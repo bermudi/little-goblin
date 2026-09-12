@@ -44,6 +44,11 @@ interface PageModule {
     status: number,
     body: { error?: unknown; message?: unknown } | null,
   ): PageSaveFailureView;
+  parseListEntries(raw: string): string[];
+  canRemoveListEntry(field: string, value: string, viewerId: number | null): boolean;
+  sectionSummary(section: string, data: unknown): string;
+  scriptJson(value: unknown): string;
+  SECRET_LABELS: readonly (readonly [string, string])[];
 }
 
 interface ServerOptions {
@@ -806,6 +811,166 @@ describe("Full settings Mini App UI (issue #66 unit 5)", () => {
   });
 });
 
+describe("Design polish: density, overflow, accordion, chips, restart bar", () => {
+  interface SchemaEnumField {
+    unwrap(): { options: readonly string[] };
+  }
+
+  it("enum fields are schema-derived selects, not free text", async () => {
+    const { renderSettingsPage } = await loadPage();
+    const page = renderSettingsPage();
+    const schema = (await import("../schema.ts")) as unknown as {
+      ConfigFileSchema: {
+        shape: {
+          logLevel: SchemaEnumField;
+          toolVisibility: SchemaEnumField;
+          asrModel: SchemaEnumField;
+        };
+      };
+    };
+    const cases: readonly (readonly [string, readonly string[]])[] = [
+      ["logLevel", schema.ConfigFileSchema.shape.logLevel.unwrap().options],
+      ["toolVisibility", schema.ConfigFileSchema.shape.toolVisibility.unwrap().options],
+      ["asrModel", schema.ConfigFileSchema.shape.asrModel.unwrap().options],
+    ];
+    for (const [field, options] of cases) {
+      expect(options.length, `schema options for ${field}`).toBeGreaterThan(0);
+      const select = /<select[^>]*data-field="FIELD"[^>]*>([\s\S]*?)<\/select>/
+        .source.replace("FIELD", field);
+      const match = new RegExp(select).exec(page);
+      expect(match, `select for ${field}`).toBeTruthy();
+      const optionValues = [...(match![1]?.matchAll(/<option value="([^"]*)">/g) ?? [])].map((m) => m[1]);
+      expect(optionValues).toEqual([...options]);
+      // No free-text input exists for the enum field.
+      expect(page).not.toContain(`<input id="field-general-${field}"`);
+    }
+    // The embedded validation mirror shares the same schema-derived lists
+    // (single source of truth, no second hand-written enum).
+    expect(page).toContain('var LOG_LEVELS = ["debug","info","warn","error"];');
+    expect(page).toContain("oneOf(patch.logLevel, LOG_LEVELS)");
+    expect(page).toContain("oneOf(patch.asrModel, ASR_MODELS)");
+    expect(page).toContain("oneOf(patch.toolVisibility, TOOL_VISIBILITY_LEVELS)");
+  });
+
+  it("restart moves to a pending-only sticky bottom bar", async () => {
+    const { renderSettingsPage } = await loadPage();
+    const page = renderSettingsPage();
+    // The header no longer hosts the restart button.
+    const header = /<header>[\s\S]*?<\/header>/.exec(page)?.[0] ?? "";
+    expect(header).toContain("<h1");
+    expect(header).not.toContain("restart-button");
+    // Bar and button exist but start hidden until the revisions diverge.
+    expect(page).toContain('<div id="restart-bar" hidden>');
+    expect(page).toContain('id="restart-button" type="button" class="secondary" hidden');
+    // Visibility is derived from the revision pair, never a timer.
+    expect(page).toContain("config.revision !== config.bootRevision");
+    // Sticky placement at the bottom of the viewport.
+    expect(page).toContain("#restart-bar { position: sticky; bottom: 0;");
+    // A subtle up-to-date state when nothing is pending.
+    expect(page).toContain("All changes applied");
+    // Badge copy and the confirmation flow are preserved.
+    expect(page).toContain("Restart pending — Devin model changes apply without restart");
+    expect(page).toContain('id="restart-confirm"');
+    expect(page).toContain('id="restart-yes"');
+    expect(page).toContain('id="restart-no"');
+  });
+
+  it("list fields render removable chips and protect the operator's own id", async () => {
+    const { renderSettingsPage, canRemoveListEntry, parseListEntries } = await loadPage();
+    const page = renderSettingsPage();
+    // favorites and allowedUsers are chip editors, not comma text inputs.
+    expect(page).toContain('<div class="chips" data-section="general" data-field="favorites" data-list="1"></div>');
+    expect(page).toContain('<div class="chips" data-section="general" data-field="allowedUsers" data-list="1"></div>');
+    expect(page).not.toMatch(/<input[^>]*data-list/);
+    // Comma-separated paste still falls back into list entries on add.
+    expect(parseListEntries("a, b ,, c")).toEqual(["a", "b", "c"]);
+    expect(parseListEntries("single")).toEqual(["single"]);
+    expect(parseListEntries("  ")).toEqual([]);
+    // The operator's own Telegram user id cannot be removed client-side
+    // (the server rejects it too); other entries and fields stay removable.
+    expect(canRemoveListEntry("allowedUsers", "123", 123)).toBe(false);
+    expect(canRemoveListEntry("allowedUsers", " 123 ", 123)).toBe(false);
+    expect(canRemoveListEntry("allowedUsers", "456", 123)).toBe(true);
+    expect(canRemoveListEntry("allowedUsers", "123", null)).toBe(true);
+    expect(canRemoveListEntry("favorites", "123", 123)).toBe(true);
+    // The embedded chips machinery mirrors the guard and converts user ids
+    // back to numbers on save (arrays over the wire, contract unchanged).
+    expect(page).toContain("canRemoveListEntry(wrapper.dataset.field");
+    expect(page).toContain('patch[field] = nums');
+  });
+
+  it("sections collapse into an accordion with one-line value summaries", async () => {
+    const { renderSettingsPage, sectionSummary } = await loadPage();
+    const page = renderSettingsPage();
+    const cards = page.match(/<details class="card"/g) ?? [];
+    expect(cards).toHaveLength(7);
+    // First section open, every other collapsed.
+    expect(page).toContain('<details class="card" data-section="general"');
+    expect(page).toMatch(/data-section="general"[^>]*open/);
+    expect(page).not.toMatch(/data-section="embeddings"[^>]*open/);
+    expect(page).not.toMatch(/data-section="devin"[^>]*open/);
+    for (const section of ["general", "embeddings", "external-agents", "devin", "mcp", "settings", "secrets"]) {
+      expect(page).toContain(`data-summary-for="${section}"`);
+    }
+    // Summaries are derived from the loaded config, not form state.
+    expect(sectionSummary("general", { model: "zai/glm-5.3-flash", allowedUsers: [1] })).toBe(
+      "zai/glm-5.3-flash · 1 user",
+    );
+    expect(sectionSummary("general", { model: "m", favorites: ["a", "b"], allowedUsers: [1, 2] })).toBe(
+      "m · 2 favorites · 2 users",
+    );
+    expect(sectionSummary("embeddings", { provider: "openai", model: "emb-model" })).toBe("openai/emb-model");
+    expect(sectionSummary("external-agents", { backends: ["claude", "devin"] })).toBe("claude, devin");
+    expect(sectionSummary("devin", { defaultModel: "atlas-exact-a" })).toBe("atlas-exact-a");
+    expect(sectionSummary("devin", { defaultModel: null })).toBe("");
+    expect(sectionSummary("mcp", { enabled: ["a", "b"], disabledServers: ["b"] })).toBe("1 on · 1 off");
+    expect(sectionSummary("settings", { port: 3423, enabled: true })).toBe("port 3423 · enabled");
+    // Secrets summaries take the full config and count exactly the chips
+    // renderSecrets renders: SECRET_LABELS plus the embeddings key.
+    expect(
+      sectionSummary("secrets", { secrets: { botToken: { present: true }, groqApiKey: { present: false } } }),
+    ).toBe("1 of 8 set");
+    expect(sectionSummary("secrets", null)).toBe("");
+    expect(sectionSummary("general", null)).toBe("");
+    expect(sectionSummary("general", undefined)).toBe("");
+  });
+
+  it("per-section save/cancel start disabled until a section is dirty", async () => {
+    const { renderSettingsPage } = await loadPage();
+    const page = renderSettingsPage();
+    for (const section of ["general", "embeddings", "external-agents", "mcp", "settings"]) {
+      expect(page).toContain(`data-save="${section}" disabled`);
+      expect(page).toContain(`data-cancel="${section}" disabled`);
+      expect(page).toContain(`data-dirty-for="${section}"`);
+    }
+    // The Devin card's exact-model save is dirty-gated the same way.
+    expect(page).toContain('<button id="save-button" type="button" class="primary" disabled>');
+    expect(page).toContain('data-dirty-for="devin"');
+    // Dirty tracking compares the collected patch against the loaded config.
+    expect(page).toContain("function snapshotBaseline(section)");
+    expect(page).toContain("function isDirtySection(section)");
+    expect(page).toContain("function cancelSection(section)");
+    expect(page).toContain("function refreshDirty(section)");
+  });
+
+  it("no horizontal overflow at 360px: fluid boxes, no fixed widths", async () => {
+    const { renderSettingsPage } = await loadPage();
+    const page = renderSettingsPage();
+    // border-box sizing everywhere and zero min-widths, so long values wrap
+    // or truncate instead of forcing the page wider than the viewport.
+    expect(page).toContain("box-sizing: border-box; min-width: 0;");
+    expect(page).toContain("grid-template-columns: minmax(0, 1fr)");
+    const inputRule = /input\[type="text"\][\s\S]*?\{([^}]+)\}/.exec(page)?.[1] ?? "";
+    expect(inputRule).toContain("width: 100%");
+    expect(inputRule).toContain("min-width: 0");
+    expect(inputRule).toContain("max-width: 100%");
+    // No fixed pixel min-width that could force sideways scrolling.
+    expect(page).not.toMatch(/min-width:\s*(?:[1-9][0-9]{2,})px/);
+    // Small-viewport viewport meta.
+    expect(page).toContain('name="viewport" content="width=device-width, initial-scale=1"');
+  });
+});
+
 describe("Search and save inside Telegram production wiring", () => {
   it("deployment owns a stable listener and URL configuration", async () => {
     const schemaPath = "../schema.ts";
@@ -1011,5 +1176,128 @@ describe("Search and save inside Telegram production wiring", () => {
     expect(indexText).toContain("startDeploymentSettingsServer");
     expect(indexText).toContain("syncSettingsMenuButton");
     expect(indexText).not.toContain("0.0.0.0");
+  });
+});
+
+describe("Micro hardening pass (review follow-ups)", () => {
+  it("empty voiceName renders General saveable: empty means omit, like other optional fields", async () => {
+    const { renderSettingsPage, validateSectionPatch } = await loadPage();
+    const page = renderSettingsPage();
+    // The shell marks voiceName optional, so the collector omits an empty
+    // input (leave unchanged) instead of sending "" and tripping the
+    // non-empty mirror check on every General save.
+    expect(page).toContain(
+      '<input id="field-general-voiceName" type="text" data-section="general" data-field="voiceName" data-optional="1">',
+    );
+    // A patch shaped like the collector's output for a voiceName-"" config
+    // (voiceName omitted) validates clean.
+    expect(
+      validateSectionPatch("general", {
+        model: "m",
+        logLevel: "info",
+        toolVisibility: "standard",
+        asrModel: "whisper-large-v3",
+        favorites: [],
+        allowedUsers: [OPERATOR_ID],
+      }),
+    ).toEqual({});
+
+    // End to end: a config with voiceName "" saves General and leaves it "".
+    const home = mkdtempSync(join(tmpdir(), "goblin-settings-page-empty-voice-"));
+    writeFileSync(
+      join(home, "goblin.json5"),
+      JSON5.stringify({ botToken: "x", allowedUsers: [OPERATOR_ID], model: "m", voiceName: "" }) + "\n",
+      "utf-8",
+    );
+    const handle = await startServer({
+      goblinHome: home,
+      botToken: BOT_TOKEN,
+      allowedUserIds: [OPERATOR_ID],
+      allowedOrigins: [ORIGIN],
+      discover: async () => testCatalog(),
+    });
+    try {
+      const auth = validInitData();
+      const before = (await (
+        await fetch(`${handle.url}/api/config`, { headers: { authorization: `tma ${auth}` } })
+      ).json()) as { general: { voiceName: string }; revision: string };
+      expect(before.general.voiceName).toBe("");
+      const saved = await fetch(`${handle.url}/api/config/general`, {
+        method: "PUT",
+        headers: { authorization: `tma ${auth}`, origin: ORIGIN, "content-type": "application/json" },
+        body: JSON.stringify({ patch: { model: "edited-model" }, expectedRevision: before.revision }),
+      });
+      expect(saved.status).toBe(200);
+      const after = (await (
+        await fetch(`${handle.url}/api/config`, { headers: { authorization: `tma ${auth}` } })
+      ).json()) as { general: { voiceName: string } };
+      expect(after.general.voiceName).toBe("");
+    } finally {
+      await handle.close();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("pre-color-mix webviews get static fallbacks for label, muted, and border", async () => {
+    const { renderSettingsPage } = await loadPage();
+    const page = renderSettingsPage();
+    const block = /@supports not \(color: color-mix\(in srgb, red, blue\)\) \{[\s\S]*?\n\}/.exec(page)?.[0] ?? "";
+    expect(block).not.toBe("");
+    for (const variable of ["--theme-label", "--theme-muted", "--theme-border"]) {
+      // Static plain-color fallbacks, not color-mix() expressions.
+      expect(block).toMatch(new RegExp(`${variable}:\\s*#[0-9a-fA-F]{6};`));
+    }
+  });
+
+  it("inline-script JSON escapes < so </script> can never terminate the script", async () => {
+    const { renderSettingsPage, scriptJson } = await loadPage();
+    const hostile = ["</script><img src=x onerror=alert(1)>", "sep\u2028inside\u2029end", "back\\slash\"quote"];
+    const serialized = scriptJson(hostile);
+    // < is escaped, so no </script sequence can appear; the JSON-legal line
+    // separators are escaped too. The value round-trips through JSON.parse.
+    expect(serialized).toContain("\\u003c");
+    expect(serialized.toLowerCase()).not.toContain("</script");
+    expect(serialized).not.toContain("\u2028");
+    expect(serialized).not.toContain("\u2029");
+    expect(JSON.parse(serialized)).toEqual(hostile);
+
+    // The rendered page keeps its script structure intact and still injects
+    // the schema-derived constants.
+    const page = renderSettingsPage();
+    expect(page.match(/<script[\s>]/g) ?? []).toHaveLength(2);
+    expect(page.match(/<\/script>/g) ?? []).toHaveLength(2);
+    expect(page).toContain('var LOG_LEVELS = ["debug","info","warn","error"];');
+
+    // Every JSON.stringify-into-script site goes through the helper.
+    const source = readFileSync(join(import.meta.dir, "page.ts"), "utf-8");
+    expect(source).not.toContain("${JSON.stringify(");
+    expect(source.match(/\$\{scriptJson\(/g) ?? []).toHaveLength(5);
+  });
+
+  it("secrets summary counts exactly the chips the page renders", async () => {
+    const { renderSettingsPage, sectionSummary, SECRET_LABELS } = await loadPage();
+    const page = renderSettingsPage();
+    // Chips are one per SECRET_LABELS entry plus the embeddings key; the
+    // summary derives from the same source, so they cannot drift.
+    const chipTotal = SECRET_LABELS.length + 1;
+    const cases: { secrets?: Record<string, { present: boolean }>; embeddings?: { apiKey?: { present: boolean } } }[] = [
+      { secrets: { botToken: { present: true } }, embeddings: { apiKey: { present: true } } },
+      {
+        secrets: Object.fromEntries(SECRET_LABELS.map(([key]) => [key, { present: false }])),
+        embeddings: { apiKey: { present: false } },
+      },
+      { secrets: Object.fromEntries(SECRET_LABELS.map(([key]) => [key, { present: true }])), embeddings: {} },
+      {},
+    ];
+    for (const config of cases) {
+      const chipSet =
+        SECRET_LABELS.filter(([key]) => config.secrets?.[key]?.present === true).length +
+        (config.embeddings?.apiKey?.present === true ? 1 : 0);
+      expect(sectionSummary("secrets", config)).toBe(`${chipSet} of ${chipTotal} set`);
+    }
+    // Both sides of the page share the injected list and the helper.
+    expect(page).toContain("var SECRET_LABELS = ");
+    expect(page).toContain("function secretPresence(config)");
+    expect(page).toContain("secretPresence(data)");
   });
 });

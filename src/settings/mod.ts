@@ -36,10 +36,15 @@ export {
   type RestartTriggerHooks,
 } from "./restart.ts";
 export {
+  canRemoveListEntry,
   escapeHtml,
   filterCatalogFamilies,
+  parseListEntries,
   renderSettingsPage,
   saveFailureFeedback,
+  scriptJson,
+  SECRET_LABELS,
+  sectionSummary,
   serverFieldErrorPlacements,
   type PageModelCatalog,
   type PageModelFamily,

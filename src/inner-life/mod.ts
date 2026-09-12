@@ -7,6 +7,7 @@ export {
 } from "./paths.ts";
 export {
   AdmissionClosedError,
+  INNER_LIFE_DISPOSAL_DEADLINE_MS,
   PRIVATE_FACTS_CONFIDENCE,
   ReconciliationError,
   ReflectionHost,
@@ -53,6 +54,20 @@ export {
   WakeStore,
   WakeReservationConflictError,
 } from "./wake-store.ts";
+export {
+  createInnerLifeLifecycle,
+  FileReflectionCursorStore,
+  LightSleepPass,
+} from "./light-sleep.ts";
+export type {
+  DreamingPhaseQueue,
+  InnerLifeLifecycle,
+  InnerLifeLifecycleOptions,
+  LightSleepConversations,
+  LightSleepMetrics,
+  LightSleepPassOptions,
+  LightSleepTranscripts,
+} from "./light-sleep.ts";
 export type {
   AcceptedIntent,
   WakeInputLine,

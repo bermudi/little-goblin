@@ -34,6 +34,14 @@
  * MemoryStore, applies each intent through the memory seam (whose canonical
  * receipt makes replays free), records the wake outcome only after all
  * durable outcomes exist, and advances the source cursor last.
+ *
+ * Shutdown fencing (lifecycle unit): `close()` synchronously closes wake
+ * admission and aborts every active reflection; late model output can never
+ * produce a memory effect. `settle()` resolves when every drive admitted
+ * before close has settled, bounded by the 5-second disposal deadline. A
+ * cancelled attempt consumes its persisted attempt and stays resumable;
+ * drives that have not yet begun an attempt after close leave the record
+ * untouched.
  */
 
 import {
@@ -130,6 +138,14 @@ export class AdmissionClosedError extends Error {
   }
 }
 
+/**
+ * Bounded shutdown disposal: `settle()` stops waiting for pre-close drives
+ * after this long. Cancellation settles the reflection boundary promptly
+ * (the engine rejects pre-aborted and aborted signals without adopting
+ * output), so the bound is a safety cap, not the expected path.
+ */
+export const INNER_LIFE_DISPOSAL_DEADLINE_MS = 5_000;
+
 // ---------------------------------------------------------------------------
 // Host
 // ---------------------------------------------------------------------------
@@ -163,8 +179,12 @@ export class ReflectionHost {
   private readonly reflection: ReflectionEngine;
   private readonly now: () => Date;
   private admitted = false;
+  /** Set by close(); fences new attempts and stays closed for the process lifetime. */
+  private closed = false;
   /** Per-wake drive serialization; an overlapping trigger waits, never bypasses. */
   private readonly driveLocks = new Map<string, Promise<void>>();
+  /** Active drives with their settlement promises, for shutdown fencing. */
+  private readonly activeDrives = new Map<AbortController, Promise<void>>();
 
   constructor(options: ReflectionHostOptions) {
     this.wakeStore = options.wakeStore;
@@ -177,6 +197,54 @@ export class ReflectionHost {
   /** True once a full reconciliation (validation plus recovery) has succeeded. */
   get isAdmitted(): boolean {
     return this.admitted;
+  }
+
+  /** True once close() has fenced admission; never reopens. */
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
+  /**
+   * Close wake admission synchronously and cancel every active reflection.
+   * New `processWindow` calls fail immediately; in-flight drives observe the
+   * abort between attempts and leave not-yet-begun attempts unburned. A
+   * reflection already in flight rejects as `cancelled`: its persisted
+   * attempt stays spent and the wake resumable, and no late output can
+   * produce a memory effect. Idempotent; never reopens admission.
+   */
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.admitted = false;
+    for (const controller of this.activeDrives.keys()) {
+      controller.abort();
+    }
+    log.info("inner-life host closed; wake admission fenced", { active: this.activeDrives.size });
+  }
+
+  /**
+   * Resolve when every drive admitted before close() has settled, waiting at
+   * most {@link INNER_LIFE_DISPOSAL_DEADLINE_MS}. A timeout is logged and does
+   * not throw: abandoned work stays replay-safe under reconciliation.
+   */
+  async settle(): Promise<void> {
+    if (this.activeDrives.size === 0) return;
+    const drain = Promise.all([...this.activeDrives.values()]).then(() => undefined);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), INNER_LIFE_DISPOSAL_DEADLINE_MS);
+    });
+    try {
+      const result = await Promise.race([drain.then(() => "settled" as const), timeout]);
+      if (result === "timeout") {
+        log.error("inner-life disposal exceeded the bounded deadline; abandoned work stays replay-safe", {
+          active: this.activeDrives.size,
+          deadlineMs: INNER_LIFE_DISPOSAL_DEADLINE_MS,
+        });
+      }
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 
   /**
@@ -213,9 +281,15 @@ export class ReflectionHost {
       unfinished: [],
     };
     for (const record of records) {
+      // Shutdown racing reconciliation: leave not-yet-driven wakes untouched
+      // instead of burning attempts against a closed admission.
+      if (this.closed) break;
       let outcome: WakeReconciliationOutcome;
+      const controller = new AbortController();
+      const drive = this.driveExclusively(record.wakeId, () => this.driveWake(record.wakeId, controller.signal));
+      this.activeDrives.set(controller, drive.then(() => undefined, () => undefined));
       try {
-        outcome = await this.driveExclusively(record.wakeId, () => this.driveWake(record.wakeId));
+        outcome = await drive;
       } catch (err) {
         log.error("inner-life reconciliation failed; admission stays closed", {
           wakeId: record.wakeId,
@@ -224,8 +298,19 @@ export class ReflectionHost {
         throw err instanceof ReconciliationError
           ? err
           : new ReconciliationError(record.wakeId, boundedError(err).error, { cause: err });
+      } finally {
+        this.activeDrives.delete(controller);
       }
       report[outcome].push(record.wakeId);
+    }
+    if (this.closed) {
+      log.warn("inner-life reconciliation interrupted by shutdown; admission stays closed", {
+        wakes: wakeIds.length,
+        completed: report.completed.length,
+        failed: report.failed.length,
+        unfinished: report.unfinished.length,
+      });
+      return report;
     }
     this.admitted = true;
     log.info("inner-life reconciliation completed; admission open", {
@@ -246,6 +331,26 @@ export class ReflectionHost {
    */
   async processWindow(input: WakeReservationInput, signal?: AbortSignal): Promise<WindowOutcome> {
     if (!this.admitted) throw new AdmissionClosedError();
+    // The drive controller is created, wired, and registered synchronously
+    // with the admission check, so a concurrent close() either observes this
+    // drive (and aborts it) or the admission check has already failed.
+    const controller = new AbortController();
+    const forwardAbort = (): void => controller.abort();
+    if (signal !== undefined) {
+      if (signal.aborted) controller.abort();
+      else signal.addEventListener("abort", forwardAbort, { once: true });
+    }
+    const body = this.processWindowBody(input, controller.signal);
+    this.activeDrives.set(controller, body.then(() => undefined, () => undefined));
+    try {
+      return await body;
+    } finally {
+      this.activeDrives.delete(controller);
+      if (signal !== undefined) signal.removeEventListener("abort", forwardAbort);
+    }
+  }
+
+  private async processWindowBody(input: WakeReservationInput, signal: AbortSignal): Promise<WindowOutcome> {
     const reservation = await this.wakeStore.reserve(input);
     const wakeId = reservation.record.wakeId;
     await this.driveExclusively(wakeId, () => this.driveWake(wakeId, signal));
@@ -299,6 +404,9 @@ export class ReflectionHost {
           continue;
         case "reserved":
         case "reflecting": {
+          // Post-close drives never begin another attempt: the record is left
+          // exactly as it stands for a later boot's reconciliation.
+          if (this.closed) return "unfinished";
           const attempt = await this.runAttempt(record, signal);
           if (attempt === "failed") return "failed";
           if (attempt === "unfinished") return "unfinished";

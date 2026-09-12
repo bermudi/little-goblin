@@ -314,13 +314,34 @@ Scheduled turns use the same dispatcher and prompt queue as user turns. A captur
 
 The frozen `inner-life` proposal is historical design input, not an implementation specification. Fresh shaping must settle the remaining wake-store, profile/effect state-machine, crash-recovery, and deny-by-default contact details under decision 0035. `visible-dreaming` remains blocked until that implementation exists; it may later supply reflection content but must not create a parallel scheduler, delivery, or consent system.
 
-**ACTIVE TARGET — issue #67 (`litespec/private-reflection`).** The designated
-contract is [`specs/inner-life/spec.md`](specs/inner-life/spec.md). This first
-slice replaces light-sleep model extraction only: a deployment-owned host,
-durable bounded wake input, tool-free extractive facts from user messages, and
-MemoryStore-owned transactional effect receipts for restart-safe memory changes.
-It does not implement proactive contact or change heartbeat, REM, or deep sleep.
-Until built and verified, the internal dreaming runtime remains CURRENT.
+**INSTALLED — issue #67 (`litespec/private-reflection`).** Light-sleep model
+extraction is deployed on the private-reflection host. The deployment owns
+exactly one `ReflectionHost` (composed in `src/index.ts` via
+`createInnerLifeLifecycle`) with its wake store under `state/inner-life/wakes/`;
+the scheduler's light-sleep timer holds only a `runPass()` work signal, and the
+host owns orchestration: conversation enumeration, retained light-sleep backlog
+policy (fresh-cursor seeding, finite snapshots, configured line batches,
+lookback filtering, expired-line warnings), per-Conversation serialization,
+bounded wake records, tool-free extractive reflection, and MemoryStore-owned
+replay-safe fact receipts. Light sleep no longer borrows the dreaming internal
+conversation runtime, constructs a Surface, or sends Telegram output; REM, deep
+sleep, heartbeat, and transcript sync keep their existing scheduling and
+coordinate with light sleep only through the DreamingPipeline's global phase
+queue. Startup reconciliation must complete before memory timers and Telegram
+polling are admitted (a failure fails startup closed); shutdown closes wake
+admission synchronously, cancels active reflection, and settles disposal within
+5 seconds, so late model output can never write memory.
+The operator migration remedy is `bun run migrate`, run with the service
+stopped: the offline versioned migration (state version 6) adds the wake layout
+and effect-receipt storage while preserving memory and cursors, and startup
+refuses older state versions. Startup itself reconciles current-version wake
+state; it never migrates.
+
+Historical note: until this slice landed and was verified, the internal dreaming
+runtime remained CURRENT for light sleep. The frozen `inner-life` proposal is
+historical design input, not an implementation specification.
+`visible-dreaming` remains blocked; it may later supply reflection content but
+must not create a parallel scheduler, delivery, or consent system.
 
 ## Memory
 

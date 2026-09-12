@@ -96,8 +96,13 @@ const DEFAULT_MAX_MODEL_LINES = 100;
 // Policy thresholds (confidence, cosine dedup) live in the shared policy seam
 // (src/memory/policy.ts) so the dreaming pipeline and the fact-effect
 // application path cannot drift.
-const LOOKBACK_HOURS = envInt("GOBLIN_MEMORY_DREAM_LOOKBACK_HOURS", DEFAULT_LOOKBACK_HOURS);
-const MAX_MODEL_LINES = envInt("GOBLIN_MEMORY_DREAM_MAX_MODEL_LINES", DEFAULT_MAX_MODEL_LINES);
+//
+// LOOKBACK_HOURS and MAX_MODEL_LINES are exported: the private-reflection
+// light-sleep wiring derives its identical backlog policy (lookback window
+// and per-batch line limit, also passed as the wake store's `maxInputLines`)
+// from the same configured values, so the two paths cannot diverge.
+export const LOOKBACK_HOURS = envInt("GOBLIN_MEMORY_DREAM_LOOKBACK_HOURS", DEFAULT_LOOKBACK_HOURS);
+export const MAX_MODEL_LINES = envInt("GOBLIN_MEMORY_DREAM_MAX_MODEL_LINES", DEFAULT_MAX_MODEL_LINES);
 
 // ---------------------------------------------------------------------------
 // Processed candidate tracking
@@ -273,13 +278,21 @@ export class DreamingPipeline {
    * work, REM, and deep) serialize through this queue so they never overlap.
    * Errors propagate to the caller but do not block subsequent phases.
    */
-  private async runGlobalPhase(fn: () => Promise<void>): Promise<void> {
-    const run = async (): Promise<void> => {
-      await fn();
-    };
-    const next = this.globalPhaseQueue.then(run, run);
-    this.globalPhaseQueue = next.catch(() => {});
-    await next;
+  private async runGlobalPhase<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.globalPhaseQueue.then(fn, fn);
+    this.globalPhaseQueue = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
+  /**
+   * Run one function on the global dreaming phase queue, serialized against
+   * REM and deep sleep (and the REM/deep sides of the private-reflection
+   * light-sleep path). The private-reflection host's per-Conversation light
+   * passes enqueue through this seam so at most one dreaming phase runs at a
+   * time across both pipelines.
+   */
+  runExclusivePhase<T>(fn: () => Promise<T>): Promise<T> {
+    return this.runGlobalPhase(fn);
   }
 
   /**

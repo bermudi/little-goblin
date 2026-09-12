@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import {
   appendFileSync,
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -26,7 +27,7 @@ import type { ReflectionModelRequest } from "./reflection.ts";
 import { PRIVATE_REFLECTION_SYSTEM_PROMPT } from "./reflection.ts";
 import { PRIVATE_FACTS_PROFILE, WakeStore, type WakeReservationInput } from "./wake-store.ts";
 import { wakesDir } from "./paths.ts";
-import { AdmissionClosedError, type ReflectionCursorState, type ReflectionCursorStore } from "./recovery.ts";
+import { AdmissionClosedError, type ReflectionCursorState } from "./recovery.ts";
 import {
   createInnerLifeLifecycle,
   FileReflectionCursorStore,
@@ -199,6 +200,16 @@ async function waitFor(condition: () => boolean, what: string): Promise<void> {
   throw new Error(`timed out waiting for ${what}`);
 }
 
+/** Run work with a directory made read-only, restoring permissions even on failure. */
+async function runWithReadOnlyDir(path: string, work: () => Promise<void>): Promise<void> {
+  chmodSync(path, 0o500);
+  try {
+    await work();
+  } finally {
+    chmodSync(path, 0o700);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Scheduler fakes (deterministic clock and dispatcher)
 // ---------------------------------------------------------------------------
@@ -248,7 +259,10 @@ function fakeDispatcher(): SchedulerDispatcher & {
 }
 
 /** Counting wrapper around the lifecycle's lightSleep seam. */
-function spyLightSleep(lifecycle: InnerLifeLifecycle): { calls: number; seam: { runPass(): Promise<void> } } {
+function spyLightSleep(lifecycle: InnerLifeLifecycle): {
+  spy: { calls: number };
+  seam: { runPass(): Promise<void> };
+} {
   const spy = { calls: 0 };
   return {
     spy,
@@ -393,6 +407,8 @@ describe("private reflection lifecycle", () => {
     const report = await fixture.lifecycle.reconcile();
     expect(report.completed).toEqual([]);
     expect(fixture.lifecycle.host.isAdmitted).toBe(true);
+    // A pre-existing checkpoint: the conversation has a backlog to drain.
+    new FileReflectionCursorStore(dir).write(conversationId, { processedLines: 0, lastDreamedAt: TS });
 
     const clockState = fakeClock();
     const dispatcher = fakeDispatcher();
@@ -446,7 +462,7 @@ describe("private reflection lifecycle", () => {
     // No Surface dispatch and no Telegram output: the scheduler never
     // enqueued a scheduled turn, and the dispatcher has no internal-turn seam.
     expect(dispatcher.calls).toHaveLength(0);
-    expect((dispatcher as Record<string, unknown>).enqueueInternalTurn).toBeUndefined();
+    expect((dispatcher as unknown as Record<string, unknown>).enqueueInternalTurn).toBeUndefined();
 
     scheduler.stop();
     fixture.lifecycle.dispose();
@@ -561,6 +577,7 @@ describe("private reflection lifecycle", () => {
       batchLimitLines: 1,
       phases,
     });
+    await fixture.lifecycle.reconcile();
 
     // Fresh-cursor seeding: a conversation with no cursor seeds to the
     // current transcript end and extracts nothing.
@@ -581,10 +598,10 @@ describe("private reflection lifecycle", () => {
     expect(model.calls).toBe(2);
     expect(readCursor(dir, conversationId)?.processedLines).toBe(5);
     expect(wakeIds(dir)).toHaveLength(2);
-    const windows = wakeIds(dir).map((id) => readWake(dir, id).source) as Array<{
-      afterLine: number;
-      beforeLine: number;
-    }>;
+    const windows = wakeIds(dir).map((id) => {
+      const source = readWake(dir, id).source as { afterLine: number; beforeLine: number };
+      return { afterLine: source.afterLine, beforeLine: source.beforeLine };
+    });
     expect(windows).toContainEqual({ afterLine: 3, beforeLine: 4 });
     expect(windows).toContainEqual({ afterLine: 4, beforeLine: 5 });
 
@@ -741,6 +758,8 @@ describe("private reflection lifecycle", () => {
       model,
     });
     await fixture.lifecycle.reconcile();
+    // A pre-existing checkpoint: the pass has a window to reflect on.
+    new FileReflectionCursorStore(dir).write(conversationId, { processedLines: 0, lastDreamedAt: TS });
 
     const draining = fixture.lifecycle.lightSleep.runPass();
     await waitFor(() => model.calls === 1, "the in-flight reflection");
@@ -766,7 +785,7 @@ describe("private reflection lifecycle", () => {
     expect(record.attempts).toBe(1);
     expect(effectReceiptCount(fixture.store)).toBe(0);
     expect(curatedRows(fixture.store, "general")).toHaveLength(0);
-    expect(readCursor(dir, conversationId)).toBeNull();
+    expect(readCursor(dir, conversationId)?.processedLines).toBe(0);
 
     // Late model output after shutdown is fenced: resolving the hung
     // invocation now must not write memory.
@@ -775,7 +794,7 @@ describe("private reflection lifecycle", () => {
     await Bun.sleep(20);
     expect(effectReceiptCount(fixture.store)).toBe(0);
     expect(curatedRows(fixture.store, "general")).toHaveLength(0);
-    expect(readCursor(dir, conversationId)).toBeNull();
+    expect(readCursor(dir, conversationId)?.processedLines).toBe(0);
 
     // New wake work is refused after close.
     const lateInput: WakeReservationInput = {
@@ -807,6 +826,7 @@ describe("private reflection lifecycle", () => {
     appendTranscriptLine(dir, conversationId, { role: "user", text: "second line" });
 
     const cursors = new FileReflectionCursorStore(dir);
+    const conversationSessionDir = sessionDir(dir, conversationId);
 
     // Source read failure: observable, progress unadvanced, no wake, no
     // model call, and not an empty successful batch.
@@ -822,6 +842,7 @@ describe("private reflection lifecycle", () => {
       conversations: { list: () => [{ id: conversationId }] },
       transcripts: brokenReads,
     });
+    await broken.lifecycle.reconcile();
     await broken.lifecycle.lightSleep.runPass();
     expect(broken.errors).toHaveLength(1);
     expect(broken.errors[0]!.conversationId).toBe(conversationId);
@@ -831,96 +852,77 @@ describe("private reflection lifecycle", () => {
     expect(broken.model.calls).toBe(0);
     broken.lifecycle.dispose();
 
-    // Cursor write failure after a completed wake: the failure is
-    // observable, the durable wake outcome stands, and no progress is
-    // silently recorded.
-    let failNextWrite = true;
-    const failingWrites: ReflectionCursorStore = {
-      read: (id) => cursors.read(id),
-      write: (id, cursor) => {
-        if (failNextWrite) {
-          failNextWrite = false;
-          throw Object.assign(new Error("EACCES: permission denied, write"), { code: "EACCES" });
-        }
-        cursors.write(id, cursor);
-      },
-    };
+    // Cursor write failure at the wake-completion checkpoint (real EACCES on
+    // the checkpoint directory): the failure is observable, the durable wake
+    // outcome stands, and no progress is silently recorded.
     const model = new FakeReflectionModel();
     const fixture = makeLifecycle(dir, {
       conversations: { list: () => [{ id: conversationId }] },
       model,
     });
-    // The composition wires one cursor store into host and pass alike, so a
-    // checkpoint write failure surfaces through the host's cursor update.
-    const host = fixture.lifecycle.host as unknown as { cursors: ReflectionCursorStore };
-    host.cursors = failingWrites;
-
-    await fixture.lifecycle.lightSleep.runPass();
+    await fixture.lifecycle.reconcile();
+    const callsAfterFixtureReconcile = model.calls;
+    await runWithReadOnlyDir(conversationSessionDir, () => fixture.lifecycle.lightSleep.runPass());
     expect(fixture.errors).toHaveLength(1);
     expect((fixture.errors[0]!.err as Error).message).toContain("EACCES");
     // The wake completed durably; only the checkpoint is missing.
     expect(wakeIds(dir)).toHaveLength(1);
     expect(readWake(dir, wakeIds(dir)[0]!).state).toBe("completed");
     expect(curatedRows(fixture.store, "general")).toHaveLength(1);
-    expect(readCursor(dir, conversationId)).toBeNull();
+    expect(readCursor(dir, conversationId)?.processedLines).toBe(0);
 
-    // A healed writer converges: the completed wake is reused (no new
-    // reflection, no duplicate memory) and the cursor finally advances.
+    // A healed checkpoint converges: reconciliation repairs the completed-
+    // but-uncheckpointed wake before admission (no new reflection, no
+    // duplicate memory), and a pass finds no backlog left.
+    const callsBeforeHeal = model.calls;
     const healed = makeLifecycle(dir, {
       conversations: { list: () => [{ id: conversationId }] },
       model,
     });
+    await healed.lifecycle.reconcile();
     await healed.lifecycle.lightSleep.runPass();
-    expect(healed.model.calls).toBe(0);
+    expect(callsBeforeHeal).toBe(callsAfterFixtureReconcile + 1);
+    expect(model.calls).toBe(callsBeforeHeal);
     expect(wakeIds(dir)).toHaveLength(1);
     expect(curatedRows(fixture.store, "general")).toHaveLength(1);
     expect(effectReceiptCount(fixture.store)).toBe(1);
     expect(readCursor(dir, conversationId)?.processedLines).toBe(2);
 
-    // An expired-only batch whose cursor write fails is an observed error,
-    // never a quiet empty successful batch.
+    // An expired-only batch whose skip-checkpoint write fails (real EACCES)
+    // is an observed error, never a quiet empty successful batch.
     appendTranscriptLine(dir, conversationId, { role: "user", text: "stale", ts: EXPIRED_TS });
-    let failSkipWrite = true;
-    const failingSkips: ReflectionCursorStore = {
-      read: (id) => cursors.read(id),
-      write: (id, cursor) => {
-        if (failSkipWrite) {
-          failSkipWrite = false;
-          throw new Error("injected skip-checkpoint write failure");
-        }
-        cursors.write(id, cursor);
-      },
-    };
-    const skipHost = healed.lifecycle.host as unknown as { cursors: ReflectionCursorStore };
-    skipHost.cursors = failingSkips;
-    await healed.lifecycle.lightSleep.runPass();
-    expect(healed.errors).toHaveLength(1);
-    expect(healed.errors[0]!.err).toBeInstanceOf(Error);
+    const errorsBeforeSkipProbe = healed.errors.length;
+    await runWithReadOnlyDir(conversationSessionDir, () => healed.lifecycle.lightSleep.runPass());
+    expect(healed.errors).toHaveLength(errorsBeforeSkipProbe + 1);
+    expect((healed.errors[errorsBeforeSkipProbe]!.err as Error).message).toContain("EACCES");
     expect(readCursor(dir, conversationId)?.processedLines).toBe(2);
-    expect(model.calls).toBe(0);
+    // The retried skip checkpoint advances without a wake or model call.
+    await healed.lifecycle.lightSleep.runPass();
+    expect(healed.errors).toHaveLength(errorsBeforeSkipProbe + 1);
+    expect(readCursor(dir, conversationId)?.processedLines).toBe(3);
+    expect(model.calls).toBe(callsBeforeHeal);
 
-    // Seeding write failure: observable, cursor stays absent, no reflection.
+    // Seeding write failure (real EACCES inside the new conversation's own
+    // session directory): observable, cursor stays absent, no reflection.
     const freshConversation = "conversation-b";
     appendTranscriptLine(dir, freshConversation, { role: "user", text: "fresh seed" });
-    let failSeedWrite = true;
-    const failingSeed: ReflectionCursorStore = {
-      read: (id) => cursors.read(id),
-      write: (id, cursor) => {
-        if (id === freshConversation && failSeedWrite) {
-          failSeedWrite = false;
-          throw new Error("injected seed write failure");
-        }
-        cursors.write(id, cursor);
-      },
-    };
-    const seedHost = healed.lifecycle.host as unknown as { cursors: ReflectionCursorStore };
-    seedHost.cursors = failingSeed;
-    await healed.lifecycle.lightSleep.runPass();
-    expect(healed.errors.some((e) => e.conversationId === freshConversation)).toBe(true);
+    const freshSessionDir = sessionDir(dir, freshConversation);
+    const seeder = makeLifecycle(dir, {
+      conversations: { list: () => [{ id: conversationId }, { id: freshConversation }] },
+      model,
+    });
+    await seeder.lifecycle.reconcile();
+    const errorsBeforeSeedProbe = seeder.errors.length;
+    await runWithReadOnlyDir(freshSessionDir, () => seeder.lifecycle.lightSleep.runPass());
+    expect(seeder.errors).toHaveLength(errorsBeforeSeedProbe + 1);
+    expect(seeder.errors[errorsBeforeSeedProbe]!.conversationId).toBe(freshConversation);
+    expect((seeder.errors[errorsBeforeSeedProbe]!.err as Error).message).toContain("EACCES");
     expect(readCursor(dir, freshConversation)).toBeNull();
-    expect(model.calls).toBe(0);
+    expect(model.calls).toBe(callsBeforeHeal);
 
+    fixture.lifecycle.dispose();
     healed.lifecycle.dispose();
+    seeder.lifecycle.dispose();
   });
 
   it("disabled-memory-and-unavailable-model-do-not-borrow-runtime", async () => {
@@ -961,6 +963,9 @@ describe("private reflection lifecycle", () => {
       conversations: { list: () => [{ id: conversationId }] },
       config: minimalConfig("definitely-unavailable-model", dir),
     });
+    await fixture.lifecycle.reconcile();
+    // A pre-existing checkpoint: the pass has a window to reflect on.
+    new FileReflectionCursorStore(dir).write(conversationId, { processedLines: 0, lastDreamedAt: TS });
     // The injected seam must be unused when a config-driven engine is selected.
     expect(fixture.model.calls).toBe(0);
     for (let i = 0; i < 3; i++) {
@@ -975,7 +980,7 @@ describe("private reflection lifecycle", () => {
     expect(failure).toContain('Unknown MODEL_NAME "definitely-unavailable-model"');
     expect(effectReceiptCount(fixture.store)).toBe(0);
     expect(curatedRows(fixture.store, "general")).toHaveLength(0);
-    expect(readCursor(dir, conversationId)).toBeNull();
+    expect(readCursor(dir, conversationId)?.processedLines).toBe(0);
     // The dreaming internal conversation runtime was never borrowed: no
     // internal session artifacts exist anywhere under the home.
     expect(existsSync(sessionDir(dir, "__goblin_dreaming__"))).toBe(false);

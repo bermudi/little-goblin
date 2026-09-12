@@ -11,7 +11,6 @@ import { log } from "../log.ts";
 import { MemoryStore } from "../memory/mod.ts";
 import { ConversationStore } from "../sessions/conversation-store.ts";
 import type { ConversationState } from "../sessions/types.ts";
-import { InternalSessionStore } from "../sessions/internal-session-store.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
 import { dmSurface, guestSurface, surfaceId, supergroupSurface, topicSurface, type Surface } from "../surface.ts";
 import { appendAssistantTranscriptEntry } from "../sessions/transcript.ts";
@@ -1782,7 +1781,7 @@ describe("Telegram intake", () => {
 
   it("queues a scheduler tick behind an active Telegram turn for the same Conversation", async () => {
     const cfg = makeConfig();
-    const { intake, conversationStore } = makeHarness(cfg);
+    const { intake } = makeHarness(cfg);
     const replies: string[] = [];
     const message = makeMessage(replies);
     const now = Date.parse("2026-07-04T12:00:00Z");
@@ -1804,8 +1803,6 @@ describe("Telegram intake", () => {
     const loop = new SchedulerLoop({
       store,
       lifecycle: intake.lifecycle,
-      conversationCatalog: conversationStore,
-      internalSessionStore: new InternalSessionStore(cfg.goblinHome),
       dispatcher: intake.dispatcher,
       clock: fixedClock(now),
       home: cfg.goblinHome,

@@ -17,8 +17,9 @@
  * values.
  * Persistence: none — no config cache, no stored selection.
  *
- * `escapeHtml`, `filterCatalogFamilies`, `validateSectionPatch`, and
- * `nextBackoffMs` are the canonical text/search/validation/backoff
+ * `escapeHtml`, `filterCatalogFamilies`, `validateSectionPatch`,
+ * `nextBackoffMs`, `serverFieldErrorPlacements`, and `saveFailureFeedback`
+ * are the canonical text/search/validation/backoff/failure-rendering
  * implementations the embedded client script mirrors (it cannot import this
  * module without a bundler). Provider strings and config values reach the
  * DOM only through `textContent`, never parsed markup; the page never uses
@@ -224,6 +225,110 @@ export function validateSectionPatch(section: string, patch: Record<string, unkn
  */
 export function nextBackoffMs(attempt: number): number {
   return Math.min(500 * 2 ** Math.max(0, Math.floor(attempt)), 5000);
+}
+
+/** File-level key for each whitelisted section; mirrors the Settings store. */
+const SECTION_FILE_KEYS: Readonly<Record<string, string | null>> = {
+  general: null,
+  embeddings: "embeddings",
+  "external-agents": "externalAgents",
+  devin: "devin",
+  mcp: "mcp",
+  settings: "settings",
+};
+
+/**
+ * Compute the inline placements for a server field-error message. Server
+ * issues are `path: message` entries separated by "; " and their paths carry
+ * the file key for embedded sections ("settings.port"); error slots are
+ * section-scoped (the "settings" section renders a "port" slot), so the
+ * section's file-key prefix is stripped. Store messages may wrap the issue
+ * list in prose ("Config update rejected: ...: settings.port: Too big"), so
+ * the split point is the last ": " whose left side is a pure dotted field
+ * path. Parts without a placeable field are dropped; when nothing lands, the
+ * caller falls back to the full section-level message. The embedded client
+ * script mirrors this logic (no bundler).
+ */
+export function serverFieldErrorPlacements(section: string, message: string): Record<string, string> {
+  if (typeof message !== "string" || message.length === 0) return {};
+  const fileKey = Object.hasOwn(SECTION_FILE_KEYS, section) ? (SECTION_FILE_KEYS[section] ?? null) : null;
+  const placements: Record<string, string> = {};
+  for (const part of message.split("; ")) {
+    const placed = placePathMessage(part, fileKey);
+    if (placed !== null) placements[placed.field] = placed.text;
+  }
+  return placements;
+}
+
+/** A dotted field path such as `settings.port`; bare identifiers only. */
+const FIELD_PATH = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*$/;
+
+/** Place one `; `-separated issue part; null when it holds no placeable field. */
+function placePathMessage(part: string, fileKey: string | null): { field: string; text: string } | null {
+  let segmentStart = 0;
+  while (true) {
+    const idx = part.indexOf(": ", segmentStart);
+    if (idx < 0) return null;
+    const candidate = part.slice(segmentStart, idx).trim();
+    if (FIELD_PATH.test(candidate)) {
+      const field =
+        fileKey !== null && candidate.startsWith(`${fileKey}.`) ? candidate.slice(fileKey.length + 1) : candidate;
+      if (field.length > 0 && !field.includes(".")) return { field, text: part.slice(idx + 2).trim() };
+    }
+    segmentStart = idx + 2;
+  }
+}
+
+/** What the page shows after a failed section save. */
+export interface SaveFailureView {
+  /** Status line content; null leaves the section's status line untouched. */
+  status: { kind: "error"; text: string } | null;
+  /** Inline field-error placements keyed by section-scoped slot field. */
+  fieldErrors: Record<string, string>;
+  /** Offer a re-fetch of current settings (409 conflict). */
+  reload: boolean;
+}
+
+/**
+ * Distinct, visible feedback for a failed section save — expired sessions,
+ * conflicts (with a reload affordance), 400 field errors (placed inline via
+ * `serverFieldErrorPlacements`), and everything else. Every saving section
+ * renders both a `data-save-status` slot and per-field `data-error-for`
+ * slots, so every branch of this view is user-visible. The embedded client
+ * script mirrors this logic (no bundler).
+ */
+export function saveFailureFeedback(
+  section: string,
+  status: number,
+  body: { error?: unknown; message?: unknown } | null,
+): SaveFailureView {
+  const code = body !== null && typeof body === "object" && typeof body.error === "string" ? body.error : "unavailable";
+  const message = body !== null && typeof body === "object" && typeof body.message === "string" ? body.message : "";
+  if (status === 401 && code === "expired") {
+    return {
+      status: {
+        kind: "error",
+        text: "Telegram session expired. Close and reopen Settings from Telegram, then save again.",
+      },
+      fieldErrors: {},
+      reload: false,
+    };
+  }
+  if (status === 409 || code === "conflict") {
+    return { status: { kind: "error", text: "Settings changed elsewhere (conflict). " }, fieldErrors: {}, reload: true };
+  }
+  if (status === 400) {
+    const fieldErrors = serverFieldErrorPlacements(section, message);
+    if (Object.keys(fieldErrors).length === 0) {
+      return {
+        status: { kind: "error", text: message.length > 0 ? message : `Save rejected (${code}).` },
+        fieldErrors: {},
+        reload: false,
+      };
+    }
+    return { status: { kind: "error", text: "Fix the highlighted fields." }, fieldErrors, reload: false };
+  }
+  return { status: { kind: "error", text: `Save failed (${code}). Nothing was saved.` }, fieldErrors: {}, reload: false };
 }
 
 /** One form field of a whitelisted section, rendered into the static shell. */
@@ -454,10 +559,14 @@ ${cards.get("external-agents") ?? ""}
 <section class="card" data-section="devin" aria-labelledby="heading-devin">
   <h2 id="heading-devin">Devin</h2>
   <p class="note">Deployment default for Devin runs. Applies to the next admitted run; no restart needed.</p>
-  <div id="current-selection" class="meta"></div>
+  <div class="field">
+    <div class="field-label">Saved deployment model</div>
+    <div id="current-selection" class="meta"></div>
+    <div class="field-error" data-error-for="devin.defaultModel" role="alert" hidden></div>
+  </div>
   <input id="model-search" type="search" placeholder="Search families or exact models…" autocomplete="off">
   <div id="family-list"></div>
-  <div class="save-row"><button id="save-button" type="button" class="primary" disabled>Save exact model</button></div>
+  <div class="save-row"><button id="save-button" type="button" class="primary" disabled>Save exact model</button><span class="save-status" data-save-status="devin" role="status"></span></div>
   <div id="status-saved" role="status" hidden></div>
   <div id="catalog-error" role="alert" hidden></div>
 </section>
@@ -548,7 +657,8 @@ function applyTheme(params) {
 }
 
 // ---- canonical mirrors: escapeHtml, filterCatalogFamilies,
-// validateSectionPatch, nextBackoffMs (see module header) ----
+// validateSectionPatch, nextBackoffMs, serverFieldErrorPlacements,
+// saveFailureFeedback (see module header) ----
 function escapeHtml(value) {
   return String(value)
     .replace(/&/g, "&amp;")
@@ -559,6 +669,51 @@ function escapeHtml(value) {
 }
 function nextBackoffMs(attempt) {
   return Math.min(500 * Math.pow(2, Math.max(0, Math.floor(attempt))), 5000);
+}
+var SECTION_FILE_KEYS = { general: null, embeddings: "embeddings", "external-agents": "externalAgents", devin: "devin", mcp: "mcp", settings: "settings" };
+var FIELD_PATH = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*$/;
+function placePathMessage(part, fileKey) {
+  var segmentStart = 0;
+  while (true) {
+    var idx = part.indexOf(": ", segmentStart);
+    if (idx < 0) return null;
+    var candidate = part.slice(segmentStart, idx).trim();
+    if (FIELD_PATH.test(candidate)) {
+      var field = fileKey !== null && candidate.lastIndexOf(fileKey + ".", 0) === 0 ? candidate.slice(fileKey.length + 1) : candidate;
+      if (field.length > 0 && field.indexOf(".") < 0) return { field: field, text: part.slice(idx + 2).trim() };
+    }
+    segmentStart = idx + 2;
+  }
+}
+function serverFieldErrorPlacements(section, message) {
+  if (typeof message !== "string" || message.length === 0) return {};
+  var fileKey = Object.prototype.hasOwnProperty.call(SECTION_FILE_KEYS, section) ? SECTION_FILE_KEYS[section] : null;
+  var placements = {};
+  var parts = message.split("; ");
+  for (var i = 0; i < parts.length; i++) {
+    var placed = placePathMessage(parts[i], fileKey);
+    if (placed !== null) placements[placed.field] = placed.text;
+  }
+  return placements;
+}
+function saveFailureFeedback(section, status, body) {
+  var code = body !== null && typeof body === "object" && typeof body.error === "string" ? body.error : "unavailable";
+  var message = body !== null && typeof body === "object" && typeof body.message === "string" ? body.message : "";
+  if (status === 401 && code === "expired") {
+    return { status: { kind: "error", text: "Telegram session expired. Close and reopen Settings from Telegram, then save again." }, fieldErrors: {}, reload: false };
+  }
+  if (status === 409 || code === "conflict") {
+    return { status: { kind: "error", text: "Settings changed elsewhere (conflict). " }, fieldErrors: {}, reload: true };
+  }
+  if (status === 400) {
+    var fieldErrors = serverFieldErrorPlacements(section, message);
+    var keys = Object.keys(fieldErrors);
+    if (keys.length === 0) {
+      return { status: { kind: "error", text: message.length > 0 ? message : "Save rejected (" + code + ")." }, fieldErrors: {}, reload: false };
+    }
+    return { status: { kind: "error", text: "Fix the highlighted fields." }, fieldErrors: fieldErrors, reload: false };
+  }
+  return { status: { kind: "error", text: "Save failed (" + code + "). Nothing was saved." }, fieldErrors: {}, reload: false };
 }
 function matches(haystack, query) { return haystack.toLowerCase().includes(query); }
 function filteredFamilies(query) {
@@ -708,18 +863,12 @@ function collectSection(section) {
 // Sections whose changes apply on the next boot (everything but devin).
 var RESTART_SECTIONS = { general: true, embeddings: true, "external-agents": true, mcp: true, settings: true };
 
-function applyServerFieldErrors(section, message) {
-  if (typeof message !== "string" || message.length === 0) return 0;
-  var parts = message.split("; ");
+function applyServerFieldErrors(section, placements) {
   var placed = 0;
-  for (var i = 0; i < parts.length; i++) {
-    var idx = parts[i].indexOf(": ");
-    if (idx <= 0) continue;
-    var field = parts[i].slice(0, idx).trim();
-    var text = parts[i].slice(idx + 2).trim();
-    var slot = fieldErrorSlot(section, field);
+  for (var key in placements) {
+    var slot = fieldErrorSlot(section, key);
     if (!slot) continue;
-    slot.textContent = text;
+    slot.textContent = placements[key];
     show(slot);
     placed++;
   }
@@ -728,30 +877,17 @@ function applyServerFieldErrors(section, message) {
 async function handleSaveFailure(section, res) {
   var body = null;
   try { body = await res.json(); } catch (e) { body = null; }
-  var code = body && typeof body.error === "string" ? body.error : "unavailable";
-  var message = body && typeof body.message === "string" ? body.message : "";
-  if (res.status === 401 && code === "expired") {
-    setSaveStatus(section, "error", "Telegram session expired. Close and reopen Settings from Telegram, then save again.");
-    return;
-  }
-  if (res.status === 409 || code === "conflict") {
-    // Distinct state: offer a re-fetch instead of faking success.
-    setSaveStatus(section, "error", "Settings changed elsewhere (conflict). ");
+  var view = saveFailureFeedback(section, res.status, body);
+  applyServerFieldErrors(section, view.fieldErrors);
+  if (view.status) setSaveStatus(section, view.status.kind, view.status.text);
+  if (view.reload) {
     var status = saveStatusEl(section);
     if (status) {
       var reload = el("button", { type: "button", class: "link", text: "Reload current settings" });
       reload.addEventListener("click", function () { reload.disabled = true; loadConfig(false); });
       status.appendChild(reload);
     }
-    return;
   }
-  if (res.status === 400) {
-    var placed = applyServerFieldErrors(section, message);
-    if (placed === 0) setSaveStatus(section, "error", message.length > 0 ? message : "Save rejected (" + code + ").");
-    else setSaveStatus(section, "error", "Fix the highlighted fields.");
-    return;
-  }
-  setSaveStatus(section, "error", "Save failed (" + code + "). Nothing was saved.");
 }
 async function saveSection(section) {
   var patch = collectSection(section);
@@ -799,7 +935,7 @@ function updateBadge(config) {
   if (!badge) return;
   var pending = !!(config && typeof config.revision === "string" && typeof config.bootRevision === "string" && config.revision !== config.bootRevision);
   badge.hidden = !pending;
-  if (pending) badge.textContent = "Restart required";
+  if (pending) badge.textContent = "Restart pending — Devin model changes apply without restart";
 }
 
 // ---- MCP section (toggles and limits are separate writes) ----
@@ -1018,7 +1154,7 @@ async function confirmRestart() {
 saveEl.addEventListener("click", async function () {
   if (!state.selectedId) return;
   hide($("status-saved"));
-  setSaveStatus("devin", "", "");
+  clearFieldErrors("devin");
   saveEl.disabled = true;
   var res;
   try {

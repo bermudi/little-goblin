@@ -122,7 +122,10 @@ WHEN the operator confirms a restart from Settings, THE SYSTEM SHALL verify
 operator identity, acknowledge before shutdown begins, stop accepting new
 requests, drain in-flight requests within a bounded deadline, and exit
 cleanly for the service manager to revive the process. A restart SHALL be
-refused while the on-disk config fails schema validation. Revival is the
+refused while the on-disk config would not boot — the same boot-equivalent
+resolved-tree validation a boot applies (`validateBootConfig`), not merely a
+raw-file schema check, so a raw-valid config whose values fail resolution
+(e.g. unset env-style literals) is refused too. Revival is the
 operator-deployed service manager's job (`Restart=on-success`), not the
 process's.
 

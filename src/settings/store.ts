@@ -11,8 +11,15 @@
  * shared `updateGoblinConfig()` coordination so MCP and Settings mutations
  * share one lock, one compare-and-swap, and one mode-preserving durable
  * write; only the target section's whitelisted keys are mutated, and the
- * merged file must still validate against `ConfigFileSchema` before commit
- * (a change that would not boot is never written). The `mcp` section is
+ * merged file must pass boot-equivalent validation (`validateBootConfig`,
+ * src/config.ts) before commit: strings are resolved the way `loadConfig`
+ * resolves them (set env names from the live process environment, the same
+ * environment boot uses) and the resolved tree must satisfy
+ * `ConfigFileSchema`, so a raw-valid but unbootable change — e.g. an
+ * env-style literal like `model: "GPT4TURBO"` that resolves to undefined —
+ * is never written. The one deliberate gap: `!command` values are never
+ * executed outside boot, so the guard validates them as literal strings;
+ * boot itself resolves them (see `validateBootConfig`). The `mcp` section is
  * never written here — McpSelectionStore owns it (decision 0042); it is
  * surfaced in the read projection only, sourced through that store's
  * `projectMcpSelection`.
@@ -26,10 +33,10 @@
  */
 
 import JSON5 from "json5";
-import type { ZodError } from "zod";
 import { projectMcpSelection, type McpSelectionProjection } from "../mcp/selection-store.ts";
 import { readGoblinConfigText, revisionForConfigText, updateGoblinConfig } from "../goblin-config-file.ts";
-import { ConfigFileSchema, ExternalAgentsConfigSchema, SettingsConfigSchema } from "../schema.ts";
+import { validateBootConfig } from "../config.ts";
+import { ExternalAgentsConfigSchema, SettingsConfigSchema } from "../schema.ts";
 
 /** Presence flag for a secret field; the value never leaves the store. */
 export interface SecretPresence {
@@ -171,11 +178,6 @@ function isConfigSectionName(value: unknown): value is ConfigSectionName {
   return typeof value === "string" && Object.hasOwn(SECTION_WRITABLE_KEYS, value);
 }
 
-/** Compact path + message issue list; never includes validated values. */
-function describeIssues(error: ZodError): string {
-  return error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ");
-}
-
 function readConfigTextOrMissing(goblinHome: string): string {
   try {
     return readGoblinConfigText(goblinHome);
@@ -191,20 +193,20 @@ function readConfigTextOrMissing(goblinHome: string): string {
  * Read the full non-secret deployment-config projection. Schema defaults
  * fill fields absent from the file; secret fields appear only as presence
  * flags. Fails loud (missing-config is the one mapped ENOENT case); a file
- * that fails `ConfigFileSchema` is rejected as `invalid-config` because it
- * would not boot.
+ * that fails boot validation — the resolved-tree check boot applies — is
+ * rejected as `invalid-config` because it would not boot.
  */
 export function readDeploymentConfig(goblinHome: string): DeploymentConfig {
   const text = readConfigTextOrMissing(goblinHome);
   const raw: unknown = JSON5.parse(text);
-  const parsed = ConfigFileSchema.safeParse(raw);
-  if (!parsed.success) {
+  const boot = validateBootConfig(raw);
+  if (!boot.bootable) {
     throw new SettingsStoreError(
       "invalid-config",
-      `Config file fails schema validation (it would not boot): ${describeIssues(parsed.error)}`,
+      `Config file fails boot validation (it would not boot): ${boot.issues}`,
     );
   }
-  const data = parsed.data;
+  const data = boot.config!;
   const settings = data.settings ?? DEFAULT_SETTINGS_SECTION;
   return {
     general: {
@@ -334,7 +336,8 @@ export interface ConfigSectionSaveResult {
 /**
  * Save one section's whitelisted fields. Unknown sections, secret targets,
  * and unknown fields are rejected before any filesystem effect; a patch
- * that would leave the file failing `ConfigFileSchema` validation is
+ * whose merged file would fail boot validation (`validateBootConfig`:
+ * boot-equivalent string resolution plus the full config schema) is
  * rejected before commit, so a config that would not boot is never
  * written. Unrelated keys and the file mode are preserved by the shared
  * coordinated writer. `expectedRevision` (from a prior read) rejects stale
@@ -365,12 +368,13 @@ export function saveConfigSection(
       (raw) => {
         applySectionPatch(raw, section, fields);
         // Never write a file that would not boot: validate the merged
-        // result against the full config schema before committing.
-        const validated = ConfigFileSchema.safeParse(raw);
-        if (!validated.success) {
+        // result the way boot would (resolved strings, full schema) before
+        // committing.
+        const boot = validateBootConfig(raw);
+        if (!boot.bootable) {
           throw new SettingsStoreError(
             "invalid-config",
-            `Config update rejected: the change would make goblin.json5 fail validation: ${describeIssues(validated.error)}`,
+            `Config update rejected: the change would not boot (resolved config fails validation): ${boot.issues}`,
           );
         }
       },

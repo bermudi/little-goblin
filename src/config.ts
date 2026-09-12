@@ -2,7 +2,14 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import JSON5 from "json5";
-import { ConfigFileSchema, type EmbeddingsConfig, type ExternalAgentsConfig, type McpConfig, type SettingsConfig } from "./schema.ts";
+import {
+  ConfigFileSchema,
+  type ConfigFile,
+  type EmbeddingsConfig,
+  type ExternalAgentsConfig,
+  type McpConfig,
+  type SettingsConfig,
+} from "./schema.ts";
 import { resolveConfigValue } from "./resolve-value.ts";
 import { goblinConfigPath, sessionsDir, stateDir, scratchDir } from "./sessions/paths.ts";
 import { piAgentDir } from "./pi-host.ts";
@@ -87,16 +94,13 @@ export function loadConfig(): Config {
     throw new Error(`Failed to parse config file: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // Resolve all string values in the raw config object
-  const resolved = resolveAllStrings(raw as Record<string, unknown>);
-
-  // Validate with Zod
-  const parsed = ConfigFileSchema.safeParse(resolved);
-  if (!parsed.success) {
-    const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
-    throw new Error(`Config validation failed: ${issues}`);
+  // Resolve all string values in the raw config object (with `!command`
+  // execution — this is boot), then validate the resolved tree.
+  const boot = validateBootConfig(raw, { executeCommands: true });
+  if (!boot.bootable) {
+    throw new Error(`Config validation failed: ${boot.issues}`);
   }
-  const cfg = parsed.data;
+  const cfg = boot.config!;
 
   // Build frozen Config object
   const config: Config = Object.freeze({
@@ -149,12 +153,13 @@ export function loadConfig(): Config {
 
 /**
  * Recursively resolve all string values in an object using resolveConfigValue().
- * Handles arrays and nested objects.
+ * Handles arrays and nested objects. When `executeCommands` is false, `!
+ * command` values pass through unresolved (see `validateBootConfig`).
  */
-function resolveAllStrings(obj: Record<string, unknown>): Record<string, unknown> {
+function resolveAllStrings(obj: Record<string, unknown>, executeCommands: boolean): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(obj)) {
-    result[key] = resolveValue(value);
+    result[key] = resolveValue(value, executeCommands);
   }
   return result;
 }
@@ -163,17 +168,68 @@ function resolveAllStrings(obj: Record<string, unknown>): Record<string, unknown
  * Resolve a single value: strings get resolved, arrays get their strings resolved,
  * nested objects are resolved recursively, other values pass through.
  */
-function resolveValue(value: unknown): unknown {
+function resolveValue(value: unknown, executeCommands: boolean): unknown {
   if (typeof value === "string") {
+    // Guard contexts (Settings store validation, the restart boot-loop guard)
+    // must stay side-effect-free, so `!command` values are not executed
+    // there; the literal passes through exactly as boot will find it.
+    if (!executeCommands && value.startsWith("!")) {
+      return value;
+    }
     return resolveConfigValue(value);
   }
   if (Array.isArray(value)) {
-    return value.map((v) => resolveValue(v));
+    return value.map((v) => resolveValue(v, executeCommands));
   }
   if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-    return resolveAllStrings(value as Record<string, unknown>);
+    return resolveAllStrings(value as Record<string, unknown>, executeCommands);
   }
   return value;
+}
+
+export interface BootConfigValidation {
+  /** True when boot would accept this config (resolved tree passes the schema). */
+  readonly bootable: boolean;
+  /** Compact `path: message` issue list; empty when bootable. */
+  readonly issues: string;
+  /** The schema-parsed resolved config; defined only when bootable. */
+  readonly config?: ConfigFile;
+}
+
+/**
+ * Validate a parsed goblin.json5 tree exactly the way boot (`loadConfig`)
+ * validates it: resolve every string value and validate the resolved tree
+ * against `ConfigFileSchema`. This is the single boot-equivalence authority
+ * shared by boot and the deployment-config guards (Settings store pre-commit,
+ * restart boot-loop guard), so a raw-valid but unbootable config (e.g. an
+ * env-style literal that resolves to nothing) is rejected before it can be
+ * committed or restarted into.
+ *
+ * Deliberate boundary: `!command` values are executed only when
+ * `executeCommands` is true (boot). Validation in guard contexts runs without
+ * side effects, so a command value passes through as a literal string — never
+ * rejected, never run. Boot itself resolves it; a failing command on a
+ * boot-required field is a blind spot the side-effect-free guard cannot
+ * close. Set env names resolve from the live process environment — the same
+ * environment boot uses — so required fields that only resolve via a
+ * now-missing env name are correctly rejected.
+ */
+export function validateBootConfig(
+  raw: unknown,
+  options?: { executeCommands?: boolean },
+): BootConfigValidation {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return { bootable: false, issues: "config must be a top-level object" };
+  }
+  const resolved = resolveAllStrings(raw as Record<string, unknown>, options?.executeCommands === true);
+  const parsed = ConfigFileSchema.safeParse(resolved);
+  if (parsed.success) {
+    return { bootable: true, issues: "", config: parsed.data };
+  }
+  return {
+    bootable: false,
+    issues: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
+  };
 }
 
 export interface GoblinHomeDirectory {

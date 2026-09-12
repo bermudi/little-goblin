@@ -39,9 +39,12 @@ export {
   escapeHtml,
   filterCatalogFamilies,
   renderSettingsPage,
+  saveFailureFeedback,
+  serverFieldErrorPlacements,
   type PageModelCatalog,
   type PageModelFamily,
   type PageModelVariant,
+  type SaveFailureView,
 } from "./page.ts";
 export {
   createDeploymentDevinModelResolver,

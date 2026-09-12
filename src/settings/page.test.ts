@@ -595,6 +595,17 @@ describe("Full settings Mini App UI (issue #66 unit 5)", () => {
     expect(serverFieldErrorPlacements("mcp", "mcp.defaultTimeoutMs: too small")).toEqual({
       defaultTimeoutMs: "too small",
     });
+    // Store messages wrap the issue list in prose; the path segment still
+    // lands on the section's slot.
+    expect(
+      serverFieldErrorPlacements(
+        "settings",
+        "Config update rejected: the change would not boot (resolved config fails validation): settings.port: Too big: expected number to be <=65535",
+      ),
+    ).toEqual({ port: "Too big: expected number to be <=65535" });
+    expect(
+      serverFieldErrorPlacements("general", "Config file fails boot validation (it would not boot): logLevel: Required"),
+    ).toEqual({ logLevel: "Required" });
     // Messages without placeable path entries yield no placements, so the
     // caller falls back to the full section-level message.
     expect(serverFieldErrorPlacements("settings", "Unknown field \"nope\" for section \"settings\".")).toEqual({});

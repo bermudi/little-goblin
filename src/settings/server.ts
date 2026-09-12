@@ -9,12 +9,16 @@
  * Settings store (`readDeploymentConfig` / `saveConfigSection` in `store.ts`,
  * coordinated through `goblin-config-file.ts`), with the `mcp` section routed
  * exclusively through McpSelectionStore's mutations (decision 0042: the
- * Settings path never writes `mcp` keys directly). Responses carry `revision`
+ * Settings path never writes `mcp` keys directly). Every PUT must carry the
+ * `expectedRevision` observed by the client, so a missing CAS field is a
+ * 400 field error rather than a CAS-less write. Responses carry `revision`
  * plus a startup-captured `bootRevision` (pending-restart derivation), and an
  * `allowedUsers` patch that would remove the verified requesting operator is
  * rejected before any write (self-lockout guard). `POST /api/restart`
- * re-validates the on-disk config with the store's pre-commit rule (boot-loop
- * guard), answers 200 before shutdown begins, enters the closing state, and
+ * re-validates the on-disk config with the store's boot-equivalent pre-commit
+ * rule (`validateBootConfig`, src/config.ts — the exact check a boot applies;
+ * boot-loop guard), answers 200 before shutdown begins, enters the closing
+ * state, and
  * delegates the process drain/exit to the composition root via the injected
  * `requestRestart` trigger — this module never terminates the process.
  * No second durable copy, no secret values in any response or log line, no
@@ -408,8 +412,16 @@ export function startSettingsServer(options: SettingsServerOptions): SettingsSer
             if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
               return fail(route, 400, "bad-request");
             }
-            if (expectedRevision !== undefined && typeof expectedRevision !== "string") {
-              return fail(route, 400, "bad-request");
+            // CAS is mandatory: without the caller's observed revision the
+            // write would silently skip stale-write detection, so a missing
+            // expectedRevision is a field error on every PUT.
+            if (typeof expectedRevision !== "string") {
+              return fail(
+                route,
+                400,
+                "bad-request",
+                'Body field "expectedRevision" is required: send the revision string from the latest GET /api/config or save response so concurrent edits are rejected (409) instead of clobbered.',
+              );
             }
             const fields = patch as Record<string, unknown>;
             if (patchRemovesOperator(section, fields, identity)) {
@@ -465,9 +477,12 @@ export function startSettingsServer(options: SettingsServerOptions): SettingsSer
                 "Restart is not wired into this deployment; the process composition must provide a restart trigger.",
               );
             }
-            // Boot-loop guard: re-validate the on-disk config with the same
-            // full-file rule the store applies pre-commit. A config that
-            // would not boot must never be restarted into (systemd
+            // Boot-loop guard: re-validate the on-disk config with the
+            // store's boot-equivalent pre-commit rule (`validateBootConfig`:
+            // resolved strings plus the full config schema — the exact
+            // check a boot applies). A config that would not boot —
+            // including raw-valid env-style literals that resolve to
+            // nothing — must never be restarted into (systemd
             // Restart=on-success would crash-loop); refuse with an
             // actionable error and keep serving.
             try {

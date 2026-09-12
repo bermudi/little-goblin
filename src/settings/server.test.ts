@@ -90,11 +90,21 @@ function catalogWith(modelId: string): TestCatalog {
   };
 }
 
+interface McpSectionProjection {
+  enabled: string[] | null;
+  disabledServers: string[];
+  defaultTimeoutMs: number;
+  maxResultChars: number;
+  configPath: { present: boolean };
+}
+
 interface ConfigBody {
   general: { model: string; allowedUsers: number[] };
   embeddings: { baseUrl?: string; apiKey: { present: boolean } };
   devin: { defaultModel: string | null };
   settings: { enabled: boolean; port: number };
+  /** Present once the mcp section is projected (issue #66 unit 3). */
+  mcp?: McpSectionProjection;
   secrets: Record<string, { present: boolean }>;
   revision: string;
   bootRevision: string;
@@ -293,6 +303,163 @@ describe("Operator-authenticated Settings API", () => {
       expect(unknownSection.status).toBe(404);
 
       expect(readFileSync(join(home, "goblin.json5"), "utf-8")).toBe(beforeRaw);
+    } finally {
+      await handle.close();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("GET /api/config includes the mcp section projection", async () => {
+    const home = makeHomeWith({
+      botToken: "x",
+      allowedUsers: [OPERATOR_ID],
+      model: "m",
+      mcp: { enabled: ["grep"], disabledServers: ["tavily"], configPath: "mc.json", defaultTimeoutMs: 30000 },
+    });
+    const handle = await startServer({
+      goblinHome: home,
+      botToken: BOT_TOKEN,
+      allowedUserIds: [OPERATOR_ID],
+      allowedOrigins: [ORIGIN],
+    });
+    try {
+      const auth = validInitData();
+      const text = await (await getConfig(handle, auth)).text();
+      const body = JSON.parse(text) as ConfigBody;
+      expect(body.mcp).toEqual({
+        enabled: ["grep"],
+        disabledServers: ["tavily"],
+        defaultTimeoutMs: 30000,
+        maxResultChars: 16000, // schema default fills the absent limit
+        configPath: { present: true },
+      });
+      // configPath is operator-owned: presence only, the value never leaves.
+      expect(text).not.toContain("mc.json");
+
+      // A config without an mcp section projects schema defaults.
+      writeFileSync(
+        join(home, "goblin.json5"),
+        JSON5.stringify({ botToken: "x", allowedUsers: [OPERATOR_ID], model: "m" }) + "\n",
+        "utf-8",
+      );
+      const after = (await (await getConfig(handle, auth)).json()) as ConfigBody;
+      expect(after.mcp).toEqual({
+        enabled: null,
+        disabledServers: [],
+        defaultTimeoutMs: 120000,
+        maxResultChars: 16000,
+        configPath: { present: false },
+      });
+    } finally {
+      await handle.close();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("PUT /api/config/mcp toggles a server and edits limits through McpSelectionStore", async () => {
+    const home = makeHome();
+    const handle = await startServer({
+      goblinHome: home,
+      botToken: BOT_TOKEN,
+      allowedUserIds: [OPERATOR_ID],
+      allowedOrigins: [ORIGIN],
+    });
+    try {
+      const auth = validInitData();
+      const before = (await (await getConfig(handle, auth)).json()) as ConfigBody;
+
+      // Deny-list toggle routed through McpSelectionStore.
+      const deny = await putSection(handle, auth, "mcp", {
+        patch: { server: "tavily", enabled: false },
+        expectedRevision: before.revision,
+      });
+      expect(deny.status).toBe(200);
+      const denySaved = (await deny.json()) as { revision: string };
+      expect(denySaved.revision).toMatch(/^[0-9a-f]{64}$/);
+      let raw = JSON5.parse(readFileSync(join(home, "goblin.json5"), "utf-8")) as Record<string, unknown>;
+      expect((raw.mcp as Record<string, unknown>).disabledServers).toEqual(["tavily"]);
+      expect(raw.botToken).toBe("x"); // unrelated keys preserved
+
+      // The saved revision is the one the next read reports (CAS coherence).
+      const reread = (await (await getConfig(handle, auth)).json()) as ConfigBody;
+      expect(reread.revision).toBe(denySaved.revision);
+      expect(reread.mcp?.disabledServers).toEqual(["tavily"]);
+
+      // Limits edits ride the same store-owned path.
+      const limits = await putSection(handle, auth, "mcp", {
+        patch: { defaultTimeoutMs: 45000, maxResultChars: 4000 },
+        expectedRevision: denySaved.revision,
+      });
+      expect(limits.status).toBe(200);
+      raw = JSON5.parse(readFileSync(join(home, "goblin.json5"), "utf-8")) as Record<string, unknown>;
+      expect(raw.mcp).toEqual({ disabledServers: ["tavily"], defaultTimeoutMs: 45000, maxResultChars: 4000 });
+
+      // Re-enabling removes the deny through the same toggle semantics.
+      const afterLimits = (await (await getConfig(handle, auth)).json()) as ConfigBody;
+      const enable = await putSection(handle, auth, "mcp", {
+        patch: { server: "tavily", enabled: true },
+        expectedRevision: afterLimits.revision,
+      });
+      expect(enable.status).toBe(200);
+      raw = JSON5.parse(readFileSync(join(home, "goblin.json5"), "utf-8")) as Record<string, unknown>;
+      expect((raw.mcp as Record<string, unknown>).disabledServers).toBeUndefined();
+
+      // Invalid patches → 400 with an actionable code, file untouched.
+      const beforeBad = readFileSync(join(home, "goblin.json5"), "utf-8");
+      const badPatches: unknown[] = [
+        { patch: {} },
+        { patch: { server: "tavily" } }, // enabled missing
+        { patch: { enabled: true } }, // server missing
+        { patch: { server: "tavily", enabled: "yes" } }, // wrong type
+        { patch: { server: "", enabled: true } }, // empty server name
+        { patch: { defaultTimeoutMs: 1 } }, // out of range → store rejects
+        { patch: { maxResultChars: "big" } }, // wrong type
+        { patch: { nope: 1 } }, // unknown field
+        { patch: { server: "a", enabled: true, defaultTimeoutMs: 30000 } }, // mixed groups
+      ];
+      for (const body of badPatches) {
+        const res = await putSection(handle, auth, "mcp", body as Record<string, unknown>);
+        expect(res.status).toBe(400);
+        const resBody = (await res.json()) as { error: string; message?: string };
+        expect(["invalid-patch", "unknown-field", "invalid-config"]).toContain(resBody.error);
+        expect(typeof resBody.message).toBe("string");
+      }
+      expect(readFileSync(join(home, "goblin.json5"), "utf-8")).toBe(beforeBad);
+    } finally {
+      await handle.close();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("stale revision on mcp write returns 409 with no partial state", async () => {
+    const home = makeHomeWith({ botToken: "x", allowedUsers: [OPERATOR_ID], model: "m", mcp: { enabled: ["grep"] } });
+    const handle = await startServer({
+      goblinHome: home,
+      botToken: BOT_TOKEN,
+      allowedUserIds: [OPERATOR_ID],
+      allowedOrigins: [ORIGIN],
+    });
+    try {
+      const auth = validInitData();
+      const beforeText = readFileSync(join(home, "goblin.json5"), "utf-8");
+      const staleBodies: Record<string, unknown>[] = [
+        { patch: { server: "grep", enabled: false }, expectedRevision: "0".repeat(64) },
+        { patch: { defaultTimeoutMs: 30000 }, expectedRevision: "0".repeat(64) },
+      ];
+      for (const body of staleBodies) {
+        const res = await putSection(handle, auth, "mcp", body);
+        expect(res.status).toBe(409);
+        expect(((await res.json()) as { error: string }).error).toBe("conflict");
+      }
+      expect(readFileSync(join(home, "goblin.json5"), "utf-8")).toBe(beforeText);
+
+      // A fresh revision succeeds — the same CAS every other section uses.
+      const current = (await (await getConfig(handle, auth)).json()) as ConfigBody;
+      const ok = await putSection(handle, auth, "mcp", {
+        patch: { server: "grep", enabled: false },
+        expectedRevision: current.revision,
+      });
+      expect(ok.status).toBe(200);
     } finally {
       await handle.close();
       rmSync(home, { recursive: true, force: true });

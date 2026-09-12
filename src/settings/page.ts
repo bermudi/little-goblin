@@ -7,7 +7,8 @@
  * the browser per page open and is re-read from the API on every load, so
  * reopening the page always shows the persisted deployment default.
  * Authority: durable selection via the Settings store through `server.ts`
- * (`/api/settings`); catalog via request-owned discovery (`/api/catalog`).
+ * (`GET /api/config` read, `PUT /api/config/devin` save); catalog via
+ * request-owned discovery (`/api/catalog`).
  * This shell holds no secrets and performs no config I/O or discovery
  * itself, so it is served without authentication; every API call carries
  * Telegram initData and is verified server-side.
@@ -220,30 +221,30 @@ function renderList() {
 }
 
 async function load() {
-  let settingsRes;
+  let configRes;
   try {
-    settingsRes = await fetch("/api/settings", { headers: authHeader });
+    configRes = await fetch("/api/config", { headers: authHeader });
   } catch {
     showError("Could not reach Goblin. Check the private connection and reopen Settings.");
     loadingEl.hidden = true;
     return;
   }
-  if (settingsRes.status === 401) {
-    const code = await settingsRes.json().then((b) => b.error, () => "unauthorized");
+  if (configRes.status === 401) {
+    const code = await configRes.json().then((b) => b.error, () => "unauthorized");
     showError(code === "expired"
       ? "Telegram session expired. Close and reopen Settings from Telegram, then save again."
       : "Not authorized. Open Settings from the operator Telegram account.");
     loadingEl.hidden = true;
     return;
   }
-  if (!settingsRes.ok) {
+  if (!configRes.ok) {
     showError("Settings are unavailable. Nothing was saved.");
     loadingEl.hidden = true;
     return;
   }
-  const settings = await settingsRes.json();
-  revision = settings.revision || null;
-  selectedId = settings.devinDefaultModel || null;
+  const config = await configRes.json();
+  revision = config.revision || null;
+  selectedId = (config.devin && config.devin.defaultModel) || null;
   setText(selectionEl, selectedId ? "Saved deployment model: " + selectedId : "No deployment model selected yet.");
 
   let catalogRes;
@@ -274,10 +275,10 @@ saveEl.addEventListener("click", async () => {
   saveEl.disabled = true;
   let res;
   try {
-    res = await fetch("/api/settings", {
-      method: "POST",
+    res = await fetch("/api/config/devin", {
+      method: "PUT",
       headers: { ...authHeader, "content-type": "application/json" },
-      body: JSON.stringify({ modelId: selectedId, expectedRevision: revision }),
+      body: JSON.stringify({ patch: { defaultModel: selectedId }, expectedRevision: revision }),
     });
   } catch {
     showError("Save did not reach Goblin. Nothing was saved.");
@@ -287,7 +288,6 @@ saveEl.addEventListener("click", async () => {
   if (res.ok) {
     const saved = await res.json();
     revision = saved.revision || revision;
-    selectedId = saved.devinDefaultModel || selectedId;
     setText(selectionEl, "Saved deployment model: " + selectedId);
     savedEl.textContent = "Saved " + selectedId + ". It applies to the next run.";
     savedEl.hidden = false;

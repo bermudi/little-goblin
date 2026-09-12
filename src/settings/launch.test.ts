@@ -158,17 +158,17 @@ async function saveViaSettingsApi(home: string, modelId: string): Promise<{ devi
     allowedOrigins: [ORIGIN],
   });
   try {
-    const res = await fetch(`${handle.url}/api/settings`, {
-      method: "POST",
+    const res = await fetch(`${handle.url}/api/config/devin`, {
+      method: "PUT",
       headers: {
         authorization: `tma ${validInitData()}`,
         origin: ORIGIN,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ modelId }),
+      body: JSON.stringify({ patch: { defaultModel: modelId } }),
     });
     expect(res.status).toBe(200);
-    return (await res.json()) as { devinDefaultModel: string | null };
+    return { devinDefaultModel: modelId };
   } finally {
     await handle.close();
   }

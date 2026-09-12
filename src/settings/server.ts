@@ -6,9 +6,12 @@
  * discovery child and is cancelled by disconnect, timeout, or server close.
  * Authority: Telegram initData signature via `botToken` plus `allowedUserIds`
  * for identity, `allowedOrigins` for writes; durable state via the sole
- * Settings store (`readDeploymentSettings` / `saveDeploymentModel` in
- * `store.ts`, coordinated through `goblin-config-file.ts`). No second durable
- * copy, no secret/config dump routes, no auth material in logs.
+ * Settings store (`readDeploymentConfig` / `saveConfigSection` in `store.ts`,
+ * coordinated through `goblin-config-file.ts`). Responses carry `revision`
+ * plus a startup-captured `bootRevision` (pending-restart derivation), and an
+ * `allowedUsers` patch that would remove the verified requesting operator is
+ * rejected before any write (self-lockout guard). No second durable copy, no
+ * secret values in any response or log line, no auth material in logs.
  * Persistence: `$GOBLIN_HOME/goblin.json5` through the Settings store only.
  * Network: binds 127.0.0.1 only (never 0.0.0.0); ephemeral port 0 for tests,
  * deployment-owned stable `settings.port` (default 3423) in production so
@@ -20,7 +23,12 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { discoverDevinCatalog, type DevinModelCatalog } from "./devin-catalog.ts";
 import { renderSettingsPage } from "./page.ts";
-import { readDeploymentSettings, saveDeploymentModel, SettingsStoreError } from "./store.ts";
+import {
+  readDeploymentConfig,
+  saveConfigSection,
+  SettingsStoreError,
+  type SettingsStoreReason,
+} from "./store.ts";
 import { log } from "../log.ts";
 
 const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
@@ -170,19 +178,46 @@ function toSafeDiscoveryReason(error: unknown): string {
   return "process-failed";
 }
 
-function toSafeStoreResponse(error: unknown): { status: number; code: string } {
+/**
+ * HTTP mapping for every store failure reason. Store messages are crafted
+ * to name fields without echoing values, so they are safe as client-facing
+ * field errors; log lines carry only the short code.
+ */
+const STORE_ERROR_RESPONSES: Record<SettingsStoreReason, { status: number; code: string }> = {
+  "invalid-selection": { status: 400, code: "invalid-selection" },
+  "unknown-section": { status: 404, code: "unknown-section" },
+  "unknown-field": { status: 400, code: "unknown-field" },
+  "secret-field": { status: 400, code: "secret-field" },
+  "invalid-patch": { status: 400, code: "invalid-patch" },
+  "invalid-config": { status: 400, code: "invalid-config" },
+  "stale-revision": { status: 409, code: "conflict" },
+  conflict: { status: 409, code: "conflict" },
+  "missing-config": { status: 404, code: "missing-config" },
+};
+
+function toSafeStoreResponse(error: unknown): { status: number; code: string; message?: string } {
   if (error instanceof SettingsStoreError) {
-    if (error.reason === "invalid-selection") return { status: 400, code: "invalid-selection" };
-    if (error.reason === "stale-revision" || error.reason === "conflict") return { status: 409, code: "conflict" };
-    return { status: 500, code: "unavailable" };
+    return { ...STORE_ERROR_RESPONSES[error.reason], message: error.message };
   }
   if (error instanceof Error) {
     if (/stale revision|changed during update|Config is locked/.test(error.message)) {
       return { status: 409, code: "conflict" };
     }
-    if (/Config file not found/.test(error.message)) return { status: 500, code: "unavailable" };
+    if (/Config file not found/.test(error.message)) return { status: 404, code: "missing-config" };
   }
   return { status: 500, code: "unavailable" };
+}
+
+/**
+ * Self-lockout guard: an `allowedUsers` patch that drops the verified
+ * requesting operator would lock them out of Settings on their next load.
+ * Only `general` carries `allowedUsers`; non-array values are left to the
+ * store's schema validation.
+ */
+function patchRemovesOperator(section: string, patch: Record<string, unknown>, operatorId: number): boolean {
+  if (section !== "general") return false;
+  const allowedUsers = patch.allowedUsers;
+  return Array.isArray(allowedUsers) && !allowedUsers.includes(operatorId);
 }
 
 /** Start the optional loopback Settings API. Call `close()` to reject new work and settle accepted requests. */
@@ -192,15 +227,21 @@ export function startSettingsServer(options: SettingsServerOptions): SettingsSer
   const authMaxAgeSec = options.authMaxAgeSec ?? DEFAULT_AUTH_MAX_AGE_SEC;
   const discover = options.discover ?? ((signal: AbortSignal) => discoverDevinCatalog({ signal }));
   const port = options.port ?? 0;
+  // Content revision captured once at server start so clients can derive a
+  // pending-restart flag (`revision !== bootRevision` after a config edit).
+  // Fails loud when the deployment config is missing or invalid: the process
+  // is already running on a loaded config, so this means the file vanished or
+  // was corrupted mid-boot.
+  const bootRevision = readDeploymentConfig(options.goblinHome).revision;
 
   let closing = false;
   let closed = false;
   const inFlight = new Set<Promise<void>>();
   const requestControllers = new Set<AbortController>();
 
-  const fail = (route: string, status: number, code: string): Response => {
+  const fail = (route: string, status: number, code: string, message?: string): Response => {
     log.warn("Settings API request failed", { route, status, error: code });
-    return jsonResponse(status, { error: code });
+    return jsonResponse(status, message === undefined ? { error: code } : { error: code, message });
   };
 
   const server = Bun.serve({
@@ -242,33 +283,19 @@ export function startSettingsServer(options: SettingsServerOptions): SettingsSer
 
       const task = (async (): Promise<Response> => {
         try {
-          if (req.method === "GET" && route === "/api/settings") {
+          if (req.method === "GET" && route === "/api/config") {
             try {
-              const settings = readDeploymentSettings(options.goblinHome);
-              return jsonResponse(200, {
-                devinDefaultModel: settings.devinDefaultModel,
-                revision: settings.revision,
-              });
+              const config = readDeploymentConfig(options.goblinHome);
+              return jsonResponse(200, { ...config, bootRevision });
             } catch (error: unknown) {
               const mapped = toSafeStoreResponse(error);
-              return fail(route, mapped.status, mapped.code);
+              return fail(route, mapped.status, mapped.code, mapped.message);
             }
           }
-          if (req.method === "GET" && route === "/api/catalog") {
-            try {
-              const catalog = await discover(requestController.signal);
-              return jsonResponse(200, catalog as unknown as Record<string, unknown>);
-            } catch (error: unknown) {
-              if (requestController.signal.aborted) {
-                const timedOut = (requestController as AbortController & { timedOut?: boolean }).timedOut === true;
-                return fail(route, timedOut ? 504 : 499, timedOut ? "timeout" : "cancelled");
-              }
-              const reason = toSafeDiscoveryReason(error);
-              return fail(route, safeDiscoveryStatus(reason), reason);
-            }
-          }
-          if (req.method === "POST" && route === "/api/settings") {
-            // Writes also enforce the configured origin server-side.
+          if (req.method === "PUT" && route.startsWith("/api/config/")) {
+            const section = route.slice("/api/config/".length);
+            // Writes enforce the configured origin server-side, same as every
+            // other mutating route.
             const origin = req.headers.get("origin");
             if (origin === null || !options.allowedOrigins.includes(origin)) {
               return fail(route, 403, "forbidden");
@@ -295,20 +322,43 @@ export function startSettingsServer(options: SettingsServerOptions): SettingsSer
             if (typeof body !== "object" || body === null || Array.isArray(body)) {
               return fail(route, 400, "bad-request");
             }
-            const { modelId, expectedRevision } = body as { modelId?: unknown; expectedRevision?: unknown };
-            if (typeof modelId !== "string") return fail(route, 400, "bad-request");
+            const { patch, expectedRevision } = body as { patch?: unknown; expectedRevision?: unknown };
+            if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
+              return fail(route, 400, "bad-request");
+            }
             if (expectedRevision !== undefined && typeof expectedRevision !== "string") {
               return fail(route, 400, "bad-request");
             }
+            const fields = patch as Record<string, unknown>;
+            if (patchRemovesOperator(section, fields, identity)) {
+              return fail(
+                route,
+                400,
+                "operator-lockout",
+                "This change would remove the requesting operator from allowedUsers and lock them out of Settings; the new allowedUsers list must include the verified operator.",
+              );
+            }
             try {
-              const saved = saveDeploymentModel(options.goblinHome, modelId, { expectedRevision });
-              return jsonResponse(200, {
-                devinDefaultModel: saved.devinDefaultModel,
-                revision: saved.revision,
-              });
+              // The store owns the section whitelist, secret-field rejection,
+              // schema validation, CAS, and the durable write.
+              const saved = saveConfigSection(options.goblinHome, section, patch, { expectedRevision });
+              return jsonResponse(200, { revision: saved.revision });
             } catch (error: unknown) {
               const mapped = toSafeStoreResponse(error);
-              return fail(route, mapped.status, mapped.code);
+              return fail(route, mapped.status, mapped.code, mapped.message);
+            }
+          }
+          if (req.method === "GET" && route === "/api/catalog") {
+            try {
+              const catalog = await discover(requestController.signal);
+              return jsonResponse(200, catalog as unknown as Record<string, unknown>);
+            } catch (error: unknown) {
+              if (requestController.signal.aborted) {
+                const timedOut = (requestController as AbortController & { timedOut?: boolean }).timedOut === true;
+                return fail(route, timedOut ? 504 : 499, timedOut ? "timeout" : "cancelled");
+              }
+              const reason = toSafeDiscoveryReason(error);
+              return fail(route, safeDiscoveryStatus(reason), reason);
             }
           }
           return fail(route, 404, "not-found");

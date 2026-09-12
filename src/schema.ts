@@ -74,8 +74,9 @@ export const SettingsConfigSchema = z
      */
     publicUrl: z.string().optional(),
     /**
-     * Allowed write origins for POST /api/settings. Defaults to the
-     * `publicUrl` origin when absent. Loopback and tests pass explicit values.
+     * Allowed write origins for settings write requests (PUT /api/config/:section).
+     * Defaults to the `publicUrl` origin when absent. Loopback and tests pass
+     * explicit values.
      */
     allowedOrigins: z.array(z.string()).optional(),
   })

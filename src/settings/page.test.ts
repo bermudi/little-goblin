@@ -139,7 +139,8 @@ describe("Search and save inside Telegram", () => {
       expect(page).toContain('type="search"');
       expect(page).toContain("telegram-web-app.js");
       expect(page).toContain("/api/catalog");
-      expect(page).toContain("/api/settings");
+      expect(page).toContain("/api/config");
+      expect(page).toContain("/api/config/devin");
       expect(page).toContain("Telegram.WebApp.initData");
       expect(page).not.toContain(BOT_TOKEN);
 
@@ -159,22 +160,22 @@ describe("Search and save inside Telegram", () => {
       // Save an exact model through the same API the page uses, then reopen.
       const auth = validInitData();
       const before = (await (
-        await fetch(`${handle.url}/api/settings`, { headers: { authorization: `tma ${auth}` } })
-      ).json()) as { devinDefaultModel: string | null; revision: string };
-      expect(before.devinDefaultModel).toBeNull();
-      const saveRes = await fetch(`${handle.url}/api/settings`, {
-        method: "POST",
+        await fetch(`${handle.url}/api/config`, { headers: { authorization: `tma ${auth}` } })
+      ).json()) as { devin: { defaultModel: string | null }; revision: string };
+      expect(before.devin.defaultModel).toBeNull();
+      const saveRes = await fetch(`${handle.url}/api/config/devin`, {
+        method: "PUT",
         headers: { authorization: `tma ${auth}`, origin: ORIGIN, "content-type": "application/json" },
-        body: JSON.stringify({ modelId: "atlas-exact-a", expectedRevision: before.revision }),
+        body: JSON.stringify({ patch: { defaultModel: "atlas-exact-a" }, expectedRevision: before.revision }),
       });
       expect(saveRes.status).toBe(200);
 
       const reopened = await fetch(`${handle.url}/`);
       expect(reopened.status).toBe(200);
       const persisted = (await (
-        await fetch(`${handle.url}/api/settings`, { headers: { authorization: `tma ${auth}` } })
-      ).json()) as { devinDefaultModel: string | null };
-      expect(persisted.devinDefaultModel).toBe("atlas-exact-a");
+        await fetch(`${handle.url}/api/config`, { headers: { authorization: `tma ${auth}` } })
+      ).json()) as { devin: { defaultModel: string | null } };
+      expect(persisted.devin.defaultModel).toBe("atlas-exact-a");
       expect(renderSettingsPage()).toBe(page);
     } finally {
       await handle.close();
@@ -195,36 +196,36 @@ describe("Search and save inside Telegram", () => {
     try {
       const auth = validInitData();
       const before = (await (
-        await fetch(`${handle.url}/api/settings`, { headers: { authorization: `tma ${auth}` } })
-      ).json()) as { devinDefaultModel: string | null; revision: string };
-      const first = await fetch(`${handle.url}/api/settings`, {
-        method: "POST",
+        await fetch(`${handle.url}/api/config`, { headers: { authorization: `tma ${auth}` } })
+      ).json()) as { devin: { defaultModel: string | null }; revision: string };
+      const first = await fetch(`${handle.url}/api/config/devin`, {
+        method: "PUT",
         headers: { authorization: `tma ${auth}`, origin: ORIGIN, "content-type": "application/json" },
-        body: JSON.stringify({ modelId: "atlas-exact-a", expectedRevision: before.revision }),
+        body: JSON.stringify({ patch: { defaultModel: "atlas-exact-a" }, expectedRevision: before.revision }),
       });
       expect(first.status).toBe(200);
 
       // Expired authentication cannot save.
       const expired = validInitData(BOT_TOKEN, OPERATOR_ID, Math.floor(Date.now() / 1000) - 4000);
-      const expiredRes = await fetch(`${handle.url}/api/settings`, {
-        method: "POST",
+      const expiredRes = await fetch(`${handle.url}/api/config/devin`, {
+        method: "PUT",
         headers: { authorization: `tma ${expired}`, origin: ORIGIN, "content-type": "application/json" },
-        body: JSON.stringify({ modelId: "boreal-exact" }),
+        body: JSON.stringify({ patch: { defaultModel: "boreal-exact" } }),
       });
       expect(expiredRes.status).toBe(401);
 
       // A stale revision cannot overwrite the committed selection.
-      const staleRes = await fetch(`${handle.url}/api/settings`, {
-        method: "POST",
+      const staleRes = await fetch(`${handle.url}/api/config/devin`, {
+        method: "PUT",
         headers: { authorization: `tma ${auth}`, origin: ORIGIN, "content-type": "application/json" },
-        body: JSON.stringify({ modelId: "boreal-exact", expectedRevision: before.revision }),
+        body: JSON.stringify({ patch: { defaultModel: "boreal-exact" }, expectedRevision: before.revision }),
       });
       expect(staleRes.status).toBe(409);
 
       const current = (await (
-        await fetch(`${handle.url}/api/settings`, { headers: { authorization: `tma ${auth}` } })
-      ).json()) as { devinDefaultModel: string | null };
-      expect(current.devinDefaultModel).toBe("atlas-exact-a");
+        await fetch(`${handle.url}/api/config`, { headers: { authorization: `tma ${auth}` } })
+      ).json()) as { devin: { defaultModel: string | null } };
+      expect(current.devin.defaultModel).toBe("atlas-exact-a");
 
       // The page keeps expired sessions, stale conflicts, and success visibly distinct.
       const page = renderSettingsPage();

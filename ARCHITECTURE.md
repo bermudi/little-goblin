@@ -314,6 +314,14 @@ Scheduled turns use the same dispatcher and prompt queue as user turns. A captur
 
 The frozen `inner-life` proposal is historical design input, not an implementation specification. Fresh shaping must settle the remaining wake-store, profile/effect state-machine, crash-recovery, and deny-by-default contact details under decision 0035. `visible-dreaming` remains blocked until that implementation exists; it may later supply reflection content but must not create a parallel scheduler, delivery, or consent system.
 
+**ACTIVE TARGET — issue #67 (`litespec/private-reflection`).** The designated
+contract is [`specs/inner-life/spec.md`](specs/inner-life/spec.md). This first
+slice replaces light-sleep model extraction only: a deployment-owned host,
+durable bounded wake input, tool-free extractive facts from user messages, and
+MemoryStore-owned transactional effect receipts for restart-safe memory changes.
+It does not implement proactive contact or change heartbeat, REM, or deep sleep.
+Until built and verified, the internal dreaming runtime remains CURRENT.
+
 ## Memory
 
 Memory's canonical store is `$GOBLIN_HOME/state/memory/memory.sqlite`. Markdown under `state/memory/` is export-only.

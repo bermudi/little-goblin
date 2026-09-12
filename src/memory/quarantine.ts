@@ -38,6 +38,8 @@ export interface QuarantineRecord {
   reason: QuarantineReason;
   /** Redacted preview of the rejected candidate content. */
   preview: string;
+  /** Effect identity for replay-safe effect audits (issue #67); absent on legacy records. */
+  effectKey?: string;
 }
 
 export interface AppendQuarantineArgs {
@@ -52,6 +54,8 @@ export interface AppendQuarantineArgs {
   previewMaxLen?: number;
   /** Override the record timestamp (defaults to now). */
   timestamp?: string;
+  /** Effect identity carried into the persisted record (issue #67). */
+  effectKey?: string;
 }
 
 /**
@@ -68,6 +72,7 @@ export function appendQuarantine(args: AppendQuarantineArgs): QuarantineRecord {
     category: args.category,
     reason: args.reason,
     preview: redactPreview(args.content, args.previewMaxLen),
+    ...(args.effectKey !== undefined ? { effectKey: args.effectKey } : {}),
   };
   new MemoryArtifactStore(args.goblinHome).appendQuarantine(record);
   return record;

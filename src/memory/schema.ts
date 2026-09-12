@@ -6,7 +6,8 @@
  */
 
 // source_surface_id is added lazily; its rollout/purge is gated by memory_meta.provenance_index_version, not this number.
-export const MEMORY_SCHEMA_VERSION = 5;
+// Version 6 adds memory_effect_receipts (issue #67 replay-safe effect commits).
+export const MEMORY_SCHEMA_VERSION = 6;
 
 export const DDL = `
 -- Schema metadata
@@ -80,6 +81,19 @@ CREATE TABLE IF NOT EXISTS memory_entry_tags (
   entry_id TEXT NOT NULL REFERENCES memory_entries(id) ON DELETE CASCADE,
   tag TEXT NOT NULL,
   PRIMARY KEY (entry_id, tag)
+);
+
+-- Durable effect receipts (issue #67): one row per applied memory effect,
+-- committed atomically with its row/index mutation. The payload_hash column
+-- is the payload identity; replay with the same hash returns the recorded
+-- outcome, reuse with a different hash is a conflict.
+CREATE TABLE IF NOT EXISTS memory_effect_receipts (
+  effect_key TEXT PRIMARY KEY,
+  payload_hash TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  entry_id TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
 );
 `;
 

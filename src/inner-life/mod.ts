@@ -6,8 +6,6 @@ export {
   wakesDir,
 } from "./paths.ts";
 export {
-  MAX_FACT_PROPOSALS,
-  MAX_FACT_TEXT_CHARS,
   MAX_REFLECTION_OUTPUT_BYTES,
   MAX_REFLECTION_REJECTION_CHARS,
   PRIVATE_REFLECTION_SYSTEM_PROMPT,
@@ -30,6 +28,8 @@ export type {
 } from "./reflection.ts";
 export {
   DEFAULT_MAX_WAKE_INPUT_LINES,
+  MAX_FACT_PROPOSALS,
+  MAX_FACT_TEXT_CHARS,
   MAX_WAKE_ATTEMPTS,
   MAX_WAKE_FAILURE_REASON_CHARS,
   MAX_WAKE_INPUT_BYTES,
@@ -40,6 +40,7 @@ export {
   WakeReservationConflictError,
 } from "./wake-store.ts";
 export type {
+  AcceptedIntent,
   WakeInputLine,
   WakeProfile,
   WakeRecord,

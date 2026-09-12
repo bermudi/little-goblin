@@ -51,6 +51,12 @@ export const DEFAULT_MAX_WAKE_INPUT_LINES = 100;
 /** Bounded failure diagnostics: no unbounded free text in records. */
 export const MAX_WAKE_FAILURE_REASON_CHARS = 2000;
 
+/** Maximum number of accepted fact intents in one wake. */
+export const MAX_FACT_PROPOSALS = 32;
+
+/** Maximum length of one accepted fact excerpt, in characters. */
+export const MAX_FACT_TEXT_CHARS = 2000;
+
 // ---------------------------------------------------------------------------
 // Profile
 // ---------------------------------------------------------------------------
@@ -117,6 +123,35 @@ const wakeInputSchema = z.object({
   lines: z.array(wakeInputLineSchema).min(1),
 }).strict();
 
+/**
+ * One accepted effect intent, persisted in the wake before it enters
+ * MemoryStore (issue #67). Effect keys are derived from the wake id so the
+ * canonical receipt key is stable across recovery; `confidence` is the
+ * code-assigned model-judgment confidence the memory policy applies.
+ */
+export interface AcceptedIntent {
+  readonly effectKey: string;
+  readonly kind: "fact";
+  readonly target: "memory" | "user";
+  /** Index of the cited user line inside the captured input. */
+  readonly lineIndex: number;
+  /** Verbatim contiguous excerpt of the cited line. */
+  readonly text: string;
+  readonly confidence: number;
+}
+
+const acceptedIntentSchema = z.object({
+  effectKey: z.string().regex(
+    /^wake_[0-9a-f]{16}:effect:[0-9]+$/,
+    "must be wake_<16 hex>:effect:<n>",
+  ),
+  kind: z.literal("fact"),
+  target: z.enum(["memory", "user"]),
+  lineIndex: z.number().int().min(0),
+  text: z.string().min(1).max(MAX_FACT_TEXT_CHARS),
+  confidence: z.number().finite().gt(0).lte(1),
+}).strict();
+
 function lineWindowIssues(
   lines: WakeInputLine[],
   afterLine: number,
@@ -154,10 +189,9 @@ const wakeRecordSchema = z.object({
   state: wakeStateSchema,
   attempts: z.number().int().min(0).max(MAX_WAKE_ATTEMPTS),
   input: wakeInputSchema,
-  // Reserved vocabulary for the memory-effect units of issue #67: this slice
-  // admits no intents and no effect outcomes, so any content here invalidates
-  // the record.
-  acceptedIntents: z.array(z.unknown()).max(0),
+  // Effect-outcome bookkeeping stays reserved for the host units of issue
+  // #67; canonical outcomes live in MemoryStore's receipt table.
+  acceptedIntents: z.array(acceptedIntentSchema).max(MAX_FACT_PROPOSALS),
   effectOutcomes: z.array(z.unknown()).max(0),
   failure: z.object({ reason: z.string().min(1).max(MAX_WAKE_FAILURE_REASON_CHARS) }).strict().nullable(),
 }).strict().superRefine((record, ctx) => {
@@ -188,6 +222,35 @@ const wakeRecordSchema = z.object({
 
   if ((record.state === "reflecting" || record.state === "applying") && record.attempts < 1) {
     issue("attempts", `${record.state} wakes must have recorded at least one attempt`);
+  }
+  // Accepted intents exist only once reflection has produced them; reserved
+  // and mid-reflection records carry none.
+  if (record.acceptedIntents.length > 0 && (record.state === "reserved" || record.state === "reflecting")) {
+    issue(
+      "acceptedIntents",
+      `intents are admitted only after reflection completes (state: ${record.state})`,
+    );
+  }
+  // Every intent is identity-bound to this wake and mechanically supported by
+  // its cited user line, so persisted intents stay trustworthy across recovery.
+  const seenEffectKeys = new Set<string>();
+  for (const [i, intent] of record.acceptedIntents.entries()) {
+    const intentPath = `acceptedIntents.${i}`;
+    if (!intent.effectKey.startsWith(`${record.wakeId}:`)) {
+      issue(`${intentPath}.effectKey`, "effect key must be derived from the wake id");
+    }
+    if (seenEffectKeys.has(intent.effectKey)) {
+      issue(`${intentPath}.effectKey`, "duplicate effect key");
+    }
+    seenEffectKeys.add(intent.effectKey);
+    const cited = record.input.lines.find((l) => l.index === intent.lineIndex);
+    if (cited === undefined) {
+      issue(`${intentPath}.lineIndex`, "cited line is outside the captured input");
+    } else if (cited.role !== "user") {
+      issue(`${intentPath}.lineIndex`, `cited line is role ${cited.role}; only user lines are eligible`);
+    } else if (!cited.text.includes(intent.text)) {
+      issue(`${intentPath}.text`, "text is not a verbatim excerpt of the cited line");
+    }
   }
   const hasFailure = record.failure !== null;
   if (record.state === "failed" && !hasFailure) {
@@ -220,6 +283,7 @@ export interface WakeReservationInput extends z.infer<typeof wakeReservationRequ
 
 export type WakeTransition =
   | { kind: "begin-attempt" }
+  | { kind: "begin-application"; intents: AcceptedIntent[] }
   | { kind: "fail"; reason: string }
   | { kind: "complete" };
 
@@ -680,6 +744,19 @@ export class WakeStore {
           );
         }
         return { ...current, state: "reflecting", attempts: current.attempts + 1 };
+      }
+      case "begin-application": {
+        if (current.state !== "reflecting") {
+          throw recordError(
+            current.wakeId,
+            path,
+            `cannot begin application from state ${current.state}`,
+          );
+        }
+        if (current.acceptedIntents.length > 0) {
+          throw recordError(current.wakeId, path, "intents already recorded for this wake");
+        }
+        return { ...current, state: "applying", acceptedIntents: transition.intents };
       }
       case "fail": {
         if (current.state !== "reflecting" && current.state !== "applying") {

@@ -23,7 +23,11 @@ import {
   quarantinePath,
   quarantineRotatedPath,
 } from "../memory/paths.ts";
-import type { MemoryFactEffect, MemoryEffectOutcome } from "../memory/policy.ts";
+import type {
+  MemoryEffectOutcome,
+  MemoryEffectRejectionReason,
+  MemoryFactEffect,
+} from "../memory/policy.ts";
 import { runMigrations } from "../migrate.ts";
 import {
   CURRENT_STATE_VERSION,
@@ -86,7 +90,7 @@ function factEffect(overrides: Partial<MemoryFactEffect> = {}): MemoryFactEffect
 
 function expectRejected(
   outcome: MemoryEffectOutcome,
-  reason: string,
+  reason: MemoryEffectRejectionReason,
 ): { message: string } {
   if (outcome.kind !== "rejected") {
     throw new Error(`expected rejected outcome, got: ${JSON.stringify(outcome)}`);
@@ -325,6 +329,7 @@ describe("memory effects", () => {
     const store = new MemoryStore(base.db, undefined, {
       budget: new MemoryBudget(BUDGET_ENV),
       embeddings: provider,
+      artifacts: new MemoryArtifactStore(home),
     });
 
     const effect = factEffect();
@@ -472,20 +477,30 @@ describe("memory effects", () => {
 
     // Budget: overflowing a budget that compaction cannot relieve rejects the
     // effect durably without mutating memory and sets the blocked marker.
-    const fill = await store.add("user", "u".repeat(4990));
+    // Fill with user-origin content (not compaction-eligible); the projected
+    // total forces eviction of exactly the four dreaming fact rows.
+    const fill = await store.add("user", "u".repeat(4974));
     expect(fill.ok).toBe(true);
+    // Remove the last dreaming row so nothing evictable remains: the next
+    // effect cannot make room and must overflow.
+    const removed = await store.remove("user", "I sign messages as bermudi");
+    expect(removed.ok).toBe(true);
     const overflow = await apply({ effectKey: key(20), text: "I live in Lisbon year round" });
-    expectRejected(overflow, "budget_exhausted");
-    expect(overflow.message).toContain("overflow");
+    const rejectedOverflow = expectRejected(overflow, "budget_exhausted");
+    expect(rejectedOverflow.message).toContain("overflow");
     expect(effectReceipts(store).find((r) => r.effect_key === key(20))?.entry_id).toBeNull();
     expect(store.isBudgetBlocked()).toBe(true);
+    // The rejected effect mutated nothing: the fill row survives.
+    const fillRows = curatedRows(store, "user");
+    expect(fillRows).toHaveLength(1);
+    expect(fillRows[0]!.text).toBe("u".repeat(4974));
     store.close();
   });
 
   it("database-error-rolls-back-receipt-and-memory", async () => {
     const store = newStore(home);
     const boom = new Error("injected sqlite failure: index write exploded");
-    const target = store as unknown as Record<string, unknown>;
+    const target = store as unknown as { insertIndexAndTags: () => void };
     const spy = spyOn(target, "insertIndexAndTags").mockImplementation(() => {
       throw boom;
     });
@@ -584,7 +599,7 @@ describe("memory effects", () => {
       const artifactWarn = warnSpy.mock.calls
         .map((call) => JSON.stringify(call.map((part) => (typeof part === "string" ? part : JSON.stringify(part)))))
         .join("\n");
-      expect(artifactWarn).toContain("artifact append failed");
+      expect(artifactWarn).toContain("append failed after commit");
       expect(artifactWarn).toContain(factEffect().effectKey);
       artifactStore.close();
 
@@ -593,7 +608,7 @@ describe("memory effects", () => {
       const retryDir = join(home, "retry");
       const retryStore = newStore(retryDir);
       const retryKey = `wake_${"d".repeat(16)}:effect:0`;
-      await retryStore.applyFactEffect(factEffect({ effectKey: retryKey, text: `tok ${"x".repeat(24)}` }));
+      await retryStore.applyFactEffect(factEffect({ effectKey: retryKey, text: `key sk-${"x".repeat(24)}` }));
       const quarantineLines = readFileSync(quarantinePath(retryDir), "utf-8")
         .split("\n")
         .filter((l) => l.length > 0);
@@ -695,12 +710,9 @@ describe("memory effects", () => {
     writeFileSync(join(wakesDir(wakesHome), "wake_0123456789abcdef.json"), "{not json");
     expect(() => runMigrations(wakesHome)).toThrow(/wake_0123456789abcdef/);
     expect(readStateVersion(wakesHome)).toBe(5);
-    const untouched = new MemoryDatabase(memoryDbPath(wakesHome), { readonly: true });
-    const receiptsTable = untouched.database
-      .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memory_effect_receipts'")
-      .get();
-    expect(receiptsTable).toBeNull();
-    untouched.close();
+    // Planning failed before the snapshot: the run never reached its
+    // write phase.
+    expect(readdirSync(wakesHome).filter((n) => n.startsWith(".migration-backup-"))).toHaveLength(0);
 
     // A structurally invalid record is rejected the same way.
     const invalidHome = mkHome("invalid");
@@ -716,6 +728,7 @@ describe("memory effects", () => {
 
     // A corrupt memory database fails validation before writes.
     const corruptHome = mkHome("corrupt");
+    mkdirSync(join(corruptHome, "state", "memory"), { recursive: true });
     writeFileSync(memoryDbPath(corruptHome), "this is not a sqlite database");
     expect(() => runMigrations(corruptHome)).toThrow();
     expect(readStateVersion(corruptHome)).toBe(5);

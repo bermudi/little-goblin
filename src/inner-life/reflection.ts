@@ -35,7 +35,17 @@ import type { Config } from "../config.ts";
 import { resolveModel, type ResolvedModel } from "../agent/models.ts";
 import { boundedError, log } from "../log.ts";
 import { validateWakeId } from "./paths.ts";
-import { PRIVATE_FACTS_PROFILE, type WakeInputLine, type WakeProfile } from "./wake-store.ts";
+import {
+  MAX_FACT_PROPOSALS,
+  MAX_FACT_TEXT_CHARS,
+  PRIVATE_FACTS_PROFILE,
+  type WakeInputLine,
+  type WakeProfile,
+} from "./wake-store.ts";
+
+// Profile bounds are owned by the wake-record schema (they bound persisted
+// records too); re-exported here so the reflection surface stays unchanged.
+export { MAX_FACT_PROPOSALS, MAX_FACT_TEXT_CHARS } from "./wake-store.ts";
 
 // ---------------------------------------------------------------------------
 // Bounds and constants
@@ -49,12 +59,6 @@ export const MAX_REFLECTION_OUTPUT_BYTES = 64 * 1024;
 
 /** Default deadline for one reflection invocation: 120 seconds. */
 export const REFLECTION_DEADLINE_MS = 120_000;
-
-/** Maximum number of fact proposals in one accepted envelope. */
-export const MAX_FACT_PROPOSALS = 32;
-
-/** Maximum length of one accepted fact excerpt, in characters. */
-export const MAX_FACT_TEXT_CHARS = 2000;
 
 /** Bounded per-item rejection reasons. */
 export const MAX_REFLECTION_REJECTION_CHARS = 300;

@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore, MemoryEffectConflictError } from "../memory/store.ts";
+import { memoryDreamingCursorPath } from "../sessions/paths.ts";
 import { MemoryBudget } from "../memory/budget.ts";
 import { EmbeddingProvider } from "../memory/embeddings.ts";
 import { MemoryDatabase } from "../memory/db.ts";
@@ -44,6 +45,7 @@ import {
   type WakeRole,
 } from "./wake-store.ts";
 import { wakesDir } from "./paths.ts";
+import { applyInnerLifeLayout, planInnerLifeLayout } from "./layout-migration.ts";
 
 /**
  * Memory-effects verifier for Litespec #67 unit "Commit replay-safe memory
@@ -747,5 +749,204 @@ describe("memory effects", () => {
     expect(readStateVersion(gateHome)).not.toBe(CURRENT_STATE_VERSION);
     runMigrations(gateHome);
     expect(readStateVersion(gateHome)).toBe(CURRENT_STATE_VERSION);
+  });
+
+  // W5 direct-fix regression coverage (issue #67 closure review): the light-
+  // sleep cursor adapter reads only the sidecar, so legacy cursor locations
+  // must be converted by the offline step-6 migration — otherwise the first
+  // pass seeds at transcript end and unprocessed lines are silently skipped.
+  function seedLegacyHome(name: string): string {
+    const dir = join(home, name);
+    mkdirSync(join(dir, "state"), { recursive: true });
+    writeStateVersion(dir, 5);
+    const seed = newStore(dir);
+    seed.close();
+    return dir;
+  }
+
+  function seedLegacyMetaRow(dir: string, conversationId: string, value: unknown): void {
+    const db = new MemoryDatabase(memoryDbPath(dir));
+    try {
+      db.setMeta(`dreaming_cursor:${conversationId}`, JSON.stringify(value));
+    } finally {
+      db.close();
+    }
+  }
+
+  function readSidecarJson(dir: string, conversationId: string): unknown {
+    return JSON.parse(readFileSync(memoryDreamingCursorPath(dir, conversationId), "utf-8"));
+  }
+
+  it("legacy-light-sleep-cursors-convert-to-the-sidecar", () => {
+    const dir = seedLegacyHome("legacy-convert");
+
+    // Legacy reflection-file cursor only (pre-SQLite DreamingPipeline shape).
+    const fileOnly = join(dir, "state", "sessions", "conv-file-only");
+    mkdirSync(fileOnly, { recursive: true });
+    writeFileSync(
+      join(fileOnly, "memory-reflection.json"),
+      JSON.stringify({ processedLines: 7, lastReflectedAt: "2026-08-01T00:00:00.000Z" }),
+    );
+
+    // Legacy memory_meta cursor only (SQLite-era DreamingPipeline shape).
+    const metaOnly = join(dir, "state", "sessions", "conv-meta-only");
+    mkdirSync(metaOnly, { recursive: true });
+    seedLegacyMetaRow(dir, "conv-meta-only", {
+      processedLines: 11,
+      lastDreamedAt: "2026-08-02T00:00:00.000Z",
+    });
+
+    // Both legacy sources conflict: the most conservative (oldest unprocessed)
+    // position is preserved, so no span either cursor held open is skipped.
+    const both = join(dir, "state", "sessions", "conv-both");
+    mkdirSync(both, { recursive: true });
+    writeFileSync(
+      join(both, "memory-reflection.json"),
+      JSON.stringify({ processedLines: 30, lastReflectedAt: "2026-08-03T00:00:00.000Z" }),
+    );
+    seedLegacyMetaRow(dir, "conv-both", {
+      processedLines: 20,
+      lastDreamedAt: "2026-08-04T00:00:00.000Z",
+    });
+
+    // An already-converted conversation: the sidecar is authoritative and the
+    // legacy sources are left exactly as they are.
+    const converted = join(dir, "state", "sessions", "conv-sidecar");
+    mkdirSync(converted, { recursive: true });
+    const sidecarBytes = `${JSON.stringify({ processedLines: 5, lastDreamedAt: "2026-08-05T00:00:00.000Z" })}\n`;
+    writeFileSync(memoryDreamingCursorPath(dir, "conv-sidecar"), sidecarBytes);
+    writeFileSync(join(converted, "memory-reflection.json"), JSON.stringify({ processedLines: 1 }));
+    seedLegacyMetaRow(dir, "conv-sidecar", {
+      processedLines: 2,
+      lastDreamedAt: "2026-08-06T00:00:00.000Z",
+    });
+
+    // A meta row without a session directory protects no transcript lines;
+    // the row is left untouched and no directory is fabricated.
+    seedLegacyMetaRow(dir, "conv-gone", {
+      processedLines: 9,
+      lastDreamedAt: "2026-08-07T00:00:00.000Z",
+    });
+
+    runMigrations(dir);
+    expect(readStateVersion(dir)).toBe(CURRENT_STATE_VERSION);
+
+    expect(readSidecarJson(dir, "conv-file-only")).toEqual({
+      processedLines: 7,
+      lastDreamedAt: "2026-08-01T00:00:00.000Z",
+    });
+    expect(readSidecarJson(dir, "conv-meta-only")).toEqual({
+      processedLines: 11,
+      lastDreamedAt: "2026-08-02T00:00:00.000Z",
+    });
+    expect(readSidecarJson(dir, "conv-both")).toEqual({
+      processedLines: 20,
+      lastDreamedAt: "2026-08-04T00:00:00.000Z",
+    });
+
+    // Already-converted cursors and legacy sources are unchanged.
+    expect(readFileSync(memoryDreamingCursorPath(dir, "conv-sidecar"), "utf-8")).toBe(sidecarBytes);
+    expect(existsSync(join(converted, "memory-reflection.json"))).toBe(true);
+    expect(existsSync(join(fileOnly, "memory-reflection.json"))).toBe(true);
+    expect(existsSync(join(metaOnly, "memory-reflection.json"))).toBe(false);
+    expect(existsSync(join(dir, "state", "sessions", "conv-gone"))).toBe(false);
+
+    // Legacy rows survive untouched; the sidecar is authoritative after
+    // conversion, so the runtime never consults them.
+    const rows = new MemoryDatabase(memoryDbPath(dir), { readonly: true });
+    try {
+      expect(rows.getMeta("dreaming_cursor:conv-meta-only")).toBe(
+        JSON.stringify({ processedLines: 11, lastDreamedAt: "2026-08-02T00:00:00.000Z" }),
+      );
+      expect(rows.getMeta("dreaming_cursor:conv-gone")).toBe(
+        JSON.stringify({ processedLines: 9, lastDreamedAt: "2026-08-07T00:00:00.000Z" }),
+      );
+    } finally {
+      rows.close();
+    }
+
+    // The migration took the standard backup path.
+    expect(readdirSync(dir).filter((n) => n.startsWith(".migration-backup-"))).toHaveLength(1);
+
+    // Idempotent: a re-run on the converted home is a no-op — the version
+    // gate returns early, and even a forced re-plan finds nothing to convert.
+    runMigrations(dir);
+    expect(readdirSync(dir).filter((n) => n.startsWith(".migration-backup-"))).toHaveLength(1);
+    expect(planInnerLifeLayout(dir).legacyCursorConversions).toEqual([]);
+    expect(readSidecarJson(dir, "conv-file-only")).toEqual({
+      processedLines: 7,
+      lastDreamedAt: "2026-08-01T00:00:00.000Z",
+    });
+  });
+
+  it("invalid-legacy-cursor-input-fails-before-any-write", () => {
+    const mkLegacyHome = (name: string, conversationId: string): string => {
+      const dir = seedLegacyHome(name);
+      const convDir = join(dir, "state", "sessions", conversationId);
+      mkdirSync(convDir, { recursive: true });
+      return dir;
+    };
+
+    // Malformed JSON in a legacy reflection file aborts the whole run before
+    // any write: version stays 5, no snapshot, no sidecar, no wake layout.
+    const malformedHome = mkLegacyHome("legacy-malformed", "conv-a");
+    writeFileSync(
+      join(malformedHome, "state", "sessions", "conv-a", "memory-reflection.json"),
+      "{not json",
+    );
+    expect(() => runMigrations(malformedHome)).toThrow(/memory-reflection\.json/);
+    expect(readStateVersion(malformedHome)).toBe(5);
+    expect(readdirSync(malformedHome).filter((n) => n.startsWith(".migration-backup-"))).toHaveLength(0);
+    expect(existsSync(wakesDir(malformedHome))).toBe(false);
+    expect(existsSync(memoryDreamingCursorPath(malformedHome, "conv-a"))).toBe(false);
+
+    // A processedLines that is not a number is ambiguity, not migration input.
+    const typeHome = mkLegacyHome("legacy-type", "conv-a");
+    writeFileSync(
+      join(typeHome, "state", "sessions", "conv-a", "memory-reflection.json"),
+      JSON.stringify({ processedLines: "42" }),
+    );
+    expect(() => runMigrations(typeHome)).toThrow(/processedLines/);
+    expect(readStateVersion(typeHome)).toBe(5);
+    expect(readdirSync(typeHome).filter((n) => n.startsWith(".migration-backup-"))).toHaveLength(0);
+
+    // A malformed legacy memory_meta value fails the same way.
+    const metaMalformedHome = mkLegacyHome("legacy-meta-malformed", "conv-a");
+    const rawDb = new MemoryDatabase(memoryDbPath(metaMalformedHome));
+    rawDb.setMeta("dreaming_cursor:conv-a", "{not json");
+    rawDb.close();
+    expect(() => runMigrations(metaMalformedHome)).toThrow(/dreaming_cursor|conv-a/);
+    expect(readStateVersion(metaMalformedHome)).toBe(5);
+    expect(readdirSync(metaMalformedHome).filter((n) => n.startsWith(".migration-backup-"))).toHaveLength(0);
+
+    // The meta shape required both fields (matching DreamingPipeline.readCursor);
+    // a missing lastDreamedAt is ambiguous and aborts instead of guessing.
+    const metaIncompleteHome = mkLegacyHome("legacy-meta-incomplete", "conv-a");
+    const incompleteDb = new MemoryDatabase(memoryDbPath(metaIncompleteHome));
+    incompleteDb.setMeta("dreaming_cursor:conv-a", JSON.stringify({ processedLines: 4 }));
+    incompleteDb.close();
+    expect(() => runMigrations(metaIncompleteHome)).toThrow(/lastDreamedAt/);
+    expect(readStateVersion(metaIncompleteHome)).toBe(5);
+    expect(readdirSync(metaIncompleteHome).filter((n) => n.startsWith(".migration-backup-"))).toHaveLength(0);
+  });
+
+  it("legacy-cursor-without-timestamp-uses-migration-clock", () => {
+    const dir = seedLegacyHome("legacy-fallback");
+    const convDir = join(dir, "state", "sessions", "conv-a");
+    mkdirSync(convDir, { recursive: true });
+    // The file-era shape made lastReflectedAt optional; the old pipeline fell
+    // back to the then-current time. The migration does the same with its own
+    // clock, injected here for determinism.
+    writeFileSync(join(convDir, "memory-reflection.json"), JSON.stringify({ processedLines: 4 }));
+
+    const plan = planInnerLifeLayout(dir, { now: () => new Date(Date.parse("2026-09-01T00:00:00.000Z")) });
+    expect(plan.legacyCursorConversions).toEqual([
+      { conversationId: "conv-a", processedLines: 4, lastDreamedAt: "2026-09-01T00:00:00.000Z" },
+    ]);
+    applyInnerLifeLayout(dir, plan);
+    expect(readSidecarJson(dir, "conv-a")).toEqual({
+      processedLines: 4,
+      lastDreamedAt: "2026-09-01T00:00:00.000Z",
+    });
   });
 });

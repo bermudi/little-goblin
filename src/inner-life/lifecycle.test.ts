@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -19,6 +20,8 @@ import { ConversationStore } from "../sessions/conversation-store.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
 import { SchedulerLoop, type SchedulerClock, type SchedulerDispatcher } from "../scheduler/loop.ts";
 import { ScheduleStore } from "../scheduler/store.ts";
+import { runMigrations } from "../migrate.ts";
+import { writeStateVersion } from "../state-version.ts";
 import type { MemoryEngine } from "../memory/engine.ts";
 import type { Config } from "../config.ts";
 import type { ConversationState } from "../sessions/mod.ts";
@@ -666,6 +669,63 @@ describe("private reflection lifecycle", () => {
     ]);
     expect(model.calls).toBe(7);
     expect(readCursor(dir, conversationId)?.processedLines).toBe(11);
+
+    fixture.lifecycle.dispose();
+  });
+
+  // W5 direct-fix regression (issue #67 closure review): a legacy pre-sidecar
+  // cursor must survive the offline migration and drive the first light-sleep
+  // pass over the remaining backlog — never a fresh seed at transcript end.
+  it("migrated-legacy-cursor-drains-remaining-lines-not-transcript-end", async () => {
+    const dir = join(home, "legacy-migrated");
+    mkdirSync(join(dir, "state"), { recursive: true });
+    writeStateVersion(dir, 5);
+
+    const conversationId = "conversation-a";
+    appendTranscriptLine(dir, conversationId, { role: "user", text: "already reflected one" });
+    appendTranscriptLine(dir, conversationId, { role: "assistant", text: "already reflected two" });
+    appendTranscriptLine(dir, conversationId, { role: "user", text: "already reflected three" });
+    appendTranscriptLine(dir, conversationId, {
+      role: "user",
+      text: "I live in Madrid",
+      sourceSurfaceId: MADRID_SURFACE,
+    });
+    appendTranscriptLine(dir, conversationId, { role: "assistant", text: "Noted." });
+
+    // A pre-sidecar deployment cursor: the first three lines are processed.
+    mkdirSync(sessionDir(dir, conversationId), { recursive: true });
+    writeFileSync(
+      join(sessionDir(dir, conversationId), "memory-reflection.json"),
+      JSON.stringify({ processedLines: 3, lastReflectedAt: TS }),
+    );
+
+    // Offline upgrade: the legacy cursor converts into the sidecar the
+    // private-host adapter reads.
+    runMigrations(dir);
+    expect(readCursor(dir, conversationId)).toEqual({ processedLines: 3, lastDreamedAt: TS });
+
+    const model = new FakeReflectionModel(() =>
+      factEnvelope([{ target: "memory", line: 3, text: "I live in Madrid" }]),
+    );
+    const fixture = makeLifecycle(dir, {
+      conversations: { list: () => [{ id: conversationId }] },
+      model,
+    });
+    await fixture.lifecycle.reconcile();
+    await fixture.lifecycle.lightSleep.runPass();
+
+    // The unprocessed backlog was reflected, not skipped: the wake covers
+    // exactly lines 3–4 and the cursor advanced from the legacy value.
+    expect(readCursor(dir, conversationId)?.processedLines).toBe(5);
+    expect(fixture.model.calls).toBe(1);
+    expect(fixture.model.requests[0]!.userPrompt).toContain("I live in Madrid");
+    expect(fixture.model.requests[0]!.userPrompt).not.toContain("already reflected");
+    expect(curatedRows(fixture.store, "general").map((row) => row.text)).toEqual(["I live in Madrid"]);
+    const record = readWake(dir, wakeIds(dir)[0]!);
+    expect(record.state).toBe("completed");
+    const source = record.source as { afterLine: number; beforeLine: number };
+    expect(source.afterLine).toBe(3);
+    expect(source.beforeLine).toBe(5);
 
     fixture.lifecycle.dispose();
   });

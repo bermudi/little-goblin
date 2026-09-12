@@ -30,6 +30,12 @@ import type { Config } from "../config.ts";
  * - [R3] deadline-output-cap-cancel-and-late-response-dispose
  * - [R3] missing-provider-and-provider-failure-have-no-fallback
  *
+ * Rebuild-cycle coverage (review cycle 1, abort-before-start): a host signal
+ * that is already aborted never replays its abort event, so cancellation
+ * settlement must not depend on listener registration order or event replay.
+ * - pre-aborted-host-signal-fails-before-invocation-and-never-adopts-output
+ * - pre-aborted-host-signal-settles-with-hanging-signal-ignoring-invoker
+ *
  * All model boundaries are deterministic fakes injected through the engine's
  * invoker seam; no live or paid provider call exists on any path here.
  */
@@ -390,6 +396,55 @@ describe("reflection", () => {
       respond = () => envelope([fact("memory", 0, "I live in Madrid")]);
       const again = await engine.reflect(reflectionRequest());
       expect(again.proposals.length).toBe(1);
+    }
+  });
+
+  it("pre-aborted-host-signal-fails-before-invocation-and-never-adopts-output", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    // The invoker ignores the abort signal entirely and returns valid output
+    // that matches the wake input: adoption here would turn a cancelled wake
+    // into a successful reflection.
+    const { invoker, calls } = fakeInvoker(() => envelope([fact("memory", 0, "I live in Madrid")]));
+    const engine = new ReflectionEngine({ invoker });
+
+    const failure = await reflectionFailure(
+      engine.reflect(reflectionRequest({ signal: controller.signal })),
+    );
+
+    expect(failure.kind).toBe("cancelled");
+    // An already-cancelled wake must not invoke the model at all.
+    expect(calls.length).toBe(0);
+  });
+
+  it("pre-aborted-host-signal-settles-with-hanging-signal-ignoring-invoker", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    // Hangs forever and never observes the abort signal. Cancellation must
+    // still settle the reflection well before the watchdog — independent of
+    // invoker behavior and of event replay — or the deadline is unenforceable.
+    const invoker: ReflectionModelInvoker = () => new Promise<string>(() => {});
+    const engine = new ReflectionEngine({ invoker, deadlineMs: 25 });
+
+    let watchdogFired = false;
+    let clearWatchdog: () => void = () => {};
+    const watchdog = new Promise<never>((_, reject) => {
+      const timer = setTimeout(() => {
+        watchdogFired = true;
+        reject(new Error("reflection never settled past its 25ms deadline"));
+      }, 1000);
+      clearWatchdog = () => clearTimeout(timer);
+    });
+
+    try {
+      const failure = await Promise.race([
+        reflectionFailure(engine.reflect(reflectionRequest({ signal: controller.signal }))),
+        watchdog,
+      ]);
+      expect(watchdogFired).toBe(false);
+      expect(failure.kind).toBe("cancelled");
+    } finally {
+      clearWatchdog();
     }
   });
 

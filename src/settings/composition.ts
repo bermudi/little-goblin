@@ -80,6 +80,16 @@ export function settingsWebAppUrl(cfg: Config): string | null {
   return resolveDeploymentSettingsServerConfig(cfg)?.publicUrl ?? null;
 }
 
+/** Composition-root hooks for the deployment Settings server. */
+export interface DeploymentSettingsServerHooks {
+  /**
+   * Called once after `POST /api/restart` validates and dispatches its 200
+   * response. Wired by the composition root (`index.ts`) to its existing
+   * shutdown path; the settings path never owns process exit.
+   */
+  requestRestart?: () => void;
+}
+
 /**
  * Start the optional deployment Settings server. Returns null when disabled;
  * otherwise binds 127.0.0.1 on the deployment-owned stable port. The caller
@@ -87,7 +97,10 @@ export function settingsWebAppUrl(cfg: Config): string | null {
  * non-secret routing identity (botToken for initData verification is required
  * by the server to authenticate, but is never logged or projected).
  */
-export function startDeploymentSettingsServer(cfg: Config): SettingsServerHandle | null {
+export function startDeploymentSettingsServer(
+  cfg: Config,
+  hooks?: DeploymentSettingsServerHooks,
+): SettingsServerHandle | null {
   const resolved = resolveDeploymentSettingsServerConfig(cfg);
   if (resolved === null) return null;
   return startSettingsServer({
@@ -96,5 +109,6 @@ export function startDeploymentSettingsServer(cfg: Config): SettingsServerHandle
     allowedUserIds: [...cfg.allowedTgUserIds],
     allowedOrigins: [...resolved.allowedOrigins],
     port: resolved.port,
+    requestRestart: hooks?.requestRestart,
   });
 }

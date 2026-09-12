@@ -5,6 +5,7 @@ import { MemoryEngine } from "./memory/mod.ts";
 import { assertEdgeTtsAvailable, resolveVoiceName } from "./voice.ts";
 import { syncTelegramMenu } from "./commands/registry.ts";
 import { startDeploymentSettingsServer } from "./settings/composition.ts";
+import { createRestartTrigger } from "./settings/restart.ts";
 import { syncSettingsMenuButton } from "./settings/telegram.ts";
 import type { SettingsServerHandle } from "./settings/server.ts";
 import { SchedulerLoop, DEFAULT_TRANSCRIPT_SYNC_MAX_MS } from "./scheduler/loop.ts";
@@ -73,23 +74,14 @@ async function main(): Promise<void> {
   // the stable port and public URL in `goblin.json5` `settings`; this
   // composition root owns the handle lifetime. Loopback only —
   // operator-managed Tailscale Serve supplies private HTTPS and is never
-  // configured here. Null when disabled.
-  let settingsHandle: SettingsServerHandle | null = null;
-  try {
-    settingsHandle = startDeploymentSettingsServer(cfg);
-  } catch (err) {
-    log.error("settings server failed to start", {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    process.exit(1);
-  }
-  if (settingsHandle) {
-    log.info("Settings Mini App API enabled", { url: settingsHandle.url });
-  }
+  // configured here. Null when disabled. Started after the shutdown wiring
+  // below so the restart trigger can reference it directly.
 
   // Graceful shutdown. The coordinator owns the Telegram phase list;
-  // index.ts additionally owns the Settings handle and closes it first so
-  // new Settings work is rejected before Telegram drains begin. grammy's
+  // index.ts additionally owns the Settings handle. Signal-driven shutdown
+  // closes the Settings handle first so new Settings work is rejected before
+  // Telegram drains begin; a restart-driven shutdown closes it last so the
+  // 200 response to POST /api/restart survives the drain. grammy's
   // start() resolves when stop() is called inside the coordinator's
   // "stop-telegram-polling" phase.
   const coordinator = new ShutdownCoordinator({
@@ -103,11 +95,18 @@ async function main(): Promise<void> {
     closeMemoryEngine: async () => { memoryEngine.close(); },
   });
   let shutdownPromise: Promise<void> | undefined;
-  const shutdown = (signal: string): Promise<void> => {
+  let settingsHandle: SettingsServerHandle | null = null;
+  const shutdown = (
+    signal: string,
+    opts?: { failureExitCode?: number; closeSettingsLast?: boolean },
+  ): Promise<void> => {
     if (shutdownPromise) return shutdownPromise;
+    const failureExitCode = opts?.failureExitCode ?? 1;
+    const closeSettingsLast = opts?.closeSettingsLast ?? false;
     shutdownPromise = (async () => {
       let settingsCloseFailed = false;
-      if (settingsHandle) {
+      const closeSettingsOnce = async (): Promise<void> => {
+        if (settingsHandle === null) return;
         try {
           await settingsHandle.close();
         } catch (err) {
@@ -116,11 +115,13 @@ async function main(): Promise<void> {
             error: err instanceof Error ? err.message : String(err),
           });
         }
-      }
+      };
+      if (!closeSettingsLast) await closeSettingsOnce();
       const result = await coordinator.shutdown(signal);
+      if (closeSettingsLast) await closeSettingsOnce();
       if (settingsCloseFailed || !result.ok) {
         log.error("shutdown completed with cleanup failures", { count: result.failures });
-        process.exit(1);
+        process.exit(failureExitCode);
       }
       process.exit(0);
     })();
@@ -128,6 +129,27 @@ async function main(): Promise<void> {
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
+
+  // Operator self-restart (POST /api/restart) reuses the shutdown path above
+  // — no parallel phase list: it runs the same coordinator phases, closes
+  // the Settings listener last (the 200 response must survive the drain),
+  // drains under a bounded deadline, and always exits 0; the
+  // operator-deployed systemd `Restart=on-success` owns revival.
+  const requestRestart = createRestartTrigger({
+    runShutdown: () => shutdown("restart", { failureExitCode: 0, closeSettingsLast: true }),
+    exit: (code) => process.exit(code),
+  });
+  try {
+    settingsHandle = startDeploymentSettingsServer(cfg, { requestRestart });
+  } catch (err) {
+    log.error("settings server failed to start", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    process.exit(1);
+  }
+  if (settingsHandle) {
+    log.info("Settings Mini App API enabled", { url: settingsHandle.url });
+  }
 
   log.info("little-goblin starting", {
     goblinHome: cfg.goblinHome,

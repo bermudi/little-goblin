@@ -7,10 +7,21 @@ export {
   type DevinModelVariant,
 } from "./devin-catalog.ts";
 export {
+  readDeploymentConfig,
   readDeploymentSettings,
-  saveDeploymentModel,
+  saveConfigSection,
   SettingsStoreError,
+  type ConfigSectionName,
+  type ConfigSectionSaveOptions,
+  type ConfigSectionSaveResult,
+  type DeploymentConfig,
+  type DeploymentSecretsProjection,
   type DeploymentSettings,
+  type EmbeddingsConfigProjection,
+  type ExternalAgentsConfigProjection,
+  type GeneralConfigProjection,
+  type SecretPresence,
+  type SettingsConfigProjection,
   type SettingsStoreReason,
 } from "./store.ts";
 export {
@@ -19,12 +30,21 @@ export {
   type SettingsServerOptions,
 } from "./server.ts";
 export {
+  createRestartTrigger,
+  RESTART_DRAIN_DEADLINE_MS,
+  type RestartTrigger,
+  type RestartTriggerHooks,
+} from "./restart.ts";
+export {
   escapeHtml,
   filterCatalogFamilies,
   renderSettingsPage,
+  saveFailureFeedback,
+  serverFieldErrorPlacements,
   type PageModelCatalog,
   type PageModelFamily,
   type PageModelVariant,
+  type SaveFailureView,
 } from "./page.ts";
 export {
   createDeploymentDevinModelResolver,

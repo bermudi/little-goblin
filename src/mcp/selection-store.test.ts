@@ -98,6 +98,190 @@ describe("validateMcpSection", () => {
   });
 });
 
+// Issue #66 unit 3: MCP section surfaced and editable through
+// McpSelectionStore. New symbols load dynamically so this verifier commit
+// typechecks before the implementation lands (mirrors server.test.ts).
+interface McpLimitsPatch {
+  defaultTimeoutMs?: number;
+  maxResultChars?: number;
+}
+interface SelectionStoreModule {
+  setMcpServerEnabled(
+    goblinHome: string,
+    server: string,
+    enabled: boolean,
+    options?: { expectedRevision?: string },
+  ): { config: unknown; path: string; revision: string };
+  setMcpLimits(
+    goblinHome: string,
+    limits: McpLimitsPatch,
+    options?: { expectedRevision?: string },
+  ): { config: unknown; path: string; revision: string };
+  validateMcpLimits(limits: unknown): McpLimitsPatch;
+  projectMcpSelection(config: unknown): {
+    enabled: string[] | null;
+    disabledServers: string[];
+    defaultTimeoutMs: number;
+    maxResultChars: number;
+    configPath: { present: boolean };
+  };
+}
+async function loadStore(): Promise<SelectionStoreModule> {
+  const loaded: unknown = await import("./selection-store.ts");
+  return loaded as SelectionStoreModule;
+}
+
+function readRaw(home: string): Record<string, unknown> {
+  return JSON5.parse(readFileSync(join(home, "goblin.json5"), "utf-8")) as Record<string, unknown>;
+}
+
+describe("MCP revision CAS (issue #66 unit 3)", () => {
+  it("setMcpServerEnabled participates in the shared revision CAS", async () => {
+    const { setMcpServerEnabled } = await loadStore();
+    const home = makeHome('{ botToken: "x", mcp: { disabledServers: ["a"] } }\n');
+    try {
+      const target = join(home, "goblin.json5");
+      const first = setMcpServerEnabled(home, "b", false);
+      expect(first.revision).toMatch(/^[0-9a-f]{64}$/);
+      const beforeText = readFileSync(target, "utf-8");
+      expect(() => setMcpServerEnabled(home, "c", false, { expectedRevision: "0".repeat(64) })).toThrow(
+        /stale revision/,
+      );
+      expect(readFileSync(target, "utf-8")).toBe(beforeText);
+      const fresh = setMcpServerEnabled(home, "c", false, { expectedRevision: first.revision });
+      expect(fresh.revision).not.toBe(first.revision);
+      const written = readRaw(home) as { mcp: { disabledServers: string[] } };
+      expect(written.mcp.disabledServers).toEqual(["a", "b", "c"]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("setMcpLimits participates in the shared revision CAS and writes only provided keys", async () => {
+    const { setMcpLimits } = await loadStore();
+    const home = makeHome('{ botToken: "x", mcp: { enabled: ["grep"], configPath: "mc.json" } }\n');
+    try {
+      const target = join(home, "goblin.json5");
+      const { revision } = setMcpLimits(home, { defaultTimeoutMs: 45000 });
+      expect(revision).toMatch(/^[0-9a-f]{64}$/);
+      const written = readRaw(home) as { mcp: Record<string, unknown>; botToken: unknown };
+      expect(written.mcp.defaultTimeoutMs).toBe(45000);
+      // Only the patched keys change; allow-list, configPath, and unrelated
+      // top-level keys survive, and schema defaults are not materialized.
+      expect(written.mcp.enabled).toEqual(["grep"]);
+      expect(written.mcp.configPath).toBe("mc.json");
+      expect(written.botToken).toBe("x");
+      expect(written.mcp.maxResultChars).toBeUndefined();
+
+      const beforeText = readFileSync(target, "utf-8");
+      expect(() => setMcpLimits(home, { maxResultChars: 2000 }, { expectedRevision: "f".repeat(64) })).toThrow(
+        /stale revision/,
+      );
+      expect(readFileSync(target, "utf-8")).toBe(beforeText);
+      const fresh = setMcpLimits(home, { maxResultChars: 2000 }, { expectedRevision: revision });
+      expect(fresh.revision).not.toBe(revision);
+      expect((readRaw(home) as { mcp: { maxResultChars?: number } }).mcp.maxResultChars).toBe(2000);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("setMcpLimits rejects invalid values with an actionable error before any filesystem effect", async () => {
+    const { setMcpLimits } = await loadStore();
+    const home = makeHome('{ mcp: { defaultTimeoutMs: 60000 } }\n');
+    try {
+      const target = join(home, "goblin.json5");
+      const beforeText = readFileSync(target, "utf-8");
+      const badPatches: unknown[] = [
+        { defaultTimeoutMs: 1 },
+        { defaultTimeoutMs: 1_800_001 },
+        { maxResultChars: 999 },
+        { defaultTimeoutMs: 12.5 },
+        { maxResultChars: "fast" },
+        { nope: 1 },
+      ];
+      for (const patch of badPatches) {
+        let caught: unknown;
+        try {
+          setMcpLimits(home, patch as McpLimitsPatch);
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeInstanceOf(Error);
+        const err = caught as Error & { reason?: string };
+        expect(err.message).toMatch(/mcp limits validation failed|Unknown MCP limit field/);
+        expect(err.reason).toBe("invalid-limits");
+      }
+      expect(readFileSync(target, "utf-8")).toBe(beforeText);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("setMcpLimits refuses to mutate a section that already fails validation", async () => {
+    const { setMcpLimits } = await loadStore();
+    const home = makeHome("{ mcp: { defaultTimeoutMs: 1 } }\n");
+    try {
+      const target = join(home, "goblin.json5");
+      const beforeText = readFileSync(target, "utf-8");
+      expect(() => setMcpLimits(home, { defaultTimeoutMs: 45000 })).toThrow(/mcp config validation failed/);
+      expect(readFileSync(target, "utf-8")).toBe(beforeText);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("validateMcpLimits (issue #66 unit 3)", () => {
+  it("returns only the provided keys", async () => {
+    const { validateMcpLimits } = await loadStore();
+    expect(validateMcpLimits({ defaultTimeoutMs: 30000 })).toEqual({ defaultTimeoutMs: 30000 });
+    expect(validateMcpLimits({ maxResultChars: 4000, defaultTimeoutMs: 30000 })).toEqual({
+      defaultTimeoutMs: 30000,
+      maxResultChars: 4000,
+    });
+    expect(validateMcpLimits({})).toEqual({});
+  });
+
+  it("rejects non-object patches", async () => {
+    const { validateMcpLimits } = await loadStore();
+    for (const bad of ["x", 5, null, [1]]) {
+      expect(() => validateMcpLimits(bad)).toThrow(/MCP limits patch must be an object/);
+    }
+  });
+});
+
+describe("projectMcpSelection (issue #66 unit 3)", () => {
+  it("projects an absent section as schema defaults with no allow-list", async () => {
+    const { projectMcpSelection } = await loadStore();
+    expect(projectMcpSelection(undefined)).toEqual({
+      enabled: null,
+      disabledServers: [],
+      defaultTimeoutMs: 120000,
+      maxResultChars: 16000,
+      configPath: { present: false },
+    });
+  });
+
+  it("projects lists, limits, and configPath presence without the path value", async () => {
+    const { projectMcpSelection } = await loadStore();
+    const config = validateMcpSection({
+      enabled: ["grep"],
+      disabledServers: ["tavily"],
+      configPath: "/home/daniel/mcporter.json",
+      defaultTimeoutMs: 30000,
+    });
+    expect(projectMcpSelection(config)).toEqual({
+      enabled: ["grep"],
+      disabledServers: ["tavily"],
+      defaultTimeoutMs: 30000,
+      maxResultChars: 16000,
+      configPath: { present: true },
+    });
+    expect(JSON.stringify(projectMcpSelection(config))).not.toContain("mcporter");
+  });
+});
+
 describe("formatMcpSelection", () => {
   it("describes the unconfigured-deny state as all servers", () => {
     expect(formatMcpSelection(validateMcpSection({})) ).toBe("all servers in the gateway config");

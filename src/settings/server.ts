@@ -6,9 +6,23 @@
  * discovery child and is cancelled by disconnect, timeout, or server close.
  * Authority: Telegram initData signature via `botToken` plus `allowedUserIds`
  * for identity, `allowedOrigins` for writes; durable state via the sole
- * Settings store (`readDeploymentSettings` / `saveDeploymentModel` in
- * `store.ts`, coordinated through `goblin-config-file.ts`). No second durable
- * copy, no secret/config dump routes, no auth material in logs.
+ * Settings store (`readDeploymentConfig` / `saveConfigSection` in `store.ts`,
+ * coordinated through `goblin-config-file.ts`), with the `mcp` section routed
+ * exclusively through McpSelectionStore's mutations (decision 0042: the
+ * Settings path never writes `mcp` keys directly). Every PUT must carry the
+ * `expectedRevision` observed by the client, so a missing CAS field is a
+ * 400 field error rather than a CAS-less write. Responses carry `revision`
+ * plus a startup-captured `bootRevision` (pending-restart derivation), and an
+ * `allowedUsers` patch that would remove the verified requesting operator is
+ * rejected before any write (self-lockout guard). `POST /api/restart`
+ * re-validates the on-disk config with the store's boot-equivalent pre-commit
+ * rule (`validateBootConfig`, src/config.ts — the exact check a boot applies;
+ * boot-loop guard), answers 200 before shutdown begins, enters the closing
+ * state, and
+ * delegates the process drain/exit to the composition root via the injected
+ * `requestRestart` trigger — this module never terminates the process.
+ * No second durable copy, no secret values in any response or log line, no
+ * auth material in logs.
  * Persistence: `$GOBLIN_HOME/goblin.json5` through the Settings store only.
  * Network: binds 127.0.0.1 only (never 0.0.0.0); ephemeral port 0 for tests,
  * deployment-owned stable `settings.port` (default 3423) in production so
@@ -20,7 +34,13 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { discoverDevinCatalog, type DevinModelCatalog } from "./devin-catalog.ts";
 import { renderSettingsPage } from "./page.ts";
-import { readDeploymentSettings, saveDeploymentModel, SettingsStoreError } from "./store.ts";
+import { McpSelectionStoreError, setMcpLimits, setMcpServerEnabled } from "../mcp/selection-store.ts";
+import {
+  readDeploymentConfig,
+  saveConfigSection,
+  SettingsStoreError,
+  type SettingsStoreReason,
+} from "./store.ts";
 import { log } from "../log.ts";
 
 const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
@@ -44,6 +64,14 @@ export interface SettingsServerOptions {
   requestTimeoutMs?: number;
   authMaxAgeSec?: number;
   discover?: (signal: AbortSignal) => Promise<DevinModelCatalog>;
+  /**
+   * Called at most once after `POST /api/restart` has been validated and its
+   * 200 response dispatched. The server owns none of the process shutdown:
+   * the composition root wires this to its existing shutdown path (bounded
+   * drain, single exit — see `restart.ts`). Omitting it makes restart refuse
+   * with 503 `restart-unavailable` and keep serving.
+   */
+  requestRestart?: () => void;
 }
 
 export interface SettingsServerHandle {
@@ -170,19 +198,111 @@ function toSafeDiscoveryReason(error: unknown): string {
   return "process-failed";
 }
 
-function toSafeStoreResponse(error: unknown): { status: number; code: string } {
+/**
+ * HTTP mapping for every store failure reason. Store messages are crafted
+ * to name fields without echoing values, so they are safe as client-facing
+ * field errors; log lines carry only the short code.
+ */
+const STORE_ERROR_RESPONSES: Record<SettingsStoreReason, { status: number; code: string }> = {
+  "unknown-section": { status: 404, code: "unknown-section" },
+  "unknown-field": { status: 400, code: "unknown-field" },
+  "secret-field": { status: 400, code: "secret-field" },
+  "invalid-patch": { status: 400, code: "invalid-patch" },
+  "invalid-config": { status: 400, code: "invalid-config" },
+  "stale-revision": { status: 409, code: "conflict" },
+  conflict: { status: 409, code: "conflict" },
+  "missing-config": { status: 404, code: "missing-config" },
+};
+
+function toSafeStoreResponse(error: unknown): { status: number; code: string; message?: string } {
+  if (error instanceof McpSelectionStoreError) {
+    // Invalid on-disk mcp section or out-of-range limits: actionable 400.
+    return { status: 400, code: "invalid-config", message: error.message };
+  }
   if (error instanceof SettingsStoreError) {
-    if (error.reason === "invalid-selection") return { status: 400, code: "invalid-selection" };
-    if (error.reason === "stale-revision" || error.reason === "conflict") return { status: 409, code: "conflict" };
-    return { status: 500, code: "unavailable" };
+    return { ...STORE_ERROR_RESPONSES[error.reason], message: error.message };
   }
   if (error instanceof Error) {
     if (/stale revision|changed during update|Config is locked/.test(error.message)) {
       return { status: 409, code: "conflict" };
     }
-    if (/Config file not found/.test(error.message)) return { status: 500, code: "unavailable" };
+    if (/Config file not found/.test(error.message)) return { status: 404, code: "missing-config" };
   }
   return { status: 500, code: "unavailable" };
+}
+
+/**
+ * Self-lockout guard: an `allowedUsers` patch that drops the verified
+ * requesting operator would lock them out of Settings on their next load.
+ * Only `general` carries `allowedUsers`; non-array values are left to the
+ * store's schema validation.
+ */
+function patchRemovesOperator(section: string, patch: Record<string, unknown>, operatorId: number): boolean {
+  if (section !== "general") return false;
+  const allowedUsers = patch.allowedUsers;
+  return Array.isArray(allowedUsers) && !allowedUsers.includes(operatorId);
+}
+
+type McpPatchMutation =
+  | { kind: "toggle"; server: string; enabled: boolean }
+  | { kind: "limits"; limits: { defaultTimeoutMs?: number; maxResultChars?: number } };
+
+/**
+ * Validate an mcp section patch. Decision 0042 routes every mcp mutation
+ * through McpSelectionStore, so patch shape is owned here: either one
+ * allow/deny toggle (`server` + `enabled`) or a limits edit
+ * (`defaultTimeoutMs` / `maxResultChars`). Mixing the two is rejected — each
+ * MCP write is one atomic revision-CAS mutation through the store, never a
+ * partial multi-write. Value ranges are the store's job (schema authority).
+ * Returns a mutation, or an actionable `{error, message}` response payload.
+ */
+function parseMcpPatch(patch: Record<string, unknown>): McpPatchMutation | { error: string; message: string } {
+  const allowed = ["server", "enabled", "defaultTimeoutMs", "maxResultChars"];
+  for (const key of Object.keys(patch)) {
+    if (!allowed.includes(key)) {
+      return {
+        error: "unknown-field",
+        message: `Unknown field "${key}" for section "mcp"; mcp patches accept one toggle (server + enabled) or limits (defaultTimeoutMs, maxResultChars).`,
+      };
+    }
+  }
+  const hasToggle = patch.server !== undefined || patch.enabled !== undefined;
+  const hasLimits = patch.defaultTimeoutMs !== undefined || patch.maxResultChars !== undefined;
+  if (hasToggle && hasLimits) {
+    return {
+      error: "invalid-patch",
+      message:
+        'A "mcp" patch accepts either one server toggle (server + enabled) or a limits edit (defaultTimeoutMs/maxResultChars), not both; send them as separate writes so each is one atomic revision-CAS mutation.',
+    };
+  }
+  if (hasToggle) {
+    const server = patch.server;
+    const enabled = patch.enabled;
+    if (typeof server !== "string" || server.length === 0 || server.trim() !== server) {
+      return { error: "invalid-patch", message: '"mcp" toggle patch field "server" must be a non-empty, unpadded server name.' };
+    }
+    if (typeof enabled !== "boolean") {
+      return { error: "invalid-patch", message: '"mcp" toggle patch field "enabled" must be a boolean.' };
+    }
+    return { kind: "toggle", server, enabled };
+  }
+  if (hasLimits) {
+    const limits: { defaultTimeoutMs?: number; maxResultChars?: number } = {};
+    for (const key of ["defaultTimeoutMs", "maxResultChars"] as const) {
+      const value = patch[key];
+      if (value === undefined) continue;
+      if (typeof value !== "number" || !Number.isInteger(value)) {
+        return { error: "invalid-patch", message: `"mcp" limits patch field "${key}" must be an integer.` };
+      }
+      limits[key] = value;
+    }
+    return { kind: "limits", limits };
+  }
+  return {
+    error: "invalid-patch",
+    message:
+      '"mcp" patch is empty; it must contain one server toggle (server + enabled) or a limits edit (defaultTimeoutMs/maxResultChars).',
+  };
 }
 
 /** Start the optional loopback Settings API. Call `close()` to reject new work and settle accepted requests. */
@@ -191,16 +311,23 @@ export function startSettingsServer(options: SettingsServerOptions): SettingsSer
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const authMaxAgeSec = options.authMaxAgeSec ?? DEFAULT_AUTH_MAX_AGE_SEC;
   const discover = options.discover ?? ((signal: AbortSignal) => discoverDevinCatalog({ signal }));
+  const requestRestart = options.requestRestart;
   const port = options.port ?? 0;
+  // Content revision captured once at server start so clients can derive a
+  // pending-restart flag (`revision !== bootRevision` after a config edit).
+  // Fails loud when the deployment config is missing or invalid: the process
+  // is already running on a loaded config, so this means the file vanished or
+  // was corrupted mid-boot.
+  const bootRevision = readDeploymentConfig(options.goblinHome).revision;
 
   let closing = false;
   let closed = false;
   const inFlight = new Set<Promise<void>>();
   const requestControllers = new Set<AbortController>();
 
-  const fail = (route: string, status: number, code: string): Response => {
+  const fail = (route: string, status: number, code: string, message?: string): Response => {
     log.warn("Settings API request failed", { route, status, error: code });
-    return jsonResponse(status, { error: code });
+    return jsonResponse(status, message === undefined ? { error: code } : { error: code, message });
   };
 
   const server = Bun.serve({
@@ -242,33 +369,19 @@ export function startSettingsServer(options: SettingsServerOptions): SettingsSer
 
       const task = (async (): Promise<Response> => {
         try {
-          if (req.method === "GET" && route === "/api/settings") {
+          if (req.method === "GET" && route === "/api/config") {
             try {
-              const settings = readDeploymentSettings(options.goblinHome);
-              return jsonResponse(200, {
-                devinDefaultModel: settings.devinDefaultModel,
-                revision: settings.revision,
-              });
+              const config = readDeploymentConfig(options.goblinHome);
+              return jsonResponse(200, { ...config, bootRevision });
             } catch (error: unknown) {
               const mapped = toSafeStoreResponse(error);
-              return fail(route, mapped.status, mapped.code);
+              return fail(route, mapped.status, mapped.code, mapped.message);
             }
           }
-          if (req.method === "GET" && route === "/api/catalog") {
-            try {
-              const catalog = await discover(requestController.signal);
-              return jsonResponse(200, catalog as unknown as Record<string, unknown>);
-            } catch (error: unknown) {
-              if (requestController.signal.aborted) {
-                const timedOut = (requestController as AbortController & { timedOut?: boolean }).timedOut === true;
-                return fail(route, timedOut ? 504 : 499, timedOut ? "timeout" : "cancelled");
-              }
-              const reason = toSafeDiscoveryReason(error);
-              return fail(route, safeDiscoveryStatus(reason), reason);
-            }
-          }
-          if (req.method === "POST" && route === "/api/settings") {
-            // Writes also enforce the configured origin server-side.
+          if (req.method === "PUT" && route.startsWith("/api/config/")) {
+            const section = route.slice("/api/config/".length);
+            // Writes enforce the configured origin server-side, same as every
+            // other mutating route.
             const origin = req.headers.get("origin");
             if (origin === null || !options.allowedOrigins.includes(origin)) {
               return fail(route, 403, "forbidden");
@@ -295,20 +408,111 @@ export function startSettingsServer(options: SettingsServerOptions): SettingsSer
             if (typeof body !== "object" || body === null || Array.isArray(body)) {
               return fail(route, 400, "bad-request");
             }
-            const { modelId, expectedRevision } = body as { modelId?: unknown; expectedRevision?: unknown };
-            if (typeof modelId !== "string") return fail(route, 400, "bad-request");
-            if (expectedRevision !== undefined && typeof expectedRevision !== "string") {
+            const { patch, expectedRevision } = body as { patch?: unknown; expectedRevision?: unknown };
+            if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
               return fail(route, 400, "bad-request");
             }
+            // CAS is mandatory: without the caller's observed revision the
+            // write would silently skip stale-write detection, so a missing
+            // expectedRevision is a field error on every PUT.
+            if (typeof expectedRevision !== "string") {
+              return fail(
+                route,
+                400,
+                "bad-request",
+                'Body field "expectedRevision" is required: send the revision string from the latest GET /api/config or save response so concurrent edits are rejected (409) instead of clobbered.',
+              );
+            }
+            const fields = patch as Record<string, unknown>;
+            if (patchRemovesOperator(section, fields, identity)) {
+              return fail(
+                route,
+                400,
+                "operator-lockout",
+                "This change would remove the requesting operator from allowedUsers and lock them out of Settings; the new allowedUsers list must include the verified operator.",
+              );
+            }
+            if (section === "mcp") {
+              // Decision 0042: McpSelectionStore is the sole writer of the
+              // mcp section. The route validates patch shape, then the
+              // mutation (toggle or limits) goes through the store with the
+              // same revision CAS as every other section — never a direct
+              // write to goblin.json5's mcp keys from this path.
+              const mutation = parseMcpPatch(fields);
+              if ("error" in mutation) {
+                return fail(route, 400, mutation.error, mutation.message);
+              }
+              try {
+                const result =
+                  mutation.kind === "toggle"
+                    ? setMcpServerEnabled(options.goblinHome, mutation.server, mutation.enabled, { expectedRevision })
+                    : setMcpLimits(options.goblinHome, mutation.limits, { expectedRevision });
+                return jsonResponse(200, { revision: result.revision });
+              } catch (error: unknown) {
+                const mapped = toSafeStoreResponse(error);
+                return fail(route, mapped.status, mapped.code, mapped.message);
+              }
+            }
             try {
-              const saved = saveDeploymentModel(options.goblinHome, modelId, { expectedRevision });
-              return jsonResponse(200, {
-                devinDefaultModel: saved.devinDefaultModel,
-                revision: saved.revision,
-              });
+              // The store owns the section whitelist, secret-field rejection,
+              // schema validation, CAS, and the durable write.
+              const saved = saveConfigSection(options.goblinHome, section, patch, { expectedRevision });
+              return jsonResponse(200, { revision: saved.revision });
             } catch (error: unknown) {
               const mapped = toSafeStoreResponse(error);
-              return fail(route, mapped.status, mapped.code);
+              return fail(route, mapped.status, mapped.code, mapped.message);
+            }
+          }
+          if (req.method === "POST" && route === "/api/restart") {
+            // Mutating route: same-origin enforcement as every write.
+            const origin = req.headers.get("origin");
+            if (origin === null || !options.allowedOrigins.includes(origin)) {
+              return fail(route, 403, "forbidden");
+            }
+            if (requestRestart === undefined) {
+              return fail(
+                route,
+                503,
+                "restart-unavailable",
+                "Restart is not wired into this deployment; the process composition must provide a restart trigger.",
+              );
+            }
+            // Boot-loop guard: re-validate the on-disk config with the
+            // store's boot-equivalent pre-commit rule (`validateBootConfig`:
+            // resolved strings plus the full config schema — the exact
+            // check a boot applies). A config that would not boot —
+            // including raw-valid env-style literals that resolve to
+            // nothing — must never be restarted into (systemd
+            // Restart=on-success would crash-loop); refuse with an
+            // actionable error and keep serving.
+            try {
+              readDeploymentConfig(options.goblinHome);
+            } catch (error: unknown) {
+              const mapped = toSafeStoreResponse(error);
+              return fail(route, mapped.status, mapped.code, mapped.message);
+            }
+            // Enter the closing state before dispatching so every request
+            // that races this one — including a second restart — gets the
+            // existing 503 shutting-down answer (single shutdown latch).
+            closing = true;
+            log.info("restart requested via Settings API");
+            // 200 first, shutdown second: the trigger fires only after this
+            // response is dispatched, so the operator's client sees the
+            // acknowledgement before the drain begins.
+            setTimeout(() => requestRestart(), 0);
+            return jsonResponse(200, { status: "restarting" });
+          }
+          if (req.method === "GET" && route === "/api/catalog") {
+            try {
+              const catalog = await discover(requestController.signal);
+              return jsonResponse(200, catalog as unknown as Record<string, unknown>);
+            } catch (error: unknown) {
+              if (requestController.signal.aborted) {
+                const timedOut = (requestController as AbortController & { timedOut?: boolean }).timedOut === true;
+                return fail(route, timedOut ? 504 : 499, timedOut ? "timeout" : "cancelled");
+              }
+              const reason = toSafeDiscoveryReason(error);
+              return fail(route, safeDiscoveryStatus(reason), reason);
             }
           }
           return fail(route, 404, "not-found");

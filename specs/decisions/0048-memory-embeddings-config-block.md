@@ -7,13 +7,13 @@ spine: false
 
 # 0048: Memory embeddings configured via goblin.json5
 
+> Supersedes the configuration channel of `0021-memory-openai-embedding-direct`
+> (its env-var fallbacks remain for backward compatibility); the OpenAI-compatible
+> client shape it ruled on is unchanged.
+
 ## Status
 
 accepted
-
-Supersedes the configuration channel of `0021-memory-openai-embedding-direct` (its env-var
-fallbacks remain for backward compatibility); the OpenAI-compatible client shape it ruled on
-is unchanged.
 
 ## Context
 

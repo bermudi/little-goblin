@@ -26,12 +26,24 @@ interface PageCatalog {
   families: PageFamily[];
 }
 
+interface PageSaveFailureView {
+  status: { kind: string; text: string } | null;
+  fieldErrors: Record<string, string>;
+  reload: boolean;
+}
+
 interface PageModule {
   renderSettingsPage(): string;
   escapeHtml(value: string): string;
   filterCatalogFamilies(catalog: PageCatalog, query: string): PageCatalog;
   validateSectionPatch(section: string, patch: Record<string, unknown>): Record<string, string>;
   nextBackoffMs(attempt: number): number;
+  serverFieldErrorPlacements(section: string, message: string): Record<string, string>;
+  saveFailureFeedback(
+    section: string,
+    status: number,
+    body: { error?: unknown; message?: unknown } | null,
+  ): PageSaveFailureView;
 }
 
 interface ServerOptions {
@@ -236,6 +248,11 @@ describe("Search and save inside Telegram", () => {
       expect(page).toContain("status-saved");
       expect(page).toContain("expired");
       expect(page).toContain("conflict");
+      // Every section that saves — including the Devin catalog card — has a
+      // real status/error slot the failure helpers target, so failed saves
+      // render instead of disappearing.
+      expect(page).toContain('data-save-status="devin"');
+      expect(page).toContain('data-error-for="devin.defaultModel"');
     } finally {
       await handle.close();
       rmSync(home, { recursive: true, force: true });
@@ -500,11 +517,135 @@ describe("Full settings Mini App UI (issue #66 unit 5)", () => {
     }
   });
 
+  it("failed devin saves render distinct visible error states", async () => {
+    const { renderSettingsPage, saveFailureFeedback } = await loadPage();
+    const page = renderSettingsPage();
+    // The devin card carries the status/error slots the save helpers target;
+    // without them every failure branch renders nothing.
+    expect(page).toContain('data-save-status="devin"');
+    expect(page).toContain('data-error-for="devin.defaultModel"');
+
+    // Distinct user-visible states for each failure class.
+    const expired = saveFailureFeedback("devin", 401, { error: "expired" });
+    expect(expired.status?.kind).toBe("error");
+    expect(expired.status?.text).toContain("Telegram session expired");
+    expect(expired.reload).toBe(false);
+    expect(expired.fieldErrors).toEqual({});
+
+    const conflict = saveFailureFeedback("devin", 409, { error: "conflict" });
+    expect(conflict.status?.text).toContain("Settings changed elsewhere (conflict)");
+    expect(conflict.reload).toBe(true);
+
+    const invalid = saveFailureFeedback("devin", 400, {
+      error: "invalid-config",
+      message: "devin.defaultModel: String must contain at least 1 character(s)",
+    });
+    expect(invalid.fieldErrors).toEqual({ defaultModel: "String must contain at least 1 character(s)" });
+    expect(invalid.status?.text).toBe("Fix the highlighted fields.");
+
+    const unreachable = saveFailureFeedback("devin", 502, { error: "unavailable" });
+    expect(unreachable.status?.text).toContain("Save failed (unavailable)");
+
+    // Simulated failing PUT against the real API: a stale devin save gets a
+    // 409 whose body renders the visible conflict text in the devin slot.
+    const home = makeRichHome();
+    const handle = await startServer({
+      goblinHome: home,
+      botToken: BOT_TOKEN,
+      allowedUserIds: [OPERATOR_ID],
+      allowedOrigins: [ORIGIN],
+      discover: async () => testCatalog(),
+    });
+    try {
+      const auth = validInitData();
+      const before = await getConfig(handle, auth);
+      const first = await putSection(handle, auth, "devin", {
+        patch: { defaultModel: "atlas-exact-a" },
+        expectedRevision: before.revision,
+      });
+      expect(first.status).toBe(200);
+      const stale = await putSection(handle, auth, "devin", {
+        patch: { defaultModel: "boreal-exact" },
+        expectedRevision: before.revision,
+      });
+      expect(stale.status).toBe(409);
+      const view = saveFailureFeedback("devin", stale.status, (await stale.json()) as { error?: unknown });
+      expect(view.status?.kind).toBe("error");
+      expect(view.status?.text).toContain("conflict");
+      expect(view.reload).toBe(true);
+    } finally {
+      await handle.close();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("server field errors land inline for every section, not just general", async () => {
+    const { renderSettingsPage, serverFieldErrorPlacements } = await loadPage();
+    const page = renderSettingsPage();
+    // Embedded-section server paths carry the file key ("settings.port");
+    // slots are section-scoped, so the prefix must be stripped.
+    expect(serverFieldErrorPlacements("general", "logLevel: bogus")).toEqual({ logLevel: "bogus" });
+    expect(serverFieldErrorPlacements("settings", "settings.port: must be an integer between 1 and 65535")).toEqual({
+      port: "must be an integer between 1 and 65535",
+    });
+    expect(
+      serverFieldErrorPlacements("embeddings", "embeddings.cooldownSeconds: must be a non-negative number"),
+    ).toEqual({ cooldownSeconds: "must be a non-negative number" });
+    expect(serverFieldErrorPlacements("devin", "devin.defaultModel: Required")).toEqual({ defaultModel: "Required" });
+    expect(serverFieldErrorPlacements("mcp", "mcp.defaultTimeoutMs: too small")).toEqual({
+      defaultTimeoutMs: "too small",
+    });
+    // Messages without placeable path entries yield no placements, so the
+    // caller falls back to the full section-level message.
+    expect(serverFieldErrorPlacements("settings", "Unknown field \"nope\" for section \"settings\".")).toEqual({});
+    expect(serverFieldErrorPlacements("settings", "")).toEqual({});
+    // Every slot the placements can target exists in the page.
+    for (const slot of [
+      "settings.port",
+      "embeddings.cooldownSeconds",
+      "devin.defaultModel",
+      "mcp.defaultTimeoutMs",
+      "general.logLevel",
+    ]) {
+      expect(page).toContain(`data-error-for="${slot}"`);
+    }
+
+    // End to end: a bad settings PUT returns a file-keyed message that
+    // placements resolve onto the section's inline port slot.
+    const home = makeRichHome();
+    const handle = await startServer({
+      goblinHome: home,
+      botToken: BOT_TOKEN,
+      allowedUserIds: [OPERATOR_ID],
+      allowedOrigins: [ORIGIN],
+      discover: async () => testCatalog(),
+    });
+    try {
+      const auth = validInitData();
+      const before = await getConfig(handle, auth);
+      const bad = await putSection(handle, auth, "settings", {
+        patch: { port: 999_999 },
+        expectedRevision: before.revision,
+      });
+      expect(bad.status).toBe(400);
+      const body = (await bad.json()) as { error: string; message?: string };
+      expect(body.error).toBe("invalid-config");
+      const placed = serverFieldErrorPlacements("settings", body.message ?? "");
+      expect(placed.port).toBeDefined();
+    } finally {
+      await handle.close();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("pending-restart badge reflects revision vs bootRevision", async () => {
     const { renderSettingsPage } = await loadPage();
     const page = renderSettingsPage();
     expect(page).toContain('id="pending-restart"');
-    expect(page).toContain("Restart required");
+    // The badge states that Devin model changes apply without restart even
+    // though a devin-only save diverges the revisions (decision 0049).
+    expect(page).toContain("Restart pending");
+    expect(page).toContain("without restart");
     // The badge is derived from the revision pair, never from a timer.
     expect(page).toContain("bootRevision");
 

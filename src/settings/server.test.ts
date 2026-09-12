@@ -297,11 +297,14 @@ describe("Operator-authenticated Settings API", () => {
       // The mcp section is owned by McpSelectionStore (decision 0042): it is
       // a known section whose patches go through the store, so an empty mcp
       // patch is rejected as invalid-patch; truly unknown sections → 404.
-      const mcp = await putSection(handle, auth, "mcp", { patch: {} });
+      const mcp = await putSection(handle, auth, "mcp", { patch: {}, expectedRevision: before.revision });
       expect(mcp.status).toBe(400);
       const mcpBody = (await mcp.json()) as { error: string };
       expect(mcpBody.error).toBe("invalid-patch");
-      const unknownSection = await putSection(handle, auth, "unknown-thing", { patch: {} });
+      const unknownSection = await putSection(handle, auth, "unknown-thing", {
+        patch: {},
+        expectedRevision: before.revision,
+      });
       expect(unknownSection.status).toBe(404);
 
       expect(readFileSync(join(home, "goblin.json5"), "utf-8")).toBe(beforeRaw);
@@ -419,8 +422,12 @@ describe("Operator-authenticated Settings API", () => {
         { patch: { nope: 1 } }, // unknown field
         { patch: { server: "a", enabled: true, defaultTimeoutMs: 30000 } }, // mixed groups
       ];
+      const current = (await (await getConfig(handle, auth)).json()) as ConfigBody;
       for (const body of badPatches) {
-        const res = await putSection(handle, auth, "mcp", body as Record<string, unknown>);
+        const res = await putSection(handle, auth, "mcp", {
+          ...(body as Record<string, unknown>),
+          expectedRevision: current.revision,
+        });
         expect(res.status).toBe(400);
         const resBody = (await res.json()) as { error: string; message?: string };
         expect(["invalid-patch", "unknown-field", "invalid-config"]).toContain(resBody.error);
@@ -499,6 +506,47 @@ describe("Operator-authenticated Settings API", () => {
       const raw = readFileSync(join(home, "goblin.json5"), "utf-8");
       expect(raw).toContain("777");
       expect(raw).toContain(String(OPERATOR_ID));
+    } finally {
+      await handle.close();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("PUT without expectedRevision is rejected 400 with a field error on every section", async () => {
+    const home = makeHome();
+    const handle = await startServer({
+      goblinHome: home,
+      botToken: BOT_TOKEN,
+      allowedUserIds: [OPERATOR_ID],
+      allowedOrigins: [ORIGIN],
+    });
+    try {
+      const auth = validInitData();
+      const beforeRaw = readFileSync(join(home, "goblin.json5"), "utf-8");
+      // CAS is mandatory: a missing expectedRevision must be a field error,
+      // never a silently CAS-less write, for every section including mcp.
+      const cases: [string, Record<string, unknown>][] = [
+        ["general", { patch: { model: "no-cas-model" } }],
+        ["settings", { patch: { port: 5050 } }],
+        ["mcp", { patch: { server: "tavily", enabled: false } }],
+        ["devin", { patch: { defaultModel: "no-cas-model" } }],
+      ];
+      for (const [section, body] of cases) {
+        const res = await putSection(handle, auth, section, body);
+        expect(res.status).toBe(400);
+        const resBody = (await res.json()) as { error: string; message?: string };
+        expect(resBody.error).toBe("bad-request");
+        expect(resBody.message).toContain("expectedRevision");
+      }
+      // Nothing was written.
+      expect(readFileSync(join(home, "goblin.json5"), "utf-8")).toBe(beforeRaw);
+
+      // A present revision keeps the CAS real: stale still gets 409.
+      const stale = await putSection(handle, auth, "general", {
+        patch: { model: "late-model" },
+        expectedRevision: "0".repeat(64),
+      });
+      expect(stale.status).toBe(409);
     } finally {
       await handle.close();
       rmSync(home, { recursive: true, force: true });
@@ -587,7 +635,7 @@ describe("Operator-authenticated Settings API", () => {
       const readBody = (await read.json()) as { error: string; message?: string };
       expect(readBody.error).toBe("missing-config");
       expect(readBody.message).toContain("Config file not found");
-      const write = await putSection(handle, auth, "general", { patch: { model: "n" } });
+      const write = await putSection(handle, auth, "general", { patch: { model: "n" }, expectedRevision: "0".repeat(64) });
       expect(write.status).toBe(404);
       const writeBody = (await write.json()) as { error: string };
       expect(writeBody.error).toBe("missing-config");

@@ -286,6 +286,9 @@ describe("POST /api/restart", () => {
       allowedOrigins: [ORIGIN],
       requestRestart: rec.hook,
     });
+    const envNames = ["GPT4TURBO", "ALICE"];
+    const savedEnv = envNames.map((name) => [name, process.env[name]] as const);
+    for (const name of envNames) delete process.env[name];
     try {
       const auth = validInitData();
       // Boot-loop guard: an externally corrupted config (out-of-range port)
@@ -305,6 +308,28 @@ describe("POST /api/restart", () => {
       const invalidBody = (await invalid.json()) as { error: string; message?: string };
       expect(invalidBody.error).toBe("invalid-config");
       expect(invalidBody.message).toContain("port");
+      expect(rec.calls).toBe(0);
+
+      // Raw-valid but unbootable configs are refused too: env-style literals
+      // resolve to undefined at boot (the review probe {model:"GPT4TURBO",
+      // favorites:["ALICE"]} parses raw but never boots), so restarting into
+      // one would crash-loop the service.
+      writeFileSync(
+        join(home, "goblin.json5"),
+        JSON5.stringify({
+          botToken: "x",
+          allowedUsers: [OPERATOR_ID],
+          model: "GPT4TURBO",
+          favorites: ["ALICE"],
+        }) + "\n",
+        "utf-8",
+      );
+      const unbootable = await postRestart(handle, auth);
+      expect(unbootable.status).toBe(400);
+      const unbootableBody = (await unbootable.json()) as { error: string; message?: string };
+      expect(unbootableBody.error).toBe("invalid-config");
+      expect(unbootableBody.message).toContain("model");
+      expect(unbootableBody.message).toContain("favorites");
       expect(rec.calls).toBe(0);
 
       // The server keeps serving while the config stays invalid: reads get
@@ -332,6 +357,10 @@ describe("POST /api/restart", () => {
       await waitFor(() => rec.calls === 1);
       expect(rec.calls).toBe(1);
     } finally {
+      for (const [name, value] of savedEnv) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
       await handle.close().catch(() => {});
       rmSync(home, { recursive: true, force: true });
     }

@@ -536,4 +536,102 @@ describe("Deployment config store", () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  it("saveConfigSection rejects raw-valid env-style literals that would not boot", async () => {
+    const { readDeploymentConfig, saveConfigSection } = await load();
+    const home = makeHome({ botToken: "t", allowedUsers: [1], model: "m" });
+    const envNames = ["GPT4TURBO", "ALICE", "GOBLIN_TEST_UNSET_DEVIN_MODEL"];
+    const savedEnv = envNames.map((name) => [name, process.env[name]] as const);
+    for (const name of envNames) delete process.env[name];
+    try {
+      const beforeText = readFileSync(join(home, "goblin.json5"), "utf-8");
+      const beforeRevision = readDeploymentConfig(home).revision;
+      // Boot resolves env-style string literals to undefined when the name is
+      // unset (src/resolve-value.ts), so these raw-valid patches are unbootable
+      // and must be rejected before any filesystem effect. The first two are
+      // the review probe (raw {model:"GPT4TURBO", favorites:["ALICE"]} parses
+      // but never boots); the third closes the same hole for devin.
+      const cases: [string, Record<string, unknown>][] = [
+        ["general", { model: "GPT4TURBO" }],
+        ["general", { favorites: ["ALICE"] }],
+        ["devin", { defaultModel: "GOBLIN_TEST_UNSET_DEVIN_MODEL" }],
+      ];
+      for (const [section, patch] of cases) {
+        const error = await catchOf(() => saveConfigSection(home, section, patch));
+        expect(error).toBeInstanceOf(Error);
+        expect(errorReason(error)).toBe("invalid-config");
+        expect(errorText(error)).toContain("would not boot");
+      }
+      expect(readFileSync(join(home, "goblin.json5"), "utf-8")).toBe(beforeText);
+      expect(readDeploymentConfig(home).revision).toBe(beforeRevision);
+    } finally {
+      for (const [name, value] of savedEnv) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("guard resolves set env names exactly like boot, in both directions", async () => {
+    const { readDeploymentConfig, saveConfigSection } = await load();
+    const home = makeHome({ botToken: "t", allowedUsers: [1], model: "m" });
+    const name = "GOBLIN_TEST_MODEL_FROM_ENV";
+    const saved = process.env[name];
+    try {
+      // With the name set, boot resolves the literal to the env value, so the
+      // write is bootable and the raw file keeps the literal for boot to
+      // resolve.
+      process.env[name] = "env-resolved-model";
+      const saved1 = saveConfigSection(home, "general", { model: name });
+      expect(typeof saved1.revision).toBe("string");
+      const raw = JSON5.parse(readFileSync(join(home, "goblin.json5"), "utf-8")) as Record<string, unknown>;
+      expect(raw.model).toBe(name);
+      expect(readDeploymentConfig(home).general.model).toBe("env-resolved-model");
+
+      // With the name gone, boot would fail on the required field: reads and
+      // further writes reject as invalid-config (honest boot equivalence).
+      delete process.env[name];
+      const readError = await catchOf(() => readDeploymentConfig(home));
+      expect(errorReason(readError)).toBe("invalid-config");
+      const writeError = await catchOf(() => saveConfigSection(home, "devin", { defaultModel: "x" }));
+      expect(errorReason(writeError)).toBe("invalid-config");
+    } finally {
+      if (saved === undefined) delete process.env[name];
+      else process.env[name] = saved;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("guard matches boot for defaulted fields and never executes command literals", async () => {
+    const { readDeploymentConfig, saveConfigSection } = await load();
+    const name = "GOBLIN_TEST_UNSET_LOG_LEVEL";
+    const saved = process.env[name];
+    delete process.env[name];
+    const home = makeHome({ botToken: "t", allowedUsers: [1], model: "m" });
+    try {
+      // An env-style value on a defaulted field resolves to undefined at
+      // boot, and the schema default fills it — the config still boots, so
+      // the guard must not over-reject it.
+      saveConfigSection(home, "general", { logLevel: name });
+      const config = readDeploymentConfig(home);
+      expect(config.general.logLevel).toBe("info");
+      const raw = JSON5.parse(readFileSync(join(home, "goblin.json5"), "utf-8")) as Record<string, unknown>;
+      expect(raw.logLevel).toBe(name);
+
+      // Documented boundary: `!command` values are never executed outside
+      // boot (config reads and write guards stay side-effect-free), so they
+      // pass through validation as literal strings. Boot itself resolves
+      // them; a failing command on a required field remains a boot-time
+      // rejection the guard cannot predict.
+      saveConfigSection(home, "general", { voiceName: "!pick-a-voice" });
+      const rawAfter = JSON5.parse(readFileSync(join(home, "goblin.json5"), "utf-8")) as Record<string, unknown>;
+      expect(rawAfter.voiceName).toBe("!pick-a-voice");
+      expect(readDeploymentConfig(home).general.voiceName).toBe("!pick-a-voice");
+    } finally {
+      if (saved === undefined) delete process.env[name];
+      else process.env[name] = saved;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });

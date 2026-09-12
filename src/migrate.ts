@@ -116,10 +116,12 @@ const STEP_4_ROOTS = ["state"];
 const STEP_5_ROOTS = ["state"];
 
 /**
- * Step 6 adds the inner-life wake layout (`state/inner-life/wakes/`) and
- * applies the memory SQLite schema migration that creates the effect-receipt
- * table. Existing memory rows and dreaming cursors are untouched (issue #67,
- * decision 0035).
+ * Step 6 adds the inner-life wake layout (`state/inner-life/wakes/`), applies
+ * the memory SQLite schema migration that creates the effect-receipt table,
+ * and converts legacy light-sleep cursor locations (`memory-reflection.json`
+ * files and `dreaming_cursor:<id>` memory_meta rows) into the sidecar files
+ * the private-host adapter reads. Existing memory rows are untouched (issue
+ * #67, decision 0035).
  */
 const STEP_6_ROOTS = ["state"];
 

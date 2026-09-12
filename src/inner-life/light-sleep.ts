@@ -81,10 +81,14 @@ const defaultTranscripts: LightSleepTranscripts = {
  * File-backed light-sleep cursor adapter: the production realization of the
  * host's `ReflectionCursorStore` seam, honoring the retained light-sleep
  * cursor policy. The checkpoint stays the existing
- * `memory-dreaming-cursor.json` sidecar owned by the light-sleep pipeline, so
- * existing cursor values are preserved (never reset to re-extract history)
+ * `memory-dreaming-cursor.json` sidecar owned by the light-sleep pipeline,
  * and the host's wake-completion checkpoints and this adapter's seeding
- * checkpoints land in the same files. Writes are mode-preserving atomic
+ * checkpoints land in the same files. This adapter reads only the sidecar:
+ * preservation of pre-sidecar cursor values (legacy
+ * `state/sessions/<id>/memory-reflection.json` files and `memory_meta`
+ * `dreaming_cursor:<id>` rows) is the offline layout migration's job, which
+ * converts them before the upgraded home first runs — so an upgraded
+ * deployment never re-extracts old history. Writes are mode-preserving atomic
  * replacements; absence (ENOENT) and malformed content read as absent.
  */
 export class FileReflectionCursorStore implements ReflectionCursorStore {

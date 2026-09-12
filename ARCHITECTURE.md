@@ -332,10 +332,12 @@ polling are admitted (a failure fails startup closed); shutdown closes wake
 admission synchronously, cancels active reflection, and settles disposal within
 5 seconds, so late model output can never write memory.
 The operator migration remedy is `bun run migrate`, run with the service
-stopped: the offline versioned migration (state version 6) adds the wake layout
-and effect-receipt storage while preserving memory and cursors, and startup
-refuses older state versions. Startup itself reconciles current-version wake
-state; it never migrates.
+stopped: the offline versioned migration (state version 6) adds the wake
+layout, applies effect-receipt storage, and converts legacy light-sleep
+cursor locations (`memory-reflection.json` files and `dreaming_cursor:<id>`
+memory_meta rows) into the sidecar cursors the host reads, leaving existing
+memory rows untouched; startup refuses older state versions. Startup itself
+reconciles current-version wake state; it never migrates.
 
 Historical note: until this slice landed and was verified, the internal dreaming
 runtime remained CURRENT for light sleep. The frozen `inner-life` proposal is

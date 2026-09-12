@@ -266,6 +266,15 @@ export class ReflectionEngine {
       );
     }
 
+    const external = request.signal;
+    // Shutdown fencing passes host signals that are already aborted before
+    // the reflection starts. A DOM AbortSignal never replays its abort event,
+    // so a pre-start abort must fail fast here — before any model invocation
+    // — instead of relying on listener registration order downstream.
+    if (external?.aborted) {
+      throw new ReflectionError("cancelled", request.wakeId, "cancelled before the model invocation");
+    }
+
     const controller = new AbortController();
     let deadlineHit = false;
     const timer: ReturnType<typeof setTimeout> = setTimeout(() => {
@@ -273,29 +282,27 @@ export class ReflectionEngine {
       controller.abort();
     }, this.deadlineMs);
 
-    const external = request.signal;
     const onExternalAbort = (): void => controller.abort();
     if (external !== undefined) {
-      if (external.aborted) controller.abort();
-      else external.addEventListener("abort", onExternalAbort, { once: true });
+      external.addEventListener("abort", onExternalAbort, { once: true });
     }
 
     const invocation = this.invokeModel(request, controller.signal);
     // Aborting settles the race with the correct failure kind computed at
     // abort time — deadline and external cancellation are distinguishable
     // regardless of which underlying rejection is observed first.
+    const abortFailure = (): ReflectionError =>
+      deadlineHit
+        ? new ReflectionError("deadline", request.wakeId, `invocation exceeded the ${this.deadlineMs}ms deadline`)
+        : new ReflectionError("cancelled", request.wakeId, "cancelled before completion");
     const abortPromise = new Promise<never>((_, reject) => {
-      controller.signal.addEventListener(
-        "abort",
-        () => {
-          reject(
-            deadlineHit
-              ? new ReflectionError("deadline", request.wakeId, `invocation exceeded the ${this.deadlineMs}ms deadline`)
-              : new ReflectionError("cancelled", request.wakeId, "cancelled before completion"),
-          );
-        },
-        { once: true },
-      );
+      // Cancellation settlement is independent of event replay: reject
+      // immediately when the signal aborted before this listener registered.
+      if (controller.signal.aborted) {
+        reject(abortFailure());
+        return;
+      }
+      controller.signal.addEventListener("abort", () => reject(abortFailure()), { once: true });
     });
 
     try {

@@ -137,7 +137,9 @@ afterEach(() => {
 
 function loggedText(): string {
   const calls: unknown[][] = [...info.mock.calls, ...warn.mock.calls, ...errorLog.mock.calls];
-  return calls.map((args) => args.map((part) => String(part)).join(" ")).join("\n");
+  return calls
+    .map((args) => args.map((part) => (typeof part === "string" ? part : JSON.stringify(part))).join(" "))
+    .join("\n");
 }
 
 describe("Restart exit policy (createRestartTrigger)", () => {
@@ -305,9 +307,12 @@ describe("POST /api/restart", () => {
       expect(invalidBody.message).toContain("port");
       expect(rec.calls).toBe(0);
 
-      // The server keeps serving while the config stays invalid.
+      // The server keeps serving while the config stays invalid: reads get
+      // the store's actionable invalid-config response (unit 2 behavior),
+      // not a shutting-down 503 and not a dead listener.
       const read = await getConfig(handle, auth);
-      expect(read.status).toBe(200);
+      expect(read.status).toBe(400);
+      expect(((await read.json()) as { error: string }).error).toBe("invalid-config");
 
       // A missing config file is refused too, with an actionable error.
       unlinkSync(join(home, "goblin.json5"));

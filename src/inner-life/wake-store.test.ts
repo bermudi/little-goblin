@@ -107,7 +107,9 @@ describe("wake store", () => {
     expect(first.record.version).toBe(1);
     expect(first.record.profile).toEqual(PRIVATE_FACTS_PROFILE);
     expect(first.record.source).toEqual({ conversationId: "conversation-a", afterLine: 0, beforeLine: 3 });
-    expect(observedInCallback).toEqual(first.record);
+    expect(observedInCallback).not.toBeNull();
+    const observed = observedInCallback as WakeRecord | null;
+    expect(observed).toEqual(first.record);
 
     // Overlapping trigger for the same window: reuses identity, does not run
     // a second reflection, and leaves exactly one wake file.

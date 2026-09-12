@@ -31,6 +31,12 @@ export {
   type SettingsServerOptions,
 } from "./server.ts";
 export {
+  createRestartTrigger,
+  RESTART_DRAIN_DEADLINE_MS,
+  type RestartTrigger,
+  type RestartTriggerHooks,
+} from "./restart.ts";
+export {
   escapeHtml,
   filterCatalogFamilies,
   renderSettingsPage,

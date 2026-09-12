@@ -12,8 +12,13 @@
  * Settings path never writes `mcp` keys directly). Responses carry `revision`
  * plus a startup-captured `bootRevision` (pending-restart derivation), and an
  * `allowedUsers` patch that would remove the verified requesting operator is
- * rejected before any write (self-lockout guard). No second durable copy, no
- * secret values in any response or log line, no auth material in logs.
+ * rejected before any write (self-lockout guard). `POST /api/restart`
+ * re-validates the on-disk config with the store's pre-commit rule (boot-loop
+ * guard), answers 200 before shutdown begins, enters the closing state, and
+ * delegates the process drain/exit to the composition root via the injected
+ * `requestRestart` trigger — this module never terminates the process.
+ * No second durable copy, no secret values in any response or log line, no
+ * auth material in logs.
  * Persistence: `$GOBLIN_HOME/goblin.json5` through the Settings store only.
  * Network: binds 127.0.0.1 only (never 0.0.0.0); ephemeral port 0 for tests,
  * deployment-owned stable `settings.port` (default 3423) in production so
@@ -55,6 +60,14 @@ export interface SettingsServerOptions {
   requestTimeoutMs?: number;
   authMaxAgeSec?: number;
   discover?: (signal: AbortSignal) => Promise<DevinModelCatalog>;
+  /**
+   * Called at most once after `POST /api/restart` has been validated and its
+   * 200 response dispatched. The server owns none of the process shutdown:
+   * the composition root wires this to its existing shutdown path (bounded
+   * drain, single exit — see `restart.ts`). Omitting it makes restart refuse
+   * with 503 `restart-unavailable` and keep serving.
+   */
+  requestRestart?: () => void;
 }
 
 export interface SettingsServerHandle {
@@ -295,6 +308,7 @@ export function startSettingsServer(options: SettingsServerOptions): SettingsSer
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const authMaxAgeSec = options.authMaxAgeSec ?? DEFAULT_AUTH_MAX_AGE_SEC;
   const discover = options.discover ?? ((signal: AbortSignal) => discoverDevinCatalog({ signal }));
+  const requestRestart = options.requestRestart;
   const port = options.port ?? 0;
   // Content revision captured once at server start so clients can derive a
   // pending-restart flag (`revision !== bootRevision` after a config edit).
@@ -437,6 +451,42 @@ export function startSettingsServer(options: SettingsServerOptions): SettingsSer
               const mapped = toSafeStoreResponse(error);
               return fail(route, mapped.status, mapped.code, mapped.message);
             }
+          }
+          if (req.method === "POST" && route === "/api/restart") {
+            // Mutating route: same-origin enforcement as every write.
+            const origin = req.headers.get("origin");
+            if (origin === null || !options.allowedOrigins.includes(origin)) {
+              return fail(route, 403, "forbidden");
+            }
+            if (requestRestart === undefined) {
+              return fail(
+                route,
+                503,
+                "restart-unavailable",
+                "Restart is not wired into this deployment; the process composition must provide a restart trigger.",
+              );
+            }
+            // Boot-loop guard: re-validate the on-disk config with the same
+            // full-file rule the store applies pre-commit. A config that
+            // would not boot must never be restarted into (systemd
+            // Restart=on-success would crash-loop); refuse with an
+            // actionable error and keep serving.
+            try {
+              readDeploymentConfig(options.goblinHome);
+            } catch (error: unknown) {
+              const mapped = toSafeStoreResponse(error);
+              return fail(route, mapped.status, mapped.code, mapped.message);
+            }
+            // Enter the closing state before dispatching so every request
+            // that races this one — including a second restart — gets the
+            // existing 503 shutting-down answer (single shutdown latch).
+            closing = true;
+            log.info("restart requested via Settings API");
+            // 200 first, shutdown second: the trigger fires only after this
+            // response is dispatched, so the operator's client sees the
+            // acknowledgement before the drain begins.
+            setTimeout(() => requestRestart(), 0);
+            return jsonResponse(200, { status: "restarting" });
           }
           if (req.method === "GET" && route === "/api/catalog") {
             try {

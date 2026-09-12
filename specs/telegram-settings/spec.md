@@ -11,7 +11,7 @@ Status: target contract. The first usable release (Devin model selection,
 catalog, persistence, API, page, launch integration) was delivered through
 issue #59. The full deployment-config surface — every whitelisted non-secret
 section, MCP through McpSelectionStore, and self-restart — is delivered
-through issue #60.
+through issue #66.
 
 ## Requirements
 

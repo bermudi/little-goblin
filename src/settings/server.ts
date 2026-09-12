@@ -200,7 +200,6 @@ function toSafeDiscoveryReason(error: unknown): string {
  * field errors; log lines carry only the short code.
  */
 const STORE_ERROR_RESPONSES: Record<SettingsStoreReason, { status: number; code: string }> = {
-  "invalid-selection": { status: 400, code: "invalid-selection" },
   "unknown-section": { status: 404, code: "unknown-section" },
   "unknown-field": { status: 400, code: "unknown-field" },
   "secret-field": { status: 400, code: "secret-field" },

@@ -8,21 +8,6 @@ import { goblinConfigLockPath } from "../sessions/paths.ts";
 import { ConfigFileSchema } from "../schema.ts";
 import { SettingsStoreError } from "./store.ts";
 
-interface CatalogVariant {
-  id: string;
-  label: string;
-  isNew: boolean;
-  isBeta: boolean;
-}
-interface Catalog {
-  families: {
-    id: string;
-    slug: string;
-    label: string;
-    aliases: string[];
-    variants: CatalogVariant[];
-  }[];
-}
 interface DeploymentSettings {
   devinDefaultModel: string | null;
   revision: string;
@@ -60,11 +45,6 @@ interface DeploymentConfig {
 }
 interface StoreModule {
   readDeploymentSettings(goblinHome: string): DeploymentSettings;
-  saveDeploymentModel(
-    goblinHome: string,
-    modelId: string,
-    options?: { expectedRevision?: string; catalog?: Catalog },
-  ): DeploymentSettings;
   readDeploymentConfig(goblinHome: string): DeploymentConfig;
   saveConfigSection(
     goblinHome: string,
@@ -105,29 +85,13 @@ async function catchOf(thunk: () => unknown): Promise<unknown> {
     .catch((error: unknown) => error);
 }
 
-function catalogWith(modelId: string): Catalog {
-  return {
-    families: [
-      {
-        id: "test-family",
-        slug: "test-family",
-        label: "Test family",
-        aliases: ["test-alias"],
-        variants: [{ id: modelId, label: "Test variant", isNew: false, isBeta: false }],
-      },
-    ],
-  };
-}
-
-describe("Durable deployment model selection", () => {
-  it("selected model survives settings owner reconstruction", async () => {
-    const { readDeploymentSettings, saveDeploymentModel } = await load();
+describe("Durable deployment config writes", () => {
+  it("saved devin default survives settings owner reconstruction", async () => {
+    const { readDeploymentSettings, saveConfigSection } = await load();
     const home = makeHome({ botToken: "x", allowedUsers: [1], model: "m" });
     try {
       expect(readDeploymentSettings(home).devinDefaultModel).toBeNull();
-      const catalog = catalogWith("test-model");
-      const saved = saveDeploymentModel(home, "test-model", { catalog });
-      expect(saved.devinDefaultModel).toBe("test-model");
+      const saved = saveConfigSection(home, "devin", { defaultModel: "test-model" });
       expect(typeof saved.revision).toBe("string");
       // Owner reconstruction is a fresh read of the same deployment file.
       const reread = readDeploymentSettings(home);
@@ -139,32 +103,33 @@ describe("Durable deployment model selection", () => {
   });
 
   it("stale and invalid saves cannot overwrite committed settings", async () => {
-    const { readDeploymentSettings, saveDeploymentModel } = await load();
+    const { readDeploymentSettings, saveConfigSection } = await load();
     const home = makeHome({ botToken: "x", allowedUsers: [1], model: "m" });
     try {
-      const catalog = catalogWith("test-model");
-      const committed = saveDeploymentModel(home, "test-model", { catalog });
-      const otherCatalog = catalogWith("other-model");
+      const committed = saveConfigSection(home, "devin", { defaultModel: "test-model" });
       // Stale revision is rejected.
       const staleError: unknown = await Promise.resolve()
-        .then(() => saveDeploymentModel(home, "other-model", { catalog: otherCatalog, expectedRevision: "stale" }))
+        .then(() => saveConfigSection(home, "devin", { defaultModel: "other-model" }, { expectedRevision: "stale" }))
         .catch((error: unknown) => error);
-      expect(staleError).toBeInstanceOf(Error);
-      // Invalid selections are rejected: empty, padded, and unknown ids.
-      for (const bad of ["", " test-model", "test-model ", "unknown-model"]) {
+      expect(errorReason(staleError)).toBe("stale-revision");
+      // Invalid model values are rejected before any write. (Padded ids pass
+      // the file schema; exactness is owned by the catalog save flow.)
+      for (const bad of ["", 5, null, true]) {
         const error: unknown = await Promise.resolve()
-          .then(() => saveDeploymentModel(home, bad, { catalog }))
-          .catch((error: unknown) => error);
-        expect(error).toBeInstanceOf(Error);
+          .then(() => saveConfigSection(home, "devin", { defaultModel: bad }))
+          .catch((err: unknown) => err);
+        expect(errorReason(error)).toBe("invalid-config");
       }
-      expect(readDeploymentSettings(home)).toEqual(committed);
+      const afterFailures = readDeploymentSettings(home);
+      expect(afterFailures.devinDefaultModel).toBe("test-model");
+      expect(afterFailures.revision).toBe(committed.revision);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
   it("MCP and settings writes share conflict protection", async () => {
-    const { readDeploymentSettings, saveDeploymentModel } = await load();
+    const { readDeploymentSettings, saveConfigSection } = await load();
     const home = makeHome({ botToken: "x", allowedUsers: [1], model: "m", mcp: {} });
     try {
       const before = readDeploymentSettings(home);
@@ -172,23 +137,19 @@ describe("Durable deployment model selection", () => {
       // A settings save based on the pre-MCP revision must not clobber it.
       const conflict: unknown = await Promise.resolve()
         .then(() =>
-          saveDeploymentModel(home, "test-model", {
-            catalog: catalogWith("test-model"),
-            expectedRevision: before.revision,
-          }),
+          saveConfigSection(home, "devin", { defaultModel: "test-model" }, { expectedRevision: before.revision }),
         )
         .catch((error: unknown) => error);
-      expect(conflict).toBeInstanceOf(Error);
+      expect(errorReason(conflict)).toBe("stale-revision");
       const raw = JSON5.parse(readFileSync(join(home, "goblin.json5"), "utf-8")) as {
         mcp?: { disabledServers?: string[] };
       };
       expect(raw.mcp?.disabledServers).toEqual(["tavily"]);
       // A fresh settings save preserves the MCP section.
-      const saved = saveDeploymentModel(home, "test-model", {
-        catalog: catalogWith("test-model"),
+      saveConfigSection(home, "devin", { defaultModel: "test-model" }, {
         expectedRevision: readDeploymentSettings(home).revision,
       });
-      expect(saved.devinDefaultModel).toBe("test-model");
+      expect(readDeploymentSettings(home).devinDefaultModel).toBe("test-model");
       const merged = JSON5.parse(readFileSync(join(home, "goblin.json5"), "utf-8")) as {
         mcp?: { disabledServers?: string[] };
         devin?: { defaultModel?: string };
@@ -201,34 +162,33 @@ describe("Durable deployment model selection", () => {
   });
 
   it("failed durable writes do not publish new values", async () => {
-    const { readDeploymentSettings, saveDeploymentModel } = await load();
+    const { readDeploymentSettings, saveConfigSection } = await load();
     const home = makeHome({ botToken: "x", allowedUsers: [1], model: "m" });
     try {
-      const committed = saveDeploymentModel(home, "test-model", { catalog: catalogWith("test-model") });
+      const committed = saveConfigSection(home, "devin", { defaultModel: "test-model" });
       // A live lock forces the coordinated write to fail without publishing.
       const lockPath = goblinConfigLockPath(home);
       writeFileSync(lockPath, `${process.pid}\n`, "utf-8");
       try {
         const error: unknown = await Promise.resolve()
           .then(() =>
-            saveDeploymentModel(home, "other-model", {
-              catalog: catalogWith("other-model"),
-              expectedRevision: committed.revision,
-            }),
+            saveConfigSection(home, "devin", { defaultModel: "other-model" }, { expectedRevision: committed.revision }),
           )
-          .catch((error: unknown) => error);
+          .catch((err: unknown) => err);
         expect(error).toBeInstanceOf(Error);
       } finally {
         rmSync(lockPath, { force: true });
       }
-      expect(readDeploymentSettings(home)).toEqual(committed);
+      const afterFailure = readDeploymentSettings(home);
+      expect(afterFailure.devinDefaultModel).toBe("test-model");
+      expect(afterFailure.revision).toBe(committed.revision);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   }, 10_000);
 
   it("non-secret projection preserves private config and file mode", async () => {
-    const { readDeploymentSettings, saveDeploymentModel } = await load();
+    const { readDeploymentSettings, saveConfigSection } = await load();
     const home = makeHome({
       botToken: "secret-token",
       allowedUsers: [1],
@@ -239,8 +199,8 @@ describe("Durable deployment model selection", () => {
     try {
       const target = join(home, "goblin.json5");
       chmodSync(target, 0o600);
-      const saved = saveDeploymentModel(home, "test-model", { catalog: catalogWith("test-model") });
-      expect(saved.devinDefaultModel).toBe("test-model");
+      saveConfigSection(home, "devin", { defaultModel: "test-model" });
+      expect(readDeploymentSettings(home).devinDefaultModel).toBe("test-model");
       expect(statSync(target).mode & 0o777).toBe(0o600);
       const raw = JSON5.parse(readFileSync(target, "utf-8")) as Record<string, unknown>;
       expect(raw.botToken).toBe("secret-token");

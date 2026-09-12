@@ -30,7 +30,6 @@ import type { ZodError } from "zod";
 import { projectMcpSelection, type McpSelectionProjection } from "../mcp/selection-store.ts";
 import { readGoblinConfigText, revisionForConfigText, updateGoblinConfig } from "../goblin-config-file.ts";
 import { ConfigFileSchema, ExternalAgentsConfigSchema, SettingsConfigSchema } from "../schema.ts";
-import type { DevinModelCatalog } from "./devin-catalog.ts";
 
 /** Presence flag for a secret field; the value never leaves the store. */
 export interface SecretPresence {
@@ -104,7 +103,6 @@ export interface DeploymentSettings {
 }
 
 export type SettingsStoreReason =
-  | "invalid-selection"
   | "stale-revision"
   | "conflict"
   | "missing-config"
@@ -385,44 +383,10 @@ export function saveConfigSection(
 }
 
 /**
- * Legacy one-knob view over the deployment-config store: read only the
- * Devin deployment default plus the revision.
+ * Legacy one-knob read view over the deployment-config store: only the Devin
+ * deployment default plus the revision. Writes go through `saveConfigSection`.
  */
 export function readDeploymentSettings(goblinHome: string): DeploymentSettings {
   const config = readDeploymentConfig(goblinHome);
   return { devinDefaultModel: config.devin.defaultModel, revision: config.revision };
-}
-
-function isValidModelId(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && value.trim() === value;
-}
-
-/**
- * Save one exact Devin model as the deployment default. `modelId` must be a
- * non-empty unpadded id; when `catalog` is supplied it must contain the id.
- * `expectedRevision` (from a prior read) rejects stale writes so a
- * concurrent MCP edit is never clobbered. Unrelated config keys and the
- * file mode are preserved by the shared coordinated writer.
- */
-export function saveDeploymentModel(
-  goblinHome: string,
-  modelId: string,
-  options?: { expectedRevision?: string; catalog?: DevinModelCatalog },
-): DeploymentSettings {
-  if (!isValidModelId(modelId)) {
-    throw new SettingsStoreError("invalid-selection", `Invalid Devin model selection: ${JSON.stringify(modelId)}`);
-  }
-  if (options?.catalog !== undefined) {
-    const known = options.catalog.families.some((family) => family.variants.some((variant) => variant.id === modelId));
-    if (!known) {
-      throw new SettingsStoreError("invalid-selection", `Unknown Devin model selection: ${JSON.stringify(modelId)}`);
-    }
-  }
-  const { revision } = saveConfigSection(
-    goblinHome,
-    "devin",
-    { defaultModel: modelId },
-    { expectedRevision: options?.expectedRevision },
-  );
-  return { devinDefaultModel: modelId, revision };
 }

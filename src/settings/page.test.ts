@@ -480,7 +480,7 @@ describe("Full settings Mini App UI (issue #66 unit 5)", () => {
 
       const bad = await putSection(handle, auth, "general", {
         patch: { logLevel: "bogus" },
-        expectedRevision: before.revision,
+        expectedRevision: okBody.revision,
       });
       expect(bad.status).toBe(400);
       const badBody = (await bad.json()) as { error: string; message?: string };

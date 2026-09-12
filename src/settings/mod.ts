@@ -10,7 +10,6 @@ export {
   readDeploymentConfig,
   readDeploymentSettings,
   saveConfigSection,
-  saveDeploymentModel,
   SettingsStoreError,
   type ConfigSectionName,
   type ConfigSectionSaveOptions,

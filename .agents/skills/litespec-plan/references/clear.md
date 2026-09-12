@@ -46,6 +46,7 @@ Record the output of `git rev-parse HEAD` as the base. Create and switch to `lit
 
 - One unit = one external boundary or one failure policy. Split broad demos across independent boundaries into separate units.
 - Cross-check every unit outcome against earlier units in the same queue before filing: an outcome an earlier unit delivers — or is constrained to preserve — is never re-delivered; reshape it as a regression pin (the named tests are the outcome, and the Verify fails while the pin is absent) or drop the unit.
+- Reconcile prose against the queue before filing: every scope or preservation sentence in the Proposal and Design prose — anything that must stay true, must not happen, or bounds the change — maps onto a unit's `Done means:` or `Constraints:`, becomes its own regression-pin unit, or is deleted. A sentence no unit enforces is a promise nothing can test; catch it here, not at closure review.
 - Every outcome clause maps to a named test scenario; filesystem, process, and network units account for all five standard risks.
 - One Verify per unit, and that Verify is the gate — `build` must satisfy it before claiming done.
 - If building shows the spec is wrong, update the spec in the same PR. Don't force wrong code to match a stale spec.

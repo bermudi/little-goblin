@@ -1,52 +1,10 @@
 import type { Context, NextFunction } from "grammy";
 import type { Config } from "../config.ts";
 import { log } from "../log.ts";
+import { botHandlePattern, isBotMentioned } from "./mention.ts";
 
 /** TTL for cached member counts (5 minutes). */
 const MEMBER_COUNT_TTL_MS = 5 * 60 * 1000;
-
-/**
- * Whether the message (text or caption) contains an @mention of the bot.
- *
- * Two passes:
- *   1. Entity pass — `mention` entities (@username) and `text_mention`
- *      entities (inline user tags from Telegram's mention picker).
- *      Usernames are case-insensitive on Telegram's side, so we compare
- *      lowercased.
- *   2. Plain-text fallback — if the client never resolved the `@handle`
- *      into an entity (typed/pasted fast, or a non-Telegram-native
- *      client), there is no entity at all. Match the literal handle in
- *      the text so a real @mention still wakes the bot.
- */
-function isBotMentioned(ctx: Context): boolean {
-  const botId = ctx.me.id;
-  const botUsername = ctx.me.username;
-  if (!botUsername) return false;
-
-  // grammy only populates entities for text messages and caption_entities
-  // for media. We need to check both.
-  const entities = ctx.msg?.entities ?? ctx.msg?.caption_entities ?? [];
-  const text = ctx.msg?.text ?? ctx.msg?.caption ?? "";
-  const lowerUser = botUsername.toLowerCase();
-
-  if (entities.some((e) => {
-    if (e.type === "mention") {
-      return text.slice(e.offset, e.offset + e.length).toLowerCase() === `@${lowerUser}`;
-    }
-    if (e.type === "text_mention") {
-      return e.user?.id === botId;
-    }
-    return false;
-  })) {
-    return true;
-  }
-
-  // Plain-text fallback: @handle present in the text with no resolved
-  // entity. Word-boundary at the end so @goblinbot doesn't match
-  // @goblinbot5000; start-anchored on the @ so we don't pattern-match a
-  // mid-mention substring.
-  return new RegExp(`@${lowerUser.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![0-9A-Za-z_])`, "i").test(text);
-}
 
 /**
  * Whether the message is a direct reply to a message sent by the bot.
@@ -180,7 +138,7 @@ export function buildAllowlistMiddleware(cfg: Config) {
       const entTypes = (ctx.msg?.entities ?? ctx.msg?.caption_entities ?? []).map((e) => e.type);
       const rawText = ctx.msg?.text ?? ctx.msg?.caption ?? "";
       const handleInText = ctx.me.username
-        ? rawText.toLowerCase().includes(`@${ctx.me.username.toLowerCase()}`)
+        ? botHandlePattern(ctx.me.username).test(rawText)
         : false;
       log.debug("dropping non-mention from allowed user in multi-member group", {
         userId,

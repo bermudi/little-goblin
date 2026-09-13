@@ -384,6 +384,54 @@ describe("memory effects", () => {
 
     expect(curatedRows(store, "general")).toHaveLength(2);
     expect(effectReceipts(store)).toHaveLength(2);
+
+    // A raced commit of the same key under a different payload identity is
+    // the same contract violation as the pre-transaction check: the loser
+    // sees MemoryEffectConflictError, not a raw SQLite primary-key error.
+    // The gated provider parks both callers inside the embedding dedup
+    // await, so the second commit genuinely loses the receipt race.
+    let dedupEntries = 0;
+    let releaseDedup!: () => void;
+    let bothEntered!: () => void;
+    const dedupGate = new Promise<void>((resolve) => { releaseDedup = resolve; });
+    const dedupBothEntered = new Promise<void>((resolve) => { bothEntered = resolve; });
+    class GatedEmbeddingProvider extends EmbeddingProvider {
+      override async embedBatch(): Promise<Array<{ hash: string; embedding: Float32Array | null }>> {
+        dedupEntries++;
+        if (dedupEntries === 2) bothEntered();
+        await dedupGate;
+        return [];
+      }
+      override async embedEntries(): Promise<Map<string, Float32Array | null>> {
+        return new Map();
+      }
+    }
+    const raced = new MemoryStore(base.db, undefined, {
+      budget: new MemoryBudget(BUDGET_ENV),
+      embeddings: new GatedEmbeddingProvider(base.db),
+    });
+    const raceKey = `wake_${"b".repeat(16)}:effect:0`;
+    const winner = raced.applyFactEffect(
+      factEffect({ effectKey: raceKey, text: "I collect stamps" }),
+    );
+    const loser = raced.applyFactEffect(
+      factEffect({ effectKey: raceKey, text: "I collect coins" }),
+    );
+    await dedupBothEntered;
+    releaseDedup();
+    const raceResults = await Promise.allSettled([winner, loser]);
+    const fulfilled = raceResults.filter(
+      (o): o is PromiseFulfilledResult<MemoryEffectOutcome> => o.status === "fulfilled",
+    );
+    const failed = raceResults.filter(
+      (o): o is PromiseRejectedResult => o.status === "rejected",
+    );
+    expect(fulfilled).toHaveLength(1);
+    expect(fulfilled[0]!.value.kind).toBe("added");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]!.reason).toBeInstanceOf(MemoryEffectConflictError);
+    expect((failed[0]!.reason as MemoryEffectConflictError).effectKey).toBe(raceKey);
+    expect(effectReceipts(store).filter((r) => r.effect_key === raceKey)).toHaveLength(1);
     store.close();
   });
 

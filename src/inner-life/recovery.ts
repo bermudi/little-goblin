@@ -374,13 +374,16 @@ export class ReflectionHost {
   private driveExclusively<T>(wakeId: string, drive: () => Promise<T>): Promise<T> {
     const tail = (this.driveLocks.get(wakeId) ?? Promise.resolve()).catch(() => {});
     const result = tail.then(drive);
-    this.driveLocks.set(
-      wakeId,
-      result.then(
-        () => undefined,
-        () => undefined,
-      ),
+    const settled: Promise<void> = result.then(
+      () => undefined,
+      () => undefined,
     );
+    this.driveLocks.set(wakeId, settled);
+    void settled.then(() => {
+      // Only the last drive for this wake clears the entry; a queued drive
+      // has already replaced it.
+      if (this.driveLocks.get(wakeId) === settled) this.driveLocks.delete(wakeId);
+    });
     return result;
   }
 

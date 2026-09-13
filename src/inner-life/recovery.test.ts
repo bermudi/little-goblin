@@ -924,6 +924,30 @@ describe("private reflection recovery", () => {
     later.store.close();
   });
 
+  it("settled-drives-release-their-per-wake-serialization-entry", async () => {
+    const dir = join(home, "locks");
+    mkdirSync(dir, { recursive: true });
+    const writes: Array<{ conversationId: string; processedLines: number }> = [];
+    const model = workingModel();
+    const host = makeHost(dir, { model, writes });
+    await host.host.reconcile();
+    const locks = (host.host as unknown as { driveLocks: Map<string, Promise<void>> }).driveLocks;
+
+    // Every processed source window mints a distinct deterministic wakeId;
+    // the serialization map is process-lifetime state and must not retain
+    // one entry per wake forever.
+    for (const beforeLine of [BEFORE_LINE, BEFORE_LINE + 1, BEFORE_LINE + 2]) {
+      const outcome = await host.host.processWindow(reservationInput({ beforeLine }));
+      expect(outcome.blocked).toBe(false);
+      expect(outcome.record.state).toBe("completed");
+    }
+    expect(model.calls).toBe(3);
+    // The release runs as a microtask after the last queued drive settles.
+    await Bun.sleep(0);
+    expect(locks.size).toBe(0);
+    host.store.close();
+  });
+
   it("corrupt-profile-record-and-receipt-block-admission", async () => {
     // Corrupt JSON: admission fails closed, naming the wake.
     const corruptDir = join(home, "corrupt-json");

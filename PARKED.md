@@ -14,8 +14,10 @@ deployment-wide, non-secret settings inside a Telegram Mini App, starting
 with searchable Devin models. Issue #58 (ACP external agents) is closed
 after PASS and merged into the #59 branch. Issue #67
 (`litespec/private-reflection`) is closed after PASS: bounded, tool-free,
-recoverable private fact extraction replaced light-sleep model extraction;
-no active labeled issue and no candidate next is named.
+recoverable private fact extraction replaced light-sleep model extraction.
+Deferred item R1#6 (bot-mention module) graduated to labeled issue #68
+(`litespec/bot-mention-module`) — the active issue. Candidate next:
+deferred item R2#4 (WorkspacePrompts semantics consolidation).
 #59's final launch integration rides the accepted ACP/delegated-run seams.
 Do not build Mini App integration on the legacy external-agent runner.
 

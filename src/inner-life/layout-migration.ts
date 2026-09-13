@@ -77,8 +77,11 @@ interface ParsedLegacyCursor {
  * Strict parse of a legacy reflection-file cursor
  * (`state/sessions/<id>/memory-reflection.json`): the old pipeline accepted
  * any JSON object with a numeric `processedLines` and an optional string
- * `lastReflectedAt`. A present-but-unusable file throws: ignoring it would
- * re-seed the conversation at transcript end and silently skip lines.
+ * `lastReflectedAt`; the migration requires a non-negative safe integer, so
+ * values such as `1e999` (which would serialize into the sidecar as `null`)
+ * or negatives are rejected rather than converted. A present-but-unusable
+ * file throws: ignoring it would re-seed the conversation at transcript end
+ * and silently skip lines.
  */
 function parseLegacyFileCursor(raw: string, path: string): ParsedLegacyCursor {
   let parsed: unknown;
@@ -91,18 +94,22 @@ function parseLegacyFileCursor(raw: string, path: string): ParsedLegacyCursor {
     throw new Error(`malformed legacy reflection cursor ${path}: not a JSON object`);
   }
   const record = parsed as Record<string, unknown>;
-  if (typeof record.processedLines !== "number") {
-    throw new Error(`malformed legacy reflection cursor ${path}: processedLines is not a number`);
+  const processedLines = record.processedLines;
+  if (typeof processedLines !== "number" || !Number.isSafeInteger(processedLines) || processedLines < 0) {
+    throw new Error(
+      `malformed legacy reflection cursor ${path}: processedLines is not a non-negative integer`,
+    );
   }
   return {
-    processedLines: record.processedLines,
+    processedLines,
     lastDreamedAt: typeof record.lastReflectedAt === "string" ? record.lastReflectedAt : null,
   };
 }
 
 /**
  * Strict parse of a legacy `memory_meta` cursor value: the old pipeline
- * required both `processedLines` (number) and `lastDreamedAt` (string).
+ * required both `processedLines` (a non-negative integer here, per the same
+ * domain rule as the file cursor) and `lastDreamedAt` (string).
  */
 function parseLegacyMetaCursor(raw: string | null, conversationId: string): ParsedLegacyCursor {
   const what = `legacy memory_meta cursor ${LEGACY_META_CURSOR_KEY_PREFIX}${conversationId}`;
@@ -116,13 +123,14 @@ function parseLegacyMetaCursor(raw: string | null, conversationId: string): Pars
     throw new Error(`malformed ${what}: not a JSON object`);
   }
   const record = parsed as Record<string, unknown>;
-  if (typeof record.processedLines !== "number") {
-    throw new Error(`malformed ${what}: processedLines is not a number`);
+  const processedLines = record.processedLines;
+  if (typeof processedLines !== "number" || !Number.isSafeInteger(processedLines) || processedLines < 0) {
+    throw new Error(`malformed ${what}: processedLines is not a non-negative integer`);
   }
   if (typeof record.lastDreamedAt !== "string") {
     throw new Error(`malformed ${what}: lastDreamedAt is not a string`);
   }
-  return { processedLines: record.processedLines, lastDreamedAt: record.lastDreamedAt };
+  return { processedLines, lastDreamedAt: record.lastDreamedAt };
 }
 
 /** Same tolerance the runtime cursor adapter applies to sidecar content. */

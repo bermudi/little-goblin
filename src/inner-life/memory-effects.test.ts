@@ -928,6 +928,37 @@ describe("memory effects", () => {
     expect(() => runMigrations(metaIncompleteHome)).toThrow(/lastDreamedAt/);
     expect(readStateVersion(metaIncompleteHome)).toBe(5);
     expect(readdirSync(metaIncompleteHome).filter((n) => n.startsWith(".migration-backup-"))).toHaveLength(0);
+
+    // A numeric processedLines outside the cursor domain — non-finite
+    // (1e999 parses to Infinity), negative, or fractional — is unusable:
+    // serializing Infinity into a sidecar emits null, which the runtime
+    // cursor store reads as absent, silently re-seeding at transcript end.
+    const overflowHome = mkLegacyHome("legacy-overflow", "conv-a");
+    writeFileSync(
+      join(overflowHome, "state", "sessions", "conv-a", "memory-reflection.json"),
+      '{"processedLines":1e999}',
+    );
+    expect(() => runMigrations(overflowHome)).toThrow(/processedLines/);
+    expect(readStateVersion(overflowHome)).toBe(5);
+    expect(readdirSync(overflowHome).filter((n) => n.startsWith(".migration-backup-"))).toHaveLength(0);
+
+    const negativeHome = mkLegacyHome("legacy-negative", "conv-a");
+    writeFileSync(
+      join(negativeHome, "state", "sessions", "conv-a", "memory-reflection.json"),
+      JSON.stringify({ processedLines: -3 }),
+    );
+    expect(() => runMigrations(negativeHome)).toThrow(/processedLines/);
+    expect(readStateVersion(negativeHome)).toBe(5);
+
+    const fractionalMetaHome = mkLegacyHome("legacy-fractional-meta", "conv-a");
+    const fractionalDb = new MemoryDatabase(memoryDbPath(fractionalMetaHome));
+    fractionalDb.setMeta(
+      "dreaming_cursor:conv-a",
+      JSON.stringify({ processedLines: 2.5, lastDreamedAt: "2026-08-02T00:00:00.000Z" }),
+    );
+    fractionalDb.close();
+    expect(() => runMigrations(fractionalMetaHome)).toThrow(/processedLines/);
+    expect(readStateVersion(fractionalMetaHome)).toBe(5);
   });
 
   it("legacy-cursor-without-timestamp-uses-migration-clock", () => {

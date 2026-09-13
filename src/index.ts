@@ -111,8 +111,11 @@ async function main(): Promise<void> {
       // timer jobs, so a mid-reflection shutdown settles in bounded time and
       // late model output can never write memory.
       innerLife.close();
-      await scheduler.stopAndDrain();
-      await innerLife.settle();
+      try {
+        await scheduler.stopAndDrain();
+      } finally {
+        await innerLife.settle();
+      }
     },
     disposeSubagents: () => subagentRunner.dispose(),
     closeMemoryEngine: async () => {

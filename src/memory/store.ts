@@ -585,7 +585,15 @@ export class MemoryStore {
           reason: "budget_exhausted",
           message: err.message,
         };
-        this.insertEffectReceiptInNewTransaction(effect.effectKey, payloadHash, rejected, Date.now());
+        try {
+          this.insertEffectReceiptInNewTransaction(effect.effectKey, payloadHash, rejected, Date.now());
+        } catch (receiptErr) {
+          if (isPrimaryKeyConflict(receiptErr)) {
+            const racedOutcome = this.racedEffectOutcome(effect.effectKey, payloadHash);
+            if (racedOutcome !== null) return racedOutcome;
+          }
+          throw receiptErr;
+        }
         this.appendEffectArtifacts(effect, rejected, scopeTag(scope), Date.now());
         return rejected;
       }
@@ -593,10 +601,8 @@ export class MemoryStore {
         // A concurrent application of the same effect key committed its
         // receipt first. Its receipt is the canonical outcome for this key:
         // replay it instead of failing the whole effect.
-        const raced = this.getEffectReceipt(effect.effectKey);
-        if (raced !== null && raced.payloadHash === payloadHash) {
-          return raced.outcome;
-        }
+        const racedOutcome = this.racedEffectOutcome(effect.effectKey, payloadHash);
+        if (racedOutcome !== null) return racedOutcome;
       }
       throw err;
     }
@@ -1252,6 +1258,24 @@ export class MemoryStore {
     if (row === null) return null;
     const receipt = this.parseEffectReceipt(effectKey, row.payload_hash, row.outcome);
     return { payloadHash: receipt.payloadHash, outcome: receipt.outcome };
+  }
+
+  /**
+   * Resolve a receipt committed by a concurrent application of the same
+   * effect key after this call's pre-transaction check ran. Identical
+   * payload identity replays the canonical outcome; a different identity is
+   * the same contract violation as the pre-check and throws
+   * {@link MemoryEffectConflictError} instead of leaking the raw SQLite
+   * primary-key error. Null means no raced receipt exists — the caller
+   * rethrows the original failure.
+   */
+  private racedEffectOutcome(effectKey: string, payloadHash: string): MemoryEffectOutcome | null {
+    const raced = this.getEffectReceipt(effectKey);
+    if (raced === null) return null;
+    if (raced.payloadHash !== payloadHash) {
+      throw new MemoryEffectConflictError(effectKey, raced.payloadHash, payloadHash);
+    }
+    return raced.outcome;
   }
 
   /**

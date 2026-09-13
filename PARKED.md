@@ -12,8 +12,10 @@ Unshaped candidates, completed stabilization context, and open questions. This f
 Issue #59 (`litespec/telegram-settings`) is closed after PASS:
 deployment-wide, non-secret settings inside a Telegram Mini App, starting
 with searchable Devin models. Issue #58 (ACP external agents) is closed
-after PASS and merged into the #59 branch; no active labeled issue and
-no candidate next is named.
+after PASS and merged into the #59 branch. Issue #67
+(`litespec/private-reflection`) is closed after PASS: bounded, tool-free,
+recoverable private fact extraction replaced light-sleep model extraction;
+no active labeled issue and no candidate next is named.
 #59's final launch integration rides the accepted ACP/delegated-run seams.
 Do not build Mini App integration on the legacy external-agent runner.
 

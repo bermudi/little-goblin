@@ -314,13 +314,44 @@ Scheduled turns use the same dispatcher and prompt queue as user turns. A captur
 
 The frozen `inner-life` proposal is historical design input, not an implementation specification. Fresh shaping must settle the remaining wake-store, profile/effect state-machine, crash-recovery, and deny-by-default contact details under decision 0035. `visible-dreaming` remains blocked until that implementation exists; it may later supply reflection content but must not create a parallel scheduler, delivery, or consent system.
 
+**INSTALLED — issue #67 (`litespec/private-reflection`).** Light-sleep model
+extraction is deployed on the private-reflection host. The deployment owns
+exactly one `ReflectionHost` (composed in `src/index.ts` via
+`createInnerLifeLifecycle`) with its wake store under `state/inner-life/wakes/`;
+the scheduler's light-sleep timer holds only a `runPass()` work signal, and the
+host owns orchestration: conversation enumeration, retained light-sleep backlog
+policy (fresh-cursor seeding, finite snapshots, configured line batches,
+lookback filtering, expired-line warnings), per-Conversation serialization,
+bounded wake records, tool-free extractive reflection, and MemoryStore-owned
+replay-safe fact receipts. Light sleep no longer borrows the dreaming internal
+conversation runtime, constructs a Surface, or sends Telegram output; REM, deep
+sleep, heartbeat, and transcript sync keep their existing scheduling and
+coordinate with light sleep only through the DreamingPipeline's global phase
+queue. Startup reconciliation must complete before memory timers and Telegram
+polling are admitted (a failure fails startup closed); shutdown closes wake
+admission synchronously, cancels active reflection, and settles disposal within
+5 seconds, so late model output can never write memory.
+The operator migration remedy is `bun run migrate`, run with the service
+stopped: the offline versioned migration (state version 6) adds the wake
+layout, applies effect-receipt storage, and converts legacy light-sleep
+cursor locations (`memory-reflection.json` files and `dreaming_cursor:<id>`
+memory_meta rows) into the sidecar cursors the host reads, leaving existing
+memory rows untouched; startup refuses older state versions. Startup itself
+reconciles current-version wake state; it never migrates.
+
+Historical note: until this slice landed and was verified, the internal dreaming
+runtime remained CURRENT for light sleep. The frozen `inner-life` proposal is
+historical design input, not an implementation specification.
+`visible-dreaming` remains blocked; it may later supply reflection content but
+must not create a parallel scheduler, delivery, or consent system.
+
 ## Memory
 
 Memory's canonical store is `$GOBLIN_HOME/state/memory/memory.sqlite`. Markdown under `state/memory/` is export-only.
 
 **CURRENT — decision 0037, `surface-derived-memory-context`, and `transcript-surface-provenance`.** The current Surface is the sole input to `Surface → ActiveScope`; the projection is not persisted as a mutable setting. A conversation runtime captures that context and frozen summary at runtime creation. Subagents capture the parent runtime's context per invocation rather than resolving a later binding. Equal project roots do not merge memory context.
 
-Each new user-visible transcript entry records event-time `sourceSurfaceId`. Indexing and dreaming use that provenance per entry, so one moved Conversation may contain several source Surfaces without rewriting history. Unknown legacy provenance stays null rather than being guessed from the current binding. Filesystem `stateVersion` is now 4; the transcript migration, mixed-chat index rebuild, provenance-driven dreaming, startup gate, boundary tests, two-Surface end-to-end fixture, and lifecycle migration are implemented.
+Each new user-visible transcript entry records event-time `sourceSurfaceId`. Indexing and dreaming use that provenance per entry, so one moved Conversation may contain several source Surfaces without rewriting history. Unknown legacy provenance stays null rather than being guessed from the current binding. Filesystem `stateVersion` is now 6; the transcript migration, mixed-chat index rebuild, provenance-driven dreaming, startup gate, boundary tests, two-Surface end-to-end fixture, and lifecycle migration are implemented.
 
 **CURRENT — conversation lifecycle and closure hardening complete.** Cross-Surface movement is wired into intake and commands; runtime capture/writer authority, archive ordering, Surface-owned preferences and automation, offline ownership migration step 4, canonical authority validation, planned-assignment recovery, and mandatory runtime authority are implemented and covered by current tests. The archived `conversation-lifecycle` material is delivery provenance only.
 

@@ -17,16 +17,23 @@ import { log } from "../log.ts";
 import { atomicWrite } from "../fs.ts";
 import { sessionDir } from "../sessions/paths.ts";
 import { countTranscriptLines, readTranscriptAfter, type TranscriptLine } from "../sessions/transcript.ts";
-import { parseSurfaceId } from "../surface.ts";
 import { MemoryStore } from "./store.ts";
 import { MemoryOverflowError } from "./budget.ts";
 import { MemoryArtifactStore } from "./artifacts.ts";
 import type { MetricsStore } from "../metrics/mod.ts";
 import { checkMemorySafety } from "./safety.ts";
 import { appendQuarantine, type QuarantineReason } from "./quarantine.ts";
-import { stripEntryMetadata, type EntrySourceRole } from "./entry.ts";
-import { activeMemoryScopeFor, resolveActiveScope, scopeTag, toMemoryScopePair, type MemoryScope } from "./scope.ts";
-import { cosineSimilarity } from "./search.ts";
+import { type EntrySourceRole } from "./entry.ts";
+import {  CONFIDENCE_THRESHOLD,
+  DEDUP_COSINE_THRESHOLD,
+  findNearDuplicateWithEmbeddings,
+  isProceduralNoise,
+  surfaceProvenanceScope,
+  textNearDuplicate,
+  type DuplicateMatch,
+  type ExistingEntry,
+} from "./policy.ts";
+import { scopeTag, toMemoryScopePair, type MemoryScope } from "./scope.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -76,13 +83,6 @@ export type CandidateExtractor = (
 // Environment-driven configuration
 // ---------------------------------------------------------------------------
 
-function envFloat(key: string, fallback: number): number {
-  const raw = process.env[key];
-  if (raw === undefined) return fallback;
-  const n = Number.parseFloat(raw);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
-}
-
 function envInt(key: string, fallback: number): number {
   const raw = process.env[key];
   if (raw === undefined) return fallback;
@@ -90,15 +90,19 @@ function envInt(key: string, fallback: number): number {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
-const DEFAULT_CONFIDENCE_THRESHOLD = 0.7;
-const DEFAULT_DEDUP_COSINE_THRESHOLD = 0.85;
 const DEFAULT_LOOKBACK_HOURS = 24;
 const DEFAULT_MAX_MODEL_LINES = 100;
 
-const CONFIDENCE_THRESHOLD = envFloat("GOBLIN_MEMORY_DREAM_CONFIDENCE_THRESHOLD", DEFAULT_CONFIDENCE_THRESHOLD);
-const DEDUP_COSINE_THRESHOLD = envFloat("GOBLIN_MEMORY_DEDUP_SIMILARITY_THRESHOLD", DEFAULT_DEDUP_COSINE_THRESHOLD);
-const LOOKBACK_HOURS = envInt("GOBLIN_MEMORY_DREAM_LOOKBACK_HOURS", DEFAULT_LOOKBACK_HOURS);
-const MAX_MODEL_LINES = envInt("GOBLIN_MEMORY_DREAM_MAX_MODEL_LINES", DEFAULT_MAX_MODEL_LINES);
+// Policy thresholds (confidence, cosine dedup) live in the shared policy seam
+// (src/memory/policy.ts) so the dreaming pipeline and the fact-effect
+// application path cannot drift.
+//
+// LOOKBACK_HOURS and MAX_MODEL_LINES are exported: the private-reflection
+// light-sleep wiring derives its identical backlog policy (lookback window
+// and per-batch line limit, also passed as the wake store's `maxInputLines`)
+// from the same configured values, so the two paths cannot diverge.
+export const LOOKBACK_HOURS = envInt("GOBLIN_MEMORY_DREAM_LOOKBACK_HOURS", DEFAULT_LOOKBACK_HOURS);
+export const MAX_MODEL_LINES = envInt("GOBLIN_MEMORY_DREAM_MAX_MODEL_LINES", DEFAULT_MAX_MODEL_LINES);
 
 // ---------------------------------------------------------------------------
 // Processed candidate tracking
@@ -136,68 +140,10 @@ function pruneProcessedCandidates(home: string, sessionId: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Noise patterns
+// Noise, near-duplicate, and provenance-scope policy live in the shared seam
+// `src/memory/policy.ts`; the dreaming pipeline and MemoryStore's fact-effect
+// application path consume the same functions.
 // ---------------------------------------------------------------------------
-
-const NOISE_PATTERNS: RegExp[] = [
-  /^\s*(run|do|try|check|show|list|tell me|explain|what|how|why|when|where|who|can you|could you|would you|please|help|fix|update|create|delete|remove|add|install|build|test|deploy|start|stop|restart|kill|send|write|read|open|close|edit|change|set|get)\b/i,
-  /^\s*(hi|hello|hey|thanks|thank you|ok|okay|sure|yes|no|yep|nope|cool|nice|great|lol|haha)\s*$/i,
-];
-
-function isProceduralNoise(text: string): boolean {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) return true;
-  for (const re of NOISE_PATTERNS) {
-    if (re.test(trimmed)) return true;
-  }
-  return false;
-}
-
-// ---------------------------------------------------------------------------
-// Near-duplicate detection
-// ---------------------------------------------------------------------------
-
-function normalizeText(s: string): string {
-  return s.toLowerCase().replace(/[^\w\s]/g, "").replace(/\s+/g, " ").trim();
-}
-
-interface ExistingEntry {
-  id: string;
-  text: string;
-}
-
-function textNearDuplicate(
-  text: string,
-  entries: ExistingEntry[],
-): { id: string; existingText: string; preserveExisting: boolean } | null {
-  const normalizedText = normalizeText(text);
-  if (normalizedText.length === 0) return null;
-  const textWords = new Set(normalizedText.split(" "));
-
-  for (const entry of entries) {
-    const body = stripEntryMetadata(entry.text);
-    const normalizedBody = normalizeText(body);
-    if (normalizedBody.length === 0) continue;
-
-    if (normalizedBody === normalizedText) {
-      return { id: entry.id, existingText: body, preserveExisting: false };
-    }
-    if (normalizedBody.includes(normalizedText) || normalizedText.includes(normalizedBody)) {
-      const preserveExisting = normalizedBody.length > normalizedText.length;
-      return { id: entry.id, existingText: body, preserveExisting };
-    }
-    const bodyWords = new Set(normalizedBody.split(" "));
-    let intersection = 0;
-    for (const w of textWords) {
-      if (bodyWords.has(w)) intersection++;
-    }
-    const union = textWords.size + bodyWords.size - intersection;
-    if (union > 0 && intersection / union > 0.6) {
-      return { id: entry.id, existingText: body, preserveExisting: false };
-    }
-  }
-  return null;
-}
 
 // ---------------------------------------------------------------------------
 // Cursor helpers
@@ -210,15 +156,6 @@ function legacyReflectionCursorPath(home: string, sessionId: string): string {
 // ---------------------------------------------------------------------------
 // Scope resolution
 // ---------------------------------------------------------------------------
-
-function surfaceProvenanceScope(sourceSurfaceId: string): MemoryScope | null {
-  try {
-    const surface = parseSurfaceId(sourceSurfaceId);
-    return activeMemoryScopeFor(resolveActiveScope(surface));
-  } catch {
-    return null;
-  }
-}
 
 interface ProvenanceScopeResolution {
   kind: "scope";
@@ -341,13 +278,21 @@ export class DreamingPipeline {
    * work, REM, and deep) serialize through this queue so they never overlap.
    * Errors propagate to the caller but do not block subsequent phases.
    */
-  private async runGlobalPhase(fn: () => Promise<void>): Promise<void> {
-    const run = async (): Promise<void> => {
-      await fn();
-    };
-    const next = this.globalPhaseQueue.then(run, run);
-    this.globalPhaseQueue = next.catch(() => {});
-    await next;
+  private async runGlobalPhase<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.globalPhaseQueue.then(fn, fn);
+    this.globalPhaseQueue = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
+  /**
+   * Run one function on the global dreaming phase queue, serialized against
+   * REM and deep sleep (and the REM/deep sides of the private-reflection
+   * light-sleep path). The private-reflection host's per-Conversation light
+   * passes enqueue through this seam so at most one dreaming phase runs at a
+   * time across both pipelines.
+   */
+  runExclusivePhase<T>(fn: () => Promise<T>): Promise<T> {
+    return this.runGlobalPhase(fn);
   }
 
   /**
@@ -927,37 +872,14 @@ export class DreamingPipeline {
   private async findNearDuplicate(
     text: string,
     entries: ExistingEntry[],
-  ): Promise<{ id: string; existingText: string; preserveExisting: boolean } | null> {
+  ): Promise<DuplicateMatch | null> {
     const textMatch = textNearDuplicate(text, entries);
     if (textMatch !== null) return textMatch;
 
     const provider = this.store.embeddingProvider;
     if (!provider || provider.status().degraded) return null;
 
-    const allTexts = [text, ...entries.map((e) => stripEntryMetadata(e.text))];
-    const embeddings = await provider.embedBatch(allTexts);
-    const candidateEmbedding = embeddings[0]?.embedding;
-    if (!candidateEmbedding) return null;
-
-    let bestId: string | null = null;
-    let bestText = "";
-    let bestScore = 0;
-    for (let i = 0; i < entries.length; i++) {
-      const embedding = embeddings[i + 1]?.embedding;
-      if (!embedding) continue;
-      const score = cosineSimilarity(candidateEmbedding, embedding);
-      if (score > bestScore) {
-        bestScore = score;
-        bestId = entries[i]!.id;
-        bestText = entries[i]!.text;
-      }
-    }
-    if (bestScore >= this.dedupCosineThreshold && bestId !== null) {
-      const existingText = stripEntryMetadata(bestText);
-      const preserveExisting = existingText.length > text.length;
-      return { id: bestId, existingText, preserveExisting };
-    }
-    return null;
+    return findNearDuplicateWithEmbeddings(text, entries, provider, this.dedupCosineThreshold);
   }
 
   private appendDreamDiary(outcome: string, candidate: Candidate, targetScope: string): void {

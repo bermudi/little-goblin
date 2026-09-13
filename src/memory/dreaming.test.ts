@@ -143,6 +143,40 @@ describe("DreamingPipeline", () => {
     expect(byId.get(existingFact)?.category).toBe("fact");
   });
 
+  it("runExclusivePhase and REM sleep serialize on the global phase queue", async () => {
+    const order: string[] = [];
+    let releaseHold!: () => void;
+    const holdDone = new Promise<void>((resolve) => {
+      releaseHold = resolve;
+    });
+    const hold = pipeline.runExclusivePhase(async () => {
+      order.push("hold-enter");
+      await holdDone;
+      order.push("hold-exit");
+    });
+    await Bun.sleep(10);
+    expect(order).toEqual(["hold-enter"]);
+
+    const rem = pipeline.runRemSleep().then(() => {
+      order.push("rem-done");
+    });
+    const light = pipeline.runExclusivePhase(async () => {
+      order.push("light");
+    });
+    await Bun.sleep(10);
+    // Both REM and the exclusive phase wait behind the in-flight phase.
+    expect(order).toEqual(["hold-enter"]);
+    releaseHold();
+    await Promise.all([hold, rem, light]);
+    // Both queued phases ran strictly after the hold released (their relative
+    // completion order is a microtask scheduling artifact, not contract).
+    expect(order).toHaveLength(4);
+    expect(order).toContain("rem-done");
+    expect(order).toContain("light");
+    expect(order.indexOf("light")).toBeGreaterThan(order.indexOf("hold-exit"));
+    expect(order.indexOf("rem-done")).toBeGreaterThan(order.indexOf("hold-exit"));
+  });
+
   it("runRemSleep promotes recurring tags to the proven topic scope", async () => {
     const topicSurfaceId = surfaceId(topicSurface("private", 12345, 7));
     const sessions = ["abcdef1000", "abcdef1001", "abcdef1002"];

@@ -38,6 +38,11 @@ import {
   applyDelegatedWorkLayout,
   type DelegatedWorkLayoutPlan,
 } from "./delegated-work/layout-migration.ts";
+import {
+  planInnerLifeLayout,
+  applyInnerLifeLayout,
+  type InnerLifeLayoutPlan,
+} from "./inner-life/layout-migration.ts";
 
 interface SnapshotManifest {
   roots: Array<{ path: string; exists: boolean }>;
@@ -88,6 +93,13 @@ interface DelegatedWorkLayoutStep {
   apply(home: string, plan: DelegatedWorkLayoutPlan): void;
 }
 
+interface InnerLifeLayoutStep {
+  readonly version: number;
+  readonly roots: string[];
+  plan(home: string): InnerLifeLayoutPlan;
+  apply(home: string, plan: InnerLifeLayoutPlan): void;
+}
+
 const STEP_1_ROOTS = ["state"];
 const STEP_2_ROOTS = ["state", "workspace", "scratch/workdir"];
 const STEP_3_ROOTS = ["state/sessions"];
@@ -102,6 +114,16 @@ const STEP_4_ROOTS = ["state"];
  * polls against a pre-break home.
  */
 const STEP_5_ROOTS = ["state"];
+
+/**
+ * Step 6 adds the inner-life wake layout (`state/inner-life/wakes/`), applies
+ * the memory SQLite schema migration that creates the effect-receipt table,
+ * and converts legacy light-sleep cursor locations (`memory-reflection.json`
+ * files and `dreaming_cursor:<id>` memory_meta rows) into the sidecar files
+ * the private-host adapter reads. Existing memory rows are untouched (issue
+ * #67, decision 0035).
+ */
+const STEP_6_ROOTS = ["state"];
 
 function backupDirPath(home: string): string {
   return join(home, `.migration-backup-${Date.now()}`);
@@ -180,6 +202,13 @@ const DELEGATED_WORK_STEP: DelegatedWorkLayoutStep = {
   apply: applyDelegatedWorkLayout,
 };
 
+const INNER_LIFE_STEP: InnerLifeLayoutStep = {
+  version: 6,
+  roots: STEP_6_ROOTS,
+  plan: planInnerLifeLayout,
+  apply: applyInnerLifeLayout,
+};
+
 /**
  * Run every pending migration step for the given goblin home.
  * Exported for tests and for the CLI entry point below.
@@ -213,6 +242,7 @@ export function runMigrations(home: string): void {
       )
     : null;
   const step5Plan = current < 5 ? DELEGATED_WORK_STEP.plan(home) : null;
+  const step6Plan = current < 6 ? INNER_LIFE_STEP.plan(home) : null;
 
   const rootsToSnapshot = new Set<string>();
   if (current < 1) {
@@ -229,6 +259,9 @@ export function runMigrations(home: string): void {
   }
   if (current < 5) {
     for (const root of DELEGATED_WORK_STEP.roots) rootsToSnapshot.add(root);
+  }
+  if (current < 6) {
+    for (const root of INNER_LIFE_STEP.roots) rootsToSnapshot.add(root);
   }
 
   log.info("starting offline migration", { from: current, to: CURRENT_STATE_VERSION });
@@ -259,6 +292,11 @@ export function runMigrations(home: string): void {
     log.info("running migration step", { step: 5 });
     DELEGATED_WORK_STEP.apply(home, step5Plan!);
     writeStateVersion(home, 5);
+  }
+  if (current < 6) {
+    log.info("running migration step", { step: 6 });
+    INNER_LIFE_STEP.apply(home, step6Plan!);
+    writeStateVersion(home, 6);
   }
 
   log.info("migration complete", { version: CURRENT_STATE_VERSION });

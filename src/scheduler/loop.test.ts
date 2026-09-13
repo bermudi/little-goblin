@@ -5,15 +5,12 @@ import { dirname, join } from "node:path";
 import { SchedulerLoop, HEARTBEAT_PROMPT, DEFAULT_TICK_INTERVAL_MS, resolveHeartbeatPrompt } from "./loop.ts";
 import { ScheduleStore } from "./store.ts";
 import { ConversationStore } from "../sessions/conversation-store.ts";
-import { InternalSessionStore } from "../sessions/internal-session-store.ts";
 import {
   createConversationLifecycle,
   reconcileProjectAssignmentAtColdStart,
   type ConversationLifecycle,
 } from "../orchestration/conversation-lifecycle.ts";
 import type { MemoryEngine } from "../memory/engine.ts";
-import type { CandidateExtractor } from "../memory/dreaming.ts";
-import type { TranscriptLine } from "../sessions/transcript.ts";
 import { loadBindings, saveBindings } from "../sessions/bindings.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
 import { heartbeatMdPath } from "../workspace/paths.ts";
@@ -26,6 +23,14 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((res) => { resolve = res; });
   return { promise, resolve };
+}
+
+async function waitFor(condition: () => boolean, what: string): Promise<void> {
+  for (let i = 0; i < 400; i++) {
+    if (condition()) return;
+    await Bun.sleep(5);
+  }
+  throw new Error(`timed out waiting for ${what}`);
 }
 
 /** Fake dispatcher that records every enqueueScheduledTurn call. */
@@ -79,7 +84,6 @@ describe("SchedulerLoop", () => {
   let tmpDir: string;
   let lifecycle: ConversationLifecycle;
   let conversationStore: ConversationStore;
-  let internalSessionStore: InternalSessionStore;
   let store: ScheduleStore;
   let dispatcher: ReturnType<typeof makeFakeDispatcher>;
   let clock: ReturnType<typeof makeFakeClock>;
@@ -91,7 +95,6 @@ describe("SchedulerLoop", () => {
       disposeRuntime: async () => {},
     });
     conversationStore = new ConversationStore(tmpDir);
-    internalSessionStore = new InternalSessionStore(tmpDir);
     store = new ScheduleStore(tmpDir);
     dispatcher = makeFakeDispatcher();
     clock = makeFakeClock(NOW_MS);
@@ -113,13 +116,9 @@ describe("SchedulerLoop", () => {
     selectedLifecycle: SchedulerConversationLifecycle = lifecycle,
   ): {
     lifecycle: SchedulerConversationLifecycle;
-    conversationCatalog: ConversationStore;
-    internalSessionStore: InternalSessionStore;
   } {
     return {
       lifecycle: selectedLifecycle,
-      conversationCatalog: conversationStore,
-      internalSessionStore,
     };
   }
 
@@ -1147,36 +1146,85 @@ describe("SchedulerLoop", () => {
     });
   });
 
-  describe("Conversation enumeration for dreaming", () => {
-    it("visits bound and unbound non-archived Conversations, excluding archived and internal state", async () => {
-      const bound = await createSession(dmSurface(100));
-      const unbound = conversationStore.create(personalEnvironment());
-      const archived = conversationStore.create(personalEnvironment());
-      conversationStore.archive(archived.id);
-      const internal = internalSessionStore.ensure("__goblin_dreaming__");
-      const visited: string[] = [];
+  describe("light sleep signal", () => {
+    it("signals the inner-life seam on the light timer and never the dreaming pipeline", async () => {
+      let passes = 0;
+      const lightSleep = {
+        runPass: async () => {
+          passes += 1;
+        },
+      };
       const memoryEngine = {
         dreaming: {
-          runLightSleep: async (conversationId: string) => {
-            visited.push(conversationId);
+          runLightSleep: async () => {
+            throw new Error("sentinel: light sleep must not route through DreamingPipeline");
           },
+          setExtractor: () => {
+            throw new Error("sentinel: no dreaming extractor may be installed");
+          },
+          runRemSleep: async () => {},
+          runDeepSleep: async () => {},
         },
+        syncTranscripts: async () => ({ indexed: 0, removed: 0, inserted: 0 }),
       } as unknown as MemoryEngine;
+      const timers: Array<{ callback: () => void; ms: number; clear(): void }> = [];
+      const fakeClock: SchedulerClock = {
+        now: () => NOW_MS,
+        setInterval: (callback, ms) => {
+          const timer = { callback, ms, clear: () => {} };
+          timers.push(timer);
+          return timer;
+        },
+      };
       const loop = new SchedulerLoop({
         store,
         ...schedulerDependencies(),
         dispatcher,
-        clock: clock.clock,
+        clock: fakeClock,
         home: tmpDir,
         memoryEngine,
+        lightSleep,
+        tickIntervalMs: 1000,
+        transcriptSyncIntervalMs: Number.POSITIVE_INFINITY,
+        dreamingLightIntervalMs: 4000,
+        dreamingRemIntervalMs: Number.POSITIVE_INFINITY,
+        dreamingDeepIntervalMs: Number.POSITIVE_INFINITY,
       });
+      loop.start();
 
-      await (loop as unknown as { runDreamingLightSleep(): Promise<void> }).runDreamingLightSleep();
+      const lightTimer = timers.find((timer) => timer.ms === 4000);
+      expect(lightTimer).toBeDefined();
+      lightTimer!.callback();
+      await waitFor(() => passes === 1, "the light-sleep pass signal");
 
-      expect(visited).toEqual(conversationStore.list().map((conversation) => conversation.id));
-      expect(new Set(visited)).toEqual(new Set([bound.id, unbound.id]));
-      expect(visited).not.toContain(archived.id);
-      expect(visited).not.toContain(internal.id);
+      loop.stop();
+    });
+
+    it("wires no light timer when no light-sleep seam is present", () => {
+      const timers: Array<{ ms: number; clear(): void }> = [];
+      const fakeClock: SchedulerClock = {
+        now: () => NOW_MS,
+        setInterval: (_callback, ms) => {
+          const timer = { ms, clear: () => {} };
+          timers.push(timer);
+          return timer;
+        },
+      };
+      const loop = new SchedulerLoop({
+        store,
+        ...schedulerDependencies(),
+        dispatcher,
+        clock: fakeClock,
+        home: tmpDir,
+        tickIntervalMs: 1000,
+        dreamingLightIntervalMs: 4000,
+        transcriptSyncIntervalMs: Number.POSITIVE_INFINITY,
+        dreamingRemIntervalMs: Number.POSITIVE_INFINITY,
+        dreamingDeepIntervalMs: Number.POSITIVE_INFINITY,
+      });
+      loop.start();
+      expect(timers.map((timer) => timer.ms)).toEqual([1000]);
+      loop.stop();
     });
   });
 
@@ -1316,55 +1364,4 @@ describe("SchedulerLoop", () => {
     });
   });
 
-  describe("dreaming extractor delegation", () => {
-    it("produces candidates through the delegated dreaming parser module", async () => {
-      let extractor: CandidateExtractor | undefined;
-      const memoryEngine = {
-        dreaming: {
-          setExtractor: (candidate: CandidateExtractor) => {
-            extractor = candidate;
-          },
-        },
-      } as unknown as MemoryEngine;
-      const internalDispatcher: SchedulerDispatcher = {
-        runtimeAdmissionOpen: () => true,
-        enqueueScheduledTurn: () => true,
-        enqueueInternalTurn: (_session, _prompt, onComplete) => {
-          onComplete(JSON.stringify({
-            candidates: [
-              { category: "fact", confidence: 0.9, text: "User likes tea.", lineRange: [0, 0] },
-            ],
-          }));
-        },
-      };
-      const loop = new SchedulerLoop({
-        store,
-        ...schedulerDependencies(),
-        dispatcher: internalDispatcher,
-        clock: clock.clock,
-        home: tmpDir,
-        memoryEngine,
-        transcriptSyncIntervalMs: Number.POSITIVE_INFINITY,
-        dreamingLightIntervalMs: Number.POSITIVE_INFINITY,
-        dreamingRemIntervalMs: Number.POSITIVE_INFINITY,
-        dreamingDeepIntervalMs: Number.POSITIVE_INFINITY,
-      });
-      loop.start();
-
-      expect(extractor).toBeDefined();
-      const lines: TranscriptLine[] = [
-        { index: 0, role: "user", text: "i like tea", ts: "2026-07-01T00:00:00.000Z" },
-      ];
-      const candidates = await extractor!(lines, { sessionId: "session-1" });
-      expect(candidates).toHaveLength(1);
-      expect(candidates[0]).toMatchObject({
-        target: "memory",
-        category: "fact",
-        confidence: 0.9,
-        text: "User likes tea.",
-        source: { sessionId: "session-1", lineRange: [0, 0], sourceRole: "user" },
-      });
-      loop.stop();
-    });
-  });
 });

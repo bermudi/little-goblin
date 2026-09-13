@@ -154,11 +154,15 @@ If comment posting, local mutation, commit, or verification fails, report the bo
 
 For every checked unit, cross-check its receipt `unit digest:` against the unit's current contract digest (`litespec digest --issue <N>` / `--queue <path>`). A receipt bound to a superseded contract is acceptable only when witnessed amendment records bridge the observed digests to the current contract over `Old digest:` → `New digest:` edges; an unbridged transition — a silent contract edit followed by a fresh receipt — is a CRITICAL finding breaking that unit's contract, routed to `litespec-plan` because neither build nor review may repair a contract.
 
+Run `litespec validate --issue <N>` (or `--queue <path>`) rather than hand-checking receipt internals: it recomputes every posted versioned `Receipt ID:` from the comment's own fields and fails on mismatch — independent verification that does not trust the assembler. Do not record uncertainty about a receipt ID the CLI can recompute.
+
 **PASS** — every unit checkbox is checked, every rebuild request, re-plan marker, and amendment is resolved, and no blocking finding remains. Routed findings may accompany it.
 
 **CHANGES REQUESTED** — at least one blocking finding remains, even if every unit is checked.
 
 Appending a unit to the parent queue and recording rule-2 routing are the only permitted routing mutations; do not change source, specs, decisions, existing unit contracts, evidence, or unaffected checkboxes. Write `## <outcome>`, `Done means:`, `Verify:`, and `Depends:` if needed. Do not invent units for trivial findings.
+
+Before returning the closure verdict, reread the Proposal and Design prose and re-inventory every scope or preservation sentence against the units: a sentence no unit's `Done means:` or `Constraints:` enforces, yet the implementation can violate in a reachable state, is a finding routed by scope — not decoration. The issue body's prose is part of the review scope.
 
 The issue closes only when every unit checkbox is checked, no rebuild request, re-plan marker, or amendment is unresolved, **and** review returns `PASS`. Routed non-blocking findings never block closure.
 

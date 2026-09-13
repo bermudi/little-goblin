@@ -11,7 +11,8 @@ import type { SettingsServerHandle } from "./settings/server.ts";
 import { SchedulerLoop, DEFAULT_TRANSCRIPT_SYNC_MAX_MS } from "./scheduler/loop.ts";
 import { runPreflight } from "./preflight.ts";
 import { CURRENT_STATE_VERSION, readStateVersion } from "./state-version.ts";
-import { ConversationStore, InternalSessionStore } from "./sessions/mod.ts";
+import { ConversationStore } from "./sessions/mod.ts";
+import { createInnerLifeLifecycle } from "./inner-life/mod.ts";
 import { reconcileProjectAssignmentAtColdStart } from "./orchestration/conversation-lifecycle.ts";
 import { ShutdownCoordinator } from "./shutdown/mod.ts";
 
@@ -54,16 +55,30 @@ async function main(): Promise<void> {
 
   await memoryEngine.syncTranscripts({ maxDurationMs: DEFAULT_TRANSCRIPT_SYNC_MAX_MS });
 
+  // Private-reflection inner life (issue #67): the deployment owns exactly ONE
+  // host instance. Startup reconciliation validates every persisted wake record
+  // and canonical receipt and recovers interrupted work; it must complete
+  // BEFORE memory timers and Telegram polling are admitted, so a failure here
+  // fails startup closed. The offline migration remedy is `bun run migrate`,
+  // run with the service stopped; startup reconciles, it never migrates.
+  const innerLife = createInnerLifeLifecycle({
+    home: cfg.goblinHome,
+    config: cfg,
+    memory: memoryEngine.newStore(),
+    conversations: new ConversationStore(cfg.goblinHome),
+    phases: memoryEngine.dreaming,
+  });
+  await innerLife.reconcile();
+
   // Scheduled turns resolve the current Conversation through the same
   // lifecycle authority as Telegram intake and serialize through the same
-  // per-Conversation runtime queue as /queue and media prompts. Dreaming gets
-  // canonical Conversation enumeration and Surface-free internal persistence
-  // as separate, explicit dependencies.
+  // per-Conversation runtime queue as /queue and media prompts. Light sleep
+  // signals the inner-life host; REM/deep sleep and transcript sync signal
+  // the memory engine as separate, explicit dependencies.
   const scheduler = new SchedulerLoop({
     store: scheduleStore,
     lifecycle,
-    conversationCatalog: new ConversationStore(cfg.goblinHome),
-    internalSessionStore: new InternalSessionStore(cfg.goblinHome),
+    lightSleep: innerLife.lightSleep,
     dispatcher,
     home: cfg.goblinHome,
     memoryEngine,
@@ -90,9 +105,20 @@ async function main(): Promise<void> {
     drainBufferedText: () => gate.bufferedTextAdmission(),
     drainRuntimeAdmission: () => gate.runtimeAdmission(),
     disposeRuntimes: () => runtimeHost.disposeAll(),
-    drainScheduler: () => scheduler.stopAndDrain(),
+    drainScheduler: async () => {
+      // Closing the host is synchronous: wake admission fences and active
+      // reflection cancels before the scheduler drain waits for admitted
+      // timer jobs, so a mid-reflection shutdown settles in bounded time and
+      // late model output can never write memory.
+      innerLife.close();
+      await scheduler.stopAndDrain();
+      await innerLife.settle();
+    },
     disposeSubagents: () => subagentRunner.dispose(),
-    closeMemoryEngine: async () => { memoryEngine.close(); },
+    closeMemoryEngine: async () => {
+      innerLife.dispose();
+      memoryEngine.close();
+    },
   });
   let shutdownPromise: Promise<void> | undefined;
   let settingsHandle: SettingsServerHandle | null = null;

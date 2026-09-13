@@ -1,13 +1,30 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
-import { log } from "../log.ts";
+import { boundedError, log } from "../log.ts";
 import type { MetricsStore } from "../metrics/mod.ts";
+import { MemoryArtifactStore } from "./artifacts.ts";
 import { MemoryDatabase } from "./db.ts";
 import { EmbeddingProvider } from "./embeddings.ts";
 import { MemoryBudget, MemoryOverflowError } from "./budget.ts";
 import { deriveConceptTags } from "./concept-vocabulary.ts";
 import { planMutation } from "./mutate-plan.ts";
+import {
+  CONFIDENCE_THRESHOLD,
+  DEDUP_COSINE_THRESHOLD,
+  factEffectPayloadHash,
+  findNearDuplicateWithEmbeddings,
+  isProceduralNoise,
+  parseMemoryEffectOutcome,
+  resolveFactEffectScope,
+  textNearDuplicate,
+  type DuplicateMatch,
+  type ExistingEntry,
+  type MemoryFactEffect,
+  type MemoryEffectOutcome,
+} from "./policy.ts";
+import type { QuarantineRecord } from "./quarantine.ts";
+import { checkMemorySafety, redactPreview } from "./safety.ts";
 import { memoryDbPath, memoryDir } from "./paths.ts";
 import { scopeTag, toMemoryScopePair, type MemoryScope } from "./scope.ts";
 import { parseSurfaceId, type SurfaceId } from "../surface.ts";
@@ -23,6 +40,35 @@ export type StoreResult =
 export interface ParsedMemory {
   description?: string;
   body: string;
+}
+
+/**
+ * Thrown when an already-applied effect key is reused with a different payload
+ * identity. The recorded receipt is canonical; the conflicting request fails
+ * loudly instead of mutating memory a second time under one identity.
+ */
+export class MemoryEffectConflictError extends Error {
+  readonly effectKey: string;
+  readonly recordedPayloadHash: string;
+  readonly requestedPayloadHash: string;
+
+  constructor(effectKey: string, recordedPayloadHash: string, requestedPayloadHash: string) {
+    super(
+      `memory effect ${effectKey} was already applied with a different payload identity ` +
+        `(recorded ${recordedPayloadHash}, requested ${requestedPayloadHash})`,
+    );
+    this.name = "MemoryEffectConflictError";
+    this.effectKey = effectKey;
+    this.recordedPayloadHash = recordedPayloadHash;
+    this.requestedPayloadHash = requestedPayloadHash;
+  }
+}
+
+export interface ApplyFactEffectOptions {
+  /** Confidence threshold below which facts are rejected. Defaults to the shared dreaming threshold. */
+  confidenceThreshold?: number;
+  /** Cosine similarity above which a candidate is a near-duplicate. Defaults to the shared dreaming threshold. */
+  dedupCosineThreshold?: number;
 }
 
 export interface ScopeEntry {
@@ -69,6 +115,54 @@ interface EntryRow {
   displayOrder: number;
 }
 
+/** Row surface needed to update an entry in place. */
+interface EntryUpdateRow {
+  id: string;
+  scope: string;
+  entry_kind: string;
+  text: string;
+  chat_id: string | null;
+  category: string | null;
+  confidence: number | null;
+  source_session: string | null;
+  updated_source_session: string | null;
+  source_role: string | null;
+  origin: string;
+  promoted_at: number | null;
+  recall_count: number;
+}
+
+/**
+ * Boundary validation for fact effects. The wake record and reflection
+ * boundary enforce the profile bounds; this guards the receipt seam itself
+ * against envelope-level garbage.
+ */
+function validateFactEffect(effect: MemoryFactEffect): void {
+  const label = effect.effectKey.length > 0 ? effect.effectKey : "<missing effect key>";
+  if (effect.effectKey.length === 0 || effect.effectKey.length > 200) {
+    throw new Error(`invalid memory fact effect ${label}: effect key must be 1..200 characters`);
+  }
+  if (effect.text.length === 0) {
+    throw new Error(`invalid memory fact effect ${label}: fact text must not be empty`);
+  }
+  if (!Number.isFinite(effect.confidence) || effect.confidence <= 0 || effect.confidence > 1) {
+    throw new Error(`invalid memory fact effect ${label}: confidence must be in (0, 1]`);
+  }
+}
+
+function isPrimaryKeyConflict(err: unknown): boolean {
+  return err instanceof Error && (err as { code?: string }).code === "SQLITE_CONSTRAINT_PRIMARYKEY";
+}
+
+/** One strictly validated canonical effect receipt. */
+export interface EffectReceiptRecord {
+  readonly effectKey: string;
+  readonly payloadHash: string;
+  readonly outcome: MemoryEffectOutcome;
+}
+
+const RECEIPT_PAYLOAD_HASH_RE = /^[0-9a-f]{64}$/;
+
 
 export interface MemoryEntryInput {
   id?: string;
@@ -108,15 +202,17 @@ export class MemoryStore {
   private metrics: MetricsStore | null;
   private embeddings: EmbeddingProvider | null;
   private budget: MemoryBudget;
+  private artifacts: MemoryArtifactStore | null;
 
   constructor(
     homeOrDb: string | MemoryDatabase,
     metrics?: MetricsStore,
-    deps?: { embeddings?: EmbeddingProvider; budget?: MemoryBudget },
+    deps?: { embeddings?: EmbeddingProvider; budget?: MemoryBudget; artifacts?: MemoryArtifactStore },
   ) {
     this.metrics = metrics ?? null;
     this.embeddings = deps?.embeddings ?? null;
     this.budget = deps?.budget ?? new MemoryBudget();
+    this.artifacts = deps?.artifacts ?? (typeof homeOrDb === "string" ? new MemoryArtifactStore(homeOrDb) : null);
     if (homeOrDb instanceof MemoryDatabase) {
       this._db = homeOrDb;
     } else {
@@ -313,74 +409,13 @@ export class MemoryStore {
     let curated = false;
     this.db.database.exec("BEGIN");
     try {
-      const existing = this.db.database
-        .query<
-          {
-            scope: string;
-            entry_kind: string;
-            text: string;
-            chat_id: string | null;
-            category: string | null;
-            confidence: number | null;
-            source_session: string | null;
-            updated_source_session: string | null;
-            source_role: string | null;
-            origin: string;
-            promoted_at: number | null;
-            recall_count: number;
-          },
-          { $id: string }
-        >(
-          `SELECT scope, entry_kind, text, chat_id, category, confidence,
-                  source_session, updated_source_session, source_role, origin,
-                  promoted_at, recall_count
-           FROM memory_entries WHERE id = $id`,
-        )
-        .get({ $id: id });
+      const existing = this.getEntryRow(id);
       if (existing === null) {
         this.db.database.exec("ROLLBACK");
         return { ok: false, error: `entry not found: ${id}` };
       }
-
       curated = existing.entry_kind === "memory" || existing.entry_kind === "user";
-      const now = Date.now();
-      const textDelta = input.text.length - existing.text.length;
-      if (curated && textDelta > 0) {
-        const current = this.budget.currentChars(this.db);
-        this.budget.enforce(this.db, current + textDelta, [id]);
-      }
-
-      // Remove the stale vector and index data before updating the row. The
-      // embedding will be recomputed after the transaction commits.
-      this.db.database.query("DELETE FROM memory_embeddings WHERE entry_id = $id").run({ $id: id });
-      this.db.database.query("DELETE FROM memory_index_fts WHERE entry_id = $id").run({ $id: id });
-      this.db.database.query("DELETE FROM memory_entry_tags WHERE entry_id = $id").run({ $id: id });
-
-      this.db.database
-        .query(
-          `UPDATE memory_entries
-           SET text=$text, updated_at=$updated_at, origin=$origin,
-               category=$category, confidence=$confidence,
-               source_session=$source_session, updated_source_session=$updated_source_session,
-               source_role=$source_role, promoted_at=$promoted_at,
-               recall_count=$recall_count
-           WHERE id=$id`,
-        )
-        .run({
-          $id: id,
-          $text: input.text,
-          $updated_at: input.updatedAt ?? now,
-          $origin: input.origin ?? existing.origin,
-          $category: input.category ?? existing.category,
-          $confidence: input.confidence ?? existing.confidence,
-          $source_session: input.sourceSession ?? existing.source_session,
-          $updated_source_session: input.updatedSourceSession ?? existing.updated_source_session,
-          $source_role: input.sourceRole ?? existing.source_role,
-          $promoted_at: input.promotedAt ?? existing.promoted_at,
-          $recall_count: input.recallCount ?? existing.recall_count,
-        });
-
-      this.insertIndexAndTags(id, existing.scope, existing.entry_kind, input.text, existing.chat_id);
+      this.applyEntryUpdateInTransaction(existing, input);
 
       if (curated) this.setBudgetBlocked(false);
       this.db.database.exec("COMMIT");
@@ -395,6 +430,187 @@ export class MemoryStore {
 
     await this.runEmbeddingAfterCommit("updateEntry", () => this.embeddings?.embedEntry(id, input.text));
     return { ok: true };
+  }
+
+  /**
+   * Apply one persisted accepted fact intent (issue #67, decision 0035).
+   *
+   * The stable effect key and payload identity select the receipt: replay with
+   * the same identity returns the recorded canonical outcome without redoing
+   * any mutation; reuse with a different identity throws
+   * {@link MemoryEffectConflictError}. First application runs the existing
+   * policy seam (procedural noise, safety, confidence, event-time scope,
+   * near-duplicate) and commits the row/index mutation and its receipt in one
+   * SQLite transaction — explicit policy rejections (including durable budget
+   * exhaustion) receive receipt outcomes, while unexpected database errors
+   * roll everything back and propagate. Embeddings and audit artifacts stay
+   * outside the transaction: their post-commit failures are logged, never
+   * retried against canonical memory.
+   */
+  async applyFactEffect(
+    effect: MemoryFactEffect,
+    opts: ApplyFactEffectOptions = {},
+  ): Promise<MemoryEffectOutcome> {
+    validateFactEffect(effect);
+    const payloadHash = factEffectPayloadHash(effect);
+
+    const stored = this.getEffectReceipt(effect.effectKey);
+    if (stored !== null) {
+      if (stored.payloadHash !== payloadHash) {
+        throw new MemoryEffectConflictError(effect.effectKey, stored.payloadHash, payloadHash);
+      }
+      // Replay: the recorded receipt IS the canonical outcome. No mutation,
+      // no embedding refresh, no artifact duplication.
+      return stored.outcome;
+    }
+
+    const now = Date.now();
+    const scope = resolveFactEffectScope(effect);
+    if (scope === null) {
+      return this.commitRejectedOutcome(
+        effect,
+        payloadHash,
+        "no_agent_authority",
+        `target ${JSON.stringify(effect.target)} is not an eligible fact target; named-agent memory writes are denied`,
+        now,
+      );
+    }
+    if (isProceduralNoise(effect.text)) {
+      return this.commitRejectedOutcome(
+        effect,
+        payloadHash,
+        "procedural_noise",
+        "candidate text matches procedural-noise patterns",
+        now,
+      );
+    }
+    const safety = checkMemorySafety(effect.text);
+    if (!safety.ok) {
+      return this.commitRejectedOutcome(
+        effect,
+        payloadHash,
+        "unsafe",
+        `${safety.reason}: ${safety.message ?? "unsafe content"}`,
+        now,
+      );
+    }
+    const confidenceThreshold = opts.confidenceThreshold ?? CONFIDENCE_THRESHOLD;
+    if (effect.confidence < confidenceThreshold) {
+      return this.commitRejectedOutcome(
+        effect,
+        payloadHash,
+        "low_confidence",
+        `confidence ${effect.confidence} is below the ${confidenceThreshold} threshold`,
+        now,
+      );
+    }
+
+    const { scope: tag, entry_kind: entryKind, chatId } = toMemoryScopePair(scope);
+    const entries: ExistingEntry[] = this.readEntries(scope).map((e) => ({ id: e.entry_id, text: e.text }));
+    let duplicate: DuplicateMatch | null = textNearDuplicate(effect.text, entries);
+    if (duplicate === null && this.embeddings !== null && !this.embeddings.isDegraded()) {
+      // Cosine enrichment is best-effort and outside the canonical
+      // transaction: a failed lookup degrades to text-only deduplication.
+      try {
+        duplicate = await findNearDuplicateWithEmbeddings(
+          effect.text,
+          entries,
+          this.embeddings,
+          opts.dedupCosineThreshold ?? DEDUP_COSINE_THRESHOLD,
+        );
+      } catch (err) {
+        log.warn("memory effect near-duplicate embedding lookup failed; applying text-only dedup", {
+          effectKey: effect.effectKey,
+          ...boundedError(err),
+        });
+      }
+    }
+
+    let outcome: MemoryEffectOutcome;
+    let embedText: string;
+    this.db.database.exec("BEGIN");
+    try {
+      if (duplicate !== null) {
+        const bodyText = duplicate.preserveExisting ? duplicate.existingText : effect.text;
+        const existing = this.getEntryRow(duplicate.id);
+        if (existing === null) {
+          throw new Error(`near-duplicate entry vanished mid-transaction: ${duplicate.id}`);
+        }
+        this.applyEntryUpdateInTransaction(existing, {
+          text: bodyText,
+          category: "fact",
+          confidence: effect.confidence,
+          updatedSourceSession: effect.source.session,
+          sourceRole: "user",
+          promotedAt: now,
+        });
+        outcome = {
+          kind: "updated",
+          entryId: duplicate.id,
+          preservedExisting: duplicate.preserveExisting,
+        };
+        embedText = bodyText;
+      } else {
+        const currentChars = this.budget.currentChars(this.db);
+        this.budget.enforce(this.db, currentChars + effect.text.length);
+        const entryId = this.addEntryInTransaction({
+          scope: tag,
+          entryKind,
+          text: effect.text,
+          origin: "dreaming",
+          category: "fact",
+          confidence: effect.confidence,
+          sourceSession: effect.source.session,
+          sourceRole: "user",
+          promotedAt: now,
+          chatId,
+          createdAt: now,
+          updatedAt: now,
+        });
+        outcome = { kind: "added", entryId };
+        embedText = effect.text;
+      }
+      this.setBudgetBlocked(false);
+      this.insertEffectReceipt(effect.effectKey, payloadHash, outcome, now);
+      this.db.database.exec("COMMIT");
+    } catch (err) {
+      this.db.database.exec("ROLLBACK");
+      if (err instanceof MemoryOverflowError) {
+        // Budget exhaustion is an explicit, durable policy outcome (decision
+        // 0047): the blocked marker and the rejection receipt commit after
+        // the mutation rollback. Everything else propagates.
+        this.setBudgetBlocked(true);
+        const rejected: MemoryEffectOutcome = {
+          kind: "rejected",
+          reason: "budget_exhausted",
+          message: err.message,
+        };
+        this.insertEffectReceiptInNewTransaction(effect.effectKey, payloadHash, rejected, Date.now());
+        this.appendEffectArtifacts(effect, rejected, scopeTag(scope), Date.now());
+        return rejected;
+      }
+      if (isPrimaryKeyConflict(err)) {
+        // A concurrent application of the same effect key committed its
+        // receipt first. Its receipt is the canonical outcome for this key:
+        // replay it instead of failing the whole effect.
+        const raced = this.getEffectReceipt(effect.effectKey);
+        if (raced !== null && raced.payloadHash === payloadHash) {
+          return raced.outcome;
+        }
+      }
+      throw err;
+    }
+
+    // Post-commit, outside the canonical transaction (contract: embeddings
+    // and audit artifacts never join it). Failures are observable and never
+    // repeat or roll back the committed mutation. Only added/updated outcomes
+    // reach this point; rejections returned earlier.
+    const entryId = outcome.entryId;
+    await this.runEmbeddingAfterCommit("applyFactEffect", () =>
+      this.embeddings?.embedEntry(entryId, embedText),
+    );
+    this.appendEffectArtifacts(effect, outcome, scopeTag(scope), now);
+    return outcome;
   }
 
   async addEntries(inputs: MemoryEntryInput[]): Promise<string[]> {
@@ -953,6 +1169,230 @@ export class MemoryStore {
     }
   }
 
+  private getEntryRow(id: string): EntryUpdateRow | null {
+    return this.db.database
+      .query<EntryUpdateRow, { $id: string }>(
+        `SELECT id, scope, entry_kind, text, chat_id, category, confidence,
+                source_session, updated_source_session, source_role, origin,
+                promoted_at, recall_count
+         FROM memory_entries WHERE id = $id`,
+      )
+      .get({ $id: id });
+  }
+
+  /**
+   * Apply one entry update inside the caller's transaction: budget projection
+   * against the existing row, stale vector/index/tag cleanup, the row update,
+   * and the FTS/tag reindex. Shared by `updateEntry` and the fact-effect
+   * application path so the update policy cannot drift between them.
+   */
+  private applyEntryUpdateInTransaction(
+    existing: EntryUpdateRow,
+    input: {
+      text: string;
+      origin?: string;
+      category?: string;
+      confidence?: number;
+      sourceSession?: string;
+      updatedSourceSession?: string;
+      sourceRole?: string;
+      promotedAt?: number;
+      recallCount?: number;
+      updatedAt?: number;
+    },
+  ): void {
+    const id = existing.id;
+    const curated = existing.entry_kind === "memory" || existing.entry_kind === "user";
+    const now = Date.now();
+    const textDelta = input.text.length - existing.text.length;
+    if (curated && textDelta > 0) {
+      const current = this.budget.currentChars(this.db);
+      this.budget.enforce(this.db, current + textDelta, [id]);
+    }
+
+    // Remove the stale vector and index data before updating the row. The
+    // embedding will be recomputed after the transaction commits.
+    this.db.database.query("DELETE FROM memory_embeddings WHERE entry_id = $id").run({ $id: id });
+    this.db.database.query("DELETE FROM memory_index_fts WHERE entry_id = $id").run({ $id: id });
+    this.db.database.query("DELETE FROM memory_entry_tags WHERE entry_id = $id").run({ $id: id });
+
+    this.db.database
+      .query(
+        `UPDATE memory_entries
+         SET text=$text, updated_at=$updated_at, origin=$origin,
+             category=$category, confidence=$confidence,
+             source_session=$source_session, updated_source_session=$updated_source_session,
+             source_role=$source_role, promoted_at=$promoted_at,
+             recall_count=$recall_count
+         WHERE id=$id`,
+      )
+      .run({
+        $id: id,
+        $text: input.text,
+        $updated_at: input.updatedAt ?? now,
+        $origin: input.origin ?? existing.origin,
+        $category: input.category ?? existing.category,
+        $confidence: input.confidence ?? existing.confidence,
+        $source_session: input.sourceSession ?? existing.source_session,
+        $updated_source_session: input.updatedSourceSession ?? existing.updated_source_session,
+        $source_role: input.sourceRole ?? existing.source_role,
+        $promoted_at: input.promotedAt ?? existing.promoted_at,
+        $recall_count: input.recallCount ?? existing.recall_count,
+      });
+
+    this.insertIndexAndTags(id, existing.scope, existing.entry_kind, input.text, existing.chat_id);
+  }
+
+  private getEffectReceipt(effectKey: string): { payloadHash: string; outcome: MemoryEffectOutcome } | null {
+    const row = this.db.database
+      .query<{ payload_hash: string; outcome: string }, { $effect_key: string }>(
+        "SELECT payload_hash, outcome FROM memory_effect_receipts WHERE effect_key = $effect_key",
+      )
+      .get({ $effect_key: effectKey });
+    if (row === null) return null;
+    const receipt = this.parseEffectReceipt(effectKey, row.payload_hash, row.outcome);
+    return { payloadHash: receipt.payloadHash, outcome: receipt.outcome };
+  }
+
+  /**
+   * Read every canonical effect receipt, strictly validated. The outcome must
+   * parse AND match the canonical outcome shape, and the payload identity must
+   * be a sha-256 digest: admission and replay must never build on a receipt
+   * they cannot interpret (issue #67, admission gate C3 — fail closed with the
+   * offending effect key).
+   */
+  readEffectReceipts(): EffectReceiptRecord[] {
+    const rows = this.db.database
+      .query<{ effect_key: string; payload_hash: string; outcome: string }, []>(
+        "SELECT effect_key, payload_hash, outcome FROM memory_effect_receipts ORDER BY effect_key",
+      )
+      .all();
+    return rows.map((row) => this.parseEffectReceipt(row.effect_key, row.payload_hash, row.outcome));
+  }
+
+  private parseEffectReceipt(
+    effectKey: string,
+    payloadHash: string,
+    rawOutcome: string,
+  ): EffectReceiptRecord {
+    if (!RECEIPT_PAYLOAD_HASH_RE.test(payloadHash)) {
+      throw new Error(`corrupt memory effect receipt for ${effectKey}: payload hash is not a sha-256 digest`);
+    }
+    return {
+      effectKey,
+      payloadHash,
+      outcome: parseMemoryEffectOutcome(effectKey, rawOutcome),
+    };
+  }
+
+  /** Insert one effect receipt. Caller owns the surrounding transaction. */
+  private insertEffectReceipt(
+    effectKey: string,
+    payloadHash: string,
+    outcome: MemoryEffectOutcome,
+    now: number,
+  ): void {
+    this.db.database
+      .query(
+        `INSERT INTO memory_effect_receipts (effect_key, payload_hash, outcome, entry_id, created_at, updated_at)
+         VALUES ($effect_key, $payload_hash, $outcome, $entry_id, $created_at, $updated_at)`,
+      )
+      .run({
+        $effect_key: effectKey,
+        $payload_hash: payloadHash,
+        $outcome: JSON.stringify(outcome),
+        $entry_id: outcome.kind === "rejected" ? null : outcome.entryId,
+        $created_at: now,
+        $updated_at: now,
+      });
+  }
+
+  private insertEffectReceiptInNewTransaction(
+    effectKey: string,
+    payloadHash: string,
+    outcome: MemoryEffectOutcome,
+    now: number,
+  ): void {
+    this.db.database.exec("BEGIN");
+    try {
+      this.insertEffectReceipt(effectKey, payloadHash, outcome, now);
+      this.db.database.exec("COMMIT");
+    } catch (err) {
+      this.db.database.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  /**
+   * Record a policy rejection durably and append its audit artifacts. The
+   * receipt commits in its own transaction — the rejection IS the canonical
+   * outcome — and never touches memory rows.
+   */
+  private commitRejectedOutcome(
+    effect: MemoryFactEffect,
+    payloadHash: string,
+    reason: Extract<MemoryEffectOutcome, { kind: "rejected" }>["reason"],
+    message: string,
+    now: number,
+  ): MemoryEffectOutcome {
+    const outcome: MemoryEffectOutcome = { kind: "rejected", reason, message };
+    const scope = resolveFactEffectScope(effect);
+    const targetScope = scope === null ? `transcript/${effect.source.session}` : scopeTag(scope);
+    this.insertEffectReceiptInNewTransaction(effect.effectKey, payloadHash, outcome, now);
+    this.appendEffectArtifacts(effect, outcome, targetScope, now);
+    return outcome;
+  }
+
+  /**
+   * Post-commit audit artifacts for one effect: a quarantine record for
+   * rejections and a dream-diary outcome line for every outcome. Both carry
+   * the effect identity so a retried append is identifiable as a duplicate.
+   * Artifacts sit outside the canonical transaction: an append failure is
+   * logged and never rolls back or repeats the committed effect.
+   */
+  private appendEffectArtifacts(
+    effect: MemoryFactEffect,
+    outcome: MemoryEffectOutcome,
+    targetScope: string,
+    now: number,
+  ): void {
+    const artifacts = this.artifacts;
+    if (artifacts === null) return;
+    if (outcome.kind === "rejected") {
+      try {
+        const record: QuarantineRecord = {
+          timestamp: new Date(now).toISOString(),
+          sourceSession: effect.source.session,
+          targetScope,
+          category: "fact",
+          reason: outcome.reason,
+          preview: redactPreview(effect.text),
+          effectKey: effect.effectKey,
+        };
+        artifacts.appendQuarantine(record);
+      } catch (err) {
+        log.warn("memory effect quarantine append failed after commit; outcome remains durable", {
+          effectKey: effect.effectKey,
+          ...boundedError(err),
+        });
+      }
+    }
+    try {
+      const tag = outcome.kind === "rejected"
+        ? `quarantine:${outcome.reason}`
+        : outcome.kind === "added"
+          ? "persisted:added"
+          : "persisted:updated";
+      const line = `- ${new Date(now).toISOString()} [${tag}] scope=${targetScope} category=fact confidence=${effect.confidence.toFixed(2)} source=${effect.source.session} line=${effect.source.lineIndex} effect=${effect.effectKey} summary=${JSON.stringify(effect.text)}\n`;
+      artifacts.appendDreamDiary(line);
+    } catch (err) {
+      log.warn("memory effect diary append failed after commit; outcome remains durable", {
+        effectKey: effect.effectKey,
+        ...boundedError(err),
+      });
+    }
+  }
+
   private readDescription(scope: string): string | null {
     const row = this.db.database
       .query<{ description: string | null }, { $scope: string }>("SELECT description FROM memory_scopes WHERE scope = $scope")
@@ -1109,6 +1549,7 @@ export class MemoryStore {
       | "addEntries"
       | "syncTranscriptChunks"
       | "importEntries"
+      | "applyFactEffect"
       | "add"
       | "replace"
       | "remove"

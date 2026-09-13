@@ -6,12 +6,8 @@ import type { ConversationState } from "../sessions/mod.ts";
 import { surfaceId, type Surface } from "../surface.ts";
 
 import type { MemoryEngine } from "../memory/engine.ts";
-import type { CandidateExtractor } from "../memory/dreaming.ts";
-import { parseDreamingResponse } from "./dreaming-parse.ts";
-import type { TranscriptLine } from "../sessions/transcript.ts";
 import type { ScheduledTurn } from "./types.ts";
 import type { ScheduleStore } from "./store.ts";
-import type { InternalSessionId, InternalSessionState } from "../sessions/internal-session.ts";
 import type { ScheduledTurnAdmission } from "../orchestration/dispatcher.ts";
 
 /**
@@ -150,12 +146,6 @@ export interface SchedulerDispatcher {
     content: string,
     onError?: (err: unknown) => void,
   ): boolean | ScheduledTurnAdmission;
-  enqueueInternalTurn?(
-    internalSession: InternalSessionState,
-    content: string,
-    onComplete: (text: string) => void,
-    onError: (err: unknown) => void,
-  ): void;
 }
 
 /** Scheduler-facing slice of ConversationLifecycle for late binding. */
@@ -163,27 +153,26 @@ export interface SchedulerConversationLifecycle {
   resolveCurrent(surface: Surface): Promise<ConversationState | null>;
 }
 
-/** Catalog of every non-archived canonical Conversation. */
-export interface ConversationCatalog {
-  list(): ConversationState[];
-}
-
-/** Persistence seam for the Surface-free dreaming compatibility runtime. */
-export interface SchedulerInternalSessionStore {
-  ensure(id: InternalSessionId): InternalSessionState;
+/**
+ * The light-sleep work signal: one deep inner-life interface the loop holds.
+ * The scheduler only signals that a light-sleep pass is due; conversation
+ * enumeration, backlog policy, wake reservation, reflection, and checkpoint
+ * ownership all live behind this seam (issue #67).
+ */
+export interface SchedulerLightSleep {
+  runPass(): Promise<void>;
 }
 
 export interface SchedulerOptions {
   store: ScheduleStore;
   lifecycle: SchedulerConversationLifecycle;
-  conversationCatalog: ConversationCatalog;
-  internalSessionStore: SchedulerInternalSessionStore;
+  lightSleep?: SchedulerLightSleep;
   dispatcher: SchedulerDispatcher;
   /** `$GOBLIN_HOME`, used to resolve the heartbeat prompt file at dispatch time. */
   home: string;
   clock?: SchedulerClock;
   tickIntervalMs?: number;
-  /** Optional memory engine; when present the loop schedules transcript sync and dreaming phases. */
+  /** Optional memory engine; when present the loop schedules transcript sync and REM/deep phases. */
   memoryEngine?: MemoryEngine;
   /** Interval in ms between transcript sync ticks. Default 5 minutes. */
   transcriptSyncIntervalMs?: number;
@@ -201,6 +190,10 @@ export interface SchedulerOptions {
  * Surface's current Conversation through ConversationLifecycle, and dispatches
  * valid prompts through the shared turn dispatcher.
  *
+ * Memory timers: transcript sync and REM/deep phases signal the memory
+ * engine; light sleep signals the deployment-owned inner-life host through
+ * the `lightSleep` seam (never the dreaming internal conversation runtime).
+ *
  * Lifecycle:
  *   - `start()` begins only after startup reconciliation (caller's ordering).
  *   - `stop()` clears the timer; in-flight ticks may finish but no new due
@@ -210,8 +203,7 @@ export interface SchedulerOptions {
 export class SchedulerLoop {
   private readonly store: ScheduleStore;
   private readonly lifecycle: SchedulerConversationLifecycle;
-  private readonly conversationCatalog: ConversationCatalog;
-  private readonly internalSessionStore: SchedulerInternalSessionStore;
+  private readonly lightSleep: SchedulerLightSleep | undefined;
   private readonly dispatcher: SchedulerDispatcher;
   private readonly clock: SchedulerClock;
   private readonly tickIntervalMs: number;
@@ -235,8 +227,7 @@ export class SchedulerLoop {
   constructor(options: SchedulerOptions) {
     this.store = options.store;
     this.lifecycle = options.lifecycle;
-    this.conversationCatalog = options.conversationCatalog;
-    this.internalSessionStore = options.internalSessionStore;
+    this.lightSleep = options.lightSleep;
     this.dispatcher = options.dispatcher;
     this.clock = options.clock ?? realClock;
     this.tickIntervalMs = options.tickIntervalMs ?? DEFAULT_TICK_INTERVAL_MS;
@@ -310,12 +301,20 @@ export class SchedulerLoop {
   }
 
   private startMemoryTimers(): void {
-    if (!this.memoryEngine) return;
-
-    // Wire a model-driven extractor when the dispatcher supports internal turns.
-    if (this.dispatcher.enqueueInternalTurn !== undefined) {
-      this.memoryEngine.dreaming.setExtractor(this.createModelExtractor());
+    // Dreaming light sleep: bounded private-reflection wakes per Conversation
+    // through the deployment-owned inner-life host (issue #67). It is wired
+    // independently of the memory engine — the host owns its own memory
+    // connection — and when no light-sleep seam is present (memory disabled)
+    // no timer exists and no wakes are scheduled.
+    if (this.lightSleep && Number.isFinite(this.dreamingLightIntervalMs)) {
+      this.memoryTimers.push(
+        this.clock.setInterval(() => {
+          this.trackJob(this.runLightSleepPass());
+        }, this.dreamingLightIntervalMs),
+      );
     }
+
+    if (!this.memoryEngine) return;
 
     // Transcript sync: lightweight, runs frequently, capped per tick.
     if (Number.isFinite(this.transcriptSyncIntervalMs)) {
@@ -329,15 +328,6 @@ export class SchedulerLoop {
               }),
           );
         }, this.transcriptSyncIntervalMs),
-      );
-    }
-
-    // Dreaming light sleep: per-Conversation cursor advancement.
-    if (Number.isFinite(this.dreamingLightIntervalMs)) {
-      this.memoryTimers.push(
-        this.clock.setInterval(() => {
-          this.trackJob(this.runDreamingLightSleep());
-        }, this.dreamingLightIntervalMs),
       );
     }
 
@@ -399,74 +389,19 @@ export class SchedulerLoop {
     this.memoryTimers.push(initialTimer);
   }
 
-  private createModelExtractor(): CandidateExtractor {
-    return async (lines, ctx) => {
-      const conversationId = ctx.sessionId;
-      const prompt = this.buildDreamingPrompt(conversationId, lines);
-      const raw = await this.runInternalTurnForDreaming(prompt);
-      return parseDreamingResponse({ goblinHome: this.home, raw, conversationId, lines });
-    };
-  }
-
-  private runInternalTurnForDreaming(prompt: string): Promise<string> {
-    // The dreaming extractor uses one fixed Surface-free internal session. Its
-    // prompt carries the source Conversation transcript excerpt, so internal
-    // runtime identity does not vary by Conversation.
-    const id: InternalSessionId = "__goblin_dreaming__";
-    const internalSession = this.internalSessionStore.ensure(id);
-    return new Promise((resolve, reject) => {
-      this.dispatcher.enqueueInternalTurn!(internalSession, prompt, resolve, reject);
-    });
-  }
-
-  private buildDreamingPrompt(conversationId: string, lines: TranscriptLine[]): string {
-    const formatted = lines
-      .map((line) => `[${line.index}] [${line.role}] ${line.text}`)
-      .join("\n");
-    return `You are the memory-dreaming extractor for a personal Telegram assistant. Review the transcript excerpt and identify durable memory candidates.
-
-Rules:
-- Extract only explicitly stated facts, short-term notes, recurring themes, commitments, standing orders, or anything that should be persisted.
-- Do not infer commitments or standing orders the user did not explicitly state.
-- Do not include procedural chit-chat, greetings, thanks, or questions.
-- category must be one of: "fact", "short_term", "theme", "commitment", "standing_order", "skip".
-- Use "skip" for anything that should not be persisted.
-- target is one of "memory" (default), "user" (preferences/communication style), or "agent" (named agent persona).
-- confidence is 0.0-1.0.
-- text is the durable memory verbatim as a concise statement.
-- rationale is an optional short reason for the choice.
-- lineRange is an optional [start, end] logical line index range from the transcript excerpt for provenance.
-
-Return ONLY a JSON object in this exact format:
-{
-  "candidates": [
-    {
-      "target": "memory" | "user" | "agent",
-      "category": "...",
-      "confidence": 0.0,
-      "text": "string",
-      "rationale": "string",
-      "lineRange": [0, 0]
-    }
-  ]
-}
-
-Transcript excerpt for Conversation ${conversationId}:
-${formatted}`;
-  }
-
-  private async runDreamingLightSleep(): Promise<void> {
-    if (!this.memoryEngine) return;
-    const conversations = this.conversationCatalog.list();
-    for (const conversation of conversations) {
-      try {
-        await this.memoryEngine.dreaming.runLightSleep(conversation.id);
-      } catch (err) {
-        log.warn("scheduled dreaming light sleep failed", {
-          conversationId: conversation.id,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
+  /**
+   * Signal one light-sleep pass to the inner-life host. Pass-level failures
+   * are logged so a timer job never crashes the loop; per-Conversation
+   * failures are logged inside the pass.
+   */
+  private async runLightSleepPass(): Promise<void> {
+    if (!this.lightSleep) return;
+    try {
+      await this.lightSleep.runPass();
+    } catch (err) {
+      log.warn("scheduled light sleep failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

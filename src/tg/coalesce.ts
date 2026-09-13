@@ -60,7 +60,7 @@ interface BufferEntry {
    * that fragment's `entities`/`caption_entities`. On flush it is applied to
    * the *merged* text, so later-fragment entity offsets are not represented
    * here. The practical consequence: `stripBotMention`'s entity path runs on
-   * first-fragment entities only — but its plain-text fallback (user-context.ts)
+   * first-fragment entities only — but its plain-text fallback (mention.ts)
    * still strips bare `@handle` occurrences anywhere in the merged text. So a
    * bot mention in a later fragment is stripped via the fallback as long as no
    * entity-range match was found in the first fragment. Re-basing per-fragment

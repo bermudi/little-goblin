@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import type { Context } from "grammy";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
-import { prepareUserContent, stripBotMention } from "./user-context.ts";
+import { prepareUserContent } from "./user-context.ts";
+import { stripBotMention } from "./mention.ts";
 
 type MessageEntity = NonNullable<Context["msg"]>["entities"] extends (infer E)[] | undefined ? E : never;
 

@@ -37,7 +37,8 @@ additionally reads the Surface-scoped `state/surfaces/<SurfaceId>/HEARTBEAT.md`
 ## Decision
 
 `WorkspacePrompts` (`src/workspace/prompts.ts`, surfaced through
-`src/workspace/mod.ts`) is the single prompt-file authority. It owns:
+`src/workspace/mod.ts`) is the single authority for deployment prompt
+files. It owns:
 
 - the prompt-file catalog — deployment files `workspace/SOUL.md` (required),
   `workspace/AGENTS.md` and `workspace/HEARTBEAT.md` (optional, per decision
@@ -53,10 +54,17 @@ additionally reads the Surface-scoped `state/surfaces/<SurfaceId>/HEARTBEAT.md`
   never overwrite), per decision 0039's onboarding ruling.
 
 The decision 0009 read-only exemption is rewritten accordingly: source code
-reads prompt files only through `WorkspacePrompts`, never through direct
-`readFile`/`access` calls in consuming modules. The exemption now explicitly
-covers the Surface-scoped `state/surfaces/<SurfaceId>/HEARTBEAT.md` as a
-prompt file, alongside the `workspace/` files.
+reads deployment prompt files only through `WorkspacePrompts`, never
+through direct `readFile`/`access` calls in consuming modules. The
+exemption now explicitly covers the Surface-scoped
+`state/surfaces/<SurfaceId>/HEARTBEAT.md` as a prompt file, alongside the
+`workspace/` files.
+
+Two prompt-file-adjacent paths remain outside the module by design:
+named-agent persona files (`workspace/agents/<name>/AGENTS.md`) are
+subagent-owned and stay with `named-agents.ts`, and `onboard.ts`'s
+`existsSync` probes for wizard flow are existence checks, not content
+reads.
 
 Path construction is unchanged: all `$GOBLIN_HOME` prompt-file paths still
 come from the path-helper modules (decision 0008); `WorkspacePrompts`
@@ -76,6 +84,7 @@ Agent-runtime writes during user-facing turns remain governed by decision
   new prompt-file behavior is added in `WorkspacePrompts`, not at the call
   site.
 - Must change: the AGENTS.md guardrail exception names `WorkspacePrompts` as
-  the prompt-file reader for both `workspace/` prompt files and the
-  Surface-scoped `state/surfaces/<SurfaceId>/HEARTBEAT.md`; the glossary
-  records the term; `ARCHITECTURE.md` prompt-read references are updated.
+  the reader of deployment prompt files — both `workspace/` prompt files
+  and the Surface-scoped `state/surfaces/<SurfaceId>/HEARTBEAT.md`; the
+  glossary records the term; `ARCHITECTURE.md` prompt-read references are
+  updated.

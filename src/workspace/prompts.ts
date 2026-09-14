@@ -185,6 +185,43 @@ export function resolveHeartbeatPrompt(home: string, surface: Surface): string {
   return HEARTBEAT_PROMPT;
 }
 
+/**
+ * Result of probing a prompt file's presence. Only ENOENT counts as
+ * "missing"; every other failure is retained as an error so callers surface
+ * the underlying problem instead of misreporting the file as absent.
+ */
+export type PromptFilePresence =
+  | { kind: "regular" }
+  | { kind: "missing" }
+  | { kind: "not-regular" }
+  | { kind: "error"; operation: "stat" | "read"; error: unknown };
+
+/** Resolved absolute paths of every deployment prompt file in the catalog. */
+export function deploymentPromptFilePaths(_home: string): Set<string> {
+  return notImplemented("deploymentPromptFilePaths");
+}
+
+/**
+ * The write-notice reserved set: every deployment prompt file plus the bound
+ * Surface's scoped `HEARTBEAT.md` when a Surface is bound.
+ */
+export function reservedPromptFilePaths(_home: string, _surface?: Surface): Set<string> {
+  return notImplemented("reservedPromptFilePaths");
+}
+
+/**
+ * Inspect a prompt file's presence without collapsing bad filesystem states
+ * into absence. A dangling symlink is not a true ENOENT: lstat can still see
+ * the link, so it is reported as non-regular rather than as missing.
+ */
+export function inspectPromptFile(_path: string): PromptFilePresence {
+  return notImplemented("inspectPromptFile");
+}
+
+function notImplemented(name: string): never {
+  throw new Error(`WorkspacePrompts.${name}: not implemented`);
+}
+
 function isEnoent(err: unknown): boolean {
   return err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT";
 }

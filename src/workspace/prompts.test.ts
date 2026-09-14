@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
+  deploymentPromptFilePaths,
   HEARTBEAT_PROMPT,
+  inspectPromptFile,
   MissingSoulError,
   preflightWorkspacePromptFiles,
   readOptionalPromptFile,
   readRequiredPromptFile,
+  reservedPromptFilePaths,
   resolveHeartbeatPrompt,
   workspacePromptCatalog,
   workspacePromptFile,
@@ -232,6 +235,80 @@ describe("resolveHeartbeatPrompt", () => {
   });
 });
 
+describe("prompt-file set projections", () => {
+  it("deploymentPromptFilePaths resolves every catalog path", () => {
+    const home = join("nonexistent", "home");
+    expect(deploymentPromptFilePaths(home)).toEqual(new Set([
+      resolve(soulMdPath(home)),
+      resolve(agentsMdPath(home)),
+      resolve(heartbeatMdPath(home)),
+    ]));
+  });
+
+  it("reservedPromptFilePaths adds the bound Surface heartbeat to the catalog", () => {
+    const home = join("nonexistent", "home");
+    const surface = dmSurface(7);
+    expect(reservedPromptFilePaths(home, surface)).toEqual(new Set([
+      resolve(soulMdPath(home)),
+      resolve(agentsMdPath(home)),
+      resolve(heartbeatMdPath(home)),
+      resolve(surfaceHeartbeatPath(home, surfaceId(surface))),
+    ]));
+    expect(reservedPromptFilePaths(home)).toEqual(deploymentPromptFilePaths(home));
+  });
+});
+
+describe("inspectPromptFile", () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "goblin-inspect-prompt-"));
+    mkdirSync(join(home, "workspace"), { recursive: true });
+  });
+
+  afterEach(() => {
+    chmodSync(join(home, "workspace"), 0o700);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("classifies a readable regular file as regular", () => {
+    const path = soulMdPath(home);
+    writeFileSync(path, "soul identity\n", "utf-8");
+    expect(inspectPromptFile(path)).toEqual({ kind: "regular" });
+  });
+
+  it("classifies an absent path as missing", () => {
+    expect(inspectPromptFile(agentsMdPath(home))).toEqual({ kind: "missing" });
+  });
+
+  it("classifies a directory as not-regular", () => {
+    expect(inspectPromptFile(join(home, "workspace"))).toEqual({ kind: "not-regular" });
+  });
+
+  it("classifies a dangling symlink as not-regular rather than missing", () => {
+    const path = agentsMdPath(home);
+    symlinkSync(join(home, "nonexistent-target"), path);
+    expect(inspectPromptFile(path)).toEqual({ kind: "not-regular" });
+  });
+
+  it("reports an unreadable file as a read error", () => {
+    const path = soulMdPath(home);
+    writeFileSync(path, "soul identity\n", "utf-8");
+    chmodSync(path, 0o000);
+    const presence = inspectPromptFile(path);
+    expect(presence.kind).toBe("error");
+    if (presence.kind === "error") expect(presence.operation).toBe("read");
+  });
+
+  it("reports a non-ENOENT stat failure as a stat error", () => {
+    const blocking = join(home, "blocking");
+    writeFileSync(blocking, "x", "utf-8");
+    const presence = inspectPromptFile(join(blocking, "SOUL.md"));
+    expect(presence.kind).toBe("error");
+    if (presence.kind === "error") expect(presence.operation).toBe("stat");
+  });
+});
+
 describe("prompt-file ownership drift pins", () => {
   it("system-prompt.ts holds no prompt-file read or ENOENT policy of its own", () => {
     const source = readFileSync(join(import.meta.dir, "..", "agent", "system-prompt.ts"), "utf-8");
@@ -258,5 +335,35 @@ describe("prompt-file ownership drift pins", () => {
     expect(source).not.toContain("ENOENT");
     expect(source).not.toContain("heartbeatMdPath");
     expect(source).not.toContain("surfaceHeartbeatPath");
+  });
+
+  it("event-handler.ts derives its write-notice reserved set from the module", () => {
+    const source = readFileSync(join(import.meta.dir, "..", "agent", "event-handler.ts"), "utf-8");
+    expect(source).toContain("reservedPromptFilePaths");
+    expect(source).toContain("workspace/mod.ts");
+    expect(source).not.toContain("soulMdPath");
+    expect(source).not.toContain("agentsMdPath");
+    expect(source).not.toContain("heartbeatMdPath");
+    expect(source).not.toContain("surfaceHeartbeatPath");
+  });
+
+  it("host.ts derives its subagent exclusion set from the module", () => {
+    const source = readFileSync(join(import.meta.dir, "..", "subagents", "host.ts"), "utf-8");
+    expect(source).toContain("deploymentPromptFilePaths");
+    expect(source).toContain("workspace/mod.ts");
+    expect(source).not.toContain("soulMdPath");
+    expect(source).not.toContain("agentsMdPath");
+    expect(source).not.toContain("heartbeatMdPath");
+  });
+
+  it("doctor.ts derives prompt-file presence and required policy from the module", () => {
+    const source = readFileSync(join(import.meta.dir, "..", "doctor.ts"), "utf-8");
+    expect(source).toContain("workspace/mod.ts");
+    expect(source).toContain("workspacePromptFile");
+    expect(source).toContain("inspectPromptFile");
+    expect(source).not.toContain("soulMdPath");
+    expect(source).not.toContain("agentsMdPath");
+    expect(source).not.toContain("heartbeatMdPath");
+    expect(source).not.toContain("function inspectPromptFile");
   });
 });

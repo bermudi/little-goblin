@@ -31,7 +31,7 @@ import {
 import { boundedError, log } from "../log.ts";
 import { createPiServices, piAgentDir, type PiServices } from "../pi-host.ts";
 import type { SubagentHistoryTarget } from "./types.ts";
-import { agentsMdPath, heartbeatMdPath, soulMdPath } from "../workspace/paths.ts";
+import { deploymentPromptFilePaths } from "../workspace/mod.ts";
 
 /** Exact persisted history selected by the coordinator. */
 export type SubagentHistory = SubagentHistoryTarget;
@@ -783,14 +783,6 @@ async function abortWithTimeout(session: AgentSession, timeoutMs: number): Promi
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
-}
-
-function deploymentPromptFilePaths(home: string): Set<string> {
-  return new Set([
-    resolve(soulMdPath(home)),
-    resolve(agentsMdPath(home)),
-    resolve(heartbeatMdPath(home)),
-  ]);
 }
 
 interface ResourceLoaderResult {

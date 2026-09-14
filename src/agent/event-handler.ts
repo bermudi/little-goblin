@@ -21,9 +21,7 @@ import {
 import type { MetricsUsage, MetricsStore, TurnMetricsEvent } from "../metrics/mod.ts";
 import type { TranscriptWriterContext } from "../sessions/transcript.ts";
 import type { Surface } from "../surface.ts";
-import { surfaceId } from "../surface.ts";
-import { surfaceHeartbeatPath } from "../sessions/paths.ts";
-import { agentsMdPath, heartbeatMdPath, soulMdPath } from "../workspace/paths.ts";
+import { reservedPromptFilePaths } from "../workspace/mod.ts";
 
 export interface AgentEventHandlerOptions {
   readonly sessionId: string;
@@ -193,15 +191,7 @@ export class AgentEventHandler {
     this.toolCwd = opts.toolCwd;
     this.isCurrent = opts.isCurrent;
 
-    const reserved = [
-      soulMdPath(opts.goblinHome),
-      agentsMdPath(opts.goblinHome),
-      heartbeatMdPath(opts.goblinHome),
-    ];
-    if (opts.surface !== undefined) {
-      reserved.push(surfaceHeartbeatPath(opts.goblinHome, surfaceId(opts.surface)));
-    }
-    this.reservedPromptFilePaths = new Set(reserved.map((path) => resolve(path)));
+    this.reservedPromptFilePaths = reservedPromptFilePaths(opts.goblinHome, opts.surface);
   }
 
   /**

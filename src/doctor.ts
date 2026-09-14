@@ -8,7 +8,7 @@
  *   bun run src/doctor.ts
  */
 
-import { accessSync, constants, lstatSync, readdirSync, statSync, statfsSync } from "node:fs";
+import { readdirSync, statSync, statfsSync } from "node:fs";
 import { loadConfig, requiredGoblinHomeDirectories, resolveGoblinHome } from "./config.ts";
 import type { Config } from "./config.ts";
 import { resolveModel } from "./agent/models.ts";
@@ -23,7 +23,7 @@ import {
 import { memoryDbPath } from "./memory/paths.ts";
 import { DEFAULT_EMBEDDING_MODEL, DEFAULT_EMBEDDING_PROVIDER, MemorySnapshot } from "./memory/db.ts";
 import { MemoryBudget } from "./memory/budget.ts";
-import { agentsMdPath, soulMdPath } from "./workspace/paths.ts";
+import { inspectPromptFile, workspacePromptFile } from "./workspace/mod.ts";
 import { CURRENT_STATE_VERSION, readStateVersion } from "./state-version.ts";
 import { log } from "./log.ts";
 import { checkQualifiedBackend } from "./external-agents/preflight.ts";
@@ -90,47 +90,6 @@ function statPresence(path: string): PathPresence {
       return { kind: "missing" };
     }
     return { kind: "error", error: err };
-  }
-}
-
-type PromptFilePresence =
-  | { kind: "regular" }
-  | { kind: "missing" }
-  | { kind: "not-regular" }
-  | { kind: "error"; operation: "stat" | "read"; error: unknown };
-
-/**
- * Inspect a prompt file without collapsing bad filesystem states into absence.
- * A dangling symlink is not a true ENOENT: lstat can still see the link, so it
- * is reported as non-regular rather than as an optional missing file.
- */
-function inspectPromptFile(path: string): PromptFilePresence {
-  const presence = statPresence(path);
-  if (presence.kind === "error") {
-    return { kind: "error", operation: "stat", error: presence.error };
-  }
-  if (presence.kind === "missing") {
-    try {
-      lstatSync(path);
-      return { kind: "not-regular" };
-    } catch (err) {
-      if (isNodeErrnoException(err) && err.code === "ENOENT") {
-        return { kind: "missing" };
-      }
-      return { kind: "error", operation: "stat", error: err };
-    }
-  }
-  if (!presence.isFile) {
-    return { kind: "not-regular" };
-  }
-  try {
-    accessSync(path, constants.R_OK);
-    return { kind: "regular" };
-  } catch (err) {
-    if (isNodeErrnoException(err) && err.code === "ENOENT") {
-      return { kind: "missing" };
-    }
-    return { kind: "error", operation: "read", error: err };
   }
 }
 
@@ -389,35 +348,38 @@ function checkMcpConfig(): Check {
 }
 
 async function checkPromptFiles(home: string): Promise<Check> {
-  const soul = inspectPromptFile(soulMdPath(home));
-  const agents = inspectPromptFile(agentsMdPath(home));
+  const soulFile = workspacePromptFile(home, "SOUL.md");
+  const agentsFile = workspacePromptFile(home, "AGENTS.md");
+  const soul = inspectPromptFile(soulFile.path);
+  const agents = inspectPromptFile(agentsFile.path);
 
-  for (const [label, presence] of [
-    ["SOUL.md", soul],
-    ["AGENTS.md", agents],
+  for (const [file, presence] of [
+    [soulFile, soul],
+    [agentsFile, agents],
   ] as const) {
     if (presence.kind === "error") {
       return {
         name: "prompt files",
         ok: false,
-        detail: `cannot ${presence.operation} ${label}: ${errorMessage(presence.error)}`,
+        detail: `cannot ${presence.operation} ${file.name}: ${errorMessage(presence.error)}`,
       };
     }
   }
 
-  // SOUL.md is mandatory at runtime (decision 0010: preflight throws on its
-  // absence), and it must be a readable regular file when present.
+  // The catalog's required file is mandatory at runtime (decision 0010:
+  // preflight throws on its absence), and it must be a readable regular file
+  // when present.
   if (soul.kind === "missing") {
     const detail = agents.kind === "missing"
-      ? "SOUL.md missing (critical); AGENTS.md missing"
-      : "SOUL.md missing (critical)";
+      ? `${soulFile.name} missing (critical); ${agentsFile.name} missing`
+      : `${soulFile.name} missing (critical)`;
     return { name: "prompt files", ok: false, detail };
   }
   if (soul.kind === "not-regular") {
     return {
       name: "prompt files",
       ok: false,
-      detail: "SOUL.md is not a regular readable file (critical)",
+      detail: `${soulFile.name} is not a regular readable file (critical)`,
     };
   }
 
@@ -425,23 +387,26 @@ async function checkPromptFiles(home: string): Promise<Check> {
     return {
       name: "prompt files",
       ok: true,
-      detail: "SOUL.md and AGENTS.md present",
+      detail: `${soulFile.name} and ${agentsFile.name} present`,
     };
   }
   if (agents.kind === "missing") {
     // Decision 0010 makes AGENTS.md optional. This is the only warning path:
     // bad file types and unreadable files remain critical diagnostics.
+    const optional = agentsFile.requirement === "optional";
     return {
       name: "prompt files",
       ok: false,
-      warn: true,
-      detail: "AGENTS.md missing (optional per decision 0010)",
+      warn: optional,
+      detail: optional
+        ? `${agentsFile.name} missing (optional per decision 0010)`
+        : `${agentsFile.name} missing (critical)`,
     };
   }
   return {
     name: "prompt files",
     ok: false,
-    detail: "AGENTS.md is not a regular readable file (critical)",
+    detail: `${agentsFile.name} is not a regular readable file (critical)`,
   };
 }
 

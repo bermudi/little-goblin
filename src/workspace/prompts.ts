@@ -2,8 +2,9 @@
  * WorkspacePrompts — the deployment prompt-file authority.
  *
  * Owns the catalog of Goblin prompt files, their required/optional read
- * policy, the heartbeat first-non-empty-wins resolution chain, and startup
- * preflight. Path construction stays in the path-helper modules (decision
+ * policy, the heartbeat first-non-empty-wins resolution chain, startup
+ * preflight, presence inspection, and the reserved-file and deployment-file
+ * set projections. Path construction stays in the path-helper modules (decision
  * 0008); this module is the sole source-code reader of prompt files
  * (decision 0009, amended by 0050), including the Surface-scoped
  * `state/surfaces/<SurfaceId>/HEARTBEAT.md`. Agent-runtime rewrites during
@@ -14,8 +15,9 @@
  * every non-ENOENT error propagates unwrapped.
  */
 
-import { readFileSync } from "node:fs";
+import { accessSync, constants, lstatSync, readFileSync, statSync } from "node:fs";
 import { access, readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { surfaceHeartbeatPath } from "../sessions/paths.ts";
 import { surfaceId, type Surface } from "../surface.ts";
 import { agentsMdPath, heartbeatMdPath, soulMdPath } from "./paths.ts";
@@ -197,16 +199,20 @@ export type PromptFilePresence =
   | { kind: "error"; operation: "stat" | "read"; error: unknown };
 
 /** Resolved absolute paths of every deployment prompt file in the catalog. */
-export function deploymentPromptFilePaths(_home: string): Set<string> {
-  return notImplemented("deploymentPromptFilePaths");
+export function deploymentPromptFilePaths(home: string): Set<string> {
+  return new Set(workspacePromptCatalog(home).map((file) => resolve(file.path)));
 }
 
 /**
  * The write-notice reserved set: every deployment prompt file plus the bound
  * Surface's scoped `HEARTBEAT.md` when a Surface is bound.
  */
-export function reservedPromptFilePaths(_home: string, _surface?: Surface): Set<string> {
-  return notImplemented("reservedPromptFilePaths");
+export function reservedPromptFilePaths(home: string, surface?: Surface): Set<string> {
+  const paths = deploymentPromptFilePaths(home);
+  if (surface !== undefined) {
+    paths.add(resolve(surfaceHeartbeatPath(home, surfaceId(surface))));
+  }
+  return paths;
 }
 
 /**
@@ -214,12 +220,32 @@ export function reservedPromptFilePaths(_home: string, _surface?: Surface): Set<
  * into absence. A dangling symlink is not a true ENOENT: lstat can still see
  * the link, so it is reported as non-regular rather than as missing.
  */
-export function inspectPromptFile(_path: string): PromptFilePresence {
-  return notImplemented("inspectPromptFile");
-}
-
-function notImplemented(name: string): never {
-  throw new Error(`WorkspacePrompts.${name}: not implemented`);
+export function inspectPromptFile(path: string): PromptFilePresence {
+  let isFile: boolean;
+  try {
+    isFile = statSync(path).isFile();
+  } catch (err) {
+    if (!isEnoent(err)) {
+      return { kind: "error", operation: "stat", error: err };
+    }
+    try {
+      lstatSync(path);
+      return { kind: "not-regular" };
+    } catch (lstatErr) {
+      if (isEnoent(lstatErr)) return { kind: "missing" };
+      return { kind: "error", operation: "stat", error: lstatErr };
+    }
+  }
+  if (!isFile) {
+    return { kind: "not-regular" };
+  }
+  try {
+    accessSync(path, constants.R_OK);
+    return { kind: "regular" };
+  } catch (err) {
+    if (isEnoent(err)) return { kind: "missing" };
+    return { kind: "error", operation: "read", error: err };
+  }
 }
 
 function isEnoent(err: unknown): boolean {

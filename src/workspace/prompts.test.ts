@@ -1,16 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
+  HEARTBEAT_PROMPT,
   MissingSoulError,
   preflightWorkspacePromptFiles,
   readOptionalPromptFile,
   readRequiredPromptFile,
+  resolveHeartbeatPrompt,
   workspacePromptCatalog,
   workspacePromptFile,
 } from "./prompts.ts";
 import { agentsMdPath, heartbeatMdPath, soulMdPath } from "./paths.ts";
+import { surfaceHeartbeatPath } from "../sessions/paths.ts";
+import { dmSurface, surfaceId, type Surface } from "../surface.ts";
 
 describe("workspacePromptCatalog", () => {
   it("enumerates the deployment prompt files via path helpers with required/optional classification", () => {
@@ -157,6 +161,77 @@ describe("preflightWorkspacePromptFiles", () => {
   });
 });
 
+describe("resolveHeartbeatPrompt", () => {
+  const SURFACE = dmSurface(100);
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "goblin-heartbeat-prompts-"));
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  function writeWorkspaceHeartbeat(content: string): void {
+    const path = heartbeatMdPath(home);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content, "utf-8");
+  }
+
+  function writeSurfaceHeartbeat(surface: Surface, content: string): void {
+    const path = surfaceHeartbeatPath(home, surfaceId(surface));
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content, "utf-8");
+  }
+
+  it("surface-scoped HEARTBEAT.md wins over the workspace file", () => {
+    writeSurfaceHeartbeat(SURFACE, "surface body");
+    writeWorkspaceHeartbeat("workspace body");
+    expect(resolveHeartbeatPrompt(home, SURFACE)).toBe("[heartbeat] surface body");
+  });
+
+  it("workspace HEARTBEAT.md wins over the built-in constant", () => {
+    writeWorkspaceHeartbeat("workspace body");
+    expect(resolveHeartbeatPrompt(home, SURFACE)).toBe("[heartbeat] workspace body");
+  });
+
+  it("falls back to the built-in constant when both files are absent", () => {
+    expect(resolveHeartbeatPrompt(home, SURFACE)).toBe(HEARTBEAT_PROMPT);
+    expect(resolveHeartbeatPrompt(home, SURFACE).match(/\[heartbeat\]/g)).toHaveLength(1);
+  });
+
+  it("falls through a whitespace-only surface file to the workspace file", () => {
+    writeSurfaceHeartbeat(SURFACE, "   \n\t \n");
+    writeWorkspaceHeartbeat("workspace body");
+    expect(resolveHeartbeatPrompt(home, SURFACE)).toBe("[heartbeat] workspace body");
+  });
+
+  it("does not double-prefix a file body already carrying [heartbeat]", () => {
+    writeSurfaceHeartbeat(SURFACE, "[heartbeat] already marked");
+    expect(resolveHeartbeatPrompt(home, SURFACE)).toBe("[heartbeat] already marked");
+    expect(resolveHeartbeatPrompt(home, SURFACE).match(/\[heartbeat\]/g)).toHaveLength(1);
+  });
+
+  it("strips trailing whitespace and preserves leading whitespace", () => {
+    writeSurfaceHeartbeat(SURFACE, "  \tindented body  \n\n");
+    expect(resolveHeartbeatPrompt(home, SURFACE)).toBe("[heartbeat]   \tindented body");
+  });
+
+  it("propagates a non-ENOENT read failure on a candidate", () => {
+    // home pointing at a plain file makes state/surfaces/<id>/HEARTBEAT.md
+    // resolve under a non-directory ancestor: ENOTDIR, not ENOENT.
+    const blockingFile = join(home, "blocking");
+    writeFileSync(blockingFile, "x", "utf-8");
+    try {
+      resolveHeartbeatPrompt(blockingFile, SURFACE);
+      expect.unreachable("expected resolveHeartbeatPrompt to throw");
+    } catch (err) {
+      expect((err as NodeJS.ErrnoException).code).toBe("ENOTDIR");
+    }
+  });
+});
+
 describe("prompt-file ownership drift pins", () => {
   it("system-prompt.ts holds no prompt-file read or ENOENT policy of its own", () => {
     const source = readFileSync(join(import.meta.dir, "..", "agent", "system-prompt.ts"), "utf-8");
@@ -173,5 +248,15 @@ describe("prompt-file ownership drift pins", () => {
     expect(source).not.toContain("agentsMdPath");
     expect(source).not.toContain("heartbeatMdPath");
     expect(source).not.toContain("preflightGoblinPromptFiles");
+  });
+
+  it("loop.ts delegates heartbeat prompt resolution instead of owning prompt-file reads", () => {
+    const source = readFileSync(join(import.meta.dir, "..", "scheduler", "loop.ts"), "utf-8");
+    expect(source).toContain("resolveHeartbeatPrompt");
+    expect(source).toContain("workspace/mod.ts");
+    expect(source).not.toContain("readFile");
+    expect(source).not.toContain("ENOENT");
+    expect(source).not.toContain("heartbeatMdPath");
+    expect(source).not.toContain("surfaceHeartbeatPath");
   });
 });

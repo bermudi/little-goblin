@@ -13,6 +13,7 @@
  */
 
 import { access, readFile } from "node:fs/promises";
+import type { Surface } from "../surface.ts";
 import { agentsMdPath, heartbeatMdPath, soulMdPath } from "./paths.ts";
 
 export class MissingSoulError extends Error {
@@ -118,6 +119,17 @@ export async function preflightWorkspacePromptFiles(
       }
     }
   }
+}
+
+/**
+ * Stub for the heartbeat-resolution unit: the symbol exists so compile gates
+ * pass; every entry point fails fast until the implementation lands.
+ */
+export const HEARTBEAT_PROMPT =
+  "WorkspacePrompts heartbeat prompt resolution is not implemented yet";
+
+export function resolveHeartbeatPrompt(_home: string, _surface: Surface): string {
+  throw new Error("WorkspacePrompts heartbeat prompt resolution is not implemented yet");
 }
 
 function isEnoent(err: unknown): boolean {

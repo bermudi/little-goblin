@@ -193,6 +193,30 @@ describe("preflightWorkspacePromptFiles", () => {
     expect(err).not.toBeInstanceOf(MissingSoulError);
   });
 
+  it("rejects when the required file exists but is unreadable", async () => {
+    writeFileSync(soulMdPath(home), "soul identity\n", "utf-8");
+    chmodSync(soulMdPath(home), 0o000);
+    const err = await rejectionOf(
+      preflightWorkspacePromptFiles({ home, warn: () => undefined }),
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(MissingSoulError);
+    expect((err as Error).message).toContain("not a regular readable file");
+    expect((err as Error).message).toContain(soulMdPath(home));
+  });
+
+  it("rejects when a warn-checked optional file exists but is unreadable", async () => {
+    writeFileSync(soulMdPath(home), "soul identity\n", "utf-8");
+    writeFileSync(agentsMdPath(home), "agent rules\n", "utf-8");
+    chmodSync(agentsMdPath(home), 0o000);
+    const err = await rejectionOf(
+      preflightWorkspacePromptFiles({ home, warn: () => undefined }),
+    );
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain("not a regular readable file");
+    expect((err as Error).message).toContain(agentsMdPath(home));
+  });
+
   it("treats a dangling symlink at the required file as missing", async () => {
     // access()-style semantics: a dangling symlink resolves to ENOENT
     // downstream, so the required file is absent, not "not regular".

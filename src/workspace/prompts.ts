@@ -139,22 +139,22 @@ export async function preflightWorkspacePromptFiles(
       continue;
     }
     const presence = inspectPromptFile(file.path);
-    switch (presence.kind) {
-      case "regular":
-        break;
-      case "missing":
-        if (file.requirement === "required") throw new MissingSoulError(file.path);
-        opts.warn("optional Goblin prompt file missing", {
-          path: file.path,
-          note: file.missingNote,
-        });
-        break;
-      case "not-regular":
-        throw new Error(
-          `Goblin prompt file ${file.name} is not a regular readable file: ${file.path}`,
-        );
-      case "error":
-        throw presence.error;
+    if (presence.kind === "error") throw presence.error;
+    // A dangling symlink resolves to ENOENT on every downstream read, so
+    // preflight treats it as absent even though lstat can see the link.
+    const absent =
+      presence.kind === "missing" ||
+      (presence.kind === "not-regular" && presence.danglingSymlink);
+    if (absent) {
+      if (file.requirement === "required") throw new MissingSoulError(file.path);
+      opts.warn("optional Goblin prompt file missing", {
+        path: file.path,
+        note: file.missingNote,
+      });
+    } else if (presence.kind === "not-regular") {
+      throw new Error(
+        `Goblin prompt file ${file.name} is not a regular readable file: ${file.path}`,
+      );
     }
   }
 }
@@ -224,12 +224,16 @@ export function resolveHeartbeatPrompt(home: string, surface: Surface): string {
 /**
  * Result of probing a prompt file's presence. Only ENOENT counts as
  * "missing"; every other failure is retained as an error so callers surface
- * the underlying problem instead of misreporting the file as absent.
+ * the underlying problem instead of misreporting the file as absent. A
+ * `not-regular` presence carries `danglingSymlink`: stat resolves the link
+ * to ENOENT (so reads downstream behave exactly like a missing file) while
+ * lstat still sees the link itself. Presence reporters keep it a critical
+ * not-regular diagnostic; absence-policy callers treat it as missing.
  */
 export type PromptFilePresence =
   | { kind: "regular" }
   | { kind: "missing" }
-  | { kind: "not-regular" }
+  | { kind: "not-regular"; danglingSymlink: boolean }
   | { kind: "error"; operation: "stat" | "read"; error: unknown };
 
 /** Resolved absolute paths of every deployment prompt file in the catalog. */
@@ -252,7 +256,8 @@ export function reservedPromptFilePaths(home: string, surface?: Surface): Set<st
 /**
  * Inspect a prompt file's presence without collapsing bad filesystem states
  * into absence. A dangling symlink is not a true ENOENT: lstat can still see
- * the link, so it is reported as non-regular rather than as missing.
+ * the link, so it is reported as non-regular with `danglingSymlink` set
+ * rather than as missing — callers decide whether the link counts as absent.
  */
 export function inspectPromptFile(path: string): PromptFilePresence {
   let isFile: boolean;
@@ -264,14 +269,14 @@ export function inspectPromptFile(path: string): PromptFilePresence {
     }
     try {
       lstatSync(path);
-      return { kind: "not-regular" };
+      return { kind: "not-regular", danglingSymlink: true };
     } catch (lstatErr) {
       if (isEnoent(lstatErr)) return { kind: "missing" };
       return { kind: "error", operation: "stat", error: lstatErr };
     }
   }
   if (!isFile) {
-    return { kind: "not-regular" };
+    return { kind: "not-regular", danglingSymlink: false };
   }
   try {
     accessSync(path, constants.R_OK);

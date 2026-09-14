@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   GOBLIN_PRODUCT_SHELL,
-  MissingSoulError,
   buildGoblinSystemPrompt,
-  preflightGoblinPromptFiles,
 } from "./system-prompt.ts";
+import {
+  MissingSoulError,
+  preflightWorkspacePromptFiles,
+} from "../workspace/mod.ts";
 import { agentsMdPath, soulMdPath } from "../workspace/paths.ts";
 import { personalEnvironment, projectEnvironment } from "../sessions/environment.ts";
 
@@ -24,7 +26,7 @@ describe("GOBLIN_PRODUCT_SHELL", () => {
   });
 });
 
-describe("preflightGoblinPromptFiles", () => {
+describe("preflightWorkspacePromptFiles", () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -39,14 +41,14 @@ describe("preflightGoblinPromptFiles", () => {
   });
 
   it("fails with the shared missing-SOUL error before startup can continue", async () => {
-    await expect(preflightGoblinPromptFiles({ home: tmpDir, warn: () => undefined })).rejects.toBeInstanceOf(MissingSoulError);
+    await expect(preflightWorkspacePromptFiles({ home: tmpDir, warn: () => undefined })).rejects.toBeInstanceOf(MissingSoulError);
   });
 
   it("warns when agent AGENTS is missing but SOUL exists", async () => {
     const warnings: string[] = [];
     writeFileSync(soulMdPath(tmpDir), "soul identity\n", "utf-8");
 
-    await preflightGoblinPromptFiles({
+    await preflightWorkspacePromptFiles({
       home: tmpDir,
       warn: (message) => warnings.push(message),
     });
@@ -59,7 +61,7 @@ describe("preflightGoblinPromptFiles", () => {
     writeFileSync(soulMdPath(tmpDir), "soul identity\n", "utf-8");
     writeFileSync(agentsMdPath(tmpDir), "agent rules\n", "utf-8");
 
-    await preflightGoblinPromptFiles({
+    await preflightWorkspacePromptFiles({
       home: tmpDir,
       warn: (message) => warnings.push(message),
     });

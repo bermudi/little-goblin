@@ -245,7 +245,7 @@ Preparation retains asynchronous binding and synchronous reservation/settings ch
 5. bounded frozen memory summary at runtime creation;
 6. relevant-memory aside per turn.
 
-Pi context-file auto-discovery stays disabled for the main runtime. Project guidance is supplemental and must not replace deployment identity. Prompt reads use path helpers and fail loudly according to required/optional semantics.
+Pi context-file auto-discovery stays disabled for the main runtime. Project guidance is supplemental and must not replace deployment identity. **CURRENT.** Prompt-file reads go through `WorkspacePrompts` (`src/workspace/prompts.ts`), the sole prompt-file reader: it owns the deployment prompt-file catalog and applies required/optional semantics (required ENOENT throws `MissingSoulError`; optional ENOENT yields absent; non-ENOENT propagates). Path construction stays in the path-helper modules (decisions 0008, 0009 as amended by 0050).
 
 ### Prompt-file write authority
 

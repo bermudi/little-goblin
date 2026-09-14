@@ -248,6 +248,17 @@ export function inspectPromptFile(path: string): PromptFilePresence {
   }
 }
 
+export interface MaterializePromptFilesResult {
+  readonly createdSoul: boolean;
+  readonly createdAgents: boolean;
+  /** True when AGENTS.md already existed without SOUL.md; the caller warns. */
+  readonly agentsWithoutSoul: boolean;
+}
+
+export function materializePromptFiles(_home: string, _agentName: string): MaterializePromptFilesResult {
+  throw new Error("materializePromptFiles is not implemented yet");
+}
+
 function isEnoent(err: unknown): boolean {
   return err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT";
 }

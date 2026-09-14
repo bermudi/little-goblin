@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
   deploymentPromptFilePaths,
   HEARTBEAT_PROMPT,
   inspectPromptFile,
+  materializePromptFiles,
   MissingSoulError,
   preflightWorkspacePromptFiles,
   readOptionalPromptFile,
@@ -309,6 +310,81 @@ describe("inspectPromptFile", () => {
   });
 });
 
+describe("materializePromptFiles", () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "goblin-materialize-prompts-"));
+  });
+
+  afterEach(() => {
+    chmodSync(home, 0o700);
+    const workspace = join(home, "workspace");
+    if (existsSync(workspace)) chmodSync(workspace, 0o700);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it("creates SOUL.md and AGENTS.md from templates in a fresh home", () => {
+    const result = materializePromptFiles(home, "Moss");
+
+    expect(result).toEqual({ createdSoul: true, createdAgents: true, agentsWithoutSoul: false });
+    expect(readFileSync(soulMdPath(home), "utf-8")).toContain("# Moss");
+    expect(readFileSync(agentsMdPath(home), "utf-8").length).toBeGreaterThan(0);
+  });
+
+  it("creates neither file and preserves contents on a second run", () => {
+    materializePromptFiles(home, "Moss");
+    const soulBefore = readFileSync(soulMdPath(home), "utf-8");
+    const agentsBefore = readFileSync(agentsMdPath(home), "utf-8");
+
+    const result = materializePromptFiles(home, "Other");
+
+    expect(result).toEqual({ createdSoul: false, createdAgents: false, agentsWithoutSoul: false });
+    expect(readFileSync(soulMdPath(home), "utf-8")).toBe(soulBefore);
+    expect(readFileSync(agentsMdPath(home), "utf-8")).toBe(agentsBefore);
+  });
+
+  it("leaves a pre-existing file byte-identical", () => {
+    mkdirSync(join(home, "workspace"), { recursive: true });
+    writeFileSync(soulMdPath(home), "existing soul\n", "utf-8");
+
+    const result = materializePromptFiles(home, "Moss");
+
+    expect(result).toEqual({ createdSoul: false, createdAgents: true, agentsWithoutSoul: false });
+    expect(readFileSync(soulMdPath(home), "utf-8")).toBe("existing soul\n");
+  });
+
+  it("signals AGENTS-without-SOUL, creates SOUL.md, and leaves AGENTS.md intact", () => {
+    mkdirSync(join(home, "workspace"), { recursive: true });
+    writeFileSync(agentsMdPath(home), "old identity from agents\n", "utf-8");
+
+    const result = materializePromptFiles(home, "Moss");
+
+    expect(result).toEqual({ createdSoul: true, createdAgents: false, agentsWithoutSoul: true });
+    expect(readFileSync(soulMdPath(home), "utf-8")).toContain("# Moss");
+    expect(readFileSync(soulMdPath(home), "utf-8")).not.toContain("old identity from agents");
+    expect(readFileSync(agentsMdPath(home), "utf-8")).toBe("old identity from agents\n");
+  });
+
+  it("never materializes HEARTBEAT.md", () => {
+    materializePromptFiles(home, "Moss");
+    materializePromptFiles(home, "Moss");
+
+    expect(existsSync(heartbeatMdPath(home))).toBe(false);
+  });
+
+  it("propagates non-ENOENT filesystem failures", () => {
+    mkdirSync(join(home, "workspace"), { recursive: true });
+    chmodSync(join(home, "workspace"), 0o500);
+    try {
+      materializePromptFiles(home, "Moss");
+      expect.unreachable("expected materializePromptFiles to throw");
+    } catch (err) {
+      expect(err).toBeDefined();
+    }
+  });
+});
+
 describe("prompt-file ownership drift pins", () => {
   it("system-prompt.ts holds no prompt-file read or ENOENT policy of its own", () => {
     const source = readFileSync(join(import.meta.dir, "..", "agent", "system-prompt.ts"), "utf-8");
@@ -365,5 +441,16 @@ describe("prompt-file ownership drift pins", () => {
     expect(source).not.toContain("agentsMdPath");
     expect(source).not.toContain("heartbeatMdPath");
     expect(source).not.toContain("function inspectPromptFile");
+  });
+
+  it("onboard.ts delegates prompt-file materialization to the module", () => {
+    const source = readFileSync(join(import.meta.dir, "..", "onboard.ts"), "utf-8");
+    expect(source).toContain("materializePromptFiles");
+    expect(source).toContain("workspace/mod.ts");
+    expect(source).not.toContain('flag: "wx"');
+    expect(source).not.toContain("writeFileSync(soulPath");
+    expect(source).not.toContain("writeFileSync(agentsPath");
+    expect(source).not.toContain("DEFAULT_AGENTS_TEMPLATE");
+    expect(source).not.toContain("buildSoulTemplate(");
   });
 });

@@ -6,10 +6,13 @@
  * preflight, presence inspection, the reserved-file and deployment-file
  * set projections, and create-missing materialization from templates.
  * Path construction stays in the path-helper modules (decision
- * 0008); this module is the sole source-code reader of prompt files
- * (decision 0009, amended by 0050), including the Surface-scoped
- * `state/surfaces/<SurfaceId>/HEARTBEAT.md`. Agent-runtime rewrites during
- * user-facing turns are governed by decision 0039, not this module.
+ * 0008); this module is the sole source-code reader of deployment
+ * prompt files (decision 0009, amended by 0050), including the
+ * Surface-scoped `state/surfaces/<SurfaceId>/HEARTBEAT.md`. Named-agent
+ * persona files are subagent-owned and stay with `named-agents.ts`;
+ * onboarding's existence probes stay with `onboard.ts`. Agent-runtime
+ * rewrites during user-facing turns are governed by decision 0039,
+ * not this module.
  *
  * Read policy (fail loud): ENOENT on a required file throws
  * `MissingSoulError`; ENOENT on an optional file yields absent (`null`);
@@ -97,6 +100,21 @@ export async function readOptionalPromptFile(path: string): Promise<string | nul
     if (isEnoent(err)) return null;
     throw err;
   }
+}
+
+/**
+ * Read one catalog file with its declared policy: a required file throws
+ * `MissingSoulError` on ENOENT; an optional file yields `null`. Callers
+ * dispatch on the catalog's `requirement` rather than re-selecting read
+ * policy per file name, so reclassifying a file in the catalog changes
+ * its read policy everywhere.
+ */
+export async function readPromptFile(
+  file: WorkspacePromptFile,
+): Promise<string | null> {
+  return file.requirement === "required"
+    ? readRequiredPromptFile(file.path)
+    : readOptionalPromptFile(file.path);
 }
 
 export interface PreflightWorkspacePromptFilesOptions {

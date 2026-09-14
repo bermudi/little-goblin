@@ -1,7 +1,8 @@
 import { join } from "node:path";
+import { readOptionalTextFile } from "../fs.ts";
 import {
-  readOptionalPromptFile,
-  readRequiredPromptFile,
+  MissingSoulError,
+  readPromptFile,
   workspacePromptFile,
 } from "../workspace/mod.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
@@ -46,14 +47,19 @@ export async function buildGoblinSystemPrompt(
       ? join(opts.executionEnvironment.projectRoot, "AGENTS.md")
       : undefined;
 
-  const soul = await readRequiredPromptFile(soulFile.path);
+  const soul = await readPromptFile(soulFile);
+  if (soul === null) {
+    // A required catalog entry throws MissingSoulError when absent, so
+    // null here means the file was reclassified — keep the same failure.
+    throw new MissingSoulError(soulFile.path);
+  }
   const sources: string[] = [soulFile.path];
-  const deploymentAgents = await readOptionalPromptFile(agentsFile.path);
+  const deploymentAgents = await readPromptFile(agentsFile);
   if (deploymentAgents !== null) {
     sources.push(agentsFile.path);
   }
   const projectAgents =
-    projectAgentsPath === undefined ? null : await readOptionalPromptFile(projectAgentsPath);
+    projectAgentsPath === undefined ? null : await readOptionalTextFile(projectAgentsPath);
   if (projectAgentsPath !== undefined && projectAgents !== null) {
     sources.push(projectAgentsPath);
   }

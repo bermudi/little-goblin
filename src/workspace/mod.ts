@@ -10,6 +10,7 @@ export {
   MissingSoulError,
   preflightWorkspacePromptFiles,
   readOptionalPromptFile,
+  readPromptFile,
   readRequiredPromptFile,
   reservedPromptFilePaths,
   resolveHeartbeatPrompt,

@@ -433,6 +433,11 @@ describe("prompt-file ownership drift pins", () => {
     expect(source).not.toContain("access(");
     expect(source).not.toContain("ENOENT");
     expect(source).toContain("workspace/mod.ts");
+    // Read policy dispatches on the catalog's requirement; call sites must
+    // not re-select required-vs-optional policy per file name.
+    expect(source).toContain("readPromptFile");
+    expect(source).not.toContain("readRequiredPromptFile");
+    expect(source).not.toContain("readOptionalPromptFile");
   });
 
   it("preflight delegates prompt-file checks to the module instead of enumerating paths", () => {

@@ -3,8 +3,9 @@
  *
  * Owns the catalog of Goblin prompt files, their required/optional read
  * policy, the heartbeat first-non-empty-wins resolution chain, startup
- * preflight, presence inspection, and the reserved-file and deployment-file
- * set projections. Path construction stays in the path-helper modules (decision
+ * preflight, presence inspection, the reserved-file and deployment-file
+ * set projections, and create-missing materialization from templates.
+ * Path construction stays in the path-helper modules (decision
  * 0008); this module is the sole source-code reader of prompt files
  * (decision 0009, amended by 0050), including the Surface-scoped
  * `state/surfaces/<SurfaceId>/HEARTBEAT.md`. Agent-runtime rewrites during
@@ -15,9 +16,9 @@
  * every non-ENOENT error propagates unwrapped.
  */
 
-import { accessSync, constants, lstatSync, readFileSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { access, readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { surfaceHeartbeatPath } from "../sessions/paths.ts";
 import { surfaceId, type Surface } from "../surface.ts";
 import { agentsMdPath, heartbeatMdPath, soulMdPath } from "./paths.ts";
@@ -248,6 +249,27 @@ export function inspectPromptFile(path: string): PromptFilePresence {
   }
 }
 
+export function buildSoulTemplate(agentName: string): string {
+  return `# ${agentName}
+
+${agentName} is the agent-owned conversational identity for this Little Goblin.
+
+## Voice
+
+- Be concise, direct, and useful in Telegram conversations.
+- Preserve the operator's preferences and house style here.
+- Keep private identity and relationship details in this file, not in source code.
+`;
+}
+
+export const DEFAULT_AGENTS_TEMPLATE = `# Operating Rules
+
+- Treat Telegram as the primary interface.
+- Be truthful about tool use, uncertainty, and state changes.
+- Ask before destructive or irreversible actions.
+- Keep durable preferences and deployment-specific rules in this file.
+`;
+
 export interface MaterializePromptFilesResult {
   readonly createdSoul: boolean;
   readonly createdAgents: boolean;
@@ -255,8 +277,38 @@ export interface MaterializePromptFilesResult {
   readonly agentsWithoutSoul: boolean;
 }
 
-export function materializePromptFiles(_home: string, _agentName: string): MaterializePromptFilesResult {
-  throw new Error("materializePromptFiles is not implemented yet");
+/**
+ * Create-missing materialization (decision 0039's onboarding ruling):
+ * `SOUL.md` and `AGENTS.md` are created from templates with exclusive `wx`
+ * creation and never overwritten; parent directories are ensured.
+ * `HEARTBEAT.md` is never materialized — it is optional and has a built-in
+ * fallback. The AGENTS-without-SOUL condition is reported to the caller via
+ * `agentsWithoutSoul` rather than warned about here; operator-facing output
+ * stays with the caller.
+ */
+export function materializePromptFiles(home: string, agentName: string): MaterializePromptFilesResult {
+  const soulPath = soulMdPath(home);
+  const agentsPath = agentsMdPath(home);
+  const hasSoul = existsSync(soulPath);
+  const hasAgents = existsSync(agentsPath);
+  const agentsWithoutSoul = !hasSoul && hasAgents;
+
+  let createdSoul = false;
+  let createdAgents = false;
+  mkdirSync(home, { recursive: true });
+  // SOUL.md and AGENTS.md live under workspace/; ensure that parent exists
+  // before the writeFileSync calls (home alone is not enough on a fresh tree).
+  mkdirSync(dirname(soulPath), { recursive: true });
+  if (!hasSoul) {
+    writeFileSync(soulPath, buildSoulTemplate(agentName), { flag: "wx" });
+    createdSoul = true;
+  }
+  if (!hasAgents) {
+    writeFileSync(agentsPath, DEFAULT_AGENTS_TEMPLATE, { flag: "wx" });
+    createdAgents = true;
+  }
+
+  return { createdSoul, createdAgents, agentsWithoutSoul };
 }
 
 function isEnoent(err: unknown): boolean {

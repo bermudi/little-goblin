@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { main, parseIdList, buildConfig, runInitialStateMigration } from "./onboard.ts";
-import { DEFAULT_AGENTS_TEMPLATE, buildSoulTemplate, createMissingPromptFiles } from "./onboard.ts";
+import { createMissingPromptFiles } from "./onboard.ts";
+import { DEFAULT_AGENTS_TEMPLATE, buildSoulTemplate } from "./workspace/mod.ts";
 import { agentsMdPath, soulMdPath } from "./workspace/paths.ts";
 import { stateVersionPath } from "./state-version.ts";
 

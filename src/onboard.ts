@@ -3,9 +3,10 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { ConfigFileSchema } from "./schema.ts";
 import { runMigrations } from "./migrate.ts";
+import { materializePromptFiles } from "./workspace/mod.ts";
 import { agentsMdPath, soulMdPath } from "./workspace/paths.ts";
 
 const DEFAULT_MODEL = "anthropic/claude-sonnet-4.6";
@@ -123,27 +124,6 @@ async function collectAnswers(): Promise<Answers> {
   };
 }
 
-export function buildSoulTemplate(agentName: string): string {
-  return `# ${agentName}
-
-${agentName} is the agent-owned conversational identity for this Little Goblin.
-
-## Voice
-
-- Be concise, direct, and useful in Telegram conversations.
-- Preserve the operator's preferences and house style here.
-- Keep private identity and relationship details in this file, not in source code.
-`;
-}
-
-export const DEFAULT_AGENTS_TEMPLATE = `# Operating Rules
-
-- Treat Telegram as the primary interface.
-- Be truthful about tool use, uncertainty, and state changes.
-- Ask before destructive or irreversible actions.
-- Keep durable preferences and deployment-specific rules in this file.
-`;
-
 export interface PromptFileMigrationResult {
   createdSoul: boolean;
   createdAgents: boolean;
@@ -154,33 +134,15 @@ export function createMissingPromptFiles(
   agentName: string,
   warn: (message: string) => void = console.warn,
 ): PromptFileMigrationResult {
-  const soulPath = soulMdPath(home);
-  const agentsPath = agentsMdPath(home);
-  const hasSoul = existsSync(soulPath);
-  const hasAgents = existsSync(agentsPath);
+  const result = materializePromptFiles(home, agentName);
 
-  if (!hasSoul && hasAgents) {
+  if (result.agentsWithoutSoul) {
     warn(
       "Existing AGENTS.md found without SOUL.md; it may contain old identity or voice content. Creating SOUL.md without copying from AGENTS.md.",
     );
   }
 
-  let createdSoul = false;
-  let createdAgents = false;
-  mkdirSync(home, { recursive: true });
-  // SOUL.md and AGENTS.md live under workspace/; ensure that parent exists
-  // before the writeFileSync calls (home alone is not enough on a fresh tree).
-  mkdirSync(dirname(soulPath), { recursive: true });
-  if (!hasSoul) {
-    writeFileSync(soulPath, buildSoulTemplate(agentName), { flag: "wx" });
-    createdSoul = true;
-  }
-  if (!hasAgents) {
-    writeFileSync(agentsPath, DEFAULT_AGENTS_TEMPLATE, { flag: "wx" });
-    createdAgents = true;
-  }
-
-  return { createdSoul, createdAgents };
+  return { createdSoul: result.createdSoul, createdAgents: result.createdAgents };
 }
 
 export function buildConfig(answers: Answers): string {

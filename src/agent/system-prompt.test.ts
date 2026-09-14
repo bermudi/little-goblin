@@ -149,13 +149,17 @@ describe("buildGoblinSystemPrompt", () => {
     chmodSync(soulMdPath(tmpDir), 0o000);
 
     // Must reject with the underlying error, not MissingSoulError.
-    try {
-      await buildGoblinSystemPrompt({ home: tmpDir, executionEnvironment: personalEnvironment() });
-      expect.unreachable("expected buildGoblinSystemPrompt to reject");
-    } catch (err) {
-      expect(err).toBeDefined();
-      expect(err).not.toBeInstanceOf(MissingSoulError);
-    }
+    const err = await buildGoblinSystemPrompt({
+      home: tmpDir,
+      executionEnvironment: personalEnvironment(),
+    }).then(
+      () => {
+        throw new Error("expected buildGoblinSystemPrompt to reject");
+      },
+      (e: unknown) => e,
+    );
+    expect(err).toBeDefined();
+    expect(err).not.toBeInstanceOf(MissingSoulError);
   });
 
   it("propagates non-ENOENT read failures for optional agent AGENTS.md", async () => {

@@ -20,6 +20,26 @@ import { agentsMdPath, heartbeatMdPath, soulMdPath } from "./paths.ts";
 import { surfaceHeartbeatPath } from "../sessions/paths.ts";
 import { dmSurface, surfaceId, type Surface } from "../surface.ts";
 
+/** Capture a rejection without routing it through a catch block that could
+ *  also swallow an expect.unreachable() failure. */
+async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (err) {
+    return err;
+  }
+  throw new Error("expected promise to reject");
+}
+
+function thrownBy(fn: () => unknown): unknown {
+  try {
+    fn();
+  } catch (err) {
+    return err;
+  }
+  throw new Error("expected function to throw");
+}
+
 describe("workspacePromptCatalog", () => {
   it("enumerates the deployment prompt files via path helpers with required/optional classification", () => {
     const home = join("nonexistent", "home");
@@ -57,14 +77,10 @@ describe("prompt-file read policy", () => {
 
   it("throws MissingSoulError when the required SOUL.md is absent", async () => {
     const file = workspacePromptFile(home, "SOUL.md");
-    try {
-      await readRequiredPromptFile(file.path);
-      expect.unreachable("expected readRequiredPromptFile to reject");
-    } catch (err) {
-      expect(err).toBeInstanceOf(MissingSoulError);
-      expect((err as MissingSoulError).code).toBe("GOBLIN_MISSING_SOUL");
-      expect((err as MissingSoulError).path).toBe(soulMdPath(home));
-    }
+    const err = await rejectionOf(readRequiredPromptFile(file.path));
+    expect(err).toBeInstanceOf(MissingSoulError);
+    expect((err as MissingSoulError).code).toBe("GOBLIN_MISSING_SOUL");
+    expect((err as MissingSoulError).path).toBe(soulMdPath(home));
   });
 
   it("yields absent when optional AGENTS.md or HEARTBEAT.md is missing", async () => {
@@ -82,13 +98,9 @@ describe("prompt-file read policy", () => {
   it("propagates non-ENOENT failures on required files unwrapped", async () => {
     writeFileSync(soulMdPath(home), "soul identity\n", "utf-8");
     chmodSync(soulMdPath(home), 0o000);
-    try {
-      await readRequiredPromptFile(soulMdPath(home));
-      expect.unreachable("expected readRequiredPromptFile to reject");
-    } catch (err) {
-      expect(err).toBeDefined();
-      expect(err).not.toBeInstanceOf(MissingSoulError);
-    }
+    const err = await rejectionOf(readRequiredPromptFile(soulMdPath(home)));
+    expect(err).toBeDefined();
+    expect(err).not.toBeInstanceOf(MissingSoulError);
   });
 
   it("propagates non-ENOENT failures on optional files unwrapped", async () => {
@@ -155,13 +167,45 @@ describe("preflightWorkspacePromptFiles", () => {
   it("propagates non-ENOENT check failures instead of remapping them", async () => {
     writeFileSync(soulMdPath(home), "soul identity\n", "utf-8");
     chmodSync(join(home, "workspace"), 0o000);
-    try {
-      await preflightWorkspacePromptFiles({ home, warn: () => undefined });
-      expect.unreachable("expected preflightWorkspacePromptFiles to reject");
-    } catch (err) {
-      expect(err).toBeDefined();
-      expect(err).not.toBeInstanceOf(MissingSoulError);
-    }
+    const err = await rejectionOf(
+      preflightWorkspacePromptFiles({ home, warn: () => undefined }),
+    );
+    expect(err).toBeDefined();
+    expect(err).not.toBeInstanceOf(MissingSoulError);
+  });
+
+  it("rejects when the required file is present but not a regular readable file", async () => {
+    mkdirSync(soulMdPath(home));
+    const err = await rejectionOf(
+      preflightWorkspacePromptFiles({ home, warn: () => undefined }),
+    );
+    expect(err).toBeDefined();
+    expect(err).not.toBeInstanceOf(MissingSoulError);
+  });
+
+  it("rejects when a warn-checked optional file is present but not a regular readable file", async () => {
+    writeFileSync(soulMdPath(home), "soul identity\n", "utf-8");
+    mkdirSync(agentsMdPath(home));
+    const err = await rejectionOf(
+      preflightWorkspacePromptFiles({ home, warn: () => undefined }),
+    );
+    expect(err).toBeDefined();
+    expect(err).not.toBeInstanceOf(MissingSoulError);
+  });
+
+  it("does not touch optional files that carry no preflight policy", async () => {
+    writeFileSync(soulMdPath(home), "soul identity\n", "utf-8");
+    writeFileSync(agentsMdPath(home), "agent rules\n", "utf-8");
+    // A self-symlink ELOOPs on stat/access; preflight must not inspect it.
+    symlinkSync(heartbeatMdPath(home), heartbeatMdPath(home));
+    const warnings: string[] = [];
+
+    await preflightWorkspacePromptFiles({
+      home,
+      warn: (message) => warnings.push(message),
+    });
+
+    expect(warnings).toEqual([]);
   });
 });
 
@@ -217,6 +261,12 @@ describe("resolveHeartbeatPrompt", () => {
     expect(resolveHeartbeatPrompt(home, SURFACE).match(/\[heartbeat\]/g)).toHaveLength(1);
   });
 
+  it("strips an indented [heartbeat] marker while preserving the indentation", () => {
+    writeSurfaceHeartbeat(SURFACE, "  [heartbeat] indented body");
+    expect(resolveHeartbeatPrompt(home, SURFACE)).toBe("[heartbeat]   indented body");
+    expect(resolveHeartbeatPrompt(home, SURFACE).match(/\[heartbeat\]/g)).toHaveLength(1);
+  });
+
   it("strips trailing whitespace and preserves leading whitespace", () => {
     writeSurfaceHeartbeat(SURFACE, "  \tindented body  \n\n");
     expect(resolveHeartbeatPrompt(home, SURFACE)).toBe("[heartbeat]   \tindented body");
@@ -227,12 +277,8 @@ describe("resolveHeartbeatPrompt", () => {
     // resolve under a non-directory ancestor: ENOTDIR, not ENOENT.
     const blockingFile = join(home, "blocking");
     writeFileSync(blockingFile, "x", "utf-8");
-    try {
-      resolveHeartbeatPrompt(blockingFile, SURFACE);
-      expect.unreachable("expected resolveHeartbeatPrompt to throw");
-    } catch (err) {
-      expect((err as NodeJS.ErrnoException).code).toBe("ENOTDIR");
-    }
+    const err = thrownBy(() => resolveHeartbeatPrompt(blockingFile, SURFACE));
+    expect((err as NodeJS.ErrnoException).code).toBe("ENOTDIR");
   });
 });
 
@@ -376,12 +422,7 @@ describe("materializePromptFiles", () => {
   it("propagates non-ENOENT filesystem failures", () => {
     mkdirSync(join(home, "workspace"), { recursive: true });
     chmodSync(join(home, "workspace"), 0o500);
-    try {
-      materializePromptFiles(home, "Moss");
-      expect.unreachable("expected materializePromptFiles to throw");
-    } catch (err) {
-      expect(err).toBeDefined();
-    }
+    expect(thrownBy(() => materializePromptFiles(home, "Moss"))).toBeDefined();
   });
 });
 

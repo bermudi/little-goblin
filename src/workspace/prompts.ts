@@ -127,9 +127,10 @@ export interface PreflightWorkspacePromptFilesOptions {
  * `MissingSoulError`; a missing optional file warns only when its catalog
  * entry carries a `missingNote`. Optional files without a `missingNote`
  * have no preflight policy (decision 0010) and are not inspected at all.
- * A file that is present but not a readable regular file fails preflight
- * rather than surfacing later during prompt processing; retained
- * inspection errors propagate unwrapped.
+ * A file that is present but not a readable regular file — a directory or
+ * other non-regular file, or a file failing the readability probe — fails
+ * preflight rather than surfacing later during prompt processing; other
+ * inspection errors (e.g. stat failures) propagate unwrapped.
  */
 export async function preflightWorkspacePromptFiles(
   opts: PreflightWorkspacePromptFilesOptions,
@@ -139,7 +140,11 @@ export async function preflightWorkspacePromptFiles(
       continue;
     }
     const presence = inspectPromptFile(file.path);
-    if (presence.kind === "error") throw presence.error;
+    // A failed readability probe means the file exists and is a regular
+    // file but cannot be read: a determined present-but-unusable state,
+    // not an inspection failure.
+    const unreadable = presence.kind === "error" && presence.operation === "read";
+    if (presence.kind === "error" && !unreadable) throw presence.error;
     // A dangling symlink resolves to ENOENT on every downstream read, so
     // preflight treats it as absent even though lstat can see the link.
     const absent =
@@ -151,7 +156,7 @@ export async function preflightWorkspacePromptFiles(
         path: file.path,
         note: file.missingNote,
       });
-    } else if (presence.kind === "not-regular") {
+    } else if (presence.kind === "not-regular" || unreadable) {
       throw new Error(
         `Goblin prompt file ${file.name} is not a regular readable file: ${file.path}`,
       );

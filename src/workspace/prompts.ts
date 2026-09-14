@@ -17,7 +17,7 @@
  */
 
 import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { surfaceHeartbeatPath } from "../sessions/paths.ts";
 import { surfaceId, type Surface } from "../surface.ts";
@@ -107,23 +107,36 @@ export interface PreflightWorkspacePromptFilesOptions {
 /**
  * Startup preflight over the catalog: a missing required file throws
  * `MissingSoulError`; a missing optional file warns only when its catalog
- * entry carries a `missingNote`. Non-ENOENT check failures propagate.
+ * entry carries a `missingNote`. Optional files without a `missingNote`
+ * have no preflight policy (decision 0010) and are not inspected at all.
+ * A file that is present but not a readable regular file fails preflight
+ * rather than surfacing later during prompt processing; retained
+ * inspection errors propagate unwrapped.
  */
 export async function preflightWorkspacePromptFiles(
   opts: PreflightWorkspacePromptFilesOptions,
 ): Promise<void> {
   for (const file of workspacePromptCatalog(opts.home)) {
-    try {
-      await access(file.path);
-    } catch (err) {
-      if (!isEnoent(err)) throw err;
-      if (file.requirement === "required") throw new MissingSoulError(file.path);
-      if (file.missingNote !== undefined) {
+    if (file.requirement !== "required" && file.missingNote === undefined) {
+      continue;
+    }
+    const presence = inspectPromptFile(file.path);
+    switch (presence.kind) {
+      case "regular":
+        break;
+      case "missing":
+        if (file.requirement === "required") throw new MissingSoulError(file.path);
         opts.warn("optional Goblin prompt file missing", {
           path: file.path,
           note: file.missingNote,
         });
-      }
+        break;
+      case "not-regular":
+        throw new Error(
+          `Goblin prompt file ${file.name} is not a regular readable file: ${file.path}`,
+        );
+      case "error":
+        throw presence.error;
     }
   }
 }
@@ -157,7 +170,9 @@ function readHeartbeatCandidate(path: string): string | null {
 }
 
 function stripLeadingHeartbeat(body: string): string {
-  return body.replace(/^\[heartbeat\]\s*/, "");
+  // Leading indentation before the marker is preserved (leading whitespace
+  // belongs to the body); only the marker and its following whitespace go.
+  return body.replace(/^([^\S\n]*)\[heartbeat\]\s*/, "$1");
 }
 
 /**

@@ -193,6 +193,37 @@ describe("preflightWorkspacePromptFiles", () => {
     expect(err).not.toBeInstanceOf(MissingSoulError);
   });
 
+  it("treats a dangling symlink at the required file as missing", async () => {
+    // access()-style semantics: a dangling symlink resolves to ENOENT
+    // downstream, so the required file is absent, not "not regular".
+    symlinkSync(join(home, "nonexistent-target"), soulMdPath(home));
+    const err = await rejectionOf(
+      preflightWorkspacePromptFiles({ home, warn: () => undefined }),
+    );
+    expect(err).toBeInstanceOf(MissingSoulError);
+  });
+
+  it("treats a dangling symlink at the warn-checked optional file as missing", async () => {
+    writeFileSync(soulMdPath(home), "soul identity\n", "utf-8");
+    symlinkSync(join(home, "nonexistent-target"), agentsMdPath(home));
+    const warnings: Array<{ message: string; extra?: unknown }> = [];
+
+    await preflightWorkspacePromptFiles({
+      home,
+      warn: (message, extra) => warnings.push({ message, extra }),
+    });
+
+    expect(warnings).toEqual([
+      {
+        message: "optional Goblin prompt file missing",
+        extra: {
+          path: agentsMdPath(home),
+          note: "Create AGENTS.md in $GOBLIN_HOME/workspace/ for agent operating rules.",
+        },
+      },
+    ]);
+  });
+
   it("does not touch optional files that carry no preflight policy", async () => {
     writeFileSync(soulMdPath(home), "soul identity\n", "utf-8");
     writeFileSync(agentsMdPath(home), "agent rules\n", "utf-8");
@@ -329,13 +360,23 @@ describe("inspectPromptFile", () => {
   });
 
   it("classifies a directory as not-regular", () => {
-    expect(inspectPromptFile(join(home, "workspace"))).toEqual({ kind: "not-regular" });
+    const expected = { kind: "not-regular" as const, danglingSymlink: false };
+    expect(inspectPromptFile(join(home, "workspace"))).toEqual(expected);
   });
 
-  it("classifies a dangling symlink as not-regular rather than missing", () => {
+  it("classifies a symlink to a regular file as regular", () => {
+    const target = join(home, "target.md");
+    writeFileSync(target, "x\n", "utf-8");
+    const path = agentsMdPath(home);
+    symlinkSync(target, path);
+    expect(inspectPromptFile(path)).toEqual({ kind: "regular" });
+  });
+
+  it("flags a dangling symlink so callers can treat it as absent downstream", () => {
     const path = agentsMdPath(home);
     symlinkSync(join(home, "nonexistent-target"), path);
-    expect(inspectPromptFile(path)).toEqual({ kind: "not-regular" });
+    const expected = { kind: "not-regular" as const, danglingSymlink: true };
+    expect(inspectPromptFile(path)).toEqual(expected);
   });
 
   it("reports an unreadable file as a read error", () => {

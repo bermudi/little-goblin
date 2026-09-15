@@ -84,7 +84,7 @@ If a fix needs a new decision, report "needs decision: <question>" instead of in
 - Flag Verify that would pass without the outcome.
 
 #### Evidence
-For every checked unit: a complete red-green receipt exists (verbatim command; labeled pre and post SHAs and statuses; two nonempty fences; matching pre/post scope lines); new receipts begin immediately after `Evidence:` with `Protocol: evidence/v1`, `Digest algorithm: unit-contract-sha256-v1`, and a content-derived `Receipt ID:` (plus optional `Recovered from:`); a receipt declaring the current digest matches the unit's `Verify:` verbatim; a superseded receipt is checked with its declared protocol/parser and digest algorithm against its own command and digest and must be connected to the current digest by valid amendment edges; legacy receipts with no version fields use the preserved legacy grammar; the SHAs differ; pre is an ancestor of post and post is an ancestor of `HEAD`.
+For every checked unit: a complete red-green receipt exists (verbatim command; labeled pre and post SHAs and statuses; two nonempty fences; matching pre/post scope lines); new receipts begin immediately after `Evidence:` with `Protocol: evidence/v2`, `Digest algorithm: unit-contract-sha256-v1`, and a bounded `receipt-sha256-v2:` Receipt ID (plus optional `Recovered from:`), while receipts declaring `evidence/v1` or the legacy unversioned shape stay on their retained grammars; a receipt declaring the current digest matches the unit's `Verify:` verbatim; a superseded receipt is checked with its declared protocol/parser and digest algorithm against its own command and digest and must be connected to the current digest by valid amendment edges; legacy receipts with no version fields use the preserved legacy grammar; the SHAs differ; pre is an ancestor of post and post is an ancestor of `HEAD`.
 
 The history from pre to post may contain one or more implementation/fix commits; do not require post to be the immediate child of pre. Post is the final clean commit where `Verify:` passes for the unit. Build's commits are immutable: fixes belong in new commits, never amendments.
 
@@ -95,7 +95,7 @@ Replay the exact command at all three trees:
 
 Before creating a worktree, install cleanup that runs on every path, such as a shell trap or the harness equivalent, covering pre, post, and `HEAD`. The reviewer must never check out an evidence SHA in the reviewer's current worktree. A green pre run, irrelevant pre failure, failed post or `HEAD`, missing/malformed receipt, edited command, or invalid ancestry is a CRITICAL finding breaking that unit's contract (triage rule 2).
 
-Red-green evidence proves only that Verify discriminates the recorded trees. It does not prove that Verify targets the correct behavior. Probe the command and outcome adversarially beyond the receipt. The scope lines are the ceiling: evidence never claims beyond them. Receipt IDs are content addresses, not authorization; continuation chunks must preserve the protocol, algorithm, Receipt ID, and routing identity.
+Red-green evidence proves only that Verify discriminates the recorded trees. It does not prove that Verify targets the correct behavior. Probe the command and outcome adversarially beyond the receipt. The scope lines are the ceiling: evidence never claims beyond them. Receipt IDs are content addresses, not authorization. For a receipt declaring `evidence/v2`, cross-check each replayed run by comparing its byte count and SHA-256 against the declared `pre bytes:`/`post bytes:` and `pre output sha256:`/`post output sha256:` fields instead of byte-diffing the full posted log — the excerpt is context, the replay is the proof. Receipts declaring `evidence/v1` or the legacy shape keep byte-diff treatment, and continuation chunks must preserve the protocol, algorithm, Receipt ID, and routing identity.
 
 ### Verdict
 `PASS` or `CHANGES REQUESTED`. The verdict is about the issue-owned branch, not the whole repo. Severity says how confident you are it is wrong; scope says whether this issue owns it.
@@ -164,7 +164,7 @@ Appending a unit to the parent queue and recording rule-2 routing are the only p
 
 Before returning the closure verdict, reread the Proposal and Design prose and re-inventory every scope or preservation sentence against the units: a sentence no unit's `Done means:` or `Constraints:` enforces, yet the implementation can violate in a reachable state, is a finding routed by scope — not decoration. The issue body's prose is part of the review scope.
 
-The issue closes only when every unit checkbox is checked, no rebuild request, re-plan marker, or amendment is unresolved, **and** review returns `PASS`. Routed non-blocking findings never block closure.
+The issue closes only when every unit checkbox is checked, no rebuild request, re-plan marker, or amendment is unresolved, review returns `PASS`, **and** the issue's `Branch:` is merged — merge first, then close. The merged PR is the test, not git ancestry: squash merges break ancestry checks, and a merge into a release branch counts once its PR lands. A closed issue leaves no work stranded on a branch. Routed non-blocking findings never block closure.
 
 ---
 

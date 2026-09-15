@@ -39,27 +39,31 @@ Read the queue's `Branch:` line and compare it with `git branch --show-current`.
 4. Implement the unit — the smallest coherent change. Extend the existing path, don't add a parallel one. No speculative abstraction. If the unit is a contract change, update `specs/<feature>/spec.md` now.
 5. Create one or more implementation/fix commits for the unit. Keep every commit after pre immutable: fix failures in a new commit, never by amending.
 6. Require a clean tree again. Run the same exact `Verify:` command. It must exit 0 with the outcome present. Post is the final clean commit where `Verify:` passes; save its full SHA from `git rev-parse HEAD`, exit status, and raw output.
-7. Record one receipt — verbatim, not interpretive (see Verification). Required fields, in this order:
+7. Record one receipt — verbatim, not interpretive (see Verification). Newly assembled receipts declare `Protocol: evidence/v2` and fit one 8192-byte comment; required fields, in this order:
    - for a checked GitHub rebuild, `Unit occurrence: <n>`, `Unit heading: <exact heading>`, and `Evidence:`; otherwise the unit heading and `Evidence:` block
-   - immediately after `Evidence:`, `Protocol: evidence/v1`
+   - immediately after `Evidence:`, `Protocol: evidence/v2`
    - `Digest algorithm: unit-contract-sha256-v1`
-   - `Receipt ID: receipt-sha256-v1:<64 lowercase hex>` — the lowercase SHA-256 of the canonical logical receipt with this ID field omitted; include protocol, algorithm, optional recovery reference, routing identity, Verify, unit digest, run fields, scope lines, and reconstructed raw output, but not wrappers or continuation boundaries
-   - optional `Recovered from: <receipt ID>` only when preserving provenance for an earlier complete receipt
+   - `Receipt ID: receipt-sha256-v2:<64 lowercase hex>` — the lowercase SHA-256 of the canonical bounded logical receipt with this ID field omitted; include protocol, algorithm, optional recovery reference, routing identity, Verify, unit digest, per-run commit sha, exit status, byte count, full-output SHA-256, excerpt text, and scope lines; the full output participates only through its byte count and hash
+   - optional `Recovered from: <receipt ID>` only when preserving provenance for an earlier complete receipt; it may name any retained receipt ID, including v1
    - exact `Verify:` command
    - `unit digest: <64 lowercase hex>` — run `litespec digest --issue <N>` (or `--queue <path>`) and paste the line whose heading and occurrence match this unit; status checkbox and Evidence content are excluded from the digest. Validate recomputes it from the current body: a missing or wrong digest is an error, so an edit to `Done means:` or `Verify:` after evidence is recorded fails validation.
    - `pre sha: <full 40- or 64-char hex>`
    - `pre exit status: <non-zero integer>`
-   - a fenced block of raw pre output, unedited; if the command emits nothing, write `<no output>`
+   - one fenced block: the complete raw pre output when it fits the excerpt budget (head 2048 + tail 3072 bytes, fixed constants), otherwise the head excerpt, the literal line `... <N> bytes elided ...` (N = the exact elided byte count), and the tail excerpt; if the command emits nothing, the fence holds `<no output>`. Cuts are byte-exact and never split a rune.
+   - `pre bytes: <decimal byte length of the full pre output>`
+   - `pre output sha256: <SHA-256 of the full pre output>`
    - `Pre-evidence scope: this command exited <status> at <sha>; nothing else is inferred.`
    - `post sha: <full 40- or 64-char hex from git rev-parse HEAD>`
    - `post exit status: 0`
-   - a fenced block of raw post output, unedited; if the command emits nothing, write `<no output>`
+   - one fenced block for the post output under the same excerpt rule
+   - `post bytes: <decimal>`
+   - `post output sha256: <SHA-256 of the full post output>`
    - `Post-evidence scope: this command exited 0 at <sha>; nothing else is inferred.`
-   The pre and post SHAs must differ, and pre must be an ancestor of post.
+   The pre and post SHAs must differ, and pre must be an ancestor of post. A v2 receipt never continues across comments and never uses the chunk form; if identity and status fields alone exceed the budget, the receipt cannot be assembled — stop and surface the refusal.
 8. Post the receipt and tick the box (`- [x]`) only after evidence is posted:
-   - GH issue queue: post the receipt as an issue comment. GitHub caps issue comments at 65,536 characters. If fields exceed the cap, split only after a scope line, end every full comment with the exact line `Receipt continues in next comment (GitHub comment size limit).`, and post the next part immediately, chaining as needed. If one pre or post raw-output fence alone exceeds the cap, use the explicit chunk form at that output position: `Raw output chunk:`, the repeated `Protocol: evidence/v1`, `Digest algorithm: unit-contract-sha256-v1`, `Receipt ID:`, `Output: pre|post`, `Chunk: <n>/<total>`, `Unit occurrence: <n>`, `Unit heading: <exact heading>`, `unit digest: <digest>`, then a closed fence. Repeat the same receipt identity for every chunk, put only one chunk in each comment, number chunks consecutively, concatenate their fenced payloads without inserted bytes, and put the same continuation marker after every non-final chunk/comment. Choose a fence delimiter longer than any delimiter line in the raw output. Never truncate, summarize, or edit fenced output; interruption, duplication, wrong identity, or wrong order must remain visible to validate. For an initially unchecked unit, then check its box in the issue body. For a checked rebuild, leave the issue body and prior comments unchanged; the fresh identity-bearing receipt resolves its requests.
+   - GH issue queue: post the receipt as one issue comment. Prefer `litespec receipt` to assemble (and, on request, post) it; hand-assembly in the shape above stays valid. The continuation marker and `Raw output chunk:` forms remain valid only for retained receipts declaring `evidence/v1` or the legacy shape — never emit them for a new receipt. For an initially unchecked unit, then check its box in the issue body. For a checked rebuild, leave the issue body and prior comments unchanged; the fresh identity-bearing receipt resolves its requests.
    - Local queue file (`specs/queues/<name>.md`): append the receipt as an `Evidence:` block under the unit (after `Verify:`, before the status checkbox), then check the box. Commit this queue-file bookkeeping as a separate metadata commit—it cannot be folded into the implementation commit because the receipt records the post SHA.
-   A nonempty `Evidence:` label is not a receipt. Validate rejects missing fields, short or equal SHAs, an empty fence, a current-digest receipt whose command does not match `Verify:` verbatim, a missing or malformed `unit digest:`, an unchained superseded digest, a zero pre status, or a non-zero post status. A complete superseded receipt is checked against its own declared command and digest before amendment-chain validation.
+   A nonempty `Evidence:` label is not a receipt. Validate rejects missing fields, short or equal SHAs, an empty fence, a current-digest receipt whose command does not match `Verify:` verbatim, a missing or malformed `unit digest:`, an unchained superseded digest, a zero pre status, or a non-zero post status. For `evidence/v2` it also enforces the bounds: reconstruction arithmetic (head plus elided plus tail equals the declared byte count), hash-matched unelided fences, one comment within the 8192-byte budget, and refusal of continuation and chunk forms. A complete superseded receipt is checked against its own declared command and digest before amendment-chain validation.
 9. Never amend either recorded evidence commit. Subsequent fixes go in a new commit.
 10. Stop. Tell the user this unit is done and they can re-invoke build for the next.
 

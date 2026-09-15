@@ -1,6 +1,22 @@
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
+
+/**
+ * Read a UTF-8 text file, returning `null` when it does not exist.
+ * Non-ENOENT errors propagate.
+ */
+export async function readOptionalTextFile(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, "utf-8");
+  } catch (err) {
+    if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    throw err;
+  }
+}
 
 /**
  * Atomically write `data` to `filePath`.

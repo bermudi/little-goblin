@@ -16,8 +16,10 @@ after PASS and merged into the #59 branch. Issue #67
 (`litespec/private-reflection`) is closed after PASS: bounded, tool-free,
 recoverable private fact extraction replaced light-sleep model extraction.
 Deferred item R1#6 (bot-mention module) graduated to labeled issue #68
-(`litespec/bot-mention-module`) — the active issue. Candidate next:
-deferred item R2#4 (WorkspacePrompts semantics consolidation).
+(`litespec/bot-mention-module`) — closed and merged. Deferred item
+R2#4 (WorkspacePrompts semantics consolidation) graduated to labeled
+issue #69 (`litespec/workspace-prompts`) — the active issue. No
+plainly described candidate next; scout before promoting.
 #59's final launch integration rides the accepted ACP/delegated-run seams.
 Do not build Mini App integration on the legacy external-agent runner.
 
@@ -76,8 +78,8 @@ Historical unstarted plans live in `specs/parked/`; they are frozen references, 
 - **Architecture review 2026-07-05 — amber candidates deferred from the deepening program.** Five "Worth exploring" candidates were parked in favor of the five Strong candidates that now have active changes. They graduate individually when ready:
   - ~~**Memory active-scope conversion consolidation (R1#4).**~~ Owned by `memory-context-assembly` (Phase 1 centralizes the four byte-identical `activeMemoryScopeFor` copies in `reflector.ts:450`, `tool.ts:340`, `snapshot.ts:172`, `search.ts:306` into `scope.ts`). Graduates when that change lands; reopens as its own follow-up only if `memory-context-assembly` is abandoned.
   - ~~**pi-host.ts split into pi-services / pi-paths / pi-session-discovery (R1#5).** Three unrelated concerns share one file (`createPiServices`, six path helpers, `findMostRecentPiSession`) and a misleading name. Mechanical split; honors ADR-0008 (path construction stays in path-helper modules). The duplicate "newest .jsonl" scanner in `src/subagents/meta.ts` differs in mechanism (mtime vs. filename sort) and would unify as part of this.~~ — resolved: `src/pi-host.ts` now holds pi services, `piAgentDir`, and `findMostRecentPiSession`; goblin workspace paths moved to `src/workspace/paths.ts`.
-  - **Bot-mention module (R1#6).** `tg/middleware.ts:isBotMentioned` and `tg/user-context.ts:stripBotMention` re-implement the same entity-scan + word-boundary regex. A `tg/mention.ts` owning both prevents gate/strip drift.
-  - **Workspace prompt-file semantics consolidation (R2#4).** SOUL/AGENTS/HEARTBEAT behavior is split across `workspace/paths.ts` (paths), `agent/system-prompt.ts` (SOUL-required/AGENTS-optional), `scheduler/loop.ts` (HEARTBEAT fallback/prefix/trim), and `onboard.ts` (writes). A `WorkspacePrompts` deep module owns preflight, fallback, and trimming. The path split (R1#5) is resolved; semantics consolidation remains.
+  - ~~**Bot-mention module (R1#6).** `tg/middleware.ts:isBotMentioned` and `tg/user-context.ts:stripBotMention` re-implement the same entity-scan + word-boundary regex. A `tg/mention.ts` owning both prevents gate/strip drift.~~ — resolved by issue #68: `src/tg/mention.ts` owns the shared scan.
+  - ~~**Workspace prompt-file semantics consolidation (R2#4).** SOUL/AGENTS/HEARTBEAT behavior is split across `workspace/paths.ts` (paths), `agent/system-prompt.ts` (SOUL-required/AGENTS-optional), `scheduler/loop.ts` (HEARTBEAT fallback/prefix/trim), and `onboard.ts` (writes). A `WorkspacePrompts` deep module owns preflight, fallback, and trimming. The path split (R1#5) is resolved; semantics consolidation remains.~~ — graduated to labeled issue #69 (`litespec/workspace-prompts`).
 - **PDF/video native model ingestion — gated on a stack change (decision 0005).** PDFs and video cannot reach the model through the pi-routed stack: pi-ai's content union is closed at `TextContent | ImageContent`. Two changes were opened and found too costly: `multimodal-native-pdf` (pi-ai `bun patch` surgery — unmaintainable) and `migrate-to-ai-sdk` (complete 8-capability stack rewrite — nuclear). Reopen against a new foundation when **either** pi-ai ships native document support **or** goblin independently migrates off pi. Workaround until then: `pdftotext` extraction; images via existing `ImageContent` path. Original proposals retained in git history.
 - v1.1: cascade cancel — abort child subagents when parent session is cancelled / disposed
 - ~~v1.x: retroactive cleanup of orphaned subagents~~ — subsumed by decision-0045 startup reconciliation: attached invocations non-terminal at boot are marked interrupted in `state/delegated-work/runs/` rather than hunted by `spawnedBy` under legacy trees.

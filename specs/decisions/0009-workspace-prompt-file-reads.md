@@ -7,6 +7,11 @@ spine: false
 
 # 0009: Workspace Prompt File Reads
 
+> Amended by decision 0050: prompt-file reads now go through `WorkspacePrompts`
+> (`src/workspace/prompts.ts`), the single prompt-file authority; the
+> exemption explicitly covers the Surface-scoped
+> `state/surfaces/<SurfaceId>/HEARTBEAT.md` alongside `workspace/` files.
+
 ## Status
 
 accepted

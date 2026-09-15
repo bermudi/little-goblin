@@ -21,7 +21,7 @@ import {
   sessionHolder,
   setLoadedSkillPathsOverride,
 } from "./support.ts";
-import { workspacePath } from "../../workspace/paths.ts";
+import { agentsMdPath, heartbeatMdPath, soulMdPath, workspacePath } from "../../workspace/paths.ts";
 
 function genericPreparation(home: string, sessionDir = join(home, "instance")): SubagentPreparation {
   return {
@@ -209,6 +209,32 @@ describe("PiSubagentHost contract", () => {
     await flush();
 
     expect(constructions).toBe(1);
+    sessionHolder.complete();
+    await expect(result).resolves.toBe("");
+  });
+
+  it("excludes deployment prompt files from the generic subagent AGENTS context", async () => {
+    const result = new PiSubagentHost(makeConfig(home))
+      .prepare(genericPreparation(home))
+      .run(invocation());
+    await flush();
+
+    const options = getCapturedCreateArgs()[0] as Record<string, unknown>;
+    const loader = options.resourceLoader as { options: Record<string, unknown> };
+    const override = loader.options.agentsFilesOverride as (input: {
+      agentsFiles: Array<{ path: string; content: string }>;
+    }) => { agentsFiles: Array<{ path: string; content: string }> };
+    const persona = join(workspacePath(home), "agents", "researcher", "AGENTS.md");
+    const filtered = override({
+      agentsFiles: [
+        { path: soulMdPath(home), content: "identity" },
+        { path: agentsMdPath(home), content: "rules" },
+        { path: heartbeatMdPath(home), content: "pulse" },
+        { path: persona, content: "persona" },
+      ],
+    });
+    expect(filtered.agentsFiles).toEqual([{ path: persona, content: "persona" }]);
+
     sessionHolder.complete();
     await expect(result).resolves.toBe("");
   });

@@ -1,7 +1,5 @@
-import { readFileSync } from "node:fs";
 import { log } from "../log.ts";
-import { heartbeatMdPath } from "../workspace/paths.ts";
-import { surfaceHeartbeatPath } from "../sessions/paths.ts";
+import { resolveHeartbeatPrompt } from "../workspace/mod.ts";
 import type { ConversationState } from "../sessions/mod.ts";
 import { surfaceId, type Surface } from "../surface.ts";
 
@@ -48,66 +46,6 @@ function parseLocalTime(key: string, fallback: string): { hour: number; minute: 
   }
   const [fh, fm] = fallback.split(":").map((s) => Number.parseInt(s, 10));
   return { hour: fh ?? 0, minute: fm ?? 0 };
-}
-
-/**
- * The system-owned heartbeat prompt. The `[heartbeat]` prefix makes the prompt
- * distinguishable from user-authored text at the agent layer and in
- * transcripts. The body MUST NOT claim a user asked a new question.
- *
- * Pinned here (not constructed dynamically) so drift cannot quietly violate
- * the "MUST NOT claim a user asked a new question" rule.
- */
-export const HEARTBEAT_PROMPT =
-  "[heartbeat] This is a scheduled self-check-in. No user message prompted this turn. Review the current conversation context and decide whether there is anything useful, timely, or important to say. If there is nothing worth saying, reply briefly that you have nothing to add and stop.";
-
-/**
- * Read a candidate heartbeat prompt file and return its content if it exists
- * and is non-whitespace. Returns `null` for ENOENT or whitespace-only files.
- * Non-ENOENT read errors propagate.
- */
-function readCandidate(path: string): string | null {
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf-8");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw e;
-  }
-  if (raw.trim().length === 0) return null;
-  return raw.trimEnd();
-}
-
-/**
- * Resolve the heartbeat prompt body for a given Surface.
- *
- * Checks candidates in first-non-empty-wins order:
- * 1. `$GOBLIN_HOME/state/surfaces/<SurfaceId>/HEARTBEAT.md`
- * 2. `$GOBLIN_HOME/workspace/HEARTBEAT.md`
- * 3. The system-owned `HEARTBEAT_PROMPT` constant
- *
- * When a file yields non-whitespace content, its content is used as the prompt
- * body with the `[heartbeat] ` prefix prepended (the file holds the user-
- * authored body; the system owns the prefix). When a file is absent or
- * empty/whitespace-only, the next candidate is tried. The constant already
- * includes the `[heartbeat]` prefix, so no double-prefixing occurs on the
- * fallback path. Non-ENOENT read errors propagate (fail loud, per AGENTS.md).
- *
- * Whitespace contract: leading whitespace is preserved (the user may intend it
- * as part of the body, e.g. an indented first line); only trailing whitespace
- * is stripped. The emptiness check uses `trim()` so a file of only whitespace
- * falls back to the next candidate.
- */
-function stripLeadingHeartbeat(body: string): string {
-  return body.replace(/^\[heartbeat\]\s*/, "");
-}
-
-export function resolveHeartbeatPrompt(home: string, surface: Surface): string {
-  const surfaceBody = readCandidate(surfaceHeartbeatPath(home, surfaceId(surface)));
-  if (surfaceBody !== null) return `[heartbeat] ${stripLeadingHeartbeat(surfaceBody)}`;
-  const globalBody = readCandidate(heartbeatMdPath(home));
-  if (globalBody !== null) return `[heartbeat] ${stripLeadingHeartbeat(globalBody)}`;
-  return HEARTBEAT_PROMPT;
 }
 
 /**
@@ -420,7 +358,7 @@ export class SchedulerLoop {
       const nowIso = new Date(this.clock.now()).toISOString();
       const due = this.store.listDue(nowIso);
       // Each schedule is processed in isolation: a throw from one schedule
-      // (e.g. a non-ENOENT HEARTBEAT.md read error, a synchronous dispatcher
+      // (e.g. a failing HEARTBEAT.md read, a synchronous dispatcher
       // bug) MUST NOT skip the remaining due schedules in this tick. Prompt
       // resolution occurs after claimDue, so processOne records the failed
       // occurrence before rethrowing to this isolation boundary.
@@ -493,11 +431,11 @@ export class SchedulerLoop {
     }
 
     // Resolve the prompt text before claiming so claim + enqueue are atomic:
-    // nothing between them can throw or close admission. A heartbeat resolves
-    // its body from `$GOBLIN_HOME/state/surfaces/<SurfaceId>/HEARTBEAT.md`
-    // (then global, then constant) using the owning Surface; a user schedule
-    // uses its captured prompt. A heartbeat read failure is recorded without
-    // claiming, so the occurrence stays due for the next tick.
+    // nothing between them can throw or close admission. A heartbeat body is
+    // resolved through WorkspacePrompts at dispatch time (Surface-scoped
+    // HEARTBEAT.md, then workspace, then the built-in constant); a user
+    // schedule uses its captured prompt. A heartbeat read failure is recorded
+    // without claiming, so the occurrence stays due for the next tick.
     const isHeartbeat = schedule.kind === "heartbeat";
     let prompt: string;
     try {

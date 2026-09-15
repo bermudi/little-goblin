@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { requiredGoblinHomeDirectories, type Config } from "./config.ts";
 import { resolveModel } from "./agent/models.ts";
-import { preflightGoblinPromptFiles } from "./agent/system-prompt.ts";
+import { preflightWorkspacePromptFiles } from "./workspace/mod.ts";
 import { atomicWrite } from "./fs.ts";
 import { log } from "./log.ts";
 import { runExternalAgentsPreflight } from "./external-agents/preflight.ts";
@@ -67,7 +67,7 @@ export async function runPreflight(
   });
 
   await ctx.check("prompt files", async () => {
-    await preflightGoblinPromptFiles({ home: cfg.goblinHome, warn: log.warn });
+    await preflightWorkspacePromptFiles({ home: cfg.goblinHome, warn: log.warn });
   });
 
   await ctx.check("GOBLIN_HOME directories are writable", async () => {

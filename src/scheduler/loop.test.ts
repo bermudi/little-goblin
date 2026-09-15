@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { SchedulerLoop, HEARTBEAT_PROMPT, DEFAULT_TICK_INTERVAL_MS, resolveHeartbeatPrompt } from "./loop.ts";
+import { SchedulerLoop, DEFAULT_TICK_INTERVAL_MS } from "./loop.ts";
+import { HEARTBEAT_PROMPT, resolveHeartbeatPrompt } from "../workspace/mod.ts";
 import { ScheduleStore } from "./store.ts";
 import { ConversationStore } from "../sessions/conversation-store.ts";
 import {

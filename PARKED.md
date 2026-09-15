@@ -18,8 +18,16 @@ recoverable private fact extraction replaced light-sleep model extraction.
 Deferred item R1#6 (bot-mention module) graduated to labeled issue #68
 (`litespec/bot-mention-module`) — closed and merged. Deferred item
 R2#4 (WorkspacePrompts semantics consolidation) graduated to labeled
-issue #69 (`litespec/workspace-prompts`) — the active issue. No
-plainly described candidate next; scout before promoting.
+issue #69 (`litespec/workspace-prompts`) — closed after PASS and merged
+to main (merge 45a6cae). No open labeled issue; no plainly described
+candidate next; scout before promoting.
+
+Notable unblocked-but-unshaped material: the three observability changes
+deleted during stabilization (`subagent-metrics`, `scheduler-metrics`,
+`voice-asr-metrics`) each had a "reopen after X" gate whose X is now
+done (delegated-work-ownership, conversation-lifecycle,
+personal-attachment-intake). They need replanning against current seams
+before any of them can graduate; see the Observability section below.
 #59's final launch integration rides the accepted ACP/delegated-run seams.
 Do not build Mini App integration on the legacy external-agent runner.
 

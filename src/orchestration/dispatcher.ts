@@ -29,11 +29,11 @@ import {
   type ImmediateWorkAdmission,
   type ImmediateWorkExecutionResult,
   type ImmediateWorkSettlement,
-  type RuntimeDisposalOptions,
   type SteerOrQueueResult,
   type WorkAuthority,
   type WorkIntent,
 } from "./conversation-runtime-host.ts";
+import type { InvalidationReason } from "./runtime-machine.ts";
 import type { AttachedWork, SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
 export type { AttachmentSignal, AttachedWork, CurrentBindingGuard, SurfaceRuntimeAuthority } from "./surface-runtime-authority.ts";
 export type { SurfaceSettings };
@@ -859,21 +859,19 @@ export class TurnDispatcher {
    * `ConversationRuntimeHost`: it fences the registration and queue first,
    * then disposes the runner and awaits delegated-work cleanup.
    *
-   * @param preserveInFlight When called from `doCreateAndRegisterRunner` to
+   * @param preserveCreation When called from `doCreateAndRegisterRunner` to
    *   dispose an old runner before creating a replacement, pass the new
    *   creation's promise so the in-flight entry for it is preserved. Without
    *   this, the in-flight entry would be cleared and the new creation's
-   *   post-capture recheck would discard it.
+   *   post-capture recheck would discard it. Only meaningful with the
+   *   `settings-change` reason.
    */
   async disposeRunner(
     sessionId: string,
-    preserveInFlight?: Promise<AgentRunner>,
-    options?: RuntimeDisposalOptions,
+    reason?: InvalidationReason,
+    preserveCreation?: Promise<AgentRunner>,
   ): Promise<void> {
-    return this.runtimeHost.disposeRuntime(sessionId, {
-      ...options,
-      preserveInFlight,
-    });
+    return this.runtimeHost.disposeRuntime(sessionId, reason, preserveCreation);
   }
 
   /**
@@ -887,15 +885,12 @@ export class TurnDispatcher {
    */
   admitDisposeRunner(
     sessionId: string,
-    preserveInFlight?: Promise<AgentRunner>,
-    options?: RuntimeDisposalOptions,
+    reason?: InvalidationReason,
+    preserveCreation?: Promise<AgentRunner>,
   ): RuntimeAdmissionResult<void> {
     try {
       return runtimeAdmission.handoff(
-        this.runtimeHost.disposeRuntime(sessionId, {
-          ...options,
-          preserveInFlight,
-        }),
+        this.runtimeHost.disposeRuntime(sessionId, reason, preserveCreation),
       );
     } catch (error) {
       throw new RuntimeAdmissionFailedBeforeDecisionError(error);

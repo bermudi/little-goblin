@@ -43,21 +43,15 @@ export type {
   WorkIntent,
 };
 
-/**
- * Preserve lifecycle-command serialization while invalidating model work.
- * Commands use Binding authority rather than a disposed runner's identity.
- */
-export interface RuntimeDisposalOptions {
-  readonly preserveCommandQueue?: boolean;
-  /** Keep this candidate reservation alive while replacing an old runtime. */
-  readonly preserveInFlight?: Promise<AgentRunner>;
-}
-
 /** Narrow lifecycle-facing port used by ConversationLifecycle. */
 export interface ConversationRuntimeHostPort {
   /** Optionally ignore the caller's own in-flight creation reservation. */
   hasRuntime(conversationId: ConversationId, excludeCreation?: Promise<AgentRunner>): boolean;
-  disposeRuntime(conversationId: ConversationId, options?: RuntimeDisposalOptions): Promise<void>;
+  disposeRuntime(
+    conversationId: ConversationId,
+    reason?: InvalidationReason,
+    preserveCreation?: Promise<AgentRunner>,
+  ): Promise<void>;
 }
 
 function flattenFailures(error: unknown, failures: unknown[]): void {
@@ -278,10 +272,10 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
   /**
    * Invalidate synchronously, then await runner and delegated-work cleanup.
    *
-   * Maps the legacy `RuntimeDisposalOptions` to the machine's invalidation
-   * reason enum:
-   * - `preserveCommandQueue` or `preserveInFlight` → `settings-change`
-   * - neither → `binding-change`
+   * Callers declare the machine's invalidation reason directly:
+   * - `settings-change` preserves queued commands and an optional
+   *   same-candidate creation reservation.
+   * - omitted reason keeps today's `binding-change` semantics.
    *
    * Deduplication is generation-aware: a second call for the same generation
    * shares the in-flight disposal promise, but a call made after a newer
@@ -289,14 +283,11 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
    */
   disposeRuntime(
     conversationId: ConversationId,
-    disposalOptions?: RuntimeDisposalOptions,
+    reason?: InvalidationReason,
+    preserveCreation?: Promise<AgentRunner>,
   ): Promise<void> {
     const machine = this.machineFor(conversationId);
-    const preserveCommandQueue = disposalOptions?.preserveCommandQueue === true;
-    const preserveInFlight = disposalOptions?.preserveInFlight;
-    const isSettingsChange = preserveCommandQueue || preserveInFlight !== undefined;
-    const reason: InvalidationReason = isSettingsChange ? "settings-change" : "binding-change";
-    return machine.invalidate(reason, preserveInFlight);
+    return machine.invalidate(reason ?? "binding-change", preserveCreation);
   }
 
   disposeAll(): Promise<void> {

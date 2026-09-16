@@ -885,7 +885,7 @@ describe("TurnDispatcher async runner creation", () => {
           if (assertionCount === 2) {
             // Simulate a settings-change invalidation: lifecycle bumps the
             // epoch and drops the in-flight creation.
-            await runtimeHost.disposeRuntime("abc123def0", { preserveCommandQueue: true });
+            await runtimeHost.disposeRuntime("abc123def0", "settings-change");
           }
         },
       },
@@ -1008,7 +1008,7 @@ describe("TurnDispatcher async runner creation", () => {
 
     // Settings-change invalidation: bumps runtime epoch, preserves binding
     // epoch, preserves the command queue.
-    await runtimeHost.disposeRuntime(session.id, { preserveCommandQueue: true });
+    await runtimeHost.disposeRuntime(session.id, "settings-change");
 
     // The runtime epoch bumped; the binding epoch did not.
     expect(runtimeHost.isEpochCurrent(session.id, "runtime", runtimeEpoch)).toBe(false);
@@ -1711,7 +1711,7 @@ describe("TurnDispatcher async runner creation", () => {
 
     const admission = dispatcher.enqueueScheduledTurn(session, surface, "warm scheduled");
     if (typeof admission === "boolean") throw new Error("expected scheduled turn admission handle");
-    await runtimeHost.disposeRuntime(session.id, { preserveCommandQueue: true });
+    await runtimeHost.disposeRuntime(session.id, "settings-change");
     releaseBlocker();
 
     expect(await admission.started).toBe(false);

@@ -291,7 +291,7 @@ describe("ConversationRuntimeHost shutdown", () => {
     await Promise.resolve();
 
     const creation = host.reserveCreation("conversation-a", surfaceId(dmSurface(1)), "replacement");
-    await host.disposeRuntime("conversation-a", { preserveInFlight: creation.promise });
+    await host.disposeRuntime("conversation-a", "settings-change", creation.promise);
     expect(host.schedule(
       "conversation-a",
       { kind: "binding" },
@@ -483,7 +483,7 @@ describe("ConversationRuntimeHost shutdown", () => {
     registerRunner(host, "conversation-a", fakeRunner(() => disposed.promise));
     const creation = host.reserveCreation("conversation-a", surfaceId(dmSurface(1)), "test");
 
-    const first = host.disposeRuntime("conversation-a", { preserveInFlight: creation.promise });
+    const first = host.disposeRuntime("conversation-a", "settings-change", creation.promise);
     expect(host.isCurrentCreation("conversation-a", creation.promise)).toBe(true);
     expect(host.disposeRuntime("conversation-a")).toBe(first);
     expect(host.isCurrentCreation("conversation-a", creation.promise)).toBe(false);

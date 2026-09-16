@@ -75,7 +75,7 @@ export class PreparedRuntimeAssembler {
 
     if (this.options.runtimeHost.hasRuntime(conversation.id, creation.promise)) {
       await creation.race(
-        this.options.runtimeHost.disposeRuntime(conversation.id, { preserveInFlight: creation.promise }),
+        this.options.runtimeHost.disposeRuntime(conversation.id, "settings-change", creation.promise),
       );
     }
     await creation.race(this.options.runtimeHost.awaitSettled(conversation.id));

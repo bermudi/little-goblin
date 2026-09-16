@@ -2,7 +2,6 @@ export {
   ConversationRuntimeHost,
   type ConversationRuntimeHostPort,
   type RuntimeCreation,
-  type RuntimeDisposalOptions,
   type RuntimeSkillContext,
   type SurfaceRuntimeRegistration,
 } from "./conversation-runtime-host.ts";

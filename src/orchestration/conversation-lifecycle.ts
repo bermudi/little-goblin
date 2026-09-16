@@ -841,7 +841,7 @@ export class ConversationLifecycleManager implements ConversationLifecycle {
       // The runtime host removes runner identity synchronously before it
       // awaits disposal. Lifecycle commands remain serialized by current
       // binding authority rather than by this stale runner.
-      await this.runtimeHost.disposeRuntime(conversationId, { preserveCommandQueue: true });
+      await this.runtimeHost.disposeRuntime(conversationId, "settings-change");
       return { runtime: hadRuntime ? "invalidated" : "none" };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

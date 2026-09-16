@@ -11,7 +11,7 @@ import {
   type SettingsConfig,
 } from "./schema.ts";
 import { resolveConfigValue } from "./resolve-value.ts";
-import { goblinConfigPath, sessionsDir, stateDir, scratchDir } from "./sessions/paths.ts";
+import { goblinConfigPath, sessionsDir, stateDir } from "./sessions/paths.ts";
 import { piAgentDir } from "./pi-host.ts";
 import { goblinSkillsPath, personalEnvironmentSkillsPath, workspacePath } from "./workspace/paths.ts";
 import { memoryDir } from "./memory/paths.ts";
@@ -254,7 +254,6 @@ export function requiredGoblinHomeDirectories(home: string): readonly GoblinHome
     { label: "state/memory", path: memoryDir(home) },
     { label: "state/pi", path: piAgentDir(home) },
     { label: "state/delegated-work/runs", path: delegatedWorkRunsRoot(home) },
-    { label: "scratch", path: scratchDir(home) },
   ];
 }
 
@@ -262,11 +261,12 @@ export function requiredGoblinHomeDirectories(home: string): readonly GoblinHome
  * Ensure GOBLIN_HOME directory exists with required subdirectories.
  * Call once at startup before any consumer tries to use the paths.
  *
- * Creates the canonical three-group layout:
+ * Creates the canonical layout:
  *   workspace/  — user-authored prompt files and the personal execution CWD
  *   .agents/    — deployment-wide Goblin skill catalog
  *   state/      — machine-managed state
- *   scratch/    — ephemeral generic subagent instance data (not a personal workdir)
+ *
+ * Startup creates no scratch/ tree.
  *
  * Per decision `config-startup-filesystem-mutation` (0007), this function is
  * exempt from the AGENTS.md "Don't touch $GOBLIN_HOME" guardrail for

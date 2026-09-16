@@ -374,17 +374,6 @@ export class TurnDispatcher {
     }
   }
 
-  /** Compatibility wrapper for non-admission callers that want the result. */
-  async reviveSubagent(
-    surface: Surface,
-    session: ConversationState,
-    subagentId: string,
-    prompt: string,
-  ): Promise<string> {
-    const attached = await this.beginReviveSubagent(surface, session, subagentId, prompt);
-    return await attached.result;
-  }
-
   private async completeRevivedSubagent(
     resultPromise: Promise<string>,
     runner: AgentRunner | undefined,

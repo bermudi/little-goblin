@@ -1130,7 +1130,7 @@ describe("TurnDispatcher async runner creation", () => {
     expect(secondCreateIdx).toBeGreaterThan(firstDisposeIdx);
   });
 
-  it("reviveSubagent delegates to subagentRunner.revive with the runner's captured Surface authority", async () => {
+  it("admitReviveSubagent hands off with the runner's captured Surface authority", async () => {
     await memoryStore.add("general", "test fact");
     const session = makeSession("abc123def0");
     const surface = dmSurface(1);
@@ -1142,7 +1142,9 @@ describe("TurnDispatcher async runner creation", () => {
     });
 
     await dispatcher.getOrCreateRunner(session, surface);
-    const result = await dispatcher.reviveSubagent(surface, session, "sub-1", "follow-up");
+    const admission = await dispatcher.admitReviveSubagent(surface, session, "sub-1", "follow-up");
+    expect(admission.kind).toBe("handoff");
+    const result = await admission.completion;
 
     expect(result).toBe("revived result");
     expect(subagentRunner.lastReviveArgs).not.toBeNull();
@@ -1158,19 +1160,21 @@ describe("TurnDispatcher async runner creation", () => {
     });
   });
 
-  it("reviveSubagent rejects when no runner exists for the session", async () => {
+  it("admitReviveSubagent rejects when no runner exists for the session", async () => {
     const session = makeSession("abc123def0");
     const surface = dmSurface(1);
     const guard = new FakeBindingGuard();
     guard.bind(surface, session.id);
     const { dispatcher } = buildAsyncDispatcher({ surfaceRuntimeAuthority: guard });
 
-    await expect(dispatcher.reviveSubagent(surface, session, "sub-1", "go")).rejects.toThrow(
+    const admission = await dispatcher.admitReviveSubagent(surface, session, "sub-1", "go");
+    expect(admission.kind).toBe("rejected");
+    await expect(admission.completion).rejects.toThrow(
       /no current runner/,
     );
   });
 
-  it("reviveSubagent rejects when the binding has rotated", async () => {
+  it("admitReviveSubagent fences when the binding has rotated", async () => {
     await memoryStore.add("general", "test fact");
     const session = makeSession("abc123def0");
     const surface = dmSurface(1);
@@ -1180,7 +1184,9 @@ describe("TurnDispatcher async runner creation", () => {
 
     await dispatcher.getOrCreateRunner(session, surface);
     guard.bind(surface, "other-session-id");
-    await expect(dispatcher.reviveSubagent(surface, session, "sub-1", "go")).rejects.toThrow(
+    const admission = await dispatcher.admitReviveSubagent(surface, session, "sub-1", "go");
+    expect(admission.kind).toBe("fenced");
+    await expect(admission.completion).rejects.toThrow(
       /binding rotated/,
     );
   });
@@ -1229,7 +1235,7 @@ describe("TurnDispatcher async runner creation", () => {
     await expect(admission.completion).rejects.toBeInstanceOf(BindingFencedError);
   });
 
-  it("reviveSubagent rejects when the runner's captured Surface does not match the requested surface", async () => {
+  it("admitReviveSubagent rejects when the runner's captured Surface does not match the requested surface", async () => {
     await memoryStore.add("general", "test fact");
     const session = makeSession("abc123def0");
     const guard = new FakeBindingGuard();
@@ -1242,12 +1248,12 @@ describe("TurnDispatcher async runner creation", () => {
     // still carries a Surface 1 capture. The guard passes the new Surface, and
     // the runner-capture mismatch is detected inside.
     guard.bind(dmSurface(2), session.id);
-    await expect(dispatcher.reviveSubagent(dmSurface(2), session, "sub-1", "go")).rejects.toThrow(
+    await expect(dispatcher.admitReviveSubagent(dmSurface(2), session, "sub-1", "go")).rejects.toThrow(
       /sourceSurfaceId mismatch/,
     );
   });
 
-  it("reviveSubagent releases the binding guard at attachment, not at terminal result", async () => {
+  it("beginReviveSubagent releases the binding guard at attachment, not at terminal result", async () => {
     await memoryStore.add("general", "test fact");
     const session = makeSession("abc123def0");
     const surface = dmSurface(1);
@@ -1272,10 +1278,10 @@ describe("TurnDispatcher async runner creation", () => {
       });
     };
 
-    const revivePromise = dispatcher.reviveSubagent(surface, session, "sub-1", "follow-up");
+    const attached = await dispatcher.beginReviveSubagent(surface, session, "sub-1", "follow-up");
 
-    // Wait for microtask queue so the attachment signal fires.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The binding guard is already released at attachment while the terminal
+    // result is still pending.
     expect(guard.lockReleases).toBe(1);
 
     // A concurrent lifecycle transition can proceed while the revived work is
@@ -1290,11 +1296,11 @@ describe("TurnDispatcher async runner creation", () => {
     expect(secondEntered).toBe(true);
 
     finishRevive();
-    await expect(revivePromise).resolves.toBe("revived result");
+    await expect(attached.result).resolves.toBe("revived result");
     await secondPromise;
   });
 
-  it("reviveSubagent releases the binding guard when subagentRunner.revive fails before attachment", async () => {
+  it("beginReviveSubagent releases the binding guard when subagentRunner.revive fails before attachment", async () => {
     await memoryStore.add("general", "test fact");
     const session = makeSession("abc123def0");
     const surface = dmSurface(1);
@@ -1307,7 +1313,7 @@ describe("TurnDispatcher async runner creation", () => {
       throw new Error("Subagent not found");
     };
 
-    await expect(dispatcher.reviveSubagent(surface, session, "missing", "go")).rejects.toThrow(
+    await expect(dispatcher.beginReviveSubagent(surface, session, "missing", "go")).rejects.toThrow(
       /Subagent not found/,
     );
     expect(guard.lockReleases).toBe(0);
@@ -1322,7 +1328,7 @@ describe("TurnDispatcher async runner creation", () => {
     expect(released).toBe(true);
   });
 
-  it("reviveSubagent suppresses stale result and acknowledgement when the runner is invalidated after attachment", async () => {
+  it("beginReviveSubagent suppresses stale result and acknowledgement when the runner is invalidated after attachment", async () => {
     await memoryStore.add("general", "test fact");
     const session = makeSession("abc123def0");
     const surface = dmSurface(1);
@@ -1350,10 +1356,10 @@ describe("TurnDispatcher async runner creation", () => {
       });
     };
 
-    const revivePromise = dispatcher.reviveSubagent(surface, session, "sub-1", "follow-up");
+    const attached = await dispatcher.beginReviveSubagent(surface, session, "sub-1", "follow-up");
 
-    // Wait for microtask queue so the attachment signal fires.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The binding guard is already released at attachment while the terminal
+    // result is still pending.
     expect(guard.lockReleases).toBe(1);
 
     // Simulate a lifecycle replacement that disposes the runner while the
@@ -1361,11 +1367,11 @@ describe("TurnDispatcher async runner creation", () => {
     await dispatcher.disposeRunner(session.id);
 
     finishRevive();
-    await expect(revivePromise).rejects.toThrow(/completed after its runtime was invalidated/);
+    await expect(attached.result).rejects.toThrow(/completed after its runtime was invalidated/);
     expect(subagentRunner.acknowledged).toHaveLength(0);
   });
 
-  it("reviveSubagent captures epoch under the binding guard, not after it releases", async () => {
+  it("beginReviveSubagent captures epoch under the binding guard, not after it releases", async () => {
     await memoryStore.add("general", "test fact");
     const session = makeSession("abc123def0");
     const surface = dmSurface(1);
@@ -1393,8 +1399,7 @@ describe("TurnDispatcher async runner creation", () => {
       });
     };
 
-    const revivePromise = dispatcher.reviveSubagent(surface, session, "sub-1", "follow-up");
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    const attached = await dispatcher.beginReviveSubagent(surface, session, "sub-1", "follow-up");
     expect(guard.lockReleases).toBe(1);
 
     await dispatcher.disposeRunner(session.id);
@@ -1403,7 +1408,7 @@ describe("TurnDispatcher async runner creation", () => {
     expect(runtimeHost.isRegisteredRunner(session.id, original)).toBe(false);
 
     finishRevive();
-    await expect(revivePromise).rejects.toThrow(/completed after its runtime was invalidated/);
+    await expect(attached.result).rejects.toThrow(/completed after its runtime was invalidated/);
     expect(subagentRunner.acknowledged).toHaveLength(0);
   });
 

@@ -116,7 +116,7 @@ function makeHarness(cascade = baseCascade(), subagentRunner = makeSubagentRunne
   const surface = dmSurface(123);
   const dispatcher: TurnDispatcher = {
     cancelPending: mock(() => false),
-    reviveSubagent: async (_surface: Surface, _session: ConversationState, id: string, prompt: string) => {
+    beginReviveSubagent: async (_surface: Surface, _session: ConversationState, id: string, prompt: string) => {
       const parentCapture: CapturedMemoryContext = {
         kind: "surface",
         authority: {
@@ -129,7 +129,7 @@ function makeHarness(cascade = baseCascade(), subagentRunner = makeSubagentRunne
         frozenUserBody: "",
         frozenActiveMemoryBody: "",
       };
-      return await subagentRunner.revive(
+      const result = subagentRunner.revive(
         parentCapture,
         {
           executionEnvironment: personalEnvironment(),
@@ -138,12 +138,12 @@ function makeHarness(cascade = baseCascade(), subagentRunner = makeSubagentRunne
         id,
         prompt,
       );
+      return { result };
     },
-    beginReviveSubagent: async (_surface: Surface, _session: ConversationState, id: string, prompt: string) => ({
-      result: dispatcher.reviveSubagent(_surface, _session, id, prompt),
-    }),
     admitReviveSubagent: async (_surface: Surface, _session: ConversationState, id: string, prompt: string) =>
-      runtimeAdmission.handoff(dispatcher.reviveSubagent(_surface, _session, id, prompt)),
+      runtimeAdmission.handoff(
+        dispatcher.beginReviveSubagent(_surface, _session, id, prompt).then((attached) => attached.result),
+      ),
     admitConversationControl: <T>(
       _surface: Surface,
       _conversation: ConversationState,

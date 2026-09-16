@@ -579,11 +579,9 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
 
     // Begin revival. The guard attaches, then the lifecycle transition proceeds
     // while the terminal result is still pending.
-    const revivePromise = fx.dispatcher.reviveSubagent(SURFACE_X, sessionX, childX.id, "follow-up");
+    const attached = await fx.dispatcher.beginReviveSubagent(SURFACE_X, sessionX, childX.id, "follow-up");
+    const revivePromise = attached.result;
     revivePromise.catch(() => {});
-
-    // Let the attachment signal fire.
-    await flush();
 
     const convY = await fx.lifecycle.resume(SURFACE_Y, sessionX.id);
     await flush();
@@ -605,7 +603,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
     // No runner: the guarded callback throws before attachment, but the lock
     // must still be released so the next lifecycle transition can proceed.
     await expect(
-      fx.dispatcher.reviveSubagent(SURFACE_X, sessionX, "missing", "go"),
+      fx.dispatcher.beginReviveSubagent(SURFACE_X, sessionX, "missing", "go"),
     ).rejects.toThrow(/no current runner/);
 
     const runnerX = await fx.dispatcher.getOrCreateRunner(sessionX, SURFACE_X);
@@ -626,7 +624,7 @@ describe("TurnDispatcher + SubagentRunner Surface authority integration", () => 
     // Corrupt revival id: subagentRunner.revive fails before onAttached, the
     // attachment gate rejects, and the lock is released.
     await expect(
-      fx.dispatcher.reviveSubagent(SURFACE_X, sessionX, "also-missing", "go"),
+      fx.dispatcher.beginReviveSubagent(SURFACE_X, sessionX, "also-missing", "go"),
     ).rejects.toThrow(/Subagent not found/);
 
     // The lifecycle transition lock is free, so resume can proceed.

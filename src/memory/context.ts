@@ -9,8 +9,8 @@ import type { PersonaPolicy } from "./search.ts";
  * - `main` — the goblin agent. Sees all personas, all scopes.
  * - `named-subagent` — a named subagent. Sees only its own persona scope.
  * - `anonymous-subagent` — an anonymous subagent. Sees no persona scopes.
- * - `internal` — internal model work with no Telegram Surface (e.g. the
- *   dreaming extractor). Receives no ordinary memory tools, no frozen summary,
+ * - `internal` — internal model work with no Telegram Surface (e.g.
+ *   delegated subagent runs). Receives no ordinary memory tools, no frozen summary,
  *   and no per-turn relevant-memory aside. Promotion scope is resolved later
  *   from transcript provenance, not from this caller.
  *

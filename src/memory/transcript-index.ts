@@ -44,9 +44,8 @@ function discoverTranscripts(home: string): TranscriptFile[] {
       if (!entry.isDirectory()) continue;
       // Archived Conversations live under their own subtree and are not indexed.
       if (entry.name === "archive") continue;
-      // Skip internal non-conversation directories (e.g. the dreaming extractor)
-      // so their synthetic transcripts are not re-indexed as user conversation
-      // data. Conversation ids are 10-char lowercase hex; internal names are not.
+      // Skip internal non-conversation directories so their synthetic
+      // transcripts are not re-indexed as user conversation data. Conversation ids are 10-char lowercase hex; internal names are not.
       if (!isValidConversationId(entry.name)) continue;
       const transcriptFile = join(dir, entry.name, "transcript.jsonl");
       result.push({ sessionId: entry.name, path: transcriptFile });

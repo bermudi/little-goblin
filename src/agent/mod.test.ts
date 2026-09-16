@@ -253,10 +253,7 @@ import { SubagentRunner } from "../subagents/mod.ts";
 import { dmSurface, surfaceId, topicSurface, type Surface } from "../surface.ts";
 import { MemoryStore } from "../memory/store.ts";
 import { captureRuntimeMemoryContext } from "../memory/mod.ts";
-import {
-  DreamingPipeline,
-  type CandidateExtractor,
-} from "../memory/dreaming.ts";
+import { DreamingPipeline } from "../memory/dreaming.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -2049,14 +2046,11 @@ describe("AgentRunner", () => {
     });
   });
 
-  describe("dreaming cursor management", () => {
+  describe("dreaming pipeline separation", () => {
     /** Helper: create a dreaming pipeline backed by a real store on tmpDir. */
-    function makeDreamingPipeline(
-      home: string,
-      extractor?: CandidateExtractor,
-    ): DreamingPipeline {
+    function makeDreamingPipeline(home: string): DreamingPipeline {
       const store = new MemoryStore(home);
-      return new DreamingPipeline({ goblinHome: home, store, extractor });
+      return new DreamingPipeline({ goblinHome: home, store });
     }
 
     /** Write a single user transcript entry. */
@@ -2072,10 +2066,8 @@ describe("AgentRunner", () => {
       );
     }
 
-    it("does not run light sleep on agent_end", async () => {
+    it("keeps only the REM/deep/phase-queue surface on agent_end", async () => {
       const dreaming = makeDreamingPipeline(tmpDir);
-      const runSpy = mock((_sessionId: string) => Promise.resolve());
-      dreaming.runLightSleep = runSpy as never;
 
       const runner = await makeRunner(
         tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, dreaming,
@@ -2084,13 +2076,16 @@ describe("AgentRunner", () => {
 
       sessionHolder.emit({ type: "agent_end", messages: [] });
 
-      expect(runSpy).not.toHaveBeenCalled();
+      // Light sleep runs through the inner-life reflection host, never the
+      // dreaming pipeline: the attached pipeline keeps only the shared
+      // phase-queue and REM/deep entry points.
+      expect(typeof dreaming.runExclusivePhase).toBe("function");
+      expect(typeof dreaming.runRemSleep).toBe("function");
+      expect(typeof dreaming.runDeepSleep).toBe("function");
     });
 
-    it("does not run light sleep for followUp (steer)", async () => {
+    it("keeps only the REM/deep/phase-queue surface for followUp (steer)", async () => {
       const dreaming = makeDreamingPipeline(tmpDir);
-      const runSpy = mock((_sessionId: string) => Promise.resolve());
-      dreaming.runLightSleep = runSpy as never;
 
       const runner = await makeRunner(
         tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, dreaming,
@@ -2099,11 +2094,15 @@ describe("AgentRunner", () => {
       sessionHolder.streaming = true;
       await runner.followUp("redirect");
 
-      // followUp steers the running turn — no agent_end is emitted.
-      expect(runSpy).not.toHaveBeenCalled();
+      // followUp steers the running turn — no agent_end is emitted — and the
+      // attached pipeline keeps only the shared phase-queue and REM/deep
+      // entry points.
+      expect(typeof dreaming.runExclusivePhase).toBe("function");
+      expect(typeof dreaming.runRemSleep).toBe("function");
+      expect(typeof dreaming.runDeepSleep).toBe("function");
     });
 
-    it("does not persist a dreaming cursor file on agent_end (cursor owned by light sleep)", async () => {
+    it("does not persist a dreaming cursor file on agent_end (cursor owned by the reflection host)", async () => {
       const dreaming = makeDreamingPipeline(tmpDir);
 
       const runner = await makeRunner(
@@ -2116,7 +2115,8 @@ describe("AgentRunner", () => {
       sessionHolder.emit({ type: "agent_end", messages: [] });
 
       // No cursor should be written on agent_end — the cursor is seeded and
-      // advanced only by processSession during the scheduled light-sleep pass.
+      // advanced only by the inner-life reflection host during its scheduled
+      // light-sleep pass, never by the turn pipeline.
       const checkStore = new MemoryStore(tmpDir);
       try {
         const raw = checkStore.db.getMeta("dreaming_cursor:abcdef1234");

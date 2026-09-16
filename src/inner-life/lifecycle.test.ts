@@ -323,12 +323,6 @@ function fakeMemoryEngine(): MemoryEngine & {
       return { indexed: 0, removed: 0, inserted: 0 };
     },
     dreaming: {
-      runLightSleep: async () => {
-        throw new Error("sentinel: light sleep must not route through DreamingPipeline");
-      },
-      setExtractor: () => {
-        throw new Error("sentinel: no dreaming extractor may be installed for light sleep");
-      },
       runRemSleep: async () => {
         state.remCalls += 1;
       },

@@ -1,7 +1,7 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Config } from "../config.ts";
 import { AgentRunner } from "../agent/mod.ts";
-import { MemoryStore, EmbeddingProvider, DreamingPipeline } from "../memory/mod.ts";
+import { MemoryStore, EmbeddingProvider } from "../memory/mod.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import { DurableCompletionWake, PendingCompletionClaim } from "../delegated-work/mod.ts";
 import type { ConversationState } from "../sessions/types.ts";
@@ -23,7 +23,6 @@ export interface ConversationOrchestrationOptions {
   readonly memoryStore: MemoryStore;
   readonly createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
   readonly embeddingProvider?: EmbeddingProvider;
-  readonly dreamingPipeline?: DreamingPipeline;
   readonly createMessageBuffer: (surface: Surface, conversation?: ConversationState) => TurnSink;
   readonly createBetaTools: (surface: Surface) => ToolDefinition[];
   readonly scheduleStore?: ScheduleStore;
@@ -76,7 +75,6 @@ export function createConversationOrchestration(
     scheduleStore: options.scheduleStore,
     mcpRunner: options.mcpRunner,
     embeddingProvider: options.embeddingProvider,
-    dreamingPipeline: options.dreamingPipeline,
     surfaceRuntimeAuthority: lifecycle,
   });
 

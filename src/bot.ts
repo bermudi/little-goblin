@@ -226,7 +226,6 @@ export function buildBot(cfg: Config, options: BuildBotOptions = {}): BuiltBot {
     scheduleStore,
     mcpRunner,
     embeddingProvider: memoryEngine.embeddingProvider,
-    dreamingPipeline: memoryEngine.dreaming,
   });
   // Process-level update gate. Owns authorization, typed settlement, drain
   // barriers, and coalescer close coupling. The callbacks are wired through

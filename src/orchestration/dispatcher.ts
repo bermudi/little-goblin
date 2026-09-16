@@ -6,7 +6,6 @@ import { AgentRunner, type TurnCallbacks } from "../agent/mod.ts";
 import {
   MemoryStore,
   EmbeddingProvider,
-  DreamingPipeline,
 } from "../memory/mod.ts";
 import type { ConversationState } from "../sessions/types.ts";
 import { surfaceId, type Surface } from "../surface.ts";
@@ -104,14 +103,6 @@ export interface TurnDispatcherOptions {
    */
   embeddingProvider?: EmbeddingProvider;
   /**
-   * Shared dreaming pipeline handle. When present, all chat runners receive
-   * the same instance; the runner no longer drives pipeline phases. REM and
-   * deep sleep keep their scheduler-driven entry points, and inner-life
-   * light passes coordinate with them through the pipeline's global phase
-   * queue.
-   */
-  dreamingPipeline?: DreamingPipeline;
-  /**
    * Mandatory factory that builds the turn sink for a surface. The dispatcher
    * never constructs a `MessageBuffer` itself — the Telegram-aware caller
    * (intake) injects this so rendering knowledge stays in `src/tg/`.
@@ -166,7 +157,6 @@ export class TurnDispatcher {
   private readonly subagentRunner: SubagentRunner;
   private readonly memoryStore: MemoryStore;
   private readonly embeddingProvider?: EmbeddingProvider;
-  private readonly dreamingPipeline?: DreamingPipeline;
   private readonly createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
   private readonly createMessageBufferFn: (surface: Surface, conversation?: ConversationState) => TurnSink;
   private readonly createBetaToolsFn: (surface: Surface) => ToolDefinition[];
@@ -182,7 +172,6 @@ export class TurnDispatcher {
     this.subagentRunner = options.subagentRunner;
     this.memoryStore = options.memoryStore;
     this.embeddingProvider = options.embeddingProvider;
-    this.dreamingPipeline = options.dreamingPipeline;
     this.createAgentRunner = options.createAgentRunner;
     this.createMessageBufferFn = options.createMessageBuffer;
     this.createBetaToolsFn = options.createBetaTools;
@@ -253,7 +242,6 @@ export class TurnDispatcher {
       getTopicName: this.getTopicName,
       delegatedRuntimeContext,
       embeddingProvider: this.embeddingProvider,
-      dreamingPipeline: this.dreamingPipeline,
       isCurrent: () => this.runtimeHost.isRegisteredRunner(plan.conversationId, runner),
     };
     runner = this.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);

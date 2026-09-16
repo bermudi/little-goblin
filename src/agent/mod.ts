@@ -25,7 +25,6 @@ import {
   formatRelevantMemory,
   type CapturedMemoryContext,
 } from "../memory/mod.ts";
-import { DreamingPipeline } from "../memory/dreaming.ts";
 import { MetricsStore } from "../metrics/mod.ts";
 import { type GenericSubagentInheritance } from "../subagents/mod.ts";
 import type { DelegatedRuntimeContext } from "../delegated-work/mod.ts";
@@ -44,14 +43,6 @@ interface AgentRunnerOptionsBase {
   cfg: Config;
   sessionId: string;
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
-  /**
-   * Shared dreaming pipeline handle. Retained so dispatcher/composition
-   * plumbing stays stable; the runner no longer drives or fences pipeline
-   * phases. Light sleep runs through the deployment-owned inner-life
-   * reflection host, and REM/deep sleep keep their scheduler-driven pipeline
-   * entry points — neither is triggered per turn nor awaited at dispose.
-   */
-  dreamingPipeline?: DreamingPipeline;
   /**
    * Shared embedding provider. When supplied, the runner creates a private
    * `MemoryStore` connection that uses this provider for vector indexing.

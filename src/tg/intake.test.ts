@@ -19,7 +19,7 @@ import { SubagentRunner } from "../subagents/mod.ts";
 import type { CapturedMemoryContext } from "../memory/mod.ts";
 import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
 import { createConversationOrchestration } from "../orchestration/composition.ts";
-import type { EmbeddingProvider, DreamingPipeline } from "../memory/mod.ts";
+import type { EmbeddingProvider } from "../memory/mod.ts";
 import { DelegatedWorkHost } from "../delegated-work/mod.ts";
 import {
   RuntimeAdmissionFailedBeforeDecisionError,
@@ -159,7 +159,6 @@ interface TestIntakeOptions {
   memoryStore: MemoryStore;
   createAgentRunner?: (opts: ConstructorParameters<typeof AgentRunner>[0]) => AgentRunner;
   embeddingProvider?: EmbeddingProvider;
-  dreamingPipeline?: DreamingPipeline;
   createMessageBuffer?: (surface: Surface, conversation?: ConversationState) => TurnSink;
   scheduleStore?: ScheduleStore;
   delegatedWorkHost?: DelegatedWorkHost;
@@ -182,7 +181,6 @@ function createTestIntake(options: TestIntakeOptions): TestIntake {
     memoryStore: options.memoryStore,
     createAgentRunner: options.createAgentRunner,
     embeddingProvider: options.embeddingProvider,
-    dreamingPipeline: options.dreamingPipeline,
     createMessageBuffer: adapters.createMessageBuffer,
     createBetaTools: adapters.createBetaTools,
     scheduleStore: options.scheduleStore,

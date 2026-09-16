@@ -355,7 +355,6 @@ async function makeRunner(
   configOverrides: Partial<Config> = {},
   executionEnvironment?: ExecutionEnvironment,
   thinkingLevel?: string,
-  dreamingPipeline?: DreamingPipeline,
   isCurrent: () => boolean = () => true,
 ) {
   const store = new MemoryStore(home);
@@ -376,7 +375,6 @@ async function makeRunner(
     getTopicName,
     executionEnvironment: executionEnvironment ?? personalEnvironment(),
     thinkingLevel: thinkingLevel as never,
-    dreamingPipeline,
     backendFactory: (opts) => new FakeAgentBackend(opts),
   });
 }
@@ -475,7 +473,7 @@ describe("AgentRunner", () => {
     it("rejects a stale prompt before model initialization", async () => {
       let current = false;
       const runner = await makeRunner(
-        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, undefined, () => current,
+        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, () => current,
       );
 
       await expect(runner.prompt("hello", nopCallbacks())).rejects.toThrow(/no longer current/);
@@ -486,7 +484,7 @@ describe("AgentRunner", () => {
     it("drops stale backend events before transcript, metrics, callbacks, or tool notices", async () => {
       let current = true;
       const runner = await makeRunner(
-        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, undefined, () => current,
+        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, () => current,
       );
       const callbacks = nopCallbacks();
       await runner.prompt("hello", callbacks);
@@ -518,7 +516,6 @@ describe("AgentRunner", () => {
         {},
         undefined,
         undefined,
-        undefined,
         () => current,
       );
       await runner.prompt("hello", nopCallbacks());
@@ -544,7 +541,6 @@ describe("AgentRunner", () => {
         {},
         undefined,
         undefined,
-        undefined,
         () => current,
       );
       await runner.prompt("hello", nopCallbacks());
@@ -563,7 +559,7 @@ describe("AgentRunner", () => {
     it("fences follow-ups and compaction after binding rotation", async () => {
       let current = true;
       const runner = await makeRunner(
-        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, undefined, () => current,
+        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, () => current,
       );
       await runner.prompt("hello", nopCallbacks());
       current = false;
@@ -581,7 +577,7 @@ describe("AgentRunner", () => {
       let current = true;
       sessionHolder.sendUserMessage = mock(async () => { current = false; });
       const runner = await makeRunner(
-        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, undefined, () => current,
+        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, () => current,
       );
 
       await expect(runner.prompt("hello", nopCallbacks())).rejects.toThrow(/no longer current/);
@@ -2070,14 +2066,14 @@ describe("AgentRunner", () => {
       const dreaming = makeDreamingPipeline(tmpDir);
 
       const runner = await makeRunner(
-        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, dreaming,
+        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined,
       );
       await runner.prompt("hello", nopCallbacks());
 
       sessionHolder.emit({ type: "agent_end", messages: [] });
 
       // Light sleep runs through the inner-life reflection host, never the
-      // dreaming pipeline: the attached pipeline keeps only the shared
+      // turn pipeline: the dreaming pipeline keeps only the shared
       // phase-queue and REM/deep entry points.
       expect(typeof dreaming.runExclusivePhase).toBe("function");
       expect(typeof dreaming.runRemSleep).toBe("function");
@@ -2088,14 +2084,14 @@ describe("AgentRunner", () => {
       const dreaming = makeDreamingPipeline(tmpDir);
 
       const runner = await makeRunner(
-        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, dreaming,
+        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined,
       );
       await runner.prompt("first", nopCallbacks());
       sessionHolder.streaming = true;
       await runner.followUp("redirect");
 
       // followUp steers the running turn — no agent_end is emitted — and the
-      // attached pipeline keeps only the shared phase-queue and REM/deep
+      // dreaming pipeline keeps only the shared phase-queue and REM/deep
       // entry points.
       expect(typeof dreaming.runExclusivePhase).toBe("function");
       expect(typeof dreaming.runRemSleep).toBe("function");
@@ -2103,10 +2099,8 @@ describe("AgentRunner", () => {
     });
 
     it("does not persist a dreaming cursor file on agent_end (cursor owned by the reflection host)", async () => {
-      const dreaming = makeDreamingPipeline(tmpDir);
-
       const runner = await makeRunner(
-        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined, dreaming,
+        tmpDir, [], dmSurface(123), undefined, undefined, {}, undefined, undefined,
       );
       await runner.prompt("hello", nopCallbacks());
 

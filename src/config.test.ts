@@ -469,7 +469,6 @@ const EXPECTED_DIRS = [
   "state/memory",
   "state/pi",
   "state/delegated-work/runs",
-  "scratch",
 ];
 
 describe("ensureGoblinHome", () => {
@@ -513,21 +512,4 @@ describe("ensureGoblinHome", () => {
     }
   });
 
-  // Active spec scenario: "Startup does not recreate the legacy personal workdir"
-  // (immutable-project-environments, sessions spec). Directly asserts the legacy
-  // $GOBLIN_HOME/scratch/workdir path is absent after startup directory creation,
-  // rather than inferring absence from the EXPECTED_DIRS allow-list.
-  it("does not create the legacy scratch/workdir personal workdir", () => {
-    ensureGoblinHome(homeConfig(tempDir));
-
-    const legacyWorkdir = join(tempDir, "scratch", "workdir");
-    expect(existsSync(legacyWorkdir)).toBe(false);
-  });
-
-  it("does not create the legacy scratch/subagents tree", () => {
-    ensureGoblinHome(homeConfig(tempDir));
-
-    const legacySubagents = join(tempDir, "scratch", "subagents");
-    expect(existsSync(legacySubagents)).toBe(false);
-  });
 });

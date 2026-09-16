@@ -272,7 +272,7 @@ describe("bun run doctor", () => {
           `state version ${CURRENT_STATE_VERSION} matches expected ${CURRENT_STATE_VERSION}`,
         );
         expect(output).toContain(
-          "subdirs: workspace, .agents/skills, workspace/.agents/skills, workspace/agents, state, state/sessions, state/memory, state/pi, state/delegated-work/runs, scratch",
+          "subdirs: workspace, .agents/skills, workspace/.agents/skills, workspace/agents, state, state/sessions, state/memory, state/pi, state/delegated-work/runs",
         );
         expect(output).toMatch(
           /memory: pass \(0 entries, budget \d+ \/ \d+ chars, embedding .+ \(.+\) ok, last sync never, db .+\)/,

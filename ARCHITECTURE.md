@@ -414,7 +414,7 @@ $GOBLIN_HOME/
     └── pi/                            # auth + model catalog, not execution CWD
 ```
 
-There is no target `$GOBLIN_HOME/scratch/` tree. True temporary data belongs in the OS temp directory or atomic sibling temp files and must not be authoritative. `scratch/workdir` is retired. Subagent records already live under `state/delegated-work/runs/`; legacy `scratch/subagents/` and `workspace/agents/*/instances/` are abandoned in place after the state-version-5 layout break (operator deletes manually). Legacy `scratch/external-agents/` code and paths were removed outright with no migration; only an empty `scratch/` directory is still recreated at startup.
+There is no target `$GOBLIN_HOME/scratch/` tree. True temporary data belongs in the OS temp directory or atomic sibling temp files and must not be authoritative. `scratch/workdir` is retired. Subagent records already live under `state/delegated-work/runs/`; legacy `scratch/subagents/` and `workspace/agents/*/instances/` are abandoned in place after the state-version-5 layout break (operator deletes manually). Legacy `scratch/external-agents/` code and paths were removed outright with no migration; startup creates no `scratch/` directory.
 
 Named-agent definitions stay under `workspace/agents/<name>/`; machine-managed run state does not share that directory.
 

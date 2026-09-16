@@ -31,10 +31,6 @@ export function stateDir(home: string): string {
   return join(home, "state");
 }
 
-export function scratchDir(home: string): string {
-  return join(home, "scratch");
-}
-
 export function sessionsDir(home: string): string {
   return join(stateDir(home), "sessions");
 }

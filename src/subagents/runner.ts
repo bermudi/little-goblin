@@ -9,7 +9,9 @@
  *   - the public surface: `spawn`, `revive`, `cancel`, `list`, `dispose`
  *
  * Does NOT own (delegated to siblings):
- *   - persistence → `meta.ts`
+ *   - validated record persistence → `DelegatedWorkHost` / `DelegatedWorkRecordStore`
+ *     (`src/delegated-work/`); `meta.ts` retains only the exact `.jsonl`
+ *     history-file lookup (`findSessionFile`)
  *   - named-agent definition loading → `named-agents.ts`
  *   - Pi resource mechanics → `host.ts`
  *   - the run-to-completion coordinator → `execution.ts`
@@ -656,15 +658,15 @@ export class SubagentRunner {
   /**
    * Resume a persisted subagent and send it a follow-up prompt.
    *
-   * Loads the subagent's `meta.json` to locate its history directory and
-   * selects the existing `.jsonl` file without rediscovering it in the host,
-   * reconstructs a `SubagentInstance`, and runs the new prompt through
-   * `runInstance()` — reusing all execution wiring (status callbacks, error
-   * handling, meta persistence).
+   * Loads the host-owned delegated-run record to locate its run directory and
+   * selects the existing `.jsonl` history file (`findSessionFile`, without
+   * rediscovering it in the host), reconstructs a `SubagentInstance`, and runs
+   * the new prompt through `runInstance()` — reusing all execution wiring
+   * (status callbacks, error handling, durable lifecycle transitions).
    *
-   * Throws "Subagent not found" only when no matching metadata or session
+   * Throws "Subagent not found" only when no matching record or history
    * file exists. Present but malformed or mismatched state raises a diagnostic
-   * metadata error instead.
+   * record error instead.
    *
    * A revived generic subagent inherits the *reviving* runtime's frozen
    * environment and skill authority (`inheritance`), mirroring the

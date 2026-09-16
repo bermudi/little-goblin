@@ -143,14 +143,14 @@ type ExecutionEnvironment =
 | Runner, prompt queue, Telegram sink/tools | Conversation runtime (RuntimeMachine — CURRENT, decision 0046) |
 | Personal identity and deployment prompts | Deployment workspace |
 | Curated memory entries | Memory store, keyed by active scope |
-| Delegated-run record and cross-run lifecycle | Delegated-work subsystem **(CURRENT store + attached lifetime — decision 0045; remaining durable/completion scope — decision 0036)** |
+| Delegated-run record and cross-run lifecycle | Delegated-work subsystem **(CURRENT — decision 0045 store with attached and durable lifetimes; completion wake, exact-Surface claim/re-arm, and owner cancellation wired — decision 0036; see `specs/delegated-work/spec.md`)** |
 | Pi session construction for delegated work | Pi execution host **(CURRENT — decision 0040)** |
-| External provider/process protocol mechanics | External-agent execution host **(TARGET — decision 0040)** |
-| External-agent working directory, invocation parameters, and permission profile | Main model through structured launch input **(TARGET — decision 0041)** |
+| External provider/process protocol mechanics | External-agent execution host **(implemented and tested but not production-wired — decision 0040; see `specs/external-agents/spec.md`)** |
+| External-agent working directory, invocation parameters, and permission profile | Main model through structured launch input **(implemented and tested but not production-wired, including the dangerous default — decision 0041; see `specs/external-agents/spec.md`)** |
 | Explicit delegated-run control | Owner Conversation |
 | Automatic delegated completion destination | Origin Surface |
 | MCP server selection (`mcp.enabled` / `mcp.disabledServers` in `goblin.json5`) | Deployment; sole writer `McpSelectionStore` (`src/mcp/selection-store.ts`), reader `loadConfig()`, runtime cache `McpRunner` **(CURRENT)** |
-| Wake/reflection/effect history | Inner-life wake store **(TARGET — decision 0035)** |
+| Wake/reflection/effect history | Inner-life wake store **(CURRENT for private-reflection wakes — decision 0035; broader wakes/effects remain TARGET; see `specs/inner-life/spec.md`)** |
 
 If new state has no unambiguous row, stop and design its lifetime before implementing it.
 
@@ -355,7 +355,7 @@ Each new user-visible transcript entry records event-time `sourceSurfaceId`. Ind
 
 **CURRENT — conversation lifecycle and closure hardening complete.** Cross-Surface movement is wired into intake and commands; runtime capture/writer authority, archive ordering, Surface-owned preferences and automation, offline ownership migration step 4, canonical authority validation, planned-assignment recovery, and mandatory runtime authority are implemented and covered by current tests. The archived `conversation-lifecycle` material is delivery provenance only.
 
-Dreaming currently uses compatibility internal-session machinery. TARGET architecture uses an explicit Surface-free internal memory context and later removes fake Telegram/session identity through `inner-life`/`visible-dreaming`, never by adding an internal Surface variant.
+Light-sleep model extraction runs through the deployment-owned inner-life lifecycle/scheduler host; it does not borrow the dreaming internal conversation runtime. REM and deep sleep keep their existing DreamingPipeline scheduling. The `InternalSessionStore`/`enqueueInternalTurn` compatibility seam is retained and tested, with no production caller.
 
 ## Delegated work
 
@@ -363,15 +363,15 @@ Dreaming currently uses compatibility internal-session machinery. TARGET archite
 
 **CURRENT — Pi execution host extraction and host-owned attached records complete.** Subagents have custom Pi construction behind `PiSubagentHost`, generic/named definitions, recursive spawning, and host-owned records. `PiSubagentHost` owns Pi session construction, resource loading, Pi event mechanics, and one invocation-lifetime execution lease; `SubagentRunner` and `execution.ts` own invocation preparation, memory/tool assembly, and durable lifecycle transitions through `DelegatedWorkHost`. Generic subagents inherit the caller runtime's immutable Execution Environment and frozen resolved skill manifest — exact selected files with no catalog re-discovery; recursive spawns inherit the received authority, revivals inherit the reviving runtime's authority, and a missing or unloaded inherited file fails the invocation visibly. Named definitions load only their isolated `workspace/agents/<name>/.agents/skills/` catalog with ambient discovery disabled; they do not inherit caller skills, and legacy `skills/` directories are ignored.
 
-**CURRENT — decision 0045 record store.** Attached generic and named subagent runs persist only under `state/delegated-work/runs/<id>/`: one validated `record.json` (stable identity plus append-only invocation log) plus that run's pi session state. `DelegatedWorkHost` owns record creation, lifecycle transitions, listing, revival intent, attached-work fence/cancellation, and startup reconciliation that marks non-terminal attached invocations interrupted. Revival appends a new invocation continuing the persisted session in place; a prior interrupted invocation is never patched back to `running`. Offline step 5 is a layout break to state version 5: it creates the runs root and advances the gate; legacy `scratch/subagents/` and `workspace/agents/*/instances/` are abandoned in place with no data transformation. Current blocking generic/named invocations are attached and their full recursive tree dies with the creating runtime.
+**CURRENT — decision 0045 record store, plus the decision 0036 durable/completion scope.** Generic, named, and external-agent runs persist under `state/delegated-work/runs/<id>/`: one validated `record.json` (stable identity plus append-only invocation log) plus that run's execution state. `DelegatedWorkHost` owns record creation, lifecycle transitions, listing, revival intent, attached-work fence/cancellation, durable reservations, external-record creation/session capture/follow-up, and startup reconciliation that marks non-terminal invocations interrupted. Revival appends a new invocation continuing the persisted session in place; a prior interrupted invocation is never patched back to `running`. Offline step 5 is a layout break to state version 5: it creates the runs root and advances the gate; legacy `scratch/subagents/` and `workspace/agents/*/instances/` are abandoned in place with no data transformation. Current blocking generic/named invocations are attached and their full recursive tree dies with the creating runtime. Durable completions ride the completion wake to the bound origin Surface, stay pending for the exact origin Surface otherwise, and claim through authorized interaction, authorized guest summon, or startup re-arm (see `specs/delegated-work/spec.md`); explicit owner cancellation stays destructive.
 
 TARGET direction:
 
-- `DelegatedWorkHost` still owes cross-run durable lifetime, cancellation races beyond the attached fence, completion delivery, and pending-completion claim/ack/release under decision 0036. Durable subagents require a future detached-result contract. External-agent records join the same store when the ACP cycle lands under decision 0044.
+The decision 0036 durable lifetime, completion delivery, and pending-completion claim/ack/release scope is CURRENT and wired (completion wake, exact-Surface pending claim/re-arm, owner cancellation; see `specs/delegated-work/spec.md`). External-agent records live in the same store; the ACP host/tool/continuation modules that create and extend them are implemented and tested but not production-wired (no production caller constructs `ExternalAgentHost` or the delegated tool, and the main-runtime manifest omits `external_agent`).
 
 ### External agents
 
-**CURRENT legacy / TARGET accepted by decision 0044.** Current code still uses provider-native Codex/Claude adapters, new-session ACP for Devin, and optional PTY fallback. The accepted target replaces the Claude and Devin paths with capability-scoped ACP behind the external-agent execution host: exact-version-pinned `@agentclientprotocol/claude-agent-acp` for Claude and native `devin acp --model glm-5.2` for Devin. Neither qualified backend needs Goblin-hosted ACP filesystem or terminal capability. Claude continues completed context with `session/resume`; Devin uses `session/load`. Permission mode is reapplied on every connection, and local process cleanup remains distinct from provider-session retirement. Codex transport is still unclassified and must not inherit claims proved only for Claude and Devin.
+**IMPLEMENTED, TESTED, BUT NOT PRODUCTION-WIRED — accepted by decision 0044.** The legacy provider-native adapters, PTY fallback, Codex path, and `scratch/external-agents/` storage were removed with no migration. The capability-scoped ACP external-agent execution host (`ExternalAgentHost`), delegated-run tool (`external_agent` via `createDelegatedExternalAgentTool`), completed-context continuation (`continueExternalRun`), external delegated-run records, and model-selected launch input (working directory, invocation, permission profile with dangerous default) are implemented and tested (see `specs/external-agents/spec.md`). No production caller constructs the host or tool, and the main-runtime capability manifest plus tool assembly omit `external_agent` — pinned by `agent/mod.test` and the tool-assembly suite — so the model cannot launch external-agent work in a production turn. The accepted mechanics remain: exact-version-pinned `@agentclientprotocol/claude-agent-acp` for Claude and native `devin acp` for Devin, no Goblin-hosted ACP filesystem or terminal capability, `session/resume` for Claude and `session/load` for Devin, permission profile reapplied on every connection, local process cleanup distinct from provider-session retirement, and Codex unclassified.
 
 Executable scouting proved that neither backend retains an interrupted user turn across a fresh server process. An active prompt therefore becomes terminally interrupted after process loss; Goblin does not send a generic continuation prompt or claim process-restart durability without a separate task-persistence and replay decision. Completed provider context may support explicit follow-up work under the owning Conversation.
 
@@ -414,7 +414,7 @@ $GOBLIN_HOME/
     └── pi/                            # auth + model catalog, not execution CWD
 ```
 
-There is no target `$GOBLIN_HOME/scratch/` tree. True temporary data belongs in the OS temp directory or atomic sibling temp files and must not be authoritative. `scratch/workdir` is retired. Subagent records already live under `state/delegated-work/runs/`; legacy `scratch/subagents/` and `workspace/agents/*/instances/` are abandoned in place after the state-version-5 layout break (operator deletes manually). `scratch/external-agents/` remains a live legacy tree until the ACP cycle abandons it the same way under decision 0044.
+There is no target `$GOBLIN_HOME/scratch/` tree. True temporary data belongs in the OS temp directory or atomic sibling temp files and must not be authoritative. `scratch/workdir` is retired. Subagent records already live under `state/delegated-work/runs/`; legacy `scratch/subagents/` and `workspace/agents/*/instances/` are abandoned in place after the state-version-5 layout break (operator deletes manually). Legacy `scratch/external-agents/` code and paths were removed outright with no migration; only an empty `scratch/` directory is still recreated at startup.
 
 Named-agent definitions stay under `workspace/agents/<name>/`; machine-managed run state does not share that directory.
 
@@ -464,11 +464,11 @@ The frozen `pi-native-skill-layout` proposal remains historical input and contai
 | Memory scope/transcript provenance derives from session metadata | Moved history gets stale context or wrong chat attribution | `surface-derived-memory-context` → `transcript-surface-provenance` |
 | Explicit Goblin path + `skillSources` | ~~Native storage exists, but runtime source authority is still process-wide and ambient~~ Resolved: `SkillCatalogResolver` owns exact-root resolution; `skillSources` removed; Surface-owned policy selects sources | ~~`skill-catalog-resolution`~~ → ~~`surface-skill-policy`~~ |
 | Personal CWD under `scratch/workdir` | User work is ephemeral and unbacked-up | personal workspace environment migration |
-| Durable records under `scratch/` | “Durable but disposable” contradiction | ~~Subagent half: one host-owned store + v5 layout break (decision 0045)~~; external-agent half rides ACP cycle (decision 0044), abandoned in place |
+| Durable records under `scratch/` | “Durable but disposable” contradiction | ~~Subagent half: one host-owned store + v5 layout break (decision 0045)~~; ~~external-agent legacy removed outright with no migration (decision 0044)~~ |
 | Named definitions mixed with instance state | User-authored and machine-managed lifetimes mixed | ~~Resolved for subagents: runs under `state/delegated-work/runs/`; definitions stay in `workspace/agents/<name>/`~~ |
 | Internal dreaming fake session identity | Borrowed routing/runtime machinery | `inner-life` → future `visible-dreaming` rewrite |
-| Attached/durable work implicit | Rotation may cancel or orphan wrong work | `delegated-work-ownership` |
-| External-agent fixed project CWD and two non-dangerous profiles | Contradicts the accepted fully trusted same-user delegate boundary | model-selected launch context under decision 0041 |
+| Attached/durable work implicit | Rotation may cancel or orphan wrong work | ~~Resolved: durable lifetime, completion wake, exact-Surface claim/re-arm, and owner cancellation wired under decision 0036 (see `specs/delegated-work/spec.md`)~~ |
+| External-agent fixed project CWD and two non-dangerous profiles | Contradicts the accepted fully trusted same-user delegate boundary | ~~Model-selected launch context with dangerous default (decision 0041); host/tool/continuation implemented and tested but not production-wired~~ |
 | `bot.ts`/`tg/intake.ts` orchestration choreography | Shallow seams and duplicated transitions | ~~Resolved: `ShutdownCoordinator` + `UpdateGate` own the phase list and admission gate; `RuntimeMachine` owns per-conversation authority (decision 0046)~~ |
 
 ## Stabilization dependency graph
@@ -561,8 +561,8 @@ If the answer to 1–4 is “the caller coordinates it,” the design is not rea
 These decisions or implementation plans block a stable baseline:
 
 1. ~~**Workspace write authority.**~~ Settled by decision 0039 and implemented by `agent-owned-prompt-files`: prompt files are agent-owned, no write guard, bounded Telegram notice per write, inner-life excluded, subagents excluded, recovery via git in `workspace/`.
-2. ~~**No-scratch subagent records.**~~ Settled by decision 0045 and implemented: host-owned store, v5 layout break, legacy subagent trees abandoned in place. External-agent half remains: abandon `scratch/external-agents/` in place when ACP lands under decision 0044.
-3. **Delegated-work remainder:** attached record store is CURRENT under decision 0045; cancellation races beyond the attached fence, durable lifetimes, completion wakes, reachability input, and pending-delivery reconciliation remain under decision 0036.
+2. ~~**No-scratch subagent records.**~~ Settled by decision 0045 and implemented: host-owned store, v5 layout break, legacy subagent trees abandoned in place. The external-agent legacy was removed outright under decision 0044 with no migration.
+3. **Delegated-work completion scope:** the decision 0036 durable lifetime, completion wake, exact-Surface pending claim/re-arm, and owner cancellation are CURRENT and wired (see `specs/delegated-work/spec.md`).
 4. **Surface lifecycle:** Telegram topic deletion/reachability, schedule suspension, pending outputs, and project recovery.
 5. **Inner-life implementation:** wake/effect schemas, per-effect guarantees, consent persistence, and observability under decision 0035; heartbeat conversion remains undecided.
 

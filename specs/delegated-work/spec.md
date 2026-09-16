@@ -11,10 +11,13 @@ Implements the durable half of decision 0036 on top of the decision-0045
 record store. Attached-lifetime semantics are already CURRENT; this spec
 owns only the durable addition.
 
-Delivery-boundary clarification and retained-instance cleanup are tracked
-by [issue #54](https://github.com/bermudi/little-goblin/issues/54).
-Those repairs are planned, not yet verified as implemented; issue #53's
-completion alone does not establish final Telegram acceptance.
+Delivery-boundary clarification and retained-instance cleanup landed through
+issue #54 (merged as PR #55): Telegram acceptance is sink-confirmed before
+acknowledgement, acknowledgement-write failures preserve recovery with run,
+invocation, and Surface identity, and accepted completions release their
+retained live instance. Those paths are wired (completion wake, exact-Surface
+pending claim/re-arm, owner cancellation) and covered by current tests; the
+spec's scenarios state the contract.
 
 Out of scope: external-agent durable runs (decision 0044 ACP cycle),
 inner-life consent layering (decision 0035 — this is decision-0036 reactive

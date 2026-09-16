@@ -94,10 +94,10 @@ function combineFailures(failures: readonly unknown[], message: string): Error |
 /**
  * Deep lifecycle boundary for delegated work.
  *
- * This first slice intentionally has one adapter kind (attached Pi
- * subagents), but the ownership/fence/quiescence contract is generic. Runtime
- * invalidation is the only lifecycle operation used by Conversation runtime
- * disposal; callers do not enumerate subagent instances or call their cancel
+ * The ownership/fence/quiescence contract is generic across attached and
+ * durable lifetimes. Runtime invalidation fences attached registrations;
+ * durable registrations survive it and are cancelled only explicitly by owner.
+ * Callers do not enumerate subagent instances or call their cancel
  * methods directly.
  */
 export class DelegatedWorkHost {

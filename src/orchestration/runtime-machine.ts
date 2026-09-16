@@ -892,8 +892,8 @@ export class RuntimeMachine {
 
   /**
    * Invalidate the current generation. The runner and creation are fenced
-   * synchronously; physical cleanup (runner dispose, delegated invalidation,
-   * external-agent cancellation) runs asynchronously and enters the drain
+   * synchronously; physical cleanup (runner dispose, delegated-work
+   * invalidation) runs asynchronously and enters the drain
    * set.
    *
    * - `settings-change`: queued commands are preserved; if

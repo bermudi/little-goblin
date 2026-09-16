@@ -285,7 +285,7 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
   }
 
   /**
-   * Invalidate synchronously, then await runner and external-work cleanup.
+   * Invalidate synchronously, then await runner and delegated-work cleanup.
    *
    * Maps the legacy `RuntimeDisposalOptions` to the machine's invalidation
    * reason enum:

@@ -873,7 +873,7 @@ export class TurnDispatcher {
    *
    * Delegates the complete runtime cleanup boundary to
    * `ConversationRuntimeHost`: it fences the registration and queue first,
-   * then disposes the runner and awaits delegated/external cleanup.
+   * then disposes the runner and awaits delegated-work cleanup.
    *
    * @param preserveInFlight When called from `doCreateAndRegisterRunner` to
    *   dispose an old runner before creating a replacement, pass the new
@@ -919,10 +919,11 @@ export class TurnDispatcher {
   }
 
   /**
-   * Enqueue an internal turn for a non-chat session. Used for background
-   * work such as the dreaming pipeline. The runner has no beta tools and writes
-   * assistant text into an in-memory capture buffer. `onComplete(text)` is
-   * called after `runner.prompt` resolves with the captured assistant text.
+   * Enqueue an internal turn for a non-chat session. Retained compatibility seam:
+   * currently no production caller dispatches through it (light-sleep
+   * reflection runs through the inner-life host). The runner has no beta tools
+   * and writes assistant text into an in-memory capture buffer. `onComplete(text)`
+   * is called after `runner.prompt` resolves with the captured assistant text.
    */
   enqueueInternalTurn(
     session: InternalSessionState,

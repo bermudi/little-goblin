@@ -74,14 +74,16 @@ interface AgentRunnerOptionsBase {
 /**
  * Options for constructing a Surface-backed `AgentRunner`. The memory context
  * is a {@link CapturedMemoryContext} and the Telegram {@link Surface} is
- * required — schedule, subagent, and external-agent tools need it for delivery.
+ * required — schedule and subagent tools need it for delivery. The delegated
+ * external-agent tool is implemented but not production-wired (the manifest
+ * omits `external_agent`), so it is not part of the production tool set.
  */
 export interface SurfaceAgentRunnerOptions extends AgentRunnerOptionsBase {
   /** Complete immutable runtime input prepared before construction. */
   plan: PreparedSurfaceRuntimePlan;
   /**
-   * Encapsulates the capability dependency bundle (schedule/subagent/
-   * external-agent/mcp runners plus the manifest) behind one interface. The
+   * Encapsulates the capability dependency bundle (schedule/subagent/mcp
+   * runners plus the manifest) behind one interface. The
    * runner consumes the assembled tools rather than carrying those deps.
    */
   surfaceToolSource: SurfaceCustomToolsSource;

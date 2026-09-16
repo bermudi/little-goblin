@@ -104,9 +104,11 @@ export interface TurnDispatcherOptions {
    */
   embeddingProvider?: EmbeddingProvider;
   /**
-   * Shared dreaming pipeline for background memory promotion. When present,
-   * all chat runners use the same pipeline instance so cursor state and the
-   * model-driven extractor are consistent across per-turn and scheduled passes.
+   * Shared dreaming pipeline handle. When present, all chat runners receive
+   * the same instance; the runner no longer drives pipeline phases. REM and
+   * deep sleep keep their scheduler-driven entry points, and inner-life
+   * light passes coordinate with them through the pipeline's global phase
+   * queue.
    */
   dreamingPipeline?: DreamingPipeline;
   /**

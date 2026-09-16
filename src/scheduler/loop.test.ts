@@ -1157,12 +1157,6 @@ describe("SchedulerLoop", () => {
       };
       const memoryEngine = {
         dreaming: {
-          runLightSleep: async () => {
-            throw new Error("sentinel: light sleep must not route through DreamingPipeline");
-          },
-          setExtractor: () => {
-            throw new Error("sentinel: no dreaming extractor may be installed");
-          },
           runRemSleep: async () => {},
           runDeepSleep: async () => {},
         },

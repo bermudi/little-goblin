@@ -45,9 +45,11 @@ interface AgentRunnerOptionsBase {
   sessionId: string;
   getTopicName?: (chatId: number, topicId: number) => Promise<string | null>;
   /**
-   * Dreaming pipeline to use for background memory promotion after completed
-   * turns. When absent, a default `DreamingPipeline` is constructed from
-   * `cfg.goblinHome` and the runner's `MemoryStore`.
+   * Shared dreaming pipeline handle. Retained so dispatcher/composition
+   * plumbing stays stable; the runner no longer drives or fences pipeline
+   * phases. Light sleep runs through the deployment-owned inner-life
+   * reflection host, and REM/deep sleep keep their scheduler-driven pipeline
+   * entry points — neither is triggered per turn nor awaited at dispose.
    */
   dreamingPipeline?: DreamingPipeline;
   /**
@@ -139,7 +141,6 @@ export class AgentRunner {
   private readonly eventHandler: AgentEventHandler;
   private memoryStore: MemoryStore;
   private ownsMemoryStore: boolean;
-  private dreamingPipeline: DreamingPipeline;
   /**
    * The captured runtime memory context: a `CapturedMemoryContext` carrying
    * the projected ActiveScope, caller, frozen summary, and deduplication
@@ -277,8 +278,6 @@ export class AgentRunner {
         this.metricsStore,
         opts.embeddingProvider ? { embeddings: opts.embeddingProvider } : undefined,
       );
-    this.dreamingPipeline = opts.dreamingPipeline ??
-      new DreamingPipeline({ goblinHome: opts.cfg.goblinHome, store: this.memoryStore, metrics: this.metricsStore });
     const backendOpts: AgentBackendOptions = {
       cfg: this.cfg,
       sessionId: this.sessionId,
@@ -597,9 +596,9 @@ export class AgentRunner {
   }
 
   /**
-   * Clean up resources. Awaits any in-flight dreaming light sleep so that a
-   * disposing runner does not leave background writes that race with session
-   * archive or rebinding.
+   * Clean up resources. The dreaming pipeline no longer runs per-session
+   * light sleep, so there is no pipeline queue to fence here; in-flight
+   * inner-life light passes are owned and fenced by the reflection host.
    */
   async dispose(): Promise<void> {
     const failures: unknown[] = [];
@@ -610,15 +609,6 @@ export class AgentRunner {
     } catch (err) {
       failures.push(err);
       log.error("AgentRunner event handler close failed", {
-        sessionId: this.sessionId,
-        err: err instanceof Error ? err.message : String(err),
-      });
-    }
-    try {
-      await this.dreamingPipeline.awaitSettled(this.sessionId);
-    } catch (err) {
-      failures.push(err);
-      log.error("AgentRunner dreaming pipeline await failed during dispose", {
         sessionId: this.sessionId,
         err: err instanceof Error ? err.message : String(err),
       });

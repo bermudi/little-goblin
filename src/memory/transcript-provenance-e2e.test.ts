@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore } from "./store.ts";
 import { TranscriptIndexer } from "./transcript-index.ts";
-import { DreamingPipeline } from "./dreaming.ts";
 import { searchMemoryEntries } from "./search.ts";
 import { sessionDir, transcriptPath } from "../sessions/paths.ts";
 import { surfaceId, topicSurface } from "../surface.ts";
@@ -39,7 +38,7 @@ describe("transcript provenance end-to-end fixture", () => {
     );
   }
 
-  it("indexes two-surface chat provenance, excludes unresolved history by default, and promotes to correct scopes", async () => {
+  it("indexes two-surface chat provenance and excludes unresolved history by default", async () => {
     const surfaceA = surfaceId(topicSurface("private", 100, 1));
     const surfaceB = surfaceId(topicSurface("private", 200, 1));
 
@@ -118,51 +117,5 @@ describe("transcript provenance end-to-end fixture", () => {
       allChats: true,
     });
     expect(allChatsSearch.results).toHaveLength(3);
-
-    // 4. Light sleep promotes each provenance-bearing source to its projected
-    //    scope, while unresolved provenance falls back to general.
-    const pipeline = new DreamingPipeline({
-      goblinHome: tmp,
-      store,
-      lookbackHours: 0,
-      extractor: (lines) =>
-        lines.map((line) => ({
-          target: "memory" as const,
-          category: "fact" as const,
-          confidence: 0.9,
-          text: line.text,
-          source: {
-            sessionId: SESSION_ID,
-            lineRange: [line.index, line.index] as [number, number],
-            sourceRole:
-              line.role === "user"
-                ? ("user" as const)
-                : line.role === "assistant"
-                  ? ("assistant" as const)
-                  : ("system" as const),
-          },
-        })),
-    });
-
-    store.db.setMeta(
-      `dreaming_cursor:${SESSION_ID}`,
-      JSON.stringify({ processedLines: 0, lastDreamedAt: new Date().toISOString() }),
-    );
-
-    await pipeline.runLightSleep(SESSION_ID);
-
-    const memoryRows = store.db.database
-      .query<
-        { text: string; scope: string },
-        Record<string, never>
-      >(
-        "SELECT text, scope FROM memory_entries WHERE entry_kind = 'memory' ORDER BY created_at, id",
-      )
-      .all({});
-
-    const byText = new Map(memoryRows.map((r) => [r.text, r.scope]));
-    expect(byText.get("uniqueA message from chat one surface.")).toBe("topics/100/1");
-    expect(byText.get("uniqueB message reply from chat two surface.")).toBe("topics/200/1");
-    expect(byText.get("legacyL message from an unknown chat without provenance.")).toBe("general");
   });
 });

@@ -1,22 +1,20 @@
 /**
  * Memory dreaming pipeline.
  *
- * A lightweight adaptation of the reflection concept: after a completed main
- * turn, light sleep scans the transcript tail for durable signal (preferences,
- * corrections, decisions, project facts, gotchas, conventions, commitments,
- * standing orders), filters noise and unsafe content, deduplicates against the
- * target scope, and promotes candidates as plain-text entries with metadata
- * stored in SQLite columns (never HTML comments in the body text).
+ * REM and deep sleep are scheduler-driven phases: REM aggregates transcript
+ * concept tags into recurring themes, deep sleep promotes qualified
+ * short-term entries and expires the rest. Candidates are filtered for noise
+ * and unsafe content, deduplicated against the target scope, and promoted as
+ * plain-text entries with metadata stored in SQLite columns (never HTML
+ * comments in the body text).
  *
- * REM and deep sleep are scheduler-driven phases.
+ * Light sleep runs through the deployment-owned inner-life reflection host,
+ * not this pipeline; light passes coordinate with REM/deep through the
+ * global phase queue below.
  */
 
-import { existsSync, readFileSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
 import { log } from "../log.ts";
-import { atomicWrite } from "../fs.ts";
-import { sessionDir } from "../sessions/paths.ts";
-import { countTranscriptLines, readTranscriptAfter, type TranscriptLine } from "../sessions/transcript.ts";
+import { readTranscriptAfter, type TranscriptLine } from "../sessions/transcript.ts";
 import { MemoryStore } from "./store.ts";
 import { MemoryOverflowError } from "./budget.ts";
 import { MemoryArtifactStore } from "./artifacts.ts";
@@ -69,16 +67,6 @@ export interface Candidate {
   };
 }
 
-export interface DreamingCursor {
-  processedLines: number;
-  lastDreamedAt: string;
-}
-
-export type CandidateExtractor = (
-  entries: TranscriptLine[],
-  ctx: { sessionId: string },
-) => Candidate[] | Promise<Candidate[]>;
-
 // ---------------------------------------------------------------------------
 // Environment-driven configuration
 // ---------------------------------------------------------------------------
@@ -105,53 +93,10 @@ export const LOOKBACK_HOURS = envInt("GOBLIN_MEMORY_DREAM_LOOKBACK_HOURS", DEFAU
 export const MAX_MODEL_LINES = envInt("GOBLIN_MEMORY_DREAM_MAX_MODEL_LINES", DEFAULT_MAX_MODEL_LINES);
 
 // ---------------------------------------------------------------------------
-// Processed candidate tracking
-// ---------------------------------------------------------------------------
-
-const processedCandidates = new Map<string, Set<string>>();
-
-function processedCandidateKey(home: string, sessionId: string, candidate: Candidate): string {
-  const [start, end] = candidate.source.lineRange;
-  return `${home}\x00${sessionId}\x00${start}:${end}:${candidate.text.slice(0, 64)}`;
-}
-
-function isProcessedCandidate(home: string, sessionId: string, candidate: Candidate): boolean {
-  const set = processedCandidates.get(home);
-  return set !== undefined && set.has(processedCandidateKey(home, sessionId, candidate));
-}
-
-function markCandidateProcessed(home: string, sessionId: string, candidate: Candidate): void {
-  const key = processedCandidateKey(home, sessionId, candidate);
-  let set = processedCandidates.get(home);
-  if (set === undefined) {
-    set = new Set();
-    processedCandidates.set(home, set);
-  }
-  set.add(key);
-}
-
-function pruneProcessedCandidates(home: string, sessionId: string): void {
-  const prefix = `${home}\x00${sessionId}\x00`;
-  const set = processedCandidates.get(home);
-  if (set === undefined) return;
-  for (const key of Array.from(set)) {
-    if (key.startsWith(prefix)) set.delete(key);
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Noise, near-duplicate, and provenance-scope policy live in the shared seam
 // `src/memory/policy.ts`; the dreaming pipeline and MemoryStore's fact-effect
 // application path consume the same functions.
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Cursor helpers
-// ---------------------------------------------------------------------------
-
-function legacyReflectionCursorPath(home: string, sessionId: string): string {
-  return join(sessionDir(home, sessionId), "memory-reflection.json");
-}
 
 // ---------------------------------------------------------------------------
 // Scope resolution
@@ -209,11 +154,6 @@ function getOrCreateScopeScore(
   return score;
 }
 
-interface SessionState {
-  running: Promise<void> | null;
-  pending: boolean;
-}
-
 // ---------------------------------------------------------------------------
 // DreamingPipeline
 // ---------------------------------------------------------------------------
@@ -222,32 +162,26 @@ export interface DreamingPipelineOptions {
   goblinHome: string;
   store: MemoryStore;
   metrics?: MetricsStore;
-  extractor?: CandidateExtractor;
   confidenceThreshold?: number;
-  /** How many hours of transcript to consider during light sleep. */
+  /** How many hours of transcript to consider during REM sleep. */
   lookbackHours?: number;
   /** Cosine similarity threshold above which a candidate is considered a duplicate. */
   dedupCosineThreshold?: number;
-  /** Maximum lines to pass to a model-driven extractor. */
-  maxModelLines?: number;
 }
 
 export class DreamingPipeline {
   private home: string;
   private store: MemoryStore;
   private metrics: MetricsStore | null;
-  private extractor: CandidateExtractor | null;
   private artifacts: MemoryArtifactStore;
   private confidenceThreshold: number;
   private lookbackHours: number;
   private dedupCosineThreshold: number;
-  private maxModelLines: number;
-  private sessions = new Map<string, SessionState>();
   /**
-   * Global queue that serializes all dreaming phases (light sleep per session,
-   * REM, and deep) so they never overlap. This satisfies the spec requirement
-   * that at most one dreaming phase runs at a time for the internal dreaming
-   * session.
+   * Global queue that serializes all dreaming phases (inner-life light
+   * passes, REM, and deep) so they never overlap. Light-sleep work from the
+   * deployment-owned reflection host enqueues through `runExclusivePhase`;
+   * REM and deep sleep enqueue through their own entry points.
    */
   private globalPhaseQueue: Promise<void> = Promise.resolve();
 
@@ -255,12 +189,10 @@ export class DreamingPipeline {
     this.home = opts.goblinHome;
     this.store = opts.store;
     this.metrics = opts.metrics ?? null;
-    this.extractor = opts.extractor ?? null;
     this.artifacts = new MemoryArtifactStore(this.home);
     this.confidenceThreshold = opts.confidenceThreshold ?? CONFIDENCE_THRESHOLD;
     this.lookbackHours = opts.lookbackHours ?? LOOKBACK_HOURS;
     this.dedupCosineThreshold = opts.dedupCosineThreshold ?? DEDUP_COSINE_THRESHOLD;
-    this.maxModelLines = opts.maxModelLines ?? MAX_MODEL_LINES;
   }
 
   /** Close the dreaming store. Safe to call multiple times. */
@@ -268,15 +200,10 @@ export class DreamingPipeline {
     this.store.close();
   }
 
-  /** Replace the candidate extractor at runtime (e.g. to wire a model-driven extractor). */
-  setExtractor(extractor: CandidateExtractor): void {
-    this.extractor = extractor;
-  }
-
   /**
-   * Queue a dreaming phase on the global phase queue. All phases (light sleep
-   * work, REM, and deep) serialize through this queue so they never overlap.
-   * Errors propagate to the caller but do not block subsequent phases.
+   * Queue a dreaming phase on the global phase queue. All phases (inner-life
+   * light passes, REM, and deep) serialize through this queue so they never
+   * overlap. Errors propagate to the caller but do not block subsequent phases.
    */
   private async runGlobalPhase<T>(fn: () => Promise<T>): Promise<T> {
     const next = this.globalPhaseQueue.then(fn, fn);
@@ -286,62 +213,12 @@ export class DreamingPipeline {
 
   /**
    * Run one function on the global dreaming phase queue, serialized against
-   * REM and deep sleep (and the REM/deep sides of the private-reflection
-   * light-sleep path). The private-reflection host's per-Conversation light
+   * REM and deep sleep. The private-reflection host's per-Conversation light
    * passes enqueue through this seam so at most one dreaming phase runs at a
    * time across both pipelines.
    */
   runExclusivePhase<T>(fn: () => Promise<T>): Promise<T> {
     return this.runGlobalPhase(fn);
-  }
-
-  /**
-   * Run light sleep for a session: read new transcript lines, extract
-   * candidates, and promote durable ones. Coalesces overlapping calls.
-   * Promotion scope is derived from the transcript source Surface provenance
-   * carried by each candidate's line range, not from a session-level binding.
-   */
-  async runLightSleep(sessionId: string): Promise<void> {
-    let state = this.sessions.get(sessionId);
-    if (state === undefined) {
-      state = { running: null, pending: false };
-      this.sessions.set(sessionId, state);
-    }
-    if (state.running !== null) {
-      state.pending = true;
-      return;
-    }
-    if (this.extractor === null) {
-      log.debug("dreaming: no extractor configured, skipping light sleep", { sessionId });
-      return;
-    }
-    state.pending = false;
-    const p = this.lightSleepInner(sessionId).finally(() => {
-      const s = this.sessions.get(sessionId);
-      if (s === undefined) return;
-      s.running = null;
-      if (s.pending) {
-        s.pending = false;
-        void this.runLightSleep(sessionId);
-      } else {
-        this.sessions.delete(sessionId);
-      }
-    });
-    state.running = p;
-    await p;
-  }
-
-  /**
-   * Wait for all pending light sleep work for a session to settle.
-   */
-  async awaitSettled(sessionId: string): Promise<void> {
-    const state = this.sessions.get(sessionId);
-    if (state === undefined || state.running === null) return;
-    await state.running;
-    const next = this.sessions.get(sessionId);
-    if (next !== undefined && next.running !== null) {
-      await this.awaitSettled(sessionId);
-    }
   }
 
   /**
@@ -475,158 +352,6 @@ export class DreamingPipeline {
       `promoted ${promoted} short_term entries; expired ${expired} unqualified rows; freed ${freed} chars; over=${stillOver}`,
     );
     log.info("dreaming deep sleep completed", { promoted, expired, freed, stillOver });
-  }
-
-  private async lightSleepInner(sessionId: string): Promise<void> {
-    try {
-      await this.runGlobalPhase(() => this.processSession(sessionId));
-    } catch (err) {
-      log.warn("dreaming light sleep failed", {
-        sessionId,
-        err: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  private dreamingCursorPath(sessionId: string): string {
-    return join(sessionDir(this.home, sessionId), "memory-dreaming-cursor.json");
-  }
-
-  private readCursor(sessionId: string): DreamingCursor | null {
-    const sidecar = this.dreamingCursorPath(sessionId);
-    if (existsSync(sidecar)) {
-      try {
-        const raw = readFileSync(sidecar, "utf-8");
-        const parsed = JSON.parse(raw) as Partial<DreamingCursor>;
-        if (typeof parsed.processedLines === "number" && typeof parsed.lastDreamedAt === "string") {
-          return { processedLines: parsed.processedLines, lastDreamedAt: parsed.lastDreamedAt };
-        }
-      } catch {
-        // malformed sidecar; fall through to migrate legacy sources
-      }
-    }
-
-    // Migrate a legacy reflection cursor if present.
-    const legacy = legacyReflectionCursorPath(this.home, sessionId);
-    if (existsSync(legacy)) {
-      try {
-        const legacyRaw = readFileSync(legacy, "utf-8");
-        const parsed = JSON.parse(legacyRaw) as { processedLines?: number; lastReflectedAt?: string };
-        if (typeof parsed.processedLines === "number") {
-          const migrated: DreamingCursor = {
-            processedLines: parsed.processedLines,
-            lastDreamedAt: typeof parsed.lastReflectedAt === "string" ? parsed.lastReflectedAt : new Date().toISOString(),
-          };
-          this.writeCursor(sessionId, migrated);
-          try {
-            rmSync(legacy);
-          } catch {
-            // best-effort removal of migrated cursor
-          }
-          return migrated;
-        }
-      } catch {
-        // ignore malformed legacy cursor
-      }
-    }
-
-    // Migrate any cursor left in the legacy memory_meta key by earlier builds.
-    const metaKey = `dreaming_cursor:${sessionId}`;
-    const metaRaw = this.store.db.getMeta(metaKey);
-    if (metaRaw !== undefined) {
-      try {
-        const parsed = JSON.parse(metaRaw) as Partial<DreamingCursor>;
-        if (typeof parsed.processedLines === "number" && typeof parsed.lastDreamedAt === "string") {
-          const migrated: DreamingCursor = { processedLines: parsed.processedLines, lastDreamedAt: parsed.lastDreamedAt };
-          this.writeCursor(sessionId, migrated);
-          this.store.db.database
-            .query("DELETE FROM memory_meta WHERE key = $key")
-            .run({ $key: metaKey });
-          return migrated;
-        }
-      } catch {
-        // malformed legacy meta cursor
-      }
-    }
-    return null;
-  }
-
-  private writeCursor(sessionId: string, cursor: DreamingCursor): void {
-    atomicWrite(this.dreamingCursorPath(sessionId), JSON.stringify(cursor));
-  }
-
-  private async processSession(sessionId: string): Promise<void> {
-    if (this.extractor === null) return;
-
-    let cursor = this.readCursor(sessionId);
-
-    if (cursor === null) {
-      const total = countTranscriptLines(this.home, sessionId);
-      const seeded: DreamingCursor = {
-        processedLines: total,
-        lastDreamedAt: new Date().toISOString(),
-      };
-      this.writeCursor(sessionId, seeded);
-      log.debug("dreaming: seeded cursor", { sessionId, processedLines: total });
-      return;
-    }
-
-    const home = resolve(this.home);
-    const snapshot = readTranscriptAfter(this.home, sessionId, cursor.processedLines);
-    const cutoff = this.lookbackHours > 0
-      ? Date.now() - this.lookbackHours * 60 * 60 * 1000
-      : null;
-    const configuredBatchLimit = Math.floor(this.maxModelLines);
-    const batchLimit = Number.isFinite(configuredBatchLimit) && configuredBatchLimit > 0
-      ? configuredBatchLimit
-      : 1;
-    let snapshotOffset = 0;
-
-    while (snapshotOffset < snapshot.length) {
-      const newLines: TranscriptLine[] = [];
-      let skippedExpired = 0;
-      while (snapshotOffset < snapshot.length && newLines.length < batchLimit) {
-        const line = snapshot[snapshotOffset++]!;
-        if (cutoff !== null && !(new Date(line.ts).getTime() >= cutoff)) {
-          skippedExpired++;
-        } else {
-          newLines.push(line);
-        }
-      }
-
-      const batchEndIndex = snapshot[snapshotOffset - 1]!.index + 1;
-      if (skippedExpired > 0) {
-        this.emitExpiredLinesWarning(sessionId, skippedExpired);
-      }
-      if (newLines.length === 0) {
-        cursor = { processedLines: batchEndIndex, lastDreamedAt: new Date().toISOString() };
-        this.writeCursor(sessionId, cursor);
-        break;
-      }
-
-      const candidates = await this.extractor(newLines, { sessionId });
-      const newCandidates = candidates.filter((c) => !isProcessedCandidate(home, sessionId, c));
-
-      for (const candidate of newCandidates) {
-        await this.processCandidate(candidate);
-        markCandidateProcessed(home, sessionId, candidate);
-        this.metrics?.incrementCounter("memory_dreaming_candidate_total", null, 1);
-      }
-
-      cursor = { processedLines: batchEndIndex, lastDreamedAt: new Date().toISOString() };
-      this.writeCursor(sessionId, cursor);
-    }
-
-    pruneProcessedCandidates(home, sessionId);
-  }
-
-  private emitExpiredLinesWarning(sessionId: string, count: number): void {
-    log.warn("dreaming: skipped transcript lines outside lookback window", {
-      sessionId,
-      count,
-      lookbackHours: this.lookbackHours,
-    });
-    this.metrics?.incrementCounter("memory_dreaming_expired_lines_total", null, count);
   }
 
   private readTranscriptLinesInRange(sessionId: string, start: number, end: number): TranscriptLine[] {

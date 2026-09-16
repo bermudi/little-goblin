@@ -61,4 +61,4 @@ export { exportToMarkdown } from "./export.ts";
 export { TranscriptIndexer } from "./transcript-index.ts";
 export type { TranscriptSyncResult } from "./transcript-index.ts";
 export { DreamingPipeline } from "./dreaming.ts";
-export type { Candidate, CandidateExtractor, DreamingCategory, DreamingCursor } from "./dreaming.ts";
+export type { Candidate, DreamingCategory } from "./dreaming.ts";

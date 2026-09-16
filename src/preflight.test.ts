@@ -32,7 +32,6 @@ function setupHome(): string {
   mkdirSync(join(home, "state", "memory"), { recursive: true });
   mkdirSync(join(home, "state", "pi"), { recursive: true });
   mkdirSync(join(home, "state", "delegated-work", "runs"), { recursive: true });
-  mkdirSync(join(home, "scratch", "external-agents"), { recursive: true });
   writeFileSync(join(home, "workspace", "SOUL.md"), "# Test Goblin\n");
   return home;
 }

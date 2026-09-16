@@ -496,6 +496,7 @@ describe("ensureGoblinHome", () => {
     for (const sub of EXPECTED_DIRS) {
       expect(existsSync(join(tempDir, sub)), `expected ${sub} to exist`).toBe(true);
     }
+    expect(existsSync(join(tempDir, "scratch")), "expected top-level scratch/ to stay absent").toBe(false);
   });
 
   it("is idempotent (existing tree is untouched)", () => {

@@ -28,7 +28,7 @@ import { environmentFromProjectRoot, personalEnvironment, projectEnvironment, ty
 import { dmSurface, surfaceId, supergroupSurface, topicSurface, type Surface } from "../surface.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
 import { MemoryStore } from "../memory/mod.ts";
-import type { CapturedMemoryContext, InternalMemoryContext } from "../memory/mod.ts";
+import type { CapturedMemoryContext } from "../memory/mod.ts";
 import type { AgentRunner } from "../agent/mod.ts";
 import type { Config } from "../config.ts";
 import type { TranscriptWriterContext } from "../sessions/transcript.ts";
@@ -98,15 +98,13 @@ class ThrowingDeleteStore extends ConversationStore {
 
 class FakeAgentRunner {
   disposeCalled = false;
-  memoryContext: CapturedMemoryContext | InternalMemoryContext;
+  memoryContext: CapturedMemoryContext;
   transcriptWriterContext: TranscriptWriterContext;
 
   constructor(opts: ConstructorParameters<typeof AgentRunner>[0]) {
-    this.memoryContext = opts.plan === undefined ? opts.memoryContext : opts.plan.memoryContext;
+    this.memoryContext = opts.plan.memoryContext;
     this.transcriptWriterContext =
-      this.memoryContext.kind === "surface"
-        ? { kind: "surface", sourceSurfaceId: this.memoryContext.authority.sourceSurfaceId }
-        : { kind: "internal" };
+      { kind: "surface", sourceSurfaceId: this.memoryContext.authority.sourceSurfaceId };
   }
 
   get isStreaming() {

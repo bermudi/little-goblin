@@ -4,50 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   loadConversationState,
-  loadInternalSessionState,
   saveConversationState,
-  saveInternalSessionState,
 } from "./state.ts";
 import { sessionDir, statePath } from "./paths.ts";
 import { personalEnvironment } from "./environment.ts";
 import type { ConversationState } from "./types.ts";
-import { createInternalSessionState } from "./internal-session.ts";
-
-describe("internal session state", () => {
-  let tmpDir: string;
-
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "goblin-state-test-"));
-  });
-
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("round-trips the explicit Surface-free internal record", () => {
-    const state = createInternalSessionState("__state_test__");
-    saveInternalSessionState(tmpDir, state);
-    expect(loadInternalSessionState(tmpDir, state.id)).toEqual(state);
-  });
-
-  it("returns null when the internal record is absent", () => {
-    expect(loadInternalSessionState(tmpDir, "__missing__")).toBeNull();
-  });
-
-  it("rejects an invalid internal ID before filesystem access", () => {
-    expect(() => loadInternalSessionState(tmpDir, "../escape")).toThrow(/reserved __…__ identity/);
-  });
-
-  it("rejects routing and preference compatibility fields", () => {
-    const id = "__invalid__";
-    mkdirSync(sessionDir(tmpDir, id), { recursive: true });
-    writeFileSync(statePath(tmpDir, id), JSON.stringify({
-      ...createInternalSessionState(id),
-      modelName: "poe/legacy",
-    }));
-    expect(() => loadInternalSessionState(tmpDir, id)).toThrow(/forbidden field: modelName/);
-  });
-});
 
 describe("conversation state", () => {
   let tmpDir: string;

@@ -94,4 +94,14 @@ describe("sessions paths", () => {
     expect(() => heartbeatMdPathForSession(home, "abc\0def")).toThrow();
     expect(() => sessionDir(home, "abc\0def")).toThrow();
   });
+
+  it("rejects reserved identities at the session path boundary", () => {
+    for (const id of ["__reserved__", "__x__"]) {
+      expect(() => sessionDir(home, id)).toThrow(/reserved __…__ identity/);
+      expect(() => statePath(home, id)).toThrow(/reserved __…__ identity/);
+      expect(() => transcriptPath(home, id)).toThrow(/reserved __…__ identity/);
+      expect(() => metricsPath(home, id)).toThrow(/reserved __…__ identity/);
+      expect(() => heartbeatMdPathForSession(home, id)).toThrow(/reserved __…__ identity/);
+    }
+  });
 });

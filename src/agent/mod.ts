@@ -15,8 +15,8 @@ import { AgentEventHandler } from "./event-handler.ts";
 import type { TurnCallbacks } from "./events.ts";
 export { appendAssistantTranscriptEntry } from "./events.ts";
 export type { TurnCallbacks } from "./events.ts";
-import { resolveModel, type ResolvedModel } from "./models.ts";
-import { type GoblinSystemPrompt, buildGoblinSystemPrompt } from "./system-prompt.ts";
+import { type ResolvedModel } from "./models.ts";
+import { type GoblinSystemPrompt } from "./system-prompt.ts";
 import { type PreparedSurfaceRuntimePlan } from "./runtime-plan.ts";
 import type { SurfaceCustomToolsSource } from "./tool-assembly.ts";
 import {
@@ -24,7 +24,6 @@ import {
   EmbeddingProvider,
   formatRelevantMemory,
   type CapturedMemoryContext,
-  type InternalMemoryContext,
 } from "../memory/mod.ts";
 import { DreamingPipeline } from "../memory/dreaming.ts";
 import { MetricsStore } from "../metrics/mod.ts";
@@ -35,11 +34,7 @@ import { AgentBackend, AgentBackendOptions, PiAgentBackend } from "./backend.ts"
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import { environmentCwd } from "../sessions/environment.ts";
 import {
-  cloneSkillPolicy,
-  resolveSkillSet,
-  DEFAULT_SKILL_POLICY,
   type ResolvedSkillSet,
-  type SkillPolicy,
 } from "./skills/mod.ts";
 
 /**
@@ -92,33 +87,10 @@ export interface SurfaceAgentRunnerOptions extends AgentRunnerOptionsBase {
 }
 
 /**
- * Options for constructing an internal `AgentRunner` (e.g. the dreaming
- * extractor). The memory context is an {@link InternalMemoryContext} and no
- * Telegram Surface is permitted — internal work has no ordinary active-memory
- * write target and no delivery surface.
+ * Construction options for a Surface-backed `AgentRunner`. Only Surface-backed
+ * generations remain; there is no Surface-free runtime identity.
  */
-export interface InternalAgentRunnerOptions extends AgentRunnerOptionsBase {
-  memoryContext: InternalMemoryContext;
-  customTools: ToolDefinition[];
-  /** Immutable environment of the Surface-free internal session. */
-  executionEnvironment: ExecutionEnvironment;
-  modelName?: string;
-  thinkingLevel?: ThinkingLevel;
-  skillPolicy?: SkillPolicy;
-  resolvedSkills?: ResolvedSkillSet;
-  /** Optional deterministic model injection retained for internal runtimes and tests. */
-  resolvedModel?: ResolvedModel;
-  surface?: never;
-  plan?: never;
-  /** Internal runtimes are explicitly Surface-free and need no binding guard. */
-  isCurrent?: never;
-}
-
-/**
- * Discriminated union: a `CapturedMemoryContext` requires a `Surface`, and an
- * `InternalMemoryContext` forbids one. Invalid combinations are unconstructible.
- */
-export type AgentRunnerOptions = SurfaceAgentRunnerOptions | InternalAgentRunnerOptions;
+export type AgentRunnerOptions = SurfaceAgentRunnerOptions;
 
 /** Thrown when the resolved model does not support the content types present in a prompt. */
 export class ModelNotCapableError extends Error {
@@ -160,10 +132,8 @@ export class RunnerNotStreamingError extends Error {
 export class AgentRunner {
   private cfg: Config;
   private sessionId: string;
-  private customTools: ToolDefinition[];
-  /** Assembles the Surface custom-tool list from the capability manifest; null
-   * for internal (surface-free) runtimes that use injected tools. */
-  private readonly surfaceToolSource: SurfaceCustomToolsSource | null;
+  /** Assembles the Surface custom-tool list from the capability manifest. */
+  private readonly surfaceToolSource: SurfaceCustomToolsSource;
   private isCurrent: () => boolean;
   private backend: AgentBackend;
   private readonly eventHandler: AgentEventHandler;
@@ -171,23 +141,20 @@ export class AgentRunner {
   private ownsMemoryStore: boolean;
   private dreamingPipeline: DreamingPipeline;
   /**
-   * The captured runtime memory context. For Surface-backed runners this is a
-   * `CapturedMemoryContext` carrying the projected ActiveScope, caller, frozen
-   * summary, and deduplication bodies. For internal runners (dreaming
-   * extraction) this is an `InternalMemoryContext` with no Surface and no
-   * memory tools.
+   * The captured runtime memory context: a `CapturedMemoryContext` carrying
+   * the projected ActiveScope, caller, frozen summary, and deduplication
+   * bodies.
    *
    * Lazy pi `AgentSession` initialization consumes this capture without
    * rereading the store or resolving routing. Disposing and replacing the
    * runner is the only way to change its memory context.
    */
-  public readonly memoryContext: CapturedMemoryContext | InternalMemoryContext;
+  public readonly memoryContext: CapturedMemoryContext;
   private getTopicName: ((chatId: number, topicId: number) => Promise<string | null>) | undefined;
   private topicNameCache = new Map<string, string | null>();
   private executionEnvironment: ExecutionEnvironment;
-  private skillPolicy: SkillPolicy;
   private resolvedSkills: ResolvedSkillSet | null;
-  private readonly preparedPlan: PreparedSurfaceRuntimePlan | null;
+  private readonly preparedPlan: PreparedSurfaceRuntimePlan;
   /** Fixed at construction; Surface preference changes create a new runtime. */
   private readonly _modelName: string | undefined;
   /** Fixed at construction; Surface preference changes create a new runtime. */
@@ -248,8 +215,7 @@ export class AgentRunner {
   }
 
   /**
-   * Single authority fence for every Surface-backed side effect. Internal
-   * runners install the explicit always-current guard in the constructor.
+   * Single authority fence for every Surface-backed side effect.
    */
   private assertCurrent(): void {
     if (!this.isCurrent()) {
@@ -282,40 +248,25 @@ export class AgentRunner {
   constructor(opts: AgentRunnerOptions) {
     this.cfg = opts.cfg;
     this.sessionId = opts.sessionId;
-    this.preparedPlan = "plan" in opts && opts.plan !== undefined ? opts.plan : null;
-    this.memoryContext = this.preparedPlan !== null
-      ? this.preparedPlan.memoryContext
-      : (opts as InternalAgentRunnerOptions).memoryContext;
-    // Injected tools for internal runtimes. Surface runtimes assemble their
-    // tools from the capability manifest in init(), so this is empty for them.
-    this.customTools = this.preparedPlan === null
-      ? (opts as InternalAgentRunnerOptions).customTools
-      : [];
-    this.surfaceToolSource = this.preparedPlan !== null
-      ? (opts as SurfaceAgentRunnerOptions).surfaceToolSource
-      : null;
+    this.preparedPlan = opts.plan;
+    this.memoryContext = this.preparedPlan.memoryContext;
+    this.surfaceToolSource = opts.surfaceToolSource;
     this.delegatedRuntimeContext = opts.delegatedRuntimeContext ?? null;
-    this.isCurrent = this.memoryContext.kind === "surface"
-      ? (opts as SurfaceAgentRunnerOptions).isCurrent
-      : () => true;
+    this.isCurrent = opts.isCurrent;
     this.getTopicName = opts.getTopicName;
-    const internal = opts as InternalAgentRunnerOptions;
-    this.executionEnvironment = this.preparedPlan?.executionEnvironment ?? internal.executionEnvironment;
-    this.skillPolicy = cloneSkillPolicy(this.preparedPlan?.skillPolicy ?? internal.skillPolicy ?? DEFAULT_SKILL_POLICY);
-    this.resolvedSkills = this.preparedPlan?.resolvedSkills ?? internal.resolvedSkills ?? null;
-    this._modelName = this.preparedPlan?.modelName ?? internal.modelName ?? (internal.resolvedModel ? `${internal.resolvedModel.model.provider}/${internal.resolvedModel.model.id}` : undefined);
-    this.thinkingLevel = this.preparedPlan?.thinkingLevel ?? internal.thinkingLevel;
-    this.resolvedModel = this.preparedPlan?.resolvedModel ?? internal.resolvedModel ?? null;
+    this.executionEnvironment = this.preparedPlan.executionEnvironment;
+    this.resolvedSkills = this.preparedPlan.resolvedSkills;
+    this._modelName = this.preparedPlan.modelName;
+    this.thinkingLevel = this.preparedPlan.thinkingLevel;
+    this.resolvedModel = this.preparedPlan.resolvedModel;
     this.metricsStore = new MetricsStore(opts.cfg.goblinHome, this.sessionId);
     this.eventHandler = new AgentEventHandler({
       sessionId: this.sessionId,
       goblinHome: opts.cfg.goblinHome,
-      transcriptWriterContext: this.memoryContext.kind === "surface"
-        ? { kind: "surface", sourceSurfaceId: this.memoryContext.authority.sourceSurfaceId }
-        : { kind: "internal" },
+      transcriptWriterContext: { kind: "surface", sourceSurfaceId: this.memoryContext.authority.sourceSurfaceId },
       metricsStore: this.metricsStore,
       toolCwd: environmentCwd(this.executionEnvironment, opts.cfg.goblinHome),
-      surface: this.preparedPlan?.surface,
+      surface: this.preparedPlan.surface,
       isCurrent: this.isCurrent,
     });
     this.ownsMemoryStore = opts.memoryStore === undefined;
@@ -347,23 +298,16 @@ export class AgentRunner {
     try {
       this.throwIfAbortedBeforeInit();
 
-      const home = this.cfg.goblinHome;
-      const cwd = this.preparedPlan?.cwd ?? environmentCwd(this.executionEnvironment, home);
-      const resolvedModel = this.preparedPlan?.resolvedModel ?? this.resolvedModel ?? resolveModel({ ...this.cfg, modelName: this._modelName ?? this.cfg.modelName });
+      const cwd = this.preparedPlan.cwd;
+      const resolvedModel = this.preparedPlan.resolvedModel;
       this.resolvedModel = resolvedModel;
 
       // Surface runtimes consume the complete prompt and exact skills captured
-      // before construction. Only the structurally unchanged internal path may
-      // use lazy compatibility preparation.
-      const goblinSystemPrompt = this.preparedPlan?.systemPrompt ?? await this.awaitCurrent(() => buildGoblinSystemPrompt({
-        home,
-        executionEnvironment: this.executionEnvironment,
-      }));
+      // before construction.
+      const goblinSystemPrompt = this.preparedPlan.systemPrompt;
       this.goblinSystemPrompt = goblinSystemPrompt;
 
-      const resolvedSkills = this.preparedPlan?.resolvedSkills ?? this.resolvedSkills ?? await this.awaitCurrent(() =>
-        resolveSkillSet(this.executionEnvironment, this.skillPolicy, home, { captureSnapshots: false }),
-      );
+      const resolvedSkills = this.preparedPlan.resolvedSkills;
       this.resolvedSkills = resolvedSkills;
       if (resolvedSkills.diagnostics.length > 0) {
         log.debug("Skill catalog diagnostics", {
@@ -374,30 +318,20 @@ export class AgentRunner {
 
       // Surface runtimes obtain their custom tools from the injected tool
       // source, which encapsulates the capability dependency bundle behind one
-      // interface. Internal runtimes use their injected tools only; they share
-      // this module but not this decision procedure.
-      let tools: ToolDefinition[];
-      if (this.surfaceToolSource !== null) {
-        tools = await this.surfaceToolSource.assemble({
-          memoryStore: this.memoryStore,
-          metricsStore: this.metricsStore,
-          delegatedRuntimeContext: this.delegatedRuntimeContext,
-          genericSubagentInheritance: this.genericSubagentInheritance,
-          resolveTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
-          guardTool: (tool) => this.guardTool(tool),
-          isCurrent: this.isCurrent,
-          sendStatusUpdate: (msg) => this.eventHandler.sendStatusUpdate(msg),
-          awaitCurrent: (op) => this.awaitCurrent(op),
-        });
-      } else {
-        tools = this.customTools.map((tool) => this.guardTool(tool));
-      }
+      // interface.
+      const tools: ToolDefinition[] = await this.surfaceToolSource.assemble({
+        memoryStore: this.memoryStore,
+        metricsStore: this.metricsStore,
+        delegatedRuntimeContext: this.delegatedRuntimeContext,
+        genericSubagentInheritance: this.genericSubagentInheritance,
+        resolveTopicName: (chatId, topicId) => this.cachedTopicName(chatId, topicId),
+        guardTool: (tool) => this.guardTool(tool),
+        isCurrent: this.isCurrent,
+        sendStatusUpdate: (msg) => this.eventHandler.sendStatusUpdate(msg),
+        awaitCurrent: (op) => this.awaitCurrent(op),
+      });
 
-      let systemPrompt = this.preparedPlan?.prompt ?? goblinSystemPrompt.prompt;
-      if (this.preparedPlan === null && this.memoryContext.kind === "surface") {
-        const frozenSummary = this.memoryContext.frozenSummary;
-        if (frozenSummary !== null) systemPrompt = `${systemPrompt}\n\n${frozenSummary}`;
-      }
+      const systemPrompt = this.preparedPlan.prompt;
 
       this.throwIfAbortedBeforeInit();
       await this.awaitCurrent(() => this.backend.init({
@@ -451,20 +385,17 @@ export class AgentRunner {
       // prompt text. Pi queues it and flushes alongside the next user message;
       // the system prompt stays frozen, preserving the provider prefix cache.
       // Steers do not pass prompt text and so never inject a relevant-memory
-      // section. Internal runners (dreaming extraction) skip the aside — they
-      // have no Surface-backed memory context.
+      // section.
       const promptText = extractPromptText(content);
       const memoryContext = this.memoryContext;
-      if (memoryContext.kind === "surface") {
-        const aside = await this.awaitCurrent(() => formatRelevantMemory({
-          store: this.memoryStore,
-          context: memoryContext,
-          promptText,
-          metrics: this.metricsStore,
-        }));
-        if (aside !== null) {
-          await this.awaitCurrent(() => this.backend.sendCustomMessage(aside, { deliverAs: "nextTurn" }));
-        }
+      const aside = await this.awaitCurrent(() => formatRelevantMemory({
+        store: this.memoryStore,
+        context: memoryContext,
+        promptText,
+        metrics: this.metricsStore,
+      }));
+      if (aside !== null) {
+        await this.awaitCurrent(() => this.backend.sendCustomMessage(aside, { deliverAs: "nextTurn" }));
       }
 
       const contentForModel = this.normalizeContentForModel(content);

@@ -199,9 +199,6 @@ describe("ConversationRuntimeHost shutdown", () => {
     expect(() => host.reserveCreation("conversation-b", surfaceId(dmSurface(1)), "test")).toThrow(
       /admission is closed/,
     );
-    expect(() => host.registerInternalRuntime("conversation-c", fakeRunner())).toThrow(
-      /admission is closed/,
-    );
     expect(host.schedule("conversation-a", { kind: "binding" }, async () => {}, async () => {})).toBe(false);
     expect(host.steerOrQueue(
       "conversation-a",

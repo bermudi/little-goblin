@@ -3,7 +3,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentRunner } from "../../agent/mod.ts";
 import { createMemorySearchTool } from "../../memory/mod.ts";
-import type { ActiveScope, CapturedMemoryContext, InternalMemoryContext } from "../../memory/mod.ts";
+import type { ActiveScope, CapturedMemoryContext } from "../../memory/mod.ts";
 import { MemoryStore } from "../../memory/mod.ts";
 import { activeMemoryScopeFor } from "../../memory/scope.ts";
 import { createConversationLifecycle, type ConversationLifecycle } from "../../orchestration/conversation-lifecycle.ts";
@@ -31,7 +31,7 @@ const SURFACE_Y: Surface = topicSurface("supergroup", -100123, 2);
 const SCOPE_X: ActiveScope = { chatId: -100123, topicScope: { topicId: 1 } };
 const SCOPE_Y: ActiveScope = { chatId: -100123, topicScope: { topicId: 2 } };
 
-function assertSurfaceCapture(ctx: CapturedMemoryContext | InternalMemoryContext): CapturedMemoryContext {
+function assertSurfaceCapture(ctx: CapturedMemoryContext): CapturedMemoryContext {
   if (ctx.kind !== "surface") throw new Error("expected a Surface-backed memory context");
   return ctx;
 }
@@ -89,7 +89,7 @@ async function seedScopes(home: string): Promise<void> {
 }
 
 function makeFakeAgentRunner(opts: ConstructorParameters<typeof AgentRunner>[0]): AgentRunner {
-  const capture = assertSurfaceCapture(opts.plan === undefined ? opts.memoryContext : opts.plan.memoryContext);
+  const capture = assertSurfaceCapture(opts.plan.memoryContext);
   return {
     memoryContext: capture,
     genericSubagentInheritance: EMPTY_GENERIC_SUBAGENT_INHERITANCE,

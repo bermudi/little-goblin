@@ -1,9 +1,4 @@
 import type { ConversationState, ConversationId } from "./types.ts";
-import {
-  assertInternalSessionId,
-  assertInternalSessionState,
-  type InternalSessionState,
-} from "./internal-session.ts";
 import type { ExecutionEnvironment } from "./environment.ts";
 import { isCanonicalProjectRoot } from "./environment.ts";
 import { validateConversationId } from "./conversation.ts";
@@ -97,21 +92,4 @@ export function saveConversationState(home: string, state: ConversationState): v
   saveJsonFile(statePath(home, state.id), canonical);
 }
 
-/** Load and validate the explicit Surface-free internal runtime record. */
-export function loadInternalSessionState(home: string, id: string): InternalSessionState | null {
-  assertInternalSessionId(id);
-  const state = loadJsonFile<unknown | undefined>(statePath(home, id), undefined);
-  if (state === undefined) return null;
-  assertInternalSessionState(state);
-  if (state.id !== id) {
-    throw new Error(`internal session ${id} state file id mismatch: ${state.id}`);
-  }
-  return state;
-}
 
-/** Persist the explicit Surface-free internal runtime record atomically. */
-export function saveInternalSessionState(home: string, state: InternalSessionState): void {
-  assertInternalSessionId(state.id);
-  assertInternalSessionState(state);
-  saveJsonFile(statePath(home, state.id), state);
-}

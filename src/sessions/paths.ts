@@ -8,15 +8,19 @@ import { parseSurfaceId, surfaceId, type SurfaceId } from "../surface.ts";
 /**
  * Validate a session directory name. This is a filesystem-safety guard, not a
  * format check: conversation ids must still be 10-char lowercase hex, which is
- * enforced by `validateConversationId` at conversation boundaries. Internal
- * session names (e.g. `__goblin_dreaming__`) are safe directory names but not
- * hex, so this helper allows them.
+ * enforced by `validateConversationId` at conversation boundaries. Reserved
+ * `__...__` identities are rejected here so no reserved record or empty
+ * transcript/metrics/events artifact can be created through any session path.
  */
 const SAFE_SESSION_ID_RE = /^[A-Za-z0-9_-]+$/;
+const RESERVED_ID_RE = /^__.+__$/;
 
 function validateSessionId(id: string): void {
   if (typeof id !== "string" || id.length === 0) {
     throw new Error(`Invalid session id: must be a non-empty string`);
+  }
+  if (RESERVED_ID_RE.test(id)) {
+    throw new Error(`Invalid session id: reserved __…__ identity`);
   }
   if (!SAFE_SESSION_ID_RE.test(id)) {
     throw new Error(`Invalid session id: must contain only alphanumeric characters, underscores, or hyphens`);

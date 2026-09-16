@@ -78,6 +78,9 @@ function listTranscriptFiles(home: string): TranscriptFileRef[] {
   for (const entry of activeEntries) {
     if (!entry.isDirectory()) continue;
     if (entry.name === "archive") continue;
+    // Legacy reserved records predate the path boundary that now rejects
+    // reserved identities; skip them without touching the path helpers.
+    if (/^__.+__$/.test(entry.name)) continue;
     const sessionId = entry.name;
     const transcriptFile = join(sessionsRoot, sessionId, "transcript.jsonl");
     if (!existsSync(transcriptFile)) continue;
@@ -94,6 +97,7 @@ function listTranscriptFiles(home: string): TranscriptFileRef[] {
   }
   for (const entry of archiveEntries) {
     if (!entry.isDirectory()) continue;
+    if (/^__.+__$/.test(entry.name)) continue;
     const sessionId = entry.name;
     const transcriptFile = join(archiveRoot, sessionId, "transcript.jsonl");
     if (!existsSync(transcriptFile)) continue;

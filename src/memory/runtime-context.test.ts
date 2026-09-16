@@ -17,7 +17,6 @@ import {
   captureRuntimeMemoryContext,
   freezeCapturedMemoryContext,
   type CapturedMemoryContext,
-  type InternalMemoryContext,
   type SurfaceMemoryAuthority,
 } from "./runtime-context.ts";
 import { MemoryStore } from "./store.ts";
@@ -159,28 +158,6 @@ describe("runtime memory context — Surface-derived authority", () => {
       expect(() =>
         assertSurfaceBackedAuthorityInput(topicSurface("supergroup", -100123, 42)),
       ).not.toThrow();
-    });
-  });
-
-  describe("InternalMemoryContext — Surface-free internal boundary", () => {
-    it("carries no SurfaceId or ActiveScope", () => {
-      const ctx: InternalMemoryContext = { kind: "internal", caller: { kind: "internal" } };
-      expect(ctx.kind).toBe("internal");
-      expect(ctx.caller.kind).toBe("internal");
-      expect("sourceSurfaceId" in ctx).toBe(false);
-      expect("activeScope" in ctx).toBe(false);
-    });
-
-    it("is structurally distinct from SurfaceMemoryAuthority", () => {
-      // The discriminated union keeps internal callers from being
-      // misinterpreted as Telegram Surfaces. A Surface-backed authority has
-      // `kind: "surface"`; an internal context has `kind: "internal"`. The
-      // two cannot be confused at a type level.
-      const surface: SurfaceMemoryAuthority = surfaceAuthority(dmSurface(123));
-      const internal: InternalMemoryContext = { kind: "internal", caller: { kind: "internal" } };
-      expect(surface.kind).toBe("surface");
-      expect(internal.kind).toBe("internal");
-      expect((surface.kind as string) === (internal.kind as string)).toBe(false);
     });
   });
 

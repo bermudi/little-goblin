@@ -37,11 +37,10 @@ export type MachinePhase = "idle" | "preparing" | "active";
  */
 export type TicketAxis = "runtime" | "binding";
 
-/** Closed declaration of the authority a queued work unit needs. */
+/** Closed declaration of the authority a queued work unit needs. Only Surface-backed generations remain. */
 export type WorkIntent =
   | { readonly kind: "current-runtime"; readonly runner: AgentRunner }
   | { readonly kind: "binding" }
-  | { readonly kind: "internal-runtime"; readonly runner: AgentRunner }
   | { readonly kind: "bootstrap" };
 
 /** Machine-generated authority passed to admitted work for await boundaries. */
@@ -235,17 +234,11 @@ export interface RuntimeMachineDeps {
  *
  *   idle      → preparing   reserveCreation
  *   preparing → preparing   reserveCreation (newer generation supersedes)
- *   preparing → active      registerSurfaceRuntime / registerInternalRuntime
- *   idle      → active      registerInternalRuntime
- *   active    → active      registerInternalRuntime (re-register internal)
+ *   preparing → active      registerSurfaceRuntime
  *   active    → preparing   invalidate("settings-change", preserveCreation)
  *   active    → idle        invalidate("binding-change" | "shutdown")
  *   preparing → idle        invalidate("binding-change" | "shutdown")
  *   idle      → idle        invalidate (no-op)
- *
- * Internal work captures one internal registration. Replacing an internal
- * runner advances the generation, fences prior tickets, and keeps the prior
- * runner in the drain set until disposal settles.
  */
 export class RuntimeMachine {
   // ── generation / phase ──
@@ -258,7 +251,6 @@ export class RuntimeMachine {
   private surfaceId: SurfaceId | undefined;
   private runtimeId: ConversationRuntimeId | undefined;
   private skillContext: RuntimeSkillContext | undefined;
-  private isInternal = false;
   private creation: RuntimeCreation | undefined;
 
   // ── queue (explicit entry list + serial executor) ──
@@ -338,10 +330,6 @@ export class RuntimeMachine {
 
   isRegisteredRunner(runner: AgentRunner): boolean {
     return this.runner === runner;
-  }
-
-  isInternalRuntime(): boolean {
-    return this.isInternal;
   }
 
   /**
@@ -467,53 +455,13 @@ export class RuntimeMachine {
     if (this.runner !== undefined) {
       throw new Error(`Conversation runtime already registered for ${this.deps.conversationId}`);
     }
-    if (this.isInternal) {
-      throw new Error(`Conversation ${this.deps.conversationId} is reserved by an internal runtime`);
-    }
     this.assertTransitionAllowed("active", "registerSurfaceRuntime");
     this.nextGeneration();
     this.runner = runner;
     this.surfaceId = registration.surfaceId;
     this.runtimeId = registration.runtimeId;
     this.skillContext = registration.skillContext;
-    this.isInternal = false;
     this.transitionTo("active", "registerSurfaceRuntime");
-  }
-
-  registerInternalRuntime(runner: AgentRunner): void {
-    if (!this.deps.isAdmissionOpen()) {
-      throw new Error("conversation runtime admission is closed");
-    }
-    const replacingInternal = this.runner !== undefined && this.isInternal;
-    if (this.drain.size > 0 && !replacingInternal) {
-      throw new Error(
-        `cannot register internal runtime for ${this.deps.conversationId}: a prior-generation disposal is still active`,
-      );
-    }
-    if (this.pendingDelegatedInvalidations.size > 0) {
-      throw new Error(
-        `cannot register internal runtime for ${this.deps.conversationId}: delegated work invalidation is still pending`,
-      );
-    }
-    if (this.runner !== undefined && !this.isInternal) {
-      throw new Error(`cannot reuse Surface-backed runtime ${this.deps.conversationId} for an internal turn`);
-    }
-
-    this.assertTransitionAllowed("active", "registerInternalRuntime");
-    const priorRunner = replacingInternal ? this.runner : undefined;
-    const priorGeneration = this.generation;
-    if (priorRunner !== undefined && priorRunner !== runner) {
-      // An active→active internal replacement installs the new generation
-      // immediately, but the old generation remains machine-owned until its
-      // runner disposal settles. Disposing first also releases a blocked old
-      // prompt so the serial queue can observe its fenced ticket and drain.
-      this.startDrainingGeneration(priorGeneration, priorRunner, [], true);
-    }
-
-    this.nextGeneration();
-    this.runner = runner;
-    this.isInternal = true;
-    this.transitionTo("active", "registerInternalRuntime");
   }
 
   // ── queue ──────────────────────────────────────────────────────────
@@ -528,10 +476,10 @@ export class RuntimeMachine {
       bindingEpoch: intent.kind === "binding" || intent.kind === "bootstrap"
         ? this.bindingEpoch
         : undefined,
-      runtimeEpoch: intent.kind === "current-runtime" || intent.kind === "internal-runtime"
+      runtimeEpoch: intent.kind === "current-runtime"
         ? this.generation
         : undefined,
-      runner: intent.kind === "current-runtime" || intent.kind === "internal-runtime"
+      runner: intent.kind === "current-runtime"
         ? intent.runner
         : undefined,
       settled: false,
@@ -555,9 +503,6 @@ export class RuntimeMachine {
         );
       case "current-runtime":
         return authority.runtimeEpoch === this.generation && authority.runner === this.runner;
-      case "internal-runtime":
-        return this.isInternal &&
-          authority.runtimeEpoch === this.generation && authority.runner === this.runner;
     }
   }
 
@@ -633,7 +578,6 @@ export class RuntimeMachine {
   ): ImmediateWorkAdmission {
     if (!this.deps.isAdmissionOpen()) return { kind: "closed" };
     if (this.queueRunning || this.queue.length > 0) return { kind: "busy" };
-    if (this.isInternal) return { kind: "fenced" };
 
     const runnerAtAdmission = this.runner ?? null;
     const intent: WorkIntent = runnerAtAdmission === null
@@ -722,12 +666,9 @@ export class RuntimeMachine {
       return { kind: "rejected" };
     }
     if (
-      (fallback.intent.kind === "current-runtime" || fallback.intent.kind === "internal-runtime") &&
+      fallback.intent.kind === "current-runtime" &&
       fallback.intent.runner !== this.runner
     ) {
-      return { kind: "fenced" };
-    }
-    if (fallback.intent.kind === "internal-runtime" && !this.isInternal) {
       return { kind: "fenced" };
     }
     let followUp: Promise<void>;
@@ -934,7 +875,6 @@ export class RuntimeMachine {
     this.surfaceId = undefined;
     this.runtimeId = undefined;
     this.skillContext = undefined;
-    this.isInternal = false;
 
     if (!preservesCreation) {
       this.creation?.cancel();
@@ -1016,7 +956,6 @@ export class RuntimeMachine {
     generation: number,
     runner: AgentRunner | undefined,
     runtimeIds: ConversationRuntimeId[],
-    retainUnobservedFailure = false,
   ): Promise<void> {
     if ([...this.drain].some((entry) => entry.generation === generation)) {
       throw new Error(
@@ -1028,9 +967,8 @@ export class RuntimeMachine {
     this.drain.add(draining);
     void disposal.then(
       () => this.drain.delete(draining),
-      (error) => {
+      () => {
         this.drain.delete(draining);
-        if (retainUnobservedFailure) this.pendingReplacementDrainFailures.add(error);
       },
     );
     return disposal;
@@ -1281,7 +1219,6 @@ export class RuntimeMachine {
 type TransitionOp =
   | "reserveCreation"
   | "registerSurfaceRuntime"
-  | "registerInternalRuntime"
   | "invalidate-preserve"
   | "invalidate-drop";
 
@@ -1291,9 +1228,7 @@ type TransitionOp =
  *
  *   idle      → preparing   reserveCreation
  *   preparing → preparing   reserveCreation (newer generation supersedes)
- *   preparing → active      registerSurfaceRuntime / registerInternalRuntime
- *   idle      → active      registerInternalRuntime
- *   active    → active      registerInternalRuntime (re-register internal)
+ *   preparing → active      registerSurfaceRuntime
  *   active    → preparing   reserveCreation (replacement) / invalidate-preserve (settings-change)
  *   active    → idle        invalidate-drop (binding-change | shutdown)
  *   preparing → idle        invalidate-drop (binding-change | shutdown)
@@ -1314,16 +1249,14 @@ function isLegalTransition(
 
   switch (source) {
     case "idle":
-      // idle → preparing via reserveCreation
-      // idle → active via registerInternalRuntime only
+      // idle → preparing via reserveCreation; idle → active is illegal.
       if (target === "preparing") return op === "reserveCreation";
-      if (target === "active") return op === "registerInternalRuntime";
       return false;
     case "preparing":
       // preparing → active via registration
       // preparing → idle via invalidate-drop
       if (target === "active") {
-        return op === "registerSurfaceRuntime" || op === "registerInternalRuntime";
+        return op === "registerSurfaceRuntime";
       }
       if (target === "idle") return op === "invalidate-drop";
       return false;

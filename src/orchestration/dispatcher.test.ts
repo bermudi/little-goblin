@@ -13,12 +13,11 @@ import {
   type SubagentRunner,
 } from "../subagents/mod.ts";
 import { MemoryStore } from "../memory/mod.ts";
-import type { CapturedMemoryContext, InternalMemoryContext } from "../memory/mod.ts";
+import type { CapturedMemoryContext } from "../memory/mod.ts";
 import type { ConversationId, ConversationState } from "../sessions/mod.ts";
-import type { InternalSessionState } from "../sessions/internal-session.ts";
 import type { Config } from "../config.ts";
 import type { Surface } from "../surface.ts";
-import { personalEnvironment, projectEnvironment } from "../sessions/environment.ts";
+import { personalEnvironment } from "../sessions/environment.ts";
 import type { ExecutionEnvironment } from "../sessions/environment.ts";
 import type { TurnSink, SurfaceSettings } from "./dispatcher.ts";
 import { dmSurface, surfaceId } from "../surface.ts";
@@ -53,7 +52,7 @@ class FakeAgentRunner {
   _isPrompting = false;
   _isAbortTimedOut = false;
   _modelName = "";
-  memoryContext: CapturedMemoryContext | InternalMemoryContext | undefined = undefined;
+  memoryContext: CapturedMemoryContext | undefined = undefined;
   transcriptWriterContext: TranscriptWriterContext | undefined = undefined;
   genericSubagentInheritance: GenericSubagentInheritance | null = null;
 
@@ -107,7 +106,7 @@ class FakeSubagentRunner {
   cancelled: string[] = [];
   acknowledged: string[] = [];
   lastReviveArgs: {
-    parentCapture: CapturedMemoryContext | InternalMemoryContext;
+    parentCapture: CapturedMemoryContext;
     inheritance: GenericSubagentInheritance | null;
     id: string;
     prompt: string;
@@ -141,7 +140,7 @@ class FakeSubagentRunner {
   }
 
   revive(
-    parentCapture: CapturedMemoryContext | InternalMemoryContext,
+    parentCapture: CapturedMemoryContext,
     inheritance: GenericSubagentInheritance | null,
     id: string,
     prompt: string,
@@ -518,60 +517,23 @@ describe("TurnDispatcher runtime host support", () => {
 
 
 
-  it("creates an internal runner without Surface comparison", () => {
-    const projectRoot = "/srv/project-a";
-    const { dispatcher, betaSurfaces, createAgentRunnerCalls } = buildDispatcher({
-      surfaceEnv: projectEnvironment(projectRoot),
-    });
-    const session: InternalSessionState = {
-      id: "__internal_test__",
-      createdAt: new Date().toISOString(),
-      chatId: 0,
-      executionEnvironment: personalEnvironment(),
-    };
-
-    // Internal runners are constructed via enqueueInternalTurn, which builds
-    // AgentRunnerOptions directly with an InternalMemoryContext and no Surface.
-    // createRunner is Surface-backed only; the internal path bypasses the
-    // environment mismatch check because there is no Surface to compare.
-    dispatcher.enqueueInternalTurn(
-      session,
-      "test prompt",
-      () => {},
-      () => {},
-    );
-
-    expect(betaSurfaces).toHaveLength(0);
-    expect(createAgentRunnerCalls).toHaveLength(1);
-    const options = createAgentRunnerCalls[0];
-    if (options === undefined || options.plan !== undefined) throw new Error("expected an internal runtime");
-    expect(options.executionEnvironment).toEqual(personalEnvironment());
-  });
-
-  it("rejects a Surface-backed session at the internal dispatch boundary", () => {
-    const { dispatcher } = buildDispatcher();
-    const surfaceSession = makeSession("abc123def0", personalEnvironment());
-
-    expect(() => dispatcher.enqueueInternalTurn(
-      surfaceSession as unknown as InternalSessionState,
-      "test prompt",
-      () => {},
-      () => {},
-    )).toThrow(/reserved __…__ identity/);
-  });
-
-  it("rejects reuse of a Surface-backed runner for an internal identity collision", () => {
+  it("keeps only Surface-backed generations under epoch and queue authority", async () => {
     const { dispatcher, runtimeHost } = buildDispatcher();
-    const internal: InternalSessionState = {
-      id: "__internal_test__",
-      createdAt: new Date().toISOString(),
-      chatId: 0,
-      executionEnvironment: personalEnvironment(),
-    };
-    registerTestSurfaceRunner(runtimeHost, internal.id, new FakeAgentRunner() as unknown as AgentRunner);
+    const session = makeSession("abc123def0");
+    const runner = new FakeAgentRunner();
+    registerTestSurfaceRunner(runtimeHost, session.id, runner as unknown as AgentRunner);
 
-    expect(() => dispatcher.enqueueInternalTurn(internal, "test prompt", () => {}, () => {}))
-      .toThrow(/Surface-backed runtime/);
+    // Surface-backed prompt work is admitted with current-runtime authority
+    // and fences stale generations on disposal.
+    const admitted = dispatcher.schedulePrompt(
+      session,
+      { kind: "current-runtime", runner: runner as unknown as AgentRunner },
+      async () => {},
+      async () => {},
+    );
+    expect(admitted).toBe(true);
+    await dispatcher.disposeRunner(session.id);
+    expect(dispatcher.hasRunner(session.id)).toBe(false);
   });
 
 

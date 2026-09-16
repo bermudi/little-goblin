@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { MemoryStore } from "../memory/store.ts";
 import { MemoryBudget } from "../memory/budget.ts";
-import { transcriptPath, sessionDir } from "../sessions/paths.ts";
+import { transcriptPath, sessionDir, sessionsDir } from "../sessions/paths.ts";
 import { dmSurface, surfaceId } from "../surface.ts";
 import { ConversationStore } from "../sessions/conversation-store.ts";
 import { personalEnvironment } from "../sessions/environment.ts";
@@ -246,8 +246,18 @@ function fakeClock(): { clock: SchedulerClock; timers: FakeTimer[] } {
   };
 }
 
+function listReservedSessionDirs(home: string): string[] {
+  try {
+    const entries = readdirSync(sessionsDir(home), { withFileTypes: true });
+    return entries.filter((entry) => entry.isDirectory() && /^__.+__$/.test(entry.name)).map((entry) => entry.name);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
 function fakeDispatcher(): SchedulerDispatcher & {
-  calls: { conversation: ConversationState; surface: Surface; content: string }[];
+calls: { conversation: ConversationState; surface: Surface; content: string }[];
 } {
   const calls: { conversation: ConversationState; surface: Surface; content: string }[] = [];
   return {
@@ -257,7 +267,7 @@ function fakeDispatcher(): SchedulerDispatcher & {
       calls.push({ conversation, surface, content });
       return true;
     },
-    // NOTE: no enqueueInternalTurn — the private-host path must not need one.
+    // NOTE: no Surface-free turn seam — the private-host path must not need one.
   };
 }
 
@@ -460,12 +470,12 @@ describe("private reflection lifecycle", () => {
     expect(request.systemPrompt).toBe(PRIVATE_REFLECTION_SYSTEM_PROMPT);
     expect(request.userPrompt).toContain("I live in Madrid");
 
-    // No dreaming internal conversation runtime was created or reused.
-    expect(existsSync(sessionDir(dir, "__goblin_dreaming__"))).toBe(false);
+    // No Surface-free conversation runtime was created or reused: no reserved
+    // session directory exists anywhere under the home.
+    expect(listReservedSessionDirs(dir)).toHaveLength(0);
     // No Surface dispatch and no Telegram output: the scheduler never
-    // enqueued a scheduled turn, and the dispatcher has no internal-turn seam.
+    // enqueued a scheduled turn.
     expect(dispatcher.calls).toHaveLength(0);
-    expect((dispatcher as unknown as Record<string, unknown>).enqueueInternalTurn).toBeUndefined();
 
     scheduler.stop();
     fixture.lifecycle.dispose();
@@ -1041,9 +1051,9 @@ describe("private reflection lifecycle", () => {
     expect(effectReceiptCount(fixture.store)).toBe(0);
     expect(curatedRows(fixture.store, "general")).toHaveLength(0);
     expect(readCursor(dir, conversationId)?.processedLines).toBe(0);
-    // The dreaming internal conversation runtime was never borrowed: no
-    // internal session artifacts exist anywhere under the home.
-    expect(existsSync(sessionDir(dir, "__goblin_dreaming__"))).toBe(false);
+    // The Surface-free conversation runtime was never borrowed: no reserved
+    // session artifacts exist anywhere under the home.
+    expect(listReservedSessionDirs(dir)).toHaveLength(0);
 
     fixture.lifecycle.dispose();
   });

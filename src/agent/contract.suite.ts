@@ -126,19 +126,6 @@ describe("AgentRunner pi-ai contract", () => {
     });
   }
 
-  function internalRunner(): AgentRunner {
-    const model = faux.getModel() as Model<Api>;
-    return new AgentRunner({
-      cfg: makeConfig(tmpDir),
-      sessionId: "__contract_internal__",
-      memoryContext: { kind: "internal", caller: { kind: "internal" } },
-      customTools: [],
-      executionEnvironment: personalEnvironment(),
-      resolvedModel: { model, apiKey: "fake-key", thinkingLevel: "medium" },
-      backendFactory: (opts) => realBackend(opts),
-    });
-  }
-
   beforeEach(() => {
     sessionManagerCalls = [];
     tmpDir = mkdtempSync(join(tmpdir(), "goblin-contract-"));
@@ -250,15 +237,15 @@ describe("AgentRunner pi-ai contract", () => {
     await bashRunner.dispose();
   });
 
-  it("keeps default tools available to explicit internal runtimes", async () => {
-    const runner = internalRunner();
+  it("keeps default tools available to Surface-backed runtimes", async () => {
+    const runner = await surfaceRunner(() => true);
     faux.setResponses([
-      fauxAssistantMessage(fauxToolCall("write", { path: "internal-write.txt", content: "internal work" })),
-      fauxAssistantMessage("internal write complete"),
+      fauxAssistantMessage(fauxToolCall("write", { path: "surface-write.txt", content: "surface work" })),
+      fauxAssistantMessage("surface write complete"),
     ]);
 
-    await runner.prompt("write internal file", callbacks());
-    expect(readFileSync(join(workspacePath(tmpDir), "internal-write.txt"), "utf-8")).toBe("internal work");
+    await runner.prompt("write surface file", callbacks());
+    expect(readFileSync(join(workspacePath(tmpDir), "surface-write.txt"), "utf-8")).toBe("surface work");
     await runner.dispose();
   });
 

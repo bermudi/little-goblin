@@ -115,29 +115,11 @@ describe("RuntimeMachine transitions", () => {
       expect(m.currentPhase).toBe("active");
     });
 
-    it("preparing → active via registerInternalRuntime", () => {
+    it("pins Surface-only registration authority", () => {
       const m = makeMachine();
       m.reserveCreation(surfaceId(dmSurface(1)), "fp");
-      m.registerInternalRuntime(fakeRunner());
+      registerSurface(m);
       expect(m.currentPhase).toBe("active");
-      expect(m.isInternalRuntime()).toBe(true);
-    });
-
-    it("idle → active via registerInternalRuntime", () => {
-      const m = makeMachine();
-      m.registerInternalRuntime(fakeRunner());
-      expect(m.currentPhase).toBe("active");
-      expect(m.isInternalRuntime()).toBe(true);
-    });
-
-    it("active → active via registerInternalRuntime (re-register)", () => {
-      const m = makeMachine();
-      m.registerInternalRuntime(fakeRunner());
-      const gen1 = m.epoch;
-      m.registerInternalRuntime(fakeRunner());
-      expect(m.currentPhase).toBe("active");
-      expect(m.isInternalRuntime()).toBe(true);
-      expect(m.epoch).toBeGreaterThan(gen1);
     });
 
     it("active → preparing via invalidate(settings-change, preserveCreation)", async () => {
@@ -210,7 +192,6 @@ describe("RuntimeMachine transitions", () => {
       expect(m.surfaceIdFor()).toBeUndefined();
       expect(m.runtimeIdFor()).toBeUndefined();
       expect(m.skillContextFor()).toBeUndefined();
-      expect(m.isInternalRuntime()).toBe(false);
 
       const legalRunner = fakeRunner();
       const legalRegistration = makeRegistration("legal");
@@ -235,21 +216,6 @@ describe("RuntimeMachine transitions", () => {
       expect(() => registerSurface(m)).toThrow(/conv-x/);
     });
 
-    it("registerSurfaceRuntime throws when an internal runtime is active", () => {
-      const m = makeMachine("conv-x");
-      m.registerInternalRuntime(fakeRunner());
-      // The runner check fires first — an internal runtime sets the runner.
-      expect(() => registerSurface(m)).toThrow(/already registered/);
-      expect(() => registerSurface(m)).toThrow(/conv-x/);
-    });
-
-    it("registerInternalRuntime throws when a surface runner is active", () => {
-      const m = makeMachine("conv-x");
-      registerSurface(m);
-      expect(() => m.registerInternalRuntime(fakeRunner())).toThrow(/cannot reuse Surface-backed runtime/);
-      expect(() => m.registerInternalRuntime(fakeRunner())).toThrow(/conv-x/);
-    });
-
     it("reserveCreation throws when admission is closed", () => {
       let open = true;
       const m = new RuntimeMachine({
@@ -270,17 +236,6 @@ describe("RuntimeMachine transitions", () => {
       });
       open = false;
       expect(() => registerSurface(m)).toThrow(/admission is closed/);
-    });
-
-    it("registerInternalRuntime throws when admission is closed", () => {
-      let open = true;
-      const m = new RuntimeMachine({
-        conversationId: "conv-x",
-        delegatedWorkHost: fakeDelegatedWorkHost(),
-        isAdmissionOpen: () => open,
-      });
-      open = false;
-      expect(() => m.registerInternalRuntime(fakeRunner())).toThrow(/admission is closed/);
     });
 
     it("registerSurfaceRuntime throws when a prior-generation disposal is still active", async () => {
@@ -751,15 +706,10 @@ describe("RuntimeMachine immediate runtime admission", () => {
     expect(await failed.settlement).toEqual({ kind: "failed", error: failure });
   });
 
-  it("returns closed or fenced without installing work", () => {
+  it("returns closed without installing work", () => {
     const closed = makeMachine("closed", false);
     expect(closed.admitImmediateRuntimeWork(async () => ({ kind: "completed" })))
       .toEqual({ kind: "closed" });
-
-    const internal = makeMachine("internal");
-    internal.registerInternalRuntime(fakeRunner());
-    expect(internal.admitImmediateRuntimeWork(async () => ({ kind: "completed" })))
-      .toEqual({ kind: "fenced" });
   });
 
   it("holds binding control authority across awaits and fences it on binding change", async () => {
@@ -963,92 +913,6 @@ describe("RuntimeMachine drain set", () => {
   });
 });
 
-// ─── internal runtimes ───────────────────────────────────────────────
-
-describe("RuntimeMachine internal runtimes", () => {
-  it("replacing an internal registration fences tickets from the prior registration", async () => {
-    const m = makeMachine();
-    const prior = fakeRunner();
-    m.registerInternalRuntime(prior);
-    const release = deferred<void>();
-    let priorFenced = false;
-    m.schedule(
-      { kind: "internal-runtime", runner: prior },
-      async () => { await release.promise; },
-      async () => {},
-      { onFenced: () => { priorFenced = true; } },
-    );
-    await Promise.resolve();
-
-    const replacement = fakeRunner();
-    m.registerInternalRuntime(replacement);
-    release.resolve(undefined);
-    await m.queueSettled();
-
-    expect(priorFenced).toBe(true);
-    expect(m.isRegisteredRunner(replacement)).toBe(true);
-  });
-
-  it("disposes replaced and current internal runners so blocked work and shutdown terminate", async () => {
-    const m = makeMachine();
-    const promptStarted = deferred<void>();
-    const disposedA = deferred<void>();
-    let disposeA = 0;
-    let disposeB = 0;
-    let fenced = 0;
-    let settled = 0;
-    let postFenceEffects = 0;
-
-    const runnerA = {
-      prompt: async (): Promise<void> => {
-        promptStarted.resolve(undefined);
-        await disposedA.promise;
-      },
-      dispose: async (): Promise<void> => {
-        disposeA += 1;
-        disposedA.resolve(undefined);
-      },
-    } as unknown as AgentRunner;
-    const runnerB = {
-      dispose: async (): Promise<void> => { disposeB += 1; },
-    } as unknown as AgentRunner;
-
-    m.registerInternalRuntime(runnerA);
-    m.schedule(
-      { kind: "internal-runtime", runner: runnerA },
-      async (authority) => {
-        await runnerA.prompt("blocked", {} as never);
-        if (authority.isCurrent()) postFenceEffects += 1;
-      },
-      async () => {},
-      {
-        onFenced: () => { fenced += 1; },
-        onSettled: () => { settled += 1; },
-      },
-    );
-    await promptStarted.promise;
-
-    m.registerInternalRuntime(runnerB);
-    expect(m.isRegisteredRunner(runnerB)).toBe(true);
-
-    await settlesWithin(m.shutdown());
-    expect(disposeA).toBe(1);
-    expect(disposeB).toBe(1);
-    expect(postFenceEffects).toBe(0);
-    expect(fenced).toBe(1);
-    expect(settled).toBe(1);
-    expect(m.currentPhase).toBe("idle");
-  });
-
-  it("reports a replaced internal runner disposal failure during shutdown", async () => {
-    const m = makeMachine();
-    const cleanupFailure = new Error("internal replacement cleanup failed");
-    m.registerInternalRuntime(fakeRunner(async () => { throw cleanupFailure; }));
-    m.registerInternalRuntime(fakeRunner());
-
-    await expect(m.shutdown()).rejects.toThrow("internal replacement cleanup failed");
-  });
-
   it("bootstrap authority survives creation and adopts the registered runner", async () => {
     const m = makeMachine();
     const creationStarted = deferred<void>();
@@ -1078,7 +942,6 @@ describe("RuntimeMachine internal runtimes", () => {
     expect(adopted).toBe(true);
     expect(currentAfterAdoption).toBe(true);
   });
-});
 
 // ─── shutdown ────────────────────────────────────────────────────────
 
@@ -1225,7 +1088,14 @@ describe("RuntimeMachine seeded interleaving property test", () => {
     };
 
     let current = createAndTrackRunner();
-    m.registerInternalRuntime(current.runner);
+    {
+      const creation = m.reserveCreation(surfaceId(dmSurface(1)), "fp");
+      try {
+        m.registerSurfaceRuntime(current.runner, makeRegistration());
+      } finally {
+        creation.complete();
+      }
+    }
 
     const admit = (kind: WorkIntent["kind"]): WorkRecord => {
       const settledControl = deferred<void>();
@@ -1292,7 +1162,6 @@ describe("RuntimeMachine seeded interleaving property test", () => {
     const intentOrder: WorkIntent["kind"][] = [
       "current-runtime",
       "binding",
-      "internal-runtime",
       "bootstrap",
     ];
     let nextIntent = 0;
@@ -1306,8 +1175,17 @@ describe("RuntimeMachine seeded interleaving property test", () => {
       } else if (roll < 0.64) {
         m.cancelPending();
       } else if (roll < 0.76) {
+        await m.invalidate("binding-change");
+        await m.awaitSettled();
         const replacement = createAndTrackRunner();
-        m.registerInternalRuntime(replacement.runner);
+        {
+          const creation = m.reserveCreation(surfaceId(dmSurface(1)), "fp");
+          try {
+            m.registerSurfaceRuntime(replacement.runner, makeRegistration());
+          } finally {
+            creation.complete();
+          }
+        }
         current = replacement;
         await Promise.resolve();
       } else if (roll < 0.86) {
@@ -1320,7 +1198,14 @@ describe("RuntimeMachine seeded interleaving property test", () => {
         await m.invalidate(reason);
         await m.awaitSettled();
         const replacement = createAndTrackRunner();
-        m.registerInternalRuntime(replacement.runner);
+        {
+          const creation = m.reserveCreation(surfaceId(dmSurface(1)), "fp");
+          try {
+            m.registerSurfaceRuntime(replacement.runner, makeRegistration());
+          } finally {
+            creation.complete();
+          }
+        }
         current = replacement;
       }
     }
@@ -1337,10 +1222,19 @@ describe("RuntimeMachine seeded interleaving property test", () => {
     for (const tracked of runners) tracked.gate.release();
     await settlesWithin(Promise.all(records.map((record) => record.settledPromise)).then(() => {}));
 
+    await m.invalidate("binding-change");
+    await m.awaitSettled();
     const finalRunner = createAndTrackRunner();
-    m.registerInternalRuntime(finalRunner.runner);
+    {
+      const creation = m.reserveCreation(surfaceId(dmSurface(1)), "fp");
+      try {
+        m.registerSurfaceRuntime(finalRunner.runner, makeRegistration());
+      } finally {
+        creation.complete();
+      }
+    }
     current = finalRunner;
-    const outstanding = admit("internal-runtime");
+    const outstanding = admit("current-runtime");
     await outstanding.startedPromise;
 
     // Shutdown begins while work is blocked. Disposing the current runner is

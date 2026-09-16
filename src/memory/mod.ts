@@ -46,7 +46,6 @@ export {
   type CaptureInvocationMemoryContextArgs,
   type CaptureRuntimeMemoryContextArgs,
   type CapturedMemoryContext,
-  type InternalMemoryContext,
   type SurfaceMemoryAuthority,
   type SurfaceMemoryCaller,
 } from "./runtime-context.ts";

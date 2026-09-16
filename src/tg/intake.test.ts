@@ -16,7 +16,7 @@ import { dmSurface, guestSurface, surfaceId, supergroupSurface, topicSurface, ty
 import { appendAssistantTranscriptEntry } from "../sessions/transcript.ts";
 import { metricsPath, transcriptPath } from "../sessions/paths.ts";
 import { SubagentRunner } from "../subagents/mod.ts";
-import type { CapturedMemoryContext, InternalMemoryContext } from "../memory/mod.ts";
+import type { CapturedMemoryContext } from "../memory/mod.ts";
 import type { ConversationLifecycle } from "../orchestration/conversation-lifecycle.ts";
 import { createConversationOrchestration } from "../orchestration/composition.ts";
 import type { EmbeddingProvider, DreamingPipeline } from "../memory/mod.ts";
@@ -44,7 +44,7 @@ class MockAgentRunner {
   static nextPrompt?: (content: unknown, buffer: unknown) => Promise<void>;
 
   readonly sessionId: string;
-  readonly memoryContext: CapturedMemoryContext | InternalMemoryContext;
+  readonly memoryContext: CapturedMemoryContext;
   streaming = false;
   abortTimedOut = false;
   abortBeforeInit = false;
@@ -101,7 +101,7 @@ class MockAgentRunner {
     sessionId: string;
     plan?: PreparedSurfaceRuntimePlan;
     modelName?: string;
-    memoryContext?: CapturedMemoryContext | InternalMemoryContext;
+    memoryContext?: CapturedMemoryContext;
   }) {
     this.sessionId = opts.sessionId;
     this.modelName = opts.plan?.modelName ?? (opts.plan === undefined ? opts.modelName : undefined);
@@ -1081,7 +1081,7 @@ describe("Telegram intake", () => {
     const conversationStore = new ConversationStore(cfg.goblinHome);
     const warnSpy = spyOn(log, "warn");
 
-    const internalContext: InternalMemoryContext = { kind: "internal", caller: { kind: "internal" } };
+    const internalContext = { kind: "internal", caller: { kind: "internal" } } as unknown as CapturedMemoryContext;
     const intake = createTestIntake({
       cfg,
       bot: fakeBot(),
@@ -2277,24 +2277,15 @@ describe("Telegram intake", () => {
       expect(runners).toHaveLength(0);
     });
 
-    it("releases a fenced classification without replying", async () => {
-      const { intake, runtimeHost } = makeHarness();
-      const resolution = await intake.lifecycle.resolveOrStart(guestSurface(99));
-      if (resolution.creationLease !== null) intake.lifecycle.sealCreation(resolution.creationLease);
-      const conversation = resolution.conversation;
-      runtimeHost.registerInternalRuntime(
-        conversation.id,
-        new MockAgentRunner({
-          sessionId: conversation.id,
-          memoryContext: { kind: "internal", caller: { kind: "internal" } },
-        }) as unknown as AgentRunner,
-      );
+    it("admits a guest turn through the Surface-backed runtime", async () => {
+      const { intake } = makeHarness();
       const guest = makeGuestMessage();
 
-      const admission = await intake.handleGuestMessage(guest.message, "fenced");
+      const admission = await intake.handleGuestMessage(guest.message, "hello");
 
-      expect(admission.kind).toBe("fenced");
-      expect(guest.results).toHaveLength(0);
+      expect(admission.kind).toBe("handoff");
+      await admission.completion;
+      expect(guest.results).toHaveLength(1);
     });
 
     it("replies with the error fallback when prompt rejects", async () => {

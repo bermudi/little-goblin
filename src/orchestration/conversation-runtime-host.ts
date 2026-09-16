@@ -145,10 +145,6 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
     return this.machines.get(conversationId)?.isRegisteredRunner(runner) ?? false;
   }
 
-  isInternalRuntime(conversationId: ConversationId): boolean {
-    return this.machines.get(conversationId)?.isInternalRuntime() ?? false;
-  }
-
   surfaceIdFor(conversationId: ConversationId): SurfaceId | undefined {
     return this.machines.get(conversationId)?.surfaceIdFor();
   }
@@ -206,11 +202,6 @@ export class ConversationRuntimeHost implements ConversationRuntimeHostPort {
   ): void {
     this.assertAdmissionOpen();
     this.machineFor(conversationId).registerSurfaceRuntime(runner, registration);
-  }
-
-  registerInternalRuntime(conversationId: ConversationId, runner: AgentRunner): void {
-    this.assertAdmissionOpen();
-    this.machineFor(conversationId).registerInternalRuntime(runner);
   }
 
   async awaitSettled(conversationId: ConversationId): Promise<void> {

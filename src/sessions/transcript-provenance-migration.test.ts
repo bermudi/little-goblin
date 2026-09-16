@@ -165,16 +165,21 @@ describe("transcript provenance migration", () => {
     expect(plan.files[0]!.preservedCount).toBe(0);
   });
 
-  it("skips internal sessions (chatId 0)", () => {
-    const internalId = "__goblin_dreaming__";
-    writeState(home, internalId, { chatId: 0, executionEnvironment: { kind: "personal" } });
+  it("skips legacy reserved sessions (chatId 0)", () => {
+    // Migration-only fixture: legacy reserved records predate the path
+    // boundary that now rejects reserved identities, so build the directory
+    // with join() instead of the session path helper.
+    const legacyId = "__legacy_skip__";
+    const legacyDir = join(sessionsDir(home), legacyId);
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(join(legacyDir, "state.json"), JSON.stringify({ chatId: 0, executionEnvironment: { kind: "personal" } }), "utf-8");
     const entry = { ts: "2026-07-07T10:00:00.000Z", role: "user", content: "hi" };
-    writeTranscript(home, internalId, `${JSON.stringify(entry)}\n`);
+    writeFileSync(join(legacyDir, "transcript.jsonl"), `${JSON.stringify(entry)}\n`, "utf-8");
 
     const plan = migrateTranscriptProvenance(home);
 
     expect(plan.files).toHaveLength(0);
-    expect(readTranscript(home, internalId)).toBe(`${JSON.stringify(entry)}\n`);
+    expect(readFileSync(join(legacyDir, "transcript.jsonl"), "utf-8")).toBe(`${JSON.stringify(entry)}\n`);
   });
 
   it("processes archived sessions", () => {

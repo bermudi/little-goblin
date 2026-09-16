@@ -23,16 +23,6 @@ export interface SurfaceMemoryAuthority {
 }
 
 /**
- * Caller descriptor for internal model work with no Telegram Surface. Internal
- * callers MUST NOT call {@link resolveActiveScope} or reinterpret `chatId: 0`
- * as a Surface. An internal context has no ordinary active-memory write target.
- */
-export interface InternalMemoryContext {
-  readonly kind: "internal";
-  readonly caller: { kind: "internal" };
-}
-
-/**
  * A complete immutable runtime memory context captured once at
  * conversation-runtime creation. `AgentRunner` and subagent execution receive
  * this capture rather than its individual policy fields, so summary,
@@ -40,7 +30,7 @@ export interface InternalMemoryContext {
  * replacing the runtime is the only way to change its memory context.
  */
 export interface CapturedMemoryContext {
-  /** Discriminator: distinguishes from {@link InternalMemoryContext}. */
+  /** Discriminator for the Surface-backed runtime memory context. */
   readonly kind: "surface";
   readonly authority: SurfaceMemoryAuthority;
   readonly caller: MemoryCaller;
@@ -88,9 +78,7 @@ export function assertSurfaceBackedAuthorityInput(surface: Surface): void {
 
 /**
  * Surface-backed caller descriptor: the subset of {@link MemoryCaller} that
- * has a Telegram Surface. Internal callers (`{ kind: "internal" }`) MUST NOT
- * use {@link captureRuntimeMemoryContext} — they use
- * {@link InternalMemoryContext} directly.
+ * has a Telegram Surface.
  */
 export type SurfaceMemoryCaller = Exclude<MemoryCaller, { kind: "internal" }>;
 

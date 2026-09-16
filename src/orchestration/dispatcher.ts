@@ -7,10 +7,8 @@ import {
   MemoryStore,
   EmbeddingProvider,
   DreamingPipeline,
-  type InternalMemoryContext,
 } from "../memory/mod.ts";
 import type { ConversationState } from "../sessions/types.ts";
-import { assertInternalSessionState, type InternalSessionState } from "../sessions/internal-session.ts";
 import { surfaceId, type Surface } from "../surface.ts";
 import {
   SubagentCancellationRejectedError,
@@ -130,8 +128,7 @@ export interface TurnDispatcherOptions {
   mcpRunner?: McpRunner;
   /**
    * Mandatory lifecycle-owned authority for Surface-backed runtime acquisition,
-   * stale-runner checks, and attached subagent revival. Internal runtimes use
-   * the explicit `enqueueInternalTurn` path and do not consume this seam.
+   * stale-runner checks, and attached subagent revival.
    */
   surfaceRuntimeAuthority: SurfaceRuntimeAuthority;
 }
@@ -448,10 +445,6 @@ export class TurnDispatcher {
       return runtimeAdmission.rejected(undefined as unknown as AgentRunner);
     }
     try {
-      if (this.runtimeHost.isInternalRuntime(session.id)) {
-        throw new Error(`conversation ${session.id} is reserved by an internal runtime`);
-      }
-
       const expectedSurfaceId = surfaceId(surface);
       const snapshot = this.surfaceSettings.getRuntimeSettings(surface);
       const existing = this.runtimeHost.getRunner(session.id);
@@ -916,88 +909,6 @@ export class TurnDispatcher {
     } catch (error) {
       throw new RuntimeAdmissionFailedBeforeDecisionError(error);
     }
-  }
-
-  /**
-   * Enqueue an internal turn for a non-chat session. Retained compatibility seam:
-   * currently no production caller dispatches through it (light-sleep
-   * reflection runs through the inner-life host). The runner has no beta tools
-   * and writes assistant text into an in-memory capture buffer. `onComplete(text)`
-   * is called after `runner.prompt` resolves with the captured assistant text.
-   */
-  enqueueInternalTurn(
-    session: InternalSessionState,
-    content: PromptContent,
-    onComplete: (text: string) => void,
-    onError: (err: unknown) => void,
-  ): void {
-    this.runtimeHost.assertAdmissionOpen();
-    assertInternalSessionState(session);
-    let runner = this.runtimeHost.getRunner(session.id);
-    if (runner && !this.runtimeHost.isInternalRuntime(session.id)) {
-      throw new Error(`cannot reuse Surface-backed runtime ${session.id} for an internal turn`);
-    }
-    if (!runner) {
-      // Internal sessions (dreaming extraction) use the explicit Surface-free
-      // internal memory context. They receive no memory tools, no frozen
-      // summary, and no per-turn relevant-memory aside. The compatibility
-      // dreaming session's chatId:0 is NOT reinterpreted as a Telegram
-      // Surface.
-      const internalContext: InternalMemoryContext = {
-        kind: "internal",
-        caller: { kind: "internal" },
-      };
-      const runnerOpts: ConstructorParameters<typeof AgentRunner>[0] = {
-        cfg: this.cfg,
-        sessionId: session.id,
-        memoryContext: internalContext,
-        customTools: [],
-        memoryStore: this.memoryStore,
-        embeddingProvider: this.embeddingProvider,
-        dreamingPipeline: this.dreamingPipeline,
-        getTopicName: this.getTopicName,
-        executionEnvironment: session.executionEnvironment,
-      };
-      runner = this.createAgentRunner?.(runnerOpts) ?? new AgentRunner(runnerOpts);
-      this.runtimeHost.registerInternalRuntime(session.id, runner);
-    }
-
-    const captured: string[] = [];
-    let settled = false;
-    const complete = (text: string): void => {
-      if (settled) return;
-      settled = true;
-      onComplete(text);
-    };
-    const fail = (error: unknown): void => {
-      if (settled) return;
-      settled = true;
-      onError(error);
-    };
-    const sink: TurnCallbacks = {
-      onTextDelta: (text) => captured.push(text),
-      onToolStart: () => {},
-      onToolEnd: () => {},
-      onStatusUpdate: () => {},
-      onMessageStart: () => {},
-      onMessageEnd: () => {},
-      onAgentEnd: () => {},
-    };
-
-    const admitted = this.runtimeHost.schedule(
-      session.id,
-      { kind: "internal-runtime", runner },
-      async (authority) => {
-        await runner.prompt(content, sink);
-        if (authority.isCurrent()) complete(captured.join(""));
-      },
-      fail,
-      {
-        isPrompt: false,
-        onFenced: () => fail(new Error(`internal runtime turn fenced for ${session.id}`)),
-      },
-    );
-    if (!admitted) fail(new Error(`internal runtime turn rejected for ${session.id}`));
   }
 
   /**

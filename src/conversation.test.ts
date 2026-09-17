@@ -45,6 +45,42 @@ describe("conversation store", () => {
 		store.close();
 	});
 
+	test("history interleaves an anchored response after its user event", () => {
+		const store = openStore(tmpdb());
+		const c = store.resolve({ kind: "dm", chatId: 42 }, "/w");
+		const asst = (text: string): UIMessage => ({
+			id: `a-${text}`,
+			role: "assistant",
+			parts: [{ type: "text", text }],
+		});
+		// Arrival order: all three questions, then the reply — a message
+		// that lands mid-turn sits ahead of a response it never saw.
+		store.append(c.id, [msg("2+2?"), msg("2+5?"), msg("2+8?")]);
+		store.append(c.id, [asst("4.")], { anchorSeq: 1 });
+		const h = store.history(c.id);
+		expect(h.map((m) => m.role)).toEqual(["user", "assistant", "user", "user"]);
+		expect((h[0]!.parts[0] as { text: string }).text).toBe("2+2?");
+		expect((h[1]!.parts[0] as { text: string }).text).toBe("4.");
+		expect((h[2]!.parts[0] as { text: string }).text).toBe("2+5?");
+		expect(store.lastUserSeq(c.id)).toBe(3);
+		store.close();
+	});
+
+	test("unanchored events keep pure arrival order", () => {
+		const store = openStore(tmpdb());
+		const c = store.resolve({ kind: "dm", chatId: 42 }, "/w");
+		store.append(c.id, [msg("one"), msg("two")]);
+		store.append(c.id, [
+			{ id: "a1", role: "assistant", parts: [{ type: "text", text: "hi" }] },
+		]);
+		expect(store.history(c.id).map((m) => m.role)).toEqual([
+			"user",
+			"user",
+			"assistant",
+		]);
+		store.close();
+	});
+
 	test("bumpEpoch advances monotonically and persists", () => {
 		const path = tmpdb();
 		const store = openStore(path);

@@ -54,8 +54,15 @@ export interface ConversationStore {
 	// that fences in-flight turns must never land half-applied.
 	applySettings(id: string, patch: ConversationMetaPatch): number;
 	// Append UIMessages in one transaction; seq is assigned here.
-	append(id: string, messages: UIMessage[]): void;
+	// anchorSeq marks a response with the seq of the user event that
+	// triggered its turn — history() uses it for causal ordering.
+	append(id: string, messages: UIMessage[], opts?: { anchorSeq?: number | null }): void;
+	// The model-facing view: causal order, not arrival order. Anchored
+	// assistant events sort immediately after their triggering user
+	// event; everything else falls back to seq.
 	history(id: string): UIMessage[];
+	// Seq of the newest user event — a turn's response anchors to it.
+	lastUserSeq(id: string): number | null;
 	close(): void;
 }
 
@@ -120,23 +127,40 @@ export function openStore(dbPath: string): ConversationStore {
 			seq INTEGER NOT NULL,
 			role TEXT NOT NULL,
 			data TEXT NOT NULL,
+			anchor_seq INTEGER,
 			created_at TEXT NOT NULL,
 			UNIQUE(conversation_id, seq)
 		)`);
+	// Existing DBs predate anchor_seq — additive column, no rebuild.
+	const eventCols = new Set(
+		db
+			.query<{ name: string }, []>("PRAGMA table_info(events)")
+			.all()
+			.map((c) => c.name),
+	);
+	if (!eventCols.has("anchor_seq")) {
+		db.run("ALTER TABLE events ADD COLUMN anchor_seq INTEGER");
+	}
 
 	const qGet = db.query<Row, [string]>("SELECT * FROM conversations WHERE id = ?");
 	const qInsertConv = db.query(
 		`INSERT INTO conversations (id, chat_id, thread_id, title, cwd, created_at)
 		 VALUES (?, ?, ?, NULL, ?, ?)`,
 	);
-	const qHistory = db.query<{ data: string }, [string]>(
-		"SELECT data FROM events WHERE conversation_id = ? ORDER BY seq",
+	const qHistory = db.query<
+		{ seq: number; anchor_seq: number | null; data: string },
+		[string]
+	>(
+		"SELECT seq, anchor_seq, data FROM events WHERE conversation_id = ? ORDER BY seq",
+	);
+	const qLastUserSeq = db.query<{ seq: number }, [string]>(
+		"SELECT seq FROM events WHERE conversation_id = ? AND role = 'user' ORDER BY seq DESC LIMIT 1",
 	);
 	const qNextSeq = db.query<{ n: number | null }, [string]>(
 		"SELECT MAX(seq) AS n FROM events WHERE conversation_id = ?",
 	);
 	const qInsertEvent = db.query(
-		"INSERT INTO events (conversation_id, seq, role, data, created_at) VALUES (?, ?, ?, ?, ?)",
+		"INSERT INTO events (conversation_id, seq, role, data, anchor_seq, created_at) VALUES (?, ?, ?, ?, ?, ?)",
 	);
 	const qEpoch = db.query<{ epoch: number }, [string]>(
 		"SELECT epoch FROM conversations WHERE id = ?",
@@ -206,18 +230,29 @@ export function openStore(dbPath: string): ConversationStore {
 			})();
 		},
 
-		append(id, messages) {
+		append(id, messages, opts) {
 			db.transaction(() => {
 				const start = qNextSeq.get(id)?.n ?? 0;
 				const now = new Date().toISOString();
 				for (const [i, m] of messages.entries()) {
-					qInsertEvent.run(id, start + i + 1, m.role, JSON.stringify(m), now);
+					qInsertEvent.run(
+						id,
+						start + i + 1,
+						m.role,
+						JSON.stringify(m),
+						opts?.anchorSeq ?? null,
+						now,
+					);
 				}
 			})();
 		},
 
+		lastUserSeq(id) {
+			return qLastUserSeq.get(id)?.seq ?? null;
+		},
+
 		history(id) {
-			return qHistory.all(id).map((r) => {
+			const rows = qHistory.all(id).map((r) => {
 				let raw: unknown;
 				try {
 					raw = JSON.parse(r.data);
@@ -232,8 +267,19 @@ export function openStore(dbPath: string): ConversationStore {
 						`conversation ${id}: invalid stored message — ${parsed.error.message}`,
 					);
 				}
-				return parsed.data as UIMessage;
+				return { seq: r.seq, anchorSeq: r.anchor_seq, message: parsed.data as UIMessage };
 			});
+			// Arrival order stays on disk; this view sorts each anchored
+			// response right after the user event that triggered its turn.
+			// Key = anchor ?? seq, tiebreak = seq — an anchored response's
+			// anchor always precedes its own seq, so it lands just after
+			// its user event and before anything that arrived later.
+			rows.sort((a, b) => {
+				const ka = a.anchorSeq ?? a.seq;
+				const kb = b.anchorSeq ?? b.seq;
+				return ka - kb || a.seq - b.seq;
+			});
+			return rows.map((r) => r.message);
 		},
 
 		close() {

@@ -13,6 +13,7 @@
 import { readFile, stat } from "node:fs/promises";
 import type { UIMessage } from "ai";
 import { z } from "zod";
+import { log } from "../log.ts";
 
 // Inline payloads get a ceiling — data URLs bloat both the request and,
 // once materialized, the context window. One budget covers the whole
@@ -52,7 +53,7 @@ export function acceptsMedia(modalities: Set<string>, mediaType: string): boolea
 
 // Rewrite a history snapshot for the model about to run: data-attachment
 // parts become file parts when the model can consume them, text references
-// otherwise. Everything else passes through. A missing attachment file
+// otherwise. Everything else passes through. An unreadable attachment file
 // degrades to the text reference too — the path still tells the model what
 // was sent; a failed read_file on it fails loud there.
 export async function materializeAttachments(
@@ -102,7 +103,12 @@ export async function materializeAttachments(
 					url: `data:${ref.mediaType};base64,${bytes.toString("base64")}`,
 				});
 			} catch (err) {
-				if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+				// Any read/stat failure degrades the same way — a dead
+				// attachment must not take the turn down with it.
+				log.warn("attachment unreadable — degrading to path reference", {
+					path: ref.path,
+					error: String(err),
+				});
 				parts.push(pathRef);
 			}
 		}

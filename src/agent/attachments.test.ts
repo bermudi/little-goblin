@@ -73,6 +73,13 @@ describe("materializeAttachments", () => {
 		expect(out[0]!.parts[0]!.type).toBe("text");
 	});
 
+	test("a non-ENOENT read failure degrades to the path reference too", async () => {
+		// A directory stats fine but readFile throws EISDIR — the error
+		// must degrade, not crash the turn.
+		const out = await materializeAttachments([msg(tmpdir_())], new Set(["text", "image"]));
+		expect(out[0]!.parts[0]!.type).toBe("text");
+	});
+
 	test("a file that grew past the cap since intake degrades to the path reference", async () => {
 		const dir = tmpdir_();
 		const f = join(dir, "x.png");

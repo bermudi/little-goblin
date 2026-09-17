@@ -231,4 +231,100 @@ describe("turn authority", () => {
 		expect(users).toHaveLength(2);
 		store.close();
 	});
+
+	test("a failed model stream reports error — no silent completion, no partial append", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({
+				model: {
+					specificationVersion: "v2",
+					provider: "fake",
+					modelId: "err-1",
+					supportedUrls: {},
+					doGenerate() {
+						throw new Error("unimplemented");
+					},
+					doStream() {
+						const stream = new ReadableStream<LanguageModelV2StreamPart>({
+							start(controller) {
+								controller.enqueue({ type: "stream-start", warnings: [] });
+								controller.enqueue({ type: "text-start", id: "t1" });
+								controller.enqueue({ type: "text-delta", id: "t1", delta: "partial" });
+								controller.enqueue({ type: "error", error: new Error("provider blew up") });
+								controller.close();
+							},
+						});
+						return { stream };
+					},
+				} as unknown as LanguageModel,
+				system: "test",
+			}),
+			makeTools: () => ({}),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const d = await sink.done;
+		expect(d.kind).toBe("error");
+		expect((d as { message: string }).message).toContain("provider blew up");
+		// the failed turn must not commit its partial assistant output
+		expect(store.history(conv.id).map((m) => m.role)).toEqual(["user"]);
+		store.close();
+	});
+
+	test("a message landing while the model step resolves stays out of the running turn", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const prompts: string[] = [];
+		let resolveStep!: (step: { model: LanguageModel; system: string }) => void;
+		const stepReady = new Promise<{ model: LanguageModel; system: string }>((r) => {
+			resolveStep = r;
+		});
+		const base = fakeModel(["ok"], 5) as unknown as {
+			doStream(o: { prompt: unknown }): { stream: ReadableStream<LanguageModelV2StreamPart> };
+		};
+		const recording = {
+			...base,
+			doStream(o: { prompt: unknown }) {
+				prompts.push(JSON.stringify(o.prompt));
+				return base.doStream(o);
+			},
+		} as unknown as LanguageModel;
+		const runtime = new Runtime({
+			store,
+			buildStep: () => stepReady,
+			makeTools: () => ({}),
+		});
+		const s1 = new RecordingSink();
+		const s2 = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "first" }]), s1);
+		await sleep(0); // turn 1 is now parked inside buildStep
+		runtime.submit(conv, userMessage([{ type: "text", text: "second" }]), s2);
+		resolveStep({ model: recording, system: "test" });
+		await Promise.all([s1.done, s2.done]);
+		// turn 1 admitted before "second" landed — it must not answer it;
+		// turn 2 owns it.
+		expect(prompts[0]).toContain("first");
+		expect(prompts[0]).not.toContain("second");
+		expect(prompts[1]).toContain("second");
+		store.close();
+	});
+
+	test("a throwing sink still gets exactly one onDone", async () => {
+		const { store, conv, runtime } = setup(["a"], 5);
+		let calls = 0;
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), {
+			onTextDelta() {},
+			onReasoningDelta() {},
+			onToolCall() {},
+			onDone() {
+				calls++;
+				throw new Error("sink blew up");
+			},
+		});
+		await sleep(100);
+		expect(calls).toBe(1);
+		store.close();
+	});
 });

@@ -71,6 +71,9 @@ export class FencedError extends Error {
 
 interface QueuedTurn {
 	sink: TurnSink;
+	// Guards the exactly-once onDone contract: a sink whose onDone throws
+	// must not be re-notified by the drain guard below.
+	doneSent: boolean;
 }
 
 interface Lane {
@@ -89,7 +92,7 @@ export class Runtime {
 	submit(conv: Conversation, message: UIMessage, sink: TurnSink): void {
 		this.deps.store.append(conv.id, [message]);
 		const lane = this.lane(conv.id);
-		lane.pending.push({ sink });
+		lane.pending.push({ sink, doneSent: false });
 		if (!lane.running) void this.drain(conv.id);
 	}
 
@@ -103,9 +106,7 @@ export class Runtime {
 			const dropped = lane.pending.splice(0);
 			lane.controller?.abort();
 			for (const t of dropped) {
-				void Promise.resolve(t.sink.onDone({ kind: "fenced" })).catch((err: unknown) =>
-					log.warn("sink onDone failed", { error: String(err) }),
-				);
+				void this.notifyDone(t, { kind: "fenced" });
 			}
 		}
 		log.info("turn stopped", { conversation: convId, epoch });
@@ -118,6 +119,19 @@ export class Runtime {
 			this.lanes.set(convId, l);
 		}
 		return l;
+	}
+
+	// Deliver the terminal signal exactly once and never let a throwing
+	// sink escape — drain treats an escaped error as a crashed turn and
+	// would notify the sink a second time.
+	private async notifyDone(turn: QueuedTurn, done: TurnDone): Promise<void> {
+		if (turn.doneSent) return;
+		turn.doneSent = true;
+		try {
+			await turn.sink.onDone(done);
+		} catch (err) {
+			log.warn("sink onDone failed", { error: String(err) });
+		}
 	}
 
 	// Re-check authority around every await: the captured epoch must still
@@ -157,14 +171,10 @@ export class Runtime {
 					// runTurn handles expected failures; this is a last-ditch guard
 					// so one bad turn can't stall the lane or leak its sink.
 					log.error("turn crashed", err, { conversation: convId });
-					try {
-						await turn.sink.onDone({
-							kind: "error",
-							message: err instanceof Error ? err.message : String(err),
-						});
-					} catch (err2) {
-						log.warn("sink onDone failed", { error: String(err2) });
-					}
+					await this.notifyDone(turn, {
+						kind: "error",
+						message: err instanceof Error ? err.message : String(err),
+					});
 				}
 			}
 		} finally {
@@ -180,10 +190,15 @@ export class Runtime {
 		if (!conv) {
 			log.error("turn for missing conversation", undefined, { conversation: convId });
 			// The sink contract still holds: exactly one onDone per submit.
-			await turn.sink.onDone({ kind: "error", message: "conversation missing" });
+			await this.notifyDone(turn, { kind: "error", message: "conversation missing" });
 			return;
 		}
 		const epoch = conv.epoch;
+		// History snapshot is part of admission: a message submitted while
+		// the model step resolves lands in history but must NOT join this
+		// turn's context — it stays queued for its own turn. Reading it
+		// here, before the awaits, is what keeps that boundary.
+		const history = store.history(convId);
 		const controller = new AbortController();
 		this.lane(convId).controller = controller;
 
@@ -192,7 +207,6 @@ export class Runtime {
 			const step = await this.deps.buildStep(conv);
 			this.checkAuthority(convId, epoch);
 			const tools = this.fenceTools(this.deps.makeTools(conv.cwd), convId, epoch);
-			const history = store.history(convId);
 			const messages = convertToModelMessages(history, {
 				tools,
 				ignoreIncompleteToolCalls: true,
@@ -212,10 +226,29 @@ export class Runtime {
 			});
 
 			let responseMessage: UIMessage | null = null;
+			// Stream errors arrive as `error` chunks — they don't throw. The
+			// authoritative signal is the finish outcome: "failed" means the
+			// turn must surface an error, not commit partial output as a
+			// clean completion.
+			let streamError: string | null = null;
 			const uiStream = result.toUIMessageStream<UIMessage>({
 				sendReasoning: true,
-				onFinish: ({ responseMessage: rm, isAborted }) => {
-					if (!isAborted) responseMessage = rm;
+				// The default serializer emits "An error occurred." — meant
+				// for public HTTP clients. This stream feeds the operator's
+				// own chat; the real message is what they need.
+				onError: (error) => (error instanceof Error ? error.message : String(error)),
+				onFinish: ({ responseMessage: rm, isAborted, outcome }) => {
+					if (isAborted) return;
+					if (outcome.status === "failed") {
+						streamError ??=
+							outcome.error instanceof Error
+								? outcome.error.message
+								: outcome.error != null
+									? String(outcome.error)
+									: "model stream failed";
+						return;
+					}
+					responseMessage = rm;
 				},
 			});
 
@@ -231,24 +264,28 @@ export class Runtime {
 					case "tool-input-available":
 						turn.sink.onToolCall(chunk.toolName, chunk.input);
 						break;
+					case "error":
+						streamError = chunk.errorText;
+						break;
 				}
 			}
 
 			this.checkAuthority(convId, epoch);
+			if (streamError !== null) throw new Error(streamError);
 			if (responseMessage !== null) {
 				// responseMessage already carries an SDK-assigned id.
 				store.append(convId, [responseMessage]);
 			}
-			await turn.sink.onDone({ kind: "completed" });
+			await this.notifyDone(turn, { kind: "completed" });
 			log.info("turn completed", { conversation: convId, epoch });
 		} catch (err) {
 			if (err instanceof FencedError || controller.signal.aborted) {
 				// Fenced turns abort quietly and log it.
 				log.info("turn fenced", { conversation: convId, epoch, error: String(err) });
-				await turn.sink.onDone({ kind: "fenced" });
+				await this.notifyDone(turn, { kind: "fenced" });
 			} else {
 				log.error("turn failed", err, { conversation: convId });
-				await turn.sink.onDone({
+				await this.notifyDone(turn, {
 					kind: "error",
 					message: err instanceof Error ? err.message : String(err),
 				});

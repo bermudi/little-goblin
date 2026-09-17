@@ -1,6 +1,13 @@
 // Copy to $GOBLIN_HOME/goblin.json5 and fill in. No secrets here — those
 // live in auth.jsonl. Editable at runtime via the Telegram mini app
 // (chat menu button when publicUrl is set); hand-editing always works.
+//
+// auth.jsonl sits next to this file (mode 0600), one JSON record per line:
+//   {"name": "telegram", "value": "123456:ABC-your-bot-token"}
+//   {"name": "openrouter", "value": "!pass show api/openrouter"}
+// A value starting with "!" is resolved by running it as a command at the
+// point of use. Required records: "telegram" (the bot token) plus one per
+// provider `auth` name below.
 {
   // --- Provider registry: name → factory + auth.jsonl key ---
   providers: {

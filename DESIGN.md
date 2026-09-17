@@ -45,7 +45,11 @@ Conversation ─────── (chatId, threadId?) → durable event history
   msgs, tool calls, system events), `meta` (created, cwd, model/thinking
   overrides). cwd is fixed once set.
 - **Turn** — a unit of work enqueued on a conversation. Per-conversation
-  serial queue; one active turn.
+  serial queue; one active turn. A turn's history snapshot is taken at
+  admission: messages submitted while it runs join the queue and its
+  successor's context, never its own. `/stop` fences the running turn and
+  drops queued ones; messages still in the intake buffer are user input,
+  not queued turns, and flush into a fresh turn at the new epoch.
 
 **Topics are the UX.** There are no `/new` or `/resume` commands. A forum
 topic is a conversation: create a topic to start one, post in an old topic to
@@ -203,7 +207,9 @@ Flat modules, one job each, tests colocated.
 memory store · scheduler/heartbeat · conversation-lifecycle commands ·
 subagents · delegated work · external agents · ACP · MCP · skill catalogs ·
 project environments beyond cwd · inner life · onboarding wizard · state
-migrations · embeddings · multi-user
+migrations · embeddings · multi-user · history compaction (history is
+unbounded in v1 — a designed truncation/compaction story arrives with the
+feature that needs it)
 
 ## Test posture — the real change
 

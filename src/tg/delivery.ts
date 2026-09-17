@@ -27,9 +27,6 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 interface Chunk {
 	id: number;
 	shown: string;
-	// Fixed window start in the rendered body. Windows are contiguous:
-	// each chunk's start is the previous chunk's end.
-	start: number;
 }
 
 // Slicing between a high and a low surrogate produces a lone surrogate —
@@ -38,9 +35,12 @@ interface Chunk {
 const isHighSurrogate = (c: number) => c >= 0xd800 && c <= 0xdbff;
 const isLowSurrogate = (c: number) => c >= 0xdc00 && c <= 0xdfff;
 
-// The fixed end of the window starting at `start`: CHUNK_LIMIT ahead,
-// pulled back one code unit if that lands inside a surrogate pair. The
-// body is append-only, so a boundary once computed never moves.
+// The end of the window starting at `start`: CHUNK_LIMIT ahead, pulled
+// back one code unit if that lands inside a surrogate pair. Boundaries
+// are recomputed every flush — the body's status tail can still change
+// under a fixed seam, so a seam computed against provisional chars may
+// drift by one; the shown≠desired re-edit below heals it. Once stream
+// text covers the seam the chars are final and it never moves again.
 function windowEnd(body: string, start: number): number {
 	const end = start + CHUNK_LIMIT;
 	if (
@@ -88,7 +88,9 @@ export function makeDeliverySink(
 				...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
 			}),
 			"sendChatAction",
-		).catch(() => {});
+		).catch((err: unknown) => {
+			log.debug("typing ping failed", { error: String(err) });
+		});
 	}
 	sendTyping();
 	const typing = setInterval(sendTyping, TYPING_INTERVAL_MS);
@@ -107,20 +109,22 @@ export function makeDeliverySink(
 	function flush(): void {
 		const body = rendered();
 		const needed = Math.ceil(body.length / CHUNK_LIMIT);
-		while (chunks.length < needed) {
-			const prev = chunks[chunks.length - 1];
-			chunks.push({ id: -1, shown: "", start: prev ? windowEnd(body, prev.start) : 0 });
-		}
+		while (chunks.length < needed) chunks.push({ id: -1, shown: "" });
+		// Seams are recomputed each flush so both neighbours share one
+		// value — a drifted boundary re-edits the sent chunk instead of
+		// leaving a duplicated or dropped character between messages.
+		let start = 0;
 		for (let idx = 0; idx < chunks.length; idx++) {
 			const c = chunks[idx]!;
 			if (c.id === -2) break; // send in flight — wait it out
 			const isLast = idx === chunks.length - 1;
-			const desired = body.slice(
-				c.start,
-				isLast ? undefined : windowEnd(body, c.start),
-			);
+			const end = isLast ? body.length : windowEnd(body, start);
+			const desired = body.slice(start, end);
 			const out = desired === "" ? "…" : desired;
 			if (c.id === -1) {
+				// Window emptied before the send — the status tail shrank
+				// past it. Nothing to send; later windows are empty too.
+				if (desired === "") break;
 				c.id = -2;
 				c.shown = out;
 				enqueue(async () => {
@@ -152,6 +156,7 @@ export function makeDeliverySink(
 					c.shown = out;
 				});
 			}
+			start = end;
 		}
 		lastEdit = Date.now();
 	}
@@ -161,7 +166,10 @@ export function makeDeliverySink(
 	}
 
 	function unsentCount(): number {
-		return chunks.filter((c) => c.id === -1).length;
+		// Only windows that still exist count — chunks pushed before a
+		// status-tail shrink sit past `needed` with empty windows.
+		const needed = Math.ceil(rendered().length / CHUNK_LIMIT);
+		return chunks.slice(0, needed).filter((c) => c.id === -1).length;
 	}
 
 	return {
@@ -198,7 +206,15 @@ export function makeDeliverySink(
 				flush();
 				await chain;
 				const unsent = unsentCount();
-				if (unsent === 0) break;
+				if (unsent === 0) {
+					// Sends that resolved inside `await chain` were still
+					// in flight when the flush above ran, so their (possibly
+					// drifted) windows were never re-checked — one last
+					// pass patches them.
+					flush();
+					await chain;
+					break;
+				}
 				stagnant = unsent >= prevUnsent ? stagnant + 1 : 0;
 				prevUnsent = unsent;
 				if (stagnant >= MAX_STAGNANT) {

@@ -4,6 +4,7 @@
 // knob (publicUrl → tailscale serve/funnel/any reverse proxy). Nothing
 // here assumes a public IP.
 
+import { z } from "zod";
 import { loadConfig, parseConfig, writeConfig, type Config } from "../config.ts";
 import { log } from "../log.ts";
 import { APP_HTML } from "./app.ts";
@@ -50,13 +51,19 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 					} catch {
 						return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
 					}
+					if (typeof body !== "object" || body === null || Array.isArray(body)) {
+						return Response.json(
+							{ error: "expected a json object" },
+							{ status: 400, headers: NO_STORE },
+						);
+					}
 					try {
 						// The page sends a partial; merge over the freshest on-disk
 						// config — a hand edit since boot must not be silently
 						// discarded by an app save. An invalid on-disk file fails
 						// here with its own parse error.
 						const base = loadConfig() ?? deps.configRef.current;
-						const merged = parseConfig({ ...base, ...(body as object) });
+						const merged = parseConfig({ ...base, ...body });
 						// The mini app is an operator's only door that doesn't need
 						// a shell — a save that drops the requester's own id locks
 						// them out of it and the bot gate. Refuse before writing.
@@ -73,10 +80,13 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 						log.info("config written via mini app");
 						return Response.json({ ok: true }, { headers: NO_STORE });
 					} catch (err) {
-						return Response.json(
-							{ error: err instanceof Error ? err.message : String(err) },
-							{ status: 422, headers: NO_STORE },
-						);
+						const msg =
+							err instanceof z.ZodError
+								? z.prettifyError(err)
+								: err instanceof Error
+									? err.message
+									: String(err);
+						return Response.json({ error: msg }, { status: 422, headers: NO_STORE });
 					}
 				}
 				return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });

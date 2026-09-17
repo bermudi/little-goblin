@@ -37,7 +37,9 @@ export async function createBot(deps: BotDeps): Promise<Bot> {
 	const apiRoot = deps.configRef.current.telegram.apiRoot;
 	const bot = new Bot(token, apiRoot ? { client: { apiRoot } } : {});
 	// Populates bot.botInfo — needed to route /cmd@botname correctly.
-	await bot.init();
+	// Bounded like the other api calls: a wedged connection should fail
+	// boot loudly, not hang before the "online" log line.
+	await withTimeout(bot.init(), "getMe");
 	const botUsername = bot.botInfo.username;
 	const buffer = new CoalescingBuffer<BufferedItem>(QUIET_WINDOW_MS, (convId, items) => {
 		const conv = deps.store.get(convId);

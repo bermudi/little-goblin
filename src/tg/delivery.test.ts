@@ -114,6 +114,30 @@ describe("delivery", () => {
 		expect(msgs[1]).toBe(emoji + "b".repeat(50));
 	});
 
+	test("a seam computed against the status tail re-seats when status changes", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, undefined, 0);
+		// First send goes out before the status tail exists; the tool call
+		// then pushes body past CHUNK, so the seam is computed against
+		// status chars, which are still provisional.
+		sink.onTextDelta("a".repeat(3791));
+		sink.onToolCall("t", { path: "pppppp" });
+		await sleep(0);
+		expect(msgs).toEqual(["a".repeat(3791)]);
+
+		// Five more tool calls push that entry out of the last-5 status
+		// window; the new first entry puts a surrogate pair exactly on the
+		// seam. The sent chunk must be re-edited and the pair must land
+		// intact in the next message — not split, dropped, or duplicated.
+		sink.onToolCall("t", { path: "\u{1f600}" });
+		for (let i = 0; i < 4; i++) sink.onToolCall("t", { path: "p" });
+		await sink.onDone({ kind: "completed" });
+		expect(msgs[1]!.startsWith("\u{1f600}")).toBe(true);
+		expect(msgs.join("")).toBe(
+			"a".repeat(3791) + "\n\n—\n⚙ t \u{1f600}" + "\n⚙ t p".repeat(4),
+		);
+	});
+
 	test("permanently failing sends don't make onDone throw", async () => {
 		const { api } = fakeApi({ failSends: true });
 		const sink = makeDeliverySink(api, conv, undefined, 0);

@@ -77,6 +77,14 @@ describe("mini-app http", () => {
 		http.stop();
 	});
 
+	test("a non-object body is rejected without touching the config", async () => {
+		const { configRef, http, post } = setup();
+		const res = await post("hello");
+		expect(res.status).toBe(400);
+		expect(configRef.current.allowedUsers).toEqual([42]);
+		http.stop();
+	});
+
 	test("a valid save is written and hot-applied", async () => {
 		const { configRef, http, post } = setup();
 		const res = await post({ allowedUsers: [42, 7], logLevel: "debug" });

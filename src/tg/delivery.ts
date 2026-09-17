@@ -19,7 +19,10 @@ export function makeDeliverySink(
 ): TurnSink {
 	let text = "";
 	const toolStatus: string[] = [];
-	// One entry per sent/sending message; -1 while its send is still queued.
+	// One entry per message chunk: -1 = unsent (send failed or not yet
+	// attempted — next flush retries), -2 = send in flight, otherwise the
+	// Telegram message id. At most one send is in flight and it is always
+	// the earliest unsent chunk, so messages can't land out of order.
 	const messageIds: number[] = [];
 	let lastEdit = 0;
 	// Serialize every api call — edits must not race sends.
@@ -48,28 +51,45 @@ export function makeDeliverySink(
 	function flush(): void {
 		const body = rendered();
 		const needed = Math.ceil(body.length / CHUNK_LIMIT);
-		while (messageIds.length < needed) {
-			const idx = messageIds.length;
-			const chunk = body.slice(idx * CHUNK_LIMIT, (idx + 1) * CHUNK_LIMIT);
-			messageIds.push(-1);
-			enqueue(async () => {
-				const sent = await api.sendMessage(conv.chatId, chunk, {
-					...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
-					...(idx === 0 && replyToMessageId !== undefined
-						? { reply_parameters: { message_id: replyToMessageId } }
-						: {}),
+		while (messageIds.length < needed) messageIds.push(-1);
+		for (let idx = 0; idx < messageIds.length; idx++) {
+			const id = messageIds[idx];
+			if (id === undefined || id === -2) break; // send in flight — wait it out
+			const isLast = idx === messageIds.length - 1;
+			const content = body.slice(
+				idx * CHUNK_LIMIT,
+				isLast ? undefined : (idx + 1) * CHUNK_LIMIT,
+			);
+			if (id === -1) {
+				messageIds[idx] = -2;
+				enqueue(async () => {
+					try {
+						const sent = await api.sendMessage(
+							conv.chatId,
+							content === "" ? "…" : content,
+							{
+								...(conv.threadId !== null
+									? { message_thread_id: conv.threadId }
+									: {}),
+								...(idx === 0 && replyToMessageId !== undefined
+									? { reply_parameters: { message_id: replyToMessageId } }
+									: {}),
+							},
+						);
+						messageIds[idx] = sent.message_id;
+					} catch (err) {
+						messageIds[idx] = -1; // failed — retried by the next flush
+						throw err;
+					}
 				});
-				messageIds[idx] = sent.message_id;
-			});
+				break; // strictly ordered — later chunks go out on a later flush
+			}
+			if (isLast) {
+				enqueue(async () => {
+					await api.editMessageText(conv.chatId, id, content === "" ? "…" : content);
+				});
+			}
 		}
-		const lastIdx = messageIds.length - 1;
-		if (lastIdx < 0) return;
-		const tail = body.slice(lastIdx * CHUNK_LIMIT);
-		enqueue(async () => {
-			const id = messageIds[lastIdx];
-			if (id === undefined || id === -1) return; // send failed; next flush retries
-			await api.editMessageText(conv.chatId, id, tail === "" ? "…" : tail);
-		});
 		lastEdit = Date.now();
 	}
 

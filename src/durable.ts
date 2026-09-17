@@ -3,7 +3,15 @@
 // for whole-file state only — SQLite uses WAL + transactions instead.
 
 import { constants } from "node:fs";
-import { closeSync, fsyncSync, openSync, renameSync, statSync, writeSync } from "node:fs";
+import {
+	closeSync,
+	fsyncSync,
+	openSync,
+	renameSync,
+	statSync,
+	unlinkSync,
+	writeSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 
 export function durableWriteFile(path: string, content: string, modeIfNew = 0o644): void {
@@ -18,8 +26,19 @@ export function durableWriteFile(path: string, content: string, modeIfNew = 0o64
 	try {
 		writeSync(fd, content);
 		fsyncSync(fd);
-	} finally {
 		closeSync(fd);
+	} catch (err) {
+		try {
+			closeSync(fd);
+		} catch {
+			// already closed
+		}
+		try {
+			unlinkSync(tmp);
+		} catch {
+			// best-effort cleanup; a stray tmp file is better than a corrupt target
+		}
+		throw err;
 	}
 	renameSync(tmp, path);
 }

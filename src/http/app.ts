@@ -84,7 +84,7 @@ $("save").onclick = async () => {
 };
 
 if (!initData) msg("open from the Telegram menu button");
-load();
+else load();
 </script>
 </body>
 </html>`;

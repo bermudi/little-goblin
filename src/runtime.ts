@@ -16,7 +16,7 @@ import {
 	type ToolSet,
 	type UIMessage,
 } from "ai";
-import type { ProviderOptions } from "@ai-sdk/provider-utils";
+import type { ProviderOptions, ToolCallOptions } from "@ai-sdk/provider-utils";
 import { randomUUID } from "node:crypto";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
@@ -28,9 +28,11 @@ const MAX_STEPS = 25;
 export type TurnDone =
 	| { kind: "completed" }
 	| { kind: "fenced" }
-	| { kind: "aborted" }
 	| { kind: "error"; message: string };
 
+// Every submitted sink receives exactly one onDone — completed, fenced, or
+// error — so it can release resources (typing intervals, etc.) no matter
+// how the turn ends, including being dropped from the queue by /stop.
 export interface TurnSink {
 	onTextDelta(delta: string): void;
 	onReasoningDelta(delta: string): void;
@@ -91,13 +93,19 @@ export class Runtime {
 	}
 
 	// /stop — advance the epoch (fences the in-flight turn) and abort its
-	// stream. Queued turns are dropped: stop means stop.
+	// stream. Queued turns are dropped: stop means stop. Dropped sinks still
+	// get their onDone so nothing leaks.
 	stop(convId: string): void {
 		const epoch = this.deps.store.bumpEpoch(convId);
 		const lane = this.lanes.get(convId);
 		if (lane) {
-			lane.pending.length = 0;
+			const dropped = lane.pending.splice(0);
 			lane.controller?.abort();
+			for (const t of dropped) {
+				void Promise.resolve(t.sink.onDone({ kind: "fenced" })).catch((err: unknown) =>
+					log.warn("sink onDone failed", { error: String(err) }),
+				);
+			}
 		}
 		log.info("turn stopped", { conversation: convId, epoch });
 	}
@@ -118,6 +126,22 @@ export class Runtime {
 		if (current !== epoch) throw new FencedError(convId);
 	}
 
+	// Tool calls are side effects too — wrap every execute so it re-checks
+	// authority before running. The SDK executes tools inside the stream,
+	// where the chunk loop's check can't reach. Tools are built fresh per
+	// turn, so wrapping in place is safe.
+	private fenceTools(tools: ToolSet, convId: string, epoch: number): ToolSet {
+		for (const t of Object.values(tools)) {
+			const execute = t.execute?.bind(t);
+			if (execute === undefined) continue;
+			t.execute = (input: unknown, options: ToolCallOptions) => {
+				this.checkAuthority(convId, epoch);
+				return execute(input as never, options);
+			};
+		}
+		return tools;
+	}
+
 	private async drain(convId: string): Promise<void> {
 		const lane = this.lane(convId);
 		if (lane.running) return;
@@ -126,7 +150,21 @@ export class Runtime {
 			for (;;) {
 				const turn = lane.pending.shift();
 				if (!turn) return;
-				await this.runTurn(convId, turn);
+				try {
+					await this.runTurn(convId, turn);
+				} catch (err) {
+					// runTurn handles expected failures; this is a last-ditch guard
+					// so one bad turn can't stall the lane or leak its sink.
+					log.error("turn crashed", err, { conversation: convId });
+					try {
+						await turn.sink.onDone({
+							kind: "error",
+							message: err instanceof Error ? err.message : String(err),
+						});
+					} catch (err2) {
+						log.warn("sink onDone failed", { error: String(err2) });
+					}
+				}
 			}
 		} finally {
 			lane.running = false;
@@ -149,7 +187,7 @@ export class Runtime {
 		try {
 			this.checkAuthority(convId, epoch);
 			const step = this.deps.buildStep(conv);
-			const tools = this.deps.makeTools(conv.cwd);
+			const tools = this.fenceTools(this.deps.makeTools(conv.cwd), convId, epoch);
 			const history = store.history(convId);
 			const messages = convertToModelMessages(history, {
 				tools,

@@ -19,15 +19,6 @@ export function addressId(addr: ConversationAddress): string {
 	return addr.kind === "dm" ? `dm:${addr.chatId}` : `topic:${addr.chatId}:${addr.threadId}`;
 }
 
-export function parseAddressId(id: string): ConversationAddress {
-	if (id.startsWith("dm:")) {
-		return { kind: "dm", chatId: Number(id.slice(3)) };
-	}
-	const m = /^topic:(-?\d+):(\d+)$/.exec(id);
-	if (!m) throw new Error(`bad conversation id "${id}"`);
-	return { kind: "topic", chatId: Number(m[1]), threadId: Number(m[2]) };
-}
-
 // ---------- types ----------
 
 export interface Conversation {

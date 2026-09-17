@@ -65,6 +65,10 @@ export function createBot(deps: BotDeps): Bot {
 					? { kind: "topic", chatId: msg.chat.id, threadId: msg.message_thread_id }
 					: { kind: "dm", chatId: msg.chat.id };
 		const conv = deps.store.resolve(addr, paths.workspace());
+		const topicTitle = msg.forum_topic_created?.name ?? msg.forum_topic_edited?.name;
+		if (topicTitle !== undefined) {
+			deps.store.setMeta(conv.id, { title: topicTitle });
+		}
 
 		if (text !== "" && COMMAND_RE.test(text)) {
 			if (handleCommand({ api: bot.api, configRef: deps.configRef, store: deps.store, runtime: deps.runtime }, conv, text)) {
@@ -80,7 +84,7 @@ export function createBot(deps: BotDeps): Bot {
 			try {
 				const file = await ctx.getFile();
 				const bytes = await fetchFileBytes(file, apiRoot, token);
-				const saved = saveAttachment(media, bytes);
+				const saved = await saveAttachment(media, bytes);
 				const modelRef = conv.model ?? deps.configRef.current.model;
 				parts.push(...(await mediaParts(media, bytes, saved, modelRef)));
 			} catch (err) {

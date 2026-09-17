@@ -56,7 +56,6 @@ const runtime = new Runtime({
 const bot = await startBot({ configRef, auth, store, runtime });
 const http = startHttp({
 	configRef,
-	auth,
 	botToken: auth.resolve(AUTH_TELEGRAM_TOKEN),
 	onConfigWritten: () => {
 		setLogLevel(configRef.current.logLevel);

@@ -4,7 +4,6 @@
 // knob (publicUrl → tailscale serve/funnel/any reverse proxy). Nothing
 // here assumes a public IP.
 
-import type { AuthStore } from "../auth.ts";
 import { loadConfig, writeConfig, type Config } from "../config.ts";
 import { log } from "../log.ts";
 import { APP_HTML } from "./app.ts";
@@ -12,7 +11,6 @@ import { validateInitData } from "./auth.ts";
 
 export interface HttpDeps {
 	configRef: { current: Config };
-	auth: AuthStore;
 	botToken: string;
 	// Called after a successful config write so the process hot-applies
 	// model/thinking/favorites (structural fields apply on restart).

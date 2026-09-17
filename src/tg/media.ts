@@ -2,7 +2,7 @@
 // natively when the model's capability data says it can; otherwise it's
 // saved to workspace/attachments/ and referenced by path.
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { File as TgFile } from "grammy/types";
 import type { UIMessage } from "ai";
@@ -27,7 +27,12 @@ export function mediaFromMessage(msg: {
 	voice?: { file_id: string; file_unique_id: string; mime_type?: string };
 	audio?: { file_id: string; file_unique_id: string; file_name?: string; mime_type?: string };
 	video?: { file_id: string; file_unique_id: string; file_name?: string; mime_type?: string };
-	sticker?: { file_id: string; file_unique_id: string };
+	sticker?: {
+		file_id: string;
+		file_unique_id: string;
+		is_animated?: boolean;
+		is_video?: boolean;
+	};
 }): IncomingMedia | null {
 	if (msg.photo && msg.photo.length > 0) {
 		const largest = msg.photo[msg.photo.length - 1]!;
@@ -76,6 +81,19 @@ export function mediaFromMessage(msg: {
 			kind: "video",
 		};
 	}
+	if (msg.sticker) {
+		const s = msg.sticker;
+		// Static stickers are .webp images; animated (.tgs) and video
+		// (.webm) stickers go the attachment-path route.
+		const staticImage = s.is_animated !== true && s.is_video !== true;
+		return {
+			fileId: s.file_id,
+			fileUniqueId: s.file_unique_id,
+			fileName: `sticker-${s.file_unique_id}.webp`,
+			mimeType: staticImage ? "image/webp" : "application/octet-stream",
+			kind: staticImage ? "image" : "document",
+		};
+	}
 	return null;
 }
 
@@ -90,7 +108,7 @@ export async function fetchFileBytes(
 	const filePath = file.file_path;
 	if (!filePath) throw new Error("telegram returned no file_path");
 	if (filePath.startsWith("/")) {
-		return readFileSync(filePath);
+		return readFile(filePath);
 	}
 	const root = apiRoot ?? "https://api.telegram.org";
 	const url = `${root}/file/bot${token}/${filePath}`;
@@ -101,11 +119,11 @@ export async function fetchFileBytes(
 
 // Persist to workspace/attachments/ (Telegram still owns the file; this is
 // the agent-reachable copy). Returns the absolute path.
-export function saveAttachment(media: IncomingMedia, bytes: Buffer): string {
-	mkdirSync(paths.attachments(), { recursive: true });
+export async function saveAttachment(media: IncomingMedia, bytes: Buffer): Promise<string> {
+	await mkdir(paths.attachments(), { recursive: true });
 	const safe = basename(media.fileName).replace(/[^\w.\-]+/g, "_");
 	const dest = join(paths.attachments(), `${media.fileUniqueId}-${safe}`);
-	writeFileSync(dest, bytes);
+	await writeFile(dest, bytes);
 	return dest;
 }
 

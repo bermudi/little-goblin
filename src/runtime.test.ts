@@ -2,9 +2,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { LanguageModel, UIMessage } from "ai";
+import { tool, type LanguageModel, type UIMessage } from "ai";
+import { z } from "zod";
 import type { LanguageModelV2StreamPart } from "@ai-sdk/provider";
-import { openStore, type ConversationStore } from "./conversation.ts";
+import { openStore } from "./conversation.ts";
 import { Runtime, userMessage, type TurnDone, type TurnSink } from "./runtime.ts";
 
 let dirs: string[] = [];
@@ -132,7 +133,90 @@ describe("turn authority", () => {
 		await sleep(40);
 		runtime.stop(conv.id);
 		const d = await sink.done;
-		expect(d.kind === "fenced" || d.kind === "aborted").toBe(true);
+		expect(d.kind).toBe("fenced");
+		store.close();
+	});
+
+	test("/stop notifies queued turns — every sink gets exactly one onDone", async () => {
+		const { store, conv, runtime } = setup(["a", "b", "c", "d"], 30);
+		const s1 = new RecordingSink();
+		const s2 = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
+		await sleep(10); // first turn is running
+		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), s2); // queued
+		runtime.stop(conv.id);
+		// the dropped turn's sink is still told, so it can release resources
+		expect(await s2.done).toEqual({ kind: "fenced" });
+		expect((await s1.done).kind).toBe("fenced");
+		store.close();
+	});
+
+	test("a tool call under stale authority never executes", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		let executed = false;
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({
+				model: {
+					specificationVersion: "v2",
+					provider: "fake",
+					modelId: "fake-1",
+					supportedUrls: {},
+					doGenerate() {
+						throw new Error("unimplemented");
+					},
+					doStream() {
+						const stream = new ReadableStream<LanguageModelV2StreamPart>({
+							async start(controller) {
+								const push = (p: LanguageModelV2StreamPart) => {
+									try {
+										controller.enqueue(p);
+									} catch {
+										/* closed */
+									}
+								};
+								push({ type: "stream-start", warnings: [] });
+								await sleep(30); // epoch bump lands before the tool call
+								push({
+									type: "tool-call",
+									toolCallId: "c1",
+									toolName: "probe",
+									input: "{}",
+								});
+								push({
+									type: "finish",
+									finishReason: "tool-calls",
+									usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+								});
+								try {
+									controller.close();
+								} catch {
+									/* already closed */
+								}
+							},
+						});
+						return { stream };
+					},
+				} as unknown as LanguageModel,
+				system: "test",
+			}),
+			makeTools: () => ({
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						executed = true;
+						return { ok: true };
+					},
+				}),
+			}),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		await sleep(15);
+		store.bumpEpoch(conv.id); // settings change mid-turn
+		expect(await sink.done).toEqual({ kind: "fenced" });
+		expect(executed).toBe(false); // the fenced tool's side effect never ran
 		store.close();
 	});
 

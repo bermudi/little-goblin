@@ -1,9 +1,7 @@
-// Commands are settings-only: /model /think /cd /stop. No
+// Commands are settings-only: /model /think /stop. No
 // conversation-lifecycle commands — topics own that. Every settings change
 // bumps the conversation epoch, fencing in-flight turns.
 
-import { existsSync, statSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
 import type { Api } from "grammy";
 import { splitModelRef, thinkingLevels, type Config, type ThinkingLevel } from "../config.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";
@@ -122,22 +120,6 @@ export function handleCommand(
 			reply(deps, conv, `thinking → ${arg}`);
 			return true;
 		}
-
-		case "/cd": {
-			if (arg === "") {
-				reply(deps, conv, `cwd: ${conv.cwd}\n/cd <path> to change`);
-				return true;
-			}
-			const abs = isAbsolute(arg) ? arg : resolve(conv.cwd, arg);
-			if (!existsSync(abs) || !statSync(abs).isDirectory()) {
-				reply(deps, conv, `not a directory: ${abs}`);
-				return true;
-			}
-			apply(deps, conv, { cwd: abs });
-			log.info("cwd set", { conversation: conv.id, cwd: abs });
-			reply(deps, conv, `cwd → ${abs}`);
-			return true;
-		}
 	}
 	return false;
 }
@@ -148,7 +130,6 @@ export function handleCommand(
 export const COMMANDS = [
 	{ command: "model", description: "show or override the model" },
 	{ command: "think", description: "show or override thinking level" },
-	{ command: "cd", description: "show or set working directory" },
 	{ command: "stop", description: "fence the running turn" },
 ] as const;
 

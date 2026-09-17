@@ -29,10 +29,8 @@ describe("conversation store", () => {
 		const a = store.resolve({ kind: "topic", chatId: -100, threadId: 7 }, "/w");
 		expect(a.id).toBe(addressId({ kind: "topic", chatId: -100, threadId: 7 }));
 		expect(a.epoch).toBe(0);
-		expect(a.cwd).toBe("/w");
 		const b = store.resolve({ kind: "topic", chatId: -100, threadId: 7 }, "/other");
 		expect(b.id).toBe(a.id);
-		expect(b.cwd).toBe("/w"); // cwd is fixed once set
 		store.close();
 	});
 

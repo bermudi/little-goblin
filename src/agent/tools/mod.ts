@@ -1,6 +1,6 @@
-// The four tools. Hand-rolled, zod-validated, bound to the conversation's
-// cwd. Telegram send is delivery, not a tool. Nothing else exists until a
-// feature needs it.
+// The four tools. Hand-rolled, zod-validated, bound to the deployment
+// workspace. Telegram send is delivery, not a tool. Nothing else exists
+// until a feature needs it.
 
 import type { ToolSet } from "ai";
 import { bashTool } from "./bash.ts";

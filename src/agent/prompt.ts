@@ -25,7 +25,7 @@ export function buildSystemPrompt(conv: Conversation): string {
 		"## environment",
 		"",
 		`- You are talking to your operator on Telegram (${conv.id}).`,
-		`- Working directory for this conversation: ${conv.cwd}`,
+		`- Working directory: ${paths.workspace()} — fixed, same for every chat.`,
 		`- Today: ${new Date().toISOString().slice(0, 10)}`,
 		`- Tools: read_file, write_file, edit_file, bash. Paths are relative to`,
 		`  the working directory unless absolute.`,

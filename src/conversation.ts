@@ -1,6 +1,6 @@
 // Conversation store — SQLite (bun:sqlite, WAL). A conversation is keyed by
 // its Telegram address: the DM itself, or a forum topic in the operator's
-// group. Owns meta (cwd, model/thinking overrides, epoch) and the durable
+// group. Owns meta (model/thinking overrides, epoch) and the durable
 // event history as UIMessage-format JSON rows.
 //
 // Durability = WAL + transactions, not tmp/fsync/rename.
@@ -27,7 +27,6 @@ export interface Conversation {
 	chatId: number;
 	threadId: number | null;
 	title: string | null;
-	cwd: string;
 	model: string | null; // "<provider>/<model-id>" override; null = config default
 	thinking: string | null; // override; null = config default
 	epoch: number;
@@ -36,14 +35,15 @@ export interface Conversation {
 
 export interface ConversationMetaPatch {
 	title?: string;
-	cwd?: string;
 	model?: string | null;
 	thinking?: string | null;
 }
 
 export interface ConversationStore {
-	// Get-or-create by Telegram address. New conversations start at cwd =
-	// defaultCwd, epoch 0.
+	// Get-or-create by Telegram address. New conversations start at epoch 0.
+	// The cwd column still exists in the table (NOT NULL, no default —
+	// existing DBs need it stamped) but cwd is no longer per-conversation
+	// state: tools always run in the deployment workspace.
 	resolve(addr: ConversationAddress, defaultCwd: string): Conversation;
 	get(id: string): Conversation | null;
 	setMeta(id: string, patch: ConversationMetaPatch): void;
@@ -66,7 +66,7 @@ interface Row {
 	chat_id: number;
 	thread_id: number | null;
 	title: string | null;
-	cwd: string;
+	cwd: string; // kept: column exists in existing DBs; never read into Conversation
 	model: string | null;
 	thinking: string | null;
 	epoch: number;
@@ -89,7 +89,6 @@ function toConversation(r: Row): Conversation {
 		chatId: r.chat_id,
 		threadId: r.thread_id,
 		title: r.title,
-		cwd: r.cwd,
 		model: r.model,
 		thinking: r.thinking,
 		epoch: r.epoch,
@@ -149,10 +148,6 @@ export function openStore(dbPath: string): ConversationStore {
 		if (patch.title !== undefined) {
 			sets.push("title = ?");
 			vals.push(patch.title);
-		}
-		if (patch.cwd !== undefined) {
-			sets.push("cwd = ?");
-			vals.push(patch.cwd);
 		}
 		if (patch.model !== undefined) {
 			sets.push("model = ?");

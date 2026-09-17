@@ -11,7 +11,6 @@ const conv: Conversation = {
 	chatId: 1,
 	threadId: null,
 	title: null,
-	cwd: "/w",
 	model: null,
 	thinking: null,
 	epoch: 0,

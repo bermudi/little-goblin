@@ -34,7 +34,7 @@ Two concepts. Conversation identity **is** the Telegram address.
 Telegram update
       │
       ▼
-Conversation ─────── (chatId, threadId?) → durable event history + cwd
+Conversation ─────── (chatId, threadId?) → durable event history
       │ while a turn is running
       ▼
     Turn ──────────── ephemeral: one agent loop + serialized queue
@@ -43,8 +43,7 @@ Conversation ─────── (chatId, threadId?) → durable event history
 - **Conversation** — keyed by its Telegram address: a forum topic — in the
   operator's group or in the bot's DM, which supports topics too — or the
   bare chat itself. Owns `events` (user msgs, assistant msgs, tool calls,
-  system events), `meta` (created, cwd, model/thinking overrides). cwd is
-  fixed once set.
+  system events), `meta` (created, model/thinking overrides).
 - **Turn** — a unit of work enqueued on a conversation. Per-conversation
   serial queue; one active turn. A turn's history snapshot is taken at
   admission: messages submitted while it runs join the queue and its
@@ -66,7 +65,7 @@ re-checks that it still holds authority** — its conversation epoch hasn't
 advanced since enqueue.
 
 Implementation: each conversation carries a monotonic `epoch`, bumped on
-settings changes (`/model`, `/think`, `/cd`) and explicit cancellation. A turn
+settings changes (`/model`, `/think`) and explicit cancellation. A turn
 captures `(conversationId, epoch)` at admission and calls `checkAuthority()`
 around every await. Fenced turns abort quietly and log it. No machines, no
 drain sets — one counter and one function.
@@ -118,7 +117,11 @@ agent loop.
 
 Hand-rolled, zod-validated, exactly four:
 
-`read_file` `write_file` `edit_file` `bash` (timeout, cwd = conversation cwd)
+`read_file` `write_file` `edit_file` `bash` (timeout)
+
+All tools run in the deployment workspace — conversations have no cwd and
+there is no `/cd`. Working elsewhere is the agent's own business (`cd x &&
+…` inside `bash`), not conversation state.
 
 Telegram send is delivery, not a tool. Memory, scheduling, subagent, MCP, and
 external-agent tools do not exist — each arrives with the feature that needs
@@ -154,7 +157,7 @@ Resolved values never enter the tool environment, the model context, or logs.
   operator devices are on the tailnet, the v1-on-lithium pattern), `tailscale
   funnel` (public HTTPS relayed through Tailscale's edge, for off-tailnet
   clients), or any reverse proxy with a cert. NAT-first by construction.
-- **Commands** are settings-only: `/model` `/think` `/cd` `/stop`. No
+- **Commands** are settings-only: `/model` `/think` `/stop`. No
   conversation-lifecycle commands — topics own that.
 - **Large files**: self-hosted `telegram-bot-api` on lithium, `--local` mode,
   grammy `apiRoot` → `http://127.0.0.1:8081`. Needs `api_id`/`api_hash` from a
@@ -176,7 +179,7 @@ Resolved values never enter the tool environment, the model context, or logs.
 $GOBLIN_HOME/
 ├── goblin.json5            # providers, models, defaults
 ├── auth.jsonl              # secrets, mode 0600
-├── workspace/              # the agent's home; default conversation cwd
+├── workspace/              # the agent's home; every tool runs here
 │   ├── SOUL.md             # required, template-created on first boot
 │   ├── AGENTS.md           # optional, agent-owned
 │   └── attachments/
@@ -225,7 +228,7 @@ Flat modules, one job each, tests colocated.
 
 memory store · scheduler/heartbeat · conversation-lifecycle commands ·
 subagents · delegated work · external agents · ACP · MCP · skill catalogs ·
-project environments beyond cwd · inner life · onboarding wizard · state
+project environments · inner life · onboarding wizard · state
 migrations · embeddings · multi-user · history compaction (history is
 unbounded in v1 — a designed truncation/compaction story arrives with the
 feature that needs it)

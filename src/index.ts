@@ -62,7 +62,7 @@ const runtime = new Runtime({
 			...(providerOptions ? { providerOptions } : {}),
 		};
 	},
-	makeTools,
+	makeTools: () => makeTools(paths.workspace()),
 });
 
 const tg = await startBot({ configRef, auth, store, runtime });

@@ -126,13 +126,5 @@ describe("commands", () => {
 		expect(stopped).toEqual([conv.id]);
 		store.close();
 	});
-
-	test("/cd rejects a missing directory", () => {
-		const { store, conv, sent, deps } = setup();
-		handleCommand(deps, conv, "/cd /nonexistent-path-xyz");
-		expect(store.get(conv.id)!.cwd).toBe("/w");
-		expect(sent[0]).toContain("not a directory");
-		store.close();
-	});
 });
 

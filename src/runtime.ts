@@ -59,8 +59,9 @@ export interface RuntimeDeps {
 	// options (thinking level) fresh at each turn. May be async (auth
 	// `!command` resolution shells out).
 	buildStep(conv: Conversation): ModelStep | Promise<ModelStep>;
-	// Build the tool set bound to the conversation's cwd.
-	makeTools(cwd: string): ToolSet;
+	// Build the tool set — bound to the deployment workspace by the
+	// composition root.
+	makeTools(): ToolSet;
 }
 
 // ---------- fencing ----------
@@ -239,7 +240,7 @@ export class Runtime {
 			this.checkAuthority(convId, epoch);
 			const step = await this.deps.buildStep(conv);
 			this.checkAuthority(convId, epoch);
-			const tools = this.fenceTools(this.deps.makeTools(conv.cwd), convId, epoch);
+			const tools = this.fenceTools(this.deps.makeTools(), convId, epoch);
 			// Materialize attachment refs against THIS turn's model — a
 			// media part the provider can't consume degrades to its path
 			// reference instead of failing the request on every turn.

@@ -1,7 +1,9 @@
 // Model capabilities via the models.dev catalog — what other agent tools
 // already do. We only need input modalities (does this model eat
 // image/audio/pdf natively?). Fetched once, cached in state/, refreshed
-// daily. Unavailable catalog → text-only, the conservative answer.
+// daily. A failing endpoint is retried on a backoff, not on every call —
+// the disk cache (or text-only) covers the gap. Unavailable catalog →
+// text-only, the conservative answer.
 
 import { readFileSync } from "node:fs";
 import { z } from "zod";
@@ -11,6 +13,10 @@ import { log } from "../log.ts";
 
 const API_URL = "https://models.dev/api.json";
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+// Backoff after any failure — an unreachable endpoint must not be hit on
+// every media message (the intake chain is serial; a 10s timeout per call
+// would stall it).
+const RETRY_MS = 10 * 60 * 1000;
 
 const catalogSchema = z.record(
 	z.string(),
@@ -33,17 +39,31 @@ const catalogSchema = z.record(
 type Catalog = z.infer<typeof catalogSchema>;
 
 let catalog: Catalog | null = null;
-let fetchedAt = 0;
+// Don't hit the network before this time. A successful fetch sets it a
+// day out; any failure leaves the RETRY_MS backoff armed below.
+let nextFetchAt = 0;
+// Concurrent callers share one fetch.
+let inflight: Promise<Catalog | null> | null = null;
 
-async function ensureCatalog(): Promise<Catalog | null> {
-	if (catalog && Date.now() - fetchedAt < CACHE_TTL_MS) return catalog;
+function ensureCatalog(): Promise<Catalog | null> {
+	if (Date.now() < nextFetchAt) return Promise.resolve(catalog);
+	inflight ??= refresh().finally(() => {
+		inflight = null;
+	});
+	return inflight;
+}
+
+async function refresh(): Promise<Catalog | null> {
+	// Arm the backoff first — a failure anywhere below must not send the
+	// next caller straight back to the network.
+	nextFetchAt = Date.now() + RETRY_MS;
 	try {
 		const res = await fetch(API_URL, { signal: AbortSignal.timeout(10_000) });
 		if (!res.ok) throw new Error(`models.dev HTTP ${res.status}`);
 		const parsed = catalogSchema.safeParse(await res.json());
 		if (!parsed.success) throw new Error(`models.dev schema: ${parsed.error.message}`);
 		catalog = parsed.data;
-		fetchedAt = Date.now();
+		nextFetchAt = Date.now() + CACHE_TTL_MS;
 		try {
 			durableWriteFile(paths.modelsDevCache(), JSON.stringify(catalog));
 		} catch (err) {

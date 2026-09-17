@@ -60,6 +60,7 @@ export const readFileTool = (cwd: string) =>
 			const start = Math.min((offset ?? 1) - 1, lines.length);
 			const end = Math.min(lines.length, start + (limit ?? MAX_LINES));
 			let out = "";
+			let shown = 0;
 			for (let i = start; i < end; i++) {
 				const line = `${i + 1}\t${lines[i] ?? ""}\n`;
 				if (out.length + line.length > MAX_BYTES) {
@@ -67,7 +68,8 @@ export const readFileTool = (cwd: string) =>
 					break;
 				}
 				out += line;
+				shown++;
 			}
-			return { content: out, lines: lines.length, shown: end - start };
+			return { content: out, lines: lines.length, shown };
 		},
 	});

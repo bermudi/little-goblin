@@ -1,6 +1,7 @@
 // Composition root: config → auth → conversations → bot → http.
 
 import { loadAuth } from "./auth.ts";
+import { inputModalities } from "./agent/models-dev.ts";
 import { buildSystemPrompt } from "./agent/prompt.ts";
 import { resolveModel, thinkingOptions } from "./agent/providers.ts";
 import { makeTools } from "./agent/tools/mod.ts";
@@ -9,6 +10,7 @@ import {
 	goblinHome,
 	loadConfig,
 	paths,
+	splitModelRef,
 	thinkingLevels,
 	type ThinkingLevel,
 } from "./config.ts";
@@ -38,7 +40,13 @@ const runtime = new Runtime({
 	async buildStep(conv) {
 		const cfg = configRef.current;
 		const modelRef = conv.model ?? cfg.model;
-		const { model } = await resolveModel(cfg, auth, modelRef);
+		const { provider, modelId } = splitModelRef(modelRef);
+		// Both may be slow (auth "!command", models.dev fetch) — run in
+		// parallel inside the same admission window.
+		const [{ model }, modalities] = await Promise.all([
+			resolveModel(cfg, auth, modelRef),
+			inputModalities(provider, modelId),
+		]);
 		const level: ThinkingLevel = (thinkingLevels as readonly string[]).includes(
 			conv.thinking ?? "",
 		)
@@ -48,6 +56,7 @@ const runtime = new Runtime({
 		return {
 			model,
 			system: buildSystemPrompt(conv),
+			inputModalities: modalities,
 			...(providerOptions ? { providerOptions } : {}),
 		};
 	},

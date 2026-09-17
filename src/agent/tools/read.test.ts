@@ -43,6 +43,24 @@ describe("read_file", () => {
 		expect(out.error).toContain("file too large");
 	});
 
+	test("byte-cap truncation reports shown honestly", async () => {
+		const dir = tmpdir_();
+		// ~126KB across 3000 lines — blows past the 64KB output cap.
+		writeFileSync(
+			join(dir, "f.txt"),
+			Array.from({ length: 3000 }, (_, i) => `line-${i}-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`).join("\n"),
+		);
+		const t = readFileTool(dir);
+		const out = (await t.execute!({ path: "f.txt" }, opts)) as {
+			content?: string;
+			shown?: number;
+		};
+		expect(out.content).toContain("truncated");
+		// shown counts the lines actually emitted — the marker line isn't one.
+		expect(out.shown).toBe(out.content!.split("\n").length - 1);
+		expect(out.shown!).toBeLessThan(3000);
+	});
+
 	test("missing file and directory errors", async () => {
 		const dir = tmpdir_();
 		const t = readFileTool(dir);

@@ -26,10 +26,6 @@ export class CoalescingBuffer<T> {
 		}
 	}
 
-	pending(key: string): number {
-		return this.buckets.get(key)?.items.length ?? 0;
-	}
-
 	private fire(key: string): void {
 		const bucket = this.buckets.get(key);
 		if (!bucket) return;

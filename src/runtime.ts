@@ -18,6 +18,7 @@ import {
 } from "ai";
 import type { ProviderOptions, ToolCallOptions } from "@ai-sdk/provider-utils";
 import { randomUUID } from "node:crypto";
+import { materializeAttachments } from "./agent/attachments.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
 
@@ -46,6 +47,10 @@ export interface ModelStep {
 	model: LanguageModel;
 	system: string;
 	providerOptions?: ProviderOptions;
+	// The model's input modalities (models.dev) — decides which stored
+	// attachment parts materialize as file parts this turn. Absent =
+	// text-only, everything degrades to path references.
+	inputModalities?: Set<string>;
 }
 
 export interface RuntimeDeps {
@@ -210,7 +215,12 @@ export class Runtime {
 			const step = await this.deps.buildStep(conv);
 			this.checkAuthority(convId, epoch);
 			const tools = this.fenceTools(this.deps.makeTools(conv.cwd), convId, epoch);
-			const messages = convertToModelMessages(history, {
+			// Materialize attachment refs against THIS turn's model — a
+			// media part the provider can't consume degrades to its path
+			// reference instead of failing the request on every turn.
+			const prepared = await materializeAttachments(history, step.inputModalities);
+			this.checkAuthority(convId, epoch);
+			const messages = convertToModelMessages(prepared, {
 				tools,
 				ignoreIncompleteToolCalls: true,
 			});

@@ -94,8 +94,14 @@ agent loop.
   `models.dev` catalog for per-model input modalities (image/audio/document),
   which is what other agent tools already do.
 - **Content**: the payoff — AI SDK takes image, document, and audio parts.
-  Telegram media goes to the model natively when the model's capability data
-  says it can; otherwise saved to `attachments/` and referenced by path.
+  Telegram media is saved to `attachments/` and stored in history as a
+  `data-attachment` part (path + metadata, no payload). At turn time each
+  part materializes against the *current* model's capability data: a file
+  part when the model can consume the media type and the payload fits the
+  inline cap, otherwise a text reference to the saved path. Capability is
+  judged per turn — a `/model` switch or a wrong catalog guess degrades to
+  the path reference instead of poisoning history with a part the provider
+  rejects on every turn.
 
 ## Tools (v1)
 
@@ -195,6 +201,8 @@ src/
   runtime.ts        per-conversation queue, turn loop, checkAuthority
   agent/
     providers.ts    registry: name → AI SDK provider
+    models-dev.ts   input-modality catalog (fetch, cache, backoff)
+    attachments.ts  data-attachment parts + per-turn materialization
     prompt.ts       system prompt assembly (shell + SOUL.md)
     tools/          the four tools
   http/             mini-app serving

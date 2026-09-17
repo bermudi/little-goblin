@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { File as TgFile } from "grammy/types";
 import { paths } from "../config.ts";
-import { mediaFromMessage, saveAttachment, type IncomingMedia } from "./media.ts";
+import { mediaFromMessage, mediaParts, saveAttachment, type IncomingMedia } from "./media.ts";
 
 let dirs: string[] = [];
 let prevHome: string | undefined;
@@ -30,7 +30,6 @@ const media: IncomingMedia = {
 	fileUniqueId: "u1",
 	fileName: "clip.mp4",
 	mimeType: "video/mp4",
-	kind: "video",
 };
 
 describe("mediaFromMessage", () => {
@@ -39,7 +38,7 @@ describe("mediaFromMessage", () => {
 			animation: { file_id: "a1", file_unique_id: "u9", mime_type: "video/mp4" },
 		});
 		expect(m).not.toBeNull();
-		expect(m!.kind).toBe("video");
+		expect(m!.mimeType).toBe("video/mp4");
 		expect(m!.fileId).toBe("a1");
 		expect(m!.fileName).toBe("animation-u9.mp4");
 	});
@@ -52,7 +51,22 @@ describe("mediaFromMessage", () => {
 			],
 		});
 		expect(m!.fileId).toBe("big");
-		expect(m!.kind).toBe("image");
+		expect(m!.mimeType).toBe("image/jpeg");
+	});
+});
+
+describe("mediaParts", () => {
+	test("stores a data-attachment part — path + metadata, no payload", () => {
+		const parts = mediaParts(media, { path: "/a/u1-clip.mp4", size: 7 });
+		expect(parts).toHaveLength(1);
+		const p = parts[0]!;
+		if (p.type !== "data-attachment") throw new Error(`expected data-attachment, got ${p.type}`);
+		expect(p.data).toEqual({
+			path: "/a/u1-clip.mp4",
+			mediaType: "video/mp4",
+			filename: "clip.mp4",
+			size: 7,
+		});
 	});
 });
 

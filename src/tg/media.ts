@@ -1,24 +1,21 @@
-// Telegram media → UIMessage parts. Telegram media goes to the model
-// natively when the model's capability data says it can; otherwise it's
-// saved to workspace/attachments/ and referenced by path.
+// Telegram media → UIMessage parts. Media is always saved to
+// workspace/attachments/ and stored as a data-attachment part (path +
+// metadata, no payload) — the inline-vs-path decision is made per turn by
+// the runtime against the current model's capability data, so intake
+// doesn't need to know the model at all.
 
-import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
+import { copyFile, mkdir, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { File as TgFile } from "grammy/types";
 import type { UIMessage } from "ai";
-import { paths, splitModelRef } from "../config.ts";
-import { inputModalities } from "../agent/models-dev.ts";
-
-// Inline payloads get a ceiling — data URLs bloat the event history.
-const INLINE_MAX_BYTES = 8 * 1024 * 1024;
+import { paths } from "../config.ts";
+import { attachmentPart } from "../agent/attachments.ts";
 
 export interface IncomingMedia {
 	fileId: string;
 	fileUniqueId: string;
 	fileName: string; // best-effort original name
 	mimeType: string;
-	// What the file is, for the text reference and modality check.
-	kind: "image" | "audio" | "video" | "document";
 }
 
 export function mediaFromMessage(msg: {
@@ -43,7 +40,6 @@ export function mediaFromMessage(msg: {
 			fileUniqueId: largest.file_unique_id,
 			fileName: `photo-${largest.file_unique_id}.jpg`,
 			mimeType: "image/jpeg",
-			kind: "image",
 		};
 	}
 	if (msg.document) {
@@ -53,7 +49,6 @@ export function mediaFromMessage(msg: {
 			fileUniqueId: d.file_unique_id,
 			fileName: d.file_name ?? `doc-${d.file_unique_id}`,
 			mimeType: d.mime_type ?? "application/octet-stream",
-			kind: d.mime_type?.startsWith("image/") ? "image" : "document",
 		};
 	}
 	if (msg.voice) {
@@ -62,7 +57,6 @@ export function mediaFromMessage(msg: {
 			fileUniqueId: msg.voice.file_unique_id,
 			fileName: `voice-${msg.voice.file_unique_id}.ogg`,
 			mimeType: msg.voice.mime_type ?? "audio/ogg",
-			kind: "audio",
 		};
 	}
 	if (msg.audio) {
@@ -71,7 +65,6 @@ export function mediaFromMessage(msg: {
 			fileUniqueId: msg.audio.file_unique_id,
 			fileName: msg.audio.file_name ?? `audio-${msg.audio.file_unique_id}`,
 			mimeType: msg.audio.mime_type ?? "audio/mpeg",
-			kind: "audio",
 		};
 	}
 	if (msg.video) {
@@ -80,7 +73,6 @@ export function mediaFromMessage(msg: {
 			fileUniqueId: msg.video.file_unique_id,
 			fileName: msg.video.file_name ?? `video-${msg.video.file_unique_id}.mp4`,
 			mimeType: msg.video.mime_type ?? "video/mp4",
-			kind: "video",
 		};
 	}
 	if (msg.animation) {
@@ -92,7 +84,6 @@ export function mediaFromMessage(msg: {
 			fileUniqueId: a.file_unique_id,
 			fileName: a.file_name ?? `animation-${a.file_unique_id}.mp4`,
 			mimeType: a.mime_type ?? "video/mp4",
-			kind: "video",
 		};
 	}
 	if (msg.video_note) {
@@ -102,7 +93,6 @@ export function mediaFromMessage(msg: {
 			fileUniqueId: msg.video_note.file_unique_id,
 			fileName: `video-note-${msg.video_note.file_unique_id}.mp4`,
 			mimeType: "video/mp4",
-			kind: "video",
 		};
 	}
 	if (msg.sticker) {
@@ -115,7 +105,6 @@ export function mediaFromMessage(msg: {
 			fileUniqueId: s.file_unique_id,
 			fileName: `sticker-${s.file_unique_id}.webp`,
 			mimeType: staticImage ? "image/webp" : "application/octet-stream",
-			kind: staticImage ? "image" : "document",
 		};
 	}
 	return null;
@@ -164,44 +153,15 @@ export async function saveAttachment(
 	return { path: dest, size };
 }
 
-// Media → parts. Natively-capable models get a file part (data URL) — the
-// bytes are read back only when the file is small enough to inline;
-// everyone else gets a text reference to the saved path.
-export async function mediaParts(
-	media: IncomingMedia,
-	saved: SavedAttachment,
-	modelRef: string,
-): Promise<UIMessage["parts"]> {
-	const { provider, modelId } = splitModelRef(modelRef);
-	const modalities = await inputModalities(provider, modelId);
-	// Inline only when the model's capability data covers this kind. A
-	// generic "file" modality takes any document; "pdf" covers PDFs only —
-	// a .zip sent to a pdf-capable model must fall back to the path
-	// reference, not a file part the provider can't consume.
-	const accepts =
-		(media.kind === "image" && modalities.has("image")) ||
-		(media.kind === "audio" && modalities.has("audio")) ||
-		(media.kind === "video" && modalities.has("video")) ||
-		(media.kind === "document" &&
-			(modalities.has("file") ||
-				(media.mimeType === "application/pdf" && modalities.has("pdf"))));
-
-	if (accepts && saved.size <= INLINE_MAX_BYTES) {
-		const bytes = await readFile(saved.path);
-		const dataUrl = `data:${media.mimeType};base64,${bytes.toString("base64")}`;
-		return [
-			{
-				type: "file",
-				mediaType: media.mimeType,
-				filename: media.fileName,
-				url: dataUrl,
-			},
-		];
-	}
+// Media → parts: one data-attachment part carrying the saved path. The
+// runtime materializes it against the current model at turn time.
+export function mediaParts(media: IncomingMedia, saved: SavedAttachment): UIMessage["parts"] {
 	return [
-		{
-			type: "text",
-			text: `[attachment: ${saved.path} — ${media.mimeType}, ${saved.size} bytes. Read it with read_file or bash tools.]`,
-		},
+		attachmentPart({
+			path: saved.path,
+			mediaType: media.mimeType,
+			filename: media.fileName,
+			size: saved.size,
+		}),
 	];
 }

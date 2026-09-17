@@ -131,11 +131,10 @@ export async function createBot(deps: BotDeps): Promise<Bot> {
 				try {
 					const file = await bot.api.getFile(media.fileId);
 					const saved = await saveAttachment(media, file, apiRoot, token);
-					// Read the conversation fresh — a /model landing while the
-					// download ran should take effect for this media too.
-					const fresh = deps.store.get(conv.id) ?? conv;
-					const modelRef = fresh.model ?? deps.configRef.current.model;
-					parts.push(...(await mediaParts(media, saved, modelRef)));
+					// Just the saved-path reference — whether the bytes go
+					// inline is decided at turn time against the model that
+					// actually runs.
+					parts.push(...mediaParts(media, saved));
 				} catch (err) {
 					log.error("media intake failed", err, { conversation: conv.id });
 					parts.push({ type: "text", text: `[attachment failed to download: ${String(err)}]` });

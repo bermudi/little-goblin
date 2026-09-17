@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tool, type LanguageModel, type UIMessage } from "ai";
@@ -308,6 +308,94 @@ describe("turn authority", () => {
 		expect(prompts[0]).toContain("first");
 		expect(prompts[0]).not.toContain("second");
 		expect(prompts[1]).toContain("second");
+		store.close();
+	});
+
+	// Records the prompt each doStream call receives.
+	function recordingModel(deltas: string[], delayMs = 15) {
+		const prompts: string[] = [];
+		const base = fakeModel(deltas, delayMs) as unknown as {
+			doStream(o: { prompt: unknown }): { stream: ReadableStream<LanguageModelV2StreamPart> };
+		};
+		const model = {
+			...base,
+			doStream(o: { prompt: unknown }) {
+				prompts.push(JSON.stringify(o.prompt));
+				return base.doStream(o);
+			},
+		} as unknown as LanguageModel;
+		return { model, prompts };
+	}
+
+	test("an attachment part the model can't consume degrades to its path reference", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		// Stored intake record: path + metadata, no payload.
+		store.append(conv.id, [
+			{
+				id: "u1",
+				role: "user",
+				parts: [
+					{
+						type: "data-attachment",
+						data: {
+							path: "/gone/x.png",
+							mediaType: "image/png",
+							filename: "x.png",
+							size: 10,
+						},
+					},
+				],
+			},
+		]);
+		const { model, prompts } = recordingModel(["ok"], 5);
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test" }), // no inputModalities → text-only
+			makeTools: () => ({}),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		expect(prompts[0]).toContain("[attachment: /gone/x.png");
+		expect(prompts[0]).not.toContain("data:image/png");
+		store.close();
+	});
+
+	test("an attachment part materializes inline for a capable model", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-rt-att-"));
+		dirs.push(dir);
+		const f = join(dir, "x.png");
+		writeFileSync(f, "pngdata");
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(conv.id, [
+			{
+				id: "u1",
+				role: "user",
+				parts: [
+					{
+						type: "data-attachment",
+						data: { path: f, mediaType: "image/png", filename: "x.png", size: 7 },
+					},
+				],
+			},
+		]);
+		const { model, prompts } = recordingModel(["ok"], 5);
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({
+				model,
+				system: "test",
+				inputModalities: new Set(["text", "image"]),
+			}),
+			makeTools: () => ({}),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		expect(prompts[0]).toContain("image/png");
+		expect(prompts[0]).not.toContain("[attachment:");
 		store.close();
 	});
 

@@ -40,10 +40,11 @@ Conversation ─────── (chatId, threadId?) → durable event history
     Turn ──────────── ephemeral: one agent loop + serialized queue
 ```
 
-- **Conversation** — keyed by its Telegram address: a forum topic in the
-  operator's group, or the DM itself. Owns `events` (user msgs, assistant
-  msgs, tool calls, system events), `meta` (created, cwd, model/thinking
-  overrides). cwd is fixed once set.
+- **Conversation** — keyed by its Telegram address: a forum topic — in the
+  operator's group or in the bot's DM, which supports topics too — or the
+  bare chat itself. Owns `events` (user msgs, assistant msgs, tool calls,
+  system events), `meta` (created, cwd, model/thinking overrides). cwd is
+  fixed once set.
 - **Turn** — a unit of work enqueued on a conversation. Per-conversation
   serial queue; one active turn. A turn's history snapshot is taken at
   admission: messages submitted while it runs join the queue and its
@@ -53,9 +54,9 @@ Conversation ─────── (chatId, threadId?) → durable event history
 
 **Topics are the UX.** There are no `/new` or `/resume` commands. A forum
 topic is a conversation: create a topic to start one, post in an old topic to
-resume it. The bot may also create topics itself (`createForumTopic`). The DM
-lane is one standing conversation. Conversation management is Telegram's job,
-not a command set's.
+resume it. The bot may also create topics itself (`createForumTopic`). A chat
+without topics is one standing conversation. Conversation management is
+Telegram's job, not a command set's.
 
 ### The authority rule
 

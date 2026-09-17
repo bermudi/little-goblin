@@ -19,6 +19,27 @@ import { mediaFromMessage, mediaParts, saveAttachment } from "./media.ts";
 export const AUTH_TELEGRAM_TOKEN = "telegram";
 const QUIET_WINDOW_MS = 1_500;
 
+// Conversation identity IS the Telegram address: a topic — forum
+// supergroup or bot DM with topics enabled — or the bare chat.
+// `message_thread_id` also rides on comment threads in non-forum
+// groups, where `is_topic_message` stays unset and bots can't post;
+// those stay bare-chat. Private chats keep a thread-id fallback:
+// is_topic_message coverage for DM topics is newer than the field
+// itself.
+export function conversationAddress(msg: {
+	chat: { id: number; type: string };
+	message_thread_id?: number;
+	is_topic_message?: boolean;
+}): ConversationAddress {
+	if (
+		msg.message_thread_id !== undefined &&
+		(msg.is_topic_message === true || msg.chat.type === "private")
+	) {
+		return { kind: "topic", chatId: msg.chat.id, threadId: msg.message_thread_id };
+	}
+	return { kind: "dm", chatId: msg.chat.id };
+}
+
 interface BufferedItem {
 	parts: UIMessage["parts"];
 	replyTo: number | undefined;
@@ -98,12 +119,7 @@ export async function createBot(deps: BotDeps): Promise<Bot> {
 	bot.on("message", (ctx) => {
 		const msg = ctx.message;
 		const text = msg.text ?? msg.caption ?? "";
-		const addr: ConversationAddress =
-			msg.chat.type === "private"
-				? { kind: "dm", chatId: msg.chat.id }
-				: msg.message_thread_id !== undefined
-					? { kind: "topic", chatId: msg.chat.id, threadId: msg.message_thread_id }
-					: { kind: "dm", chatId: msg.chat.id };
+		const addr = conversationAddress(msg);
 		const conv = deps.store.resolve(addr, paths.workspace());
 		const topicTitle = msg.forum_topic_created?.name ?? msg.forum_topic_edited?.name;
 		if (topicTitle !== undefined) {

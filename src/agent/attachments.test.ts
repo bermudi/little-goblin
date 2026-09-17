@@ -79,6 +79,15 @@ describe("materializeAttachments", () => {
 		expect(out[0]!.parts[0]).toEqual({ type: "text", text: "hi" });
 	});
 
+	test("a malformed attachment part fails loud", async () => {
+		const bad: UIMessage = {
+			id: "u3",
+			role: "user",
+			parts: [{ type: ATTACHMENT_PART, data: { path: 123 } }],
+		};
+		await expect(materializeAttachments([bad], new Set(["image"]))).rejects.toThrow();
+	});
+
 	test(`${ATTACHMENT_PART} round-trips through stored JSON shape`, async () => {
 		// The stored part is plain JSON — what comes back from SQLite must
 		// materialize the same way as the in-memory object.

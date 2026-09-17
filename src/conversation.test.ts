@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -65,6 +66,21 @@ describe("conversation store", () => {
 		const after = store.get(c.id)!;
 		expect(after.model).toBe("zai/glm-4.5");
 		expect(after.epoch).toBe(1);
+		store.close();
+	});
+
+	test("history fails loud on a row that isn't a message", () => {
+		const path = tmpdb();
+		const store = openStore(path);
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		// Corrupt disk state — bypass the store's own writer.
+		const db = new Database(path);
+		db.run(
+			"INSERT INTO events (conversation_id, seq, role, data, created_at) VALUES (?, ?, ?, ?, ?)",
+			[c.id, 1, "user", JSON.stringify({ bogus: true }), new Date().toISOString()],
+		);
+		db.close();
+		expect(() => store.history(c.id)).toThrow(/invalid stored message/);
 		store.close();
 	});
 

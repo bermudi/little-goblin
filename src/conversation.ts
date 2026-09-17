@@ -7,6 +7,7 @@
 
 import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
+import { z } from "zod";
 
 // ---------- identity ----------
 
@@ -71,6 +72,16 @@ interface Row {
 	epoch: number;
 	created_at: string;
 }
+
+// Disk state is a boundary: history rows are validated on read, not
+// trusted. Parts stay loosely typed — the runtime's converters own the
+// per-part semantics — but a row that isn't a message envelope at all
+// fails loud here instead of confusing the model layer downstream.
+const uiMessageSchema = z.object({
+	id: z.string(),
+	role: z.enum(["system", "user", "assistant"]),
+	parts: z.array(z.looseObject({ type: z.string() })),
+});
 
 function toConversation(r: Row): Conversation {
 	return {
@@ -211,7 +222,15 @@ export function openStore(dbPath: string): ConversationStore {
 		},
 
 		history(id) {
-			return qHistory.all(id).map((r) => JSON.parse(r.data) as UIMessage);
+			return qHistory.all(id).map((r) => {
+				const parsed = uiMessageSchema.safeParse(JSON.parse(r.data));
+				if (!parsed.success) {
+					throw new Error(
+						`conversation ${id}: invalid stored message — ${parsed.error.message}`,
+					);
+				}
+				return parsed.data as UIMessage;
+			});
 		},
 
 		close() {

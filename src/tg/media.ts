@@ -4,7 +4,7 @@
 // the runtime against the current model's capability data, so intake
 // doesn't need to know the model at all.
 
-import { copyFile, mkdir, stat } from "node:fs/promises";
+import { copyFile, mkdir, stat, unlink } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { File as TgFile } from "grammy/types";
 import type { UIMessage } from "ai";
@@ -130,24 +130,31 @@ export async function saveAttachment(
 	await mkdir(paths.attachments(), { recursive: true });
 	const safe = basename(media.fileName).replace(/[^\w.\-]+/g, "_");
 	const dest = join(paths.attachments(), `${media.fileUniqueId}-${safe}`);
-	if (filePath.startsWith("/")) {
-		// Self-hosted bot-api in --local mode: the file is already on this
-		// box — copy on disk, no HTTP fetch, no in-memory buffer.
-		await copyFile(filePath, dest);
-	} else {
-		const root = apiRoot ?? "https://api.telegram.org";
-		// The request URL carries the bot token — scrub it from anything
-		// propagated toward logs.
-		const url = `${root}/file/bot${token}/${filePath}`;
-		let res: Response;
-		try {
-			res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
-		} catch (err) {
-			const msg = String(err instanceof Error ? err.message : err).replaceAll(token, "***");
-			throw new Error(`telegram file download failed: ${msg}`);
+	try {
+		if (filePath.startsWith("/")) {
+			// Self-hosted bot-api in --local mode: the file is already on this
+			// box — copy on disk, no HTTP fetch, no in-memory buffer.
+			await copyFile(filePath, dest);
+		} else {
+			const root = apiRoot ?? "https://api.telegram.org";
+			// The request URL carries the bot token — scrub it from anything
+			// propagated toward logs.
+			const url = `${root}/file/bot${token}/${filePath}`;
+			let res: Response;
+			try {
+				res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+			} catch (err) {
+				const msg = String(err instanceof Error ? err.message : err).replaceAll(token, "***");
+				throw new Error(`telegram file download failed: ${msg}`);
+			}
+			if (!res.ok) throw new Error(`telegram file download HTTP ${res.status}`);
+			await Bun.write(dest, res);
 		}
-		if (!res.ok) throw new Error(`telegram file download HTTP ${res.status}`);
-		await Bun.write(dest, res);
+	} catch (err) {
+		// A partial copy or aborted download must not sit in attachments/
+		// looking like the real file.
+		await unlink(dest).catch(() => {});
+		throw err;
 	}
 	const { size } = await stat(dest);
 	return { path: dest, size };

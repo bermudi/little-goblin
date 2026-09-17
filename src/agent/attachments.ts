@@ -12,6 +12,7 @@
 
 import { readFile } from "node:fs/promises";
 import type { UIMessage } from "ai";
+import { z } from "zod";
 
 // Inline payloads get a ceiling — data URLs bloat both the request and,
 // once materialized, the context window.
@@ -19,12 +20,14 @@ export const INLINE_MAX_BYTES = 8 * 1024 * 1024;
 
 export const ATTACHMENT_PART = "data-attachment";
 
-export interface AttachmentRef {
-	path: string;
-	mediaType: string;
-	filename: string;
-	size: number;
-}
+const attachmentRefSchema = z.object({
+	path: z.string(),
+	mediaType: z.string(),
+	filename: z.string(),
+	size: z.number(),
+});
+
+export type AttachmentRef = z.infer<typeof attachmentRefSchema>;
 
 // What intake stores: a data part, not a file part — it's a durable
 // reference, not model content.
@@ -61,7 +64,8 @@ export async function materializeAttachments(
 			parts: await Promise.all(
 				m.parts.map(async (p) => {
 					if (p.type !== ATTACHMENT_PART) return p;
-					const ref = p.data as AttachmentRef;
+					// The part crossed the disk boundary — validate, don't trust.
+					const ref = attachmentRefSchema.parse(p.data);
 					if (acceptsMedia(modalities, ref.mediaType) && ref.size <= INLINE_MAX_BYTES) {
 						try {
 							const bytes = await readFile(ref.path);

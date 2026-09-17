@@ -11,27 +11,46 @@ const EDIT_INTERVAL_MS = 1_000;
 const TYPING_INTERVAL_MS = 4_000;
 // Leave headroom under Telegram's 4096 limit for the status block.
 const CHUNK_LIMIT = 3800;
+// onDone drains the queue itself — enough headroom for ~95KB of backlog.
+const MAX_DRAIN_ITERATIONS = 25;
+const MAX_STAGNANT = 3;
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// One chunk per Telegram message. id: -1 = unsent (send failed or not yet
+// attempted), -2 = send in flight, otherwise the Telegram message id.
+// shown = the content we believe the message displays. A chunk sent early
+// as the trailing message can later slide into the middle of the stream;
+// its window then outgrows what it shows, so it gets patched with an edit
+// — no slice of the output is silently dropped.
+interface Chunk {
+	id: number;
+	shown: string;
+}
 
 export function makeDeliverySink(
 	api: Api,
 	conv: Conversation,
 	replyToMessageId: number | undefined,
+	editIntervalMs = EDIT_INTERVAL_MS,
 ): TurnSink {
 	let text = "";
 	const toolStatus: string[] = [];
-	// One entry per message chunk: -1 = unsent (send failed or not yet
-	// attempted — next flush retries), -2 = send in flight, otherwise the
-	// Telegram message id. At most one send is in flight and it is always
-	// the earliest unsent chunk, so messages can't land out of order.
-	const messageIds: number[] = [];
+	// At most one send is in flight and it is always the earliest unsent
+	// chunk, so messages can't land out of order.
+	const chunks: Chunk[] = [];
 	let lastEdit = 0;
-	// Serialize every api call — edits must not race sends.
+	// Serialized api calls — edits must not race sends. The chain never
+	// rejects: each link logs its own failure, so `await chain` is always
+	// safe and onDone can't throw on a delivery error.
 	let chain: Promise<void> = Promise.resolve();
 
 	function enqueue(fn: () => Promise<void>): void {
-		chain = chain.then(fn, (err: unknown) => {
-			log.warn("telegram delivery failed", { error: String(err) });
-		});
+		chain = chain.then(() =>
+			fn().catch((err: unknown) => {
+				log.warn("telegram delivery failed", { error: String(err) });
+			}),
+		);
 	}
 
 	const typing = setInterval(() => {
@@ -46,47 +65,50 @@ export function makeDeliverySink(
 		return text + status;
 	}
 
-	// Push the current rendered output to Telegram: new fixed-position
-	// chunks become new messages, the last one gets edited in place.
+	// Push the current rendered output to Telegram: fixed-position chunks
+	// become messages, the trailing one is edited in place. A sent chunk
+	// whose displayed content no longer matches its window gets re-edited
+	// — covers both failed edits and chunks sent before their window
+	// filled.
 	function flush(): void {
 		const body = rendered();
 		const needed = Math.ceil(body.length / CHUNK_LIMIT);
-		while (messageIds.length < needed) messageIds.push(-1);
-		for (let idx = 0; idx < messageIds.length; idx++) {
-			const id = messageIds[idx];
-			if (id === undefined || id === -2) break; // send in flight — wait it out
-			const isLast = idx === messageIds.length - 1;
-			const content = body.slice(
+		while (chunks.length < needed) chunks.push({ id: -1, shown: "" });
+		for (let idx = 0; idx < chunks.length; idx++) {
+			const c = chunks[idx]!;
+			if (c.id === -2) break; // send in flight — wait it out
+			const isLast = idx === chunks.length - 1;
+			const desired = body.slice(
 				idx * CHUNK_LIMIT,
 				isLast ? undefined : (idx + 1) * CHUNK_LIMIT,
 			);
-			if (id === -1) {
-				messageIds[idx] = -2;
+			const out = desired === "" ? "…" : desired;
+			if (c.id === -1) {
+				c.id = -2;
+				c.shown = out;
 				enqueue(async () => {
 					try {
-						const sent = await api.sendMessage(
-							conv.chatId,
-							content === "" ? "…" : content,
-							{
-								...(conv.threadId !== null
-									? { message_thread_id: conv.threadId }
-									: {}),
-								...(idx === 0 && replyToMessageId !== undefined
-									? { reply_parameters: { message_id: replyToMessageId } }
-									: {}),
-							},
-						);
-						messageIds[idx] = sent.message_id;
+						const sent = await api.sendMessage(conv.chatId, out, {
+							...(conv.threadId !== null
+								? { message_thread_id: conv.threadId }
+								: {}),
+							...(idx === 0 && replyToMessageId !== undefined
+								? { reply_parameters: { message_id: replyToMessageId } }
+								: {}),
+						});
+						c.id = sent.message_id;
 					} catch (err) {
-						messageIds[idx] = -1; // failed — retried by the next flush
+						c.id = -1; // failed — retried by the next flush
 						throw err;
 					}
 				});
 				break; // strictly ordered — later chunks go out on a later flush
 			}
-			if (isLast) {
+			if (c.shown !== desired) {
+				const mid = c.id;
 				enqueue(async () => {
-					await api.editMessageText(conv.chatId, id, content === "" ? "…" : content);
+					await api.editMessageText(conv.chatId, mid, out);
+					c.shown = out;
 				});
 			}
 		}
@@ -94,7 +116,11 @@ export function makeDeliverySink(
 	}
 
 	function maybeFlush(): void {
-		if (Date.now() - lastEdit >= EDIT_INTERVAL_MS) flush();
+		if (Date.now() - lastEdit >= editIntervalMs) flush();
+	}
+
+	function unsentCount(): number {
+		return chunks.filter((c) => c.id === -1).length;
 	}
 
 	return {
@@ -122,8 +148,27 @@ export function makeDeliverySink(
 				if (text === "" && toolStatus.length === 0) return;
 				toolStatus.push("⏹ superseded");
 			}
-			flush();
-			await chain;
+			// Final flush. No flush runs after this, so drain here: keep
+			// flushing while chunks remain unsent, retrying failures with a
+			// short backoff. Give up loudly rather than dropping the tail.
+			let prevUnsent = Number.POSITIVE_INFINITY;
+			let stagnant = 0;
+			for (let i = 0; i < MAX_DRAIN_ITERATIONS; i++) {
+				flush();
+				await chain;
+				const unsent = unsentCount();
+				if (unsent === 0) break;
+				stagnant = unsent >= prevUnsent ? stagnant + 1 : 0;
+				prevUnsent = unsent;
+				if (stagnant >= MAX_STAGNANT) {
+					log.warn("delivery gave up on unsent chunks", {
+						conversation: conv.id,
+						unsent,
+					});
+					break;
+				}
+				await sleep(300 * stagnant);
+			}
 		},
 	};
 }

@@ -2,6 +2,8 @@
 // one turn. A message resets the quiet-window timer; when it fires, all
 // buffered items flush as a single batch.
 
+import { log } from "../log.ts";
+
 export class CoalescingBuffer<T> {
 	private buckets = new Map<string, { items: T[]; timer: ReturnType<typeof setTimeout> }>();
 
@@ -32,6 +34,12 @@ export class CoalescingBuffer<T> {
 		const bucket = this.buckets.get(key);
 		if (!bucket) return;
 		this.buckets.delete(key);
-		this.flush(key, bucket.items);
+		// fire() runs in a timer — a throwing flush would escape as an
+		// uncaught exception and kill the process mid-update.
+		try {
+			this.flush(key, bucket.items);
+		} catch (err) {
+			log.error("buffer flush failed", err, { key });
+		}
 	}
 }

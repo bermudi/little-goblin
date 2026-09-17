@@ -59,4 +59,12 @@ describe("initData validation", () => {
 		});
 		expect(validateInitData(data, TOKEN, allowed)).toBeNull();
 	});
+
+	test("auth_date far in the future fails", () => {
+		const data = makeInitData({
+			auth_date: String(Math.floor(Date.now() / 1000) + 3600),
+			user: JSON.stringify({ id: 42 }),
+		});
+		expect(validateInitData(data, TOKEN, allowed)).toBeNull();
+	});
 });

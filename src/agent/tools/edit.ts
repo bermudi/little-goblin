@@ -10,7 +10,7 @@ export const editFileTool = (cwd: string) =>
 			"Replace exact text in a file. old_string must match uniquely unless replace_all is set.",
 		inputSchema: z.object({
 			path: z.string().describe("File path, relative to the working directory or absolute"),
-			old_string: z.string(),
+			old_string: z.string().min(1),
 			new_string: z.string(),
 			replace_all: z.boolean().optional(),
 		}),
@@ -32,7 +32,9 @@ export const editFileTool = (cwd: string) =>
 			if (count > 1 && !replace_all) {
 				return { error: `old_string matches ${count} times in ${path}; set replace_all or make it unique` };
 			}
-			const next = replace_all ? text.split(old_string).join(new_string) : text.replace(old_string, new_string);
+			// Function replacer: new_string is literal — a string replacer
+			// would interpret $&, $`, $', $n as special patterns.
+			const next = replace_all ? text.split(old_string).join(new_string) : text.replace(old_string, () => new_string);
 			durableWriteFile(abs, next);
 			return { path: abs, replaced: replace_all ? count : 1 };
 		},

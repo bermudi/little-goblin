@@ -6,6 +6,7 @@ import { resolveModel, thinkingOptions } from "./agent/providers.ts";
 import { makeTools } from "./agent/tools/mod.ts";
 import {
 	ensureHomeLayout,
+	goblinHome,
 	loadConfig,
 	paths,
 	thinkingLevels,
@@ -34,10 +35,10 @@ const store = openStore(paths.db());
 
 const runtime = new Runtime({
 	store,
-	buildStep(conv) {
+	async buildStep(conv) {
 		const cfg = configRef.current;
 		const modelRef = conv.model ?? cfg.model;
-		const { model } = resolveModel(cfg, auth, modelRef);
+		const { model } = await resolveModel(cfg, auth, modelRef);
 		const level: ThinkingLevel = (thinkingLevels as readonly string[]).includes(
 			conv.thinking ?? "",
 		)
@@ -56,7 +57,7 @@ const runtime = new Runtime({
 const bot = await startBot({ configRef, auth, store, runtime });
 const http = startHttp({
 	configRef,
-	botToken: auth.resolve(AUTH_TELEGRAM_TOKEN),
+	botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN),
 	onConfigWritten: () => {
 		setLogLevel(configRef.current.logLevel);
 	},
@@ -72,4 +73,4 @@ function shutdown(signal: string): void {
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
-log.info("goblin up", { home: paths.config() });
+log.info("goblin up", { home: goblinHome() });

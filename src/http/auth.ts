@@ -7,6 +7,8 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+// Small future tolerance for client clock skew; beyond that, reject.
+const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 
 export interface InitDataUser {
 	id: number;
@@ -34,8 +36,14 @@ export function validateInitData(
 	const b = Buffer.from(hash, "utf8");
 	if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
 
-	const authDate = Number(params.get("auth_date") ?? 0);
-	if (!Number.isFinite(authDate) || Date.now() - authDate * 1000 > MAX_AGE_MS) return null;
+	const authDateMs = Number(params.get("auth_date") ?? 0) * 1000;
+	if (
+		!Number.isFinite(authDateMs) ||
+		Date.now() - authDateMs > MAX_AGE_MS ||
+		authDateMs - Date.now() > MAX_FUTURE_SKEW_MS
+	) {
+		return null;
+	}
 
 	const userRaw = params.get("user");
 	if (!userRaw) return null;

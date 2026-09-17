@@ -60,7 +60,13 @@ async function ensureCatalog(): Promise<Catalog | null> {
 			const parsed = catalogSchema.safeParse(cached);
 			catalog = parsed.success ? parsed.data : null;
 		} catch (cacheErr) {
-			if ((cacheErr as NodeJS.ErrnoException).code !== "ENOENT") throw cacheErr;
+			// ENOENT just means no cache; anything else (corrupt file) is
+			// warned and ignored — a bad cache must not break media intake.
+			if ((cacheErr as NodeJS.ErrnoException).code !== "ENOENT") {
+				log.warn("models.dev cache unreadable — ignoring", {
+					error: String(cacheErr),
+				});
+			}
 			catalog = null;
 		}
 		return catalog;

@@ -29,8 +29,8 @@ export interface BotDeps {
 	runtime: Runtime;
 }
 
-export function createBot(deps: BotDeps): Bot {
-	const token = deps.auth.resolve(AUTH_TELEGRAM_TOKEN);
+export async function createBot(deps: BotDeps): Promise<Bot> {
+	const token = await deps.auth.resolve(AUTH_TELEGRAM_TOKEN);
 	// apiRoot is structural — applies at process start, not hot-reloaded.
 	const apiRoot = deps.configRef.current.telegram.apiRoot;
 	const bot = new Bot(token, apiRoot ? { client: { apiRoot } } : {});
@@ -70,7 +70,10 @@ export function createBot(deps: BotDeps): Bot {
 			deps.store.setMeta(conv.id, { title: topicTitle });
 		}
 
-		if (text !== "" && COMMAND_RE.test(text)) {
+		// Commands are settings-only — but a caption that looks like a
+		// command must not silently eat the media it rides on; media wins.
+		const media = mediaFromMessage(msg);
+		if (text !== "" && !media && COMMAND_RE.test(text)) {
 			if (handleCommand({ api: bot.api, configRef: deps.configRef, store: deps.store, runtime: deps.runtime }, conv, text)) {
 				return;
 			}
@@ -79,7 +82,6 @@ export function createBot(deps: BotDeps): Bot {
 		const parts: UIMessage["parts"] = [];
 		if (text !== "") parts.push({ type: "text", text });
 
-		const media = mediaFromMessage(msg);
 		if (media) {
 			try {
 				const file = await ctx.getFile();
@@ -105,7 +107,7 @@ export function createBot(deps: BotDeps): Bot {
 }
 
 export async function startBot(deps: BotDeps): Promise<Bot> {
-	const bot = createBot(deps);
+	const bot = await createBot(deps);
 	const me = await bot.api.getMe();
 	log.info("telegram bot online", { bot: me.username });
 

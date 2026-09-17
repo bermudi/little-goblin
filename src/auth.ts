@@ -10,7 +10,6 @@
 // logs. This module must never log a resolved value.
 
 import { readFileSync, statSync } from "node:fs";
-import { spawnSync } from "node:child_process";
 import { z } from "zod";
 import { paths } from "./config.ts";
 import { log } from "./log.ts";
@@ -21,9 +20,11 @@ const recordSchema = z.object({
 });
 
 export interface AuthStore {
-	// Resolve a named secret. Throws if absent — callers handle "no such
-	// secret" as a configuration error at the boundary that needs it.
-	resolve(name: string): string;
+	// Resolve a named secret. Rejects if absent or if a `!command` fails —
+	// callers handle "no such secret" as a configuration error at the
+	// boundary that needs it. Async: `!command` resolution shells out and
+	// must not block the event loop.
+	resolve(name: string): Promise<string>;
 	has(name: string): boolean;
 	names(): string[];
 }
@@ -65,7 +66,10 @@ export function loadAuth(): AuthStore {
 }
 
 function makeStore(entries: Map<string, string>): AuthStore {
-	const cache = new Map<string, string>();
+	// Promises are cached, not values: concurrent resolves share one
+	// `!command` execution, and a rejection evicts itself so a transient
+	// failure can be retried.
+	const cache = new Map<string, Promise<string>>();
 	return {
 		has: (name) => entries.has(name),
 		names: () => [...entries.keys()],
@@ -74,32 +78,55 @@ function makeStore(entries: Map<string, string>): AuthStore {
 			if (cached !== undefined) return cached;
 			const value = entries.get(name);
 			if (value === undefined) {
-				throw new Error(`auth.jsonl: no secret named "${name}"`);
+				return Promise.reject(new Error(`auth.jsonl: no secret named "${name}"`));
 			}
-			const resolved = value.startsWith("!") ? resolveCommand(value.slice(1), name) : value;
+			const resolved = value.startsWith("!")
+				? resolveCommand(value.slice(1), name)
+				: Promise.resolve(value);
 			cache.set(name, resolved);
+			resolved.catch(() => cache.delete(name));
 			return resolved;
 		},
 	};
 }
 
-function resolveCommand(command: string, name: string): string {
-	const result = spawnSync("/bin/sh", ["-c", command], {
-		encoding: "utf8",
-		timeout: 15_000,
-		env: process.env,
-	});
-	if (result.error) {
-		throw new Error(`auth.jsonl: command for "${name}" failed — ${result.error.message}`);
+const RESOLVE_TIMEOUT_MS = 15_000;
+
+async function resolveCommand(command: string, name: string): Promise<string> {
+	let proc: Bun.ReadableSubprocess;
+	try {
+		proc = Bun.spawn(["/bin/sh", "-c", command], {
+			env: process.env,
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+	} catch (err) {
+		throw new Error(`auth.jsonl: command for "${name}" failed to spawn — ${(err as Error).message}`);
 	}
-	if (result.status !== 0) {
-		throw new Error(
-			`auth.jsonl: command for "${name}" exited ${result.status}: ${result.stderr.trim()}`,
-		);
+	let timedOut = false;
+	const timer = setTimeout(() => {
+		timedOut = true;
+		proc.kill();
+	}, RESOLVE_TIMEOUT_MS);
+	try {
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		if (timedOut) {
+			throw new Error(`auth.jsonl: command for "${name}" timed out after ${RESOLVE_TIMEOUT_MS}ms`);
+		}
+		if (exitCode !== 0) {
+			throw new Error(`auth.jsonl: command for "${name}" exited ${exitCode}: ${stderr.trim()}`);
+		}
+		const out = stdout.trim();
+		if (out === "") {
+			throw new Error(`auth.jsonl: command for "${name}" produced no output`);
+		}
+		return out;
+	} finally {
+		clearTimeout(timer);
 	}
-	const out = result.stdout.trim();
-	if (out === "") {
-		throw new Error(`auth.jsonl: command for "${name}" produced no output`);
-	}
-	return out;
 }

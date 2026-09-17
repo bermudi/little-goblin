@@ -24,32 +24,32 @@ afterEach(() => {
 });
 
 describe("auth.jsonl", () => {
-	test("ENOENT → empty store, resolve throws", () => {
+	test("ENOENT → empty store, resolve rejects", async () => {
 		useHome();
 		const auth = loadAuth();
 		expect(auth.has("x")).toBe(false);
-		expect(() => auth.resolve("x")).toThrow('no secret named "x"');
+		await expect(auth.resolve("x")).rejects.toThrow('no secret named "x"');
 	});
 
-	test("literal values resolve", () => {
+	test("literal values resolve", async () => {
 		const dir = useHome();
 		writeFileSync(join(dir, "auth.jsonl"), '{"name":"a","value":"s3cret"}\n');
-		expect(loadAuth().resolve("a")).toBe("s3cret");
+		expect(await loadAuth().resolve("a")).toBe("s3cret");
 	});
 
-	test("!command resolves via stdout", () => {
+	test("!command resolves via stdout", async () => {
 		const dir = useHome();
 		writeFileSync(
 			join(dir, "auth.jsonl"),
 			'{"name":"b","value":"!echo resolved-value"}\n',
 		);
-		expect(loadAuth().resolve("b")).toBe("resolved-value");
+		expect(await loadAuth().resolve("b")).toBe("resolved-value");
 	});
 
-	test("failing !command throws with the secret name, not the value", () => {
+	test("failing !command rejects with the secret name, not the value", async () => {
 		const dir = useHome();
 		writeFileSync(join(dir, "auth.jsonl"), '{"name":"c","value":"!exit 3"}\n');
-		expect(() => loadAuth().resolve("c")).toThrow('"c"');
+		await expect(loadAuth().resolve("c")).rejects.toThrow('"c"');
 	});
 
 	test("malformed line fails loud with line number", () => {

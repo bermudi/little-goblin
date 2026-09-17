@@ -9,11 +9,11 @@ import type { LanguageModel } from "ai";
 import type { AuthStore } from "../auth.ts";
 import { splitModelRef, type Config, type ThinkingLevel } from "../config.ts";
 
-export function resolveModel(
+export async function resolveModel(
 	config: Config,
 	auth: AuthStore,
 	modelRef: string,
-): { model: LanguageModel; providerName: string } {
+): Promise<{ model: LanguageModel; providerName: string }> {
 	const { provider, modelId } = splitModelRef(modelRef);
 	const p = config.providers[provider];
 	if (!p) {
@@ -21,7 +21,7 @@ export function resolveModel(
 			`model "${modelRef}": provider "${provider}" not in goblin.json5 providers`,
 		);
 	}
-	const apiKey = auth.resolve(p.auth);
+	const apiKey = await auth.resolve(p.auth);
 	switch (p.kind) {
 		case "openai-compatible": {
 			const f = createOpenAICompatible({ name: provider, baseURL: p.baseUrl, apiKey });

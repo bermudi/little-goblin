@@ -34,7 +34,9 @@ export const readFileTool = (cwd: string) =>
 			}
 			const text = raw.toString("utf8");
 			const lines = text.split("\n");
-			const start = (offset ?? 1) - 1;
+			// Clamp: an offset past EOF yields empty content, not a negative
+			// `shown` count.
+			const start = Math.min((offset ?? 1) - 1, lines.length);
 			const end = Math.min(lines.length, start + (limit ?? MAX_LINES));
 			let out = "";
 			for (let i = start; i < end; i++) {

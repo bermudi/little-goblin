@@ -51,8 +51,9 @@ export interface ModelStep {
 export interface RuntimeDeps {
 	store: ConversationStore;
 	// Resolve the conversation's effective model + system prompt + provider
-	// options (thinking level) fresh at each turn.
-	buildStep(conv: Conversation): ModelStep;
+	// options (thinking level) fresh at each turn. May be async (auth
+	// `!command` resolution shells out).
+	buildStep(conv: Conversation): ModelStep | Promise<ModelStep>;
 	// Build the tool set bound to the conversation's cwd.
 	makeTools(cwd: string): ToolSet;
 }
@@ -178,6 +179,8 @@ export class Runtime {
 		const conv = store.get(convId);
 		if (!conv) {
 			log.error("turn for missing conversation", undefined, { conversation: convId });
+			// The sink contract still holds: exactly one onDone per submit.
+			await turn.sink.onDone({ kind: "error", message: "conversation missing" });
 			return;
 		}
 		const epoch = conv.epoch;
@@ -186,7 +189,8 @@ export class Runtime {
 
 		try {
 			this.checkAuthority(convId, epoch);
-			const step = this.deps.buildStep(conv);
+			const step = await this.deps.buildStep(conv);
+			this.checkAuthority(convId, epoch);
 			const tools = this.fenceTools(this.deps.makeTools(conv.cwd), convId, epoch);
 			const history = store.history(convId);
 			const messages = convertToModelMessages(history, {

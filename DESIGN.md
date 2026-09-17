@@ -99,6 +99,14 @@ agent loop.
 - **History**: stored as AI SDK `UIMessage`-format JSON (the v5 parts array —
   text, reasoning, tool, file parts). The SDK doesn't prescribe storage; this
   is the format it round-trips best.
+- **Causal view, arrival-order storage.** `events` appends in arrival seq —
+  that stays the truth. What the model sees interleaves replies by
+  `anchor_seq`: each assistant response is stamped with the seq of the user
+  message that triggered its turn and sorts immediately after it, so a reply
+  never reads as having seen input that arrived while it ran. Submits queued
+  behind a running turn coalesce into one successor turn — a single model
+  call answers them all — and consecutive user messages merge into one at
+  conversion.
 - **Capabilities**: don't hand-maintain a matrix. Use what the SDK exposes on
   model objects (`supportedUrls`, unsupported-feature warnings) plus the
   `models.dev` catalog for per-model input modalities (image/audio/document),

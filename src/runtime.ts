@@ -192,18 +192,28 @@ export class Runtime {
 		lane.running = true;
 		try {
 			for (;;) {
-				const turn = lane.pending.shift();
-				if (!turn) return;
+				// Drain everything queued into ONE turn — messages that
+				// piled up behind a running turn are one conversational
+				// beat, and a single model call answers them all.
+				const turns = lane.pending.splice(0);
+				if (turns.length === 0) return;
+				if (turns.length > 1) {
+					log.info("queued submits coalesced", {
+						conversation: convId,
+						count: turns.length,
+					});
+				}
 				try {
-					await this.runTurn(convId, turn);
+					await this.runTurn(convId, turns);
 				} catch (err) {
 					// runTurn handles expected failures; this is a last-ditch guard
-					// so one bad turn can't stall the lane or leak its sink.
+					// so one bad turn can't stall the lane or leak its sinks.
 					log.error("turn crashed", err, { conversation: convId });
-					await this.notifyDone(turn, {
+					const done: TurnDone = {
 						kind: "error",
 						message: err instanceof Error ? err.message : String(err),
-					});
+					};
+					for (const t of turns) await this.notifyDone(t, done);
 				}
 			}
 		} finally {
@@ -216,22 +226,32 @@ export class Runtime {
 		}
 	}
 
-	private async runTurn(convId: string, turn: QueuedTurn): Promise<void> {
+	private async runTurn(convId: string, turns: QueuedTurn[]): Promise<void> {
 		const { store } = this.deps;
+		// The first queued sink streams the response; the rest get the
+		// same terminal outcome and nothing else — one onDone per submit.
+		const sink = turns[0]!.sink;
+		const notifyAll = async (done: TurnDone) => {
+			for (const t of turns) await this.notifyDone(t, done);
+		};
 		// Admission: capture the epoch this turn holds authority under.
 		const conv = store.get(convId);
 		if (!conv) {
 			log.error("turn for missing conversation", undefined, { conversation: convId });
 			// The sink contract still holds: exactly one onDone per submit.
-			await this.notifyDone(turn, { kind: "error", message: "conversation missing" });
+			await notifyAll({ kind: "error", message: "conversation missing" });
 			return;
 		}
 		const epoch = conv.epoch;
 		// History snapshot is part of admission: a message submitted while
 		// the model step resolves lands in history but must NOT join this
 		// turn's context — it stays queued for its own turn. Reading it
-		// here, before the awaits, is what keeps that boundary.
+		// here, before the awaits, is what keeps that boundary. The anchor
+		// rides along: this turn's response is stamped with the seq of
+		// the user message that triggered it, so the causal view can
+		// place the reply immediately after its question.
 		const history = store.history(convId);
+		const anchorSeq = store.lastUserSeq(convId);
 		log.info("turn started", { conversation: convId, epoch, history: history.length });
 		const controller = new AbortController();
 		this.lane(convId).controller = controller;
@@ -244,7 +264,10 @@ export class Runtime {
 			// Materialize attachment refs against THIS turn's model — a
 			// media part the provider can't consume degrades to its path
 			// reference instead of failing the request on every turn.
-			const prepared = await materializeAttachments(history, step.inputModalities);
+			const prepared = await materializeAttachments(
+				mergeConsecutiveUsers(history),
+				step.inputModalities,
+			);
 			this.checkAuthority(convId, epoch);
 			const messages = convertToModelMessages(prepared, {
 				tools,
@@ -295,13 +318,13 @@ export class Runtime {
 				this.checkAuthority(convId, epoch);
 				switch (chunk.type) {
 					case "text-delta":
-						turn.sink.onTextDelta(chunk.delta);
+						sink.onTextDelta(chunk.delta);
 						break;
 					case "reasoning-delta":
-						turn.sink.onReasoningDelta(chunk.delta);
+						sink.onReasoningDelta(chunk.delta);
 						break;
 					case "tool-input-available":
-						turn.sink.onToolCall(chunk.toolName, chunk.input);
+						sink.onToolCall(chunk.toolName, chunk.input);
 						// Side-effecting boundary — the chat shows a status
 						// line, the log gets the durable record. Args are
 						// truncated metadata, not payloads.
@@ -321,24 +344,43 @@ export class Runtime {
 			if (streamError !== null) throw new Error(streamError);
 			if (responseMessage !== null) {
 				// responseMessage already carries an SDK-assigned id.
-				store.append(convId, [responseMessage]);
+				// The anchor ties it to the user message that triggered
+				// this turn — the causal view places the reply right
+				// after its question, not after later arrivals.
+				store.append(convId, [responseMessage], { anchorSeq });
 			}
-			await this.notifyDone(turn, { kind: "completed" });
+			await notifyAll({ kind: "completed" });
 			log.info("turn completed", { conversation: convId, epoch });
 		} catch (err) {
 			if (err instanceof FencedError || controller.signal.aborted) {
 				// Fenced turns abort quietly and log it.
 				log.info("turn fenced", { conversation: convId, epoch, error: String(err) });
-				await this.notifyDone(turn, { kind: "fenced" });
+				await notifyAll({ kind: "fenced" });
 			} else {
 				log.error("turn failed", err, { conversation: convId });
-				await this.notifyDone(turn, {
+				await notifyAll({
 					kind: "error",
 					message: err instanceof Error ? err.message : String(err),
 				});
 			}
 		}
 	}
+}
+
+// A burst of user input with no answer between the messages is one
+// conversational beat — merge adjacent user messages so the model
+// reads them as a single message, not N. Keeps the first id.
+function mergeConsecutiveUsers(messages: UIMessage[]): UIMessage[] {
+	const out: UIMessage[] = [];
+	for (const m of messages) {
+		const prev = out[out.length - 1];
+		if (m.role === "user" && prev?.role === "user") {
+			prev.parts.push(...m.parts);
+		} else {
+			out.push(m);
+		}
+	}
+	return out;
 }
 
 export function userMessage(parts: UIMessage["parts"]): UIMessage {

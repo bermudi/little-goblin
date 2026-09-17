@@ -261,6 +261,47 @@ describe("turn authority", () => {
 		store.close();
 	});
 
+	test("submits queued behind a running turn coalesce into ONE successor turn", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const { model, prompts } = recordingModel(["answer"], 30);
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({}),
+		});
+		const s1 = new RecordingSink();
+		const s2 = new RecordingSink();
+		const s3 = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "2+2?" }]), s1);
+		await sleep(15); // turn 1 is mid-stream
+		runtime.submit(conv, userMessage([{ type: "text", text: "2+5?" }]), s2);
+		runtime.submit(conv, userMessage([{ type: "text", text: "2+8?" }]), s3);
+		// Two queued submits, one successor turn — every sink still gets
+		// exactly one onDone.
+		expect(await s1.done).toEqual({ kind: "completed" });
+		expect(await s2.done).toEqual({ kind: "completed" });
+		expect(await s3.done).toEqual({ kind: "completed" });
+		expect(prompts).toHaveLength(2); // two model calls for three submits
+		// The streaming sink is the first queued one; the rest get the
+		// outcome and nothing else.
+		expect(s2.text).toBe("answer");
+		expect(s3.text).toBe("");
+		// The second call's context tells the true story: the first
+		// answer sits right after its question, and the queued burst
+		// reads as ONE user message, not turns the reply already saw.
+		const wire = JSON.parse(prompts[1]!) as {
+			role: string;
+			content: { type: string; text?: string }[];
+		}[];
+		const msgs = wire.filter((m) => m.role !== "system");
+		expect(msgs.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+		expect(msgs[0]!.content.map((c) => c.text)).toEqual(["2+2?"]);
+		expect(msgs[1]!.content.map((c) => c.text)).toEqual(["answer"]);
+		expect(msgs[2]!.content.map((c) => c.text)).toEqual(["2+5?", "2+8?"]);
+		store.close();
+	});
+
 	test("a failed model stream reports error — no silent completion, no partial append", async () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");

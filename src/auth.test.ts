@@ -52,6 +52,26 @@ describe("auth.jsonl", () => {
 		await expect(loadAuth().resolve("c")).rejects.toThrow('"c"');
 	});
 
+	test("a lingering child can't wedge !command resolution", async () => {
+		const dir = useHome();
+		// The shell exits instantly; the orphaned sleep holds the pipe's
+		// write end for 60s. The cut drain means possibly-incomplete output
+		// — a maybe-partial secret must fail loud, bounded in time.
+		writeFileSync(
+			join(dir, "auth.jsonl"),
+			'{"name":"d","value":"!sleep 60 & echo partial"}\n',
+		);
+		const started = Date.now();
+		await expect(loadAuth().resolve("d")).rejects.toThrow('"d"');
+		expect(Date.now() - started).toBeLessThan(5_000);
+	});
+
+	test("oversized !command output is refused, not truncated into use", async () => {
+		const dir = useHome();
+		writeFileSync(join(dir, "auth.jsonl"), '{"name":"e","value":"!seq 1 500000"}\n');
+		await expect(loadAuth().resolve("e")).rejects.toThrow('"e"');
+	});
+
 	test("malformed line fails loud with line number", () => {
 		const dir = useHome();
 		writeFileSync(join(dir, "auth.jsonl"), '{"name":"a","value":"x"}\nnot json\n');

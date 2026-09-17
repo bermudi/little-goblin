@@ -223,7 +223,15 @@ export function openStore(dbPath: string): ConversationStore {
 
 		history(id) {
 			return qHistory.all(id).map((r) => {
-				const parsed = uiMessageSchema.safeParse(JSON.parse(r.data));
+				let raw: unknown;
+				try {
+					raw = JSON.parse(r.data);
+				} catch (err) {
+					throw new Error(
+						`conversation ${id}: invalid stored message — ${(err as Error).message}`,
+					);
+				}
+				const parsed = uiMessageSchema.safeParse(raw);
 				if (!parsed.success) {
 					throw new Error(
 						`conversation ${id}: invalid stored message — ${parsed.error.message}`,

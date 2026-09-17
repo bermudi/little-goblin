@@ -13,7 +13,7 @@ export async function resolveModel(
 	config: Config,
 	auth: AuthStore,
 	modelRef: string,
-): Promise<{ model: LanguageModel; providerName: string }> {
+): Promise<LanguageModel> {
 	const { provider, modelId } = splitModelRef(modelRef);
 	const p = config.providers[provider];
 	if (!p) {
@@ -23,17 +23,17 @@ export async function resolveModel(
 	}
 	const apiKey = await auth.resolve(p.auth);
 	switch (p.kind) {
-		case "openai-compatible": {
-			const f = createOpenAICompatible({ name: provider, baseURL: p.baseUrl, apiKey });
-			return { model: f.chatModel(modelId), providerName: provider };
-		}
-		case "openrouter": {
-			const f = createOpenRouter({ apiKey });
+		case "openai-compatible":
+			return createOpenAICompatible({
+				name: provider,
+				baseURL: p.baseUrl,
+				apiKey,
+			}).chatModel(modelId);
+		case "openrouter":
 			// The provider package's response-metadata types use nullable
 			// fields that predate exactOptionalPropertyTypes — structurally
 			// it's the same spec-v2 LanguageModel.
-			return { model: f.chat(modelId) as unknown as LanguageModel, providerName: "openrouter" };
-		}
+			return createOpenRouter({ apiKey }).chat(modelId) as unknown as LanguageModel;
 	}
 }
 

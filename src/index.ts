@@ -43,7 +43,7 @@ const runtime = new Runtime({
 		const { provider, modelId } = splitModelRef(modelRef);
 		// Both may be slow (auth "!command", models.dev fetch) — run in
 		// parallel inside the same admission window.
-		const [{ model }, modalities] = await Promise.all([
+		const [model, modalities] = await Promise.all([
 			resolveModel(cfg, auth, modelRef),
 			inputModalities(provider, modelId),
 		]);

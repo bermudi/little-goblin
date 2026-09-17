@@ -13,6 +13,7 @@ import { readFileSync, statSync } from "node:fs";
 import { z } from "zod";
 import { paths } from "./config.ts";
 import { log } from "./log.ts";
+import { boundedRun, spawnProc } from "./proc.ts";
 
 const recordSchema = z.object({
 	name: z.string().min(1),
@@ -97,42 +98,41 @@ function makeStore(entries: Map<string, string>): AuthStore {
 }
 
 const RESOLVE_TIMEOUT_MS = 15_000;
+// A secret is a line of text. Far more means the command is wrong — cap it
+// rather than buffering a flood.
+const MAX_OUTPUT = 64 * 1024;
 
+// Runs through the shared bounded runner: a command that ignores SIGTERM is
+// escalated to SIGKILL, and a spawned child holding the pipes open can't
+// keep EOF pending past the drain window. An unbounded resolve would hang
+// buildStep and wedge the conversation lane — /stop can't reach it.
 async function resolveCommand(command: string, name: string): Promise<string> {
 	let proc: Bun.ReadableSubprocess;
 	try {
-		proc = Bun.spawn(["/bin/sh", "-c", command], {
-			env: process.env,
-			stdin: "ignore",
-			stdout: "pipe",
-			stderr: "pipe",
-		});
+		proc = spawnProc(["/bin/sh", "-c", command]);
 	} catch (err) {
 		throw new Error(`auth.jsonl: command for "${name}" failed to spawn — ${(err as Error).message}`);
 	}
-	let timedOut = false;
-	const timer = setTimeout(() => {
-		timedOut = true;
-		proc.kill();
-	}, RESOLVE_TIMEOUT_MS);
-	try {
-		const [stdout, stderr, exitCode] = await Promise.all([
-			new Response(proc.stdout).text(),
-			new Response(proc.stderr).text(),
-			proc.exited,
-		]);
-		if (timedOut) {
-			throw new Error(`auth.jsonl: command for "${name}" timed out after ${RESOLVE_TIMEOUT_MS}ms`);
-		}
-		if (exitCode !== 0) {
-			throw new Error(`auth.jsonl: command for "${name}" exited ${exitCode}: ${stderr.trim()}`);
-		}
-		const out = stdout.trim();
-		if (out === "") {
-			throw new Error(`auth.jsonl: command for "${name}" produced no output`);
-		}
-		return out;
-	} finally {
-		clearTimeout(timer);
+	const result = await boundedRun(proc, {
+		timeoutMs: RESOLVE_TIMEOUT_MS,
+		maxOutput: MAX_OUTPUT,
+	});
+	if (result.timedOut) {
+		throw new Error(`auth.jsonl: command for "${name}" timed out after ${RESOLVE_TIMEOUT_MS}ms`);
 	}
+	if (result.truncated) {
+		// Cut or capped output may be an incomplete credential — a wrong
+		// secret fails downstream confusingly, so refuse it here.
+		throw new Error(`auth.jsonl: command for "${name}" produced oversized or cut-off output`);
+	}
+	if (result.exitCode !== 0) {
+		throw new Error(
+			`auth.jsonl: command for "${name}" exited ${result.exitCode}: ${result.stderr.trim()}`,
+		);
+	}
+	const out = result.stdout.trim();
+	if (out === "") {
+		throw new Error(`auth.jsonl: command for "${name}" produced no output`);
+	}
+	return out;
 }

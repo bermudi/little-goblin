@@ -50,8 +50,12 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 						return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
 					}
 					try {
-						// The page sends a partial; merge over current config.
-						writeConfig({ ...deps.configRef.current, ...(body as object) });
+						// The page sends a partial; merge over the freshest on-disk
+						// config — a hand edit since boot must not be silently
+						// discarded by an app save. An invalid on-disk file fails
+						// here with its own parse error.
+						const base = loadConfig() ?? deps.configRef.current;
+						writeConfig({ ...base, ...(body as object) });
 						const fresh = loadConfig();
 						if (fresh) deps.configRef.current = fresh;
 						deps.onConfigWritten();

@@ -43,9 +43,13 @@ export function loadAuth(): AuthStore {
 		throw err;
 	}
 
+	// Any group/world bit means the secrets file leaks to other users —
+	// refuse to load rather than warn and proceed.
 	const mode = statSync(paths.auth()).mode & 0o777;
-	if (mode !== 0o600) {
-		log.warn("auth.jsonl should be mode 0600", { path: paths.auth(), mode: mode.toString(8) });
+	if ((mode & 0o077) !== 0) {
+		throw new Error(
+			`${paths.auth()}: insecure permissions ${mode.toString(8).padStart(4, "0")} — clear group/world bits (chmod 600)`,
+		);
 	}
 
 	for (const [i, line] of raw.split("\n").entries()) {
@@ -126,9 +130,10 @@ async function resolveCommand(command: string, name: string): Promise<string> {
 		throw new Error(`auth.jsonl: command for "${name}" produced oversized or cut-off output`);
 	}
 	if (result.exitCode !== 0) {
-		throw new Error(
-			`auth.jsonl: command for "${name}" exited ${result.exitCode}: ${result.stderr.trim()}`,
-		);
+		// stderr stays out of the error — a failing credential command can
+		// echo the secret it was fed, and errors travel to logs and the
+		// model context.
+		throw new Error(`auth.jsonl: command for "${name}" exited ${result.exitCode}`);
 	}
 	const out = result.stdout.trim();
 	if (out === "") {

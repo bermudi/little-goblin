@@ -138,6 +138,68 @@ describe("delivery", () => {
 		);
 	});
 
+	test("a failed final edit is retried by the drain, not declared done", async () => {
+		let edits = 0;
+		const msgs: string[] = [];
+		const api = {
+			sendChatAction: () => Promise.resolve(true),
+			sendMessage: async (_chat: number, text: string) => {
+				msgs.push(text);
+				return { message_id: msgs.length };
+			},
+			editMessageText: async (_chat: number, id: number, text: string) => {
+				edits++;
+				// Two transient failures — the drain must keep retrying a
+				// stale shown window, not exit on zero unsent sends.
+				if (edits <= 2) throw new Error("transient edit failure");
+				msgs[id - 1] = text;
+				return true;
+			},
+		} as unknown as Api;
+		const sink = makeDeliverySink(api, conv, undefined, 0);
+		sink.onTextDelta("a".repeat(3791));
+		await sleep(0);
+		expect(msgs).toEqual(["a".repeat(3791)]);
+		// The error status entry lands at done time, so the seam under
+		// msg1 moves only in the final flush — its edit fails twice and
+		// the drain has to come back for it.
+		await sink.onDone({ kind: "error", message: "boom" });
+		expect(msgs.join("")).toBe("a".repeat(3791) + "\n\n—\n⚠ boom");
+	});
+
+	test("a chunk edited to the empty-window ellipsis is not re-edited", async () => {
+		let ellipsisEdits = 0;
+		const msgs: string[] = [];
+		const api = {
+			sendChatAction: () => Promise.resolve(true),
+			sendMessage: async (_chat: number, text: string) => {
+				msgs.push(text);
+				return { message_id: msgs.length };
+			},
+			editMessageText: async (_chat: number, id: number, text: string) => {
+				if (text === "…") ellipsisEdits++;
+				msgs[id - 1] = text;
+				return true;
+			},
+		} as unknown as Api;
+		const sink = makeDeliverySink(api, conv, undefined, 0);
+		// Two long status entries (the hint caps at 60 chars) push the body
+		// past the chunk limit, so a second message goes out showing the
+		// tail.
+		sink.onTextDelta("a".repeat(3700));
+		sink.onToolCall("t", { path: "p".repeat(200) });
+		sink.onToolCall("t", { path: "p".repeat(200) });
+		await sleep(0);
+		// Tiny entries roll the long ones out of the last-5 window — the
+		// tail shrinks back under the limit and msg2's window empties.
+		for (let i = 0; i < 6; i++) sink.onToolCall("t", { path: "p" });
+		await sink.onDone({ kind: "completed" });
+		expect(msgs[1]).toBe("…");
+		// shown already holds "…" — comparing against the rendered value
+		// means later flushes see no diff. Each would re-edit otherwise.
+		expect(ellipsisEdits).toBe(1);
+	});
+
 	test("permanently failing sends don't make onDone throw", async () => {
 		const { api } = fakeApi({ failSends: true });
 		const sink = makeDeliverySink(api, conv, undefined, 0);

@@ -60,6 +60,33 @@ describe("goblin.json5", () => {
 		expect(() => loadConfig()).toThrow("goblin.json5");
 	});
 
+	test("a port outside 0–65535 is rejected", () => {
+		const dir = useHome();
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7],http:{port:70000}}`,
+		);
+		expect(() => loadConfig()).toThrow("goblin.json5");
+	});
+
+	test("a model naming a missing provider is rejected", () => {
+		const dir = useHome();
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"other/glm-4.6",allowedUsers:[7]}`,
+		);
+		expect(() => loadConfig()).toThrow('provider "other"');
+	});
+
+	test("a malformed model ref is rejected", () => {
+		const dir = useHome();
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"glm-4.6",allowedUsers:[7]}`,
+		);
+		expect(() => loadConfig()).toThrow("provider>/<model-id>");
+	});
+
 	test("writeConfig preserves a hardened file mode", () => {
 		const dir = useHome();
 		const p = join(dir, "goblin.json5");

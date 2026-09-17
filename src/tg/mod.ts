@@ -171,9 +171,9 @@ export async function startBot(deps: BotDeps): Promise<Bot> {
 	const bot = await createBot(deps);
 	log.info("telegram bot online", { bot: bot.botInfo.username });
 
-	if (deps.configRef.current.publicUrl) {
-		applyMenuButton(bot.api, deps.configRef.current.publicUrl);
-	}
+	// Unconditional: an unset publicUrl must reset the button to default,
+	// not leave a stale web_app link from a previous config.
+	applyMenuButton(bot.api, deps.configRef.current.publicUrl);
 
 	bot.start({
 		onStart: () => log.info("long polling started"),

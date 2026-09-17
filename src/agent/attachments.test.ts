@@ -73,6 +73,36 @@ describe("materializeAttachments", () => {
 		expect(out[0]!.parts[0]!.type).toBe("text");
 	});
 
+	test("a file that grew past the cap since intake degrades to the path reference", async () => {
+		const dir = tmpdir_();
+		const f = join(dir, "x.png");
+		writeFileSync(f, "x".repeat(64));
+		// ref.size says 4 — the recorded size is not authoritative.
+		const out = await materializeAttachments([msg(f)], new Set(["image"]), 16);
+		expect(out[0]!.parts[0]!.type).toBe("text");
+	});
+
+	test("attachments past the inline budget degrade, oldest first", async () => {
+		const dir = tmpdir_();
+		const a = join(dir, "a.png");
+		const b = join(dir, "b.png");
+		writeFileSync(a, "12345678");
+		writeFileSync(b, "12345678");
+		const m: UIMessage = {
+			id: "u4",
+			role: "user",
+			parts: [
+				attachmentPart({ path: a, mediaType: "image/png", filename: "a.png", size: 8 }),
+				attachmentPart({ path: b, mediaType: "image/png", filename: "b.png", size: 8 }),
+			],
+		};
+		const out = await materializeAttachments([m], new Set(["image"]), 10);
+		expect(out[0]!.parts[0]!.type).toBe("file");
+		const second = out[0]!.parts[1]!;
+		expect(second.type).toBe("text");
+		expect((second as { text: string }).text).toContain(b);
+	});
+
 	test("non-attachment parts pass through untouched", async () => {
 		const m: UIMessage = { id: "u2", role: "user", parts: [{ type: "text", text: "hi" }] };
 		const out = await materializeAttachments([m], new Set(["image"]));

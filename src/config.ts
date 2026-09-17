@@ -66,26 +66,46 @@ const providerSchema = z.discriminatedUnion("kind", [
 export const thinkingLevels = ["off", "low", "medium", "high"] as const;
 export type ThinkingLevel = (typeof thinkingLevels)[number];
 
-const configSchema = z.object({
-	providers: z.record(z.string(), providerSchema),
-	// "<provider>/<model-id>" — provider must exist in `providers`.
-	model: z.string().min(1),
-	favorites: z.array(z.string()).default([]),
-	thinking: z.enum(thinkingLevels).default("medium"),
-	allowedUsers: z.array(z.number().int().positive()).min(1),
-	// Self-hosted telegram-bot-api in --local mode, e.g. http://127.0.0.1:8081.
-	// Absent = default api.telegram.org.
-	telegram: z.object({ apiRoot: z.url().optional() }).default({}),
-	// External HTTPS door for mini apps (tailscale serve/funnel, reverse
-	// proxy). Nothing in-process assumes a public IP. "" means unset —
-	// the settings form can't express undefined over JSON.
-	publicUrl: z
-		.union([z.url(), z.literal("")])
-		.transform((v) => v || undefined)
-		.optional(),
-	http: z.object({ port: z.number().int().default(8787) }).default({ port: 8787 }),
-	logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
-});
+const configSchema = z
+	.object({
+		providers: z.record(z.string(), providerSchema),
+		// "<provider>/<model-id>" — provider must exist in `providers`.
+		model: z.string().min(1),
+		favorites: z.array(z.string()).default([]),
+		thinking: z.enum(thinkingLevels).default("medium"),
+		allowedUsers: z.array(z.number().int().positive()).min(1),
+		// Self-hosted telegram-bot-api in --local mode, e.g. http://127.0.0.1:8081.
+		// Absent = default api.telegram.org.
+		telegram: z.object({ apiRoot: z.url().optional() }).default({}),
+		// External HTTPS door for mini apps (tailscale serve/funnel, reverse
+		// proxy). Nothing in-process assumes a public IP. "" means unset —
+		// the settings form can't express undefined over JSON.
+		publicUrl: z
+			.union([z.url(), z.literal("")])
+			.transform((v) => v || undefined)
+			.optional(),
+		http: z
+			.object({ port: z.number().int().min(0).max(65535).default(8787) })
+			.default({ port: 8787 }),
+		logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
+	})
+	// Cross-field: the model ref must parse and name a configured provider.
+	.superRefine((cfg, ctx) => {
+		let provider: string;
+		try {
+			provider = splitModelRef(cfg.model).provider;
+		} catch (err) {
+			ctx.addIssue({ code: "custom", path: ["model"], message: (err as Error).message });
+			return;
+		}
+		if (!(provider in cfg.providers)) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["model"],
+				message: `model "${cfg.model}" names provider "${provider}", which is not in providers`,
+			});
+		}
+	});
 
 export type ProviderConfig = z.infer<typeof providerSchema>;
 export type Config = z.infer<typeof configSchema>;

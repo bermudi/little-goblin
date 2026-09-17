@@ -146,7 +146,11 @@ export async function boundedRun(
 					// released mid-iteration — nothing to cancel
 				}
 			}
-		});
+		})
+		// exitP's rejection reaches the `await exitP` below — this detached
+		// chain only observes it, but without a handler it would surface as
+		// an unhandled rejection.
+		.catch(() => {});
 
 	const [out, err] = await Promise.all([
 		collect(proc.stdout, maxOutput, triggerKill, readers),

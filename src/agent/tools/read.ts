@@ -35,10 +35,16 @@ export function readTextFile(abs: string, display: string): { text: string } | {
 		}
 		throw err;
 	}
-	if (raw.subarray(0, 8192).includes(0)) {
+	if (raw.includes(0)) {
 		return { error: `binary file: ${display} (${raw.byteLength} bytes)` };
 	}
-	return { text: raw.toString("utf8") };
+	// Fatal decode: lossy utf8 would let invalid bytes through, and
+	// edit_file writes the decoded text back — corrupting the file.
+	try {
+		return { text: new TextDecoder("utf-8", { fatal: true }).decode(raw) };
+	} catch {
+		return { error: `binary file: ${display} (${raw.byteLength} bytes)` };
+	}
 }
 
 export const readFileTool = (cwd: string) =>

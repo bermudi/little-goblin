@@ -10,12 +10,13 @@
 // poisoning the conversation's history with a part the provider rejects
 // on every turn.
 
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import type { UIMessage } from "ai";
 import { z } from "zod";
 
 // Inline payloads get a ceiling — data URLs bloat both the request and,
-// once materialized, the context window.
+// once materialized, the context window. One budget covers the whole
+// turn: attachments materialize oldest-first until it's spent.
 export const INLINE_MAX_BYTES = 8 * 1024 * 1024;
 
 export const ATTACHMENT_PART = "data-attachment";
@@ -57,34 +58,55 @@ export function acceptsMedia(modalities: Set<string>, mediaType: string): boolea
 export async function materializeAttachments(
 	messages: UIMessage[],
 	modalities: Set<string> = new Set(),
+	inlineBudget: number = INLINE_MAX_BYTES,
 ): Promise<UIMessage[]> {
-	return Promise.all(
-		messages.map(async (m) => ({
-			...m,
-			parts: await Promise.all(
-				m.parts.map(async (p) => {
-					if (p.type !== ATTACHMENT_PART) return p;
-					// The part crossed the disk boundary — validate, don't trust.
-					const ref = attachmentRefSchema.parse(p.data);
-					if (acceptsMedia(modalities, ref.mediaType) && ref.size <= INLINE_MAX_BYTES) {
-						try {
-							const bytes = await readFile(ref.path);
-							return {
-								type: "file",
-								mediaType: ref.mediaType,
-								filename: ref.filename,
-								url: `data:${ref.mediaType};base64,${bytes.toString("base64")}`,
-							};
-						} catch (err) {
-							if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-						}
-					}
-					return {
-						type: "text",
-						text: `[attachment: ${ref.path} — ${ref.mediaType}, ${ref.size} bytes. Read it with read_file or bash tools.]`,
-					};
-				}),
-			),
-		})),
-	);
+	// Sequential: the budget is consumed in history order, so later
+	// attachments see what earlier ones spent.
+	let spent = 0;
+	const out: UIMessage[] = [];
+	for (const m of messages) {
+		const parts: UIMessage["parts"] = [];
+		for (const p of m.parts) {
+			if (p.type !== ATTACHMENT_PART) {
+				parts.push(p);
+				continue;
+			}
+			// The part crossed the disk boundary — validate, don't trust.
+			const ref = attachmentRefSchema.parse(p.data);
+			const pathRef: UIMessage["parts"][number] = {
+				type: "text",
+				text: `[attachment: ${ref.path} — ${ref.mediaType}, ${ref.size} bytes. Read it with read_file or bash tools.]`,
+			};
+			if (!acceptsMedia(modalities, ref.mediaType)) {
+				parts.push(pathRef);
+				continue;
+			}
+			try {
+				// The file on disk is authoritative — ref.size was recorded at
+				// intake and the file may have changed since.
+				if ((await stat(ref.path)).size > inlineBudget - spent) {
+					parts.push(pathRef);
+					continue;
+				}
+				const bytes = await readFile(ref.path);
+				// Grew (or shrank — be honest) between stat and read.
+				if (bytes.byteLength > inlineBudget - spent) {
+					parts.push(pathRef);
+					continue;
+				}
+				spent += bytes.byteLength;
+				parts.push({
+					type: "file",
+					mediaType: ref.mediaType,
+					filename: ref.filename,
+					url: `data:${ref.mediaType};base64,${bytes.toString("base64")}`,
+				});
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+				parts.push(pathRef);
+			}
+		}
+		out.push({ ...m, parts });
+	}
+	return out;
 }

@@ -61,6 +61,22 @@ describe("read_file", () => {
 		expect(out.shown!).toBeLessThan(3000);
 	});
 
+	test("a NUL past the first 8KB still marks the file binary", async () => {
+		const dir = tmpdir_();
+		writeFileSync(join(dir, "f.bin"), Buffer.concat([Buffer.alloc(9000, 0x61), Buffer.from([0])]));
+		const t = readFileTool(dir);
+		const out = (await t.execute!({ path: "f.bin" }, opts)) as { error?: string };
+		expect(out.error).toContain("binary file");
+	});
+
+	test("invalid utf-8 is refused, not lossily decoded", async () => {
+		const dir = tmpdir_();
+		writeFileSync(join(dir, "f.bin"), Buffer.from([0x61, 0xff, 0xfe, 0x62]));
+		const t = readFileTool(dir);
+		const out = (await t.execute!({ path: "f.bin" }, opts)) as { error?: string };
+		expect(out.error).toContain("binary file");
+	});
+
 	test("missing file and directory errors", async () => {
 		const dir = tmpdir_();
 		const t = readFileTool(dir);

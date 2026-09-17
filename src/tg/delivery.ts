@@ -149,7 +149,7 @@ export function makeDeliverySink(
 				});
 				break; // strictly ordered — later chunks go out on a later flush
 			}
-			if (c.shown !== desired) {
+			if (c.shown !== out) {
 				const mid = c.id;
 				enqueue(async () => {
 					await withTimeout(api.editMessageText(conv.chatId, mid, out), "editMessageText");
@@ -165,11 +165,23 @@ export function makeDeliverySink(
 		if (Date.now() - lastEdit >= editIntervalMs) flush();
 	}
 
-	function unsentCount(): number {
-		// Only windows that still exist count — chunks pushed before a
-		// status-tail shrink sit past `needed` with empty windows.
-		const needed = Math.ceil(rendered().length / CHUNK_LIMIT);
-		return chunks.slice(0, needed).filter((c) => c.id === -1).length;
+	// Chunks that still need Telegram work: never-sent ones with a
+	// non-empty window, plus sent ones whose shown content no longer
+	// matches their current window — a failed edit counts here, so the
+	// drain retries it instead of declaring victory.
+	function pendingCount(): number {
+		const body = rendered();
+		let n = 0;
+		let start = 0;
+		for (let idx = 0; idx < chunks.length; idx++) {
+			const c = chunks[idx]!;
+			const end = idx === chunks.length - 1 ? body.length : windowEnd(body, start);
+			const desired = body.slice(start, end);
+			const out = desired === "" ? "…" : desired;
+			if (c.id === -1 ? desired !== "" : c.shown !== out) n++;
+			start = end;
+		}
+		return n;
 	}
 
 	return {
@@ -200,13 +212,13 @@ export function makeDeliverySink(
 			// Final flush. No flush runs after this, so drain here: keep
 			// flushing while chunks remain unsent, retrying failures with a
 			// short backoff. Give up loudly rather than dropping the tail.
-			let prevUnsent = Number.POSITIVE_INFINITY;
+			let prevPending = Number.POSITIVE_INFINITY;
 			let stagnant = 0;
 			for (let i = 0; i < MAX_DRAIN_ITERATIONS; i++) {
 				flush();
 				await chain;
-				const unsent = unsentCount();
-				if (unsent === 0) {
+				const pending = pendingCount();
+				if (pending === 0) {
 					// Sends that resolved inside `await chain` were still
 					// in flight when the flush above ran, so their (possibly
 					// drifted) windows were never re-checked — one last
@@ -215,12 +227,12 @@ export function makeDeliverySink(
 					await chain;
 					break;
 				}
-				stagnant = unsent >= prevUnsent ? stagnant + 1 : 0;
-				prevUnsent = unsent;
+				stagnant = pending >= prevPending ? stagnant + 1 : 0;
+				prevPending = pending;
 				if (stagnant >= MAX_STAGNANT) {
 					log.warn("delivery gave up on unsent chunks", {
 						conversation: conv.id,
-						unsent,
+						unsent: pending,
 					});
 					break;
 				}

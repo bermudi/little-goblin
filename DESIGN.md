@@ -157,6 +157,11 @@ stays plain files either way.
 `goblin.json5`: provider registry, per-conversation default model/thinking.
 No secrets — those live in `auth.jsonl`.
 
+**Settings are operator-facing UI, not SSH.** The mini app is the
+configuration surface: the process reads and writes `goblin.json5` itself, and
+the operator changes settings from Telegram. Editing the file by hand always
+works; it is never required.
+
 ## Module map
 
 ```text

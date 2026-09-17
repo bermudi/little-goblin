@@ -1,0 +1,88 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { createHmac } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Config } from "../config.ts";
+import { startHttp } from "./mod.ts";
+
+const TOKEN = "test-bot-token";
+
+function makeInitData(fields: Record<string, string>): string {
+	const params = new URLSearchParams(fields);
+	const checkString = [...params.entries()]
+		.sort(([a], [b]) => a.localeCompare(b))
+		.map(([k, v]) => `${k}=${v}`)
+		.join("\n");
+	const secret = createHmac("sha256", "WebAppData").update(TOKEN).digest();
+	const hash = createHmac("sha256", secret).update(checkString).digest("hex");
+	params.set("hash", hash);
+	return params.toString();
+}
+
+let dirs: string[] = [];
+let prevHome: string | undefined;
+function useHome(): void {
+	prevHome = process.env.GOBLIN_HOME;
+	const dir = mkdtempSync(join(tmpdir(), "goblin-http-"));
+	dirs.push(dir);
+	process.env.GOBLIN_HOME = dir;
+}
+afterEach(() => {
+	if (prevHome === undefined) delete process.env.GOBLIN_HOME;
+	else process.env.GOBLIN_HOME = prevHome;
+	prevHome = undefined;
+	for (const d of dirs) rmSync(d, { recursive: true, force: true });
+	dirs = [];
+});
+
+const baseConfig: Config = {
+	providers: {
+		zai: { kind: "openai-compatible", baseUrl: "https://api.example.com", auth: "zai" },
+	},
+	model: "zai/m",
+	favorites: [],
+	thinking: "medium",
+	allowedUsers: [42],
+	telegram: {},
+	http: { port: 0 }, // ephemeral
+	logLevel: "info",
+};
+
+function setup() {
+	useHome();
+	const configRef = { current: { ...baseConfig } };
+	const http = startHttp({ configRef, botToken: TOKEN, onConfigWritten: () => {} });
+	const initData = makeInitData({
+		auth_date: String(Math.floor(Date.now() / 1000)),
+		user: JSON.stringify({ id: 42 }),
+	});
+	const post = (body: unknown) =>
+		fetch(`http://127.0.0.1:${http.port}/api/config`, {
+			method: "POST",
+			headers: { "content-type": "application/json", "x-init-data": initData },
+			body: JSON.stringify(body),
+		});
+	return { configRef, http, post };
+}
+
+describe("mini-app http", () => {
+	test("a save that would lock out the requester is refused before writing", async () => {
+		const { configRef, http, post } = setup();
+		const res = await post({ allowedUsers: [99] });
+		expect(res.status).toBe(422);
+		const j = (await res.json()) as { error?: string };
+		expect(j.error).toContain("42");
+		expect(configRef.current.allowedUsers).toEqual([42]);
+		http.stop();
+	});
+
+	test("a valid save is written and hot-applied", async () => {
+		const { configRef, http, post } = setup();
+		const res = await post({ allowedUsers: [42, 7], logLevel: "debug" });
+		expect(res.ok).toBe(true);
+		expect(configRef.current.allowedUsers).toEqual([42, 7]);
+		expect(configRef.current.logLevel).toBe("debug");
+		http.stop();
+	});
+});

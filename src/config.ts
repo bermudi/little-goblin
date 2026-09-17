@@ -115,11 +115,17 @@ export function loadConfig(): Config | null {
 	return result.data;
 }
 
+// Validate a candidate config — the mini app parses before writing so it
+// can inspect the result (e.g. refuse a self-lockout) without touching
+// the file first.
+export function parseConfig(raw: unknown): Config {
+	return configSchema.parse(raw);
+}
+
 // The mini app writes through here. Whole-file durable write; a hardened
 // mode on the existing file survives the rewrite.
 export function writeConfig(config: Config): void {
-	const validated = configSchema.parse(config);
-	durableWriteFile(paths.config(), JSON5.stringify(validated, null, 2) + "\n");
+	durableWriteFile(paths.config(), JSON5.stringify(parseConfig(config), null, 2) + "\n");
 }
 
 // Split "<provider>/<model-id>" — model IDs themselves contain slashes

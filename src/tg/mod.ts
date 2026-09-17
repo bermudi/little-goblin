@@ -12,6 +12,7 @@ import { userMessage, type Runtime } from "../runtime.ts";
 import { log } from "../log.ts";
 import { CoalescingBuffer } from "./buffer.ts";
 import { COMMAND_RE, handleCommand } from "./commands.ts";
+import { withTimeout } from "./deadline.ts";
 import { makeDeliverySink } from "./delivery.ts";
 import { mediaFromMessage, mediaParts, saveAttachment } from "./media.ts";
 
@@ -129,7 +130,7 @@ export async function createBot(deps: BotDeps): Promise<Bot> {
 
 			if (media) {
 				try {
-					const file = await bot.api.getFile(media.fileId);
+					const file = await withTimeout(bot.api.getFile(media.fileId), "getFile");
 					const saved = await saveAttachment(media, file, apiRoot, token);
 					// Just the saved-path reference — whether the bytes go
 					// inline is decided at turn time against the model that

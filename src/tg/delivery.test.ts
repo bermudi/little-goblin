@@ -102,6 +102,18 @@ describe("delivery", () => {
 		expect(msgs).toEqual(["tail"]);
 	});
 
+	test("a surrogate pair is never split across the chunk boundary", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, undefined, 0);
+		// 😀 is one code point but two UTF-16 units — placed so the naive
+		// 3800-unit cut lands inside the pair.
+		const emoji = "\u{1f600}";
+		sink.onTextDelta("a".repeat(CHUNK - 1) + emoji + "b".repeat(50));
+		await sink.onDone({ kind: "completed" });
+		expect(msgs[0]).toBe("a".repeat(CHUNK - 1));
+		expect(msgs[1]).toBe(emoji + "b".repeat(50));
+	});
+
 	test("permanently failing sends don't make onDone throw", async () => {
 		const { api } = fakeApi({ failSends: true });
 		const sink = makeDeliverySink(api, conv, undefined, 0);

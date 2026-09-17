@@ -4,10 +4,10 @@
 // knob (publicUrl → tailscale serve/funnel/any reverse proxy). Nothing
 // here assumes a public IP.
 
-import { loadConfig, writeConfig, type Config } from "../config.ts";
+import { loadConfig, parseConfig, writeConfig, type Config } from "../config.ts";
 import { log } from "../log.ts";
 import { APP_HTML } from "./app.ts";
-import { validateInitData } from "./auth.ts";
+import { validateInitData, type InitDataUser } from "./auth.ts";
 
 export interface HttpDeps {
 	configRef: { current: Config };
@@ -20,11 +20,11 @@ export interface HttpDeps {
 const NO_STORE = { "content-type": "application/json", "cache-control": "no-store" };
 
 export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
-	function authed(req: Request): boolean {
+	function authedUser(req: Request): InitDataUser | null {
 		const initData = req.headers.get("x-init-data") ?? "";
 		// Read per-request so config writes take effect without a restart.
 		const allowed = new Set(deps.configRef.current.allowedUsers);
-		return validateInitData(initData, deps.botToken, allowed) !== null;
+		return validateInitData(initData, deps.botToken, allowed);
 	}
 
 	const server = Bun.serve({
@@ -36,7 +36,8 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 				return new Response(APP_HTML, { headers: { "content-type": "text/html" } });
 			}
 			if (url.pathname === "/api/config") {
-				if (!authed(req)) {
+				const user = authedUser(req);
+				if (!user) {
 					return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
 				}
 				if (req.method === "GET") {
@@ -55,7 +56,17 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 						// discarded by an app save. An invalid on-disk file fails
 						// here with its own parse error.
 						const base = loadConfig() ?? deps.configRef.current;
-						writeConfig({ ...base, ...(body as object) });
+						const merged = parseConfig({ ...base, ...(body as object) });
+						// The mini app is an operator's only door that doesn't need
+						// a shell — a save that drops the requester's own id locks
+						// them out of it and the bot gate. Refuse before writing.
+						if (!merged.allowedUsers.includes(user.id)) {
+							return Response.json(
+								{ error: `config would remove your own telegram user id (${user.id})` },
+								{ status: 422, headers: NO_STORE },
+							);
+						}
+						writeConfig(merged);
 						const fresh = loadConfig();
 						if (fresh) deps.configRef.current = fresh;
 						deps.onConfigWritten();

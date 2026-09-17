@@ -6,6 +6,7 @@ import type { Api } from "grammy";
 import type { Conversation } from "../conversation.ts";
 import type { TurnDone, TurnSink } from "../runtime.ts";
 import { log } from "../log.ts";
+import { withTimeout } from "./deadline.ts";
 
 const EDIT_INTERVAL_MS = 1_000;
 const TYPING_INTERVAL_MS = 4_000;
@@ -26,6 +27,30 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 interface Chunk {
 	id: number;
 	shown: string;
+	// Fixed window start in the rendered body. Windows are contiguous:
+	// each chunk's start is the previous chunk's end.
+	start: number;
+}
+
+// Slicing between a high and a low surrogate produces a lone surrogate —
+// not valid text, and Telegram may reject or mangle the message. Window
+// boundaries are nudged so a pair never splits across two messages.
+const isHighSurrogate = (c: number) => c >= 0xd800 && c <= 0xdbff;
+const isLowSurrogate = (c: number) => c >= 0xdc00 && c <= 0xdfff;
+
+// The fixed end of the window starting at `start`: CHUNK_LIMIT ahead,
+// pulled back one code unit if that lands inside a surrogate pair. The
+// body is append-only, so a boundary once computed never moves.
+function windowEnd(body: string, start: number): number {
+	const end = start + CHUNK_LIMIT;
+	if (
+		end < body.length &&
+		isHighSurrogate(body.charCodeAt(end - 1)) &&
+		isLowSurrogate(body.charCodeAt(end))
+	) {
+		return end - 1;
+	}
+	return end;
 }
 
 export function makeDeliverySink(
@@ -58,9 +83,12 @@ export function makeDeliverySink(
 	}
 
 	function sendTyping(): void {
-		api.sendChatAction(conv.chatId, "typing", {
-			...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
-		}).catch(() => {});
+		withTimeout(
+			api.sendChatAction(conv.chatId, "typing", {
+				...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+			}),
+			"sendChatAction",
+		).catch(() => {});
 	}
 	sendTyping();
 	const typing = setInterval(sendTyping, TYPING_INTERVAL_MS);
@@ -79,14 +107,17 @@ export function makeDeliverySink(
 	function flush(): void {
 		const body = rendered();
 		const needed = Math.ceil(body.length / CHUNK_LIMIT);
-		while (chunks.length < needed) chunks.push({ id: -1, shown: "" });
+		while (chunks.length < needed) {
+			const prev = chunks[chunks.length - 1];
+			chunks.push({ id: -1, shown: "", start: prev ? windowEnd(body, prev.start) : 0 });
+		}
 		for (let idx = 0; idx < chunks.length; idx++) {
 			const c = chunks[idx]!;
 			if (c.id === -2) break; // send in flight — wait it out
 			const isLast = idx === chunks.length - 1;
 			const desired = body.slice(
-				idx * CHUNK_LIMIT,
-				isLast ? undefined : (idx + 1) * CHUNK_LIMIT,
+				c.start,
+				isLast ? undefined : windowEnd(body, c.start),
 			);
 			const out = desired === "" ? "…" : desired;
 			if (c.id === -1) {
@@ -94,14 +125,17 @@ export function makeDeliverySink(
 				c.shown = out;
 				enqueue(async () => {
 					try {
-						const sent = await api.sendMessage(conv.chatId, out, {
-							...(conv.threadId !== null
-								? { message_thread_id: conv.threadId }
-								: {}),
-							...(idx === 0 && replyTo !== undefined
-								? { reply_parameters: { message_id: replyTo } }
-								: {}),
-						});
+						const sent = await withTimeout(
+							api.sendMessage(conv.chatId, out, {
+								...(conv.threadId !== null
+									? { message_thread_id: conv.threadId }
+									: {}),
+								...(idx === 0 && replyTo !== undefined
+									? { reply_parameters: { message_id: replyTo } }
+									: {}),
+							}),
+							"sendMessage",
+						);
 						c.id = sent.message_id;
 					} catch (err) {
 						replyTo = undefined; // never retry the reply link
@@ -114,7 +148,7 @@ export function makeDeliverySink(
 			if (c.shown !== desired) {
 				const mid = c.id;
 				enqueue(async () => {
-					await api.editMessageText(conv.chatId, mid, out);
+					await withTimeout(api.editMessageText(conv.chatId, mid, out), "editMessageText");
 					c.shown = out;
 				});
 			}

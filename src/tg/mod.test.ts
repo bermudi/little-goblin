@@ -1,6 +1,24 @@
 import { describe, expect, test } from "bun:test";
 import type { Api } from "grammy";
-import { applyMenuButton, conversationAddress } from "./mod.ts";
+import { applyCommands, applyMenuButton, conversationAddress } from "./mod.ts";
+import { COMMANDS } from "./commands.ts";
+
+describe("applyCommands", () => {
+	test("registers exactly the handled command set", async () => {
+		const calls: unknown[] = [];
+		const api = {
+			setMyCommands: (cmds: unknown) => {
+				calls.push(cmds);
+				return Promise.resolve(true);
+			},
+		} as unknown as Api;
+
+		applyCommands(api);
+		await Promise.resolve();
+
+		expect(calls).toEqual([[...COMMANDS]]);
+	});
+});
 
 describe("conversationAddress", () => {
 	// Regression: bot DMs with topics enabled carry message_thread_id on

@@ -11,7 +11,7 @@ import type { ConversationAddress, ConversationStore } from "../conversation.ts"
 import { userMessage, type Runtime } from "../runtime.ts";
 import { log } from "../log.ts";
 import { CoalescingBuffer } from "./buffer.ts";
-import { COMMAND_RE, handleCommand } from "./commands.ts";
+import { COMMAND_RE, COMMANDS, handleCommand } from "./commands.ts";
 import { withTimeout } from "./deadline.ts";
 import { makeDeliverySink } from "./delivery.ts";
 import { mediaFromMessage, mediaParts, saveAttachment } from "./media.ts";
@@ -183,6 +183,15 @@ export function applyMenuButton(api: Api, publicUrl: string | undefined): void {
 	);
 }
 
+// setMyCommands persists server-side on the bot token — v1's command
+// list will sit there forever unless we overwrite it. Cosmetic, so a
+// failure is a warn, not a boot error.
+export function applyCommands(api: Api): void {
+	api.setMyCommands([...COMMANDS]).catch((err: unknown) =>
+		log.warn("setMyCommands failed", { error: String(err) }),
+	);
+}
+
 export async function startBot(deps: BotDeps): Promise<Bot> {
 	const bot = await createBot(deps);
 	log.info("telegram bot online", { bot: bot.botInfo.username });
@@ -190,6 +199,7 @@ export async function startBot(deps: BotDeps): Promise<Bot> {
 	// Unconditional: an unset publicUrl must reset the button to default,
 	// not leave a stale web_app link from a previous config.
 	applyMenuButton(bot.api, deps.configRef.current.publicUrl);
+	applyCommands(bot.api);
 
 	bot.start({
 		onStart: () => log.info("long polling started"),

@@ -142,4 +142,16 @@ export function handleCommand(
 	return false;
 }
 
-export const COMMAND_RE = /^\/(model|think|cd|stop)(@\w+)?(\s|$)/;
+// The settings surface Telegram advertises — registered via
+// setMyCommands at boot so autocomplete shows exactly what works.
+// COMMAND_RE derives from this list: the two can never drift apart.
+export const COMMANDS = [
+	{ command: "model", description: "show or override the model" },
+	{ command: "think", description: "show or override thinking level" },
+	{ command: "cd", description: "show or set working directory" },
+	{ command: "stop", description: "fence the running turn" },
+] as const;
+
+export const COMMAND_RE = new RegExp(
+	`^/(${COMMANDS.map((c) => c.command).join("|")})(@\\w+)?(\\s|$)`,
+);

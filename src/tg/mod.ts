@@ -70,6 +70,7 @@ export async function createBot(deps: BotDeps): Promise<Bot> {
 		}
 		const parts = items.flatMap((i) => i.parts);
 		const replyTo = items[0]?.replyTo;
+		log.debug("coalesced turn input", { conversation: convId, items: items.length });
 		const sink = makeDeliverySink(bot.api, conv, replyTo);
 		try {
 			deps.runtime.submit(conv, userMessage(parts), sink);
@@ -121,6 +122,11 @@ export async function createBot(deps: BotDeps): Promise<Bot> {
 		const text = msg.text ?? msg.caption ?? "";
 		const addr = conversationAddress(msg);
 		const conv = deps.store.resolve(addr, paths.workspace());
+		log.debug("intake", {
+			conversation: conv.id,
+			message: msg.message_id,
+			...(conv.threadId !== null ? { thread: conv.threadId } : {}),
+		});
 		const topicTitle = msg.forum_topic_created?.name ?? msg.forum_topic_edited?.name;
 		if (topicTitle !== undefined) {
 			deps.store.setMeta(conv.id, { title: topicTitle });

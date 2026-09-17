@@ -1,5 +1,14 @@
-// Structured logging. JSONL on stdout. The only output channel — no
+// Structured logging. JSONL on stdout plus an append sink at
+// $GOBLIN_HOME/state/goblin.log — a stable, durable location no matter
+// how the process was launched. The only output channel — no
 // console.log anywhere else in the codebase.
+//
+// The file sink must never take the process down or recurse: a failed
+// append warns once on stdout and the sink stays dead for the run.
+
+import { appendFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { paths } from "./config.ts";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -11,17 +20,48 @@ export function setLogLevel(level: LogLevel): void {
 	threshold = LEVELS[level];
 }
 
+let fileSinkDead = false;
+
+function writeFile(line: string): void {
+	if (fileSinkDead) return;
+	const target = join(paths.state(), "goblin.log");
+	try {
+		appendFileSync(target, line);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+			try {
+				mkdirSync(paths.state(), { recursive: true });
+				appendFileSync(target, line);
+				return;
+			} catch {
+				// falls through to the dead-sink warn below
+			}
+		}
+		fileSinkDead = true;
+		process.stdout.write(
+			JSON.stringify({
+				ts: new Date().toISOString(),
+				level: "warn",
+				msg: "goblin.log sink failed — stdout only for this run",
+				error: String(err),
+			}) + "\n",
+		);
+	}
+}
+
 type Fields = Record<string, unknown>;
 
 function emit(level: LogLevel, msg: string, fields?: Fields): void {
 	if (LEVELS[level] < threshold) return;
-	const line = JSON.stringify({
-		ts: new Date().toISOString(),
-		level,
-		msg,
-		...fields,
-	});
-	process.stdout.write(line + "\n");
+	const line =
+		JSON.stringify({
+			ts: new Date().toISOString(),
+			level,
+			msg,
+			...fields,
+		}) + "\n";
+	process.stdout.write(line);
+	writeFile(line);
 }
 
 function errFields(err: unknown): Fields {

@@ -207,6 +207,7 @@ export class Runtime {
 		// turn's context — it stays queued for its own turn. Reading it
 		// here, before the awaits, is what keeps that boundary.
 		const history = store.history(convId);
+		log.info("turn started", { conversation: convId, epoch, history: history.length });
 		const controller = new AbortController();
 		this.lane(convId).controller = controller;
 
@@ -276,6 +277,14 @@ export class Runtime {
 						break;
 					case "tool-input-available":
 						turn.sink.onToolCall(chunk.toolName, chunk.input);
+						// Side-effecting boundary — the chat shows a status
+						// line, the log gets the durable record. Args are
+						// truncated metadata, not payloads.
+						log.info("tool call", {
+							conversation: convId,
+							tool: chunk.toolName,
+							arg: JSON.stringify(chunk.input).slice(0, 200),
+						});
 						break;
 					case "error":
 						streamError = chunk.errorText;

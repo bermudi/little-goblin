@@ -141,6 +141,11 @@ export function makeDeliverySink(
 							"sendMessage",
 						);
 						c.id = sent.message_id;
+						log.debug("delivered", {
+							conversation: conv.id,
+							message: sent.message_id,
+							...(conv.threadId !== null ? { thread: conv.threadId } : {}),
+						});
 					} catch (err) {
 						replyTo = undefined; // never retry the reply link
 						c.id = -1; // failed — retried by the next flush

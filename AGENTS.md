@@ -15,8 +15,14 @@ non-goals list.
 - **Durable writes.** Whole-file state: tmp + `fsync` + `renameSync`,
   preserving the existing file's mode. Append-only JSONL: one serialized
   record per write, failures propagate.
-- **No `console.log`.** Use `log` from `src/log.ts`. Every external boundary,
-  critical state mutation, and error path emits a structured log line.
+- **No `console.log`.** Use `log` from `src/log.ts` — JSONL on stdout and
+  appended to `$GOBLIN_HOME/state/goblin.log`. The bar: a screenshot of
+  weird behavior plus the log file must fully reconstruct what the process
+  did. Every external boundary emits a line with the fields to explain it
+  — intake (update → conversation address), delivery (send →
+  chat/thread), model calls, tool calls — plus critical state mutations
+  and error paths. If explaining a symptom needs a REPL or a guess, the
+  logging is insufficient: add the line.
 - **One module, one job.** Flat modules, colocated tests (`foo.ts` /
   `foo.test.ts`). `bun test` to run, `tsc --noEmit` before committing.
 - **Only `src/tg/` knows grammy.** Domain modules never see a Telegram

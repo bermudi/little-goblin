@@ -1,8 +1,8 @@
 import { tool } from "ai";
-import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { durableWriteFile } from "../../durable.ts";
 import { resolvePath } from "./paths.ts";
+import { readTextFile } from "./read.ts";
 
 export const editFileTool = (cwd: string) =>
 	tool({
@@ -16,15 +16,9 @@ export const editFileTool = (cwd: string) =>
 		}),
 		execute: async ({ path, old_string, new_string, replace_all }) => {
 			const abs = resolvePath(cwd, path);
-			let text: string;
-			try {
-				text = readFileSync(abs, "utf8");
-			} catch (err) {
-				if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-					return { error: `file not found: ${path}` };
-				}
-				throw err;
-			}
+			const read = readTextFile(abs, path);
+			if ("error" in read) return read;
+			const text = read.text;
 			const count = text.split(old_string).length - 1;
 			if (count === 0) {
 				return { error: `old_string not found in ${path}` };

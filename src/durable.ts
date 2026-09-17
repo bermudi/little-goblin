@@ -30,7 +30,15 @@ export function durableWriteFile(path: string, content: string, modeIfNew = 0o64
 	);
 	const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, mode);
 	try {
-		writeSync(fd, content);
+		// writeSync returns bytes written — a short write (ENOSPC,
+		// interruption) must not reach fsync/rename as a truncated file.
+		const buf = Buffer.from(content, "utf8");
+		let off = 0;
+		while (off < buf.length) {
+			const n = writeSync(fd, buf, off);
+			if (n === 0) throw new Error(`writeSync wrote 0 bytes to ${tmp}`);
+			off += n;
+		}
 		fsyncSync(fd);
 		closeSync(fd);
 	} catch (err) {

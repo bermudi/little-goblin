@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { File as TgFile } from "grammy/types";
 import { paths } from "../config.ts";
-import { saveAttachment, type IncomingMedia } from "./media.ts";
+import { mediaFromMessage, saveAttachment, type IncomingMedia } from "./media.ts";
 
 let dirs: string[] = [];
 let prevHome: string | undefined;
@@ -32,6 +32,29 @@ const media: IncomingMedia = {
 	mimeType: "video/mp4",
 	kind: "video",
 };
+
+describe("mediaFromMessage", () => {
+	test("animation (GIF) is picked up as video media", () => {
+		const m = mediaFromMessage({
+			animation: { file_id: "a1", file_unique_id: "u9", mime_type: "video/mp4" },
+		});
+		expect(m).not.toBeNull();
+		expect(m!.kind).toBe("video");
+		expect(m!.fileId).toBe("a1");
+		expect(m!.fileName).toBe("animation-u9.mp4");
+	});
+
+	test("a photo picks the largest size", () => {
+		const m = mediaFromMessage({
+			photo: [
+				{ file_id: "small", file_unique_id: "u1", width: 90 },
+				{ file_id: "big", file_unique_id: "u2", width: 1280 },
+			],
+		});
+		expect(m!.fileId).toBe("big");
+		expect(m!.kind).toBe("image");
+	});
+});
 
 describe("saveAttachment", () => {
 	test("local-mode file is copied into attachments, never fetched", async () => {

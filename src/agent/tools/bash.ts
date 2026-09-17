@@ -70,10 +70,16 @@ export const bashTool = (cwd: string) =>
 					collect(proc.stderr, MAX_OUTPUT, kill),
 				]);
 				const exitCode = await proc.exited;
+				const combined = out.text + err.text;
+				// Truncation must reach the model: a capped stream killed the
+				// process, and the final slice drops the head — either way the
+				// output is incomplete and must not look like a clean result.
+				const truncated = out.truncated || err.truncated || combined.length > MAX_OUTPUT;
 				return {
 					exit_code: timedOut ? null : exitCode,
 					timed_out: timedOut || undefined,
-					output: (out.text + err.text).slice(-MAX_OUTPUT),
+					truncated: truncated || undefined,
+					output: combined.slice(-MAX_OUTPUT),
 				};
 			} finally {
 				clearTimeout(timer);

@@ -16,7 +16,7 @@ import { openStore } from "./conversation.ts";
 import { startHttp } from "./http/mod.ts";
 import { log, setLogLevel } from "./log.ts";
 import { Runtime } from "./runtime.ts";
-import { AUTH_TELEGRAM_TOKEN, startBot } from "./tg/mod.ts";
+import { applyMenuButton, AUTH_TELEGRAM_TOKEN, startBot } from "./tg/mod.ts";
 
 ensureHomeLayout();
 
@@ -60,6 +60,9 @@ const http = startHttp({
 	botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN),
 	onConfigWritten: () => {
 		setLogLevel(configRef.current.logLevel);
+		// publicUrl is operator-editable through the app — keep the menu
+		// button (the door) in sync without a restart.
+		applyMenuButton(bot.api, configRef.current.publicUrl);
 	},
 });
 

@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	ftruncateSync,
+	mkdtempSync,
+	openSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { editFileTool } from "./edit.ts";
@@ -45,5 +53,31 @@ describe("edit_file", () => {
 		)) as { error?: string };
 		expect(all.error).toBeUndefined();
 		expect(readFileSync(join(dir, "f.txt"), "utf8")).toBe("y y\n");
+	});
+
+	test("oversized file is refused before it is read", async () => {
+		const dir = tmpdir_();
+		const fd = openSync(join(dir, "big.log"), "w");
+		ftruncateSync(fd, 9 * 1024 * 1024);
+		closeSync(fd);
+		const t = editFileTool(dir);
+		const out = (await t.execute!(
+			{ path: "big.log", old_string: "x", new_string: "y" },
+			opts,
+		)) as { error?: string };
+		expect(out.error).toContain("file too large");
+	});
+
+	test("binary file is refused, not mangled by a utf8 round-trip", async () => {
+		const dir = tmpdir_();
+		const bytes = Buffer.from([0x89, 0x00, 0x50, 0x4e, 0x47]);
+		writeFileSync(join(dir, "b.bin"), bytes);
+		const t = editFileTool(dir);
+		const out = (await t.execute!(
+			{ path: "b.bin", old_string: "x", new_string: "y" },
+			opts,
+		)) as { error?: string };
+		expect(out.error).toContain("binary file");
+		expect(readFileSync(join(dir, "b.bin"))).toEqual(bytes); // untouched
 	});
 });

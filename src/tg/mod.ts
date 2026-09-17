@@ -2,7 +2,8 @@
 // thing, commands → settings, everything else → coalescing buffer → turn.
 // Only this directory knows grammy.
 
-import { Bot } from "grammy";
+import { Bot, type Api } from "grammy";
+import type { MenuButton } from "grammy/types";
 import type { UIMessage } from "ai";
 import type { AuthStore } from "../auth.ts";
 import { paths, type Config } from "../config.ts";
@@ -115,7 +116,12 @@ export async function createBot(deps: BotDeps): Promise<Bot> {
 			}
 		}
 
-		if (text === "" && !media) return; // service messages, join/leave
+		if (text === "" && !media) {
+			// Service messages, join/leave, and media kinds intake doesn't
+			// cover — routine, but worth a debug line when it isn't.
+			log.debug("dropped message with no text or media", { conversation: conv.id });
+			return;
+		}
 
 		enqueueIntake(conv.id, async () => {
 			const parts: UIMessage["parts"] = [];
@@ -147,16 +153,24 @@ export async function createBot(deps: BotDeps): Promise<Bot> {
 	return bot;
 }
 
+// The mini-app door is the chat menu button — no /settings command needed.
+// Called at boot and again on config writes, so a publicUrl change (or
+// clearing it) takes effect without a restart.
+export function applyMenuButton(api: Api, publicUrl: string | undefined): void {
+	const menu_button: MenuButton = publicUrl
+		? { type: "web_app", text: "Settings", web_app: { url: publicUrl } }
+		: { type: "default" };
+	api.setChatMenuButton({ menu_button }).catch((err: unknown) =>
+		log.warn("menu button failed", { error: String(err) }),
+	);
+}
+
 export async function startBot(deps: BotDeps): Promise<Bot> {
 	const bot = await createBot(deps);
 	log.info("telegram bot online", { bot: bot.botInfo.username });
 
 	if (deps.configRef.current.publicUrl) {
-		// Mini-app door is the chat menu button — no /settings command needed.
-		const url = deps.configRef.current.publicUrl;
-		bot.api
-			.setChatMenuButton({ menu_button: { type: "web_app", text: "Settings", web_app: { url } } })
-			.catch((err: unknown) => log.warn("menu button failed", { error: String(err) }));
+		applyMenuButton(bot.api, deps.configRef.current.publicUrl);
 	}
 
 	bot.start({

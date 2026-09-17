@@ -27,6 +27,7 @@ export function mediaFromMessage(msg: {
 	voice?: { file_id: string; file_unique_id: string; mime_type?: string };
 	audio?: { file_id: string; file_unique_id: string; file_name?: string; mime_type?: string };
 	video?: { file_id: string; file_unique_id: string; file_name?: string; mime_type?: string };
+	animation?: { file_id: string; file_unique_id: string; file_name?: string; mime_type?: string };
 	video_note?: { file_id: string; file_unique_id: string };
 	sticker?: {
 		file_id: string;
@@ -79,6 +80,18 @@ export function mediaFromMessage(msg: {
 			fileUniqueId: msg.video.file_unique_id,
 			fileName: msg.video.file_name ?? `video-${msg.video.file_unique_id}.mp4`,
 			mimeType: msg.video.mime_type ?? "video/mp4",
+			kind: "video",
+		};
+	}
+	if (msg.animation) {
+		// GIFs from the picker arrive as `animation`, not video/document —
+		// always mp4 by convention.
+		const a = msg.animation;
+		return {
+			fileId: a.file_id,
+			fileUniqueId: a.file_unique_id,
+			fileName: a.file_name ?? `animation-${a.file_unique_id}.mp4`,
+			mimeType: a.mime_type ?? "video/mp4",
 			kind: "video",
 		};
 	}

@@ -27,6 +27,7 @@ export function mediaFromMessage(msg: {
 	voice?: { file_id: string; file_unique_id: string; mime_type?: string };
 	audio?: { file_id: string; file_unique_id: string; file_name?: string; mime_type?: string };
 	video?: { file_id: string; file_unique_id: string; file_name?: string; mime_type?: string };
+	video_note?: { file_id: string; file_unique_id: string };
 	sticker?: {
 		file_id: string;
 		file_unique_id: string;
@@ -81,6 +82,16 @@ export function mediaFromMessage(msg: {
 			kind: "video",
 		};
 	}
+	if (msg.video_note) {
+		// Video notes (circles) are always mp4 and carry no mime_type.
+		return {
+			fileId: msg.video_note.file_id,
+			fileUniqueId: msg.video_note.file_unique_id,
+			fileName: `video-note-${msg.video_note.file_unique_id}.mp4`,
+			mimeType: "video/mp4",
+			kind: "video",
+		};
+	}
 	if (msg.sticker) {
 		const s = msg.sticker;
 		// Static stickers are .webp images; animated (.tgs) and video
@@ -111,8 +122,16 @@ export async function fetchFileBytes(
 		return readFile(filePath);
 	}
 	const root = apiRoot ?? "https://api.telegram.org";
+	// The request URL carries the bot token — scrub it from anything
+	// propagated toward logs.
 	const url = `${root}/file/bot${token}/${filePath}`;
-	const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+	let res: Response;
+	try {
+		res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+	} catch (err) {
+		const msg = String(err instanceof Error ? err.message : err).replaceAll(token, "***");
+		throw new Error(`telegram file download failed: ${msg}`);
+	}
 	if (!res.ok) throw new Error(`telegram file download HTTP ${res.status}`);
 	return Buffer.from(await res.arrayBuffer());
 }
@@ -137,13 +156,17 @@ export async function mediaParts(
 ): Promise<UIMessage["parts"]> {
 	const { provider, modelId } = splitModelRef(modelRef);
 	const modalities = await inputModalities(provider, modelId);
+	// Inline only when the model's capability data covers this kind. A
+	// generic "file" modality takes any document; "pdf" covers PDFs only —
+	// a .zip sent to a pdf-capable model must fall back to the path
+	// reference, not a file part the provider can't consume.
 	const accepts =
 		(media.kind === "image" && modalities.has("image")) ||
 		(media.kind === "audio" && modalities.has("audio")) ||
+		(media.kind === "video" && modalities.has("video")) ||
 		(media.kind === "document" &&
-			(modalities.has(media.mimeType === "application/pdf" ? "pdf" : "file") ||
-				modalities.has("pdf"))) ||
-		(media.kind === "video" && modalities.has("video"));
+			(modalities.has("file") ||
+				(media.mimeType === "application/pdf" && modalities.has("pdf"))));
 
 	if (accepts && bytes.byteLength <= INLINE_MAX_BYTES) {
 		const dataUrl = `data:${media.mimeType};base64,${bytes.toString("base64")}`;

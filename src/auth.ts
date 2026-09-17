@@ -60,6 +60,12 @@ export function loadAuth(): AuthStore {
 		if (!rec.success) {
 			throw new Error(`${paths.auth()}:${i + 1}: ${z.prettifyError(rec.error)}`);
 		}
+		if (entries.has(rec.data.name)) {
+			log.warn("auth.jsonl: duplicate secret name — last wins", {
+				name: rec.data.name,
+				line: i + 1,
+			});
+		}
 		entries.set(rec.data.name, rec.data.value);
 	}
 	return makeStore(entries);

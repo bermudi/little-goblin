@@ -75,7 +75,7 @@ const configSchema = z.object({
 	allowedUsers: z.array(z.number().int().positive()).min(1),
 	// Self-hosted telegram-bot-api in --local mode, e.g. http://127.0.0.1:8081.
 	// Absent = default api.telegram.org.
-	telegram: z.object({ apiRoot: z.string().optional() }).default({}),
+	telegram: z.object({ apiRoot: z.url().optional() }).default({}),
 	// External HTTPS door for mini apps (tailscale serve/funnel, reverse
 	// proxy). Nothing in-process assumes a public IP.
 	publicUrl: z.url().optional(),

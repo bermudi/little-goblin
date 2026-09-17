@@ -42,8 +42,36 @@ export async function createBot(deps: BotDeps): Promise<Bot> {
 		}
 		const parts = items.flatMap((i) => i.parts);
 		const replyTo = items[0]?.replyTo;
-		deps.runtime.submit(conv, userMessage(parts), makeDeliverySink(bot.api, conv, replyTo));
+		const sink = makeDeliverySink(bot.api, conv, replyTo);
+		try {
+			deps.runtime.submit(conv, userMessage(parts), sink);
+		} catch (err) {
+			// The sink was already constructed (typing interval running) —
+			// release it or it ghosts "typing…" forever.
+			void sink.onDone({
+				kind: "error",
+				message: err instanceof Error ? err.message : String(err),
+			});
+			throw err;
+		}
 	});
+
+	// Per-conversation intake chain. Media resolution (getFile, download,
+	// models.dev) is slow, so it runs off the update hot path — grammy's
+	// runner processes updates sequentially and a 60s download would stall
+	// every later update, /stop included. Chaining per conversation keeps
+	// buffer.push order matching arrival order; commands bypass the chain.
+	const intake = new Map<string, Promise<void>>();
+	const enqueueIntake = (convId: string, step: () => Promise<void>): void => {
+		const prev = intake.get(convId) ?? Promise.resolve();
+		const next = prev.then(step).catch((err: unknown) => {
+			log.error("intake step failed", err, { conversation: convId });
+		});
+		intake.set(convId, next);
+		void next.finally(() => {
+			if (intake.get(convId) === next) intake.delete(convId);
+		});
+	};
 
 	bot.use(async (ctx, next) => {
 		// Allowed-user gate, first thing. Read per-message so config
@@ -55,7 +83,7 @@ export async function createBot(deps: BotDeps): Promise<Bot> {
 		await next();
 	});
 
-	bot.on("message", async (ctx) => {
+	bot.on("message", (ctx) => {
 		const msg = ctx.message;
 		const text = msg.text ?? msg.caption ?? "";
 		const addr: ConversationAddress =
@@ -79,24 +107,30 @@ export async function createBot(deps: BotDeps): Promise<Bot> {
 			}
 		}
 
-		const parts: UIMessage["parts"] = [];
-		if (text !== "") parts.push({ type: "text", text });
+		if (text === "" && !media) return; // service messages, join/leave
 
-		if (media) {
-			try {
-				const file = await ctx.getFile();
-				const bytes = await fetchFileBytes(file, apiRoot, token);
-				const saved = await saveAttachment(media, bytes);
-				const modelRef = conv.model ?? deps.configRef.current.model;
-				parts.push(...(await mediaParts(media, bytes, saved, modelRef)));
-			} catch (err) {
-				log.error("media intake failed", err, { conversation: conv.id });
-				parts.push({ type: "text", text: `[attachment failed to download: ${String(err)}]` });
+		enqueueIntake(conv.id, async () => {
+			const parts: UIMessage["parts"] = [];
+			if (text !== "") parts.push({ type: "text", text });
+
+			if (media) {
+				try {
+					const file = await bot.api.getFile(media.fileId);
+					const bytes = await fetchFileBytes(file, apiRoot, token);
+					const saved = await saveAttachment(media, bytes);
+					// Read the conversation fresh — a /model landing while the
+					// download ran should take effect for this media too.
+					const fresh = deps.store.get(conv.id) ?? conv;
+					const modelRef = fresh.model ?? deps.configRef.current.model;
+					parts.push(...(await mediaParts(media, bytes, saved, modelRef)));
+				} catch (err) {
+					log.error("media intake failed", err, { conversation: conv.id });
+					parts.push({ type: "text", text: `[attachment failed to download: ${String(err)}]` });
+				}
 			}
-		}
 
-		if (parts.length === 0) return; // e.g. service messages, join/leave
-		buffer.push(conv.id, { parts, replyTo: msg.message_id });
+			buffer.push(conv.id, { parts, replyTo: msg.message_id });
+		});
 	});
 
 	bot.catch((err) => {

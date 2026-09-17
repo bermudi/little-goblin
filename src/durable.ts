@@ -2,6 +2,7 @@
 // existing file's mode so a hardened 0600 never downgrades. This ritual is
 // for whole-file state only — SQLite uses WAL + transactions instead.
 
+import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import {
 	closeSync,
@@ -21,7 +22,12 @@ export function durableWriteFile(path: string, content: string, modeIfNew = 0o64
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 	}
-	const tmp = join(dirname(path), `.${Date.now()}-${process.pid}.tmp`);
+	// Random suffix: parallel writes to the same directory in the same
+	// millisecond (e.g. two tool calls in one step) must not collide.
+	const tmp = join(
+		dirname(path),
+		`.${Date.now()}-${process.pid}-${randomBytes(6).toString("hex")}.tmp`,
+	);
 	const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, mode);
 	try {
 		writeSync(fd, content);

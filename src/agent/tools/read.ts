@@ -1,10 +1,14 @@
 import { tool } from "ai";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { z } from "zod";
 import { resolvePath } from "./paths.ts";
 
 const MAX_LINES = 2000;
 const MAX_BYTES = 64 * 1024;
+// Reads are whole-file, so gate on size first — a multi-GB log or database
+// would OOM the process before the output cap ever applied. Bigger files
+// get sliced with bash (sed/head/tail) instead.
+const MAX_FILE_BYTES = 8 * 1024 * 1024;
 
 export const readFileTool = (cwd: string) =>
 	tool({
@@ -19,6 +23,15 @@ export const readFileTool = (cwd: string) =>
 			const abs = resolvePath(cwd, path);
 			let raw: Buffer;
 			try {
+				const st = statSync(abs);
+				if (st.isDirectory()) {
+					return { error: `is a directory: ${path}` };
+				}
+				if (st.size > MAX_FILE_BYTES) {
+					return {
+						error: `file too large: ${path} (${st.size} bytes, max ${MAX_FILE_BYTES}) — slice it with bash (sed/head/tail)`,
+					};
+				}
 				raw = readFileSync(abs);
 			} catch (err) {
 				if ((err as NodeJS.ErrnoException).code === "ENOENT") {

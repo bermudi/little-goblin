@@ -5,7 +5,7 @@
 import { existsSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import type { Api } from "grammy";
-import { thinkingLevels, type Config, type ThinkingLevel } from "../config.ts";
+import { splitModelRef, thinkingLevels, type Config, type ThinkingLevel } from "../config.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";
 import type { Runtime } from "../runtime.ts";
 import { log } from "../log.ts";
@@ -59,12 +59,24 @@ export function handleCommand(
 				reply(
 					deps,
 					conv,
-					`model: ${current}\nfavorites:\n${favs || "  (none)"}\n\n/model <ref> to switch`,
+					`model: ${current}\nfavorites:\n${favs || "  (none)"}\n\n/model <ref> to switch · /model reset for the default`,
 				);
 				return true;
 			}
-			const provider = arg.split("/")[0];
-			if (!provider || !deps.configRef.current.providers[provider]) {
+			if (arg === "reset") {
+				apply(deps, conv, { model: null });
+				log.info("model override cleared", { conversation: conv.id });
+				reply(deps, conv, `model → ${deps.configRef.current.model} (default)`);
+				return true;
+			}
+			let ref: { provider: string; modelId: string };
+			try {
+				ref = splitModelRef(arg);
+			} catch {
+				reply(deps, conv, `model ref must be "<provider>/<model-id>", got "${arg}"`);
+				return true;
+			}
+			if (!deps.configRef.current.providers[ref.provider]) {
 				reply(
 					deps,
 					conv,
@@ -83,8 +95,14 @@ export function handleCommand(
 				reply(
 					deps,
 					conv,
-					`thinking: ${conv.thinking ?? deps.configRef.current.thinking}\n/think <${thinkingLevels.join("|")}>`,
+					`thinking: ${conv.thinking ?? deps.configRef.current.thinking}\n/think <${thinkingLevels.join("|")}> · /think reset for the default`,
 				);
+				return true;
+			}
+			if (arg === "reset") {
+				apply(deps, conv, { thinking: null });
+				log.info("thinking override cleared", { conversation: conv.id });
+				reply(deps, conv, `thinking → ${deps.configRef.current.thinking} (default)`);
 				return true;
 			}
 			if (!(thinkingLevels as readonly string[]).includes(arg)) {

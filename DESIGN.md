@@ -21,7 +21,8 @@ earns its place.
 - Telegram is the UI: long polling, topics, reactions, files, voice — **and
   Mini Apps, designed in from the start** (the process serves them over HTTP;
   see Intake & delivery).
-- Persistence backend is open (files vs SQLite) — see Open questions.
+- Machine state lives in SQLite (`bun:sqlite`, WAL); files stay where humans
+  edit them — config, auth, workspace.
 - No standalone web UI beyond Telegram Mini Apps, no multi-channel, no plugin
   SDK, no k8s.
 
@@ -75,9 +76,10 @@ agent loop.
   - `zai` — GLM via OpenAI-compatible endpoint (`@ai-sdk/openai-compatible`).
     Daily driver.
   - `openrouter` — `@openrouter/ai-sdk-provider`.
-  - `codex` — **needs a spike.** ChatGPT-subscription OAuth isn't a standard
-    AI SDK provider; likely a community package or a thin custom provider.
-    Verify before committing.
+  - `codex` — `ai-sdk-provider-codex-cli` exists (ChatGPT Plus/Pro auth via
+    `codex` CLI login) but wraps the CLI's own agent loop — no caller tools,
+    so it can't drive goblin's turn loop. In-loop Codex needs a thin custom
+    provider over OAuth + the responses endpoint; defer until wanted.
 - **Thinking**: per-provider reasoning effort mapping, one `/think` command,
   honest about which providers support which levels.
 - **History**: stored as AI SDK `UIMessage`-format JSON (the v5 parts array —
@@ -123,17 +125,31 @@ Resolved values never enter the tool environment, the model context, or logs.
 - **Delivery**: `streamText` deltas → throttled message edits (~1/s), final
   flush on completion. Typing indicator while a turn runs. Errors post a short
   message and log structured detail.
-- **Mini Apps**: the process serves an HTTP endpoint for mini-app pages; the
-  bot links them via `web_app` buttons. Telegram requires HTTPS — how the
-  endpoint is exposed (tailscale funnel, reverse proxy, direct) is deployment
-  config, see Open questions.
+- **Mini Apps**: the process serves an HTTP endpoint on localhost; the bot
+  links pages via `web_app` buttons. Telegram requires HTTPS, and the page is
+  fetched by the *client device* — so the door is a config knob (`publicUrl`)
+  and nothing in the process assumes a public IP. Reference doors, all
+  zero-open-port: `tailscale serve` (tailnet HTTPS, auto cert — works when
+  operator devices are on the tailnet, the v1-on-lithium pattern), `tailscale
+  funnel` (public HTTPS relayed through Tailscale's edge, for off-tailnet
+  clients), or any reverse proxy with a cert. NAT-first by construction.
 - **Commands** are settings-only: `/model` `/think` `/cd` `/stop`. No
   conversation-lifecycle commands — topics own that.
-- **Large files**: Telegram's hosted Bot API caps downloads at 20MB; 2GB files
-  need a self-hosted `telegram-bot-api` server (grammy supports a custom API
-  root). Pinned — see Open questions.
+- **Large files**: self-hosted `telegram-bot-api` on lithium, `--local` mode,
+  grammy `apiRoot` → `http://127.0.0.1:8081`. Needs `api_id`/`api_hash` from a
+  my.telegram.org app registration (operator's account, stored as secrets —
+  "Little Goblin" app, api_id 955258, already minted for the v1 e2e harness,
+  lives in `little-goblin/e2e/.env`). App-platform cred, not per-environment:
+  all instances share it; dev/prod splits on bot token + server instance.
+  No inbound ports — long-poll only, the server dials out to Telegram; its
+  only client is goblin on the same box. `getFile` returns an absolute local
+  path — intake reads the file off disk, no HTTP fetch. Uploads ≤2GB,
+  `file://` URIs for sends. The server's working dir is a staging cache, not
+  storage — Telegram still owns the files; periodic clean is safe (worst
+  case = re-fetch via `file_id`). Deploy: static binary + systemd unit (no
+  docker); build off-box, TDLib compile would crush lithium.
 
-## State layout (if filesystem wins the open question)
+## State layout
 
 ```text
 $GOBLIN_HOME/
@@ -144,13 +160,13 @@ $GOBLIN_HOME/
 │   ├── AGENTS.md           # optional, agent-owned
 │   └── attachments/
 └── state/
-    └── conversations/<chatId>/<threadId|dm>/
-        ├── meta.json
-        └── events.jsonl    # UIMessage-format records, one per line
+    └── goblin.sqlite       # all machine state: conversation meta, event
+                            # history (UIMessage JSON rows), bindings
 ```
 
-If SQLite wins: same layout minus `state/` — one `state.db` instead. Workspace
-stays plain files either way.
+SQLite durability = WAL + transactions (`synchronous=NORMAL` minimum), not
+tmp/fsync/rename — that ritual is for whole-file state only. Inspectability
+is an export/query command, not a format property.
 
 ## Config
 
@@ -171,7 +187,7 @@ src/
   auth.ts           auth.jsonl reader + "!" command resolution
   log.ts            structured log; no console.log anywhere else
   tg/               grammy: intake, buffer, delivery, commands (only grammy-aware dir)
-  conversation.ts   store: resolve-by-address/load/append events, meta, epoch
+  conversation.ts   store: SQLite-backed resolve/load/append events, meta, epoch
   runtime.ts        per-conversation queue, turn loop, checkAuthority
   agent/
     providers.ts    registry: name → AI SDK provider
@@ -198,21 +214,3 @@ that a function calls its collaborator with the right arguments. Fakes at the
 two external edges (model provider, Telegram API); no mock.module pyramids.
 The suite should stay smaller than `src/` — if it isn't, that's a smell to
 fix, not a badge.
-
-## Open questions
-
-1. **Persistence backend** — files vs SQLite for all state. AI SDK is
-   unopinionated (store `UIMessage` JSON yourself). Recommendation: SQLite via
-   `bun:sqlite` in WAL for all machine state — one file, transactional
-   appends, and memory will need it whenever it lands. Workspace stays files.
-   Decide before the store is written.
-2. **2GB file support** — self-hosted `telegram-bot-api` server on the
-   homelab, grammy pointed at the local API root. **Pinned — bermudi is
-   reading up on this.** Questions to settle: where it runs, how uploads vs
-   downloads differ, whether it changes intake code paths.
-3. **Codex provider** — does a usable AI SDK provider exist for
-   ChatGPT-subscription Codex auth? If not, thin custom provider wrapping the
-   OAuth token + responses endpoint.
-4. **Mini-app exposure** — Telegram requires HTTPS for web_app URLs. Homelab
-   answer is probably tailscale funnel or an existing reverse proxy; pick at
-   deploy time, keep `http/` behind a port that doesn't care.

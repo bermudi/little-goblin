@@ -24,6 +24,7 @@ export const paths = {
 	attachments: () => join(goblinHome(), "workspace", "attachments"),
 	state: () => join(goblinHome(), "state"),
 	db: () => join(goblinHome(), "state", "goblin.sqlite"),
+	logFile: () => join(goblinHome(), "state", "goblin.log"),
 	modelsDevCache: () => join(goblinHome(), "state", "models.dev.json"),
 };
 

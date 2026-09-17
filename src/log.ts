@@ -7,8 +7,7 @@
 // append warns once on stdout and the sink stays dead for the run.
 
 import { appendFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
-import { paths } from "./config.ts";
+import { dirname } from "node:path";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -20,17 +19,25 @@ export function setLogLevel(level: LogLevel): void {
 	threshold = LEVELS[level];
 }
 
+// The file sink is opt-in: the composition root attaches it at boot
+// (setLogFile). Anything else that logs — tests, one-off scripts —
+// goes stdout-only and can't pollute the operator's log file.
+let fileTarget: string | null = null;
 let fileSinkDead = false;
 
+export function setLogFile(path: string): void {
+	fileTarget = path;
+}
+
 function writeFile(line: string): void {
-	if (fileSinkDead) return;
-	const target = join(paths.state(), "goblin.log");
+	if (fileSinkDead || fileTarget === null) return;
+	const target = fileTarget;
 	try {
 		appendFileSync(target, line);
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
 			try {
-				mkdirSync(paths.state(), { recursive: true });
+				mkdirSync(dirname(target), { recursive: true });
 				appendFileSync(target, line);
 				return;
 			} catch {

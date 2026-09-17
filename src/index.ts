@@ -16,11 +16,12 @@ import {
 } from "./config.ts";
 import { openStore } from "./conversation.ts";
 import { startHttp } from "./http/mod.ts";
-import { log, setLogLevel } from "./log.ts";
+import { log, setLogFile, setLogLevel } from "./log.ts";
 import { Runtime } from "./runtime.ts";
 import { applyMenuButton, AUTH_TELEGRAM_TOKEN, startBot } from "./tg/mod.ts";
 
 ensureHomeLayout();
+setLogFile(paths.logFile());
 
 const config = loadConfig();
 if (!config) {

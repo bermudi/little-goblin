@@ -2,7 +2,7 @@
 // natively when the model's capability data says it can; otherwise it's
 // saved to workspace/attachments/ and referenced by path.
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { File as TgFile } from "grammy/types";
 import type { UIMessage } from "ai";
@@ -108,50 +108,55 @@ export function mediaFromMessage(msg: {
 	return null;
 }
 
-// Fetch file bytes. With a self-hosted telegram-bot-api in --local mode,
-// getFile returns an absolute local path — read straight off disk, no HTTP.
-// With the cloud API, download over HTTPS.
-export async function fetchFileBytes(
-	file: TgFile,
-	apiRoot: string | undefined,
-	token: string,
-): Promise<Buffer> {
-	const filePath = file.file_path;
-	if (!filePath) throw new Error("telegram returned no file_path");
-	if (filePath.startsWith("/")) {
-		return readFile(filePath);
-	}
-	const root = apiRoot ?? "https://api.telegram.org";
-	// The request URL carries the bot token — scrub it from anything
-	// propagated toward logs.
-	const url = `${root}/file/bot${token}/${filePath}`;
-	let res: Response;
-	try {
-		res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
-	} catch (err) {
-		const msg = String(err instanceof Error ? err.message : err).replaceAll(token, "***");
-		throw new Error(`telegram file download failed: ${msg}`);
-	}
-	if (!res.ok) throw new Error(`telegram file download HTTP ${res.status}`);
-	return Buffer.from(await res.arrayBuffer());
+export interface SavedAttachment {
+	path: string;
+	size: number;
 }
 
 // Persist to workspace/attachments/ (Telegram still owns the file; this is
-// the agent-reachable copy). Returns the absolute path.
-export async function saveAttachment(media: IncomingMedia, bytes: Buffer): Promise<string> {
+// the agent-reachable copy) without ever buffering the whole file —
+// uploads run to 2GB on a self-hosted bot-api. Local-mode files are
+// copied on disk; cloud downloads stream straight to the destination.
+export async function saveAttachment(
+	media: IncomingMedia,
+	file: TgFile,
+	apiRoot: string | undefined,
+	token: string,
+): Promise<SavedAttachment> {
+	const filePath = file.file_path;
+	if (!filePath) throw new Error("telegram returned no file_path");
 	await mkdir(paths.attachments(), { recursive: true });
 	const safe = basename(media.fileName).replace(/[^\w.\-]+/g, "_");
 	const dest = join(paths.attachments(), `${media.fileUniqueId}-${safe}`);
-	await writeFile(dest, bytes);
-	return dest;
+	if (filePath.startsWith("/")) {
+		// Self-hosted bot-api in --local mode: the file is already on this
+		// box — copy on disk, no HTTP fetch, no in-memory buffer.
+		await copyFile(filePath, dest);
+	} else {
+		const root = apiRoot ?? "https://api.telegram.org";
+		// The request URL carries the bot token — scrub it from anything
+		// propagated toward logs.
+		const url = `${root}/file/bot${token}/${filePath}`;
+		let res: Response;
+		try {
+			res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+		} catch (err) {
+			const msg = String(err instanceof Error ? err.message : err).replaceAll(token, "***");
+			throw new Error(`telegram file download failed: ${msg}`);
+		}
+		if (!res.ok) throw new Error(`telegram file download HTTP ${res.status}`);
+		await Bun.write(dest, res);
+	}
+	const { size } = await stat(dest);
+	return { path: dest, size };
 }
 
-// Media → parts. Natively-capable models get a file part (data URL);
+// Media → parts. Natively-capable models get a file part (data URL) — the
+// bytes are read back only when the file is small enough to inline;
 // everyone else gets a text reference to the saved path.
 export async function mediaParts(
 	media: IncomingMedia,
-	bytes: Buffer,
-	savedPath: string,
+	saved: SavedAttachment,
 	modelRef: string,
 ): Promise<UIMessage["parts"]> {
 	const { provider, modelId } = splitModelRef(modelRef);
@@ -168,7 +173,8 @@ export async function mediaParts(
 			(modalities.has("file") ||
 				(media.mimeType === "application/pdf" && modalities.has("pdf"))));
 
-	if (accepts && bytes.byteLength <= INLINE_MAX_BYTES) {
+	if (accepts && saved.size <= INLINE_MAX_BYTES) {
+		const bytes = await readFile(saved.path);
 		const dataUrl = `data:${media.mimeType};base64,${bytes.toString("base64")}`;
 		return [
 			{
@@ -182,7 +188,7 @@ export async function mediaParts(
 	return [
 		{
 			type: "text",
-			text: `[attachment: ${savedPath} — ${media.mimeType}, ${bytes.byteLength} bytes. Read it with read_file or bash tools.]`,
+			text: `[attachment: ${saved.path} — ${media.mimeType}, ${saved.size} bytes. Read it with read_file or bash tools.]`,
 		},
 	];
 }

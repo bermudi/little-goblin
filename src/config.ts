@@ -77,8 +77,12 @@ const configSchema = z.object({
 	// Absent = default api.telegram.org.
 	telegram: z.object({ apiRoot: z.url().optional() }).default({}),
 	// External HTTPS door for mini apps (tailscale serve/funnel, reverse
-	// proxy). Nothing in-process assumes a public IP.
-	publicUrl: z.url().optional(),
+	// proxy). Nothing in-process assumes a public IP. "" means unset —
+	// the settings form can't express undefined over JSON.
+	publicUrl: z
+		.union([z.url(), z.literal("")])
+		.transform((v) => v || undefined)
+		.optional(),
 	http: z.object({ port: z.number().int().default(8787) }).default({ port: 8787 }),
 	logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });

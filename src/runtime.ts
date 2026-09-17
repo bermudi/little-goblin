@@ -180,6 +180,9 @@ export class Runtime {
 		} finally {
 			lane.running = false;
 			lane.controller = null;
+			// A drained lane is cheap to recreate on the next submit —
+			// don't pin one per conversation for the life of the process.
+			if (lane.pending.length === 0) this.lanes.delete(convId);
 		}
 	}
 

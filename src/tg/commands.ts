@@ -15,6 +15,8 @@ export interface CommandDeps {
 	configRef: { current: Config };
 	store: ConversationStore;
 	runtime: Runtime;
+	// This bot's own username — commands can be addressed /cmd@botname.
+	botUsername: string;
 }
 
 function target(conv: Conversation) {
@@ -29,10 +31,10 @@ function reply(deps: CommandDeps, conv: Conversation, text: string): void {
 	});
 }
 
-// Apply a settings change: write meta + bump epoch (fences in-flight turns).
+// Apply a settings change: patch meta + bump epoch (fences in-flight
+// turns) atomically.
 function apply(deps: CommandDeps, conv: Conversation, patch: Parameters<ConversationStore["setMeta"]>[1]): void {
-	deps.store.setMeta(conv.id, patch);
-	deps.store.bumpEpoch(conv.id);
+	deps.store.applySettings(conv.id, patch);
 }
 
 // Returns true if the text was a command and got handled.
@@ -42,7 +44,13 @@ export function handleCommand(
 	text: string,
 ): boolean {
 	const [rawCmd, ...rest] = text.trim().split(/\s+/);
-	const cmd = rawCmd!.split("@")[0]!; // strip /cmd@botname suffix
+	const at = rawCmd!.indexOf("@");
+	// "/stop@otherbot" is not for this bot — consumed silently rather than
+	// fed to the model as a user message.
+	if (at !== -1 && rawCmd!.slice(at + 1).toLowerCase() !== deps.botUsername.toLowerCase()) {
+		return true;
+	}
+	const cmd = at === -1 ? rawCmd! : rawCmd!.slice(0, at);
 	const arg = rest.join(" ").trim();
 
 	switch (cmd) {

@@ -49,6 +49,9 @@ export interface ConversationStore {
 	// Settings changes and cancellation bump the epoch; in-flight turns
 	// fence themselves against it.
 	bumpEpoch(id: string): number;
+	// Settings patch + epoch bump in one transaction — a settings write
+	// that fences in-flight turns must never land half-applied.
+	applySettings(id: string, patch: ConversationMetaPatch): number;
 	// Append UIMessages in one transaction; seq is assigned here.
 	append(id: string, messages: UIMessage[]): void;
 	history(id: string): UIMessage[];
@@ -129,6 +132,37 @@ export function openStore(dbPath: string): ConversationStore {
 		"SELECT epoch FROM conversations WHERE id = ?",
 	);
 
+	function applyPatch(id: string, patch: ConversationMetaPatch): void {
+		const sets: string[] = [];
+		const vals: (string | number | null)[] = [];
+		if (patch.title !== undefined) {
+			sets.push("title = ?");
+			vals.push(patch.title);
+		}
+		if (patch.cwd !== undefined) {
+			sets.push("cwd = ?");
+			vals.push(patch.cwd);
+		}
+		if (patch.model !== undefined) {
+			sets.push("model = ?");
+			vals.push(patch.model);
+		}
+		if (patch.thinking !== undefined) {
+			sets.push("thinking = ?");
+			vals.push(patch.thinking);
+		}
+		if (sets.length === 0) return;
+		vals.push(id);
+		db.run(`UPDATE conversations SET ${sets.join(", ")} WHERE id = ?`, vals);
+	}
+
+	function bump(id: string): number {
+		db.run("UPDATE conversations SET epoch = epoch + 1 WHERE id = ?", [id]);
+		const row = qEpoch.get(id);
+		if (!row) throw new Error(`conversation ${id} not found`);
+		return row.epoch;
+	}
+
 	return {
 		resolve(addr, defaultCwd) {
 			const id = addressId(addr);
@@ -152,34 +186,18 @@ export function openStore(dbPath: string): ConversationStore {
 		},
 
 		setMeta(id, patch) {
-			const sets: string[] = [];
-			const vals: (string | number | null)[] = [];
-			if (patch.title !== undefined) {
-				sets.push("title = ?");
-				vals.push(patch.title);
-			}
-			if (patch.cwd !== undefined) {
-				sets.push("cwd = ?");
-				vals.push(patch.cwd);
-			}
-			if (patch.model !== undefined) {
-				sets.push("model = ?");
-				vals.push(patch.model);
-			}
-			if (patch.thinking !== undefined) {
-				sets.push("thinking = ?");
-				vals.push(patch.thinking);
-			}
-			if (sets.length === 0) return;
-			vals.push(id);
-			db.run(`UPDATE conversations SET ${sets.join(", ")} WHERE id = ?`, vals);
+			applyPatch(id, patch);
 		},
 
 		bumpEpoch(id) {
-			db.run("UPDATE conversations SET epoch = epoch + 1 WHERE id = ?", [id]);
-			const row = qEpoch.get(id);
-			if (!row) throw new Error(`conversation ${id} not found`);
-			return row.epoch;
+			return bump(id);
+		},
+
+		applySettings(id, patch) {
+			return db.transaction(() => {
+				applyPatch(id, patch);
+				return bump(id);
+			})();
 		},
 
 		append(id, messages) {

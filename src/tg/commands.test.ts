@@ -47,6 +47,7 @@ function setup() {
 		configRef: { current: config },
 		store,
 		runtime: { stop: (id: string) => stopped.push(id) } as unknown as Runtime,
+		botUsername: "goblin",
 	};
 	return { store, conv, sent, stopped, deps };
 }
@@ -107,6 +108,21 @@ describe("commands", () => {
 	test("/stop fences the conversation", () => {
 		const { store, conv, stopped, deps } = setup();
 		expect(handleCommand(deps, conv, "/stop")).toBe(true);
+		expect(stopped).toEqual([conv.id]);
+		store.close();
+	});
+
+	test("/stop@otherbot is not ours — consumed silently, no stop, no reply", () => {
+		const { store, conv, sent, stopped, deps } = setup();
+		expect(handleCommand(deps, conv, "/stop@otherbot")).toBe(true);
+		expect(stopped).toEqual([]);
+		expect(sent).toEqual([]);
+		store.close();
+	});
+
+	test("/stop@goblin addressed to this bot still handles", () => {
+		const { store, conv, stopped, deps } = setup();
+		expect(handleCommand(deps, conv, "/stop@goblin")).toBe(true);
 		expect(stopped).toEqual([conv.id]);
 		store.close();
 	});

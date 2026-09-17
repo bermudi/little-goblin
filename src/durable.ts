@@ -47,4 +47,17 @@ export function durableWriteFile(path: string, content: string, modeIfNew = 0o64
 		throw err;
 	}
 	renameSync(tmp, path);
+	// fsync the directory so the rename itself is durable, not just the
+	// file's data. Best-effort: not every filesystem permits dir fsync,
+	// and the payload is already safe.
+	try {
+		const dfd = openSync(dirname(path), constants.O_RDONLY);
+		try {
+			fsyncSync(dfd);
+		} finally {
+			closeSync(dfd);
+		}
+	} catch {
+		// directory fsync unsupported — the data is already durable
+	}
 }

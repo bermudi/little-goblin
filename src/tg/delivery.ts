@@ -44,6 +44,10 @@ export function makeDeliverySink(
 	// rejects: each link logs its own failure, so `await chain` is always
 	// safe and onDone can't throw on a delivery error.
 	let chain: Promise<void> = Promise.resolve();
+	// Reply threading is cosmetic — if a send fails (e.g. the operator
+	// deleted the triggering message), retries go out without it rather
+	// than failing forever.
+	let replyTo = replyToMessageId;
 
 	function enqueue(fn: () => Promise<void>): void {
 		chain = chain.then(() =>
@@ -53,11 +57,13 @@ export function makeDeliverySink(
 		);
 	}
 
-	const typing = setInterval(() => {
+	function sendTyping(): void {
 		api.sendChatAction(conv.chatId, "typing", {
 			...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
 		}).catch(() => {});
-	}, TYPING_INTERVAL_MS);
+	}
+	sendTyping();
+	const typing = setInterval(sendTyping, TYPING_INTERVAL_MS);
 
 	function rendered(): string {
 		const status =
@@ -92,12 +98,13 @@ export function makeDeliverySink(
 							...(conv.threadId !== null
 								? { message_thread_id: conv.threadId }
 								: {}),
-							...(idx === 0 && replyToMessageId !== undefined
-								? { reply_parameters: { message_id: replyToMessageId } }
+							...(idx === 0 && replyTo !== undefined
+								? { reply_parameters: { message_id: replyTo } }
 								: {}),
 						});
 						c.id = sent.message_id;
 					} catch (err) {
+						replyTo = undefined; // never retry the reply link
 						c.id = -1; // failed — retried by the next flush
 						throw err;
 					}

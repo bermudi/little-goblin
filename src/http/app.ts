@@ -68,7 +68,7 @@ $("save").onclick = async () => {
     favorites: strs($("favorites").value),
     thinking: $("thinking").value,
     allowedUsers: num($("allowedUsers").value),
-    publicUrl: $("publicUrl").value.trim() || undefined,
+    publicUrl: $("publicUrl").value.trim(), // "" clears the door — server normalizes it
     telegram: { apiRoot: $("apiRoot").value.trim() || undefined },
     providers,
     logLevel: $("logLevel").value,

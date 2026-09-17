@@ -12,7 +12,7 @@ import { log } from "../log.ts";
 import { CoalescingBuffer } from "./buffer.ts";
 import { COMMAND_RE, handleCommand } from "./commands.ts";
 import { makeDeliverySink } from "./delivery.ts";
-import { fetchFileBytes, mediaFromMessage, mediaParts, saveAttachment } from "./media.ts";
+import { mediaFromMessage, mediaParts, saveAttachment } from "./media.ts";
 
 export const AUTH_TELEGRAM_TOKEN = "telegram";
 const QUIET_WINDOW_MS = 1_500;
@@ -34,6 +34,9 @@ export async function createBot(deps: BotDeps): Promise<Bot> {
 	// apiRoot is structural — applies at process start, not hot-reloaded.
 	const apiRoot = deps.configRef.current.telegram.apiRoot;
 	const bot = new Bot(token, apiRoot ? { client: { apiRoot } } : {});
+	// Populates bot.botInfo — needed to route /cmd@botname correctly.
+	await bot.init();
+	const botUsername = bot.botInfo.username;
 	const buffer = new CoalescingBuffer<BufferedItem>(QUIET_WINDOW_MS, (convId, items) => {
 		const conv = deps.store.get(convId);
 		if (!conv) {
@@ -76,8 +79,13 @@ export async function createBot(deps: BotDeps): Promise<Bot> {
 	bot.use(async (ctx, next) => {
 		// Allowed-user gate, first thing. Read per-message so config
 		// writes via the mini app take effect without a restart.
-		if (!ctx.from || !deps.configRef.current.allowedUsers.includes(ctx.from.id)) {
-			log.warn("rejected user", { userId: ctx.from?.id ?? "unknown" });
+		if (!ctx.from) {
+			// Service updates carry no sender — routine, not a warn.
+			log.debug("rejected update with no sender");
+			return;
+		}
+		if (!deps.configRef.current.allowedUsers.includes(ctx.from.id)) {
+			log.warn("rejected user", { userId: ctx.from.id });
 			return;
 		}
 		await next();
@@ -102,7 +110,7 @@ export async function createBot(deps: BotDeps): Promise<Bot> {
 		// command must not silently eat the media it rides on; media wins.
 		const media = mediaFromMessage(msg);
 		if (text !== "" && !media && COMMAND_RE.test(text)) {
-			if (handleCommand({ api: bot.api, configRef: deps.configRef, store: deps.store, runtime: deps.runtime }, conv, text)) {
+			if (handleCommand({ api: bot.api, configRef: deps.configRef, store: deps.store, runtime: deps.runtime, botUsername }, conv, text)) {
 				return;
 			}
 		}
@@ -116,13 +124,12 @@ export async function createBot(deps: BotDeps): Promise<Bot> {
 			if (media) {
 				try {
 					const file = await bot.api.getFile(media.fileId);
-					const bytes = await fetchFileBytes(file, apiRoot, token);
-					const saved = await saveAttachment(media, bytes);
+					const saved = await saveAttachment(media, file, apiRoot, token);
 					// Read the conversation fresh — a /model landing while the
 					// download ran should take effect for this media too.
 					const fresh = deps.store.get(conv.id) ?? conv;
 					const modelRef = fresh.model ?? deps.configRef.current.model;
-					parts.push(...(await mediaParts(media, bytes, saved, modelRef)));
+					parts.push(...(await mediaParts(media, saved, modelRef)));
 				} catch (err) {
 					log.error("media intake failed", err, { conversation: conv.id });
 					parts.push({ type: "text", text: `[attachment failed to download: ${String(err)}]` });
@@ -142,8 +149,7 @@ export async function createBot(deps: BotDeps): Promise<Bot> {
 
 export async function startBot(deps: BotDeps): Promise<Bot> {
 	const bot = await createBot(deps);
-	const me = await bot.api.getMe();
-	log.info("telegram bot online", { bot: me.username });
+	log.info("telegram bot online", { bot: bot.botInfo.username });
 
 	if (deps.configRef.current.publicUrl) {
 		// Mini-app door is the chat menu button — no /settings command needed.

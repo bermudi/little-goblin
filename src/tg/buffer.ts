@@ -26,6 +26,15 @@ export class CoalescingBuffer<T> {
 		}
 	}
 
+	// Flush every pending bucket now — shutdown calls this so buffered
+	// input reaches history instead of dying in memory with the process.
+	drain(): void {
+		for (const [key, bucket] of [...this.buckets]) {
+			clearTimeout(bucket.timer);
+			this.fire(key);
+		}
+	}
+
 	private fire(key: string): void {
 		const bucket = this.buckets.get(key);
 		if (!bucket) return;

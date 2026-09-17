@@ -65,7 +65,7 @@ const runtime = new Runtime({
 	makeTools,
 });
 
-const bot = await startBot({ configRef, auth, store, runtime });
+const tg = await startBot({ configRef, auth, store, runtime });
 const http = startHttp({
 	configRef,
 	botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN),
@@ -73,18 +73,62 @@ const http = startHttp({
 		setLogLevel(configRef.current.logLevel);
 		// publicUrl is operator-editable through the app — keep the menu
 		// button (the door) in sync without a restart.
-		applyMenuButton(bot.api, configRef.current.publicUrl);
+		applyMenuButton(tg.bot.api, configRef.current.publicUrl);
 	},
 });
 
-function shutdown(signal: string): void {
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+// Long enough for the sinks' final flushes and polling's offset
+// confirm; short enough that a wedged Telegram API can't hold a deploy.
+const SHUTDOWN_DRAIN_MS = 10_000;
+let shuttingDown = false;
+
+async function shutdown(signal: string): Promise<void> {
+	if (shuttingDown) {
+		log.warn("second signal — forcing exit", { signal });
+		process.exit(1);
+	}
+	shuttingDown = true;
 	log.info("shutting down", { signal });
-	bot.stop();
+	// bot.stop confirms the polling offset so handled updates don't
+	// redeliver on the next boot.
+	const stopping = tg.bot.stop().catch((err: unknown) => {
+		log.warn("bot stop failed", { error: String(err) });
+	});
+	// Close the runtime first — intake that lands during the drain still
+	// reaches history but never starts a turn. Fencing each lane makes
+	// its sink stamp "⏹ superseded" and run a final flush; drainIntake
+	// lands coalescing-buffer messages in history the same way.
+	const drained = runtime.shutdown();
+	const flushed = tg.drainIntake();
+	const settled = Promise.allSettled([stopping, drained, flushed]);
+	const finished = await Promise.race([
+		settled.then(() => true),
+		sleep(SHUTDOWN_DRAIN_MS).then(() => false),
+	]);
+	if (!finished) {
+		log.warn("shutdown drain exceeded budget — exiting anyway", {
+			budgetMs: SHUTDOWN_DRAIN_MS,
+		});
+	} else {
+		for (const r of await settled) {
+			if (r.status === "rejected") {
+				log.warn("shutdown step failed", { error: String(r.reason) });
+			}
+		}
+	}
 	http.stop();
 	store.close();
+	log.info("bye", { signal });
 	process.exit(0);
 }
-process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+	process.on(sig, () => {
+		void shutdown(sig).catch((err) => {
+			log.error("shutdown failed", err);
+			process.exit(1);
+		});
+	});
+}
 
 log.info("goblin up", { home: goblinHome() });

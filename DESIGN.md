@@ -71,6 +71,16 @@ captures `(conversationId, epoch)` at admission and calls `checkAuthority()`
 around every await. Fenced turns abort quietly and log it. No machines, no
 drain sets — one counter and one function.
 
+Shutdown rides the same rule. SIGINT/SIGTERM closes the runtime (submits
+still land in history but never run), fences every live lane — each sink
+stamps "⏹ superseded" and runs its final flush — and drains the intake
+buffer into history, all under a bounded budget. A crash mid-turn leaves
+the same shape minus the flush: the user message is in history, the next
+turn answers it. Boot never auto-retries a half-run turn — tool calls
+aren't idempotent, and an unanswered tail can't be told apart from
+`/stop`. If recovery is ever wanted it is notify-don't-retry: surface
+the orphaned turn to the operator, don't replay it.
+
 ## Model layer
 
 Vercel AI SDK (`ai` package). `streamText` with tools and `stopWhen` for the

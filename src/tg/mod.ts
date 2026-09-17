@@ -52,7 +52,16 @@ export interface BotDeps {
 	runtime: Runtime;
 }
 
-export async function createBot(deps: BotDeps): Promise<Bot> {
+export interface RunningBot {
+	bot: Bot;
+	// Drain in-flight intake: wait out media-resolution chains, then
+	// flush the coalescing buffer so buffered input submits. Shutdown
+	// calls this after closing the runtime — submits then land in
+	// history without starting turns. Bounded by the caller.
+	drainIntake(): Promise<void>;
+}
+
+export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	const token = await deps.auth.resolve(AUTH_TELEGRAM_TOKEN);
 	// apiRoot is structural — applies at process start, not hot-reloaded.
 	const apiRoot = deps.configRef.current.telegram.apiRoot;
@@ -174,7 +183,19 @@ export async function createBot(deps: BotDeps): Promise<Bot> {
 		log.error("bot error", err.error, { update: String(err.ctx?.update?.update_id) });
 	});
 
-	return bot;
+	return {
+		bot,
+		async drainIntake() {
+			// Drain before AND after the chains: a hung media resolution
+			// must not take already-buffered input down with it, and
+			// whatever the settled chains pushed goes out in the second
+			// pass. Anything later still submits via its own timer —
+			// the closed runtime records it history-only.
+			buffer.drain();
+			await Promise.allSettled([...intake.values()]);
+			buffer.drain();
+		},
+	};
 }
 
 // The mini-app door is the chat menu button — no /settings command needed.
@@ -198,8 +219,9 @@ export function applyCommands(api: Api): void {
 	);
 }
 
-export async function startBot(deps: BotDeps): Promise<Bot> {
-	const bot = await createBot(deps);
+export async function startBot(deps: BotDeps): Promise<RunningBot> {
+	const running = await createBot(deps);
+	const { bot } = running;
 	log.info("telegram bot online", { bot: bot.botInfo.username });
 
 	// Unconditional: an unset publicUrl must reset the button to default,
@@ -210,5 +232,5 @@ export async function startBot(deps: BotDeps): Promise<Bot> {
 	bot.start({
 		onStart: () => log.info("long polling started"),
 	});
-	return bot;
+	return running;
 }

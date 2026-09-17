@@ -151,6 +151,35 @@ describe("turn authority", () => {
 		store.close();
 	});
 
+	test("shutdown fences every lane and resolves after the sinks' onDone", async () => {
+		const { store, conv, runtime } = setup(["a", "b", "c", "d", "e"], 20);
+		const conv2 = store.resolve({ kind: "dm", chatId: 2 }, "/w");
+		const s1 = new RecordingSink();
+		const s2 = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
+		runtime.submit(conv2, userMessage([{ type: "text", text: "two" }]), s2);
+		await sleep(30); // both turns mid-stream
+		await runtime.shutdown();
+		expect(await s1.done).toEqual({ kind: "fenced" });
+		expect(await s2.done).toEqual({ kind: "fenced" });
+		// fenced turns commit no assistant output
+		expect(store.history(conv.id).map((m) => m.role)).toEqual(["user"]);
+		expect(store.history(conv2.id).map((m) => m.role)).toEqual(["user"]);
+		store.close();
+	});
+
+	test("a submit after shutdown lands in history but never runs", async () => {
+		const { store, conv, runtime } = setup(["a"], 5);
+		await runtime.shutdown();
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		expect(await sink.done).toEqual({ kind: "fenced" });
+		await sleep(50); // prove no turn ever starts
+		expect(sink.text).toBe("");
+		expect(store.history(conv.id).map((m) => m.role)).toEqual(["user"]);
+		store.close();
+	});
+
 	test("a tool call under stale authority never executes", async () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");

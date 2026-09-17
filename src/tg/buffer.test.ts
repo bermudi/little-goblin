@@ -28,6 +28,17 @@ describe("coalescing buffer", () => {
 		expect(seen.c2).toEqual(["x"]);
 	});
 
+	test("drain flushes pending buckets immediately and disarms their timers", async () => {
+		const flushes: string[][] = [];
+		const buf = new CoalescingBuffer<string>(40, (_k, items) => flushes.push(items));
+		buf.push("c1", "a");
+		buf.push("c2", "x");
+		buf.drain();
+		expect(flushes).toEqual([["a"], ["x"]]);
+		await sleep(80); // disarmed timers must not re-fire
+		expect(flushes).toEqual([["a"], ["x"]]);
+	});
+
 	test("a quiet gap starts a new batch", async () => {
 		const flushes: string[][] = [];
 		const buf = new CoalescingBuffer<string>(30, (_k, items) => flushes.push(items));

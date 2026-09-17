@@ -85,20 +85,43 @@ interface Lane {
 	pending: QueuedTurn[];
 	running: boolean;
 	controller: AbortController | null;
+	// The drain loop's promise — shutdown awaits it so a fenced sink's
+	// final flush finishes before the process exits.
+	draining: Promise<void> | null;
 }
 
 export class Runtime {
 	private lanes = new Map<string, Lane>();
+	// Set by shutdown(): submits still land in history but never run.
+	private closed = false;
 
 	constructor(private deps: RuntimeDeps) {}
 
 	// Enqueue a user message + a sink. The message lands in history
-	// immediately — it's real regardless of when the turn runs.
+	// immediately — it's real regardless of when the turn runs, or
+	// whether it runs at all (post-shutdown submits record only).
 	submit(conv: Conversation, message: UIMessage, sink: TurnSink): void {
 		this.deps.store.append(conv.id, [message]);
+		if (this.closed) {
+			void this.notifyDone({ sink, doneSent: false }, { kind: "fenced" });
+			return;
+		}
 		const lane = this.lane(conv.id);
 		lane.pending.push({ sink, doneSent: false });
-		if (!lane.running) void this.drain(conv.id);
+		if (!lane.running) lane.draining = this.drain(conv.id);
+	}
+
+	// Graceful stop: close intake, then fence every live lane — running
+	// turns abort, queued ones drop. Resolves when the drains settle,
+	// which includes each sink's final flush (the "⏹ superseded" stamp).
+	async shutdown(): Promise<void> {
+		this.closed = true;
+		const drains: Promise<void>[] = [];
+		for (const [convId, lane] of this.lanes) {
+			this.stop(convId);
+			if (lane.draining) drains.push(lane.draining);
+		}
+		await Promise.all(drains);
 	}
 
 	// /stop — advance the epoch (fences the in-flight turn) and abort its
@@ -120,7 +143,7 @@ export class Runtime {
 	private lane(convId: string): Lane {
 		let l = this.lanes.get(convId);
 		if (!l) {
-			l = { pending: [], running: false, controller: null };
+			l = { pending: [], running: false, controller: null, draining: null };
 			this.lanes.set(convId, l);
 		}
 		return l;
@@ -185,6 +208,7 @@ export class Runtime {
 		} finally {
 			lane.running = false;
 			lane.controller = null;
+			lane.draining = null;
 			// A drained lane is cheap to recreate on the next submit —
 			// don't pin one per conversation for the life of the process.
 			if (lane.pending.length === 0) this.lanes.delete(convId);

@@ -302,6 +302,63 @@ describe("turn authority", () => {
 		store.close();
 	});
 
+	test("distinct text parts stream with a seam — blocks must not fuse in the bubble", async () => {
+		// A multi-step turn (text, tool call, more text) emits several text
+		// parts. The chat bubble must show them as blocks, not one run-on —
+		// "yo 👋 what's up" + "Workspace…" streamed as "upWorkspace" once.
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({
+				model: {
+					specificationVersion: "v2",
+					provider: "fake",
+					modelId: "two-part-1",
+					supportedUrls: {},
+					doGenerate() {
+						throw new Error("unimplemented");
+					},
+					doStream() {
+						const stream = new ReadableStream<LanguageModelV2StreamPart>({
+							start(controller) {
+								controller.enqueue({ type: "stream-start", warnings: [] });
+								controller.enqueue({ type: "text-start", id: "t1" });
+								controller.enqueue({
+									type: "text-delta",
+									id: "t1",
+									delta: "yo 👋 what's up",
+								});
+								controller.enqueue({ type: "text-end", id: "t1" });
+								controller.enqueue({ type: "text-start", id: "t2" });
+								controller.enqueue({
+									type: "text-delta",
+									id: "t2",
+									delta: "Workspace is basically fresh",
+								});
+								controller.enqueue({ type: "text-end", id: "t2" });
+								controller.enqueue({
+									type: "finish",
+									finishReason: "stop",
+									usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+								});
+								controller.close();
+							},
+						});
+						return { stream };
+					},
+				} as unknown as LanguageModel,
+				system: "test",
+			}),
+			makeTools: () => ({}),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		expect(sink.text).toBe("yo 👋 what's up\n\nWorkspace is basically fresh");
+		store.close();
+	});
+
 	test("a failed model stream reports error — no silent completion, no partial append", async () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");

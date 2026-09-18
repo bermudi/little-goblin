@@ -288,6 +288,9 @@ export class Runtime {
 			});
 
 			let responseMessage: UIMessage | null = null;
+			// Last streamed text part id — part boundaries are block
+			// boundaries in the chat bubble (see the text-delta case).
+			let lastTextPartId: string | null = null;
 			// Stream errors arrive as `error` chunks — they don't throw. The
 			// authoritative signal is the finish outcome: "failed" means the
 			// turn must surface an error, not commit partial output as a
@@ -318,6 +321,16 @@ export class Runtime {
 				this.checkAuthority(convId, epoch);
 				switch (chunk.type) {
 					case "text-delta":
+						// Distinct text parts are distinct blocks. A multi-step
+						// turn — text, then a tool call, then more text — must
+						// not fuse its blocks in the chat bubble ("what's up" +
+						// "Workspace" streamed as "upWorkspace" otherwise).
+						// History keeps the parts separate; this seam is
+						// display-only.
+						if (lastTextPartId !== null && chunk.id !== lastTextPartId) {
+							sink.onTextDelta("\n\n");
+						}
+						lastTextPartId = chunk.id;
 						sink.onTextDelta(chunk.delta);
 						break;
 					case "reasoning-delta":

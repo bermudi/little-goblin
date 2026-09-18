@@ -108,3 +108,110 @@ export async function inputModalities(provider: string, modelId: string): Promis
 	}
 	return new Set(["text"]);
 }
+
+// ---------- OpenRouter per-route capability catalog ----------
+//
+// openrouter.ai/api/v1/models is public and lists each route's
+// supported_parameters — the only honest source for whether a routed
+// model takes reasoning_effort, a bare reasoning toggle, or no reasoning
+// at all. Same fetch/cache/backoff shape as the models.dev catalog above.
+
+const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
+
+const openrouterCatalogSchema = z.object({
+	data: z.array(
+		z.object({
+			id: z.string(),
+			supported_parameters: z.array(z.string()).default([]),
+		}),
+	),
+});
+
+let openrouterCatalog: Map<string, Set<string>> | null = null;
+let openrouterNextFetchAt = 0;
+let openrouterInflight: Promise<Map<string, Set<string>> | null> | null = null;
+
+async function refreshOpenRouter(): Promise<Map<string, Set<string>> | null> {
+	openrouterNextFetchAt = Date.now() + RETRY_MS;
+	try {
+		const res = await fetch(OPENROUTER_MODELS_URL, {
+			signal: AbortSignal.timeout(10_000),
+		});
+		if (!res.ok) throw new Error(`openrouter models HTTP ${res.status}`);
+		const parsed = openrouterCatalogSchema.safeParse(await res.json());
+		if (!parsed.success) {
+			throw new Error(`openrouter models schema: ${parsed.error.message}`);
+		}
+		openrouterCatalog = new Map(
+			parsed.data.data.map((m) => [m.id, new Set(m.supported_parameters)]),
+		);
+		openrouterNextFetchAt = Date.now() + CACHE_TTL_MS;
+		try {
+			durableWriteFile(
+				paths.openrouterModelsCache(),
+				JSON.stringify(
+					Object.fromEntries(
+						[...openrouterCatalog].map(([id, p]) => [id, [...p]]),
+					),
+				),
+			);
+		} catch (err) {
+			log.warn("openrouter catalog cache write failed", { error: String(err) });
+		}
+		return openrouterCatalog;
+	} catch (err) {
+		log.warn("openrouter catalog fetch failed — thinking levels stay generic", {
+			error: String(err),
+		});
+		if (openrouterCatalog) return openrouterCatalog;
+		try {
+			const cached = JSON.parse(
+				readFileSync(paths.openrouterModelsCache(), "utf8"),
+			) as Record<string, string[]>;
+			openrouterCatalog = new Map(
+				Object.entries(cached).map(([id, params]) => [id, new Set(params)]),
+			);
+		} catch (cacheErr) {
+			if ((cacheErr as NodeJS.ErrnoException).code !== "ENOENT") {
+				log.warn("openrouter catalog cache unreadable — ignoring", {
+					error: String(cacheErr),
+				});
+			}
+			openrouterCatalog = null;
+		}
+		return openrouterCatalog;
+	}
+}
+
+// Boot warm + cold-read share one flight; a failure backs off RETRY_MS.
+export function ensureOpenRouterCatalog(): Promise<Map<
+	string,
+	Set<string>
+> | null> {
+	if (Date.now() < openrouterNextFetchAt) {
+		return Promise.resolve(openrouterCatalog);
+	}
+	openrouterInflight ??= refreshOpenRouter().finally(() => {
+		openrouterInflight = null;
+	});
+	return openrouterInflight;
+}
+
+// Per-route supported_parameters for an openrouter model id, or null when
+// the catalog is cold or doesn't list the model — callers must treat null
+// as "unknown", never "unsupported". A cold read kicks the fetch so the
+// next caller sees the real answer.
+export function openrouterSupportedParams(modelId: string): Set<string> | null {
+	if (!openrouterCatalog && Date.now() >= openrouterNextFetchAt) {
+		void ensureOpenRouterCatalog();
+	}
+	return openrouterCatalog?.get(modelId) ?? null;
+}
+
+// Test hook: prime or clear the sync cache without a network round-trip.
+export function _primeOpenRouterCatalog(
+	catalog: Map<string, Set<string>> | null,
+): void {
+	openrouterCatalog = catalog;
+	openrouterNextFetchAt = Date.now() + CACHE_TTL_MS;
+}

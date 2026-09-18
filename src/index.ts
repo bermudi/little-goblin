@@ -1,7 +1,7 @@
 // Composition root: config → auth → conversations → bot → http.
 
 import { loadAuth } from "./auth.ts";
-import { inputModalities } from "./agent/models-dev.ts";
+import { ensureOpenRouterCatalog, inputModalities } from "./agent/models-dev.ts";
 import { buildSystemPrompt } from "./agent/prompt.ts";
 import { resolveModel, thinkingOptions } from "./agent/providers.ts";
 import { generateTopicTitle } from "./agent/title.ts";
@@ -36,6 +36,10 @@ setLogLevel(config.logLevel);
 const configRef = { current: config };
 const auth = loadAuth();
 const store = openStore(paths.db());
+
+// Warm the openrouter route-capability catalog so /think and the mini app
+// see real per-model thinking levels instead of the cold-start fallback.
+void ensureOpenRouterCatalog();
 
 const runtime = new Runtime({
 	store,

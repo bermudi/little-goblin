@@ -102,19 +102,34 @@ agent loop.
   - `openrouter` — `@openrouter/ai-sdk-provider`.
   - `codex` — `ai-sdk-provider-codex-cli` exists (ChatGPT Plus/Pro auth via
     `codex` CLI login) but wraps the CLI's own agent loop — no caller tools,
-    so it can't drive goblin's turn loop. In-loop Codex needs a thin custom
-    provider over OAuth + the responses endpoint; defer until wanted.
-- **Thinking**: `off|low|medium|high|max` is an operator vocabulary, not a
-  provider contract — `thinkingOptions` maps each family to the nearest
-  honest knob and writes the collapse down; `thinkingLevelsFor` is the
-  same table read the other way, and `/think` + the mini app offer only
-  what the active model can express. Stored values outside a model's set
-  aren't errors — defaults span models, so the mapping clamps them. GLM
+    so it can't drive goblin's turn loop. Ours is a thin `LanguageModelV2`
+    over `chatgpt.com/backend-api/codex/responses` (`src/agent/codex.ts`):
+    reads `~/.codex/auth.json` per call, refreshes expired access tokens
+    against the OAuth endpoint, and writes rotated refresh tokens back —
+    not writing back would invalidate the CLI's own login.
+- **Thinking**: `off|low|medium|high|xhigh|max` is an operator vocabulary,
+  not a provider contract — `thinkingOptions` maps each family to the
+  nearest honest knob and writes the collapse down; `thinkingLevelsFor`
+  is the same table read the other way, and `/think` + the mini app offer
+  only what the active model can express. Family ladders follow the bare
+  model id under every kind — a `glm-5.3` is forced-thinking whether z.ai
+  serves it directly or via a relay. Stored values outside a model's set
+  aren't errors — defaults span models, so the mapping clamps them to the
+  nearest rung at-or-above (GLM's own collapse direction). GLM
   (docs.z.ai): 5.3+ is forced thinking with effort `low|high|max`
   (unlisted values silently become `max`; `off`/`medium` clamp to `low`/
-  `high`), 5.2 toggles plus `high|max`, ≤4.6 toggles only. OpenRouter
-  takes `reasoning.effort` verbatim; `off` = `enabled:false`. One
-  `/think` command.
+  `high`), 5.2 toggles plus `high|max`, ≤4.6 toggles only. Endpoint
+  caveat: z.ai's coding plan (`api.z.ai/api/coding/…`) serves only
+  5.3-gen models and aliases older glm-* ids to them, so on that base
+  URL every glm gets the 5.3 ladder and wire map. GPT/codex
+  takes `reasoning_effort` verbatim on a `low|medium|high|xhigh` ladder
+  (gpt-6 adds `max`); `off` isn't a rung and clamps to the floor.
+  OpenRouter's public `/models` catalog is fetched + cached like
+  models.dev: `supported_parameters` discriminates `reasoning_effort`
+  (native ladder → verbatim), `reasoning` only (toggle → `off|low`), or
+  neither (non-reasoner → `off`); a cold catalog passes the level
+  through — fail loud, never fake knowledge. `off` = `enabled:false`.
+  One `/think` command.
 - **History**: stored as AI SDK `UIMessage`-format JSON (the v5 parts array —
   text, reasoning, tool, file parts). The SDK doesn't prescribe storage; this
   is the format it round-trips best.

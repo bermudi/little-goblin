@@ -102,9 +102,11 @@ export function handleCommand(
 			// vocabulary is wider than any single model's ladder.
 			const ref = conv.model ?? deps.configRef.current.model;
 			const { provider, modelId } = splitModelRef(ref);
+			const p = deps.configRef.current.providers[provider];
 			const valid = thinkingLevelsFor(
-				deps.configRef.current.providers[provider]?.kind ?? "",
+				p?.kind ?? "",
 				modelId,
+				p?.kind === "openai-compatible" ? p.baseUrl : undefined,
 			);
 			if (arg === "") {
 				reply(

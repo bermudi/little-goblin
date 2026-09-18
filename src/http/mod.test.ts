@@ -93,4 +93,30 @@ describe("mini-app http", () => {
 		expect(configRef.current.logLevel).toBe("debug");
 		http.stop();
 	});
+
+	test("/api/thinking-levels requires auth and returns the model's ladder", async () => {
+		const { http } = setup();
+		const initData = makeInitData({
+			auth_date: String(Math.floor(Date.now() / 1000)),
+			user: JSON.stringify({ id: 42 }),
+		});
+		const get = (q: string, authed = true) =>
+			fetch(`http://127.0.0.1:${http.port}/api/thinking-levels?${q}`, {
+				headers: authed ? { "x-init-data": initData } : {},
+			});
+		expect((await get("kind=openai-compatible&model=glm-5.3", false)).status).toBe(401);
+		const forced = (await (await get("kind=openai-compatible&model=glm-5.3")).json()) as {
+			levels: string[];
+		};
+		expect(forced.levels).toEqual(["low", "high", "max"]);
+		// The base param carries the coding-plan alias rule for unsaved forms.
+		const aliased = (await (
+			await get(
+				"kind=openai-compatible&model=glm-4.6&base=" +
+					encodeURIComponent("https://api.z.ai/api/coding/paas/v4"),
+			)
+		).json()) as { levels: string[] };
+		expect(aliased.levels).toEqual(["low", "high", "max"]);
+		http.stop();
+	});
 });

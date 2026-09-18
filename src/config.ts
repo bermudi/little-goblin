@@ -26,6 +26,7 @@ export const paths = {
 	db: () => join(goblinHome(), "state", "goblin.sqlite"),
 	logFile: () => join(goblinHome(), "state", "goblin.log"),
 	modelsDevCache: () => join(goblinHome(), "state", "models.dev.json"),
+	openrouterModelsCache: () => join(goblinHome(), "state", "openrouter-models.json"),
 };
 
 export function ensureHomeLayout(): void {
@@ -62,9 +63,22 @@ const providerSchema = z.discriminatedUnion("kind", [
 		kind: z.literal("openrouter"),
 		auth: z.string().min(1),
 	}),
+	z.object({
+		kind: z.literal("codex"),
+		// Codex CLI OAuth file (~/.codex/auth.json when unset) — read and
+		// refreshed in-process; it is not an auth.jsonl record.
+		authFile: z.string().min(1).optional(),
+	}),
 ]);
 
-export const thinkingLevels = ["off", "low", "medium", "high", "max"] as const;
+export const thinkingLevels = [
+	"off",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+] as const;
 export type ThinkingLevel = (typeof thinkingLevels)[number];
 
 const configSchema = z

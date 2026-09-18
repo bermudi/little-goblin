@@ -21,22 +21,29 @@
       kind: "openrouter",
       auth: "openrouter",
     },
+    // ChatGPT-subscription Codex models — auth comes from the codex CLI's
+    // own OAuth file, not auth.jsonl. Run `codex login` first; expired
+    // tokens are refreshed in-process and written back. authFile defaults
+    // to ~/.codex/auth.json.
+    // codex: { kind: "codex" },
   },
 
   // Default model: "<provider>/<model-id>". Model ids may contain slashes.
-  model: "zai/glm-4.6",
+  // The zai coding plan only serves glm-5.3-gen — older glm-* ids are
+  // silently routed to 5.3/5.3-flash, so write the real ones.
+  model: "zai/glm-5.3-flash",
   // Auto-titles for Telegram's placeholder topic names ("New Chat"). Small
   // and cheap is the right shape — unset = topics keep the placeholder.
   // titleModel: "openrouter/openrouter/free",
   favorites: [
-    "zai/glm-4.6",
-    "zai/glm-4.5-air",
+    "zai/glm-5.3",
+    "zai/glm-5.3-flash",
     "openrouter/anthropic/claude-sonnet-4.5",
   ],
-  // Operator vocabulary — each model clamps it to its real knob and the
+  // Operator vocabulary — each model clamps it to its real ladder and the
   // mini app only offers levels the model can express (glm-5.3: low|high|
-  // max — thinking is forced; glm-4.6: off|low).
-  thinking: "medium", // off | low | medium | high | max
+  // max — thinking is forced; gpt-6: low…xhigh|max; non-thinkers: off).
+  thinking: "medium", // off | low | medium | high | xhigh | max
 
   // --- Telegram ---
   // Your user id (DM @userinfobot to find it). Only these users can talk.

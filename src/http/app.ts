@@ -141,7 +141,7 @@ export const APP_HTML = `<!doctype html>
       <label for="favorites">favorites</label>
       <input id="favorites" class="mono" placeholder="comma-separated" autocomplete="off" spellcheck="false" autocapitalize="off">
       <label for="thinking">thinking</label>
-      <select id="thinking"><option>off</option><option>low</option><option>medium</option><option>high</option><option>max</option></select>
+      <select id="thinking"><option>off</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select>
     </section>
 
     <section>
@@ -183,22 +183,21 @@ const $ = (id) => document.getElementById(id);
 // true/false → success/failure of an explicit action.
 const msg = (t, ok) => { const el = $("msg"); el.textContent = t; el.className = ok === undefined ? "" : ok ? "ok" : "err"; };
 
-const KINDS = ["openai-compatible", "openrouter"];
+const KINDS = ["openai-compatible", "openrouter", "codex"];
 
 const debounce = (f, ms) => { let t; return () => { clearTimeout(t); t = setTimeout(f, ms); }; };
 
 // Thinking levels are model-shaped: the server owns the capability table
 // (/api/thinking-levels), this select just renders what comes back.
 // ORDER is the full vocabulary — the fallback when the kind is unknown
-// and the ordering for nearest-lower substitution.
-const ORDER = ["off", "low", "medium", "high", "max"];
+// and the ordering for nearest-rung substitution.
+const ORDER = ["off", "low", "medium", "high", "xhigh", "max"];
 
-function providerKindFor(ref) {
+function providerCardFor(ref) {
   const name = ref.split("/")[0];
   for (const div of $("provs").children)
-    if (div.querySelector(".pname").value.trim() === name)
-      return div.querySelector(".pkind").value;
-  return "";
+    if (div.querySelector(".pname").value.trim() === name) return div;
+  return null;
 }
 
 async function refreshThinking() {
@@ -208,10 +207,12 @@ async function refreshThinking() {
   const modelId = i > 0 ? ref.slice(i + 1) : "";
   let levels = ORDER;
   if (modelId) {
+    const card = providerCardFor(ref);
     try {
       const res = await fetch(
-        "/api/thinking-levels?kind=" + encodeURIComponent(providerKindFor(ref)) +
-          "&model=" + encodeURIComponent(modelId),
+        "/api/thinking-levels?kind=" + encodeURIComponent(card?.querySelector(".pkind").value ?? "") +
+          "&model=" + encodeURIComponent(modelId) +
+          "&base=" + encodeURIComponent(card?.querySelector(".pbase").value.trim() ?? ""),
         { headers: { "x-init-data": initData } },
       );
       if (res.ok) levels = (await res.json()).levels;
@@ -261,17 +262,23 @@ function addProvider(name, p) {
   const sync = () => {
     base.classList.toggle("hidden", kind.value !== "openai-compatible");
     baseLabel.classList.toggle("hidden", kind.value !== "openai-compatible");
+    // codex auth is the CLI's OAuth file, not an auth.jsonl secret name.
+    authLabel.textContent = kind.value === "codex"
+      ? "codex auth file (blank = ~/.codex/auth.json)"
+      : "secret name (in auth.jsonl)";
+    auth.placeholder = kind.value === "codex" ? "~/.codex/auth.json" : "not the secret itself";
   };
   kind.onchange = () => { sync(); refreshThinking(); };
   // Provider name/kind decide which thinking levels the model field's
   // prefix maps to — re-derive as they're edited.
   pname.addEventListener("input", debounce(refreshThinking, 300));
+  base.addEventListener("input", debounce(refreshThinking, 300));
   div.append(head, kindLabel, kind, baseLabel, base, authLabel, auth);
   $("provs").append(div);
   pname.value = name ?? "";
   kind.value = p?.kind ?? "openai-compatible";
   base.value = p?.baseUrl ?? "";
-  auth.value = p?.auth ?? "";
+  auth.value = p?.auth ?? p?.authFile ?? "";
   sync();
 }
 $("addProv").onclick = () => addProvider();
@@ -284,9 +291,14 @@ function readProviders() {
     if (!name) continue;
     if (name in out) { msg("duplicate provider name: " + name, false); return null; }
     const kind = div.querySelector(".pkind").value;
-    out[name] = kind === "openai-compatible"
-      ? { kind, baseUrl: div.querySelector(".pbase").value.trim(), auth: div.querySelector(".pauth").value.trim() }
-      : { kind, auth: div.querySelector(".pauth").value.trim() };
+    const authVal = div.querySelector(".pauth").value.trim();
+    if (kind === "openai-compatible") {
+      out[name] = { kind, baseUrl: div.querySelector(".pbase").value.trim(), auth: authVal };
+    } else if (kind === "codex") {
+      out[name] = authVal ? { kind, authFile: authVal } : { kind };
+    } else {
+      out[name] = { kind, auth: authVal };
+    }
   }
   return out;
 }

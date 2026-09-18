@@ -45,11 +45,12 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 				if (!user) {
 					return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
 				}
-				// The page passes the provider kind from its own form state —
-				// an unsaved provider card still resolves correctly.
+				// The page passes provider kind + base url from its own form
+				// state — an unsaved provider card still resolves correctly.
 				const levels = thinkingLevelsFor(
 					url.searchParams.get("kind") ?? "",
 					url.searchParams.get("model") ?? "",
+					url.searchParams.get("base") ?? undefined,
 				);
 				return Response.json({ levels }, { headers: NO_STORE });
 			}

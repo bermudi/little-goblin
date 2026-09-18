@@ -232,7 +232,8 @@ src/
     providers.ts    registry: name → AI SDK provider
     models-dev.ts   input-modality catalog (fetch, cache, backoff)
     attachments.ts  data-attachment parts + per-turn materialization
-    prompt.ts       system prompt assembly (shell + SOUL.md)
+    prompt.ts       system prompt assembly (shell + SOUL.md + agent-owned
+                    AGENTS.md; re-read every turn, edits live next message)
     tools/          the four tools
   http/             mini-app serving
 ```

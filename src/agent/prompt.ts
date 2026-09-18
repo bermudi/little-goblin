@@ -1,6 +1,6 @@
 // System prompt assembly: shell + SOUL.md + optional AGENTS.md. Read fresh
-// every turn — the agent may edit its own soul and it takes effect on the
-// next turn.
+// every turn — the operator or the agent itself may edit either file and
+// the change is live on the next turn. No command, no restart.
 
 import { readFileSync } from "node:fs";
 import { paths } from "../config.ts";
@@ -15,11 +15,11 @@ function readOptional(path: string): string | null {
 	}
 }
 
-export function buildSystemPrompt(conv: Conversation): string {
+export function buildSystemPrompt(conv: Conversation): { text: string; sources: string[] } {
 	const soul = readOptional(paths.soul()) ?? "You are goblin, a personal AI agent.";
 	const agents = readOptional(paths.agents());
 
-	return [
+	const text = [
 		soul.trim(),
 		"",
 		"## environment",
@@ -32,6 +32,16 @@ export function buildSystemPrompt(conv: Conversation): string {
 		`- Telegram is the UI: messages are plain text/Markdown, media arrives as`,
 		`  file paths or inline parts. Keep replies chat-sized; write files for`,
 		`  anything long.`,
-		...(agents ? ["", "## workspace notes", "", agents.trim()] : []),
+		`- SOUL.md in the workspace root is your identity; AGENTS.md is your own`,
+		`  operating notes. You own both — edit them when who you are or how you`,
+		`  work changes. Reads are fresh every turn: edits take effect next message.`,
+		`- Irreversible or destructive actions (deleting data, force-anything)`,
+		`  need an explicit go-ahead first.`,
+		...(agents ? ["", "## AGENTS.md — your operating notes", "", agents.trim()] : []),
 	].join("\n");
+
+	return {
+		text,
+		sources: agents ? ["SOUL.md", "AGENTS.md"] : ["SOUL.md"],
+	};
 }

@@ -54,10 +54,16 @@ const runtime = new Runtime({
 			? (conv.thinking as ThinkingLevel)
 			: cfg.thinking;
 		const providerOptions = thinkingOptions(cfg, modelRef, level);
-		log.info("model step", { conversation: conv.id, model: modelRef, thinking: level });
+		const prompt = buildSystemPrompt(conv);
+		log.info("model step", {
+			conversation: conv.id,
+			model: modelRef,
+			thinking: level,
+			prompt: prompt.sources.join("+"),
+		});
 		return {
 			model,
-			system: buildSystemPrompt(conv),
+			system: prompt.text,
 			inputModalities: modalities,
 			...(providerOptions ? { providerOptions } : {}),
 		};

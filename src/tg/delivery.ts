@@ -248,7 +248,7 @@ export function makeDeliverySink(
 			// exact message that finished. Errors already surface as ⚠ in
 			// the body; fenced turns end quietly by design. Cosmetic — a
 			// failure is the enqueue warn, never the turn's.
-			if (done.kind === "completed") {
+			if (done.kind === "completed" && pendingCount() === 0) {
 				const last = [...chunks].reverse().find((c) => c.id > 0);
 				if (last) {
 					const mid = last.id;

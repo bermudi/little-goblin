@@ -96,6 +96,7 @@ function readProviders() {
   for (const div of $("providers").children) {
     const name = div.querySelector(".pname").value.trim();
     if (!name) continue;
+    if (name in out) { msg("duplicate provider name: " + name); return null; }
     const kind = div.querySelector(".pkind").value;
     out[name] = kind === "openai-compatible"
       ? { kind, baseUrl: div.querySelector(".pbase").value.trim(), auth: div.querySelector(".pauth").value.trim() }
@@ -126,6 +127,8 @@ async function load() {
 $("save").onclick = async () => {
   const num = (s) => s.split(",").map(x => Number(x.trim())).filter(n => Number.isInteger(n) && n > 0);
   const strs = (s) => s.split(",").map(x => x.trim()).filter(Boolean);
+  const providers = readProviders();
+  if (!providers) return;
   const body = {
     model: $("model").value.trim(),
     titleModel: $("titleModel").value.trim(), // "" clears — server normalizes it
@@ -134,7 +137,7 @@ $("save").onclick = async () => {
     allowedUsers: num($("allowedUsers").value),
     publicUrl: $("publicUrl").value.trim(), // "" clears the door — server normalizes it
     telegram: { apiRoot: $("apiRoot").value.trim() || undefined },
-    providers: readProviders(),
+    providers,
     logLevel: $("logLevel").value,
   };
   const res = await fetch("/api/config", {

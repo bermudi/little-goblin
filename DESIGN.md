@@ -242,6 +242,23 @@ Flat modules, one job each, tests colocated.
 
 ## Non-goals (v1 — return only on demand)
 
+The list below is a record, not a law. The law, applied to any capability:
+
+1. **Core** — what the turn loop's honesty depends on (ordering, authority,
+   durability, delivery). Always in; defects here jump the queue.
+2. **Chat-native** — a natural property of one operator talking to one agent
+   in Telegram: text/voice/media intake, topics, settings commands, the
+   soul. In scope by default; a missing piece here is a gap *against this
+   doc*, not a deferral. (Voice notes are chat-native — the rewrite exists
+   because pi couldn't do audio; if transcription is missing, that's a bug
+   in the roadmap, not a choice.)
+3. **Machinery** — a second system the loop must keep honest: memory stores,
+   schedulers, subagent fleets, MCP brokers, skill catalogs, projects, inner
+   life. Out until explicitly demanded; when demanded, designed here first.
+
+If a capability can't be classified in one sentence, the classification is
+   the design conversation — have it before building.
+
 memory store · scheduler/heartbeat · conversation-lifecycle commands ·
 subagents · delegated work · external agents · ACP · MCP · skill catalogs ·
 project environments · inner life · onboarding wizard · state

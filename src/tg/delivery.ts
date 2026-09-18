@@ -243,6 +243,26 @@ export function makeDeliverySink(
 				}
 				await sleep(300 * stagnant);
 			}
+			// Clean finish → 🫡 on the last bubble. The turn's end-marker:
+			// visible, silent (reactions don't notify), and it rides the
+			// exact message that finished. Errors already surface as ⚠ in
+			// the body; fenced turns end quietly by design. Cosmetic — a
+			// failure is the enqueue warn, never the turn's.
+			if (done.kind === "completed") {
+				const last = [...chunks].reverse().find((c) => c.id > 0);
+				if (last) {
+					const mid = last.id;
+					enqueue(async () => {
+						await withTimeout(
+							api.setMessageReaction(conv.chatId, mid, [
+								{ type: "emoji", emoji: "🫡" },
+								]),
+						"setMessageReaction",
+					);
+					});
+					await chain;
+				}
+			}
 		},
 	};
 }

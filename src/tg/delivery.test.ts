@@ -20,6 +20,7 @@ const conv: Conversation = {
 // Fake the Telegram API at the edge. `gate` holds sends while set.
 function fakeApi(opts: { gate?: { current: Promise<void> | null }; failSends?: boolean }) {
 	const msgs: string[] = [];
+	const reactions: Array<{ chat: number; id: number; emoji: string }> = [];
 	const api = {
 		sendChatAction: () => Promise.resolve(true),
 		sendMessage: async (_chat: number, text: string) => {
@@ -32,8 +33,16 @@ function fakeApi(opts: { gate?: { current: Promise<void> | null }; failSends?: b
 			msgs[id - 1] = text;
 			return true;
 		},
+		setMessageReaction: async (
+			chat: number,
+			id: number,
+			reaction: Array<{ type: string; emoji: string }>,
+		) => {
+			reactions.push({ chat, id, emoji: reaction[0]!.emoji });
+			return true;
+		},
 	} as unknown as Api;
-	return { api, msgs };
+	return { api, msgs, reactions };
 }
 
 describe("delivery", () => {
@@ -204,5 +213,23 @@ describe("delivery", () => {
 		const sink = makeDeliverySink(api, conv, undefined, 0);
 		sink.onTextDelta("lost");
 		await expect(sink.onDone({ kind: "completed" })).resolves.toBeUndefined();
+	});
+
+	test("completed turn reacts 🫡 on the last bubble", async () => {
+		const { api, msgs, reactions } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, undefined, 0);
+		sink.onTextDelta("a".repeat(CHUNK)); // msg1
+		sink.onTextDelta("tail"); // msg2
+		await sink.onDone({ kind: "completed" });
+		expect(msgs.length).toBe(2);
+		expect(reactions).toEqual([{ chat: 1, id: 2, emoji: "🫡" }]);
+	});
+
+	test("error turn gets no reaction", async () => {
+		const { api, reactions } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, undefined, 0);
+		sink.onTextDelta("partial");
+		await sink.onDone({ kind: "error", message: "boom" });
+		expect(reactions).toEqual([]);
 	});
 });

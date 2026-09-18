@@ -104,8 +104,14 @@ agent loop.
     `codex` CLI login) but wraps the CLI's own agent loop — no caller tools,
     so it can't drive goblin's turn loop. In-loop Codex needs a thin custom
     provider over OAuth + the responses endpoint; defer until wanted.
-- **Thinking**: per-provider reasoning effort mapping, one `/think` command,
-  honest about which providers support which levels.
+- **Thinking**: `off|low|medium|high` is an operator vocabulary, not a
+  provider contract — `thinkingOptions` maps each family to the nearest
+  honest knob and writes the collapse down. GLM (docs.z.ai): 5.3+ is
+  forced thinking with effort `low|high|max` (unlisted values silently
+  become `max`, so `medium` never goes on the wire; `off` = `low`, the
+  floor), 5.2 toggles plus `high|max`, ≤4.6 toggles only. OpenRouter takes
+  `reasoning.effort` verbatim; `off` = `enabled:false`. One `/think`
+  command.
 - **History**: stored as AI SDK `UIMessage`-format JSON (the v5 parts array —
   text, reasoning, tool, file parts). The SDK doesn't prescribe storage; this
   is the format it round-trips best.

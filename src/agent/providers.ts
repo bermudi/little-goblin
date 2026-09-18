@@ -37,14 +37,16 @@ export async function resolveModel(
 	}
 }
 
-// Thinking level → providerOptions. Levels the provider can't express are
-// mapped to the nearest honest equivalent — never silently invented.
+// Thinking level → providerOptions. The four levels are an operator
+// vocabulary, not a provider contract — each family maps them to the
+// nearest honest equivalent, and collapses are written down here, never
+// silently invented.
 export function thinkingOptions(
 	config: Config,
 	modelRef: string,
 	level: ThinkingLevel,
 ): ProviderOptions | undefined {
-	const { provider } = splitModelRef(modelRef);
+	const { provider, modelId } = splitModelRef(modelRef);
 	const p = config.providers[provider];
 	if (!p) return undefined;
 	switch (p.kind) {
@@ -56,11 +58,54 @@ export function thinkingOptions(
 			}
 			return { openrouter: { reasoning: { effort: level } } };
 		case "openai-compatible":
-			// OpenAI-compatible surface: reasoningEffort is the only knob the
-			// SDK exposes. "off" maps to the lowest effort rather than an
-			// invented disable flag.
-			return {
-				[provider]: { reasoningEffort: level === "off" ? "low" : level },
-			};
+			return openaiCompatibleThinking(provider, modelId, level);
 	}
+}
+
+// OpenAI-compatible endpoints: the honest knob depends on the model
+// family, which is knowable from the model id, not the provider name.
+function openaiCompatibleThinking(
+	provider: string,
+	modelId: string,
+	level: ThinkingLevel,
+): ProviderOptions {
+	if (modelId.startsWith("glm-")) return glmThinking(provider, modelId, level);
+	// Generic surface: reasoning_effort is the only knob the SDK exposes;
+	// "off" degrades to the lowest effort rather than an invented disable.
+	return { [provider]: { reasoningEffort: level === "off" ? "low" : level } };
+}
+
+// GLM generations express thinking differently (docs.z.ai/guides):
+//   glm-5.3+ — forced thinking; reasoning_effort is low|high|max and any
+//              other value silently becomes max. "off" can only mean the
+//              floor: low.
+//   glm-5.2  — thinking.type toggle + effort high|max (others → max).
+//   older    — thinking.type enabled|disabled only; effort doesn't exist.
+// Unknown future majors (glm-6+) get the 5.3 treatment — forced thinking
+// is the trajectory, and an effort param is likelier accepted than a
+// "disabled" toggle that forced-thinking models reject outright.
+function glmThinking(
+	provider: string,
+	modelId: string,
+	level: ThinkingLevel,
+): ProviderOptions {
+	const m = /^glm-(\d+)\.(\d+)/.exec(modelId);
+	const major = m ? Number(m[1]) : 0;
+	const minor = m ? Number(m[2]) : 0;
+	if (major > 5 || (major === 5 && minor >= 3)) {
+		const effort = { off: "low", low: "low", medium: "high", high: "max" }[level];
+		return {
+			[provider]: { thinking: { type: "enabled" }, reasoningEffort: effort },
+		};
+	}
+	if (major === 5 && minor === 2) {
+		if (level === "off") return { [provider]: { thinking: { type: "disabled" } } };
+		return {
+			[provider]: {
+				thinking: { type: "enabled" },
+				reasoningEffort: level === "high" ? "max" : "high",
+			},
+		};
+	}
+	return { [provider]: { thinking: { type: level === "off" ? "disabled" : "enabled" } } };
 }

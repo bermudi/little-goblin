@@ -18,7 +18,8 @@ export interface HttpDeps {
 	onConfigWritten(): void;
 }
 
-const NO_STORE = { "content-type": "application/json", "cache-control": "no-store" };
+const NO_STORE = { "cache-control": "no-store" };
+const HTML = { "content-type": "text/html; charset=utf-8", ...NO_STORE };
 
 export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 	function authedUser(req: Request): InitDataUser | null {
@@ -34,7 +35,9 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 		async fetch(req) {
 			const url = new URL(req.url);
 			if (url.pathname === "/" || url.pathname === "/index.html") {
-				return new Response(APP_HTML, { headers: { "content-type": "text/html" } });
+				// no-store: a webview must never pair stale page code with a
+				// fresh /api/config after an update.
+				return new Response(APP_HTML, { headers: HTML });
 			}
 			if (url.pathname === "/api/config") {
 				const user = authedUser(req);

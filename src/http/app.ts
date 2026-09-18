@@ -1,6 +1,15 @@
 // The settings mini app. One page, no build step: friendly inputs for
 // every knob — providers are per-card fields, not a JSON blob — with
 // server-side zod validation on save.
+//
+// Design rules this page follows (don't regress them):
+// - Color comes only from Telegram's --tg-theme-* vars, so the page reads
+//   as native in both light and dark; fallbacks mirror Telegram dark.
+// - Machine values (model refs, urls, ids, secret names) are monospace;
+//   human labels are the system sans. The split carries the meaning.
+// - Inputs render at 16px — smaller and iOS zoom-jumps on focus.
+// - Save lives in a fixed bottom bar with inline status; never strand it
+//   below the fold.
 
 export const APP_HTML = `<!doctype html>
 <html lang="en">
@@ -10,49 +19,169 @@ export const APP_HTML = `<!doctype html>
 <title>goblin settings</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-  :root { color-scheme: light dark; }
-  body { font: 14px/1.4 system-ui, sans-serif; margin: 0; padding: 16px;
-         background: var(--tg-theme-bg-color, #fff); color: var(--tg-theme-text-color, #000); }
-  label { display: block; margin: 12px 0 4px; opacity: .7; }
-  input, select { width: 100%; box-sizing: border-box; padding: 8px;
-    border-radius: 8px; border: 1px solid #8884; font: inherit;
-    background: var(--tg-theme-secondary-bg-color, #f4f4f5); color: inherit; }
-  button { margin-top: 16px; width: 100%; padding: 12px; border: 0; border-radius: 10px;
-    font: inherit; font-weight: 600; cursor: pointer;
-    background: var(--tg-theme-button-color, #40a7e3); color: var(--tg-theme-button-text-color, #fff); }
-  #msg { margin-top: 10px; min-height: 1.2em; white-space: pre-wrap; }
-  .err { color: #e5534b; } .ok { color: #57ab5a; }
-  .prov { border: 1px solid #8884; border-radius: 10px; padding: 8px; margin: 8px 0; }
-  .prov input, .prov select { margin: 4px 0; }
-  .prov-head { display: flex; gap: 8px; align-items: center; }
-  .prov-head .pname { flex: 1; font-weight: 600; }
-  .pdel { width: auto; margin: 0; padding: 6px 10px; font-weight: 400; }
-  .secondary { background: var(--tg-theme-secondary-bg-color, #f4f4f5);
-    color: inherit; border: 1px solid #8884; margin-top: 8px; }
+  :root {
+    color-scheme: light dark;
+    --bg: var(--tg-theme-bg-color, #212121);
+    --bg2: var(--tg-theme-secondary-bg-color, #181818);
+    --text: var(--tg-theme-text-color, #ffffff);
+    --hint: var(--tg-theme-hint-color, #aaaaaa);
+    --link: var(--tg-theme-link-color, #62bcf9);
+    --btn: var(--tg-theme-button-color, #40a7e3);
+    --btn-text: var(--tg-theme-button-text-color, #ffffff);
+    --sep: var(--tg-theme-separator-color, #303030);
+    --err: var(--tg-theme-destructive-text-color, #e8574e);
+    --ok: #57ab5a;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font: 15px/1.45 system-ui, -apple-system, sans-serif;
+    margin: 0; padding: 0 0 108px;
+    background: var(--bg); color: var(--text);
+  }
+  .wrap { max-width: 560px; margin: 0 auto; padding: 0 16px; }
+
+  header { padding: 20px 0 2px; display: flex; align-items: baseline; gap: 10px; }
+  header .mark { font-family: var(--mono); font-size: 17px; font-weight: 700; letter-spacing: -0.02em; }
+  header .what { color: var(--hint); font-size: 15px; }
+
+  section { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--sep); }
+  #providers { margin-top: 0; }
+  section > h2 {
+    font-size: 13px; font-weight: 550; color: var(--hint);
+    margin: 0 0 4px;
+  }
+  section:first-of-type { border-top: 0; }
+
+  label {
+    display: block; margin: 14px 0 5px;
+    font-size: 13px; color: var(--hint);
+  }
+  input, select {
+    width: 100%; padding: 10px 12px;
+    font: 16px/1.3 inherit; color: var(--text);
+    background: var(--bg2);
+    border: 1px solid var(--sep); border-radius: 10px;
+    appearance: none; -webkit-appearance: none;
+  }
+  select {
+    background-image: linear-gradient(45deg, transparent 50%, var(--hint) 50%),
+                      linear-gradient(135deg, var(--hint) 50%, transparent 50%);
+    background-position: calc(100% - 18px) 55%, calc(100% - 13px) 55%;
+    background-size: 5px 5px;
+    background-repeat: no-repeat;
+    padding-right: 34px;
+  }
+  input:focus-visible, select:focus-visible, button:focus-visible {
+    outline: none; border-color: var(--link);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--link) 25%, transparent);
+  }
+  input::placeholder { color: var(--hint); opacity: .6; }
+  .mono { font-family: var(--mono); font-size: 15px; }
+
+  /* providers */
+  .prov {
+    background: var(--bg2); border-radius: 12px;
+    padding: 4px 12px 12px; margin: 12px 0;
+  }
+  .prov-head { display: flex; align-items: center; gap: 4px; margin: 0 -4px; }
+  .pname {
+    flex: 1; font-weight: 600;
+    background: transparent; border-color: transparent;
+  }
+  .pname:focus-visible { border-color: transparent; box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--link) 45%, transparent); background: transparent; }
+  .pdel {
+    width: auto; margin: 4px 0; padding: 7px 10px;
+    background: transparent; border: 0; border-radius: 8px;
+    font: 500 13px system-ui; color: var(--err); cursor: pointer;
+  }
+  .pdel:hover { background: color-mix(in srgb, var(--err) 12%, transparent); }
+  .micro { font-size: 12px; color: var(--hint); margin: 10px 2px 3px; }
+  .prov input, .prov select { margin: 0; }
+  #addProv {
+    width: 100%; margin-top: 4px; padding: 12px;
+    background: transparent; border: 1px dashed var(--sep); border-radius: 12px;
+    font: 600 15px system-ui; color: var(--link); cursor: pointer;
+  }
+  #addProv:hover { border-color: var(--link); }
   .hidden { display: none; }
+
+  /* bottom command bar */
+  #bar {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+    border-top: 1px solid var(--sep);
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  }
+  #bar .wrap { display: flex; align-items: center; gap: 14px; }
+  #msg { flex: 1; font-size: 13px; min-height: 1.2em; white-space: pre-wrap; }
+  #msg.ok { color: var(--ok); } #msg.err { color: var(--err); }
+  #msg:not(.ok):not(.err) { color: var(--hint); }
+  #save {
+    width: auto; margin: 0; padding: 12px 30px;
+    border: 0; border-radius: 12px;
+    font: 600 16px system-ui; cursor: pointer;
+    background: var(--btn); color: var(--btn-text);
+  }
+  #save:active { transform: scale(.97); }
 </style>
 </head>
 <body>
-  <label>model</label><input id="model" list="modelRefs" placeholder="provider/model-id">
-  <label>title model (topic auto-title, blank = off)</label><input id="titleModel" list="modelRefs" placeholder="provider/model-id">
-  <datalist id="modelRefs"></datalist>
-  <label>favorites (comma-separated)</label><input id="favorites">
-  <label>thinking</label>
-  <select id="thinking"><option>off</option><option>low</option><option>medium</option><option>high</option></select>
-  <label>allowed telegram user ids (comma-separated)</label><input id="allowedUsers">
-  <label>public url (mini-app door)</label><input id="publicUrl" placeholder="https://…">
-  <label>telegram api root (self-hosted bot-api, blank = cloud)</label><input id="apiRoot">
-  <label>providers</label>
-  <div id="providers"></div>
-  <button id="addProv" type="button" class="secondary">+ add provider</button>
-  <label>log level</label>
-  <select id="logLevel"><option>debug</option><option>info</option><option>warn</option><option>error</option></select>
-  <button id="save">save</button>
-  <div id="msg"></div>
+  <div class="wrap">
+    <header><span class="mark">goblin</span><span class="what">settings</span></header>
+
+    <section>
+      <h2>Model</h2>
+      <label for="model">model</label>
+      <input id="model" class="mono" list="modelRefs" placeholder="provider/model-id" autocomplete="off" spellcheck="false" autocapitalize="off">
+      <label for="titleModel">title model (auto-titles new topics, blank = off)</label>
+      <input id="titleModel" class="mono" list="modelRefs" placeholder="provider/model-id" autocomplete="off" spellcheck="false" autocapitalize="off">
+      <datalist id="modelRefs"></datalist>
+      <label for="favorites">favorites</label>
+      <input id="favorites" class="mono" placeholder="comma-separated" autocomplete="off" spellcheck="false" autocapitalize="off">
+      <label for="thinking">thinking</label>
+      <select id="thinking"><option>off</option><option>low</option><option>medium</option><option>high</option></select>
+    </section>
+
+    <section>
+      <h2>Access</h2>
+      <label for="allowedUsers">allowed telegram user ids</label>
+      <input id="allowedUsers" class="mono" placeholder="comma-separated" inputmode="numeric" autocomplete="off" spellcheck="false">
+    </section>
+
+    <section>
+      <h2>Telegram</h2>
+      <label for="publicUrl">public url (menu-button door)</label>
+      <input id="publicUrl" class="mono" placeholder="https://…" autocomplete="off" spellcheck="false" autocapitalize="off">
+      <label for="apiRoot">telegram api root (self-hosted bot-api, blank = cloud)</label>
+      <input id="apiRoot" class="mono" placeholder="http://127.0.0.1:8081" autocomplete="off" spellcheck="false" autocapitalize="off">
+    </section>
+
+    <section id="providers">
+      <h2>Providers</h2>
+      <div id="provs"></div>
+      <button id="addProv" type="button">+ add provider</button>
+    </section>
+
+    <section>
+      <h2>Diagnostics</h2>
+      <label for="logLevel">log level</label>
+      <select id="logLevel"><option>debug</option><option>info</option><option>warn</option><option>error</option></select>
+    </section>
+  </div>
+
+  <div id="bar"><div class="wrap">
+    <div id="msg"></div>
+    <button id="save">Save</button>
+  </div></div>
+
 <script>
 const initData = window.Telegram?.WebApp?.initData ?? "";
 const $ = (id) => document.getElementById(id);
-const msg = (t, ok) => { const el = $("msg"); el.textContent = t; el.className = ok ? "ok" : "err"; };
+// ok === undefined → neutral hint (e.g. the not-opened-from-Telegram notice);
+// true/false → success/failure of an explicit action.
+const msg = (t, ok) => { const el = $("msg"); el.textContent = t; el.className = ok === undefined ? "" : ok ? "ok" : "err"; };
 
 const KINDS = ["openai-compatible", "openrouter"];
 
@@ -62,27 +191,39 @@ function addProvider(name, p) {
   const head = document.createElement("div");
   head.className = "prov-head";
   const pname = document.createElement("input");
-  pname.className = "pname";
+  pname.className = "pname mono";
   pname.placeholder = "name";
+  pname.autocomplete = "off"; pname.spellcheck = false; pname.autocapitalize = "off";
   const del = document.createElement("button");
   del.type = "button";
   del.className = "pdel";
   del.textContent = "remove";
   del.onclick = () => div.remove();
   head.append(pname, del);
+  const kindLabel = document.createElement("div");
+  kindLabel.className = "micro"; kindLabel.textContent = "type";
   const kind = document.createElement("select");
   kind.className = "pkind";
   for (const k of KINDS) kind.append(new Option(k, k));
+  const baseLabel = document.createElement("div");
+  baseLabel.className = "micro pbase-label"; baseLabel.textContent = "base url";
   const base = document.createElement("input");
-  base.className = "pbase";
-  base.placeholder = "base url";
+  base.className = "pbase mono";
+  base.placeholder = "https://…";
+  base.autocomplete = "off"; base.spellcheck = false; base.autocapitalize = "off";
+  const authLabel = document.createElement("div");
+  authLabel.className = "micro"; authLabel.textContent = "secret name (in auth.jsonl)";
   const auth = document.createElement("input");
-  auth.className = "pauth";
-  auth.placeholder = "auth.jsonl key";
-  const sync = () => base.classList.toggle("hidden", kind.value !== "openai-compatible");
+  auth.className = "pauth mono";
+  auth.placeholder = "not the secret itself";
+  auth.autocomplete = "off"; auth.spellcheck = false; auth.autocapitalize = "off";
+  const sync = () => {
+    base.classList.toggle("hidden", kind.value !== "openai-compatible");
+    baseLabel.classList.toggle("hidden", kind.value !== "openai-compatible");
+  };
   kind.onchange = sync;
-  div.append(head, kind, base, auth);
-  $("providers").append(div);
+  div.append(head, kindLabel, kind, baseLabel, base, authLabel, auth);
+  $("provs").append(div);
   pname.value = name ?? "";
   kind.value = p?.kind ?? "openai-compatible";
   base.value = p?.baseUrl ?? "";
@@ -93,10 +234,10 @@ $("addProv").onclick = () => addProvider();
 
 function readProviders() {
   const out = {};
-  for (const div of $("providers").children) {
+  for (const div of $("provs").children) {
     const name = div.querySelector(".pname").value.trim();
     if (!name) continue;
-    if (name in out) { msg("duplicate provider name: " + name); return null; }
+    if (name in out) { msg("duplicate provider name: " + name, false); return null; }
     const kind = div.querySelector(".pkind").value;
     out[name] = kind === "openai-compatible"
       ? { kind, baseUrl: div.querySelector(".pbase").value.trim(), auth: div.querySelector(".pauth").value.trim() }
@@ -107,7 +248,7 @@ function readProviders() {
 
 async function load() {
   const res = await fetch("/api/config", { headers: { "x-init-data": initData } });
-  if (!res.ok) { msg("load failed: " + res.status); return; }
+  if (!res.ok) { msg("load failed: " + res.status, false); return; }
   const c = await res.json();
   $("model").value = c.model ?? "";
   $("titleModel").value = c.titleModel ?? "";
@@ -146,8 +287,13 @@ $("save").onclick = async () => {
     body: JSON.stringify(body),
   });
   const j = await res.json().catch(() => ({}));
-  msg(res.ok ? "saved" : "save failed: " + (j.error ?? res.status), res.ok);
-  if (res.ok) window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred("success");
+  if (res.ok) {
+    msg("saved", true);
+    window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred("success");
+  } else {
+    msg("save failed — " + (j.error ?? res.status), false);
+    window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred("error");
+  }
 };
 
 if (!initData) msg("open from the Telegram menu button");

@@ -33,9 +33,10 @@
     "zai/glm-4.5-air",
     "openrouter/anthropic/claude-sonnet-4.5",
   ],
-  // Operator vocabulary — each model maps it to its nearest real knob
-  // (glm-5.3: medium→high, high→max, off→low; thinking can't fully stop).
-  thinking: "medium", // off | low | medium | high
+  // Operator vocabulary — each model clamps it to its real knob and the
+  // mini app only offers levels the model can express (glm-5.3: low|high|
+  // max — thinking is forced; glm-4.6: off|low).
+  thinking: "medium", // off | low | medium | high | max
 
   // --- Telegram ---
   // Your user id (DM @userinfobot to find it). Only these users can talk.

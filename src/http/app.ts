@@ -141,7 +141,7 @@ export const APP_HTML = `<!doctype html>
       <label for="favorites">favorites</label>
       <input id="favorites" class="mono" placeholder="comma-separated" autocomplete="off" spellcheck="false" autocapitalize="off">
       <label for="thinking">thinking</label>
-      <select id="thinking"><option>off</option><option>low</option><option>medium</option><option>high</option></select>
+      <select id="thinking"><option>off</option><option>low</option><option>medium</option><option>high</option><option>max</option></select>
     </section>
 
     <section>
@@ -185,6 +185,47 @@ const msg = (t, ok) => { const el = $("msg"); el.textContent = t; el.className =
 
 const KINDS = ["openai-compatible", "openrouter"];
 
+const debounce = (f, ms) => { let t; return () => { clearTimeout(t); t = setTimeout(f, ms); }; };
+
+// Thinking levels are model-shaped: the server owns the capability table
+// (/api/thinking-levels), this select just renders what comes back.
+// ORDER is the full vocabulary — the fallback when the kind is unknown
+// and the ordering for nearest-lower substitution.
+const ORDER = ["off", "low", "medium", "high", "max"];
+
+function providerKindFor(ref) {
+  const name = ref.split("/")[0];
+  for (const div of $("provs").children)
+    if (div.querySelector(".pname").value.trim() === name)
+      return div.querySelector(".pkind").value;
+  return "";
+}
+
+async function refreshThinking() {
+  const sel = $("thinking");
+  const ref = $("model").value.trim();
+  const i = ref.indexOf("/");
+  const modelId = i > 0 ? ref.slice(i + 1) : "";
+  let levels = ORDER;
+  if (modelId) {
+    try {
+      const res = await fetch(
+        "/api/thinking-levels?kind=" + encodeURIComponent(providerKindFor(ref)) +
+          "&model=" + encodeURIComponent(modelId),
+        { headers: { "x-init-data": initData } },
+      );
+      if (res.ok) levels = (await res.json()).levels;
+    } catch { /* keep the full vocabulary — honest unknown */ }
+  }
+  const wanted = sel.value;
+  sel.replaceChildren(...levels.map(l => new Option(l, l)));
+  if (levels.includes(wanted)) { sel.value = wanted; return; }
+  // Stored value isn't on this model's ladder — mirror the server's
+  // clamp: nearest rung at-or-above, else the top rung.
+  const idx = ORDER.indexOf(wanted);
+  sel.value = levels.find(l => ORDER.indexOf(l) >= idx) ?? levels[levels.length - 1];
+}
+
 function addProvider(name, p) {
   const div = document.createElement("div");
   div.className = "prov";
@@ -198,7 +239,7 @@ function addProvider(name, p) {
   del.type = "button";
   del.className = "pdel";
   del.textContent = "remove";
-  del.onclick = () => div.remove();
+  del.onclick = () => { div.remove(); refreshThinking(); };
   head.append(pname, del);
   const kindLabel = document.createElement("div");
   kindLabel.className = "micro"; kindLabel.textContent = "type";
@@ -221,7 +262,10 @@ function addProvider(name, p) {
     base.classList.toggle("hidden", kind.value !== "openai-compatible");
     baseLabel.classList.toggle("hidden", kind.value !== "openai-compatible");
   };
-  kind.onchange = sync;
+  kind.onchange = () => { sync(); refreshThinking(); };
+  // Provider name/kind decide which thinking levels the model field's
+  // prefix maps to — re-derive as they're edited.
+  pname.addEventListener("input", debounce(refreshThinking, 300));
   div.append(head, kindLabel, kind, baseLabel, base, authLabel, auth);
   $("provs").append(div);
   pname.value = name ?? "";
@@ -231,6 +275,7 @@ function addProvider(name, p) {
   sync();
 }
 $("addProv").onclick = () => addProvider();
+$("model").addEventListener("input", debounce(refreshThinking, 300));
 
 function readProviders() {
   const out = {};
@@ -258,6 +303,7 @@ async function load() {
   $("publicUrl").value = c.publicUrl ?? "";
   $("apiRoot").value = c.telegram?.apiRoot ?? "";
   for (const [name, p] of Object.entries(c.providers ?? {})) addProvider(name, p);
+  refreshThinking(); // after provider cards exist — kind lookup needs them
   $("logLevel").value = c.logLevel ?? "info";
   const dl = $("modelRefs");
   for (const r of new Set([c.model, c.titleModel, ...(c.favorites ?? [])].filter(Boolean))) {

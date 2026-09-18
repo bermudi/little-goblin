@@ -5,6 +5,7 @@
 // here assumes a public IP.
 
 import { z } from "zod";
+import { thinkingLevelsFor } from "../agent/providers.ts";
 import { loadConfig, parseConfig, writeConfig, type Config } from "../config.ts";
 import { log } from "../log.ts";
 import { APP_HTML } from "./app.ts";
@@ -38,6 +39,19 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 				// no-store: a webview must never pair stale page code with a
 				// fresh /api/config after an update.
 				return new Response(APP_HTML, { headers: HTML });
+			}
+			if (url.pathname === "/api/thinking-levels") {
+				const user = authedUser(req);
+				if (!user) {
+					return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
+				}
+				// The page passes the provider kind from its own form state —
+				// an unsaved provider card still resolves correctly.
+				const levels = thinkingLevelsFor(
+					url.searchParams.get("kind") ?? "",
+					url.searchParams.get("model") ?? "",
+				);
+				return Response.json({ levels }, { headers: NO_STORE });
 			}
 			if (url.pathname === "/api/config") {
 				const user = authedUser(req);

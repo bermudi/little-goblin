@@ -3,7 +3,8 @@
 // bumps the conversation epoch, fencing in-flight turns.
 
 import type { Api } from "grammy";
-import { splitModelRef, thinkingLevels, type Config, type ThinkingLevel } from "../config.ts";
+import { splitModelRef, type Config, type ThinkingLevel } from "../config.ts";
+import { thinkingLevelsFor } from "../agent/providers.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";
 import type { Runtime } from "../runtime.ts";
 import { log } from "../log.ts";
@@ -97,11 +98,19 @@ export function handleCommand(
 		}
 
 		case "/think": {
+			// Levels the conversation's model can actually express — the
+			// vocabulary is wider than any single model's ladder.
+			const ref = conv.model ?? deps.configRef.current.model;
+			const { provider, modelId } = splitModelRef(ref);
+			const valid = thinkingLevelsFor(
+				deps.configRef.current.providers[provider]?.kind ?? "",
+				modelId,
+			);
 			if (arg === "") {
 				reply(
 					deps,
 					conv,
-					`thinking: ${conv.thinking ?? deps.configRef.current.thinking}\n/think <${thinkingLevels.join("|")}> · /think reset for the default`,
+					`thinking: ${conv.thinking ?? deps.configRef.current.thinking}\n/think <${valid.join("|")}> · /think reset for the default`,
 				);
 				return true;
 			}
@@ -111,8 +120,8 @@ export function handleCommand(
 				reply(deps, conv, `thinking → ${deps.configRef.current.thinking} (default)`);
 				return true;
 			}
-			if (!(thinkingLevels as readonly string[]).includes(arg)) {
-				reply(deps, conv, `level must be one of: ${thinkingLevels.join(", ")}`);
+			if (!(valid as readonly string[]).includes(arg)) {
+				reply(deps, conv, `${modelId} supports: ${valid.join(", ")}`);
 				return true;
 			}
 			apply(deps, conv, { thinking: arg as ThinkingLevel });

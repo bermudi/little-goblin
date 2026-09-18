@@ -64,7 +64,7 @@ const providerSchema = z.discriminatedUnion("kind", [
 	}),
 ]);
 
-export const thinkingLevels = ["off", "low", "medium", "high"] as const;
+export const thinkingLevels = ["off", "low", "medium", "high", "max"] as const;
 export type ThinkingLevel = (typeof thinkingLevels)[number];
 
 const configSchema = z

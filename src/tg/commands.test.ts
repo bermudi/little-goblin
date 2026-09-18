@@ -23,8 +23,8 @@ const config: Config = {
 	providers: {
 		zai: { kind: "openai-compatible", baseUrl: "https://api.z.ai/v4", auth: "zai" },
 	},
-	model: "zai/glm-4.6",
-	favorites: ["zai/glm-4.6"],
+	model: "zai/glm-5.3",
+	favorites: ["zai/glm-5.3"],
 	thinking: "medium",
 	allowedUsers: [1],
 	telegram: {},
@@ -102,6 +102,15 @@ describe("commands", () => {
 		const { store, conv, deps } = setup();
 		handleCommand(deps, conv, "/think turbo");
 		expect(store.get(conv.id)!.thinking).toBeNull();
+		store.close();
+	});
+
+	test("/think rejects a level the model can't express", () => {
+		const { store, conv, sent, deps } = setup();
+		// glm-5.3 thinking is forced — off is not on its ladder.
+		handleCommand(deps, conv, "/think off");
+		expect(store.get(conv.id)!.thinking).toBeNull();
+		expect(sent[0]).toContain("low, high, max");
 		store.close();
 	});
 

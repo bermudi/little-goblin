@@ -17,7 +17,9 @@ earns its place.
 
 ## Product boundary
 
-- One human operator (bermudi), one Bun process, homelab.
+- One human operator (bermudi), one Bun process, homelab. It runs as a
+  systemd user unit (`deploy/goblin.service`, linger enabled): restart on
+  failure, starts on boot, SIGTERM rides the graceful shutdown path.
 - Telegram is the UI: long polling, topics, reactions, files, voice — **and
   Mini Apps, designed in from the start** (the process serves them over HTTP;
   see Intake & delivery).

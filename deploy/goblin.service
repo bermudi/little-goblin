@@ -1,0 +1,18 @@
+[Unit]
+Description=Goblin v2 — Telegram-native personal agent
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/daniel/build/goblin-v2
+Environment=GOBLIN_HOME=/home/daniel/goblin
+ExecStart=/usr/bin/bun run src/index.ts
+# SIGTERM rides the app's own graceful shutdown (fence lanes, drain intake).
+KillSignal=SIGTERM
+Restart=on-failure
+RestartSec=5
+# Never give up restarting — a phone-only operator can't run systemctl reset-failed.
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=default.target

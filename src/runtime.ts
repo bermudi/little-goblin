@@ -288,9 +288,11 @@ export class Runtime {
 			});
 
 			let responseMessage: UIMessage | null = null;
-			// Last streamed text part id — part boundaries are block
-			// boundaries in the chat bubble (see the text-delta case).
+			// Block-boundary tracking for the live stream: last text part id
+			// within a step, plus whether any text has streamed at all (see
+			// the text-delta and start-step cases).
 			let lastTextPartId: string | null = null;
+			let seenText = false;
 			// Stream errors arrive as `error` chunks — they don't throw. The
 			// authoritative signal is the finish outcome: "failed" means the
 			// turn must surface an error, not commit partial output as a
@@ -320,6 +322,13 @@ export class Runtime {
 			for await (const chunk of uiStream) {
 				this.checkAuthority(convId, epoch);
 				switch (chunk.type) {
+					case "start-step":
+						// A new step is always a new block — and id comparison
+						// alone can't see this seam: openai-compatible providers
+						// synthesize part ids per request, so step 2 can reuse
+						// step 1's id verbatim. Reset instead of trusting ids.
+						lastTextPartId = null;
+						break;
 					case "text-delta":
 						// Distinct text parts are distinct blocks. A multi-step
 						// turn — text, then a tool call, then more text — must
@@ -327,10 +336,11 @@ export class Runtime {
 						// "Workspace" streamed as "upWorkspace" otherwise).
 						// History keeps the parts separate; this seam is
 						// display-only.
-						if (lastTextPartId !== null && chunk.id !== lastTextPartId) {
+						if (seenText && (lastTextPartId === null || chunk.id !== lastTextPartId)) {
 							sink.onTextDelta("\n\n");
 						}
 						lastTextPartId = chunk.id;
+						seenText = true;
 						sink.onTextDelta(chunk.delta);
 						break;
 					case "reasoning-delta":

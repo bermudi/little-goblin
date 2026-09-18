@@ -359,6 +359,79 @@ describe("turn authority", () => {
 		store.close();
 	});
 
+	test("a two-step turn streams its blocks with seams — even when step 2 reuses step 1's part id", async () => {
+		// The real shape: text + tool call in step 1, tool executes, text
+		// continues in step 2. Providers synthesizing part ids per request
+		// can hand step 2 the SAME id ("t1") — the seam must survive that,
+		// so the step boundary itself has to reset the tracker.
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		let executed = false;
+		let call = 0;
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({
+				model: {
+					specificationVersion: "v2",
+					provider: "fake",
+					modelId: "two-step-1",
+					supportedUrls: {},
+					doGenerate() {
+						throw new Error("unimplemented");
+					},
+					doStream() {
+						call++;
+						const stream = new ReadableStream<LanguageModelV2StreamPart>({
+							start(controller) {
+								const push = (p: LanguageModelV2StreamPart) => controller.enqueue(p);
+								push({ type: "stream-start", warnings: [] });
+								if (call === 1) {
+									push({ type: "text-start", id: "t1" });
+									push({ type: "text-delta", id: "t1", delta: "yo 👋 what's up" });
+									push({ type: "text-end", id: "t1" });
+									push({ type: "tool-call", toolCallId: "c1", toolName: "probe", input: "{}" });
+									push({
+										type: "finish",
+										finishReason: "tool-calls",
+										usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+									});
+								} else {
+									// Same id as step 1 — deliberate.
+									push({ type: "text-start", id: "t1" });
+									push({ type: "text-delta", id: "t1", delta: "Workspace is basically fresh" });
+									push({ type: "text-end", id: "t1" });
+									push({
+										type: "finish",
+										finishReason: "stop",
+										usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+									});
+								}
+								controller.close();
+							},
+						});
+						return { stream };
+					},
+				} as unknown as LanguageModel,
+				system: "test",
+			}),
+			makeTools: () => ({
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						executed = true;
+						return { ok: true };
+					},
+				}),
+			}),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		expect(executed).toBe(true); // step 2 really ran — this is the real shape
+		expect(sink.text).toBe("yo 👋 what's up\n\nWorkspace is basically fresh");
+		store.close();
+	});
+
 	test("a failed model stream reports error — no silent completion, no partial append", async () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");

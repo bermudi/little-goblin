@@ -101,23 +101,62 @@ function tokenExpiryS(token: string): number | null {
 	}
 }
 
+// Refresh tokens are single-use — two callers POSTing the same one
+// concurrently loses one to invalid_grant and a false "run codex login".
+// Single-flight per auth file; concurrent conversations share it.
+const refreshInflight = new Map<string, Promise<CodexAuthFile>>();
+
+function expired(token: string): boolean {
+	const exp = tokenExpiryS(token);
+	return exp !== null && exp - Date.now() / 1000 <= EXPIRY_MARGIN_S;
+}
+
 // Fresh credentials for one request: file → expiry check → refresh.
 // Exported for tests; the model calls it per request.
 export async function codexCredentials(
 	path: string,
 	fetchImpl: FetchLike = fetch,
+	signal?: AbortSignal,
 ): Promise<CodexAuthFile> {
 	const auth = readAuthFile(path);
-	const exp = tokenExpiryS(auth.tokens.access_token);
-	if (exp === null || exp - Date.now() / 1000 > EXPIRY_MARGIN_S) return auth;
+	if (!expired(auth.tokens.access_token)) return auth;
+	let p = refreshInflight.get(path);
+	if (!p) {
+		p = refreshAuth(path, fetchImpl, signal).finally(() => {
+			refreshInflight.delete(path);
+		});
+		refreshInflight.set(path, p);
+	}
+	return p;
+}
+
+async function refreshAuth(
+	path: string,
+	fetchImpl: FetchLike,
+	signal?: AbortSignal,
+): Promise<CodexAuthFile> {
+	// Re-read inside the flight — a sibling refresh (ours or the CLI's)
+	// may already have rotated the pair while this caller queued.
+	const auth = readAuthFile(path);
+	if (!expired(auth.tokens.access_token)) return auth;
+	if (!auth.tokens.refresh_token) {
+		throw new Error(
+			`${path}: access token expired and no refresh_token — run \`codex login\``,
+		);
+	}
 	const res = await fetchImpl(OAUTH_TOKEN_URL, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({
 			client_id: OAUTH_CLIENT_ID,
 			grant_type: "refresh_token",
-			refresh_token: auth.tokens.refresh_token ?? "",
+			refresh_token: auth.tokens.refresh_token,
 		}),
+		// The call's abort plus a hard deadline — a wedged auth host must
+		// not park the turn lane past /stop or the OS tcp timeout.
+		signal: signal
+			? AbortSignal.any([signal, AbortSignal.timeout(30_000)])
+			: AbortSignal.timeout(30_000),
 	});
 	if (!res.ok) {
 		throw new Error(
@@ -135,6 +174,7 @@ export async function codexCredentials(
 		...auth.tokens,
 		access_token: refreshed.access_token,
 		refresh_token: refreshed.refresh_token ?? auth.tokens.refresh_token,
+		...(refreshed.id_token ? { id_token: refreshed.id_token } : {}),
 	};
 	durableWriteFile(
 		path,
@@ -147,6 +187,8 @@ export async function codexCredentials(
 			null,
 			2,
 		) + "\n",
+		// Live OAuth credentials — match the CLI's file mode on recreate.
+		0o600,
 	);
 	log.info("codex oauth token refreshed", { authFile: path });
 	return { tokens };
@@ -174,12 +216,18 @@ function fileToDataUrl(data: unknown, mediaType: string): string {
 function toolResultText(output: {
 	type: string;
 	value?: unknown;
+	reason?: unknown;
 }): string {
 	if (output.type === "text" || output.type === "error-text") {
 		return String(output.value ?? "");
 	}
 	if (output.type === "json" || output.type === "error-json") {
 		return JSON.stringify(output.value);
+	}
+	if (output.type === "execution-denied") {
+		return typeof output.reason === "string" && output.reason
+			? `[execution denied: ${output.reason}]`
+			: "[execution denied]";
 	}
 	if (output.type === "content" && Array.isArray(output.value)) {
 		return (output.value as Array<{ type: string; text?: string }>)
@@ -215,11 +263,21 @@ function convertPrompt(prompt: LanguageModelV2Prompt): {
 							image_url: fileToDataUrl(part.data, part.mediaType),
 						});
 					} else if (part.mediaType === "application/pdf") {
-						content.push({
-							type: "input_file",
-							filename: part.filename ?? "attachment.pdf",
-							file_data: fileToDataUrl(part.data, part.mediaType),
-						});
+						const data = fileToDataUrl(part.data, part.mediaType);
+						// Remote URLs go on file_url — file_data is the inline form.
+						content.push(
+							data.startsWith("http")
+								? {
+										type: "input_file",
+										filename: part.filename ?? "attachment.pdf",
+										file_url: data,
+									}
+								: {
+										type: "input_file",
+										filename: part.filename ?? "attachment.pdf",
+										file_data: data,
+									},
+						);
 					} else {
 						throw new Error(`codex: unsupported input media type "${part.mediaType}"`);
 					}
@@ -266,7 +324,7 @@ function convertPrompt(prompt: LanguageModelV2Prompt): {
 
 // ---------- SSE parsing ----------
 
-// One parsed SSE frame: the JSON payload of a `data:` line.
+// One parsed SSE frame: the joined `data:` lines of an event block.
 async function* sseEvents(
 	body: ReadableStream<Uint8Array>,
 ): AsyncGenerator<Record<string, unknown>> {
@@ -276,20 +334,27 @@ async function* sseEvents(
 	for (;;) {
 		const { done, value } = await reader.read();
 		if (done) break;
-		buf += decoder.decode(value, { stream: true });
+		// Normalize CRLF — a proxy folding line endings must not wedge the
+		// frame scan (every event would sit buffered until the body ended).
+		// Whole-buffer replace so a \r\n split across chunks still folds.
+		buf = (buf + decoder.decode(value, { stream: true })).replace(/\r\n/g, "\n");
 		let idx: number;
 		while ((idx = buf.indexOf("\n\n")) !== -1) {
 			const frame = buf.slice(0, idx);
 			buf = buf.slice(idx + 2);
-			for (const line of frame.split("\n")) {
-				if (!line.startsWith("data:")) continue;
-				const data = line.slice(5).trim();
-				if (data === "[DONE]") return;
-				try {
-					yield JSON.parse(data) as Record<string, unknown>;
-				} catch {
-					// A non-JSON data line is noise — keep consuming.
-				}
+			// A frame may carry several data: lines — join per the SSE spec.
+			// event:/id:/comment lines drop.
+			const data = frame
+				.split("\n")
+				.filter((l) => l.startsWith("data:"))
+				.map((l) => l.slice(5).trimStart())
+				.join("\n");
+			if (!data) continue;
+			if (data === "[DONE]") return;
+			try {
+				yield JSON.parse(data) as Record<string, unknown>;
+			} catch {
+				// A non-JSON data payload is noise — keep consuming.
 			}
 		}
 	}
@@ -342,12 +407,34 @@ function mapEvent(
 					toolName: String(item.name ?? ""),
 					input: String(item.arguments ?? "{}"),
 				});
-			} else if (item?.type === "message" && state.textOpen) {
-				push({ type: "text-end", id: state.textOpen });
-				state.textOpen = null;
-			} else if (item?.type === "reasoning" && state.reasoningOpen) {
-				push({ type: "reasoning-end", id: state.reasoningOpen });
-				state.reasoningOpen = null;
+			} else if (item?.type === "message") {
+				if (state.textOpen) {
+					push({ type: "text-end", id: state.textOpen });
+					state.textOpen = null;
+				} else {
+					// A completed item with no added/delta stream — emit its
+					// content rather than dropping the answer.
+					const text = itemText(item, "content", "output_text");
+					if (text) {
+						const id = String(item.id ?? "text");
+						push({ type: "text-start", id });
+						push({ type: "text-delta", id, delta: text });
+						push({ type: "text-end", id });
+					}
+				}
+			} else if (item?.type === "reasoning") {
+				if (state.reasoningOpen) {
+					push({ type: "reasoning-end", id: state.reasoningOpen });
+					state.reasoningOpen = null;
+				} else {
+					const text = itemText(item, "summary", "summary_text");
+					if (text) {
+						const id = String(item.id ?? "reasoning");
+						push({ type: "reasoning-start", id });
+						push({ type: "reasoning-delta", id, delta: text });
+						push({ type: "reasoning-end", id });
+					}
+				}
 			}
 			break;
 		case "response.completed":
@@ -391,6 +478,25 @@ function mapEvent(
 	}
 }
 
+// Text payload of a completed item — message.content[] output_text or
+// reasoning.summary[] summary_text. Wire-shaped, so fish out what's there.
+function itemText(
+	item: Record<string, unknown>,
+	field: "content" | "summary",
+	partType: string,
+): string {
+	const parts = item[field];
+	if (!Array.isArray(parts)) return "";
+	return parts
+		.filter(
+			(p): p is { type: string; text?: unknown } =>
+				typeof p === "object" && p !== null &&
+				(p as { type?: unknown }).type === partType,
+		)
+		.map((p) => String(p.text ?? ""))
+		.join("");
+}
+
 function num(v: unknown): number | undefined {
 	return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
@@ -425,7 +531,11 @@ export class CodexLanguageModel implements LanguageModelV2 {
 		body: Record<string, unknown>;
 		headers: Record<string, string>;
 	}> {
-		const auth = await codexCredentials(this.authFile, this.fetchImpl);
+		const auth = await codexCredentials(
+			this.authFile,
+			this.fetchImpl,
+			options.abortSignal,
+		);
 		const { instructions, input } = convertPrompt(options.prompt);
 		const codexOpts = (options.providerOptions?.codex ?? {}) as CodexProviderOptions;
 		const body: Record<string, unknown> = {
@@ -487,12 +597,14 @@ export class CodexLanguageModel implements LanguageModelV2 {
 		] as const) {
 			if (options[k] !== undefined) warnings.push({ type: "unsupported-setting", setting: k });
 		}
-		if (options.tools?.some((t) => t.type !== "function")) {
-			warnings.push({
-				type: "unsupported-setting",
-				setting: "tools",
-				details: "provider-defined tools are not supported by codex",
-			});
+		for (const t of options.tools ?? []) {
+			if (t.type !== "function") {
+				warnings.push({
+					type: "unsupported-tool",
+					tool: t,
+					details: "provider-defined tools are not supported by codex",
+				});
+			}
 		}
 		return warnings;
 	}
@@ -519,8 +631,12 @@ export class CodexLanguageModel implements LanguageModelV2 {
 		const res = await this.post(body, headers, options.abortSignal);
 		const warnings = this.warningsFor(options);
 		const state: StreamState = { textOpen: null, reasoningOpen: null, sawToolCall: false };
+		let cancelled = false;
 		const stream = new ReadableStream<LanguageModelV2StreamPart>({
 			start: (controller) => {
+				const push = (part: LanguageModelV2StreamPart): void => {
+					if (!cancelled) controller.enqueue(part);
+				};
 				push({ type: "stream-start", warnings });
 				void (async () => {
 					try {
@@ -530,12 +646,13 @@ export class CodexLanguageModel implements LanguageModelV2 {
 					} catch (err) {
 						push({ type: "error", error: err });
 					} finally {
-						controller.close();
+						if (!cancelled) controller.close();
 					}
 				})();
-				function push(part: LanguageModelV2StreamPart): void {
-					controller.enqueue(part);
-				}
+			},
+			cancel: () => {
+				cancelled = true;
+				void res.body?.cancel();
 			},
 		});
 		return { stream, request: { body } };
@@ -612,9 +729,14 @@ export function codexModel(
 ): CodexLanguageModel {
 	return new CodexLanguageModel(
 		modelId,
-		authFile ?? join(homedir(), ".codex", "auth.json"),
+		authFile ? expandHome(authFile) : defaultCodexAuthFile(),
 		fetchImpl,
 	);
+}
+
+// "~/…" means the operator's home — the mini app's own placeholder uses it.
+function expandHome(p: string): string {
+	return p === "~" || p.startsWith("~/") ? join(homedir(), p.slice(2)) : p;
 }
 
 export function defaultCodexAuthFile(): string {

@@ -70,6 +70,33 @@ describe("codexCredentials — oauth refresh write-back", () => {
 			"codex auth file not found",
 		);
 	});
+
+	test("concurrent callers share one refresh — the token is single-use", async () => {
+		const path = authDir({ access_token: jwt(PAST), refresh_token: "rt" });
+		let fetches = 0;
+		let resolveFetch!: (r: Response) => void;
+		const gate = new Promise<Response>((r) => {
+			resolveFetch = r;
+		});
+		const p1 = codexCredentials(path, async () => {
+			fetches++;
+			return gate;
+		});
+		const p2 = codexCredentials(path, async () => {
+			fetches++;
+			return gate;
+		});
+		await Bun.sleep(0); // let both callers reach the inflight check
+		resolveFetch(
+			new Response(
+				JSON.stringify({ access_token: jwt(FUTURE), refresh_token: "rt2" }),
+			),
+		);
+		const [a, b] = await Promise.all([p1, p2]);
+		// Two overlapping turns must not both POST the single-use token.
+		expect(fetches).toBe(1);
+		expect(a.tokens.access_token).toBe(b.tokens.access_token);
+	});
 });
 
 describe("CodexLanguageModel — request shape", () => {
@@ -150,5 +177,43 @@ describe("CodexLanguageModel — request shape", () => {
 			call_id: "call_1",
 			output: "file.txt",
 		});
+	});
+
+	test("stream events map to parts — deltas, done-item fallback, tool calls", async () => {
+		const path = authDir({ access_token: jwt(FUTURE) });
+		const model = new CodexLanguageModel("gpt-6-astra", path, async () =>
+			sse([
+				{ type: "response.output_item.added", item: { type: "reasoning", id: "r1" } },
+				{ type: "response.reasoning_summary_text.delta", delta: "thinking…" },
+				// A message that arrives only in done — no added/delta stream —
+				// must still emit its content, not vanish.
+				{
+					type: "response.output_item.done",
+					item: {
+						type: "message",
+						id: "m1",
+						content: [{ type: "output_text", text: "the answer" }],
+					},
+				},
+				{
+					type: "response.output_item.done",
+					item: {
+						type: "function_call",
+						id: "f1",
+						call_id: "call_1",
+						name: "bash",
+						arguments: "{}",
+					},
+				},
+				{ type: "response.completed", response: { status: "completed", usage: {} } },
+			]),
+		);
+		const r = await model.doGenerate({
+			prompt: [{ role: "user", content: [{ type: "text", text: "x" }] }],
+		});
+		expect(r.finishReason).toBe("tool-calls");
+		expect(r.content.map((c) => c.type)).toEqual(["reasoning", "text", "tool-call"]);
+		expect((r.content[0] as { text: string }).text).toBe("thinking…");
+		expect((r.content[1] as { text: string }).text).toBe("the answer");
 	});
 });

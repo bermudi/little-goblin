@@ -208,11 +208,17 @@ async function refreshThinking() {
   let levels = ORDER;
   if (modelId) {
     const card = providerCardFor(ref);
+    const kind = card?.querySelector(".pkind").value ?? "";
+    // base only matters to openai-compatible — a hidden input's stale
+    // value must not travel with a kind switch.
+    const base = kind === "openai-compatible"
+      ? card?.querySelector(".pbase").value.trim() ?? ""
+      : "";
     try {
       const res = await fetch(
-        "/api/thinking-levels?kind=" + encodeURIComponent(card?.querySelector(".pkind").value ?? "") +
+        "/api/thinking-levels?kind=" + encodeURIComponent(kind) +
           "&model=" + encodeURIComponent(modelId) +
-          "&base=" + encodeURIComponent(card?.querySelector(".pbase").value.trim() ?? ""),
+          "&base=" + encodeURIComponent(base),
         { headers: { "x-init-data": initData } },
       );
       if (res.ok) levels = (await res.json()).levels;

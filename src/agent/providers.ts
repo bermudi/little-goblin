@@ -59,6 +59,9 @@ export function thinkingOptions(
 	const { provider, modelId } = splitModelRef(modelRef);
 	const p = config.providers[provider];
 	if (!p) return undefined;
+	// Family detection keys on the bare id — relays may nest a vendor
+	// prefix ("relay/z-ai/glm-5.2"), same rule thinkingLevelsFor applies.
+	const bare = modelId.split("/").pop() ?? modelId;
 	switch (p.kind) {
 		case "openrouter": {
 			// "off" is just enabled:false — pairing it with an effort is a
@@ -81,13 +84,13 @@ export function thinkingOptions(
 			return { openrouter: { reasoning: { effort: level } } };
 		}
 		case "openai-compatible":
-			return openaiCompatibleThinking(provider, modelId, level, p.baseUrl);
+			return openaiCompatibleThinking(provider, bare, level, p.baseUrl);
 		case "codex":
 			// reasoning_effort verbatim inside the model's ladder; "off"
 			// isn't a codex rung, so it and any out-of-ladder stored value
 			// clamp to the nearest rung at-or-above (then the top).
 			return {
-				codex: { reasoningEffort: clampToLadder(gptLevels(modelId), level) },
+				codex: { reasoningEffort: clampToLadder(gptLevels(bare), level) },
 			};
 	}
 }
@@ -123,7 +126,7 @@ function zaiCodingPlan(baseUrl?: string): boolean {
 	if (!baseUrl) return false;
 	try {
 		const u = new URL(baseUrl);
-		return u.hostname === "api.z.ai" && u.pathname.includes("coding");
+		return u.hostname === "api.z.ai" && u.pathname.split("/").includes("coding");
 	} catch {
 		return false;
 	}
@@ -146,7 +149,9 @@ export function thinkingLevelsFor(
 	// the endpoint aliases older ids to the two models it actually serves.
 	const bare = modelId.split("/").pop() ?? modelId;
 	if (bare.startsWith("glm-")) {
-		if (zaiCodingPlan(baseUrl)) return ["low", "high", "max"];
+		if (kind === "openai-compatible" && zaiCodingPlan(baseUrl)) {
+			return ["low", "high", "max"];
+		}
 		const { major, minor } = glmVersion(bare);
 		if (major > 5 || (major === 5 && minor >= 3)) return ["low", "high", "max"];
 		if (major === 5 && minor === 2) return ["off", "high", "max"];

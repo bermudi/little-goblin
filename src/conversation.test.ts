@@ -81,6 +81,63 @@ describe("conversation store", () => {
 		store.close();
 	});
 
+	test("a pre-anchor DB migrates in place — old rows read, new anchors work", () => {
+		const path = tmpdb();
+		// Hand-build the old schema: events without anchor_seq.
+		const old = new Database(path);
+		old.run(`CREATE TABLE conversations (
+			id TEXT PRIMARY KEY,
+			chat_id INTEGER NOT NULL,
+			thread_id INTEGER,
+			title TEXT,
+			cwd TEXT NOT NULL,
+			model TEXT,
+			thinking TEXT,
+			epoch INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL
+		)`);
+		old.run(`CREATE TABLE events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_id TEXT NOT NULL REFERENCES conversations(id),
+			seq INTEGER NOT NULL,
+			role TEXT NOT NULL,
+			data TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			UNIQUE(conversation_id, seq)
+		)`);
+		old.run(
+			`INSERT INTO conversations (id, chat_id, cwd, created_at) VALUES ('dm:9', 9, '/w', 't')`,
+		);
+		old.run(
+			`INSERT INTO events (conversation_id, seq, role, data, created_at) VALUES
+				('dm:9', 1, 'user', ?, 't'),
+				('dm:9', 2, 'assistant', ?, 't')`,
+			[
+				JSON.stringify(msg("old question")),
+				JSON.stringify({ id: "a0", role: "assistant", parts: [{ type: "text", text: "old reply" }] }),
+			],
+		);
+		old.close();
+
+		const store = openStore(path);
+		// Old rows survived and keep arrival order (null anchor → seq).
+		expect(store.history("dm:9").map((m) => m.role)).toEqual(["user", "assistant"]);
+		// New anchored writes interleave against migrated rows.
+		store.append("dm:9", [msg("follow-up")]);
+		store.append(
+			"dm:9",
+			[{ id: "a1", role: "assistant", parts: [{ type: "text", text: "new reply" }] }],
+			{ anchorSeq: store.lastUserSeq("dm:9") },
+		);
+		expect(store.history("dm:9").map((m) => m.role)).toEqual([
+			"user",
+			"assistant",
+			"user",
+			"assistant",
+		]);
+		store.close();
+	});
+
 	test("bumpEpoch advances monotonically and persists", () => {
 		const path = tmpdb();
 		const store = openStore(path);

@@ -49,8 +49,10 @@ export function thinkingOptions(
 	if (!p) return undefined;
 	switch (p.kind) {
 		case "openrouter":
+			// "off" is just enabled:false — pairing it with an effort is a
+			// contradiction providers may reject outright.
 			if (level === "off") {
-				return { openrouter: { reasoning: { enabled: false, exclude: true, effort: "low" } } };
+				return { openrouter: { reasoning: { enabled: false, exclude: true } } };
 			}
 			return { openrouter: { reasoning: { effort: level } } };
 		case "openai-compatible":

@@ -15,10 +15,13 @@ import { COMMAND_RE, COMMANDS, handleCommand } from "./commands.ts";
 import { withTimeout } from "./deadline.ts";
 import { makeDeliverySink } from "./delivery.ts";
 import { mediaFromMessage, mediaParts, saveAttachment } from "./media.ts";
-import { maybeRenameTopic } from "./titles.ts";
+import { maybeRenameTopic, titleMetaFromService } from "./titles.ts";
 
 export const AUTH_TELEGRAM_TOKEN = "telegram";
 const QUIET_WINDOW_MS = 1_500;
+// Sentinel for media that failed intake — kept out of topic-title input
+// or a download error becomes the conversation's name.
+const ATTACHMENT_FAILED_PREFIX = "[attachment failed to download:";
 
 // Conversation identity IS the Telegram address: a topic — forum
 // supergroup or bot DM with topics enabled — or the bare chat.
@@ -94,7 +97,11 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 			!titleAttempts.has(conv.id)
 		) {
 			const text = parts
-				.map((p) => (p.type === "text" ? p.text : ""))
+				.map((p) =>
+					p.type === "text" && !p.text.startsWith(ATTACHMENT_FAILED_PREFIX)
+						? p.text
+						: "",
+				)
 				.join("\n")
 				.trim();
 			if (text !== "") {
@@ -164,17 +171,19 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 			message: msg.message_id,
 			...(conv.threadId !== null ? { thread: conv.threadId } : {}),
 		});
-		if (msg.forum_topic_created) {
-			deps.store.setMeta(conv.id, {
-				title: msg.forum_topic_created.name,
-				titleImplicit: msg.forum_topic_created.is_name_implicit === true,
-			});
-		} else if (msg.forum_topic_edited?.name !== undefined) {
-			// An explicit rename settles the titling debt — never overwrite it.
-			deps.store.setMeta(conv.id, {
-				title: msg.forum_topic_edited.name,
-				titleImplicit: false,
-			});
+		// conv is read before this patch — titleImplicit transitions both
+		// ways get a line, so "why is it still New Chat" never needs a REPL.
+		const topicMeta = titleMetaFromService(msg);
+		if (topicMeta) {
+			deps.store.setMeta(conv.id, topicMeta);
+			if (topicMeta.titleImplicit) {
+				log.info("implicit topic name — titling owed", {
+					conversation: conv.id,
+					title: topicMeta.title,
+				});
+			} else if (conv.titleImplicit) {
+				log.info("topic renamed — titling debt settled", { conversation: conv.id });
+			}
 		}
 
 		// Commands are settings-only — but a caption that looks like a
@@ -207,7 +216,10 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 					parts.push(...mediaParts(media, saved));
 				} catch (err) {
 					log.error("media intake failed", err, { conversation: conv.id });
-					parts.push({ type: "text", text: `[attachment failed to download: ${String(err)}]` });
+					parts.push({
+						type: "text",
+						text: `${ATTACHMENT_FAILED_PREFIX} ${String(err)}]`,
+					});
 				}
 			}
 

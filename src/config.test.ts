@@ -87,6 +87,17 @@ describe("goblin.json5", () => {
 		expect(() => loadConfig()).toThrow("provider>/<model-id>");
 	});
 
+	test("titleModel is provider-validated like model; \"\" clears to unset", () => {
+		const dir = useHome();
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"},openrouter:{kind:"openrouter",auth:"openrouter"}},model:"zai/glm-4.6",allowedUsers:[7]`;
+		writeFileSync(join(dir, "goblin.json5"), `${base},titleModel:"openrouter/openrouter/free"}`);
+		expect(loadConfig()!.titleModel).toBe("openrouter/openrouter/free");
+		writeFileSync(join(dir, "goblin.json5"), `${base},titleModel:""}`);
+		expect(loadConfig()!.titleModel).toBeUndefined();
+		writeFileSync(join(dir, "goblin.json5"), `${base},titleModel:"other/x"}`);
+		expect(() => loadConfig()).toThrow('provider "other"');
+	});
+
 	test("writeConfig preserves a hardened file mode", () => {
 		const dir = useHome();
 		const p = join(dir, "goblin.json5");

@@ -62,7 +62,10 @@ Conversation ─────── (chatId, threadId?) → durable event history
 topic is a conversation: create a topic to start one, post in an old topic to
 resume it. The bot may also create topics itself (`createForumTopic`). A chat
 without topics is one standing conversation. Conversation management is
-Telegram's job, not a command set's.
+Telegram's job, not a command set's. A topic created without an explicit name
+(`is_name_implicit`) carries a placeholder; the first text burst triggers a
+one-shot rename via the optional `titleModel` config ref — an explicit
+operator rename always wins.
 
 ### The authority rule
 

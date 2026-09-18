@@ -72,6 +72,12 @@ const configSchema = z
 		providers: z.record(z.string(), providerSchema),
 		// "<provider>/<model-id>" — provider must exist in `providers`.
 		model: z.string().min(1),
+		// Optional model for auto-titling implicitly-named topics. "" means
+		// unset (mini-app clearing convention); absent/"" = placeholders stay.
+		titleModel: z
+			.union([z.string().min(1), z.literal("")])
+			.transform((v) => v || undefined)
+			.optional(),
 		favorites: z.array(z.string()).default([]),
 		thinking: z.enum(thinkingLevels).default("medium"),
 		allowedUsers: z.array(z.number().int().positive()).min(1),
@@ -90,21 +96,27 @@ const configSchema = z
 			.default({ port: 8787 }),
 		logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
 	})
-	// Cross-field: the model ref must parse and name a configured provider.
+	// Cross-field: every model ref must parse and name a configured provider.
 	.superRefine((cfg, ctx) => {
-		let provider: string;
-		try {
-			provider = splitModelRef(cfg.model).provider;
-		} catch (err) {
-			ctx.addIssue({ code: "custom", path: ["model"], message: (err as Error).message });
-			return;
-		}
-		if (!(provider in cfg.providers)) {
-			ctx.addIssue({
-				code: "custom",
-				path: ["model"],
-				message: `model "${cfg.model}" names provider "${provider}", which is not in providers`,
-			});
+		for (const [path, ref] of [
+			["model", cfg.model],
+			["titleModel", cfg.titleModel],
+		] as const) {
+			if (ref === undefined) continue;
+			let provider: string;
+			try {
+				provider = splitModelRef(ref).provider;
+			} catch (err) {
+				ctx.addIssue({ code: "custom", path: [path], message: (err as Error).message });
+				continue;
+			}
+			if (!(provider in cfg.providers)) {
+				ctx.addIssue({
+					code: "custom",
+					path: [path],
+					message: `model "${ref}" names provider "${provider}", which is not in providers`,
+				});
+			}
 		}
 	});
 

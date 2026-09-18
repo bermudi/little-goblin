@@ -27,6 +27,10 @@ export interface Conversation {
 	chatId: number;
 	threadId: number | null;
 	title: string | null;
+	// Telegram handed this topic a placeholder name (forum_topic_created
+	// is_name_implicit) — the bot owes it a real one. Cleared by any
+	// explicit rename or a successful auto-title.
+	titleImplicit: boolean;
 	model: string | null; // "<provider>/<model-id>" override; null = config default
 	thinking: string | null; // override; null = config default
 	epoch: number;
@@ -35,6 +39,7 @@ export interface Conversation {
 
 export interface ConversationMetaPatch {
 	title?: string;
+	titleImplicit?: boolean;
 	model?: string | null;
 	thinking?: string | null;
 }
@@ -73,6 +78,7 @@ interface Row {
 	chat_id: number;
 	thread_id: number | null;
 	title: string | null;
+	title_implicit: number;
 	cwd: string; // kept: column exists in existing DBs; never read into Conversation
 	model: string | null;
 	thinking: string | null;
@@ -96,6 +102,7 @@ function toConversation(r: Row): Conversation {
 		chatId: r.chat_id,
 		threadId: r.thread_id,
 		title: r.title,
+		titleImplicit: r.title_implicit !== 0,
 		model: r.model,
 		thinking: r.thinking,
 		epoch: r.epoch,
@@ -114,12 +121,23 @@ export function openStore(dbPath: string): ConversationStore {
 			chat_id INTEGER NOT NULL,
 			thread_id INTEGER,
 			title TEXT,
+			title_implicit INTEGER NOT NULL DEFAULT 0,
 			cwd TEXT NOT NULL,
 			model TEXT,
 			thinking TEXT,
 			epoch INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL
 		)`);
+	// Existing DBs predate title_implicit — additive column, no rebuild.
+	const convCols = new Set(
+		db
+			.query<{ name: string }, []>("PRAGMA table_info(conversations)")
+			.all()
+			.map((c) => c.name),
+	);
+	if (!convCols.has("title_implicit")) {
+		db.run("ALTER TABLE conversations ADD COLUMN title_implicit INTEGER NOT NULL DEFAULT 0");
+	}
 	db.run(`
 		CREATE TABLE IF NOT EXISTS events (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -172,6 +190,10 @@ export function openStore(dbPath: string): ConversationStore {
 		if (patch.title !== undefined) {
 			sets.push("title = ?");
 			vals.push(patch.title);
+		}
+		if (patch.titleImplicit !== undefined) {
+			sets.push("title_implicit = ?");
+			vals.push(patch.titleImplicit ? 1 : 0);
 		}
 		if (patch.model !== undefined) {
 			sets.push("model = ?");

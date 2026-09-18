@@ -25,6 +25,9 @@
 
   // Default model: "<provider>/<model-id>". Model ids may contain slashes.
   model: "zai/glm-4.6",
+  // Auto-titles for Telegram's placeholder topic names ("New Chat"). Small
+  // and cheap is the right shape — unset = topics keep the placeholder.
+  // titleModel: "openrouter/openrouter/free",
   favorites: [
     "zai/glm-4.6",
     "zai/glm-4.5-air",

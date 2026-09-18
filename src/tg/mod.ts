@@ -15,6 +15,7 @@ import { COMMAND_RE, COMMANDS, handleCommand } from "./commands.ts";
 import { withTimeout } from "./deadline.ts";
 import { makeDeliverySink } from "./delivery.ts";
 import { mediaFromMessage, mediaParts, saveAttachment } from "./media.ts";
+import { maybeRenameTopic } from "./titles.ts";
 
 export const AUTH_TELEGRAM_TOKEN = "telegram";
 const QUIET_WINDOW_MS = 1_500;
@@ -50,6 +51,9 @@ export interface BotDeps {
 	auth: AuthStore;
 	store: ConversationStore;
 	runtime: Runtime;
+	// Topic titler — one small model call per implicitly-named topic.
+	// null = no usable title this attempt.
+	titleFor(text: string): Promise<string | null>;
 }
 
 export interface RunningBot {
@@ -71,6 +75,9 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	// boot loudly, not hang before the "online" log line.
 	await withTimeout(bot.init(), "getMe");
 	const botUsername = bot.botInfo.username;
+	// One auto-title attempt per topic per process — a failing provider
+	// must not retry on every burst. The flag survives for the next boot.
+	const titleAttempts = new Set<string>();
 	const buffer = new CoalescingBuffer<BufferedItem>(QUIET_WINDOW_MS, (convId, items) => {
 		const conv = deps.store.get(convId);
 		if (!conv) {
@@ -80,6 +87,27 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 		const parts = items.flatMap((i) => i.parts);
 		const replyTo = items[0]?.replyTo;
 		log.debug("coalesced turn input", { conversation: convId, items: items.length });
+		if (
+			conv.threadId !== null &&
+			conv.titleImplicit &&
+			deps.configRef.current.titleModel !== undefined &&
+			!titleAttempts.has(conv.id)
+		) {
+			const text = parts
+				.map((p) => (p.type === "text" ? p.text : ""))
+				.join("\n")
+				.trim();
+			if (text !== "") {
+				titleAttempts.add(conv.id);
+				void maybeRenameTopic(
+					{ api: bot.api, store: deps.store, titleFor: deps.titleFor },
+					conv,
+					text,
+				).catch((err: unknown) => {
+					log.error("topic titling failed", err, { conversation: conv.id });
+				});
+			}
+		}
 		const sink = makeDeliverySink(bot.api, conv, replyTo);
 		try {
 			deps.runtime.submit(conv, userMessage(parts), sink);
@@ -136,9 +164,17 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 			message: msg.message_id,
 			...(conv.threadId !== null ? { thread: conv.threadId } : {}),
 		});
-		const topicTitle = msg.forum_topic_created?.name ?? msg.forum_topic_edited?.name;
-		if (topicTitle !== undefined) {
-			deps.store.setMeta(conv.id, { title: topicTitle });
+		if (msg.forum_topic_created) {
+			deps.store.setMeta(conv.id, {
+				title: msg.forum_topic_created.name,
+				titleImplicit: msg.forum_topic_created.is_name_implicit === true,
+			});
+		} else if (msg.forum_topic_edited?.name !== undefined) {
+			// An explicit rename settles the titling debt — never overwrite it.
+			deps.store.setMeta(conv.id, {
+				title: msg.forum_topic_edited.name,
+				titleImplicit: false,
+			});
 		}
 
 		// Commands are settings-only — but a caption that looks like a

@@ -4,6 +4,7 @@ import { loadAuth } from "./auth.ts";
 import { inputModalities } from "./agent/models-dev.ts";
 import { buildSystemPrompt } from "./agent/prompt.ts";
 import { resolveModel, thinkingOptions } from "./agent/providers.ts";
+import { generateTopicTitle } from "./agent/title.ts";
 import { makeTools } from "./agent/tools/mod.ts";
 import {
 	ensureHomeLayout,
@@ -71,7 +72,22 @@ const runtime = new Runtime({
 	makeTools: () => makeTools(paths.workspace()),
 });
 
-const tg = await startBot({ configRef, auth, store, runtime });
+const tg = await startBot({
+	configRef,
+	auth,
+	store,
+	runtime,
+	async titleFor(text) {
+		const cfg = configRef.current;
+		if (!cfg.titleModel) return null;
+		const model = await resolveModel(cfg, auth, cfg.titleModel);
+		return generateTopicTitle(
+			model,
+			text,
+			thinkingOptions(cfg, cfg.titleModel, "off"),
+		);
+	},
+});
 const http = startHttp({
 	configRef,
 	botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN),

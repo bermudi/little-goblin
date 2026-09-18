@@ -175,6 +175,19 @@ describe("conversation store", () => {
 		store.close();
 	});
 
+	test("titleImplicit flag round-trips through setMeta", () => {
+		const store = openStore(tmpdb());
+		const c = store.resolve({ kind: "topic", chatId: 42, threadId: 7 }, "/w");
+		expect(c.titleImplicit).toBe(false);
+		store.setMeta(c.id, { title: "New Chat", titleImplicit: true });
+		expect(store.get(c.id)!.titleImplicit).toBe(true);
+		store.setMeta(c.id, { title: "real name", titleImplicit: false });
+		const after = store.get(c.id)!;
+		expect(after.title).toBe("real name");
+		expect(after.titleImplicit).toBe(false);
+		store.close();
+	});
+
 	test("setMeta patches fields", () => {
 		const store = openStore(tmpdb());
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");

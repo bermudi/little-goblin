@@ -45,6 +45,15 @@
   // max — thinking is forced; gpt-6: low…xhigh|max; non-thinkers: off).
   thinking: "medium", // off | low | medium | high | xhigh | max
 
+  // Speech → text for voice/audio/video notes — transcribed once at
+  // intake, and models that can't consume audio read the transcript
+  // instead of a bare path. Unset = no transcription.
+  // transcription: {
+  //   kind: "groq",
+  //   model: "whisper-large-v3-turbo", // default
+  //   auth: "groq", // resolves auth.jsonl record named "groq"
+  // },
+
   // --- Telegram ---
   // Your user id (DM @userinfobot to find it). Only these users can talk.
   allowedUsers: [123456789],

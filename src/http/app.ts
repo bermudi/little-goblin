@@ -145,6 +145,16 @@ export const APP_HTML = `<!doctype html>
     </section>
 
     <section>
+      <h2>Transcription</h2>
+      <label for="trKind">speech → text for voice/audio/video notes</label>
+      <select id="trKind"><option value="">off</option><option value="groq">groq whisper</option></select>
+      <label for="trModel">transcription model</label>
+      <input id="trModel" class="mono" placeholder="whisper-large-v3-turbo" autocomplete="off" spellcheck="false" autocapitalize="off">
+      <label for="trAuth">secret name (in auth.jsonl)</label>
+      <input id="trAuth" class="mono" placeholder="not the secret itself" autocomplete="off" spellcheck="false" autocapitalize="off">
+    </section>
+
+    <section>
       <h2>Access</h2>
       <label for="allowedUsers">allowed telegram user ids</label>
       <input id="allowedUsers" class="mono" placeholder="comma-separated" inputmode="numeric" autocomplete="off" spellcheck="false">
@@ -290,6 +300,17 @@ function addProvider(name, p) {
 $("addProv").onclick = () => addProvider();
 $("model").addEventListener("input", debounce(refreshThinking, 300));
 
+// "off" hides the kind's fields — dead inputs invite bad reads of what
+// actually applies.
+function syncTranscription() {
+  const off = $("trKind").value === "";
+  for (const id of ["trModel", "trAuth"]) {
+    $(id).classList.toggle("hidden", off);
+    $(id).previousElementSibling.classList.toggle("hidden", off);
+  }
+}
+$("trKind").onchange = syncTranscription;
+
 function readProviders() {
   const out = {};
   for (const div of $("provs").children) {
@@ -320,6 +341,10 @@ async function load() {
   $("allowedUsers").value = (c.allowedUsers ?? []).join(", ");
   $("publicUrl").value = c.publicUrl ?? "";
   $("apiRoot").value = c.telegram?.apiRoot ?? "";
+  $("trKind").value = c.transcription?.kind ?? "";
+  $("trModel").value = c.transcription?.model ?? "";
+  $("trAuth").value = c.transcription?.auth ?? "";
+  syncTranscription();
   for (const [name, p] of Object.entries(c.providers ?? {})) addProvider(name, p);
   refreshThinking(); // after provider cards exist — kind lookup needs them
   $("logLevel").value = c.logLevel ?? "info";
@@ -342,6 +367,12 @@ $("save").onclick = async () => {
     allowedUsers: num($("allowedUsers").value),
     publicUrl: $("publicUrl").value.trim(), // "" clears the door — server normalizes it
     telegram: { apiRoot: $("apiRoot").value.trim() || undefined },
+    // "" clears — server normalizes it to unset like publicUrl.
+    transcription: $("trKind").value === "" ? "" : {
+      kind: $("trKind").value,
+      model: $("trModel").value.trim() || "whisper-large-v3-turbo",
+      auth: $("trAuth").value.trim(),
+    },
     providers,
     logLevel: $("logLevel").value,
   };

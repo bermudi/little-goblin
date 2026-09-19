@@ -5,6 +5,7 @@
     "": {
       "name": "goblin",
       "dependencies": {
+        "@ai-sdk/groq": "2.0.53",
         "@ai-sdk/openai-compatible": "^1.0.0",
         "@ai-sdk/provider-utils": "3",
         "@openrouter/ai-sdk-provider": "^1.0.0",
@@ -23,6 +24,8 @@
   },
   "packages": {
     "@ai-sdk/gateway": ["@ai-sdk/gateway@2.0.153", "", { "dependencies": { "@ai-sdk/provider": "2.0.4", "@ai-sdk/provider-utils": "3.0.37", "@vercel/oidc": "3.1.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-USFJ7MIRxR6+PrXT06Q7V+cJf/rJIOmH/KdY84OWCb6+9bhg4xg1pUNxKD28N4F8+VFnX42wfWtqbM3+ZhK+yQ=="],
+
+    "@ai-sdk/groq": ["@ai-sdk/groq@2.0.53", "", { "dependencies": { "@ai-sdk/provider": "2.0.4", "@ai-sdk/provider-utils": "3.0.37" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-aQcCmh7BkVibSvSgNpGNBWMK3sjwkKJs4bqszI2dtcMMEStrCGWS0e/k7MTu7vTDWsdXxvjfR45Ga7V+nKTfCw=="],
 
     "@ai-sdk/openai-compatible": ["@ai-sdk/openai-compatible@1.0.54", "", { "dependencies": { "@ai-sdk/provider": "2.0.4", "@ai-sdk/provider-utils": "3.0.37" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-3wY1L21FLhfKN6I1nQeWgFzDCeBiRxXwU2guE9BCixSLfOPtkJ0vyF7zo7lbnAg1y7tz6RDPq/o+AJf6QSL55g=="],
 

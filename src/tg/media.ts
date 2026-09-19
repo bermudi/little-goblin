@@ -16,6 +16,10 @@ export interface IncomingMedia {
 	fileUniqueId: string;
 	fileName: string; // best-effort original name
 	mimeType: string;
+	// Carries speech worth transcribing: voice, audio, video notes, and
+	// documents that are audio files by mime. Plain video/animation stay
+	// out — a silent mp4 is a wasted whisper call.
+	transcribable?: boolean;
 }
 
 export function mediaFromMessage(msg: {
@@ -49,6 +53,7 @@ export function mediaFromMessage(msg: {
 			fileUniqueId: d.file_unique_id,
 			fileName: d.file_name ?? `doc-${d.file_unique_id}`,
 			mimeType: d.mime_type ?? "application/octet-stream",
+			transcribable: (d.mime_type ?? "").startsWith("audio/"),
 		};
 	}
 	if (msg.voice) {
@@ -57,6 +62,7 @@ export function mediaFromMessage(msg: {
 			fileUniqueId: msg.voice.file_unique_id,
 			fileName: `voice-${msg.voice.file_unique_id}.ogg`,
 			mimeType: msg.voice.mime_type ?? "audio/ogg",
+			transcribable: true,
 		};
 	}
 	if (msg.audio) {
@@ -65,6 +71,7 @@ export function mediaFromMessage(msg: {
 			fileUniqueId: msg.audio.file_unique_id,
 			fileName: msg.audio.file_name ?? `audio-${msg.audio.file_unique_id}`,
 			mimeType: msg.audio.mime_type ?? "audio/mpeg",
+			transcribable: true,
 		};
 	}
 	if (msg.video) {
@@ -93,6 +100,7 @@ export function mediaFromMessage(msg: {
 			fileUniqueId: msg.video_note.file_unique_id,
 			fileName: `video-note-${msg.video_note.file_unique_id}.mp4`,
 			mimeType: "video/mp4",
+			transcribable: true,
 		};
 	}
 	if (msg.sticker) {
@@ -160,15 +168,21 @@ export async function saveAttachment(
 	return { path: dest, size };
 }
 
-// Media → parts: one data-attachment part carrying the saved path. The
-// runtime materializes it against the current model at turn time.
-export function mediaParts(media: IncomingMedia, saved: SavedAttachment): UIMessage["parts"] {
+// Media → parts: one data-attachment part carrying the saved path (plus
+// the transcript when intake produced one). The runtime materializes it
+// against the current model at turn time.
+export function mediaParts(
+	media: IncomingMedia,
+	saved: SavedAttachment,
+	transcript?: string,
+): UIMessage["parts"] {
 	return [
 		attachmentPart({
 			path: saved.path,
 			mediaType: media.mimeType,
 			filename: media.fileName,
 			size: saved.size,
+			...(transcript !== undefined ? { transcript } : {}),
 		}),
 	];
 }

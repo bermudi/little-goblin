@@ -95,6 +95,19 @@ const configSchema = z
 			.optional(),
 		favorites: z.array(z.string()).default([]),
 		thinking: z.enum(thinkingLevels).default("medium"),
+		// Speech → text at intake for models that can't consume audio.
+		// "" means unset (mini-app clearing convention).
+		transcription: z
+			.union([
+				z.object({
+					kind: z.literal("groq"),
+					model: z.string().min(1).default("whisper-large-v3-turbo"),
+					auth: z.string().min(1),
+				}),
+				z.literal(""),
+			])
+			.transform((v) => (v === "" ? undefined : v))
+			.optional(),
 		allowedUsers: z.array(z.number().int().positive()).min(1),
 		// Self-hosted telegram-bot-api in --local mode, e.g. http://127.0.0.1:8081.
 		// Absent = default api.telegram.org.
@@ -137,6 +150,7 @@ const configSchema = z
 
 export type ProviderConfig = z.infer<typeof providerSchema>;
 export type Config = z.infer<typeof configSchema>;
+export type TranscriptionConfig = NonNullable<Config["transcription"]>;
 
 // ---------- load / write ----------
 

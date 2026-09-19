@@ -53,6 +53,37 @@ describe("mediaFromMessage", () => {
 		expect(m!.fileId).toBe("big");
 		expect(m!.mimeType).toBe("image/jpeg");
 	});
+
+	test("speech media is marked transcribable; silent media is not", () => {
+		expect(
+			mediaFromMessage({ voice: { file_id: "v", file_unique_id: "u" } })!.transcribable,
+		).toBe(true);
+		expect(
+			mediaFromMessage({ audio: { file_id: "a", file_unique_id: "u" } })!.transcribable,
+		).toBe(true);
+		expect(
+			mediaFromMessage({ video_note: { file_id: "n", file_unique_id: "u" } })!
+				.transcribable,
+		).toBe(true);
+		expect(
+			mediaFromMessage({
+				document: { file_id: "d", file_unique_id: "u", mime_type: "audio/flac" },
+			})!.transcribable,
+		).toBe(true);
+		expect(
+			mediaFromMessage({
+				document: { file_id: "d", file_unique_id: "u", mime_type: "application/pdf" },
+			})!.transcribable,
+		).toBe(false);
+		// Plain video and GIFs might have no audio track — never offered.
+		expect(
+			mediaFromMessage({ video: { file_id: "vv", file_unique_id: "u" } })!.transcribable,
+		).toBeUndefined();
+		expect(
+			mediaFromMessage({ animation: { file_id: "g", file_unique_id: "u" } })!
+				.transcribable,
+		).toBeUndefined();
+	});
 });
 
 describe("mediaParts", () => {
@@ -66,6 +97,19 @@ describe("mediaParts", () => {
 			mediaType: "video/mp4",
 			filename: "clip.mp4",
 			size: 7,
+		});
+	});
+
+	test("a transcript rides inside the part when intake produced one", () => {
+		const parts = mediaParts(media, { path: "/a/u1-clip.mp4", size: 7 }, "call me back");
+		const p = parts[0]!;
+		if (p.type !== "data-attachment") throw new Error(`expected data-attachment, got ${p.type}`);
+		expect(p.data).toEqual({
+			path: "/a/u1-clip.mp4",
+			mediaType: "video/mp4",
+			filename: "clip.mp4",
+			size: 7,
+			transcript: "call me back",
 		});
 	});
 });

@@ -14,6 +14,7 @@ import { CoalescingBuffer } from "./buffer.ts";
 import { COMMAND_RE, COMMANDS, handleCommand } from "./commands.ts";
 import { withTimeout } from "./deadline.ts";
 import { makeDeliverySink } from "./delivery.ts";
+import type { SpeechFile } from "../agent/transcribe.ts";
 import { mediaFromMessage, mediaParts, saveAttachment } from "./media.ts";
 import { maybeRenameTopic, titleMetaFromService } from "./titles.ts";
 
@@ -57,6 +58,9 @@ export interface BotDeps {
 	// Topic titler — one small model call per implicitly-named topic.
 	// null = no usable title this attempt.
 	titleFor(text: string): Promise<string | null>;
+	// Speech → text for transcribable media (voice, audio, video notes).
+	// null = unconfigured, over the provider cap, or no speech found.
+	transcribe(file: SpeechFile): Promise<string | null>;
 }
 
 export interface RunningBot {
@@ -210,10 +214,29 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 				try {
 					const file = await withTimeout(bot.api.getFile(media.fileId), "getFile");
 					const saved = await saveAttachment(media, file, apiRoot, token);
-					// Just the saved-path reference — whether the bytes go
-					// inline is decided at turn time against the model that
-					// actually runs.
-					parts.push(...mediaParts(media, saved));
+					let transcript: string | undefined;
+					if (media.transcribable) {
+						try {
+							transcript =
+								(await deps.transcribe({
+									path: saved.path,
+									mediaType: media.mimeType,
+									filename: media.fileName,
+								})) ?? undefined;
+						} catch (err) {
+							// Transcription is enrichment, not intake — a whisper
+							// outage leaves the attachment path-referenced, not eaten.
+							log.warn("transcription failed — attachment kept", {
+								conversation: conv.id,
+								file: media.fileName,
+								error: String(err),
+							});
+						}
+					}
+					// The saved-path reference (plus any transcript) — whether
+					// the bytes go inline is decided at turn time against the
+					// model that actually runs.
+					parts.push(...mediaParts(media, saved, transcript));
 				} catch (err) {
 					log.error("media intake failed", err, { conversation: conv.id });
 					parts.push({

@@ -27,6 +27,9 @@ const attachmentRefSchema = z.object({
 	mediaType: z.string(),
 	filename: z.string(),
 	size: z.number(),
+	// Speech attachments carry an intake-produced transcript — a model
+	// that can't consume audio reads the words instead of a bare path.
+	transcript: z.string().optional(),
 });
 
 export type AttachmentRef = z.infer<typeof attachmentRefSchema>;
@@ -74,25 +77,33 @@ export async function materializeAttachments(
 			}
 			// The part crossed the disk boundary — validate, don't trust.
 			const ref = attachmentRefSchema.parse(p.data);
-			const pathRef: UIMessage["parts"][number] = {
-				type: "text",
-				text: `[attachment: ${ref.path} — ${ref.mediaType}, ${ref.size} bytes. Read it with read_file or bash tools.]`,
-			};
+			// The fallback when the file can't go inline: a stored transcript
+			// (speech the model can't hear) beats the bare path reference.
+			const fallback: UIMessage["parts"][number] =
+				ref.transcript !== undefined
+					? {
+							type: "text",
+							text: `[attachment: ${ref.path} — ${ref.mediaType}, ${ref.size} bytes. transcript: ${JSON.stringify(ref.transcript)}]`,
+						}
+					: {
+							type: "text",
+							text: `[attachment: ${ref.path} — ${ref.mediaType}, ${ref.size} bytes. Read it with read_file or bash tools.]`,
+						};
 			if (!acceptsMedia(modalities, ref.mediaType)) {
-				parts.push(pathRef);
+				parts.push(fallback);
 				continue;
 			}
 			try {
 				// The file on disk is authoritative — ref.size was recorded at
 				// intake and the file may have changed since.
 				if ((await stat(ref.path)).size > inlineBudget - spent) {
-					parts.push(pathRef);
+					parts.push(fallback);
 					continue;
 				}
 				const bytes = await readFile(ref.path);
 				// Grew (or shrank — be honest) between stat and read.
 				if (bytes.byteLength > inlineBudget - spent) {
-					parts.push(pathRef);
+					parts.push(fallback);
 					continue;
 				}
 				spent += bytes.byteLength;
@@ -105,11 +116,11 @@ export async function materializeAttachments(
 			} catch (err) {
 				// Any read/stat failure degrades the same way — a dead
 				// attachment must not take the turn down with it.
-				log.warn("attachment unreadable — degrading to path reference", {
+				log.warn("attachment unreadable — degrading to fallback reference", {
 					path: ref.path,
 					error: String(err),
 				});
-				parts.push(pathRef);
+				parts.push(fallback);
 			}
 		}
 		out.push({ ...m, parts });

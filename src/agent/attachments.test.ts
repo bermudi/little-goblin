@@ -125,6 +125,75 @@ describe("materializeAttachments", () => {
 		await expect(materializeAttachments([bad], new Set(["image"]))).rejects.toThrow();
 	});
 
+	test("a model that can't consume audio gets the transcript, not the bare path", async () => {
+		const dir = tmpdir_();
+		const f = join(dir, "v.ogg");
+		writeFileSync(f, "oggdata");
+		const m: UIMessage = {
+			id: "u9",
+			role: "user",
+			parts: [
+				attachmentPart({
+					path: f,
+					mediaType: "audio/ogg",
+					filename: "v.ogg",
+					size: 7,
+					transcript: "call me back",
+				}),
+			],
+		};
+		const out = await materializeAttachments([m], new Set(["text"]));
+		const p = out[0]!.parts[0]!;
+		expect(p.type).toBe("text");
+		expect((p as { text: string }).text).toContain("call me back");
+	});
+
+	test("an audio-capable model still gets the file part", async () => {
+		const dir = tmpdir_();
+		const f = join(dir, "v.ogg");
+		writeFileSync(f, "oggdata");
+		const m: UIMessage = {
+			id: "u10",
+			role: "user",
+			parts: [
+				attachmentPart({
+					path: f,
+					mediaType: "audio/ogg",
+					filename: "v.ogg",
+					size: 7,
+					transcript: "call me back",
+				}),
+			],
+		};
+		const out = await materializeAttachments([m], new Set(["text", "audio"]));
+		expect(out[0]!.parts[0]!.type).toBe("file");
+	});
+
+	test("the transcript also beats the path when the payload doesn't fit", async () => {
+		const dir = tmpdir_();
+		const f = join(dir, "v.ogg");
+		writeFileSync(f, "x".repeat(64));
+		const m: UIMessage = {
+			id: "u11",
+			role: "user",
+			parts: [
+				attachmentPart({
+					path: f,
+					mediaType: "audio/ogg",
+					filename: "v.ogg",
+					size: 64,
+					transcript: "call me back",
+				}),
+			],
+		};
+		// Capable model, but the file can't fit the inline budget — the
+		// transcript is still the better answer than a bare path.
+		const out = await materializeAttachments([m], new Set(["audio"]), 16);
+		const p = out[0]!.parts[0]!;
+		expect(p.type).toBe("text");
+		expect((p as { text: string }).text).toContain("call me back");
+	});
+
 	test(`${ATTACHMENT_PART} round-trips through stored JSON shape`, async () => {
 		// The stored part is plain JSON — what comes back from SQLite must
 		// materialize the same way as the in-memory object.

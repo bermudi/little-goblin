@@ -154,6 +154,19 @@ agent loop.
   judged per turn — a `/model` switch or a wrong catalog guess degrades to
   the path reference instead of poisoning history with a part the provider
   rejects on every turn.
+- **Transcription**: voice notes, audio files, and video notes are speech —
+  a model that can't consume audio shouldn't lose them to a bare path.
+  When `transcription` is configured (`kind: groq`, whisper `model`, `auth`
+  ref — other kinds slot in as the SDK grows transcription providers),
+  intake transcribes the saved file once and stores the text inside the
+  `data-attachment` part. Eager, not per-turn: the transcript is durable
+  history, and materialization prefers it over the path reference whenever
+  the file can't go inline — wrong modality or spent budget — while
+  audio-capable models still get the file part. The call rides the
+  per-conversation intake chain (off the update hot path), bounded at 60s
+  and 25 MiB. A failed or oversized transcription leaves the attachment
+  path-referenced and warn-logged — whisper being down must never eat a
+  voice message.
 
 ## Tools (v1)
 
@@ -329,8 +342,8 @@ is an export/query command, not a format property.
 
 ## Config
 
-`goblin.json5`: provider registry, per-conversation default model/thinking.
-No secrets — those live in `auth.jsonl`.
+`goblin.json5`: provider registry, per-conversation default model/thinking,
+optional `transcription` block. No secrets — those live in `auth.jsonl`.
 
 **Settings are operator-facing UI, not SSH.** The mini app is the
 configuration surface: the process reads and writes `goblin.json5` itself, and
@@ -352,6 +365,7 @@ src/
     providers.ts    registry: name → AI SDK provider
     models-dev.ts   input-modality catalog (fetch, cache, backoff)
     attachments.ts  data-attachment parts + per-turn materialization
+    transcribe.ts   speech → text at intake (groq whisper, more kinds later)
     prompt.ts       system prompt assembly (shell + SOUL.md + agent-owned
                     AGENTS.md; re-read every turn, edits live next message)
     skills.ts       catalog scan + frontmatter validation → ## skills section

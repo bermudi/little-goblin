@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@ai-sdk/groq": "2.0.53",
     "@ai-sdk/openai-compatible": "^1.0.0",
     "@ai-sdk/provider-utils": "3",
     "@openrouter/ai-sdk-provider": "^1.0.0",

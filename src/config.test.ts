@@ -98,6 +98,29 @@ describe("goblin.json5", () => {
 		expect(() => loadConfig()).toThrow('provider "other"');
 	});
 
+	test("transcription defaults its model; \"\" clears to unset", () => {
+		const dir = useHome();
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
+		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
+		expect(loadConfig()!.transcription).toBeUndefined();
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},transcription:{kind:"groq",auth:"groq"}}`,
+		);
+		expect(loadConfig()!.transcription).toEqual({
+			kind: "groq",
+			model: "whisper-large-v3-turbo",
+			auth: "groq",
+		});
+		writeFileSync(join(dir, "goblin.json5"), `${base},transcription:""}`);
+		expect(loadConfig()!.transcription).toBeUndefined();
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},transcription:{kind:"elevenlabs",auth:"x"}}`,
+		);
+		expect(() => loadConfig()).toThrow("goblin.json5");
+	});
+
 	test("writeConfig preserves a hardened file mode", () => {
 		const dir = useHome();
 		const p = join(dir, "goblin.json5");

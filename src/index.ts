@@ -5,6 +5,7 @@ import { ensureOpenRouterCatalog, inputModalities } from "./agent/models-dev.ts"
 import { buildSystemPrompt } from "./agent/prompt.ts";
 import { resolveModel, thinkingOptions } from "./agent/providers.ts";
 import { generateTopicTitle } from "./agent/title.ts";
+import { transcribeAudio, transcriptionModel } from "./agent/transcribe.ts";
 import { makeTools } from "./agent/tools/mod.ts";
 import {
 	ensureHomeLayout,
@@ -90,6 +91,13 @@ const tg = await startBot({
 			text,
 			thinkingOptions(cfg, cfg.titleModel, "off"),
 		);
+	},
+	async transcribe(file) {
+		// Read per call — a mini-app save applies to the next voice note,
+		// no restart.
+		const cfg = configRef.current.transcription;
+		if (!cfg) return null;
+		return transcribeAudio(await transcriptionModel(cfg, auth), file);
 	},
 });
 const http = startHttp({

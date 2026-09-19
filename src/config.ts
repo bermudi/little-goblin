@@ -21,6 +21,7 @@ export const paths = {
 	workspace: () => join(goblinHome(), "workspace"),
 	soul: () => join(goblinHome(), "workspace", "SOUL.md"),
 	agents: () => join(goblinHome(), "workspace", "AGENTS.md"),
+	skills: () => join(goblinHome(), "workspace", "skills"),
 	attachments: () => join(goblinHome(), "workspace", "attachments"),
 	state: () => join(goblinHome(), "state"),
 	db: () => join(goblinHome(), "state", "goblin.sqlite"),
@@ -30,7 +31,7 @@ export const paths = {
 };
 
 export function ensureHomeLayout(): void {
-	for (const dir of [goblinHome(), paths.workspace(), paths.attachments(), paths.state()]) {
+	for (const dir of [goblinHome(), paths.workspace(), paths.skills(), paths.attachments(), paths.state()]) {
 		mkdirSync(dir, { recursive: true });
 	}
 	// SOUL.md is required — template-created on first boot.

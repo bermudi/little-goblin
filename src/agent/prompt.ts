@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import { paths } from "../config.ts";
 import type { Conversation } from "../conversation.ts";
+import { formatSkillsSection, loadCatalog } from "./skills.ts";
 
 function readOptional(path: string): string | null {
 	try {
@@ -18,6 +19,9 @@ function readOptional(path: string): string | null {
 export function buildSystemPrompt(conv: Conversation): { text: string; sources: string[] } {
 	const soul = readOptional(paths.soul()) ?? "You are goblin, a personal AI agent.";
 	const agents = readOptional(paths.agents());
+	// Rescanned every turn — a skill written or edited now is live next
+	// message, like the prompt files above.
+	const catalog = loadCatalog(paths.skills());
 
 	const text = [
 		soul.trim(),
@@ -38,10 +42,13 @@ export function buildSystemPrompt(conv: Conversation): { text: string; sources: 
 		`- Irreversible or destructive actions (deleting data, force-anything)`,
 		`  need an explicit go-ahead first.`,
 		...(agents ? ["", "## AGENTS.md — your operating notes", "", agents.trim()] : []),
+		"",
+		...formatSkillsSection(catalog),
 	].join("\n");
 
-	return {
-		text,
-		sources: agents ? ["SOUL.md", "AGENTS.md"] : ["SOUL.md"],
-	};
+	const sources = ["SOUL.md"];
+	if (agents) sources.push("AGENTS.md");
+	if (catalog.entries.length > 0 || catalog.skipped > 0) sources.push("skills");
+
+	return { text, sources };
 }

@@ -169,6 +169,98 @@ Telegram send is delivery, not a tool. Memory, scheduling, subagent, MCP, and
 external-agent tools do not exist — each arrives with the feature that needs
 it, designed then, not spec'd now.
 
+## Skills
+
+Agent Skills (agentskills.io format): one directory per skill holding
+`SKILL.md` — YAML frontmatter plus a Markdown body — alongside whatever
+scripts/references/assets the body points at. The frontmatter is validated
+per the spec: `name` + `description` required; `license`, `compatibility`,
+`metadata`, `allowed-tools` checked for shape when present and then
+ignored for behavior — except `compatibility`, which joins the catalog
+line so a skill needing tools the box lacks isn't a dead-end invitation.
+`allowed-tools` is spec-experimental and nothing here enforces per-skill
+tool scope. `disable-model-invocation` is a non-spec extension the
+operator's catalog already carries; it is honored (below). Unknown keys
+pass through — real skills in the wild carry extra fields.
+
+One catalog, fixed: `workspace/skills/`. It sits inside the agent's cwd so
+goblin can author its own — writing `skills/<name>/SKILL.md` is the entire
+publishing flow, live next turn. Sharing in a host skill is a symlink —
+made by goblin on request, or by hand; there is no second root, no source
+policy, no selection UI.
+
+The lifecycle is the filesystem, and the agent is the operator's hands:
+**install** = "install the mq skill" in chat → goblin links or copies it
+into `skills/`, fetches a repo via `bash`, or files a SKILL.md that
+arrived as a Telegram attachment; **update** = edit the files; **remove**
+= delete the entry. Each is live on the next turn — no command,
+registry, cache, or tombstone for any of it, and no ssh: the operator
+asks in Telegram and goblin already has a shell on the box. Where to
+fetch *from* (the operator's skills repo, the host catalog) is
+deployment fact, not code — it lives in the workspace `AGENTS.md` so the
+agent knows its sources. Hand-editing `skills/` over ssh always works;
+it is the fallback, not the flow. `skills-ref validate` is installed for
+authoring-time checks — goblin runs it via `bash` after writing a skill,
+and a skipped entry plus the warn log is the failure signal when it
+doesn't.
+
+Discovery is per turn, in `buildSystemPrompt`: scan `skills/*/SKILL.md`
+(symlinks resolved), parse a bounded head of each file for frontmatter —
+the body is never injected — and render a `## skills` section listing
+name + description (+ compatibility when set) + path. The section
+renders even when the catalog is empty: it's also the notice that the
+capability exists.
+
+- `name` must equal its directory name and follow the spec rule —
+  1–64 chars, `a-z0-9` and hyphens, no leading/trailing hyphen, no
+  consecutive hyphens; `description` is required, ≤1024 chars.
+- `disable-model-invocation: true` excludes the skill from the list —
+  manual-only. The operator can still name it and the agent can `ls
+  skills/` and read it; it just isn't advertised every turn.
+- A malformed entry never kills a turn: `log.warn` with path + reason,
+  skip it, and the section notes the skip count so the agent can surface
+  it in chat — and fix the file, when it's one it authored.
+- Sorted by name; deterministic. Same-name conflicts can't exist —
+  name == dirname means they'd be the same directory.
+
+Scan contract: each entry in `skills/` is stat'ed (symlinks followed).
+A directory without `SKILL.md` warns and skips; a non-directory is
+ignored silently; a broken symlink warns and skips. Frontmatter is read
+from a bounded head (16 KiB — a `---` that doesn't close inside it is
+malformed). The catalog caps at 128 entries: over that, the
+sorted-first-128 list plus a warn — a self-authored catalog that big is
+already a bug worth surfacing.
+
+The section, approximately:
+
+```text
+## skills
+
+Skills are directories under `skills/` — each a SKILL.md (frontmatter:
+name, description) with instructions plus any scripts/files it needs.
+When a request matches one, read_file its SKILL.md and follow it. This
+catalog is yours: write skills/<name>/SKILL.md when you learn a
+repeatable task, then `skills-ref validate ./skills/<name>` via bash.
+Edits are live next turn.
+
+- mq — jq for Markdown … [Requires the mq CLI] (skills/mq/SKILL.md)
+- pdf — Extract PDF text … (skills/pdf/SKILL.md)
+(1 entry skipped as malformed — see goblin.log)
+```
+
+An empty catalog renders the header plus "(none yet)" — the notice that
+the capability exists is the point.
+
+Invocation is `read_file`. The model sees the catalog line, reads the
+SKILL.md when one matches the request, runs its scripts via `bash`.
+Activation is already observable in the tool-call log — no skill tool, no
+per-skill tool scoping (`allowed-tools` is parsed and ignored), no
+snapshots, no fingerprints.
+
+Still out — machinery that returns only on demand: additional catalog
+roots (host, project), per-conversation selection, a `/skills` command or
+mini-app surface, immutable skill snapshots.
+
 ## Auth
 
 No secrets in env — the agent's `bash` tool inherits the process environment,
@@ -224,6 +316,7 @@ $GOBLIN_HOME/
 ├── workspace/              # the agent's home; every tool runs here
 │   ├── SOUL.md             # required, template-created on first boot
 │   ├── AGENTS.md           # optional, agent-owned
+│   ├── skills/             # the skill catalog — agent-authored, in cwd
 │   └── attachments/
 └── state/
     └── goblin.sqlite       # all machine state: conversation meta, event
@@ -261,6 +354,7 @@ src/
     attachments.ts  data-attachment parts + per-turn materialization
     prompt.ts       system prompt assembly (shell + SOUL.md + agent-owned
                     AGENTS.md; re-read every turn, edits live next message)
+    skills.ts       catalog scan + frontmatter validation → ## skills section
     tools/          the four tools
   http/             mini-app serving
 ```
@@ -287,8 +381,8 @@ If a capability can't be classified in one sentence, the classification is
    the design conversation — have it before building.
 
 memory store · scheduler/heartbeat · conversation-lifecycle commands ·
-subagents · delegated work · external agents · ACP · MCP · skill catalogs ·
-project environments · inner life · onboarding wizard · state
+subagents · delegated work · external agents · ACP · MCP · project
+environments · inner life · onboarding wizard · state
 migrations · embeddings · multi-user · history compaction (history is
 unbounded in v1 — a designed truncation/compaction story arrives with the
 feature that needs it)

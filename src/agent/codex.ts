@@ -116,13 +116,14 @@ function expired(token: string): boolean {
 export async function codexCredentials(
 	path: string,
 	fetchImpl: FetchLike = fetch,
-	signal?: AbortSignal,
 ): Promise<CodexAuthFile> {
 	const auth = readAuthFile(path);
 	if (!expired(auth.tokens.access_token)) return auth;
 	let p = refreshInflight.get(path);
 	if (!p) {
-		p = refreshAuth(path, fetchImpl, signal).finally(() => {
+		// The flight is shared — no caller's abort signal may reach it,
+		// or one turn's /stop fails every waiter's refresh.
+		p = refreshAuth(path, fetchImpl).finally(() => {
 			refreshInflight.delete(path);
 		});
 		refreshInflight.set(path, p);
@@ -133,7 +134,6 @@ export async function codexCredentials(
 async function refreshAuth(
 	path: string,
 	fetchImpl: FetchLike,
-	signal?: AbortSignal,
 ): Promise<CodexAuthFile> {
 	// Re-read inside the flight — a sibling refresh (ours or the CLI's)
 	// may already have rotated the pair while this caller queued.
@@ -152,11 +152,9 @@ async function refreshAuth(
 			grant_type: "refresh_token",
 			refresh_token: auth.tokens.refresh_token,
 		}),
-		// The call's abort plus a hard deadline — a wedged auth host must
-		// not park the turn lane past /stop or the OS tcp timeout.
-		signal: signal
-			? AbortSignal.any([signal, AbortSignal.timeout(30_000)])
-			: AbortSignal.timeout(30_000),
+		// Hard deadline only — a wedged auth host must not park every
+		// caller sharing this flight past the OS tcp timeout.
+		signal: AbortSignal.timeout(30_000),
 	});
 	if (!res.ok) {
 		throw new Error(
@@ -531,11 +529,7 @@ export class CodexLanguageModel implements LanguageModelV2 {
 		body: Record<string, unknown>;
 		headers: Record<string, string>;
 	}> {
-		const auth = await codexCredentials(
-			this.authFile,
-			this.fetchImpl,
-			options.abortSignal,
-		);
+		const auth = await codexCredentials(this.authFile, this.fetchImpl);
 		const { instructions, input } = convertPrompt(options.prompt);
 		const codexOpts = (options.providerOptions?.codex ?? {}) as CodexProviderOptions;
 		const body: Record<string, unknown> = {
@@ -699,6 +693,9 @@ export class CodexLanguageModel implements LanguageModelV2 {
 					usage = value.usage;
 					break;
 				case "error":
+					// Cancel before rethrowing — the reader loop never
+					// returns to the stream, so the body would leak.
+					await reader.cancel();
 					throw value.error;
 			}
 		}

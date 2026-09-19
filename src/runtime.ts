@@ -119,7 +119,9 @@ export class Runtime {
 		this.closed = true;
 		const drains: Promise<void>[] = [];
 		for (const [convId, lane] of this.lanes) {
-			this.stop(convId);
+			// stop() resolves once the dropped turns' onDone calls settle —
+			// a sink's final flush must finish before the process exits.
+			drains.push(this.stop(convId));
 			if (lane.draining) drains.push(lane.draining);
 		}
 		await Promise.all(drains);
@@ -127,18 +129,21 @@ export class Runtime {
 
 	// /stop — advance the epoch (fences the in-flight turn) and abort its
 	// stream. Queued turns are dropped: stop means stop. Dropped sinks still
-	// get their onDone so nothing leaks.
-	stop(convId: string): void {
+	// get their onDone so nothing leaks. Resolves when those notifications
+	// settle — shutdown awaits it; /stop callers may ignore it.
+	stop(convId: string): Promise<void> {
 		const epoch = this.deps.store.bumpEpoch(convId);
 		const lane = this.lanes.get(convId);
+		const notifies: Promise<void>[] = [];
 		if (lane) {
 			const dropped = lane.pending.splice(0);
 			lane.controller?.abort();
 			for (const t of dropped) {
-				void this.notifyDone(t, { kind: "fenced" });
+				notifies.push(this.notifyDone(t, { kind: "fenced" }));
 			}
 		}
 		log.info("turn stopped", { conversation: convId, epoch });
+		return Promise.all(notifies).then(() => undefined);
 	}
 
 	private lane(convId: string): Lane {

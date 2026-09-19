@@ -125,11 +125,15 @@ export function loadCatalog(root: string): SkillCatalog {
 		try {
 			head = readHead(file);
 		} catch (err) {
-			if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-				skip(dir, "no SKILL.md");
-				continue;
-			}
-			throw err;
+			// A malformed or unreadable entry warns and skips — only the
+			// catalog root read (above) may kill the load.
+			skip(
+				dir,
+				(err as NodeJS.ErrnoException).code === "ENOENT"
+					? "no SKILL.md"
+					: `cannot read SKILL.md: ${(err as Error).message}`,
+			);
+			continue;
 		}
 		const parsed = parseSkill(head);
 		if ("err" in parsed) {

@@ -127,3 +127,18 @@ describe("mini-app http", () => {
 		http.stop();
 	});
 });
+
+// The provider-kind list is served from the schema (single source in
+// config.ts) — the page must carry the injected array, not a stale
+// copy or an unreplaced placeholder.
+describe("mini-app page serving", () => {
+	test("GET / serves the schema's provider kinds, placeholder replaced", async () => {
+		useHome();
+		const http = startHttp({ configRef: { current: { ...baseConfig } }, botToken: TOKEN, onConfigWritten: () => {} });
+		const res = await fetch(`http://127.0.0.1:${http.port}/`);
+		const html = await res.text();
+		expect(html).toContain('const KINDS = ["openai-compatible","openrouter","codex"];');
+		expect(html).not.toContain("__PROVIDER_KINDS__");
+		http.stop(true);
+	});
+});

@@ -2,7 +2,15 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureHomeLayout, loadConfig, splitModelRef, writeConfig, type Config } from "./config.ts";
+import {
+	ensureHomeLayout,
+	loadConfig,
+	providerKinds,
+	providerSchema,
+	splitModelRef,
+	writeConfig,
+	type Config,
+} from "./config.ts";
 
 let dirs: string[] = [];
 let prevHome: string | undefined;
@@ -163,6 +171,24 @@ describe("ensureHomeLayout", () => {
 		writeFileSync(join(dir, "workspace", "AGENTS.md"), "my notes");
 		ensureHomeLayout();
 		expect(readFileSync(join(dir, "workspace", "AGENTS.md"), "utf8")).toBe("my notes");
+	});
+});
+
+describe("providerKinds", () => {
+	// The kinds array must agree with the zod union in BOTH directions:
+	// a kind in the schema but not the array → the mini app can't render
+	// or save a hand-edited config using it; a kind in the array but not
+	// the schema → the form offers what the config rejects.
+	test("every kind parses with its required fields; an unknown kind is rejected", () => {
+		const fields: Record<string, Record<string, unknown>> = {
+			"openai-compatible": { baseUrl: "https://api.example.com", auth: "a" },
+			openrouter: { auth: "a" },
+			codex: {},
+		};
+		for (const kind of providerKinds) {
+			expect(providerSchema.safeParse({ kind, ...fields[kind] }).success).toBe(true);
+		}
+		expect(providerSchema.safeParse({ kind: "anthropic" }).success).toBe(false);
 	});
 });
 

@@ -203,7 +203,7 @@ const $ = (id) => document.getElementById(id);
 // true/false → success/failure of an explicit action.
 const msg = (t, ok) => { const el = $("msg"); el.textContent = t; el.className = ok === undefined ? "" : ok ? "ok" : "err"; };
 
-const KINDS = ["openai-compatible", "openrouter", "codex"];
+const KINDS = __PROVIDER_KINDS__;
 
 const debounce = (f, ms) => { let t; return () => { clearTimeout(t); t = setTimeout(f, ms); }; };
 

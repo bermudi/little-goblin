@@ -74,7 +74,15 @@ function seedFile(path: string, content: string): void {
 
 // ---------- schema ----------
 
-const providerSchema = z.discriminatedUnion("kind", [
+// The kinds the mini app's provider form may offer, in schema order.
+// Single source: the schema literals below are what actually parses —
+// config.test.ts pins this array against them in both directions
+// (schema-only kind → settings UI can't render/save it; array-only
+// kind → the UI offers what the config rejects). http/mod.ts injects
+// this into the page at serve time.
+export const providerKinds = ["openai-compatible", "openrouter", "codex"] as const;
+
+export const providerSchema = z.discriminatedUnion("kind", [
 	z.object({
 		kind: z.literal("openai-compatible"),
 		baseUrl: z.url(),

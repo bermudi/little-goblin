@@ -35,6 +35,21 @@ skills, MCP, projects, or inner-life machinery without an explicit ask —
 "it would be nice" is how v1 happened. When a dropped capability returns, it
 gets designed into `DESIGN.md` first.
 
+## Design inspiration
+
+When designing workspace layout, identity/memory files, prompt assembly, or
+scheduled work: two mature agents live locally and already paid for these
+lessons — `~/build/testing/openclaw/` (TypeScript, multi-channel) and
+`~/build/testing/hermes-agent/` (Python, Nous Research). Borrow their
+*mechanisms*, never their scope: both carry 10x goblin's feature list, most
+of it on our non-goals list. Worth stealing outright: openclaw's bootstrap
+file protocol (trigger→file memory rules, supersede-in-place directives) and
+its HEARTBEAT.md post-mortem (a scheduled job's instructions are the job's
+state in the DB, never a shared workspace file); hermes' cache discipline
+("per-conversation prompt caching is sacred" — both projects converged on
+this independently, treat it as settled). Consult their AGENTS.md, docs/
+and templates before designing; cite what you took in `DESIGN.md`.
+
 ## Tests
 
 Tests guard boundaries and invariants, not implementations. Fake the model

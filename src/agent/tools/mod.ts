@@ -12,6 +12,8 @@ import { writeFileTool } from "./write.ts";
 export interface VoiceToolDeps {
 	synthesize(text: string): Promise<Uint8Array[]>;
 	deliver(audio: Uint8Array): Promise<void>;
+	/** Starts a record_voice chat action; returns the stopper. */
+	recording?(): () => void;
 }
 
 export function makeTools(cwd: string, voice?: VoiceToolDeps): ToolSet {
@@ -20,6 +22,8 @@ export function makeTools(cwd: string, voice?: VoiceToolDeps): ToolSet {
 		write_file: writeFileTool(cwd),
 		edit_file: editFileTool(cwd),
 		bash: bashTool(cwd),
-		...(voice ? { speak: speakTool(cwd, voice.synthesize, voice.deliver) } : {}),
+		...(voice
+			? { speak: speakTool(cwd, voice.synthesize, voice.deliver, voice.recording) }
+			: {}),
 	};
 }

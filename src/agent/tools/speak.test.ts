@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeTools } from "./mod.ts";
-import { speakTool } from "./speak.ts";
+import { speakInputSchema, speakTool } from "./speak.ts";
 
 const dirs: string[] = [];
 const opts = { toolCallId: "t1", messages: [] };
@@ -50,5 +50,54 @@ describe("speak", () => {
 		);
 		const out = (await t.execute!({ text: "hello" }, opts)) as { error?: string };
 		expect(out.error).toContain("edge is down");
+	});
+});
+
+describe("speak input rule", () => {
+	test("input is exactly one of text or path", () => {
+		expect(speakInputSchema.safeParse({ text: "hi" }).success).toBe(true);
+		expect(speakInputSchema.safeParse({ path: "note.md" }).success).toBe(true);
+		expect(speakInputSchema.safeParse({ text: "hi", path: "note.md" }).success).toBe(false);
+		expect(speakInputSchema.safeParse({}).success).toBe(false);
+	});
+});
+
+describe("speak recording indicator", () => {
+	test("record_voice brackets synthesis — started before, stopped after delivery", async () => {
+		const events: string[] = [];
+		const t = speakTool(
+			"/tmp",
+			async () => {
+				events.push("synthesize");
+				return [new Uint8Array([1])];
+			},
+			async () => {
+				events.push("deliver");
+			},
+			() => {
+				events.push("recording-start");
+				return () => events.push("recording-stop");
+			},
+		);
+		await t.execute!({ text: "hello" }, opts);
+		expect(events).toEqual(["recording-start", "synthesize", "deliver", "recording-stop"]);
+	});
+
+	test("a failed synthesis still stops the indicator", async () => {
+		const events: string[] = [];
+		const t = speakTool(
+			"/tmp",
+			async () => {
+				throw new Error("edge is down");
+			},
+			async () => {},
+			() => {
+				events.push("recording-start");
+				return () => events.push("recording-stop");
+			},
+		);
+		const out = (await t.execute!({ text: "x" }, opts)) as { error?: string };
+		expect(out.error).toContain("edge is down");
+		expect(events).toEqual(["recording-start", "recording-stop"]);
 	});
 });

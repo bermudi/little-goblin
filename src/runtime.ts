@@ -54,6 +54,10 @@ export interface TurnSink {
 	onReasoningDelta(delta: string): void;
 	onToolCall(toolName: string, input: unknown): void;
 	onVoiceNote?(audio: Uint8Array): Promise<void>;
+	// The speak tool's synthesis is a visible wait: start a record_voice
+	// chat action and return its stopper. Optional like onVoiceNote —
+	// the runtime only wires the door when the sink provides it.
+	onVoiceSynthesisStart?(): () => void;
 	setAuthorityCheck?(check: () => boolean): void;
 	onDone(done: TurnDone): void | Promise<void>;
 }
@@ -80,8 +84,12 @@ export interface RuntimeDeps {
 	// `!command` resolution shells out).
 	buildStep(conv: Conversation): ModelStep | Promise<ModelStep>;
 	// Build the tool set — bound to the deployment workspace by the
-	// composition root.
-	makeTools(deliverVoice?: (audio: Uint8Array) => Promise<void>): ToolSet;
+	// composition root. deliverVoice/recording wire the speak tool into
+	// the running turn's sink (voice delivery + chat-action indicator).
+	makeTools(
+		deliverVoice?: (audio: Uint8Array) => Promise<void>,
+		recording?: () => () => void,
+	): ToolSet;
 }
 
 // ---------- fencing ----------
@@ -304,7 +312,21 @@ export class Runtime {
 						this.checkAuthority(convId, epoch);
 					}
 				: undefined;
-			const tools = this.fenceTools(this.deps.makeTools(deliverVoice), convId, epoch);
+			// The speak tool's synthesis shows record_voice instead of
+			// typing while it runs. Starting it sends a Telegram chat
+			// action — a side effect, so fence the start; the returned
+			// stopper only clears an interval.
+			const recording = sink.onVoiceSynthesisStart
+				? () => {
+						this.checkAuthority(convId, epoch);
+						return sink.onVoiceSynthesisStart!();
+					}
+				: undefined;
+			const tools = this.fenceTools(
+				this.deps.makeTools(deliverVoice, recording),
+				convId,
+				epoch,
+			);
 			// Materialize attachment refs against THIS turn's model — a
 			// media part the provider can't consume degrades to its path
 			// reference instead of failing the request on every turn.

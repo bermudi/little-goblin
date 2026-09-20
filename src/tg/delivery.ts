@@ -124,6 +124,15 @@ export function makeDeliverySink(
 	// than failing forever.
 	let replyTo = replyToMessageId;
 	let authoritative = () => true;
+	// Typing indicator state. `let` because onVoiceSynthesisStart swaps it
+	// for a record_voice interval and the stopper swaps it back — the
+	// variable always names the live interval so onDone clears the right
+	// one whichever way the swap ended.
+	let typing = setInterval(sendTyping, TYPING_INTERVAL_MS);
+	let recording: ReturnType<typeof setInterval> | null = null;
+	// onDone is terminal: a synthesis stopper firing after it must not
+	// restart a typing indicator on a dead sink.
+	let sinkDone = false;
 
 	function enqueue(fn: () => Promise<void>): void {
 		chain = chain.then(() =>
@@ -144,8 +153,6 @@ export function makeDeliverySink(
 		});
 	}
 	sendTyping();
-	const typing = setInterval(sendTyping, TYPING_INTERVAL_MS);
-
 	function sendRecording(): void {
 		if (!authoritative()) return;
 		withTimeout(
@@ -309,8 +316,27 @@ export function makeDeliverySink(
 			sendRecording();
 			await sendVoice(audio);
 		},
+		// DESIGN.md (TTS): record_voice runs while synthesis is in flight —
+		// the speak tool's door, matching the 🔊 button and /voice mode.
+		// Typing pauses for the duration; the stopper restores it only when
+		// the turn is still live (a fenced turn must not ghost a typing
+		// indicator after onDone already tore the sink down).
+		onVoiceSynthesisStart() {
+			clearInterval(typing);
+			sendRecording();
+			recording = setInterval(sendRecording, TYPING_INTERVAL_MS);
+			return () => {
+				if (recording !== null) clearInterval(recording);
+				recording = null;
+				if (!sinkDone && authoritative()) {
+					typing = setInterval(sendTyping, TYPING_INTERVAL_MS);
+				}
+			};
+		},
 		async onDone(done: TurnDone) {
 			clearInterval(typing);
+			if (recording !== null) clearInterval(recording);
+			sinkDone = true;
 			if (voice?.voiceMode) {
 				if (done.kind === "fenced") return;
 				if (done.kind === "error") {
@@ -330,11 +356,13 @@ export function makeDeliverySink(
 					let audio: Uint8Array[] = [];
 					if (content.spoken !== "") {
 						sendRecording();
-						const recording = setInterval(sendRecording, TYPING_INTERVAL_MS);
+						// Local to this synthesis — distinct from the speak-tool
+						// indicator state above (already torn down by onDone).
+						const synthesisPing = setInterval(sendRecording, TYPING_INTERVAL_MS);
 						try {
 							audio = await voice.synthesize(content.spoken);
 						} finally {
-							clearInterval(recording);
+							clearInterval(synthesisPing);
 						}
 					}
 					if (!authoritative()) {

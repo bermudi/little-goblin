@@ -98,13 +98,17 @@ async function boot() {
 				...(providerOptions ? { providerOptions } : {}),
 			};
 		},
-		makeTools: (deliverVoice) => {
+		makeTools: (deliverVoice, recording) => {
 			const tts = configRef.current.tts;
 			return makeTools(
 				paths.workspace(),
 				tts && deliverVoice
-					? { synthesize: (text) => synthesizeSpeech(text, tts), deliver: deliverVoice }
-					: undefined,
+					? {
+							synthesize: (text) => synthesizeSpeech(text, tts),
+							deliver: deliverVoice,
+							...(recording ? { recording } : {}),
+					}
+				: undefined,
 			);
 		},
 	});

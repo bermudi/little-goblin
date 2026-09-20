@@ -147,13 +147,37 @@ agent loop.
   which is what other agent tools already do.
 - **Content**: the payoff — AI SDK takes image, document, and audio parts.
   Telegram media is saved to `attachments/` and stored in history as a
-  `data-attachment` part (path + metadata, no payload). At turn time each
-  part materializes against the *current* model's capability data: a file
-  part when the model can consume the media type and the payload fits the
-  inline cap, otherwise a text reference to the saved path. Capability is
-  judged per turn — a `/model` switch or a wrong catalog guess degrades to
-  the path reference instead of poisoning history with a part the provider
-  rejects on every turn.
+  `data-attachment` part (path + metadata, no payload). Each part's
+  representation — file part vs text reference (transcript first for
+  speech) — is a pure function of the stored ref and the conversation's
+  model: file part when the model consumes the media type and the payload
+  fits the per-item inline cap, reference otherwise. Pure means stable:
+  the same history under the same model materializes to the same request
+  bytes every turn (see Cache stability). A `/model` switch recomputes
+  representations once — legitimate, because a model switch is already a
+  cold cache. Only disk failure (file gone) degrades an item that would
+  have inlined, with a warn.
+- **Cache stability.** Provider prompt caching is a pricing and latency
+  feature goblin is designed around, not an afterthought: z.ai caches
+  repeated prefixes implicitly (no breakpoints; `cached_tokens` in
+  usage), other providers do the same by prefix matching. The invariant:
+  **the request for turn N+1 is the request for turn N with new content
+  appended — bytes already sent are never rewritten.** Consequences:
+  - No per-turn re-judgment of history. Attachment representation is the
+    pure function above; there is no whole-turn budget and no newest-first
+    eviction — an old image never degrades to a path
+    reference because newer ones arrived.
+  - The system prompt carries no automatic per-turn variability — no
+    clock. Current time comes from `date` via bash when it matters.
+    Operator edits (SOUL.md, AGENTS.md, skills) stay live next turn;
+    they are explicit cache boundaries and log the cost they incur.
+  - Every model call logs usage with the cached split
+    (`cachedInputTokens`, null when the provider doesn't report) and the
+    request prefix hash — cache behavior and any drift are observable in
+    goblin.log. Window utilization warns as input approaches the
+    catalog context limit. History compaction, when it arrives, is an
+    explicit logged boundary that starts a fresh stable prefix — never
+    silent eviction. (Until then history is unbounded; see non-goals.)
 - **Transcription**: voice notes, audio files, and video notes are speech —
   a model that can't consume audio shouldn't lose them to a bare path.
   When `transcription` is configured (`kind: groq`, whisper `model`, `auth`

@@ -139,6 +139,6 @@ describe("mini-app page serving", () => {
 		const html = await res.text();
 		expect(html).toContain('const KINDS = ["openai-compatible","openrouter","codex"];');
 		expect(html).not.toContain("__PROVIDER_KINDS__");
-		http.stop(true);
+		http.stop();
 	});
 });

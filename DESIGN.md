@@ -476,7 +476,15 @@ src/
   runtime.ts        per-conversation queue, turn loop, checkAuthority
   agent/
     providers.ts    registry: name → AI SDK provider
-    models-dev.ts   input-modality catalog (fetch, cache, backoff)
+    models-dev.ts   input-modality catalog (fetch, cache, backoff) — two
+                    catalog fetchers live here (models.dev, openrouter);
+                    the next change to either extracts one
+                    fetchCachedCatalog helper and migrates both. No third
+                    copy.
+    codex.ts        codex OAuth provider — credentials lifecycle, wire
+                    conversion, LanguageModelV2; splits into
+                    codex/auth.ts + codex/model.ts when next touched
+                    (external-change pressure lands on one 770-line file)
     attachments.ts  data-attachment parts + per-turn materialization
     transcribe.ts   speech → text at intake (groq whisper, more kinds later)
     tts.ts          text or file → speech (edge read-aloud ws, opus out)

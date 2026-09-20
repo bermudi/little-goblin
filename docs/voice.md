@@ -53,10 +53,12 @@ Three ways to hear the bot:
    to the audio.
 2. **The 🔊 button** — every finished text reply (when speech is configured)
    carries a 🔊 button that reads the *whole* reply aloud, not just one
-   bubble. The whole-reply view comes from a small in-memory cache of
-   recent replies: after a restart (or once a reply has scrolled out of
-   it) the button falls back to reading only the tapped bubble — for a
-   multi-bubble reply, that's its first part alone.
+   bubble. The whole-reply view comes from a small, per-process in-memory
+   cache and never survives a restart. Once a reply has scrolled out of
+   the cache (or after a restart), the button falls back to reading only
+   the tapped bubble — for a multi-bubble reply, that's its first part
+   alone. Code blocks and long URLs are left out of the button's audio too;
+   the original text remains in chat.
 3. **Ask for it** — "read me this document" and the bot synthesizes the
    file straight from disk (no re-typing it) and sends voice notes inline.
    Long input is split at sentence boundaries automatically.

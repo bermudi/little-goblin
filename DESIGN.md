@@ -365,7 +365,7 @@ Resolved values never enter the tool environment, the model context, or logs.
 
 ## Telegram intake & delivery
 
-- grammy long polling; `ALLOWED_TG_USER_IDS` gate first thing.
+- grammy long polling; the `allowedUsers` config key gates access first thing.
 - **Coalescing buffer**: rapid-fire messages in one conversation merge into
   one turn (~1.5s quiet window). Real product value in v1; keep it.
 - **Delivery**: `streamText` deltas → throttled message edits (~1/s), final
@@ -379,8 +379,9 @@ Resolved values never enter the tool environment, the model context, or logs.
   last bubble, and `/voice` mode (below). Input over ~10k chars is
   chunked at sentence boundaries inside the module — the cap is a sanity
   guard, never a control-flow path the model must recover from. Button
-  text is stripped of the tool-status tail and markdown before synthesis
-  (`speakable`); tool input is already authored for speech. Edge's supported
+  text is stripped of the tool-status tail, code blocks, long URLs, and
+  markdown before synthesis (`speakable`); tool input is already authored
+  for speech. Edge's supported
   WebM/Opus stream is remuxed losslessly through ffmpeg to ogg/opus — a real
   voice-note bubble, not an audio-file card. ffmpeg is probed at boot when TTS
   is configured, and install.sh warns when it is absent.

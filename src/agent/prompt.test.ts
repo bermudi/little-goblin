@@ -4,10 +4,11 @@
 // someone added a clock, counter, or random value to the prompt.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths } from "../config.ts";
+import { setLogFile } from "../log.ts";
 import type { Conversation } from "../conversation.ts";
 import { buildSystemPrompt } from "./prompt.ts";
 
@@ -60,6 +61,29 @@ describe("buildSystemPrompt", () => {
 			const b = buildSystemPrompt(conv);
 			expect(a.text).toBe(b.text);
 		} finally {
+			delete process.env.GOBLIN_HOME;
+		}
+	});
+
+	test("missing SOUL.md falls back to the default identity — loudly", () => {
+		const home = useHome();
+		process.env.GOBLIN_HOME = home;
+		const logFile = join(home, "goblin.log");
+		setLogFile(logFile);
+		try {
+			mkdirSync(paths.workspace(), { recursive: true });
+			// No SOUL.md — deleted mid-run, never recreated.
+			const { text } = buildSystemPrompt(conv);
+			expect(text).toContain("You are goblin, a personal AI agent.");
+			const warned = readFileSync(logFile, "utf8")
+				.trim()
+				.split("\n")
+				.map((l) => JSON.parse(l) as Record<string, unknown>)
+				.some((l) => l.msg === "SOUL.md missing — default identity in use");
+			// A silent personality swap is exactly what the log must explain.
+			expect(warned).toBe(true);
+		} finally {
+			setLogFile(null);
 			delete process.env.GOBLIN_HOME;
 		}
 	});

@@ -9,6 +9,7 @@
 
 import { readFileSync } from "node:fs";
 import { paths } from "../config.ts";
+import { log } from "../log.ts";
 import type { Conversation } from "../conversation.ts";
 import { formatSkillsSection, loadCatalog } from "./skills.ts";
 
@@ -22,14 +23,22 @@ function readOptional(path: string): string | null {
 }
 
 export function buildSystemPrompt(conv: Conversation): { text: string; sources: string[] } {
-	const soul = readOptional(paths.soul()) ?? "You are goblin, a personal AI agent.";
+	const soul = readOptional(paths.soul());
+	if (soul === null) {
+		// Not a reason to fail the turn — but a deleted SOUL.md silently
+		// swaps the bot's personality, and the log must explain that.
+		log.warn("SOUL.md missing — default identity in use", {
+			conversation: conv.id,
+			path: paths.soul(),
+		});
+	}
 	const agents = readOptional(paths.agents());
 	// Rescanned every turn — a skill written or edited now is live next
 	// message, like the prompt files above.
 	const catalog = loadCatalog(paths.skills());
 
 	const text = [
-		soul.trim(),
+		(soul ?? "You are goblin, a personal AI agent.").trim(),
 		"",
 		"## environment",
 		"",

@@ -46,7 +46,12 @@ function setup() {
 		} as unknown as Api,
 		configRef: { current: config },
 		store,
-		runtime: { stop: (id: string) => stopped.push(id) } as unknown as Runtime,
+		runtime: {
+			stop: (id: string) => {
+				stopped.push(id);
+				return { stopped: stopped.length > 0, settled: Promise.resolve() };
+			},
+		} as unknown as Runtime,
 		botUsername: "goblin",
 	};
 	return { store, conv, sent, stopped, deps };
@@ -135,9 +140,19 @@ describe("commands", () => {
 	});
 
 	test("/stop fences the conversation", () => {
-		const { store, conv, stopped, deps } = setup();
+		const { store, conv, sent, stopped, deps } = setup();
 		expect(handleCommand(deps, conv, "/stop")).toBe(true);
 		expect(stopped).toEqual([conv.id]);
+		expect(sent[0]).toBe("stopped");
+		store.close();
+	});
+
+	test("/stop with nothing running says so", () => {
+		const { store, conv, sent, deps } = setup();
+		(deps.runtime as unknown as { stop: () => { stopped: boolean; settled: Promise<void> } }).stop =
+			() => ({ stopped: false, settled: Promise.resolve() });
+		expect(handleCommand(deps, conv, "/stop")).toBe(true);
+		expect(sent[0]).toBe("nothing was running");
 		store.close();
 	});
 

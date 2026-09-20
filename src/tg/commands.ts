@@ -54,8 +54,8 @@ export function handleCommand(
 
 	switch (cmd) {
 		case "/stop": {
-			deps.runtime.stop(conv.id);
-			reply(deps, conv, "stopped");
+			const { stopped } = deps.runtime.stop(conv.id);
+			reply(deps, conv, stopped ? "stopped" : "nothing was running");
 			return true;
 		}
 

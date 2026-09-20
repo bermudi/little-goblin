@@ -162,10 +162,36 @@ describe("turn authority", () => {
 		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
 		await sleep(10); // first turn is running
 		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), s2); // queued
-		runtime.stop(conv.id);
+		const { stopped, settled } = runtime.stop(conv.id);
+		expect(stopped).toBe(true);
 		// the dropped turn's sink is still told, so it can release resources
 		expect(await s2.done).toEqual({ kind: "fenced" });
 		expect((await s1.done).kind).toBe("fenced");
+		await settled;
+		store.close();
+	});
+
+	test("/stop reports nothing-running on an idle lane — epoch still bumps", async () => {
+		const { store, conv, runtime } = setup(["a"], 30);
+		const idle = runtime.stop(conv.id);
+		expect(idle.stopped).toBe(false);
+		// The bump is harmless — and any turn admitted next captures it.
+		expect(store.get(conv.id)!.epoch).toBe(1);
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		await sleep(5); // admitted and running
+		const live = runtime.stop(conv.id);
+		expect(live.stopped).toBe(true);
+		store.close();
+	});
+
+	test("a finished lane does not report stoppable turns", async () => {
+		const { store, conv, runtime } = setup(["a"], 5);
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		await sink.done;
+		await sleep(10); // lane fully drained
+		expect(runtime.stop(conv.id).stopped).toBe(false);
 		store.close();
 	});
 
@@ -772,6 +798,68 @@ describe("cache stability", () => {
 			const completed = lines.find((l) => l.msg === "turn completed");
 			expect(completed?.window).toEqual({ input: 900, limit: 1000, pct: 90 });
 			expect(completed?.usage).toEqual({ input: 900, cached: 700, output: 1 });
+		} finally {
+			setLogFile(null);
+			store.close();
+		}
+	});
+
+	test("provider warnings are logged, not dropped", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const dir = mkdtempSync(join(tmpdir(), "goblin-rt-log-"));
+		dirs.push(dir);
+		const logFile = join(dir, "goblin.log");
+		const model = {
+			specificationVersion: "v2",
+			provider: "fake",
+			modelId: "fake-1",
+			supportedUrls: {},
+			doGenerate() {
+				throw new Error("unimplemented");
+			},
+			doStream() {
+				const stream = new ReadableStream<LanguageModelV2StreamPart>({
+					start(controller) {
+						controller.enqueue({
+							type: "stream-start",
+							warnings: [
+								{ type: "unsupported-setting", setting: "temperature" },
+							],
+						});
+						controller.enqueue({ type: "text-start", id: "t1" });
+						controller.enqueue({ type: "text-delta", id: "t1", delta: "ok" });
+						controller.enqueue({ type: "text-end", id: "t1" });
+						controller.enqueue({
+								type: "finish",
+								finishReason: "stop",
+								usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+							});
+						controller.close();
+					},
+				});
+				return { stream };
+			},
+		} as unknown as LanguageModel;
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({}),
+		});
+		setLogFile(logFile);
+		try {
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+			expect(await sink.done).toEqual({ kind: "completed" });
+			// The warn rides the same turn's log trail — a warning that never
+			// lands was the fail-quiet seam this guards against.
+			await Bun.sleep(20);
+			const lines = readFileSync(logFile, "utf8")
+				.trim()
+				.split("\n")
+				.map((l) => JSON.parse(l) as Record<string, unknown>);
+			const warn = lines.find((l) => l.msg === "model warnings");
+			expect(warn?.warnings).toEqual(["unsupported-setting:temperature"]);
 		} finally {
 			setLogFile(null);
 			store.close();

@@ -17,12 +17,27 @@ import {
 	type UIMessage,
 } from "ai";
 import type { ProviderOptions, ToolCallOptions } from "@ai-sdk/provider-utils";
+import type { LanguageModelV2CallWarning } from "@ai-sdk/provider";
 import { createHash, randomUUID } from "node:crypto";
 import { materializeAttachments } from "./agent/attachments.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
 
 const MAX_STEPS = 25;
+
+// Provider capability warnings are observability, not control — logged
+// compact, never fatal. Kept as strings so a warning object carrying a
+// full tool definition can't bloat the log line.
+function describeWarning(w: LanguageModelV2CallWarning): string {
+	switch (w.type) {
+		case "unsupported-setting":
+			return `unsupported-setting:${w.setting}`;
+		case "unsupported-tool":
+			return `unsupported-tool:${(w.tool as { name?: string }).name ?? "provider-defined"}`;
+		default:
+			return JSON.stringify(w);
+	}
+}
 
 // ---------- sink: what the turn streams into (tg implements) ----------
 
@@ -124,9 +139,10 @@ export class Runtime {
 		this.closed = true;
 		const drains: Promise<void>[] = [];
 		for (const [convId, lane] of this.lanes) {
-			// stop() resolves once the dropped turns' onDone calls settle —
-			// a sink's final flush must finish before the process exits.
-			drains.push(this.stop(convId));
+			// stop().settled resolves once the dropped turns' onDone calls
+			// settle — a sink's final flush must finish before the process
+			// exits.
+			drains.push(this.stop(convId).settled);
 			if (lane.draining) drains.push(lane.draining);
 		}
 		await Promise.all(drains);
@@ -134,11 +150,14 @@ export class Runtime {
 
 	// /stop — advance the epoch (fences the in-flight turn) and abort its
 	// stream. Queued turns are dropped: stop means stop. Dropped sinks still
-	// get their onDone so nothing leaks. Resolves when those notifications
-	// settle — shutdown awaits it; /stop callers may ignore it.
-	stop(convId: string): Promise<void> {
+	// get their onDone so nothing leaks. The return value tells the caller
+	// — synchronously — whether anything was actually live, so /stop can
+	// say "stopped" vs "nothing was running"; `settled` resolves once the
+	// dropped sinks' onDone calls settle — shutdown awaits it.
+	stop(convId: string): { stopped: boolean; settled: Promise<void> } {
 		const epoch = this.deps.store.bumpEpoch(convId);
 		const lane = this.lanes.get(convId);
+		const stopped = lane !== undefined && (lane.pending.length > 0 || lane.controller !== null);
 		const notifies: Promise<void>[] = [];
 		if (lane) {
 			const dropped = lane.pending.splice(0);
@@ -147,8 +166,12 @@ export class Runtime {
 				notifies.push(this.notifyDone(t, { kind: "fenced" }));
 			}
 		}
-		log.info("turn stopped", { conversation: convId, epoch });
-		return Promise.all(notifies).then(() => undefined);
+		if (stopped) {
+			log.info("turn stopped", { conversation: convId, epoch });
+		} else {
+			log.debug("stop — nothing was running", { conversation: convId, epoch });
+		}
+		return { stopped, settled: Promise.all(notifies).then(() => undefined) };
 	}
 
 	private lane(convId: string): Lane {
@@ -225,6 +248,9 @@ export class Runtime {
 					};
 					for (const t of turns) await this.notifyDone(t, done);
 				}
+				// Between turns the lane holds no live controller — /stop's
+				// stopped flag must not false-positive on a finished turn.
+				this.lane(convId).controller = null;
 			}
 		} finally {
 			lane.running = false;
@@ -352,6 +378,28 @@ export class Runtime {
 					});
 				},
 			});
+
+			// The SDK hands provider capability warnings back on the result —
+			// previously the one fail-quiet seam in the model path: an ignored
+			// setting or an inexpressible tool vanished. Observability only;
+			// the turn proceeds regardless.
+			void result.warnings
+				.then((ws) => {
+					if (ws !== undefined && ws.length > 0) {
+						log.warn("model warnings", {
+						conversation: convId,
+						warnings: ws.map(describeWarning),
+						});
+					}
+				})
+				.catch((err: unknown) => {
+					// An aborted stream's warnings promise rejects with it —
+					// expected on /stop, not worth a warn line.
+					log.debug("model warnings unavailable", {
+						conversation: convId,
+						error: String(err),
+					});
+				});
 
 			let responseMessage: UIMessage | null = null;
 			// Block-boundary tracking for the live stream: last text part id

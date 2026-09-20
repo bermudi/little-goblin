@@ -34,12 +34,15 @@ describe("truncateTail", () => {
 		const text = "🎉".repeat(100);
 		const r = truncateTail(text, 50);
 		expect(r.truncated).toBe(true);
-		expect(r.droppedBytes).toBe(400 - Buffer.byteLength(r.content.split("\n")[1] ?? "", "utf-8"));
+		const keptLine = r.content.split("\n")[1] ?? "";
+		// droppedBytes counts input bytes only — the … marker is not input.
+		expect(r.droppedBytes).toBe(400 - Buffer.byteLength(keptLine.slice(1), "utf-8"));
 		const kept = r.content.split("\n")[1] ?? "";
 		// Decodes cleanly: round-trips as whole emoji, no replacement chars.
+		// (Leading … marks the mid-line fragment start.)
 		expect(kept).not.toContain("\ufffd");
-		expect([...kept].every((c) => c === "🎉")).toBe(true);
-		expect(Buffer.byteLength(kept, "utf-8")).toBeLessThanOrEqual(50);
+		expect([...kept.slice(1)].every((c) => c === "🎉")).toBe(true);
+		expect(Buffer.byteLength(kept.slice(1), "utf-8")).toBeLessThanOrEqual(50); // input bytes; the … marker is free
 		expect(Buffer.byteLength(kept, "utf-8")).toBeGreaterThanOrEqual(48); // boundary walked < 4 bytes
 
 	});
@@ -53,5 +56,12 @@ describe("truncateTail", () => {
 		expect(r.truncated).toBe(true);
 		expect(r.droppedBytes).toBe(5);
 		expect(r.content.endsWith("\nhello")).toBe(false);
+	});
+
+	test("a single line over the budget is kept as a marked fragment, never a fake whole line", () => {
+		const r = truncateTail(`head of output here\n${"FRAGMENT_TAIL_" + "x".repeat(200)}`, 100);
+		expect(r.truncated).toBe(true);
+		const lines = r.content.split("\n");
+		expect(lines[1]!.startsWith("…")).toBe(true); // mid-line start is marked
 	});
 });

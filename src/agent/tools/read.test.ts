@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
 	closeSync,
+	existsSync,
 	ftruncateSync,
 	mkdtempSync,
 	openSync,
@@ -270,5 +271,76 @@ describe("read_file images", () => {
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "f.bin" }, opts)) as { error?: string };
 		expect(out.error).toContain("binary file");
+	});
+});
+
+describe("unicode twins — read, edit, and write land on one file", () => {
+	// "café" as NFC vs NFD: same picture in a terminal, different bytes.
+	const nfc = "café.txt";
+	const nfd = "cafe\u0301.txt";
+
+	test("read_file resolves an NFD-named file from its NFC spelling", async () => {
+		const dir = tmpdir_();
+		writeFileSync(join(dir, nfd), "hola\n");
+		const t = readFileTool(dir);
+		const out = (await t.execute!({ path: nfc }, opts)) as { content?: string };
+		expect(out.content).toContain("hola");
+	});
+
+	test("edit_file resolves the twin too — no file-not-found after a good read", async () => {
+		const dir = tmpdir_();
+		writeFileSync(join(dir, nfd), "one\ntwo\n");
+		const { editFileTool } = await import("./edit.ts");
+		const out = (await editFileTool(dir).execute!(
+			{ path: nfc, old_string: "two", new_string: "TWO" },
+			opts,
+		)) as { replaced?: number; error?: string };
+		expect(out.error).toBeUndefined();
+		expect(out.replaced).toBe(1);
+	});
+
+	test("write_file targets the twin instead of forking a second file", async () => {
+		const dir = tmpdir_();
+		writeFileSync(join(dir, nfd), "old");
+		const { writeFileTool } = await import("./write.ts");
+		const out = (await writeFileTool(dir).execute!(
+			{ path: nfc, content: "new" },
+			opts,
+		)) as { path?: string };
+		expect(out.path).toBe(join(dir, nfd));
+		expect(existsSync(join(dir, nfc))).toBe(false); // no fork
+	});
+});
+
+describe("sniffImage — JPEG marker walk", () => {
+	// SOF0 right after the SOI: height at i+5, width at i+7.
+	const jpegWithSof = Buffer.from([
+		0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x1e, 0x00, 0x32, 0x00,
+	]);
+
+	test("SOF0 within the first 64 bytes yields dimensions", async () => {
+		const dir = tmpdir_();
+		writeFileSync(join(dir, "a.jpg"), jpegWithSof);
+		const t = readFileTool(dir);
+		const out = (await t.execute!({ path: "a.jpg" }, opts)) as { content?: string };
+		expect(out.content).toContain("[image file image/jpeg 50x30");
+	});
+
+	test("EXIF pushing SOF past 64 bytes still names the type, without dims", async () => {
+		const dir = tmpdir_();
+		// SOI + APP1 (EXIF) declaring a length that runs past 64 bytes, zeros
+		// after — no SOF marker inside the sniff window. The walk must give
+		// up on dims, not on the media type.
+		const app1 = Buffer.alloc(64);
+		app1[0] = 0xff;
+		app1[1] = 0xd8;
+		app1[2] = 0xff;
+		app1[3] = 0xe1;
+		app1.writeUInt16BE(0x1000, 4); // APP1 segment length 4096
+		writeFileSync(join(dir, "b.jpg"), app1);
+		const t = readFileTool(dir);
+		const out = (await t.execute!({ path: "b.jpg" }, opts)) as { content?: string };
+		expect(out.content).toContain("[image file image/jpeg,");
+		expect(out.content).not.toMatch(/\d+x\d+/);
 	});
 });

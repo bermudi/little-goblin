@@ -37,11 +37,13 @@ export function truncateTail(text: string, maxBytes: number): TruncateTailResult
 		const lineBytes = Buffer.byteLength(line, "utf-8") + (kept.length > 0 ? 1 : 0);
 		if (keptBytes + lineBytes > maxBytes) {
 			if (kept.length === 0) {
-				// Edge case: the last line alone exceeds the budget — keep
-				// its final bytes rather than nothing.
+				// Edge case: the last line alone exceeds the budget — keep its
+				// final bytes rather than nothing, prefixed so a mid-line start
+				// is never mistaken for a whole line. The ellipsis is markup,
+				// not input — it doesn't count toward keptBytes.
 				const partial = tailBytes(line, maxBytes);
 				keptBytes = Buffer.byteLength(partial, "utf-8");
-				kept.unshift(partial);
+				kept.unshift(`…${partial}`);
 			}
 			break;
 		}

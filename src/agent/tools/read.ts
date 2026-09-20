@@ -3,7 +3,7 @@ import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } fr
 import { basename, dirname } from "node:path";
 import { z } from "zod";
 import { log } from "../../log.ts";
-import { resolvePath } from "./paths.ts";
+import { resolvePath, unicodeTwin } from "./paths.ts";
 
 const MAX_LINES = 2000;
 const MAX_BYTES = 64 * 1024;
@@ -19,13 +19,21 @@ export const MAX_LINE_CHARS = 2000;
 
 // Whole-file read guarded for tool use — shared by read_file and edit_file
 // (edit_file needs the same gates: it reads the whole file too, and a
-// binary file decoded as utf8 would be corrupted on write-back).
-export function readTextFile(abs: string, display: string): { text: string } | { error: string } {
+// binary file decoded as utf8 would be corrupted on write-back). The
+// `kind` discriminates failures for callers; the message is for the model.
+export type ReadFileError =
+	| { error: string; kind: "not-found" }
+	| { error: string; kind: "is-dir" }
+	| { error: string; kind: "special" }
+	| { error: string; kind: "too-large" }
+	| { error: string; kind: "binary" };
+
+export function readTextFile(abs: string, display: string): { text: string } | ReadFileError {
 	let raw: Buffer;
 	try {
 		const st = statSync(abs);
 		if (st.isDirectory()) {
-			return { error: `is a directory: ${display}` };
+			return { error: `is a directory: ${display}`, kind: "is-dir" };
 		}
 		// Special files hang or lie: /dev/zero reports size 0 (passes the gate
 		// below) and never reaches EOF; a FIFO with no writer blocks forever.
@@ -34,32 +42,42 @@ export function readTextFile(abs: string, display: string): { text: string } | {
 		if (st.isCharacterDevice() || st.isBlockDevice() || st.isFIFO() || st.isSocket()) {
 			return {
 				error: `refusing to read special file (device/fifo/socket): ${display} — use the bash tool if you really need it`,
+				kind: "special",
 			};
 		}
 		if (st.size > MAX_FILE_BYTES) {
 			return {
 				error: `file too large: ${display} (${st.size} bytes, max ${MAX_FILE_BYTES}) — slice it with bash (sed/head/tail)`,
+				kind: "too-large",
 			};
 		}
 		raw = readFileSync(abs);
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-			return { error: `file not found: ${display}` };
+			// A differently-normalized twin may exist (macOS NFD names): every
+			// file tool resolves through the same twin so read, edit, and write
+			// land on one file instead of forking it under a second spelling.
+			const twin = unicodeTwin(abs);
+			if (twin !== null) {
+				log.info("read_unicode_retry", { original: abs, variant: twin });
+				return readTextFile(twin, display);
+			}
+			return { error: `file not found: ${display}`, kind: "not-found" };
 		}
 		if ((err as NodeJS.ErrnoException).code === "EISDIR") {
-			return { error: `is a directory: ${display}` };
+			return { error: `is a directory: ${display}`, kind: "is-dir" };
 		}
 		throw err;
 	}
 	if (raw.includes(0)) {
-		return { error: `binary file: ${display} (${raw.byteLength} bytes)` };
+		return { error: `binary file: ${display} (${raw.byteLength} bytes)`, kind: "binary" };
 	}
 	// Fatal decode: lossy utf8 would let invalid bytes through, and
 	// edit_file writes the decoded text back — corrupting the file.
 	try {
 		return { text: new TextDecoder("utf-8", { fatal: true }).decode(raw) };
 	} catch {
-		return { error: `binary file: ${display} (${raw.byteLength} bytes)` };
+		return { error: `binary file: ${display} (${raw.byteLength} bytes)`, kind: "binary" };
 	}
 }
 
@@ -104,7 +122,17 @@ function suggestAlternatives(abs: string): string[] {
 	}
 	for (const e of entries) {
 		const el = e.toLowerCase();
-		if (el !== lower && (el.includes(lower) || lower.includes(el))) take(e);
+		// 4-char floor: without it a 1-3 char entry matches inside almost
+		// any miss ("efi" inside "definitely-not-here") and the suggestion
+		// is pure noise.
+		if (
+			el !== lower &&
+			el.length >= 4 &&
+			lower.length >= 4 &&
+			(el.includes(lower) || lower.includes(el))
+		) {
+			take(e);
+		}
 	}
 	for (const e of entries) {
 		if (!withinLevenshtein(base, e, 2)) continue;
@@ -113,23 +141,15 @@ function suggestAlternatives(abs: string): string[] {
 	return picked;
 }
 
-// read_file's readTextFile wrapper: retries a not-found path under NFC/NFD
-// unicode normalization (macOS stores filenames as NFD), then decorates a
-// genuine miss with did-you-mean candidates.
-function readTextFileSmart(abs: string, display: string): { text: string } | { error: string } {
+// read_file's readTextFile wrapper: decorates a genuine not-found with
+// did-you-mean candidates. (The NFC/NFD twin retry lives inside
+// readTextFile itself so every file tool shares it.)
+function readTextFileSmart(abs: string, display: string): { text: string } | ReadFileError {
 	const read = readTextFile(abs, display);
-	if (!("error" in read) || !read.error.startsWith("file not found")) return read;
-	const variants = [abs.normalize("NFC"), abs.normalize("NFD")].filter((v) => v !== abs);
-	for (const v of variants) {
-		const retry = readTextFile(v, display);
-		if (!("error" in retry)) {
-			log.info("read_unicode_retry", { original: abs, variant: v });
-			return retry;
-		}
-	}
+	if (!("error" in read) || read.kind !== "not-found") return read;
 	const alts = suggestAlternatives(abs);
 	if (alts.length === 0) return read;
-	return { error: `file not found: ${display} — did you mean: ${alts.join(", ")}?` };
+	return { error: `file not found: ${display} — did you mean: ${alts.join(", ")}?`, kind: "not-found" };
 }
 
 // Image sniffing for the tool layer: providers carry tool results as
@@ -194,9 +214,14 @@ export function sniffImage(abs: string): { mediaType: string; width?: number; he
 
 function clampLine(line: string): string {
 	if (line.length <= MAX_LINE_CHARS) return line;
-	const omitted = line.length - MAX_LINE_CHARS;
+	// Back off a lone lead surrogate at the seam — slicing on UTF-16 units
+	// can otherwise split an emoji in half and hand the model a U+FFFD.
+	let cut = line.slice(0, MAX_LINE_CHARS);
+	const last = cut.charCodeAt(cut.length - 1);
+	if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
+	const omitted = line.length - cut.length;
 	return (
-		line.slice(0, MAX_LINE_CHARS) +
+		cut +
 		` … [+${omitted} chars truncated — see the full line with bash; do not quote this line for edits]`
 	);
 }
@@ -223,7 +248,7 @@ export const readFileTool = (cwd: string) =>
 				// Providers can't carry image bytes in tool results — turn a
 				// binary/too-large refusal into a structured note when the file
 				// is actually an image, so the model knows what it's holding.
-				if (read.error.startsWith("binary file") || read.error.startsWith("file too large")) {
+				if (read.kind === "binary" || read.kind === "too-large") {
 					const sniff = sniffImage(abs);
 					if (sniff) {
 						const size = statSync(abs).size;

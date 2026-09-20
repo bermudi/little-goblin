@@ -246,10 +246,13 @@ miss (long files, wide files, minified one-liners); output stops at
 complete numbered lines only, and every stop names its own recovery
 (`Use offset=N`, sed fallback for a giant line, did-you-mean on a miss,
 tail reads via negative offset). Bash: tail-truncation at complete lines,
-UTF-8 boundary-safe, with the dropped-byte count stated. Special files
-(devices, FIFOs, sockets) are refused before any I/O — `read_file` on
-`/dev/zero` is a hang, not a read; `bash` (timeouts + output caps) is the
-sanctioned channel for those.
+UTF-8 boundary-safe, with the dropped-byte count stated — the single
+exception being a final line that alone exceeds the whole budget, whose
+last bytes are kept with an ellipsis prefix so a mid-line start is never
+mistaken for a whole line. Special files (devices, FIFOs, sockets) are
+refused before any I/O — `read_file` on `/dev/zero` is a hang, not a
+read; `bash` (timeouts + output caps) is the sanctioned channel for
+those.
 
 Memory, scheduling, subagent, MCP, and external-agent tools do not exist —
 each arrives with the feature that needs it, designed then, not spec'd now.

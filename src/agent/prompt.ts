@@ -1,6 +1,11 @@
 // System prompt assembly: shell + SOUL.md + optional AGENTS.md. Read fresh
 // every turn — the operator or the agent itself may edit either file and
 // the change is live on the next turn. No command, no restart.
+//
+// Cache stability: nothing here may vary turn-to-turn on its own (no
+// clock, no counters) — the prompt is the head of the provider prefix
+// cache, and any automatic change invalidates the whole thing. Operator
+// edits are fine: they're explicit and logged as cache boundaries.
 
 import { readFileSync } from "node:fs";
 import { paths } from "../config.ts";
@@ -30,7 +35,8 @@ export function buildSystemPrompt(conv: Conversation): { text: string; sources: 
 		"",
 		`- You are talking to your operator on Telegram (${conv.id}).`,
 		`- Working directory: ${paths.workspace()} — fixed, same for every chat.`,
-		`- Today: ${new Date().toISOString().slice(0, 10)}`,
+		`- No clock: the current date/time is not in this prompt — run \`date\` via`,
+		`  bash whenever it matters.`,
 		`- Tools: read_file, write_file, edit_file, bash. Paths are relative to`,
 		`  the working directory unless absolute.`,
 		`- Telegram is the UI: messages are plain text/Markdown, media arrives as`,

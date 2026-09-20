@@ -488,6 +488,11 @@ export class Runtime {
 				});
 				return null;
 			});
+			// The last await before the history write and the "completed"
+			// notification — the one spot the fence didn't cover: a /stop
+			// landing while usage settles must not deliver an unstamped
+			// reply into history.
+			this.checkAuthority(convId, epoch);
 			if (responseMessage !== null) {
 				// responseMessage already carries an SDK-assigned id.
 				// The anchor ties it to the user message that triggered

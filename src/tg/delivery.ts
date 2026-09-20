@@ -7,6 +7,7 @@ import { stat } from "node:fs/promises";
 import type { Conversation } from "../conversation.ts";
 import type { TurnDone, TurnSink } from "../runtime.ts";
 import { sniffImage } from "../agent/tools/read.ts";
+import type { OutgoingFile } from "../agent/tools/send.ts";
 import { speechContent, STATUS_TAIL_MARK } from "../agent/tts.ts";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
@@ -188,7 +189,7 @@ export function makeDeliverySink(
 		await chain;
 	}
 
-	async function sendFile(file: { path: string; filename: string; caption?: string }): Promise<void> {
+	async function sendFile(file: OutgoingFile): Promise<void> {
 		if (!authoritative()) return;
 		// Fail fast on a file that vanished between the tool's check and
 		// now, so the tool reports it — network failures inside the chain
@@ -197,8 +198,11 @@ export function makeDeliverySink(
 			throw new Error(`file unreadable: ${file.path} (${String(err)})`);
 		});
 		// Images go as photo previews, everything else as documents —
-		// sniffed from magic bytes, never the extension.
-		const photo = sniffImage(file.path) !== null;
+		// sniffed from magic bytes, never the extension. Two things force
+		// the document path: as_file (sendPhoto re-encodes — a document is
+		// byte-exact) and GIFs (sendPhoto strips animation).
+		const sniff = sniffImage(file.path);
+		const photo = !file.asFile && sniff !== null && sniff.mediaType !== "image/gif";
 		const bytes = st.size;
 		enqueue(async () => {
 			if (!authoritative()) return;

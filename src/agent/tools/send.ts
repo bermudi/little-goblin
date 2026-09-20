@@ -14,6 +14,9 @@ export interface OutgoingFile {
 	path: string;
 	filename: string;
 	caption?: string;
+	// Forces the document path: sendPhoto re-encodes (lossy) and strips
+	// GIF animation — a document is byte-exact.
+	asFile?: boolean;
 }
 
 export const sendFileInputSchema = z.object({
@@ -23,6 +26,12 @@ export const sendFileInputSchema = z.object({
 		.max(1024)
 		.optional()
 		.describe("Optional caption shown under the file (max 1024 chars)"),
+	as_file: z
+		.boolean()
+		.optional()
+		.describe(
+			"Send as an uncompressed document instead of a photo preview — byte-exact, and preserves GIF animation",
+		),
 });
 
 export function sendFileTool(cwd: string, deliver: (file: OutgoingFile) => Promise<void>) {
@@ -30,7 +39,7 @@ export function sendFileTool(cwd: string, deliver: (file: OutgoingFile) => Promi
 		description:
 			"Send a file from the workspace to the operator via Telegram. Images arrive as photo previews, everything else as documents. Use this whenever the operator should receive a file — never paste file bytes into chat.",
 		inputSchema: sendFileInputSchema,
-		execute: async ({ path, caption }) => {
+		execute: async ({ path, caption, as_file }) => {
 			const abs = resolvePath(cwd, path);
 			// Same twin rule as the other file tools: an NFC/NFD variant
 			// must resolve to the one file, never fork beside it.
@@ -60,6 +69,7 @@ export function sendFileTool(cwd: string, deliver: (file: OutgoingFile) => Promi
 				path: target,
 				filename: basename(target),
 				...(caption !== undefined ? { caption } : {}),
+				...(as_file ? { asFile: true } : {}),
 			};
 			try {
 				await deliver(file);

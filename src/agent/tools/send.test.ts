@@ -39,6 +39,20 @@ describe("send_file", () => {
 		expect(out).toEqual({ sent: "report.pdf", bytes: 9 });
 	});
 
+	test("as_file passes through to the delivery sink", async () => {
+		const dir = workdir();
+		writeFileSync(join(dir, "shot.png"), "not-real-png-bytes");
+		const delivered: OutgoingFile[] = [];
+		const t = sendFileTool(dir, async (f) => {
+			delivered.push(f);
+		});
+		await t.execute!({ path: "shot.png", as_file: true }, opts);
+		expect(delivered[0]?.asFile).toBe(true);
+		// Absent by default — the document decision stays delivery's.
+		await t.execute!({ path: "shot.png" }, opts);
+		expect("asFile" in delivered[1]!).toBe(false);
+	});
+
 	test("a missing file is an error result, not a throw", async () => {
 		const t = sendFileTool(workdir(), async () => {});
 		const out = (await t.execute!({ path: "nope.txt" }, opts)) as { error?: string };

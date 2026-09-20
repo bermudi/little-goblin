@@ -454,8 +454,11 @@ Resolved values never enter the tool environment, the model context, or logs.
   and file sends ride the same serialized chain and authority fencing
   as text: a `/stop`'d turn can't emit one. Delivery sniffs magic bytes
   (never the extension): images go as photo previews, everything else
-  as documents. The file travels from disk (no whole-file buffering),
-  capped at the local bot-api's 2GB upload ceiling.
+  as documents — except that `as_file` forces the document path
+  (sendPhoto re-encodes; a document is byte-exact) and GIFs always
+  ride it (sendPhoto strips animation). The file travels from disk
+  (no whole-file buffering), capped at the local bot-api's 2GB upload
+  ceiling.
 - **Voice mode**: `/voice` toggles voice-note replies per conversation —
   a settings command like `/model`/`/think`, epoch bump and all, so a
   turn never switches medium mid-flight. When on, delivery skips

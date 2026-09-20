@@ -20,6 +20,7 @@ import type { ProviderOptions, ToolCallOptions } from "@ai-sdk/provider-utils";
 import type { LanguageModelV2CallWarning } from "@ai-sdk/provider";
 import { randomUUID } from "node:crypto";
 import { materializeAttachments } from "./agent/attachments.ts";
+import type { OutgoingFile } from "./agent/tools/send.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
 
@@ -58,7 +59,8 @@ export interface TurnSink {
 	// workspace path to the sink, which owns the Telegram send — so
 	// "Telegram send is delivery, not a tool" stays true and file sends
 	// ride the same serialized chain and authority fencing as text.
-	onFile?(file: { path: string; filename: string; caption?: string }): Promise<void>;
+	// asFile forces the byte-exact document path (sendPhoto compresses).
+	onFile?(file: OutgoingFile): Promise<void>;
 	// The speak tool's synthesis is a visible wait: start a record_voice
 	// chat action and return its stopper. Optional like onVoiceNote —
 	// the runtime only wires the door when the sink provides it.
@@ -97,7 +99,7 @@ export interface RuntimeDeps {
 		conv: Conversation,
 		deliverVoice?: (audio: Uint8Array) => Promise<void>,
 		recording?: () => () => void,
-		deliverFile?: (file: { path: string; filename: string; caption?: string }) => Promise<void>,
+		deliverFile?: (file: OutgoingFile) => Promise<void>,
 	): ToolSet;
 }
 
@@ -324,7 +326,7 @@ export class Runtime {
 			// Same fencing as voice: a /stop'd turn can't emit a file after
 			// losing authority.
 			const deliverFile = sink.onFile
-				? async (file: { path: string; filename: string; caption?: string }) => {
+				? async (file: OutgoingFile) => {
 						this.checkAuthority(convId, epoch);
 						await sink.onFile!(file);
 						this.checkAuthority(convId, epoch);

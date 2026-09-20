@@ -450,6 +450,35 @@ describe("delivery files", () => {
 		}
 	});
 
+	test("as_file forces a document even for an image", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
+		try {
+			const { api, photos, documents } = fileApi();
+			const sink = makeDeliverySink(api, conv, undefined, 0);
+			await sink.onFile!({ path: pngFile(dir), filename: "chart.png", asFile: true });
+			expect(documents).toHaveLength(1);
+			expect(photos).toHaveLength(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a GIF goes as a document — sendPhoto strips animation", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
+		try {
+			const f = join(dir, "loop.gif");
+			// Minimal GIF head: the "GIF8" magic is all the sniffer needs.
+			writeFileSync(f, Buffer.from("GIF89a"));
+			const { api, photos, documents } = fileApi();
+			const sink = makeDeliverySink(api, conv, undefined, 0);
+			await sink.onFile!({ path: f, filename: "loop.gif" });
+			expect(documents).toHaveLength(1);
+			expect(photos).toHaveLength(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("a fenced turn sends nothing", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
 		try {

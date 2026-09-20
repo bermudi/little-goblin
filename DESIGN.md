@@ -75,7 +75,7 @@ re-checks that it still holds authority** — its conversation epoch hasn't
 advanced since enqueue.
 
 Implementation: each conversation carries a monotonic `epoch`, bumped on
-settings changes (`/model`, `/think`) and explicit cancellation. A turn
+settings changes (`/model`, `/think`, `/voice`) and explicit cancellation. A turn
 captures `(conversationId, epoch)` at admission and calls `checkAuthority()`
 around every await. Fenced turns abort quietly and log it. No machines, no
 drain sets — one counter and one function.
@@ -176,17 +176,28 @@ agent loop.
 
 ## Tools (v1)
 
-Hand-rolled, zod-validated, exactly four:
+Hand-rolled, zod-validated, five:
 
-`read_file` `write_file` `edit_file` `bash` (timeout)
+`read_file` `write_file` `edit_file` `bash` (timeout) `speak`
 
 All tools run in the deployment workspace — conversations have no cwd and
 there is no `/cd`. Working elsewhere is the agent's own business (`cd x &&
 …` inside `bash`), not conversation state.
 
-Telegram send is delivery, not a tool. Memory, scheduling, subagent, MCP, and
-external-agent tools do not exist — each arrives with the feature that needs
-it, designed then, not spec'd now.
+`speak` is the voice-out twin of intake transcription: it *synthesizes*,
+it does not send. The tool hands audio bytes to the turn's delivery sink
+(`sink.onVoiceNote`), which owns the Telegram call — so "Telegram send is
+delivery, not a tool" stays true and voice notes ride the same serialized
+chain and authority fencing as text: a `/stop`'d turn can't emit one.
+Input is `text` or a file `path` (plain text/markdown; richer formats are
+extracted with the agent's own tools first) — a path is synthesized
+straight from disk, so "read me this document" never re-types the content
+as model output. Long input is split at sentence boundaries inside the
+tts module, never by the caller. Configure `tts` or the tool isn't in the
+set at all.
+
+Memory, scheduling, subagent, MCP, and external-agent tools do not exist —
+each arrives with the feature that needs it, designed then, not spec'd now.
 
 ## Skills
 
@@ -302,6 +313,35 @@ Resolved values never enter the tool environment, the model context, or logs.
 - **Delivery**: `streamText` deltas → throttled message edits (~1/s), final
   flush on completion. Typing indicator while a turn runs. Errors post a short
   message and log structured detail.
+- **TTS**: `tts: {kind: "edge", voice, rate?}` — the Edge read-aloud
+  websocket service (no auth, unofficial, it can break; failures surface
+  as a warn + a callback toast, never a turn failure). Three doors into
+  the same `synthesizeSpeech`: the `speak` tool (text or file path, sent
+  in-stream via the sink), a 🔊 button stamped on a completed reply's
+  last bubble, and `/voice` mode (below). Input over ~10k chars is
+  chunked at sentence boundaries inside the module — the cap is a sanity
+  guard, never a control-flow path the model must recover from. Button
+  text is stripped of the tool-status tail and markdown before synthesis
+  (`speakable`); tool input is already authored for speech. Output is
+  ogg/opus — a real voice-note bubble, not an audio-file card.
+  `record_voice` chat action runs while synthesis is in flight. The
+  button voices the *whole* reply, not the tapped bubble: delivery keeps
+  a bounded in-memory map of its own recent sends (chat, message id →
+  full reply text — one process, one operator, no schema change), and a
+  miss (restart, old message) degrades to the tapped bubble's text,
+  warn-logged. No button in voice mode — the reply is already audio.
+- **Voice mode**: `/voice` toggles voice-note replies per conversation —
+  a settings command like `/model`/`/think`, epoch bump and all, so a
+  turn never switches medium mid-flight. When on, delivery skips
+  streamed text entirely: typing indicator while the turn runs,
+  `record_voice` while it synthesizes, then the final reply as voice
+  notes. The mode changes delivery, not the record — history still
+  stores the reply text, so toggling off loses nothing and "what did you
+  say verbatim" stays answerable. Code blocks and long URLs aren't
+  spoken; a reply carrying them sends them as a plain text message
+  alongside the audio. Composes with topics: a voice-mode topic plus
+  voice-note intake transcription is a fully ears-in-ears-out
+  conversation.
 - **Mini Apps**: the process serves an HTTP endpoint on localhost; the bot
   links pages via `web_app` buttons. Telegram requires HTTPS, and the page is
   fetched by the *client device* — so the door is a config knob (`publicUrl`)
@@ -310,7 +350,7 @@ Resolved values never enter the tool environment, the model context, or logs.
   operator devices are on the tailnet, the v1-on-lithium pattern), `tailscale
   funnel` (public HTTPS relayed through Tailscale's edge, for off-tailnet
   clients), or any reverse proxy with a cert. NAT-first by construction.
-- **Commands** are settings-only: `/model` `/think` `/stop`. No
+- **Commands** are settings-only: `/model` `/think` `/voice` `/stop`. No
   conversation-lifecycle commands — topics own that.
 - **Large files**: self-hosted `telegram-bot-api` on lithium, `--local` mode,
   grammy `apiRoot` → `http://127.0.0.1:8081`. Needs `api_id`/`api_hash` from a
@@ -372,10 +412,11 @@ src/
     models-dev.ts   input-modality catalog (fetch, cache, backoff)
     attachments.ts  data-attachment parts + per-turn materialization
     transcribe.ts   speech → text at intake (groq whisper, more kinds later)
+    tts.ts          text or file → speech (edge read-aloud ws, opus out)
     prompt.ts       system prompt assembly (shell + SOUL.md + agent-owned
                     AGENTS.md; re-read every turn, edits live next message)
     skills.ts       catalog scan + frontmatter validation → ## skills section
-    tools/          the four tools
+    tools/          the five tools
   http/             mini-app serving
 ```
 

@@ -1,4 +1,5 @@
-// System prompt assembly: shell + SOUL.md + optional AGENTS.md. Read fresh
+// System prompt assembly: shell + SOUL.md + optional AGENTS.md/USER.md
+// (each capped — see readCapped). Read fresh
 // every turn — the operator or the agent itself may edit either file and
 // the change is live on the next turn. No command, no restart.
 //
@@ -39,6 +40,12 @@ export function _resetPromptSourcesForTest(): void {
 	lastSeen.clear();
 }
 
+// First-boot ceiling on any injected workspace file. The files are
+// meant to stay small; a runaway AGENTS.md must not silently eat the
+// prompt head (and the cache) every turn — it truncates with an
+// in-prompt notice and a warn line instead.
+const MAX_PROMPT_FILE_CHARS = 8_000;
+
 function readOptional(path: string): string | null {
 	try {
 		return readFileSync(path, "utf8");
@@ -48,8 +55,21 @@ function readOptional(path: string): string | null {
 	}
 }
 
+// Read a workspace file for injection, capped. Truncation is a warn —
+// "why does the bot ignore half my notes" must not need a REPL.
+function readCapped(source: string, path: string): string | null {
+	const content = readOptional(path);
+	if (content === null || content.length <= MAX_PROMPT_FILE_CHARS) return content;
+	log.warn("prompt file truncated", {
+		file: source,
+		chars: content.length,
+		cap: MAX_PROMPT_FILE_CHARS,
+	});
+	return `${content.slice(0, MAX_PROMPT_FILE_CHARS)}\n\n… (${source} truncated at ${MAX_PROMPT_FILE_CHARS} chars — read the file for the rest)`;
+}
+
 export function buildSystemPrompt(conv: Conversation): { text: string; sources: string[] } {
-	const soul = readOptional(paths.soul());
+	const soul = readCapped("SOUL.md", paths.soul());
 	if (soul === null) {
 		// Not a reason to fail the turn — but a deleted SOUL.md silently
 		// swaps the bot's personality, and the log must explain that.
@@ -58,13 +78,15 @@ export function buildSystemPrompt(conv: Conversation): { text: string; sources: 
 			path: paths.soul(),
 		});
 	}
-	const agents = readOptional(paths.agents());
+	const agents = readCapped("AGENTS.md", paths.agents());
+	const user = readCapped("USER.md", paths.user());
 	// Rescanned every turn — a skill written or edited now is live next
 	// message, like the prompt files above.
 	const catalog = loadCatalog(paths.skills());
 	const skillsSection = formatSkillsSection(catalog);
 	noteSource("SOUL.md", soul);
 	noteSource("AGENTS.md", agents);
+	noteSource("USER.md", user);
 	noteSource("skills", skillsSection.join("\n"));
 
 	const text = [
@@ -82,17 +104,24 @@ export function buildSystemPrompt(conv: Conversation): { text: string; sources: 
 		`  file paths or inline parts. Keep replies chat-sized; write files for`,
 		`  anything long.`,
 		`- SOUL.md in the workspace root is your identity; AGENTS.md is your own`,
-		`  operating notes. You own both — edit them when who you are or how you`,
-		`  work changes. Reads are fresh every turn: edits take effect next message.`,
+		`  operating notes; USER.md is your model of the operator. You own all`,
+		`  three — conversations share nothing else; these files are your only`,
+		`  memory between them. Reads are fresh every turn: edits take effect`,
+		`  next message.`,
+		`- Verify before saying done: run it, read it back, then report.`,
+		`- Act freely on this machine (read, write, run); ask first before`,
+		`  anything leaves it or can't be undone.`,
 		`- Irreversible or destructive actions (deleting data, force-anything)`,
 		`  need an explicit go-ahead first.`,
 		...(agents ? ["", "## AGENTS.md — your operating notes", "", agents.trim()] : []),
+		...(user ? ["", "## USER.md — your model of the operator", "", user.trim()] : []),
 		"",
 		...skillsSection,
 	].join("\n");
 
 	const sources = ["SOUL.md"];
 	if (agents) sources.push("AGENTS.md");
+	if (user) sources.push("USER.md");
 	if (catalog.entries.length > 0 || catalog.skipped > 0) sources.push("skills");
 
 	return { text, sources };

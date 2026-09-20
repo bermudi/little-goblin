@@ -90,5 +90,9 @@ Only people in `allowedUsers` can load it, and logins expire after a day.
 - `workspace/AGENTS.md` — the bot's operating notes, owned by the bot
   itself (it starts as a stub the bot is expected to grow). Same deal:
   edits apply next turn.
+- `workspace/USER.md` — the bot's model of *you*: stable preferences as
+  directives, each with an observation date. When you change your mind,
+  the bot marks the old entry superseded instead of stacking a
+  contradiction. Same deal: edits apply next turn.
 - `workspace/skills/` — repeatable tasks the bot has learned; see
   [Skills](skills.md).

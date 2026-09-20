@@ -80,6 +80,7 @@ On startup the bot creates the rest of its folder layout:
 ├── workspace/              # the bot's home: every tool runs here
 │   ├── SOUL.md             # created from a template — the bot's identity
 │   ├── AGENTS.md           # created from a stub — the bot's own operating notes
+│   ├── USER.md             # created from a stub — the bot's model of you
 │   ├── skills/             # skills the bot installs for itself
 │   └── attachments/        # photos/files/voice you send, saved here
 └── state/

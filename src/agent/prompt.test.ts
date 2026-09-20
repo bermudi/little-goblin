@@ -116,3 +116,72 @@ describe("buildSystemPrompt", () => {
 		}
 	});
 });
+
+describe("workspace file injection", () => {
+	test("USER.md becomes its own section and source", () => {
+		const home = useHome();
+		process.env.GOBLIN_HOME = home;
+		try {
+			mkdirSync(paths.workspace(), { recursive: true });
+			writeFileSync(paths.soul(), "You are goblin.");
+			writeFileSync(paths.agents(), "notes");
+			writeFileSync(paths.user(), "- Prefer terse answers.");
+			const { text, sources } = buildSystemPrompt(conv);
+			expect(text).toContain("## USER.md — your model of the operator");
+			expect(text).toContain("- Prefer terse answers.");
+			expect(sources).toContain("USER.md");
+		} finally {
+			delete process.env.GOBLIN_HOME;
+		}
+	});
+
+	test("no USER.md — no section, no source", () => {
+		const home = useHome();
+		process.env.GOBLIN_HOME = home;
+		try {
+			mkdirSync(paths.workspace(), { recursive: true });
+			writeFileSync(paths.soul(), "You are goblin.");
+			const { text, sources } = buildSystemPrompt(conv);
+			expect(text).not.toContain("## USER.md");
+			expect(sources).not.toContain("USER.md");
+		} finally {
+			delete process.env.GOBLIN_HOME;
+		}
+	});
+
+	test("an oversized file truncates with an in-prompt notice and a warn", () => {
+		const home = useHome();
+		process.env.GOBLIN_HOME = home;
+		const logFile = join(home, "goblin.log");
+		setLogFile(logFile);
+		try {
+			mkdirSync(paths.workspace(), { recursive: true });
+			writeFileSync(paths.soul(), `You are goblin. ${"x".repeat(9_000)}`);
+			const { text } = buildSystemPrompt(conv);
+			expect(text).toContain("SOUL.md truncated at 8000 chars");
+			// And the log explains it — no REPL needed.
+			const warned = readFileSync(logFile, "utf8")
+				.trim()
+				.split("\n")
+				.map((l) => JSON.parse(l) as Record<string, unknown>)
+				.some((l) => l.msg === "prompt file truncated");
+			expect(warned).toBe(true);
+		} finally {
+			setLogFile(null);
+			delete process.env.GOBLIN_HOME;
+		}
+	});
+
+	test("the shell carries the memory model, verify, and act-vs-ask rules", () => {
+		const home = useHome();
+		process.env.GOBLIN_HOME = home;
+		try {
+			const { text } = buildSystemPrompt(conv);
+			expect(text).toContain("these files are your only");
+			expect(text).toContain("Verify before saying done");
+			expect(text).toContain("ask first before");
+		} finally {
+			delete process.env.GOBLIN_HOME;
+		}
+	});
+});

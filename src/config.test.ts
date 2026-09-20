@@ -161,7 +161,10 @@ describe("ensureHomeLayout", () => {
 		const agents = readFileSync(join(dir, "workspace", "AGENTS.md"), "utf8");
 		expect(agents).toContain("Your operating notes");
 		// The growth rule must be inside the file — that's the mechanism.
-		expect(agents).toContain("write it here");
+		expect(agents).toContain("Write things down");
+		const user = readFileSync(join(dir, "workspace", "USER.md"), "utf8");
+		expect(user).toContain("Your model of the operator");
+		expect(user).toContain("status: active");
 		expect(statSync(join(dir, "workspace", "AGENTS.md")).mode & 0o777).toBe(0o644);
 	});
 
@@ -169,8 +172,10 @@ describe("ensureHomeLayout", () => {
 		const dir = useHome();
 		mkdirSync(join(dir, "workspace"), { recursive: true });
 		writeFileSync(join(dir, "workspace", "AGENTS.md"), "my notes");
+		writeFileSync(join(dir, "workspace", "USER.md"), "my user model");
 		ensureHomeLayout();
 		expect(readFileSync(join(dir, "workspace", "AGENTS.md"), "utf8")).toBe("my notes");
+		expect(readFileSync(join(dir, "workspace", "USER.md"), "utf8")).toBe("my user model");
 	});
 });
 

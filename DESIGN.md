@@ -169,7 +169,7 @@ agent loop.
     reference because newer ones arrived.
   - The system prompt carries no automatic per-turn variability — no
     clock. Current time comes from `date` via bash when it matters.
-    Operator edits (SOUL.md, AGENTS.md, skills) stay live next turn;
+    Operator edits (SOUL.md, AGENTS.md, USER.md, skills) stay live next turn;
     they are explicit cache boundaries and log the cost they incur.
   - Every model call logs usage with the cached split
     (`cachedInputTokens`, null when the provider doesn't report) and the
@@ -442,6 +442,8 @@ $GOBLIN_HOME/
 ├── workspace/              # the agent's home; every tool runs here
 │   ├── SOUL.md             # required, template-created on first boot
 │   ├── AGENTS.md           # stub-created on first boot, then agent-owned
+│   ├── USER.md             # operator model — directive entries (observed
+│   │                       # date, active/superseded), agent-grown
 │   ├── skills/             # the skill catalog — agent-authored, in cwd
 │   └── attachments/
 └── state/
@@ -489,7 +491,8 @@ src/
     transcribe.ts   speech → text at intake (groq whisper, more kinds later)
     tts.ts          text or file → speech (edge read-aloud ws, opus out)
     prompt.ts       system prompt assembly (shell + SOUL.md + agent-owned
-                    AGENTS.md; re-read every turn, edits live next message)
+                    AGENTS.md/USER.md, each capped at 8k chars; re-read
+                    every turn, edits live next message)
     skills.ts       catalog scan + frontmatter validation → ## skills section
     tools/          the five tools
   http/             mini-app serving

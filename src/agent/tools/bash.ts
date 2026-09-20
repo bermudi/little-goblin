@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { boundedRun, spawnProc, type BoundedProc } from "../../proc.ts";
+import { truncateTail } from "./truncate.ts";
 
 const MAX_OUTPUT = 100 * 1024;
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -28,15 +29,16 @@ export const bashTool = (cwd: string) =>
 			});
 			const combined = result.stdout + result.stderr;
 			// Truncation must reach the model: a capped stream killed the
-			// process, a cut drain dropped output, and the final slice drops
+			// process, a cut drain dropped output, and the tail cut drops
 			// the head — either way the output is incomplete and must not
 			// look like a clean result.
-			const truncated = result.truncated || combined.length > MAX_OUTPUT;
+			const tail = truncateTail(combined, MAX_OUTPUT);
+			const truncated = result.truncated || tail.truncated;
 			return {
 				exit_code: result.timedOut ? null : result.exitCode,
 				timed_out: result.timedOut || undefined,
 				truncated: truncated || undefined,
-				output: combined.slice(-MAX_OUTPUT),
+				output: tail.content,
 			};
 		},
 	});

@@ -28,6 +28,21 @@ describe("bash", () => {
 		expect(out.output!.length).toBeLessThanOrEqual(100 * 1024);
 	});
 
+	test("over-cap output is tail-truncated at whole lines with a skip notice", async () => {
+		const t = bashTool("/tmp");
+		// Each stream is capped at 100KB on its own, so this stays under the
+		// per-stream kill — the sum crosses the cap and the helper does the cut.
+		const out = (await t.execute!({ command: "seq 1 12000; seq 1 12000 >&2" }, opts)) as BashResult;
+		expect(out.truncated).toBe(true);
+		const lines = out.output!.split("\n");
+		expect(lines[0]).toMatch(/^\[… \d+ bytes of earlier output skipped — showing the tail\]$/);
+		// First content line is a whole input line, not a partial cut.
+		expect(lines[1]).toMatch(/^\d+$/);
+		expect(Number(lines[1])).toBeGreaterThan(1);
+		// Tail is intact (stderr concatenates after stdout).
+		expect(out.output!.endsWith("12000\n")).toBe(true);
+	});
+
 	test("nonzero exit propagates", async () => {
 		const t = bashTool("/tmp");
 		const out = (await t.execute!({ command: "exit 3" }, opts)) as BashResult;

@@ -1,26 +1,28 @@
 // Attachment parts. Telegram media is saved to workspace/attachments/ and
 // stored in history as a small data-attachment part — path + metadata, no
 // payload. At turn time, materializeAttachments swaps each one for either
-// a file part (the current model's capability data says it can consume the
-// media type, and the payload fits the inline cap) or a text reference to
-// the saved path.
+// a file part or a text reference to the saved path.
 //
-// The capability decision is per-turn, per-current-model: a /model switch
-// or a wrong catalog guess degrades to the path reference instead of
-// poisoning the conversation's history with a part the provider rejects
-// on every turn.
+// Cache stability owns this module's shape: the decision for each part is
+// a pure function of the stored ref and the model's input modalities —
+// never of what else is in history, never of turn order. The same history
+// under the same model materializes to identical request bytes every turn,
+// so a provider's prefix cache survives from turn to turn. A /model switch
+// recomputes representations once, which is free — the switch already
+// lands on a cold cache.
 
-import { readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import type { UIMessage } from "ai";
 import { z } from "zod";
 import { log } from "../log.ts";
 
-// Inline payloads get a ceiling — data URLs bloat both the request and,
-// once materialized, the context window. One budget covers the whole
-// turn: attachments reserve newest-first, so a fresh photo never goes
-// invisible behind megabytes of older images. Degradations past the budget
-// warn — a silent path reference the model can't read is a trap.
-export const INLINE_MAX_BYTES = 8 * 1024 * 1024;
+// Inline payloads get a per-item ceiling — a data URL inflates ~1.33× and
+// providers cap request bodies. It is a request-size guard, not a context
+// policy: there is deliberately no whole-turn budget, because a shared
+// budget means new attachments can re-decide old ones — rewriting bytes
+// already sent and busting the prefix cache (see DESIGN.md, Cache
+// stability). Over-cap items degrade to the path reference with a warn.
+export const INLINE_ITEM_MAX_BYTES = 8 * 1024 * 1024;
 
 export const ATTACHMENT_PART = "data-attachment";
 
@@ -77,149 +79,109 @@ function malformedFallback(): UIMessage["parts"][number] {
 	};
 }
 
-type PlanEntry =
-	| { decision: "inline"; ref: AttachmentRef; size: number }
-	| { decision: "fallback"; ref: AttachmentRef | null; reason: "malformed" | "modality" | "budget" | "unreadable" };
+// One part's decision, independent of every other part. The plan is
+// derivable from the ref alone (no disk access) — reading only happens
+// for items that will inline.
+function planPart(
+	ref: AttachmentRef,
+	modalities: Set<string>,
+	maxItemBytes: number,
+): { decision: "inline" } | { decision: "fallback"; reason: "modality" | "size" } {
+	if (!acceptsMedia(modalities, ref.mediaType)) {
+		return { decision: "fallback", reason: "modality" };
+	}
+	if (ref.size > maxItemBytes) {
+		return { decision: "fallback", reason: "size" };
+	}
+	return { decision: "inline" };
+}
 
 // Rewrite a history snapshot for the model about to run: data-attachment
 // parts become file parts when the model can consume them, text references
-// otherwise. Everything else passes through. An unreadable attachment file
-// — or a malformed stored part — degrades to the text reference too: the
-// path still tells the model what was sent, and a corrupt row must never
-// take the turn (or the conversation) down with it.
+// otherwise. Everything else passes through untouched.
+//
+// Each part is decided on its own merits, in isolation — the output for a
+// given message never depends on the rest of the snapshot, so adding a new
+// photo to history cannot change how an old one materializes. That
+// independence is what keeps a provider prefix cache valid across turns.
+//
+// Disk failure is the one degrade path for a planned-inline item: a file
+// gone or grown past the cap becomes its path reference, with a warn — the
+// model still sees what was sent, and the anomaly is visible in the log.
+// A file whose bytes differ from intake but still fits inlines the current
+// bytes with a warn — intake names files by Telegram fileUniqueId, so an
+// overwrite means someone touched the workspace by hand.
 export async function materializeAttachments(
 	messages: UIMessage[],
 	modalities: Set<string> = new Set(),
-	inlineBudget: number = INLINE_MAX_BYTES,
+	maxItemBytes: number = INLINE_ITEM_MAX_BYTES,
 ): Promise<UIMessage[]> {
-	// Collect attachment slots in history order.
-	const slots: Array<{ mi: number; pi: number }> = [];
-	messages.forEach((m, mi) => {
-		m.parts.forEach((p, pi) => {
-			if (p.type === ATTACHMENT_PART) slots.push({ mi, pi });
-		});
-	});
-
-	// Reserve the budget newest-first: walk slots in reverse, statting each
-	// candidate and spending the budget on the newest attachments first.
-	// Older images degrade to path references instead of starving the new.
-	const plan = new Map<string, PlanEntry>();
-	let remaining = inlineBudget;
-	let budgetDegraded = 0;
-	const budgetPaths: string[] = [];
-	for (let i = slots.length - 1; i >= 0; i--) {
-		const { mi, pi } = slots[i]!;
-		const key = `${mi}:${pi}`;
-		const p = messages[mi]!.parts[pi] as { data?: unknown };
-		// The part crossed the disk boundary — validate, don't trust. A
-		// malformed part degrades like everything else, never throws.
-		const parsed = attachmentRefSchema.safeParse(p.data);
-		if (!parsed.success) {
-			plan.set(key, { decision: "fallback", ref: null, reason: "malformed" });
-			continue;
-		}
-		const ref = parsed.data;
-		if (!acceptsMedia(modalities, ref.mediaType)) {
-			plan.set(key, { decision: "fallback", ref, reason: "modality" });
-			continue;
-		}
-		// The file on disk is authoritative — ref.size was recorded at
-		// intake and the file may have changed since.
-		let size: number;
-		try {
-			size = (await stat(ref.path)).size;
-		} catch {
-			plan.set(key, { decision: "fallback", ref, reason: "unreadable" });
-			continue;
-		}
-		if (size > remaining) {
-			plan.set(key, { decision: "fallback", ref, reason: "budget" });
-			budgetDegraded++;
-			if (budgetPaths.length < 5) budgetPaths.push(ref.path);
-			continue;
-		}
-		remaining -= size;
-		plan.set(key, { decision: "inline", ref, size });
-	}
-	if (budgetDegraded > 0) {
-		log.warn("attachment budget spent — oldest attachments degraded to references", {
-			budget: inlineBudget,
-			degraded: budgetDegraded,
-			inlined: slots.length - budgetDegraded,
-			paths: budgetPaths,
-		});
-	}
-
-	// Emit in history order. Reservations above guarantee the inline set
-	// fits the budget as long as files only shrink; a file that grew past
-	// its reservation degrades instead of pushing the total over.
-	let spent = 0;
 	const out: UIMessage[] = [];
-	for (const [mi, m] of messages.entries()) {
-		const parts: UIMessage["parts"] = [];
+	for (const m of messages) {
+		let parts: UIMessage["parts"] | null = null;
 		for (const [pi, p] of m.parts.entries()) {
-			if (p.type !== ATTACHMENT_PART) {
-				parts.push(p);
+			if (p.type !== ATTACHMENT_PART) continue;
+			// The part crossed the disk boundary — validate, don't trust. A
+			// malformed part degrades like everything else, never throws.
+			const parsed = attachmentRefSchema.safeParse((p as { data?: unknown }).data);
+			if (!parsed.success) {
+				log.warn("malformed attachment — degrading to fallback reference", {
+					message: m.id,
+				});
+				parts ??= [...m.parts];
+				parts[pi] = malformedFallback();
 				continue;
 			}
-			const entry = plan.get(`${mi}:${pi}`);
-			if (!entry || entry.decision === "fallback") {
-				if (!entry || entry.ref === null) {
-					log.warn("malformed attachment — degrading to fallback reference", {
-						message: m.id,
+			const ref = parsed.data;
+			const plan = planPart(ref, modalities, maxItemBytes);
+			if (plan.decision === "fallback") {
+				if (plan.reason === "size") {
+					log.warn("attachment over inline cap — degrading to reference", {
+						path: ref.path,
+						size: ref.size,
+						cap: maxItemBytes,
 					});
-					parts.push(malformedFallback());
-				} else if (entry.reason === "budget") {
-					parts.push(fallbackFor(entry.ref));
-				} else if (entry.reason === "modality") {
-					parts.push(fallbackFor(entry.ref));
-				} else {
-					log.warn("attachment unreadable — degrading to fallback reference", {
-						path: entry.ref.path,
-						error: "stat failed",
-					});
-					parts.push(fallbackFor(entry.ref));
 				}
+				parts ??= [...m.parts];
+				parts[pi] = fallbackFor(ref);
 				continue;
 			}
-			const { ref, size: reserved } = entry;
 			try {
 				const bytes = await readFile(ref.path);
-				if (bytes.byteLength > reserved) {
-					// Grew between stat and read — be honest, degrade.
-					log.warn("attachment grew since stat — degrading to fallback reference", {
+				if (bytes.byteLength > maxItemBytes) {
+					log.warn("attachment grew past cap since intake — degrading to reference", {
 						path: ref.path,
-						reserved,
+						intakeSize: ref.size,
 						actual: bytes.byteLength,
 					});
-					parts.push(fallbackFor(ref));
+					parts ??= [...m.parts];
+					parts[pi] = fallbackFor(ref);
 					continue;
 				}
-				if (spent + bytes.byteLength > inlineBudget) {
-					log.warn("attachment budget exceeded at read — degrading to fallback reference", {
+				if (bytes.byteLength !== ref.size) {
+					log.warn("attachment bytes differ from intake — inlining current bytes", {
 						path: ref.path,
+						intakeSize: ref.size,
+						actual: bytes.byteLength,
 					});
-					parts.push(fallbackFor(ref));
-					continue;
 				}
-				spent += bytes.byteLength;
-				parts.push({
+				parts ??= [...m.parts];
+				parts[pi] = {
 					type: "file",
 					mediaType: ref.mediaType,
 					filename: ref.filename,
 					url: `data:${ref.mediaType};base64,${bytes.toString("base64")}`,
-				});
+				};
 			} catch (err) {
-				// Any read failure degrades the same way — a dead
-				// attachment must not take the turn down with it.
 				log.warn("attachment unreadable — degrading to fallback reference", {
 					path: ref.path,
 					error: String(err),
 				});
-				parts.push(fallbackFor(ref));
+				parts ??= [...m.parts];
+				parts[pi] = fallbackFor(ref);
 			}
 		}
-		out.push({ ...m, parts });
+		out.push(parts ? { ...m, parts } : m);
 	}
 	return out;
 }

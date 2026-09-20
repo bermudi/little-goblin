@@ -89,7 +89,7 @@ describe("materializeAttachments", () => {
 		expect(out[0]!.parts[0]!.type).toBe("text");
 	});
 
-	test("attachments past the inline budget degrade oldest-first — newest stays inline", async () => {
+	test("each item is judged alone — no shared budget between attachments", async () => {
 		const dir = tmpdir_();
 		const a = join(dir, "a.png");
 		const b = join(dir, "b.png");
@@ -103,16 +103,16 @@ describe("materializeAttachments", () => {
 				attachmentPart({ path: b, mediaType: "image/png", filename: "b.png", size: 8 }),
 			],
 		};
+		// Two items over the old whole-turn budget (16 with cap 10) — both
+		// fit the per-item cap, so both inline. Cross-item budgets would
+		// re-decide old parts when new ones arrive; that's the bug this
+		// replaced.
 		const out = await materializeAttachments([m], new Set(["image"]), 10);
-		// Newest-first reservation: the fresh photo (b) wins the budget,
-		// the older one degrades to its path reference.
-		const first = out[0]!.parts[0]!;
-		expect(first.type).toBe("text");
-		expect((first as { text: string }).text).toContain(a);
+		expect(out[0]!.parts[0]!.type).toBe("file");
 		expect(out[0]!.parts[1]!.type).toBe("file");
 	});
 
-	test("a fresh photo stays inline behind megabytes of older images", async () => {
+	test("an over-cap item degrades while a small one inlines — decisions are independent", async () => {
 		const dir = tmpdir_();
 		const old = join(dir, "old.png");
 		const fresh = join(dir, "fresh.png");
@@ -133,6 +133,28 @@ describe("materializeAttachments", () => {
 		const out = await materializeAttachments(history, new Set(["image"]), 16);
 		expect(out[1]!.parts[0]!.type).toBe("file");
 		expect(out[0]!.parts[0]!.type).toBe("text");
+	});
+
+	test("cache stability — adding attachments never changes how old ones materialize", async () => {
+		const dir = tmpdir_();
+		const a = join(dir, "a.png");
+		const b = join(dir, "b.png");
+		writeFileSync(a, "pngdata");
+		writeFileSync(b, "pngdata");
+		const turn1: UIMessage[] = [msg(a)];
+		const turn2: UIMessage[] = [
+			...turn1,
+			{ id: "u2", role: "user", parts: [attachmentPart({ path: b, mediaType: "image/png", filename: "b.png", size: 7 })] },
+		];
+		const run1 = await materializeAttachments(turn1, new Set(["image"]));
+		const run2 = await materializeAttachments(turn2, new Set(["image"]));
+		// The old message renders byte-identically whether or not a new
+		// attachment exists — the provider prefix stays cacheable.
+		expect(JSON.stringify(run2[0])).toBe(JSON.stringify(run1[0]));
+		// And repeated materialization of the same snapshot is identical —
+		// the same history must produce the same request bytes every turn.
+		const rerun = await materializeAttachments(turn2, new Set(["image"]));
+		expect(JSON.stringify(rerun)).toBe(JSON.stringify(run2));
 	});
 
 	test("non-attachment parts pass through untouched", async () => {
@@ -212,7 +234,7 @@ describe("materializeAttachments", () => {
 				}),
 			],
 		};
-		// Capable model, but the file can't fit the inline budget — the
+		// Capable model, but the file can't fit the per-item cap — the
 		// transcript is still the better answer than a bare path.
 		const out = await materializeAttachments([m], new Set(["audio"]), 16);
 		const p = out[0]!.parts[0]!;

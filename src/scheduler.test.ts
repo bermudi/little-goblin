@@ -134,7 +134,7 @@ describe("scheduler", () => {
 	test("a submit failure releases the sink and leaves the job due", async () => {
 		const h = harness();
 		h.deps.runtime = {
-			submit: (_c: unknown, _m: unknown, sink: TurnSink) => {
+			submit: (_c: unknown, _m: unknown, _sink: TurnSink) => {
 				throw new Error("queue closed");
 			},
 		} as unknown as Runtime;

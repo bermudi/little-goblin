@@ -96,8 +96,6 @@ Only people in `allowedUsers` can load it, and logins expire after a day.
   contradiction. Same deal: edits apply next turn.
 - `workspace/skills/` — repeatable tasks the bot has learned; see
   [Skills](skills.md).
-- `workspace/skills/` — repeatable tasks the bot has learned; see
-  [Skills](skills.md).
 
 ## Scheduled jobs
 

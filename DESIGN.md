@@ -259,7 +259,7 @@ refused before any I/O — `read_file` on `/dev/zero` is a hang, not a
 read; `bash` (timeouts + output caps) is the sanctioned channel for
 those.
 
-Memory, scheduling, subagent, MCP, and external-agent tools do not exist —
+Memory, subagent, MCP, and external-agent tools do not exist —
 each arrives with the feature that needs it, designed then, not spec'd now.
 
 ## Skills

@@ -17,6 +17,7 @@
     "@ai-sdk/provider-utils": "3",
     "@openrouter/ai-sdk-provider": "^1.0.0",
     "ai": "^5.0.0",
+    "cron-parser": "^5.10.1",
     "grammy": "^1.38.0",
     "json5": "^2.2.3",
     "ws": "8.21.3",

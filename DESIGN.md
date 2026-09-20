@@ -349,6 +349,53 @@ Still out — machinery that returns only on demand: additional catalog
 roots (host, project), per-conversation selection, a `/skills` command or
 mini-app surface, immutable skill snapshots.
 
+## Scheduled work (jobs)
+
+Standing orders, on demand (2026-09-20): a job is a natural-language
+prompt the operator asked for once ("every weekday at 08:30, brief me
+on X") that keeps firing as an ordinary conversation turn. The design
+takes openclaw's hardest lesson wholesale: **a scheduled job's
+instructions are the job's state, never a workspace file** — its
+HEARTBEAT.md spent years leaking into wrong scopes before being retired
+into per-job state. Rulings:
+
+- **State is rows, not files.** A `jobs` table in `goblin.sqlite`
+  (own connection in `src/jobs.ts`, same WAL file): name, 5-field cron,
+  prompt, the pinned Telegram address, enabled, last_run, next_run.
+  Creating a job changes nothing in the workspace and nothing in any
+  prompt — cache stable by construction.
+- **Recurrence is cron, evaluated in the server's local timezone**
+  (operator = admin; `date` via bash agrees). The model translates
+  natural language → cron inside the tool call; `cron-parser`
+  validates it at the boundary — an invalid expression is rejected
+  before a row exists. No interval-plus-prose hybrids; prose recurrence
+  is where heartbeat bugs came from.
+- **A job belongs to the conversation where it was created** (chat/
+  topic address pinned by the tool from the live conversation — the
+  model never handles chat ids). Firing = `runtime.submit` of a user
+  message `[scheduled: <name>] <prompt>` into that conversation, sink
+  built like any other (voice per conversation setting). Replies land
+  in that chat/topic. The lane queue orders it behind any live turn —
+  no interleaving, no special execution path, epoch fencing applies.
+- **Management is the `schedule` tool** (list/create/update/delete/
+  toggle), zod-validated, one tool not a CLI — state mutation belongs
+  behind validation and logging. Scheduled turns may use it too (a
+  job deleting itself on completion is fine); every mutation logs.
+  Creating or editing a job is reversible (delete restores), so it
+  needs no go-ahead; what a job *does* when it fires is a normal turn
+  under the same ask-first rule as any operator message.
+- **The scheduler is an in-process ticker** (30s) in the runtime
+  process; systemd covers crashes. A fire time missed while the
+  process was down fires **once** at the next tick (boot catch-up),
+  then advances to the next future occurrence — never a replay of
+  every missed instance. Submit first, then markRan: a message that
+  landed is history even if the turn never ran.
+
+Still out (machinery): proactive monitoring/heartbeat (jobs are
+explicit standing orders the operator asked for, not an agent that
+decides to check things), cross-host schedulers, job history/audit
+tables beyond last_run.
+
 ## Auth
 
 No secrets in env — the agent's `bash` tool inherits the process environment,
@@ -522,9 +569,10 @@ The list below is a record, not a law. The law, applied to any capability:
 If a capability can't be classified in one sentence, the classification is
    the design conversation — have it before building.
 
-memory store · scheduler/heartbeat · conversation-lifecycle commands ·
-subagents · delegated work · external agents · ACP · MCP · project
-environments · inner life · onboarding wizard · state
+memory store · scheduler (returned on demand — designed in `Scheduled
+work`; heartbeat/proactive monitoring stays out) · conversation-lifecycle
+commands · subagents · delegated work · external agents · ACP · MCP ·
+project environments · inner life · onboarding wizard · state
 migrations · embeddings · multi-user · history compaction (history is
 unbounded in v1 — a designed truncation/compaction story arrives with the
 feature that needs it)

@@ -52,7 +52,9 @@ function replyKey(chatId: number, messageId: number): string {
 	return `${chatId}:${messageId}`;
 }
 
-function rememberReply(chatId: number, messageId: number, text: string): void {
+// Exported for speak-button tests: prime the reply cache directly
+// instead of driving a full delivery sink to completion.
+export function rememberReply(chatId: number, messageId: number, text: string): void {
 	recentReplies.set(replyKey(chatId, messageId), text);
 	while (recentReplies.size > RECENT_REPLY_LIMIT) {
 		const oldest = recentReplies.keys().next().value;

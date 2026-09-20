@@ -18,7 +18,7 @@ import {
 } from "ai";
 import type { ProviderOptions, ToolCallOptions } from "@ai-sdk/provider-utils";
 import type { LanguageModelV2CallWarning } from "@ai-sdk/provider";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { materializeAttachments } from "./agent/attachments.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
@@ -318,35 +318,13 @@ export class Runtime {
 				ignoreIncompleteToolCalls: true,
 			});
 
-			// Cache observability (DESIGN.md, Cache stability). headHash covers
-			// system + tools — the request head — and must never move between
-			// turns on its own; if it does, something automated rewrote the
-			// head and the provider prefix cache went with it. requestHash
-			// covers the whole request and moves by appends only: same message
-			// count with a different hash, or a shrinking count, is the
-			// visible signature of a history rewrite.
-			const headHash = createHash("sha256")
-				.update(
-					JSON.stringify({
-						system: step.system,
-						tools: Object.entries(tools)
-							.map(
-								([name, t]) =>
-									`${name}=${(t as { description?: string }).description ?? ""}:${JSON.stringify((t as { inputSchema?: unknown }).inputSchema ?? null)}`,
-							)
-							.sort(),
-					}),
-				)
-				.digest("hex")
-				.slice(0, 16);
-			const requestHash = createHash("sha256")
-				.update(JSON.stringify(messages))
-				.digest("hex")
-				.slice(0, 16);
+			// Cache observability (DESIGN.md, Cache stability): the per-call
+			// request hashes — head (system + tools) and full request — are
+			// logged by the model wrapper at EVERY call: tool-loop
+			// continuations, retries, titling. See observedModel in
+			// agent/providers.ts; this line only anchors the turn.
 			log.info("model request", {
 				conversation: convId,
-				headHash,
-				requestHash,
 				messages: messages.length,
 			});
 

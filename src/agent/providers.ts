@@ -2,10 +2,11 @@
 // reference. Thinking maps to per-provider providerOptions — honest about
 // which providers support which levels.
 
+import { createHash } from "node:crypto";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-import type { LanguageModel } from "ai";
+import { wrapLanguageModel, type LanguageModel, type LanguageModelMiddleware } from "ai";
 import type { AuthStore } from "../auth.ts";
 import {
 	splitModelRef,
@@ -13,6 +14,7 @@ import {
 	type Config,
 	type ThinkingLevel,
 } from "../config.ts";
+import { log } from "../log.ts";
 import { codexModel } from "./codex.ts";
 import { openrouterSupportedParams } from "./models-dev.ts";
 
@@ -45,6 +47,48 @@ export async function resolveModel(
 		case "codex":
 			return codexModel(modelId, p.authFile);
 	}
+}
+
+// Per-model-call observability (DESIGN.md, Cache stability: "every
+// model call logs … the request prefix hash"). The model boundary is
+// the only seam that sees each call's actual params — a tool-using turn
+// makes several calls the turn loop can't observe, and SDK retries land
+// here too. headHash covers system + tools (the request head — must
+// never move on its own); requestHash covers the whole prompt and moves
+// by appends only. Same message count with a different hash, or a
+// shrinking count, is the visible signature of a history rewrite.
+export function observedModel(
+	model: LanguageModel,
+	context: { conversation?: string; purpose?: string },
+): LanguageModel {
+	// LanguageModel is also a provider-registry id string — nothing to
+	// observe there. resolveModel only ever returns instances.
+	if (typeof model === "string") return model;
+	const middleware: LanguageModelMiddleware = {
+		transformParams: async ({ type, params }) => {
+			// The system prompt rides inside the prompt as leading system
+			// messages — the head is those plus the tool definitions.
+			const system = params.prompt.filter((m) => m.role === "system");
+			const headHash = createHash("sha256")
+				.update(JSON.stringify({ system, tools: params.tools ?? null }))
+				.digest("hex")
+				.slice(0, 16);
+			const requestHash = createHash("sha256")
+				.update(JSON.stringify(params.prompt))
+				.digest("hex")
+				.slice(0, 16);
+			log.info("model call", {
+				...context,
+				model: `${model.provider}/${model.modelId}`,
+				call: type,
+				messages: params.prompt.length,
+				headHash,
+				requestHash,
+			});
+			return params;
+		},
+	};
+	return wrapLanguageModel({ model, middleware });
 }
 
 // Thinking level → providerOptions. The levels are an operator

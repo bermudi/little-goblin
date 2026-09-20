@@ -5,6 +5,7 @@
 
 import { generateText, type LanguageModel } from "ai";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
+import { log } from "../log.ts";
 
 // Bot API topic-name cap.
 const MAX_TITLE_CHARS = 128;
@@ -17,16 +18,31 @@ export async function generateTopicTitle(
 	firstText: string,
 	providerOptions?: ProviderOptions,
 ): Promise<string | null> {
+	const input = firstText.slice(0, MAX_INPUT_CHARS);
 	const result = await generateText({
 		model,
 		system:
 			"Write a short title — a few words — for a chat that begins with the " +
 			"message below. Output only the title: no quotes, no preamble, no " +
 			"trailing period.",
-		prompt: firstText.slice(0, MAX_INPUT_CHARS),
+		prompt: input,
 		...(providerOptions ? { providerOptions } : {}),
 	});
-	return sanitizeTitle(result.text);
+	const title = sanitizeTitle(result.text);
+	// A model call is a cost line even when it's a throwaway — DESIGN.md
+	// (Cache stability): every model call logs usage with the cached
+	// split, or a titling anomaly can't be reconstructed from the log.
+	// The request hashes ride the model-call wrapper (observedModel).
+	log.info("title model call", {
+		model: typeof model === "string" ? model : `${model.provider}/${model.modelId}`,
+		usage: {
+			input: result.usage.inputTokens ?? null,
+			cached: result.usage.cachedInputTokens ?? null,
+			output: result.usage.outputTokens ?? null,
+		},
+		title,
+	});
+	return title;
 }
 
 // Model output is a boundary: take the first line, strip quote/markdown

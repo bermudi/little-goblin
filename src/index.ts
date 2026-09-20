@@ -3,7 +3,7 @@
 import { loadAuth } from "./auth.ts";
 import { contextLimit, ensureOpenRouterCatalog, inputModalities } from "./agent/models-dev.ts";
 import { buildSystemPrompt } from "./agent/prompt.ts";
-import { resolveModel, thinkingOptions } from "./agent/providers.ts";
+import { observedModel, resolveModel, thinkingOptions } from "./agent/providers.ts";
 import { generateTopicTitle } from "./agent/title.ts";
 import { checkFfmpeg, transcribeAudio, transcriptionModel } from "./agent/transcribe.ts";
 import { synthesizeSpeech } from "./agent/tts.ts";
@@ -89,7 +89,9 @@ async function boot() {
 				prompt: prompt.sources.join("+"),
 			});
 			return {
-				model,
+				// Observed at the model boundary: every call this turn makes —
+				// tool-loop continuations included — logs its request hashes.
+				model: observedModel(model, { conversation: conv.id }),
 				system: prompt.text,
 				inputModalities: modalities,
 				...(contextWindow !== null ? { contextWindow } : {}),
@@ -117,7 +119,7 @@ async function boot() {
 			if (!cfg.titleModel) return null;
 			const model = await resolveModel(cfg, auth, cfg.titleModel);
 			return generateTopicTitle(
-				model,
+				observedModel(model, { purpose: "topic-title" }),
 				text,
 				thinkingOptions(cfg, cfg.titleModel, "off"),
 			);

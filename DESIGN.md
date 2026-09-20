@@ -228,6 +228,29 @@ as model output. Long input is split at sentence boundaries inside the
 tts module, never by the caller. Configure `tts` or the tool isn't in the
 set at all.
 
+**Tool results are text.** Every provider goblin speaks (OpenAI-compatible
+chat completions, the codex Responses shim) serializes tool results as a
+string — the SDK's `toModelOutput` media-parts hook exists, but the wire
+formats can't carry it, and an image sent as stringified JSON is garbage,
+not vision. So tools never put image bytes in results: `read_file` sniffs
+magic bytes and returns a structured note (type, dimensions when the
+header carries them, size) naming the two working channels — the operator
+sending the image via Telegram (intake materializes it natively for vision
+models) or `bash`/`ffmpeg` for metadata work. If a provider whose tool
+results carry media ever arrives, revisit this ruling — the hook is the
+door.
+
+**Bounded, self-describing output.** Read tool: line window + byte ceiling
++ per-line clamp — three ceilings because each catches a shape the others
+miss (long files, wide files, minified one-liners); output stops at
+complete numbered lines only, and every stop names its own recovery
+(`Use offset=N`, sed fallback for a giant line, did-you-mean on a miss,
+tail reads via negative offset). Bash: tail-truncation at complete lines,
+UTF-8 boundary-safe, with the dropped-byte count stated. Special files
+(devices, FIFOs, sockets) are refused before any I/O — `read_file` on
+`/dev/zero` is a hang, not a read; `bash` (timeouts + output caps) is the
+sanctioned channel for those.
+
 Memory, scheduling, subagent, MCP, and external-agent tools do not exist —
 each arrives with the feature that needs it, designed then, not spec'd now.
 

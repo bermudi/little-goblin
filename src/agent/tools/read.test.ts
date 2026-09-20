@@ -43,7 +43,7 @@ describe("read_file", () => {
 		expect(out.error).toContain("file too large");
 	});
 
-	test("byte-cap truncation reports shown honestly", async () => {
+	test("byte-cap truncation emits complete lines plus a continuation notice", async () => {
 		const dir = tmpdir_();
 		// ~126KB across 3000 lines — blows past the 64KB output cap.
 		writeFileSync(
@@ -54,11 +54,52 @@ describe("read_file", () => {
 		const out = (await t.execute!({ path: "f.txt" }, opts)) as {
 			content?: string;
 			shown?: number;
+			lines?: number;
 		};
-		expect(out.content).toContain("truncated");
-		// shown counts the lines actually emitted — the marker line isn't one.
-		expect(out.shown).toBe(out.content!.split("\n").length - 1);
 		expect(out.shown!).toBeLessThan(3000);
+		expect(out.lines!).toBe(3000);
+		// Every emitted line is complete and numbered — never a partial line.
+		const emitted = out.content!.split("\n").filter((l) => /^\d+\t/.test(l));
+		expect(emitted.length).toBe(out.shown!);
+		// The notice names the exact resumption offset.
+		expect(out.content).toMatch(/\[Showing lines 1–\d+ of 3000 \(64KB limit\)\. Use offset=\d+ to continue\.\]/);
+		const next = Number(out.content!.match(/Use offset=(\d+)/)![1]);
+		// Following the notice resumes exactly where the cap stopped.
+		const page2 = (await t.execute!({ path: "f.txt", offset: next }, opts)) as { content?: string };
+		expect(page2.content!.startsWith(`${next}\tline-${next - 1}-`)).toBe(true);
+	});
+
+	test("an offset past EOF is an error carrying the real line count", async () => {
+		const dir = tmpdir_();
+		writeFileSync(join(dir, "f.txt"), "a\nb\n");
+		const t = readFileTool(dir);
+		const out = (await t.execute!({ path: "f.txt", offset: 99 }, opts)) as { error?: string };
+		expect(out.error).toContain("offset 99 is beyond end of file (3 lines)");
+	});
+
+	test("a single line bigger than the cap gets a bash fallback, not a marker", async () => {
+		const dir = tmpdir_();
+		writeFileSync(join(dir, "min.txt"), `x`.repeat(100 * 1024)); // one 100KB line
+		const t = readFileTool(dir);
+		const out = (await t.execute!({ path: "min.txt" }, opts)) as {
+			content?: string;
+			shown?: number;
+		};
+		expect(out.shown).toBe(0);
+		expect(out.content).toContain("exceeds the 64KB read_file cap");
+		expect(out.content).toContain("sed -n '1p'");
+	});
+
+	test("a user limit that stops early says how many lines remain", async () => {
+		const dir = tmpdir_();
+		writeFileSync(join(dir, "f.txt"), Array.from({ length: 10 }, (_, i) => `l${i}`).join("\n"));
+		const t = readFileTool(dir);
+		const out = (await t.execute!({ path: "f.txt", offset: 2, limit: 3 }, opts)) as {
+			content?: string;
+			shown?: number;
+		};
+		expect(out.content!.startsWith("2\tl1\n3\tl2\n4\tl3\n")).toBe(true);
+		expect(out.content).toContain("[6 more lines in file. Use offset=5 to continue.]");
 	});
 
 	test("a NUL past the first 8KB still marks the file binary", async () => {

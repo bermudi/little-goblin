@@ -4,7 +4,7 @@
 // conversion and effort placement are the contract codex.ts exists for.
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexLanguageModel, codexCredentials } from "./codex.ts";
@@ -63,6 +63,51 @@ describe("codexCredentials — oauth refresh write-back", () => {
 		await expect(
 			codexCredentials(path, async () => new Response("nope", { status: 401 })),
 		).rejects.toThrow("codex login");
+	});
+
+	test("a lost refresh race adopts the sibling's fresh pair instead of demanding re-login", async () => {
+		const path = authDir({ access_token: jwt(PAST), refresh_token: "rt" });
+		const cliFresh = jwt(FUTURE);
+		const auth = await codexCredentials(path, async () => {
+			// The CLI refreshed the same single-use token and won: its pair
+			// is on disk by the time our POST fails with invalid_grant.
+			writeFileSync(
+				path,
+				JSON.stringify({ tokens: { access_token: cliFresh, refresh_token: "cli-rt" } }),
+			);
+			return new Response("invalid_grant", { status: 400 });
+		});
+		expect(auth.tokens.access_token).toBe(cliFresh);
+		expect(auth.tokens.refresh_token).toBe("cli-rt");
+	});
+
+	test("a merge read that stays unreadable still persists the rotated pair — loudly", async () => {
+		const path = authDir(
+			{ access_token: jwt(PAST), refresh_token: "old-rt" },
+			{ last_refresh: "2026-01-01T00:00:00Z", auth_mode: "chatgpt" },
+		);
+		// Owner-unreadable from the POST onward: the merge read fails EACCES
+		// through all retries. The write must still happen — the refresh
+		// token is single-use and losing it logs the CLI out.
+		try {
+			const auth = await codexCredentials(path, async () => {
+				chmodSync(path, 0o000);
+				return new Response(
+					JSON.stringify({ access_token: jwt(FUTURE), refresh_token: "new-rt" }),
+				);
+			});
+			expect(auth.tokens.refresh_token).toBe("new-rt");
+		} finally {
+			chmodSync(path, 0o644);
+		}
+		const onDisk = JSON.parse(readFileSync(path, "utf8")) as {
+			tokens: { refresh_token: string };
+			auth_mode?: string;
+		};
+		expect(onDisk.tokens.refresh_token).toBe("new-rt");
+		// Sibling fields drop in this path — that's the warned trade-off,
+		// not a silent clobber; the warn line names the file.
+		expect(onDisk.auth_mode).toBeUndefined();
 	});
 
 	test("missing file says so plainly", async () => {

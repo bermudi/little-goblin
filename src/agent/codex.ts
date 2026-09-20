@@ -157,16 +157,45 @@ async function refreshAuth(
 		signal: AbortSignal.timeout(30_000),
 	});
 	if (!res.ok) {
+		// A 400 here is often a lost race, not a dead login: the codex CLI
+		// (or any sibling) consumed the same single-use refresh token and
+		// already wrote a fresh pair. Adopt it instead of demanding a
+		// re-login that would fix nothing.
+		try {
+			const raced = readAuthFile(path);
+			if (!expired(raced.tokens.access_token)) {
+				log.info("codex refresh lost a race — adopted the sibling's fresh tokens", {
+					authFile: path,
+				});
+				return raced;
+			}
+		} catch {
+			// Unreadable now — the refresh failure below is the honest error.
+		}
 		throw new Error(
 			`codex token refresh failed: HTTP ${res.status} — run \`codex login\` to re-authenticate`,
 		);
 	}
 	const refreshed = refreshResponseSchema.parse(await res.json());
 	let existing: Record<string, unknown> = {};
-	try {
-		existing = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-	} catch {
-		// file moved mid-flight — the write below restores a whole file
+	// The merge read must survive a transient failure or a concurrent
+	// non-atomic writer: retry briefly. Still failing → write anyway (the
+	// new refresh token is single-use; losing it logs the CLI out), but
+	// warn — sibling fields would drop out of the file.
+	for (let attempt = 0; attempt < 3; attempt++) {
+		try {
+			existing = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+			break;
+		} catch (err) {
+			if (attempt === 2) {
+				log.warn("codex auth re-read failed — writing tokens without sibling fields", {
+					authFile: path,
+					error: String(err),
+				});
+			} else {
+				await Bun.sleep(50);
+			}
+		}
 	}
 	const tokens = {
 		...auth.tokens,

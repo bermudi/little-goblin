@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, splitModelRef, writeConfig, type Config } from "./config.ts";
+import { ensureHomeLayout, loadConfig, splitModelRef, writeConfig, type Config } from "./config.ts";
 
 let dirs: string[] = [];
 let prevHome: string | undefined;
@@ -141,6 +141,28 @@ describe("goblin.json5", () => {
 		expect(statSync(p).mode & 0o777).toBe(0o600);
 		// and it round-trips
 		expect(loadConfig()!.model).toBe("zai/glm-4.6");
+	});
+});
+
+describe("ensureHomeLayout", () => {
+	test("first boot seeds SOUL.md and the AGENTS.md stub", () => {
+		const dir = useHome();
+		ensureHomeLayout();
+		const soul = readFileSync(join(dir, "workspace", "SOUL.md"), "utf8");
+		expect(soul).toContain("You are goblin");
+		const agents = readFileSync(join(dir, "workspace", "AGENTS.md"), "utf8");
+		expect(agents).toContain("Your operating notes");
+		// The growth rule must be inside the file — that's the mechanism.
+		expect(agents).toContain("write it here");
+		expect(statSync(join(dir, "workspace", "AGENTS.md")).mode & 0o777).toBe(0o644);
+	});
+
+	test("existing identity files are never clobbered", () => {
+		const dir = useHome();
+		mkdirSync(join(dir, "workspace"), { recursive: true });
+		writeFileSync(join(dir, "workspace", "AGENTS.md"), "my notes");
+		ensureHomeLayout();
+		expect(readFileSync(join(dir, "workspace", "AGENTS.md"), "utf8")).toBe("my notes");
 	});
 });
 

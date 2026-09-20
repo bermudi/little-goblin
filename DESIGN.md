@@ -23,8 +23,8 @@ earns its place.
   `scripts/install.sh` installs it — idempotent, path-substituting, and it
   refuses to enable a half-configured service (config/auth missing) rather
   than crash-loop it. That script plus first-boot scaffolding (home layout,
-  SOUL.md template, fail-loud config pointer) is the entire setup story —
-  no onboarding wizard, ever.
+  SOUL.md/AGENTS.md stubs, fail-loud config pointer) is the entire setup
+  story — no onboarding wizard, ever.
 - Telegram is the UI: long polling, topics, reactions, files, voice — **and
   Mini Apps, designed in from the start** (the process serves them over HTTP;
   see Intake & delivery).
@@ -441,7 +441,7 @@ $GOBLIN_HOME/
 ├── auth.jsonl              # secrets, mode 0600
 ├── workspace/              # the agent's home; every tool runs here
 │   ├── SOUL.md             # required, template-created on first boot
-│   ├── AGENTS.md           # optional, agent-owned
+│   ├── AGENTS.md           # stub-created on first boot, then agent-owned
 │   ├── skills/             # the skill catalog — agent-authored, in cwd
 │   └── attachments/
 └── state/

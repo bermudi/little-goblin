@@ -34,22 +34,42 @@ export function ensureHomeLayout(): void {
 	for (const dir of [goblinHome(), paths.workspace(), paths.skills(), paths.attachments(), paths.state()]) {
 		mkdirSync(dir, { recursive: true });
 	}
-	// SOUL.md is required — template-created on first boot.
-	if (!existsSync(paths.soul())) {
-		durableWriteFile(
-			paths.soul(),
-			[
-				"# SOUL.md",
-				"",
-				"You are goblin, a personal AI agent living in Telegram. You serve one",
-				"operator. You are direct, competent, and terse by default — this is a",
-				"chat, not a report generator. You have a shell, a filesystem, and",
-				"opinions. Use them.",
-				"",
-			].join("\n"),
-			0o644,
-		);
-	}
+	seedFile(
+		paths.soul(),
+		[
+			"# SOUL.md",
+			"",
+			"You are goblin, a personal AI agent living in Telegram. You serve one",
+			"operator. You are direct, competent, and terse by default — this is a",
+			"chat, not a report generator. You have a shell, a filesystem, and",
+			"opinions. Use them.",
+			"",
+		].join("\n"),
+	);
+	seedFile(
+		paths.agents(),
+		[
+			"# AGENTS.md",
+			"",
+			"Your operating notes. You own this file: when a conversation teaches",
+			"you something durable — a path, a deployment fact, a habit of your",
+			"operator, how work gets done on this machine — write it here. Next",
+			"turn you start from exactly this text and there is no other memory.",
+			"Facts, not plans. Short lines. No secrets.",
+			"",
+		].join("\n"),
+	);
+}
+
+// First-boot scaffolding: create if (and only if) absent — an operator's
+// hand or the agent's own edits are never clobbered. The AGENTS.md stub
+// exists because a standing instruction ("you own AGENTS.md") is not a
+// mechanism: a model edits a file it can see in its prompt head every
+// turn, but won't create one out of nothing — the stub carries the
+// growth rule where it's read every turn.
+function seedFile(path: string, content: string): void {
+	if (existsSync(path)) return;
+	durableWriteFile(path, content, 0o644);
 }
 
 // ---------- schema ----------

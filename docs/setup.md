@@ -79,7 +79,7 @@ On startup the bot creates the rest of its folder layout:
 ├── auth.jsonl              # you wrote this (mode 0600)
 ├── workspace/              # the bot's home: every tool runs here
 │   ├── SOUL.md             # created from a template — the bot's identity
-│   ├── AGENTS.md           # optional, the bot's own operating notes
+│   ├── AGENTS.md           # created from a stub — the bot's own operating notes
 │   ├── skills/             # skills the bot installs for itself
 │   └── attachments/        # photos/files/voice you send, saved here
 └── state/

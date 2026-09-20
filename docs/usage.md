@@ -88,6 +88,7 @@ Only people in `allowedUsers` can load it, and logins expire after a day.
 - `workspace/SOUL.md` — who the bot is. Edit it (by hand or by telling the
   bot) and the change is live on the next message.
 - `workspace/AGENTS.md` — the bot's operating notes, owned by the bot
-  itself. Same deal: edits apply next turn.
+  itself (it starts as a stub the bot is expected to grow). Same deal:
+  edits apply next turn.
 - `workspace/skills/` — repeatable tasks the bot has learned; see
   [Skills](skills.md).

@@ -3,8 +3,11 @@
 // how the process was launched. The only output channel — no
 // console.log anywhere else in the codebase.
 //
-// The file sink must never take the process down or recurse: a failed
-// append warns once on stdout and the sink stays dead for the run.
+// The file sink must never take the process down or recurse. Failures
+// split two ways: permanent ones (bad path, permissions) kill the sink
+// for the run after one warn; transient ones (disk full, EIO) keep the
+// sink alive and retry on later writes — a full disk is exactly when
+// the durable log matters most. Recovery logs one line.
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -25,9 +28,30 @@ export function setLogLevel(level: LogLevel): void {
 // detaches (tests do this after reading the file back).
 let fileTarget: string | null = null;
 let fileSinkDead = false;
+let fileSinkDegraded = false;
+let lastDegradedWarn = 0;
+
+// Throttled while degraded — a full disk must not double every log
+// line on stdout, but the condition may not go silent either.
+const DEGRADED_WARN_INTERVAL_MS = 60_000;
+
+// Errno that can clear without operator action — retry, don't die.
+const TRANSIENT_ERRNOS = new Set(["ENOSPC", "EIO", "EAGAIN", "ENFILE", "EMFILE"]);
 
 export function setLogFile(path: string | null): void {
 	fileTarget = path;
+	// Attaching a sink starts fresh: a dead or degraded sink from an
+	// earlier target must not silence the new one.
+	fileSinkDead = false;
+	fileSinkDegraded = false;
+}
+
+// stdout warn that bypasses emit() — the file sink's own health must
+// never route through the machinery whose failure it is reporting.
+function warnStdout(msg: string, fields: Record<string, unknown>): void {
+	process.stdout.write(
+		JSON.stringify({ ts: new Date().toISOString(), level: "warn", msg, ...fields }) + "\n",
+	);
 }
 
 function writeFile(line: string): void {
@@ -36,7 +60,8 @@ function writeFile(line: string): void {
 	try {
 		appendFileSync(target, line);
 	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
 			try {
 				mkdirSync(dirname(target), { recursive: true });
 				appendFileSync(target, line);
@@ -44,16 +69,30 @@ function writeFile(line: string): void {
 			} catch {
 				// falls through to the dead-sink warn below
 			}
+		} else if (code !== undefined && TRANSIENT_ERRNOS.has(code)) {
+			// Transient: keep the sink, retry on later writes. The line
+			// itself already reached stdout; the warn is throttled.
+			if (
+				!fileSinkDegraded ||
+				Date.now() - lastDegradedWarn >= DEGRADED_WARN_INTERVAL_MS
+			) {
+				lastDegradedWarn = Date.now();
+				warnStdout("goblin.log sink degraded — retrying on later writes", {
+					error: String(err),
+				});
+			}
+			fileSinkDegraded = true;
+			return;
 		}
 		fileSinkDead = true;
-		process.stdout.write(
-			JSON.stringify({
-				ts: new Date().toISOString(),
-				level: "warn",
-				msg: "goblin.log sink failed — stdout only for this run",
-				error: String(err),
-			}) + "\n",
-		);
+		warnStdout("goblin.log sink failed — stdout only for this run", {
+			error: String(err),
+		});
+		return;
+	}
+	if (fileSinkDegraded) {
+		fileSinkDegraded = false;
+		warnStdout("goblin.log sink recovered", {});
 	}
 }
 

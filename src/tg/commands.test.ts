@@ -170,5 +170,15 @@ describe("commands", () => {
 		expect(stopped).toEqual([conv.id]);
 		store.close();
 	});
+
+	test("/start answers a canned greeting — consumed, never a model turn", () => {
+		const { store, conv, sent, deps } = setup();
+		expect(handleCommand(deps, conv, "/start")).toBe(true);
+		expect(sent[0]).toContain("goblin online");
+		// A deep-link payload rides along silently — same greeting.
+		expect(handleCommand(deps, conv, "/start payload-x")).toBe(true);
+		expect(sent[1]).toContain("goblin online");
+		store.close();
+	});
 });
 

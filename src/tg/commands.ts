@@ -1,4 +1,6 @@
-// Commands are settings-only: /model /think /voice /stop. No
+// Commands are settings-only: /model /think /voice /stop — plus /start,
+// the one non-settings command: a canned greeting for the message every
+// Telegram client fires automatically on first open. No
 // conversation-lifecycle commands — topics own that. Every settings change
 // bumps the conversation epoch, fencing in-flight turns.
 
@@ -53,6 +55,18 @@ export function handleCommand(
 	const arg = rest.join(" ").trim();
 
 	switch (cmd) {
+		case "/start": {
+			// Sent automatically by the client on first open — answering it
+			// with a model turn wastes the very first interaction; a canned
+			// reply is the whole job. A deep-link payload is ignored.
+			reply(
+				deps,
+				conv,
+				"goblin online. just talk — each topic is its own conversation.\n/model · /think · /voice · /stop",
+			);
+			return true;
+		}
+
 		case "/stop": {
 			const { stopped } = deps.runtime.stop(conv.id);
 			reply(deps, conv, stopped ? "stopped" : "nothing was running");
@@ -149,7 +163,8 @@ export function handleCommand(
 
 // The settings surface Telegram advertises — registered via
 // setMyCommands at boot so autocomplete shows exactly what works.
-// COMMAND_RE derives from this list: the two can never drift apart.
+// COMMAND_RE derives from this list plus HIDDEN_COMMANDS: the two can
+// never drift apart.
 export const COMMANDS = [
 	{ command: "model", description: "show or override the model" },
 	{ command: "think", description: "show or override thinking level" },
@@ -157,6 +172,10 @@ export const COMMANDS = [
 	{ command: "stop", description: "fence the running turn" },
 ] as const;
 
+// Handled but not advertised: /start is the client's automatic opener,
+// not an operator command — it stays out of the command menu.
+const HIDDEN_COMMANDS = ["start"] as const;
+
 export const COMMAND_RE = new RegExp(
-	`^/(${COMMANDS.map((c) => c.command).join("|")})(@\\w+)?(\\s|$)`,
+	`^/(${[...COMMANDS.map((c) => c.command), ...HIDDEN_COMMANDS].join("|")})(@\\w+)?(\\s|$)`,
 );

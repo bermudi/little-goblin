@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -165,9 +165,6 @@ describe("ensureHomeLayout", () => {
 		const user = readFileSync(join(dir, "workspace", "USER.md"), "utf8");
 		expect(user).toContain("Your model of the operator");
 		expect(user).toContain("status: active");
-		// Daily notes: raw session logs, never injected — read on demand.
-		expect(agents).toContain("memory/YYYY-MM-DD.md");
-		expect(existsSync(join(dir, "workspace", "memory"))).toBe(true);
 		expect(statSync(join(dir, "workspace", "AGENTS.md")).mode & 0o777).toBe(0o644);
 	});
 

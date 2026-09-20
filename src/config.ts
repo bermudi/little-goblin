@@ -23,7 +23,6 @@ export const paths = {
 	agents: () => join(goblinHome(), "workspace", "AGENTS.md"),
 	user: () => join(goblinHome(), "workspace", "USER.md"),
 	skills: () => join(goblinHome(), "workspace", "skills"),
-	memory: () => join(goblinHome(), "workspace", "memory"),
 	attachments: () => join(goblinHome(), "workspace", "attachments"),
 	state: () => join(goblinHome(), "state"),
 	db: () => join(goblinHome(), "state", "goblin.sqlite"),
@@ -33,7 +32,7 @@ export const paths = {
 };
 
 export function ensureHomeLayout(): void {
-	for (const dir of [goblinHome(), paths.workspace(), paths.skills(), paths.memory(), paths.attachments(), paths.state()]) {
+	for (const dir of [goblinHome(), paths.workspace(), paths.skills(), paths.attachments(), paths.state()]) {
 		mkdirSync(dir, { recursive: true });
 	}
 	seedFile(
@@ -60,10 +59,6 @@ export function ensureHomeLayout(): void {
 			"- You learn a deployment fact (a path, a host, a service, where",
 			"  things live on this machine) → it goes here.",
 			"- You make a mistake you could repeat → the lesson goes here.",
-			"- A conversation leaves context a future one would want (what was",
-			"  tried, what was decided) → a line in memory/YYYY-MM-DD.md — raw",
-			"  notes, not loaded each turn; read the file when the context would",
-			"  help, and promote the durable parts into this file or USER.md.",
 			"- A rule stops being true → replace it in place. Never keep two",
 			"  rules that contradict.",
 			"",

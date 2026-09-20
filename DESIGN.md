@@ -496,9 +496,12 @@ $GOBLIN_HOME/
 │   ├── AGENTS.md           # stub-created on first boot, then agent-owned
 │   ├── USER.md             # operator model — directive entries (observed
 │   │                       # date, active/superseded), agent-grown
-│   ├── memory/             # daily session notes YYYY-MM-DD.md — NOT
-│   │                       # injected; read on demand, promoted into
-│   │                       # AGENTS.md/USER.md when durable
+│   │                       #
+│   │                       # PROVISIONAL: the USER.md directive schema, the
+│   │                       # AGENTS.md trigger table, and the prompt-shell
+│   │                       # memory-model lines predate the real memory
+│   │                       # design (daily notes were reverted). They stand
+│   │                       # only until that design re-rules them.
 │   ├── skills/             # the skill catalog — agent-authored, in cwd
 │   └── attachments/
 └── state/

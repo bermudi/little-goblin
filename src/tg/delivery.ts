@@ -32,6 +32,10 @@ export function isNotModifiedError(err: unknown): boolean {
 	const haystacks: unknown[] = [err];
 	if (typeof err === "object" && err !== null) {
 		const rec = err as Record<string, unknown>;
+		// The stable identifier is the code: Telegram/grammy errors carry
+		// error_code 400 for this no-op. A phrase match alone would fire on
+		// any coincidental wording with a different failure class.
+		if (rec.error_code !== undefined && rec.error_code !== 400) return false;
 		haystacks.push(rec.description, rec.message);
 	}
 	return haystacks.some(

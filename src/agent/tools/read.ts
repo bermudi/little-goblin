@@ -154,7 +154,9 @@ function readTextFileSmart(abs: string, display: string): { text: string } | Rea
 
 // Image sniffing for the tool layer: providers carry tool results as
 // strings, so image bytes must never reach the model. Reads at most the
-// first 64 bytes — never the whole file.
+// first few KB — never the whole file. JPEG needs the headroom: APP0/
+// EXIF/DQT segments routinely push the SOF frame header past 64 bytes.
+const SNIFF_BYTES = 4096;
 export function sniffImage(abs: string): { mediaType: string; width?: number; height?: number } | null {
 	let fd: number;
 	try {
@@ -163,8 +165,8 @@ export function sniffImage(abs: string): { mediaType: string; width?: number; he
 		return null;
 	}
 	try {
-		const buf = Buffer.alloc(64);
-		const n = readSync(fd, buf, 0, 64, 0);
+		const buf = Buffer.alloc(SNIFF_BYTES);
+		const n = readSync(fd, buf, 0, SNIFF_BYTES, 0);
 		const b = buf.subarray(0, n);
 		// PNG: signature then IHDR chunk — dims at offset 16/20, big-endian.
 		if (b.length >= 24 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) {
@@ -187,7 +189,7 @@ export function sniffImage(abs: string): { mediaType: string; width?: number; he
 						width: b.readUInt16BE(i + 7),
 					};
 				}
-				// Skip this segment by its length; stop if it runs past 64 bytes.
+				// Skip this segment by its length; stop if it runs past the window.
 				if (i + 3 >= b.length) break;
 				i += 2 + b.readUInt16BE(i + 2);
 			}

@@ -1,7 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { durableWriteFile } from "../../durable.ts";
-import { resolvePath } from "./paths.ts";
+import { resolvePath, unicodeTwin } from "./paths.ts";
 import { readTextFile } from "./read.ts";
 
 export const editFileTool = (cwd: string) =>
@@ -15,8 +15,12 @@ export const editFileTool = (cwd: string) =>
 			replace_all: z.boolean().optional(),
 		}),
 		execute: async ({ path, old_string, new_string, replace_all }) => {
+			// Resolve the unicode twin BEFORE reading, and read, write, and
+			// report the same path: reading via the twin retry while writing
+			// the requested spelling silently forks the file into two names.
 			const abs = resolvePath(cwd, path);
-			const read = readTextFile(abs, path);
+			const target = unicodeTwin(abs) ?? abs;
+			const read = readTextFile(target, path);
 			if ("error" in read) return read;
 			const text = read.text;
 			const count = text.split(old_string).length - 1;
@@ -29,7 +33,7 @@ export const editFileTool = (cwd: string) =>
 			// Function replacer: new_string is literal — a string replacer
 			// would interpret $&, $`, $', $n as special patterns.
 			const next = replace_all ? text.split(old_string).join(new_string) : text.replace(old_string, () => new_string);
-			durableWriteFile(abs, next);
-			return { path: abs, replaced: replace_all ? count : 1 };
+			durableWriteFile(target, next);
+			return { path: target, replaced: replace_all ? count : 1 };
 		},
 	});

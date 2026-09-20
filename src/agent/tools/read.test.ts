@@ -5,6 +5,8 @@ import {
 	ftruncateSync,
 	mkdtempSync,
 	openSync,
+	readdirSync,
+	readFileSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -287,16 +289,22 @@ describe("unicode twins — read, edit, and write land on one file", () => {
 		expect(out.content).toContain("hola");
 	});
 
-	test("edit_file resolves the twin too — no file-not-found after a good read", async () => {
+	test("edit_file resolves the twin too — one file, content changed in place", async () => {
 		const dir = tmpdir_();
 		writeFileSync(join(dir, nfd), "one\ntwo\n");
 		const { editFileTool } = await import("./edit.ts");
 		const out = (await editFileTool(dir).execute!(
 			{ path: nfc, old_string: "two", new_string: "TWO" },
 			opts,
-		)) as { replaced?: number; error?: string };
+		)) as { replaced?: number; error?: string; path?: string };
 		expect(out.error).toBeUndefined();
 		expect(out.replaced).toBe(1);
+		// The fork this test used to miss: returning success while writing
+		// the NFC spelling would leave two files, the NFD original unchanged.
+		expect(out.path).toBe(join(dir, nfd));
+		expect(readdirSync(dir)).toEqual([nfd]);
+		expect(readFileSync(join(dir, nfd), "utf8")).toBe("one\nTWO\n");
+		expect(existsSync(join(dir, nfc))).toBe(false);
 	});
 
 	test("write_file targets the twin instead of forking a second file", async () => {
@@ -342,5 +350,28 @@ describe("sniffImage — JPEG marker walk", () => {
 		const out = (await t.execute!({ path: "b.jpg" }, opts)) as { content?: string };
 		expect(out.content).toContain("[image file image/jpeg,");
 		expect(out.content).not.toMatch(/\d+x\d+/);
+	});
+
+	test("EXIF-sized prefix before SOF — dims found within the 4KB window", async () => {
+		const dir = tmpdir_();
+		// SOI + APP1 declaring a 200-byte segment, SOF0 at offset 204 — past
+		// the old 64-byte window, routine for real JPEGs. The walk must reach
+		// it and report dimensions.
+		const buf = Buffer.alloc(220);
+		buf[0] = 0xff;
+		buf[1] = 0xd8;
+		buf[2] = 0xff;
+		buf[3] = 0xe1;
+		buf.writeUInt16BE(200, 4);
+		buf[204] = 0xff;
+		buf[205] = 0xc0;
+		buf.writeUInt16BE(0x0011, 206); // SOF0 length
+		buf[208] = 0x08; // precision
+		buf.writeUInt16BE(30, 209); // height
+		buf.writeUInt16BE(50, 211); // width
+		writeFileSync(join(dir, "c.jpg"), buf);
+		const t = readFileTool(dir);
+		const out = (await t.execute!({ path: "c.jpg" }, opts)) as { content?: string };
+		expect(out.content).toContain("[image file image/jpeg 50x30");
 	});
 });

@@ -1,11 +1,13 @@
-// The four tools. Hand-rolled, zod-validated, bound to the deployment
+// The tools. Hand-rolled, zod-validated, bound to the deployment
 // workspace. Telegram send is delivery, not a tool. Nothing else exists
 // until a feature needs it.
 
 import type { ToolSet } from "ai";
+import type { JobsStore } from "../../jobs.ts";
 import { bashTool } from "./bash.ts";
 import { editFileTool } from "./edit.ts";
 import { readFileTool } from "./read.ts";
+import { scheduleTool } from "./schedule.ts";
 import { speakTool } from "./speak.ts";
 import { writeFileTool } from "./write.ts";
 
@@ -16,7 +18,17 @@ export interface VoiceToolDeps {
 	recording?(): () => void;
 }
 
-export function makeTools(cwd: string, voice?: VoiceToolDeps): ToolSet {
+export interface ScheduleToolDeps {
+	jobs: JobsStore;
+	chatId: number;
+	threadId: number | null;
+}
+
+export function makeTools(
+	cwd: string,
+	voice?: VoiceToolDeps,
+	schedule?: ScheduleToolDeps,
+): ToolSet {
 	return {
 		read_file: readFileTool(cwd),
 		write_file: writeFileTool(cwd),
@@ -25,5 +37,6 @@ export function makeTools(cwd: string, voice?: VoiceToolDeps): ToolSet {
 		...(voice
 			? { speak: speakTool(cwd, voice.synthesize, voice.deliver, voice.recording) }
 			: {}),
+		...(schedule ? { schedule: scheduleTool(schedule) } : {}),
 	};
 }

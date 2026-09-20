@@ -86,7 +86,10 @@ export interface RuntimeDeps {
 	// Build the tool set — bound to the deployment workspace by the
 	// composition root. deliverVoice/recording wire the speak tool into
 	// the running turn's sink (voice delivery + chat-action indicator).
+	// The conversation is passed so conversation-pinned tools (schedule)
+	// know where they run without the model handling chat ids.
 	makeTools(
+		conv: Conversation,
 		deliverVoice?: (audio: Uint8Array) => Promise<void>,
 		recording?: () => () => void,
 	): ToolSet;
@@ -323,7 +326,7 @@ export class Runtime {
 					}
 				: undefined;
 			const tools = this.fenceTools(
-				this.deps.makeTools(deliverVoice, recording),
+				this.deps.makeTools(conv, deliverVoice, recording),
 				convId,
 				epoch,
 			);

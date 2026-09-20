@@ -208,9 +208,9 @@ agent loop.
 
 ## Tools (v1)
 
-Hand-rolled, zod-validated, five:
+Hand-rolled, zod-validated, six:
 
-`read_file` `write_file` `edit_file` `bash` (timeout) `speak`
+`read_file` `write_file` `edit_file` `bash` (timeout) `speak` `schedule`
 
 All tools run in the deployment workspace — conversations have no cwd and
 there is no `/cd`. Working elsewhere is the agent's own business (`cd x &&
@@ -227,6 +227,11 @@ straight from disk, so "read me this document" never re-types the content
 as model output. Long input is split at sentence boundaries inside the
 tts module, never by the caller. Configure `tts` or the tool isn't in the
 set at all.
+
+`schedule` manages standing jobs (list/create/update/delete/toggle) —
+see `Scheduled work`. It is bound per-turn to the running conversation
+so new jobs are pinned to the chat/topic they were born in; the model
+never handles chat ids.
 
 **Tool results are text.** Every provider goblin speaks (OpenAI-compatible
 chat completions, the codex Responses shim) serializes tool results as a
@@ -525,6 +530,9 @@ src/
   log.ts            structured log; no console.log anywhere else
   tg/               grammy: intake, buffer, delivery, commands (only grammy-aware dir)
   conversation.ts   store: SQLite-backed resolve/load/append events, meta, epoch
+  jobs.ts           scheduled jobs — rows in goblin.sqlite, cron validated
+                    at the boundary
+  scheduler.ts      ticker: due jobs → turns in their pinned conversation
   runtime.ts        per-conversation queue, turn loop, checkAuthority
   agent/
     providers.ts    registry: name → AI SDK provider
@@ -544,7 +552,7 @@ src/
                     AGENTS.md/USER.md, each capped at 8k chars; re-read
                     every turn, edits live next message)
     skills.ts       catalog scan + frontmatter validation → ## skills section
-    tools/          the five tools
+    tools/          the six tools (read, write, edit, bash, speak, schedule)
   http/             mini-app serving
 ```
 

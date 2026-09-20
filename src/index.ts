@@ -18,6 +18,8 @@ import {
 	type ThinkingLevel,
 } from "./config.ts";
 import { openStore } from "./conversation.ts";
+import { openJobs } from "./jobs.ts";
+import { startScheduler } from "./scheduler.ts";
 import { startHttp } from "./http/mod.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { Runtime } from "./runtime.ts";
@@ -51,6 +53,9 @@ async function boot() {
 	const configRef = { current: config };
 	const auth = loadAuth();
 	const store = openStore(paths.db());
+	// Jobs live in the same SQLite file (own connection) — scheduled
+	// standing orders, DESIGN.md "Scheduled work".
+	const jobs = openJobs(paths.db());
 
 	// ffmpeg powers TTS remuxing and over-cap transcription — probe it once
 	// at boot so a missing binary surfaces before the first speech request.
@@ -98,7 +103,7 @@ async function boot() {
 				...(providerOptions ? { providerOptions } : {}),
 			};
 		},
-		makeTools: (deliverVoice, recording) => {
+		makeTools: (conv, deliverVoice, recording) => {
 			const tts = configRef.current.tts;
 			return makeTools(
 				paths.workspace(),
@@ -109,6 +114,8 @@ async function boot() {
 							...(recording ? { recording } : {}),
 					}
 				: undefined,
+				// The schedule tool pins new jobs to the conversation it runs in.
+				{ jobs, chatId: conv.chatId, threadId: conv.threadId },
 			);
 		},
 	});
@@ -150,7 +157,19 @@ async function boot() {
 		},
 	});
 
-	return { configRef, auth, store, runtime, tg, http };
+	// Scheduler after the bot: it submits into conversations and delivers
+	// through bot.api — both must exist. The boot scan fires anything
+	// missed while the process was down (DESIGN.md, Scheduled work).
+	const scheduler = startScheduler({
+		jobs,
+		store,
+		runtime,
+		api: tg.bot.api,
+		configRef,
+		synthesize: (text, tts) => synthesizeSpeech(text, tts),
+	});
+
+	return { configRef, auth, store, jobs, runtime, tg, http, scheduler };
 }
 
 let booted: Awaited<ReturnType<typeof boot>>;
@@ -160,7 +179,7 @@ try {
 	log.error("boot failed", err);
 	process.exit(1);
 }
-const { store, runtime, tg, http } = booted;
+const { store, jobs, runtime, tg, http, scheduler } = booted;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // Long enough for the sinks' final flushes and polling's offset
@@ -175,6 +194,8 @@ async function shutdown(signal: string): Promise<void> {
 	}
 	shuttingDown = true;
 	log.info("shutting down", { signal });
+	// Scheduler first — no new scheduled submits once the drain begins.
+	scheduler.stop();
 	// bot.stop confirms the polling offset so handled updates don't
 	// redeliver on the next boot.
 	const stopping = tg.bot.stop().catch((err: unknown) => {
@@ -204,6 +225,7 @@ async function shutdown(signal: string): Promise<void> {
 	}
 	http.stop();
 	store.close();
+	jobs.close();
 	log.info("bye", { signal });
 	process.exit(0);
 }

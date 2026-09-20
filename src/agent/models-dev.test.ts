@@ -6,6 +6,7 @@ import {
 	_resetOpenRouterForTest,
 	ensureOpenRouterCatalog,
 	inputModalities,
+	readOpenRouterCache,
 } from "./models-dev.ts";
 
 let dirs: string[] = [];
@@ -91,5 +92,36 @@ describe("openrouter catalog", () => {
 			globalThis.fetch = prevFetch;
 			_resetOpenRouterForTest();
 		}
+	});
+});
+
+describe("readOpenRouterCache", () => {
+	// The disk-boundary invariant: a valid-JSON-wrong-shape cache degrades
+	// to null with a warn — the old blind cast built a Set of characters
+	// out of a params string and reasoning ladders went silently wrong.
+	test("a wrong-shape cache degrades to null, not a Set of characters", () => {
+		const dir = useHome();
+		mkdirSync(join(dir, "state"), { recursive: true });
+		writeFileSync(
+			join(dir, "state", "openrouter-models.json"),
+			JSON.stringify({ "anthropic/claude-sonnet-4.5": "reasoning" }),
+		);
+		expect(readOpenRouterCache()).toBeNull();
+	});
+
+	test("a well-formed cache round-trips into per-model param sets", () => {
+		const dir = useHome();
+		mkdirSync(join(dir, "state"), { recursive: true });
+		writeFileSync(
+			join(dir, "state", "openrouter-models.json"),
+			JSON.stringify({ "a/b": ["reasoning", "reasoning_effort"] }),
+		);
+		const cat = readOpenRouterCache()!;
+		expect(cat.get("a/b")).toEqual(new Set(["reasoning", "reasoning_effort"]));
+	});
+
+	test("no cache file: ENOENT → null, cold and silent", () => {
+		useHome();
+		expect(readOpenRouterCache()).toBeNull();
 	});
 });

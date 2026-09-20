@@ -81,7 +81,16 @@ async function refresh(): Promise<Catalog | null> {
 		try {
 			const cached = JSON.parse(readFileSync(paths.modelsDevCache(), "utf8")) as unknown;
 			const parsed = catalogSchema.safeParse(cached);
-			catalog = parsed.success ? parsed.data : null;
+			if (parsed.success) {
+				catalog = parsed.data;
+			} else {
+				// Wrong shape degrades with a line, not a silent null — the
+				// log bar: a symptom here must not need a REPL to explain.
+				log.warn("models.dev cache invalid — ignoring", {
+					error: parsed.error.message,
+				});
+				catalog = null;
+			}
 		} catch (cacheErr) {
 			// ENOENT just means no cache; anything else (corrupt file) is
 			// warned and ignored — a bad cache must not break media intake.
@@ -145,9 +154,41 @@ const openrouterCatalogSchema = z.object({
 	),
 });
 
+// The disk cache stores the flattened {modelId: [params...]} shape —
+// disk state is a boundary, so it is validated on read like the
+// models.dev cache, never trusted.
+const openrouterCacheSchema = z.record(z.string(), z.array(z.string()));
+
 let openrouterCatalog: Map<string, Set<string>> | null = null;
 let openrouterNextFetchAt = 0;
 let openrouterInflight: Promise<Map<string, Set<string>> | null> | null = null;
+
+// Cache read on its own so the shape-validation boundary is testable
+// without a network round-trip. A valid-JSON-wrong-shape file (hand
+// edit, partial write, future format change) must degrade to null with
+// a warn line — the previous blind cast happily built a Set of
+// *characters* out of a string and reasoning ladders went quietly wrong
+// forever.
+export function readOpenRouterCache(): Map<string, Set<string>> | null {
+	try {
+		const raw: unknown = JSON.parse(readFileSync(paths.openrouterModelsCache(), "utf8"));
+		const parsed = openrouterCacheSchema.safeParse(raw);
+		if (!parsed.success) {
+			log.warn("openrouter catalog cache invalid — ignoring", {
+				error: parsed.error.message,
+			});
+			return null;
+		}
+		return new Map(Object.entries(parsed.data).map(([id, params]) => [id, new Set(params)]));
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+			log.warn("openrouter catalog cache unreadable — ignoring", {
+				error: String(err),
+			});
+		}
+		return null;
+	}
+}
 
 async function refreshOpenRouter(): Promise<Map<string, Set<string>> | null> {
 	openrouterNextFetchAt = Date.now() + RETRY_MS;
@@ -182,21 +223,7 @@ async function refreshOpenRouter(): Promise<Map<string, Set<string>> | null> {
 			error: String(err),
 		});
 		if (openrouterCatalog) return openrouterCatalog;
-		try {
-			const cached = JSON.parse(
-				readFileSync(paths.openrouterModelsCache(), "utf8"),
-			) as Record<string, string[]>;
-			openrouterCatalog = new Map(
-				Object.entries(cached).map(([id, params]) => [id, new Set(params)]),
-			);
-		} catch (cacheErr) {
-			if ((cacheErr as NodeJS.ErrnoException).code !== "ENOENT") {
-				log.warn("openrouter catalog cache unreadable — ignoring", {
-					error: String(cacheErr),
-				});
-			}
-			openrouterCatalog = null;
-		}
+		openrouterCatalog = readOpenRouterCache();
 		return openrouterCatalog;
 	}
 }

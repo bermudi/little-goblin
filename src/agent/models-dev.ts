@@ -233,3 +233,10 @@ export function _primeOpenRouterCatalog(
 	openrouterCatalog = catalog;
 	openrouterNextFetchAt = Date.now() + CACHE_TTL_MS;
 }
+
+// Test hook: force the next ensure onto the network path with a cold
+// in-memory catalog.
+export function _resetOpenRouterForTest(): void {
+	openrouterCatalog = null;
+	openrouterNextFetchAt = 0;
+}

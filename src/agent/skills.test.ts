@@ -189,4 +189,19 @@ describe("formatSkillsSection", () => {
 		const many = formatSkillsSection({ entries: [], skipped: 3 }).join("\n");
 		expect(many).toContain("(3 entries skipped as malformed");
 	});
+
+	test("frontmatter that doesn't close inside the 16 KiB head is malformed", () => {
+		const root = useRoot();
+		const dir = join(root, "huge");
+		mkdirSync(dir, { recursive: true });
+		// The closing --- sits past the bounded head — the read truncates
+		// before it, so the frontmatter is unterminated, not large.
+		writeFileSync(
+			join(dir, "SKILL.md"),
+			`---\n# ${"a".repeat(17 * 1024)}\n---\nname: huge\ndescription: d\nbody\n`,
+		);
+		const catalog = loadCatalog(root);
+		expect(catalog.entries).toEqual([]);
+		expect(catalog.skipped).toBe(1);
+	});
 });

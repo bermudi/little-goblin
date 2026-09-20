@@ -1,7 +1,43 @@
 import { describe, expect, test } from "bun:test";
 import type { Api } from "grammy";
-import { applyCommands, applyMenuButton, conversationAddress } from "./mod.ts";
+import type { Config } from "../config.ts";
+import { allowedUserGate, applyCommands, applyMenuButton, conversationAddress } from "./mod.ts";
 import { COMMANDS } from "./commands.ts";
+
+const baseConfig: Config = {
+	providers: {
+		zai: { kind: "openai-compatible", baseUrl: "https://api.example.com", auth: "zai" },
+	},
+	model: "zai/m",
+	favorites: [],
+	thinking: "medium",
+	allowedUsers: [1],
+	telegram: {},
+	http: { port: 8787 },
+	logLevel: "info",
+};
+
+describe("allowedUserGate", () => {
+	// The access-control boundary — everything else hangs off it.
+	test("allowed ids pass; anyone else is dropped before the bot sees it", async () => {
+		const configRef = { current: baseConfig };
+		const gate = allowedUserGate(configRef);
+		let reached = 0;
+		const next = async (): Promise<void> => {
+			reached++;
+		};
+		await gate({ from: { id: 1 } }, next);
+		expect(reached).toBe(1);
+		await gate({ from: { id: 2 } }, next); // not on the list
+		expect(reached).toBe(1);
+		await gate({}, next); // service update, no sender
+		expect(reached).toBe(1);
+		// Read per message: a mini-app save applies without a restart.
+		configRef.current = { ...baseConfig, allowedUsers: [1, 2] };
+		await gate({ from: { id: 2 } }, next);
+		expect(reached).toBe(2);
+	});
+});
 
 describe("applyCommands", () => {
 	test("registers exactly the handled command set", async () => {

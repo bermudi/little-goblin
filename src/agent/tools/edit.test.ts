@@ -80,4 +80,16 @@ describe("edit_file", () => {
 		expect(out.error).toContain("binary file");
 		expect(readFileSync(join(dir, "b.bin"))).toEqual(bytes); // untouched
 	});
+
+	test("a no-match returns an error and leaves the file untouched", async () => {
+		const dir = tmpdir_();
+		writeFileSync(join(dir, "f.txt"), "original content\n");
+		const t = editFileTool(dir);
+		const out = (await t.execute!(
+			{ path: "f.txt", old_string: "not in file", new_string: "replacement" },
+			opts,
+		)) as { error?: string };
+		expect(out.error).toContain("not found");
+		expect(readFileSync(join(dir, "f.txt"), "utf8")).toBe("original content\n");
+	});
 });

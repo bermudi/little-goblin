@@ -382,4 +382,31 @@ describe("sniffImage — JPEG marker walk", () => {
 		const out = (await t.execute!({ path: "c.jpg" }, opts)) as { content?: string };
 		expect(out.content).toContain("[image file image/jpeg 50x30");
 	});
+
+	test("the 2000-line ceiling caps short-line files before bytes do", async () => {
+		const dir = tmpdir_();
+		// Short lines: the line-count ceiling must hit while the output is
+		// still far under the 64KB byte cap — the one ceiling of the three
+		// the others can't stand in for.
+		writeFileSync(
+			join(dir, "many.txt"),
+			Array.from({ length: 2500 }, (_, i) => `l${i}`).join("\n"),
+		);
+		const t = readFileTool(dir);
+		const out = (await t.execute!({ path: "many.txt" }, opts)) as {
+			content?: string;
+			shown?: number;
+			lines?: number;
+		};
+		expect(out.lines).toBe(2500);
+		expect(out.shown).toBe(2000);
+		expect(out.content).toMatch(
+			/\[Showing lines 1–2000 of 2500 \(2000-line limit\)\. Use offset=2001 to continue\.\]/,
+		);
+		// Following the notice resumes exactly where the cap stopped.
+		const page2 = (await t.execute!({ path: "many.txt", offset: 2001 }, opts)) as {
+			content?: string;
+		};
+		expect(page2.content!.startsWith("2001\tl2000")).toBe(true);
+	});
 });

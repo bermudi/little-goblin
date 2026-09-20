@@ -77,6 +77,28 @@ export interface RunningBot {
 	drainIntake(): Promise<void>;
 }
 
+// The access-control boundary: allowedUsers gates every update first
+// thing, read per-message so mini-app saves apply without a restart.
+// Extracted from createBot so the boundary itself is testable without
+// a live bot.
+export function allowedUserGate(configRef: { current: Config }) {
+	return async (
+		ctx: { from?: { id: number } | undefined },
+		next: () => Promise<void>,
+	): Promise<void> => {
+		if (!ctx.from) {
+			// Service updates carry no sender — routine, not a warn.
+			log.debug("rejected update with no sender");
+			return;
+		}
+		if (!configRef.current.allowedUsers.includes(ctx.from.id)) {
+			log.warn("rejected user", { userId: ctx.from.id });
+			return;
+		}
+		await next();
+	};
+}
+
 export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	const token = await deps.auth.resolve(AUTH_TELEGRAM_TOKEN);
 	// apiRoot is structural — applies at process start, not hot-reloaded.
@@ -166,20 +188,7 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 		});
 	};
 
-	bot.use(async (ctx, next) => {
-		// Allowed-user gate, first thing. Read per-message so config
-		// writes via the mini app take effect without a restart.
-		if (!ctx.from) {
-			// Service updates carry no sender — routine, not a warn.
-			log.debug("rejected update with no sender");
-			return;
-		}
-		if (!deps.configRef.current.allowedUsers.includes(ctx.from.id)) {
-			log.warn("rejected user", { userId: ctx.from.id });
-			return;
-		}
-		await next();
-	});
+	bot.use(allowedUserGate(deps.configRef));
 
 	bot.on("message", (ctx) => {
 		const msg = ctx.message;

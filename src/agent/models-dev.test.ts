@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { inputModalities } from "./models-dev.ts";
+import {
+	_resetOpenRouterForTest,
+	ensureOpenRouterCatalog,
+	inputModalities,
+} from "./models-dev.ts";
 
 let dirs: string[] = [];
 let prevHome: string | undefined;
@@ -51,6 +55,41 @@ describe("models.dev catalog", () => {
 			expect(calls).toBe(1);
 		} finally {
 			globalThis.fetch = prevFetch;
+		}
+	});
+});
+
+describe("openrouter catalog", () => {
+	test("fetches, caches to disk, and serves that cache when the endpoint is down", async () => {
+		const dir = useHome();
+		mkdirSync(join(dir, "state"), { recursive: true });
+		_resetOpenRouterForTest();
+		const prevFetch = globalThis.fetch;
+		let fail = false;
+		globalThis.fetch = (async () => {
+			if (fail) throw new Error("offline");
+			return new Response(
+				JSON.stringify({
+					data: [{ id: "prov/m1", supported_parameters: ["reasoning", "reasoning_effort"] }],
+				}),
+			);
+		}) as unknown as typeof fetch;
+		try {
+			const fresh = await ensureOpenRouterCatalog();
+			expect(fresh?.get("prov/m1")).toEqual(new Set(["reasoning", "reasoning_effort"]));
+			// The successful fetch landed on disk…
+			const cached = JSON.parse(
+				readFileSync(join(dir, "state", "openrouter-models.json"), "utf8"),
+			) as Record<string, string[]>;
+			expect(cached).toEqual({ "prov/m1": ["reasoning", "reasoning_effort"] });
+			// …and serves the next cold start when the endpoint is down.
+			_resetOpenRouterForTest();
+			fail = true;
+			const cold = await ensureOpenRouterCatalog();
+			expect(cold?.get("prov/m1")).toEqual(new Set(["reasoning", "reasoning_effort"]));
+		} finally {
+			globalThis.fetch = prevFetch;
+			_resetOpenRouterForTest();
 		}
 	});
 });

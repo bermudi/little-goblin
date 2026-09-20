@@ -119,4 +119,11 @@ describe("mini-app http", () => {
 		expect(aliased.levels).toEqual(["low", "high", "max"]);
 		http.stop();
 	});
+
+	test("GET /api/config without init data is rejected", async () => {
+		const { http } = setup();
+		const res = await fetch(`http://127.0.0.1:${http.port}/api/config`);
+		expect(res.status).toBe(401);
+		http.stop();
+	});
 });

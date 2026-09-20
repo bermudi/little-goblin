@@ -7,11 +7,37 @@
 // cache, and any automatic change invalidates the whole thing. Operator
 // edits are fine: they're explicit and logged as cache boundaries.
 
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { paths } from "../config.ts";
 import { log } from "../log.ts";
 import type { Conversation } from "../conversation.ts";
 import { formatSkillsSection, loadCatalog } from "./skills.ts";
+
+// Last-seen content hash per prompt source, process-wide. An operator
+// edit is a sanctioned cache boundary (DESIGN.md, Cache stability) — but
+// it must be attributable: a "prompt source changed" line is what
+// separates "the operator edited SOUL.md" from "a bug moved the head
+// hash" when reading goblin.log. First sight primes silently; sources
+// are global (not per conversation), so one edit logs once.
+const lastSeen = new Map<string, string>();
+
+function noteSource(source: string, content: string | null): void {
+	const digest =
+		content === null
+			? "absent"
+			: createHash("sha256").update(content).digest("hex").slice(0, 16);
+	const prev = lastSeen.get(source);
+	lastSeen.set(source, digest);
+	if (prev === undefined || prev === digest) return;
+	log.info("prompt source changed", { source, from: prev, to: digest });
+}
+
+// Test hook: forget the seen-source hashes — module state persists
+// across tests; production never resets.
+export function _resetPromptSourcesForTest(): void {
+	lastSeen.clear();
+}
 
 function readOptional(path: string): string | null {
 	try {
@@ -36,6 +62,10 @@ export function buildSystemPrompt(conv: Conversation): { text: string; sources: 
 	// Rescanned every turn — a skill written or edited now is live next
 	// message, like the prompt files above.
 	const catalog = loadCatalog(paths.skills());
+	const skillsSection = formatSkillsSection(catalog);
+	noteSource("SOUL.md", soul);
+	noteSource("AGENTS.md", agents);
+	noteSource("skills", skillsSection.join("\n"));
 
 	const text = [
 		(soul ?? "You are goblin, a personal AI agent.").trim(),
@@ -58,7 +88,7 @@ export function buildSystemPrompt(conv: Conversation): { text: string; sources: 
 		`  need an explicit go-ahead first.`,
 		...(agents ? ["", "## AGENTS.md — your operating notes", "", agents.trim()] : []),
 		"",
-		...formatSkillsSection(catalog),
+		...skillsSection,
 	].join("\n");
 
 	const sources = ["SOUL.md"];

@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { paths } from "../config.ts";
 import { setLogFile } from "../log.ts";
 import type { Conversation } from "../conversation.ts";
-import { buildSystemPrompt } from "./prompt.ts";
+import { _resetPromptSourcesForTest, buildSystemPrompt } from "./prompt.ts";
 
 let dirs: string[] = [];
 function useHome(): string {
@@ -82,6 +82,34 @@ describe("buildSystemPrompt", () => {
 				.some((l) => l.msg === "SOUL.md missing — default identity in use");
 			// A silent personality swap is exactly what the log must explain.
 			expect(warned).toBe(true);
+		} finally {
+			setLogFile(null);
+			delete process.env.GOBLIN_HOME;
+		}
+	});
+
+	test("an operator edit to a prompt source logs the cache boundary", () => {
+		_resetPromptSourcesForTest();
+		const home = useHome();
+		process.env.GOBLIN_HOME = home;
+		const logFile = join(home, "goblin.log");
+		setLogFile(logFile);
+		try {
+			mkdirSync(paths.workspace(), { recursive: true });
+			buildSystemPrompt(conv); // primes the source hashes silently
+			writeFileSync(join(paths.workspace(), "SOUL.md"), "an edited soul");
+			buildSystemPrompt(conv);
+			const lines = readFileSync(logFile, "utf8")
+				.trim()
+				.split("\n")
+				.map((l) => JSON.parse(l) as Record<string, unknown>);
+			// "operator edited" and "a bug moved the hash" must be
+			// distinguishable in the log — the changed line names the file.
+			const changed = lines.filter((l) => l.msg === "prompt source changed");
+			expect(changed).toHaveLength(1);
+			expect(changed[0]).toMatchObject({ source: "SOUL.md" });
+			expect(changed[0]!.from).toBe("absent");
+			expect(changed[0]!.to).not.toBe("absent");
 		} finally {
 			setLogFile(null);
 			delete process.env.GOBLIN_HOME;

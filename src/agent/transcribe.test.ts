@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TranscriptionModelV2 } from "@ai-sdk/provider";
 import type { AuthStore } from "../auth.ts";
-import { transcribeAudio, transcriptionModel, TRANSCRIBE_MAX_BYTES } from "./transcribe.ts";
+import { transcribeAudio, transcriptionModel } from "./transcribe.ts";
 
 let dirs: string[] = [];
 function tmpdir_(): string {
@@ -57,14 +57,45 @@ describe("transcribeAudio", () => {
 		expect(await transcribeAudio(fakeModel("   "), file(f))).toBeNull();
 	});
 
-	test("a file over the provider cap is skipped without calling the model", async () => {
+	test("over-cap media is segmented by ffmpeg and joined", async () => {
+		if (Bun.which("ffmpeg") === null) return; // environment dep
 		const dir = tmpdir_();
-		const f = join(dir, "big.ogg");
-		writeFileSync(f, "x");
-		truncateSync(f, TRANSCRIBE_MAX_BYTES + 1);
-		const calls = { n: 0 };
-		expect(await transcribeAudio(fakeModel("x", calls), file(f))).toBeNull();
-		expect(calls.n).toBe(0);
+		const src = join(dir, "long.ogg");
+		// 25s of audio → 3 segments at a shrunken 10s split. A 1-byte cap
+		// forces the segment path without a real 25MiB fixture.
+		const gen = Bun.spawnSync([
+			"ffmpeg", "-hide_banner", "-loglevel", "error",
+			"-f", "lavfi", "-i", "sine=frequency=440:duration=25",
+			"-ac", "1", "-b:a", "48k", src,
+		]);
+		if (gen.exitCode !== 0) throw new Error(`test audio gen: ${gen.stderr.toString()}`);
+		let n = 0;
+		const model: TranscriptionModelV2 = {
+			specificationVersion: "v2",
+			provider: "test",
+			modelId: "fake-whisper",
+			doGenerate: async () => ({
+				text: `chunk-${++n}`,
+				segments: [],
+				language: "en",
+				durationInSeconds: 1,
+				warnings: [],
+				response: { timestamp: new Date(), modelId: "fake-whisper" },
+			}),
+		};
+		expect(
+			await transcribeAudio(model, file(src), { maxBytes: 1, segmentSeconds: 10 }),
+		).toBe("chunk-1 chunk-2 chunk-3");
+		expect(n).toBe(3);
+	});
+
+	test("a corrupt source fails loud through ffmpeg", async () => {
+		if (Bun.which("ffmpeg") === null) return;
+		const f = join(tmpdir_(), "junk.ogg");
+		writeFileSync(f, "definitely not audio");
+		await expect(
+			transcribeAudio(fakeModel("x"), file(f), { maxBytes: 1 }),
+		).rejects.toThrow("ffmpeg");
 	});
 
 	test("a missing file fails loud", async () => {

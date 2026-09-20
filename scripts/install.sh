@@ -24,6 +24,15 @@ if [ ! -d "$repo_root/node_modules" ]; then
 	(cd "$repo_root" && bun install --frozen-lockfile)
 fi
 
+# ffmpeg powers the over-cap transcription path (audio extract + segment).
+# Only relevant when a transcription block is configured — warn, not fail.
+# Comment lines are stripped first so a commented-out example doesn't
+# count as configured.
+if grep -vE '^[[:space:]]*//' "$goblin_home/goblin.json5" | grep -q 'transcription' &&
+	! command -v ffmpeg >/dev/null; then
+	echo "install: warning — transcription is configured but ffmpeg is not in PATH; oversized media stays untranscribed" >&2
+fi
+
 # Unit generation: substitute the paths baked into the committed unit so
 # the same file works on any box. No-ops where the defaults already match.
 mkdir -p "$unit_dir"

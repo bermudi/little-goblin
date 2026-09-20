@@ -164,9 +164,15 @@ agent loop.
   the file can't go inline — wrong modality or spent budget — while
   audio-capable models still get the file part. The call rides the
   per-conversation intake chain (off the update hot path), bounded at 60s
-  and 25 MiB. A failed or oversized transcription leaves the attachment
-  path-referenced and warn-logged — whisper being down must never eat a
-  voice message.
+  per call. Files over the provider's 25 MiB upload cap are segmented, not
+  skipped: ffmpeg extracts the audio track to mono opus — a video note's
+  payload is mostly pixels — and splits it into 15-minute chunks,
+  transcribed sequentially and joined; a partial result is kept and
+  warn-logged rather than discarded. ffmpeg presence is probed at boot
+  when transcription is configured, and install.sh warns when the config
+  names it but PATH lacks it. A failed transcription — whisper down,
+  ffmpeg missing, corrupt media — leaves the attachment path-referenced
+  and warn-logged: it must never eat a voice message.
 
 ## Tools (v1)
 

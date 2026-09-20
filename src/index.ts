@@ -5,7 +5,7 @@ import { ensureOpenRouterCatalog, inputModalities } from "./agent/models-dev.ts"
 import { buildSystemPrompt } from "./agent/prompt.ts";
 import { resolveModel, thinkingOptions } from "./agent/providers.ts";
 import { generateTopicTitle } from "./agent/title.ts";
-import { transcribeAudio, transcriptionModel } from "./agent/transcribe.ts";
+import { checkFfmpeg, transcribeAudio, transcriptionModel } from "./agent/transcribe.ts";
 import { makeTools } from "./agent/tools/mod.ts";
 import {
 	ensureHomeLayout,
@@ -37,6 +37,10 @@ setLogLevel(config.logLevel);
 const configRef = { current: config };
 const auth = loadAuth();
 const store = openStore(paths.db());
+
+// ffmpeg powers the over-cap transcription path — probe it once at boot
+// so a missing binary is a startup warn, not a surprise mid-voice-note.
+if (config.transcription) void checkFfmpeg();
 
 // Warm the openrouter route-capability catalog so /think and the mini app
 // see real per-model thinking levels instead of the cold-start fallback.

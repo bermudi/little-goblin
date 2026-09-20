@@ -14,6 +14,9 @@ const cfg: Config = {
 	providers: {
 		zai: { kind: "openai-compatible", baseUrl: "https://api.z.ai/api/coding/paas/v4", auth: "zai" },
 		other: { kind: "openai-compatible", baseUrl: "https://example.com/v1", auth: "other" },
+		// Free-form name with a dot — the exact shape the SDK's lookup
+		// key rule (first dot-separated segment) exists for.
+		"z.ai": { kind: "openai-compatible", baseUrl: "https://api.z.ai/api/paas/v4", auth: "zai" },
 		openrouter: { kind: "openrouter", auth: "openrouter" },
 		codex: { kind: "codex" },
 	},
@@ -211,6 +214,23 @@ describe("thinkingOptions — codex and gpt (reasoning_effort ladder)", () => {
 		});
 		expect(thinkingOptions(cfg, "other/gpt-6-astra", "max")).toEqual({
 			other: { reasoningEffort: "max" },
+		});
+	});
+});
+
+describe("thinkingOptions — provider options key", () => {
+	// The openai-compatible provider resolves options under
+	// name.split(".")[0] — keying under the full name silently drops
+	// them. Every model family must follow the rule.
+	test("a dotted provider name keys options under its first segment", () => {
+		expect(thinkingOptions(cfg, "z.ai/glm-5.2", "high")).toEqual({
+			z: { thinking: { type: "enabled" }, reasoningEffort: "high" },
+		});
+		expect(thinkingOptions(cfg, "z.ai/gpt-6-astra", "off")).toEqual({
+			z: { reasoningEffort: "low" },
+		});
+		expect(thinkingOptions(cfg, "z.ai/whatever-9", "medium")).toEqual({
+			z: { reasoningEffort: "medium" },
 		});
 	});
 });

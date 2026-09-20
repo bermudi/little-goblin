@@ -106,17 +106,22 @@ function openaiCompatibleThinking(
 	level: ThinkingLevel,
 	baseUrl?: string,
 ): ProviderOptions {
+	// The SDK resolves provider options under the first dot-separated
+	// segment of the provider name (config.provider.split(".")[0]) — a
+	// provider named "z.ai" must key under "z" or the options are
+	// silently dropped.
+	const key = provider.split(".")[0]!.trim();
 	if (modelId.startsWith("glm-")) {
-		return glmThinking(provider, modelId, level, zaiCodingPlan(baseUrl));
+		return glmThinking(key, modelId, level, zaiCodingPlan(baseUrl));
 	}
 	if (modelId.startsWith("gpt-")) {
 		return {
-			[provider]: { reasoningEffort: clampToLadder(gptLevels(modelId), level) },
+			[key]: { reasoningEffort: clampToLadder(gptLevels(modelId), level) },
 		};
 	}
 	// Generic surface: reasoning_effort is the only knob the SDK exposes;
 	// "off" degrades to the lowest effort rather than an invented disable.
-	return { [provider]: { reasoningEffort: level === "off" ? "low" : level } };
+	return { [key]: { reasoningEffort: level === "off" ? "low" : level } };
 }
 
 // api.z.ai/api/coding/paas/* — the subscription coding-plan endpoint.
@@ -213,7 +218,7 @@ function openrouterLevels(
 // is the trajectory, and an effort param is likelier accepted than a
 // "disabled" toggle that forced-thinking models reject outright.
 function glmThinking(
-	provider: string,
+	key: string,
 	modelId: string,
 	level: ThinkingLevel,
 	forced53 = false,
@@ -229,11 +234,11 @@ function glmThinking(
 			max: "max",
 		}[level];
 		return {
-			[provider]: { thinking: { type: "enabled" }, reasoningEffort: effort },
+			[key]: { thinking: { type: "enabled" }, reasoningEffort: effort },
 		};
 	}
 	if (major === 5 && minor === 2) {
-		if (level === "off") return { [provider]: { thinking: { type: "disabled" } } };
+		if (level === "off") return { [key]: { thinking: { type: "disabled" } } };
 		const effort = {
 			low: "high",
 			medium: "high",
@@ -242,10 +247,10 @@ function glmThinking(
 			max: "max",
 		}[level];
 		return {
-			[provider]: { thinking: { type: "enabled" }, reasoningEffort: effort },
+			[key]: { thinking: { type: "enabled" }, reasoningEffort: effort },
 		};
 	}
-	return { [provider]: { thinking: { type: level === "off" ? "disabled" : "enabled" } } };
+	return { [key]: { thinking: { type: level === "off" ? "disabled" : "enabled" } } };
 }
 
 function glmVersion(modelId: string): { major: number; minor: number } {

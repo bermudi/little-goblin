@@ -39,8 +39,8 @@ describe("read_file", () => {
 			error?: string;
 		};
 		expect(out.error).toBeUndefined();
-		expect(out.content).toBe("1\tone\n2\ttwo\n3\t\n");
-		expect(out.lines).toBe(3); // trailing newline → empty third line
+		expect(out.content).toBe("1\tone\n2\ttwo\n");
+		expect(out.lines).toBe(2); // the trailing newline terminates line 2 — no phantom line 3
 	});
 
 	test("oversized file is refused before it is read", async () => {
@@ -85,7 +85,7 @@ describe("read_file", () => {
 		writeFileSync(join(dir, "f.txt"), "a\nb\n");
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "f.txt", offset: 99 }, opts)) as { error?: string };
-		expect(out.error).toContain("offset 99 is beyond end of file (3 lines)");
+		expect(out.error).toContain("offset 99 is beyond end of file (2 lines)");
 	});
 
 	test("a single line bigger than the cap gets a bash fallback, not a marker", async () => {
@@ -183,6 +183,14 @@ describe("read_file negative offsets", () => {
 		expect(out.content).toBe("26\tl25\n27\tl26\n28\tl27\n29\tl28\n30\tl29\n");
 	});
 
+	test("offset=-1 on a trailing-newline file returns the last real line, not a blank", async () => {
+		const dir = tmpdir_();
+		writeFileSync(join(dir, "f.txt"), "a\nb\nc\n");
+		const t = readFileTool(dir);
+		const out = (await t.execute!({ path: "f.txt", offset: -1 }, opts)) as { content?: string };
+		expect(out.content).toBe("3\tc\n");
+	});
+
 	test("a negative offset beyond the file clamps to the whole file, no error", async () => {
 		const dir = tmpdir_();
 		writeFileSync(join(dir, "f.txt"), "a\nb\nc\n");
@@ -195,8 +203,8 @@ describe("read_file negative offsets", () => {
 		};
 		expect(out.error).toBeUndefined();
 		expect(out.content!.startsWith("1\ta\n")).toBe(true);
-		expect(out.lines).toBe(4);
-		expect(out.shown).toBe(4);
+		expect(out.lines).toBe(3);
+		expect(out.shown).toBe(3);
 	});
 });
 
@@ -220,7 +228,7 @@ describe("read_file empty files", () => {
 		writeFileSync(join(dir, "ws.txt"), " \n\t\n");
 		const t = readFileTool(dir);
 		const out = (await t.execute!({ path: "ws.txt" }, opts)) as { content?: string; lines?: number };
-		expect(out.lines).toBe(3);
+		expect(out.lines).toBe(2);
 		expect(out.content!.startsWith("1\t \n")).toBe(true);
 	});
 });

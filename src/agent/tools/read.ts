@@ -274,7 +274,11 @@ export const readFileTool = (cwd: string) =>
 				// Whitespace-only files are not empty and keep their numbering.
 				return { content: "[file is empty — 0 bytes]", lines: 0, shown: 0 };
 			}
+			// A trailing newline terminates the last line; it does not start a new
+			// one. Keeping the empty tail element makes counts off by one and
+			// makes offset=-1 return a blank line.
 			const lines = read.text.split("\n");
+			if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
 			const total = lines.length;
 
 			// An offset past EOF is an error with the real count, not a silent

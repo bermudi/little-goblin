@@ -373,7 +373,10 @@ Resolved values never enter the tool environment, the model context, or logs.
   message and log structured detail.
 - **TTS**: `tts: {kind: "edge", voice, rate?}` — the Edge read-aloud
   websocket service (no auth, unofficial, it can break; failures surface
-  as a warn + a callback toast, never a turn failure). Three doors into
+  as a warn + a short chat message, never a turn failure — the 🔊 tap is
+  answered immediately because Telegram expires callback queries in
+  seconds and synthesis outruns them, so an outcome can't ride the
+  toast). Three doors into
   the same `synthesizeSpeech`: the `speak` tool (text or file path, sent
   in-stream via the sink), a 🔊 button stamped on a completed reply's
   last bubble, and `/voice` mode (below). Input over ~10k chars is

@@ -10,7 +10,8 @@ Environment=GOBLIN_HOME=/home/daniel/goblin
 # PATH — not the login shell's. The systemd user manager's default PATH is
 # /usr/local/sbin:/usr/local/bin:/usr/bin only, which misses operator tools
 # in the home dir (pass-cli lives in ~/bin) — every resolve would exit 127.
-# Keep this list covering every tool the auth records call.
+# Keep this list covering every tool the auth records call — and ffmpeg
+# (/usr/bin), which the transcription segment path shells out to.
 Environment=PATH=/home/daniel/bin:/home/daniel/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin
 ExecStart=/usr/bin/bun run src/index.ts
 # SIGTERM rides the app's own graceful shutdown (fence lanes, drain intake).

@@ -92,7 +92,7 @@ async function collectBytes(
 	cap: number,
 	onTruncate: () => void,
 	readers: Set<CancellableReader>,
-): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+): Promise<{ value: Uint8Array; truncated: boolean }> {
 	const reader = stream.getReader();
 	readers.add(reader);
 	const chunks: Uint8Array[] = [];
@@ -115,7 +115,7 @@ async function collectBytes(
 		readers.delete(reader);
 		reader.releaseLock();
 	}
-	return { bytes: Buffer.concat(chunks), truncated };
+	return { value: Buffer.concat(chunks), truncated };
 }
 
 async function collect(
@@ -123,153 +123,113 @@ async function collect(
 	cap: number,
 	onTruncate: () => void,
 	readers: Set<CancellableReader>,
-): Promise<{ text: string; truncated: boolean }> {
-	const { bytes, truncated } = await collectBytes(stream, cap, onTruncate, readers);
-	return { text: Buffer.from(bytes).toString("utf8"), truncated };
+): Promise<{ value: string; truncated: boolean }> {
+	const { value: bytes, truncated } = await collectBytes(stream, cap, onTruncate, readers);
+	return { value: Buffer.from(bytes).toString("utf8"), truncated };
 }
 
-// Run an already-spawned process to a settled result: combined deadline,
-// abort, and cap-overflow kills funnel into group TERM→KILL escalation;
-// pipe readers get a short window after exit before being cut.
+type Collector<S> = (
+	stream: ReadableStream<Uint8Array>,
+	cap: number,
+	onTruncate: () => void,
+	readers: Set<CancellableReader>,
+) => Promise<{ value: S; truncated: boolean }>;
+
+// The one runner: combined deadline, abort, and cap-overflow kills funnel
+// into group TERM→KILL escalation; pipe readers get a short window after
+// exit before being cut. stdout's shape (text vs bytes) is the caller's
+// collector; stderr is always text — it's only ever an error message.
+async function runBounded<S>(
+	proc: Bun.ReadableSubprocess,
+	opts: { timeoutMs: number; maxOutput: number; abortSignal?: AbortSignal },
+	collectStdout: Collector<S>,
+): Promise<{
+	stdout: S;
+	stderr: string;
+	exitCode: number | null;
+	timedOut: boolean;
+	truncated: boolean;
+}> {
+	const { timeoutMs, maxOutput, abortSignal } = opts;
+	const readers = new Set<CancellableReader>();
+	let timedOut = false;
+	let drainCut = false;
+
+	const killAndReap = async (): Promise<number | null> => {
+		killGroup(proc, "SIGTERM");
+		let code = await Promise.race([proc.exited, sleep(KILL_GRACE_MS)]);
+		if (code === undefined) {
+			killGroup(proc, "SIGKILL");
+			code = await Promise.race([proc.exited, sleep(KILL_GRACE_MS)]);
+		}
+		return code ?? null;
+	};
+
+	let stopDeadline!: () => void;
+	const deadline = new Promise<"timeout">((res) => {
+		const t = setTimeout(() => res("timeout"), timeoutMs);
+		stopDeadline = () => clearTimeout(t);
+	});
+	let triggerKill!: () => void;
+	const killed = new Promise<"killed">((res) => {
+		triggerKill = () => res("killed");
+	});
+	const onAbort = () => triggerKill();
+	if (abortSignal?.aborted) triggerKill();
+	else abortSignal?.addEventListener("abort", onAbort, { once: true });
+
+	const exitP: Promise<number | null> = (async () => {
+		const first = await Promise.race([proc.exited, deadline, killed]);
+		stopDeadline();
+		abortSignal?.removeEventListener("abort", onAbort);
+		if (typeof first === "number") return first;
+		if (first === "timeout") timedOut = true;
+		return killAndReap();
+	})();
+
+	void exitP
+		.then(() => sleep(PIPE_DRAIN_MS))
+		.then(() => {
+			if (readers.size === 0) return;
+			drainCut = true;
+			for (const r of readers) {
+				try {
+					void r.cancel().catch(() => {});
+				} catch {
+					// released mid-iteration — nothing to cancel
+				}
+			}
+		})
+		.catch(() => {});
+
+	const [out, err] = await Promise.all([
+		collectStdout(proc.stdout, maxOutput, triggerKill, readers),
+		collect(proc.stderr, maxOutput, triggerKill, readers),
+	]);
+	const exitCode = await exitP;
+	return {
+		stdout: out.value,
+		stderr: err.value,
+		exitCode,
+		timedOut,
+		truncated: out.truncated || err.truncated || drainCut,
+	};
+}
+
+// Run an already-spawned process to a settled result — text stdout.
 export async function boundedRun(
 	proc: Bun.ReadableSubprocess,
 	opts: { timeoutMs: number; maxOutput: number; abortSignal?: AbortSignal },
 ): Promise<BoundedProc> {
-	const { timeoutMs, maxOutput, abortSignal } = opts;
-	const readers = new Set<CancellableReader>();
-	let timedOut = false;
-	let drainCut = false;
-
-	const killAndReap = async (): Promise<number | null> => {
-		killGroup(proc, "SIGTERM");
-		let code = await Promise.race([proc.exited, sleep(KILL_GRACE_MS)]);
-		if (code === undefined) {
-			killGroup(proc, "SIGKILL");
-			code = await Promise.race([proc.exited, sleep(KILL_GRACE_MS)]);
-		}
-		return code ?? null;
-	};
-
-	let stopDeadline!: () => void;
-	const deadline = new Promise<"timeout">((res) => {
-		const t = setTimeout(() => res("timeout"), timeoutMs);
-		stopDeadline = () => clearTimeout(t);
-	});
-	let triggerKill!: () => void;
-	const killed = new Promise<"killed">((res) => {
-		triggerKill = () => res("killed");
-	});
-	const onAbort = () => triggerKill();
-	if (abortSignal?.aborted) triggerKill();
-	else abortSignal?.addEventListener("abort", onAbort, { once: true });
-
-	const exitP: Promise<number | null> = (async () => {
-		const first = await Promise.race([proc.exited, deadline, killed]);
-		stopDeadline();
-		abortSignal?.removeEventListener("abort", onAbort);
-		if (typeof first === "number") return first;
-		if (first === "timeout") timedOut = true;
-		return killAndReap();
-	})();
-
-	void exitP
-		.then(() => sleep(PIPE_DRAIN_MS))
-		.then(() => {
-			if (readers.size === 0) return;
-			drainCut = true;
-			for (const r of readers) {
-				try {
-					void r.cancel().catch(() => {});
-				} catch {
-					// released mid-iteration — nothing to cancel
-				}
-			}
-		})
-		.catch(() => {});
-
-	const [out, err] = await Promise.all([
-		collect(proc.stdout, maxOutput, triggerKill, readers),
-		collect(proc.stderr, maxOutput, triggerKill, readers),
-	]);
-	const exitCode = await exitP;
-	return {
-		stdout: out.text,
-		stderr: err.text,
-		exitCode,
-		timedOut,
-		truncated: out.truncated || err.truncated || drainCut,
-	};
+	return runBounded(proc, opts, collect);
 }
 
-// Binary-stdout twin of boundedRun for callers whose stdout isn't text
-// (TTS ffmpeg remux). Same deadline/abort/cap/group-kill contract, same
-// bounded-settles guarantee.
+// Binary-stdout twin for callers whose stdout isn't text (TTS ffmpeg
+// remux). Same deadline/abort/cap/group-kill contract, same
+// bounded-settles guarantee — one runner, different collector.
 export async function boundedRunBinary(
 	proc: Bun.ReadableSubprocess,
 	opts: { timeoutMs: number; maxOutput: number; abortSignal?: AbortSignal },
 ): Promise<BoundedProcBytes> {
-	const { timeoutMs, maxOutput, abortSignal } = opts;
-	const readers = new Set<CancellableReader>();
-	let timedOut = false;
-	let drainCut = false;
-
-	const killAndReap = async (): Promise<number | null> => {
-		killGroup(proc, "SIGTERM");
-		let code = await Promise.race([proc.exited, sleep(KILL_GRACE_MS)]);
-		if (code === undefined) {
-			killGroup(proc, "SIGKILL");
-			code = await Promise.race([proc.exited, sleep(KILL_GRACE_MS)]);
-		}
-		return code ?? null;
-	};
-
-	let stopDeadline!: () => void;
-	const deadline = new Promise<"timeout">((res) => {
-		const t = setTimeout(() => res("timeout"), timeoutMs);
-		stopDeadline = () => clearTimeout(t);
-	});
-	let triggerKill!: () => void;
-	const killed = new Promise<"killed">((res) => {
-		triggerKill = () => res("killed");
-	});
-	const onAbort = () => triggerKill();
-	if (abortSignal?.aborted) triggerKill();
-	else abortSignal?.addEventListener("abort", onAbort, { once: true });
-
-	const exitP: Promise<number | null> = (async () => {
-		const first = await Promise.race([proc.exited, deadline, killed]);
-		stopDeadline();
-		abortSignal?.removeEventListener("abort", onAbort);
-		if (typeof first === "number") return first;
-		if (first === "timeout") timedOut = true;
-		return killAndReap();
-	})();
-
-	void exitP
-		.then(() => sleep(PIPE_DRAIN_MS))
-		.then(() => {
-			if (readers.size === 0) return;
-			drainCut = true;
-			for (const r of readers) {
-				try {
-					void r.cancel().catch(() => {});
-				} catch {
-					// released mid-iteration — nothing to cancel
-				}
-			}
-		})
-		.catch(() => {});
-
-	const [out, err] = await Promise.all([
-		collectBytes(proc.stdout, maxOutput, triggerKill, readers),
-		collect(proc.stderr, maxOutput, triggerKill, readers),
-	]);
-	const exitCode = await exitP;
-	return {
-		stdout: out.bytes,
-		stderr: err.text,
-		exitCode,
-		timedOut,
-		truncated: out.truncated || err.truncated || drainCut,
-	};
+	return runBounded(proc, opts, collectBytes);
 }

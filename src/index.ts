@@ -1,7 +1,7 @@
 // Composition root: config → auth → conversations → bot → http.
 
 import { loadAuth } from "./auth.ts";
-import { ensureOpenRouterCatalog, inputModalities } from "./agent/models-dev.ts";
+import { contextLimit, ensureOpenRouterCatalog, inputModalities } from "./agent/models-dev.ts";
 import { buildSystemPrompt } from "./agent/prompt.ts";
 import { resolveModel, thinkingOptions } from "./agent/providers.ts";
 import { generateTopicTitle } from "./agent/title.ts";
@@ -68,11 +68,12 @@ async function boot() {
 			const cfg = configRef.current;
 			const modelRef = conv.model ?? cfg.model;
 			const { provider, modelId } = splitModelRef(modelRef);
-			// Both may be slow (auth "!command", models.dev fetch) — run in
+			// All may be slow (auth "!command", models.dev fetch) — run in
 			// parallel inside the same admission window.
-			const [model, modalities] = await Promise.all([
+			const [model, modalities, contextWindow] = await Promise.all([
 				resolveModel(cfg, auth, modelRef),
 				inputModalities(provider, modelId),
+				contextLimit(provider, modelId),
 			]);
 			const level: ThinkingLevel = (thinkingLevels as readonly string[]).includes(
 				conv.thinking ?? "",
@@ -91,6 +92,7 @@ async function boot() {
 				model,
 				system: prompt.text,
 				inputModalities: modalities,
+				...(contextWindow !== null ? { contextWindow } : {}),
 				...(providerOptions ? { providerOptions } : {}),
 			};
 		},

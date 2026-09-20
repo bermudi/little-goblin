@@ -17,7 +17,7 @@ import {
 	type UIMessage,
 } from "ai";
 import type { ProviderOptions, ToolCallOptions } from "@ai-sdk/provider-utils";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { materializeAttachments } from "./agent/attachments.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
@@ -53,6 +53,9 @@ export interface ModelStep {
 	// attachment parts materialize as file parts this turn. Absent =
 	// text-only, everything degrades to path references.
 	inputModalities?: Set<string>;
+	// The model's context window (models.dev), when known — the
+	// denominator for window-utilization logging.
+	contextWindow?: number;
 }
 
 export interface RuntimeDeps {
@@ -289,6 +292,38 @@ export class Runtime {
 				ignoreIncompleteToolCalls: true,
 			});
 
+			// Cache observability (DESIGN.md, Cache stability). headHash covers
+			// system + tools — the request head — and must never move between
+			// turns on its own; if it does, something automated rewrote the
+			// head and the provider prefix cache went with it. requestHash
+			// covers the whole request and moves by appends only: same message
+			// count with a different hash, or a shrinking count, is the
+			// visible signature of a history rewrite.
+			const headHash = createHash("sha256")
+				.update(
+					JSON.stringify({
+						system: step.system,
+						tools: Object.entries(tools)
+							.map(([name, t]) => `${name}=${(t as { description?: string }).description ?? ""}`)
+							.sort(),
+					}),
+				)
+				.digest("hex")
+				.slice(0, 16);
+			const requestHash = createHash("sha256")
+				.update(JSON.stringify(messages))
+				.digest("hex")
+				.slice(0, 16);
+			log.info("model request", {
+				conversation: convId,
+				headHash,
+				requestHash,
+				messages: messages.length,
+			});
+
+			// The last step's input is the fullest prompt this turn sent —
+			// the honest numerator for window utilization.
+			let lastStepInputTokens: number | null = null;
 			const result = streamText({
 				model: step.model,
 				system: step.system,
@@ -299,6 +334,19 @@ export class Runtime {
 				abortSignal: controller.signal,
 				onError: ({ error }) => {
 					log.error("model stream error", error, { conversation: convId });
+				},
+				onStepFinish: ({ usage }) => {
+					lastStepInputTokens = usage.inputTokens ?? null;
+					// The cached split is how cache health is read off the log:
+					// undefined means the provider didn't report it (logged as
+					// null), 0 means reported-and-cold. inputTokens includes the
+					// cached ones.
+					log.info("model step usage", {
+						conversation: convId,
+						inputTokens: usage.inputTokens ?? null,
+						cachedInputTokens: usage.cachedInputTokens ?? null,
+						outputTokens: usage.outputTokens ?? null,
+					});
 				},
 			});
 
@@ -380,6 +428,7 @@ export class Runtime {
 
 			this.checkAuthority(convId, epoch);
 			if (streamError !== null) throw new Error(streamError);
+			const usage = await result.usage.catch(() => null);
 			if (responseMessage !== null) {
 				// responseMessage already carries an SDK-assigned id.
 				// The anchor ties it to the user message that triggered
@@ -388,7 +437,35 @@ export class Runtime {
 				store.append(convId, [responseMessage], { anchorSeq });
 			}
 			await notifyAll({ kind: "completed" });
-			log.info("turn completed", { conversation: convId, epoch });
+			// Window utilization rides the completion line: the last step's
+			// input against the catalog context limit. Cached tokens still
+			// occupy the window, so this is the filling gauge regardless of
+			// cache health.
+			const window =
+				step.contextWindow !== undefined && lastStepInputTokens !== null
+					? {
+							input: lastStepInputTokens,
+							limit: step.contextWindow,
+							pct: Math.round((lastStepInputTokens / step.contextWindow) * 100),
+						}
+					: null;
+			log.info("turn completed", {
+				conversation: convId,
+				epoch,
+				usage:
+					usage && {
+						input: usage.inputTokens ?? null,
+						cached: usage.cachedInputTokens ?? null,
+						output: usage.outputTokens ?? null,
+					},
+				window,
+			});
+			if (window && window.pct >= 80) {
+				log.warn("context window ≥80% — history is approaching the limit", {
+					conversation: convId,
+					...window,
+				});
+			}
 		} catch (err) {
 			if (err instanceof FencedError || controller.signal.aborted) {
 				// Fenced turns abort quietly and log it.

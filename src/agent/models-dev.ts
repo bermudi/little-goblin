@@ -30,6 +30,9 @@ const catalogSchema = z.record(
 							input: z.array(z.string()).default(["text"]),
 						})
 						.optional(),
+						// Context window limit — the denominator for window
+						// utilization logging (DESIGN.md, Cache stability).
+						limit: z.object({ context: z.number().optional() }).optional(),
 				}),
 			)
 			.default({}),
@@ -107,6 +110,21 @@ export async function inputModalities(provider: string, modelId: string): Promis
 		if (found) return new Set(found);
 	}
 	return new Set(["text"]);
+}
+
+// Context window (tokens) for "<provider>/<model-id>" as configured, same
+// lookup rule as inputModalities. Null when the catalog is cold or doesn't
+// list the model — callers treat null as "unknown", never "unlimited".
+export async function contextLimit(provider: string, modelId: string): Promise<number | null> {
+	const cat = await ensureCatalog();
+	if (!cat) return null;
+	const direct = cat[provider]?.models[modelId]?.limit?.context;
+	if (direct !== undefined) return direct;
+	for (const p of Object.values(cat)) {
+		const found = p.models[modelId]?.limit?.context;
+		if (found !== undefined) return found;
+	}
+	return null;
 }
 
 // ---------- OpenRouter per-route capability catalog ----------

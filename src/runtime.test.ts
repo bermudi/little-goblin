@@ -100,6 +100,23 @@ function setup(deltas: string[], delayMs = 15) {
 	return { store, conv, runtime };
 }
 
+// Records the prompt each doStream call receives — JSON-stringified so
+// requests compare bytewise across turns (cache-stability tests).
+function recordingModel(deltas: string[], delayMs = 15) {
+	const prompts: string[] = [];
+	const base = fakeModel(deltas, delayMs) as unknown as {
+		doStream(o: { prompt: unknown }): { stream: ReadableStream<LanguageModelV2StreamPart> };
+	};
+	const model = {
+		...base,
+		doStream(o: { prompt: unknown }) {
+			prompts.push(JSON.stringify(o.prompt));
+			return base.doStream(o);
+		},
+	} as unknown as LanguageModel;
+	return { model, prompts };
+}
+
 describe("turn authority", () => {
 	test("clean turn completes and persists the assistant message", async () => {
 		const { store, conv, runtime } = setup(["hello", " world"], 5);
@@ -511,22 +528,6 @@ describe("turn authority", () => {
 		store.close();
 	});
 
-	// Records the prompt each doStream call receives.
-	function recordingModel(deltas: string[], delayMs = 15) {
-		const prompts: string[] = [];
-		const base = fakeModel(deltas, delayMs) as unknown as {
-			doStream(o: { prompt: unknown }): { stream: ReadableStream<LanguageModelV2StreamPart> };
-		};
-		const model = {
-			...base,
-			doStream(o: { prompt: unknown }) {
-				prompts.push(JSON.stringify(o.prompt));
-				return base.doStream(o);
-			},
-		} as unknown as LanguageModel;
-		return { model, prompts };
-	}
-
 	test("an attachment part the model can't consume degrades to its path reference", async () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -613,6 +614,94 @@ describe("turn authority", () => {
 		});
 		await sleep(100);
 		expect(calls).toBe(1);
+		store.close();
+	});
+});
+
+describe("cache stability", () => {
+	// DESIGN.md, Cache stability: the request for turn N+1 is the request
+	// for turn N with new content appended — bytes already sent are never
+	// rewritten. This is the end-to-end guard: history out of SQLite,
+	// through materialization and conversion, onto the wire.
+	function prefixOf(request: string, count: number): string {
+		const msgs = JSON.parse(request) as unknown[];
+		return JSON.stringify(msgs.slice(0, count));
+	}
+	function messageCount(request: string): number {
+		return (JSON.parse(request) as unknown[]).length;
+	}
+
+	test("turn N+1's request is turn N's request with content appended", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const { model, prompts } = recordingModel(["hello world"], 5);
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({}),
+		});
+		const s1 = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), s1);
+		expect(await s1.done).toEqual({ kind: "completed" });
+		const s2 = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "again" }]), s2);
+		expect(await s2.done).toEqual({ kind: "completed" });
+		expect(prompts.length).toBe(2);
+		// The whole first request survives verbatim as the head of the
+		// second — provider prefix caches stay valid across turns.
+		expect(prefixOf(prompts[1]!, messageCount(prompts[0]!))).toBe(prompts[0]!);
+		store.close();
+	});
+
+	test("inlined image bytes don't move when new media arrives later", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-rt-cache-"));
+		dirs.push(dir);
+		const a = join(dir, "a.png");
+		const b = join(dir, "b.png");
+		writeFileSync(a, "pngdata-a");
+		writeFileSync(b, "pngdata-b");
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const { model, prompts } = recordingModel(["ok"], 5);
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({
+				model,
+				system: "test",
+				inputModalities: new Set(["text", "image"]),
+			}),
+			makeTools: () => ({}),
+		});
+		const att = (f: string, name: string, size: number): UIMessage["parts"][number] => ({
+			type: "data-attachment" as const,
+			data: { path: f, mediaType: "image/png", filename: name, size },
+		});
+		const s1 = new RecordingSink();
+		runtime.submit(
+			conv,
+			userMessage([
+				att(a, "a.png", 9),
+				{ type: "text", text: "what is this" },
+			]),
+			s1,
+		);
+		expect(await s1.done).toEqual({ kind: "completed" });
+		const s2 = new RecordingSink();
+		runtime.submit(
+			conv,
+			userMessage([
+				att(b, "b.png", 9),
+				{ type: "text", text: "and this" },
+			]),
+			s2,
+		);
+		expect(await s2.done).toEqual({ kind: "completed" });
+		expect(prompts.length).toBe(2);
+		// The first photo's inlined bytes ride the head of the second
+		// request unchanged — a new photo never re-decides an old one.
+		expect(prefixOf(prompts[1]!, messageCount(prompts[0]!))).toBe(prompts[0]!);
+		expect(prompts[0]!).toContain("image/png");
+		expect(prompts[1]!).toContain("image/png");
 		store.close();
 	});
 });

@@ -89,7 +89,7 @@ describe("materializeAttachments", () => {
 		expect(out[0]!.parts[0]!.type).toBe("text");
 	});
 
-	test("attachments past the inline budget degrade, oldest first", async () => {
+	test("attachments past the inline budget degrade oldest-first — newest stays inline", async () => {
 		const dir = tmpdir_();
 		const a = join(dir, "a.png");
 		const b = join(dir, "b.png");
@@ -104,10 +104,35 @@ describe("materializeAttachments", () => {
 			],
 		};
 		const out = await materializeAttachments([m], new Set(["image"]), 10);
-		expect(out[0]!.parts[0]!.type).toBe("file");
-		const second = out[0]!.parts[1]!;
-		expect(second.type).toBe("text");
-		expect((second as { text: string }).text).toContain(b);
+		// Newest-first reservation: the fresh photo (b) wins the budget,
+		// the older one degrades to its path reference.
+		const first = out[0]!.parts[0]!;
+		expect(first.type).toBe("text");
+		expect((first as { text: string }).text).toContain(a);
+		expect(out[0]!.parts[1]!.type).toBe("file");
+	});
+
+	test("a fresh photo stays inline behind megabytes of older images", async () => {
+		const dir = tmpdir_();
+		const old = join(dir, "old.png");
+		const fresh = join(dir, "fresh.png");
+		writeFileSync(old, "x".repeat(64));
+		writeFileSync(fresh, "12345678");
+		const history: UIMessage[] = [
+			{
+				id: "u-old",
+				role: "user",
+				parts: [attachmentPart({ path: old, mediaType: "image/png", filename: "old.png", size: 64 })],
+			},
+			{
+				id: "u-new",
+				role: "user",
+				parts: [attachmentPart({ path: fresh, mediaType: "image/png", filename: "fresh.png", size: 8 })],
+			},
+		];
+		const out = await materializeAttachments(history, new Set(["image"]), 16);
+		expect(out[1]!.parts[0]!.type).toBe("file");
+		expect(out[0]!.parts[0]!.type).toBe("text");
 	});
 
 	test("non-attachment parts pass through untouched", async () => {
@@ -116,13 +141,14 @@ describe("materializeAttachments", () => {
 		expect(out[0]!.parts[0]).toEqual({ type: "text", text: "hi" });
 	});
 
-	test("a malformed attachment part fails loud", async () => {
+	test("a malformed attachment part degrades to the fallback reference", async () => {
 		const bad: UIMessage = {
 			id: "u3",
 			role: "user",
 			parts: [{ type: ATTACHMENT_PART, data: { path: 123 } }],
 		};
-		await expect(materializeAttachments([bad], new Set(["image"]))).rejects.toThrow();
+		const out = await materializeAttachments([bad], new Set(["image"]));
+		expect(out[0]!.parts[0]!.type).toBe("text");
 	});
 
 	test("a model that can't consume audio gets the transcript, not the bare path", async () => {

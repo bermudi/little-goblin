@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { Api } from "grammy";
 import type { Conversation } from "../conversation.ts";
-import { makeDeliverySink, recentReplyText, SPEAK_CALLBACK } from "./delivery.ts";
+import {
+	isNotModifiedError,
+	makeDeliverySink,
+	recentReplyText,
+	SPEAK_CALLBACK,
+} from "./delivery.ts";
 
 const CHUNK = 3800;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -298,5 +303,46 @@ describe("delivery", () => {
 		await done;
 		expect(msgs).toEqual([]);
 		expect(voices).toEqual([]);
+	});
+
+	test("a benign 'message is not modified' edit counts as success — 🫡 still lands", async () => {
+		const msgs: string[] = [];
+		const reactions: Array<{ id: number; emoji: string }> = [];
+		const api = {
+			sendChatAction: () => Promise.resolve(true),
+			sendMessage: async (_chat: number, text: string) => {
+				msgs.push(text);
+				return { message_id: msgs.length };
+			},
+			editMessageText: async () => {
+				// Telegram 400 when the edit changes nothing — must not
+				// wedge the drain or skip the end-marker reaction.
+				throw new Error(
+					"Call to 'editMessageText' failed! (400: Bad Request: message is not modified)",
+				);
+			},
+			setMessageReaction: async (_chat: number, id: number, reaction: Array<{ emoji: string }>) => {
+				reactions.push({ id, emoji: reaction[0]!.emoji });
+				return true;
+			},
+		} as unknown as Api;
+		const sink = makeDeliverySink(api, conv, undefined, 0);
+		sink.onTextDelta("a".repeat(3791));
+		await sleep(0);
+		expect(msgs).toEqual(["a".repeat(3791)]);
+		// The tool status tail moves msg1's window at done time — its edit
+		// hits the benign 400, which must clear as success instead of
+		// stagnating the drain and skipping the 🫡.
+		sink.onToolCall("t", { path: "p" });
+		await sink.onDone({ kind: "completed" });
+		expect(reactions).toEqual([{ id: 1, emoji: "🫡" }]);
+	});
+
+	test("isNotModifiedError matches grammy 400 shapes", () => {
+		expect(isNotModifiedError(new Error("400: Bad Request: message is not modified"))).toBe(true);
+		expect(
+			isNotModifiedError({ description: "Bad Request: message is not modified", error_code: 400 }),
+		).toBe(true);
+		expect(isNotModifiedError(new Error("transient edit failure"))).toBe(false);
 	});
 });

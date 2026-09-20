@@ -17,7 +17,9 @@ import { log } from "../log.ts";
 
 // Inline payloads get a ceiling — data URLs bloat both the request and,
 // once materialized, the context window. One budget covers the whole
-// turn: attachments materialize oldest-first until it's spent.
+// turn: attachments reserve newest-first, so a fresh photo never goes
+// invisible behind megabytes of older images. Degradations past the budget
+// warn — a silent path reference the model can't read is a trap.
 export const INLINE_MAX_BYTES = 8 * 1024 * 1024;
 
 export const ATTACHMENT_PART = "data-attachment";
@@ -54,56 +56,150 @@ export function acceptsMedia(modalities: Set<string>, mediaType: string): boolea
 	);
 }
 
+// The fallback when the file can't go inline: a stored transcript
+// (speech the model can't hear) beats the bare path reference.
+function fallbackFor(ref: AttachmentRef): UIMessage["parts"][number] {
+	return ref.transcript !== undefined
+		? {
+				type: "text",
+				text: `[attachment: ${ref.path} — ${ref.mediaType}, ${ref.size} bytes. transcript: ${JSON.stringify(ref.transcript)}]`,
+			}
+		: {
+				type: "text",
+				text: `[attachment: ${ref.path} — ${ref.mediaType}, ${ref.size} bytes. Read it with read_file or bash tools.]`,
+			};
+}
+
+function malformedFallback(): UIMessage["parts"][number] {
+	return {
+		type: "text",
+		text: "[attachment: unreadable reference — stored attachment data failed validation. The file, if saved, may still be readable with read_file or bash tools.]",
+	};
+}
+
+type PlanEntry =
+	| { decision: "inline"; ref: AttachmentRef; size: number }
+	| { decision: "fallback"; ref: AttachmentRef | null; reason: "malformed" | "modality" | "budget" | "unreadable" };
+
 // Rewrite a history snapshot for the model about to run: data-attachment
 // parts become file parts when the model can consume them, text references
 // otherwise. Everything else passes through. An unreadable attachment file
-// degrades to the text reference too — the path still tells the model what
-// was sent; a failed read_file on it fails loud there.
+// — or a malformed stored part — degrades to the text reference too: the
+// path still tells the model what was sent, and a corrupt row must never
+// take the turn (or the conversation) down with it.
 export async function materializeAttachments(
 	messages: UIMessage[],
 	modalities: Set<string> = new Set(),
 	inlineBudget: number = INLINE_MAX_BYTES,
 ): Promise<UIMessage[]> {
-	// Sequential: the budget is consumed in history order, so later
-	// attachments see what earlier ones spent.
+	// Collect attachment slots in history order.
+	const slots: Array<{ mi: number; pi: number }> = [];
+	messages.forEach((m, mi) => {
+		m.parts.forEach((p, pi) => {
+			if (p.type === ATTACHMENT_PART) slots.push({ mi, pi });
+		});
+	});
+
+	// Reserve the budget newest-first: walk slots in reverse, statting each
+	// candidate and spending the budget on the newest attachments first.
+	// Older images degrade to path references instead of starving the new.
+	const plan = new Map<string, PlanEntry>();
+	let remaining = inlineBudget;
+	let budgetDegraded = 0;
+	const budgetPaths: string[] = [];
+	for (let i = slots.length - 1; i >= 0; i--) {
+		const { mi, pi } = slots[i]!;
+		const key = `${mi}:${pi}`;
+		const p = messages[mi]!.parts[pi] as { data?: unknown };
+		// The part crossed the disk boundary — validate, don't trust. A
+		// malformed part degrades like everything else, never throws.
+		const parsed = attachmentRefSchema.safeParse(p.data);
+		if (!parsed.success) {
+			plan.set(key, { decision: "fallback", ref: null, reason: "malformed" });
+			continue;
+		}
+		const ref = parsed.data;
+		if (!acceptsMedia(modalities, ref.mediaType)) {
+			plan.set(key, { decision: "fallback", ref, reason: "modality" });
+			continue;
+		}
+		// The file on disk is authoritative — ref.size was recorded at
+		// intake and the file may have changed since.
+		let size: number;
+		try {
+			size = (await stat(ref.path)).size;
+		} catch {
+			plan.set(key, { decision: "fallback", ref, reason: "unreadable" });
+			continue;
+		}
+		if (size > remaining) {
+			plan.set(key, { decision: "fallback", ref, reason: "budget" });
+			budgetDegraded++;
+			if (budgetPaths.length < 5) budgetPaths.push(ref.path);
+			continue;
+		}
+		remaining -= size;
+		plan.set(key, { decision: "inline", ref, size });
+	}
+	if (budgetDegraded > 0) {
+		log.warn("attachment budget spent — oldest attachments degraded to references", {
+			budget: inlineBudget,
+			degraded: budgetDegraded,
+			inlined: slots.length - budgetDegraded,
+			paths: budgetPaths,
+		});
+	}
+
+	// Emit in history order. Reservations above guarantee the inline set
+	// fits the budget as long as files only shrink; a file that grew past
+	// its reservation degrades instead of pushing the total over.
 	let spent = 0;
 	const out: UIMessage[] = [];
-	for (const m of messages) {
+	for (const [mi, m] of messages.entries()) {
 		const parts: UIMessage["parts"] = [];
-		for (const p of m.parts) {
+		for (const [pi, p] of m.parts.entries()) {
 			if (p.type !== ATTACHMENT_PART) {
 				parts.push(p);
 				continue;
 			}
-			// The part crossed the disk boundary — validate, don't trust.
-			const ref = attachmentRefSchema.parse(p.data);
-			// The fallback when the file can't go inline: a stored transcript
-			// (speech the model can't hear) beats the bare path reference.
-			const fallback: UIMessage["parts"][number] =
-				ref.transcript !== undefined
-					? {
-							type: "text",
-							text: `[attachment: ${ref.path} — ${ref.mediaType}, ${ref.size} bytes. transcript: ${JSON.stringify(ref.transcript)}]`,
-						}
-					: {
-							type: "text",
-							text: `[attachment: ${ref.path} — ${ref.mediaType}, ${ref.size} bytes. Read it with read_file or bash tools.]`,
-						};
-			if (!acceptsMedia(modalities, ref.mediaType)) {
-				parts.push(fallback);
+			const entry = plan.get(`${mi}:${pi}`);
+			if (!entry || entry.decision === "fallback") {
+				if (!entry || entry.ref === null) {
+					log.warn("malformed attachment — degrading to fallback reference", {
+						message: m.id,
+					});
+					parts.push(malformedFallback());
+				} else if (entry.reason === "budget") {
+					parts.push(fallbackFor(entry.ref));
+				} else if (entry.reason === "modality") {
+					parts.push(fallbackFor(entry.ref));
+				} else {
+					log.warn("attachment unreadable — degrading to fallback reference", {
+						path: entry.ref.path,
+						error: "stat failed",
+					});
+					parts.push(fallbackFor(entry.ref));
+				}
 				continue;
 			}
+			const { ref, size: reserved } = entry;
 			try {
-				// The file on disk is authoritative — ref.size was recorded at
-				// intake and the file may have changed since.
-				if ((await stat(ref.path)).size > inlineBudget - spent) {
-					parts.push(fallback);
+				const bytes = await readFile(ref.path);
+				if (bytes.byteLength > reserved) {
+					// Grew between stat and read — be honest, degrade.
+					log.warn("attachment grew since stat — degrading to fallback reference", {
+						path: ref.path,
+						reserved,
+						actual: bytes.byteLength,
+					});
+					parts.push(fallbackFor(ref));
 					continue;
 				}
-				const bytes = await readFile(ref.path);
-				// Grew (or shrank — be honest) between stat and read.
-				if (bytes.byteLength > inlineBudget - spent) {
-					parts.push(fallback);
+				if (spent + bytes.byteLength > inlineBudget) {
+					log.warn("attachment budget exceeded at read — degrading to fallback reference", {
+						path: ref.path,
+					});
+					parts.push(fallbackFor(ref));
 					continue;
 				}
 				spent += bytes.byteLength;
@@ -114,13 +210,13 @@ export async function materializeAttachments(
 					url: `data:${ref.mediaType};base64,${bytes.toString("base64")}`,
 				});
 			} catch (err) {
-				// Any read/stat failure degrades the same way — a dead
+				// Any read failure degrades the same way — a dead
 				// attachment must not take the turn down with it.
 				log.warn("attachment unreadable — degrading to fallback reference", {
 					path: ref.path,
 					error: String(err),
 				});
-				parts.push(fallback);
+				parts.push(fallbackFor(ref));
 			}
 		}
 		out.push({ ...m, parts });

@@ -4,10 +4,14 @@
 //
 //   timeout/abort/cap-overflow → SIGTERM → grace → SIGKILL → give up
 //
+// Kills target the whole process group (the child is spawned detached, so
+// it leads its own group): a timed-out `bash -c` takes its backgrounded
+// grandchildren with it instead of leaving them running on the box.
+//
 // and pipe EOF gets a short grace after process exit, then the readers are
 // cut: a backgrounded or orphaned child inheriting the write end must not
-// outlive the command. Used by the bash tool and auth.jsonl `!command`
-// resolution — a wedged child must never stall a turn or a lane.
+// outlive the command. Used by the bash tool, TTS remux, and auth.jsonl
+// `!command` resolution — a wedged child must never stall a turn or a lane.
 
 const PIPE_DRAIN_MS = 250;
 // SIGTERM gets a grace period, then SIGKILL. If even KILL can't reap it
@@ -34,28 +38,61 @@ export interface BoundedProc {
 	truncated: boolean;
 }
 
-// Fixed stdio for both callers: no stdin, both pipes captured, the daemon's
-// environment (no secrets live there by design — auth.jsonl keeps them out).
-// Throws if the process can't be spawned.
-export function spawnProc(argv: string[], cwd?: string): Bun.ReadableSubprocess {
+// Binary variant for callers whose stdout isn't text (TTS remux returns
+// ogg/opus bytes). stderr stays text — it's only ever an error message.
+export interface BoundedProcBytes {
+	stdout: Uint8Array;
+	stderr: string;
+	// null when even SIGKILL couldn't reap the process.
+	exitCode: number | null;
+	timedOut: boolean;
+	truncated: boolean;
+}
+
+// Fixed stdio for callers: both pipes captured, the daemon's environment
+// (no secrets live there by design — auth.jsonl keeps them out). Detached
+// so the child leads its own process group — group kills below reach
+// grandchildren. Throws if the process can't be spawned.
+export function spawnProc(
+	argv: string[],
+	cwd?: string,
+	stdin?: Bun.SpawnOptions.Writable,
+): Bun.ReadableSubprocess {
 	return Bun.spawn(argv, {
 		...(cwd !== undefined ? { cwd } : {}),
 		env: process.env,
-		stdin: "ignore",
+		stdin: stdin ?? "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
+		detached: true,
 	});
+}
+
+// Signal the whole process group; fall back to the leader-only kill when
+// the group is already gone (ESRCH) or the platform refuses it.
+function killGroup(proc: Bun.ReadableSubprocess, signal: NodeJS.Signals): void {
+	try {
+		process.kill(-proc.pid, signal);
+		return;
+	} catch {
+		// Group gone or unaddressable — try the leader itself.
+	}
+	try {
+		proc.kill(signal);
+	} catch {
+		// Already reaped — the exit race below settles it.
+	}
 }
 
 // Drain a pipe to EOF, capped — a runaway process that floods a stream gets
 // killed instead of buffering forever. The reader registers itself so the
 // drain window after process exit can cut it off.
-async function collect(
+async function collectBytes(
 	stream: ReadableStream<Uint8Array>,
 	cap: number,
 	onTruncate: () => void,
 	readers: Set<CancellableReader>,
-): Promise<{ text: string; truncated: boolean }> {
+): Promise<{ bytes: Uint8Array; truncated: boolean }> {
 	const reader = stream.getReader();
 	readers.add(reader);
 	const chunks: Uint8Array[] = [];
@@ -78,12 +115,22 @@ async function collect(
 		readers.delete(reader);
 		reader.releaseLock();
 	}
-	return { text: Buffer.concat(chunks).toString("utf8"), truncated };
+	return { bytes: Buffer.concat(chunks), truncated };
+}
+
+async function collect(
+	stream: ReadableStream<Uint8Array>,
+	cap: number,
+	onTruncate: () => void,
+	readers: Set<CancellableReader>,
+): Promise<{ text: string; truncated: boolean }> {
+	const { bytes, truncated } = await collectBytes(stream, cap, onTruncate, readers);
+	return { text: Buffer.from(bytes).toString("utf8"), truncated };
 }
 
 // Run an already-spawned process to a settled result: combined deadline,
-// abort, and cap-overflow kills funnel into TERM→KILL escalation; pipe
-// readers get a short window after exit before being cut.
+// abort, and cap-overflow kills funnel into group TERM→KILL escalation;
+// pipe readers get a short window after exit before being cut.
 export async function boundedRun(
 	proc: Bun.ReadableSubprocess,
 	opts: { timeoutMs: number; maxOutput: number; abortSignal?: AbortSignal },
@@ -91,24 +138,18 @@ export async function boundedRun(
 	const { timeoutMs, maxOutput, abortSignal } = opts;
 	const readers = new Set<CancellableReader>();
 	let timedOut = false;
-	// The drain window cut off output still in flight — surfaced as
-	// `truncated` so partial output never looks like a clean result.
 	let drainCut = false;
 
-	// TERM, then KILL after a grace period. Returns null if even KILL can't
-	// reap the process — an honest null beats a hung caller.
 	const killAndReap = async (): Promise<number | null> => {
-		proc.kill();
+		killGroup(proc, "SIGTERM");
 		let code = await Promise.race([proc.exited, sleep(KILL_GRACE_MS)]);
 		if (code === undefined) {
-			proc.kill("SIGKILL");
+			killGroup(proc, "SIGKILL");
 			code = await Promise.race([proc.exited, sleep(KILL_GRACE_MS)]);
 		}
 		return code ?? null;
 	};
 
-	// The exit race: natural exit beats the deadline. Timeout, abort, and
-	// cap-overflow kills all funnel into the escalation path.
 	let stopDeadline!: () => void;
 	const deadline = new Promise<"timeout">((res) => {
 		const t = setTimeout(() => res("timeout"), timeoutMs);
@@ -131,9 +172,6 @@ export async function boundedRun(
 		return killAndReap();
 	})();
 
-	// EOF can trail process exit (kernel buffer, inherited fds): the readers
-	// get a moment, then are cancelled. Readers that finished on their own
-	// are already gone from the set — nothing was cut.
 	void exitP
 		.then(() => sleep(PIPE_DRAIN_MS))
 		.then(() => {
@@ -147,9 +185,6 @@ export async function boundedRun(
 				}
 			}
 		})
-		// exitP's rejection reaches the `await exitP` below — this detached
-		// chain only observes it, but without a handler it would surface as
-		// an unhandled rejection.
 		.catch(() => {});
 
 	const [out, err] = await Promise.all([
@@ -159,6 +194,79 @@ export async function boundedRun(
 	const exitCode = await exitP;
 	return {
 		stdout: out.text,
+		stderr: err.text,
+		exitCode,
+		timedOut,
+		truncated: out.truncated || err.truncated || drainCut,
+	};
+}
+
+// Binary-stdout twin of boundedRun for callers whose stdout isn't text
+// (TTS ffmpeg remux). Same deadline/abort/cap/group-kill contract, same
+// bounded-settles guarantee.
+export async function boundedRunBinary(
+	proc: Bun.ReadableSubprocess,
+	opts: { timeoutMs: number; maxOutput: number; abortSignal?: AbortSignal },
+): Promise<BoundedProcBytes> {
+	const { timeoutMs, maxOutput, abortSignal } = opts;
+	const readers = new Set<CancellableReader>();
+	let timedOut = false;
+	let drainCut = false;
+
+	const killAndReap = async (): Promise<number | null> => {
+		killGroup(proc, "SIGTERM");
+		let code = await Promise.race([proc.exited, sleep(KILL_GRACE_MS)]);
+		if (code === undefined) {
+			killGroup(proc, "SIGKILL");
+			code = await Promise.race([proc.exited, sleep(KILL_GRACE_MS)]);
+		}
+		return code ?? null;
+	};
+
+	let stopDeadline!: () => void;
+	const deadline = new Promise<"timeout">((res) => {
+		const t = setTimeout(() => res("timeout"), timeoutMs);
+		stopDeadline = () => clearTimeout(t);
+	});
+	let triggerKill!: () => void;
+	const killed = new Promise<"killed">((res) => {
+		triggerKill = () => res("killed");
+	});
+	const onAbort = () => triggerKill();
+	if (abortSignal?.aborted) triggerKill();
+	else abortSignal?.addEventListener("abort", onAbort, { once: true });
+
+	const exitP: Promise<number | null> = (async () => {
+		const first = await Promise.race([proc.exited, deadline, killed]);
+		stopDeadline();
+		abortSignal?.removeEventListener("abort", onAbort);
+		if (typeof first === "number") return first;
+		if (first === "timeout") timedOut = true;
+		return killAndReap();
+	})();
+
+	void exitP
+		.then(() => sleep(PIPE_DRAIN_MS))
+		.then(() => {
+			if (readers.size === 0) return;
+			drainCut = true;
+			for (const r of readers) {
+				try {
+					void r.cancel().catch(() => {});
+				} catch {
+					// released mid-iteration — nothing to cancel
+				}
+			}
+		})
+		.catch(() => {});
+
+	const [out, err] = await Promise.all([
+		collectBytes(proc.stdout, maxOutput, triggerKill, readers),
+		collect(proc.stderr, maxOutput, triggerKill, readers),
+	]);
+	const exitCode = await exitP;
+	return {
+		stdout: out.bytes,
 		stderr: err.text,
 		exitCode,
 		timedOut,

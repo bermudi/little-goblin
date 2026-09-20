@@ -21,6 +21,9 @@ import { maybeRenameTopic, titleMetaFromService } from "./titles.ts";
 
 export const AUTH_TELEGRAM_TOKEN = "telegram";
 const QUIET_WINDOW_MS = 1_500;
+// A source dribbling messages faster than the quiet window must not
+// postpone its turn forever — the ceiling flushes mid-dribble instead.
+const COALESCE_MAX_WAIT_MS = 10_000;
 // Sentinel for media that failed intake — kept out of topic-title input
 // or a download error becomes the conversation's name.
 const ATTACHMENT_FAILED_PREFIX = "[attachment failed to download:";
@@ -87,7 +90,9 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	// One auto-title attempt per topic per process — a failing provider
 	// must not retry on every burst. The flag survives for the next boot.
 	const titleAttempts = new Set<string>();
-	const buffer = new CoalescingBuffer<BufferedItem>(QUIET_WINDOW_MS, (convId, items) => {
+	const buffer = new CoalescingBuffer<BufferedItem>(
+		QUIET_WINDOW_MS,
+		(convId, items) => {
 		const conv = deps.store.get(convId);
 		if (!conv) {
 			log.error("flush for missing conversation", undefined, { conversation: convId });
@@ -140,7 +145,9 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 			});
 			throw err;
 		}
-	});
+		},
+		COALESCE_MAX_WAIT_MS,
+	);
 
 	// Per-conversation intake chain. Media resolution (getFile, download,
 	// models.dev) is slow, so it runs off the update hot path — grammy's

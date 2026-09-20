@@ -8,6 +8,7 @@
 import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
 import { z } from "zod";
+import { log } from "./log.ts";
 
 // ---------- identity ----------
 
@@ -91,13 +92,33 @@ interface Row {
 
 // Disk state is a boundary: history rows are validated on read, not
 // trusted. Parts stay loosely typed — the runtime's converters own the
-// per-part semantics — but a row that isn't a message envelope at all
-// fails loud here instead of confusing the model layer downstream.
+// per-part semantics — and a row that isn't a message envelope at all
+// degrades to a placeholder text part, never a throw: one malformed row
+// must not kill every future turn in its conversation.
 const uiMessageSchema = z.object({
 	id: z.string(),
 	role: z.enum(["system", "user", "assistant"]),
 	parts: z.array(z.looseObject({ type: z.string() })),
 });
+
+const roleSchema = z.enum(["system", "user", "assistant"]);
+
+// One corrupt row degrades to a readable placeholder in its original
+// position (seq/anchor preserved) — the turn sees a note where a message
+// was, not a parse error that fails every future turn identically.
+function corruptPlaceholder(seq: number, role: string): UIMessage {
+	const parsed = roleSchema.safeParse(role);
+	return {
+		id: `corrupt-${seq}`,
+		role: parsed.success ? parsed.data : "user",
+		parts: [
+			{
+				type: "text",
+				text: `[unreadable history row seq ${seq} — stored message failed validation. Any attachment it carried may still be readable with read_file or bash tools.]`,
+			},
+		],
+	};
+}
 
 function toConversation(r: Row): Conversation {
 	return {
@@ -174,10 +195,10 @@ export function openStore(dbPath: string): ConversationStore {
 		 VALUES (?, ?, ?, NULL, ?, ?)`,
 	);
 	const qHistory = db.query<
-		{ seq: number; anchor_seq: number | null; data: string },
+		{ seq: number; anchor_seq: number | null; role: string; data: string },
 		[string]
 	>(
-		"SELECT seq, anchor_seq, data FROM events WHERE conversation_id = ? ORDER BY seq",
+		"SELECT seq, anchor_seq, role, data FROM events WHERE conversation_id = ? ORDER BY seq",
 	);
 	const qLastUserSeq = db.query<{ seq: number }, [string]>(
 		"SELECT seq FROM events WHERE conversation_id = ? AND role = 'user' ORDER BY seq DESC LIMIT 1",
@@ -291,15 +312,29 @@ export function openStore(dbPath: string): ConversationStore {
 				try {
 					raw = JSON.parse(r.data);
 				} catch (err) {
-					throw new Error(
-						`conversation ${id}: invalid stored message — ${(err as Error).message}`,
-					);
+					log.warn("corrupt history row — degrading to placeholder", {
+						conversation: id,
+						seq: r.seq,
+						error: (err as Error).message,
+					});
+					return {
+						seq: r.seq,
+						anchorSeq: r.anchor_seq,
+						message: corruptPlaceholder(r.seq, r.role),
+					};
 				}
 				const parsed = uiMessageSchema.safeParse(raw);
 				if (!parsed.success) {
-					throw new Error(
-						`conversation ${id}: invalid stored message — ${parsed.error.message}`,
-					);
+					log.warn("corrupt history row — degrading to placeholder", {
+						conversation: id,
+						seq: r.seq,
+						error: parsed.error.message,
+					});
+					return {
+						seq: r.seq,
+						anchorSeq: r.anchor_seq,
+						message: corruptPlaceholder(r.seq, r.role),
+					};
 				}
 				return { seq: r.seq, anchorSeq: r.anchor_seq, message: parsed.data as UIMessage };
 			});

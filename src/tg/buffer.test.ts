@@ -48,4 +48,36 @@ describe("coalescing buffer", () => {
 		await sleep(60);
 		expect(flushes).toEqual([["first"], ["second"]]);
 	});
+
+	test("a dribble faster than the quiet window still flushes at the max-wait ceiling", async () => {
+		const flushes: string[][] = [];
+		// Quiet 40ms, ceiling 70ms: pushes every 25ms reset the quiet
+		// timer forever, so only the ceiling can fire.
+		const buf = new CoalescingBuffer<string>(40, (_k, items) => flushes.push(items), 70);
+		buf.push("c1", "a");
+		await sleep(25);
+		buf.push("c1", "b");
+		await sleep(25);
+		buf.push("c1", "c");
+		// Ceiling fires ~70ms after the first push, mid-dribble.
+		await sleep(30);
+		expect(flushes).toEqual([["a", "b", "c"]]);
+		// The post-ceiling dribble starts a fresh bucket on its own timer.
+		buf.push("c1", "d");
+		await sleep(60);
+		expect(flushes).toEqual([
+			["a", "b", "c"],
+			["d"],
+		]);
+	});
+
+	test("drain disarms the max-wait timer too", async () => {
+		const flushes: string[][] = [];
+		const buf = new CoalescingBuffer<string>(40, (_k, items) => flushes.push(items), 70);
+		buf.push("c1", "a");
+		buf.drain();
+		expect(flushes).toEqual([["a"]]);
+		await sleep(120); // neither timer may re-fire
+		expect(flushes).toEqual([["a"]]);
+	});
 });

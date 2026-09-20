@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import WebSocket, { type RawData } from "ws";
 import type { TtsConfig } from "../config.ts";
 import { log } from "../log.ts";
+import { boundedRunBinary, spawnProc } from "../proc.ts";
 
 const CHUNK_LIMIT = 10_000;
 const OUTPUT_FORMAT = "webm-24khz-16bit-mono-opus";
@@ -226,26 +227,41 @@ const edgeSynthesize: EdgeSynthesizer = (text, options) =>
 		});
 	});
 
+const REMUX_TIMEOUT_MS = 30_000;
+// A 10k-char chunk synthesizes to a few minutes of opus — single-digit MiB.
+// The cap only guards a wedged ffmpeg flooding stdout, not real speech.
+const REMUX_MAX_OUTPUT = 32 * 1024 * 1024;
+
 const remuxOgg: AudioRemuxer = async (webm) => {
-	const proc = Bun.spawn(
-		["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "webm", "-i", "pipe:0", "-vn", "-c:a", "copy", "-f", "ogg", "pipe:1"],
-		{
-			env: process.env,
-			stdin: new Blob([webm]),
-			stdout: "pipe",
-			stderr: "pipe",
-		},
-	);
-	const timeout = setTimeout(() => proc.kill(), 30_000);
-	const [exitCode, audio, stderr] = await Promise.all([
-		proc.exited,
-		new Response(proc.stdout).arrayBuffer(),
-		new Response(proc.stderr).text(),
-	]).finally(() => clearTimeout(timeout));
-	if (exitCode !== 0) {
-		throw new Error(`ffmpeg ogg remux exited ${exitCode}: ${stderr.trim().slice(0, 500)}`);
+	let proc: Bun.ReadableSubprocess;
+	try {
+		proc = spawnProc(
+			["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "webm", "-i", "pipe:0", "-vn", "-c:a", "copy", "-f", "ogg", "pipe:1"],
+			undefined,
+			new Blob([webm]),
+		);
+	} catch (err) {
+		throw new Error(`ffmpeg ogg remux failed to spawn — ${(err as Error).message}`);
 	}
-	const out = new Uint8Array(audio);
+	// Bounded like every other subprocess: a SIGTERM-ignoring ffmpeg is
+	// escalated to group SIGKILL instead of stalling the voice lane and
+	// shutdown forever waiting on proc.exited.
+	const r = await boundedRunBinary(proc, {
+		timeoutMs: REMUX_TIMEOUT_MS,
+		maxOutput: REMUX_MAX_OUTPUT,
+	});
+	if (r.timedOut) {
+		throw new Error(`ffmpeg ogg remux timed out after ${REMUX_TIMEOUT_MS}ms`);
+	}
+	if (r.truncated) {
+		throw new Error("ffmpeg ogg remux produced oversized or cut-off output");
+	}
+	if (r.exitCode !== 0) {
+		throw new Error(
+			`ffmpeg ogg remux exited ${r.exitCode ?? "unreaped"}: ${r.stderr.trim().slice(0, 500)}`,
+		);
+	}
+	const out = r.stdout;
 	if (out.byteLength < 4 || new TextDecoder().decode(out.subarray(0, 4)) !== "OggS") {
 		throw new Error("ffmpeg ogg remux returned invalid output");
 	}

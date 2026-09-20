@@ -23,111 +23,136 @@ import { log, setLogFile, setLogLevel } from "./log.ts";
 import { Runtime } from "./runtime.ts";
 import { applyMenuButton, AUTH_TELEGRAM_TOKEN, startBot } from "./tg/mod.ts";
 
-ensureHomeLayout();
+// The file sink attaches before anything that can fail — a malformed
+// config, bad auth file, corrupt DB, or occupied port must land in
+// goblin.log, not die to stderr against an empty log. Late async
+// failures ride the rejection handler for the same reason.
 setLogFile(paths.logFile());
+process.on("unhandledRejection", (reason: unknown) => {
+	log.error("unhandled rejection", reason);
+});
+process.on("uncaughtException", (err: unknown) => {
+	log.error("uncaught exception", err);
+	process.exit(1);
+});
 
-const config = loadConfig();
-if (!config) {
-	log.error(`no config at ${paths.config()} — copy goblin.json5.example and fill it in`);
+async function boot() {
+	ensureHomeLayout();
+
+	const config = loadConfig();
+	if (!config) {
+		log.error(`no config at ${paths.config()} — copy goblin.json5.example and fill it in`);
+		process.exit(1);
+	}
+	setLogLevel(config.logLevel);
+
+	// Shared ref: the mini app writes goblin.json5 and swaps this in place;
+	// everything reads .current at point of use.
+	const configRef = { current: config };
+	const auth = loadAuth();
+	const store = openStore(paths.db());
+
+	// ffmpeg powers TTS remuxing and over-cap transcription — probe it once
+	// at boot so a missing binary surfaces before the first speech request.
+	if (config.transcription || config.tts) {
+		void checkFfmpeg(config.tts ? "tts" : "transcription");
+	}
+
+	// Warm the openrouter route-capability catalog so /think and the mini app
+	// see real per-model thinking levels instead of the cold-start fallback.
+	void ensureOpenRouterCatalog();
+
+	const runtime = new Runtime({
+		store,
+		async buildStep(conv) {
+			const cfg = configRef.current;
+			const modelRef = conv.model ?? cfg.model;
+			const { provider, modelId } = splitModelRef(modelRef);
+			// Both may be slow (auth "!command", models.dev fetch) — run in
+			// parallel inside the same admission window.
+			const [model, modalities] = await Promise.all([
+				resolveModel(cfg, auth, modelRef),
+				inputModalities(provider, modelId),
+			]);
+			const level: ThinkingLevel = (thinkingLevels as readonly string[]).includes(
+				conv.thinking ?? "",
+			)
+				? (conv.thinking as ThinkingLevel)
+				: cfg.thinking;
+			const providerOptions = thinkingOptions(cfg, modelRef, level);
+			const prompt = buildSystemPrompt(conv);
+			log.info("model step", {
+				conversation: conv.id,
+				model: modelRef,
+				thinking: level,
+				prompt: prompt.sources.join("+"),
+			});
+			return {
+				model,
+				system: prompt.text,
+				inputModalities: modalities,
+				...(providerOptions ? { providerOptions } : {}),
+			};
+		},
+		makeTools: (deliverVoice) => {
+			const tts = configRef.current.tts;
+			return makeTools(
+				paths.workspace(),
+				tts && deliverVoice
+					? { synthesize: (text) => synthesizeSpeech(text, tts), deliver: deliverVoice }
+					: undefined,
+			);
+		},
+	});
+
+	const tg = await startBot({
+		configRef,
+		auth,
+		store,
+		runtime,
+		async titleFor(text) {
+			const cfg = configRef.current;
+			if (!cfg.titleModel) return null;
+			const model = await resolveModel(cfg, auth, cfg.titleModel);
+			return generateTopicTitle(
+				model,
+				text,
+				thinkingOptions(cfg, cfg.titleModel, "off"),
+			);
+		},
+		async synthesize(text, tts) {
+			return synthesizeSpeech(text, tts);
+		},
+		async transcribe(file) {
+			// Read per call — a mini-app save applies to the next voice note,
+			// no restart.
+			const cfg = configRef.current.transcription;
+			if (!cfg) return null;
+			return transcribeAudio(await transcriptionModel(cfg, auth), file);
+		},
+	});
+	const http = startHttp({
+		configRef,
+		botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN),
+		onConfigWritten: () => {
+			setLogLevel(configRef.current.logLevel);
+			// publicUrl is operator-editable through the app — keep the menu
+			// button (the door) in sync without a restart.
+			applyMenuButton(tg.bot.api, configRef.current.publicUrl);
+		},
+	});
+
+	return { configRef, auth, store, runtime, tg, http };
+}
+
+let booted: Awaited<ReturnType<typeof boot>>;
+try {
+	booted = await boot();
+} catch (err) {
+	log.error("boot failed", err);
 	process.exit(1);
 }
-setLogLevel(config.logLevel);
-
-// Shared ref: the mini app writes goblin.json5 and swaps this in place;
-// everything reads .current at point of use.
-const configRef = { current: config };
-const auth = loadAuth();
-const store = openStore(paths.db());
-
-// ffmpeg powers TTS remuxing and over-cap transcription — probe it once
-// at boot so a missing binary surfaces before the first speech request.
-if (config.transcription || config.tts) {
-	void checkFfmpeg(config.tts ? "tts" : "transcription");
-}
-
-// Warm the openrouter route-capability catalog so /think and the mini app
-// see real per-model thinking levels instead of the cold-start fallback.
-void ensureOpenRouterCatalog();
-
-const runtime = new Runtime({
-	store,
-	async buildStep(conv) {
-		const cfg = configRef.current;
-		const modelRef = conv.model ?? cfg.model;
-		const { provider, modelId } = splitModelRef(modelRef);
-		// Both may be slow (auth "!command", models.dev fetch) — run in
-		// parallel inside the same admission window.
-		const [model, modalities] = await Promise.all([
-			resolveModel(cfg, auth, modelRef),
-			inputModalities(provider, modelId),
-		]);
-		const level: ThinkingLevel = (thinkingLevels as readonly string[]).includes(
-			conv.thinking ?? "",
-		)
-			? (conv.thinking as ThinkingLevel)
-			: cfg.thinking;
-		const providerOptions = thinkingOptions(cfg, modelRef, level);
-		const prompt = buildSystemPrompt(conv);
-		log.info("model step", {
-			conversation: conv.id,
-			model: modelRef,
-			thinking: level,
-			prompt: prompt.sources.join("+"),
-		});
-		return {
-			model,
-			system: prompt.text,
-			inputModalities: modalities,
-			...(providerOptions ? { providerOptions } : {}),
-		};
-	},
-	makeTools: (deliverVoice) => {
-		const tts = configRef.current.tts;
-		return makeTools(
-			paths.workspace(),
-			tts && deliverVoice
-				? { synthesize: (text) => synthesizeSpeech(text, tts), deliver: deliverVoice }
-				: undefined,
-		);
-	},
-});
-
-const tg = await startBot({
-	configRef,
-	auth,
-	store,
-	runtime,
-	async titleFor(text) {
-		const cfg = configRef.current;
-		if (!cfg.titleModel) return null;
-		const model = await resolveModel(cfg, auth, cfg.titleModel);
-		return generateTopicTitle(
-			model,
-			text,
-			thinkingOptions(cfg, cfg.titleModel, "off"),
-		);
-	},
-	async synthesize(text, tts) {
-		return synthesizeSpeech(text, tts);
-	},
-	async transcribe(file) {
-		// Read per call — a mini-app save applies to the next voice note,
-		// no restart.
-		const cfg = configRef.current.transcription;
-		if (!cfg) return null;
-		return transcribeAudio(await transcriptionModel(cfg, auth), file);
-	},
-});
-const http = startHttp({
-	configRef,
-	botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN),
-	onConfigWritten: () => {
-		setLogLevel(configRef.current.logLevel);
-		// publicUrl is operator-editable through the app — keep the menu
-		// button (the door) in sync without a restart.
-		applyMenuButton(tg.bot.api, configRef.current.publicUrl);
-	},
-});
+const { store, runtime, tg, http } = booted;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // Long enough for the sinks' final flushes and polling's offset

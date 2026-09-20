@@ -22,6 +22,23 @@ export const SPEAK_CALLBACK = "speak_reply";
 const recentReplies = new Map<string, string>();
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+// Telegram answers an edit whose content is identical with 400
+// "message is not modified" — benign, not a failure. The drain counts a
+// failed edit as still-pending and retries it; without this carve-out one
+// no-op edit makes the drain give up and skips the 🫡 + 🔊 on a turn that
+// actually delivered. Treat it as success: the message already shows what
+// we wanted.
+export function isNotModifiedError(err: unknown): boolean {
+	const haystacks: unknown[] = [err];
+	if (typeof err === "object" && err !== null) {
+		const rec = err as Record<string, unknown>;
+		haystacks.push(rec.description, rec.message);
+	}
+	return haystacks.some(
+		(h) => typeof h === "string" && h.toLowerCase().includes("message is not modified"),
+	);
+}
+
 export interface DeliveryVoiceDeps {
 	synthesize(text: string): Promise<Uint8Array[]>;
 	voiceMode: boolean;
@@ -216,7 +233,22 @@ export function makeDeliverySink(
 			if (c.shown !== out) {
 				const mid = c.id;
 				enqueue(async () => {
-					await withTimeout(api.editMessageText(conv.chatId, mid, out), "editMessageText");
+					try {
+						await withTimeout(api.editMessageText(conv.chatId, mid, out), "editMessageText");
+					} catch (err) {
+						if (isNotModifiedError(err)) {
+							// Already shows `out` — adopt it so the drain
+							// sees no pending work instead of retrying a
+							// no-op until it gives up and skips the 🫡 + 🔊.
+							log.debug("edit no-op — message already current", {
+								conversation: conv.id,
+								message: mid,
+							});
+							c.shown = out;
+							return;
+						}
+						throw err;
+					}
 					c.shown = out;
 				});
 			}
@@ -391,14 +423,20 @@ export function makeDeliverySink(
 					});
 					if (voice) {
 						enqueue(async () => {
-							await withTimeout(
-								api.editMessageReplyMarkup(conv.chatId, mid, {
-									reply_markup: {
-										inline_keyboard: [[{ text: "🔊", callback_data: SPEAK_CALLBACK }]],
-									},
-								}),
-								"editMessageReplyMarkup",
-							);
+							try {
+								await withTimeout(
+									api.editMessageReplyMarkup(conv.chatId, mid, {
+										reply_markup: {
+											inline_keyboard: [[{ text: "🔊", callback_data: SPEAK_CALLBACK }]],
+										},
+									}),
+									"editMessageReplyMarkup",
+								);
+							} catch (err) {
+								// Button already stamped — benign, not a failure.
+								if (isNotModifiedError(err)) return;
+								throw err;
+							}
 						});
 					}
 					await chain;

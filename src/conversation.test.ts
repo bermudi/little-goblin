@@ -161,7 +161,7 @@ describe("conversation store", () => {
 		store.close();
 	});
 
-	test("history fails loud on a row that isn't a message", () => {
+	test("history degrades a corrupt row to a placeholder instead of failing", () => {
 		const path = tmpdb();
 		const store = openStore(path);
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -172,7 +172,13 @@ describe("conversation store", () => {
 			[c.id, 1, "user", JSON.stringify({ bogus: true }), new Date().toISOString()],
 		);
 		db.close();
-		expect(() => store.history(c.id)).toThrow(/invalid stored message/);
+		const h = store.history(c.id);
+		expect(h).toHaveLength(1);
+		expect(h[0]!.role).toBe("user");
+		expect((h[0]!.parts[0] as { text: string }).text).toContain("unreadable history row");
+		// The conversation stays usable — later turns read past the row.
+		store.append(c.id, [msg("still here")]);
+		expect(store.history(c.id)).toHaveLength(2);
 		store.close();
 	});
 

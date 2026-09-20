@@ -5,7 +5,7 @@
 import { InputFile, type Api } from "grammy";
 import type { Conversation } from "../conversation.ts";
 import type { TurnDone, TurnSink } from "../runtime.ts";
-import { speechContent } from "../agent/tts.ts";
+import { speechContent, STATUS_TAIL_MARK } from "../agent/tts.ts";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
 
@@ -188,7 +188,7 @@ export function makeDeliverySink(
 
 	function rendered(): string {
 		const status =
-			toolStatus.length > 0 ? `\n\n—\n${toolStatus.slice(-5).join("\n")}` : "";
+			toolStatus.length > 0 ? `${STATUS_TAIL_MARK}${toolStatus.slice(-5).join("\n")}` : "";
 		return text + status;
 	}
 

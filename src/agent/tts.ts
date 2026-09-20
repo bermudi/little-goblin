@@ -54,8 +54,14 @@ export function chunkSpeech(text: string, limit = CHUNK_LIMIT): string[] {
 	return chunks;
 }
 
+// The status tail delivery appends to rendered turn output. One
+// definition, both ends: delivery.ts writes it, withoutStatusTail()
+// strips it — a second copy of the string is how voice notes quietly
+// start reading "⚙ bash" lines aloud.
+export const STATUS_TAIL_MARK = "\n\n—\n";
+
 function withoutStatusTail(text: string): string {
-	const marker = text.lastIndexOf("\n\n—\n");
+	const marker = text.lastIndexOf(STATUS_TAIL_MARK);
 	return marker === -1 ? text : text.slice(0, marker);
 }
 

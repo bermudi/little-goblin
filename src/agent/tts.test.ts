@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { chunkSpeech, speakable, speechContent, synthesizeSpeech } from "./tts.ts";
+import {
+	chunkSpeech,
+	speakable,
+	speechContent,
+	synthesizeSpeech,
+	STATUS_TAIL_MARK,
+} from "./tts.ts";
 
 describe("tts", () => {
 	test("chunks long input at sentence boundaries under the service guard", () => {
@@ -11,8 +17,12 @@ describe("tts", () => {
 	});
 
 	test("button speech strips the status tail and markdown", () => {
+		// Built with the shared marker — this test is the cross-file
+		// contract: what delivery appends, speakable strips.
 		expect(
-			speakable("## Hello **there**\n\nRead [the guide](https://example.com).\n\n—\n⚙ bash pwd"),
+			speakable(
+				`## Hello **there**\n\nRead [the guide](https://example.com).${STATUS_TAIL_MARK}⚙ bash pwd`,
+			),
 		).toBe("Hello there\n\nRead the guide.");
 	});
 

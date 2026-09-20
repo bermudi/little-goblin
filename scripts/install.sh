@@ -18,6 +18,14 @@ fail() { echo "install: $*" >&2; exit 1; }
 	fail "no config at $goblin_home/goblin.json5 — copy goblin.json5.example from the repo and fill it in"
 [ -f "$goblin_home/auth.jsonl" ] ||
 	fail "no auth at $goblin_home/auth.jsonl — one record per line, mode 0600 (see DESIGN.md: Auth)"
+# The process refuses any group/world-readable auth.jsonl at boot — the
+# same rule here, or a lax mode passes install and boot-loops the service
+# with restart-on-failure. Mirrors auth.ts: only the group/world bits
+# matter (0600, 0400, … all fine).
+auth_mode="$(stat -c '%a' "$goblin_home/auth.jsonl")"
+if [ "$(( 8#$auth_mode & 8#077 ))" -ne 0 ]; then
+	fail "auth.jsonl mode is $auth_mode — tighten it first: chmod 600 $goblin_home/auth.jsonl"
+fi
 
 # Dependencies — node_modules, not the world.
 if [ ! -d "$repo_root/node_modules" ]; then

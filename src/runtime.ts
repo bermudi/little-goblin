@@ -304,7 +304,10 @@ export class Runtime {
 					JSON.stringify({
 						system: step.system,
 						tools: Object.entries(tools)
-							.map(([name, t]) => `${name}=${(t as { description?: string }).description ?? ""}`)
+							.map(
+								([name, t]) =>
+									`${name}=${(t as { description?: string }).description ?? ""}:${JSON.stringify((t as { inputSchema?: unknown }).inputSchema ?? null)}`,
+							)
 							.sort(),
 					}),
 				)
@@ -428,7 +431,15 @@ export class Runtime {
 
 			this.checkAuthority(convId, epoch);
 			if (streamError !== null) throw new Error(streamError);
-			const usage = await result.usage.catch(() => null);
+			const usage = await result.usage.catch((err) => {
+				// Totals are observability, not control — but a dropped usage
+				// promise must be visible, not a silent null on the log line.
+				log.warn("turn usage unavailable — totals skipped", {
+					conversation: convId,
+					error: String(err),
+				});
+				return null;
+			});
 			if (responseMessage !== null) {
 				// responseMessage already carries an SDK-assigned id.
 				// The anchor ties it to the user message that triggered
@@ -436,11 +447,11 @@ export class Runtime {
 				// after its question, not after later arrivals.
 				store.append(convId, [responseMessage], { anchorSeq });
 			}
-			await notifyAll({ kind: "completed" });
 			// Window utilization rides the completion line: the last step's
 			// input against the catalog context limit. Cached tokens still
 			// occupy the window, so this is the filling gauge regardless of
-			// cache health.
+			// cache health. Logged BEFORE the final notify — onDone means the
+			// turn is fully finished, log included.
 			const window =
 				step.contextWindow !== undefined && lastStepInputTokens !== null
 					? {
@@ -466,6 +477,7 @@ export class Runtime {
 					...window,
 				});
 			}
+			await notifyAll({ kind: "completed" });
 		} catch (err) {
 			if (err instanceof FencedError || controller.signal.aborted) {
 				// Fenced turns abort quietly and log it.

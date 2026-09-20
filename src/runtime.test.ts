@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tool, type LanguageModel, type UIMessage } from "ai";
 import { z } from "zod";
 import type { LanguageModelV2StreamPart } from "@ai-sdk/provider";
 import { openStore } from "./conversation.ts";
+import { setLogFile } from "./log.ts";
 import { Runtime, userMessage, type TurnDone, type TurnSink } from "./runtime.ts";
 
 let dirs: string[] = [];
@@ -703,5 +704,77 @@ describe("cache stability", () => {
 		expect(prompts[0]!).toContain("image/png");
 		expect(prompts[1]!).toContain("image/png");
 		store.close();
+	});
+
+	test("window gauge and cached split land in the log", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-rt-log-"));
+		dirs.push(dir);
+		const logFile = join(dir, "goblin.log");
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		// One step, reporting a warm cache (700 of 900 input tokens cached)
+		// against a 1000-token window — 90% utilization must warn.
+		const model = {
+			specificationVersion: "v2",
+			provider: "fake",
+			modelId: "fake-1",
+			supportedUrls: {},
+			doGenerate() {
+				throw new Error("unimplemented");
+			},
+			doStream() {
+				const stream = new ReadableStream<LanguageModelV2StreamPart>({
+					start(controller) {
+						controller.enqueue({ type: "stream-start", warnings: [] });
+						controller.enqueue({ type: "text-start", id: "t1" });
+						controller.enqueue({ type: "text-delta", id: "t1", delta: "ok" });
+						controller.enqueue({ type: "text-end", id: "t1" });
+						controller.enqueue({
+							type: "finish",
+							finishReason: "stop",
+							usage: {
+								inputTokens: 900,
+								outputTokens: 1,
+								totalTokens: 901,
+								cachedInputTokens: 700,
+							},
+							});
+						controller.close();
+					},
+				});
+				return { stream };
+			},
+		} as unknown as LanguageModel;
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
+			makeTools: () => ({}),
+		});
+		setLogFile(logFile);
+		try {
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+			expect(await sink.done).toEqual({ kind: "completed" });
+			const lines = readFileSync(logFile, "utf8")
+				.trim()
+				.split("\n")
+				.map((l) => JSON.parse(l) as Record<string, unknown>);
+			const warn = lines.find(
+					(l) => l.msg === "context window ≥80% — history is approaching the limit",
+				);
+			expect(warn).toMatchObject({ input: 900, limit: 1000, pct: 90 });
+			const stepUsage = lines.find((l) => l.msg === "model step usage");
+			expect(stepUsage).toMatchObject({
+				inputTokens: 900,
+				cachedInputTokens: 700,
+				outputTokens: 1,
+			});
+			const completed = lines.find((l) => l.msg === "turn completed");
+			expect(completed?.window).toEqual({ input: 900, limit: 1000, pct: 90 });
+			expect(completed?.usage).toEqual({ input: 900, cached: 700, output: 1 });
+		} finally {
+			setLogFile(null);
+			store.close();
+		}
 	});
 });

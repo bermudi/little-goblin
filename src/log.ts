@@ -20,12 +20,13 @@ export function setLogLevel(level: LogLevel): void {
 }
 
 // The file sink is opt-in: the composition root attaches it at boot
-// (setLogFile). Anything else that logs — tests, one-off scripts —
-// goes stdout-only and can't pollute the operator's log file.
+// (setLogFile). Anything else that logs — tests, one-off scripts — goes
+// stdout-only and can't pollute the operator's log file. Passing null
+// detaches (tests do this after reading the file back).
 let fileTarget: string | null = null;
 let fileSinkDead = false;
 
-export function setLogFile(path: string): void {
+export function setLogFile(path: string | null): void {
 	fileTarget = path;
 }
 

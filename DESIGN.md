@@ -178,6 +178,14 @@ agent loop.
     catalog context limit. History compaction, when it arrives, is an
     explicit logged boundary that starts a fresh stable prefix — never
     silent eviction. (Until then history is unbounded; see non-goals.)
+
+  Sanctioned one-time rewrites, each visible as a requestHash move in the
+  log: a `/model` switch — or a catalog refresh that changes a model's
+  listed modalities — recomputes attachment representations once; a fenced
+  or failed turn leaves its user message unanswered, and the successor
+  turn's burst-merge (Causal view) rewrites that boundary; a corrupt row's
+  placeholder is a repair, not drift. Everything else that moves the hash
+  is a bug.
 - **Transcription**: voice notes, audio files, and video notes are speech —
   a model that can't consume audio shouldn't lose them to a bare path.
   When `transcription` is configured (`kind: groq`, whisper `model`, `auth`

@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Api } from "grammy";
 import type { Conversation } from "../conversation.ts";
 import {
@@ -384,5 +387,82 @@ describe("delivery", () => {
 			isNotModifiedError({ description: "Bad Request: message is not modified", error_code: 400 }),
 		).toBe(true);
 		expect(isNotModifiedError(new Error("transient edit failure"))).toBe(false);
+	});
+});
+
+describe("delivery files", () => {
+	function fileApi() {
+		const photos: Array<{ caption?: string }> = [];
+		const documents: Array<{ caption?: string }> = [];
+		const api = {
+			sendChatAction: () => Promise.resolve(true),
+			sendMessage: async () => ({ message_id: 1 }),
+			editMessageText: async () => true,
+			sendPhoto: async (_chat: number, _photo: unknown, other?: { caption?: string }) => {
+				photos.push({ ...(other?.caption !== undefined ? { caption: other.caption } : {}) });
+				return { message_id: 10 + photos.length };
+			},
+			sendDocument: async (_chat: number, _doc: unknown, other?: { caption?: string }) => {
+				documents.push({ ...(other?.caption !== undefined ? { caption: other.caption } : {}) });
+				return { message_id: 20 + documents.length };
+			},
+			setMessageReaction: async () => true,
+		} as unknown as Api;
+		return { api, photos, documents };
+	}
+
+	function pngFile(dir: string): string {
+		// Minimal PNG head: signature + IHDR dims — enough for magic sniffing.
+		const head = Buffer.alloc(24);
+		head.set([0x89, 0x50, 0x4e, 0x47], 0);
+		head.writeUInt32BE(2, 16);
+		head.writeUInt32BE(3, 20);
+		const f = join(dir, "chart.png");
+		writeFileSync(f, head);
+		return f;
+	}
+
+	test("an image goes as a photo preview", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
+		try {
+			const { api, photos, documents } = fileApi();
+			const sink = makeDeliverySink(api, conv, undefined, 0);
+			await sink.onFile!({ path: pngFile(dir), filename: "chart.png" });
+			expect(photos).toHaveLength(1);
+			expect(documents).toHaveLength(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a non-image goes as a document, caption carried", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
+		try {
+			const f = join(dir, "report.pdf");
+			writeFileSync(f, "pdf-bytes");
+			const { api, photos, documents } = fileApi();
+			const sink = makeDeliverySink(api, conv, undefined, 0);
+			await sink.onFile!({ path: f, filename: "report.pdf", caption: "here you go" });
+			expect(documents).toEqual([{ caption: "here you go" }]);
+			expect(photos).toHaveLength(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a fenced turn sends nothing", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
+		try {
+			const f = join(dir, "a.txt");
+			writeFileSync(f, "data");
+			const { api, photos, documents } = fileApi();
+			const sink = makeDeliverySink(api, conv, undefined, 0);
+			sink.setAuthorityCheck?.(() => false);
+			await sink.onFile!({ path: f, filename: "a.txt" });
+			expect(photos).toHaveLength(0);
+			expect(documents).toHaveLength(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

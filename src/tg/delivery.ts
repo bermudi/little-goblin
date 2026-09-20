@@ -3,8 +3,10 @@
 // TurnSink: the runtime streams into it, grammy does the sending.
 
 import { InputFile, type Api } from "grammy";
+import { stat } from "node:fs/promises";
 import type { Conversation } from "../conversation.ts";
 import type { TurnDone, TurnSink } from "../runtime.ts";
+import { sniffImage } from "../agent/tools/read.ts";
 import { speechContent, STATUS_TAIL_MARK } from "../agent/tts.ts";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
@@ -186,6 +188,42 @@ export function makeDeliverySink(
 		await chain;
 	}
 
+	async function sendFile(file: { path: string; filename: string; caption?: string }): Promise<void> {
+		if (!authoritative()) return;
+		// Fail fast on a file that vanished between the tool's check and
+		// now, so the tool reports it — network failures inside the chain
+		// stay warn-logged, like voice.
+		const st = await stat(file.path).catch((err: unknown) => {
+			throw new Error(`file unreadable: ${file.path} (${String(err)})`);
+		});
+		// Images go as photo previews, everything else as documents —
+		// sniffed from magic bytes, never the extension.
+		const photo = sniffImage(file.path) !== null;
+		const bytes = st.size;
+		enqueue(async () => {
+			if (!authoritative()) return;
+			const extra = {
+				...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+				...(file.caption !== undefined ? { caption: file.caption } : {}),
+			};
+			const sent = photo
+				? await withTimeout(api.sendPhoto(conv.chatId, new InputFile(file.path, file.filename), extra), "sendPhoto")
+				: await withTimeout(
+						api.sendDocument(conv.chatId, new InputFile(file.path, file.filename), extra),
+						"sendDocument",
+					);
+			log.debug("file delivered", {
+				conversation: conv.id,
+				message: sent.message_id,
+				path: file.path,
+				bytes,
+				kind: photo ? "photo" : "document",
+				...(conv.threadId !== null ? { thread: conv.threadId } : {}),
+			});
+		});
+		await chain;
+	}
+
 	function rendered(): string {
 		const status =
 			toolStatus.length > 0 ? `${STATUS_TAIL_MARK}${toolStatus.slice(-5).join("\n")}` : "";
@@ -317,6 +355,9 @@ export function makeDeliverySink(
 		async onVoiceNote(audio) {
 			sendRecording();
 			await sendVoice(audio);
+		},
+		async onFile(file) {
+			await sendFile(file);
 		},
 		// DESIGN.md (TTS): record_voice runs while synthesis is in flight —
 		// the speak tool's door, matching the 🔊 button and /voice mode.

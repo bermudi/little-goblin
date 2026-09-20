@@ -103,7 +103,7 @@ async function boot() {
 				...(providerOptions ? { providerOptions } : {}),
 			};
 		},
-		makeTools: (conv, deliverVoice, recording) => {
+		makeTools: (conv, deliverVoice, recording, deliverFile) => {
 			const tts = configRef.current.tts;
 			return makeTools(
 				paths.workspace(),
@@ -112,10 +112,13 @@ async function boot() {
 							synthesize: (text) => synthesizeSpeech(text, tts),
 							deliver: deliverVoice,
 							...(recording ? { recording } : {}),
-					}
-				: undefined,
+						}
+					: undefined,
 				// The schedule tool pins new jobs to the conversation it runs in.
 				{ jobs, chatId: conv.chatId, threadId: conv.threadId },
+				// The send_file tool hands workspace paths to the turn's
+				// delivery sink, which owns the Telegram send.
+				deliverFile ? { deliver: deliverFile } : undefined,
 			);
 		},
 	});

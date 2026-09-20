@@ -8,6 +8,7 @@ import { bashTool } from "./bash.ts";
 import { editFileTool } from "./edit.ts";
 import { readFileTool } from "./read.ts";
 import { scheduleTool } from "./schedule.ts";
+import { type OutgoingFile, sendFileTool } from "./send.ts";
 import { speakTool } from "./speak.ts";
 import { writeFileTool } from "./write.ts";
 
@@ -24,10 +25,15 @@ export interface ScheduleToolDeps {
 	threadId: number | null;
 }
 
+export interface FileToolDeps {
+	deliver(file: OutgoingFile): Promise<void>;
+}
+
 export function makeTools(
 	cwd: string,
 	voice?: VoiceToolDeps,
 	schedule?: ScheduleToolDeps,
+	file?: FileToolDeps,
 ): ToolSet {
 	return {
 		read_file: readFileTool(cwd),
@@ -38,5 +44,6 @@ export function makeTools(
 			? { speak: speakTool(cwd, voice.synthesize, voice.deliver, voice.recording) }
 			: {}),
 		...(schedule ? { schedule: scheduleTool(schedule) } : {}),
+		...(file ? { send_file: sendFileTool(cwd, file.deliver) } : {}),
 	};
 }

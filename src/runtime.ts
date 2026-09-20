@@ -54,6 +54,11 @@ export interface TurnSink {
 	onReasoningDelta(delta: string): void;
 	onToolCall(toolName: string, input: unknown): void;
 	onVoiceNote?(audio: Uint8Array): Promise<void>;
+	// The send_file tool's door, matching speak's: the tool hands a
+	// workspace path to the sink, which owns the Telegram send — so
+	// "Telegram send is delivery, not a tool" stays true and file sends
+	// ride the same serialized chain and authority fencing as text.
+	onFile?(file: { path: string; filename: string; caption?: string }): Promise<void>;
 	// The speak tool's synthesis is a visible wait: start a record_voice
 	// chat action and return its stopper. Optional like onVoiceNote —
 	// the runtime only wires the door when the sink provides it.
@@ -92,6 +97,7 @@ export interface RuntimeDeps {
 		conv: Conversation,
 		deliverVoice?: (audio: Uint8Array) => Promise<void>,
 		recording?: () => () => void,
+		deliverFile?: (file: { path: string; filename: string; caption?: string }) => Promise<void>,
 	): ToolSet;
 }
 
@@ -315,6 +321,15 @@ export class Runtime {
 						this.checkAuthority(convId, epoch);
 					}
 				: undefined;
+			// Same fencing as voice: a /stop'd turn can't emit a file after
+			// losing authority.
+			const deliverFile = sink.onFile
+				? async (file: { path: string; filename: string; caption?: string }) => {
+						this.checkAuthority(convId, epoch);
+						await sink.onFile!(file);
+						this.checkAuthority(convId, epoch);
+					}
+				: undefined;
 			// The speak tool's synthesis shows record_voice instead of
 			// typing while it runs. Starting it sends a Telegram chat
 			// action — a side effect, so fence the start; the returned
@@ -326,7 +341,7 @@ export class Runtime {
 					}
 				: undefined;
 			const tools = this.fenceTools(
-				this.deps.makeTools(conv, deliverVoice, recording),
+				this.deps.makeTools(conv, deliverVoice, recording, deliverFile),
 				convId,
 				epoch,
 			);

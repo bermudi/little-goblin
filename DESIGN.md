@@ -208,9 +208,10 @@ agent loop.
 
 ## Tools (v1)
 
-Hand-rolled, zod-validated, six:
+Hand-rolled, zod-validated, seven:
 
 `read_file` `write_file` `edit_file` `bash` (timeout) `speak` `schedule`
+`send_file`
 
 All tools run in the deployment workspace — conversations have no cwd and
 there is no `/cd`. Working elsewhere is the agent's own business (`cd x &&
@@ -446,6 +447,15 @@ Resolved values never enter the tool environment, the model context, or logs.
   full reply text — one process, one operator, no schema change), and a
   miss (restart, old message) degrades to the tapped bubble's text,
   warn-logged. No button in voice mode — the reply is already audio.
+- **Files**: `send_file` is the file-out twin of intake media: it
+  *names*, it does not send. The tool hands a workspace path (+ optional
+  caption) to the turn's delivery sink (`sink.onFile`), which owns the
+  Telegram call — so "Telegram send is delivery, not a tool" stays true
+  and file sends ride the same serialized chain and authority fencing
+  as text: a `/stop`'d turn can't emit one. Delivery sniffs magic bytes
+  (never the extension): images go as photo previews, everything else
+  as documents. The file travels from disk (no whole-file buffering),
+  capped at the local bot-api's 2GB upload ceiling.
 - **Voice mode**: `/voice` toggles voice-note replies per conversation —
   a settings command like `/model`/`/think`, epoch bump and all, so a
   turn never switches medium mid-flight. When on, delivery skips

@@ -2,19 +2,20 @@
 // thing, commands → settings, everything else → coalescing buffer → turn.
 // Only this directory knows grammy.
 
-import { Bot, type Api } from "grammy";
+import { Bot, InputFile, type Api } from "grammy";
 import type { MenuButton } from "grammy/types";
 import type { UIMessage } from "ai";
 import type { AuthStore } from "../auth.ts";
-import { paths, type Config } from "../config.ts";
+import { paths, type Config, type TtsConfig } from "../config.ts";
 import type { ConversationAddress, ConversationStore } from "../conversation.ts";
 import { userMessage, type Runtime } from "../runtime.ts";
 import { log } from "../log.ts";
 import { CoalescingBuffer } from "./buffer.ts";
 import { COMMAND_RE, COMMANDS, handleCommand } from "./commands.ts";
 import { withTimeout } from "./deadline.ts";
-import { makeDeliverySink } from "./delivery.ts";
+import { makeDeliverySink, recentReplyText, SPEAK_CALLBACK } from "./delivery.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
+import { speakable } from "../agent/tts.ts";
 import { mediaFromMessage, mediaParts, saveAttachment } from "./media.ts";
 import { maybeRenameTopic, titleMetaFromService } from "./titles.ts";
 
@@ -61,6 +62,7 @@ export interface BotDeps {
 	// Speech → text for transcribable media (voice, audio, video notes).
 	// null = unconfigured, over the provider cap, or no speech found.
 	transcribe(file: SpeechFile): Promise<string | null>;
+	synthesize(text: string, config: TtsConfig): Promise<Uint8Array[]>;
 }
 
 export interface RunningBot {
@@ -119,7 +121,14 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 				});
 			}
 		}
-		const sink = makeDeliverySink(bot.api, conv, replyTo);
+		const tts = deps.configRef.current.tts;
+		const sink = makeDeliverySink(
+			bot.api,
+			conv,
+			replyTo,
+			undefined,
+			tts ? { voiceMode: conv.voice, synthesize: (text) => deps.synthesize(text, tts) } : undefined,
+		);
 		try {
 			deps.runtime.submit(conv, userMessage(parts), sink);
 		} catch (err) {
@@ -248,6 +257,77 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 
 			buffer.push(conv.id, { parts, replyTo: msg.message_id });
 		});
+	});
+
+	bot.callbackQuery(SPEAK_CALLBACK, async (ctx) => {
+		const query = ctx.callbackQuery;
+		const message = query.message;
+		const tts = deps.configRef.current.tts;
+		if (!message || !tts) {
+			await withTimeout(
+				bot.api.answerCallbackQuery(query.id, { text: "speech is not configured" }),
+				"answerCallbackQuery",
+			);
+			return;
+		}
+		const full = recentReplyText(message.chat.id, message.message_id);
+		const tapped = "text" in message ? message.text ?? "" : "";
+		if (full === null) {
+			log.warn("voice button reply cache miss", {
+				chat: message.chat.id,
+				message: message.message_id,
+			});
+		}
+		const text = speakable(full ?? tapped);
+		if (text === "") {
+			await withTimeout(
+				bot.api.answerCallbackQuery(query.id, { text: "nothing speakable in this reply" }),
+				"answerCallbackQuery",
+			);
+			return;
+		}
+		const action = () =>
+			withTimeout(
+				bot.api.sendChatAction(message.chat.id, "record_voice", {
+					...(message.message_thread_id !== undefined
+						? { message_thread_id: message.message_thread_id }
+						: {}),
+				}),
+				"sendChatAction",
+			).catch((err: unknown) => log.debug("record voice ping failed", { error: String(err) }));
+		action();
+		const recording = setInterval(action, 4_000);
+		try {
+			const audio = await deps.synthesize(text, tts);
+			clearInterval(recording);
+			for (const chunk of audio) {
+				await withTimeout(
+					bot.api.sendVoice(message.chat.id, new InputFile(chunk, "speech.ogg"), {
+						...(message.message_thread_id !== undefined
+							? { message_thread_id: message.message_thread_id }
+							: {}),
+					}),
+					"sendVoice",
+				);
+			}
+			await withTimeout(bot.api.answerCallbackQuery(query.id), "answerCallbackQuery");
+			log.info("voice button delivered", {
+				chat: message.chat.id,
+				message: message.message_id,
+				chunks: audio.length,
+			});
+		} catch (err) {
+			clearInterval(recording);
+			log.warn("voice button failed", {
+				chat: message.chat.id,
+				message: message.message_id,
+				error: String(err),
+			});
+			await withTimeout(
+				bot.api.answerCallbackQuery(query.id, { text: "speech synthesis failed" }),
+				"answerCallbackQuery",
+			);
+		}
 	});
 
 	bot.catch((err) => {

@@ -322,8 +322,10 @@ Resolved values never enter the tool environment, the model context, or logs.
   chunked at sentence boundaries inside the module — the cap is a sanity
   guard, never a control-flow path the model must recover from. Button
   text is stripped of the tool-status tail and markdown before synthesis
-  (`speakable`); tool input is already authored for speech. Output is
-  ogg/opus — a real voice-note bubble, not an audio-file card.
+  (`speakable`); tool input is already authored for speech. Edge's supported
+  WebM/Opus stream is remuxed losslessly through ffmpeg to ogg/opus — a real
+  voice-note bubble, not an audio-file card. ffmpeg is probed at boot when TTS
+  is configured, and install.sh warns when it is absent.
   `record_voice` chat action runs while synthesis is in flight. The
   button voices the *whole* reply, not the tapped bubble: delivery keeps
   a bounded in-memory map of its own recent sends (chat, message id →

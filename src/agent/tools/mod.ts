@@ -6,13 +6,20 @@ import type { ToolSet } from "ai";
 import { bashTool } from "./bash.ts";
 import { editFileTool } from "./edit.ts";
 import { readFileTool } from "./read.ts";
+import { speakTool } from "./speak.ts";
 import { writeFileTool } from "./write.ts";
 
-export function makeTools(cwd: string): ToolSet {
+export interface VoiceToolDeps {
+	synthesize(text: string): Promise<Uint8Array[]>;
+	deliver(audio: Uint8Array): Promise<void>;
+}
+
+export function makeTools(cwd: string, voice?: VoiceToolDeps): ToolSet {
 	return {
 		read_file: readFileTool(cwd),
 		write_file: writeFileTool(cwd),
 		edit_file: editFileTool(cwd),
 		bash: bashTool(cwd),
+		...(voice ? { speak: speakTool(cwd, voice.synthesize, voice.deliver) } : {}),
 	};
 }

@@ -153,9 +153,10 @@ describe("conversation store", () => {
 	test("applySettings patches meta and bumps epoch atomically", () => {
 		const store = openStore(tmpdb());
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		expect(store.applySettings(c.id, { model: "zai/glm-4.5" })).toBe(1);
+		expect(store.applySettings(c.id, { model: "zai/glm-4.5", voice: true })).toBe(1);
 		const after = store.get(c.id)!;
 		expect(after.model).toBe("zai/glm-4.5");
+		expect(after.voice).toBe(true);
 		expect(after.epoch).toBe(1);
 		store.close();
 	});

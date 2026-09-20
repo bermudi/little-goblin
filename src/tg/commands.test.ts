@@ -114,6 +114,26 @@ describe("commands", () => {
 		store.close();
 	});
 
+	test("/voice toggles voice replies and bumps the epoch", () => {
+		const { store, conv, deps } = setup();
+		deps.configRef.current = { ...config, tts: { kind: "edge", voice: "en-US-AriaNeural" } };
+		expect(handleCommand(deps, conv, "/voice")).toBe(true);
+		const after = store.get(conv.id)!;
+		expect(after.voice).toBe(true);
+		expect(after.epoch).toBe(1);
+		handleCommand(deps, after, "/voice");
+		expect(store.get(conv.id)!.voice).toBe(false);
+		store.close();
+	});
+
+	test("/voice refuses to enable without tts configured", () => {
+		const { store, conv, sent, deps } = setup();
+		expect(handleCommand(deps, conv, "/voice")).toBe(true);
+		expect(store.get(conv.id)!.voice).toBe(false);
+		expect(sent[0]).toContain("not configured");
+		store.close();
+	});
+
 	test("/stop fences the conversation", () => {
 		const { store, conv, stopped, deps } = setup();
 		expect(handleCommand(deps, conv, "/stop")).toBe(true);

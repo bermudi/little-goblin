@@ -6,6 +6,7 @@ import { buildSystemPrompt } from "./agent/prompt.ts";
 import { resolveModel, thinkingOptions } from "./agent/providers.ts";
 import { generateTopicTitle } from "./agent/title.ts";
 import { checkFfmpeg, transcribeAudio, transcriptionModel } from "./agent/transcribe.ts";
+import { synthesizeSpeech } from "./agent/tts.ts";
 import { makeTools } from "./agent/tools/mod.ts";
 import {
 	ensureHomeLayout,
@@ -38,9 +39,11 @@ const configRef = { current: config };
 const auth = loadAuth();
 const store = openStore(paths.db());
 
-// ffmpeg powers the over-cap transcription path — probe it once at boot
-// so a missing binary is a startup warn, not a surprise mid-voice-note.
-if (config.transcription) void checkFfmpeg();
+// ffmpeg powers TTS remuxing and over-cap transcription — probe it once
+// at boot so a missing binary surfaces before the first speech request.
+if (config.transcription || config.tts) {
+	void checkFfmpeg(config.tts ? "tts" : "transcription");
+}
 
 // Warm the openrouter route-capability catalog so /think and the mini app
 // see real per-model thinking levels instead of the cold-start fallback.
@@ -78,7 +81,15 @@ const runtime = new Runtime({
 			...(providerOptions ? { providerOptions } : {}),
 		};
 	},
-	makeTools: () => makeTools(paths.workspace()),
+	makeTools: (deliverVoice) => {
+		const tts = configRef.current.tts;
+		return makeTools(
+			paths.workspace(),
+			tts && deliverVoice
+				? { synthesize: (text) => synthesizeSpeech(text, tts), deliver: deliverVoice }
+				: undefined,
+		);
+	},
 });
 
 const tg = await startBot({
@@ -95,6 +106,9 @@ const tg = await startBot({
 			text,
 			thinkingOptions(cfg, cfg.titleModel, "off"),
 		);
+	},
+	async synthesize(text, tts) {
+		return synthesizeSpeech(text, tts);
 	},
 	async transcribe(file) {
 		// Read per call — a mini-app save applies to the next voice note,

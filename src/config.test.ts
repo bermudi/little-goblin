@@ -98,6 +98,17 @@ describe("goblin.json5", () => {
 		expect(() => loadConfig()).toThrow('provider "other"');
 	});
 
+	test("tts validates edge voice/rate and \"\" clears to unset", () => {
+		const dir = useHome();
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
+		writeFileSync(join(dir, "goblin.json5"), `${base},tts:{kind:"edge",voice:"en-US-AriaNeural",rate:"+10%"}}`);
+		expect(loadConfig()!.tts).toEqual({ kind: "edge", voice: "en-US-AriaNeural", rate: "+10%" });
+		writeFileSync(join(dir, "goblin.json5"), `${base},tts:""}`);
+		expect(loadConfig()!.tts).toBeUndefined();
+		writeFileSync(join(dir, "goblin.json5"), `${base},tts:{kind:"edge",voice:""}}`);
+		expect(() => loadConfig()).toThrow("goblin.json5");
+	});
+
 	test("transcription defaults its model; \"\" clears to unset", () => {
 		const dir = useHome();
 		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;

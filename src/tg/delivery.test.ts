@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Api } from "grammy";
 import type { Conversation } from "../conversation.ts";
-import { makeDeliverySink } from "./delivery.ts";
+import { makeDeliverySink, recentReplyText, SPEAK_CALLBACK } from "./delivery.ts";
 
 const CHUNK = 3800;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -14,6 +14,7 @@ const conv: Conversation = {
 	titleImplicit: false,
 	model: null,
 	thinking: null,
+	voice: false,
 	epoch: 0,
 	createdAt: "",
 };
@@ -21,7 +22,9 @@ const conv: Conversation = {
 // Fake the Telegram API at the edge. `gate` holds sends while set.
 function fakeApi(opts: { gate?: { current: Promise<void> | null }; failSends?: boolean }) {
 	const msgs: string[] = [];
+	const voices: number[] = [];
 	const reactions: Array<{ chat: number; id: number; emoji: string }> = [];
+	const markups: unknown[] = [];
 	const api = {
 		sendChatAction: () => Promise.resolve(true),
 		sendMessage: async (_chat: number, text: string) => {
@@ -34,6 +37,14 @@ function fakeApi(opts: { gate?: { current: Promise<void> | null }; failSends?: b
 			msgs[id - 1] = text;
 			return true;
 		},
+		sendVoice: async () => {
+			voices.push(voices.length + 1);
+			return { message_id: 100 + voices.length };
+		},
+		editMessageReplyMarkup: async (_chat: number, _id: number, markup: unknown) => {
+			markups.push(markup);
+			return true;
+		},
 		setMessageReaction: async (
 			chat: number,
 			id: number,
@@ -43,7 +54,7 @@ function fakeApi(opts: { gate?: { current: Promise<void> | null }; failSends?: b
 			return true;
 		},
 	} as unknown as Api;
-	return { api, msgs, reactions };
+	return { api, msgs, voices, reactions, markups };
 }
 
 describe("delivery", () => {
@@ -232,5 +243,60 @@ describe("delivery", () => {
 		sink.onTextDelta("partial");
 		await sink.onDone({ kind: "error", message: "boom" });
 		expect(reactions).toEqual([]);
+	});
+
+	test("configured text delivery stamps a speak button and remembers the whole reply", async () => {
+		const { api, markups } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, undefined, 0, {
+			voiceMode: false,
+			synthesize: async () => [],
+		});
+		sink.onTextDelta("whole reply");
+		await sink.onDone({ kind: "completed" });
+		expect(markups).toEqual([
+			{ reply_markup: { inline_keyboard: [[{ text: "🔊", callback_data: SPEAK_CALLBACK }]] } },
+		]);
+		expect(recentReplyText(1, 1)).toBe("whole reply");
+	});
+
+	test("voice mode skips streamed text and sends synthesized ogg chunks", async () => {
+		const { api, msgs, voices } = fakeApi({});
+		const spoken: string[] = [];
+		const sink = makeDeliverySink(api, conv, undefined, 0, {
+			voiceMode: true,
+			synthesize: async (text) => {
+				spoken.push(text);
+				return [new Uint8Array([1]), new Uint8Array([2])];
+			},
+		});
+		sink.onTextDelta("**hello**");
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toEqual([]);
+		expect(spoken).toEqual(["hello"]);
+		expect(voices).toHaveLength(2);
+	});
+
+	test("an epoch change during synthesis fences the voice reply", async () => {
+		const { api, msgs, voices } = fakeApi({});
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let authoritative = true;
+		const sink = makeDeliverySink(api, conv, undefined, 0, {
+			voiceMode: true,
+			synthesize: async () => {
+				await gate;
+				return [new Uint8Array([1])];
+			},
+		});
+		sink.setAuthorityCheck?.(() => authoritative);
+		sink.onTextDelta("hello");
+		const done = sink.onDone({ kind: "completed" });
+		authoritative = false;
+		release();
+		await done;
+		expect(msgs).toEqual([]);
+		expect(voices).toEqual([]);
 	});
 });

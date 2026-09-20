@@ -145,6 +145,16 @@ export const APP_HTML = `<!doctype html>
     </section>
 
     <section>
+      <h2>Speech</h2>
+      <label for="ttsKind">text → voice notes</label>
+      <select id="ttsKind"><option value="">off</option><option value="edge">edge read-aloud</option></select>
+      <label for="ttsVoice">voice</label>
+      <input id="ttsVoice" class="mono" placeholder="en-US-AriaNeural" autocomplete="off" spellcheck="false" autocapitalize="off">
+      <label for="ttsRate">rate (optional)</label>
+      <input id="ttsRate" class="mono" placeholder="+10%" autocomplete="off" spellcheck="false" autocapitalize="off">
+    </section>
+
+    <section>
       <h2>Transcription</h2>
       <label for="trKind">speech → text for voice/audio/video notes</label>
       <select id="trKind"><option value="">off</option><option value="groq">groq whisper</option></select>
@@ -311,6 +321,15 @@ function syncTranscription() {
 }
 $("trKind").onchange = syncTranscription;
 
+function syncTts() {
+  const off = $("ttsKind").value === "";
+  for (const id of ["ttsVoice", "ttsRate"]) {
+    $(id).classList.toggle("hidden", off);
+    $(id).previousElementSibling.classList.toggle("hidden", off);
+  }
+}
+$("ttsKind").onchange = syncTts;
+
 function readProviders() {
   const out = {};
   for (const div of $("provs").children) {
@@ -341,6 +360,10 @@ async function load() {
   $("allowedUsers").value = (c.allowedUsers ?? []).join(", ");
   $("publicUrl").value = c.publicUrl ?? "";
   $("apiRoot").value = c.telegram?.apiRoot ?? "";
+  $("ttsKind").value = c.tts?.kind ?? "";
+  $("ttsVoice").value = c.tts?.voice ?? "";
+  $("ttsRate").value = c.tts?.rate ?? "";
+  syncTts();
   $("trKind").value = c.transcription?.kind ?? "";
   $("trModel").value = c.transcription?.model ?? "";
   $("trAuth").value = c.transcription?.auth ?? "";
@@ -367,6 +390,11 @@ $("save").onclick = async () => {
     allowedUsers: num($("allowedUsers").value),
     publicUrl: $("publicUrl").value.trim(), // "" clears the door — server normalizes it
     telegram: { apiRoot: $("apiRoot").value.trim() || undefined },
+    tts: $("ttsKind").value === "" ? "" : {
+      kind: $("ttsKind").value,
+      voice: $("ttsVoice").value.trim(),
+      ...($("ttsRate").value.trim() ? { rate: $("ttsRate").value.trim() } : {}),
+    },
     // "" clears — server normalizes it to unset like publicUrl.
     transcription: $("trKind").value === "" ? "" : {
       kind: $("trKind").value,

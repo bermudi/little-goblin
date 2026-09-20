@@ -1,4 +1,4 @@
-// Commands are settings-only: /model /think /stop. No
+// Commands are settings-only: /model /think /voice /stop. No
 // conversation-lifecycle commands — topics own that. Every settings change
 // bumps the conversation epoch, fencing in-flight turns.
 
@@ -97,6 +97,18 @@ export function handleCommand(
 			return true;
 		}
 
+		case "/voice": {
+			if (!deps.configRef.current.tts && !conv.voice) {
+				reply(deps, conv, "voice replies unavailable — tts is not configured");
+				return true;
+			}
+			const enabled = !conv.voice;
+			apply(deps, conv, { voice: enabled });
+			log.info("voice mode changed", { conversation: conv.id, enabled });
+			reply(deps, conv, `voice replies → ${enabled ? "on" : "off"}`);
+			return true;
+		}
+
 		case "/think": {
 			// Levels the conversation's model can actually express — the
 			// vocabulary is wider than any single model's ladder.
@@ -141,6 +153,7 @@ export function handleCommand(
 export const COMMANDS = [
 	{ command: "model", description: "show or override the model" },
 	{ command: "think", description: "show or override thinking level" },
+	{ command: "voice", description: "toggle voice-note replies" },
 	{ command: "stop", description: "fence the running turn" },
 ] as const;
 

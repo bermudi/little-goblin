@@ -45,6 +45,14 @@
   // max — thinking is forced; gpt-6: low…xhigh|max; non-thinkers: off).
   thinking: "medium", // off | low | medium | high | xhigh | max
 
+  // Text → Telegram voice notes. Enables /voice, reply buttons, and the
+  // speak tool. Edge read-aloud is unofficial and may break.
+  // tts: {
+  //   kind: "edge",
+  //   voice: "en-US-AriaNeural",
+  //   rate: "+0%", // optional
+  // },
+
   // Speech → text for voice/audio/video notes — transcribed once at
   // intake, and models that can't consume audio read the transcript
   // instead of a bare path. Unset = no transcription.

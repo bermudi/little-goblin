@@ -33,6 +33,7 @@ export interface Conversation {
 	titleImplicit: boolean;
 	model: string | null; // "<provider>/<model-id>" override; null = config default
 	thinking: string | null; // override; null = config default
+	voice: boolean;
 	epoch: number;
 	createdAt: string;
 }
@@ -42,6 +43,7 @@ export interface ConversationMetaPatch {
 	titleImplicit?: boolean;
 	model?: string | null;
 	thinking?: string | null;
+	voice?: boolean;
 }
 
 export interface ConversationStore {
@@ -82,6 +84,7 @@ interface Row {
 	cwd: string; // kept: column exists in existing DBs; never read into Conversation
 	model: string | null;
 	thinking: string | null;
+	voice: number;
 	epoch: number;
 	created_at: string;
 }
@@ -105,6 +108,7 @@ function toConversation(r: Row): Conversation {
 		titleImplicit: r.title_implicit !== 0,
 		model: r.model,
 		thinking: r.thinking,
+		voice: r.voice !== 0,
 		epoch: r.epoch,
 		createdAt: r.created_at,
 	};
@@ -125,6 +129,7 @@ export function openStore(dbPath: string): ConversationStore {
 			cwd TEXT NOT NULL,
 			model TEXT,
 			thinking TEXT,
+			voice INTEGER NOT NULL DEFAULT 0,
 			epoch INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL
 		)`);
@@ -137,6 +142,9 @@ export function openStore(dbPath: string): ConversationStore {
 	);
 	if (!convCols.has("title_implicit")) {
 		db.run("ALTER TABLE conversations ADD COLUMN title_implicit INTEGER NOT NULL DEFAULT 0");
+	}
+	if (!convCols.has("voice")) {
+		db.run("ALTER TABLE conversations ADD COLUMN voice INTEGER NOT NULL DEFAULT 0");
 	}
 	db.run(`
 		CREATE TABLE IF NOT EXISTS events (
@@ -202,6 +210,10 @@ export function openStore(dbPath: string): ConversationStore {
 		if (patch.thinking !== undefined) {
 			sets.push("thinking = ?");
 			vals.push(patch.thinking);
+		}
+		if (patch.voice !== undefined) {
+			sets.push("voice = ?");
+			vals.push(patch.voice ? 1 : 0);
 		}
 		if (sets.length === 0) return;
 		vals.push(id);

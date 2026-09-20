@@ -38,6 +38,8 @@ export interface TurnSink {
 	onTextDelta(delta: string): void;
 	onReasoningDelta(delta: string): void;
 	onToolCall(toolName: string, input: unknown): void;
+	onVoiceNote?(audio: Uint8Array): Promise<void>;
+	setAuthorityCheck?(check: () => boolean): void;
 	onDone(done: TurnDone): void | Promise<void>;
 }
 
@@ -61,7 +63,7 @@ export interface RuntimeDeps {
 	buildStep(conv: Conversation): ModelStep | Promise<ModelStep>;
 	// Build the tool set — bound to the deployment workspace by the
 	// composition root.
-	makeTools(): ToolSet;
+	makeTools(deliverVoice?: (audio: Uint8Array) => Promise<void>): ToolSet;
 }
 
 // ---------- fencing ----------
@@ -248,6 +250,7 @@ export class Runtime {
 			return;
 		}
 		const epoch = conv.epoch;
+		sink.setAuthorityCheck?.(() => this.deps.store.get(convId)?.epoch === epoch);
 		// History snapshot is part of admission: a message submitted while
 		// the model step resolves lands in history but must NOT join this
 		// turn's context — it stays queued for its own turn. Reading it
@@ -265,7 +268,14 @@ export class Runtime {
 			this.checkAuthority(convId, epoch);
 			const step = await this.deps.buildStep(conv);
 			this.checkAuthority(convId, epoch);
-			const tools = this.fenceTools(this.deps.makeTools(), convId, epoch);
+			const deliverVoice = sink.onVoiceNote
+				? async (audio: Uint8Array) => {
+						this.checkAuthority(convId, epoch);
+						await sink.onVoiceNote!(audio);
+						this.checkAuthority(convId, epoch);
+					}
+				: undefined;
+			const tools = this.fenceTools(this.deps.makeTools(deliverVoice), convId, epoch);
 			// Materialize attachment refs against THIS turn's model — a
 			// media part the provider can't consume degrades to its path
 			// reference instead of failing the request on every turn.

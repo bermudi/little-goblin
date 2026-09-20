@@ -2,9 +2,10 @@
 // flush on completion, typing indicator while a turn runs. This is a
 // TurnSink: the runtime streams into it, grammy does the sending.
 
-import type { Api } from "grammy";
+import { InputFile, type Api } from "grammy";
 import type { Conversation } from "../conversation.ts";
 import type { TurnDone, TurnSink } from "../runtime.ts";
+import { speechContent } from "../agent/tts.ts";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
 
@@ -15,8 +16,33 @@ const CHUNK_LIMIT = 3800;
 // onDone drains the queue itself — enough headroom for ~95KB of backlog.
 const MAX_DRAIN_ITERATIONS = 25;
 const MAX_STAGNANT = 3;
+const RECENT_REPLY_LIMIT = 256;
+export const SPEAK_CALLBACK = "speak_reply";
 
+const recentReplies = new Map<string, string>();
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+export interface DeliveryVoiceDeps {
+	synthesize(text: string): Promise<Uint8Array[]>;
+	voiceMode: boolean;
+}
+
+function replyKey(chatId: number, messageId: number): string {
+	return `${chatId}:${messageId}`;
+}
+
+function rememberReply(chatId: number, messageId: number, text: string): void {
+	recentReplies.set(replyKey(chatId, messageId), text);
+	while (recentReplies.size > RECENT_REPLY_LIMIT) {
+		const oldest = recentReplies.keys().next().value;
+		if (oldest === undefined) break;
+		recentReplies.delete(oldest);
+	}
+}
+
+export function recentReplyText(chatId: number, messageId: number): string | null {
+	return recentReplies.get(replyKey(chatId, messageId)) ?? null;
+}
 
 // One chunk per Telegram message. id: -1 = unsent (send failed or not yet
 // attempted), -2 = send in flight, otherwise the Telegram message id.
@@ -58,6 +84,7 @@ export function makeDeliverySink(
 	conv: Conversation,
 	replyToMessageId: number | undefined,
 	editIntervalMs = EDIT_INTERVAL_MS,
+	voice?: DeliveryVoiceDeps,
 ): TurnSink {
 	let text = "";
 	const toolStatus: string[] = [];
@@ -73,6 +100,7 @@ export function makeDeliverySink(
 	// deleted the triggering message), retries go out without it rather
 	// than failing forever.
 	let replyTo = replyToMessageId;
+	let authoritative = () => true;
 
 	function enqueue(fn: () => Promise<void>): void {
 		chain = chain.then(() =>
@@ -94,6 +122,37 @@ export function makeDeliverySink(
 	}
 	sendTyping();
 	const typing = setInterval(sendTyping, TYPING_INTERVAL_MS);
+
+	function sendRecording(): void {
+		if (!authoritative()) return;
+		withTimeout(
+			api.sendChatAction(conv.chatId, "record_voice", {
+				...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+			}),
+			"sendChatAction",
+		).catch((err: unknown) => {
+			log.debug("record voice ping failed", { error: String(err) });
+		});
+	}
+
+	async function sendVoice(audio: Uint8Array): Promise<void> {
+		if (!authoritative()) return;
+		enqueue(async () => {
+			if (!authoritative()) return;
+			const sent = await withTimeout(
+				api.sendVoice(conv.chatId, new InputFile(audio, "speech.ogg"), {
+					...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+				}),
+				"sendVoice",
+			);
+			log.debug("voice delivered", {
+				conversation: conv.id,
+				message: sent.message_id,
+				...(conv.threadId !== null ? { thread: conv.threadId } : {}),
+			});
+		});
+		await chain;
+	}
 
 	function rendered(): string {
 		const status =
@@ -190,9 +249,12 @@ export function makeDeliverySink(
 	}
 
 	return {
+		setAuthorityCheck(check) {
+			authoritative = check;
+		},
 		onTextDelta(delta) {
 			text += delta;
-			maybeFlush();
+			if (!voice?.voiceMode) maybeFlush();
 		},
 		onReasoningDelta() {
 			// Thinking stays in history, not in the chat stream.
@@ -203,10 +265,76 @@ export function makeDeliverySink(
 					? String((input as { command?: string }).command ?? "").slice(0, 60)
 					: String((input as { path?: string }).path ?? "").slice(0, 60);
 			toolStatus.push(`⚙ ${toolName}${hint ? ` ${hint}` : ""}`);
-			flush();
+			if (!voice?.voiceMode) flush();
+		},
+		async onVoiceNote(audio) {
+			sendRecording();
+			await sendVoice(audio);
 		},
 		async onDone(done: TurnDone) {
 			clearInterval(typing);
+			if (voice?.voiceMode) {
+				if (done.kind === "fenced") return;
+				if (done.kind === "error") {
+					enqueue(async () => {
+						await withTimeout(
+							api.sendMessage(conv.chatId, `⚠ ${done.message.slice(0, 200)}`, {
+								...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+							}),
+							"sendMessage",
+						);
+					});
+					await chain;
+					return;
+				}
+				const content = speechContent(text);
+				try {
+					let audio: Uint8Array[] = [];
+					if (content.spoken !== "") {
+						sendRecording();
+						const recording = setInterval(sendRecording, TYPING_INTERVAL_MS);
+						try {
+							audio = await voice.synthesize(content.spoken);
+						} finally {
+							clearInterval(recording);
+						}
+					}
+					if (!authoritative()) {
+						log.info("voice reply fenced before delivery", { conversation: conv.id });
+						return;
+					}
+					if (content.supplemental) {
+						enqueue(async () => {
+							if (!authoritative()) return;
+							await withTimeout(
+								api.sendMessage(conv.chatId, content.supplemental!, {
+									...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+								}),
+								"sendMessage",
+							);
+						});
+					}
+					for (const chunk of audio) await sendVoice(chunk);
+					await chain;
+				} catch (err) {
+					if (!authoritative()) return;
+					log.warn("voice reply synthesis failed", {
+						conversation: conv.id,
+						error: String(err),
+					});
+					enqueue(async () => {
+						if (!authoritative()) return;
+						await withTimeout(
+							api.sendMessage(conv.chatId, text || "speech synthesis failed", {
+								...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+							}),
+							"sendMessage",
+						);
+					});
+					await chain;
+				}
+				return;
+			}
 			if (done.kind === "error") {
 				toolStatus.push(`⚠ ${done.message.slice(0, 200)}`);
 			} else if (done.kind === "fenced") {
@@ -252,14 +380,27 @@ export function makeDeliverySink(
 				const last = [...chunks].reverse().find((c) => c.id > 0);
 				if (last) {
 					const mid = last.id;
+					if (voice) rememberReply(conv.chatId, mid, text);
 					enqueue(async () => {
 						await withTimeout(
 							api.setMessageReaction(conv.chatId, mid, [
 								{ type: "emoji", emoji: "🫡" },
-								]),
-						"setMessageReaction",
-					);
+							]),
+							"setMessageReaction",
+						);
 					});
+					if (voice) {
+						enqueue(async () => {
+							await withTimeout(
+								api.editMessageReplyMarkup(conv.chatId, mid, {
+									reply_markup: {
+										inline_keyboard: [[{ text: "🔊", callback_data: SPEAK_CALLBACK }]],
+									},
+								}),
+								"editMessageReplyMarkup",
+							);
+						});
+					}
 					await chain;
 				}
 			}

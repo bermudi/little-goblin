@@ -95,6 +95,17 @@ const configSchema = z
 			.optional(),
 		favorites: z.array(z.string()).default([]),
 		thinking: z.enum(thinkingLevels).default("medium"),
+		tts: z
+			.union([
+				z.object({
+					kind: z.literal("edge"),
+					voice: z.string().min(1),
+					rate: z.string().regex(/^[+-]\d+%$/).optional(),
+				}),
+				z.literal(""),
+			])
+			.transform((v) => (v === "" ? undefined : v))
+			.optional(),
 		// Speech → text at intake for models that can't consume audio.
 		// "" means unset (mini-app clearing convention).
 		transcription: z
@@ -151,6 +162,7 @@ const configSchema = z
 export type ProviderConfig = z.infer<typeof providerSchema>;
 export type Config = z.infer<typeof configSchema>;
 export type TranscriptionConfig = NonNullable<Config["transcription"]>;
+export type TtsConfig = NonNullable<Config["tts"]>;
 
 // ---------- load / write ----------
 

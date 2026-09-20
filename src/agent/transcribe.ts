@@ -54,10 +54,8 @@ export async function transcriptionModel(
 	}
 }
 
-// Boot check, run when transcription is configured — over-cap media
-// needs ffmpeg on PATH, and a missing binary should surface at startup,
-// not inside the first big voice note's warn.
-export async function checkFfmpeg(): Promise<void> {
+// Boot check for speech features that need ffmpeg on PATH.
+export async function checkFfmpeg(feature = "transcription"): Promise<void> {
 	try {
 		const r = await boundedRun(spawnProc(["ffmpeg", "-version"]), {
 			timeoutMs: 10_000,
@@ -67,10 +65,7 @@ export async function checkFfmpeg(): Promise<void> {
 			throw new Error(`ffmpeg -version exited ${r.exitCode ?? "unreaped"}`);
 		}
 	} catch (err) {
-		log.warn(
-			"transcription configured but ffmpeg unavailable — oversized media stays untranscribed",
-			{ error: String(err) },
-		);
+		log.warn("ffmpeg unavailable", { feature, error: String(err) });
 	}
 }
 

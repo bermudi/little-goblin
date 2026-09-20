@@ -444,6 +444,9 @@ $GOBLIN_HOME/
 │   ├── AGENTS.md           # stub-created on first boot, then agent-owned
 │   ├── USER.md             # operator model — directive entries (observed
 │   │                       # date, active/superseded), agent-grown
+│   ├── memory/             # daily session notes YYYY-MM-DD.md — NOT
+│   │                       # injected; read on demand, promoted into
+│   │                       # AGENTS.md/USER.md when durable
 │   ├── skills/             # the skill catalog — agent-authored, in cwd
 │   └── attachments/
 └── state/

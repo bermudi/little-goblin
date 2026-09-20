@@ -81,6 +81,7 @@ On startup the bot creates the rest of its folder layout:
 │   ├── SOUL.md             # created from a template — the bot's identity
 │   ├── AGENTS.md           # created from a stub — the bot's own operating notes
 │   ├── USER.md             # created from a stub — the bot's model of you
+│   ├── memory/             # daily session notes (not loaded each turn)
 │   ├── skills/             # skills the bot installs for itself
 │   └── attachments/        # photos/files/voice you send, saved here
 └── state/

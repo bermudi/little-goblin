@@ -10,7 +10,7 @@ const MAX_TIMEOUT_MS = 10 * 60_000;
 export const bashTool = (cwd: string) =>
 	tool({
 		description:
-			"Run a shell command in the conversation's working directory. Returns combined stdout/stderr and the exit code.",
+			"Run a shell command in the deployment workspace — the fixed working directory shared by every conversation. Use `cd` inside the command to work elsewhere. Returns combined stdout/stderr and the exit code.",
 		inputSchema: z.object({
 			command: z.string(),
 			timeout_ms: z.number().int().positive().optional(),

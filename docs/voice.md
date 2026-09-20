@@ -56,8 +56,8 @@ Three ways to hear the bot:
    bubble. The whole-reply view comes from a small, per-process in-memory
    cache and never survives a restart. Once a reply has scrolled out of
    the cache (or after a restart), the button falls back to reading only
-   the tapped bubble — for a multi-bubble reply, that's its first part
-   alone. Code blocks and long URLs are left out of the button's audio too;
+   the tapped bubble — the one carrying the button, so for a multi-bubble
+   reply that's its last part alone. Code blocks and long URLs are left out of the button's audio too;
    the original text remains in chat.
 3. **Ask for it** — "read me this document" and the bot synthesizes the
    file straight from disk (no re-typing it) and sends voice notes inline.

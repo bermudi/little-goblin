@@ -3,7 +3,7 @@
 // Only this directory knows grammy.
 
 import { Bot, type Api } from "grammy";
-import type { MenuButton } from "grammy/types";
+import type { MenuButton, Message } from "grammy/types";
 import type { UIMessage } from "ai";
 import type { AuthStore } from "../auth.ts";
 import { paths, type Config, type TtsConfig } from "../config.ts";
@@ -99,6 +99,209 @@ export function allowedUserGate(configRef: { current: Config }) {
 	};
 }
 
+// ---------- intake router ----------
+//
+// The message router and the coalescing flush, lifted out of createBot
+// (they used to be anonymous closures) so every rule they carry is
+// testable without a live bot: command-vs-media precedence, the failed
+// attachment sentinel, one-attempt topic titling, the topic-meta patch
+// logging, and the submit-failure sink release. createBot only wires
+// grammy to these.
+
+// Everything the lifted functions need, made explicit — the deps they
+// used to close over.
+export interface IntakeEnv {
+	deps: BotDeps;
+	api: Api;
+	apiRoot: string | undefined;
+	token: string;
+	botUsername: string;
+	titleAttempts: Set<string>;
+	buffer: CoalescingBuffer<BufferedItem>;
+	intake: Map<string, Promise<void>>;
+}
+
+export type FlushEnv = Pick<IntakeEnv, "deps" | "api" | "titleAttempts">;
+
+export function handleMessage(env: IntakeEnv, msg: Message): void {
+	const { deps } = env;
+	const text = msg.text ?? msg.caption ?? "";
+	const addr = conversationAddress(msg);
+	const conv = deps.store.resolve(addr, paths.workspace());
+	log.debug("intake", {
+		conversation: conv.id,
+		message: msg.message_id,
+		...(conv.threadId !== null ? { thread: conv.threadId } : {}),
+	});
+	// conv is read before this patch — titleImplicit transitions both
+	// ways get a line, so "why is it still New Chat" never needs a REPL.
+	const topicMeta = titleMetaFromService(msg);
+	if (topicMeta) {
+		deps.store.setMeta(conv.id, topicMeta);
+		if (topicMeta.titleImplicit) {
+			log.info("implicit topic name — titling owed", {
+				conversation: conv.id,
+				title: topicMeta.title,
+			});
+		} else if (conv.titleImplicit) {
+			log.info("topic renamed — titling debt settled", { conversation: conv.id });
+		}
+	}
+
+	// Commands are settings-only — but a caption that looks like a
+	// command must not silently eat the media it rides on; media wins.
+	const media = mediaFromMessage(msg);
+	if (text !== "" && !media && COMMAND_RE.test(text)) {
+		if (
+			handleCommand(
+				{
+					api: env.api,
+					configRef: deps.configRef,
+					store: deps.store,
+					runtime: deps.runtime,
+					botUsername: env.botUsername,
+				},
+				conv,
+				text,
+			)
+		) {
+			return;
+		}
+	}
+
+	if (text === "" && !media) {
+		// Service messages, join/leave, and media kinds intake doesn't
+		// cover — routine, but worth a debug line when it isn't.
+		log.debug("dropped message with no text or media", { conversation: conv.id });
+		return;
+	}
+
+	enqueueIntake(env.intake, conv.id, async () => {
+		const parts: UIMessage["parts"] = [];
+		if (text !== "") parts.push({ type: "text", text });
+
+		if (media) {
+			try {
+				const file = await withTimeout(env.api.getFile(media.fileId), "getFile");
+				const saved = await saveAttachment(media, file, env.apiRoot, env.token);
+				let transcript: string | undefined;
+				if (media.transcribable) {
+					try {
+						transcript =
+							(
+								await deps.transcribe({
+									path: saved.path,
+									mediaType: media.mimeType,
+									filename: media.fileName,
+								})
+							) ?? undefined;
+					} catch (err) {
+						// Transcription is enrichment, not intake — a whisper
+						// outage leaves the attachment path-referenced, not eaten.
+						log.warn("transcription failed — attachment kept", {
+							conversation: conv.id,
+							file: media.fileName,
+							error: String(err),
+						});
+					}
+				}
+				// The saved-path reference (plus any transcript) — whether
+				// the bytes go inline is decided at turn time against the
+				// model that actually runs.
+				parts.push(...mediaParts(media, saved, transcript));
+			} catch (err) {
+				log.error("media intake failed", err, { conversation: conv.id });
+				parts.push({
+					type: "text",
+					text: `${ATTACHMENT_FAILED_PREFIX} ${String(err)}]`,
+				});
+			}
+		}
+
+		env.buffer.push(conv.id, { parts, replyTo: msg.message_id });
+	});
+}
+
+// The coalescing-buffer flush: one batch of buffered items → one turn
+// submit (plus at most one topic-titling attempt). The sink-release on
+// submit failure is load-bearing — a constructed sink is already
+// "typing" and ghosts forever if the submit throws past it.
+export function flushConversation(env: FlushEnv, convId: string, items: BufferedItem[]): void {
+	const { deps } = env;
+	const conv = deps.store.get(convId);
+	if (!conv) {
+		log.error("flush for missing conversation", undefined, { conversation: convId });
+		return;
+	}
+	const parts = items.flatMap((i) => i.parts);
+	const replyTo = items[0]?.replyTo;
+	log.debug("coalesced turn input", { conversation: convId, items: items.length });
+	if (
+		conv.threadId !== null &&
+		conv.titleImplicit &&
+		deps.configRef.current.titleModel !== undefined &&
+		!env.titleAttempts.has(conv.id)
+	) {
+		const text = parts
+			.map((p) =>
+				p.type === "text" && !p.text.startsWith(ATTACHMENT_FAILED_PREFIX)
+					? p.text
+					: "",
+			)
+			.join("\n")
+			.trim();
+		if (text !== "") {
+			env.titleAttempts.add(conv.id);
+			void maybeRenameTopic(
+				{ api: env.api, store: deps.store, titleFor: deps.titleFor },
+				conv,
+				text,
+			).catch((err: unknown) => {
+				log.error("topic titling failed", err, { conversation: conv.id });
+			});
+		}
+	}
+	const tts = deps.configRef.current.tts;
+	const sink = makeDeliverySink(
+		env.api,
+		conv,
+		replyTo,
+		undefined,
+		tts ? { voiceMode: conv.voice, synthesize: (text) => deps.synthesize(text, tts) } : undefined,
+	);
+	try {
+		deps.runtime.submit(conv, userMessage(parts), sink);
+	} catch (err) {
+		// The sink was already constructed (typing interval running) —
+		// release it or it ghosts "typing…" forever.
+		void sink.onDone({
+			kind: "error",
+			message: err instanceof Error ? err.message : String(err),
+		});
+		throw err;
+	}
+}
+
+// Per-conversation intake chain. Media resolution (getFile, download,
+// models.dev) is slow, so it runs off the update hot path — grammy's
+// runner processes updates sequentially and a 60s download would stall
+// every later update, /stop included. Chaining per conversation keeps
+// buffer.push order matching arrival order; commands bypass the chain.
+function enqueueIntake(
+	intake: Map<string, Promise<void>>,
+	convId: string,
+	step: () => Promise<void>,
+): void {
+	const prev = intake.get(convId) ?? Promise.resolve();
+	const next = prev.then(step).catch((err: unknown) => {
+		log.error("intake step failed", err, { conversation: convId });
+	});
+	intake.set(convId, next);
+	void next.finally(() => {
+		if (intake.get(convId) === next) intake.delete(convId);
+	});
+}
+
 export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	const token = await deps.auth.resolve(AUTH_TELEGRAM_TOKEN);
 	// apiRoot is structural — applies at process start, not hot-reloaded.
@@ -108,172 +311,28 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	// Bounded like the other api calls: a wedged connection should fail
 	// boot loudly, not hang before the "online" log line.
 	await withTimeout(bot.init(), "getMe");
-	const botUsername = bot.botInfo.username;
-	// One auto-title attempt per topic per process — a failing provider
-	// must not retry on every burst. The flag survives for the next boot.
-	const titleAttempts = new Set<string>();
+	const base = {
+		deps,
+		api: bot.api,
+		apiRoot,
+		token,
+		botUsername: bot.botInfo.username,
+		// One auto-title attempt per topic per process — a failing
+		// provider must not retry on every burst. The flag survives for
+		// the next boot.
+		titleAttempts: new Set<string>(),
+	};
+	const intake = new Map<string, Promise<void>>();
 	const buffer = new CoalescingBuffer<BufferedItem>(
 		QUIET_WINDOW_MS,
-		(convId, items) => {
-		const conv = deps.store.get(convId);
-		if (!conv) {
-			log.error("flush for missing conversation", undefined, { conversation: convId });
-			return;
-		}
-		const parts = items.flatMap((i) => i.parts);
-		const replyTo = items[0]?.replyTo;
-		log.debug("coalesced turn input", { conversation: convId, items: items.length });
-		if (
-			conv.threadId !== null &&
-			conv.titleImplicit &&
-			deps.configRef.current.titleModel !== undefined &&
-			!titleAttempts.has(conv.id)
-		) {
-			const text = parts
-				.map((p) =>
-					p.type === "text" && !p.text.startsWith(ATTACHMENT_FAILED_PREFIX)
-						? p.text
-						: "",
-				)
-				.join("\n")
-				.trim();
-			if (text !== "") {
-				titleAttempts.add(conv.id);
-				void maybeRenameTopic(
-					{ api: bot.api, store: deps.store, titleFor: deps.titleFor },
-					conv,
-					text,
-				).catch((err: unknown) => {
-					log.error("topic titling failed", err, { conversation: conv.id });
-				});
-			}
-		}
-		const tts = deps.configRef.current.tts;
-		const sink = makeDeliverySink(
-			bot.api,
-			conv,
-			replyTo,
-			undefined,
-			tts ? { voiceMode: conv.voice, synthesize: (text) => deps.synthesize(text, tts) } : undefined,
-		);
-		try {
-			deps.runtime.submit(conv, userMessage(parts), sink);
-		} catch (err) {
-			// The sink was already constructed (typing interval running) —
-			// release it or it ghosts "typing…" forever.
-			void sink.onDone({
-				kind: "error",
-				message: err instanceof Error ? err.message : String(err),
-			});
-			throw err;
-		}
-		},
+		(convId, items) => flushConversation(base, convId, items),
 		COALESCE_MAX_WAIT_MS,
 	);
-
-	// Per-conversation intake chain. Media resolution (getFile, download,
-	// models.dev) is slow, so it runs off the update hot path — grammy's
-	// runner processes updates sequentially and a 60s download would stall
-	// every later update, /stop included. Chaining per conversation keeps
-	// buffer.push order matching arrival order; commands bypass the chain.
-	const intake = new Map<string, Promise<void>>();
-	const enqueueIntake = (convId: string, step: () => Promise<void>): void => {
-		const prev = intake.get(convId) ?? Promise.resolve();
-		const next = prev.then(step).catch((err: unknown) => {
-			log.error("intake step failed", err, { conversation: convId });
-		});
-		intake.set(convId, next);
-		void next.finally(() => {
-			if (intake.get(convId) === next) intake.delete(convId);
-		});
-	};
+	const env: IntakeEnv = { ...base, buffer, intake };
 
 	bot.use(allowedUserGate(deps.configRef));
 
-	bot.on("message", (ctx) => {
-		const msg = ctx.message;
-		const text = msg.text ?? msg.caption ?? "";
-		const addr = conversationAddress(msg);
-		const conv = deps.store.resolve(addr, paths.workspace());
-		log.debug("intake", {
-			conversation: conv.id,
-			message: msg.message_id,
-			...(conv.threadId !== null ? { thread: conv.threadId } : {}),
-		});
-		// conv is read before this patch — titleImplicit transitions both
-		// ways get a line, so "why is it still New Chat" never needs a REPL.
-		const topicMeta = titleMetaFromService(msg);
-		if (topicMeta) {
-			deps.store.setMeta(conv.id, topicMeta);
-			if (topicMeta.titleImplicit) {
-				log.info("implicit topic name — titling owed", {
-					conversation: conv.id,
-					title: topicMeta.title,
-				});
-			} else if (conv.titleImplicit) {
-				log.info("topic renamed — titling debt settled", { conversation: conv.id });
-			}
-		}
-
-		// Commands are settings-only — but a caption that looks like a
-		// command must not silently eat the media it rides on; media wins.
-		const media = mediaFromMessage(msg);
-		if (text !== "" && !media && COMMAND_RE.test(text)) {
-			if (handleCommand({ api: bot.api, configRef: deps.configRef, store: deps.store, runtime: deps.runtime, botUsername }, conv, text)) {
-				return;
-			}
-		}
-
-		if (text === "" && !media) {
-			// Service messages, join/leave, and media kinds intake doesn't
-			// cover — routine, but worth a debug line when it isn't.
-			log.debug("dropped message with no text or media", { conversation: conv.id });
-			return;
-		}
-
-		enqueueIntake(conv.id, async () => {
-			const parts: UIMessage["parts"] = [];
-			if (text !== "") parts.push({ type: "text", text });
-
-			if (media) {
-				try {
-					const file = await withTimeout(bot.api.getFile(media.fileId), "getFile");
-					const saved = await saveAttachment(media, file, apiRoot, token);
-					let transcript: string | undefined;
-					if (media.transcribable) {
-						try {
-							transcript =
-								(await deps.transcribe({
-									path: saved.path,
-									mediaType: media.mimeType,
-									filename: media.fileName,
-								})) ?? undefined;
-						} catch (err) {
-							// Transcription is enrichment, not intake — a whisper
-							// outage leaves the attachment path-referenced, not eaten.
-							log.warn("transcription failed — attachment kept", {
-								conversation: conv.id,
-								file: media.fileName,
-								error: String(err),
-							});
-						}
-					}
-					// The saved-path reference (plus any transcript) — whether
-					// the bytes go inline is decided at turn time against the
-					// model that actually runs.
-					parts.push(...mediaParts(media, saved, transcript));
-				} catch (err) {
-					log.error("media intake failed", err, { conversation: conv.id });
-					parts.push({
-						type: "text",
-						text: `${ATTACHMENT_FAILED_PREFIX} ${String(err)}]`,
-					});
-				}
-			}
-
-			buffer.push(conv.id, { parts, replyTo: msg.message_id });
-		});
-	});
+	bot.on("message", (ctx) => handleMessage(env, ctx.message));
 
 	bot.callbackQuery(SPEAK_CALLBACK, (ctx) => {
 		void handleSpeakButton(ctx.callbackQuery, {

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import type { Api } from "grammy";
 import type { Config } from "../config.ts";
 import { allowedUserGate, applyCommands, applyMenuButton, conversationAddress } from "./mod.ts";
@@ -117,5 +117,276 @@ describe("applyMenuButton", () => {
 			},
 			{ menu_button: { type: "default" } },
 		]);
+	});
+});
+
+
+// ---------- handleMessage / flushConversation ----------
+//
+// The intake router and the coalescing flush, driven through explicit
+// fakes: real store (SQLite in a tmpdir — the house pattern), fake Api,
+// fake buffer. These tests pin the rulings that used to live only
+// inside createBot's closures: command-vs-media precedence, the failed
+// attachment sentinel, one-attempt titling, and the sink release.
+
+import type { Message } from "grammy/types";
+import type { UIMessage } from "ai";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { openStore, type ConversationStore } from "../conversation.ts";
+import type { Runtime, TurnSink } from "../runtime.ts";
+import type { AuthStore } from "../auth.ts";
+import { CoalescingBuffer } from "./buffer.ts";
+import { flushConversation, handleMessage, type IntakeEnv } from "./mod.ts";
+
+let intakeDirs: string[] = [];
+function tmpdb(): string {
+	const dir = mkdtempSync(join(tmpdir(), "goblin-intake-"));
+	intakeDirs.push(dir);
+	return join(dir, "goblin.sqlite");
+}
+
+afterEach(() => {
+	for (const d of intakeDirs) rmSync(d, { recursive: true, force: true });
+	intakeDirs = [];
+});
+
+function tgMsg(p: Record<string, unknown>): Message {
+	return { date: 0, ...p } as unknown as Message;
+}
+
+interface RouterHarness {
+	env: IntakeEnv;
+	pushed: Array<{ conv: string; parts: UIMessage["parts"]; replyTo: number | undefined }>;
+	apiCalls: Array<{ method: string; text?: string }>;
+	stopped: string[];
+	store: ConversationStore;
+}
+
+function routerHarness(config: Config = baseConfig): RouterHarness {
+	const store = openStore(tmpdb());
+	const pushed: RouterHarness["pushed"] = [];
+	const apiCalls: RouterHarness["apiCalls"] = [];
+	const stopped: string[] = [];
+	const api = {
+		getFile: (_id: string) => Promise.reject(new Error("file api down")),
+		sendMessage: (_chat: unknown, text: string) => {
+			apiCalls.push({ method: "sendMessage", text });
+			return Promise.resolve({ message_id: apiCalls.length });
+		},
+		editMessageText: (_c: unknown, _m: unknown, text: string) => {
+			apiCalls.push({ method: "editMessageText", text });
+			return Promise.resolve(true);
+		},
+		editForumTopic: () => Promise.resolve(true),
+		sendChatAction: () => Promise.resolve(true),
+		sendVoice: () => Promise.resolve({ message_id: 1 }),
+	} as unknown as IntakeEnv["api"];
+	const buffer = {
+		push: (conv: string, item: { parts: UIMessage["parts"]; replyTo: number | undefined }) => {
+			pushed.push({ conv, parts: item.parts, replyTo: item.replyTo });
+		},
+	} as unknown as CoalescingBuffer<{ parts: UIMessage["parts"]; replyTo: number | undefined }>;
+	const env: IntakeEnv = {
+		deps: {
+			configRef: { current: config },
+			auth: {} as unknown as AuthStore,
+			store,
+			runtime: {
+				submit: () => {},
+				stop: (id: string) => {
+					stopped.push(id);
+					return { stopped: true, settled: Promise.resolve() };
+				},
+			} as unknown as Runtime,
+			titleFor: () => Promise.resolve(null),
+			transcribe: () => Promise.resolve(null),
+			synthesize: () => Promise.resolve([]),
+		},
+		api,
+		apiRoot: undefined,
+		token: "t",
+		botUsername: "goblin",
+		titleAttempts: new Set<string>(),
+		buffer,
+		intake: new Map<string, Promise<void>>(),
+	};
+	return { env, pushed, apiCalls, stopped, store };
+}
+
+describe("handleMessage", () => {
+	test("a settings command without media is consumed — nothing reaches the buffer", () => {
+		const h = routerHarness();
+		handleMessage(
+			h.env,
+			tgMsg({ message_id: 1, chat: { id: 1, type: "private" }, text: "/model zai/m" }),
+		);
+		expect(h.pushed).toEqual([]);
+		expect(h.env.intake.size).toBe(0);
+		// The command really ran: the model override landed in meta.
+		expect(h.store.get("dm:1")!.model).toBe("zai/m");
+	});
+
+	test("a caption that looks like a command must not eat its media", async () => {
+		const h = routerHarness();
+		handleMessage(
+			h.env,
+			tgMsg({
+				message_id: 2,
+				chat: { id: 1, type: "private" },
+				photo: [{ file_id: "f1", file_unique_id: "u1", width: 8, height: 8 }],
+				caption: "/stop",
+			}),
+		);
+		await h.env.intake.get("dm:1");
+		// The command never ran (media wins), and intake kept going:
+		// caption text + the failed-download sentinel, reply-anchored.
+		expect(h.stopped).toEqual([]);
+		expect(h.pushed).toHaveLength(1);
+		expect(h.pushed[0]!.replyTo).toBe(2);
+		expect(h.pushed[0]!.parts[0]).toEqual({ type: "text", text: "/stop" });
+		expect(JSON.stringify(h.pushed[0]!.parts[1])).toContain(
+			"[attachment failed to download:",
+		);
+	});
+
+	test("a message with neither text nor media is dropped", () => {
+		const h = routerHarness();
+		handleMessage(
+			h.env,
+			tgMsg({ message_id: 3, chat: { id: 1, type: "private" }, new_chat_title: "x" }),
+		);
+		expect(h.pushed).toEqual([]);
+		expect(h.env.intake.size).toBe(0);
+	});
+
+	test("an unmatched /word falls through to a normal message", async () => {
+		const h = routerHarness();
+		handleMessage(
+			h.env,
+			tgMsg({ message_id: 4, chat: { id: 1, type: "private" }, text: "/notacommand" }),
+		);
+		await h.env.intake.get("dm:1");
+		expect(h.pushed).toHaveLength(1);
+		expect(h.pushed[0]!.parts).toEqual([{ type: "text", text: "/notacommand" }]);
+	});
+});
+
+describe("flushConversation", () => {
+	function topicHarness(config: Config) {
+		const h = routerHarness(config);
+		const conv = h.store.resolve({ kind: "topic", chatId: -100, threadId: 7 }, "/w");
+		h.store.setMeta(conv.id, { title: "New Chat", titleImplicit: true });
+		const titleCalls: string[] = [];
+		const submitted: Array<{ conv: string; parts: UIMessage["parts"]; sink: TurnSink }> = [];
+		h.env.deps = {
+			...h.env.deps,
+			titleFor: (text: string) => {
+				titleCalls.push(text);
+				return Promise.resolve(title === "" ? null : title);
+			},
+			runtime: {
+				submit: (c: { id: string }, m: UIMessage, s: TurnSink) => {
+					submitted.push({ conv: c.id, parts: m.parts, sink: s });
+				},
+			} as unknown as Runtime,
+		};
+		const setTitle = (t: string | null): void => {
+			title = t ?? "";
+		};
+		return { h, conv, submitted, titleCalls, setTitle };
+	}
+	let title = "Titled";
+
+	test("buffered text becomes one turn submit; the sentinel stays out of the title", async () => {
+		const { h, conv, submitted, titleCalls } = topicHarness({
+			...baseConfig,
+			titleModel: "zai/t",
+		});
+		flushConversation(h.env, conv.id, [
+			{
+				parts: [{ type: "text", text: "[attachment failed to download: boom]" }],
+				replyTo: 5,
+			},
+			{ parts: [{ type: "text", text: "what did the photo say?" }], replyTo: 5 },
+		]);
+		await Bun.sleep(10);
+		// The sentinel never became the topic's name.
+		expect(titleCalls).toEqual(["what did the photo say?"]);
+		expect(submitted).toHaveLength(1);
+		expect(submitted[0]!.parts).toEqual([
+			{ type: "text", text: "[attachment failed to download: boom]" },
+			{ type: "text", text: "what did the photo say?" },
+		]);
+		// Sinks are constructed "typing" — close them.
+		await submitted[0]!.sink.onDone({ kind: "completed" });
+	});
+
+	test("one titling attempt per topic per process — a failed attempt is not retried", async () => {
+		const { h, conv, titleCalls, setTitle } = topicHarness({
+			...baseConfig,
+			titleModel: "zai/t",
+		});
+		setTitle(null); // first attempt: provider unusable
+		flushConversation(h.env, conv.id, [
+			{ parts: [{ type: "text", text: "hello" }], replyTo: 1 },
+		]);
+		expect(titleCalls).toEqual(["hello"]);
+		await Bun.sleep(10);
+		setTitle("Titled");
+		flushConversation(h.env, conv.id, [
+			{ parts: [{ type: "text", text: "again" }], replyTo: 2 },
+		]);
+		await Bun.sleep(10);
+		// Attempt burned on the first flush — never retried this process.
+		expect(titleCalls).toEqual(["hello"]);
+		expect([...h.env.titleAttempts]).toContain(conv.id);
+	});
+
+	test("no titleModel configured — titling never fires, the turn still submits", async () => {
+		const { h, conv, submitted, titleCalls } = topicHarness(baseConfig);
+		flushConversation(h.env, conv.id, [
+			{ parts: [{ type: "text", text: "hello" }], replyTo: 1 },
+		]);
+		expect(titleCalls).toEqual([]);
+		expect(submitted).toHaveLength(1);
+		await submitted[0]!.sink.onDone({ kind: "completed" });
+	});
+
+	test("a submit failure rethrows and releases the sink with the error", async () => {
+		const h = routerHarness(baseConfig);
+		const conv = h.store.resolve({ kind: "dm", chatId: 9 }, "/w");
+		let seen: TurnSink | null = null;
+		h.env.deps = {
+			...h.env.deps,
+			runtime: {
+				submit: (_c: unknown, _m: unknown, s: TurnSink) => {
+					seen = s;
+					throw new Error("queue closed");
+				},
+			} as unknown as Runtime,
+		};
+		expect(() =>
+			flushConversation(h.env, conv.id, [
+				{ parts: [{ type: "text", text: "hi" }], replyTo: 1 },
+			]),
+		).toThrow("queue closed");
+		expect(seen).not.toBeNull();
+		// The sink was released (not left ghosting "typing…"): its error
+		// path delivers the failure to Telegram.
+		await Bun.sleep(10);
+		expect(
+			h.apiCalls.some((c) => c.method === "sendMessage" && c.text?.includes("queue closed")),
+		).toBe(true);
+	});
+
+	test("a flush for a missing conversation submits nothing and survives", () => {
+		const h = routerHarness(baseConfig);
+		expect(() =>
+			flushConversation(h.env, "dm:404", [
+				{ parts: [{ type: "text", text: "hi" }], replyTo: 1 },
+			]),
+		).not.toThrow();
 	});
 });

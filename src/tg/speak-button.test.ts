@@ -121,7 +121,7 @@ describe("speak button", () => {
 		});
 		expect(answers(calls)).toEqual([undefined]);
 		const notice = calls.find((c) => c.method === "sendMessage");
-		expect(notice?.args[1]).toBe("⚠ speech synthesis failed");
+		expect(notice?.args[1]).toBe("⚠ speech failed — check the log");
 	});
 
 	test("reads the cached whole reply over the tapped bubble", async () => {
@@ -151,6 +151,25 @@ describe("speak button", () => {
 			},
 		});
 		expect(spoken).toBe("just the bubble");
+	});
+
+	test("a completed rendering clears the in-flight guard — a later tap runs again", async () => {
+		const calls: ApiCall[] = [];
+		let synthesized = 0;
+		const deps = {
+			api: fakeApi(calls),
+			tts: TTS,
+			synthesize: async () => {
+				synthesized++;
+				return [];
+			},
+		};
+		// Two sequential taps on the same message: the finally cleanup is
+		// what keeps the button from dying after its first success.
+		await handleSpeakButton(query(chatId, 6), deps);
+		await handleSpeakButton(query(chatId, 6), deps);
+		expect(synthesized).toBe(2);
+		expect(answers(calls)).toEqual([undefined, undefined]);
 	});
 
 	test("unconfigured tts is answered, nothing runs", async () => {

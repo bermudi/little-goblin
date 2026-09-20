@@ -35,6 +35,17 @@ export interface SpeakButtonDeps {
 }
 
 export async function handleSpeakButton(query: SpeakQuery, deps: SpeakButtonDeps): Promise<void> {
+	try {
+		await speak(query, deps);
+	} catch (err) {
+		// Outside the guarded boundaries below — a programming error, not
+		// an edge failure. The fire-and-forget registration can't surface
+		// it, so it lands here instead of unhandledRejection.
+		log.error("voice button handler failed", err, { query: query.id });
+	}
+}
+
+async function speak(query: SpeakQuery, deps: SpeakButtonDeps): Promise<void> {
 	const message = query.message;
 	// Answer the tap exactly once, immediately: Telegram expires callback
 	// queries in seconds, and an answer attempted after synthesis and
@@ -116,9 +127,10 @@ export async function handleSpeakButton(query: SpeakQuery, deps: SpeakButtonDeps
 			});
 			// The tap was already answered — no toast can carry this. The
 			// failure lands in the chat, where the operator is watching
-			// for voice notes that never came.
+			// for voice notes that never came. Synthesis or delivery — the
+			// log line carries the which.
 			await withTimeout(
-				deps.api.sendMessage(message.chat.id, "⚠ speech synthesis failed", { ...thread }),
+				deps.api.sendMessage(message.chat.id, "⚠ speech failed — check the log", { ...thread }),
 				"sendMessage",
 			).catch((err2: unknown) =>
 				log.warn("voice button failure notice failed", { error: String(err2) }),

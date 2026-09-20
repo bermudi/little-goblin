@@ -1,14 +1,14 @@
 // The file sink's failure policy is a real boundary: logging must never
 // throw, permanent target breakage silences the sink for the run, and a
-// re-attached target starts fresh. (ENOSPC-style transient degradation
-// can't be triggered portably in a test — errno coverage is by code
-// review; the state machine around it is what's guarded here.)
+// re-attached target starts fresh. The transient path (ENOSPC-style)
+// needs a fake writer — the real filesystem can't be asked to fail that
+// way portably — via setLogWriter, same pattern as codex.ts's fetchImpl.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { log, setLogFile } from "./log.ts";
+import { log, setLogFile, setLogWriter } from "./log.ts";
 
 let dirs: string[] = [];
 function tmpHome(): string {
@@ -18,6 +18,7 @@ function tmpHome(): string {
 }
 afterEach(() => {
 	setLogFile(null);
+	setLogWriter(null);
 	for (const d of dirs) rmSync(d, { recursive: true, force: true });
 	dirs = [];
 });
@@ -27,6 +28,12 @@ function lines(path: string): Record<string, unknown>[] {
 		.trim()
 		.split("\n")
 		.map((l) => JSON.parse(l) as Record<string, unknown>);
+}
+
+function errno(code: string, msg: string): NodeJS.ErrnoException {
+	const err = new Error(msg) as NodeJS.ErrnoException;
+	err.code = code;
+	return err;
 }
 
 describe("file sink", () => {
@@ -71,5 +78,48 @@ describe("file sink", () => {
 		log.info("lives again");
 		const msgs = lines(fresh).map((l) => l.msg);
 		expect(msgs).toContain("lives again");
+	});
+
+	test("a transient error degrades the sink — later writes recover, the file keeps filling", () => {
+		const dir = tmpHome();
+		const target = join(dir, "goblin.log");
+		setLogFile(target);
+		let fail = true;
+		setLogWriter((path, line) => {
+			if (fail) {
+				fail = false;
+				throw errno("ENOSPC", "ENOSPC: no space left on device");
+			}
+			appendFileSync(path, line);
+		});
+		// First line: lost to the full disk (stdout only), sink stays alive.
+		expect(() => log.info("lost to the full disk")).not.toThrow();
+		// Second line: disk freed — it lands, and the sink recovers.
+		log.info("recovered line");
+		expect(lines(target).map((l) => l.msg)).toEqual(["recovered line"]);
+		// And the sink is not dead: a third line still lands.
+		log.info("still alive");
+		expect(lines(target).map((l) => l.msg)).toEqual(["recovered line", "still alive"]);
+	});
+
+	test("an ENOENT recreate whose retry hits a transient error degrades, not dies", () => {
+		const dir = tmpHome();
+		const target = join(dir, "state", "goblin.log");
+		setLogFile(target);
+		let calls = 0;
+		setLogWriter((path, line) => {
+			calls++;
+			// First append: the state dir is missing. After mkdirSync, the
+			// retry append hits the full disk — transient, must not kill.
+			if (calls === 1) throw errno("ENOENT", "ENOENT: no such file or directory");
+			if (calls === 2) throw errno("ENOSPC", "ENOSPC: no space left on device");
+			appendFileSync(path, line);
+		});
+		log.info("first");
+		// The sink survived the compound failure: later writes land.
+		log.info("second");
+		log.info("third");
+		expect(calls).toBe(4);
+		expect(lines(target).map((l) => l.msg)).toEqual(["second", "third"]);
 	});
 });

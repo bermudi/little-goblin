@@ -185,6 +185,42 @@ describe("turn authority", () => {
 		store.close();
 	});
 
+	test("stop().settled resolves only after the dropped sinks' onDone settles", async () => {
+		const { store, conv, runtime } = setup(["a", "b", "c", "d"], 30);
+		const running = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), running);
+		await sleep(10); // first turn is running
+		// A queued sink whose onDone does a slow final flush.
+		let flushed = false;
+		const flush = new Promise<void>((r) =>
+			setTimeout(() => {
+				flushed = true;
+				r();
+			}, 40),
+		);
+		const queued: TurnSink = {
+			onTextDelta() {},
+			onReasoningDelta() {},
+			onToolCall() {},
+			onDone: async () => {
+				await flush;
+			},
+		};
+		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), queued);
+		const { settled } = runtime.stop(conv.id);
+		let settledDone = false;
+		void settled.then(() => {
+			settledDone = true;
+		});
+		await sleep(15); // stop has run; the flush has not finished
+		expect(flushed).toBe(false);
+		expect(settledDone).toBe(false);
+		await flush;
+		await sleep(15);
+		expect(settledDone).toBe(true);
+		store.close();
+	});
+
 	test("a finished lane does not report stoppable turns", async () => {
 		const { store, conv, runtime } = setup(["a"], 5);
 		const sink = new RecordingSink();

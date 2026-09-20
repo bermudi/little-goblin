@@ -46,6 +46,16 @@ export function setLogFile(path: string | null): void {
 	fileSinkDegraded = false;
 }
 
+// Injectable for tests (same pattern as codex.ts's fetchImpl): a fake
+// writer can fail with a chosen errno, which the real filesystem can't
+// be asked to do portably. Passing null restores the real one.
+export type AppendFn = (path: string, line: string) => void;
+let appendImpl: AppendFn = (path, line) => appendFileSync(path, line);
+
+export function setLogWriter(fn: AppendFn | null): void {
+	appendImpl = fn ?? ((path, line) => appendFileSync(path, line));
+}
+
 // stdout warn that bypasses emit() — the file sink's own health must
 // never route through the machinery whose failure it is reporting.
 function warnStdout(msg: string, fields: Record<string, unknown>): void {
@@ -58,20 +68,19 @@ function writeFile(line: string): void {
 	if (fileSinkDead || fileTarget === null) return;
 	const target = fileTarget;
 	try {
-		appendFileSync(target, line);
+		try {
+			appendImpl(target, line);
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+			mkdirSync(dirname(target), { recursive: true });
+			appendImpl(target, line);
+		}
 	} catch (err) {
 		const code = (err as NodeJS.ErrnoException).code;
-		if (code === "ENOENT") {
-			try {
-				mkdirSync(dirname(target), { recursive: true });
-				appendFileSync(target, line);
-				return;
-			} catch {
-				// falls through to the dead-sink warn below
-			}
-		} else if (code !== undefined && TRANSIENT_ERRNOS.has(code)) {
-			// Transient: keep the sink, retry on later writes. The line
-			// itself already reached stdout; the warn is throttled.
+		if (code !== undefined && TRANSIENT_ERRNOS.has(code)) {
+			// Transient — from either append, including the ENOENT retry:
+			// keep the sink, retry on later writes. The line itself
+			// already reached stdout; the warn is throttled.
 			if (
 				!fileSinkDegraded ||
 				Date.now() - lastDegradedWarn >= DEGRADED_WARN_INTERVAL_MS

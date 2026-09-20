@@ -411,7 +411,10 @@ Resolved values never enter the tool environment, the model context, or logs.
   funnel` (public HTTPS relayed through Tailscale's edge, for off-tailnet
   clients), or any reverse proxy with a cert. NAT-first by construction.
 - **Commands** are settings-only: `/model` `/think` `/voice` `/stop`. No
-  conversation-lifecycle commands — topics own that.
+  conversation-lifecycle commands — topics own that. The one exception is
+  `/start`: clients fire it automatically on first open, so it gets a canned
+  greeting (consumed before intake, never a model turn) and stays hidden
+  from the advertised command menu.
 - **Large files**: self-hosted `telegram-bot-api` on lithium, `--local` mode,
   grammy `apiRoot` → `http://127.0.0.1:8081`. Needs `api_id`/`api_hash` from a
   my.telegram.org app registration (operator's account, stored as secrets —

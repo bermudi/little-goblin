@@ -108,6 +108,7 @@ export function makeDeliverySink(
 	replyToMessageId: number | undefined,
 	editIntervalMs = EDIT_INTERVAL_MS,
 	voice?: DeliveryVoiceDeps,
+	typingIntervalMs = TYPING_INTERVAL_MS,
 ): TurnSink {
 	let text = "";
 	const toolStatus: string[] = [];
@@ -124,12 +125,13 @@ export function makeDeliverySink(
 	// than failing forever.
 	let replyTo = replyToMessageId;
 	let authoritative = () => true;
-	// Typing indicator state. `let` because onVoiceSynthesisStart swaps it
-	// for a record_voice interval and the stopper swaps it back — the
-	// variable always names the live interval so onDone clears the right
-	// one whichever way the swap ended.
-	let typing = setInterval(sendTyping, TYPING_INTERVAL_MS);
-	let recording: ReturnType<typeof setInterval> | null = null;
+	// Typing indicator state. `let` because onVoiceSynthesisStart pauses
+	// it and a synthesis stopper resumes it. Parallel speak calls overlap,
+	// so every live record_voice interval is tracked in a set — a single
+	// shared handle would orphan all but the newest interval and make a
+	// stopper clear the wrong one.
+	let typing = setInterval(sendTyping, typingIntervalMs);
+	const recordings = new Set<ReturnType<typeof setInterval>>();
 	// onDone is terminal: a synthesis stopper firing after it must not
 	// restart a typing indicator on a dead sink.
 	let sinkDone = false;
@@ -324,18 +326,20 @@ export function makeDeliverySink(
 		onVoiceSynthesisStart() {
 			clearInterval(typing);
 			sendRecording();
-			recording = setInterval(sendRecording, TYPING_INTERVAL_MS);
+			const interval = setInterval(sendRecording, typingIntervalMs);
+			recordings.add(interval);
 			return () => {
-				if (recording !== null) clearInterval(recording);
-				recording = null;
-				if (!sinkDone && authoritative()) {
-					typing = setInterval(sendTyping, TYPING_INTERVAL_MS);
+				clearInterval(interval);
+				recordings.delete(interval);
+				if (recordings.size === 0 && !sinkDone && authoritative()) {
+					typing = setInterval(sendTyping, typingIntervalMs);
 				}
 			};
 		},
 		async onDone(done: TurnDone) {
 			clearInterval(typing);
-			if (recording !== null) clearInterval(recording);
+			for (const interval of recordings) clearInterval(interval);
+			recordings.clear();
 			sinkDone = true;
 			if (voice?.voiceMode) {
 				if (done.kind === "fenced") return;

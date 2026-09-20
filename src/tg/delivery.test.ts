@@ -338,6 +338,46 @@ describe("delivery", () => {
 		expect(reactions).toEqual([{ id: 1, emoji: "🫡" }]);
 	});
 
+	test("overlapping speak syntheses keep independent recording indicators", async () => {
+		// Parallel speak tool calls open overlapping synthesis windows on
+		// one sink. A shared recording handle would orphan all but the
+		// newest interval (it keeps pinging record_voice after the sink is
+		// done), let a stopper clear another window's interval, and resume
+		// typing while a synthesis is still live.
+		const actions: string[] = [];
+		const api = {
+			sendChatAction: async (_chat: number, action: string) => {
+				actions.push(action);
+				return true;
+			},
+		} as unknown as Api;
+		const sink = makeDeliverySink(api, conv, undefined, 0, undefined, 2);
+		await sleep(3);
+		expect(actions[0]).toBe("typing"); // construction's immediate ping
+		expect(actions.every((a) => a === "typing")).toBe(true);
+
+		const stopA = sink.onVoiceSynthesisStart!();
+		const stopB = sink.onVoiceSynthesisStart!();
+		stopB(); // B ends while A is still synthesizing
+		actions.length = 0;
+		await sleep(12);
+		// Only A's window is live: record_voice, never typing.
+		expect(actions.length).toBeGreaterThan(0);
+		expect(actions.every((a) => a === "record_voice")).toBe(true);
+
+		stopA();
+		actions.length = 0;
+		await sleep(12);
+		// Last window closed → typing resumes.
+		expect(actions).toContain("typing");
+
+		await sink.onDone({ kind: "completed" });
+		actions.length = 0;
+		await sleep(12);
+		// Terminal sink: no orphaned record_voice, no ghost typing.
+		expect(actions).toEqual([]);
+	});
+
 	test("isNotModifiedError matches grammy 400 shapes", () => {
 		expect(isNotModifiedError(new Error("400: Bad Request: message is not modified"))).toBe(true);
 		expect(

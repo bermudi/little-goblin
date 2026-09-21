@@ -18,29 +18,39 @@ pulled, services started, credentials read, or model calls made.
   text search, not optional VectorChord/ParadeDB extensions. Its migrations create
   `vector` and `pg_trgm` (the latter ships in PostgreSQL contrib). The dedicated
   database role owns this isolated database and can run those migrations.
-- Extraction (`retain`) and consolidation inherit the explicitly configured
-  global `zai` / `glm-5.3-flash`. The endpoint is explicitly
-  `https://api.z.ai/api/paas/v4`, **not** Hindsight's default coding-plan endpoint.
-  Z.AI documents this model ID and the standard OpenAI-compatible endpoint.
-- Embeddings: Hindsight provider **`openrouter`**, setting
-  `HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL=voyageai/voyage-4-lite`, with a separate
-  `HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY`. Hindsight uses
-  `https://openrouter.ai/api/v1`; OpenRouter's public embeddings catalog lists
-  this exact ID. `voyageai` is the model namespace here, not a Hindsight provider.
+- Extraction (`retain`), consolidation and reflection inherit the operator's
+  global LLM selection. Supported LLM providers: `zai`, `openai`, `openrouter`.
+  Each requires `HINDSIGHT_API_LLM_PROVIDER`, `HINDSIGHT_API_LLM_MODEL`,
+  `HINDSIGHT_API_LLM_BASE_URL` and `HINDSIGHT_API_LLM_API_KEY`. No model or
+  endpoint is supplied by the guard. Choose a compatible model and HTTP(S)
+  endpoint; prefer HTTPS for remote services.
+- Embeddings require `HINDSIGHT_API_EMBEDDINGS_PROVIDER` and the selected
+  provider's settings (no credential fallback):
+
+  | Provider | Required model / auth | Endpoint |
+  | --- | --- | --- |
+  | `openrouter` | `HINDSIGHT_API_EMBEDDINGS_OPENROUTER_MODEL`, `HINDSIGHT_API_EMBEDDINGS_OPENROUTER_API_KEY` | Selecting this provider explicitly selects upstream's fixed `https://openrouter.ai/api/v1`; v0.10.0 has no embedding endpoint override for it. |
+  | `openai` | `HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL`, `HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY` | Require `HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL` for OpenAI or a compatible endpoint. |
+
+  Remove the previous provider's fields when switching; inactive settings fail.
+  Model IDs are operator-selected, not allowlisted. The env file's
+  `glm-5.3-flash` at `https://api.z.ai/api/paas/v4` (not the coding-plan endpoint)
+  and OpenRouter `voyageai/voyage-4-lite` are **examples, not locks or defaults**.
+  `voyageai` is a model namespace, not the selected Hindsight provider.
 - Reranker remains an operator decision. The example is deliberately blank and
   **fails startup**. Explicitly selecting **`rrf`** chooses the verified
   model-free option: preserve retrieval's reciprocal-rank-fusion ordering,
   without a cross-encoder, model download or reranking provider call. It is not
   equivalent in recall quality to a learned reranker. No silent fallback.
 
-The launch guard rejects missing settings, alternate models, provider chains,
-per-operation overrides and unsupported Hindsight settings before initialization.
-This is intentionally one narrow, auditable profile, not a general configuration
-framework. A different provider or learned reranker requires a reviewed change to
-this profile and its tests, with explicit model/endpoint selection. The slim
-image excludes local ML models; Hugging Face offline flags add defense in depth.
-Reflection, if someone calls it directly, also inherits the same global GLM model;
-Goblin does not call it. Do not expose the service's bank configuration APIs to
+The launch guard rejects missing settings, provider chains, per-operation
+and unknown overrides before initialization, preventing silent upstream defaults.
+Changing model IDs or supported endpoints/providers requires only operator config,
+not a code change. This profile supports only the mappings above and model-free
+`rrf`; wider provider or learned-reranker choices belong in an operator-managed
+external BYO Hindsight deployment, not an implicit fallback here. The slim image
+excludes local ML models; Hugging Face offline flags add defense in depth.
+Goblin does not call reflection. Do not expose bank configuration APIs to
 untrusted clients: bank-level overrides are outside this launch guard.
 
 ### Evidence
@@ -64,7 +74,7 @@ provider routing, quality, migrations and rootless runtime remain untested.
 ## Operator setup (not automatic)
 
 Requires Linux, rootless Podman with Quadlet and `Notify=healthy` support, a
-systemd user manager, subordinate UID/GID mappings, Python 3 for offline tests,
+systemd user manager, subordinate UID/GID mappings, uv for offline Python checks,
 and sufficient storage. Generator validation passed with Podman 6.1.2. Check
 older versions with the dry run below; do not assume compatibility. The container
 includes its own Python. No Node sidecar or control-plane UI is deployed.
@@ -88,7 +98,7 @@ there is no shell expansion. Use the operator's secret-management workflow.
 `postgres.env` supplies only `POSTGRES_PASSWORD`. In `hindsight.env`, set the
 provider keys and a database URI of the form
 `postgresql://hindsight:<percent-encoded-password>@db:5432/hindsight`, matching
-the database password. Leave the documented model/endpoint selections intact.
+the database password. Choose models and endpoints using the mappings above.
 Explicitly decide whether to set `HINDSIGHT_API_RERANKER_PROVIDER=rrf`. No auth
 secret is supplied or generated by these assets. Database password variables
 initialize a **new** volume only; changing the file does not rotate an existing
@@ -101,7 +111,8 @@ SELinux bind-mount relabeling is scoped to the installed launch script (`:Z`).
 ### Offline validation
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s deploy/memory -p 'test_*.py' -v
+PYTHONDONTWRITEBYTECODE=1 uv run python -m unittest discover -s deploy/memory -p 'test_*.py' -v
+uv run --with mypy mypy --strict deploy/memory/start.py deploy/memory/test_config.py
 QUADLET_UNIT_DIRS="$PWD/deploy/memory" \
   /usr/lib/systemd/system-generators/podman-system-generator --user --dryrun
 ```
@@ -156,9 +167,10 @@ host. Do not bind publicly or proxy remotely without deliberately designed TLS
 and authentication. A separate existing remote service is a later Goblin-side
 configuration choice, not a reason to expose this database.
 
-Self-hosted storage is not local processing: Z.AI receives retained source text
-for extraction and memories/evidence for consolidation; OpenRouter and its
-VoyageAI routing receive text embedded for storage and recall queries. `rrf`
+Self-hosted storage is not local processing: the selected LLM endpoint receives
+retained source text and memories/evidence; the selected embedding provider
+receives storage text and recall queries. In the example these are Z.AI and
+OpenRouter with VoyageAI routing, respectively. `rrf`
 sends nothing to a reranking provider. Provider retention policies apply. Do not
 send secrets. This stack does not implement Goblin's exclusions or consent gates.
 

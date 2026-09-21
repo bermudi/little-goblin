@@ -568,7 +568,8 @@ src/
                     AGENTS.md/USER.md, each capped at 8k chars; re-read
                     every turn, edits live next message)
     skills.ts       catalog scan + frontmatter validation → ## skills section
-    tools/          the six tools (read, write, edit, bash, speak, schedule)
+    tools/          the seven tools (read, write, edit, bash, speak,
+                    schedule, send_file)
   http/             mini-app serving
 ```
 

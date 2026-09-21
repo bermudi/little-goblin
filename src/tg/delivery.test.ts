@@ -391,7 +391,7 @@ describe("delivery", () => {
 });
 
 describe("delivery files", () => {
-	function fileApi() {
+	function fileApi(fail?: { photo?: boolean; document?: boolean }) {
 		const photos: Array<{ caption?: string }> = [];
 		const documents: Array<{ caption?: string }> = [];
 		const api = {
@@ -399,10 +399,12 @@ describe("delivery files", () => {
 			sendMessage: async () => ({ message_id: 1 }),
 			editMessageText: async () => true,
 			sendPhoto: async (_chat: number, _photo: unknown, other?: { caption?: string }) => {
+				if (fail?.photo) throw new Error("sendPhoto wedged");
 				photos.push({ ...(other?.caption !== undefined ? { caption: other.caption } : {}) });
 				return { message_id: 10 + photos.length };
 			},
 			sendDocument: async (_chat: number, _doc: unknown, other?: { caption?: string }) => {
+				if (fail?.document) throw new Error("sendDocument wedged");
 				documents.push({ ...(other?.caption !== undefined ? { caption: other.caption } : {}) });
 				return { message_id: 20 + documents.length };
 			},
@@ -474,6 +476,69 @@ describe("delivery files", () => {
 			await sink.onFile!({ path: f, filename: "loop.gif" });
 			expect(documents).toHaveLength(1);
 			expect(photos).toHaveLength(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a failed document send rejects onFile — no false success for send_file", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
+		try {
+			const f = join(dir, "report.pdf");
+			writeFileSync(f, "pdf-bytes");
+			const { api, photos } = fileApi({ document: true });
+			const sink = makeDeliverySink(api, conv, undefined, 0);
+			await expect(sink.onFile!({ path: f, filename: "report.pdf" })).rejects.toThrow(
+				"sendDocument wedged",
+			);
+			expect(photos).toHaveLength(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a failed photo send rejects onFile too", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
+		try {
+			const { api, documents } = fileApi({ photo: true });
+			const sink = makeDeliverySink(api, conv, undefined, 0);
+			await expect(sink.onFile!({ path: pngFile(dir), filename: "chart.png" })).rejects.toThrow(
+				"sendPhoto wedged",
+			);
+			expect(documents).toHaveLength(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a failed file send leaves the chain usable — later sends still go out", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
+		try {
+			const f = join(dir, "a.txt");
+			writeFileSync(f, "data");
+			let failOnce = true;
+			const sent: number[] = [];
+			const api = {
+				sendChatAction: () => Promise.resolve(true),
+				sendMessage: async () => ({ message_id: 1 }),
+				editMessageText: async () => true,
+				sendDocument: async () => {
+					if (failOnce) {
+						failOnce = false;
+						throw new Error("sendDocument wedged");
+					}
+					sent.push(1);
+					return { message_id: 21 };
+				},
+				setMessageReaction: async () => true,
+			} as unknown as Api;
+			const sink = makeDeliverySink(api, conv, undefined, 0);
+			await expect(sink.onFile!({ path: f, filename: "a.txt" })).rejects.toThrow(
+				"sendDocument wedged",
+			);
+			// The chain survived the rejection: the next file delivers.
+			await sink.onFile!({ path: f, filename: "a.txt" });
+			expect(sent).toHaveLength(1);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

@@ -192,8 +192,8 @@ export function makeDeliverySink(
 	async function sendFile(file: OutgoingFile): Promise<void> {
 		if (!authoritative()) return;
 		// Fail fast on a file that vanished between the tool's check and
-		// now, so the tool reports it — network failures inside the chain
-		// stay warn-logged, like voice.
+		// now, so the tool reports it. Send failures below reject too —
+		// see the sentinel comment there.
 		const st = await stat(file.path).catch((err: unknown) => {
 			throw new Error(`file unreadable: ${file.path} (${String(err)})`);
 		});
@@ -204,28 +204,42 @@ export function makeDeliverySink(
 		const sniff = sniffImage(file.path);
 		const photo = !file.asFile && sniff !== null && sniff.mediaType !== "image/gif";
 		const bytes = st.size;
+		// The chain never rejects (onDone awaits it bare), so a failed
+		// send can't travel through it. The link records the failure and
+		// rethrows — the chain's catch still warn-logs it — and the
+		// rethrow below rejects sendFile, the tool's only honest "it
+		// didn't arrive" signal. Unlike text chunks, a file send gets no
+		// drain retry: swallowing it makes send_file report a sent file
+		// the operator never saw.
+		let failure: { err: unknown } | undefined;
 		enqueue(async () => {
 			if (!authoritative()) return;
 			const extra = {
 				...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
 				...(file.caption !== undefined ? { caption: file.caption } : {}),
 			};
-			const sent = photo
-				? await withTimeout(api.sendPhoto(conv.chatId, new InputFile(file.path, file.filename), extra), "sendPhoto")
-				: await withTimeout(
-						api.sendDocument(conv.chatId, new InputFile(file.path, file.filename), extra),
-						"sendDocument",
-					);
-			log.debug("file delivered", {
-				conversation: conv.id,
-				message: sent.message_id,
-				path: file.path,
-				bytes,
-				kind: photo ? "photo" : "document",
-				...(conv.threadId !== null ? { thread: conv.threadId } : {}),
-			});
+			try {
+				const sent = photo
+					? await withTimeout(api.sendPhoto(conv.chatId, new InputFile(file.path, file.filename), extra), "sendPhoto")
+					: await withTimeout(
+							api.sendDocument(conv.chatId, new InputFile(file.path, file.filename), extra),
+							"sendDocument",
+						);
+				log.debug("file delivered", {
+					conversation: conv.id,
+					message: sent.message_id,
+					path: file.path,
+					bytes,
+					kind: photo ? "photo" : "document",
+					...(conv.threadId !== null ? { thread: conv.threadId } : {}),
+				});
+			} catch (err) {
+				failure = { err };
+				throw err;
+			}
 		});
 		await chain;
+		if (failure !== undefined) throw failure.err;
 	}
 
 	function rendered(): string {

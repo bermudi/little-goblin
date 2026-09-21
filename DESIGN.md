@@ -28,8 +28,10 @@ earns its place.
 - Telegram is the UI: long polling, topics, reactions, files, voice — **and
   Mini Apps, designed in from the start** (the process serves them over HTTP;
   see Intake & delivery).
-- Machine state lives in SQLite (`bun:sqlite`, WAL); files stay where humans
-  edit them — config, auth, workspace.
+- Goblin's machine state lives in SQLite (`bun:sqlite`, WAL); files stay
+  where humans edit them — config, auth, workspace. Optional long-term
+  memory lives in a separate Hindsight service backed by PostgreSQL (see
+  Long-term memory). This does not migrate Goblin's conversation store.
 - No standalone web UI beyond Telegram Mini Apps, no multi-channel, no plugin
   SDK, no k8s.
 
@@ -402,6 +404,181 @@ explicit standing orders the operator asked for, not an agent that
 decides to check things), cross-host schedulers, job history/audit
 tables beyond last_run.
 
+## Long-term memory
+
+**Approved design; not implemented yet.** Memory returns on explicit
+operator demand. Hindsight is the selected memory service, not an agent
+runtime: Goblin still owns history, tools, reasoning, and Telegram delivery.
+No MCP, replacement turn loop, or generic multi-backend framework.
+
+### Deployment and configuration
+
+Ship a portable, optional rootless Podman stack managed by Quadlet/systemd:
+Hindsight plus PostgreSQL with the vector extension required by the pinned
+Hindsight release. Use persistent storage, readiness checks, restart on
+failure, and a private container network. PostgreSQL publishes no host port;
+Hindsight's API binds to loopback. Use pinned images, not floating automatic
+upgrades. Nothing assumes a particular hostname, operator home directory,
+or existing database installation.
+
+Goblin accepts a configured Hindsight base URL and bank identity; it can
+use the supplied local stack or an existing service. Remote services require
+an explicit operator choice and appropriate transport/authentication.
+Omitting memory configuration preserves current behavior. Configuration is
+validated at the boundary; credentials stay out of config examples, logs,
+model context, and Goblin's inherited tool environment. Resolve Goblin-side
+auth through the existing auth mechanism; keep service credentials scoped
+to the containers rather than exporting them into Goblin.
+
+Model selection belongs to the operator, not to an SDK's implicit defaults.
+The requested initial setup is `glm-5.3-flash` for extraction/consolidation
+and `voyageai/voyage-4-lite` for embeddings. These are requested identifiers,
+not claims about Hindsight's accepted wire configuration: verify provider
+support, endpoint, and exact model IDs before implementation or live calls.
+Other installations select their own providers/models and credentials.
+Reranking is **unresolved**: require an explicit choice or a verified
+supported no-reranker mode; do not silently download or invoke a default
+model. Choosing a different embedding model for an existing bank requires
+an explicit compatibility/re-indexing procedure, not a hot config edit.
+Self-hosted storage does not imply local processing: document which text
+each configured external model service receives.
+
+The TypeScript SDK is an HTTP client, not a requirement to run Node.
+Basic retain/recall against a fake HTTP server passed with SDK 0.10.0 under
+Bun 1.4.2 during planning. Real-server compatibility, cancellation,
+timeouts, error handling, and document management remain release gates.
+Use direct typed HTTP if necessary; do not add a Node sidecar.
+
+### Retain: a durable projection of completed exchanges
+
+One bank per Goblin installation/operator, shared across topics. Preserve
+conversation identity, source event/message identifiers, timestamps, and
+speaker attribution. An assistant suggestion is not an operator decision.
+Banks are not public knowledge: an allowed Telegram sender is not proof
+that everyone who can read a group is authorized to see recalled memories.
+Memory-enabled delivery destinations must be operator-approved.
+
+Start with new completed text exchanges only. No historical backfill,
+attachment ingestion, raw tool output, hidden reasoning, or re-ingestion of
+recall results. Bounded prior context may resolve references but must be
+labelled as context rather than fresh independent evidence. Scheduled
+housekeeping is not automatically a source of new personal memories.
+Extraction instructions emphasize preferences, decisions, commitments,
+people, and ongoing work; they guide quality, not privacy enforcement.
+
+Commit the completed assistant event and a pending-retention record in one
+SQLite transaction, under the turn's existing authority check. This is an
+additive schema change and must preserve existing installations. A failed
+or fenced turn cannot commit completed-turn memory. A committed exchange
+is then independent background indexing work; a later epoch change does
+not retroactively cancel it.
+
+A bounded worker drains the durable queue, using a stable document ID per
+exchange and replacement semantics for retries. Keep pending work through
+restarts and retry transient failures with backoff. An HTTP acknowledgement
+of asynchronous processing is not proof that retention completed: either
+wait for completed retention or track the operation to its terminal state.
+Permanent failures remain inspectable and reported, not silently dropped or
+retried in a tight loop. Ordering must preserve source chronology where it
+matters; never mutate the same document concurrently.
+
+Indexing is eventually consistent. A turn immediately afterward in another
+topic may run before the prior exchange becomes searchable. Do not delay
+Telegram delivery for extraction or promise immediate cross-topic recall.
+
+### Recall: evidence, not instructions
+
+Before a model turn, build a bounded query from its admitted message
+snapshot and recent conversational context. No additional query-generation
+model initially. Recall has explicit time/search/output bounds and source
+references. Also expose a validated memory-search tool for deeper searches.
+Do not use Hindsight `reflect` initially: Goblin already reasons over the
+evidence with its selected model.
+
+Retrieved text is dated, potentially stale evidence, not system
+instructions. Current operator statements outrank retrieved preferences;
+inferred observations are not explicit requests. Keep source attribution
+available for important claims rather than treating extraction as truth.
+
+Preserve the cache invariant: store the exact bounded recall context used
+by a turn and materialize it at a stable causal position near that turn's
+input. Do not regenerate old recall blocks, shift them when new messages
+arrive, inject changing results into the system prompt, or feed them back
+to retain. Successful turns must preserve the request prefix across later
+turns and process restarts; cancelled/failed-turn recovery follows the
+existing logged cache-boundary rule. Memory enable/disable and intentional
+forgetting are explicit logged boundaries, not accidental prefix drift.
+
+An unavailable memory service must not stop ordinary conversation.
+Distinguish unavailable recall from an empty result in model context and
+operator-facing status. Log the failure, leave durable writes queued, and
+report recovery without emitting a notification for every retry.
+
+### Control, correction, and forgetting
+
+Provide operator-facing exclusion controls before automatic ingestion is
+enabled; enforce them before any external request, not through model
+instructions. Topic exclusion governs both sending that topic's content
+and whether shared memories may be recalled there. Enabling memory does
+not silently backfill excluded or historical messages.
+
+New dated corrections can be retained while preserving historical facts;
+verify that recall distinguishes past from current state. Explicit
+forgetting must first resolve and show the affected sources, then require
+the operator's go-ahead before deletion. Persist source suppression, cancel
+pending ingestion, and serialize against in-flight writes before deleting
+remote documents and accounting for derived observations. Suppression must
+survive restarts and any future backfill so forgotten sources cannot be
+resurrected by retries.
+
+Forgetting indexed knowledge is distinct from erasing original Telegram
+messages or Goblin history. Explain that distinction. Stored recall
+snapshots and tool results can also contain forgotten information; remove
+or redact those projections and intentionally reset the affected request
+prefix. Never claim complete erasure while originals, backups, or provider
+retention still exist. Document that restoring an older backup can restore
+forgotten data and requires suppression reconciliation before serving it.
+
+### Operations and verification
+
+Basic database maintenance only: leave PostgreSQL autovacuum enabled,
+surface health/storage errors, and document upgrades and recovery. Backups,
+retention schedules, encryption, off-machine storage, and restore drills
+belong to the operator. Ship guidance on what to back up and how to restore,
+not a backup scheduler. No automatic volume pruning or destructive cleanup.
+Image rollback alone is not database rollback after a schema migration.
+
+Every service boundary and queue mutation emits structured signals:
+conversation/document IDs, operation, duration, result count, retry state,
+and classified failures without credentials or raw memory contents.
+Status must distinguish disabled, healthy, degraded, and pending work.
+
+Tests fake external services, never invoke an unspecified model. Release
+gates: cross-topic recall; dated correction; no duplicate documents on
+retry; durable restart recovery; authority fencing; exclusions; forgetting
+through in-flight writes and derived data; stable cached prefixes; outage
+degradation; validation of a real Hindsight server under Bun. Live model
+verification uses only explicitly configured models and credentials.
+
+Borrowed mechanisms, not scope: OpenClaw's
+`docs/reference/templates/AGENTS.md` supplies source-aware user directives
+and supersede-in-place correction; keep USER.md for small deliberate
+always-needed preferences, not a parallel automatic memory database.
+Hermes' `AGENTS.md` and
+`website/docs/user-guide/which-file-does-what.md` establish frozen past
+context for prompt caching; apply that to persisted per-turn recall rather
+than importing its session lifecycle. See also Hindsight's
+[SDK](https://hindsight.vectorize.io/sdks/nodejs),
+[installation](https://hindsight.vectorize.io/developer/installation),
+[retain](https://hindsight.vectorize.io/developer/retain), and
+[recall](https://hindsight.vectorize.io/developer/retrieval) documentation.
+
+Implementation order: configuration/provider compatibility contract →
+portable container assets and operations guidance → memory client, durable
+queue, controls, and turn integration → boundary tests → explicitly
+configured live verification. Reranker selection and exact provider
+configuration must be resolved before the live-verification step.
+
 ## Auth
 
 No secrets in env — the agent's `bash` tool inherits the process environment,
@@ -510,15 +687,14 @@ $GOBLIN_HOME/
 │   ├── USER.md             # operator model — directive entries (observed
 │   │                       # date, active/superseded), agent-grown
 │   │                       #
-│   │                       # PROVISIONAL: the USER.md directive schema, the
-│   │                       # AGENTS.md trigger table, and the prompt-shell
-│   │                       # memory-model lines predate the real memory
-│   │                       # design (daily notes were reverted). They stand
-│   │                       # only until that design re-rules them.
+│   │                       # Keep small deliberate preferences here;
+│   │                       # automatic cross-topic memory belongs to the
+│   │                       # approved Long-term memory design. Update the
+│   │                       # prompt-shell "only memory" claim when wired.
 │   ├── skills/             # the skill catalog — agent-authored, in cwd
 │   └── attachments/
 └── state/
-    └── goblin.sqlite       # all machine state: conversation meta, event
+    └── goblin.sqlite       # Goblin state: conversation meta, event
                             # history (UIMessage JSON rows), bindings
 ```
 
@@ -594,11 +770,13 @@ The list below is a record, not a law. The law, applied to any capability:
 If a capability can't be classified in one sentence, the classification is
    the design conversation — have it before building.
 
-memory store · scheduler (returned on demand — designed in `Scheduled
+memory store (returned on demand — approved in `Long-term memory`) ·
+scheduler (returned on demand — designed in `Scheduled
 work`; heartbeat/proactive monitoring stays out) · conversation-lifecycle
 commands · subagents · delegated work · external agents · ACP · MCP ·
 project environments · inner life · onboarding wizard · state
-migrations · embeddings · multi-user · history compaction (history is
+migrations (general framework; additive memory schema changes are in scope) ·
+in-process embeddings (delegated to Hindsight for memory) · multi-user · history compaction (history is
 unbounded in v1 — a designed truncation/compaction story arrives with the
 feature that needs it)
 

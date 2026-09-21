@@ -35,11 +35,12 @@ describe("schedule tool", () => {
 			name: "morning brief",
 			cron: "30 8 * * 1-5",
 			prompt: "brief me on the day",
-		})) as { job: { chat_id: number; thread_id: number; next_run: string } };
-		expect(out.job.chat_id).toBe(-100);
-		expect(out.job.thread_id).toBe(7);
+		})) as { job: { next_run: string } };
+		expect(out.job).not.toHaveProperty("chat_id");
+		expect(out.job).not.toHaveProperty("thread_id");
 		expect(new Date(out.job.next_run).getTime()).toBeGreaterThan(Date.now());
 		expect(jobs.list()).toHaveLength(1);
+		expect(jobs.list()[0]).toMatchObject({ chatId: -100, threadId: 7 });
 	});
 
 	test("an invalid cron is a tool error — no row exists", async () => {
@@ -87,6 +88,11 @@ describe("schedule tool", () => {
 			job: { enabled: boolean };
 		};
 		expect(toggled.job.enabled).toBe(false);
+		for (const view of [listed.jobs[0], updated.job, toggled.job]) {
+			expect(Object.keys(view!).sort()).toEqual([
+				"cron", "enabled", "id", "last_run", "name", "next_run", "prompt",
+			]);
+		}
 
 		const gone = (await exec(tool, { action: "delete", id: created.job.id })) as {
 			deleted: number;
@@ -103,5 +109,28 @@ describe("schedule tool", () => {
 		};
 		expect(del.error).toContain("no job 99");
 		expect(upd.error).toContain("no job 99");
+	});
+
+	test("invalid update cron leaves the stored job unchanged", async () => {
+		const { tool, jobs } = toolFor();
+		const job = jobs.create({
+			name: "x", cron: "0 9 * * *", prompt: "p",
+			address: { chatId: -100, threadId: 7 },
+		});
+		expect(await exec(tool, {
+			action: "update", id: job.id, name: "changed", cron: "61 8 * * *",
+		})).toEqual({ error: expect.stringContaining("invalid cron") });
+		expect(jobs.get(job.id)).toEqual(job);
+	});
+
+	test("update validates before storage and propagates storage failures", async () => {
+		const { tool, jobs } = toolFor();
+		jobs.close();
+		expect(await exec(tool, {
+			action: "update", id: 1, cron: "61 8 * * *",
+		})).toEqual({ error: expect.stringContaining("invalid cron") });
+		await expect(exec(tool, {
+			action: "update", id: 1, cron: "0 9 * * *",
+		})).rejects.toThrow();
 	});
 });

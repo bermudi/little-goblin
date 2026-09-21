@@ -15,8 +15,6 @@ function jobView(job: Job): Record<string, unknown> {
 		name: job.name,
 		cron: job.cron,
 		prompt: job.prompt,
-		chat_id: job.chatId,
-		...(job.threadId !== null ? { thread_id: job.threadId } : {}),
 		enabled: job.enabled,
 		last_run: job.lastRun,
 		next_run: job.nextRun,
@@ -81,19 +79,22 @@ export const scheduleTool = (deps: ScheduleToolDeps) =>
 					return { job: jobView(job) };
 				}
 				case "update": {
+					if (input.cron !== undefined) {
+						try {
+							nextFire(input.cron, new Date());
+						} catch (err) {
+							return { error: (err as Error).message };
+						}
+					}
 					// exactOptionalPropertyTypes: never pass an explicit undefined.
 					const patch: { name?: string; cron?: string; prompt?: string } = {};
 					if (input.name !== undefined) patch.name = input.name;
 					if (input.cron !== undefined) patch.cron = input.cron;
 					if (input.prompt !== undefined) patch.prompt = input.prompt;
-					try {
-						const job = deps.jobs.update(input.id, patch);
-						if (job === null) return { error: `no job ${input.id}` };
-						log.info("job updated", { job: job.id, name: job.name });
-						return { job: jobView(job) };
-					} catch (err) {
-						return { error: (err as Error).message };
-					}
+					const job = deps.jobs.update(input.id, patch);
+					if (job === null) return { error: `no job ${input.id}` };
+					log.info("job updated", { job: job.id, name: job.name });
+					return { job: jobView(job) };
 				}
 				case "delete": {
 					const ok = deps.jobs.remove(input.id);

@@ -69,7 +69,7 @@ async function boot() {
 
 	const runtime = new Runtime({
 		store,
-		async buildStep(conv) {
+		async buildStep(conv, tools) {
 			const cfg = configRef.current;
 			const modelRef = conv.model ?? cfg.model;
 			const { provider, modelId } = splitModelRef(modelRef);
@@ -88,9 +88,8 @@ async function boot() {
 			const providerOptions = thinkingOptions(cfg, modelRef, level);
 			const prompt = buildSystemPrompt(
 				conv,
-				// Advertise exactly what the turn wires: speak only when TTS is
-				// configured, same rule as makeTools below.
-				toolNames(cfg.tts !== undefined),
+				// The registered set already reflects TTS and sink availability.
+				toolNames(tools),
 			);
 			log.info("model step", {
 				conversation: conv.id,

@@ -89,7 +89,7 @@ export interface RuntimeDeps {
 	// Resolve the conversation's effective model + system prompt + provider
 	// options (thinking level) fresh at each turn. May be async (auth
 	// `!command` resolution shells out).
-	buildStep(conv: Conversation): ModelStep | Promise<ModelStep>;
+	buildStep(conv: Conversation, tools: ToolSet): ModelStep | Promise<ModelStep>;
 	// Build the tool set — bound to the deployment workspace by the
 	// composition root. deliverVoice/recording wire the speak tool into
 	// the running turn's sink (voice delivery + chat-action indicator).
@@ -314,8 +314,6 @@ export class Runtime {
 
 		try {
 			this.checkAuthority(convId, epoch);
-			const step = await this.deps.buildStep(conv);
-			this.checkAuthority(convId, epoch);
 			const deliverVoice = sink.onVoiceNote
 				? async (audio: Uint8Array) => {
 						this.checkAuthority(convId, epoch);
@@ -347,6 +345,8 @@ export class Runtime {
 				convId,
 				epoch,
 			);
+			const step = await this.deps.buildStep(conv, tools);
+			this.checkAuthority(convId, epoch);
 			// Materialize attachment refs against THIS turn's model — a
 			// media part the provider can't consume degrades to its path
 			// reference instead of failing the request on every turn.

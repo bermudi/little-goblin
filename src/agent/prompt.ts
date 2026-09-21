@@ -1,7 +1,10 @@
-// System prompt assembly: shell + SOUL.md + optional AGENTS.md/USER.md
-// (each capped — see readCapped). Read fresh
+// System prompt assembly: shell + tool list + SOUL.md + optional
+// AGENTS.md/USER.md (each capped — see readCapped). Read fresh
 // every turn — the operator or the agent itself may edit either file and
 // the change is live on the next turn. No command, no restart.
+// The tool list comes from the caller (tools/mod.ts's toolNames):
+// availability is deployment-config state, and config only changes by
+// operator action — a sanctioned cache boundary like any other edit.
 //
 // Cache stability: nothing here may vary turn-to-turn on its own (no
 // clock, no counters) — the prompt is the head of the provider prefix
@@ -68,7 +71,10 @@ function readCapped(source: string, path: string): string | null {
 	return `${content.slice(0, MAX_PROMPT_FILE_CHARS)}\n\n… (${source} truncated at ${MAX_PROMPT_FILE_CHARS} chars — read the file for the rest)`;
 }
 
-export function buildSystemPrompt(conv: Conversation): { text: string; sources: string[] } {
+export function buildSystemPrompt(
+	conv: Conversation,
+	tools: readonly string[],
+): { text: string; sources: string[] } {
 	const soul = readCapped("SOUL.md", paths.soul());
 	if (soul === null) {
 		// Not a reason to fail the turn — but a deleted SOUL.md silently
@@ -98,10 +104,15 @@ export function buildSystemPrompt(conv: Conversation): { text: string; sources: 
 		`- Working directory: ${paths.workspace()} — fixed, same for every chat.`,
 		`- No clock: the current date/time is not in this prompt — run \`date\` via`,
 		`  bash whenever it matters.`,
-		`- Tools: read_file, write_file, edit_file, bash, schedule. Paths are relative to`,
-		`  the working directory unless absolute. schedule manages standing jobs —`,
-		`  natural-language prompts on a cron, replies landing in this chat;`,
-		`  create one only when explicitly asked.`,
+		`- Tools: ${tools.join(", ")}. Paths are relative to the working`,
+		`  directory unless absolute.`,
+		...(tools.includes("schedule")
+			? [
+					`- schedule manages standing jobs — natural-language prompts on a`,
+					`  cron, replies landing in this chat; create one only when`,
+					`  explicitly asked.`,
+			]
+			: []),
 		`- Telegram is the UI: messages are plain text/Markdown, media arrives as`,
 		`  file paths or inline parts. Keep replies chat-sized; write files for`,
 		`  anything long.`,

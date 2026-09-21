@@ -36,12 +36,15 @@ const conv: Conversation = {
 	createdAt: new Date().toISOString(),
 };
 
+// The deployment's always-on set — as index.ts builds it without TTS.
+const tools = ["read_file", "write_file", "edit_file", "bash", "schedule", "send_file"];
+
 describe("buildSystemPrompt", () => {
 	test("no clock — the prompt carries no date and points at `date` instead", () => {
 		const home = useHome();
 		process.env.GOBLIN_HOME = home;
 		try {
-			const { text } = buildSystemPrompt(conv);
+			const { text } = buildSystemPrompt(conv, tools);
 			// An ISO date anywhere in the prompt would invalidate the whole
 			// prefix cache every midnight.
 			expect(text).not.toMatch(/\d{4}-\d{2}-\d{2}/);
@@ -57,8 +60,8 @@ describe("buildSystemPrompt", () => {
 		try {
 			mkdirSync(paths.workspace(), { recursive: true });
 			writeFileSync(paths.soul(), "You are goblin.");
-			const a = buildSystemPrompt(conv);
-			const b = buildSystemPrompt(conv);
+			const a = buildSystemPrompt(conv, tools);
+			const b = buildSystemPrompt(conv, tools);
 			expect(a.text).toBe(b.text);
 		} finally {
 			delete process.env.GOBLIN_HOME;
@@ -73,7 +76,7 @@ describe("buildSystemPrompt", () => {
 		try {
 			mkdirSync(paths.workspace(), { recursive: true });
 			// No SOUL.md — deleted mid-run, never recreated.
-			const { text } = buildSystemPrompt(conv);
+			const { text } = buildSystemPrompt(conv, tools);
 			expect(text).toContain("You are goblin, a personal AI agent.");
 			const warned = readFileSync(logFile, "utf8")
 				.trim()
@@ -96,9 +99,9 @@ describe("buildSystemPrompt", () => {
 		setLogFile(logFile);
 		try {
 			mkdirSync(paths.workspace(), { recursive: true });
-			buildSystemPrompt(conv); // primes the source hashes silently
+			buildSystemPrompt(conv, tools); // primes the source hashes silently
 			writeFileSync(join(paths.workspace(), "SOUL.md"), "an edited soul");
-			buildSystemPrompt(conv);
+			buildSystemPrompt(conv, tools);
 			const lines = readFileSync(logFile, "utf8")
 				.trim()
 				.split("\n")
@@ -115,6 +118,33 @@ describe("buildSystemPrompt", () => {
 			delete process.env.GOBLIN_HOME;
 		}
 	});
+	describe("tool list", () => {
+		test("rendered verbatim from the wiring; schedule prose gated on presence", () => {
+			const home = useHome();
+			process.env.GOBLIN_HOME = home;
+			try {
+				const full = buildSystemPrompt(conv, [
+					"read_file",
+					"write_file",
+					"edit_file",
+					"bash",
+					"speak",
+					"schedule",
+					"send_file",
+				]);
+				expect(full.text).toContain(
+					"Tools: read_file, write_file, edit_file, bash, speak, schedule, send_file.",
+				);
+				expect(full.text).toContain("create one only when");
+
+				const bare = buildSystemPrompt(conv, ["read_file", "bash"]);
+				expect(bare.text).toContain("Tools: read_file, bash.");
+				expect(bare.text).not.toContain("standing jobs");
+			} finally {
+				delete process.env.GOBLIN_HOME;
+			}
+		});
+	});
 });
 
 describe("workspace file injection", () => {
@@ -126,7 +156,7 @@ describe("workspace file injection", () => {
 			writeFileSync(paths.soul(), "You are goblin.");
 			writeFileSync(paths.agents(), "notes");
 			writeFileSync(paths.user(), "- Prefer terse answers.");
-			const { text, sources } = buildSystemPrompt(conv);
+			const { text, sources } = buildSystemPrompt(conv, tools);
 			expect(text).toContain("## USER.md — your model of the operator");
 			expect(text).toContain("- Prefer terse answers.");
 			expect(sources).toContain("USER.md");
@@ -141,7 +171,7 @@ describe("workspace file injection", () => {
 		try {
 			mkdirSync(paths.workspace(), { recursive: true });
 			writeFileSync(paths.soul(), "You are goblin.");
-			const { text, sources } = buildSystemPrompt(conv);
+			const { text, sources } = buildSystemPrompt(conv, tools);
 			expect(text).not.toContain("## USER.md");
 			expect(sources).not.toContain("USER.md");
 		} finally {
@@ -157,7 +187,7 @@ describe("workspace file injection", () => {
 		try {
 			mkdirSync(paths.workspace(), { recursive: true });
 			writeFileSync(paths.soul(), `You are goblin. ${"x".repeat(9_000)}`);
-			const { text } = buildSystemPrompt(conv);
+			const { text } = buildSystemPrompt(conv, tools);
 			expect(text).toContain("SOUL.md truncated at 8000 chars");
 			// And the log explains it — no REPL needed.
 			const warned = readFileSync(logFile, "utf8")
@@ -176,7 +206,7 @@ describe("workspace file injection", () => {
 		const home = useHome();
 		process.env.GOBLIN_HOME = home;
 		try {
-			const { text } = buildSystemPrompt(conv);
+			const { text } = buildSystemPrompt(conv, tools);
 			expect(text).toContain("these files are your only");
 			expect(text).toContain("Verify before saying done");
 			expect(text).toContain("ask first before");

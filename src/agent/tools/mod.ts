@@ -29,6 +29,24 @@ export interface FileToolDeps {
 	deliver(file: OutgoingFile): Promise<void>;
 }
 
+// The prompt-facing tool list, in makeTools' registration order.
+// speak rides only when TTS is configured — the same rule that gates
+// the voice deps below; everything else is wired on every live turn.
+// The composition root passes this to buildSystemPrompt so the
+// advertised list can never drift from the registered one (a test in
+// mod.test.ts pins them together).
+export function toolNames(ttsConfigured: boolean): string[] {
+	return [
+		"read_file",
+		"write_file",
+		"edit_file",
+		"bash",
+		...(ttsConfigured ? ["speak"] : []),
+		"schedule",
+		"send_file",
+	];
+}
+
 export function makeTools(
 	cwd: string,
 	voice?: VoiceToolDeps,

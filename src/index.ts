@@ -7,7 +7,7 @@ import { observedModel, resolveModel, thinkingOptions } from "./agent/providers.
 import { generateTopicTitle } from "./agent/title.ts";
 import { checkFfmpeg, transcribeAudio, transcriptionModel } from "./agent/transcribe.ts";
 import { synthesizeSpeech } from "./agent/tts.ts";
-import { makeTools } from "./agent/tools/mod.ts";
+import { makeTools, toolNames } from "./agent/tools/mod.ts";
 import {
 	ensureHomeLayout,
 	goblinHome,
@@ -86,7 +86,12 @@ async function boot() {
 				? (conv.thinking as ThinkingLevel)
 				: cfg.thinking;
 			const providerOptions = thinkingOptions(cfg, modelRef, level);
-			const prompt = buildSystemPrompt(conv);
+			const prompt = buildSystemPrompt(
+				conv,
+				// Advertise exactly what the turn wires: speak only when TTS is
+				// configured, same rule as makeTools below.
+				toolNames(cfg.tts !== undefined),
+			);
 			log.info("model step", {
 				conversation: conv.id,
 				model: modelRef,

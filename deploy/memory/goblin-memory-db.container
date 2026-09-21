@@ -1,0 +1,24 @@
+[Unit]
+Description=Optional Goblin memory PostgreSQL
+
+[Container]
+# pgvector 0.8.2, PostgreSQL 17, Debian bookworm (multi-arch index)
+Image=docker.io/pgvector/pgvector:0.8.2-pg17-bookworm@sha256:feb68f4f15446397d8cac7f4fe48fe4586de83160d1fc48b46283312d1a33966
+ContainerName=goblin-memory-db
+Network=goblin-memory.network
+NetworkAlias=db
+Volume=goblin-memory-db.volume:/var/lib/postgresql/data
+Environment=POSTGRES_USER=hindsight POSTGRES_DB=hindsight
+EnvironmentFile=%h/.config/goblin-memory/postgres.env
+HealthCmd=pg_isready -U hindsight -d hindsight
+HealthInterval=10s
+HealthTimeout=5s
+HealthRetries=6
+HealthStartPeriod=30s
+Notify=healthy
+LogDriver=journald
+
+[Service]
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=300

@@ -1,0 +1,28 @@
+[Unit]
+Description=Optional Goblin Hindsight API
+Requires=goblin-memory-db.service
+After=goblin-memory-db.service
+
+[Container]
+# API-only slim 0.10.0: no bundled local embedding/reranking models.
+Image=ghcr.io/vectorize-io/hindsight-api:0.10.0-slim@sha256:bc3082ccb514fee1a7f7d66da308ba2c2018e2ea2c739d2341c993e3a3bd91b9
+ContainerName=goblin-memory-api
+Network=goblin-memory.network
+PublishPort=127.0.0.1:8888:8888
+EnvironmentFile=%h/.config/goblin-memory/hindsight.env
+Volume=%h/.config/goblin-memory/start.py:/opt/goblin-memory-start.py:ro,Z
+Exec=/app/api/.venv/bin/python /opt/goblin-memory-start.py
+HealthCmd=/app/api/.venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8888/health/ready', timeout=5)"
+HealthInterval=15s
+HealthTimeout=10s
+HealthRetries=4
+HealthStartPeriod=60s
+Notify=healthy
+LogDriver=journald
+
+[Service]
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=300
+
+# Intentionally no [Install]: operator starts it explicitly.

@@ -89,7 +89,7 @@ export class MemoryQueue {
 		return raw === null ? null : this.decode(raw);
 	}
 
-	update(item: MemoryQueueItem, state: MemoryQueueItem["state"], nextAttempt: number, error: string | null): void {
+		update(item: MemoryQueueItem, state: MemoryQueueItem["state"], nextAttempt: number, error: string | null): void {
 		const change = this.db.run(
 			`UPDATE memory_outbox SET state = ?, next_attempt = ?, attempts = attempts + 1, error = ?
 			 WHERE operation_id = ? AND state = ? AND attempts = ?`,
@@ -100,6 +100,58 @@ export class MemoryQueue {
 			operation: item.operation_id, document: item.document_id, target: item.target,
 			from: item.state, to: state, attempts: item.attempts + 1, nextAttempt, error,
 		});
+	}
+
+	// Forgetting cancels pending ingestion across all targets — a config
+	// change must not resurrect a suppressed document from another target.
+	cancelDocument(documentId: string): number {
+		const change = this.db.run(
+			`DELETE FROM memory_outbox WHERE document_id = ? AND state IN ('pending', 'submitted')`,
+			[documentId],
+		);
+		return Number(change.changes);
+	}
+
+	// Excluding a topic purges its pending retention — "/memory off"
+	// promises nothing from here is sent. Finished, blocked, and other
+	// topics' rows are untouched.
+	cancelConversation(conversationId: string): number {
+		const rows = this.db.query<{ operation_id: string; payload: string }, []>(
+			`SELECT operation_id, payload FROM memory_outbox WHERE state IN ('pending', 'submitted')`,
+		).all();
+		let removed = 0;
+		for (const row of rows) {
+			let payload: unknown;
+			try {
+				payload = JSON.parse(row.payload);
+			} catch {
+				throw new Error(`Invalid memory queue payload for operation ${row.operation_id}`);
+			}
+			const doc = memoryDocumentSchema.safeParse(payload);
+			if (!doc.success) {
+				throw new Error(`Invalid memory document for operation ${row.operation_id}`);
+			}
+			if (doc.data.conversationId === conversationId) {
+				this.db.run("DELETE FROM memory_outbox WHERE operation_id = ?", [row.operation_id]);
+				removed++;
+			}
+		}
+		return removed;
+	}
+
+	counts(target: string): { pending: number; submitted: number; completed: number; blocked: number } {
+		targetSchema.parse(target);
+		const rows = this.db.query<{ state: string; n: number }, [string]>(
+			`SELECT state, COUNT(*) AS n FROM memory_outbox WHERE target = ? GROUP BY state`,
+		).all(target);
+		const out = { pending: 0, submitted: 0, completed: 0, blocked: 0 };
+		for (const r of rows) {
+			if (r.state === "pending") out.pending = r.n;
+			else if (r.state === "submitted") out.submitted = r.n;
+			else if (r.state === "completed") out.completed = r.n;
+			else if (r.state === "blocked") out.blocked = r.n;
+		}
+		return out;
 	}
 }
 

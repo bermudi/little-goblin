@@ -407,14 +407,62 @@ tables beyond last_run.
 ## Long-term memory
 
 **Implementation in progress.** The optional Podman assets, validated HTTP
-client, and durable retention queue are implemented and tested offline.
-The queue can commit atomically with conversation history, but the turn
-loop does not enqueue or recall yet. Operator controls, prompt integration,
-and live verification remain required before enabling memory.
+client, durable retention queue, and turn-loop integration (bounded recall
+with persisted cache-stable blocks, retention enqueue, worker timer,
+memory-search tool, `/memory` + `/forget` controls) are implemented and
+tested offline. Live verification against a real Hindsight server remains
+required before enabling memory.
+Slice 2 rulings (below) lock the turn-integration mechanisms.
 Memory returns on explicit
 operator demand. Hindsight is the selected memory service, not an agent
 runtime: Goblin still owns history, tools, reasoning, and Telegram delivery.
 No MCP, replacement turn loop, or generic multi-backend framework.
+
+### Slice 2 rulings (locked)
+
+1. **Config key: `memory`.** Optional `goblin.json5` block `{baseUrl,
+   bankId, auth?, recallTimeoutMs?, maxTokens?, budget?}`; absent =
+   exact current behavior. `auth` names an `auth.jsonl` secret for the
+   Bearer token (loopback needs none). Recall defaults: 2000ms timeout,
+   1024 max tokens, `low` budget — turns must not wait on memory.
+2. **Exclusions: per-topic setting, command-first.** `memoryExcluded`
+   boolean on the conversation (settings-command pattern: `/memory
+   on|off|status`, epoch-bumped like `/model`; mini-app toggle follows).
+   Excluded topics send nothing and recall nothing — enforced in Goblin
+   before any external request, for both automatic recall and the
+   memory-search tool. No automatic ingestion until this control exists.
+3. **Recall persistence: `memory_contexts` table, interleaved before
+   the anchored user message.** Every recall outcome (results, empty,
+   unavailable) is persisted verbatim keyed by `(conversation_id,
+   anchor_seq)` before the model call; future turns reuse the persisted
+   bytes, never regenerate. Materialize each block immediately before
+   its triggering user message in the causal view, so turn N+1's request
+   starts with turn N's request plus appended content. Enable/disable
+   and forgetting are explicit logged cache boundaries (the prefix may reset
+   there, nowhere else). Recall-context writes are working state, not
+   completed-turn commits: a turn fenced after its recall may leave an
+   orphan block, and its same-anchor retry replaces it under the logged
+   turn-fenced boundary. Successful-turn prefixes are unaffected (a failed
+   request is never anyone's prefix).
+4. **Document ID: `exchange/{conversationId}/{anchorSeq}/{assistantId}`.**
+   Stable per completed exchange, unique across retries; retries replay
+   identical content (queue rejects same ID with different content).
+5. **Degraded status: log + `/memory status`, not chat spam.** Every
+   recall/worker outcome emits a structured line; `/memory status`
+   reports disabled/healthy/degraded/pending with outbox counts. Model
+   context distinguishes unavailable from empty via the persisted block;
+   no Telegram notification per retry.
+6. **Bank/mission: operator step, no auto-creation.** Goblin never
+   creates banks or sets missions; `docs/memory.md` documents the manual
+   `curl` with an example mission (preferences, decisions, commitments,
+   people, ongoing work). Bank-level overrides stay out of Goblin.
+7. **Forgetting: two commands, suppression survives everything.**
+   `/forget <query>` resolves and shows affected sources;
+   `/forget delete <documentId>` requires that go-ahead, then suppresses,
+   cancels pending outbox rows, deletes the remote document, and redacts
+   affected recall snapshots (global prefix reset, logged). Suppression
+   lives in SQLite and is checked before every enqueue, so restarts and
+   future backfills cannot resurrect forgotten sources.
 
 ### Deployment and configuration
 
@@ -706,7 +754,8 @@ $GOBLIN_HOME/
 │   └── attachments/
 └── state/
     └── goblin.sqlite       # Goblin state: conversation meta, event
-                            # history (UIMessage JSON rows), bindings
+                            # history (UIMessage JSON rows), bindings,
+                            # memory outbox/contexts/suppressions
 ```
 
 SQLite durability = WAL + transactions (`synchronous=NORMAL` minimum), not
@@ -716,7 +765,8 @@ is an export/query command, not a format property.
 ## Config
 
 `goblin.json5`: provider registry, per-conversation default model/thinking,
-optional `transcription` block. No secrets — those live in `auth.jsonl`.
+optional `transcription` block, optional `memory` block (absent =
+memory disabled). No secrets — those live in `auth.jsonl`.
 
 **Settings are operator-facing UI, not SSH.** The mini app is the
 configuration surface: the process reads and writes `goblin.json5` itself, and
@@ -733,6 +783,8 @@ src/
   log.ts            structured log; no console.log anywhere else
   tg/               grammy: intake, buffer, delivery, commands (only grammy-aware dir)
   conversation.ts   store: SQLite-backed resolve/load/append events, meta, epoch
+  memory.ts         recall contexts, retention builders, status, worker timer
+                    (wire client in hindsight.ts, outbox in memory-queue.ts)
   jobs.ts           scheduled jobs — rows in goblin.sqlite, cron validated
                     at the boundary
   scheduler.ts      ticker: due jobs → turns in their pinned conversation
@@ -755,8 +807,8 @@ src/
                     AGENTS.md/USER.md, each capped at 8k chars; re-read
                     every turn, edits live next message)
     skills.ts       catalog scan + frontmatter validation → ## skills section
-    tools/          the seven tools (read, write, edit, bash, speak,
-                    schedule, send_file)
+    tools/          the eight tools (read, write, edit, bash, speak,
+                    schedule, send_file, memory_search)
   http/             mini-app serving
 ```
 

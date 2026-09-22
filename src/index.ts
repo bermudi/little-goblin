@@ -19,6 +19,7 @@ import {
 } from "./config.ts";
 import { openStore } from "./conversation.ts";
 import { openJobs } from "./jobs.ts";
+import { buildMemoryClient, startMemoryWorker } from "./memory.ts";
 import { startScheduler } from "./scheduler.ts";
 import { startHttp } from "./http/mod.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
@@ -66,6 +67,20 @@ async function boot() {
 	// Warm the openrouter route-capability catalog so /think and the mini app
 	// see real per-model thinking levels instead of the cold-start fallback.
 	void ensureOpenRouterCatalog();
+
+	// Long-term memory is a boot-time snapshot: the queue binds rows to
+	// the endpoint+bank hash, so mini-app memory edits apply on restart —
+	// a config change can never redirect queued personal content mid-run.
+	const memoryBootConfig = config.memory;
+	const memoryClient = buildMemoryClient(memoryBootConfig ?? undefined, auth);
+	const memoryState = { lastRecallOk: null as boolean | null };
+	const memoryWorker = memoryClient ? startMemoryWorker(store.memoryQueue, memoryClient) : null;
+	if (memoryClient && memoryBootConfig) {
+		log.info("memory enabled", {
+			baseUrl: memoryBootConfig.baseUrl,
+			bank: memoryBootConfig.bankId,
+		});
+	}
 
 	const runtime = new Runtime({
 		store,
@@ -123,8 +138,33 @@ async function boot() {
 				// The send_file tool hands workspace paths to the turn's
 				// delivery sink, which owns the Telegram send.
 				deliverFile ? { deliver: deliverFile } : undefined,
+				// Memory search recalls the shared bank; excluded topics
+				// recall nothing by any path.
+				memoryClient && memoryBootConfig
+					? {
+							client: memoryClient,
+							maxTokens: memoryBootConfig.maxTokens,
+							budget: memoryBootConfig.budget,
+							isExcluded: () => conv.memoryExcluded,
+							noteRecall: (ok: boolean) => {
+								memoryState.lastRecallOk = ok;
+							},
+						}
+					: undefined,
 			);
 		},
+		...(memoryClient && memoryBootConfig
+			? {
+					memory: {
+						client: memoryClient,
+						config: memoryBootConfig,
+						contexts: store.memoryContexts,
+						noteRecall: (ok: boolean) => {
+							memoryState.lastRecallOk = ok;
+						},
+					},
+				}
+			: {}),
 	});
 
 	const tg = await startBot({
@@ -152,6 +192,16 @@ async function boot() {
 			if (!cfg) return null;
 			return transcribeAudio(await transcriptionModel(cfg, auth), file);
 		},
+		...(memoryClient
+			? {
+					memory: {
+						client: memoryClient,
+						contexts: store.memoryContexts,
+						queue: store.memoryQueue,
+						lastRecallOk: () => memoryState.lastRecallOk,
+					},
+				}
+			: {}),
 	});
 	const http = startHttp({
 		configRef,
@@ -161,6 +211,11 @@ async function boot() {
 			// publicUrl is operator-editable through the app — keep the menu
 			// button (the door) in sync without a restart.
 			applyMenuButton(tg.bot.api, configRef.current.publicUrl);
+			// Memory is a boot-time snapshot (queue rows bind to the
+			// endpoint+bank hash) — a changed block needs a restart.
+			if (JSON.stringify(configRef.current.memory ?? null) !== JSON.stringify(memoryBootConfig ?? null)) {
+				log.warn("memory config changed — restart to apply");
+			}
 		},
 	});
 
@@ -176,7 +231,7 @@ async function boot() {
 		synthesize: (text, tts) => synthesizeSpeech(text, tts),
 	});
 
-	return { configRef, auth, store, jobs, runtime, tg, http, scheduler };
+	return { configRef, auth, store, jobs, runtime, tg, http, scheduler, memoryWorker };
 }
 
 let booted: Awaited<ReturnType<typeof boot>>;
@@ -186,7 +241,7 @@ try {
 	log.error("boot failed", err);
 	process.exit(1);
 }
-const { store, jobs, runtime, tg, http, scheduler } = booted;
+const { store, jobs, runtime, tg, http, scheduler, memoryWorker } = booted;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // Long enough for the sinks' final flushes and polling's offset
@@ -203,6 +258,9 @@ async function shutdown(signal: string): Promise<void> {
 	log.info("shutting down", { signal });
 	// Scheduler first — no new scheduled submits once the drain begins.
 	scheduler.stop();
+	// The retention worker only drains the outbox — stopping it leaves
+	// pending rows durable for the next boot.
+	await memoryWorker?.stop();
 	// bot.stop confirms the polling offset so handled updates don't
 	// redeliver on the next boot.
 	const stopping = tg.bot.stop().catch((err: unknown) => {

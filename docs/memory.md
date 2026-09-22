@@ -1,21 +1,63 @@
-# Optional Hindsight service
+# Optional Hindsight service + Goblin memory integration
 
-This is **an opt-in service stack, not enabled Goblin memory yet**. The HTTP
-client and durable retention queue are implemented and tested offline, but no
-turn-loop hooks or worker timer run. Ordinary conversations are unchanged;
-there is no automatic ingestion, recall, backfill, or backup automation.
-`DESIGN.md` remains the integration contract.
+Memory is **opt-in and off by default**. Without a `memory` block in
+`goblin.json5`, ordinary conversations are byte-identical to before: no
+recall, no retention, no extra tool, no worker timer.
 
-The queue shares Goblin's SQLite history transaction and keeps a stable remote
-operation ID across retries/restarts. Acknowledgement is not completion; records
-stay pending until Hindsight reports completion. Queued content is bound to its
-original endpoint and bank. Failed or missing remote operations remain visible
-in the database rather than being discarded or blindly replayed.
+When configured, each admitted turn recalls bounded evidence pre-turn
+(fail-open, persisted per-turn and re-materialized verbatim so provider
+prefix caches stay valid), completed text exchanges enqueue retention in
+the same SQLite transaction as history, a bounded worker drains the
+outbox, and `memory_search` offers deeper recall. `/memory` controls
+per-topic inclusion; `/forget` resolves then deletes sources with a
+suppression that survives restarts and future backfills.
 
-Still to implement before enabling: operator-facing exclusions/forgetting,
-retention and recall turn hooks, cached recall context, status UI, and explicitly
-authorized end-to-end verification. Do not treat the raw client's delete method
-as a complete forgetting mechanism.
+The queue keeps a stable remote operation ID across retries/restarts.
+Acknowledgement is not completion; records stay queued until Hindsight
+reports completion. Queued content is bound to its original endpoint and
+bank. Failed or missing remote operations remain visible in the database
+rather than being discarded or blindly replayed.
+
+Still required before enabling: explicitly authorized end-to-end
+verification against a real Hindsight server (containers + provider
+traffic). Do not treat the raw client's delete method as a complete
+forgetting mechanism — see `/forget` below.
+
+## Operator controls
+
+- `/memory` — status (`disabled|healthy|degraded|pending` with outbox
+  counts) and whether this topic is included.
+- `/memory off` — exclude this topic: nothing from here is sent, and no
+  shared memories are recalled here (automatic or via `memory_search`).
+  `/memory on` re-includes. Both bump the epoch (fence in-flight turns)
+  and are logged cache boundaries.
+- `/forget <query>` — resolve and list matching sources (document IDs
+  with dates and snippets).
+- `/forget delete <documentId>` — after reviewing the listing: suppress
+  the source (survives restarts/backfill), cancel its queued retention,
+  delete the remote document, and redact recalled snapshots citing it.
+  Original chat history, backups, and provider retention are untouched —
+  forgetting is not erasure.
+- `memory` block edits in the mini app apply on **restart**: queued rows
+  are bound to their endpoint+bank, so a live switch could never redirect
+  pending personal content. The process logs a warning when a save
+  changes the block.
+
+## Bank creation (operator step, once)
+
+Goblin never creates banks. With the stack running:
+
+```sh
+# Create the bank (replace goblin with your bank id):
+curl -s -X PUT http://127.0.0.1:8888/v1/default/banks/goblin \
+  -H 'content-type: application/json' \
+  -d '{"mission": "Remember the operator'"'"'s preferences, decisions, commitments, people, and ongoing work. Assistant suggestions are not operator decisions. Date every fact."}'
+```
+
+The mission guides extraction quality, not privacy — exclusions are
+enforced in Goblin before any external request. Keep the bank ID stable:
+changing embedding models for an existing bank needs an explicit
+compatibility/re-indexing procedure, not a config edit.
 
 ## Verified launch profile
 

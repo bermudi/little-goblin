@@ -9,6 +9,7 @@ import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
 import { z } from "zod";
 import { log } from "./log.ts";
+import { MemoryContexts } from "./memory.ts";
 import { MemoryQueue } from "./memory-queue.ts";
 import type { MemoryDocument } from "./hindsight.ts";
 
@@ -37,6 +38,7 @@ export interface Conversation {
 	model: string | null; // "<provider>/<model-id>" override; null = config default
 	thinking: string | null; // override; null = config default
 	voice: boolean;
+	memoryExcluded: boolean; // operator opt-out: this topic sends/recalls no memory
 	epoch: number;
 	createdAt: string;
 }
@@ -47,10 +49,12 @@ export interface ConversationMetaPatch {
 	model?: string | null;
 	thinking?: string | null;
 	voice?: boolean;
+	memoryExcluded?: boolean;
 }
 
 export interface ConversationStore {
 	readonly memoryQueue: MemoryQueue;
+	readonly memoryContexts: MemoryContexts;
 	// Get-or-create by Telegram address. New conversations start at epoch 0.
 	// The cwd column still exists in the table (NOT NULL, no default —
 	// existing DBs need it stamped) but cwd is no longer per-conversation
@@ -75,6 +79,9 @@ export interface ConversationStore {
 	// assistant events sort immediately after their triggering user
 	// event; everything else falls back to seq.
 	history(id: string): UIMessage[];
+	// Same causal view with event seqs — memory recall blocks anchor to
+	// the triggering user message's seq, so interleaving needs positions.
+	historyEntries(id: string): { seq: number; message: UIMessage }[];
 	// Seq of the newest user event — a turn's response anchors to it.
 	lastUserSeq(id: string): number | null;
 	close(): void;
@@ -92,6 +99,7 @@ interface Row {
 	model: string | null;
 	thinking: string | null;
 	voice: number;
+	memory_excluded: number;
 	epoch: number;
 	created_at: string;
 }
@@ -136,6 +144,7 @@ function toConversation(r: Row): Conversation {
 		model: r.model,
 		thinking: r.thinking,
 		voice: r.voice !== 0,
+		memoryExcluded: r.memory_excluded !== 0,
 		epoch: r.epoch,
 		createdAt: r.created_at,
 	};
@@ -173,6 +182,9 @@ export function openStore(dbPath: string): ConversationStore {
 	if (!convCols.has("voice")) {
 		db.run("ALTER TABLE conversations ADD COLUMN voice INTEGER NOT NULL DEFAULT 0");
 	}
+	if (!convCols.has("memory_excluded")) {
+		db.run("ALTER TABLE conversations ADD COLUMN memory_excluded INTEGER NOT NULL DEFAULT 0");
+	}
 	db.run(`
 		CREATE TABLE IF NOT EXISTS events (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -196,6 +208,7 @@ export function openStore(dbPath: string): ConversationStore {
 	}
 
 	const memoryQueue = new MemoryQueue(db);
+	const memoryContexts = new MemoryContexts(db);
 	const qGet = db.query<Row, [string]>("SELECT * FROM conversations WHERE id = ?");
 	const qInsertConv = db.query(
 		`INSERT INTO conversations (id, chat_id, thread_id, title, cwd, created_at)
@@ -243,6 +256,10 @@ export function openStore(dbPath: string): ConversationStore {
 			sets.push("voice = ?");
 			vals.push(patch.voice ? 1 : 0);
 		}
+		if (patch.memoryExcluded !== undefined) {
+			sets.push("memory_excluded = ?");
+			vals.push(patch.memoryExcluded ? 1 : 0);
+		}
 		if (sets.length === 0) return;
 		vals.push(id);
 		db.run(`UPDATE conversations SET ${sets.join(", ")} WHERE id = ?`, vals);
@@ -257,6 +274,7 @@ export function openStore(dbPath: string): ConversationStore {
 
 	return {
 		memoryQueue,
+		memoryContexts,
 		resolve(addr, defaultCwd) {
 			const id = addressId(addr);
 			const existing = qGet.get(id);
@@ -327,6 +345,10 @@ export function openStore(dbPath: string): ConversationStore {
 		},
 
 		history(id) {
+			return this.historyEntries(id).map((e) => e.message);
+		},
+
+		historyEntries(id) {
 			const rows = qHistory.all(id).map((r) => {
 				let raw: unknown;
 				try {
@@ -368,7 +390,7 @@ export function openStore(dbPath: string): ConversationStore {
 				const kb = b.anchorSeq ?? b.seq;
 				return ka - kb || a.seq - b.seq;
 			});
-			return rows.map((r) => r.message);
+			return rows.map((r) => ({ seq: r.seq, message: r.message }));
 		},
 
 		close() {

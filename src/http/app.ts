@@ -185,6 +185,24 @@ export const APP_HTML = `<!doctype html>
     </section>
 
     <section>
+      <h2>Memory</h2>
+      <label for="memEnable">long-term memory (self-hosted hindsight)</label>
+      <select id="memEnable"><option value="">off</option><option value="on">on</option></select>
+      <label for="memBase" class="mem-field">hindsight base url</label>
+      <input id="memBase" class="mono mem-field" placeholder="http://127.0.0.1:8888" autocomplete="off" spellcheck="false" autocapitalize="off">
+      <label for="memBank" class="mem-field">bank id</label>
+      <input id="memBank" class="mono mem-field" placeholder="goblin" autocomplete="off" spellcheck="false" autocapitalize="off">
+      <label for="memAuth" class="mem-field">secret name (in auth.jsonl, blank = none)</label>
+      <input id="memAuth" class="mono mem-field" placeholder="not the secret itself" autocomplete="off" spellcheck="false" autocapitalize="off">
+      <label for="memBudget" class="mem-field">recall budget</label>
+      <select id="memBudget" class="mem-field"><option>low</option><option>mid</option><option>high</option></select>
+      <label for="memTokens" class="mem-field">recall max tokens</label>
+      <input id="memTokens" class="mono mem-field" placeholder="1024" inputmode="numeric" autocomplete="off" spellcheck="false">
+      <label for="memTimeout" class="mem-field">recall timeout ms</label>
+      <input id="memTimeout" class="mono mem-field" placeholder="2000" inputmode="numeric" autocomplete="off" spellcheck="false">
+    </section>
+
+    <section>
       <h2>Diagnostics</h2>
       <label for="logLevel">log level</label>
       <select id="logLevel"><option>debug</option><option>info</option><option>warn</option><option>error</option></select>
@@ -330,6 +348,16 @@ function syncTts() {
 }
 $("ttsKind").onchange = syncTts;
 
+// Memory "" clears the block server-side — hidden fields must not carry
+// stale values into an enable.
+function syncMemory() {
+  const off = $("memEnable").value === "";
+  for (const el of document.querySelectorAll(".mem-field")) {
+    el.classList.toggle("hidden", off);
+  }
+}
+$("memEnable").onchange = syncMemory;
+
 function readProviders() {
   const out = {};
   for (const div of $("provs").children) {
@@ -368,6 +396,14 @@ async function load() {
   $("trModel").value = c.transcription?.model ?? "";
   $("trAuth").value = c.transcription?.auth ?? "";
   syncTranscription();
+  $("memEnable").value = c.memory ? "on" : "";
+  $("memBase").value = c.memory?.baseUrl ?? "";
+  $("memBank").value = c.memory?.bankId ?? "";
+  $("memAuth").value = c.memory?.auth ?? "";
+  $("memBudget").value = c.memory?.budget ?? "low";
+  $("memTokens").value = c.memory ? String(c.memory.maxTokens) : "";
+  $("memTimeout").value = c.memory ? String(c.memory.recallTimeoutMs) : "";
+  syncMemory();
   for (const [name, p] of Object.entries(c.providers ?? {})) addProvider(name, p);
   refreshThinking(); // after provider cards exist — kind lookup needs them
   $("logLevel").value = c.logLevel ?? "info";
@@ -400,6 +436,16 @@ $("save").onclick = async () => {
       kind: $("trKind").value,
       model: $("trModel").value.trim() || "whisper-large-v3-turbo",
       auth: $("trAuth").value.trim(),
+    },
+    // "" clears the block — enabling with blank url/bank fails loudly
+    // server-side instead of saving a dead endpoint.
+    memory: $("memEnable").value === "" ? "" : {
+      baseUrl: $("memBase").value.trim(),
+      bankId: $("memBank").value.trim(),
+      ...($("memAuth").value.trim() ? { auth: $("memAuth").value.trim() } : {}),
+      budget: $("memBudget").value,
+      ...($("memTokens").value.trim() ? { maxTokens: Number($("memTokens").value.trim()) } : {}),
+      ...($("memTimeout").value.trim() ? { recallTimeoutMs: Number($("memTimeout").value.trim()) } : {}),
     },
     providers,
     logLevel: $("logLevel").value,

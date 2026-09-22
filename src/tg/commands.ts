@@ -1,5 +1,6 @@
-// Commands are settings-only: /model /think /voice /stop — plus /start,
-// the one non-settings command: a canned greeting for the message every
+// Commands are settings-only: /model /think /voice /memory /stop — plus
+// /forget (memory deletion after review) and /start, the one
+// non-settings command: a canned greeting for the message every
 // Telegram client fires automatically on first open. No
 // conversation-lifecycle commands — topics own that. Every settings change
 // bumps the conversation epoch, fencing in-flight turns.
@@ -8,8 +9,18 @@ import type { Api } from "grammy";
 import { splitModelRef, type Config, type ThinkingLevel } from "../config.ts";
 import { thinkingLevelsFor } from "../agent/providers.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";
+import { HindsightClient, HindsightError } from "../hindsight.ts";
+import { memoryStatus, type MemoryContexts } from "../memory.ts";
+import type { MemoryQueue } from "../memory-queue.ts";
 import type { Runtime } from "../runtime.ts";
 import { log } from "../log.ts";
+
+export interface CommandMemoryDeps {
+	client: HindsightClient;
+	contexts: MemoryContexts;
+	queue: MemoryQueue;
+	lastRecallOk(): boolean | null;
+}
 
 export interface CommandDeps {
 	api: Api;
@@ -18,6 +29,8 @@ export interface CommandDeps {
 	runtime: Runtime;
 	// This bot's own username — commands can be addressed /cmd@botname.
 	botUsername: string;
+	// Long-term memory wiring — absent = memory not configured.
+	memory?: CommandMemoryDeps;
 }
 
 function target(conv: Conversation) {
@@ -62,7 +75,7 @@ export function handleCommand(
 			reply(
 				deps,
 				conv,
-				"goblin online. just talk — each topic is its own conversation.\n/model · /think · /voice · /stop",
+				"goblin online. just talk — each topic is its own conversation.\n/model · /think · /voice · /memory · /stop",
 			);
 			return true;
 		}
@@ -157,6 +170,149 @@ export function handleCommand(
 			reply(deps, conv, `thinking → ${arg}`);
 			return true;
 		}
+
+		case "/memory": {
+			const mem = deps.memory && deps.configRef.current.memory ? deps.memory : null;
+			if (!mem) {
+				reply(deps, conv, "memory is not configured — see docs/memory.md");
+				return true;
+			}
+			if (arg === "off") {
+				apply(deps, conv, { memoryExcluded: true });
+				// The promise below is real: pending rows from this topic
+				// are purged, so the worker can no longer send them.
+				const cancelled = mem.queue.cancelConversation(conv.id);
+				log.info("memory excluded", { conversation: conv.id, cancelled });
+				reply(
+					deps,
+					conv,
+					`memory → off for this topic (${cancelled} queued cancelled, nothing sent or recalled here)`,
+				);
+				return true;
+			}
+			if (arg === "on") {
+				apply(deps, conv, { memoryExcluded: false });
+				log.info("memory exclusion cleared", { conversation: conv.id });
+				reply(deps, conv, "memory → on for this topic");
+				return true;
+			}
+			if (arg !== "" && arg !== "status") {
+				reply(deps, conv, "/memory on|off|status");
+				return true;
+			}
+			const counts = mem.queue.counts(mem.client.target);
+			const status = memoryStatus({
+				enabled: true,
+				pending: counts.pending + counts.submitted,
+				blocked: counts.blocked,
+				lastRecallOk: mem.lastRecallOk(),
+			});
+			reply(
+				deps,
+				conv,
+				`memory: ${status.state} — ${status.detail}\n` +
+					`this topic: ${conv.memoryExcluded ? "excluded" : "included"}\n` +
+					`forget with /forget <query>`,
+			);
+			return true;
+		}
+
+		case "/forget": {
+			const mem = deps.memory && deps.configRef.current.memory ? deps.memory : null;
+			if (!mem) {
+				reply(deps, conv, "memory is not configured — see docs/memory.md");
+				return true;
+			}
+			if (conv.memoryExcluded) {
+				reply(deps, conv, "memory is excluded in this topic — nothing to forget here");
+				return true;
+			}
+			if (arg === "" || arg === "help") {
+				reply(
+					deps,
+					conv,
+					"/forget <query> — list matching sources\n/forget delete <documentId> — delete after review (irreversible)",
+				);
+				return true;
+			}
+			if (arg === "delete" || arg.startsWith("delete ")) {
+				const id = arg.slice("delete".length).trim();
+				if (id === "" || id.length > 256 || id === "." || id === "..") {
+					reply(deps, conv, "/forget delete <documentId> — id from a /forget <query> listing");
+					return true;
+				}
+				// Resolve-then-confirm already happened: the operator ran
+				// /forget <query>, saw this id, and typed delete. Suppress
+				// first so nothing resurrects it, then cancel, delete, redact.
+				void (async () => {
+					try {
+						mem.contexts.suppress(id);
+						const cancelled = mem.queue.cancelDocument(id);
+						await mem.client.deleteDocument(id);
+						const redacted = mem.contexts.deleteByDocument(id);
+						log.info("memory forgotten", {
+							conversation: conv.id,
+							document: id,
+							cancelled,
+							redacted,
+							prefixReset: true,
+						});
+						reply(
+							deps,
+							conv,
+							`forgotten ${id} (suppressed, ${cancelled} queued cancelled, ${redacted} snapshots redacted). ` +
+								`Original chat history, backups, and provider retention are untouched.`,
+						);
+					} catch (err) {
+						log.error("forget failed", err, { conversation: conv.id });
+						reply(deps, conv, `forget failed: ${err instanceof Error ? err.message : String(err)}`);
+					}
+				})();
+				return true;
+			}
+			if (arg.length > 800) {
+				reply(deps, conv, "query too long — keep it under 800 characters");
+				return true;
+			}
+			void (async () => {
+				try {
+					const facts = await mem.client.recall(arg, { maxTokens: 512, budget: "low" });
+					if (facts.length === 0) {
+						reply(deps, conv, "no matching memories found");
+						return;
+					}
+					const seen = new Map<string, { date: string; snippet: string }>();
+					for (const f of facts.slice(0, 20)) {
+						if (!f.document_id || seen.has(f.document_id) || seen.size >= 5) continue;
+						seen.set(f.document_id, {
+							date: f.occurred_start ?? f.mentioned_at ?? f.occurred_end ?? "undated",
+							snippet: f.text.length > 120 ? `${f.text.slice(0, 120)}…` : f.text,
+						});
+					}
+					if (seen.size === 0) {
+						reply(deps, conv, "no matching memories found");
+						return;
+					}
+					const lines = [...seen.entries()].map(
+						([doc, s]) => `- ${doc} (${s.date}): ${s.snippet}`,
+					);
+					reply(
+						deps,
+						conv,
+						`matching sources:\n${lines.join("\n")}\n\n/forget delete <documentId> to delete (irreversible)`,
+					);
+				} catch (err) {
+					if (err instanceof HindsightError) {
+						log.warn("forget search failed", { conversation: conv.id, kind: err.kind });
+						reply(deps, conv, "memory unavailable — try again later");
+						return;
+					}
+					log.error("forget search failed", err, { conversation: conv.id });
+					reply(deps, conv, `forget failed: ${err instanceof Error ? err.message : String(err)}`);
+				}
+			})();
+			return true;
+		}
 	}
 	return false;
 }
@@ -169,6 +325,8 @@ export const COMMANDS = [
 	{ command: "model", description: "show or override the model" },
 	{ command: "think", description: "show or override thinking level" },
 	{ command: "voice", description: "toggle voice-note replies" },
+	{ command: "memory", description: "memory on/off/status for this topic" },
+	{ command: "forget", description: "list or delete memorized sources" },
 	{ command: "stop", description: "fence the running turn" },
 ] as const;
 

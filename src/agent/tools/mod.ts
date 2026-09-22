@@ -3,9 +3,11 @@
 // until a feature needs it.
 
 import type { ToolSet } from "ai";
+import type { HindsightClient } from "../../hindsight.ts";
 import type { JobsStore } from "../../jobs.ts";
 import { bashTool } from "./bash.ts";
 import { editFileTool } from "./edit.ts";
+import { memorySearchTool } from "./memory.ts";
 import { readFileTool } from "./read.ts";
 import { scheduleTool } from "./schedule.ts";
 import { type OutgoingFile, sendFileTool } from "./send.ts";
@@ -29,6 +31,14 @@ export interface FileToolDeps {
 	deliver(file: OutgoingFile): Promise<void>;
 }
 
+export interface MemoryToolDeps {
+	client: HindsightClient;
+	maxTokens: number;
+	budget: "low" | "mid" | "high";
+	isExcluded: () => boolean;
+	noteRecall: (ok: boolean) => void;
+}
+
 // Use the registered set as the availability source, rather than
 // duplicating its dependency gates in the prompt.
 export function toolNames(tools: ToolSet): string[] {
@@ -40,6 +50,7 @@ export function makeTools(
 	voice?: VoiceToolDeps,
 	schedule?: ScheduleToolDeps,
 	file?: FileToolDeps,
+	memory?: MemoryToolDeps,
 ): ToolSet {
 	return {
 		read_file: readFileTool(cwd),
@@ -51,5 +62,6 @@ export function makeTools(
 			: {}),
 		...(schedule ? { schedule: scheduleTool(schedule) } : {}),
 		...(file ? { send_file: sendFileTool(cwd, file.deliver) } : {}),
+		...(memory ? { memory_search: memorySearchTool(memory) } : {}),
 	};
 }

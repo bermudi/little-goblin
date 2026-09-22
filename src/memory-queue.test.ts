@@ -130,6 +130,16 @@ test("destination changes cannot redirect queued personal content", async () => 
 	expect(store.memoryQueue.get(id)?.state).toBe("pending");
 });
 
+test("excluding a topic purges only its pending rows", async () => {
+	const client = service(() => Response.json({ results: [] }));
+	const store = storeAt(database());
+	const other = { ...doc, id: "exchange-2", conversationId: "dm:2" };
+	store.memoryQueue.enqueue(client.target, doc);
+	store.memoryQueue.enqueue(client.target, other);
+	expect(store.memoryQueue.cancelConversation("dm:1")).toBe(1);
+	expect(store.memoryQueue.next(client.target, Date.now())?.document.id).toBe("exchange-2");
+});
+
 test("pruned operations and permanent HTTP errors remain inspectable, not blindly replayed", async () => {
 	let id = "";
 	let responseMode = "submit";

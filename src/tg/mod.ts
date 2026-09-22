@@ -11,7 +11,7 @@ import type { ConversationAddress, ConversationStore } from "../conversation.ts"
 import { userMessage, type Runtime } from "../runtime.ts";
 import { log } from "../log.ts";
 import { CoalescingBuffer } from "./buffer.ts";
-import { COMMAND_RE, COMMANDS, handleCommand } from "./commands.ts";
+import { COMMAND_RE, COMMANDS, handleCommand, type CommandMemoryDeps } from "./commands.ts";
 import { withTimeout } from "./deadline.ts";
 import { makeDeliverySink, SPEAK_CALLBACK } from "./delivery.ts";
 import { handleSpeakButton } from "./speak-button.ts";
@@ -66,6 +66,8 @@ export interface BotDeps {
 	// null = unconfigured, over the provider cap, or no speech found.
 	transcribe(file: SpeechFile): Promise<string | null>;
 	synthesize(text: string, config: TtsConfig): Promise<Uint8Array[]>;
+	// Long-term memory wiring for /memory + /forget — absent = disabled.
+	memory?: CommandMemoryDeps;
 }
 
 export interface RunningBot {
@@ -160,6 +162,7 @@ export function handleMessage(env: IntakeEnv, msg: Message): void {
 					store: deps.store,
 					runtime: deps.runtime,
 					botUsername: env.botUsername,
+					...(deps.memory ? { memory: deps.memory } : {}),
 				},
 				conv,
 				text,

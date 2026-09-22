@@ -23,6 +23,7 @@ const conv: Conversation = {
 	model: null,
 	thinking: null,
 	voice: false,
+	memoryExcluded: false,
 	epoch: 0,
 	createdAt: "",
 };

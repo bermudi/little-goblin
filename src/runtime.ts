@@ -22,6 +22,21 @@ import { randomUUID } from "node:crypto";
 import { materializeAttachments } from "./agent/attachments.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
+import type { MemoryConfig } from "./config.ts";
+import {
+	HindsightClient,
+	HindsightError,
+	type MemoryDocument,
+} from "./hindsight.ts";
+import {
+	buildRecallQuery,
+	buildRetentionDocument,
+	formatRecallBlock,
+	messageText,
+	withMemoryBlocks,
+	type MemoryContexts,
+	type RecallContext,
+} from "./memory.ts";
 import { log } from "./log.ts";
 
 const MAX_STEPS = 25;
@@ -101,6 +116,24 @@ export interface RuntimeDeps {
 		recording?: () => () => void,
 		deliverFile?: (file: OutgoingFile) => Promise<void>,
 	): ToolSet;
+	// Long-term memory — absent = exact current behavior. When present,
+	// admitted turns recall bounded evidence pre-turn (fail-open,
+	// cache-stable) and completed text exchanges enqueue retention under
+	// the turn's authority check.
+	memory?: MemoryTurnDeps;
+}
+
+// Everything a memory-enabled turn needs. Built once at boot from the
+// boot-time memory config (mini-app memory edits apply on restart, so a
+// config change can never redirect queued personal content mid-run).
+export interface MemoryTurnDeps {
+	client: HindsightClient;
+	config: MemoryConfig;
+	contexts: MemoryContexts;
+	// Records the latest recall outcome for /memory status. True =
+	// service answered (results or empty); false = outage. Skips and
+	// cancellations leave it untouched.
+	noteRecall(ok: boolean): void;
 }
 
 // ---------- fencing ----------
@@ -238,6 +271,161 @@ export class Runtime {
 		return tools;
 	}
 
+	// Bounded recall before the turn's model calls. Fail-open: outages
+	// persist an "unavailable" block (stable prefix, model sees the
+	// difference from empty); anything unpersistable is left out so the
+	// prefix never carries bytes that won't survive a restart.
+	private async recallMemory(
+		conv: Conversation,
+		anchorSeq: number | null,
+		history: UIMessage[],
+		signal: AbortSignal,
+	): Promise<{ prior: RecallContext[]; current: RecallContext | null }> {
+		const mem = this.deps.memory;
+		if (!mem || anchorSeq === null || conv.memoryExcluded) return { prior: [], current: null };
+		// Local store failures are memory outages too — a corrupt
+		// contexts table must degrade the turn, never fail it.
+		let prior: RecallContext[];
+		try {
+			prior = mem.contexts.load(conv.id);
+		} catch (err) {
+			log.warn("memory contexts unreadable — continuing without prior blocks", {
+				conversation: conv.id,
+				error: String(err),
+			});
+			prior = [];
+		}
+		const query = buildRecallQuery(history);
+		if (query === "") {
+			log.debug("memory recall skipped — no text to query", { conversation: conv.id });
+			return { prior, current: null };
+		}
+		try {
+			const facts = await mem.client.recall(query, {
+				signal,
+				maxTokens: mem.config.maxTokens,
+				budget: mem.config.budget,
+			});
+			const block = formatRecallBlock(facts, facts.length > 0 ? "results" : "empty");
+			const sources = [...new Set(
+				facts.map((f) => f.document_id).filter((d): d is string => typeof d === "string"),
+			)].slice(0, 100);
+			const current: RecallContext = { anchorSeq, content: block, sourceIds: sources };
+			try {
+				mem.contexts.save(conv.id, anchorSeq, block, sources);
+			} catch (err) {
+				log.warn("memory recall not persisted — continuing without it", {
+					conversation: conv.id,
+					error: String(err),
+				});
+				return { prior, current: null };
+			}
+			mem.noteRecall(true);
+			log.info("memory recall stored", {
+				conversation: conv.id,
+				anchor: anchorSeq,
+				facts: facts.length,
+			});
+			return { prior, current };
+		} catch (err) {
+			// A /stop during recall owns the outcome via the fence check —
+			// don't mark the service degraded for an operator action.
+			if (err instanceof HindsightError && err.kind === "cancelled") {
+				return { prior, current: null };
+			}
+			if (err instanceof HindsightError) {
+				mem.noteRecall(false);
+				log.warn("memory recall unavailable — proceeding without it", {
+					conversation: conv.id,
+					kind: err.kind,
+					status: err.status ?? null,
+					retryable: err.retryable,
+				});
+				const block = formatRecallBlock(null, "unavailable");
+				const current: RecallContext = { anchorSeq, content: block, sourceIds: [] };
+				try {
+					mem.contexts.save(conv.id, anchorSeq, block, []);
+				} catch (saveErr) {
+					log.warn("memory outage marker not persisted — continuing without it", {
+						conversation: conv.id,
+						error: String(saveErr),
+					});
+					return { prior, current: null };
+				}
+				return { prior, current };
+			}
+			log.warn("memory recall failed without a service error — continuing without it", {
+				conversation: conv.id,
+				error: String(err),
+			});
+			return { prior, current: null };
+		}
+	}
+
+	// Retention for a completed exchange: text only, scheduled
+	// housekeeping excluded, suppressed documents skipped. Null = append
+	// history alone.
+	private retentionOpt(
+		conv: Conversation,
+		anchorSeq: number | null,
+		source: RetentionSource,
+		responseMessage: UIMessage,
+	): { target: string; document: MemoryDocument } | null {
+		const mem = this.deps.memory;
+		if (!mem || anchorSeq === null || conv.memoryExcluded) return null;
+		if (source.scheduled) {
+			log.debug("memory retention skipped — scheduled housekeeping", {
+				conversation: conv.id,
+			});
+			return null;
+		}
+		// The document ID and source refs are keyed to the assistant
+		// message identity — without one there is nothing stable to
+		// retain. Providers normally assign it; a blank one fails open
+		// loudly here rather than forging an identity.
+		if (responseMessage.id.trim() === "") {
+			log.warn("memory retention skipped — assistant message has no id", {
+				conversation: conv.id,
+			});
+			return null;
+		}
+		const doc = buildRetentionDocument({
+			conversationId: conv.id,
+			anchorSeq,
+			userTexts: source.userTexts,
+			userIds: source.userIds,
+			assistant: responseMessage,
+			priorContext: source.priorContext,
+			timestamp: new Date().toISOString(),
+		});
+		if (!doc) {
+			log.debug("memory retention skipped — no text to retain", {
+				conversation: conv.id,
+			});
+			return null;
+		}
+		// Suppression is checked after the model already streamed — a
+		// store failure here must skip retention, never drop the response.
+		let suppressed = false;
+		try {
+			suppressed = mem.contexts.isSuppressed(doc.id);
+		} catch (err) {
+			log.warn("memory suppression unreadable — skipping retention", {
+				conversation: conv.id,
+				error: String(err),
+			});
+			return null;
+		}
+		if (suppressed) {
+			log.info("memory retention suppressed", {
+				conversation: conv.id,
+				document: doc.id,
+			});
+			return null;
+		}
+		return { target: mem.client.target, document: doc };
+	}
+
 	private async drain(convId: string): Promise<void> {
 		const lane = this.lane(convId);
 		if (lane.running) return;
@@ -305,14 +493,23 @@ export class Runtime {
 		// here, before the awaits, is what keeps that boundary. The anchor
 		// rides along: this turn's response is stamped with the seq of
 		// the user message that triggered it, so the causal view can
-		// place the reply immediately after its question.
-		const history = store.history(convId);
-		const anchorSeq = store.lastUserSeq(convId);
+		// place the reply immediately after its question. One snapshot
+		// serves history, anchor, and retention-source together — a message
+		// landing between two reads must not split them.
+		const entries = store.historyEntries(convId);
+		const history = entries.map((e) => e.message);
+		let anchorSeq: number | null = null;
+		for (const e of entries) {
+			if (e.message.role === "user" && (anchorSeq === null || e.seq > anchorSeq)) anchorSeq = e.seq;
+		}
+		const retentionSource = retentionSourceFrom(entries);
 		log.info("turn started", { conversation: convId, epoch, history: history.length });
 		const controller = new AbortController();
 		this.lane(convId).controller = controller;
 
 		try {
+			this.checkAuthority(convId, epoch);
+			const memory = await this.recallMemory(conv, anchorSeq, history, controller.signal);
 			this.checkAuthority(convId, epoch);
 			const deliverVoice = sink.onVoiceNote
 				? async (audio: Uint8Array) => {
@@ -350,8 +547,11 @@ export class Runtime {
 			// Materialize attachment refs against THIS turn's model — a
 			// media part the provider can't consume degrades to its path
 			// reference instead of failing the request on every turn.
+			// Memory recall blocks interleave before their anchored user
+			// message (persisted, never regenerated); without memory the
+			// sequence is byte-identical to history.
 			const prepared = await materializeAttachments(
-				mergeConsecutiveUsers(history),
+				mergeConsecutiveUsers(withMemoryBlocks(entries, memory.prior, memory.current)),
 				step.inputModalities,
 			);
 			this.checkAuthority(convId, epoch);
@@ -434,6 +634,10 @@ export class Runtime {
 			let streamError: string | null = null;
 			const uiStream = result.toUIMessageStream<UIMessage>({
 				sendReasoning: true,
+				// Retention keys documents and source refs to the assistant
+				// message identity — without a generator the SDK leaves it
+				// blank, so every completed turn mints one here.
+				generateMessageId: randomUUID,
 				// The default serializer emits "An error occurred." — meant
 				// for public HTTP clients. This stream feeds the operator's
 				// own chat; the real message is what they need.
@@ -517,8 +721,15 @@ export class Runtime {
 				// responseMessage already carries an SDK-assigned id.
 				// The anchor ties it to the user message that triggered
 				// this turn — the causal view places the reply right
-				// after its question, not after later arrivals.
-				store.append(convId, [responseMessage], { anchorSeq });
+				// after its question, not after later arrivals. Completed
+				// text exchanges also enqueue retention in the same
+				// transaction; fenced/failed turns never reach here.
+				const memoryOpt = this.retentionOpt(conv, anchorSeq, retentionSource, responseMessage);
+				store.append(
+					convId,
+					[responseMessage],
+					memoryOpt ? { anchorSeq, memory: memoryOpt } : { anchorSeq },
+				);
 			}
 			// Window utilization rides the completion line: the last step's
 			// input against the catalog context limit. Cached tokens still
@@ -565,6 +776,45 @@ export class Runtime {
 			}
 		}
 	}
+}
+
+// What a completed turn retains: the user burst it answered (everything
+// after the previous assistant message), bounded prior text for
+// reference resolution, and whether the burst is scheduler housekeeping
+// (which is never retained — it isn't operator memory).
+interface RetentionSource {
+	userTexts: string[];
+	userIds: string[];
+	priorContext: string;
+	scheduled: boolean;
+}
+
+function retentionSourceFrom(entries: { seq: number; message: UIMessage }[]): RetentionSource {
+	let lastAsstSeq = 0;
+	for (const e of entries) {
+		if (e.message.role === "assistant" && e.seq > lastAsstSeq) lastAsstSeq = e.seq;
+	}
+	const userTexts: string[] = [];
+	const userIds: string[] = [];
+	const priorParts: string[] = [];
+	for (const e of entries) {
+		if (e.message.role !== "user" && e.message.role !== "assistant") continue;
+		const t = messageText(e.message);
+		if (t === "") continue;
+		if (e.message.role === "user" && e.seq > lastAsstSeq) {
+			userTexts.push(t);
+			userIds.push(e.message.id);
+		} else if (e.seq <= lastAsstSeq) {
+			priorParts.push(t);
+		}
+	}
+	const priorContext = priorParts.join("\n").slice(-500);
+	return {
+		userTexts,
+		userIds,
+		priorContext,
+		scheduled: userTexts.some((t) => t.startsWith("[scheduled: ")),
+	};
 }
 
 // A burst of user input with no answer between the messages is one

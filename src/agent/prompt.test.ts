@@ -32,6 +32,7 @@ const conv: Conversation = {
 	model: null,
 	thinking: null,
 	voice: false,
+	memoryExcluded: false,
 	epoch: 0,
 	createdAt: new Date().toISOString(),
 };
@@ -40,6 +41,21 @@ const conv: Conversation = {
 const tools = ["read_file", "write_file", "edit_file", "bash", "schedule", "send_file"];
 
 describe("buildSystemPrompt", () => {
+	test("memory evidence is framed when the tool is present — and only then", () => {
+		const home = useHome();
+		process.env.GOBLIN_HOME = home;
+		try {
+			const plain = buildSystemPrompt(conv, tools);
+			expect(plain.text).toContain("your only\n  memory between them");
+			expect(plain.text).not.toContain("Long-term memory is on");
+			const withMemory = buildSystemPrompt(conv, [...tools, "memory_search"]);
+			expect(withMemory.text).toContain("Long-term memory is on");
+			expect(withMemory.text).toContain("memory_search");
+			expect(withMemory.text).not.toContain("your only\n  memory between them");
+		} finally {
+			delete process.env.GOBLIN_HOME;
+		}
+	});
 	test("no clock — the prompt carries no date and points at `date` instead", () => {
 		const home = useHome();
 		process.env.GOBLIN_HOME = home;

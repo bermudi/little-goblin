@@ -150,6 +150,30 @@ describe("goblin.json5", () => {
 		// and it round-trips
 		expect(loadConfig()!.model).toBe("zai/glm-4.6");
 	});
+
+	test("memory is optional, validated, and \"\" clears to unset", () => {
+		const dir = useHome();
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
+		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
+		expect(loadConfig()!.memory).toBeUndefined();
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},memory:{baseUrl:"http://127.0.0.1:8888",bankId:"goblin"}}`,
+		);
+		const mem = loadConfig()!.memory!;
+		expect(mem.bankId).toBe("goblin");
+		expect(mem.recallTimeoutMs).toBe(2000);
+		expect(mem.maxTokens).toBe(1024);
+		expect(mem.budget).toBe("low");
+		// Remote plain HTTP is rejected — loopback or HTTPS only.
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},memory:{baseUrl:"http://memory.example",bankId:"goblin"}}`,
+		);
+		expect(() => loadConfig()).toThrow("goblin.json5");
+		writeFileSync(join(dir, "goblin.json5"), `${base},memory:""}`);
+		expect(loadConfig()!.memory).toBeUndefined();
+	});
 });
 
 describe("ensureHomeLayout", () => {

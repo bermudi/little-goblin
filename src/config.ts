@@ -8,6 +8,7 @@ import { join } from "node:path";
 import JSON5 from "json5";
 import { z } from "zod";
 import { durableWriteFile } from "./durable.ts";
+import { hindsightConnectionSchema } from "./hindsight.ts";
 
 // ---------- paths ----------
 
@@ -136,6 +137,21 @@ export const thinkingLevels = [
 ] as const;
 export type ThinkingLevel = (typeof thinkingLevels)[number];
 
+// Optional long-term memory (DESIGN.md, Slice 2 rulings). Absent =
+// disabled, exact current behavior. baseUrl/bankId reuse the Hindsight
+// connection validation as the single source; auth names an auth.jsonl
+// secret for the Bearer token (loopback needs none). Recall bounds are
+// tight by default — turns must not wait on memory.
+export const memoryConfigSchema = z.object({
+	baseUrl: hindsightConnectionSchema.shape.baseUrl,
+	bankId: hindsightConnectionSchema.shape.bankId,
+	auth: z.string().min(1).optional(),
+	recallTimeoutMs: z.number().int().min(100).max(10_000).default(2000),
+	maxTokens: z.number().int().min(1).max(8192).default(1024),
+	budget: z.enum(["low", "mid", "high"]).default("low"),
+});
+export type MemoryConfig = z.infer<typeof memoryConfigSchema>;
+
 const configSchema = z
 	.object({
 		providers: z.record(z.string(), providerSchema),
@@ -188,6 +204,12 @@ const configSchema = z
 			.object({ port: z.number().int().min(0).max(65535).default(8787) })
 			.default({ port: 8787 }),
 		logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
+		// Optional long-term memory — "" clears to unset (mini-app
+		// clearing convention, like tts/transcription).
+		memory: z
+			.union([memoryConfigSchema, z.literal("")])
+			.transform((v) => (v === "" ? undefined : v))
+			.optional(),
 	})
 	// Cross-field: every model ref must parse and name a configured provider.
 	.superRefine((cfg, ctx) => {

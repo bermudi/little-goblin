@@ -484,14 +484,21 @@ def ask_nonempty(label: str) -> Callable[[str], str]:
 
 
 def ask_choice(prompt: str, options: tuple[str, ...]) -> str:
-    menu = "\n".join(f"  {i}) {option}" for i, option in enumerate(options, 1))
+    # Print the menu, THEN ask on a fresh line — passing a multi-line
+    # string to input() glues the ": " prompt onto the last option and
+    # the typed answer looks like part of the menu.
+    print(prompt)
+    for index, option in enumerate(options, 1):
+        print(f"  {index}) {option}")
+
     def check(value: str) -> str:
         if value.isdigit() and 1 <= int(value) <= len(options):
             return options[int(value) - 1]
         if value in options:
             return value
         raise ValueError(f"choose 1-{len(options)}")
-    return ask(f"{prompt}\n{menu}", check)
+
+    return ask(f"choice [1-{len(options)}]", check)
 
 
 def ask_url(prompt: str, hint: str, required: bool) -> str:

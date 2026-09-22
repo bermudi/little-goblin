@@ -261,6 +261,30 @@ FAKED = ("preflight", "prompt_answers", "prompt_bank", "ask_yes", "run",
          "POSTGRES_ENV", "HINDSIGHT_ENV")
 
 
+class AskChoiceTest(unittest.TestCase):
+    def test_menu_and_prompt_on_separate_lines(self) -> None:
+        import builtins
+        inputs = iter(["9", "zzz", "2"])
+        seen: list[str] = []
+        original_input = builtins.input
+
+        def fake_input(prompt: object = "") -> str:
+            seen.append(str(prompt))
+            return next(inputs)
+
+        builtins.input = fake_input
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                choice = install.ask_choice("provider", ("zai", "openai", "openrouter"))
+        finally:
+            builtins.input = original_input
+        self.assertEqual(choice, "openai")
+        # The interactive prompt must be its own line, not glued to the
+        # last menu option ("3) openrouter: ").
+        self.assertEqual(seen, ["choice [1-3]: ", "choice [1-3]: ", "choice [1-3]: "])
+        self.assertIn("  3) openrouter\n", output.getvalue())
+
+
 class MainFlowTest(unittest.TestCase):
     """Offline main()/wire_goblin() tests: fake the system edge (run/probe/
     prompts), keep file I/O real. Synthetic values only."""

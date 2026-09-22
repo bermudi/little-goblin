@@ -1,28 +1,32 @@
 """Interactive installer for the Goblin memory stack (Hindsight + PostgreSQL).
 
-One command; every decision is prompted, never assumed:
+One command. goblin's own registry is the source of truth: providers it
+already uses are proposed as defaults, and their keys are resolved from
+its auth store (in-process, never printed). Only genuinely-new providers
+prompt for a key (hidden input). Keys belong to providers, not roles —
+one key serves both Hindsight roles.
 
 - database password: generated with secrets.token_urlsafe (URL-safe by
   construction), written to a 0600 env file, never printed
-- provider API keys: hidden input, written straight to the 0600 env file,
-  never echoed, logged, or passed through command lines
-- model selection: search the provider's LIVE catalog (fetched with
-  your key after you enter it) — type a substring, pick from the short
-  list of matches, or type an exact id; if the catalog can't be fetched,
-  free text with a verified example; endpoints fixed by the provider
-  are derived silently, openai prompts with its standard endpoint as
-  the default
-  anything is written — an invalid answer cannot produce a config the
-  container would reject
+- model selection: search the provider's LIVE /models catalog with the
+  key just resolved — substring in, short numbered list out, exact ids
+  accepted; if the catalog is unreachable the reason is shown (a 401 is
+  a key/endpoint mismatch worth knowing) and selection falls back to
+  free text with a verified example
+- endpoints fixed by the provider are derived silently; openai
+  (compatible endpoints exist) asks, with its standard endpoint as the
+  default
+- the assembled config is validated by the launch guard (start.validate)
+  BEFORE anything is written — an invalid answer cannot produce a config
+  the container would reject
 - starting the stack requires an explicit confirmation: first start can
   call the embedding provider (dimension detection) and costs money
 
 Fail loud: every step reports what it is doing and aborts with context on
 the first failure. Idempotent for assets; refuses to touch existing env
 files unless --reconfigure (a new database password would NOT rotate an
-existing role — see docs/memory.md). --reconfigure keeps the previous
-hindsight.env in memory and restores + restarts it if the new one does
-not come back healthy.
+existing role — see docs/memory.md). Provider knowledge lives in
+providers.py; this file is the flow.
 
 Usage: uv run python deploy/memory/install.py [--no-start] [--reconfigure]
 """
@@ -46,9 +50,21 @@ from urllib import error as urlerror
 from urllib import request as urlrequest
 from urllib.parse import quote
 
+from providers import (
+    DEFAULT_OPENAI_BASE_URL,
+    PROVIDERS,
+    catalog_url_for,
+    example_for,
+    fetch_model_catalog,
+    filter_catalog,
+    providers_for,
+    read_goblin_providers,
+    resolve_auth_key,
+)
 from start import validate, validate_endpoint
 
 MEMORY_DIR = Path(__file__).resolve().parent
+REPO_ROOT = MEMORY_DIR.parent.parent
 CFG_DIR = Path.home() / ".config" / "goblin-memory"
 SYSTEMD_DIR = Path.home() / ".config" / "containers" / "systemd"
 POSTGRES_ENV = CFG_DIR / "postgres.env"
@@ -68,29 +84,6 @@ API_IMAGE = (
     "ghcr.io/vectorize-io/hindsight-api:0.10.0-slim"
     "@sha256:bc3082ccb514fee1a7f7d66da308ba2c2018e2ea2c739d2341c993e3a3bd91b9"
 )
-LLM_PROVIDERS = ("zai", "openai", "openrouter")
-EMBEDDING_PROVIDERS = ("openrouter", "openai")
-# Verified fallback examples per provider/purpose (design session
-# evidence) — shown when the live catalog can't be fetched. The catalog
-# itself is ground truth: fetched from the provider at install time and
-# searched interactively, because these providers carry far too many
-# models for a static menu.
-MODEL_EXAMPLES: dict[tuple[str, str], str] = {
-    ("llm", "zai"): "glm-5.3-flash",
-    ("emb", "openrouter"): "voyageai/voyage-4-lite",
-}
-# Endpoints fixed by the provider (upstream has no override for them in
-# this Hindsight release) are derived silently — facts aren't questions.
-FIXED_LLM_BASE_URLS = {
-    "zai": "https://api.z.ai/api/paas/v4",
-    "openrouter": "https://openrouter.ai/api/v1",
-}
-DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
-CATALOG_URLS: dict[tuple[str, str], str] = {
-    ("llm", "zai"): "https://api.z.ai/api/paas/v4/models",
-    ("llm", "openrouter"): "https://openrouter.ai/api/v1/models",
-    ("emb", "openrouter"): "https://openrouter.ai/api/v1/embeddings/models",
-}
 BANK_ID_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
 DEFAULT_BANK_ID = "goblin"
 DEFAULT_MISSION = (
@@ -543,29 +536,6 @@ def ask_url(prompt: str, hint: str) -> str:
     return ask(f"{prompt} [default: {hint}]", check)
 
 
-def fetch_model_catalog(url: str, api_key: str | None,
-                        timeout: float = 10.0) -> list[str] | None:
-    """Live model ids from a provider's /models endpoint. None =
-    unavailable (offline, endpoint moved, bad auth) — callers fall back
-    to free text with an example; the install never blocks on this."""
-    request = urlrequest.Request(url)
-    if api_key:
-        request.add_header("authorization", f"Bearer {api_key}")
-    try:
-        with urlrequest.urlopen(request, timeout=timeout) as response:
-            body = json.loads(response.read().decode())
-    except (urlerror.URLError, OSError, ValueError):
-        return None
-    if not isinstance(body, dict):
-        return None
-    data = body.get("data")
-    if not isinstance(data, list):
-        return None
-    ids = {item.get("id") for item in data if isinstance(item, dict)}
-    models = sorted(model for model in ids if isinstance(model, str) and model)
-    return models or None
-
-
 def ask_model_search(label: str, catalog: list[str] | None, example: str) -> str:
     """Search-then-pick over the live catalog. Numbers are good UX when
     the list is filtered to a handful; typing a substring any time
@@ -599,19 +569,16 @@ def ask_model_search(label: str, catalog: list[str] | None, example: str) -> str
         query = pick  # empty = re-ask for a search; non-numeric = new search
 
 
-def load_catalog(purpose: str, provider: str, base_url: str | None,
+def load_catalog(role: str, provider: str, base_url: str | None,
                  api_key: str) -> list[str] | None:
-    url = (CATALOG_URLS.get((purpose, provider))
-           or (f"{base_url}/models" if base_url else None))
+    url = catalog_url_for(provider, role, base_url)
     if url is None:
         return None
-    catalog = fetch_model_catalog(url, api_key)
+    catalog, reason = fetch_model_catalog(url, api_key)
     if catalog is None:
-        info(f"could not fetch the {provider} model catalog — typing fallback")
+        info(f"{provider} catalog unavailable: {reason} — typing fallback")
         return None
-    if purpose == "emb" and provider == "openai":
-        # /models lists everything; embeddings are what's wanted here.
-        catalog = [model for model in catalog if "embedding" in model.lower()]
+    catalog = filter_catalog(provider, role, catalog)
     info(f"fetched {len(catalog)} {provider} models")
     return catalog
 
@@ -632,27 +599,77 @@ def ask_yes(prompt: str, default: bool) -> bool:
     return raw in ("y", "yes")
 
 
-def prompt_answers() -> Answers:
-    print("\n— Extraction/consolidation LLM —")
-    llm_provider = ask_choice("provider", LLM_PROVIDERS)
-    llm_base_url = FIXED_LLM_BASE_URLS.get(llm_provider)
-    if llm_base_url is None:  # openai: compatible endpoints exist — genuine choice
-        llm_base_url = ask_url("base URL", DEFAULT_OPENAI_BASE_URL)
-    llm_api_key = ask_secret("API key")
-    example = MODEL_EXAMPLES.get(("llm", llm_provider), "any supported model")
-    catalog = load_catalog("llm", llm_provider, llm_base_url, llm_api_key)
-    llm_model = ask_model_search("model", catalog, example)
+def ask_provider(label: str, role: str, goblin_providers: dict[str, str]) -> str:
+    """Menu of role-compatible providers; ones goblin already uses are
+    marked and the first is the Enter-accepting default — the registry is
+    the operator's own record, not a guess."""
+    options = tuple(p.name for p in providers_for(role))
+    from_goblin = [p for p in options if p in goblin_providers]
+    if not from_goblin:
+        return ask_choice(label, options)
+    default = from_goblin[0]
+    print(label)
+    for index, option in enumerate(options, 1):
+        mark = "  (already in goblin)" if option in goblin_providers else ""
+        print(f"  {index}) {option}{mark}")
 
-    print("\n— Embeddings —")
-    emb_provider = ask_choice("provider", EMBEDDING_PROVIDERS)
+    def check(value: str) -> str:
+        if not value:
+            return default
+        if value.isdigit() and 1 <= int(value) <= len(options):
+            return options[int(value) - 1]
+        if value in options:
+            return value
+        raise ValueError(f"choose 1-{len(options)} or Enter for {default}")
+
+    return ask(f"provider [default: {default}]", check)
+
+
+def prompt_answers(goblin_home: Path) -> Answers:
+    goblin_providers, problem = read_goblin_providers(goblin_home, REPO_ROOT)
+    if problem is not None:
+        info(f"{problem} — entering providers manually")
+    elif goblin_providers:
+        info("goblin already uses " + ", ".join(sorted(goblin_providers))
+             + " — keys will be reused from its auth store")
+
+    # Keys belong to providers, not roles: resolved once (auth store
+    # first, hidden input otherwise) and shared by both Hindsight roles.
+    keys: dict[str, str] = {}
+
+    def key_for(provider: str) -> str:
+        if provider in keys:
+            return keys[provider]
+        auth_name = goblin_providers.get(provider)
+        if auth_name is not None:
+            try:
+                keys[provider] = resolve_auth_key(goblin_home, auth_name)
+                info(f"{provider}: reusing goblin's stored key '{auth_name}'")
+                return keys[provider]
+            except ValueError as error:
+                info(f"{provider}: stored key unusable ({error}) — enter it now")
+        keys[provider] = ask_secret("API key")
+        return keys[provider]
+
+    print("\n— Providers — one key per provider; Hindsight's two roles draw from them")
+    llm_provider = ask_provider("extraction/consolidation LLM", "llm", goblin_providers)
+    emb_provider = ask_provider("embeddings", "emb", goblin_providers)
+    llm_base_url = PROVIDERS[llm_provider].llm_base_url \
+        or ask_url("base URL", DEFAULT_OPENAI_BASE_URL)
     emb_base_url: str | None = None
     if emb_provider == "openai":
         emb_base_url = ask_url("base URL (OpenAI or compatible endpoint)",
                                DEFAULT_OPENAI_BASE_URL)
-    emb_api_key = ask_secret("API key")
-    example = MODEL_EXAMPLES.get(("emb", emb_provider), "any embedding model")
+    llm_api_key = key_for(llm_provider)
+    emb_api_key = key_for(emb_provider)
+
+    print("\n— LLM model —")
+    catalog = load_catalog("llm", llm_provider, llm_base_url, llm_api_key)
+    llm_model = ask_model_search("model", catalog, example_for(llm_provider, "llm"))
+
+    print("\n— Embeddings model —")
     catalog = load_catalog("emb", emb_provider, emb_base_url, emb_api_key)
-    emb_model = ask_model_search("model", catalog, example)
+    emb_model = ask_model_search("model", catalog, example_for(emb_provider, "emb"))
 
     # Not a question: this launch profile supports exactly one reranker.
     print("\n— Reranker: rrf (model-free; the only option this profile "
@@ -736,7 +753,7 @@ def main(argv: list[str] | None = None) -> None:
         # failing on a missing file is hostile.
         if not POSTGRES_ENV.is_file():
             fail(f"--reconfigure needs {POSTGRES_ENV}; run a fresh install instead")
-        answers = prompt_answers()
+        answers = prompt_answers(args.goblin_home)
         try:
             db_password = parse_postgres_env(POSTGRES_ENV.read_text())["POSTGRES_PASSWORD"]
         except (OSError, ValueError) as error:
@@ -788,7 +805,7 @@ def main(argv: list[str] | None = None) -> None:
         existing_install_status()
         return
 
-    answers = prompt_answers()
+    answers = prompt_answers(args.goblin_home)
     bank_id, mission = prompt_bank()
     print_summary(answers, bank_id)
     if not ask_yes("write config and install assets?", default=False):

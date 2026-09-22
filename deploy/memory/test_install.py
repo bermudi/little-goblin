@@ -315,29 +315,6 @@ class AskModelSearchTest(unittest.TestCase):
         self.assertIn("and 15 more", output)
 
 
-class FetchCatalogTest(unittest.TestCase):
-    def test_parses_openai_style_catalog(self) -> None:
-        import unittest.mock as mock
-        from urllib import request as urlrequest
-        payload = io.BytesIO(b'{"data": [{"id": "b"}, {"id": "a"}, {"not": "id"}]}')
-        response = mock.MagicMock()
-        response.__enter__.return_value = payload
-        response.__exit__.return_value = False
-        with mock.patch.object(urlrequest, "urlopen", return_value=response):
-            catalog = install.fetch_model_catalog("https://example.invalid/models", "k")
-        self.assertEqual(catalog, ["a", "b"])
-
-    def test_unreachable_returns_none_not_crash(self) -> None:
-        import unittest.mock as mock
-        from urllib import error as urlerror
-        from urllib import request as urlrequest
-        with mock.patch.object(
-                urlrequest, "urlopen",
-                side_effect=urlerror.URLError("nope")):
-            catalog = install.fetch_model_catalog("https://example.invalid/models", None)
-        self.assertIsNone(catalog)
-
-
 class AskChoiceTest(unittest.TestCase):
     def test_menu_and_prompt_on_separate_lines(self) -> None:
         import builtins
@@ -401,7 +378,7 @@ class MainFlowTest(unittest.TestCase):
 
     def fake_prompts(self) -> None:
         install.preflight = lambda: None
-        install.prompt_answers = lambda: synthetic_answers()
+        install.prompt_answers = lambda goblin_home: synthetic_answers()
         install.prompt_bank = lambda: ("goblin", "synthetic mission")
 
     def fake_yes(self) -> None:
@@ -504,7 +481,7 @@ class MainFlowTest(unittest.TestCase):
     def test_reconfigure_prompts_before_failing_on_missing_postgres_env(self) -> None:
         asked = {"prompts": False}
 
-        def fake_answers() -> Answers:
+        def fake_answers(goblin_home: Path) -> Answers:
             asked["prompts"] = True
             return synthetic_answers()
 

@@ -257,7 +257,7 @@ class InsertJson5Test(unittest.TestCase):
 
 
 FAKED = ("preflight", "prompt_answers", "prompt_bank", "ask_yes", "run",
-         "http_ok", "probe", "goblin_stable", "CFG_DIR", "SYSTEMD_DIR",
+         "http_ok", "probe", "goblin_stable", "time", "CFG_DIR", "SYSTEMD_DIR",
          "POSTGRES_ENV", "HINDSIGHT_ENV", "main")
 
 
@@ -362,6 +362,20 @@ class AskChoiceTest(unittest.TestCase):
         self.assertIn("  3) openrouter\n", output.getvalue())
 
 
+class FakeClock:
+    """Advances only on sleep(), so api_healthy's bounded poll loops run
+    instantly in tests instead of sleeping out their full budget."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
 class MainFlowTest(unittest.TestCase):
     """Offline main()/wire_goblin() tests: fake the system edge (run/probe/
     prompts), keep file I/O real. Synthetic values only."""
@@ -413,11 +427,11 @@ class MainFlowTest(unittest.TestCase):
         install.HINDSIGHT_ENV.write_text("HINDSIGHT_API_LLM_MODEL=old\n")
         restarts: list[list[str]] = []
 
-        def fake_run(command: list[str], timeout: float = 600) -> subprocess.CompletedProcess[str]:
+        def fake_probe(command: list[str]) -> subprocess.CompletedProcess[str]:
             restarts.append(command)
             return subprocess.CompletedProcess(command, 0, "", "")
 
-        install.run = fake_run
+        install.probe = fake_probe
         install.http_ok = lambda url: True
         install.main(["--reconfigure"])
         self.assertEqual(install.POSTGRES_ENV.read_text(),
@@ -426,6 +440,66 @@ class MainFlowTest(unittest.TestCase):
         self.assertIn("HINDSIGHT_API_LLM_MODEL=operator-llm", env)
         self.assertIn("postgresql://hindsight:existing@db:5432/hindsight", env)
         self.assertEqual(restarts, [["systemctl", "--user", "restart", install.API_UNIT]])
+
+    def test_reconfigure_restores_previous_env_when_restart_fails(self) -> None:
+        # A restart command failure must not leave the new (untested) env
+        # installed over a working stack's config.
+        self.fake_prompts()
+        install.POSTGRES_ENV.parent.mkdir(parents=True)
+        install.POSTGRES_ENV.write_text("POSTGRES_PASSWORD=existing\n")
+        install.HINDSIGHT_ENV.write_text("HINDSIGHT_API_LLM_MODEL=old\n")
+        failed = subprocess.CompletedProcess([], 1, "", "unit not found")
+        commands: list[list[str]] = []
+
+        def fake_probe(command: list[str]) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            return failed
+
+        install.probe = fake_probe
+        install.http_ok = lambda url: True
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(errors):
+            with self.assertRaises(SystemExit):
+                install.main(["--reconfigure"])
+        self.assertEqual(install.HINDSIGHT_ENV.read_text(),
+                         "HINDSIGHT_API_LLM_MODEL=old\n",
+                         "previous env must be restored")
+        self.assertEqual(
+            commands,
+            [["systemctl", "--user", "restart", install.API_UNIT]] * 2,
+            "rollback must restart the restored (previous) config")
+        self.assertIn("restored the previous hindsight.env", errors.getvalue())
+
+    def test_reconfigure_restores_previous_env_when_never_healthy(self) -> None:
+        # Structurally valid config (passes the launch guard) that the API
+        # still refuses to serve: restore and verify the old stack.
+        self.fake_prompts()
+        install.POSTGRES_ENV.parent.mkdir(parents=True)
+        install.POSTGRES_ENV.write_text("POSTGRES_PASSWORD=existing\n")
+        install.HINDSIGHT_ENV.write_text("HINDSIGHT_API_LLM_MODEL=old\n")
+        ok = subprocess.CompletedProcess([], 0, "", "")
+        commands: list[list[str]] = []
+
+        def fake_probe(command: list[str]) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            return ok
+
+        install.probe = fake_probe
+        install.http_ok = lambda url: False
+        # setattr, not assignment: `time` is an imported module, and mypy
+        # flags rebinding those directly. The clock runs api_healthy's
+        # 120s budget instantly.
+        setattr(install, "time", FakeClock())
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(errors):
+            with self.assertRaises(SystemExit):
+                install.main(["--reconfigure"])
+        self.assertEqual(install.HINDSIGHT_ENV.read_text(),
+                         "HINDSIGHT_API_LLM_MODEL=old\n")
+        self.assertEqual(len(commands), 2, "rollback restarts the prior config")
+        self.assertIn("did NOT recover", errors.getvalue())
 
     def test_reconfigure_prompts_before_failing_on_missing_postgres_env(self) -> None:
         asked = {"prompts": False}

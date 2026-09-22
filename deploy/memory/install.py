@@ -20,7 +20,9 @@ One command; every decision is prompted, never assumed:
 Fail loud: every step reports what it is doing and aborts with context on
 the first failure. Idempotent for assets; refuses to touch existing env
 files unless --reconfigure (a new database password would NOT rotate an
-existing role — see docs/memory.md).
+existing role — see docs/memory.md). --reconfigure keeps the previous
+hindsight.env in memory and restores + restarts it if the new one does
+not come back healthy.
 
 Usage: uv run python deploy/memory/install.py [--no-start] [--reconfigure]
 """
@@ -393,6 +395,19 @@ def http_ok(url: str) -> bool:
         return False
 
 
+def api_healthy(seconds: float) -> bool:
+    """Poll the API health endpoint until it answers or the budget runs
+    out. A restart of an already-migrated stack is normally quick, but a
+    single check 10s in would judge a merely slow restart as broken —
+    and callers act on that verdict (see the --reconfigure rollback)."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if http_ok(HEALTH_URL):
+            return True
+        time.sleep(5)
+    return False
+
+
 def create_bank(bank_id: str, mission: str) -> None:
     url = f"{MEMORY_API_URL}/v1/default/banks/{bank_id}"
     body = json.dumps({"mission": mission}).encode()
@@ -710,11 +725,6 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--goblin-home", type=Path,
                         default=Path(os.environ.get("GOBLIN_HOME", str(Path.home() / "goblin"))))
     args = parser.parse_args(argv)
-
-    print("Goblin memory stack installer — Hindsight 0.10.0-slim + PostgreSQL 17")
-    preflight()
-
-    args = parser.parse_args(argv)
     if args.reconfigure and args.no_start:
         parser.error("--reconfigure restarts the API by design; --no-start contradicts it")
 
@@ -735,12 +745,42 @@ def main(argv: list[str] | None = None) -> None:
             env = build_hindsight_env(answers, db_password)
         except ValueError as error:
             fail(f"launch guard rejected the configuration: {error}")
+
+        # The rewrite replaces the API's live configuration. Keep the
+        # previous file (and its mode) so a failed restart or health
+        # check can put the working stack back instead of exiting with
+        # the new — possibly broken — env left installed.
+        previous_text: str | None = None
+        previous_mode = 0o600
+        if HINDSIGHT_ENV.is_file():
+            previous_text = HINDSIGHT_ENV.read_text()
+            previous_mode = HINDSIGHT_ENV.stat().st_mode & 0o777
+
+        def rollback(reason: str) -> NoReturn:
+            text = previous_text
+            if text is None:
+                # No config existed before this run (half-install
+                # recovery): back to clean is the honest state.
+                HINDSIGHT_ENV.unlink(missing_ok=True)
+                fail(f"{reason}; removed the new hindsight.env — no previous "
+                     "configuration existed to restore")
+            write_file_atomic(HINDSIGHT_ENV, text, previous_mode)
+            restart = probe(["systemctl", "--user", "restart", API_UNIT])
+            recovered = (restart is not None and restart.returncode == 0
+                         and api_healthy(120))
+            suffix = "and verified the API is healthy again" if recovered else \
+                f"but the API did NOT recover — journalctl --user -u {API_UNIT}"
+            fail(f"{reason}; restored the previous hindsight.env {suffix}")
+
         write_file_atomic(HINDSIGHT_ENV, render_env_file(env), 0o600)
         info(f"rewrote {HINDSIGHT_ENV}; restarting API")
-        run(["systemctl", "--user", "restart", API_UNIT])
-        time.sleep(10)
-        if not http_ok(HEALTH_URL):
-            fail(f"API not healthy after restart — journalctl --user -u {API_UNIT}")
+        restart = probe(["systemctl", "--user", "restart", API_UNIT])
+        if restart is None or restart.returncode != 0:
+            output = ("systemctl probe failed" if restart is None
+                      else (restart.stderr or "").strip()[:500])
+            rollback(f"API restart command failed ({output})")
+        if not api_healthy(120):
+            rollback("API not healthy after restart")
         info("done — bank and goblin config unchanged")
         return
 

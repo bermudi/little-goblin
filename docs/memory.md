@@ -126,7 +126,36 @@ Catalog presence and supported wire configuration are **not** a successful live
 compatibility test. Account access, GLM structured extraction, dimensions,
 provider routing, quality, migrations and rootless runtime remain untested.
 
-## Operator setup (not automatic)
+## Operator setup
+
+Run the interactive installer from the repository root:
+
+```sh
+uv run python deploy/memory/install.py
+```
+
+It prompts for every decision — LLM provider/model/endpoint/key,
+embeddings provider/model/key, reranker confirmation, bank id and mission —
+then generates the database password (`secrets.token_urlsafe`, written to a
+0600 env file, never printed), validates the whole configuration against
+the launch guard **before** anything is written, installs the Quadlet
+assets, pre-pulls the pinned images, starts the stack, creates the bank,
+adds the `memory` block to `goblin.json5` (with a backup and automatic
+rollback if goblin fails to boot), and restarts goblin. `--no-start` stops
+after installing config and assets; `--reconfigure` re-prompts models and
+keys, rewrites `hindsight.env` only (the database password is reused from
+`postgres.env` — a new one would not rotate the existing role), and
+restarts the API. Running it again on an installed stack prints status.
+
+API keys are read with hidden input and go straight to the 0600 env files;
+they are never echoed, logged, or passed through command lines. The start
+step requires an explicit confirmation: first start can call the embedding
+provider (dimension detection) and is not free.
+
+### Manual path (advanced)
+
+The installer is a convenience over deliberately simple assets; the steps
+it automates, for reference or degenerate environments:
 
 Requires Linux, rootless Podman with Quadlet and `Notify=healthy` support, a
 systemd user manager, subordinate UID/GID mappings, uv for offline Python checks,
@@ -167,7 +196,8 @@ SELinux bind-mount relabeling is scoped to the installed launch script (`:Z`).
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 uv run python -m unittest discover -s deploy/memory -p 'test_*.py' -v
-uv run --with mypy mypy --strict deploy/memory/start.py deploy/memory/test_config.py
+uv run --with mypy mypy --strict deploy/memory/start.py deploy/memory/test_config.py \
+  deploy/memory/install.py deploy/memory/test_install.py
 QUADLET_UNIT_DIRS="$PWD/deploy/memory" \
   /usr/lib/systemd/system-generators/podman-system-generator --user --dryrun
 ```

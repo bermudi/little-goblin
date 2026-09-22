@@ -210,10 +210,10 @@ agent loop.
 
 ## Tools (v1)
 
-Hand-rolled, zod-validated, seven:
+Hand-rolled, zod-validated, eight:
 
 `read_file` `write_file` `edit_file` `bash` (timeout) `speak` `schedule`
-`send_file`
+`send_file` `memory_search`
 
 All tools run in the deployment workspace — conversations have no cwd and
 there is no `/cd`. Working elsewhere is the agent's own business (`cd x &&
@@ -495,6 +495,15 @@ model. Choosing a different embedding model for an existing bank requires
 an explicit compatibility/re-indexing procedure, not a hot config edit.
 Self-hosted storage does not imply local processing: document which text
 each configured external model service receives.
+
+Setup is installer-driven (`deploy/memory/install.py`), overruling the
+earlier "operator setup, not automatic" stance. An installer that *asks*
+preserves the deliberation the manual flow was protecting: every provider,
+model, and key choice is an explicit prompt (hidden input for secrets), the
+launch guard validates the assembled configuration before anything is
+written, the database password is generated locally and never printed, and
+stack start carries its own cost warning. Deliberation lives in the
+questions, not in copy-paste friction.
 
 The TypeScript SDK is an HTTP client, not a requirement to run Node.
 Basic retain/recall against a fake HTTP server passed with SDK 0.10.0 under

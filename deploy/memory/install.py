@@ -6,9 +6,10 @@ One command; every decision is prompted, never assumed:
   construction), written to a 0600 env file, never printed
 - provider API keys: hidden input, written straight to the 0600 env file,
   never echoed, logged, or passed through command lines
-- model choices: typed by the operator (examples shown, never defaults);
-  provider endpoints have structural defaults (zai/openrouter are fixed
-  upstream; openai prompts) and empty input accepts the shown default
+- model selection: a menu of catalog-verified choices per provider, with
+  "type another" always available (the guard accepts any id); endpoints
+  fixed by the provider are derived silently, openai prompts with its
+  standard endpoint as the default
   anything is written — an invalid answer cannot produce a config the
   container would reject
 - starting the stack requires an explicit confirmation: first start can
@@ -65,12 +66,26 @@ API_IMAGE = (
 )
 LLM_PROVIDERS = ("zai", "openai", "openrouter")
 EMBEDDING_PROVIDERS = ("openrouter", "openai")
-# Fixed upstream endpoints for these providers; empty = operator must type one.
-LLM_ENDPOINT_HINTS: dict[str, str] = {
+# Model menus per provider: the catalog-verified entries from the design
+# session's evidence, offered as CHOICES — not assignments. "Type another"
+# is always available and the launch guard accepts any model id; an empty
+# tuple means nothing is verified for that provider, so it's free text.
+LLM_MODEL_CHOICES: dict[str, tuple[str, ...]] = {
+    "zai": ("glm-5.3-flash",),
+    "openai": (),
+    "openrouter": (),
+}
+EMBEDDING_MODEL_CHOICES: dict[str, tuple[str, ...]] = {
+    "openrouter": ("voyageai/voyage-4-lite",),
+    "openai": (),
+}
+# Endpoints fixed by the provider (upstream has no override for them in
+# this Hindsight release) are derived silently — facts aren't questions.
+FIXED_LLM_BASE_URLS = {
     "zai": "https://api.z.ai/api/paas/v4",
     "openrouter": "https://openrouter.ai/api/v1",
-    "openai": "https://api.openai.com/v1",
 }
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 BANK_ID_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
 DEFAULT_BANK_ID = "goblin"
 DEFAULT_MISSION = (
@@ -501,16 +516,42 @@ def ask_choice(prompt: str, options: tuple[str, ...]) -> str:
     return ask(f"choice [1-{len(options)}]", check)
 
 
-def ask_url(prompt: str, hint: str, required: bool) -> str:
+def ask_url(prompt: str, hint: str) -> str:
     def check(value: str) -> str:
-        if not value and hint and not required:
-            return hint
         if not value:
-            raise ValueError("endpoint URL is required")
+            return hint
         validate_endpoint("(input)", value)
         return value
-    suffix = "" if required else f" [default: {hint}]"
-    return ask(f"{prompt}{suffix}", check)
+    return ask(f"{prompt} [default: {hint}]", check)
+
+
+def ask_model(label: str, choices: tuple[str, ...]) -> str:
+    """Menu of catalog-verified models plus free text — a choice, not a
+    typing test. The guard accepts any id, so typing one directly at the
+    menu prompt or via the last option is equally valid."""
+    if not choices:
+        return ask(label, ask_nonempty("model id"))
+    print(label)
+    for index, model in enumerate(choices, 1):
+        print(f"  {index}) {model}")
+    other = len(choices) + 1
+    print(f"  {other}) type another model id")
+
+    def check(value: str) -> str:
+        if value.isdigit() and 1 <= int(value) <= len(choices):
+            return choices[int(value) - 1]
+        if value == str(other):
+            return ""
+        if not value:
+            raise ValueError(f"choose 1-{other} or type a model id")
+        if any(ch.isspace() for ch in value):
+            raise ValueError("model id must not contain whitespace")
+        return value
+
+    picked = ask(f"choice [1-{other}]", check)
+    if picked:
+        return picked
+    return ask("model id", ask_nonempty("model id"))
 
 
 def ask_secret(prompt: str) -> str:
@@ -532,32 +573,24 @@ def ask_yes(prompt: str, default: bool) -> bool:
 def prompt_answers() -> Answers:
     print("\n— Extraction/consolidation LLM —")
     llm_provider = ask_choice("provider", LLM_PROVIDERS)
-    example = "glm-5.3-flash" if llm_provider == "zai" else "operator-chosen model id"
-    llm_model = ask(f"model id (example only, not a default: {example})",
-                    ask_nonempty("model id"))
-    llm_base_url = ask_url(
-        "base URL", LLM_ENDPOINT_HINTS[llm_provider],
-        required=llm_provider == "openai")
+    llm_model = ask_model("model", LLM_MODEL_CHOICES.get(llm_provider, ()))
+    llm_base_url = FIXED_LLM_BASE_URLS.get(llm_provider)
+    if llm_base_url is None:  # openai: compatible endpoints exist — genuine choice
+        llm_base_url = ask_url("base URL", DEFAULT_OPENAI_BASE_URL)
     llm_api_key = ask_secret("API key")
 
     print("\n— Embeddings —")
     emb_provider = ask_choice("provider", EMBEDDING_PROVIDERS)
-    emb_example = ("voyageai/voyage-4-lite" if emb_provider == "openrouter"
-                   else "operator-chosen embedding model id")
-    emb_model = ask(f"model id (example only, not a default: {emb_example})",
-                    ask_nonempty("model id"))
+    emb_model = ask_model("model", EMBEDDING_MODEL_CHOICES.get(emb_provider, ()))
     emb_api_key = ask_secret("API key")
     emb_base_url: str | None = None
     if emb_provider == "openai":
         emb_base_url = ask_url("base URL (OpenAI or compatible endpoint)",
-                               "https://api.openai.com/v1", required=True)
+                               DEFAULT_OPENAI_BASE_URL)
 
-    print("\n— Reranker —")
-    print("  Only the model-free 'rrf' option is supported by this launch "
-          "profile: no cross-encoder download, no reranking provider call, "
-          "slightly weaker recall ordering than a learned reranker.")
-    if not ask_yes("use rrf?", default=True):
-        fail("no alternative is supported; see docs/memory.md (BYO deployment)")
+    # Not a question: this launch profile supports exactly one reranker.
+    print("\n— Reranker: rrf (model-free; the only option this profile "
+          "supports — no reranking model, no extra provider calls) —")
     return Answers(
         llm_provider=llm_provider,
         llm_model=llm_model,

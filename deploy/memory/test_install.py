@@ -261,6 +261,46 @@ FAKED = ("preflight", "prompt_answers", "prompt_bank", "ask_yes", "run",
          "POSTGRES_ENV", "HINDSIGHT_ENV", "main")
 
 
+class AskModelTest(unittest.TestCase):
+    def run_inputs(self, choices: tuple[str, ...], inputs: list[str]) -> tuple[str, str, list[str]]:
+        import builtins
+        feed = iter(inputs)
+        prompts: list[str] = []
+        original_input = builtins.input
+
+        def fake_input(prompt: object = "") -> str:
+            prompts.append(str(prompt))
+            return next(feed)
+
+        builtins.input = fake_input
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                result = install.ask_model("model", choices)
+        finally:
+            builtins.input = original_input
+        return result, output.getvalue(), prompts
+
+    def test_verified_choice_selected_by_number(self) -> None:
+        result, output, _ = self.run_inputs(("glm-5.3-flash",), ["1"])
+        self.assertEqual(result, "glm-5.3-flash")
+        self.assertIn("  1) glm-5.3-flash\n", output)
+        self.assertIn("  2) type another model id\n", output)
+
+    def test_typing_a_model_id_directly_works(self) -> None:
+        result, _, _ = self.run_inputs(("glm-5.3-flash",), ["glm-5.3-air"])
+        self.assertEqual(result, "glm-5.3-air")
+
+    def test_type_another_falls_through_to_free_text(self) -> None:
+        result, _, prompts = self.run_inputs(("glm-5.3-flash",), ["2", "custom-model"])
+        self.assertEqual(result, "custom-model")
+        self.assertIn("model id: ", "".join(prompts))
+
+    def test_no_verified_choices_is_plain_free_text(self) -> None:
+        result, output, _ = self.run_inputs((), ["any-model"])
+        self.assertEqual(result, "any-model")
+        self.assertNotIn("type another", output)
+
+
 class AskChoiceTest(unittest.TestCase):
     def test_menu_and_prompt_on_separate_lines(self) -> None:
         import builtins

@@ -258,7 +258,7 @@ class InsertJson5Test(unittest.TestCase):
 
 FAKED = ("preflight", "prompt_answers", "prompt_bank", "ask_yes", "run",
          "http_ok", "probe", "goblin_stable", "CFG_DIR", "SYSTEMD_DIR",
-         "POSTGRES_ENV", "HINDSIGHT_ENV")
+         "POSTGRES_ENV", "HINDSIGHT_ENV", "main")
 
 
 class AskChoiceTest(unittest.TestCase):
@@ -378,6 +378,28 @@ class MainFlowTest(unittest.TestCase):
         pw = install.POSTGRES_ENV.read_text().split("=", 1)[1].strip()
         self.assertNotIn(pw, output)
         self.assertTrue(install.HINDSIGHT_ENV.is_file())
+
+    def test_ctrl_c_exits_cleanly(self) -> None:
+        def interrupted(argv: list[str] | None = None) -> None:
+            raise KeyboardInterrupt()
+
+        install.main = interrupted
+        with contextlib.redirect_stderr(io.StringIO()) as errors:
+            with self.assertRaises(SystemExit) as raised:
+                install.cli()
+        self.assertEqual(raised.exception.code, 130)
+        self.assertNotIn("Traceback", errors.getvalue())
+
+    def test_ctrl_d_exits_cleanly(self) -> None:
+        def ended(argv: list[str] | None = None) -> None:
+            raise EOFError()
+
+        install.main = ended
+        with contextlib.redirect_stderr(io.StringIO()) as errors:
+            with self.assertRaises(SystemExit) as raised:
+                install.cli()
+        self.assertEqual(raised.exception.code, 1)
+        self.assertNotIn("Traceback", errors.getvalue())
 
 
 class WireGoblinRollbackTest(unittest.TestCase):

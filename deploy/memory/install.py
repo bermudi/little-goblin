@@ -713,5 +713,22 @@ def main(argv: list[str] | None = None) -> None:
               "systemctl --user restart goblin.service")
 
 
+def cli() -> None:
+    try:
+        main()
+    except KeyboardInterrupt:
+        # Prompts happen before any write and writes are atomic, so an
+        # interrupt can only leave CLEAN state: no file, or complete
+        # files. A half-install (postgres.env without hindsight.env) is
+        # detected on rerun and pointed at --reconfigure.
+        print("\ninstall: interrupted — safe to rerun; existing files are "
+              "detected and kept", file=sys.stderr)
+        sys.exit(130)  # 128 + SIGINT, the convention shells understand
+    except EOFError:
+        print("\ninstall: input ended (Ctrl+D) — aborting; rerun to continue",
+              file=sys.stderr)
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    main()
+    cli()

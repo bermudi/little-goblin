@@ -132,7 +132,7 @@ class SecretFileTest(unittest.TestCase):
             write_file_atomic(path, "K=v\n", 0o600)
             self.assertEqual(path.read_text(), "K=v\n")
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-            self.assertFalse(list(path.parent.glob(".secrets.env.tmp")),
+            self.assertFalse(list(path.parent.glob(".secrets.env.*.tmp")),
                              "tmp file must not survive")
 
     def test_overwrite_keeps_mode(self) -> None:

@@ -1,6 +1,9 @@
 """Offline installer checks: synthetic values only; no network, no containers."""
+import contextlib
+import io
 from pathlib import Path
 import stat
+import subprocess
 import tempfile
 import unittest
 from urllib.parse import urlsplit
@@ -116,6 +119,11 @@ class RenderEnvTest(unittest.TestCase):
         self.assertEqual(
             parse_postgres_env("# comment\nPOSTGRES_PASSWORD=p\n")["POSTGRES_PASSWORD"], "p")
 
+    def test_duplicate_keys_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            parse_postgres_env(
+                "POSTGRES_PASSWORD=a\nPOSTGRES_PASSWORD=b\n")
+
 
 class SecretFileTest(unittest.TestCase):
     def test_mode_600_and_content(self) -> None:
@@ -185,14 +193,44 @@ class InsertJson5Test(unittest.TestCase):
         updated = insert_json5_property(self.JSON5, "  memory: {\n    bankId: 'goblin',\n  }", "memory")
         self.assertIn("// goblin config", updated)
         self.assertIn("logLevel: 'debug', // trailing comment", updated)
-        # The appended comma lands inside the line comment, but the property
-        # was already terminated by the comma before it — valid JSON5.
-        self.assertIn("// trailing comment,\n  memory: {", updated)
+        # Comma precedes the comment, so the property is terminated: the
+        # snippet follows with NO new separator (adding one would be
+        # swallowed by the comment — see the corruption tests below).
+        self.assertIn("// trailing comment\n  memory: {", updated)
 
     def test_no_double_comma_when_last_property_has_trailing_comma(self) -> None:
         updated = insert_json5_property("{\n  a: 1,\n}\n", "  memory: {}", "memory")
         self.assertNotIn(",,", updated)
         self.assertEqual(updated, "{\n  a: 1,\n  memory: {}\n}\n")
+
+    def test_comment_after_unterminated_value_refused(self) -> None:
+        # Proven corruption shape (review B1): no comma before the
+        # comment — an appended separator lands inside the comment and
+        # the output is invalid JSON5. Refusal is the contract.
+        with self.assertRaises(ValueError):
+            insert_json5_property(
+                "{\n  logLevel: 'debug' // debug | info | warn\n}\n",
+                "  memory: {}", "memory")
+
+    def test_own_line_comment_after_unterminated_value_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            insert_json5_property(
+                "{\n  a: 1\n  // note\n}\n", "  memory: {}", "memory")
+
+    def test_url_string_in_last_line_does_not_false_positive(self) -> None:
+        # 'https://' inside a quoted string is not a comment; insertion
+        # must succeed (over-refusal here would force manual edits on the
+        # most common real-world shape).
+        config = "{\n  publicUrl: 'https://x.ts.net:8788/'\n}\n"
+        updated = insert_json5_property(config, "  memory: {}", "memory")
+        self.assertIn("/',\n  memory: {}\n}\n", updated)
+
+    def test_inline_duplicate_key_detected(self) -> None:
+        # One-line configs: the line-start regex alone misses these and
+        # json5 is last-wins — a silent replace. The inline pattern must
+        # catch them.
+        with self.assertRaises(ValueError):
+            insert_json5_property("{ a: 1, memory: {}, b: 2 }", "  memory: {}", "memory")
 
     def test_existing_key_rejected(self) -> None:
         with self.assertRaises(ValueError):
@@ -216,6 +254,155 @@ class InsertJson5Test(unittest.TestCase):
         updated = insert_json5_property(live, snippet, "memory")
         self.assertIn("logLevel: 'debug',\n  memory: {\n", updated)
         self.assertIn("bankId: 'goblin',\n  }\n}\n", updated)
+
+
+FAKED = ("preflight", "prompt_answers", "prompt_bank", "ask_yes", "run",
+         "http_ok", "probe", "goblin_stable", "CFG_DIR", "SYSTEMD_DIR",
+         "POSTGRES_ENV", "HINDSIGHT_ENV")
+
+
+class MainFlowTest(unittest.TestCase):
+    """Offline main()/wire_goblin() tests: fake the system edge (run/probe/
+    prompts), keep file I/O real. Synthetic values only."""
+
+    def setUp(self) -> None:
+        self.saved = {name: getattr(install, name) for name in FAKED}
+        self.addCleanup(self._restore)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        install.CFG_DIR = root / "goblin-memory"
+        install.SYSTEMD_DIR = root / "systemd"
+        install.POSTGRES_ENV = install.CFG_DIR / "postgres.env"
+        install.HINDSIGHT_ENV = install.CFG_DIR / "hindsight.env"
+        self.goblin_home = root / "goblin"
+        self.goblin_home.mkdir()
+        (self.goblin_home / "goblin.json5").write_text(
+            "{\n  model: 'zai/m',\n  logLevel: 'debug',\n}\n")
+
+    def _restore(self) -> None:
+        for name, value in self.saved.items():
+            setattr(install, name, value)
+
+    def fake_prompts(self) -> None:
+        install.preflight = lambda: None
+        install.prompt_answers = lambda: synthetic_answers()
+        install.prompt_bank = lambda: ("goblin", "synthetic mission")
+
+    def fake_yes(self) -> None:
+        install.ask_yes = lambda prompt, default: True
+
+    def test_fresh_refuses_existing_postgres_env(self) -> None:
+        # Review B2: a fresh run must never regenerate the database
+        # password — the volume may already be initialized.
+        self.fake_prompts()
+        self.fake_yes()
+        install.POSTGRES_ENV.parent.mkdir(parents=True)
+        install.POSTGRES_ENV.write_text("POSTGRES_PASSWORD=existing\n")
+        with self.assertRaises(SystemExit):
+            install.main([])
+        self.assertEqual(install.POSTGRES_ENV.read_text(),
+                         "POSTGRES_PASSWORD=existing\n")
+        self.assertFalse(install.HINDSIGHT_ENV.exists())
+
+    def test_reconfigure_reuses_password_and_rewrites_only_hindsight(self) -> None:
+        self.fake_prompts()
+        install.POSTGRES_ENV.parent.mkdir(parents=True)
+        install.POSTGRES_ENV.write_text("POSTGRES_PASSWORD=existing\n")
+        install.HINDSIGHT_ENV.write_text("HINDSIGHT_API_LLM_MODEL=old\n")
+        restarts: list[list[str]] = []
+
+        def fake_run(command: list[str], timeout: float = 600) -> subprocess.CompletedProcess[str]:
+            restarts.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        install.run = fake_run
+        install.http_ok = lambda url: True
+        install.main(["--reconfigure"])
+        self.assertEqual(install.POSTGRES_ENV.read_text(),
+                         "POSTGRES_PASSWORD=existing\n")
+        env = install.HINDSIGHT_ENV.read_text()
+        self.assertIn("HINDSIGHT_API_LLM_MODEL=operator-llm", env)
+        self.assertIn("postgresql://hindsight:existing@db:5432/hindsight", env)
+        self.assertEqual(restarts, [["systemctl", "--user", "restart", install.API_UNIT]])
+
+    def test_reconfigure_prompts_before_failing_on_missing_postgres_env(self) -> None:
+        asked = {"prompts": False}
+
+        def fake_answers() -> Answers:
+            asked["prompts"] = True
+            return synthetic_answers()
+
+        install.preflight = lambda: None
+        install.prompt_answers = fake_answers
+        with self.assertRaises(SystemExit):
+            install.main(["--reconfigure"])
+        self.assertFalse(asked["prompts"], "must fail before collecting hidden keys")
+
+    def test_reconfigure_rejects_no_start(self) -> None:
+        with self.assertRaises(SystemExit):
+            install.main(["--reconfigure", "--no-start"])
+
+    def test_main_no_start_never_leaks_secrets_to_output(self) -> None:
+        self.fake_prompts()
+        self.fake_yes()
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            install.main(["--no-start", "--goblin-home", str(self.goblin_home)])
+        output = captured.getvalue()
+        self.assertNotIn(SYNTHETIC_KEY, output)
+        pw = install.POSTGRES_ENV.read_text().split("=", 1)[1].strip()
+        self.assertNotIn(pw, output)
+        self.assertTrue(install.HINDSIGHT_ENV.is_file())
+
+
+class WireGoblinRollbackTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.saved = {name: getattr(install, name) for name in FAKED}
+        self.addCleanup(self._restore)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name)
+        self.config = self.home / "goblin.json5"
+        self.original = "{\n  model: 'zai/m',\n  logLevel: 'debug',\n}\n"
+        self.config.write_text(self.original)
+
+    def _restore(self) -> None:
+        for name, value in self.saved.items():
+            setattr(install, name, value)
+
+    def run_wire(self, restart_result: subprocess.CompletedProcess[str], stable: bool) -> None:
+        install.ask_yes = lambda prompt, default: True
+        install.probe = lambda command: restart_result
+        install.goblin_stable = lambda seconds: stable
+        install.wire_goblin(self.home, "goblin")
+
+    def test_rollback_when_restart_command_fails(self) -> None:
+        failed = subprocess.CompletedProcess([], 1, "", "unit not found")
+        with self.assertRaises(SystemExit):
+            self.run_wire(failed, stable=True)
+        self.assertEqual(self.config.read_text(), self.original,
+                         "config must be restored when the restart command fails")
+        self.assertTrue((self.home / "goblin.json5.pre-memory").is_file())
+
+    def test_rollback_when_goblin_unstable(self) -> None:
+        ok = subprocess.CompletedProcess([], 0, "", "")
+        with self.assertRaises(SystemExit):
+            self.run_wire(ok, stable=False)
+        self.assertEqual(self.config.read_text(), self.original,
+                         "config must be restored when goblin crash-loops")
+
+    def test_success_patches_and_reports_wired(self) -> None:
+        ok = subprocess.CompletedProcess([], 0, "", "")
+        self.run_wire(ok, stable=True)
+        self.assertIn("memory: {", self.config.read_text())
+
+    def test_declined_restart_leaves_patch_with_backup(self) -> None:
+        install.ask_yes = lambda prompt, default: False
+        install.wire_goblin(self.home, "goblin")
+        text = self.config.read_text()
+        self.assertIn("memory: {", text)
+        self.assertTrue((self.home / "goblin.json5.pre-memory").is_file())
 
 
 if __name__ == "__main__":

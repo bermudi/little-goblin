@@ -6,8 +6,9 @@ One command; every decision is prompted, never assumed:
   construction), written to a 0600 env file, never printed
 - provider API keys: hidden input, written straight to the 0600 env file,
   never echoed, logged, or passed through command lines
-- model/endpoint choices: typed by the operator (hints are examples, not
-  defaults), then validated by the launch guard (start.validate) BEFORE
+- model choices: typed by the operator (examples shown, never defaults);
+  provider endpoints have structural defaults (zai/openrouter are fixed
+  upstream; openai prompts) and empty input accepts the shown default
   anything is written — an invalid answer cannot produce a config the
   container would reject
 - starting the stack requires an explicit confirmation: first start can
@@ -35,7 +36,7 @@ import subprocess
 import sys
 import secrets
 import time
-from typing import Callable
+from typing import Callable, NoReturn
 from urllib import error as urlerror
 from urllib import request as urlrequest
 from urllib.parse import quote
@@ -93,7 +94,7 @@ class Answers:
     bank_mission: str
 
 
-def fail(message: str) -> None:
+def fail(message: str) -> NoReturn:
     print(f"\ninstall: {message}", file=sys.stderr)
     sys.exit(1)
 
@@ -171,7 +172,10 @@ def parse_postgres_env(text: str) -> dict[str, str]:
         key, sep, value = line.partition("=")
         if not sep:
             raise ValueError("postgres.env: line without '='")
-        result[key.strip()] = value
+        key = key.strip()
+        if key in result:
+            raise ValueError(f"postgres.env: duplicate key {key}")
+        result[key] = value
     if "POSTGRES_PASSWORD" not in result:
         raise ValueError("postgres.env: POSTGRES_PASSWORD missing")
     return result
@@ -188,18 +192,47 @@ def insert_json5_property(text: str, snippet: str, key: str) -> str:
     """Surgically append one top-level property, preserving all formatting.
 
     goblin.json5 is JSON5 (unquoted keys, comments, trailing commas); a
-    JSON round-trip would destroy it. Handles: empty object, last
-    property already comma-terminated (no double comma), and a trailing
-    line comment (the appended comma lands inside the comment, but the
-    property before it was already terminated by its own comma — valid).
+    JSON round-trip would destroy it. Handled shapes: empty object, last
+    property already comma-terminated (no double comma), and a comment
+    after a terminating comma. REFUSES (raises) when a comment follows
+    an unterminated property: the separator we would append lands
+    inside the comment and the result is invalid JSON5 (proven against
+    the json5 parser). Refusal is always safe — the caller falls back
+    to printing the snippet for a manual add. Quoted spans are stripped
+    before comment detection so URLs in strings ('https://…') do not
+    false-positive; a mis-split quote can only over-refuse, never
+    corrupt.
     """
-    if re.search(rf"(?m)^\s*[\"']?{re.escape(key)}[\"']?\s*:", text):
+    inline = re.compile(rf"[{{,]\s*[\"']?{re.escape(key)}[\"']?\s*:")
+    if re.search(rf"(?m)^\s*[\"']?{re.escape(key)}[\"']?\s*:", text) or inline.search(text):
         raise ValueError(f"top-level key already present: {key}")
     stripped = text.rstrip()
     if not stripped.endswith("}"):
         raise ValueError("config does not end with a top-level closing brace")
     body = stripped[:-1].rstrip()
     if body.endswith("{") or body.endswith(","):
+        return f"{body}\n{snippet}\n}}\n"
+    last_line = body.splitlines()[-1] if body else ""
+    without_strings = re.sub(r"'[^']*'|\"[^\"]*\"", "", last_line)
+    comment_at = len(without_strings)
+    for token in ("//", "/*"):
+        found = without_strings.find(token)
+        if found != -1:
+            comment_at = min(comment_at, found)
+    if comment_at < len(without_strings):
+        # A comment with no comma before it: a separator appended at end
+        # of line lands inside the comment and the result is invalid
+        # JSON5 (proven against the json5 parser). Refuse — the caller
+        # falls back to a manual add. With a comma before the comment the
+        # property is already terminated; insert without a new separator.
+        # Strings are stripped first so URLs ('https://…') do not
+        # false-positive; a mis-split quote can only over-refuse, never
+        # corrupt. Block comments are conservatively treated like line
+        # comments — over-refusal is safe, corruption is not.
+        if not without_strings[:comment_at].rstrip().endswith(","):
+            raise ValueError(
+                "comment at the end of the config without a preceding comma; "
+                "cannot place the separator safely — add the block manually")
         return f"{body}\n{snippet}\n}}\n"
     return f"{body},\n{snippet}\n}}\n"
 
@@ -211,14 +244,22 @@ def insert_json5_property(text: str, snippet: str, key: str) -> str:
 
 def write_file_atomic(path: Path, content: str, mode: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    tmp = path.with_name(f".{path.name}.tmp")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
     try:
+        # The os.open mode is masked by umask; set it explicitly so 0600
+        # secrets and preserved config modes hold regardless of umask.
+        os.fchmod(fd, mode)
         with os.fdopen(fd, "w") as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)  # the rename itself must survive power loss
+        finally:
+            os.close(dir_fd)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
@@ -246,17 +287,23 @@ def install_assets(memory_dir: Path, systemd_dir: Path, cfg_dir: Path) -> list[P
 # --------------------------------------------------------------------------
 
 
-def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+def run(command: list[str], timeout: float = 600) -> subprocess.CompletedProcess[str]:
     info("$ " + " ".join(command))
-    proc = subprocess.run(command, text=True, capture_output=True)
+    try:
+        proc = subprocess.run(command, text=True, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        fail(f"command timed out after {timeout}s: {' '.join(command)}")
     if proc.returncode != 0:
         output = (proc.stderr.strip() or proc.stdout.strip())[:2000]
         fail(f"command failed ({proc.returncode}): {' '.join(command)}\n{output}")
     return proc
 
 
-def probe(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, text=True, capture_output=True)
+def probe(command: list[str]) -> subprocess.CompletedProcess[str] | None:
+    try:
+        return subprocess.run(command, text=True, capture_output=True, timeout=60)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
 
 
 def preflight() -> None:
@@ -296,9 +343,12 @@ def start_stack() -> None:
     run(["systemctl", "--user", "start", DB_UNIT])
     deadline = time.monotonic() + 180
     while time.monotonic() < deadline:
+        state = probe(["systemctl", "--user", "is-active", DB_UNIT])
+        if state is not None and (state.stdout or "").strip() == "failed":
+            fail(f"{DB_UNIT} failed — journalctl --user -u {DB_UNIT}")
         status = probe(["podman", "inspect", "--format",
                         "{{.State.Health.Status}}", "goblin-memory-db"])
-        if (status.stdout or "").strip() == "healthy":
+        if status is not None and (status.stdout or "").strip() == "healthy":
             break
         time.sleep(5)
     else:
@@ -343,38 +393,70 @@ def create_bank(bank_id: str, mission: str) -> None:
         fail(f"bank creation failed: {error}")
 
 
-def wire_goblin(goblin_home: Path, bank_id: str) -> None:
+def goblin_stable(seconds: float) -> bool:
+    """Type=simple reports 'active' the moment bun spawns; require the
+    unit to STAY active with zero restarts, else a boot-time config
+    crash can read as success."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        state = probe(["systemctl", "--user", "show", GOBLIN_UNIT,
+                       "--property=ActiveState", "--property=NRestarts"])
+        if state is None:
+            return False
+        props = dict(
+            line.split("=", 1)
+            for line in (state.stdout or "").splitlines() if "=" in line
+        )
+        if props.get("ActiveState") != "active" or int(props.get("NRestarts", "0")) > 0:
+            return False
+        time.sleep(2)
+    return True
+
+
+def wire_goblin(goblin_home: Path, bank_id: str) -> bool:
+    """Patch goblin.json5 and restart goblin. Returns True only when the
+    memory block is live. Any failure rolls the config back and verifies
+    the rollback — never leave the operator's bot dead or patched-but-down.
+    """
     config = goblin_home / "goblin.json5"
     snippet = build_goblin_memory_snippet(bank_id)
     if not config.is_file():
         info(f"{config} not found — add this block yourself:")
         print(snippet)
-        return
+        return False
     text = config.read_text()
     try:
         updated = insert_json5_property(text, snippet, "memory")
     except ValueError as error:
         info(f"goblin.json5 not patched: {error} — add this block yourself:")
         print(snippet)
-        return
+        return False
     mode = config.stat().st_mode & 0o777
     backup = config.with_name(config.name + ".pre-memory")
     write_file_atomic(backup, text, mode)
     write_file_atomic(config, updated, mode)
     info(f"memory block added to {config} (backup: {backup.name})")
     if not ask_yes("restart goblin now so memory goes live?", default=True):
-        return
-    run(["systemctl", "--user", "restart", GOBLIN_UNIT])
-    time.sleep(8)
-    state = (probe(["systemctl", "--user", "is-active", GOBLIN_UNIT]).stdout or "").strip()
-    if state != "active":
-        # Fail loud WITH rollback: never leave the operator's bot dead.
+        return False
+
+    def rollback(reason: str) -> None:
         write_file_atomic(config, text, mode)
-        run(["systemctl", "--user", "restart", GOBLIN_UNIT])
-        fail(f"goblin did not come up with the memory block (state: {state}); "
-             f"restored the pre-memory config and restarted — add the block "
-             "manually per docs/memory.md")
-    info("goblin restarted and active — send /memory in Telegram to check status")
+        restart = probe(["systemctl", "--user", "restart", GOBLIN_UNIT])
+        recovered = restart is not None and restart.returncode == 0 and goblin_stable(15)
+        suffix = "and verified goblin is back up" if recovered else \
+            "but goblin did NOT come back — check: systemctl --user status goblin"
+        fail(f"{reason}; rolled back to the pre-memory config {suffix}")
+
+    restart = probe(["systemctl", "--user", "restart", GOBLIN_UNIT])
+    if restart is None or restart.returncode != 0:
+        output = ("systemctl probe failed" if restart is None
+                  else (restart.stderr or "").strip()[:500])
+        rollback(f"goblin restart command failed ({output})")
+    if not goblin_stable(30):
+        rollback("goblin did not stay up with the memory block "
+                 "(config rejected or crash-looping)")
+    info("goblin restarted, stable — send /memory in Telegram to check status")
+    return True
 
 
 # --------------------------------------------------------------------------
@@ -514,7 +596,8 @@ def existing_install_status() -> None:
     for path in (POSTGRES_ENV, HINDSIGHT_ENV):
         print(f"  {'✓' if path.is_file() else '✗'} {path}")
     for unit in (DB_UNIT, API_UNIT):
-        state = (probe(["systemctl", "--user", "is-active", unit]).stdout or "").strip()
+        result = probe(["systemctl", "--user", "is-active", unit])
+        state = (result.stdout if result else None) or "unknown"
         print(f"  {unit}: {state}")
     if http_ok(HEALTH_URL):
         print(f"  API: healthy at {MEMORY_API_URL}")
@@ -540,15 +623,19 @@ def main(argv: list[str] | None = None) -> None:
     print("Goblin memory stack installer — Hindsight 0.10.0-slim + PostgreSQL 17")
     preflight()
 
-    if HINDSIGHT_ENV.is_file() and not args.reconfigure:
-        existing_install_status()
-        return
+    args = parser.parse_args(argv)
+    if args.reconfigure and args.no_start:
+        parser.error("--reconfigure restarts the API by design; --no-start contradicts it")
 
-    answers = prompt_answers()
+    print("Goblin memory stack installer — Hindsight 0.10.0-slim + PostgreSQL 17")
+    preflight()
 
     if args.reconfigure:
+        # Check BEFORE prompting: collecting two hidden keys and then
+        # failing on a missing file is hostile.
         if not POSTGRES_ENV.is_file():
-            fail(f"--reconfigure needs {POSTGRES_ENV}; fresh install instead")
+            fail(f"--reconfigure needs {POSTGRES_ENV}; run a fresh install instead")
+        answers = prompt_answers()
         try:
             db_password = parse_postgres_env(POSTGRES_ENV.read_text())["POSTGRES_PASSWORD"]
         except (OSError, ValueError) as error:
@@ -566,11 +653,22 @@ def main(argv: list[str] | None = None) -> None:
         info("done — bank and goblin config unchanged")
         return
 
+    if HINDSIGHT_ENV.is_file():
+        existing_install_status()
+        return
+
+    answers = prompt_answers()
     bank_id, mission = prompt_bank()
     print_summary(answers, bank_id)
     if not ask_yes("write config and install assets?", default=False):
         fail("aborted before writing anything")
 
+    # Regenerating the password would silently desync PostgreSQL auth on
+    # an initialized volume (a new password never rotates the role); if
+    # hindsight.env was removed but this file survived, the stack exists.
+    if POSTGRES_ENV.is_file():
+        fail(f"{POSTGRES_ENV} already exists — refusing to regenerate the "
+             "database password; run with --reconfigure to change models/keys")
     db_password = secrets.token_urlsafe(24)
     try:
         env = build_hindsight_env(answers, db_password)
@@ -599,8 +697,13 @@ def main(argv: list[str] | None = None) -> None:
     pre_pull_images()
     start_stack()
     create_bank(bank_id, mission)
-    wire_goblin(args.goblin_home, bank_id)
-    print("\nDone. Memory is live. In Telegram: /memory")
+    wired = wire_goblin(args.goblin_home, bank_id)
+    if wired:
+        print("\nDone. Memory is live. In Telegram: /memory")
+    else:
+        print("\nStack and bank are live, but goblin was not wired — "
+              "add the memory block printed above, then: "
+              "systemctl --user restart goblin.service")
 
 
 if __name__ == "__main__":

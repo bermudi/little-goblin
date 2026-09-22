@@ -1,6 +1,7 @@
 // The scheduler's boundary contract: a due job becomes a submitted
 // user turn in its pinned conversation, marked ran; a submit failure
-// releases the sink and leaves the job due; nothing else fires.
+// releases the sink and still advances past the occurrence; nothing
+// else fires.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -131,7 +132,7 @@ describe("scheduler", () => {
 		expect(h.submitted).toEqual([]);
 	});
 
-	test("a submit failure releases the sink and leaves the job due", async () => {
+	test("a submit failure releases the sink and advances past the occurrence", async () => {
 		const h = harness();
 		h.deps.runtime = {
 			submit: (_c: unknown, _m: unknown, _sink: TurnSink) => {
@@ -148,8 +149,10 @@ describe("scheduler", () => {
 		expect(
 			h.apiCalls.some((c) => c.method === "sendMessage" && c.text?.includes("queue closed")),
 		).toBe(true);
-		// Not marked ran — the job stays due for the next boot.
-		expect(h.deps.jobs.due(new Date()).map((j) => j.id)).toContain(job.id);
+		// Marked ran anyway — one attempt per occurrence; a persistent
+		// submit failure must not refire (and re-deliver the error) every
+		// tick.
+		expect(h.deps.jobs.due(new Date()).map((j) => j.id)).not.toContain(job.id);
 	});
 
 	test("one job's failure does not stop the scan", async () => {

@@ -79,13 +79,16 @@ function fire(deps: SchedulerDeps, job: Job, now: Date): void {
 		deps.runtime.submit(conv, userMessage(parts), sink);
 	} catch (err) {
 		// Same contract as the intake flush: a constructed sink is already
-		// "typing" — release it with the error or it ghosts forever. The
-		// job is NOT marked ran: it stays due and fires after a restart.
+		// "typing" — release it with the error or it ghosts forever.
 		void sink.onDone({
 			kind: "error",
 			message: err instanceof Error ? err.message : String(err),
 		});
 		log.error("job submit failed", err, { job: job.id, name: job.name });
+		// One attempt per occurrence (DESIGN.md: never a replay): advance
+		// even on failure, or a persistent submit error refires this job
+		// — and re-delivers the error — on every tick.
+		deps.jobs.markRan(job.id, now);
 		return;
 	}
 	// Submit landed (in history even if the turn never runs) — record

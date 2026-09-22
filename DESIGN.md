@@ -396,8 +396,13 @@ into per-job state. Rulings:
   process; systemd covers crashes. A fire time missed while the
   process was down fires **once** at the next tick (boot catch-up),
   then advances to the next future occurrence — never a replay of
-  every missed instance. Submit first, then markRan: a message that
-  landed is history even if the turn never ran.
+  every missed instance. Occurrences skipped while a job was
+  disabled are skipped, not owed: re-enabling recomputes `next_run`
+  from now. Submit first, then markRan: a message that landed is
+  history even if the turn never ran. A submit that throws never
+  landed — release the sink with the error, deliver it, then
+  markRan anyway: one attempt per occurrence, so a persistent
+  failure cannot refire (and re-deliver) on every tick.
 
 Still out (machinery): proactive monitoring/heartbeat (jobs are
 explicit standing orders the operator asked for, not an agent that

@@ -261,44 +261,81 @@ FAKED = ("preflight", "prompt_answers", "prompt_bank", "ask_yes", "run",
          "POSTGRES_ENV", "HINDSIGHT_ENV", "main")
 
 
-class AskModelTest(unittest.TestCase):
-    def run_inputs(self, choices: tuple[str, ...], inputs: list[str]) -> tuple[str, str, list[str]]:
+class AskModelSearchTest(unittest.TestCase):
+    CATALOG = ["openai/gpt-5.3", "voyageai/voyage-4", "voyageai/voyage-4-lite",
+               "zai/glm-5.3", "zai/glm-5.3-flash"]
+
+    def run_inputs(self, inputs: list[str], catalog: list[str] | None) -> tuple[str | None, str]:
         import builtins
         feed = iter(inputs)
-        prompts: list[str] = []
         original_input = builtins.input
 
         def fake_input(prompt: object = "") -> str:
-            prompts.append(str(prompt))
             return next(feed)
 
         builtins.input = fake_input
         try:
             with contextlib.redirect_stdout(io.StringIO()) as output:
-                result = install.ask_model("model", choices)
+                result = install.ask_model_search("model", catalog, "example-model")
+        except StopIteration:
+            return None, "ran out of inputs"
         finally:
             builtins.input = original_input
-        return result, output.getvalue(), prompts
+        return result, output.getvalue()
 
-    def test_verified_choice_selected_by_number(self) -> None:
-        result, output, _ = self.run_inputs(("glm-5.3-flash",), ["1"])
-        self.assertEqual(result, "glm-5.3-flash")
-        self.assertIn("  1) glm-5.3-flash\n", output)
-        self.assertIn("  2) type another model id\n", output)
+    def test_search_then_pick(self) -> None:
+        result, output = self.run_inputs(["voyage", "1"], self.CATALOG)
+        self.assertEqual(result, "voyageai/voyage-4")
+        self.assertIn("1) voyageai/voyage-4\n", output)
+        self.assertIn("2) voyageai/voyage-4-lite\n", output)
 
-    def test_typing_a_model_id_directly_works(self) -> None:
-        result, _, _ = self.run_inputs(("glm-5.3-flash",), ["glm-5.3-air"])
-        self.assertEqual(result, "glm-5.3-air")
+    def test_typed_pick_becomes_new_search(self) -> None:
+        result, output = self.run_inputs(["glm", "voyage-4-lite", "1"], self.CATALOG)
+        self.assertEqual(result, "voyageai/voyage-4-lite")
+        self.assertIn("1) zai/glm-5.3\n", output)
 
-    def test_type_another_falls_through_to_free_text(self) -> None:
-        result, _, prompts = self.run_inputs(("glm-5.3-flash",), ["2", "custom-model"])
-        self.assertEqual(result, "custom-model")
-        self.assertIn("model id: ", "".join(prompts))
+    def test_exact_catalog_id_at_pick_accepted(self) -> None:
+        result, _ = self.run_inputs(["glm", "zai/glm-5.3-flash"], self.CATALOG)
+        self.assertEqual(result, "zai/glm-5.3-flash")
 
-    def test_no_verified_choices_is_plain_free_text(self) -> None:
-        result, output, _ = self.run_inputs((), ["any-model"])
-        self.assertEqual(result, "any-model")
-        self.assertNotIn("type another", output)
+    def test_no_match_reprompts(self) -> None:
+        result, output = self.run_inputs(["zzzz", "voyage", "2"], self.CATALOG)
+        self.assertEqual(result, "voyageai/voyage-4-lite")
+        self.assertIn("no models match 'zzzz'", output)
+
+    def test_no_catalog_is_free_text(self) -> None:
+        result, output = self.run_inputs(["typed-model"], None)
+        self.assertEqual(result, "typed-model")
+        self.assertIn("e.g. example-model", output)
+
+    def test_long_match_lists_truncated(self) -> None:
+        catalog = [f"vendor/model-{i}" for i in range(25)]
+        result, output = self.run_inputs(["model", "1"], catalog)
+        self.assertEqual(result, "vendor/model-0")
+        self.assertIn("and 15 more", output)
+
+
+class FetchCatalogTest(unittest.TestCase):
+    def test_parses_openai_style_catalog(self) -> None:
+        import unittest.mock as mock
+        from urllib import request as urlrequest
+        payload = io.BytesIO(b'{"data": [{"id": "b"}, {"id": "a"}, {"not": "id"}]}')
+        response = mock.MagicMock()
+        response.__enter__.return_value = payload
+        response.__exit__.return_value = False
+        with mock.patch.object(urlrequest, "urlopen", return_value=response):
+            catalog = install.fetch_model_catalog("https://example.invalid/models", "k")
+        self.assertEqual(catalog, ["a", "b"])
+
+    def test_unreachable_returns_none_not_crash(self) -> None:
+        import unittest.mock as mock
+        from urllib import error as urlerror
+        from urllib import request as urlrequest
+        with mock.patch.object(
+                urlrequest, "urlopen",
+                side_effect=urlerror.URLError("nope")):
+            catalog = install.fetch_model_catalog("https://example.invalid/models", None)
+        self.assertIsNone(catalog)
 
 
 class AskChoiceTest(unittest.TestCase):

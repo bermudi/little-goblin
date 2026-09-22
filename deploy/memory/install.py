@@ -6,10 +6,12 @@ One command; every decision is prompted, never assumed:
   construction), written to a 0600 env file, never printed
 - provider API keys: hidden input, written straight to the 0600 env file,
   never echoed, logged, or passed through command lines
-- model selection: a menu of catalog-verified choices per provider, with
-  "type another" always available (the guard accepts any id); endpoints
-  fixed by the provider are derived silently, openai prompts with its
-  standard endpoint as the default
+- model selection: search the provider's LIVE catalog (fetched with
+  your key after you enter it) — type a substring, pick from the short
+  list of matches, or type an exact id; if the catalog can't be fetched,
+  free text with a verified example; endpoints fixed by the provider
+  are derived silently, openai prompts with its standard endpoint as
+  the default
   anything is written — an invalid answer cannot produce a config the
   container would reject
 - starting the stack requires an explicit confirmation: first start can
@@ -66,18 +68,14 @@ API_IMAGE = (
 )
 LLM_PROVIDERS = ("zai", "openai", "openrouter")
 EMBEDDING_PROVIDERS = ("openrouter", "openai")
-# Model menus per provider: the catalog-verified entries from the design
-# session's evidence, offered as CHOICES — not assignments. "Type another"
-# is always available and the launch guard accepts any model id; an empty
-# tuple means nothing is verified for that provider, so it's free text.
-LLM_MODEL_CHOICES: dict[str, tuple[str, ...]] = {
-    "zai": ("glm-5.3-flash",),
-    "openai": (),
-    "openrouter": (),
-}
-EMBEDDING_MODEL_CHOICES: dict[str, tuple[str, ...]] = {
-    "openrouter": ("voyageai/voyage-4-lite",),
-    "openai": (),
+# Verified fallback examples per provider/purpose (design session
+# evidence) — shown when the live catalog can't be fetched. The catalog
+# itself is ground truth: fetched from the provider at install time and
+# searched interactively, because these providers carry far too many
+# models for a static menu.
+MODEL_EXAMPLES: dict[tuple[str, str], str] = {
+    ("llm", "zai"): "glm-5.3-flash",
+    ("emb", "openrouter"): "voyageai/voyage-4-lite",
 }
 # Endpoints fixed by the provider (upstream has no override for them in
 # this Hindsight release) are derived silently — facts aren't questions.
@@ -86,6 +84,11 @@ FIXED_LLM_BASE_URLS = {
     "openrouter": "https://openrouter.ai/api/v1",
 }
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+CATALOG_URLS: dict[tuple[str, str], str] = {
+    ("llm", "zai"): "https://api.z.ai/api/paas/v4/models",
+    ("llm", "openrouter"): "https://openrouter.ai/api/v1/models",
+    ("emb", "openrouter"): "https://openrouter.ai/api/v1/embeddings/models",
+}
 BANK_ID_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
 DEFAULT_BANK_ID = "goblin"
 DEFAULT_MISSION = (
@@ -525,33 +528,77 @@ def ask_url(prompt: str, hint: str) -> str:
     return ask(f"{prompt} [default: {hint}]", check)
 
 
-def ask_model(label: str, choices: tuple[str, ...]) -> str:
-    """Menu of catalog-verified models plus free text — a choice, not a
-    typing test. The guard accepts any id, so typing one directly at the
-    menu prompt or via the last option is equally valid."""
-    if not choices:
-        return ask(label, ask_nonempty("model id"))
-    print(label)
-    for index, model in enumerate(choices, 1):
-        print(f"  {index}) {model}")
-    other = len(choices) + 1
-    print(f"  {other}) type another model id")
+def fetch_model_catalog(url: str, api_key: str | None,
+                        timeout: float = 10.0) -> list[str] | None:
+    """Live model ids from a provider's /models endpoint. None =
+    unavailable (offline, endpoint moved, bad auth) — callers fall back
+    to free text with an example; the install never blocks on this."""
+    request = urlrequest.Request(url)
+    if api_key:
+        request.add_header("authorization", f"Bearer {api_key}")
+    try:
+        with urlrequest.urlopen(request, timeout=timeout) as response:
+            body = json.loads(response.read().decode())
+    except (urlerror.URLError, OSError, ValueError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    data = body.get("data")
+    if not isinstance(data, list):
+        return None
+    ids = {item.get("id") for item in data if isinstance(item, dict)}
+    models = sorted(model for model in ids if isinstance(model, str) and model)
+    return models or None
 
-    def check(value: str) -> str:
-        if value.isdigit() and 1 <= int(value) <= len(choices):
-            return choices[int(value) - 1]
-        if value == str(other):
-            return ""
-        if not value:
-            raise ValueError(f"choose 1-{other} or type a model id")
-        if any(ch.isspace() for ch in value):
-            raise ValueError("model id must not contain whitespace")
-        return value
 
-    picked = ask(f"choice [1-{other}]", check)
-    if picked:
-        return picked
-    return ask("model id", ask_nonempty("model id"))
+def ask_model_search(label: str, catalog: list[str] | None, example: str) -> str:
+    """Search-then-pick over the live catalog. Numbers are good UX when
+    the list is filtered to a handful; typing a substring any time
+    re-searches; typing an exact catalog id accepts it directly."""
+    if not catalog:
+        print(f"  live catalog unavailable — type a model id (e.g. {example})")
+        return ask("model id", ask_nonempty("model id"))
+    print(f"{label}: {len(catalog)} models — search by substring, pick by number")
+    query = ""
+    while True:
+        if not query:
+            query = input("search: ").strip()
+            if not query:
+                print("  ✗ type a substring (e.g. 'voyage') or Ctrl+C to abort")
+                continue
+        matches = [model for model in catalog if query.lower() in model.lower()]
+        shown = matches[:10]
+        if not shown:
+            print(f"  ✗ no models match '{query}' — try a shorter substring")
+            query = ""
+            continue
+        for index, model in enumerate(shown, 1):
+            print(f"  {index}) {model}")
+        if len(matches) > 10:
+            print(f"  … and {len(matches) - 10} more — refine the search to narrow")
+        pick = input(f"pick [1-{len(shown)}], or type a new search: ").strip()
+        if pick.isdigit() and 1 <= int(pick) <= len(shown):
+            return shown[int(pick) - 1]
+        if pick in catalog:
+            return pick
+        query = pick  # empty = re-ask for a search; non-numeric = new search
+
+
+def load_catalog(purpose: str, provider: str, base_url: str | None,
+                 api_key: str) -> list[str] | None:
+    url = (CATALOG_URLS.get((purpose, provider))
+           or (f"{base_url}/models" if base_url else None))
+    if url is None:
+        return None
+    catalog = fetch_model_catalog(url, api_key)
+    if catalog is None:
+        info(f"could not fetch the {provider} model catalog — typing fallback")
+        return None
+    if purpose == "emb" and provider == "openai":
+        # /models lists everything; embeddings are what's wanted here.
+        catalog = [model for model in catalog if "embedding" in model.lower()]
+    info(f"fetched {len(catalog)} {provider} models")
+    return catalog
 
 
 def ask_secret(prompt: str) -> str:
@@ -573,20 +620,24 @@ def ask_yes(prompt: str, default: bool) -> bool:
 def prompt_answers() -> Answers:
     print("\n— Extraction/consolidation LLM —")
     llm_provider = ask_choice("provider", LLM_PROVIDERS)
-    llm_model = ask_model("model", LLM_MODEL_CHOICES.get(llm_provider, ()))
     llm_base_url = FIXED_LLM_BASE_URLS.get(llm_provider)
     if llm_base_url is None:  # openai: compatible endpoints exist — genuine choice
         llm_base_url = ask_url("base URL", DEFAULT_OPENAI_BASE_URL)
     llm_api_key = ask_secret("API key")
+    example = MODEL_EXAMPLES.get(("llm", llm_provider), "any supported model")
+    catalog = load_catalog("llm", llm_provider, llm_base_url, llm_api_key)
+    llm_model = ask_model_search("model", catalog, example)
 
     print("\n— Embeddings —")
     emb_provider = ask_choice("provider", EMBEDDING_PROVIDERS)
-    emb_model = ask_model("model", EMBEDDING_MODEL_CHOICES.get(emb_provider, ()))
-    emb_api_key = ask_secret("API key")
     emb_base_url: str | None = None
     if emb_provider == "openai":
         emb_base_url = ask_url("base URL (OpenAI or compatible endpoint)",
                                DEFAULT_OPENAI_BASE_URL)
+    emb_api_key = ask_secret("API key")
+    example = MODEL_EXAMPLES.get(("emb", emb_provider), "any embedding model")
+    catalog = load_catalog("emb", emb_provider, emb_base_url, emb_api_key)
+    emb_model = ask_model_search("model", catalog, example)
 
     # Not a question: this launch profile supports exactly one reranker.
     print("\n— Reranker: rrf (model-free; the only option this profile "

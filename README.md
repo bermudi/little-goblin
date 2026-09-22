@@ -86,4 +86,5 @@ systemctl --user restart goblin  # restart
 - [`docs/voice.md`](docs/voice.md) — voice notes in and out, transcription, `/voice`
 - [`docs/skills.md`](docs/skills.md) — teaching the bot repeatable tasks
 - [`docs/operations.md`](docs/operations.md) — service, logs, backups, troubleshooting
+- [`docs/memory.md`](docs/memory.md) — optional Hindsight stack; memory integration in progress
 - [`DESIGN.md`](DESIGN.md) — the design spec (why it's built this way)

@@ -9,6 +9,8 @@ import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
 import { z } from "zod";
 import { log } from "./log.ts";
+import { MemoryQueue } from "./memory-queue.ts";
+import type { MemoryDocument } from "./hindsight.ts";
 
 // ---------- identity ----------
 
@@ -48,6 +50,7 @@ export interface ConversationMetaPatch {
 }
 
 export interface ConversationStore {
+	readonly memoryQueue: MemoryQueue;
 	// Get-or-create by Telegram address. New conversations start at epoch 0.
 	// The cwd column still exists in the table (NOT NULL, no default —
 	// existing DBs need it stamped) but cwd is no longer per-conversation
@@ -64,7 +67,10 @@ export interface ConversationStore {
 	// Append UIMessages in one transaction; seq is assigned here.
 	// anchorSeq marks a response with the seq of the user event that
 	// triggered its turn — history() uses it for causal ordering.
-	append(id: string, messages: UIMessage[], opts?: { anchorSeq?: number | null }): void;
+	append(id: string, messages: UIMessage[], opts?: {
+		anchorSeq?: number | null;
+		memory?: { target: string; document: MemoryDocument };
+	}): void;
 	// The model-facing view: causal order, not arrival order. Anchored
 	// assistant events sort immediately after their triggering user
 	// event; everything else falls back to seq.
@@ -189,6 +195,7 @@ export function openStore(dbPath: string): ConversationStore {
 		db.run("ALTER TABLE events ADD COLUMN anchor_seq INTEGER");
 	}
 
+	const memoryQueue = new MemoryQueue(db);
 	const qGet = db.query<Row, [string]>("SELECT * FROM conversations WHERE id = ?");
 	const qInsertConv = db.query(
 		`INSERT INTO conversations (id, chat_id, thread_id, title, cwd, created_at)
@@ -249,6 +256,7 @@ export function openStore(dbPath: string): ConversationStore {
 	}
 
 	return {
+		memoryQueue,
 		resolve(addr, defaultCwd) {
 			const id = addressId(addr);
 			const existing = qGet.get(id);
@@ -286,6 +294,7 @@ export function openStore(dbPath: string): ConversationStore {
 		},
 
 		append(id, messages, opts) {
+			let operation: string | undefined;
 			db.transaction(() => {
 				const start = qNextSeq.get(id)?.n ?? 0;
 				const now = new Date().toISOString();
@@ -299,7 +308,18 @@ export function openStore(dbPath: string): ConversationStore {
 						now,
 					);
 				}
+				if (opts?.memory) {
+					if (opts.memory.document.conversationId !== id ||
+						!messages.some((message) => message.role === "assistant" &&
+							opts.memory!.document.sourceIds.includes(message.id))) {
+						throw new Error("Memory retention must accompany its completed assistant event");
+					}
+					operation = memoryQueue.enqueue(opts.memory.target, opts.memory.document);
+				}
 			})();
+			if (operation) log.info("memory queued", {
+				conversation: id, operation, document: opts?.memory?.document.id,
+			});
 		},
 
 		lastUserSeq(id) {

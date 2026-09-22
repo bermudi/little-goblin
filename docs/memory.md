@@ -1,8 +1,21 @@
 # Optional Hindsight service
 
-This is **service infrastructure only**, not Goblin memory integration. Nothing
-in Goblin is enabled or changed. No SDK, ingestion, recall, backfill, scheduler,
-or backup automation is installed. `DESIGN.md` remains the integration contract.
+This is **an opt-in service stack, not enabled Goblin memory yet**. The HTTP
+client and durable retention queue are implemented and tested offline, but no
+turn-loop hooks or worker timer run. Ordinary conversations are unchanged;
+there is no automatic ingestion, recall, backfill, or backup automation.
+`DESIGN.md` remains the integration contract.
+
+The queue shares Goblin's SQLite history transaction and keeps a stable remote
+operation ID across retries/restarts. Acknowledgement is not completion; records
+stay pending until Hindsight reports completion. Queued content is bound to its
+original endpoint and bank. Failed or missing remote operations remain visible
+in the database rather than being discarded or blindly replayed.
+
+Still to implement before enabling: operator-facing exclusions/forgetting,
+retention and recall turn hooks, cached recall context, status UI, and explicitly
+authorized end-to-end verification. Do not treat the raw client's delete method
+as a complete forgetting mechanism.
 
 ## Verified launch profile
 

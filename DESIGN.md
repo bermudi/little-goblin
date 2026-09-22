@@ -406,7 +406,12 @@ tables beyond last_run.
 
 ## Long-term memory
 
-**Approved design; not implemented yet.** Memory returns on explicit
+**Implementation in progress.** The optional Podman assets, validated HTTP
+client, and durable retention queue are implemented and tested offline.
+The queue can commit atomically with conversation history, but the turn
+loop does not enqueue or recall yet. Operator controls, prompt integration,
+and live verification remain required before enabling memory.
+Memory returns on explicit
 operator demand. Hindsight is the selected memory service, not an agent
 runtime: Goblin still owns history, tools, reasoning, and Telegram delivery.
 No MCP, replacement turn loop, or generic multi-backend framework.
@@ -474,7 +479,13 @@ is then independent background indexing work; a later epoch change does
 not retroactively cancel it.
 
 A bounded worker drains the durable queue, using a stable document ID per
-exchange and replacement semantics for retries. Keep pending work through
+exchange and replacement semantics for retries. Persist a client-generated
+operation UUID before submitting asynchronous retention and reuse it after
+a lost acknowledgement. Poll the operation to completion; an acknowledged
+operation that disappears is blocked for operator reconciliation rather
+than blindly resubmitted. Bind queued records to the original endpoint and
+bank so a configuration change cannot redirect pending personal content.
+Keep pending work through
 restarts and retry transient failures with backoff. An HTTP acknowledgement
 of asynchronous processing is not proof that retention completed: either
 wait for completed retention or track the operation to its terminal state.

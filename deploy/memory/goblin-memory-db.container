@@ -10,7 +10,7 @@ NetworkAlias=db
 Volume=goblin-memory-db.volume:/var/lib/postgresql/data
 Environment=POSTGRES_USER=hindsight POSTGRES_DB=hindsight
 EnvironmentFile=%h/.config/goblin-memory/postgres.env
-HealthCmd=pg_isready -U hindsight -d hindsight
+HealthCmd=pg_isready -h 127.0.0.1 -U hindsight -d hindsight
 HealthInterval=10s
 HealthTimeout=5s
 HealthRetries=6

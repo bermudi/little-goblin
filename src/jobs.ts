@@ -142,10 +142,14 @@ export function openJobs(dbPath: string): JobsStore {
 			const before = rowToJob(current);
 			const cron = patch.cron ?? before.cron;
 			const enabled = patch.enabled ?? before.enabled;
-			// Recompute from `now` whenever anything recurrence-shaped moved;
-			// a disabled job still carries its next occurrence.
+			// Recompute from `now` whenever anything recurrence-shaped moved —
+			// a new cron, or a re-enable: occurrences skipped while disabled
+			// are skipped, not owed (boot catch-up is for downtime only). Any
+			// other patch leaves the scheduled occurrence untouched.
 			const next =
-				patch.cron !== undefined ? nextFire(cron, now).toISOString() : before.nextRun;
+				patch.cron !== undefined || (enabled && !before.enabled)
+					? nextFire(cron, now).toISOString()
+					: before.nextRun;
 			qUpdate.run(patch.name ?? before.name, cron, patch.prompt ?? before.prompt, enabled ? 1 : 0, next, id);
 			return rowToJob(qGet.get(id));
 		},

@@ -103,6 +103,23 @@ describe("jobs store", () => {
 		expect(s.get(job.id)).toBeNull();
 	});
 
+	test("re-enabling recomputes next_run — skipped occurrences are not owed", () => {
+		const s = store();
+		const job = s.create(
+			{ name: "x", cron: "0 * * * *", prompt: "p", address: { chatId: 1, threadId: null } },
+			NOW,
+		);
+		s.update(job.id, { enabled: false });
+		// A day passes while disabled; the stale next_run (11:00 yesterday)
+		// must not make the job instantly due the moment it's re-enabled.
+		const reEnabledAt = new Date("2026-09-21T10:00:00");
+		const on = s.update(job.id, { enabled: true }, reEnabledAt)!;
+		expect(on.enabled).toBe(true);
+		expect(new Date(on.nextRun).getHours()).toBe(11); // next hourly from now
+		expect(new Date(on.nextRun).getDate()).toBe(21);
+		expect(s.due(reEnabledAt)).toEqual([]);
+	});
+
 	test("rows survive a reopen — same file, fresh connection", () => {
 		const path = tmpdb();
 		const a = openJobs(path);

@@ -780,8 +780,11 @@ export class Runtime {
 
 // What a completed turn retains: the user burst it answered (everything
 // after the previous assistant message), bounded prior text for
-// reference resolution, and whether the burst is scheduler housekeeping
-// (which is never retained — it isn't operator memory).
+// reference resolution, and whether the burst is scheduler
+// housekeeping alone (which is never retained — it isn't operator
+// memory). A mixed burst — the scheduler firing while an operator
+// message waits for its turn — keeps the operator's messages and
+// drops the housekeeping text instead.
 interface RetentionSource {
 	userTexts: string[];
 	userIds: string[];
@@ -797,11 +800,19 @@ function retentionSourceFrom(entries: { seq: number; message: UIMessage }[]): Re
 	const userTexts: string[] = [];
 	const userIds: string[] = [];
 	const priorParts: string[] = [];
+	let sawScheduled = false;
 	for (const e of entries) {
 		if (e.message.role !== "user" && e.message.role !== "assistant") continue;
 		const t = messageText(e.message);
 		if (t === "") continue;
 		if (e.message.role === "user" && e.seq > lastAsstSeq) {
+			// Scheduled housekeeping is never operator memory — but an
+			// operator message in the same burst is, so it drops out of
+			// the retained set rather than fencing the whole burst.
+			if (t.startsWith("[scheduled: ")) {
+				sawScheduled = true;
+				continue;
+			}
 			userTexts.push(t);
 			userIds.push(e.message.id);
 		} else if (e.seq <= lastAsstSeq) {
@@ -813,7 +824,9 @@ function retentionSourceFrom(entries: { seq: number; message: UIMessage }[]): Re
 		userTexts,
 		userIds,
 		priorContext,
-		scheduled: userTexts.some((t) => t.startsWith("[scheduled: ")),
+		// Retention is skipped only for scheduled-only bursts — once
+		// operator text remains, there is real memory to keep.
+		scheduled: sawScheduled && userTexts.length === 0,
 	};
 }
 

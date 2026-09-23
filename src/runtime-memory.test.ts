@@ -282,4 +282,27 @@ describe("memory turn integration", () => {
 		expect(h.store.memoryQueue.next(h.client.target, Date.now())).toBeNull();
 		h.store.close();
 	});
+
+	test("an operator message in a scheduled burst is still retained", async () => {
+		const h = harness({ factText: "Quiet mornings." });
+		// The scheduler fires while the operator's message still waits
+		// for its turn — one mixed burst. Housekeeping must not fence the
+		// operator's memory out of it.
+		h.store.append(
+			h.conversation,
+			[userMessage([{ type: "text", text: "remember: i take my coffee black" }])],
+		);
+		const sink = new RecordingSink();
+		h.runtime.submit(
+			h.store.get(h.conversation)!,
+			userMessage([{ type: "text", text: "[scheduled: brief] send the brief" }]),
+			sink,
+		);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		const item = h.store.memoryQueue.next(h.client.target, Date.now());
+		expect(item).not.toBeNull();
+		expect(item?.document.content).toContain("i take my coffee black");
+		expect(item?.document.content).not.toContain("[scheduled:");
+		h.store.close();
+	});
 });

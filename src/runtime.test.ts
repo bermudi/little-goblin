@@ -72,16 +72,35 @@ function fakeModel(deltas: string[], delayMs = 15): LanguageModel {
 class RecordingSink implements TurnSink {
 	text = "";
 	done: Promise<TurnDone>;
+	// Resolves when the runtime admits the turn — setAuthorityCheck
+	// fires before any model work, the deterministic moment for tests
+	// that bump the epoch against a live turn.
+	admitted: Promise<void>;
+	// Resolves on the first observed text delta — the turn is admitted
+	// and mid-stream.
+	firstDelta: Promise<void>;
 	private resolveDone: (d: TurnDone) => void;
+	private markAdmitted: () => void = () => {};
+	private markFirstDelta: () => void = () => {};
 	constructor() {
 		let r: (d: TurnDone) => void = () => {};
 		this.done = new Promise<TurnDone>((res) => {
 			r = res;
 		});
 		this.resolveDone = r;
+		this.admitted = new Promise<void>((res) => {
+			this.markAdmitted = res;
+		});
+		this.firstDelta = new Promise<void>((res) => {
+			this.markFirstDelta = res;
+		});
+	}
+	setAuthorityCheck() {
+		this.markAdmitted();
 	}
 	onTextDelta(d: string) {
 		this.text += d;
+		this.markFirstDelta();
 	}
 	onReasoningDelta() {}
 	onToolCall() {}
@@ -134,7 +153,7 @@ describe("turn authority", () => {
 		const { store, conv, runtime } = setup(["a", "b", "c", "d", "e"], 20);
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
-		await sleep(50); // a couple of deltas in
+		await sink.firstDelta; // first delta observed — turn is mid-stream
 		store.bumpEpoch(conv.id); // settings change, e.g. /think
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		expect(sink.text.length).toBeGreaterThan(0);
@@ -322,7 +341,7 @@ describe("turn authority", () => {
 		});
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
-		await sleep(15);
+		await sink.admitted; // turn holds its epoch — bump cannot race admission
 		store.bumpEpoch(conv.id); // settings change mid-turn
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		expect(executed).toBe(false); // the fenced tool's side effect never ran

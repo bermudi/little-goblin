@@ -61,6 +61,14 @@ export interface JobsStore {
 // Validate + compute. Throws with cron-parser's own message — the tool
 // boundary surfaces it to the model, so it must be human-readable.
 export function nextFire(cron: string, from: Date): Date {
+	// cron-parser accepts 1–6 fields (a 6th being seconds); the contract
+	// here is exactly 5 (min hour dom month dow). Check before parsing —
+	// "*/5 * * * * *" would otherwise silently mean every five seconds.
+	if (cron.trim().split(/\s+/).length !== 5) {
+		throw new Error(
+			`invalid cron "${cron}": expected exactly 5 fields (min hour dom month dow)`,
+		);
+	}
 	try {
 		return CronExpressionParser.parse(cron, { currentDate: from }).next().toDate();
 	} catch (err) {

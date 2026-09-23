@@ -37,6 +37,29 @@ describe("nextFire", () => {
 		expect(() => nextFire("not a cron", NOW)).toThrow("invalid cron");
 		expect(() => nextFire("61 * * * *", NOW)).toThrow("invalid cron");
 	});
+
+	// cron-parser accepts 1–6 fields (the 6th being seconds) — the
+	// contract is exactly 5, so a 6-field "*/5 * * * * *" would silently
+	// mean every five seconds, and short forms get fields misread.
+	test("rejects any expression that is not exactly 5 fields", () => {
+		for (const bad of [
+			"*/5 * * * * *", // 6: seconds — every 5s
+			"0 */5 * * * *", // 6: seconds
+			"* * * *", // 4
+			"* * *", // 3
+			"5 *", // 2
+			"*", // 1
+			"", // 0
+		]) {
+			expect(() => nextFire(bad, NOW)).toThrow(
+				'expected exactly 5 fields (min hour dom month dow)',
+			);
+		}
+	});
+
+	test("accepts 5 fields regardless of whitespace padding", () => {
+		expect(nextFire("  30   8 * * *  ", NOW).getHours()).toBe(8);
+	});
 });
 
 describe("jobs store", () => {

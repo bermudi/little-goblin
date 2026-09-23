@@ -70,16 +70,25 @@ function fakeModel(deltas: string[], delayMs = 5): LanguageModel {
 class RecordingSink implements TurnSink {
 	text = "";
 	done: Promise<TurnDone>;
+	// Resolves on the first observed text delta — proof the turn was
+	// admitted (epoch captured) and is mid-stream. Fence-timing tests
+	// await this instead of sleeping a guess.
+	firstDelta: Promise<void>;
 	private resolveDone: (d: TurnDone) => void;
+	private markFirstDelta: () => void = () => {};
 	constructor() {
 		let r: (d: TurnDone) => void = () => {};
 		this.done = new Promise<TurnDone>((res) => {
 			r = res;
 		});
 		this.resolveDone = r;
+		this.firstDelta = new Promise<void>((res) => {
+			this.markFirstDelta = res;
+		});
 	}
 	onTextDelta(d: string) {
 		this.text += d;
+		this.markFirstDelta();
 	}
 	onReasoningDelta() {}
 	onToolCall() {}
@@ -243,7 +252,10 @@ describe("memory turn integration", () => {
 		});
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
-		await sleep(50);
+		// The first delta proves the turn was admitted (epoch captured)
+		// and is mid-stream — bumping before that can race admission and
+		// let the turn adopt the new epoch instead of fencing.
+		await sink.firstDelta;
 		store.bumpEpoch(conv.id);
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		expect(store.history(conv.id).map((m) => m.role)).toEqual(["user"]);

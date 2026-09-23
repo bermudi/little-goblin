@@ -12,7 +12,8 @@
 // edits are fine: they're explicit and logged as cache boundaries.
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import { paths } from "../config.ts";
 import { log } from "../log.ts";
 import type { Conversation } from "../conversation.ts";
@@ -49,26 +50,65 @@ export function _resetPromptSourcesForTest(): void {
 // in-prompt notice and a warn line instead.
 const MAX_PROMPT_FILE_CHARS = 8_000;
 
-function readOptional(path: string): string | null {
+// Byte ceiling for the bounded read: producing cap+1 chars never needs
+// more than 3 bytes per char (3-byte UTF-8 sequences are the worst case
+// per UTF-16 unit), so cap+1 extra chars are always detectable without
+// reading past this — a runaway multi-gigabyte file is cut at ~24KB of
+// disk, never loaded whole and decoded just to be sliced back down.
+const MAX_PROMPT_FILE_BYTES = 3 * (MAX_PROMPT_FILE_CHARS + 1);
+
+interface PromptFile {
+	content: string;
+	truncated: boolean;
+	bytes: number;
+}
+
+function readOptional(path: string): PromptFile | null {
+	let fd: number;
 	try {
-		return readFileSync(path, "utf8");
+		fd = openSync(path, "r");
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
 		throw err;
+	}
+	try {
+		const bytes = fstatSync(fd).size;
+		const buf = Buffer.allocUnsafe(Math.min(bytes, MAX_PROMPT_FILE_BYTES));
+		let n = 0;
+		while (n < buf.length) {
+			const read = readSync(fd, buf, n, buf.length - n, n);
+			if (read === 0) break;
+			n += read;
+		}
+		// StringDecoder holds partial trailing sequences back instead of
+		// mangling them; end() flushes one only at true EOF, matching
+		// readFileSync's handling of a file that ends mid-sequence.
+		const decoder = new StringDecoder("utf8");
+		let text = decoder.write(buf.subarray(0, n));
+		if (n === bytes) text += decoder.end();
+		const truncated = n < bytes || text.length > MAX_PROMPT_FILE_CHARS;
+		return {
+			content: truncated ? text.slice(0, MAX_PROMPT_FILE_CHARS) : text,
+			truncated,
+			bytes,
+		};
+	} finally {
+		closeSync(fd);
 	}
 }
 
 // Read a workspace file for injection, capped. Truncation is a warn —
 // "why does the bot ignore half my notes" must not need a REPL.
 function readCapped(source: string, path: string): string | null {
-	const content = readOptional(path);
-	if (content === null || content.length <= MAX_PROMPT_FILE_CHARS) return content;
+	const file = readOptional(path);
+	if (file === null) return null;
+	if (!file.truncated) return file.content;
 	log.warn("prompt file truncated", {
 		file: source,
-		chars: content.length,
+		bytes: file.bytes,
 		cap: MAX_PROMPT_FILE_CHARS,
 	});
-	return `${content.slice(0, MAX_PROMPT_FILE_CHARS)}\n\n… (${source} truncated at ${MAX_PROMPT_FILE_CHARS} chars — read the file for the rest)`;
+	return `${file.content}\n\n… (${source} truncated at ${MAX_PROMPT_FILE_CHARS} chars — read the file for the rest)`;
 }
 
 export function buildSystemPrompt(

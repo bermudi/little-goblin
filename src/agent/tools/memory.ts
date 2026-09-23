@@ -21,6 +21,10 @@ export interface MemorySearchDeps {
 	noteRecall: (ok: boolean) => void;
 }
 
+// low < mid < high — a tool-supplied budget may narrow the configured
+// recall effort, never widen past it (the same rule maxTokens follows).
+const BUDGET_ORDER: Record<MemorySearchDeps["budget"], number> = { low: 0, mid: 1, high: 2 };
+
 export const memorySearchTool = (deps: MemorySearchDeps) =>
 	tool({
 		description:
@@ -44,7 +48,9 @@ export const memorySearchTool = (deps: MemorySearchDeps) =>
 					...(maxTokens !== undefined
 						? { maxTokens: Math.min(maxTokens, deps.maxTokens) }
 						: { maxTokens: deps.maxTokens }),
-					...(budget !== undefined ? { budget } : { budget: deps.budget }),
+					...(budget !== undefined
+						? { budget: BUDGET_ORDER[budget] > BUDGET_ORDER[deps.budget] ? deps.budget : budget }
+						: { budget: deps.budget }),
 				});
 				const block = formatRecallBlock(facts, facts.length > 0 ? "results" : "empty");
 				deps.noteRecall(true);

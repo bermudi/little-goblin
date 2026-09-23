@@ -62,4 +62,18 @@ describe("memory_search tool", () => {
 		expect(out).toEqual({ error: "memory is excluded in this conversation" });
 		expect(calls).toBe(0);
 	});
+
+	test("a supplied budget may narrow the configured effort, never widen past it", async () => {
+		const budgets: (string | undefined)[] = [];
+		const client = served(async (request) => {
+			budgets.push(((await request.json()) as { budget?: string }).budget);
+			return Response.json({ results: [] });
+		});
+		const capped = memorySearchTool(deps(client)); // configured "low"
+		const wide = memorySearchTool({ ...deps(client), budget: "high" as const });
+		await exec(capped, { query: "x", budget: "high" }); // widened — clamped to "low"
+		await exec(capped, { query: "x" }); // absent — configured value preserved
+		await exec(wide, { query: "x", budget: "mid" }); // narrowed — passes through
+		expect(budgets).toEqual(["low", "low", "mid"]);
+	});
 });

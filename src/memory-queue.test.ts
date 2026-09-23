@@ -198,3 +198,15 @@ test("slow HTTP failures do not consume the backoff before it begins", async () 
 	await worker.tick();
 	expect(calls).toBe(2);
 });
+
+test("due pending submissions outrank polling older submitted operations", () => {
+	const client = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
+	const store = storeAt(database());
+	const firstId = store.memoryQueue.enqueue(client.target, doc);
+	const first = store.memoryQueue.get(firstId);
+	if (!first) throw new Error("expected queued memory");
+	// Older rowid, acknowledged, due — its next step is a status poll.
+	store.memoryQueue.update(first, "submitted", 0, null);
+	const secondId = store.memoryQueue.enqueue(client.target, { ...doc, id: "exchange-2" });
+	expect(store.memoryQueue.next(client.target, Date.now())?.operation_id).toBe(secondId);
+});

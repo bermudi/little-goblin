@@ -74,11 +74,17 @@ export class MemoryQueue {
 		return { ...fields, document: document.data };
 	}
 
+	// Due pending submissions outrank polling already-acknowledged
+	// operations: a submitted row's poll is bookkeeping, while a due
+	// pending row is unsent work. Ordering by rowid alone let an early
+	// submitted row — re-polled at every backoff interval — continually
+	// outrank every later enqueue. rowid still orders within each state,
+	// so submitted rows poll FIFO among themselves.
 	next(target: string, now: number): MemoryQueueItem | null {
 		targetSchema.parse(target);
 		const raw = this.db.query(
 			`SELECT * FROM memory_outbox WHERE target = ? AND state IN ('pending', 'submitted')
-			 AND next_attempt <= ? ORDER BY rowid LIMIT 1`,
+			 AND next_attempt <= ? ORDER BY CASE WHEN state = 'pending' THEN 0 ELSE 1 END, rowid LIMIT 1`,
 		).get(target, now);
 		return raw === null ? null : this.decode(raw);
 	}

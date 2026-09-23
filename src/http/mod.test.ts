@@ -69,29 +69,38 @@ function setup() {
 describe("mini-app http", () => {
 	test("a save that would lock out the requester is refused before writing", async () => {
 		const { configRef, http, post } = setup();
-		const res = await post({ allowedUsers: [99] });
-		expect(res.status).toBe(422);
-		const j = (await res.json()) as { error?: string };
-		expect(j.error).toContain("42");
-		expect(configRef.current.allowedUsers).toEqual([42]);
-		http.stop();
+		try {
+			const res = await post({ allowedUsers: [99] });
+			expect(res.status).toBe(422);
+			const j = (await res.json()) as { error?: string };
+			expect(j.error).toContain("42");
+			expect(configRef.current.allowedUsers).toEqual([42]);
+		} finally {
+			http.stop();
+		}
 	});
 
 	test("a non-object body is rejected without touching the config", async () => {
 		const { configRef, http, post } = setup();
-		const res = await post("hello");
-		expect(res.status).toBe(400);
-		expect(configRef.current.allowedUsers).toEqual([42]);
-		http.stop();
+		try {
+			const res = await post("hello");
+			expect(res.status).toBe(400);
+			expect(configRef.current.allowedUsers).toEqual([42]);
+		} finally {
+			http.stop();
+		}
 	});
 
 	test("a valid save is written and hot-applied", async () => {
 		const { configRef, http, post } = setup();
-		const res = await post({ allowedUsers: [42, 7], logLevel: "debug" });
-		expect(res.ok).toBe(true);
-		expect(configRef.current.allowedUsers).toEqual([42, 7]);
-		expect(configRef.current.logLevel).toBe("debug");
-		http.stop();
+		try {
+			const res = await post({ allowedUsers: [42, 7], logLevel: "debug" });
+			expect(res.ok).toBe(true);
+			expect(configRef.current.allowedUsers).toEqual([42, 7]);
+			expect(configRef.current.logLevel).toBe("debug");
+		} finally {
+			http.stop();
+		}
 	});
 
 	test("/api/thinking-levels requires auth and returns the model's ladder", async () => {
@@ -104,27 +113,33 @@ describe("mini-app http", () => {
 			fetch(`http://127.0.0.1:${http.port}/api/thinking-levels?${q}`, {
 				headers: authed ? { "x-init-data": initData } : {},
 			});
-		expect((await get("kind=openai-compatible&model=glm-5.3", false)).status).toBe(401);
-		const forced = (await (await get("kind=openai-compatible&model=glm-5.3")).json()) as {
-			levels: string[];
-		};
-		expect(forced.levels).toEqual(["low", "high", "max"]);
-		// The base param carries the coding-plan alias rule for unsaved forms.
-		const aliased = (await (
-			await get(
-				"kind=openai-compatible&model=glm-4.6&base=" +
-					encodeURIComponent("https://api.z.ai/api/coding/paas/v4"),
-			)
-		).json()) as { levels: string[] };
-		expect(aliased.levels).toEqual(["low", "high", "max"]);
-		http.stop();
+		try {
+			expect((await get("kind=openai-compatible&model=glm-5.3", false)).status).toBe(401);
+			const forced = (await (await get("kind=openai-compatible&model=glm-5.3")).json()) as {
+				levels: string[];
+			};
+			expect(forced.levels).toEqual(["low", "high", "max"]);
+			// The base param carries the coding-plan alias rule for unsaved forms.
+			const aliased = (await (
+				await get(
+					"kind=openai-compatible&model=glm-4.6&base=" +
+						encodeURIComponent("https://api.z.ai/api/coding/paas/v4"),
+				)
+			).json()) as { levels: string[] };
+			expect(aliased.levels).toEqual(["low", "high", "max"]);
+		} finally {
+			http.stop();
+		}
 	});
 
 	test("GET /api/config without init data is rejected", async () => {
 		const { http } = setup();
-		const res = await fetch(`http://127.0.0.1:${http.port}/api/config`);
-		expect(res.status).toBe(401);
-		http.stop();
+		try {
+			const res = await fetch(`http://127.0.0.1:${http.port}/api/config`);
+			expect(res.status).toBe(401);
+		} finally {
+			http.stop();
+		}
 	});
 });
 
@@ -135,10 +150,13 @@ describe("mini-app page serving", () => {
 	test("GET / serves the schema's provider kinds, placeholder replaced", async () => {
 		useHome();
 		const http = startHttp({ configRef: { current: { ...baseConfig } }, botToken: TOKEN, onConfigWritten: () => {} });
-		const res = await fetch(`http://127.0.0.1:${http.port}/`);
-		const html = await res.text();
-		expect(html).toContain('const KINDS = ["openai-compatible","openrouter","codex"];');
-		expect(html).not.toContain("__PROVIDER_KINDS__");
-		http.stop();
+		try {
+			const res = await fetch(`http://127.0.0.1:${http.port}/`);
+			const html = await res.text();
+			expect(html).toContain('const KINDS = ["openai-compatible","openrouter","codex"];');
+			expect(html).not.toContain("__PROVIDER_KINDS__");
+		} finally {
+			http.stop();
+		}
 	});
 });

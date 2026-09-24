@@ -38,15 +38,21 @@ interface AdapterOpts {
 	baseUrl?: string | undefined;
 }
 
-type SearchAdapter = (opts: AdapterOpts) => Promise<SearchHit[]>;
+/** What an adapter owes the tool: hits plus the response status for the log line. */
+export interface SearchOutcome {
+	hits: SearchHit[];
+	status: number;
+}
+
+type SearchAdapter = (opts: AdapterOpts) => Promise<SearchOutcome>;
 
 async function getJson(
 	provider: string,
 	url: string,
 	headers: Record<string, string>,
-): Promise<unknown> {
+): Promise<{ data: unknown; status: number }> {
 	const res = await fetchOk(provider, url, { headers }, TIMEOUT_MS);
-	return readJson(provider, res);
+	return { ...(await readJson(provider, res)), status: res.status };
 }
 
 async function postJson(
@@ -54,7 +60,7 @@ async function postJson(
 	url: string,
 	headers: Record<string, string>,
 	body: unknown,
-): Promise<unknown> {
+): Promise<{ data: unknown; status: number }> {
 	const res = await fetchOk(
 		provider,
 		url,
@@ -65,7 +71,7 @@ async function postJson(
 		},
 		TIMEOUT_MS,
 	);
-	return readJson(provider, res);
+	return { ...(await readJson(provider, res)), status: res.status };
 }
 
 function bearer(key?: string): Record<string, string> {
@@ -77,71 +83,87 @@ function bearer(key?: string): Record<string, string> {
 const braveSearch: SearchAdapter = async (opts) => {
 	const base = opts.baseUrl ?? BASES.brave;
 	const url = `${base}/res/v1/web/search?q=${encodeURIComponent(opts.query)}&count=${Math.min(opts.count, 20)}`;
-	const data = (await getJson("brave", url, {
+	const { data, status } = await getJson("brave", url, {
 		Accept: "application/json",
 		"X-Subscription-Token": opts.key ?? "",
-	})) as { web?: { results?: unknown[] } };
-	return (data.web?.results ?? []).slice(0, opts.count).map(toHit("description"));
+	});
+	const body = data as { web?: { results?: unknown[] } };
+	return {
+		hits: (body.web?.results ?? []).slice(0, opts.count).map(toHit("description")),
+		status,
+	};
 };
 
 const exaSearch: SearchAdapter = async (opts) => {
-	const data = (await postJson(
+	const { data, status } = await postJson(
 		"exa",
 		`${opts.baseUrl ?? BASES.exa}/search`,
 		{ "x-api-key": opts.key ?? "" },
 		{ query: opts.query, numResults: opts.count, contents: { highlights: true } },
-	)) as { results?: unknown[] };
-	return (data.results ?? []).map((r) => {
-		const row = r as Record<string, unknown>;
-		const highlights = Array.isArray(row.highlights)
-			? row.highlights.filter((h): h is string => typeof h === "string")
-			: [];
-		return { title: str(row.title), url: str(row.url), snippet: highlights.join(" ") };
-	});
+	);
+	const rows = (data as { results?: unknown[] }).results ?? [];
+	return {
+		hits: rows.map((r) => {
+			const row = r as Record<string, unknown>;
+			const highlights = Array.isArray(row.highlights)
+				? row.highlights.filter((h): h is string => typeof h === "string")
+				: [];
+			return { title: str(row.title), url: str(row.url), snippet: highlights.join(" ") };
+		}),
+		status,
+	};
 };
 
 const jinaSearch: SearchAdapter = async (opts) => {
 	const url = `${opts.baseUrl ?? BASES.jina}/${encodeURIComponent(opts.query)}`;
-	const data = (await getJson("jina", url, { Accept: "application/json", ...bearer(opts.key) })) as {
-		data?: unknown[];
+	const { data, status } = await getJson("jina", url, { Accept: "application/json", ...bearer(opts.key) });
+	const rows = (data as { data?: unknown[] }).data;
+	return {
+		hits: (Array.isArray(rows) ? rows : []).slice(0, opts.count).map(toHit("description")),
+		status,
 	};
-	return (Array.isArray(data.data) ? data.data : []).slice(0, opts.count).map(toHit("description"));
 };
 
 const tavilySearch: SearchAdapter = async (opts) => {
-	const data = (await postJson("tavily", `${opts.baseUrl ?? BASES.tavily}/search`, bearer(opts.key), {
+	const { data, status } = await postJson("tavily", `${opts.baseUrl ?? BASES.tavily}/search`, bearer(opts.key), {
 		query: opts.query,
 		max_results: opts.count,
 		include_raw_content: false,
 		include_images: false,
-	})) as { results?: unknown[] };
-	return (data.results ?? []).map(toHit("content"));
+	});
+	const rows = (data as { results?: unknown[] }).results ?? [];
+	return { hits: rows.map(toHit("content")), status };
 };
 
 const firecrawlSearch: SearchAdapter = async (opts) => {
-	const data = (await postJson("firecrawl", `${opts.baseUrl ?? BASES.firecrawl}/v2/search`, bearer(opts.key), {
+	const { data, status } = await postJson("firecrawl", `${opts.baseUrl ?? BASES.firecrawl}/v2/search`, bearer(opts.key), {
 		query: opts.query,
 		limit: opts.count,
-	})) as { success?: boolean; search?: unknown[]; error?: string };
-	if (data.success === false) {
-		throw new ProviderError("firecrawl", str(data.error) || "search failed");
+	});
+	const body = data as { success?: boolean; search?: unknown[]; error?: string };
+	if (body.success === false) {
+		throw new ProviderError("firecrawl", str(body.error) || "search failed");
 	}
-	return (data.search ?? []).map(toHit("description"));
+	return { hits: (body.search ?? []).map(toHit("description")), status };
 };
 
 const parallelSearch: SearchAdapter = async (opts) => {
-	const data = (await postJson("parallel", `${opts.baseUrl ?? BASES.parallel}/v1/search`, bearer(opts.key), {
+	const { data, status } = await postJson("parallel", `${opts.baseUrl ?? BASES.parallel}/v1/search`, bearer(opts.key), {
 		search_queries: [opts.query],
 		objective: opts.query,
 		max_results: opts.count,
-	})) as { results?: unknown[] };
-	return (data.results ?? []).slice(0, opts.count).map((r) => {
-		const row = r as Record<string, unknown>;
-		const excerpts = Array.isArray(row.excerpts)
-			? row.excerpts.filter((e): e is string => typeof e === "string")
-			: [];
-		return { title: str(row.title), url: str(row.url), snippet: excerpts.join(" ") };
 	});
+	const rows = (data as { results?: unknown[] }).results ?? [];
+	return {
+		hits: rows.slice(0, opts.count).map((r) => {
+			const row = r as Record<string, unknown>;
+			const excerpts = Array.isArray(row.excerpts)
+				? row.excerpts.filter((e): e is string => typeof e === "string")
+				: [];
+			return { title: str(row.title), url: str(row.url), snippet: excerpts.join(" ") };
+		}),
+		status,
+	};
 };
 
 // DuckDuckGo html — the unofficial endpoint. Regex over the stable
@@ -158,6 +180,7 @@ const ddgSearch: SearchAdapter = async (opts) => {
 		},
 		TIMEOUT_MS,
 	);
+	const status = res.status;
 	const html = await res.text();
 	const hits: SearchHit[] = [];
 	for (const anchor of html.matchAll(
@@ -177,7 +200,7 @@ const ddgSearch: SearchAdapter = async (opts) => {
 	hits.forEach((hit, i) => {
 		hit.snippet = snippets[i] ?? "";
 	});
-	return hits;
+	return { hits, status };
 };
 
 /** Mapper for providers whose rows are flat {title,url,<snippetField>}. */
@@ -232,7 +255,7 @@ export interface BoundSearch {
 export function bindSearch(
 	cfg: { kind: SearchKind; auth?: string | undefined },
 	auth: AuthStore,
-): (opts: { query: string; count: number; baseUrl?: string | undefined }) => Promise<SearchHit[]> {
+): (opts: { query: string; count: number; baseUrl?: string | undefined }) => Promise<SearchOutcome> {
 	return async (opts) => {
 		const key = cfg.auth ? await auth.resolve(cfg.auth) : undefined;
 		return ADAPTERS[cfg.kind]({ ...opts, key });
@@ -257,11 +280,29 @@ export const searchTool = (deps: WebToolDeps) =>
 			}
 			const started = Date.now();
 			const run = bindSearch(cfg, deps.auth);
-			const hits = await run({ query: input.query, count: input.count });
+			let hits: SearchHit[];
+			let status: number;
+			try {
+				({ hits, status } = await run({ query: input.query, count: input.count }));
+			} catch (err) {
+				// A provider outage must be distinguishable from a model glitch
+				// in the log — the same bar fetch.ts holds. The error message
+				// carries the HTTP status; never the key.
+				log.warn("web search failed", {
+					provider: cfg.kind,
+					query: input.query,
+					count: input.count,
+					error: (err as Error).message,
+					ms: Date.now() - started,
+				});
+				throw err;
+			}
 			log.info("web search", {
 				provider: cfg.kind,
 				query: input.query,
+				count: input.count,
 				results: hits.length,
+				status,
 				ms: Date.now() - started,
 			});
 			return renderHits(hits);

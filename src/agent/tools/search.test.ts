@@ -4,8 +4,12 @@
 // deterministic and bounded.
 
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AuthStore } from "../../auth.ts";
 import type { Config } from "../../config.ts";
+import { setLogFile } from "../../log.ts";
 import { bindSearch, searchTool, type SearchKind } from "./search.ts";
 import { renderHits, type SearchHit } from "./web.ts";
 
@@ -16,9 +20,13 @@ const fakeAuth: AuthStore = {
 };
 
 let servers: ReturnType<typeof Bun.serve>[] = [];
+let logDir: string | null = null;
 afterEach(() => {
 	for (const s of servers) s.stop(true);
 	servers = [];
+	setLogFile(null);
+	if (logDir !== null) rmSync(logDir, { recursive: true, force: true });
+	logDir = null;
 });
 
 function serve(handler: (req: Request) => Response | Promise<Response>): string {
@@ -47,8 +55,9 @@ describe("search tool", () => {
 			});
 		});
 		const run = bindSearch({ kind: "brave", auth: "brave" }, fakeAuth);
-		const hits = await run({ query: "test", count: 5, baseUrl: base });
+		const { hits, status } = await run({ query: "test", count: 5, baseUrl: base });
 		expect(sawToken).toBe("key-for-brave");
+		expect(status).toBe(200);
 		expect(hits).toEqual([{ title: "Brave Result", url: "https://example.com/a", snippet: "the snippet" }]);
 		expect(renderHits(hits)).toBe("1. Brave Result — https://example.com/a\n   the snippet");
 	});
@@ -64,7 +73,7 @@ describe("search tool", () => {
 			});
 		});
 		const run = bindSearch({ kind: "parallel", auth: "parallel" }, fakeAuth);
-		const hits = await run({ query: "objective", count: 3, baseUrl: base });
+		const { hits } = await run({ query: "objective", count: 3, baseUrl: base });
 		expect(sawAuth).toBe("Bearer key-for-parallel");
 		expect(JSON.parse(sawBody)).toEqual({
 			search_queries: ["objective"],
@@ -99,7 +108,7 @@ describe("search tool", () => {
 			),
 		);
 		const run = bindSearch({ kind: "ddg" }, fakeAuth);
-		const hits = await run({ query: "q", count: 5, baseUrl: base });
+		const { hits } = await run({ query: "q", count: 5, baseUrl: base });
 		expect(hits).toEqual([{ title: "Real Title", url: "https://real.example/x", snippet: "the &snippet" }]);
 	});
 
@@ -110,6 +119,39 @@ describe("search tool", () => {
 		};
 		expect(out.kind).toBe("unconfigured");
 		expect(out.error).toContain("goblin.json5");
+	});
+
+	test("a failed search rethrows and gets its own log line — an outage is not a silence", async () => {
+		// The tool hardwires the production base (the baseUrl door sits one
+		// layer down, on bindSearch), so the network-free seam for the
+		// tool-level catch is a failing auth resolve — same path, same
+		// warn-and-rethrow contract as a provider outage.
+		logDir = mkdtempSync(join(tmpdir(), "goblin-searchlog-"));
+		const target = join(logDir, "goblin.log");
+		setLogFile(target);
+		const boomAuth: AuthStore = {
+			resolve: async () => {
+				throw new Error("auth command failed");
+			},
+			has: () => true,
+			names: () => ["brave"],
+		};
+		const tool = searchTool({ configRef: { current: { search: { kind: "brave", auth: "brave" } } as unknown as Config }, auth: boomAuth });
+		try {
+			await exec(tool, { query: "outage probe", count: 5 });
+			expect.unreachable();
+		} catch (err) {
+			expect((err as Error).message).toContain("auth command failed");
+		}
+		const entry = JSON.parse(readFileSync(target, "utf8")) as Record<string, unknown>;
+		expect(entry).toMatchObject({
+			level: "warn",
+			msg: "web search failed",
+			provider: "brave",
+			query: "outage probe",
+		});
+		expect(String(entry.error)).toContain("auth command failed");
+		expect(JSON.stringify(entry)).not.toContain("key-for-brave");
 	});
 });
 

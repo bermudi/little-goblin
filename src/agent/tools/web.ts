@@ -57,13 +57,35 @@ export async function fetchOk(
 	return res;
 }
 
-/** Parse a JSON response body or fail with the provider's name and status. */
-export async function readJson(provider: string, res: Response): Promise<unknown> {
+/** Wire metadata for one provider response — the web tools' log fields. */
+export interface HttpMeta {
+	status: number;
+	contentType: string;
+	bytes: number;
+}
+
+/** Boundary metadata off a response; bytes filled in once the body is read. */
+export function resMeta(res: Response, bytes = 0): HttpMeta {
+	return {
+		status: res.status,
+		contentType: (res.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "",
+		bytes,
+	};
+}
+
+/** Parse a JSON body (with its byte size) or fail with the provider's name. */
+export async function readJson(
+	provider: string,
+	res: Response,
+): Promise<{ data: unknown; bytes: number }> {
+	const text = await res.text();
+	let data: unknown;
 	try {
-		return await res.json();
+		data = JSON.parse(text) as unknown;
 	} catch (err) {
 		throw new ProviderError(provider, `non-JSON response — ${(err as Error).message}`);
 	}
+	return { data, bytes: Buffer.byteLength(text) };
 }
 
 /** UTF-8-safe character clamp for titles and snippets. */

@@ -171,6 +171,10 @@ const configSchema = z
 					kind: z.literal("edge"),
 					voice: z.string().min(1),
 					rate: z.string().regex(/^[+-]\d+%$/).optional(),
+					// Alternates the speak tool may pick per call; the language
+					// follows the voice name. `voice` stays the default for
+					// /voice mode and the 🔊 button.
+					voices: z.array(z.string().min(1)).optional(),
 				}),
 				z.literal(""),
 			])

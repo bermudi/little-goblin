@@ -55,10 +55,67 @@ describe("speak", () => {
 
 describe("speak input rule", () => {
 	test("input is exactly one of text or path", () => {
-		expect(speakInputSchema.safeParse({ text: "hi" }).success).toBe(true);
-		expect(speakInputSchema.safeParse({ path: "note.md" }).success).toBe(true);
-		expect(speakInputSchema.safeParse({ text: "hi", path: "note.md" }).success).toBe(false);
-		expect(speakInputSchema.safeParse({}).success).toBe(false);
+		expect(speakInputSchema().safeParse({ text: "hi" }).success).toBe(true);
+		expect(speakInputSchema().safeParse({ path: "note.md" }).success).toBe(true);
+		expect(speakInputSchema().safeParse({ text: "hi", path: "note.md" }).success).toBe(false);
+		expect(speakInputSchema().safeParse({}).success).toBe(false);
+	});
+});
+
+describe("speak voice choice", () => {
+	const allow = ["en-US-AriaNeural", "es-ES-ElviraNeural"];
+
+	test("threads a chosen voice to synthesize", async () => {
+		const calls: Array<{ text: string; voice?: string | undefined }> = [];
+		const t = speakTool(
+			"/tmp",
+			async (text, voice) => {
+				calls.push({ text, voice });
+				return [new Uint8Array([1])];
+			},
+			async () => {},
+			undefined,
+			allow,
+		);
+		const out = await t.execute!({ text: "hola", voice: "es-ES-ElviraNeural" }, opts);
+		expect(out).toEqual({ sent: 1 });
+		expect(calls).toEqual([{ text: "hola", voice: "es-ES-ElviraNeural" }]);
+	});
+
+	test("omitting the voice threads undefined — default synthesis", async () => {
+		const calls: Array<{ text: string; voice?: string | undefined }> = [];
+		const t = speakTool(
+			"/tmp",
+			async (text, voice) => {
+				calls.push({ text, voice });
+				return [new Uint8Array([1])];
+			},
+			async () => {},
+			undefined,
+			allow,
+		);
+		await t.execute!({ text: "hi" }, opts);
+		expect(calls).toEqual([{ text: "hi", voice: undefined }]);
+	});
+
+	test("a voice outside the allowlist fails schema validation", () => {
+		const parsed = speakInputSchema(allow).safeParse({ text: "hola", voice: "es-MX-DaliaNeural" });
+		expect(parsed.success).toBe(false);
+	});
+
+	test("a voice without configured alternates fails schema validation", () => {
+		expect(speakInputSchema().safeParse({ text: "hi", voice: "es-ES-ElviraNeural" }).success).toBe(
+			false,
+		);
+	});
+
+	test("the description offers the configured voices, and stays bare without them", () => {
+		const withVoices = speakTool("/tmp", async () => [], async () => {}, undefined, allow);
+		expect(withVoices.description).toContain("es-ES-ElviraNeural");
+		const bare = speakTool("/tmp", async () => [], async () => {});
+		expect(bare.description).toBe(
+			"Synthesize text or a plain-text/Markdown file and send it as Telegram voice notes.",
+		);
 	});
 });
 

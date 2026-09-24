@@ -128,9 +128,18 @@ async function boot() {
 				paths.workspace(),
 				tts && deliverVoice
 					? {
-							synthesize: (text) => synthesizeSpeech(text, tts),
+							// A per-call voice replaces the whole config voice — Edge
+							// derives the language from the voice name, so an
+							// alternate voice is an alternate language.
+							synthesize: (text, voice) =>
+								synthesizeSpeech(text, voice ? { ...tts, voice } : tts),
 							deliver: deliverVoice,
 							...(recording ? { recording } : {}),
+							// The allowlist always carries the default: picking it
+							// explicitly is a no-op.
+							...(tts.voices?.length
+								? { voices: [...new Set([tts.voice, ...tts.voices])] }
+								: {}),
 						}
 					: undefined,
 				// The schedule tool pins new jobs to the conversation it runs in.

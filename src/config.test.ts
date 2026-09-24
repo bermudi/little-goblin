@@ -111,6 +111,20 @@ describe("goblin.json5", () => {
 		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
 		writeFileSync(join(dir, "goblin.json5"), `${base},tts:{kind:"edge",voice:"en-US-AriaNeural",rate:"+10%"}}`);
 		expect(loadConfig()!.tts).toEqual({ kind: "edge", voice: "en-US-AriaNeural", rate: "+10%" });
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},tts:{kind:"edge",voice:"en-US-AriaNeural",voices:["es-ES-ElviraNeural","es-MX-JorgeNeural"]}}`,
+		);
+		expect(loadConfig()!.tts).toEqual({
+			kind: "edge",
+			voice: "en-US-AriaNeural",
+			voices: ["es-ES-ElviraNeural", "es-MX-JorgeNeural"],
+		});
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},tts:{kind:"edge",voice:"en-US-AriaNeural",voices:[""]}}`,
+		);
+		expect(() => loadConfig()).toThrow("goblin.json5");
 		writeFileSync(join(dir, "goblin.json5"), `${base},tts:""}`);
 		expect(loadConfig()!.tts).toBeUndefined();
 		writeFileSync(join(dir, "goblin.json5"), `${base},tts:{kind:"edge",voice:""}}`);

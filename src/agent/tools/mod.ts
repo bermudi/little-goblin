@@ -15,10 +15,12 @@ import { speakTool } from "./speak.ts";
 import { writeFileTool } from "./write.ts";
 
 export interface VoiceToolDeps {
-	synthesize(text: string): Promise<Uint8Array[]>;
+	synthesize(text: string, voice?: string): Promise<Uint8Array[]>;
 	deliver(audio: Uint8Array): Promise<void>;
 	/** Starts a record_voice chat action; returns the stopper. */
 	recording?(): () => void;
+	/** Allowlist (default included) the speak tool may pick from per call. */
+	voices?: readonly string[];
 }
 
 export interface ScheduleToolDeps {
@@ -58,7 +60,7 @@ export function makeTools(
 		edit_file: editFileTool(cwd),
 		bash: bashTool(cwd),
 		...(voice
-			? { speak: speakTool(cwd, voice.synthesize, voice.deliver, voice.recording) }
+			? { speak: speakTool(cwd, voice.synthesize, voice.deliver, voice.recording, voice.voices) }
 			: {}),
 		...(schedule ? { schedule: scheduleTool(schedule) } : {}),
 		...(file ? { send_file: sendFileTool(cwd, file.deliver) } : {}),

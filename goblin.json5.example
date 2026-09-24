@@ -51,6 +51,11 @@
   //   kind: "edge",
   //   voice: "en-US-AriaNeural",
   //   rate: "+0%", // optional
+  //   // Optional alternates the speak tool may pick per voice note —
+  //   // e.g. ["es-ES-ElviraNeural", "es-MX-JorgeNeural"]. Language
+  //   // follows the voice name. /voice mode and the 🔊 button always
+  //   // use `voice` above.
+  //   voices: [],
   // },
 
   // Speech → text for voice/audio/video notes — transcribed once at

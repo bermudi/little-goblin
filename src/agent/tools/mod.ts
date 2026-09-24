@@ -70,8 +70,11 @@ export function makeTools(
 		...(file ? { send_file: sendFileTool(cwd, file.deliver) } : {}),
 		...(memory ? { memory_search: memorySearchTool(memory) } : {}),
 		// Fetch is always in the set (local extraction needs no config);
-		// search rides its config block — both live via configRef, so an
-		// edit is effective next turn without a restart.
+		// search rides its config block. This runs per turn against
+		// configRef, so a mini-app save — the one writer that swaps the
+		// ref in place — applies next turn: provider switch and search
+		// add/remove alike (its flip is logged at the save boundary). A
+		// hand edit to goblin.json5 is only seen on restart.
 		...(web ? { fetch: fetchTool(web) } : {}),
 		...(web?.configRef.current.search ? { search: searchTool(web) } : {}),
 	};

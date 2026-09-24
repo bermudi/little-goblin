@@ -67,6 +67,11 @@ export function ensureHomeLayout(): void {
 			"Facts, not plans. Short lines. No secrets. Read before writing —",
 			"update what exists instead of stacking a new entry.",
 			"",
+			"Deployment facts (this box):",
+			"- Browser automation goes through the agent-browser CLI",
+			"  (skills/browser). Missing on a rebuilt box? Install with",
+			"  `npm i -g agent-browser && agent-browser install`.",
+			"",
 		].join("\n"),
 	);
 	seedFile(

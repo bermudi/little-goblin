@@ -215,6 +215,10 @@ async function boot() {
 				}
 			: {}),
 	});
+	// The search block's enable/disable redraws the registered tool set —
+	// a cache boundary per DESIGN.md "Web access" — so the flip gets its
+	// own line, not just the generic config-written one.
+	let searchInSet = config.search !== undefined;
 	const http = startHttp({
 		configRef,
 		botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN),
@@ -223,6 +227,15 @@ async function boot() {
 			// publicUrl is operator-editable through the app — keep the menu
 			// button (the door) in sync without a restart.
 			applyMenuButton(tg.bot.api, configRef.current.publicUrl);
+			const searchNow = configRef.current.search !== undefined;
+			if (searchNow !== searchInSet) {
+				log.info(
+					searchNow
+						? "search tool enabled — joins the set next turn"
+						: "search tool disabled — leaves the set next turn",
+				);
+				searchInSet = searchNow;
+			}
 			// Memory is a boot-time snapshot (queue rows bind to the
 			// endpoint+bank hash) — a changed block needs a restart.
 			if (JSON.stringify(configRef.current.memory ?? null) !== JSON.stringify(memoryBootConfig ?? null)) {

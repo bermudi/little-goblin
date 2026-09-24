@@ -200,6 +200,9 @@ describe("ensureHomeLayout", () => {
 		expect(agents).toContain("Your operating notes");
 		// The growth rule must be inside the file — that's the mechanism.
 		expect(agents).toContain("Write things down");
+		// Deployment facts live here too (DESIGN.md, "Web access"): the
+		// agent-browser install command is the box-rebuild recovery path.
+		expect(agents).toContain("npm i -g agent-browser && agent-browser install");
 		const user = readFileSync(join(dir, "workspace", "USER.md"), "utf8");
 		expect(user).toContain("Your model of the operator");
 		expect(user).toContain("status: active");

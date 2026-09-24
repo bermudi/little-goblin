@@ -42,7 +42,6 @@ like `en-US-AriaNeural`. Two caveats, up front: it's unofficial and can
 break, and `ffmpeg` must be installed (it repackages the audio into a real
 Telegram voice-note bubble). A synthesis failure is always reported, never
 silent — and never fails the whole reply because of it.
-
 Three ways to hear the bot:
 
 1. **`/voice` mode** — per topic. The reply arrives as voice notes instead
@@ -63,6 +62,30 @@ Three ways to hear the bot:
    file straight from disk (no re-typing it) and sends voice notes inline.
    Long input is split at sentence boundaries automatically.
 
+### Speaking another language
+
+Add `voices` to the `tts` block and the bot can pick the language per voice
+note:
+
+```json5
+tts: {
+  kind: "edge",
+  voice: "en-US-AriaNeural",
+  voices: ["es-ES-ElviraNeural", "es-MX-JorgeNeural"],
+},
+```
+
+Ask "read me this in Spanish" and the speak tool picks a Spanish voice —
+the language follows the voice name, and Edge reads Spanish text with a
+Spanish voice natively. The choice is validated against your list: the bot
+can only pick voices you configured, and an unknown name errors the tool
+call so the model corrects itself.
+
+The default `voice` is untouched: `/voice` mode and the 🔊 button always
+use it. A voice is a language — an English reply through a Spanish voice
+comes out mangled, so pick the voice that matches the text being spoken
+(that's the model's job, and the tool description tells it so).
+
 Combine `/voice` mode with transcription and a topic becomes fully
 ears-in-ears-out: voice notes in, voice notes out, full text history
 underneath.
@@ -75,4 +98,5 @@ underneath.
 | 🔊 button missing | same — no `tts`, no button |
 | Voice notes arrive as files the model can't read | `transcription` not configured, or its provider was down (check the log) |
 | Synthesis suddenly fails for everything | Edge endpoint changed (it's unofficial); check the log, then check for a bot update |
+| A voice note comes out mangled | text language and voice language don't match — Edge reads whatever text it's given with the voice's phonetics |
 | `ffmpeg` warnings at boot/install | install `ffmpeg` — speech features need it |

@@ -674,14 +674,17 @@ Resolved values never enter the tool environment, the model context, or logs.
 - **Delivery**: `streamText` deltas → throttled message edits (~1/s), final
   flush on completion. Typing indicator while a turn runs. Errors post a short
   message and log structured detail.
-- **TTS**: `tts: {kind: "edge", voice, rate?}` — the Edge read-aloud
+- **TTS**: `tts: {kind: "edge", voice, rate?, voices?}` — the Edge read-aloud
   websocket service (no auth, unofficial, it can break; failures surface
   as a warn + a short chat message, never a turn failure — the 🔊 tap is
   answered immediately because Telegram expires callback queries in
   seconds and synthesis outruns them, so an outcome can't ride the
   toast). Three doors into
   the same `synthesizeSpeech`: the `speak` tool (text or file path, sent
-  in-stream via the sink), a 🔊 button stamped on a completed reply's
+  in-stream via the sink — and, when `tts.voices` configures alternates, a
+  per-call `voice` zod-validated against that allowlist; Edge derives the
+  language from the voice name, so alternate voices are alternate
+  languages), a 🔊 button stamped on a completed reply's
   last bubble, and `/voice` mode (below). Input over ~10k chars is
   chunked at sentence boundaries inside the module — the cap is a sanity
   guard, never a control-flow path the model must recover from. Button
@@ -697,6 +700,8 @@ Resolved values never enter the tool environment, the model context, or logs.
   full reply text — one process, one operator, no schema change), and a
   miss (restart, old message) degrades to the tapped bubble's text,
   warn-logged. No button in voice mode — the reply is already audio.
+  Button and `/voice` mode always use the default `voice`; per-call
+  choice is the `speak` tool's alone.
 - **Files**: `send_file` is the file-out twin of intake media: it
   *names*, it does not send. The tool hands a workspace path (+ optional
   caption) to the turn's delivery sink (`sink.onFile`), which owns the

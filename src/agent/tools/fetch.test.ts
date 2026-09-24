@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuthStore } from "../../auth.ts";
 import type { Config } from "../../config.ts";
+import { setLogFile } from "../../log.ts";
 import { extractors, fetchTool, windowText } from "./fetch.ts";
 
 const fakeAuth: AuthStore = {
@@ -29,6 +30,7 @@ beforeEach(() => {
 afterEach(() => {
 	for (const s of servers) s.stop(true);
 	servers = [];
+	setLogFile(null);
 	delete process.env.GOBLIN_HOME;
 	rmSync(home, { recursive: true, force: true });
 });
@@ -115,6 +117,29 @@ describe("fetch tool — providers", () => {
 			expect((err as Error).message).toContain("parallel");
 			expect((err as Error).message).toContain("timeout");
 		}
+	});
+
+	test("a failed local fetch rethrows and gets its own log line — a dead page is not a silence", async () => {
+		// Loopback port 1 is always closed: connection refused in
+		// milliseconds, no DNS, no network dependency — the deterministic
+		// seam for a transport failure on the default (local) kind.
+		const target = join(home, "state", "goblin.log");
+		setLogFile(target);
+		const tool = fetchTool(depsWith(undefined));
+		try {
+			await exec(tool, { url: "http://127.0.0.1:1/dead" });
+			expect.unreachable();
+		} catch (err) {
+			expect((err as Error).message).toContain("local");
+		}
+		const entry = JSON.parse(readFileSync(target, "utf8")) as Record<string, unknown>;
+		expect(entry).toMatchObject({
+			level: "warn",
+			msg: "web fetch failed",
+			url: "http://127.0.0.1:1/dead",
+			kind: "local",
+		});
+		expect(String(entry.error)).toContain("local");
 	});
 });
 

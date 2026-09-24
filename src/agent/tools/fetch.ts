@@ -247,22 +247,26 @@ export const fetchTool = (deps: WebToolDeps) =>
 			const budget = input.maxChars ?? DEFAULT_BUDGET;
 
 			let extracted: Extracted | Rejected;
-			if (kind === "local") {
-				extracted = await localExtract(input.url);
-			} else {
-				const authName = cfg && "auth" in cfg ? cfg.auth : undefined;
-				const key = authName ? await deps.auth.resolve(authName) : undefined;
-				try {
+			try {
+				if (kind === "local") {
+					extracted = await localExtract(input.url);
+				} else {
+					const authName = cfg && "auth" in cfg ? cfg.auth : undefined;
+					const key = authName ? await deps.auth.resolve(authName) : undefined;
 					extracted = await extractors[kind](input.url, key);
-				} catch (err) {
-					log.warn("web fetch failed", {
-						url: input.url,
-						kind,
-						error: (err as Error).message,
-						ms: Date.now() - started,
-					});
-					throw err;
 				}
+			} catch (err) {
+				// Warn-and-rethrow covers every failure path — the search
+				// contract: transport (dead link, DNS), auth resolve, and
+				// provider extraction all read as themselves in the log,
+				// never as a downstream "model stream error".
+				log.warn("web fetch failed", {
+					url: input.url,
+					kind,
+					error: (err as Error).message,
+					ms: Date.now() - started,
+				});
+				throw err;
 			}
 			const logMeta = (m: HttpMeta) => ({
 				status: m.status,

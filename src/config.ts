@@ -67,13 +67,20 @@ export function ensureHomeLayout(): void {
 			"Facts, not plans. Short lines. No secrets. Read before writing —",
 			"update what exists instead of stacking a new entry.",
 			"",
-			"Deployment facts (this box):",
-			"- Browser automation goes through the agent-browser CLI",
-			"  (skills/browser). Missing on a rebuilt box? Install with",
-			"  `npm i -g agent-browser && agent-browser install`.",
-			"",
 		].join("\n"),
 	);
+	// The browser skill ships with the repo (DESIGN.md, "Web access"): its
+	// compatibility line carries the dependency + recovery command into
+	// the system prompt's catalog, and a rebuilt box regains the whole
+	// capability — stub, modes, recovery — without operator prompting or
+	// agent memory. Write-if-absent: once seeded, the workspace copy is
+	// goblin's to evolve.
+	mkdirSync(join(paths.skills(), "browser"), { recursive: true });
+	const template = readFileSync(
+		join(import.meta.dir, "..", "deploy", "skills", "browser", "SKILL.md"),
+		"utf8",
+	);
+	seedFile(join(paths.skills(), "browser", "SKILL.md"), template);
 	seedFile(
 		paths.user(),
 		[

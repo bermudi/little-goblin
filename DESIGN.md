@@ -343,9 +343,15 @@ tool. MCP stays out, with its return conditions on record (below).
   Chrome, accessibility snapshots with `@eN` refs, sessions, and idle
   shutdown; bash is the channel. The SKILL.md is a thin stub pointing at
   `agent-browser skills get core` — the CLI serves version-matched
-  instructions, so the stub never rots. Install is deployment fact in the
-  workspace AGENTS.md (`npm i -g agent-browser && agent-browser install`),
-  not config. The operator-browser attach mode (pin-tab, never close
+  instructions, so the stub never rots. The skill ships with the repo
+  (`deploy/skills/browser/SKILL.md`, seeded write-if-absent at first
+  boot): capability plumbing is not agent memory — a rebuilt box regains
+  the skill, and once seeded the workspace copy is goblin's to evolve.
+  The dependency + recovery command ride the `compatibility` frontmatter
+  line, which the system prompt's catalog renders every turn — a missing
+  CLI is never a dead-end invitation, and the operator never has to be
+  the one to mention it. Install as config knob stays out for the same
+  reason as every other knob. The operator-browser attach mode (pin-tab, never close
   operator tabs, never read credentials) is carried in the skill now, for
   the day a box with a display wants it. If the model fumbles CLI
   ergonomics in practice, a thin native `browser` tool wrapping the same
@@ -376,7 +382,11 @@ pass through — real skills in the wild carry extra fields.
 
 One catalog, fixed: `workspace/skills/`. It sits inside the agent's cwd so
 goblin can author its own — writing `skills/<name>/SKILL.md` is the entire
-publishing flow, live next turn. Sharing in a host skill is a symlink —
+publishing flow, live next turn. One exception ships from the repo: the
+browser skill is seeded by `ensureHomeLayout` (write-if-absent, from
+`deploy/skills/browser/SKILL.md`) because DESIGN mandates the capability —
+a rebuilt box must regain it without operator prompting or agent memory.
+Sharing in a host skill is a symlink —
 made by goblin on request, or by hand; there is no second root, no source
 policy, no selection UI.
 

@@ -200,13 +200,25 @@ describe("ensureHomeLayout", () => {
 		expect(agents).toContain("Your operating notes");
 		// The growth rule must be inside the file — that's the mechanism.
 		expect(agents).toContain("Write things down");
-		// Deployment facts live here too (DESIGN.md, "Web access"): the
-		// agent-browser install command is the box-rebuild recovery path.
-		expect(agents).toContain("npm i -g agent-browser && agent-browser install");
 		const user = readFileSync(join(dir, "workspace", "USER.md"), "utf8");
 		expect(user).toContain("Your model of the operator");
 		expect(user).toContain("status: active");
 		expect(statSync(join(dir, "workspace", "AGENTS.md")).mode & 0o777).toBe(0o644);
+	});
+
+	test("first boot seeds the browser skill — capability plumbing survives a rebuild", () => {
+		const dir = useHome();
+		ensureHomeLayout();
+		const skill = readFileSync(join(dir, "workspace", "skills", "browser", "SKILL.md"), "utf8");
+		// The compatibility line is what the system prompt's catalog
+		// renders — the recovery command must ride it, so a missing CLI is
+		// never a dead-end invitation (DESIGN.md, "Web access").
+		expect(skill).toContain(
+			"compatibility: Requires the agent-browser CLI and a Chrome/Chromium binary",
+		);
+		expect(skill).toContain("npm i -g agent-browser && agent-browser install");
+		// Frontmatter name must match the directory or the catalog skips it.
+		expect(skill).toContain("name: browser");
 	});
 
 	test("existing identity files are never clobbered", () => {
@@ -217,6 +229,16 @@ describe("ensureHomeLayout", () => {
 		ensureHomeLayout();
 		expect(readFileSync(join(dir, "workspace", "AGENTS.md"), "utf8")).toBe("my notes");
 		expect(readFileSync(join(dir, "workspace", "USER.md"), "utf8")).toBe("my user model");
+	});
+
+	test("an evolved browser skill is never clobbered by the seed", () => {
+		const dir = useHome();
+		mkdirSync(join(dir, "workspace", "skills", "browser"), { recursive: true });
+		writeFileSync(join(dir, "workspace", "skills", "browser", "SKILL.md"), "my evolution");
+		ensureHomeLayout();
+		expect(readFileSync(join(dir, "workspace", "skills", "browser", "SKILL.md"), "utf8")).toBe(
+			"my evolution",
+		);
 	});
 });
 

@@ -91,12 +91,15 @@ describe("fetch tool — local", () => {
 describe("fetch tool — providers", () => {
 	test("parallel extract: bearer auth, full_content returned", async () => {
 		let sawAuth = "";
+		let sawBody = "";
 		const base = serve(async (req) => {
 			sawAuth = req.headers.get("authorization") ?? "";
+			sawBody = await new Response(req.body).text();
 			return Response.json({ results: [{ title: "Page", url: "https://example.com", full_content: "A".repeat(400) }] });
 		});
 		const { title, text } = await extractors.parallel("https://example.com/deep", "key-for-parallel", base);
 		expect(sawAuth).toBe("Bearer key-for-parallel");
+		expect(JSON.parse(sawBody)).toEqual({ urls: ["https://example.com/deep"], advanced_settings: { full_content: true } });
 		expect(title).toBe("Page");
 		expect(text).toBe("A".repeat(400));
 	});

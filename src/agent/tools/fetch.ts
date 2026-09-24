@@ -60,7 +60,9 @@ const extractors: Record<Exclude<FetchKind, "local">, (url: string, key: string 
 	parallel: async (url, key, baseUrl) => {
 		const data = (await postJson("parallel", `${baseUrl ?? BASES.parallel}/v1/extract`, key ? { Authorization: `Bearer ${key}` } : {}, {
 			urls: [url],
-			full_content: true,
+			// v1 API: full content rides advanced_settings, not the top level
+			// (top-level `full_content` was the /v1beta shape hermes' SDK used).
+			advanced_settings: { full_content: true },
 		})) as { results?: unknown[]; errors?: unknown[] };
 		const row = (data.results ?? [])[0] as Record<string, unknown> | undefined;
 		if (!row) {

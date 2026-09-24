@@ -210,10 +210,10 @@ agent loop.
 
 ## Tools (v1)
 
-Hand-rolled, zod-validated, eight:
+Hand-rolled, zod-validated, ten:
 
 `read_file` `write_file` `edit_file` `bash` (timeout) `speak` `schedule`
-`send_file` `memory_search`
+`send_file` `memory_search` `search` `fetch`
 
 All tools run in the deployment workspace — conversations have no cwd and
 there is no `/cd`. Working elsewhere is the agent's own business (`cd x &&
@@ -264,6 +264,92 @@ those.
 
 Subagent, MCP, and external-agent tools do not exist —
 each arrives with the feature that needs it, designed then, not spec'd now.
+
+## Web access (search, fetch, browser)
+
+Returned on demand (2026-09-24): scheduled jobs answering "brief me on X"
+need the outside world. Classification: `search` and `fetch` are
+chat-native — a personal assistant that can't look things up is a gap
+against this doc. The browser returns as a skill over a CLI, not a native
+tool. MCP stays out, with its return conditions on record (below).
+
+- **`search` is one tool with a provider behind it** — the model-provider
+  pattern. OpenClaw, which also has MCP, still ships a generic `web_search`
+  with vendors plugged in behind it (plus a dozen per-vendor tools); hermes
+  kept one `web_search` with eleven backends. One tool it is: provider
+  switch = config edit, and the tool's name, schema, and result shape never
+  move — request bytes and the model's habits stay stable. Swapping
+  providers via MCP would swap tool names and schemas in front of the
+  model; the flexibility argument inverts.
+- **Config**: optional `search` block, the tts/transcription convention
+  (absent or `""` → tool absent): `{kind: "brave"|"exa"|"ddg", auth?}`.
+  `auth` is an auth.jsonl ref, required for brave/exa; ddg is keyless (the
+  unofficial endpoint — it rate-limits and can break; it's the no-key
+  default, not a promise). More kinds slot in like transcription
+  providers. Enabling/disabling the block is a deploy-time cache boundary,
+  logged. v1 ships brave + exa + ddg.
+- **Input**: `{query, count?}` zod-validated, count default 5 cap 10. No
+  provider-knob mirroring (freshness, topic, domain filters): recency is
+  expressible in the query, and knobs are how fifteen search tools happen.
+- **Output is deterministic text**: numbered `title — URL — snippet` lines.
+  Provider answer-fields and full-content payloads are dropped at the
+  boundary; snippets bounded by the read/bash truncation discipline
+  (complete lines, byte ceiling, recovery named: re-query narrower or
+  `fetch` a result URL). Every result carries its URL — fetch is the named
+  next step.
+- **`fetch` is always in the set** — no config, no key, no capability
+  `bash` + curl lacks; what it adds is readability extraction and bounded,
+  self-describing output with no shell-quoting hazards. Input `{url,
+  maxChars?}`: redirects followed (bounded), 20s timeout, 8 MiB download
+  cap, content-type dispatch — HTML → `@mozilla/readability` over
+  `linkedom` (pure JS, the industry path), text-ish (text, markdown, json,
+  csv, xml) → raw, anything else (PDF included) → structured refusal
+  naming recovery (`bash` + file tools, or `send_file` to put it in the
+  operator's hands). v1 does not parse PDFs; the refusal says so instead
+  of guessing.
+- **Overflow goes to disk, recovery named** (hermes' `web_extract` rule,
+  adopted): default 15k-char head+tail window (~75/25, cut on line
+  boundaries) with a `[TRUNCATED n chars]` footer; the full extracted text
+  lands in `$GOBLIN_HOME/state/webcache/<sha>.txt` and the footer names the
+  absolute path plus the exact `read_file` call to page through the middle.
+  Near-empty extraction from a JS shell says so and names the browser as
+  the recovery path — never a silent empty result.
+- **No SSRF policy — recorded as a ruling.** `bash` already has full
+  network access, so pretending `fetch` is a boundary is security theater;
+  the boundary is the tool set, same as `bash`. Loopback/LAN fetches are
+  legal (the local bot-api server is fair game).
+- **Auth never enters tool env** (the standing rule): the search key is
+  resolved lazily in-process at the point of use, exactly like provider
+  keys.
+- **Logging**: one line per external call — search logs provider, query,
+  count, duration, status; fetch logs url, status, content-type, bytes,
+  extraction outcome, truncated flag, duration. Failures surface as tool
+  errors, never silent empties.
+- **The browser is a skill, not a tool.** goblin authors
+  `skills/browser/SKILL.md` over the `agent-browser` CLI: hermes' default
+  local browser mode drives that same CLI, and openclaw's nine doc pages
+  (dedicated profile, port collisions, orphan sweeps, login management,
+  loopback auth) are the price of owning browser lifecycle in-process —
+  goblin borrows the capability, not the machinery. The CLI owns headless
+  Chrome, accessibility snapshots with `@eN` refs, sessions, and idle
+  shutdown; bash is the channel. The SKILL.md is a thin stub pointing at
+  `agent-browser skills get core` — the CLI serves version-matched
+  instructions, so the stub never rots. Install is deployment fact in the
+  workspace AGENTS.md (`npm i -g agent-browser && agent-browser install`),
+  not config. The operator-browser attach mode (pin-tab, never close
+  operator tabs, never read credentials) is carried in the skill now, for
+  the day a box with a display wants it. If the model fumbles CLI
+  ergonomics in practice, a thin native `browser` tool wrapping the same
+  CLI arrives — designed then, with evidence. Not now.
+- **MCP stays out**, return conditions on record: (1) stdio servers take
+  secrets via env vars, which the bash-inherits-env rule forbids — remote
+  HTTP servers with per-call header auth, or config-file servers, would be
+  the only allowed shapes; (2) dynamic tool schemas drift the request
+  prefix — a returning MCP layer must snapshot its tool surface at boot and
+  log every change; (3) servers dump 5–50 tools into every request — both
+  references built filtering/tool-search machinery to cope, and goblin
+  doesn't ship that until a second concrete service demand (beyond
+  search/fetch/browser) names itself.
 
 ## Skills
 
@@ -784,8 +870,9 @@ is an export/query command, not a format property.
 ## Config
 
 `goblin.json5`: provider registry, per-conversation default model/thinking,
-optional `transcription` block, optional `memory` block (absent =
-memory disabled). No secrets — those live in `auth.jsonl`.
+optional `transcription` block, optional `search` block (absent =
+search tool absent), optional `memory` block (absent = memory
+disabled). No secrets — those live in `auth.jsonl`.
 
 **Settings are operator-facing UI, not SSH.** The mini app is the
 configuration surface: the process reads and writes `goblin.json5` itself, and
@@ -826,8 +913,8 @@ src/
                     AGENTS.md/USER.md, each capped at 8k chars; re-read
                     every turn, edits live next message)
     skills.ts       catalog scan + frontmatter validation → ## skills section
-    tools/          the eight tools (read, write, edit, bash, speak,
-                    schedule, send_file, memory_search)
+    tools/          the ten tools (read, write, edit, bash, speak,
+                    schedule, send_file, memory_search, search, fetch)
   http/             mini-app serving
 ```
 
@@ -853,8 +940,10 @@ If a capability can't be classified in one sentence, the classification is
    the design conversation — have it before building.
 
 memory store (returned on demand — approved in `Long-term memory`) ·
-scheduler (returned on demand — designed in `Scheduled
-work`; heartbeat/proactive monitoring stays out) · conversation-lifecycle
+scheduler (returned on demand — designed in `Scheduled work`;
+heartbeat/proactive monitoring stays out) · web access (returned on
+demand — designed in `Web access`; MCP and a native browser tool stay
+out) · conversation-lifecycle
 commands · subagents · delegated work · external agents · ACP · MCP ·
 project environments · inner life · onboarding wizard · state
 migrations (general framework; additive memory schema changes are in scope) ·

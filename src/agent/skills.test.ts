@@ -51,6 +51,24 @@ describe("loadCatalog", () => {
 		expect(loadCatalog(root).entries[0]!.compatibility).toBe("Requires the mq CLI");
 	});
 
+	// Regression: the spec's own allowed-tools shape (a LIST) was rejected
+	// by a string-only schema, silently dropping real skills — the live
+	// browser skill never made it into the catalog until this was caught.
+	test("spec-shaped allowed-tools (a list) parses and lists the skill", () => {
+		const root = useRoot();
+		writeSkill(
+			root,
+			"browser",
+			'name: browser\ndescription: drive Chrome\nallowed-tools:\n  - Bash(agent-browser:*)',
+		);
+		const catalog = loadCatalog(root);
+		expect(catalog.skipped).toBe(0);
+		expect(catalog.entries[0]!.name).toBe("browser");
+		// The bare-string form stays accepted too.
+		writeSkill(root, "mq", 'name: mq\ndescription: d\nallowed-tools: "Bash(mq:*)"');
+		expect(loadCatalog(root).skipped).toBe(0);
+	});
+
 	test("a directory without SKILL.md is skipped; loose files are ignored", () => {
 		const root = useRoot();
 		mkdirSync(join(root, "empty"), { recursive: true });

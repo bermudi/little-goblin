@@ -26,7 +26,11 @@ const frontmatterSchema = z.object({
 	license: z.string().optional(),
 	compatibility: z.string().min(1).max(500).optional(),
 	metadata: z.record(z.string(), z.string()).optional(),
-	"allowed-tools": z.string().optional(),
+	// Spec-experimental; nothing here enforces per-skill tool scope, but
+	// the spec form is a LIST ("allowed-tools:\n  - Bash(...)") — a bare
+	// string schema rejected the spec's own shape and silently dropped
+	// real skills from the catalog. Accept both; ignore for behavior.
+	"allowed-tools": z.union([z.string(), z.array(z.string())]).optional(),
 	// Non-spec extension the operator's catalog carries: manual-only
 	// skills stay out of the advertised list.
 	"disable-model-invocation": z.boolean().optional(),

@@ -7,12 +7,15 @@ import type { HindsightClient } from "../../hindsight.ts";
 import type { JobsStore } from "../../jobs.ts";
 import { bashTool } from "./bash.ts";
 import { editFileTool } from "./edit.ts";
+import { fetchTool } from "./fetch.ts";
 import { memorySearchTool } from "./memory.ts";
 import { readFileTool } from "./read.ts";
 import { scheduleTool } from "./schedule.ts";
 import { type OutgoingFile, sendFileTool } from "./send.ts";
 import { speakTool } from "./speak.ts";
+import { searchTool } from "./search.ts";
 import { writeFileTool } from "./write.ts";
+import type { WebToolDeps } from "./web.ts";
 
 export interface VoiceToolDeps {
 	synthesize(text: string, voice?: string): Promise<Uint8Array[]>;
@@ -53,6 +56,7 @@ export function makeTools(
 	schedule?: ScheduleToolDeps,
 	file?: FileToolDeps,
 	memory?: MemoryToolDeps,
+	web?: WebToolDeps,
 ): ToolSet {
 	return {
 		read_file: readFileTool(cwd),
@@ -65,5 +69,10 @@ export function makeTools(
 		...(schedule ? { schedule: scheduleTool(schedule) } : {}),
 		...(file ? { send_file: sendFileTool(cwd, file.deliver) } : {}),
 		...(memory ? { memory_search: memorySearchTool(memory) } : {}),
+		// Fetch is always in the set (local extraction needs no config);
+		// search rides its config block — both live via configRef, so an
+		// edit is effective next turn without a restart.
+		...(web ? { fetch: fetchTool(web) } : {}),
+		...(web?.configRef.current.search ? { search: searchTool(web) } : {}),
 	};
 }

@@ -80,6 +80,24 @@ the 🔊 button, the `speak` tool). `transcription` transcribes incoming
 voice/audio/video notes so text-only models can read them. Both need
 `ffmpeg` in `PATH`. Details in [Voice](voice.md).
 
+### Web access
+
+```json5
+// search: { kind: "brave", auth: "brave" },
+// fetch: { kind: "parallel", auth: "parallel" },
+```
+
+`search` selects the provider behind the `search` tool — kinds `brave`,
+`exa`, `jina`, `tavily`, `firecrawl`, `parallel`, `ddg`. Unset means the
+tool is absent. `jina` and `ddg` work keyless (rate-limited, unofficial
+for ddg); every other kind names an `auth.jsonl` record.
+
+`fetch` selects the extraction provider behind the `fetch` tool — kinds
+`local` (default when unset: direct HTTP + readability, no key), `jina`,
+`tavily`, `firecrawl`, `parallel`. Search and fetch are chosen
+independently, so a search-only key like Brave's free tier pairs with a
+full-extraction provider.
+
 ### Telegram
 
 ```json5

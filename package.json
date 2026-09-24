@@ -15,11 +15,13 @@
     "@ai-sdk/groq": "2.0.53",
     "@ai-sdk/openai-compatible": "^1.0.0",
     "@ai-sdk/provider-utils": "3",
+    "@mozilla/readability": "^0.6.0",
     "@openrouter/ai-sdk-provider": "^1.0.0",
     "ai": "^5.0.0",
     "cron-parser": "^5.10.1",
     "grammy": "^1.38.0",
     "json5": "^2.2.3",
+    "linkedom": "^0.18.13",
     "ws": "8.21.3",
     "zod": "^4.0.0"
   },

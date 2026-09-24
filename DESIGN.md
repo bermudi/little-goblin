@@ -282,12 +282,18 @@ tool. MCP stays out, with its return conditions on record (below).
   providers via MCP would swap tool names and schemas in front of the
   model; the flexibility argument inverts.
 - **Config**: optional `search` block, the tts/transcription convention
-  (absent or `""` → tool absent): `{kind: "brave"|"exa"|"ddg", auth?}`.
-  `auth` is an auth.jsonl ref, required for brave/exa; ddg is keyless (the
-  unofficial endpoint — it rate-limits and can break; it's the no-key
-  default, not a promise). More kinds slot in like transcription
-  providers. Enabling/disabling the block is a deploy-time cache boundary,
-  logged. v1 ships brave + exa + ddg.
+  (absent or `""` → tool absent): `{kind, auth?}` with kinds
+  `brave|exa|jina|tavily|firecrawl|parallel|ddg`. `auth` is an auth.jsonl
+  ref, required for every kind but jina (keyless tolerated, rate-limited)
+  and ddg (keyless — the unofficial html endpoint; it can rate-limit or
+  break, it's the no-key default, not a promise). Enabling/disabling the
+  block is a deploy-time cache boundary, logged.
+- **Wire formats** follow hermes' plugins/web (brave and tavily verbatim)
+  and the vendors' own SDK wire paths, checked against the SDK sources:
+  exa `POST api.exa.ai/search` (`x-api-key`), parallel
+  `POST api.parallel.ai/v1/search` + `/v1/extract` (Bearer), firecrawl
+  `POST api.firecrawl.dev/v2/search` + `/v2/scrape` (Bearer), jina
+  `s.jina.ai` / `r.jina.ai` (Bearer, keyless tolerated).
 - **Input**: `{query, count?}` zod-validated, count default 5 cap 10. No
   provider-knob mirroring (freshness, topic, domain filters): recency is
   expressible in the query, and knobs are how fifteen search tools happen.
@@ -297,16 +303,19 @@ tool. MCP stays out, with its return conditions on record (below).
   (complete lines, byte ceiling, recovery named: re-query narrower or
   `fetch` a result URL). Every result carries its URL — fetch is the named
   next step.
-- **`fetch` is always in the set** — no config, no key, no capability
-  `bash` + curl lacks; what it adds is readability extraction and bounded,
-  self-describing output with no shell-quoting hazards. Input `{url,
-  maxChars?}`: redirects followed (bounded), 20s timeout, 8 MiB download
-  cap, content-type dispatch — HTML → `@mozilla/readability` over
-  `linkedom` (pure JS, the industry path), text-ish (text, markdown, json,
-  csv, xml) → raw, anything else (PDF included) → structured refusal
-  naming recovery (`bash` + file tools, or `send_file` to put it in the
-  operator's hands). v1 does not parse PDFs; the refusal says so instead
-  of guessing.
+- **`fetch` is always in the set** — default `local`, no config, no key:
+  direct HTTP (20s timeout, 8 MiB cap) + in-process readability
+  extraction (`@mozilla/readability` over `linkedom` — pure JS, the
+  industry path). An optional `fetch` block selects a server-side
+  extractor instead: `{kind: "jina"|"tavily"|"firecrawl"|"parallel",
+  auth?}` — the per-capability split hermes ships: search and fetch
+  providers are chosen independently (brave for search, parallel for
+  extract, say). Both paths share one output discipline. Input `{url,
+  maxChars?}`; local does content-type dispatch — HTML → readability,
+  text-ish (text, markdown, json, csv, xml) → raw, anything else (PDF
+  included) → structured refusal naming recovery (`bash` + file tools,
+  or `send_file` to put it in the operator's hands). v1 does not parse
+  PDFs; the refusal says so instead of guessing.
 - **Overflow goes to disk, recovery named** (hermes' `web_extract` rule,
   adopted): default 15k-char head+tail window (~75/25, cut on line
   boundaries) with a `[TRUNCATED n chars]` footer; the full extracted text

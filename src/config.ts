@@ -30,6 +30,7 @@ export const paths = {
 	logFile: () => join(goblinHome(), "state", "goblin.log"),
 	modelsDevCache: () => join(goblinHome(), "state", "models.dev.json"),
 	openrouterModelsCache: () => join(goblinHome(), "state", "openrouter-models.json"),
+	webcache: () => join(goblinHome(), "state", "webcache"),
 };
 
 export function ensureHomeLayout(): void {
@@ -193,6 +194,45 @@ const configSchema = z
 			])
 			.transform((v) => (v === "" ? undefined : v))
 			.optional(),
+		// Web search provider (DESIGN.md, "Web access"). Absent or "" →
+		// the search tool is not in the set. ddg is keyless; jina tolerates
+		// keyless (rate-limited); every other kind requires an auth ref.
+		search: z
+			.union([
+				z.discriminatedUnion("kind", [
+					z.object({ kind: z.literal("brave"), auth: z.string().min(1) }),
+					z.object({ kind: z.literal("exa"), auth: z.string().min(1) }),
+					z.object({
+						kind: z.literal("jina"),
+						auth: z.string().min(1).optional(),
+					}),
+					z.object({ kind: z.literal("tavily"), auth: z.string().min(1) }),
+					z.object({ kind: z.literal("firecrawl"), auth: z.string().min(1) }),
+					z.object({ kind: z.literal("parallel"), auth: z.string().min(1) }),
+					z.object({ kind: z.literal("ddg") }),
+				]),
+				z.literal(""),
+			])
+			.transform((v) => (v === "" ? undefined : v))
+			.optional(),
+		// Fetch/extract provider (DESIGN.md, "Web access"). Absent or "" →
+		// local (direct HTTP + in-process readability extraction).
+		fetch: z
+			.union([
+				z.discriminatedUnion("kind", [
+					z.object({ kind: z.literal("local") }),
+					z.object({
+						kind: z.literal("jina"),
+						auth: z.string().min(1).optional(),
+					}),
+					z.object({ kind: z.literal("tavily"), auth: z.string().min(1) }),
+					z.object({ kind: z.literal("firecrawl"), auth: z.string().min(1) }),
+					z.object({ kind: z.literal("parallel"), auth: z.string().min(1) }),
+				]),
+				z.literal(""),
+			])
+			.transform((v) => (v === "" ? undefined : v))
+			.optional(),
 		allowedUsers: z.array(z.number().int().positive()).min(1),
 		// Self-hosted telegram-bot-api in --local mode, e.g. http://127.0.0.1:8081.
 		// Absent = default api.telegram.org.
@@ -243,6 +283,8 @@ export type ProviderConfig = z.infer<typeof providerSchema>;
 export type Config = z.infer<typeof configSchema>;
 export type TranscriptionConfig = NonNullable<Config["transcription"]>;
 export type TtsConfig = NonNullable<Config["tts"]>;
+export type SearchConfig = NonNullable<Config["search"]>;
+export type FetchConfig = NonNullable<Config["fetch"]>;
 
 // ---------- load / write ----------
 

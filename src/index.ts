@@ -160,6 +160,9 @@ async function boot() {
 							},
 						}
 					: undefined,
+					// Web tools: fetch always (local needs no config), search
+					// behind its config block — both read configRef live.
+					{ configRef, auth },
 			);
 		},
 		...(memoryClient && memoryBootConfig

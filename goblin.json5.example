@@ -67,6 +67,16 @@
   //   auth: "groq", // resolves auth.jsonl record named "groq"
   // },
 
+  // --- Web access ---
+  // Search provider behind the `search` tool. Unset = no search tool.
+  // Kinds: brave | exa | jina | tavily | firecrawl | parallel | ddg
+  // (jina/ddg work without a key; the rest need an auth.jsonl record).
+  // search: { kind: "brave", auth: "brave" },
+  // Fetch/extract provider behind the `fetch` tool. Unset = local
+  // (direct HTTP + in-process readability — no key, handles plain HTML
+  // and text; JS-heavy sites route through the browser skill).
+  // fetch: { kind: "parallel", auth: "parallel" },
+
   // --- Telegram ---
   // Your user id (DM @userinfobot to find it). Only these users can talk.
   allowedUsers: [123456789],

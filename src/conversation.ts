@@ -53,6 +53,9 @@ export interface ConversationMetaPatch {
 }
 
 export interface ConversationStore {
+	// The shared handle — memory-queue, memory-contexts, and the outage
+	// tracker each own one table in the same database file.
+	readonly db: Database;
 	readonly memoryQueue: MemoryQueue;
 	readonly memoryContexts: MemoryContexts;
 	// Get-or-create by Telegram address. New conversations start at epoch 0.
@@ -273,6 +276,7 @@ export function openStore(dbPath: string): ConversationStore {
 	}
 
 	return {
+		db,
 		memoryQueue,
 		memoryContexts,
 		resolve(addr, defaultCwd) {

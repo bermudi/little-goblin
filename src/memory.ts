@@ -16,7 +16,8 @@ import {
 	type RecalledFact,
 } from "./hindsight.ts";
 import { log } from "./log.ts";
-import { MemoryQueueWorker, type MemoryQueue } from "./memory-queue.ts";
+import { OutageTracker } from "./memory-outage.ts";
+import { MemoryQueueWorker, type MemoryQueue, type WorkerOutcome } from "./memory-queue.ts";
 
 // ---------- client ----------
 
@@ -361,18 +362,53 @@ export function memoryStatus(options: {
 
 // ---------- bounded worker timer ----------
 
+export interface MemoryWorkerOutage {
+	tracker: OutageTracker;
+	// Sends the one-per-episode notice. Throws on delivery failure — the
+	// tracker retries on the next worker failure, never in a loop.
+	notify(conversationId: string, sinceMs: number, queued: number): Promise<void>;
+}
+
 // One owner per process. Drains until idle each interval; errors are
 // logged, never thrown — a wedged memory service must not crash the bot.
 export function startMemoryWorker(
 	queue: MemoryQueue,
 	client: HindsightClient,
-	intervalMs = 5000,
-	tickFn?: (signal?: AbortSignal) => Promise<boolean>,
+	opts: {
+		intervalMs?: number;
+		tickFn?: (signal?: AbortSignal) => Promise<boolean>;
+		outage?: MemoryWorkerOutage;
+	} = {},
 ): { stop(): Promise<void>; tickNow(): Promise<boolean> } {
 	let stopped = false;
 	let draining: Promise<void> | null = null;
-	const worker = new MemoryQueueWorker(queue, client);
-	const tick = tickFn ?? ((signal) => worker.tick(signal));
+	const outage = opts.outage;
+	// The observe seam: transport failures feed the outage episode, any
+	// advance clears it, and a crossed threshold fires the notice. The
+	// notice send is fire-and-forget on purpose — it must never delay or
+	// fail the worker tick that observed the failure.
+	const observe = outage
+		? (outcome: WorkerOutcome) => {
+				if (outcome.ok) {
+					outage.tracker.recordSuccess();
+					return;
+				}
+				if (!outcome.transport) return; // blocked is not an outage
+				const notice = outage.tracker.recordFailure(outcome.conversationId);
+				if (!notice) return;
+				const counts = queue.counts(client.target);
+				void outage
+						.notify(notice.conversation, notice.sinceMs, counts.pending + counts.submitted)
+					.then(() => outage.tracker.markNotified())
+					.catch((err) => {
+							log.warn("memory outage notice failed — retries on next failure", {
+								error: String(err),
+							});
+						});
+			}
+		: undefined;
+	const worker = new MemoryQueueWorker(queue, client, Date.now, observe);
+	const tick = opts.tickFn ?? ((signal) => worker.tick(signal));
 	async function drain(): Promise<void> {
 		for (;;) {
 			let worked = false;
@@ -390,7 +426,7 @@ export function startMemoryWorker(
 		draining = drain().finally(() => {
 			draining = null;
 		});
-	}, intervalMs);
+	}, opts.intervalMs ?? 5000);
 	if (typeof timer.unref === "function") timer.unref();
 	return {
 		async stop(): Promise<void> {

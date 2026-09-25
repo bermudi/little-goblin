@@ -130,6 +130,39 @@ test("destination changes cannot redirect queued personal content", async () => 
 	expect(store.memoryQueue.get(id)?.state).toBe("pending");
 });
 
+test("worker outcomes: transport failure signals an outage, advance clears it", async () => {
+	const outcomes: { ok: boolean; transport: boolean }[] = [];
+	// Dead port: submit fails as a retryable transport error.
+	const dead = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
+	const deadStore = storeAt(database());
+	const deadId = enqueue(deadStore, dead);
+	const deadWorker = new MemoryQueueWorker(
+		deadStore.memoryQueue, dead, Date.now,
+		(o) => outcomes.push({ ok: o.ok, transport: "transport" in o && o.transport }),
+	);
+	await deadWorker.tick();
+	expect(outcomes).toEqual([{ ok: false, transport: true }]);
+	expect(deadStore.memoryQueue.get(deadId)?.state).toBe("pending");
+
+	// Live service: submit acknowledged — an advance, not an outage.
+	let opId = "";
+	const client = service(() => Response.json({
+		success: true, bank_id: "g", items_count: 1, async: true,
+		operation_id: opId,
+	}));
+	const store = storeAt(database());
+	opId = enqueue(store, client);
+	const worker = new MemoryQueueWorker(
+		store.memoryQueue, client, Date.now,
+		(o) => outcomes.push({ ok: o.ok, transport: "transport" in o && o.transport }),
+	);
+	await worker.tick();
+	expect(outcomes).toEqual([
+		{ ok: false, transport: true },
+		{ ok: true, transport: false },
+	]);
+});
+
 test("excluding a topic purges only its pending rows", async () => {
 	const client = service(() => Response.json({ results: [] }));
 	const store = storeAt(database());

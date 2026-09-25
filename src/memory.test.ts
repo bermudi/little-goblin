@@ -204,9 +204,12 @@ describe("worker timer", () => {
 		let calls = 0;
 		const fakeQueue = {} as never;
 		const fakeClient = {} as never;
-		const w = startMemoryWorker(fakeQueue, fakeClient, 5, async () => {
-			calls++;
-			throw new Error("service down");
+		const w = startMemoryWorker(fakeQueue, fakeClient, {
+			intervalMs: 5,
+			tickFn: async () => {
+				calls++;
+				throw new Error("service down");
+			},
 		});
 		await Bun.sleep(25);
 		await w.stop();

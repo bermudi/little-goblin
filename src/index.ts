@@ -20,11 +20,13 @@ import {
 import { openStore } from "./conversation.ts";
 import { openJobs } from "./jobs.ts";
 import { buildMemoryClient, startMemoryWorker } from "./memory.ts";
+import { OutageTracker } from "./memory-outage.ts";
 import { startScheduler } from "./scheduler.ts";
 import { startHttp } from "./http/mod.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { Runtime } from "./runtime.ts";
 import { applyMenuButton, AUTH_TELEGRAM_TOKEN, startBot } from "./tg/mod.ts";
+import { sendMemoryOutageNotice } from "./tg/notify.ts";
 
 // The file sink attaches before anything that can fail — a malformed
 // config, bad auth file, corrupt DB, or occupied port must land in
@@ -74,7 +76,6 @@ async function boot() {
 	const memoryBootConfig = config.memory;
 	const memoryClient = buildMemoryClient(memoryBootConfig ?? undefined, auth);
 	const memoryState = { lastRecallOk: null as boolean | null };
-	const memoryWorker = memoryClient ? startMemoryWorker(store.memoryQueue, memoryClient) : null;
 	if (memoryClient && memoryBootConfig) {
 		log.info("memory enabled", {
 			baseUrl: memoryBootConfig.baseUrl,
@@ -215,6 +216,20 @@ async function boot() {
 				}
 			: {}),
 	});
+
+	// Memory worker after the bot: a persistent outage notices the
+	// operator through bot.api (one message per episode, into the topic
+	// whose retention is stuck — DESIGN.md, Slice 2 ruling 5 amendment).
+	const memoryWorker = memoryClient
+		? startMemoryWorker(store.memoryQueue, memoryClient, {
+				outage: {
+					tracker: new OutageTracker(store.db),
+					notify: (conversationId, sinceMs, queued) =>
+						sendMemoryOutageNotice(tg.bot.api, conversationId, sinceMs, queued),
+				},
+			})
+		: null;
+
 	// The search block's enable/disable redraws the registered tool set —
 	// a cache boundary per DESIGN.md "Web access" — so the flip gets its
 	// own line, not just the generic config-written one.

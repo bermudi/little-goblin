@@ -161,6 +161,13 @@ export class MemoryQueue {
 	}
 }
 
+// Outcome of one processed item, for the outage tracker (memory-outage.ts):
+// transport failures are outage signals; blocked is a permanent per-document
+// verdict with the service reachable and advances nothing.
+export type WorkerOutcome =
+	| { ok: true; conversationId: string }
+	| { ok: false; transport: boolean; conversationId: string };
+
 // One caller/process owns the outbox. tick() coalesces concurrent invocations;
 // it deliberately has no timer or implicit network activity at construction.
 export class MemoryQueueWorker {
@@ -170,6 +177,7 @@ export class MemoryQueueWorker {
 		private readonly queue: MemoryQueue,
 		private readonly client: HindsightClient,
 		private readonly clock: () => number = Date.now,
+		private readonly observe?: (outcome: WorkerOutcome) => void,
 	) {}
 
 	tick(signal?: AbortSignal): Promise<boolean> {
@@ -188,6 +196,7 @@ export class MemoryQueueWorker {
 		let state: MemoryQueueItem["state"];
 		let delayMs = 5_000;
 		let error: string | null = null;
+		let transportFailure = false;
 		try {
 			if (item.state === "pending") {
 				await this.client.submit(item.document, item.operation_id, signal);
@@ -214,9 +223,14 @@ export class MemoryQueueWorker {
 			state = err.retryable ? item.state : "blocked";
 			delayMs = Math.min(300_000, 1_000 * 2 ** Math.min(item.attempts, 9));
 			error = err.message; // HindsightError is deliberately payload-free.
+			transportFailure = err.retryable;
 		}
 		// A late shutdown must not discard an already acknowledged operation.
 		this.queue.update(item, state, this.clock() + delayMs, error);
+		const conversationId = item.document.conversationId;
+		if (transportFailure) this.observe?.({ ok: false, transport: true, conversationId });
+		else if (state === "submitted" || state === "completed") this.observe?.({ ok: true, conversationId });
+		else this.observe?.({ ok: false, transport: false, conversationId });
 		return true;
 	}
 }

@@ -3,8 +3,9 @@ import { createHmac } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Config } from "../config.ts";
-import { startHttp } from "./mod.ts";
+import type { Config, MemoryConfig } from "../config.ts";
+import { memoryConfigSchema } from "../config.ts";
+import { startHttp, type HttpDeps } from "./mod.ts";
 
 const TOKEN = "test-bot-token";
 
@@ -49,10 +50,22 @@ const baseConfig: Config = {
 	logLevel: "info",
 };
 
-function setup() {
+// Provider present ⇔ the boot config carried a memory block — the same
+// pairing src/index.ts builds (client from boot config, deps from client).
+function setup(memory?: HttpDeps["memory"]) {
 	useHome();
-	const configRef = { current: { ...baseConfig } };
-	const http = startHttp({ configRef, botToken: TOKEN, onConfigWritten: () => {} });
+	const memoryBlock: MemoryConfig | undefined = memory
+		? memoryConfigSchema.parse({ baseUrl: "http://127.0.0.1:8888", bankId: "goblin" })
+		: undefined;
+	const configRef = {
+		current: { ...baseConfig, ...(memoryBlock ? { memory: memoryBlock } : {}) } as Config,
+	};
+	const http = startHttp({
+		configRef,
+		botToken: TOKEN,
+		onConfigWritten: () => {},
+		...(memory ? { memory } : {}),
+	});
 	const initData = makeInitData({
 		auth_date: String(Math.floor(Date.now() / 1000)),
 		user: JSON.stringify({ id: 42 }),
@@ -63,7 +76,11 @@ function setup() {
 			headers: { "content-type": "application/json", "x-init-data": initData },
 			body: JSON.stringify(body),
 		});
-	return { configRef, http, post };
+	const get = (path: string, authed = true) =>
+		fetch(`http://127.0.0.1:${http.port}${path}`, {
+			headers: authed ? { "x-init-data": initData } : {},
+		});
+	return { configRef, http, post, get };
 }
 
 describe("mini-app http", () => {
@@ -137,6 +154,119 @@ describe("mini-app http", () => {
 		try {
 			const res = await fetch(`http://127.0.0.1:${http.port}/api/config`);
 			expect(res.status).toBe(401);
+		} finally {
+			http.stop();
+		}
+	});
+});
+
+// The memory status card renders what /memory prints — the endpoint
+// reads the same seams the command does (queue counts, blocked detail,
+// recall telemetry) through fake deps; no real queue, no network.
+describe("mini-app memory status", () => {
+	test("without init data it is rejected like every other endpoint", async () => {
+		const { http, get } = setup();
+		try {
+			expect((await get("/api/memory-status", false)).status).toBe(401);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("unconfigured memory serves the disabled shape, not an error", async () => {
+		const { http, get } = setup();
+		try {
+			const res = await get("/api/memory-status");
+			expect(res.status).toBe(200);
+			expect(await res.json()).toEqual({
+				state: "disabled",
+				detail: "memory is not configured",
+				pending: 0,
+				completed: 0,
+				blocked: 0,
+				dismissed: 0,
+				queued: 0,
+				lastRecallAt: null,
+				lastRecallOk: null,
+				topicNote: null,
+				blockedDetail: [],
+			});
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("drained counts render healthy with queue and recall fields", async () => {
+		const { http, get } = setup({
+			counts: () => ({ pending: 0, submitted: 0, completed: 5, blocked: 0, dismissed: 0 }),
+			blockedDetail: () => [],
+			lastRecallOk: () => true,
+			lastRecallAt: () => "2026-09-25T12:00:00.000Z",
+		});
+		try {
+			const j = (await (await get("/api/memory-status")).json()) as Record<string, unknown>;
+			expect(j.state).toBe("healthy");
+			expect(j.detail).toBe("no queued or blocked retention");
+			expect(j.pending).toBe(0);
+			expect(j.queued).toBe(0);
+			expect(j.completed).toBe(5);
+			expect(j.lastRecallAt).toBe("2026-09-25T12:00:00.000Z");
+			expect(j.lastRecallOk).toBe(true);
+			expect(j.blockedDetail).toEqual([]);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("blocked retention drives the degraded state, counts and list", async () => {
+		const { http, get } = setup({
+			counts: () => ({ pending: 0, submitted: 2, completed: 1, blocked: 1, dismissed: 1 }),
+			blockedDetail: () => [{ document: "msg-1234", error: "hindsight 500", attempts: 3 }],
+			lastRecallOk: () => false,
+			lastRecallAt: () => "2026-09-25T12:00:00.000Z",
+		});
+		try {
+			const j = (await (await get("/api/memory-status")).json()) as Record<string, unknown>;
+			expect(j.state).toBe("degraded");
+			expect(j.detail).toContain("operator review");
+			expect(j.blocked).toBe(1);
+			expect(j.blockedDetail).toEqual([{ document: "msg-1234", error: "hindsight 500", attempts: 3 }]);
+			// queued sums what the worker still owes: pending + submitted.
+			expect(j.queued).toBe(2);
+			expect(j.dismissed).toBe(1);
+			expect(j.lastRecallOk).toBe(false);
+		} finally {
+			http.stop();
+		}
+	});
+});
+
+// The page's client-side zod parse fetches the vendored ESM tree from
+// the process's own node_modules — the route must serve it, and only
+// it.
+describe("vendored zod", () => {
+	test("serves zod's published esm entry as javascript", async () => {
+		const { http } = setup();
+		try {
+			const res = await fetch(`http://127.0.0.1:${http.port}/vendor/zod/v4/index.js`);
+			expect(res.ok).toBe(true);
+			expect(res.headers.get("content-type")).toContain("text/javascript");
+			expect(await res.text()).toContain("export");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("is confined to js files inside the package", async () => {
+		const { http } = setup();
+		try {
+			const base = `http://127.0.0.1:${http.port}`;
+			expect((await fetch(`${base}/vendor/zod/package.json`)).status).toBe(404);
+			expect((await fetch(`${base}/vendor/zod/v4/index.cjs`)).status).toBe(404);
+			expect((await fetch(`${base}/vendor/zod/v4/no-such-file.js`)).status).toBe(404);
+			// Encoded traversal stays a literal pathname segment and fails
+		// the charset guard; URL parsing collapses plain ../.
+			expect((await fetch(`${base}/vendor/zod/%2e%2e/goblin.json5`)).status).toBe(404);
 		} finally {
 			http.stop();
 		}

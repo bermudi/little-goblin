@@ -605,7 +605,10 @@ No MCP, replacement turn loop, or generic multi-backend framework.
    `blocked` earns ONE notice per document (latch in SQLite,
    `memory_blocked_notices`), naming `/memory retry` and `/memory
    dismiss`; everything after the first notice is `/memory status`
-   territory. Retry mints a FRESH operation id — Hindsight holds the old
+   territory. The mini app's Memory tab renders the same status as a
+   read-only card (`GET /api/memory-status`, same auth as every other
+   endpoint, polled only while the tab is open) — the verbs stay in
+   Telegram; the panel never mutates the queue. Retry mints a FRESH operation id — Hindsight holds the old
    op terminally failed server-side, so replaying it just re-reads the
    dead op's status (the live hand-requeue that failed); dismiss keeps
    the row as `dismissed` for audit, and `/forget delete` cancels

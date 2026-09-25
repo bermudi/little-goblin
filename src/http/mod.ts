@@ -5,9 +5,13 @@
 // here assumes a public IP.
 
 import { z } from "zod";
+import { dirname, join, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { thinkingLevelsFor } from "../agent/providers.ts";
 import { loadConfig, parseConfig, fetchKinds, providerKinds, searchKinds, writeConfig, type Config } from "../config.ts";
 import { log } from "../log.ts";
+import { memoryStatus, type MemoryState } from "../memory.ts";
+import type { BlockedRetention, MemoryQueueCounts } from "../memory-queue.ts";
 import { APP_HTML } from "./app.ts";
 import { validateInitData, type InitDataUser } from "./auth.ts";
 
@@ -17,10 +21,89 @@ export interface HttpDeps {
 	// Called after a successful config write so the process hot-applies
 	// model/thinking/favorites (structural fields apply on restart).
 	onConfigWritten(): void;
+	// Long-term memory status — the same seams the /memory command reads
+	// (queue counts + blocked detail, bound to the boot-time target, and
+	// recall telemetry). Absent = memory not configured at boot.
+	memory?: {
+		counts(): MemoryQueueCounts;
+		blockedDetail(): BlockedRetention[];
+		lastRecallOk(): boolean | null;
+		lastRecallAt(): string | null;
+	};
 }
 
 const NO_STORE = { "cache-control": "no-store" };
 const HTML = { "content-type": "text/html; charset=utf-8", ...NO_STORE };
+const JS = { "content-type": "text/javascript; charset=utf-8", ...NO_STORE };
+
+// The mini app's read-only view of memory — the same sources the
+// /memory command renders, reduced by memoryStatus(). `topicNote` is
+// always null: the panel has no conversation address, so "this topic"
+// lines belong to /memory in Telegram; the field stays present so the
+// shape tells the same story the command does.
+export interface MemoryStatusResponse {
+	state: MemoryState;
+	detail: string;
+	pending: number;
+	completed: number;
+	blocked: number;
+	dismissed: number;
+	// pending+submitted — everything the worker still owes Hindsight.
+	queued: number;
+	lastRecallAt: string | null;
+	lastRecallOk: boolean | null;
+	topicNote: null;
+	blockedDetail: BlockedRetention[];
+}
+
+function memoryStatusResponse(deps: HttpDeps): MemoryStatusResponse {
+	// Same gate as the /memory command: the provider is a boot-time
+	// snapshot, the config is live — memory removed via a save reads as
+	// not configured until restart.
+	const mem = deps.memory && deps.configRef.current.memory ? deps.memory : null;
+	if (!mem) {
+		return {
+			state: "disabled",
+			detail: "memory is not configured",
+			pending: 0,
+			completed: 0,
+			blocked: 0,
+			dismissed: 0,
+			queued: 0,
+			lastRecallAt: null,
+			lastRecallOk: null,
+			topicNote: null,
+			blockedDetail: [],
+		};
+	}
+	const counts = mem.counts();
+	const lastRecallAt = mem.lastRecallAt();
+	const lastRecallOk = mem.lastRecallOk();
+	const status = memoryStatus({
+		enabled: true,
+		counts,
+		lastRecallOk,
+		lastRecallAt,
+		blockedDetail: mem.blockedDetail(),
+	});
+	return {
+		state: status.state,
+		detail: status.detail,
+		pending: status.pending,
+		completed: counts.completed,
+		blocked: counts.blocked,
+		dismissed: counts.dismissed,
+		queued: counts.pending + counts.submitted,
+		lastRecallAt,
+		lastRecallOk,
+		topicNote: null,
+		blockedDetail: status.blockedDetail,
+	};
+}
+
+// Resolved from the server's own zod import — wherever the process runs
+// from, the vendored tree is the tree the server actually validates with.
+const ZOD_ROOT = dirname(fileURLToPath(import.meta.resolve("zod")));
 
 export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 	function authedUser(req: Request): InitDataUser | null {
@@ -48,6 +131,28 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 					{ headers: HTML },
 				);
 			}
+			if (url.pathname.startsWith("/vendor/zod/")) {
+				// Vendored zod for the page's client-side validation. The page has
+				// no build step, so zod's published ESM tree is served as-is from
+				// the process's own node_modules and the browser resolves zod's
+				// relative imports against this prefix. Library code only — no
+				// secrets — so it is unauthenticated like the page shell, and
+				// confined by two independent guards: a charset regex and a
+				// resolved-prefix check.
+				const rel = url.pathname.slice("/vendor/zod/".length);
+				if (!/^[\w-]+(?:\/[\w.-]+)*\.js$/.test(rel)) {
+					return new Response("not found", { status: 404 });
+				}
+				const abs = join(ZOD_ROOT, rel);
+				if (!abs.startsWith(ZOD_ROOT + sep)) {
+					return new Response("not found", { status: 404 });
+				}
+				const file = Bun.file(abs);
+				if (!(await file.exists())) {
+					return new Response("not found", { status: 404 });
+				}
+				return new Response(file, { headers: JS });
+			}
 			if (url.pathname === "/api/thinking-levels") {
 				const user = authedUser(req);
 				if (!user) {
@@ -61,6 +166,21 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 					url.searchParams.get("base") ?? undefined,
 				);
 				return Response.json({ levels }, { headers: NO_STORE });
+			}
+			if (url.pathname === "/api/memory-status") {
+				const user = authedUser(req);
+				if (!user) {
+					return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
+				}
+				const view = memoryStatusResponse(deps);
+				// A read the page polls every 10s — debug, so the boundary is
+				// observable without drowning the log at the default level.
+				log.debug("memory status served", {
+					state: view.state,
+					queued: view.queued,
+					blocked: view.blocked,
+				});
+				return Response.json(view, { headers: NO_STORE });
 			}
 			if (url.pathname === "/api/config") {
 				const user = authedUser(req);

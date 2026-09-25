@@ -247,6 +247,19 @@ async function boot() {
 	const http = startHttp({
 		configRef,
 		botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN),
+		// Same memory seams the /memory command reads, bound to the
+		// boot-time target — the mini app's status card renders the same
+		// truth the command does. Absent when memory is unconfigured.
+		...(memoryClient
+			? {
+					memory: {
+						counts: () => store.memoryQueue.counts(memoryClient.target),
+						blockedDetail: () => store.memoryQueue.blockedDetail(memoryClient.target),
+						lastRecallOk: () => memoryState.lastRecallOk,
+						lastRecallAt: () => memoryState.lastRecallAt,
+					},
+				}
+			: {}),
 		onConfigWritten: () => {
 			setLogLevel(configRef.current.logLevel);
 			// publicUrl is operator-editable through the app — keep the menu

@@ -28,6 +28,10 @@ forgetting mechanism — see `/forget` below.
 - `/memory` — status (`disabled|healthy|degraded|pending` with outbox
   counts, last recall time/outcome, and blocked detail) and whether this
   topic is included.
+- Settings mini app → Memory tab — the same status as a live read-only
+  card above the config fields (state, queue line, last recall, blocked
+  list with the `/memory retry` · `/memory dismiss` hint). Polled while
+  the tab is open; the verbs themselves stay in Telegram.
 - `/memory retry` — requeue blocked retention under fresh operation ids.
   A stale operation id is a dead remote op server-side; replaying it can
   never succeed.

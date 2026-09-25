@@ -49,6 +49,8 @@ export const APP_HTML = `<!doctype html>
   .wrap { max-width: 560px; margin: 0 auto; padding: 0 16px; }
   .hidden { display: none !important; }
   .mono { font-family: var(--mono); }
+  .st-ok { color: var(--ok); }
+  .st-err { color: var(--err); }
 
   header {
     position: sticky; top: 0; z-index: 20;
@@ -473,6 +475,15 @@ export const APP_HTML = `<!doctype html>
 
     <!-- MEMORY -->
     <section class="panel" id="panel-memory" role="tabpanel" aria-label="Memory">
+      <h2>Status</h2>
+      <div class="card" id="memStatusCard">
+        <div class="row">
+          <div class="rstack">
+            <div class="rlabel">status: <span class="mono">…</span></div>
+            <div class="cap">Live view of the memory queue — fetched while this tab is open. Read-only; the verbs live in Telegram.</div>
+          </div>
+        </div>
+      </div>
       <h2>Long-term memory</h2>
       <div class="card">
         <div class="row">
@@ -734,6 +745,7 @@ function initTabs() {
       for (const p of document.querySelectorAll(".panel")) {
         p.classList.toggle("on", p.id === "panel-" + b.dataset.tab);
       }
+      setMemoryPolling(b.dataset.tab === "memory");
       tap();
     };
   }
@@ -1186,6 +1198,138 @@ async function save() {
     msg("Save failed — " + e, "err");
   }
   updateSave();
+}
+
+// ---------- memory status ----------
+// Read-only projection of the same sources /memory reads; retry and
+// dismiss stay in Telegram. Fetched on tab activation, then every 10s
+// while the memory tab is the visible one — polling stops when it
+// isn't.
+const MEM_POLL_MS = 10000;
+let memTimer = null;
+let memInFlight = false;
+let memZod = null;
+let memSchema = null;
+async function memorySchema() {
+  if (!memSchema) {
+    // Vendored from the process's own node_modules — served at
+    // /vendor/zod/, no build step, no third-party origin.
+    if (!memZod) memZod = await import("/vendor/zod/v4/index.js");
+    const z = memZod.z;
+    memSchema = z.object({
+      state: z.enum(["disabled", "healthy", "pending", "degraded"]),
+      detail: z.string(),
+      pending: z.number().int(),
+      completed: z.number().int(),
+      blocked: z.number().int(),
+      dismissed: z.number().int(),
+      queued: z.number().int(),
+      lastRecallAt: z.string().nullable(),
+      lastRecallOk: z.boolean().nullable(),
+      topicNote: z.null(),
+      blockedDetail: z.array(z.object({
+        document: z.string(),
+        error: z.string().nullable(),
+        attempts: z.number().int()
+      }))
+    });
+  }
+  return memSchema;
+}
+// Local wall clock, like /memory — read by the operator on this box.
+function hm(iso) {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "never";
+  const p = (n) => String(n).padStart(2, "0");
+  return p(d.getHours()) + ":" + p(d.getMinutes());
+}
+function memStateWord(state) {
+  return el("span", "mono" + (state === "degraded" ? " st-err" : state === "healthy" ? " st-ok" : ""), state);
+}
+function memHead(why) {
+  const row = el("div", "row");
+  const stack = el("div", "rstack");
+  const label = el("div", "rlabel");
+  label.append("status: ", memStateWord(why.state));
+  stack.append(label, el("div", "cap", why.detail));
+  row.append(stack);
+  return row;
+}
+function renderMemoryStatus(s) {
+  const card = $("memStatusCard");
+  card.replaceChildren();
+  card.append(memHead(s));
+  const meta = el("div", "row col");
+  const mstack = el("div", "rstack");
+  mstack.append(
+    el("div", "cap", "queue: " + s.queued + " queued · " + s.completed + " retained" +
+      (s.dismissed > 0 ? " · " + s.dismissed + " dismissed (kept for audit)" : "")),
+    el("div", "cap", s.lastRecallAt === null
+      ? "last recall: never"
+      : "last recall: " + hm(s.lastRecallAt) + " (" + (s.lastRecallOk === false ? "failed" : "ok") + ")")
+  );
+  meta.append(mstack);
+  card.append(meta);
+  if (s.blocked > 0) {
+    for (const b of s.blockedDetail) {
+      const row = el("div", "row");
+      const st = el("div", "rstack");
+      const doc = b.document.length > 32 ? b.document.slice(0, 32) + "…" : b.document;
+      const err = b.error || "unknown error";
+      st.append(
+        el("div", "rlabel mono", doc),
+        el("div", "cap", b.attempts + " attempt" + (b.attempts === 1 ? "" : "s") + ": " +
+          (err.length > 80 ? err.slice(0, 80) + "…" : err))
+      );
+      row.append(st);
+      card.append(row);
+    }
+    const hint = el("div", "row");
+    const hstack = el("div", "rstack");
+    const cap = el("div", "cap");
+    cap.append("actions: ", el("span", "mono", "/memory retry"), " · ", el("span", "mono", "/memory dismiss"));
+    hstack.append(cap);
+    hint.append(hstack);
+    card.append(hint);
+  }
+}
+function renderMemoryUnavailable(why) {
+  const card = $("memStatusCard");
+  card.replaceChildren();
+  const row = el("div", "row");
+  const stack = el("div", "rstack");
+  const label = el("div", "rlabel");
+  label.append("status: ", el("span", "mono", "unavailable"));
+  stack.append(label, el("div", "cap", why));
+  row.append(stack);
+  card.append(row);
+}
+async function refreshMemoryStatus() {
+  if (memInFlight) return;
+  memInFlight = true;
+  try {
+    const res = await fetch("/api/memory-status", { headers: { "x-init-data": initData } });
+    if (!res.ok) { renderMemoryUnavailable("status endpoint answered " + res.status); return; }
+    const raw = await res.json();
+    // The fetch is external input — zod-parsed before render, never
+    // trusted on shape.
+    const parsed = (await memorySchema()).safeParse(raw);
+    if (!parsed.success) { renderMemoryUnavailable("status data failed validation — not rendered"); return; }
+    renderMemoryStatus(parsed.data);
+  } catch (e) {
+    renderMemoryUnavailable("could not reach goblin — " + e);
+  } finally {
+    memInFlight = false;
+  }
+}
+function setMemoryPolling(on) {
+  if (on) {
+    refreshMemoryStatus();
+    if (memTimer === null) memTimer = setInterval(refreshMemoryStatus, MEM_POLL_MS);
+  } else if (memTimer !== null) {
+    clearInterval(memTimer);
+    memTimer = null;
+  }
 }
 
 // ---------- load + populate ----------

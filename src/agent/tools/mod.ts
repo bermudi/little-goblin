@@ -5,6 +5,7 @@
 import type { ToolSet } from "ai";
 import type { HindsightClient } from "../../hindsight.ts";
 import type { JobsStore } from "../../jobs.ts";
+import type { SpeechFile } from "../transcribe.ts";
 import { bashTool } from "./bash.ts";
 import { editFileTool } from "./edit.ts";
 import { fetchTool } from "./fetch.ts";
@@ -14,6 +15,7 @@ import { scheduleTool } from "./schedule.ts";
 import { type OutgoingFile, sendFileTool } from "./send.ts";
 import { speakTool } from "./speak.ts";
 import { searchTool } from "./search.ts";
+import { transcribeTool } from "./transcribe.ts";
 import { writeFileTool } from "./write.ts";
 import type { WebToolDeps } from "./web.ts";
 
@@ -44,6 +46,12 @@ export interface MemoryToolDeps {
 	noteRecall: (ok: boolean) => void;
 }
 
+export interface TranscribeToolDeps {
+	// Same seam intake uses — the composition root reads the
+	// transcription block per call. null = unconfigured or no speech.
+	transcribe(file: SpeechFile): Promise<string | null>;
+}
+
 // Use the registered set as the availability source, rather than
 // duplicating its dependency gates in the prompt.
 export function toolNames(tools: ToolSet): string[] {
@@ -57,6 +65,7 @@ export function makeTools(
 	file?: FileToolDeps,
 	memory?: MemoryToolDeps,
 	web?: WebToolDeps,
+	transcribe?: TranscribeToolDeps,
 ): ToolSet {
 	return {
 		read_file: readFileTool(cwd),
@@ -66,6 +75,10 @@ export function makeTools(
 		...(voice
 			? { speak: speakTool(cwd, voice.synthesize, voice.deliver, voice.recording, voice.voices) }
 			: {}),
+		// The speech-in twin of speak: gated on the transcription block
+		// like search is on its own config — presence is decided per turn
+		// by the caller, which reads configRef live.
+		...(transcribe ? { transcribe: transcribeTool(cwd, transcribe.transcribe) } : {}),
 		...(schedule ? { schedule: scheduleTool(schedule) } : {}),
 		...(file ? { send_file: sendFileTool(cwd, file.deliver) } : {}),
 		...(memory ? { memory_search: memorySearchTool(memory) } : {}),

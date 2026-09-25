@@ -420,7 +420,7 @@ export const APP_HTML = `<!doctype html>
         <div class="row">
           <div class="rstack">
             <div class="rlabel">Speech to text</div>
-            <div class="cap">Transcribes incoming voice, audio and video notes for models that can't listen.</div>
+            <div class="cap">Voice and video notes are transcribed on arrival; the bot can transcribe other audio files on request.</div>
           </div>
           <button class="switch" id="trOn" aria-label="speech to text"></button>
         </div>

@@ -62,8 +62,10 @@ export interface BotDeps {
 	// Topic titler — one small model call per implicitly-named topic.
 	// null = no usable title this attempt.
 	titleFor(text: string): Promise<string | null>;
-	// Speech → text for transcribable media (voice, audio, video notes).
-	// null = unconfigured, over the provider cap, or no speech found.
+	// Speech → text for transcribable media (voice and video notes —
+	// attached audio files are data, the transcribe tool handles those
+	// on demand). null = unconfigured, over the provider cap, or no
+	// speech found.
 	transcribe(file: SpeechFile): Promise<string | null>;
 	synthesize(text: string, config: TtsConfig): Promise<Uint8Array[]>;
 	// Long-term memory wiring for /memory + /forget — absent = disabled.

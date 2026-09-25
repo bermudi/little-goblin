@@ -12,30 +12,35 @@ describe("toolNames ↔ makeTools", () => {
 		for (const schedule of [false, true]) {
 			for (const file of [false, true]) {
 				for (const memory of [false, true]) {
-					test(`voice=${voice}, schedule=${schedule}, file=${file}, memory=${memory}`, () => {
-						const tools = makeTools(
-							"/tmp",
-							voice ? { synthesize: async () => [], deliver: async () => {} } : undefined,
-							schedule ? { jobs, chatId: 1, threadId: null } : undefined,
-							file ? { deliver: async () => {} } : undefined,
-							memory
-								? {
-										client: memoryClient,
-										maxTokens: 256,
-										budget: "low",
-										isExcluded: () => false,
-										noteRecall: () => {},
-									}
-								: undefined,
-						);
-						expect(toolNames(tools)).toEqual([
-							"read_file", "write_file", "edit_file", "bash",
-							...(voice ? ["speak"] : []),
-							...(schedule ? ["schedule"] : []),
-							...(file ? ["send_file"] : []),
-							...(memory ? ["memory_search"] : []),
-						]);
-					});
+					for (const transcribe of [false, true]) {
+						test(`voice=${voice}, schedule=${schedule}, file=${file}, memory=${memory}, transcribe=${transcribe}`, () => {
+							const tools = makeTools(
+								"/tmp",
+								voice ? { synthesize: async () => [], deliver: async () => {} } : undefined,
+								schedule ? { jobs, chatId: 1, threadId: null } : undefined,
+								file ? { deliver: async () => {} } : undefined,
+								memory
+									? {
+											client: memoryClient,
+											maxTokens: 256,
+											budget: "low",
+											isExcluded: () => false,
+											noteRecall: () => {},
+										}
+									: undefined,
+								undefined,
+								transcribe ? { transcribe: async () => null } : undefined,
+							);
+							expect(toolNames(tools)).toEqual([
+								"read_file", "write_file", "edit_file", "bash",
+								...(voice ? ["speak"] : []),
+								...(transcribe ? ["transcribe"] : []),
+								...(schedule ? ["schedule"] : []),
+								...(file ? ["send_file"] : []),
+								...(memory ? ["memory_search"] : []),
+							]);
+						});
+					}
 				}
 			}
 		}

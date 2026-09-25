@@ -14,11 +14,18 @@ transcription: {
 },
 ```
 
-With this set, every voice note, audio file, and video note is transcribed
-once, when it arrives — before the model ever sees it. The transcript is
-stored with the message, permanently. Models that can hear audio get the
-audio; models that can't read the transcript instead of staring at a bare
-file path. Either way your words are never lost.
+With this set, every voice note and video note is transcribed once, when
+it arrives — before the model ever sees it. The transcript is stored with
+the message, permanently. Models that can hear audio get the audio;
+models that can't read the transcript instead of staring at a bare file
+path. Either way your words are never lost.
+
+Attached audio is different: an mp3 or flac you *send* is a file, not a
+recording — maybe a song to convert, maybe a podcast to transcribe, and
+only you know which. So attached audio is never transcribed eagerly and
+its bytes never go to the model; it lands in the workspace like any
+other file. Ask the bot to transcribe it and the `transcribe` tool does
+that, on the same provider.
 
 Practical notes:
 

@@ -153,7 +153,10 @@ agent loop.
   representation — file part vs text reference (transcript first for
   speech) — is a pure function of the stored ref and the conversation's
   model: file part when the model consumes the media type and the payload
-  fits the per-item inline cap, reference otherwise. Pure means stable:
+  fits the per-item inline cap, reference otherwise. One carve-out:
+  audio only inlines when the ref is marked `speech` — a voice or video
+  note. Attached audio is data (Transcription, below); an mp3's bytes in
+  every request is the most expensive way to not listen to it. Pure means stable:
   the same history under the same model materializes to the same request
   bytes every turn (see Cache stability). A `/model` switch recomputes
   representations once — legitimate, because a model switch is already a
@@ -188,15 +191,21 @@ agent loop.
   turn's burst-merge (Causal view) rewrites that boundary; a corrupt row's
   placeholder is a repair, not drift. Everything else that moves the hash
   is a bug.
-- **Transcription**: voice notes, audio files, and video notes are speech —
-  a model that can't consume audio shouldn't lose them to a bare path.
+- **Transcription**: voice notes and video notes are speech — the two
+  media kinds Telegram only produces by recording someone — and a model
+  that can't consume audio shouldn't lose them to a bare path. Attached
+  audio (`audio`, audio-mime `document`) is data, not speech: an mp3
+  meant for `ffmpeg` shouldn't pay whisper for lyrics, so it is never
+  transcribed eagerly and never inlines (the `speech` marker above).
+  On-demand transcription of attached audio is the `transcribe` tool's
+  job — same provider, same segmentation, called deliberately.
   When `transcription` is configured (`kind: groq`, whisper `model`, `auth`
   ref — other kinds slot in as the SDK grows transcription providers),
-  intake transcribes the saved file once and stores the text inside the
-  `data-attachment` part. Eager, not per-turn: the transcript is durable
-  history, and materialization prefers it over the path reference whenever
-  the file can't go inline — wrong modality or spent budget — while
-  audio-capable models still get the file part. The call rides the
+  intake transcribes the saved recording once and stores the text inside
+  the `data-attachment` part. Eager, not per-turn: the transcript is
+  durable history, and materialization prefers it over the path
+  reference whenever the file can't go inline — wrong modality or spent
+  budget — while audio-capable models still get the file part. The call rides the
   per-conversation intake chain (off the update hot path), bounded at 60s
   per call. Files over the provider's 25 MiB upload cap are segmented, not
   skipped: ffmpeg extracts the audio track to mono opus — a video note's
@@ -210,10 +219,10 @@ agent loop.
 
 ## Tools (v1)
 
-Hand-rolled, zod-validated, ten:
+Hand-rolled, zod-validated, eleven:
 
-`read_file` `write_file` `edit_file` `bash` (timeout) `speak` `schedule`
-`send_file` `memory_search` `search` `fetch`
+`read_file` `write_file` `edit_file` `bash` (timeout) `speak` `transcribe`
+`schedule` `send_file` `memory_search` `search` `fetch`
 
 All tools run in the deployment workspace — conversations have no cwd and
 there is no `/cd`. Working elsewhere is the agent's own business (`cd x &&
@@ -230,6 +239,12 @@ straight from disk, so "read me this document" never re-types the content
 as model output. Long input is split at sentence boundaries inside the
 tts module, never by the caller. Configure `tts` or the tool isn't in the
 set at all.
+
+`transcribe` is the other direction of the same pair: a workspace audio
+or video file → text, present only when `transcription` is configured
+and riding the same provider seam as intake. It exists precisely because
+intake *doesn't* transcribe attached audio — "transcribe this podcast"
+is a tool call against the saved attachment path, not a re-send.
 
 `schedule` manages standing jobs (list/create/update/delete/toggle) —
 see `Scheduled work`. It is bound per-turn to the running conversation
@@ -989,14 +1004,16 @@ src/
                     codex/auth.ts + codex/model.ts when next touched
                     (external-change pressure lands on one 770-line file)
     attachments.ts  data-attachment parts + per-turn materialization
-    transcribe.ts   speech → text at intake (groq whisper, more kinds later)
+    transcribe.ts   speech → text (groq whisper, more kinds later) —
+                    intake + transcribe tool share it
     tts.ts          text or file → speech (edge read-aloud ws, opus out)
     prompt.ts       system prompt assembly (shell + SOUL.md + agent-owned
                     AGENTS.md/USER.md, each capped at 8k chars; re-read
                     every turn, edits live next message)
     skills.ts       catalog scan + frontmatter validation → ## skills section
-    tools/          the ten tools (read, write, edit, bash, speak,
-                    schedule, send_file, memory_search, search, fetch)
+    tools/          the eleven tools (read, write, edit, bash, speak,
+                    transcribe, schedule, send_file, memory_search,
+                    search, fetch)
   http/             mini-app serving
 ```
 

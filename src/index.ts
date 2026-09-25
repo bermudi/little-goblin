@@ -90,6 +90,15 @@ async function boot() {
 		});
 	}
 
+	// Speech → text, one seam shared by intake (voice/video notes) and
+	// the transcribe tool (everything else, on demand). Read per call —
+	// a mini-app save applies to the next voice note, no restart.
+	const transcribeFile = async (file: Parameters<typeof transcribeAudio>[1]) => {
+		const cfg = configRef.current.transcription;
+		if (!cfg) return null;
+		return transcribeAudio(await transcriptionModel(cfg, auth), file);
+	};
+
 	const runtime = new Runtime({
 		store,
 		async buildStep(conv, tools) {
@@ -166,9 +175,14 @@ async function boot() {
 							noteRecall,
 						}
 					: undefined,
-					// Web tools: fetch always (local needs no config), search
-					// behind its config block — both read configRef live.
-					{ configRef, auth },
+				// Web tools: fetch always (local needs no config), search
+				// behind its config block — both read configRef live.
+				{ configRef, auth },
+				// The transcribe tool joins/leaves the set with the
+				// transcription block — same live-read rule as search.
+				configRef.current.transcription !== undefined
+					? { transcribe: transcribeFile }
+					: undefined,
 			);
 		},
 		...(memoryClient && memoryBootConfig
@@ -201,13 +215,7 @@ async function boot() {
 		async synthesize(text, tts) {
 			return synthesizeSpeech(text, tts);
 		},
-		async transcribe(file) {
-			// Read per call — a mini-app save applies to the next voice note,
-			// no restart.
-			const cfg = configRef.current.transcription;
-			if (!cfg) return null;
-			return transcribeAudio(await transcriptionModel(cfg, auth), file);
-		},
+		transcribe: transcribeFile,
 		...(memoryClient
 			? {
 					memory: {
@@ -240,10 +248,12 @@ async function boot() {
 			})
 		: null;
 
-	// The search block's enable/disable redraws the registered tool set —
-	// a cache boundary per DESIGN.md "Web access" — so the flip gets its
-	// own line, not just the generic config-written one.
+	// The search and transcription blocks' enable/disable redraw the
+	// registered tool set — a cache boundary per DESIGN.md "Web access" —
+	// so each flip gets its own line, not just the generic
+	// config-written one.
 	let searchInSet = config.search !== undefined;
+	let transcribeInSet = config.transcription !== undefined;
 	const http = startHttp({
 		configRef,
 		botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN),
@@ -273,6 +283,15 @@ async function boot() {
 						: "search tool disabled — leaves the set next turn",
 				);
 				searchInSet = searchNow;
+			}
+			const transcribeNow = configRef.current.transcription !== undefined;
+			if (transcribeNow !== transcribeInSet) {
+				log.info(
+					transcribeNow
+						? "transcribe tool enabled — joins the set next turn"
+						: "transcribe tool disabled — leaves the set next turn",
+				);
+				transcribeInSet = transcribeNow;
 			}
 			// Memory is a boot-time snapshot (queue rows bind to the
 			// endpoint+bank hash) — a changed block needs a restart.

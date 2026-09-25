@@ -54,27 +54,30 @@ describe("mediaFromMessage", () => {
 		expect(m!.mimeType).toBe("image/jpeg");
 	});
 
-	test("speech media is marked transcribable; silent media is not", () => {
+	test("only recordings are marked transcribable; attached audio is data", () => {
 		expect(
 			mediaFromMessage({ voice: { file_id: "v", file_unique_id: "u" } })!.transcribable,
-		).toBe(true);
-		expect(
-			mediaFromMessage({ audio: { file_id: "a", file_unique_id: "u" } })!.transcribable,
 		).toBe(true);
 		expect(
 			mediaFromMessage({ video_note: { file_id: "n", file_unique_id: "u" } })!
 				.transcribable,
 		).toBe(true);
+		// Attached audio — a song, a podcast — is a file, not speech.
+		// Transcribing it eagerly burns provider calls on content nobody
+		// asked for; the transcribe tool covers it on demand.
+		expect(
+			mediaFromMessage({ audio: { file_id: "a", file_unique_id: "u" } })!.transcribable,
+		).toBeUndefined();
 		expect(
 			mediaFromMessage({
 				document: { file_id: "d", file_unique_id: "u", mime_type: "audio/flac" },
 			})!.transcribable,
-		).toBe(true);
+		).toBeUndefined();
 		expect(
 			mediaFromMessage({
 				document: { file_id: "d", file_unique_id: "u", mime_type: "application/pdf" },
 			})!.transcribable,
-		).toBe(false);
+		).toBeUndefined();
 		// Plain video and GIFs might have no audio track — never offered.
 		expect(
 			mediaFromMessage({ video: { file_id: "vv", file_unique_id: "u" } })!.transcribable,
@@ -98,6 +101,16 @@ describe("mediaParts", () => {
 			filename: "clip.mp4",
 			size: 7,
 		});
+	});
+
+	test("a transcribable medium marks the part as speech", () => {
+		const parts = mediaParts(
+			{ ...media, transcribable: true },
+			{ path: "/a/u1-clip.mp4", size: 7 },
+		);
+		const p = parts[0]!;
+		if (p.type !== "data-attachment") throw new Error(`expected data-attachment, got ${p.type}`);
+		expect((p.data as { speech?: boolean }).speech).toBe(true);
 	});
 
 	test("a transcript rides inside the part when intake produced one", () => {

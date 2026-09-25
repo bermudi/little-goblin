@@ -58,9 +58,11 @@
   //   voices: [],
   // },
 
-  // Speech → text for voice/audio/video notes — transcribed once at
+  // Speech → text for voice and video notes — transcribed once at
   // intake, and models that can't consume audio read the transcript
-  // instead of a bare path. Unset = no transcription.
+  // instead of a bare path. Also enables the transcribe tool so the
+  // bot can transcribe attached audio/video files on request.
+  // Unset = no transcription.
   // transcription: {
   //   kind: "groq",
   //   model: "whisper-large-v3-turbo", // default

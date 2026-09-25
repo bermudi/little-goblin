@@ -196,7 +196,7 @@ describe("materializeAttachments", () => {
 		expect((p as { text: string }).text).toContain("call me back");
 	});
 
-	test("an audio-capable model still gets the file part", async () => {
+	test("an audio-capable model still gets the file part for a recording", async () => {
 		const dir = tmpdir_();
 		const f = join(dir, "v.ogg");
 		writeFileSync(f, "oggdata");
@@ -210,11 +210,34 @@ describe("materializeAttachments", () => {
 					filename: "v.ogg",
 					size: 7,
 					transcript: "call me back",
+					speech: true,
 				}),
 			],
 		};
 		const out = await materializeAttachments([m], new Set(["text", "audio"]));
 		expect(out[0]!.parts[0]!.type).toBe("file");
+	});
+
+	test("attached audio never inlines — a hearing model gets the path, not a song's bytes", async () => {
+		const dir = tmpdir_();
+		const f = join(dir, "song.mp3");
+		writeFileSync(f, "mp3data");
+		const m: UIMessage = {
+			id: "u12",
+			role: "user",
+			parts: [
+				attachmentPart({
+					path: f,
+					mediaType: "audio/mpeg",
+					filename: "song.mp3",
+					size: 7,
+				}),
+			],
+		};
+		const out = await materializeAttachments([m], new Set(["text", "audio"]));
+		const p = out[0]!.parts[0]!;
+		expect(p.type).toBe("text");
+		expect((p as { text: string }).text).toContain(f);
 	});
 
 	test("the transcript also beats the path when the payload doesn't fit", async () => {

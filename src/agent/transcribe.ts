@@ -1,8 +1,11 @@
 // Speech → text. When a `transcription` block is configured, intake
-// transcribes voice/audio/video-note media once, eagerly, and the
-// transcript rides inside the data-attachment part — durable history
-// that materialization prefers over the bare path reference for models
-// that can't consume audio (or payloads that don't fit the inline cap).
+// transcribes voice and video notes once, eagerly — the media kinds
+// Telegram only produces by recording speech — and the transcript rides
+// inside the data-attachment part: durable history that materialization
+// prefers over the bare path reference for models that can't consume
+// audio (or payloads that don't fit the inline cap). Other audio —
+// attached files — is transcribed on demand by the transcribe tool,
+// which calls into this same module.
 //
 // The model is an AI SDK TranscriptionModelV2 fed to
 // experimental_transcribe. `kind: groq` is the first — other kinds slot

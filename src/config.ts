@@ -220,8 +220,9 @@ const configSchema = z
 			])
 			.transform((v) => (v === "" ? undefined : v))
 			.optional(),
-		// Speech → text at intake for models that can't consume audio.
-		// "" means unset (mini-app clearing convention).
+		// Speech → text: voice/video notes at intake, other audio on
+		// demand via the transcribe tool. "" means unset (mini-app
+		// clearing convention).
 		transcription: z
 			.union([
 				z.object({

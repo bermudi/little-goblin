@@ -16,9 +16,11 @@ export interface IncomingMedia {
 	fileUniqueId: string;
 	fileName: string; // best-effort original name
 	mimeType: string;
-	// Carries speech worth transcribing: voice, audio, video notes, and
-	// documents that are audio files by mime. Plain video/animation stay
-	// out — a silent mp4 is a wasted whisper call.
+	// Carries speech worth transcribing at intake: voice notes and video
+	// notes — the two kinds Telegram only produces by recording someone.
+	// Attached audio (audio, audio-mime documents) is data, not speech —
+	// a song is a wasted whisper call. The transcribe tool covers it on
+	// demand.
 	transcribable?: boolean;
 }
 
@@ -53,7 +55,6 @@ export function mediaFromMessage(msg: {
 			fileUniqueId: d.file_unique_id,
 			fileName: d.file_name ?? `doc-${d.file_unique_id}`,
 			mimeType: d.mime_type ?? "application/octet-stream",
-			transcribable: (d.mime_type ?? "").startsWith("audio/"),
 		};
 	}
 	if (msg.voice) {
@@ -71,7 +72,6 @@ export function mediaFromMessage(msg: {
 			fileUniqueId: msg.audio.file_unique_id,
 			fileName: msg.audio.file_name ?? `audio-${msg.audio.file_unique_id}`,
 			mimeType: msg.audio.mime_type ?? "audio/mpeg",
-			transcribable: true,
 		};
 	}
 	if (msg.video) {
@@ -183,6 +183,9 @@ export function mediaParts(
 			filename: media.fileName,
 			size: saved.size,
 			...(transcript !== undefined ? { transcript } : {}),
+			// The speech marker is what lets a voice note inline for a
+			// hearing model while an attached mp3 stays a path.
+			...(media.transcribable ? { speech: true } : {}),
 		}),
 	];
 }

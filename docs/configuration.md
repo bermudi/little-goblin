@@ -77,7 +77,8 @@ it per-topic with `/think`; the default here is the fallback.
 
 Unset (commented out) means off. `tts` enables spoken replies (`/voice`,
 the 🔊 button, the `speak` tool). `transcription` transcribes incoming
-voice/audio/video notes so text-only models can read them. Both need
+voice and video notes so text-only models can read them, and gives the
+bot a `transcribe` tool for other audio files on request. Both need
 `ffmpeg` in `PATH`. Details in [Voice](voice.md).
 
 ### Web access

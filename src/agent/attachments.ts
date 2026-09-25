@@ -34,6 +34,12 @@ const attachmentRefSchema = z.object({
 	// Speech attachments carry an intake-produced transcript — a model
 	// that can't consume audio reads the words instead of a bare path.
 	transcript: z.string().optional(),
+	// Set at intake for voice and video notes — the kinds Telegram only
+	// produces by recording someone. Audio inlines for a hearing model
+	// only when the file is speech: an attached mp3 is data, and
+	// base64-ing a song into every request is the most expensive way
+	// to not listen to it.
+	speech: z.boolean().optional(),
 });
 
 export type AttachmentRef = z.infer<typeof attachmentRefSchema>;
@@ -87,6 +93,12 @@ function planPart(
 	modalities: Set<string>,
 	maxItemBytes: number,
 ): { decision: "inline" } | { decision: "fallback"; reason: "modality" | "size" } {
+	// Attached audio is data, not speech — even an audio-capable model
+	// gets the path, and listens via the transcribe tool or ffmpeg. Only
+	// intake-marked recordings (voice/video notes) inline as audio.
+	if (ref.mediaType.startsWith("audio/") && ref.speech !== true) {
+		return { decision: "fallback", reason: "modality" };
+	}
 	if (!acceptsMedia(modalities, ref.mediaType)) {
 		return { decision: "fallback", reason: "modality" };
 	}

@@ -61,10 +61,11 @@ stickers — just send them, optionally with a caption. What happens:
    process it with its tools. Nothing is ever silently dropped because the
    model couldn't see it.
 
-Two special cases: voice/audio/video notes are transcribed when
-`transcription` is configured (see [Voice](voice.md)), and a caption that
-happens to look like a command (e.g. `/model …`) is treated as a caption,
-not a command, when it rides on media — the attachment wins.
+Two special cases: voice and video notes are transcribed on arrival when
+`transcription` is configured (see [Voice](voice.md)) — other audio files
+are transcribed only if you ask — and a caption that happens to look like
+a command (e.g. `/model …`) is treated as a caption, not a command, when
+it rides on media — the attachment wins.
 
 Files up to 2 GB work if you're running the self-hosted Telegram bot API
 (`telegram.apiRoot`); on the cloud API the usual Telegram limits apply.

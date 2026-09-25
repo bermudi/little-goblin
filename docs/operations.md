@@ -89,6 +89,7 @@ it only while the bot is stopped, if ever.
 | Mini app won't load / `load failed: 401` | open it from the Telegram menu button (not a bare browser tab); logins older than a day expire — close and reopen |
 | `config would remove your own telegram user id` | the save you're attempting drops your id from `allowedUsers` — fix the field, save again |
 | Voice notes the model "can't hear" | `transcription` unset, or its provider was down — the log says which; the file itself is still in `attachments/` |
+| `/memory` says degraded — blocked retention(s) | a retention failed permanently (e.g. provider credit ran out). `/memory` lists the short doc id + error; `/memory retry` resends with a fresh operation id (replays of the old one are dead server-side), `/memory dismiss` drops it (kept for audit). The mini-app memory tab shows the same status. The affected topic got one notice when it first blocked |
 | All speech synthesis suddenly fails | the Edge endpoint is unofficial and drifts — check the log, then update the bot |
 | `ffmpeg` warnings at boot | install `ffmpeg` — voice features and large-file transcription need it |
 | Thinking levels look wrong for a model | capability catalogs (models.dev, OpenRouter) refresh daily and are cached in `state/` — a failed fetch warns and falls back safely; it heals itself |

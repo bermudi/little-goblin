@@ -1,8 +1,7 @@
 # goblin v2 — design
 
 Rewrite of little-goblin. Same product, ruthless scope. The old codebase is at
-`~/build/little-goblin`; it ran until cutover — v2 is now the running bot.
-Nothing is imported —
+`~/build/little-goblin`; it keeps running on lithium until cutover. Nothing is imported —
 no code, no state, no specs. This document is the only thing that carries over,
 plus the lessons it encodes.
 

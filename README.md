@@ -6,7 +6,7 @@ commands, reads and writes files, handles photos and voice notes, and can
 speak replies back as voice notes.
 
 This is a rewrite of `little-goblin` on the Vercel AI SDK (see `DESIGN.md`
-for why). The old bot is retired — this is the one running; nothing was
+for why). The old bot still runs on lithium until cutover; nothing is
 shared between them (no code, no state, no specs).
 
 ## How it works, in one paragraph

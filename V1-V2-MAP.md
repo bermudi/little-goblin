@@ -1,9 +1,9 @@
 # v1 ↔ v2 feature map
 
-v1 = `~/build/little-goblin` (pi-coding-agent core; retired at cutover —
-v2 is the running bot). v2 = this repo (Vercel AI SDK core). Same product,
+v1 = `~/build/little-goblin` (pi-coding-agent core; still running on
+lithium until cutover). v2 = this repo (Vercel AI SDK core). Same product,
 ruthless scope: v2 rebuilds what earned its place and drops the machinery
-that didn't. Nothing migrated — no code, no state, no specs. Rows below
+that didn't. Nothing migrates — no code, no state, no specs. Rows below
 describe what each repo actually does (v2 at current HEAD).
 
 Legend: ✅ both, roughly same shape · 🔀 both, new mechanism in v2 ·
@@ -128,8 +128,8 @@ designed into `DESIGN.md` first.
 
 ## Operator habit changes at cutover
 
-Cutover is complete — v2 is the bot; the list below describes current
-habits, not a plan.
+Not yet done — v1 still runs on lithium. The list below is what changes
+when you cut over.
 
 - **New conversation** — `/new` is gone. Create a topic.
 - **Resume** — `/resume` is gone. Post in the old topic.

@@ -535,12 +535,16 @@ tables beyond last_run.
 
 ## Long-term memory
 
-**Implementation in progress.** The optional Podman assets, validated HTTP
-client, durable retention queue, and turn-loop integration (bounded recall
-with persisted cache-stable blocks, retention enqueue, worker timer,
-memory-search tool, `/memory` + `/forget` controls) are implemented and
-tested offline. Live verification against a real Hindsight server remains
-required before enabling memory.
+**Implemented; live-verified 2026-09-24** on the homelab box against the
+real Podman stack (0.10.0-slim): retention end-to-end (queued exchanges
+drained through submit → async operation → completed), recall answering
+with real extracted facts, boot lifecycle and the health watch exercised
+(see Deployment below for the rulings this produced). The broader release
+gates from Operations and verification — cross-topic recall, dated
+correction, restart-recovery drills — remain operator exercises. First
+live finding: z.ai 429 "insufficient balance" during extraction blocks a
+single document for operator reconciliation (the designed path, not a
+crash) — provider credit is a live dependency of retention.
 Slice 2 rulings (below) lock the turn-integration mechanisms.
 Memory returns on explicit
 operator demand. Hindsight is the selected memory service, not an agent

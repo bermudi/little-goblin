@@ -143,12 +143,15 @@ the just-resolved key; failures print the reason and fall back to free
 text). It then generates the database password (`secrets.token_urlsafe`,
 written to a 0600 env file, never printed), validates the whole
 configuration against the launch guard **before** anything is written,
-installs the Quadlet assets, pre-pulls the pinned images, starts the
-stack, creates the bank, adds the `memory` block to `goblin.json5` (with
+installs the Quadlet assets and the health-watch timer, pre-pulls the
+pinned images, starts the stack, enables it at boot (a healthy stack
+survives reboots like goblin itself), creates the bank, adds the
+`memory` block to `goblin.json5` (with
 a backup and automatic rollback if goblin fails to boot), and restarts
 goblin. Provider knowledge (roles, endpoints, catalogs, key resolution)
 lives in `deploy/memory/providers.py`. `--no-start` stops after
-installing config and assets; `--reconfigure` re-prompts models and
+installing config and assets (nothing is enabled until the confirmed
+first start); `--reconfigure` re-prompts models and
 keys, rewrites `hindsight.env` only (the database password is reused
 from `postgres.env` — a new one would not rotate the existing role),
 and restarts the API. Running it again on an installed stack prints
@@ -170,9 +173,21 @@ From the repository root, **when choosing to install**:
 ```sh
 install -d -m 700 "$HOME/.config/goblin-memory"
 install -d -m 700 "$HOME/.config/containers/systemd"
+install -d -m 755 "$HOME/.config/systemd/user"
 install -m 644 deploy/memory/start.py "$HOME/.config/goblin-memory/start.py"
 install -m 644 deploy/memory/*.container deploy/memory/*.network \
   deploy/memory/*.volume "$HOME/.config/containers/systemd/"
+install -m 644 deploy/memory/goblin-memory-watch.service \
+  deploy/memory/goblin-memory-watch.timer "$HOME/.config/systemd/user/"
+```
+
+Then enable the boot and health hooks (the installer does this after the
+confirmed first start):
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable goblin-memory-api.service   # survives reboots
+systemctl --user enable --now goblin-memory-watch.timer  # 5-min health watch
 ```
 
 Create `~/.config/goblin-memory/postgres.env` and `hindsight.env` privately, mode

@@ -580,7 +580,14 @@ No MCP, replacement turn loop, or generic multi-backend framework.
    recall/worker outcome emits a structured line; `/memory status`
    reports disabled/healthy/degraded/pending with outbox counts. Model
    context distinguishes unavailable from empty via the persisted block;
-   no Telegram notification per retry.
+   no Telegram notification per retry. Amendment (2026-09-24): the ruling
+   covers per-retry spam, not silence — a retention chain that cannot
+   drain for a continuous hour earns exactly ONE notice per episode,
+   sent to the conversation whose exchange is stuck (episode state in
+   SQLite, `memory_outage`; a failed send retries on the next worker
+   failure; any successful advance clears the episode silently). The
+   amendment exists because the stack's boot-enablement gap (below) left
+   goblin retrying a dead port for a full day with no one the wiser.
 6. **Bank/mission: operator step, no auto-creation.** Goblin never
    creates banks or sets missions; `docs/memory.md` documents the manual
    `curl` with an example mission (preferences, decisions, commitments,
@@ -601,7 +608,18 @@ Hindsight release. Use persistent storage, readiness checks, restart on
 failure, and a private container network. PostgreSQL publishes no host port;
 Hindsight's API binds to loopback. Use pinned images, not floating automatic
 upgrades. Nothing assumes a particular hostname, operator home directory,
-or existing database installation.
+or existing database installation. The stack is boot-enabled
+(`[Install]` + `WantedBy=default.target` on the API unit; the database
+rides along via `Requires`/`After`) like goblin itself — the installer's
+cost confirmation gates the first start, not every reboot. The original
+"operator starts it explicitly" ruling died the first nightly shutdown:
+the box went down, goblin came back with memory on, the stack did not,
+and the bot quietly retried a dead port for a day. Health probes gate
+startup (`Notify=healthy`) but are write-only after it —
+`Restart=on-failure` only sees process death — so a systemd user timer
+(`goblin-memory-watch`, 5 min) turns an `unhealthy` container report
+into a unit restart; a stopped or absent stack is a deliberate operator
+choice and stays stopped.
 
 Goblin accepts a configured Hindsight base URL and bank identity; it can
 use the supplied local stack or an existing service. Remote services require
@@ -928,7 +946,8 @@ src/
   tg/               grammy: intake, buffer, delivery, commands (only grammy-aware dir)
   conversation.ts   store: SQLite-backed resolve/load/append events, meta, epoch
   memory.ts         recall contexts, retention builders, status, worker timer
-                    (wire client in hindsight.ts, outbox in memory-queue.ts)
+                    (wire client in hindsight.ts, outbox in memory-queue.ts,
+                    outage episodes in memory-outage.ts)
   jobs.ts           scheduled jobs — rows in goblin.sqlite, cron validated
                     at the boundary
   scheduler.ts      ticker: due jobs → turns in their pinned conversation

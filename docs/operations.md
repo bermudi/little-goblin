@@ -20,6 +20,14 @@ Settings mini app apply immediately — no restart.) Re-running
 `scripts/install.sh` after a `git pull` refreshes the unit file with your
 current paths.
 
+If the optional memory stack is installed, it takes care of itself: it
+starts on boot with goblin, and a 5-minute timer (`goblin-memory-watch.timer`)
+restarts the API if its health probe reports the container unhealthy. Stopping
+the stack by hand is deliberate — nothing will start it again until you do.
+When the retention chain cannot reach the service for a continuous hour,
+the bot says so **once** in the affected topic and keeps queueing locally;
+nothing is lost while it is down. `/memory status` reports detail on demand.
+
 Shutdown is graceful with a 10-second budget: in-flight replies are cut off
 cleanly (the chat shows `⏹ superseded`), buffered-but-unsent messages are
 still recorded in history, then the process exits. A crash mid-reply leaves

@@ -759,6 +759,23 @@ def print_summary(answers: Answers, bank_id: str) -> None:
               {SYSTEMD_DIR}/goblin-memory-*""")
 
 
+def manual_recovery_commands() -> list[str]:
+    """The by-hand equivalent of install_assets + start_stack's enablement.
+
+    Re-running the installer cannot repair a missing boot hook: existing
+    env files make it print status and exit. The status output itself has
+    to carry the fix.
+    """
+    return [
+        f"install -m 644 {MEMORY_DIR}/{WATCH_UNITS[0]} {MEMORY_DIR}/{WATCH_UNITS[1]} "
+        f"{USER_UNIT_DIR}/",
+        f"mkdir -p {USER_UNIT_DIR}/default.target.wants && "
+        f"ln -s {API_UNIT} {USER_UNIT_DIR}/default.target.wants/{API_UNIT}",
+        f"systemctl --user daemon-reload && "
+        f"systemctl --user enable --now {WATCH_TIMER}",
+    ]
+
+
 def existing_install_status() -> None:
     info("existing installation detected:")
     for path in (POSTGRES_ENV, HINDSIGHT_ENV):
@@ -772,6 +789,10 @@ def existing_install_status() -> None:
     boot_hook = (USER_UNIT_DIR / "default.target.wants" / API_UNIT).is_symlink()
     print(f"  boot hook (default.target.wants/{API_UNIT}): "
           f"{'✓ present' if boot_hook else '✗ MISSING — stack will not survive a reboot'}")
+    if not boot_hook:
+        print("  manual recovery:")
+        for command in manual_recovery_commands():
+            print(f"    {command}")
     watch = probe(["systemctl", "--user", "is-active", WATCH_TIMER])
     watch_state = ((watch.stdout if watch else None) or "unknown").strip()
     print(f"  {WATCH_TIMER}: {watch_state}")

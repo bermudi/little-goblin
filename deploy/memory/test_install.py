@@ -178,6 +178,21 @@ class InstallAssetsTest(unittest.TestCase):
                 install_assets(memory_dir, Path(tmp) / "systemd",
                                Path(tmp) / "cfg", Path(tmp) / "user-units")
 
+    def test_manual_recovery_commands_are_actionable(self) -> None:
+        # The missing-boot-hook status must carry its own fix: watch
+        # units into the user unit dir, the wants symlink (relative
+        # target, like start_stack writes it), and the enabled timer.
+        commands = install.manual_recovery_commands()
+        self.assertEqual(len(commands), 3)
+        for name in install.WATCH_UNITS:
+            self.assertIn(name, commands[0])
+        self.assertIn(str(install.USER_UNIT_DIR), commands[0])
+        self.assertIn("default.target.wants", commands[1])
+        self.assertEqual(commands[1].count(install.API_UNIT), 2)
+        self.assertIn("ln -s", commands[1])
+        self.assertIn("daemon-reload", commands[2])
+        self.assertIn(install.WATCH_TIMER, commands[2])
+
 
 class GoblinSnippetTest(unittest.TestCase):
     def test_snippet_shape(self) -> None:

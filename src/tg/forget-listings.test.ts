@@ -13,6 +13,14 @@ const items = (n: number) =>
 	}));
 
 describe("ForgetListings", () => {
+	test("listings are isolated per conversation", () => {
+		const listings = new ForgetListings(memdb());
+		listings.save("dm:1", [{ documentId: "exchange/a", preview: "p" }]);
+		// B has no row of its own — a number from A's listing must not
+		// resolve here (wrong-document deletion is the invariant).
+		expect(listings.resolve("dm:2", "1", Date.now())).toBeNull();
+	});
+
 	test("save then resolve — 1-based, id and preview round-trip", () => {
 		const listings = new ForgetListings(memdb());
 		listings.save("c1", items(3));

@@ -273,6 +273,10 @@ export function handleCommand(
 				for (const [i, b] of status.blockedDetail.entries()) {
 					lines.push(`  ${i + 1}. ${b.document} (${b.attempts} attempt${b.attempts === 1 ? "" : "s"}): ${b.error ?? "unknown error"}`);
 				}
+				// blockedDetail caps at 10 — the header count is the truth.
+				if (counts.blocked > status.blockedDetail.length) {
+					lines.push(`  … and ${counts.blocked - status.blockedDetail.length} more (goblin.log has every id)`);
+				}
 				lines.push("actions: /memory retry · /memory dismiss");
 			}
 			lines.push(
@@ -321,7 +325,7 @@ export function handleCommand(
 				if (/^\d+$/.test(ref)) {
 					const picked = listingsFor(deps.store.db).resolve(conv.id, ref, Date.now());
 					if (picked === null) {
-						reply(deps, conv, "listing expired — run /forget <query> again and pick within 10 minutes");
+						reply(deps, conv, "no usable listing for that number — run /forget <query> and pick within 10 minutes");
 						return true;
 					}
 					id = picked.documentId;

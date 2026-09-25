@@ -5,8 +5,6 @@
 // here assumes a public IP.
 
 import { z } from "zod";
-import { dirname, join, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import { thinkingLevelsFor } from "../agent/providers.ts";
 import { loadConfig, parseConfig, fetchKinds, providerKinds, searchKinds, writeConfig, type Config } from "../config.ts";
 import { log } from "../log.ts";
@@ -34,7 +32,6 @@ export interface HttpDeps {
 
 const NO_STORE = { "cache-control": "no-store" };
 const HTML = { "content-type": "text/html; charset=utf-8", ...NO_STORE };
-const JS = { "content-type": "text/javascript; charset=utf-8", ...NO_STORE };
 
 // The mini app's read-only view of memory — the same sources the
 // /memory command renders, reduced by memoryStatus(). `topicNote` is
@@ -44,11 +41,11 @@ const JS = { "content-type": "text/javascript; charset=utf-8", ...NO_STORE };
 export interface MemoryStatusResponse {
 	state: MemoryState;
 	detail: string;
-	pending: number;
 	completed: number;
 	blocked: number;
 	dismissed: number;
-	// pending+submitted — everything the worker still owes Hindsight.
+	// memoryStatus's `pending` — pending+submitted, everything the
+	// worker still owes Hindsight.
 	queued: number;
 	lastRecallAt: string | null;
 	lastRecallOk: boolean | null;
@@ -65,7 +62,6 @@ function memoryStatusResponse(deps: HttpDeps): MemoryStatusResponse {
 		return {
 			state: "disabled",
 			detail: "memory is not configured",
-			pending: 0,
 			completed: 0,
 			blocked: 0,
 			dismissed: 0,
@@ -89,21 +85,16 @@ function memoryStatusResponse(deps: HttpDeps): MemoryStatusResponse {
 	return {
 		state: status.state,
 		detail: status.detail,
-		pending: status.pending,
 		completed: counts.completed,
 		blocked: counts.blocked,
 		dismissed: counts.dismissed,
-		queued: counts.pending + counts.submitted,
+		queued: status.pending,
 		lastRecallAt,
 		lastRecallOk,
 		topicNote: null,
 		blockedDetail: status.blockedDetail,
 	};
 }
-
-// Resolved from the server's own zod import — wherever the process runs
-// from, the vendored tree is the tree the server actually validates with.
-const ZOD_ROOT = dirname(fileURLToPath(import.meta.resolve("zod")));
 
 export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 	function authedUser(req: Request): InitDataUser | null {
@@ -130,28 +121,6 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 						.replace("__FETCH_KINDS__", JSON.stringify(fetchKinds)),
 					{ headers: HTML },
 				);
-			}
-			if (url.pathname.startsWith("/vendor/zod/")) {
-				// Vendored zod for the page's client-side validation. The page has
-				// no build step, so zod's published ESM tree is served as-is from
-				// the process's own node_modules and the browser resolves zod's
-				// relative imports against this prefix. Library code only — no
-				// secrets — so it is unauthenticated like the page shell, and
-				// confined by two independent guards: a charset regex and a
-				// resolved-prefix check.
-				const rel = url.pathname.slice("/vendor/zod/".length);
-				if (!/^[\w-]+(?:\/[\w.-]+)*\.js$/.test(rel)) {
-					return new Response("not found", { status: 404 });
-				}
-				const abs = join(ZOD_ROOT, rel);
-				if (!abs.startsWith(ZOD_ROOT + sep)) {
-					return new Response("not found", { status: 404 });
-				}
-				const file = Bun.file(abs);
-				if (!(await file.exists())) {
-					return new Response("not found", { status: 404 });
-				}
-				return new Response(file, { headers: JS });
 			}
 			if (url.pathname === "/api/thinking-levels") {
 				const user = authedUser(req);

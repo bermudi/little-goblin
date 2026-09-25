@@ -516,7 +516,46 @@ describe("memory commands", () => {
 			);
 			expect(handleCommand(deps, conv, "/forget delete 1")).toBe(true);
 			await waitFor(sent, 2);
-			expect(sent[1]).toBe("listing expired — run /forget <query> again and pick within 10 minutes");
+			expect(sent[1]).toBe("no usable listing for that number — run /forget <query> and pick within 10 minutes");
+			expect(deleted).toEqual([]);
+			expect(store.memoryContexts.isSuppressed("exchange/a")).toBe(false);
+		} finally {
+			server.stop(true);
+			store.close();
+		}
+	});
+
+	test("/forget delete <n> from another conversation refuses and deletes nothing", async () => {
+		const { store, conv, sent, deps } = setupMemory();
+		const deleted: string[] = [];
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: (request) => {
+				if (request.method === "DELETE") {
+					const id = deleteIdFrom(request.url);
+					deleted.push(id);
+					return Response.json({ success: true, document_id: id });
+				}
+				return Response.json({ results: [
+					{ id: "f1", text: "Lighthouse weekends.", document_id: "exchange/a", occurred_start: "2026-02-01" },
+				] });
+			},
+		});
+		try {
+			deps.memory = {
+				...deps.memory!,
+				client: new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" }),
+			};
+			// Listing cached under conv A's id…
+			expect(handleCommand(deps, conv, "/forget lighthouse")).toBe(true);
+			await waitFor(sent, 1);
+			// …but picked from a different conversation: the per-conversation
+			// key must refuse rather than let B spend A's number.
+			const other = store.resolve({ kind: "dm", chatId: 424242 }, "/unused");
+			expect(handleCommand(deps, other, "/forget delete 1")).toBe(true);
+			await waitFor(sent, 2);
+			expect(sent[1]).toBe("no usable listing for that number — run /forget <query> and pick within 10 minutes");
 			expect(deleted).toEqual([]);
 			expect(store.memoryContexts.isSuppressed("exchange/a")).toBe(false);
 		} finally {

@@ -443,10 +443,9 @@ export function startMemoryWorker(
 							// No retry by design — the latch above already committed,
 							// so retries would spam a dead Telegram. Error, not warn:
 							// the log is this failure's only voice.
-							log.error("memory blocked notice failed — /memory status remains the surface", {
+							log.error("memory blocked notice failed — /memory status remains the surface", err, {
 								conversation: outcome.conversationId,
 								document: outcome.documentId,
-								error: String(err),
 							});
 						});
 					}
@@ -465,9 +464,8 @@ export function startMemoryWorker(
 						// released in finally). Error, not warn: a notice that cannot
 						// go out is operator silence — the log is the only voice it
 						// has (an unparseable conversation id would loop here).
-						log.error("memory outage notice failed — retries on next failure", {
+						log.error("memory outage notice failed — retries on next failure", err, {
 							conversation: notice.conversation,
-							error: String(err),
 						});
 					})
 					.finally(() => {

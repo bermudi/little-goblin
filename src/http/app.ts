@@ -1208,33 +1208,27 @@ async function save() {
 const MEM_POLL_MS = 10000;
 let memTimer = null;
 let memInFlight = false;
-let memZod = null;
-let memSchema = null;
-async function memorySchema() {
-  if (!memSchema) {
-    // Vendored from the process's own node_modules — served at
-    // /vendor/zod/, no build step, no third-party origin.
-    if (!memZod) memZod = await import("/vendor/zod/v4/index.js");
-    const z = memZod.z;
-    memSchema = z.object({
-      state: z.enum(["disabled", "healthy", "pending", "degraded"]),
-      detail: z.string(),
-      pending: z.number().int(),
-      completed: z.number().int(),
-      blocked: z.number().int(),
-      dismissed: z.number().int(),
-      queued: z.number().int(),
-      lastRecallAt: z.string().nullable(),
-      lastRecallOk: z.boolean().nullable(),
-      topicNote: z.null(),
-      blockedDetail: z.array(z.object({
-        document: z.string(),
-        error: z.string().nullable(),
-        attempts: z.number().int()
-      }))
-    });
+// Same-origin, HMAC-gated answer from the same process that serves this
+// page — not a zod boundary in the repo's sense. Defensive shape check
+// in the populate() (/api/config) idiom (review ruling 2026-09-25): every
+// field read is guarded, anything unexpected renders as unavailable
+// instead of throwing mid-render.
+function checkMemoryStatus(s) {
+  if (s === null || typeof s !== "object") return null;
+  const int = (v) => typeof v === "number" && Number.isInteger(v) && v >= 0;
+  if (!["disabled", "healthy", "pending", "degraded"].includes(s.state)) return null;
+  if (typeof s.detail !== "string") return null;
+  if (!int(s.completed) || !int(s.blocked) || !int(s.dismissed) || !int(s.queued)) return null;
+  if (!(s.lastRecallAt === null || typeof s.lastRecallAt === "string")) return null;
+  if (!(s.lastRecallOk === null || typeof s.lastRecallOk === "boolean")) return null;
+  if (!Array.isArray(s.blockedDetail)) return null;
+  for (const b of s.blockedDetail) {
+    if (b === null || typeof b !== "object") return null;
+    if (typeof b.document !== "string") return null;
+    if (!(b.error === null || typeof b.error === "string")) return null;
+    if (!int(b.attempts)) return null;
   }
-  return memSchema;
+  return s;
 }
 // Local wall clock, like /memory — read by the operator on this box.
 function hm(iso) {
@@ -1311,11 +1305,11 @@ async function refreshMemoryStatus() {
     const res = await fetch("/api/memory-status", { headers: { "x-init-data": initData } });
     if (!res.ok) { renderMemoryUnavailable("status endpoint answered " + res.status); return; }
     const raw = await res.json();
-    // The fetch is external input — zod-parsed before render, never
-    // trusted on shape.
-    const parsed = (await memorySchema()).safeParse(raw);
-    if (!parsed.success) { renderMemoryUnavailable("status data failed validation — not rendered"); return; }
-    renderMemoryStatus(parsed.data);
+    // Defensive shape check — see checkMemoryStatus for why this is
+    // hand-rolled rather than zod.
+    const checked = checkMemoryStatus(raw);
+    if (checked === null) { renderMemoryUnavailable("status data failed validation — not rendered"); return; }
+    renderMemoryStatus(checked);
   } catch (e) {
     renderMemoryUnavailable("could not reach goblin — " + e);
   } finally {

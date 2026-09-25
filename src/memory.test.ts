@@ -17,6 +17,7 @@ import {
 	type MemoryState,
 } from "./memory.ts";
 import { HindsightClient } from "./hindsight.ts";
+import { log } from "./log.ts";
 import { MemoryQueue, type MemoryQueueCounts } from "./memory-queue.ts";
 import { OUTAGE_NOTICE_AFTER_MS, OutageTracker } from "./memory-outage.ts";
 
@@ -355,6 +356,59 @@ describe("worker timer", () => {
 			expect(submitted[0]).not.toBe(submitted[1]);
 			await w.stop();
 		} finally {
+			server.stop(true);
+		}
+	});
+
+	// The notice's failure path has no retry — the log line is the only
+	// voice it has, so its shape is pinned here: message, error, and the
+	// fields that locate the stuck document (review finding 2026-09-25:
+	// passing the fields object as the error argument collapsed it to
+	// "[object Object]").
+	test("a failed blocked-notice send logs with locating fields and never retries", async () => {
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: async (request) => {
+				if (request.method === "POST") return new Response("no", { status: 401 });
+				return Response.json({ results: [] });
+			},
+		});
+		const calls: { msg: string; err: unknown; fields: Record<string, unknown> }[] = [];
+		const original = log.error;
+		(log as { error: (msg: string, err?: unknown, fields?: Record<string, unknown>) => void }).error = (
+			msg, err, fields,
+		) => {
+			calls.push({ msg, err, fields: fields ?? {} });
+		};
+		try {
+			const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
+			const queue = new MemoryQueue(memdb());
+			queue.enqueue(client.target, {
+				id: "exchange-9",
+				conversationId: "dm:9",
+				sourceIds: ["u-9", "a-9"],
+				timestamp: "2026-09-22T10:00:00Z",
+				content: "Operator: hi.\nGoblin: hello.",
+			});
+			const w = startMemoryWorker(queue, client, {
+				intervalMs: 60_000,
+				blocked: {
+					notify: async () => {
+						throw new Error("telegram unreachable");
+					},
+				},
+			});
+			await w.tickNow(); // submit 401 → blocked → latch → notice send throws
+			await w.tickNow(); // nothing due: no second attempt, no second log
+			expect(calls).toHaveLength(1);
+			expect(calls[0]!.msg).toContain("blocked notice failed");
+			expect(String(calls[0]!.err)).toContain("telegram unreachable");
+			expect(calls[0]!.fields.conversation).toBe("dm:9");
+			expect(calls[0]!.fields.document).toBe("exchange-9");
+			await w.stop();
+		} finally {
+			(log as { error: unknown }).error = original;
 			server.stop(true);
 		}
 	});

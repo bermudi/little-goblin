@@ -181,7 +181,6 @@ describe("mini-app memory status", () => {
 			expect(await res.json()).toEqual({
 				state: "disabled",
 				detail: "memory is not configured",
-				pending: 0,
 				completed: 0,
 				blocked: 0,
 				dismissed: 0,
@@ -207,7 +206,6 @@ describe("mini-app memory status", () => {
 			const j = (await (await get("/api/memory-status")).json()) as Record<string, unknown>;
 			expect(j.state).toBe("healthy");
 			expect(j.detail).toBe("no queued or blocked retention");
-			expect(j.pending).toBe(0);
 			expect(j.queued).toBe(0);
 			expect(j.completed).toBe(5);
 			expect(j.lastRecallAt).toBe("2026-09-25T12:00:00.000Z");
@@ -241,37 +239,6 @@ describe("mini-app memory status", () => {
 	});
 });
 
-// The page's client-side zod parse fetches the vendored ESM tree from
-// the process's own node_modules — the route must serve it, and only
-// it.
-describe("vendored zod", () => {
-	test("serves zod's published esm entry as javascript", async () => {
-		const { http } = setup();
-		try {
-			const res = await fetch(`http://127.0.0.1:${http.port}/vendor/zod/v4/index.js`);
-			expect(res.ok).toBe(true);
-			expect(res.headers.get("content-type")).toContain("text/javascript");
-			expect(await res.text()).toContain("export");
-		} finally {
-			http.stop();
-		}
-	});
-
-	test("is confined to js files inside the package", async () => {
-		const { http } = setup();
-		try {
-			const base = `http://127.0.0.1:${http.port}`;
-			expect((await fetch(`${base}/vendor/zod/package.json`)).status).toBe(404);
-			expect((await fetch(`${base}/vendor/zod/v4/index.cjs`)).status).toBe(404);
-			expect((await fetch(`${base}/vendor/zod/v4/no-such-file.js`)).status).toBe(404);
-			// Encoded traversal stays a literal pathname segment and fails
-		// the charset guard; URL parsing collapses plain ../.
-			expect((await fetch(`${base}/vendor/zod/%2e%2e/goblin.json5`)).status).toBe(404);
-		} finally {
-			http.stop();
-		}
-	});
-});
 
 // The provider/chain kind lists are served from the schema (single
 // source in config.ts) — the page must carry the injected arrays, not

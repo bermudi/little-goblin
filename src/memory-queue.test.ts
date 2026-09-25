@@ -325,6 +325,14 @@ test("noteBlocked latches once per document", () => {
 	expect(queue.noteBlocked("exchange/dm:1/2/b")).toBe(true);
 });
 
+test("the one-notice latch survives a restart", () => {
+	const path = database();
+	expect(storeAt(path).memoryQueue.noteBlocked("exchange/dm:1/1/a")).toBe(true);
+	// A fresh store over the same disk state = a process restart: the
+	// operator must not be told twice about the same document.
+	expect(storeAt(path).memoryQueue.noteBlocked("exchange/dm:1/1/a")).toBe(false);
+});
+
 test("blockedDetail abbreviates documents and caps errors for chat surfaces", () => {
 	const client = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
 	const store = storeAt(database());

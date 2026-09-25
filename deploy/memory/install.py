@@ -402,14 +402,25 @@ def start_stack() -> None:
     wants_dir = USER_UNIT_DIR / "default.target.wants"
     wants_dir.mkdir(parents=True, exist_ok=True)
     wants_link = wants_dir / API_UNIT
+    if wants_link.exists() and not wants_link.is_symlink():
+        fail(f"{wants_link} exists and is not a symlink — remove or inspect "
+             "it by hand, then re-run")
     if not wants_link.is_symlink():
         os.symlink(API_UNIT, wants_link)
-    info(f"{API_UNIT} wants-linked into default.target — starts on boot "
-         "(linger keeps the user manager alive)")
     # The watch units landed after the earlier daemon-reload; load them,
     # then start the timer now. It turns an unhealthy-but-alive container
     # into a unit restart (Restart=on-failure only sees process death).
     run(["systemctl", "--user", "daemon-reload"])
+    # Fail loud if the manager did not accept the boot hook: a silently
+    # dead wants-link is exactly the day-long-outage failure mode the
+    # hook exists to close.
+    wants = probe(["systemctl", "--user", "show", "-p", "Wants",
+                   "default.target"])
+    if wants is None or API_UNIT not in (wants.stdout or ""):
+        fail(f"{API_UNIT} not in default.target Wants after daemon-reload — "
+             f"check 'systemctl --user show -p Wants default.target'")
+    info(f"{API_UNIT} wants-linked into default.target — starts on boot "
+         "(linger keeps the user manager alive)")
     run(["systemctl", "--user", "enable", "--now", WATCH_TIMER])
     info(f"{WATCH_TIMER} enabled — health checked every 5 minutes")
 
@@ -756,6 +767,14 @@ def existing_install_status() -> None:
         result = probe(["systemctl", "--user", "is-active", unit])
         state = (result.stdout if result else None) or "unknown"
         print(f"  {unit}: {state}")
+    # Quadlet units report 'generated', never 'enabled' — the wants
+    # symlink is the real boot evidence.
+    boot_hook = (USER_UNIT_DIR / "default.target.wants" / API_UNIT).is_symlink()
+    print(f"  boot hook (default.target.wants/{API_UNIT}): "
+          f"{'✓ present' if boot_hook else '✗ MISSING — stack will not survive a reboot'}")
+    watch = probe(["systemctl", "--user", "is-active", WATCH_TIMER])
+    watch_state = ((watch.stdout if watch else None) or "unknown").strip()
+    print(f"  {WATCH_TIMER}: {watch_state}")
     if http_ok(HEALTH_URL):
         print(f"  API: healthy at {MEMORY_API_URL}")
     print("  to change models/keys:  uv run python deploy/memory/install.py --reconfigure")

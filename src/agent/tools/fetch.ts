@@ -139,6 +139,43 @@ const extractors: Record<Exclude<FetchKind, "local">, (url: string, key: string 
 
 const TEXTUAL = /^(text\/|application\/(json|xml|x-yaml|yaml|javascript|toml))/;
 
+/** The cap is a ceiling on reads, not a post-hoc check: a lying
+ * Content-Length or an endless chunked stream must never balloon
+ * memory. The read is cancelled the moment the cap is crossed; chunks
+ * assemble only after the stream ends within it. `seen` on the
+ * too-large arm is what was actually read before cancellation — the
+ * full size is unknowable without downloading it, which is the point. */
+async function readBodyCapped(
+	res: Response,
+	cap: number,
+): Promise<{ tooLarge: false; bytes: Uint8Array } | { tooLarge: true; seen: number }> {
+	if (res.body === null) {
+		// No stream to gate (not reachable for http(s) fetch today) —
+		// there is nothing to buffer either.
+		return { tooLarge: false, bytes: new Uint8Array(await res.arrayBuffer()) };
+	}
+	const reader = res.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let seen = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done || !value) break;
+		chunks.push(value);
+		seen += value.byteLength;
+		if (seen > cap) {
+			await reader.cancel();
+			return { tooLarge: true, seen };
+		}
+	}
+	const bytes = new Uint8Array(seen);
+	let at = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, at);
+		at += chunk.byteLength;
+	}
+	return { tooLarge: false, bytes };
+}
+
 async function localExtract(url: string, baseUrl?: string): Promise<Extracted | Rejected> {
 	const target = baseUrl ?? url;
 	const res = await fetchOk(
@@ -152,22 +189,22 @@ async function localExtract(url: string, baseUrl?: string): Promise<Extracted | 
 	if (length > DOWNLOAD_CAP) {
 		return { error: `page is ${Math.round(length / 1024 / 1024)} MiB (cap 8 MiB) — use bash + curl for oversized fetches`, kind: "too-large", meta: resMeta(res, length) };
 	}
-	const buf = await res.arrayBuffer();
-	if (buf.byteLength > DOWNLOAD_CAP) {
-		return { error: `page exceeds the 8 MiB download cap — use bash + curl`, kind: "too-large", meta: resMeta(res, buf.byteLength) };
+	const body = await readBodyCapped(res, DOWNLOAD_CAP);
+	if (body.tooLarge) {
+		return { error: `page exceeds the 8 MiB download cap — use bash + curl`, kind: "too-large", meta: resMeta(res, body.seen) };
 	}
-	const meta = resMeta(res, buf.byteLength);
-	const body = new TextDecoder("utf-8", { fatal: false }).decode(buf);
+	const meta = resMeta(res, body.bytes.byteLength);
+	const text = new TextDecoder("utf-8", { fatal: false }).decode(body.bytes);
 	const looksHtml = contentType === "text/html" || contentType === "application/xhtml+xml" ||
-		(/^\s*<(?:!doctype html|html[\s>])/i.test(body) && contentType === "");
+		(/^\s*<(?:!doctype html|html[\s>])/i.test(text) && contentType === "");
 	if (looksHtml) {
-		return { ...extractReadable(url, body), meta };
+		return { ...extractReadable(url, text), meta };
 	}
 	if (TEXTUAL.test(contentType) || contentType === "") {
-		return { title: "", text: body, meta };
+		return { title: "", text, meta };
 	}
 	return {
-		error: `unsupported content type "${contentType}" (${buf.byteLength} bytes) — fetch it via bash to a file, or send_file to hand it to the operator`,
+		error: `unsupported content type "${contentType}" (${body.bytes.byteLength} bytes) — fetch it via bash to a file, or send_file to hand it to the operator`,
 		kind: "binary",
 		meta,
 	};

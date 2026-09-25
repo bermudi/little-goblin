@@ -74,6 +74,44 @@ describe("fetch tool — local", () => {
 		expect(out.error).toContain("bash");
 	});
 
+	test("oversized stream with no content-length is refused and cancelled mid-download", async () => {
+		// 40 MiB in 1 MiB chunks with no content-length: the header
+		// pre-check cannot fire, so the cap must gate the stream itself —
+		// and stop reading once crossed, not after buffering it all.
+		let produced = 0;
+		const chunk = new Uint8Array(1024 * 1024).fill(65);
+		const stream = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				produced += 1;
+				if (produced > 40) controller.close();
+				else controller.enqueue(chunk);
+			},
+		});
+		const base = serve(() => new Response(stream, { headers: { "content-type": "text/plain" } }));
+		const out = (await exec(fetchTool(depsWith(undefined)), { url: `${base}/endless` })) as { error: string; kind: string };
+		expect(out.kind).toBe("too-large");
+		expect(out.error).toContain("8 MiB");
+		// The reader was cancelled ~8 chunks in, well before all 40.
+		expect(produced).toBeLessThan(20);
+	});
+
+	test("multi-chunk stream within the cap assembles in order", async () => {
+		const parts = [`${"a".repeat(90)}alpha\n`, `${"b".repeat(90)}beta\n`, `${"c".repeat(90)}gamma\n`];
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				for (const part of parts) controller.enqueue(new TextEncoder().encode(part));
+				controller.close();
+			},
+		});
+		const base = serve(() => new Response(stream, { headers: { "content-type": "text/plain" } }));
+		const out = (await exec(fetchTool(depsWith(undefined)), { url: `${base}/parts` })) as string;
+		expect(out).toContain("alpha");
+		expect(out).toContain("beta");
+		expect(out).toContain("gamma");
+		expect(out.indexOf("alpha")).toBeLessThan(out.indexOf("beta"));
+		expect(out.indexOf("beta")).toBeLessThan(out.indexOf("gamma"));
+	});
+
 	test("overflow windows head+tail and names the webcache recovery", async () => {
 		const long = Array.from({ length: 400 }, (_, i) => `line ${i} ${"x".repeat(40)}`).join("\n");
 		const base = serve(() => new Response(long, { headers: { "content-type": "text/plain" } }));

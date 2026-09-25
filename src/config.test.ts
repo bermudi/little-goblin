@@ -7,6 +7,10 @@ import {
 	loadConfig,
 	providerKinds,
 	providerSchema,
+	fetchKinds,
+	fetchEntrySchema,
+	searchKinds,
+	searchEntrySchema,
 	splitModelRef,
 	writeConfig,
 	type Config,
@@ -290,6 +294,49 @@ describe("providerKinds", () => {
 			expect(providerSchema.safeParse({ kind, ...fields[kind] }).success).toBe(true);
 		}
 		expect(providerSchema.safeParse({ kind: "anthropic" }).success).toBe(false);
+	});
+});
+
+describe("searchKinds", () => {
+	// Same two-direction contract as providerKinds, for the mini app's
+	// search chain builder. Keyless kinds parse with no auth field.
+	test("every kind parses with its required fields; an unknown kind is rejected", () => {
+		const fields: Record<string, Record<string, unknown>> = {
+			brave: { auth: "a" },
+			exa: { auth: "a" },
+			jina: {},
+			tavily: { auth: "a" },
+			firecrawl: { auth: "a" },
+			parallel: { auth: "a" },
+			ddg: {},
+		};
+		for (const kind of searchKinds) {
+			expect(searchEntrySchema.safeParse({ kind, ...fields[kind] }).success).toBe(true);
+		}
+		expect(searchEntrySchema.safeParse({ kind: "bing" }).success).toBe(false);
+		// Required-auth kinds really do require it.
+		for (const kind of ["brave", "exa", "tavily", "firecrawl", "parallel"] as const) {
+			expect(searchEntrySchema.safeParse({ kind }).success).toBe(false);
+		}
+	});
+});
+
+describe("fetchKinds", () => {
+	test("every kind parses with its required fields; an unknown kind is rejected", () => {
+		const fields: Record<string, Record<string, unknown>> = {
+			local: {},
+			jina: {},
+			tavily: { auth: "a" },
+			firecrawl: { auth: "a" },
+			parallel: { auth: "a" },
+		};
+		for (const kind of fetchKinds) {
+			expect(fetchEntrySchema.safeParse({ kind, ...fields[kind] }).success).toBe(true);
+		}
+		expect(fetchEntrySchema.safeParse({ kind: "diffbot" }).success).toBe(false);
+		for (const kind of ["tavily", "firecrawl", "parallel"] as const) {
+			expect(fetchEntrySchema.safeParse({ kind }).success).toBe(false);
+		}
 	});
 });
 

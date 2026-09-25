@@ -143,18 +143,41 @@ describe("mini-app http", () => {
 	});
 });
 
-// The provider-kind list is served from the schema (single source in
-// config.ts) — the page must carry the injected array, not a stale
-// copy or an unreplaced placeholder.
+// The provider/chain kind lists are served from the schema (single
+// source in config.ts) — the page must carry the injected arrays, not
+// stale copies or unreplaced placeholders. The inline script must also
+// parse — a template-literal typo in a 1000-line page string otherwise
+// only surfaces on a phone.
 describe("mini-app page serving", () => {
-	test("GET / serves the schema's provider kinds, placeholder replaced", async () => {
+	test("GET / serves the schema's kind lists, placeholders replaced", async () => {
 		useHome();
 		const http = startHttp({ configRef: { current: { ...baseConfig } }, botToken: TOKEN, onConfigWritten: () => {} });
 		try {
 			const res = await fetch(`http://127.0.0.1:${http.port}/`);
 			const html = await res.text();
 			expect(html).toContain('const KINDS = ["openai-compatible","openrouter","codex"];');
+			expect(html).toContain(
+				'const SEARCH_KINDS = ["brave","exa","jina","tavily","firecrawl","parallel","ddg"];',
+			);
+			expect(html).toContain('const FETCH_KINDS = ["local","jina","tavily","firecrawl","parallel"];');
 			expect(html).not.toContain("__PROVIDER_KINDS__");
+			expect(html).not.toContain("__SEARCH_KINDS__");
+			expect(html).not.toContain("__FETCH_KINDS__");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("the page's inline script parses", async () => {
+		useHome();
+		const http = startHttp({ configRef: { current: { ...baseConfig } }, botToken: TOKEN, onConfigWritten: () => {} });
+		try {
+			const html = await (await fetch(`http://127.0.0.1:${http.port}/`)).text();
+			const start = html.lastIndexOf("<script>");
+			const end = html.lastIndexOf("</script>");
+			expect(start).toBeGreaterThan(0);
+			expect(end).toBeGreaterThan(start);
+			expect(() => new Function(html.slice(start + "<script>".length, end))).not.toThrow();
 		} finally {
 			http.stop();
 		}

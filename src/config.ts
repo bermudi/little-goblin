@@ -168,7 +168,12 @@ export type MemoryConfig = z.infer<typeof memoryConfigSchema>;
 // One web provider selection. Search and fetch each accept one of
 // these or an ordered list of them (DESIGN.md, "Web access") — the
 // list is the fallback chain, config order, first entry primary.
-const searchEntrySchema = z.discriminatedUnion("kind", [
+// The chain-entry kinds the mini app's search/fetch builders may offer,
+// in schema order. Same single-source contract as providerKinds —
+// config.test.ts pins both against the unions below.
+export const searchKinds = ["brave", "exa", "jina", "tavily", "firecrawl", "parallel", "ddg"] as const;
+
+export const searchEntrySchema = z.discriminatedUnion("kind", [
 	z.object({ kind: z.literal("brave"), auth: z.string().min(1) }),
 	z.object({ kind: z.literal("exa"), auth: z.string().min(1) }),
 	z.object({ kind: z.literal("jina"), auth: z.string().min(1).optional() }),
@@ -177,7 +182,9 @@ const searchEntrySchema = z.discriminatedUnion("kind", [
 	z.object({ kind: z.literal("parallel"), auth: z.string().min(1) }),
 	z.object({ kind: z.literal("ddg") }),
 ]);
-const fetchEntrySchema = z.discriminatedUnion("kind", [
+export const fetchKinds = ["local", "jina", "tavily", "firecrawl", "parallel"] as const;
+
+export const fetchEntrySchema = z.discriminatedUnion("kind", [
 	z.object({ kind: z.literal("local") }),
 	z.object({ kind: z.literal("jina"), auth: z.string().min(1).optional() }),
 	z.object({ kind: z.literal("tavily"), auth: z.string().min(1) }),

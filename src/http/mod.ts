@@ -6,7 +6,7 @@
 
 import { z } from "zod";
 import { thinkingLevelsFor } from "../agent/providers.ts";
-import { loadConfig, parseConfig, providerKinds, writeConfig, type Config } from "../config.ts";
+import { loadConfig, parseConfig, fetchKinds, providerKinds, searchKinds, writeConfig, type Config } from "../config.ts";
 import { log } from "../log.ts";
 import { APP_HTML } from "./app.ts";
 import { validateInitData, type InitDataUser } from "./auth.ts";
@@ -38,11 +38,13 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 			if (url.pathname === "/" || url.pathname === "/index.html") {
 				// no-store: a webview must never pair stale page code with a
 				// fresh /api/config after an update.
-				// Provider kinds are served from the schema's list (single
-				// source — config.ts); a bare identifier makes a missed
+				// Provider and chain kinds are served from the schema's lists
+				// (single source — config.ts); a bare identifier makes a missed
 				// injection fail loud (ReferenceError), not silent.
 				return new Response(
-					APP_HTML.replace("__PROVIDER_KINDS__", JSON.stringify(providerKinds)),
+					APP_HTML.replace("__PROVIDER_KINDS__", JSON.stringify(providerKinds))
+						.replace("__SEARCH_KINDS__", JSON.stringify(searchKinds))
+						.replace("__FETCH_KINDS__", JSON.stringify(fetchKinds)),
 					{ headers: HTML },
 				);
 			}

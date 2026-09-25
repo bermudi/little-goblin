@@ -18,10 +18,11 @@ reports completion. Queued content is bound to its original endpoint and
 bank. Failed or missing remote operations remain visible in the database
 rather than being discarded or blindly replayed.
 
-Still required before enabling: explicitly authorized end-to-end
-verification against a real Hindsight server (containers + provider
-traffic). Do not treat the raw client's delete method as a complete
-forgetting mechanism — see `/forget` below.
+Verified end-to-end against the real Hindsight stack on 2026-09-24
+(retention, recall, installer, watch timer) and live since — the
+2026-09-25 reboot auto-started the stack on schedule. Do not treat the
+raw client's delete method as a complete forgetting mechanism — see
+`/forget` below.
 
 ## Operator controls
 

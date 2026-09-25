@@ -6,17 +6,18 @@ commands, reads and writes files, handles photos and voice notes, and can
 speak replies back as voice notes.
 
 This is a rewrite of `little-goblin` on the Vercel AI SDK (see `DESIGN.md`
-for why). The old bot keeps running until cutover; nothing is shared between
-them.
+for why). The old bot is retired — this is the one running; nothing was
+shared between them (no code, no state, no specs).
 
 ## How it works, in one paragraph
 
 You message the bot on Telegram. Each forum topic (or the bare chat, if there
 are no topics) is its own conversation with its own history — make a topic to
 start something, post in an old topic to pick it back up. Your messages get
-answered by whatever model you've picked, with five tools at its disposal
-(read, write, edit, shell, speak). Settings live in Telegram: four commands
-plus a Settings mini app. Everything is stored under one folder
+answered by whatever model you've picked, with eleven tools at its
+disposal (files, shell, speech, scheduling, memory recall, web search
+and fetch). Settings live in Telegram: seven commands plus a Settings
+mini app. Everything is stored under one folder
 (`~/goblin` by default).
 
 ## Quick start
@@ -33,10 +34,15 @@ Full walkthrough: [`docs/setup.md`](docs/setup.md).
 ## Daily use
 
 - **Topics are conversations.** No `/new`, no `/resume` — Telegram does that job.
-- **Four commands:** `/model` (pick the model), `/think` (thinking effort),
-  `/voice` (voice-note replies on/off), `/stop` (interrupt). All per-topic.
+- **Seven commands:** `/model` (pick the model), `/think` (thinking effort),
+  `/voice` (voice-note replies on/off), `/stop` (interrupt), `/memory`
+  (memory status, per-topic inclusion), `/forget` (delete remembered
+  content), `/start` (a canned hello). The settings ones are per-topic.
 - **Send anything:** photos, files, voice notes, videos. Voice gets
   transcribed so even text-only models can "hear" it.
+- **Memory is automatic (when enabled):** exchanges are remembered and
+  recalled on their own — no "remember this". `/forget` removes; see
+  [`docs/memory.md`](docs/memory.md).
 - **Settings mini app:** a Settings button in the chat opens a form for every
   knob — no SSH needed.
 
@@ -86,5 +92,6 @@ systemctl --user restart goblin  # restart
 - [`docs/voice.md`](docs/voice.md) — voice notes in and out, transcription, `/voice`
 - [`docs/skills.md`](docs/skills.md) — teaching the bot repeatable tasks
 - [`docs/operations.md`](docs/operations.md) — service, logs, backups, troubleshooting
-- [`docs/memory.md`](docs/memory.md) — optional Hindsight memory; implemented, needs authorized live verification
+- [`docs/memory.md`](docs/memory.md) — optional Hindsight memory; opt-in, live since 2026-09-24
 - [`DESIGN.md`](DESIGN.md) — the design spec (why it's built this way)
+- [`V1-V2-MAP.md`](V1-V2-MAP.md) — what changed from little-goblin, feature by feature

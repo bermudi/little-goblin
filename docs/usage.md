@@ -17,11 +17,12 @@ auto-titled from your first message — if `titleModel` is configured. Rename
 it yourself at any point and your name always wins; the bot won't overwrite
 an explicit rename.
 
-## The four commands
+## The seven commands
 
-Commands are settings-only, and each one is per-topic (the topic you're in).
-Every settings change interrupts whatever that topic is currently doing, so
-a reply always reflects the current settings — never a mix.
+Commands are settings and controls, not conversations. The settings ones are
+per-topic (the topic you're in), and every settings change interrupts
+whatever that topic is currently doing, so a reply always reflects the
+current settings — never a mix.
 
 | Command | What it does |
 |---|---|
@@ -29,6 +30,9 @@ a reply always reflects the current settings — never a mix.
 | `/think` | With no argument: shows the current thinking level and what this model supports. `/think <level>` switches. `/think reset` back to the default. |
 | `/voice` | Toggles voice-note replies for this topic. Needs `tts` configured (otherwise it tells you so). |
 | `/stop` | Interrupts the running reply and drops anything queued behind it. |
+| `/memory` | With no argument: memory status (health, queue, last recall, blocked rows) and whether this topic is included. `/memory on`·`off` set per-topic inclusion; `/memory retry`·`dismiss` handle blocked retention. [Memory](memory.md) has the full picture. |
+| `/forget` | Deletes remembered content: `/forget <query>` lists matching sources, `/forget delete <n>` removes one for good — irreversible, and suppressed from future retention. |
+| `/start` | A canned hello (Telegram sends it when a chat first opens). Nothing more. |
 
 Commands can be addressed (`/stop@yourbot`) in groups; a command addressed
 to a different bot is ignored rather than fed to the model.

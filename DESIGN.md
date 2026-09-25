@@ -1,7 +1,8 @@
 # goblin v2 — design
 
 Rewrite of little-goblin. Same product, ruthless scope. The old codebase is at
-`~/build/little-goblin`; it keeps running until cutover. Nothing is imported —
+`~/build/little-goblin`; it ran until cutover — v2 is now the running bot.
+Nothing is imported —
 no code, no state, no specs. This document is the only thing that carries over,
 plus the lessons it encodes.
 
@@ -554,14 +555,13 @@ tables beyond last_run.
 real Podman stack (0.10.0-slim). Verified by live traffic that day:
 retention end-to-end (queued exchanges drained through submit → async
 operation → completed), recall answering with real extracted facts,
-installer start, and the watch timer firing on schedule. Verified by
-wiring only — the box has not rebooted since the units landed, so the
-boot path (wants-symlink → generator resolution) rests on systemd
-semantics plus `list-dependencies` confirmation, not on a drill; the
-watch's restart action has never had a live `unhealthy` to act on. The
-next reboot closes both; until then `systemctl --user is-enabled
-goblin-memory-api` reads `generated` (the symlink is the evidence, not
-that command). The broader release gates from Operations and
+installer start, and the watch timer firing on schedule. The 2026-09-25
+reboot closed the boot-path gate in production: db and api units
+auto-started within a minute of boot — the wants-symlink → generator
+path survived contact with a real restart (`systemctl --user is-enabled
+goblin-memory-api` reads `generated`; the symlink is the evidence, not
+that command). Still never exercised: the watch's restart action on a
+live `unhealthy`. The broader release gates from Operations and
 verification — cross-topic recall, dated correction, restart-recovery
 drills — remain operator exercises. First live finding: z.ai 429
 "insufficient balance" during extraction blocks a single document for

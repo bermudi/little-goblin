@@ -1,10 +1,10 @@
 # v1 ↔ v2 feature map
 
-v1 = `~/build/little-goblin` (pi-coding-agent core, kept running until
-cutover). v2 = this repo (Vercel AI SDK core). Same product, ruthless scope:
-v2 rebuilds what earned its place and drops the machinery that didn't. Nothing
-migrates — no code, no state, no specs. Rows below describe what each repo
-actually does (v2 at current HEAD; the one explicit pending item is noted).
+v1 = `~/build/little-goblin` (pi-coding-agent core; retired at cutover —
+v2 is the running bot). v2 = this repo (Vercel AI SDK core). Same product,
+ruthless scope: v2 rebuilds what earned its place and drops the machinery
+that didn't. Nothing migrated — no code, no state, no specs. Rows below
+describe what each repo actually does (v2 at current HEAD).
 
 Legend: ✅ both, roughly same shape · 🔀 both, new mechanism in v2 ·
 ❌ v1 only · ➕ v2 only
@@ -76,7 +76,7 @@ Legend: ✅ both, roughly same shape · 🔀 both, new mechanism in v2 ·
 | 🔀 What's remembered | curated by the model via `memory_write` (add/replace/remove/rewrite, char budget) + private-reflection extraction pipeline ("inner life") | automatic retention of completed text exchanges (extract → enqueue → durable outbox → background worker) |
 | 🔀 Recall | frozen summary at runtime creation + `memory_search` hybrid recall per turn | bounded recall before each turn, persisted verbatim and replayed cache-stably; `memory_search` tool for deep search |
 | 🔀 Controls | `memory status` / `memory export` inspection | `/memory on\|off\|status` per topic (exclusion enforced before any request), `/forget` resolves → go-ahead → deletes + suppresses permanently |
-| 🚧 Status | live since forever | implemented + offline-tested; **live verification against a real Hindsight server is the open gate** |
+| ✅ Status | live since forever | live since 2026-09-24 — end-to-end verified against the real server; survived the 2026-09-25 reboot |
 
 ## Scheduled work
 
@@ -127,6 +127,9 @@ designed into `DESIGN.md` first.
 | ➕ Memory controls | `/memory`, `/forget` with explicit go-ahead and permanent suppression |
 
 ## Operator habit changes at cutover
+
+Cutover is complete — v2 is the bot; the list below describes current
+habits, not a plan.
 
 - **New conversation** — `/new` is gone. Create a topic.
 - **Resume** — `/resume` is gone. Post in the old topic.

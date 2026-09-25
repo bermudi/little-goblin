@@ -851,7 +851,15 @@ Resolved values never enter the tool environment, the model context, or logs.
 
 - grammy long polling; the `allowedUsers` config key gates access first thing.
 - **Coalescing buffer**: rapid-fire messages in one conversation merge into
-  one turn (~1.5s quiet window). Real product value in v1; keep it.
+  one turn. Real product value in v1 — but its 1.5s quiet window was
+  inherited, never measured, and it is a flat latency tax on every
+  single-message turn. Ruled 2026-09-25 from a live 7-chunk paste: worst
+  inter-chunk gap 167ms ≈ one long-poll RTT to the public Telegram API
+  (~185ms from this box) — poll-boundary straddles, not client pacing — so
+  the window is **500ms** (3× observed worst) while polling the public API.
+  RTT-sized gaps are structural there; 200–300ms becomes safe only when
+  polling goes LAN-side (self-hosted bot-api). The 10s dribble ceiling
+  stands.
 - **Delivery**: `streamText` deltas → throttled message edits (~1/s), final
   flush on completion. Typing indicator while a turn runs. Errors post a short
   message and log structured detail.

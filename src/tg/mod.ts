@@ -20,7 +20,17 @@ import { mediaFromMessage, mediaParts, saveAttachment } from "./media.ts";
 import { maybeRenameTopic, titleMetaFromService } from "./titles.ts";
 
 export const AUTH_TELEGRAM_TOKEN = "telegram";
-const QUIET_WINDOW_MS = 1_500;
+// 500ms of quiet seals a burst — measured, not vibes (2026-09-25): a
+// 7-chunk pasted message arrived with a 167ms worst gap, which is not
+// client send pacing but one long-poll round-trip to the Telegram API
+// (~185ms from this box) — a chunk straddling a poll boundary waits out
+// an RTT. 200ms is falsified by that one paste; 500ms is 3× the
+// observed worst and survives an RTT doubling. The window is also a
+// flat latency tax on every single-message turn (no typing indicator
+// until flush), so shorter-is-better within that margin. 200–300ms
+// becomes safe only when polling goes LAN-side (self-hosted bot-api);
+// until then RTT-sized gaps are structural, no client speed fixes them.
+const QUIET_WINDOW_MS = 500;
 // A source dribbling messages faster than the quiet window must not
 // postpone its turn forever — the ceiling flushes mid-dribble instead.
 const COALESCE_MAX_WAIT_MS = 10_000;

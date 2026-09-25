@@ -145,22 +145,38 @@ class SecretFileTest(unittest.TestCase):
 
 
 class InstallAssetsTest(unittest.TestCase):
-    def test_copies_quadlet_and_guard_with_modes(self) -> None:
+    def test_copies_quadlet_guard_and_watch_with_modes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             memory_dir = Path(tmp) / "src"
             systemd_dir = Path(tmp) / "systemd"
             cfg_dir = Path(tmp) / "cfg"
+            user_unit_dir = Path(tmp) / "user-units"
             memory_dir.mkdir()
             (memory_dir / "goblin-memory-api.container").write_text("[Container]\n")
             (memory_dir / "goblin-memory.network").write_text("[Network]\n")
             (memory_dir / "start.py").write_text("x = 1\n")
-            installed = install_assets(memory_dir, systemd_dir, cfg_dir)
+            for name in install.WATCH_UNITS:
+                (memory_dir / name).write_text("[Unit]\n")
+            installed = install_assets(memory_dir, systemd_dir, cfg_dir, user_unit_dir)
             names = {p.name for p in installed}
             self.assertEqual(names, {"goblin-memory-api.container",
-                                     "goblin-memory.network", "start.py"})
+                                     "goblin-memory.network", "start.py",
+                                     *install.WATCH_UNITS})
             for path in installed:
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
             self.assertEqual(stat.S_IMODE(systemd_dir.stat().st_mode), 0o700)
+            # Watch units are plain user units, not Quadlet assets — they
+            # must land in the systemd user dir where timers can be enabled.
+            self.assertTrue((user_unit_dir / "goblin-memory-watch.timer").is_file())
+
+    def test_missing_watch_asset_fails_loud(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory_dir = Path(tmp) / "src"
+            memory_dir.mkdir()
+            (memory_dir / "goblin-memory-api.container").write_text("[Container]\n")
+            with self.assertRaises(SystemExit):
+                install_assets(memory_dir, Path(tmp) / "systemd",
+                               Path(tmp) / "cfg", Path(tmp) / "user-units")
 
 
 class GoblinSnippetTest(unittest.TestCase):

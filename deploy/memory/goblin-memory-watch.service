@@ -1,0 +1,12 @@
+[Unit]
+# The container health probes gate startup (Notify=healthy) but are
+# write-only after it: Restart=on-failure only sees process death, so an
+# unhealthy-but-alive API would sit degraded forever. This watch turns
+# the probe into action — restart the unit when the container reports
+# unhealthy. A stopped or absent stack is a deliberate operator choice:
+# no container, no restart.
+Description=Goblin memory stack health watch
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'st=$(podman inspect -f "{{.State.Health.Status}}" goblin-memory-api 2>/dev/null) || exit 0; if [ "$st" = unhealthy ]; then echo "goblin-memory-api unhealthy - restarting unit"; systemctl --user restart goblin-memory-api.service; fi'

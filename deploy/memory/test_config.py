@@ -101,12 +101,28 @@ class MemoryAssetsTest(unittest.TestCase):
             self.assertEqual(container["Notify"], "healthy")
             self.assertEqual(container["LogDriver"], "journald")
             self.assertEqual(unit["Service"]["Restart"], "on-failure")
-            self.assertNotIn("Install", unit)
             if role == "api":
                 self.assertEqual(container["PublishPort"], "127.0.0.1:8888:8888")
+                # Boot-enabled like goblin itself — the confirmed first start
+                # belongs to the installer, not to every reboot. The db rides
+                # along via Requires/After; only the API unit needs the hook.
+                self.assertEqual(unit["Install"]["WantedBy"], "default.target")
             else:
                 self.assertNotIn("PublishPort", container)
                 self.assertIn("/var/lib/postgresql/data", container["Volume"])
+                self.assertNotIn("Install", unit)
+
+    def test_watch_units(self) -> None:
+        """The health watch restarts only a running-but-unhealthy stack."""
+        service = (ROOT / "goblin-memory-watch.service").read_text()
+        timer = (ROOT / "goblin-memory-watch.timer").read_text()
+        self.assertIn('"{{.State.Health.Status}}" goblin-memory-api', service)
+        self.assertIn('= unhealthy ]', service)
+        self.assertIn('systemctl --user restart goblin-memory-api.service', service)
+        # Absent container exits 0 — a deliberate stop must stick.
+        self.assertIn('|| exit 0', service)
+        self.assertIn('OnUnitActiveSec=5min', timer)
+        self.assertIn('[Install]', timer)
 
 
 if __name__ == "__main__":

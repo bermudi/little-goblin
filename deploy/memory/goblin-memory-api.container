@@ -25,4 +25,10 @@ Restart=on-failure
 RestartSec=10
 TimeoutStartSec=300
 
-# Intentionally no [Install]: operator starts it explicitly.
+# Enabled at boot like goblin.service itself. The installer's cost
+# confirmation gates the FIRST start only — a reboot must not silently
+# strand a memory-enabled goblin against a dead endpoint (the original
+# "operator starts it explicitly" ruling died the first nightly
+# shutdown: the stack stayed down for days while the bot retried).
+[Install]
+WantedBy=default.target

@@ -67,12 +67,15 @@ MEMORY_DIR = Path(__file__).resolve().parent
 REPO_ROOT = MEMORY_DIR.parent.parent
 CFG_DIR = Path.home() / ".config" / "goblin-memory"
 SYSTEMD_DIR = Path.home() / ".config" / "containers" / "systemd"
+USER_UNIT_DIR = Path.home() / ".config" / "systemd" / "user"
 POSTGRES_ENV = CFG_DIR / "postgres.env"
 HINDSIGHT_ENV = CFG_DIR / "hindsight.env"
 MEMORY_API_URL = "http://127.0.0.1:8888"
 HEALTH_URL = MEMORY_API_URL + "/health/ready"
 API_UNIT = "goblin-memory-api.service"
 DB_UNIT = "goblin-memory-db.service"
+WATCH_UNITS = ("goblin-memory-watch.service", "goblin-memory-watch.timer")
+WATCH_TIMER = "goblin-memory-watch.timer"
 GOBLIN_UNIT = "goblin.service"
 # Digest-pinned, matching the Quadlet assets. Pre-pulled so systemd's
 # TimeoutStartSec budget is spent on migrations, not downloads.
@@ -278,9 +281,11 @@ def write_file_atomic(path: Path, content: str, mode: int) -> None:
         raise
 
 
-def install_assets(memory_dir: Path, systemd_dir: Path, cfg_dir: Path) -> list[Path]:
+def install_assets(memory_dir: Path, systemd_dir: Path, cfg_dir: Path,
+                    user_unit_dir: Path) -> list[Path]:
     systemd_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     cfg_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    user_unit_dir.mkdir(parents=True, exist_ok=True)
     installed: list[Path] = []
     for pattern in ("*.container", "*.network", "*.volume"):
         for src in sorted(memory_dir.glob(pattern)):
@@ -288,6 +293,14 @@ def install_assets(memory_dir: Path, systemd_dir: Path, cfg_dir: Path) -> list[P
             shutil.copyfile(src, dst)
             dst.chmod(0o644)
             installed.append(dst)
+    for name in WATCH_UNITS:
+        src = memory_dir / name
+        if not src.is_file():
+            fail(f"missing deploy asset: {src}")
+        dst = user_unit_dir / name
+        shutil.copyfile(src, dst)
+        dst.chmod(0o644)
+        installed.append(dst)
     start_dst = cfg_dir / "start.py"
     shutil.copyfile(memory_dir / "start.py", start_dst)
     start_dst.chmod(0o644)
@@ -373,11 +386,23 @@ def start_stack() -> None:
     while time.monotonic() < deadline:
         if http_ok(HEALTH_URL):
             info("API healthy")
-            return
+            break
         time.sleep(5)
-    fail(f"{API_UNIT} not ready after 480s — journalctl --user -u {API_UNIT}; "
-         "first-run migrations can exceed systemd's TimeoutStartSec=300: "
-         "raise it deliberately in the installed Quadlet and re-run install")
+    else:
+        fail(f"{API_UNIT} not ready after 480s — journalctl --user -u {API_UNIT}; "
+             "first-run migrations can exceed systemd's TimeoutStartSec=300: "
+             "raise it deliberately in the installed Quadlet and re-run install")
+    # A healthy stack is not enough: it must also survive the next boot.
+    # Enabling is a runtime claim, not a config write — deliberately after
+    # the health gate, so a broken stack never hooks itself into boot.
+    run(["systemctl", "--user", "enable", API_UNIT])
+    info(f"{API_UNIT} enabled — starts on boot (linger keeps the user manager alive)")
+    # The watch units landed after the earlier daemon-reload; load them,
+    # then start the timer now. It turns an unhealthy-but-alive container
+    # into a unit restart (Restart=on-failure only sees process death).
+    run(["systemctl", "--user", "daemon-reload"])
+    run(["systemctl", "--user", "enable", "--now", WATCH_TIMER])
+    info(f"{WATCH_TIMER} enabled — health checked every 5 minutes")
 
 
 def http_ok(url: str) -> bool:
@@ -735,7 +760,8 @@ def existing_install_status() -> None:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--no-start", action="store_true",
-                        help="write config and install assets, do not start")
+                        help="write config and install assets; do not start or enable "
+                             "(enablement rides the confirmed first start)")
     parser.add_argument("--reconfigure", action="store_true",
                         help="re-prompt LLM/embeddings and rewrite hindsight.env "
                              "(keeps database, volume, bank, goblin config)")
@@ -824,12 +850,13 @@ def main(argv: list[str] | None = None) -> None:
         fail(f"launch guard rejected the configuration: {error}")
     write_file_atomic(POSTGRES_ENV, render_postgres_env(db_password), 0o600)
     write_file_atomic(HINDSIGHT_ENV, render_env_file(env), 0o600)
-    installed = install_assets(MEMORY_DIR, SYSTEMD_DIR, CFG_DIR)
+    installed = install_assets(MEMORY_DIR, SYSTEMD_DIR, CFG_DIR, USER_UNIT_DIR)
     for path in installed:
         info(f"installed {path}")
 
     if args.no_start:
-        print("\nAssets installed, stack NOT started. To start later:\n"
+        print("\nAssets installed, stack NOT started (and NOT enabled at boot —\n"
+              "enablement happens with the first confirmed start). To start later:\n"
               "  systemctl --user daemon-reload\n"
               f"  systemctl --user start {API_UNIT}\n"
               "Then create the bank and wire goblin per docs/memory.md.")

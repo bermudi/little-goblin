@@ -16,6 +16,8 @@ import {
 	withMemoryBlocks,
 } from "./memory.ts";
 import { HindsightClient } from "./hindsight.ts";
+import { MemoryQueue } from "./memory-queue.ts";
+import { OUTAGE_NOTICE_AFTER_MS, OutageTracker } from "./memory-outage.ts";
 
 const dirs: string[] = [];
 const dbs: Database[] = [];
@@ -216,6 +218,53 @@ describe("worker timer", () => {
 		const frozen = calls;
 		await Bun.sleep(20);
 		expect(calls).toBe(frozen);
+		await w.stop();
+	});
+
+	// The review-found race: the notice send is detached from the tick,
+	// so two sequential drain ticks can both cross the threshold inside
+	// one Telegram round-trip. The episode latch must collapse them into
+	// a single send.
+	test("duplicate-notice race: sequential failures inside one send round-trip send once", async () => {
+		const client = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
+		const db = memdb();
+		const queue = new MemoryQueue(db);
+		for (const id of ["exchange-a", "exchange-b"]) {
+			queue.enqueue(client.target, {
+				id,
+				conversationId: "dm:1",
+				sourceIds: ["u-1", "a-1"],
+				timestamp: "2026-09-22T10:00:00Z",
+				content: "Operator: hi.\nGoblin: hello.",
+			});
+		}
+		// Pre-age the episode past the threshold with a mutable clock, in
+		// outage cadence (a failure every ~5min — a single hour-long clock
+		// jump would trip the stale-episode reset instead), so the very
+		// first worker failure is already notice-eligible.
+		let now = 1_000_000;
+		const tracker = new OutageTracker(db, () => now);
+		for (let i = 0; i < 13; i++) {
+			now += 5 * 60 * 1000;
+			tracker.recordFailure("dm:1");
+		}
+		const sends: number[] = [];
+		const held = { release: null as (() => void) | null };
+		const w = startMemoryWorker(queue, client, {
+			intervalMs: 60_000,
+			outage: {
+				tracker,
+				notify: (_conversationId, sinceMs) =>
+					new Promise<void>((resolve) => {
+						sends.push(sinceMs);
+						held.release = resolve; // hold the send open across the second tick
+					}),
+			},
+		});
+		await w.tickNow(); // exchange-a fails transport → notice fired, send pending
+		await w.tickNow(); // exchange-b fails transport → latch must suppress
+		expect(sends).toHaveLength(1);
+		held.release?.();
 		await w.stop();
 	});
 });

@@ -386,7 +386,15 @@ export function startMemoryWorker(
 	// The observe seam: transport failures feed the outage episode, any
 	// advance clears it, and a crossed threshold fires the notice. The
 	// notice send is fire-and-forget on purpose — it must never delay or
-	// fail the worker tick that observed the failure.
+	// fail the worker tick that observed the failure — but that detachment
+	// is also the duplicate race: sequential drain ticks can both cross the
+	// threshold inside one Telegram round-trip. The episode-scoped latch
+	// closes it process-locally: while a send for episode E is awaiting
+	// confirmation, further failures produce no second send. It dies with
+	// the process; a crash mid-send leaves notified=0, so the next failure
+	// re-fires — the pathological duplicate is a send that succeeded but
+	// whose mark didn't commit before a crash: one message, once.
+	let noticeInFlight: number | null = null;
 	const observe = outage
 		? (outcome: WorkerOutcome) => {
 				if (outcome.ok) {
@@ -395,16 +403,25 @@ export function startMemoryWorker(
 				}
 				if (!outcome.transport) return; // blocked is not an outage
 				const notice = outage.tracker.recordFailure(outcome.conversationId);
-				if (!notice) return;
+				if (!notice || noticeInFlight === notice.episode) return;
+				noticeInFlight = notice.episode;
 				const counts = queue.counts(client.target);
 				void outage
 						.notify(notice.conversation, notice.sinceMs, counts.pending + counts.submitted)
-					.then(() => outage.tracker.markNotified())
+					.then(() => outage.tracker.markNotified(notice.episode))
 					.catch((err) => {
-							log.warn("memory outage notice failed — retries on next failure", {
-								error: String(err),
-							});
+						// Delivery failure retries on the next worker failure (latch
+						// released in finally). Error, not warn: a notice that cannot
+						// go out is operator silence — the log is the only voice it
+						// has (an unparseable conversation id would loop here).
+						log.error("memory outage notice failed — retries on next failure", {
+							conversation: notice.conversation,
+							error: String(err),
 						});
+					})
+					.finally(() => {
+						if (noticeInFlight === notice.episode) noticeInFlight = null;
+					});
 			}
 		: undefined;
 	const worker = new MemoryQueueWorker(queue, client, Date.now, observe);

@@ -130,7 +130,7 @@ test("destination changes cannot redirect queued personal content", async () => 
 	expect(store.memoryQueue.get(id)?.state).toBe("pending");
 });
 
-test("worker outcomes: transport failure signals an outage, advance clears it", async () => {
+test("worker outcome classification: transport failure vs advance (feeds the outage tracker)", async () => {
 	const outcomes: { ok: boolean; transport: boolean }[] = [];
 	// Dead port: submit fails as a retryable transport error.
 	const dead = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });

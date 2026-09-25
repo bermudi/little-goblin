@@ -1,6 +1,10 @@
 [Unit]
 Description=Goblin v2 — Telegram-native personal agent
 After=network-online.target
+# Never give up restarting — a phone-only operator can't run systemctl reset-failed.
+# ([Unit], not [Service]: systemd ignores it in [Service] with an
+# "Unknown key" warning — the intent silently never applied.)
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -18,8 +22,6 @@ ExecStart=/usr/bin/bun run src/index.ts
 KillSignal=SIGTERM
 Restart=on-failure
 RestartSec=5
-# Never give up restarting — a phone-only operator can't run systemctl reset-failed.
-StartLimitIntervalSec=0
 
 [Install]
 WantedBy=default.target

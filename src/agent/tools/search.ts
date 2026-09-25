@@ -12,7 +12,7 @@ import { z } from "zod";
 import type { AuthStore } from "../../auth.ts";
 import type { Config } from "../../config.ts";
 import { log } from "../../log.ts";
-import { fetchOk, readJson, renderHits, str, ProviderError, type SearchHit, type WebToolDeps } from "./web.ts";
+import { clampChars, fetchOk, readJson, renderHits, str, ProviderError, type SearchHit, type WebToolDeps } from "./web.ts";
 
 const TIMEOUT_MS = 15_000;
 
@@ -262,6 +262,66 @@ export function bindSearch(
 	};
 }
 
+/** One provider that threw while the chain advanced past it. */
+export interface ChainFailure {
+	provider: string;
+	error: string;
+}
+
+export interface ChainOutcome {
+	hits: SearchHit[];
+	status: number;
+	servedBy: SearchKind;
+	/** Providers that threw before the one that answered (config order). */
+	failures: ChainFailure[];
+}
+
+/**
+ * Walk the configured chain in order. Transport, HTTP, and auth
+ * failures advance to the next entry; an EMPTY result set is a valid
+ * answer from the first provider and stops the walk (DESIGN.md,
+ * "Web access" — empty is an answer, not a failure). Each failed
+ * attempt logs its own line; exhaustion throws with every error.
+ */
+export async function runSearchChain(
+	entries: ReadonlyArray<{ kind: SearchKind; auth?: string | undefined }>,
+	auth: AuthStore,
+	opts: { query: string; count: number; baseUrl?: string },
+): Promise<ChainOutcome> {
+	const failures: ChainFailure[] = [];
+	for (const entry of entries) {
+		const started = Date.now();
+		try {
+			const key = entry.auth ? await auth.resolve(entry.auth) : undefined;
+			const { hits, status } = await ADAPTERS[entry.kind]({ ...opts, key });
+			return { hits, status, servedBy: entry.kind, failures };
+		} catch (err) {
+			// Auth-resolve failures carry no provider prefix; transport ones
+			// do (ProviderError). Normalize so every failure names its entry.
+			const raw = (err as Error).message;
+			const error = raw.startsWith(`${entry.kind}:`) ? raw : `${entry.kind}: ${raw}`;
+			failures.push({ provider: entry.kind, error });
+			log.warn("web search failed", {
+				provider: entry.kind,
+				query: opts.query,
+				count: opts.count,
+				error,
+				ms: Date.now() - started,
+			});
+		}
+	}
+	// Error strings already carry their provider prefix (ProviderError).
+	throw new Error(`search failed — ${failures.map((f) => f.error).join("; ")}`);
+}
+
+/** The fallback note names who answered and why it isn't the primary —
+ * the model can tell the operator, who then fixes the primary. */
+export function withFallbackNote(result: string, outcome: ChainOutcome): string {
+	if (outcome.failures.length === 0) return result;
+	const why = outcome.failures.map((f) => f.error).join("; ");
+	return `${result}\n\n(via ${outcome.servedBy} — ${clampChars(why, 300)})`;
+}
+
 export const searchTool = (deps: WebToolDeps) =>
 	tool({
 		description:
@@ -271,40 +331,29 @@ export const searchTool = (deps: WebToolDeps) =>
 			count: z.number().int().min(1).max(10).default(5),
 		}),
 		execute: async (input) => {
-			const cfg = deps.configRef.current.search;
-			if (!cfg) {
+			const entries = deps.configRef.current.search;
+			if (!entries) {
 				return {
 					error: "search is not configured — set a `search` block in goblin.json5",
 					kind: "unconfigured",
 				};
 			}
 			const started = Date.now();
-			const run = bindSearch(cfg, deps.auth);
-			let hits: SearchHit[];
-			let status: number;
-			try {
-				({ hits, status } = await run({ query: input.query, count: input.count }));
-			} catch (err) {
-				// A provider outage must be distinguishable from a model glitch
-				// in the log — the same bar fetch.ts holds. The error message
-				// carries the HTTP status; never the key.
-				log.warn("web search failed", {
-					provider: cfg.kind,
-					query: input.query,
-					count: input.count,
-					error: (err as Error).message,
-					ms: Date.now() - started,
-				});
-				throw err;
-			}
-			log.info("web search", {
-				provider: cfg.kind,
+			// Per-attempt failures already logged by the chain; exhaustion
+			// throws with every error joined — the model sees the whole story.
+			const outcome = await runSearchChain(entries, deps.auth, {
 				query: input.query,
 				count: input.count,
-				results: hits.length,
-				status,
+			});
+			log.info("web search", {
+				provider: outcome.servedBy,
+				query: input.query,
+				count: input.count,
+				results: outcome.hits.length,
+				status: outcome.status,
+				fallback: outcome.failures.length > 0,
 				ms: Date.now() - started,
 			});
-			return renderHits(hits);
+			return withFallbackNote(renderHits(outcome.hits), outcome);
 		},
 	});

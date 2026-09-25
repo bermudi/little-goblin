@@ -165,6 +165,26 @@ export const memoryConfigSchema = z.object({
 });
 export type MemoryConfig = z.infer<typeof memoryConfigSchema>;
 
+// One web provider selection. Search and fetch each accept one of
+// these or an ordered list of them (DESIGN.md, "Web access") — the
+// list is the fallback chain, config order, first entry primary.
+const searchEntrySchema = z.discriminatedUnion("kind", [
+	z.object({ kind: z.literal("brave"), auth: z.string().min(1) }),
+	z.object({ kind: z.literal("exa"), auth: z.string().min(1) }),
+	z.object({ kind: z.literal("jina"), auth: z.string().min(1).optional() }),
+	z.object({ kind: z.literal("tavily"), auth: z.string().min(1) }),
+	z.object({ kind: z.literal("firecrawl"), auth: z.string().min(1) }),
+	z.object({ kind: z.literal("parallel"), auth: z.string().min(1) }),
+	z.object({ kind: z.literal("ddg") }),
+]);
+const fetchEntrySchema = z.discriminatedUnion("kind", [
+	z.object({ kind: z.literal("local") }),
+	z.object({ kind: z.literal("jina"), auth: z.string().min(1).optional() }),
+	z.object({ kind: z.literal("tavily"), auth: z.string().min(1) }),
+	z.object({ kind: z.literal("firecrawl"), auth: z.string().min(1) }),
+	z.object({ kind: z.literal("parallel"), auth: z.string().min(1) }),
+]);
+
 const configSchema = z
 	.object({
 		providers: z.record(z.string(), providerSchema),
@@ -206,44 +226,22 @@ const configSchema = z
 			])
 			.transform((v) => (v === "" ? undefined : v))
 			.optional(),
-		// Web search provider (DESIGN.md, "Web access"). Absent or "" →
-		// the search tool is not in the set. ddg is keyless; jina tolerates
-		// keyless (rate-limited); every other kind requires an auth ref.
+		// Web search providers (DESIGN.md, "Web access"). Absent or "" →
+		// the search tool is not in the set. One entry or an ordered list:
+		// first is primary, the rest are explicit fallbacks (transport/
+		// HTTP/auth failures advance; an empty result set is an answer).
+		// ddg is keyless; jina tolerates keyless (rate-limited); every
+		// other kind requires an auth ref.
 		search: z
-			.union([
-				z.discriminatedUnion("kind", [
-					z.object({ kind: z.literal("brave"), auth: z.string().min(1) }),
-					z.object({ kind: z.literal("exa"), auth: z.string().min(1) }),
-					z.object({
-						kind: z.literal("jina"),
-						auth: z.string().min(1).optional(),
-					}),
-					z.object({ kind: z.literal("tavily"), auth: z.string().min(1) }),
-					z.object({ kind: z.literal("firecrawl"), auth: z.string().min(1) }),
-					z.object({ kind: z.literal("parallel"), auth: z.string().min(1) }),
-					z.object({ kind: z.literal("ddg") }),
-				]),
-				z.literal(""),
-			])
-			.transform((v) => (v === "" ? undefined : v))
+			.union([searchEntrySchema, z.array(searchEntrySchema).min(1), z.literal("")])
+			.transform((v) => (v === "" ? undefined : Array.isArray(v) ? v : [v]))
 			.optional(),
-		// Fetch/extract provider (DESIGN.md, "Web access"). Absent or "" →
+		// Fetch/extract providers (DESIGN.md, "Web access"). Same shape
+		// rule as search: one entry or an ordered chain. Absent or "" →
 		// local (direct HTTP + in-process readability extraction).
 		fetch: z
-			.union([
-				z.discriminatedUnion("kind", [
-					z.object({ kind: z.literal("local") }),
-					z.object({
-						kind: z.literal("jina"),
-						auth: z.string().min(1).optional(),
-					}),
-					z.object({ kind: z.literal("tavily"), auth: z.string().min(1) }),
-					z.object({ kind: z.literal("firecrawl"), auth: z.string().min(1) }),
-					z.object({ kind: z.literal("parallel"), auth: z.string().min(1) }),
-				]),
-				z.literal(""),
-			])
-			.transform((v) => (v === "" ? undefined : v))
+			.union([fetchEntrySchema, z.array(fetchEntrySchema).min(1), z.literal("")])
+			.transform((v) => (v === "" ? undefined : Array.isArray(v) ? v : [v]))
 			.optional(),
 		allowedUsers: z.array(z.number().int().positive()).min(1),
 		// Self-hosted telegram-bot-api in --local mode, e.g. http://127.0.0.1:8081.

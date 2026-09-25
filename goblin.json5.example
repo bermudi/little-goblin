@@ -68,14 +68,18 @@
   // },
 
   // --- Web access ---
-  // Search provider behind the `search` tool. Unset = no search tool.
+  // Search provider(s) behind the `search` tool. Unset = no search tool.
+  // One entry or an ordered list — the list is a fallback chain:
+  // transport/HTTP/auth failures advance; empty results are an answer.
   // Kinds: brave | exa | jina | tavily | firecrawl | parallel | ddg
   // (jina/ddg work without a key; the rest need an auth.jsonl record).
   // search: { kind: "brave", auth: "brave" },
-  // Fetch/extract provider behind the `fetch` tool. Unset = local
+  // search: [{ kind: "brave", auth: "brave" }, { kind: "ddg" }],
+  // Fetch/extract provider(s) behind the `fetch` tool. Unset = local
   // (direct HTTP + in-process readability — no key, handles plain HTML
   // and text; JS-heavy sites route through the browser skill).
-  // fetch: { kind: "parallel", auth: "parallel" },
+  // Same list rule: [{ kind: "parallel", auth: "parallel" }, { kind: "local" }]
+  // fetch: [{ kind: "parallel", auth: "parallel" }, { kind: "local" }],
 
   // --- Telegram ---
   // Your user id (DM @userinfobot to find it). Only these users can talk.

@@ -141,6 +141,29 @@ describe("fetch tool — providers", () => {
 		});
 		expect(String(entry.error)).toContain("local");
 	});
+
+	test("chain failover: a dead provider advances to local, and the header says so", async () => {
+		// The primary (parallel) fails at auth resolve — no network — and
+		// the local entry extracts a real page off the fake server.
+		const page = serve(() => new Response(ARTICLE_HTML, { headers: { "content-type": "text/html" } }));
+		const boomAuth: AuthStore = {
+			resolve: async () => {
+				throw new Error("auth command failed");
+			},
+			has: () => true,
+			names: () => ["parallel"],
+		};
+		const tool = fetchTool({
+			configRef: {
+				current: { fetch: [{ kind: "parallel", auth: "parallel" }, { kind: "local" }] } as unknown as Config,
+			},
+			auth: boomAuth,
+		});
+		const out = (await exec(tool, { url: `${page}/article` })) as string;
+		expect(out).toContain("# The Title");
+		expect(out).toContain("(extracted via local — parallel");
+		expect(out).toContain("auth command failed");
+	});
 });
 
 describe("windowText", () => {

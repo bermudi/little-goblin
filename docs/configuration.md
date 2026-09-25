@@ -92,11 +92,19 @@ voice/audio/video notes so text-only models can read them. Both need
 tool is absent. `jina` and `ddg` work keyless (rate-limited, unofficial
 for ddg); every other kind names an `auth.jsonl` record.
 
+Either tool also accepts an ordered **list** of entries — a fallback
+chain. First entry is primary; transport, HTTP, or auth failures advance
+to the next; an empty result set is a valid answer and stops the walk.
+When a fallback serves, the result says so (`(via ddg — brave: HTTP
+402 …)`) and each failed attempt gets its own log line. Chains are
+explicit config — no provider is ever injected you didn't write.
+
 `fetch` selects the extraction provider behind the `fetch` tool — kinds
 `local` (default when unset: direct HTTP + readability, no key), `jina`,
-`tavily`, `firecrawl`, `parallel`. Search and fetch are chosen
-independently, so a search-only key like Brave's free tier pairs with a
-full-extraction provider.
+`tavily`, `firecrawl`, `parallel`, with the same list rule (`local` may
+appear in the chain). Search and fetch are chosen independently, so a
+search-only key like Brave's free tier pairs with a full-extraction
+provider.
 
 ### Telegram
 

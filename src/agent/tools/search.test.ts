@@ -10,7 +10,7 @@ import { join } from "node:path";
 import type { AuthStore } from "../../auth.ts";
 import type { Config } from "../../config.ts";
 import { setLogFile } from "../../log.ts";
-import { bindSearch, searchTool, type SearchKind } from "./search.ts";
+import { bindSearch, runSearchChain, searchTool, withFallbackNote, type SearchKind } from "./search.ts";
 import { renderHits, type SearchHit } from "./web.ts";
 
 const fakeAuth: AuthStore = {
@@ -112,6 +112,7 @@ describe("search tool", () => {
 		expect(hits).toEqual([{ title: "Real Title", url: "https://real.example/x", snippet: "the &snippet" }]);
 	});
 
+
 	test("unconfigured search returns the config pointer", async () => {
 		const out = (await exec(searchTool(depsWith(undefined)), { query: "x", count: 5 })) as {
 			error: string;
@@ -136,7 +137,10 @@ describe("search tool", () => {
 			has: () => true,
 			names: () => ["brave"],
 		};
-		const tool = searchTool({ configRef: { current: { search: { kind: "brave", auth: "brave" } } as unknown as Config }, auth: boomAuth });
+		const tool = searchTool({
+			configRef: { current: { search: [{ kind: "brave", auth: "brave" }] } as unknown as Config },
+			auth: boomAuth,
+		});
 		try {
 			await exec(tool, { query: "outage probe", count: 5 });
 			expect.unreachable();
@@ -152,6 +156,90 @@ describe("search tool", () => {
 		});
 		expect(String(entry.error)).toContain("auth command failed");
 		expect(JSON.stringify(entry)).not.toContain("key-for-brave");
+	});
+});
+
+describe("search fallback chain", () => {
+	// One fake server speaks both wire paths: brave answers 402 on its
+	// search route, ddg answers html on its POST route. The chain walks
+	// config order — exactly the live Brave-quota shape.
+	function serveChain(braveStatus: number, ddgStatus: number) {
+		let ddgCalls = 0;
+		const base = serve((req) => {
+			const path = new URL(req.url).pathname;
+			if (path.startsWith("/res/v1/web/search")) {
+				return Response.json(
+					{ error: { code: "USAGE_LIMIT_EXCEEDED", detail: "Usage limit exceeded." } },
+					{ status: braveStatus },
+				);
+			}
+			if (path === "/html/") {
+				ddgCalls++;
+				if (ddgStatus !== 200) return new Response("upstream broke", { status: ddgStatus });
+				return new Response(
+						`<a class="result__a" href="https://fallback.example/a">Fallback Hit</a>\n` +
+							`<a class="result__snippet">served by the fallback</a>`,
+						{ headers: { "content-type": "text/html" } },
+				);
+			}
+			return new Response("no route", { status: 404 });
+		});
+		return { base, ddgCalls: () => ddgCalls };
+	}
+
+	test("transport/HTTP failure advances; the note names who answered and why", async () => {
+		const { base } = serveChain(402, 200);
+		const outcome = await runSearchChain(
+			[{ kind: "brave", auth: "brave" }, { kind: "ddg" }],
+			fakeAuth,
+			{ query: "quota probe", count: 5, baseUrl: base },
+		);
+		expect(outcome.servedBy).toBe("ddg");
+		expect(outcome.failures).toEqual([
+			{ provider: "brave", error: expect.stringContaining("402") },
+		]);
+		expect(outcome.hits[0]?.url).toBe("https://fallback.example/a");
+		const rendered = withFallbackNote(renderHits(outcome.hits), outcome);
+		expect(rendered).toContain("1. Fallback Hit — https://fallback.example/a");
+		expect(rendered).toContain("(via ddg — brave: HTTP 402");
+	});
+
+	test("an empty result set is an answer — the walk stops, no fallback attempt", async () => {
+		const base = serve((req) =>
+			new URL(req.url).pathname.startsWith("/res/v1/web/search")
+				? Response.json({ web: { results: [] } })
+				: new Response("no route", { status: 404 }),
+		);
+		let ddgServed = false;
+		const second = serve(() => {
+			ddgServed = true;
+			return Response.json({});
+		});
+		// Single fake server can't host ddg here — a second one proves the
+		// negative (it must never be asked).
+		const outcome = await runSearchChain(
+			[{ kind: "brave", auth: "brave" }, { kind: "ddg" }],
+			fakeAuth,
+			{ query: "quiet topic", count: 5, baseUrl: base },
+		);
+		expect(outcome).toMatchObject({ servedBy: "brave", hits: [], failures: [] });
+		expect(second && ddgServed).toBe(false);
+	});
+
+	test("exhaustion throws with every provider's error", async () => {
+		const { base } = serveChain(402, 503);
+		try {
+			await runSearchChain(
+					[{ kind: "brave", auth: "brave" }, { kind: "ddg" }],
+					fakeAuth,
+					{ query: "everything down", count: 5, baseUrl: base },
+				);
+			expect.unreachable();
+		} catch (err) {
+			expect((err as Error).message).toContain("search failed");
+			expect((err as Error).message).toContain("402");
+			expect((err as Error).message).toContain("503");
+		}
 	});
 });
 

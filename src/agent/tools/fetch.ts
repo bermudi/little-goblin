@@ -14,14 +14,15 @@ import { tool } from "ai";
 import { z } from "zod";
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
-import type { Config } from "../../config.ts";
+import type { AuthStore } from "../../auth.ts";
+import type { Config, FetchConfig } from "../../config.ts";
 import { paths } from "../../config.ts";
 // The webcache overflow file is state the model will page through later —
 // it gets the same crash-safe write as every other whole-file state, so a
 // mid-write crash can never leave a truncated "full text" behind.
 import { durableWriteFile } from "../../durable.ts";
 import { log } from "../../log.ts";
-import { fetchOk, readJson, resMeta, str, type HttpMeta, type WebToolDeps } from "./web.ts";
+import { clampChars, fetchOk, readJson, resMeta, str, type HttpMeta, type WebToolDeps } from "./web.ts";
 
 const TIMEOUT_MS = 30_000;
 const LOCAL_TIMEOUT_MS = 20_000;
@@ -207,8 +208,8 @@ export function windowText(text: string, budget: number): { window: string; trun
 	return { window: `${head}\n\n[…]\n\n${tail}`, truncated: true };
 }
 
-export function shapeResult(url: string, extracted: Extracted, budget: number): string {
-	const header = `${extracted.title ? `# ${extracted.title}\n` : ""}Source: ${url}\n\n`;
+export function shapeResult(url: string, extracted: Extracted, budget: number, note?: string): string {
+	const header = `${extracted.title ? `# ${extracted.title}\n` : ""}Source: ${url}${note ? `\n${note}` : ""}\n\n`;
 	const { window, truncated } = windowText(extracted.text, budget);
 	if (!truncated) return header + window;
 	const file = cachePath(url);
@@ -226,6 +227,65 @@ function cachePath(url: string): string {
 	return join(paths.webcache(), `${hash}.txt`);
 }
 
+// ---------- chain ----------
+
+export interface FetchFailure {
+	kind: string;
+	error: string;
+}
+
+export interface FetchChainOutcome {
+	extracted: Extracted | Rejected;
+	servedBy: FetchKind;
+	/** Providers that threw before the one that answered (config order). */
+	failures: FetchFailure[];
+}
+
+/**
+ * Walk the configured chain in order (absent config = [{kind: "local"}]).
+ * Transport, HTTP, and auth failures advance to the next entry; a
+ * structured refusal (binary, too-large, empty extraction) is an ANSWER
+ * from that provider and stops the walk — the search chain's rule,
+ * applied here. Each failed attempt logs its own line; exhaustion
+ * throws with every error.
+ */
+export async function runFetchChain(
+	entries: ReadonlyArray<FetchConfig[number]>,
+	auth: AuthStore,
+	url: string,
+): Promise<FetchChainOutcome> {
+	const failures: FetchFailure[] = [];
+	for (const entry of entries) {
+		const kind: FetchKind = entry.kind;
+		const started = Date.now();
+		try {
+			let extracted: Extracted | Rejected;
+			if (kind === "local") {
+				extracted = await localExtract(url);
+			} else {
+				const authName = "auth" in entry ? entry.auth : undefined;
+				const key = authName ? await auth.resolve(authName) : undefined;
+				extracted = await extractors[kind](url, key);
+			}
+			return { extracted, servedBy: kind, failures };
+		} catch (err) {
+			// Auth-resolve failures carry no provider prefix; transport ones
+			// do (ProviderError). Normalize so every failure names its entry.
+			const raw = (err as Error).message;
+			const error = raw.startsWith(`${kind}:`) ? raw : `${kind}: ${raw}`;
+			failures.push({ kind, error });
+			log.warn("web fetch failed", {
+				url,
+				kind,
+				error,
+				ms: Date.now() - started,
+			});
+		}
+	}
+	// Error strings already carry their provider prefix (ProviderError).
+	throw new Error(`fetch failed — ${failures.map((f) => f.error).join("; ")}`);
+}
+
 // ---------- tool ----------
 
 // Test door: the extractor table, so failure mapping is verifiable
@@ -241,33 +301,21 @@ export const fetchTool = (deps: WebToolDeps) =>
 			maxChars: z.number().int().min(2000).max(50_000).optional(),
 		}),
 		execute: async (input) => {
-			const cfg = deps.configRef.current.fetch;
-			const kind: FetchKind = cfg?.kind ?? "local";
+			const entries = deps.configRef.current.fetch ?? [{ kind: "local" as const }];
 			const started = Date.now();
 			const budget = input.maxChars ?? DEFAULT_BUDGET;
 
-			let extracted: Extracted | Rejected;
-			try {
-				if (kind === "local") {
-					extracted = await localExtract(input.url);
-				} else {
-					const authName = cfg && "auth" in cfg ? cfg.auth : undefined;
-					const key = authName ? await deps.auth.resolve(authName) : undefined;
-					extracted = await extractors[kind](input.url, key);
-				}
-			} catch (err) {
-				// Warn-and-rethrow covers every failure path — the search
-				// contract: transport (dead link, DNS), auth resolve, and
-				// provider extraction all read as themselves in the log,
-				// never as a downstream "model stream error".
-				log.warn("web fetch failed", {
-					url: input.url,
-					kind,
-					error: (err as Error).message,
-					ms: Date.now() - started,
-				});
-				throw err;
-			}
+			// Per-attempt failures already logged by the chain; exhaustion
+			// throws with every error joined — the model sees the whole story.
+			const { extracted, servedBy: kind, failures } = await runFetchChain(
+				entries,
+				deps.auth,
+				input.url,
+			);
+			const note =
+				failures.length > 0
+					? `(extracted via ${kind} — ${clampChars(failures.map((f) => f.error).join("; "), 300)})`
+					: undefined;
 			const logMeta = (m: HttpMeta) => ({
 				status: m.status,
 				contentType: m.contentType,
@@ -296,7 +344,7 @@ export const fetchTool = (deps: WebToolDeps) =>
 					kind: "empty-extraction",
 				};
 			}
-			const result = shapeResult(input.url, extracted, budget);
+			const result = shapeResult(input.url, extracted, budget, note);
 			log.info("web fetch", {
 				url: input.url,
 				kind,
@@ -304,6 +352,7 @@ export const fetchTool = (deps: WebToolDeps) =>
 				outcome: "ok",
 				chars: extracted.text.length,
 				truncated: extracted.text.length > budget,
+				fallback: failures.length > 0,
 				ms: Date.now() - started,
 			});
 			return result;

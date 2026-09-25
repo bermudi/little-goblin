@@ -106,6 +106,39 @@ describe("goblin.json5", () => {
 		expect(() => loadConfig()).toThrow('provider "other"');
 	});
 
+	test("search/fetch: single entry, chain list, and rejection shapes", () => {
+		const dir = useHome();
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
+		// Object form normalizes to a one-entry chain (back-compat).
+		writeFileSync(join(dir, "goblin.json5"), `${base},search:{kind:"brave",auth:"brave"}}`);
+		expect(loadConfig()!.search).toEqual([{ kind: "brave", auth: "brave" }]);
+		// List form preserves order — the chain is config order.
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},search:[{kind:"brave",auth:"brave"},{kind:"ddg"}]}`,
+		);
+		expect(loadConfig()!.search).toEqual([
+			{ kind: "brave", auth: "brave" },
+			{ kind: "ddg" },
+		]);
+		// Empty chain is no chain.
+		writeFileSync(join(dir, "goblin.json5"), `${base},search:[]}`);
+		expect(() => loadConfig()).toThrow();
+		// "" clears; fetch takes the same two forms.
+		writeFileSync(join(dir, "goblin.json5"), `${base},search:""}`);
+		expect(loadConfig()!.search).toBeUndefined();
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},fetch:[{kind:"parallel",auth:"parallel"},{kind:"local"}]}`,
+		);
+		expect(loadConfig()!.fetch).toEqual([
+			{ kind: "parallel", auth: "parallel" },
+			{ kind: "local" },
+		]);
+		writeFileSync(join(dir, "goblin.json5"), `${base},fetch:{kind:"local"}}`);
+		expect(loadConfig()!.fetch).toEqual([{ kind: "local" }]);
+	});
+
 	test("tts validates edge voice/rate and \"\" clears to unset", () => {
 		const dir = useHome();
 		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;

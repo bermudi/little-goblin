@@ -283,11 +283,27 @@ tool. MCP stays out, with its return conditions on record (below).
   model; the flexibility argument inverts.
 - **Config**: optional `search` block, the tts/transcription convention
   (absent or `""` → tool absent): `{kind, auth?}` with kinds
-  `brave|exa|jina|tavily|firecrawl|parallel|ddg`. `auth` is an auth.jsonl
-  ref, required for every kind but jina (keyless tolerated, rate-limited)
-  and ddg (keyless — the unofficial html endpoint; it can rate-limit or
+  `brave|exa|jina|tavily|firecrawl|parallel|ddg`, or an ordered list of
+  such entries — the fallback chain. `auth` is an auth.jsonl ref,
+  required for every kind but jina (keyless tolerated, rate-limited) and
+  ddg (keyless — the unofficial html endpoint; it can rate-limit or
   break, it's the no-key default, not a promise). Enabling/disabling the
   block is a deploy-time cache boundary, logged.
+- **Fallback chains are explicit config, never implicit.** A list entry
+  order is the walk order: first is primary, the rest are fallbacks.
+  Transport, HTTP, and auth failures advance to the next entry; an EMPTY
+  result set (or a structured refusal on the fetch side) is an answer
+  from that provider and stops the walk — "no results" must never
+  silently mean "results from whoever has any". Every failed attempt
+  logs its own line; when the answer comes from a non-primary provider,
+  the result says so (`(via ddg — brave: HTTP 402 …)` — hermes'
+  `served_by`, adopted) so the model can tell the operator and the
+  operator can fix the primary. Borrowed from hermes'
+  `search_with_failover`; NOT borrowed: its round-robin ring, seeded
+  cursor, and fleet-spreading — one operator gets deterministic config
+  order, and no vendor is ever injected that the operator didn't write.
+  No health checks, no cooldowns, no pinning: try-next-on-error is the
+  whole mechanism.
 - **Wire formats** follow hermes' plugins/web (brave and tavily verbatim)
   and the vendors' own SDK wire paths, checked against the SDK sources:
   exa `POST api.exa.ai/search` (`x-api-key`), parallel
@@ -308,9 +324,12 @@ tool. MCP stays out, with its return conditions on record (below).
   extraction (`@mozilla/readability` over `linkedom` — pure JS, the
   industry path). An optional `fetch` block selects a server-side
   extractor instead: `{kind: "jina"|"tavily"|"firecrawl"|"parallel",
-  auth?}` — the per-capability split hermes ships: search and fetch
-  providers are chosen independently (brave for search, parallel for
-  extract, say). Both paths share one output discipline. Input `{url,
+  auth?}` — or an ordered chain of such entries plus `local`, the same
+  list rule as search (`[{kind: "parallel", auth: "parallel"},
+  {kind: "local"}]` is the resilient default shape: paid extraction
+  with a free direct fallback). The per-capability split hermes ships:
+  search and fetch providers are chosen independently (brave for search,
+  parallel for extract, say). Both paths share one output discipline. Input `{url,
   maxChars?}`; local does content-type dispatch — HTML → readability,
   text-ish (text, markdown, json, csv, xml) → raw, anything else (PDF
   included) → structured refusal naming recovery (`bash` + file tools,

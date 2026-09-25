@@ -17,7 +17,7 @@ import {
 } from "./hindsight.ts";
 import { log } from "./log.ts";
 import { OutageTracker } from "./memory-outage.ts";
-import { MemoryQueueWorker, type MemoryQueue, type WorkerOutcome } from "./memory-queue.ts";
+import { MemoryQueueWorker, type BlockedRetention, type MemoryQueue, type MemoryQueueCounts, type WorkerOutcome } from "./memory-queue.ts";
 
 // ---------- client ----------
 
@@ -324,40 +324,58 @@ export type MemoryState = "disabled" | "healthy" | "degraded" | "pending";
 
 export interface MemoryStatus {
 	state: MemoryState;
+	// pending+submitted — everything the worker still owes Hindsight.
 	pending: number;
 	blocked: number;
+	// A sentence that says something the state word alone does not —
+	// the /memory rendering must never read "healthy — memory healthy".
 	detail: string;
+	// Passes through for the /memory degraded listing (already
+	// abbreviated/capped by the queue).
+	blockedDetail: BlockedRetention[];
 }
 
 export function memoryStatus(options: {
 	enabled: boolean;
-	pending: number;
-	blocked: number;
+	counts: MemoryQueueCounts;
 	lastRecallOk: boolean | null;
+	// ISO timestamp of the latest recall outcome — set alongside
+	// lastRecallOk by the noteRecall seam. Null = no recall yet.
+	lastRecallAt: string | null;
+	blockedDetail: BlockedRetention[];
 }): MemoryStatus {
+	const pending = options.counts.pending + options.counts.submitted;
 	if (!options.enabled) {
-		return { state: "disabled", pending: 0, blocked: 0, detail: "memory is not configured" };
+		return {
+			state: "disabled",
+			pending: 0,
+			blocked: 0,
+			detail: "memory is not configured",
+			blockedDetail: [],
+		};
 	}
-	if (options.blocked > 0 || options.lastRecallOk === false) {
+	if (options.counts.blocked > 0 || options.lastRecallOk === false) {
 		return {
 			state: "degraded",
-			pending: options.pending,
-			blocked: options.blocked,
+			pending,
+			blocked: options.counts.blocked,
 			detail:
-				options.blocked > 0
-					? `${options.blocked} blocked retention(s) need operator review`
+				options.counts.blocked > 0
+					? `${options.counts.blocked} blocked retention${options.counts.blocked === 1 ? "" : "s"} need${options.counts.blocked === 1 ? "s" : ""} operator review`
 					: "last recall failed — turns continue without memory",
+			blockedDetail: options.blockedDetail,
 		};
 	}
-	if (options.pending > 0) {
-		return {
-			state: "pending",
-			pending: options.pending,
-			blocked: 0,
-			detail: `${options.pending} retention(s) queued`,
-		};
+	if (pending > 0) {
+		return { state: "pending", pending, blocked: 0, detail: `${pending} retention${pending === 1 ? "" : "s"} draining`, blockedDetail: [] };
 	}
-	return { state: "healthy", pending: 0, blocked: 0, detail: "memory healthy" };
+	return {
+		state: "healthy",
+		pending: 0,
+		blocked: 0,
+		detail: "no queued or blocked retention",
+		blockedDetail: [],
+	};
 }
 
 // ---------- bounded worker timer ----------
@@ -369,6 +387,14 @@ export interface MemoryWorkerOutage {
 	notify(conversationId: string, sinceMs: number, queued: number): Promise<void>;
 }
 
+// Blocked retention is the other silent failure (2026-09-25 incident):
+// the outage amendment covers transport failures only, so a document
+// stuck `blocked` surfaced nowhere in chat. One notice per document,
+// ever — the queue's noteBlocked latch decides "first time".
+export interface MemoryWorkerBlocked {
+	notify(conversationId: string, error: string | null, attempts: number): Promise<void>;
+}
+
 // One owner per process. Drains until idle each interval; errors are
 // logged, never thrown — a wedged memory service must not crash the bot.
 export function startMemoryWorker(
@@ -378,11 +404,13 @@ export function startMemoryWorker(
 		intervalMs?: number;
 		tickFn?: (signal?: AbortSignal) => Promise<boolean>;
 		outage?: MemoryWorkerOutage;
+		blocked?: MemoryWorkerBlocked;
 	} = {},
 ): { stop(): Promise<void>; tickNow(): Promise<boolean> } {
 	let stopped = false;
 	let draining: Promise<void> | null = null;
 	const outage = opts.outage;
+	const blocked = opts.blocked;
 	// The observe seam: transport failures feed the outage episode, any
 	// advance clears it, and a crossed threshold fires the notice. The
 	// notice send is fire-and-forget on purpose — it must never delay or
@@ -395,13 +423,36 @@ export function startMemoryWorker(
 	// re-fires — the pathological duplicate is a send that succeeded but
 	// whose mark didn't commit before a crash: one message, once.
 	let noticeInFlight: number | null = null;
-	const observe = outage
+	const observe = outage || blocked
 		? (outcome: WorkerOutcome) => {
 				if (outcome.ok) {
-					outage.tracker.recordSuccess();
+					outage?.tracker.recordSuccess();
 					return;
 				}
-				if (!outcome.transport) return; // blocked is not an outage
+				if (!outcome.transport) {
+					// Blocked: not an outage (the service answered) — the outage
+					// amendment covers transport failures only. The operator
+					// hears about it exactly once per document: noteBlocked
+					// commits BEFORE the send fires (synchronous SQLite, no
+					// await window), so a second blocked transition of the same
+					// document can never re-notify, and a failed delivery does
+					// not re-notify either — /memory status stays the durable
+					// surface for everything after the first notice.
+					if (blocked && queue.noteBlocked(outcome.documentId)) {
+						void blocked.notify(outcome.conversationId, outcome.error, outcome.attempts).catch((err) => {
+							// No retry by design — the latch above already committed,
+							// so retries would spam a dead Telegram. Error, not warn:
+							// the log is this failure's only voice.
+							log.error("memory blocked notice failed — /memory status remains the surface", {
+								conversation: outcome.conversationId,
+								document: outcome.documentId,
+								error: String(err),
+							});
+						});
+					}
+					return;
+				}
+				if (!outage) return;
 				const notice = outage.tracker.recordFailure(outcome.conversationId);
 				if (!notice || noticeInFlight === notice.episode) return;
 				noticeInFlight = notice.episode;

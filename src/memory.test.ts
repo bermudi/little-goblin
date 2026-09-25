@@ -14,9 +14,10 @@ import {
 	MemoryContexts,
 	startMemoryWorker,
 	withMemoryBlocks,
+	type MemoryState,
 } from "./memory.ts";
 import { HindsightClient } from "./hindsight.ts";
-import { MemoryQueue } from "./memory-queue.ts";
+import { MemoryQueue, type MemoryQueueCounts } from "./memory-queue.ts";
 import { OUTAGE_NOTICE_AFTER_MS, OutageTracker } from "./memory-outage.ts";
 
 const dirs: string[] = [];
@@ -178,12 +179,48 @@ describe("cache-stable materialization", () => {
 });
 
 describe("status", () => {
+	const counts = (over: Partial<MemoryQueueCounts> = {}): MemoryQueueCounts => ({
+		pending: 0,
+		submitted: 0,
+		completed: 0,
+		blocked: 0,
+		dismissed: 0,
+		...over,
+	});
+	const input = (over: Partial<Parameters<typeof memoryStatus>[0]> = {}) => ({
+		enabled: true,
+		counts: counts(),
+		lastRecallOk: true,
+		lastRecallAt: null,
+		blockedDetail: [],
+		...over,
+	});
+
 	test("disabled without config; degraded on blocked or failed recall; pending on queued work", () => {
-		expect(memoryStatus({ enabled: false, pending: 5, blocked: 1, lastRecallOk: false }).state).toBe("disabled");
-		expect(memoryStatus({ enabled: true, pending: 0, blocked: 0, lastRecallOk: true }).state).toBe("healthy");
-		expect(memoryStatus({ enabled: true, pending: 2, blocked: 0, lastRecallOk: true }).state).toBe("pending");
-		expect(memoryStatus({ enabled: true, pending: 0, blocked: 1, lastRecallOk: true }).state).toBe("degraded");
-		expect(memoryStatus({ enabled: true, pending: 0, blocked: 0, lastRecallOk: false }).state).toBe("degraded");
+		expect(memoryStatus(input({ enabled: false, counts: counts({ pending: 5, blocked: 1 }), lastRecallOk: false })).state).toBe("disabled");
+		expect(memoryStatus(input()).state).toBe("healthy");
+		expect(memoryStatus(input({ counts: counts({ submitted: 2 }) })).state).toBe("pending");
+		expect(memoryStatus(input({ counts: counts({ blocked: 1 }) })).state).toBe("degraded");
+		expect(memoryStatus(input({ lastRecallOk: false })).state).toBe("degraded");
+	});
+
+	test("detail says something the state word alone does not", () => {
+		const states: MemoryState[] = ["disabled", "healthy", "degraded", "pending"];
+		const samples = [
+			memoryStatus(input({ enabled: false })),
+			memoryStatus(input()),
+			memoryStatus(input({ counts: counts({ blocked: 2 }) })),
+			memoryStatus(input({ lastRecallOk: false })),
+			memoryStatus(input({ counts: counts({ pending: 3 }) })),
+		];
+		for (const s of samples) {
+			expect(s.detail.trim()).not.toBe("");
+			// The old redundancy: "memory: healthy — memory healthy".
+			expect(s.detail).not.toContain(`memory ${s.state}`);
+		}
+		expect(states).toHaveLength(4); // every state sampled above
+		expect(memoryStatus(input({ counts: counts({ blocked: 1 }) })).detail).toContain("1 blocked retention needs");
+		expect(memoryStatus(input({ counts: counts({ blocked: 2 }) })).detail).toContain("2 blocked retentions need");
 	});
 });
 
@@ -266,5 +303,59 @@ describe("worker timer", () => {
 		expect(sends).toHaveLength(1);
 		held.release?.();
 		await w.stop();
+	});
+
+	// The 2026-09-25 incident's chat-facing half: a blocked document must
+	// surface in chat exactly once, no matter how many times it goes
+	// blocked (operator retried it and it blocked again). The latch is
+	// the queue's noteBlocked row — committed before the send fires.
+	test("a document blocked twice notifies the operator exactly once", async () => {
+		const submitted: string[] = [];
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: async (request) => {
+				if (request.method === "POST") {
+					const body = (await request.json()) as { operation_id?: unknown };
+					submitted.push(typeof body.operation_id === "string" ? body.operation_id : "?");
+					// 401 is permanent, not retryable: the row goes blocked.
+					return new Response("private upstream body", { status: 401 });
+				}
+				return Response.json({ results: [] });
+			},
+		});
+		try {
+			const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
+			const db = memdb();
+			const queue = new MemoryQueue(db);
+			queue.enqueue(client.target, {
+				id: "exchange-1",
+				conversationId: "dm:1",
+				sourceIds: ["u-1", "a-1"],
+				timestamp: "2026-09-22T10:00:00Z",
+					content: "Operator: hi.\nGoblin: hello.",
+			});
+			const notices: { conversationId: string; error: string | null; attempts: number }[] = [];
+			const w = startMemoryWorker(queue, client, {
+				intervalMs: 60_000,
+				blocked: {
+					notify: async (conversationId, error, attempts) => {
+						notices.push({ conversationId, error, attempts });
+					},
+				},
+			});
+			await w.tickNow(); // submit 401 → blocked → first-ever block of this document
+			expect(queue.retryBlocked(client.target)).toBe(1); // operator retry, fresh operation id
+			await w.tickNow(); // fresh submit 401 → blocked again → latch must suppress
+			expect(notices).toHaveLength(1);
+			expect(notices[0]?.conversationId).toBe("dm:1");
+			expect(notices[0]?.error).toContain("HTTP 401");
+			// The retry actually reached the wire under a new operation id.
+			expect(submitted).toHaveLength(2);
+			expect(submitted[0]).not.toBe(submitted[1]);
+			await w.stop();
+		} finally {
+			server.stop(true);
+		}
 	});
 });

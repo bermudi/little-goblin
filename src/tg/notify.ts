@@ -39,3 +39,28 @@ export async function sendMemoryOutageNotice(
 	);
 	log.info("memory outage notice sent", { conversation: conversationId, hours, queued });
 }
+
+// Same discipline as the outage notice, for the other silent failure the
+// 2026-09-25 incident exposed: a retention document stuck `blocked` in
+// the outbox. One line, plain text, into the conversation whose exchange
+// is stuck. Sent at most once per document (the queue's noteBlocked
+// latch); throws on delivery failure — the caller fire-and-forgets and
+// logs, /memory status stays the durable surface.
+export async function sendMemoryBlockedNotice(
+	api: Api,
+	conversationId: string,
+	error: string | null,
+	attempts: number,
+): Promise<void> {
+	const addr = parseConversationAddress(conversationId);
+	if (!addr) throw new Error(`unparseable conversation id: ${conversationId}`);
+	const text =
+		`memory retention blocked for one exchange: ${(error ?? "unknown error").slice(0, 120)} — ` +
+		"/memory retry to resend, /memory dismiss to drop";
+	await api.sendMessage(
+			addr.chatId,
+		text,
+		addr.threadId !== null ? { message_thread_id: addr.threadId } : {},
+	);
+	log.info("memory blocked notice sent", { conversation: conversationId, attempts });
+}

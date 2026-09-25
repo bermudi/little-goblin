@@ -599,6 +599,17 @@ No MCP, replacement turn loop, or generic multi-backend framework.
    failure; any successful advance clears the episode silently). The
    amendment exists because the stack's boot-enablement gap (below) left
    goblin retrying a dead port for a full day with no one the wiser.
+   Amendment (2026-09-25): blocked retention is not an outage — the
+   service answered — and it surfaced nowhere in chat while a 429 storm
+   left a document stuck for hours. A document's first transition into
+   `blocked` earns ONE notice per document (latch in SQLite,
+   `memory_blocked_notices`), naming `/memory retry` and `/memory
+   dismiss`; everything after the first notice is `/memory status`
+   territory. Retry mints a FRESH operation id — Hindsight holds the old
+   op terminally failed server-side, so replaying it just re-reads the
+   dead op's status (the live hand-requeue that failed); dismiss keeps
+   the row as `dismissed` for audit, and `/forget delete` cancels
+   blocked and dismissed rows too.
 6. **Bank/mission: operator step, no auto-creation.** Goblin never
    creates banks or sets missions; `docs/memory.md` documents the manual
    `curl` with an example mission (preferences, decisions, commitments,

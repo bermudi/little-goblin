@@ -5,6 +5,7 @@
 // conversation-lifecycle commands — topics own that. Every settings change
 // bumps the conversation epoch, fencing in-flight turns.
 
+import type { Database } from "bun:sqlite";
 import type { Api } from "grammy";
 import { splitModelRef, type Config, type ThinkingLevel } from "../config.ts";
 import { thinkingLevelsFor } from "../agent/providers.ts";
@@ -14,12 +15,16 @@ import { memoryStatus, type MemoryContexts } from "../memory.ts";
 import type { MemoryQueue } from "../memory-queue.ts";
 import type { Runtime } from "../runtime.ts";
 import { log } from "../log.ts";
+import { ForgetListings, renderNumberedListing, type ForgetItem } from "./forget-listings.ts";
 
 export interface CommandMemoryDeps {
 	client: HindsightClient;
 	contexts: MemoryContexts;
 	queue: MemoryQueue;
 	lastRecallOk(): boolean | null;
+	// ISO timestamp of the latest recall outcome (set alongside
+	// lastRecallOk) — null when no recall has happened yet.
+	lastRecallAt(): string | null;
 }
 
 export interface CommandDeps {
@@ -39,10 +44,32 @@ function target(conv: Conversation) {
 	};
 }
 
+// Local wall clock — the operator is the admin and /memory status is
+// read by them, on this box (same ruling as cron's local timezone).
+function clockHM(iso: string): string {
+	const d = new Date(iso);
+	if (Number.isNaN(d.getTime())) return "never";
+	return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
 function reply(deps: CommandDeps, conv: Conversation, text: string): void {
 	deps.api.sendMessage(conv.chatId, text, target(conv)).catch((err: unknown) => {
 		log.warn("command reply failed", { error: String(err) });
 	});
+}
+
+// /forget's numbered listings live in the store's own SQLite file — one
+// ForgetListings per database, built on first use. Not a CommandDeps
+// field: /forget is the only consumer, and the cache is command UX, not
+// memory-domain wiring.
+const forgetListingsByDb = new WeakMap<Database, ForgetListings>();
+function listingsFor(db: Database): ForgetListings {
+	let listings = forgetListingsByDb.get(db);
+	if (listings === undefined) {
+		listings = new ForgetListings(db);
+		forgetListingsByDb.set(db, listings);
+	}
+	return listings;
 }
 
 // Apply a settings change: patch meta + bump epoch (fences in-flight
@@ -196,24 +223,68 @@ export function handleCommand(
 				reply(deps, conv, "memory → on for this topic");
 				return true;
 			}
+			if (arg === "retry") {
+				// Fresh operation ids are the whole point — see MemoryQueue.retryBlocked.
+				const requeued = mem.queue.retryBlocked(mem.client.target);
+				log.info("memory blocked retentions requeued by operator", {
+					conversation: conv.id,
+					requeued,
+				});
+				reply(
+					deps,
+					conv,
+					`memory: requeued ${requeued} blocked retention${requeued === 1 ? "" : "s"} with fresh operation ids`,
+				);
+				return true;
+			}
+			if (arg === "dismiss") {
+				const dismissed = mem.queue.dismissBlocked(mem.client.target);
+				log.info("memory blocked retentions dismissed by operator", {
+					conversation: conv.id,
+					dismissed,
+				});
+				reply(
+					deps,
+					conv,
+					`memory: dismissed ${dismissed} blocked retention${dismissed === 1 ? "" : "s"} (kept for audit)`,
+				);
+				return true;
+			}
 			if (arg !== "" && arg !== "status") {
-				reply(deps, conv, "/memory on|off|status");
+				reply(deps, conv, "usage: /memory on|off|retry|dismiss|status");
 				return true;
 			}
 			const counts = mem.queue.counts(mem.client.target);
+			const lastRecallAt = mem.lastRecallAt();
 			const status = memoryStatus({
 				enabled: true,
-				pending: counts.pending + counts.submitted,
-				blocked: counts.blocked,
+				counts,
 				lastRecallOk: mem.lastRecallOk(),
+				lastRecallAt,
+				blockedDetail: mem.queue.blockedDetail(mem.client.target),
 			});
-			reply(
-				deps,
-				conv,
-				`memory: ${status.state} — ${status.detail}\n` +
-					`this topic: ${conv.memoryExcluded ? "excluded" : "included"}\n` +
-					`forget with /forget <query>`,
+			const queued = counts.pending + counts.submitted;
+			const lines = [
+				status.state === "degraded"
+					? `memory: ${status.state} — ${status.detail}`
+					: `memory: ${status.state}`,
+			];
+			if (counts.blocked > 0) {
+				for (const [i, b] of status.blockedDetail.entries()) {
+					lines.push(`  ${i + 1}. ${b.document} (${b.attempts} attempt${b.attempts === 1 ? "" : "s"}): ${b.error ?? "unknown error"}`);
+				}
+				lines.push("actions: /memory retry · /memory dismiss");
+			}
+			lines.push(
+				`queue: ${queued} queued · ${counts.completed} retained` +
+					(counts.dismissed > 0 ? ` · ${counts.dismissed} dismissed (kept for audit)` : ""),
+				lastRecallAt === null
+					? "last recall: never"
+					: `last recall: ${clockHM(lastRecallAt)} (${mem.lastRecallOk() === false ? "failed" : "ok"})`,
+				`this topic: ${conv.memoryExcluded ? "excluded" : "included"}`,
+				"forget with /forget <query>",
 			);
+			reply(deps, conv, lines.join("\n"));
 			return true;
 		}
 
@@ -231,15 +302,31 @@ export function handleCommand(
 				reply(
 					deps,
 					conv,
-					"/forget <query> — list matching sources\n/forget delete <documentId> — delete after review (irreversible)",
+					"/forget <query> — list matching sources\n/forget delete <n> — or the full document id (irreversible)",
 				);
 				return true;
 			}
 			if (arg === "delete" || arg.startsWith("delete ")) {
-				const id = arg.slice("delete".length).trim();
-				if (id === "" || id.length > 256 || id === "." || id === "..") {
-					reply(deps, conv, "/forget delete <documentId> — id from a /forget <query> listing");
+				const ref = arg.slice("delete".length).trim();
+				if (ref === "" || ref.length > 256 || ref === "." || ref === "..") {
+					reply(deps, conv, "/forget delete <n> — or the document id from a /forget <query> listing");
 					return true;
+				}
+				// A pure integer addresses the listing this conversation last
+				// got from /forget <query> — no full document ids on a phone.
+				// Fail-closed: expired, missing, or out of range refuses
+				// outright; a stale number must never delete something unseen.
+				let id = ref;
+				let preview: string | null = null;
+				if (/^\d+$/.test(ref)) {
+					const picked = listingsFor(deps.store.db).resolve(conv.id, ref, Date.now());
+					if (picked === null) {
+						reply(deps, conv, "listing expired — run /forget <query> again and pick within 10 minutes");
+						return true;
+					}
+					id = picked.documentId;
+					preview = picked.preview;
+					log.info("forget listing ref resolved", { conversation: conv.id, ref, document: id });
 				}
 				// Resolve-then-confirm already happened: the operator ran
 				// /forget <query>, saw this id, and typed delete. Suppress
@@ -260,7 +347,8 @@ export function handleCommand(
 						reply(
 							deps,
 							conv,
-							`forgotten ${id} (suppressed, ${cancelled} queued cancelled, ${redacted} snapshots redacted). ` +
+							(preview !== null ? `forgotten ${id} — ${preview} ` : `forgotten ${id} `) +
+								`(suppressed, ${cancelled} queued cancelled, ${redacted} snapshots redacted). ` +
 								`Original chat history, backups, and provider retention are untouched.`,
 						);
 					} catch (err) {
@@ -293,13 +381,18 @@ export function handleCommand(
 						reply(deps, conv, "no matching memories found");
 						return;
 					}
-					const lines = [...seen.entries()].map(
-						([doc, s]) => `- ${doc} (${s.date}): ${s.snippet}`,
-					);
+					const items: ForgetItem[] = [...seen.entries()].map(([doc, s]) => ({
+						documentId: doc,
+						preview: s.snippet,
+						date: s.date,
+					}));
+					// The listing becomes this conversation's pick-list: numbers
+					// address it for the next 10 minutes (/forget delete <n>).
+					listingsFor(deps.store.db).save(conv.id, items);
 					reply(
 						deps,
 						conv,
-						`matching sources:\n${lines.join("\n")}\n\n/forget delete <documentId> to delete (irreversible)`,
+						`matching sources:\n${renderNumberedListing(items)}\n\n/forget delete <n> — or the full document id (irreversible)`,
 					);
 				} catch (err) {
 					if (err instanceof HindsightError) {
@@ -325,7 +418,7 @@ export const COMMANDS = [
 	{ command: "model", description: "show or override the model" },
 	{ command: "think", description: "show or override thinking level" },
 	{ command: "voice", description: "toggle voice-note replies" },
-	{ command: "memory", description: "memory on/off/status for this topic" },
+	{ command: "memory", description: "memory status, retry or dismiss blocked retention" },
 	{ command: "forget", description: "list or delete memorized sources" },
 	{ command: "stop", description: "fence the running turn" },
 ] as const;

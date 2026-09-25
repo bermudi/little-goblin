@@ -199,14 +199,39 @@ function setupMemory() {
 		contexts: store.memoryContexts,
 		queue: store.memoryQueue,
 		lastRecallOk: () => null,
+		lastRecallAt: () => null,
 	};
 	return { store, conv, sent, deps };
+}
+
+// Enqueue one retention row for this conversation and mark it blocked —
+// the /memory degraded fixture.
+function blockOne(store: ReturnType<typeof setup>["store"], client: HindsightClient, documentId: string): string {
+	const id = store.memoryQueue.enqueue(client.target, {
+		id: documentId,
+		content: "Operator: hi\nGoblin: hello",
+		timestamp: new Date().toISOString(),
+		conversationId: "dm:1",
+		sourceIds: ["u1", "a7"],
+	});
+	const item = store.memoryQueue.get(id);
+	if (!item) throw new Error("expected queued memory");
+	store.memoryQueue.update(item, "blocked", 0, "Hindsight http failure (HTTP 429)");
+	return id;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(sent: string[], n: number): Promise<void> {
 	for (let i = 0; i < 100 && sent.length < n; i++) await sleep(10);
 	expect(sent.length).toBeGreaterThanOrEqual(n);
+}
+
+// The client DELETEs `<base>/documents/<encoded-id>` (base carries the
+// bank prefix) — the fake echoes the id back for z.literal validation.
+function deleteIdFrom(url: string): string {
+	const path = new URL(url).pathname;
+	const at = path.lastIndexOf("/documents/");
+	return decodeURIComponent(path.slice(at + "/documents/".length));
 }
 
 describe("memory commands", () => {
@@ -222,6 +247,121 @@ describe("memory commands", () => {
 		expect(handleCommand(deps, conv, "/memory")).toBe(true);
 		expect(sent[0]).toContain("healthy");
 		expect(sent[0]).toContain("included");
+		store.close();
+	});
+
+	test("/memory healthy rendering: queue, recall, topic — no state-word echo", () => {
+		const { store, conv, sent, deps } = setupMemory();
+		const client = deps.memory!.client;
+		const id = store.memoryQueue.enqueue(client.target, {
+			id: "exchange/dm:1/1/a",
+			content: "Operator: hi\nGoblin: hello",
+			timestamp: new Date().toISOString(),
+			conversationId: conv.id,
+			sourceIds: ["u1", "a1"],
+		});
+		const item = store.memoryQueue.get(id);
+		if (!item) throw new Error("expected queued memory");
+		store.memoryQueue.update(item, "completed", 0, null);
+		expect(handleCommand(deps, conv, "/memory")).toBe(true);
+		expect(sent[0]).toContain("memory: healthy\n");
+		expect(sent[0]).toContain("queue: 0 queued · 1 retained");
+		expect(sent[0]).toContain("last recall: never");
+		expect(sent[0]).toContain("this topic: included");
+		expect(sent[0]).toContain("forget with /forget <query>");
+		// The killed redundancy: "memory: healthy — memory healthy".
+		expect(sent[0]).not.toContain("memory healthy");
+		store.close();
+	});
+
+	test("/memory pending rendering counts queued work; recall time and outcome", () => {
+		const { store, conv, sent, deps } = setupMemory();
+		const client = deps.memory!.client;
+		for (const id of ["exchange/dm:1/1/a", "exchange/dm:1/2/b"]) {
+			store.memoryQueue.enqueue(client.target, {
+				id,
+				content: "Operator: hi\nGoblin: hello",
+				timestamp: new Date().toISOString(),
+				conversationId: conv.id,
+				sourceIds: ["u1", "a1"],
+			});
+		}
+		deps.memory = {
+			...deps.memory!,
+			lastRecallOk: () => true,
+			lastRecallAt: () => new Date().toISOString(),
+		};
+		expect(handleCommand(deps, conv, "/memory")).toBe(true);
+		expect(sent[0]).toContain("memory: pending");
+		expect(sent[0]).toContain("queue: 2 queued · 0 retained");
+		expect(sent[0]).toMatch(/last recall: \d{2}:\d{2} \(ok\)/);
+		store.close();
+	});
+
+	test("/memory degraded lists blocked retention with actions", () => {
+		const { store, conv, sent, deps } = setupMemory();
+		blockOne(store, deps.memory!.client, "exchange/dm:1/7/a7");
+		expect(handleCommand(deps, conv, "/memory")).toBe(true);
+		expect(sent[0]).toContain("memory: degraded — 1 blocked retention needs operator review");
+		expect(sent[0]).toContain("  1. a7 (1 attempt): Hindsight http failure (HTTP 429)");
+		expect(sent[0]).toContain("actions: /memory retry · /memory dismiss");
+		expect(sent[0]).toContain("queue: 0 queued · 0 retained");
+		store.close();
+	});
+
+	test("/memory shows dismissed rows as kept for audit", () => {
+		const { store, conv, sent, deps } = setupMemory();
+		blockOne(store, deps.memory!.client, "exchange/dm:1/7/a7");
+		expect(store.memoryQueue.dismissBlocked(deps.memory!.client.target)).toBe(1);
+		expect(handleCommand(deps, conv, "/memory")).toBe(true);
+		expect(sent[0]).toContain("memory: healthy");
+		expect(sent[0]).toContain("queue: 0 queued · 0 retained · 1 dismissed (kept for audit)");
+		store.close();
+	});
+
+	test("a failed last recall degrades without inventing blocked work", () => {
+		const { store, conv, sent, deps } = setupMemory();
+		deps.memory = {
+			...deps.memory!,
+			lastRecallOk: () => false,
+			lastRecallAt: () => new Date().toISOString(),
+		};
+		expect(handleCommand(deps, conv, "/memory")).toBe(true);
+		expect(sent[0]).toContain("memory: degraded — last recall failed");
+		expect(sent[0]).not.toContain("actions:");
+		store.close();
+	});
+
+	test("/memory retry requeues blocked retention with fresh operation ids", () => {
+		const { store, conv, sent, deps } = setupMemory();
+		const client = deps.memory!.client;
+		const id = blockOne(store, client, "exchange/dm:1/7/a7");
+		expect(handleCommand(deps, conv, "/memory retry")).toBe(true);
+		expect(sent.at(-1)).toContain("requeued 1 blocked retention with fresh operation ids");
+		const requeued = store.memoryQueue.next(client.target, Date.now());
+		expect(requeued?.document.id).toBe("exchange/dm:1/7/a7");
+		expect(requeued?.operation_id).not.toBe(id);
+		expect(requeued?.attempts).toBe(0);
+		store.close();
+	});
+
+	test("/memory dismiss keeps blocked rows for audit and out of the queue", () => {
+		const { store, conv, sent, deps } = setupMemory();
+		const client = deps.memory!.client;
+		blockOne(store, client, "exchange/dm:1/7/a7");
+		expect(handleCommand(deps, conv, "/memory dismiss")).toBe(true);
+		expect(sent.at(-1)).toContain("dismissed 1 blocked retention (kept for audit)");
+		expect(store.memoryQueue.counts(client.target).dismissed).toBe(1);
+		expect(store.memoryQueue.next(client.target, Date.now())).toBeNull();
+		store.close();
+	});
+
+	test("/memory retry and dismiss without the block say so", () => {
+		const { store, conv, sent, deps } = setup();
+		expect(handleCommand(deps, conv, "/memory retry")).toBe(true);
+		expect(handleCommand(deps, conv, "/memory dismiss")).toBe(true);
+		expect(sent[0]).toContain("not configured");
+		expect(sent[1]).toContain("not configured");
 		store.close();
 	});
 
@@ -255,7 +395,7 @@ describe("memory commands", () => {
 	test("/memory rejects bad args", () => {
 		const { store, conv, sent, deps } = setupMemory();
 		expect(handleCommand(deps, conv, "/memory maybe")).toBe(true);
-		expect(sent[0]).toContain("on|off|status");
+		expect(sent[0]).toContain("usage: /memory on|off|retry|dismiss|status");
 		expect(store.get(conv.id)!.memoryExcluded).toBe(false);
 		store.close();
 	});
@@ -293,9 +433,92 @@ describe("memory commands", () => {
 			};
 			expect(handleCommand(deps, conv, "/forget lighthouse")).toBe(true);
 			await waitFor(sent, 1);
-			expect(sent[0]).toContain("exchange/a");
-			expect(sent[0]).toContain("exchange/b");
-			expect(sent[0]).toContain("/forget delete");
+			// Numbered, preview-first — no raw document ids to type on a phone.
+			expect(sent[0]).toContain("1. Lighthouse weekends. (2026-02-01)");
+			expect(sent[0]).toContain("2. Quiet mornings. (2026-01-01)");
+			expect(sent[0]).toContain("/forget delete <n> — or the full document id (irreversible)");
+			expect(sent[0]).not.toContain("exchange/");
+		} finally {
+			server.stop(true);
+			store.close();
+		}
+	});
+
+	test("/forget delete <n> resolves the cached listing and deletes that document", async () => {
+		const { store, conv, sent, deps } = setupMemory();
+		const deleted: string[] = [];
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: (request) => {
+				if (request.method === "DELETE") {
+					const id = deleteIdFrom(request.url);
+					deleted.push(id);
+					return Response.json({ success: true, document_id: id });
+				}
+				return Response.json({ results: [
+					{ id: "f1", text: "Lighthouse weekends.", document_id: "exchange/a", occurred_start: "2026-02-01" },
+					{ id: "f2", text: "Quiet mornings.", document_id: "exchange/b", occurred_start: "2026-01-01" },
+				] });
+			},
+		});
+		try {
+			deps.memory = {
+				...deps.memory!,
+				client: new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" }),
+			};
+			expect(handleCommand(deps, conv, "/forget lighthouse")).toBe(true);
+			await waitFor(sent, 1);
+			// Pick #2 off the listing just rendered — the full id was never shown.
+			expect(handleCommand(deps, conv, "/forget delete 2")).toBe(true);
+			await waitFor(sent, 2);
+			expect(deleted).toEqual(["exchange/b"]);
+			expect(sent[1]).toContain("forgotten exchange/b");
+			// The confirmation echoes the preview so the pick is auditable.
+			expect(sent[1]).toContain("Quiet mornings.");
+			expect(store.memoryContexts.isSuppressed("exchange/b")).toBe(true);
+			expect(store.memoryContexts.isSuppressed("exchange/a")).toBe(false);
+		} finally {
+			server.stop(true);
+			store.close();
+		}
+	});
+
+	test("/forget delete <n> with an expired listing refuses and deletes nothing", async () => {
+		const { store, conv, sent, deps } = setupMemory();
+		const deleted: string[] = [];
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: (request) => {
+				if (request.method === "DELETE") {
+					const id = deleteIdFrom(request.url);
+					deleted.push(id);
+					return Response.json({ success: true, document_id: id });
+				}
+				return Response.json({ results: [
+					{ id: "f1", text: "Lighthouse weekends.", document_id: "exchange/a", occurred_start: "2026-02-01" },
+				] });
+			},
+		});
+		try {
+			deps.memory = {
+				...deps.memory!,
+				client: new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" }),
+			};
+			expect(handleCommand(deps, conv, "/forget lighthouse")).toBe(true);
+			await waitFor(sent, 1);
+			// Age the cached listing past its ttl — row surgery is the only
+			// lever a test has over wall-clock.
+			store.db.run(
+				"UPDATE forget_listings SET created_at = ? WHERE conversation_id = ?",
+				[new Date(Date.now() - 60_000_000).toISOString(), conv.id],
+			);
+			expect(handleCommand(deps, conv, "/forget delete 1")).toBe(true);
+			await waitFor(sent, 2);
+			expect(sent[1]).toBe("listing expired — run /forget <query> again and pick within 10 minutes");
+			expect(deleted).toEqual([]);
+			expect(store.memoryContexts.isSuppressed("exchange/a")).toBe(false);
 		} finally {
 			server.stop(true);
 			store.close();

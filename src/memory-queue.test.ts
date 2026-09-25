@@ -243,3 +243,98 @@ test("due pending submissions outrank polling older submitted operations", () =>
 	const secondId = store.memoryQueue.enqueue(client.target, { ...doc, id: "exchange-2" });
 	expect(store.memoryQueue.next(client.target, Date.now())?.operation_id).toBe(secondId);
 });
+
+// The 2026-09-25 incident: hand-requeuing by flipping state back to
+// pending could never drain — the stale operation_id is a dead remote op
+// server-side, so the replay just re-read its failed status. A retry
+// must reach the wire as a brand-new operation.
+test("retryBlocked mints a fresh operation id and the replay completes", async () => {
+	let remoteStatus = "failed";
+	const client = service(async (request) => {
+		if (request.method === "POST") {
+			const body = (await request.json()) as { operation_id?: unknown };
+			const id = typeof body.operation_id === "string" ? body.operation_id : "";
+			return Response.json({ success: true, bank_id: "g", items_count: 1, async: true, operation_id: id });
+		}
+		const id = new URL(request.url).pathname.split("/").pop() ?? "";
+		return Response.json({ operation_id: id, status: remoteStatus });
+	});
+	const store = storeAt(database());
+	const firstId = enqueue(store, client);
+	let now = Date.now();
+	const worker = new MemoryQueueWorker(store.memoryQueue, client, () => now);
+	await worker.tick(); // submit acknowledged
+	now += 5_000;
+	await worker.tick(); // poll: remote says failed → blocked
+	expect(store.memoryQueue.get(firstId)?.state).toBe("blocked");
+	expect(store.memoryQueue.retryBlocked(client.target)).toBe(1);
+	// In-place UPDATE under a new primary key: the old operation id is gone.
+	expect(store.memoryQueue.get(firstId)).toBeNull();
+	const requeued = store.memoryQueue.next(client.target, now);
+	if (!requeued) throw new Error("expected requeued memory");
+	expect(requeued.document.id).toBe(doc.id);
+	expect(requeued.operation_id).not.toBe(firstId);
+	expect(requeued.state).toBe("pending");
+	expect(requeued.attempts).toBe(0);
+	expect(requeued.next_attempt).toBe(0);
+	await worker.tick(); // fresh submit under the new operation id
+	now += 5_000;
+	remoteStatus = "completed";
+	await worker.tick(); // poll completes the new operation
+	expect(store.memoryQueue.get(requeued.operation_id)?.state).toBe("completed");
+	expect(store.memoryQueue.next(client.target, now + 5_000)).toBeNull();
+});
+
+test("dismissed rows stay for audit: never due, counted apart, forgotten with the document", () => {
+	const client = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
+	const store = storeAt(database());
+	store.memoryQueue.enqueue(client.target, doc);
+	store.memoryQueue.enqueue(client.target, { ...doc, id: "exchange-2" });
+	const first = store.memoryQueue.next(client.target, Date.now());
+	if (!first) throw new Error("expected queued memory");
+	store.memoryQueue.update(first, "blocked", 0, "Hindsight http failure (HTTP 401)");
+	expect(store.memoryQueue.dismissBlocked(client.target)).toBe(1);
+	expect(store.memoryQueue.counts(client.target)).toEqual({
+		pending: 1, submitted: 0, completed: 0, blocked: 0, dismissed: 1,
+	});
+	// Dismissed is a terminal operator verdict — next() never offers it again.
+	expect(store.memoryQueue.next(client.target, Date.now())?.document.id).toBe("exchange-2");
+	// /forget delete must not leave dismissed rows behind either.
+	expect(store.memoryQueue.cancelDocument(doc.id)).toBe(1);
+	expect(store.memoryQueue.counts(client.target).dismissed).toBe(0);
+});
+
+test("cancelDocument removes blocked rows — a forgotten document is not 'needs review'", () => {
+	const client = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
+	const store = storeAt(database());
+	const id = store.memoryQueue.enqueue(client.target, doc);
+	const item = store.memoryQueue.get(id);
+	if (!item) throw new Error("expected queued memory");
+	store.memoryQueue.update(item, "blocked", 0, "operation missing; operator reconciliation required");
+	expect(store.memoryQueue.cancelDocument(doc.id)).toBe(1);
+	expect(store.memoryQueue.get(id)).toBeNull();
+	expect(store.memoryQueue.next(client.target, Date.now())).toBeNull();
+});
+
+test("noteBlocked latches once per document", () => {
+	const store = storeAt(database());
+	const queue = store.memoryQueue;
+	expect(queue.noteBlocked("exchange/dm:1/1/a")).toBe(true);
+	expect(queue.noteBlocked("exchange/dm:1/1/a")).toBe(false);
+	expect(queue.noteBlocked("exchange/dm:1/1/a")).toBe(false); // still latched
+	expect(queue.noteBlocked("exchange/dm:1/2/b")).toBe(true);
+});
+
+test("blockedDetail abbreviates documents and caps errors for chat surfaces", () => {
+	const client = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
+	const store = storeAt(database());
+	const id = store.memoryQueue.enqueue(client.target, { ...doc, id: "exchange/dm:1/7/a7" });
+	const item = store.memoryQueue.get(id);
+	if (!item) throw new Error("expected queued memory");
+	store.memoryQueue.update(item, "blocked", 0, "x".repeat(300));
+	const detail = store.memoryQueue.blockedDetail(client.target);
+	expect(detail).toHaveLength(1);
+	expect(detail[0]?.document).toBe("a7"); // last path segment
+	expect(detail[0]?.error?.length).toBe(120);
+	expect(detail[0]?.attempts).toBe(1);
+});

@@ -10,12 +10,31 @@ import {
 import { log } from "./log.ts";
 
 const targetSchema = z.string().regex(/^[a-f0-9]{64}$/);
+export interface MemoryQueueCounts {
+	pending: number;
+	submitted: number;
+	completed: number;
+	blocked: number;
+	dismissed: number;
+}
+// Operator-facing projection of a blocked row. `document` is the last
+// path segment of the document id when it contains one (the assistant
+// message id — enough to point the operator at the exchange); `error` is
+// capped for chat surfaces.
+export interface BlockedRetention {
+	document: string;
+	error: string | null;
+	attempts: number;
+}
 const rowSchema = z.object({
 	operation_id: z.uuid(),
 	target: targetSchema,
 	document_id: z.string(),
 	payload: z.string(),
-	state: z.enum(["pending", "submitted", "completed", "blocked"]),
+	// `dismissed`: the operator reviewed a blocked row and chose to drop
+	// it. The row stays in the DB for audit — failed/missing remote
+	// operations remain visible, never silently discarded.
+	state: z.enum(["pending", "submitted", "completed", "blocked", "dismissed"]),
 	attempts: z.number().int().nonnegative(),
 	next_attempt: z.number().int().nonnegative(),
 	error: z.string().nullable(),
@@ -36,6 +55,15 @@ export class MemoryQueue {
 			UNIQUE(target, document_id)
 		)`);
 		db.run("CREATE INDEX IF NOT EXISTS memory_outbox_due ON memory_outbox(target, state, next_attempt)");
+		// One-notice-per-document latch for blocked retention (the other
+		// half of the 2026-09-25 incident: nothing in chat ever surfaced a
+		// blocked document). A row here means the operator was already
+		// told once; it is never cleared — /memory status is the durable
+		// surface for everything after the first notice.
+		db.run(`CREATE TABLE IF NOT EXISTS memory_blocked_notices (
+			document_id TEXT PRIMARY KEY,
+			created_at TEXT NOT NULL
+		)`);
 	}
 
 	// Returns the same operation for an exact replay; never overwrites pending
@@ -109,10 +137,13 @@ export class MemoryQueue {
 	}
 
 	// Forgetting cancels pending ingestion across all targets — a config
-	// change must not resurrect a suppressed document from another target.
+	// change must not resurrect a suppressed document from another
+	// target. Blocked and dismissed rows die too: a forgotten document
+	// must not linger as "needs review" in the outbox (live finding
+	// 2026-09-25: /forget delete used to leave blocked rows behind).
 	cancelDocument(documentId: string): number {
 		const change = this.db.run(
-			`DELETE FROM memory_outbox WHERE document_id = ? AND state IN ('pending', 'submitted')`,
+			`DELETE FROM memory_outbox WHERE document_id = ? AND state IN ('pending', 'submitted', 'blocked', 'dismissed')`,
 			[documentId],
 		);
 		return Number(change.changes);
@@ -145,28 +176,116 @@ export class MemoryQueue {
 		return removed;
 	}
 
-	counts(target: string): { pending: number; submitted: number; completed: number; blocked: number } {
+	counts(target: string): MemoryQueueCounts {
 		targetSchema.parse(target);
 		const rows = this.db.query<{ state: string; n: number }, [string]>(
 			`SELECT state, COUNT(*) AS n FROM memory_outbox WHERE target = ? GROUP BY state`,
 		).all(target);
-		const out = { pending: 0, submitted: 0, completed: 0, blocked: 0 };
+		const out: MemoryQueueCounts = { pending: 0, submitted: 0, completed: 0, blocked: 0, dismissed: 0 };
 		for (const r of rows) {
 			if (r.state === "pending") out.pending = r.n;
 			else if (r.state === "submitted") out.submitted = r.n;
 			else if (r.state === "completed") out.completed = r.n;
 			else if (r.state === "blocked") out.blocked = r.n;
+			else if (r.state === "dismissed") out.dismissed = r.n;
 		}
 		return out;
 	}
+
+	// Hand-requeue after an operator reviews a blocked retention. CRITICAL:
+	// a fresh randomUUID() is minted, not the old operation_id reused —
+	// Hindsight treats the original op as terminally failed server-side,
+	// so replaying it just re-reads the dead op's failed status forever
+	// (live finding 2026-09-25: flipping state back to pending alone
+	// never drained). In-place UPDATE, so UNIQUE(target, document_id)
+	// still holds.
+	retryBlocked(target: string): number {
+		targetSchema.parse(target);
+		const rows = this.db.query<{ operation_id: string; document_id: string }, [string]>(
+			"SELECT operation_id, document_id FROM memory_outbox WHERE target = ? AND state = 'blocked'",
+		).all(target);
+		for (const row of rows) {
+			const fresh = randomUUID();
+			const change = this.db.run(
+				`UPDATE memory_outbox SET operation_id = ?, state = 'pending', attempts = 0, next_attempt = 0, error = NULL
+				 WHERE operation_id = ? AND state = 'blocked'`,
+				[fresh, row.operation_id],
+			);
+			if (change.changes !== 1) throw new Error("Memory queue changed during retry");
+			log.info("memory blocked retention requeued with fresh operation", {
+				target,
+				document: row.document_id,
+				operation: abbrevOperation(row.operation_id),
+				operationNew: abbrevOperation(fresh),
+			});
+		}
+		return rows.length;
+	}
+
+	// The operator reviewed the blocked rows and chose to drop them. The
+	// rows stay in the DB (state='dismissed') for audit — they are never
+	// selected by next() again.
+	dismissBlocked(target: string): number {
+		targetSchema.parse(target);
+		const rows = this.db.query<{ operation_id: string; document_id: string }, [string]>(
+			"SELECT operation_id, document_id FROM memory_outbox WHERE target = ? AND state = 'blocked'",
+		).all(target);
+		for (const row of rows) {
+			const change = this.db.run(
+				"UPDATE memory_outbox SET state = 'dismissed' WHERE operation_id = ? AND state = 'blocked'",
+				[row.operation_id],
+			);
+			if (change.changes !== 1) throw new Error("Memory queue changed during dismiss");
+			log.info("memory blocked retention dismissed", { target, document: row.document_id });
+		}
+		return rows.length;
+	}
+
+	// The one-notice-per-document latch: true only on the first block of
+	// this document (ever — including across restarts). Commits before
+	// any notice is sent, so a failed delivery does not re-notify;
+	// /memory status remains the durable fallback surface.
+	noteBlocked(documentId: string): boolean {
+		const change = this.db.run(
+			"INSERT OR IGNORE INTO memory_blocked_notices (document_id, created_at) VALUES (?, ?)",
+			[documentId, new Date().toISOString()],
+		);
+		return change.changes === 1;
+	}
+
+	blockedDetail(target: string): BlockedRetention[] {
+		targetSchema.parse(target);
+		const rows = this.db.query<{ document_id: string; error: string | null; attempts: number }, [string]>(
+			"SELECT document_id, error, attempts FROM memory_outbox WHERE target = ? AND state = 'blocked' ORDER BY rowid LIMIT 10",
+		).all(target);
+		return rows.map((r) => ({
+			document: r.document_id.includes("/") ? (r.document_id.split("/").pop() ?? r.document_id) : r.document_id,
+			error: r.error === null ? null : r.error.slice(0, 120),
+			attempts: r.attempts,
+		}));
+	}
 }
 
-// Outcome of one processed item, for the outage tracker (memory-outage.ts):
-// transport failures are outage signals; blocked is a permanent per-document
-// verdict with the service reachable and advances nothing.
+function abbrevOperation(id: string): string {
+	return id.slice(0, 8);
+}
+
+// Outcome of one processed item, for the outage tracker (memory-outage.ts)
+// and the blocked-notice latch: transport failures are outage signals;
+// blocked is a permanent per-document verdict with the service
+// reachable and advances nothing — it carries the document + error so
+// the seam can fire the one-per-document notice.
 export type WorkerOutcome =
 	| { ok: true; conversationId: string }
-	| { ok: false; transport: boolean; conversationId: string };
+	| { ok: false; transport: true; conversationId: string }
+	| {
+			ok: false;
+			transport: false;
+			conversationId: string;
+			documentId: string;
+			error: string | null;
+			attempts: number;
+		};
 
 // One caller/process owns the outbox. tick() coalesces concurrent invocations;
 // it deliberately has no timer or implicit network activity at construction.
@@ -230,7 +349,15 @@ export class MemoryQueueWorker {
 		const conversationId = item.document.conversationId;
 		if (transportFailure) this.observe?.({ ok: false, transport: true, conversationId });
 		else if (state === "submitted" || state === "completed") this.observe?.({ ok: true, conversationId });
-		else this.observe?.({ ok: false, transport: false, conversationId });
+		else
+			this.observe?.({
+				ok: false,
+				transport: false,
+				conversationId,
+				documentId: item.document_id,
+				error,
+				attempts: item.attempts + 1,
+			});
 		return true;
 	}
 }

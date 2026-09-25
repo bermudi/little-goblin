@@ -26,7 +26,14 @@ forgetting mechanism — see `/forget` below.
 ## Operator controls
 
 - `/memory` — status (`disabled|healthy|degraded|pending` with outbox
-  counts) and whether this topic is included.
+  counts, last recall time/outcome, and blocked detail) and whether this
+  topic is included.
+- `/memory retry` — requeue blocked retention under fresh operation ids.
+  A stale operation id is a dead remote op server-side; replaying it can
+  never succeed.
+- `/memory dismiss` — drop blocked retention from review. Dismissed rows
+  stay in the database for audit (failed/missing remote operations are
+  never silently discarded) and are removed by `/forget delete`.
 - `/memory off` — exclude this topic: nothing from here is sent, and no
   shared memories are recalled here (automatic or via `memory_search`).
   `/memory on` re-includes. Both bump the epoch (fence in-flight turns)

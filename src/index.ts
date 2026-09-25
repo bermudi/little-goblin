@@ -26,7 +26,7 @@ import { startHttp } from "./http/mod.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { Runtime } from "./runtime.ts";
 import { applyMenuButton, AUTH_TELEGRAM_TOKEN, startBot } from "./tg/mod.ts";
-import { sendMemoryOutageNotice } from "./tg/notify.ts";
+import { sendMemoryBlockedNotice, sendMemoryOutageNotice } from "./tg/notify.ts";
 
 // The file sink attaches before anything that can fail — a malformed
 // config, bad auth file, corrupt DB, or occupied port must land in
@@ -75,7 +75,14 @@ async function boot() {
 	// a config change can never redirect queued personal content mid-run.
 	const memoryBootConfig = config.memory;
 	const memoryClient = buildMemoryClient(memoryBootConfig ?? undefined, auth);
-	const memoryState = { lastRecallOk: null as boolean | null };
+	const memoryState = { lastRecallOk: null as boolean | null, lastRecallAt: null as string | null };
+	// Runtime recall telemetry for /memory status: the latest outcome and
+	// when it happened. One closure serves both recall paths (pre-turn
+	// recall and the memory_search tool).
+	const noteRecall = (ok: boolean): void => {
+		memoryState.lastRecallOk = ok;
+		memoryState.lastRecallAt = new Date().toISOString();
+	};
 	if (memoryClient && memoryBootConfig) {
 		log.info("memory enabled", {
 			baseUrl: memoryBootConfig.baseUrl,
@@ -156,9 +163,7 @@ async function boot() {
 							maxTokens: memoryBootConfig.maxTokens,
 							budget: memoryBootConfig.budget,
 							isExcluded: () => conv.memoryExcluded,
-							noteRecall: (ok: boolean) => {
-								memoryState.lastRecallOk = ok;
-							},
+							noteRecall,
 						}
 					: undefined,
 					// Web tools: fetch always (local needs no config), search
@@ -172,10 +177,8 @@ async function boot() {
 						client: memoryClient,
 						config: memoryBootConfig,
 						contexts: store.memoryContexts,
-						noteRecall: (ok: boolean) => {
-							memoryState.lastRecallOk = ok;
-						},
-					},
+					noteRecall,
+				},
 				}
 			: {}),
 	});
@@ -212,6 +215,7 @@ async function boot() {
 						contexts: store.memoryContexts,
 						queue: store.memoryQueue,
 						lastRecallOk: () => memoryState.lastRecallOk,
+						lastRecallAt: () => memoryState.lastRecallAt,
 					},
 				}
 			: {}),
@@ -219,13 +223,19 @@ async function boot() {
 
 	// Memory worker after the bot: a persistent outage notices the
 	// operator through bot.api (one message per episode, into the topic
-	// whose retention is stuck — DESIGN.md, Slice 2 ruling 5 amendment).
+	// whose retention is stuck — DESIGN.md, Slice 2 ruling 5 amendment),
+	// and a blocked retention does the same once per document (retry
+	// requeues with fresh operation ids — MemoryQueue.retryBlocked).
 	const memoryWorker = memoryClient
 		? startMemoryWorker(store.memoryQueue, memoryClient, {
 				outage: {
 					tracker: new OutageTracker(store.db),
 					notify: (conversationId, sinceMs, queued) =>
 						sendMemoryOutageNotice(tg.bot.api, conversationId, sinceMs, queued),
+				},
+				blocked: {
+					notify: (conversationId, error, attempts) =>
+						sendMemoryBlockedNotice(tg.bot.api, conversationId, error, attempts),
 				},
 			})
 		: null;

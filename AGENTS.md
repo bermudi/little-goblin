@@ -10,6 +10,14 @@ non-goals list.
 - **Bun + strict TypeScript.** No `any` — `unknown` and narrow. Validate
   external input with zod at boundaries (config, Telegram updates, tool args,
   disk state).
+- **The mini app client is plain, checked JS.** `src/http/app.js` ships as
+  served — no bundler, no framework, no build step (design rule). It is
+  type-checked (`bun run typecheck` runs both tsc programs) with wire types
+  imported from `mod.ts`/`config.ts`, so config schema changes break
+  typecheck, not the page. Don't add `.js` files without the same treatment,
+  and don't let the server program see `telegram-webapp.d.ts` — its `Window`
+  declaration changes how linkedom's `parseHTML` resolves in
+  `agent/tools/fetch.ts` (that's why tsconfig.json excludes it).
 - **Fail loud.** `ENOENT` means null. Everything else propagates with context.
   Never swallow an exception.
 - **Durable writes.** Whole-file state: tmp + `fsync` + `renameSync`,
@@ -24,7 +32,8 @@ non-goals list.
   and error paths. If explaining a symptom needs a REPL or a guess, the
   logging is insufficient: add the line.
 - **One module, one job.** Flat modules, colocated tests (`foo.ts` /
-  `foo.test.ts`). `bun test` to run, `tsc --noEmit` before committing.
+  `foo.test.ts`). `bun test` to run, `bun run typecheck` (both tsc
+  programs) before committing.
 - **Only `src/tg/` knows grammy.** Domain modules never see a Telegram
   context object.
 

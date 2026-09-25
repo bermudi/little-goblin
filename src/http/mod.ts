@@ -4,14 +4,21 @@
 // knob (publicUrl → tailscale serve/funnel/any reverse proxy). Nothing
 // here assumes a public IP.
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
 import { thinkingLevelsFor } from "../agent/providers.ts";
-import { loadConfig, parseConfig, fetchKinds, providerKinds, searchKinds, writeConfig, type Config } from "../config.ts";
+import { loadConfig, parseConfig, fetchKinds, providerKinds, searchKinds, writeConfig, type Config, type ProviderConfig, type ThinkingLevel } from "../config.ts";
 import { log } from "../log.ts";
 import { memoryStatus, type MemoryState } from "../memory.ts";
 import type { BlockedRetention, MemoryQueueCounts } from "../memory-queue.ts";
 import { APP_HTML } from "./app.ts";
 import { validateInitData, type InitDataUser } from "./auth.ts";
+
+// The mini app's client script, read once at boot and served verbatim at
+// /app.js — no build step. A missing file fails here, loudly, before the
+// process serves anything.
+const APP_JS = readFileSync(join(import.meta.dir, "app.js"), "utf8");
 
 export interface HttpDeps {
 	configRef: { current: Config };
@@ -32,6 +39,50 @@ export interface HttpDeps {
 
 const NO_STORE = { "cache-control": "no-store" };
 const HTML = { "content-type": "text/html; charset=utf-8", ...NO_STORE };
+const JS = { "content-type": "text/javascript; charset=utf-8", ...NO_STORE };
+
+// The page's single load-time fetch: the config plus the schema's kind
+// lists (single source — config.ts). The client (app.js) types itself
+// against this shape, so a field rename here is a typecheck failure
+// there, not a silently broken control.
+export interface ConfigResponse {
+	config: Config;
+	providerKinds: typeof providerKinds;
+	searchKinds: typeof searchKinds;
+	fetchKinds: typeof fetchKinds;
+}
+
+// What the page POSTs: the config with optional blocks sent as "" to
+// clear (parseConfig normalizes "" away). Purely the wire contract for
+// app.js's buildBody() — the handler below still takes unknown and
+// validates through zod, which is the actual gate.
+export interface ConfigPostBody {
+	providers: Record<string, ProviderConfig>;
+	model: string;
+	// "" clears — server normalizes.
+	titleModel: string;
+	favorites: string[];
+	thinking: ThinkingLevel;
+	tts: "" | { kind: "edge"; voice: string; rate: string | undefined; voices: string[] | undefined };
+	transcription: "" | { kind: "groq"; model: string; auth: string };
+	search: "" | Array<{ kind: string; auth?: string }>;
+	fetch: "" | Array<{ kind: string; auth?: string }>;
+	allowedUsers: number[];
+	telegram: { apiRoot: string | undefined };
+	publicUrl: string;
+	http: { port: number };
+	memory:
+		| ""
+		| {
+				baseUrl: string;
+				bankId: string;
+				auth: string | undefined;
+				budget: "low" | "mid" | "high";
+				maxTokens: number | undefined;
+				recallTimeoutMs: number | undefined;
+			};
+	logLevel: "debug" | "info" | "warn" | "error";
+}
 
 // The mini app's read-only view of memory — the same sources the
 // /memory command renders, reduced by memoryStatus(). `topicNote` is
@@ -112,15 +163,12 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 			if (url.pathname === "/" || url.pathname === "/index.html") {
 				// no-store: a webview must never pair stale page code with a
 				// fresh /api/config after an update.
-				// Provider and chain kinds are served from the schema's lists
-				// (single source — config.ts); a bare identifier makes a missed
-				// injection fail loud (ReferenceError), not silent.
-				return new Response(
-					APP_HTML.replace("__PROVIDER_KINDS__", JSON.stringify(providerKinds))
-						.replace("__SEARCH_KINDS__", JSON.stringify(searchKinds))
-						.replace("__FETCH_KINDS__", JSON.stringify(fetchKinds)),
-					{ headers: HTML },
-				);
+				return new Response(APP_HTML, { headers: HTML });
+			}
+			if (url.pathname === "/app.js") {
+				// Static client code, no secrets — same no-store reasoning as the
+				// page: never run last version's script against this API.
+				return new Response(APP_JS, { headers: JS });
 			}
 			if (url.pathname === "/api/thinking-levels") {
 				const user = authedUser(req);
@@ -157,7 +205,15 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 					return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
 				}
 				if (req.method === "GET") {
-					return Response.json(deps.configRef.current, { headers: NO_STORE });
+					return Response.json(
+						{
+							config: deps.configRef.current,
+							providerKinds,
+							searchKinds,
+							fetchKinds,
+						} satisfies ConfigResponse,
+						{ headers: NO_STORE },
+					);
 				}
 				if (req.method === "POST") {
 					let body: unknown;

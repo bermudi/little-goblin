@@ -923,6 +923,11 @@ Resolved values never enter the tool environment, the model context, or logs.
   operator devices are on the tailnet, the v1-on-lithium pattern), `tailscale
   funnel` (public HTTPS relayed through Tailscale's edge, for off-tailnet
   clients), or any reverse proxy with a cert. NAT-first by construction.
+  The settings page ships as two static files the process serves verbatim —
+  markup+css in `http/app.ts`, client script in `http/app.js`, no build step.
+  tsc checks the client (`tsconfig.client.json`: checkJs, DOM lib scoped to
+  that program only) against the server's own wire types, so schema drift is
+  a typecheck failure, not a phone-only bug.
 - **Commands** are settings-only: `/model` `/think` `/voice` `/stop`. No
   conversation-lifecycle commands — topics own that. The one exception is
   `/start`: clients fire it automatically on first open, so it gets a canned
@@ -1022,6 +1027,10 @@ src/
                     transcribe, schedule, send_file, memory_search,
                     search, fetch)
   http/             mini-app serving
+    app.ts          page markup+css (served as-is, no build step)
+    app.js          page client — plain JS, tsc-checked (checkJs via
+                    tsconfig.client.json); wire types imported from
+                    mod.ts/config.ts so schema drift fails typecheck
 ```
 
 Flat modules, one job each, tests colocated.

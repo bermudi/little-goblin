@@ -118,8 +118,8 @@ function seedFile(path: string, content: string): void {
 // Single source: the schema literals below are what actually parses —
 // config.test.ts pins this array against them in both directions
 // (schema-only kind → settings UI can't render/save it; array-only
-// kind → the UI offers what the config rejects). http/mod.ts injects
-// this into the page at serve time.
+// kind → the UI offers what the config rejects). The config GET
+// serves it to the page (http/mod.ts, ConfigResponse).
 export const providerKinds = ["openai-compatible", "openrouter", "codex"] as const;
 
 export const providerSchema = z.discriminatedUnion("kind", [

@@ -186,7 +186,11 @@ confirmed first start):
 
 ```sh
 systemctl --user daemon-reload
-systemctl --user enable goblin-memory-api.service   # survives reboots
+# Quadlet units are generator-produced; systemd refuses `enable` on them,
+# so write the wants symlink by hand (name-relative — resolves at boot):
+install -d -m 755 "$HOME/.config/systemd/user/default.target.wants"
+ln -sfn goblin-memory-api.service \
+  "$HOME/.config/systemd/user/default.target.wants/goblin-memory-api.service"
 systemctl --user enable --now goblin-memory-watch.timer  # 5-min health watch
 ```
 

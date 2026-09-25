@@ -395,8 +395,17 @@ def start_stack() -> None:
     # A healthy stack is not enough: it must also survive the next boot.
     # Enabling is a runtime claim, not a config write — deliberately after
     # the health gate, so a broken stack never hooks itself into boot.
-    run(["systemctl", "--user", "enable", API_UNIT])
-    info(f"{API_UNIT} enabled — starts on boot (linger keeps the user manager alive)")
+    # systemd refuses `enable`/`add-wants` on generator-produced units
+    # ("transient or generated"), so write the wants symlink directly —
+    # the unit NAME as a relative target resolves through the generator
+    # at boot, which is all `enable` would have written anyway.
+    wants_dir = USER_UNIT_DIR / "default.target.wants"
+    wants_dir.mkdir(parents=True, exist_ok=True)
+    wants_link = wants_dir / API_UNIT
+    if not wants_link.is_symlink():
+        os.symlink(API_UNIT, wants_link)
+    info(f"{API_UNIT} wants-linked into default.target — starts on boot "
+         "(linger keeps the user manager alive)")
     # The watch units landed after the earlier daemon-reload; load them,
     # then start the timer now. It turns an unhealthy-but-alive container
     # into a unit restart (Restart=on-failure only sees process death).

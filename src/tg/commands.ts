@@ -24,6 +24,10 @@ export interface CommandMemoryDeps {
 	// ISO timestamp of the latest recall outcome (set alongside
 	// lastRecallOk) — null when no recall has happened yet.
 	lastRecallAt(): string | null;
+	// /forget delete's settle-wait timing. Production omits it and gets
+	// the defaults; tests inject small values instead of sleeping the
+	// real budget (same ruling as MemoryQueueWorker's injectable clock).
+	settleTiming?: { pollMs: number; budgetMs: number };
 }
 
 export interface CommandDeps {
@@ -75,6 +79,48 @@ function listingsFor(db: Database): ForgetListings {
 // turns) atomically.
 function apply(deps: CommandDeps, conv: Conversation, patch: Parameters<ConversationStore["setMeta"]>[1]): void {
 	deps.store.applySettings(conv.id, patch);
+}
+
+// /forget delete settles in-flight retention before deleting: a
+// submitted operation is acknowledged but may still be processing
+// remotely, and a replace-mode retain finishing after the delete would
+// re-create the document server-side with its local row already gone
+// (DESIGN.md: serialize against in-flight writes before deleting).
+const SETTLE_POLL_MS = 2_000;
+const SETTLE_BUDGET_MS = 30_000;
+// `not_found` is already mapped to null by HindsightClient.operation.
+const SETTLE_TERMINAL = new Set(["completed", "failed", "cancelled"]);
+
+// True once every operation reached a terminal state (or was pruned
+// server-side — null counts as settled) within the budget; false means
+// something is still unsettled and the caller must refuse rather than
+// race the delete. Transient Hindsight failures retry inside the same
+// budget (each poll logs its own request line); anything that is not a
+// HindsightError escapes so the forget attempt fails loud.
+async function settleInflightRetention(
+	client: HindsightClient,
+	operationIds: string[],
+	timing?: { pollMs?: number; budgetMs?: number },
+): Promise<boolean> {
+	const pollMs = timing?.pollMs ?? SETTLE_POLL_MS;
+	const deadline = Date.now() + (timing?.budgetMs ?? SETTLE_BUDGET_MS);
+	const outstanding = new Set(operationIds);
+	while (outstanding.size > 0 && Date.now() < deadline) {
+		for (const operationId of [...outstanding]) {
+			try {
+				const operation = await client.operation(operationId);
+				if (operation === null || SETTLE_TERMINAL.has(operation.status)) outstanding.delete(operationId);
+			} catch (err) {
+				if (!(err instanceof HindsightError)) throw err;
+			}
+		}
+		if (outstanding.size > 0) {
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) return false;
+			await new Promise<void>((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)));
+		}
+	}
+	return outstanding.size === 0;
 }
 
 // Returns true if the text was a command and got handled.
@@ -291,10 +337,39 @@ export function handleCommand(
 					log.info("forget listing ref resolved", { conversation: conv.id, ref, document: id });
 				}
 				// Resolve-then-confirm already happened: the operator ran
-				// /forget <query>, saw this id, and typed delete. Suppress
-				// first so nothing resurrects it, then cancel, delete, redact.
+				// /forget <query>, saw this id, and typed delete. Settle
+				// in-flight retention first — a submitted replace-mode retain
+				// finishing after the delete would resurrect the document —
+				// then suppress so nothing resurrects it, cancel, delete, redact.
+				// Refusing the delete beats racing it (fail-loud, DESIGN.md).
 				void (async () => {
 					try {
+						const submitted = mem.queue
+							.inflightOps(id)
+							.filter((op) => op.state === "submitted")
+							.map((op) => op.operationId);
+						if (submitted.length > 0) {
+							const startedAt = Date.now();
+							if (!(await settleInflightRetention(mem.client, submitted, mem.settleTiming))) {
+								log.warn("forget refused — retention still processing remotely", {
+									conversation: conv.id,
+									document: id,
+									operations: submitted.length,
+								});
+								reply(
+									deps,
+									conv,
+									"memory for that document is still processing remotely — try /forget delete again in a minute",
+								);
+								return;
+							}
+							log.info("forget settled in-flight retention", {
+								conversation: conv.id,
+								document: id,
+								operations: submitted.length,
+								waitedMs: Date.now() - startedAt,
+							});
+						}
 						mem.contexts.suppress(id);
 						const cancelled = mem.queue.cancelDocument(id);
 						await mem.client.deleteDocument(id);

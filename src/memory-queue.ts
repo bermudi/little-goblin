@@ -136,6 +136,23 @@ export class MemoryQueue {
 		});
 	}
 
+	// In-flight retention for one document, across every target. Pending
+	// rows were never sent (safe to cancel outright); submitted rows are
+	// acknowledged and may still be processing remotely — /forget settles
+	// those before deleting, or a replace-mode retain finishing after the
+	// delete re-creates the document with its local row already gone
+	// (DESIGN.md: serialize against in-flight writes before deleting).
+	inflightOps(documentId: string): { operationId: string; state: "pending" | "submitted" }[] {
+		const state = z.enum(["pending", "submitted"]);
+		const rows = this.db.query<{ operation_id: string; state: string }, [string]>(
+			`SELECT operation_id, state FROM memory_outbox WHERE document_id = ? AND state IN ('pending', 'submitted')`,
+		).all(documentId);
+		return rows.map((row) => ({
+			operationId: z.uuid().parse(row.operation_id),
+			state: state.parse(row.state),
+		}));
+	}
+
 	// Forgetting cancels pending ingestion across all targets — a config
 	// change must not resurrect a suppressed document from another
 	// target. Blocked and dismissed rows die too: a forgotten document

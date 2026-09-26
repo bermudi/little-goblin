@@ -35,6 +35,7 @@ export const paths = {
 	modelsDevCache: () => join(goblinHome(), "state", "models.dev.json"),
 	openrouterModelsCache: () => join(goblinHome(), "state", "openrouter-models.json"),
 	webcache: () => join(goblinHome(), "state", "webcache"),
+	mailcache: () => join(goblinHome(), "state", "mail"),
 };
 
 export function ensureHomeLayout(): void {
@@ -251,6 +252,19 @@ export const delegationConfigSchema = z.object({
 });
 export type DelegationConfig = z.infer<typeof delegationConfigSchema>;
 
+// Gmail (DESIGN.md, "Email"). Absent = no mail tool, no mail watcher.
+// clientId is the Google Cloud OAuth client ID — a public identifier,
+// not a secret. The client secret and both refresh tokens live in
+// auth.jsonl under these names: split scopes, so the read credential
+// cannot send and the send credential never reaches the model.
+export const mailConfigSchema = z.object({
+	clientId: z.string().min(1),
+	clientSecretAuth: z.string().min(1),
+	readAuth: z.string().min(1),
+	sendAuth: z.string().min(1),
+});
+export type MailConfig = z.infer<typeof mailConfigSchema>;
+
 export const ttsConfigSchema = z.object({
 	kind: z.literal("edge"),
 	voice: z.string().min(1),
@@ -373,6 +387,8 @@ const configSchema = z
 		// surface, hand-edited only; a mini-app save round-trips it
 		// through the merge untouched.
 		delegation: delegationConfigSchema.optional(),
+		// Optional Gmail — same hand-edited-only rule as delegation.
+		mail: mailConfigSchema.optional(),
 	})
 	// Cross-field: every model ref must parse and name a configured provider.
 	.superRefine((cfg, ctx) => {

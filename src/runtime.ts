@@ -918,15 +918,22 @@ interface RetentionSource {
 }
 
 function retentionSourceFrom(entries: { seq: number; message: UIMessage }[]): RetentionSource {
-	let lastAsstSeq = 0;
-	for (const e of entries) {
-		if (e.message.role === "assistant" && e.seq > lastAsstSeq) lastAsstSeq = e.seq;
+	// The burst boundary is causal, not arrival: a message that lands
+	// mid-turn has an arrival seq below the response it interrupted, so
+	// comparing seqs would demote the operator's follow-up to prior
+	// context. Split on the last assistant position in the causally
+	// sorted view instead.
+	let lastAsstIndex = -1;
+	for (let i = 0; i < entries.length; i++) {
+		const m = entries[i]!.message;
+		if (m.role === "assistant" && !m.id.startsWith("compact-")) lastAsstIndex = i;
 	}
 	const userTexts: string[] = [];
 	const userIds: string[] = [];
 	const priorParts: string[] = [];
 	let sawScheduled = false;
-	for (const e of entries) {
+	for (let i = 0; i < entries.length; i++) {
+		const e = entries[i]!;
 		// The compaction summary rides the model view as a user-role
 		// message — carried context, not operator speech. In a tail with
 		// no assistant reply yet (a failed turn, a just-run /compact) it
@@ -936,7 +943,7 @@ function retentionSourceFrom(entries: { seq: number; message: UIMessage }[]): Re
 		if (e.message.role !== "user" && e.message.role !== "assistant") continue;
 		const t = messageText(e.message);
 		if (t === "") continue;
-		if (e.message.role === "user" && e.seq > lastAsstSeq) {
+		if (e.message.role === "user" && i > lastAsstIndex) {
 			// Scheduled housekeeping is never operator memory — but an
 			// operator message in the same burst is, so it drops out of
 			// the retained set rather than fencing the whole burst.
@@ -946,7 +953,7 @@ function retentionSourceFrom(entries: { seq: number; message: UIMessage }[]): Re
 			}
 			userTexts.push(t);
 			userIds.push(e.message.id);
-		} else if (e.seq <= lastAsstSeq) {
+		} else {
 			priorParts.push(t);
 		}
 	}

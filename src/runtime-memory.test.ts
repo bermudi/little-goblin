@@ -336,4 +336,42 @@ describe("memory turn integration", () => {
 		expect(item?.document.content).not.toContain("[scheduled:");
 		h.store.close();
 	});
+
+	test("a mid-turn user message is operator speech in retention, not context", async () => {
+		const h = harness();
+		// Turn A in flight: the operator's follow-up arrives (seq 2)
+		// before turn A's response does (seq 3, anchored to seq 1). The
+		// causal view places the reply before the follow-up — classifying
+		// the burst by arrival seq would demote the follow-up to context.
+		h.store.append(h.conversation, [
+			userMessage([{ type: "text", text: "what about the coffee order" }]),
+		]);
+		h.store.append(h.conversation, [
+			userMessage([{ type: "text", text: "remember: i take my coffee black" }]),
+		]);
+		h.store.append(
+			h.conversation,
+			[{ id: "a1", role: "assistant", parts: [{ type: "text", text: "got it" }] }],
+			{ anchorSeq: 1 },
+		);
+		const sink = new RecordingSink();
+		h.runtime.submit(
+			h.store.get(h.conversation)!,
+			userMessage([{ type: "text", text: "and what else is new" }]),
+			sink,
+		);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		const item = h.store.memoryQueue.next(h.client.target, Date.now());
+		expect(item).not.toBeNull();
+		// The mid-turn message and this turn's trigger are the burst;
+		// only the pre-response exchange is prior context.
+		expect(item?.document.content).toBe(
+			"[Context — not fresh evidence]: what about the coffee order\n" +
+				"got it\n" +
+				"Operator: remember: i take my coffee black\n" +
+				"and what else is new\n" +
+				"Goblin: ok",
+		);
+		h.store.close();
+	});
 });

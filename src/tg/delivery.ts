@@ -112,6 +112,7 @@ export function makeDeliverySink(
 	editIntervalMs = EDIT_INTERVAL_MS,
 	voice?: DeliveryVoiceDeps,
 	typingIntervalMs = TYPING_INTERVAL_MS,
+	maxDrainIterations = MAX_DRAIN_ITERATIONS,
 ): TurnSink {
 	let text = "";
 	const toolStatus: string[] = [];
@@ -476,7 +477,8 @@ export function makeDeliverySink(
 			// short backoff. Give up loudly rather than dropping the tail.
 			let prevPending = Number.POSITIVE_INFINITY;
 			let stagnant = 0;
-			for (let i = 0; i < MAX_DRAIN_ITERATIONS; i++) {
+			let gaveUp = false;
+			for (let i = 0; i < maxDrainIterations; i++) {
 				flush();
 				await chain;
 				const pending = pendingCount();
@@ -496,9 +498,21 @@ export function makeDeliverySink(
 						conversation: conv.id,
 						unsent: pending,
 					});
+					gaveUp = true;
 					break;
 				}
 				await sleep(300 * stagnant);
+			}
+			// Steady progress on a backlog bigger than the drain budget
+			// never trips the stagnant guard — the loop simply runs out of
+			// iterations and the tail would drop silently. Same failure,
+			// same warn (and the 🫡 check below still sees the residue).
+			const unsent = pendingCount();
+			if (unsent > 0 && !gaveUp) {
+				log.warn("delivery gave up on unsent chunks", {
+					conversation: conv.id,
+					unsent,
+				});
 			}
 			// Clean finish → 🫡 on the last bubble. The turn's end-marker:
 			// visible, silent (reactions don't notify), and it rides the

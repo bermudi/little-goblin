@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api } from "grammy";
 import type { Conversation } from "../conversation.ts";
+import { setLogFile, setLogWriter } from "../log.ts";
 import {
 	isNotModifiedError,
 	makeDeliverySink,
@@ -252,6 +253,42 @@ describe("delivery", () => {
 		sink.onTextDelta("partial");
 		await sink.onDone({ kind: "error", message: "boom" });
 		expect(reactions).toEqual([]);
+	});
+
+	test("a backlog past the drain budget warns instead of dropping the tail silently", async () => {
+		const { api, msgs, reactions } = fakeApi({});
+		// editIntervalMs ∞ → nothing sends while streaming, so four full
+		// chunks wait for onDone; the drain sends one chunk per flush and
+		// only gets two iterations. Progress is steady (stagnant never
+		// trips) — the loop must still announce the dropped tail.
+		const sink = makeDeliverySink(
+			api,
+			conv,
+			undefined,
+			Number.POSITIVE_INFINITY,
+			undefined,
+			4_000, // typingIntervalMs — the module default, irrelevant here
+			2, // maxDrainIterations
+		);
+		const captured: string[] = [];
+		setLogFile("delivery-drain-test.log");
+		setLogWriter((_path, line) => {
+			captured.push(line);
+		});
+		try {
+			sink.onTextDelta("a".repeat(CHUNK * 4));
+			await sink.onDone({ kind: "completed" });
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		expect(msgs).toHaveLength(2); // two chunks out, two dropped
+		expect(reactions).toEqual([]); // no 🫡 on an unfinished drain
+		const gaveUp = captured
+			.map((l) => JSON.parse(l) as Record<string, unknown>)
+			.filter((l) => l.msg === "delivery gave up on unsent chunks");
+		expect(gaveUp).toHaveLength(1);
+		expect(gaveUp[0]).toMatchObject({ level: "warn", conversation: "dm:1", unsent: 2 });
 	});
 
 	test("configured text delivery stamps a speak button and remembers the whole reply", async () => {

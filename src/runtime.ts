@@ -944,12 +944,17 @@ function retentionSourceFrom(entries: { seq: number; message: UIMessage }[]): Re
 		const t = messageText(e.message);
 		if (t === "") continue;
 		if (e.message.role === "user" && i > lastAsstIndex) {
-			// Program housekeeping is never operator memory — but an
-			// operator message in the same burst is, so it drops out of
-			// the retained set rather than fencing the whole burst. The
-			// legacy "[scheduled: " prefix still matches: a fire queued
-			// before the jobs→programs cutover can land unanswered.
-			if (t.startsWith("[program: ") || t.startsWith("[scheduled: ")) {
+			// Program fires and delegation notices are housekeeping, not
+			// operator memory — but an operator message in the same burst
+			// is, so housekeeping drops out of the retained set rather
+			// than fencing the whole burst. The legacy "[scheduled: "
+			// prefix still matches: a fire queued before the
+			// jobs→programs cutover can land unanswered.
+			if (
+				t.startsWith("[program: ") ||
+				t.startsWith("[delegation: ") ||
+				t.startsWith("[scheduled: ")
+			) {
 				sawProgram = true;
 				continue;
 			}

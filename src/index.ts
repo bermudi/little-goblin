@@ -17,6 +17,7 @@ import {
 	splitModelRef,
 	type ConfigRef,
 	type ThinkingLevel,
+	type TtsConfig,
 } from "./config.ts";
 import { openStore } from "./conversation.ts";
 import { openDelegations, startDelegationWatcher } from "./delegations.ts";
@@ -24,7 +25,7 @@ import { makeHerdr } from "./herdr.ts";
 import { openPrograms } from "./programs.ts";
 import { buildMemoryClient, startMemoryWorker } from "./memory.ts";
 import { OutageTracker } from "./memory-outage.ts";
-import { startScheduler } from "./scheduler.ts";
+import { fireProgram, startScheduler } from "./scheduler.ts";
 import { startHttp } from "./http/mod.ts";
 import { wake } from "./wake.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
@@ -198,8 +199,24 @@ async function boot() {
 								: {}),
 						}
 					: undefined,
-				// The program tool pins new programs to the conversation it runs in.
-				{ programs, chatId: conv.chatId, threadId: conv.threadId },
+				// The program tool pins new programs to the conversation it runs
+				// in. Hook URLs go through sendPrivate — a bare api.sendMessage
+				// into this chat/topic that never lands in history, so the token
+				// stays out of model context. publicUrl reads live: the mini app
+				// can change it between turns.
+				{
+					programs,
+					chatId: conv.chatId,
+					threadId: conv.threadId,
+					publicUrl: () => configRef.current.publicUrl,
+					sendPrivate: async (text) => {
+						await tg.bot.api.sendMessage(
+							conv.chatId,
+							text,
+							conv.threadId !== null ? { message_thread_id: conv.threadId } : {},
+						);
+					},
+				},
 				// The send_file tool hands workspace paths to the turn's
 				// delivery sink, which owns the Telegram send.
 				deliverFile ? { deliver: deliverFile } : undefined,
@@ -302,6 +319,16 @@ async function boot() {
 			})
 		: null;
 
+	// The shared wake path — program fires (cron or webhook) submit
+	// through it into the pinned conversation.
+	const wakeDeps = {
+		store,
+		runtime,
+		api: tg.bot.api,
+		configRef,
+		synthesize: (text: string, tts: TtsConfig) => synthesizeSpeech(text, tts),
+	};
+
 	// The search and transcription blocks' enable/disable redraw the
 	// registered tool set — a cache boundary per DESIGN.md "Web access" —
 	// so each flip gets its own line, not just the generic
@@ -311,6 +338,13 @@ async function boot() {
 	const http = startHttp({
 		configRef,
 		botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN),
+		// POST /hook/<token> — the token is the credential; the hit wakes
+		// the program through the same fire path as a cron tick.
+		hooks: {
+			programs,
+			fire: (program, trigger, event, now) =>
+				fireProgram(wakeDeps, program, trigger, event, now),
+		},
 		// Same memory seams the /memory command reads, bound to the
 		// boot-time target — the mini app's status card renders the same
 		// truth the command does. Absent when memory is unconfigured.
@@ -360,11 +394,7 @@ async function boot() {
 	// missed while the process was down (DESIGN.md, Programs).
 	const scheduler = startScheduler({
 		programs,
-		store,
-		runtime,
-		api: tg.bot.api,
-		configRef,
-		synthesize: (text, tts) => synthesizeSpeech(text, tts),
+		...wakeDeps,
 	});
 
 	// The delegation watcher is the scheduler's twin: it polls herdr
@@ -376,18 +406,7 @@ async function boot() {
 					delegations,
 					herdr,
 					delegationsDir: paths.delegations(),
-					wake: (address, text) =>
-						wake(
-							{
-								store,
-								runtime,
-								api: tg.bot.api,
-								configRef,
-								synthesize: (t, tts) => synthesizeSpeech(t, tts),
-							},
-							address,
-							text,
-						),
+					wake: (address, text) => wake(wakeDeps, address, text),
 				})
 			: null;
 

@@ -12,6 +12,11 @@ import { loadConfig, parseConfig, fetchKinds, providerKinds, searchKinds, writeC
 import { log } from "../log.ts";
 import { memoryStatus, type MemoryState } from "../memory.ts";
 import type { BlockedRetention, MemoryQueueCounts } from "../memory-queue.ts";
+// Type-only imports must stay shallow here: app.js's JSDoc wire types
+// pull this module into the client tsconfig (DOM lib) — a type import
+// of scheduler.ts would drag wake → tg/delivery → agent/tts.ts in with
+// it and DOM's stricter BlobPart would fail the client typecheck.
+import type { Program, ProgramsStore } from "../programs.ts";
 import { APP_HTML } from "./app.ts";
 import { validateInitData, type InitDataUser } from "./auth.ts";
 
@@ -34,6 +39,19 @@ export interface HttpDeps {
 		blockedDetail(): BlockedRetention[];
 		lastRecallOk(): boolean | null;
 		lastRecallAt(): string | null;
+	};
+	// Program webhooks: POST /hook/<token>. The token is the credential —
+	// no initData on this route (the caller is a CI runner or a GitHub
+	// webhook, not a Telegram webview). Absent = no hook route.
+	hooks?: {
+		programs: ProgramsStore;
+		// The scheduler's fireProgram — same wake path, webhook trigger.
+		fire(
+			program: Program,
+			trigger: "webhook",
+			event: string | undefined,
+			now: Date,
+		): boolean;
 	};
 }
 
@@ -147,7 +165,70 @@ function memoryStatusResponse(deps: HttpDeps): MemoryStatusResponse {
 	};
 }
 
+const HOOK_BODY_CAP = 32 * 1024;
+const HOOK_THROTTLE_MS = 60_000;
+
+// Read a request body with a hard cap — Content-Length is a hint, not
+// the contract, so the stream itself is bounded too.
+async function readBodyCapped(
+	req: Request,
+	cap: number,
+): Promise<{ text: string; oversize: boolean }> {
+	const declared = Number(req.headers.get("content-length") ?? 0);
+	if (declared > cap) return { text: "", oversize: true };
+	const body = req.body;
+	if (body === null) return { text: "", oversize: false };
+	const reader = body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			total += value.byteLength;
+			if (total > cap) return { text: "", oversize: true };
+			chunks.push(value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	return { text: new TextDecoder().decode(Buffer.concat(chunks)), oversize: false };
+}
+
 export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
+	// One fire per program per 60 s — in-memory: a restart resets the
+	// window, which is acceptable (the program just runs again).
+	const hookLastFired = new Map<number, number>();
+
+	async function handleHook(req: Request, token: string): Promise<Response> {
+		const t0 = Date.now();
+		const done = (status: number, program?: Program): Response => {
+			log.info("program hook hit", {
+				status,
+				ms: Date.now() - t0,
+				...(program ? { program: program.id, name: program.name } : {}),
+			});
+			return new Response(null, { status, headers: NO_STORE });
+		};
+		if (req.method !== "POST") return done(405);
+		const hooks = deps.hooks;
+		if (!hooks) return done(404);
+		const hash = new Bun.CryptoHasher("sha256").update(token).digest("hex");
+		const program = hooks.programs.findByHook(hash);
+		// Unknown and disabled read identically — no existence oracle.
+		if (program === null || !program.enabled) return done(404, program ?? undefined);
+		const body = await readBodyCapped(req, HOOK_BODY_CAP);
+		if (body.oversize) return done(413, program);
+		const last = hookLastFired.get(program.id);
+		const now = new Date();
+		if (last !== undefined && now.getTime() - last < HOOK_THROTTLE_MS) {
+			return done(429, program);
+		}
+		hookLastFired.set(program.id, now.getTime());
+		const landed = hooks.fire(program, "webhook", body.text, now);
+		hooks.programs.markFired(program.id, now);
+		return done(landed ? 202 : 500, program);
+	}
 	function authedUser(req: Request): InitDataUser | null {
 		const initData = req.headers.get("x-init-data") ?? "";
 		// Read per-request so config writes take effect without a restart.
@@ -160,6 +241,9 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 		port: deps.configRef.current.http.port,
 		async fetch(req) {
 			const url = new URL(req.url);
+			if (url.pathname.startsWith("/hook/")) {
+				return handleHook(req, url.pathname.slice("/hook/".length));
+			}
 			if (url.pathname === "/" || url.pathname === "/index.html") {
 				// no-store: a webview must never pair stale page code with a
 				// fresh /api/config after an update.

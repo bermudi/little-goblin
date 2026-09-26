@@ -7,8 +7,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { openStore } from "../../conversation.ts";
+import { hookTokenHash, programTool } from "./program.ts";
 import { openPrograms } from "../../programs.ts";
-import { programTool } from "./program.ts";
 
 let dirs: string[] = [];
 afterEach(() => {
@@ -16,11 +17,25 @@ afterEach(() => {
 	dirs = [];
 });
 
-function toolFor(chatId = -100, threadId: number | null = 7) {
+function toolFor(chatId = -100, threadId: number | null = 7, publicUrl?: string) {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
 	dirs.push(dir);
 	const programs = openPrograms(join(dir, "goblin.sqlite"));
-	return { programs, tool: programTool({ programs, chatId, threadId }) };
+	const store = openStore(join(dir, "conv.sqlite"));
+	const sent: string[] = [];
+	const tool = programTool({
+		programs,
+		chatId,
+		threadId,
+		publicUrl: () => publicUrl,
+		// The production wiring is a bare api.sendMessage — it goes to
+		// Telegram only and never writes the conversation store, so the
+		// token can't become model context next turn.
+		sendPrivate: async (text) => {
+			sent.push(text);
+		},
+	});
+	return { programs, store, sent, tool };
 }
 
 const exec = (t: ReturnType<typeof programTool>, input: unknown) =>
@@ -90,7 +105,7 @@ describe("program tool", () => {
 		expect(toggled.program.enabled).toBe(false);
 		for (const view of [listed.programs[0], updated.program, toggled.program]) {
 			expect(Object.keys(view!).sort()).toEqual([
-				"charter", "cron", "enabled", "id", "last_run", "name", "next_run",
+				"charter", "cron", "enabled", "has_hook", "id", "last_run", "name", "next_run",
 			]);
 		}
 
@@ -132,5 +147,76 @@ describe("program tool", () => {
 		await expect(exec(tool, {
 			action: "update", id: 1, cron: "0 9 * * *",
 		})).rejects.toThrow();
+	});
+
+	test("hook enable sends the URL privately; the token never reaches the model", async () => {
+		const { tool, programs, store, sent } = toolFor(-100, 7, "https://goblin.ts.net/");
+		const created = (await exec(tool, {
+			action: "create", name: "ci", charter: "c", cron: "0 9 * * *",
+		})) as { program: { id: number } };
+
+		const out = (await exec(tool, {
+			action: "hook", id: created.program.id, op: "enable",
+		})) as { hook: string; url_sent: boolean };
+		expect(out).toEqual({ hook: "enabled", url_sent: true });
+
+		// The operator-facing text carries a URL whose token hashes to the
+		// stored hash — and it's the only place the token exists.
+		expect(sent).toHaveLength(1);
+		const url = sent[0]!.match(/https:\/\/goblin\.ts\.net\/hook\/(\S+)/);
+		expect(url).not.toBeNull();
+		const token = url![1]!;
+		expect(programs.get(created.program.id)!.hookHash).toBe(hookTokenHash(token));
+		expect(programs.findByHook(hookTokenHash(token))!.id).toBe(created.program.id);
+
+		// The token is in neither the tool result nor the conversation
+		// history (history is what the model reads next turn).
+		expect(JSON.stringify(out)).not.toContain(token);
+		for (const m of store.history("topic:-100:7")) {
+			expect(JSON.stringify(m)).not.toContain(token);
+		}
+		expect(sent[0]).toContain("Keep it secret");
+	});
+
+	test("hook rotate replaces the credential; disable on a cron-less program refuses", async () => {
+		const { tool, programs, sent } = toolFor(-100, 7, "https://g.ts.net");
+		// Hook-only program — the hook is its only trigger.
+		const created = (await exec(tool, {
+			action: "create", name: "ci", charter: "c", hook: true,
+		})) as { program: { id: number } };
+		expect(sent).toHaveLength(1);
+		const oldToken = sent[0]!.match(/\/hook\/(\S+)/)![1]!;
+		expect(programs.get(created.program.id)!.cron).toBeNull();
+		expect(programs.get(created.program.id)!.nextRun).toBeNull();
+
+		const rotated = (await exec(tool, {
+			action: "hook", id: created.program.id, op: "rotate",
+		})) as { hook: string; url_sent: boolean };
+		expect(rotated).toEqual({ hook: "rotated", url_sent: true });
+		const newToken = sent[1]!.match(/\/hook\/(\S+)/)![1]!;
+		expect(newToken).not.toBe(oldToken);
+		// The old credential is dead at the store level.
+		expect(programs.findByHook(hookTokenHash(oldToken))).toBeNull();
+
+		// Disabling the only trigger refuses — the invariant holds at the
+		// tool boundary too.
+		const refused = (await exec(tool, {
+			action: "hook", id: created.program.id, op: "disable",
+		})) as { error: string };
+		expect(refused.error).toContain("at least one trigger");
+		expect(programs.get(created.program.id)!.hookHash).toBe(hookTokenHash(newToken));
+	});
+
+	test("hook needs publicUrl — unset is an error, no row change", async () => {
+		const { tool, programs, sent } = toolFor(-100, 7); // no publicUrl
+		const created = (await exec(tool, {
+			action: "create", name: "ci", charter: "c", cron: "0 9 * * *",
+		})) as { program: { id: number } };
+		const out = (await exec(tool, {
+			action: "hook", id: created.program.id, op: "enable",
+		})) as { error: string };
+		expect(out.error).toContain("publicUrl");
+		expect(programs.get(created.program.id)!.hookHash).toBeNull();
+		expect(sent).toEqual([]);
 	});
 });

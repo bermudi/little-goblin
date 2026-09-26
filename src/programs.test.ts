@@ -182,6 +182,38 @@ describe("programs store", () => {
 		expect(s.due(reEnabledAt)).toEqual([]);
 	});
 
+	test("update can clear the cron while a hook remains; next_run nulls", () => {
+		const s = store();
+		const p = s.create(
+			{ name: "x", cron: "0 * * * *", charter: "c", hookHash: "h", address: ADDRESS },
+			NOW,
+		);
+		const cleared = s.update(p.id, { cron: null })!;
+		expect(cleared.cron).toBeNull();
+		expect(cleared.nextRun).toBeNull();
+		expect(s.due(new Date("2100-01-01"))).toEqual([]);
+		// Still trigger-owned — clearing the hook too is refused.
+		expect(() => s.setHook(p.id, null)).toThrow("at least one trigger");
+	});
+
+	test("setHook/findByHook/markFired — the webhook half of the store", () => {
+		const s = store();
+		const p = s.create(
+			{ name: "x", cron: "0 * * * *", charter: "c", address: ADDRESS },
+			NOW,
+		);
+		expect(s.setHook(999, "h")).toBeNull(); // missing row → null
+		s.setHook(p.id, "deadbeef");
+		expect(s.findByHook("deadbeef")!.id).toBe(p.id);
+		expect(s.findByHook("nope")).toBeNull();
+
+		const before = s.get(p.id)!.nextRun;
+		s.markFired(p.id, new Date("2026-09-20T11:00:00"));
+		const after = s.get(p.id)!;
+		expect(after.lastRun).toBe("2026-09-20T11:00:00.000Z");
+		expect(after.nextRun).toBe(before); // hook fires never touch the schedule
+	});
+
 	test("rows survive a reopen — same file, fresh connection", () => {
 		const path = tmpdb();
 		const a = openPrograms(path);
@@ -248,13 +280,15 @@ describe("legacy jobs copy", () => {
 		expect(list[1]).toMatchObject({ id: 2, enabled: true });
 		a.close();
 
-		// The copy ran once — reopening with rows present never re-copies,
-		// so a later delete doesn't resurrect the legacy row.
+		// The copy ran at table creation — reopening never re-copies, so
+		// deletes don't resurrect legacy rows — even deleting them all:
+		// the gate is "programs table is new", not "programs is empty".
 		const b = openPrograms(path);
 		expect(b.remove(2)).toBe(true);
+		expect(b.remove(1)).toBe(true);
 		b.close();
 		const c = openPrograms(path);
-		expect(c.list().map((p) => p.id)).toEqual([1]);
+		expect(c.list()).toEqual([]);
 		c.close();
 
 		// `jobs` itself is never modified or dropped.

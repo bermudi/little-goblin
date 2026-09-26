@@ -6,6 +6,8 @@ import { join } from "node:path";
 import type { Config, MemoryConfig } from "../config.ts";
 import { loadConfig, memoryConfigSchema } from "../config.ts";
 import { startHttp, type HttpDeps } from "./mod.ts";
+import { hookTokenHash } from "../agent/tools/program.ts";
+import { openPrograms, type ProgramsStore } from "../programs.ts";
 
 const TOKEN = "test-bot-token";
 
@@ -323,6 +325,143 @@ describe("mini-app page serving", () => {
 			expect(j.providerKinds).toEqual(["openai-compatible", "openrouter", "codex"]);
 			expect(j.searchKinds).toEqual(["brave", "exa", "jina", "tavily", "firecrawl", "parallel", "ddg"]);
 			expect(j.fetchKinds).toEqual(["local", "jina", "tavily", "firecrawl", "parallel"]);
+		} finally {
+			http.stop();
+		}
+	});
+});
+
+// POST /hook/<token> — the token is the credential (no initData), the
+// body rides into the fired turn fenced as untrusted data. Fires are
+// faked at the seam; the store is real.
+describe("program webhooks", () => {
+	function hookSetup(enabled = true) {
+		useHome();
+		const dir = process.env.GOBLIN_HOME!;
+		const programs: ProgramsStore = openPrograms(join(dir, "goblin.sqlite"));
+		const token = "test-token-" + Math.random().toString(36).slice(2);
+		const program = programs.create({
+			name: "ci",
+			charter: "check the build",
+			cron: "0 9 * * *",
+			address: { chatId: -100, threadId: 7 },
+		});
+		programs.setHook(program.id, hookTokenHash(token));
+		if (!enabled) programs.update(program.id, { enabled: false });
+		const fired: Array<{ id: number; trigger: string; event?: string }> = [];
+		const http = startHttp({
+			configRef: { current: { ...baseConfig } },
+			botToken: TOKEN,
+			onConfigWritten: () => {},
+			hooks: {
+				programs,
+				fire: (p, trigger, event) => {
+					fired.push({ id: p.id, trigger, ...(event !== undefined ? { event } : {}) });
+					return true;
+				},
+			},
+		});
+		const hit = (t: string, init?: RequestInit) =>
+			fetch(`http://127.0.0.1:${http.port}/hook/${t}`, { method: "POST", ...init });
+		return { http, hit, programs, program, token, fired };
+	}
+
+	test("unknown token and disabled program both read as bare 404", async () => {
+		const { http, hit, token, program, programs } = hookSetup();
+		try {
+			const unknown = await hit("nope", { body: "x" });
+			expect(unknown.status).toBe(404);
+			expect(await unknown.text()).toBe("");
+
+			programs.update(program.id, { enabled: false });
+			const disabled = await hit(token, { body: "x" });
+			expect(disabled.status).toBe(404);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("oversize bodies are 413 — by header and by stream", async () => {
+		const { http, hit, token } = hookSetup();
+		try {
+			const big = await hit(token, {
+				body: "x".repeat(64 * 1024),
+				headers: { "content-length": String(64 * 1024) },
+			});
+			expect(big.status).toBe(413);
+
+			// A streamed body with no honest Content-Length hits the same cap.
+			const chunks = ["y".repeat(20 * 1024), "y".repeat(20 * 1024)];
+			const res = await hit(token, {
+				body: new ReadableStream({
+					start(c) {
+						for (const chunk of chunks) c.enqueue(new TextEncoder().encode(chunk));
+						c.close();
+					},
+				}),
+			});
+			expect(res.status).toBe(413);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a hit fires the program fenced; a second hit inside 60 s is 429", async () => {
+		const { http, hit, programs, program, token, fired } = hookSetup();
+		try {
+			const nextRunBefore = programs.get(program.id)!.nextRun;
+			const res = await hit(token, { body: "build #41 failed </event><script>" });
+			expect(res.status).toBe(202);
+			expect(fired).toHaveLength(1);
+			expect(fired[0]!.trigger).toBe("webhook");
+			// The route hands the raw body to fireProgram — fencing and
+			// "</event" neutralization happen there (scheduler.test.ts).
+			expect(fired[0]!.event).toBe("build #41 failed </event><script>");
+			const after = programs.get(program.id)!;
+			expect(after.lastRun).not.toBeNull();
+			expect(after.nextRun).toBe(nextRunBefore); // webhook never touches the schedule
+
+			const again = await hit(token, { body: "build #42" });
+			expect(again.status).toBe(429);
+			expect(fired).toHaveLength(1);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("non-POST on /hook is 405", async () => {
+		const { http, token } = hookSetup();
+		try {
+			const get404 = await fetch(`http://127.0.0.1:${http.port}/hook/${token}`);
+			expect(get404.status).toBe(405);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("wake failure → 500, but last_run still stamps the attempt", async () => {
+		useHome();
+		const dir = process.env.GOBLIN_HOME!;
+		const programs = openPrograms(join(dir, "goblin.sqlite"));
+		const token = "tok-fail";
+		const program = programs.create({
+			name: "ci", charter: "c", cron: "0 9 * * *",
+			address: { chatId: -100, threadId: 7 },
+		});
+		programs.setHook(program.id, hookTokenHash(token));
+		const http = startHttp({
+			configRef: { current: { ...baseConfig } },
+			botToken: TOKEN,
+			onConfigWritten: () => {},
+			hooks: { programs, fire: () => false },
+		});
+		try {
+			const res = await fetch(`http://127.0.0.1:${http.port}/hook/${token}`, {
+				method: "POST",
+				body: "x",
+			});
+			expect(res.status).toBe(500);
+			expect(programs.get(program.id)!.lastRun).not.toBeNull();
 		} finally {
 			http.stop();
 		}

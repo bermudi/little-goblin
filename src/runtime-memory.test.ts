@@ -314,14 +314,17 @@ describe("memory turn integration", () => {
 		h.store.close();
 	});
 
-	test("an operator message in a program burst is still retained", async () => {
+	test("an operator message in a housekeeping burst is still retained", async () => {
 		const h = harness({ factText: "Quiet mornings." });
-		// The scheduler fires while the operator's message still waits
-		// for its turn — one mixed burst. Housekeeping must not fence the
-		// operator's memory out of it.
+		// The scheduler and the delegation watcher both fire while the
+		// operator's message still waits for its turn — one mixed burst.
+		// Housekeeping must not fence the operator's memory out of it.
 		h.store.append(
 			h.conversation,
-			[userMessage([{ type: "text", text: "remember: i take my coffee black" }])],
+			[
+				userMessage([{ type: "text", text: "remember: i take my coffee black" }]),
+				userMessage([{ type: "text", text: "[delegation: deploy · done] all green" }]),
+			],
 		);
 		const sink = new RecordingSink();
 		h.runtime.submit(
@@ -334,6 +337,7 @@ describe("memory turn integration", () => {
 		expect(item).not.toBeNull();
 		expect(item?.document.content).toContain("i take my coffee black");
 		expect(item?.document.content).not.toContain("[program:");
+		expect(item?.document.content).not.toContain("[delegation:");
 		h.store.close();
 	});
 

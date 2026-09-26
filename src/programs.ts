@@ -69,6 +69,14 @@ export interface ProgramsStore {
 	due(now: Date): Program[];
 	/** Record a run; advances next_run only when a cron is set. */
 	markRan(id: number, now: Date): void;
+	/** Stamp a hook-fired run — last_run only, next_run untouched. */
+	markFired(id: number, now: Date): void;
+	/** Set or clear the webhook token hash. Clearing the last trigger
+	 *  throws — the trigger invariant holds here too. */
+	setHook(id: number, hash: string | null): Program | null;
+	/** Reverse lookup for the /hook route — returns the row regardless
+	 *  of enabled; the route decides what disabled means. */
+	findByHook(hash: string): Program | null;
 	close(): void;
 }
 
@@ -132,6 +140,13 @@ function rowToProgram(row: unknown): Program {
 export function openPrograms(dbPath: string): ProgramsStore {
 	const db = new Database(dbPath);
 	db.exec("PRAGMA journal_mode = WAL");
+	// The legacy copy keys on whether the table is *new* this open — not
+	// on it being empty, or deleting every program would resurrect the
+	// legacy jobs on the next boot.
+	const isNewTable =
+		db.query(
+			"SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'programs'",
+		).get() === null;
 	db.exec(`CREATE TABLE IF NOT EXISTS programs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT NOT NULL,
@@ -145,7 +160,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		last_run TEXT,
 		next_run TEXT
 	)`);
-	copyLegacyJobs(db);
+	if (isNewTable) copyLegacyJobs(db);
 
 	const qGet = db.query("SELECT * FROM programs WHERE id = ?");
 	const qList = db.query("SELECT * FROM programs ORDER BY id");
@@ -159,6 +174,9 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		"UPDATE programs SET name = ?, charter = ?, cron = ?, hook_hash = ?, enabled = ?, next_run = ? WHERE id = ?",
 	);
 	const qMark = db.query("UPDATE programs SET last_run = ?, next_run = ? WHERE id = ?");
+	const qFired = db.query("UPDATE programs SET last_run = ? WHERE id = ?");
+	const qHook = db.query("UPDATE programs SET hook_hash = ? WHERE id = ?");
+	const qByHook = db.query("SELECT * FROM programs WHERE hook_hash = ?");
 	const qDelete = db.query("DELETE FROM programs WHERE id = ?");
 
 	return {
@@ -228,6 +246,21 @@ export function openPrograms(dbPath: string): ProgramsStore {
 					: nextFire(program.cron, now).toISOString();
 			qMark.run(now.toISOString(), next, id);
 		},
+		markFired(id, now) {
+			qFired.run(now.toISOString(), id);
+		},
+		setHook(id, hash) {
+			const row = qGet.get(id);
+			if (row === null) return null;
+			const program = rowToProgram(row);
+			requireTrigger(program.cron, hash);
+			qHook.run(hash, id);
+			return rowToProgram(qGet.get(id));
+		},
+		findByHook(hash) {
+			const row = qByHook.get(hash);
+			return row === null ? null : rowToProgram(row);
+		},
 		close() {
 			db.close();
 		},
@@ -235,19 +268,15 @@ export function openPrograms(dbPath: string): ProgramsStore {
 }
 
 // One-shot upgrade path: the `jobs` table predates programs (DESIGN.md).
-// If it exists and programs is still empty, every job copies across in
-// a single transaction — same ids, prompt → charter — and `jobs` is
-// left exactly as it was. Once programs has rows the copy never runs
-// again, however many jobs rows remain.
+// Called only when `programs` was just created this open — every job
+// copies across in a single transaction (same ids, prompt → charter)
+// and `jobs` is left exactly as it was. A `programs` table that already
+// existed — even an empty one — never sees the copy again.
 function copyLegacyJobs(db: Database): void {
 	const jobsTable = db
 		.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'")
 		.get();
 	if (jobsTable === null) return;
-	const { n } = db
-		.query("SELECT COUNT(*) AS n FROM programs")
-		.get() as { n: number };
-	if (n > 0) return;
 	const copied = db.transaction((): number => {
 		return db
 			.query(`INSERT INTO programs

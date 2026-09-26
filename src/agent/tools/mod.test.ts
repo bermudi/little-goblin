@@ -17,7 +17,15 @@ describe("toolNames ↔ makeTools", () => {
 							const tools = makeTools(
 								"/tmp",
 								voice ? { synthesize: async () => [], deliver: async () => {} } : undefined,
-								program ? { programs, chatId: 1, threadId: null } : undefined,
+								program
+									? {
+											programs,
+											chatId: 1,
+											threadId: null,
+											publicUrl: () => "https://g.ts.net",
+											sendPrivate: async () => {},
+										}
+									: undefined,
 								file ? { deliver: async () => {} } : undefined,
 								memory
 									? {

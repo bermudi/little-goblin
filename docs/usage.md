@@ -111,3 +111,14 @@ confirm with you first. Replies arrive as ordinary messages in the same
 place. Programs survive restarts; a fire missed while the bot was down
 runs once when it comes back, then continues on schedule. Tell the bot
 "list my programs" / "delete the news brief" to manage them.
+
+### Webhooks
+
+A program can also wake on demand: ask for a hook ("give the build
+watcher a webhook") and the bot sends you a secret URL — anyone who
+POSTs to it fires the program with the request body as the event. The
+URL reaches the outside through the same door as the mini app: with
+`tailscale serve` it's tailnet-only; `funnel` (or any public proxy)
+makes it reachable by GitHub, CI, etc. POSTs over 32 KiB are refused
+and a program fires at most once per minute. Ask the bot to rotate the
+URL if it leaks, or to disable the hook entirely.

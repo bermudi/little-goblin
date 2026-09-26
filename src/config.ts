@@ -28,6 +28,7 @@ export const paths = {
 	state: () => join(goblinHome(), "state"),
 	db: () => join(goblinHome(), "state", "goblin.sqlite"),
 	logFile: () => join(goblinHome(), "state", "goblin.log"),
+	delegations: () => join(goblinHome(), "state", "delegations"),
 	modelsDevCache: () => join(goblinHome(), "state", "models.dev.json"),
 	openrouterModelsCache: () => join(goblinHome(), "state", "openrouter-models.json"),
 	webcache: () => join(goblinHome(), "state", "webcache"),
@@ -169,6 +170,29 @@ export type MemoryConfig = z.infer<typeof memoryConfigSchema>;
 // break. Default-on: the only dependency is ffmpeg, probed at boot.
 export const DEFAULT_TTS_VOICE = "en-US-AriaNeural";
 
+// Delegation to external coding harnesses via herdr (DESIGN.md,
+// "Delegation"). Absent = the delegate tool is not in the set. Harnesses
+// are named operator choices — a herdr agent kind plus native args;
+// goblin never picks a model or flags for one. Harness names double as
+// herdr agent-name prefixes, so they live in herdr's name charset.
+export const delegationConfigSchema = z.object({
+	// The herdr session the goblin-herdr unit runs (`herdr --session <name> …`).
+	session: z.string().min(1).default("goblin"),
+	maxRunning: z.number().int().min(1).default(3),
+	harnesses: z
+		.record(
+			z.string().regex(/^[a-z][a-z0-9_-]{0,15}$/),
+			z.object({
+				kind: z.string().min(1),
+				args: z.array(z.string()).optional(),
+			}),
+		)
+		.refine((h) => Object.keys(h).length > 0, {
+			message: "delegation.harnesses must name at least one harness",
+		}),
+});
+export type DelegationConfig = z.infer<typeof delegationConfigSchema>;
+
 export const ttsConfigSchema = z.object({
 	kind: z.literal("edge"),
 	voice: z.string().min(1),
@@ -287,6 +311,10 @@ const configSchema = z
 			.union([memoryConfigSchema, z.literal("")])
 			.transform((v) => (v === "" ? undefined : v))
 			.optional(),
+		// Optional delegation to external harnesses — no mini-app
+		// surface, hand-edited only; a mini-app save round-trips it
+		// through the merge untouched.
+		delegation: delegationConfigSchema.optional(),
 	})
 	// Cross-field: every model ref must parse and name a configured provider.
 	.superRefine((cfg, ctx) => {

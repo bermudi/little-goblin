@@ -7,12 +7,11 @@
 // process was down is just "due" on the first tick.
 
 import type { Api } from "grammy";
-import type { UIMessage } from "ai";
-import type { ConversationAddress, ConversationStore } from "./conversation.ts";
-import { paths, type ConfigRef, type TtsConfig } from "./config.ts";
-import { userMessage, type Runtime } from "./runtime.ts";
+import type { ConversationStore } from "./conversation.ts";
+import type { ConfigRef, TtsConfig } from "./config.ts";
+import type { Runtime } from "./runtime.ts";
 import { log } from "./log.ts";
-import { makeDeliverySink } from "./tg/delivery.ts";
+import { wake } from "./wake.ts";
 import type { Job, JobsStore } from "./jobs.ts";
 
 export interface SchedulerDeps {
@@ -52,48 +51,24 @@ export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler
 }
 
 function fire(deps: SchedulerDeps, job: Job, now: Date): void {
-	const addr: ConversationAddress =
-		job.threadId === null
-			? { kind: "dm", chatId: job.chatId }
-			: { kind: "topic", chatId: job.chatId, threadId: job.threadId };
-	const conv = deps.store.resolve(addr, paths.workspace());
 	const lateMs = now.getTime() - new Date(job.nextRun).getTime();
 	log.info("job fired", {
 		job: job.id,
 		name: job.name,
-		conversation: conv.id,
+		conversation:
+			job.threadId === null ? `dm:${job.chatId}` : `topic:${job.chatId}:${job.threadId}`,
 		...(lateMs > TICK_MS ? { lateMs } : {}),
 	});
-	const parts: UIMessage["parts"] = [
-		{ type: "text", text: `[scheduled: ${job.name}] ${job.prompt}` },
-	];
-	const tts = deps.configRef.current.tts;
-	const sink = makeDeliverySink(
-		deps.api,
-		conv,
-		undefined,
-		undefined,
-		tts && !deps.configRef.ttsDown
-			? { voiceMode: conv.voice, synthesize: (text) => deps.synthesize(text, tts) }
-			: undefined,
+	const landed = wake(
+		deps,
+		{ chatId: job.chatId, threadId: job.threadId },
+		`[scheduled: ${job.name}] ${job.prompt}`,
 	);
-	try {
-		deps.runtime.submit(conv, userMessage(parts), sink);
-	} catch (err) {
-		// Same contract as the intake flush: a constructed sink is already
-		// "typing" — release it with the error or it ghosts forever.
-		void sink.onDone({
-			kind: "error",
-			message: err instanceof Error ? err.message : String(err),
-		});
-		log.error("job submit failed", err, { job: job.id, name: job.name });
-		// One attempt per occurrence (DESIGN.md: never a replay): advance
-		// even on failure, or a persistent submit error refires this job
-		// — and re-delivers the error — on every tick.
-		deps.jobs.markRan(job.id, now);
-		return;
+	if (!landed) {
+		log.error("job submit failed", undefined, { job: job.id, name: job.name });
 	}
-	// Submit landed (in history even if the turn never runs) — record
-	// the run and advance to the next future occurrence.
+	// One attempt per occurrence (DESIGN.md: never a replay): advance
+	// even on failure, or a persistent submit error refires this job
+	// — and re-delivers the error — on every tick.
 	deps.jobs.markRan(job.id, now);
 }

@@ -675,9 +675,14 @@ Rulings:
   stops (`blocked`, or ends its turn with a question), goblin relays
   it to the topic and types the operator's answer back; it never
   invents one. Startup dialogs are the known trap: herdr reported a
-  codex trust-directory prompt as `idle` in the 2026-09-26 probe —
-  configured args must suppress them, and start verifies the screen
-  before prompting.
+  codex trust-directory prompt as `idle` in the 2026-09-26 probe, and
+  `--dangerously-bypass-approvals-and-sandbox` does not skip it
+  (codex 0.155.1) — directory trust is harness config (codex:
+  `[projects."<dir>"] trust_level` in `~/.codex/config.toml`). Panes
+  run the operator's interactive shell, so shell aliases apply: args
+  that duplicate an alias's flags make the harness refuse to start.
+  Start relies on herdr's ready gate plus the watcher's stall rule,
+  not on screen-scraping.
 - **State is rows.** `delegations` table in `goblin.sqlite`
   (`src/delegations.ts`): name, harness, cwd, task, pinned address,
   herdr agent name + pane/workspace ids, status
@@ -696,9 +701,16 @@ Rulings:
   3) — the tool refuses beyond it, naming what's running.
 - **The watcher is an in-process ticker** (15 s), the scheduler's
   twin: for each `running`/`needs_input` row, `agent get`. Done =
-  status `idle|done` **and** `state_change_seq` advanced past the
-  recorded one (a fresh prompt is idle before it's working).
-  Blocked → `needs_input`, notify once. Agent gone (pane closed,
+  status `idle|done` **and** either `state_change_seq` advanced past
+  the recorded one (a fresh prompt is idle before it's working) or a
+  report file newer than the last prompt (catches an agent that
+  finished before the baseline read; freshness keeps an old report
+  from closing a follow-up). Blocked → `needs_input`, notify once.
+  Idle with no seq advance 90 s after prompting → `needs_input`
+  ("likely stuck on a startup dialog"). Parking re-baselines the seq;
+  a parked row resumes on *any* seq advance, not a `working` glimpse
+  — an operator answering through `herdr session attach` can finish
+  the whole exchange between two polls. Agent gone (pane closed,
   process exited) → `failed`. Every transition submits one message
   into the pinned conversation, the same path as program fires:
   `[delegation: <name> · <done|needs input|failed>]` + the report
@@ -708,9 +720,10 @@ Rulings:
   voice.
 - **Management is the `delegate` tool** (start/list/read/send/stop),
   bound per-turn to the running conversation like `program`.
-  `read` peeks the screen tail; `send` prompts the agent (an answer
-  or a follow-up — it resets the seq baseline and flips the row back
-  to `running`); `stop` interrupts and closes the workspace. Done
+  `read` peeks the screen tail; `send` prompts the agent (an answer,
+  or a follow-up to a finished delegation — any status but
+  `stopped`; it resets the seq baseline and flips the row back to
+  `running`); `stop` interrupts and closes the workspace. Done
   delegations keep their workspace so the operator can inspect it;
   `stop` on a finished one is the cleanup.
 - **Goblin may delegate on its own judgment** within a turn — long or

@@ -5,6 +5,7 @@
 import type { ToolSet } from "ai";
 import type { HindsightClient } from "../../hindsight.ts";
 import type { JobsStore } from "../../jobs.ts";
+import { delegateTool, type DelegateToolDeps } from "./delegate.ts";
 import type { SpeechFile } from "../transcribe.ts";
 import { bashTool } from "./bash.ts";
 import { editFileTool } from "./edit.ts";
@@ -52,6 +53,8 @@ export interface TranscribeToolDeps {
 	transcribe(file: SpeechFile): Promise<string | null>;
 }
 
+export type { DelegateToolDeps };
+
 // Use the registered set as the availability source, rather than
 // duplicating its dependency gates in the prompt.
 export function toolNames(tools: ToolSet): string[] {
@@ -66,6 +69,7 @@ export function makeTools(
 	memory?: MemoryToolDeps,
 	web?: WebToolDeps,
 	transcribe?: TranscribeToolDeps,
+	delegate?: DelegateToolDeps,
 ): ToolSet {
 	return {
 		read_file: readFileTool(cwd),
@@ -80,6 +84,9 @@ export function makeTools(
 		// by the caller, which reads configRef live.
 		...(transcribe ? { transcribe: transcribeTool(cwd, transcribe.transcribe) } : {}),
 		...(schedule ? { schedule: scheduleTool(schedule) } : {}),
+		// Same per-turn gate as search/transcribe: the caller passes deps
+		// only when the delegation block exists in the live config.
+		...(delegate ? { delegate: delegateTool(delegate) } : {}),
 		...(file ? { send_file: sendFileTool(cwd, file.deliver) } : {}),
 		...(memory ? { memory_search: memorySearchTool(memory) } : {}),
 		// Fetch is always in the set (local extraction needs no config);

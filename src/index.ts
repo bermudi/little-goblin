@@ -19,11 +19,14 @@ import {
 	type ThinkingLevel,
 } from "./config.ts";
 import { openStore } from "./conversation.ts";
+import { openDelegations, startDelegationWatcher } from "./delegations.ts";
+import { makeHerdr } from "./herdr.ts";
 import { openJobs } from "./jobs.ts";
 import { buildMemoryClient, startMemoryWorker } from "./memory.ts";
 import { OutageTracker } from "./memory-outage.ts";
 import { startScheduler } from "./scheduler.ts";
 import { startHttp } from "./http/mod.ts";
+import { wake } from "./wake.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { Runtime } from "./runtime.ts";
 import { applyMenuButton, AUTH_TELEGRAM_TOKEN, startBot } from "./tg/mod.ts";
@@ -60,6 +63,12 @@ async function boot() {
 	// Jobs live in the same SQLite file (own connection) — scheduled
 	// standing orders, DESIGN.md "Scheduled work".
 	const jobs = openJobs(paths.db());
+	// Delegation is a boot-time snapshot like memory: the store and the
+	// herdr adapter only exist when the block was configured at boot —
+	// the herdr session is systemd's, not ours (DESIGN.md, Delegation).
+	const delegationBoot = config.delegation;
+	const delegations = delegationBoot ? openDelegations(paths.db()) : null;
+	const herdr = delegationBoot ? makeHerdr(delegationBoot.session) : null;
 
 	// ffmpeg powers TTS remuxing and over-cap transcription — probe it
 	// once at boot so a missing binary surfaces before the first speech
@@ -213,6 +222,21 @@ async function boot() {
 				configRef.current.transcription !== undefined
 					? { transcribe: transcribeFile }
 					: undefined,
+				// The delegate tool rides the live config like search —
+				// but the store/adapter are boot fixtures, so removing
+				// the block hides the tool next turn while the watcher
+				// keeps tracking rows it already owns.
+				configRef.current.delegation !== undefined && delegations && herdr
+					? {
+							delegations,
+							herdr,
+							config: configRef.current.delegation,
+							chatId: conv.chatId,
+							threadId: conv.threadId,
+							workspaceDir: paths.workspace(),
+							delegationsDir: paths.delegations(),
+						}
+					: undefined,
 			);
 		},
 		...(memoryClient && memoryBootConfig
@@ -343,7 +367,31 @@ async function boot() {
 		synthesize: (text, tts) => synthesizeSpeech(text, tts),
 	});
 
-	return { configRef, auth, store, jobs, runtime, tg, http, scheduler, memoryWorker };
+	// The delegation watcher is the scheduler's twin: it polls herdr
+	// for active rows and reports transitions as turns through the same
+	// wake path. Needs bot.api — starts after tg for the same reason.
+	const delegationWatcher =
+		delegations && herdr
+			? startDelegationWatcher({
+					delegations,
+					herdr,
+					delegationsDir: paths.delegations(),
+					wake: (address, text) =>
+						wake(
+							{
+								store,
+								runtime,
+								api: tg.bot.api,
+								configRef,
+								synthesize: (t, tts) => synthesizeSpeech(t, tts),
+							},
+							address,
+							text,
+						),
+				})
+			: null;
+
+	return { configRef, auth, store, jobs, delegations, runtime, tg, http, scheduler, delegationWatcher, memoryWorker };
 }
 
 let booted: Awaited<ReturnType<typeof boot>>;
@@ -353,7 +401,7 @@ try {
 	log.error("boot failed", err);
 	process.exit(1);
 }
-const { store, jobs, runtime, tg, http, scheduler, memoryWorker } = booted;
+const { store, jobs, delegations, runtime, tg, http, scheduler, delegationWatcher, memoryWorker } = booted;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // Long enough for the sinks' final flushes and polling's offset
@@ -370,6 +418,9 @@ async function shutdown(signal: string): Promise<void> {
 	log.info("shutting down", { signal });
 	// Scheduler first — no new scheduled submits once the drain begins.
 	scheduler.stop();
+	// The watcher only stops polling — running agents belong to the
+	// herdr unit, not this process; rows resume on next boot.
+	delegationWatcher?.stop();
 	// The retention worker only drains the outbox — stopping it leaves
 	// pending rows durable for the next boot.
 	await memoryWorker?.stop();
@@ -403,6 +454,7 @@ async function shutdown(signal: string): Promise<void> {
 	http.stop();
 	store.close();
 	jobs.close();
+	delegations?.close();
 	log.info("bye", { signal });
 	process.exit(0);
 }

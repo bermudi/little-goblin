@@ -1,0 +1,18 @@
+[Unit]
+Description=Goblin herdr session — hosts delegated coding agents
+# goblin.service Wants=/After= this; the panes must outlive goblin
+# restarts (a spawned session would die in goblin's cgroup) — hence its
+# own unit. DESIGN.md, "Delegation".
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Same PATH as goblin.service — harness binaries resolve under THIS
+# unit's env, not a login shell's.
+Environment=PATH=/home/daniel/bin:/home/daniel/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin
+ExecStart=/home/daniel/.local/bin/herdr --session goblin server
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

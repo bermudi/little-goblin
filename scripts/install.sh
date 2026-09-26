@@ -47,6 +47,18 @@ sed \
 	-e "s|/home/daniel/goblin|$goblin_home|g" \
 	-e "s|/usr/bin/bun|$bun_bin|g" \
 	"$repo_root/deploy/goblin.service" > "$unit_dir/goblin.service"
+
+# The herdr session is a sibling unit (DESIGN.md, "Delegation") — its
+# panes outlive goblin restarts. goblin.service's Wants= tolerates it
+# being absent, so a missing herdr is a warning, not a failed install.
+herdr_bin="$(command -v herdr || true)"
+if [ -n "$herdr_bin" ]; then
+	sed \
+		-e "s|/home/daniel/.local/bin/herdr|$herdr_bin|g" \
+		"$repo_root/deploy/goblin-herdr.service" > "$unit_dir/goblin-herdr.service"
+else
+	echo "install: warning — herdr not found in PATH; delegation will be unavailable" >&2
+fi
 systemctl --user daemon-reload
 
 # User units need linger to run without a login session.
@@ -55,6 +67,9 @@ if [ "$(loginctl show-user "$USER" -p Linger 2>/dev/null)" != "Linger=yes" ]; th
 		echo "install: could not enable linger — run: loginctl enable-linger $USER" >&2
 fi
 
+if [ -n "$herdr_bin" ]; then
+	systemctl --user enable --now goblin-herdr
+fi
 systemctl --user enable --now goblin
 sleep 1
 systemctl --user --no-pager --full status goblin | head -6 || true

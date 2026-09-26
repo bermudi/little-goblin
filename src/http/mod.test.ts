@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config, MemoryConfig } from "../config.ts";
-import { memoryConfigSchema } from "../config.ts";
+import { loadConfig, memoryConfigSchema } from "../config.ts";
 import { startHttp, type HttpDeps } from "./mod.ts";
 
 const TOKEN = "test-bot-token";
@@ -116,6 +116,42 @@ describe("mini-app http", () => {
 			expect(res.ok).toBe(true);
 			expect(configRef.current.allowedUsers).toEqual([42, 7]);
 			expect(configRef.current.logLevel).toBe("debug");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a save never drops config blocks the page can't express (delegation)", async () => {
+		useHome();
+		const delegation = {
+			session: "goblin",
+			maxRunning: 2,
+			harnesses: { codex: { kind: "codex", args: ["--x"] } },
+		};
+		writeFileSync(
+			join(process.env.GOBLIN_HOME!, "goblin.json5"),
+			JSON.stringify({ ...baseConfig, delegation }),
+		);
+		const configRef = { current: { ...baseConfig, delegation } as Config };
+		const http = startHttp({ configRef, botToken: TOKEN, onConfigWritten: () => {} });
+		const initData = makeInitData({
+			auth_date: String(Math.floor(Date.now() / 1000)),
+			user: JSON.stringify({ id: 42 }),
+		});
+		try {
+			// The page's body has no delegation key — the merge over the
+			// on-disk config must carry it through untouched.
+			const res = await fetch(`http://127.0.0.1:${http.port}/api/config`, {
+				method: "POST",
+				headers: { "content-type": "application/json", "x-init-data": initData },
+				body: JSON.stringify({ logLevel: "debug" }),
+			});
+			expect(res.ok).toBe(true);
+			expect(configRef.current.delegation).toEqual(delegation);
+			expect(configRef.current.logLevel).toBe("debug");
+			// The on-disk file round-trips it too (read via the real
+			// loader — writeConfig emits JSON5, not strict JSON).
+			expect(loadConfig()?.delegation).toEqual(delegation);
 		} finally {
 			http.stop();
 		}

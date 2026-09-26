@@ -605,7 +605,7 @@ function encodeSubject(subject: string): string {
 }
 
 // Log fields carry the recipient domain, never the address or body.
-function domainOf(address: string): string {
+export function domainOf(address: string): string {
 	const at = address.lastIndexOf("@");
 	return at === -1 ? "(invalid)" : address.slice(at + 1).toLowerCase() || "(invalid)";
 }

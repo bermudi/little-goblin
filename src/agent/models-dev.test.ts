@@ -3,9 +3,11 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	_resetModelsDevForTest,
 	_resetOpenRouterForTest,
 	ensureOpenRouterCatalog,
 	inputModalities,
+	contextLimit,
 	readOpenRouterCache,
 } from "./models-dev.ts";
 
@@ -56,6 +58,57 @@ describe("models.dev catalog", () => {
 			expect(calls).toBe(1);
 		} finally {
 			globalThis.fetch = prevFetch;
+			_resetModelsDevForTest();
+		}
+	});
+
+	// refresh() arms its backoff synchronously on entry, so the pre-fix
+	// nextFetchAt-first ensure handed the second same-tick caller a cold
+	// null instead of the in-flight fetch — index.ts awaits
+	// inputModalities and contextLimit together, so the first turn after
+	// every boot ran without a contextWindow. The gate keeps the fetch
+	// pending until both callers have entered ensure.
+	test("cold catalog: concurrent callers join the in-flight fetch, not null", async () => {
+		const dir = useHome();
+		mkdirSync(join(dir, "state"), { recursive: true });
+		_resetModelsDevForTest();
+		const prevFetch = globalThis.fetch;
+		let calls = 0;
+		let resolveFetch!: (res: Response) => void;
+		const gate = new Promise<Response>((res) => {
+			resolveFetch = res;
+		});
+		globalThis.fetch = (() => {
+			calls++;
+			return gate;
+		}) as unknown as typeof fetch;
+		try {
+			// buildStep shape: both lookups start in the same tick.
+			const both = Promise.all([
+				inputModalities("testprov", "m1"),
+				contextLimit("testprov", "m1"),
+			]);
+			resolveFetch(
+				new Response(
+					JSON.stringify({
+						testprov: {
+							models: {
+								m1: {
+									modalities: { input: ["text", "image"] },
+									limit: { context: 123456 },
+								},
+							},
+						},
+					}),
+				),
+			);
+			const [mods, limit] = await both;
+			expect(mods.has("image")).toBe(true);
+			expect(limit).toBe(123456);
+			expect(calls).toBe(1);
+		} finally {
+			globalThis.fetch = prevFetch;
+			_resetModelsDevForTest();
 		}
 	});
 });
@@ -88,6 +141,43 @@ describe("openrouter catalog", () => {
 			fail = true;
 			const cold = await ensureOpenRouterCatalog();
 			expect(cold?.get("prov/m1")).toEqual(new Set(["reasoning", "reasoning_effort"]));
+		} finally {
+			globalThis.fetch = prevFetch;
+			_resetOpenRouterForTest();
+		}
+	});
+
+	// Same invariant as the models.dev join test above: refreshOpenRouter
+	// arms its backoff synchronously, so a second same-tick caller must
+	// join the flight rather than take the early null.
+	test("cold catalog: concurrent callers join the in-flight fetch, not null", async () => {
+		const dir = useHome();
+		mkdirSync(join(dir, "state"), { recursive: true });
+		_resetOpenRouterForTest();
+		const prevFetch = globalThis.fetch;
+		let calls = 0;
+		let resolveFetch!: (res: Response) => void;
+		const gate = new Promise<Response>((res) => {
+			resolveFetch = res;
+		});
+		globalThis.fetch = (() => {
+			calls++;
+			return gate;
+		}) as unknown as typeof fetch;
+		try {
+			const a = ensureOpenRouterCatalog();
+			const b = ensureOpenRouterCatalog();
+			resolveFetch(
+				new Response(
+					JSON.stringify({
+						data: [{ id: "prov/m1", supported_parameters: ["reasoning"] }],
+					}),
+				),
+			);
+			const [ra, rb] = await Promise.all([a, b]);
+			expect(ra?.get("prov/m1")).toEqual(new Set(["reasoning"]));
+			expect(rb?.get("prov/m1")).toEqual(new Set(["reasoning"]));
+			expect(calls).toBe(1);
 		} finally {
 			globalThis.fetch = prevFetch;
 			_resetOpenRouterForTest();

@@ -49,6 +49,11 @@ let nextFetchAt = 0;
 let inflight: Promise<Catalog | null> | null = null;
 
 function ensureCatalog(): Promise<Catalog | null> {
+	// Join an in-flight fetch before consulting the backoff — refresh
+	// arms the backoff synchronously on entry, so a nextFetchAt-first
+	// order hands same-tick callers (index.ts awaits inputModalities and
+	// contextLimit together) a cold null instead of the shared flight.
+	if (inflight) return inflight;
 	if (Date.now() < nextFetchAt) return Promise.resolve(catalog);
 	inflight ??= refresh().finally(() => {
 		inflight = null;
@@ -233,6 +238,8 @@ export function ensureOpenRouterCatalog(): Promise<Map<
 	string,
 	Set<string>
 > | null> {
+	// In-flight before backoff, same reason as ensureCatalog above.
+	if (openrouterInflight) return openrouterInflight;
 	if (Date.now() < openrouterNextFetchAt) {
 		return Promise.resolve(openrouterCatalog);
 	}
@@ -262,8 +269,19 @@ export function _primeOpenRouterCatalog(
 }
 
 // Test hook: force the next ensure onto the network path with a cold
+// in-memory catalog — the models.dev twin of _resetOpenRouterForTest.
+export function _resetModelsDevForTest(): void {
+	catalog = null;
+	nextFetchAt = 0;
+	inflight = null;
+}
+
+// Test hook: force the next ensure onto the network path with a cold
 // in-memory catalog.
 export function _resetOpenRouterForTest(): void {
 	openrouterCatalog = null;
 	openrouterNextFetchAt = 0;
+	// The ensure functions now return an in-flight promise before any
+	// other check — a reset that left one armed would serve it stale.
+	openrouterInflight = null;
 }

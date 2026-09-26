@@ -10,6 +10,7 @@ import type { SpeechFile } from "../transcribe.ts";
 import { bashTool } from "./bash.ts";
 import { editFileTool } from "./edit.ts";
 import { fetchTool } from "./fetch.ts";
+import { historySearchTool, type HistorySearchDeps } from "./history.ts";
 import { mailTool } from "./mail.ts";
 import { memorySearchTool } from "./memory.ts";
 import { readFileTool } from "./read.ts";
@@ -51,6 +52,7 @@ export interface TranscribeToolDeps {
 }
 
 export type { DelegateToolDeps };
+export type { HistorySearchDeps };
 export type { MailToolDeps };
 
 // Use the registered set as the availability source, rather than
@@ -69,6 +71,7 @@ export function makeTools(
 	transcribe?: TranscribeToolDeps,
 	delegate?: DelegateToolDeps,
 	mail?: MailToolDeps,
+	history?: HistorySearchDeps,
 ): ToolSet {
 	return {
 		read_file: readFileTool(cwd),
@@ -100,5 +103,8 @@ export function makeTools(
 		// hand edit to goblin.json5 is only seen on restart.
 		...(web ? { fetch: fetchTool(web) } : {}),
 		...(web?.configRef.current.search ? { search: searchTool(web) } : {}),
+		// Past-chat search is local state, not a config block — always in
+		// the set (the store dep is unconditional at the composition root).
+		...(history ? { history_search: historySearchTool(history) } : {}),
 	};
 }

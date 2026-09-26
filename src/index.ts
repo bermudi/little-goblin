@@ -302,6 +302,9 @@ async function boot() {
 								),
 						}
 					: undefined,
+				// Past-chat search rides the store — always present, local
+				// state, no config block. Excluded topics recall nothing.
+				{ store, isExcluded: () => conv.memoryExcluded },
 			);
 		},
 		...(memoryClient && memoryBootConfig

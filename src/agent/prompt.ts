@@ -167,6 +167,13 @@ export function buildSystemPrompt(
 					`  sent until the operator taps it.`,
 				]
 			: []),
+		...(tools.includes("history_search")
+			? [
+					`- history_search searches past conversations across every topic`,
+					`  ("what did we decide about X?") — page context around a hit`,
+					`  with its conversation id and seq before quoting it.`,
+				]
+			: []),
 		...(tools.includes("memory_search")
 			? [
 					`- Long-term memory is on: dated [Long-term memory] evidence may`,

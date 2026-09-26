@@ -330,3 +330,115 @@ describe("compaction pointers", () => {
 		store.close();
 	});
 });
+
+describe("chat search", () => {
+	const asst = (id: string, text: string): UIMessage => ({
+		id,
+		role: "assistant",
+		parts: [{ type: "text", text }],
+	});
+
+	test("finds user and assistant text across conversations, bounded by limit", () => {
+		const store = openStore(tmpdb());
+		const a = store.resolve({ kind: "topic", chatId: -100, threadId: 7 }, "/w");
+		const b = store.resolve({ kind: "dm", chatId: 42 }, "/w");
+		store.setMeta(a.id, { title: "Pizza plans" });
+		store.append(a.id, [msg("we decided pineapple belongs on pizza")]);
+		store.append(b.id, [asst("a1", "the pineapple decision stands")]);
+		store.append(a.id, [msg("unrelated weather chat")]);
+		const hits = store.searchHistory("pineapple", 10);
+		expect(hits.map((h) => h.conversationId).sort()).toEqual([a.id, b.id].sort());
+		expect(hits.find((h) => h.conversationId === a.id)).toMatchObject({
+			title: "Pizza plans",
+			seq: 1,
+			role: "user",
+		});
+		expect(hits.find((h) => h.conversationId === a.id)!.text).toContain("pineapple");
+		expect(store.searchHistory("pineapple", 1)).toHaveLength(1);
+		expect(store.searchHistory("weather", 10)).toHaveLength(1);
+		store.close();
+	});
+
+	test("tool payloads and system events are never indexed", () => {
+		const store = openStore(tmpdb());
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [{
+			id: "t1",
+			role: "assistant",
+			parts: [{ type: "tool-zebracakesecret", input: "zebracakesecret payload" } as unknown as UIMessage["parts"][number]],
+		}]);
+		store.append(c.id, [{
+			id: "s1",
+			role: "system",
+			parts: [{ type: "text", text: "system note about zebracakesecret" }],
+		}]);
+		expect(store.searchHistory("zebracakesecret", 10)).toEqual([]);
+		store.close();
+	});
+
+	test("memory exclusion hides retroactively", () => {
+		const store = openStore(tmpdb());
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("the retroactive hiddenword plans")]);
+		expect(store.searchHistory("hiddenword", 10)).toHaveLength(1);
+		store.setMeta(c.id, { memoryExcluded: true });
+		expect(store.searchHistory("hiddenword", 10)).toEqual([]);
+		store.setMeta(c.id, { memoryExcluded: false });
+		expect(store.searchHistory("hiddenword", 10)).toHaveLength(1);
+		store.close();
+	});
+
+	test("deletes stay honest through the delete trigger", () => {
+		const store = openStore(tmpdb());
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("the transient forgetmeword note")]);
+		expect(store.searchHistory("forgetmeword", 10)).toHaveLength(1);
+		store.db.run("DELETE FROM events WHERE conversation_id = ?", [c.id]);
+		expect(store.searchHistory("forgetmeword", 10)).toEqual([]);
+		store.close();
+	});
+
+	test("upgrading DBs backfill the index at open", () => {
+		const path = tmpdb();
+		const first = openStore(path);
+		const c = first.resolve({ kind: "dm", chatId: 1 }, "/w");
+		first.append(c.id, [msg("the backfill checkword plans")]);
+		first.close();
+		// Simulate a pre-FTS database: drop the index and its triggers.
+		const raw = new Database(path);
+		raw.run("DROP TRIGGER IF EXISTS events_fts_ai");
+		raw.run("DROP TRIGGER IF EXISTS events_fts_ad");
+		raw.run("DROP TRIGGER IF EXISTS events_fts_au");
+		raw.run("DROP TABLE events_fts");
+		raw.close();
+		const second = openStore(path);
+		const hits = second.searchHistory("checkword", 10);
+		expect(hits).toHaveLength(1);
+		expect(hits[0]!.conversationId).toBe(c.id);
+		second.close();
+	});
+
+	test("query syntax is literal — operators never throw, empties answer empty", () => {
+		const store = openStore(tmpdb());
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("plain hello world note")]);
+		expect(store.searchHistory('" OR *:', 10)).toEqual([]);
+		expect(store.searchHistory("   ", 10)).toEqual([]);
+		expect(store.searchHistory('"""', 10)).toEqual([]);
+		expect(store.searchHistory("hello", 10)).toHaveLength(1);
+		store.close();
+	});
+
+	test("eventContext pages an arrival-ordered window", () => {
+		const store = openStore(tmpdb());
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("one"), msg("two"), msg("three"), msg("four"), msg("five")]);
+		expect(store.eventContext(c.id, 3, 1).map((r) => r.seq)).toEqual([2, 3, 4]);
+		expect(store.eventContext(c.id, 1, 3).map((r) => r.seq)).toEqual([1, 2, 3, 4]);
+		expect(store.eventContext(c.id, 99, 3)).toEqual([]);
+		const mid = store.eventContext(c.id, 3, 0);
+		expect(mid).toHaveLength(1);
+		expect(mid[0]!.text).toBe("three");
+		store.close();
+	});
+});

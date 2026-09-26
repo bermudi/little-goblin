@@ -9,7 +9,7 @@ import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
 import { z } from "zod";
 import { log } from "./log.ts";
-import { MemoryContexts } from "./memory.ts";
+import { MemoryContexts, messageText } from "./memory.ts";
 import { MemoryQueue } from "./memory-queue.ts";
 import type { MemoryDocument } from "./hindsight.ts";
 
@@ -115,7 +115,34 @@ export interface ConversationStore {
 	modelEntries(id: string): { seq: number; message: UIMessage }[];
 	// Seq of the newest user event — a turn's response anchors to it.
 	lastUserSeq(id: string): number | null;
+	// Full-text search over user/assistant event text (DESIGN.md, Chat
+	// search). Memory-excluded conversations are filtered at query time
+	// against the live flag — retroactive. Empty when the query has no
+	// searchable terms. Rank-best-first, bounded by limit.
+	searchHistory(query: string, limit: number): HistoryHit[];
+	// Arrival-ordered window around one event — paging context around a
+	// search hit. No exclusion check here: the tool checks the live flag
+	// before calling, the way search filters it in SQL.
+	eventContext(id: string, seq: number, window: number): HistoryContextRow[];
 	close(): void;
+}
+
+// A chat-search hit: the addressing a context page needs, plus the text
+// the tool shapes into a snippet.
+export interface HistoryHit {
+	conversationId: string;
+	title: string | null;
+	seq: number;
+	role: string;
+	text: string;
+	createdAt: string;
+}
+
+export interface HistoryContextRow {
+	seq: number;
+	role: string;
+	text: string;
+	createdAt: string;
 }
 
 // ---------- store ----------
@@ -211,6 +238,61 @@ function toConversation(r: Row): Conversation {
 	};
 }
 
+// The FTS-indexed text of one event row: concatenated text parts only.
+// Written against a row qualifier (new/old/events) so triggers and the
+// backfill SELECT share it. Total over any stored bytes — a corrupt
+// row indexes as empty, never fails its INSERT (corruption still warns
+// at read time, where the placeholder degrades it).
+function ftsTextOf(qual: string): string {
+	return (
+		`(CASE WHEN json_valid(${qual}.data) THEN ` +
+		`(SELECT coalesce(group_concat(json_extract(value,'$.text'),' '), '') ` +
+		`FROM json_each(json_extract(${qual}.data,'$.message.parts')) ` +
+		`WHERE json_extract(value,'$.type')='text') ELSE '' END)`
+	);
+}
+
+// Plain terms in, quoted FTS5 AND out — no query syntax reaches MATCH:
+// each whitespace-separated term becomes a double-quoted phrase, so
+// operators and punctuation are literal text. Null = no searchable
+// terms (the search answers empty, it doesn't throw).
+export function toFtsQuery(query: string): string | null {
+	const terms = query
+		.split(/\s+/)
+		.map((t) => t.replace(/"/g, "").trim())
+		.filter((t) => t !== "");
+	if (terms.length === 0) return null;
+	return terms.map((t) => `"${t}"`).join(" ");
+}
+
+// Parse one event row's envelope — null when the row is unreadable.
+// The caller decides: history degrades to a placeholder in position,
+// search and context skip the row. Warns either way — a silent skip
+// would hide corruption.
+function parseEvent(conversation: string, seq: number, role: string, data: string): UIMessage | null {
+	let raw: unknown;
+	try {
+		raw = JSON.parse(data);
+	} catch (err) {
+		log.warn("corrupt history row — degrading to placeholder", {
+			conversation,
+			seq,
+			error: (err as Error).message,
+		});
+		return null;
+	}
+	const parsed = uiMessageSchema.safeParse(envelopeOf(raw));
+	if (!parsed.success) {
+		log.warn("corrupt history row — degrading to placeholder", {
+			conversation,
+			seq,
+			error: parsed.error.message,
+		});
+		return null;
+	}
+	return parsed.data as UIMessage;
+}
+
 export function openStore(dbPath: string): ConversationStore {
 	const db = new Database(dbPath);
 	db.run("PRAGMA journal_mode = WAL");
@@ -266,6 +348,38 @@ export function openStore(dbPath: string): ConversationStore {
 	);
 	if (!eventCols.has("anchor_seq")) {
 		db.run("ALTER TABLE events ADD COLUMN anchor_seq INTEGER");
+	}
+	// Chat search (DESIGN.md): a contentless FTS5 index over user and
+	// assistant event text, kept by triggers. Contentless, not
+	// external-content — events stores JSON envelopes, so there is no
+	// plain-text content column to point at; the indexed value is the
+	// extracted projection below. System events never enter (the WHEN
+	// clauses) and neither do tool payloads (the text-parts-only
+	// projection). Deletes stay honest through the delete trigger.
+	// Created before the envelope migration further down so the update
+	// trigger re-indexes migrated rows.
+	const ftsFresh =
+		db.query<{ n: number }, []>(
+			"SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'events_fts'",
+		).get()?.n === 0;
+	db.run(
+		"CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(text, content='', content_rowid='id', tokenize='porter')",
+	);
+	db.run(`CREATE TRIGGER IF NOT EXISTS events_fts_ai AFTER INSERT ON events
+		WHEN NEW.role IN ('user','assistant')
+		BEGIN INSERT INTO events_fts(rowid, text) VALUES (new.id, ${ftsTextOf("new")}); END`);
+	db.run(`CREATE TRIGGER IF NOT EXISTS events_fts_ad AFTER DELETE ON events
+		WHEN OLD.role IN ('user','assistant')
+		BEGIN INSERT INTO events_fts(events_fts, rowid, text) VALUES('delete', old.id, ${ftsTextOf("old")}); END`);
+	db.run(`CREATE TRIGGER IF NOT EXISTS events_fts_au AFTER UPDATE ON events
+		WHEN NEW.role IN ('user','assistant')
+		BEGIN INSERT INTO events_fts(events_fts, rowid, text) VALUES('delete', old.id, ${ftsTextOf("old")});
+		INSERT INTO events_fts(rowid, text) VALUES (new.id, ${ftsTextOf("new")}); END`);
+	// Upgrading DBs predate the index — backfill once, from the same
+	// projection the triggers use. In a fresh DB this selects nothing.
+	if (ftsFresh) {
+		db.run(`INSERT INTO events_fts(rowid, text)
+			SELECT id, ${ftsTextOf("events")} FROM events WHERE role IN ('user','assistant')`);
 	}
 
 	const memoryQueue = new MemoryQueue(db);
@@ -336,6 +450,28 @@ export function openStore(dbPath: string): ConversationStore {
 	);
 	const qEpoch = db.query<{ epoch: number }, [string]>(
 		"SELECT epoch FROM conversations WHERE id = ?",
+	);
+	// Chat search: FTS rowids join back to events for the addressable
+	// hit, conversations for the title and the live exclusion flag.
+	// Rank-best-first — FTS5's default rank orders best match first.
+	const qSearch = db.query<
+		{ cid: string; seq: number; role: string; data: string; created_at: string; title: string | null },
+		[string, number]
+	>(
+		`SELECT e.conversation_id AS cid, e.seq AS seq, e.role AS role,
+			e.data AS data, e.created_at AS created_at, c.title AS title
+		FROM events_fts
+		JOIN events e ON events_fts.rowid = e.id
+		JOIN conversations c ON c.id = e.conversation_id
+		WHERE events_fts MATCH ? AND c.memory_excluded = 0
+		ORDER BY rank LIMIT ?`,
+	);
+	const qContext = db.query<
+		{ seq: number; role: string; data: string; created_at: string },
+		[string, number, number]
+	>(
+		`SELECT seq, role, data, created_at FROM events
+		WHERE conversation_id = ? AND seq BETWEEN ? AND ? ORDER BY seq`,
 	);
 
 	function applyPatch(id: string, patch: ConversationMetaPatch): void {
@@ -475,6 +611,36 @@ export function openStore(dbPath: string): ConversationStore {
 			return qLastUserSeq.get(id)?.seq ?? null;
 		},
 
+		searchHistory(query, limit) {
+			const match = toFtsQuery(query);
+			if (match === null) return [];
+			const hits: HistoryHit[] = [];
+			for (const r of qSearch.all(match, Math.max(1, Math.min(limit, 50)))) {
+				const message = parseEvent(r.cid, r.seq, r.role, r.data);
+				if (message === null) continue;
+				hits.push({
+					conversationId: r.cid,
+					title: r.title,
+					seq: r.seq,
+					role: r.role,
+					text: messageText(message),
+					createdAt: r.created_at,
+				});
+			}
+			return hits;
+		},
+
+		eventContext(id, seq, window) {
+			const w = Math.max(0, Math.min(window, 25));
+			const rows: HistoryContextRow[] = [];
+			for (const r of qContext.all(id, seq - w, seq + w)) {
+				const message = parseEvent(id, r.seq, r.role, r.data);
+				if (message === null) continue;
+				rows.push({ seq: r.seq, role: r.role, text: messageText(message), createdAt: r.created_at });
+			}
+			return rows;
+		},
+
 		history(id) {
 			return this.historyEntries(id).map((e) => e.message);
 		},
@@ -484,37 +650,11 @@ export function openStore(dbPath: string): ConversationStore {
 		},
 
 		historyDetail(id) {
-			const rows = qHistory.all(id).map((r) => {
-				let raw: unknown;
-				try {
-					raw = JSON.parse(r.data);
-				} catch (err) {
-					log.warn("corrupt history row — degrading to placeholder", {
-						conversation: id,
-						seq: r.seq,
-						error: (err as Error).message,
-					});
-					return {
-						seq: r.seq,
-						anchorSeq: r.anchor_seq,
-						message: corruptPlaceholder(r.seq, r.role),
-					};
-				}
-				const parsed = uiMessageSchema.safeParse(envelopeOf(raw));
-				if (!parsed.success) {
-					log.warn("corrupt history row — degrading to placeholder", {
-						conversation: id,
-						seq: r.seq,
-						error: parsed.error.message,
-					});
-					return {
-						seq: r.seq,
-						anchorSeq: r.anchor_seq,
-						message: corruptPlaceholder(r.seq, r.role),
-					};
-				}
-				return { seq: r.seq, anchorSeq: r.anchor_seq, message: parsed.data as UIMessage };
-			});
+			const rows = qHistory.all(id).map((r) => ({
+				seq: r.seq,
+				anchorSeq: r.anchor_seq,
+				message: parseEvent(id, r.seq, r.role, r.data) ?? corruptPlaceholder(r.seq, r.role),
+			}));
 			// Arrival order stays on disk; this view sorts each anchored
 			// response right after the user event that triggered its turn.
 			// Key = anchor ?? seq, tiebreak = seq — an anchored response's

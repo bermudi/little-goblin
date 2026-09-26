@@ -868,13 +868,19 @@ On demand (2026-09-26, the first slice of "richer inner life"). A
 `history_search` tool: full-text search over goblin's own conversation
 history — "what did we decide about X last month?".
 
-- **SQLite FTS5** over the text of user and assistant events, an
-  external-content index kept by insert/delete triggers (an additive
-  schema change — in scope; `/forget` deletes stay honest through the
-  delete trigger). Tool-call payloads are not indexed.
+- **SQLite FTS5** over the text of user and assistant events, a
+  contentless index kept by insert/delete/update triggers (an additive
+  schema change — in scope; deletes stay honest through the delete
+  trigger). Contentless, not external-content: events stores JSON
+  envelopes, so there is no plain-text content column to point at —
+  the indexed value is a text-parts projection. Tool-call payloads
+  and system events are not indexed. Queries are plain terms, each
+  quoted into an AND — no FTS syntax reaches MATCH.
 - **Scope: every conversation except memory-excluded ones**, checked
   at query time against the live `memoryExcluded` flag — `/memory off`
-  means off for search too, retroactively.
+  means off for search too, retroactively. Excluded topics also can't
+  wield the tool: exclusion means a topic recalls nothing, the same
+  rule as `memory_search`.
 - Output: bounded list of topic title · date · role · snippet, plus
   the address/event id to page context around a hit.
 

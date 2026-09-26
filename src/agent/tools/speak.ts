@@ -16,7 +16,7 @@ export function speakInputSchema(voices?: readonly string[]) {
 			text: z.string().min(1).optional(),
 			path: z.string().min(1).optional(),
 			voice: allowed
-				? z.enum(allowed).optional().describe("match the text's language; omit for the default voice")
+				? z.enum(allowed).optional().describe("match the text's language; omit to let goblin pick by language")
 				: z.never().optional().describe("no alternate voices configured — omit"),
 	})
 		.refine((input) => (input.text === undefined) !== (input.path === undefined), {

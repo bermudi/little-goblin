@@ -12,6 +12,75 @@ const EDGE_TIMEOUT_MS = 30_000;
 const LONG_URL = /https?:\/\/\S{61,}/g;
 const CODE_BLOCK = /```(?:[^\n]*)\n?([\s\S]*?)```/g;
 
+// ---------- voice cast ----------
+
+// Language sniffing for the voice cast (en/es today): exclusive
+// diacritics and function words decide — cheap, deterministic, no model
+// call, and the bar is only "which configured voice matches". Short or
+// ambiguous text resolves to no language and the default voice speaks.
+const ES_WORDS = new Set([
+	"el", "la", "los", "las", "un", "una", "que", "de", "del", "al",
+	"y", "o", "es", "está", "están", "soy", "eres", "somos", "esto", "eso",
+	"esta", "este", "estos", "esa", "esas", "hola", "gracias", "pero",
+	"como", "más", "muy", "para", "por", "con", "sin", "sobre", "entre",
+	"cuando", "porque", "si", "sí", "también", "tampoco", "nada", "algo",
+	"todo", "todos", "bien", "aquí", "ahí", "allí", "ahora", "después",
+	"antes", "luego", "ya", "aún", "día", "año", "vez", "veces", "dos",
+	"tres", "quiero", "puedo", "puedes", "vamos", "listo", "lista", "hecho",
+	"claro", "cierto", "vale", "tengo", "tiene", "tienes", "fue", "hay",
+	"dónde", "cómo", "cuál", "quién", "bueno", "buena", "otro", "otra",
+	"solo", "incluso", "punto", "verdad", "nuevo", "nueva", "menos", "cada",
+	"nos", "les", "mi", "tu", "te", "su", "sus", "era", "ser", "va", "voy",
+]);
+const EN_WORDS = new Set([
+	"the", "and", "is", "are", "was", "were", "be", "been", "am", "do", "does",
+	"did", "done", "have", "has", "had", "will", "would", "can", "could",
+	"should", "shall", "may", "might", "must", "of", "to", "in", "on", "at",
+	"by", "for", "with", "from", "about", "into", "over", "after", "before",
+	"between", "out", "off", "up", "down", "it", "its", "this", "that",
+	"these", "those", "there", "here", "i", "you", "your", "yours", "we",
+	"us", "our", "they", "them", "their", "he", "she", "his", "her", "him",
+	"what", "which", "who", "when", "where", "why", "how", "if", "then",
+	"than", "so", "because", "but", "or", "not", "nor", "very", "too",
+	"also", "just", "only", "more", "most", "some", "any", "all", "both",
+	"each", "other", "same", "such", "yes", "yep", "yeah", "ok", "okay",
+	"hey", "hi", "hello", "thanks", "thank", "please", "sorry", "let",
+	"get", "got", "make", "made", "want", "need", "needs", "good", "great",
+	"nice", "cool", "right", "true", "sure", "thing", "one", "two", "three",
+	"first", "next", "last", "now", "later", "today", "working", "works",
+]);
+
+export function detectLanguage(text: string): "en" | "es" | null {
+	const lower = text.toLowerCase();
+	// ¿ ¡ ñ and the accented vowels are Spanish-exclusive in practice —
+	// each occurrence outweighs a function word.
+	let es = 3 * (lower.match(/[¿¡ñáéíóúü]/g)?.length ?? 0);
+	let en = 0;
+	for (const word of lower.split(/[^a-záéíóúüñ]+/)) {
+		if (!word) continue;
+		if (ES_WORDS.has(word)) es++;
+		if (EN_WORDS.has(word)) en++;
+	}
+	if (Math.max(es, en) < 2 || Math.abs(es - en) < 2) return null;
+	return es > en ? "es" : "en";
+}
+
+// The voice for this text: the cast member whose language matches the
+// sniff, else the configured default. First match wins when several
+// voices share a language.
+export function pickVoice(
+	text: string,
+	defaultVoice: string,
+	alternates: readonly string[] | undefined,
+): string {
+	if (!alternates?.length) return defaultVoice;
+	const lang = detectLanguage(text);
+	if (!lang) return defaultVoice;
+	return (
+		[defaultVoice, ...alternates].find((v) => v.toLowerCase().split("-")[0] === lang) ?? defaultVoice
+	);
+}
+
 export interface EdgeOptions {
 	voice: string;
 	lang: string;
@@ -283,18 +352,22 @@ export async function synthesizeSpeech(
 ): Promise<Uint8Array[]> {
 	const chunks = chunkSpeech(text, chunkLimit);
 	if (chunks.length === 0) throw new Error("speech input is empty");
-	const lang = config.voice.split("-").slice(0, 2).join("-");
+	// One sniff per reply, applied to every chunk — replies are
+	// monolingual in practice, and a per-chunk flip would stutter.
+	const voice = pickVoice(text, config.voice, config.voices);
+	const lang = voice.split("-").slice(0, 2).join("-");
 	const audio: Uint8Array[] = [];
 	log.info("speech synthesis started", {
 		provider: config.kind,
-		voice: config.voice,
+		voice,
+		...(voice !== config.voice ? { defaultVoice: config.voice } : {}),
 		chars: text.length,
 		chunks: chunks.length,
 	});
 	try {
 		for (const chunk of chunks) {
 			const webm = await synthesize(chunk, {
-				voice: config.voice,
+				voice,
 				lang,
 				...(config.rate ? { rate: config.rate } : {}),
 				outputFormat: OUTPUT_FORMAT,
@@ -304,7 +377,7 @@ export async function synthesizeSpeech(
 	} catch (err) {
 		log.warn("speech synthesis failed", {
 			provider: config.kind,
-			voice: config.voice,
+			voice,
 			completedChunks: audio.length,
 			error: String(err),
 		});
@@ -312,7 +385,7 @@ export async function synthesizeSpeech(
 	}
 	log.info("speech synthesis completed", {
 		provider: config.kind,
-		voice: config.voice,
+		voice,
 		chunks: audio.length,
 		bytes: audio.reduce((sum, chunk) => sum + chunk.byteLength, 0),
 	});

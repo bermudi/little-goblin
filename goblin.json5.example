@@ -55,10 +55,10 @@
   //   kind: "edge",
   //   voice: "en-US-AriaNeural",
   //   rate: "+0%", // optional
-  //   // Optional alternates the speak tool may pick per voice note —
-  //   // e.g. ["es-ES-ElviraNeural", "es-MX-JorgeNeural"]. Language
-  //   // follows the voice name. /voice mode and the 🔊 button always
-  //   // use `voice` above.
+  //   // The cast beyond `voice` — language follows the voice name, e.g.
+  //   // ["es-MX-JorgeNeural"]. The speak tool picks per call; /voice
+  //   // mode and the 🔊 button sniff each reply's language and cast the
+  //   // matching voice, falling back to `voice` above.
   //   voices: [],
   // },
 

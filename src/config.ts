@@ -173,9 +173,10 @@ export const ttsConfigSchema = z.object({
 	kind: z.literal("edge"),
 	voice: z.string().min(1),
 	rate: z.string().regex(/^[+-]\d+%$/).optional(),
-	// Alternates the speak tool may pick per call; the language
-	// follows the voice name. `voice` stays the default for
-	// /voice mode and the 🔊 button.
+	// The cast beyond the default voice — language follows the voice
+	// name. The speak tool picks per call; /voice mode and the 🔊 button
+	// sniff each reply's language and cast the matching voice, falling
+	// back to `voice` when nothing matches.
 	voices: z.array(z.string().min(1)).optional(),
 });
 export type TtsConfig = z.infer<typeof ttsConfigSchema>;

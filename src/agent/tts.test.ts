@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
 	chunkSpeech,
+	detectLanguage,
+	pickVoice,
 	speakable,
 	speechContent,
 	synthesizeSpeech,
@@ -64,5 +66,56 @@ describe("tts", () => {
 			return new Uint8Array([1]);
 		}, 10_000, async () => new Uint8Array([79, 103, 103, 83]));
 		expect(calls).toEqual([{ voice: "es-ES-ElviraNeural", lang: "es-ES" }]);
+	});
+});
+
+describe("voice cast", () => {
+	test("the reply's language casts its voice; the default speaks english", () => {
+		expect(pickVoice("¿Listo para mañana? Sí, claro.", "en-US-AndrewNeural", ["es-MX-JorgeNeural"]))
+			.toBe("es-MX-JorgeNeural");
+		expect(
+			pickVoice("Sure — done and working. Let me know if you need more.", "en-US-AndrewNeural", [
+				"es-MX-JorgeNeural",
+			]),
+		).toBe("en-US-AndrewNeural");
+	});
+
+	test("short or ambiguous text falls back to the default voice", () => {
+		// One spanish signal each — under the decision bar.
+		expect(pickVoice("Listo.", "en-US-AndrewNeural", ["es-MX-JorgeNeural"])).toBe(
+			"en-US-AndrewNeural",
+		);
+		expect(pickVoice("OK, done.", "en-US-AndrewNeural", ["es-MX-JorgeNeural"])).toBe(
+			"en-US-AndrewNeural",
+		);
+		expect(pickVoice("42 + 58 = 100", "en-US-AndrewNeural", ["es-MX-JorgeNeural"])).toBe(
+			"en-US-AndrewNeural",
+		);
+	});
+
+	test("unaccented spanish still sniffs via function words", () => {
+		expect(detectLanguage("Listo, gracias. El cambio esta hecho")).toBe("es");
+		expect(detectLanguage("Sure, the work is done and the build is green")).toBe("en");
+	});
+
+	test("without a cast, the default voice speaks everything", () => {
+		expect(pickVoice("Hola, ¿qué tal?", "en-US-AndrewNeural", undefined)).toBe(
+			"en-US-AndrewNeural",
+		);
+	});
+
+	test("synthesis auto-matches a configured cast", async () => {
+		const calls: Array<{ voice: string; lang: string }> = [];
+		await synthesizeSpeech(
+			"¿Listo para mañana? Sí, claro.",
+			{ kind: "edge", voice: "en-US-AndrewNeural", voices: ["es-MX-JorgeNeural"] },
+			async (_text, options) => {
+				calls.push({ voice: options.voice, lang: options.lang });
+				return new Uint8Array([1]);
+			},
+			10_000,
+			async () => new Uint8Array([79, 103, 103, 83]),
+		);
+		expect(calls).toEqual([{ voice: "es-MX-JorgeNeural", lang: "es-MX" }]);
 	});
 });

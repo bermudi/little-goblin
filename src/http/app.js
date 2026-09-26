@@ -940,7 +940,7 @@ function populate(c) {
   // Voice — toggles keep the block's last content (lastTts etc.) so
   // flipping off is never "delete my work"; paint* re-syncs the controls
   // with the draft state on every toggle.
-  const paintVoices = initChips({ box: "voiceChips", input: "voiceInput", add: "voiceAdd", datalist: "voiceDl", datalistValues: VOICE_SUGGESTIONS, get: () => cfg.tts ? cfg.tts.voices : [], set: (a) => { /** @type {TtsDraft} */ (cfg.tts).voices = /** @type {string[]} */ (a); }, empty: "no alternates — the speak tool uses the default voice" });
+  const paintVoices = initChips({ box: "voiceChips", input: "voiceInput", add: "voiceAdd", datalist: "voiceDl", datalistValues: VOICE_SUGGESTIONS, get: () => cfg.tts ? cfg.tts.voices : [], set: (a) => { /** @type {TtsDraft} */ (cfg.tts).voices = /** @type {string[]} */ (a); }, empty: "no alternates — every language speaks with the default voice" });
   function paintTts() {
     $("ttsFields").classList.toggle("hidden", cfg.tts === null);
     inputEl("ttsVoice").value = cfg.tts ? cfg.tts.voice : "";

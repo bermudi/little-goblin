@@ -894,8 +894,11 @@ failing message by message.
   full reply text — one process, one operator, no schema change), and a
   miss (restart, old message) degrades to the tapped bubble's text,
   warn-logged. No button in voice mode — the reply is already audio.
-  Button and `/voice` mode always use the default `voice`; per-call
-  choice is the `speak` tool's alone.
+  Every door speaks the reply's language: the `speak` tool picks its
+  voice per call, and `/voice` mode and the 🔊 button sniff the
+  speakable text and cast the matching voice from `voice` + `voices` —
+  one cast list, three consumers; `voice` speaks when the language is
+  unclear or no cast member matches.
 - **Files**: `send_file` is the file-out twin of intake media: it
   *names*, it does not send. The tool hands a workspace path (+ optional
   caption) to the turn's delivery sink (`sink.onFile`), which owns the

@@ -264,15 +264,32 @@ async function stampDecision(
 ): Promise<void> {
 	const messageId = query.message?.message_id ?? row.draftMessageId;
 	if (messageId === null || messageId === undefined) return;
-	await withTimeout(
-		deps.api.editMessageText(row.chatId, messageId, text, {
-			...(row.threadId !== null ? { message_thread_id: row.threadId } : {}),
-			reply_markup: { inline_keyboard: [] },
-		}),
-		"editMessageText",
+	await stampMailDraft(
+		deps.api,
+		{ chatId: row.chatId, threadId: row.threadId },
+		messageId,
+		text,
 	).catch((err: unknown) => {
 		log.warn("mail draft stamp failed", { outbox: row.id, error: String(err) });
 	});
+}
+
+// Rewrite a draft message into its verdict and strip the buttons.
+// Throws — callers decide whether a failed stamp retries (the watcher)
+// or logs (a tap, whose toast already answered).
+export async function stampMailDraft(
+	api: Api,
+	address: { chatId: number; threadId: number | null },
+	messageId: number,
+	text: string,
+): Promise<void> {
+	await withTimeout(
+		api.editMessageText(address.chatId, messageId, text, {
+			...(address.threadId !== null ? { message_thread_id: address.threadId } : {}),
+			reply_markup: { inline_keyboard: [] },
+		}),
+		"editMessageText",
+	);
 }
 
 async function stripButtons(
@@ -297,12 +314,25 @@ async function stripButtons(
 // for a verdict that never came. Delivery failures log-and-continue —
 // the row is still pending, so nothing is lost.
 async function notice(deps: MailApprovalDeps, row: OutboxEntry, text: string): Promise<void> {
+	await sendMailNotice(deps.api, { chatId: row.chatId, threadId: row.threadId }, text).catch(
+		(err: unknown) => {
+			log.warn("mail notice failed", { outbox: row.id, error: String(err) });
+		},
+	);
+}
+
+// Plain-text delivery into a mail conversation — outage notices and
+// send failures. Throws: the watcher retries next tick, a tap's notice
+// logs instead (its toast already answered).
+export async function sendMailNotice(
+	api: Api,
+	address: { chatId: number; threadId: number | null },
+	text: string,
+): Promise<void> {
 	await withTimeout(
-		deps.api.sendMessage(row.chatId, text, {
-			...(row.threadId !== null ? { message_thread_id: row.threadId } : {}),
+		api.sendMessage(address.chatId, text, {
+			...(address.threadId !== null ? { message_thread_id: address.threadId } : {}),
 		}),
 		"sendMessage",
-	).catch((err: unknown) => {
-		log.warn("mail notice failed", { outbox: row.id, error: String(err) });
-	});
+	);
 }

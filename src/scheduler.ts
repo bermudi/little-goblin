@@ -32,12 +32,15 @@ export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler
 			// One bad row must not take the scan down with it — but it
 			// surfaces as an error line, never a swallow.
 			try {
-				fireProgram(deps, program, "schedule", undefined, now);
-				// One attempt per occurrence (DESIGN.md: never a replay):
-				// advance even on failure, or a persistent submit error
-				// refires this program — and re-delivers the error — on
-				// every tick.
-				deps.programs.markRan(program.id, now);
+				try {
+					fireProgram(deps, program, "schedule", undefined, now);
+				} finally {
+					// One attempt per occurrence (DESIGN.md: never a
+					// replay): advance even when the fire throws, or a
+					// persistent failure refires this program — and
+					// re-delivers the error — on every tick.
+					deps.programs.markRan(program.id, now);
+				}
 			} catch (err) {
 				log.error("program scan failed", err, {
 					program: program.id,

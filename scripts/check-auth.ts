@@ -3,10 +3,12 @@
 // session — full account, no audit trail. loadAuth only poisons it (the
 // unit must never crash-loop), so install.sh refuses it here instead.
 //
-// Prints ONLY the offending records' names, one per line, and exits 1
-// when any exist. Values are secret material and never print — stdout
-// is written through process.stdout.write, not `log`, precisely so the
-// output stays bare names.
+// Prints ONLY the offending records' names, one per line, and exits 2
+// when any exist — a dedicated code so install.sh can tell "offenders
+// found" apart from the check itself failing (any other nonzero).
+// Values are secret material and never print — stdout is written
+// through process.stdout.write, not `log`, precisely so the output
+// stays bare names.
 import { readFileSync } from "node:fs";
 import { invokesPassCliDirectly, parseAuthFile } from "../src/auth.ts";
 import { paths } from "../src/config.ts";
@@ -20,4 +22,4 @@ for (const rec of parseAuthFile(readFileSync(paths.auth(), "utf8"))) {
 for (const name of offenders) {
 	process.stdout.write(name + "\n");
 }
-process.exit(offenders.size > 0 ? 1 : 0);
+process.exit(offenders.size > 0 ? 2 : 0);

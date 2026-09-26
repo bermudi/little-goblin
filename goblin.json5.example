@@ -94,12 +94,15 @@
   // `kind` is a herdr agent kind (herdr agent → kind list); `args` are
   // native CLI args — full-auto flags and model choice live here, and
   // they must suppress startup dialogs (trust prompts report as idle).
+  // Panes run your interactive shell, so aliases apply — never repeat a
+  // flag an alias already adds (the codex alias's bypass flag, devin's
+  // --permission-mode): a duplicate makes the harness refuse to start.
   // delegation: {
   //   session: "goblin", // default; must match the unit's --session
   //   maxRunning: 3,     // default
   //   harnesses: {
-  //     codex: { kind: "codex", args: ["--dangerously-bypass-approvals-and-sandbox"] },
-  //     pi: { kind: "pi" },
+  //     codex: { kind: "codex" }, // the shell alias carries the bypass flag
+  //     pi: { kind: "pi", args: ["--model", "<provider>/<model>"] },
   //   },
   // },
 

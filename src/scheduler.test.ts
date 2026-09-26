@@ -156,6 +156,28 @@ describe("scheduler", () => {
 		expect(h.deps.programs.due(new Date()).map((j) => j.id)).not.toContain(job.id);
 	});
 
+	test("a fire that throws still advances past the occurrence", () => {
+		const h = harness();
+		// wake() resolves the conversation before submit — when that
+		// throws, the fire explodes with no sink to release.
+		h.deps.store = {
+			resolve: () => {
+				throw new Error("db gone");
+			},
+		} as unknown as ConversationStore;
+		const job = h.deps.programs.create(
+			{ name: "x", cron: "* * * * *", charter: "p", address: { chatId: 1, threadId: null } },
+			new Date(Date.now() - 5 * 60_000),
+		);
+		const s = startScheduler(h.deps); // boot scan: the fire throws
+		s.stop();
+		expect(h.submitted).toEqual([]);
+		// Marked ran anyway — one attempt per occurrence covers throws
+		// too, or a persistent failure refires (and re-delivers the
+		// error) every tick.
+		expect(h.deps.programs.due(new Date()).map((j) => j.id)).not.toContain(job.id);
+	});
+
 	test("one job's failure does not stop the scan", async () => {
 		const h = harness();
 		const past = new Date(Date.now() - 5 * 60_000);

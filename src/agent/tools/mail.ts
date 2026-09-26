@@ -34,7 +34,7 @@ export interface MailToolDeps {
 	threadId: number | null;
 	/** Post the draft + Send/Cancel buttons in this conversation;
 	 *  resolves the buttons' message id. Telegram-aware, built in tg/. */
-	postDraft(text: string): Promise<number>;
+	postDraft(outboxId: number, text: string): Promise<number>;
 }
 
 const addressSchema = z.email().max(320);
@@ -138,6 +138,7 @@ export const mailTool = (deps: MailToolDeps) =>
 						address: { chatId: deps.chatId, threadId: deps.threadId },
 					});
 					const messageId = await deps.postDraft(
+						row.id,
 						draftText(row.id, {
 							to: input.to,
 							...(input.cc !== undefined ? { cc: input.cc } : {}),

@@ -14,6 +14,9 @@ import { CoalescingBuffer } from "./buffer.ts";
 import { COMMAND_RE, COMMANDS, handleCommand, type CommandMemoryDeps } from "./commands.ts";
 import { withTimeout } from "./deadline.ts";
 import { makeDeliverySink, SPEAK_CALLBACK } from "./delivery.ts";
+import { handleMailApproval, MAIL_CALLBACK_RE } from "./mail-approval.ts";
+import type { MailSender } from "../mail.ts";
+import type { OutboxStore } from "../mail-outbox.ts";
 import { handleSpeakButton } from "./speak-button.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
 import { mediaFromMessage, mediaParts, saveAttachment } from "./media.ts";
@@ -80,6 +83,12 @@ export interface BotDeps {
 	synthesize(text: string, config: TtsConfig): Promise<Uint8Array[]>;
 	// Long-term memory wiring for /memory + /forget — absent = disabled.
 	memory?: CommandMemoryDeps;
+	// Mail drafts' Send/Cancel buttons — absent = mail never configured
+	// this run (a stale button still gets an answer, never a hang).
+	mail?: {
+		outbox: OutboxStore;
+		sender(): MailSender | null;
+	};
 }
 
 export interface RunningBot {
@@ -360,6 +369,19 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 			tts: deps.configRef.ttsDown ? undefined : deps.configRef.current.tts || undefined,
 			synthesize: deps.synthesize,
 		});
+	});
+
+	bot.callbackQuery(MAIL_CALLBACK_RE, (ctx) => {
+		if (!deps.mail) {
+			void withTimeout(
+				bot.api.answerCallbackQuery(ctx.callbackQuery.id, { text: "mail is not configured" }),
+				"answerCallbackQuery",
+			).catch((err: unknown) => {
+				log.debug("answerCallbackQuery failed", { error: String(err) });
+			});
+			return;
+		}
+		void handleMailApproval(ctx.callbackQuery, { api: bot.api, ...deps.mail });
 	});
 
 	bot.catch((err) => {

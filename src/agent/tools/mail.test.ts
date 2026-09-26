@@ -60,7 +60,7 @@ function toolFor(reader: MailReader | null, outbox: OutboxStore, drafts: string[
 		outbox,
 		chatId: -100,
 		threadId: 7,
-		postDraft: async (text) => {
+		postDraft: async (_id, text) => {
 			drafts.push(text);
 			return 9000 + drafts.length;
 		},

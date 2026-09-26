@@ -20,6 +20,49 @@ const recordSchema = z.object({
 	value: z.string().min(1),
 });
 
+export interface AuthRecord {
+	name: string;
+	value: string;
+	line: number; // 1-based line number in auth.jsonl
+}
+
+// parseAuthFile validates auth.jsonl's record shape and returns the
+// records in file order — duplicates included; "last wins" is the
+// caller's rule. Shared with scripts/check-auth.ts so the install-time
+// poison scan parses exactly like the loader. `value` is secret
+// material: callers may inspect its shape (literal vs `!command`) but
+// must never print it.
+export function parseAuthFile(raw: string): AuthRecord[] {
+	const records: AuthRecord[] = [];
+	for (const [i, line] of raw.split("\n").entries()) {
+		const trimmed = line.trim();
+		if (trimmed === "") continue;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(trimmed);
+		} catch (err) {
+			throw new Error(`${paths.auth()}:${i + 1}: invalid JSON — ${(err as Error).message}`);
+		}
+		const rec = recordSchema.safeParse(parsed);
+		if (!rec.success) {
+			throw new Error(`${paths.auth()}:${i + 1}: ${z.prettifyError(rec.error)}`);
+		}
+		records.push({ name: rec.data.name, value: rec.data.value, line: i + 1 });
+	}
+	return records;
+}
+
+// A `!` command that invokes pass-cli itself would run as the OWNER
+// session — full account, no audit trail (DESIGN.md: Proton Pass).
+// This is a lint, not a sandbox: `pass-cli` as a shell word at command
+// position — start of the string or after whitespace/`;&|()"'`` —
+// optionally path-prefixed like `/x/bin/pass-cli`, followed by a
+// separator or end. Deliberately conservative: `echo pass-cli` trips it
+// too — the fix is always "route through pass-keys".
+export function invokesPassCliDirectly(command: string): boolean {
+	return /(?:^|[\s;&|()"'`])(?:[^\s;&|()"'`/]*\/)*pass-cli(?:[\s;&|)"'`]|$)/.test(command);
+}
+
 export interface AuthStore {
 	// Resolve a named secret. Rejects if absent or if a `!command` fails —
 	// callers handle "no such secret" as a configuration error at the
@@ -38,7 +81,7 @@ export function loadAuth(): AuthStore {
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
 			log.warn("auth.jsonl not found — no secrets available", { path: paths.auth() });
-			return makeStore(entries);
+			return makeStore(entries, new Set());
 		}
 		throw err;
 	}
@@ -52,31 +95,34 @@ export function loadAuth(): AuthStore {
 		);
 	}
 
-	for (const [i, line] of raw.split("\n").entries()) {
-		const trimmed = line.trim();
-		if (trimmed === "") continue;
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(trimmed);
-		} catch (err) {
-			throw new Error(`${paths.auth()}:${i + 1}: invalid JSON — ${(err as Error).message}`);
-		}
-		const rec = recordSchema.safeParse(parsed);
-		if (!rec.success) {
-			throw new Error(`${paths.auth()}:${i + 1}: ${z.prettifyError(rec.error)}`);
-		}
-		if (entries.has(rec.data.name)) {
+	const poisoned = new Set<string>();
+	for (const rec of parseAuthFile(raw)) {
+		if (entries.has(rec.name)) {
 			log.warn("auth.jsonl: duplicate secret name — last wins", {
-				name: rec.data.name,
-				line: i + 1,
+				name: rec.name,
+				line: rec.line,
 			});
 		}
-		entries.set(rec.data.name, rec.data.value);
+		entries.set(rec.name, rec.value);
+		// Poison, don't refuse the boot: the unit restarts forever and a
+		// phone-only operator can't fix a crash loop — the feature needing
+		// this key fails loud at resolve instead (DESIGN.md: Proton Pass).
+		// "Last wins" applies to poison too: a clean override un-poisons.
+		if (rec.value.startsWith("!") && invokesPassCliDirectly(rec.value.slice(1))) {
+			poisoned.add(rec.name);
+			log.error(
+				"auth.jsonl: secret invokes pass-cli directly — it would run as the owner session; route it through pass-keys (DESIGN.md: Proton Pass)",
+				undefined,
+				{ name: rec.name, line: rec.line },
+			);
+		} else {
+			poisoned.delete(rec.name);
+		}
 	}
-	return makeStore(entries);
+	return makeStore(entries, poisoned);
 }
 
-function makeStore(entries: Map<string, string>): AuthStore {
+function makeStore(entries: Map<string, string>, poisoned: Set<string>): AuthStore {
 	// Promises are cached, not values: concurrent resolves share one
 	// `!command` execution, and a rejection evicts itself so a transient
 	// failure can be retried.
@@ -91,9 +137,16 @@ function makeStore(entries: Map<string, string>): AuthStore {
 			if (value === undefined) {
 				return Promise.reject(new Error(`auth.jsonl: no secret named "${name}"`));
 			}
-			const resolved = value.startsWith("!")
-				? resolveCommand(value.slice(1), name)
-				: Promise.resolve(value);
+			// Poisoned records reject without ever spawning their command.
+			const resolved = poisoned.has(name)
+				? Promise.reject(
+						new Error(
+							`auth.jsonl: "${name}" invokes pass-cli directly — that runs as the owner session; route it through pass-keys (DESIGN.md: Proton Pass)`,
+						),
+					)
+				: value.startsWith("!")
+					? resolveCommand(value.slice(1), name)
+					: Promise.resolve(value);
 			cache.set(name, resolved);
 			resolved.catch(() => cache.delete(name));
 			return resolved;

@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadAuth } from "./auth.ts";
+import { invokesPassCliDirectly, loadAuth } from "./auth.ts";
 
 let dirs: string[] = [];
 let prevHome: string | undefined;
@@ -95,5 +102,93 @@ describe("auth.jsonl", () => {
 		const dir = useHome();
 		writeAuth(dir, '{"name":"a","value":"x"}\nnot json\n');
 		expect(() => loadAuth()).toThrow("auth.jsonl:2");
+	});
+});
+
+describe("pass-cli poison (DESIGN.md: Proton Pass)", () => {
+	test("a !command invoking pass-cli directly is poisoned — rejects without spawning", async () => {
+		const dir = useHome();
+		const marker = join(dir, "spawned");
+		// If the command ever ran, the marker file would exist — the
+		// rejection alone can't prove the spawn was skipped.
+		writeAuth(
+			dir,
+			`{"name":"p","value":"!pass-cli item view --vault-name k --item-title i; touch ${marker}"}\n`,
+		);
+		const auth = loadAuth(); // boot must not fail — the poison is per-record
+		expect(auth.has("p")).toBe(true);
+		expect(auth.names()).toContain("p");
+		await expect(auth.resolve("p")).rejects.toThrow(
+			'"p" invokes pass-cli directly — that runs as the owner session; route it through pass-keys',
+		);
+		expect(existsSync(marker)).toBe(false);
+	});
+
+	test("a path-prefixed pass-cli is still poisoned", async () => {
+		const dir = useHome();
+		writeAuth(dir, '{"name":"q","value":"!/opt/tools/bin/pass-cli item view x"}\n');
+		await expect(loadAuth().resolve("q")).rejects.toThrow('"q" invokes pass-cli directly');
+	});
+
+	test("a literal value containing 'pass-cli' is not poisoned", async () => {
+		const dir = useHome();
+		writeAuth(dir, '{"name":"lit","value":"the pass-cli docs say so"}\n');
+		expect(await loadAuth().resolve("lit")).toBe("the pass-cli docs say so");
+	});
+
+	test("a pass-keys record resolves like any !command", async () => {
+		const dir = useHome();
+		const bin = join(dir, "bin");
+		mkdirSync(bin);
+		writeFileSync(join(bin, "pass-keys"), "#!/bin/sh\nprintf 'from-pass-keys'\n", {
+			mode: 0o755,
+		});
+		const prevPath = process.env.PATH;
+		process.env.PATH = `${bin}:${prevPath}`;
+		try {
+			writeAuth(dir, '{"name":"k","value":"!pass-keys run goblin -- printenv K"}\n');
+			expect(await loadAuth().resolve("k")).toBe("from-pass-keys");
+		} finally {
+			process.env.PATH = prevPath;
+		}
+	});
+
+	test("a clean duplicate overrides the poison — last wins", async () => {
+		const dir = useHome();
+		writeAuth(
+			dir,
+			'{"name":"d","value":"!pass-cli item view x"}\n{"name":"d","value":"!printf ok"}\n',
+		);
+		expect(await loadAuth().resolve("d")).toBe("ok");
+	});
+});
+
+describe("invokesPassCliDirectly", () => {
+	test.each([
+		"pass-cli item view --vault-name k --item-title i",
+		"pass-cli",
+		"/home/u/bin/pass-cli item view",
+		"~/bin/pass-cli info",
+		"echo hi; pass-cli item view x",
+		"x && pass-cli login",
+		"$(pass-cli item view x)",
+		"echo `pass-cli info`",
+		// Conservative by design (see auth.ts): a bare word after
+		// whitespace trips even when it's an argument, not a command.
+		"echo pass-cli",
+		"sh -c 'pass-cli item view x'",
+	])("poisons %s", (cmd) => {
+		expect(invokesPassCliDirectly(cmd)).toBe(true);
+	});
+
+	test.each([
+		"pass-keys run goblin -- printenv K",
+		"printenv PASS_CLI_SESSION_DIR",
+		"mypass-cli --help",
+		"cat ~/.pass-cli-env",
+		"printf pass-cli-extra",
+		"echo nothing relevant",
+	])("ignores %s", (cmd) => {
+		expect(invokesPassCliDirectly(cmd)).toBe(false);
 	});
 });

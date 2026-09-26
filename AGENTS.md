@@ -59,6 +59,16 @@ state in the DB, never a shared workspace file); hermes' cache discipline
 this independently, treat it as settled). Consult their AGENTS.md, docs/
 and templates before designing; cite what you took in `DESIGN.md`.
 
+## Live services
+
+- `goblin.service` runs from this working tree — code changes go live
+  only on `systemctl --user restart goblin`, which needs bermudi's OK.
+- `goblin-herdr.service` owns the `goblin` herdr session where delegated
+  harnesses run. Probe herdr only in a throwaway named session
+  (`herdr --session goblin-probe server`), never `default` or `goblin`.
+  Panes run bermudi's interactive zsh: aliases (codex, devin) already
+  add no-approval flags, and repeating them in harness args is fatal.
+
 ## Tests
 
 Tests guard boundaries and invariants, not implementations. Fake the model

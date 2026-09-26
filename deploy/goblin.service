@@ -6,6 +6,11 @@ After=network-online.target
 # tool is what degrades, not the bot.
 Wants=goblin-herdr.service
 After=goblin-herdr.service
+# Key warming rides a sibling oneshot (DESIGN.md, "Proton Pass") — same
+# weak-dep shape as herdr: goblin boots without it; pass-keys-routed
+# auth records then fail loud on a cold cache instead of stalling.
+Wants=goblin-keys.service
+After=goblin-keys.service
 # Never give up restarting — a phone-only operator can't run systemctl reset-failed.
 # ([Unit], not [Service]: systemd ignores it in [Service] with an
 # "Unknown key" warning — the intent silently never applied.)

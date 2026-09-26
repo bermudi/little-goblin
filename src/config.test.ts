@@ -262,6 +262,12 @@ describe("ensureHomeLayout", () => {
 		expect(skill).toContain("npm i -g agent-browser && agent-browser install");
 		// Frontmatter name must match the directory or the catalog skips it.
 		expect(skill).toContain("name: browser");
+		// The pass-cli skill seeds the same way (DESIGN.md, "Proton
+		// Pass") — its compatibility line names the dependency (goblin's
+		// own agent token), which the catalog renders every turn.
+		const passCli = readFileSync(join(dir, "workspace", "skills", "pass-cli", "SKILL.md"), "utf8");
+		expect(passCli).toContain("name: pass-cli");
+		expect(passCli).toContain("compatibility:");
 	});
 
 	test("existing identity files are never clobbered", () => {

@@ -70,18 +70,20 @@ export function ensureHomeLayout(): void {
 			"",
 		].join("\n"),
 	);
-	// The browser skill ships with the repo (DESIGN.md, "Web access"): its
-	// compatibility line carries the dependency + recovery command into
-	// the system prompt's catalog, and a rebuilt box regains the whole
-	// capability — stub, modes, recovery — without operator prompting or
-	// agent memory. Write-if-absent: once seeded, the workspace copy is
-	// goblin's to evolve.
-	mkdirSync(join(paths.skills(), "browser"), { recursive: true });
-	const template = readFileSync(
-		join(import.meta.dir, "..", "deploy", "skills", "browser", "SKILL.md"),
-		"utf8",
-	);
-	seedFile(join(paths.skills(), "browser", "SKILL.md"), template);
+	// Repo-shipped skills (DESIGN.md, "Web access" and "Auth → Proton
+	// Pass"): their compatibility lines carry the dependency + recovery
+	// command into the system prompt's catalog, and a rebuilt box
+	// regains the whole capability — stub, modes, recovery — without
+	// operator prompting or agent memory. Write-if-absent: once seeded,
+	// each workspace copy is goblin's to evolve.
+	for (const skill of ["browser", "pass-cli"]) {
+		mkdirSync(join(paths.skills(), skill), { recursive: true });
+		const template = readFileSync(
+			join(import.meta.dir, "..", "deploy", "skills", skill, "SKILL.md"),
+			"utf8",
+		);
+		seedFile(join(paths.skills(), skill, "SKILL.md"), template);
+	}
 	seedFile(
 		paths.user(),
 		[

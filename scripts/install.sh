@@ -26,6 +26,14 @@ auth_mode="$(stat -c '%a' "$goblin_home/auth.jsonl")"
 if [ "$(( 8#$auth_mode & 8#077 ))" -ne 0 ]; then
 	fail "auth.jsonl mode is $auth_mode — tighten it first: chmod 600 $goblin_home/auth.jsonl"
 fi
+# A `!` record that invokes pass-cli directly resolves as the OWNER
+# session — full account, no audit (DESIGN.md: Proton Pass). The loader
+# only poisons such records (boot must never crash-loop), so install is
+# where they get refused. check-auth prints names only, never values.
+offenders=""
+if ! offenders="$(GOBLIN_HOME="$goblin_home" "$bun_bin" "$repo_root/scripts/check-auth.ts")"; then
+	fail "auth.jsonl records invoke pass-cli directly (${offenders//$'\n'/, }) — route them through pass-keys (DESIGN.md: Proton Pass)"
+fi
 
 # Dependencies — node_modules, not the world.
 if [ ! -d "$repo_root/node_modules" ]; then
@@ -59,6 +67,23 @@ if [ -n "$herdr_bin" ]; then
 else
 	echo "install: warning — herdr not found in PATH; delegation will be unavailable" >&2
 fi
+
+# Key warming (DESIGN.md, "Proton Pass"): a cold pass-cli login runs
+# ~100s of retries, past auth's 15s resolve bound, so goblin.service
+# Wants= a oneshot warmer + a twice-daily timer that keep the pass-keys
+# tmpfs cache hot. Only installed when an auth record's command routes
+# through pass-keys — and then pass-keys must exist, or the records
+# could never resolve at all.
+passkeys_bin=""
+if grep -Eq '"value"[[:space:]]*:[[:space:]]*"!.*pass-keys' "$goblin_home/auth.jsonl"; then
+	passkeys_bin="$(command -v pass-keys || true)"
+	[ -n "$passkeys_bin" ] ||
+		fail "auth.jsonl routes keys through pass-keys but pass-keys is not in PATH — install it first (~/build/pass-keys)"
+	sed \
+		-e "s|/home/daniel/.local/bin/pass-keys|$passkeys_bin|g" \
+		"$repo_root/deploy/goblin-keys.service" > "$unit_dir/goblin-keys.service"
+	cp "$repo_root/deploy/goblin-keys.timer" "$unit_dir/goblin-keys.timer"
+fi
 systemctl --user daemon-reload
 
 # User units need linger to run without a login session.
@@ -69,6 +94,12 @@ fi
 
 if [ -n "$herdr_bin" ]; then
 	systemctl --user enable --now goblin-herdr
+fi
+if [ -n "$passkeys_bin" ]; then
+	# The service is a oneshot warmer: enable puts it in default.target's
+	# wants for boot; the timer --now schedules the twice-daily refresh.
+	systemctl --user enable goblin-keys.service
+	systemctl --user enable --now goblin-keys.timer
 fi
 systemctl --user enable --now goblin
 sleep 1

@@ -482,10 +482,11 @@ pass through — real skills in the wild carry extra fields.
 
 One catalog, fixed: `workspace/skills/`. It sits inside the agent's cwd so
 goblin can author its own — writing `skills/<name>/SKILL.md` is the entire
-publishing flow, live next turn. One exception ships from the repo: the
-browser skill is seeded by `ensureHomeLayout` (write-if-absent, from
-`deploy/skills/browser/SKILL.md`) because DESIGN mandates the capability —
-a rebuilt box must regain it without operator prompting or agent memory.
+publishing flow, live next turn. Two exceptions ship from the repo: the
+browser and pass-cli skills are seeded by `ensureHomeLayout` (write-if-absent,
+from `deploy/skills/<name>/SKILL.md`) because DESIGN mandates both
+capabilities — a rebuilt box must regain them without operator prompting
+or agent memory.
 Sharing in a host skill is a symlink —
 made by goblin on request, or by hand; there is no second root, no source
 policy, no selection UI.
@@ -1351,6 +1352,8 @@ failing message by message.
 $GOBLIN_HOME/
 ├── goblin.json5            # providers, models, defaults
 ├── auth.jsonl              # secrets, mode 0600
+├── pass-cli.env            # goblin's agent-token PAT, mode 0600
+│                           # (owner-written; never read into context)
 ├── workspace/              # the agent's home; every tool runs here
 │   ├── SOUL.md             # required, template-created on first boot
 │   ├── AGENTS.md           # stub-created on first boot, then agent-owned
@@ -1368,6 +1371,10 @@ $GOBLIN_HOME/
     │                       # history (UIMessage JSON rows), bindings,
     │                       # memory outbox/contexts/suppressions,
     │                       # programs, delegations
+    ├── pass-cli/           # pass-cli session dir for the pass-keys
+    │                       # lane (auth.jsonl `!pass-keys` resolves)
+    ├── pass-cli-task/      # pass-cli session dir for the skill —
+    │                       # separate, never concurrent with the lane
     └── delegations/<id>/report.md   # a harness's final report
 ```
 
@@ -1396,7 +1403,8 @@ works; it is never required.
 src/
   index.ts          composition root: config → auth → conversations → bot → http
   config.ts         goblin.json5, zod-validated
-  auth.ts           auth.jsonl reader + "!" command resolution
+  auth.ts           auth.jsonl reader + "!" command resolution +
+                    pass-cli-direct poisoning (resolve rejects, never spawns)
   log.ts            structured log; no console.log anywhere else
   tg/               grammy: intake, buffer, delivery, commands (only grammy-aware dir)
   conversation.ts   store: SQLite-backed resolve/load/append events, meta, epoch

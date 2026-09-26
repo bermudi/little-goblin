@@ -77,7 +77,8 @@ re-checks that it still holds authority** — its conversation epoch hasn't
 advanced since enqueue.
 
 Implementation: each conversation carries a monotonic `epoch`, bumped on
-settings changes (`/model`, `/think`, `/voice`) and explicit cancellation. A turn
+settings changes (`/voice`, the mini app's settings writes) and explicit
+cancellation. A turn
 captures `(conversationId, epoch)` at admission and calls `checkAuthority()`
 around every await. Fenced turns abort quietly and log it. No machines, no
 drain sets — one counter and one function.
@@ -112,8 +113,7 @@ agent loop.
 - **Thinking**: `off|low|medium|high|xhigh|max` is an operator vocabulary,
   not a provider contract — `thinkingOptions` maps each family to the
   nearest honest knob and writes the collapse down; `thinkingLevelsFor`
-  is the same table read the other way, and `/think` + the mini app offer
-  only what the active model can express. Family ladders follow the bare
+  is the same table read the other way, and the mini app offers only what the active model can express. Family ladders follow the bare
   model id under every kind — a `glm-5.3` is forced-thinking whether z.ai
   serves it directly or via a relay. Stored values outside a model's set
   aren't errors — defaults span models, so the mapping clamps them to the
@@ -130,11 +130,15 @@ agent loop.
   models.dev: `supported_parameters` discriminates `reasoning_effort`
   (native ladder → verbatim), `reasoning` only (toggle → `off|low`), or
   neither (non-reasoner → `off`); a cold catalog passes the level
-  through — fail loud, never fake knowledge. `off` = `enabled:false`.
-  One `/think` command.
+  through — fail loud, never fake knowledge. `off` = `enabled:false`. No
+  `/think` command — the mini app owns the knob.
 - **History**: stored as AI SDK `UIMessage`-format JSON (the v5 parts array —
-  text, reasoning, tool, file parts). The SDK doesn't prescribe storage; this
-  is the format it round-trips best.
+  text, reasoning, tool, file parts), wrapped in a versioned envelope
+  `{"v":1,"message":…}`: the SDK owns the part shapes, so every row stamps
+  the format that wrote it — a future shape change is a deliberate
+  `v1→v2` converter at open, never silent placeholder degradation of old
+  rows. `openStore` migrates bare (pre-envelope) rows once; reads accept
+  both shapes.
 - **Causal view, arrival-order storage.** `events` appends in arrival seq —
   that stays the truth. What the model sees interleaves replies by
   `anchor_seq`: each assistant response is stamped with the seq of the user
@@ -143,6 +147,32 @@ agent loop.
   behind a running turn coalesce into one successor turn — a single model
   call answers them all — and consecutive user messages merge into one at
   conversion.
+- **Compaction**: history is unbounded on disk, bounded in the window by
+  pointer relocation, never deletion. A conversation whose completed turn
+  crosses **75% of its model's catalog context window** — or the operator's
+  `/compact` — compacts: the conversation's own model (a summary is a
+  compression of everything the agent knew; a sloppy one silently degrades
+  every future turn, and it runs rarely) summarizes everything from the
+  previous boundary (or the start) up to a cut chosen at a **completed
+  exchange** — the causal-view rule, so a response is never orphaned from
+  its user message — keeping a recent tail inside a token budget (~25% of
+  the window, estimated). The result lands in a first-class `compactions`
+  table (boundary seq, summary, tokens before, model, timestamp); the latest
+  row is the conversation's active pointer and earlier rows are the audit
+  trail. The event stream is untouched — arrival-order storage stays the
+  truth, and the full record remains queryable forever. The model view
+  becomes [summary message] + events after the boundary: the summary is
+  minted at read time as a user-role message framing the carried context.
+  The requestHash move is the sanctioned boundary (Cache stability), logged
+  as `history compacted` with the numbers. Failure is loud and lossless: a
+  failed summary call writes no boundary and warns; the next threshold
+  crossing retries. Auto-compaction runs inside the conversation's serial
+  lane after the turn's sinks are notified — the reply lands first, a
+  queued successor waits out the summary call. `/compact` runs the same
+  compaction on demand and replies with the numbers; with the context
+  window unknown it still compacts (manual is a forced scrub). The ≥80%
+  utilization warn stays as the alarm that compaction didn't happen or
+  didn't keep up.
 - **Capabilities**: don't hand-maintain a matrix. Use what the SDK exposes on
   model objects (`supportedUrls`, unsupported-feature warnings) plus the
   `models.dev` catalog for per-model input modalities (image/audio/document),
@@ -158,7 +188,7 @@ agent loop.
   note. Attached audio is data (Transcription, below); an mp3's bytes in
   every request is the most expensive way to not listen to it. Pure means stable:
   the same history under the same model materializes to the same request
-  bytes every turn (see Cache stability). A `/model` switch recomputes
+  bytes every turn (see Cache stability). A model switch recomputes
   representations once — legitimate, because a model switch is already a
   cold cache. Only disk failure (file gone) degrades an item that would
   have inlined, with a warn.
@@ -180,12 +210,12 @@ agent loop.
     (`cachedInputTokens`, null when the provider doesn't report) and the
     request prefix hash — cache behavior and any drift are observable in
     goblin.log. Window utilization warns as input approaches the
-    catalog context limit. History compaction, when it arrives, is an
-    explicit logged boundary that starts a fresh stable prefix — never
-    silent eviction. (Until then history is unbounded; see non-goals.)
+    catalog context limit. History compaction is an explicit logged
+    boundary that starts a fresh stable prefix — never silent eviction
+    (see Compaction).
 
   Sanctioned one-time rewrites, each visible as a requestHash move in the
-  log: a `/model` switch — or a catalog refresh that changes a model's
+  log: a model switch — or a catalog refresh that changes a model's
   listed modalities — recomputes attachment representations once; a fenced
   or failed turn leaves its user message unanswered, and the successor
   turn's burst-merge (Causal view) rewrites that boundary; a corrupt row's
@@ -581,7 +611,7 @@ No MCP, replacement turn loop, or generic multi-backend framework.
    1024 max tokens, `low` budget — turns must not wait on memory.
 2. **Exclusions: per-topic setting, command-first.** `memoryExcluded`
    boolean on the conversation (settings-command pattern: `/memory
-   on|off|status`, epoch-bumped like `/model`; mini-app toggle follows).
+   on|off|status`, epoch-bumped like `/voice`; mini-app toggle follows).
    Excluded topics send nothing and recall nothing — enforced in Goblin
    before any external request, for both automatic recall and the
    memory-search tool. No automatic ingestion until this control exists.
@@ -912,7 +942,7 @@ failing message by message.
   (no whole-file buffering), capped at the local bot-api's 2GB upload
   ceiling.
 - **Voice mode**: `/voice` toggles voice-note replies per conversation —
-  a settings command like `/model`/`/think`, epoch bump and all, so a
+  a settings command like `/voice`, epoch bump and all, so a
   turn never switches medium mid-flight. When on, delivery skips
   streamed text entirely: typing indicator while the turn runs,
   `record_voice` while it synthesizes, then the final reply as voice
@@ -936,8 +966,11 @@ failing message by message.
   tsc checks the client (`tsconfig.client.json`: checkJs, DOM lib scoped to
   that program only) against the server's own wire types, so schema drift is
   a typecheck failure, not a phone-only bug.
-- **Commands** are settings-only: `/model` `/think` `/voice` `/stop`. No
-  conversation-lifecycle commands — topics own that. The one exception is
+- **Commands** are few on purpose: `/voice` `/memory` `/forget` `/stop`
+  `/compact`. `/model` and `/think` are retired — the mini app owns
+  model and thinking settings (config lives where config lives), which
+  keeps the chat surface small. No conversation-lifecycle commands —
+  topics own that. The one exception is
   `/start`: clients fire it automatically on first open, so it gets a canned
   greeting (consumed before intake, never a model turn) and stays hidden
   from the advertised command menu.
@@ -1070,9 +1103,7 @@ out) · conversation-lifecycle
 commands · subagents · delegated work · external agents · ACP · MCP ·
 project environments · inner life · onboarding wizard · state
 migrations (general framework; additive memory schema changes are in scope) ·
-in-process embeddings (delegated to Hindsight for memory) · multi-user · history compaction (history is
-unbounded in v1 — a designed truncation/compaction story arrives with the
-feature that needs it)
+in-process embeddings (delegated to Hindsight for memory) · multi-user
 
 ## Test posture — the real change
 

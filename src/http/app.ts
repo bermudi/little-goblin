@@ -381,7 +381,7 @@ export const APP_HTML = `<!doctype html>
             <input id="favInput" class="mono" placeholder="provider/model-id" autocomplete="off" spellcheck="false" autocapitalize="off" aria-label="add favorite">
             <button class="addbtn" id="favAdd" type="button">Add</button>
           </div>
-          <div class="cap">Offered in /model and in the pickers above.</div>
+          <div class="cap">Offered in the pickers above.</div>
         </div>
       </div>
     </section>

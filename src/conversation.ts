@@ -52,12 +52,27 @@ export interface ConversationMetaPatch {
 	memoryExcluded?: boolean;
 }
 
+// A compaction pointer (DESIGN.md, Compaction). Rows append forever —
+// audit trail; the latest per conversation is the active boundary.
+export interface Compaction {
+	boundarySeq: number;
+	summary: string;
+	tokensBefore: number;
+	model: string;
+	createdAt: string;
+}
+
 export interface ConversationStore {
 	// The shared handle — memory-queue, memory-contexts, and the outage
 	// tracker each own one table in the same database file.
 	readonly db: Database;
 	readonly memoryQueue: MemoryQueue;
 	readonly memoryContexts: MemoryContexts;
+	// The active compaction pointer (latest row) — null = uncompacted.
+	// The compactions table itself is append-only audit; only the newest
+	// row per conversation steers the model view.
+	getCompaction(id: string): Compaction | null;
+	setCompaction(id: string, compaction: Compaction): void;
 	// Get-or-create by Telegram address. New conversations start at epoch 0.
 	// The cwd column still exists in the table (NOT NULL, no default —
 	// existing DBs need it stamped) but cwd is no longer per-conversation
@@ -85,6 +100,13 @@ export interface ConversationStore {
 	// Same causal view with event seqs — memory recall blocks anchor to
 	// the triggering user message's seq, so interleaving needs positions.
 	historyEntries(id: string): { seq: number; message: UIMessage }[];
+	// The causal view with anchors — compaction's cut rule needs to know
+	// which responses belong to which user events (exchange completeness).
+	historyDetail(id: string): { seq: number; anchorSeq: number | null; message: UIMessage }[];
+	// What a turn actually sees (DESIGN.md, Compaction): the causal view
+	// cut at the active boundary, with the summary message prepended.
+	// historyEntries above stays the full, unbounded record.
+	modelEntries(id: string): { seq: number; message: UIMessage }[];
 	// Seq of the newest user event — a turn's response anchors to it.
 	lastUserSeq(id: string): number | null;
 	close(): void;
@@ -132,6 +154,36 @@ function corruptPlaceholder(seq: number, role: string): UIMessage {
 			{
 				type: "text",
 				text: `[unreadable history row seq ${seq} — stored message failed validation. Any attachment it carried may still be readable with read_file or bash tools.]`,
+			},
+		],
+	};
+}
+
+// Rows are versioned envelopes {"v":1,"message":…} — the SDK owns the
+// part shapes, so every row stamps the format that wrote it (DESIGN.md,
+// History). Bare rows are pre-envelope legacy and still read; openStore
+// migrates them once at open.
+function envelopeOf(raw: unknown): unknown {
+	if (
+		typeof raw === "object" && raw !== null && "v" in raw &&
+		(raw as { v?: unknown }).v === 1 && "message" in raw
+	) {
+		return (raw as { message: unknown }).message;
+	}
+	return raw;
+}
+
+// The compacted view's synthetic first message (DESIGN.md, Compaction):
+// user role, explicit framing — the model reads carried context, not a
+// forged transcript. seq = the boundary, so causal sorting keeps it first.
+export function summaryMessage(compaction: Compaction): UIMessage {
+	return {
+		id: `compact-${compaction.boundarySeq}`,
+		role: "user",
+		parts: [
+			{
+				type: "text",
+				text: `[history compacted — the summary below replaces everything before seq ${compaction.boundarySeq}; treat it as accurate carried context, not as a message anyone sent]\n\n${compaction.summary}`,
 			},
 		],
 	};
@@ -212,6 +264,50 @@ export function openStore(dbPath: string): ConversationStore {
 
 	const memoryQueue = new MemoryQueue(db);
 	const memoryContexts = new MemoryContexts(db);
+	// Compaction pointers — append-only audit; the newest row per
+	// conversation is the active boundary (DESIGN.md, Compaction).
+	db.run(`
+		CREATE TABLE IF NOT EXISTS compactions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_id TEXT NOT NULL REFERENCES conversations(id),
+			boundary_seq INTEGER NOT NULL,
+			summary TEXT NOT NULL,
+			tokens_before INTEGER NOT NULL,
+			model TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`);
+	// Legacy rows predate the versioned envelope — wrap them once, in
+	// place, before anything reads them this boot. Only well-formed bare
+	// UIMessage objects match (top-level string `id`); corrupt rows are
+	// left alone and keep degrading to placeholders on read.
+	const bare = db
+		.query<{ n: number }, []>(
+			`SELECT COUNT(*) AS n FROM events
+			 WHERE json_valid(data)
+			   AND json_type(data, '$.v') IS NULL
+			   AND json_type(data, '$.message') IS NULL
+			   AND json_type(data, '$.id') = 'text'`,
+		)
+		.get()?.n ?? 0;
+	if (bare > 0) {
+		db.run(
+			`UPDATE events SET data = json_object('v', 1, 'message', json(data))
+			 WHERE json_valid(data)
+			   AND json_type(data, '$.v') IS NULL
+			   AND json_type(data, '$.message') IS NULL
+			   AND json_type(data, '$.id') = 'text'`,
+		);
+		log.info("history payload envelopes migrated", { rows: bare });
+	}
+	const qCompaction = db.query<
+		{ boundary_seq: number; summary: string; tokens_before: number; model: string; created_at: string },
+		[string]
+	>(
+		"SELECT boundary_seq, summary, tokens_before, model, created_at FROM compactions WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
+	);
+	const qInsertCompaction = db.query(
+		"INSERT INTO compactions (conversation_id, boundary_seq, summary, tokens_before, model, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+	);
 	const qGet = db.query<Row, [string]>("SELECT * FROM conversations WHERE id = ?");
 	const qInsertConv = db.query(
 		`INSERT INTO conversations (id, chat_id, thread_id, title, cwd, created_at)
@@ -279,6 +375,31 @@ export function openStore(dbPath: string): ConversationStore {
 		db,
 		memoryQueue,
 		memoryContexts,
+
+		getCompaction(id) {
+			const row = qCompaction.get(id);
+			return row
+				? {
+						boundarySeq: row.boundary_seq,
+						summary: row.summary,
+						tokensBefore: row.tokens_before,
+						model: row.model,
+						createdAt: row.created_at,
+					}
+				: null;
+		},
+
+		setCompaction(id, compaction) {
+			qInsertCompaction.run(
+					id,
+					compaction.boundarySeq,
+					compaction.summary,
+					compaction.tokensBefore,
+					compaction.model,
+					compaction.createdAt,
+				);
+		},
+
 		resolve(addr, defaultCwd) {
 			const id = addressId(addr);
 			const existing = qGet.get(id);
@@ -325,7 +446,7 @@ export function openStore(dbPath: string): ConversationStore {
 						id,
 						start + i + 1,
 						m.role,
-						JSON.stringify(m),
+						JSON.stringify({ v: 1, message: m }),
 						opts?.anchorSeq ?? null,
 						now,
 					);
@@ -353,6 +474,10 @@ export function openStore(dbPath: string): ConversationStore {
 		},
 
 		historyEntries(id) {
+			return this.historyDetail(id).map((e) => ({ seq: e.seq, message: e.message }));
+		},
+
+		historyDetail(id) {
 			const rows = qHistory.all(id).map((r) => {
 				let raw: unknown;
 				try {
@@ -369,7 +494,7 @@ export function openStore(dbPath: string): ConversationStore {
 						message: corruptPlaceholder(r.seq, r.role),
 					};
 				}
-				const parsed = uiMessageSchema.safeParse(raw);
+				const parsed = uiMessageSchema.safeParse(envelopeOf(raw));
 				if (!parsed.success) {
 					log.warn("corrupt history row — degrading to placeholder", {
 						conversation: id,
@@ -394,7 +519,17 @@ export function openStore(dbPath: string): ConversationStore {
 				const kb = b.anchorSeq ?? b.seq;
 				return ka - kb || a.seq - b.seq;
 			});
-			return rows.map((r) => ({ seq: r.seq, message: r.message }));
+			return rows;
+		},
+
+		modelEntries(id) {
+			const compaction = this.getCompaction(id);
+			const entries = this.historyEntries(id).filter(
+				(e) => compaction === null || e.seq > compaction.boundarySeq,
+			);
+			return compaction === null
+				? entries
+				: [{ seq: compaction.boundarySeq, message: summaryMessage(compaction) }, ...entries];
 		},
 
 		close() {

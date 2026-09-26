@@ -34,7 +34,7 @@ const config: Config = {
 	logLevel: "info",
 };
 
-function setup() {
+function setup(overrides?: { compact?: Runtime["compact"] }) {
 	const store = openStore(tmpdb());
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 	const sent: string[] = [];
@@ -53,71 +53,66 @@ function setup() {
 				stopped.push(id);
 				return { stopped: stopped.length > 0, settled: Promise.resolve() };
 			},
+			...(overrides?.compact ? { compact: overrides.compact } : {}),
 		} as unknown as Runtime,
 		botUsername: "goblin",
 	};
 	return { store, conv, sent, stopped, deps };
 }
 
+const tick = () => new Promise<void>((r) => setTimeout(r, 10));
+
 describe("commands", () => {
-	test("/model rejects a ref without provider/model shape", () => {
-		const { store, conv, sent, deps } = setup();
-		expect(handleCommand(deps, conv, "/model zai")).toBe(true);
-		expect(store.get(conv.id)!.model).toBeNull();
-		expect(sent[0]).toContain("<provider>/<model-id>");
+	test("/compact runs the compactor and reports the numbers", async () => {
+		const compactCalls: string[] = [];
+		const { store, conv, sent, deps } = setup({
+			compact: async (c) => {
+				compactCalls.push(c.id);
+				return {
+					kind: "compacted",
+					boundarySeq: 40,
+					eventsCompacted: 42,
+					tokensBefore: 21_000,
+					tailEvents: 6,
+					summary: "s",
+				};
+			},
+		});
+		expect(handleCommand(deps, conv, "/compact")).toBe(true);
+		await tick();
+		expect(compactCalls).toEqual([conv.id]);
+		expect(sent[0]).toContain("compacted 42 messages");
+		expect(sent[0]).toContain("kept the last 6");
 		store.close();
 	});
 
-	test("/model sets an override and bumps the epoch", () => {
+	test("/compact with nothing to do says so; a failure surfaces", async () => {
+		const { store, conv, sent, deps } = setup({
+			compact: async () => ({ kind: "noop", reason: "nothing worth compacting" }),
+		});
+		expect(handleCommand(deps, conv, "/compact")).toBe(true);
+		await tick();
+		expect(sent[0]).toContain("nothing to compact");
+		store.close();
+
+		const failing = setup({
+			compact: async () => {
+				throw new Error("summarizer exploded");
+			},
+		});
+		expect(handleCommand(failing.deps, failing.conv, "/compact")).toBe(true);
+		await tick();
+		expect(failing.sent[0]).toContain("compact failed: summarizer exploded");
+		failing.store.close();
+	});
+
+	test("/model and /think are retired — they are no longer commands", () => {
 		const { store, conv, deps } = setup();
-		expect(handleCommand(deps, conv, "/model zai/glm-4.5")).toBe(true);
-		const after = store.get(conv.id)!;
-		expect(after.model).toBe("zai/glm-4.5");
-		expect(after.epoch).toBe(1);
-		store.close();
-	});
-
-	test("/model rejects an unknown provider", () => {
-		const { store, conv, sent, deps } = setup();
-		expect(handleCommand(deps, conv, "/model other/x")).toBe(true);
-		expect(store.get(conv.id)!.model).toBeNull();
-		expect(sent[0]).toContain("unknown provider");
-		store.close();
-	});
-
-	test("/model reset clears the override", () => {
-		const { store, conv, sent, deps } = setup();
-		handleCommand(deps, conv, "/model zai/glm-4.5");
-		expect(store.get(conv.id)!.model).toBe("zai/glm-4.5");
-		handleCommand(deps, conv, "/model reset");
-		const after = store.get(conv.id)!;
-		expect(after.model).toBeNull();
-		expect(sent.at(-1)).toContain("default");
-		store.close();
-	});
-
-	test("/think reset clears the override", () => {
-		const { store, conv, deps } = setup();
-		handleCommand(deps, conv, "/think high");
-		expect(store.get(conv.id)!.thinking).toBe("high");
-		handleCommand(deps, conv, "/think reset");
-		expect(store.get(conv.id)!.thinking).toBeNull();
-		store.close();
-	});
-
-	test("/think rejects a bad level", () => {
-		const { store, conv, deps } = setup();
-		handleCommand(deps, conv, "/think turbo");
-		expect(store.get(conv.id)!.thinking).toBeNull();
-		store.close();
-	});
-
-	test("/think rejects a level the model can't express", () => {
-		const { store, conv, sent, deps } = setup();
-		// glm-5.3 thinking is forced — off is not on its ladder.
-		handleCommand(deps, conv, "/think off");
-		expect(store.get(conv.id)!.thinking).toBeNull();
-		expect(sent[0]).toContain("low, high, max");
+		// Not handled: falls through to intake as an ordinary message the
+		// model answers ("use the settings app") — muscle memory degrades
+		// gracefully instead of silently doing settings work.
+		expect(handleCommand(deps, conv, "/model zai/glm-4.5")).toBe(false);
+		expect(handleCommand(deps, conv, "/think high")).toBe(false);
 		store.close();
 	});
 

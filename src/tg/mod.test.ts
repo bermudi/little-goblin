@@ -218,15 +218,22 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 
 describe("handleMessage", () => {
 	test("a settings command without media is consumed — nothing reaches the buffer", () => {
-		const h = routerHarness();
+		// tts on (the default) so /voice actually toggles — the observable
+		// proof the command ran against meta, not just a reply.
+		const h = routerHarness({
+			...baseConfig,
+			tts: { kind: "edge", voice: "en-US-AriaNeural" },
+		});
 		handleMessage(
 			h.env,
-			tgMsg({ message_id: 1, chat: { id: 1, type: "private" }, text: "/model zai/m" }),
+			tgMsg({ message_id: 1, chat: { id: 1, type: "private" }, text: "/voice" }),
 		);
 		expect(h.pushed).toEqual([]);
 		expect(h.env.intake.size).toBe(0);
-		// The command really ran: the model override landed in meta.
-		expect(h.store.get("dm:1")!.model).toBe("zai/m");
+		// The command really ran: the voice toggle and epoch bump landed.
+		const conv = h.store.get("dm:1")!;
+		expect(conv.voice).toBe(true);
+		expect(conv.epoch).toBe(1);
 	});
 
 	test("a caption that looks like a command must not eat its media", async () => {

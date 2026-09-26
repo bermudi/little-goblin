@@ -207,3 +207,82 @@ describe("conversation store", () => {
 		store.close();
 	});
 });
+
+describe("history payload envelope", () => {
+	test("append writes versioned envelopes that read back intact", () => {
+		const path = tmpdb();
+		const store = openStore(path);
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("one")]);
+		store.close();
+		const raw = new Database(path)
+			.query<{ data: string }, []>("SELECT data FROM events")
+			.all()[0]!.data;
+		const parsed = JSON.parse(raw) as { v?: number; message?: UIMessage };
+		expect(parsed.v).toBe(1);
+		expect(parsed.message!.parts[0]).toMatchObject({ type: "text", text: "one" });
+	});
+
+	test("bare legacy rows still read, and are wrapped once at next open", () => {
+		const path = tmpdb();
+		const store = openStore(path);
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("legacy")]);
+		// Forcibly age the row back to the pre-envelope format.
+		store.db.run("UPDATE events SET data = json_extract(data, '$.message')");
+		expect(store.history(c.id).map((m) => (m.parts[0] as { text: string }).text)).toEqual(["legacy"]);
+		store.close();
+		// Migration at open: wrap, and never re-wrap (idempotent).
+		const reopened = openStore(path);
+		expect(reopened.history(c.id).map((m) => (m.parts[0] as { text: string }).text)).toEqual(["legacy"]);
+		const raw = reopened.db.query<{ data: string }, []>("SELECT data FROM events").all()[0]!.data;
+		expect(JSON.parse(raw)).toMatchObject({ v: 1 });
+		reopened.close();
+		const twice = openStore(path);
+		expect(JSON.parse(twice.db.query<{ data: string }, []>("SELECT data FROM events").all()[0]!.data)).toMatchObject({ v: 1 });
+		twice.close();
+	});
+});
+
+describe("compaction pointers", () => {
+	test("getCompaction returns the latest row; modelEntries is summary + tail", () => {
+		const store = openStore(tmpdb());
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("one"), { id: "a", role: "assistant", parts: [{ type: "text", text: "two" }] }]);
+		store.append(c.id, [msg("three")]);
+		store.setCompaction(c.id, {
+			boundarySeq: 2,
+			summary: "the early era, folded",
+			tokensBefore: 1234,
+			model: "zai/glm-5.3",
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+		store.setCompaction(c.id, {
+			boundarySeq: 2,
+			summary: "newer fold",
+			tokensBefore: 2345,
+			model: "zai/glm-5.3",
+			createdAt: "2026-01-02T00:00:00Z",
+		});
+		expect(store.getCompaction(c.id)).toMatchObject({ boundarySeq: 2, summary: "newer fold" });
+		// The full record stays whole; the model view is cut and lead by
+		// the synthetic summary message.
+		expect(store.history(c.id)).toHaveLength(3);
+		const view = store.modelEntries(c.id);
+		expect(view).toHaveLength(2);
+		expect(view[0]!.seq).toBe(2);
+		expect(view[0]!.message.role).toBe("user");
+		expect((view[0]!.message.parts[0] as { text: string }).text).toContain("newer fold");
+		expect(view[0]!.message.id).toBe("compact-2");
+		expect((view[1]!.message.parts[0] as { text: string }).text).toBe("three");
+		store.close();
+	});
+
+	test("without a pointer, modelEntries is exactly the causal view", () => {
+		const store = openStore(tmpdb());
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("one")]);
+		expect(store.modelEntries(c.id)).toEqual(store.historyEntries(c.id));
+		store.close();
+	});
+});

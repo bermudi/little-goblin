@@ -2,7 +2,7 @@
 // land on knobs each provider family actually has. GLM's per-generation
 // semantics (docs.z.ai/guides) motivated this test — send glm-5.3 an
 // effort it doesn't list and the API silently upgrades to max.
-// thinkingLevelsFor is the same table read the other way: what /think
+// thinkingLevelsFor is the same table read the other way: what the app
 // and the mini app may offer.
 
 import { describe, expect, test } from "bun:test";

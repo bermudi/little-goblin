@@ -1,14 +1,13 @@
-// Commands are settings-only: /model /think /voice /memory /stop — plus
-// /forget (memory deletion after review) and /start, the one
-// non-settings command: a canned greeting for the message every
-// Telegram client fires automatically on first open. No
-// conversation-lifecycle commands — topics own that. Every settings change
-// bumps the conversation epoch, fencing in-flight turns.
+// Commands are deliberately few: /voice /memory /forget /stop /compact
+// — plus /start, the one non-settings command: a canned greeting for the
+// message every Telegram client fires automatically on first open.
+// /model and /think are retired — the mini app owns model and thinking
+// settings. No conversation-lifecycle commands — topics own that. Every
+// settings change bumps the conversation epoch, fencing in-flight turns.
 
 import type { Database } from "bun:sqlite";
 import type { Api } from "grammy";
-import { splitModelRef, type ConfigRef, type ThinkingLevel } from "../config.ts";
-import { thinkingLevelsFor } from "../agent/providers.ts";
+import { type ConfigRef } from "../config.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";
 import { HindsightClient, HindsightError } from "../hindsight.ts";
 import { memoryStatus, type MemoryContexts } from "../memory.ts";
@@ -102,7 +101,7 @@ export function handleCommand(
 			reply(
 				deps,
 				conv,
-				"goblin online. just talk — each topic is its own conversation.\n/model · /think · /voice · /memory · /stop",
+				"goblin online. just talk — each topic is its own conversation.\n/voice · /memory · /forget · /stop · /compact",
 			);
 			return true;
 		}
@@ -113,41 +112,28 @@ export function handleCommand(
 			return true;
 		}
 
-		case "/model": {
-			if (arg === "") {
-				const current = conv.model ?? deps.configRef.current.model;
-				const favs = deps.configRef.current.favorites.map((f) => `  ${f}`).join("\n");
-				reply(
-					deps,
-					conv,
-					`model: ${current}\nfavorites:\n${favs || "  (none)"}\n\n/model <ref> to switch · /model reset for the default`,
-				);
-				return true;
-			}
-			if (arg === "reset") {
-				apply(deps, conv, { model: null });
-				log.info("model override cleared", { conversation: conv.id });
-				reply(deps, conv, `model → ${deps.configRef.current.model} (default)`);
-				return true;
-			}
-			let ref: { provider: string; modelId: string };
-			try {
-				ref = splitModelRef(arg);
-			} catch {
-				reply(deps, conv, `model ref must be "<provider>/<model-id>", got "${arg}"`);
-				return true;
-			}
-			if (!deps.configRef.current.providers[ref.provider]) {
-				reply(
-					deps,
-					conv,
-					`unknown provider in "${arg}" — providers: ${Object.keys(deps.configRef.current.providers).join(", ")}`,
-				);
-				return true;
-			}
-			apply(deps, conv, { model: arg });
-			log.info("model override set", { conversation: conv.id, model: arg });
-			reply(deps, conv, `model → ${arg}`);
+		case "/compact": {
+			// The manual lever (DESIGN.md, Compaction) — the same compaction
+			// the 75% auto-trigger runs, forced now. Safe while a turn runs:
+			// the cut rule keeps any in-flight exchange whole, and the turn
+			// keeps its pre-compaction snapshot.
+			void (async () => {
+				try {
+					const outcome = await deps.runtime.compact(conv);
+					if (outcome.kind === "noop") {
+						reply(deps, conv, `nothing to compact — ${outcome.reason}`);
+						return;
+					}
+					reply(
+						deps,
+						conv,
+						`compacted ${outcome.eventsCompacted} messages into a summary · kept the last ${outcome.tailEvents} · ~${Math.round(outcome.tokensBefore / 1000)}k tokens folded`,
+					);
+				} catch (err) {
+					log.error("compact failed", err, { conversation: conv.id });
+					reply(deps, conv, `compact failed: ${err instanceof Error ? err.message : String(err)}`);
+				}
+			})();
 			return true;
 		}
 
@@ -167,41 +153,6 @@ export function handleCommand(
 			apply(deps, conv, { voice: enabled });
 			log.info("voice mode changed", { conversation: conv.id, enabled });
 			reply(deps, conv, `voice replies → ${enabled ? "on" : "off"}`);
-			return true;
-		}
-
-		case "/think": {
-			// Levels the conversation's model can actually express — the
-			// vocabulary is wider than any single model's ladder.
-			const ref = conv.model ?? deps.configRef.current.model;
-			const { provider, modelId } = splitModelRef(ref);
-			const p = deps.configRef.current.providers[provider];
-			const valid = thinkingLevelsFor(
-				p?.kind ?? "",
-				modelId,
-				p?.kind === "openai-compatible" ? p.baseUrl : undefined,
-			);
-			if (arg === "") {
-				reply(
-					deps,
-					conv,
-					`thinking: ${conv.thinking ?? deps.configRef.current.thinking}\n/think <${valid.join("|")}> · /think reset for the default`,
-				);
-				return true;
-			}
-			if (arg === "reset") {
-				apply(deps, conv, { thinking: null });
-				log.info("thinking override cleared", { conversation: conv.id });
-				reply(deps, conv, `thinking → ${deps.configRef.current.thinking} (default)`);
-				return true;
-			}
-			if (!(valid as readonly string[]).includes(arg)) {
-				reply(deps, conv, `${modelId} supports: ${valid.join(", ")}`);
-				return true;
-			}
-			apply(deps, conv, { thinking: arg as ThinkingLevel });
-			log.info("thinking override set", { conversation: conv.id, thinking: arg });
-			reply(deps, conv, `thinking → ${arg}`);
 			return true;
 		}
 
@@ -426,12 +377,11 @@ export function handleCommand(
 // COMMAND_RE derives from this list plus HIDDEN_COMMANDS: the two can
 // never drift apart.
 export const COMMANDS = [
-	{ command: "model", description: "show or override the model" },
-	{ command: "think", description: "show or override thinking level" },
 	{ command: "voice", description: "toggle voice-note replies" },
 	{ command: "memory", description: "memory status, retry or dismiss blocked retention" },
 	{ command: "forget", description: "list or delete memorized sources" },
 	{ command: "stop", description: "fence the running turn" },
+	{ command: "compact", description: "summarize older history to free context" },
 ] as const;
 
 // Handled but not advertised: /start is the client's automatic opener,

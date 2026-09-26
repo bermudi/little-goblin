@@ -7,7 +7,7 @@
 // a pure function of the stored ref and the model's input modalities —
 // never of what else is in history, never of turn order. The same history
 // under the same model materializes to identical request bytes every turn,
-// so a provider's prefix cache survives from turn to turn. A /model switch
+// so a provider's prefix cache survives from turn to turn. A model switch
 // recomputes representations once, which is free — the switch already
 // lands on a cold cache.
 

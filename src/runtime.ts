@@ -38,8 +38,14 @@ import {
 	type RecallContext,
 } from "./memory.ts";
 import { log } from "./log.ts";
+import { runCompaction, type CompactionOutcome } from "./agent/compaction.ts";
 
 const MAX_STEPS = 25;
+
+// Auto-compaction trigger (DESIGN.md, Compaction): a completed turn at
+// or past this fraction of the catalog context window compacts in-lane.
+// The ≥80% utilization warn stays as the alarm that it didn't keep up.
+const COMPACT_AT_PCT = 75;
 
 // Provider capability warnings are observability, not control — logged
 // compact, never fatal. Kept as strings so a warning object carrying a
@@ -121,6 +127,13 @@ export interface RuntimeDeps {
 	// cache-stable) and completed text exchanges enqueue retention under
 	// the turn's authority check.
 	memory?: MemoryTurnDeps;
+	// Compaction wiring — absent = compaction never runs (tests, degraded
+	// boots). summarize resolves the conversation's own model and returns
+	// the summary text; modelRef labels the compactions row.
+	compaction?: {
+		modelRef(conv: Conversation): string;
+		summarize(conv: Conversation, system: string, prompt: string): Promise<string>;
+	};
 }
 
 // Everything a memory-enabled turn needs. Built once at boot from the
@@ -224,6 +237,29 @@ export class Runtime {
 			log.debug("stop — nothing was running", { conversation: convId, epoch });
 		}
 		return { stopped, settled: Promise.all(notifies).then(() => undefined) };
+	}
+
+	// Compact a conversation now — shared by the auto trigger (a completed
+	// turn at ≥75% of the context window) and /compact. Runs the
+	// conversation's own model over the span and moves the pointer; the
+	// event stream is never touched. Throws propagate to the caller — the
+	// auto path warns, the command path replies.
+	async compact(conv: Conversation): Promise<CompactionOutcome> {
+		const compaction = this.deps.compaction;
+		if (!compaction) return { kind: "noop", reason: "compaction not configured" };
+		// buildStep resolves the effective model (+ its context window from
+		// the catalog) with all the usual auth/provider plumbing. Empty tools:
+		// the summary call is a plain generate, no tool surface needed.
+		const step = await this.deps.buildStep(conv, {});
+		const tailTokenBudget =
+			step.contextWindow !== undefined ? Math.round(step.contextWindow * 0.25) : 20_000;
+		return runCompaction(
+			conv.id,
+			this.deps.store,
+			compaction.modelRef(conv),
+			(system, prompt) => compaction.summarize(conv, system, prompt),
+			{ tailTokenBudget },
+		);
 	}
 
 	private lane(convId: string): Lane {
@@ -490,13 +526,16 @@ export class Runtime {
 		// History snapshot is part of admission: a message submitted while
 		// the model step resolves lands in history but must NOT join this
 		// turn's context — it stays queued for its own turn. Reading it
-		// here, before the awaits, is what keeps that boundary. The anchor
+		// here, before the awaits, is what keeps that boundary — and because
+		// the snapshot is the compacted model view (summary + tail, DESIGN.md
+		// Compaction), a /compact landing mid-turn can't rewrite what this
+		// turn already sees. The anchor
 		// rides along: this turn's response is stamped with the seq of
 		// the user message that triggered it, so the causal view can
 		// place the reply immediately after its question. One snapshot
 		// serves history, anchor, and retention-source together — a message
 		// landing between two reads must not split them.
-		const entries = store.historyEntries(convId);
+		const entries = store.modelEntries(convId);
 		const history = entries.map((e) => e.message);
 		let anchorSeq: number | null = null;
 		for (const e of entries) {
@@ -762,6 +801,22 @@ export class Runtime {
 				});
 			}
 			await notifyAll({ kind: "completed" });
+			// Auto-compaction (DESIGN.md, Compaction): the reply has landed and
+			// the sinks are released; the lane stays busy through the summary
+			// call so a queued successor reads the compacted view, not a
+			// mid-flight one. Failure is loud but lossless — no boundary
+			// written, the next threshold crossing retries. Deliberately NOT
+		// thrown to the outer handler: onDone already fired.
+			if (window && window.pct >= COMPACT_AT_PCT) {
+				try {
+					await this.compact(conv);
+				} catch (err) {
+					log.warn("compaction failed — view unchanged, will retry on next threshold crossing", {
+						conversation: convId,
+						error: String(err),
+					});
+				}
+			}
 		} catch (err) {
 			if (err instanceof FencedError || controller.signal.aborted) {
 				// Fenced turns abort quietly and log it.

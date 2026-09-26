@@ -181,7 +181,7 @@ function zaiCodingPlan(baseUrl?: string): boolean {
 	}
 }
 
-// The levels a model can actually express — what /think and the mini app
+// The levels a model can actually express — what the mini app
 // offer. Stored values outside the set aren't rejected: config defaults
 // span models with different ladders, so thinkingOptions clamps them.
 // Unknown kinds/models get the full vocabulary — the passthrough fails

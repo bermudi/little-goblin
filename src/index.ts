@@ -5,6 +5,7 @@ import { contextLimit, ensureOpenRouterCatalog, inputModalities } from "./agent/
 import { buildSystemPrompt } from "./agent/prompt.ts";
 import { observedModel, resolveModel, thinkingOptions } from "./agent/providers.ts";
 import { generateTopicTitle } from "./agent/title.ts";
+import { generateText } from "ai";
 import { probeFfmpeg, transcribeAudio, transcriptionModel } from "./agent/transcribe.ts";
 import { synthesizeSpeech } from "./agent/tts.ts";
 import { makeTools, toolNames } from "./agent/tools/mod.ts";
@@ -150,6 +151,22 @@ async function boot() {
 				...(contextWindow !== null ? { contextWindow } : {}),
 				...(providerOptions ? { providerOptions } : {}),
 			};
+		},
+		// Compaction wiring (DESIGN.md, Compaction): the conversation's own
+		// model writes the summary — same resolution path as turns (auth,
+		// relays), plain generate, no tools, default thinking.
+		compaction: {
+			modelRef: (conv) => conv.model ?? configRef.current.model,
+			summarize: async (conv, system, prompt) => {
+				const cfg = configRef.current;
+				const modelRef = conv.model ?? cfg.model;
+				const model = observedModel(await resolveModel(cfg, auth, modelRef), {
+					conversation: conv.id,
+					purpose: "compaction",
+				});
+				const { text } = await generateText({ model, system, prompt });
+				return text;
+			},
 		},
 		makeTools: (conv, deliverVoice, recording, deliverFile) => {
 			const tts = configRef.current.tts;

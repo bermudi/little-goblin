@@ -859,6 +859,107 @@ describe("cache stability", () => {
 		}
 	});
 
+	test("a completed turn at ≥75% of the window compacts; below it does not", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		// Seed three big exchanges + the turn's own: the compactor must fold
+		// the first three into a summary and keep the live one whole.
+		const big = "x".repeat(600);
+		for (let i = 0; i < 3; i++) {
+			store.append(conv.id, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
+			store.append(
+				conv.id,
+				[{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
+				{ anchorSeq: store.lastUserSeq(conv.id) },
+			);
+		}
+		const model = (inputTokens: number) =>
+			({
+				specificationVersion: "v2",
+				provider: "fake",
+				modelId: "fake-1",
+				supportedUrls: {},
+				doGenerate() {
+					throw new Error("unimplemented");
+			},
+				doStream() {
+					const stream = new ReadableStream<LanguageModelV2StreamPart>({
+						start(controller) {
+							controller.enqueue({ type: "stream-start", warnings: [] });
+							controller.enqueue({ type: "text-start", id: "t1" });
+							controller.enqueue({ type: "text-delta", id: "t1", delta: "ok" });
+							controller.enqueue({ type: "text-end", id: "t1" });
+							controller.enqueue({
+								type: "finish",
+								finishReason: "stop",
+								usage: { inputTokens, outputTokens: 1, totalTokens: inputTokens + 1 },
+							});
+							controller.close();
+						},
+					});
+					return { stream };
+				},
+			} as unknown as LanguageModel);
+		const summaries: string[] = [];
+		const runtime = new Runtime({
+				store,
+				buildStep: () => ({ model: model(800), system: "test", contextWindow: 1000 }),
+				makeTools: () => ({}),
+				compaction: {
+					modelRef: () => "zai/glm-5.3",
+					summarize: async (_conv, _system, prompt) => {
+						summaries.push(prompt);
+						return "the folded era";
+					},
+				},
+			});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "live question" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		// The compaction runs in-lane AFTER the sinks are notified — done
+		// resolving only means the reply landed. Wait for the lane to settle.
+		await sleep(100);
+		// 80% ≥ 75%: the compactor ran in-lane before onDone settled the
+		// next queued turn's snapshot — here, before done resolves.
+		expect(summaries).toHaveLength(1);
+		expect(summaries[0]).toContain("q0");
+		const pointer = store.getCompaction(conv.id);
+		// The budget keeps a chunky recent tail (whole exchanges only), so
+		// the cut lands at the end of the second exchange — seq 4 — with the
+		// live exchange (u7/a7) whole in the tail.
+		expect(pointer).toMatchObject({ boundarySeq: 4, summary: "the folded era", model: "zai/glm-5.3" });
+		// The record stays whole; the model view is summary + kept tail.
+		expect(store.history(conv.id)).toHaveLength(8);
+		const view = store.modelEntries(conv.id);
+		expect(view).toHaveLength(5);
+		expect((view[0]!.message.parts[0] as { text: string }).text).toContain("the folded era");
+		const lastText = view
+			.at(-1)!
+			.message.parts.find((p) => (p as { type: string }).type === "text") as { text: string } | undefined;
+		expect(lastText?.text).toBe("ok");
+		store.close();
+
+		// Below the threshold: no compaction, no pointer.
+		const store2 = openStore(tmpdb());
+		const conv2 = store2.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const runtime2 = new Runtime({
+			store: store2,
+			buildStep: () => ({ model: model(50), system: "test", contextWindow: 1000 }),
+			makeTools: () => ({}),
+			compaction: {
+				modelRef: () => "m",
+				summarize: async () => {
+					throw new Error("must not compact");
+				},
+			},
+		});
+		const sink2 = new RecordingSink();
+		runtime2.submit(conv2, userMessage([{ type: "text", text: "hi" }]), sink2);
+		expect(await sink2.done).toEqual({ kind: "completed" });
+		expect(store2.getCompaction(conv2.id)).toBeNull();
+		store2.close();
+	});
+
 	test("provider warnings are logged, not dropped", async () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");

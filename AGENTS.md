@@ -69,6 +69,20 @@ and templates before designing; cite what you took in `DESIGN.md`.
   Panes run bermudi's interactive zsh: aliases (codex, devin) already
   add no-approval flags, and repeating them in harness args is fatal.
 
+## Keys (live since 2026-09-26)
+
+- Every `auth.jsonl` record is `!pass-keys run goblin -- printenv NAME`
+  — the `goblin` profile in `~/.config/pass-keys/config.json` (dots
+  `passkeys` store), authenticating as the **`goblin-dev`** agent token
+  (`~/goblin/pass-cli.env`), each key item-granted from the Keys vault
+  and ID-addressed. `goblin-keys.timer` keeps the tmpfs cache warm.
+- Adding a key: create/grant the item to `goblin-dev` (owner session),
+  add the ID ref to the profile, `pass-keys warm goblin`, add the
+  record. Symptom decoder: a key error at request time → `pass-keys
+  status goblin` and `journalctl --user -u goblin-keys` first.
+- `pass-keys run`'s stdout is the child's (fixed 2026-09-26 — operational
+  lines used to corrupt resolved keys).
+
 ## Tests
 
 Tests guard boundaries and invariants, not implementations. Fake the model

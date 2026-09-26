@@ -322,8 +322,9 @@ refused before any I/O — `read_file` on `/dev/zero` is a hang, not a
 read; `bash` (timeouts + output caps) is the sanctioned channel for
 those.
 
-External agents arrived as `delegate` (see `Delegation`). Subagent and
-MCP tools do not exist — each arrives with the feature that needs it,
+External agents arrived as `delegate` (see `Delegation`); MCP arrived
+as a skill over goblin's own mcporter (see `Web access`). Subagent
+tools do not exist — they arrive with the feature that needs them,
 designed then, not spec'd now.
 
 ## Web access (search, fetch, browser)
@@ -436,15 +437,34 @@ tool. MCP stays out, with its return conditions on record (below).
   the day a box with a display wants it. If the model fumbles CLI
   ergonomics in practice, a thin native `browser` tool wrapping the same
   CLI arrives — designed then, with evidence. Not now.
-- **MCP stays out**, return conditions on record: (1) stdio servers take
-  secrets via env vars, which the bash-inherits-env rule forbids — remote
-  HTTP servers with per-call header auth, or config-file servers, would be
-  the only allowed shapes; (2) dynamic tool schemas drift the request
-  prefix — a returning MCP layer must snapshot its tool surface at boot and
-  log every change; (3) servers dump 5–50 tools into every request — both
-  references built filtering/tool-search machinery to cope, and goblin
-  doesn't ship that until a second concrete service demand (beyond
-  search/fetch/browser) names itself.
+- **MCP returns as a skill over goblin's own mcporter** (operator ask,
+  2026-09-26; a native in-process client was weighed and rejected).
+  The original return conditions, and how this shape meets them:
+  (1) stdio servers take secrets via env — the keys ride `pass-keys run
+  goblin-mcp` into mcporter's child env only, never goblin's process
+  env; (2) dynamic schemas drift the request prefix — goblin's tool set
+  doesn't move at all, MCP tools are reached through `bash`; (3) 5–50
+  tools per server — discovery is on demand (`list <server> --schema`),
+  which is the tool-search both references built, for free.
+- **Goblin owns its mcporter; it never rides the host's.** mcporter is
+  a pinned goblin dependency (bun.lock → `node_modules/.bin/mcporter`),
+  its config is `$GOBLIN_HOME/mcporter.json` (standard `mcpServers`
+  shape, env placeholders only), its keys are the `goblin-mcp` pass-keys
+  profile (goblin's token, see Auth), and the repo ships the one entry
+  point (`scripts/mcp`: pass-keys run → pinned mcporter `--config`).
+  Editor/host config imports are off — the operator's Cursor/Claude/
+  Codex servers never leak in. The skill ships like the browser's
+  (`deploy/skills/mcp/SKILL.md`, seeded write-if-absent) and carries
+  the two-timeouts rule (mcporter `--timeout` strictly under the bash
+  timeout, or the kill is silent). The server set is config, not code.
+  Open before build: mcporter's switch for disabling imports, and
+  whether its keep-alive daemon state (`~/.mcporter/daemon`) can live
+  under `$GOBLIN_HOME` — if it can't, no daemon (per-call spawn).
+- **Known limits, accepted**: MCP 2.0 elicitation (a server pausing a
+  call to ask) is declined from a non-TTY; sampling and server
+  notifications aren't bridged; stdio servers pay a spawn per call
+  without the daemon. A native client returns only when one of these
+  bites with evidence — mcporter.json carries over unchanged.
 
 ## Skills
 
@@ -637,9 +657,12 @@ program's state, never a workspace file.** Rulings:
 Still out (machinery): proactive monitoring/heartbeat (programs are
 authority the operator granted, woken by a clock or an event — not an
 agent that wakes itself to decide whether to check things; ruled out
-again 2026-09-26), cross-host schedulers, built-in mail/file
-watchers (a script that curls the program's hook covers them),
-run history/audit tables beyond last_run and the log.
+again 2026-09-26), cross-host schedulers, built-in file watchers (a
+script that curls the program's hook covers them), run history/audit
+tables beyond last_run and the log. Mail is the one watcher that
+returned (operator ask, 2026-09-26) — as a program trigger, see
+`Email`: a mail match is an event the operator's filter asked for,
+not the agent deciding to look.
 
 ## Delegation (other harnesses, via herdr)
 
@@ -752,6 +775,110 @@ Rulings:
 Still out: subagent fleets inside goblin (a delegation is one
 external agent per task, not an orchestrator), nesting, fan-out
 tooling, ACP, the AI SDK harness wrappers.
+
+## Email (Gmail)
+
+On demand (2026-09-26). The operator's Gmail: goblin searches and
+reads it, sends only on the operator's tap, and a program can be woken
+by mail matching a filter. Build order: after Proton Pass and MCP —
+its credentials ride the same lane.
+
+- **Google OAuth with split tokens.** The operator's own Google Cloud
+  OAuth client (one-time setup, desktop-app flow). Two refresh tokens,
+  two scopes: **read** (`gmail.readonly`) and **send** (`gmail.send`).
+  An app password was rejected: one credential would cover both, and
+  the send gate would be the only thing between a tricked model and a
+  sent mail. Both refresh tokens and the client secret live in Pass,
+  granted to goblin's token, resolved through `auth.jsonl` like every
+  other secret; access tokens are minted in-process per use, never
+  cached to disk. Open before build: the consent-screen publishing
+  status — a "testing" app's refresh tokens die after 7 days, so the
+  client must be in production (unverified is fine for one user).
+- **One `mail` tool, stable schema** (the `search`-tool rule): actions
+  `search` (Gmail query syntax, bounded list of id · from · subject ·
+  date · snippet), `read` (one message: headers + text body, HTML
+  through the same readability path as `fetch`, bounded with overflow
+  to disk; attachments listed, fetched to `attachments/` on request),
+  and `send` (to/cc/subject/body/reply-to-id). Mail content is
+  untrusted input — tool results fence it the way webhook payloads are
+  fenced (`<event>` note: data to evaluate, never instructions).
+- **Send is operator-gated by mechanism, not by prompt.** `send` never
+  sends: it writes a pending row (`mail_outbox` in goblin.sqlite:
+  draft, pinned address, created, expires +24h, status) and the sink
+  posts the draft with **Send / Cancel** inline buttons; the tool
+  returns "awaiting operator approval". Only the callback from an
+  `allowedUsers` id sends — with the send token, which no tool path
+  and no skill ever touches. Expired or cancelled rows never send; a
+  restart keeps pending rows (the buttons still work). Honest
+  boundary: goblin runs with full bash as the same uid, so this stops
+  a *tricked* model (the read path holds a token that cannot send),
+  not a deliberately hostile one — the trust level `bash` already
+  granted.
+- **Mail is a program trigger.** A program may carry a `mail` filter
+  (Gmail query, e.g. `from:bank is:important`) beside its cron and
+  webhook. An in-process ticker (the scheduler's twin, 5 min) runs
+  each enabled filter with the read token since the program's last
+  seen history id (stored on the row), and each new match fires the
+  program through the one firing path — `[program: <name> · trigger:
+  mail]` + charter + `<event>` (from, subject, date, snippet, id; the
+  body is one `mail read` away, never pushed). The 60 s per-program
+  throttle becomes a batch: matches inside one tick fire once with all
+  of them. A dead token or quota error warns once per outage episode,
+  never per tick.
+- **Logging**: every Gmail call (action, query or id, result count,
+  status, ms); every outbox transition (queued, sent, cancelled,
+  expired — recipient domain, never the body).
+
+## Chat search
+
+On demand (2026-09-26, the first slice of "richer inner life"). A
+`history_search` tool: full-text search over goblin's own conversation
+history — "what did we decide about X last month?".
+
+- **SQLite FTS5** over the text of user and assistant events, an
+  external-content index kept by insert/delete triggers (an additive
+  schema change — in scope; `/forget` deletes stay honest through the
+  delete trigger). Tool-call payloads are not indexed.
+- **Scope: every conversation except memory-excluded ones**, checked
+  at query time against the live `memoryExcluded` flag — `/memory off`
+  means off for search too, retroactively.
+- Output: bounded list of topic title · date · role · snippet, plus
+  the address/event id to page context around a hit.
+
+## Skill reviewer
+
+On demand (2026-09-26, the second slice of "richer inner life").
+After a turn, goblin may distill what it just learned into a skill
+without being asked. A better model of the operator is **not** this
+feature — that is Hindsight's job (tune it, don't duplicate it).
+
+- **Gate: Jev on every completed turn** — `typesafe/jev-1.13`
+  (operator-chosen) via OpenRouter's Decisions API, a typed-decision
+  model, not a chat model. State: the operator's message(s), the
+  reply, tool-call count and names (bounded to its 32k context). Two
+  `noul` questions: *did the operator correct how goblin did
+  something?* and *did the turn carry out a repeatable multi-step
+  procedure worth a skill?* Either at ≥ `reviewer.threshold` (default
+  0.8) → review. Fenced or failed turns are not gated; the reviewer's
+  own writes never re-gate. This is an **experiment**: every gate logs
+  both probabilities, the decision, input tokens, cost from the
+  response `usage`, and latency, so cost and hit rate are answerable
+  from the log. Jev unreachable → fall back to "≥ 8 tool calls" and log
+  the fallback. Open before build: the Decisions API wire shape
+  (alpha endpoint — pin it with a boundary test on a recorded
+  response).
+- **Reviewer**: a background model call, off the conversation lane —
+  never delays the next turn. Model defaults to the conversation's
+  model; `reviewer.model` overrides. Given the turn transcript and the
+  skills catalog, it creates or edits one skill under `skills/` (file
+  tools confined to that directory; `skills-ref validate` must pass or
+  the write is reverted and warned) or does nothing.
+- **It writes, then tells.** A write posts a short note to the topic
+  ("saved skill: X — reply to undo") and lands in history as a system
+  event, so the next turn knows. Skills are already goblin's to write;
+  this adds no new authority.
+- Config: optional `reviewer` block `{threshold?, model?, auth}` (auth
+  = the OpenRouter key); absent = feature off.
 
 ## Long-term memory
 
@@ -1052,6 +1179,61 @@ A value is either a literal credential or `!<command>` — resolved by executing
 the command and reading stdout, lazily at the point of use, in-process.
 Resolved values never enter the tool environment, the model context, or logs.
 
+### Proton Pass (2026-09-26)
+
+Proton Pass is the operator's credential backbone; goblin reaches it
+only through a scoped, audited **agent token of its own**. Found at
+design time: five of six `auth.jsonl` records ran `pass-cli item view`
+with no session dir, which resolves to the owner's default session
+(`~/.local/share/proton-pass-cli`, present on this box) — full
+account, no audit trail. Rulings:
+
+- **Goblin's own agent token** (`pass-cli agent create goblin`, an
+  owner action — goblin never creates, renews, grants, or revokes
+  agents). Grants are item by item, viewer; its audit trail
+  (`agent monitor goblin`) is its own; revoking it touches nothing
+  else. The PAT lives in `$GOBLIN_HOME/pass-cli.env`
+  (`PROTON_PASS_PAT=…`, 0600, owner-written, never read into model
+  context).
+- **Never the owner session, by mechanism.** A `!` command that
+  invokes `pass-cli` directly (records go through pass-keys, below) is
+  poisoned at load: `log.error` names the record, and every `resolve`
+  of it rejects with the same reason — the command never runs. Not a
+  boot refusal: the unit restarts forever and a phone-only operator
+  can't fix a crash loop, so the feature needing that key fails loud
+  instead. install.sh refuses such records before enabling the unit.
+- **Goblin's own keys resolve through pass-keys** — the one
+  implementation of the Pass → agent lane → tmpfs cache discipline
+  (retries, negative cache, herd collapse; `~/build/pass-keys`). A
+  `goblin` profile in refs mode, ID-addressed; pass-keys gains optional
+  per-profile `sessionDir` and `patFile` so goblin's profile logs in
+  with goblin's token (defaults unchanged for pi/mcporter). A record
+  reads `{"name": "openrouter", "value": "!pass-keys run goblin --
+  printenv OPENROUTER_API_KEY"}` — pass-keys writes only to stderr,
+  stdout is the child's.
+- **Warmer**: a cold pass-keys login can take ~100 s (3 × 30 s +
+  backoff), past auth's 15 s resolve bound. Goblin ships its own
+  `deploy/goblin-keys.service` (oneshot `pass-keys warm goblin`,
+  restart-on-failure every 60 s, never gives up) + `.timer`
+  (06:30/18:30), installed by install.sh; `goblin.service`
+  `Wants=`/`After=` it, so boot resolves are tmpfs reads. A cold miss
+  still fails loud, and the evicted rejection retries on next use.
+- **Secrets during tasks: the `pass-cli` skill**, shipped like the
+  browser's (`deploy/skills/pass-cli/SKILL.md`, seeded write-if-absent).
+  Powers: `pass-cli run` with `pass://` refs (masked output — the
+  program gets the secret, goblin doesn't), `inject` to an explicit
+  path, `item totp` with a reason naming the task. Never `item view`,
+  never `--no-masking`, never item/vault/agent writes. Its guard uses
+  goblin's PAT with a separate session dir
+  (`$GOBLIN_HOME/state/pass-cli-task/`) from the pass-keys lane
+  (`$GOBLIN_HOME/state/pass-cli/`): pass-cli calls sharing a session
+  must never run concurrently, and a long `run` must not hold
+  pass-keys' lock. Open before build: confirm one PAT can hold two
+  live sessions; if not, the skill takes pass-keys' flock instead.
+- **Honest boundary**: same uid, full bash — the token's grants are
+  the real limit, and anything goblin sees goes to its model
+  provider. Grant narrowly.
+
 ## Telegram intake & delivery
 
 - grammy long polling; the `allowedUsers` config key gates access first thing.
@@ -1282,11 +1464,15 @@ If a capability can't be classified in one sentence, the classification is
 memory store (returned on demand — approved in `Long-term memory`) ·
 scheduler (returned on demand — generalized into `Programs`;
 heartbeat/proactive monitoring stays out) · web access (returned on
-demand — designed in `Web access`; MCP and a native browser tool stay
+demand — designed in `Web access`; a native browser tool stays
 out) · delegated work / external agents (returned on demand —
-designed in `Delegation`) · conversation-lifecycle
-commands · subagents · ACP · MCP ·
-project environments · inner life · onboarding wizard · state
+designed in `Delegation`) · MCP (returned on demand as a skill over
+goblin's own mcporter — `Web access`; a native client stays out) ·
+email (returned on demand — `Email`) · inner life (partly returned on
+demand — `Chat search`, `Skill reviewer`; self-waking, memory nudges,
+and self-grading skill machinery stay out) · conversation-lifecycle
+commands · subagents · ACP ·
+project environments · onboarding wizard · state
 migrations (general framework; additive memory schema changes are in scope) ·
 in-process embeddings (delegated to Hindsight for memory) · multi-user
 

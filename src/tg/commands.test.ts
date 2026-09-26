@@ -607,3 +607,190 @@ describe("memory commands", () => {
 	});
 });
 
+// Enqueue one retention row for this document and mark it submitted —
+// acknowledged remotely, still processing there: the /forget delete
+// settle fixture (reachable in production via /memory retry).
+function submitOne(store: ReturnType<typeof setup>["store"], client: HindsightClient, documentId: string): string {
+	const id = store.memoryQueue.enqueue(client.target, {
+		id: documentId,
+		content: "Operator: hi\nGoblin: hello",
+		timestamp: new Date().toISOString(),
+		conversationId: "dm:1",
+		sourceIds: ["u1", "a7"],
+	});
+	const item = store.memoryQueue.get(id);
+	if (!item) throw new Error("expected queued memory");
+	store.memoryQueue.update(item, "submitted", 0, null);
+	return id;
+}
+
+describe("forget delete against in-flight retention", () => {
+	test("nothing in flight: delete proceeds without polling operations", async () => {
+		const { store, conv, sent, deps } = setupMemory();
+		const deleted: string[] = [];
+		const polled: string[] = [];
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: (request) => {
+				const path = new URL(request.url).pathname;
+				if (path.includes("/operations/")) {
+					polled.push(path);
+					return Response.json({ operation_id: path.split("/").pop(), status: "completed" });
+				}
+				if (request.method === "DELETE") {
+					const id = deleteIdFrom(request.url);
+					deleted.push(id);
+					return Response.json({ success: true, document_id: id });
+				}
+				return Response.json({ results: [] });
+			},
+		});
+		try {
+			deps.memory = {
+				...deps.memory!,
+				client: new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" }),
+				settleTiming: { pollMs: 5, budgetMs: 2_000 },
+			};
+			expect(handleCommand(deps, conv, "/forget delete exchange/dm:1/1/a")).toBe(true);
+			await waitFor(sent, 1);
+			expect(deleted).toEqual(["exchange/dm:1/1/a"]);
+			// No submitted row existed, so the settle wait never touches the wire.
+			expect(polled).toEqual([]);
+			expect(sent[0]).toContain("forgotten exchange/dm:1/1/a");
+			expect(store.memoryContexts.isSuppressed("exchange/dm:1/1/a")).toBe(true);
+		} finally {
+			server.stop(true);
+			store.close();
+		}
+	});
+
+	test("a pending (never-sent) row is cancelled without polling", async () => {
+		const { store, conv, sent, deps } = setupMemory();
+		const deleted: string[] = [];
+		const polled: string[] = [];
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: (request) => {
+				const path = new URL(request.url).pathname;
+				if (path.includes("/operations/")) {
+					polled.push(path);
+					return Response.json({ operation_id: path.split("/").pop(), status: "completed" });
+				}
+				if (request.method === "DELETE") {
+					const id = deleteIdFrom(request.url);
+					deleted.push(id);
+					return Response.json({ success: true, document_id: id });
+				}
+				return Response.json({ results: [] });
+			},
+			});
+		try {
+			const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
+			deps.memory = { ...deps.memory!, client, settleTiming: { pollMs: 5, budgetMs: 2_000 } };
+			store.memoryQueue.enqueue(client.target, {
+				id: "exchange/dm:1/1/a",
+				content: "Operator: hi\nGoblin: hello",
+				timestamp: new Date().toISOString(),
+			conversationId: conv.id,
+				sourceIds: ["u1", "a1"],
+			});
+			expect(handleCommand(deps, conv, "/forget delete exchange/dm:1/1/a")).toBe(true);
+			await waitFor(sent, 1);
+			// Pending rows were never sent — cancelling them is not a race.
+			expect(polled).toEqual([]);
+			expect(deleted).toEqual(["exchange/dm:1/1/a"]);
+			expect(sent[0]).toContain("1 queued cancelled");
+			expect(store.memoryQueue.next(client.target, Date.now())).toBeNull();
+		} finally {
+			server.stop(true);
+			store.close();
+		}
+	});
+
+	test("a submitted operation is polled to terminal (transient errors retry) before the delete", async () => {
+		const { store, conv, sent, deps } = setupMemory();
+		const deleted: string[] = [];
+		const polls: number[] = [];
+		// processing → retryable 503 → completed: the wait must outlast all three.
+		const script = ["processing", "http-503", "completed"];
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: (request) => {
+				const path = new URL(request.url).pathname;
+				if (path.includes("/operations/")) {
+					const step = polls.push(1);
+					const mode = script[Math.min(step - 1, script.length - 1)];
+					if (mode === "http-503") return new Response("busy", { status: 503 });
+					return Response.json({ operation_id: path.split("/").pop(), status: mode });
+				}
+				if (request.method === "DELETE") {
+					const id = deleteIdFrom(request.url);
+					deleted.push(id);
+					return Response.json({ success: true, document_id: id });
+				}
+				return Response.json({ results: [] });
+			},
+		});
+		try {
+			const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
+			deps.memory = { ...deps.memory!, client, settleTiming: { pollMs: 5, budgetMs: 2_000 } };
+			const operationId = submitOne(store, client, "exchange/dm:1/1/a");
+			expect(handleCommand(deps, conv, "/forget delete exchange/dm:1/1/a")).toBe(true);
+			await waitFor(sent, 1);
+			// Polled past the 503 to completed, only then deleted.
+			expect(polls.length).toBeGreaterThanOrEqual(3);
+			expect(deleted).toEqual(["exchange/dm:1/1/a"]);
+			expect(sent[0]).toContain("forgotten exchange/dm:1/1/a");
+			expect(store.memoryContexts.isSuppressed("exchange/dm:1/1/a")).toBe(true);
+			// The settled submitted row leaves with the cancel, not behind it.
+			expect(store.memoryQueue.get(operationId)).toBeNull();
+		} finally {
+			server.stop(true);
+			store.close();
+		}
+	});
+
+	test("an operation that never settles makes the delete refuse and touch nothing", async () => {
+		const { store, conv, sent, deps } = setupMemory();
+		const deleted: string[] = [];
+		const polls: number[] = [];
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: (request) => {
+				const path = new URL(request.url).pathname;
+				if (path.includes("/operations/")) {
+					polls.push(1);
+					return Response.json({ operation_id: path.split("/").pop(), status: "processing" });
+				}
+				if (request.method === "DELETE") {
+					const id = deleteIdFrom(request.url);
+					deleted.push(id);
+					return Response.json({ success: true, document_id: id });
+				}
+				return Response.json({ results: [] });
+			},
+			});
+		try {
+			const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
+			deps.memory = { ...deps.memory!, client, settleTiming: { pollMs: 5, budgetMs: 80 } };
+			const operationId = submitOne(store, client, "exchange/dm:1/1/a");
+			expect(handleCommand(deps, conv, "/forget delete exchange/dm:1/1/a")).toBe(true);
+			await waitFor(sent, 1);
+			expect(polls.length).toBeGreaterThanOrEqual(2);
+			expect(deleted).toEqual([]); // nothing deleted remotely
+			expect(store.memoryContexts.isSuppressed("exchange/dm:1/1/a")).toBe(false); // nothing suppressed
+			// The row stays submitted — a later /forget delete can settle it.
+			expect(store.memoryQueue.get(operationId)?.state).toBe("submitted");
+			expect(sent[0]).toBe(
+				"memory for that document is still processing remotely — try /forget delete again in a minute",
+			);
+		} finally {
+			server.stop(true);
+			store.close();
+		}
+	});
+});

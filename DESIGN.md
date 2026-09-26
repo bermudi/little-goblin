@@ -77,8 +77,10 @@ re-checks that it still holds authority** — its conversation epoch hasn't
 advanced since enqueue.
 
 Implementation: each conversation carries a monotonic `epoch`, bumped on
-settings changes (`/voice`, the mini app's settings writes) and explicit
-cancellation. A turn
+conversation-scoped settings changes (`/voice`, `/memory on|off`) and
+explicit cancellation. Model and thinking are config-global since
+`/model` and `/think` retired — the mini app writes global config, not
+conversation state, so nothing there needs fencing. A turn
 captures `(conversationId, epoch)` at admission and calls `checkAuthority()`
 around every await. Fenced turns abort quietly and log it. No machines, no
 drain sets — one counter and one function.

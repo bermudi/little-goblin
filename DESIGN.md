@@ -887,37 +887,54 @@ history — "what did we decide about X last month?".
 ## Skill reviewer
 
 On demand (2026-09-26, the second slice of "richer inner life").
-After a turn, goblin may distill what it just learned into a skill
-without being asked. A better model of the operator is **not** this
-feature — that is Hindsight's job (tune it, don't duplicate it).
+Implemented 2026-09-26. After a turn, goblin may distill what it just
+learned into a skill without being asked. A better model of the
+operator is **not** this feature — that is Hindsight's job (tune it,
+don't duplicate it).
 
 - **Gate: Jev on every completed turn** — `typesafe/jev-1.13`
   (operator-chosen) via OpenRouter's Decisions API, a typed-decision
-  model, not a chat model. State: the operator's message(s), the
-  reply, tool-call count and names (bounded to its 32k context). Two
-  `noul` questions: *did the operator correct how goblin did
-  something?* and *did the turn carry out a repeatable multi-step
-  procedure worth a skill?* Either at ≥ `reviewer.threshold` (default
-  0.8) → review. Fenced or failed turns are not gated; the reviewer's
-  own writes never re-gate. This is an **experiment**: every gate logs
-  both probabilities, the decision, input tokens, cost from the
-  response `usage`, and latency, so cost and hit rate are answerable
-  from the log. Jev unreachable → fall back to "≥ 8 tool calls" and log
-  the fallback. Open before build: the Decisions API wire shape
-  (alpha endpoint — pin it with a boundary test on a recorded
-  response).
+  model, not a chat model. `POST openrouter.ai/api/alpha/decisions`
+  with `{model, state, questions}`; each `noul` answer is a
+  yes-probability, `usage` carries input tokens and cost (the wire
+  shape is pinned by a boundary test on a recorded response). State:
+  the operator's message(s) (tail-first), the reply (head-first),
+  tool-call count and names — bounded to ~22k chars against its 32k
+  context. Two `noul` questions: *did the operator correct how goblin
+  did something?* and *did the turn carry out a repeatable multi-step
+  procedure worth a skill?* — both criteria sides required, the
+  OpenRouter transport rejects a one-sided noul. Either at ≥
+  `reviewer.threshold` (default 0.8) → review. Fenced or failed turns
+  are not gated; the reviewer's own writes never re-gate (they submit
+  no turns). This is an **experiment**: every gate logs both
+  probabilities, the decision, input tokens, cost, and latency, so
+  cost and hit rate are answerable from the log. Any gate failure →
+  fall back to "≥ 8 tool calls" and log the fallback on the same line.
 - **Reviewer**: a background model call, off the conversation lane —
-  never delays the next turn. Model defaults to the conversation's
-  model; `reviewer.model` overrides. Given the turn transcript and the
-  skills catalog, it creates or edits one skill under `skills/` (file
-  tools confined to that directory; `skills-ref validate` must pass or
-  the write is reverted and warned) or does nothing.
+  fire-and-forget, never delays the next turn, and shutdown doesn't
+  await it either (a missed save on a racing shutdown is benign — the
+  next similar turn re-gates — and logged). Model defaults to the
+  conversation's model, resolved live per review; `reviewer.model`
+  overrides. Given the turn transcript and the skills catalog, it
+  creates or edits one skill under `skills/` (10 steps, 5-minute
+  budget) or does nothing. Its read/write/edit tools are bound to
+  `skills/` with lexical root checks that refuse escapes — complete
+  because the trio creates no symlinks, so nothing under the root can
+  resolve out from under the check. Touched skills are read from disk,
+  not from the model's tool calls, and each must pass `skills-ref
+  validate` — failure reverts the whole write from a pre-review
+  snapshot (512 files / 2MB caps; over budget skips the review loud)
+  and warns. A write over 100KB of new bytes reverts unvalidated.
 - **It writes, then tells.** A write posts a short note to the topic
   ("saved skill: X — reply to undo") and lands in history as a system
-  event, so the next turn knows. Skills are already goblin's to write;
+  event, so the next turn knows. "Reply to undo" is conversational,
+  not mechanical: the history event tells the next turn that undo
+  means deleting the skill dir. Skills are already goblin's to write;
   this adds no new authority.
 - Config: optional `reviewer` block `{threshold?, model?, auth}` (auth
-  = the OpenRouter key); absent = feature off.
+  = the OpenRouter key); absent = feature off. Hand-edited-only, like
+  delegation and mail — no mini-app surface, gate auth and threshold
+  boot-captured.
 
 ## Long-term memory
 

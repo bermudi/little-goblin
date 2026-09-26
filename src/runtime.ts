@@ -39,6 +39,8 @@ import {
 } from "./memory.ts";
 import { log } from "./log.ts";
 import { runCompaction, type CompactionOutcome } from "./agent/compaction.ts";
+import type { CompletedTurn, ReviewerDeps } from "./reviewer.ts";
+import { considerTurn } from "./reviewer.ts";
 
 const MAX_STEPS = 25;
 
@@ -199,8 +201,15 @@ export class Runtime {
 	private lanes = new Map<string, Lane>();
 	// Set by shutdown(): submits still land in history but never run.
 	private closed = false;
+	// The skill reviewer — attached after the bot exists (its save note
+	// delivers through bot.api). Absent = the feature is off.
+	private reviewer: ReviewerDeps | undefined;
 
 	constructor(private deps: RuntimeDeps) {}
+
+	setReviewer(reviewer: ReviewerDeps): void {
+		this.reviewer = reviewer;
+	}
 
 	// Enqueue a user message + a sink. The message lands in history
 	// immediately — it's real regardless of when the turn runs, or
@@ -738,6 +747,9 @@ export class Runtime {
 				});
 
 			let responseMessage: UIMessage | null = null;
+			// Every tool call this turn, in order — the reviewer's gate
+			// state (count + names) and its fallback rule read this.
+			const toolCalls: string[] = [];
 			// Block-boundary tracking for the live stream: last text part id
 			// within a step, plus whether any text has streamed at all (see
 			// the text-delta and start-step cases).
@@ -802,6 +814,7 @@ export class Runtime {
 						break;
 					case "tool-input-available":
 						sink.onToolCall(chunk.toolName, chunk.input);
+						toolCalls.push(chunk.toolName);
 						// Side-effecting boundary — the chat shows a status
 						// line, the log gets the durable record. Args are
 						// truncated metadata, not payloads.
@@ -878,6 +891,22 @@ export class Runtime {
 				});
 			}
 			await notifyAll({ kind: "completed" });
+			// Skill reviewer (DESIGN.md): every completed turn gates a
+			// possible background review — fire-and-forget, off the lane,
+			// never delaying the successor. Fenced/failed turns never
+			// reach here. The backstop only sees bugs: gate failures fall
+			// back inside considerTurn, review failures log their own lines.
+			if (this.reviewer) {
+				const snapshot: CompletedTurn = {
+					conversationId: convId,
+					operatorTexts: retentionSource.userTexts,
+					replyText: responseMessage ? messageText(responseMessage) : "",
+					toolNames: toolCalls,
+				};
+				void considerTurn(this.reviewer, snapshot).catch((err: unknown) => {
+					log.error("reviewer failed", err, { conversation: convId });
+				});
+			}
 			// Auto-compaction (DESIGN.md, Compaction): the reply has landed and
 			// the sinks are released; the lane stays busy through the summary
 			// call so a queued successor reads the compacted view, not a

@@ -265,6 +265,17 @@ export const mailConfigSchema = z.object({
 });
 export type MailConfig = z.infer<typeof mailConfigSchema>;
 
+// Automatic skill saving (DESIGN.md, "Skill reviewer"). Absent = off.
+// auth names the auth.jsonl record holding the OpenRouter key behind
+// the Jev gate; model overrides the review model (default: the
+// conversation's own model); threshold is the gate's review cutoff.
+export const reviewerConfigSchema = z.object({
+	threshold: z.number().min(0).max(1).default(0.8),
+	model: z.string().min(1).optional(),
+	auth: z.string().min(1),
+});
+export type ReviewerConfig = z.infer<typeof reviewerConfigSchema>;
+
 export const ttsConfigSchema = z.object({
 	kind: z.literal("edge"),
 	voice: z.string().min(1),
@@ -389,12 +400,15 @@ const configSchema = z
 		delegation: delegationConfigSchema.optional(),
 		// Optional Gmail — same hand-edited-only rule as delegation.
 		mail: mailConfigSchema.optional(),
+		// Optional automatic skill saving — same hand-edited-only rule.
+		reviewer: reviewerConfigSchema.optional(),
 	})
 	// Cross-field: every model ref must parse and name a configured provider.
 	.superRefine((cfg, ctx) => {
 		for (const [path, ref] of [
 			["model", cfg.model],
 			["titleModel", cfg.titleModel],
+			["reviewer.model", cfg.reviewer?.model],
 		] as const) {
 			if (ref === undefined) continue;
 			let provider: string;

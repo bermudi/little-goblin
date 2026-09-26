@@ -64,6 +64,13 @@ deployment fact, not code — it lives in `workspace/AGENTS.md`, the bot's
 operating notes, so the bot knows where to look when you say "install X".
 Tell the bot your sources once and it remembers.
 
+## Automatic saving
+
+After a turn where you corrected it or it worked through a repeatable
+procedure, the bot may save what it learned as a skill on its own — it
+says so in the topic (*"saved skill: X — reply to undo"*). A bad save is
+one reply away from gone: say undo and it deletes the folder.
+
 ## Limits worth knowing
 
 - The bot only reads the instruction file when a request matches — skills

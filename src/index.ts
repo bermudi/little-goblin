@@ -28,6 +28,7 @@ import { openOutbox } from "./mail-outbox.ts";
 import { startMailWatcher } from "./mail-watcher.ts";
 import { openPrograms } from "./programs.ts";
 import { buildMemoryClient, startMemoryWorker } from "./memory.ts";
+import { JevClient } from "./jev.ts";
 import { OutageTracker } from "./memory-outage.ts";
 import { fireProgram, startScheduler } from "./scheduler.ts";
 import { startHttp } from "./http/mod.ts";
@@ -36,7 +37,7 @@ import { log, setLogFile, setLogLevel } from "./log.ts";
 import { Runtime } from "./runtime.ts";
 import { applyMenuButton, AUTH_TELEGRAM_TOKEN, startBot } from "./tg/mod.ts";
 import { postMailDraft, sendMailNotice, stampMailDraft } from "./tg/mail-approval.ts";
-import { sendMemoryBlockedNotice, sendMemoryOutageNotice } from "./tg/notify.ts";
+import { sendMemoryBlockedNotice, sendMemoryOutageNotice, sendSkillSavedNotice } from "./tg/notify.ts";
 
 // The file sink attaches before anything that can fail — a malformed
 // config, bad auth file, corrupt DB, or occupied port must land in
@@ -372,6 +373,36 @@ async function boot() {
 				},
 			})
 		: null;
+
+	// Skill reviewer after the bot: its save note delivers through
+	// bot.api, so the runtime can't hold it before tg exists. Absent
+	// block = the feature is off. The block is hand-edited-only (no
+	// mini-app surface), so gate auth and threshold are boot-captured;
+	// the review model resolves live per review — the mini app owns the
+	// default between reviews.
+	const reviewerBlock = configRef.current.reviewer;
+	if (reviewerBlock) {
+		const reviewerAuth = reviewerBlock.auth;
+		runtime.setReviewer({
+			gate: new JevClient({ auth: () => auth.resolve(reviewerAuth) }),
+			threshold: reviewerBlock.threshold,
+			reviewModel: async (conversationId) => {
+				const cfg = configRef.current;
+				const ref = cfg.reviewer?.model ?? cfg.model;
+				return {
+					ref,
+					model: observedModel(await resolveModel(cfg, auth, ref), {
+						conversation: conversationId,
+						purpose: "review",
+					}),
+				};
+			},
+			store,
+			skillsDir: paths.skills(),
+			workspaceDir: paths.workspace(),
+			notify: (conversationId, skills) => sendSkillSavedNotice(tg.bot.api, conversationId, skills),
+		});
+	}
 
 	// The shared wake path — program fires (cron or webhook) submit
 	// through it into the pinned conversation.

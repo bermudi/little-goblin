@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Api } from "grammy";
 import { addressId, type ConversationAddress } from "../conversation.ts";
-import { parseConversationAddress, sendMemoryBlockedNotice, sendMemoryOutageNotice } from "./notify.ts";
+import { parseConversationAddress, sendMemoryBlockedNotice, sendMemoryOutageNotice, sendSkillSavedNotice } from "./notify.ts";
 
 // addressId ∘ parseConversationAddress must be the identity on every
 // address goblin stores — the outage notice depends on the round trip.
@@ -95,5 +95,26 @@ describe("blocked notice send", () => {
 		await expect(sendMemoryBlockedNotice(api, "garbage", "err", 1)).rejects.toThrow(
 			/unparseable conversation id/,
 		);
+	});
+});
+
+describe("skill saved notice send", () => {
+	test("names the skill with an undo invite, into the topic's thread", async () => {
+		type Send = { chatId: number; text: string; threadId?: number };
+		const sends: Send[] = [];
+		const api = {
+			sendMessage: async (chatId: number, text: string, other?: { message_thread_id?: number }) => {
+				sends.push({
+					chatId, text,
+					...(other?.message_thread_id !== undefined ? { threadId: other.message_thread_id } : {}),
+				});
+			},
+		} as unknown as Api;
+		await sendSkillSavedNotice(api, "topic:-100200300:546216", ["pdf-tables"]);
+		await sendSkillSavedNotice(api, "dm:42", ["a", "b"]);
+		expect(sends).toHaveLength(2);
+		expect(sends[0]).toMatchObject({ chatId: -100200300, threadId: 546216 });
+		expect(sends[0]?.text).toBe("saved skill: pdf-tables — reply to undo");
+		expect(sends[1]?.text).toBe("saved skills: a, b — reply to undo");
 	});
 });

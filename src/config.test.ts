@@ -113,6 +113,19 @@ describe("goblin.json5", () => {
 		expect(() => loadConfig()).toThrow('provider "other"');
 	});
 
+	test("reviewer: threshold defaults, model is provider-validated, auth required", () => {
+		const dir = useHome();
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
+		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
+		expect(loadConfig()!.reviewer).toBeUndefined();
+		writeFileSync(join(dir, "goblin.json5"), `${base},reviewer:{auth:"openrouter"}}`);
+		expect(loadConfig()!.reviewer).toEqual({ threshold: 0.8, auth: "openrouter" });
+		writeFileSync(join(dir, "goblin.json5"), `${base},reviewer:{auth:"openrouter",model:"other/x"}}`);
+		expect(() => loadConfig()).toThrow('provider "other"');
+		writeFileSync(join(dir, "goblin.json5"), `${base},reviewer:{threshold:0.5}}`);
+		expect(() => loadConfig()).toThrow();
+	});
+
 	test("search/fetch: single entry, chain list, and rejection shapes", () => {
 		const dir = useHome();
 		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;

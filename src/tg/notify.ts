@@ -64,3 +64,24 @@ export async function sendMemoryBlockedNotice(
 	);
 	log.info("memory blocked notice sent", { conversation: conversationId, attempts });
 }
+
+// The skill reviewer's write notice (DESIGN.md, "Skill reviewer") — the
+// second sanctioned proactive message: a saved skill announces itself
+// in the topic it was learned in. Throws on delivery failure like the
+// notices above — the reviewer logs it, and the history event it already
+// wrote stays the durable record.
+export async function sendSkillSavedNotice(
+	api: Api,
+	conversationId: string,
+	skills: string[],
+): Promise<void> {
+	const addr = parseConversationAddress(conversationId);
+	if (!addr) throw new Error(`unparseable conversation id: ${conversationId}`);
+	const names = skills.length === 1 ? `skill: ${skills[0]}` : `skills: ${skills.join(", ")}`;
+	await api.sendMessage(
+		addr.chatId,
+		`saved ${names} — reply to undo`,
+		addr.threadId !== null ? { message_thread_id: addr.threadId } : {},
+	);
+	log.info("skill saved notice sent", { conversation: conversationId, skills });
+}

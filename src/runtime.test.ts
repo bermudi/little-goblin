@@ -1092,3 +1092,120 @@ describe("cache stability", () => {
 		}
 	});
 });
+
+describe("skill reviewer hook", () => {
+	// A model that calls a tool, then answers — scripted streams per step.
+	function toolThenText(toolName: string, deltas: string[]): LanguageModel {
+		let step = 0;
+		return {
+			specificationVersion: "v2",
+			provider: "fake",
+			modelId: "fake-tool",
+			supportedUrls: {},
+			doGenerate() {
+				throw new Error("unimplemented");
+			},
+			doStream() {
+				const n = step++;
+				const stream = new ReadableStream<LanguageModelV2StreamPart>({
+					start(controller) {
+						controller.enqueue({ type: "stream-start", warnings: [] });
+						if (n === 0) {
+							controller.enqueue({ type: "tool-call", toolCallId: "c1", toolName, input: "{}" });
+							controller.enqueue({
+								type: "finish",
+								finishReason: "tool-calls",
+								usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+							});
+						} else {
+							controller.enqueue({ type: "text-start", id: "t1" });
+							for (const d of deltas) controller.enqueue({ type: "text-delta", id: "t1", delta: d });
+							controller.enqueue({ type: "text-end", id: "t1" });
+							controller.enqueue({
+								type: "finish",
+								finishReason: "stop",
+								usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+							});
+						}
+						controller.close();
+					},
+				});
+				return { stream };
+			},
+		} as unknown as LanguageModel;
+	}
+
+	test("a completed turn gates its snapshot — operator burst, reply, tool names", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model: toolThenText("bash", ["do", "ne"]), system: "test" }),
+			makeTools: () => ({
+				bash: tool({ inputSchema: z.object({}), execute: async () => "ok" }),
+			}),
+		});
+		let gated: unknown = null;
+		let markGated: () => void = () => {};
+		const gatedIt = new Promise<void>((res) => {
+			markGated = res;
+		});
+		runtime.setReviewer({
+			// The gate stub records the state considerTurn built — the
+			// hook's snapshot, observed through the real call path.
+			gate: {
+				decide: async (state) => {
+					gated = state;
+					markGated();
+					return { answers: {}, inputTokens: null, cost: null };
+				},
+			},
+			threshold: 0.8,
+			reviewModel: async () => {
+				throw new Error("empty answers never review — must not resolve");
+			},
+			store,
+			skillsDir: "/none",
+			workspaceDir: "/none",
+			notify: async () => {},
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "run it" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		// Off-lane: completion never waits for the gate.
+		await gatedIt;
+		expect(gated as string).toContain("run it");
+		expect(gated as string).toContain("done");
+		expect(gated as string).toContain("tools: bash (1 total)");
+		store.close();
+	});
+
+	test("a fenced turn never gates", async () => {
+		const { store, conv, runtime } = setup(["a", "b", "c", "d", "e"], 20);
+		let gated = false;
+		runtime.setReviewer({
+			gate: {
+				decide: async () => {
+					gated = true;
+					return { answers: {}, inputTokens: null, cost: null };
+				},
+			},
+			threshold: 0.8,
+			reviewModel: async () => {
+				throw new Error("must not resolve");
+			},
+			store,
+			skillsDir: "/none",
+			workspaceDir: "/none",
+			notify: async () => {},
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		await sink.firstDelta;
+		store.bumpEpoch(conv.id);
+		expect(await sink.done).toEqual({ kind: "fenced" });
+		await sleep(50); // the fire-and-forget gate would have fired by now
+		expect(gated).toBe(false);
+		store.close();
+	});
+});

@@ -227,6 +227,100 @@ describe("programs store", () => {
 		expect(b.get(p.id)!.threadId).toBe(7);
 		b.close();
 	});
+
+	test("a pre-mail DB migrates in place — old rows read, new trigger works", () => {
+		const path = tmpdb();
+		const db = new Database(path);
+		db.exec(`CREATE TABLE programs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			charter TEXT NOT NULL,
+			cron TEXT,
+			hook_hash TEXT,
+			chat_id INTEGER NOT NULL,
+			thread_id INTEGER,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL,
+			last_run TEXT,
+			next_run TEXT
+		)`);
+		db.query(`INSERT INTO programs
+			(name, charter, cron, hook_hash, chat_id, thread_id, enabled, created_at, last_run, next_run)
+			VALUES (?, ?, ?, ?, ?, ?, 1, ?, NULL, ?)`)
+			.run("old", "c", "0 9 * * *", null, -100, 7, NOW.toISOString(), "2026-09-21T09:00:00.000Z");
+		db.close();
+
+		const s = openPrograms(path);
+		const old = s.list()[0]!;
+		expect(old.mailFilter).toBeNull();
+		expect(old.mailHistoryId).toBeNull();
+		expect(old.cron).toBe("0 9 * * *");
+		// And the new trigger works on the migrated table.
+		s.setMailFilter(old.id, "from:bank");
+		expect(s.get(old.id)!.mailFilter).toBe("from:bank");
+		expect(s.withMailFilter()).toHaveLength(1);
+		s.close();
+	});
+});
+
+describe("mail trigger", () => {
+	test("a mail filter is a trigger like cron and hook", () => {
+		const s = store();
+		const p = s.create(
+			{ name: "bank watch", charter: "c", mailFilter: "from:bank", address: ADDRESS },
+			NOW,
+		);
+		expect(p.mailFilter).toBe("from:bank");
+		expect(p.mailHistoryId).toBeNull();
+		expect(p.nextRun).toBeNull();
+		expect(s.due(new Date("2100-01-01"))).toEqual([]); // never cron-due
+
+		// Clearing the only trigger is refused, whichever it is.
+		expect(() => s.update(p.id, { mailFilter: null })).toThrow("at least one trigger");
+		expect(() => s.setMailFilter(p.id, null)).toThrow("at least one trigger");
+		expect(s.get(p.id)!.mailFilter).toBe("from:bank");
+
+		// A cron beside it makes the filter clearable.
+		s.update(p.id, { cron: "0 9 * * *" });
+		s.setMailFilter(p.id, null);
+		expect(s.get(p.id)!.mailFilter).toBeNull();
+	});
+
+	test("changing the filter resets the cursor; a no-op keeps it", () => {
+		const s = store();
+		const p = s.create(
+			{ name: "w", charter: "c", mailFilter: "from:a", address: ADDRESS },
+			NOW,
+		);
+		s.setMailHistory(p.id, "12345");
+		expect(s.get(p.id)!.mailHistoryId).toBe("12345");
+
+		s.setMailFilter(p.id, "from:a"); // same filter — cursor survives
+		expect(s.get(p.id)!.mailHistoryId).toBe("12345");
+
+		s.setMailFilter(p.id, "from:b"); // new query — re-baseline
+		expect(s.get(p.id)!.mailFilter).toBe("from:b");
+		expect(s.get(p.id)!.mailHistoryId).toBeNull();
+
+		s.setMailHistory(p.id, "999");
+		s.update(p.id, { mailFilter: "from:c" }); // update path resets too
+		expect(s.get(p.id)!.mailHistoryId).toBeNull();
+		s.setMailHistory(p.id, "1000");
+		s.update(p.id, { charter: "c2" }); // other patches leave it
+		expect(s.get(p.id)!.mailHistoryId).toBe("1000");
+	});
+
+	test("withMailFilter scans enabled mail programs only", () => {
+		const s = store();
+		s.create({ name: "m", charter: "c", mailFilter: "from:a", address: ADDRESS }, NOW);
+		s.create({ name: "c", charter: "c", cron: "0 9 * * *", address: ADDRESS }, NOW);
+		const off = s.create(
+			{ name: "off", charter: "c", cron: "0 9 * * *", mailFilter: "from:b", address: ADDRESS },
+			NOW,
+		);
+		s.update(off.id, { enabled: false });
+		expect(s.withMailFilter().map((p) => p.name)).toEqual(["m"]);
+	});
 });
 
 // The superseded `jobs` table, built the way openJobs built it.

@@ -114,7 +114,7 @@ describe("program tool", () => {
 		expect(toggled.program.enabled).toBe(false);
 		for (const view of [listed.programs[0], updated.program, toggled.program]) {
 			expect(Object.keys(view!).sort()).toEqual([
-				"charter", "cron", "enabled", "has_hook", "id", "last_run", "name", "next_run",
+				"charter", "cron", "enabled", "has_hook", "id", "last_run", "mail_filter", "name", "next_run",
 			]);
 		}
 
@@ -156,6 +156,25 @@ describe("program tool", () => {
 		await expect(exec(tool, {
 			action: "update", id: 1, cron: "0 9 * * *",
 		})).rejects.toThrow();
+	});
+
+	test("a mail filter alone is a trigger; clearing the last one is refused", async () => {
+		const { tool, programs } = toolFor();
+		const created = (await exec(tool, {
+			action: "create",
+			name: "bank watch",
+			charter: "flag bank mail",
+			mailFilter: "from:bank is:important",
+		})) as { program: { id: number; mail_filter: string; next_run: null } };
+		expect(created.program.mail_filter).toBe("from:bank is:important");
+		expect(created.program.next_run).toBeNull();
+		expect(programs.withMailFilter()).toHaveLength(1);
+
+		const cleared = (await exec(tool, {
+			action: "update", id: created.program.id, mailFilter: null,
+		})) as { error: string };
+		expect(cleared.error).toContain("at least one trigger");
+		expect(programs.get(created.program.id)!.mailFilter).toBe("from:bank is:important");
 	});
 
 	test("hook enable sends the URL privately; the token never reaches the model", async () => {

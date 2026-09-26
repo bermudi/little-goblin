@@ -1,7 +1,8 @@
 // The programs table — standing orders (DESIGN.md, "Programs"). A
 // program is standing authority for one concern: a charter plus the
-// triggers that wake it (a 5-field cron in server-local time, and
-// later a webhook whose sha256 lives in hook_hash). State is rows in
+// triggers that wake it (a 5-field cron in server-local time, a webhook
+// whose sha256 lives in hook_hash, or a Gmail filter in
+// mail_filter). State is rows in
 // goblin.sqlite, never files: a program's instructions are the
 // program's state. Own connection, same WAL file as the conversation
 // store. Cron validates here at the boundary — an invalid expression
@@ -24,6 +25,11 @@ export interface Program {
 	cron: string | null;
 	/** sha256 of the webhook token — unused until webhook delivery lands. */
 	hookHash: string | null;
+	/** Gmail query waking the program on new matches, or null. */
+	mailFilter: string | null;
+	/** Mailbox history id checkpoint for the mail filter — the watcher's
+	 *  cursor, null until the first poll baselines it. */
+	mailHistoryId: string | null;
 	/** Pinned Telegram address — replies land where the program was born. */
 	chatId: number;
 	threadId: number | null;
@@ -44,6 +50,7 @@ export interface CreateProgram {
 	charter: string;
 	cron?: string | null;
 	hookHash?: string | null;
+	mailFilter?: string | null;
 	address: ProgramAddress;
 }
 
@@ -54,6 +61,7 @@ export interface ProgramPatch {
 	charter?: string;
 	cron?: string | null;
 	hookHash?: string | null;
+	mailFilter?: string | null;
 	enabled?: boolean;
 }
 
@@ -74,6 +82,15 @@ export interface ProgramsStore {
 	/** Set or clear the webhook token hash. Clearing the last trigger
 	 *  throws — the trigger invariant holds here too. */
 	setHook(id: number, hash: string | null): Program | null;
+	/** Set or clear the Gmail filter. Clearing the last trigger throws;
+	 *  setting a new filter resets the history cursor so the watcher
+	 *  re-baselines instead of firing the mailbox's backlog. */
+	setMailFilter(id: number, filter: string | null): Program | null;
+	/** Advance the mail watcher's checkpoint — cursor only, no trigger
+	 *  semantics. */
+	setMailHistory(id: number, historyId: string): void;
+	/** Enabled programs carrying a mail filter — the watcher's scan. */
+	withMailFilter(): Program[];
 	/** Reverse lookup for the /hook route — returns the row regardless
 	 *  of enabled; the route decides what disabled means. */
 	findByHook(hash: string): Program | null;
@@ -100,9 +117,9 @@ export function nextFire(cron: string, from: Date): Date {
 
 // The load-bearing invariant: a program with no trigger can never
 // wake — it would be a row that does nothing.
-function requireTrigger(cron: string | null, hookHash: string | null): void {
-	if (cron === null && hookHash === null) {
-		throw new Error("a program needs at least one trigger — set a cron or a hook");
+function requireTrigger(cron: string | null, hookHash: string | null, mailFilter: string | null): void {
+	if (cron === null && hookHash === null && mailFilter === null) {
+		throw new Error("a program needs at least one trigger — set a cron, a hook, or a mail filter");
 	}
 }
 
@@ -112,6 +129,8 @@ const programSchema = z.object({
 	charter: z.string(),
 	cron: z.string().nullable(),
 	hook_hash: z.string().nullable(),
+	mail_filter: z.string().nullable(),
+	mail_history_id: z.string().nullable(),
 	chat_id: z.number(),
 	thread_id: z.number().nullable(),
 	enabled: z.number(),
@@ -128,6 +147,8 @@ function rowToProgram(row: unknown): Program {
 		charter: parsed.charter,
 		cron: parsed.cron,
 		hookHash: parsed.hook_hash,
+		mailFilter: parsed.mail_filter,
+		mailHistoryId: parsed.mail_history_id,
 		chatId: parsed.chat_id,
 		threadId: parsed.thread_id,
 		enabled: parsed.enabled === 1,
@@ -153,6 +174,8 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		charter TEXT NOT NULL,
 		cron TEXT,
 		hook_hash TEXT,
+		mail_filter TEXT,
+		mail_history_id TEXT,
 		chat_id INTEGER NOT NULL,
 		thread_id INTEGER,
 		enabled INTEGER NOT NULL DEFAULT 1,
@@ -161,6 +184,19 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		next_run TEXT
 	)`);
 	if (isNewTable) copyLegacyJobs(db);
+	// Existing DBs predate the mail trigger — additive columns, no rebuild.
+	const progCols = new Set(
+		db
+			.query<{ name: string }, []>("PRAGMA table_info(programs)")
+			.all()
+			.map((c) => c.name),
+	);
+	if (!progCols.has("mail_filter")) {
+		db.exec("ALTER TABLE programs ADD COLUMN mail_filter TEXT");
+	}
+	if (!progCols.has("mail_history_id")) {
+		db.exec("ALTER TABLE programs ADD COLUMN mail_history_id TEXT");
+	}
 
 	const qGet = db.query("SELECT * FROM programs WHERE id = ?");
 	const qList = db.query("SELECT * FROM programs ORDER BY id");
@@ -168,23 +204,28 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		"SELECT * FROM programs WHERE enabled = 1 AND cron IS NOT NULL AND next_run <= ? ORDER BY next_run",
 	);
 	const qInsert = db.query(`INSERT INTO programs
-		(name, charter, cron, hook_hash, chat_id, thread_id, enabled, created_at, last_run, next_run)
-		VALUES (?, ?, ?, ?, ?, ?, 1, ?, NULL, ?)`);
+		(name, charter, cron, hook_hash, mail_filter, mail_history_id, chat_id, thread_id, enabled, created_at, last_run, next_run)
+		VALUES (?, ?, ?, ?, ?, NULL, ?, ?, 1, ?, NULL, ?)`);
 	const qUpdate = db.query(
-		"UPDATE programs SET name = ?, charter = ?, cron = ?, hook_hash = ?, enabled = ?, next_run = ? WHERE id = ?",
+		"UPDATE programs SET name = ?, charter = ?, cron = ?, hook_hash = ?, mail_filter = ?, mail_history_id = ?, enabled = ?, next_run = ? WHERE id = ?",
 	);
 	const qMark = db.query("UPDATE programs SET last_run = ?, next_run = ? WHERE id = ?");
 	const qFired = db.query("UPDATE programs SET last_run = ? WHERE id = ?");
 	const qHook = db.query("UPDATE programs SET hook_hash = ? WHERE id = ?");
+	const qMailFilter = db.query("UPDATE programs SET mail_filter = ?, mail_history_id = ? WHERE id = ?");
+	const qMailHistory = db.query("UPDATE programs SET mail_history_id = ? WHERE id = ?");
+	const qWithMail = db.query(
+		"SELECT * FROM programs WHERE enabled = 1 AND mail_filter IS NOT NULL ORDER BY id",
+	);
 	const qByHook = db.query("SELECT * FROM programs WHERE hook_hash = ?");
 	const qDelete = db.query("DELETE FROM programs WHERE id = ?");
 
 	return {
-		create({ name, charter, cron = null, hookHash = null, address }, now = new Date()) {
-			requireTrigger(cron, hookHash);
+		create({ name, charter, cron = null, hookHash = null, mailFilter = null, address }, now = new Date()) {
+			requireTrigger(cron, hookHash, mailFilter);
 			const next = cron === null ? null : nextFire(cron, now).toISOString();
 			const res = qInsert.run(
-				name, charter, cron, hookHash, address.chatId, address.threadId,
+				name, charter, cron, hookHash, mailFilter, address.chatId, address.threadId,
 				now.toISOString(), next,
 			);
 			return rowToProgram(qGet.get(Number(res.lastInsertRowid)));
@@ -196,7 +237,9 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			const cron = patch.cron !== undefined ? patch.cron : before.cron;
 			const hookHash =
 				patch.hookHash !== undefined ? patch.hookHash : before.hookHash;
-			requireTrigger(cron, hookHash);
+			const mailFilter =
+				patch.mailFilter !== undefined ? patch.mailFilter : before.mailFilter;
+			requireTrigger(cron, hookHash, mailFilter);
 			const enabled = patch.enabled ?? before.enabled;
 			// Recompute from `now` whenever anything recurrence-shaped moved —
 			// a new cron, or a re-enable: occurrences skipped while disabled
@@ -208,11 +251,19 @@ export function openPrograms(dbPath: string): ProgramsStore {
 						? null
 						: nextFire(cron, now).toISOString()
 					: before.nextRun;
+			// A changed filter resets the cursor — the new query's backlog
+			// must not fire as if it just arrived.
+			const mailHistoryId =
+				patch.mailFilter !== undefined && patch.mailFilter !== before.mailFilter
+					? null
+					: before.mailHistoryId;
 			qUpdate.run(
 				patch.name ?? before.name,
 				patch.charter ?? before.charter,
 				cron,
 				hookHash,
+				mailFilter,
+				mailHistoryId,
 				enabled ? 1 : 0,
 				next,
 				id,
@@ -253,9 +304,25 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			const row = qGet.get(id);
 			if (row === null) return null;
 			const program = rowToProgram(row);
-			requireTrigger(program.cron, hash);
+			requireTrigger(program.cron, hash, program.mailFilter);
 			qHook.run(hash, id);
 			return rowToProgram(qGet.get(id));
+		},
+		setMailFilter(id, filter) {
+			const row = qGet.get(id);
+			if (row === null) return null;
+			const program = rowToProgram(row);
+			requireTrigger(program.cron, program.hookHash, filter);
+			// A new filter re-baselines (see update); an unchanged one
+			// keeps its cursor — a no-op set must not drop arrivals.
+			qMailFilter.run(filter, filter === program.mailFilter ? program.mailHistoryId : null, id);
+			return rowToProgram(qGet.get(id));
+		},
+		setMailHistory(id, historyId) {
+			qMailHistory.run(historyId, id);
+		},
+		withMailFilter() {
+			return qWithMail.all().map(rowToProgram);
 		},
 		findByHook(hash) {
 			const row = qByHook.get(hash);

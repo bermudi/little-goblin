@@ -23,6 +23,7 @@ function programView(program: Program): Record<string, unknown> {
 		charter: program.charter,
 		cron: program.cron,
 		has_hook: program.hookHash !== null,
+		mail_filter: program.mailFilter,
 		enabled: program.enabled,
 		last_run: program.lastRun,
 		next_run: program.nextRun,
@@ -86,7 +87,7 @@ export function hookTokenHash(token: string): string {
 export const programTool = (deps: ProgramToolDeps) =>
 	tool({
 		description:
-			"Manage programs — a program is standing authority for one concern. Its charter says what it owns: scope, what needs the operator's OK, when to escalate, what not to do, and the steps — write that, not a one-line instruction. A cron is 5 fields (minute hour day month weekday) in server local time; translate the operator's wording into cron yourself (e.g. \"weekdays 8:30\" → \"30 8 * * 1-5\") and confirm the cron with them if ambiguous. The 'hook' action gives a program a secret URL that external services POST to wake it — the URL is sent to the operator privately and never appears to you. Creating a program or widening its authority needs the operator's explicit ask — you may propose one, never grant yourself one. Rewording, rescheduling, or toggling within the charter's intent needs no go-ahead.",
+			"Manage programs — a program is standing authority for one concern. Its charter says what it owns: scope, what needs the operator's OK, when to escalate, what not to do, and the steps — write that, not a one-line instruction. A cron is 5 fields (minute hour day month weekday) in server local time; translate the operator's wording into cron yourself (e.g. \"weekdays 8:30\" → \"30 8 * * 1-5\") and confirm the cron with them if ambiguous. The 'hook' action gives a program a secret URL that external services POST to wake it — the URL is sent to the operator privately and never appears to you. A mail filter (Gmail query syntax, e.g. from:bank is:important) wakes the program when new matching mail arrives. Creating a program or widening its authority needs the operator's explicit ask — you may propose one, never grant yourself one. Rewording, rescheduling, or toggling within the charter's intent needs no go-ahead.",
 		inputSchema: z.discriminatedUnion("action", [
 			z.object({ action: z.literal("list") }),
 			z.object({
@@ -95,6 +96,7 @@ export const programTool = (deps: ProgramToolDeps) =>
 				charter: z.string().min(1),
 				cron: z.string().min(5).optional(),
 				hook: z.boolean().optional(),
+				mailFilter: z.string().min(1).max(500).optional(),
 			}),
 			z.object({
 				action: z.literal("update"),
@@ -103,6 +105,8 @@ export const programTool = (deps: ProgramToolDeps) =>
 				charter: z.string().min(1).optional(),
 				// null clears the cron — allowed only while a hook remains.
 				cron: z.string().min(5).nullable().optional(),
+				// null clears the mail filter — allowed only while another trigger remains.
+				mailFilter: z.string().min(1).max(500).nullable().optional(),
 			}),
 			z.object({ action: z.literal("delete"), id: z.number().int().positive() }),
 			z.object({ action: z.literal("toggle"), id: z.number().int().positive() }),
@@ -135,6 +139,7 @@ export const programTool = (deps: ProgramToolDeps) =>
 								charter: input.charter,
 								...(input.cron !== undefined ? { cron: input.cron } : {}),
 								...(minted !== null ? { hookHash: hookTokenHash(minted.token) } : {}),
+								...(input.mailFilter !== undefined ? { mailFilter: input.mailFilter } : {}),
 								address: { chatId: deps.chatId, threadId: deps.threadId },
 							},
 						);
@@ -143,6 +148,7 @@ export const programTool = (deps: ProgramToolDeps) =>
 							name: program.name,
 							cron: program.cron,
 							hook: program.hookHash !== null,
+							mail: program.mailFilter !== null,
 							conversation: `${deps.chatId}/${deps.threadId ?? "-"}`,
 						});
 						if (minted !== null) {
@@ -172,10 +178,11 @@ export const programTool = (deps: ProgramToolDeps) =>
 						}
 					}
 					// exactOptionalPropertyTypes: never pass an explicit undefined.
-					const patch: { name?: string; charter?: string; cron?: string | null } = {};
+					const patch: { name?: string; charter?: string; cron?: string | null; mailFilter?: string | null } = {};
 					if (input.name !== undefined) patch.name = input.name;
 					if (input.charter !== undefined) patch.charter = input.charter;
 					if (input.cron !== undefined) patch.cron = input.cron;
+					if (input.mailFilter !== undefined) patch.mailFilter = input.mailFilter;
 					try {
 						const program = deps.programs.update(input.id, patch);
 						if (program === null) return { error: `no program ${input.id}` };

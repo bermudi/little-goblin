@@ -564,8 +564,8 @@ export function htmlToText(html: string): string {
 }
 
 // RFC 2047 encoded-words (=?charset?B|Q?text?=) — the shape non-ASCII
-// subjects and display names arrive in. Unknown charsets decode as
-// UTF-8; undecodable words survive verbatim rather than vanishing.
+// subjects and display names arrive in. Undecodable words survive
+// verbatim rather than vanishing.
 export function decodeRfc2047(value: string): string {
 	return value.replace(/=\?([^?\s]+)\?([bBqQ])\?([^?]*)\?=/g, (match, charset: string, enc: string, text: string) => {
 		try {
@@ -573,7 +573,10 @@ export function decodeRfc2047(value: string): string {
 				? Buffer.from(text, "base64")
 				: Buffer.from(text.replace(/_/g, " ").replace(/=([0-9A-Fa-f]{2})/g, (_, hex: string) =>
 					String.fromCharCode(Number.parseInt(hex, 16))), "latin1");
-			return new TextDecoder(charset.toLowerCase(), { fatal: false }).decode(bytes);
+			// Bun types narrow TextDecoder's label to its Encoding union;
+			// the runtime takes any WHATWG label and throws RangeError
+			// otherwise — the catch turns that into a verbatim word.
+			return new TextDecoder(charset.toLowerCase() as "utf-8", { fatal: false }).decode(bytes);
 		} catch {
 			return match;
 		}

@@ -152,6 +152,14 @@ export function buildSystemPrompt(
 					`  landing in this chat; create one only when explicitly asked.`,
 			]
 			: []),
+		...(tools.includes("delegate")
+			? [
+					`- delegate hands work to external coding agents (they run in your`,
+					`  own herdr session — the operator watches via herdr session`,
+					`  attach). Prefer it over long bash sessions; results arrive as`,
+					`  [delegation: …] messages in the chat they were born in.`,
+			]
+			: []),
 		...(tools.includes("memory_search")
 			? [
 					`- Long-term memory is on: dated [Long-term memory] evidence may`,

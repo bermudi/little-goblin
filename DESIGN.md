@@ -441,7 +441,7 @@ tool. MCP stays out, with its return conditions on record (below).
   2026-09-26; a native in-process client was weighed and rejected).
   The original return conditions, and how this shape meets them:
   (1) stdio servers take secrets via env — the keys ride `pass-keys run
-  goblin-mcp` into mcporter's child env only, never goblin's process
+  goblin-mcp-dev` into mcporter's child env only, never goblin's process
   env; (2) dynamic schemas drift the request prefix — goblin's tool set
   doesn't move at all, MCP tools are reached through `bash`; (3) 5–50
   tools per server — discovery is on demand (`list <server> --schema`),
@@ -450,7 +450,7 @@ tool. MCP stays out, with its return conditions on record (below).
   a pinned goblin dependency (bun.lock → `node_modules/.bin/mcporter`),
   its config is `$GOBLIN_HOME/mcporter.json` (standard `mcpServers`
   shape, env placeholders only, seeded write-if-absent with zero
-  servers), its keys are the `goblin-mcp` pass-keys profile (goblin's
+  servers), its keys are the `goblin-mcp-dev` pass-keys profile (goblin's
   token, see Auth), and the repo ships the one entry point
   (`scripts/mcp`: gate → pass-keys run → pinned mcporter `--config`),
   reachable as `$GOBLIN_HOME/mcp` (a boot-refreshed symlink — the
@@ -478,11 +478,11 @@ tool. MCP stays out, with its return conditions on record (below).
   keep OAuth tokens and schema caches out of `~/.mcporter`, where
   same-named host servers would collide. The skill forbids
   `daemon`/`serve` outright.
-- **The `goblin-mcp` profile starts empty and stays warm.**
-  Refs-mode, goblin's token, session shared with the `goblin` profile
+- **The `goblin-mcp-dev` profile starts empty and stays warm.**
+  Refs-mode, goblin's token, session shared with the `goblin-dev` profile
   (one agent-lane lock serializes both), own tmpfs cache — empty until
   the first MCP server needs a key, grown with `pass-keys add
-  goblin-mcp` (owner action, like every grant). pass-keys warms an
+  goblin-mcp-dev` (owner action, like every grant). pass-keys warms an
   explicitly empty refs profile vacuously and `run` execs with no
   added env (2026-09-26); the key warmer covers both profiles, so the
   first MCP call after boot is a tmpfs read like every other resolve.
@@ -1238,16 +1238,16 @@ account, no audit trail. Rulings:
 - **Goblin's own keys resolve through pass-keys** — the one
   implementation of the Pass → agent lane → tmpfs cache discipline
   (retries, negative cache, herd collapse; `~/build/pass-keys`). A
-  `goblin` profile in refs mode, ID-addressed; pass-keys gains optional
+  `goblin-dev` profile in refs mode, ID-addressed; pass-keys gains optional
   per-profile `sessionDir` and `patFile` so goblin's profile logs in
   with goblin's token (defaults unchanged for pi/mcporter). A record
-  reads `{"name": "openrouter", "value": "!pass-keys run goblin --
+  reads `{"name": "openrouter", "value": "!pass-keys run goblin-dev --
   printenv OPENROUTER_API_KEY"}` — pass-keys writes only to stderr,
   stdout is the child's.
 - **Warmer**: a cold pass-keys login can take ~100 s (3 × 30 s +
   backoff), past auth's 15 s resolve bound. Goblin ships its own
-  `deploy/goblin-keys.service` (oneshot `pass-keys warm goblin` +
-  `pass-keys warm goblin-mcp`, restart-on-failure every 60 s, never
+  `deploy/goblin-keys.service` (oneshot `pass-keys warm goblin-dev` +
+  `pass-keys warm goblin-mcp-dev`, restart-on-failure every 60 s, never
   gives up) + `.timer`
   (06:30/18:30), installed by install.sh; `goblin.service`
   `Wants=`/`After=` it, so boot resolves are tmpfs reads. A cold miss

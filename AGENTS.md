@@ -71,16 +71,19 @@ and templates before designing; cite what you took in `DESIGN.md`.
 
 ## Keys (live since 2026-09-26)
 
-- Every `auth.jsonl` record is `!pass-keys run goblin -- printenv NAME`
-  — the `goblin` profile in `~/.config/pass-keys/config.json` (dots
+- Every `auth.jsonl` record is `!pass-keys run goblin-dev -- printenv NAME`
+  — the `goblin-dev` profile in `~/.config/pass-keys/config.json` (dots
   `passkeys` store), authenticating as the **`goblin-dev`** agent token
   (`~/goblin/pass-cli.env`), each key item-granted from the Keys vault
   and ID-addressed. `goblin-keys.timer` keeps the tmpfs cache warm.
-- Adding a key: `pass-keys add goblin NAME Keys/<Item>` (or no item
-  spec to paste a new key; rerun to rotate; `pass-keys drop goblin
+  Profiles are environment-scoped (`goblin-dev`, `goblin-mcp-dev`) because
+  the config syncs via dots — a future prod box gets `goblin-prod`, never
+  these refs.
+- Adding a key: `pass-keys add goblin-dev NAME Keys/<Item>` (or no item
+  spec to paste a new key; rerun to rotate; `pass-keys drop goblin-dev
   NAME` to retire) — grants, refs, and warm in one step — then add the
   `auth.jsonl` record. Symptom decoder: a key error at request time → `pass-keys
-  status goblin` and `journalctl --user -u goblin-keys` first.
+  status goblin-dev` and `journalctl --user -u goblin-keys` first.
 - `pass-keys run`'s stdout is the child's (fixed 2026-09-26 — operational
   lines used to corrupt resolved keys).
 

@@ -8,7 +8,7 @@ license: Apache-2.0
 metadata:
   version: "1.0"
   topic: external-tools
-compatibility: Requires the pinned mcporter dep plus goblin's agent token (the goblin-mcp pass-keys profile); if the entry point reports a missing piece, its error names the fix
+compatibility: Requires the pinned mcporter dep plus goblin's agent token (the goblin-mcp-dev pass-keys profile); if the entry point reports a missing piece, its error names the fix
 allowed-tools:
   - Bash($GOBLIN_HOME/mcp:*)
 ---
@@ -26,7 +26,7 @@ GOBLIN_HOME="${GOBLIN_HOME:-$HOME/goblin}"
 ```
 
 The shim pins everything: goblin's config (`$GOBLIN_HOME/mcporter.json`),
-goblin's keys (the `goblin-mcp` pass-keys profile, resolved into
+goblin's keys (the `goblin-mcp-dev` pass-keys profile, resolved into
 mcporter's child env only), no editor imports, no keep-alive daemon, and
 OAuth/schema caches under `$GOBLIN_HOME/state/mcporter` instead of the
 host's. A widened or missing config fails loud before anything runs.
@@ -60,9 +60,9 @@ connection, that's a design conversation with the operator, not a flag.
 
 `$GOBLIN_HOME/mcporter.json` is yours to edit when the operator asks for
 a server: standard `mcpServers` shape, `${VAR}` placeholders for secrets
-only — never an inline key (values ride the `goblin-mcp` profile, and a
+only — never an inline key (values ride the `goblin-mcp-dev` profile, and a
 key in this file is a key in the model context). New keys need the
-operator (`pass-keys add goblin-mcp NAME …` grants under goblin's token —
+operator (`pass-keys add goblin-mcp-dev NAME …` grants under goblin's token —
 an owner action): ask, don't work around. A call naming an unset variable
 fails loud with its name; that's the prompt to ask.
 

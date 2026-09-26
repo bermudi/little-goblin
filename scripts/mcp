@@ -34,7 +34,7 @@ export MCPORTER_DAEMON_DIR="$mcporter_state/daemon"
 export XDG_DATA_HOME="$mcporter_state/data"
 export XDG_CACHE_HOME="$mcporter_state/cache"
 
-# Keys ride the goblin-mcp pass-keys profile (goblin's token) into
+# Keys ride the goblin-mcp-dev pass-keys profile (goblin's token) into
 # mcporter's child env only — never goblin's process env, never the
 # owner session. pass-keys never execs keyless: a cold cache fails loud.
-exec pass-keys run goblin-mcp -- "$mcporter_bin" --config "$goblin_home/mcporter.json" "$@"
+exec pass-keys run goblin-mcp-dev -- "$mcporter_bin" --config "$goblin_home/mcporter.json" "$@"

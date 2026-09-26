@@ -146,7 +146,7 @@ describe("pass-cli poison (DESIGN.md: Proton Pass)", () => {
 		const prevPath = process.env.PATH;
 		process.env.PATH = `${bin}:${prevPath}`;
 		try {
-			writeAuth(dir, '{"name":"k","value":"!pass-keys run goblin -- printenv K"}\n');
+			writeAuth(dir, '{"name":"k","value":"!pass-keys run goblin-dev -- printenv K"}\n');
 			expect(await loadAuth().resolve("k")).toBe("from-pass-keys");
 		} finally {
 			process.env.PATH = prevPath;
@@ -182,7 +182,7 @@ describe("invokesPassCliDirectly", () => {
 	});
 
 	test.each([
-		"pass-keys run goblin -- printenv K",
+		"pass-keys run goblin-dev -- printenv K",
 		"printenv PASS_CLI_SESSION_DIR",
 		"mypass-cli --help",
 		"cat ~/.pass-cli-env",

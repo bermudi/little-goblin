@@ -100,7 +100,7 @@ export function ensureHomeLayout(): void {
 			"{",
 			'\t// Goblin\'s own MCP servers (DESIGN.md, "Web access" → "MCP").',
 			"\t// Secrets are ${VAR} placeholders only — values ride the",
-			"\t// goblin-mcp pass-keys profile into mcporter's child env,",
+			"\t// goblin-mcp-dev pass-keys profile into mcporter's child env,",
 			"\t// never this file. \"imports\" MUST stay []: without it",
 			"\t// mcporter merges the operator's editor servers, and the",
 			"\t// call-time gate refuses anything else.",

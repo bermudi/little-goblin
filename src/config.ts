@@ -2,13 +2,14 @@
 // No secrets here; those live in auth.jsonl. The mini app is the
 // operator-facing editing surface; hand-editing always works.
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import JSON5 from "json5";
 import { z } from "zod";
 import { durableWriteFile } from "./durable.ts";
 import { hindsightConnectionSchema } from "./hindsight.ts";
+import { log } from "./log.ts";
 
 // ---------- paths ----------
 
@@ -19,6 +20,8 @@ export function goblinHome(): string {
 export const paths = {
 	config: () => join(goblinHome(), "goblin.json5"),
 	auth: () => join(goblinHome(), "auth.jsonl"),
+	mcporter: () => join(goblinHome(), "mcporter.json"),
+	mcpShim: () => join(goblinHome(), "mcp"),
 	workspace: () => join(goblinHome(), "workspace"),
 	soul: () => join(goblinHome(), "workspace", "SOUL.md"),
 	agents: () => join(goblinHome(), "workspace", "AGENTS.md"),
@@ -76,7 +79,7 @@ export function ensureHomeLayout(): void {
 	// regains the whole capability — stub, modes, recovery — without
 	// operator prompting or agent memory. Write-if-absent: once seeded,
 	// each workspace copy is goblin's to evolve.
-	for (const skill of ["browser", "pass-cli"]) {
+	for (const skill of ["browser", "pass-cli", "mcp"]) {
 		mkdirSync(join(paths.skills(), skill), { recursive: true });
 		const template = readFileSync(
 			join(import.meta.dir, "..", "deploy", "skills", skill, "SKILL.md"),
@@ -84,6 +87,29 @@ export function ensureHomeLayout(): void {
 		);
 		seedFile(join(paths.skills(), skill, "SKILL.md"), template);
 	}
+	// Goblin's own MCP servers (DESIGN.md, "Web access" → "MCP"): the
+	// server set is config, not code, so a fresh home starts empty. The
+	// seed carries `"imports": []` — without it mcporter merges the
+	// operator's editor servers, and the call-time gate refuses anything
+	// else. Write-if-absent like the skills: the operator's (and
+	// goblin's) server set is never clobbered.
+	seedFile(
+		paths.mcporter(),
+		[
+			"{",
+			'\t// Goblin\'s own MCP servers (DESIGN.md, "Web access" → "MCP").',
+			"\t// Secrets are ${VAR} placeholders only — values ride the",
+			"\t// goblin-mcp pass-keys profile into mcporter's child env,",
+			"\t// never this file. \"imports\" MUST stay []: without it",
+			"\t// mcporter merges the operator's editor servers, and the",
+			"\t// call-time gate refuses anything else.",
+			'\t"mcpServers": {},',
+			'\t"imports": []',
+			"}",
+			"",
+		].join("\n"),
+	);
+	refreshMcpShim();
 	seedFile(
 		paths.user(),
 		[
@@ -113,6 +139,36 @@ export function ensureHomeLayout(): void {
 function seedFile(path: string, content: string): void {
 	if (existsSync(path)) return;
 	durableWriteFile(path, content, 0o644);
+}
+
+// The `mcp` entry point (DESIGN.md, "Web access" → "MCP"): goblin's bash
+// runs in the workspace, which can't see the repo — so scripts/mcp is
+// reachable as $GOBLIN_HOME/mcp. A symlink, not a copy, so repo updates
+// propagate: repointed every boot when it already is a link (a repo move
+// heals itself), never clobbering a real file — that refuses loud and
+// leaves boot running, since the skill without its shim is a degraded
+// capability, not a crash loop.
+function refreshMcpShim(): void {
+	const shim = paths.mcpShim();
+	const target = join(import.meta.dir, "..", "scripts", "mcp");
+	let isLink: boolean | null = null;
+	try {
+		isLink = lstatSync(shim).isSymbolicLink();
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+	}
+	if (isLink === null) {
+		symlinkSync(target, shim);
+		return;
+	}
+	if (!isLink) {
+		log.error("not clobbering the mcp shim: a real file is in the way", undefined, { path: shim });
+		return;
+	}
+	if (readlinkSync(shim) !== target) {
+		unlinkSync(shim);
+		symlinkSync(target, shim);
+	}
 }
 
 // ---------- schema ----------

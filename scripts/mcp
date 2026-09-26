@@ -1,0 +1,40 @@
+#!/bin/sh
+# The one way goblin reaches MCP servers (DESIGN.md, "Web access" → "MCP"):
+# goblin's pinned mcporter, goblin's config, goblin's keys — never the host's.
+set -eu
+
+# Resolved through the $GOBLIN_HOME/mcp symlink (readlink -f): $0 alone
+# points at the home dir when invoked as the shim, and the pinned
+# mcporter + gate live relative to the repo.
+repo_root="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+goblin_home="${GOBLIN_HOME:-$HOME/goblin}"
+mcporter_bin="$repo_root/node_modules/.bin/mcporter"
+
+fail() { echo "mcp: $*" >&2; exit 1; }
+
+# Prerequisites, each with its recovery — a missing piece is a loud
+# error naming the fix, never a silent fallback onto host state.
+[ -x "$mcporter_bin" ] || fail "pinned mcporter is missing — run: (cd $repo_root && bun install)"
+command -v pass-keys >/dev/null || fail "pass-keys is not in PATH — install it first (~/build/pass-keys)"
+command -v bun >/dev/null || fail "bun is not in PATH — the config gate needs it"
+GOBLIN_HOME="$goblin_home" bun "$repo_root/scripts/check-mcp-config.ts" || exit 1
+
+# Isolation, by mechanism:
+# - MCPORTER_DISABLE_KEEPALIVE=* keeps every server ephemeral, so the
+#   keep-alive daemon is never contacted (DESIGN's "no daemon" ruling).
+# - MCPORTER_DAEMON_DIR backstops it: even an explicit `daemon` command
+#   through this shim lands in goblin's dir, never the host singleton.
+# - XDG_DATA_HOME / XDG_CACHE_HOME keep OAuth tokens and schema caches
+#   out of ~/.mcporter, where same-named host servers would collide.
+mcporter_state="$goblin_home/state/mcporter"
+mkdir -p "$mcporter_state/data" "$mcporter_state/cache" "$mcporter_state/daemon"
+chmod 700 "$mcporter_state" "$mcporter_state/data" "$mcporter_state/cache" "$mcporter_state/daemon"
+export MCPORTER_DISABLE_KEEPALIVE='*'
+export MCPORTER_DAEMON_DIR="$mcporter_state/daemon"
+export XDG_DATA_HOME="$mcporter_state/data"
+export XDG_CACHE_HOME="$mcporter_state/cache"
+
+# Keys ride the goblin-mcp pass-keys profile (goblin's token) into
+# mcporter's child env only — never goblin's process env, never the
+# owner session. pass-keys never execs keyless: a cold cache fails loud.
+exec pass-keys run goblin-mcp -- "$mcporter_bin" --config "$goblin_home/mcporter.json" "$@"

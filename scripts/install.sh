@@ -29,16 +29,23 @@ fi
 # A `!` record that invokes pass-cli directly resolves as the OWNER
 # session — full account, no audit (DESIGN.md: Proton Pass). The loader
 # only poisons such records (boot must never crash-loop), so install is
-# where they get refused. check-auth prints names only, never values.
+# where they get refused. check-auth prints names only, never values,
+# and reserves exit 2 for "offenders found" — any other nonzero means
+# the check itself failed (its stderr already showed why), which is a
+# different failure than a refused record.
 offenders=""
-if ! offenders="$(GOBLIN_HOME="$goblin_home" "$bun_bin" "$repo_root/scripts/check-auth.ts")"; then
+check_exit=0
+offenders="$(GOBLIN_HOME="$goblin_home" "$bun_bin" "$repo_root/scripts/check-auth.ts")" || check_exit=$?
+if [ "$check_exit" -eq 2 ]; then
 	fail "auth.jsonl records invoke pass-cli directly (${offenders//$'\n'/, }) — route them through pass-keys (DESIGN.md: Proton Pass)"
+elif [ "$check_exit" -ne 0 ]; then
+	fail "auth check failed (check-auth.ts exit $check_exit) — see the error above"
 fi
 
-# Dependencies — node_modules, not the world.
-if [ ! -d "$repo_root/node_modules" ]; then
-	(cd "$repo_root" && bun install --frozen-lockfile)
-fi
+# Dependencies — node_modules, not the world. Always sync: a new dep
+# (mcporter for the mcp skill, …) must land on re-run, not just on a
+# fresh checkout — frozen-lockfile keeps it deterministic.
+(cd "$repo_root" && bun install --frozen-lockfile)
 
 # ffmpeg powers TTS's WebM→Ogg remux and over-cap transcription.
 # Comment lines are stripped first so commented-out examples don't count.

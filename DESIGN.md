@@ -449,17 +449,43 @@ tool. MCP stays out, with its return conditions on record (below).
 - **Goblin owns its mcporter; it never rides the host's.** mcporter is
   a pinned goblin dependency (bun.lock → `node_modules/.bin/mcporter`),
   its config is `$GOBLIN_HOME/mcporter.json` (standard `mcpServers`
-  shape, env placeholders only), its keys are the `goblin-mcp` pass-keys
-  profile (goblin's token, see Auth), and the repo ships the one entry
-  point (`scripts/mcp`: pass-keys run → pinned mcporter `--config`).
-  Editor/host config imports are off — the operator's Cursor/Claude/
-  Codex servers never leak in. The skill ships like the browser's
+  shape, env placeholders only, seeded write-if-absent with zero
+  servers), its keys are the `goblin-mcp` pass-keys profile (goblin's
+  token, see Auth), and the repo ships the one entry point
+  (`scripts/mcp`: gate → pass-keys run → pinned mcporter `--config`),
+  reachable as `$GOBLIN_HOME/mcp` (a boot-refreshed symlink — the
+  workspace can't see the repo; a real file there is never clobbered).
+  The skill ships like the browser's
   (`deploy/skills/mcp/SKILL.md`, seeded write-if-absent) and carries
   the two-timeouts rule (mcporter `--timeout` strictly under the bash
   timeout, or the kill is silent). The server set is config, not code.
-  Open before build: mcporter's switch for disabling imports, and
-  whether its keep-alive daemon state (`~/.mcporter/daemon`) can live
-  under `$GOBLIN_HOME` — if it can't, no daemon (per-call spawn).
+- **Imports stay off by gate, not by convention.** mcporter 0.13.13's
+  switch is `"imports": []` in the config — verified in its sources:
+  an omitted key loads every editor default (Cursor, Claude, Codex,
+  …), and a non-empty list appends the omitted defaults after it, so
+  either silently widens goblin's tool surface to the operator's
+  editors. The seed carries `[]`, and `scripts/mcp` runs
+  `scripts/check-mcp-config.ts` before every call — anything but `[]`
+  fails loud, and a missing config fails with its recovery instead of
+  falling back onto host state (an explicit `--config` never merges).
+- **No daemon, by mechanism.** `scripts/mcp` exports
+  `MCPORTER_DISABLE_KEEPALIVE=*` — every server is ephemeral, so the
+  keep-alive daemon is never contacted and per-call spawn is the
+  accepted cost. `MCPORTER_DAEMON_DIR` under
+  `$GOBLIN_HOME/state/mcporter` backstops it (even an explicit
+  `daemon` command through the shim lands there, never the host
+  singleton), and `XDG_DATA_HOME`/`XDG_CACHE_HOME` under the same root
+  keep OAuth tokens and schema caches out of `~/.mcporter`, where
+  same-named host servers would collide. The skill forbids
+  `daemon`/`serve` outright.
+- **The `goblin-mcp` profile starts empty and stays warm.**
+  Refs-mode, goblin's token, session shared with the `goblin` profile
+  (one agent-lane lock serializes both), own tmpfs cache — empty until
+  the first MCP server needs a key, grown with `pass-keys add
+  goblin-mcp` (owner action, like every grant). pass-keys warms an
+  explicitly empty refs profile vacuously and `run` execs with no
+  added env (2026-09-26); the key warmer covers both profiles, so the
+  first MCP call after boot is a tmpfs read like every other resolve.
 - **Known limits, accepted**: MCP 2.0 elicitation (a server pausing a
   call to ask) is declined from a non-TTY; sampling and server
   notifications aren't bridged; stdio servers pay a spawn per call
@@ -482,9 +508,9 @@ pass through — real skills in the wild carry extra fields.
 
 One catalog, fixed: `workspace/skills/`. It sits inside the agent's cwd so
 goblin can author its own — writing `skills/<name>/SKILL.md` is the entire
-publishing flow, live next turn. Two exceptions ship from the repo: the
-browser and pass-cli skills are seeded by `ensureHomeLayout` (write-if-absent,
-from `deploy/skills/<name>/SKILL.md`) because DESIGN mandates both
+publishing flow, live next turn. Three exceptions ship from the repo: the
+browser, pass-cli, and mcp skills are seeded by `ensureHomeLayout` (write-if-absent,
+from `deploy/skills/<name>/SKILL.md`) because DESIGN mandates the
 capabilities — a rebuilt box must regain them without operator prompting
 or agent memory.
 Sharing in a host skill is a symlink —
@@ -1214,8 +1240,9 @@ account, no audit trail. Rulings:
   stdout is the child's.
 - **Warmer**: a cold pass-keys login can take ~100 s (3 × 30 s +
   backoff), past auth's 15 s resolve bound. Goblin ships its own
-  `deploy/goblin-keys.service` (oneshot `pass-keys warm goblin`,
-  restart-on-failure every 60 s, never gives up) + `.timer`
+  `deploy/goblin-keys.service` (oneshot `pass-keys warm goblin` +
+  `pass-keys warm goblin-mcp`, restart-on-failure every 60 s, never
+  gives up) + `.timer`
   (06:30/18:30), installed by install.sh; `goblin.service`
   `Wants=`/`After=` it, so boot resolves are tmpfs reads. A cold miss
   still fails loud, and the evicted rejection retries on next use.
@@ -1354,6 +1381,9 @@ $GOBLIN_HOME/
 ├── auth.jsonl              # secrets, mode 0600
 ├── pass-cli.env            # goblin's agent-token PAT, mode 0600
 │                           # (owner-written; never read into context)
+├── mcporter.json           # goblin's own MCP servers, seeded empty
+│                           # (placeholders only; imports [] — gated)
+├── mcp                     # symlink → repo scripts/mcp (refreshed boot)
 ├── workspace/              # the agent's home; every tool runs here
 │   ├── SOUL.md             # required, template-created on first boot
 │   ├── AGENTS.md           # stub-created on first boot, then agent-owned
@@ -1375,6 +1405,8 @@ $GOBLIN_HOME/
     │                       # lane (auth.jsonl `!pass-keys` resolves)
     ├── pass-cli-task/      # pass-cli session dir for the skill —
     │                       # separate, never concurrent with the lane
+    ├── mcporter/            # mcporter data/cache/daemon dirs (0700) —
+    │                       # OAuth tokens + schema caches, off ~/.mcporter
     └── delegations/<id>/report.md   # a harness's final report
 ```
 

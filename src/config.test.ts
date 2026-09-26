@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -288,6 +288,48 @@ describe("ensureHomeLayout", () => {
 		expect(readFileSync(join(dir, "workspace", "skills", "browser", "SKILL.md"), "utf8")).toBe(
 			"my evolution",
 		);
+	});
+
+	test("first boot seeds the mcp skill and an empty, import-free mcporter.json", () => {
+		const dir = useHome();
+		ensureHomeLayout();
+		const skill = readFileSync(join(dir, "workspace", "skills", "mcp", "SKILL.md"), "utf8");
+		expect(skill).toContain("name: mcp");
+		expect(skill).toContain("compatibility:");
+		// The seed is the isolation default: no servers, and imports []
+		// so mcporter never merges the operator's editor setups
+		// (DESIGN.md, "Web access" → "MCP").
+		const mcporter = readFileSync(join(dir, "mcporter.json"), "utf8");
+		expect(mcporter).toContain('"mcpServers": {}');
+		expect(mcporter).toContain('"imports": []');
+	});
+
+	test("an operator's mcporter.json is never clobbered by the seed", () => {
+		const dir = useHome();
+		writeFileSync(join(dir, "mcporter.json"), '{"mcpServers": {"x": {}}, "imports": []}');
+		ensureHomeLayout();
+		expect(readFileSync(join(dir, "mcporter.json"), "utf8")).toContain('"x"');
+	});
+
+	test("first boot links the mcp shim at the home root, and a repo move heals it", () => {
+		const dir = useHome();
+		ensureHomeLayout();
+		const shim = join(dir, "mcp");
+		expect(lstatSync(shim).isSymbolicLink()).toBe(true);
+		expect(readlinkSync(shim)).toBe(join(import.meta.dir, "..", "scripts", "mcp"));
+		// A stale link (repo moved) repoints on the next boot.
+		rmSync(shim);
+		symlinkSync(join("somewhere-else", "mcp"), shim);
+		ensureHomeLayout();
+		expect(readlinkSync(shim)).toBe(join(import.meta.dir, "..", "scripts", "mcp"));
+	});
+
+	test("a real file at the shim path is never clobbered", () => {
+		const dir = useHome();
+		writeFileSync(join(dir, "mcp"), "operator's own");
+		ensureHomeLayout();
+		expect(lstatSync(join(dir, "mcp")).isSymbolicLink()).toBe(false);
+		expect(readFileSync(join(dir, "mcp"), "utf8")).toBe("operator's own");
 	});
 });
 

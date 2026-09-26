@@ -61,7 +61,7 @@ Legend: ✅ both, roughly same shape · 🔀 both, new mechanism in v2 ·
 
 | | v1 | v2 |
 |---|---|---|
-| 🔀 Toolset | 10 α (`read bash edit write grep memory_search memory_write spawn_subagent revive_subagent text_to_speech`) + 4 per-surface β (`send_voice send_photo send_document rename_topic`) | 11: `read_file write_file edit_file bash speak transcribe schedule send_file memory_search fetch search` (speak/transcribe/search join per config) |
+| 🔀 Toolset | 10 α (`read bash edit write grep memory_search memory_write spawn_subagent revive_subagent text_to_speech`) + 4 per-surface β (`send_voice send_photo send_document rename_topic`) | 12: `read_file write_file edit_file bash speak transcribe program delegate send_file memory_search fetch search` (speak/transcribe/search/delegate join per config) |
 | ❌ `grep` tool | yes | no — `bash` covers it |
 | 🔀 Tool results | — | text-only by ruling (wire formats can't carry media); `read_file` on an image returns a structured note instead of bytes |
 | 🔀 Output bounds | — | bounded, self-describing output: line window + byte ceiling + per-line clamp, every truncation names its own recovery |
@@ -94,6 +94,7 @@ Legend: ✅ both, roughly same shape · 🔀 both, new mechanism in v2 ·
 |---|---|---|
 | 🔀 Layout | pi-native `.agents/skills/` roots (goblin + personal environment), host root (off), per-surface `SkillPolicy`, `/skills` command | one catalog: `workspace/skills/`, agentskills.io format, frontmatter-validated per turn |
 | 🔀 Lifecycle | policy + `/skills` inspection/mutation/reload | the filesystem is the lifecycle — the agent authors/edits/removes skills in chat, live next turn; `skills-ref validate` for authoring checks |
+| 🔀 MCP | `mcporter`-based `mcp_call` tool, selection store | `mcp` skill over goblin's own pinned mcporter via bash — own config/keys, no editor imports, no daemon |
 | ❌ Per-surface selection | yes | no (out until demanded) |
 
 ## Machinery dropped in v2 (v1-only)
@@ -102,7 +103,6 @@ Legend: ✅ both, roughly same shape · 🔀 both, new mechanism in v2 ·
 |---|---|
 | ❌ Subagents | generic + named (`workspace/agents/<name>/`), recursion depth 3, 10-min timeout, revive, delegated-run store, Pi execution host |
 | ❌ External agents (ACP: Claude, Devin) | implemented and tested but **never production-wired, even in v1** |
-| ❌ MCP bridge | `mcporter`-based `mcp_call`, selection store |
 | ❌ Inner life | private reflection, light-sleep extraction, wake store, dreaming pipeline |
 | ❌ Projects | `/project <dir>` one-time per-surface CWD binding, project `AGENTS.md`, project-scoped attachments |
 | ❌ Diagnostics | `/debug`, `/ping`, `/help`, doctor CLI, `MetricsStore` |

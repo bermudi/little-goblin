@@ -98,6 +98,10 @@ function splitOversized(text: string, limit: number): string[] {
 		let end = rest.lastIndexOf(" ", limit);
 		if (end < limit / 2) end = limit;
 		if (end < rest.length && /[\ud800-\udbff]/.test(rest[end - 1] ?? "")) end--;
+		// The decrement can reach 0 (limit ≤ 2, pair at the head) and
+		// slice(0, 0) would loop forever — emit the surrogate pair as its
+		// own whole piece; correctness beats the limit for tiny inputs.
+		if (end <= 0) end = 2;
 		out.push(rest.slice(0, end).trim());
 		rest = rest.slice(end).trim();
 	}

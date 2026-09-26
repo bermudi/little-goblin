@@ -9,6 +9,25 @@ import {
 	STATUS_TAIL_MARK,
 } from "./tts.ts";
 
+// Unpaired surrogate units in a piece: a high surrogate not followed by
+// its low half, or a low half whose high went to a different piece.
+// Splitting an emoji in two corrupts every downstream byte boundary.
+function loneSurrogates(s: string): string[] {
+	const bad: string[] = [];
+	for (let i = 0; i < s.length; i++) {
+		const code = s.charCodeAt(i);
+		const prev = s.charCodeAt(i - 1);
+		const next = s.charCodeAt(i + 1);
+		const high = code >= 0xd800 && code <= 0xdbff;
+		const low = code >= 0xdc00 && code <= 0xdfff;
+		const nextIsLow = next >= 0xdc00 && next <= 0xdfff;
+		const prevIsHigh = prev >= 0xd800 && prev <= 0xdbff;
+		if (high && !nextIsLow) bad.push(`high@${i}`);
+		if (low && !prevIsHigh) bad.push(`low@${i}`);
+	}
+	return bad;
+}
+
 describe("tts", () => {
 	test("chunks long input at sentence boundaries under the service guard", () => {
 		const sentence = `${"word ".repeat(900)}done.`;
@@ -16,6 +35,30 @@ describe("tts", () => {
 		expect(chunks.length).toBeGreaterThan(1);
 		expect(chunks.every((chunk) => chunk.length <= 10_000)).toBe(true);
 		expect(chunks.join(" ")).toBe(`${sentence} ${sentence} ${sentence}`);
+	});
+
+	// limit ≤ 2 with a surrogate pair at the head drove the cutter's
+	// surrogate guard to end=0 — slice(0, 0) left `rest` untouched and the
+	// loop pushed "" forever. These tests terminating is the assertion.
+	test("limit 2 with a leading emoji terminates without halving the pair", () => {
+		const chunks = chunkSpeech("\ud83d\ude00 hi there more text", 2);
+		expect(chunks.length).toBeGreaterThan(0);
+		expect(chunks.every((chunk) => chunk !== "")).toBe(true);
+		for (const chunk of chunks) expect(loneSurrogates(chunk)).toEqual([]);
+		expect(chunks.join("")).toContain("\ud83d\ude00");
+		// The originally-reported repro: a lone leading high surrogate (an
+		// unpaired unit by construction — it can only pass through, not be
+		// halved) must not hang either.
+		const lone = chunkSpeech("\ud83d hi there more text", 2);
+		expect(lone.every((chunk) => chunk !== "")).toBe(true);
+		expect(lone.join("")).toContain("\ud83d");
+	});
+
+	test("limit 1 with a leading emoji terminates and emits the pair whole", () => {
+		const chunks = chunkSpeech("\ud83d\ude00 hi there more text", 1);
+		expect(chunks).toContain("\ud83d\ude00");
+		expect(chunks.every((chunk) => chunk !== "")).toBe(true);
+		for (const chunk of chunks) expect(loneSurrogates(chunk)).toEqual([]);
 	});
 
 	test("button speech strips the status tail and markdown", () => {

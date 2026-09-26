@@ -25,16 +25,16 @@ Legend: ✅ both, roughly same shape · 🔀 both, new mechanism in v2 ·
 | 🔀 Conversation management | `/new` `/resume <id>` `/archive` `/name` | none — Telegram owns it. Unnamed topics get a one-shot rename from the first text burst (`titleModel`); the bot can create topics itself |
 | 🔀 Queuing | `/queue <text>` enqueues a follow-up turn | implicit per-conversation serial queue; submits while a turn runs coalesce into one successor turn; `/stop` fences |
 | 🔀 State | per-conversation dirs under `state/sessions/<id>/` (atomic JSON + JSONL logs) | one SQLite db (`goblin.sqlite`, WAL); history as AI SDK `UIMessage` JSON rows |
-| 🔀 Message coalescing | text-fragment coalescer (>4096 splits, command-entity edge cases) | ~1.5s quiet-window buffer; consecutive user messages merge at conversion |
+| 🔀 Message coalescing | text-fragment coalescer (>4096 splits, command-entity edge cases) | 500 ms quiet-window buffer; consecutive user messages merge at conversion |
 | 🔀 History ordering | append order | arrival-order storage, causal view: replies interleave at their triggering message's seq (`anchor_seq`) |
 | ❌ Group machinery | @mention gating, small-group exception, guest lane | `allowedUsers` gates first thing; multi-user is a non-goal |
-| 🔀 Compaction | `/compact` manual context compaction | out (history unbounded by design; compaction returns with the feature that needs it) |
+| 🔀 Compaction | `/compact` manual context compaction | `/compact` + auto at 75% of the context window; history unbounded on disk, bounded in the window by pointer relocation |
 
 ## Commands
 
 | | v1 | v2 |
 |---|---|---|
-| 🔀 Full set | 21: `/start /new /archive /resume /name /project /model /think /compact /queue /debug /subagents /cancel_subagent /revive /cancel /voice /ping /help /skills /mcp /schedule` | 7, settings only: `/start /stop /model /think /voice /memory /forget` |
+| 🔀 Full set | 21: `/start /new /archive /resume /name /project /model /think /compact /queue /debug /subagents /cancel_subagent /revive /cancel /voice /ping /help /skills /mcp /schedule` | 6, settings + compaction: `/start /stop /voice /memory /forget /compact` |
 | 🔀 Cancel | `/cancel` | `/stop` |
 
 ## Models & settings
@@ -42,9 +42,9 @@ Legend: ✅ both, roughly same shape · 🔀 both, new mechanism in v2 ·
 | | v1 | v2 |
 |---|---|---|
 | 🔀 Providers | static registry, prefixed ids: `or/` `openai/` `anthropic/` `zai/` `opencode-go/` (+ Poe remnants), pattern fallback for unknown ids | config registry: `zai` (daily driver), `openrouter`, `codex` (custom shim over chatgpt.com backend, OAuth token rotation via `~/.codex/auth.json`) |
-| 🔀 Thinking | pi levels (`off…max`), half-broken | honest per-family ladders (GLM effort, GPT `reasoning_effort`, OpenRouter catalog-driven); `/think` offers only what the model can express; clamping is defined |
+| 🔀 Thinking | pi levels (`off…max`), half-broken | honest per-family ladders (GLM effort, GPT `reasoning_effort`, OpenRouter catalog-driven); the mini app offers only what the model can express; clamping is defined |
 | 🔀 Capabilities | hand-maintained | fetched catalogs: models.dev + OpenRouter `/models` (cached, with backoff) |
-| 🔀 Switching | `/model` + `favorites` quick-switch list | `/model` + the mini app |
+| 🔀 Switching | `/model` + `favorites` quick-switch list | the mini app (`favorites` quick-switch list) |
 | 🔀 Mini App settings | yes (issue #59): deployment-wide non-secret settings, searchable Devin models | **the** configuration surface — reads and writes `goblin.json5` itself; served over localhost HTTP, doors are `tailscale serve`/`funnel`, zero open ports |
 
 ## Media & files
@@ -61,7 +61,7 @@ Legend: ✅ both, roughly same shape · 🔀 both, new mechanism in v2 ·
 
 | | v1 | v2 |
 |---|---|---|
-| 🔀 Toolset | 10 α (`read bash edit write grep memory_search memory_write spawn_subagent revive_subagent text_to_speech`) + 4 per-surface β (`send_voice send_photo send_document rename_topic`) | 8: `read_file write_file edit_file bash speak schedule send_file memory_search` |
+| 🔀 Toolset | 10 α (`read bash edit write grep memory_search memory_write spawn_subagent revive_subagent text_to_speech`) + 4 per-surface β (`send_voice send_photo send_document rename_topic`) | 11: `read_file write_file edit_file bash speak transcribe schedule send_file memory_search fetch search` (speak/transcribe/search join per config) |
 | ❌ `grep` tool | yes | no — `bash` covers it |
 | 🔀 Tool results | — | text-only by ruling (wire formats can't carry media); `read_file` on an image returns a structured note instead of bytes |
 | 🔀 Output bounds | — | bounded, self-describing output: line window + byte ceiling + per-line clamp, every truncation names its own recovery |
@@ -108,7 +108,6 @@ Legend: ✅ both, roughly same shape · 🔀 both, new mechanism in v2 ·
 | ❌ Diagnostics | `/debug`, `/ping`, `/help`, doctor CLI, `MetricsStore` |
 | ❌ Onboarding wizard | interactive `bun run onboard` |
 | ❌ State migrations | state-version framework (reached v5) |
-| ❌ Manual compaction | `/compact` |
 
 All of these sit on v2's non-goals list: each returns only on explicit demand,
 designed into `DESIGN.md` first.
@@ -136,7 +135,7 @@ when you cut over.
 - **Queue follow-up** — `/queue` is gone. Just send messages while it works; they queue and coalesce. `/stop` to fence.
 - **Cancel** — `/cancel` is now `/stop`.
 - **Audio of a reply** — `/voice` is no longer per-message; it's a sticky per-topic mode, or tap 🔊.
-- **Model favorites** — configured in the mini app / `goblin.json5`, switched with `/model`.
+- **Model favorites** — configured and switched in the mini app / `goblin.json5`.
 - **Huge replies** — no more `reply.md` document; long replies arrive as chunked bubbles.
 - **"Remember X"** — don't ask; retention is automatic once memory goes live. `/forget` removes.
 - **Schedules** — natural language still works, but recurrence is cron under the hood (no more `every 30m`; it becomes `*/30 * * * *`).

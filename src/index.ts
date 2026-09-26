@@ -15,7 +15,6 @@ import {
 	loadConfig,
 	paths,
 	splitModelRef,
-	thinkingLevels,
 	type ConfigRef,
 	type ThinkingLevel,
 } from "./config.ts";
@@ -79,8 +78,9 @@ async function boot() {
 		}
 	}
 
-	// Warm the openrouter route-capability catalog so /think and the mini app
-	// see real per-model thinking levels instead of the cold-start fallback.
+	// Warm the openrouter route-capability catalog so turn-time thinking
+	// options and the mini app see real per-model thinking levels instead
+	// of the cold-start fallback.
 	void ensureOpenRouterCatalog();
 
 	// Long-term memory is a boot-time snapshot: the queue binds rows to
@@ -116,7 +116,10 @@ async function boot() {
 		store,
 		async buildStep(conv, tools) {
 			const cfg = configRef.current;
-			const modelRef = conv.model ?? cfg.model;
+			// Model and thinking are config-only since /model and /think
+			// retired (DESIGN.md, Commands) — stale per-topic overrides in
+			// the db must never beat the mini app's defaults.
+			const modelRef = cfg.model;
 			const { provider, modelId } = splitModelRef(modelRef);
 			// All may be slow (auth "!command", models.dev fetch) — run in
 			// parallel inside the same admission window.
@@ -125,11 +128,7 @@ async function boot() {
 				inputModalities(provider, modelId),
 				contextLimit(provider, modelId),
 			]);
-			const level: ThinkingLevel = (thinkingLevels as readonly string[]).includes(
-				conv.thinking ?? "",
-			)
-				? (conv.thinking as ThinkingLevel)
-				: cfg.thinking;
+			const level: ThinkingLevel = cfg.thinking;
 			const providerOptions = thinkingOptions(cfg, modelRef, level);
 			const prompt = buildSystemPrompt(
 				conv,
@@ -156,10 +155,10 @@ async function boot() {
 		// model writes the summary — same resolution path as turns (auth,
 		// relays), plain generate, no tools, default thinking.
 		compaction: {
-			modelRef: (conv) => conv.model ?? configRef.current.model,
+			modelRef: () => configRef.current.model,
 			summarize: async (conv, system, prompt, signal) => {
 				const cfg = configRef.current;
-				const modelRef = conv.model ?? cfg.model;
+				const modelRef = cfg.model;
 				const model = observedModel(await resolveModel(cfg, auth, modelRef), {
 					conversation: conv.id,
 					purpose: "compaction",

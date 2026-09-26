@@ -86,8 +86,16 @@ export function chooseBoundary(
 	if (boundaryIndex < 0) return null;
 	const boundary = detail[boundaryIndex]!.seq;
 	if (opts.previousBoundary !== null && boundary <= opts.previousBoundary) return null;
+	// The floor gates the delta — the same slice runCompaction will
+	// summarize (events after the previous boundary), not everything ever
+	// stored. Counting from index 0 would fold already-compacted bulk into
+	// the floor and let a tiny delta through on old conversations. An
+	// unfound previous boundary falls back to 0, matching runCompaction's
+	// spanStart.
+	const spanStart =
+		opts.previousBoundary === null ? 0 : detail.findIndex((e) => e.seq === opts.previousBoundary) + 1;
 	let spanTokens = 0;
-	for (let j = 0; j <= boundaryIndex; j++) {
+	for (let j = spanStart; j <= boundaryIndex; j++) {
 		spanTokens += estimateTokens(JSON.stringify(detail[j]!.message));
 	}
 	if (spanTokens < (opts.minSpanTokens ?? 500)) return null;

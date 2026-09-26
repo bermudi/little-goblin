@@ -35,8 +35,11 @@ export interface Conversation {
 	// is_name_implicit) — the bot owes it a real one. Cleared by any
 	// explicit rename or a successful auto-title.
 	titleImplicit: boolean;
-	model: string | null; // "<provider>/<model-id>" override; null = config default
-	thinking: string | null; // override; null = config default
+	// Retired with /model and /think — the mini app (config) owns model
+	// and thinking, and nothing reads these at turn time. Columns persist
+	// for existing DBs, same ruling as cwd.
+	model: string | null;
+	thinking: string | null;
 	voice: boolean;
 	memoryExcluded: boolean; // operator opt-out: this topic sends/recalls no memory
 	epoch: number;

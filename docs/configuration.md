@@ -52,7 +52,8 @@ model ids themselves contain slashes (`openrouter/anthropic/...`), and
 that's fine. The provider name must exist in `providers`, otherwise the bot
 fails loudly at startup/validation time instead of guessing.
 
-`favorites` is the shortlist `/model` shows you in chat. `titleModel` names
+`favorites` is the quick-switch shortlist the Settings mini app shows you.
+`titleModel` names
 a small cheap model used to auto-title new topics; leave it unset and topics
 keep Telegram's placeholder name.
 
@@ -64,9 +65,8 @@ thinking: "medium",   // off | low | medium | high | xhigh | max
 
 This is *your* vocabulary, not the providers'. Each model honestly maps it
 onto what it can actually do — a forced-thinking model clamps `off` up to
-its lowest rung rather than pretending thinking is disabled, and `/think`
-plus the mini app only offer the levels the current model supports. Change
-it per-topic with `/think`; the default here is the fallback.
+its lowest rung rather than pretending thinking is disabled; the mini app
+only offers the levels the current model supports.
 
 ### Speech
 
@@ -153,10 +153,11 @@ refuses to load it otherwise):
   credential command's error output could contain a secret, it is deliberately
   kept out of the error message.
 
-## Per-topic overrides
+## Per-topic settings
 
-`model`, `thinking`, and voice mode can each be overridden per conversation
-from chat (`/model`, `/think`, `/voice`). The config file holds the
-defaults; a topic override wins until `/model reset` / `/think reset` /
-`/voice` clears it. Changing any of them interrupts whatever the topic is
-currently doing, so a reply never comes from a half-applied setting.
+Voice mode and memory inclusion are the per-topic settings, toggled from
+chat (`/voice`, `/memory on`·`off`). Model and thinking are config-only —
+set once in `goblin.json5` or the mini app, they apply everywhere (`/model`
+and `/think` are retired). Changing a per-topic setting interrupts whatever
+the topic is currently doing, so a reply never comes from a half-applied
+setting.

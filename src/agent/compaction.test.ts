@@ -72,6 +72,21 @@ describe("chooseBoundary", () => {
 		const detail = [ev(1, "user", "hi"), ev(2, "assistant", "yo", 1)];
 		expect(chooseBoundary(detail, { tailTokenBudget: 1, previousBoundary: null })).toBeNull();
 	});
+
+	test("the minimum-span floor gates the delta, not total history", () => {
+		// Previous boundary at seq 2 folded the two huge early events; the
+		// delta since (seqs 3-4) is tiny. The floor must measure what would
+		// actually be summarized — counting from index 0 would let
+		// already-folded bulk pass a tiny delta through.
+		const detail = [
+			ev(1, "user", "old bulk".repeat(400)),
+			ev(2, "assistant", "older bulk".repeat(400), 1),
+			ev(3, "user", "hi"),
+			ev(4, "assistant", "yo", 3),
+			ev(5, "user", "pending question"),
+		];
+		expect(chooseBoundary(detail, { tailTokenBudget: 1, previousBoundary: 2 })).toBeNull();
+	});
 });
 
 function fakeStore(detail: CompactionEvent[], previous: { boundarySeq: number; summary: string } | null = null) {

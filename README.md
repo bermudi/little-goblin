@@ -16,7 +16,7 @@ are no topics) is its own conversation with its own history — make a topic to
 start something, post in an old topic to pick it back up. Your messages get
 answered by whatever model you've picked, with eleven tools at its
 disposal (files, shell, speech, scheduling, memory recall, web search
-and fetch). Settings live in Telegram: seven commands plus a Settings
+and fetch). Settings live in Telegram: six commands plus a Settings
 mini app. Everything is stored under one folder
 (`~/goblin` by default).
 
@@ -34,10 +34,11 @@ Full walkthrough: [`docs/setup.md`](docs/setup.md).
 ## Daily use
 
 - **Topics are conversations.** No `/new`, no `/resume` — Telegram does that job.
-- **Seven commands:** `/model` (pick the model), `/think` (thinking effort),
-  `/voice` (voice-note replies on/off), `/stop` (interrupt), `/memory`
-  (memory status, per-topic inclusion), `/forget` (delete remembered
-  content), `/start` (a canned hello). The settings ones are per-topic.
+- **Six commands:** `/voice` (voice-note replies on/off), `/stop`
+  (interrupt), `/memory` (memory status, per-topic inclusion), `/forget`
+  (delete remembered content), `/compact` (summarize older history), and
+  `/start` (a canned hello). The settings ones are per-topic; model and
+  thinking effort live in the Settings mini app.
 - **Send anything:** photos, files, voice notes, videos. Voice gets
   transcribed so even text-only models can "hear" it.
 - **Memory is automatic (when enabled):** exchanges are remembered and
@@ -76,7 +77,8 @@ systemctl --user restart goblin  # restart
 
 ## Developing
 
-- `bun test` runs the suite, `bunx tsc --noEmit` typechecks. Both should pass
+- `bun test` runs the suite, `bun run typecheck` typechecks (both tsc
+  programs). Both should pass
   before committing.
 - Read `DESIGN.md` before any structural work — it owns the domain model, the
   authority rule, and the non-goals list. Read `AGENTS.md` for the working

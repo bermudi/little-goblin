@@ -17,7 +17,7 @@ auto-titled from your first message — if `titleModel` is configured. Rename
 it yourself at any point and your name always wins; the bot won't overwrite
 an explicit rename.
 
-## The seven commands
+## The six commands
 
 Commands are settings and controls, not conversations. The settings ones are
 per-topic (the topic you're in), and every settings change interrupts
@@ -26,10 +26,9 @@ current settings — never a mix.
 
 | Command | What it does |
 |---|---|
-| `/model` | With no argument: shows the current model and your favorites. `/model <provider/model-id>` switches. `/model reset` back to the default. |
-| `/think` | With no argument: shows the current thinking level and what this model supports. `/think <level>` switches. `/think reset` back to the default. |
 | `/voice` | Toggles voice-note replies for this topic. Needs `tts` configured (otherwise it tells you so). |
 | `/stop` | Interrupts the running reply and drops anything queued behind it. |
+| `/compact` | Compacts this topic's older history into a summary right now — the same thing the bot does automatically once a turn crosses 75% of the context window. Recent messages stay; nothing is deleted. |
 | `/memory` | With no argument: memory status (health, queue, last recall, blocked rows) and whether this topic is included. `/memory on`·`off` set per-topic inclusion; `/memory retry`·`dismiss` handle blocked retention. [Memory](memory.md) has the full picture. |
 | `/forget` | Deletes remembered content: `/forget <query>` lists matching sources, `/forget delete <n>` removes one for good — irreversible, and suppressed from future retention. |
 | `/start` | A canned hello (Telegram sends it when a chat first opens). Nothing more. |
@@ -40,7 +39,7 @@ to a different bot is ignored rather than fed to the model.
 ## How replies behave
 
 - **Fire off several messages in a row** — they merge into one reply. The bot
-  waits ~1.5 seconds after each message before starting, so a burst reads as
+  waits ~500 ms after each message before starting, so a burst reads as
   one thought.
 - While it works you see "typing…", plus status lines (`⚙ bash …`) as it
   uses tools.
@@ -68,7 +67,7 @@ stickers — just send them, optionally with a caption. What happens:
 Two special cases: voice and video notes are transcribed on arrival when
 `transcription` is configured (see [Voice](voice.md)) — other audio files
 are transcribed only if you ask — and a caption that happens to look like
-a command (e.g. `/model …`) is treated as a caption, not a command, when
+a command (e.g. `/compact …`) is treated as a caption, not a command, when
 it rides on media — the attachment wins.
 
 Files up to 2 GB work if you're running the self-hosted Telegram bot API

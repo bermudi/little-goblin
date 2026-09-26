@@ -158,7 +158,14 @@ export function buildSystemPrompt(
 					`  own herdr session — the operator watches via herdr session`,
 					`  attach). Prefer it over long bash sessions; results arrive as`,
 					`  [delegation: …] messages in the chat they were born in.`,
-			]
+				]
+			: []),
+		...(tools.includes("mail")
+			? [
+					`- mail searches and reads Gmail; its send queues a draft the`,
+					`  operator approves with a Send button — never claim a mail is`,
+					`  sent until the operator taps it.`,
+				]
 			: []),
 		...(tools.includes("memory_search")
 			? [

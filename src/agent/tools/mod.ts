@@ -10,6 +10,7 @@ import type { SpeechFile } from "../transcribe.ts";
 import { bashTool } from "./bash.ts";
 import { editFileTool } from "./edit.ts";
 import { fetchTool } from "./fetch.ts";
+import { mailTool } from "./mail.ts";
 import { memorySearchTool } from "./memory.ts";
 import { readFileTool } from "./read.ts";
 import { type OutgoingFile, sendFileTool } from "./send.ts";
@@ -17,6 +18,7 @@ import { speakTool } from "./speak.ts";
 import { searchTool } from "./search.ts";
 import { transcribeTool } from "./transcribe.ts";
 import { writeFileTool } from "./write.ts";
+import type { MailToolDeps } from "./mail.ts";
 import type { WebToolDeps } from "./web.ts";
 
 export interface VoiceToolDeps {
@@ -49,6 +51,7 @@ export interface TranscribeToolDeps {
 }
 
 export type { DelegateToolDeps };
+export type { MailToolDeps };
 
 // Use the registered set as the availability source, rather than
 // duplicating its dependency gates in the prompt.
@@ -65,6 +68,7 @@ export function makeTools(
 	web?: WebToolDeps,
 	transcribe?: TranscribeToolDeps,
 	delegate?: DelegateToolDeps,
+	mail?: MailToolDeps,
 ): ToolSet {
 	return {
 		read_file: readFileTool(cwd),
@@ -82,6 +86,10 @@ export function makeTools(
 		// Same per-turn gate as search/transcribe: the caller passes deps
 		// only when the delegation block exists in the live config.
 		...(delegate ? { delegate: delegateTool(delegate) } : {}),
+		// Same live gate on the mail block — the reader closure inside
+		// resolves the read credential per call; the send credential is
+		// never in this dep tree.
+		...(mail ? { mail: mailTool(mail) } : {}),
 		...(file ? { send_file: sendFileTool(cwd, file.deliver) } : {}),
 		...(memory ? { memory_search: memorySearchTool(memory) } : {}),
 		// Fetch is always in the set (local extraction needs no config);

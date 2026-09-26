@@ -5,7 +5,7 @@ import { contextLimit, ensureOpenRouterCatalog, inputModalities } from "./agent/
 import { buildSystemPrompt } from "./agent/prompt.ts";
 import { observedModel, resolveModel, thinkingOptions } from "./agent/providers.ts";
 import { generateTopicTitle } from "./agent/title.ts";
-import { checkFfmpeg, transcribeAudio, transcriptionModel } from "./agent/transcribe.ts";
+import { probeFfmpeg, transcribeAudio, transcriptionModel } from "./agent/transcribe.ts";
 import { synthesizeSpeech } from "./agent/tts.ts";
 import { makeTools, toolNames } from "./agent/tools/mod.ts";
 import {
@@ -15,6 +15,7 @@ import {
 	paths,
 	splitModelRef,
 	thinkingLevels,
+	type ConfigRef,
 	type ThinkingLevel,
 } from "./config.ts";
 import { openStore } from "./conversation.ts";
@@ -53,17 +54,28 @@ async function boot() {
 
 	// Shared ref: the mini app writes goblin.json5 and swaps this in place;
 	// everything reads .current at point of use.
-	const configRef = { current: config };
+	const configRef: ConfigRef = { current: config, ttsDown: false };
 	const auth = loadAuth();
 	const store = openStore(paths.db());
 	// Jobs live in the same SQLite file (own connection) — scheduled
 	// standing orders, DESIGN.md "Scheduled work".
 	const jobs = openJobs(paths.db());
 
-	// ffmpeg powers TTS remuxing and over-cap transcription — probe it once
-	// at boot so a missing binary surfaces before the first speech request.
+	// ffmpeg powers TTS remuxing and over-cap transcription — probe it
+	// once at boot so a missing binary surfaces before the first speech
+	// request. TTS is default-on and ffmpeg is its only dependency, so a
+	// failed probe takes TTS down for the run (warn + /voice and the
+	// speak tool report it) instead of failing message by message —
+	// install ffmpeg and restart to re-enable. Transcription only needs
+	// ffmpeg over the provider upload cap; the probe's warn covers that.
 	if (config.transcription || config.tts) {
-		void checkFfmpeg(config.tts ? "tts" : "transcription");
+		const ok = await probeFfmpeg(config.tts ? "tts" : "transcription");
+		if (!ok && config.tts) {
+			configRef.ttsDown = true;
+			log.warn(
+				"tts disabled — ffmpeg not found on PATH; install ffmpeg and restart to enable voice replies",
+			);
+		}
 	}
 
 	// Warm the openrouter route-capability catalog so /think and the mini app
@@ -143,7 +155,7 @@ async function boot() {
 			const tts = configRef.current.tts;
 			return makeTools(
 				paths.workspace(),
-				tts && deliverVoice
+				tts && !configRef.ttsDown && deliverVoice
 					? {
 							// A per-call voice replaces the whole config voice — Edge
 							// derives the language from the voice name, so an

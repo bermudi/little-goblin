@@ -32,6 +32,7 @@ const config: Config = {
 		zai: { kind: "openai-compatible", baseUrl: "https://api.example.com", auth: "zai" },
 	},
 	model: "zai/m",
+	tts: false,
 	favorites: [],
 	thinking: "medium",
 	allowedUsers: [1],
@@ -75,7 +76,7 @@ function harness(): Harness {
 			},
 		} as unknown as Runtime,
 		api,
-		configRef: { current: config },
+		configRef: { current: config, ttsDown: false },
 		synthesize: () => Promise.resolve([]),
 	};
 	return { deps, submitted, apiCalls, store };

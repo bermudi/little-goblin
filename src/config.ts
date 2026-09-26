@@ -165,6 +165,21 @@ export const memoryConfigSchema = z.object({
 });
 export type MemoryConfig = z.infer<typeof memoryConfigSchema>;
 
+// Edge read-aloud (DESIGN.md, Delivery/TTS) — no auth, unofficial, can
+// break. Default-on: the only dependency is ffmpeg, probed at boot.
+export const DEFAULT_TTS_VOICE = "en-US-AriaNeural";
+
+export const ttsConfigSchema = z.object({
+	kind: z.literal("edge"),
+	voice: z.string().min(1),
+	rate: z.string().regex(/^[+-]\d+%$/).optional(),
+	// Alternates the speak tool may pick per call; the language
+	// follows the voice name. `voice` stays the default for
+	// /voice mode and the 🔊 button.
+	voices: z.array(z.string().min(1)).optional(),
+});
+export type TtsConfig = z.infer<typeof ttsConfigSchema>;
+
 // One web provider selection. Search and fetch each accept one of
 // these or an ordered list of them (DESIGN.md, "Web access") — the
 // list is the fallback chain, config order, first entry primary.
@@ -205,21 +220,20 @@ const configSchema = z
 			.optional(),
 		favorites: z.array(z.string()).default([]),
 		thinking: z.enum(thinkingLevels).default("medium"),
+		// Default-on (no keys — the only dependency is ffmpeg): absent →
+		// edge with the default voice. `""` is the explicit off and
+		// parses to `false` so it survives the mini app's whole-file
+		// rewrite — an undefined key would be dropped and reload as on.
 		tts: z
-			.union([
-				z.object({
-					kind: z.literal("edge"),
-					voice: z.string().min(1),
-					rate: z.string().regex(/^[+-]\d+%$/).optional(),
-					// Alternates the speak tool may pick per call; the language
-					// follows the voice name. `voice` stays the default for
-					// /voice mode and the 🔊 button.
-					voices: z.array(z.string().min(1)).optional(),
-				}),
-				z.literal(""),
-			])
-			.transform((v) => (v === "" ? undefined : v))
-			.optional(),
+			.union([ttsConfigSchema, z.literal(""), z.literal(false)])
+			.optional()
+			.transform((v) =>
+				v === undefined
+					? { kind: "edge" as const, voice: DEFAULT_TTS_VOICE }
+					: v === "" || v === false
+						? false
+						: v,
+			),
 		// Speech → text: voice/video notes at intake, other audio on
 		// demand via the transcribe tool. "" means unset (mini-app
 		// clearing convention).
@@ -300,7 +314,15 @@ const configSchema = z
 export type ProviderConfig = z.infer<typeof providerSchema>;
 export type Config = z.infer<typeof configSchema>;
 export type TranscriptionConfig = NonNullable<Config["transcription"]>;
-export type TtsConfig = NonNullable<Config["tts"]>;
+
+// The shared config handle plus boot-time liveness gates. ttsDown is
+// decided once, at boot (ffmpeg probe): a config mutation instead would
+// leak into the mini app's round-trip as an explicit operator "off".
+// Install ffmpeg and restart to re-enable.
+export interface ConfigRef {
+	current: Config;
+	ttsDown: boolean;
+}
 export type SearchConfig = NonNullable<Config["search"]>;
 export type FetchConfig = NonNullable<Config["fetch"]>;
 

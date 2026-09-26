@@ -21,6 +21,7 @@ const cfg: Config = {
 		codex: { kind: "codex" },
 	},
 	model: "zai/glm-5.3-flash",
+	tts: false,
 	favorites: [],
 	thinking: "medium",
 	allowedUsers: [1],

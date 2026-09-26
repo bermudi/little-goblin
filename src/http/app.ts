@@ -393,7 +393,7 @@ export const APP_HTML = `<!doctype html>
         <div class="row">
           <div class="rstack">
             <div class="rlabel">Text to speech</div>
-            <div class="cap">Edge read-aloud — free and unofficial. Failures post a note in chat.</div>
+            <div class="cap">On by default — Edge read-aloud, free and unofficial, needs ffmpeg on the host. Failures post a note in chat.</div>
           </div>
           <button class="switch" id="ttsOn" aria-label="text to speech"></button>
         </div>

@@ -40,6 +40,7 @@ const valid: Config = {
 		zai: { kind: "openai-compatible", baseUrl: "https://api.z.ai/v4", auth: "zai" },
 	},
 	model: "zai/glm-4.6",
+	tts: false,
 	favorites: [],
 	thinking: "medium",
 	allowedUsers: [1],
@@ -64,6 +65,8 @@ describe("goblin.json5", () => {
 		expect(c.thinking).toBe("medium");
 		expect(c.http.port).toBe(8787);
 		expect(c.allowedUsers).toEqual([7]);
+		// TTS is default-on: absent block, default voice.
+		expect(c.tts).toEqual({ kind: "edge", voice: "en-US-AriaNeural" });
 	});
 
 	test("invalid config throws with file path", () => {
@@ -143,9 +146,11 @@ describe("goblin.json5", () => {
 		expect(loadConfig()!.fetch).toEqual([{ kind: "local" }]);
 	});
 
-	test("tts validates edge voice/rate and \"\" clears to unset", () => {
+	test("tts defaults to edge; \"\" is an explicit off that round-trips", () => {
 		const dir = useHome();
 		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
+		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
+		expect(loadConfig()!.tts).toEqual({ kind: "edge", voice: "en-US-AriaNeural" });
 		writeFileSync(join(dir, "goblin.json5"), `${base},tts:{kind:"edge",voice:"en-US-AriaNeural",rate:"+10%"}}`);
 		expect(loadConfig()!.tts).toEqual({ kind: "edge", voice: "en-US-AriaNeural", rate: "+10%" });
 		writeFileSync(
@@ -163,7 +168,7 @@ describe("goblin.json5", () => {
 		);
 		expect(() => loadConfig()).toThrow("goblin.json5");
 		writeFileSync(join(dir, "goblin.json5"), `${base},tts:""}`);
-		expect(loadConfig()!.tts).toBeUndefined();
+		expect(loadConfig()!.tts).toBe(false);
 		writeFileSync(join(dir, "goblin.json5"), `${base},tts:{kind:"edge",voice:""}}`);
 		expect(() => loadConfig()).toThrow("goblin.json5");
 	});
@@ -198,8 +203,9 @@ describe("goblin.json5", () => {
 		chmodSync(p, 0o600);
 		writeConfig(valid);
 		expect(statSync(p).mode & 0o777).toBe(0o600);
-		// and it round-trips
+		// and it round-trips — including the explicit tts off
 		expect(loadConfig()!.model).toBe("zai/glm-4.6");
+		expect(loadConfig()!.tts).toBe(false);
 	});
 
 	test("memory is optional, validated, and \"\" clears to unset", () => {

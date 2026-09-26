@@ -25,6 +25,7 @@ const config: Config = {
 		zai: { kind: "openai-compatible", baseUrl: "https://api.z.ai/v4", auth: "zai" },
 	},
 	model: "zai/glm-5.3",
+	tts: false,
 	favorites: ["zai/glm-5.3"],
 	thinking: "medium",
 	allowedUsers: [1],
@@ -45,7 +46,7 @@ function setup() {
 				return { message_id: sent.length };
 			},
 		} as unknown as Api,
-		configRef: { current: config },
+		configRef: { current: config, ttsDown: false },
 		store,
 		runtime: {
 			stop: (id: string) => {
@@ -132,11 +133,21 @@ describe("commands", () => {
 		store.close();
 	});
 
-	test("/voice refuses to enable without tts configured", () => {
+	test("/voice refuses to enable when tts is explicitly off", () => {
 		const { store, conv, sent, deps } = setup();
 		expect(handleCommand(deps, conv, "/voice")).toBe(true);
 		expect(store.get(conv.id)!.voice).toBe(false);
-		expect(sent[0]).toContain("not configured");
+		expect(sent[0]).toContain("turned off");
+		store.close();
+	});
+
+	test("/voice refuses to enable while the ffmpeg gate has tts down", () => {
+		const { store, conv, sent, deps } = setup();
+		deps.configRef.current = { ...config, tts: { kind: "edge", voice: "en-US-AriaNeural" } };
+		deps.configRef.ttsDown = true;
+		expect(handleCommand(deps, conv, "/voice")).toBe(true);
+		expect(store.get(conv.id)!.voice).toBe(false);
+		expect(sent[0]).toContain("ffmpeg");
 		store.close();
 	});
 

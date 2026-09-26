@@ -9,6 +9,7 @@ const baseConfig: Config = {
 		zai: { kind: "openai-compatible", baseUrl: "https://api.example.com", auth: "zai" },
 	},
 	model: "zai/m",
+	tts: false,
 	favorites: [],
 	thinking: "medium",
 	allowedUsers: [1],
@@ -190,7 +191,7 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 	} as unknown as CoalescingBuffer<{ parts: UIMessage["parts"]; replyTo: number | undefined }>;
 	const env: IntakeEnv = {
 		deps: {
-			configRef: { current: config },
+			configRef: { current: config, ttsDown: false },
 			auth: {} as unknown as AuthStore,
 			store,
 			runtime: {

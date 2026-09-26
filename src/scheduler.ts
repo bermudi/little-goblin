@@ -9,7 +9,7 @@
 import type { Api } from "grammy";
 import type { UIMessage } from "ai";
 import type { ConversationAddress, ConversationStore } from "./conversation.ts";
-import { paths, type Config, type TtsConfig } from "./config.ts";
+import { paths, type ConfigRef, type TtsConfig } from "./config.ts";
 import { userMessage, type Runtime } from "./runtime.ts";
 import { log } from "./log.ts";
 import { makeDeliverySink } from "./tg/delivery.ts";
@@ -20,7 +20,7 @@ export interface SchedulerDeps {
 	store: ConversationStore;
 	runtime: Runtime;
 	api: Api;
-	configRef: { current: Config };
+	configRef: ConfigRef;
 	synthesize(text: string, tts: TtsConfig): Promise<Uint8Array[]>;
 }
 
@@ -73,7 +73,9 @@ function fire(deps: SchedulerDeps, job: Job, now: Date): void {
 		conv,
 		undefined,
 		undefined,
-		tts ? { voiceMode: conv.voice, synthesize: (text) => deps.synthesize(text, tts) } : undefined,
+		tts && !deps.configRef.ttsDown
+			? { voiceMode: conv.voice, synthesize: (text) => deps.synthesize(text, tts) }
+			: undefined,
 	);
 	try {
 		deps.runtime.submit(conv, userMessage(parts), sink);

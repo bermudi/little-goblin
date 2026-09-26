@@ -6,7 +6,7 @@ import { Bot, type Api } from "grammy";
 import type { MenuButton, Message } from "grammy/types";
 import type { UIMessage } from "ai";
 import type { AuthStore } from "../auth.ts";
-import { paths, type Config, type TtsConfig } from "../config.ts";
+import { paths, type Config, type ConfigRef, type TtsConfig } from "../config.ts";
 import type { ConversationAddress, ConversationStore } from "../conversation.ts";
 import { userMessage, type Runtime } from "../runtime.ts";
 import { log } from "../log.ts";
@@ -65,7 +65,7 @@ interface BufferedItem {
 }
 
 export interface BotDeps {
-	configRef: { current: Config };
+	configRef: ConfigRef;
 	auth: AuthStore;
 	store: ConversationStore;
 	runtime: Runtime;
@@ -282,7 +282,9 @@ export function flushConversation(env: FlushEnv, convId: string, items: Buffered
 		conv,
 		replyTo,
 		undefined,
-		tts ? { voiceMode: conv.voice, synthesize: (text) => deps.synthesize(text, tts) } : undefined,
+		tts && !deps.configRef.ttsDown
+			? { voiceMode: conv.voice, synthesize: (text) => deps.synthesize(text, tts) }
+			: undefined,
 	);
 	try {
 		deps.runtime.submit(conv, userMessage(parts), sink);
@@ -352,8 +354,10 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	bot.callbackQuery(SPEAK_CALLBACK, (ctx) => {
 		void handleSpeakButton(ctx.callbackQuery, {
 			api: bot.api,
-			// Read per tap — a mini-app save applies without restart.
-			tts: deps.configRef.current.tts,
+			// Read per tap — a mini-app save applies without restart. The
+			// boot ffmpeg gate counts as off here; the toast rounds, the
+			// log and /voice carry the reason.
+			tts: deps.configRef.ttsDown ? undefined : deps.configRef.current.tts || undefined,
 			synthesize: deps.synthesize,
 		});
 	});

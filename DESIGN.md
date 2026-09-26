@@ -237,8 +237,8 @@ Input is `text` or a file `path` (plain text/markdown; richer formats are
 extracted with the agent's own tools first) — a path is synthesized
 straight from disk, so "read me this document" never re-types the content
 as model output. Long input is split at sentence boundaries inside the
-tts module, never by the caller. Configure `tts` or the tool isn't in the
-set at all.
+tts module, never by the caller. TTS is default-on (Delivery, TTS), so
+the tool rides that block; `tts: ""` removes it.
 
 `transcribe` is the other direction of the same pair: a workspace audio
 or video file → text, present only when `transcription` is configured
@@ -296,8 +296,8 @@ tool. MCP stays out, with its return conditions on record (below).
   move — request bytes and the model's habits stay stable. Swapping
   providers via MCP would swap tool names and schemas in front of the
   model; the flexibility argument inverts.
-- **Config**: optional `search` block, the tts/transcription convention
-  (absent or `""` → tool absent): `{kind, auth?}` with kinds
+- **Config**: optional `search` block (absent or `""` → tool absent):
+  `{kind, auth?}` with kinds
   `brave|exa|jina|tavily|firecrawl|parallel|ddg`, or an ordered list of
   such entries — the fallback chain. `auth` is an auth.jsonl ref,
   required for every kind but jina (keyless tolerated, rate-limited) and
@@ -863,9 +863,12 @@ Resolved values never enter the tool environment, the model context, or logs.
 - **Delivery**: `streamText` deltas → throttled message edits (~1/s), final
   flush on completion. Typing indicator while a turn runs. Errors post a short
   message and log structured detail.
-- **TTS**: `tts: {kind: "edge", voice, rate?, voices?}` — the Edge read-aloud
-  websocket service (no auth, unofficial, it can break; failures surface
-  as a warn + a short chat message, never a turn failure — the 🔊 tap is
+- **TTS**: default-on — absent config means
+  `tts: {kind: "edge", voice: "en-US-AriaNeural"}`; `tts: ""` is the
+  explicit off (it parses to `false` so the mini app's whole-file
+  rewrite can't silently lose it and reload as on). The service is the
+  Edge read-aloud websocket (no auth, unofficial, it can break; failures
+  surface as a warn + a short chat message, never a turn failure — the 🔊 tap is
   answered immediately because Telegram expires callback queries in
   seconds and synthesis outruns them, so an outcome can't ride the
   toast). Three doors into
@@ -881,8 +884,10 @@ Resolved values never enter the tool environment, the model context, or logs.
   markdown before synthesis (`speakable`); tool input is already authored
   for speech. Edge's supported
   WebM/Opus stream is remuxed losslessly through ffmpeg to ogg/opus — a real
-  voice-note bubble, not an audio-file card. ffmpeg is probed at boot when TTS
-  is configured, and install.sh warns when it is absent.
+  voice-note bubble, not an audio-file card. ffmpeg is probed at boot —
+TTS is default-on, so always; a failed probe takes TTS down for the run
+with a boot warning (install ffmpeg and restart to re-enable) instead of
+failing message by message.
   `record_voice` chat action runs while synthesis is in flight. The
   button voices the *whole* reply, not the tapped bubble: delivery keeps
   a bounded in-memory map of its own recent sends (chat, message id →

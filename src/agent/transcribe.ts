@@ -57,8 +57,12 @@ export async function transcriptionModel(
 	}
 }
 
-// Boot check for speech features that need ffmpeg on PATH.
-export async function checkFfmpeg(feature = "transcription"): Promise<void> {
+// Boot probe for speech features that need ffmpeg on PATH. Resolves
+// false when the binary is missing or broken — the caller decides what
+// that costs (TTS takes the feature down for the run; transcription
+// only loses the over-cap segmentation path). The warn here is the
+// audit trail either way.
+export async function probeFfmpeg(feature = "transcription"): Promise<boolean> {
 	try {
 		const r = await boundedRun(spawnProc(["ffmpeg", "-version"]), {
 			timeoutMs: 10_000,
@@ -67,8 +71,10 @@ export async function checkFfmpeg(feature = "transcription"): Promise<void> {
 		if (r.exitCode !== 0) {
 			throw new Error(`ffmpeg -version exited ${r.exitCode ?? "unreaped"}`);
 		}
+		return true;
 	} catch (err) {
 		log.warn("ffmpeg unavailable", { feature, error: String(err) });
+		return false;
 	}
 }
 

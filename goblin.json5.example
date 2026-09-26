@@ -45,8 +45,12 @@
   // max — thinking is forced; gpt-6: low…xhigh|max; non-thinkers: off).
   thinking: "medium", // off | low | medium | high | xhigh | max
 
-  // Text → Telegram voice notes. Enables /voice, reply buttons, and the
-  // speak tool. Edge read-aloud is unofficial and may break.
+  // Text → Telegram voice notes (/voice mode, the speak tool, 🔊
+  // buttons). ON BY DEFAULT — edge read-aloud needs no keys, just ffmpeg
+  // on PATH (a failed boot probe disables it with a warning; install
+  // ffmpeg and restart to re-enable). Uncomment to pick a different
+  // voice/rate or alternates; `tts: ""` turns it off. Edge is
+  // unofficial and may break.
   // tts: {
   //   kind: "edge",
   //   voice: "en-US-AriaNeural",

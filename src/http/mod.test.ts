@@ -42,6 +42,7 @@ const baseConfig: Config = {
 		zai: { kind: "openai-compatible", baseUrl: "https://api.example.com", auth: "zai" },
 	},
 	model: "zai/m",
+	tts: false,
 	favorites: [],
 	thinking: "medium",
 	allowedUsers: [42],

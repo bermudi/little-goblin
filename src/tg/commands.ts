@@ -7,7 +7,7 @@
 
 import type { Database } from "bun:sqlite";
 import type { Api } from "grammy";
-import { splitModelRef, type Config, type ThinkingLevel } from "../config.ts";
+import { splitModelRef, type ConfigRef, type ThinkingLevel } from "../config.ts";
 import { thinkingLevelsFor } from "../agent/providers.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";
 import { HindsightClient, HindsightError } from "../hindsight.ts";
@@ -29,7 +29,7 @@ export interface CommandMemoryDeps {
 
 export interface CommandDeps {
 	api: Api;
-	configRef: { current: Config };
+	configRef: ConfigRef;
 	store: ConversationStore;
 	runtime: Runtime;
 	// This bot's own username — commands can be addressed /cmd@botname.
@@ -152,8 +152,15 @@ export function handleCommand(
 		}
 
 		case "/voice": {
-			if (!deps.configRef.current.tts && !conv.voice) {
-				reply(deps, conv, "voice replies unavailable — tts is not configured");
+			const ttsDown = deps.configRef.ttsDown;
+			if ((!deps.configRef.current.tts || ttsDown) && !conv.voice) {
+				reply(
+					deps,
+					conv,
+					ttsDown
+						? "voice replies unavailable — ffmpeg is missing on the host (install it and restart goblin)"
+						: "voice replies unavailable — tts is turned off (settings → Voice notes)",
+				);
 				return true;
 			}
 			const enabled = !conv.voice;

@@ -12,6 +12,13 @@
 // the once. Gone → failed. An idle agent that never advanced its seq
 // 90 s after prompting is needs_input — the generic defense against
 // startup dialogs (codex's trust prompt reports as idle).
+//
+// A notice must land before the transition records it: wake first,
+// transition (and re-baseline) only on a landed submit, so a lost
+// notice is retried next tick instead of silently skipped. `starting`
+// rows are invisible to the scan — the start tool owns them — except
+// on the watcher's FIRST scan, where one means goblin died mid-start:
+// its workspace is closed and it reports failed once.
 
 import { Database } from "bun:sqlite";
 import { readFileSync, statSync } from "node:fs";
@@ -20,7 +27,13 @@ import { z } from "zod";
 import { log } from "./log.ts";
 import type { Herdr } from "./herdr.ts";
 
-export type DelegationStatus = "running" | "needs_input" | "done" | "failed" | "stopped";
+export type DelegationStatus =
+	| "starting"
+	| "running"
+	| "needs_input"
+	| "done"
+	| "failed"
+	| "stopped";
 
 export interface Delegation {
 	id: number;
@@ -51,23 +64,41 @@ export interface CreateDelegation {
 }
 
 export interface DelegationsStore {
-	/** Inserts status "running" with empty launch ids — bindLaunch fills
-	 *  them once herdr answers (the agent name derives from the row id). */
+	/** Inserts status "starting" with empty launch ids — the watcher
+	 *  never touches it; the row goes running via markRunning only
+	 *  once the prompt has landed. */
 	create(input: CreateDelegation, now?: Date): Delegation;
 	bindLaunch(
 		id: number,
 		launch: { agentName: string; workspaceId: string; paneId: string },
 	): Delegation | null;
-	/** Record a prompt landing: new seq baseline + prompt timestamp. */
-	markPrompted(id: number, baselineSeq: number, now?: Date): void;
-	/** Move the seq baseline without touching prompted_at — parking a
-	 *  row re-baselines it so "did anything happen since" still works. */
-	setBaseline(id: number, seq: number): void;
+	/** Launch completed: baseline + prompt timestamp + status running
+	 *  in one UPDATE. Returns the row, or null when a `stop` won the
+	 *  race while herdr was launching (a stopped row stays stopped). */
+	markRunning(id: number, baselineSeq: number, promptedAt: Date): Delegation | null;
+	/** Watcher-side compare-and-set: apply the transition only if the
+	 *  row is still exactly what the scan read (same status and
+	 *  prompted_at) — a tool-side send/stop that landed while the
+	 *  notice was in flight wins and is never overwritten. baseline,
+	 *  when given, folds a park-time re-baseline into the same UPDATE. */
+	transitionIf(
+		id: number,
+		expect: { status: DelegationStatus; promptedAt: string },
+		to: DelegationStatus,
+		baseline?: number,
+		now?: Date,
+	): boolean;
 	setStatus(id: number, status: DelegationStatus, now?: Date): void;
 	get(id: number): Delegation | null;
 	list(): Delegation[];
 	/** Rows the watcher still owes a verdict: running + needs_input. */
 	active(): Delegation[];
+	/** Everything that can still consume a herdr slot — the start
+	 *  tool's concurrency cap: starting + running + needs_input. */
+	live(): Delegation[];
+	/** Rows stuck mid-launch — only meaningful to a fresh watcher:
+	 *  a `starting` row across a restart means goblin died mid-start. */
+	starting(): Delegation[];
 	close(): void;
 }
 
@@ -82,7 +113,7 @@ const delegationSchema = z.object({
 	agent_name: z.string(),
 	workspace_id: z.string(),
 	pane_id: z.string(),
-	status: z.enum(["running", "needs_input", "done", "failed", "stopped"]),
+	status: z.enum(["starting", "running", "needs_input", "done", "failed", "stopped"]),
 	baseline_seq: z.number(),
 	prompted_at: z.string(),
 	created_at: z.string(),
@@ -147,17 +178,25 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	const qActive = db.query(
 		"SELECT * FROM delegations WHERE status IN ('running','needs_input') ORDER BY id",
 	);
+	const qLive = db.query(
+		"SELECT * FROM delegations WHERE status IN ('starting','running','needs_input') ORDER BY id",
+	);
+	const qStarting = db.query(
+		"SELECT * FROM delegations WHERE status = 'starting' ORDER BY id",
+	);
 	const qInsert = db.query(`INSERT INTO delegations
 		(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, baseline_seq, prompted_at, created_at, finished_at)
-		VALUES (?, ?, ?, ?, ?, ?, '', '', '', 'running', 0, ?, ?, NULL)`);
+		VALUES (?, ?, ?, ?, ?, ?, '', '', '', 'starting', 0, ?, ?, NULL)`);
 	const qBind = db.query(
 		"UPDATE delegations SET agent_name = ?, workspace_id = ?, pane_id = ? WHERE id = ?",
 	);
-	const qPrompted = db.query(
-		"UPDATE delegations SET baseline_seq = ?, prompted_at = ? WHERE id = ?",
+	const qRunning = db.query(
+		"UPDATE delegations SET baseline_seq = ?, prompted_at = ?, status = 'running', finished_at = NULL WHERE id = ? AND status != 'stopped'",
 	);
-	const qBaseline = db.query(
-		"UPDATE delegations SET baseline_seq = ? WHERE id = ?",
+	const qTransition = db.query(
+		`UPDATE delegations SET status = ?, finished_at = ?,
+			baseline_seq = COALESCE(?, baseline_seq)
+		WHERE id = ? AND status = ? AND prompted_at = ?`,
 	);
 	const qStatus = db.query(
 		"UPDATE delegations SET status = ?, finished_at = ? WHERE id = ?",
@@ -176,11 +215,23 @@ export function openDelegations(dbPath: string): DelegationsStore {
 			const row = qGet.get(id);
 			return row === null ? null : rowToDelegation(row);
 		},
-		markPrompted(id, baselineSeq, now = new Date()) {
-			qPrompted.run(baselineSeq, now.toISOString(), id);
+		markRunning(id, baselineSeq, promptedAt) {
+			qRunning.run(baselineSeq, promptedAt.toISOString(), id);
+			const row = qGet.get(id);
+			if (row === null) return null;
+			const d = rowToDelegation(row);
+			return d.status === "running" ? d : null;
 		},
-		setBaseline(id, seq) {
-			qBaseline.run(seq, id);
+		transitionIf(id, expect, to, baseline, now = new Date()) {
+			const res = qTransition.run(
+				to,
+				TERMINAL.has(to) ? now.toISOString() : null,
+				baseline ?? null,
+				id,
+				expect.status,
+				expect.promptedAt,
+			);
+			return res.changes > 0;
 		},
 		setStatus(id, status, now = new Date()) {
 			qStatus.run(status, TERMINAL.has(status) ? now.toISOString() : null, id);
@@ -194,6 +245,12 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		},
 		active() {
 			return qActive.all().map(rowToDelegation);
+		},
+		live() {
+			return qLive.all().map(rowToDelegation);
+		},
+		starting() {
+			return qStarting.all().map(rowToDelegation);
 		},
 		close() {
 			db.close();
@@ -222,6 +279,11 @@ const TICK_MS = 15_000;
 // A fresh prompt sits idle before it's working — give the harness this
 // long to move the seq before calling it stuck on a startup dialog.
 const STALL_MS = 90_000;
+// "Report written since the prompt" compares a jiffy-granular kernel
+// mtime (can lag real time by several ms) against a precise Date.now()
+// — without headroom a same-tick report reads as older than the prompt
+// and the delegation parks until the stall rule mislabels it.
+const REPORT_SKEW_MS = 200;
 const REPORT_CAP = 16 * 1024;
 const TAIL_LINES = 80;
 
@@ -233,10 +295,27 @@ export function startDelegationWatcher(
 	// would stack another scan on top. Sharing the in-flight promise
 	// gives await-tick callers (tests) a completed scan, not a skipped one.
 	let current: Promise<void> | null = null;
+	// `starting` rows belong to an in-flight start — except across a
+	// restart, where one means goblin died mid-launch. Only the first
+	// scan can tell the difference, so only it reconciles them.
+	let firstScan = true;
 	const scan = (): Promise<void> => {
 		if (current !== null) return current;
 		current = (async () => {
 			try {
+				if (firstScan) {
+					firstScan = false;
+					for (const d of deps.delegations.starting()) {
+						try {
+							await recoverStart(deps, d);
+						} catch (err) {
+							log.error("delegation start recovery failed", err, {
+								delegation: d.id,
+								name: d.name,
+							});
+						}
+					}
+				}
 				for (const d of deps.delegations.active()) {
 					// One bad row must not take the scan down with it — but
 					// it surfaces as an error line, never a swallow.
@@ -300,12 +379,16 @@ async function reportBody(
 	}
 }
 
+// Returns whether the notice landed — callers transition only on
+// true, so an unsubmitted notice is retried on the next tick rather
+// than silently dropped. reportBody throws propagate the same way:
+// they happen before any transition and the scan's catch logs them.
 async function notify(
 	deps: DelegationWatcherDeps,
 	d: Delegation,
 	verdict: "done" | "needs input" | "failed",
 	opts: { extra?: string; agentGone?: boolean } = {},
-): Promise<void> {
+): Promise<boolean> {
 	const body = await reportBody(deps, d, opts.agentGone ?? false);
 	const extra = opts.extra;
 	const text = `[delegation: ${d.name} · ${verdict}]${extra ? ` ${extra}` : ""}\n${body}`;
@@ -316,20 +399,67 @@ async function notify(
 			name: d.name,
 		});
 	}
+	return landed;
 }
 
+// Every watcher write is a compare-and-set against the row the scan
+// read: a send/stop that landed while the notice was in flight wins
+// and is only logged, never overwritten. On a successful transition the
+// local snapshot is updated so fall-through checks expect the new
+// status. baseline folds a park re-baseline into the same UPDATE.
 function transition(
 	deps: DelegationWatcherDeps,
 	d: Delegation,
 	to: DelegationStatus,
-): void {
-	deps.delegations.setStatus(d.id, to);
+	baseline?: number,
+): boolean {
+	const applied = deps.delegations.transitionIf(
+		d.id,
+		{ status: d.status, promptedAt: d.promptedAt },
+		to,
+		baseline,
+	);
+	if (!applied) {
+		log.info("delegation transition superseded", {
+			delegation: d.id,
+			name: d.name,
+			from: d.status,
+			to,
+		});
+		return false;
+	}
 	log.info("delegation transition", {
 		delegation: d.id,
 		name: d.name,
 		from: d.status,
 		to,
 	});
+	d.status = to;
+	return true;
+}
+
+// A `starting` row at boot: goblin died between inserting the row and
+// finishing the herdr launch. Close the workspace it may have opened
+// (best effort), then report it failed like any other dead row.
+async function recoverStart(
+	deps: DelegationWatcherDeps,
+	d: Delegation,
+): Promise<void> {
+	if (d.workspaceId) {
+		try {
+			await deps.herdr.closeWorkspace(d.workspaceId);
+		} catch (err) {
+			log.warn("delegation start-recovery close failed", {
+				delegation: d.id,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+	const landed = await notify(deps, d, "failed", {
+		extra: "(goblin restarted while starting it)",
+		agentGone: d.agentName === "",
+	});
+	if (landed) transition(deps, d, "failed");
 }
 
 async function check(deps: DelegationWatcherDeps, d: Delegation): Promise<void> {
@@ -337,8 +467,11 @@ async function check(deps: DelegationWatcherDeps, d: Delegation): Promise<void> 
 	if (info === null) {
 		// Agent gone — pane closed or process exited. The pane may still
 		// hold the exit text; readPane is the fallback channel here.
-		transition(deps, d, "failed");
-		await notify(deps, d, "failed", { extra: "(agent gone)", agentGone: true });
+		const landed = await notify(deps, d, "failed", {
+			extra: "(agent gone)",
+			agentGone: true,
+		});
+		if (landed) transition(deps, d, "failed");
 		return;
 	}
 
@@ -348,22 +481,22 @@ async function check(deps: DelegationWatcherDeps, d: Delegation): Promise<void> 
 		// never shows as "working" to a 15 s poll, but it always moves
 		// the seq — so seq advance, not a status glimpse, is the signal.
 		if (info.state_change_seq <= d.baselineSeq) return;
-		transition(deps, d, "running");
 		// Fall through — the running rules apply in the same tick (a
-		// parked row that already finished reads done right away).
+		// parked row that already finished reads done right away). A
+		// superseded flip means a tool write won: stop here.
+		if (!transition(deps, d, "running")) return;
 	}
 
 	// running:
 	if (info.agent_status === "blocked") {
-		transition(deps, d, "needs_input");
-		// Re-baseline at the park point: what matters from here is what
-		// happens after this block, not before it.
-		deps.delegations.setBaseline(d.id, info.state_change_seq);
-		await notify(deps, d, "needs input");
+		const landed = await notify(deps, d, "needs input");
+		// The re-baseline rides the same CAS: what matters from here is
+		// what happens after this block, not before it.
+		if (landed) transition(deps, d, "needs_input", info.state_change_seq);
 		return;
 	}
 	if (info.agent_status === "idle" || info.agent_status === "done") {
-		// A report written after the last prompt is itself a completion
+		// A report written since the last prompt is itself a completion
 		// signal: an agent that finished before the post-prompt baseline
 		// get already folded its done transition into baseline_seq —
 		// without this it would sit idle until the stall rule mislabels
@@ -372,24 +505,28 @@ async function check(deps: DelegationWatcherDeps, d: Delegation): Promise<void> 
 		const reportPath = join(deps.delegationsDir, String(d.id), "report.md");
 		let freshReport = false;
 		try {
-			freshReport = statSync(reportPath).mtimeMs > Date.parse(d.promptedAt);
+			// The prompt clock starts before the send and the report can
+			// land in the same millisecond — >=, with headroom for the
+			// fs clock lagging Date.now() (REPORT_SKEW_MS).
+			freshReport =
+				statSync(reportPath).mtimeMs >=
+				Date.parse(d.promptedAt) - REPORT_SKEW_MS;
 		} catch (err) {
 			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 		}
 		if (info.state_change_seq > d.baselineSeq || freshReport) {
-			transition(deps, d, "done");
-			await notify(deps, d, "done");
+			const landed = await notify(deps, d, "done");
+			if (landed) transition(deps, d, "done");
 			return;
 		}
 		if (
 			info.agent_status === "idle" &&
 			Date.now() - Date.parse(d.promptedAt) > STALL_MS
 		) {
-			transition(deps, d, "needs_input");
-			deps.delegations.setBaseline(d.id, info.state_change_seq);
-			await notify(deps, d, "needs input", {
+			const landed = await notify(deps, d, "needs input", {
 				extra: "(agent never started working — likely stuck on a startup dialog)",
 			});
+			if (landed) transition(deps, d, "needs_input", info.state_change_seq);
 		}
 	}
 	// working / unknown / idle-at-baseline: still in flight.

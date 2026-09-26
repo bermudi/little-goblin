@@ -110,7 +110,7 @@ function runningRow(
 		workspaceId: "w1",
 		paneId: "w1:p1",
 	});
-	h.store.markPrompted(d.id, seq, new Date(Date.now() - promptedAgoMs));
+	h.store.markRunning(d.id, seq, new Date(Date.now() - promptedAgoMs));
 	return h.store.get(d.id)!;
 }
 
@@ -244,6 +244,101 @@ describe("delegation watcher", () => {
 		w.stop();
 		expect(h.store.get(d.id)!.status).toBe("needs_input");
 		expect(h.wakes[0]).toContain("startup dialog");
+	});
+
+	test("a notice that can't submit leaves the row for the next tick", async () => {
+		const h = harness();
+		const d = runningRow(h, "flaky wire", 1);
+		h.agents.set(d.agentName, agent(d.agentName, "idle", 3));
+		let lands = false;
+		h.deps.wake = (_a, text) => {
+			if (lands) h.wakes.push(text);
+			return lands;
+		};
+		const w = startDelegationWatcher(h.deps);
+		await w.tick();
+		// Nothing landed → no transition, no notice recorded.
+		expect(h.store.get(d.id)!.status).toBe("running");
+		expect(h.wakes).toEqual([]);
+
+		lands = true;
+		await w.tick();
+		w.stop();
+		expect(h.store.get(d.id)!.status).toBe("done");
+		expect(h.wakes).toHaveLength(1); // exactly one landed notice
+		expect(h.wakes[0]).toContain("[delegation: flaky wire · done]");
+	});
+
+	test("a send that lands mid-notice is never overwritten", async () => {
+		const h = harness();
+		const d = runningRow(h, "race", 1);
+		h.agents.set(d.agentName, agent(d.agentName, "idle", 3));
+		// Suspend the notice inside the screen read — a turn running
+		// `send` meanwhile rewrites the row (running, fresh baseline).
+		let reading = false;
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		h.deps.herdr = {
+			...h.deps.herdr,
+			readAgent: async (name) => {
+				reading = true;
+				await gate;
+				return `agent screen ${name}`;
+			},
+		};
+		const w = startDelegationWatcher(h.deps);
+		const tick = w.tick();
+		for (let i = 0; i < 200 && !reading; i++) {
+			await new Promise((r) => setTimeout(r, 1));
+		}
+		// The tool-side write: unconditional, wins by definition.
+		h.store.markRunning(d.id, 10, new Date());
+		release();
+		await tick;
+		w.stop();
+		// The notice landed — acceptable — but the CAS refused to
+		// clobber the send's row: still running, send's baseline kept.
+		const row = h.store.get(d.id)!;
+		expect(row.status).toBe("running");
+		expect(row.baselineSeq).toBe(10);
+		expect(h.wakes).toHaveLength(1);
+	});
+
+	test("a `starting` row at boot means goblin died mid-start", async () => {
+		const h = harness();
+		// A row left mid-launch — bound ids but never marked running.
+		const d = h.store.create({
+			name: "orphan",
+			harness: "codex",
+			cwd: "/w",
+			task: "t",
+			address: { chatId: 1, threadId: null },
+		});
+		h.store.bindLaunch(d.id, {
+			agentName: "g1-orphan",
+			workspaceId: "w9",
+			paneId: "w9:p1",
+		});
+		const closed: string[] = [];
+		const w = startDelegationWatcher({
+			...h.deps,
+			herdr: {
+				...h.deps.herdr,
+				closeWorkspace: (id) => {
+					closed.push(id);
+					return Promise.resolve();
+				},
+			},
+		});
+		await w.tick();
+		w.stop();
+		expect(h.store.get(d.id)!.status).toBe("failed");
+		expect(closed).toEqual(["w9"]);
+		expect(h.wakes).toHaveLength(1);
+		expect(h.wakes[0]).toContain("[delegation: orphan · failed]");
+		expect(h.wakes[0]).toContain("restarted while starting");
 	});
 
 	test("a second watcher over the same DB resumes a running row", async () => {

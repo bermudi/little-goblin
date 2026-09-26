@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore } from "../../conversation.ts";
-import { hookTokenHash, programTool } from "./program.ts";
+import { hookTokenHash, makePrivateSender, programTool } from "./program.ts";
 import { openPrograms } from "../../programs.ts";
 
 let dirs: string[] = [];
@@ -17,23 +17,32 @@ afterEach(() => {
 	dirs = [];
 });
 
-function toolFor(chatId = -100, threadId: number | null = 7, publicUrl?: string) {
+function toolFor(
+	chatId = -100,
+	threadId: number | null = 7,
+	publicUrl?: string,
+	opts: { operatorIds?: number[]; sendError?: string } = {},
+) {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
 	dirs.push(dir);
 	const programs = openPrograms(join(dir, "goblin.sqlite"));
 	const store = openStore(join(dir, "conv.sqlite"));
-	const sent: string[] = [];
+	const sent: Array<{ chatId: number; text: string }> = [];
 	const tool = programTool({
 		programs,
 		chatId,
 		threadId,
 		publicUrl: () => publicUrl,
-		// The production wiring is a bare api.sendMessage — it goes to
-		// Telegram only and never writes the conversation store, so the
-		// token can't become model context next turn.
-		sendPrivate: async (text) => {
-			sent.push(text);
-		},
+		// The real dep: DMs to each operator id, bare api.sendMessage —
+		// it goes to Telegram only and never writes the conversation
+		// store, so the token can't become model context next turn.
+		sendPrivate: makePrivateSender(
+			async (chatId, text) => {
+				if (opts.sendError) throw new Error(opts.sendError);
+				sent.push({ chatId, text });
+			},
+			() => opts.operatorIds ?? [42],
+		),
 	});
 	return { programs, store, sent, tool };
 }
@@ -163,7 +172,7 @@ describe("program tool", () => {
 		// The operator-facing text carries a URL whose token hashes to the
 		// stored hash — and it's the only place the token exists.
 		expect(sent).toHaveLength(1);
-		const url = sent[0]!.match(/https:\/\/goblin\.ts\.net\/hook\/(\S+)/);
+		const url = sent[0]!.text.match(/https:\/\/goblin\.ts\.net\/hook\/(\S+)/);
 		expect(url).not.toBeNull();
 		const token = url![1]!;
 		expect(programs.get(created.program.id)!.hookHash).toBe(hookTokenHash(token));
@@ -175,7 +184,43 @@ describe("program tool", () => {
 		for (const m of store.history("topic:-100:7")) {
 			expect(JSON.stringify(m)).not.toContain(token);
 		}
-		expect(sent[0]).toContain("Keep it secret");
+		expect(sent[0]!.text).toContain("Keep it secret");
+	});
+
+	test("hook enable DMs every operator, never the topic chat", async () => {
+		// The tool ran in a group topic (-100/7) — the credential must
+		// reach each operator's private chat and nothing else.
+		const { tool, sent } = toolFor(-100, 7, "https://g.ts.net", {
+			operatorIds: [42, 7],
+		});
+		const created = (await exec(tool, {
+			action: "create", name: "ci", charter: "c", cron: "0 9 * * *",
+		})) as { program: { id: number } };
+		const out = (await exec(tool, {
+			action: "hook", id: created.program.id, op: "enable",
+		})) as { hook: string; url_sent: boolean };
+		expect(out).toEqual({ hook: "enabled", url_sent: true });
+		expect(sent.map((s) => s.chatId)).toEqual([42, 7]);
+	});
+
+	test("all DMs failing is an error — hook stays set, token unseen", async () => {
+		const { tool, programs, sent } = toolFor(-100, 7, "https://g.ts.net", {
+			operatorIds: [42, 7],
+			sendError: "chat not found",
+		});
+		const created = (await exec(tool, {
+			action: "create", name: "ci", charter: "c", cron: "0 9 * * *",
+		})) as { program: { id: number } };
+		const out = (await exec(tool, {
+			action: "hook", id: created.program.id, op: "enable",
+		})) as { error: string };
+		expect(out.error).toContain("couldn't DM");
+		expect(out.error).toContain("rotate");
+		// The hook is live — rotate is the resend path — and nothing
+		// URL-shaped reached the model.
+		expect(programs.get(created.program.id)!.hookHash).not.toBeNull();
+		expect(JSON.stringify(out)).not.toContain("/hook/");
+		expect(sent).toEqual([]);
 	});
 
 	test("hook rotate replaces the credential; disable on a cron-less program refuses", async () => {
@@ -185,7 +230,7 @@ describe("program tool", () => {
 			action: "create", name: "ci", charter: "c", hook: true,
 		})) as { program: { id: number } };
 		expect(sent).toHaveLength(1);
-		const oldToken = sent[0]!.match(/\/hook\/(\S+)/)![1]!;
+		const oldToken = sent[0]!.text.match(/\/hook\/(\S+)/)![1]!;
 		expect(programs.get(created.program.id)!.cron).toBeNull();
 		expect(programs.get(created.program.id)!.nextRun).toBeNull();
 
@@ -193,7 +238,7 @@ describe("program tool", () => {
 			action: "hook", id: created.program.id, op: "rotate",
 		})) as { hook: string; url_sent: boolean };
 		expect(rotated).toEqual({ hook: "rotated", url_sent: true });
-		const newToken = sent[1]!.match(/\/hook\/(\S+)/)![1]!;
+		const newToken = sent[1]!.text.match(/\/hook\/(\S+)/)![1]!;
 		expect(newToken).not.toBe(oldToken);
 		// The old credential is dead at the store level.
 		expect(programs.findByHook(hookTokenHash(oldToken))).toBeNull();

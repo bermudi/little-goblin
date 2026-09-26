@@ -3,10 +3,14 @@
 // a successful start leaves a pinned, bound row herdr knows about.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openDelegations, type DelegationsStore } from "../../delegations.ts";
+import {
+	openDelegations,
+	startDelegationWatcher,
+	type DelegationsStore,
+} from "../../delegations.ts";
 import { HerdrError, type AgentInfo, type Herdr } from "../../herdr.ts";
 import { delegateTool, type DelegateToolDeps } from "./delegate.ts";
 
@@ -35,6 +39,7 @@ interface Harness {
 	closed: string[];
 	herdr: Herdr;
 	workspaceDir: string;
+	delegationsDir: string;
 }
 
 function harness(maxRunning = 3, startError?: string): Harness {
@@ -81,7 +86,15 @@ function harness(maxRunning = 3, startError?: string): Harness {
 		workspaceDir,
 		delegationsDir: join(dir, "delegations"),
 	};
-	return { tool: delegateTool(deps), store, prompts, closed, herdr, workspaceDir };
+	return {
+		tool: delegateTool(deps),
+		store,
+		prompts,
+		closed,
+		herdr,
+		workspaceDir,
+		delegationsDir: deps.delegationsDir,
+	};
 }
 
 const exec = (t: ReturnType<typeof delegateTool>, input: unknown) =>
@@ -232,5 +245,107 @@ describe("delegate tool", () => {
 		expect(stopped.stopped).toBe(out.id);
 		expect(h.closed).toEqual(["w1"]);
 		expect(h.store.get(out.id)!.status).toBe("stopped");
+	});
+
+	test("stop only marks stopped once nothing can run unseen", async () => {
+		const h = harness();
+		const out = (await exec(h.tool, {
+			action: "start",
+			harness: "codex",
+			task: "do it",
+			name: "x",
+		})) as { id: number };
+		h.herdr.closeWorkspace = () => Promise.reject(new Error("herdr gone"));
+
+		// Close failed and the agent is alive → the row stays watched.
+		const refused = (await exec(h.tool, {
+			action: "stop",
+			id: out.id,
+		})) as { error: string; notes?: string[] };
+		expect(refused.error).toContain("may still be running");
+		expect(refused.notes?.[0]).toContain("close:");
+		expect(h.store.get(out.id)!.status).toBe("running");
+
+		// Close failed but herdr confirms the agent is gone → stopped.
+		h.herdr.get = () => Promise.resolve(null);
+		const stopped = (await exec(h.tool, {
+			action: "stop",
+			id: out.id,
+		})) as { stopped: number; notes?: string[] };
+		expect(stopped.stopped).toBe(out.id);
+		expect(h.store.get(out.id)!.status).toBe("stopped");
+	});
+
+	test("a watcher tick mid-launch leaves the starting row alone", async () => {
+		const h = harness();
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		h.herdr.startAgent = (name) => gate.then(() => agent(name));
+		const wakes: string[] = [];
+		const w = startDelegationWatcher({
+			delegations: h.store,
+			herdr: h.herdr,
+			delegationsDir: h.delegationsDir,
+			wake: (_a, text) => {
+				wakes.push(text);
+				return true;
+			},
+		});
+		await w.tick(); // drain the boot scan before the row exists
+		const starting = exec(h.tool, {
+			action: "start",
+			harness: "codex",
+			task: "do it",
+			name: "x",
+		});
+		// Wait until start is suspended inside startAgent.
+		for (let i = 0; i < 200 && h.store.list().length === 0; i++) {
+			await new Promise((r) => setTimeout(r, 1));
+		}
+		await w.tick();
+		expect(h.store.get(1)!.status).toBe("starting");
+		expect(wakes).toEqual([]);
+
+		release();
+		const out = (await starting) as { id: number; status: string };
+		w.stop();
+		expect(out.status).toBe("running");
+		expect(h.store.get(1)!.status).toBe("running");
+	});
+
+	test("an agent finished before the baseline read is done, not stuck", async () => {
+		const h = harness();
+		// The agent completes inside the prompt round-trip: report
+		// written and the seq already at its terminal value when the
+		// post-prompt baseline get runs.
+		h.herdr.prompt = () => {
+			writeFileSync(join(h.delegationsDir, "1", "report.md"), "# done");
+			return Promise.resolve();
+		};
+		h.herdr.get = (name) =>
+			Promise.resolve({ ...agent(name), agent_status: "done", state_change_seq: 9 });
+		const out = (await exec(h.tool, {
+			action: "start",
+			harness: "codex",
+			task: "do it",
+			name: "x",
+		})) as { id: number };
+
+		const wakes: string[] = [];
+		const w = startDelegationWatcher({
+			delegations: h.store,
+			herdr: h.herdr,
+			delegationsDir: h.delegationsDir,
+			wake: (_a, text) => {
+				wakes.push(text);
+				return true;
+			},
+		});
+		await w.tick();
+		w.stop();
+		expect(h.store.get(out.id)!.status).toBe("done");
+		expect(wakes[0]).toContain("· done]");
 	});
 });

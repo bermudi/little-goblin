@@ -585,9 +585,15 @@ program's state, never a workspace file.** Rulings:
   `tailscale serve` keeps it tailnet-only, `funnel` makes it public
   for GitHub/CI). The token is 32 random bytes, base64url; only its
   sha256 is stored. **The token never enters model context**: the
-  tool that enables or rotates a hook delivers the full URL to the
-  operator as a direct Telegram message and returns only "hook
-  enabled, URL sent" to the model. Disable = clear the hash; rotate
+  tool that enables or rotates a hook DMs the full URL to each
+  `allowedUsers` id — never the program's topic, whose group readers
+  aren't implicitly authorized — outside conversation history, and
+  returns only "hook enabled, URL sent privately" to the model. No DM
+  delivered = tool error (hook stays set; rotate resends). The route
+  re-resolves the token after reading the body (a hook disabled or
+  rotated mid-upload is dead) and answers 503 + `Retry-After` once
+  the runtime stops accepting turns — a closed runtime only records
+  submits, so a 202 would be a lie. Disable = clear the hash; rotate
   = new token. Body (text or JSON, capped at 32 KiB, larger →
   413) rides into the turn fenced as `<event>…</event>` with a
   standing note that event content is data to evaluate, never
@@ -686,10 +692,22 @@ Rulings:
 - **State is rows.** `delegations` table in `goblin.sqlite`
   (`src/delegations.ts`): name, harness, cwd, task, pinned address,
   herdr agent name + pane/workspace ids, status
-  (`running|needs_input|done|failed|stopped`), the herdr
-  `state_change_seq` observed after prompting, created/finished
+  (`starting|running|needs_input|done|failed|stopped`), the herdr
+  `state_change_seq` observed after prompting, the prompt time
+  (captured *before* the prompt is sent), created/finished
   timestamps. Survives goblin restarts; the herdr unit keeps the
-  panes alive meanwhile.
+  panes alive meanwhile. `starting` is invisible to the watcher and
+  flips to `running` in one write once the prompt landed; a
+  `starting` row seen at watcher boot means goblin died mid-start →
+  close its workspace, notify, `failed`. The cap counts
+  starting+running+needs_input.
+- **Watcher writes are compare-and-set; the notice lands first.**
+  Every watcher transition applies only if status and prompt time
+  still match what it read (a `send` or `stop` mid-poll wins), and
+  only after its notice landed — an unsubmitted notice leaves the row
+  as-is for the next tick. `stop` marks `stopped` only when the
+  workspace closed, none was bound, or herdr confirms the agent is
+  gone; otherwise the row stays watched and the tool reports it.
 - **Start**: one herdr workspace per delegation (cwd = the task's
   directory, label = name), `agent start <name> --kind <kind> --pane
   <root> -- <args>`, then `agent prompt` with the task plus one

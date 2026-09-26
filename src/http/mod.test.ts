@@ -335,7 +335,7 @@ describe("mini-app page serving", () => {
 // body rides into the fired turn fenced as untrusted data. Fires are
 // faked at the seam; the store is real.
 describe("program webhooks", () => {
-	function hookSetup(enabled = true) {
+	function hookSetup(enabled = true, accepting: () => boolean = () => true) {
 		useHome();
 		const dir = process.env.GOBLIN_HOME!;
 		const programs: ProgramsStore = openPrograms(join(dir, "goblin.sqlite"));
@@ -355,6 +355,7 @@ describe("program webhooks", () => {
 			onConfigWritten: () => {},
 			hooks: {
 				programs,
+				accepting,
 				fire: (p, trigger, event) => {
 					fired.push({ id: p.id, trigger, ...(event !== undefined ? { event } : {}) });
 					return true;
@@ -453,7 +454,7 @@ describe("program webhooks", () => {
 			configRef: { current: { ...baseConfig } },
 			botToken: TOKEN,
 			onConfigWritten: () => {},
-			hooks: { programs, fire: () => false },
+			hooks: { programs, accepting: () => true, fire: () => false },
 		});
 		try {
 			const res = await fetch(`http://127.0.0.1:${http.port}/hook/${token}`, {
@@ -462,6 +463,47 @@ describe("program webhooks", () => {
 			});
 			expect(res.status).toBe(500);
 			expect(programs.get(program.id)!.lastRun).not.toBeNull();
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a hook revoked while the body streams is 404 — no fire", async () => {
+		const { http, hit, programs, program, token, fired } = hookSetup();
+		try {
+			// The stream stays open while the row flips to disabled —
+			// the route must re-resolve after the read, not fire the
+			// stale row it resolved before it.
+			const body = new ReadableStream<Uint8Array>({
+				async start(c) {
+					c.enqueue(new TextEncoder().encode("part one"));
+					await new Promise((r) => setTimeout(r, 20));
+					programs.update(program.id, { enabled: false });
+					c.enqueue(new TextEncoder().encode("part two"));
+					c.close();
+				},
+			});
+			const res = await hit(token, { body });
+			expect(res.status).toBe(404);
+			expect(fired).toEqual([]);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a runtime that stopped accepting gets 503 + Retry-After", async () => {
+		const { http, hit, programs, program, token, fired } = hookSetup(
+			true,
+			() => false,
+		);
+		try {
+			const res = await hit(token, { body: "x" });
+			expect(res.status).toBe(503);
+			expect(res.headers.get("retry-after")).toBe("30");
+			// Nothing fired, nothing recorded — a fake-202 would hide a
+			// fire that only lands in history during shutdown.
+			expect(fired).toEqual([]);
+			expect(programs.get(program.id)!.lastRun).toBeNull();
 		} finally {
 			http.stop();
 		}

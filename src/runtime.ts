@@ -216,6 +216,13 @@ export class Runtime {
 		if (!lane.running) lane.draining = this.drain(conv.id);
 	}
 
+	// False after shutdown(): a closed runtime still appends submits to
+	// history and fences them, so a caller offering future work (a webhook
+	// hit) must gate on this rather than trusting submit's return.
+	accepting(): boolean {
+		return !this.closed;
+	}
+
 	// Graceful stop: close intake, then fence every live lane — running
 	// turns abort, queued ones drop. Resolves when the drains settle,
 	// which includes each sink's final flush (the "⏹ superseded" stamp).

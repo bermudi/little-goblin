@@ -81,12 +81,12 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 					// Everything live, plus a tail of finished rows for
 					// context — the table only ever grows.
 					const rows = deps.delegations.list();
-					const live = rows.filter(
-						(d) => d.status === "running" || d.status === "needs_input",
-					);
-					const recent = rows
-						.filter((d) => d.status !== "running" && d.status !== "needs_input")
-						.slice(-10);
+					const isLive = (d: Delegation) =>
+						d.status === "starting" ||
+						d.status === "running" ||
+						d.status === "needs_input";
+					const live = rows.filter(isLive);
+					const recent = rows.filter((d) => !isLive(d)).slice(-10);
 					return { delegations: [...live, ...recent].map(view) };
 				}
 				case "read": {
@@ -124,6 +124,16 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 					if (d.status === "stopped") {
 						return { error: `delegation ${d.id} is stopped — its workspace is closed` };
 					}
+					if (d.status === "starting") {
+						return { error: `delegation ${d.id} is still launching — try again in a moment` };
+					}
+					if (!d.agentName) {
+						return { error: `delegation ${d.id} never launched an agent` };
+					}
+					// The prompt clock starts before the send: an agent that
+					// finishes during the round-trip must read as fresh work,
+					// not stale (the report freshness check compares to this).
+					const promptedAt = new Date();
 					try {
 						await deps.herdr.prompt(d.agentName, input.text);
 					} catch (err) {
@@ -141,8 +151,9 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 					}
 					// Back to running with a fresh baseline: the stall/done
 					// comparisons restart from this prompt.
-					deps.delegations.setStatus(d.id, "running");
-					deps.delegations.markPrompted(d.id, seq);
+					if (deps.delegations.markRunning(d.id, seq, promptedAt) === null) {
+						return { error: `delegation ${d.id} was stopped while the send was in flight` };
+					}
 					log.info("delegation prompted", { delegation: d.id, name: d.name });
 					return { sent: d.id, status: "running" };
 				}
@@ -157,11 +168,40 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 							notes.push(`interrupt: ${err instanceof Error ? err.message : String(err)}`);
 						}
 					}
+					// "stopped" is only honest once nothing can keep running
+					// unseen: the workspace closed, none was ever bound, or
+					// herdr confirms the agent is gone after a failed close.
+					// A failed interrupt alone doesn't block the stop.
+					let closeFailed = false;
 					if (d.workspaceId) {
 						try {
 							await deps.herdr.closeWorkspace(d.workspaceId);
 						} catch (err) {
+							closeFailed = true;
 							notes.push(`close: ${err instanceof Error ? err.message : String(err)}`);
+						}
+					}
+					if (closeFailed) {
+						let alive = true; // can't prove dead → assume alive
+						if (d.agentName) {
+							try {
+								alive = (await deps.herdr.get(d.agentName)) !== null;
+							} catch (err) {
+								notes.push(`agent check: ${err instanceof Error ? err.message : String(err)}`);
+							}
+						} else {
+							alive = false;
+						}
+						if (alive) {
+							log.warn("delegation stop refused — agent may still be running", {
+								delegation: d.id,
+								name: d.name,
+								notes,
+							});
+							return {
+								error: `delegation ${d.id} could not be stopped cleanly — the agent may still be running; it is still watched`,
+								...(notes.length ? { notes } : {}),
+							};
 						}
 					}
 					deps.delegations.setStatus(d.id, "stopped");
@@ -192,10 +232,10 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 					return { error: `cwd "${cwd}" does not exist or is not a directory` };
 				}
 
-				const running = deps.delegations.active();
-				if (running.length >= deps.config.maxRunning) {
+				const live = deps.delegations.live();
+				if (live.length >= deps.config.maxRunning) {
 					return {
-						error: `delegation cap reached (${deps.config.maxRunning} running): ${running.map((d) => `#${d.id} ${d.name}`).join(", ")}`,
+						error: `delegation cap reached (${deps.config.maxRunning} running): ${live.map((d) => `#${d.id} ${d.name}`).join(", ")}`,
 					};
 				}
 
@@ -262,6 +302,11 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 					return fail(`${err instanceof Error ? err.message : String(err)}${screen}`);
 				}
 
+				// The prompt clock starts before the send, not after the
+				// baseline read: an agent that finishes mid-launch writes
+				// its report while still "fresh", which the watcher's
+				// completion check needs to call it done instead of stuck.
+				const promptedAt = new Date();
 				try {
 					await deps.herdr.prompt(agentName, input.task + REPORT_NOTE + reportPath);
 				} catch (err) {
@@ -278,7 +323,16 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 						error: String(err),
 					});
 				}
-				deps.delegations.markPrompted(d.id, baseline);
+				const applied = deps.delegations.markRunning(d.id, baseline, promptedAt);
+				if (applied === null) {
+					// A `stop` won the race while herdr was launching — the
+					// operator's verdict stands over our launch report.
+					log.info("delegation stopped while launching", {
+						delegation: d.id,
+						name,
+					});
+					return { id: d.id, name, status: "stopped" };
+				}
 				log.info("delegation started", {
 					delegation: d.id,
 					name,

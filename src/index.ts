@@ -9,6 +9,7 @@ import { generateText } from "ai";
 import { probeFfmpeg, transcribeAudio, transcriptionModel } from "./agent/transcribe.ts";
 import { synthesizeSpeech } from "./agent/tts.ts";
 import { makeTools, toolNames } from "./agent/tools/mod.ts";
+import { makePrivateSender } from "./agent/tools/program.ts";
 import {
 	ensureHomeLayout,
 	goblinHome,
@@ -200,8 +201,9 @@ async function boot() {
 						}
 					: undefined,
 				// The program tool pins new programs to the conversation it runs
-				// in. Hook URLs go through sendPrivate — a bare api.sendMessage
-				// into this chat/topic that never lands in history, so the token
+				// in. Hook URLs go through sendPrivate — a DM to each operator
+				// (a group topic's readers aren't implicitly authorized), and a
+				// bare api.sendMessage never lands in history, so the token
 				// stays out of model context. publicUrl reads live: the mini app
 				// can change it between turns.
 				{
@@ -209,13 +211,10 @@ async function boot() {
 					chatId: conv.chatId,
 					threadId: conv.threadId,
 					publicUrl: () => configRef.current.publicUrl,
-					sendPrivate: async (text) => {
-						await tg.bot.api.sendMessage(
-							conv.chatId,
-							text,
-							conv.threadId !== null ? { message_thread_id: conv.threadId } : {},
-						);
-					},
+					sendPrivate: makePrivateSender(
+						(id, text) => tg.bot.api.sendMessage(id, text),
+						() => configRef.current.allowedUsers,
+					),
 				},
 				// The send_file tool hands workspace paths to the turn's
 				// delivery sink, which owns the Telegram send.
@@ -342,6 +341,7 @@ async function boot() {
 		// the program through the same fire path as a cron tick.
 		hooks: {
 			programs,
+			accepting: () => runtime.accepting(),
 			fire: (program, trigger, event, now) =>
 				fireProgram(wakeDeps, program, trigger, event, now),
 		},

@@ -45,6 +45,10 @@ export interface HttpDeps {
 	// webhook, not a Telegram webview). Absent = no hook route.
 	hooks?: {
 		programs: ProgramsStore;
+		// False once the runtime is shutting down — a wake then only
+		// records history without running, so the hit is refused (503)
+		// instead of a 202 that silently never executes.
+		accepting(): boolean;
 		// The scheduler's fireProgram — same wake path, webhook trigger.
 		fire(
 			program: Program,
@@ -202,13 +206,20 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 
 	async function handleHook(req: Request, token: string): Promise<Response> {
 		const t0 = Date.now();
-		const done = (status: number, program?: Program): Response => {
+		const done = (
+			status: number,
+			program?: Program,
+			extraHeaders?: Record<string, string>,
+		): Response => {
 			log.info("program hook hit", {
 				status,
 				ms: Date.now() - t0,
 				...(program ? { program: program.id, name: program.name } : {}),
 			});
-			return new Response(null, { status, headers: NO_STORE });
+			return new Response(null, {
+				status,
+				headers: { ...NO_STORE, ...extraHeaders },
+			});
 		};
 		if (req.method !== "POST") return done(405);
 		const hooks = deps.hooks;
@@ -219,15 +230,23 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 		if (program === null || !program.enabled) return done(404, program ?? undefined);
 		const body = await readBodyCapped(req, HOOK_BODY_CAP);
 		if (body.oversize) return done(413, program);
-		const last = hookLastFired.get(program.id);
+		// The row can change while a slow body streams — a disabled or
+		// rotated hook is dead by now, and the fire wants the fresh row
+		// (the charter may have been reworded mid-upload).
+		const fresh = hooks.programs.findByHook(hash);
+		if (fresh === null || !fresh.enabled) return done(404, fresh ?? undefined);
+		const last = hookLastFired.get(fresh.id);
 		const now = new Date();
 		if (last !== undefined && now.getTime() - last < HOOK_THROTTLE_MS) {
-			return done(429, program);
+			return done(429, fresh);
 		}
-		hookLastFired.set(program.id, now.getTime());
-		const landed = hooks.fire(program, "webhook", body.text, now);
-		hooks.programs.markFired(program.id, now);
-		return done(landed ? 202 : 500, program);
+		hookLastFired.set(fresh.id, now.getTime());
+		// No await between this check and fire — a closed runtime only
+		// records the submit, so the hit is refused instead of fake-202.
+		if (!hooks.accepting()) return done(503, fresh, { "retry-after": "30" });
+		const landed = hooks.fire(fresh, "webhook", body.text, now);
+		hooks.programs.markFired(fresh.id, now);
+		return done(landed ? 202 : 500, fresh);
 	}
 	function authedUser(req: Request): InitDataUser | null {
 		const initData = req.headers.get("x-init-data") ?? "";

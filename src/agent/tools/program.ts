@@ -36,14 +36,47 @@ export interface ProgramToolDeps {
 	threadId: number | null;
 	/** Live read — the operator can change publicUrl in the mini app. */
 	publicUrl(): string | undefined;
-	/** Direct delivery to this conversation — bypasses history, so the
-	 *  hook token never becomes model context next turn. */
+	/** Direct delivery to the operators' DMs — bypasses history, so the
+	 *  hook token never becomes model context next turn. Built by
+	 *  makePrivateSender in production. */
 	sendPrivate(text: string): Promise<void>;
 }
 
 // 32 random bytes, base64url — the whole URL path is the credential.
 function newHookToken(): string {
 	return Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
+}
+
+// Builds the tool's sendPrivate dep. The hook URL is a bearer
+// credential and DESIGN.md rules group readers aren't implicitly
+// authorized — so it goes to each operator's private chat (user id as
+// chat id), never the possibly-shared topic the tool ran in. One
+// delivered DM counts as sent; zero deliveries throws so the caller
+// can surface "rotate to resend".
+export function makePrivateSender(
+	send: (chatId: number, text: string) => Promise<unknown>,
+	operatorIds: () => number[],
+): (text: string) => Promise<void> {
+	return async (text) => {
+		let delivered = 0;
+		for (const id of operatorIds()) {
+			try {
+				await send(id, text);
+				delivered++;
+				log.info("private delivery", { user: id });
+			} catch (err) {
+				log.warn("private delivery failed", {
+					user: id,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+		if (delivered === 0) {
+			throw new Error(
+				"couldn't DM the operator — they may need to open a private chat with the bot first",
+			);
+		}
+	};
 }
 
 export function hookTokenHash(token: string): string {
@@ -53,7 +86,7 @@ export function hookTokenHash(token: string): string {
 export const programTool = (deps: ProgramToolDeps) =>
 	tool({
 		description:
-			"Manage programs — a program is standing authority for one concern. Its charter says what it owns: scope, what needs the operator's OK, when to escalate, what not to do, and the steps — write that, not a one-line instruction. A cron is 5 fields (minute hour day month weekday) in server local time; translate the operator's wording into cron yourself (e.g. \"weekdays 8:30\" → \"30 8 * * 1-5\") and confirm the cron with them if ambiguous. The 'hook' action gives a program a secret URL that external services POST to wake it — the URL goes to the operator directly and never appears to you. Creating a program or widening its authority needs the operator's explicit ask — you may propose one, never grant yourself one. Rewording, rescheduling, or toggling within the charter's intent needs no go-ahead.",
+			"Manage programs — a program is standing authority for one concern. Its charter says what it owns: scope, what needs the operator's OK, when to escalate, what not to do, and the steps — write that, not a one-line instruction. A cron is 5 fields (minute hour day month weekday) in server local time; translate the operator's wording into cron yourself (e.g. \"weekdays 8:30\" → \"30 8 * * 1-5\") and confirm the cron with them if ambiguous. The 'hook' action gives a program a secret URL that external services POST to wake it — the URL is sent to the operator privately and never appears to you. Creating a program or widening its authority needs the operator's explicit ask — you may propose one, never grant yourself one. Rewording, rescheduling, or toggling within the charter's intent needs no go-ahead.",
 		inputSchema: z.discriminatedUnion("action", [
 			z.object({ action: z.literal("list") }),
 			z.object({
@@ -114,7 +147,12 @@ export const programTool = (deps: ProgramToolDeps) =>
 						});
 						if (minted !== null) {
 							const err = await sendHookUrl(deps, program, minted.url);
-							if (err !== null) return { program: programView(program), error: err };
+							if (err !== null) {
+								return {
+									program: programView(program),
+									error: `hook is set but the URL delivery failed: ${err} — run hook/rotate to resend`,
+								};
+							}
 							return { program: programView(program), hook: "enabled", url_sent: true };
 						}
 						return { program: programView(program) };

@@ -401,7 +401,7 @@ export const APP_HTML = `<!doctype html>
           <div class="frow">
             <label for="ttsVoice">Voice</label>
             <input id="ttsVoice" placeholder="en-US-AriaNeural" autocomplete="off" spellcheck="false" autocapitalize="off">
-            <div class="cap">Used for /voice mode and the speaker button on replies.</div>
+            <div class="cap">Default for /voice mode, the speaker button, and the speak tool — an alternate matching the reply's language wins; this speaks when the language is unclear or none matches.</div>
           </div>
           <div class="frow">
             <label for="ttsRate">Rate</label>
@@ -415,7 +415,7 @@ export const APP_HTML = `<!doctype html>
               <button class="addbtn" id="voiceAdd" type="button">Add</button>
             </div>
             <datalist id="voiceDl"></datalist>
-            <div class="cap">The speak tool may pick one per message — language follows the voice name.</div>
+            <div class="cap">Picked by reply language wherever speech is synthesized — the speak tool may also name one per call. Language follows the voice name.</div>
           </div>
         </div>
       </div>

@@ -956,7 +956,7 @@ failing message by message.
   (no whole-file buffering), capped at the local bot-api's 2GB upload
   ceiling.
 - **Voice mode**: `/voice` toggles voice-note replies per conversation —
-  a settings command like `/voice`, epoch bump and all, so a
+  a settings command like `/memory on|off`, epoch bump and all, so a
   turn never switches medium mid-flight. When on, delivery skips
   streamed text entirely: typing indicator while the turn runs,
   `record_voice` while it synthesizes, then the final reply as voice

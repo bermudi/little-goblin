@@ -267,16 +267,16 @@ describe("memory turn integration", () => {
 		store.close();
 	});
 
-	test("scheduled housekeeping recalls but never retains", async () => {
+	test("program housekeeping recalls but never retains", async () => {
 		const h = harness({ factText: "Quiet mornings." });
 		const sink = new RecordingSink();
 		h.runtime.submit(
 			h.store.get(h.conversation)!,
-			userMessage([{ type: "text", text: "[scheduled: brief] send the brief" }]),
+			userMessage([{ type: "text", text: "[program: brief · trigger: schedule] send the brief" }]),
 			sink,
 		);
 		expect(await sink.done).toEqual({ kind: "completed" });
-		// Recall ran (evidence for the job)…
+		// Recall ran (evidence for the program)…
 		expect(h.store.memoryContexts.load(h.conversation)).toHaveLength(1);
 		// …but housekeeping is never retained.
 		expect(h.store.memoryQueue.next(h.client.target, Date.now())).toBeNull();
@@ -314,7 +314,7 @@ describe("memory turn integration", () => {
 		h.store.close();
 	});
 
-	test("an operator message in a scheduled burst is still retained", async () => {
+	test("an operator message in a program burst is still retained", async () => {
 		const h = harness({ factText: "Quiet mornings." });
 		// The scheduler fires while the operator's message still waits
 		// for its turn — one mixed burst. Housekeeping must not fence the
@@ -326,14 +326,14 @@ describe("memory turn integration", () => {
 		const sink = new RecordingSink();
 		h.runtime.submit(
 			h.store.get(h.conversation)!,
-			userMessage([{ type: "text", text: "[scheduled: brief] send the brief" }]),
+			userMessage([{ type: "text", text: "[program: brief · trigger: schedule] send the brief" }]),
 			sink,
 		);
 		expect(await sink.done).toEqual({ kind: "completed" });
 		const item = h.store.memoryQueue.next(h.client.target, Date.now());
 		expect(item).not.toBeNull();
 		expect(item?.document.content).toContain("i take my coffee black");
-		expect(item?.document.content).not.toContain("[scheduled:");
+		expect(item?.document.content).not.toContain("[program:");
 		h.store.close();
 	});
 

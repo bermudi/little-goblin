@@ -101,12 +101,13 @@ Only people in `allowedUsers` can load it, and logins expire after a day.
 - `workspace/skills/` — repeatable tasks the bot has learned; see
   [Skills](skills.md).
 
-## Scheduled jobs
+## Programs
 
 Ask in the chat where you want the replies: "every weekday at 8:30,
-brief me on the news" creates a job pinned to that chat (or topic). The
-bot writes jobs it can restate as a cron schedule; anything vaguer it
-will confirm with you first. Replies arrive as ordinary messages in the
-same place. Jobs survive restarts; a fire missed while the bot was down
+brief me on the news" creates a program pinned to that chat (or topic).
+A program is standing authority for one concern — a charter plus a
+schedule. The bot writes crons it can restate; anything vaguer it will
+confirm with you first. Replies arrive as ordinary messages in the same
+place. Programs survive restarts; a fire missed while the bot was down
 runs once when it comes back, then continues on schedule. Tell the bot
-"list my jobs" / "delete the news brief" to manage them.
+"list my programs" / "delete the news brief" to manage them.

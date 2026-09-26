@@ -1,4 +1,4 @@
-// The scheduler's boundary contract: a due job becomes a submitted
+// The scheduler's boundary contract: a due program becomes a submitted
 // user turn in its pinned conversation, marked ran; a submit failure
 // releases the sink and still advances past the occurrence; nothing
 // else fires.
@@ -12,7 +12,7 @@ import type { UIMessage } from "ai";
 import { openStore } from "./conversation.ts";
 import type { ConversationStore } from "./conversation.ts";
 import type { Runtime, TurnSink } from "./runtime.ts";
-import { openJobs } from "./jobs.ts";
+import { openPrograms } from "./programs.ts";
 import type { Config } from "./config.ts";
 import { startScheduler, type SchedulerDeps } from "./scheduler.ts";
 
@@ -50,7 +50,7 @@ interface Harness {
 
 function harness(): Harness {
 	const dir = tmpdirPath();
-	const jobs = openJobs(join(dir, "goblin.sqlite"));
+	const programs = openPrograms(join(dir, "goblin.sqlite"));
 	const store = openStore(join(dir, "conv.sqlite"));
 	const submitted: Harness["submitted"] = [];
 	const apiCalls: Harness["apiCalls"] = [];
@@ -68,7 +68,7 @@ function harness(): Harness {
 		sendVoice: () => Promise.resolve({ message_id: 1 }),
 	} as unknown as Api;
 	const deps: SchedulerDeps = {
-		jobs,
+		programs,
 		store,
 		runtime: {
 			submit: (conv: { id: string }, message: UIMessage, sink: TurnSink) => {
@@ -93,25 +93,25 @@ describe("scheduler", () => {
 		const h = harness();
 		// Created 10 minutes "ago": every-minute cron → overdue = catch-up.
 		const past = new Date(Date.now() - 10 * 60_000);
-		const job = h.deps.jobs.create(
-			{ name: "morning brief", cron: "* * * * *", prompt: "brief me on the day", address: { chatId: -100, threadId: 7 } },
+		const job = h.deps.programs.create(
+			{ name: "morning brief", cron: "* * * * *", charter: "brief me on the day", address: { chatId: -100, threadId: 7 } },
 			past,
 		);
 		startScheduler(h.deps).stop(); // the boot scan fires, then we stop the timer
 		expect(h.submitted).toHaveLength(1);
 		expect(h.submitted[0]!.conv).toBe("topic:-100:7");
 		expect(h.submitted[0]!.parts).toEqual([
-			{ type: "text", text: "[scheduled: morning brief] brief me on the day" },
+			{ type: "text", text: "[program: morning brief · trigger: schedule]\nbrief me on the day" },
 		]);
 		// Marked ran — not due again this minute.
-		expect(h.deps.jobs.due(new Date()).map((j) => j.id)).not.toContain(job.id);
+		expect(h.deps.programs.due(new Date()).map((j) => j.id)).not.toContain(job.id);
 		await closeSinks(h);
 	});
 
 	test("nothing due → nothing fires", () => {
 		const h = harness();
-		h.deps.jobs.create(
-			{ name: "x", cron: "0 4 * * *", prompt: "p", address: { chatId: 1, threadId: null } },
+		h.deps.programs.create(
+			{ name: "x", cron: "0 4 * * *", charter: "p", address: { chatId: 1, threadId: null } },
 			new Date(),
 		);
 		const s = startScheduler(h.deps);
@@ -122,11 +122,11 @@ describe("scheduler", () => {
 
 	test("a disabled job never fires", () => {
 		const h = harness();
-		const job = h.deps.jobs.create(
-			{ name: "x", cron: "* * * * *", prompt: "p", address: { chatId: 1, threadId: null } },
+		const job = h.deps.programs.create(
+			{ name: "x", cron: "* * * * *", charter: "p", address: { chatId: 1, threadId: null } },
 			new Date(Date.now() - 5 * 60_000),
 		);
-		h.deps.jobs.update(job.id, { enabled: false });
+		h.deps.programs.update(job.id, { enabled: false });
 		const s = startScheduler(h.deps);
 		s.tick();
 		s.stop();
@@ -140,8 +140,8 @@ describe("scheduler", () => {
 				throw new Error("queue closed");
 			},
 		} as unknown as Runtime;
-		const job = h.deps.jobs.create(
-			{ name: "x", cron: "* * * * *", prompt: "p", address: { chatId: 1, threadId: null } },
+		const job = h.deps.programs.create(
+			{ name: "x", cron: "* * * * *", charter: "p", address: { chatId: 1, threadId: null } },
 			new Date(Date.now() - 5 * 60_000),
 		);
 		const s = startScheduler(h.deps); // boot scan: submit throws
@@ -153,18 +153,18 @@ describe("scheduler", () => {
 		// Marked ran anyway — one attempt per occurrence; a persistent
 		// submit failure must not refire (and re-deliver the error) every
 		// tick.
-		expect(h.deps.jobs.due(new Date()).map((j) => j.id)).not.toContain(job.id);
+		expect(h.deps.programs.due(new Date()).map((j) => j.id)).not.toContain(job.id);
 	});
 
 	test("one job's failure does not stop the scan", async () => {
 		const h = harness();
 		const past = new Date(Date.now() - 5 * 60_000);
-		h.deps.jobs.create(
-			{ name: "a", cron: "* * * * *", prompt: "p", address: { chatId: 1, threadId: null } },
+		h.deps.programs.create(
+			{ name: "a", cron: "* * * * *", charter: "p", address: { chatId: 1, threadId: null } },
 			past,
 		);
-		h.deps.jobs.create(
-			{ name: "b", cron: "* * * * *", prompt: "p", address: { chatId: 2, threadId: null } },
+		h.deps.programs.create(
+			{ name: "b", cron: "* * * * *", charter: "p", address: { chatId: 2, threadId: null } },
 			past,
 		);
 		let calls = 0;

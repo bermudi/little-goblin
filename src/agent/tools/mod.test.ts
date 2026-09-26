@@ -1,23 +1,23 @@
 // Prompt names must reflect every combination of optional dependencies.
 import { describe, expect, test } from "bun:test";
 import type { HindsightClient } from "../../hindsight.ts";
-import type { JobsStore } from "../../jobs.ts";
+import type { ProgramsStore } from "../../programs.ts";
 import { makeTools, toolNames } from "./mod.ts";
 
-const jobs = {} as unknown as JobsStore;
+const programs = {} as unknown as ProgramsStore;
 const memoryClient = {} as unknown as HindsightClient;
 
 describe("toolNames ↔ makeTools", () => {
 	for (const voice of [false, true]) {
-		for (const schedule of [false, true]) {
+		for (const program of [false, true]) {
 			for (const file of [false, true]) {
 				for (const memory of [false, true]) {
 					for (const transcribe of [false, true]) {
-						test(`voice=${voice}, schedule=${schedule}, file=${file}, memory=${memory}, transcribe=${transcribe}`, () => {
+						test(`voice=${voice}, program=${program}, file=${file}, memory=${memory}, transcribe=${transcribe}`, () => {
 							const tools = makeTools(
 								"/tmp",
 								voice ? { synthesize: async () => [], deliver: async () => {} } : undefined,
-								schedule ? { jobs, chatId: 1, threadId: null } : undefined,
+								program ? { programs, chatId: 1, threadId: null } : undefined,
 								file ? { deliver: async () => {} } : undefined,
 								memory
 									? {
@@ -35,7 +35,7 @@ describe("toolNames ↔ makeTools", () => {
 								"read_file", "write_file", "edit_file", "bash",
 								...(voice ? ["speak"] : []),
 								...(transcribe ? ["transcribe"] : []),
-								...(schedule ? ["schedule"] : []),
+								...(program ? ["program"] : []),
 								...(file ? ["send_file"] : []),
 								...(memory ? ["memory_search"] : []),
 							]);

@@ -38,7 +38,7 @@ const conv: Conversation = {
 };
 
 // The deployment's always-on set — as index.ts builds it without TTS.
-const tools = ["read_file", "write_file", "edit_file", "bash", "schedule", "send_file"];
+const tools = ["read_file", "write_file", "edit_file", "bash", "program", "send_file"];
 
 describe("buildSystemPrompt", () => {
 	test("memory evidence is framed when the tool is present — and only then", () => {
@@ -135,7 +135,7 @@ describe("buildSystemPrompt", () => {
 		}
 	});
 	describe("tool list", () => {
-		test("rendered verbatim from the wiring; schedule prose gated on presence", () => {
+		test("rendered verbatim from the wiring; program prose gated on presence", () => {
 			const home = useHome();
 			process.env.GOBLIN_HOME = home;
 			try {
@@ -145,17 +145,17 @@ describe("buildSystemPrompt", () => {
 					"edit_file",
 					"bash",
 					"speak",
-					"schedule",
+					"program",
 					"send_file",
 				]);
 				expect(full.text).toContain(
-					"Tools: read_file, write_file, edit_file, bash, speak, schedule, send_file.",
+					"Tools: read_file, write_file, edit_file, bash, speak, program, send_file.",
 				);
 				expect(full.text).toContain("create one only when");
 
 				const bare = buildSystemPrompt(conv, ["read_file", "bash"]);
 				expect(bare.text).toContain("Tools: read_file, bash.");
-				expect(bare.text).not.toContain("standing jobs");
+				expect(bare.text).not.toContain("standing orders");
 			} finally {
 				delete process.env.GOBLIN_HOME;
 			}

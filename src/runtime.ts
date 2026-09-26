@@ -114,7 +114,7 @@ export interface RuntimeDeps {
 	// Build the tool set — bound to the deployment workspace by the
 	// composition root. deliverVoice/recording wire the speak tool into
 	// the running turn's sink (voice delivery + chat-action indicator).
-	// The conversation is passed so conversation-pinned tools (schedule)
+	// The conversation is passed so conversation-pinned tools (program)
 	// know where they run without the model handling chat ids.
 	makeTools(
 		conv: Conversation,
@@ -453,7 +453,7 @@ export class Runtime {
 		}
 	}
 
-	// Retention for a completed exchange: text only, scheduled
+	// Retention for a completed exchange: text only, program
 	// housekeeping excluded, suppressed documents skipped. Null = append
 	// history alone.
 	private retentionOpt(
@@ -464,8 +464,8 @@ export class Runtime {
 	): { target: string; document: MemoryDocument } | null {
 		const mem = this.deps.memory;
 		if (!mem || anchorSeq === null || conv.memoryExcluded) return null;
-		if (source.scheduled) {
-			log.debug("memory retention skipped — scheduled housekeeping", {
+		if (source.program) {
+			log.debug("memory retention skipped — program housekeeping", {
 				conversation: conv.id,
 			});
 			return null;
@@ -905,16 +905,16 @@ export class Runtime {
 
 // What a completed turn retains: the user burst it answered (everything
 // after the previous assistant message), bounded prior text for
-// reference resolution, and whether the burst is scheduler
-// housekeeping alone (which is never retained — it isn't operator
-// memory). A mixed burst — the scheduler firing while an operator
-// message waits for its turn — keeps the operator's messages and
-// drops the housekeeping text instead.
+// reference resolution, and whether the burst is program housekeeping
+// alone (which is never retained — it isn't operator memory). A mixed
+// burst — the scheduler firing while an operator message waits for its
+// turn — keeps the operator's messages and drops the housekeeping text
+// instead.
 interface RetentionSource {
 	userTexts: string[];
 	userIds: string[];
 	priorContext: string;
-	scheduled: boolean;
+	program: boolean;
 }
 
 function retentionSourceFrom(entries: { seq: number; message: UIMessage }[]): RetentionSource {
@@ -931,7 +931,7 @@ function retentionSourceFrom(entries: { seq: number; message: UIMessage }[]): Re
 	const userTexts: string[] = [];
 	const userIds: string[] = [];
 	const priorParts: string[] = [];
-	let sawScheduled = false;
+	let sawProgram = false;
 	for (let i = 0; i < entries.length; i++) {
 		const e = entries[i]!;
 		// The compaction summary rides the model view as a user-role
@@ -944,11 +944,13 @@ function retentionSourceFrom(entries: { seq: number; message: UIMessage }[]): Re
 		const t = messageText(e.message);
 		if (t === "") continue;
 		if (e.message.role === "user" && i > lastAsstIndex) {
-			// Scheduled housekeeping is never operator memory — but an
+			// Program housekeeping is never operator memory — but an
 			// operator message in the same burst is, so it drops out of
-			// the retained set rather than fencing the whole burst.
-			if (t.startsWith("[scheduled: ")) {
-				sawScheduled = true;
+			// the retained set rather than fencing the whole burst. The
+			// legacy "[scheduled: " prefix still matches: a fire queued
+			// before the jobs→programs cutover can land unanswered.
+			if (t.startsWith("[program: ") || t.startsWith("[scheduled: ")) {
+				sawProgram = true;
 				continue;
 			}
 			userTexts.push(t);
@@ -962,9 +964,9 @@ function retentionSourceFrom(entries: { seq: number; message: UIMessage }[]): Re
 		userTexts,
 		userIds,
 		priorContext,
-		// Retention is skipped only for scheduled-only bursts — once
+		// Retention is skipped only for program-only bursts — once
 		// operator text remains, there is real memory to keep.
-		scheduled: sawScheduled && userTexts.length === 0,
+		program: sawProgram && userTexts.length === 0,
 	};
 }
 

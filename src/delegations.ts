@@ -1,5 +1,5 @@
 // The delegations table + watcher (DESIGN.md, "Delegation"). State is
-// rows in goblin.sqlite, own connection, same WAL file as the jobs and
+// rows in goblin.sqlite, own connection, same WAL file as the programs and
 // conversation stores — rows survive goblin restarts while the herdr
 // unit keeps the panes alive, so a watcher opened over an existing DB
 // resumes tracking.

@@ -146,11 +146,10 @@ export function buildSystemPrompt(
 		`  bash whenever it matters.`,
 		`- Tools: ${tools.join(", ")}. Paths are relative to the working`,
 		`  directory unless absolute.`,
-		...(tools.includes("schedule")
+		...(tools.includes("program")
 			? [
-					`- schedule manages standing jobs — natural-language prompts on a`,
-					`  cron, replies landing in this chat; create one only when`,
-					`  explicitly asked.`,
+					`- program manages standing orders — charters on a cron, replies`,
+					`  landing in this chat; create one only when explicitly asked.`,
 			]
 			: []),
 		...(tools.includes("memory_search")

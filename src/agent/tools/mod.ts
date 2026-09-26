@@ -4,15 +4,14 @@
 
 import type { ToolSet } from "ai";
 import type { HindsightClient } from "../../hindsight.ts";
-import type { JobsStore } from "../../jobs.ts";
 import { delegateTool, type DelegateToolDeps } from "./delegate.ts";
+import { programTool, type ProgramToolDeps } from "./program.ts";
 import type { SpeechFile } from "../transcribe.ts";
 import { bashTool } from "./bash.ts";
 import { editFileTool } from "./edit.ts";
 import { fetchTool } from "./fetch.ts";
 import { memorySearchTool } from "./memory.ts";
 import { readFileTool } from "./read.ts";
-import { scheduleTool } from "./schedule.ts";
 import { type OutgoingFile, sendFileTool } from "./send.ts";
 import { speakTool } from "./speak.ts";
 import { searchTool } from "./search.ts";
@@ -29,11 +28,7 @@ export interface VoiceToolDeps {
 	voices?: readonly string[];
 }
 
-export interface ScheduleToolDeps {
-	jobs: JobsStore;
-	chatId: number;
-	threadId: number | null;
-}
+export type { ProgramToolDeps };
 
 export interface FileToolDeps {
 	deliver(file: OutgoingFile): Promise<void>;
@@ -64,7 +59,7 @@ export function toolNames(tools: ToolSet): string[] {
 export function makeTools(
 	cwd: string,
 	voice?: VoiceToolDeps,
-	schedule?: ScheduleToolDeps,
+	program?: ProgramToolDeps,
 	file?: FileToolDeps,
 	memory?: MemoryToolDeps,
 	web?: WebToolDeps,
@@ -83,7 +78,7 @@ export function makeTools(
 		// like search is on its own config — presence is decided per turn
 		// by the caller, which reads configRef live.
 		...(transcribe ? { transcribe: transcribeTool(cwd, transcribe.transcribe) } : {}),
-		...(schedule ? { schedule: scheduleTool(schedule) } : {}),
+		...(program ? { program: programTool(program) } : {}),
 		// Same per-turn gate as search/transcribe: the caller passes deps
 		// only when the delegation block exists in the live config.
 		...(delegate ? { delegate: delegateTool(delegate) } : {}),

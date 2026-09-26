@@ -21,7 +21,7 @@ import {
 import { openStore } from "./conversation.ts";
 import { openDelegations, startDelegationWatcher } from "./delegations.ts";
 import { makeHerdr } from "./herdr.ts";
-import { openJobs } from "./jobs.ts";
+import { openPrograms } from "./programs.ts";
 import { buildMemoryClient, startMemoryWorker } from "./memory.ts";
 import { OutageTracker } from "./memory-outage.ts";
 import { startScheduler } from "./scheduler.ts";
@@ -60,9 +60,9 @@ async function boot() {
 	const configRef: ConfigRef = { current: config, ttsDown: false };
 	const auth = loadAuth();
 	const store = openStore(paths.db());
-	// Jobs live in the same SQLite file (own connection) — scheduled
-	// standing orders, DESIGN.md "Scheduled work".
-	const jobs = openJobs(paths.db());
+	// Programs live in the same SQLite file (own connection) — standing
+	// orders, DESIGN.md "Programs".
+	const programs = openPrograms(paths.db());
 	// Delegation is a boot-time snapshot like memory: the store and the
 	// herdr adapter only exist when the block was configured at boot —
 	// the herdr session is systemd's, not ours (DESIGN.md, Delegation).
@@ -198,8 +198,8 @@ async function boot() {
 								: {}),
 						}
 					: undefined,
-				// The schedule tool pins new jobs to the conversation it runs in.
-				{ jobs, chatId: conv.chatId, threadId: conv.threadId },
+				// The program tool pins new programs to the conversation it runs in.
+				{ programs, chatId: conv.chatId, threadId: conv.threadId },
 				// The send_file tool hands workspace paths to the turn's
 				// delivery sink, which owns the Telegram send.
 				deliverFile ? { deliver: deliverFile } : undefined,
@@ -357,9 +357,9 @@ async function boot() {
 
 	// Scheduler after the bot: it submits into conversations and delivers
 	// through bot.api — both must exist. The boot scan fires anything
-	// missed while the process was down (DESIGN.md, Scheduled work).
+	// missed while the process was down (DESIGN.md, Programs).
 	const scheduler = startScheduler({
-		jobs,
+		programs,
 		store,
 		runtime,
 		api: tg.bot.api,
@@ -391,7 +391,7 @@ async function boot() {
 				})
 			: null;
 
-	return { configRef, auth, store, jobs, delegations, runtime, tg, http, scheduler, delegationWatcher, memoryWorker };
+	return { configRef, auth, store, programs, delegations, runtime, tg, http, scheduler, delegationWatcher, memoryWorker };
 }
 
 let booted: Awaited<ReturnType<typeof boot>>;
@@ -401,7 +401,7 @@ try {
 	log.error("boot failed", err);
 	process.exit(1);
 }
-const { store, jobs, delegations, runtime, tg, http, scheduler, delegationWatcher, memoryWorker } = booted;
+const { store, programs, delegations, runtime, tg, http, scheduler, delegationWatcher, memoryWorker } = booted;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // Long enough for the sinks' final flushes and polling's offset
@@ -416,7 +416,7 @@ async function shutdown(signal: string): Promise<void> {
 	}
 	shuttingDown = true;
 	log.info("shutting down", { signal });
-	// Scheduler first — no new scheduled submits once the drain begins.
+	// Scheduler first — no new program submits once the drain begins.
 	scheduler.stop();
 	// The watcher only stops polling — running agents belong to the
 	// herdr unit, not this process; rows resume on next boot.
@@ -453,7 +453,7 @@ async function shutdown(signal: string): Promise<void> {
 	}
 	http.stop();
 	store.close();
-	jobs.close();
+	programs.close();
 	delegations?.close();
 	log.info("bye", { signal });
 	process.exit(0);

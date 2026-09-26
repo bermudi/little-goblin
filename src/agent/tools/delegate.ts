@@ -2,7 +2,7 @@
 // in goblin's herdr session (DESIGN.md, "Delegation"). One herdr
 // workspace per delegation; the watcher (delegations.ts) polls the
 // agent and reports back here as a `[delegation: …]` turn. Bound
-// per-turn to the running conversation like schedule — notices pin to
+// per-turn to the running conversation like program — notices pin to
 // the chat/topic it was born in, the model never handles chat ids.
 
 import { tool } from "ai";

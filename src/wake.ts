@@ -1,8 +1,8 @@
 // Wake — submit a system-generated user message into a pinned
 // conversation address through the ordinary turn path: resolve the
 // conversation, build a normal delivery sink, runtime.submit. This is
-// the shared door scheduled jobs and delegation notices take
-// (DESIGN.md, "Scheduled work" / "Delegation") — no special execution
+// the shared door program fires and delegation notices take
+// (DESIGN.md, "Programs" / "Delegation") — no special execution
 // path, the lane queue orders it behind any live turn, epoch fencing
 // applies.
 //

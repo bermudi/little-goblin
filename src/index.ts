@@ -176,9 +176,11 @@ async function boot() {
 					? {
 							// A per-call voice replaces the whole config voice — Edge
 							// derives the language from the voice name, so an
-							// alternate voice is an alternate language.
+							// alternate voice is an alternate language. An explicit
+							// pick wins outright: with no alternates to sniff
+							// against, pickVoice can't override it.
 							synthesize: (text, voice) =>
-								synthesizeSpeech(text, voice ? { ...tts, voice } : tts),
+								synthesizeSpeech(text, voice ? { ...tts, voice, voices: [] } : tts),
 							deliver: deliverVoice,
 							...(recording ? { recording } : {}),
 							// The allowlist always carries the default: picking it

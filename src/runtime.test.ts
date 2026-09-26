@@ -994,13 +994,39 @@ describe("cache stability", () => {
 		const outcome = await compacted;
 		expect(outcome.kind).toBe("compacted");
 		const boundary = store.getCompaction(conv.id)!.boundarySeq;
-		// THE invariant (DESIGN.md, Compaction): nothing in the tail anchors
-		// at or below the boundary — no response orphaned from its user.
-		for (const e of store.historyDetail(conv.id)) {
-			if (e.seq > boundary) {
-				expect(e.anchorSeq ?? e.seq).toBeGreaterThan(boundary);
-			}
-		}
+		// THE invariant (DESIGN.md, Compaction): the model view's tail is
+		// exactly the events whose causal position follows the boundary —
+		// nothing orphaned (an anchored reply without its question), and
+		// nothing silently swallowed (an event neither summarized nor shown).
+		const tail = store.modelEntries(conv.id).slice(1).map((e) => e.seq);
+		const expected = store
+			.historyDetail(conv.id)
+			.filter((e) => (e.anchorSeq ?? e.seq) > boundary)
+			.map((e) => e.seq);
+		expect(tail).toEqual(expected);
+		store.close();
+	});
+
+	test("/stop drops a queued /compact — it resolves as a noop", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model: fakeModel(["slow ", "reply"], 40), system: "test", contextWindow: 1000 }),
+			makeTools: () => ({}),
+			compaction: { modelRef: () => "m", summarize: async () => "folded" },
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		await sink.firstDelta; // mid-stream: the compact queues behind the turn
+		const compacted = runtime.compact(conv);
+		const { stopped } = runtime.stop(conv.id);
+		expect(stopped).toBe(true);
+		// stop means stop — the queued job drops like a queued turn, but
+		// its promise still settles so the /compact reply fires.
+		expect(await compacted).toEqual({ kind: "noop", reason: "stopped" });
+		expect(await sink.done).toEqual({ kind: "fenced" });
+		expect(store.getCompaction(conv.id)).toBeNull();
 		store.close();
 	});
 

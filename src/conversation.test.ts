@@ -294,6 +294,34 @@ describe("compaction pointers", () => {
 		store.close();
 	});
 
+	test("a late answer to a folded question rides into the summary — never orphaned in the tail", () => {
+		const store = openStore(tmpdb());
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		// Interleaved burst (arrival order): a question, three more while
+		// its turn ran, then the answer — high seq, anchored to seq 1.
+		store.append(c.id, [msg("first")]); // seq 1
+		store.append(c.id, [msg("barge-1"), msg("barge-2"), msg("barge-3")]); // 2-4
+		store.append(
+			c.id,
+			[{ id: "a1", role: "assistant", parts: [{ type: "text", text: "the answer" }] }],
+			{ anchorSeq: 1 },
+		); // seq 5, causal position 1
+		store.setCompaction(c.id, {
+			boundarySeq: 3,
+			summary: "folded",
+			tokensBefore: 100,
+			model: "m",
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+		// The answer's causal position precedes the boundary, so the
+		// summary covers it — filtering on raw seq would strand it in the
+		// tail, orphaned from the question the summary just replaced.
+		const view = store.modelEntries(c.id);
+		expect(view.map((e) => e.seq)).toEqual([3, 4]);
+		expect(view[0]!.message.id).toBe("compact-3");
+		store.close();
+	});
+
 	test("without a pointer, modelEntries is exactly the causal view", () => {
 		const store = openStore(tmpdb());
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");

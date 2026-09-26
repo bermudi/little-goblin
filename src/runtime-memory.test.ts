@@ -283,6 +283,37 @@ describe("memory turn integration", () => {
 		h.store.close();
 	});
 
+	test("a compaction summary is carried context, never retained as operator speech", async () => {
+		const h = harness();
+		// A compaction whose tail has no assistant reply yet: the synthetic
+		// summary is the newest "user" text in the model view until the
+		// next response lands.
+		h.store.append(h.conversation, [
+			userMessage([{ type: "text", text: "old stuff" }]),
+			{ id: "a0", role: "assistant", parts: [{ type: "text", text: "old reply" }] },
+		]);
+		h.store.setCompaction(h.conversation, {
+			boundarySeq: 2,
+			summary: "the folded era",
+			tokensBefore: 10,
+			model: "m",
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+		const sink = new RecordingSink();
+		h.runtime.submit(
+			h.store.get(h.conversation)!,
+			userMessage([{ type: "text", text: "remember the coffee detail" }]),
+			sink,
+		);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		const item = h.store.memoryQueue.next(h.client.target, Date.now());
+		expect(item).not.toBeNull();
+		expect(item?.document.content).toContain("remember the coffee detail");
+		expect(item?.document.content).not.toContain("the folded era");
+		expect(item?.document.content).not.toContain("history compacted");
+		h.store.close();
+	});
+
 	test("an operator message in a scheduled burst is still retained", async () => {
 		const h = harness({ factText: "Quiet mornings." });
 		// The scheduler fires while the operator's message still waits

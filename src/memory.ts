@@ -303,7 +303,9 @@ export function withMemoryBlocks(
 	if (byAnchor.size === 0) return entries.map((e) => e.message);
 	const out: UIMessage[] = [];
 	for (const e of entries) {
-		if (e.message.role === "user") {
+		// The compaction summary takes the boundary event's seq — a recall
+		// block anchored there belongs to a message the summary replaced.
+		if (e.message.role === "user" && !e.message.id.startsWith("compact-")) {
 			const block = byAnchor.get(e.seq);
 			if (block) {
 				out.push({

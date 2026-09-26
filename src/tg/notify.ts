@@ -58,7 +58,7 @@ export async function sendMemoryBlockedNotice(
 		`memory retention blocked for one exchange: ${(error ?? "unknown error").slice(0, 120)} — ` +
 		"/memory retry to resend, /memory dismiss to drop";
 	await api.sendMessage(
-			addr.chatId,
+		addr.chatId,
 		text,
 		addr.threadId !== null ? { message_thread_id: addr.threadId } : {},
 	);

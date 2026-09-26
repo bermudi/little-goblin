@@ -235,7 +235,9 @@ export class Runtime {
 	// /stop — advance the epoch (fences the in-flight turn) and abort its
 	// stream. Queued turns are dropped: stop means stop. Dropped sinks still
 	// get their onDone so nothing leaks. An in-flight compaction summary
-	// aborts too — no pointer written, the next threshold crossing retries.
+	// aborts too — no pointer written, the next threshold crossing retries —
+	// and queued /compact jobs drop with the turns, resolving as a noop so
+	// the command still gets its reply.
 	// The return value tells the caller
 	// — synchronously — whether anything was actually live, so /stop can
 	// say "stopped" vs "nothing was running"; `settled` resolves once the
@@ -243,14 +245,23 @@ export class Runtime {
 	stop(convId: string): { stopped: boolean; settled: Promise<void> } {
 		const epoch = this.deps.store.bumpEpoch(convId);
 		const lane = this.lanes.get(convId);
-		const stopped = lane !== undefined && (lane.pending.length > 0 || lane.controller !== null);
+		const stopped =
+			lane !== undefined &&
+			(lane.pending.length > 0 ||
+				lane.compacts.length > 0 ||
+				lane.controller !== null ||
+				lane.compactController !== null);
 		const notifies: Promise<void>[] = [];
 		if (lane) {
 			const dropped = lane.pending.splice(0);
+			const droppedCompacts = lane.compacts.splice(0);
 			lane.controller?.abort();
 			lane.compactController?.abort();
 			for (const t of dropped) {
 				notifies.push(this.notifyDone(t, { kind: "fenced" }));
+			}
+			for (const c of droppedCompacts) {
+				c.resolve({ kind: "noop", reason: "stopped" });
 			}
 		}
 		if (stopped) {
@@ -916,6 +927,12 @@ function retentionSourceFrom(entries: { seq: number; message: UIMessage }[]): Re
 	const priorParts: string[] = [];
 	let sawScheduled = false;
 	for (const e of entries) {
+		// The compaction summary rides the model view as a user-role
+		// message — carried context, not operator speech. In a tail with
+		// no assistant reply yet (a failed turn, a just-run /compact) it
+		// would otherwise retain the whole summary blob as something the
+		// operator said.
+		if (e.message.id.startsWith("compact-")) continue;
 		if (e.message.role !== "user" && e.message.role !== "assistant") continue;
 		const t = messageText(e.message);
 		if (t === "") continue;

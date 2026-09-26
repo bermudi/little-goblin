@@ -177,6 +177,17 @@ describe("cache-stable materialization", () => {
 		// block with its user deterministically on both sides.
 		expect(req2.slice(0, 2).map((m) => m.id)).toEqual(req1.map((m) => m.id));
 	});
+
+	test("a compaction summary never inherits the boundary's recall block", () => {
+		// The synthetic summary takes the boundary event's seq — a block
+		// anchored there belongs to the message the summary replaced.
+		const view = [
+			{ seq: 2, message: user("compact-2", "[history compacted] …") },
+			{ seq: 3, message: user("u3", "fresh question") },
+		];
+		const stale = { anchorSeq: 2, content: "stale evidence", sourceIds: ["e1"] };
+		expect(withMemoryBlocks(view, [stale], null).map((m) => m.id)).toEqual(["compact-2", "u3"]);
+	});
 });
 
 describe("status", () => {

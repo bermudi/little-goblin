@@ -340,7 +340,7 @@ function openSheet(mode) {
   body.replaceChildren();
   const current = sheetTarget();
   if (mode === "title") body.append(sheetRow("", "Off", current));
-  const favs = cfg.favorites.filter((f) => mode === "title" || true);
+  const favs = cfg.favorites;
   if (favs.length) {
     body.append(el("div", "mgroup", "Favorites"));
     for (const f of favs) body.append(sheetRow(f, f, current));

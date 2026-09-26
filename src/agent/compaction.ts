@@ -38,14 +38,13 @@ export interface CompactionStore {
 
 // A cut after detail[i] is exchange-complete when nothing later anchors
 // at or before it — the causal-view rule, so no response is ever
-// orphaned from its user message in the tail.
-// A cut after detail[i] is exchange-complete when nothing later anchors
-// at or before it — the causal-view rule, so no response is ever orphaned
-// from its user message in the tail. The comparison is against the
-// boundary's arrival seq because the model-view filter is
-// `seq > boundarySeq` (arrival). One ruled consequence: an interleaved
-// burst — operator messages arriving mid-turn — is atomic; the cut
-// coarsens to whole bursts rather than splitting them.
+// orphaned from its user message in the tail. The comparison is against
+// the boundary's arrival seq, and the model view cuts on the same key —
+// `(anchorSeq ?? seq) > boundarySeq` — so an event whose causal position
+// precedes the cut folds into the summarized span rather than stranding
+// in the tail. One ruled consequence: an interleaved burst — operator
+// messages arriving mid-turn — is atomic; the cut coarsens to whole
+// bursts rather than splitting them.
 function exchangeComplete(detail: CompactionEvent[], boundaryIndex: number): boolean {
 	const boundary = detail[boundaryIndex]!.seq;
 	for (let j = boundaryIndex + 1; j < detail.length; j++) {

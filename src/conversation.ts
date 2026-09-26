@@ -105,7 +105,10 @@ export interface ConversationStore {
 	historyDetail(id: string): { seq: number; anchorSeq: number | null; message: UIMessage }[];
 	// What a turn actually sees (DESIGN.md, Compaction): the causal view
 	// cut at the active boundary, with the summary message prepended.
-	// historyEntries above stays the full, unbounded record.
+	// The cut is on causal position — (anchorSeq ?? seq) > boundarySeq —
+	// so a late answer to a folded question rides into the summary with
+	// it instead of stranding, orphaned, in the tail. historyEntries
+	// above stays the full, unbounded record.
 	modelEntries(id: string): { seq: number; message: UIMessage }[];
 	// Seq of the newest user event — a turn's response anchors to it.
 	lastUserSeq(id: string): number | null;
@@ -524,9 +527,13 @@ export function openStore(dbPath: string): ConversationStore {
 
 		modelEntries(id) {
 			const compaction = this.getCompaction(id);
-			const entries = this.historyEntries(id).filter(
-				(e) => compaction === null || e.seq > compaction.boundarySeq,
-			);
+			// Filter on the same key the causal sort uses: an anchored
+			// response to a compacted user event has a high seq but an
+			// early causal position — it belongs to the summarized span,
+			// not the tail (DESIGN.md, Compaction).
+			const entries = this.historyDetail(id)
+				.filter((e) => compaction === null || (e.anchorSeq ?? e.seq) > compaction.boundarySeq)
+				.map((e) => ({ seq: e.seq, message: e.message }));
 			return compaction === null
 				? entries
 				: [{ seq: compaction.boundarySeq, message: summaryMessage(compaction) }, ...entries];

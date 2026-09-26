@@ -166,7 +166,10 @@ agent loop.
   row is the conversation's active pointer and earlier rows are the audit
   trail. The event stream is untouched — arrival-order storage stays the
   truth, and the full record remains queryable forever. The model view
-  becomes [summary message] + events after the boundary: the summary is
+  becomes [summary message] + events whose causal position follows the
+  boundary — `anchorSeq ?? seq`, the same key the causal sort uses, so a
+  late answer to a folded question rides into the summary with it rather
+  than stranding orphaned in the tail. The summary is
   minted at read time as a user-role message framing the carried context.
   The requestHash move is the sanctioned boundary (Cache stability), logged
   as `history compacted` with the numbers. Failure is loud and lossless: a

@@ -1,0 +1,429 @@
+// The Gmail client's boundaries: OAuth minting, list/get parsing,
+// multipart body choice, attachment separation, history polling, and
+// MIME construction — all against fake Google servers, never the wire.
+
+import { afterEach, describe, expect, test } from "bun:test";
+import type { AuthStore } from "./auth.ts";
+import {
+	buildRaw,
+	decodeRfc2047,
+	HistoryExpiredError,
+	htmlToText,
+	makeReader,
+	makeSender,
+} from "./mail.ts";
+
+const fakeAuth: AuthStore = {
+	resolve: async (name) => `secret:${name}`,
+	has: () => true,
+	names: () => [],
+};
+
+let servers: ReturnType<typeof Bun.serve>[] = [];
+afterEach(async () => {
+	for (const s of servers) await s.stop();
+	servers = [];
+});
+
+function serve(handler: (req: Request) => Response | Promise<Response>): string {
+	const server = Bun.serve({ port: 0, fetch: handler });
+	servers.push(server);
+	return `http://127.0.0.1:${server.port}`;
+}
+
+const b64url = (s: string): string => Buffer.from(s, "utf8").toString("base64url");
+
+function headers(...pairs: [string, string][]): Array<{ name: string; value: string }> {
+	return pairs.map(([name, value]) => ({ name, value }));
+}
+
+describe("decodeRfc2047", () => {
+	test("plain values pass through", () => {
+		expect(decodeRfc2047("Hello world")).toBe("Hello world");
+		expect(decodeRfc2047("alice@example.com")).toBe("alice@example.com");
+	});
+
+	test("B-encoded words decode", () => {
+		expect(decodeRfc2047("=?UTF-8?B?SGVsbMOzIHdvcmxk?=")).toBe("Helló world");
+	});
+
+	test("Q-encoded words decode with underscores as spaces", () => {
+		expect(decodeRfc2047("=?UTF-8?Q?booking_confirmed_=E2=9C=93?=")).toBe("booking confirmed ✓");
+	});
+
+	test("an undecodable word survives verbatim", () => {
+		expect(decodeRfc2047("=?X?B?!!!?=")).toBe("=?X?B?!!!?=");
+	});
+});
+
+describe("htmlToText", () => {
+	test("short mail is kept — no minimum length", () => {
+		expect(htmlToText("<p>ok thanks</p>")).toContain("ok thanks");
+	});
+
+	test("a normal HTML mail reads as text", () => {
+		const text = htmlToText("<html><body><h1>Hi</h1><p>second line</p></body></html>");
+		expect(text).toContain("Hi");
+		expect(text).toContain("second line");
+	});
+});
+
+describe("buildRaw", () => {
+	function decoded(draft: Parameters<typeof buildRaw>[0]): string {
+		return Buffer.from(buildRaw(draft), "base64url").toString("utf8");
+	}
+
+	test("minimal headers + body, base64url round-trip", () => {
+		const raw = decoded({ to: ["a@x.com"], subject: "hi", body: "hello" });
+		expect(raw).toContain("To: a@x.com");
+		expect(raw).toContain("Subject: hi");
+		expect(raw).toContain("Content-Type: text/plain");
+		expect(raw).toContain("hello");
+		expect(buildRaw({ to: ["a@x.com"], subject: "hi", body: "hello" })).not.toMatch(/[+/=]/);
+	});
+
+	test("non-ASCII subjects ride RFC 2047, replies thread", () => {
+		const raw = decoded({
+			to: ["a@x.com"],
+			cc: ["b@y.com"],
+			subject: "Hellóz",
+			body: "x",
+			threadId: "t1",
+			inReplyTo: "<orig@mail>",
+		});
+		expect(raw).toContain("Cc: b@y.com");
+		expect(raw).toContain("=?UTF-8?B?");
+		expect(raw).toContain("In-Reply-To: <orig@mail>");
+		expect(raw).toContain("References: <orig@mail>");
+	});
+});
+
+describe("gmail client", () => {
+	function oauthBase(seen: { body: string }): string {
+		return serve(async (req) => {
+			if (new URL(req.url).pathname !== "/token") return new Response("nf", { status: 404 });
+			seen.body = await req.text();
+			return Response.json({ access_token: "tok-1", expires_in: 3600 });
+		});
+	}
+
+	test("search lists then resolves each hit's headers", async () => {
+		const seen = { body: "" };
+		const oauth = oauthBase(seen);
+		const gmail = serve((req) => {
+			const url = new URL(req.url);
+			if (url.pathname === "/gmail/v1/users/me/messages") {
+				expect(req.headers.get("authorization")).toBe("Bearer tok-1");
+				expect(url.searchParams.get("q")).toBe("from:bank");
+				return Response.json({ messages: [{ id: "m1" }, { id: "m2" }], resultSizeEstimate: 2 });
+			}
+			const m = /^\/gmail\/v1\/users\/me\/messages\/([^/]+)$/.exec(url.pathname);
+			if (m) {
+				return Response.json({
+					id: m[1],
+					threadId: `t-${m[1]}`,
+					snippet: `snip-${m[1]}`,
+					payload: {
+						headers: headers(
+							["From", `a-${m[1]}@x.com`],
+							["Subject", `sub-${m[1]}`],
+							["Date", "Sat, 26 Sep 2026 10:00:00 +0000"],
+						),
+					},
+				});
+			}
+			return new Response("nf", { status: 404 });
+		});
+		const reader = makeReader({
+			auth: fakeAuth,
+			clientId: "cid",
+			clientSecretAuth: "gmail-secret",
+			readAuth: "gmail-read",
+			gmailBase: `${gmail}/gmail/v1`,
+			oauthBase: oauth,
+		});
+		const hits = await reader.search("from:bank", 10);
+		expect(hits).toHaveLength(2);
+		expect(hits[0]).toMatchObject({
+			id: "m1",
+			threadId: "t-m1",
+			from: "a-m1@x.com",
+			subject: "sub-m1",
+			snippet: "snip-m1",
+		});
+		// The mint posted the desktop-flow fields — and the READ refresh token.
+		expect(seen.body).toContain("grant_type=refresh_token");
+		expect(seen.body).toContain("client_id=cid");
+		expect(seen.body).toContain(encodeURIComponent("secret:gmail-read"));
+	});
+
+	test("an oauth failure fails the call with the provider named", async () => {
+		const oauth = serve(() => new Response("bad", { status: 401 }));
+		const reader = makeReader({
+			auth: fakeAuth,
+			clientId: "cid",
+			clientSecretAuth: "gmail-secret",
+			readAuth: "gmail-read",
+			gmailBase: "http://127.0.0.1:1/gmail/v1",
+			oauthBase: oauth,
+		});
+		await expect(reader.search("q", 5)).rejects.toThrow("gmail-oauth");
+	});
+
+	test("read prefers plain text and separates attachments", async () => {
+		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
+		const gmail = serve((req) => {
+			const url = new URL(req.url);
+			if (url.pathname === "/gmail/v1/users/me/messages/m1") {
+				return Response.json({
+					id: "m1",
+					threadId: "t1",
+					snippet: "snip",
+					payload: {
+						mimeType: "multipart/mixed",
+						headers: headers(
+							["From", "Bank <noreply@bank.com>"],
+							["To", "me@gmail.com"],
+							["Subject", "=?UTF-8?B?U3RhdGVtZW50?="],
+							["Date", "Sat, 26 Sep 2026 10:00:00 +0000"],
+						),
+						parts: [
+							{ mimeType: "text/plain", body: { data: b64url("plain body"), size: 10 } },
+							{ mimeType: "text/html", body: { data: b64url("<p>html body</p>"), size: 16 } },
+							{
+								mimeType: "application/pdf",
+								filename: "stmt.pdf",
+								body: { attachmentId: "att1", size: 1234 },
+							},
+						],
+					},
+				});
+			}
+			return new Response("nf", { status: 404 });
+		});
+		const reader = makeReader({
+			auth: fakeAuth,
+			clientId: "cid",
+			clientSecretAuth: "gmail-secret",
+			readAuth: "gmail-read",
+			gmailBase: `${gmail}/gmail/v1`,
+			oauthBase: oauth,
+		});
+		const msg = await reader.read("m1");
+		expect(msg.subject).toBe("Statement");
+		expect(msg.textBody).toBe("plain body");
+		expect(msg.htmlConverted).toBe(false);
+		expect(msg.attachments).toEqual([
+			{ attachmentId: "att1", filename: "stmt.pdf", mimeType: "application/pdf", size: 1234 },
+		]);
+	});
+
+	test("read converts html-only mail and flags it", async () => {
+		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
+		const gmail = serve(() =>
+			Response.json({
+				id: "m2",
+				threadId: "t2",
+				snippet: "s",
+				payload: {
+					mimeType: "text/html",
+					headers: headers(["From", "x@y.com"], ["Subject", "hi"], ["Date", "today"]),
+					body: { data: b64url("<p>html only</p>"), size: 16 },
+				},
+			}),
+		);
+		const reader = makeReader({
+			auth: fakeAuth,
+			clientId: "cid",
+			clientSecretAuth: "gmail-secret",
+			readAuth: "gmail-read",
+			gmailBase: `${gmail}/gmail/v1`,
+			oauthBase: oauth,
+		});
+		const msg = await reader.read("m2");
+		expect(msg.textBody).toContain("html only");
+		expect(msg.htmlConverted).toBe(true);
+	});
+
+	test("attachment bytes decode from base64url", async () => {
+		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
+		const gmail = serve(() =>
+			Response.json({ data: Buffer.from("file-bytes").toString("base64url"), size: 10 }),
+		);
+		const reader = makeReader({
+			auth: fakeAuth,
+			clientId: "cid",
+			clientSecretAuth: "gmail-secret",
+			readAuth: "gmail-read",
+			gmailBase: `${gmail}/gmail/v1`,
+			oauthBase: oauth,
+		});
+		expect(Buffer.from(await reader.attachment("m", "a")).toString()).toBe("file-bytes");
+	});
+
+	test("poll intersects arrivals with the filter, oldest first", async () => {
+		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
+		const gmail = serve((req) => {
+			const url = new URL(req.url);
+			if (url.pathname === "/gmail/v1/users/me/history") {
+				expect(url.searchParams.get("startHistoryId")).toBe("100");
+				return Response.json({
+					history: [
+						{ messagesAdded: [{ message: { id: "new-match" } }] },
+						{ messagesAdded: [{ message: { id: "new-other" } }] },
+					],
+					historyId: "120",
+				});
+			}
+			if (url.pathname === "/gmail/v1/users/me/messages") {
+				// Newest first — new-match is older than the noise above it.
+				return Response.json({ messages: [{ id: "old-noise" }, { id: "new-match" }] });
+			}
+			const m = /^\/gmail\/v1\/users\/me\/messages\/([^/]+)$/.exec(url.pathname);
+			if (m) {
+				return Response.json({
+					id: m[1],
+					threadId: "t",
+					snippet: "s",
+					payload: { headers: headers(["From", "f"], ["Subject", "s"], ["Date", "d"]) },
+				});
+			}
+			return new Response("nf", { status: 404 });
+		});
+		const reader = makeReader({
+			auth: fakeAuth,
+			clientId: "cid",
+			clientSecretAuth: "gmail-secret",
+			readAuth: "gmail-read",
+			gmailBase: `${gmail}/gmail/v1`,
+			oauthBase: oauth,
+		});
+		const { hits, historyId } = await reader.poll("from:bank", "100");
+		// new-other arrived but doesn't match; old-noise matches but isn't new.
+		expect(hits.map((h) => h.id)).toEqual(["new-match"]);
+		expect(historyId).toBe("120");
+	});
+
+	test("poll with no arrivals advances the checkpoint without a list call", async () => {
+		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
+		let lists = 0;
+		const gmail = serve((req) => {
+			const url = new URL(req.url);
+			if (url.pathname === "/gmail/v1/users/me/history") {
+				return Response.json({ historyId: "130" });
+			}
+			if (url.pathname === "/gmail/v1/users/me/messages") lists++;
+			return new Response("nf", { status: 404 });
+		});
+		const reader = makeReader({
+			auth: fakeAuth,
+			clientId: "cid",
+			clientSecretAuth: "gmail-secret",
+			readAuth: "gmail-read",
+			gmailBase: `${gmail}/gmail/v1`,
+			oauthBase: oauth,
+		});
+		const { hits, historyId } = await reader.poll("from:bank", "120");
+		expect(hits).toEqual([]);
+		expect(historyId).toBe("130");
+		expect(lists).toBe(0);
+	});
+
+	test("an expired history id surfaces as HistoryExpiredError", async () => {
+		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
+		const gmail = serve((req) => {
+			const url = new URL(req.url);
+			if (url.pathname === "/gmail/v1/users/me/history") {
+				return Response.json({ error: { code: 404 } }, { status: 404 });
+			}
+			return new Response("nf", { status: 404 });
+		});
+		const reader = makeReader({
+			auth: fakeAuth,
+			clientId: "cid",
+			clientSecretAuth: "gmail-secret",
+			readAuth: "gmail-read",
+			gmailBase: `${gmail}/gmail/v1`,
+			oauthBase: oauth,
+		});
+		await expect(reader.poll("from:bank", "1")).rejects.toBeInstanceOf(HistoryExpiredError);
+	});
+
+	test("profileHistoryId returns the baseline checkpoint", async () => {
+		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
+		const gmail = serve(() => Response.json({ historyId: "999", messagesTotal: 1 }));
+		const reader = makeReader({
+			auth: fakeAuth,
+			clientId: "cid",
+			clientSecretAuth: "gmail-secret",
+			readAuth: "gmail-read",
+			gmailBase: `${gmail}/gmail/v1`,
+			oauthBase: oauth,
+		});
+		expect(await reader.profileHistoryId()).toBe("999");
+	});
+
+	test("threadFor resolves threading context; a missing target is null", async () => {
+		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
+		const gmail = serve((req) => {
+			const url = new URL(req.url);
+			if (url.pathname === "/gmail/v1/users/me/messages/m1") {
+				return Response.json({
+					id: "m1",
+					threadId: "thread-9",
+					payload: { headers: headers(["Message-ID", "<orig@mail>"]) },
+				});
+			}
+			return Response.json({ error: {} }, { status: 404 });
+		});
+		const sender = makeSender({
+			auth: fakeAuth,
+			clientId: "cid",
+			clientSecretAuth: "gmail-secret",
+			sendAuth: "gmail-send",
+			gmailBase: `${gmail}/gmail/v1`,
+			oauthBase: oauth,
+		});
+		expect(await sender.threadFor("m1")).toEqual({ threadId: "thread-9", messageId: "<orig@mail>" });
+		expect(await sender.threadFor("ghost")).toBeNull();
+	});
+
+	test("send posts MIME + thread id; the mint used the SEND token", async () => {
+		const seen = { body: "", send: "" as unknown };
+		const oauth = serve(async (req) => {
+			seen.body = await req.text();
+			return Response.json({ access_token: "t", expires_in: 3600 });
+		});
+		const gmail = serve(async (req) => {
+			const url = new URL(req.url);
+			if (url.pathname === "/gmail/v1/users/me/messages/send" && req.method === "POST") {
+				seen.send = (await req.json()) as unknown;
+				return Response.json({ id: "sent-1", threadId: "thread-9" });
+			}
+			return new Response("nf", { status: 404 });
+		});
+		const sender = makeSender({
+			auth: fakeAuth,
+			clientId: "cid",
+			clientSecretAuth: "gmail-secret",
+			sendAuth: "gmail-send",
+			gmailBase: `${gmail}/gmail/v1`,
+			oauthBase: oauth,
+		});
+		const out = await sender.send({
+			to: ["a@x.com"],
+			subject: "hi",
+			body: "hello",
+			threadId: "thread-9",
+			inReplyTo: "<orig@mail>",
+		});
+		expect(out).toEqual({ id: "sent-1", threadId: "thread-9" });
+		const posted = seen.send as { raw: string; threadId: string };
+		expect(posted.threadId).toBe("thread-9");
+		const mime = Buffer.from(posted.raw, "base64url").toString("utf8");
+		expect(mime).toContain("To: a@x.com");
+		expect(mime).toContain("In-Reply-To: <orig@mail>");
+		expect(seen.body).toContain(encodeURIComponent("secret:gmail-send"));
+		expect(seen.body).not.toContain("gmail-read");
+	});
+});

@@ -156,6 +156,8 @@ async function segmentAudio(
 		"1",
 		"-b:a",
 		"48k",
+		"-c:a",
+		"libopus",
 		"-f",
 		"segment",
 		"-segment_time",

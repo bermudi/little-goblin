@@ -40,6 +40,19 @@ const file = (path: string): { path: string; mediaType: string; filename: string
 	filename: "v.ogg",
 });
 
+// Codec name from the start of an Ogg stream: opus pages open with
+// "OpusHead", vorbis with "\u0001vorbis", FLAC-in-Ogg with "\u007fFLAC".
+function oggCodec(audio: Uint8Array | string): string {
+	const bytes = typeof audio === "string" ? Buffer.from(audio, "base64") : audio;
+	const head = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+		.toString("latin1")
+		.slice(0, 128);
+	if (head.includes("OpusHead")) return "opus";
+	if (head.includes("vorbis")) return "vorbis";
+	if (head.includes("FLAC")) return "flac";
+	return "unknown";
+}
+
 describe("transcribeAudio", () => {
 	test("returns the trimmed transcript", async () => {
 		const dir = tmpdir_();
@@ -57,7 +70,7 @@ describe("transcribeAudio", () => {
 		expect(await transcribeAudio(fakeModel("   "), file(f))).toBeNull();
 	});
 
-	test("over-cap media is segmented by ffmpeg and joined", async () => {
+	test("over-cap media is segmented to mono opus and joined", async () => {
 		if (Bun.which("ffmpeg") === null) return; // environment dep
 		const dir = tmpdir_();
 		const src = join(dir, "long.ogg");
@@ -70,23 +83,34 @@ describe("transcribeAudio", () => {
 		]);
 		if (gen.exitCode !== 0) throw new Error(`test audio gen: ${gen.stderr.toString()}`);
 		let n = 0;
+		const codecs: string[] = [];
 		const model: TranscriptionModelV2 = {
 			specificationVersion: "v2",
 			provider: "test",
 			modelId: "fake-whisper",
-			doGenerate: async () => ({
-				text: `chunk-${++n}`,
-				segments: [],
-				language: "en",
-				durationInSeconds: 1,
-				warnings: [],
-				response: { timestamp: new Date(), modelId: "fake-whisper" },
-			}),
+			// DESIGN.md mandates mono opus: without -c:a the Ogg segment
+			// muxer picks the build's default encoder — libvorbis where
+			// present, else FLAC, which ignores -b:a and can re-exceed the
+			// 25 MiB upload cap. Sniffing what the provider would upload pins
+			// that at the boundary.
+			doGenerate: async ({ audio }) => {
+				n += 1;
+				codecs.push(oggCodec(audio));
+				return {
+					text: `chunk-${n}`,
+					segments: [],
+					language: "en",
+					durationInSeconds: 1,
+					warnings: [],
+					response: { timestamp: new Date(), modelId: "fake-whisper" },
+				};
+			},
 		};
 		expect(
 			await transcribeAudio(model, file(src), { maxBytes: 1, segmentSeconds: 10 }),
 		).toBe("chunk-1 chunk-2 chunk-3");
 		expect(n).toBe(3);
+		expect(codecs).toEqual(["opus", "opus", "opus"]);
 	});
 
 	test("a corrupt source fails loud through ffmpeg", async () => {

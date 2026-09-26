@@ -263,10 +263,10 @@ agent loop.
 
 ## Tools (v1)
 
-Hand-rolled, zod-validated, eleven:
+Hand-rolled, zod-validated, twelve:
 
 `read_file` `write_file` `edit_file` `bash` (timeout) `speak` `transcribe`
-`schedule` `send_file` `memory_search` `search` `fetch`
+`program` `delegate` `send_file` `memory_search` `search` `fetch`
 
 All tools run in the deployment workspace — conversations have no cwd and
 there is no `/cd`. Working elsewhere is the agent's own business (`cd x &&
@@ -290,10 +290,11 @@ and riding the same provider seam as intake. It exists precisely because
 intake *doesn't* transcribe attached audio — "transcribe this podcast"
 is a tool call against the saved attachment path, not a re-send.
 
-`schedule` manages standing jobs (list/create/update/delete/toggle) —
-see `Scheduled work`. It is bound per-turn to the running conversation
-so new jobs are pinned to the chat/topic they were born in; the model
-never handles chat ids.
+`program` manages standing programs (list/create/update/delete/toggle/
+hook) — see `Programs`. `delegate` hands tasks to other harnesses —
+see `Delegation`. Both are bound per-turn to the running conversation
+so what they create is pinned to the chat/topic it was born in; the
+model never handles chat ids.
 
 **Tool results are text.** Every provider goblin speaks (OpenAI-compatible
 chat completions, the codex Responses shim) serializes tool results as a
@@ -321,8 +322,9 @@ refused before any I/O — `read_file` on `/dev/zero` is a hang, not a
 read; `bash` (timeouts + output caps) is the sanctioned channel for
 those.
 
-Subagent, MCP, and external-agent tools do not exist —
-each arrives with the feature that needs it, designed then, not spec'd now.
+External agents arrived as `delegate` (see `Delegation`). Subagent and
+MCP tools do not exist — each arrives with the feature that needs it,
+designed then, not spec'd now.
 
 ## Web access (search, fetch, browser)
 
@@ -540,57 +542,185 @@ Still out — machinery that returns only on demand: additional catalog
 roots (host, project), per-conversation selection, a `/skills` command or
 mini-app surface, immutable skill snapshots.
 
-## Scheduled work (jobs)
+## Programs (standing orders)
 
-Standing orders, on demand (2026-09-20): a job is a natural-language
-prompt the operator asked for once ("every weekday at 08:30, brief me
-on X") that keeps firing as an ordinary conversation turn. The design
-takes openclaw's hardest lesson wholesale: **a scheduled job's
-instructions are the job's state, never a workspace file** — its
-HEARTBEAT.md spent years leaking into wrong scopes before being retired
-into per-job state. Rulings:
+Scheduled jobs arrived on demand (2026-09-20); programs generalize
+them on demand (2026-09-26, operator ask: "more proactive"). A
+program is **standing authority for one concern**, borrowed from
+openclaw's standing orders (`docs/automation/standing-orders.md`):
+a charter — scope, what needs the operator's OK, when to escalate,
+what not to do, steps — plus the triggers that wake it. "You own the
+weekly report; compile it Fridays, only escalate if something looks
+off." A job was a program with a cron and a one-line charter; the
+`jobs` table and `schedule` tool are superseded, not kept alongside.
 
-- **State is rows, not files.** A `jobs` table in `goblin.sqlite`
-  (own connection in `src/jobs.ts`, same WAL file): name, 5-field cron,
-  prompt, the pinned Telegram address, enabled, last_run, next_run.
-  Creating a job changes nothing in the workspace and nothing in any
-  prompt — cache stable by construction.
+What we took from openclaw is the charter *shape*, not its storage:
+openclaw puts standing orders in the always-injected AGENTS.md, which
+every conversation sees — the same shared-file scope its HEARTBEAT.md
+leaked through for years. Here the charter is the row. The design
+takes that lesson wholesale: **a program's instructions are the
+program's state, never a workspace file.** Rulings:
+
+- **State is rows, not files.** A `programs` table in `goblin.sqlite`
+  (own connection in `src/programs.ts`, same WAL file): name,
+  charter, optional 5-field cron, optional webhook token hash, the
+  pinned Telegram address, enabled, last_run, next_run (null without
+  a cron). A program needs at least one trigger. Creating one changes
+  nothing in the workspace and nothing in any prompt — cache stable
+  by construction. On first open, rows from the legacy `jobs` table
+  (if any) copy in once — prompt becomes charter — and the old table
+  is left untouched; no general migration framework.
+- **Firing is one path for every trigger.** Cron tick, webhook hit,
+  or anything later: `runtime.submit` of a user message
+  `[program: <name> · trigger: <schedule|webhook>]` + the charter
+  (+ the event payload, below) into the pinned conversation.
+- **Authority is granted, never self-issued.** Creating or widening a
+  program needs the operator's explicit ask — the agent may *propose*
+  one ("want me to own this?"), never grant itself standing
+  authority. What a firing turn does is bounded by its charter and
+  the same ask-first rule as any operator message.
+- **Webhooks: one secret address per program.** `POST
+  /hook/<token>` on the existing HTTP server (bound to 127.0.0.1;
+  reachable only through whatever door `publicUrl` fronts —
+  `tailscale serve` keeps it tailnet-only, `funnel` makes it public
+  for GitHub/CI). The token is 32 random bytes, base64url; only its
+  sha256 is stored. **The token never enters model context**: the
+  tool that enables or rotates a hook delivers the full URL to the
+  operator as a direct Telegram message and returns only "hook
+  enabled, URL sent" to the model. Disable = clear the hash; rotate
+  = new token. Body (text or JSON, capped at 32 KiB, larger →
+  413) rides into the turn fenced as `<event>…</event>` with a
+  standing note that event content is data to evaluate, never
+  instructions — a webhook is untrusted input by construction.
+  Throttle: one fire per program per 60 s; extra hits get 429 and a
+  log line. Unknown/disabled token → 404, no body echo.
 - **Recurrence is cron, evaluated in the server's local timezone**
   (operator = admin; `date` via bash agrees). The model translates
   natural language → cron inside the tool call; `cron-parser`
   validates it at the boundary — an invalid expression is rejected
   before a row exists. No interval-plus-prose hybrids; prose recurrence
   is where heartbeat bugs came from.
-- **A job belongs to the conversation where it was created** (chat/
-  topic address pinned by the tool from the live conversation — the
-  model never handles chat ids). Firing = `runtime.submit` of a user
-  message `[scheduled: <name>] <prompt>` into that conversation, sink
-  built like any other (voice per conversation setting). Replies land
-  in that chat/topic. The lane queue orders it behind any live turn —
-  no interleaving, no special execution path, epoch fencing applies.
-- **Management is the `schedule` tool** (list/create/update/delete/
-  toggle), zod-validated, one tool not a CLI — state mutation belongs
-  behind validation and logging. Scheduled turns may use it too (a
-  job deleting itself on completion is fine); every mutation logs.
-  Creating or editing a job is reversible (delete restores), so it
-  needs no go-ahead; what a job *does* when it fires is a normal turn
-  under the same ask-first rule as any operator message.
+- **A program belongs to the conversation where it was created**
+  (chat/topic address pinned by the tool from the live conversation
+  — the model never handles chat ids). The fired message gets a sink
+  built like any other (voice per conversation setting); replies
+  land in that chat/topic. The lane queue orders it behind any live
+  turn — no interleaving, no special execution path, epoch fencing
+  applies.
+- **Management is the `program` tool** (list/create/update/delete/
+  toggle/hook), zod-validated, one tool not a CLI — state mutation
+  belongs behind validation and logging. `hook` takes
+  `enable|rotate|disable`. Firing turns may use the tool too (a
+  program retiring itself when its charter says it's done is fine);
+  every mutation logs. Edits within an existing charter's intent
+  (reword, reschedule, toggle) need no go-ahead; new programs and
+  widened authority do (above).
 - **The scheduler is an in-process ticker** (30s) in the runtime
   process; systemd covers crashes. A fire time missed while the
   process was down fires **once** at the next tick (boot catch-up),
   then advances to the next future occurrence — never a replay of
-  every missed instance. Occurrences skipped while a job was
+  every missed instance. Occurrences skipped while a program was
   disabled are skipped, not owed: re-enabling recomputes `next_run`
   from now. Submit first, then markRan: a message that landed is
   history even if the turn never ran. A submit that throws never
   landed — release the sink with the error, deliver it, then
   markRan anyway: one attempt per occurrence, so a persistent
-  failure cannot refire (and re-deliver) on every tick.
+  failure cannot refire (and re-deliver) on every tick. Webhook
+  fires stamp last_run and leave next_run alone.
 
-Still out (machinery): proactive monitoring/heartbeat (jobs are
-explicit standing orders the operator asked for, not an agent that
-decides to check things), cross-host schedulers, job history/audit
-tables beyond last_run.
+Still out (machinery): proactive monitoring/heartbeat (programs are
+authority the operator granted, woken by a clock or an event — not an
+agent that wakes itself to decide whether to check things; ruled out
+again 2026-09-26), cross-host schedulers, built-in mail/file
+watchers (a script that curls the program's hook covers them),
+run history/audit tables beyond last_run and the log.
+
+## Delegation (other harnesses, via herdr)
+
+On demand (2026-09-26): goblin hands work to other coding harnesses
+(codex, claude, pi, devin, opencode, …) and gets on with the chat;
+the result comes back to the topic it was delegated from. The AI SDK
+wrappers for harnesses (`ai-sdk-provider-codex-cli`,
+`…-claude-code`) were considered and rejected: they cover two
+harnesses, run in-process (die on restart), and nobody can watch
+them. Instead harnesses run **interactively in goblin's own herdr
+session** — herdr is the terminal multiplexer already on the host,
+it recognizes agents in panes and reports their state
+(`idle|working|blocked|done|unknown`). The operator can `herdr
+session attach goblin` at any time to watch or take over.
+
+Rulings:
+
+- **The herdr session is its own systemd user unit**
+  (`deploy/goblin-herdr.service`: `herdr --session goblin server`),
+  which `goblin.service` `Wants=`/`After=`. Not a child of goblin:
+  systemd stops a unit's whole cgroup, so a spawned session would
+  kill every running delegation on each goblin restart. Verified
+  2026-09-26: a named headless session starts and drives agents
+  under the service's stripped env (no `HERDR_ENV`, service PATH).
+  `install.sh` installs both.
+- **Only `src/herdr.ts` knows herdr** — a thin adapter over the CLI
+  (`herdr --session <name> …`, JSON out, zod-parsed; CLI errors are
+  JSON on stderr with exit 1 and propagate with context). Every call
+  logs (verb, target, outcome, ms).
+- **Harnesses are config, never guessed.** `delegation.harnesses`
+  maps a name to a herdr agent `kind` plus native args — the
+  operator's choice of full-auto flags and model live there.
+  Goblin never picks a model for a harness; absent args mean the
+  harness's own defaults. Absent `delegation` block = tool absent.
+- **Agents run full-auto; goblin never answers approvals.** The
+  operator's ruling: harnesses start in their no-approval mode (the
+  configured args), so there is nothing to approve. This is not a
+  new trust level — goblin already has `bash`. If an agent still
+  stops (`blocked`, or ends its turn with a question), goblin relays
+  it to the topic and types the operator's answer back; it never
+  invents one. Startup dialogs are the known trap: herdr reported a
+  codex trust-directory prompt as `idle` in the 2026-09-26 probe —
+  configured args must suppress them, and start verifies the screen
+  before prompting.
+- **State is rows.** `delegations` table in `goblin.sqlite`
+  (`src/delegations.ts`): name, harness, cwd, task, pinned address,
+  herdr agent name + pane/workspace ids, status
+  (`running|needs_input|done|failed|stopped`), the herdr
+  `state_change_seq` observed after prompting, created/finished
+  timestamps. Survives goblin restarts; the herdr unit keeps the
+  panes alive meanwhile.
+- **Start**: one herdr workspace per delegation (cwd = the task's
+  directory, label = name), `agent start <name> --kind <kind> --pane
+  <root> -- <args>`, then `agent prompt` with the task plus one
+  appended instruction: write the final report to
+  `$GOBLIN_HOME/state/delegations/<id>/report.md`. herdr's own guide
+  treats file output as the fallback for results a screen can't
+  hold; here it is the primary channel because a TUI screen is a
+  lossy transport. Concurrency cap `delegation.maxRunning` (default
+  3) — the tool refuses beyond it, naming what's running.
+- **The watcher is an in-process ticker** (15 s), the scheduler's
+  twin: for each `running`/`needs_input` row, `agent get`. Done =
+  status `idle|done` **and** `state_change_seq` advanced past the
+  recorded one (a fresh prompt is idle before it's working).
+  Blocked → `needs_input`, notify once. Agent gone (pane closed,
+  process exited) → `failed`. Every transition submits one message
+  into the pinned conversation, the same path as program fires:
+  `[delegation: <name> · <done|needs input|failed>]` + the report
+  file (capped at 16 KiB; beyond that, the path to read) or, absent a
+  report, the screen tail (`recent-unwrapped`, last ~80 lines). The
+  resulting turn tells the operator what happened, in goblin's
+  voice.
+- **Management is the `delegate` tool** (start/list/read/send/stop),
+  bound per-turn to the running conversation like `program`.
+  `read` peeks the screen tail; `send` prompts the agent (an answer
+  or a follow-up — it resets the seq baseline and flips the row back
+  to `running`); `stop` interrupts and closes the workspace. Done
+  delegations keep their workspace so the operator can inspect it;
+  `stop` on a finished one is the cleanup.
+- **Goblin may delegate on its own judgment** within a turn — long or
+  coding-heavy work belongs in a harness, not in a lane-blocking
+  `bash` call — and says that it did. `/stop` fences goblin's turn,
+  not delegations: they aren't turns. `delegate stop` ends one.
+
+Still out: subagent fleets inside goblin (a delegation is one
+external agent per task, not an orchestrator), nesting, fan-out
+tooling, ACP, the AI SDK harness wrappers.
 
 ## Long-term memory
 
@@ -1021,9 +1151,11 @@ $GOBLIN_HOME/
 │   ├── skills/             # the skill catalog — agent-authored, in cwd
 │   └── attachments/
 └── state/
-    └── goblin.sqlite       # Goblin state: conversation meta, event
-                            # history (UIMessage JSON rows), bindings,
-                            # memory outbox/contexts/suppressions
+    ├── goblin.sqlite       # Goblin state: conversation meta, event
+    │                       # history (UIMessage JSON rows), bindings,
+    │                       # memory outbox/contexts/suppressions,
+    │                       # programs, delegations
+    └── delegations/<id>/report.md   # a harness's final report
 ```
 
 SQLite durability = WAL + transactions (`synchronous=NORMAL` minimum), not
@@ -1035,7 +1167,10 @@ is an export/query command, not a format property.
 `goblin.json5`: provider registry, per-conversation default model/thinking,
 optional `transcription` block, optional `search` block (absent =
 search tool absent), optional `memory` block (absent = memory
-disabled). No secrets — those live in `auth.jsonl`.
+disabled), optional `delegation` block (`session`, default
+`"goblin"`; `maxRunning`, default 3; `harnesses`: name → `{ kind,
+args? }` — absent = delegate tool absent). No secrets — those live in
+`auth.jsonl`.
 
 **Settings are operator-facing UI, not SSH.** The mini app is the
 configuration surface: the process reads and writes `goblin.json5` itself, and
@@ -1055,9 +1190,13 @@ src/
   memory.ts         recall contexts, retention builders, status, worker timer
                     (wire client in hindsight.ts, outbox in memory-queue.ts,
                     outage episodes in memory-outage.ts)
-  jobs.ts           scheduled jobs — rows in goblin.sqlite, cron validated
-                    at the boundary
-  scheduler.ts      ticker: due jobs → turns in their pinned conversation
+  programs.ts       standing programs — rows in goblin.sqlite, cron
+                    validated at the boundary, webhook token hashes
+  scheduler.ts      ticker: due programs → turns in their pinned
+                    conversation; fire() is shared with the webhook route
+  herdr.ts          herdr CLI adapter (the only herdr-aware module)
+  delegations.ts    delegation rows + watcher ticker: herdr state →
+                    turns in the pinned conversation
   runtime.ts        per-conversation queue, turn loop, checkAuthority
   agent/
     providers.ts    registry: name → AI SDK provider
@@ -1078,10 +1217,10 @@ src/
                     AGENTS.md/USER.md, each capped at 8k chars; re-read
                     every turn, edits live next message)
     skills.ts       catalog scan + frontmatter validation → ## skills section
-    tools/          the eleven tools (read, write, edit, bash, speak,
-                    transcribe, schedule, send_file, memory_search,
-                    search, fetch)
-  http/             mini-app serving
+    tools/          the twelve tools (read, write, edit, bash, speak,
+                    transcribe, program, delegate, send_file,
+                    memory_search, search, fetch)
+  http/             mini-app serving + POST /hook/<token>
     app.ts          page markup+css (served as-is, no build step)
     app.js          page client — plain JS, tsc-checked (checkJs via
                     tsconfig.client.json); wire types imported from
@@ -1110,11 +1249,12 @@ If a capability can't be classified in one sentence, the classification is
    the design conversation — have it before building.
 
 memory store (returned on demand — approved in `Long-term memory`) ·
-scheduler (returned on demand — designed in `Scheduled work`;
+scheduler (returned on demand — generalized into `Programs`;
 heartbeat/proactive monitoring stays out) · web access (returned on
 demand — designed in `Web access`; MCP and a native browser tool stay
-out) · conversation-lifecycle
-commands · subagents · delegated work · external agents · ACP · MCP ·
+out) · delegated work / external agents (returned on demand —
+designed in `Delegation`) · conversation-lifecycle
+commands · subagents · ACP · MCP ·
 project environments · inner life · onboarding wizard · state
 migrations (general framework; additive memory schema changes are in scope) ·
 in-process embeddings (delegated to Hindsight for memory) · multi-user

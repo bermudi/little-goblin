@@ -157,14 +157,14 @@ async function boot() {
 		// relays), plain generate, no tools, default thinking.
 		compaction: {
 			modelRef: (conv) => conv.model ?? configRef.current.model,
-			summarize: async (conv, system, prompt) => {
+			summarize: async (conv, system, prompt, signal) => {
 				const cfg = configRef.current;
 				const modelRef = conv.model ?? cfg.model;
 				const model = observedModel(await resolveModel(cfg, auth, modelRef), {
 					conversation: conv.id,
 					purpose: "compaction",
 				});
-				const { text } = await generateText({ model, system, prompt });
+				const { text } = await generateText({ model, system, prompt, abortSignal: signal });
 				return text;
 			},
 		},

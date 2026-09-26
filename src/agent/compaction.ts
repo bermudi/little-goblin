@@ -39,6 +39,13 @@ export interface CompactionStore {
 // A cut after detail[i] is exchange-complete when nothing later anchors
 // at or before it — the causal-view rule, so no response is ever
 // orphaned from its user message in the tail.
+// A cut after detail[i] is exchange-complete when nothing later anchors
+// at or before it — the causal-view rule, so no response is ever orphaned
+// from its user message in the tail. The comparison is against the
+// boundary's arrival seq because the model-view filter is
+// `seq > boundarySeq` (arrival). One ruled consequence: an interleaved
+// burst — operator messages arriving mid-turn — is atomic; the cut
+// coarsens to whole bursts rather than splitting them.
 function exchangeComplete(detail: CompactionEvent[], boundaryIndex: number): boolean {
 	const boundary = detail[boundaryIndex]!.seq;
 	for (let j = boundaryIndex + 1; j < detail.length; j++) {
@@ -142,8 +149,9 @@ export async function runCompaction(
 	id: string,
 	store: CompactionStore,
 	model: string,
-	summarize: (system: string, prompt: string) => Promise<string>,
+	summarize: (system: string, prompt: string, signal: AbortSignal) => Promise<string>,
 	opts: { tailTokenBudget: number },
+	signal: AbortSignal,
 ): Promise<CompactionOutcome> {
 	const detail = store.historyDetail(id);
 	const previous = store.getCompaction(id);
@@ -151,10 +159,22 @@ export async function runCompaction(
 		tailTokenBudget: opts.tailTokenBudget,
 		previousBoundary: previous?.boundarySeq ?? null,
 	});
-	if (boundary === null) return { kind: "noop", reason: "nothing worth compacting" };
+	if (boundary === null) {
+		log.info("compaction skipped", { conversation: id, reason: "nothing worth compacting" });
+		return { kind: "noop", reason: "nothing worth compacting" };
+	}
 	const boundaryIndex = detail.findIndex((e) => e.seq === boundary);
-	if (boundaryIndex < 0) return { kind: "noop", reason: "boundary vanished — history changed mid-compaction" };
-	const span = detail.slice(0, boundaryIndex + 1);
+	if (boundaryIndex < 0) {
+		log.info("compaction skipped", { conversation: id, reason: "boundary vanished — history changed mid-compaction" });
+		return { kind: "noop", reason: "boundary vanished — history changed mid-compaction" };
+	}
+	// The span is the DELTA since the previous boundary (DESIGN.md,
+	// Compaction) — already-folded events never re-enter the prompt, so
+	// the summary call stays bounded by one compaction interval, not by
+	// total history. The previous summary rides in the prompt instead.
+	const spanStart =
+		(previous ? detail.findIndex((e) => e.seq === previous.boundarySeq) : -1) + 1;
+	const span = detail.slice(spanStart, boundaryIndex + 1);
 	const tokensBefore = span.reduce((sum, e) => sum + estimateTokens(JSON.stringify(e.message)), 0);
 	const prompt =
 		(previous ? `[summary carried from the previous compaction — fold it in]\n${previous.summary}\n\n---\n\n` : "") +
@@ -165,8 +185,19 @@ export async function runCompaction(
 		events: span.length,
 		estimatedTokens: tokensBefore,
 	});
-	const summary = (await summarize(SUMMARY_SYSTEM, prompt)).trim();
+	const summary = (await summarize(SUMMARY_SYSTEM, prompt, signal)).trim();
 	if (summary === "") throw new Error("summarizer returned an empty summary");
+	// A verbose summarizer can emit a summary comparable to the span —
+	// compaction would buy nothing and re-fire every turn. Warn, don't
+	// fail: the pointer still moves, the log explains the churn.
+	const summaryTokens = estimateTokens(summary);
+	if (summaryTokens > Math.max(2_000, tokensBefore / 2)) {
+		log.warn("compaction summary unusually large — utilization may not drop", {
+			conversation: id,
+			summaryTokens,
+			spanTokens: tokensBefore,
+		});
+	}
 	store.setCompaction(id, {
 		boundarySeq: boundary,
 		summary,
@@ -178,7 +209,7 @@ export async function runCompaction(
 		conversation: id,
 		boundary,
 		eventsCompacted: span.length,
-		tailEvents: detail.length - span.length,
+		tailEvents: detail.length - spanStart - span.length,
 		estimatedTokensBefore: tokensBefore,
 		summaryChars: summary.length,
 		model,
@@ -188,7 +219,7 @@ export async function runCompaction(
 		boundarySeq: boundary,
 		eventsCompacted: span.length,
 		tokensBefore,
-		tailEvents: detail.length - span.length,
+		tailEvents: detail.length - spanStart - span.length,
 		summary,
 	};
 }

@@ -903,11 +903,11 @@ describe("cache stability", () => {
 		const summaries: string[] = [];
 		const runtime = new Runtime({
 				store,
-				buildStep: () => ({ model: model(800), system: "test", contextWindow: 1000 }),
+				buildStep: () => ({ model: model(750), system: "test", contextWindow: 1000 }),
 				makeTools: () => ({}),
 				compaction: {
 					modelRef: () => "zai/glm-5.3",
-					summarize: async (_conv, _system, prompt) => {
+					summarize: async (_conv, _system, prompt, _signal) => {
 						summaries.push(prompt);
 						return "the folded era";
 					},
@@ -917,8 +917,12 @@ describe("cache stability", () => {
 		runtime.submit(conv, userMessage([{ type: "text", text: "live question" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
 		// The compaction runs in-lane AFTER the sinks are notified — done
-		// resolving only means the reply landed. Wait for the lane to settle.
-		await sleep(100);
+		// resolving only means the reply landed. Poll for the pointer,
+		// bounded, instead of a fixed sleep.
+		for (let i = 0; i < 100 && store.getCompaction(conv.id) === null; i++) {
+			await sleep(10);
+		}
+		// Exactly 75% is inclusive — the trigger fired.
 		// 80% ≥ 75%: the compactor ran in-lane before onDone settled the
 		// next queued turn's snapshot — here, before done resolves.
 		expect(summaries).toHaveLength(1);
@@ -939,12 +943,12 @@ describe("cache stability", () => {
 		expect(lastText?.text).toBe("ok");
 		store.close();
 
-		// Below the threshold: no compaction, no pointer.
+		// Just below the threshold (74%): no compaction, no pointer.
 		const store2 = openStore(tmpdb());
 		const conv2 = store2.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime2 = new Runtime({
 			store: store2,
-			buildStep: () => ({ model: model(50), system: "test", contextWindow: 1000 }),
+			buildStep: () => ({ model: model(740), system: "test", contextWindow: 1000 }),
 			makeTools: () => ({}),
 			compaction: {
 				modelRef: () => "m",
@@ -958,6 +962,46 @@ describe("cache stability", () => {
 		expect(await sink2.done).toEqual({ kind: "completed" });
 		expect(store2.getCompaction(conv2.id)).toBeNull();
 		store2.close();
+	});
+
+	test("/compact serializes behind a running turn — no orphaned exchange", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const big = "x".repeat(600);
+		for (let i = 0; i < 3; i++) {
+			store.append(conv.id, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
+			store.append(
+				conv.id,
+				[{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
+				{ anchorSeq: store.lastUserSeq(conv.id) },
+			);
+		}
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model: fakeModel(["slow ", "reply"], 40), system: "test", contextWindow: 1000 }),
+			makeTools: () => ({}),
+			compaction: {
+				modelRef: () => "m",
+				summarize: async () => "folded",
+			},
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "live question" }]), sink);
+		// The manual compact queues while the turn still runs — it must not
+		// choose a cut until the turn's response is appended to history.
+		const compacted = runtime.compact(conv);
+		await sink.done;
+		const outcome = await compacted;
+		expect(outcome.kind).toBe("compacted");
+		const boundary = store.getCompaction(conv.id)!.boundarySeq;
+		// THE invariant (DESIGN.md, Compaction): nothing in the tail anchors
+		// at or below the boundary — no response orphaned from its user.
+		for (const e of store.historyDetail(conv.id)) {
+			if (e.seq > boundary) {
+				expect(e.anchorSeq ?? e.seq).toBeGreaterThan(boundary);
+			}
+		}
+		store.close();
 	});
 
 	test("provider warnings are logged, not dropped", async () => {

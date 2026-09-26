@@ -156,7 +156,12 @@ agent loop.
   previous boundary (or the start) up to a cut chosen at a **completed
   exchange** — the causal-view rule, so a response is never orphaned from
   its user message — keeping a recent tail inside a token budget (~25% of
-  the window, estimated). The result lands in a first-class `compactions`
+  the window, estimated). An interleaved burst (operator messages that
+  arrived mid-turn) is atomic: the cut coarsens to whole bursts rather
+  than splitting them. The summarizer input is the delta since the
+  previous boundary plus the previous summary — never the re-serialized
+  whole past, so the summary call stays bounded by one compaction
+  interval, not by total history. The result lands in a first-class `compactions`
   table (boundary seq, summary, tokens before, model, timestamp); the latest
   row is the conversation's active pointer and earlier rows are the audit
   trail. The event stream is untouched — arrival-order storage stays the
@@ -166,10 +171,14 @@ agent loop.
   The requestHash move is the sanctioned boundary (Cache stability), logged
   as `history compacted` with the numbers. Failure is loud and lossless: a
   failed summary call writes no boundary and warns; the next threshold
-  crossing retries. Auto-compaction runs inside the conversation's serial
+  crossing retries. `/stop` and shutdown abort an in-flight summary —
+  no pointer is written, the crossing retries. Auto-compaction runs inside the conversation's serial
   lane after the turn's sinks are notified — the reply lands first, a
-  queued successor waits out the summary call. `/compact` runs the same
-  compaction on demand and replies with the numbers; with the context
+  queued successor waits out the summary call. `/compact` is the same
+  compaction serialized through the conversation's lane — a running turn
+  completes (its response appended) before the cut is chosen, and a
+  queued submit waits out the summary call — and replies with the
+  numbers; with the context
   window unknown it still compacts (manual is a forced scrub). The ≥80%
   utilization warn stays as the alarm that compaction didn't happen or
   didn't keep up.

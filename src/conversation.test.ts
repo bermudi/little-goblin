@@ -242,6 +242,22 @@ describe("history payload envelope", () => {
 		expect(JSON.parse(twice.db.query<{ data: string }, []>("SELECT data FROM events").all()[0]!.data)).toMatchObject({ v: 1 });
 		twice.close();
 	});
+	test("a corrupt bare row is left unmigrated and still placeholder-degrades", () => {
+		const path = tmpdb();
+		const store = openStore(path);
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("good")]);
+		store.db.run(
+			`INSERT INTO events (conversation_id, seq, role, data, anchor_seq, created_at) VALUES (?, 2, 'user', 'not json at all', NULL, ?)`,
+			[c.id, new Date().toISOString()],
+		);
+		store.close();
+		const reopened = openStore(path);
+		const h = reopened.history(c.id);
+		expect(h).toHaveLength(2);
+		expect((h[1]!.parts[0] as { text: string }).text).toContain("unreadable history row");
+		reopened.close();
+	});
 });
 
 describe("compaction pointers", () => {

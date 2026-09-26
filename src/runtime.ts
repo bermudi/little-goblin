@@ -129,10 +129,17 @@ export interface RuntimeDeps {
 	memory?: MemoryTurnDeps;
 	// Compaction wiring — absent = compaction never runs (tests, degraded
 	// boots). summarize resolves the conversation's own model and returns
-	// the summary text; modelRef labels the compactions row.
+	// the summary text; modelRef labels the compactions row. The signal is
+	// the compaction's own abort handle — /stop and shutdown cancel an
+	// in-flight summary rather than waiting it out.
 	compaction?: {
 		modelRef(conv: Conversation): string;
-		summarize(conv: Conversation, system: string, prompt: string): Promise<string>;
+		summarize(
+			conv: Conversation,
+			system: string,
+			prompt: string,
+			signal: AbortSignal,
+		): Promise<string>;
 	};
 }
 
@@ -167,10 +174,22 @@ interface QueuedTurn {
 	doneSent: boolean;
 }
 
+// A /compact waiting for the lane — run between turns so a running
+// turn's exchange is whole in history before the cut is chosen.
+interface QueuedCompact {
+	conv: Conversation;
+	resolve: (outcome: CompactionOutcome) => void;
+	reject: (err: unknown) => void;
+}
+
 interface Lane {
 	pending: QueuedTurn[];
+	compacts: QueuedCompact[];
 	running: boolean;
 	controller: AbortController | null;
+	// The abort handle for an in-flight compaction summary call — aborted
+	// by stop()/shutdown() so a stalled provider can't stall the process.
+	compactController: AbortController | null;
 	// The drain loop's promise — shutdown awaits it so a fenced sink's
 	// final flush finishes before the process exits.
 	draining: Promise<void> | null;
@@ -215,7 +234,9 @@ export class Runtime {
 
 	// /stop — advance the epoch (fences the in-flight turn) and abort its
 	// stream. Queued turns are dropped: stop means stop. Dropped sinks still
-	// get their onDone so nothing leaks. The return value tells the caller
+	// get their onDone so nothing leaks. An in-flight compaction summary
+	// aborts too — no pointer written, the next threshold crossing retries.
+	// The return value tells the caller
 	// — synchronously — whether anything was actually live, so /stop can
 	// say "stopped" vs "nothing was running"; `settled` resolves once the
 	// dropped sinks' onDone calls settle — shutdown awaits it.
@@ -227,6 +248,7 @@ export class Runtime {
 		if (lane) {
 			const dropped = lane.pending.splice(0);
 			lane.controller?.abort();
+			lane.compactController?.abort();
 			for (const t of dropped) {
 				notifies.push(this.notifyDone(t, { kind: "fenced" }));
 			}
@@ -239,12 +261,26 @@ export class Runtime {
 		return { stopped, settled: Promise.all(notifies).then(() => undefined) };
 	}
 
-	// Compact a conversation now — shared by the auto trigger (a completed
-	// turn at ≥75% of the context window) and /compact. Runs the
-	// conversation's own model over the span and moves the pointer; the
-	// event stream is never touched. Throws propagate to the caller — the
-	// auto path warns, the command path replies.
-	async compact(conv: Conversation): Promise<CompactionOutcome> {
+	// Compact a conversation — the manual lever (/compact). Serialized
+	// through the lane behind any running turn: the cut must be chosen
+	// only after that turn's response is appended, or it could orphan the
+	// exchange. Resolves (or rejects) when the job actually runs.
+	compact(conv: Conversation): Promise<CompactionOutcome> {
+		const lane = this.lane(conv.id);
+		return new Promise<CompactionOutcome>((resolve, reject) => {
+			lane.compacts.push({ conv, resolve, reject });
+			if (!lane.running) lane.draining = this.drain(conv.id);
+		});
+	}
+
+	// The in-lane body, shared by the auto trigger (a completed turn at
+	// ≥75% of the context window — already inside the lane) and the queued
+	// manual job. Runs the conversation's own model over the delta and
+	// moves the pointer; the event stream is never touched. Throws
+	// propagate — the auto path warns, the command path replies. The
+	// summary call rides a dedicated abort controller: /stop and shutdown
+	// cancel it rather than waiting out a stalled provider.
+	private async doCompact(conv: Conversation): Promise<CompactionOutcome> {
 		const compaction = this.deps.compaction;
 		if (!compaction) return { kind: "noop", reason: "compaction not configured" };
 		// buildStep resolves the effective model (+ its context window from
@@ -253,19 +289,27 @@ export class Runtime {
 		const step = await this.deps.buildStep(conv, {});
 		const tailTokenBudget =
 			step.contextWindow !== undefined ? Math.round(step.contextWindow * 0.25) : 20_000;
-		return runCompaction(
-			conv.id,
-			this.deps.store,
-			compaction.modelRef(conv),
-			(system, prompt) => compaction.summarize(conv, system, prompt),
-			{ tailTokenBudget },
-		);
+		const lane = this.lane(conv.id);
+		const controller = new AbortController();
+		lane.compactController = controller;
+		try {
+			return await runCompaction(
+				conv.id,
+				this.deps.store,
+				compaction.modelRef(conv),
+				(system, prompt, signal) => compaction.summarize(conv, system, prompt, signal),
+				{ tailTokenBudget },
+				controller.signal,
+			);
+		} finally {
+			if (lane.compactController === controller) lane.compactController = null;
+		}
 	}
 
 	private lane(convId: string): Lane {
 		let l = this.lanes.get(convId);
 		if (!l) {
-			l = { pending: [], running: false, controller: null, draining: null };
+			l = { pending: [], compacts: [], running: false, controller: null, compactController: null, draining: null };
 			this.lanes.set(convId, l);
 		}
 		return l;
@@ -472,8 +516,8 @@ export class Runtime {
 				// piled up behind a running turn are one conversational
 				// beat, and a single model call answers them all.
 				const turns = lane.pending.splice(0);
-				if (turns.length === 0) return;
-				if (turns.length > 1) {
+				if (turns.length > 0) {
+					if (turns.length > 1) {
 					log.info("queued submits coalesced", {
 						conversation: convId,
 						count: turns.length,
@@ -494,6 +538,21 @@ export class Runtime {
 				// Between turns the lane holds no live controller — /stop's
 				// stopped flag must not false-positive on a finished turn.
 				this.lane(convId).controller = null;
+					continue;
+				}
+				// /compact jobs run between turns — any running turn's exchange
+				// is whole in history by the time the cut is chosen, and a submit
+				// arriving mid-job simply starts the next drain pass.
+				const job = lane.compacts.shift();
+				if (job !== undefined) {
+					try {
+						job.resolve(await this.doCompact(job.conv));
+					} catch (err) {
+						job.reject(err);
+					}
+					continue;
+				}
+				return;
 			}
 		} finally {
 			lane.running = false;
@@ -501,7 +560,7 @@ export class Runtime {
 			lane.draining = null;
 			// A drained lane is cheap to recreate on the next submit —
 			// don't pin one per conversation for the life of the process.
-			if (lane.pending.length === 0) this.lanes.delete(convId);
+			if (lane.pending.length === 0 && lane.compacts.length === 0) this.lanes.delete(convId);
 		}
 	}
 
@@ -809,7 +868,7 @@ export class Runtime {
 		// thrown to the outer handler: onDone already fired.
 			if (window && window.pct >= COMPACT_AT_PCT) {
 				try {
-					await this.compact(conv);
+					await this.doCompact(conv);
 				} catch (err) {
 					log.warn("compaction failed — view unchanged, will retry on next threshold crossing", {
 						conversation: convId,

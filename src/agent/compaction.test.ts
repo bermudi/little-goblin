@@ -6,6 +6,8 @@ import {
 	type CompactionStore,
 } from "./compaction.ts";
 
+const signal = () => new AbortController().signal;
+
 function ev(
 	seq: number,
 	role: "user" | "assistant",
@@ -58,6 +60,14 @@ describe("chooseBoundary", () => {
 		expect(chooseBoundary(sample(), { tailTokenBudget: 1, previousBoundary: 4 })).toBeNull();
 	});
 
+	test("an interleaved burst is atomic — the cut coarsens, never splits", () => {
+		// u_b arrived while u_a's turn ran; a_a anchors to u_a. No seq
+		// between them is a valid cut, so with a tiny budget the whole
+		// burst is kept and there is nothing to compact.
+		const burst = [ev(1, "user", "first question".repeat(200)), ev(2, "user", "queued follow-up".repeat(200)), ev(3, "assistant", "the answer".repeat(200), 1)];
+		expect(chooseBoundary(burst, { tailTokenBudget: 1, previousBoundary: null })).toBeNull();
+	});
+
 	test("a tiny span is not worth compacting", () => {
 		const detail = [ev(1, "user", "hi"), ev(2, "assistant", "yo", 1)];
 		expect(chooseBoundary(detail, { tailTokenBudget: 1, previousBoundary: null })).toBeNull();
@@ -89,6 +99,7 @@ describe("runCompaction", () => {
 				return "the folded summary";
 			},
 			{ tailTokenBudget: 1 },
+			signal(),
 		);
 		expect(outcome.kind).toBe("compacted");
 		if (outcome.kind !== "compacted") return;
@@ -112,6 +123,7 @@ describe("runCompaction", () => {
 					throw new Error("provider down");
 				},
 				{ tailTokenBudget: 1 },
+				signal(),
 			),
 		).rejects.toThrow("provider down");
 		expect(writes).toHaveLength(0);
@@ -120,8 +132,45 @@ describe("runCompaction", () => {
 	test("an empty summary is a failure, not a silent wipe", async () => {
 		const { store, writes } = fakeStore(sample());
 		await expect(
-			runCompaction("dm:1", store, "m", async () => "  ", { tailTokenBudget: 1 }),
+			runCompaction("dm:1", store, "m", async () => "  ", { tailTokenBudget: 1 }, signal()),
 		).rejects.toThrow("empty summary");
 		expect(writes).toHaveLength(0);
+	});
+
+	test("re-compaction serializes only the delta, never the folded past", async () => {
+		// The previous boundary stands at seq 4; exchanges 5-6 (seqs 7-10)
+		// are new. The newest exchange always stays in the tail, so the fold
+		// covers the delta 5..8 — and must NOT re-serialize events 1-4
+		// already folded, or the call grows with TOTAL history and
+		// eventually can't fit the window it exists to bound.
+		const detail = [
+			...sample(),
+			ev(7, "user", "later question".repeat(200)),
+			ev(8, "assistant", "later answer".repeat(200), 7),
+			ev(9, "user", "newest question".repeat(200)),
+			ev(10, "assistant", "newest answer".repeat(200), 9),
+		];
+		const { store, writes } = fakeStore(detail, { boundarySeq: 4, summary: "the early era" });
+		const prompts: string[] = [];
+		const outcome = await runCompaction(
+			"dm:1",
+			store,
+			"m",
+			async (_system, prompt) => {
+				prompts.push(prompt);
+				return "fold two";
+			},
+			{ tailTokenBudget: 1 },
+			signal(),
+		);
+		expect(outcome.kind).toBe("compacted");
+		if (outcome.kind !== "compacted") return;
+		expect(outcome.boundarySeq).toBe(8);
+		expect(outcome.eventsCompacted).toBe(4);
+		expect(prompts[0]).toContain("the early era");
+		expect(prompts[0]).toContain("later question");
+		expect(prompts[0]).not.toContain("hello");
+		expect(prompts[0]).not.toContain("newest question");
+		expect(writes[0]).toMatchObject({ boundarySeq: 8, summary: "fold two" });
 	});
 });

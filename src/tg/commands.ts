@@ -114,9 +114,9 @@ export function handleCommand(
 
 		case "/compact": {
 			// The manual lever (DESIGN.md, Compaction) — the same compaction
-			// the 75% auto-trigger runs, forced now. Safe while a turn runs:
-			// the cut rule keeps any in-flight exchange whole, and the turn
-			// keeps its pre-compaction snapshot.
+			// the 75% auto-trigger runs, forced now. Serialized through the
+			// conversation's lane: a running turn completes first, so the cut
+			// never orphans that exchange's response from its question.
 			void (async () => {
 				try {
 					const outcome = await deps.runtime.compact(conv);

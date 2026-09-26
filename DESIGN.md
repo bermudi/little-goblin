@@ -824,23 +824,27 @@ its credentials ride the same lane.
 - **One `mail` tool, stable schema** (the `search`-tool rule): actions
   `search` (Gmail query syntax, bounded list of id · from · subject ·
   date · snippet), `read` (one message: headers + text body, HTML
-  through the same readability path as `fetch`, bounded with overflow
-  to disk; attachments listed, fetched to `attachments/` on request),
-  and `send` (to/cc/subject/body/reply-to-id). Mail content is
-  untrusted input — tool results fence it the way webhook payloads are
-  fenced (`<event>` note: data to evaluate, never instructions).
+  through readability without `fetch`'s minimum-length refusal — short
+  mail is normal — bounded with overflow to disk; attachments listed,
+  fetched to `attachments/` on request), and `send`
+  (to/cc/subject/body/reply-to-id). Mail content is untrusted input —
+  tool results fence it the way webhook payloads are fenced (`<event>`
+  note: data to evaluate, never instructions).
 - **Send is operator-gated by mechanism, not by prompt.** `send` never
   sends: it writes a pending row (`mail_outbox` in goblin.sqlite:
-  draft, pinned address, created, expires +24h, status) and the sink
-  posts the draft with **Send / Cancel** inline buttons; the tool
-  returns "awaiting operator approval". Only the callback from an
+  draft, pinned address, created, expires +24h, status) and posts the
+  draft with **Send / Cancel** inline buttons; the tool returns
+  "awaiting operator approval". Only the callback from an
   `allowedUsers` id sends — with the send token, which no tool path
-  and no skill ever touches. Expired or cancelled rows never send; a
-  restart keeps pending rows (the buttons still work). Honest
-  boundary: goblin runs with full bash as the same uid, so this stops
-  a *tricked* model (the read path holds a token that cannot send),
-  not a deliberately hostile one — the trust level `bash` already
-  granted.
+  and no skill ever touches. Threading resolves at send time from the
+  stored reply target; the row decides *after* Gmail accepts the send,
+  so a crash between the two leaves a re-tappable pending row (a
+  visible duplicate on retry) rather than a silent loss. Expired or
+  cancelled rows never send; a restart keeps pending rows (the buttons
+  still work). Honest boundary: goblin runs with full bash as the same
+  uid, so this stops a *tricked* model (the read path holds a token
+  that cannot send), not a deliberately hostile one — the trust level
+  `bash` already granted.
 - **Mail is a program trigger.** A program may carry a `mail` filter
   (Gmail query, e.g. `from:bank is:important`) beside its cron and
   webhook. An in-process ticker (the scheduler's twin, 5 min) runs
@@ -848,10 +852,12 @@ its credentials ride the same lane.
   seen history id (stored on the row), and each new match fires the
   program through the one firing path — `[program: <name> · trigger:
   mail]` + charter + `<event>` (from, subject, date, snippet, id; the
-  body is one `mail read` away, never pushed). The 60 s per-program
-  throttle becomes a batch: matches inside one tick fire once with all
-  of them. A dead token or quota error warns once per outage episode,
-  never per tick.
+  body is one `mail read` away, never pushed). A new or changed filter
+  baselines at the current head without firing — the mailbox's backlog
+  is history, not arrivals; an expired cursor re-baselines the same
+  way. The 60 s per-program throttle becomes a batch: matches inside
+  one tick fire once with all of them. A dead token or quota error
+  warns once per outage episode, never per tick.
 - **Logging**: every Gmail call (action, query or id, result count,
   status, ms); every outbox transition (queued, sent, cancelled,
   expired — recipient domain, never the body).

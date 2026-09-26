@@ -383,6 +383,7 @@ async function boot() {
 	const reviewerBlock = configRef.current.reviewer;
 	if (reviewerBlock) {
 		const reviewerAuth = reviewerBlock.auth;
+		log.info("reviewer enabled", { threshold: reviewerBlock.threshold });
 		runtime.setReviewer({
 			gate: new JevClient({ auth: () => auth.resolve(reviewerAuth) }),
 			threshold: reviewerBlock.threshold,

@@ -61,7 +61,7 @@ Legend: ✅ both, roughly same shape · 🔀 both, new mechanism in v2 ·
 
 | | v1 | v2 |
 |---|---|---|
-| 🔀 Toolset | 10 α (`read bash edit write grep memory_search memory_write spawn_subagent revive_subagent text_to_speech`) + 4 per-surface β (`send_voice send_photo send_document rename_topic`) | 12: `read_file write_file edit_file bash speak transcribe program delegate send_file memory_search fetch search` (speak/transcribe/search/delegate join per config) |
+| 🔀 Toolset | 10 α (`read bash edit write grep memory_search memory_write spawn_subagent revive_subagent text_to_speech`) + 4 per-surface β (`send_voice send_photo send_document rename_topic`) | 14: `read_file write_file edit_file bash speak transcribe program delegate mail send_file memory_search fetch search history_search` (speak/transcribe/search/delegate/mail join per config) |
 | ❌ `grep` tool | yes | no — `bash` covers it |
 | 🔀 Tool results | — | text-only by ruling (wire formats can't carry media); `read_file` on an image returns a structured note instead of bytes |
 | 🔀 Output bounds | — | bounded, self-describing output: line window + byte ceiling + per-line clamp, every truncation names its own recovery |

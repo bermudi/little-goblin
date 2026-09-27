@@ -6,11 +6,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	openDelegations,
-	startDelegationWatcher,
-	type DelegationsStore,
-} from "../../delegations.ts";
+import { openDelegations, type DelegationsStore } from "../../delegations.ts";
+import { startDelegationWatcher } from "../../delegation-lifecycle.ts";
 import { HerdrError, type AgentInfo, type Herdr } from "../../herdr.ts";
 import { delegateTool, type DelegateToolDeps } from "./delegate.ts";
 

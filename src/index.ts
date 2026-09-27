@@ -21,7 +21,8 @@ import {
 	type TtsConfig,
 } from "./config.ts";
 import { openStore } from "./conversation.ts";
-import { openDelegations, startDelegationWatcher } from "./delegations.ts";
+import { openDelegations } from "./delegations.ts";
+import { startDelegationWatcher } from "./delegation-lifecycle.ts";
 import { makeHerdr } from "./herdr.ts";
 import { makeReader, makeSender, type MailReader, type MailSender } from "./mail.ts";
 import { openOutbox } from "./mail-outbox.ts";

@@ -13,8 +13,9 @@ setup wizard: two files plus one script.
   replies with the number.
 - At least one model provider: an API key (or a `codex login` — see
   [Configuration](configuration.md#providers)).
-- Optional: `ffmpeg` in `PATH` if you turn on voice features (the installer
-  warns you if it's missing — see [Voice](voice.md)).
+- `ffmpeg` in `PATH` for speech, which is on by default. Without it the bot
+  starts but disables speech with a warning; set `tts: ""` to turn speech
+  off intentionally (see [Voice](voice.md)).
 
 ## The two files
 
@@ -40,14 +41,17 @@ Then edit it. The minimum to fill in:
 
 ```json
 {"name": "telegram", "value": "123456:ABC-your-bot-token"}
-{"name": "zai", "value": "!pass show api/zai"}
+{"name": "zai", "value": "replace-with-your-provider-key"}
 ```
 
 - `"telegram"` is required — that's the bot token.
 - You need one record per provider `auth` name in your config.
-- A value starting with `!` is run as a shell command each time the secret
-  is needed, and its output is used as the secret. That way the key itself
-  never sits in a file. A plain value works too.
+- A value starting with `!` is run to resolve a secret when needed. If you
+  use Proton Pass, configure a scoped `pass-keys` profile and item grant
+  first, then use `!pass-keys run goblin-dev -- printenv ZAI_API_KEY` for the
+  `zai` record. Direct `pass-cli` commands are refused by the installer:
+  they would use the owner's unscoped session. See
+  [Proton Pass](../DESIGN.md#proton-pass-2026-09-26).
 - Set the file mode so only you can read it: `chmod 600 ~/goblin/auth.jsonl`.
   The bot refuses to start if anyone else can read it.
 
@@ -59,11 +63,11 @@ scripts/install.sh
 
 The script is idempotent — re-run it any time. It:
 
-1. Checks `~/goblin/goblin.json5` and `~/goblin/auth.jsonl` exist. If either
-   is missing it stops and tells you what to create, rather than installing
-   a bot that would crash in a loop.
+1. Checks `~/goblin/goblin.json5` and `~/goblin/auth.jsonl` exist and refuses
+   direct `pass-cli` secret commands before installing the service.
 2. Installs dependencies (`bun install`).
-3. Warns if you configured voice features but `ffmpeg` isn't installed.
+3. Speech needs `ffmpeg`: if missing, the bot disables TTS at boot and logs
+   a warning (transcription over the provider upload cap needs it too).
 4. Writes the systemd user unit (with your paths substituted in), enables
    linger so it runs without you being logged in, and starts the bot.
 

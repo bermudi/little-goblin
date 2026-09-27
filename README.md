@@ -14,10 +14,10 @@ shared between them (no code, no state, no specs).
 You message the bot on Telegram. Each forum topic (or the bare chat, if there
 are no topics) is its own conversation with its own history — make a topic to
 start something, post in an old topic to pick it back up. Your messages get
-answered by whatever model you've picked, with eleven tools at its
-disposal (files, shell, speech, scheduling, memory recall, web search
-and fetch). Settings live in Telegram: six commands plus a Settings
-mini app. Everything is stored under one folder
+answered by whatever model you've picked, with tools for files, shell,
+speech, scheduling, memory recall, web search and more. Common settings live
+in Telegram's Settings mini app; some optional integrations are configured
+by hand. Everything is stored under one folder
 (`~/goblin` by default).
 
 ## Quick start
@@ -44,8 +44,8 @@ Full walkthrough: [`docs/setup.md`](docs/setup.md).
 - **Memory is automatic (when enabled):** exchanges are remembered and
   recalled on their own — no "remember this". `/forget` removes; see
   [`docs/memory.md`](docs/memory.md).
-- **Settings mini app:** a Settings button in the chat opens a form for every
-  knob — no SSH needed.
+- **Settings mini app:** a Settings button in the chat opens the common
+  settings; delegation, Gmail, and the skill reviewer remain hand-configured.
 
 Details: [`docs/usage.md`](docs/usage.md). Voice features:
 [`docs/voice.md`](docs/voice.md). Skills: [`docs/skills.md`](docs/skills.md).
@@ -59,8 +59,9 @@ Two files, side by side in `~/goblin/`:
 | `goblin.json5` | providers, default model, thinking, speech, Telegram, web UI | never |
 | `auth.jsonl` | one `{"name": ..., "value": ...}` per line, file mode `0600` | always |
 
-A secret value is either the credential itself or `!command` (e.g.
-`"!pass show api/openrouter"`) that gets run to fetch it when needed.
+A secret value is either the credential itself or a `!command` that fetches
+it when needed. Direct Pass commands are refused; use a configured
+`pass-keys` profile for Pass-backed secrets.
 Full reference: [`docs/configuration.md`](docs/configuration.md).
 
 ## Running it

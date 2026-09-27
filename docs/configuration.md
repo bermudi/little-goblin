@@ -75,11 +75,14 @@ only offers the levels the current model supports.
 // transcription: { kind: "groq", model: "whisper-large-v3-turbo", auth: "groq" },
 ```
 
-Unset (commented out) means off. `tts` enables spoken replies (`/voice`,
-the 🔊 button, the `speak` tool). `transcription` transcribes incoming
-voice and video notes so text-only models can read them, and gives the
-bot a `transcribe` tool for other audio files on request. Both need
-`ffmpeg` in `PATH`. Details in [Voice](voice.md).
+TTS is on by default with Edge's `en-US-AriaNeural` voice; configure `tts`
+to change the voice or rate, or set `tts: ""` to turn it off. It powers
+spoken replies (`/voice`, the 🔊 button, the `speak` tool). Transcription
+is off when unset; configuring it transcribes incoming voice and video
+notes so text-only models can read them, and gives the bot a `transcribe`
+tool for other audio files on request. TTS needs
+`ffmpeg` in `PATH`; transcription needs it for files over the provider's
+upload cap. Details in [Voice](voice.md).
 
 ### Web access
 
@@ -138,16 +141,21 @@ refuses to load it otherwise):
 ```json
 {"name": "telegram", "value": "123456:ABC-your-bot-token"}
 {"name": "zai", "value": "literal-key-works-too"}
-{"name": "openrouter", "value": "!pass show api/openrouter"}
+{"name": "openrouter", "value": "!pass-keys run goblin-dev -- printenv OPENROUTER_API_KEY"}
 ```
 
 - `telegram` (the bot token) is always required, plus one record per
   provider `auth` name (and `transcription.auth` if configured).
+- The `pass-keys` example requires a configured `goblin-dev` profile with
+  that key item granted. Direct `pass-cli` commands are refused at install:
+  they would run as the owner, not the scoped agent. See
+  [Proton Pass](../DESIGN.md#proton-pass-2026-09-26).
 - A value starting with `!` is executed as a shell command when the secret
   is needed, and its output (trimmed) is the secret. Resolution is lazy —
-  the command runs at the point of use, not at boot — with a 15-second
-  timeout. Failing commands surface as configuration errors where the
-  secret was needed, never as silent blanks.
+  the command runs on first use, not at boot — with a 15-second timeout.
+  A successful value is cached for the process lifetime; a failure is
+  retried on the next use and surfaces as a configuration error, never a
+  silent blank.
 - Resolved secrets never end up in the shell environment (the bot's `bash`
   tool would expose them), in the model context, or in logs. If a
   credential command's error output could contain a secret, it is deliberately

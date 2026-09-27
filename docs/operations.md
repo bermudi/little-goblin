@@ -83,7 +83,7 @@ it only while the bot is stopped, if ever.
 | Service crash-loops or won't start | `journalctl --user -u goblin` — startup errors name the file and the problem (missing config/auth, JSON5 typo, unknown provider, bad `auth.jsonl` line) |
 | `insecure permissions … chmod 600` | `chmod 600 ~/goblin/auth.jsonl` — group/world-readable secrets are refused, not warned about |
 | `no secret named "…"` | `auth.jsonl` needs a record matching every provider `auth` name (and `transcription.auth`) plus `telegram` |
-| Secret command fails | run the `!…` command yourself — it must print the secret and exit 0 within 15 s. Note the service `PATH` covers `~/bin` and `~/.local/bin` for these |
+| Secret command fails | If it uses `pass-keys`, check `pass-keys status goblin-dev` and `journalctl --user -u goblin-keys`; fix the profile or item grant, then run `pass-keys warm goblin-dev`. Don't print the secret while debugging. The service `PATH` covers `~/bin` and `~/.local/bin` |
 | Bot runs but never answers | your user id in `allowedUsers`? The log shows `rejected user` with the id. DM `@userinfobot` to confirm yours |
 | Settings button missing/stale | `publicUrl` in config; mini-app saves apply it without restart, hand-edits need one |
 | Mini app won't load / `load failed: 401` | open it from the Telegram menu button (not a bare browser tab); logins older than a day expire — close and reopen |

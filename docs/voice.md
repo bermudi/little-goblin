@@ -1,8 +1,9 @@
 # Voice
 
 Voice works in both directions: the bot listens (transcription) and speaks
-(text-to-speech). Each direction is one config block, and each can be on
-without the other. Both need `ffmpeg` in the bot's `PATH`.
+(text-to-speech). Transcription is opt-in; speech is on by default, but can
+be turned off independently with `tts: ""`. Speech needs `ffmpeg` in the
+bot's `PATH`; transcription needs it for files over the provider upload cap.
 
 ## Hearing you: transcription
 
@@ -40,10 +41,15 @@ Practical notes:
 
 ## Speaking: text-to-speech
 
+With `tts` unset, the bot uses Edge with the default `en-US-AriaNeural`
+voice. To change the voice or rate, configure it explicitly:
+
 ```json5
 tts: { kind: "edge", voice: "en-US-AriaNeural", rate: "+0%" },
 ```
 
+Set `tts: ""` to turn speech off. If `ffmpeg` is missing at boot, speech is
+disabled for that run with a warning; install it and restart to re-enable.
 This uses the Edge read-aloud service: no key needed, pick any voice name
 like `en-US-AriaNeural`. Two caveats, up front: it's unofficial and can
 break, and `ffmpeg` must be installed (it repackages the audio into a real
@@ -88,10 +94,11 @@ Spanish voice natively. The choice is validated against your list: the bot
 can only pick voices you configured, and an unknown name errors the tool
 call so the model corrects itself.
 
-The default `voice` is untouched: `/voice` mode and the 🔊 button always
-use it. A voice is a language — an English reply through a Spanish voice
-comes out mangled, so pick the voice that matches the text being spoken
-(that's the model's job, and the tool description tells it so).
+`/voice` mode and the 🔊 button pick a matching voice from your list when
+they recognize the reply's language (English or Spanish); otherwise they
+use the default `voice`. A voice is a language — an English reply through
+a Spanish voice comes out mangled, so the speak tool should also pick a
+voice that matches the text it was given.
 
 Combine `/voice` mode with transcription and a topic becomes fully
 ears-in-ears-out: voice notes in, voice notes out, full text history
@@ -101,8 +108,8 @@ underneath.
 
 | Symptom | Likely cause |
 |---|---|
-| `/voice` says speech isn't configured | `tts` block missing/commented in config |
-| 🔊 button missing | same — no `tts`, no button |
+| `/voice` says speech isn't available | `tts: ""` disabled it, or `ffmpeg` was missing at boot (install it and restart) |
+| 🔊 button missing | same — speech is off or unavailable |
 | Voice notes arrive as files the model can't read | `transcription` not configured, or its provider was down (check the log) |
 | Synthesis suddenly fails for everything | Edge endpoint changed (it's unofficial); check the log, then check for a bot update |
 | A voice note comes out mangled | text language and voice language don't match — Edge reads whatever text it's given with the voice's phonetics |

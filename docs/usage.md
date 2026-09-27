@@ -26,7 +26,7 @@ current settings — never a mix.
 
 | Command | What it does |
 |---|---|
-| `/voice` | Toggles voice-note replies for this topic. Needs `tts` configured (otherwise it tells you so). |
+| `/voice` | Toggles voice-note replies for this topic. Speech is on by default; it needs `ffmpeg` and can be turned off with `tts: ""`. |
 | `/stop` | Interrupts the running reply and drops anything queued behind it. |
 | `/compact` | Compacts this topic's older history into a summary right now — the same thing the bot does automatically once a turn crosses 75% of the context window. Recent messages stay; nothing is deleted. |
 | `/memory` | With no argument: memory status (health, queue, last recall, blocked rows) and whether this topic is included. `/memory on`·`off` set per-topic inclusion; `/memory retry`·`dismiss` handle blocked retention. [Memory](memory.md) has the full picture. |
@@ -76,11 +76,12 @@ Files up to 2 GB work if you're running the self-hosted Telegram bot API
 ## The Settings mini app
 
 When `publicUrl` is set, the chat has a **Settings** menu button that opens
-a form with every knob: model, title model, favorites, thinking (the
+a form for common settings: model, title model, favorites, thinking (the
 dropdown only offers levels the chosen model supports), speech,
 transcription, allowed users, URLs, providers, log level. Save applies
 immediately — no restart. It won't let you save a config that removes your
-own user id.
+own user id. Delegation, Gmail, and the skill reviewer still require editing
+`goblin.json5` by hand and restarting; saving in the app preserves them.
 
 Behind the scenes it's a page served by the bot on localhost, loaded by your
 Telegram client over HTTPS — which is why `publicUrl` (a tailnet serve,

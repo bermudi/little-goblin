@@ -93,4 +93,20 @@ describe("mail outbox", () => {
 		expect(s.get(fresh.id)!.status).toBe("pending");
 		expect(s.get(done.id)!.status).toBe("cancelled");
 	});
+
+	test("expireDue leaves excluded rows pending — a mid-send draft is not the sweep's", () => {
+		const s = store();
+		const sending = s.queue(
+			{ to: ["a@x.com"], subject: "h", body: "b", address: ADDRESS },
+			new Date(NOW.getTime() - OUTBOX_TTL_MS - 1000),
+		);
+		const lapsed = s.queue(
+			{ to: ["b@y.com"], subject: "h", body: "b", address: ADDRESS },
+			new Date(NOW.getTime() - OUTBOX_TTL_MS - 1000),
+		);
+		const expired = s.expireDue(NOW, (id) => id === sending.id);
+		expect(expired.map((r) => r.id)).toEqual([lapsed.id]);
+		expect(s.get(sending.id)!.status).toBe("pending");
+		expect(s.get(lapsed.id)!.status).toBe("expired");
+	});
 });

@@ -50,6 +50,7 @@ function fakeReader(over: Partial<MailReader> = {}): MailReader {
 		attachment: async () => new TextEncoder().encode("file-bytes"),
 		poll: async () => ({ hits: [], historyId: "1" }),
 		profileHistoryId: async () => "1",
+		threadFor: async () => null,
 		...over,
 	};
 }
@@ -207,6 +208,38 @@ describe("mail tool", () => {
 		expect(drafts[0]).toContain("To: a@x.com");
 		expect(drafts[0]).toContain("Subject: hi");
 		expect(drafts[0]).toContain("hello");
+		outbox.close();
+	});
+
+	test("a failed draft post cancels the row and returns a retryable error", async () => {
+		const dir = useHome();
+		const outbox = openOutbox(join(dir, "goblin.sqlite"));
+		let seenId = 0;
+		const t = mailTool({
+			reader: () => fakeReader(),
+			outbox,
+			chatId: -100,
+			threadId: 7,
+			postDraft: async (id) => {
+				seenId = id;
+				throw new Error("telegram: HTTP 502");
+			},
+		});
+		const out = (await exec(t, {
+			action: "send",
+			to: ["a@x.com"],
+			subject: "hi",
+			body: "hello",
+		})) as { error: string };
+		expect(out.error).toBe(
+			"posting the draft to Telegram failed — the draft was cancelled; retry the send when delivery recovers",
+		);
+		// No orphan: the queued row is settled cancelled, not pending
+		// for 24h with no buttons anywhere.
+		const row = outbox.get(seenId)!;
+		expect(row.status).toBe("cancelled");
+		expect(row.decidedAt).not.toBeNull();
+		expect(row.draftMessageId).toBeNull();
 		outbox.close();
 	});
 });

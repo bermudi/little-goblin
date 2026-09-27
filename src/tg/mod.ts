@@ -15,7 +15,7 @@ import { COMMAND_RE, COMMANDS, handleCommand, type CommandMemoryDeps } from "./c
 import { withTimeout } from "./deadline.ts";
 import { makeDeliverySink, SPEAK_CALLBACK } from "./delivery.ts";
 import { handleMailApproval, MAIL_CALLBACK_RE } from "./mail-approval.ts";
-import type { MailSender } from "../mail.ts";
+import type { MailReader, MailSender } from "../mail.ts";
 import type { OutboxStore } from "../mail-outbox.ts";
 import { handleSpeakButton } from "./speak-button.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
@@ -88,6 +88,9 @@ export interface BotDeps {
 	mail?: {
 		outbox: OutboxStore;
 		sender(): MailSender | null;
+		// The threading lookup at send time is a READ — it rides the
+		// read credential, never the send token.
+		reader(): MailReader | null;
 	};
 }
 

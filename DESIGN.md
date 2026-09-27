@@ -837,7 +837,10 @@ its credentials ride the same lane.
   "awaiting operator approval". Only the callback from an
   `allowedUsers` id sends — with the send token, which no tool path
   and no skill ever touches. Threading resolves at send time from the
-  stored reply target; the row decides *after* Gmail accepts the send,
+  stored reply target — the lookup is a read, so it rides the read
+  credential (the send credential still never leaves the approval
+  path, and under the send-only scope Google would 403 the read
+  anyway); the row decides *after* Gmail accepts the send,
   so a crash between the two leaves a re-tappable pending row (a
   visible duplicate on retry) rather than a silent loss. Expired or
   cancelled rows never send; a restart keeps pending rows (the buttons

@@ -137,16 +137,30 @@ export const mailTool = (deps: MailToolDeps) =>
 						...(input.replyToId !== undefined ? { replyToId: input.replyToId } : {}),
 						address: { chatId: deps.chatId, threadId: deps.threadId },
 					});
-					const messageId = await deps.postDraft(
-						row.id,
-						draftText(row.id, {
-							to: input.to,
-							...(input.cc !== undefined ? { cc: input.cc } : {}),
-							subject: input.subject ?? "",
-							body: input.body,
-							...(input.replyToId !== undefined ? { replyToId: input.replyToId } : {}),
-						}, row.expiresAt),
-					);
+					// A row queued but never posted is a 24h pending draft with
+					// no buttons anywhere — a partial Telegram post (a throw
+					// mid-chunks) cancels the row instead of orphaning it, and
+					// the model gets a retryable error instead of a throw.
+					let messageId: number;
+					try {
+						messageId = await deps.postDraft(
+							row.id,
+							draftText(row.id, {
+								to: input.to,
+								...(input.cc !== undefined ? { cc: input.cc } : {}),
+								subject: input.subject ?? "",
+								body: input.body,
+								...(input.replyToId !== undefined ? { replyToId: input.replyToId } : {}),
+							}, row.expiresAt),
+						);
+					} catch (err) {
+						deps.outbox.decide(row.id, "cancelled", new Date());
+						log.error("mail draft posting failed — draft cancelled", err, { outbox: row.id });
+						return {
+							error:
+								"posting the draft to Telegram failed — the draft was cancelled; retry the send when delivery recovers",
+						};
+					}
 					deps.outbox.bindDraft(row.id, messageId);
 					return {
 						queued: row.id,

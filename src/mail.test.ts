@@ -4,6 +4,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import type { AuthStore } from "./auth.ts";
+import { setLogFile, setLogWriter } from "./log.ts";
 import {
 	buildRaw,
 	decodeRfc2047,
@@ -11,6 +12,7 @@ import {
 	htmlToText,
 	makeReader,
 	makeSender,
+	type MailHit,
 } from "./mail.ts";
 
 const fakeAuth: AuthStore = {
@@ -304,6 +306,120 @@ describe("gmail client", () => {
 		expect(historyId).toBe("120");
 	});
 
+	test("a multi-record burst fires the oldest cap-many and checkpoints at the last fired record", async () => {
+		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
+		// 14 matching arrivals, one per history record — Google split the
+		// burst across records, so a record-boundary cursor can hold the
+		// unfired tail back for the next poll.
+		const ids = Array.from({ length: 14 }, (_, i) => `m${i + 1}`);
+		const records = ids.map((id, i) => ({
+			id: String(101 + i),
+			messagesAdded: [{ message: { id } }],
+		}));
+		const gmail = serve((req) => {
+			const url = new URL(req.url);
+			if (url.pathname === "/gmail/v1/users/me/history") {
+				// Records strictly after the cursor — the checkpoint contract.
+				const start = Number(url.searchParams.get("startHistoryId"));
+				return Response.json({
+					history: records.filter((r) => Number(r.id) > start),
+					historyId: "200",
+				});
+			}
+			if (url.pathname === "/gmail/v1/users/me/messages") {
+					// Newest first — and all 14 still match on the second poll.
+				return Response.json({ messages: [...ids].reverse().map((id) => ({ id })) });
+			}
+			const m = /^\/gmail\/v1\/users\/me\/messages\/([^/]+)$/.exec(url.pathname);
+			if (m) {
+				return Response.json({
+					id: m[1],
+					threadId: "t",
+					snippet: "s",
+					payload: { headers: headers(["From", "f"], ["Subject", "s"], ["Date", "d"]) },
+				});
+			}
+			return new Response("nf", { status: 404 });
+		});
+		const reader = makeReader({
+			auth: fakeAuth,
+			clientId: "cid",
+			clientSecretAuth: "gmail-secret",
+			readAuth: "gmail-read",
+			gmailBase: `${gmail}/gmail/v1`,
+			oauthBase: oauth,
+		});
+		const first = await reader.poll("from:bank", "100");
+		expect(first.hits.map((h) => h.id)).toEqual(ids.slice(0, 10));
+		// The checkpoint is the 10th match's record — the last one that
+		// fired — not the mailbox head.
+		expect(first.historyId).toBe("110");
+		const second = await reader.poll("from:bank", first.historyId);
+		// The remainder fires, no duplicates: only the records after the
+		// checkpoint count as arrivals.
+		expect(second.hits.map((h) => h.id)).toEqual(ids.slice(10));
+		expect(second.historyId).toBe("200");
+	});
+
+	test("a single record over the cap fires cap-many, skips the rest, and warns", async () => {
+		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
+		// Gmail collapsed a 12-message burst into ONE history record — a
+		// record is the smallest checkpoint unit, so the 2 overflow
+		// matches can only be skipped, and the warn says exactly that.
+		const ids = Array.from({ length: 12 }, (_, i) => `m${i + 1}`);
+		const gmail = serve((req) => {
+			const url = new URL(req.url);
+			if (url.pathname === "/gmail/v1/users/me/history") {
+				return Response.json({
+					history: [{ id: "150", messagesAdded: ids.map((id) => ({ message: { id } })) }],
+					historyId: "200",
+				});
+			}
+			if (url.pathname === "/gmail/v1/users/me/messages") {
+				return Response.json({ messages: [...ids].reverse().map((id) => ({ id })) });
+			}
+			const m = /^\/gmail\/v1\/users\/me\/messages\/([^/]+)$/.exec(url.pathname);
+			if (m) {
+				return Response.json({
+					id: m[1],
+					threadId: "t",
+					snippet: "s",
+					payload: { headers: headers(["From", "f"], ["Subject", "s"], ["Date", "d"]) },
+				});
+			}
+			return new Response("nf", { status: 404 });
+		});
+		const reader = makeReader({
+			auth: fakeAuth,
+			clientId: "cid",
+			clientSecretAuth: "gmail-secret",
+			readAuth: "gmail-read",
+			gmailBase: `${gmail}/gmail/v1`,
+			oauthBase: oauth,
+		});
+		const captured: string[] = [];
+		setLogFile("mail-poll-collapse-test.log");
+		setLogWriter((_path, line) => {
+			captured.push(line);
+		});
+		let out: { hits: MailHit[]; historyId: string };
+		try {
+			out = await reader.poll("from:bank", "100");
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		expect(out.hits.map((h) => h.id)).toEqual(ids.slice(0, 10));
+		// Advanced past the collapsed record — the 2 skipped matches
+		// never refire (and never loop).
+		expect(out.historyId).toBe("150");
+		const warns = captured
+			.map((l) => JSON.parse(l) as Record<string, unknown>)
+			.filter((l) => l.msg === "Gmail collapsed a burst into one history record — 2 matches skipped");
+		expect(warns).toHaveLength(1);
+		expect(warns[0]).toMatchObject({ level: "warn", filter: "from:bank", matched: 12, firing: 10 });
+	});
+
 	test("poll with no arrivals advances the checkpoint without a list call", async () => {
 		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
 		let lists = 0;
@@ -363,8 +479,12 @@ describe("gmail client", () => {
 		expect(await reader.profileHistoryId()).toBe("999");
 	});
 
-	test("threadFor resolves threading context; a missing target is null", async () => {
-		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
+	test("threadFor rides the read credential; a missing target is null", async () => {
+		const seen = { body: "" };
+		const oauth = serve(async (req) => {
+			seen.body = await req.text();
+			return Response.json({ access_token: "t", expires_in: 3600 });
+		});
 		const gmail = serve((req) => {
 			const url = new URL(req.url);
 			if (url.pathname === "/gmail/v1/users/me/messages/m1") {
@@ -376,16 +496,19 @@ describe("gmail client", () => {
 			}
 			return Response.json({ error: {} }, { status: 404 });
 		});
-		const sender = makeSender({
+		const reader = makeReader({
 			auth: fakeAuth,
 			clientId: "cid",
 			clientSecretAuth: "gmail-secret",
-			sendAuth: "gmail-send",
+			readAuth: "gmail-read",
 			gmailBase: `${gmail}/gmail/v1`,
 			oauthBase: oauth,
 		});
-		expect(await sender.threadFor("m1")).toEqual({ threadId: "thread-9", messageId: "<orig@mail>" });
-		expect(await sender.threadFor("ghost")).toBeNull();
+		expect(await reader.threadFor("m1")).toEqual({ threadId: "thread-9", messageId: "<orig@mail>" });
+		expect(await reader.threadFor("ghost")).toBeNull();
+		// The mint used the READ refresh token — the lookup is a read
+		// (the send-only scope would answer 403).
+		expect(seen.body).toContain(encodeURIComponent("secret:gmail-read"));
 	});
 
 	test("send posts MIME + thread id; the mint used the SEND token", async () => {

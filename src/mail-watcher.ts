@@ -26,6 +26,10 @@ export interface MailWatcherDeps {
 		messageId: number,
 		text: string,
 	): Promise<void>;
+	/** True while a Send tap's Gmail calls are in flight for the draft
+	 *  (tg/mail-approval's sending set) — the expiry sweep must not
+	 *  claim such a row: the send's own verdict decides it. */
+	isSending?(id: number): boolean;
 	/** Test door for the expiry sweep. */
 	now?(): Date;
 }
@@ -137,24 +141,60 @@ async function check(
 			recovered(deps, failing, program);
 			return;
 		}
-		if (historyId !== "") {
-			deps.programs.setMailHistory(program.id, historyId);
-		} else {
-			log.warn("mail poll returned no checkpoint — cursor kept, retrying next tick", {
+		// The row can change while the poll is in flight (the webhook
+		// route's fresh re-read rule): a disable, delete, or filter edit
+		// that landed mid-poll wins over this poll's snapshot. A stale
+		// charter must not fire, and setMailHistory must not clobber the
+		// null cursor a filter edit just wrote to force re-baselining.
+		const fresh = deps.programs.get(program.id);
+		if (fresh === null) {
+			// Deleted mid-poll — nothing to write, nothing to fire; the
+			// episode key dies with the row.
+			failing.delete(program.id);
+			log.info("mail program deleted mid-poll — nothing fired", {
 				program: program.id,
 				name: program.name,
 			});
+			return;
 		}
-		if (hits.length > 0) {
-			const event = formatMailEvent(hits);
-			deps.fire(program, event, now);
-			// The cursor already advanced past these matches — markFired
-			// is the informational stamp (the webhook route's rule).
-			deps.programs.markFired(program.id, now);
-			log.info("mail fired", {
+		const stillMine = fresh.mailFilter === filter;
+		const cursorUntouched = fresh.mailHistoryId === program.mailHistoryId;
+		if (stillMine && cursorUntouched) {
+			if (historyId !== "") {
+				deps.programs.setMailHistory(program.id, historyId);
+			} else {
+				log.warn("mail poll returned no checkpoint — cursor kept, retrying next tick", {
+					program: program.id,
+					name: program.name,
+				});
+			}
+			if (hits.length > 0 && fresh.enabled) {
+				const event = formatMailEvent(hits);
+				// The cursor already advanced past these matches — markFired is
+				// the informational stamp (the webhook route's rule), and it
+				// only lands when the turn did.
+				const landed = deps.fire(fresh, event, now);
+				if (landed) {
+					deps.programs.markFired(program.id, now);
+					log.info("mail fired", {
+						program: program.id,
+						name: program.name,
+						matches: hits.length,
+					});
+				} else {
+					log.error("mail fire did not land", undefined, {
+						program: program.id,
+						name: program.name,
+						matches: hits.length,
+					});
+				}
+			}
+		} else {
+			// The edit won: no cursor write (it would clobber the null a
+			// filter edit just wrote), no fire under a stale charter/filter.
+			log.info("mail poll lost to a mid-poll program edit — cursor and fire skipped", {
 				program: program.id,
 				name: program.name,
-				matches: hits.length,
 			});
 		}
 		recovered(deps, failing, program);
@@ -217,7 +257,10 @@ async function failed(
 async function sweepExpired(deps: MailWatcherDeps, now: Date): Promise<void> {
 	let rows: ReturnType<OutboxStore["expireDue"]>;
 	try {
-		rows = deps.outbox.expireDue(now);
+		// Rows mid-send are excluded at the store: their Gmail send is
+		// deciding them, and an "expired — never sent" stamp over a send
+		// in flight would be a lie.
+		rows = deps.outbox.expireDue(now, deps.isSending);
 	} catch (err) {
 		log.error("outbox expiry sweep failed", err);
 		return;

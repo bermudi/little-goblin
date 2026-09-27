@@ -36,7 +36,7 @@ import { wake } from "./wake.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { Runtime } from "./runtime.ts";
 import { applyMenuButton, AUTH_TELEGRAM_TOKEN, startBot } from "./tg/mod.ts";
-import { postMailDraft, sendMailNotice, stampMailDraft } from "./tg/mail-approval.ts";
+import { isMailSending, postMailDraft, sendMailNotice, stampMailDraft } from "./tg/mail-approval.ts";
 import { sendMemoryBlockedNotice, sendMemoryOutageNotice, sendSkillSavedNotice } from "./tg/notify.ts";
 
 // The file sink attaches before anything that can fail — a malformed
@@ -352,7 +352,7 @@ async function boot() {
 			: {}),
 		// Draft approvals always wire up — the outbox outlives the mail
 		// block, and the taps degrade to toasts without it.
-		mail: { outbox, sender: mailSender },
+		mail: { outbox, sender: mailSender, reader: mailReader },
 	});
 
 	// Memory worker after the bot: a persistent outage notices the
@@ -508,6 +508,9 @@ async function boot() {
 		fire: (program, event, now) => fireProgram(wakeDeps, program, "mail", event, now),
 		notify: (address, text) => sendMailNotice(tg.bot.api, address, text),
 		stampDraft: (address, messageId, text) => stampMailDraft(tg.bot.api, address, messageId, text),
+		// The expiry sweep must not claim a row whose Gmail send is in
+		// flight — the send's own verdict decides it.
+		isSending: isMailSending,
 	});
 
 	return { configRef, auth, store, programs, outbox, delegations, runtime, tg, http, scheduler, delegationWatcher, mailWatcher, memoryWorker };

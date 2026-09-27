@@ -96,16 +96,20 @@ export interface MailReader {
 	read(id: string): Promise<MailMessage>;
 	attachment(messageId: string, attachmentId: string): Promise<Uint8Array>;
 	/** New matches since startHistoryId: history.list intersected with
-	 *  the filter's list, oldest first, capped. historyId in the
-	 *  result is the new checkpoint — advance past it even when empty. */
+	 *  the filter's list, oldest first, batched at whole history records
+	 *  up to the per-tick cap. historyId in the result is the new
+	 *  checkpoint — advance past it even when empty; a truncated batch
+	 *  checkpoints at its last fired record so the remainder refires. */
 	poll(filter: string, startHistoryId: string): Promise<{ hits: MailHit[]; historyId: string }>;
 	/** Current mailbox history id — the no-fire baseline for a new filter. */
 	profileHistoryId(): Promise<string>;
+	/** Thread context for a reply target, or null when it doesn't exist.
+	 *  This is a READ (messages.get METADATA): it rides the read
+	 *  credential — under the send-only scope Google answers 403. */
+	threadFor(replyToId: string): Promise<{ threadId: string; messageId: string | null } | null>;
 }
 
 export interface MailSender {
-	/** Thread context for a reply target, or null when it doesn't exist. */
-	threadFor(replyToId: string): Promise<{ threadId: string; messageId: string | null } | null>;
 	send(draft: MailDraft): Promise<{ id: string; threadId: string }>;
 }
 
@@ -126,13 +130,13 @@ export function makeReader(deps: GmailReaderDeps): MailReader {
 		attachment: (messageId, attachmentId) => inner.attachment(messageId, attachmentId),
 		poll: (filter, startHistoryId) => inner.poll(filter, startHistoryId),
 		profileHistoryId: () => inner.profileHistoryId(),
+		threadFor: (replyToId) => inner.threadFor(replyToId),
 	};
 }
 
 export function makeSender(deps: GmailSenderDeps): MailSender {
 	const inner = new Gmail(deps, deps.sendAuth);
 	return {
-		threadFor: (replyToId) => inner.threadFor(replyToId),
 		send: (draft) => inner.send(draft),
 	};
 }
@@ -306,14 +310,21 @@ class Gmail {
 		}
 		const body = data as { history?: unknown[]; historyId?: unknown };
 		const latest = str(body.historyId);
-		const added = new Set<string>();
+		// Keep the records whole, in ascending id order: a capped batch
+		// checkpoints at its last fired record so the unfired matches stay
+		// ahead of the cursor instead of being skipped forever.
+		const records: Array<{ id: string; ids: string[] }> = [];
 		for (const h of body.history ?? []) {
-			const rec = h as { messagesAdded?: unknown[] };
+			const rec = h as { id?: unknown; messagesAdded?: unknown[] };
+			const ids: string[] = [];
 			for (const m of rec.messagesAdded ?? []) {
 				const id = str((m as { message?: Record<string, unknown> }).message?.id);
-				if (id !== "") added.add(id);
+				if (id !== "") ids.push(id);
 			}
+			records.push({ id: str(rec.id), ids });
 		}
+		records.sort((a, b) => Number(a.id) - Number(b.id));
+		const added = new Set(records.flatMap((r) => r.ids));
 		if (added.size === 0) return { hits: [], historyId: latest };
 		// history.list takes no query — intersect the mailbox-wide
 		// arrivals with the filter's own recent matches (newest first),
@@ -325,17 +336,45 @@ class Gmail {
 		const matching = ((listData as Record<string, unknown>).messages ?? []) as Array<Record<string, unknown>>;
 		const matched = matching.map((m) => str(m.id)).filter((id) => id !== "" && added.has(id));
 		matched.reverse();
-		const batch = matched.slice(0, POLL_BATCH_CAP);
-		if (matched.length > batch.length) {
-			log.warn("mail poll batch capped — oldest matches fire, the rest wait for the next tick", {
-				filter,
-				matched: matched.length,
-				firing: batch.length,
-			});
+		// Within a record, keep the oldest-first order the list established.
+		const order = new Map(matched.map((id, i) => [id, i] as const));
+		// Batch WHOLE records: taking a record takes all of its matches,
+		// and the batch stops before the record that would push it past
+		// the cap — that record re-arrives on the next poll from the
+		// record-boundary checkpoint below.
+		const batch: string[] = [];
+		let lastIncluded = "";
+		let truncated = false;
+		for (const rec of records) {
+			const recMatched = rec.ids
+				.filter((id) => order.has(id))
+				.sort((a, b) => order.get(a)! - order.get(b)!);
+			if (recMatched.length === 0) continue;
+			if (batch.length + recMatched.length > POLL_BATCH_CAP) {
+				if (batch.length === 0) {
+					// A single record's burst alone exceeds the cap — a record
+					// is the smallest checkpoint unit, so the overflow can only
+					// be skipped, never deferred. Fire the first cap-many,
+					// advance past the record, and say exactly what was lost.
+					batch.push(...recMatched.slice(0, POLL_BATCH_CAP));
+					log.warn(
+						`Gmail collapsed a burst into one history record — ${recMatched.length - POLL_BATCH_CAP} matches skipped`,
+						{ filter, matched: recMatched.length, firing: POLL_BATCH_CAP },
+					);
+					lastIncluded = rec.id;
+				}
+				truncated = true;
+				break;
+			}
+			batch.push(...recMatched);
+			lastIncluded = rec.id;
 		}
 		const hits: MailHit[] = [];
 		for (const id of batch) hits.push(await this.getMetadata(token, id));
-		return { hits, historyId: latest };
+		// Every match fired → the head (past every record, matched or
+		// not); truncated → the last fired record's id, so the unfired
+		// remainder is still ahead of the cursor.
+		return { hits, historyId: truncated ? lastIncluded : latest };
 	}
 
 	async profileHistoryId(): Promise<string> {

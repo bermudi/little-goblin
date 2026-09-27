@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api } from "grammy";
-import type { MailSender } from "../mail.ts";
+import type { MailReader, MailSender } from "../mail.ts";
 import { openOutbox, OUTBOX_TTL_MS, type OutboxStore } from "../mail-outbox.ts";
 import {
 	handleMailApproval,
@@ -64,7 +64,6 @@ function fakeSender(over: Partial<MailSender> = {}): MailSender & { sent: unknow
 	const sent: unknown[] = [];
 	return {
 		sent,
-		threadFor: async () => ({ threadId: "thread-1", messageId: "<orig@mail>" }),
 		send: async (draft) => {
 			sent.push(draft);
 			return { id: "gmail-1", threadId: "thread-1" };
@@ -73,7 +72,32 @@ function fakeSender(over: Partial<MailSender> = {}): MailSender & { sent: unknow
 	};
 }
 
-function setup(sender: MailSender | null = fakeSender()): {
+// The threading lookup rides the reader — a read, never the send token.
+function fakeReader(
+	over: Partial<Pick<MailReader, "threadFor">> = {},
+): MailReader & { threaded: string[] } {
+	const threaded: string[] = [];
+	return {
+		search: async () => [],
+		read: async () => {
+			throw new Error("unreachable");
+		},
+		attachment: async () => new Uint8Array(),
+		poll: async () => ({ hits: [], historyId: "1" }),
+		profileHistoryId: async () => "1",
+		threaded,
+		threadFor: async (id) => {
+			threaded.push(id);
+			return { threadId: "thread-1", messageId: "<orig@mail>" };
+		},
+		...over,
+	};
+}
+
+function setup(
+	sender: MailSender | null = fakeSender(),
+	reader: MailReader | null = fakeReader(),
+): {
 	outbox: OutboxStore;
 	calls: ApiCalls;
 	deps: MailApprovalDeps;
@@ -83,7 +107,7 @@ function setup(sender: MailSender | null = fakeSender()): {
 	return {
 		outbox,
 		calls,
-		deps: { api: fakeApi(calls), outbox, sender: () => sender, now: () => NOW },
+		deps: { api: fakeApi(calls), outbox, sender: () => sender, reader: () => reader, now: () => NOW },
 	};
 }
 
@@ -153,31 +177,61 @@ describe("mail approval taps", () => {
 		outbox.close();
 	});
 
-	test("a reply resolves threading at send time", async () => {
+	test("a reply resolves threading at send time through the reader", async () => {
 		const sender = fakeSender();
-		const { outbox, deps } = setup(sender);
+		const reader = fakeReader();
+		const { outbox, deps } = setup(sender, reader);
 		const row = outbox.queue(
 			{ to: ["a@x.com"], subject: "re", body: "b", replyToId: "m9", address: ADDRESS },
 			NOW,
 		);
 		await handleMailApproval(tap(row.id, "send"), deps);
+		expect(reader.threaded).toEqual(["m9"]);
 		expect(sender.sent[0]).toMatchObject({ threadId: "thread-1", inReplyTo: "<orig@mail>" });
 		expect(outbox.get(row.id)!.status).toBe("sent");
 		outbox.close();
 	});
 
 	test("a vanished reply target keeps the row pending with a notice", async () => {
-		const sender = fakeSender({ threadFor: async () => null });
-		const { outbox, calls, deps } = setup(sender);
+		const reader = fakeReader({ threadFor: async () => null });
+		const { outbox, calls, deps } = setup(fakeSender(), reader);
 		const row = outbox.queue(
 			{ to: ["a@x.com"], subject: "re", body: "b", replyToId: "ghost", address: ADDRESS },
 			NOW,
 		);
 		await handleMailApproval(tap(row.id, "send"), deps);
-		expect(sender.sent).toHaveLength(0);
 		expect(outbox.get(row.id)!.status).toBe("pending");
 		expect(calls.sends).toHaveLength(1);
 		expect(calls.sends[0]!.text).toContain("message this answers is gone");
+		outbox.close();
+	});
+
+	test("a threading lookup failure keeps the row pending with a retry notice", async () => {
+		const reader = fakeReader({
+			threadFor: async () => {
+				throw new Error("gmail: HTTP 500");
+			},
+		});
+		const { outbox, calls, deps } = setup(fakeSender(), reader);
+		const row = outbox.queue(
+			{ to: ["a@x.com"], subject: "re", body: "b", replyToId: "m9", address: ADDRESS },
+			NOW,
+		);
+		await handleMailApproval(tap(row.id, "send"), deps);
+		expect(outbox.get(row.id)!.status).toBe("pending");
+		expect(calls.sends[0]!.text).toContain("tap Send to retry");
+		outbox.close();
+	});
+
+	test("a missing reader keeps a reply draft pending with a notice", async () => {
+		const { outbox, calls, deps } = setup(fakeSender(), null);
+		const row = outbox.queue(
+			{ to: ["a@x.com"], subject: "re", body: "b", replyToId: "m9", address: ADDRESS },
+			NOW,
+		);
+		await handleMailApproval(tap(row.id, "send"), deps);
+		expect(outbox.get(row.id)!.status).toBe("pending");
+		expect(calls.sends[0]!.text).toContain("couldn't thread the reply");
 		outbox.close();
 	});
 
@@ -240,7 +294,55 @@ describe("mail approval taps", () => {
 		await handleMailApproval({ ...tap(row.id, "send"), id: "q-second" }, deps);
 		release();
 		await first;
-		expect(calls.answers).toContainEqual({ id: "q-second", text: "sending…" });
+		expect(calls.answers).toContainEqual({ id: "q-second", text: "sending — wait for the verdict" });
+		expect(outbox.get(row.id)!.status).toBe("sent");
+		outbox.close();
+	});
+
+	test("cancel during a slow send is refused — the send's verdict wins", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		const sender = fakeSender({
+			send: async (draft) => {
+				await gate;
+				return { id: "gmail-1", threadId: "t" };
+			},
+		});
+		const { outbox, calls, deps } = setup(sender);
+		const row = queue(outbox);
+		const first = handleMailApproval({ ...tap(row.id, "send"), id: "q-first" }, deps);
+		await Bun.sleep(10);
+		await handleMailApproval({ ...tap(row.id, "cancel"), id: "q-cancel" }, deps);
+		release();
+		await first;
+		expect(calls.answers).toContainEqual({ id: "q-cancel", text: "sending — wait for the verdict" });
+		expect(calls.edits[0]!.text).toContain("sent to a@x.com");
+		expect(outbox.get(row.id)!.status).toBe("sent");
+		outbox.close();
+	});
+
+	test("a fuse burning out mid-send can't expire the row — the send decides it", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		const sender = fakeSender({
+			send: async (draft) => {
+				await gate;
+				return { id: "gmail-1", threadId: "t" };
+			},
+		});
+		const { outbox, calls, deps } = setup(sender);
+		// Queued a minute ago — the 24h fuse is still burning at tap time.
+		const row = queue(outbox, new Date(NOW.getTime() - 60_000));
+		let clock = NOW;
+		deps.now = () => clock;
+		const first = handleMailApproval({ ...tap(row.id, "send"), id: "q-first" }, deps);
+		await Bun.sleep(10);
+		// The fuse runs out while the Gmail send is in flight.
+		clock = new Date(NOW.getTime() + OUTBOX_TTL_MS + 60_000);
+		await handleMailApproval({ ...tap(row.id, "send"), id: "q-late" }, deps);
+		release();
+		await first;
+		expect(calls.answers).toContainEqual({ id: "q-late", text: "sending — wait for the verdict" });
 		expect(outbox.get(row.id)!.status).toBe("sent");
 		outbox.close();
 	});

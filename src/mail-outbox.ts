@@ -49,8 +49,10 @@ export interface OutboxStore {
 	/** Compare-and-set decision: applies only while the row is still
 	 *  pending — a double-tap or a sweeper race resolves to one winner. */
 	decide(id: number, to: Exclude<OutboxStatus, "pending">, now?: Date, sentId?: string): boolean;
-	/** Mark every expired pending row; the watcher edits their drafts. */
-	expireDue(now?: Date): OutboxEntry[];
+	/** Mark every expired pending row; the watcher edits their drafts.
+	 *  Rows the caller excludes (a send in flight) stay pending — the
+	 *  send's own verdict decides them, and the next sweep retries. */
+	expireDue(now?: Date, exclude?: (id: number) => boolean): OutboxEntry[];
 	close(): void;
 }
 
@@ -170,8 +172,11 @@ export function openOutbox(dbPath: string): OutboxStore {
 			return true;
 		},
 
-		expireDue(now = new Date()) {
-			const rows = qExpired.all(now.toISOString()).map(rowToEntry);
+		expireDue(now = new Date(), exclude?: (id: number) => boolean) {
+			const rows = qExpired
+				.all(now.toISOString())
+				.map(rowToEntry)
+				.filter((row) => !exclude?.(row.id));
 			for (const row of rows) {
 				// decide() re-checks pending — a tap racing the sweep wins.
 				this.decide(row.id, "expired", now);

@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HistoryExpiredError, type MailHit, type MailReader } from "./mail.ts";
 import { openOutbox, OUTBOX_TTL_MS, type OutboxStore } from "./mail-outbox.ts";
+import { setLogFile, setLogWriter } from "./log.ts";
 import { formatMailEvent, startMailWatcher, type MailWatcher } from "./mail-watcher.ts";
 import { openPrograms, type Program, type ProgramsStore } from "./programs.ts";
 
@@ -36,6 +37,11 @@ interface Harness {
 	stamps: Array<{ message: number; text: string }>;
 	polls: Array<{ filter: string; cursor: string }>;
 	profiles: number;
+	/** Rows the approval flow reports mid-send — the sweep skips them. */
+	sending: Set<number>;
+	/** What the harness's fire() reports — false simulates a turn that
+	 *  did not land. */
+	landFire: boolean;
 	pollImpl: (filter: string, cursor: string) => Promise<{ hits: MailHit[]; historyId: string }>;
 	reader: MailReader | null;
 }
@@ -52,6 +58,8 @@ function harness(): Harness {
 		stamps: [],
 		polls: [],
 		profiles: 0,
+		sending: new Set(),
+		landFire: true,
 		pollImpl: async () => ({ hits: [], historyId: "1" }),
 		reader: null,
 	};
@@ -67,6 +75,7 @@ function harness(): Harness {
 			h.profiles++;
 			return "100";
 		},
+		threadFor: async () => null,
 	};
 	return h;
 }
@@ -79,7 +88,7 @@ function start(h: Harness): MailWatcher {
 			reader: () => h.reader,
 			fire: (program: Program, event: string) => {
 				h.fired.push({ program: program.id, event });
-				return true;
+				return h.landFire;
 			},
 			notify: async (address, text) => {
 				h.notices.push({ chat: address.chatId, text });
@@ -87,6 +96,7 @@ function start(h: Harness): MailWatcher {
 			stampDraft: async (_address, messageId, text) => {
 				h.stamps.push({ message: messageId, text });
 			},
+			isSending: (id) => h.sending.has(id),
 			now: () => NOW,
 		},
 		60_000,
@@ -236,5 +246,104 @@ describe("mail watcher", () => {
 		expect(h.outbox.get(old.id)!.status).toBe("expired");
 		expect(h.outbox.get(fresh.id)!.status).toBe("pending");
 		expect(h.stamps).toHaveLength(1);
+	});
+
+	test("a disable mid-poll advances the cursor but does not fire", async () => {
+		const h = harness();
+		const p = mailProgram(h);
+		h.programs.setMailHistory(p.id, "100");
+		h.pollImpl = async () => {
+			// The toggle lands while the poll is in flight.
+			h.programs.update(p.id, { enabled: false });
+			return { hits: [hit("m1")], historyId: "120" };
+		};
+		const w = start(h);
+		await w.tick();
+		expect(h.fired).toHaveLength(0);
+		// The cursor still advances — mail matched while disabled is
+		// skipped, not owed (the cron rule).
+		expect(h.programs.get(p.id)!.mailHistoryId).toBe("120");
+		expect(h.programs.get(p.id)!.lastRun).toBeNull();
+	});
+
+	test("a filter edit mid-poll wins — no fire, and the re-baseline cursor survives", async () => {
+		const h = harness();
+		const p = mailProgram(h);
+		h.programs.setMailHistory(p.id, "100");
+		h.pollImpl = async () => {
+			// update() nulls mailHistoryId on a filter change to force a
+			// re-baseline — the stale poll must not write its cursor over it.
+			h.programs.update(p.id, { mailFilter: "from:bank is:important" });
+			return { hits: [hit("m1")], historyId: "120" };
+		};
+		const w = start(h);
+		await w.tick();
+		expect(h.fired).toHaveLength(0);
+		const after = h.programs.get(p.id)!;
+		expect(after.mailFilter).toBe("from:bank is:important");
+		expect(after.mailHistoryId).toBeNull();
+		expect(after.lastRun).toBeNull();
+	});
+
+	test("a delete mid-poll writes nothing and fires nothing", async () => {
+		const h = harness();
+		const p = mailProgram(h);
+		h.programs.setMailHistory(p.id, "100");
+		h.pollImpl = async () => {
+			h.programs.remove(p.id);
+			return { hits: [hit("m1")], historyId: "120" };
+		};
+		const w = start(h);
+		await w.tick();
+		expect(h.fired).toHaveLength(0);
+		expect(h.programs.get(p.id)).toBeNull();
+	});
+
+	test("a fire that does not land marks nothing ran", async () => {
+		const h = harness();
+		const p = mailProgram(h);
+		h.programs.setMailHistory(p.id, "100");
+		h.pollImpl = async () => ({ hits: [hit("m1")], historyId: "120" });
+		h.landFire = false;
+		const captured: string[] = [];
+		setLogFile("mail-watch-fire-test.log");
+		setLogWriter((_path, line) => {
+			captured.push(line);
+		});
+		const w = start(h);
+		try {
+			await w.tick();
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		// The fire path ran, but the turn didn't land: no markFired, and
+		// the log says so instead of claiming "mail fired".
+		expect(h.fired).toHaveLength(1);
+		expect(h.programs.get(p.id)!.lastRun).toBeNull();
+		expect(h.programs.get(p.id)!.mailHistoryId).toBe("120");
+		const lines = captured.map((l) => JSON.parse(l) as Record<string, unknown>);
+		expect(lines.some((l) => l.msg === "mail fire did not land" && l.level === "error")).toBe(true);
+		expect(lines.some((l) => l.msg === "mail fired")).toBe(false);
+	});
+
+	test("the sweep skips a row mid-send — the send's verdict decides it", async () => {
+		const h = harness();
+		const row = h.outbox.queue(
+			{ to: ["a@x.com"], subject: "h", body: "b", address: ADDRESS },
+			new Date(NOW.getTime() - OUTBOX_TTL_MS - 1000),
+		);
+		h.outbox.bindDraft(row.id, 555);
+		h.sending.add(row.id);
+		const w = start(h);
+		await w.tick();
+		expect(h.outbox.get(row.id)!.status).toBe("pending");
+		expect(h.stamps).toHaveLength(0);
+		// The send settles one way or the other — the next sweep takes
+		// whatever is still pending then.
+		h.sending.delete(row.id);
+		await w.tick();
+		expect(h.outbox.get(row.id)!.status).toBe("expired");
+		expect(h.stamps).toEqual([{ message: 555, text: expect.stringContaining("expired") }]);
 	});
 });

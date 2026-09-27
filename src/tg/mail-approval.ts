@@ -6,7 +6,7 @@
 // without a live bot.
 
 import type { Api } from "grammy";
-import type { MailSender } from "../mail.ts";
+import type { MailReader, MailSender } from "../mail.ts";
 import { domainOf } from "../mail.ts";
 import type { OutboxEntry, OutboxStore } from "../mail-outbox.ts";
 import { log } from "../log.ts";
@@ -23,9 +23,20 @@ const DRAFT_CHUNK = 3800;
 const MAX_DRAFT_CHUNKS = 4;
 
 // One in-flight send per draft: the Gmail call is slow, and a second
-// tap inside it would otherwise double-send. (A restart clears the
-// set; a pending row stays re-tappable — the crash window is one tap.)
+// tap inside it would otherwise double-send. The set also fences the
+// other deciders — a Cancel tap from a second device, the tap-time
+// expiry branch, and the watcher's expiry sweep must not stamp a row
+// whose mail is already leaving; the send's own verdict wins. (A
+// restart clears the set; a pending row stays re-tappable — the crash
+// window is one tap.)
 const sending = new Set<number>();
+
+/** True while a Send tap's Gmail calls are in flight for this draft —
+ *  the watcher's expiry sweep refuses to claim such a row (the send's
+ *  own verdict decides it). */
+export function isMailSending(id: number): boolean {
+	return sending.has(id);
+}
 
 // Structural subset of Telegram's CallbackQuery — the fields this flow
 // reads (the speak-button pattern: grammy's full type is assignable).
@@ -43,6 +54,10 @@ export interface MailApprovalDeps {
 	outbox: OutboxStore;
 	/** Live send client, or null when mail is unconfigured. */
 	sender(): MailSender | null;
+	/** Live read client, or null when mail is unconfigured — the
+	 *  threading lookup is a READ, so it rides this credential, never
+	 *  the send token (the send-only scope answers 403). */
+	reader(): MailReader | null;
 	/** Test door for expiry. */
 	now?(): Date;
 }
@@ -155,6 +170,14 @@ async function decide(query: MailApprovalQuery, deps: MailApprovalDeps): Promise
 		await answer(`already ${row.status}`);
 		return;
 	}
+	// A send is in flight: its own verdict is coming. A Cancel tap from
+	// a second device or a stale client, and the expiry branch below,
+	// must not decide a row whose mail is already leaving — "never
+	// sent" would be a lie stamped over a send in progress.
+	if (sending.has(outboxId)) {
+		await answer("sending — wait for the verdict");
+		return;
+	}
 	if (now.getTime() >= new Date(row.expiresAt).getTime()) {
 		deps.outbox.decide(outboxId, "expired", now);
 		await stampDecision(deps, row, query, `⌛ Draft #${outboxId} expired — never sent.`);
@@ -173,10 +196,6 @@ async function decide(query: MailApprovalQuery, deps: MailApprovalDeps): Promise
 	}
 
 	// Send: the slow path — spinner off first, outcomes in the chat.
-	if (sending.has(outboxId)) {
-		await answer("sending…");
-		return;
-	}
 	sending.add(outboxId);
 	try {
 		await answer();
@@ -198,13 +217,24 @@ async function sendApproved(
 		return;
 	}
 	// Threading resolves here, at send time — the tool stored only the
-	// reply target's id, never touching the send credential.
+	// reply target's id. The lookup itself is a READ: it rides the read
+	// credential (the send token would answer 403), which still never
+	// sends — the send credential stays the only sender in this path.
 	let threadId: string | undefined;
 	let inReplyTo: string | null | undefined;
 	if (row.replyToId !== null) {
+		const reader = deps.reader();
+		if (reader === null) {
+			await notice(
+				deps,
+				row,
+				"⚠️ mail reading is not configured — couldn't thread the reply — tap Send to retry.",
+			);
+			return;
+		}
 		let ctx: { threadId: string; messageId: string | null } | null;
 		try {
-			ctx = await sender.threadFor(row.replyToId);
+			ctx = await reader.threadFor(row.replyToId);
 		} catch (err) {
 			log.error("mail send threading lookup failed", err, { outbox: row.id });
 			await notice(deps, row, `⚠️ couldn't reach Gmail to thread the reply (${(err as Error).message}) — tap Send to retry.`);

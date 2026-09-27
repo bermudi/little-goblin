@@ -301,6 +301,109 @@ describe("review run", () => {
 		h.store.close();
 	});
 
+	test("a concurrent edit outside the write set survives a failed-validation revert", async () => {
+		const h = harness();
+		mkdirSync(join(h.skills, "other"), { recursive: true });
+		writeFileSync(join(h.skills, "other", "SKILL.md"), SKILL_MD("other", "original"));
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0.9 },
+			validateCode: 1,
+		});
+		let step = 0;
+		deps.reviewModel = async () => ({
+			ref: "fake/review",
+			model: fakeReviewModel(
+				[
+					{ calls: [{ name: "write_file", input: { path: "bad/SKILL.md", content: SKILL_MD("bad") } }] },
+					{ text: "saved" },
+				],
+				async () => {
+					// Step 2's doGenerate runs after the write tool executed —
+					// exactly when a concurrent edit (an operator's undo, a
+					// hand edit) can land mid-review.
+					if (++step === 2) {
+						writeFileSync(join(h.skills, "other", "SKILL.md"), SKILL_MD("other", "concurrent"));
+					}
+				},
+			),
+		});
+		await considerTurn(deps, turn());
+		// The review's own write is rolled back; the concurrent edit to a
+		// path it never wrote stands.
+		expect(() => readFileSync(join(h.skills, "bad", "SKILL.md"))).toThrow();
+		expect(readFileSync(join(h.skills, "other", "SKILL.md"), "utf8")).toBe(SKILL_MD("other", "concurrent"));
+		expect(h.notified).toEqual([]);
+		expect(h.store.history(h.convId)).toHaveLength(0);
+		h.store.close();
+	});
+
+	test("a concurrent edit survives a model-failure revert too", async () => {
+		const h = harness();
+		mkdirSync(join(h.skills, "existing"), { recursive: true });
+		writeFileSync(join(h.skills, "existing", "SKILL.md"), SKILL_MD("existing", "original"));
+		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0.9 } });
+		let step = 0;
+		deps.reviewModel = async () => ({
+			ref: "fake/review",
+			model: fakeReviewModel(
+				[
+					{ calls: [{ name: "write_file", input: { path: "partial/SKILL.md", content: SKILL_MD("partial") } }] },
+					{ error: "provider exploded mid-review" },
+				],
+				async () => {
+					if (++step === 2) {
+						writeFileSync(join(h.skills, "existing", "SKILL.md"), SKILL_MD("existing", "concurrent"));
+					}
+				},
+			),
+		});
+		await considerTurn(deps, turn());
+		expect(() => readFileSync(join(h.skills, "partial", "SKILL.md"))).toThrow();
+		expect(readFileSync(join(h.skills, "existing", "SKILL.md"), "utf8")).toBe(SKILL_MD("existing", "concurrent"));
+		expect(h.notified).toEqual([]);
+		h.store.close();
+	});
+
+	test("a concurrent skill appearing mid-review is neither validated nor announced", async () => {
+		const h = harness();
+		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0.1 } });
+		deps.reviewModel = async () => ({
+			ref: "fake/review",
+			model: fakeReviewModel([{ text: "nothing worth saving" }], async () => {
+				// Lands after the snapshot walk, while the (idle) review is
+				// in flight — a tree-wide diff would blame it on the review.
+				mkdirSync(join(h.skills, "unrelated"), { recursive: true });
+				writeFileSync(join(h.skills, "unrelated", "SKILL.md"), SKILL_MD("unrelated"));
+			}),
+		});
+		await considerTurn(deps, turn());
+		expect(readFileSync(join(h.skills, "unrelated", "SKILL.md"), "utf8")).toContain("name: unrelated");
+		const binDir = join(deps.workspaceDir, "..", "bin");
+		expect(skillsRefCalls(binDir)).toEqual([]);
+		expect(h.notified).toEqual([]);
+		expect(h.store.history(h.convId)).toHaveLength(0);
+		h.store.close();
+	});
+
+	test("a byte-identical rewrite is a no-op — no validation, no announce", async () => {
+		const h = harness();
+		mkdirSync(join(h.skills, "same"), { recursive: true });
+		writeFileSync(join(h.skills, "same", "SKILL.md"), SKILL_MD("same"));
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0.1 },
+			script: [
+				{ calls: [{ name: "write_file", input: { path: "same/SKILL.md", content: SKILL_MD("same") } }] },
+				{ text: "saved" },
+			],
+		});
+		await considerTurn(deps, turn());
+		const binDir = join(deps.workspaceDir, "..", "bin");
+		expect(skillsRefCalls(binDir)).toEqual([]);
+		expect(h.notified).toEqual([]);
+		expect(h.store.history(h.convId)).toHaveLength(0);
+		h.store.close();
+	});
+
 	test("concurrent reviews never overlap — the second starts only after the first finished", async () => {
 		const h = harness();
 		const events: string[] = [];

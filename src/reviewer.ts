@@ -13,16 +13,20 @@
 // (the conversation's own, or the reviewer.model override) gets the
 // turn transcript plus the skills catalog and read/write/edit tools
 // confined to skills/ — no shell. It creates or edits one skill, or
-// does nothing. Touched skills must pass `skills-ref validate` or the
-// write is reverted; a saved skill posts a note to its topic and lands
-// in history as a system event, so the next turn knows.
+// does nothing. The review owns exactly the paths its tools wrote:
+// changed paths, validation targets, and any rollback scope to that
+// set, so concurrent edits to skills/ (an operator undo racing the
+// review) are never blamed on it or erased by its revert. Touched
+// skills must pass `skills-ref validate` or the write is reverted; a
+// saved skill posts a note to its topic and lands in history as a
+// system event, so the next turn knows.
 //
 // Fire-and-forget by design: the runtime never awaits a review, and
 // shutdown doesn't wait for one either — a missed save on a racing
 // shutdown is benign (the next similar turn re-gates) and logged.
 
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { generateText, stepCountIs, type LanguageModel, type ToolSet } from "ai";
 import type { ToolCallOptions } from "@ai-sdk/provider-utils";
@@ -253,8 +257,15 @@ function escapesRoot(root: string, path: string): boolean {
 	return abs !== root && !abs.startsWith(root + sep);
 }
 
-export function reviewTools(skillsDir: string): ToolSet {
-	return confineTools(
+// `written`, when passed, collects the skills-root-relative paths the
+// write tools actually wrote — the review's attribution set. Recorded
+// from each tool's *result* path (unicode twin included): a refused or
+// failed write reports no path and records nothing, and a read never
+// qualifies. Without a tree-wide diff to blame, changes, validation
+// targets, and rollback can only ever cover what the review itself
+// wrote — a concurrent edit outside the set is not its business.
+export function reviewTools(skillsDir: string, written?: Set<string>): ToolSet {
+	const tools = confineTools(
 		{
 			read_file: readFileTool(skillsDir),
 			write_file: writeFileTool(skillsDir),
@@ -262,6 +273,24 @@ export function reviewTools(skillsDir: string): ToolSet {
 		},
 		skillsDir,
 	);
+	if (written === undefined) return tools;
+	const root = resolve(skillsDir);
+	for (const name of ["write_file", "edit_file"] as const) {
+		const t = tools[name];
+		if (t === undefined) continue;
+		const execute = t.execute?.bind(t);
+		if (execute === undefined) continue;
+		t.execute = async (input: unknown, options: ToolCallOptions) => {
+			const result = await execute(input as never, options);
+			const path = (result as { path?: unknown } | null | undefined)?.path;
+			if (typeof path === "string") {
+				const abs = resolve(path);
+				if (abs !== root && abs.startsWith(root + sep)) written.add(relative(root, abs));
+			}
+			return result;
+		};
+	}
+	return tools;
 }
 
 // ---------- snapshot / revert ----------
@@ -310,35 +339,69 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
 	return a.byteLength === b.byteLength && Buffer.from(a).equals(Buffer.from(b));
 }
 
-/** Rel paths whose bytes differ between the snapshots (either direction). */
-function diffSnapshots(before: SkillsSnapshot, after: SkillsSnapshot): string[] {
+/** Which written paths actually differ from the snapshot, and their
+ * combined on-disk size. The written set is the attribution (what the
+ * review may have changed); disk is the content truth (did it). */
+function writtenChanges(
+	root: string,
+	snapshot: SkillsSnapshot,
+	written: Set<string>,
+): { changed: string[]; bytes: number } {
 	const changed: string[] = [];
-	for (const [rel, content] of after.files) {
-		const prev = before.files.get(rel);
-		if (!prev || !sameBytes(prev, content)) changed.push(rel);
+	let bytes = 0;
+	for (const rel of [...written].sort()) {
+		const prev = snapshot.files.get(rel);
+		let size: number;
+		try {
+			size = statSync(join(root, rel)).size;
+		} catch (err) {
+			// Written, then concurrently deleted — a delta against the
+			// snapshot only if the snapshot had it (0 bytes on disk).
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+			if (prev !== undefined) changed.push(rel);
+			continue;
+		}
+		// Snapshot bytes are bounded by the snapshot budget, so this
+		// read is too; a giant new file is caught by size, never read.
+		if (prev !== undefined && prev.byteLength === size && sameBytes(prev, readFileSync(join(root, rel)))) {
+			continue;
+		}
+		changed.push(rel);
+		bytes += size;
 	}
-	for (const rel of before.files.keys()) {
-		if (!after.files.has(rel)) changed.push(rel);
-	}
-	return changed.sort();
+	return { changed, bytes };
 }
 
-function restoreSnapshot(root: string, snapshot: SkillsSnapshot): void {
-	const current = walkSkills(root, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, "revert scan");
-	for (const rel of current.files.keys()) {
-		if (!snapshot.files.has(rel)) rmSync(join(root, rel));
-	}
-	for (const [rel, content] of snapshot.files) {
-		const prev = current.files.get(rel);
-		if (!prev || !sameBytes(prev, content)) {
-			mkdirSync(dirname(join(root, rel)), { recursive: true });
-			writeFileSync(join(root, rel), content);
+/** Undo the review's writes only: every written path back to its
+ * snapshot bytes, gone if the snapshot never had it. Paths the review
+ * never wrote — concurrent edits, operator undos — are untouched. */
+function restoreWrites(root: string, snapshot: SkillsSnapshot, written: Set<string>): void {
+	for (const rel of written) {
+		const prev = snapshot.files.get(rel);
+		const abs = join(root, rel);
+		if (prev !== undefined) {
+			mkdirSync(dirname(abs), { recursive: true });
+			writeFileSync(abs, prev);
+		} else {
+			// force: a concurrent delete may have already removed it —
+			// absence is the target state, not an error.
+			rmSync(abs, { force: true });
 		}
 	}
-	// Newly created dirs, deepest first — rmdir of a non-empty dir
-	// throws, so depth order is the whole algorithm.
-	const gone = [...current.dirs].filter((d) => !snapshot.dirs.has(d)).sort().reverse();
-	for (const dir of gone) rmSync(join(root, dir), { recursive: true });
+	// A rolled-back new skill would otherwise leave its empty dir
+	// behind. Prune only dirs the writes plausibly created (not in the
+	// snapshot), deepest first, and only when empty — concurrent content
+	// inside keeps its parent.
+	const created = new Set<string>();
+	for (const rel of written) {
+		if (snapshot.files.has(rel)) continue;
+		const parts = rel.split("/");
+		for (let i = 1; i < parts.length; i++) created.add(parts.slice(0, i).join("/"));
+	}
+	for (const dir of [...created].filter((d) => !snapshot.dirs.has(d)).sort().reverse()) {
+		const abs = join(root, dir);
+		if (existsSync(abs) && readdirSync(abs).length === 0) rmSync(abs, { recursive: true });
+	}
 }
 
 // ---------- validate ----------
@@ -385,6 +448,11 @@ async function runReview(deps: ReviewerDeps, turn: CompletedTurn): Promise<void>
 	log.info("reviewer review started", { conversation: conv, model: ref });
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), REVIEW_TIMEOUT_MS);
+	// The review's attribution set: every skills-root-relative path its
+	// write tools actually wrote. Only these paths may be counted as its
+	// changes, validated, or rolled back — concurrent edits elsewhere in
+	// the tree (an operator undo, a hand edit) are not its business.
+	const written = new Set<string>();
 	try {
 		let result: Awaited<ReturnType<typeof generateText>>;
 		try {
@@ -392,7 +460,7 @@ async function runReview(deps: ReviewerDeps, turn: CompletedTurn): Promise<void>
 				model,
 				system: REVIEW_SYSTEM,
 				prompt: reviewPrompt(turn, catalogLines),
-				tools: reviewTools(deps.skillsDir),
+				tools: reviewTools(deps.skillsDir, written),
 				stopWhen: stepCountIs(REVIEW_MAX_STEPS),
 				abortSignal: controller.signal,
 			});
@@ -400,11 +468,13 @@ async function runReview(deps: ReviewerDeps, turn: CompletedTurn): Promise<void>
 			// Provider failure or the timeout abort — but review tools may
 			// already have written skill files in earlier steps. Those
 			// writes are unvalidated, unannounced, and undoable only by
-			// hand: revert to the snapshot like a validation failure
-			// instead of leaving partial output in the catalog.
-			restoreSnapshot(deps.skillsDir, snapshot);
+			// hand: undo them like a validation failure instead of leaving
+			// partial output in the catalog. Only the written set is
+			// touched — concurrent edits outside it stand.
+			restoreWrites(deps.skillsDir, snapshot, written);
 			log.error("reviewer write reverted — model call failed", err, {
 				conversation: conv,
+				written: [...written].sort(),
 			});
 			return;
 		}
@@ -419,35 +489,27 @@ async function runReview(deps: ReviewerDeps, turn: CompletedTurn): Promise<void>
 			},
 			steps: result.steps.length,
 		});
-		let after: SkillsSnapshot;
-		try {
-			after = walkSkills(deps.skillsDir, MAX_SNAPSHOT_FILES, MAX_SNAPSHOT_BYTES, "reviewed skills tree");
-		} catch (err) {
-			// The model grew the tree past the budget — unassessable means
-			// unkeepable: revert best-effort and fail loud.
-			restoreSnapshot(deps.skillsDir, snapshot);
-			log.error("reviewer write reverted — reviewed tree over snapshot budget", err, {
-				conversation: conv,
-			});
-			return;
-		}
-		const changed = diffSnapshots(snapshot, after);
+		// Attribution from the recorded writes, content truth from disk:
+		// a written path counts as changed only if its bytes differ from
+		// the snapshot (a byte-identical rewrite is a no-op), and nothing
+		// the review didn't write is ever charged to it.
+		const { changed, bytes } = writtenChanges(deps.skillsDir, snapshot, written);
 		if (changed.length === 0) {
-			log.info("reviewer review done", { conversation: conv, changed: false, skills: [] });
+			log.info("reviewer review done", { conversation: conv, changed: false, skills: [], written: [...written].sort() });
 			return;
 		}
-		const changedBytes = changed.reduce((n, rel) => n + (after.files.get(rel)?.byteLength ?? 0), 0);
-		if (changedBytes > MAX_REVIEW_BYTES) {
-			restoreSnapshot(deps.skillsDir, snapshot);
+		if (bytes > MAX_REVIEW_BYTES) {
+			restoreWrites(deps.skillsDir, snapshot, written);
 			log.warn("reviewer write reverted — over the byte budget", {
 				conversation: conv,
-				bytes: changedBytes,
+				bytes,
 				files: changed.length,
+				written: [...written].sort(),
 			});
 			return;
 		}
-		// Ground truth from disk, not from the model's tool calls: every
-		// top-level dir it touched is a skill to validate.
+		// Every top-level dir among the review's changed paths is a skill
+		// to validate.
 		const skills = [...new Set(changed.map((rel) => rel.split("/")[0]!))].sort();
 		const failures: { skill: string; output: string }[] = [];
 		for (const skill of skills) {
@@ -455,11 +517,12 @@ async function runReview(deps: ReviewerDeps, turn: CompletedTurn): Promise<void>
 			if (!outcome.ok) failures.push({ skill, output: outcome.output });
 		}
 		if (failures.length > 0) {
-			restoreSnapshot(deps.skillsDir, snapshot);
+			restoreWrites(deps.skillsDir, snapshot, written);
 			log.warn("reviewer write reverted — skills-ref validate failed", {
 				conversation: conv,
 				skills,
 				failures: failures.map((f) => `${f.skill}: ${f.output.slice(0, 300)}`),
+				written: [...written].sort(),
 			});
 			return;
 		}
@@ -483,7 +546,7 @@ async function runReview(deps: ReviewerDeps, turn: CompletedTurn): Promise<void>
 				skills,
 			});
 		}
-		log.info("reviewer review done", { conversation: conv, changed: true, skills });
+		log.info("reviewer review done", { conversation: conv, changed: true, skills, written: [...written].sort() });
 	} finally {
 		clearTimeout(timeout);
 	}

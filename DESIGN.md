@@ -985,16 +985,23 @@ don't duplicate it).
   budget) or does nothing. Its read/write/edit tools are bound to
   `skills/` with lexical root checks that refuse escapes — complete
   because the trio creates no symlinks, so nothing under the root can
-  resolve out from under the check. Touched skills are read from disk,
-  not from the model's tool calls, and each must pass `skills-ref
-  validate` — failure reverts the whole write from a pre-review
-  snapshot (512 files / 2MB caps; over budget skips the review loud)
-  and warns. A write over 100KB of new bytes reverts unvalidated. A
-  model-call failure (provider outage, the 5-minute abort) reverts
-  the same way — tool writes from earlier steps never survive half a
-  review. Reviews serialize (one at a time, in arrival order):
-  overlapping runs would restore snapshots over each other's
-  committed, announced writes.
+  resolve out from under the check. The review owns exactly the paths
+  its write tools report writing (a refused or failed write reports
+  nothing); that set — not a tree-wide diff — decides what changed,
+  which skills must pass `skills-ref validate`, and what any revert
+  touches, while content truth still comes from disk (each written
+  path's bytes vs the pre-review snapshot, 512 files / 2MB caps; over
+  budget skips the review loud). Ruling 2026-09-27: reviews run
+  fire-and-forget off the conversation lane, so concurrent edits to
+  `skills/` (an operator undo, a hand edit) can land mid-review — a
+  whole-tree diff-and-restore blamed those on the review and erased
+  them; attribution must stay scoped to the review's own writes.
+  Failure reverts the whole write and warns. A write over 100KB of new
+  bytes reverts unvalidated. A model-call failure (provider outage,
+  the 5-minute abort) reverts the same way — tool writes from earlier
+  steps never survive half a review. Reviews serialize (one at a
+  time, in arrival order): overlapping runs would restore snapshots
+  over each other's committed, announced writes.
 - **It writes, then tells.** A write posts a short note to the topic
   ("saved skill: X — reply to undo") and lands in history as a system
   event, so the next turn knows. "Reply to undo" is conversational,

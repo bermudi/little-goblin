@@ -133,6 +133,12 @@ describe("fetch tool — local", () => {
 		const base = serve(() => new Response(long, { headers: { "content-type": "text/plain" } }));
 		const out = (await exec(fetchTool(depsWith(undefined)), { url: `${base}/big` })) as string;
 		expect(out).toContain("[TRUNCATED");
+		// Truncation must not drop the trusted header: the Source line
+		// (and the chain-fallback note, same string) rides before the
+		// fence in the truncated shape too, so the model still knows
+		// where the text came from and how it was extracted.
+		expect(out).toContain(`Source: ${base}/big`);
+		expect(out.indexOf("Source:")).toBeLessThan(out.indexOf("<web>"));
 		expect(out).toContain("line 0 ");
 		expect(out).toContain("line 399 ");
 		// The overflow footer stays OUTSIDE the fence (after its close) —

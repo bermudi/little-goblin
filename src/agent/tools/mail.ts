@@ -1,10 +1,12 @@
 // The mail tool — Gmail search/read/send behind the operator's tap
 // (DESIGN.md, "Email"). Search and read ride the read credential;
-// send never sends — it queues an outbox row and posts the draft with
-// Send/Cancel buttons, returning "awaiting operator approval". The
-// tool holds a pre-bound reader only: no auth store, no send
-// credential, no config — the composition root owns those, so no tool
-// path can mint a send token however the model phrases it.
+// send never sends — it hands the draft to the approval gate, which
+// queues the outbox row and posts it with Send/Cancel buttons,
+// returning "awaiting operator approval". The tool holds a pre-bound
+// reader and the gate's request closure: no auth store, no send
+// credential, no config, no Telegram — the composition root owns
+// those, so no tool path can mint a send token however the model
+// phrases it.
 //
 // Mail content is untrusted input: search and read results ride fenced,
 // the way webhook payloads do.
@@ -15,7 +17,6 @@ import { unlink } from "node:fs/promises";
 import { tool } from "ai";
 import { z } from "zod";
 import { domainOf, type MailReader } from "../../mail.ts";
-import type { OutboxStore } from "../../mail-outbox.ts";
 import { paths } from "../../config.ts";
 import { durableWriteFile } from "../../durable.ts";
 import { log } from "../../log.ts";
@@ -24,18 +25,26 @@ import { fenceUntrusted } from "./web.ts";
 
 const DEFAULT_BUDGET = 15_000;
 
+/** What a send asks the gate for — the draft content. The address is
+ *  pre-bound per conversation at the composition root. */
+export interface MailDraftInput {
+	to: string[];
+	cc?: string[];
+	subject: string;
+	body: string;
+	replyToId?: string;
+}
+
 export interface MailToolDeps {
 	/** Pre-bound read client, or null when mail is unconfigured — the
 	 *  composition root reads the live config; the tool never does. */
 	reader(): MailReader | null;
-	outbox: OutboxStore;
-	/** The conversation this tool call runs in — pinned onto queued
-	 *  drafts, where the Send/Cancel buttons land. */
-	chatId: number;
-	threadId: number | null;
-	/** Post the draft + Send/Cancel buttons in this conversation;
-	 *  resolves the buttons' message id. Telegram-aware, built in tg/. */
-	postDraft(outboxId: number, text: string): Promise<number>;
+	/** Hand a send to the approval gate: it queues the outbox row,
+	 *  posts the draft with Send/Cancel into this conversation
+	 *  (pre-bound at the composition root — the model never sees chat
+	 *  ids), binds the buttons' message id, and resolves the
+	 *  model-facing verdict. */
+	requestDraft(input: MailDraftInput): Promise<{ queued: number; status: string } | { error: string }>;
 }
 
 const addressSchema = z.email().max(320);
@@ -75,18 +84,6 @@ function shapeMessage(
 function cachePath(id: string): string {
 	const safe = /^[A-Za-z0-9_-]+$/.test(id) ? id : "msg";
 	return join(paths.mailcache(), `${safe}.txt`);
-}
-
-function draftText(id: number, input: { to: string[]; cc?: string[]; subject: string; body: string; replyToId?: string }, expiresAt: string): string {
-	return [
-		`✉️ Draft #${id} — tap Send to send, Cancel to discard (expires ${expiresAt}).`,
-		`To: ${input.to.join(", ")}`,
-		...(input.cc?.length ? [`Cc: ${input.cc.join(", ")}`] : []),
-		`Subject: ${input.subject || "(no subject)"}`,
-		...(input.replyToId ? [`Reply to: ${input.replyToId}`] : []),
-		"",
-		input.body,
-	].join("\n");
 }
 
 export const mailTool = (deps: MailToolDeps) =>
@@ -133,43 +130,16 @@ export const mailTool = (deps: MailToolDeps) =>
 					return fenceMail(shapeMessage(msg, input.maxChars ?? DEFAULT_BUDGET));
 				}
 				case "send": {
-					const row = deps.outbox.queue({
+					// The gate does the rest — queue, post the draft with its
+					// buttons, bind, and cancel-on-post-failure. The tool
+					// never touches Telegram.
+					return deps.requestDraft({
 						to: input.to,
 						...(input.cc !== undefined ? { cc: input.cc } : {}),
 						subject: input.subject ?? "",
 						body: input.body,
 						...(input.replyToId !== undefined ? { replyToId: input.replyToId } : {}),
-						address: { chatId: deps.chatId, threadId: deps.threadId },
 					});
-					// A row queued but never posted is a 24h pending draft with
-					// no buttons anywhere — a partial Telegram post (a throw
-					// mid-chunks) cancels the row instead of orphaning it, and
-					// the model gets a retryable error instead of a throw.
-					let messageId: number;
-					try {
-						messageId = await deps.postDraft(
-							row.id,
-							draftText(row.id, {
-								to: input.to,
-								...(input.cc !== undefined ? { cc: input.cc } : {}),
-								subject: input.subject ?? "",
-								body: input.body,
-								...(input.replyToId !== undefined ? { replyToId: input.replyToId } : {}),
-							}, row.expiresAt),
-						);
-					} catch (err) {
-						deps.outbox.decide(row.id, "cancelled", new Date());
-						log.error("mail draft posting failed — draft cancelled", err, { outbox: row.id });
-						return {
-							error:
-								"posting the draft to Telegram failed — the draft was cancelled; retry the send when delivery recovers",
-						};
-					}
-					deps.outbox.bindDraft(row.id, messageId);
-					return {
-						queued: row.id,
-						status: "awaiting operator approval — the draft is in Telegram with Send/Cancel buttons",
-					};
 				}
 			}
 		},

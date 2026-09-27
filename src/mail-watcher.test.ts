@@ -1,14 +1,13 @@
 // The mail watcher's contract: new filters baseline without firing,
 // matches fire once per tick batched through the one firing path, the
-// cursor always advances, outages notice once per episode, and the
-// same tick sweeps expired drafts.
+// cursor always advances, and outages notice once per episode. (Draft
+// expiry is the approval gate's — its tests cover the sweep.)
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HistoryExpiredError, type MailHit, type MailReader } from "./mail.ts";
-import { openOutbox, OUTBOX_TTL_MS, type OutboxStore } from "./mail-outbox.ts";
 import { setLogFile, setLogWriter } from "./log.ts";
 import { formatMailEvent, startMailWatcher, type MailWatcher } from "./mail-watcher.ts";
 import { openPrograms, type Program, type ProgramsStore } from "./programs.ts";
@@ -31,14 +30,10 @@ function hit(id: string): MailHit {
 
 interface Harness {
 	programs: ProgramsStore;
-	outbox: OutboxStore;
 	fired: Array<{ program: number; event: string }>;
 	notices: Array<{ chat: number; text: string }>;
-	stamps: Array<{ message: number; text: string }>;
 	polls: Array<{ filter: string; cursor: string }>;
 	profiles: number;
-	/** Rows the approval flow reports mid-send — the sweep skips them. */
-	sending: Set<number>;
 	/** What the harness's fire() reports — false simulates a turn that
 	 *  did not land. */
 	landFire: boolean;
@@ -52,13 +47,10 @@ function harness(): Harness {
 	const db = join(dir, "goblin.sqlite");
 	const h: Harness = {
 		programs: openPrograms(db),
-		outbox: openOutbox(db),
 		fired: [],
 		notices: [],
-		stamps: [],
 		polls: [],
 		profiles: 0,
-		sending: new Set(),
 		landFire: true,
 		pollImpl: async () => ({ hits: [], historyId: "1" }),
 		reader: null,
@@ -84,7 +76,6 @@ function start(h: Harness): MailWatcher {
 	const w = startMailWatcher(
 		{
 			programs: h.programs,
-			outbox: h.outbox,
 			reader: () => h.reader,
 			fire: (program: Program, event: string) => {
 				h.fired.push({ program: program.id, event });
@@ -93,10 +84,6 @@ function start(h: Harness): MailWatcher {
 			notify: async (address, text) => {
 				h.notices.push({ chat: address.chatId, text });
 			},
-			stampDraft: async (_address, messageId, text) => {
-				h.stamps.push({ message: messageId, text });
-			},
-			isSending: (id) => h.sending.has(id),
 			now: () => NOW,
 		},
 		60_000,
@@ -216,36 +203,14 @@ describe("mail watcher", () => {
 		expect(h.notices).toHaveLength(1);
 	});
 
-	test("unconfigured mail idles — no polls, no fires, sweep still runs", async () => {
+	test("unconfigured mail idles — no polls, no fires", async () => {
 		const h = harness();
 		h.reader = null;
 		mailProgram(h);
-		const row = h.outbox.queue(
-			{ to: ["a@x.com"], subject: "h", body: "b", address: ADDRESS },
-			new Date(NOW.getTime() - OUTBOX_TTL_MS - 1000),
-		);
-		h.outbox.bindDraft(row.id, 555);
 		const w = start(h);
 		await w.tick();
 		expect(h.polls).toHaveLength(0);
 		expect(h.fired).toHaveLength(0);
-		expect(h.outbox.get(row.id)!.status).toBe("expired");
-		expect(h.stamps).toEqual([{ message: 555, text: expect.stringContaining("expired") }]);
-	});
-
-	test("the sweep stamps expired drafts and leaves the rest", async () => {
-		const h = harness();
-		const old = h.outbox.queue(
-			{ to: ["a@x.com"], subject: "h", body: "b", address: ADDRESS },
-			new Date(NOW.getTime() - OUTBOX_TTL_MS - 1000),
-		);
-		h.outbox.bindDraft(old.id, 555);
-		const fresh = h.outbox.queue({ to: ["b@y.com"], subject: "h", body: "b", address: ADDRESS }, NOW);
-		const w = start(h);
-		await w.tick();
-		expect(h.outbox.get(old.id)!.status).toBe("expired");
-		expect(h.outbox.get(fresh.id)!.status).toBe("pending");
-		expect(h.stamps).toHaveLength(1);
 	});
 
 	test("a disable mid-poll advances the cursor but does not fire", async () => {
@@ -325,25 +290,5 @@ describe("mail watcher", () => {
 		const lines = captured.map((l) => JSON.parse(l) as Record<string, unknown>);
 		expect(lines.some((l) => l.msg === "mail fire did not land" && l.level === "error")).toBe(true);
 		expect(lines.some((l) => l.msg === "mail fired")).toBe(false);
-	});
-
-	test("the sweep skips a row mid-send — the send's verdict decides it", async () => {
-		const h = harness();
-		const row = h.outbox.queue(
-			{ to: ["a@x.com"], subject: "h", body: "b", address: ADDRESS },
-			new Date(NOW.getTime() - OUTBOX_TTL_MS - 1000),
-		);
-		h.outbox.bindDraft(row.id, 555);
-		h.sending.add(row.id);
-		const w = start(h);
-		await w.tick();
-		expect(h.outbox.get(row.id)!.status).toBe("pending");
-		expect(h.stamps).toHaveLength(0);
-		// The send settles one way or the other — the next sweep takes
-		// whatever is still pending then.
-		h.sending.delete(row.id);
-		await w.tick();
-		expect(h.outbox.get(row.id)!.status).toBe("expired");
-		expect(h.stamps).toEqual([{ message: 555, text: expect.stringContaining("expired") }]);
 	});
 });

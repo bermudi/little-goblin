@@ -36,7 +36,7 @@ import { wake } from "./wake.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { Runtime } from "./runtime.ts";
 import { applyMenuButton, AUTH_TELEGRAM_TOKEN, startBot } from "./tg/mod.ts";
-import { isMailSending, postMailDraft, sendMailNotice, stampMailDraft } from "./tg/mail-approval.ts";
+import { sendMailNotice, startMailApproval } from "./tg/mail-approval.ts";
 import { sendMemoryBlockedNotice, sendMemoryOutageNotice, sendSkillSavedNotice } from "./tg/notify.ts";
 
 // The file sink attaches before anything that can fail — a malformed
@@ -288,22 +288,19 @@ async function boot() {
 							delegationsDir: paths.delegations(),
 						}
 					: undefined,
-				// The mail tool rides the same live gate — and only the
-				// read client: the send credential is nowhere in this
-				// dep tree (the approval taps hold it instead).
+				// The mail tool rides the same live gate — and holds only
+				// the read client plus the approval gate's request
+				// closure: the send credential is nowhere in this dep
+				// tree (the approval taps hold it instead), and the
+				// draft's address is pinned here, per conversation.
 				configRef.current.mail !== undefined
 					? {
 							reader: mailReader,
-							outbox,
-							chatId: conv.chatId,
-							threadId: conv.threadId,
-							postDraft: (outboxId, text) =>
-								postMailDraft(
-									tg.bot.api,
-									{ chatId: conv.chatId, threadId: conv.threadId },
-									outboxId,
-									text,
-								),
+							requestDraft: (input) =>
+								mailApproval.requestDraft(input, {
+									chatId: conv.chatId,
+									threadId: conv.threadId,
+								}),
 						}
 					: undefined,
 				// Past-chat search rides the store — always present, local
@@ -368,8 +365,22 @@ async function boot() {
 				}
 			: {}),
 		// Draft approvals always wire up — the outbox outlives the mail
-		// block, and the taps degrade to toasts without it.
-		mail: { outbox, sender: mailSender, reader: mailReader },
+		// block, and the taps degrade to toasts without it. The gate
+		// itself is constructed right below (it needs bot.api), so taps
+		// resolve it per-tap through this getter.
+		mail: () => mailApproval,
+	});
+
+	// The mail approval gate — the draft's one owner: the tool's send
+	// request lands here (queue → post → bind), the Send/Cancel taps
+	// decide here, and the expiry sweep runs here on its own ticker.
+	// Always started — orphaned drafts still settle without a mail
+	// block.
+	const mailApproval = startMailApproval({
+		api: tg.bot.api,
+		outbox,
+		sender: mailSender,
+		reader: mailReader,
 	});
 
 	// Memory worker after the bot: a persistent outage notices the
@@ -517,21 +528,16 @@ async function boot() {
 
 	// The mail watcher is the scheduler's twin: it polls Gmail for
 	// enabled mail filters and fires matches through the same wake
-	// path. Always started — without the mail block it idles (its
-	// expiry sweep still settles orphaned drafts).
+	// path. Always started — without the mail block it idles (draft
+	// expiry lives in the approval gate, not here).
 	const mailWatcher = startMailWatcher({
 		programs,
-		outbox,
 		reader: mailReader,
 		fire: (program, event, now) => fireProgram(wakeDeps, program, "mail", event, now),
 		notify: (address, text) => sendMailNotice(tg.bot.api, address, text),
-		stampDraft: (address, messageId, text) => stampMailDraft(tg.bot.api, address, messageId, text),
-		// The expiry sweep must not claim a row whose Gmail send is in
-		// flight — the send's own verdict decides it.
-		isSending: isMailSending,
 	});
 
-	return { configRef, auth, store, programs, outbox, delegations, runtime, tg, http, scheduler, delegationWatcher, mailWatcher, memoryWorker };
+	return { configRef, auth, store, programs, outbox, delegations, runtime, tg, http, scheduler, delegationWatcher, mailWatcher, mailApproval, memoryWorker };
 }
 
 let booted: Awaited<ReturnType<typeof boot>>;
@@ -541,7 +547,7 @@ try {
 	log.error("boot failed", err);
 	process.exit(1);
 }
-const { store, programs, outbox, delegations, runtime, tg, http, scheduler, delegationWatcher, mailWatcher, memoryWorker } = booted;
+const { store, programs, outbox, delegations, runtime, tg, http, scheduler, delegationWatcher, mailWatcher, mailApproval, memoryWorker } = booted;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // Long enough for the sinks' final flushes and polling's offset
@@ -563,6 +569,9 @@ async function shutdown(signal: string): Promise<void> {
 	delegationWatcher?.stop();
 	// The mail watcher only stops polling — cursors and drafts persist.
 	mailWatcher.stop();
+	// The approval gate's sweep timer joins it — pending rows persist
+	// and re-settle on the next boot's catch-up sweep.
+	mailApproval.stop();
 	// The retention worker only drains the outbox — stopping it leaves
 	// pending rows durable for the next boot.
 	await memoryWorker?.stop();

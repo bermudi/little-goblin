@@ -14,9 +14,7 @@ import { CoalescingBuffer } from "./buffer.ts";
 import { COMMAND_RE, COMMANDS, handleCommand, type CommandMemoryDeps } from "./commands.ts";
 import { withTimeout } from "./deadline.ts";
 import { makeDeliverySink, SPEAK_CALLBACK } from "./delivery.ts";
-import { handleMailApproval, MAIL_CALLBACK_RE } from "./mail-approval.ts";
-import type { MailReader, MailSender } from "../mail.ts";
-import type { OutboxStore } from "../mail-outbox.ts";
+import { MAIL_CALLBACK_RE, type MailApproval } from "./mail-approval.ts";
 import { handleSpeakButton } from "./speak-button.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
 import { mediaFromMessage, mediaParts, saveAttachment } from "./media.ts";
@@ -83,15 +81,11 @@ export interface BotDeps {
 	synthesize(text: string, config: TtsConfig): Promise<Uint8Array[]>;
 	// Long-term memory wiring for /memory + /forget — absent = disabled.
 	memory?: CommandMemoryDeps;
-	// Mail drafts' Send/Cancel buttons — absent = mail never configured
-	// this run (a stale button still gets an answer, never a hang).
-	mail?: {
-		outbox: OutboxStore;
-		sender(): MailSender | null;
-		// The threading lookup at send time is a READ — it rides the
-		// read credential, never the send token.
-		reader(): MailReader | null;
-	};
+	// The mail approval gate — taps resolve it per-tap through this
+	// getter (it's constructed right after the bot: it needs bot.api).
+	// Absent = mail never wired this run — a stale button still gets
+	// an answer, never a hang.
+	mail?: () => MailApproval;
 }
 
 export interface RunningBot {
@@ -375,7 +369,8 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	});
 
 	bot.callbackQuery(MAIL_CALLBACK_RE, (ctx) => {
-		if (!deps.mail) {
+		const approval = deps.mail?.();
+		if (!approval) {
 			void withTimeout(
 				bot.api.answerCallbackQuery(ctx.callbackQuery.id, { text: "mail is not configured" }),
 				"answerCallbackQuery",
@@ -384,7 +379,7 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 			});
 			return;
 		}
-		void handleMailApproval(ctx.callbackQuery, { api: bot.api, ...deps.mail });
+		void approval.handleTap(ctx.callbackQuery);
 	});
 
 	bot.catch((err) => {

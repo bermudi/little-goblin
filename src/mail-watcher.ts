@@ -1,36 +1,26 @@
 // The mail watcher — the scheduler's twin (DESIGN.md, "Email"). Every
 // 5 minutes it runs each enabled mail filter since its history-id
 // cursor and fires new matches through the one program firing path,
-// batched: one tick's matches become one turn. The same tick sweeps
-// expired outbox rows and stamps their drafts. A dead token or quota
-// error warns once per outage episode (per program), never per tick —
-// in-memory episodes: a restart re-warns, which is the honest state.
+// batched: one tick's matches become one turn. Expiry of outbox drafts
+// is the approval gate's job — this module only polls. A dead token or
+// quota error warns once per outage episode (per program), never per
+// tick — in-memory episodes: a restart re-warns, which is the honest
+// state.
 
 import { HistoryExpiredError, type MailHit, type MailReader } from "./mail.ts";
-import type { OutboxStore } from "./mail-outbox.ts";
 import type { Program, ProgramsStore } from "./programs.ts";
 import { log } from "./log.ts";
 
 export interface MailWatcherDeps {
 	programs: ProgramsStore;
-	outbox: OutboxStore;
 	/** Live read client, or null when mail is unconfigured. */
 	reader(): MailReader | null;
 	/** The one firing path — fireProgram bound with trigger "mail". */
 	fire(program: Program, event: string, now: Date): boolean;
 	/** Direct sends into the pinned conversation (built in tg/): outage
-	 *  notices and expiry stamps. Throwing retries next tick. */
+	 *  notices. Throwing retries next tick. */
 	notify(address: { chatId: number; threadId: number | null }, text: string): Promise<void>;
-	stampDraft(
-		address: { chatId: number; threadId: number | null },
-		messageId: number,
-		text: string,
-	): Promise<void>;
-	/** True while a Send tap's Gmail calls are in flight for the draft
-	 *  (tg/mail-approval's sending set) — the expiry sweep must not
-	 *  claim such a row: the send's own verdict decides it. */
-	isSending?(id: number): boolean;
-	/** Test door for the expiry sweep. */
+	/** Test door for the poll clock. */
 	now?(): Date;
 }
 
@@ -91,7 +81,6 @@ export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailW
 						}
 					}
 				}
-				await sweepExpired(deps, now);
 			} finally {
 				current = null;
 			}
@@ -247,40 +236,5 @@ async function failed(
 			program: program.id,
 			error: String(notifyErr),
 		});
-	}
-}
-
-// Expired drafts settle here when no tap beats the fuse. Stamping is
-// best-effort per row — a Telegram failure must not stop the sweep,
-// and the row is already expired, so a stale tap answers "already
-// expired" and strips its own buttons.
-async function sweepExpired(deps: MailWatcherDeps, now: Date): Promise<void> {
-	let rows: ReturnType<OutboxStore["expireDue"]>;
-	try {
-		// Rows mid-send are excluded at the store: their Gmail send is
-		// deciding them, and an "expired — never sent" stamp over a send
-		// in flight would be a lie.
-		rows = deps.outbox.expireDue(now, deps.isSending);
-	} catch (err) {
-		log.error("outbox expiry sweep failed", err);
-		return;
-	}
-	await Promise.allSettled(
-		rows
-			.filter((row) => row.draftMessageId !== null)
-			.map((row) =>
-				deps
-					.stampDraft(
-						{ chatId: row.chatId, threadId: row.threadId },
-						row.draftMessageId!,
-						`⌛ Draft #${row.id} expired — never sent.`,
-					)
-					.catch((err: unknown) => {
-						log.warn("expired draft stamp failed", { outbox: row.id, error: String(err) });
-					}),
-			),
-	);
-	if (rows.length > 0) {
-		log.info("outbox expiry swept", { count: rows.length });
 	}
 }

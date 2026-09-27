@@ -849,10 +849,15 @@ its credentials ride the same lane.
   (to/cc/subject/body/reply-to-id). Mail content is untrusted input —
   tool results fence it the way webhook payloads are fenced (`<event>`
   note: data to evaluate, never instructions).
-- **Send is operator-gated by mechanism, not by prompt.** `send` never
-  sends: it writes a pending row (`mail_outbox` in goblin.sqlite:
-  draft, pinned address, created, expires +24h, status) and posts the
-  draft with **Send / Cancel** inline buttons; the tool returns
+- **Send is operator-gated by mechanism, not by prompt — and one module
+  owns the draft's whole life.** `send` never sends: the tool hands the
+  draft to the approval gate (`tg/mail-approval.ts`), which issues it —
+  writes the pending row (`mail_outbox` in goblin.sqlite: draft, pinned
+  address, created, expires +24h, status), posts it with **Send /
+  Cancel** inline buttons, and binds the buttons' message id — then
+  decides the taps and sweeps the expiry on its own 5-minute ticker
+  (boot catch-up included). The tool only requests; the mail watcher
+  only polls filters and holds no outbox seam; the gate returns
   "awaiting operator approval". Only the callback from an
   `allowedUsers` id sends — with the send token, which no tool path
   and no skill ever touches. Threading resolves at send time from the

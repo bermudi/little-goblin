@@ -49,13 +49,11 @@ export interface HttpDeps {
 		// records history without running, so the hit is refused (503)
 		// instead of a 202 that silently never executes.
 		accepting(): boolean;
-		// The scheduler's fireProgram — same wake path, webhook trigger.
-		fire(
-			program: Program,
-			trigger: "webhook",
-			event: string | undefined,
-			now: Date,
-		): boolean;
+		// The firing owner's webhook entry point (scheduler.ts's
+		// fireWebhook) — same wake path, owns the webhook accounting
+		// (last_run only when landed). The route owns status and the
+		// throttle clock.
+		fire(program: Program, event: string | undefined, now: Date): boolean;
 	};
 }
 
@@ -243,13 +241,13 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 		// No await between this check and fire — a closed runtime only
 		// records the submit, so the hit is refused instead of fake-202.
 		if (!hooks.accepting()) return done(503, fresh, { "retry-after": "30" });
-		const landed = hooks.fire(fresh, "webhook", body.text, now);
-		// Only a landed fire consumes the window (and stamps last_run): a
-		// refused (503) or failed (500) hit leaves it open, so the caller's
-		// retry is never answered 429 for a fire that never happened.
+		const landed = hooks.fire(fresh, body.text, now);
+		// Only a landed fire consumes the window: a refused (503) or failed
+		// (500) hit leaves it open, so the caller's retry is never answered
+		// 429 for a fire that never happened. (last_run stamping is
+		// fireWebhook's — this route only owns HTTP.)
 		if (landed) {
 			hookLastFired.set(fresh.id, now.getTime());
-			hooks.programs.markFired(fresh.id, now);
 		}
 		return done(landed ? 202 : 500, fresh);
 	}

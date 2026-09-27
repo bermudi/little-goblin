@@ -1,11 +1,11 @@
 // The mail watcher — the scheduler's twin (DESIGN.md, "Email"). Every
 // 5 minutes it runs each enabled mail filter since its history-id
-// cursor and fires new matches through the one program firing path,
-// batched: one tick's matches become one turn. Expiry of outbox drafts
-// is the approval gate's job — this module only polls. A dead token or
-// quota error warns once per outage episode (per program), never per
-// tick — in-memory episodes: a restart re-warns, which is the honest
-// state.
+// cursor and hands new matches to the program firing owner's mail
+// entry point, which owns the checkpoint policy — the watcher never
+// writes program state. Expiry of outbox drafts is the approval
+// gate's job — this module only polls. A dead token or quota error
+// warns once per outage episode (per program), never per tick — in
+// memory episodes: a restart re-warns, which is the honest state.
 
 import { HistoryExpiredError, type MailHit, type MailReader } from "./mail.ts";
 import type { Program, ProgramsStore } from "./programs.ts";
@@ -15,8 +15,14 @@ export interface MailWatcherDeps {
 	programs: ProgramsStore;
 	/** Live read client, or null when mail is unconfigured. */
 	reader(): MailReader | null;
-	/** The one firing path — fireProgram bound with trigger "mail". */
-	fire(program: Program, event: string, now: Date): boolean;
+	/** The firing owner's mail entry point (scheduler.ts's fireMail) —
+	 *  owns the fire and the checkpoint policy. */
+	fire(
+		program: Program,
+		hits: MailHit[],
+		checkpoint: string,
+		now: Date,
+	): void;
 	/** Direct sends into the pinned conversation (built in tg/): outage
 	 *  notices. Throwing retries next tick. */
 	notify(address: { chatId: number; threadId: number | null }, text: string): Promise<void>;
@@ -31,22 +37,6 @@ export interface MailWatcher {
 }
 
 const TICK_MS = 5 * 60_000;
-
-// The event body: one block per match (from/subject/date/snippet/id —
-// the body is one `mail read` away, never pushed), oldest first.
-export function formatMailEvent(hits: MailHit[]): string {
-	return hits
-		.map((h) =>
-			[
-				`from: ${h.from || "(no sender)"}`,
-				`subject: ${h.subject || "(no subject)"}`,
-				`date: ${h.date}`,
-				`snippet: ${h.snippet}`,
-				`id: ${h.id}`,
-			].join("\n"),
-		)
-		.join("\n---\n");
-}
 
 export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailWatcher {
 	// Per-program outage episodes: the last error message, present while
@@ -149,35 +139,10 @@ async function check(
 		const stillMine = fresh.mailFilter === filter;
 		const cursorUntouched = fresh.mailHistoryId === program.mailHistoryId;
 		if (stillMine && cursorUntouched) {
-			if (historyId !== "") {
-				deps.programs.setMailHistory(program.id, historyId);
-			} else {
-				log.warn("mail poll returned no checkpoint — cursor kept, retrying next tick", {
-					program: program.id,
-					name: program.name,
-				});
-			}
-			if (hits.length > 0 && fresh.enabled) {
-				const event = formatMailEvent(hits);
-				// The cursor already advanced past these matches — markFired is
-				// the informational stamp (the webhook route's rule), and it
-				// only lands when the turn did.
-				const landed = deps.fire(fresh, event, now);
-				if (landed) {
-					deps.programs.markFired(program.id, now);
-					log.info("mail fired", {
-						program: program.id,
-						name: program.name,
-						matches: hits.length,
-					});
-				} else {
-					log.error("mail fire did not land", undefined, {
-						program: program.id,
-						name: program.name,
-						matches: hits.length,
-					});
-				}
-			}
+			// The entry point owns what happens next: an empty or disabled
+			// poll consumes the checkpoint, a failed fire holds it, a landed
+			// fire advances it (DESIGN.md, "Email").
+			deps.fire(fresh, hits, historyId, now);
 		} else {
 			// The edit won: no cursor write (it would clobber the null a
 			// filter edit just wrote), no fire under a stale charter/filter.

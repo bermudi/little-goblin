@@ -1,16 +1,26 @@
 // The mail watcher's contract: new filters baseline without firing,
-// matches fire once per tick batched through the one firing path, the
-// cursor always advances, and outages notice once per episode. (Draft
-// expiry is the approval gate's — its tests cover the sweep.)
+// one tick's matches become one turn, the checkpoint follows fired
+// records (held on a fire that does not land), and outages notice
+// once per episode. The boundary is real on both sides: a fake Gmail
+// reader at one edge, the real fireMail entry point over a fake
+// runtime.submit at the other — everything between is production
+// code. (Draft expiry is the approval gate's — its tests cover the
+// sweep.)
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Api } from "grammy";
+import type { UIMessage } from "ai";
 import { HistoryExpiredError, type MailHit, type MailReader } from "./mail.ts";
 import { setLogFile, setLogWriter } from "./log.ts";
-import { formatMailEvent, startMailWatcher, type MailWatcher } from "./mail-watcher.ts";
+import { startMailWatcher, type MailWatcher } from "./mail-watcher.ts";
+import { fireMail } from "./scheduler.ts";
 import { openPrograms, type Program, type ProgramsStore } from "./programs.ts";
+import { openStore } from "./conversation.ts";
+import type { Runtime, TurnSink } from "./runtime.ts";
+import type { Config } from "./config.ts";
 
 let dirs: string[] = [];
 let watchers: MailWatcher[] = [];
@@ -24,36 +34,57 @@ afterEach(() => {
 const NOW = new Date("2026-09-26T10:00:00.000Z");
 const ADDRESS = { chatId: -100, threadId: 7 };
 
+const config: Config = {
+	providers: {
+		zai: { kind: "openai-compatible", baseUrl: "https://api.example.com", auth: "zai" },
+	},
+	model: "zai/m",
+	tts: false,
+	favorites: [],
+	thinking: "medium",
+	allowedUsers: [1],
+	telegram: {},
+	http: { port: 8787 },
+	logLevel: "info",
+};
+
 function hit(id: string): MailHit {
 	return { id, threadId: "t", from: "a@x.com", subject: `sub-${id}`, date: "today", snippet: `snip-${id}` };
 }
 
 interface Harness {
 	programs: ProgramsStore;
-	fired: Array<{ program: number; event: string }>;
+	/** The handoff record: every fireMail call, before it runs. */
+	fired: Array<{ program: number; matches: string[] }>;
+	submitted: Array<{ conv: string; text: string; sink: TurnSink }>;
 	notices: Array<{ chat: number; text: string }>;
 	polls: Array<{ filter: string; cursor: string }>;
 	profiles: number;
-	/** What the harness's fire() reports — false simulates a turn that
-	 *  did not land. */
-	landFire: boolean;
+	/** What the fake runtime does: true → submit throws, no turn lands. */
+	failSubmit: boolean;
 	pollImpl: (filter: string, cursor: string) => Promise<{ hits: MailHit[]; historyId: string }>;
 	reader: MailReader | null;
+	/** The real entry point over the fake runtime — the seam index.ts binds. */
+	fireMail(program: Program, hits: MailHit[], checkpoint: string, now: Date): void;
 }
 
 function harness(): Harness {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-mailwatch-"));
 	dirs.push(dir);
-	const db = join(dir, "goblin.sqlite");
 	const h: Harness = {
-		programs: openPrograms(db),
+		programs: openPrograms(join(dir, "goblin.sqlite")),
 		fired: [],
+		submitted: [],
 		notices: [],
 		polls: [],
 		profiles: 0,
-		landFire: true,
+		failSubmit: false,
 		pollImpl: async () => ({ hits: [], historyId: "1" }),
 		reader: null,
+		// Replaced at the end of harness() once firingDeps exists.
+		fireMail: () => {
+			throw new Error("harness incomplete");
+		},
 	};
 	h.reader = {
 		search: async () => [],
@@ -69,6 +100,30 @@ function harness(): Harness {
 		},
 		threadFor: async () => null,
 	};
+	const store = openStore(join(dir, "conv.sqlite"));
+	const api = {
+		sendMessage: () => Promise.resolve({ message_id: 1 }),
+		editMessageText: () => Promise.resolve(true),
+		setMessageReaction: () => Promise.resolve(true),
+		sendChatAction: () => Promise.resolve(true),
+		sendVoice: () => Promise.resolve({ message_id: 1 }),
+	} as unknown as Api;
+	const firingDeps = {
+		programs: h.programs,
+		store,
+		runtime: {
+			submit: (conv: { id: string }, message: UIMessage, sink: TurnSink) => {
+				if (h.failSubmit) throw new Error("queue closed");
+				const part = message.parts[0] as { text?: string } | undefined;
+				h.submitted.push({ conv: conv.id, text: part?.text ?? "", sink });
+			},
+		} as unknown as Runtime,
+		api,
+		configRef: { current: config, ttsDown: false },
+		synthesize: () => Promise.resolve([]),
+	};
+	h.fireMail = (program, hits, checkpoint, now) =>
+		fireMail(firingDeps, program, hits, checkpoint, now);
 	return h;
 }
 
@@ -77,9 +132,9 @@ function start(h: Harness): MailWatcher {
 		{
 			programs: h.programs,
 			reader: () => h.reader,
-			fire: (program: Program, event: string) => {
-				h.fired.push({ program: program.id, event });
-				return h.landFire;
+			fire: (program, hits, checkpoint, now) => {
+				h.fired.push({ program: program.id, matches: hits.map((x) => x.id) });
+				h.fireMail(program, hits, checkpoint, now);
 			},
 			notify: async (address, text) => {
 				h.notices.push({ chat: address.chatId, text });
@@ -92,23 +147,18 @@ function start(h: Harness): MailWatcher {
 	return w;
 }
 
+// Close every sink the fake runtime captured — they run typing
+// intervals until onDone.
+function closeSinks(h: Harness): Promise<unknown> {
+	return Promise.all(h.submitted.map((s) => s.sink.onDone({ kind: "completed" })));
+}
+
 function mailProgram(h: Harness, name = "bank watch", filter = "from:bank"): Program {
 	return h.programs.create(
 		{ name, charter: "flag bank mail", mailFilter: filter, address: ADDRESS },
 		NOW,
 	);
 }
-
-describe("formatMailEvent", () => {
-	test("one block per match — body stays one read away", () => {
-		const event = formatMailEvent([hit("m1"), hit("m2")]);
-		expect(event).toContain("subject: sub-m1");
-		expect(event).toContain("id: m1");
-		expect(event).toContain("id: m2");
-		expect(event).toContain("---");
-		expect(event).not.toContain("hello body");
-	});
-});
 
 describe("mail watcher", () => {
 	test("a new filter baselines at the head — the backlog never fires", async () => {
@@ -119,6 +169,7 @@ describe("mail watcher", () => {
 		expect(h.profiles).toBe(1);
 		expect(h.polls).toHaveLength(0);
 		expect(h.fired).toHaveLength(0);
+		expect(h.submitted).toHaveLength(0);
 		expect(h.programs.get(p.id)!.mailHistoryId).toBe("100");
 	});
 
@@ -132,21 +183,26 @@ describe("mail watcher", () => {
 		expect(h.polls).toEqual([{ filter: "from:bank", cursor: "100" }]);
 		expect(h.fired).toHaveLength(1);
 		expect(h.fired[0]!.program).toBe(p.id);
-		expect(h.fired[0]!.event).toContain("id: m1");
-		expect(h.fired[0]!.event).toContain("id: m2");
+		expect(h.fired[0]!.matches).toEqual(["m1", "m2"]);
+		expect(h.submitted).toHaveLength(1);
+		expect(h.submitted[0]!.text).toContain("[program: bank watch · trigger: mail]");
+		expect(h.submitted[0]!.text).toContain("id: m1");
+		expect(h.submitted[0]!.text).toContain("id: m2");
 		expect(h.programs.get(p.id)!.mailHistoryId).toBe("120");
 		expect(h.programs.get(p.id)!.lastRun).toBe(NOW.toISOString());
+		await closeSinks(h);
 	});
 
-	test("an empty poll advances the cursor without firing", async () => {
+	test("an empty poll advances the cursor without a turn", async () => {
 		const h = harness();
 		const p = mailProgram(h);
 		h.programs.setMailHistory(p.id, "100");
 		h.pollImpl = async () => ({ hits: [], historyId: "110" });
 		const w = start(h);
 		await w.tick();
-		expect(h.fired).toHaveLength(0);
+		expect(h.submitted).toHaveLength(0);
 		expect(h.programs.get(p.id)!.mailHistoryId).toBe("110");
+		expect(h.programs.get(p.id)!.lastRun).toBeNull();
 	});
 
 	test("an expired cursor re-baselines instead of failing", async () => {
@@ -156,7 +212,7 @@ describe("mail watcher", () => {
 		h.pollImpl = async () => { throw new HistoryExpiredError(); };
 		const w = start(h);
 		await w.tick();
-		expect(h.fired).toHaveLength(0);
+		expect(h.submitted).toHaveLength(0);
 		expect(h.notices).toHaveLength(0);
 		expect(h.programs.get(p.id)!.mailHistoryId).toBe("100");
 	});
@@ -200,20 +256,22 @@ describe("mail watcher", () => {
 		const w = start(h);
 		await w.tick();
 		expect(h.fired.map((f) => f.program)).toEqual([good.id]);
+		expect(h.submitted).toHaveLength(1);
 		expect(h.notices).toHaveLength(1);
+		await closeSinks(h);
 	});
 
-	test("unconfigured mail idles — no polls, no fires", async () => {
+	test("unconfigured mail idles — no polls, no turns", async () => {
 		const h = harness();
 		h.reader = null;
 		mailProgram(h);
 		const w = start(h);
 		await w.tick();
 		expect(h.polls).toHaveLength(0);
-		expect(h.fired).toHaveLength(0);
+		expect(h.submitted).toHaveLength(0);
 	});
 
-	test("a disable mid-poll advances the cursor but does not fire", async () => {
+	test("a disable mid-poll consumes the checkpoint without firing a turn", async () => {
 		const h = harness();
 		const p = mailProgram(h);
 		h.programs.setMailHistory(p.id, "100");
@@ -224,7 +282,7 @@ describe("mail watcher", () => {
 		};
 		const w = start(h);
 		await w.tick();
-		expect(h.fired).toHaveLength(0);
+		expect(h.submitted).toHaveLength(0);
 		// The cursor still advances — mail matched while disabled is
 		// skipped, not owed (the cron rule).
 		expect(h.programs.get(p.id)!.mailHistoryId).toBe("120");
@@ -244,6 +302,7 @@ describe("mail watcher", () => {
 		const w = start(h);
 		await w.tick();
 		expect(h.fired).toHaveLength(0);
+		expect(h.submitted).toHaveLength(0);
 		const after = h.programs.get(p.id)!;
 		expect(after.mailFilter).toBe("from:bank is:important");
 		expect(after.mailHistoryId).toBeNull();
@@ -261,15 +320,16 @@ describe("mail watcher", () => {
 		const w = start(h);
 		await w.tick();
 		expect(h.fired).toHaveLength(0);
+		expect(h.submitted).toHaveLength(0);
 		expect(h.programs.get(p.id)).toBeNull();
 	});
 
-	test("a fire that does not land marks nothing ran", async () => {
+	test("a fire that does not land holds the checkpoint, then retries next tick", async () => {
 		const h = harness();
 		const p = mailProgram(h);
 		h.programs.setMailHistory(p.id, "100");
 		h.pollImpl = async () => ({ hits: [hit("m1")], historyId: "120" });
-		h.landFire = false;
+		h.failSubmit = true;
 		const captured: string[] = [];
 		setLogFile("mail-watch-fire-test.log");
 		setLogWriter((_path, line) => {
@@ -283,12 +343,33 @@ describe("mail watcher", () => {
 			setLogWriter(null);
 		}
 		// The fire path ran, but the turn didn't land: no markFired, and
-		// the log says so instead of claiming "mail fired".
+		// the checkpoint stays at "100" — the matches are still ahead of
+		// the cursor, not silently skipped.
 		expect(h.fired).toHaveLength(1);
+		expect(h.submitted).toHaveLength(0);
 		expect(h.programs.get(p.id)!.lastRun).toBeNull();
-		expect(h.programs.get(p.id)!.mailHistoryId).toBe("120");
+		expect(h.programs.get(p.id)!.mailHistoryId).toBe("100");
 		const lines = captured.map((l) => JSON.parse(l) as Record<string, unknown>);
-		expect(lines.some((l) => l.msg === "mail fire did not land" && l.level === "error")).toBe(true);
+		expect(
+			lines.some(
+				(l) =>
+					l.msg === "mail fire did not land — checkpoint held, matches retry next poll" &&
+					l.level === "error",
+			),
+		).toBe(true);
 		expect(lines.some((l) => l.msg === "mail fired")).toBe(false);
+
+		// Recovery: the runtime accepts again — the next poll re-reads
+		// from the held cursor and the match fires for real.
+		h.failSubmit = false;
+		await w.tick();
+		expect(h.polls).toEqual([
+			{ filter: "from:bank", cursor: "100" },
+			{ filter: "from:bank", cursor: "100" },
+		]);
+		expect(h.submitted).toHaveLength(1);
+		expect(h.programs.get(p.id)!.mailHistoryId).toBe("120");
+		expect(h.programs.get(p.id)!.lastRun).toBe(NOW.toISOString());
+		await closeSinks(h);
 	});
 });

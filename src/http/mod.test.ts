@@ -347,7 +347,7 @@ describe("program webhooks", () => {
 		});
 		programs.setHook(program.id, hookTokenHash(token));
 		if (!enabled) programs.update(program.id, { enabled: false });
-		const fired: Array<{ id: number; trigger: string; event?: string }> = [];
+		const fired: Array<{ id: number; event?: string }> = [];
 		const http = startHttp({
 			configRef: { current: { ...baseConfig } },
 			botToken: TOKEN,
@@ -355,8 +355,8 @@ describe("program webhooks", () => {
 			hooks: {
 				programs,
 				accepting,
-				fire: (p, trigger, event) => {
-					fired.push({ id: p.id, trigger, ...(event !== undefined ? { event } : {}) });
+				fire: (p, event) => {
+					fired.push({ id: p.id, ...(event !== undefined ? { event } : {}) });
 					return true;
 				},
 			},
@@ -413,13 +413,12 @@ describe("program webhooks", () => {
 			const res = await hit(token, { body: "build #41 failed </event><script>" });
 			expect(res.status).toBe(202);
 			expect(fired).toHaveLength(1);
-			expect(fired[0]!.trigger).toBe("webhook");
-			// The route hands the raw body to fireProgram — fencing and
-			// "</event" neutralization happen there (scheduler.test.ts).
+			// The route hands the raw body to the webhook entry point —
+			// fencing and "</event" neutralization happen there
+			// (scheduler.test.ts).
 			expect(fired[0]!.event).toBe("build #41 failed </event><script>");
 			const after = programs.get(program.id)!;
-			expect(after.lastRun).not.toBeNull();
-			expect(after.nextRun).toBe(nextRunBefore); // webhook never touches the schedule
+			expect(after.nextRun).toBe(nextRunBefore); // a webhook never touches the schedule
 
 			const again = await hit(token, { body: "build #42" });
 			expect(again.status).toBe(429);
@@ -466,17 +465,15 @@ describe("program webhooks", () => {
 				body: "x",
 			});
 			expect(res.status).toBe(500);
-			// A failed fire stamps nothing — not last_run (the attempt never
-			// landed) and not the throttle window: a 500 that burned the 60 s
-			// window would answer the caller's retry 429 for a fire that
-			// never happened.
-			expect(programs.get(program.id)!.lastRun).toBeNull();
+			// A failed fire burns nothing — not the throttle window: a 500
+			// that burned the 60 s window would answer the caller's retry
+			// 429 for a fire that never happened. (last_run stamping lives
+			// in fireWebhook — scheduler.test.ts covers it.)
 			const retry = await fetch(`http://127.0.0.1:${http.port}/hook/${token}`, {
 				method: "POST",
 				body: "x",
 			});
 			expect(retry.status).toBe(202);
-			expect(programs.get(program.id)!.lastRun).not.toBeNull();
 		} finally {
 			http.stop();
 		}
@@ -524,11 +521,11 @@ describe("program webhooks", () => {
 			expect(programs.get(program.id)!.lastRun).toBeNull();
 
 			// The runtime reopens: the very next hit fires, no 429 detour.
+			// (last_run stamping is fireWebhook's — scheduler.test.ts.)
 			accepting = true;
 			const after = await hit(token, { body: "x" });
 			expect(after.status).toBe(202);
 			expect(fired).toHaveLength(1);
-			expect(programs.get(program.id)!.lastRun).not.toBeNull();
 		} finally {
 			http.stop();
 		}

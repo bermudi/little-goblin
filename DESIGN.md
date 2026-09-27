@@ -628,8 +628,22 @@ program's state, never a workspace file.** Rulings:
   is left untouched; no general migration framework.
 - **Firing is one path for every trigger.** Cron tick, webhook hit,
   or anything later: `runtime.submit` of a user message
-  `[program: <name> · trigger: <schedule|webhook>]` + the charter
-  (+ the event payload, below) into the pinned conversation.
+  `[program: <name> · trigger: <schedule|webhook|mail>]` + the charter
+  (+ the event payload, below) into the pinned conversation. One
+  shared format-and-submit core — and one entry point per trigger
+  beside it, because the accounting is not shared:
+- **Post-submit accounting is trigger-owned** (2026-09-28). What a
+  fire costs when delivery fails is the policy, and it lives in the
+  firing owner's three entry points, never in a caller: cron advances
+  past the occurrence even on a failed submit (occurrences are
+  synthetic and infinite — holding one refires and re-delivers the
+  error every tick); a webhook stamps `last_run` only when the turn
+  landed (the caller owns retry — a failed hit leaves the stamp and
+  the throttle window open for it); mail holds its checkpoint on a
+  failed fire (matches are real events that cannot be regenerated —
+  they retry next poll). The route keeps its HTTP status and throttle
+  clock, the watcher keeps polling, but no caller writes program
+  state.
 - **Authority is granted, never self-issued.** Creating or widening a
   program needs the operator's explicit ask — the agent may *propose*
   one ("want me to own this?"), never grant itself standing
@@ -688,9 +702,7 @@ program's state, never a workspace file.** Rulings:
   history even if the turn never ran. A submit that throws never
   landed — release the sink with the error, deliver it, then
   markRan anyway: one attempt per occurrence, so a persistent
-  failure cannot refire (and re-deliver) on every tick. Webhook
-  fires stamp last_run only when the wake landed, and leave next_run
-  alone.
+  failure cannot refire (and re-deliver) on every tick.
 
 Still out (machinery): proactive monitoring/heartbeat (programs are
 authority the operator granted, woken by a clock or an event — not an
@@ -898,9 +910,15 @@ its credentials ride the same lane.
   tick — the checkpoint advances only to the last fired record's
   boundary, so the unfired remainder refires next tick instead of
   being skipped (a single collapsed record over the cap is the one
-  honest skip, and it warns). The filter's 50-entry list page is the
-  intersection window; a full page warns that older matches may be
-  invisible to it. After each poll the watcher re-reads the program
+  honest skip, and it warns). A fire that does not land holds the
+  checkpoint the same way — its matches retry on the next poll
+  instead of being silently skipped, and the checkpoint write
+  follows the submit, so a crash between the two re-fires a batch
+  rather than dropping it (at-least-once). An empty poll, or one
+  whose program was disabled mid-flight, consumes the checkpoint —
+  that mail is skipped, not owed (the cron rule). The filter's
+  50-entry list page is the intersection window; a full page warns
+  that older matches may be invisible to it. After each poll the watcher re-reads the program
   row — a disable, delete, or filter edit that lands mid-poll wins
   over the stale snapshot, and an edited filter keeps its
   re-baseline. A dead token or quota error warns once per outage

@@ -34,7 +34,7 @@ import { openPrograms } from "./programs.ts";
 import { buildMemoryClient, startMemoryWorker, type MemoryWorker } from "./memory.ts";
 import { JevClient } from "./jev.ts";
 import { OutageTracker } from "./memory-outage.ts";
-import { fireProgram, startScheduler } from "./scheduler.ts";
+import { fireMail, fireWebhook, startScheduler, type SchedulerDeps } from "./scheduler.ts";
 import { startHttp } from "./http/mod.ts";
 import { wake } from "./wake.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
@@ -450,8 +450,9 @@ async function boot() {
 		});
 	}
 
-	// The shared wake path — program fires (cron or webhook) submit
-	// through it into the pinned conversation.
+	// The shared wake path — program fires (cron, webhook, mail) submit
+	// through it into the pinned conversation. The firing owner's deps:
+	// the trigger entry points take this plus the programs store.
 	const wakeDeps = {
 		store,
 		runtime,
@@ -459,6 +460,7 @@ async function boot() {
 		configRef,
 		synthesize: (text: string, tts: TtsConfig) => synthesizeSpeech(text, tts),
 	};
+	const firingDeps: SchedulerDeps = { ...wakeDeps, programs };
 
 	// The delegation lifecycle — the protocol's one owner: the tool's
 	// launch/send/stop/read land here and the watcher's verdicts fire
@@ -486,12 +488,12 @@ async function boot() {
 		configRef,
 		botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN),
 		// POST /hook/<token> — the token is the credential; the hit wakes
-		// the program through the same fire path as a cron tick.
+		// the program through the webhook entry point, which owns the
+		// fire's accounting (last_run only when landed).
 		hooks: {
 			programs,
 			accepting: () => runtime.accepting(),
-			fire: (program, trigger, event, now) =>
-				fireProgram(wakeDeps, program, trigger, event, now),
+			fire: (program, event, now) => fireWebhook(firingDeps, program, event, now),
 		},
 		// Same memory seams the /memory command reads, bound to the
 		// boot-time target — the mini app's status card renders the same
@@ -540,19 +542,18 @@ async function boot() {
 	// Scheduler after the bot: it submits into conversations and delivers
 	// through bot.api — both must exist. The boot scan fires anything
 	// missed while the process was down (DESIGN.md, Programs).
-	const scheduler = startScheduler({
-		programs,
-		...wakeDeps,
-	});
+	const scheduler = startScheduler(firingDeps);
 
 	// The mail watcher is the scheduler's twin: it polls Gmail for
-	// enabled mail filters and fires matches through the same wake
-	// path. Always started — without the mail block it idles (draft
-	// expiry lives in the approval gate, not here).
+	// enabled mail filters and hands matches to the mail entry point,
+	// which owns the checkpoint policy. Always started — without the
+	// mail block it idles (draft expiry lives in the approval gate,
+	// not here).
 	const mailWatcher = startMailWatcher({
 		programs,
 		reader: mailReader,
-		fire: (program, event, now) => fireProgram(wakeDeps, program, "mail", event, now),
+		fire: (program, hits, checkpoint, now) =>
+			fireMail(firingDeps, program, hits, checkpoint, now),
 		notify: (address, text) => sendMailNotice(tg.bot.api, address, text),
 	});
 

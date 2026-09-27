@@ -402,6 +402,9 @@ export interface MemoryWorkerBlocked {
 // withWorkerPaused quiesces the worker around an async section.
 export interface MemoryWorker {
 	stop(): Promise<void>;
+	// Test seam: runs one tick directly. It bypasses the pause gate —
+	// production code must never call it (withWorkerPaused is the door
+	// that keeps ticks out of a critical section).
 	tickNow(): Promise<boolean>;
 	// Serialize an async section against the worker: no new drain starts,
 	// the in-flight drain settles first, then fn runs, then the timer

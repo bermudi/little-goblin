@@ -317,6 +317,69 @@ describe("worker timer", () => {
 		await w.stop();
 	});
 
+	test("withWorkerPaused holds the timer gate — a pending row stays unclaimed mid-pause", async () => {
+		// The /forget quiesce's GATE, not just its drain-await: while a
+		// pause holds, the interval must not start a new drain, or a row
+		// enqueued mid-pause is submitted behind the delete's back —
+		// exactly the resurrect the pause exists to prevent.
+		const gates = new Map<string, () => void>();
+		const parked = new Map<string, Promise<void>>();
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: async (request) => {
+				if (request.method === "POST") {
+					const body = (await request.json()) as { operation_id?: unknown };
+					const op = typeof body.operation_id === "string" ? body.operation_id : "?";
+					const park = parked.get(op);
+					if (park !== undefined) await park;
+					return Response.json({ success: true, bank_id: "g", items_count: 1, async: true, operation_id: op });
+				}
+				const id = new URL(request.url).pathname.split("/").pop() ?? "";
+				return Response.json({ operation_id: id, status: "completed" });
+			},
+		});
+		try {
+			const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
+			const queue = new MemoryQueue(memdb());
+			const op1 = queue.enqueue(client.target, {
+				id: "exchange-1", conversationId: "dm:1", sourceIds: ["u1", "a1"],
+				timestamp: "2026-09-27T10:00:00Z", content: "one",
+			});
+			parked.set(op1, new Promise<void>((resolve) => gates.set(op1, resolve)));
+			const w = startMemoryWorker(queue, client, { intervalMs: 10 });
+			// Let the timer start its drain — it claims row 1 and parks
+			// inside the submit.
+			await Bun.sleep(50);
+			// Release row 1; its drain settles on its own (row 2 doesn't
+			// exist yet, so the drain finds nothing more and exits).
+			gates.get(op1)?.();
+			await Bun.sleep(50);
+			// Inside the pause: enqueue row 2 and let several intervals fire
+			// — the gate must refuse them all. (Without the `pauses > 0`
+			// term in the timer gate, a drain starts within ~10 ms and
+			// row 2 reads "submitted" here.)
+			const out = await w.withWorkerPaused(async () => {
+				const op2 = queue.enqueue(client.target, {
+					id: "exchange-2", conversationId: "dm:1", sourceIds: ["u2", "a2"],
+					timestamp: "2026-09-27T10:01:00Z", content: "two",
+				});
+				await Bun.sleep(80); // ≥ 8 intervals at 10 ms
+				const row2 = queue.get(op2);
+				if (!row2) throw new Error("expected row 2");
+				return { state: row2.state, op2 };
+			});
+			expect(out.state).toBe("pending");
+			// The pause lifted: the timer drains row 2 now.
+			await Bun.sleep(80);
+			const settled = queue.get(out.op2);
+			expect(settled?.state).toBe("submitted");
+			await w.stop();
+		} finally {
+			server.stop();
+		}
+	});
+
 	// The 2026-09-25 incident's chat-facing half: a blocked document must
 	// surface in chat exactly once, no matter how many times it goes
 	// blocked (operator retried it and it blocked again). The latch is

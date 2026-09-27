@@ -113,6 +113,19 @@ describe("search tool", () => {
 	});
 
 
+	test("ddg: an oversized html response fails at the cap instead of buffering forever", async () => {
+		// Endless stream: an uncapped read would hang the test — the
+		// read cancelling at the cap is the only way this resolves.
+		const stream = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				controller.enqueue(new TextEncoder().encode(`<html>${"x".repeat(256 * 1024)}`));
+			},
+		});
+		const base = serve(() => new Response(stream, { headers: { "content-type": "text/html" } }));
+		const run = bindSearch({ kind: "ddg" }, fakeAuth);
+		await expect(run({ query: "q", count: 5, baseUrl: base })).rejects.toThrow("8 MiB");
+	});
+
 	test("unconfigured search returns the config pointer", async () => {
 		const out = (await exec(searchTool(depsWith(undefined)), { query: "x", count: 5 })) as {
 			error: string;

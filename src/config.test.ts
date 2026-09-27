@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { setLogFile, setLogWriter } from "./log.ts";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -67,6 +68,32 @@ describe("goblin.json5", () => {
 		expect(c.allowedUsers).toEqual([7]);
 		// TTS is default-on: absent block, default voice.
 		expect(c.tts).toEqual({ kind: "edge", voice: "en-US-AriaNeural" });
+	});
+
+	test("a legacy delegation.session warns and is ignored — the unit owns the session", () => {
+		const dir = useHome();
+		writeFileSync(
+				join(dir, "goblin.json5"),
+				`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7],delegation:{session:"other",harnesses:{pi:{kind:"pi"}}}}`,
+		);
+		const captured: string[] = [];
+		setLogFile("config-legacy-session-test.log");
+		setLogWriter((_path, line) => {
+			captured.push(line);
+		});
+		try {
+			const c = loadConfig()!;
+			// The knob strips; the rest of the delegation block stands.
+			expect(c.delegation?.maxRunning).toBe(3);
+			expect(c.delegation?.harnesses["pi"]?.kind).toBe("pi");
+			const warns = captured
+				.map((l) => JSON.parse(l) as Record<string, unknown>)
+				.filter((l) => typeof l.msg === "string" && l.msg.includes("delegation.session is gone"));
+			expect(warns).toHaveLength(1);
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
 	});
 
 	test("invalid config throws with file path", () => {

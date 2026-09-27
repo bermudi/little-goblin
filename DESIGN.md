@@ -383,11 +383,12 @@ tool. MCP stays out, with its return conditions on record (below).
   next step.
 - **Search results and fetched page text ride fenced** like mail and
   event content (`web.ts`'s `fenceUntrusted`, tag `<web>`): provider
-  words are untrusted data to evaluate, never instructions. The
-  fence wraps only the remote text — fetch's `# title`/`Source:`
-  header, search's fallback note, and the `[TRUNCATED …]` recovery
-  footer stay outside it (the recovery instruction is trusted text),
-  and the footer marks the saved overflow file untrusted too.
+  words are untrusted data to evaluate, never instructions. The page
+  title is the site's words too — it rides inside the fence, clamped
+  like search titles. Only fetch's `Source:` line, search's fallback
+  note, and the `[TRUNCATED …]` recovery footer stay outside it (the
+  recovery instruction is trusted text), and the footer marks the
+  saved overflow file untrusted too.
 - **`fetch` is always in the set** — default `local`, no config, no key:
   direct HTTP (20s timeout, 8 MiB cap) + in-process readability
   extraction (`@mozilla/readability` over `linkedom` — pure JS, the
@@ -801,7 +802,8 @@ Rulings:
   (`<event source="delegation">`, any `</event` neutralized) —
   untrusted data, never instructions: a delegated agent's output (or
   a malicious repo it processed) gains no authority by arriving in
-  goblin's voice.
+  goblin's voice. The `read` action's screen output rides the same
+  fence.
 - **Management is the `delegate` tool** (start/list/read/send/stop),
   bound per-turn to the running conversation like `program`.
   `read` peeks the screen tail; `send` prompts the agent (an answer,
@@ -875,8 +877,17 @@ its credentials ride the same lane.
   baselines at the current head without firing — the mailbox's backlog
   is history, not arrivals; an expired cursor re-baselines the same
   way. The 60 s per-program throttle becomes a batch: matches inside
-  one tick fire once with all of them. A dead token or quota error
-  warns once per outage episode, never per tick.
+  one tick fire once with all of them, capped at 10 oldest-first per
+  tick — the checkpoint advances only to the last fired record's
+  boundary, so the unfired remainder refires next tick instead of
+  being skipped (a single collapsed record over the cap is the one
+  honest skip, and it warns). The filter's 50-entry list page is the
+  intersection window; a full page warns that older matches may be
+  invisible to it. After each poll the watcher re-reads the program
+  row — a disable, delete, or filter edit that lands mid-poll wins
+  over the stale snapshot, and an edited filter keeps its
+  re-baseline. A dead token or quota error warns once per outage
+  episode, never per tick.
 - **Logging**: every Gmail call (action, query or id, result count,
   status, ms); every outbox transition (queued, sent, cancelled,
   expired — recipient domain, never the body).

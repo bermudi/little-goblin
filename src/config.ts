@@ -463,6 +463,7 @@ export function loadConfig(): Config | null {
 	} catch (err) {
 		throw new Error(`${paths.config()}: invalid JSON5 — ${(err as Error).message}`);
 	}
+	warnLegacyDelegationSession(parsed);
 	const result = configSchema.safeParse(parsed);
 	if (!result.success) {
 		throw new Error(`${paths.config()}: ${z.prettifyError(result.error)}`);
@@ -473,7 +474,23 @@ export function loadConfig(): Config | null {
 // Validate a candidate config — the mini app parses before writing so it
 // can inspect the result (e.g. refuse a self-lockout) without touching
 // the file first.
+// A legacy `delegation.session` strips silently under zod — a box that
+// relied on the knob must learn where the session lives now (the unit
+// file), not discover delegation broken by surprise. Both load paths
+// (parseConfig and loadConfig) check it before validation.
+function warnLegacyDelegationSession(raw: unknown): void {
+	if (typeof raw === "object" && raw !== null) {
+		const delegation = (raw as Record<string, unknown>).delegation;
+		if (typeof delegation === "object" && delegation !== null && "session" in delegation) {
+			log.warn(
+				"delegation.session is gone — the herdr session is fixed by deploy/goblin-herdr.service (--session goblin); the key is ignored",
+			);
+		}
+	}
+}
+
 export function parseConfig(raw: unknown): Config {
+	warnLegacyDelegationSession(raw);
 	return configSchema.parse(raw);
 }
 

@@ -445,6 +445,66 @@ describe("gmail client", () => {
 		expect(warns[0]).toMatchObject({ level: "warn", filter: "from:bank", matched: 12, firing: 10 });
 	});
 
+	test("a full filter list page warns — older matches may be invisible to the intersection", async () => {
+		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
+		// Two arrivals, but the filter's list page comes back full (50/50)
+		// — arrivals older than the newest 50 matches are invisible to
+		// the intersection, and the head checkpoint would skip them. The
+		// poll still works; it just says the loss is possible.
+		const ids = ["m1", "m2"];
+		const gmail = serve((req) => {
+			const url = new URL(req.url);
+			if (url.pathname === "/gmail/v1/users/me/history") {
+				return Response.json({
+					history: ids.map((id, i) => ({ id: String(101 + i), messagesAdded: [{ message: { id } }] })),
+					historyId: "200",
+				});
+			}
+			if (url.pathname === "/gmail/v1/users/me/messages") {
+				const page = Array.from({ length: 50 }, (_, i) => ({ id: `x${i}` }));
+				// The two arrivals ride at the top of a FULL page.
+				return Response.json({ messages: [...ids.reverse().map((id) => ({ id })), ...page.slice(ids.length)] });
+			}
+			const m = /^\/gmail\/v1\/users\/me\/messages\/([^/]+)$/.exec(url.pathname);
+			if (m) {
+				return Response.json({
+					id: m[1],
+					threadId: "t",
+					snippet: "s",
+					payload: { headers: headers(["From", "f"], ["Subject", "s"], ["Date", "d"]) },
+				});
+			}
+			return new Response("nf", { status: 404 });
+		});
+		const reader = makeReader({
+			auth: fakeAuth,
+			clientId: "cid",
+			clientSecretAuth: "gmail-secret",
+			readAuth: "gmail-read",
+			gmailBase: `${gmail}/gmail/v1`,
+			oauthBase: oauth,
+		});
+		const captured: string[] = [];
+		setLogFile("mail-poll-fullpage-test.log");
+		setLogWriter((_path, line) => {
+			captured.push(line);
+		});
+		let out: { hits: MailHit[]; historyId: string };
+		try {
+			out = await reader.poll("from:bank", "100");
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		expect(out.hits.map((h) => h.id)).toEqual(["m1", "m2"]);
+		expect(out.historyId).toBe("200");
+		const warns = captured
+			.map((l) => JSON.parse(l) as Record<string, unknown>)
+			.filter((l) => l.msg === "mail poll filter list page full — matches older than the newest 50 may be skipped by this checkpoint");
+		expect(warns).toHaveLength(1);
+		expect(warns[0]).toMatchObject({ level: "warn", filter: "from:bank", listed: 50 });
+	});
+
 	test("poll with no arrivals advances the checkpoint without a list call", async () => {
 		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
 		let lists = 0;

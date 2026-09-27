@@ -12,9 +12,13 @@ import { z } from "zod";
 import type { AuthStore } from "../../auth.ts";
 import type { Config } from "../../config.ts";
 import { log } from "../../log.ts";
-import { clampChars, fetchOk, fenceUntrusted, readJson, renderHits, str, ProviderError, type SearchHit, type WebToolDeps } from "./web.ts";
+import { clampChars, fetchOk, fenceUntrusted, readJson, readTextCapped, renderHits, str, ProviderError, type SearchHit, type WebToolDeps } from "./web.ts";
 
 const TIMEOUT_MS = 15_000;
+// The html endpoint's response is the one search body that isn't JSON
+// — cap the read like every other remote body (fetch's DOWNLOAD_CAP
+// rule): a runaway response fails loud at the cap, never buffers.
+const DDG_HTML_CAP = 8 * 1024 * 1024;
 
 // Remote words ride fenced (DESIGN.md, "Web access") — titles and
 // snippets are provider output, not goblin's own text.
@@ -191,7 +195,10 @@ const ddgSearch: SearchAdapter = async (opts) => {
 		TIMEOUT_MS,
 	);
 	const status = res.status;
-	const html = await res.text();
+	const { tooLarge, text: html } = await readTextCapped(res, DDG_HTML_CAP);
+	if (tooLarge) {
+		throw new ProviderError("ddg", "html response exceeds the 8 MiB download cap");
+	}
 	const hits: SearchHit[] = [];
 	for (const anchor of html.matchAll(
 		/<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g,

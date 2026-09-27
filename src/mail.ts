@@ -69,6 +69,11 @@ const ATTACHMENT_CAP = 40 * 1024 * 1024;
 // One watcher tick fires once no matter how many matches — the batch
 // cap bounds the per-tick get fan-out, oldest first.
 const POLL_BATCH_CAP = 10;
+// The intersection window: how many of the filter's recent matches the
+// list call can see. A full page means arrivals older than the newest
+// LIST_PAGE matches are invisible to the intersection — the one way a
+// match can still be lost, and it gets a warn line when it's possible.
+const LIST_PAGE = 50;
 
 export interface GmailReaderDeps {
 	auth: AuthStore;
@@ -336,11 +341,20 @@ class Gmail {
 		// history.list takes no query — intersect the mailbox-wide
 		// arrivals with the filter's own recent matches (newest first),
 		// then present oldest first.
-		const listParams = new URLSearchParams({ q: filter, maxResults: "50" });
+		const listParams = new URLSearchParams({ q: filter, maxResults: String(LIST_PAGE) });
 		const { data: listData } = await this.call(
 			"poll.list", `/users/me/messages?${listParams}`, token, { filter },
 		);
 		const matching = ((listData as Record<string, unknown>).messages ?? []) as Array<Record<string, unknown>>;
+		if (matching.length >= LIST_PAGE) {
+			// The intersection window may have truncated: arrivals older
+			// than the newest LIST_PAGE matches are invisible to it, and a
+			// head checkpoint would skip them silently — the log says so.
+			log.warn("mail poll filter list page full — matches older than the newest 50 may be skipped by this checkpoint", {
+				filter,
+				listed: matching.length,
+			});
+		}
 		const matched = matching.map((m) => str(m.id)).filter((id) => id !== "" && added.has(id));
 		matched.reverse();
 		// Within a record, keep the oldest-first order the list established.

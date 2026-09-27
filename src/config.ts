@@ -188,6 +188,16 @@ export const providerSchema = z.discriminatedUnion("kind", [
 		baseUrl: z.url(),
 		auth: z.string().min(1),
 	}),
+	// OpenAI Responses protocol — the one chat-family protocol whose
+	// tool outputs carry documents (function_call_output content arrays).
+	// z.ai serves it at https://api.z.ai/api/v1 (devpack endpoint table);
+	// probe-verified 2026-09-27: input_file in user messages AND in tool
+	// outputs both parse (glm-5.3-flash read a marker PDF through each).
+	z.object({
+		kind: z.literal("responses"),
+		baseUrl: z.url(),
+		auth: z.string().min(1),
+	}),
 	z.object({
 		kind: z.literal("openrouter"),
 		auth: z.string().min(1),

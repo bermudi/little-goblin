@@ -9,11 +9,17 @@
 
 import type { AuthStore } from "../../auth.ts";
 import type { Config } from "../../config.ts";
+import type { AcceptsMedia } from "../attachments.ts";
 
-/** Shared deps for the web tools: live config + the secrets store. */
+/** Shared deps for the web tools: live config + the secrets store.
+ *  `accepts` is the per-turn media-acceptance ref (see attachments.ts) —
+ *  filled by the runtime after buildStep resolves the model, read at
+ *  request time when the fetch tool renders a stored PDF reference.
+ *  Absent = nothing rides natively; everything degrades to text. */
 export interface WebToolDeps {
 	configRef: { current: Config };
 	auth: AuthStore;
+	accepts?: { current: AcceptsMedia };
 }
 
 /** A normalized search result — everything else provider-specific is dropped. */

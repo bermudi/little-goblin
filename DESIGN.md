@@ -102,8 +102,11 @@ agent loop.
 
 - **Provider registry** in config: name → AI SDK provider factory + auth
   reference. v1 targets:
-  - `zai` — GLM via OpenAI-compatible endpoint (`@ai-sdk/openai-compatible`).
-    Daily driver.
+  - `zai` — GLM via z.ai's OpenAI Responses endpoint (`/api/v1`, the
+    `responses` kind over `@ai-sdk/openai`) — the coding-plan door that
+    carries documents in tool results (see Web access). Daily driver.
+    The `openai-compatible` kind (chat completions) stays available for
+    any OpenAI-shaped relay.
   - `openrouter` — `@openrouter/ai-sdk-provider`.
   - `codex` — `ai-sdk-provider-codex-cli` exists (ChatGPT Plus/Pro auth via
     `codex` CLI login) but wraps the CLI's own agent loop — no caller tools,
@@ -196,8 +199,15 @@ agent loop.
   `data-attachment` part (path + metadata, no payload). Each part's
   representation — file part vs text reference (transcript first for
   speech) — is a pure function of the stored ref and the conversation's
-  model: file part when the model consumes the media type and the payload
-  fits the per-item inline cap, reference otherwise. One carve-out:
+  model **and provider pipe**: file part when the model consumes the
+  media type (catalog modalities), the pipe can deliver it
+  (`carriesMedia`, `src/agent/providers.ts` — the SDK converter's
+  expressible surface, per kind), and the payload
+  fits the per-item inline cap, reference otherwise. Two gates because
+  the catalog and the pipe disagree in practice: models.dev said
+  glm-5.3-flash takes PDFs while `@ai-sdk/openai-compatible` < v3
+  threw `UnsupportedFunctionalityError` on any non-image file part —
+  catalog truth alone cost a thrown turn. One carve-out:
   audio only inlines when the ref is marked `speech` — a voice or video
   note. Attached audio is data (Transcription, below); an mp3's bytes in
   every request is the most expensive way to not listen to it. Pure means stable:
@@ -232,7 +242,9 @@ agent loop.
 
   Sanctioned one-time rewrites, each visible as a requestHash move in the
   log: a model switch — or a catalog refresh that changes a model's
-  listed modalities — recomputes attachment representations once; a fenced
+  listed modalities — recomputes attachment representations once (and
+  re-renders stored PDF fetch refs through the same modalities-and-pipe
+  gate); a fenced
   or failed turn leaves its user message unanswered, and the successor
   turn's burst-merge (Causal view) rewrites that boundary; a corrupt row's
   placeholder is a repair, not drift. Everything else that moves the hash
@@ -404,10 +416,32 @@ tool. MCP stays out, with its return conditions on record (below).
   search and fetch providers are chosen independently (brave for search,
   parallel for extract, say). Both paths share one output discipline. Input `{url,
   maxChars?}`; local does content-type dispatch — HTML → readability,
-  text-ish (text, markdown, json, csv, xml) → raw, anything else (PDF
-  included) → structured refusal naming recovery (`bash` + file tools,
-  or `send_file` to put it in the operator's hands). v1 does not parse
-  PDFs; the refusal says so instead of guessing.
+  text-ish (text, markdown, json, csv, xml) → raw, PDF → native handoff
+  (below), anything else → structured refusal naming recovery (`bash` +
+  file tools, or `send_file` to put it in the operator's hands).
+- **PDFs ride as documents, not text** (the reason goblin moved to the
+  AI SDK, landed 2026-09-28): a fetched PDF is saved to
+  `state/webcache/<sha>.pdf` under the durable write, and the tool
+  result stores only a small ref — path, url, size, never the payload.
+  At request time the tool's `toModelOutput` decides per turn: a native
+  `file` part inside the tool result when this turn's model takes PDFs
+  (catalog) *and* the provider pipe can carry them (`carriesMedia`, see
+  Capabilities), a trusted-framing path reference otherwise — the
+  bash/`send_file` recovery, with the file already on disk. Same
+  discipline as attachments: the decision is a pure function of the
+  ref + bytes + this turn's model, so the same history renders to
+  identical request bytes under the same model (cache-stable), and a
+  model switch recomputes once. The wire path is probe-verified
+  (2026-09-27, glm-5.3-flash read a marker PDF through every position):
+  z.ai's OpenAI Responses endpoint (`/api/v1`) parses `input_file`
+  inside `function_call_output` — the only chat-family door that
+  carries tool-result documents — which is why the `zai` provider is
+  the `responses` kind. Chat-completions and Anthropic endpoints carry
+  user-message documents fine; tool-result documents are Responses or
+  Anthropic-only (z.ai has no Anthropic tool-result need — Responses
+  is the Bearer-auth door). The framing text around the bytes marks
+  them untrusted — the fence discipline's binary twin; nothing inside
+  a PDF can displace it.
 - **Overflow goes to disk, recovery named** (hermes' `web_extract` rule,
   adopted): default 15k-char head+tail window (~75/25, cut on line
   boundaries) with a `[TRUNCATED n chars]` footer; the full extracted text

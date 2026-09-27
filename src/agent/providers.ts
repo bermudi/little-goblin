@@ -3,6 +3,7 @@
 // which providers support which levels.
 
 import { createHash } from "node:crypto";
+import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
@@ -37,6 +38,15 @@ export async function resolveModel(
 				baseURL: p.baseUrl,
 				apiKey: await auth.resolve(p.auth),
 			}).chatModel(modelId);
+		case "responses":
+			// `name` pins the providerOptions key to the config name — the
+			// SDK resolves options under provider.split(".")[0], same rule
+			// glmThinking applies.
+			return createOpenAI({
+				name: provider,
+				baseURL: p.baseUrl,
+				apiKey: await auth.resolve(p.auth),
+			}).responses(modelId);
 		case "openrouter": {
 			const apiKey = await auth.resolve(p.auth);
 			// The provider package's response-metadata types use nullable
@@ -46,6 +56,46 @@ export async function resolveModel(
 		}
 		case "codex":
 			return codexModel(modelId, p.authFile);
+	}
+}
+
+// What each provider kind's pipe can carry on the wire. Catalog
+// modalities (models.dev) say what the MODEL accepts; this says what
+// goblin's SDK converters can actually deliver to it. The two disagree
+// in practice — openai-compatible threw UnsupportedFunctionalityError
+// for any non-image file part before v3, and even v3 stringifies tool
+// outputs — so attachment materialization and the fetch tool intersect
+// both before inlining anything. Anything the pipe can't carry degrades
+// to its path reference, never a thrown turn.
+//
+// Probe-verified against z.ai 2026-09-27 (see DESIGN.md, Web access):
+//   responses (/api/v1): PDF input_file parses in user messages AND in
+//   function_call_output; video/mp4 is rejected server-side.
+//   openai-compatible (chat): file parts accepted in both positions
+//   server-side, but the SDK can only express user-message parts.
+export function carriesMedia(kind: string, mediaType: string): boolean {
+	switch (kind) {
+		case "responses":
+			return mediaType.startsWith("image/") || mediaType === "application/pdf";
+		case "openai-compatible":
+			// SDK v3 emits image_url / video_url / input_audio / file parts
+			// for user-message content.
+			return (
+				mediaType.startsWith("image/") ||
+				mediaType.startsWith("video/") ||
+				mediaType.startsWith("audio/") ||
+				mediaType === "application/pdf"
+			);
+		case "openrouter":
+			// Normalizes everything: image_url, input_audio, or a generic
+			// file part for any other media type.
+			return true;
+		case "codex":
+			// goblin's own converter (codex.ts): images and PDFs.
+			return mediaType.startsWith("image/") || mediaType === "application/pdf";
+		default:
+			// Unknown kinds carry the universal minimum.
+			return mediaType.startsWith("image/");
 	}
 }
 
@@ -129,6 +179,25 @@ export function thinkingOptions(
 		}
 		case "openai-compatible":
 			return openaiCompatibleThinking(provider, bare, level, p.baseUrl);
+		case "responses": {
+			// /api/v1 serves the forced-thinking GLM generation; the OpenAI
+			// effort knob is real there (probe 2026-09-27: effort low → 7
+			// reasoning tokens, high → 37) and the ladder collapses like
+			// glmThinking's forced-5.3 arm — "off" can only mean the floor.
+			const key = provider.split(".")[0]!.trim();
+			if (bare.startsWith("glm-")) {
+				const effort = {
+					off: "low",
+					low: "low",
+					medium: "high",
+					high: "high",
+					xhigh: "max",
+					max: "max",
+				}[level];
+				return { [key]: { reasoningEffort: effort } };
+			}
+			return { [key]: { reasoningEffort: level === "off" ? "low" : level } };
+		}
 		case "codex":
 			// reasoning_effort verbatim inside the model's ladder; "off"
 			// isn't a codex rung, so it and any out-of-ladder stored value
@@ -156,7 +225,7 @@ function openaiCompatibleThinking(
 	// silently dropped.
 	const key = provider.split(".")[0]!.trim();
 	if (modelId.startsWith("glm-")) {
-		return glmThinking(key, modelId, level, zaiCodingPlan(baseUrl));
+		return glmThinking(key, modelId, level, zaiCodingEndpoint(baseUrl));
 	}
 	if (modelId.startsWith("gpt-")) {
 		return {
@@ -168,14 +237,16 @@ function openaiCompatibleThinking(
 	return { [key]: { reasoningEffort: level === "off" ? "low" : level } };
 }
 
-// api.z.ai/api/coding/paas/* — the subscription coding-plan endpoint.
-// The general paas endpoint (no "coding" in the path) serves real
-// per-generation GLMs, so the sniff is scoped to the coding path.
-function zaiCodingPlan(baseUrl?: string): boolean {
+// api.z.ai coding-plan endpoints: the /api/coding/paas/* chat door and
+// the /api/v1 Responses door (devpack endpoint table lists both as
+// coding-plan quota). The general paas endpoint (no "coding" in the
+// path) serves real per-generation GLMs, so the sniff stays scoped.
+function zaiCodingEndpoint(baseUrl?: string): boolean {
 	if (!baseUrl) return false;
 	try {
 		const u = new URL(baseUrl);
-		return u.hostname === "api.z.ai" && u.pathname.split("/").includes("coding");
+		if (u.hostname !== "api.z.ai") return false;
+		return u.pathname.split("/").includes("coding") || u.pathname === "/api/v1";
 	} catch {
 		return false;
 	}
@@ -198,7 +269,10 @@ export function thinkingLevelsFor(
 	// the endpoint aliases older ids to the two models it actually serves.
 	const bare = modelId.split("/").pop() ?? modelId;
 	if (bare.startsWith("glm-")) {
-		if (kind === "openai-compatible" && zaiCodingPlan(baseUrl)) {
+		if (
+			(kind === "openai-compatible" || kind === "responses") &&
+			zaiCodingEndpoint(baseUrl)
+		) {
 			return ["low", "high", "max"];
 		}
 		const { major, minor } = glmVersion(bare);

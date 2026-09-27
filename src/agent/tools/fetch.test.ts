@@ -261,3 +261,135 @@ describe("windowText", () => {
 		expect(window).not.toContain("line-50\n");
 	});
 });
+
+describe("fetch tool — pdf", () => {
+	const PDF_BYTES = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x25, 0xe2, 0xe3, 0xcf, 0xd3]);
+
+	const capable = {
+		current: { modalities: new Set(["text", "pdf"]), carries: () => true },
+	};
+	const incapable = {
+		current: { modalities: new Set(["text"]), carries: () => true },
+	};
+	const pipeBlocked = {
+		current: { modalities: new Set(["text", "pdf"]), carries: () => false },
+	};
+
+	const toModelOutput = (t: ReturnType<typeof fetchTool>, output: unknown) =>
+		(t as unknown as { toModelOutput: (o: { toolCallId: string; input: unknown; output: unknown }) => Promise<unknown> })
+			.toModelOutput({ toolCallId: "tc_1", input: { url: "https://example.com/doc.pdf" }, output });
+
+	function depsPdf(accepts?: { current: { modalities: Set<string>; carries: (mt: string) => boolean } }) {
+		return {
+			configRef: { current: { fetch: [{ kind: "local" }] } as unknown as Config },
+			auth: fakeAuth,
+			...(accepts ? { accepts } : {}),
+		};
+	}
+
+	test("a PDF is saved to webcache and answered with a small ref — the payload never rides history", async () => {
+		const base = serve(() => new Response(PDF_BYTES, { headers: { "content-type": "application/pdf" } }));
+		const out = (await exec(fetchTool(depsPdf()), { url: `${base}/doc.pdf` })) as { pdf: { path: string; url: string; size: number } };
+		expect(out.pdf.url).toBe(`${base}/doc.pdf`);
+		expect(out.pdf.size).toBe(PDF_BYTES.byteLength);
+		expect(out.pdf.path.endsWith(".pdf")).toBe(true);
+		// Crash-safe write, bytes exact.
+		expect(new Uint8Array(readFileSync(out.pdf.path))).toEqual(PDF_BYTES);
+		// The chain's answer rule: a PDF stops the walk — no error, no fallback note.
+		expect("error" in out).toBe(false);
+	});
+
+	test("a pdf answer stops the chain — providers behind local never run", async () => {
+		let providerHits = 0;
+		const provider = serve(() => {
+			providerHits += 1;
+			return Response.json({ results: [{ title: "t", raw_content: "x" }] });
+		});
+		const pdfServer = serve(() => new Response(PDF_BYTES, { headers: { "content-type": "application/pdf" } }));
+		const deps = {
+			configRef: {
+				current: { fetch: [{ kind: "local" }, { kind: "tavily", auth: "tavily" }] } as unknown as Config,
+			},
+			auth: fakeAuth,
+		};
+		const out = (await exec(fetchTool(deps), { url: `${pdfServer}/doc.pdf` })) as { pdf?: unknown };
+		expect(out.pdf).toBeDefined();
+		expect(providerHits).toBe(0);
+	});
+
+	test("toModelOutput renders a native file part for a capable model + pipe", async () => {
+		const base = serve(() => new Response(PDF_BYTES, { headers: { "content-type": "application/pdf" } }));
+		const tool = fetchTool(depsPdf(capable));
+		const out = (await exec(tool, { url: `${base}/doc.pdf` })) as { pdf: { path: string; url: string; size: number } };
+		const rendered = (await toModelOutput(tool, out)) as {
+			type: string;
+			value: Array<Record<string, unknown>>;
+		};
+		expect(rendered.type).toBe("content");
+		const [text, file] = rendered.value as [Record<string, unknown>, Record<string, unknown>];
+		expect(text.type).toBe("text");
+		// Trusted framing rides outside the payload — the fence discipline's
+		// binary twin: the bytes are marked untrusted, and nothing inside
+		// them can displace the framing.
+		expect(String(text.text)).toContain("untrusted data");
+		expect(String(text.text)).toContain(`Source: ${base}/doc.pdf`);
+		expect(file.type).toBe("file");
+		expect(file.mediaType).toBe("application/pdf");
+		expect((file.data as { type: string; data: string }).type).toBe("data");
+		expect((file.data as { data: string }).data).toBe(Buffer.from(PDF_BYTES).toString("base64"));
+	});
+
+	test("model without the pdf modality gets the saved-path reference", async () => {
+		const base = serve(() => new Response(PDF_BYTES, { headers: { "content-type": "application/pdf" } }));
+		const tool = fetchTool(depsPdf(incapable));
+		const out = (await exec(tool, { url: `${base}/doc.pdf` })) as { pdf: { path: string } };
+		const rendered = (await toModelOutput(tool, out)) as { type: string; value: string };
+		expect(rendered.type).toBe("text");
+		expect(rendered.value).toContain("saved to:");
+		expect(rendered.value).toContain(out.pdf.path);
+		expect(rendered.value).toContain("send_file");
+	});
+
+	test("a pipe that can't carry PDFs degrades the same way — two gates, both must pass", async () => {
+		const base = serve(() => new Response(PDF_BYTES, { headers: { "content-type": "application/pdf" } }));
+		const tool = fetchTool(depsPdf(pipeBlocked));
+		const out = (await exec(tool, { url: `${base}/doc.pdf` })) as { pdf: { path: string } };
+		const rendered = (await toModelOutput(tool, out)) as { type: string; value: string };
+		expect(rendered.type).toBe("text");
+		expect(rendered.value).toContain(out.pdf.path);
+	});
+
+	test("no accepts ref at all = degrade (never inline blind)", async () => {
+		const base = serve(() => new Response(PDF_BYTES, { headers: { "content-type": "application/pdf" } }));
+		const tool = fetchTool(depsPdf(undefined));
+		const out = (await exec(tool, { url: `${base}/doc.pdf` }));
+		const rendered = (await toModelOutput(tool, out)) as { type: string; value: string };
+		expect(rendered.type).toBe("text");
+	});
+
+	test("saved copy gone: degrade with a warn — the anomaly is in the log", async () => {
+		const target = join(home, "state", "goblin.log");
+		setLogFile(target);
+		const base = serve(() => new Response(PDF_BYTES, { headers: { "content-type": "application/pdf" } }));
+		const tool = fetchTool(depsPdf(capable));
+		const out = (await exec(tool, { url: `${base}/doc.pdf` })) as { pdf: { path: string } };
+		// The file vanishes between fetch and render (the disk-failure path).
+		rmSync(out.pdf.path);
+		const rendered = (await toModelOutput(tool, out)) as { type: string; value: string };
+		expect(rendered.type).toBe("text");
+		expect(rendered.value).toContain("unreadable");
+		const lines = readFileSync(target, "utf8").trim().split("\n");
+		const last = JSON.parse(lines[lines.length - 1] ?? "{}") as Record<string, unknown>;
+		expect(last.msg).toBe("fetched pdf unreadable — degrading to reference");
+	});
+
+	test("non-pdf outputs keep the SDK default rendering through toModelOutput", async () => {
+		const base = serve(() => new Response(ARTICLE_HTML, { headers: { "content-type": "text/html" } }));
+		const tool = fetchTool(depsPdf(capable));
+		const out = (await exec(tool, { url: `${base}/page` })) as string;
+		const rendered = (await toModelOutput(tool, out)) as { type: string; value: string };
+		expect(rendered).toEqual({ type: "text", value: out });
+		const refusal = await toModelOutput(tool, { error: "nope", kind: "binary" });
+		expect(refusal).toEqual({ type: "json", value: { error: "nope", kind: "binary" } });
+	});
+});

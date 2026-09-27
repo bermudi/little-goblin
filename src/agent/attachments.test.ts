@@ -276,3 +276,26 @@ describe("materializeAttachments", () => {
 		expect(out[0]!.parts[0]!.type).toBe("file");
 	});
 });
+
+	test("capable model + incapable pipe = path reference — two gates, both must pass", async () => {
+		const dir = tmpdir_();
+		const f = join(dir, "doc.pdf");
+		writeFileSync(f, "pdfbytes");
+		const history: UIMessage[] = [
+			{
+				id: "u1",
+				role: "user",
+				parts: [attachmentPart({ path: f, mediaType: "application/pdf", filename: "doc.pdf", size: 8 })],
+			},
+		];
+		// Catalog truth (pdf modality) without pipe truth (carriesMedia)
+		// once meant a thrown turn mid-request — openai-compatible rejected
+		// non-image file parts the catalog said the model could take.
+		const blocked = await materializeAttachments(history, new Set(["text", "pdf"]), 1024, () => false);
+		expect(blocked[0]!.parts[0]!.type).toBe("text");
+		expect((blocked[0]!.parts[0] as { text: string }).text).toContain(f);
+
+		const open = await materializeAttachments(history, new Set(["text", "pdf"]), 1024, () => true);
+		expect(open[0]!.parts[0]!.type).toBe("file");
+		expect((open[0]!.parts[0] as { mediaType: string }).mediaType).toBe("application/pdf");
+	});

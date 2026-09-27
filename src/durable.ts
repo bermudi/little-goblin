@@ -16,6 +16,16 @@ import {
 import { dirname, join } from "node:path";
 
 export function durableWriteFile(path: string, content: string, modeIfNew = 0o644): void {
+	durableWriteBuffer(path, Buffer.from(content, "utf8"), modeIfNew);
+}
+
+/** The bytes twin — fetched PDFs and other binary state get the same
+ *  tmp+fsync+rename ritual as every other whole-file write. */
+export function durableWriteBytes(path: string, data: Uint8Array, modeIfNew = 0o644): void {
+	durableWriteBuffer(path, Buffer.from(data), modeIfNew);
+}
+
+function durableWriteBuffer(path: string, buf: Buffer, modeIfNew: number): void {
 	let mode = modeIfNew;
 	try {
 		mode = statSync(path).mode & 0o777;
@@ -32,7 +42,6 @@ export function durableWriteFile(path: string, content: string, modeIfNew = 0o64
 	try {
 		// writeSync returns bytes written — a short write (ENOSPC,
 		// interruption) must not reach fsync/rename as a truncated file.
-		const buf = Buffer.from(content, "utf8");
 		let off = 0;
 		while (off < buf.length) {
 			const n = writeSync(fd, buf, off);

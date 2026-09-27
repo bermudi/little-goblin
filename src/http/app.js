@@ -410,9 +410,9 @@ async function refreshThinking() {
   /** @type {string[]} */
   let levels = ORDER;
   if (modelId && prov) {
-    // base only matters to openai-compatible — a stale value must not
-    // travel with a kind switch.
-    const base = prov.kind === "openai-compatible" ? prov.baseUrl.trim() : "";
+    // base only matters to the kinds that carry one — a stale value must
+    // not travel with a kind switch.
+    const base = prov.kind === "openai-compatible" || prov.kind === "responses" ? prov.baseUrl.trim() : "";
     try {
       const res = await fetch(
         "/api/thinking-levels?kind=" + encodeURIComponent(prov.kind) +
@@ -565,9 +565,9 @@ function provCard(p) {
   auth.setAttribute("aria-label", "secret name");
   auth.oninput = () => { p.auth = auth.value; markDirty(); };
   function sync() {
-    const compat = kind.value === "openai-compatible";
-    baseLabel.classList.toggle("hidden", !compat);
-    base.classList.toggle("hidden", !compat);
+    const needsBase = kind.value === "openai-compatible" || kind.value === "responses";
+    baseLabel.classList.toggle("hidden", !needsBase);
+    base.classList.toggle("hidden", !needsBase);
     // codex auth is the CLI's OAuth file, not an auth.jsonl secret name.
     const codex = kind.value === "codex";
     authLabel.textContent = codex ? "Codex auth file" : "Secret name";
@@ -597,7 +597,7 @@ function validate() {
   if (names.some((n) => !n)) return "Every provider needs a name.";
   if (new Set(names).size !== names.length) return "Duplicate provider name.";
   for (const p of provDraft) {
-    if (p.kind === "openai-compatible") {
+    if (p.kind === "openai-compatible" || p.kind === "responses") {
       if (!p.baseUrl.trim()) return 'Provider "' + p.name + '" needs a base url.';
       if (!p.auth.trim()) return 'Provider "' + p.name + '" needs a secret name.';
     } else if (p.kind === "openrouter" && !p.auth.trim()) {
@@ -641,7 +641,7 @@ function buildBody() {
   /** @type {Record<string, ProviderConfig>} */
   const providers = {};
   for (const p of provDraft) {
-    if (p.kind === "openai-compatible") {
+    if (p.kind === "openai-compatible" || p.kind === "responses") {
       providers[p.name] = { kind: p.kind, baseUrl: p.baseUrl.trim(), auth: p.auth.trim() };
     } else if (p.kind === "codex") {
       providers[p.name] = p.auth.trim() ? { kind: p.kind, authFile: p.auth.trim() } : { kind: p.kind };

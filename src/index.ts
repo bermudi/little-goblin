@@ -3,7 +3,7 @@
 import { loadAuth } from "./auth.ts";
 import { contextLimit, ensureOpenRouterCatalog, inputModalities } from "./agent/models-dev.ts";
 import { buildSystemPrompt } from "./agent/prompt.ts";
-import { observedModel, resolveModel, thinkingOptions } from "./agent/providers.ts";
+import { observedModel, carriesMedia, resolveModel, thinkingOptions } from "./agent/providers.ts";
 import { generateTopicTitle } from "./agent/title.ts";
 import { generateText } from "ai";
 import { probeFfmpeg, transcribeAudio, transcriptionModel } from "./agent/transcribe.ts";
@@ -200,6 +200,12 @@ async function boot() {
 				inputModalities(provider, modelId),
 				contextLimit(provider, modelId),
 			]);
+			// The pipe gate: what the provider's SDK converter can actually
+			// deliver (carriesMedia, providers.ts). Catalog truth alone once
+			// cost a thrown turn — openai-compatible < v3 rejected any
+			// non-image file part the catalog said the model could take.
+			const kind = cfg.providers[provider]?.kind;
+			const carries = (mediaType: string): boolean => carriesMedia(kind ?? "", mediaType);
 			const level: ThinkingLevel = cfg.thinking;
 			const providerOptions = thinkingOptions(cfg, modelRef, level);
 			const prompt = buildSystemPrompt(
@@ -219,6 +225,7 @@ async function boot() {
 				model: observedModel(model, { conversation: conv.id }),
 				system: prompt.text,
 				inputModalities: modalities,
+				carries,
 				...(contextWindow !== null ? { contextWindow } : {}),
 				...(providerOptions ? { providerOptions } : {}),
 			};
@@ -239,7 +246,7 @@ async function boot() {
 				return text;
 			},
 		},
-		makeTools: (conv, deliverVoice, recording, deliverFile) => {
+		makeTools: (conv, deliverVoice, recording, deliverFile, accepts) => {
 			const tts = configRef.current.tts;
 			return makeTools(
 				paths.workspace(),
@@ -292,8 +299,10 @@ async function boot() {
 						}
 					: undefined,
 				// Web tools: fetch always (local needs no config), search
-				// behind its config block — both read configRef live.
-				{ configRef, auth },
+				// behind its config block — both read configRef live. The
+				// accepts ref rides along for the fetch tool's per-turn PDF
+				// rendering.
+				{ configRef, auth, ...(accepts ? { accepts } : {}) },
 				// The transcribe tool joins/leaves the set with the
 				// transcription block — same live-read rule as search.
 				configRef.current.transcription !== undefined

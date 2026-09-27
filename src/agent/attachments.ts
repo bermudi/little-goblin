@@ -50,10 +50,22 @@ export function attachmentPart(ref: AttachmentRef): UIMessage["parts"][number] {
 	return { type: ATTACHMENT_PART, data: ref };
 }
 
+// This turn's effective media acceptance, built once per turn by
+// buildStep: catalog modalities (what the model consumes, models.dev)
+// intersected with the provider pipe's carries predicate (what the SDK
+// converter can actually deliver — carriesMedia in providers.ts).
+// Attachment materialization and the fetch tool's PDF rendering both
+// read it at request time, so a given history under a given model
+// renders to identical request bytes every turn.
+export interface AcceptsMedia {
+	modalities: ReadonlySet<string>;
+	carries: (mediaType: string) => boolean;
+}
+
 // Does capability data say this media type goes in natively? Same mapping
 // intake and replay share: image/audio/video need their own modality;
 // anything else needs the generic "file" modality, or "pdf" for PDFs.
-export function acceptsMedia(modalities: Set<string>, mediaType: string): boolean {
+export function acceptsMedia(modalities: ReadonlySet<string>, mediaType: string): boolean {
 	const top = mediaType.split("/", 1)[0];
 	if (top === "image") return modalities.has("image");
 	if (top === "audio") return modalities.has("audio");
@@ -92,6 +104,7 @@ function planPart(
 	ref: AttachmentRef,
 	modalities: Set<string>,
 	maxItemBytes: number,
+	carries: (mediaType: string) => boolean,
 ): { decision: "inline" } | { decision: "fallback"; reason: "modality" | "size" } {
 	// Attached audio is data, not speech — even an audio-capable model
 	// gets the path, and listens via the transcribe tool or ffmpeg. Only
@@ -99,7 +112,12 @@ function planPart(
 	if (ref.mediaType.startsWith("audio/") && ref.speech !== true) {
 		return { decision: "fallback", reason: "modality" };
 	}
-	if (!acceptsMedia(modalities, ref.mediaType)) {
+	// Two gates, both must pass: the model consumes the media type
+	// (catalog modalities), and the provider pipe can deliver it
+	// (carriesMedia — the SDK converter's expressible surface). A model
+	// that takes PDFs behind a pipe that can't carry them gets the path
+	// reference, not a thrown turn mid-request.
+	if (!acceptsMedia(modalities, ref.mediaType) || !carries(ref.mediaType)) {
 		return { decision: "fallback", reason: "modality" };
 	}
 	if (ref.size > maxItemBytes) {
@@ -127,6 +145,7 @@ export async function materializeAttachments(
 	messages: UIMessage[],
 	modalities: Set<string> = new Set(),
 	maxItemBytes: number = INLINE_ITEM_MAX_BYTES,
+	carries: (mediaType: string) => boolean = () => true,
 ): Promise<UIMessage[]> {
 	const out: UIMessage[] = [];
 	for (const m of messages) {
@@ -145,7 +164,7 @@ export async function materializeAttachments(
 				continue;
 			}
 			const ref = parsed.data;
-			const plan = planPart(ref, modalities, maxItemBytes);
+			const plan = planPart(ref, modalities, maxItemBytes, carries);
 			if (plan.decision === "fallback") {
 				if (plan.reason === "size") {
 					log.warn("attachment over inline cap — degrading to reference", {

@@ -8,11 +8,15 @@
 import { describe, expect, test } from "bun:test";
 import type { Config } from "../config.ts";
 import { _primeOpenRouterCatalog } from "./models-dev.ts";
-import { thinkingLevelsFor, thinkingOptions } from "./providers.ts";
+import { carriesMedia, thinkingLevelsFor, thinkingOptions } from "./providers.ts";
 
 const cfg: Config = {
 	providers: {
 		zai: { kind: "openai-compatible", baseUrl: "https://api.z.ai/api/coding/paas/v4", auth: "zai" },
+		// The Responses door (devpack endpoint table) — probe-verified
+		// 2026-09-27: documents ride in user messages AND tool outputs.
+		zai_responses: { kind: "responses", baseUrl: "https://api.z.ai/api/v1", auth: "zai" },
+		relay_responses: { kind: "responses", baseUrl: "https://relay.example/v1", auth: "other" },
 		other: { kind: "openai-compatible", baseUrl: "https://example.com/v1", auth: "other" },
 		// Free-form name with a dot — the exact shape the SDK's lookup
 		// key rule (first dot-separated segment) exists for.
@@ -269,5 +273,70 @@ describe("thinkingOptions — non-glm openai-compatible and openrouter", () => {
 			openrouter: { reasoning: { enabled: false, exclude: true } },
 		});
 		_primeOpenRouterCatalog(null);
+	});
+});
+
+describe("responses kind — the /api/v1 door", () => {
+	test("glm on the coding endpoint is forced-thinking, whichever door", () => {
+		expect(thinkingLevelsFor("responses", "glm-5.3-flash", "https://api.z.ai/api/v1")).toEqual([
+			"low",
+			"high",
+			"max",
+		]);
+		// The endpoint aliases older glm ids to the 5.3 generation it serves.
+		expect(thinkingLevelsFor("responses", "glm-4.6", "https://api.z.ai/api/v1")).toEqual([
+			"low",
+			"high",
+			"max",
+		]);
+	});
+
+	test("glm thinking maps to the OpenAI effort knob (probe: low→7, high→37 reasoning tokens)", () => {
+		expect(thinkingOptions(cfg, "zai_responses/glm-5.3-flash", "off")).toEqual({
+			zai_responses: { reasoningEffort: "low" },
+		});
+		expect(thinkingOptions(cfg, "zai_responses/glm-5.3-flash", "medium")).toEqual({
+			zai_responses: { reasoningEffort: "high" },
+		});
+		expect(thinkingOptions(cfg, "zai_responses/glm-5.3-flash", "xhigh")).toEqual({
+			zai_responses: { reasoningEffort: "max" },
+		});
+	});
+
+	test("non-glm models pass the level through; off means the floor", () => {
+		expect(thinkingOptions(cfg, "relay_responses/gpt-6-astra", "high")).toEqual({
+			relay_responses: { reasoningEffort: "high" },
+		});
+		expect(thinkingOptions(cfg, "relay_responses/gpt-6-astra", "off")).toEqual({
+			relay_responses: { reasoningEffort: "low" },
+		});
+	});
+});
+
+describe("carriesMedia — what the pipe can deliver", () => {
+	test("responses carries probe-verified types only: images and PDFs", () => {
+		expect(carriesMedia("responses", "application/pdf")).toBe(true);
+		expect(carriesMedia("responses", "image/png")).toBe(true);
+		// Server-side rejection, probe 2026-09-27: "Failed to parse the file."
+		expect(carriesMedia("responses", "video/mp4")).toBe(false);
+		expect(carriesMedia("responses", "application/zip")).toBe(false);
+	});
+
+	test("openai-compatible emits image/video/audio/pdf parts in user messages", () => {
+		expect(carriesMedia("openai-compatible", "application/pdf")).toBe(true);
+		expect(carriesMedia("openai-compatible", "video/mp4")).toBe(true);
+		expect(carriesMedia("openai-compatible", "audio/ogg")).toBe(true);
+		expect(carriesMedia("openai-compatible", "application/zip")).toBe(false);
+	});
+
+	test("openrouter normalizes everything; codex is goblin's own converter", () => {
+		expect(carriesMedia("openrouter", "application/zip")).toBe(true);
+		expect(carriesMedia("codex", "application/pdf")).toBe(true);
+		expect(carriesMedia("codex", "video/mp4")).toBe(false);
+	});
+
+	test("unknown kinds carry the universal minimum", () => {
+		expect(carriesMedia("mystery", "image/jpeg")).toBe(true);
+		expect(carriesMedia("mystery", "application/pdf")).toBe(false);
 	});
 });

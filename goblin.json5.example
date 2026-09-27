@@ -11,10 +11,13 @@
 {
   // --- Provider registry: name → factory + auth.jsonl key ---
   providers: {
-    // GLM via Z.AI coding plan — daily driver.
+    // GLM via Z.AI coding plan — daily driver. The `responses` kind is
+    // z.ai's OpenAI Responses door (https://api.z.ai/api/v1): the one
+    // chat-family protocol whose tool outputs carry documents, so
+    // fetched/sent PDFs reach the model natively (DESIGN.md, Web access).
     zai: {
-      kind: "openai-compatible",
-      baseUrl: "https://api.z.ai/api/coding/paas/v4",
+      kind: "responses",
+      baseUrl: "https://api.z.ai/api/v1",
       auth: "zai", // resolves auth.jsonl record named "zai"
     },
     openrouter: {

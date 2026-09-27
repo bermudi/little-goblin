@@ -20,7 +20,7 @@ import {
 } from "ai";
 import type { ProviderOptions, ToolExecutionOptions } from "@ai-sdk/provider-utils";
 import { randomUUID } from "node:crypto";
-import { materializeAttachments } from "./agent/attachments.ts";
+import { INLINE_ITEM_MAX_BYTES, materializeAttachments, type AcceptsMedia } from "./agent/attachments.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import type { MemoryConfig } from "./config.ts";
@@ -105,6 +105,9 @@ export interface ModelStep {
 	// attachment parts materialize as file parts this turn. Absent =
 	// text-only, everything degrades to path references.
 	inputModalities?: Set<string>;
+	// What the provider pipe can carry (carriesMedia, providers.ts) —
+	// the second gate on inlining. Absent = anything (legacy behavior).
+	carries?: (mediaType: string) => boolean;
 	// The model's context window (models.dev), when known — the
 	// denominator for window-utilization logging.
 	contextWindow?: number;
@@ -126,6 +129,10 @@ export interface RuntimeDeps {
 		deliverVoice?: (audio: Uint8Array) => Promise<void>,
 		recording?: () => () => void,
 		deliverFile?: (file: OutgoingFile) => Promise<void>,
+		// Filled from this turn's ModelStep once buildStep resolves it;
+		// the fetch tool reads it at request time when rendering stored
+		// PDF references (see attachments.ts, AcceptsMedia).
+		accepts?: { current: AcceptsMedia },
 	): ToolSet;
 	// Long-term memory — absent = exact current behavior. When present,
 	// admitted turns recall bounded evidence pre-turn (fail-open,
@@ -670,12 +677,23 @@ export class Runtime {
 						return sink.onVoiceSynthesisStart!();
 					}
 				: undefined;
+			// The accept-everything placeholder is what tools see if they ask
+			// before buildStep lands (nothing does — first read is at request
+			// build, after the assignment below).
+			const accepts: { current: AcceptsMedia } = {
+				current: { modalities: new Set(["text"]), carries: () => false },
+			};
 			const tools = this.fenceTools(
-				this.deps.makeTools(conv, deliverVoice, recording, deliverFile),
+				this.deps.makeTools(conv, deliverVoice, recording, deliverFile, accepts),
 				convId,
 				epoch,
 			);
 			const step = await this.deps.buildStep(conv, tools);
+			this.checkAuthority(convId, epoch);
+			accepts.current = {
+				modalities: step.inputModalities ?? new Set(["text"]),
+				carries: step.carries ?? (() => true),
+			};
 			this.checkAuthority(convId, epoch);
 			// Materialize attachment refs against THIS turn's model — a
 			// media part the provider can't consume degrades to its path
@@ -686,6 +704,8 @@ export class Runtime {
 			const prepared = await materializeAttachments(
 				mergeConsecutiveUsers(withMemoryBlocks(entries, memory.prior, memory.current)),
 				step.inputModalities,
+				INLINE_ITEM_MAX_BYTES,
+				accepts.current.carries,
 			);
 			this.checkAuthority(convId, epoch);
 			const messages = await convertToModelMessages(prepared, {

@@ -1,13 +1,19 @@
 // The delegate tool's boundary contract: only configured harnesses run,
 // the concurrency cap and cwd checks reject before any herdr call, and
-// a successful start leaves a pinned, bound row herdr knows about.
+// a successful start leaves a pinned, bound row herdr knows about. The
+// tool drives a real lifecycle owner over the same fake-herdr/real-
+// SQLite edge — these tests pin the wire shapes the model sees on top
+// of the protocol the owner's own tests pin.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDelegations, type DelegationsStore } from "../../delegations.ts";
-import { startDelegationWatcher } from "../../delegation-lifecycle.ts";
+import {
+	startDelegationLifecycle,
+	type DelegationLifecycle,
+} from "../../delegation-lifecycle.ts";
 import { HerdrError, type AgentInfo, type Herdr } from "../../herdr.ts";
 import { delegateTool, type DelegateToolDeps } from "./delegate.ts";
 
@@ -31,6 +37,7 @@ function agent(name: string): AgentInfo {
 
 interface Harness {
 	tool: ReturnType<typeof delegateTool>;
+	lifecycle: DelegationLifecycle;
 	store: DelegationsStore;
 	prompts: string[];
 	closed: string[];
@@ -67,9 +74,21 @@ function harness(maxRunning = 3, startError?: string): Harness {
 			return Promise.resolve();
 		},
 	};
+	const delegationsDir = join(dir, "delegations");
+	// The real owner under the tool — the timer never fires inside a
+	// test (huge tick); scans happen through explicit tick() calls on
+	// ad-hoc instances, as before.
+	const lifecycle = startDelegationLifecycle(
+		{
+			delegations: store,
+			herdr,
+			delegationsDir,
+			wake: () => true,
+		},
+		3_600_000,
+	);
 	const deps: DelegateToolDeps = {
-		delegations: store,
-		herdr,
+		lifecycle,
 		config: {
 			maxRunning,
 			harnesses: {
@@ -80,16 +99,16 @@ function harness(maxRunning = 3, startError?: string): Harness {
 		chatId: -100,
 		threadId: 7,
 		workspaceDir,
-		delegationsDir: join(dir, "delegations"),
 	};
 	return {
 		tool: delegateTool(deps),
+		lifecycle,
 		store,
 		prompts,
 		closed,
 		herdr,
 		workspaceDir,
-		delegationsDir: deps.delegationsDir,
+		delegationsDir,
 	};
 }
 
@@ -280,7 +299,7 @@ describe("delegate tool", () => {
 		});
 		h.herdr.startAgent = (name) => gate.then(() => agent(name));
 		const wakes: string[] = [];
-		const w = startDelegationWatcher({
+		const w = startDelegationLifecycle({
 			delegations: h.store,
 			herdr: h.herdr,
 			delegationsDir: h.delegationsDir,
@@ -306,7 +325,7 @@ describe("delegate tool", () => {
 
 		release();
 		const out = (await starting) as { id: number; status: string };
-		w.stop();
+		w.stopTicker();
 		expect(out.status).toBe("running");
 		expect(h.store.get(1)!.status).toBe("running");
 	});
@@ -408,7 +427,7 @@ describe("delegate tool", () => {
 		})) as { id: number };
 
 		const wakes: string[] = [];
-		const w = startDelegationWatcher({
+		const w = startDelegationLifecycle({
 			delegations: h.store,
 			herdr: h.herdr,
 			delegationsDir: h.delegationsDir,
@@ -418,7 +437,7 @@ describe("delegate tool", () => {
 			},
 		});
 		await w.tick();
-		w.stop();
+		w.stopTicker();
 		expect(h.store.get(out.id)!.status).toBe("done");
 		expect(wakes[0]).toContain("· done]");
 	});

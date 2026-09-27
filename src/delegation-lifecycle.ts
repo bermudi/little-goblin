@@ -290,6 +290,18 @@ async function launch(
 	// whatever got bound, report why. The row is the record — the
 	// workspace must not outlive it unwatched.
 	const fail = async (why: string): Promise<LaunchOutcome> => {
+		// A stop that won while herdr was mid-call already closed the
+		// bound workspace and stamped the row — re-read first: the
+		// operator's verdict stands over the failure report (the
+		// markRunning rule), and the workspace must not close twice.
+		const raced = deps.delegations.get(d.id);
+		if (raced?.status === "stopped") {
+			log.info("delegation stopped during start failure", {
+				delegation: d.id,
+				name: d.name,
+			});
+			return { kind: "stopped", delegation: raced };
+		}
 		deps.delegations.setStatus(d.id, "failed");
 		const bound = deps.delegations.get(d.id);
 		if (bound?.workspaceId) {

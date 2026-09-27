@@ -440,5 +440,51 @@ describe("delegation watcher", () => {
 			expect(h.store.get(1)!.status).toBe("stopped");
 			expect(h.wakes).toEqual([]); // nothing to report
 		});
+
+		test("stop lands while startAgent fails → stopped stands, workspace closed once", async () => {
+			const h = harness();
+			let release!: () => void;
+			const gate = new Promise<void>((r) => {
+				release = r;
+			});
+			const closed: string[] = [];
+			h.deps.herdr = {
+				...h.deps.herdr,
+				createWorkspace: () => Promise.resolve({ workspaceId: "w5", paneId: "w5:p1" }),
+				startAgent: () => gate.then(() => Promise.reject(new Error("harness refused"))),
+				closeWorkspace: (id) => {
+					closed.push(id);
+					return Promise.resolve();
+				},
+			};
+			const owner = startDelegationLifecycle(h.deps);
+			const launching = owner.launch({
+				harness: { name: "codex", kind: "codex", args: [] },
+				task: "do it",
+				cwd: "/w",
+				name: "x",
+				maxRunning: 3,
+				address: { chatId: 1, threadId: null },
+			});
+			// Wait for the bind so the stop sees a workspace to close —
+			// the row is starting with the launch ids bound.
+			for (let i = 0; i < 200 && h.store.get(1)?.workspaceId === ""; i++) {
+				await new Promise((r) => setTimeout(r, 1));
+			}
+			// The stop lands fully while startAgent is pending: it closes
+			// the bound workspace and marks the row stopped.
+			const stopOut = await owner.stop(1);
+			expect(stopOut.kind).toBe("stopped");
+			expect(closed).toEqual(["w5"]);
+
+			release();
+			const out = await launching;
+			owner.stopTicker();
+			// The failure must not stomp the operator's stop verdict or
+			// close the workspace a second time.
+			expect(out.kind).toBe("stopped");
+			expect(closed).toEqual(["w5"]);
+			expect(h.store.get(1)!.status).toBe("stopped");
+		});
 	});
 });

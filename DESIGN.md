@@ -107,7 +107,7 @@ agent loop.
   - `openrouter` — `@openrouter/ai-sdk-provider`.
   - `codex` — `ai-sdk-provider-codex-cli` exists (ChatGPT Plus/Pro auth via
     `codex` CLI login) but wraps the CLI's own agent loop — no caller tools,
-    so it can't drive goblin's turn loop. Ours is a thin `LanguageModelV2`
+    so it can't drive goblin's turn loop. Ours is a thin `LanguageModelV4`
     over `chatgpt.com/backend-api/codex/responses` (`src/agent/codex.ts`):
     reads `~/.codex/auth.json` per call, refreshes expired access tokens
     against the OAuth endpoint, and writes rotated refresh tokens back —
@@ -134,7 +134,7 @@ agent loop.
   neither (non-reasoner → `off`); a cold catalog passes the level
   through — fail loud, never fake knowledge. `off` = `enabled:false`. No
   `/think` command — the mini app owns the knob.
-- **History**: stored as AI SDK `UIMessage`-format JSON (the v5 parts array —
+- **History**: stored as AI SDK `UIMessage`-format JSON (the parts array —
   text, reasoning, tool, file parts), wrapped in a versioned envelope
   `{"v":1,"message":…}`: the SDK owns the part shapes, so every row stamps
   the format that wrote it — a future shape change is a deliberate
@@ -221,7 +221,9 @@ agent loop.
     Operator edits (SOUL.md, AGENTS.md, USER.md, skills) stay live next turn;
     they are explicit cache boundaries and log the cost they incur.
   - Every model call logs usage with the cached split
-    (`cachedInputTokens`, null when the provider doesn't report) and the
+    (`cacheReadTokens`/`cacheWriteTokens` in the per-step line — spec v4
+    splits reads from writes — null when the provider doesn't report)
+    and the
     request prefix hash — cache behavior and any drift are observable in
     goblin.log. Window utilization warns as input approaches the
     catalog context limit. History compaction is an explicit logged
@@ -1585,7 +1587,7 @@ src/
                     fetchCachedCatalog helper and migrates both. No third
                     copy.
     codex.ts        codex OAuth provider — credentials lifecycle, wire
-                    conversion, LanguageModelV2; splits into
+                    conversion, LanguageModelV4; splits into
                     codex/auth.ts + codex/model.ts when next touched
                     (external-change pressure lands on one 770-line file)
     attachments.ts  data-attachment parts + per-turn materialization

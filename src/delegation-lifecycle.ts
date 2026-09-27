@@ -254,7 +254,13 @@ async function readScreenTail(
 	try {
 		return await deps.herdr.readPane(d.paneId, lines);
 	} catch (err) {
+		// Both channels failed — the first error is the one callers
+		// render, but the pane failure must still land in the log.
 		firstError ??= err;
+		log.warn("delegation pane read failed", {
+			delegation: d.id,
+			error: err instanceof Error ? err.message : String(err),
+		});
 		throw firstError instanceof Error
 			? firstError
 			: new Error(String(firstError));

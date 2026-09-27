@@ -257,17 +257,25 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 					deps.delegations.setStatus(d.id, "failed");
 					const bound = deps.delegations.get(d.id);
 					if (bound?.workspaceId) {
-						try {
-							await deps.herdr.closeWorkspace(bound.workspaceId);
-						} catch (err) {
-							log.warn("delegation cleanup failed", {
-								delegation: d.id,
-								error: String(err),
-							});
-						}
+						await closeWorkspaceQuietly(bound.workspaceId);
 					}
 					log.info("delegation failed at start", { delegation: d.id, name, why });
 					return { error: `delegation ${d.id} failed at start: ${why}` };
+				};
+
+				// The stop-race cleanup path: the row is (or is about to be)
+				// stopped/failed, so nothing will ever watch this workspace — a
+				// failed close is logged, not thrown (the stop verdict itself
+				// must not be lost to a cleanup error).
+				const closeWorkspaceQuietly = async (workspaceId: string): Promise<void> => {
+					try {
+						await deps.herdr.closeWorkspace(workspaceId);
+					} catch (err) {
+						log.warn("delegation cleanup failed", {
+							delegation: d.id,
+							error: String(err),
+						});
+					}
 				};
 
 				let ws: { workspaceId: string; paneId: string };
@@ -282,6 +290,19 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 					workspaceId: ws.workspaceId,
 					paneId: ws.paneId,
 				});
+				// bindLaunch does not resurrect a stopped row: a `stop` that ran
+				// while createWorkspace was pending saw nothing to close (empty
+				// workspaceId) and marked the row stopped. Re-read now — the
+				// workspace we just bound is otherwise one nobody closes and no
+				// watcher tracks. Honoring the stop here skips the agent entirely.
+				if (deps.delegations.get(d.id)?.status === "stopped") {
+					await closeWorkspaceQuietly(ws.workspaceId);
+					log.info("delegation stopped during workspace creation", {
+						delegation: d.id,
+						name,
+					});
+					return { id: d.id, name, status: "stopped" };
+				}
 
 				try {
 					await deps.herdr.startAgent(agentName, h.kind, ws.paneId, h.args ?? []);
@@ -326,7 +347,11 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 				const applied = deps.delegations.markRunning(d.id, baseline, promptedAt);
 				if (applied === null) {
 					// A `stop` won the race while herdr was launching — the
-					// operator's verdict stands over our launch report.
+					// operator's verdict stands over our launch report. The stop
+					// may have failed to close the workspace itself (or never got
+					// the chance), and this row no longer has a watcher: close
+					// before returning so no live agent survives unwatched.
+					await closeWorkspaceQuietly(ws.workspaceId);
 					log.info("delegation stopped while launching", {
 						delegation: d.id,
 						name,

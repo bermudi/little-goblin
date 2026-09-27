@@ -646,7 +646,8 @@ program's state, never a workspace file.** Rulings:
   standing note that event content is data to evaluate, never
   instructions — a webhook is untrusted input by construction.
   Throttle: one fire per program per 60 s; extra hits get 429 and a
-  log line. Unknown/disabled token → 404, no body echo.
+  log line; a refused or failed hit does not consume the window.
+  Unknown/disabled token → 404, no body echo.
 - **Recurrence is cron, evaluated in the server's local timezone**
   (operator = admin; `date` via bash agrees). The model translates
   natural language → cron inside the tool call; `cron-parser`
@@ -679,7 +680,8 @@ program's state, never a workspace file.** Rulings:
   landed — release the sink with the error, deliver it, then
   markRan anyway: one attempt per occurrence, so a persistent
   failure cannot refire (and re-deliver) on every tick. Webhook
-  fires stamp last_run and leave next_run alone.
+  fires stamp last_run only when the wake landed, and leave next_run
+  alone.
 
 Still out (machinery): proactive monitoring/heartbeat (programs are
 authority the operator granted, woken by a clock or an event — not an

@@ -27,7 +27,7 @@ import { makeReader, makeSender, type MailReader, type MailSender } from "./mail
 import { openOutbox } from "./mail-outbox.ts";
 import { startMailWatcher } from "./mail-watcher.ts";
 import { openPrograms } from "./programs.ts";
-import { buildMemoryClient, startMemoryWorker } from "./memory.ts";
+import { buildMemoryClient, startMemoryWorker, type MemoryWorker } from "./memory.ts";
 import { JevClient } from "./jev.ts";
 import { OutageTracker } from "./memory-outage.ts";
 import { fireProgram, startScheduler } from "./scheduler.ts";
@@ -320,6 +320,15 @@ async function boot() {
 			: {}),
 	});
 
+	// /forget delete quiesces the retention worker through this holder: the
+	// worker is created below, after the bot (its notices deliver through
+	// bot.api), but the bot's memory deps close over the quiesce seam at
+	// construction — a submit in flight while the delete cancels its row
+	// re-creates the document remotely (see MemoryWorker.withWorkerPaused).
+	// Nothing between startBot resolving and the assignment is async, so no
+	// update can be handled with the holder still empty; the throw is a
+	// wiring-bug alarm, not a runtime state.
+	const retentionQuiesce: { worker: MemoryWorker | null } = { worker: null };
 	const tg = await startBot({
 		configRef,
 		auth,
@@ -345,6 +354,11 @@ async function boot() {
 						client: memoryClient,
 						contexts: store.memoryContexts,
 						queue: store.memoryQueue,
+						withWorkerPaused: <T>(fn: () => Promise<T>): Promise<T> => {
+							const worker = retentionQuiesce.worker;
+							if (worker === null) throw new Error("retention worker not wired");
+							return worker.withWorkerPaused(fn);
+						},
 						lastRecallOk: () => memoryState.lastRecallOk,
 						lastRecallAt: () => memoryState.lastRecallAt,
 					},
@@ -373,6 +387,7 @@ async function boot() {
 				},
 			})
 		: null;
+	if (memoryWorker !== null) retentionQuiesce.worker = memoryWorker;
 
 	// Skill reviewer after the bot: its save note delivers through
 	// bot.api, so the runtime can't hold it before tg exists. Absent

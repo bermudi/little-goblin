@@ -10,7 +10,7 @@ import type { Api } from "grammy";
 import { type ConfigRef } from "../config.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";
 import { HindsightClient, HindsightError } from "../hindsight.ts";
-import { memoryStatus, type MemoryContexts } from "../memory.ts";
+import { memoryStatus, type MemoryContexts, type MemoryWorker } from "../memory.ts";
 import type { MemoryQueue } from "../memory-queue.ts";
 import type { Runtime } from "../runtime.ts";
 import { log } from "../log.ts";
@@ -20,6 +20,10 @@ export interface CommandMemoryDeps {
 	client: HindsightClient;
 	contexts: MemoryContexts;
 	queue: MemoryQueue;
+	// Quiesce the retention worker around /forget delete (see
+	// MemoryWorker.withWorkerPaused) — wired from the boot worker in
+	// index.ts; tests inject a passthrough when no worker runs.
+	withWorkerPaused: MemoryWorker["withWorkerPaused"];
 	lastRecallOk(): boolean | null;
 	// ISO timestamp of the latest recall outcome (set alongside
 	// lastRecallOk) — null when no recall has happened yet.
@@ -337,57 +341,64 @@ export function handleCommand(
 					log.info("forget listing ref resolved", { conversation: conv.id, ref, document: id });
 				}
 				// Resolve-then-confirm already happened: the operator ran
-				// /forget <query>, saw this id, and typed delete. Settle
-				// in-flight retention first — a submitted replace-mode retain
-				// finishing after the delete would resurrect the document —
-				// then suppress so nothing resurrects it, cancel, delete, redact.
-				// Refusing the delete beats racing it (fail-loud, DESIGN.md).
+				// /forget <query>, saw this id, and typed delete. The whole async
+				// block runs inside withWorkerPaused: the worker flips a row to
+				// submitted only after its submit HTTP call returns, so an
+				// unpaused delete can cancel a row that still reads pending
+				// while its document lands remotely — a resurrect with no local
+				// row left. Settle in-flight retention first — a submitted
+				// replace-mode retain finishing after the delete would resurrect
+				// the document — then suppress so nothing resurrects it, cancel,
+				// delete, redact. Refusing the delete beats racing it
+				// (fail-loud, DESIGN.md).
 				void (async () => {
 					try {
-						const submitted = mem.queue
-							.inflightOps(id)
-							.filter((op) => op.state === "submitted")
-							.map((op) => op.operationId);
-						if (submitted.length > 0) {
-							const startedAt = Date.now();
-							if (!(await settleInflightRetention(mem.client, submitted, mem.settleTiming))) {
-								log.warn("forget refused — retention still processing remotely", {
+						await mem.withWorkerPaused(async () => {
+							const submitted = mem.queue
+								.inflightOps(id)
+								.filter((op) => op.state === "submitted")
+								.map((op) => op.operationId);
+							if (submitted.length > 0) {
+								const startedAt = Date.now();
+								if (!(await settleInflightRetention(mem.client, submitted, mem.settleTiming))) {
+									log.warn("forget refused — retention still processing remotely", {
+										conversation: conv.id,
+										document: id,
+										operations: submitted.length,
+									});
+									reply(
+										deps,
+										conv,
+										"memory for that document is still processing remotely — try /forget delete again in a minute",
+									);
+									return;
+								}
+								log.info("forget settled in-flight retention", {
 									conversation: conv.id,
 									document: id,
 									operations: submitted.length,
+									waitedMs: Date.now() - startedAt,
 								});
-								reply(
-									deps,
-									conv,
-									"memory for that document is still processing remotely — try /forget delete again in a minute",
-								);
-								return;
 							}
-							log.info("forget settled in-flight retention", {
+							mem.contexts.suppress(id);
+							const cancelled = mem.queue.cancelDocument(id);
+							await mem.client.deleteDocument(id);
+							const redacted = mem.contexts.deleteByDocument(id);
+							log.info("memory forgotten", {
 								conversation: conv.id,
 								document: id,
-								operations: submitted.length,
-								waitedMs: Date.now() - startedAt,
+								cancelled,
+								redacted,
+								prefixReset: true,
 							});
-						}
-						mem.contexts.suppress(id);
-						const cancelled = mem.queue.cancelDocument(id);
-						await mem.client.deleteDocument(id);
-						const redacted = mem.contexts.deleteByDocument(id);
-						log.info("memory forgotten", {
-							conversation: conv.id,
-							document: id,
-							cancelled,
-							redacted,
-							prefixReset: true,
+							reply(
+								deps,
+								conv,
+								(preview !== null ? `forgotten ${id} — ${preview} ` : `forgotten ${id} `) +
+									`(suppressed, ${cancelled} queued cancelled, ${redacted} snapshots redacted). ` +
+									`Original chat history, backups, and provider retention are untouched.`,
+							);
 						});
-						reply(
-							deps,
-							conv,
-							(preview !== null ? `forgotten ${id} — ${preview} ` : `forgotten ${id} `) +
-								`(suppressed, ${cancelled} queued cancelled, ${redacted} snapshots redacted). ` +
-								`Original chat history, backups, and provider retention are untouched.`,
-						);
 					} catch (err) {
 						log.error("forget failed", err, { conversation: conv.id });
 						reply(deps, conv, `forget failed: ${err instanceof Error ? err.message : String(err)}`);

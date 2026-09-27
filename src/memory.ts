@@ -397,6 +397,24 @@ export interface MemoryWorkerBlocked {
 	notify(conversationId: string, error: string | null, attempts: number): Promise<void>;
 }
 
+// The started worker's handle: stop shuts it down (awaiting any
+// in-flight drain), tickNow runs a single tick (test seam), and
+// withWorkerPaused quiesces the worker around an async section.
+export interface MemoryWorker {
+	stop(): Promise<void>;
+	tickNow(): Promise<boolean>;
+	// Serialize an async section against the worker: no new drain starts,
+	// the in-flight drain settles first, then fn runs, then the timer
+	// resumes — also on throw. /forget delete runs its whole
+	// settle→suppress→cancel→delete→redact block inside this: the worker
+	// flips a row to "submitted" only after submit() returns, so a delete
+	// racing the HTTP call cancels a row that still reads "pending" while
+	// its document lands remotely — the forgotten source resurrects with
+	// no local row left to settle (DESIGN.md: serialize against in-flight
+	// writes before deleting).
+	withWorkerPaused<T>(fn: () => Promise<T>): Promise<T>;
+}
+
 // One owner per process. Drains until idle each interval; errors are
 // logged, never thrown — a wedged memory service must not crash the bot.
 export function startMemoryWorker(
@@ -408,9 +426,16 @@ export function startMemoryWorker(
 		outage?: MemoryWorkerOutage;
 		blocked?: MemoryWorkerBlocked;
 	} = {},
-): { stop(): Promise<void>; tickNow(): Promise<boolean> } {
+): MemoryWorker {
 	let stopped = false;
 	let draining: Promise<void> | null = null;
+	// Pause depth, not timer surgery: each withWorkerPaused holds one
+	// pause. The timer gate refuses to start a new drain while any pause
+	// holds (so the timer "restarts" on exit, throw included, for free);
+	// the pause first awaits whatever drain is already running, so its
+	// submits land and flip their rows before the paused section reads
+	// the queue.
+	let pauses = 0;
 	const outage = opts.outage;
 	const blocked = opts.blocked;
 	// The observe seam: transport failures feed the outage episode, any
@@ -490,7 +515,7 @@ export function startMemoryWorker(
 		}
 	}
 	const timer = setInterval(() => {
-		if (stopped || draining) return;
+		if (stopped || draining || pauses > 0) return;
 		draining = drain().finally(() => {
 			draining = null;
 		});
@@ -504,6 +529,18 @@ export function startMemoryWorker(
 		},
 		tickNow(): Promise<boolean> {
 			return tick();
+		},
+		async withWorkerPaused<T>(fn: () => Promise<T>): Promise<T> {
+			pauses++;
+			try {
+				// drain() never rejects (tick failures are logged inside it),
+				// so this await settles when the drain runs dry — every
+				// in-flight submit has landed and flipped its row.
+				if (draining) await draining;
+				return await fn();
+			} finally {
+				pauses--;
+			}
 		},
 	};
 }

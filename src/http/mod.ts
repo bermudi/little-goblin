@@ -240,12 +240,17 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 		if (last !== undefined && now.getTime() - last < HOOK_THROTTLE_MS) {
 			return done(429, fresh);
 		}
-		hookLastFired.set(fresh.id, now.getTime());
 		// No await between this check and fire — a closed runtime only
 		// records the submit, so the hit is refused instead of fake-202.
 		if (!hooks.accepting()) return done(503, fresh, { "retry-after": "30" });
 		const landed = hooks.fire(fresh, "webhook", body.text, now);
-		hooks.programs.markFired(fresh.id, now);
+		// Only a landed fire consumes the window (and stamps last_run): a
+		// refused (503) or failed (500) hit leaves it open, so the caller's
+		// retry is never answered 429 for a fire that never happened.
+		if (landed) {
+			hookLastFired.set(fresh.id, now.getTime());
+			hooks.programs.markFired(fresh.id, now);
+		}
 		return done(landed ? 202 : 500, fresh);
 	}
 	function authedUser(req: Request): InitDataUser | null {

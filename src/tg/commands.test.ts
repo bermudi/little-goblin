@@ -6,6 +6,7 @@ import type { Api } from "grammy";
 import type { Config } from "../config.ts";
 import { openStore } from "../conversation.ts";
 import { HindsightClient } from "../hindsight.ts";
+import { startMemoryWorker } from "../memory.ts";
 import type { Runtime } from "../runtime.ts";
 import { handleCommand, type CommandDeps } from "./commands.ts";
 
@@ -204,6 +205,9 @@ function setupMemory() {
 		client: new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" }),
 		contexts: store.memoryContexts,
 		queue: store.memoryQueue,
+		// No worker runs in these fixtures — the quiesce seam passes
+		// through (the race test below wires a real one).
+		withWorkerPaused: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 		lastRecallOk: () => null,
 		lastRecallAt: () => null,
 	};
@@ -789,6 +793,99 @@ describe("forget delete against in-flight retention", () => {
 				"memory for that document is still processing remotely — try /forget delete again in a minute",
 			);
 		} finally {
+			server.stop(true);
+			store.close();
+		}
+	});
+
+	// The found race: the worker flips an outbox row to submitted only
+	// AFTER client.submit() returns — during the HTTP call the row still
+	// reads pending, so an unpaused /forget delete treats it as never-sent,
+	// cancels the local row, and the submit then lands on Hindsight: the
+	// forgotten document is re-created remotely with no row left to
+	// settle. The delete must quiesce the worker (withWorkerPaused).
+	test("a delete racing an in-flight submit waits it out — no resurrect", async () => {
+		const { store, conv, sent, deps } = setupMemory();
+		const events: string[] = [];
+		let releaseSubmit!: () => void;
+		const submitHeld = new Promise<void>((r) => {
+			releaseSubmit = r;
+		});
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: async (request) => {
+				const path = new URL(request.url).pathname;
+				if (request.method === "POST" && path.endsWith("/memories")) {
+					events.push("submit");
+					const body = (await request.json()) as { operation_id?: unknown };
+					await submitHeld; // the submit hangs mid-HTTP
+					events.push("submit-landed");
+					return Response.json({
+						success: true,
+						bank_id: "g",
+						items_count: 1,
+						async: true,
+						operation_id: typeof body.operation_id === "string" ? body.operation_id : "?",
+					});
+				}
+				if (path.includes("/operations/")) {
+					events.push("settle");
+					return Response.json({ operation_id: path.split("/").pop(), status: "completed" });
+				}
+				if (request.method === "DELETE") {
+					events.push("delete");
+					return Response.json({ success: true, document_id: deleteIdFrom(request.url) });
+				}
+				return Response.json({ results: [] });
+			},
+		});
+		const worker = startMemoryWorker(store.memoryQueue, new HindsightClient({
+			baseUrl: `http://127.0.0.1:${server.port}`,
+			bankId: "g",
+		}), { intervalMs: 5 });
+		try {
+			const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
+			deps.memory = {
+				...deps.memory!,
+				client,
+				settleTiming: { pollMs: 5, budgetMs: 2_000 },
+				withWorkerPaused: (fn) => worker.withWorkerPaused(fn),
+			};
+			const operationId = store.memoryQueue.enqueue(client.target, {
+				id: "exchange/dm:1/1/a",
+				content: "Operator: hi\nGoblin: hello",
+				timestamp: new Date().toISOString(),
+				conversationId: conv.id,
+				sourceIds: ["u1", "a1"],
+			});
+			// Let the worker's timer pick the row and park inside the submit.
+			for (let i = 0; i < 400 && !events.includes("submit"); i++) {
+				await sleep(5);
+			}
+			expect(events).toContain("submit");
+
+			expect(handleCommand(deps, conv, "/forget delete exchange/dm:1/1/a")).toBe(true);
+			// The delete is now queued behind the worker's in-flight drain:
+			// nothing is cancelled, deleted, or replied while the submit hangs.
+			await sleep(80);
+			expect(events).toEqual(["submit"]); // no settle, no delete
+			expect(sent).toEqual([]);
+			expect(store.memoryQueue.get(operationId)?.state).toBe("pending"); // row untouched
+
+			releaseSubmit();
+			await waitFor(sent, 1);
+			// The submit landed first, its row settled, only then the delete —
+			// the document cannot resurrect from the in-flight retain.
+			expect(events.indexOf("submit-landed")).toBeLessThan(events.indexOf("delete"));
+			expect(sent[0]).toContain("forgotten exchange/dm:1/1/a");
+			expect(store.memoryContexts.isSuppressed("exchange/dm:1/1/a")).toBe(true);
+			// The row settles consistently: cancelled by the delete, not
+			// stranded, and nothing re-queued after it.
+			expect(store.memoryQueue.get(operationId)).toBeNull();
+			expect(store.memoryQueue.next(client.target, Date.now())).toBeNull();
+		} finally {
+			await worker.stop();
 			server.stop(true);
 			store.close();
 		}

@@ -315,6 +315,76 @@ describe("delegate tool", () => {
 		expect(h.store.get(1)!.status).toBe("running");
 	});
 
+	test("a stop during workspace creation is honored — no agent starts, the bound workspace closes", async () => {
+		const h = harness();
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		h.herdr.createWorkspace = () => gate.then(() => ({ workspaceId: "w1", paneId: "w1:p1" }));
+		const started: string[] = [];
+		h.herdr.startAgent = (name) => {
+			started.push(name);
+			return Promise.resolve(agent(name));
+		};
+		const launching = exec(h.tool, { action: "start", harness: "codex", task: "do it", name: "x" });
+		for (let i = 0; i < 200 && h.store.list().length === 0; i++) {
+			await new Promise((r) => setTimeout(r, 1));
+		}
+		// The stop lands while createWorkspace is pending: the row reads
+		// starting with no workspace bound, so the stop closes nothing and
+		// marks it stopped. The launch must not start an agent into that
+		// verdict — the workspace it binds afterwards would be orphaned.
+		const stopped = (await exec(h.tool, { action: "stop", id: 1 })) as { stopped: number };
+		expect(stopped).toEqual({ stopped: 1 });
+		expect(h.closed).toEqual([]);
+
+		release();
+		const out = (await launching) as { id: number; status: string };
+		expect(out.status).toBe("stopped");
+		expect(started).toEqual([]); // no agent left started
+		expect(h.prompts).toEqual([]); // never prompted
+		expect(h.closed).toEqual(["w1"]); // the just-bound workspace did not survive
+		expect(h.store.get(1)!.status).toBe("stopped");
+	});
+
+	test("a stop landing mid-prompt returns stopped with the workspace closed", async () => {
+		const h = harness();
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		h.herdr.prompt = (_name, text) => {
+			h.prompts.push(text);
+			return gate;
+		};
+		// The stop's own close fails (herdr busy) but the agent is gone
+		// per herdr — the stop completes without closing. The launch's exit
+		// path must finish the cleanup its row no longer has a watcher for.
+		let closeCalls = 0;
+		h.herdr.closeWorkspace = (id) => {
+			closeCalls++;
+			return closeCalls === 1 ? Promise.reject(new Error("herdr busy")) : Promise.resolve();
+		};
+		h.herdr.get = () => Promise.resolve(null);
+		const launching = exec(h.tool, { action: "start", harness: "codex", task: "do it", name: "x" });
+		for (let i = 0; i < 200 && h.prompts.length === 0; i++) {
+			await new Promise((r) => setTimeout(r, 1));
+		}
+		const stopped = (await exec(h.tool, { action: "stop", id: 1 })) as {
+			stopped: number;
+			notes?: string[];
+		};
+		expect(stopped.stopped).toBe(1); // agent confirmed gone → stop completed
+		expect(stopped.notes?.[0]).toContain("close:");
+
+		release();
+		const out = (await launching) as { id: number; status: string };
+		expect(out.status).toBe("stopped");
+		expect(closeCalls).toBe(2); // the launch retried the close the stop could not make
+		expect(h.store.get(1)!.status).toBe("stopped"); // nothing left running unwatched
+	});
+
 	test("an agent finished before the baseline read is done, not stuck", async () => {
 		const h = harness();
 		// The agent completes inside the prompt round-trip: report

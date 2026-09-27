@@ -310,16 +310,21 @@ export class Runtime {
 	private async doCompact(conv: Conversation): Promise<CompactionOutcome> {
 		const compaction = this.deps.compaction;
 		if (!compaction) return { kind: "noop", reason: "compaction not configured" };
-		// buildStep resolves the effective model (+ its context window from
-		// the catalog) with all the usual auth/provider plumbing. Empty tools:
-		// the summary call is a plain generate, no tool surface needed.
-		const step = await this.deps.buildStep(conv, {});
-		const tailTokenBudget =
-			step.contextWindow !== undefined ? Math.round(step.contextWindow * 0.25) : 20_000;
+		// The controller registers BEFORE the first await: a /stop arriving
+		// while buildStep is pending must abort this compaction, not a null
+		// controller — otherwise the summary runs and the pointer lands
+		// despite the stop. The pre-aborted signal makes the summarize call
+		// fail fast, so no boundary is written.
 		const lane = this.lane(conv.id);
 		const controller = new AbortController();
 		lane.compactController = controller;
 		try {
+			// buildStep resolves the effective model (+ its context window from
+			// the catalog) with all the usual auth/provider plumbing. Empty tools:
+			// the summary call is a plain generate, no tool surface needed.
+			const step = await this.deps.buildStep(conv, {});
+			const tailTokenBudget =
+				step.contextWindow !== undefined ? Math.round(step.contextWindow * 0.25) : 20_000;
 			return await runCompaction(
 				conv.id,
 				this.deps.store,

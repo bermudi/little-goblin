@@ -1030,6 +1030,53 @@ describe("cache stability", () => {
 		store.close();
 	});
 
+	test("/stop during a pending buildStep aborts the compaction — no pointer written", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const big = "x".repeat(600);
+		for (let i = 0; i < 3; i++) {
+			store.append(conv.id, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
+			store.append(
+				conv.id,
+				[{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
+				{ anchorSeq: store.lastUserSeq(conv.id) },
+			);
+		}
+		// buildStep hangs until the stop has landed: the abort controller
+		// must be registered BEFORE this await, or the stop aborts a null
+		// controller and the compaction runs on despite it.
+		let releaseBuild!: () => void;
+		const buildGate = new Promise<void>((r) => {
+			releaseBuild = r;
+		});
+		const runtime = new Runtime({
+			store,
+			buildStep: () =>
+				buildGate.then(() => ({ model: fakeModel(["reply"], 5), system: "test", contextWindow: 1000 })),
+			makeTools: () => ({}),
+			compaction: {
+				modelRef: () => "m",
+				// Fails fast on an already-aborted signal, as a real model call
+				// does — the summary must never run past a stop.
+				summarize: (_conv, _system, _prompt, signal) =>
+					signal.aborted
+						? Promise.reject(new Error("summarize aborted"))
+						: Promise.resolve("must not summarize"),
+			},
+		});
+		const compacted = runtime.compact(conv);
+		// The compaction is now suspended inside buildStep with its
+		// controller registered — stop must see (and abort) it.
+		const { stopped } = runtime.stop(conv.id);
+		expect(stopped).toBe(true);
+		releaseBuild();
+		await expect(compacted).rejects.toThrow("summarize aborted");
+		// No history pointer was written despite the summary path being
+		// reachable — the crossing retries on the next threshold.
+		expect(store.getCompaction(conv.id)).toBeNull();
+		store.close();
+	});
+
 	test("provider warnings are logged, not dropped", async () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");

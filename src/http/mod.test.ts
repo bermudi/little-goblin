@@ -440,7 +440,7 @@ describe("program webhooks", () => {
 		}
 	});
 
-	test("wake failure → 500, but last_run still stamps the attempt", async () => {
+	test("wake failure → 500 with the window unconsumed; the retry can land", async () => {
 		useHome();
 		const dir = process.env.GOBLIN_HOME!;
 		const programs = openPrograms(join(dir, "goblin.sqlite"));
@@ -450,11 +450,16 @@ describe("program webhooks", () => {
 			address: { chatId: -100, threadId: 7 },
 		});
 		programs.setHook(program.id, hookTokenHash(token));
+		const fired: boolean[] = [];
 		const http = startHttp({
 			configRef: { current: { ...baseConfig } },
 			botToken: TOKEN,
 			onConfigWritten: () => {},
-			hooks: { programs, accepting: () => true, fire: () => false },
+			hooks: { programs, accepting: () => true, fire: () => {
+				fired.push(true);
+				// First attempt's wake submit fails (500); the retry lands.
+				return fired.length > 1;
+			} },
 		});
 		try {
 			const res = await fetch(`http://127.0.0.1:${http.port}/hook/${token}`, {
@@ -462,6 +467,16 @@ describe("program webhooks", () => {
 				body: "x",
 			});
 			expect(res.status).toBe(500);
+			// A failed fire stamps nothing — not last_run (the attempt never
+			// landed) and not the throttle window: a 500 that burned the 60 s
+			// window would answer the caller's retry 429 for a fire that
+			// never happened.
+			expect(programs.get(program.id)!.lastRun).toBeNull();
+			const retry = await fetch(`http://127.0.0.1:${http.port}/hook/${token}`, {
+				method: "POST",
+				body: "x",
+			});
+			expect(retry.status).toBe(202);
 			expect(programs.get(program.id)!.lastRun).not.toBeNull();
 		} finally {
 			http.stop();
@@ -491,10 +506,14 @@ describe("program webhooks", () => {
 		}
 	});
 
-	test("a runtime that stopped accepting gets 503 + Retry-After", async () => {
+	test("a runtime that stopped accepting gets 503 + Retry-After, without consuming the window", async () => {
+		// Shutdown is transient: the 503 must not stamp the throttle window,
+		// or the caller's Retry-After — the exact moment the runtime comes
+		// back — would be answered 429 for a hit that never fired.
+		let accepting = false;
 		const { http, hit, programs, program, token, fired } = hookSetup(
 			true,
-			() => false,
+			() => accepting,
 		);
 		try {
 			const res = await hit(token, { body: "x" });
@@ -504,6 +523,13 @@ describe("program webhooks", () => {
 			// fire that only lands in history during shutdown.
 			expect(fired).toEqual([]);
 			expect(programs.get(program.id)!.lastRun).toBeNull();
+
+			// The runtime reopens: the very next hit fires, no 429 detour.
+			accepting = true;
+			const after = await hit(token, { body: "x" });
+			expect(after.status).toBe(202);
+			expect(fired).toHaveLength(1);
+			expect(programs.get(program.id)!.lastRun).not.toBeNull();
 		} finally {
 			http.stop();
 		}

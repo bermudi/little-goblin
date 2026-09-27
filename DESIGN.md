@@ -992,8 +992,15 @@ included the date. All four replies were visible in Telegram and all four
 retention operations completed. With the queue idle, a
 controlled API restart returned healthy with unchanged queue state; a
 watch tick against a healthy API left its service invocation unchanged.
-Still never exercised: the watch's restart action on a live `unhealthy`,
-or recovery and duplicate suppression with work in flight during a restart.
+In a later drill that day, pausing only the API process made its running
+container genuinely `unhealthy` after four failed probes. The scheduled
+watch restarted that unit, not the database; the new container became
+healthy and readiness returned HTTP 200. A separate synthetic retention
+operation was acknowledged as `pending` remotely when the API restarted:
+Goblin submitted it once, kept the same operation ID, and later marked it
+completed with a stored document. Two attempts to catch an operation in
+`processing` finished before the probe could observe that state; active
+extraction interrupted by a restart is therefore **not verified**.
 First live finding: z.ai 429
 "insufficient balance" during extraction blocks a single document for
 operator reconciliation (the designed path, not a crash) — provider

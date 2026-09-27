@@ -29,9 +29,15 @@ dated correction in three private Telegram topics: four visible replies,
 four completed retention operations, and source-backed recall in the fresh
 topics. A controlled API restart with no pending operations returned
 healthy without changing the queue; the watch's healthy no-op was also
-observed. The watch's restart on a live `unhealthy` container and recovery
-with retention in flight across a restart remain untested. The synthetic
-topics and retained facts remain available for audit, not auto-deleted.
+observed. A later drill paused the API process until the running container
+reported `unhealthy`; the scheduled watch restarted the API, leaving the
+database running, and readiness returned HTTP 200. Another restart caught
+an acknowledged remote retention operation still `pending`: it completed
+afterward under the same operation ID with one submission and a stored
+document. Interruption during active `processing` was not observed (two
+synthetic attempts completed before the probe saw that state). The synthetic
+topics and three additional retained drill documents remain for audit,
+not auto-deleted.
 
 ## Operator controls
 

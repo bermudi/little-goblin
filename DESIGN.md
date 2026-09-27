@@ -733,6 +733,17 @@ Rulings:
   (`herdr --session <name> …`, JSON out, zod-parsed; CLI errors are
   JSON on stderr with exit 1 and propagate with context). Every call
   logs (verb, target, outcome, ms).
+- **One lifecycle owner.** `src/delegation-lifecycle.ts` owns the
+  delegation protocol end to end — launch, send, stop, read, the
+  watcher's verdicts, boot recovery — including every workspace close
+  owed by a row that stopped or failed while someone else held it.
+  The tool validates model input and renders outcomes; the store
+  (`delegations.ts`) stays pure rows; the ticker is a thin timer over
+  the owner's scan. The same owner shape as the scheduler over
+  programs and the approval gate over the mail outbox. A replacement
+  that only forwards the old tool calls would be a shallow layer —
+  the owner exists because the protocol (stop-vs-launch races,
+  cleanup on stop/failed/recovery) has one home, not two.
 - **Harnesses are config, never guessed.** `delegation.harnesses`
   maps a name to a herdr agent `kind` plus native args — the
   operator's choice of full-auto flags and model live there.
@@ -1534,8 +1545,12 @@ src/
   scheduler.ts      ticker: due programs → turns in their pinned
                     conversation; fire() is shared with the webhook route
   herdr.ts          herdr CLI adapter (the only herdr-aware module)
-  delegations.ts    delegation rows + watcher ticker: herdr state →
-                    turns in the pinned conversation
+  delegations.ts    delegation rows (SQLite store)
+  delegation-lifecycle.ts   the delegation protocol: launch, send,
+                    stop, read + the watcher's verdicts and boot
+                    recovery — herdr state → turns in the pinned
+                    conversation; the ticker is a thin timer over
+                    the owner's scan
   runtime.ts        per-conversation queue, turn loop, checkAuthority
   agent/
     providers.ts    registry: name → AI SDK provider

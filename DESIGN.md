@@ -263,10 +263,11 @@ agent loop.
 
 ## Tools (v1)
 
-Hand-rolled, zod-validated, twelve:
+Hand-rolled, zod-validated, fourteen:
 
 `read_file` `write_file` `edit_file` `bash` (timeout) `speak` `transcribe`
-`program` `delegate` `send_file` `memory_search` `search` `fetch`
+`program` `delegate` `mail` `send_file` `memory_search` `search` `fetch`
+`history_search`
 
 All tools run in the deployment workspace — conversations have no cwd and
 there is no `/cd`. Working elsewhere is the agent's own business (`cd x &&
@@ -1535,9 +1536,9 @@ src/
                     AGENTS.md/USER.md, each capped at 8k chars; re-read
                     every turn, edits live next message)
     skills.ts       catalog scan + frontmatter validation → ## skills section
-    tools/          the twelve tools (read, write, edit, bash, speak,
-                    transcribe, program, delegate, send_file,
-                    memory_search, search, fetch)
+    tools/          the fourteen tools (read, write, edit, bash, speak,
+                    transcribe, program, delegate, mail, send_file,
+                    memory_search, search, fetch, history_search)
   http/             mini-app serving + POST /hook/<token>
     app.ts          page markup+css (served as-is, no build step)
     app.js          page client — plain JS, tsc-checked (checkJs via

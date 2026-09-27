@@ -282,7 +282,15 @@ def write_file_atomic(path: Path, content: str, mode: int) -> None:
 
 
 def install_assets(memory_dir: Path, systemd_dir: Path, cfg_dir: Path,
-                    user_unit_dir: Path) -> list[Path]:
+                    user_unit_dir: Path,
+                    skip_existing_quadlets: bool = False) -> list[Path]:
+    """Copy shipped assets into place. With skip_existing_quadlets, a
+    Quadlet already at the destination is left untouched — the installed
+    Quadlets are operator-editable (slow first-run migrations are fixed by
+    raising TimeoutStartSec in the installed file, per the health-gate
+    failure message), so a refresh hands over new assets without clobbering
+    operator edits. Fresh installs keep overwrite semantics — deleting a
+    Quadlet before a fresh install is the reset path."""
     systemd_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     cfg_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     user_unit_dir.mkdir(parents=True, exist_ok=True)
@@ -290,6 +298,9 @@ def install_assets(memory_dir: Path, systemd_dir: Path, cfg_dir: Path,
     for pattern in ("*.container", "*.network", "*.volume"):
         for src in sorted(memory_dir.glob(pattern)):
             dst = systemd_dir / src.name
+            if skip_existing_quadlets and dst.exists():
+                info(f"kept existing {dst} — operator-editable, not overwritten")
+                continue
             shutil.copyfile(src, dst)
             dst.chmod(0o644)
             installed.append(dst)
@@ -430,8 +441,12 @@ def refresh_assets(enable_watch: bool) -> None:
     have a stack. install_assets() is otherwise reached only on a fresh
     install, so a re-run (status path, --reconfigure) never picked up the
     watch units — the health watcher stayed inactive forever. Same
-    enablement start_stack uses when the timer should be live."""
-    installed = install_assets(MEMORY_DIR, SYSTEMD_DIR, CFG_DIR, USER_UNIT_DIR)
+    enablement start_stack uses when the timer should be live. Existing
+    Quadlets are never overwritten: the operator may have tuned them
+    (TimeoutStartSec), and this path only needs to deliver new assets
+    and the watch units."""
+    installed = install_assets(MEMORY_DIR, SYSTEMD_DIR, CFG_DIR, USER_UNIT_DIR,
+                               skip_existing_quadlets=True)
     for path in installed:
         info(f"installed {path}")
     run(["systemctl", "--user", "daemon-reload"])

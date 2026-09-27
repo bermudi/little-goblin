@@ -169,6 +169,42 @@ class InstallAssetsTest(unittest.TestCase):
             # must land in the systemd user dir where timers can be enabled.
             self.assertTrue((user_unit_dir / "goblin-memory-watch.timer").is_file())
 
+    def test_refresh_keeps_operator_edited_quadlets(self) -> None:
+        # Review finding: refresh_assets re-copied shipped Quadlets over
+        # installed ones — destroying exactly the TimeoutStartSec edit
+        # the health-gate failure message tells the operator to make.
+        # A refresh must deliver new assets without touching files
+        # already at the destination.
+        with tempfile.TemporaryDirectory() as tmp:
+            memory_dir = Path(tmp) / "src"
+            systemd_dir = Path(tmp) / "systemd"
+            cfg_dir = Path(tmp) / "cfg"
+            user_unit_dir = Path(tmp) / "user-units"
+            memory_dir.mkdir()
+            (memory_dir / "goblin-memory-api.container").write_text("[Container]\n")
+            (memory_dir / "goblin-memory.network").write_text("[Network]\n")
+            (memory_dir / "start.py").write_text("x = 1\n")
+            for name in install.WATCH_UNITS:
+                (memory_dir / name).write_text("[Unit]\n")
+            systemd_dir.mkdir()
+            edited = systemd_dir / "goblin-memory-api.container"
+            edited.write_text("[Container]\nTimeoutStartSec=900\n")
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                installed = install_assets(memory_dir, systemd_dir, cfg_dir,
+                                           user_unit_dir,
+                                           skip_existing_quadlets=True)
+            self.assertIn("TimeoutStartSec=900", edited.read_text())
+            self.assertNotIn(edited, installed)
+            self.assertIn("not overwritten", out.getvalue())
+            names = {p.name for p in installed}
+            self.assertEqual(names, {"goblin-memory.network", "start.py",
+                                     *install.WATCH_UNITS})
+            # Fresh-install overwrite semantics stay: without the skip
+            # flag the shipped file wins, so deleting a Quadlet before a
+            # reinstall remains the reset path.
+            install_assets(memory_dir, systemd_dir, cfg_dir, user_unit_dir)
+            self.assertEqual(edited.read_text(), "[Container]\n")
+
     def test_missing_watch_asset_fails_loud(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             memory_dir = Path(tmp) / "src"
@@ -575,6 +611,21 @@ class MainFlowTest(unittest.TestCase):
         for name in install.WATCH_UNITS:
             self.assertTrue((install.USER_UNIT_DIR / name).is_file(),
                             f"{name} must land in the user unit dir")
+
+    def test_existing_install_preserves_operator_edited_quadlet(self) -> None:
+        # Review finding: the status-path refresh re-copied shipped
+        # Quadlets over installed ones — destroying the TimeoutStartSec
+        # raise the health-gate failure message tells the operator to
+        # make by hand.
+        self.existing_stack()
+        install.SYSTEMD_DIR.mkdir(parents=True, exist_ok=True)
+        edited = install.SYSTEMD_DIR / "goblin-memory-api.container"
+        edited.write_text("[Container]\nTimeoutStartSec=900\n")
+        self.run_existing("active", [])
+        self.assertIn("TimeoutStartSec=900", edited.read_text())
+        self.assertTrue(
+            (install.SYSTEMD_DIR / "goblin-memory-db.container").is_file(),
+            "Quadlets missing at the destination must still be delivered")
 
     def test_existing_install_skips_watch_enable_when_stack_down(self) -> None:
         # A stopped stack is a deliberate operator choice: assets and

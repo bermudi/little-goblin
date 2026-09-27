@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { LanguageModel, ToolSet } from "ai";
 import { openStore, type ConversationStore } from "./conversation.ts";
 import { JevError } from "./jev.ts";
+import { setLogFile } from "./log.ts";
 import { buildGateState, confineTools, considerTurn, reviewTools, type CompletedTurn, type ReviewerDeps } from "./reviewer.ts";
 
 let dirs: string[] = [];
@@ -14,6 +15,7 @@ function tmpdir_(): string {
 	return dir;
 }
 afterEach(() => {
+	setLogFile(null);
 	for (const d of dirs) rmSync(d, { recursive: true, force: true });
 	dirs = [];
 });
@@ -34,9 +36,11 @@ function skillsRefCalls(dir: string): string[] {
 }
 
 // Fake the review model at the edge: scripted doGenerate steps — tool
-// calls, then text. generateText drives it like any provider.
+// calls, then text. generateText drives it like any provider. The
+// optional hook runs before each step (tests park a review mid-flight).
 function fakeReviewModel(
-	script: { text?: string; calls?: { name: string; input: unknown }[] }[],
+	script: { text?: string; calls?: { name: string; input: unknown }[]; error?: string }[],
+	beforeStep?: () => Promise<void>,
 ): LanguageModel {
 	let step = 0;
 	let call = 0;
@@ -46,7 +50,9 @@ function fakeReviewModel(
 		modelId: "fake-review",
 		supportedUrls: {},
 		doGenerate: async () => {
+			if (beforeStep !== undefined) await beforeStep();
 			const s = script[Math.min(step++, script.length - 1)]!;
+			if (s.error !== undefined) throw new Error(s.error);
 			const content: unknown[] = [];
 			if (s.text !== undefined) content.push({ type: "text", text: s.text });
 			for (const c of s.calls ?? []) {
@@ -81,7 +87,7 @@ interface Harness {
 	notified: { conversationId: string; skills: string[] }[];
 	depsFor(o: {
 		nouls?: { correction: number; procedure: number } | JevError | Error;
-		script?: { text?: string; calls?: { name: string; input: unknown }[] }[];
+		script?: { text?: string; calls?: { name: string; input: unknown }[]; error?: string }[];
 		validateCode?: number;
 	}): ReviewerDeps;
 }
@@ -262,6 +268,106 @@ describe("review run", () => {
 		expect(readFileSync(join(h.skills, "existing", "SKILL.md"), "utf8")).toBe(SKILL_MD("existing", "original"));
 		expect(h.notified).toEqual([]);
 		expect(h.store.history(h.convId)).toHaveLength(0);
+		h.store.close();
+	});
+
+	test("a model failure after writes reverts the tree, logs, and appends no history", async () => {
+		const h = harness();
+		mkdirSync(join(h.skills, "existing"), { recursive: true });
+		writeFileSync(join(h.skills, "existing", "SKILL.md"), SKILL_MD("existing", "original"));
+		const logFile = join(h.workspace, "goblin.log");
+		setLogFile(logFile);
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0.9 },
+			script: [
+				{
+					calls: [{ name: "write_file", input: { path: "partial/SKILL.md", content: SKILL_MD("partial") } }],
+				},
+				{ error: "provider exploded mid-review" },
+			],
+		});
+		await considerTurn(deps, turn());
+		// The tool-write step landed, then the model call died — the tree
+		// is back to the snapshot: created dir gone, edited bytes intact.
+		expect(() => readFileSync(join(h.skills, "partial", "SKILL.md"))).toThrow();
+		expect(readFileSync(join(h.skills, "existing", "SKILL.md"), "utf8")).toBe(SKILL_MD("existing", "original"));
+		expect(h.notified).toEqual([]);
+		expect(h.store.history(h.convId)).toHaveLength(0);
+		const lines = readFileSync(logFile, "utf8").trim().split("\n");
+		const reverted = lines.map((l) => JSON.parse(l) as Record<string, unknown>)
+			.find((e) => e.msg === "reviewer write reverted — model call failed");
+		expect(reverted).toMatchObject({ conversation: "dm:1" });
+		expect(String(reverted?.error)).toContain("provider exploded mid-review");
+		h.store.close();
+	});
+
+	test("concurrent reviews never overlap — the second starts only after the first finished", async () => {
+		const h = harness();
+		const events: string[] = [];
+		// Review 1's model parks inside its first generate until released;
+		// an unserialized second review would start meanwhile.
+		let parked = false;
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		const hanging = fakeReviewModel(
+			[
+				{ calls: [{ name: "write_file", input: { path: "a/SKILL.md", content: SKILL_MD("a") } }] },
+				{ text: "saved" },
+			],
+			async () => {
+				if (!parked) {
+					parked = true;
+					await gate;
+				}
+			},
+		);
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0.9 },
+			script: [{ text: "nothing worth saving" }],
+		});
+		const inner = deps.reviewModel;
+		let resolves = 0;
+		deps.reviewModel = async (conv) => {
+			resolves += 1;
+			events.push(`review ${resolves} started`);
+			return resolves === 1 ? { ref: "fake/hang", model: hanging } : inner(conv);
+		};
+		const p1 = considerTurn(deps, turn());
+		const p2 = considerTurn(deps, turn());
+		for (let i = 0; i < 500 && !parked; i++) await Bun.sleep(1);
+		expect(parked).toBe(true);
+		// While review 1 hangs mid-flight, review 2 has not entered.
+		await Bun.sleep(20);
+		expect(events).toEqual(["review 1 started"]);
+		release();
+		await p1;
+		await p2;
+		// Review 2 ran after review 1 finished — its skill saved, told, history.
+		expect(events).toEqual(["review 1 started", "review 2 started"]);
+		expect(readFileSync(join(h.skills, "a", "SKILL.md"), "utf8")).toContain("name: a");
+		expect(h.notified).toEqual([{ conversationId: h.convId, skills: ["a"] }]);
+		h.store.close();
+	});
+
+	test("a failed review doesn't poison the chain — the next one still runs", async () => {
+		const h = harness();
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0.9 },
+			script: [{ text: "nothing worth saving" }],
+		});
+		const inner = deps.reviewModel;
+		let resolves = 0;
+		deps.reviewModel = async (conv) => {
+			resolves += 1;
+			if (resolves === 1) throw new Error("model resolve failed");
+			return inner(conv);
+		};
+		// The bug propagates to the runtime's backstop — loud, as designed.
+		await expect(considerTurn(deps, turn())).rejects.toThrow("model resolve failed");
+		await considerTurn(deps, turn());
+		expect(resolves).toBe(2);
 		h.store.close();
 	});
 });

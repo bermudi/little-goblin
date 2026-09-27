@@ -135,7 +135,7 @@ export async function considerTurn(deps: ReviewerDeps, turn: CompletedTurn): Pro
 			cost: decision.cost,
 			ms: Date.now() - started,
 		});
-		if (review) await runReview(deps, turn);
+		if (review) await enqueueReview(deps, turn);
 	} catch (err) {
 		// Only the gate's own failures fall back — anything else is a
 		// bug and propagates to the runtime's backstop, loud.
@@ -154,8 +154,29 @@ export async function considerTurn(deps: ReviewerDeps, turn: CompletedTurn): Pro
 			cost: null,
 			ms: Date.now() - started,
 		});
-		if (review) await runReview(deps, turn);
+		if (review) await enqueueReview(deps, turn);
 	}
+}
+
+// Reviews serialize: the runtime fires considerTurn fire-and-forget
+// for every completed turn, and two overlapping runReview calls would
+// snapshot, write, and restore the same skills tree over each other —
+// a revert in the later one erases the earlier one's committed,
+// announced writes. The chain link is exactly what considerTurn
+// awaits, so a caller still resolves only when ITS OWN review finished;
+// a rejected link is absorbed before it can poison the next.
+let reviewChain: Promise<void> = Promise.resolve();
+
+function enqueueReview(deps: ReviewerDeps, turn: CompletedTurn): Promise<void> {
+	const run = reviewChain.then(
+		() => runReview(deps, turn),
+		() => runReview(deps, turn),
+	);
+	reviewChain = run.then(
+		() => undefined,
+		() => undefined,
+	);
+	return run;
 }
 
 // ---------- review ----------
@@ -365,14 +386,28 @@ async function runReview(deps: ReviewerDeps, turn: CompletedTurn): Promise<void>
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), REVIEW_TIMEOUT_MS);
 	try {
-		const result = await generateText({
-			model,
-			system: REVIEW_SYSTEM,
-			prompt: reviewPrompt(turn, catalogLines),
-			tools: reviewTools(deps.skillsDir),
-			stopWhen: stepCountIs(REVIEW_MAX_STEPS),
-			abortSignal: controller.signal,
-		});
+		let result: Awaited<ReturnType<typeof generateText>>;
+		try {
+			result = await generateText({
+				model,
+				system: REVIEW_SYSTEM,
+				prompt: reviewPrompt(turn, catalogLines),
+				tools: reviewTools(deps.skillsDir),
+				stopWhen: stepCountIs(REVIEW_MAX_STEPS),
+				abortSignal: controller.signal,
+			});
+		} catch (err) {
+			// Provider failure or the timeout abort — but review tools may
+			// already have written skill files in earlier steps. Those
+			// writes are unvalidated, unannounced, and undoable only by
+			// hand: revert to the snapshot like a validation failure
+			// instead of leaving partial output in the catalog.
+			restoreSnapshot(deps.skillsDir, snapshot);
+			log.error("reviewer write reverted — model call failed", err, {
+				conversation: conv,
+			});
+			return;
+		}
 		// A model call is a cost line even backstage (the title-call rule).
 		log.info("review model call", {
 			conversation: conv,

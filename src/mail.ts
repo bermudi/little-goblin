@@ -16,6 +16,7 @@ import {
 	fetchOk,
 	ProviderError,
 	readJson,
+	readTextCapped,
 	str,
 } from "./agent/tools/web.ts";
 
@@ -237,7 +238,13 @@ class Gmail {
 		const res = await fetchOk("gmail", `${this.gmailBase}${path}`, {
 			headers: { Authorization: `Bearer ${token}` },
 		}, TIMEOUT_MS);
-		const text = await readTextCapped(res, cap);
+		const { tooLarge, text } = await readTextCapped(res, cap);
+		if (tooLarge) {
+			throw new ProviderError(
+				"gmail",
+				`response exceeds the ${Math.round(cap / 1024 / 1024)} MiB cap — narrow with search instead`,
+			);
+		}
 		let data: unknown;
 		try {
 			data = JSON.parse(text) as unknown;
@@ -445,36 +452,6 @@ class Gmail {
 			snippet: str(msg.snippet),
 		};
 	}
-}
-
-// The cap is a ceiling on reads, not a post-hoc check (fetch.ts's
-// readBodyCapped rule): cancel the moment it trips, assemble only a
-// stream that ends within it.
-async function readTextCapped(res: Response, cap: number): Promise<string> {
-	if (res.body === null) return res.text();
-	const reader = res.body.getReader();
-	const chunks: Uint8Array[] = [];
-	let seen = 0;
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done || !value) break;
-		chunks.push(value);
-		seen += value.byteLength;
-		if (seen > cap) {
-			await reader.cancel();
-			throw new ProviderError(
-				"gmail",
-				`response exceeds the ${Math.round(cap / 1024 / 1024)} MiB cap — narrow with search instead`,
-			);
-		}
-	}
-	const bytes = new Uint8Array(seen);
-	let at = 0;
-	for (const chunk of chunks) {
-		bytes.set(chunk, at);
-		at += chunk.byteLength;
-	}
-	return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
 }
 
 // ---------- parsing ----------

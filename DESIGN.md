@@ -381,6 +381,13 @@ tool. MCP stays out, with its return conditions on record (below).
   (complete lines, byte ceiling, recovery named: re-query narrower or
   `fetch` a result URL). Every result carries its URL — fetch is the named
   next step.
+- **Search results and fetched page text ride fenced** like mail and
+  event content (`web.ts`'s `fenceUntrusted`, tag `<web>`): provider
+  words are untrusted data to evaluate, never instructions. The
+  fence wraps only the remote text — fetch's `# title`/`Source:`
+  header, search's fallback note, and the `[TRUNCATED …]` recovery
+  footer stay outside it (the recovery instruction is trusted text),
+  and the footer marks the saved overflow file untrusted too.
 - **`fetch` is always in the set** — default `local`, no config, no key:
   direct HTTP (20s timeout, 8 MiB cap) + in-process readability
   extraction (`@mozilla/readability` over `linkedom` — pure JS, the
@@ -787,7 +794,11 @@ Rulings:
   file (capped at 16 KiB; beyond that, the path to read) or, absent a
   report, the screen tail (`recent-unwrapped`, last ~80 lines). The
   resulting turn tells the operator what happened, in goblin's
-  voice.
+  voice. Reports and screen tails ride fenced like program events
+  (`<event source="delegation">`, any `</event` neutralized) —
+  untrusted data, never instructions: a delegated agent's output (or
+  a malicious repo it processed) gains no authority by arriving in
+  goblin's voice.
 - **Management is the `delegate` tool** (start/list/read/send/stop),
   bound per-turn to the running conversation like `program`.
   `read` peeks the screen tail; `send` prompts the agent (an answer,
@@ -929,7 +940,12 @@ don't duplicate it).
   not from the model's tool calls, and each must pass `skills-ref
   validate` — failure reverts the whole write from a pre-review
   snapshot (512 files / 2MB caps; over budget skips the review loud)
-  and warns. A write over 100KB of new bytes reverts unvalidated.
+  and warns. A write over 100KB of new bytes reverts unvalidated. A
+  model-call failure (provider outage, the 5-minute abort) reverts
+  the same way — tool writes from earlier steps never survive half a
+  review. Reviews serialize (one at a time, in arrival order):
+  overlapping runs would restore snapshots over each other's
+  committed, announced writes.
 - **It writes, then tells.** A write posts a short note to the topic
   ("saved skill: X — reply to undo") and lands in history as a system
   event, so the next turn knows. "Reply to undo" is conversational,

@@ -247,6 +247,31 @@ describe("gmail client", () => {
 		expect(msg.htmlConverted).toBe(true);
 	});
 
+	test("an oversized message body throws at the cap, not after buffering it", async () => {
+		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
+		// format=FULL inlines every text part — an attacker-sized mail
+		// streams forever, so the read must trip the cap mid-stream.
+		const chunk = new Uint8Array(1024 * 1024).fill(65);
+		const gmail = serve(() =>
+			new Response(
+				new ReadableStream<Uint8Array>({
+					pull(controller) {
+						controller.enqueue(chunk);
+					},
+				}),
+				{ headers: { "content-type": "application/json" } },
+			));
+		const reader = makeReader({
+			auth: fakeAuth,
+			clientId: "cid",
+			clientSecretAuth: "gmail-secret",
+			readAuth: "gmail-read",
+			gmailBase: `${gmail}/gmail/v1`,
+			oauthBase: oauth,
+		});
+		await expect(reader.read("m-huge")).rejects.toThrow("8 MiB cap");
+	});
+
 	test("attachment bytes decode from base64url", async () => {
 		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
 		const gmail = serve(() =>

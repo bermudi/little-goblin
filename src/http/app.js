@@ -989,6 +989,7 @@ function populate(c) {
       else { lastSearch = cfg.search; cfg.search = null; }
     },
     paintSearch);
+  paintSearch();
   const paintFetchChain = initChain("fetch", FETCH_KINDS, FETCH_META, () => cfg.fetch, (a) => cfg.fetch = a);
   function paintFetch() {
     $("fetchChain").classList.toggle("hidden", cfg.fetch === null);
@@ -1001,6 +1002,7 @@ function populate(c) {
       else { lastFetch = cfg.fetch; cfg.fetch = null; }
     },
     paintFetch);
+  paintFetch();
 
   // Memory
   function paintMemory() {

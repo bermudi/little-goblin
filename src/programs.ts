@@ -251,12 +251,14 @@ export function openPrograms(dbPath: string): ProgramsStore {
 						? null
 						: nextFire(cron, now).toISOString()
 					: before.nextRun;
-			// A changed filter resets the cursor — the new query's backlog
-			// must not fire as if it just arrived.
+			// A changed filter or a re-enable resets the cursor — the new
+			// query's backlog must not fire as if it just arrived, and mail
+			// that landed while disabled is skipped, not owed (the cron
+			// rule above: re-enable re-baselines from now).
+			const filterChanged =
+				patch.mailFilter !== undefined && patch.mailFilter !== before.mailFilter;
 			const mailHistoryId =
-				patch.mailFilter !== undefined && patch.mailFilter !== before.mailFilter
-					? null
-					: before.mailHistoryId;
+				filterChanged || (enabled && !before.enabled) ? null : before.mailHistoryId;
 			qUpdate.run(
 				patch.name ?? before.name,
 				patch.charter ?? before.charter,

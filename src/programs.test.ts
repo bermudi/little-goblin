@@ -310,6 +310,22 @@ describe("mail trigger", () => {
 		expect(s.get(p.id)!.mailHistoryId).toBe("1000");
 	});
 
+	test("re-enabling resets the cursor — mail while disabled is skipped, not owed", () => {
+		const s = store();
+		const p = s.create(
+			{ name: "w", charter: "c", mailFilter: "from:a", address: ADDRESS },
+			NOW,
+		);
+		s.setMailHistory(p.id, "12345");
+		s.update(p.id, { enabled: false });
+		// Disabling keeps the cursor — the watcher just doesn't scan it.
+		expect(s.get(p.id)!.mailHistoryId).toBe("12345");
+		s.update(p.id, { enabled: true });
+		// Re-enabling re-baselines: the disabled-period backlog never
+		// fires (the cron rule — skipped, not owed).
+		expect(s.get(p.id)!.mailHistoryId).toBeNull();
+	});
+
 	test("withMailFilter scans enabled mail programs only", () => {
 		const s = store();
 		s.create({ name: "m", charter: "c", mailFilter: "from:a", address: ADDRESS }, NOW);

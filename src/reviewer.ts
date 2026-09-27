@@ -28,8 +28,8 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
-import { generateText, stepCountIs, type LanguageModel, type ToolSet } from "ai";
-import type { ToolCallOptions } from "@ai-sdk/provider-utils";
+import { generateText, isStepCount, type LanguageModel, type ToolSet } from "ai";
+import type { ToolExecutionOptions } from "@ai-sdk/provider-utils";
 import { loadCatalog } from "./agent/skills.ts";
 import { editFileTool } from "./agent/tools/edit.ts";
 import { readFileTool } from "./agent/tools/read.ts";
@@ -240,7 +240,7 @@ export function confineTools(tools: ToolSet, root: string): ToolSet {
 	for (const t of Object.values(tools)) {
 		const execute = t.execute?.bind(t);
 		if (execute === undefined) continue;
-		t.execute = (input: unknown, options: ToolCallOptions) => {
+		t.execute = (input: unknown, options: ToolExecutionOptions<unknown>) => {
 			const path = (input as { path?: unknown } | null)?.path;
 			if (typeof path !== "string" || escapesRoot(resolved, path)) {
 				const shown = typeof path === "string" ? path.slice(0, 200) : "(missing)";
@@ -280,7 +280,7 @@ export function reviewTools(skillsDir: string, written?: Set<string>): ToolSet {
 		if (t === undefined) continue;
 		const execute = t.execute?.bind(t);
 		if (execute === undefined) continue;
-		t.execute = async (input: unknown, options: ToolCallOptions) => {
+		t.execute = async (input: unknown, options: ToolExecutionOptions<unknown>) => {
 			const result = await execute(input as never, options);
 			const path = (result as { path?: unknown } | null | undefined)?.path;
 			if (typeof path === "string") {
@@ -458,10 +458,10 @@ async function runReview(deps: ReviewerDeps, turn: CompletedTurn): Promise<void>
 		try {
 			result = await generateText({
 				model,
-				system: REVIEW_SYSTEM,
+				instructions: REVIEW_SYSTEM,
 				prompt: reviewPrompt(turn, catalogLines),
 				tools: reviewTools(deps.skillsDir, written),
-				stopWhen: stepCountIs(REVIEW_MAX_STEPS),
+				stopWhen: isStepCount(REVIEW_MAX_STEPS),
 				abortSignal: controller.signal,
 			});
 		} catch (err) {
@@ -484,7 +484,8 @@ async function runReview(deps: ReviewerDeps, turn: CompletedTurn): Promise<void>
 			model: ref,
 			usage: {
 				input: result.usage.inputTokens ?? null,
-				cached: result.usage.cachedInputTokens ?? null,
+				cacheRead: result.usage.inputTokenDetails?.cacheReadTokens ?? null,
+				cacheWrite: result.usage.inputTokenDetails?.cacheWriteTokens ?? null,
 				output: result.usage.outputTokens ?? null,
 			},
 			steps: result.steps.length,

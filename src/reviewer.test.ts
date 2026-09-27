@@ -45,7 +45,7 @@ function fakeReviewModel(
 	let step = 0;
 	let call = 0;
 	return {
-		specificationVersion: "v2",
+		specificationVersion: "v4",
 		provider: "fake",
 		modelId: "fake-review",
 		supportedUrls: {},
@@ -65,8 +65,11 @@ function fakeReviewModel(
 			}
 			return {
 				content,
-				finishReason: (s.calls?.length ?? 0) > 0 ? "tool-calls" : "stop",
-				usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+				finishReason:
+					(s.calls?.length ?? 0) > 0
+						? { unified: "tool-calls", raw: undefined }
+						: { unified: "stop", raw: undefined },
+				usage: { inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 5, text: undefined, reasoning: undefined } },
 				warnings: [],
 			};
 		},

@@ -23,7 +23,7 @@ afterEach(() => {
 	dirs = [];
 });
 
-const opts = { toolCallId: "t1", messages: [] };
+const opts = { toolCallId: "t1", messages: [], context: {} };
 
 describe("edit_file", () => {
 	test("new_string is literal — $&, $1, $` are not interpolated", async () => {

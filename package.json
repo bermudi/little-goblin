@@ -12,12 +12,12 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.client.json"
   },
   "dependencies": {
-    "@ai-sdk/groq": "2.0.53",
-    "@ai-sdk/openai-compatible": "^1.0.0",
-    "@ai-sdk/provider-utils": "3",
+    "@ai-sdk/groq": "4.0.50",
+    "@ai-sdk/openai-compatible": "^3.0.0",
+    "@ai-sdk/provider-utils": "5",
     "@mozilla/readability": "^0.6.0",
-    "@openrouter/ai-sdk-provider": "^1.0.0",
-    "ai": "^5.0.0",
+    "@openrouter/ai-sdk-provider": "^3.0.0",
+    "ai": "^7.0.0",
     "cron-parser": "^5.10.1",
     "grammy": "^1.38.0",
     "json5": "^2.2.3",
@@ -27,7 +27,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "@ai-sdk/provider": "2.0.4",
+    "@ai-sdk/provider": "4.0.18",
     "@types/bun": "latest",
     "@types/json5": "^2.2.0",
     "@types/ws": "8.18.1",

@@ -145,6 +145,9 @@ describe("transcriptionModel", () => {
 			auth,
 		);
 		expect(resolved).toEqual(["groq"]);
-		expect(model.modelId).toBe("whisper-large-v3");
+		// TranscriptionModel is a version union (string | V2 | V3 | V4) —
+		// groq returns a V4 instance; assert through a narrowing cast
+		// rather than widening the production type.
+		expect((model as { modelId: string }).modelId).toBe("whisper-large-v3");
 	});
 });

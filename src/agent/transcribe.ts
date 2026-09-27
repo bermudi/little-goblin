@@ -7,9 +7,9 @@
 // attached files — is transcribed on demand by the transcribe tool,
 // which calls into this same module.
 //
-// The model is an AI SDK TranscriptionModelV2 fed to
-// experimental_transcribe. `kind: groq` is the first — other kinds slot
-// into transcriptionModel() as the SDK grows transcription providers.
+// The model is an AI SDK TranscriptionModel fed to `transcribe`. `kind:
+// groq` is the first — other kinds slot into transcriptionModel() as the
+// SDK grows transcription providers.
 //
 // Over the provider's upload cap, the file is segmented instead of
 // skipped: ffmpeg extracts the audio track to mono opus (a video note's
@@ -19,8 +19,7 @@
 import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { experimental_transcribe } from "ai";
-import type { TranscriptionModelV2 } from "@ai-sdk/provider";
+import { transcribe, type TranscriptionModel } from "ai";
 import { createGroq } from "@ai-sdk/groq";
 import type { AuthStore } from "../auth.ts";
 import type { TranscriptionConfig } from "../config.ts";
@@ -48,7 +47,7 @@ export interface SpeechFile {
 export async function transcriptionModel(
 	cfg: TranscriptionConfig,
 	auth: AuthStore,
-): Promise<TranscriptionModelV2> {
+): Promise<TranscriptionModel> {
 	switch (cfg.kind) {
 		case "groq":
 			return createGroq({ apiKey: await auth.resolve(cfg.auth) }).transcription(
@@ -91,7 +90,7 @@ export interface TranscribeOptions {
 // file, and other IO/provider failures propagate — the intake caller
 // degrades them to a warn + path-referenced attachment.
 export async function transcribeAudio(
-	model: TranscriptionModelV2,
+	model: TranscriptionModel,
 	file: SpeechFile,
 	opts: TranscribeOptions = {},
 ): Promise<string | null> {
@@ -188,11 +187,11 @@ async function segmentAudio(
 }
 
 async function transcribeOne(
-	model: TranscriptionModelV2,
+	model: TranscriptionModel,
 	file: SpeechFile,
 ): Promise<string | null> {
 	const audio = await readFile(file.path);
-	const result = await experimental_transcribe({
+	const result = await transcribe({
 		model,
 		audio,
 		abortSignal: AbortSignal.timeout(TRANSCRIBE_TIMEOUT_MS),

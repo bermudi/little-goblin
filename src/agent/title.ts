@@ -21,7 +21,7 @@ export async function generateTopicTitle(
 	const input = firstText.slice(0, MAX_INPUT_CHARS);
 	const result = await generateText({
 		model,
-		system:
+		instructions:
 			"Write a short title — a few words — for a chat that begins with the " +
 			"message below. Output only the title: no quotes, no preamble, no " +
 			"trailing period.",
@@ -37,7 +37,8 @@ export async function generateTopicTitle(
 		model: typeof model === "string" ? model : `${model.provider}/${model.modelId}`,
 		usage: {
 			input: result.usage.inputTokens ?? null,
-			cached: result.usage.cachedInputTokens ?? null,
+			cacheRead: result.usage.inputTokenDetails?.cacheReadTokens ?? null,
+			cacheWrite: result.usage.inputTokenDetails?.cacheWriteTokens ?? null,
 			output: result.usage.outputTokens ?? null,
 		},
 		title,

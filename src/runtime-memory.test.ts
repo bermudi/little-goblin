@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModel, UIMessage } from "ai";
-import type { LanguageModelV2StreamPart } from "@ai-sdk/provider";
+import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { openStore } from "./conversation.ts";
 import { HindsightClient } from "./hindsight.ts";
 import type { MemoryConfig } from "./config.ts";
@@ -26,7 +26,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function fakeModel(deltas: string[], delayMs = 5): LanguageModel {
 	return {
-		specificationVersion: "v2",
+		specificationVersion: "v4",
 		provider: "fake",
 		modelId: "fake-1",
 		supportedUrls: {},
@@ -34,9 +34,9 @@ function fakeModel(deltas: string[], delayMs = 5): LanguageModel {
 			throw new Error("unimplemented");
 		},
 		doStream() {
-			const stream = new ReadableStream<LanguageModelV2StreamPart>({
+			const stream = new ReadableStream<LanguageModelV4StreamPart>({
 				async start(controller) {
-					const push = (p: LanguageModelV2StreamPart) => {
+					const push = (p: LanguageModelV4StreamPart) => {
 						try {
 							controller.enqueue(p);
 						} catch {
@@ -52,8 +52,8 @@ function fakeModel(deltas: string[], delayMs = 5): LanguageModel {
 					push({ type: "text-end", id: "t1" });
 					push({
 						type: "finish",
-						finishReason: "stop",
-						usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+						finishReason: { unified: "stop", raw: undefined },
+						usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
 					});
 					try {
 						controller.close();

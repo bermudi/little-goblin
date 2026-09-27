@@ -1,5 +1,5 @@
 // Codex provider kind: OpenAI's ChatGPT-subscription Codex backend
-// (chatgpt.com/backend-api/codex/responses) as a LanguageModelV2 — the
+// (chatgpt.com/backend-api/codex/responses) as a LanguageModelV4 — the
 // "thin custom provider over OAuth + the responses endpoint" DESIGN.md
 // called for. ai-sdk-provider-codex-cli wraps the CLI's own agent loop
 // (no caller tools), which can't drive goblin's turn loop.
@@ -16,15 +16,16 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
-	LanguageModelV2,
-	LanguageModelV2CallOptions,
-	LanguageModelV2CallWarning,
-	LanguageModelV2Content,
-	LanguageModelV2FinishReason,
-	LanguageModelV2FunctionTool,
-	LanguageModelV2Prompt,
-	LanguageModelV2StreamPart,
-	LanguageModelV2Usage,
+	LanguageModelV4,
+	LanguageModelV4CallOptions,
+	LanguageModelV4Content,
+	LanguageModelV4FinishReason,
+	LanguageModelV4FunctionTool,
+	LanguageModelV4Prompt,
+	LanguageModelV4StreamPart,
+	LanguageModelV4Usage,
+	SharedV4FileData,
+	SharedV4Warning,
 } from "@ai-sdk/provider";
 import { z } from "zod";
 import { durableWriteFile } from "../durable.ts";
@@ -225,19 +226,24 @@ async function refreshAuth(
 
 type ResponsesInputItem = Record<string, unknown>;
 
-function fileToDataUrl(data: unknown, mediaType: string): string {
-	if (typeof data === "string") {
-		// base64 payload or a URL — the SDK gives URLs as strings too.
-		if (data.startsWith("http://") || data.startsWith("https://") || data.startsWith("data:")) {
-			return data;
-		}
-		return `data:${mediaType};base64,${data}`;
+function fileToDataUrl(data: SharedV4FileData, mediaType: string): string {
+	// Spec v4 tags the payload — no more guessing whether a string is a
+	// URL, base64, or an inline data URL.
+	if (data.type === "url") {
+		return data.originalUrl ?? data.url.toString();
 	}
-	if (data instanceof Uint8Array) {
-		return `data:${mediaType};base64,${Buffer.from(data).toString("base64")}`;
+	if (data.type === "reference") {
+		throw new Error("codex: provider file references are not supported");
 	}
-	if (data instanceof URL) return data.toString();
-	throw new Error(`codex: unsupported file data shape (${typeof data})`);
+	if (data.type === "text") {
+		return `data:${mediaType};base64,${Buffer.from(data.text, "utf8").toString("base64")}`;
+	}
+	// 'data': raw bytes or base64 string. A data: string rides through
+	// untouched rather than double-encoding a middleware's gift.
+	if (typeof data.data === "string") {
+		return data.data.startsWith("data:") ? data.data : `data:${mediaType};base64,${data.data}`;
+	}
+	return `data:${mediaType};base64,${Buffer.from(data.data).toString("base64")}`;
 }
 
 function toolResultText(output: {
@@ -265,10 +271,10 @@ function toolResultText(output: {
 	return JSON.stringify(output.value ?? null);
 }
 
-// LanguageModelV2Prompt → responses `input` items + instructions.
+// LanguageModelV4Prompt → responses `input` items + instructions.
 // Assistant reasoning parts are dropped — the backend accepts no reasoning
 // echo without the encrypted content we don't persist.
-function convertPrompt(prompt: LanguageModelV2Prompt): {
+function convertPrompt(prompt: LanguageModelV4Prompt): {
 	instructions: string | undefined;
 	input: ResponsesInputItem[];
 } {
@@ -284,7 +290,10 @@ function convertPrompt(prompt: LanguageModelV2Prompt): {
 				for (const part of msg.content) {
 					if (part.type === "text") {
 						content.push({ type: "input_text", text: part.text });
-					} else if (part.mediaType.startsWith("image/")) {
+					} else if (
+						part.mediaType === "image" ||
+						part.mediaType.startsWith("image/")
+					) {
 						content.push({
 							type: "input_image",
 							image_url: fileToDataUrl(part.data, part.mediaType),
@@ -331,12 +340,21 @@ function convertPrompt(prompt: LanguageModelV2Prompt): {
 					}
 					// reasoning/file/tool-result parts on assistant messages are
 					// dropped — see the note above.
+					//
+					// (Spec v4 also allows tool-result parts on assistant messages
+					// for provider-executed tools — codex never requests any, so
+					// dropping is the honest mapping.)
 				}
 				if (content.length) input.push({ type: "message", role: "assistant", content });
 				break;
 			}
 			case "tool":
 				for (const part of msg.content) {
+					// Spec v4 unions approval responses into tool messages.
+					// Codex never requests approvals, so a response part can't
+					// legitimately arrive — skipping (not throwing) keeps a
+					// midflight SDK change from killing the turn.
+					if (part.type !== "tool-result") continue;
 					input.push({
 						type: "function_call_output",
 						call_id: part.toolCallId,
@@ -396,7 +414,7 @@ interface StreamState {
 function mapEvent(
 	event: Record<string, unknown>,
 	state: StreamState,
-	push: (p: LanguageModelV2StreamPart) => void,
+	push: (p: LanguageModelV4StreamPart) => void,
 ): void {
 	const type = event.type as string;
 	const item = event.item as Record<string, unknown> | undefined;
@@ -481,12 +499,20 @@ function mapEvent(
 			push({
 				type: "finish",
 				finishReason: finishReasonOf(state, response?.status),
+				// Spec v4 nests token counts: input/output objects with detail
+				// splits, not flat numbers.
 				usage: {
-					inputTokens: num(usage.input_tokens),
-					outputTokens: num(usage.output_tokens),
-					totalTokens: num(usage.total_tokens),
-					reasoningTokens: num(outDetails.reasoning_tokens),
-					cachedInputTokens: num(inDetails.cached_tokens),
+					inputTokens: {
+						total: num(usage.input_tokens),
+						noCache: undefined,
+						cacheRead: num(inDetails.cached_tokens),
+						cacheWrite: undefined,
+					},
+					outputTokens: {
+						total: num(usage.output_tokens),
+						text: undefined,
+						reasoning: num(outDetails.reasoning_tokens),
+					},
 				},
 			});
 			break;
@@ -531,10 +557,15 @@ function num(v: unknown): number | undefined {
 function finishReasonOf(
 	state: StreamState,
 	status: unknown,
-): LanguageModelV2FinishReason {
-	if (state.sawToolCall) return "tool-calls";
-	if (status === "incomplete") return "length";
-	return "stop";
+): LanguageModelV4FinishReason {
+	// Spec v4 pairs the unified reason with the provider's raw string.
+	if (state.sawToolCall) return { unified: "tool-calls", raw: rawStatus(status) };
+	if (status === "incomplete") return { unified: "length", raw: rawStatus(status) };
+	return { unified: "stop", raw: rawStatus(status) };
+}
+
+function rawStatus(status: unknown): string | undefined {
+	return typeof status === "string" ? status : undefined;
 }
 
 // ---------- the model ----------
@@ -543,8 +574,8 @@ interface CodexProviderOptions {
 	reasoningEffort?: string;
 }
 
-export class CodexLanguageModel implements LanguageModelV2 {
-	readonly specificationVersion = "v2" as const;
+export class CodexLanguageModel implements LanguageModelV4 {
+	readonly specificationVersion = "v4" as const;
 	readonly provider = "codex";
 	readonly supportedUrls = {};
 
@@ -554,7 +585,7 @@ export class CodexLanguageModel implements LanguageModelV2 {
 		private readonly fetchImpl: FetchLike = fetch,
 	) {}
 
-	private async buildRequest(options: LanguageModelV2CallOptions): Promise<{
+	private async buildRequest(options: LanguageModelV4CallOptions): Promise<{
 		body: Record<string, unknown>;
 		headers: Record<string, string>;
 	}> {
@@ -574,7 +605,7 @@ export class CodexLanguageModel implements LanguageModelV2 {
 		}
 		if (options.tools?.length) {
 			const fns = options.tools.filter(
-				(t): t is LanguageModelV2FunctionTool => t.type === "function",
+				(t): t is LanguageModelV4FunctionTool => t.type === "function",
 			);
 			body.tools = fns.map((t) => ({
 				type: "function",
@@ -605,8 +636,8 @@ export class CodexLanguageModel implements LanguageModelV2 {
 		};
 	}
 
-	private warningsFor(options: LanguageModelV2CallOptions): LanguageModelV2CallWarning[] {
-		const warnings: LanguageModelV2CallWarning[] = [];
+	private warningsFor(options: LanguageModelV4CallOptions): SharedV4Warning[] {
+		const warnings: SharedV4Warning[] = [];
 		for (const k of [
 			"maxOutputTokens",
 			"temperature",
@@ -618,13 +649,15 @@ export class CodexLanguageModel implements LanguageModelV2 {
 			"seed",
 			"responseFormat",
 		] as const) {
-			if (options[k] !== undefined) warnings.push({ type: "unsupported-setting", setting: k });
+			// Spec v4 collapsed unsupported-setting/unsupported-tool into a
+			// single `unsupported` warning keyed by feature string.
+			if (options[k] !== undefined) warnings.push({ type: "unsupported", feature: k });
 		}
 		for (const t of options.tools ?? []) {
 			if (t.type !== "function") {
 				warnings.push({
-					type: "unsupported-tool",
-					tool: t,
+					type: "unsupported",
+					feature: "provider-defined tools",
 					details: "provider-defined tools are not supported by codex",
 				});
 			}
@@ -646,8 +679,8 @@ export class CodexLanguageModel implements LanguageModelV2 {
 		return res;
 	}
 
-	async doStream(options: LanguageModelV2CallOptions): Promise<{
-		stream: ReadableStream<LanguageModelV2StreamPart>;
+	async doStream(options: LanguageModelV4CallOptions): Promise<{
+		stream: ReadableStream<LanguageModelV4StreamPart>;
 		request: { body: unknown };
 	}> {
 		const { body, headers } = await this.buildRequest(options);
@@ -655,9 +688,9 @@ export class CodexLanguageModel implements LanguageModelV2 {
 		const warnings = this.warningsFor(options);
 		const state: StreamState = { textOpen: null, reasoningOpen: null, sawToolCall: false };
 		let cancelled = false;
-		const stream = new ReadableStream<LanguageModelV2StreamPart>({
+		const stream = new ReadableStream<LanguageModelV4StreamPart>({
 			start: (controller) => {
-				const push = (part: LanguageModelV2StreamPart): void => {
+				const push = (part: LanguageModelV4StreamPart): void => {
 					if (!cancelled) controller.enqueue(part);
 				};
 				push({ type: "stream-start", warnings });
@@ -681,22 +714,21 @@ export class CodexLanguageModel implements LanguageModelV2 {
 		return { stream, request: { body } };
 	}
 
-	async doGenerate(options: LanguageModelV2CallOptions): Promise<{
-		content: LanguageModelV2Content[];
-		finishReason: LanguageModelV2FinishReason;
-		usage: LanguageModelV2Usage;
-		warnings: LanguageModelV2CallWarning[];
+	async doGenerate(options: LanguageModelV4CallOptions): Promise<{
+		content: LanguageModelV4Content[];
+		finishReason: LanguageModelV4FinishReason;
+		usage: LanguageModelV4Usage;
+		warnings: SharedV4Warning[];
 		request: { body: unknown };
 	}> {
 		const { stream, request } = await this.doStream(options);
-		const content: LanguageModelV2Content[] = [];
+		const content: LanguageModelV4Content[] = [];
 		const textBuf = new Map<string, string>();
 		const reasoningBuf = new Map<string, string>();
-		let finishReason: LanguageModelV2FinishReason = "unknown";
-		let usage: LanguageModelV2Usage = {
-			inputTokens: undefined,
-			outputTokens: undefined,
-			totalTokens: undefined,
+		let finishReason: LanguageModelV4FinishReason = { unified: "other", raw: undefined };
+		let usage: LanguageModelV4Usage = {
+			inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+			outputTokens: { total: undefined, text: undefined, reasoning: undefined },
 		};
 		const reader = stream.getReader();
 		for (;;) {
@@ -733,10 +765,10 @@ export class CodexLanguageModel implements LanguageModelV2 {
 		return {
 			content: [
 				...[...reasoningBuf.values()].map(
-					(text): LanguageModelV2Content => ({ type: "reasoning", text }),
+					(text): LanguageModelV4Content => ({ type: "reasoning", text }),
 				),
 				...[...textBuf.values()].map(
-					(text): LanguageModelV2Content => ({ type: "text", text }),
+					(text): LanguageModelV4Content => ({ type: "text", text }),
 				),
 				...content,
 			],

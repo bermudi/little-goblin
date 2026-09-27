@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { bashTool } from "./bash.ts";
 
-const opts = { toolCallId: "t1", messages: [] };
+const opts = { toolCallId: "t1", messages: [], context: {} };
 
 interface BashResult {
 	exit_code?: number | null;

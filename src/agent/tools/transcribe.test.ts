@@ -7,7 +7,7 @@ import { transcribeTool } from "./transcribe.ts";
 import type { SpeechFile } from "../transcribe.ts";
 
 const dirs: string[] = [];
-const opts = { toolCallId: "t1", messages: [] };
+const opts = { toolCallId: "t1", messages: [], context: {} };
 
 afterEach(() => {
 	for (const dir of dirs) rmSync(dir, { recursive: true, force: true });

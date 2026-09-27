@@ -26,7 +26,7 @@ afterEach(() => {
 	dirs = [];
 });
 
-const opts = { toolCallId: "t1", messages: [] };
+const opts = { toolCallId: "t1", messages: [], context: {} };
 
 describe("read_file", () => {
 	test("reads a file with line numbers", async () => {

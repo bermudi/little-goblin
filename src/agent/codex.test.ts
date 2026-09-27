@@ -158,7 +158,7 @@ describe("CodexLanguageModel — request shape", () => {
 			return sse([
 				{
 					type: "response.completed",
-					response: { status: "completed", usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 } },
+					response: { status: "completed", usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8, input_tokens_details: { cached_tokens: 3 } } },
 				},
 			]);
 		});
@@ -177,8 +177,9 @@ describe("CodexLanguageModel — request shape", () => {
 		const input = sent.input as Array<{ role: string; content: Array<{ type: string; text: string }> }>;
 		expect(input[0]!.role).toBe("user");
 		expect(input[0]!.content[0]).toEqual({ type: "input_text", text: "hi" });
-		expect(result.finishReason).toBe("stop");
-		expect(result.usage.inputTokens).toBe(5);
+		expect(result.finishReason).toEqual({ unified: "stop", raw: "completed" });
+		expect(result.usage.inputTokens.total).toBe(5);
+		expect(result.usage.inputTokens.cacheRead).toBe(3);
 	});
 
 	test("a tool result round-trips as function_call_output", async () => {
@@ -256,7 +257,7 @@ describe("CodexLanguageModel — request shape", () => {
 		const r = await model.doGenerate({
 			prompt: [{ role: "user", content: [{ type: "text", text: "x" }] }],
 		});
-		expect(r.finishReason).toBe("tool-calls");
+		expect(r.finishReason).toEqual({ unified: "tool-calls", raw: "completed" });
 		expect(r.content.map((c) => c.type)).toEqual(["reasoning", "text", "tool-call"]);
 		expect((r.content[0] as { text: string }).text).toBe("thinking…");
 		expect((r.content[1] as { text: string }).text).toBe("the answer");

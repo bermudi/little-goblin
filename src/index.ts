@@ -235,7 +235,7 @@ async function boot() {
 					conversation: conv.id,
 					purpose: "compaction",
 				});
-				const { text } = await generateText({ model, system, prompt, abortSignal: signal });
+				const { text } = await generateText({ model, instructions: system, prompt, abortSignal: signal });
 				return text;
 			},
 		},

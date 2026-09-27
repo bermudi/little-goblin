@@ -10,14 +10,15 @@
 
 import {
 	convertToModelMessages,
-	stepCountIs,
+	isStepCount,
 	streamText,
+	toUIMessageStream,
+	type CallWarning,
 	type LanguageModel,
 	type ToolSet,
 	type UIMessage,
 } from "ai";
-import type { ProviderOptions, ToolCallOptions } from "@ai-sdk/provider-utils";
-import type { LanguageModelV2CallWarning } from "@ai-sdk/provider";
+import type { ProviderOptions, ToolExecutionOptions } from "@ai-sdk/provider-utils";
 import { randomUUID } from "node:crypto";
 import { materializeAttachments } from "./agent/attachments.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
@@ -51,15 +52,17 @@ const COMPACT_AT_PCT = 75;
 
 // Provider capability warnings are observability, not control — logged
 // compact, never fatal. Kept as strings so a warning object carrying a
-// full tool definition can't bloat the log line.
-function describeWarning(w: LanguageModelV2CallWarning): string {
+// full tool definition can't bloat the log line. (Spec v4 collapsed the
+// per-setting/per-tool variants into feature strings.)
+function describeWarning(w: CallWarning): string {
 	switch (w.type) {
-		case "unsupported-setting":
-			return `unsupported-setting:${w.setting}`;
-		case "unsupported-tool":
-			return `unsupported-tool:${(w.tool as { name?: string }).name ?? "provider-defined"}`;
-		default:
-			return JSON.stringify(w);
+		case "unsupported":
+		case "compatibility":
+			return `${w.type}:${w.feature}`;
+		case "deprecated":
+			return `deprecated:${w.setting}`;
+		case "other":
+			return `other:${w.message}`;
 	}
 }
 
@@ -375,7 +378,7 @@ export class Runtime {
 		for (const t of Object.values(tools)) {
 			const execute = t.execute?.bind(t);
 			if (execute === undefined) continue;
-			t.execute = (input: unknown, options: ToolCallOptions) => {
+			t.execute = (input: unknown, options: ToolExecutionOptions<unknown>) => {
 				this.checkAuthority(convId, epoch);
 				return execute(input as never, options);
 			};
@@ -685,7 +688,7 @@ export class Runtime {
 				step.inputModalities,
 			);
 			this.checkAuthority(convId, epoch);
-			const messages = convertToModelMessages(prepared, {
+			const messages = await convertToModelMessages(prepared, {
 				tools,
 				ignoreIncompleteToolCalls: true,
 			});
@@ -705,25 +708,30 @@ export class Runtime {
 			let lastStepInputTokens: number | null = null;
 			const result = streamText({
 				model: step.model,
-				system: step.system,
+				// `instructions` is the v7 primary; the internal ModelStep keeps
+				// its own `system` field name — the seam stays one property deep.
+				instructions: step.system,
 				messages,
 				tools,
 				...(step.providerOptions ? { providerOptions: step.providerOptions } : {}),
-				stopWhen: stepCountIs(MAX_STEPS),
+				stopWhen: isStepCount(MAX_STEPS),
 				abortSignal: controller.signal,
 				onError: ({ error }) => {
 					log.error("model stream error", error, { conversation: convId });
 				},
-				onStepFinish: ({ usage }) => {
+				onStepEnd: ({ usage }) => {
 					lastStepInputTokens = usage.inputTokens ?? null;
 					// The cached split is how cache health is read off the log:
-					// undefined means the provider didn't report it (logged as
-					// null), 0 means reported-and-cold. inputTokens includes the
-					// cached ones.
+					// null means the provider didn't report it, 0 means
+					// reported-and-cold. inputTokens includes the cached ones.
+					// Spec v4 splits reads from writes — Anthropic-style caches
+					// bill both; read-only caches (OpenRouter, openai-compatible)
+					// leave write null.
 					log.info("model step usage", {
 						conversation: convId,
 						inputTokens: usage.inputTokens ?? null,
-						cachedInputTokens: usage.cachedInputTokens ?? null,
+						cacheReadTokens: usage.inputTokenDetails?.cacheReadTokens ?? null,
+						cacheWriteTokens: usage.inputTokenDetails?.cacheWriteTokens ?? null,
 						outputTokens: usage.outputTokens ?? null,
 					});
 				},
@@ -732,8 +740,9 @@ export class Runtime {
 			// The SDK hands provider capability warnings back on the result —
 			// previously the one fail-quiet seam in the model path: an ignored
 			// setting or an inexpressible tool vanished. Observability only;
-			// the turn proceeds regardless.
-			void result.warnings
+			// the turn proceeds regardless. (v7 exposes result promises as
+			// bare PromiseLikes — Promise.resolve buys back .catch.)
+			void Promise.resolve(result.warnings)
 				.then((ws) => {
 					if (ws !== undefined && ws.length > 0) {
 						log.warn("model warnings", {
@@ -765,7 +774,8 @@ export class Runtime {
 			// turn must surface an error, not commit partial output as a
 			// clean completion.
 			let streamError: string | null = null;
-			const uiStream = result.toUIMessageStream<UIMessage>({
+			const uiStream = toUIMessageStream<ToolSet, UIMessage>({
+				stream: result.stream,
 				sendReasoning: true,
 				// Retention keys documents and source refs to the assistant
 				// message identity — without a generator the SDK leaves it
@@ -837,7 +847,7 @@ export class Runtime {
 
 			this.checkAuthority(convId, epoch);
 			if (streamError !== null) throw new Error(streamError);
-			const usage = await result.usage.catch((err) => {
+			const usage = await Promise.resolve(result.usage).catch((err) => {
 				// Totals are observability, not control — but a dropped usage
 				// promise must be visible, not a silent null on the log line.
 				log.warn("turn usage unavailable — totals skipped", {
@@ -884,7 +894,8 @@ export class Runtime {
 				usage:
 					usage && {
 						input: usage.inputTokens ?? null,
-						cached: usage.cachedInputTokens ?? null,
+						cacheRead: usage.inputTokenDetails?.cacheReadTokens ?? null,
+						cacheWrite: usage.inputTokenDetails?.cacheWriteTokens ?? null,
 						output: usage.outputTokens ?? null,
 					},
 				window,

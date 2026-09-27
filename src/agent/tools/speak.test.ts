@@ -6,7 +6,7 @@ import { makeTools } from "./mod.ts";
 import { speakInputSchema, speakTool } from "./speak.ts";
 
 const dirs: string[] = [];
-const opts = { toolCallId: "t1", messages: [] };
+const opts = { toolCallId: "t1", messages: [], context: {} };
 
 afterEach(() => {
 	for (const dir of dirs) rmSync(dir, { recursive: true, force: true });

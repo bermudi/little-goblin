@@ -41,7 +41,7 @@ export async function resolveModel(
 			const apiKey = await auth.resolve(p.auth);
 			// The provider package's response-metadata types use nullable
 			// fields that predate exactOptionalPropertyTypes — structurally
-			// it's the same spec-v2 LanguageModel.
+			// it's the same spec-v4 LanguageModel.
 			return createOpenRouter({ apiKey }).chat(modelId) as unknown as LanguageModel;
 		}
 		case "codex":

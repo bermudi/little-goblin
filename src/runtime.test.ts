@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tool, type LanguageModel, type UIMessage } from "ai";
 import { z } from "zod";
-import type { LanguageModelV2StreamPart } from "@ai-sdk/provider";
+import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { openStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
 import { Runtime, userMessage, type TurnDone, type TurnSink } from "./runtime.ts";
@@ -26,7 +26,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // given deltas with a delay between each.
 function fakeModel(deltas: string[], delayMs = 15): LanguageModel {
 	return {
-		specificationVersion: "v2",
+		specificationVersion: "v4",
 		provider: "fake",
 		modelId: "fake-1",
 		supportedUrls: {},
@@ -35,9 +35,9 @@ function fakeModel(deltas: string[], delayMs = 15): LanguageModel {
 		},
 		doStream(options: { abortSignal?: AbortSignal }) {
 			const signal = options.abortSignal;
-			const stream = new ReadableStream<LanguageModelV2StreamPart>({
+			const stream = new ReadableStream<LanguageModelV4StreamPart>({
 				async start(controller) {
-					const push = (p: LanguageModelV2StreamPart) => {
+					const push = (p: LanguageModelV4StreamPart) => {
 						try {
 							controller.enqueue(p);
 						} catch {
@@ -54,8 +54,8 @@ function fakeModel(deltas: string[], delayMs = 15): LanguageModel {
 					push({ type: "text-end", id: "t1" });
 					push({
 						type: "finish",
-						finishReason: "stop",
-						usage: { inputTokens: 1, outputTokens: deltas.length, totalTokens: 2 },
+						finishReason: { unified: "stop", raw: undefined },
+						usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: deltas.length, text: undefined, reasoning: undefined } },
 					});
 					try {
 						controller.close();
@@ -125,7 +125,7 @@ function setup(deltas: string[], delayMs = 15) {
 function recordingModel(deltas: string[], delayMs = 15) {
 	const prompts: string[] = [];
 	const base = fakeModel(deltas, delayMs) as unknown as {
-		doStream(o: { prompt: unknown }): { stream: ReadableStream<LanguageModelV2StreamPart> };
+		doStream(o: { prompt: unknown }): { stream: ReadableStream<LanguageModelV4StreamPart> };
 	};
 	const model = {
 		...base,
@@ -287,7 +287,7 @@ describe("turn authority", () => {
 			store,
 			buildStep: () => ({
 				model: {
-					specificationVersion: "v2",
+					specificationVersion: "v4",
 					provider: "fake",
 					modelId: "fake-1",
 					supportedUrls: {},
@@ -295,9 +295,9 @@ describe("turn authority", () => {
 						throw new Error("unimplemented");
 					},
 					doStream() {
-						const stream = new ReadableStream<LanguageModelV2StreamPart>({
+						const stream = new ReadableStream<LanguageModelV4StreamPart>({
 							async start(controller) {
-								const push = (p: LanguageModelV2StreamPart) => {
+								const push = (p: LanguageModelV4StreamPart) => {
 									try {
 										controller.enqueue(p);
 									} catch {
@@ -314,8 +314,8 @@ describe("turn authority", () => {
 								});
 								push({
 									type: "finish",
-									finishReason: "tool-calls",
-									usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+									finishReason: { unified: "tool-calls", raw: undefined },
+									usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
 								});
 								try {
 									controller.close();
@@ -411,7 +411,7 @@ describe("turn authority", () => {
 			store,
 			buildStep: () => ({
 				model: {
-					specificationVersion: "v2",
+					specificationVersion: "v4",
 					provider: "fake",
 					modelId: "two-part-1",
 					supportedUrls: {},
@@ -419,7 +419,7 @@ describe("turn authority", () => {
 						throw new Error("unimplemented");
 					},
 					doStream() {
-						const stream = new ReadableStream<LanguageModelV2StreamPart>({
+						const stream = new ReadableStream<LanguageModelV4StreamPart>({
 							start(controller) {
 								controller.enqueue({ type: "stream-start", warnings: [] });
 								controller.enqueue({ type: "text-start", id: "t1" });
@@ -438,8 +438,8 @@ describe("turn authority", () => {
 								controller.enqueue({ type: "text-end", id: "t2" });
 								controller.enqueue({
 									type: "finish",
-									finishReason: "stop",
-									usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+									finishReason: { unified: "stop", raw: undefined },
+									usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 2, text: undefined, reasoning: undefined } },
 								});
 								controller.close();
 							},
@@ -471,7 +471,7 @@ describe("turn authority", () => {
 			store,
 			buildStep: () => ({
 				model: {
-					specificationVersion: "v2",
+					specificationVersion: "v4",
 					provider: "fake",
 					modelId: "two-step-1",
 					supportedUrls: {},
@@ -480,9 +480,9 @@ describe("turn authority", () => {
 					},
 					doStream() {
 						call++;
-						const stream = new ReadableStream<LanguageModelV2StreamPart>({
+						const stream = new ReadableStream<LanguageModelV4StreamPart>({
 							start(controller) {
-								const push = (p: LanguageModelV2StreamPart) => controller.enqueue(p);
+								const push = (p: LanguageModelV4StreamPart) => controller.enqueue(p);
 								push({ type: "stream-start", warnings: [] });
 								if (call === 1) {
 									push({ type: "text-start", id: "t1" });
@@ -491,8 +491,8 @@ describe("turn authority", () => {
 									push({ type: "tool-call", toolCallId: "c1", toolName: "probe", input: "{}" });
 									push({
 										type: "finish",
-										finishReason: "tool-calls",
-										usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+										finishReason: { unified: "tool-calls", raw: undefined },
+										usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
 									});
 								} else {
 									// Same id as step 1 — deliberate.
@@ -501,8 +501,8 @@ describe("turn authority", () => {
 									push({ type: "text-end", id: "t1" });
 									push({
 										type: "finish",
-										finishReason: "stop",
-										usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+										finishReason: { unified: "stop", raw: undefined },
+										usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
 									});
 								}
 								controller.close();
@@ -538,7 +538,7 @@ describe("turn authority", () => {
 			store,
 			buildStep: () => ({
 				model: {
-					specificationVersion: "v2",
+					specificationVersion: "v4",
 					provider: "fake",
 					modelId: "err-1",
 					supportedUrls: {},
@@ -546,7 +546,7 @@ describe("turn authority", () => {
 						throw new Error("unimplemented");
 					},
 					doStream() {
-						const stream = new ReadableStream<LanguageModelV2StreamPart>({
+						const stream = new ReadableStream<LanguageModelV4StreamPart>({
 							start(controller) {
 								controller.enqueue({ type: "stream-start", warnings: [] });
 								controller.enqueue({ type: "text-start", id: "t1" });
@@ -581,7 +581,7 @@ describe("turn authority", () => {
 			resolveStep = r;
 		});
 		const base = fakeModel(["ok"], 5) as unknown as {
-			doStream(o: { prompt: unknown }): { stream: ReadableStream<LanguageModelV2StreamPart> };
+			doStream(o: { prompt: unknown }): { stream: ReadableStream<LanguageModelV4StreamPart> };
 		};
 		const recording = {
 			...base,
@@ -796,7 +796,7 @@ describe("cache stability", () => {
 		// One step, reporting a warm cache (700 of 900 input tokens cached)
 		// against a 1000-token window — 90% utilization must warn.
 		const model = {
-			specificationVersion: "v2",
+			specificationVersion: "v4",
 			provider: "fake",
 			modelId: "fake-1",
 			supportedUrls: {},
@@ -804,7 +804,7 @@ describe("cache stability", () => {
 				throw new Error("unimplemented");
 			},
 			doStream() {
-				const stream = new ReadableStream<LanguageModelV2StreamPart>({
+				const stream = new ReadableStream<LanguageModelV4StreamPart>({
 					start(controller) {
 						controller.enqueue({ type: "stream-start", warnings: [] });
 						controller.enqueue({ type: "text-start", id: "t1" });
@@ -812,14 +812,21 @@ describe("cache stability", () => {
 						controller.enqueue({ type: "text-end", id: "t1" });
 						controller.enqueue({
 							type: "finish",
-							finishReason: "stop",
+							finishReason: { unified: "stop", raw: undefined },
 							usage: {
-								inputTokens: 900,
-								outputTokens: 1,
-								totalTokens: 901,
-								cachedInputTokens: 700,
+								inputTokens: {
+									total: 900,
+									noCache: undefined,
+									cacheRead: 700,
+									cacheWrite: undefined,
+								},
+								outputTokens: {
+									total: 1,
+									text: undefined,
+									reasoning: undefined,
+								},
 							},
-							});
+						});
 						controller.close();
 					},
 				});
@@ -847,12 +854,13 @@ describe("cache stability", () => {
 			const stepUsage = lines.find((l) => l.msg === "model step usage");
 			expect(stepUsage).toMatchObject({
 				inputTokens: 900,
-				cachedInputTokens: 700,
+				cacheReadTokens: 700,
+				cacheWriteTokens: null,
 				outputTokens: 1,
 			});
 			const completed = lines.find((l) => l.msg === "turn completed");
 			expect(completed?.window).toEqual({ input: 900, limit: 1000, pct: 90 });
-			expect(completed?.usage).toEqual({ input: 900, cached: 700, output: 1 });
+			expect(completed?.usage).toEqual({ input: 900, cacheRead: 700, cacheWrite: null, output: 1 });
 		} finally {
 			setLogFile(null);
 			store.close();
@@ -875,7 +883,7 @@ describe("cache stability", () => {
 		}
 		const model = (inputTokens: number) =>
 			({
-				specificationVersion: "v2",
+				specificationVersion: "v4",
 				provider: "fake",
 				modelId: "fake-1",
 				supportedUrls: {},
@@ -883,7 +891,7 @@ describe("cache stability", () => {
 					throw new Error("unimplemented");
 			},
 				doStream() {
-					const stream = new ReadableStream<LanguageModelV2StreamPart>({
+					const stream = new ReadableStream<LanguageModelV4StreamPart>({
 						start(controller) {
 							controller.enqueue({ type: "stream-start", warnings: [] });
 							controller.enqueue({ type: "text-start", id: "t1" });
@@ -891,8 +899,20 @@ describe("cache stability", () => {
 							controller.enqueue({ type: "text-end", id: "t1" });
 							controller.enqueue({
 								type: "finish",
-								finishReason: "stop",
-								usage: { inputTokens, outputTokens: 1, totalTokens: inputTokens + 1 },
+								finishReason: { unified: "stop", raw: undefined },
+								usage: {
+									inputTokens: {
+										total: inputTokens,
+										noCache: undefined,
+										cacheRead: undefined,
+										cacheWrite: undefined,
+									},
+									outputTokens: {
+										total: 1,
+										text: undefined,
+										reasoning: undefined,
+									},
+								},
 							});
 							controller.close();
 						},
@@ -1084,7 +1104,7 @@ describe("cache stability", () => {
 		dirs.push(dir);
 		const logFile = join(dir, "goblin.log");
 		const model = {
-			specificationVersion: "v2",
+			specificationVersion: "v4",
 			provider: "fake",
 			modelId: "fake-1",
 			supportedUrls: {},
@@ -1092,12 +1112,12 @@ describe("cache stability", () => {
 				throw new Error("unimplemented");
 			},
 			doStream() {
-				const stream = new ReadableStream<LanguageModelV2StreamPart>({
+				const stream = new ReadableStream<LanguageModelV4StreamPart>({
 					start(controller) {
 						controller.enqueue({
 							type: "stream-start",
 							warnings: [
-								{ type: "unsupported-setting", setting: "temperature" },
+								{ type: "unsupported", feature: "temperature" },
 							],
 						});
 						controller.enqueue({ type: "text-start", id: "t1" });
@@ -1105,8 +1125,8 @@ describe("cache stability", () => {
 						controller.enqueue({ type: "text-end", id: "t1" });
 						controller.enqueue({
 								type: "finish",
-								finishReason: "stop",
-								usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+								finishReason: { unified: "stop", raw: undefined },
+								usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
 							});
 						controller.close();
 					},
@@ -1132,7 +1152,7 @@ describe("cache stability", () => {
 				.split("\n")
 				.map((l) => JSON.parse(l) as Record<string, unknown>);
 			const warn = lines.find((l) => l.msg === "model warnings");
-			expect(warn?.warnings).toEqual(["unsupported-setting:temperature"]);
+			expect(warn?.warnings).toEqual(["unsupported:temperature"]);
 		} finally {
 			setLogFile(null);
 			store.close();
@@ -1145,7 +1165,7 @@ describe("skill reviewer hook", () => {
 	function toolThenText(toolName: string, deltas: string[]): LanguageModel {
 		let step = 0;
 		return {
-			specificationVersion: "v2",
+			specificationVersion: "v4",
 			provider: "fake",
 			modelId: "fake-tool",
 			supportedUrls: {},
@@ -1154,15 +1174,15 @@ describe("skill reviewer hook", () => {
 			},
 			doStream() {
 				const n = step++;
-				const stream = new ReadableStream<LanguageModelV2StreamPart>({
+				const stream = new ReadableStream<LanguageModelV4StreamPart>({
 					start(controller) {
 						controller.enqueue({ type: "stream-start", warnings: [] });
 						if (n === 0) {
 							controller.enqueue({ type: "tool-call", toolCallId: "c1", toolName, input: "{}" });
 							controller.enqueue({
 								type: "finish",
-								finishReason: "tool-calls",
-								usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+								finishReason: { unified: "tool-calls", raw: undefined },
+								usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
 							});
 						} else {
 							controller.enqueue({ type: "text-start", id: "t1" });
@@ -1170,8 +1190,8 @@ describe("skill reviewer hook", () => {
 							controller.enqueue({ type: "text-end", id: "t1" });
 							controller.enqueue({
 								type: "finish",
-								finishReason: "stop",
-								usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+								finishReason: { unified: "stop", raw: undefined },
+								usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
 							});
 						}
 						controller.close();

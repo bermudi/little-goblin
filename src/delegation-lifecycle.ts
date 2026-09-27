@@ -541,6 +541,8 @@ async function reportBody(
 // true, so an unsubmitted notice is retried on the next tick rather
 // than silently dropped. reportBody throws propagate the same way:
 // they happen before any transition and the scan's catch logs them.
+// recoverStart is the one exception: a `starting` row has no next
+// tick to retry on, so it records failed regardless (see there).
 async function notify(
 	deps: DelegationLifecycleDeps,
 	d: Delegation,
@@ -605,7 +607,15 @@ function transition(
 
 // A `starting` row at boot: goblin died between inserting the row and
 // finishing the herdr launch. Close the workspace it may have opened
-// (best effort), then report it failed like any other dead row.
+// (best effort), then report it failed like any other dead row. The
+// scan's notice-then-transition ordering exists so a lost notice is
+// retried next tick — but a `starting` row has no next tick (only the
+// first scan ever sees it), and one wedged there stays invisible to
+// every later scan while still holding a live() concurrency slot. So
+// the transition is unconditional (a concurrent stop's CAS still
+// wins) and the notice is best-effort: notify logs a miss, and a
+// reportBody throw reaches the scan's catch after the finally has
+// recorded the verdict.
 async function recoverStart(
 	deps: DelegationLifecycleDeps,
 	d: Delegation,
@@ -613,11 +623,14 @@ async function recoverStart(
 	if (d.workspaceId) {
 		await closeWorkspaceQuietly(deps, d.id, d.workspaceId);
 	}
-	const landed = await notify(deps, d, "failed", {
-		extra: "(goblin restarted while starting it)",
-		agentGone: d.agentName === "",
-	});
-	if (landed) transition(deps, d, "failed");
+	try {
+		await notify(deps, d, "failed", {
+			extra: "(goblin restarted while starting it)",
+			agentGone: d.agentName === "",
+		});
+	} finally {
+		transition(deps, d, "failed");
+	}
 }
 
 async function check(deps: DelegationLifecycleDeps, d: Delegation): Promise<void> {

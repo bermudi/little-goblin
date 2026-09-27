@@ -364,6 +364,36 @@ describe("delegation watcher", () => {
 		expect(h.wakes[0]).toContain("restarted while starting");
 	});
 
+	test("a recovery notice that fails to submit still fails the row", async () => {
+		const h = harness();
+		const d = h.store.create({
+			name: "orphan",
+			harness: "codex",
+			cwd: "/w",
+			task: "t",
+			address: { chatId: 1, threadId: null },
+		});
+		h.store.bindLaunch(d.id, {
+			agentName: "g1-orphan",
+			workspaceId: "w9",
+			paneId: "w9:p1",
+		});
+		const w = startDelegationLifecycle({
+			...h.deps,
+			wake: (a, text) => {
+				h.wakes.push(text);
+				return false;
+			},
+		});
+		await w.tick();
+		w.stopTicker();
+		// The notice never landed, but a `starting` row has no next tick:
+		// waiting on a landed notice would wedge it invisible to every
+		// later scan while it still holds a live() concurrency slot.
+		expect(h.store.get(d.id)!.status).toBe("failed");
+		expect(h.wakes).toHaveLength(1);
+	});
+
 	test("a second watcher over the same DB resumes a running row", async () => {
 		const h = harness();
 		const d = runningRow(h, "survivor", 1);

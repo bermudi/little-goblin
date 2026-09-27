@@ -115,6 +115,7 @@ describe("delivery", () => {
 	test("failed send at final flush is retried, not dropped", async () => {
 		let calls = 0;
 		const msgs: string[] = [];
+		const reactions: number[] = [];
 		const api = {
 			sendChatAction: () => Promise.resolve(true),
 			sendMessage: async (_chat: number, text: string) => {
@@ -124,12 +125,17 @@ describe("delivery", () => {
 				return { message_id: msgs.length };
 			},
 			editMessageText: () => Promise.resolve(true),
+			setMessageReaction: async (_chat: number, id: number) => {
+				reactions.push(id);
+				return true;
+			},
 		} as unknown as Api;
 		const sink = makeDeliverySink(api, conv, undefined, 0);
 		sink.onTextDelta("tail");
 		// First send fails inside onDone's flush; the drain retries it.
 		await sink.onDone({ kind: "completed" });
 		expect(msgs).toEqual(["tail"]);
+		expect(reactions).toEqual([1]);
 	});
 
 	test("a surrogate pair is never split across the chunk boundary", async () => {
@@ -200,6 +206,7 @@ describe("delivery", () => {
 	test("a chunk edited to the empty-window ellipsis is not re-edited", async () => {
 		let ellipsisEdits = 0;
 		const msgs: string[] = [];
+		const reactions: number[] = [];
 		const api = {
 			sendChatAction: () => Promise.resolve(true),
 			sendMessage: async (_chat: number, text: string) => {
@@ -209,6 +216,10 @@ describe("delivery", () => {
 			editMessageText: async (_chat: number, id: number, text: string) => {
 				if (text === "…") ellipsisEdits++;
 				msgs[id - 1] = text;
+				return true;
+			},
+			setMessageReaction: async (_chat: number, id: number) => {
+				reactions.push(id);
 				return true;
 			},
 		} as unknown as Api;
@@ -228,6 +239,7 @@ describe("delivery", () => {
 		// shown already holds "…" — comparing against the rendered value
 		// means later flushes see no diff. Each would re-edit otherwise.
 		expect(ellipsisEdits).toBe(1);
+		expect(reactions).toEqual([2]);
 	});
 
 	test("permanently failing sends don't make onDone throw", async () => {

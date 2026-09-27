@@ -24,6 +24,15 @@ Verified end-to-end against the real Hindsight stack on 2026-09-24
 raw client's delete method as a complete forgetting mechanism — see
 `/forget` below.
 
+On 2026-09-27, a synthetic live drill verified cross-topic recall and a
+dated correction in three private Telegram topics: four visible replies,
+four completed retention operations, and source-backed recall in the fresh
+topics. A controlled API restart with no pending operations returned
+healthy without changing the queue; the watch's healthy no-op was also
+observed. The watch's restart on a live `unhealthy` container and recovery
+with retention in flight across a restart remain untested. The synthetic
+topics and retained facts remain available for audit, not auto-deleted.
+
 ## Operator controls
 
 - `/memory` — status (`disabled|healthy|degraded|pending` with outbox

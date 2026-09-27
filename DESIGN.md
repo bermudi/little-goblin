@@ -983,10 +983,18 @@ reboot closed the boot-path gate in production: db and api units
 auto-started within a minute of boot — the wants-symlink → generator
 path survived contact with a real restart (`systemctl --user is-enabled
 goblin-memory-api` reads `generated`; the symlink is the evidence, not
-that command). Still never exercised: the watch's restart action on a
-live `unhealthy`. The broader release gates from Operations and
-verification — cross-topic recall, dated correction, restart-recovery
-drills — remain operator exercises. First live finding: z.ai 429
+that command). On 2026-09-27, four synthetic exchanges across three named
+private Telegram topics exercised cross-topic recall and a dated correction
+with the operator-selected `glm-5.3-flash`: the fresh topics' persisted
+recall blocks cited the source topic, the recall reply gave the prior
+value, and the correction reply distinguished current from prior and
+included the date. All four replies were visible in Telegram and all four
+retention operations completed. With the queue idle, a
+controlled API restart returned healthy with unchanged queue state; a
+watch tick against a healthy API left its service invocation unchanged.
+Still never exercised: the watch's restart action on a live `unhealthy`,
+or recovery and duplicate suppression with work in flight during a restart.
+First live finding: z.ai 429
 "insufficient balance" during extraction blocks a single document for
 operator reconciliation (the designed path, not a crash) — provider
 credit is a live dependency of retention.

@@ -425,6 +425,21 @@ def start_stack() -> None:
     info(f"{WATCH_TIMER} enabled — health checked every 5 minutes")
 
 
+def refresh_assets(enable_watch: bool) -> None:
+    """Idempotent asset install + manager reload for boxes that already
+    have a stack. install_assets() is otherwise reached only on a fresh
+    install, so a re-run (status path, --reconfigure) never picked up the
+    watch units — the health watcher stayed inactive forever. Same
+    enablement start_stack uses when the timer should be live."""
+    installed = install_assets(MEMORY_DIR, SYSTEMD_DIR, CFG_DIR, USER_UNIT_DIR)
+    for path in installed:
+        info(f"installed {path}")
+    run(["systemctl", "--user", "daemon-reload"])
+    if enable_watch:
+        run(["systemctl", "--user", "enable", "--now", WATCH_TIMER])
+        info(f"{WATCH_TIMER} enabled — health checked every 5 minutes")
+
+
 def http_ok(url: str) -> bool:
     try:
         with urlrequest.urlopen(url, timeout=5) as response:
@@ -762,9 +777,10 @@ def print_summary(answers: Answers, bank_id: str) -> None:
 def manual_recovery_commands() -> list[str]:
     """The by-hand equivalent of install_assets + start_stack's enablement.
 
-    Re-running the installer cannot repair a missing boot hook: existing
-    env files make it print status and exit. The status output itself has
-    to carry the fix.
+    A missing boot hook stays manual: re-running the installer on an
+    existing install now installs the assets and (stack up) enables the
+    watch timer, but the API unit's wants symlink is written only by the
+    fresh-install start path — the status output has to carry that fix.
     """
     return [
         f"install -m 644 {MEMORY_DIR}/{WATCH_UNITS[0]} {MEMORY_DIR}/{WATCH_UNITS[1]} "
@@ -776,13 +792,18 @@ def manual_recovery_commands() -> list[str]:
     ]
 
 
-def existing_install_status() -> None:
+def existing_install_status() -> str:
+    """Print the installed stack's status. Returns the API unit's
+    is-active state — main keys the watch-timer enablement off it."""
     info("existing installation detected:")
     for path in (POSTGRES_ENV, HINDSIGHT_ENV):
         print(f"  {'✓' if path.is_file() else '✗'} {path}")
+    api_state = "unknown"
     for unit in (DB_UNIT, API_UNIT):
         result = probe(["systemctl", "--user", "is-active", unit])
-        state = (result.stdout if result else None) or "unknown"
+        state = ((result.stdout if result else None) or "unknown").strip()
+        if unit == API_UNIT:
+            api_state = state
         print(f"  {unit}: {state}")
     # Quadlet units report 'generated', never 'enabled' — the wants
     # symlink is the real boot evidence.
@@ -799,6 +820,7 @@ def existing_install_status() -> None:
     if http_ok(HEALTH_URL):
         print(f"  API: healthy at {MEMORY_API_URL}")
     print("  to change models/keys:  uv run python deploy/memory/install.py --reconfigure")
+    return api_state
 
 
 # --------------------------------------------------------------------------
@@ -873,11 +895,21 @@ def main(argv: list[str] | None = None) -> None:
             rollback(f"API restart command failed ({output})")
         if not api_healthy(120):
             rollback("API not healthy after restart")
+        # The stack is confirmed live on the new config — same asset
+        # refresh a fresh install gets, so a reconfigure on an older box
+        # also picks up the watch units. (--no-start is rejected above.)
+        refresh_assets(enable_watch=True)
         info("done — bank and goblin config unchanged")
         return
 
     if HINDSIGHT_ENV.is_file():
-        existing_install_status()
+        api_state = existing_install_status()
+        # install_assets is fresh-install-only otherwise: a re-run on an
+        # existing box never picked up the watch units. Idempotent copy
+        # + reload; the timer goes live only while the stack is actually
+        # used (a stopped stack is a deliberate operator choice — see
+        # the watch unit) and --no-start keeps enablement off.
+        refresh_assets(enable_watch=api_state == "active" and not args.no_start)
         return
 
     answers = prompt_answers(args.goblin_home)

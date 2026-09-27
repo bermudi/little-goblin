@@ -56,11 +56,17 @@ fi
 
 # Unit generation: substitute the paths baked into the committed unit so
 # the same file works on any box. No-ops where the defaults already match.
+# PATH is per-account too (Environment=PATH=/home/daniel/bin:…): rewrite
+# the operator's home there like the other baked paths. Specific (binary)
+# substitutions run first so the generic PATH rules never eat their
+# prefixes.
 mkdir -p "$unit_dir"
 sed \
 	-e "s|/home/daniel/build/goblin-v2|$repo_root|g" \
 	-e "s|/home/daniel/goblin|$goblin_home|g" \
 	-e "s|/usr/bin/bun|$bun_bin|g" \
+	-e "s|/home/daniel/bin|$HOME/bin|g" \
+	-e "s|/home/daniel/.local/bin|$HOME/.local/bin|g" \
 	"$repo_root/deploy/goblin.service" > "$unit_dir/goblin.service"
 
 # The herdr session is a sibling unit (DESIGN.md, "Delegation") — its
@@ -70,6 +76,8 @@ herdr_bin="$(command -v herdr || true)"
 if [ -n "$herdr_bin" ]; then
 	sed \
 		-e "s|/home/daniel/.local/bin/herdr|$herdr_bin|g" \
+		-e "s|/home/daniel/bin|$HOME/bin|g" \
+		-e "s|/home/daniel/.local/bin|$HOME/.local/bin|g" \
 		"$repo_root/deploy/goblin-herdr.service" > "$unit_dir/goblin-herdr.service"
 else
 	echo "install: warning — herdr not found in PATH; delegation will be unavailable" >&2
@@ -88,6 +96,8 @@ if grep -Eq '"value"[[:space:]]*:[[:space:]]*"!.*pass-keys' "$goblin_home/auth.j
 		fail "auth.jsonl routes keys through pass-keys but pass-keys is not in PATH — install it first (~/build/pass-keys)"
 	sed \
 		-e "s|/home/daniel/.local/bin/pass-keys|$passkeys_bin|g" \
+		-e "s|/home/daniel/bin|$HOME/bin|g" \
+		-e "s|/home/daniel/.local/bin|$HOME/.local/bin|g" \
 		"$repo_root/deploy/goblin-keys.service" > "$unit_dir/goblin-keys.service"
 	cp "$repo_root/deploy/goblin-keys.timer" "$unit_dir/goblin-keys.timer"
 fi

@@ -235,8 +235,10 @@ export const DEFAULT_TTS_VOICE = "en-US-AriaNeural";
 // goblin never picks a model or flags for one. Harness names double as
 // herdr agent-name prefixes, so they live in herdr's name charset.
 export const delegationConfigSchema = z.object({
-	// The herdr session the goblin-herdr unit runs (`herdr --session <name> …`).
-	session: z.string().min(1).default("goblin"),
+	// No `session` knob: the herdr session name is fixed by the unit
+	// (deploy/goblin-herdr.service: `herdr --session goblin server`) — the
+	// single source of truth. A config override could target a session
+	// the unit does not host, so consumers use the literal "goblin".
 	maxRunning: z.number().int().min(1).default(3),
 	harnesses: z
 		.record(

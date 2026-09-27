@@ -371,7 +371,10 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 					name,
 					agent_name: agentName,
 					status: "running",
-					attach: `herdr session attach ${deps.config.session}`,
+					// "goblin" — the session deploy/goblin-herdr.service runs
+					// (--session goblin); the unit is the single source of truth,
+					// no config knob (DESIGN.md, Delegation).
+					attach: "herdr session attach goblin",
 				};
 			}
 		},

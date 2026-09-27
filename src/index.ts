@@ -102,7 +102,10 @@ async function boot() {
 	// the herdr session is systemd's, not ours (DESIGN.md, Delegation).
 	const delegationBoot = config.delegation;
 	const delegations = delegationBoot ? openDelegations(paths.db()) : null;
-	const herdr = delegationBoot ? makeHerdr(delegationBoot.session) : null;
+	// "goblin" is not config: deploy/goblin-herdr.service's --session is
+	// the single source of truth for the session name — no knob to drift
+	// from the unit (DESIGN.md, Delegation).
+	const herdr = delegationBoot ? makeHerdr("goblin") : null;
 
 	// ffmpeg powers TTS remuxing and over-cap transcription — probe it
 	// once at boot so a missing binary surfaces before the first speech

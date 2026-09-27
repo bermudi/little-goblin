@@ -89,8 +89,9 @@
 
   // --- Delegation (other coding harnesses, via herdr) ---
   // Unset = no delegate tool. Harnesses run in the `goblin` herdr
-  // session (the goblin-herdr systemd unit), each in its own workspace;
-  // results come back to the topic as a `[delegation: …]` message.
+  // session, each in its own workspace; the session name lives in the
+  // goblin-herdr systemd unit, not here. Results come back to the topic
+  // as a `[delegation: …]` message.
   // `kind` is a herdr agent kind (herdr agent → kind list); `args` are
   // native CLI args — full-auto flags and model choice live here, and
   // they must suppress startup dialogs (trust prompts report as idle).
@@ -98,7 +99,6 @@
   // flag an alias already adds (the codex alias's bypass flag, devin's
   // --permission-mode): a duplicate makes the harness refuse to start.
   // delegation: {
-  //   session: "goblin", // default; must match the unit's --session
   //   maxRunning: 3,     // default
   //   harnesses: {
   //     codex: { kind: "codex" }, // the shell alias carries the bypass flag

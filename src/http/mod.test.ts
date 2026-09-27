@@ -126,7 +126,6 @@ describe("mini-app http", () => {
 	test("a save never drops config blocks the page can't express (delegation)", async () => {
 		useHome();
 		const delegation = {
-			session: "goblin",
 			maxRunning: 2,
 			harnesses: { codex: { kind: "codex", args: ["--x"] } },
 		};

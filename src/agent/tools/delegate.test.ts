@@ -74,7 +74,6 @@ function harness(maxRunning = 3, startError?: string): Harness {
 		delegations: store,
 		herdr,
 		config: {
-			session: "goblin",
 			maxRunning,
 			harnesses: {
 				codex: { kind: "codex", args: ["--sandbox", "workspace-write"] },

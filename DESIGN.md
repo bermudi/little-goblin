@@ -723,7 +723,10 @@ Rulings:
   kill every running delegation on each goblin restart. Verified
   2026-09-26: a named headless session starts and drives agents
   under the service's stripped env (no `HERDR_ENV`, service PATH).
-  `install.sh` installs both.
+  `install.sh` installs both. One session, named by the unit: the
+  name `goblin` exists only in the unit's `--session`, and
+  `delegation` has no session knob (dropped 2026-09-26 — an
+  override could target a herdr session the unit does not host).
 - **Only `src/herdr.ts` knows herdr** — a thin adapter over the CLI
   (`herdr --session <name> …`, JSON out, zod-parsed; CLI errors are
   JSON on stderr with exit 1 and propagate with context). Every call
@@ -1469,9 +1472,10 @@ is an export/query command, not a format property.
 `goblin.json5`: provider registry, per-conversation default model/thinking,
 optional `transcription` block, optional `search` block (absent =
 search tool absent), optional `memory` block (absent = memory
-disabled), optional `delegation` block (`session`, default
-`"goblin"`; `maxRunning`, default 3; `harnesses`: name → `{ kind,
-args? }` — absent = delegate tool absent). No secrets — those live in
+disabled), optional `delegation` block (`maxRunning`, default 3;
+`harnesses`: name → `{ kind, args? }` — absent = delegate tool
+absent; the herdr session name is not config, it belongs to
+`deploy/goblin-herdr.service`). No secrets — those live in
 `auth.jsonl`.
 
 **Settings are operator-facing UI, not SSH.** The mini app is the

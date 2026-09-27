@@ -396,6 +396,7 @@ class MainFlowTest(unittest.TestCase):
         root = Path(self.tmp.name)
         install.CFG_DIR = root / "goblin-memory"
         install.SYSTEMD_DIR = root / "systemd"
+        install.USER_UNIT_DIR = root / "user-units"
         install.POSTGRES_ENV = install.CFG_DIR / "postgres.env"
         install.HINDSIGHT_ENV = install.CFG_DIR / "hindsight.env"
         self.goblin_home = root / "goblin"
@@ -434,12 +435,18 @@ class MainFlowTest(unittest.TestCase):
         install.POSTGRES_ENV.write_text("POSTGRES_PASSWORD=existing\n")
         install.HINDSIGHT_ENV.write_text("HINDSIGHT_API_LLM_MODEL=old\n")
         restarts: list[list[str]] = []
+        runs: list[list[str]] = []
 
         def fake_probe(command: list[str]) -> subprocess.CompletedProcess[str]:
             restarts.append(command)
             return subprocess.CompletedProcess(command, 0, "", "")
 
+        def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+            runs.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
         install.probe = fake_probe
+        install.run = fake_run
         install.http_ok = lambda url: True
         install.main(["--reconfigure"])
         self.assertEqual(install.POSTGRES_ENV.read_text(),
@@ -448,6 +455,12 @@ class MainFlowTest(unittest.TestCase):
         self.assertIn("HINDSIGHT_API_LLM_MODEL=operator-llm", env)
         self.assertIn("postgresql://hindsight:existing@db:5432/hindsight", env)
         self.assertEqual(restarts, [["systemctl", "--user", "restart", install.API_UNIT]])
+        # A reconfigure on an existing box must also refresh the assets
+        # (watch units) and bring the timer live — fresh-install parity.
+        self.assertEqual(runs, [["systemctl", "--user", "daemon-reload"],
+                                ["systemctl", "--user", "enable", "--now",
+                                 install.WATCH_TIMER]])
+        self.assertTrue((install.USER_UNIT_DIR / install.WATCH_TIMER).is_file())
 
     def test_reconfigure_restores_previous_env_when_restart_fails(self) -> None:
         # A restart command failure must not leave the new (untested) env
@@ -525,6 +538,55 @@ class MainFlowTest(unittest.TestCase):
     def test_reconfigure_rejects_no_start(self) -> None:
         with self.assertRaises(SystemExit):
             install.main(["--reconfigure", "--no-start"])
+
+    def existing_stack(self) -> None:
+        install.preflight = lambda: None
+        install.POSTGRES_ENV.parent.mkdir(parents=True)
+        install.POSTGRES_ENV.write_text("POSTGRES_PASSWORD=existing\n")
+        install.HINDSIGHT_ENV.write_text("HINDSIGHT_API_LLM_MODEL=old\n")
+
+    def run_existing(self, api_state: str, argv: list[str]) -> list[list[str]]:
+        """Run main() over an existing install; probe reports api_state
+        for every is-active query (the API unit's is what gates the
+        watch-timer enable). Captures run() commands — never real ones."""
+        runs: list[list[str]] = []
+        install.probe = lambda command: subprocess.CompletedProcess(
+            command, 0, f"{api_state}\n", "")
+        install.http_ok = lambda url: True
+
+        def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+            runs.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        install.run = fake_run
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.main(argv)
+        return runs
+
+    def test_existing_install_refreshes_assets_and_enables_watch(self) -> None:
+        # Review finding: install_assets ran only on a fresh install, so
+        # re-running on an existing box left the health watcher inactive
+        # forever. Stack up → copy + reload + timer live.
+        self.existing_stack()
+        runs = self.run_existing("active", [])
+        self.assertEqual(runs, [["systemctl", "--user", "daemon-reload"],
+                                ["systemctl", "--user", "enable", "--now",
+                                 install.WATCH_TIMER]])
+        for name in install.WATCH_UNITS:
+            self.assertTrue((install.USER_UNIT_DIR / name).is_file(),
+                            f"{name} must land in the user unit dir")
+
+    def test_existing_install_skips_watch_enable_when_stack_down(self) -> None:
+        # A stopped stack is a deliberate operator choice: assets and
+        # reload only, no enable.
+        self.existing_stack()
+        runs = self.run_existing("inactive", [])
+        self.assertEqual(runs, [["systemctl", "--user", "daemon-reload"]])
+
+    def test_existing_install_respects_no_start(self) -> None:
+        self.existing_stack()
+        runs = self.run_existing("active", ["--no-start"])
+        self.assertEqual(runs, [["systemctl", "--user", "daemon-reload"]])
 
     def test_main_no_start_never_leaks_secrets_to_output(self) -> None:
         self.fake_prompts()

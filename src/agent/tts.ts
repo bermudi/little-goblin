@@ -8,7 +8,19 @@ const CHUNK_LIMIT = 10_000;
 const OUTPUT_FORMAT = "webm-24khz-16bit-mono-opus";
 const EDGE_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 const EDGE_VERSION = "143.0.3650.75";
-const EDGE_TIMEOUT_MS = 30_000;
+// Synthesis runs ~74 chars/s (measured 2026-09-27: 1928 chars → 26s),
+// and nothing arrives mid-flight — audio only lands at turn.end, so
+// the timeout must cover the whole budget, not idle gaps. Scale with
+// the chunk: 30s floor for handshake + short text, 40ms/char ≈ 3x
+// headroom, capped so a wedged socket can't hold the voice lane for
+// more than 5 minutes (the 10k-char CHUNK_LIMIT needs ~135s).
+const EDGE_TIMEOUT_BASE_MS = 30_000;
+const EDGE_TIMEOUT_PER_CHAR_MS = 40;
+const EDGE_TIMEOUT_MAX_MS = 300_000;
+
+function edgeTimeoutMs(chars: number): number {
+	return Math.min(EDGE_TIMEOUT_BASE_MS + chars * EDGE_TIMEOUT_PER_CHAR_MS, EDGE_TIMEOUT_MAX_MS);
+}
 const LONG_URL = /https?:\/\/\S{61,}/g;
 const CODE_BLOCK = /```(?:[^\n]*)\n?([\s\S]*?)```/g;
 
@@ -229,12 +241,13 @@ const edgeSynthesize: EdgeSynthesizer = (text, options) =>
 		const audio: Buffer[] = [];
 		let settled = false;
 		let lastPath = "none";
+		const budgetMs = edgeTimeoutMs(text.length);
 		const timer = setTimeout(() => {
 			if (settled) return;
 			settled = true;
 			socket.terminate();
-			reject(new Error("Edge TTS timed out"));
-		}, EDGE_TIMEOUT_MS);
+			reject(new Error(`Edge TTS timed out after ${budgetMs}ms (${text.length} chars, last path ${lastPath})`));
+		}, budgetMs);
 		const fail = (err: unknown) => {
 			if (settled) return;
 			settled = true;

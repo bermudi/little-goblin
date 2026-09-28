@@ -1001,8 +1001,9 @@ learned into a skill without being asked. A better model of the
 operator is **not** this feature — that is Hindsight's job (tune it,
 don't duplicate it).
 
-- **Gate: Jev on every completed turn** — `typesafe/jev-1.13`
-  (operator-chosen) via OpenRouter's Decisions API, a typed-decision
+- **Gate: Jev on every completed turn** — `respan/span-01-lite`
+  (operator-chosen; replaced `typesafe/jev-1.13` on 2026-09-27) via
+  OpenRouter's Decisions API, a typed-decision
   model, not a chat model. `POST openrouter.ai/api/alpha/decisions`
   with `{model, state, questions}`; each `noul` answer is a
   yes-probability, `usage` carries input tokens and cost (the wire

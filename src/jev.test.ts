@@ -21,7 +21,7 @@ const question = {
 // Recorded response shape (OpenRouter Decisions docs, 2026-09-21): the
 // alpha wire shape pinned — a drift here fails loud, not silently.
 const RECORDED = {
-	model: "typesafe/jev-1.13-20260917",
+	model: "respan/span-01-lite",
 	answers: { correction: { type: "noul", noul: 0.91 } },
 	usage: { input_tokens: 287, output_tokens: 20, cost: 0.000012054 },
 	id: "gen-dec-1790013977-LxrJdV3aOEliWmRmdmh9",

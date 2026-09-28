@@ -12,7 +12,7 @@
 
 import { z } from "zod";
 
-export const JEV_MODEL = "typesafe/jev-1.13";
+export const JEV_MODEL = "respan/span-01-lite";
 const DECISIONS_PATH = "/api/alpha/decisions";
 
 type FailureKind = "http" | "transport" | "timeout" | "protocol" | "auth";

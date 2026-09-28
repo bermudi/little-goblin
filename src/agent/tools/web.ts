@@ -3,10 +3,10 @@
 // fail-loud HTTP helper, the capped body reads, the normalized result
 // shape, the bounded deterministic rendering both tools share, and the
 // untrusted-content fence every remotely controlled text rides in.
-// Error paths carry status and a body head — never request headers, so
-// credentials cannot leak into an error message, a log line, or the
-// model context.
+// Error paths carry status to the model; remote error bodies are logged
+// separately, never mixed into trusted tool framing.
 
+import { log } from "../../log.ts";
 import type { AuthStore } from "../../auth.ts";
 import type { Config } from "../../config.ts";
 import type { AcceptsMedia } from "../attachments.ts";
@@ -70,10 +70,12 @@ export async function fetchOk(
 			text = "";
 		}
 		const body = text.replace(/\s+/g, " ").trim();
-		throw new ProviderError(
+		log.warn("web provider HTTP error", {
 			provider,
-			`HTTP ${res.status}${body ? ` — ${body.slice(0, BODY_HEAD)}` : ""}`,
-		);
+			status: res.status,
+			bodyHead: body.slice(0, BODY_HEAD),
+		});
+		throw new ProviderError(provider, `HTTP ${res.status}`);
 	}
 	return res;
 }

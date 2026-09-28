@@ -104,7 +104,7 @@ describe("fetchOk error body", () => {
 		} catch (err) {
 			expect(err).toBeInstanceOf(ProviderError);
 			expect((err as Error).message).toContain("HTTP 502");
-			expect((err as Error).message).toContain("AAAA");
+			expect((err as Error).message).not.toContain("AAAA");
 		}
 		// Completing at all is the proof: the old res.text() buffered a
 		// body with no end, and this test would hang. (No absolute

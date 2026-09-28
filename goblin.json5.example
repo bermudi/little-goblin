@@ -90,6 +90,22 @@
   // Same list rule: [{ kind: "parallel", auth: "parallel" }, { kind: "local" }]
   // fetch: [{ kind: "parallel", auth: "parallel" }, { kind: "local" }],
 
+  // --- Skill reviewer ---
+  // Unset = automatic skill saving off. `auth` names the auth.jsonl
+  // record holding your OpenRouter key (the Jev gate rides it).
+  // threshold is the gate's shared yes-cutoff; thresholds overrides it
+  // per question. queueCap bounds queued reviews (a full queue drops
+  // the incoming). evidence bounds the tool-call digest the review
+  // sees (last N calls, truncated arguments and results).
+  // reviewer: {
+  //   auth: "openrouter",
+  //   threshold: 0.8,
+  //   thresholds: { correction: 0.8, procedure: 0.85 },
+  //   queueCap: 3,
+  //   evidence: { calls: 8, argChars: 300, outChars: 300 },
+  //   // model: "provider/model", // default: the conversation's own
+  // },
+
   // --- Delegation (other coding harnesses, via herdr) ---
   // Unset = no delegate tool. Harnesses run in the `goblin` herdr
   // session, each in its own workspace; the session name lives in the

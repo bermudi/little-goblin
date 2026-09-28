@@ -146,7 +146,25 @@ describe("goblin.json5", () => {
 		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
 		expect(loadConfig()!.reviewer).toBeUndefined();
 		writeFileSync(join(dir, "goblin.json5"), `${base},reviewer:{auth:"openrouter"}}`);
-		expect(loadConfig()!.reviewer).toEqual({ threshold: 0.8, auth: "openrouter" });
+		expect(loadConfig()!.reviewer).toEqual({
+			threshold: 0.8,
+			queueCap: 3,
+			evidence: { calls: 8, argChars: 300, outChars: 300 },
+			auth: "openrouter",
+		});
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},reviewer:{auth:"openrouter",thresholds:{correction:0.7},queueCap:5,evidence:{calls:12}}}`,
+		);
+		expect(loadConfig()!.reviewer).toEqual({
+			threshold: 0.8,
+			thresholds: { correction: 0.7 },
+			queueCap: 5,
+			evidence: { calls: 12, argChars: 300, outChars: 300 },
+			auth: "openrouter",
+		});
+		writeFileSync(join(dir, "goblin.json5"), `${base},reviewer:{auth:"openrouter",queueCap:0}}`);
+		expect(() => loadConfig()).toThrow();
 		writeFileSync(join(dir, "goblin.json5"), `${base},reviewer:{auth:"openrouter",model:"other/x"}}`);
 		expect(() => loadConfig()).toThrow('provider "other"');
 		writeFileSync(join(dir, "goblin.json5"), `${base},reviewer:{threshold:0.5}}`);

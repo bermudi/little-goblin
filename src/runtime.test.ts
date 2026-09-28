@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tool, type LanguageModel, type UIMessage } from "ai";
@@ -1227,7 +1227,9 @@ describe("skill reviewer hook", () => {
 					return { answers: {}, inputTokens: null, cost: null };
 				},
 			},
-			threshold: 0.8,
+			thresholds: { correction: 0.8, procedure: 0.8 },
+			queueCap: 3,
+			evidence: { calls: 8, argChars: 300, outChars: 300 },
 			reviewModel: async () => {
 				throw new Error("empty answers never review — must not resolve");
 			},
@@ -1257,7 +1259,9 @@ describe("skill reviewer hook", () => {
 					return { answers: {}, inputTokens: null, cost: null };
 				},
 			},
-			threshold: 0.8,
+			thresholds: { correction: 0.8, procedure: 0.8 },
+			queueCap: 3,
+			evidence: { calls: 8, argChars: 300, outChars: 300 },
 			reviewModel: async () => {
 				throw new Error("must not resolve");
 			},
@@ -1273,6 +1277,108 @@ describe("skill reviewer hook", () => {
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		await sleep(50); // the fire-and-forget gate would have fired by now
 		expect(gated).toBe(false);
+		store.close();
+	});
+
+	test("a memory-excluded turn never gates — the reviewer skips it and logs why", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const root = mkdtempSync(join(tmpdir(), "goblin-rt-"));
+		dirs.push(root);
+		const logFile = join(root, "goblin.log");
+		setLogFile(logFile);
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model: fakeModel(["answer"], 5), system: "test" }),
+			makeTools: () => ({}),
+		});
+		runtime.setReviewer({
+			gate: {
+				decide: async () => {
+					throw new Error("memory-excluded turns must never gate");
+				},
+			},
+			thresholds: { correction: 0.8, procedure: 0.8 },
+			queueCap: 3,
+			evidence: { calls: 8, argChars: 300, outChars: 300 },
+			reviewModel: async () => {
+				throw new Error("must not resolve");
+			},
+			store,
+			skillsDir: "/none",
+			workspaceDir: "/none",
+			notify: async () => {},
+		});
+		store.applySettings(conv.id, { memoryExcluded: true });
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "off the record" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		await sleep(50);
+		const skipped = readFileSync(logFile, "utf8").trim().split("\n")
+			.map((l) => JSON.parse(l) as Record<string, unknown>)
+			.find((e) => e.msg === "reviewer skipped — memory excluded");
+		expect(skipped).toMatchObject({ conversation: conv.id });
+		store.close();
+	});
+
+	test("the turn's tool digest reaches the review payload through the real stream path", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const root = mkdtempSync(join(tmpdir(), "goblin-rt-"));
+		dirs.push(root);
+		const workspace = join(root, "ws");
+		const skills = join(workspace, "skills");
+		mkdirSync(skills, { recursive: true });
+		const logFile = join(root, "goblin.log");
+		setLogFile(logFile);
+		const prompts: string[] = [];
+		const reviewModel = {
+			specificationVersion: "v4",
+			provider: "fake",
+			modelId: "fake-review",
+			supportedUrls: {},
+			doGenerate: async (options: unknown) => {
+				prompts.push(JSON.stringify((options as { prompt?: unknown }).prompt ?? null));
+				return {
+					content: [{ type: "text", text: "nothing worth saving" }],
+					finishReason: { unified: "stop", raw: undefined },
+					usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
+					warnings: [],
+				};
+			},
+			doStream: () => {
+				throw new Error("unimplemented");
+			},
+		} as unknown as LanguageModel;
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model: toolThenText("bash", ["done"]), system: "test" }),
+			makeTools: () => ({
+				bash: tool({ inputSchema: z.object({}), execute: async () => ({ exit_code: 0, stdout: "listed" }) }),
+			}),
+		});
+		runtime.setReviewer({
+			gate: {
+				decide: async () => ({ answers: { correction: 0, procedure: 0.99 }, inputTokens: 1, cost: 0 }),
+			},
+			thresholds: { correction: 0.8, procedure: 0.8 },
+			queueCap: 3,
+			evidence: { calls: 8, argChars: 300, outChars: 300 },
+			reviewModel: async () => ({ ref: "fake/review", model: reviewModel }),
+			store,
+			skillsDir: skills,
+			workspaceDir: workspace,
+			notify: async () => {},
+			skillsRefBin: join(root, "nonexistent-skills-ref"),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "list the files" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		for (let i = 0; i < 500 && prompts.length === 0; i++) await sleep(2);
+		expect(prompts).toHaveLength(1);
+		expect(prompts[0]).toContain("- bash — ok");
+		expect(prompts[0]).toContain("listed");
+		expect(prompts[0]).toContain("list the files");
 		store.close();
 	});
 });

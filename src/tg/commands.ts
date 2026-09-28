@@ -157,8 +157,9 @@ export function handleCommand(
 		}
 
 		case "/stop": {
-			const { stopped } = deps.runtime.stop(conv.id);
-			reply(deps, conv, stopped ? "stopped" : "nothing was running");
+			const { stopped, reviewsCancelled } = deps.runtime.stop(conv.id);
+			const suffix = reviewsCancelled > 0 ? ` — ${reviewsCancelled} review${reviewsCancelled === 1 ? "" : "s"} cancelled` : "";
+			reply(deps, conv, stopped ? `stopped${suffix}` : `nothing was running${suffix}`);
 			return true;
 		}
 

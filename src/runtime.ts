@@ -40,8 +40,8 @@ import {
 } from "./memory.ts";
 import { log } from "./log.ts";
 import { runCompaction, type CompactionOutcome } from "./agent/compaction.ts";
-import type { CompletedTurn, ReviewerDeps } from "./reviewer.ts";
-import { considerTurn } from "./reviewer.ts";
+import type { CompletedTurn, PriorTurnContext, ReviewerDeps, ToolCallDigest } from "./reviewer.ts";
+import { cancelReviews, considerTurn, summarize, toolOk } from "./reviewer.ts";
 
 const MAX_STEPS = 25;
 
@@ -215,6 +215,13 @@ export class Runtime {
 	// The skill reviewer — attached after the bot exists (its save note
 	// delivers through bot.api). Absent = the feature is off.
 	private reviewer: ReviewerDeps | undefined;
+	// Turn-completion counter — the reviewer queue's serialization
+	// order (gate latency must not reorder reviews).
+	private turnCounter = 0;
+	// The previous completed turn per conversation — a correction's
+	// review needs the turn it corrects as evidence. Off-the-record
+	// turns are never stored (and break the chain).
+	private lastTurns = new Map<string, PriorTurnContext>();
 
 	constructor(private deps: RuntimeDeps) {}
 
@@ -268,8 +275,12 @@ export class Runtime {
 	// The return value tells the caller
 	// — synchronously — whether anything was actually live, so /stop can
 	// say "stopped" vs "nothing was running"; `settled` resolves once the
-	// dropped sinks' onDone calls settle — shutdown awaits it.
-	stop(convId: string): { stopped: boolean; settled: Promise<void> } {
+	// dropped sinks' onDone calls settle — shutdown awaits it. Reviews the
+	// reviewer queued or is running for this conversation are cancelled
+	// too: /stop is the operator's panic lever, and a background
+	// skill-write from a fenced topic must not outlive it (DESIGN.md,
+	// "Skill reviewer").
+	stop(convId: string): { stopped: boolean; settled: Promise<void>; reviewsCancelled: number } {
 		const epoch = this.deps.store.bumpEpoch(convId);
 		const lane = this.lanes.get(convId);
 		const stopped =
@@ -291,12 +302,13 @@ export class Runtime {
 				c.resolve({ kind: "noop", reason: "stopped" });
 			}
 		}
+		const reviewsCancelled = this.reviewer ? cancelReviews(convId) : 0;
 		if (stopped) {
-			log.info("turn stopped", { conversation: convId, epoch });
+			log.info("turn stopped", { conversation: convId, epoch, reviewsCancelled });
 		} else {
-			log.debug("stop — nothing was running", { conversation: convId, epoch });
+			log.debug("stop — nothing was running", { conversation: convId, epoch, reviewsCancelled });
 		}
-		return { stopped, settled: Promise.all(notifies).then(() => undefined) };
+		return { stopped, settled: Promise.all(notifies).then(() => undefined), reviewsCancelled };
 	}
 
 	// Compact a conversation — the manual lever (/compact). Serialized
@@ -786,6 +798,13 @@ export class Runtime {
 			// Every tool call this turn, in order — the reviewer's gate
 			// state (count + names) and its fallback rule read this.
 			const toolCalls: string[] = [];
+			// Reviewer evidence, captured while the stream still exists: the
+			// last `evidence.calls` calls with truncated args/result/status.
+			// Only captured when the reviewer is configured — zero cost when
+			// the feature is off. Ring order = call order; an entry whose
+			// result never arrives (stream ended) reads "(no result)".
+			const evidence = this.reviewer?.evidence;
+			const digestRing: { id: string; entry: ToolCallDigest }[] = [];
 			// Block-boundary tracking for the live stream: last text part id
 			// within a step, plus whether any text has streamed at all (see
 			// the text-delta and start-step cases).
@@ -852,6 +871,19 @@ export class Runtime {
 					case "tool-input-available":
 						sink.onToolCall(chunk.toolName, chunk.input);
 						toolCalls.push(chunk.toolName);
+						if (evidence !== undefined) {
+							digestRing.push({
+								id: chunk.toolCallId,
+								entry: {
+									tool: chunk.toolName,
+									args: summarize(chunk.input, evidence.argChars),
+									result: "(no result)",
+									// A result that never arrives (cut stream) stays neutral.
+									ok: true,
+								},
+							});
+							if (digestRing.length > evidence.calls) digestRing.shift();
+						}
 						// Side-effecting boundary — the chat shows a status
 						// line, the log gets the durable record. Args are
 						// truncated metadata, not payloads.
@@ -860,6 +892,27 @@ export class Runtime {
 							tool: chunk.toolName,
 							arg: JSON.stringify(chunk.input).slice(0, 200),
 						});
+						break;
+					case "tool-output-available":
+						// Reviewer evidence: what the call actually returned.
+						if (evidence !== undefined) {
+							for (let i = digestRing.length - 1; i >= 0; i--) {
+								if (digestRing[i]!.id !== chunk.toolCallId) continue;
+								digestRing[i]!.entry.result = summarize(chunk.output, evidence.outChars);
+								digestRing[i]!.entry.ok = toolOk(chunk.output);
+								break;
+							}
+						}
+						break;
+					case "tool-output-error":
+						if (evidence !== undefined) {
+							for (let i = digestRing.length - 1; i >= 0; i--) {
+								if (digestRing[i]!.id !== chunk.toolCallId) continue;
+								digestRing[i]!.entry.result = summarize(chunk.errorText, evidence.outChars);
+								digestRing[i]!.entry.ok = false;
+								break;
+							}
+						}
 						break;
 					case "error":
 						streamError = chunk.errorText;
@@ -932,18 +985,37 @@ export class Runtime {
 			// Skill reviewer (DESIGN.md): every completed turn gates a
 			// possible background review — fire-and-forget, off the lane,
 			// never delaying the successor. Fenced/failed turns never
-			// reach here. The backstop only sees bugs: gate failures fall
-			// back inside considerTurn, review failures log their own lines.
+			// reach here, and neither do memory-excluded ones: off the
+			// record means no durable distillation, so the reviewer never
+			// sees the turn and the prior-turn chain breaks there (an
+			// excluded turn is never evidence for the next review either).
+			// The backstop only sees bugs: gate failures fall back inside
+			// considerTurn, review failures log their own lines.
 			if (this.reviewer) {
-				const snapshot: CompletedTurn = {
-					conversationId: convId,
-					operatorTexts: retentionSource.userTexts,
-					replyText: responseMessage ? messageText(responseMessage) : "",
-					toolNames: toolCalls,
-				};
-				void considerTurn(this.reviewer, snapshot).catch((err: unknown) => {
-					log.error("reviewer failed", err, { conversation: convId });
-				});
+				if (conv.memoryExcluded) {
+					log.info("reviewer skipped — memory excluded", { conversation: convId });
+					this.lastTurns.delete(convId);
+				} else {
+					const turnSeq = ++this.turnCounter;
+					const snapshot: CompletedTurn = {
+						conversationId: convId,
+						turnSeq,
+						operatorTexts: retentionSource.userTexts,
+						replyText: responseMessage ? messageText(responseMessage) : "",
+						toolNames: toolCalls,
+						toolDigest: digestRing.map((p) => p.entry),
+					};
+					void considerTurn(this.reviewer, snapshot, this.lastTurns.get(convId)).catch(
+						(err: unknown) => {
+							log.error("reviewer failed", err, { conversation: convId });
+						},
+					);
+					this.lastTurns.set(convId, {
+						operatorTexts: snapshot.operatorTexts,
+						replyText: snapshot.replyText,
+						toolDigest: snapshot.toolDigest,
+					});
+				}
 			}
 			// Auto-compaction (DESIGN.md, Compaction): the reply has landed and
 			// the sinks are released; the lane stays busy through the summary

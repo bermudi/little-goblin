@@ -280,9 +280,25 @@ export type MailConfig = z.infer<typeof mailConfigSchema>;
 // Automatic skill saving (DESIGN.md, "Skill reviewer"). Absent = off.
 // auth names the auth.jsonl record holding the OpenRouter key behind
 // the Jev gate; model overrides the review model (default: the
-// conversation's own model); threshold is the gate's review cutoff.
+// conversation's own model); threshold is the gate's shared review
+// cutoff, overridable per question by thresholds; queueCap bounds the
+// queued (not running) reviews — a full queue drops the incoming;
+// evidence bounds the tool-call digest the review sees.
+export const reviewerEvidenceSchema = z.object({
+	calls: z.number().int().min(1).max(32).default(8),
+	argChars: z.number().int().min(50).max(4000).default(300),
+	outChars: z.number().int().min(50).max(4000).default(300),
+});
 export const reviewerConfigSchema = z.object({
 	threshold: z.number().min(0).max(1).default(0.8),
+	thresholds: z
+		.object({
+			correction: z.number().min(0).max(1).optional(),
+			procedure: z.number().min(0).max(1).optional(),
+		})
+		.optional(),
+	queueCap: z.number().int().min(1).max(10).default(3),
+	evidence: reviewerEvidenceSchema.prefault({}),
 	model: z.string().min(1).optional(),
 	auth: z.string().min(1),
 });

@@ -34,6 +34,7 @@ import { startMailWatcher } from "./mail-watcher.ts";
 import { openPrograms } from "./programs.ts";
 import { buildMemoryClient, startMemoryWorker, type MemoryWorker } from "./memory.ts";
 import { JevClient } from "./jev.ts";
+import { cleanupStaging } from "./reviewer.ts";
 import { OutageTracker } from "./memory-outage.ts";
 import { fireMail, fireWebhook, startScheduler, type SchedulerDeps } from "./scheduler.ts";
 import { startHttp } from "./http/mod.ts";
@@ -439,10 +440,19 @@ async function boot() {
 	const reviewerBlock = configRef.current.reviewer;
 	if (reviewerBlock) {
 		const reviewerAuth = reviewerBlock.auth;
-		log.info("reviewer enabled", { threshold: reviewerBlock.threshold });
+		const thresholds = {
+			correction: reviewerBlock.thresholds?.correction ?? reviewerBlock.threshold,
+			procedure: reviewerBlock.thresholds?.procedure ?? reviewerBlock.threshold,
+		};
+		log.info("reviewer enabled", { thresholds, queueCap: reviewerBlock.queueCap, evidence: reviewerBlock.evidence });
+		// Staging from a killed run can only be garbage — clear it before
+		// any review can publish alongside it.
+		cleanupStaging(paths.workspace());
 		runtime.setReviewer({
 			gate: new JevClient({ auth: () => auth.resolve(reviewerAuth) }),
-			threshold: reviewerBlock.threshold,
+			thresholds,
+			queueCap: reviewerBlock.queueCap,
+			evidence: reviewerBlock.evidence,
 			reviewModel: async (conversationId) => {
 				const cfg = configRef.current;
 				const ref = cfg.reviewer?.model ?? cfg.model;

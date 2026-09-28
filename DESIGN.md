@@ -1573,7 +1573,11 @@ failing message by message.
   markup+css in `http/app.ts`, client script in `http/app.js`, no build step.
   tsc checks the client (`tsconfig.client.json`: checkJs, DOM lib scoped to
   that program only) against the server's own wire types, so schema drift is
-  a typecheck failure, not a phone-only bug.
+  a typecheck failure, not a phone-only bug. A settings GET returns an
+  ETag for the current on-disk config; POST requires that version via
+  If-Match and refuses a stale full-form save (409) rather than overwriting
+  another tab's save or an operator hand edit. Reopen the page to resolve
+  the conflict.
 - **Commands** are few on purpose: `/voice` `/memory` `/forget` `/stop`
   `/compact`. `/model` and `/think` are retired — the mini app owns
   model and thinking settings (config lives where config lives), which

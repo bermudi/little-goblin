@@ -139,6 +139,10 @@ const EMPTY_DRAFT = {
 };
 // cfg mirrors the server schema for everything this page manages.
 let cfg = EMPTY_DRAFT;
+// Opaque server version of the form we loaded. A stale full-form save
+// gets a conflict instead of replacing another tab's (or a hand edit's)
+// newer settings.
+let configTag = "";
 /** @type {ProvDraftItem[]} */
 let provDraft = [];
 let provSeq = 0;
@@ -702,22 +706,26 @@ function buildBody() {
 async function save() {
   const err = validate();
   if (err) { msg(err, "err"); return; }
+  if (!configTag) { msg("Load settings before saving.", "err"); return; }
   msg("Saving…");
   buttonEl("save").disabled = true;
   try {
     const res = await fetch("/api/config", {
       method: "POST",
-      headers: { "content-type": "application/json", "x-init-data": initData },
+      headers: { "content-type": "application/json", "x-init-data": initData, "if-match": configTag },
       body: JSON.stringify(buildBody())
     });
     const j = /** @type {{ error?: string }} */ (await res.json().catch(() => ({})));
     if (res.ok) {
+      configTag = res.headers.get("etag") || "";
       makeClean();
       msg("Saved", "ok");
       if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
       setTimeout(() => { if (!dirty) msg("All changes saved"); }, 2500);
     } else {
-      msg("Save failed — " + (j.error || res.status), "err");
+      msg(res.status === 409
+        ? "Settings changed elsewhere. Your edits were not saved; reopen settings to load the latest version."
+        : "Save failed — " + (j.error || res.status), "err");
       if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
     }
   } catch (e) {
@@ -1056,6 +1064,7 @@ async function load() {
   try {
     const res = await fetch("/api/config", { headers: { "x-init-data": initData } });
     if (!res.ok) { msg("Load failed — " + res.status, "err"); return; }
+    configTag = res.headers.get("etag") || "";
     const r = /** @type {ConfigResponse} */ (await res.json());
     KINDS = r.providerKinds;
     SEARCH_KINDS = r.searchKinds;

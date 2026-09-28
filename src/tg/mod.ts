@@ -394,7 +394,15 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 			// whatever the settled chains pushed goes out in the second
 			// pass. Anything later still submits via its own timer —
 			// the closed runtime records it history-only.
-			buffer.drain();
+			try {
+				buffer.drain();
+			} catch (err) {
+				// Keep draining media; the failed batch remains in memory
+				// and gets another attempt after those chains settle.
+				log.warn("intake first drain failed — retrying after media chains", {
+					error: String(err),
+				});
+			}
 			await Promise.allSettled([...intake.values()]);
 			buffer.drain();
 		},

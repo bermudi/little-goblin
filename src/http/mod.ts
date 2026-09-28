@@ -4,6 +4,7 @@
 // knob (publicUrl → tailscale serve/funnel/any reverse proxy). Nothing
 // here assumes a public IP.
 
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
@@ -24,6 +25,12 @@ import { validateInitData, type InitDataUser } from "./auth.ts";
 // /app.js — no build step. A missing file fails here, loudly, before the
 // process serves anything.
 const APP_JS = readFileSync(join(import.meta.dir, "app.js"), "utf8");
+
+// The page posts a full form snapshot. Require the version of the config
+// it loaded, or a second tab/hand edit could be silently overwritten.
+function configTag(config: Config): string {
+	return `"${createHash("sha256").update(JSON.stringify(config)).digest("hex")}"`;
+}
 
 export interface HttpDeps {
 	configRef: { current: Config };
@@ -311,14 +318,15 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 					return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
 				}
 				if (req.method === "GET") {
+					const config = loadConfig() ?? deps.configRef.current;
 					return Response.json(
 						{
-							config: deps.configRef.current,
+							config,
 							providerKinds,
 							searchKinds,
 							fetchKinds,
 						} satisfies ConfigResponse,
-						{ headers: NO_STORE },
+						{ headers: { ...NO_STORE, etag: configTag(config) } },
 					);
 				}
 				if (req.method === "POST") {
@@ -340,6 +348,21 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 						// discarded by an app save. An invalid on-disk file fails
 						// here with its own parse error.
 						const base = loadConfig() ?? deps.configRef.current;
+						const expected = req.headers.get("if-match");
+						if (!expected) {
+							log.warn("mini app config save refused — missing version", { userId: user.id });
+							return Response.json(
+								{ error: "load settings before saving" },
+								{ status: 428, headers: NO_STORE },
+							);
+						}
+						if (expected !== configTag(base)) {
+							log.warn("mini app config save refused — stale version", { userId: user.id });
+							return Response.json(
+								{ error: "settings changed since this page loaded — reopen settings before saving" },
+								{ status: 409, headers: NO_STORE },
+							);
+						}
 						const merged = parseConfig({ ...base, ...body });
 						// The mini app is an operator's only door that doesn't need
 						// a shell — a save that drops the requester's own id locks
@@ -355,7 +378,9 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 						if (fresh) deps.configRef.current = fresh;
 						deps.onConfigWritten();
 						log.info("config written via mini app");
-						return Response.json({ ok: true }, { headers: NO_STORE });
+						return Response.json({ ok: true }, {
+							headers: { ...NO_STORE, etag: configTag(fresh ?? merged) },
+						});
 					} catch (err) {
 						const msg =
 							err instanceof z.ZodError

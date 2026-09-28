@@ -73,12 +73,16 @@ function setup(memory?: HttpDeps["memory"]) {
 		auth_date: String(Math.floor(Date.now() / 1000)),
 		user: JSON.stringify({ id: 42 }),
 	});
-	const post = (body: unknown) =>
-		fetch(`http://127.0.0.1:${http.port}/api/config`, {
+	const post = async (body: unknown) => {
+		const loaded = await fetch(`http://127.0.0.1:${http.port}/api/config`, {
+			headers: { "x-init-data": initData },
+		});
+		return fetch(`http://127.0.0.1:${http.port}/api/config`, {
 			method: "POST",
-			headers: { "content-type": "application/json", "x-init-data": initData },
+			headers: { "content-type": "application/json", "x-init-data": initData, "if-match": loaded.headers.get("etag") ?? "" },
 			body: JSON.stringify(body),
 		});
+	};
 	const get = (path: string, authed = true) =>
 		fetch(`http://127.0.0.1:${http.port}${path}`, {
 			headers: authed ? { "x-init-data": initData } : {},
@@ -123,6 +127,68 @@ describe("mini-app http", () => {
 		}
 	});
 
+	test("a second tab's stale snapshot cannot undo the first tab's save", async () => {
+		const { configRef, http, get } = setup();
+		try {
+			const a = await get("/api/config");
+			const b = await get("/api/config");
+			const headers = (version: string) => ({
+				"content-type": "application/json",
+				"x-init-data": makeInitData({
+					auth_date: String(Math.floor(Date.now() / 1000)),
+					user: JSON.stringify({ id: 42 }),
+				}),
+				"if-match": version,
+			});
+			const url = `http://127.0.0.1:${http.port}/api/config`;
+			const saved = await fetch(url, {
+				method: "POST", headers: headers(a.headers.get("etag")!),
+				body: JSON.stringify({ logLevel: "debug" }),
+			});
+			expect(saved.ok).toBe(true);
+			const stale = await fetch(url, {
+				method: "POST", headers: headers(b.headers.get("etag")!),
+				body: JSON.stringify({ http: { port: 9999 }, logLevel: "info" }),
+			});
+			expect(stale.status).toBe(409);
+			expect(configRef.current.logLevel).toBe("debug");
+			expect(configRef.current.http.port).not.toBe(9999);
+			// A direct disk edit also invalidates the version the page saw.
+			writeFileSync(join(process.env.GOBLIN_HOME!, "goblin.json5"),
+				JSON.stringify({ ...configRef.current, logLevel: "warn" }));
+			const edited = await fetch(url, {
+				method: "POST", headers: headers(saved.headers.get("etag")!),
+				body: JSON.stringify({ logLevel: "error" }),
+			});
+			expect(edited.status).toBe(409);
+			expect(loadConfig()?.logLevel).toBe("warn");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("saving without a loaded config version is refused", async () => {
+		const { http, get } = setup();
+		try {
+			const loaded = await get("/api/config");
+			expect(loaded.headers.get("etag")).toBeTruthy();
+			const res = await fetch(`http://127.0.0.1:${http.port}/api/config`, {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					"x-init-data": makeInitData({
+						auth_date: String(Math.floor(Date.now() / 1000)),
+						user: JSON.stringify({ id: 42 }),
+					}),
+				},
+				body: JSON.stringify({ logLevel: "debug" }),
+			});
+			expect(res.status).toBe(428);
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("a save never drops config blocks the page can't express (delegation)", async () => {
 		useHome();
 		const delegation = {
@@ -144,7 +210,12 @@ describe("mini-app http", () => {
 			// on-disk config must carry it through untouched.
 			const res = await fetch(`http://127.0.0.1:${http.port}/api/config`, {
 				method: "POST",
-				headers: { "content-type": "application/json", "x-init-data": initData },
+				headers: {
+					"content-type": "application/json", "x-init-data": initData,
+					"if-match": (await fetch(`http://127.0.0.1:${http.port}/api/config`, {
+						headers: { "x-init-data": initData },
+					})).headers.get("etag") ?? "",
+				},
 				body: JSON.stringify({ logLevel: "debug" }),
 			});
 			expect(res.ok).toBe(true);

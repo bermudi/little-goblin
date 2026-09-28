@@ -80,4 +80,19 @@ describe("coalescing buffer", () => {
 		await sleep(120); // neither timer may re-fire
 		expect(flushes).toEqual([["a"]]);
 	});
+
+	test("a rejected submit retains the batch and retries it before later arrivals", () => {
+		const flushes: string[][] = [];
+		let fail = true;
+		const buf = new CoalescingBuffer<string>(40, (_key, items) => {
+			if (fail) throw new Error("history write failed");
+			flushes.push(items);
+		});
+		buf.push("c1", "first");
+		expect(() => buf.drain()).toThrow("messages retained for retry");
+		buf.push("c1", "second");
+		fail = false;
+		buf.drain();
+		expect(flushes).toEqual([["first", "second"]]);
+	});
 });

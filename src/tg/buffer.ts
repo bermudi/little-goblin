@@ -15,6 +15,7 @@ export class CoalescingBuffer<T> {
 			timer: ReturnType<typeof setTimeout>;
 			maxTimer: ReturnType<typeof setTimeout>;
 			firstAt: number;
+			attempts: number;
 		}
 	>();
 
@@ -37,6 +38,7 @@ export class CoalescingBuffer<T> {
 				timer: setTimeout(() => this.fire(key), this.windowMs),
 				maxTimer: setTimeout(() => this.fireMax(key), this.maxWaitMs),
 				firstAt: Date.now(),
+				attempts: 0,
 			});
 		}
 	}
@@ -44,11 +46,13 @@ export class CoalescingBuffer<T> {
 	// Flush every pending bucket now — shutdown calls this so buffered
 	// input reaches history instead of dying in memory with the process.
 	drain(): void {
+		let failed = 0;
 		for (const [key, bucket] of [...this.buckets]) {
 			clearTimeout(bucket.timer);
 			clearTimeout(bucket.maxTimer);
-			this.fire(key);
+			if (!this.fire(key)) failed++;
 		}
+		if (failed > 0) throw new Error(`buffer drain failed for ${failed} conversations — messages retained for retry`);
 	}
 
 	private fireMax(key: string): void {
@@ -63,17 +67,38 @@ export class CoalescingBuffer<T> {
 		this.fire(key);
 	}
 
-	private fire(key: string): void {
+	private fire(key: string): boolean {
 		const bucket = this.buckets.get(key);
-		if (!bucket) return;
+		if (!bucket) return true;
+		clearTimeout(bucket.timer);
 		clearTimeout(bucket.maxTimer);
 		this.buckets.delete(key);
 		// fire() runs in a timer — a throwing flush would escape as an
 		// uncaught exception and kill the process mid-update.
 		try {
 			this.flush(key, bucket.items);
+			return true;
 		} catch (err) {
-			log.error("buffer flush failed", err, { key });
+			// submit did not admit this batch. Restore it before any new
+			// arrivals (including a reentrant push during flush), then
+			// retry; a timer failure must never discard acknowledged input.
+			const newer = this.buckets.get(key);
+			if (newer) {
+				clearTimeout(newer.timer);
+				clearTimeout(newer.maxTimer);
+			}
+			const retryMs = Math.max(this.windowMs, 1_000);
+			this.buckets.set(key, {
+				items: [...bucket.items, ...(newer?.items ?? [])],
+				timer: setTimeout(() => this.fire(key), retryMs),
+				maxTimer: setTimeout(() => this.fireMax(key), Math.max(retryMs, this.maxWaitMs)),
+				firstAt: bucket.firstAt,
+				attempts: bucket.attempts + 1,
+			});
+			log.error("buffer flush failed — batch retained for retry", err, {
+				key, items: bucket.items.length, attempts: bucket.attempts + 1, retryMs,
+			});
+			return false;
 		}
 	}
 }

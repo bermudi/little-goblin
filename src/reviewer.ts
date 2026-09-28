@@ -775,10 +775,19 @@ function publishSkill(
 // ---------- review run ----------
 
 async function runReview(entry: QueueEntry, signal: AbortSignal): Promise<void> {
+	const reviewDir = join(stagingRoot(entry.deps.workspaceDir), entry.reviewId);
+	try {
+		await runStagedReview(entry, signal, reviewDir);
+	} finally {
+		// Staging is single-use, including when the copy or model lookup fails.
+		rmSync(reviewDir, { recursive: true, force: true });
+	}
+}
+
+async function runStagedReview(entry: QueueEntry, signal: AbortSignal, reviewDir: string): Promise<void> {
 	const { deps, turn, prior, trigger, reviewId } = entry;
 	const conv = turn.conversationId;
 	const stagingArea = stagingRoot(deps.workspaceDir);
-	const reviewDir = join(stagingArea, reviewId);
 	const stagedSkills = join(reviewDir, "skills");
 	let manifest: Map<string, string>;
 	try {
@@ -810,6 +819,7 @@ async function runReview(entry: QueueEntry, signal: AbortSignal): Promise<void> 
 	const onAbort = () => controller.abort();
 	signal.addEventListener("abort", onAbort, { once: true });
 	timeoutController.signal.addEventListener("abort", onAbort, { once: true });
+	if (signal.aborted || timeoutController.signal.aborted) controller.abort();
 	// The review's attribution set: every staging-relative path its
 	// write tools actually wrote. Only these paths are candidates to
 	// publish — concurrent edits in the LIVE tree are not its business.
@@ -975,8 +985,5 @@ async function runReview(entry: QueueEntry, signal: AbortSignal): Promise<void> 
 		signal.removeEventListener("abort", onAbort);
 		timeoutController.signal.removeEventListener("abort", onAbort);
 		clearTimeout(timer);
-		// Staging is single-use: published content was renamed out, and
-		// everything else — discards, rejections, cancels — is garbage.
-		rmSync(reviewDir, { recursive: true, force: true });
 	}
 }

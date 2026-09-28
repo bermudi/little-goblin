@@ -1321,6 +1321,42 @@ describe("skill reviewer hook", () => {
 		store.close();
 	});
 
+	test("memory switched off mid-turn prevents review at completion", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model: fakeModel(["first", "last"], 30), system: "test" }),
+			makeTools: () => ({}),
+		});
+		let gated = false;
+		runtime.setReviewer({
+			gate: { decide: async () => {
+				gated = true;
+				return { answers: {}, inputTokens: null, cost: null };
+			} },
+			thresholds: { correction: 0.8, procedure: 0.8 },
+			queueCap: 3,
+			evidence: { calls: 8, argChars: 300, outChars: 300 },
+			reviewModel: async () => { throw new Error("must not review"); },
+			store,
+			skillsDir: "/none",
+			workspaceDir: "/none",
+			notify: async () => {},
+		});
+		const sink = new RecordingSink();
+		const onDone = sink.onDone.bind(sink);
+		sink.onDone = (done) => {
+			if (done.kind === "completed") store.applySettings(conv.id, { memoryExcluded: true });
+			onDone(done);
+		};
+		runtime.submit(conv, userMessage([{ type: "text", text: "private now" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		await sleep(20);
+		expect(gated).toBe(false);
+		store.close();
+	});
+
 	test("the turn's tool digest reaches the review payload through the real stream path", async () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");

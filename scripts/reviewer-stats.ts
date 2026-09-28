@@ -204,7 +204,8 @@ if (fired.length > 0) {
 	const byTrigger = new Map<string, number>();
 	for (const g of fired) byTrigger.set(g.trigger ?? "?", (byTrigger.get(g.trigger ?? "?") ?? 0) + 1);
 	p(`fired triggers: ${[...byTrigger.entries()].map(([k, v]) => `${k} ${v}`).join(" · ")}`);
-	p(`gate cost: avg ${f2(avg(gates.map((g) => g.cost ?? 0)))} (known) · avg ${Math.round(avg(gates.map((g) => g.ms)))}ms`);
+	const knownCosts = fired.flatMap((g) => (g.cost === null ? [] : [g.cost]));
+	p(`gate cost: avg ${knownCosts.length === 0 ? "—" : avg(knownCosts).toPrecision(3)} (known) · avg ${Math.round(avg(fired.map((g) => g.ms)))}ms`);
 }
 
 const rs = [...reviews.values()];

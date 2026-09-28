@@ -69,6 +69,9 @@ function fakeReviewModel(
 		modelId: "fake-review",
 		supportedUrls: {},
 		doGenerate: async (options: unknown) => {
+			if ((options as { abortSignal?: AbortSignal }).abortSignal?.aborted) {
+				throw new Error("aborted before provider call");
+			}
 			if (beforeStep !== undefined) await beforeStep();
 			if (prompts !== undefined) {
 				prompts.push(JSON.stringify((options as { prompt?: unknown }).prompt ?? null));
@@ -731,13 +734,52 @@ describe("review queue", () => {
 			return inner(conv);
 		};
 		await expect(considerTurn(deps, turn())).rejects.toThrow("model resolve failed");
+		expect(readdirSync(h.staging)).toEqual([]);
 		await considerTurn(deps, turn({ turnSeq: 2 }));
 		expect(resolves).toBe(2);
+		h.store.close();
+	});
+
+	test("a failed staging copy removes its partial tree", async () => {
+		const h = harness();
+		// A broken link fails after the destination directory has been created.
+		symlinkSync(join(h.skills, "missing"), join(h.skills, "broken"));
+		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 } });
+		await considerTurn(deps, turn());
+		expect(readdirSync(h.staging)).toEqual([]);
 		h.store.close();
 	});
 });
 
 describe("/stop cancellation", () => {
+	test("abort during model resolution reaches the provider", async () => {
+		const h = harness();
+		const logFile = join(h.workspace, "goblin.log");
+		setLogFile(logFile);
+		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 } });
+		let release!: () => void;
+		const parked = new Promise<void>((resolve) => { release = resolve; });
+		const inner = deps.reviewModel;
+		let resolving = false;
+		deps.reviewModel = async (conv) => {
+			resolving = true;
+			await parked;
+			return inner(conv);
+		};
+		const pending = considerTurn(deps, turn());
+		for (let i = 0; i < 500 && !resolving; i++) await Bun.sleep(1);
+		expect(resolving).toBe(true);
+		expect(cancelReviews(h.convId)).toBe(1);
+		release();
+		await pending;
+		expect(readdirSync(h.staging)).toEqual([]);
+		expect(h.notified).toEqual([]);
+		const messages = readFileSync(logFile, "utf8").trim().split("\n")
+			.map((line) => (JSON.parse(line) as { msg: string }).msg);
+		expect(messages).toContain("reviewer review cancelled — staging discarded");
+		expect(messages).not.toContain("review model call");
+		h.store.close();
+	});
 	test("queued reviews are dropped and the in-flight one aborts — staging discarded, live untouched", async () => {
 		const h = harness();
 		const logFile = join(h.workspace, "goblin.log");

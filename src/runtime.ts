@@ -992,7 +992,7 @@ export class Runtime {
 			// The backstop only sees bugs: gate failures fall back inside
 			// considerTurn, review failures log their own lines.
 			if (this.reviewer) {
-				if (conv.memoryExcluded) {
+				if (store.get(convId)?.memoryExcluded ?? conv.memoryExcluded) {
 					log.info("reviewer skipped — memory excluded", { conversation: convId });
 					this.lastTurns.delete(convId);
 				} else {

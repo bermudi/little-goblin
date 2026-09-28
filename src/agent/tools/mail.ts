@@ -86,32 +86,57 @@ function cachePath(id: string): string {
 	return join(paths.mailcache(), `${safe}.txt`);
 }
 
+const searchSchema = z.object({
+	action: z.literal("search"),
+	q: z.string().min(1).max(500),
+	max: z.number().int().min(1).max(20).optional(),
+});
+const readSchema = z.object({
+	action: z.literal("read"),
+	id: z.string().min(1).max(256),
+	attachment: z.string().min(1).max(256).optional(),
+	maxChars: z.number().int().min(2000).max(50_000).optional(),
+});
+const sendSchema = z.object({
+	action: z.literal("send"),
+	to: z.array(addressSchema).min(1).max(10),
+	cc: z.array(addressSchema).max(10).optional(),
+	subject: z.string().max(500).optional(),
+	body: z.string().min(1).max(200_000),
+	replyToId: z.string().min(1).max(256).optional(),
+});
+const actionSchema = z.discriminatedUnion("action", [searchSchema, readSchema, sendSchema]);
+
+// Tool providers expect an object at the root. A discriminated union
+// serializes to root-level oneOf, which some providers cannot use to
+// generate arguments. Keep the wire schema flat, but enforce the exact
+// per-action contract before execution.
+export const mailInputSchema = z.object({
+	action: z.enum(["search", "read", "send"]),
+	q: searchSchema.shape.q.optional(),
+	max: searchSchema.shape.max,
+	id: readSchema.shape.id.optional(),
+	attachment: readSchema.shape.attachment,
+	maxChars: readSchema.shape.maxChars,
+	to: sendSchema.shape.to.optional(),
+	cc: sendSchema.shape.cc,
+	subject: sendSchema.shape.subject,
+	body: sendSchema.shape.body.optional(),
+	replyToId: sendSchema.shape.replyToId,
+}).superRefine((value, ctx) => {
+	const result = actionSchema.safeParse(value);
+	if (!result.success) for (const issue of result.error.issues) {
+		ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
+	}
+});
+
 export const mailTool = (deps: MailToolDeps) =>
 	tool({
 		description:
 			"Search and read the operator's Gmail, or draft a mail for them to send. Search takes Gmail query syntax (from:, subject:, is:important, older_than:, …) and returns id · from · subject · date · snippet lines — read one with the read action. Read returns headers + the text body (HTML converted, overflow paged from disk) and lists attachments, which download to the workspace on request. Send never sends directly: it queues a draft the operator approves with a Send button in Telegram — the result tells you it is awaiting approval, and you wait for the operator instead of announcing a sent mail.",
-		inputSchema: z.discriminatedUnion("action", [
-			z.object({
-				action: z.literal("search"),
-				q: z.string().min(1).max(500),
-				max: z.number().int().min(1).max(20).optional(),
-			}),
-			z.object({
-				action: z.literal("read"),
-				id: z.string().min(1).max(256),
-				attachment: z.string().min(1).max(256).optional(),
-				maxChars: z.number().int().min(2000).max(50_000).optional(),
-			}),
-			z.object({
-				action: z.literal("send"),
-				to: z.array(addressSchema).min(1).max(10),
-				cc: z.array(addressSchema).max(10).optional(),
-				subject: z.string().max(500).optional(),
-				body: z.string().min(1).max(200_000),
-				replyToId: z.string().min(1).max(256).optional(),
-			}),
-		]),
-		execute: async (input) => {
+		inputSchema: mailInputSchema,
+		execute: async (raw) => {
+			const input = actionSchema.parse(raw);
 			const gmail = deps.reader();
 			if (gmail === null) {
 				return { error: "mail is not configured — add the mail block to goblin.json5 first" };

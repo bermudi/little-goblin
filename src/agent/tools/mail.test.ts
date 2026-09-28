@@ -7,8 +7,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import type { MailMessage, MailReader } from "../../mail.ts";
-import { mailTool, type MailDraftInput, type MailToolDeps } from "./mail.ts";
+import { mailInputSchema, mailTool, type MailDraftInput, type MailToolDeps } from "./mail.ts";
 
 let dirs: string[] = [];
 let prevHome: string | undefined;
@@ -69,6 +70,17 @@ const exec = (t: ReturnType<typeof mailTool>, input: unknown) =>
 	(t as unknown as { execute: (i: unknown) => Promise<unknown> }).execute(input);
 
 describe("mail tool", () => {
+	test("provider sees an object schema; missing action arguments still fail validation", () => {
+		const wire = z.toJSONSchema(mailInputSchema);
+		expect(wire.type).toBe("object");
+		expect(wire.properties?.action).toEqual({ type: "string", enum: ["search", "read", "send"] });
+		expect(wire.required).toContain("action");
+		expect(mailInputSchema.safeParse({}).success).toBe(false);
+		expect(mailInputSchema.safeParse({ action: "search" }).success).toBe(false);
+		expect(mailInputSchema.safeParse({ action: "read", q: "inbox" }).success).toBe(false);
+		expect(mailInputSchema.safeParse({ action: "send", body: "hello" }).success).toBe(false);
+		expect(mailInputSchema.safeParse({ action: "search", q: "in:inbox" }).success).toBe(true);
+	});
 	test("unconfigured mail is a tool error, not a throw", async () => {
 		useHome();
 		const t = toolFor(null);

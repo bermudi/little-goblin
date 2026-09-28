@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModel, ToolSet } from "ai";
@@ -752,6 +752,34 @@ describe("review queue", () => {
 });
 
 describe("/stop cancellation", () => {
+	test("stop while skills-ref validates discards staging instead of publishing", async () => {
+		const h = harness();
+		const binDir = tmpdir_();
+		const started = join(binDir, "started");
+		const release = join(binDir, "release");
+		const bin = join(binDir, "skills-ref");
+		writeFileSync(bin, `#!/bin/sh\ntouch "${started}"\nwhile [ ! -e "${release}" ]; do sleep 0.01; done\nexit 0\n`);
+		chmodSync(bin, 0o755);
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0 },
+			script: [{ calls: [{ name: "write_file", input: { path: "stopped/SKILL.md", content: SKILL_MD("stopped") } }] }, { text: "saved" }],
+		});
+		deps.skillsRefBin = bin;
+		const pending = considerTurn(deps, turn());
+		try {
+			for (let i = 0; i < 2000 && !existsSync(started); i++) await Bun.sleep(1);
+			// Await the marker rather than a timer: the validator has started.
+			expect(existsSync(started)).toBe(true);
+			expect(cancelReviews(h.convId)).toBe(1);
+		} finally {
+			writeFileSync(release, "go");
+			await pending;
+		}
+		expect(readdirSync(h.skills)).not.toContain("stopped");
+		expect(readdirSync(h.staging)).toEqual([]);
+		expect(h.notified).toEqual([]);
+		h.store.close();
+	});
 	test("abort during model resolution reaches the provider", async () => {
 		const h = harness();
 		const logFile = join(h.workspace, "goblin.log");

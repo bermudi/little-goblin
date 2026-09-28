@@ -901,6 +901,15 @@ async function runStagedReview(entry: QueueEntry, signal: AbortSignal, reviewDir
 		const validated: { skill: string; ok: boolean; output: string }[] = [];
 		for (const skill of skills) {
 			const outcome = await validateSkill(deps, reviewDir, skill);
+			// Validation is asynchronous: /stop can arrive while the
+			// validator runs. Never start another validator or publish then.
+			if (entry.cancelled) {
+				log.info("reviewer review cancelled — staging discarded", {
+					review_id: reviewId,
+					conversation: conv,
+				});
+				return;
+			}
 			validated.push({ skill, ...outcome });
 			log.info("reviewer validation", {
 				review_id: reviewId,

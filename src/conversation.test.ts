@@ -24,6 +24,17 @@ const msg = (text: string): UIMessage => ({
 });
 
 describe("conversation store", () => {
+	test("history preserves valid top-level UI message metadata after reopening", () => {
+		const path = tmpdb();
+		const store = openStore(path);
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(conv.id, [{ ...msg("hello"), metadata: { source: "test" } }]);
+		store.close();
+		const reopened = openStore(path);
+		expect(reopened.history(conv.id)[0]?.metadata).toEqual({ source: "test" });
+		reopened.close();
+	});
+
 	test("resolve creates then returns the same conversation", () => {
 		const store = openStore(tmpdb());
 		const a = store.resolve({ kind: "topic", chatId: -100, threadId: 7 }, "/w");

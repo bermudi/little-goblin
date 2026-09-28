@@ -114,16 +114,31 @@ Omit small talk and process chatter. Plain text with short labeled bullets. Neve
 
 function messageText(message: UIMessage): string {
 	const parts: string[] = [];
+	const brief = (value: unknown): string => {
+		if (value === undefined) return "(not recorded)";
+		const text = typeof value === "string" ? value : JSON.stringify(value) ?? String(value);
+		return text.length > 8_000 ? `${text.slice(0, 8_000)}… [truncated]` : text;
+	};
 	for (const p of message.parts) {
-		const part = p as { type: string; text?: string; filename?: string; path?: string; mimeType?: string };
+		const part = p as { type: string; text?: string; data?: unknown; input?: unknown; output?: unknown; errorText?: unknown };
 		if (part.type === "text" && typeof part.text === "string") {
 			parts.push(part.text);
 		} else if (part.type === "data-attachment") {
-			parts.push(`[attachment: ${part.path ?? part.filename ?? "unnamed"}]`);
+			const data = part.data;
+			const ref = typeof data === "object" && data !== null
+				? data as { path?: unknown; filename?: unknown }
+				: null;
+			const path = typeof ref?.path === "string"
+				? ref.path
+				: typeof ref?.filename === "string" ? ref.filename : "unnamed";
+			parts.push(`[attachment: ${path}]`);
 		} else if (part.type.startsWith("tool-")) {
-			// Tool parts matter as actions taken; the input/output detail is
-			// the summarizer's to compress from context, not to re-quote.
-			parts.push(`[${part.type}]`);
+			// Keep bounded evidence of what the tool actually did. Merely
+			// naming the tool loses the command and result after the cut.
+			parts.push(
+				`[${part.type}]\ninput: ${brief(part.input)}\n` +
+				`result: ${brief(part.output ?? part.errorText)}`,
+			);
 		}
 	}
 	return parts.join("\n").trim();

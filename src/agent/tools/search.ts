@@ -101,9 +101,10 @@ const braveSearch: SearchAdapter = async (opts) => {
 		Accept: "application/json",
 		"X-Subscription-Token": opts.key ?? "",
 	});
-	const body = data as { web?: { results?: unknown[] } };
+	const body = z.object({ web: z.object({ results: z.array(z.unknown()) }) }).safeParse(data);
+	if (!body.success) throw new ProviderError("brave", "invalid search response (missing web.results)");
 	return {
-		hits: (body.web?.results ?? []).slice(0, opts.count).map(toHit("description")),
+		hits: body.data.web.results.slice(0, opts.count).map(toHit("description")),
 		status,
 	};
 };

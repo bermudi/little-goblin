@@ -14,8 +14,16 @@ import {
 	searchEntrySchema,
 	splitModelRef,
 	writeConfig,
+	parseConfig,
 	type Config,
 } from "./config.ts";
+
+test("the mini-app public URL must be HTTPS, unlike the local bot API URL", () => {
+	const config = { providers: { test: { kind: "openai-compatible", baseUrl: "https://api.example.org", auth: "ref" } },
+		model: "test/m", allowedUsers: [42] };
+	expect(() => parseConfig({ ...config, publicUrl: "http://example.org" })).toThrow();
+	expect(parseConfig({ ...config, publicUrl: "https://example.org" }).publicUrl).toBe("https://example.org");
+});
 
 let dirs: string[] = [];
 let prevHome: string | undefined;

@@ -409,7 +409,10 @@ const configSchema = z
 		// proxy). Nothing in-process assumes a public IP. "" means unset —
 		// the settings form can't express undefined over JSON.
 		publicUrl: z
-			.union([z.url(), z.literal("")])
+			.union([
+				z.url().refine((url) => new URL(url).protocol === "https:", "Public URL must use HTTPS for Telegram Web Apps"),
+				z.literal(""),
+			])
 			.transform((v) => v || undefined)
 			.optional(),
 		http: z

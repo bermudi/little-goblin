@@ -636,6 +636,9 @@ function validate() {
   }
   const port = Number(cfg.port);
   if (!Number.isInteger(port) || port < 0 || port > 65535) return "Http port must be a number between 0 and 65535.";
+  if (cfg.publicUrl.trim() && !cfg.publicUrl.trim().startsWith("https://")) {
+    return "Public URL must use HTTPS for Telegram Web Apps.";
+  }
   if (me && cfg.allowedUsers.indexOf(me) === -1) {
     return "Your own telegram id (" + me + ") must stay in allowed users.";
   }

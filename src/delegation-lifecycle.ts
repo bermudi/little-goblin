@@ -284,8 +284,6 @@ async function launch(
 		task: input.task,
 		address: input.address,
 	});
-	mkdirSync(reportDirFor(deps, d.id), { recursive: true });
-
 	// Launch failed after the row existed: fail the row, close
 	// whatever got bound, report why. The row is the record — the
 	// workspace must not outlive it unwatched.
@@ -310,6 +308,11 @@ async function launch(
 		log.info("delegation failed at start", { delegation: d.id, name: d.name, why });
 		return { kind: "failed", delegation: bound ?? d, why };
 	};
+	try {
+		mkdirSync(reportDirFor(deps, d.id), { recursive: true });
+	} catch (err) {
+		return fail(`report directory unavailable: ${err instanceof Error ? err.message : String(err)}`);
+	}
 
 	let ws: { workspaceId: string; paneId: string };
 	try {
@@ -355,6 +358,13 @@ async function launch(
 			});
 		}
 		return fail(`${err instanceof Error ? err.message : String(err)}${screen}`);
+	}
+	row = deps.delegations.get(d.id);
+	if (row?.status === "stopped") {
+		// stop may have closed the workspace during startAgent's await.
+		// In particular, never prompt an agent after the operator stopped it.
+		log.info("delegation stopped during agent start", { delegation: d.id, name: d.name });
+		return { kind: "stopped", delegation: row };
 	}
 
 	// The prompt clock starts before the send, not after the baseline

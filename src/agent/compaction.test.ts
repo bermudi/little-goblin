@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import type { UIMessage } from "ai";
 import {
 	chooseBoundary,
 	runCompaction,
+	serializeSpan,
 	type CompactionEvent,
 	type CompactionStore,
 } from "./compaction.ts";
+import { attachmentPart } from "./attachments.ts";
 
 const signal = () => new AbortController().signal;
 
@@ -35,6 +38,25 @@ function sample(): CompactionEvent[] {
 }
 
 describe("chooseBoundary", () => {
+	test("attachment summaries retain the stored path rather than saying unnamed", () => {
+		const event = ev(1, "user", "please read this");
+		event.message.parts.push(attachmentPart({
+			path: "/workspace/attachments/a.pdf", filename: "a.pdf",
+			mediaType: "application/pdf", size: 42,
+		}));
+		expect(serializeSpan([event])).toContain("[attachment: /workspace/attachments/a.pdf]");
+	});
+
+	test("tool summaries retain bounded command and result evidence", () => {
+		const event = ev(2, "assistant", "");
+		event.message.parts.push({
+			type: "tool-bash", toolCallId: "t1", state: "output-available",
+			input: { command: "pwd" }, output: "/workspace",
+		} as UIMessage["parts"][number]);
+		const text = serializeSpan([event]);
+		expect(text).toContain("pwd");
+		expect(text).toContain("/workspace");
+	});
 	test("the cut lands at a completed exchange — no anchored response is orphaned", () => {
 		// Tiny budget: keep only the last exchange. The boundary must be the
 		// seq of the assistant response that closes the second exchange —

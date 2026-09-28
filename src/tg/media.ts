@@ -8,6 +8,7 @@ import { copyFile, mkdir, stat, unlink } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { File as TgFile } from "grammy/types";
 import type { UIMessage } from "ai";
+import { z } from "zod";
 import { paths } from "../config.ts";
 import { attachmentPart } from "../agent/attachments.ts";
 
@@ -40,7 +41,10 @@ export function mediaFromMessage(msg: {
 	};
 }): IncomingMedia | null {
 	if (msg.photo && msg.photo.length > 0) {
-		const largest = msg.photo[msg.photo.length - 1]!;
+		const largest = z.object({
+			file_id: z.string().min(1),
+			file_unique_id: z.string().min(1),
+		}).parse(msg.photo[msg.photo.length - 1]);
 		return {
 			fileId: largest.file_id,
 			fileUniqueId: largest.file_unique_id,

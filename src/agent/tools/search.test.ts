@@ -234,6 +234,21 @@ describe("search fallback chain", () => {
 		expect(rendered).not.toContain(hostile);
 	});
 
+	test("a malformed successful Brave response falls back instead of claiming no results", async () => {
+		const base = serve((req) =>
+			new URL(req.url).pathname === "/html/"
+				? new Response('<a class="result__a" href="https://example.org">Found</a>')
+				: Response.json({}),
+		);
+		const outcome = await runSearchChain(
+			[{ kind: "brave", auth: "brave" }, { kind: "ddg" }],
+			fakeAuth, { query: "test", count: 1, baseUrl: base },
+		);
+		expect(outcome.servedBy).toBe("ddg");
+		expect(outcome.hits).toHaveLength(1);
+		expect(outcome.failures[0]?.error).toContain("missing web.results");
+	});
+
 	test("an empty result set is an answer — the walk stops, no fallback attempt", async () => {
 		const base = serve((req) =>
 			new URL(req.url).pathname.startsWith("/res/v1/web/search")

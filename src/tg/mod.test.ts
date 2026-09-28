@@ -259,6 +259,20 @@ describe("handleMessage", () => {
 		);
 	});
 
+	test("malformed photo metadata becomes a failed attachment, not a dropped update", async () => {
+		const h = routerHarness();
+		handleMessage(h.env, tgMsg({
+			message_id: 3,
+			chat: { id: 1, type: "private" },
+			photo: [null],
+		}));
+		await h.env.intake.get("dm:1");
+		expect(h.pushed).toHaveLength(1);
+		expect(h.pushed[0]!.parts[0]?.type).toBe("text");
+		expect((h.pushed[0]!.parts[0] as { text: string }).text).toContain("[attachment failed to download:");
+		h.store.close();
+	});
+
 	test("a message with neither text nor media is dropped", () => {
 		const h = routerHarness();
 		handleMessage(

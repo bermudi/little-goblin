@@ -417,6 +417,48 @@ describe("delegation watcher", () => {
 	});
 
 	describe("owner sequence", () => {
+		test("a report directory failure marks the row failed instead of stranding starting", async () => {
+			const h = harness();
+			mkdirSync(h.delegationsDir, { recursive: true });
+			writeFileSync(join(h.delegationsDir, "1"), "not a directory");
+			const owner = startDelegationLifecycle(h.deps);
+			const out = await owner.launch({
+				harness: { name: "codex", kind: "codex", args: [] },
+				task: "do it", cwd: "/w", name: "x", maxRunning: 3,
+				address: { chatId: 1, threadId: null },
+			});
+			expect(out.kind).toBe("failed");
+			expect(h.store.get(1)?.status).toBe("failed");
+			owner.stopTicker();
+		});
+
+		test("stop during a successful startAgent never sends the prompt", async () => {
+			const h = harness();
+			let release!: () => void;
+			const gate = new Promise<void>((resolve) => { release = resolve; });
+			const prompts: string[] = [];
+			h.deps.herdr = {
+				...h.deps.herdr,
+				createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1" }),
+				startAgent: (name) => gate.then(() => agent(name, "working", 1)),
+				prompt: async (_name, text) => { prompts.push(text); },
+			};
+			const owner = startDelegationLifecycle(h.deps);
+			const launching = owner.launch({
+				harness: { name: "codex", kind: "codex", args: [] },
+				task: "do it", cwd: "/w", name: "x", maxRunning: 3,
+				address: { chatId: 1, threadId: null },
+			});
+			for (let i = 0; i < 200 && h.store.get(1)?.workspaceId === ""; i++) {
+				await new Promise((resolve) => setTimeout(resolve, 1));
+			}
+			expect((await owner.stop(1)).kind).toBe("stopped");
+			release();
+			expect((await launching).kind).toBe("stopped");
+			expect(prompts).toEqual([]);
+			owner.stopTicker();
+		});
+
 		test("launch → stop while launching → tick: stopped row, workspace closed exactly once", async () => {
 			const h = harness();
 			// A launch-capable herdr with a gated workspace creation — the

@@ -167,7 +167,7 @@ interface Row {
 // per-part semantics — and a row that isn't a message envelope at all
 // degrades to a placeholder text part, never a throw: one malformed row
 // must not kill every future turn in its conversation.
-const uiMessageSchema = z.object({
+const uiMessageSchema = z.looseObject({
 	id: z.string(),
 	role: z.enum(["system", "user", "assistant"]),
 	parts: z.array(z.looseObject({ type: z.string() })),

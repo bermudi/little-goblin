@@ -170,8 +170,14 @@ export function handleMessage(env: IntakeEnv, msg: Message): void {
 
 	// Commands are settings-only — but a caption that looks like a
 	// command must not silently eat the media it rides on; media wins.
-	const media = mediaFromMessage(msg);
-	if (text !== "" && !media && COMMAND_RE.test(text)) {
+	let media: ReturnType<typeof mediaFromMessage> = null;
+	let mediaError: unknown = null;
+	try {
+		media = mediaFromMessage(msg);
+	} catch (err) {
+		mediaError = err;
+	}
+	if (text !== "" && !media && mediaError === null && COMMAND_RE.test(text)) {
 		if (
 			handleCommand(
 				{
@@ -190,7 +196,7 @@ export function handleMessage(env: IntakeEnv, msg: Message): void {
 		}
 	}
 
-	if (text === "" && !media) {
+	if (text === "" && !media && mediaError === null) {
 		// Service messages, join/leave, and media kinds intake doesn't
 		// cover — routine, but worth a debug line when it isn't.
 		log.debug("dropped message with no text or media", { conversation: conv.id });
@@ -200,6 +206,13 @@ export function handleMessage(env: IntakeEnv, msg: Message): void {
 	enqueueIntake(env.intake, conv.id, async () => {
 		const parts: UIMessage["parts"] = [];
 		if (text !== "") parts.push({ type: "text", text });
+		if (mediaError !== null) {
+			log.error("media intake failed", mediaError, { conversation: conv.id });
+			parts.push({
+				type: "text",
+				text: `${ATTACHMENT_FAILED_PREFIX} ${String(mediaError)}]`,
+			});
+		}
 
 		if (media) {
 			try {

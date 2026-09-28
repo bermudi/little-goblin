@@ -180,7 +180,7 @@ function refreshMcpShim(): void {
 // (schema-only kind → settings UI can't render/save it; array-only
 // kind → the UI offers what the config rejects). The config GET
 // serves it to the page (http/mod.ts, ConfigResponse).
-export const providerKinds = ["openai-compatible", "openrouter", "codex"] as const;
+export const providerKinds = ["openai-compatible", "responses", "openrouter", "codex"] as const;
 
 export const providerSchema = z.discriminatedUnion("kind", [
 	z.object({

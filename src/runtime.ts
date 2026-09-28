@@ -20,7 +20,7 @@ import {
 } from "ai";
 import type { ProviderOptions, ToolExecutionOptions } from "@ai-sdk/provider-utils";
 import { randomUUID } from "node:crypto";
-import { INLINE_ITEM_MAX_BYTES, materializeAttachments, type AcceptsMedia } from "./agent/attachments.ts";
+import { INLINE_ITEM_MAX_BYTES, materializeAttachments, type AcceptsMedia, type MediaPosition } from "./agent/attachments.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import type { MemoryConfig } from "./config.ts";
@@ -106,8 +106,9 @@ export interface ModelStep {
 	// text-only, everything degrades to path references.
 	inputModalities?: Set<string>;
 	// What the provider pipe can carry (carriesMedia, providers.ts) —
-	// the second gate on inlining. Absent = anything (legacy behavior).
-	carries?: (mediaType: string) => boolean;
+	// the second gate on inlining, position-aware (user message vs tool
+	// result). Absent = anything in user messages (legacy behavior).
+	carries?: (mediaType: string, position: MediaPosition) => boolean;
 	// The model's context window (models.dev), when known — the
 	// denominator for window-utilization logging.
 	contextWindow?: number;
@@ -677,9 +678,10 @@ export class Runtime {
 						return sink.onVoiceSynthesisStart!();
 					}
 				: undefined;
-			// The accept-everything placeholder is what tools see if they ask
+			// The accept-nothing placeholder is what tools see if they ask
 			// before buildStep lands (nothing does — first read is at request
-			// build, after the assignment below).
+			// build, after the assignment below). Conservative is the safety
+			// property: an unfilled ref must never inline anything.
 			const accepts: { current: AcceptsMedia } = {
 				current: { modalities: new Set(["text"]), carries: () => false },
 			};

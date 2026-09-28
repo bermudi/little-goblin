@@ -421,7 +421,10 @@ export const fetchTool = (deps: WebToolDeps) =>
 			const capable =
 				accepts !== undefined &&
 				acceptsMedia(accepts.modalities, "application/pdf") &&
-				accepts.carries("application/pdf");
+				// tool-result position: the fetch result rides in a tool
+				// message, a different converter path than user-message
+				// attachments — chat-completions kinds stringify it there.
+				accepts.carries("application/pdf", "tool-result");
 			const reference = (note: string): LanguageModelV4ToolResultOutput => ({
 				type: "text",
 				value: `Source: ${ref.url}\nPDF (${ref.size} bytes) saved to: ${ref.path}\n${note}`,

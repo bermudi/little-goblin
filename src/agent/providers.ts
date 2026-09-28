@@ -17,6 +17,7 @@ import {
 } from "../config.ts";
 import { log } from "../log.ts";
 import { codexModel } from "./codex.ts";
+import type { MediaPosition } from "./attachments.ts";
 import { openrouterSupportedParams } from "./models-dev.ts";
 
 export async function resolveModel(
@@ -59,46 +60,69 @@ export async function resolveModel(
 	}
 }
 
-// What each provider kind's pipe can carry on the wire. Catalog
-// modalities (models.dev) say what the MODEL accepts; this says what
-// goblin's SDK converters can actually deliver to it. The two disagree
-// in practice — openai-compatible threw UnsupportedFunctionalityError
-// for any non-image file part before v3, and even v3 stringifies tool
-// outputs — so attachment materialization and the fetch tool intersect
-// both before inlining anything. Anything the pipe can't carry degrades
-// to its path reference, never a thrown turn.
+// What each provider kind's pipe can carry on the wire, per position.
+// Catalog modalities (models.dev) say what the MODEL accepts; this says
+// what goblin's SDK converters can actually deliver to it — and the
+// answer differs by where the part rides: user-message content and
+// tool-result content are different converter paths, and two kinds
+// express file parts in one while silently mangling them in the other.
+// openai-compatible stringifies tool-result content (an 8 MiB PDF would
+// ride as ~11 MB of base64 JSON text in every later request — no throw,
+// just silent payload garbage), and codex's toolResultText filters to
+// text (the framing survives, the payload drops). Attachment
+// materialization and the fetch tool intersect catalog truth with this
+// before inlining anything; anything the pipe can't carry degrades to
+// its path reference, never a thrown turn and never silent garbage.
 //
 // Probe-verified against z.ai 2026-09-27 (see DESIGN.md, Web access):
 //   responses (/api/v1): PDF input_file parses in user messages AND in
 //   function_call_output; video/mp4 is rejected server-side.
-//   openai-compatible (chat): file parts accepted in both positions
-//   server-side, but the SDK can only express user-message parts.
-export function carriesMedia(kind: string, mediaType: string): boolean {
+//   openai-compatible (chat): file parts accepted server-side in both
+//   positions, but the SDK only expresses user-message parts.
+export function carriesMedia(
+	kind: string,
+	mediaType: string,
+	position: MediaPosition = "user",
+): boolean {
 	switch (kind) {
 		case "responses":
+			// @ai-sdk/openai's Responses converter maps file parts in both
+			// positions (input_file in user content and in
+			// function_call_output content arrays).
 			return mediaType.startsWith("image/") || mediaType === "application/pdf";
 		case "openai-compatible":
-			// SDK v3 emits image_url / video_url / input_audio / file parts
-			// for user-message content.
+			// Tool results are stringified by the converter — nothing
+			// carries there, whatever the server would accept.
+			if (position === "tool-result") return false;
+			// User position: SDK v3 emits image_url / video_url / input_audio
+			// / file parts. getAudioFormat expresses wav and mp3/mpeg only —
+			// any other audio (Telegram voice notes are audio/ogg) throws at
+			// request build, so those don't carry either.
 			return (
 				mediaType.startsWith("image/") ||
 				mediaType.startsWith("video/") ||
-				mediaType.startsWith("audio/") ||
+				mediaType === "audio/wav" ||
+				mediaType === "audio/mp3" ||
+				mediaType === "audio/mpeg" ||
 				mediaType === "application/pdf"
 			);
 		case "openrouter":
-			// Normalizes everything: image_url, input_audio, or a generic
-			// file part for any other media type.
+			// Normalizes everything, in both positions: user content gets
+			// image_url / input_audio / a generic file part, tool-result
+			// content gets real mapped parts (mapToolResultContentParts).
 			return true;
 		case "codex":
-			// goblin's own converter (codex.ts): images and PDFs.
-			return mediaType.startsWith("image/") || mediaType === "application/pdf";
+			// goblin's own converter (codex.ts): user messages take images
+			// and PDFs; tool results keep text only.
+			return (
+				position === "user" &&
+				(mediaType.startsWith("image/") || mediaType === "application/pdf")
+			);
 		default:
-			// Unknown kinds carry the universal minimum.
-			return mediaType.startsWith("image/");
+			// Unknown kinds carry the universal minimum, user messages only.
+			return position === "user" && mediaType.startsWith("image/");
 	}
 }
-
 // Per-model-call observability (DESIGN.md, Cache stability: "every
 // model call logs … the request prefix hash"). The model boundary is
 // the only seam that sees each call's actual params — a tool-using turn

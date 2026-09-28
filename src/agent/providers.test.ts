@@ -313,30 +313,43 @@ describe("responses kind — the /api/v1 door", () => {
 	});
 });
 
-describe("carriesMedia — what the pipe can deliver", () => {
-	test("responses carries probe-verified types only: images and PDFs", () => {
+describe("carriesMedia — what the pipe can deliver, per position", () => {
+	test("responses carries probe-verified types only: images and PDFs, in both positions", () => {
 		expect(carriesMedia("responses", "application/pdf")).toBe(true);
 		expect(carriesMedia("responses", "image/png")).toBe(true);
+		expect(carriesMedia("responses", "application/pdf", "tool-result")).toBe(true);
+		expect(carriesMedia("responses", "image/png", "tool-result")).toBe(true);
 		// Server-side rejection, probe 2026-09-27: "Failed to parse the file."
 		expect(carriesMedia("responses", "video/mp4")).toBe(false);
 		expect(carriesMedia("responses", "application/zip")).toBe(false);
 	});
 
-	test("openai-compatible emits image/video/audio/pdf parts in user messages", () => {
+	test("openai-compatible emits image/video/pdf parts in user messages — and stringifies tool results", () => {
 		expect(carriesMedia("openai-compatible", "application/pdf")).toBe(true);
 		expect(carriesMedia("openai-compatible", "video/mp4")).toBe(true);
-		expect(carriesMedia("openai-compatible", "audio/ogg")).toBe(true);
+		// getAudioFormat expresses wav/mp3/mpeg only; anything else throws
+		// at request build — Telegram voice notes are audio/ogg.
+		expect(carriesMedia("openai-compatible", "audio/mpeg")).toBe(true);
+		expect(carriesMedia("openai-compatible", "audio/ogg")).toBe(false);
 		expect(carriesMedia("openai-compatible", "application/zip")).toBe(false);
+		// The converter stringifies tool-result content — a PDF there
+		// would ride as base64 JSON text in every later request.
+		expect(carriesMedia("openai-compatible", "application/pdf", "tool-result")).toBe(false);
+		expect(carriesMedia("openai-compatible", "image/png", "tool-result")).toBe(false);
 	});
 
-	test("openrouter normalizes everything; codex is goblin's own converter", () => {
+	test("openrouter normalizes everything in both positions; codex is user-position only", () => {
 		expect(carriesMedia("openrouter", "application/zip")).toBe(true);
+		expect(carriesMedia("openrouter", "application/pdf", "tool-result")).toBe(true);
 		expect(carriesMedia("codex", "application/pdf")).toBe(true);
 		expect(carriesMedia("codex", "video/mp4")).toBe(false);
+		// toolResultText filters content to text — the payload would drop.
+		expect(carriesMedia("codex", "application/pdf", "tool-result")).toBe(false);
 	});
 
-	test("unknown kinds carry the universal minimum", () => {
+	test("unknown kinds carry the universal minimum, user messages only", () => {
 		expect(carriesMedia("mystery", "image/jpeg")).toBe(true);
+		expect(carriesMedia("mystery", "image/jpeg", "tool-result")).toBe(false);
 		expect(carriesMedia("mystery", "application/pdf")).toBe(false);
 	});
 });

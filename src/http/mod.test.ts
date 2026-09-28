@@ -321,7 +321,7 @@ describe("mini-app page serving", () => {
 				fetchKinds: string[];
 			};
 			expect(j.config.model).toBe("zai/m");
-			expect(j.providerKinds).toEqual(["openai-compatible", "openrouter", "codex"]);
+			expect(j.providerKinds).toEqual(["openai-compatible", "responses", "openrouter", "codex"]);
 			expect(j.searchKinds).toEqual(["brave", "exa", "jina", "tavily", "firecrawl", "parallel", "ddg"]);
 			expect(j.fetchKinds).toEqual(["local", "jina", "tavily", "firecrawl", "parallel"]);
 		} finally {

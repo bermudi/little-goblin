@@ -271,15 +271,18 @@ describe("fetch tool — pdf", () => {
 	const incapable = {
 		current: { modalities: new Set(["text"]), carries: () => true },
 	};
-	const pipeBlocked = {
-		current: { modalities: new Set(["text", "pdf"]), carries: () => false },
+	// The pipe-blind killer this gate once had: a chat-completions pipe
+	// that carries PDFs in user messages but stringifies tool results
+	// (openai-compatible's converter) — the fetch result rides in a tool
+	// message, so it must degrade, never inline.
+	const chatPipe = {
+		current: { modalities: new Set(["text", "pdf"]), carries: (_mt: string, pos: "user" | "tool-result") => pos === "user" },
 	};
-
 	const toModelOutput = (t: ReturnType<typeof fetchTool>, output: unknown) =>
 		(t as unknown as { toModelOutput: (o: { toolCallId: string; input: unknown; output: unknown }) => Promise<unknown> })
 			.toModelOutput({ toolCallId: "tc_1", input: { url: "https://example.com/doc.pdf" }, output });
 
-	function depsPdf(accepts?: { current: { modalities: Set<string>; carries: (mt: string) => boolean } }) {
+	function depsPdf(accepts?: { current: { modalities: Set<string>; carries: (mt: string, pos: "user" | "tool-result") => boolean } }) {
 		return {
 			configRef: { current: { fetch: [{ kind: "local" }] } as unknown as Config },
 			auth: fakeAuth,
@@ -352,7 +355,7 @@ describe("fetch tool — pdf", () => {
 
 	test("a pipe that can't carry PDFs degrades the same way — two gates, both must pass", async () => {
 		const base = serve(() => new Response(PDF_BYTES, { headers: { "content-type": "application/pdf" } }));
-		const tool = fetchTool(depsPdf(pipeBlocked));
+		const tool = fetchTool(depsPdf(chatPipe));
 		const out = (await exec(tool, { url: `${base}/doc.pdf` })) as { pdf: { path: string } };
 		const rendered = (await toModelOutput(tool, out)) as { type: string; value: string };
 		expect(rendered.type).toBe("text");

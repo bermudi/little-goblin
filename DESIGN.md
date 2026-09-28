@@ -202,7 +202,8 @@ agent loop.
   model **and provider pipe**: file part when the model consumes the
   media type (catalog modalities), the pipe can deliver it
   (`carriesMedia`, `src/agent/providers.ts` — the SDK converter's
-  expressible surface, per kind), and the payload
+  expressible surface, per kind and position — user-message content
+  and tool results are different converter paths), and the payload
   fits the per-item inline cap, reference otherwise. Two gates because
   the catalog and the pipe disagree in practice: models.dev said
   glm-5.3-flash takes PDFs while `@ai-sdk/openai-compatible` < v3
@@ -434,12 +435,13 @@ tool. MCP stays out, with its return conditions on record (below).
   model switch recomputes once. The wire path is probe-verified
   (2026-09-27, glm-5.3-flash read a marker PDF through every position):
   z.ai's OpenAI Responses endpoint (`/api/v1`) parses `input_file`
-  inside `function_call_output` — the only chat-family door that
-  carries tool-result documents — which is why the `zai` provider is
-  the `responses` kind. Chat-completions and Anthropic endpoints carry
-  user-message documents fine; tool-result documents are Responses or
-  Anthropic-only (z.ai has no Anthropic tool-result need — Responses
-  is the Bearer-auth door). The framing text around the bytes marks
+  inside `function_call_output` — the chat-family door that carries
+  tool-result documents (OpenRouter's normalizer maps them too;
+  openai-compatible stringifies tool-result content and codex filters
+  it to text, so `carriesMedia` is position-aware) — which is why the
+  `zai` provider is the `responses` kind. Chat-completions and
+  Anthropic endpoints carry
+  user-message documents fine. The framing text around the bytes marks
   them untrusted — the fence discipline's binary twin; nothing inside
   a PDF can displace it.
 - **Overflow goes to disk, recovery named** (hermes' `web_extract` rule,

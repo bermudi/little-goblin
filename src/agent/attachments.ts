@@ -50,6 +50,14 @@ export function attachmentPart(ref: AttachmentRef): UIMessage["parts"][number] {
 	return { type: ATTACHMENT_PART, data: ref };
 }
 
+// Where a media part rides in a request. The pipe's answer differs by
+// position: chat-completions converters express file parts in user
+// messages but stringify tool-result content (openai-compatible — a
+// file part there becomes base64 JSON text riding every later request)
+// or filter it to text (codex). Real tool-result file parts exist on
+// the Responses protocol and OpenRouter's normalizer.
+export type MediaPosition = "user" | "tool-result";
+
 // This turn's effective media acceptance, built once per turn by
 // buildStep: catalog modalities (what the model consumes, models.dev)
 // intersected with the provider pipe's carries predicate (what the SDK
@@ -59,7 +67,7 @@ export function attachmentPart(ref: AttachmentRef): UIMessage["parts"][number] {
 // renders to identical request bytes every turn.
 export interface AcceptsMedia {
 	modalities: ReadonlySet<string>;
-	carries: (mediaType: string) => boolean;
+	carries: (mediaType: string, position: MediaPosition) => boolean;
 }
 
 // Does capability data say this media type goes in natively? Same mapping
@@ -104,7 +112,7 @@ function planPart(
 	ref: AttachmentRef,
 	modalities: Set<string>,
 	maxItemBytes: number,
-	carries: (mediaType: string) => boolean,
+	carries: (mediaType: string, position: MediaPosition) => boolean,
 ): { decision: "inline" } | { decision: "fallback"; reason: "modality" | "size" } {
 	// Attached audio is data, not speech — even an audio-capable model
 	// gets the path, and listens via the transcribe tool or ffmpeg. Only
@@ -113,11 +121,12 @@ function planPart(
 		return { decision: "fallback", reason: "modality" };
 	}
 	// Two gates, both must pass: the model consumes the media type
-	// (catalog modalities), and the provider pipe can deliver it
-	// (carriesMedia — the SDK converter's expressible surface). A model
+	// (catalog modalities), and the provider pipe can deliver it at the
+	// position it rides (carriesMedia — user-message content here; tool
+	// results are a different converter path). A model
 	// that takes PDFs behind a pipe that can't carry them gets the path
 	// reference, not a thrown turn mid-request.
-	if (!acceptsMedia(modalities, ref.mediaType) || !carries(ref.mediaType)) {
+	if (!acceptsMedia(modalities, ref.mediaType) || !carries(ref.mediaType, "user")) {
 		return { decision: "fallback", reason: "modality" };
 	}
 	if (ref.size > maxItemBytes) {
@@ -145,7 +154,11 @@ export async function materializeAttachments(
 	messages: UIMessage[],
 	modalities: Set<string> = new Set(),
 	maxItemBytes: number = INLINE_ITEM_MAX_BYTES,
-	carries: (mediaType: string) => boolean = () => true,
+	// Default preserves the pre-gate behavior for user-message parts and
+	// carries nothing in tool results — the conservative reading for a
+	// caller that didn't say.
+	carries: (mediaType: string, position: MediaPosition) => boolean = (_mt, position) =>
+		position === "user",
 ): Promise<UIMessage[]> {
 	const out: UIMessage[] = [];
 	for (const m of messages) {

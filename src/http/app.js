@@ -573,8 +573,9 @@ function provCard(p) {
     authLabel.textContent = codex ? "Codex auth file" : "Secret name";
     auth.placeholder = codex ? "~/.codex/auth.json — blank = default" : "in auth.jsonl — not the secret itself";
   }
-  // Options come from KINDS — the schema's list — so the string value is
-  // always one of the union's literals.
+  // Options come from KINDS — providerKinds off the config GET, pinned
+  // to the schema in both directions by config.test.ts — so the string
+  // value is always one of the union's literals.
   kind.onchange = () => { p.kind = /** @type {ProvDraftItem["kind"]} */ (kind.value); sync(); markDirty(); refreshThinkingSoon(); };
 
   const kWrap = el("div", "frow"); kWrap.append(kindLabel, kind);

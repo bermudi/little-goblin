@@ -399,6 +399,7 @@ describe("providerKinds", () => {
 	test("every kind parses with its required fields; an unknown kind is rejected", () => {
 		const fields: Record<string, Record<string, unknown>> = {
 			"openai-compatible": { baseUrl: "https://api.example.com", auth: "a" },
+			responses: { baseUrl: "https://api.example.com/v1", auth: "a" },
 			openrouter: { auth: "a" },
 			codex: {},
 		};
@@ -406,6 +407,16 @@ describe("providerKinds", () => {
 			expect(providerSchema.safeParse({ kind, ...fields[kind] }).success).toBe(true);
 		}
 		expect(providerSchema.safeParse({ kind: "anthropic" }).success).toBe(false);
+	});
+
+	// The other direction: a literal the schema accepts but the array
+	// omits renders a blank type selector in the mini app (kind.value ""
+	// hides the base-url row) and a dropdown touch silently rewrites the
+	// kind on save — the exact failure a hand-edited `responses` block hit
+	// before this direction was pinned.
+	test("every schema literal is offered — array and union agree both ways", () => {
+		const schemaKinds = providerSchema.options.map((o) => o.shape.kind.value);
+		expect(new Set(schemaKinds)).toEqual(new Set(providerKinds));
 	});
 });
 

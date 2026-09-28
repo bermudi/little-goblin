@@ -4,6 +4,7 @@ import { loadAuth } from "./auth.ts";
 import { contextLimit, ensureOpenRouterCatalog, inputModalities } from "./agent/models-dev.ts";
 import { buildSystemPrompt } from "./agent/prompt.ts";
 import { observedModel, carriesMedia, resolveModel, thinkingOptions } from "./agent/providers.ts";
+import type { MediaPosition } from "./agent/attachments.ts";
 import { generateTopicTitle } from "./agent/title.ts";
 import { generateText } from "ai";
 import { probeFfmpeg, transcribeAudio, transcriptionModel } from "./agent/transcribe.ts";
@@ -205,7 +206,8 @@ async function boot() {
 			// cost a thrown turn — openai-compatible < v3 rejected any
 			// non-image file part the catalog said the model could take.
 			const kind = cfg.providers[provider]?.kind;
-			const carries = (mediaType: string): boolean => carriesMedia(kind ?? "", mediaType);
+			const carries = (mediaType: string, position: MediaPosition): boolean =>
+				carriesMedia(kind ?? "", mediaType, position);
 			const level: ThinkingLevel = cfg.thinking;
 			const providerOptions = thinkingOptions(cfg, modelRef, level);
 			const prompt = buildSystemPrompt(

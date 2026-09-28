@@ -846,14 +846,24 @@ describe("review queue", () => {
 		h.store.close();
 	});
 
-	test("a failed staging copy removes its partial tree and logs the real cause", async () => {
+	// Permission bits can't make a file unreadable for root (uid 0 reads
+	// through 0o000); a read that always fails can. /proc/self/mem stats
+	// as a plain file and EIOs on any read, root included. Where /proc
+	// doesn't exist, fall back to chmod — which root bypasses, so skip.
+	test.skipIf(!existsSync("/proc/self/mem") && process.geteuid?.() === 0)(
+		"a failed staging copy removes its partial tree and logs the real cause",
+		async () => {
 		const h = harness();
 		const logFile = join(h.workspace, "goblin.log");
 		setLogFile(logFile);
 		// An unreadable file kills the copy after the staging dir exists —
 		// a mechanical failure that must not wear the budget label.
-		writeFileSync(join(h.skills, "secret.md"), "unreadable");
-		chmodSync(join(h.skills, "secret.md"), 0o000);
+		if (existsSync("/proc/self/mem")) {
+			symlinkSync("/proc/self/mem", join(h.skills, "secret.md"));
+		} else {
+			writeFileSync(join(h.skills, "secret.md"), "unreadable");
+			chmodSync(join(h.skills, "secret.md"), 0o000);
+		}
 		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 } });
 		await considerTurn(deps, turn());
 		expect(readdirSync(h.staging)).toEqual([]);
@@ -864,7 +874,8 @@ describe("review queue", () => {
 		expect(msgs).toContain("reviewer review skipped — skills tree copy failed");
 		expect(msgs).not.toContain("reviewer review skipped — skills tree over staging budget");
 		h.store.close();
-	});
+		},
+	);
 });
 
 describe("/stop cancellation", () => {

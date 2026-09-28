@@ -173,6 +173,33 @@ describe("mail watcher", () => {
 		expect(h.programs.get(p.id)!.mailHistoryId).toBe("100");
 	});
 
+	test("an edit while a new filter baselines cannot inherit its stale head", async () => {
+		const h = harness();
+		const p = mailProgram(h);
+		h.reader!.profileHistoryId = async () => {
+			h.programs.update(p.id, { mailFilter: "from:new" });
+			return "120";
+		};
+		const w = start(h);
+		await w.tick();
+		expect(h.programs.get(p.id)?.mailFilter).toBe("from:new");
+		expect(h.programs.get(p.id)?.mailHistoryId).toBeNull();
+	});
+
+	test("an edit while an expired cursor re-baselines cannot inherit its stale head", async () => {
+		const h = harness();
+		const p = mailProgram(h);
+		h.programs.setMailHistory(p.id, "old");
+		h.pollImpl = async () => { throw new HistoryExpiredError(); };
+		h.reader!.profileHistoryId = async () => {
+			h.programs.update(p.id, { mailFilter: "from:new" });
+			return "120";
+		};
+		const w = start(h);
+		await w.tick();
+		expect(h.programs.get(p.id)?.mailHistoryId).toBeNull();
+	});
+
 	test("matches fire once, batched, and the cursor advances", async () => {
 		const h = harness();
 		const p = mailProgram(h);

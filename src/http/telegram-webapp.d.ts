@@ -14,6 +14,7 @@ interface TelegramWebApp {
 	initData: string;
 	initDataUnsafe: { user?: { id?: number } };
 	expand?(): void;
+	ready?(): void;
 	setHeaderColor?(color: string): void;
 	setBackgroundColor?(color: string): void;
 	showConfirm?(message: string, callback: (ok: boolean) => void): void;

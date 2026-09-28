@@ -406,7 +406,9 @@ function renderThinking() {
     box.append(b);
   }
 }
+let thinkingRequest = 0;
 async function refreshThinking() {
+  const request = ++thinkingRequest;
   const ref = cfg.model || "";
   const i = ref.indexOf("/");
   const modelId = i > 0 ? ref.slice(i + 1) : "";
@@ -427,6 +429,9 @@ async function refreshThinking() {
       if (res.ok) levels = (/** @type {{ levels: string[] }} */ (await res.json())).levels;
     } catch (e) { /* keep the full vocabulary — honest unknown */ }
   }
+  // Model switches can finish before an older request: only the latest
+  // selection is allowed to repaint the segmented control.
+  if (request !== thinkingRequest || ref !== cfg.model) return;
   thinkLevels = levels;
   renderThinking();
 }
@@ -1095,6 +1100,9 @@ if (tg) {
     });
   }
 }
+// The loading state is already in the DOM; let Telegram reveal it now
+// rather than leaving the Web App waiting for an uncalled ready().
+if (tg && tg.ready) tg.ready();
 if (!initData) {
   loading = false;
   msg("Open from the Telegram menu button — settings need Telegram's proof of identity.", "err");

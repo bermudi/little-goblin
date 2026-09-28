@@ -112,11 +112,20 @@ export class JevClient {
 		}, this.timeoutMs);
 		try {
 			let token: string;
+			const onAuthTimeout = (): void => rejectAuthTimeout(new JevError("timeout"));
+			let rejectAuthTimeout: (error: JevError) => void = () => {};
+			const authTimeout = new Promise<never>((_resolve, reject) => {
+				rejectAuthTimeout = reject;
+				controller.signal.addEventListener("abort", onAuthTimeout, { once: true });
+			});
 			try {
-				token = await this.auth();
+				token = await Promise.race([this.auth(), authTimeout]);
 				if (!token.trim() || /[\r\n]/.test(token)) throw new Error("invalid auth");
-			} catch {
+			} catch (err) {
+				if (err instanceof JevError) throw err;
 				throw new JevError("auth");
+			} finally {
+				controller.signal.removeEventListener("abort", onAuthTimeout);
 			}
 			if (controller.signal.aborted) throw new JevError(timedOut ? "timeout" : "transport");
 			let response: Response;
@@ -141,7 +150,14 @@ export class JevClient {
 				await response.body?.cancel();
 				throw new JevError("http", response.status);
 			}
-			const parsed = decisionsResponseSchema.safeParse(await readJson(response));
+			let body: unknown;
+			try {
+				body = await readJson(response);
+			} catch (err) {
+				if (err instanceof JevError) throw err;
+				throw new JevError(timedOut ? "timeout" : "transport");
+			}
+			const parsed = decisionsResponseSchema.safeParse(body);
 			if (!parsed.success) throw new JevError("protocol");
 			const answers: Record<string, number> = {};
 			for (const id of Object.keys(questions)) {

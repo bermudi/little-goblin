@@ -42,6 +42,8 @@ export interface HttpDeps {
 	// (queue counts + blocked detail, bound to the boot-time target, and
 	// recall telemetry). Absent = memory not configured at boot.
 	memory?: {
+		/** Boot-bound queue/client destination; edits apply after restart. */
+		target?: { baseUrl: string; bankId: string };
 		counts(): MemoryQueueCounts;
 		blockedDetail(): BlockedRetention[];
 		lastRecallOk(): boolean | null;
@@ -135,11 +137,14 @@ function memoryStatusResponse(deps: HttpDeps): MemoryStatusResponse {
 	// Same gate as the /memory command: the provider is a boot-time
 	// snapshot, the config is live — memory removed via a save reads as
 	// not configured until restart.
-	const mem = deps.memory && deps.configRef.current.memory ? deps.memory : null;
+	const configured = deps.configRef.current.memory;
+	const targetChanged = configured && deps.memory?.target &&
+		(configured.baseUrl !== deps.memory.target.baseUrl || configured.bankId !== deps.memory.target.bankId);
+	const mem = deps.memory && configured && !targetChanged ? deps.memory : null;
 	if (!mem) {
 		return {
 			state: "disabled",
-			detail: "memory is not configured",
+			detail: targetChanged ? "memory destination changed — restart to apply" : "memory is not configured",
 			completed: 0,
 			blocked: 0,
 			dismissed: 0,

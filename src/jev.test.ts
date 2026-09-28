@@ -88,4 +88,24 @@ describe("JevClient", () => {
 		const err = await client.decide("s", { correction: question }).catch((e: unknown) => e);
 		expect((err as JevError).kind).toBe("timeout");
 	});
+
+	test("a wedged auth resolver is bounded by the same deadline", async () => {
+		const client = new JevClient({ auth: () => new Promise<string>(() => {}), timeoutMs: 25 });
+		const err = await client.decide("s", { correction: question }).catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(JevError);
+		expect((err as JevError).kind).toBe("timeout");
+	});
+
+	test("a failing response stream is a Jev transport error, not a raw exception", async () => {
+		const baseUrl = served(() => new Response(new ReadableStream({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode('{"answers":'));
+				setTimeout(() => controller.error(new Error("stream broke")), 5);
+			},
+		}), { headers: { "content-type": "application/json" } }));
+		const err = await new JevClient({ baseUrl, auth: async () => "key" })
+			.decide("s", { correction: question }).catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(JevError);
+		expect((err as JevError).kind).toBe("transport");
+	});
 });

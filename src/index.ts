@@ -522,6 +522,9 @@ async function boot() {
 		...(memoryClient
 			? {
 					memory: {
+						...(memoryBootConfig ? { target: {
+							baseUrl: memoryBootConfig.baseUrl, bankId: memoryBootConfig.bankId,
+						} } : {}),
 						counts: () => store.memoryQueue.counts(memoryClient.target),
 						blockedDetail: () => store.memoryQueue.blockedDetail(memoryClient.target),
 						lastRecallOk: () => memoryState.lastRecallOk,

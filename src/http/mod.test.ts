@@ -273,6 +273,25 @@ describe("mini-app http", () => {
 // reads the same seams the command does (queue counts, blocked detail,
 // recall telemetry) through fake deps; no real queue, no network.
 describe("mini-app memory status", () => {
+	test("a changed memory destination never displays the boot target's status", async () => {
+		const mem: NonNullable<HttpDeps["memory"]> = {
+			target: { baseUrl: "http://127.0.0.1:8888", bankId: "goblin" },
+			counts: () => ({ pending: 2, submitted: 0, completed: 1, blocked: 0, dismissed: 0 }),
+			blockedDetail: () => [], lastRecallOk: () => true, lastRecallAt: () => null,
+		};
+		const { http, get, configRef } = setup(mem);
+		try {
+			configRef.current = {
+				...configRef.current,
+				memory: { ...configRef.current.memory!, bankId: "elsewhere" },
+			};
+			const status = (await (await get("/api/memory-status")).json()) as { detail: string; queued: number };
+			expect(status.detail).toContain("restart");
+			expect(status.queued).toBe(0);
+		} finally {
+			http.stop();
+		}
+	});
 	test("without init data it is rejected like every other endpoint", async () => {
 		const { http, get } = setup();
 		try {

@@ -97,8 +97,13 @@ async function check(
 			// New filter: baseline at the current head — the mailbox's
 			// backlog is history, not arrivals, so it never fires.
 			const head = await gmail.profileHistoryId();
-			deps.programs.setMailHistory(program.id, head);
-			log.info("mail filter baselined", { program: program.id, name: program.name, filter });
+			const fresh = deps.programs.get(program.id);
+			if (fresh?.mailFilter === filter && fresh.mailHistoryId === null) {
+				deps.programs.setMailHistory(program.id, head);
+				log.info("mail filter baselined", { program: program.id, name: program.name, filter });
+			} else {
+				log.info("mail baseline lost to a mid-poll program edit — cursor skipped", { program: program.id, filter });
+			}
 			recovered(deps, failing, program);
 			return;
 		}
@@ -112,11 +117,16 @@ async function check(
 			// Mail between the old cursor and now may fire late or not
 			// at all; the log says which (DESIGN.md's honest boundary).
 			const head = await gmail.profileHistoryId();
-			deps.programs.setMailHistory(program.id, head);
-			log.info("mail cursor expired — re-baselined", {
-				program: program.id,
-				name: program.name,
-			});
+			const fresh = deps.programs.get(program.id);
+			if (fresh?.mailFilter === filter && fresh.mailHistoryId === program.mailHistoryId) {
+				deps.programs.setMailHistory(program.id, head);
+				log.info("mail cursor expired — re-baselined", {
+					program: program.id,
+					name: program.name,
+				});
+			} else {
+				log.info("mail baseline lost to a mid-poll program edit — cursor skipped", { program: program.id, filter });
+			}
 			recovered(deps, failing, program);
 			return;
 		}

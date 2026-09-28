@@ -422,8 +422,14 @@ tool. MCP stays out, with its return conditions on record (below).
   file tools, or `send_file` to put it in the operator's hands).
 - **PDFs ride as documents, not text** (the reason goblin moved to the
   AI SDK, landed 2026-09-28): a fetched PDF is saved to
-  `state/webcache/<sha>.pdf` under the durable write, and the tool
-  result stores only a small ref — path, url, size, never the payload.
+  `state/webcache/<sha>.pdf` under the durable write — content-addressed
+  (URL + bytes), because the ref is replayed into every later request:
+  a refetch that brought new bytes writes a new file and old tool
+  results keep reading the old bytes; URL-keying would silently rewrite
+  history's request bytes (the text-overflow cache is URL-keyed only
+  because its tool result is the window string — the file is a recovery
+  aid, never replayed). The
+  tool result stores only a small ref — path, url, size, never the payload.
   At request time the tool's `toModelOutput` decides per turn: a native
   `file` part inside the tool result when this turn's model takes PDFs
   (catalog) *and* the provider pipe can carry them (`carriesMedia`, see

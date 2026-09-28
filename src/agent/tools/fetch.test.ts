@@ -290,6 +290,32 @@ describe("fetch tool — pdf", () => {
 		};
 	}
 
+	test("a refetch with new bytes writes a new file — old refs stay byte-stable", async () => {
+		// History's PDF refs are replayed into every later request, so the
+		// cache path must be content-addressed: an updated PDF at the same
+		// URL must never rewrite the file an older tool result references
+		// (that would silently move the request prefix — DESIGN.md, Cache
+		// stability — and show the model different bytes than it saw when
+		// the original tool call ran).
+		let body = PDF_BYTES;
+		const base = serve(() => new Response(body, { headers: { "content-type": "application/pdf" } }));
+		const tool = fetchTool(depsPdf());
+		const first = (await exec(tool, { url: `${base}/doc.pdf` })) as { pdf: { path: string } };
+		body = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x21, 0x00, 0x01]);
+		const second = (await exec(tool, { url: `${base}/doc.pdf` })) as { pdf: { path: string } };
+		expect(second.pdf.path).not.toBe(first.pdf.path);
+		expect(new Uint8Array(readFileSync(first.pdf.path))).toEqual(PDF_BYTES);
+		expect(new Uint8Array(readFileSync(second.pdf.path))).toEqual(body);
+	});
+
+	test("same bytes refetched is idempotent — same path, no file explosion", async () => {
+		const base = serve(() => new Response(PDF_BYTES, { headers: { "content-type": "application/pdf" } }));
+		const tool = fetchTool(depsPdf());
+		const a = (await exec(tool, { url: `${base}/doc.pdf` })) as { pdf: { path: string } };
+		const b = (await exec(tool, { url: `${base}/doc.pdf` })) as { pdf: { path: string } };
+		expect(b.pdf.path).toBe(a.pdf.path);
+	});
+
 	test("a PDF is saved to webcache and answered with a small ref — the payload never rides history", async () => {
 		const base = serve(() => new Response(PDF_BYTES, { headers: { "content-type": "application/pdf" } }));
 		const out = (await exec(fetchTool(depsPdf()), { url: `${base}/doc.pdf` })) as { pdf: { path: string; url: string; size: number } };

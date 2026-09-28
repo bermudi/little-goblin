@@ -228,10 +228,15 @@ async function localExtract(url: string, baseUrl?: string): Promise<Extracted | 
 		// The AI-SDK payoff (DESIGN.md, Web access): a PDF the model can
 		// read natively rides as a document, not extracted text. The bytes
 		// land in webcache under the same crash-safe write as text overflow;
-		// history stores only the ref. Same URL → same file, so refetching
-		// an updated PDF rewrites in place (attachments' fileUniqueId rule
-		// doesn't apply — the URL is the identity).
-		const file = pdfCachePath(url);
+		// history stores only the ref — and the ref is REPLAYED into every
+		// later request, so the path must be content-addressed (URL +
+		// bytes): a refetch that brought new bytes writes a new file and the
+		// old tool result keeps reading the old bytes. URL-keying (the text
+		// overflow's convention) would silently rewrite history's request
+		// bytes and bust the prefix cache (DESIGN.md, Cache stability); the
+		// text cache can be URL-keyed only because its tool result is the
+		// window string — the file is a recovery aid, never replayed.
+		const file = pdfCachePath(url, body.bytes);
 		mkdirSync(paths.webcache(), { recursive: true });
 		durableWriteBytes(file, body.bytes);
 		return {
@@ -320,8 +325,8 @@ function cachePath(url: string): string {
 	return join(paths.webcache(), `${hash}.txt`);
 }
 
-function pdfCachePath(url: string): string {
-	const hash = createHash("sha256").update(url).digest("hex").slice(0, 24);
+function pdfCachePath(url: string, bytes: Uint8Array): string {
+	const hash = createHash("sha256").update(url).update(bytes).digest("hex").slice(0, 24);
 	return join(paths.webcache(), `${hash}.pdf`);
 }
 

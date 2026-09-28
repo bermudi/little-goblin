@@ -620,7 +620,8 @@ class StagingBudgetError extends Error {
 }
 
 /** Copy the live skills tree into `stagedDir` (created), flattening
- * symlinks by content, and return path → sha256 of what was copied.
+ * in-root symlinks by content and refusing out-of-root entries.
+ * Return path → sha256 of what was copied.
  * Throws over the file/byte budget — the caller skips the review loud.
  * A missing live root copies as an empty catalog. */
 function copySkillsTree(skillsDir: string, stagedDir: string): Map<string, string> {
@@ -628,24 +629,30 @@ function copySkillsTree(skillsDir: string, stagedDir: string): Map<string, strin
 	mkdirSync(stagedDir, { recursive: true });
 	// A missing live root copies as an empty catalog — first skill ever.
 	if (!existsSync(skillsDir)) return manifest;
+	const realRoot = realpathSync(skillsDir);
 	let bytes = 0;
 	const walk = (srcRel: string): void => {
 		const srcAbs = srcRel === "." ? skillsDir : join(skillsDir, srcRel);
 		for (const dirent of readdirSync(srcAbs, { withFileTypes: true })) {
 			const rel = srcRel === "." ? dirent.name : `${srcRel}/${dirent.name}`;
-			// statSync follows symlinks, like the catalog loader — a
-			// linked-in skill copies by content, never as a link. An entry
-			// that won't resolve (a broken link, a file vanished
-			// mid-walk) is logged and skipped: one dead link doesn't veto
-			// the whole review.
+			// Only flatten links whose resolved target stays in the skills
+			// tree. Never copy external content into the model's staging area.
+			// Broken links and entries vanished mid-walk are logged and skipped.
+			const source = join(skillsDir, rel);
+			let real: string;
 			let stats: Stats;
 			try {
-				stats = statSync(join(skillsDir, rel));
+				real = realpathSync(source);
+				stats = statSync(source);
 			} catch (err) {
 				log.warn("reviewer staging skipped unresolved skills-tree entry", {
 					path: rel,
 					error: (err as Error).message,
 				});
+				continue;
+			}
+			if (real !== realRoot && !real.startsWith(realRoot + sep)) {
+				log.warn("reviewer staging skipped out-of-root skills-tree entry", { path: rel });
 				continue;
 			}
 			if (stats.isDirectory()) {

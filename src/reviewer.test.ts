@@ -666,6 +666,34 @@ describe("review run — staging and publication", () => {
 		h.store.close();
 	});
 
+	test("staging refuses external file and directory links but flattens in-root links", async () => {
+		const h = harness();
+		const logFile = join(h.workspace, "goblin.log");
+		setLogFile(logFile);
+		const outside = join(h.workspace, "..", "private");
+		mkdirSync(outside);
+		writeFileSync(join(outside, "secret.md"), "private data");
+		symlinkSync(join(outside, "secret.md"), join(h.skills, "external.md"));
+		symlinkSync(outside, join(h.skills, "external-dir"));
+		writeFileSync(join(h.skills, "safe.md"), "in-root data");
+		symlinkSync(join(h.skills, "safe.md"), join(h.skills, "internal.md"));
+		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 } });
+		const original = deps.reviewModel;
+		deps.reviewModel = async (conv) => {
+			const staged = join(h.staging, readdirSync(h.staging)[0]!, "skills");
+			expect(readdirSync(staged).sort()).toEqual(["internal.md", "safe.md"]);
+			expect(readFileSync(join(staged, "internal.md"), "utf8")).toBe("in-root data");
+			return original(conv);
+		};
+		await considerTurn(deps, turn());
+		const skipped = readFileSync(logFile, "utf8").trim().split("\n")
+			.map((l) => JSON.parse(l) as { msg: string; path?: string })
+			.filter((e) => e.msg === "reviewer staging skipped out-of-root skills-tree entry")
+			.map((e) => e.path);
+		expect(skipped.sort()).toEqual(["external-dir", "external.md"]);
+		h.store.close();
+	});
+
 	test("an over-budget tree keeps the budget label — policy, not mechanical failure", async () => {
 		const h = harness();
 		const logFile = join(h.workspace, "goblin.log");
@@ -847,10 +875,9 @@ describe("review queue", () => {
 	});
 
 	// Permission bits can't make a file unreadable for root (uid 0 reads
-	// through 0o000); a read that always fails can. /proc/self/mem stats
-	// as a plain file and EIOs on any read, root included. Where /proc
-	// doesn't exist, fall back to chmod — which root bypasses, so skip.
-	test.skipIf(!existsSync("/proc/self/mem") && process.geteuid?.() === 0)(
+	// through 0o000). Use an in-root unreadable file: external links are
+	// deliberately refused before any read.
+	test.skipIf(process.geteuid?.() === 0)(
 		"a failed staging copy removes its partial tree and logs the real cause",
 		async () => {
 		const h = harness();
@@ -858,12 +885,8 @@ describe("review queue", () => {
 		setLogFile(logFile);
 		// An unreadable file kills the copy after the staging dir exists —
 		// a mechanical failure that must not wear the budget label.
-		if (existsSync("/proc/self/mem")) {
-			symlinkSync("/proc/self/mem", join(h.skills, "secret.md"));
-		} else {
-			writeFileSync(join(h.skills, "secret.md"), "unreadable");
-			chmodSync(join(h.skills, "secret.md"), 0o000);
-		}
+		writeFileSync(join(h.skills, "secret.md"), "unreadable");
+		chmodSync(join(h.skills, "secret.md"), 0o000);
 		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 } });
 		await considerTurn(deps, turn());
 		expect(readdirSync(h.staging)).toEqual([]);

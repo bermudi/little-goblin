@@ -36,6 +36,7 @@
 
 import {
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
@@ -43,6 +44,7 @@ import {
 	renameSync,
 	rmSync,
 	statSync,
+	type Stats,
 	writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
@@ -607,6 +609,16 @@ function sha256(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex");
 }
 
+/** Thrown (only) when the live skills tree exceeds the staging budget —
+ * a distinct type so the caller can tell policy from mechanical
+ * failure and log the true cause. */
+class StagingBudgetError extends Error {
+	constructor(files: number, bytes: number) {
+		super(`skills tree exceeds the staging budget (${files} files / ${bytes} bytes)`);
+		this.name = "StagingBudgetError";
+	}
+}
+
 /** Copy the live skills tree into `stagedDir` (created), flattening
  * symlinks by content, and return path → sha256 of what was copied.
  * Throws over the file/byte budget — the caller skips the review loud.
@@ -622,8 +634,20 @@ function copySkillsTree(skillsDir: string, stagedDir: string): Map<string, strin
 		for (const dirent of readdirSync(srcAbs, { withFileTypes: true })) {
 			const rel = srcRel === "." ? dirent.name : `${srcRel}/${dirent.name}`;
 			// statSync follows symlinks, like the catalog loader — a
-			// linked-in skill copies by content, never as a link.
-			const stats = statSync(join(skillsDir, rel));
+			// linked-in skill copies by content, never as a link. An entry
+			// that won't resolve (a broken link, a file vanished
+			// mid-walk) is logged and skipped: one dead link doesn't veto
+			// the whole review.
+			let stats: Stats;
+			try {
+				stats = statSync(join(skillsDir, rel));
+			} catch (err) {
+				log.warn("reviewer staging skipped unresolved skills-tree entry", {
+					path: rel,
+					error: (err as Error).message,
+				});
+				continue;
+			}
 			if (stats.isDirectory()) {
 				mkdirSync(join(stagedDir, rel), { recursive: true });
 				walk(rel);
@@ -634,7 +658,7 @@ function copySkillsTree(skillsDir: string, stagedDir: string): Map<string, strin
 				writeFileSync(join(stagedDir, rel), content);
 				bytes += content.byteLength;
 				if (manifest.size > MAX_STAGING_FILES || bytes > MAX_STAGING_BYTES) {
-					throw new Error(`skills tree exceeds the staging budget (${MAX_STAGING_FILES} files / ${MAX_STAGING_BYTES} bytes)`);
+					throw new StagingBudgetError(MAX_STAGING_FILES, MAX_STAGING_BYTES);
 				}
 			}
 		}
@@ -701,7 +725,10 @@ type PublishOutcome = { published: true } | { published: false; reason: "conflic
 
 /** Does the live skill dir still byte-match the copy the review worked
  * from? Operator edits, undos, or hand-added files mid-review are never
- * clobbered — the skill is skipped instead. */
+ * clobbered — the skill is skipped instead. Symlinks count as drift
+ * too (lstat, never resolved): publishing over a link — the whole
+ * skill or one file inside it — would replace it with plain bytes and
+ * silently fork whatever it points to. */
 function liveDrifted(
 	skillsDir: string,
 	manifest: Map<string, string>,
@@ -713,18 +740,33 @@ function liveDrifted(
 	);
 	const drifted: string[] = [];
 	const liveSkill = join(skillsDir, skill);
-	if (!existsSync(liveSkill)) {
+	// lstat, not existsSync: a broken link is still a link and must
+	// conflict like any other, not count as "not there". Any lstat
+	// failure means the root is unreachable — same branch as missing.
+	let rootStats: Stats | undefined;
+	try {
+		rootStats = lstatSync(liveSkill);
+	} catch {
+		// Not there at all.
+	}
+	if (rootStats === undefined) {
 		// Not in the manifest either → brand-new skill, nothing to drift.
 		if (expected.size === 0) return [];
 		return [...expected.keys()];
 	}
+	if (rootStats.isSymbolicLink()) return [skill];
 	const walk = (rel: string): void => {
 		const abs = rel === "." ? liveSkill : join(liveSkill, rel);
 		for (const dirent of readdirSync(abs, { withFileTypes: true })) {
 			const child = rel === "." ? dirent.name : `${rel}/${dirent.name}`;
 			const childRel = `${skill}/${child}`;
-			const stats = statSync(join(liveSkill, child));
-			if (stats.isDirectory()) {
+			// lstat: a link never resolves into the byte comparison —
+			// even one whose content matches must not be published over.
+			const stats = lstatSync(join(liveSkill, child));
+			if (stats.isSymbolicLink()) {
+				drifted.push(childRel);
+				expected.delete(childRel);
+			} else if (stats.isDirectory()) {
 				walk(child);
 			} else if (stats.isFile()) {
 				const prev = expected.get(childRel);
@@ -745,8 +787,9 @@ function liveDrifted(
  * swap: live → trash (staging area, same filesystem), staged → live,
  * trash deleted. A failed swap restores the original — the live catalog
  * is never left without the skill and never half-updated. Throws only
- * on mechanical filesystem failure (after rollback); drift is returned,
- * not thrown. */
+ * on mechanical filesystem failure (after rollback); drift (operator
+ * edits, or any symlink under the skill — a linked-in skill is never
+ * replaced) is returned, not thrown. */
 function publishSkill(
 	skillsDir: string,
 	stagedDir: string,
@@ -793,11 +836,20 @@ async function runStagedReview(entry: QueueEntry, signal: AbortSignal, reviewDir
 	try {
 		manifest = copySkillsTree(deps.skillsDir, stagedSkills);
 	} catch (err) {
-		log.warn("reviewer review skipped — skills tree over staging budget", {
-			review_id: reviewId,
-			conversation: conv,
-			error: (err as Error).message,
-		});
+		// Policy (the budget) and mechanical failure (permissions, disk)
+		// carry different labels — one message would lie about the other.
+		if (err instanceof StagingBudgetError) {
+			log.warn("reviewer review skipped — skills tree over staging budget", {
+				review_id: reviewId,
+				conversation: conv,
+				error: err.message,
+			});
+		} else {
+			log.error("reviewer review skipped — skills tree copy failed", err, {
+				review_id: reviewId,
+				conversation: conv,
+			});
+		}
 		return;
 	}
 	// The catalog the model sees is the staged copy — exactly what its

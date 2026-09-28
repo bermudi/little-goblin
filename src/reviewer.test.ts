@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModel, ToolSet } from "ai";
@@ -560,6 +560,71 @@ describe("review run — staging and publication", () => {
 		h.store.close();
 	});
 
+	test("a symlinked live skill conflicts at publish — the link and its target survive", async () => {
+		const h = harness();
+		const logFile = join(h.workspace, "goblin.log");
+		setLogFile(logFile);
+		// The operator links a skill in from elsewhere (a dots repo, say).
+		// The drift check must not resolve it: even matching content
+		// through the link would publish over it and fork the source.
+		const truth = join(h.workspace, "..", "truth");
+		mkdirSync(truth, { recursive: true });
+		writeFileSync(join(truth, "SKILL.md"), SKILL_MD("linked", "source of truth"));
+		symlinkSync(truth, join(h.skills, "linked"));
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0.1 },
+			script: [
+				{
+					calls: [{
+						name: "write_file",
+						input: { path: "linked/SKILL.md", content: SKILL_MD("linked", "review's take") },
+					}],
+				},
+				{ text: "saved" },
+			],
+		});
+		await considerTurn(deps, turn());
+		// Still a link, still the operator's bytes — nothing forked.
+		expect(lstatSync(join(h.skills, "linked")).isSymbolicLink()).toBe(true);
+		expect(readFileSync(join(h.skills, "linked", "SKILL.md"), "utf8")).toContain("source of truth");
+		expect(h.notified).toEqual([]);
+		expect(h.store.history(h.convId)).toHaveLength(0);
+		const skipped = readFileSync(logFile, "utf8").trim().split("\n")
+			.map((l) => JSON.parse(l) as { msg: string; skipped?: { skill: string; drifted: string[] }[] })
+			.find((e) => e.msg === "reviewer publish skipped — live skills changed mid-review");
+		expect(skipped?.skipped).toEqual([{ skill: "linked", drifted: ["linked"] }]);
+		h.store.close();
+	});
+
+	test("a symlinked file inside a live skill conflicts at publish, never swaps the dir", async () => {
+		const h = harness();
+		const notes = join(h.workspace, "..", "notes.md");
+		writeFileSync(notes, "operator's notes");
+		mkdirSync(join(h.skills, "partly"));
+		writeFileSync(join(h.skills, "partly", "SKILL.md"), SKILL_MD("partly", "original"));
+		symlinkSync(notes, join(h.skills, "partly", "notes.md"));
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0.1 },
+			script: [
+				{
+					calls: [{
+						name: "write_file",
+						input: { path: "partly/SKILL.md", content: SKILL_MD("partly", "review's take") },
+					}],
+				},
+				{ text: "saved" },
+			],
+		});
+		await considerTurn(deps, turn());
+		// The whole-dir swap is refused: original bytes, link intact.
+		expect(readFileSync(join(h.skills, "partly", "SKILL.md"), "utf8")).toContain("original");
+		expect(lstatSync(join(h.skills, "partly", "notes.md")).isSymbolicLink()).toBe(true);
+		expect(readFileSync(join(h.skills, "partly", "notes.md"), "utf8")).toBe("operator's notes");
+		expect(h.notified).toEqual([]);
+		expect(h.store.history(h.convId)).toHaveLength(0);
+		h.store.close();
+	});
+
 	test("a skill appearing live mid-review is neither validated nor announced", async () => {
 		const h = harness();
 		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0.1 } });
@@ -576,6 +641,47 @@ describe("review run — staging and publication", () => {
 		expect(skillsRefCalls(binDir)).toEqual([]);
 		expect(h.notified).toEqual([]);
 		expect(h.store.history(h.convId)).toHaveLength(0);
+		h.store.close();
+	});
+
+	test("a broken symlink in the live tree is logged and skipped, not fatal", async () => {
+		const h = harness();
+		const logFile = join(h.workspace, "goblin.log");
+		setLogFile(logFile);
+		symlinkSync(join(h.skills, "missing"), join(h.skills, "broken"));
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0 },
+			script: [{ text: "nothing worth saving" }],
+		});
+		await considerTurn(deps, turn());
+		// The review still ran; the dead link is still live — one
+		// unresolvable entry doesn't veto the whole review.
+		expect(lstatSync(join(h.skills, "broken")).isSymbolicLink()).toBe(true);
+		expect(readdirSync(h.staging)).toEqual([]);
+		const msgs = readFileSync(logFile, "utf8").trim().split("\n")
+			.map((l) => JSON.parse(l) as { msg: string }).map((e) => e.msg);
+		expect(msgs).toContain("reviewer staging skipped unresolved skills-tree entry");
+		expect(msgs).toContain("reviewer review done");
+		expect(msgs).not.toContain("reviewer review skipped — skills tree copy failed");
+		h.store.close();
+	});
+
+	test("an over-budget tree keeps the budget label — policy, not mechanical failure", async () => {
+		const h = harness();
+		const logFile = join(h.workspace, "goblin.log");
+		setLogFile(logFile);
+		// 513 files crosses MAX_STAGING_FILES (512) without any of them
+		// being unreadable — a policy stop, not a copy failure.
+		for (let i = 0; i <= 512; i++) writeFileSync(join(h.skills, `f${i}.txt`), "x");
+		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 } });
+		await considerTurn(deps, turn());
+		expect(readdirSync(h.staging)).toEqual([]);
+		const binDir = join(deps.workspaceDir, "..", "bin");
+		expect(skillsRefCalls(binDir)).toEqual([]);
+		const msgs = readFileSync(logFile, "utf8").trim().split("\n")
+			.map((l) => JSON.parse(l) as { msg: string }).map((e) => e.msg);
+		expect(msgs).toContain("reviewer review skipped — skills tree over staging budget");
+		expect(msgs).not.toContain("reviewer review skipped — skills tree copy failed");
 		h.store.close();
 	});
 });
@@ -740,13 +846,23 @@ describe("review queue", () => {
 		h.store.close();
 	});
 
-	test("a failed staging copy removes its partial tree", async () => {
+	test("a failed staging copy removes its partial tree and logs the real cause", async () => {
 		const h = harness();
-		// A broken link fails after the destination directory has been created.
-		symlinkSync(join(h.skills, "missing"), join(h.skills, "broken"));
+		const logFile = join(h.workspace, "goblin.log");
+		setLogFile(logFile);
+		// An unreadable file kills the copy after the staging dir exists —
+		// a mechanical failure that must not wear the budget label.
+		writeFileSync(join(h.skills, "secret.md"), "unreadable");
+		chmodSync(join(h.skills, "secret.md"), 0o000);
 		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 } });
 		await considerTurn(deps, turn());
 		expect(readdirSync(h.staging)).toEqual([]);
+		const binDir = join(deps.workspaceDir, "..", "bin");
+		expect(skillsRefCalls(binDir)).toEqual([]);
+		const msgs = readFileSync(logFile, "utf8").trim().split("\n")
+			.map((l) => JSON.parse(l) as { msg: string }).map((e) => e.msg);
+		expect(msgs).toContain("reviewer review skipped — skills tree copy failed");
+		expect(msgs).not.toContain("reviewer review skipped — skills tree over staging budget");
 		h.store.close();
 	});
 });

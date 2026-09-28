@@ -1097,6 +1097,42 @@ describe("cache stability", () => {
 		store.close();
 	});
 
+	test("/stop while completion delivery is pending prevents a new auto-compaction", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		let builds = 0;
+		let release!: () => void;
+		const pendingDelivery = new Promise<void>((resolve) => { release = resolve; });
+		const runtime = new Runtime({
+			store,
+			buildStep: () => {
+				builds++;
+				return { model: fakeModel(["ok"], 1), system: "test", contextWindow: 1 };
+			},
+			makeTools: () => ({}),
+			compaction: { modelRef: () => "m", summarize: async () => "should not run" },
+		});
+		const sink = new RecordingSink();
+		const delivered = sink.onDone.bind(sink);
+		sink.onDone = async (done) => {
+			await pendingDelivery;
+			delivered(done);
+		};
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		await sink.firstDelta;
+		// Let the turn reach onDone, then revoke its authority while the
+		// delivery remains parked.
+		for (let i = 0; i < 100 && store.history(conv.id).length < 2; i++) await sleep(1);
+		expect(store.history(conv.id)).toHaveLength(2);
+		runtime.stop(conv.id);
+		release();
+		await sink.done;
+		await sleep(20);
+		expect(builds).toBe(1);
+		expect(store.getCompaction(conv.id)).toBeNull();
+		store.close();
+	});
+
 	test("provider warnings are logged, not dropped", async () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");

@@ -303,38 +303,50 @@ class Gmail {
 
 	async poll(filter: string, startHistoryId: string): Promise<{ hits: MailHit[]; historyId: string }> {
 		const token = await this.token();
-		const params = new URLSearchParams({
-			startHistoryId,
-			historyTypes: "messageAdded",
-		});
-		let data: unknown;
-		try {
-			({ data } = await this.call(
-				"poll.history", `/users/me/history?${params}`, token, { filter },
-			));
-		} catch (err) {
-			// Expired ids 404 — the only 404 here that means "re-baseline";
-			// anything else propagates as a poll failure.
-			if (err instanceof ProviderError && err.message.includes("HTTP 404")) {
-				throw new HistoryExpiredError();
-			}
-			throw err;
-		}
-		const body = data as { history?: unknown[]; historyId?: unknown };
-		const latest = str(body.historyId);
+		const records: Array<{ id: string; ids: string[] }> = [];
+		let latest = "";
+		let pageToken = "";
+		const seenTokens = new Set<string>();
 		// Keep the records whole, in ascending id order: a capped batch
 		// checkpoints at its last fired record so the unfired matches stay
 		// ahead of the cursor instead of being skipped forever.
-		const records: Array<{ id: string; ids: string[] }> = [];
-		for (const h of body.history ?? []) {
-			const rec = h as { id?: unknown; messagesAdded?: unknown[] };
-			const ids: string[] = [];
-			for (const m of rec.messagesAdded ?? []) {
-				const id = str((m as { message?: Record<string, unknown> }).message?.id);
-				if (id !== "") ids.push(id);
+		do {
+			const params = new URLSearchParams({
+				startHistoryId,
+				historyTypes: "messageAdded",
+			});
+			if (pageToken !== "") params.set("pageToken", pageToken);
+			let data: unknown;
+			try {
+				({ data } = await this.call(
+					"poll.history", `/users/me/history?${params}`, token, { filter },
+				));
+			} catch (err) {
+				// Expired ids 404 — the only 404 here that means "re-baseline";
+				// anything else propagates as a poll failure.
+				if (err instanceof ProviderError && err.message.includes("HTTP 404")) {
+					throw new HistoryExpiredError();
+				}
+				throw err;
 			}
-			records.push({ id: str(rec.id), ids });
-		}
+			const body = data as { history?: unknown[]; historyId?: unknown; nextPageToken?: unknown };
+			latest = str(body.historyId) || latest;
+			for (const h of body.history ?? []) {
+				const rec = h as { id?: unknown; messagesAdded?: unknown[] };
+				const ids: string[] = [];
+				for (const m of rec.messagesAdded ?? []) {
+					const id = str((m as { message?: Record<string, unknown> }).message?.id);
+					if (id !== "") ids.push(id);
+				}
+				records.push({ id: str(rec.id), ids });
+			}
+			pageToken = str(body.nextPageToken);
+			if (pageToken !== "" && (seenTokens.has(pageToken) || seenTokens.size >= 100)) {
+				throw new ProviderError("gmail", "history pagination repeated or exceeded 100 pages — cursor unchanged");
+			}
+			if (pageToken !== "") seenTokens.add(pageToken);
+		} while (pageToken !== "");
+		log.info("mail poll history pages loaded", { filter, pages: seenTokens.size + 1, records: records.length });
 		records.sort((a, b) => Number(a.id) - Number(b.id));
 		const added = new Set(records.flatMap((r) => r.ids));
 		if (added.size === 0) return { hits: [], historyId: latest };

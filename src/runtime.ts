@@ -415,6 +415,7 @@ export class Runtime {
 		anchorSeq: number | null,
 		history: UIMessage[],
 		signal: AbortSignal,
+		epoch: number,
 	): Promise<{ prior: RecallContext[]; current: RecallContext | null }> {
 		const mem = this.deps.memory;
 		if (!mem || anchorSeq === null || conv.memoryExcluded) return { prior: [], current: null };
@@ -441,6 +442,7 @@ export class Runtime {
 				maxTokens: mem.config.maxTokens,
 				budget: mem.config.budget,
 			});
+			this.checkAuthority(conv.id, epoch);
 			const block = formatRecallBlock(facts, facts.length > 0 ? "results" : "empty");
 			const sources = [...new Set(
 				facts.map((f) => f.document_id).filter((d): d is string => typeof d === "string"),
@@ -463,6 +465,7 @@ export class Runtime {
 			});
 			return { prior, current };
 		} catch (err) {
+			this.checkAuthority(conv.id, epoch);
 			// A /stop during recall owns the outcome via the fence check —
 			// don't mark the service degraded for an operator action.
 			if (err instanceof HindsightError && err.kind === "cancelled") {
@@ -662,7 +665,7 @@ export class Runtime {
 
 		try {
 			this.checkAuthority(convId, epoch);
-			const memory = await this.recallMemory(conv, anchorSeq, history, controller.signal);
+			const memory = await this.recallMemory(conv, anchorSeq, history, controller.signal, epoch);
 			this.checkAuthority(convId, epoch);
 			const deliverVoice = sink.onVoiceNote
 				? async (audio: Uint8Array) => {
@@ -982,6 +985,10 @@ export class Runtime {
 				});
 			}
 			await notifyAll({ kind: "completed" });
+			// onDone may itself await a slow delivery. A stop during that
+			// await revokes this turn before it can start fresh background
+			// work (in particular auto-compaction with a new controller).
+			this.checkAuthority(convId, epoch);
 			// Skill reviewer (DESIGN.md): every completed turn gates a
 			// possible background review — fire-and-forget, off the lane,
 			// never delaying the successor. Fenced/failed turns never

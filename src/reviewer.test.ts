@@ -354,6 +354,35 @@ describe("review run — staging and publication", () => {
 		h.store.close();
 	});
 
+	test("an earlier published skill is recorded when a later swap fails", async () => {
+		const h = harness();
+		const logFile = join(h.workspace, "goblin.log");
+		setLogFile(logFile);
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0 },
+			script: [
+				{ calls: [
+					{ name: "write_file", input: { path: "a/SKILL.md", content: SKILL_MD("a") } },
+					{ name: "write_file", input: { path: "b/SKILL.md", content: SKILL_MD("b") } },
+				] },
+				{ text: "saved" },
+			],
+		});
+		// Simulate a mechanical failure between validation and the swap:
+		// a validates and publishes, but b's staged source goes missing.
+		const bin = deps.skillsRefBin!;
+		writeFileSync(bin, '#!/bin/sh\nif [ "$2" = "./skills/b" ]; then mv "$PWD/skills/b" "$PWD/skills/moved"; fi\n');
+		chmodSync(bin, 0o755);
+		await expect(considerTurn(deps, turn())).rejects.toThrow();
+		expect(readFileSync(join(h.skills, "a", "SKILL.md"), "utf8")).toContain("name: a");
+		expect(existsSync(join(h.skills, "b"))).toBe(false);
+		expect(h.store.history(h.convId)).toHaveLength(1);
+		expect((h.store.history(h.convId)[0]!.parts[0] as { text: string }).text).toContain("saved skill: a");
+		expect(h.notified).toEqual([{ conversationId: h.convId, skills: ["a"] }]);
+		expect(readFileSync(logFile, "utf8")).toContain("reviewer publish failed");
+		h.store.close();
+	});
+
 	test("the live catalog is untouched until the review finishes — writes land only in staging", async () => {
 		const h = harness();
 		let step = 0;

@@ -267,6 +267,46 @@ describe("memory turn integration", () => {
 		store.close();
 	});
 
+	test("a late recall after forgetting cannot reinsert a redacted source", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		let recallStarted!: () => void;
+		let release!: () => void;
+		const started = new Promise<void>((resolve) => { recallStarted = resolve; });
+		const parked = new Promise<void>((resolve) => { release = resolve; });
+		const server = Bun.serve({
+			hostname: "127.0.0.1", port: 0,
+			fetch: async () => {
+				recallStarted();
+				await parked;
+				return Response.json({ results: [{
+					id: "fact-1", text: "forget this", type: "world",
+					document_id: "exchange/dm:1/1/a",
+				}] });
+			},
+		});
+		servers.push(server);
+		const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
+		const runtime = new Runtime({
+			store, buildStep: () => ({ model: fakeModel(["ok"]), system: "test" }),
+			makeTools: () => ({}),
+			memory: {
+				client, config: { ...memConfig, baseUrl: `http://127.0.0.1:${server.port}` },
+				contexts: store.memoryContexts, noteRecall: () => {},
+			},
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		await started;
+		runtime.stop(conv.id);
+		store.memoryContexts.suppress("exchange/dm:1/1/a");
+		store.memoryContexts.deleteByDocument("exchange/dm:1/1/a");
+		release();
+		expect(await sink.done).toEqual({ kind: "fenced" });
+		expect(store.memoryContexts.load(conv.id)).toEqual([]);
+		store.close();
+	});
+
 	test("program housekeeping recalls but never retains", async () => {
 		const h = harness({ factText: "Quiet mornings." });
 		const sink = new RecordingSink();

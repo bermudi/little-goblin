@@ -167,9 +167,13 @@ test("excluding a topic purges only its pending rows", async () => {
 	const client = service(() => Response.json({ results: [] }));
 	const store = storeAt(database());
 	const other = { ...doc, id: "exchange-2", conversationId: "dm:2" };
+	const submittedId = store.memoryQueue.enqueue(client.target, { ...doc, id: "exchange-submitted" });
+	const submitted = store.memoryQueue.get(submittedId)!;
+	store.memoryQueue.update(submitted, "submitted", 0, null);
 	store.memoryQueue.enqueue(client.target, doc);
 	store.memoryQueue.enqueue(client.target, other);
 	expect(store.memoryQueue.cancelConversation("dm:1")).toBe(1);
+	expect(store.memoryQueue.get(submittedId)?.state).toBe("submitted");
 	expect(store.memoryQueue.next(client.target, Date.now())?.document.id).toBe("exchange-2");
 });
 

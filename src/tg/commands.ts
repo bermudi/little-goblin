@@ -215,14 +215,14 @@ export function handleCommand(
 			}
 			if (arg === "off") {
 				apply(deps, conv, { memoryExcluded: true });
-				// The promise below is real: pending rows from this topic
-				// are purged, so the worker can no longer send them.
+				// Pending rows are purged; operations already submitted
+				// remain tracked until Hindsight reaches a terminal state.
 				const cancelled = mem.queue.cancelConversation(conv.id);
 				log.info("memory excluded", { conversation: conv.id, cancelled });
 				reply(
 					deps,
 					conv,
-					`memory → off for this topic (${cancelled} queued cancelled, nothing sent or recalled here)`,
+					`memory → off for this topic (${cancelled} queued cancelled; already-submitted operations still tracked; no new memories sent or recalled)`,
 				);
 				return true;
 			}
@@ -381,6 +381,10 @@ export function handleCommand(
 									waitedMs: Date.now() - startedAt,
 								});
 							}
+							// A turn may already hold prior recall or be awaiting a
+							// fresh one. Revoke its epoch before redacting snapshots:
+							// a late recall must not reinsert the forgotten source.
+							deps.runtime.stop(conv.id);
 							mem.contexts.suppress(id);
 							const cancelled = mem.queue.cancelDocument(id);
 							await mem.client.deleteDocument(id);

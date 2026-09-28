@@ -193,6 +193,9 @@ export async function runCompaction(
 		estimatedTokens: tokensBefore,
 	});
 	const summary = (await summarize(SUMMARY_SYSTEM, prompt, signal)).trim();
+	// Providers may resolve successfully even after an abort. The pointer
+	// must never commit a summary minted under revoked authority.
+	signal.throwIfAborted();
 	if (summary === "") throw new Error("summarizer returned an empty summary");
 	// A verbose summarizer can emit a summary comparable to the span —
 	// compaction would buy nothing and re-fire every turn. Warn, don't

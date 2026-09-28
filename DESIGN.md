@@ -1069,7 +1069,10 @@ don't duplicate it).
   Publishing one skill is a directory swap on the same filesystem:
   live → staging-area trash, staged → live, trash deleted, with
   rollback to the original if the swap itself fails — never a
-  half-updated skill, and the live catalog is untouched on failure.
+  half-updated skill. A later skill's failed swap cannot undo earlier
+  publications: those earlier saves are written to history and announced
+  before the failure surfaces. Failed trash cleanup is logged, not
+  treated as a failed publication.
   A skill whose live copy changed mid-review (operator hand edit,
   undo) is **skipped, never clobbered** — hashed against the copy
   manifest at publish time. Reviews serialize one at a time, in turn

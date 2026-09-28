@@ -199,7 +199,7 @@ const memBlock = {
 };
 
 function setupMemory() {
-	const { store, conv, sent, deps } = setup();
+	const { store, conv, sent, stopped, deps } = setup();
 	deps.configRef.current = { ...config, memory: memBlock };
 	deps.memory = {
 		client: new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" }),
@@ -211,7 +211,7 @@ function setupMemory() {
 		lastRecallOk: () => null,
 		lastRecallAt: () => null,
 	};
-	return { store, conv, sent, deps };
+	return { store, conv, sent, stopped, deps };
 }
 
 // Enqueue one retention row for this conversation and mark it blocked —
@@ -575,7 +575,7 @@ describe("memory commands", () => {
 	});
 
 	test("/forget delete suppresses, cancels, deletes, and redacts", async () => {
-		const { store, conv, sent, deps } = setupMemory();
+		const { store, conv, sent, stopped, deps } = setupMemory();
 		const server = Bun.serve({
 			hostname: "127.0.0.1",
 			port: 0,
@@ -602,6 +602,7 @@ describe("memory commands", () => {
 			await waitFor(sent, 1);
 			expect(sent[0]).toContain("forgotten exchange/dm:1/1/a");
 			expect(store.memoryContexts.isSuppressed("exchange/dm:1/1/a")).toBe(true);
+			expect(stopped).toContain(conv.id);
 			expect(store.memoryQueue.next(client.target, Date.now())).toBeNull();
 			expect(store.memoryContexts.load(conv.id)).toEqual([]);
 		} finally {

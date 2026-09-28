@@ -331,6 +331,41 @@ describe("gmail client", () => {
 		expect(historyId).toBe("120");
 	});
 
+	test("poll reads every history page before advancing the cursor", async () => {
+		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
+		const pages: string[] = [];
+		const gmail = serve((req) => {
+			const url = new URL(req.url);
+			if (url.pathname === "/gmail/v1/users/me/history") {
+				const page = url.searchParams.get("pageToken") ?? "";
+				pages.push(page);
+				return Response.json(page === ""
+					? { history: [], historyId: "150", nextPageToken: "more" }
+					: { history: [{ id: "120", messagesAdded: [{ message: { id: "late" } }] }], historyId: "150" });
+			}
+			if (url.pathname === "/gmail/v1/users/me/messages") {
+				return Response.json({ messages: [{ id: "late" }] });
+			}
+			if (url.pathname === "/gmail/v1/users/me/messages/late") {
+				return Response.json({
+					id: "late",
+					threadId: "t",
+					snippet: "s",
+					payload: { headers: headers(["From", "f"], ["Subject", "s"], ["Date", "d"]) },
+				});
+			}
+			return new Response("nf", { status: 404 });
+		});
+		const reader = makeReader({
+			auth: fakeAuth, clientId: "cid", clientSecretAuth: "gmail-secret",
+			readAuth: "gmail-read", gmailBase: `${gmail}/gmail/v1`, oauthBase: oauth,
+		});
+		const result = await reader.poll("from:bank", "100");
+		expect(pages).toEqual(["", "more"]);
+		expect(result.hits.map((h) => h.id)).toEqual(["late"]);
+		expect(result.historyId).toBe("150");
+	});
+
 	test("a multi-record burst fires the oldest cap-many and checkpoints at the last fired record", async () => {
 		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
 		// 14 matching arrivals, one per history record — Google split the

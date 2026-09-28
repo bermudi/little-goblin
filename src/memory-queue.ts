@@ -167,11 +167,12 @@ export class MemoryQueue {
 	}
 
 	// Excluding a topic purges its pending retention — "/memory off"
-	// promises nothing from here is sent. Finished, blocked, and other
-	// topics' rows are untouched.
+	// promises no new submissions. Submitted operations were already
+	// accepted remotely and must remain tracked through completion.
+	// Finished, blocked, and other topics' rows are untouched.
 	cancelConversation(conversationId: string): number {
 		const rows = this.db.query<{ operation_id: string; payload: string }, []>(
-			`SELECT operation_id, payload FROM memory_outbox WHERE state IN ('pending', 'submitted')`,
+			`SELECT operation_id, payload FROM memory_outbox WHERE state = 'pending'`,
 		).all();
 		let removed = 0;
 		for (const row of rows) {
@@ -186,8 +187,10 @@ export class MemoryQueue {
 				throw new Error(`Invalid memory document for operation ${row.operation_id}`);
 			}
 			if (doc.data.conversationId === conversationId) {
-				this.db.run("DELETE FROM memory_outbox WHERE operation_id = ?", [row.operation_id]);
-				removed++;
+				removed += Number(this.db.run(
+					"DELETE FROM memory_outbox WHERE operation_id = ? AND state = 'pending'",
+					[row.operation_id],
+				).changes);
 			}
 		}
 		return removed;

@@ -18,10 +18,10 @@
 // touched until the staged writes pass `skills-ref validate`; then each
 // changed skill is published into skills/ by an atomic directory swap,
 // skipped if the live copy changed mid-review (operator edits are never
-// clobbered), and rolled back if the swap itself fails. Any failure —
-// model call, budget, validation, publish — discards the staging copy
-// and leaves the live catalog byte-identical. A published skill posts a
-// note to its topic and lands in history as a system event.
+// clobbered), and rolled back if its own swap fails. Model, budget, and
+// validation failures leave the live catalog byte-identical; if a later
+// swap fails, earlier published skills are recorded and announced before
+// the failure propagates.
 //
 // Reviews queue in turn-completion order (a monotonic seq from the
 // runtime), capped (default 3; a full queue drops the incoming review
@@ -793,8 +793,9 @@ function liveDrifted(
 /** Publish one staged skill into the live catalog with a directory
  * swap: live → trash (staging area, same filesystem), staged → live,
  * trash deleted. A failed swap restores the original — the live catalog
- * is never left without the skill and never half-updated. Throws only
- * on mechanical filesystem failure (after rollback); drift (operator
+ * is never left without the skill and never half-updated. Failed trash
+ * cleanup is logged, not mistaken for a failed swap. Throws on swap
+ * failures (after rollback); drift (operator
  * edits, or any symlink under the skill — a linked-in skill is never
  * replaced) is returned, not thrown. */
 function publishSkill(
@@ -818,7 +819,15 @@ function publishSkill(
 		if (existed) renameSync(trash, liveSkill);
 		throw err;
 	}
-	rmSync(trash, { recursive: true, force: true });
+	try {
+		rmSync(trash, { recursive: true, force: true });
+	} catch (err) {
+		// The swap succeeded: cleanup is not a publication failure. The
+		// next boot cleans reviewer staging; keep the saved skill recorded.
+		log.warn("reviewer replaced-skill trash cleanup failed", {
+			skill, review_id: reviewId, trash, error: String(err),
+		});
+	}
 	return { published: true };
 }
 
@@ -994,6 +1003,7 @@ async function runStagedReview(entry: QueueEntry, signal: AbortSignal, reviewDir
 		// skill the operator touched mid-review.
 		const published: string[] = [];
 		const skipped: { skill: string; drifted: string[] }[] = [];
+		let publishError: unknown = null;
 		try {
 			for (const skill of skills) {
 				const outcome = publishSkill(deps.skillsDir, stagedSkills, stagingArea, manifest, skill, reviewId);
@@ -1008,7 +1018,7 @@ async function runStagedReview(entry: QueueEntry, signal: AbortSignal, reviewDir
 				skipped,
 				staged: stagedSkills,
 			});
-			throw err;
+			publishError = err;
 		}
 		if (skipped.length > 0) {
 			log.warn("reviewer publish skipped — live skills changed mid-review", {
@@ -1018,7 +1028,10 @@ async function runStagedReview(entry: QueueEntry, signal: AbortSignal, reviewDir
 				published,
 			});
 		}
-		if (published.length === 0) return;
+		if (published.length === 0) {
+			if (publishError !== null) throw publishError;
+			return;
+		}
 		// It publishes, then tells: history first (the durable record),
 		// the topic note second. An undo request next turn deletes these dirs.
 		const names = published.join(", ");
@@ -1049,6 +1062,10 @@ async function runStagedReview(entry: QueueEntry, signal: AbortSignal, reviewDir
 			validated: validated.map((v) => ({ skill: v.skill, ok: v.ok })),
 			written: [...written].sort(),
 		});
+		// A later skill's failed swap does not undo earlier publications.
+		// Record and announce those durable changes before surfacing the
+		// failure to the review runner.
+		if (publishError !== null) throw publishError;
 	} finally {
 		signal.removeEventListener("abort", onAbort);
 		timeoutController.signal.removeEventListener("abort", onAbort);

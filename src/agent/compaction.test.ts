@@ -144,6 +144,22 @@ describe("runCompaction", () => {
 		expect(writes).toHaveLength(0);
 	});
 
+	test("a summarizer that resolves after abort cannot publish a pointer", async () => {
+		const { store, writes } = fakeStore(sample());
+		const controller = new AbortController();
+		await expect(
+			runCompaction(
+				"dm:1", store, "m",
+				async () => {
+					controller.abort();
+					return "late summary";
+				},
+				{ tailTokenBudget: 1 }, controller.signal,
+			),
+		).rejects.toThrow();
+		expect(writes).toHaveLength(0);
+	});
+
 	test("an empty summary is a failure, not a silent wipe", async () => {
 		const { store, writes } = fakeStore(sample());
 		await expect(

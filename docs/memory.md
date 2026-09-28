@@ -54,7 +54,9 @@ not auto-deleted.
 - `/memory dismiss` — drop blocked retention from review. Dismissed rows
   stay in the database for audit (failed/missing remote operations are
   never silently discarded) and are removed by `/forget delete`.
-- `/memory off` — exclude this topic: nothing from here is sent, and no
+- `/memory off` — exclude this topic: pending retention is cancelled,
+  already-submitted operations remain tracked through their remote outcome,
+  and no new retention is sent or
   shared memories are recalled here (automatic or via `memory_search`).
   `/memory on` re-includes. Both bump the epoch (fence in-flight turns)
   and are logged cache boundaries.

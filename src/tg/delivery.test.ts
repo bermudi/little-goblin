@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Api } from "grammy";
 import type { Conversation } from "../conversation.ts";
 import { setLogFile, setLogWriter } from "../log.ts";
+import { TelegramTimeoutError } from "./deadline.ts";
 import {
 	isNotModifiedError,
 	makeDeliverySink,
@@ -136,6 +137,147 @@ describe("delivery", () => {
 		await sink.onDone({ kind: "completed" });
 		expect(msgs).toEqual(["tail"]);
 		expect(reactions).toEqual([1]);
+	});
+
+	test("ambiguous text send stops the drain and completion, notifies once", async () => {
+		const { api, msgs, reactions } = fakeApi({});
+		let calls = 0;
+		const original = api.sendMessage.bind(api);
+		api.sendMessage = async (...args) => {
+			calls++;
+			if (calls === 1) throw new TelegramTimeoutError("sendMessage", 30_000);
+			return original(...args);
+		};
+		const sink = makeDeliverySink(api, conv, undefined, Number.POSITIVE_INFINITY);
+		sink.onTextDelta("a".repeat(CHUNK * 2));
+		await sink.onDone({ kind: "completed" });
+		expect(calls).toBe(2); // original attempt + distinct notice, never a chunk retry
+		expect(msgs).toEqual(["⚠ Delivery uncertain—check Telegram before retrying."]);
+		expect(reactions).toEqual([]);
+	});
+
+	test("uncertain streamed send fences queued output and skips notice if superseded", async () => {
+		const { api, msgs, reactions } = fakeApi({});
+		let live = true;
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		let started: () => void = () => {};
+		const entered = new Promise<void>((resolve) => { started = resolve; });
+		let calls = 0;
+		api.sendMessage = async () => {
+			calls++;
+			started();
+			await gate;
+			live = false;
+			throw new TelegramTimeoutError("sendMessage", 30_000);
+		};
+		const sink = makeDeliverySink(api, conv, undefined, 0);
+		sink.setAuthorityCheck?.(() => live);
+		sink.onTextDelta("a".repeat(CHUNK * 2));
+		const done = sink.onDone({ kind: "completed" });
+		await entered;
+		release();
+		await done;
+		expect(calls).toBe(1);
+		expect(msgs).toEqual([]);
+		expect(reactions).toEqual([]);
+	});
+
+	test("a stop during an uncertain send marks an already-visible reply instead of sending a notice", async () => {
+		const { api, msgs } = fakeApi({});
+		const original = api.sendMessage.bind(api);
+		let calls = 0;
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		let started: () => void = () => {};
+		const entered = new Promise<void>((resolve) => { started = resolve; });
+		api.sendMessage = async (...args) => {
+			calls++;
+			if (calls === 2) {
+				started();
+				await gate;
+				throw new TelegramTimeoutError("sendMessage", 30_000);
+			}
+			return original(...args);
+		};
+		const sink = makeDeliverySink(api, conv, undefined, 0);
+		sink.onTextDelta("first");
+		await sleep(0);
+		sink.onTextDelta("x".repeat(CHUNK * 2));
+		await entered;
+		const done = sink.onDone({ kind: "fenced" });
+		release();
+		await done;
+		expect(calls).toBe(2);
+		expect(msgs).toHaveLength(1);
+		expect(msgs[0]).toContain("⏹ superseded");
+		expect(msgs[0]).not.toContain("Delivery uncertain");
+	});
+
+	test("uncertainty notice failure is not retried", async () => {
+		const { api, reactions } = fakeApi({});
+		let calls = 0;
+		api.sendMessage = async () => {
+			calls++;
+			throw new TelegramTimeoutError("sendMessage", 30_000);
+		};
+		const sink = makeDeliverySink(api, conv, undefined, Number.POSITIVE_INFINITY);
+		sink.onTextDelta("lost");
+		await sink.onDone({ kind: "completed" });
+		expect(calls).toBe(2);
+		expect(reactions).toEqual([]);
+	});
+
+	test("voice-mode sendVoice timeout never falls back to duplicate text", async () => {
+		const { api, msgs, reactions } = fakeApi({});
+		let voiceCalls = 0;
+		api.sendVoice = async () => {
+			voiceCalls++;
+			throw new TelegramTimeoutError("sendVoice", 30_000);
+		};
+		const sink = makeDeliverySink(api, conv, undefined, 0, {
+			voiceMode: true, synthesize: async () => [new Uint8Array([1])],
+		});
+		sink.onTextDelta("spoken answer");
+		await sink.onDone({ kind: "completed" });
+		expect(voiceCalls).toBe(1);
+		expect(msgs).toEqual(["⚠ Delivery uncertain—check Telegram before retrying."]);
+		expect(reactions).toEqual([]);
+	});
+
+	test("voice-mode supplemental text timeout prevents audio and fallback", async () => {
+		const { api, msgs, voices } = fakeApi({});
+		let calls = 0;
+		const original = api.sendMessage.bind(api);
+		api.sendMessage = async (...args) => {
+			calls++;
+			if (calls === 1) throw new TelegramTimeoutError("sendMessage", 30_000);
+			return original(...args);
+		};
+		const sink = makeDeliverySink(api, conv, undefined, 0, {
+			voiceMode: true, synthesize: async () => [new Uint8Array([1])],
+		});
+		sink.onTextDelta("spoken answer\n```\ncode\n```\nend");
+		await sink.onDone({ kind: "completed" });
+		expect(calls).toBe(2);
+		expect(voices).toEqual([]);
+		expect(msgs).toEqual(["⚠ Delivery uncertain—check Telegram before retrying."]);
+	});
+
+	test("voice-mode sendVoice timeout suppresses notice after authority loss", async () => {
+		const { api, msgs } = fakeApi({});
+		let live = true;
+		api.sendVoice = async () => {
+			live = false;
+			throw new TelegramTimeoutError("sendVoice", 30_000);
+		};
+		const sink = makeDeliverySink(api, conv, undefined, 0, {
+			voiceMode: true, synthesize: async () => [new Uint8Array([1])],
+		});
+		sink.setAuthorityCheck?.(() => live);
+		sink.onTextDelta("spoken answer");
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toEqual([]);
 	});
 
 	test("a surrogate pair is never split across the chunk boundary", async () => {

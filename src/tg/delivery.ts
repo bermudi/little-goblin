@@ -10,7 +10,7 @@ import { sniffImage } from "../agent/tools/read.ts";
 import type { OutgoingFile } from "../agent/tools/send.ts";
 import { speechContent, STATUS_TAIL_MARK } from "../agent/tts.ts";
 import { log } from "../log.ts";
-import { withTimeout } from "./deadline.ts";
+import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 
 const EDIT_INTERVAL_MS = 1_000;
 const TYPING_INTERVAL_MS = 4_000;
@@ -20,6 +20,7 @@ const CHUNK_LIMIT = 3800;
 const MAX_DRAIN_ITERATIONS = 25;
 const MAX_STAGNANT = 3;
 const RECENT_REPLY_LIMIT = 256;
+const UNCERTAIN_NOTICE = "⚠ Delivery uncertain—check Telegram before retrying.";
 export const SPEAK_CALLBACK = "speak_reply";
 
 const recentReplies = new Map<string, string>();
@@ -70,8 +71,9 @@ export function recentReplyText(chatId: number, messageId: number): string | nul
 	return recentReplies.get(replyKey(chatId, messageId)) ?? null;
 }
 
-// One chunk per Telegram message. id: -1 = unsent (send failed or not yet
-// attempted), -2 = send in flight, otherwise the Telegram message id.
+// One chunk per Telegram message. id: -1 = unsent (definite failure or not yet
+// attempted), -2 = send in flight or timed out (outcome unknown), otherwise
+// the Telegram message id.
 // shown = the content we believe the message displays. A chunk sent early
 // as the trailing message can later slide into the middle of the stream;
 // its window then outgrows what it shows, so it gets patched with an edit
@@ -130,7 +132,50 @@ export function makeDeliverySink(
 	let replyTo = replyToMessageId;
 	let authoritative = () => true;
 	let cancelled = false;
-	const mayDeliver = () => !cancelled && authoritative();
+	let uncertain = false;
+	const mayDeliver = () => !cancelled && !uncertain && authoritative();
+
+	function markUncertain(error: TelegramTimeoutError, kind: string, chunk?: number): void {
+		uncertain = true;
+		log.warn("telegram delivery uncertain — not retrying", {
+			conversation: conv.id,
+			chat: conv.chatId,
+			thread: conv.threadId,
+			kind,
+			...(chunk !== undefined ? { chunk } : {}),
+			timeoutMs: error.ms,
+			error: String(error),
+		});
+	}
+
+	async function notifyUncertain(): Promise<void> {
+		if (cancelled || !authoritative()) {
+			log.info("delivery uncertainty notice fenced", {
+				conversation: conv.id, chat: conv.chatId, thread: conv.threadId,
+			});
+			return;
+		}
+		try {
+			await withTimeout(
+				api.sendMessage(conv.chatId, UNCERTAIN_NOTICE, {
+					...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+				}),
+				"sendMessage",
+			);
+			log.info("delivery uncertainty notice sent", {
+				conversation: conv.id,
+				chat: conv.chatId,
+				thread: conv.threadId,
+			});
+		} catch (error) {
+			log.warn("delivery uncertainty notice failed — not retrying", {
+				conversation: conv.id,
+				chat: conv.chatId,
+				thread: conv.threadId,
+				error: String(error),
+			});
+		}
+	}
 	// Typing indicator state. `let` because onVoiceSynthesisStart pauses
 	// it and a synthesis stopper resumes it. Parallel speak calls overlap,
 	// so every live record_voice interval is tracked in a set — a single
@@ -175,10 +220,10 @@ export function makeDeliverySink(
 	}
 
 	async function sendVoice(audio: Uint8Array): Promise<void> {
-		if (!authoritative()) return;
+		if (!mayDeliver()) return;
 		let failure: { error: unknown } | undefined;
 		enqueue(async () => {
-			if (!authoritative()) return;
+			if (!mayDeliver()) return;
 			try {
 				const sent = await withTimeout(
 					api.sendVoice(conv.chatId, new InputFile(audio, "speech.ogg"), {
@@ -192,6 +237,7 @@ export function makeDeliverySink(
 					...(conv.threadId !== null ? { thread: conv.threadId } : {}),
 				});
 			} catch (error) {
+				if (error instanceof TelegramTimeoutError) markUncertain(error, "sendVoice");
 				failure = { error };
 				throw error;
 			}
@@ -310,8 +356,12 @@ export function makeDeliverySink(
 							...(conv.threadId !== null ? { thread: conv.threadId } : {}),
 						});
 					} catch (err) {
-						replyTo = undefined; // never retry the reply link
-						c.id = -1; // failed — retried by the next flush
+						if (err instanceof TelegramTimeoutError) {
+							markUncertain(err, "sendMessage", idx);
+						} else {
+							replyTo = undefined; // never retry the reply link
+							c.id = -1; // definite failure — retry on next flush
+						}
 						throw err;
 					}
 				});
@@ -439,19 +489,32 @@ export function makeDeliverySink(
 			for (const interval of recordings) clearInterval(interval);
 			recordings.clear();
 			sinkDone = true;
+			if (uncertain) {
+				await chain;
+				if (cancelled || !authoritative()) await stampSuperseded();
+				else await notifyUncertain();
+				return;
+			}
 			if (voice?.voiceMode) {
 				if (done.kind === "fenced") return;
 				if (done.kind === "error") {
 					enqueue(async () => {
 						if (!mayDeliver()) return;
-						await withTimeout(
-							api.sendMessage(conv.chatId, `⚠ ${done.message.slice(0, 200)}`, {
-								...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
-							}),
-							"sendMessage",
-						);
+						try {
+							await withTimeout(
+								api.sendMessage(conv.chatId, `⚠ ${done.message.slice(0, 200)}`, {
+									...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+								}),
+								"sendMessage",
+							);
+						} catch (error) {
+							if (error instanceof TelegramTimeoutError)
+								markUncertain(error, "sendMessage error");
+							throw error;
+						}
 					});
 					await chain;
+					if (uncertain) await notifyUncertain();
 					return;
 				}
 				const content = speechContent(text);
@@ -473,20 +536,33 @@ export function makeDeliverySink(
 						return;
 					}
 					if (content.supplemental) {
+						let failure: { error: unknown } | undefined;
 						enqueue(async () => {
-							if (!authoritative()) return;
-							await withTimeout(
-								api.sendMessage(conv.chatId, content.supplemental!, {
-									...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
-								}),
-								"sendMessage",
-							);
+							if (!mayDeliver()) return;
+							try {
+								await withTimeout(
+									api.sendMessage(conv.chatId, content.supplemental!, {
+										...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+									}),
+									"sendMessage",
+								);
+							} catch (error) {
+								failure = { error };
+								throw error;
+							}
 						});
+						await chain;
+						if (failure) throw failure.error;
 					}
 					for (const chunk of audio) await sendVoice(chunk);
 					await chain;
 				} catch (err) {
 					if (!authoritative()) return;
+					if (err instanceof TelegramTimeoutError) {
+						if (!uncertain) markUncertain(err, err.label);
+						await notifyUncertain();
+						return;
+					}
 					log.warn("voice reply delivery failed — falling back to text", {
 						conversation: conv.id,
 						error: String(err),
@@ -498,12 +574,13 @@ export function makeDeliverySink(
 						const end = windowEnd(fallback, at);
 						const chunk = fallback.slice(at, end);
 						enqueue(async () => {
-							if (!authoritative()) return;
+							if (!mayDeliver()) return;
 							try {
 								await withTimeout(api.sendMessage(conv.chatId, chunk, {
 									...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
 								}), "sendMessage");
 							} catch (error) {
+								if (error instanceof TelegramTimeoutError) markUncertain(error, "sendMessage fallback");
 								failed = error;
 								throw error;
 							}
@@ -511,6 +588,10 @@ export function makeDeliverySink(
 						at = end;
 					}
 					await chain;
+					if (uncertain) {
+						await notifyUncertain();
+						return;
+					}
 					if (failed) throw failed;
 				}
 				return;
@@ -531,6 +612,10 @@ export function makeDeliverySink(
 			for (let i = 0; i < maxDrainIterations; i++) {
 				flush();
 				await chain;
+				if (uncertain) {
+					await notifyUncertain();
+					return;
+				}
 				if (!mayDeliver()) {
 					await stampSuperseded();
 					return;
@@ -543,6 +628,10 @@ export function makeDeliverySink(
 					// pass patches them.
 					flush();
 					await chain;
+					if (uncertain) {
+						await notifyUncertain();
+						return;
+					}
 					if (!mayDeliver()) {
 						await stampSuperseded();
 						return;
@@ -560,6 +649,10 @@ export function makeDeliverySink(
 					break;
 				}
 				await sleep(300 * stagnant);
+			}
+			if (uncertain) {
+				await notifyUncertain();
+				return;
 			}
 			if (!mayDeliver()) {
 				await stampSuperseded();

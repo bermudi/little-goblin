@@ -6,10 +6,17 @@
 // in the codebase is bounded tighter; these edges are too.
 //
 // A timed-out call is abandoned, not cancelled — the underlying fetch may
-// still complete, but the caller stops waiting and treats it as a failure
-// (delivery retries it; intake reports the failure as a text part).
+// still complete. Callers must decide whether retry is safe: a send
+// timeout does not establish that Telegram failed to deliver it.
 
 export const API_CALL_TIMEOUT_MS = 30_000;
+
+export class TelegramTimeoutError extends Error {
+	constructor(readonly label: string, readonly ms: number) {
+		super(`${label} timed out after ${ms}ms`);
+		this.name = "TelegramTimeoutError";
+	}
+}
 
 export function withTimeout<T>(
 	p: Promise<T>,
@@ -18,7 +25,7 @@ export function withTimeout<T>(
 ): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
 		const t = setTimeout(
-			() => reject(new Error(`${label} timed out after ${ms}ms`)),
+			() => reject(new TelegramTimeoutError(label, ms)),
 			ms,
 		);
 		t.unref();

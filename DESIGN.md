@@ -944,6 +944,12 @@ its credentials ride the same lane.
   uid, so this stops a *tricked* model (the read path holds a token
   that cannot send), not a deliberately hostile one — the trust level
   `bash` already granted.
+  A Telegram timeout while posting the draft is not proof it failed:
+  keep its row pending, report the uncertainty with its draft id, and
+  do not post it again automatically. If the buttons landed, their
+  callback can settle the row even without a bound message id; if they
+  did not land, the pending row expires after 24 hours. The operator
+  checks Telegram before requesting a replacement draft.
 - **Mail is a program trigger.** A program may carry a `mail` filter
   (Gmail query, e.g. `from:bank is:important`) beside its cron and
   webhook. An in-process ticker (the scheduler's twin, 5 min) runs
@@ -1511,7 +1517,15 @@ account, no audit trail. Rulings:
   stands.
 - **Delivery**: `streamText` deltas → throttled message edits (~1/s), final
   flush on completion. Typing indicator while a turn runs. Errors post a short
-  message and log structured detail.
+  message and log structured detail. A definite Telegram send failure may
+  retry/fall back; a sendMessage timeout is ambiguous (the abandoned request
+  may still land), so never resend that content. Stop the remaining text
+  chunks/drain and completion reaction, log the address and uncertainty, and
+  best-effort send a distinct "delivery uncertain—check Telegram before
+  retrying" notice only while the turn still holds authority. Never retry
+  the notice itself. In voice mode a sendVoice timeout likewise stops voice
+  output without falling back to duplicate text; use the same notice.
+  Fencing suppresses any new output, including the notice.
 - **TTS**: default-on — absent config means
   `tts: {kind: "edge", voice: "en-US-AriaNeural"}`; `tts: ""` is the
   explicit off (it parses to `false` so the mini app's whole-file

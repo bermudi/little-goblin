@@ -313,6 +313,48 @@ describe("mail trigger", () => {
 		expect(s.get(p.id)!.mailRevision).toBe(2);
 	});
 
+	test("a second connection cannot change the filter between an edit's read and write", () => {
+		const path = tmpdb();
+		const a = openPrograms(path);
+		const b = openPrograms(path);
+		const p = a.create(
+			{ name: "w", charter: "old", mailFilter: "from:a", address: ADDRESS },
+			NOW,
+		);
+		a.setMailHistory(p.id, "123");
+
+		// patch.charter is read after update() has loaded the row. Without
+		// a writer reservation b's filter edit succeeds here, then a's
+		// stale whole-row write restores the old filter and cursor.
+		let attempted = false;
+		const patch = {
+			get charter() {
+				attempted = true;
+				b.setMailFilter(p.id, "from:b");
+				return "new";
+			},
+		};
+		expect(() => a.update(p.id, patch)).toThrow(/locked|busy/i);
+		expect(attempted).toBe(true);
+		expect(a.get(p.id)).toMatchObject({
+			charter: "old", mailFilter: "from:a", mailHistoryId: "123", mailRevision: 0,
+		});
+
+		// Once the failed edit rolls back, the other connection may write;
+		// a later charter edit observes its filter, cursor and revision.
+		b.setMailFilter(p.id, "from:b");
+		b.setMailHistory(p.id, "456");
+		expect(a.update(p.id, { charter: "new" })).toMatchObject({
+			charter: "new", mailFilter: "from:b", mailHistoryId: "456", mailRevision: 1,
+		});
+		// A no-op filter set also must preserve that cursor/revision.
+		expect(b.setMailFilter(p.id, "from:b")).toMatchObject({
+			mailFilter: "from:b", mailHistoryId: "456", mailRevision: 1,
+		});
+		a.close();
+		b.close();
+	});
+
 	test("re-enabling resets the cursor — mail while disabled is skipped, not owed", () => {
 		const s = store();
 		const p = s.create(

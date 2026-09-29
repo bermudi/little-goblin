@@ -234,6 +234,65 @@ export function openPrograms(dbPath: string): ProgramsStore {
 	const qByHook = db.query("SELECT * FROM programs WHERE hook_hash = ?");
 	const qDelete = db.query("DELETE FROM programs WHERE id = ?");
 
+	// Reserve the writer before reading a row. A deferred transaction can
+	// read a stale WAL snapshot and fail on write; without a transaction a
+	// second connection can replace the filter/cursor between these steps.
+	// Keep the return read inside the same transaction as the write.
+	const update = db.transaction((id: number, patch: ProgramPatch, now: Date): Program | null => {
+		const current = qGet.get(id);
+		if (current === null) return null;
+		const before = rowToProgram(current);
+		const cron = patch.cron !== undefined ? patch.cron : before.cron;
+		const hookHash =
+			patch.hookHash !== undefined ? patch.hookHash : before.hookHash;
+		const mailFilter =
+			patch.mailFilter !== undefined ? patch.mailFilter : before.mailFilter;
+		requireTrigger(cron, hookHash, mailFilter);
+		const enabled = patch.enabled ?? before.enabled;
+		// Recompute from `now` whenever anything recurrence-shaped moved —
+		// a new cron, or a re-enable: occurrences skipped while disabled
+		// are skipped, not owed (boot catch-up is for downtime only). Any
+		// other patch leaves the scheduled occurrence untouched.
+		const next =
+			patch.cron !== undefined || (enabled && !before.enabled)
+				? cron === null
+					? null
+					: nextFire(cron, now).toISOString()
+				: before.nextRun;
+		// A changed filter or a re-enable resets the cursor — the new
+		// query's backlog must not fire as if it just arrived, and mail
+		// that landed while disabled is skipped, not owed (the cron
+		// rule above: re-enable re-baselines from now).
+		const filterChanged =
+			patch.mailFilter !== undefined && patch.mailFilter !== before.mailFilter;
+		const invalidated = filterChanged || (enabled && !before.enabled);
+		const mailHistoryId = invalidated ? null : before.mailHistoryId;
+		qUpdate.run(
+			patch.name ?? before.name,
+			patch.charter ?? before.charter,
+			cron,
+			hookHash,
+			mailFilter,
+			mailHistoryId,
+			invalidated ? 1 : 0,
+			enabled ? 1 : 0,
+			next,
+			id,
+		);
+		return rowToProgram(qGet.get(id));
+	});
+	const setMailFilter = db.transaction((id: number, filter: string | null): Program | null => {
+		const row = qGet.get(id);
+		if (row === null) return null;
+		const program = rowToProgram(row);
+		requireTrigger(program.cron, program.hookHash, filter);
+		// A new filter re-baselines (see update); an unchanged one
+		// keeps its cursor — a no-op set must not drop arrivals.
+		const changed = filter !== program.mailFilter;
+		qMailFilter.run(filter, changed ? null : program.mailHistoryId, changed ? 1 : 0, id);
+		return rowToProgram(qGet.get(id));
+	});
+
 	return {
 		create({ name, charter, cron = null, hookHash = null, mailFilter = null, address }, now = new Date()) {
 			requireTrigger(cron, hookHash, mailFilter);
@@ -245,47 +304,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			return rowToProgram(qGet.get(Number(res.lastInsertRowid)));
 		},
 		update(id, patch, now = new Date()) {
-			const current = qGet.get(id);
-			if (current === null) return null;
-			const before = rowToProgram(current);
-			const cron = patch.cron !== undefined ? patch.cron : before.cron;
-			const hookHash =
-				patch.hookHash !== undefined ? patch.hookHash : before.hookHash;
-			const mailFilter =
-				patch.mailFilter !== undefined ? patch.mailFilter : before.mailFilter;
-			requireTrigger(cron, hookHash, mailFilter);
-			const enabled = patch.enabled ?? before.enabled;
-			// Recompute from `now` whenever anything recurrence-shaped moved —
-			// a new cron, or a re-enable: occurrences skipped while disabled
-			// are skipped, not owed (boot catch-up is for downtime only). Any
-			// other patch leaves the scheduled occurrence untouched.
-			const next =
-				patch.cron !== undefined || (enabled && !before.enabled)
-					? cron === null
-						? null
-						: nextFire(cron, now).toISOString()
-					: before.nextRun;
-			// A changed filter or a re-enable resets the cursor — the new
-			// query's backlog must not fire as if it just arrived, and mail
-			// that landed while disabled is skipped, not owed (the cron
-			// rule above: re-enable re-baselines from now).
-			const filterChanged =
-				patch.mailFilter !== undefined && patch.mailFilter !== before.mailFilter;
-			const invalidated = filterChanged || (enabled && !before.enabled);
-			const mailHistoryId = invalidated ? null : before.mailHistoryId;
-			qUpdate.run(
-				patch.name ?? before.name,
-				patch.charter ?? before.charter,
-				cron,
-				hookHash,
-				mailFilter,
-				mailHistoryId,
-				invalidated ? 1 : 0,
-				enabled ? 1 : 0,
-				next,
-				id,
-			);
-			return rowToProgram(qGet.get(id));
+			return update.immediate(id, patch, now);
 		},
 		remove(id) {
 			return qDelete.run(id).changes > 0;
@@ -326,15 +345,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			return rowToProgram(qGet.get(id));
 		},
 		setMailFilter(id, filter) {
-			const row = qGet.get(id);
-			if (row === null) return null;
-			const program = rowToProgram(row);
-			requireTrigger(program.cron, program.hookHash, filter);
-			// A new filter re-baselines (see update); an unchanged one
-			// keeps its cursor — a no-op set must not drop arrivals.
-			const changed = filter !== program.mailFilter;
-			qMailFilter.run(filter, changed ? null : program.mailHistoryId, changed ? 1 : 0, id);
-			return rowToProgram(qGet.get(id));
+			return setMailFilter.immediate(id, filter);
 		},
 		setMailHistory(id, historyId) {
 			qMailHistory.run(historyId, id);

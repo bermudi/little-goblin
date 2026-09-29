@@ -97,9 +97,7 @@ async function check(
 			// New filter: baseline at the current head — the mailbox's
 			// backlog is history, not arrivals, so it never fires.
 			const head = await gmail.profileHistoryId();
-			const fresh = deps.programs.get(program.id);
-			if (fresh?.mailFilter === filter && fresh.mailHistoryId === null) {
-				deps.programs.setMailHistory(program.id, head);
+			if (deps.programs.baselineMail(program, head)) {
 				log.info("mail filter baselined", { program: program.id, name: program.name, filter });
 			} else {
 				log.info("mail baseline lost to a mid-poll program edit — cursor skipped", { program: program.id, filter });
@@ -117,9 +115,7 @@ async function check(
 			// Mail between the old cursor and now may fire late or not
 			// at all; the log says which (DESIGN.md's honest boundary).
 			const head = await gmail.profileHistoryId();
-			const fresh = deps.programs.get(program.id);
-			if (fresh?.mailFilter === filter && fresh.mailHistoryId === program.mailHistoryId) {
-				deps.programs.setMailHistory(program.id, head);
+			if (deps.programs.baselineMail(program, head)) {
 				log.info("mail cursor expired — re-baselined", {
 					program: program.id,
 					name: program.name,
@@ -146,7 +142,7 @@ async function check(
 			});
 			return;
 		}
-		const stillMine = fresh.mailFilter === filter;
+		const stillMine = fresh.mailFilter === filter && fresh.mailRevision === program.mailRevision;
 		const cursorUntouched = fresh.mailHistoryId === program.mailHistoryId;
 		if (stillMine && cursorUntouched) {
 			// The entry point owns what happens next: an empty or disabled

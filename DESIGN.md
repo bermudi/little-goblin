@@ -954,7 +954,13 @@ its credentials ride the same lane.
   body is one `mail read` away, never pushed). A new or changed filter
   baselines at the current head without firing — the mailbox's backlog
   is history, not arrivals; an expired cursor re-baselines the same
-  way. The 60 s per-program throttle becomes a batch: matches inside
+  way. The row has a dedicated `mail_revision INTEGER NOT NULL DEFAULT 0`:
+  filter changes and re-enables increment it when clearing the cursor.
+  Baselines compare the original revision, filter, cursor and enabled state
+  in one conditional SQL update, so an in-flight Gmail head cannot survive
+  a disable/re-enable ABA (even across DB connections). Existing rows gain
+  the column additively; `created_at` remains creation time, not a generation.
+  The 60 s per-program throttle becomes a batch: matches inside
   one tick fire once with all of them, capped at 10 oldest-first per
   tick — the checkpoint advances only to the last fired record's
   boundary, so the unfired remainder refires next tick instead of

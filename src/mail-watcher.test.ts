@@ -53,6 +53,7 @@ function hit(id: string): MailHit {
 }
 
 interface Harness {
+	path: string;
 	programs: ProgramsStore;
 	/** The handoff record: every fireMail call, before it runs. */
 	fired: Array<{ program: number; matches: string[] }>;
@@ -71,8 +72,10 @@ interface Harness {
 function harness(): Harness {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-mailwatch-"));
 	dirs.push(dir);
+	const path = join(dir, "goblin.sqlite");
 	const h: Harness = {
-		programs: openPrograms(join(dir, "goblin.sqlite")),
+		path,
+		programs: openPrograms(path),
 		fired: [],
 		submitted: [],
 		notices: [],
@@ -186,6 +189,36 @@ describe("mail watcher", () => {
 		expect(h.programs.get(p.id)?.mailFilter).toBe("from:new");
 		expect(h.programs.get(p.id)?.mailHistoryId).toBeNull();
 	});
+
+	for (const expired of [false, true]) {
+		test(`${expired ? "expired cursor" : "new filter"} baseline rejects disable/re-enable ABA across connections`, async () => {
+			const h = harness();
+			const p = mailProgram(h);
+			if (expired) {
+				h.programs.setMailHistory(p.id, "old");
+				h.pollImpl = async () => { throw new HistoryExpiredError(); };
+			}
+			h.reader!.profileHistoryId = async () => {
+				// The same filter and null cursor return before the Gmail await
+				// resolves. A snapshot re-read cannot distinguish this row.
+				const other = openPrograms(h.path);
+				try {
+					other.update(p.id, { enabled: false });
+					other.update(p.id, { enabled: true });
+				} finally {
+					other.close();
+				}
+				return "stale-head";
+			};
+			const w = start(h);
+			await w.tick();
+			const after = h.programs.get(p.id)!;
+			expect(after.enabled).toBe(true);
+			expect(after.mailFilter).toBe(p.mailFilter);
+			expect(after.mailHistoryId).toBeNull();
+			expect(after.mailRevision).toBe(p.mailRevision + 1);
+		});
+	}
 
 	test("an edit while an expired cursor re-baselines cannot inherit its stale head", async () => {
 		const h = harness();

@@ -30,6 +30,8 @@ export interface Program {
 	/** Mailbox history id checkpoint for the mail filter — the watcher's
 	 *  cursor, null until the first poll baselines it. */
 	mailHistoryId: string | null;
+	/** Monotonic generation of filter/re-enable baseline invalidations. */
+	mailRevision: number;
 	/** Pinned Telegram address — replies land where the program was born. */
 	chatId: number;
 	threadId: number | null;
@@ -89,6 +91,9 @@ export interface ProgramsStore {
 	/** Advance the mail watcher's checkpoint — cursor only, no trigger
 	 *  semantics. */
 	setMailHistory(id: number, historyId: string): void;
+	/** Baseline only if the original filter, cursor, enabled state and
+	 *  revision still hold; one SQL write, safe across connections. */
+	baselineMail(program: Program, historyId: string): boolean;
 	/** Enabled programs carrying a mail filter — the watcher's scan. */
 	withMailFilter(): Program[];
 	/** Reverse lookup for the /hook route — returns the row regardless
@@ -131,6 +136,7 @@ const programSchema = z.object({
 	hook_hash: z.string().nullable(),
 	mail_filter: z.string().nullable(),
 	mail_history_id: z.string().nullable(),
+	mail_revision: z.number().int().nonnegative(),
 	chat_id: z.number(),
 	thread_id: z.number().nullable(),
 	enabled: z.number(),
@@ -149,6 +155,7 @@ function rowToProgram(row: unknown): Program {
 		hookHash: parsed.hook_hash,
 		mailFilter: parsed.mail_filter,
 		mailHistoryId: parsed.mail_history_id,
+		mailRevision: parsed.mail_revision,
 		chatId: parsed.chat_id,
 		threadId: parsed.thread_id,
 		enabled: parsed.enabled === 1,
@@ -177,6 +184,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			hook_hash TEXT,
 			mail_filter TEXT,
 			mail_history_id TEXT,
+			mail_revision INTEGER NOT NULL DEFAULT 0,
 			chat_id INTEGER NOT NULL,
 			thread_id INTEGER,
 			enabled INTEGER NOT NULL DEFAULT 1,
@@ -184,23 +192,21 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			last_run TEXT,
 			next_run TEXT
 		)`);
-		return isNewTable ? copyLegacyJobs(db) : 0;
+		const count = isNewTable ? copyLegacyJobs(db) : 0;
+		// Existing DBs predate the mail trigger/revision — additive only.
+		// Keep the legacy copy gated on table creation, never row count.
+		const progCols = new Set(
+			db.query<{ name: string }, []>("PRAGMA table_info(programs)").all().map((c) => c.name),
+		);
+		if (!progCols.has("mail_filter")) db.exec("ALTER TABLE programs ADD COLUMN mail_filter TEXT");
+		if (!progCols.has("mail_history_id")) db.exec("ALTER TABLE programs ADD COLUMN mail_history_id TEXT");
+		if (!progCols.has("mail_revision")) {
+			db.exec("ALTER TABLE programs ADD COLUMN mail_revision INTEGER NOT NULL DEFAULT 0");
+		}
+		return count;
 	})();
 	if (copied > 0) {
 		log.info("legacy jobs copied into programs", { count: copied });
-	}
-	// Existing DBs predate the mail trigger — additive columns, no rebuild.
-	const progCols = new Set(
-		db
-			.query<{ name: string }, []>("PRAGMA table_info(programs)")
-			.all()
-			.map((c) => c.name),
-	);
-	if (!progCols.has("mail_filter")) {
-		db.exec("ALTER TABLE programs ADD COLUMN mail_filter TEXT");
-	}
-	if (!progCols.has("mail_history_id")) {
-		db.exec("ALTER TABLE programs ADD COLUMN mail_history_id TEXT");
 	}
 
 	const qGet = db.query("SELECT * FROM programs WHERE id = ?");
@@ -212,13 +218,16 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		(name, charter, cron, hook_hash, mail_filter, mail_history_id, chat_id, thread_id, enabled, created_at, last_run, next_run)
 		VALUES (?, ?, ?, ?, ?, NULL, ?, ?, 1, ?, NULL, ?)`);
 	const qUpdate = db.query(
-		"UPDATE programs SET name = ?, charter = ?, cron = ?, hook_hash = ?, mail_filter = ?, mail_history_id = ?, enabled = ?, next_run = ? WHERE id = ?",
+		"UPDATE programs SET name = ?, charter = ?, cron = ?, hook_hash = ?, mail_filter = ?, mail_history_id = ?, mail_revision = mail_revision + ?, enabled = ?, next_run = ? WHERE id = ?",
 	);
 	const qMark = db.query("UPDATE programs SET last_run = ?, next_run = ? WHERE id = ?");
 	const qFired = db.query("UPDATE programs SET last_run = ? WHERE id = ?");
 	const qHook = db.query("UPDATE programs SET hook_hash = ? WHERE id = ?");
-	const qMailFilter = db.query("UPDATE programs SET mail_filter = ?, mail_history_id = ? WHERE id = ?");
+	const qMailFilter = db.query("UPDATE programs SET mail_filter = ?, mail_history_id = ?, mail_revision = mail_revision + ? WHERE id = ?");
 	const qMailHistory = db.query("UPDATE programs SET mail_history_id = ? WHERE id = ?");
+	const qBaselineMail = db.query(`UPDATE programs SET mail_history_id = ?
+		WHERE id = ? AND enabled = 1 AND mail_revision = ?
+		AND mail_filter IS ? AND mail_history_id IS ?`);
 	const qWithMail = db.query(
 		"SELECT * FROM programs WHERE enabled = 1 AND mail_filter IS NOT NULL ORDER BY id",
 	);
@@ -262,8 +271,8 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			// rule above: re-enable re-baselines from now).
 			const filterChanged =
 				patch.mailFilter !== undefined && patch.mailFilter !== before.mailFilter;
-			const mailHistoryId =
-				filterChanged || (enabled && !before.enabled) ? null : before.mailHistoryId;
+			const invalidated = filterChanged || (enabled && !before.enabled);
+			const mailHistoryId = invalidated ? null : before.mailHistoryId;
 			qUpdate.run(
 				patch.name ?? before.name,
 				patch.charter ?? before.charter,
@@ -271,6 +280,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 				hookHash,
 				mailFilter,
 				mailHistoryId,
+				invalidated ? 1 : 0,
 				enabled ? 1 : 0,
 				next,
 				id,
@@ -322,11 +332,17 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			requireTrigger(program.cron, program.hookHash, filter);
 			// A new filter re-baselines (see update); an unchanged one
 			// keeps its cursor — a no-op set must not drop arrivals.
-			qMailFilter.run(filter, filter === program.mailFilter ? program.mailHistoryId : null, id);
+			const changed = filter !== program.mailFilter;
+			qMailFilter.run(filter, changed ? null : program.mailHistoryId, changed ? 1 : 0, id);
 			return rowToProgram(qGet.get(id));
 		},
 		setMailHistory(id, historyId) {
 			qMailHistory.run(historyId, id);
+		},
+		baselineMail(program, historyId) {
+			return qBaselineMail.run(
+				historyId, program.id, program.mailRevision, program.mailFilter, program.mailHistoryId,
+			).changes === 1;
 		},
 		withMailFilter() {
 			return qWithMail.all().map(rowToProgram);

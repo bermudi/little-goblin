@@ -297,10 +297,12 @@ describe("mail trigger", () => {
 
 		s.setMailFilter(p.id, "from:a"); // same filter — cursor survives
 		expect(s.get(p.id)!.mailHistoryId).toBe("12345");
+		expect(s.get(p.id)!.mailRevision).toBe(0);
 
 		s.setMailFilter(p.id, "from:b"); // new query — re-baseline
 		expect(s.get(p.id)!.mailFilter).toBe("from:b");
 		expect(s.get(p.id)!.mailHistoryId).toBeNull();
+		expect(s.get(p.id)!.mailRevision).toBe(1);
 
 		s.setMailHistory(p.id, "999");
 		s.update(p.id, { mailFilter: "from:c" }); // update path resets too
@@ -308,6 +310,7 @@ describe("mail trigger", () => {
 		s.setMailHistory(p.id, "1000");
 		s.update(p.id, { charter: "c2" }); // other patches leave it
 		expect(s.get(p.id)!.mailHistoryId).toBe("1000");
+		expect(s.get(p.id)!.mailRevision).toBe(2);
 	});
 
 	test("re-enabling resets the cursor — mail while disabled is skipped, not owed", () => {
@@ -320,10 +323,12 @@ describe("mail trigger", () => {
 		s.update(p.id, { enabled: false });
 		// Disabling keeps the cursor — the watcher just doesn't scan it.
 		expect(s.get(p.id)!.mailHistoryId).toBe("12345");
+		expect(s.get(p.id)!.mailRevision).toBe(0);
 		s.update(p.id, { enabled: true });
 		// Re-enabling re-baselines: the disabled-period backlog never
 		// fires (the cron rule — skipped, not owed).
 		expect(s.get(p.id)!.mailHistoryId).toBeNull();
+		expect(s.get(p.id)!.mailRevision).toBe(1);
 	});
 
 	test("withMailFilter scans enabled mail programs only", () => {
@@ -366,6 +371,40 @@ function createLegacyJobs(path: string, rows: number): void {
 	}
 	db.close();
 }
+
+describe("mail revision upgrade", () => {
+	test("adds a default revision to existing rows without re-copying deleted jobs", () => {
+		const path = tmpdb();
+		createLegacyJobs(path, 1);
+		const db = new Database(path);
+		db.exec(`CREATE TABLE programs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, charter TEXT NOT NULL,
+			cron TEXT, hook_hash TEXT, mail_filter TEXT, mail_history_id TEXT,
+			chat_id INTEGER NOT NULL, thread_id INTEGER, enabled INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL, last_run TEXT, next_run TEXT
+		)`);
+		db.query(`INSERT INTO programs
+			(id, name, charter, mail_filter, mail_history_id, chat_id, enabled, created_at)
+			VALUES (2, 'mail', 'watch', 'from:bank', '100', -100, 1, '2026-09-20')`).run();
+		db.close();
+
+		const a = openPrograms(path);
+		expect(a.list().map((p) => p.id)).toEqual([2]); // no legacy resurrection
+		const initial = a.get(2)!;
+		expect(initial.mailRevision).toBe(0);
+		expect(initial.mailHistoryId).toBe("100");
+		const b = openPrograms(path); // migration is safe on repeat open
+		b.setMailFilter(2, "from:new");
+		expect(a.baselineMail(initial, "stale")).toBe(false);
+		expect(a.get(2)).toMatchObject({ mailRevision: 1, mailHistoryId: null });
+		b.close();
+		a.close();
+		const reopened = openPrograms(path);
+		expect(reopened.get(2)).toMatchObject({ mailRevision: 1, mailHistoryId: null });
+		expect(reopened.list()).toHaveLength(1);
+		reopened.close();
+	});
+});
 
 describe("legacy jobs copy", () => {
 	test("failed copy rolls back table creation so the next boot can retry", () => {

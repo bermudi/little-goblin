@@ -27,7 +27,7 @@
 // failed once.
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
+import { linkSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { log } from "./log.ts";
 import {
@@ -436,9 +436,11 @@ async function send(
 	// only a report written to this path after the send can finish the new run.
 	// Keep the old report inspectable rather than deleting it.
 	const reportPath = reportPathFor(deps, d.id);
+	let archivedPath: string | null = null;
 	try {
-		const archivedPath = join(reportDirFor(deps, d.id), `report-${randomUUID()}.md`);
-		renameSync(reportPath, archivedPath);
+		const destination = join(reportDirFor(deps, d.id), `report-${randomUUID()}.md`);
+		renameSync(reportPath, destination);
+		archivedPath = destination;
 		log.info("delegation previous report archived", {
 			delegation: d.id, reportPath, archivedPath,
 		});
@@ -455,7 +457,29 @@ async function send(
 	try {
 		await deps.herdr.prompt(d.agentName, text);
 	} catch (err) {
-		return { kind: "prompt failed", error: err instanceof Error ? err.message : String(err) };
+		const error = err instanceof Error ? err.message : String(err);
+		log.error("delegation prompt failed", err, { delegation: d.id, name: d.name });
+		if (archivedPath !== null) {
+			try {
+				// A new report can arrive during the prompt call. Unlike rename,
+				// linking fails atomically if it already owns the live slot.
+				linkSync(archivedPath, reportPath);
+				unlinkSync(archivedPath);
+				log.info("delegation previous report restored", { delegation: d.id, reportPath, archivedPath });
+			} catch (restoreErr) {
+				if ((restoreErr as NodeJS.ErrnoException).code === "EEXIST") {
+					log.warn("delegation previous report not restored — newer report exists", {
+						delegation: d.id, reportPath, archivedPath,
+					});
+				} else {
+					log.error("delegation previous report restoration failed", restoreErr, {
+						delegation: d.id, reportPath, archivedPath,
+					});
+					return { kind: "prompt failed", error: `${error}; report restoration failed: ${String(restoreErr)}` };
+				}
+			}
+		}
+		return { kind: "prompt failed", error };
 	}
 	let seq = d.baselineSeq;
 	try {

@@ -260,6 +260,59 @@ describe("delegation watcher", () => {
 		expect(h.wakes[0]).not.toContain("# previous run");
 	});
 
+	test("failed follow-up restores the previous report for the watcher", async () => {
+		const h = harness();
+		const d = runningRow(h, "failed follow-up", 5, 1_000);
+		h.agents.set(d.agentName, agent(d.agentName, "working", 5));
+		const owner = startDelegationLifecycle(h.deps);
+		await owner.tick();
+		const dir = join(h.delegationsDir, String(d.id));
+		mkdirSync(dir, { recursive: true });
+		const reportPath = join(dir, "report.md");
+		writeFileSync(reportPath, "# previous result");
+		h.deps.herdr = {
+			...h.deps.herdr,
+			prompt: async () => { throw new Error("herdr rejected prompt"); },
+		};
+		const out = await owner.send(d.id, "follow up");
+		expect(out).toEqual({ kind: "prompt failed", error: "herdr rejected prompt" });
+		expect(readFileSync(reportPath, "utf8")).toBe("# previous result");
+		expect(readdirSync(dir)).toEqual(["report.md"]);
+		expect(h.store.get(d.id)!.baselineSeq).toBe(5);
+		h.agents.set(d.agentName, agent(d.agentName, "idle", 5));
+		await owner.tick();
+		await owner.stopTicker();
+		expect(h.store.get(d.id)!.status).toBe("done");
+		expect(h.wakes).toHaveLength(1);
+		expect(h.wakes[0]).toContain("# previous result");
+	});
+
+	test("failed follow-up does not overwrite a report written during prompt", async () => {
+		const h = harness();
+		const d = runningRow(h, "racing report", 5, 1_000);
+		h.agents.set(d.agentName, agent(d.agentName, "working", 5));
+		const owner = startDelegationLifecycle(h.deps);
+		await owner.tick();
+		const dir = join(h.delegationsDir, String(d.id));
+		mkdirSync(dir, { recursive: true });
+		const reportPath = join(dir, "report.md");
+		writeFileSync(reportPath, "# previous result");
+		h.deps.herdr = {
+			...h.deps.herdr,
+			prompt: async () => {
+				writeFileSync(reportPath, "# newer result");
+				throw new Error("herdr rejected prompt");
+			},
+		};
+		expect(await owner.send(d.id, "follow up")).toEqual({
+			kind: "prompt failed", error: "herdr rejected prompt",
+		});
+		expect(readFileSync(reportPath, "utf8")).toBe("# newer result");
+		const archived = readdirSync(dir).find((name) => name.startsWith("report-"))!;
+		expect(readFileSync(join(dir, archived), "utf8")).toBe("# previous result");
+		await owner.stopTicker();
+	});
+
 	test("an unreadable report path refuses a follow-up before prompting", async () => {
 		const h = harness();
 		const d = runningRow(h, "bad report path", 1);

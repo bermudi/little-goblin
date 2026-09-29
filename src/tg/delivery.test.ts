@@ -459,6 +459,87 @@ describe("delivery", () => {
 		).toBe(true);
 		expect(isNotModifiedError(new Error("transient edit failure"))).toBe(false);
 	});
+
+	test("fenced completion stamps an existing bubble even if the authority check still passes", async () => {
+		const { api, msgs, reactions } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, undefined, 0);
+		sink.onTextDelta("visible");
+		await sleep(0);
+		sink.onTextDelta(" queued");
+		await sink.onDone({ kind: "fenced" });
+		expect(msgs).toEqual(["visible\n\n—\n⏹ superseded"]);
+		expect(reactions).toEqual([]);
+	});
+
+	test("a queued send loses authority before execution — no new bubble or drain retry", async () => {
+		const { api, msgs, reactions } = fakeApi({});
+		let live = true;
+		const sink = makeDeliverySink(api, conv, undefined, 0);
+		sink.setAuthorityCheck?.(() => live);
+		sink.onTextDelta("stale");
+		live = false; // before the serialized send starts
+		await sink.onDone({ kind: "fenced" });
+		expect(msgs).toEqual([]);
+		expect(reactions).toEqual([]);
+	});
+
+	test("fencing drops queued edits and tail sends but stamps the visible partial", async () => {
+		const { api, msgs, reactions } = fakeApi({});
+		let live = true;
+		const sink = makeDeliverySink(api, conv, undefined, 0);
+		sink.setAuthorityCheck?.(() => live);
+		sink.onTextDelta("partial");
+		await sleep(0); // first bubble is visible
+		sink.onTextDelta(" stale"); // edit queued, not yet executed
+		sink.onTextDelta("x".repeat(CHUNK)); // unsent tail
+		live = false;
+		await sink.onDone({ kind: "fenced" });
+		expect(msgs).toEqual(["partial\n\n—\n⏹ superseded"]);
+		expect(reactions).toEqual([]);
+	});
+
+	test("authority loss during final drain does not retry fenced chunks", async () => {
+		const { api, msgs, reactions } = fakeApi({});
+		let live = true;
+		const originalSend = api.sendMessage.bind(api);
+		api.sendMessage = async (...args) => {
+			const result = await originalSend(...args);
+			live = false; // first send lands, before the next drain pass
+			return result;
+		};
+		const sink = makeDeliverySink(api, conv, undefined, Number.POSITIVE_INFINITY);
+		sink.setAuthorityCheck?.(() => live);
+		sink.onTextDelta("a".repeat(CHUNK * 2));
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toEqual(["a".repeat(CHUNK) + "\n\n—\n⏹ superseded"]);
+		expect(reactions).toEqual([]);
+	});
+
+	test("queued completion button is fenced after an in-flight reaction", async () => {
+		const { api, msgs, markups } = fakeApi({});
+		let live = true;
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		let reactionStarted: () => void = () => {};
+		const started = new Promise<void>((resolve) => { reactionStarted = resolve; });
+		api.setMessageReaction = async () => {
+			reactionStarted();
+			await gate;
+			return true;
+		};
+		const sink = makeDeliverySink(api, conv, undefined, 0, {
+			voiceMode: false, synthesize: async () => [],
+		});
+		sink.setAuthorityCheck?.(() => live);
+		sink.onTextDelta("partial");
+		const done = sink.onDone({ kind: "completed" });
+		await started;
+		live = false;
+		release();
+		await done;
+		expect(markups).toEqual([]);
+		expect(msgs).toEqual(["partial\n\n—\n⏹ superseded"]);
+	});
 });
 
 describe("delivery files", () => {

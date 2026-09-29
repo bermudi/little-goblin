@@ -129,6 +129,8 @@ export function makeDeliverySink(
 	// than failing forever.
 	let replyTo = replyToMessageId;
 	let authoritative = () => true;
+	let cancelled = false;
+	const mayDeliver = () => !cancelled && authoritative();
 	// Typing indicator state. `let` because onVoiceSynthesisStart pauses
 	// it and a synthesis stopper resumes it. Parallel speak calls overlap,
 	// so every live record_voice interval is tracked in a set — a single
@@ -143,12 +145,13 @@ export function makeDeliverySink(
 	function enqueue(fn: () => Promise<void>): void {
 		chain = chain.then(() =>
 			fn().catch((err: unknown) => {
-				log.warn("telegram delivery failed", { error: String(err) });
+				log.warn("telegram delivery failed", { conversation: conv.id, error: String(err) });
 			}),
 		);
 	}
 
 	function sendTyping(): void {
+		if (!mayDeliver()) return;
 		withTimeout(
 			api.sendChatAction(conv.chatId, "typing", {
 				...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
@@ -262,6 +265,7 @@ export function makeDeliverySink(
 	// — covers both failed edits and chunks sent before their window
 	// filled.
 	function flush(): void {
+		if (!mayDeliver()) return;
 		const body = rendered();
 		const needed = Math.ceil(body.length / CHUNK_LIMIT);
 		while (chunks.length < needed) chunks.push({ id: -1, shown: "" });
@@ -283,6 +287,10 @@ export function makeDeliverySink(
 				c.id = -2;
 				c.shown = out;
 				enqueue(async () => {
+					if (!mayDeliver()) {
+						c.id = -1; // queued, never sent; don't leave a phantom in-flight chunk
+						return;
+					}
 					try {
 						const sent = await withTimeout(
 							api.sendMessage(conv.chatId, out, {
@@ -312,6 +320,7 @@ export function makeDeliverySink(
 			if (c.shown !== out) {
 				const mid = c.id;
 				enqueue(async () => {
+					if (!mayDeliver()) return;
 					try {
 						await withTimeout(api.editMessageText(conv.chatId, mid, out), "editMessageText");
 					} catch (err) {
@@ -334,6 +343,27 @@ export function makeDeliverySink(
 			start = end;
 		}
 		lastEdit = Date.now();
+	}
+
+	// Cancellation is the sole post-fence edit: label only a bubble that
+	// actually landed, using what it showed rather than unsent stream text.
+	// In-flight sends have already settled by the time this runs.
+	async function stampSuperseded(): Promise<void> {
+		await chain;
+		const last = [...chunks].reverse().find((c) => c.id > 0);
+		if (!last) return;
+		const mid = last.id;
+		const marked = `${last.shown}${STATUS_TAIL_MARK}⏹ superseded`;
+		enqueue(async () => {
+			try {
+				await withTimeout(api.editMessageText(conv.chatId, mid, marked), "editMessageText");
+				log.debug("delivery superseded marker", { conversation: conv.id, message: mid });
+			} catch (err) {
+				if (isNotModifiedError(err)) return;
+				throw err;
+			}
+		});
+		await chain;
 	}
 
 	function maybeFlush(): void {
@@ -404,6 +434,7 @@ export function makeDeliverySink(
 			};
 		},
 		async onDone(done: TurnDone) {
+			if (done.kind === "fenced") cancelled = true;
 			clearInterval(typing);
 			for (const interval of recordings) clearInterval(interval);
 			recordings.clear();
@@ -483,12 +514,12 @@ export function makeDeliverySink(
 				}
 				return;
 			}
+			if (!mayDeliver()) {
+				await stampSuperseded();
+				return;
+			}
 			if (done.kind === "error") {
 				toolStatus.push(`⚠ ${done.message.slice(0, 200)}`);
-			} else if (done.kind === "fenced") {
-				// Fenced turns abort quietly — nothing emitted, nothing sent.
-				if (text === "" && toolStatus.length === 0) return;
-				toolStatus.push("⏹ superseded");
 			}
 			// Final flush. No flush runs after this, so drain here: keep
 			// flushing while chunks remain unsent, retrying failures with a
@@ -499,6 +530,10 @@ export function makeDeliverySink(
 			for (let i = 0; i < maxDrainIterations; i++) {
 				flush();
 				await chain;
+				if (!mayDeliver()) {
+					await stampSuperseded();
+					return;
+				}
 				const pending = pendingCount();
 				if (pending === 0) {
 					// Sends that resolved inside `await chain` were still
@@ -507,6 +542,10 @@ export function makeDeliverySink(
 					// pass patches them.
 					flush();
 					await chain;
+					if (!mayDeliver()) {
+						await stampSuperseded();
+						return;
+					}
 					break;
 				}
 				stagnant = pending >= prevPending ? stagnant + 1 : 0;
@@ -520,6 +559,10 @@ export function makeDeliverySink(
 					break;
 				}
 				await sleep(300 * stagnant);
+			}
+			if (!mayDeliver()) {
+				await stampSuperseded();
+				return;
 			}
 			// Steady progress on a backlog bigger than the drain budget
 			// never trips the stagnant guard — the loop simply runs out of
@@ -541,8 +584,9 @@ export function makeDeliverySink(
 				const last = [...chunks].reverse().find((c) => c.id > 0);
 				if (last) {
 					const mid = last.id;
-					if (voice) rememberReply(conv.chatId, mid, text);
 					enqueue(async () => {
+						if (!mayDeliver()) return;
+						if (voice) rememberReply(conv.chatId, mid, text);
 						await withTimeout(
 							api.setMessageReaction(conv.chatId, mid, [
 								{ type: "emoji", emoji: "🫡" },
@@ -552,6 +596,7 @@ export function makeDeliverySink(
 					});
 					if (voice) {
 						enqueue(async () => {
+							if (!mayDeliver()) return;
 							try {
 								await withTimeout(
 									api.editMessageReplyMarkup(conv.chatId, mid, {
@@ -569,6 +614,7 @@ export function makeDeliverySink(
 						});
 					}
 					await chain;
+					if (!mayDeliver()) await stampSuperseded();
 				}
 			}
 		},

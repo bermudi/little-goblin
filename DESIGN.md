@@ -83,11 +83,16 @@ explicit cancellation. Model and thinking are config-global since
 conversation state, so nothing there needs fencing. A turn
 captures `(conversationId, epoch)` at admission and calls `checkAuthority()`
 around every await. Fenced turns abort quietly and log it. No machines, no
-drain sets — one counter and one function.
+drain sets — one counter and one function. Delivery checks authority when each
+queued Telegram action executes, not only when it is queued. The sole
+post-fence exception is a cancellation edit: an already-visible partial reply
+may be stamped `⏹ superseded` using only its displayed text. Unsent chunks
+never become new bubbles on cancellation, and fenced chunks are not retried.
 
 Shutdown rides the same rule. SIGINT/SIGTERM closes the runtime (submits
 still land in history but never run), fences every live lane — each sink
-stamps "⏹ superseded" and runs its final flush — and drains the intake
+stamps "⏹ superseded" on its already-visible partial reply (if any),
+without flushing unsent content — and drains the intake
 buffer into history, all under a bounded budget. A crash mid-turn leaves
 the same shape minus the flush: the user message is in history, the next
 turn answers it. Boot never auto-retries a half-run turn — tool calls

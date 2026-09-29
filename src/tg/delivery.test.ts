@@ -334,6 +334,27 @@ describe("delivery", () => {
 		expect(voices).toHaveLength(2);
 	});
 
+	test("a rejected voice send fails its caller instead of claiming delivery", async () => {
+		const { api } = fakeApi({});
+		api.sendVoice = async () => { throw new Error("voice send failed"); };
+		const sink = makeDeliverySink(api, conv, undefined);
+		await expect(sink.onVoiceNote!(new Uint8Array([1]))).rejects.toThrow("voice send failed");
+		await sink.onDone({ kind: "fenced" });
+	});
+
+	test("voice-mode send failure falls back in Telegram-sized text chunks", async () => {
+		const { api, msgs } = fakeApi({});
+		api.sendVoice = async () => { throw new Error("voice send failed"); };
+		const sink = makeDeliverySink(api, conv, undefined, 0, {
+			voiceMode: true, synthesize: async () => [new Uint8Array([1])],
+		});
+		const text = "x".repeat(CHUNK + 100);
+		sink.onTextDelta(text);
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toHaveLength(2);
+		expect(msgs.join("")).toBe(text);
+	});
+
 	test("an epoch change during synthesis fences the voice reply", async () => {
 		const { api, msgs, voices } = fakeApi({});
 		let release: () => void = () => {};

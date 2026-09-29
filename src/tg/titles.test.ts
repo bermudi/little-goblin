@@ -86,6 +86,24 @@ describe("maybeRenameTopic", () => {
 		store.close();
 	});
 
+	test("an operator rename during Telegram's edit wins locally and is restored remotely", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "topic", chatId: 42, threadId: 7 }, "/w");
+		store.setMeta(conv.id, { title: "New Chat", titleImplicit: true });
+		const names: string[] = [];
+		const api = {
+			editForumTopic: async (_chat: number, _thread: number, opts: { name: string }) => {
+				names.push(opts.name);
+				if (names.length === 1) store.setMeta(conv.id, { title: "mine", titleImplicit: false });
+				return true;
+			},
+		} as Api;
+		await maybeRenameTopic({ api, store, titleFor: async () => "generated" }, conv, "question");
+		expect(names).toEqual(["generated", "mine"]);
+		expect(store.get(conv.id)?.title).toBe("mine");
+		store.close();
+	});
+
 	test("null title leaves the placeholder and the flag", async () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "topic", chatId: 42, threadId: 7 }, "/w");

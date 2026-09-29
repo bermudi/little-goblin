@@ -399,7 +399,7 @@ async function* sseEvents(
 			try {
 				yield JSON.parse(data) as Record<string, unknown>;
 			} catch {
-				// A non-JSON data payload is noise — keep consuming.
+				throw new Error("codex stream contained a malformed SSE data frame");
 			}
 		}
 	}
@@ -409,6 +409,7 @@ interface StreamState {
 	textOpen: string | null;
 	reasoningOpen: string | null;
 	sawToolCall: boolean;
+	sawTerminal: boolean;
 }
 
 function mapEvent(
@@ -484,6 +485,7 @@ function mapEvent(
 			break;
 		case "response.completed":
 		case "response.incomplete": {
+			state.sawTerminal = true;
 			const response = event.response as Record<string, unknown> | undefined;
 			const usage = (response?.usage ?? {}) as Record<string, unknown>;
 			const outDetails = (usage.output_tokens_details ?? {}) as Record<string, unknown>;
@@ -686,7 +688,7 @@ export class CodexLanguageModel implements LanguageModelV4 {
 		const { body, headers } = await this.buildRequest(options);
 		const res = await this.post(body, headers, options.abortSignal);
 		const warnings = this.warningsFor(options);
-		const state: StreamState = { textOpen: null, reasoningOpen: null, sawToolCall: false };
+		const state: StreamState = { textOpen: null, reasoningOpen: null, sawToolCall: false, sawTerminal: false };
 		let cancelled = false;
 		const stream = new ReadableStream<LanguageModelV4StreamPart>({
 			start: (controller) => {
@@ -698,6 +700,9 @@ export class CodexLanguageModel implements LanguageModelV4 {
 					try {
 						for await (const event of sseEvents(res.body!)) {
 							mapEvent(event, state, push);
+						}
+						if (!state.sawTerminal && !cancelled) {
+							throw new Error("codex stream ended before a terminal response");
 						}
 					} catch (err) {
 						push({ type: "error", error: err });

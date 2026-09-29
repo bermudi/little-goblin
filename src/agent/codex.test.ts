@@ -262,4 +262,15 @@ describe("CodexLanguageModel — request shape", () => {
 		expect((r.content[0] as { text: string }).text).toBe("thinking…");
 		expect((r.content[1] as { text: string }).text).toBe("the answer");
 	});
+
+	test("a truncated stream with partial text never counts as a completed answer", async () => {
+		const path = authDir({ access_token: jwt(FUTURE) });
+		const model = new CodexLanguageModel("gpt-6-astra", path, async () =>
+			sse([
+				{ type: "response.output_item.added", item: { type: "message", id: "m1" } },
+				{ type: "response.output_text.delta", delta: "partial" },
+			]),
+		);
+		await expect(model.doGenerate({ prompt: [] })).rejects.toThrow("before a terminal response");
+	});
 });

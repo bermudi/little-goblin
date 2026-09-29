@@ -68,6 +68,20 @@ export async function maybeRenameTopic(
 		deps.api.editForumTopic(fresh.chatId, fresh.threadId, { name: title }),
 		"editForumTopic",
 	);
+	const afterEdit = deps.store.get(fresh.id);
+	if (!afterEdit?.titleImplicit) {
+		// The operator renamed while Telegram was acknowledging our edit.
+		// Never write the generated title into local metadata; restore
+		// their explicit title remotely if the edit displaced it.
+		if (afterEdit?.title && afterEdit.threadId !== null) {
+			await withTimeout(
+				deps.api.editForumTopic(afterEdit.chatId, afterEdit.threadId, { name: afterEdit.title }),
+				"editForumTopic",
+			);
+		}
+		log.info("topic titling lost to operator rename during edit", { conversation: fresh.id });
+		return;
+	}
 	deps.store.setMeta(fresh.id, { title, titleImplicit: false });
 	log.info("topic renamed", { conversation: fresh.id, title });
 }

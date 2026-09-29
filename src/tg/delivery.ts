@@ -173,21 +173,28 @@ export function makeDeliverySink(
 
 	async function sendVoice(audio: Uint8Array): Promise<void> {
 		if (!authoritative()) return;
+		let failure: { error: unknown } | undefined;
 		enqueue(async () => {
 			if (!authoritative()) return;
-			const sent = await withTimeout(
-				api.sendVoice(conv.chatId, new InputFile(audio, "speech.ogg"), {
-					...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
-				}),
-				"sendVoice",
-			);
-			log.debug("voice delivered", {
-				conversation: conv.id,
-				message: sent.message_id,
-				...(conv.threadId !== null ? { thread: conv.threadId } : {}),
-			});
+			try {
+				const sent = await withTimeout(
+					api.sendVoice(conv.chatId, new InputFile(audio, "speech.ogg"), {
+						...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+					}),
+					"sendVoice",
+				);
+				log.debug("voice delivered", {
+					conversation: conv.id,
+					message: sent.message_id,
+					...(conv.threadId !== null ? { thread: conv.threadId } : {}),
+				});
+			} catch (error) {
+				failure = { error };
+				throw error;
+			}
 		});
 		await chain;
+		if (failure) throw failure.error;
 	}
 
 	async function sendFile(file: OutgoingFile): Promise<void> {
@@ -448,20 +455,31 @@ export function makeDeliverySink(
 					await chain;
 				} catch (err) {
 					if (!authoritative()) return;
-					log.warn("voice reply synthesis failed", {
+					log.warn("voice reply delivery failed — falling back to text", {
 						conversation: conv.id,
 						error: String(err),
 					});
-					enqueue(async () => {
-						if (!authoritative()) return;
-						await withTimeout(
-							api.sendMessage(conv.chatId, text || "speech synthesis failed", {
-								...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
-							}),
-							"sendMessage",
-						);
-					});
+					const fallback = text || "speech synthesis failed";
+					let at = 0;
+					let failed: unknown;
+					while (at < fallback.length) {
+						const end = windowEnd(fallback, at);
+						const chunk = fallback.slice(at, end);
+						enqueue(async () => {
+							if (!authoritative()) return;
+							try {
+								await withTimeout(api.sendMessage(conv.chatId, chunk, {
+									...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+								}), "sendMessage");
+							} catch (error) {
+								failed = error;
+								throw error;
+							}
+						});
+						at = end;
+					}
 					await chain;
+					if (failed) throw failed;
 				}
 				return;
 			}

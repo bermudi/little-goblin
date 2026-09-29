@@ -8,6 +8,7 @@ import { JevError } from "./jev.ts";
 import { setLogFile } from "./log.ts";
 import {
 	buildGateState,
+	cancelAllReviews,
 	cancelReviews,
 	confineTools,
 	considerTurn,
@@ -764,6 +765,25 @@ describe("review run — staging and publication", () => {
 });
 
 describe("review queue", () => {
+	test("a later gate cannot start a review before an earlier gate decides", async () => {
+		const h = harness();
+		const prompts: string[] = [];
+		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 }, prompts });
+		let release!: () => void;
+		const held = new Promise<void>((r) => { release = r; });
+		const first = considerTurn({ ...deps, gate: { decide: async () => {
+			await held;
+			return { answers: { correction: 0.9 }, inputTokens: 1, cost: 0 };
+		} } }, turn({ turnSeq: 1, operatorTexts: ["FIRST"] }));
+		const second = considerTurn(deps, turn({ turnSeq: 2, operatorTexts: ["SECOND"] }));
+		await Bun.sleep(20);
+		expect(prompts).toEqual([]);
+		release();
+		await Promise.all([first, second]);
+		expect(prompts.map((p) => p.includes("FIRST") ? 1 : 2)).toEqual([1, 2]);
+		h.store.close();
+	});
+
 	test("concurrent reviews never overlap — the second starts only after the first finished", async () => {
 		const h = harness();
 		const events: string[] = [];
@@ -951,6 +971,73 @@ describe("review queue", () => {
 });
 
 describe("/stop cancellation", () => {
+	test("a held gate resolving after stop cannot start a review", async () => {
+		const h = harness();
+		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 } });
+		let release!: () => void;
+		const held = new Promise<void>((r) => { release = r; });
+		deps.gate = { decide: async () => {
+			await held;
+			return { answers: { correction: 0.9 }, inputTokens: 1, cost: 0 };
+		} };
+		deps.reviewModel = async () => { throw new Error("cancelled gate started a review"); };
+		const pending = considerTurn(deps, turn());
+		expect(cancelReviews(h.convId)).toBe(1);
+		release();
+		await pending;
+		expect(h.notified).toEqual([]);
+		expect(existsSync(h.staging)).toBe(false);
+		h.store.close();
+	});
+
+	test("shutdown drops every conversation's queued work without starting the next one", async () => {
+		const h = harness();
+		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 } });
+		let release!: () => void;
+		const held = new Promise<void>((r) => { release = r; });
+		let started = 0;
+		deps.reviewModel = async () => { started++; throw new Error("shutdown started a review"); };
+		const first = considerTurn({ ...deps, gate: { decide: async () => {
+			await held;
+			return { answers: { correction: 0.9 }, inputTokens: 1, cost: 0 };
+		} } }, turn({ turnSeq: 1 }));
+		const second = considerTurn(deps, turn({ conversationId: "dm:2", turnSeq: 2 }));
+		const third = considerTurn(deps, turn({ conversationId: "dm:3", turnSeq: 3 }));
+		await Bun.sleep(10);
+		expect(cancelAllReviews()).toBe(3);
+		release();
+		await Promise.all([first, second, third]);
+		expect(started).toBe(0);
+		h.store.close();
+	});
+
+	test("shutdown cancellation aborts a review without a live lane", async () => {
+		const h = harness();
+		const prompts: string[] = [];
+		let release!: () => void;
+		let started!: () => void;
+		const parked = new Promise<void>((r) => { release = r; });
+		const atModel = new Promise<void>((r) => { started = r; });
+		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 }, prompts,
+			script: [{ calls: [{ name: "write_file", input: { path: "shutdown/SKILL.md", content: SKILL_MD("shutdown") } }] }, { text: "saved" }],
+		});
+		const inner = deps.reviewModel;
+		deps.reviewModel = async (conv) => {
+			const result = await inner(conv);
+			started();
+			await parked;
+			return result;
+		};
+		const pending = considerTurn(deps, turn());
+		await atModel;
+		expect(cancelAllReviews()).toBe(1);
+		release();
+		await pending;
+		expect(readdirSync(h.skills)).not.toContain("shutdown");
+		expect(h.notified).toEqual([]);
+		h.store.close();
+	});
+
 	test("stop while skills-ref validates discards staging instead of publishing", async () => {
 		const h = harness();
 		const binDir = tmpdir_();

@@ -214,6 +214,10 @@ export async function considerTurn(
 	turn: CompletedTurn,
 	priorTurn?: PriorTurnContext,
 ): Promise<void> {
+	// Register before the first await: /stop and shutdown must see a gate
+	// even when no queue entry exists yet.
+	const pending = { conversationId: turn.conversationId, seq: turn.turnSeq, cancelled: false };
+	pendingGates.add(pending);
 	const started = Date.now();
 	const state = buildGateState(turn);
 	// Unique tool names, bounded — the gate line must explain what kind
@@ -249,7 +253,7 @@ export async function considerTurn(
 			cost: decision.cost,
 			ms: Date.now() - started,
 		});
-		if (review) await enqueueReview(deps, turn, trigger === "correction" ? priorTurn : undefined, trigger, reviewId!);
+		if (review && !pending.cancelled) return enqueueReview(deps, turn, trigger === "correction" ? priorTurn : undefined, trigger, reviewId!);
 	} catch (err) {
 		// Only the gate's own failures fall back — anything else is a
 		// bug and propagates to the runtime's backstop, loud.
@@ -257,7 +261,8 @@ export async function considerTurn(
 		fallbackStreak += 1;
 		const review = turn.toolNames.length >= FALLBACK_TOOL_CALLS;
 		const trigger: Trigger = "procedure";
-		const reviewId = review ? randomUUID() : null;		log.info("reviewer gate", {
+		const reviewId = review ? randomUUID() : null;
+		log.info("reviewer gate", {
 			conversation: turn.conversationId,
 			correction: null,
 			procedure: null,
@@ -274,16 +279,22 @@ export async function considerTurn(
 			cost: null,
 			ms: Date.now() - started,
 		});
-		if (review) await enqueueReview(deps, turn, undefined, trigger, reviewId!);
+		if (review && !pending.cancelled) return enqueueReview(deps, turn, undefined, trigger, reviewId!);
+	} finally {
+		pendingGates.delete(pending);
+		if (pending.cancelled) log.info("reviewer gate cancelled — no review enqueued", {
+			conversation: turn.conversationId, seq: turn.turnSeq,
+		});
+		drainQueue();
 	}
 }
 
 // ---------- review queue ----------
 //
 // Reviews serialize one at a time, in turn-completion order (turnSeq),
-// queued-not-running capped at queueCap. Overlapping runs would publish
-// over each other's announced writes; gate-latency ordering would let a
-// slow gate leapfrog a faster later turn. A full queue drops the
+// queued-not-running capped at queueCap. Pending gate decisions hold
+// later reviews back; overlapping runs would publish over each other's
+// announced writes. A full queue drops the
 // incoming review (the newest turn is the most re-gateable — the next
 // similar turn re-fires) and logs the drop. /stop cancels a
 // conversation's queued reviews and aborts its in-flight one.
@@ -318,13 +329,22 @@ interface QueueEntry {
 
 let reviewQueue: QueueEntry[] = [];
 let inFlight: { entry: QueueEntry; controller: AbortController } | null = null;
+const pendingGates = new Set<{ conversationId: string; seq: number; cancelled: boolean }>();
+let cancellingAll = false;
 
-/** /stop (and shutdown via stop): cancel a conversation's reviews.
+/** /stop: cancel a conversation's pending gates and reviews.
  * Queued entries are removed and resolved; the in-flight one (if the
  * conversation's) is aborted — its staging is discarded by the normal
  * failure path. Returns how many were cancelled. */
 export function cancelReviews(conversationId: string): number {
 	let n = 0;
+	for (const gate of pendingGates) {
+		if (gate.conversationId !== conversationId || gate.cancelled) continue;
+		gate.cancelled = true;
+		pendingGates.delete(gate);
+		log.info("reviewer gate cancelled — pending decision", { conversation: conversationId, seq: gate.seq });
+		n += 1;
+	}
 	for (const entry of [...reviewQueue]) {
 		if (entry.conversationId !== conversationId || entry.cancelled) continue;
 		entry.cancelled = true;
@@ -347,14 +367,35 @@ export function cancelReviews(conversationId: string): number {
 		});
 		n += 1;
 	}
+	drainQueue();
 	return n;
+}
+
+/** Shutdown fences reviewer work even when the originating lane has drained. */
+export function cancelAllReviews(): number {
+	const conversations = new Set([
+		...[...pendingGates].map((g) => g.conversationId),
+		...reviewQueue.map((e) => e.conversationId),
+		...(inFlight ? [inFlight.entry.conversationId] : []),
+	]);
+	let cancelled = 0;
+	cancellingAll = true;
+	try {
+		for (const convId of conversations) cancelled += cancelReviews(convId);
+	} finally {
+		cancellingAll = false;
+	}
+	return cancelled;
 }
 
 /** Test door — isolate queue + streak state between tests. */
 export function resetReviewerState(): void {
 	reviewQueue = [];
+	for (const gate of pendingGates) gate.cancelled = true;
+	pendingGates.clear();
 	if (inFlight !== null) inFlight.controller.abort();
 	inFlight = null;
+	cancellingAll = false;
 	fallbackStreak = 0;
 }
 
@@ -397,8 +438,12 @@ function enqueueReview(
 }
 
 function drainQueue(): void {
-	if (inFlight !== null || reviewQueue.length === 0) return;
-	const entry = reviewQueue.shift()!;
+	if (cancellingAll || inFlight !== null || reviewQueue.length === 0) return;
+	const entry = reviewQueue[0]!;
+	// A later gate cannot overtake an earlier completion, including a
+	// no-review decision that has not arrived yet.
+	if ([...pendingGates].some((g) => g.seq < entry.seq)) return;
+	reviewQueue.shift();
 	const controller = new AbortController();
 	inFlight = { entry, controller };
 	void runReview(entry, controller.signal)

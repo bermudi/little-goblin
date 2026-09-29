@@ -41,7 +41,7 @@ import {
 import { log } from "./log.ts";
 import { runCompaction, type CompactionOutcome } from "./agent/compaction.ts";
 import type { CompletedTurn, PriorTurnContext, ReviewerDeps, ToolCallDigest } from "./reviewer.ts";
-import { cancelReviews, considerTurn, summarize, toolOk } from "./reviewer.ts";
+import { cancelAllReviews, cancelReviews, considerTurn, summarize, toolOk } from "./reviewer.ts";
 
 const MAX_STEPS = 25;
 
@@ -255,6 +255,12 @@ export class Runtime {
 	// which includes each sink's final flush (the "⏹ superseded" stamp).
 	async shutdown(): Promise<void> {
 		this.closed = true;
+		// Drained lanes no longer exist, but their gates/reviews can still be
+		// pending. Fence them before the caller closes the store.
+		if (this.reviewer) {
+			const reviewsCancelled = cancelAllReviews();
+			log.info("reviewer shutdown fenced", { reviewsCancelled });
+		}
 		const drains: Promise<void>[] = [];
 		for (const [convId, lane] of this.lanes) {
 			// stop().settled resolves once the dropped turns' onDone calls

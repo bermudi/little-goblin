@@ -1197,6 +1197,41 @@ describe("cache stability", () => {
 });
 
 describe("skill reviewer hook", () => {
+	test("shutdown fences a held gate after its conversation lane has drained", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model: fakeModel(["answer"], 1), system: "test" }),
+			makeTools: () => ({}),
+		});
+		let release!: () => void;
+		let entered!: () => void;
+		const held = new Promise<void>((r) => { release = r; });
+		const atGate = new Promise<void>((r) => { entered = r; });
+		runtime.setReviewer({
+			gate: { decide: async () => {
+				entered();
+				await held;
+				return { answers: { correction: 1 }, inputTokens: 1, cost: 0 };
+			} },
+			thresholds: { correction: 0.8, procedure: 0.8 },
+			queueCap: 3,
+			evidence: { calls: 8, argChars: 300, outChars: 300 },
+			reviewModel: async () => { throw new Error("shutdown let a review start"); },
+			store, skillsDir: "/none", workspaceDir: "/none", notify: async () => {},
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "save this" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		await atGate;
+		// A settled drain removes the lane; shutdown must still find the gate.
+		await sleep(20);
+		await runtime.shutdown();
+		store.close();
+		release();
+		await sleep(20);
+	});
 	// A model that calls a tool, then answers — scripted streams per step.
 	function toolThenText(toolName: string, deltas: string[]): LanguageModel {
 		let step = 0;

@@ -1,7 +1,8 @@
 // The send gate's contract: a draft request queues, posts, and binds
-// as one unit — a Telegram post failure cancels the row and answers
-// retryable — the Send/Cancel taps decide (cancel stamps and settles,
-// send threads and sends through the send credential, expiry and
+// as one unit — a definite Telegram post failure cancels and answers
+// retryable; a timeout stays pending — the Send/Cancel taps decide
+// (cancel stamps and settles, send threads through the send credential,
+// expiry and
 // double-taps resolve to a single verdict, failures keep the row
 // pending with the reason in the chat), and the sweep settles expired
 // drafts without ever claiming a row mid-send.
@@ -11,6 +12,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api } from "grammy";
+import { TelegramTimeoutError } from "./deadline.ts";
 import type { MailReader, MailSender } from "../mail.ts";
 import { openOutbox, OUTBOX_TTL_MS, type OutboxStore } from "../mail-outbox.ts";
 import {
@@ -201,6 +203,61 @@ describe("draft requests", () => {
 		expect(calls.sends.at(-1)!.keyboard).toBe(true);
 		expect(calls.sends.at(-1)!.text).toContain("truncated for Telegram");
 		expect(row.draftMessageId).toBe(500 + calls.sends.length);
+		outbox.close();
+	});
+
+	test("an accepted draft whose button post times out stays pending and its unbound button still sends", async () => {
+		const sender = fakeSender();
+		const { outbox, calls, deps, gate } = setup(sender);
+		// Telegram accepted the message (with buttons) but the response was
+		// lost. A callback can arrive even though no message id was bound.
+		deps.api = {
+			...deps.api,
+			sendMessage: async (chat: number, text: string, extra?: { reply_markup?: unknown }) => {
+				calls.sends.push({ chat, text, keyboard: extra?.reply_markup !== undefined });
+				throw new TelegramTimeoutError("sendMessage", 30_000);
+			},
+		} as unknown as Api;
+		const out = await gate.requestDraft({ to: ["a@x.com"], subject: "hi", body: "hello" }, ADDRESS);
+		if (!("queued" in out)) throw new Error("expected uncertain queued verdict");
+		expect(out.status).toContain(`draft #${out.queued}`);
+		expect(out.status).toContain("uncertain");
+		expect(out.status).toContain("check Telegram before retrying");
+		expect(out.status).not.toContain("cancelled");
+		expect(calls.sends).toHaveLength(1);
+		expect(calls.sends[0]!.keyboard).toBe(true);
+		expect(calls.sends[0]!.text).toContain(`Draft #${out.queued}`);
+		expect(outbox.get(out.queued)).toMatchObject({
+			status: "pending", draftMessageId: null, decidedAt: null,
+		});
+		await gate.handleTap(tap(out.queued, "send"));
+		expect(sender.sent).toHaveLength(1);
+		expect(outbox.get(out.queued)!.status).toBe("sent");
+		expect(calls.edits).toContainEqual({
+			chat: -100, message: 500, text: expect.stringContaining("sent to a@x.com"),
+		});
+		outbox.close();
+	});
+
+	test("a timeout on a later draft chunk does not cancel or post more chunks", async () => {
+		const { outbox, calls, deps, gate } = setup();
+		deps.api = {
+			...deps.api,
+			sendMessage: async (chat: number, text: string, extra?: { reply_markup?: unknown }) => {
+				calls.sends.push({ chat, text, keyboard: extra?.reply_markup !== undefined });
+				if (calls.sends.length === 2) throw new TelegramTimeoutError("sendMessage", 30_000);
+				return { message_id: 500 + calls.sends.length } as never;
+			},
+		} as unknown as Api;
+		const out = await gate.requestDraft(
+			{ to: ["a@x.com"], subject: "hi", body: "x".repeat(4000) }, ADDRESS,
+		);
+		if (!("queued" in out)) throw new Error("expected uncertain queued verdict");
+		expect(out.status).toContain("check Telegram before retrying");
+		expect(calls.sends.map((s) => s.keyboard)).toEqual([false, true]);
+		expect(outbox.get(out.queued)).toMatchObject({
+			status: "pending", draftMessageId: null, decidedAt: null,
+		});
 		outbox.close();
 	});
 

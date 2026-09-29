@@ -13,7 +13,7 @@ import type { MailReader, MailSender } from "../mail.ts";
 import { domainOf } from "../mail.ts";
 import type { OutboxEntry, OutboxStore } from "../mail-outbox.ts";
 import { log } from "../log.ts";
-import { withTimeout } from "./deadline.ts";
+import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 
 export const MAIL_SEND_PREFIX = "mail:send:";
 export const MAIL_CANCEL_PREFIX = "mail:cancel:";
@@ -54,8 +54,9 @@ export interface MailApprovalDeps {
 export interface MailApproval {
 	/** The mail tool's whole send path: queue the row, post the draft
 	 *  with its buttons into the pinned conversation, bind the buttons'
-	 *  message id. A Telegram post failure cancels the row and
-	 *  resolves a retryable error, never a throw. */
+	 *  message id. A definite Telegram post failure cancels the row
+	 *  and resolves a retryable error; a timeout leaves it pending
+	 *  because the buttons may have landed without an id to bind. */
 	requestDraft(
 		input: { to: string[]; cc?: string[]; subject: string; body: string; replyToId?: string },
 		address: { chatId: number; threadId: number | null },
@@ -85,16 +86,22 @@ export function startMailApproval(deps: MailApprovalDeps, tickMs = SWEEP_TICK_MS
 		address: { chatId: number; threadId: number | null },
 	): Promise<{ queued: number; status: string } | { error: string }> => {
 		const row = deps.outbox.queue({ ...input, address });
-		// A row queued but never posted is a 24h pending draft with
-		// no buttons anywhere — a partial Telegram post (a throw
-		// mid-chunks) cancels the row instead of orphaning it, and
-		// the model gets a retryable error instead of a throw.
+		// Definite post failures cancel the row; a sendMessage timeout
+		// does not prove delivery failed, even if no message id was returned.
 		let messageId: number;
 		try {
 			messageId = await postMailDraft(deps.api, address, row.id, draftText(row.id, input, row.expiresAt));
 		} catch (err) {
+			if (err instanceof TelegramTimeoutError) {
+				return {
+					queued: row.id,
+					status: `draft #${row.id} delivery to Telegram is uncertain — no automatic cancellation or retry; check Telegram before retrying (buttons may already be visible)`,
+				};
+			}
 			deps.outbox.decide(row.id, "cancelled", new Date());
-			log.error("mail draft posting failed — draft cancelled", err, { outbox: row.id });
+			log.error("mail draft posting failed — draft cancelled", err, {
+				outbox: row.id, chat: address.chatId, thread: address.threadId,
+			});
 			return {
 				error:
 					"posting the draft to Telegram failed — the draft was cancelled; retry the send when delivery recovers",
@@ -231,23 +238,33 @@ async function postMailDraft(
 	let messageId = 0;
 	for (let i = 0; i < chunks.length; i++) {
 		const last = i === chunks.length - 1;
-		const sent = await withTimeout(
-			api.sendMessage(address.chatId, chunks[i]!, {
-				...thread,
-				...(last
-					? {
-							reply_markup: {
-								inline_keyboard: [[
-									{ text: "✅ Send", callback_data: `${MAIL_SEND_PREFIX}${outboxId}` },
-									{ text: "🚫 Cancel", callback_data: `${MAIL_CANCEL_PREFIX}${outboxId}` },
-								]],
-							},
-						}
-					: {}),
-			}),
-			"sendMessage",
-		);
-		messageId = sent.message_id;
+		try {
+			const sent = await withTimeout(
+				api.sendMessage(address.chatId, chunks[i]!, {
+					...thread,
+					...(last
+						? {
+								reply_markup: {
+									inline_keyboard: [[
+										{ text: "✅ Send", callback_data: `${MAIL_SEND_PREFIX}${outboxId}` },
+										{ text: "🚫 Cancel", callback_data: `${MAIL_CANCEL_PREFIX}${outboxId}` },
+									]],
+								},
+							}
+						: {}),
+				}),
+				"sendMessage",
+			);
+			messageId = sent.message_id;
+		} catch (err) {
+			if (err instanceof TelegramTimeoutError) {
+				log.warn("mail draft posting timed out — delivery uncertain; no automatic cancellation", {
+					outbox: outboxId, chat: address.chatId, thread: address.threadId,
+					chunk: i + 1, chunks: chunks.length, buttons: last, error: String(err),
+				});
+			}
+			throw err;
+		}
 	}
 	log.info("mail draft posted", {
 		outbox: outboxId,

@@ -18,6 +18,7 @@ import { MAIL_CALLBACK_RE, type MailApproval } from "./mail-approval.ts";
 import { handleSpeakButton } from "./speak-button.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
 import { mediaFromMessage, mediaParts, saveAttachment } from "./media.ts";
+import { openTelegramInbox, validatedInboxMedia, type InboxEntry, type InboxPayload } from "./inbox.ts";
 import { maybeRenameTopic, titleMetaFromService } from "./titles.ts";
 
 export const AUTH_TELEGRAM_TOKEN = "telegram";
@@ -61,8 +62,17 @@ export function conversationAddress(msg: {
 }
 
 interface BufferedItem {
+	updateId: number;
 	parts: UIMessage["parts"];
 	replyTo: number | undefined;
+}
+
+// A failed durable insert must stop polling, not allow grammy to acknowledge
+// this update (or any later one) with its next getUpdates offset.
+export class InboxRecordError extends Error {
+	constructor(updateId: number, cause: unknown) {
+		super(`Telegram intake failed before durable admission for update ${updateId}`, { cause });
+	}
 }
 
 export interface BotDeps {
@@ -95,6 +105,8 @@ export interface RunningBot {
 	// calls this after closing the runtime — submits then land in
 	// history without starting turns. Bounded by the caller.
 	drainIntake(): Promise<void>;
+	replayInbox(): Promise<void>;
+	startPolling(): void;
 }
 
 // The access-control boundary: allowedUsers gates every update first
@@ -139,16 +151,18 @@ export interface IntakeEnv {
 	titleAttempts: Set<string>;
 	buffer: CoalescingBuffer<BufferedItem>;
 	intake: Map<string, Promise<void>>;
+	inbox: ReturnType<typeof openTelegramInbox>;
 }
 
-export type FlushEnv = Pick<IntakeEnv, "deps" | "api" | "titleAttempts">;
+export type FlushEnv = Pick<IntakeEnv, "deps" | "api" | "titleAttempts" | "inbox">;
 
-export function handleMessage(env: IntakeEnv, msg: Message): void {
+export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): void {
 	const { deps } = env;
 	const text = msg.text ?? msg.caption ?? "";
 	const addr = conversationAddress(msg);
 	const conv = deps.store.resolve(addr, paths.workspace());
 	log.debug("intake", {
+		updateId,
 		conversation: conv.id,
 		message: msg.message_id,
 		...(conv.threadId !== null ? { thread: conv.threadId } : {}),
@@ -173,7 +187,8 @@ export function handleMessage(env: IntakeEnv, msg: Message): void {
 	let media: ReturnType<typeof mediaFromMessage> = null;
 	let mediaError: unknown = null;
 	try {
-		media = mediaFromMessage(msg);
+		const extracted = mediaFromMessage(msg);
+		media = extracted === null ? null : validatedInboxMedia(extracted);
 	} catch (err) {
 		mediaError = err;
 	}
@@ -203,11 +218,38 @@ export function handleMessage(env: IntakeEnv, msg: Message): void {
 		return;
 	}
 
-	enqueueIntake(env.intake, conv.id, async () => {
+	const payload: InboxPayload = {
+		conversationId: conv.id, chatId: msg.chat.id, messageId: msg.message_id,
+		text, media, mediaError: mediaError === null ? null : String(mediaError),
+	};
+	try {
+		if (!env.inbox.record(updateId, payload)) return;
+	} catch (err) {
+		throw new InboxRecordError(updateId, err);
+	}
+	void enqueuePersisted(env, { updateId, payload }).catch(() => {
+		// The intake chain logged the failure; the durable row remains for replay.
+	});
+}
+
+export function handleMessageDurably(env: IntakeEnv, msg: Message, updateId: number): void {
+	try {
+		handleMessage(env, msg, updateId);
+	} catch (err) {
+		// Conversation creation and topic metadata happen before record().
+		// Failure at either boundary cannot become a consumed update.
+		throw err instanceof InboxRecordError ? err : new InboxRecordError(updateId, err);
+	}
+}
+
+function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Promise<void> {
+	const { conversationId: convId, text, media, mediaError, messageId } = payload;
+	const { deps } = env;
+	return enqueueIntake(env.intake, convId, async () => {
 		const parts: UIMessage["parts"] = [];
 		if (text !== "") parts.push({ type: "text", text });
 		if (mediaError !== null) {
-			log.error("media intake failed", mediaError, { conversation: conv.id });
+			log.error("media intake failed", mediaError, { conversation: convId });
 			parts.push({
 				type: "text",
 				text: `${ATTACHMENT_FAILED_PREFIX} ${String(mediaError)}]`,
@@ -233,7 +275,7 @@ export function handleMessage(env: IntakeEnv, msg: Message): void {
 						// Transcription is enrichment, not intake — a whisper
 						// outage leaves the attachment path-referenced, not eaten.
 						log.warn("transcription failed — attachment kept", {
-							conversation: conv.id,
+							conversation: convId,
 							file: media.fileName,
 							error: String(err),
 						});
@@ -244,7 +286,7 @@ export function handleMessage(env: IntakeEnv, msg: Message): void {
 				// model that actually runs.
 				parts.push(...mediaParts(media, saved, transcript));
 			} catch (err) {
-				log.error("media intake failed", err, { conversation: conv.id });
+				log.error("media intake failed", err, { conversation: convId });
 				parts.push({
 					type: "text",
 					text: `${ATTACHMENT_FAILED_PREFIX} ${String(err)}]`,
@@ -252,7 +294,7 @@ export function handleMessage(env: IntakeEnv, msg: Message): void {
 			}
 		}
 
-		env.buffer.push(conv.id, { parts, replyTo: msg.message_id });
+		env.buffer.push(convId, { updateId, parts, replyTo: messageId });
 	});
 }
 
@@ -264,8 +306,7 @@ export function flushConversation(env: FlushEnv, convId: string, items: Buffered
 	const { deps } = env;
 	const conv = deps.store.get(convId);
 	if (!conv) {
-		log.error("flush for missing conversation", undefined, { conversation: convId });
-		return;
+		throw new Error(`flush for missing conversation: ${convId}`);
 	}
 	const parts = items.flatMap((i) => i.parts);
 	const replyTo = items[0]?.replyTo;
@@ -306,7 +347,10 @@ export function flushConversation(env: FlushEnv, convId: string, items: Buffered
 			: undefined,
 	);
 	try {
-		deps.runtime.submit(conv, userMessage(parts), sink);
+		env.inbox.commitBatch(items.map((i) => i.updateId), convId, () => {
+			deps.store.append(convId, [userMessage(parts)]);
+		});
+		deps.runtime.submitPersisted(conv, sink);
 	} catch (err) {
 		// The sink was already constructed (typing interval running) —
 		// release it or it ghosts "typing…" forever.
@@ -327,15 +371,32 @@ function enqueueIntake(
 	intake: Map<string, Promise<void>>,
 	convId: string,
 	step: () => Promise<void>,
-): void {
+): Promise<void> {
 	const prev = intake.get(convId) ?? Promise.resolve();
-	const next = prev.then(step).catch((err: unknown) => {
-		log.error("intake step failed", err, { conversation: convId });
-	});
+	const next = prev.catch(() => {}).then(step);
 	intake.set(convId, next);
-	void next.finally(() => {
+	// Keep the rejection visible to replay, while avoiding an unhandled
+	// rejection for the live (fire-and-forget) update path.
+	void next.then(() => {
+		if (intake.get(convId) === next) intake.delete(convId);
+	}, (err: unknown) => {
+		log.error("intake step failed", err, { conversation: convId });
 		if (intake.get(convId) === next) intake.delete(convId);
 	});
+	return next;
+}
+
+export async function replayInbox(env: IntakeEnv): Promise<void> {
+	const entries = env.inbox.pending();
+	// Queue every recovered entry before polling resumes, but never wait
+	// here for a wedged local file copy. New updates join the same
+	// per-conversation chain behind their recovered predecessors.
+	for (const entry of entries) {
+		void enqueuePersisted(env, entry).catch(() => {
+			// Logged by the chain; the row remains on disk for next boot.
+		});
+	}
+	log.info("telegram inbox recovery queued", { updates: entries.length });
 }
 
 export async function createBot(deps: BotDeps): Promise<RunningBot> {
@@ -359,16 +420,17 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 		titleAttempts: new Set<string>(),
 	};
 	const intake = new Map<string, Promise<void>>();
+	const inbox = openTelegramInbox(deps.store.db);
 	const buffer = new CoalescingBuffer<BufferedItem>(
 		QUIET_WINDOW_MS,
-		(convId, items) => flushConversation(base, convId, items),
+		(convId, items) => flushConversation({ ...base, inbox }, convId, items),
 		COALESCE_MAX_WAIT_MS,
 	);
-	const env: IntakeEnv = { ...base, buffer, intake };
+	const env: IntakeEnv = { ...base, buffer, intake, inbox };
 
 	bot.use(allowedUserGate(deps.configRef));
 
-	bot.on("message", (ctx) => handleMessage(env, ctx.message));
+	bot.on("message", (ctx) => handleMessageDurably(env, ctx.message, ctx.update.update_id));
 
 	bot.callbackQuery(SPEAK_CALLBACK, (ctx) => {
 		void handleSpeakButton(ctx.callbackQuery, {
@@ -397,10 +459,18 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 
 	bot.catch((err) => {
 		log.error("bot error", err.error, { update: String(err.ctx?.update?.update_id) });
+		if (err.error instanceof InboxRecordError) process.exit(1);
 	});
 
 	return {
 		bot,
+		replayInbox: () => replayInbox(env),
+		startPolling() {
+			void bot.start({ onStart: () => log.info("long polling started") }).catch((err: unknown) => {
+				log.error("long polling failed", err);
+				process.exit(1);
+			});
+		},
 		async drainIntake() {
 			// Drain before AND after the chains: a hung media resolution
 			// must not take already-buffered input down with it, and
@@ -446,15 +516,12 @@ export function applyCommands(api: Api): void {
 export async function startBot(deps: BotDeps): Promise<RunningBot> {
 	const running = await createBot(deps);
 	const { bot } = running;
-	log.info("telegram bot online", { bot: bot.botInfo.username });
+	log.info("telegram bot ready — polling after inbox replay", { bot: bot.botInfo.username });
 
 	// Unconditional: an unset publicUrl must reset the button to default,
 	// not leave a stale web_app link from a previous config.
 	applyMenuButton(bot.api, deps.configRef.current.publicUrl);
 	applyCommands(bot.api);
 
-	bot.start({
-		onStart: () => log.info("long polling started"),
-	});
 	return running;
 }

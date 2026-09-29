@@ -499,6 +499,12 @@ async function boot() {
 				})
 			: null;
 
+	// Recover inbox rows before polling new updates. The delegation/tool
+	// closures above must exist before recovered turns can run, and the
+	// polling offset must not advance ahead of journaled input.
+	await tg.replayInbox();
+	tg.startPolling();
+
 	// The search and transcription blocks' enable/disable redraw the
 	// registered tool set — a cache boundary per DESIGN.md "Web access" —
 	// so each flip gets its own line, not just the generic

@@ -139,7 +139,8 @@ import { openStore, type ConversationStore } from "../conversation.ts";
 import type { Runtime, TurnSink } from "../runtime.ts";
 import type { AuthStore } from "../auth.ts";
 import { CoalescingBuffer } from "./buffer.ts";
-import { flushConversation, handleMessage, type IntakeEnv } from "./mod.ts";
+import { flushConversation, handleMessage, handleMessageDurably, replayInbox, InboxRecordError, type IntakeEnv } from "./mod.ts";
+import { openTelegramInbox } from "./inbox.ts";
 
 let intakeDirs: string[] = [];
 function tmpdb(): string {
@@ -159,7 +160,7 @@ function tgMsg(p: Record<string, unknown>): Message {
 
 interface RouterHarness {
 	env: IntakeEnv;
-	pushed: Array<{ conv: string; parts: UIMessage["parts"]; replyTo: number | undefined }>;
+	pushed: Array<{ conv: string; parts: UIMessage["parts"]; replyTo: number | undefined; updateId: number }>;
 	apiCalls: Array<{ method: string; text?: string }>;
 	stopped: string[];
 	store: ConversationStore;
@@ -185,17 +186,17 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 		sendVoice: () => Promise.resolve({ message_id: 1 }),
 	} as unknown as IntakeEnv["api"];
 	const buffer = {
-		push: (conv: string, item: { parts: UIMessage["parts"]; replyTo: number | undefined }) => {
-			pushed.push({ conv, parts: item.parts, replyTo: item.replyTo });
+		push: (conv: string, item: { parts: UIMessage["parts"]; replyTo: number | undefined; updateId: number }) => {
+			pushed.push({ conv, parts: item.parts, replyTo: item.replyTo, updateId: item.updateId });
 		},
-	} as unknown as CoalescingBuffer<{ parts: UIMessage["parts"]; replyTo: number | undefined }>;
+	} as unknown as IntakeEnv["buffer"];
 	const env: IntakeEnv = {
 		deps: {
 			configRef: { current: config, ttsDown: false },
 			auth: {} as unknown as AuthStore,
 			store,
 			runtime: {
-				submit: () => {},
+				submitPersisted: () => {},
 				stop: (id: string) => {
 					stopped.push(id);
 					return { stopped: true, settled: Promise.resolve() };
@@ -212,8 +213,26 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 		titleAttempts: new Set<string>(),
 		buffer,
 		intake: new Map<string, Promise<void>>(),
+		inbox: openTelegramInbox(store.db),
 	};
 	return { env, pushed, apiCalls, stopped, store };
+}
+
+function handleTestMessage(env: IntakeEnv, msg: Message): void {
+	handleMessage(env, msg, msg.message_id);
+}
+
+let nextFlushUpdate = 100;
+function flushTest(env: IntakeEnv, convId: string, items: Array<{parts: UIMessage["parts"]; replyTo?: number}>): void {
+	const buffered = items.map((item) => {
+		const updateId = nextFlushUpdate++;
+		env.inbox.record(updateId, {
+			conversationId: convId, chatId: -100, messageId: updateId,
+			text: "", media: null, mediaError: null,
+		});
+		return { parts: item.parts, replyTo: item.replyTo, updateId };
+	});
+	flushConversation(env, convId, buffered);
 }
 
 describe("handleMessage", () => {
@@ -224,7 +243,7 @@ describe("handleMessage", () => {
 			...baseConfig,
 			tts: { kind: "edge", voice: "en-US-AriaNeural" },
 		});
-		handleMessage(
+		handleTestMessage(
 			h.env,
 			tgMsg({ message_id: 1, chat: { id: 1, type: "private" }, text: "/voice" }),
 		);
@@ -238,7 +257,7 @@ describe("handleMessage", () => {
 
 	test("a caption that looks like a command must not eat its media", async () => {
 		const h = routerHarness();
-		handleMessage(
+		handleTestMessage(
 			h.env,
 			tgMsg({
 				message_id: 2,
@@ -261,7 +280,7 @@ describe("handleMessage", () => {
 
 	test("malformed photo metadata becomes a failed attachment, not a dropped update", async () => {
 		const h = routerHarness();
-		handleMessage(h.env, tgMsg({
+		handleTestMessage(h.env, tgMsg({
 			message_id: 3,
 			chat: { id: 1, type: "private" },
 			photo: [null],
@@ -273,9 +292,25 @@ describe("handleMessage", () => {
 		h.store.close();
 	});
 
+	test("malformed document metadata is journaled as a failed attachment, not a boot loop", async () => {
+		const h = routerHarness();
+		handleMessage(h.env, tgMsg({
+			message_id: 33,
+			chat: { id: 1, type: "private" },
+			document: { file_id: "f", file_unique_id: null },
+		}), 330);
+		expect(h.env.inbox.pending()[0]!.payload.media).toBeNull();
+		expect(h.env.inbox.pending()[0]!.payload.mediaError).not.toBeNull();
+		await h.env.intake.get("dm:1");
+		expect(h.pushed[0]!.parts).toEqual([
+			{ type: "text", text: expect.stringContaining("[attachment failed to download:") },
+		]);
+		h.store.close();
+	});
+
 	test("a message with neither text nor media is dropped", () => {
 		const h = routerHarness();
-		handleMessage(
+		handleTestMessage(
 			h.env,
 			tgMsg({ message_id: 3, chat: { id: 1, type: "private" }, new_chat_title: "x" }),
 		);
@@ -285,7 +320,7 @@ describe("handleMessage", () => {
 
 	test("an unmatched /word falls through to a normal message", async () => {
 		const h = routerHarness();
-		handleMessage(
+		handleTestMessage(
 			h.env,
 			tgMsg({ message_id: 4, chat: { id: 1, type: "private" }, text: "/notacommand" }),
 		);
@@ -309,8 +344,8 @@ describe("flushConversation", () => {
 				return Promise.resolve(title === "" ? null : title);
 			},
 			runtime: {
-				submit: (c: { id: string }, m: UIMessage, s: TurnSink) => {
-					submitted.push({ conv: c.id, parts: m.parts, sink: s });
+				submitPersisted: (c: { id: string }, s: TurnSink) => {
+					submitted.push({ conv: c.id, parts: h.store.history(c.id).at(-1)!.parts, sink: s });
 				},
 			} as unknown as Runtime,
 		};
@@ -326,7 +361,7 @@ describe("flushConversation", () => {
 			...baseConfig,
 			titleModel: "zai/t",
 		});
-		flushConversation(h.env, conv.id, [
+		flushTest(h.env, conv.id, [
 			{
 				parts: [{ type: "text", text: "[attachment failed to download: boom]" }],
 				replyTo: 5,
@@ -351,13 +386,13 @@ describe("flushConversation", () => {
 			titleModel: "zai/t",
 		});
 		setTitle(null); // first attempt: provider unusable
-		flushConversation(h.env, conv.id, [
+		flushTest(h.env, conv.id, [
 			{ parts: [{ type: "text", text: "hello" }], replyTo: 1 },
 		]);
 		expect(titleCalls).toEqual(["hello"]);
 		await Bun.sleep(10);
 		setTitle("Titled");
-		flushConversation(h.env, conv.id, [
+		flushTest(h.env, conv.id, [
 			{ parts: [{ type: "text", text: "again" }], replyTo: 2 },
 		]);
 		await Bun.sleep(10);
@@ -368,7 +403,7 @@ describe("flushConversation", () => {
 
 	test("no titleModel configured — titling never fires, the turn still submits", async () => {
 		const { h, conv, submitted, titleCalls } = topicHarness(baseConfig);
-		flushConversation(h.env, conv.id, [
+		flushTest(h.env, conv.id, [
 			{ parts: [{ type: "text", text: "hello" }], replyTo: 1 },
 		]);
 		expect(titleCalls).toEqual([]);
@@ -383,14 +418,14 @@ describe("flushConversation", () => {
 		h.env.deps = {
 			...h.env.deps,
 			runtime: {
-				submit: (_c: unknown, _m: unknown, s: TurnSink) => {
+				submitPersisted: (_c: unknown, s: TurnSink) => {
 					seen = s;
 					throw new Error("queue closed");
 				},
 			} as unknown as Runtime,
 		};
 		expect(() =>
-			flushConversation(h.env, conv.id, [
+			flushTest(h.env, conv.id, [
 				{ parts: [{ type: "text", text: "hi" }], replyTo: 1 },
 			]),
 		).toThrow("queue closed");
@@ -401,14 +436,141 @@ describe("flushConversation", () => {
 		expect(
 			h.apiCalls.some((c) => c.method === "sendMessage" && c.text?.includes("queue closed")),
 		).toBe(true);
+		expect(h.env.inbox.pending()).toEqual([]); // commit precedes admission
 	});
 
-	test("a flush for a missing conversation submits nothing and survives", () => {
+	test("a flush for a missing conversation fails without consuming its row", () => {
 		const h = routerHarness(baseConfig);
 		expect(() =>
-			flushConversation(h.env, "dm:404", [
+			flushTest(h.env, "dm:404", [
 				{ parts: [{ type: "text", text: "hi" }], replyTo: 1 },
 			]),
-		).not.toThrow();
+		).toThrow("flush for missing conversation");
+		expect(h.env.inbox.pending()).toHaveLength(1);
+	});
+});
+
+describe("durable intake", () => {
+	test("duplicate update is not enqueued twice; commands and service messages are not journaled", async () => {
+		const h = routerHarness();
+		const msg = tgMsg({ message_id: 50, chat: { id: 1, type: "private" }, text: "hello" });
+		handleMessage(h.env, msg, 500);
+		handleMessage(h.env, msg, 500);
+		handleMessage(h.env, tgMsg({ message_id: 51, chat: msg.chat, text: "/stop" }), 501);
+		handleMessage(h.env, tgMsg({ message_id: 52, chat: msg.chat, new_chat_title: "hi" }), 502);
+		await h.env.intake.get("dm:1");
+		expect(h.pushed).toHaveLength(1);
+		expect(h.env.inbox.pending().map((e) => e.updateId)).toEqual([500]);
+		h.store.close();
+	});
+
+	test("replay resolves persisted media and commits once before admitting a turn", async () => {
+		const h = routerHarness();
+		const msg = tgMsg({ message_id: 61, chat: { id: 1, type: "private" },
+			caption: "look", photo: [{ file_id: "f", file_unique_id: "u", width: 8, height: 8 }] });
+		handleMessage(h.env, msg, 601);
+		expect(h.env.inbox.pending()).toEqual([{
+			updateId: 601,
+			payload: { conversationId: "dm:1", chatId: 1, messageId: 61, text: "look",
+				media: { fileId: "f", fileUniqueId: "u", fileName: "photo-u.jpg", mimeType: "image/jpeg" },
+				mediaError: null },
+		}]);
+		handleMessage(h.env, tgMsg({ message_id: 62, chat: { id: 1, type: "private" }, text: "after" }), 602);
+		await h.env.intake.get("dm:1");
+		// Simulate a restart after journaling but before flush: old buffered
+		// parts are lost; replay uses only the normalized SQLite payload.
+		const submitted: UIMessage[][] = [];
+		h.env.deps.runtime = {
+			submitPersisted: (conv: { id: string }, sink: TurnSink) => {
+				submitted.push(h.store.history(conv.id));
+				void sink.onDone({ kind: "completed" });
+			},
+		} as unknown as Runtime;
+		h.env.intake = new Map();
+		h.env.buffer = new CoalescingBuffer(60_000,
+			(id, items) => flushConversation(h.env, id, items), 120_000);
+		await replayInbox(h.env);
+		// Scheduling recovery is non-blocking: new polling can start while
+		// a media download waits, but each conversation keeps its order.
+		await Promise.all([...h.env.intake.values()]);
+		h.env.buffer.drain();
+		expect(submitted).toHaveLength(1);
+		expect(submitted[0]).toHaveLength(1);
+		expect(JSON.stringify(submitted[0])).toContain("[attachment failed to download:");
+		expect(JSON.stringify(submitted[0])).toContain("after");
+		expect(h.env.inbox.pending()).toEqual([]);
+		await replayInbox(h.env);
+		handleMessage(h.env, msg, 601); // Telegram redelivery after commit
+		expect(submitted).toHaveLength(1);
+		expect(h.store.history("dm:1")).toHaveLength(1);
+		h.store.close();
+	});
+
+	test("failed history append rolls back inbox acknowledgement; retry commits exactly once", () => {
+		const h = routerHarness();
+		const conv = h.store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		h.env.inbox.record(700, { conversationId: conv.id, chatId: 1, messageId: 70,
+			text: "retry", media: null, mediaError: null });
+		const item = { updateId: 700, parts: [{ type: "text" as const, text: "retry" }], replyTo: 70 };
+		const originalStore = h.store;
+		h.env.deps.store = { ...originalStore, append: () => { throw new Error("disk failed"); } };
+		expect(() => flushConversation(h.env, conv.id, [item])).toThrow("disk failed");
+		expect(originalStore.history(conv.id)).toHaveLength(0);
+		expect(h.env.inbox.pending()).toHaveLength(1);
+		h.env.deps.store = originalStore;
+		flushConversation(h.env, conv.id, [item]);
+		expect(originalStore.history(conv.id)).toHaveLength(1);
+		expect(h.env.inbox.pending()).toEqual([]);
+		originalStore.close();
+	});
+
+	test("journal insert failure is a fatal-class synchronous error", () => {
+		const h = routerHarness();
+		h.store.db.run("DROP TABLE tg_inbox");
+		expect(() => handleMessage(h.env, tgMsg({ message_id: 80,
+			chat: { id: 1, type: "private" }, text: "hello" }), 800)).toThrow(InboxRecordError);
+		expect(h.pushed).toHaveLength(0);
+		h.store.close();
+	});
+
+	test("a conversation write failure before journaling also stops acknowledgement", () => {
+		const h = routerHarness();
+		h.env.deps.store = {
+			...h.store,
+			resolve: () => { throw new Error("database unavailable"); },
+		};
+		expect(() => handleMessageDurably(h.env, tgMsg({
+			message_id: 81, chat: { id: 1, type: "private" }, text: "hello",
+		}), 801)).toThrow(InboxRecordError);
+		expect(h.env.inbox.pending()).toEqual([]);
+		h.store.close();
+	});
+
+	test("recovery queues a stalled attachment without blocking a different chat", async () => {
+		const h = routerHarness();
+		const first = h.store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const other = h.store.resolve({ kind: "dm", chatId: 2 }, "/w");
+		h.env.inbox.record(901, { conversationId: first.id, chatId: 1, messageId: 91,
+			text: "", media: { fileId: "f", fileUniqueId: "u", fileName: "a.jpg", mimeType: "image/jpeg" },
+			mediaError: null });
+		h.env.inbox.record(902, { conversationId: first.id, chatId: 1, messageId: 92,
+			text: "second", media: null, mediaError: null });
+		h.env.inbox.record(903, { conversationId: other.id, chatId: 2, messageId: 93,
+			text: "other", media: null, mediaError: null });
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		h.env.api.getFile = async () => {
+			await gate;
+			throw new Error("download unavailable");
+		};
+		await replayInbox(h.env); // only schedules; does not wait for getFile
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(h.pushed.map((item) => item.parts)).toEqual([[{ type: "text", text: "other" }]]);
+		release();
+		await Promise.all([...h.env.intake.values()]);
+		expect(h.pushed.map((item) => item.conv)).toEqual(["dm:2", "dm:1", "dm:1"]);
+		expect(h.pushed[2]!.parts).toEqual([{ type: "text", text: "second" }]);
+		h.store.close();
 	});
 });

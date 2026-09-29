@@ -296,7 +296,10 @@ function parseEvent(conversation: string, seq: number, role: string, data: strin
 export function openStore(dbPath: string): ConversationStore {
 	const db = new Database(dbPath);
 	db.run("PRAGMA journal_mode = WAL");
-	db.run("PRAGMA synchronous = NORMAL");
+	// Telegram acknowledges an update after its inbox insert. WAL/NORMAL
+	// survives a process crash, but a host power loss can discard an
+	// acknowledged commit; FULL syncs each commit before we return.
+	db.run("PRAGMA synchronous = FULL");
 	db.run("PRAGMA foreign_keys = ON");
 	db.run(`
 		CREATE TABLE IF NOT EXISTS conversations (

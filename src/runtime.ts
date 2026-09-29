@@ -235,6 +235,17 @@ export class Runtime {
 	// True means admitted to a lane; false means history-only after close.
 	submit(conv: Conversation, message: UIMessage, sink: TurnSink): boolean {
 		this.deps.store.append(conv.id, [message]);
+		return this.admit(conv, sink);
+	}
+
+	// Telegram's durable inbox commits its user event and consumes the
+	// inbox batch in one SQLite transaction before reaching this method.
+	// Never append again here: that would duplicate a recovered turn.
+	submitPersisted(conv: Conversation, sink: TurnSink): boolean {
+		return this.admit(conv, sink);
+	}
+
+	private admit(conv: Conversation, sink: TurnSink): boolean {
 		if (this.closed) {
 			void this.notifyDone({ sink, doneSent: false }, { kind: "fenced" });
 			return false;

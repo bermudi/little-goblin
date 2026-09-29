@@ -24,6 +24,13 @@ const msg = (text: string): UIMessage => ({
 });
 
 describe("conversation store", () => {
+	test("acknowledged inbox writes use WAL FULL sync on the shared connection", () => {
+		const store = openStore(tmpdb());
+		const result = store.db.query<{ synchronous: number }, []>("PRAGMA synchronous").get();
+		expect(result?.synchronous).toBe(2);
+		store.close();
+	});
+
 	test("history preserves valid top-level UI message metadata after reopening", () => {
 		const path = tmpdb();
 		const store = openStore(path);

@@ -1514,7 +1514,20 @@ account, no audit trail. Rulings:
   the window is **500ms** (3× observed worst) while polling the public API.
   RTT-sized gaps are structural there; 200–300ms becomes safe only when
   polling goes LAN-side (self-hosted bot-api). The 10s dribble ceiling
-  stands.
+  stands. An allowed, non-command Telegram message is recorded in a
+  SQLite inbox by update id before asynchronous media work or polling
+  acknowledgement. A duplicate update never makes a second turn. At
+  boot pending rows are queued for replay before polling starts; media
+  resolution does not block polling, but new messages in the same
+  conversation wait behind recovered ones. Once the batch resolves,
+  the combined user event enters history and the inbox rows become
+  compact tombstones in one transaction. A failed history write leaves
+  rows replayable after a crash. A history-committed turn does not rerun
+  after a model crash (the normal half-run rule). A journal failure
+  stops polling rather than acknowledging input held only in RAM. This
+  store connection uses WAL/FULL so an acknowledged journal commit also
+  survives a host power loss. This protects future updates, not input
+  lost before the inbox was deployed.
 - **Delivery**: `streamText` deltas → throttled message edits (~1/s), final
   flush on completion. Typing indicator while a turn runs. Errors post a short
   message and log structured detail. A definite Telegram send failure may

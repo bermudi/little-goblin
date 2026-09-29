@@ -5,7 +5,7 @@
 // the same DB resumes where the dead one left off.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -195,6 +195,55 @@ describe("delegation watcher", () => {
 		expect(h.wakes[0]).toContain("[delegation: fast finisher · done]");
 	});
 
+	test("a follow-up inside the skew window ignores the previous report but accepts an immediate new one", async () => {
+		const h = harness();
+		const d = runningRow(h, "follow-up", 5);
+		h.agents.set(d.agentName, agent(d.agentName, "idle", 5));
+		const dir = join(h.delegationsDir, String(d.id));
+		mkdirSync(dir, { recursive: true });
+		const reportPath = join(dir, "report.md");
+		writeFileSync(reportPath, "# previous run");
+		const owner = startDelegationLifecycle(h.deps);
+		// A report written immediately before send remains within 200 ms
+		// of the new prompt, even on a filesystem with coarse mtimes.
+		utimesSync(reportPath, new Date(), new Date());
+		expect((await owner.send(d.id, "another task")).kind).toBe("sent");
+		expect(readdirSync(dir).filter((name) => name.startsWith("report-"))).toHaveLength(1);
+		const archived = readdirSync(dir).find((name) => name.startsWith("report-"))!;
+		expect(readFileSync(join(dir, archived), "utf8")).toBe("# previous run");
+		await owner.tick();
+		expect(h.store.get(d.id)!.status).toBe("running");
+		expect(h.wakes).toEqual([]);
+
+		// The agent can finish during the prompt round-trip; its report
+		// should still complete the run even if get already saw its seq.
+		h.deps.herdr = {
+			...h.deps.herdr,
+			prompt: async () => { writeFileSync(reportPath, "# current run"); },
+		};
+		expect((await owner.send(d.id, "next task")).kind).toBe("sent");
+		await owner.tick();
+		owner.stopTicker();
+		expect(h.store.get(d.id)!.status).toBe("done");
+		expect(h.wakes).toHaveLength(1);
+		expect(h.wakes[0]).toContain("# current run");
+		expect(h.wakes[0]).not.toContain("# previous run");
+	});
+
+	test("an unreadable report path refuses a follow-up before prompting", async () => {
+		const h = harness();
+		const d = runningRow(h, "bad report path", 1);
+		writeFileSync(h.delegationsDir, "not a directory");
+		let prompted = false;
+		h.deps.herdr = { ...h.deps.herdr, prompt: async () => { prompted = true; } };
+		const owner = startDelegationLifecycle(h.deps);
+		const out = await owner.send(d.id, "another task");
+		owner.stopTicker();
+		expect(out.kind).toBe("prompt failed");
+		expect(prompted).toBe(false);
+		expect(h.store.get(d.id)!.status).toBe("running");
+	});
+
 	test("agent gone → failed, notice carries the pane tail", async () => {
 		const h = harness();
 		const d = runningRow(h, "died", 1);
@@ -222,6 +271,22 @@ describe("delegation watcher", () => {
 		expect(h.wakes[0]).toContain(`… full report at ${reportPath}`);
 		expect(h.wakes[0]).not.toContain("agent screen");
 		expect(h.wakes[0]!.length).toBeLessThan(17 * 1024);
+	});
+
+	test("multibyte report excerpt respects the 16 KiB byte cap and UTF-8 boundaries", async () => {
+		const h = harness();
+		const d = runningRow(h, "unicode report", 1);
+		h.agents.set(d.agentName, agent(d.agentName, "idle", 2));
+		mkdirSync(join(h.delegationsDir, String(d.id)), { recursive: true });
+		const reportPath = join(h.delegationsDir, String(d.id), "report.md");
+		writeFileSync(reportPath, "😀".repeat(5_000));
+		const w = startDelegationLifecycle(h.deps);
+		await w.tick();
+		w.stopTicker();
+		const excerpt = h.wakes[0]!.split(`\n\n… full report at ${reportPath}`)[0]!.split('<event source="delegation">\n')[1]!;
+		expect(Buffer.byteLength(excerpt, "utf8")).toBeLessThanOrEqual(16 * 1024);
+		expect(excerpt).not.toContain("�");
+		expect(excerpt).toContain("😀");
 	});
 
 	test("a small report file is used whole, screen ignored", async () => {

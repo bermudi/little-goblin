@@ -26,7 +26,8 @@
 // means goblin died mid-start: its workspace is closed and it reports
 // failed once.
 
-import { mkdirSync, readFileSync, statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { log } from "./log.ts";
 import {
@@ -427,6 +428,23 @@ async function send(
 	if (d.status === "stopped") return { kind: "refused", id, why: "stopped" };
 	if (d.status === "starting") return { kind: "refused", id, why: "starting" };
 	if (!d.agentName) return { kind: "refused", id, why: "never launched" };
+	// Move the previous run's report out of the live slot before prompting.
+	// Its mtime may fall inside the watcher's 200 ms clock-skew allowance;
+	// only a report written to this path after the send can finish the new run.
+	// Keep the old report inspectable rather than deleting it.
+	const reportPath = reportPathFor(deps, d.id);
+	try {
+		const archivedPath = join(reportDirFor(deps, d.id), `report-${randomUUID()}.md`);
+		renameSync(reportPath, archivedPath);
+		log.info("delegation previous report archived", {
+			delegation: d.id, reportPath, archivedPath,
+		});
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+			log.error("delegation report archive failed", err, { delegation: d.id, reportPath });
+			return { kind: "prompt failed", error: `report archive failed: ${String(err)}` };
+		}
+	}
 	// The prompt clock starts before the send: an agent that finishes
 	// during the round-trip must read as fresh work, not stale (the
 	// report freshness check compares to this).
@@ -532,7 +550,20 @@ async function reportBody(
 	try {
 		const size = statSync(reportPath).size;
 		if (size > REPORT_CAP) {
-			const head = readFileSync(reportPath, "utf8").slice(0, REPORT_CAP);
+			// Decode a byte prefix, not REPORT_CAP UTF-16 units. A cut through
+			// a UTF-8 sequence (or malformed input) may expand to U+FFFD, so
+			// bound the encoded excerpt too without splitting a code point.
+			let head = readFileSync(reportPath).subarray(0, REPORT_CAP).toString("utf8");
+			if (Buffer.byteLength(head, "utf8") > REPORT_CAP) {
+				let bytes = 0;
+				let safe = "";
+				for (const char of head) {
+					bytes += Buffer.byteLength(char, "utf8");
+					if (bytes > REPORT_CAP) break;
+					safe += char;
+				}
+				head = safe;
+			}
 			return `${head}\n\n… full report at ${reportPath}`;
 		}
 		return readFileSync(reportPath, "utf8");

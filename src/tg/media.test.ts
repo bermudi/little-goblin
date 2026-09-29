@@ -153,7 +153,8 @@ describe("saveAttachment", () => {
 			const handle = await realOpen(path, flags, mode);
 			const realSync = handle.sync.bind(handle);
 			handle.sync = async () => {
-				synced.push(String(path) === paths.attachments() ? "directory" : "temp");
+				synced.push(String(path) === paths.attachments() ? "directory" :
+					String(path) === paths.workspace() ? "workspace" : "temp");
 				await realSync();
 			};
 			return handle;
@@ -163,7 +164,7 @@ describe("saveAttachment", () => {
 				media, { file_path: "cloud/file" } as TgFile, undefined, "token",
 			);
 			expect(readFileSync(saved.path, "utf8")).toBe("downloaded");
-			expect(synced).toEqual(["temp", "directory"]);
+			expect(synced).toEqual(["workspace", "temp", "directory"]);
 			expect(fetched).toHaveBeenCalledTimes(1);
 		} finally {
 			opened.mockRestore();
@@ -180,7 +181,8 @@ describe("saveAttachment", () => {
 		const realRename = fsPromises.rename;
 		const opened = spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
 			const handle = await realOpen(path, flags, mode);
-			const kind = String(path) === paths.attachments() ? "directory" : "temp";
+			const kind = String(path) === paths.attachments() ? "directory" :
+				String(path) === paths.workspace() ? "workspace" : "temp";
 			const realSync = handle.sync.bind(handle);
 			handle.sync = async () => {
 				events.push(`sync:${kind}`);
@@ -195,11 +197,32 @@ describe("saveAttachment", () => {
 		try {
 			const saved = await saveAttachment(media, { file_path: src } as TgFile, undefined, "token");
 			expect(readFileSync(saved.path, "utf8")).toBe("payload");
-			expect(events).toEqual(["sync:temp", "rename", "sync:directory"]);
+			expect(events).toEqual(["sync:workspace", "sync:temp", "rename", "sync:directory"]);
 		} finally {
 			opened.mockRestore();
 			renamed.mockRestore();
 		}
+	});
+
+	test("a new attachments directory needs its parent synced before any file is published", async () => {
+		const dir = useHome();
+		const src = join(dir, "upload.bin");
+		writeFileSync(src, "payload");
+		const realOpen = fsPromises.open;
+		const opened = spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
+			const handle = await realOpen(path, flags, mode);
+			if (String(path) === paths.workspace()) {
+				handle.sync = async () => { throw new Error("parent I/O failure"); };
+			}
+			return handle;
+		});
+		try {
+			await expect(saveAttachment(media, { file_path: src } as TgFile, undefined, "token"))
+				.rejects.toThrow("attachment parent directory sync failed");
+		} finally {
+			opened.mockRestore();
+		}
+		expect(readdirSync(paths.attachments())).toEqual([]);
 	});
 
 	test("temp sync failure rejects without replacing the previous attachment", async () => {
@@ -212,7 +235,9 @@ describe("saveAttachment", () => {
 		const realOpen = fsPromises.open;
 		const opened = spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
 			const handle = await realOpen(path, flags, mode);
-			handle.sync = async () => { throw new Error("disk I/O failure token"); };
+			if (String(path) !== paths.workspace()) {
+				handle.sync = async () => { throw new Error("disk I/O failure token"); };
+			}
 			return handle;
 		});
 		try {

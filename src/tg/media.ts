@@ -7,7 +7,7 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { copyFile, mkdir, open, rename, stat, unlink } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { File as TgFile } from "grammy/types";
 import type { UIMessage } from "ai";
 import { z } from "zod";
@@ -145,6 +145,20 @@ export async function saveAttachment(
 	// Telegram's unique id is untrusted input, not a path component.
 	const uniqueId = z.string().regex(/^[A-Za-z0-9_-]+$/).parse(media.fileUniqueId);
 	await mkdir(paths.attachments(), { recursive: true });
+	// ensureHomeLayout syncs first-boot directory creation. Also cover
+	// attachments/ being recreated later: its name must be durable in
+	// workspace/ before history can commit a path inside it.
+	try {
+		const parent = await open(dirname(paths.attachments()), "r");
+		try {
+			await parent.sync();
+		} finally {
+			await parent.close();
+		}
+	} catch (err) {
+		const detail = String(err);
+		throw new Error(`telegram attachment parent directory sync failed: ${token ? detail.replaceAll(token, "***") : detail}`);
+	}
 	const safe = basename(media.fileName).replace(/[^\w.\-]+/g, "_");
 	const dest = join(paths.attachments(), `${uniqueId}-${safe}`);
 	const temp = join(paths.attachments(), `.${uniqueId}-${randomUUID()}.tmp`);

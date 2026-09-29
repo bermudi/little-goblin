@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { setLogFile, setLogWriter } from "./log.ts";
+import * as fs from "node:fs";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -318,6 +319,32 @@ describe("goblin.json5", () => {
 });
 
 describe("ensureHomeLayout", () => {
+	test("first-boot directory names are synced before state and attachments are used", () => {
+		const dir = useHome();
+		const opened = new Map<number, string>();
+		const synced: string[] = [];
+		const realOpen = fs.openSync;
+		const realSync = fs.fsyncSync;
+		const openSpy = spyOn(fs, "openSync").mockImplementation((path, flags, mode) => {
+			const fd = realOpen(path, flags, mode);
+			opened.set(fd, String(path));
+			return fd;
+		});
+		const syncSpy = spyOn(fs, "fsyncSync").mockImplementation((fd) => {
+			const path = opened.get(fd);
+			if (path) synced.push(path);
+			realSync(fd);
+		});
+		try {
+			ensureHomeLayout();
+			expect(synced).toContain(dir); // workspace/ and state/ entries
+			expect(synced).toContain(join(dir, "workspace")); // attachments/ entry
+		} finally {
+			syncSpy.mockRestore();
+			openSpy.mockRestore();
+		}
+	});
+
 	test("first boot seeds SOUL.md and the AGENTS.md stub", () => {
 		const dir = useHome();
 		ensureHomeLayout();

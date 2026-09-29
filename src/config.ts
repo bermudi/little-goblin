@@ -2,9 +2,9 @@
 // No secrets here; those live in auth.jsonl. The mini app is the
 // operator-facing editing surface; hand-editing always works.
 
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync } from "node:fs";
+import { closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import JSON5 from "json5";
 import { z } from "zod";
 import { durableWriteFile } from "./durable.ts";
@@ -40,7 +40,30 @@ export const paths = {
 
 export function ensureHomeLayout(): void {
 	for (const dir of [goblinHome(), paths.workspace(), paths.skills(), paths.attachments(), paths.state()]) {
-		mkdirSync(dir, { recursive: true });
+		// A WAL/FULL inbox commit cannot protect a database or attachment
+		// inside a directory whose name vanishes on first-boot power loss.
+		// Create missing ancestors from the oldest down and sync each
+		// parent after publishing its child's directory entry.
+		const missing: string[] = [];
+		for (let next = dir; ; next = dirname(next)) {
+			try {
+				lstatSync(next);
+				break;
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+				missing.unshift(next);
+				if (dirname(next) === next) throw new Error(`no existing parent for ${dir}`);
+			}
+		}
+		for (const next of missing) {
+			mkdirSync(next);
+			const parent = openSync(dirname(next), constants.O_RDONLY);
+			try {
+				fsyncSync(parent);
+			} finally {
+				closeSync(parent);
+			}
+		}
 	}
 	seedFile(
 		paths.soul(),

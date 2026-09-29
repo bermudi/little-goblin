@@ -1055,7 +1055,7 @@ async function runStagedReview(entry: QueueEntry, signal: AbortSignal, reviewDir
 				skills: published,
 			});
 		}
-		log.info("reviewer review done", {
+		log.info(publishError === null ? "reviewer review done" : "reviewer review partially published", {
 			review_id: reviewId,
 			conversation: conv,
 			changed: true,

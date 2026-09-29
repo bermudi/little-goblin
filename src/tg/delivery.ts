@@ -443,6 +443,7 @@ export function makeDeliverySink(
 				if (done.kind === "fenced") return;
 				if (done.kind === "error") {
 					enqueue(async () => {
+						if (!mayDeliver()) return;
 						await withTimeout(
 							api.sendMessage(conv.chatId, `⚠ ${done.message.slice(0, 200)}`, {
 								...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),

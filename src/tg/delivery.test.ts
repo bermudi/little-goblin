@@ -342,6 +342,19 @@ describe("delivery", () => {
 		await sink.onDone({ kind: "fenced" });
 	});
 
+	test("a queued voice-mode error notice cannot send after authority is revoked", async () => {
+		const { api, msgs } = fakeApi({});
+		let authoritative = true;
+		const sink = makeDeliverySink(api, conv, undefined, 0, {
+			voiceMode: true, synthesize: async () => [],
+		});
+		sink.setAuthorityCheck?.(() => authoritative);
+		const done = sink.onDone({ kind: "error", message: "failed" });
+		authoritative = false;
+		await done;
+		expect(msgs).toEqual([]);
+	});
+
 	test("voice-mode send failure falls back in Telegram-sized text chunks", async () => {
 		const { api, msgs } = fakeApi({});
 		api.sendVoice = async () => { throw new Error("voice send failed"); };

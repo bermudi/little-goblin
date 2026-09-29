@@ -161,29 +161,34 @@ function rowToProgram(row: unknown): Program {
 export function openPrograms(dbPath: string): ProgramsStore {
 	const db = new Database(dbPath);
 	db.exec("PRAGMA journal_mode = WAL");
-	// The legacy copy keys on whether the table is *new* this open — not
-	// on it being empty, or deleting every program would resurrect the
-	// legacy jobs on the next boot.
-	const isNewTable =
-		db.query(
-			"SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'programs'",
-		).get() === null;
-	db.exec(`CREATE TABLE IF NOT EXISTS programs (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		name TEXT NOT NULL,
-		charter TEXT NOT NULL,
-		cron TEXT,
-		hook_hash TEXT,
-		mail_filter TEXT,
-		mail_history_id TEXT,
-		chat_id INTEGER NOT NULL,
-		thread_id INTEGER,
-		enabled INTEGER NOT NULL DEFAULT 1,
-		created_at TEXT NOT NULL,
-		last_run TEXT,
-		next_run TEXT
-	)`);
-	if (isNewTable) copyLegacyJobs(db);
+	// Check, create, and copy in one transaction: a failed copy (or a
+	// crash) must not leave an empty programs table that prevents retry.
+	// An existing table, even if empty, never re-copies deleted jobs.
+	const copied = db.transaction((): number => {
+		const isNewTable =
+			db.query(
+				"SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'programs'",
+			).get() === null;
+		db.exec(`CREATE TABLE IF NOT EXISTS programs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			charter TEXT NOT NULL,
+			cron TEXT,
+			hook_hash TEXT,
+			mail_filter TEXT,
+			mail_history_id TEXT,
+			chat_id INTEGER NOT NULL,
+			thread_id INTEGER,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL,
+			last_run TEXT,
+			next_run TEXT
+		)`);
+		return isNewTable ? copyLegacyJobs(db) : 0;
+	})();
+	if (copied > 0) {
+		log.info("legacy jobs copied into programs", { count: copied });
+	}
 	// Existing DBs predate the mail trigger — additive columns, no rebuild.
 	const progCols = new Set(
 		db
@@ -337,24 +342,17 @@ export function openPrograms(dbPath: string): ProgramsStore {
 }
 
 // One-shot upgrade path: the `jobs` table predates programs (DESIGN.md).
-// Called only when `programs` was just created this open — every job
-// copies across in a single transaction (same ids, prompt → charter)
-// and `jobs` is left exactly as it was. A `programs` table that already
-// existed — even an empty one — never sees the copy again.
-function copyLegacyJobs(db: Database): void {
+// Called inside the table-creation transaction only when `programs` is
+// new. Copies same ids (prompt → charter) and leaves `jobs` untouched.
+function copyLegacyJobs(db: Database): number {
 	const jobsTable = db
 		.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'")
 		.get();
-	if (jobsTable === null) return;
-	const copied = db.transaction((): number => {
-		return db
-			.query(`INSERT INTO programs
-				(id, name, charter, cron, hook_hash, chat_id, thread_id, enabled, created_at, last_run, next_run)
-				SELECT id, name, prompt, cron, NULL, chat_id, thread_id, enabled, created_at, last_run, next_run
-				FROM jobs`)
-			.run().changes;
-	})();
-	if (copied > 0) {
-		log.info("legacy jobs copied into programs", { count: copied });
-	}
+	if (jobsTable === null) return 0;
+	return db
+		.query(`INSERT INTO programs
+			(id, name, charter, cron, hook_hash, chat_id, thread_id, enabled, created_at, last_run, next_run)
+			SELECT id, name, prompt, cron, NULL, chat_id, thread_id, enabled, created_at, last_run, next_run
+			FROM jobs`)
+		.run().changes;
 }

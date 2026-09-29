@@ -368,6 +368,30 @@ function createLegacyJobs(path: string, rows: number): void {
 }
 
 describe("legacy jobs copy", () => {
+	test("failed copy rolls back table creation so the next boot can retry", () => {
+		const path = tmpdb();
+		createLegacyJobs(path, 2);
+		const fixture = new Database(path);
+		fixture.exec("ALTER TABLE jobs RENAME COLUMN prompt TO missing_prompt");
+		fixture.close();
+
+		// The copy statement fails after CREATE TABLE. Neither the table
+		// nor a partial migration may survive the failed open.
+		expect(() => openPrograms(path)).toThrow("no such column: prompt");
+		const db = new Database(path);
+		expect(db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'programs'").get()).toBeNull();
+		expect(db.query("SELECT COUNT(*) AS count FROM jobs").get()).toEqual({ count: 2 });
+		db.exec("ALTER TABLE jobs RENAME COLUMN missing_prompt TO prompt");
+		db.close();
+
+		const retried = openPrograms(path);
+		expect(retried.list().map(({ id, charter }) => ({ id, charter }))).toEqual([
+			{ id: 1, charter: "prompt 1" },
+			{ id: 2, charter: "prompt 2" },
+		]);
+		retried.close();
+	});
+
 	test("jobs rows copy into programs once, keeping ids; jobs is untouched", () => {
 		const path = tmpdb();
 		createLegacyJobs(path, 2);

@@ -86,10 +86,10 @@ const envelopeSchema = z.object({ result: z.unknown() });
 function parseJson(verb: string, stdout: string): unknown {
 	try {
 		return JSON.parse(stdout);
-	} catch (err) {
-		throw new Error(
-			`herdr ${verb}: stdout is not JSON — ${(err as Error).message}; got: ${stdout.slice(0, 200)}`,
-		);
+	} catch {
+		// Parser diagnostics can quote a fragment of the CLI's stdout;
+		// don't put raw agent output into a log or error.
+		throw new Error(`herdr ${verb}: stdout is not JSON`);
 	}
 }
 
@@ -107,11 +107,23 @@ export interface Herdr {
 }
 
 export function makeHerdr(session: string, run: HerdrRunner = defaultRunner): Herdr {
-	// The one call site: run argv under the session, lift the error
-	// envelope on non-zero exit, log the boundary either way.
-	async function call(verb: string, target: string, args: string[]): Promise<HerdrRunResult> {
+	// The one call site: log success only after this verb's result has
+	// passed validation. Runner rejection and invalid output each get
+	// their own boundary line; neither can masquerade as a good call.
+	async function call<T>(
+		verb: string,
+		target: string,
+		args: string[],
+		parse: (stdout: string) => T,
+	): Promise<T> {
 		const t0 = Date.now();
-		const r = await run(["--session", session, ...args]);
+		let r: HerdrRunResult;
+		try {
+			r = await run(["--session", session, ...args]);
+		} catch (err) {
+			log.error("herdr call runner failed", err, { verb, target, ms: Date.now() - t0 });
+			throw err;
+		}
 		const ms = Date.now() - t0;
 		if (r.code !== 0) {
 			let code = `exit_${r.code}`;
@@ -126,16 +138,22 @@ export function makeHerdr(session: string, run: HerdrRunner = defaultRunner): He
 			log.info("herdr call", { verb, target, ms, outcome: `error:${code}` });
 			throw new HerdrError(verb, code, message);
 		}
+		let result: T;
+		try {
+			result = parse(r.stdout);
+		} catch (err) {
+			log.error("herdr call returned invalid output", err, { verb, target, ms });
+			throw err;
+		}
 		log.info("herdr call", { verb, target, ms, outcome: "ok" });
-		return r;
+		return result;
 	}
 
 	return {
 		async createWorkspace(cwd, label) {
-			const r = await call("workspace create", label, [
+			const parsed = await call("workspace create", label, [
 				"workspace", "create", "--cwd", cwd, "--label", label, "--no-focus",
-			]);
-			const parsed = workspaceCreatedSchema.parse(parseJson("workspace create", r.stdout));
+			], (stdout) => workspaceCreatedSchema.parse(parseJson("workspace create", stdout)));
 			return {
 				workspaceId: parsed.result.workspace.workspace_id,
 				paneId: parsed.result.root_pane.pane_id,
@@ -145,14 +163,14 @@ export function makeHerdr(session: string, run: HerdrRunner = defaultRunner): He
 		async startAgent(name, kind, paneId, args) {
 			const argv = ["agent", "start", name, "--kind", kind, "--pane", paneId];
 			if (args.length > 0) argv.push("--", ...args);
-			const r = await call("agent start", name, argv);
-			return agentResultSchema.parse(parseJson("agent start", r.stdout)).result.agent;
+			return (await call("agent start", name, argv,
+				(stdout) => agentResultSchema.parse(parseJson("agent start", stdout)))).result.agent;
 		},
 
 		async get(name) {
 			try {
-				const r = await call("agent get", name, ["agent", "get", name]);
-				return agentResultSchema.parse(parseJson("agent get", r.stdout)).result.agent;
+				return (await call("agent get", name, ["agent", "get", name],
+					(stdout) => agentResultSchema.parse(parseJson("agent get", stdout)))).result.agent;
 			} catch (err) {
 				if (err instanceof HerdrError && err.code === "agent_not_found") return null;
 				throw err;
@@ -160,32 +178,30 @@ export function makeHerdr(session: string, run: HerdrRunner = defaultRunner): He
 		},
 
 		async prompt(name, text) {
-			const r = await call("agent prompt", name, ["agent", "prompt", name, text]);
-			envelopeSchema.parse(parseJson("agent prompt", r.stdout));
+			await call("agent prompt", name, ["agent", "prompt", name, text],
+				(stdout) => envelopeSchema.parse(parseJson("agent prompt", stdout)));
 		},
 
 		async readAgent(name, lines) {
-			const r = await call("agent read", name, [
+			return call("agent read", name, [
 				"agent", "read", name, "--source", "recent-unwrapped", "--lines", String(lines),
-			]);
-			return r.stdout;
+			], (stdout) => stdout);
 		},
 
 		async readPane(paneId, lines) {
-			const r = await call("pane read", paneId, [
+			return call("pane read", paneId, [
 				"pane", "read", paneId, "--source", "recent-unwrapped", "--lines", String(lines),
-			]);
-			return r.stdout;
+			], (stdout) => stdout);
 		},
 
 		async interrupt(name) {
-			const r = await call("agent send-keys", name, ["agent", "send-keys", name, "ctrl+c"]);
-			envelopeSchema.parse(parseJson("agent send-keys", r.stdout));
+			await call("agent send-keys", name, ["agent", "send-keys", name, "ctrl+c"],
+				(stdout) => envelopeSchema.parse(parseJson("agent send-keys", stdout)));
 		},
 
 		async closeWorkspace(id) {
-			const r = await call("workspace close", id, ["workspace", "close", id]);
-			envelopeSchema.parse(parseJson("workspace close", r.stdout));
+			await call("workspace close", id, ["workspace", "close", id],
+				(stdout) => envelopeSchema.parse(parseJson("workspace close", stdout)));
 		},
 	};
 }

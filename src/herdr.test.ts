@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { HerdrError, makeHerdr, type HerdrRunResult } from "./herdr.ts";
+import { setLogFile, setLogWriter } from "./log.ts";
 
 function fakeRunner(results: HerdrRunResult[]) {
 	const calls: string[][] = [];
@@ -115,5 +116,23 @@ describe("herdr adapter", () => {
 		const f = fakeRunner([{ code: 0, stdout: "not json", stderr: "" }]);
 		const h = makeHerdr("goblin", f.run);
 		await expect(h.createWorkspace("/x", "l")).rejects.toThrow(/workspace create.*not JSON/);
+	});
+
+	test("invalid output and runner rejection never log a successful call", async () => {
+		const lines: Array<{ msg: string; outcome?: string }> = [];
+		setLogFile("herdr-test.log");
+		setLogWriter((_path, line) => { lines.push(JSON.parse(line) as { msg: string; outcome?: string }); });
+		try {
+			const invalid = makeHerdr("probe", async () => ({ code: 0, stdout: "not json", stderr: "" }));
+			await expect(invalid.get("a")).rejects.toThrow("not JSON");
+			const rejected = makeHerdr("probe", async () => { throw new Error("socket refused"); });
+			await expect(rejected.get("a")).rejects.toThrow("socket refused");
+			expect(lines.map((line) => line.msg)).toContain("herdr call returned invalid output");
+			expect(lines.map((line) => line.msg)).toContain("herdr call runner failed");
+			expect(lines.filter((line) => line.outcome === "ok")).toEqual([]);
+		} finally {
+			setLogWriter(null);
+			setLogFile(null);
+		}
 	});
 });

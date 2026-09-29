@@ -336,6 +336,7 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 				}
 				if (req.method === "POST") {
 					let body: unknown;
+					let wrote = false;
 					try {
 						body = await req.json();
 					} catch {
@@ -379,6 +380,7 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 							);
 						}
 						writeConfig(merged);
+						wrote = true;
 						const fresh = loadConfig();
 						if (fresh) deps.configRef.current = fresh;
 						deps.onConfigWritten();
@@ -387,12 +389,16 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 							headers: { ...NO_STORE, etag: configTag(fresh ?? merged) },
 						});
 					} catch (err) {
+						if (!(err instanceof z.ZodError)) {
+							log.error("mini app config save failed", err, { userId: user.id, wrote });
+							return Response.json({
+								error: wrote
+									? "settings were saved but could not be applied — check the service log"
+									: "settings could not be written — check the service log",
+							}, { status: 500, headers: NO_STORE });
+						}
 						const msg =
-							err instanceof z.ZodError
-								? z.prettifyError(err)
-								: err instanceof Error
-									? err.message
-									: String(err);
+							z.prettifyError(err);
 						return Response.json({ error: msg }, { status: 422, headers: NO_STORE });
 					}
 				}

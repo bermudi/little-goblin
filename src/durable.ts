@@ -65,16 +65,19 @@ function durableWriteBuffer(path: string, buf: Buffer, modeIfNew: number): void 
 	}
 	renameSync(tmp, path);
 	// fsync the directory so the rename itself is durable, not just the
-	// file's data. Best-effort: not every filesystem permits dir fsync,
-	// and the payload is already safe.
+	// file's data. Only an explicitly unsupported directory fsync may
+	// degrade; EIO and other failures leave rename durability unknown.
 	try {
 		const dfd = openSync(dirname(path), constants.O_RDONLY);
 		try {
 			fsyncSync(dfd);
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EOPNOTSUPP") throw err;
 		} finally {
 			closeSync(dfd);
 		}
-	} catch {
-		// directory fsync unsupported — the data is already durable
+	} catch (err) {
+		throw new Error(`directory sync failed for ${path}: ${String(err)}`, { cause: err });
 	}
 }

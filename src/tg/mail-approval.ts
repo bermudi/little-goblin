@@ -258,7 +258,7 @@ async function postMailDraft(
 	return messageId;
 }
 
-function chunkDraft(text: string): string[] {
+export function chunkDraft(text: string): string[] {
 	const chunks: string[] = [];
 	let rest = text;
 	while (rest.length > 0 && chunks.length < MAX_DRAFT_CHUNKS) {
@@ -269,6 +269,10 @@ function chunkDraft(text: string): string[] {
 		}
 		let cut = rest.lastIndexOf("\n", DRAFT_CHUNK);
 		if (cut < DRAFT_CHUNK / 2) cut = DRAFT_CHUNK;
+		// Don't split a UTF-16 surrogate pair at the hard boundary.
+		const before = rest.charCodeAt(cut - 1);
+		const after = rest.charCodeAt(cut);
+		if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff) cut--;
 		chunks.push(rest.slice(0, cut));
 		rest = rest.slice(cut).replace(/^\n/, "");
 	}

@@ -189,6 +189,35 @@ describe("mini-app http", () => {
 		}
 	});
 
+	test("a post-write apply failure reports that the settings were saved, not invalid", async () => {
+		useHome();
+		const configRef = { current: { ...baseConfig } };
+		const http = startHttp({
+			configRef, botToken: TOKEN, onConfigWritten: () => { throw new Error("apply failed"); },
+		});
+		const auth = makeInitData({
+			auth_date: String(Math.floor(Date.now() / 1000)),
+			user: JSON.stringify({ id: 42 }),
+		});
+		try {
+			const url = `http://127.0.0.1:${http.port}/api/config`;
+			const loaded = await fetch(url, { headers: { "x-init-data": auth } });
+			const saved = await fetch(url, {
+				method: "POST",
+				headers: {
+					"x-init-data": auth, "content-type": "application/json",
+					"if-match": loaded.headers.get("etag")!,
+				},
+				body: JSON.stringify({ logLevel: "debug" }),
+			});
+			expect(saved.status).toBe(500);
+			expect((await saved.json() as { error: string }).error).toContain("were saved");
+			expect(loadConfig()?.logLevel).toBe("debug");
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("a save never drops config blocks the page can't express (delegation)", async () => {
 		useHome();
 		const delegation = {

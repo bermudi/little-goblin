@@ -190,7 +190,11 @@ async function downloadAttachment(
 	try {
 		await Bun.write(dest, bytes);
 	} catch (err) {
-		await unlink(dest).catch(() => {});
+		await unlink(dest).catch((cleanupErr: unknown) => {
+			log.warn("mail attachment partial-file cleanup failed", {
+				path: dest, error: String(cleanupErr),
+			});
+		});
 		throw err;
 	}
 	log.info("mail attachment saved", {

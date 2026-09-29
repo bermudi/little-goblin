@@ -35,6 +35,7 @@
 // and logged.
 
 import {
+	chmodSync,
 	existsSync,
 	lstatSync,
 	mkdirSync,
@@ -663,6 +664,7 @@ function copySkillsTree(skillsDir: string, stagedDir: string): Map<string, strin
 				manifest.set(rel, sha256(content));
 				mkdirSync(dirname(join(stagedDir, rel)), { recursive: true });
 				writeFileSync(join(stagedDir, rel), content);
+				chmodSync(join(stagedDir, rel), stats.mode & 0o777);
 				bytes += content.byteLength;
 				if (manifest.size > MAX_STAGING_FILES || bytes > MAX_STAGING_BYTES) {
 					throw new StagingBudgetError(MAX_STAGING_FILES, MAX_STAGING_BYTES);

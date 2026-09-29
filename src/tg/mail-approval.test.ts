@@ -16,10 +16,19 @@ import { openOutbox, OUTBOX_TTL_MS, type OutboxStore } from "../mail-outbox.ts";
 import {
 	MAIL_CANCEL_PREFIX,
 	MAIL_SEND_PREFIX,
+	chunkDraft,
 	startMailApproval,
 	type MailApproval,
 	type MailApprovalDeps,
 } from "./mail-approval.ts";
+
+test("draft chunk boundaries never split an emoji", () => {
+	const chunks = chunkDraft(`${"x".repeat(3799)}🙂tail`);
+	expect(chunks).toHaveLength(2);
+	expect(chunks.join("")).toBe(`${"x".repeat(3799)}🙂tail`);
+	expect(chunks[0]?.endsWith("🙂")).toBe(false);
+	expect(chunks[1]?.startsWith("🙂")).toBe(true);
+});
 
 let dirs: string[] = [];
 let gates: MailApproval[] = [];

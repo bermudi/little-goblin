@@ -354,6 +354,26 @@ describe("review run — staging and publication", () => {
 		h.store.close();
 	});
 
+	test("publishing an edited skill preserves the executable mode of copied helpers", async () => {
+		const h = harness();
+		mkdirSync(join(h.skills, "existing"));
+		writeFileSync(join(h.skills, "existing", "SKILL.md"), SKILL_MD("existing", "before"));
+		const helper = join(h.skills, "existing", "helper.sh");
+		writeFileSync(helper, "#!/bin/sh\nexit 0\n");
+		chmodSync(helper, 0o755);
+		await considerTurn(h.depsFor({
+			nouls: { correction: 0.9, procedure: 0 },
+			script: [
+				{ calls: [{ name: "write_file", input: {
+					path: "existing/SKILL.md", content: SKILL_MD("existing", "after"),
+				} }] },
+				{ text: "saved" },
+			],
+		}), turn());
+		expect(lstatSync(helper).mode & 0o777).toBe(0o755);
+		h.store.close();
+	});
+
 	test("an earlier published skill is recorded when a later swap fails", async () => {
 		const h = harness();
 		const logFile = join(h.workspace, "goblin.log");

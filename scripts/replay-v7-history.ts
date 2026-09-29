@@ -7,15 +7,17 @@ import { convertToModelMessages, safeValidateUIMessages } from "ai";
 import { cpSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { paths } from "../src/config.ts";
 import { openStore } from "../src/conversation.ts";
 
-const live = join(process.env.HOME!, "goblin", "state", "goblin.sqlite");
+const live = paths.db();
 const dir = mkdtempSync(join(tmpdir(), "goblin-replay-"));
 for (const suffix of ["", "-wal", "-shm"]) {
 	try {
 		cpSync(live + suffix, join(dir, "db.sqlite" + suffix));
-	} catch {
-		/* absent suffixes are fine */
+	} catch (err) {
+		if (suffix !== "" && (err as NodeJS.ErrnoException).code === "ENOENT") continue;
+		throw new Error(`cannot copy ${live + suffix} for history replay: ${String(err)}`, { cause: err });
 	}
 }
 const store = openStore(join(dir, "db.sqlite"));

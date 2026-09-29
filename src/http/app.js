@@ -649,7 +649,8 @@ function validate() {
   }
   return null;
 }
-/** The POST /api/config body — must satisfy ConfigPostBody exactly. */
+/** The POST /api/config body — checked against the server's wire type.
+ * @returns {ConfigPostBody} */
 function buildBody() {
   /** @type {Record<string, ProviderConfig>} */
   const providers = {};

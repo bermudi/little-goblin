@@ -131,7 +131,9 @@ export async function transcribeAudio(
 		}
 		return texts.length === 0 ? null : texts.join(" ");
 	} finally {
-		await rm(dir, { recursive: true, force: true }).catch(() => {});
+		await rm(dir, { recursive: true, force: true }).catch((err: unknown) => {
+			log.warn("transcription scratch cleanup failed", { dir, error: String(err) });
+		});
 	}
 }
 

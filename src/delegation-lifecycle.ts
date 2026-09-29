@@ -27,7 +27,7 @@
 // failed once.
 
 import { randomUUID } from "node:crypto";
-import { linkSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { copyFileSync, linkSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { log } from "./log.ts";
 import {
@@ -460,11 +460,15 @@ async function send(
 		const error = err instanceof Error ? err.message : String(err);
 		log.error("delegation prompt failed", err, { delegation: d.id, name: d.name });
 		if (archivedPath !== null) {
+			const restoreTemp = join(reportDirFor(deps, d.id), `.report-restore-${randomUUID()}`);
 			try {
 				// A new report can arrive during the prompt call. Unlike rename,
 				// linking fails atomically if it already owns the live slot.
-				linkSync(archivedPath, reportPath);
-				unlinkSync(archivedPath);
+				// Copy to a separate inode first: agents write report.md in
+				// place, so a hardlink to the archive would destroy the only
+				// previous-run copy when a late report overwrites it.
+				copyFileSync(archivedPath, restoreTemp);
+				linkSync(restoreTemp, reportPath);
 				log.info("delegation previous report restored", { delegation: d.id, reportPath, archivedPath });
 			} catch (restoreErr) {
 				if ((restoreErr as NodeJS.ErrnoException).code === "EEXIST") {
@@ -476,6 +480,16 @@ async function send(
 						delegation: d.id, reportPath, archivedPath,
 					});
 					return { kind: "prompt failed", error: `${error}; report restoration failed: ${String(restoreErr)}` };
+				}
+			} finally {
+				try {
+					unlinkSync(restoreTemp);
+				} catch (cleanupErr) {
+					if ((cleanupErr as NodeJS.ErrnoException).code !== "ENOENT") {
+						log.warn("delegation restore temp cleanup failed", {
+							delegation: d.id, restoreTemp, error: String(cleanupErr),
+						});
+					}
 				}
 			}
 		}

@@ -5,7 +5,7 @@
 // the same DB resumes where the dead one left off.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -306,6 +306,49 @@ describe("delegation watcher", () => {
 		expect(readFileSync(reportPath, "utf8")).toBe("# new result");
 		expect(readFileSync(join(dir, archived), "utf8")).toBe("# previous result");
 		await owner.stopTicker();
+	});
+
+	test("restoring an old report does not make it look fresh to the watcher", async () => {
+		const h = harness();
+		const d = runningRow(h, "stale report", 5, 1_000);
+		h.agents.set(d.agentName, agent(d.agentName, "working", 5));
+		const owner = startDelegationLifecycle(h.deps);
+		await owner.tick();
+		const dir = join(h.delegationsDir, String(d.id));
+		mkdirSync(dir, { recursive: true });
+		const reportPath = join(dir, "report.md");
+		writeFileSync(reportPath, "# long before this run");
+		utimesSync(reportPath, new Date(0), new Date(0));
+		h.deps.herdr = { ...h.deps.herdr, prompt: async () => { throw new Error("rejected"); } };
+		expect((await owner.send(d.id, "follow up")).kind).toBe("prompt failed");
+		expect(statSync(reportPath).mtimeMs).toBe(0);
+		h.agents.set(d.agentName, agent(d.agentName, "idle", 5));
+		await owner.tick();
+		expect(h.store.get(d.id)!.status).toBe("running");
+		expect(h.wakes).toHaveLength(0);
+		await owner.stopTicker();
+	});
+
+	test("a pre-opened report writer cannot change the previous report archive", async () => {
+		const h = harness();
+		const d = runningRow(h, "open writer", 5, 1_000);
+		const dir = join(h.delegationsDir, String(d.id));
+		mkdirSync(dir, { recursive: true });
+		const reportPath = join(dir, "report.md");
+		writeFileSync(reportPath, "# previous result");
+		const writer = openSync(reportPath, "r+");
+		try {
+			h.deps.herdr = { ...h.deps.herdr, prompt: async () => { throw new Error("rejected"); } };
+			const owner = startDelegationLifecycle(h.deps);
+			expect((await owner.send(d.id, "follow up")).kind).toBe("prompt failed");
+			writeSync(writer, "# changed through old descriptor", 0);
+			const archived = readdirSync(dir).find((name) => name.startsWith("report-"))!;
+			expect(readFileSync(join(dir, archived), "utf8")).toBe("# previous result");
+			expect(readFileSync(reportPath, "utf8")).toBe("# previous result");
+			await owner.stopTicker();
+		} finally {
+			closeSync(writer);
+		}
 	});
 
 	test("failed follow-up does not overwrite a report written during prompt", async () => {

@@ -27,7 +27,7 @@
 // failed once.
 
 import { randomUUID } from "node:crypto";
-import { copyFileSync, linkSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { copyFileSync, linkSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { log } from "./log.ts";
 import {
@@ -441,6 +441,26 @@ async function send(
 		const destination = join(reportDirFor(deps, d.id), `report-${randomUUID()}.md`);
 		renameSync(reportPath, destination);
 		archivedPath = destination;
+		// A writer may already have report.md open. A rename alone leaves
+		// that file descriptor pointing at the archive. Replace the archive
+		// with a separate snapshot before the new prompt can be sent.
+		const snapshot = join(reportDirFor(deps, d.id), `.report-snapshot-${randomUUID()}`);
+		try {
+			const oldTimes = statSync(destination);
+			copyFileSync(destination, snapshot);
+			utimesSync(snapshot, oldTimes.atime, oldTimes.mtime);
+			renameSync(snapshot, destination);
+		} finally {
+			try {
+				unlinkSync(snapshot);
+			} catch (cleanupErr) {
+				if ((cleanupErr as NodeJS.ErrnoException).code !== "ENOENT") {
+					log.warn("delegation snapshot temp cleanup failed", {
+						delegation: d.id, snapshot, error: String(cleanupErr),
+					});
+				}
+			}
+		}
 		log.info("delegation previous report archived", {
 			delegation: d.id, reportPath, archivedPath,
 		});
@@ -467,7 +487,11 @@ async function send(
 				// Copy to a separate inode first: agents write report.md in
 				// place, so a hardlink to the archive would destroy the only
 				// previous-run copy when a late report overwrites it.
+				const oldTimes = statSync(archivedPath);
 				copyFileSync(archivedPath, restoreTemp);
+				// Freshness belongs to the writer, not this restoration;
+				// otherwise the watcher mistakes an old report for a new run.
+				utimesSync(restoreTemp, oldTimes.atime, oldTimes.mtime);
 				linkSync(restoreTemp, reportPath);
 				log.info("delegation previous report restored", { delegation: d.id, reportPath, archivedPath });
 			} catch (restoreErr) {

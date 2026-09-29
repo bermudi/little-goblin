@@ -345,6 +345,12 @@ describe("ensureHomeLayout", () => {
 		}
 	});
 
+	test("a file masquerading as a required directory fails boot", () => {
+		const dir = useHome();
+		writeFileSync(join(dir, "state"), "not a directory");
+		expect(() => ensureHomeLayout()).toThrow("layout directory is not a directory");
+	});
+
 	test("first boot seeds SOUL.md and the AGENTS.md stub", () => {
 		const dir = useHome();
 		ensureHomeLayout();

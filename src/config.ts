@@ -2,7 +2,7 @@
 // No secrets here; those live in auth.jsonl. The mini app is the
 // operator-facing editing surface; hand-editing always works.
 
-import { closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, symlinkSync, unlinkSync } from "node:fs";
+import { closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, statSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import JSON5 from "json5";
@@ -47,7 +47,7 @@ export function ensureHomeLayout(): void {
 		const missing: string[] = [];
 		for (let next = dir; ; next = dirname(next)) {
 			try {
-				lstatSync(next);
+				if (!statSync(next).isDirectory()) throw new Error(`layout directory is not a directory: ${next}`);
 				break;
 			} catch (err) {
 				if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;

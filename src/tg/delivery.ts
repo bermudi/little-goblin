@@ -156,7 +156,7 @@ export function makeDeliverySink(
 			return;
 		}
 		try {
-			await withTimeout(
+			const notice = await withTimeout(
 				api.sendMessage(conv.chatId, UNCERTAIN_NOTICE, {
 					...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
 				}),
@@ -166,6 +166,7 @@ export function makeDeliverySink(
 				conversation: conv.id,
 				chat: conv.chatId,
 				thread: conv.threadId,
+				message: notice.message_id,
 			});
 		} catch (error) {
 			log.warn("delivery uncertainty notice failed — not retrying", {
@@ -220,6 +221,9 @@ export function makeDeliverySink(
 	}
 
 	async function sendVoice(audio: Uint8Array): Promise<void> {
+		if (uncertain) {
+			throw new Error("Telegram delivery uncertain — voice not sent again; check Telegram before retrying");
+		}
 		if (!mayDeliver()) return;
 		let failure: { error: unknown } | undefined;
 		enqueue(async () => {
@@ -244,6 +248,9 @@ export function makeDeliverySink(
 		});
 		await chain;
 		if (failure) throw failure.error;
+		if (uncertain) {
+			throw new Error("Telegram delivery uncertain — voice not sent again; check Telegram before retrying");
+		}
 	}
 
 	async function sendFile(file: OutgoingFile): Promise<void> {

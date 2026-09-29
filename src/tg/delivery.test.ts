@@ -245,6 +245,20 @@ describe("delivery", () => {
 		expect(reactions).toEqual([]);
 	});
 
+	test("a later speak call cannot claim success after a voice send timed out", async () => {
+		const { api } = fakeApi({});
+		let calls = 0;
+		api.sendVoice = async () => {
+			calls++;
+			throw new TelegramTimeoutError("sendVoice", 30_000);
+		};
+		const sink = makeDeliverySink(api, conv, undefined, 0);
+		await expect(sink.onVoiceNote!(new Uint8Array([1]))).rejects.toThrow("timed out");
+		await expect(sink.onVoiceNote!(new Uint8Array([2]))).rejects.toThrow("delivery uncertain");
+		expect(calls).toBe(1);
+		await sink.onDone({ kind: "completed" });
+	});
+
 	test("voice-mode supplemental text timeout prevents audio and fallback", async () => {
 		const { api, msgs, voices } = fakeApi({});
 		let calls = 0;

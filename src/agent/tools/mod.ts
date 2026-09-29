@@ -89,9 +89,9 @@ export function makeTools(
 		// Same per-turn gate as search/transcribe: the caller passes deps
 		// only when the delegation block exists in the live config.
 		...(delegate ? { delegate: delegateTool(delegate) } : {}),
-		// Same live gate on the mail block — the reader closure inside
-		// resolves the read credential per call; the send credential is
-		// never in this dep tree.
+		// Same live gate on the mail block — the tool holds only the
+		// approval gate's request closure; the send credential is never
+		// in this dep tree (reads ride the goblin-mail wrapper via bash).
 		...(mail ? { mail: mailTool(mail) } : {}),
 		...(file ? { send_file: sendFileTool(cwd, file.deliver) } : {}),
 		...(memory ? { memory_search: memorySearchTool(memory) } : {}),

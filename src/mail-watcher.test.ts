@@ -1,8 +1,8 @@
 // The mail watcher's contract: new filters baseline without firing,
 // one tick's matches become one turn, the checkpoint follows fired
 // records (held on a fire that does not land), and outages notice
-// once per episode. The boundary is real on both sides: a fake Gmail
-// reader at one edge, the real fireMail entry point over a fake
+// once per episode. The boundary is real on both sides: a fake gws
+// poller at one edge, the real fireMail entry point over a fake
 // runtime.submit at the other — everything between is production
 // code. (Draft expiry is the approval gate's — its tests cover the
 // sweep.)
@@ -13,10 +13,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api } from "grammy";
 import type { UIMessage } from "ai";
-import { HistoryExpiredError, type MailHit, type MailReader } from "./mail.ts";
+import { HistoryExpiredError, type MailHit, type MailPoller } from "./mail.ts";
+import { JevError } from "./jev.ts";
 import { setLogFile, setLogWriter } from "./log.ts";
 import { startMailWatcher, type MailWatcher } from "./mail-watcher.ts";
-import { fireMail } from "./scheduler.ts";
+import { fireMail, type SchedulerDeps } from "./scheduler.ts";
 import { openPrograms, type Program, type ProgramsStore } from "./programs.ts";
 import { openStore } from "./conversation.ts";
 import type { Runtime, TurnSink } from "./runtime.ts";
@@ -55,6 +56,9 @@ function hit(id: string): MailHit {
 interface Harness {
 	path: string;
 	programs: ProgramsStore;
+	/** The shared gate the firing entry point scores events through —
+	 *  assigned per test the way index.ts wires jevGate into checkMail. */
+	checkMail?: Pick<{ decide: (...args: unknown[]) => Promise<unknown> }, "decide">;
 	/** The handoff record: every fireMail call, before it runs. */
 	fired: Array<{ program: number; matches: string[] }>;
 	submitted: Array<{ conv: string; text: string; sink: TurnSink }>;
@@ -64,9 +68,9 @@ interface Harness {
 	/** What the fake runtime does: true → submit throws, no turn lands. */
 	failSubmit: boolean;
 	pollImpl: (filter: string, cursor: string) => Promise<{ hits: MailHit[]; historyId: string }>;
-	reader: MailReader | null;
+	reader: MailPoller | null;
 	/** The real entry point over the fake runtime — the seam index.ts binds. */
-	fireMail(program: Program, hits: MailHit[], checkpoint: string, now: Date): void;
+	fireMail(program: Program, hits: MailHit[], checkpoint: string, now: Date): Promise<void>;
 }
 
 function harness(): Harness {
@@ -90,10 +94,7 @@ function harness(): Harness {
 		},
 	};
 	h.reader = {
-		search: async () => [],
-		read: async () => { throw new Error("unreachable"); },
-		attachment: async () => new Uint8Array(),
-		poll: async (filter, cursor) => {
+		poll: async (filter: string, cursor: string) => {
 			h.polls.push({ filter, cursor });
 			return h.pollImpl(filter, cursor);
 		},
@@ -111,7 +112,7 @@ function harness(): Harness {
 		sendChatAction: () => Promise.resolve(true),
 		sendVoice: () => Promise.resolve({ message_id: 1 }),
 	} as unknown as Api;
-	const firingDeps = {
+	const firingDeps: SchedulerDeps & { checkMail?: Harness["checkMail"] } = {
 		programs: h.programs,
 		store,
 		runtime: {
@@ -128,7 +129,16 @@ function harness(): Harness {
 	};
 	h.fireMail = (program, hits, checkpoint, now) =>
 		fireMail(firingDeps, program, hits, checkpoint, now);
-	return h;
+	// The test's gate handle rides the same object the entry point
+	// reads — assigning h.checkMail lands in firingDeps.checkMail.
+	Object.defineProperty(h, "checkMail", {
+		get: () => firingDeps.checkMail,
+		set: (v) => {
+			firingDeps.checkMail = v;
+		},
+		configurable: true,
+	});
+	return h as Harness;
 }
 
 function start(h: Harness): MailWatcher {
@@ -136,9 +146,9 @@ function start(h: Harness): MailWatcher {
 		{
 			programs: h.programs,
 			reader: () => h.reader,
-			fire: (program, hits, checkpoint, now) => {
+			fire: async (program, hits, checkpoint, now) => {
 				h.fired.push({ program: program.id, matches: hits.map((x) => x.id) });
-				h.fireMail(program, hits, checkpoint, now);
+				await h.fireMail(program, hits, checkpoint, now);
 			},
 			notify: async (address, text) => {
 				h.notices.push({ chat: address.chatId, text });
@@ -251,6 +261,39 @@ describe("mail watcher", () => {
 		expect(h.submitted[0]!.text).toContain("id: m2");
 		expect(h.programs.get(p.id)!.mailHistoryId).toBe("120");
 		expect(h.programs.get(p.id)!.lastRun).toBe(NOW.toISOString());
+		await closeSinks(h);
+	});
+
+	test("a fired event carries the injection verdict line — outage still fires, marked unavailable", async () => {
+		const h = harness();
+		const p = mailProgram(h);
+		h.programs.setMailHistory(p.id, "100");
+		h.pollImpl = async () => ({ hits: [hit("m1")], historyId: "120" });
+		// The shared gate, wired the way index.ts wires jevGate into
+		// firingDeps.checkMail: a scripted clean verdict first.
+		h.checkMail = {
+			decide: async () => ({ answers: { injection: 0.02, severity: 0.01 }, inputTokens: null, cost: null }),
+		};
+		const w = start(h);
+		await w.tick();
+		expect(h.submitted).toHaveLength(1);
+		expect(h.submitted[0]!.text).toContain("[injection check: clean p=0.02 sev=0.01]");
+		expect(h.programs.get(p.id)!.mailHistoryId).toBe("120");
+		await closeSinks(h);
+
+		// A checker outage fails open: the fire still lands, annotated.
+		h.submitted.length = 0;
+		h.checkMail = {
+			decide: async () => {
+				throw new JevError("timeout");
+			},
+		};
+		h.pollImpl = async () => ({ hits: [hit("m2")], historyId: "130" });
+		await w.tick();
+		expect(h.submitted).toHaveLength(1);
+		expect(h.submitted[0]!.text).toContain("id: m2");
+		expect(h.submitted[0]!.text).toContain("[injection check unavailable]");
+		expect(h.programs.get(p.id)!.mailHistoryId).toBe("130");
 		await closeSinks(h);
 	});
 

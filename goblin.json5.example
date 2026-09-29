@@ -126,18 +126,20 @@
   // },
 
   // --- Gmail ---
-  // Unset = no mail tool, no mail watcher. Your own Google Cloud OAuth
-  // client (desktop-app flow, consent screen in production — a "testing"
-  // app's refresh tokens die after 7 days). Two refresh tokens, two
-  // scopes: read (gmail.readonly) and send (gmail.send). All three
-  // secrets live in auth.jsonl (via pass-keys, like every other key);
-  // access tokens are minted per use and never touch disk. Sending is
-  // always operator-gated: the tool queues a draft and Telegram gets
-  // Send/Cancel buttons — nothing sends on the model's word alone.
+  // Unset = no mail tool, no mail watcher. Reads ride the gws CLI
+  // (`gws auth login` with the Workspace scopes in the gws skill —
+  // gmail.readonly, drive.readonly, calendar + sheets read-write).
+  // Your own Google Cloud OAuth client (desktop-app flow, consent
+  // screen in production — a "testing" app's refresh tokens die after
+  // 7 days) covers only the SEND: the client secret and the send
+  // refresh token live in auth.jsonl (via pass-keys, like every other
+  // key); access tokens are minted per send and never touch disk.
+  // Sending is always operator-gated: the tool queues a draft and
+  // Telegram gets Send/Cancel buttons — nothing sends on the model's
+  // word alone.
   // mail: {
   //   clientId: "xxx.apps.googleusercontent.com",
   //   clientSecretAuth: "gmail-client-secret",
-  //   readAuth: "gmail-read",
   //   sendAuth: "gmail-send",
   // },
 

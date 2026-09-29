@@ -28,7 +28,8 @@ import {
 	type DelegationLifecycle,
 } from "./delegation-lifecycle.ts";
 import { makeHerdr } from "./herdr.ts";
-import { makeReader, makeSender, type MailReader, type MailSender } from "./mail.ts";
+import { makeSender, type MailPoller, type MailSender } from "./mail.ts";
+import { makeGwsReader } from "./mail-gws.ts";
 import { openOutbox } from "./mail-outbox.ts";
 import { startMailWatcher } from "./mail-watcher.ts";
 import { openPrograms } from "./programs.ts";
@@ -80,18 +81,14 @@ async function boot() {
 	// cancellable) even when the mail block is removed; only the Gmail
 	// clients gate on it.
 	const outbox = openOutbox(paths.db());
-	// Split credentials, live closures: the read client serves the tool
-	// and the watcher, the send client serves only the approval taps.
-	// Neither holds a token — each call mints in-process (mail.ts).
-	const mailReader = (): MailReader | null => {
+	// Split authority, live closures: the gws-backed poller serves the
+	// watcher, the send client serves only the approval taps and mints
+	// its token in-process per call (mail.ts). No Gmail OAuth secret is
+	// held here — gws owns its own auth (`gws auth login`).
+	const mailPoller = (): MailPoller | null => {
 		const m = configRef.current.mail;
 		if (!m) return null;
-		return makeReader({
-			auth,
-			clientId: m.clientId,
-			clientSecretAuth: m.clientSecretAuth,
-			readAuth: m.readAuth,
-		});
+		return makeGwsReader();
 	};
 	const mailSender = (): MailSender | null => {
 		const m = configRef.current.mail;
@@ -317,13 +314,13 @@ async function boot() {
 				// keeps tracking rows it already owns.
 				delegateDeps(conv),
 				// The mail tool rides the same live gate — and holds only
-				// the read client plus the approval gate's request
-				// closure: the send credential is nowhere in this dep
-				// tree (the approval taps hold it instead), and the
-				// draft's address is pinned here, per conversation.
+				// the approval gate's request closure: the send
+				// credential is nowhere in this dep tree (the approval
+				// taps hold it instead), and the draft's address is
+				// pinned here, per conversation. Reads left for the
+				// goblin-mail wrapper (bash + gws skill).
 				configRef.current.mail !== undefined
 					? {
-							reader: mailReader,
 							requestDraft: (input) =>
 								mailApproval.requestDraft(input, {
 									chatId: conv.chatId,
@@ -408,7 +405,7 @@ async function boot() {
 		api: tg.bot.api,
 		outbox,
 		sender: mailSender,
-		reader: mailReader,
+		reader: mailPoller,
 	});
 
 	// Memory worker after the bot: a persistent outage notices the
@@ -500,7 +497,14 @@ async function boot() {
 		configRef,
 		synthesize: (text: string, tts: TtsConfig) => synthesizeSpeech(text, tts),
 	};
-	const firingDeps: SchedulerDeps = { ...wakeDeps, programs };
+	const firingDeps: SchedulerDeps = {
+		...wakeDeps,
+		programs,
+		// The reviewer's Jev gate doubles as the watcher-event
+		// scorer (fail-open) — same instance the loopback checker
+		// route holds. Absent reviewer block = events fire unscored.
+		...(jevGate ? { checkMail: jevGate as Pick<typeof jevGate, "decide"> } : {}),
+	};
 
 	// The delegation lifecycle — the protocol's one owner: the tool's
 	// launch/send/stop/read land here and the watcher's verdicts fire
@@ -597,14 +601,14 @@ async function boot() {
 	// missed while the process was down (DESIGN.md, Programs).
 	const scheduler = startScheduler(firingDeps);
 
-	// The mail watcher is the scheduler's twin: it polls Gmail for
-	// enabled mail filters and hands matches to the mail entry point,
-	// which owns the checkpoint policy. Always started — without the
-	// mail block it idles (draft expiry lives in the approval gate,
+	// The mail watcher is the scheduler's twin: it polls Gmail through
+	// gws for enabled mail filters and hands matches to the mail entry
+	// point, which owns the checkpoint policy. Always started — without
+	// the mail block it idles (draft expiry lives in the approval gate,
 	// not here).
 	const mailWatcher = startMailWatcher({
 		programs,
-		reader: mailReader,
+		reader: mailPoller,
 		fire: (program, hits, checkpoint, now) =>
 			fireMail(firingDeps, program, hits, checkpoint, now),
 		notify: (address, text) => sendMailNotice(tg.bot.api, address, text),

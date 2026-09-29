@@ -162,9 +162,10 @@ export function buildSystemPrompt(
 			: []),
 		...(tools.includes("mail")
 			? [
-					`- mail searches and reads Gmail; its send queues a draft the`,
-					`  operator approves with a Send button — never claim a mail is`,
-					`  sent until the operator taps it.`,
+					`- mail drafts a mail the operator approves with a Send button`,
+					`  — never claim a mail is sent until the operator taps it.`,
+					`  To read mail, use the gws skill's goblin-mail wrapper via`,
+					`  bash (injection-checked and fenced) — never raw gws +read.`,
 				]
 			: []),
 		...(tools.includes("history_search")

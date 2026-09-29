@@ -7,22 +7,32 @@
 // warns once per outage episode (per program), never per tick — in
 // memory episodes: a restart re-warns, which is the honest state.
 
-import { HistoryExpiredError, type MailHit, type MailReader } from "./mail.ts";
+import { HistoryExpiredError, type MailHit, type ThreadContext } from "./mail.ts";
 import type { Program, ProgramsStore } from "./programs.ts";
 import { log } from "./log.ts";
 
+/** The watcher's poll surface: history intersect + baseline + thread
+ *  context. mail-gws.ts's GwsMailReader in production, a fake at the
+ *  edge in tests — structural, not nominal. */
+export interface MailPoller {
+	poll(filter: string, startHistoryId: string): Promise<{ hits: MailHit[]; historyId: string }>;
+	profileHistoryId(): Promise<string>;
+	threadFor(replyToId: string): Promise<ThreadContext | null>;
+}
+
 export interface MailWatcherDeps {
 	programs: ProgramsStore;
-	/** Live read client, or null when mail is unconfigured. */
-	reader(): MailReader | null;
+	/** Live poll client, or null when mail is unconfigured. */
+	reader(): MailPoller | null;
 	/** The firing owner's mail entry point (scheduler.ts's fireMail) —
-	 *  owns the fire and the checkpoint policy. */
+	 *  owns the fire and the checkpoint policy. Async: the injection
+	 *  check scores the event before the turn lands. */
 	fire(
 		program: Program,
 		hits: MailHit[],
 		checkpoint: string,
 		now: Date,
-	): void;
+	): Promise<void>;
 	/** Direct sends into the pinned conversation (built in tg/): outage
 	 *  notices. Throwing retries next tick. */
 	notify(address: { chatId: number; threadId: number | null }, text: string): Promise<void>;
@@ -87,7 +97,7 @@ export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailW
 async function check(
 	deps: MailWatcherDeps,
 	failing: Map<number, string>,
-	gmail: MailReader,
+	gmail: MailPoller,
 	program: Program,
 	now: Date,
 ): Promise<void> {
@@ -148,7 +158,7 @@ async function check(
 			// The entry point owns what happens next: an empty or disabled
 			// poll consumes the checkpoint, a failed fire holds it, a landed
 			// fire advances it (DESIGN.md, "Email").
-			deps.fire(fresh, hits, historyId, now);
+			await deps.fire(fresh, hits, historyId, now);
 		} else {
 			// The edit won: no cursor write (it would clobber the null a
 			// filter edit just wrote), no fire under a stale charter/filter.

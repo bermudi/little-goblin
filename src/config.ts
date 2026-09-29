@@ -36,7 +36,6 @@ export const paths = {
 	modelsDevCache: () => join(goblinHome(), "state", "models.dev.json"),
 	openrouterModelsCache: () => join(goblinHome(), "state", "openrouter-models.json"),
 	webcache: () => join(goblinHome(), "state", "webcache"),
-	mailcache: () => join(goblinHome(), "state", "mail"),
 };
 
 export function ensureHomeLayout(): void {
@@ -321,13 +320,13 @@ export type DelegationConfig = z.infer<typeof delegationConfigSchema>;
 
 // Gmail (DESIGN.md, "Email"). Absent = no mail tool, no mail watcher.
 // clientId is the Google Cloud OAuth client ID — a public identifier,
-// not a secret. The client secret and both refresh tokens live in
-// auth.jsonl under these names: split scopes, so the read credential
-// cannot send and the send credential never reaches the model.
+// not a secret. The client secret and the SEND refresh token live in
+// auth.jsonl under these names; reads ride gws's own auth (`gws auth
+// login`), so there is no read credential here to leak — the send
+// credential never reaches the model.
 export const mailConfigSchema = z.object({
 	clientId: z.string().min(1),
 	clientSecretAuth: z.string().min(1),
-	readAuth: z.string().min(1),
 	sendAuth: z.string().min(1),
 });
 export type MailConfig = z.infer<typeof mailConfigSchema>;

@@ -327,17 +327,18 @@ describe("goblin.json5", () => {
 		expect(loadConfig()!.memory).toBeUndefined();
 	});
 
-	test("mail is optional; all four fields required when present", () => {
+	test("mail is optional; all three fields required when present", () => {
 		const dir = useHome();
 		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
 		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
 		expect(loadConfig()!.mail).toBeUndefined();
-		const block = `mail:{clientId:"x.apps.googleusercontent.com",clientSecretAuth:"gmail-secret",readAuth:"gmail-read",sendAuth:"gmail-send"}`;
+		// Reads ride gws's own auth — the block holds only the send
+		// credential (plus the public client id and secret ref).
+		const block = `mail:{clientId:"x.apps.googleusercontent.com",clientSecretAuth:"gmail-secret",sendAuth:"gmail-send"}`;
 		writeFileSync(join(dir, "goblin.json5"), `${base},${block}}`);
 		expect(loadConfig()!.mail).toEqual({
 			clientId: "x.apps.googleusercontent.com",
 			clientSecretAuth: "gmail-secret",
-			readAuth: "gmail-read",
 			sendAuth: "gmail-send",
 		});
 		// A half-configured block is a boot error, not a silent half.

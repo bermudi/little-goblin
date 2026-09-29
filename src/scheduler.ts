@@ -10,6 +10,8 @@
 // catch-up falls out of the due() query — a fire missed while the
 // process was down is just "due" on the first tick.
 
+import { checkInjection, verdictLine } from "./injection.ts";
+import type { JevClient } from "./jev.ts";
 import { log } from "./log.ts";
 import type { MailHit } from "./mail.ts";
 import { wake, type WakeDeps } from "./wake.ts";
@@ -17,6 +19,11 @@ import type { Program, ProgramsStore } from "./programs.ts";
 
 export interface SchedulerDeps extends WakeDeps {
 	programs: ProgramsStore;
+	/** The shared System One gate (index.ts's jevGate) — scores the
+	 *  fired event text before the turn lands. Absent = no check
+	 *  (the event fires unscored); a gate outage fails open with the
+	 *  unavailable line, never a held fire. */
+	checkMail?: Pick<JevClient, "decide">;
 }
 
 export interface Scheduler {
@@ -86,13 +93,13 @@ export function fireWebhook(
 // (at-least-once). An empty poll, or one whose program was disabled
 // mid-flight, consumes the checkpoint — that mail is skipped, not
 // owed.
-export function fireMail(
+export async function fireMail(
 	deps: SchedulerDeps,
 	program: Program,
 	hits: readonly MailHit[],
 	checkpoint: string,
 	now: Date,
-): void {
+): Promise<void> {
 	if (checkpoint === "") {
 		log.warn("mail poll returned no checkpoint — cursor kept, retrying next tick", {
 			program: program.id,
@@ -104,7 +111,10 @@ export function fireMail(
 		deps.programs.setMailHistory(program.id, checkpoint);
 		return;
 	}
-	const landed = fireProgram(deps, program, "mail", formatMailEvent(hits), now);
+	// The whole event is what the model sees — one call scores it all.
+	// Fail-open: a gate outage annotates unavailable, never holds fire.
+	const event = await scoredMailEvent(deps.checkMail, formatMailEvent(hits));
+	const landed = fireProgram(deps, program, "mail", event, now);
 	if (!landed) {
 		log.error("mail fire did not land — checkpoint held, matches retry next poll", undefined, {
 			program: program.id,
@@ -120,6 +130,18 @@ export function fireMail(
 		name: program.name,
 		matches: hits.length,
 	});
+}
+
+// Score one fired event through the shared gate and append the
+// verdict line — the same contract the goblin-mail wrapper prints.
+// No gate = unscored event; any gate outage = unavailable line.
+export async function scoredMailEvent(
+	gate: Pick<JevClient, "decide"> | undefined,
+	event: string,
+): Promise<string> {
+	if (!gate) return event;
+	const verdict = await checkInjection(gate, event);
+	return `${event}\n${verdictLine(verdict)}`;
 }
 
 // The event body: one block per match (from/subject/date/snippet/id —

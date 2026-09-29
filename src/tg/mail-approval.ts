@@ -9,7 +9,7 @@
 // private closure state.
 
 import type { Api } from "grammy";
-import type { MailReader, MailSender } from "../mail.ts";
+import type { MailPoller, MailSender } from "../mail.ts";
 import { domainOf } from "../mail.ts";
 import type { OutboxEntry, OutboxStore } from "../mail-outbox.ts";
 import { log } from "../log.ts";
@@ -43,10 +43,10 @@ export interface MailApprovalDeps {
 	outbox: OutboxStore;
 	/** Live send client, or null when mail is unconfigured. */
 	sender(): MailSender | null;
-	/** Live read client, or null when mail is unconfigured — the
-	 *  threading lookup is a READ, so it rides this credential, never
-	 *  the send token (the send-only scope answers 403). */
-	reader(): MailReader | null;
+	/** Live gws poll client, or null when mail is unconfigured — the
+	 *  threading lookup is a read through gws's own auth, never the
+	 *  send token (which only ever sends). */
+	reader(): MailPoller | null;
 	/** Test door for expiry. */
 	now?(): Date;
 }
@@ -311,9 +311,9 @@ async function sendApproved(
 		return;
 	}
 	// Threading resolves here, at send time — the tool stored only the
-	// reply target's id. The lookup itself is a READ: it rides the read
-	// credential (the send token would answer 403), which still never
-	// sends — the send credential stays the only sender in this path.
+	// reply target's id. The lookup itself is a gws metadata read under
+	// gws's own auth, which still never sends — the send credential
+	// stays the only sender in this path.
 	let threadId: string | undefined;
 	let inReplyTo: string | null | undefined;
 	if (row.replyToId !== null) {

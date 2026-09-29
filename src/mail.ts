@@ -1,22 +1,19 @@
-// Gmail over the operator's own OAuth client (DESIGN.md, "Email").
+// Gmail send over the operator's own OAuth client (DESIGN.md, "Email").
 //
-// Split tokens by construction: makeReader mints only read tokens,
-// makeSender only send tokens, and the mail tool only ever receives a
-// reader — the send credential never reaches a tool path or a skill.
-// Access tokens are minted in-process per public-method call (one mint
-// covers a method's whole sub-call fan-out) and never touch disk.
-// Resolved secrets never enter logs or errors: log lines carry action,
-// query or id, counts, status, and ms — never tokens or bodies.
+// Reads ride gws: the model's read path is the goblin-mail wrapper +
+// gws skill, the watcher's poll surface is mail-gws.ts — this module
+// owns only the operator-gated SEND. makeSender mints send tokens
+// in-process per call and never touches disk; the send credential never
+// reaches a tool path or a skill. Resolved secrets never enter logs or
+// errors: log lines carry action, counts, status, and ms — never tokens
+// or bodies.
 
-import { Readability } from "@mozilla/readability";
-import { parseHTML } from "linkedom";
 import type { AuthStore } from "./auth.ts";
 import { log } from "./log.ts";
 import {
 	fetchOk,
 	ProviderError,
 	readJson,
-	readTextCapped,
 	str,
 } from "./agent/tools/web.ts";
 
@@ -31,19 +28,11 @@ export interface MailHit {
 	snippet: string;
 }
 
-export interface MailAttachmentMeta {
-	attachmentId: string;
-	filename: string;
-	mimeType: string;
-	size: number;
-}
-
-export interface MailMessage extends MailHit {
-	to: string;
-	textBody: string;
-	/** True when textBody came from HTML conversion, not a text part. */
-	htmlConverted: boolean;
-	attachments: MailAttachmentMeta[];
+/** Thread context for a reply target — resolved through the gws-backed
+ *  poller at send time (mail-gws.ts), never the send token. */
+export interface ThreadContext {
+	threadId: string;
+	messageId: string | null;
 }
 
 export interface MailDraft {
@@ -60,32 +49,6 @@ export interface MailDraft {
 const GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1";
 const OAUTH_BASE = "https://oauth2.googleapis.com";
 const TIMEOUT_MS = 15_000;
-// A message.get(FULL) inlines every text part — an attacker-sized mail
-// must fail loud, not balloon memory (fetch.ts's DOWNLOAD_CAP rule).
-const MESSAGE_CAP = 8 * 1024 * 1024;
-// attachments.get returns base64 (~4/3 of the file); Gmail caps files
-// at 25 MiB, so 40 MiB of JSON headroom covers the largest legal one.
-const ATTACHMENT_CAP = 40 * 1024 * 1024;
-// One watcher tick fires once no matter how many matches — the batch
-// cap bounds the per-tick get fan-out, oldest first.
-const POLL_BATCH_CAP = 10;
-// The intersection window: how many of the filter's recent matches the
-// list call can see. A full page means arrivals older than the newest
-// LIST_PAGE matches are invisible to the intersection — the one way a
-// match can still be lost, and it gets a warn line when it's possible.
-const LIST_PAGE = 50;
-
-export interface GmailReaderDeps {
-	auth: AuthStore;
-	clientId: string;
-	/** auth.jsonl name holding the client secret. */
-	clientSecretAuth: string;
-	/** auth.jsonl name holding the gmail.readonly refresh token. */
-	readAuth: string;
-	/** Test doors — production always uses the Google bases. */
-	gmailBase?: string;
-	oauthBase?: string;
-}
 
 export interface GmailSenderDeps {
 	auth: AuthStore;
@@ -97,10 +60,10 @@ export interface GmailSenderDeps {
 	oauthBase?: string;
 }
 
-export interface MailReader {
-	search(query: string, max: number): Promise<MailHit[]>;
-	read(id: string): Promise<MailMessage>;
-	attachment(messageId: string, attachmentId: string): Promise<Uint8Array>;
+/** The watcher's poll surface: history intersect + baseline + thread
+ *  context. mail-gws.ts's gws reader in production, a fake at the
+ *  edge in tests — structural, not nominal. */
+export interface MailPoller {
 	/** New matches since startHistoryId: history.list intersected with
 	 *  the filter's list, oldest first, batched at whole history records
 	 *  up to the per-tick cap. historyId in the result is the new
@@ -109,10 +72,8 @@ export interface MailReader {
 	poll(filter: string, startHistoryId: string): Promise<{ hits: MailHit[]; historyId: string }>;
 	/** Current mailbox history id — the no-fire baseline for a new filter. */
 	profileHistoryId(): Promise<string>;
-	/** Thread context for a reply target, or null when it doesn't exist.
-	 *  This is a READ (messages.get METADATA): it rides the read
-	 *  credential — under the send-only scope Google answers 403. */
-	threadFor(replyToId: string): Promise<{ threadId: string; messageId: string | null } | null>;
+	/** Thread context for a reply target, or null when it doesn't exist. */
+	threadFor(replyToId: string): Promise<ThreadContext | null>;
 }
 
 export interface MailSender {
@@ -126,18 +87,6 @@ export class HistoryExpiredError extends Error {
 		super("gmail: stored history id expired — re-baseline");
 		this.name = "HistoryExpiredError";
 	}
-}
-
-export function makeReader(deps: GmailReaderDeps): MailReader {
-	const inner = new Gmail(deps, deps.readAuth);
-	return {
-		search: (query, max) => inner.search(query, max),
-		read: (id) => inner.read(id),
-		attachment: (messageId, attachmentId) => inner.attachment(messageId, attachmentId),
-		poll: (filter, startHistoryId) => inner.poll(filter, startHistoryId),
-		profileHistoryId: () => inner.profileHistoryId(),
-		threadFor: (replyToId) => inner.threadFor(replyToId),
-	};
 }
 
 export function makeSender(deps: GmailSenderDeps): MailSender {
@@ -167,10 +116,9 @@ class Gmail {
 		this.oauthBase = deps.oauthBase ?? OAUTH_BASE;
 	}
 
-	// One mint per public-method call: the token covers the method's
-	// whole sub-call fan-out, then is dropped — never cached, never
-	// logged. Concurrent methods mint independently; correctness over
-	// call-counting.
+	// One mint per public-method call: the token covers the method, then
+	// is dropped — never cached, never logged. Concurrent methods mint
+	// independently; correctness over call-counting.
 	private async token(): Promise<string> {
 		const [clientSecret, refreshToken] = await Promise.all([
 			this.deps.auth.resolve(this.deps.clientSecretAuth),
@@ -230,217 +178,6 @@ class Gmail {
 		return { data, status: res.status };
 	}
 
-	// Same call, but the body is attacker-sizable (a full message or an
-	// attachment): gate the read on a cap instead of buffering blindly.
-	private async callCapped(
-		action: string,
-		path: string,
-		token: string,
-		fields: Record<string, unknown>,
-		cap: number,
-	): Promise<unknown> {
-		const started = Date.now();
-		const res = await fetchOk("gmail", `${this.gmailBase}${path}`, {
-			headers: { Authorization: `Bearer ${token}` },
-		}, TIMEOUT_MS);
-		const { tooLarge, text } = await readTextCapped(res, cap);
-		if (tooLarge) {
-			throw new ProviderError(
-				"gmail",
-				`response exceeds the ${Math.round(cap / 1024 / 1024)} MiB cap — narrow with search instead`,
-			);
-		}
-		let data: unknown;
-		try {
-			data = JSON.parse(text) as unknown;
-		} catch (err) {
-			throw new ProviderError("gmail", `non-JSON response — ${(err as Error).message}`);
-		}
-		log.info("gmail call", {
-			action,
-			...fields,
-			status: res.status,
-			bytes: Buffer.byteLength(text),
-			ms: Date.now() - started,
-		});
-		return data;
-	}
-
-	async search(query: string, max: number): Promise<MailHit[]> {
-		const token = await this.token();
-		const params = new URLSearchParams({ q: query, maxResults: String(max) });
-		const { data } = await this.call("search.list", `/users/me/messages?${params}`, token, { query });
-		const rows = ((data as Record<string, unknown>).messages ?? []) as Array<Record<string, unknown>>;
-		const hits: MailHit[] = [];
-		for (const row of rows.slice(0, max)) {
-			const id = str(row.id);
-			if (id === "") continue;
-			hits.push(await this.getMetadata(token, id));
-		}
-		return hits;
-	}
-
-	async read(id: string): Promise<MailMessage> {
-		const token = await this.token();
-		const data = await this.callCapped(
-			"read.get", `/users/me/messages/${encodeURIComponent(id)}?format=FULL`, token,
-			{ id }, MESSAGE_CAP,
-		);
-		return parseFull(data);
-	}
-
-	async attachment(messageId: string, attachmentId: string): Promise<Uint8Array> {
-		const token = await this.token();
-		const data = await this.callCapped(
-			"attachment.get",
-			`/users/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
-			token, { id: messageId }, ATTACHMENT_CAP,
-		);
-		const raw = str((data as Record<string, unknown>).data);
-		if (raw === "") throw new ProviderError("gmail", "attachment response carried no data");
-		return Buffer.from(raw.replace(/-/g, "+").replace(/_/g, "/"), "base64");
-	}
-
-	async poll(filter: string, startHistoryId: string): Promise<{ hits: MailHit[]; historyId: string }> {
-		const token = await this.token();
-		const records: Array<{ id: string; ids: string[] }> = [];
-		let latest = "";
-		let pageToken = "";
-		const seenTokens = new Set<string>();
-		// Keep the records whole, in ascending id order: a capped batch
-		// checkpoints at its last fired record so the unfired matches stay
-		// ahead of the cursor instead of being skipped forever.
-		do {
-			const params = new URLSearchParams({
-				startHistoryId,
-				historyTypes: "messageAdded",
-			});
-			if (pageToken !== "") params.set("pageToken", pageToken);
-			let data: unknown;
-			try {
-				({ data } = await this.call(
-					"poll.history", `/users/me/history?${params}`, token, { filter },
-				));
-			} catch (err) {
-				// Expired ids 404 — the only 404 here that means "re-baseline";
-				// anything else propagates as a poll failure.
-				if (err instanceof ProviderError && err.message.includes("HTTP 404")) {
-					throw new HistoryExpiredError();
-				}
-				throw err;
-			}
-			const body = data as { history?: unknown[]; historyId?: unknown; nextPageToken?: unknown };
-			latest = str(body.historyId) || latest;
-			for (const h of body.history ?? []) {
-				const rec = h as { id?: unknown; messagesAdded?: unknown[] };
-				const ids: string[] = [];
-				for (const m of rec.messagesAdded ?? []) {
-					const id = str((m as { message?: Record<string, unknown> }).message?.id);
-					if (id !== "") ids.push(id);
-				}
-				records.push({ id: str(rec.id), ids });
-			}
-			pageToken = str(body.nextPageToken);
-			if (pageToken !== "" && (seenTokens.has(pageToken) || seenTokens.size >= 100)) {
-				throw new ProviderError("gmail", "history pagination repeated or exceeded 100 pages — cursor unchanged");
-			}
-			if (pageToken !== "") seenTokens.add(pageToken);
-		} while (pageToken !== "");
-		log.info("mail poll history pages loaded", { filter, pages: seenTokens.size + 1, records: records.length });
-		records.sort((a, b) => Number(a.id) - Number(b.id));
-		const added = new Set(records.flatMap((r) => r.ids));
-		if (added.size === 0) return { hits: [], historyId: latest };
-		// history.list takes no query — intersect the mailbox-wide
-		// arrivals with the filter's own recent matches (newest first),
-		// then present oldest first.
-		const listParams = new URLSearchParams({ q: filter, maxResults: String(LIST_PAGE) });
-		const { data: listData } = await this.call(
-			"poll.list", `/users/me/messages?${listParams}`, token, { filter },
-		);
-		const matching = ((listData as Record<string, unknown>).messages ?? []) as Array<Record<string, unknown>>;
-		if (matching.length >= LIST_PAGE) {
-			// The intersection window may have truncated: arrivals older
-			// than the newest LIST_PAGE matches are invisible to it, and a
-			// head checkpoint would skip them silently — the log says so.
-			log.warn("mail poll filter list page full — matches older than the newest 50 may be skipped by this checkpoint", {
-				filter,
-				listed: matching.length,
-			});
-		}
-		const matched = matching.map((m) => str(m.id)).filter((id) => id !== "" && added.has(id));
-		matched.reverse();
-		// Within a record, keep the oldest-first order the list established.
-		const order = new Map(matched.map((id, i) => [id, i] as const));
-		// Batch WHOLE records: taking a record takes all of its matches,
-		// and the batch stops before the record that would push it past
-		// the cap — that record re-arrives on the next poll from the
-		// record-boundary checkpoint below.
-		const batch: string[] = [];
-		let lastIncluded = "";
-		let truncated = false;
-		for (const rec of records) {
-			const recMatched = rec.ids
-				.filter((id) => order.has(id))
-				.sort((a, b) => order.get(a)! - order.get(b)!);
-			if (recMatched.length === 0) continue;
-			if (batch.length + recMatched.length > POLL_BATCH_CAP) {
-				if (batch.length === 0) {
-					// A single record's burst alone exceeds the cap — a record
-					// is the smallest checkpoint unit, so the overflow can only
-					// be skipped, never deferred. Fire the first cap-many,
-					// advance past the record, and say exactly what was lost.
-					batch.push(...recMatched.slice(0, POLL_BATCH_CAP));
-					log.warn(
-						`Gmail collapsed a burst into one history record — ${recMatched.length - POLL_BATCH_CAP} matches skipped`,
-						{ filter, matched: recMatched.length, firing: POLL_BATCH_CAP },
-					);
-					lastIncluded = rec.id;
-				}
-				truncated = true;
-				break;
-			}
-			batch.push(...recMatched);
-			lastIncluded = rec.id;
-		}
-		const hits: MailHit[] = [];
-		for (const id of batch) hits.push(await this.getMetadata(token, id));
-		// Every match fired → the head (past every record, matched or
-		// not); truncated → the last fired record's id, so the unfired
-		// remainder is still ahead of the cursor.
-		return { hits, historyId: truncated ? lastIncluded : latest };
-	}
-
-	async profileHistoryId(): Promise<string> {
-		const token = await this.token();
-		const { data } = await this.call("profile.get", "/users/me/profile", token, {});
-		const historyId = str((data as Record<string, unknown>).historyId);
-		if (historyId === "") throw new ProviderError("gmail", "profile response carried no historyId");
-		return historyId;
-	}
-
-	async threadFor(replyToId: string): Promise<{ threadId: string; messageId: string | null } | null> {
-		const token = await this.token();
-		const params = new URLSearchParams({ format: "METADATA" });
-		params.append("metadataHeaders", "Message-ID");
-		let data: unknown;
-		try {
-			({ data } = await this.call(
-				"reply.get", `/users/me/messages/${encodeURIComponent(replyToId)}?${params}`, token,
-				{ id: replyToId },
-			));
-		} catch (err) {
-			// A missing reply target is model-actionable (don't thread a
-			// ghost); anything else is a failure.
-			if (err instanceof ProviderError && err.message.includes("HTTP 404")) return null;
-			throw err;
-		}
-		const msg = data as { threadId?: unknown; payload?: unknown };
-		const threadId = str(msg.threadId);
-		if (threadId === "") return null;
-		const messageId = header((msg.payload ?? {}) as PartPayload, "Message-ID");
-		return { threadId, messageId: messageId === "" ? null : messageId };
-	}
-
 	async send(draft: MailDraft): Promise<{ id: string; threadId: string }> {
 		const token = await this.token();
 		const raw = buildRaw(draft);
@@ -457,151 +194,6 @@ class Gmail {
 		});
 		const sent = data as { id?: unknown; threadId?: unknown };
 		return { id: str(sent.id), threadId: str(sent.threadId) };
-	}
-
-	private async getMetadata(token: string, id: string): Promise<MailHit> {
-		const params = new URLSearchParams({ format: "METADATA" });
-		for (const h of ["From", "Subject", "Date"]) params.append("metadataHeaders", h);
-		const { data } = await this.call(
-			"meta.get", `/users/me/messages/${encodeURIComponent(id)}?${params}`, token, { id },
-		);
-		const msg = data as {
-			id?: unknown; threadId?: unknown; snippet?: unknown; payload?: unknown;
-		};
-		const payload = (msg.payload ?? {}) as PartPayload;
-		return {
-			id: str(msg.id) || id,
-			threadId: str(msg.threadId),
-			from: header(payload, "From"),
-			subject: header(payload, "Subject"),
-			date: header(payload, "Date"),
-			snippet: str(msg.snippet),
-		};
-	}
-}
-
-// ---------- parsing ----------
-
-interface PartPayload {
-	mimeType?: unknown;
-	filename?: unknown;
-	headers?: unknown;
-	body?: unknown;
-	parts?: unknown;
-}
-
-function header(payload: PartPayload, name: string): string {
-	const headers = Array.isArray(payload.headers) ? payload.headers : [];
-	const want = name.toLowerCase();
-	for (const h of headers) {
-		const row = h as { name?: unknown; value?: unknown };
-		if (str(row.name).toLowerCase() === want) return decodeRfc2047(str(row.value));
-	}
-	return "";
-}
-
-function partBody(part: PartPayload): { data: string; attachmentId: string; size: number } {
-	const body = (part.body ?? {}) as { data?: unknown; attachmentId?: unknown; size?: unknown };
-	return {
-		data: str(body.data),
-		attachmentId: str(body.attachmentId),
-		size: typeof body.size === "number" ? body.size : 0,
-	};
-}
-
-function parseFull(data: unknown): MailMessage {
-	const msg = data as {
-		id?: unknown; threadId?: unknown; snippet?: unknown; payload?: unknown;
-	};
-	const payload = (msg.payload ?? {}) as PartPayload;
-	const plains: string[] = [];
-	const htmls: string[] = [];
-	const attachments: MailAttachmentMeta[] = [];
-	walkParts(payload, plains, htmls, attachments);
-	const plain = plains.join("\n\n").trim();
-	const htmlConverted = plain === "" && htmls.length > 0;
-	const textBody = plain !== ""
-		? plain
-		: htmls.map(htmlToText).filter((t) => t !== "").join("\n\n");
-	return {
-		id: str(msg.id),
-		threadId: str(msg.threadId),
-		from: header(payload, "From"),
-		to: header(payload, "To"),
-		subject: header(payload, "Subject"),
-		date: header(payload, "Date"),
-		snippet: str(msg.snippet),
-		textBody,
-		htmlConverted,
-		attachments,
-	};
-}
-
-function walkParts(
-	part: PartPayload,
-	plains: string[],
-	htmls: string[],
-	attachments: MailAttachmentMeta[],
-): void {
-	const mime = str(part.mimeType).toLowerCase() || "text/plain";
-	const filename = str(part.filename);
-	const { data, attachmentId, size } = partBody(part);
-	// A named part with an attachment id is a file, even when its mime
-	// says text — never inline it into the body.
-	if (filename !== "" && attachmentId !== "") {
-		attachments.push({ attachmentId, filename, mimeType: mime, size });
-		return;
-	}
-	if (mime === "text/html" && data !== "") {
-		htmls.push(decodeBody(data));
-		return;
-	}
-	if (mime.startsWith("text/") && data !== "") {
-		plains.push(decodeBody(data));
-		return;
-	}
-	const parts = Array.isArray(part.parts) ? part.parts : [];
-	for (const sub of parts) {
-		walkParts((sub ?? {}) as PartPayload, plains, htmls, attachments);
-	}
-	// Single-part non-multipart with an inline body and no text mime
-	// (e.g. a bare message/rfc822 forward): surface the raw text.
-	if (parts.length === 0 && data !== "" && filename === "" && attachmentId === "") {
-		plains.push(decodeBody(data));
-	}
-}
-
-function decodeBody(data: string): string {
-	try {
-		return Buffer.from(data.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
-	} catch {
-		return "";
-	}
-}
-
-/** HTML → text for mail bodies. Short mail is normal — no minimum
- *  length, no browser-skill refusal (fetch.ts's MIN_EXTRACT rule would
- *  reject half of all mail); readability with a textContent fallback. */
-export function htmlToText(html: string): string {
-	try {
-		const dom = parseHTML(html);
-		const article = new Readability(dom.document).parse();
-		const text = (article?.textContent ?? "").replace(/\n{3,}/g, "\n\n").trim();
-		if (text !== "") return text;
-	} catch {
-		// fall through to the raw fallback
-	}
-	try {
-		const dom = parseHTML(html);
-		const doc = dom.document as unknown as {
-			body?: { textContent?: string };
-			documentElement?: { textContent?: string };
-		};
-		// Fragments parse without a body — documentElement holds the text.
-		const raw = doc.body?.textContent || doc.documentElement?.textContent || "";
-		return raw.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-	} catch {
-		return "";
 	}
 }
 

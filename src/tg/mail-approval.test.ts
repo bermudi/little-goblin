@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api } from "grammy";
 import { TelegramTimeoutError } from "./deadline.ts";
-import type { MailReader, MailSender } from "../mail.ts";
+import type { MailPoller, MailSender } from "../mail.ts";
 import { openOutbox, OUTBOX_TTL_MS, type OutboxStore } from "../mail-outbox.ts";
 import {
 	MAIL_CANCEL_PREFIX,
@@ -89,21 +89,16 @@ function fakeSender(over: Partial<MailSender> = {}): MailSender & { sent: unknow
 	};
 }
 
-// The threading lookup rides the reader — a read, never the send token.
+// The threading lookup rides the gws poller — a read, never the send token.
 function fakeReader(
-	over: Partial<Pick<MailReader, "threadFor">> = {},
-): MailReader & { threaded: string[] } {
+	over: Partial<Pick<MailPoller, "threadFor">> = {},
+): MailPoller & { threaded: string[] } {
 	const threaded: string[] = [];
 	return {
-		search: async () => [],
-		read: async () => {
-			throw new Error("unreachable");
-		},
-		attachment: async () => new Uint8Array(),
 		poll: async () => ({ hits: [], historyId: "1" }),
 		profileHistoryId: async () => "1",
 		threaded,
-		threadFor: async (id) => {
+		threadFor: async (id: string) => {
 			threaded.push(id);
 			return { threadId: "thread-1", messageId: "<orig@mail>" };
 		},
@@ -113,7 +108,7 @@ function fakeReader(
 
 function setup(
 	sender: MailSender | null = fakeSender(),
-	reader: MailReader | null = fakeReader(),
+	reader: MailPoller | null = fakeReader(),
 	outbox: OutboxStore = openOutbox(tmpdb()),
 ): {
 	outbox: OutboxStore;

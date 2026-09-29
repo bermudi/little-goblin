@@ -84,6 +84,7 @@ function harness(): Harness {
 		runtime: {
 			submit: (conv: { id: string }, message: UIMessage, sink: TurnSink) => {
 				submitted.push({ conv: conv.id, parts: message.parts, sink });
+				return true;
 			},
 		} as unknown as Runtime,
 		api,
@@ -235,6 +236,7 @@ describe("scheduler", () => {
 					throw new Error("boom");
 				}
 				h.submitted.push({ conv: _c.id, parts: _m.parts, sink });
+				return true;
 			},
 		} as unknown as Runtime;
 		const s = startScheduler(h.deps);

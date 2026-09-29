@@ -117,6 +117,36 @@ function runningRow(
 }
 
 describe("delegation watcher", () => {
+	test("shutdown joins a late scan without recording a history-only notice as landed", async () => {
+		const h = harness();
+		const d = runningRow(h, "late", 1);
+		let release!: (info: AgentInfo) => void;
+		const pending = new Promise<AgentInfo>((resolve) => { release = resolve; });
+		let entered!: () => void;
+		const inGet = new Promise<void>((resolve) => { entered = resolve; });
+		h.deps.herdr = { ...h.deps.herdr, get: () => { entered(); return pending; } };
+		let closed = false;
+		const history: string[] = [];
+		h.deps.wake = (_addr, text) => {
+			if (closed) {
+				history.push(text); // a closed runtime stores it but runs no turn
+				return false;
+			}
+			throw new Error("unexpected pre-close notice");
+		};
+		const w = startDelegationLifecycle(h.deps);
+		await inGet;
+		const joined = w.stopTicker();
+		let settled = false;
+		void joined.then(() => { settled = true; });
+		closed = true;
+		await Promise.resolve();
+		expect(settled).toBe(false);
+		release(agent(d.agentName, "done", 2));
+		await joined;
+		expect(history).toHaveLength(1);
+		expect(h.store.get(d.id)?.status).toBe("running");
+	});
 	test("idle at baseline stays running; done needs a seq advance", async () => {
 		const h = harness();
 		const d = runningRow(h, "fix it", 5);

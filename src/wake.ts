@@ -6,7 +6,8 @@
 // path, the lane queue orders it behind any live turn, epoch fencing
 // applies.
 //
-// Returns true when the submit landed. On a throw the constructed sink
+// Returns true only when the submit was admitted to a turn (not merely
+// appended to history by a closed runtime). On a throw the constructed sink
 // is released with the error — same contract as the intake flush: a
 // constructed sink is already "typing" and would ghost forever.
 
@@ -47,7 +48,11 @@ export function wake(deps: WakeDeps, address: WakeAddress, text: string): boolea
 			: undefined,
 	);
 	try {
-		deps.runtime.submit(conv, userMessage([{ type: "text", text }]), sink);
+		const admitted = deps.runtime.submit(conv, userMessage([{ type: "text", text }]), sink);
+		if (!admitted) {
+			log.warn("wake history only — runtime closed", { conversation: conv.id });
+			return false;
+		}
 	} catch (err) {
 		void sink.onDone({
 			kind: "error",

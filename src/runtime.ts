@@ -232,15 +232,17 @@ export class Runtime {
 	// Enqueue a user message + a sink. The message lands in history
 	// immediately — it's real regardless of when the turn runs, or
 	// whether it runs at all (post-shutdown submits record only).
-	submit(conv: Conversation, message: UIMessage, sink: TurnSink): void {
+	// True means admitted to a lane; false means history-only after close.
+	submit(conv: Conversation, message: UIMessage, sink: TurnSink): boolean {
 		this.deps.store.append(conv.id, [message]);
 		if (this.closed) {
 			void this.notifyDone({ sink, doneSent: false }, { kind: "fenced" });
-			return;
+			return false;
 		}
 		const lane = this.lane(conv.id);
 		lane.pending.push({ sink, doneSent: false });
 		if (!lane.running) lane.draining = this.drain(conv.id);
+		return true;
 	}
 
 	// False after shutdown(): a closed runtime still appends submits to

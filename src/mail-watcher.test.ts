@@ -116,6 +116,7 @@ function harness(): Harness {
 				if (h.failSubmit) throw new Error("queue closed");
 				const part = message.parts[0] as { text?: string } | undefined;
 				h.submitted.push({ conv: conv.id, text: part?.text ?? "", sink });
+				return true;
 			},
 		} as unknown as Runtime,
 		api,

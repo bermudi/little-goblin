@@ -112,9 +112,9 @@ export interface DelegationLifecycle {
 	list(): Delegation[];
 	/** One scan now — also the test door; production runs it on a timer. */
 	tick(): Promise<void>;
-	/** Stop the scan timer only — running agents belong to the herdr
-	 *  unit, not this process; rows resume on the next boot's scan. */
-	stopTicker(): void;
+	/** Stop polling and join any scan already in flight before closing
+	 *  stores. Running agents belong to herdr and resume on next boot. */
+	stopTicker(): Promise<void>;
 }
 
 const TICK_MS = 15_000;
@@ -193,7 +193,10 @@ export function startDelegationLifecycle(
 		read: (id, lines) => read(deps, id, lines),
 		list: () => deps.delegations.list(),
 		tick: scan,
-		stopTicker: () => clearInterval(timer),
+		stopTicker: () => {
+			clearInterval(timer);
+			return current ?? Promise.resolve();
+		},
 	};
 }
 

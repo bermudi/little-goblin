@@ -608,9 +608,10 @@ async function shutdown(signal: string): Promise<void> {
 	log.info("shutting down", { signal });
 	// Scheduler first — no new program submits once the drain begins.
 	scheduler.stop();
-	// The lifecycle only stops polling — running agents belong to the
-	// herdr unit, not this process; rows resume on next boot.
-	delegationLifecycle?.stopTicker();
+	// Join any in-flight scan before closing the store. Runtime closes
+	// below without waiting for it, so late notices remain retryable.
+	// Running agents belong to herdr and resume on next boot.
+	const delegationScan = delegationLifecycle?.stopTicker() ?? Promise.resolve();
 	// The mail watcher only stops polling — cursors and drafts persist.
 	mailWatcher.stop();
 	// The approval gate's sweep timer joins it — pending rows persist
@@ -630,7 +631,7 @@ async function shutdown(signal: string): Promise<void> {
 	// lands coalescing-buffer messages in history the same way.
 	const drained = runtime.shutdown();
 	const flushed = tg.drainIntake();
-	const settled = Promise.allSettled([stopping, drained, flushed]);
+	const settled = Promise.allSettled([stopping, drained, flushed, delegationScan]);
 	const finished = await Promise.race([
 		settled.then(() => true),
 		sleep(SHUTDOWN_DRAIN_MS).then(() => false),

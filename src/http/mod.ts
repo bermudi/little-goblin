@@ -17,7 +17,12 @@ import type { BlockedRetention, MemoryQueueCounts } from "../memory-queue.ts";
 // pull this module into the client tsconfig (DOM lib) — a type import
 // of scheduler.ts would drag wake → tg/delivery → agent/tts.ts in with
 // it and DOM's stricter BlobPart would fail the client typecheck.
+// checkInjection's value import lives in check.ts for the same reason:
+// injection.ts → jev.ts is shallow today, but this edge must never
+// harden into a value pull of the server graph.
 import type { Program, ProgramsStore } from "../programs.ts";
+import type { JevClient } from "../jev.ts";
+import { readBodyCapped, serveInjectionCheck } from "./check.ts";
 import { APP_HTML } from "./app.ts";
 import { validateInitData, type InitDataUser } from "./auth.ts";
 
@@ -64,6 +69,12 @@ export interface HttpDeps {
 		// throttle clock.
 		fire(program: Program, event: string | undefined, now: Date): boolean;
 	};
+	// Loopback-only injection scoring (POST /api/check-injection, no
+	// initData — the 127.0.0.1 bind + Host check is the auth, same trust
+	// class as the hook token-in-URL). The composition root passes the
+	// SAME JevClient instance the reviewer holds; http only calls decide.
+	// Absent = no reviewer/system1 gate, the route answers 503.
+	checkInjection?: { gate: Pick<JevClient, "decide"> };
 }
 
 const NO_STORE = { "cache-control": "no-store" };
@@ -181,33 +192,6 @@ function memoryStatusResponse(deps: HttpDeps): MemoryStatusResponse {
 
 const HOOK_BODY_CAP = 32 * 1024;
 const HOOK_THROTTLE_MS = 60_000;
-
-// Read a request body with a hard cap — Content-Length is a hint, not
-// the contract, so the stream itself is bounded too.
-async function readBodyCapped(
-	req: Request,
-	cap: number,
-): Promise<{ text: string; oversize: boolean }> {
-	const declared = Number(req.headers.get("content-length") ?? 0);
-	if (declared > cap) return { text: "", oversize: true };
-	const body = req.body;
-	if (body === null) return { text: "", oversize: false };
-	const reader = body.getReader();
-	const chunks: Uint8Array[] = [];
-	let total = 0;
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			total += value.byteLength;
-			if (total > cap) return { text: "", oversize: true };
-			chunks.push(value);
-		}
-	} finally {
-		reader.releaseLock();
-	}
-	return { text: new TextDecoder().decode(Buffer.concat(chunks)), oversize: false };
-}
 
 export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 	// One fire per program per 60 s — in-memory: a restart resets the
@@ -403,6 +387,9 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 					}
 				}
 				return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+			}
+			if (url.pathname === "/api/check-injection") {
+				return serveInjectionCheck(req, deps.checkInjection);
 			}
 			return new Response("not found", { status: 404 });
 		},

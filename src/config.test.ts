@@ -447,6 +447,13 @@ describe("ensureHomeLayout", () => {
 		const mcporter = readFileSync(join(dir, "mcporter.json"), "utf8");
 		expect(mcporter).toContain('"mcpServers": {}');
 		expect(mcporter).toContain('"imports": []');
+		// The gws skill seeds the same way — the Workspace capability
+		// (mail reads through the goblin-mail wrapper, drive/calendar/
+		// sheets discovery) survives a rebuild without operator memory.
+		const gws = readFileSync(join(dir, "workspace", "skills", "gws", "SKILL.md"), "utf8");
+		expect(gws).toContain("name: gws");
+		expect(gws).toContain("compatibility:");
+		expect(gws).toContain("goblin-mail");
 	});
 
 	test("an operator's mcporter.json is never clobbered by the seed", () => {
@@ -467,14 +474,27 @@ describe("ensureHomeLayout", () => {
 		symlinkSync(join("somewhere-else", "mcp"), shim);
 		ensureHomeLayout();
 		expect(readlinkSync(shim)).toBe(join(import.meta.dir, "..", "scripts", "mcp"));
+		// The goblin-mail entry point links the same way — the
+		// sanctioned mail-read path stays reachable as
+		// $GOBLIN_HOME/goblin-mail from the workspace.
+		const mailShim = join(dir, "goblin-mail");
+		expect(lstatSync(mailShim).isSymbolicLink()).toBe(true);
+		expect(readlinkSync(mailShim)).toBe(join(import.meta.dir, "..", "scripts", "goblin-mail"));
+		rmSync(mailShim);
+		symlinkSync(join("somewhere-else", "goblin-mail"), mailShim);
+		ensureHomeLayout();
+		expect(readlinkSync(mailShim)).toBe(join(import.meta.dir, "..", "scripts", "goblin-mail"));
 	});
 
 	test("a real file at the shim path is never clobbered", () => {
 		const dir = useHome();
 		writeFileSync(join(dir, "mcp"), "operator's own");
+		writeFileSync(join(dir, "goblin-mail"), "operator's own mail");
 		ensureHomeLayout();
 		expect(lstatSync(join(dir, "mcp")).isSymbolicLink()).toBe(false);
 		expect(readFileSync(join(dir, "mcp"), "utf8")).toBe("operator's own");
+		expect(lstatSync(join(dir, "goblin-mail")).isSymbolicLink()).toBe(false);
+		expect(readFileSync(join(dir, "goblin-mail"), "utf8")).toBe("operator's own mail");
 	});
 });
 

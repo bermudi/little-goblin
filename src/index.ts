@@ -438,27 +438,40 @@ async function boot() {
 	// (system1's auth/model/baseUrl ride the same capture — a hand-edit
 	// applies on restart); the review model resolves live per review —
 	// the mini app owns the default between reviews.
+	// The reviewer's JevClient doubles as the loopback injection-check
+	// gate below — one instance, its auth closure resolves per call.
 	const reviewerBlock = configRef.current.reviewer;
-	if (reviewerBlock) {
-		// System One is the Jev gate source when present; absent pieces fall
-		// back to reviewer.auth / JevClient defaults so the live reviewer
-		// never breaks. reviewerBlock stays the on/off switch.
-		const gateAuth = configRef.current.system1?.auth ?? reviewerBlock.auth;
-		const gateModel = configRef.current.system1?.model;
-		const gateBaseUrl = configRef.current.system1?.baseUrl;
+	const jevGate = reviewerBlock
+		? new JevClient({
+				auth: () => auth.resolve(configRef.current.system1?.auth ?? reviewerBlock.auth),
+				// System One is the Jev gate source when present; absent
+				// pieces fall back to reviewer.auth / JevClient defaults
+				// so the live reviewer never breaks. reviewerBlock stays
+				// the on/off switch.
+				...(configRef.current.system1?.model !== undefined
+					? { model: configRef.current.system1.model }
+					: {}),
+				...(configRef.current.system1?.baseUrl !== undefined
+					? { baseUrl: configRef.current.system1.baseUrl }
+					: {}),
+			})
+		: null;
+	if (jevGate !== null) {
+		const block = reviewerBlock; // narrowed: non-null exactly when the gate exists
+		if (!block) throw new Error("reviewer gate without block");
 		const thresholds = {
-			correction: reviewerBlock.thresholds?.correction ?? reviewerBlock.threshold,
-			procedure: reviewerBlock.thresholds?.procedure ?? reviewerBlock.threshold,
+			correction: block.thresholds?.correction ?? block.threshold,
+			procedure: block.thresholds?.procedure ?? block.threshold,
 		};
-		log.info("reviewer enabled", { thresholds, queueCap: reviewerBlock.queueCap, evidence: reviewerBlock.evidence, system1: configRef.current.system1 !== undefined });
+		log.info("reviewer enabled", { thresholds, queueCap: block.queueCap, evidence: block.evidence, system1: configRef.current.system1 !== undefined });
 		// Staging from a killed run can only be garbage — clear it before
 		// any review can publish alongside it.
 		cleanupStaging(paths.workspace());
 		runtime.setReviewer({
-			gate: new JevClient({ auth: () => auth.resolve(gateAuth), ...(gateModel !== undefined ? { model: gateModel } : {}), ...(gateBaseUrl !== undefined ? { baseUrl: gateBaseUrl } : {}) }),
+			gate: jevGate,
 			thresholds,
-			queueCap: reviewerBlock.queueCap,
-			evidence: reviewerBlock.evidence,
+			queueCap: block.queueCap,
+			evidence: block.evidence,
 			reviewModel: async (conversationId) => {
 				const cfg = configRef.current;
 				const ref = cfg.reviewer?.model ?? cfg.model;
@@ -544,6 +557,10 @@ async function boot() {
 					},
 				}
 			: {}),
+		// The reviewer's Jev gate doubles as the loopback injection
+		// checker — same instance, no second auth closure. Absent
+		// reviewer block = no gate = the route answers 503.
+		...(jevGate ? { checkInjection: { gate: jevGate } } : {}),
 		onConfigWritten: () => {
 			setLogLevel(configRef.current.logLevel);
 			// publicUrl is operator-editable through the app — keep the menu

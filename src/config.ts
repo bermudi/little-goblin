@@ -22,6 +22,7 @@ export const paths = {
 	auth: () => join(goblinHome(), "auth.jsonl"),
 	mcporter: () => join(goblinHome(), "mcporter.json"),
 	mcpShim: () => join(goblinHome(), "mcp"),
+	goblinMailShim: () => join(goblinHome(), "goblin-mail"),
 	workspace: () => join(goblinHome(), "workspace"),
 	soul: () => join(goblinHome(), "workspace", "SOUL.md"),
 	agents: () => join(goblinHome(), "workspace", "AGENTS.md"),
@@ -103,7 +104,7 @@ export function ensureHomeLayout(): void {
 	// regains the whole capability — stub, modes, recovery — without
 	// operator prompting or agent memory. Write-if-absent: once seeded,
 	// each workspace copy is goblin's to evolve.
-	for (const skill of ["browser", "pass-cli", "mcp"]) {
+	for (const skill of ["browser", "pass-cli", "mcp", "gws"]) {
 		mkdirSync(join(paths.skills(), skill), { recursive: true });
 		const template = readFileSync(
 			join(import.meta.dir, "..", "deploy", "skills", skill, "SKILL.md"),
@@ -134,6 +135,7 @@ export function ensureHomeLayout(): void {
 		].join("\n"),
 	);
 	refreshMcpShim();
+	refreshGoblinMailShim();
 	seedFile(
 		paths.user(),
 		[
@@ -187,6 +189,36 @@ function refreshMcpShim(): void {
 	}
 	if (!isLink) {
 		log.error("not clobbering the mcp shim: a real file is in the way", undefined, { path: shim });
+		return;
+	}
+	if (readlinkSync(shim) !== target) {
+		unlinkSync(shim);
+		symlinkSync(target, shim);
+	}
+}
+
+// The `goblin-mail` entry point (the sanctioned mail-read path —
+// Gmail reads fenced and injection-checked): goblin's bash runs in
+// the workspace, which can't see the repo — so scripts/goblin-mail is
+// reachable as $GOBLIN_HOME/goblin-mail. Same contract as the mcp
+// shim: a symlink so repo updates propagate, repointed every boot,
+// never clobbering a real file — a refusal logs loud and leaves boot
+// running, since the skill without its shim is degraded, not fatal.
+function refreshGoblinMailShim(): void {
+	const shim = paths.goblinMailShim();
+	const target = join(import.meta.dir, "..", "scripts", "goblin-mail");
+	let isLink: boolean | null = null;
+	try {
+		isLink = lstatSync(shim).isSymbolicLink();
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+	}
+	if (isLink === null) {
+		symlinkSync(target, shim);
+		return;
+	}
+	if (!isLink) {
+		log.error("not clobbering the goblin-mail shim: a real file is in the way", undefined, { path: shim });
 		return;
 	}
 	if (readlinkSync(shim) !== target) {

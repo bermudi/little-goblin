@@ -4,13 +4,16 @@
 // the runtime against the current model's capability data, so intake
 // doesn't need to know the model at all.
 
-import { copyFile, mkdir, stat, unlink } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { constants } from "node:fs";
+import { copyFile, mkdir, open, rename, stat, unlink } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { File as TgFile } from "grammy/types";
 import type { UIMessage } from "ai";
 import { z } from "zod";
 import { paths } from "../config.ts";
 import { attachmentPart } from "../agent/attachments.ts";
+import { log } from "../log.ts";
 
 export interface IncomingMedia {
 	fileId: string;
@@ -130,7 +133,7 @@ export interface SavedAttachment {
 // Persist to workspace/attachments/ (Telegram still owns the file; this is
 // the agent-reachable copy) without ever buffering the whole file —
 // uploads run to 2GB on a self-hosted bot-api. Local-mode files are
-// copied on disk; cloud downloads stream straight to the destination.
+// copied on disk; cloud downloads stream to a same-directory temp file.
 export async function saveAttachment(
 	media: IncomingMedia,
 	file: TgFile,
@@ -139,37 +142,71 @@ export async function saveAttachment(
 ): Promise<SavedAttachment> {
 	const filePath = file.file_path;
 	if (!filePath) throw new Error("telegram returned no file_path");
+	// Telegram's unique id is untrusted input, not a path component.
+	const uniqueId = z.string().regex(/^[A-Za-z0-9_-]+$/).parse(media.fileUniqueId);
 	await mkdir(paths.attachments(), { recursive: true });
 	const safe = basename(media.fileName).replace(/[^\w.\-]+/g, "_");
-	const dest = join(paths.attachments(), `${media.fileUniqueId}-${safe}`);
+	const dest = join(paths.attachments(), `${uniqueId}-${safe}`);
+	const temp = join(paths.attachments(), `.${uniqueId}-${randomUUID()}.tmp`);
 	try {
 		if (filePath.startsWith("/")) {
-			// Self-hosted bot-api in --local mode: the file is already on this
-			// box — copy on disk, no HTTP fetch, no in-memory buffer.
-			await copyFile(filePath, dest);
+			// Self-hosted bot-api in --local mode: copy on disk, no HTTP fetch.
+			await copyFile(filePath, temp, constants.COPYFILE_EXCL);
 		} else {
 			const root = apiRoot ?? "https://api.telegram.org";
-			// The request URL carries the bot token — scrub it from anything
-			// propagated toward logs.
+			// The URL carries the bot token. Never propagate its raw errors.
 			const url = `${root}/file/bot${token}/${filePath}`;
-			let res: Response;
 			try {
-				res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+				const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+				if (!res.ok) throw new Error(`HTTP ${res.status}`);
+				await Bun.write(temp, res);
 			} catch (err) {
-				const msg = String(err instanceof Error ? err.message : err).replaceAll(token, "***");
-				throw new Error(`telegram file download failed: ${msg}`);
+				const msg = String(err instanceof Error ? err.message : err);
+				throw new Error(`telegram file download failed: ${token ? msg.replaceAll(token, "***") : msg}`);
 			}
-			if (!res.ok) throw new Error(`telegram file download HTTP ${res.status}`);
-			await Bun.write(dest, res);
 		}
+		const { size } = await stat(temp);
+		// The copy/download must reach disk before its name can enter history.
+		try {
+			const handle = await open(temp, "r");
+			try {
+				await handle.sync();
+			} finally {
+				await handle.close();
+			}
+		} catch (err) {
+			const detail = String(err);
+			throw new Error(`telegram attachment file sync failed for ${dest}: ${token ? detail.replaceAll(token, "***") : detail}`);
+		}
+		await rename(temp, dest);
+		// Persist the rename too. A failure here leaves the new destination in
+		// place, but must not commit an unproven path to history.
+		try {
+			const handle = await open(paths.attachments(), "r");
+			try {
+				await handle.sync();
+			} finally {
+				await handle.close();
+			}
+		} catch (err) {
+			const detail = String(err);
+			throw new Error(`telegram attachment directory sync failed for ${dest}: ${token ? detail.replaceAll(token, "***") : detail}`);
+		}
+		return { path: dest, size };
 	} catch (err) {
-		// A partial copy or aborted download must not sit in attachments/
-		// looking like the real file.
-		await unlink(dest).catch(() => {});
+		// Never delete the destination: history may already reference it.
+		try {
+			await unlink(temp);
+		} catch (cleanupErr) {
+			if ((cleanupErr as NodeJS.ErrnoException).code !== "ENOENT") {
+				const msg = String(cleanupErr);
+				log.warn("telegram attachment temp cleanup failed", {
+					dest, temp, error: token ? msg.replaceAll(token, "***") : msg,
+				});
+			}
+		}
 		throw err;
 	}
-	const { size } = await stat(dest);
-	return { path: dest, size };
 }
 
 // Media → parts: one data-attachment part carrying the saved path (plus

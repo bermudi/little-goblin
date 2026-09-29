@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { File as TgFile } from "grammy/types";
@@ -141,6 +142,162 @@ describe("saveAttachment", () => {
 		expect(saved.size).toBe(7);
 		expect(saved.path).toBe(join(paths.attachments(), "u1-clip.mp4"));
 		expect(readFileSync(saved.path, "utf8")).toBe("payload");
+	});
+
+	test("downloaded bytes also pass through the sync boundary without contacting Telegram", async () => {
+		useHome();
+		const fetched = spyOn(globalThis, "fetch").mockResolvedValue(new Response("downloaded"));
+		const realOpen = fsPromises.open;
+		const synced: string[] = [];
+		const opened = spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
+			const handle = await realOpen(path, flags, mode);
+			const realSync = handle.sync.bind(handle);
+			handle.sync = async () => {
+				synced.push(String(path) === paths.attachments() ? "directory" : "temp");
+				await realSync();
+			};
+			return handle;
+		});
+		try {
+			const saved = await saveAttachment(
+				media, { file_path: "cloud/file" } as TgFile, undefined, "token",
+			);
+			expect(readFileSync(saved.path, "utf8")).toBe("downloaded");
+			expect(synced).toEqual(["temp", "directory"]);
+			expect(fetched).toHaveBeenCalledTimes(1);
+		} finally {
+			opened.mockRestore();
+			fetched.mockRestore();
+		}
+	});
+
+	test("syncs the complete temp file before rename and the directory before returning", async () => {
+		const dir = useHome();
+		const src = join(dir, "upload.bin");
+		writeFileSync(src, "payload");
+		const events: string[] = [];
+		const realOpen = fsPromises.open;
+		const realRename = fsPromises.rename;
+		const opened = spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
+			const handle = await realOpen(path, flags, mode);
+			const kind = String(path) === paths.attachments() ? "directory" : "temp";
+			const realSync = handle.sync.bind(handle);
+			handle.sync = async () => {
+				events.push(`sync:${kind}`);
+				await realSync();
+			};
+			return handle;
+		});
+		const renamed = spyOn(fsPromises, "rename").mockImplementation(async (from, to) => {
+			events.push("rename");
+			await realRename(from, to);
+		});
+		try {
+			const saved = await saveAttachment(media, { file_path: src } as TgFile, undefined, "token");
+			expect(readFileSync(saved.path, "utf8")).toBe("payload");
+			expect(events).toEqual(["sync:temp", "rename", "sync:directory"]);
+		} finally {
+			opened.mockRestore();
+			renamed.mockRestore();
+		}
+	});
+
+	test("temp sync failure rejects without replacing the previous attachment", async () => {
+		const dir = useHome();
+		const src = join(dir, "upload.bin");
+		writeFileSync(src, "replacement");
+		mkdirSync(paths.attachments(), { recursive: true });
+		const dest = join(paths.attachments(), "u1-clip.mp4");
+		writeFileSync(dest, "previous");
+		const realOpen = fsPromises.open;
+		const opened = spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
+			const handle = await realOpen(path, flags, mode);
+			handle.sync = async () => { throw new Error("disk I/O failure token"); };
+			return handle;
+		});
+		try {
+			const failure: unknown = await saveAttachment(
+				media, { file_path: src } as TgFile, undefined, "token",
+			).catch((err: unknown) => err);
+			expect(failure).toBeInstanceOf(Error);
+			if (!(failure instanceof Error)) throw new Error("expected sync failure");
+			expect(failure.message).toContain("telegram attachment file sync failed");
+			expect(failure.message).toContain("disk I/O failure");
+			expect(failure.message).not.toContain("token");
+		} finally {
+			opened.mockRestore();
+		}
+		expect(readFileSync(dest, "utf8")).toBe("previous");
+		expect(readdirSync(paths.attachments())).toEqual(["u1-clip.mp4"]);
+	});
+
+	test("directory sync failure rejects after rename without removing the destination", async () => {
+		const dir = useHome();
+		const src = join(dir, "upload.bin");
+		writeFileSync(src, "replacement");
+		mkdirSync(paths.attachments(), { recursive: true });
+		const dest = join(paths.attachments(), "u1-clip.mp4");
+		writeFileSync(dest, "previous");
+		const realOpen = fsPromises.open;
+		const opened = spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
+			const handle = await realOpen(path, flags, mode);
+			if (String(path) === paths.attachments()) {
+				handle.sync = async () => { throw new Error("directory I/O failure"); };
+			}
+			return handle;
+		});
+		try {
+			await expect(saveAttachment(media, { file_path: src } as TgFile, undefined, "token"))
+				.rejects.toThrow("telegram attachment directory sync failed");
+		} finally {
+			opened.mockRestore();
+		}
+		expect(readFileSync(dest, "utf8")).toBe("replacement");
+		expect(readdirSync(paths.attachments())).toEqual(["u1-clip.mp4"]);
+	});
+
+	test("failed partial local copy preserves the previous attachment and removes temp", async () => {
+		const dir = useHome();
+		const src = join(dir, "upload.bin");
+		writeFileSync(src, "replacement");
+		mkdirSync(paths.attachments(), { recursive: true });
+		const dest = join(paths.attachments(), "u1-clip.mp4");
+		const previous = Buffer.from([0, 1, 2, 255]);
+		writeFileSync(dest, previous);
+		const copy = spyOn(fsPromises, "copyFile").mockImplementation(async (_src, temp) => {
+			writeFileSync(temp, "partial");
+			throw new Error("copy interrupted");
+		});
+		try {
+			await expect(saveAttachment(media, { file_path: src } as TgFile, undefined, "token"))
+				.rejects.toThrow("copy interrupted");
+		} finally {
+			copy.mockRestore();
+		}
+		expect(readFileSync(dest)).toEqual(previous);
+		expect(readdirSync(paths.attachments())).toEqual(["u1-clip.mp4"]);
+	});
+
+	test("successful replay atomically replaces the previous local attachment", async () => {
+		const dir = useHome();
+		const src = join(dir, "upload.bin");
+		writeFileSync(src, "replacement");
+		mkdirSync(paths.attachments(), { recursive: true });
+		const dest = join(paths.attachments(), "u1-clip.mp4");
+		writeFileSync(dest, "previous");
+		const saved = await saveAttachment(media, { file_path: src } as TgFile, undefined, "token");
+		expect(saved).toEqual({ path: dest, size: 11 });
+		expect(readFileSync(dest, "utf8")).toBe("replacement");
+		expect(readdirSync(paths.attachments())).toEqual(["u1-clip.mp4"]);
+	});
+
+	test("rejects a unique id that could escape the attachments directory", async () => {
+		useHome();
+		await expect(saveAttachment(
+			{ ...media, fileUniqueId: "../escape" },
+			{ file_path: "/not-read" } as TgFile, undefined, "token",
+		)).rejects.toThrow();
+		expect(existsSync(paths.attachments())).toBe(false);
 	});
 
 	test("a missing file_path fails loud", async () => {

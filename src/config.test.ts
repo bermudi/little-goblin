@@ -180,6 +180,34 @@ describe("goblin.json5", () => {
 		expect(() => loadConfig()).toThrow();
 	});
 
+	test("system1: optional block, model/baseUrl free-form, reviewer stays the switch", () => {
+		const dir = useHome();
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
+		// Absent → undefined; system1 alone enables nothing (reviewer is the switch).
+		writeFileSync(join(dir, "goblin.json5"), `${base},system1:{auth:"x"}}`);
+		expect(loadConfig()!.system1).toEqual({ auth: "x" });
+		expect(loadConfig()!.reviewer).toBeUndefined();
+		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
+		expect(loadConfig()!.system1).toBeUndefined();
+		// Full block parses as-is.
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},system1:{auth:"x",model:"jev-latest",baseUrl:"https://example.com"}}`,
+		);
+		expect(loadConfig()!.system1).toEqual({
+			auth: "x",
+			model: "jev-latest",
+			baseUrl: "https://example.com",
+		});
+		// system1.model is a Jev model id, NOT a <provider>/<model-id> chat
+		// ref — it is NOT provider-validated (unlike reviewer.model).
+		writeFileSync(join(dir, "goblin.json5"), `${base},system1:{auth:"x",model:"other/x"}}`);
+		expect(loadConfig()!.system1?.model).toBe("other/x");
+		// auth stays required.
+		writeFileSync(join(dir, "goblin.json5"), `${base},system1:{model:"jev-latest"}}`);
+		expect(() => loadConfig()).toThrow();
+	});
+
 	test("search/fetch: single entry, chain list, and rejection shapes", () => {
 		const dir = useHome();
 		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;

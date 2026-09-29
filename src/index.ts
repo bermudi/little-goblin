@@ -434,22 +434,28 @@ async function boot() {
 	// Skill reviewer after the bot: its save note delivers through
 	// bot.api, so the runtime can't hold it before tg exists. Absent
 	// block = the feature is off. The block is hand-edited-only (no
-	// mini-app surface), so gate auth and threshold are boot-captured;
-	// the review model resolves live per review — the mini app owns the
-	// default between reviews.
+	// mini-app surface), so gate auth and threshold are boot-captured
+	// (system1's auth/model/baseUrl ride the same capture — a hand-edit
+	// applies on restart); the review model resolves live per review —
+	// the mini app owns the default between reviews.
 	const reviewerBlock = configRef.current.reviewer;
 	if (reviewerBlock) {
-		const reviewerAuth = reviewerBlock.auth;
+		// System One is the Jev gate source when present; absent pieces fall
+		// back to reviewer.auth / JevClient defaults so the live reviewer
+		// never breaks. reviewerBlock stays the on/off switch.
+		const gateAuth = configRef.current.system1?.auth ?? reviewerBlock.auth;
+		const gateModel = configRef.current.system1?.model;
+		const gateBaseUrl = configRef.current.system1?.baseUrl;
 		const thresholds = {
 			correction: reviewerBlock.thresholds?.correction ?? reviewerBlock.threshold,
 			procedure: reviewerBlock.thresholds?.procedure ?? reviewerBlock.threshold,
 		};
-		log.info("reviewer enabled", { thresholds, queueCap: reviewerBlock.queueCap, evidence: reviewerBlock.evidence });
+		log.info("reviewer enabled", { thresholds, queueCap: reviewerBlock.queueCap, evidence: reviewerBlock.evidence, system1: configRef.current.system1 !== undefined });
 		// Staging from a killed run can only be garbage — clear it before
 		// any review can publish alongside it.
 		cleanupStaging(paths.workspace());
 		runtime.setReviewer({
-			gate: new JevClient({ auth: () => auth.resolve(reviewerAuth) }),
+			gate: new JevClient({ auth: () => auth.resolve(gateAuth), ...(gateModel !== undefined ? { model: gateModel } : {}), ...(gateBaseUrl !== undefined ? { baseUrl: gateBaseUrl } : {}) }),
 			thresholds,
 			queueCap: reviewerBlock.queueCap,
 			evidence: reviewerBlock.evidence,

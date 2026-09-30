@@ -134,10 +134,10 @@ agent loop.
   - `codex` — `ai-sdk-provider-codex-cli` exists (ChatGPT Plus/Pro auth via
     `codex` CLI login) but wraps the CLI's own agent loop — no caller tools,
     so it can't drive goblin's turn loop. Ours is a thin `LanguageModelV4`
-    over `chatgpt.com/backend-api/codex/responses` (`src/agent/codex.ts`):
-    reads `~/.codex/auth.json` per call, refreshes expired access tokens
-    against the OAuth endpoint, and writes rotated refresh tokens back —
-    not writing back would invalidate the CLI's own login.
+    over `chatgpt.com/backend-api/codex/responses` (`src/agent/codex/`):
+    reads `~/.codex/auth.json` per call (auth.ts), refreshes expired
+    access tokens against the OAuth endpoint, and writes rotated refresh
+    tokens back — not writing back would invalidate the CLI's own login.
 - **Thinking**: `off|low|medium|high|xhigh|max` is an operator vocabulary,
   not a provider contract — `thinkingOptions` maps each family to the
   nearest honest knob and writes the collapse down; `thinkingLevelsFor`
@@ -1881,10 +1881,10 @@ src/
                     the next change to either extracts one
                     fetchCachedCatalog helper and migrates both. No third
                     copy.
-    codex.ts        codex OAuth provider — credentials lifecycle, wire
-                    conversion, LanguageModelV4; splits into
-                    codex/auth.ts + codex/model.ts when next touched
-                    (external-change pressure lands on one 770-line file)
+    codex/          the codex provider: auth.ts (OAuth file lifecycle —
+                    expiry, single-flight refresh, durable write-back)
+                    and model.ts (LanguageModelV4 — prompt→responses
+                    conversion, SSE→stream parts)
     attachments.ts  data-attachment parts + per-turn materialization
     transcribe.ts   speech → text (groq whisper, more kinds later) —
                     intake + transcribe tool share it

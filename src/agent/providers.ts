@@ -16,7 +16,7 @@ import {
 	type ThinkingLevel,
 } from "../config.ts";
 import { log } from "../log.ts";
-import { codexModel } from "./codex.ts";
+import { codexModel } from "./codex/model.ts";
 import type { MediaPosition } from "./attachments.ts";
 import { openrouterSupportedParams } from "./models-dev.ts";
 

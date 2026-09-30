@@ -46,7 +46,7 @@ export function setLogFile(path: string | null): void {
 	fileSinkDegraded = false;
 }
 
-// Injectable for tests (same pattern as codex.ts's fetchImpl): a fake
+// Injectable for tests (same pattern as codex/auth.ts's fetchImpl): a fake
 // writer can fail with a chosen errno, which the real filesystem can't
 // be asked to do portably. Passing null restores the real one.
 export type AppendFn = (path: string, line: string) => void;

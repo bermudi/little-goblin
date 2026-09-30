@@ -2,7 +2,7 @@
 // throw, permanent target breakage silences the sink for the run, and a
 // re-attached target starts fresh. The transient path (ENOSPC-style)
 // needs a fake writer — the real filesystem can't be asked to fail that
-// way portably — via setLogWriter, same pattern as codex.ts's fetchImpl.
+// way portably — via setLogWriter, same pattern as codex/auth.ts's fetchImpl.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

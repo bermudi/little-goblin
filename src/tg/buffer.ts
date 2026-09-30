@@ -87,16 +87,25 @@ export class CoalescingBuffer<T> {
 				clearTimeout(newer.timer);
 				clearTimeout(newer.maxTimer);
 			}
-			const retryMs = Math.max(this.windowMs, 1_000);
+			// Consecutive failures back off exponentially — a persistently
+			// failing flush (full disk, dead history file) must not hot-loop
+			// once a second forever. Doubling from the base delay, capped at
+			// five minutes; a successful flush deletes the bucket, so any
+			// later batch starts the ladder over.
+			const attempts = bucket.attempts + 1;
+			const retryMs = Math.min(
+				Math.max(this.windowMs, 1_000) * 2 ** (attempts - 1),
+				300_000,
+			);
 			this.buckets.set(key, {
 				items: [...bucket.items, ...(newer?.items ?? [])],
 				timer: setTimeout(() => this.fire(key), retryMs),
 				maxTimer: setTimeout(() => this.fireMax(key), Math.max(retryMs, this.maxWaitMs)),
 				firstAt: bucket.firstAt,
-				attempts: bucket.attempts + 1,
+				attempts,
 			});
 			log.error("buffer flush failed — batch retained for retry", err, {
-				key, items: bucket.items.length, attempts: bucket.attempts + 1, retryMs,
+				key, items: bucket.items.length, attempts, retryMs,
 			});
 			return false;
 		}

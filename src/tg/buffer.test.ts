@@ -95,4 +95,30 @@ describe("coalescing buffer", () => {
 		buf.drain();
 		expect(flushes).toEqual([["first", "second"]]);
 	});
+
+	test("consecutive failures back the retry off past the constant delay", async () => {
+		const flushes: string[][] = [];
+		let failuresLeft = 2;
+		const buf = new CoalescingBuffer<string>(
+			40,
+			(_key, items) => {
+				if (failuresLeft > 0) {
+					failuresLeft--;
+					throw new Error("history write failed");
+				}
+				flushes.push(items);
+			},
+			70,
+		);
+		buf.push("c1", "first");
+		// Two failures back to back: the pending retry is re-armed at the
+		// doubled delay (~2s), not the old constant max(window, 1s) = 1s.
+		expect(() => buf.drain()).toThrow("messages retained for retry");
+		expect(() => buf.drain()).toThrow("messages retained for retry");
+		await sleep(1_200); // past 1s — the constant delay would have fired
+		expect(flushes).toEqual([]);
+		// The batch is still intact and complete for the next attempt.
+		buf.drain();
+		expect(flushes).toEqual([["first"]]);
+	}, 10_000);
 });

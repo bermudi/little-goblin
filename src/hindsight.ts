@@ -4,7 +4,10 @@ import { z } from "zod";
 import { createHash } from "node:crypto";
 import { log } from "./log.ts";
 
-const identifier = z.string().min(1).max(256).refine((value) => value !== "." && value !== "..");
+// Bank/document identifier vocabulary — shared with the forget
+// protocol (memory-forget.ts validates operator-supplied ids before
+// touching local state) and the mini-app routes.
+export const identifier = z.string().min(1).max(256).refine((value) => value !== "." && value !== "..");
 const baseUrlSchema = z.url().superRefine((value, ctx) => {
 	let url: URL;
 	try {
@@ -65,6 +68,53 @@ const documentSchema = z.object({
 	memory_unit_count: z.number().int().nonnegative(),
 });
 export type StoredMemoryDocument = z.infer<typeof documentSchema>;
+
+// ---------- browse wire shapes (mini-app memories browser) ----------
+const documentSummarySchema = z.object({
+	id: identifier,
+	created_at: z.string().max(128).nullish(),
+	updated_at: z.string().max(128).nullish(),
+	text_length: z.number().int().nonnegative().nullish(),
+	memory_unit_count: z.number().int().nonnegative().nullish(),
+	// Goblin's own retain metadata — conversation_id is what the browser
+	// groups by. Optional: only id is required server-side.
+	document_metadata: z.object({
+		conversation_id: z.string().max(256).nullish(),
+	}).nullish(),
+});
+export type MemoryDocSummary = z.infer<typeof documentSummarySchema>;
+const factListItemSchema = z.object({
+	id: identifier,
+	text: z.string().max(64_000),
+	fact_type: z.string().max(128).nullish(),
+	document_id: identifier.nullish(),
+	context: z.string().max(16_000).nullish(),
+	date: z.string().max(128).nullish(),
+	mentioned_at: z.string().max(128).nullish(),
+	occurred_start: z.string().max(128).nullish(),
+	occurred_end: z.string().max(128).nullish(),
+	entities: z.string().max(4_000).nullish(),
+	// Curation state: 'valid' or 'invalidated' (Hindsight 0.10) — the
+	// browser dims invalidated facts; anything unexpected renders as valid
+	// rather than throwing.
+	state: z.string().max(32).nullish(),
+});
+export type MemoryFact = z.infer<typeof factListItemSchema>;
+const listEnvelope = <T>(item: z.ZodType<T>) =>
+	z.object({
+		items: z.array(item).max(200),
+		total: z.number().int().nonnegative(),
+		limit: z.number().int().nonnegative(),
+		offset: z.number().int().nonnegative(),
+	});
+const docListSchema = listEnvelope(documentSummarySchema);
+const memoryListSchema = listEnvelope(factListItemSchema);
+export interface MemoryDocPage<T> {
+	items: T[];
+	total: number;
+	limit: number;
+	offset: number;
+}
 
 const retainSchema = z.object({
 	success: z.literal(true),
@@ -307,5 +357,61 @@ export class HindsightClient {
 		await this.request("delete", `/documents/${encodeURIComponent(id)}`, "DELETE",
 			z.object({ success: z.literal(true), document_id: z.literal(id) }),
 			{ signal, missing: true, document: id });
+	}
+
+	// ---------- browse (mini-app memories browser, read-only) ----------
+
+	// Paginated list of the bank's documents — one per retained exchange.
+	// The wire returns more fields (content_hash, retain_params, …); the
+	// schema reads only what the browser renders and lets zod strip the
+	// rest. List-item fields beyond id are optional server-side (live
+	// responses carry them); the route falls back when absent.
+	async listDocuments(options: {
+		q?: string;
+		limit: number;
+		offset: number;
+		signal?: AbortSignal;
+	}): Promise<MemoryDocPage<MemoryDocSummary>> {
+		const input = z.object({
+			q: z.string().min(1).max(256).optional(),
+			limit: z.number().int().min(1).max(100),
+			offset: z.number().int().min(0),
+		}).parse(options);
+		const query = new URLSearchParams({
+			limit: String(input.limit),
+			offset: String(input.offset),
+			...(input.q !== undefined ? { q: input.q } : {}),
+		});
+		const result = await this.request("documents", `/documents?${query}`, "GET",
+			docListSchema, { signal: options.signal });
+		if (!result) throw new HindsightError("protocol");
+		return { items: result.items, total: result.total, limit: input.limit, offset: input.offset };
+	}
+
+	// A document's extracted facts — what recall actually returns. Same
+	// pagination shape; `q` filters fact text server-side.
+	async listMemories(options: {
+		documentId?: string;
+		q?: string;
+		limit: number;
+		offset: number;
+		signal?: AbortSignal;
+	}): Promise<MemoryDocPage<MemoryFact>> {
+		const input = z.object({
+			documentId: identifier.optional(),
+			q: z.string().min(1).max(256).optional(),
+			limit: z.number().int().min(1).max(200),
+			offset: z.number().int().min(0),
+		}).parse(options);
+		const query = new URLSearchParams({
+			limit: String(input.limit),
+			offset: String(input.offset),
+			...(input.documentId !== undefined ? { document_id: input.documentId } : {}),
+			...(input.q !== undefined ? { q: input.q } : {}),
+		});
+		const result = await this.request("memories", `/memories/list?${query}`, "GET",
+			memoryListSchema, { signal: options.signal });
+		if (!result) throw new HindsightError("protocol");
+		return { items: result.items, total: result.total, limit: input.limit, offset: input.offset };
 	}
 }

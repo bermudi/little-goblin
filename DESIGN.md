@@ -1311,10 +1311,11 @@ No MCP, replacement turn loop, or generic multi-backend framework.
    `blocked` earns ONE notice per document (latch in SQLite,
    `memory_blocked_notices`), naming `/memory retry` and `/memory
    dismiss`; everything after the first notice is `/memory status`
-   territory. The mini app's Memory tab renders the same status as a
+   territory. The mini app's Memories tab renders the same status as a
    read-only card (`GET /api/memory-status`, same auth as every other
-   endpoint, polled only while the tab is open) — the verbs stay in
-   Telegram; the panel never mutates the queue. Retry mints a FRESH operation id — Hindsight holds the old
+   endpoint, polled only while the tab is open) — the status panel
+   never mutates the queue. Forgetting later grew a UI surface
+   (ruling 8); retry and dismiss stay Telegram verbs. Retry mints a FRESH operation id — Hindsight holds the old
    op terminally failed server-side, so replaying it just re-reads the
    dead op's status (the live hand-requeue that failed); dismiss keeps
    the row as `dismissed` for audit, and `/forget delete` cancels
@@ -1330,6 +1331,28 @@ No MCP, replacement turn loop, or generic multi-backend framework.
    affected recall snapshots (global prefix reset, logged). Suppression
    lives in SQLite and is checked before every enqueue, so restarts and
    future backfills cannot resurrect forgotten sources.
+8. **Memories browser: the mini app grows a Memories tab (operator ask,
+   2026-09-30).** The settings page restructures to two tabs — Settings
+   (the six config sections one level deep behind an index; settings
+   stays the default view) and Memories (status card + browser). The
+   browser reads and forgets through goblin's own endpoints
+   (`GET /api/memory/documents[/<id>]`, `DELETE …/<id>`), never through
+   Hindsight directly — the service stays invisible to the page. Reads
+   are paginated documents (one per retained exchange, filterable by
+   the bank's id-substring `q` — filter-only by ruling: "what do you
+   remember about X" belongs to recall in chat, not a second recall
+   box) plus a document's facts and original text; invalidated facts
+   render dimmed so corrections are visible. Forgetting is the one
+   mutation: the route runs the same protocol as `/forget delete` —
+   quiesce, settle in-flight retention, suppress, cancel, delete,
+   redact — extracted into one owner (`src/memory-forget.ts`) that
+   both surfaces call, with a confirm dialog as the go-ahead. The
+   command's issuing-conversation fence stays in the command; the
+   cross-conversation recall-in-flight window it already tolerates is
+   the browser's window too (suppression persists, so re-running
+   forget is the recovery). All three routes share the status gate:
+   boot-time destination or degrade to an operator-facing reason
+   ("restart to apply"), never a read or delete against a stale bank.
 
 ### Deployment and configuration
 

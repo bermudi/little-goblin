@@ -11,6 +11,7 @@ import { type ConfigRef } from "../config.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";
 import { HindsightClient, HindsightError } from "../hindsight.ts";
 import { memoryStatus, type MemoryContexts, type MemoryWorker } from "../memory.ts";
+import { forgetDocument } from "../memory-forget.ts";
 import type { MemoryQueue } from "../memory-queue.ts";
 import type { Runtime } from "../runtime.ts";
 import { log } from "../log.ts";
@@ -83,48 +84,6 @@ function listingsFor(db: Database): ForgetListings {
 // turns) atomically.
 function apply(deps: CommandDeps, conv: Conversation, patch: Parameters<ConversationStore["setMeta"]>[1]): void {
 	deps.store.applySettings(conv.id, patch);
-}
-
-// /forget delete settles in-flight retention before deleting: a
-// submitted operation is acknowledged but may still be processing
-// remotely, and a replace-mode retain finishing after the delete would
-// re-create the document server-side with its local row already gone
-// (DESIGN.md: serialize against in-flight writes before deleting).
-const SETTLE_POLL_MS = 2_000;
-const SETTLE_BUDGET_MS = 30_000;
-// `not_found` is already mapped to null by HindsightClient.operation.
-const SETTLE_TERMINAL = new Set(["completed", "failed", "cancelled"]);
-
-// True once every operation reached a terminal state (or was pruned
-// server-side — null counts as settled) within the budget; false means
-// something is still unsettled and the caller must refuse rather than
-// race the delete. Transient Hindsight failures retry inside the same
-// budget (each poll logs its own request line); anything that is not a
-// HindsightError escapes so the forget attempt fails loud.
-async function settleInflightRetention(
-	client: HindsightClient,
-	operationIds: string[],
-	timing?: { pollMs?: number; budgetMs?: number },
-): Promise<boolean> {
-	const pollMs = timing?.pollMs ?? SETTLE_POLL_MS;
-	const deadline = Date.now() + (timing?.budgetMs ?? SETTLE_BUDGET_MS);
-	const outstanding = new Set(operationIds);
-	while (outstanding.size > 0 && Date.now() < deadline) {
-		for (const operationId of [...outstanding]) {
-			try {
-				const operation = await client.operation(operationId);
-				if (operation === null || SETTLE_TERMINAL.has(operation.status)) outstanding.delete(operationId);
-			} catch (err) {
-				if (!(err instanceof HindsightError)) throw err;
-			}
-		}
-		if (outstanding.size > 0) {
-			const remaining = deadline - Date.now();
-			if (remaining <= 0) return false;
-			await new Promise<void>((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)));
-		}
-	}
-	return outstanding.size === 0;
 }
 
 // Returns true if the text was a command and got handled.
@@ -342,68 +301,33 @@ export function handleCommand(
 					log.info("forget listing ref resolved", { conversation: conv.id, ref, document: id });
 				}
 				// Resolve-then-confirm already happened: the operator ran
-				// /forget <query>, saw this id, and typed delete. The whole async
-				// block runs inside withWorkerPaused: the worker flips a row to
-				// submitted only after its submit HTTP call returns, so an
-				// unpaused delete can cancel a row that still reads pending
-				// while its document lands remotely — a resurrect with no local
-				// row left. Settle in-flight retention first — a submitted
-				// replace-mode retain finishing after the delete would resurrect
-				// the document — then suppress so nothing resurrects it, cancel,
-				// delete, redact. Refusing the delete beats racing it
-				// (fail-loud, DESIGN.md).
+				// /forget <query>, saw this id, and typed delete. The protocol
+				// itself (quiesce the retention worker, settle in-flight
+				// retention, suppress, cancel, delete, redact) lives in
+				// memory-forget.ts — shared with the mini app's forget button.
+				// Refusing the delete beats racing it (fail-loud, DESIGN.md).
 				void (async () => {
 					try {
-						await mem.withWorkerPaused(async () => {
-							const submitted = mem.queue
-								.inflightOps(id)
-								.filter((op) => op.state === "submitted")
-								.map((op) => op.operationId);
-							if (submitted.length > 0) {
-								const startedAt = Date.now();
-								if (!(await settleInflightRetention(mem.client, submitted, mem.settleTiming))) {
-									log.warn("forget refused — retention still processing remotely", {
-										conversation: conv.id,
-										document: id,
-										operations: submitted.length,
-									});
-									reply(
-										deps,
-										conv,
-										"memory for that document is still processing remotely — try /forget delete again in a minute",
-									);
-									return;
-								}
-								log.info("forget settled in-flight retention", {
-									conversation: conv.id,
-									document: id,
-									operations: submitted.length,
-									waitedMs: Date.now() - startedAt,
-								});
-							}
-							// A turn may already hold prior recall or be awaiting a
-							// fresh one. Revoke its epoch before redacting snapshots:
-							// a late recall must not reinsert the forgotten source.
-							deps.runtime.stop(conv.id);
-							mem.contexts.suppress(id);
-							const cancelled = mem.queue.cancelDocument(id);
-							await mem.client.deleteDocument(id);
-							const redacted = mem.contexts.deleteByDocument(id);
-							log.info("memory forgotten", {
-								conversation: conv.id,
-								document: id,
-								cancelled,
-								redacted,
-								prefixReset: true,
-							});
+						// A turn may already hold prior recall or be awaiting a
+						// fresh one. Revoke its epoch before redacting snapshots:
+						// a late recall must not reinsert the forgotten source.
+						deps.runtime.stop(conv.id);
+						const result = await forgetDocument(mem, id, { channel: "telegram", conversation: conv.id });
+						if (result.outcome === "busy") {
 							reply(
 								deps,
 								conv,
-								(preview !== null ? `forgotten ${id} — ${preview} ` : `forgotten ${id} `) +
-									`(suppressed, ${cancelled} queued cancelled, ${redacted} snapshots redacted). ` +
-									`Original chat history, backups, and provider retention are untouched.`,
+								"memory for that document is still processing remotely — try /forget delete again in a minute",
 							);
-						});
+							return;
+						}
+						reply(
+							deps,
+							conv,
+							(preview !== null ? `forgotten ${id} — ${preview} ` : `forgotten ${id} `) +
+								`(suppressed, ${result.cancelled} queued cancelled, ${result.redacted} snapshots redacted). ` +
+								`Original chat history, backups, and provider retention are untouched.`,
+						);
 					} catch (err) {
 						log.error("forget failed", err, { conversation: conv.id });
 						reply(deps, conv, `forget failed: ${err instanceof Error ? err.message : String(err)}`);

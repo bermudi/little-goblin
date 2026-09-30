@@ -233,3 +233,93 @@ describe("Hindsight HTTP boundary", () => {
 		expect(calls).toBe(0);
 	});
 });
+
+describe("memories browser list endpoints", () => {
+	// Verbatim item shapes from the live 0.10.0-slim API (2026-09-30),
+	// minus the fields the schema strips — the browser reads only what
+	// it renders; the rest of the payload is server-owned detail.
+	test("listDocuments sends the page query and reads the live envelope", async () => {
+		const requests: URL[] = [];
+		const baseUrl = fake((request) => {
+			requests.push(new URL(request.url));
+			return Response.json({
+				items: [{
+					id: "exchange/topic:889192981:547754/7/6206fa00",
+					bank_id: "goblin",
+					content_hash: "ef2a",
+					created_at: "2026-09-30T01:14:46.511505+00:00",
+					updated_at: "2026-09-30T01:14:46.511505+00:00",
+					text_length: 2453,
+					memory_unit_count: 3,
+					retain_params: { context: "Telegram exchange.", metadata: {} },
+					document_metadata: { source: "goblin", conversation_id: "topic:889192981:547754" },
+					tags: [],
+				}],
+				total: 37,
+				limit: 25,
+				offset: 0,
+			});
+		});
+		const client = new HindsightClient({ baseUrl, bankId: "goblin" });
+		const page = await client.listDocuments({ q: "topic:889192981", limit: 25, offset: 0 });
+		expect(page.total).toBe(37);
+		expect(page.items).toHaveLength(1);
+		expect(page.items[0]?.id).toBe("exchange/topic:889192981:547754/7/6206fa00");
+		expect(page.items[0]?.memory_unit_count).toBe(3);
+		expect(page.items[0]?.document_metadata?.conversation_id).toBe("topic:889192981:547754");
+		expect(requests[0]?.pathname).toBe("/v1/default/banks/goblin/documents");
+		expect(requests[0]?.searchParams.get("q")).toBe("topic:889192981");
+		expect(requests[0]?.searchParams.get("limit")).toBe("25");
+		expect(requests[0]?.searchParams.get("offset")).toBe("0");
+	});
+
+	test("listMemories filters by document and reads facts with curation state", async () => {
+		const requests: URL[] = [];
+		const baseUrl = fake((request) => {
+			requests.push(new URL(request.url));
+			return Response.json({
+				items: [{
+					id: "14badc40",
+					text: "Fernando Cinta es el contador del usuario.",
+					context: "Telegram exchange.",
+					date: "2026-09-30T01:14:28.654000+00:00",
+					fact_type: "world",
+					document_id: "exchange/topic:1:2/7/abc",
+					mentioned_at: "2026-09-30T01:14:28.654000+00:00",
+					occurred_start: null,
+					occurred_end: null,
+					entities: "Fernando Cinta, user",
+					chunk_id: "ignored",
+					proof_count: 1,
+					state: "valid",
+					metadata: {},
+				}],
+				total: 1,
+				limit: 200,
+				offset: 0,
+			});
+		});
+		const client = new HindsightClient({ baseUrl, bankId: "goblin" });
+		const page = await client.listMemories({ documentId: "exchange/topic:1:2/7/abc", limit: 200, offset: 0 });
+		expect(page.items[0]?.fact_type).toBe("world");
+		expect(page.items[0]?.state).toBe("valid");
+		expect(requests[0]?.searchParams.get("document_id")).toBe("exchange/topic:1:2/7/abc");
+	});
+
+	test("browse inputs are bounded and malformed envelopes fail loud", async () => {
+		let served = 0;
+		const baseUrl = fake(() => {
+			served++;
+			return Response.json({ items: [], total: 0, limit: 1, offset: 0 });
+		});
+		const client = new HindsightClient({ baseUrl, bankId: "goblin" });
+		await expect(client.listDocuments({ q: "x".repeat(257), limit: 10, offset: 0 })).rejects.toThrow();
+		await expect(client.listDocuments({ limit: 0, offset: 0 })).rejects.toThrow();
+		await expect(client.listDocuments({ limit: 101, offset: 0 })).rejects.toThrow();
+		await expect(client.listMemories({ documentId: ".", limit: 10, offset: 0 })).rejects.toThrow();
+		expect(served).toBe(0);
+		const broken = fake(() => Response.json({ items: "nope" }));
+		const badClient = new HindsightClient({ baseUrl: broken, bankId: "goblin" });
+		await expect(badClient.listDocuments({ limit: 10, offset: 0 })).rejects.toThrow(HindsightError);
+	});
+});

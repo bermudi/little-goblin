@@ -11,8 +11,9 @@ import { z } from "zod";
 import { thinkingLevelsFor } from "../agent/providers.ts";
 import { loadConfig, parseConfig, fetchKinds, providerKinds, searchKinds, writeConfig, type Config, type ProviderConfig, type ThinkingLevel } from "../config.ts";
 import { log } from "../log.ts";
-import { memoryStatus, type MemoryState } from "../memory.ts";
-import type { BlockedRetention, MemoryQueueCounts } from "../memory-queue.ts";
+import { memoryStatus, type MemoryState, type MemoryContexts } from "../memory.ts";
+import type { BlockedRetention, MemoryQueue, MemoryQueueCounts } from "../memory-queue.ts";
+import type { HindsightClient } from "../hindsight.ts";
 // Type-only imports must stay shallow here: app.js's JSDoc wire types
 // pull this module into the client tsconfig (DOM lib) — a type import
 // of scheduler.ts would drag wake → tg/delivery → agent/tts.ts in with
@@ -22,6 +23,8 @@ import type { BlockedRetention, MemoryQueueCounts } from "../memory-queue.ts";
 // harden into a value pull of the server graph.
 import type { Program, ProgramsStore } from "../programs.ts";
 import type { JevClient } from "../jev.ts";
+import { forgetDocument, type ForgetSource } from "../memory-forget.ts";
+import { HindsightError, identifier, type MemoryDocSummary, type MemoryFact } from "../hindsight.ts";
 import { readBodyCapped, serveInjectionCheck } from "./check.ts";
 import { APP_HTML } from "./app.ts";
 import { validateInitData, type InitDataUser } from "./auth.ts";
@@ -45,7 +48,10 @@ export interface HttpDeps {
 	onConfigWritten(): void;
 	// Long-term memory status — the same seams the /memory command reads
 	// (queue counts + blocked detail, bound to the boot-time target, and
-	// recall telemetry). Absent = memory not configured at boot.
+	// recall telemetry). Absent = memory not configured at boot. The
+	// browse/delete members (client, contexts, queue, withWorkerPaused)
+	// are the memories browser's seams — absent in status-only wirings,
+	// and the browse routes degrade to "not wired" when missing.
 	memory?: {
 		/** Boot-bound queue/client destination; edits apply after restart. */
 		target?: { baseUrl: string; bankId: string };
@@ -53,6 +59,14 @@ export interface HttpDeps {
 		blockedDetail(): BlockedRetention[];
 		lastRecallOk(): boolean | null;
 		lastRecallAt(): string | null;
+		/** Memories browser: read Hindsight through goblin's own client. */
+		client?: HindsightClient;
+		/** Forgetting: suppression + recall-snapshot redaction. */
+		contexts?: MemoryContexts;
+		/** Forgetting: cancel queued retention rows for a document. */
+		queue?: MemoryQueue;
+		/** Forgetting: quiesce the retention worker around the delete. */
+		withWorkerPaused?: <T>(fn: () => Promise<T>) => Promise<T>;
 	};
 	// Program webhooks: POST /hook/<token>. The token is the credential —
 	// no initData on this route (the caller is a CI runner or a GitHub
@@ -144,18 +158,158 @@ export interface MemoryStatusResponse {
 	blockedDetail: BlockedRetention[];
 }
 
-function memoryStatusResponse(deps: HttpDeps): MemoryStatusResponse {
-	// Same gate as the /memory command: the provider is a boot-time
-	// snapshot, the config is live — memory removed via a save reads as
-	// not configured until restart.
+// ---------- memories browser wire types ----------
+// The GET /api/memory/documents page item. One retained exchange; the
+// dates echo Hindsight's stored timestamps, conversationId is goblin's
+// own conversation address (topic:<chat>:<thread> | dm:<chat>).
+export interface MemoryDocListItem {
+	id: string;
+	createdAt: string | null;
+	updatedAt: string | null;
+	textLength: number;
+	factCount: number;
+	conversationId: string | null;
+}
+
+/** GET /api/memory/documents — one page plus the server-side total. */
+export interface MemoriesListResponse {
+	items: MemoryDocListItem[];
+	total: number;
+	limit: number;
+	offset: number;
+}
+
+/** One extracted fact — what recall actually returns into turns. */
+export interface MemoryFactItem {
+	id: string;
+	text: string;
+	factType: string | null;
+	// 'valid' | 'invalidated' per Hindsight 0.10 — the page dims
+	// anything but valid so corrections are visible.
+	state: string | null;
+	occurredStart: string | null;
+	occurredEnd: string | null;
+	mentionedAt: string | null;
+	entities: string | null;
+}
+
+/** GET /api/memory/documents/<id> — the document plus its facts. */
+export interface MemoryDocDetailResponse {
+	document: MemoryDocListItem;
+	originalText: string | null;
+	facts: MemoryFactItem[];
+	factsTotal: number;
+}
+
+/** DELETE /api/memory/documents/<id> — the forget outcome. */
+export interface MemoryForgetResponse {
+	ok: true;
+	cancelled: number;
+	redacted: number;
+}
+
+function memoryDocListItem(source: MemoryDocSummary): MemoryDocListItem {
+	return {
+		id: source.id,
+		createdAt: source.created_at ?? null,
+		updatedAt: source.updated_at ?? null,
+		textLength: source.text_length ?? 0,
+		factCount: source.memory_unit_count ?? 0,
+		conversationId: source.document_metadata?.conversation_id ?? null,
+	};
+}
+
+function memoryFactItem(source: MemoryFact): MemoryFactItem {
+	return {
+		id: source.id,
+		text: source.text,
+		factType: source.fact_type ?? null,
+		state: source.state ?? null,
+		occurredStart: source.occurred_start ?? null,
+		occurredEnd: source.occurred_end ?? null,
+		mentionedAt: source.mentioned_at ?? null,
+		entities: source.entities ?? null,
+	};
+}
+
+// Query params for GET /api/memory/documents — bounded like every
+// boundary; an out-of-range or malformed value is a 422, not a guess.
+const browseQuerySchema = z.object({
+	q: z.string().min(1).max(256).optional(),
+	limit: z.coerce.number().int().min(1).max(100).default(25),
+	offset: z.coerce.number().int().min(0).default(0),
+});
+
+// The boot-target gate every memory route shares: the provider is a
+// boot-time snapshot, the config is live — memory removed or re-pointed
+// via a save reads as not configured until restart, and a stale
+// destination must never be read (or forgotten against). Returns the
+// usable deps or the operator-facing reason.
+function memoryGate(deps: HttpDeps): NonNullable<HttpDeps["memory"]> | string {
 	const configured = deps.configRef.current.memory;
 	const targetChanged = configured && deps.memory?.target &&
 		(configured.baseUrl !== deps.memory.target.baseUrl || configured.bankId !== deps.memory.target.bankId);
-	const mem = deps.memory && configured && !targetChanged ? deps.memory : null;
-	if (!mem) {
+	if (!deps.memory || !configured || targetChanged) {
+		return targetChanged ? "memory destination changed — restart to apply" : "memory is not configured";
+	}
+	return deps.memory;
+}
+
+// The memories browser's extra seams — a status-only wiring (tests,
+// partial composition) serves status but not browse/delete.
+function browseGate(deps: HttpDeps):
+	| { mem: NonNullable<HttpDeps["memory"]>; client: HindsightClient }
+	| string {
+	const mem = memoryGate(deps);
+	if (typeof mem === "string") return mem;
+	if (!mem.client) return "memory browsing is not wired";
+	return { mem, client: mem.client };
+}
+
+function forgetGate(deps: HttpDeps):
+	| { mem: NonNullable<HttpDeps["memory"]>; client: HindsightClient; source: ForgetSource }
+	| string {
+	const mem = memoryGate(deps);
+	if (typeof mem === "string") return mem;
+	if (!mem.client || !mem.contexts || !mem.queue || !mem.withWorkerPaused) {
+		return "memory forgetting is not wired";
+	}
+	return {
+		mem,
+		client: mem.client,
+		source: {
+			client: mem.client,
+			contexts: mem.contexts,
+			queue: mem.queue,
+			withWorkerPaused: mem.withWorkerPaused,
+		},
+	};
+}
+
+// Hindsight failures never echo the service's internals — the response
+// is the operator-facing line the chat command uses; the log line
+// carries kind/status for reconstruction. Anything else fails loud.
+function memoryUpstreamError(err: unknown, what: string): Response {
+	if (err instanceof HindsightError) {
+		log.warn(what, { kind: err.kind, status: err.status });
+		return Response.json(
+			{ error: "memory unavailable — try again later" },
+			{ status: 503, headers: NO_STORE },
+		);
+	}
+	log.error(what, err);
+	return Response.json(
+		{ error: "memory request failed — check the service log" },
+		{ status: 500, headers: NO_STORE },
+	);
+}
+
+function memoryStatusResponse(deps: HttpDeps): MemoryStatusResponse {
+	const gate = memoryGate(deps);
+	if (typeof gate === "string") {
 		return {
 			state: "disabled",
-			detail: targetChanged ? "memory destination changed — restart to apply" : "memory is not configured",
+			detail: gate,
 			completed: 0,
 			blocked: 0,
 			dismissed: 0,
@@ -166,6 +320,7 @@ function memoryStatusResponse(deps: HttpDeps): MemoryStatusResponse {
 			blockedDetail: [],
 		};
 	}
+	const mem = gate;
 	const counts = mem.counts();
 	const lastRecallAt = mem.lastRecallAt();
 	const lastRecallOk = mem.lastRecallOk();
@@ -300,6 +455,128 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 					blocked: view.blocked,
 				});
 				return Response.json(view, { headers: NO_STORE });
+			}
+			// ---------- memories browser ----------
+			// Read through goblin's own Hindsight client — the service never
+			// faces the page. Reads bind to the boot-time destination (the
+			// shared gate); a changed block degrades to an operator-facing
+			// reason until restart, exactly like the status card.
+			if (url.pathname === "/api/memory/documents") {
+				const user = authedUser(req);
+				if (!user) {
+					return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
+				}
+				if (req.method !== "GET") return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+				const gate = browseGate(deps);
+				if (typeof gate === "string") {
+					return Response.json({ error: gate }, { status: 503, headers: NO_STORE });
+				}
+				const parsed = browseQuerySchema.safeParse({
+					...(url.searchParams.has("q") ? { q: url.searchParams.get("q") ?? undefined } : {}),
+					limit: url.searchParams.get("limit") ?? undefined,
+					offset: url.searchParams.get("offset") ?? undefined,
+				});
+				if (!parsed.success) {
+					return Response.json({ error: z.prettifyError(parsed.error) }, { status: 422, headers: NO_STORE });
+				}
+				try {
+					const page = await gate.client.listDocuments({
+						...(parsed.data.q !== undefined ? { q: parsed.data.q } : {}),
+						limit: parsed.data.limit,
+						offset: parsed.data.offset,
+					});
+					const body: MemoriesListResponse = {
+						items: page.items.map(memoryDocListItem),
+						total: page.total,
+						limit: page.limit,
+						offset: page.offset,
+					};
+					log.debug("memory browse served", {
+						userId: user.id, q: parsed.data.q ?? null,
+						total: body.total, offset: body.offset, returned: body.items.length,
+					});
+					return Response.json(body, { headers: NO_STORE });
+				} catch (err) {
+					return memoryUpstreamError(err, "memory browse failed");
+				}
+			}
+			const docMatch = url.pathname.match(/^\/api\/memory\/documents\/([^/]+)$/);
+			if (docMatch) {
+				const user = authedUser(req);
+				if (!user) {
+					return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
+				}
+				const rawId = docMatch[1];
+				const parsedId = rawId === undefined ? undefined : identifier.safeParse(decodeURIComponent(rawId));
+				if (!parsedId || !parsedId.success) {
+					return Response.json({ error: "no such document" }, { status: 404, headers: NO_STORE });
+				}
+				const id = parsedId.data;
+				if (req.method === "GET") {
+					const gate = browseGate(deps);
+					if (typeof gate === "string") {
+						return Response.json({ error: gate }, { status: 503, headers: NO_STORE });
+					}
+					const started = Date.now();
+					try {
+						const [doc, facts] = await Promise.all([
+							gate.client.getDocument(id),
+							gate.client.listMemories({ documentId: id, limit: 200, offset: 0 }),
+						]);
+						if (doc === null) {
+							return Response.json({ error: "no such document" }, { status: 404, headers: NO_STORE });
+						}
+						const body: MemoryDocDetailResponse = {
+							document: memoryDocListItem({
+								id: doc.id,
+								created_at: doc.created_at,
+								updated_at: doc.updated_at,
+								text_length: doc.original_text === null ? 0 : doc.original_text.length,
+								memory_unit_count: doc.memory_unit_count,
+							}),
+							originalText: doc.original_text,
+							facts: facts.items.map(memoryFactItem),
+							factsTotal: facts.total,
+						};
+						log.debug("memory document served", {
+							userId: user.id, document: id, facts: facts.total, ms: Date.now() - started,
+						});
+						return Response.json(body, { headers: NO_STORE });
+					} catch (err) {
+						return memoryUpstreamError(err, "memory document failed");
+					}
+				}
+				if (req.method === "DELETE") {
+					const gate = forgetGate(deps);
+					if (typeof gate === "string") {
+						return Response.json({ error: gate }, { status: 503, headers: NO_STORE });
+					}
+					const started = Date.now();
+					try {
+						const result = await forgetDocument(gate.source, id, { channel: "mini-app" });
+						if (result.outcome === "busy") {
+							log.warn("memory forget via mini app refused", {
+								userId: user.id, document: id, unsettled: result.unsettled, ms: Date.now() - started,
+							});
+							return Response.json({
+								error: "memory for that document is still processing remotely — retry in a minute",
+							}, { status: 409, headers: NO_STORE });
+						}
+						log.info("memory forget via mini app", {
+							userId: user.id, document: id, cancelled: result.cancelled,
+							redacted: result.redacted, ms: Date.now() - started,
+						});
+						const body: MemoryForgetResponse = {
+							ok: true,
+							cancelled: result.cancelled,
+							redacted: result.redacted,
+						};
+						return Response.json(body, { headers: NO_STORE });
+					} catch (err) {
+						return memoryUpstreamError(err, "memory forget failed");
+					}
+				}
+				return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 			}
 			if (url.pathname === "/api/config") {
 				const user = authedUser(req);

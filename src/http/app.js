@@ -21,6 +21,14 @@
 /** @typedef {import("./mod.ts").ConfigPostBody} ConfigPostBody */
 /** The GET /api/memory-status shape. */
 /** @typedef {import("./mod.ts").MemoryStatusResponse} MemoryStatusResponse */
+/** GET /api/memory/documents — one page of retained exchanges. */
+/** @typedef {import("./mod.ts").MemoriesListResponse} MemoriesListResponse */
+/** One list item — a retained exchange. */
+/** @typedef {import("./mod.ts").MemoryDocListItem} MemoryDocListItem */
+/** GET /api/memory/documents/<id> — the document plus its facts. */
+/** @typedef {import("./mod.ts").MemoryDocDetailResponse} MemoryDocDetailResponse */
+/** One extracted fact. */
+/** @typedef {import("./mod.ts").MemoryFactItem} MemoryFactItem */
 
 /** One editable search/fetch chain step. */
 /** @typedef {{ kind: string, auth: string }} ChainEntry */
@@ -174,27 +182,31 @@ function msg(t, kind) {
   elStatus.className = kind || "";
 }
 function updateSave() { buttonEl("save").disabled = !dirty; }
+// The back button means: leave. Dirty work asks first; inside a
+// settings section it climbs to the index; nowhere else does it show.
+function updateBackButton() {
+  if (!tg || !tg.BackButton) return;
+  const show = dirty || section !== null;
+  if (show) { if (tg.BackButton.show) tg.BackButton.show(); }
+  else if (tg.BackButton.hide) tg.BackButton.hide();
+}
 function markDirty() {
   if (loading) return;
   if (!dirty) {
     dirty = true;
     $("dirtyPill").hidden = false;
     msg("Unsaved changes", "dirty");
-    if (tg) {
-      if (tg.enableClosingConfirmation) tg.enableClosingConfirmation();
-      if (tg.BackButton && tg.BackButton.show) tg.BackButton.show();
-    }
+    if (tg && tg.enableClosingConfirmation) tg.enableClosingConfirmation();
   }
   updateSave();
+  updateBackButton();
 }
 function makeClean() {
   dirty = false;
   $("dirtyPill").hidden = true;
-  if (tg) {
-    if (tg.disableClosingConfirmation) tg.disableClosingConfirmation();
-    if (tg.BackButton && tg.BackButton.hide) tg.BackButton.hide();
-  }
+  if (tg && tg.disableClosingConfirmation) tg.disableClosingConfirmation();
   updateSave();
+  updateBackButton();
 }
 
 /**
@@ -220,16 +232,57 @@ function iconBtn(path, label, onclick) {
 }
 const CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
 
-// ---------- tabs ----------
+// ---------- view controller ----------
+// Two tabs: settings (an index of section panels — the config lives one
+// level deep) and memories (read-only browser). Sections never nest
+// deeper; the Telegram back button and the dirty guard share one rule:
+// dirty wins, then section-exit, then nothing.
+let activeTab = "settings";
+/** null = the settings index; otherwise a data-section value.
+ * @type {string | null} */
+let section = null;
+/** @type {NodeListOf<HTMLButtonElement>} */
+let tabButtons = document.querySelectorAll("#tabs button");
+
+function renderView() {
+  const settingsRoot = activeTab === "settings" && section === null;
+  for (const p of document.querySelectorAll(".panel")) {
+    const id = p.id;
+    let on = false;
+    if (id === "panel-settings") on = settingsRoot;
+    else if (id === "panel-memories") on = activeTab === "memories";
+    else on = activeTab === "settings" && section !== null && id === "panel-" + section;
+    p.classList.toggle("on", on);
+  }
+  for (const b of tabButtons) b.setAttribute("aria-selected", String(b.dataset.tab === activeTab));
+  document.body.classList.toggle("memtab", activeTab === "memories");
+  setMemoryPolling(activeTab === "memories");
+  updateBackButton();
+  if (activeTab === "memories") void loadDocs(true);
+}
+
 function initTabs() {
-  const btns = Array.from(/** @type {NodeListOf<HTMLButtonElement>} */ (document.querySelectorAll("#tabs button")));
-  for (const b of btns) {
+  tabButtons = document.querySelectorAll("#tabs button");
+  for (const b of tabButtons) {
     b.onclick = () => {
-      for (const x of btns) x.setAttribute("aria-selected", String(x === b));
-      for (const p of document.querySelectorAll(".panel")) {
-        p.classList.toggle("on", p.id === "panel-" + b.dataset.tab);
-      }
-      setMemoryPolling(b.dataset.tab === "memory");
+      const t = b.dataset.tab || "settings";
+      // Tapping the active settings tab climbs back to its index.
+      if (t === activeTab && t === "settings" && section !== null) section = null;
+      else { activeTab = t; if (t === "memories") section = null; }
+      renderView();
+      window.scrollTo(0, 0);
+      tap();
+    };
+  }
+}
+
+function initSections() {
+  const rows = /** @type {NodeListOf<HTMLButtonElement>} */ (document.querySelectorAll("#settingsIndex .idx"));
+  for (const b of rows) {
+    b.onclick = () => {
+      section = b.dataset.section || null;
+      renderView();
+      window.scrollTo(0, 0);
       tap();
     };
   }
@@ -370,8 +423,8 @@ function initSheet() {
   $("modelBtn").onclick = () => openSheet("model");
   $("titleBtn").onclick = () => openSheet("title");
   $("sheetClose").onclick = closeSheet;
-  $("veil").onclick = closeSheet;
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
+  $("veil").onclick = () => { closeSheet(); closeDocSheet(); };
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeSheet(); closeDocSheet(); } });
   $("sheetUse").onclick = () => {
     const p = selectEl("sheetProv").value;
     const m = inputEl("sheetModel").value.trim();
@@ -906,6 +959,201 @@ function setMemoryPolling(on) {
   }
 }
 
+// ---------- memories browser ----------
+// Read-only browsing over the same Hindsight bank recall reads, through
+// goblin's own endpoints (the service never faces this page). The
+// forget button is the one mutation, guarded by a Telegram confirm —
+// the same go-ahead /forget delete asks for in chat, running the same
+// protocol (memory-forget.ts).
+const DOC_PAGE = 25;
+let docOffset = 0;
+let docTotal = 0;
+let docsInFlight = false;
+/** The document the detail sheet is currently showing (null = closed).
+ * @type {string | null} */
+let openDocId = null;
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** @param {number} n */
+const pad2 = (n) => String(n).padStart(2, "0");
+/** Local wall clock, like /memory — read by the operator on this box.
+ * @param {string | null} iso
+ * @returns {string} */
+function fmtDateTime(iso) {
+  if (!iso) return "unknown date";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "unknown date";
+  return MONTHS[d.getMonth()] + " " + d.getDate() + ", " + pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+}
+
+/** @param {string} why */
+function renderBrowserUnavailable(why) {
+  $("memBrowser").hidden = true;
+  const hint = $("memBrowserHint");
+  hint.hidden = false;
+  hint.textContent = why;
+}
+
+/** @param {MemoryDocListItem} d @returns {HTMLButtonElement} */
+function docRow(d) {
+  const row = /** @type {HTMLButtonElement} */ (el("button", "docrow"));
+  row.type = "button";
+  const stack = el("div", "dstack");
+  const facts = d.factCount === 1 ? "1 fact" : d.factCount + " facts";
+  stack.append(el("div", "d1", fmtDateTime(d.createdAt) + " · " + facts));
+  stack.append(el("div", "d2", d.conversationId || d.id));
+  const chev = el("span", "dchev");
+  chev.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>'; // static markup
+  row.append(stack, chev);
+  row.onclick = () => { void openDoc(d.id, d.conversationId); };
+  return row;
+}
+
+/** @param {boolean} reset */
+async function loadDocs(reset) {
+  if (docsInFlight) return;
+  docsInFlight = true;
+  const q = inputEl("docSearch").value.trim();
+  const offset = reset ? 0 : docOffset;
+  try {
+    const params = new URLSearchParams({ limit: String(DOC_PAGE), offset: String(offset) });
+    if (q) params.set("q", q);
+    const res = await fetch("/api/memory/documents?" + params, { headers: { "x-init-data": initData } });
+    if (res.status === 503) {
+      const j = /** @type {{ error?: string }} */ (await res.json().catch(() => ({})));
+      renderBrowserUnavailable(j.error || "memory is not configured");
+      return;
+    }
+    if (!res.ok) { renderBrowserUnavailable("could not load memories — the service answered " + res.status); return; }
+    const page = /** @type {MemoriesListResponse} */ (await res.json());
+    docOffset = offset + page.items.length;
+    docTotal = page.total;
+    if (reset) $("docList").replaceChildren();
+    for (const d of page.items) $("docList").append(docRow(d));
+    const have = $("docList").childElementCount;
+    $("docMore").hidden = have >= docTotal;
+    $("docCount").textContent = docTotal === 0
+      ? (q ? "nothing matches that filter" : "nothing retained yet")
+      : "showing " + have + " of " + docTotal + " retained exchanges";
+    $("memBrowser").hidden = false;
+    $("memBrowserHint").hidden = true;
+  } catch (e) {
+    renderBrowserUnavailable("could not reach goblin — " + e);
+  } finally {
+    docsInFlight = false;
+  }
+}
+const loadDocsSoon = debounce(() => { void loadDocs(true); }, 300);
+
+/** @param {MemoryFactItem} f @returns {HTMLElement} */
+function factBlock(f) {
+  const invalid = f.state !== null && f.state !== "valid";
+  const box = el("div", "fact" + (invalid ? " dim" : ""));
+  box.append(el("div", "ftext", f.text));
+  const bits = [];
+  if (f.factType) bits.push(f.factType);
+  const when = f.occurredStart || f.occurredEnd || f.mentionedAt;
+  if (when) bits.push(fmtDateTime(when));
+  if (invalid) bits.push(f.state || "invalidated");
+  box.append(el("div", "fcap", bits.join(" · ")));
+  return box;
+}
+
+/** @param {string} id @param {string | null} conversationId */
+async function openDoc(id, conversationId) {
+  openDocId = id;
+  $("docSheetTitle").textContent = "Exchange";
+  $("docFacts").replaceChildren(el("div", "cap", "Loading…"));
+  $("docText").textContent = "";
+  const wrap = /** @type {HTMLDetailsElement} */ ($("docTextWrap"));
+  wrap.open = false;
+  wrap.hidden = true;
+  buttonEl("docForget").disabled = false;
+  openDocSheet();
+  let res;
+  try {
+    res = await fetch("/api/memory/documents/" + encodeURIComponent(id), { headers: { "x-init-data": initData } });
+  } catch (e) {
+    if (openDocId === id) $("docFacts").replaceChildren(el("div", "cap", "could not reach goblin — " + e));
+    return;
+  }
+  if (openDocId !== id) return; // the sheet moved on mid-flight
+  const j = /** @type {MemoryDocDetailResponse & { error?: string }} */ (await res.json().catch(() => ({})));
+  if (!res.ok) {
+    $("docFacts").replaceChildren(el("div", "cap", j.error || "could not load — the service answered " + res.status));
+    return;
+  }
+  $("docSheetTitle").textContent = fmtDateTime(j.document.createdAt) +
+    (conversationId ? " · " + conversationId : "");
+  const factsBox = $("docFacts");
+  factsBox.replaceChildren();
+  if (j.facts.length === 0) factsBox.append(el("div", "cap", "No facts were extracted from this exchange."));
+  for (const f of j.facts) factsBox.append(factBlock(f));
+  if (j.factsTotal > j.facts.length) {
+    factsBox.append(el("div", "cap", "+" + (j.factsTotal - j.facts.length) + " more — beyond this page"));
+  }
+  const text = j.originalText || "";
+  if (text) {
+    $("docText").textContent = text.length > 16000
+      ? text.slice(0, 16000) + "…\n[truncated — the full text is on the server]"
+      : text;
+    wrap.hidden = false;
+  }
+}
+
+function openDocSheet() {
+  $("veil").classList.add("on");
+  $("docSheet").classList.add("on");
+  $("docSheet").focus();
+}
+function closeDocSheet() {
+  if (!$('docSheet').classList.contains("on")) return;
+  $("veil").classList.remove("on");
+  $("docSheet").classList.remove("on");
+  openDocId = null;
+}
+
+function initDocBrowser() {
+  $("docSearch").addEventListener("input", loadDocsSoon);
+  $("docMore").onclick = () => { void loadDocs(false); };
+  $("docSheetClose").onclick = closeDocSheet;
+  $("docForget").onclick = () => {
+    const id = openDocId;
+    if (!id) return;
+    const doForget = async () => {
+      buttonEl("docForget").disabled = true;
+      try {
+        const res = await fetch("/api/memory/documents/" + encodeURIComponent(id), {
+          method: "DELETE",
+          headers: { "x-init-data": initData },
+        });
+        const j = /** @type {{ ok?: boolean, cancelled?: number, redacted?: number, error?: string }} */ (await res.json().catch(() => ({})));
+        if (res.ok) {
+          closeDocSheet();
+          if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("success");
+          msg("Forgotten — " + (j.cancelled ?? 0) + " queued cancelled, " + (j.redacted ?? 0) + " snapshots redacted", "ok");
+          void loadDocs(true);
+          refreshMemoryStatus();
+        } else {
+          buttonEl("docForget").disabled = res.status !== 409; // busy: allow retry
+          msg(j.error || "forget failed — the service answered " + res.status, "err");
+          if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred("error");
+        }
+      } catch (e) {
+        buttonEl("docForget").disabled = false;
+        msg("forget failed — " + e, "err");
+      }
+    };
+    // The go-ahead: the same confirmation /forget delete asks for in
+    // chat, native to the client.
+    if (tg && tg.showConfirm) {
+      tg.showConfirm("Forget this exchange? Its facts stop being recalled. This cannot be undone.", (ok) => { if (ok) void doForget(); });
+    } else {
+      void doForget();
+    }
+  };
+}
+
 // ---------- load + populate ----------
 /** @param {Config} c */
 function populate(c) {
@@ -1089,7 +1337,10 @@ async function load() {
 
 // ---------- boot ----------
 initTabs();
+initSections();
 initSheet();
+initDocBrowser();
+renderView();
 $("save").onclick = save;
 if (tg) {
   if (tg.expand) tg.expand();
@@ -1097,7 +1348,17 @@ if (tg) {
   try { if (tg.setBackgroundColor) tg.setBackgroundColor("bg_color"); } catch (e) {}
   if (tg.BackButton && tg.BackButton.onClick) {
     tg.BackButton.onClick(() => {
-      if (tg.showConfirm) tg.showConfirm("Discard unsaved changes?", (ok) => { if (ok) window.location.reload(); });
+      // Dirty work asks before being discarded; an open settings
+      // section climbs to the index; both never apply at once (dirty
+      // wins — leaving with unsaved work is the dangerous exit).
+      if (dirty) {
+        if (tg.showConfirm) tg.showConfirm("Discard unsaved changes?", (ok) => { if (ok) window.location.reload(); });
+        return;
+      }
+      if (section !== null) {
+        section = null;
+        renderView();
+      }
     });
   }
 }

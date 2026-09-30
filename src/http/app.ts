@@ -264,6 +264,9 @@ export const APP_HTML = `<!doctype html>
   }
   #save:disabled { opacity: .45; cursor: default; }
   #save:active:not(:disabled) { transform: scale(.97); }
+  /* The memories tab is read-only — no save in the bar, but the bar
+     stays (one status home for the whole page, no layout jump). */
+  body.memtab #save { display: none; }
 
   #tabs {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 31;
@@ -331,6 +334,81 @@ export const APP_HTML = `<!doctype html>
     font: 600 15px system-ui; cursor: pointer;
   }
 
+  /* settings index rows */
+  .idx {
+    display: flex; align-items: center; gap: 12px;
+    width: 100%; padding: 13px 14px; border: 0; background: transparent;
+    color: var(--text); text-align: left; cursor: pointer;
+    font: 500 15px system-ui;
+  }
+  .idx + .idx { border-top: 1px solid var(--sep); }
+  .idx:active { background: color-mix(in srgb, var(--text) 6%, transparent); }
+  .idx .iicon { flex: none; width: 22px; height: 22px; color: var(--hint); }
+  .idx .iicon svg { width: 100%; height: 100%; display: block; }
+  .idx .ilabel { flex: 1; min-width: 0; }
+  .idx .ilabel small { display: block; font-size: 12.5px; color: var(--hint); font-weight: 400; margin-top: 1px; }
+  .idx .chev { flex: none; width: 16px; height: 16px; color: var(--hint); opacity: .7; }
+
+  /* memories browser */
+  .browsetop { display: flex; gap: 8px; margin: 10px 0 10px; }
+  .browsetop input { flex: 1; min-width: 0; }
+  .docrow {
+    display: flex; align-items: center; gap: 10px; width: 100%;
+    padding: 11px 14px; border: 0; background: transparent;
+    color: var(--text); text-align: left; cursor: pointer;
+  }
+  .docrow + .docrow { border-top: 1px solid var(--sep); }
+  .docrow:active { background: color-mix(in srgb, var(--text) 6%, transparent); }
+  .docrow .dstack { flex: 1; min-width: 0; }
+  .docrow .d1 { font-size: 14.5px; font-weight: 500; }
+  .docrow .d2 {
+    font-size: 12px; color: var(--hint); margin-top: 2px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: var(--mono);
+  }
+  .docrow .dchev { flex: none; width: 15px; height: 15px; color: var(--hint); opacity: .7; }
+  #docCount { margin: 8px 6px 0; }
+  #docMore { margin-top: 10px; }
+
+  /* document detail sheet — mirrors #sheet */
+  #docSheet {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 41;
+    background: var(--bg); border-radius: 16px 16px 0 0;
+    border-top: 1px solid var(--sep);
+    transform: translateY(105%); transition: transform .24s cubic-bezier(.2,.8,.2,1);
+    max-height: 88%; display: flex; flex-direction: column;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  #docSheet.on { transform: none; }
+  #docSheetBody { overflow-y: auto; padding: 4px 16px 10px; }
+  .fact { padding: 10px 2px; }
+  .fact + .fact { border-top: 1px solid var(--sep); }
+  .fact .ftext { font-size: 14.5px; line-height: 1.45; white-space: pre-wrap; }
+  .fact .fcap { font-size: 12px; color: var(--hint); margin-top: 4px; }
+  .fact.dim .ftext { color: var(--hint); text-decoration: line-through; text-decoration-thickness: 1px; }
+  .fact.dim .fcap { color: var(--err); }
+  #docTextWrap { margin: 8px 0 4px; border-top: 1px solid var(--sep); }
+  #docTextWrap summary {
+    list-style: none; cursor: pointer;
+    font-size: 13px; color: var(--hint); padding: 11px 2px;
+  }
+  #docTextWrap summary::-webkit-details-marker { display: none; }
+  #docTextWrap summary::before { content: "▸"; font-size: 11px; margin-right: 6px; }
+  #docTextWrap[open] summary::before { content: "▾"; }
+  #docTextWrap[open] summary { padding-bottom: 6px; }
+  .doctext {
+    font-size: 13.5px; line-height: 1.5; white-space: pre-wrap;
+    padding: 2px 2px 10px; overflow-wrap: break-word;
+  }
+  #docSheet .dfoot { padding: 10px 16px 14px; border-top: 1px solid var(--sep); }
+  .dangerbtn {
+    width: 100%; padding: 12px; border: 1px solid var(--err); border-radius: 12px;
+    background: transparent; color: var(--err);
+    font: 600 15px system-ui; cursor: pointer;
+  }
+  .dangerbtn:active { transform: scale(.98); }
+  .dangerbtn:disabled { opacity: .45; cursor: default; }
+
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; }
   }
@@ -343,8 +421,45 @@ export const APP_HTML = `<!doctype html>
       <span id="dirtyPill" hidden>unsaved</span>
     </header>
 
+    <!-- SETTINGS INDEX — the config sections live one level deep -->
+    <section class="panel on" id="panel-settings" role="tabpanel" aria-label="Settings">
+      <h2>Settings</h2>
+      <div class="card" id="settingsIndex">
+        <button class="idx" data-section="chat" type="button">
+          <span class="iicon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4.5c-4.5 0-8 2.9-8 6.5 0 2 1.1 3.9 2.8 5.1L6.2 19.6l3.4-1.5c.8.2 1.6.3 2.4.3 4.5 0 8-2.9 8-6.5s-3.5-6.4-8-6.4z"/></svg></span>
+          <span class="ilabel">Chat<small>Model, thinking, topic titles, favorites</small></span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+        <button class="idx" data-section="voice" type="button">
+          <span class="iicon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/></svg></span>
+          <span class="ilabel">Voice<small>Text to speech, transcription</small></span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+        <button class="idx" data-section="web" type="button">
+          <span class="iicon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c2.5 2.2 3.8 5 3.8 8s-1.3 5.8-3.8 8c-2.5-2.2-3.8-5-3.8-8S9.5 6.2 12 4z"/></svg></span>
+          <span class="ilabel">Web<small>Search and fetch providers</small></span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+        <button class="idx" data-section="memory" type="button">
+          <span class="iicon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4l8 4-8 4-8-4 8-4z"/><path d="M4 12l8 4 8-4"/><path d="M4 16l8 4 8-4"/></svg></span>
+          <span class="ilabel">Memory<small>Hindsight service — browse it in the Memories tab</small></span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+        <button class="idx" data-section="providers" type="button">
+          <span class="iicon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4.5" width="16" height="6.5" rx="2"/><rect x="4" y="13" width="16" height="6.5" rx="2"/><path d="M8 7.75h.01M8 16.25h.01"/></svg></span>
+          <span class="ilabel">Providers<small>Model vendors and secret names</small></span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+        <button class="idx" data-section="access" type="button">
+          <span class="iicon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5.5c0 4.4-2.9 7.4-7 9-4.1-1.6-7-4.6-7-9V6l7-3z"/></svg></span>
+          <span class="ilabel">Access<small>Allowed users, doors, port, log level</small></span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+      </div>
+    </section>
+
     <!-- CHAT -->
-    <section class="panel on" id="panel-chat" role="tabpanel" aria-label="Chat">
+    <section class="panel" id="panel-chat" role="tabpanel" aria-label="Chat">
       <h2>Model</h2>
       <div class="card">
         <div class="row">
@@ -478,17 +593,9 @@ export const APP_HTML = `<!doctype html>
       </div>
     </section>
 
-    <!-- MEMORY -->
+    <!-- MEMORY (config — browsing lives in the Memories tab) -->
     <section class="panel" id="panel-memory" role="tabpanel" aria-label="Memory">
-      <h2>Status</h2>
-      <div class="card" id="memStatusCard">
-        <div class="row">
-          <div class="rstack">
-            <div class="rlabel">status: <span class="mono">…</span></div>
-            <div class="cap">Live view of the memory queue — fetched while this tab is open. Read-only; the verbs live in Telegram.</div>
-          </div>
-        </div>
-      </div>
+      <p class="lead">What goblin retains and recalls — browse it in the Memories tab.</p>
       <h2>Long-term memory</h2>
       <div class="card">
         <div class="row">
@@ -530,6 +637,30 @@ export const APP_HTML = `<!doctype html>
             </div>
           </details>
         </div>
+      </div>
+    </section>
+
+    <!-- MEMORIES — the browser over Hindsight's retained exchanges -->
+    <section class="panel" id="panel-memories" role="tabpanel" aria-label="Memories">
+      <h2>Status</h2>
+      <div class="card" id="memStatusCard">
+        <div class="row">
+          <div class="rstack">
+            <div class="rlabel">status: <span class="mono">…</span></div>
+            <div class="cap">Live view of the memory queue — fetched while this tab is open. To forget something, open it below; retry and dismiss live in Telegram.</div>
+          </div>
+        </div>
+      </div>
+
+      <h2>Retained exchanges</h2>
+      <div id="memBrowserHint" class="cap" style="margin:10px 6px 0" hidden></div>
+      <div id="memBrowser" hidden>
+        <div class="browsetop">
+          <input id="docSearch" class="mono" placeholder="filter by topic or exchange id" autocomplete="off" spellcheck="false" autocapitalize="off" aria-label="filter exchanges">
+        </div>
+        <div class="card" id="docList"></div>
+        <button class="ghost" id="docMore" type="button" hidden>Load more</button>
+        <div class="cap" id="docCount"></div>
       </div>
     </section>
 
@@ -590,29 +721,13 @@ export const APP_HTML = `<!doctype html>
   </div></div>
 
   <nav id="tabs" aria-label="Sections">
-    <button type="button" role="tab" aria-selected="true" data-tab="chat">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4.5c-4.5 0-8 2.9-8 6.5 0 2 1.1 3.9 2.8 5.1L6.2 19.6l3.4-1.5c.8.2 1.6.3 2.4.3 4.5 0 8-2.9 8-6.5s-3.5-6.4-8-6.4z"/></svg>
-      <span>Chat</span>
+    <button type="button" role="tab" aria-selected="true" data-tab="settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8l1.2 2.6 2.8-.7 1.6 2.4 2.7.8-.3 2.9 1.9 2.2-1.9 2.2.3 2.9-2.7.8-1.6 2.4-2.8-.7-1.2 2.6-1.2-2.6-2.8.7-1.6-2.4-2.7-.8.3-2.9L3 12l1.9-2.2-.3-2.9 2.7-.8L8.9 3.7l2.8.7L12 2.8z"/></svg>
+      <span>Settings</span>
     </button>
-    <button type="button" role="tab" aria-selected="false" data-tab="voice">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/></svg>
-      <span>Voice</span>
-    </button>
-    <button type="button" role="tab" aria-selected="false" data-tab="web">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c2.5 2.2 3.8 5 3.8 8s-1.3 5.8-3.8 8c-2.5-2.2-3.8-5-3.8-8S9.5 6.2 12 4z"/></svg>
-      <span>Web</span>
-    </button>
-    <button type="button" role="tab" aria-selected="false" data-tab="memory">
+    <button type="button" role="tab" aria-selected="false" data-tab="memories">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4l8 4-8 4-8-4 8-4z"/><path d="M4 12l8 4 8-4"/><path d="M4 16l8 4 8-4"/></svg>
-      <span>Memory</span>
-    </button>
-    <button type="button" role="tab" aria-selected="false" data-tab="access">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5.5c0 4.4-2.9 7.4-7 9-4.1-1.6-7-4.6-7-9V6l7-3z"/></svg>
-      <span>Access</span>
-    </button>
-    <button type="button" role="tab" aria-selected="false" data-tab="providers">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4.5" width="16" height="6.5" rx="2"/><rect x="4" y="13" width="16" height="6.5" rx="2"/><path d="M8 7.75h.01M8 16.25h.01"/></svg>
-      <span>Providers</span>
+      <span>Memories</span>
     </button>
   </nav>
 
@@ -631,6 +746,25 @@ export const APP_HTML = `<!doctype html>
         <input id="sheetModel" class="mono" placeholder="model-id" autocomplete="off" spellcheck="false" autocapitalize="off" aria-label="model id">
       </div>
       <button id="sheetUse" type="button">Use this model</button>
+    </div>
+  </div>
+
+  <div id="docSheet" role="dialog" aria-modal="true" aria-labelledby="docSheetTitle" tabindex="-1">
+    <div class="grab"></div>
+    <div class="shead">
+      <h3 id="docSheetTitle">Exchange</h3>
+      <button id="docSheetClose" type="button" aria-label="close">×</button>
+    </div>
+    <div id="docSheetBody">
+      <div id="docFacts"></div>
+      <details id="docTextWrap">
+        <summary>Original exchange</summary>
+        <div id="docText" class="doctext"></div>
+      </details>
+    </div>
+    <div class="dfoot">
+      <button id="docForget" class="dangerbtn" type="button">Forget this exchange</button>
+      <div class="cap" style="margin-top:7px">Its facts stop being recalled and queued copies are cancelled. The chat history itself is untouched.</div>
     </div>
   </div>
 

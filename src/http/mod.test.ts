@@ -650,3 +650,173 @@ describe("program webhooks", () => {
 		}
 	});
 });
+
+// ---------- memories browser ----------
+import { HindsightError, type HindsightClient, type MemoryDocPage, type MemoryDocSummary, type MemoryFact, type StoredMemoryDocument } from "../hindsight.ts";
+import type { MemoryContexts } from "../memory.ts";
+import type { MemoryQueue } from "../memory-queue.ts";
+
+function stubClient(): HindsightClient {
+	return {
+		listDocuments: () => Promise.reject(new Error("not stubbed")),
+		listMemories: () => Promise.reject(new Error("not stubbed")),
+		getDocument: () => Promise.reject(new Error("not stubbed")),
+		operation: () => Promise.reject(new Error("not stubbed")),
+		deleteDocument: () => Promise.reject(new Error("not stubbed")),
+	} as unknown as HindsightClient;
+}
+
+describe("mini-app memories browser", () => {
+	test("list requires init data, honors the boot-target gate, and serves pages", async () => {
+		const page: MemoryDocPage<MemoryDocSummary> = {
+			items: [{
+				id: "exchange/topic:1:2/3/abc",
+				created_at: "2026-09-30T01:14:46.511505+00:00",
+				updated_at: "2026-09-30T01:14:46.511505+00:00",
+				text_length: 2453,
+				memory_unit_count: 3,
+				document_metadata: { conversation_id: "topic:1:2" },
+			}],
+			total: 37, limit: 25, offset: 0,
+		};
+		const calls: string[] = [];
+		const client = stubClient();
+		client.listDocuments = (o) => { calls.push(`q=${"q" in o ? o.q : null} ${o.limit}@${o.offset}`); return Promise.resolve(page); };
+		const mem: NonNullable<HttpDeps["memory"]> = {
+			target: { baseUrl: "http://127.0.0.1:8888", bankId: "goblin" },
+			counts: () => ({ pending: 0, submitted: 0, completed: 0, blocked: 0, dismissed: 0 }),
+			blockedDetail: () => [], lastRecallOk: () => null, lastRecallAt: () => null,
+			client,
+		};
+		const { http, get, configRef } = setup(mem);
+		try {
+			expect((await get("/api/memory/documents", false)).status).toBe(401);
+			// Same authed path; gate passes (config matches boot target).
+			const ok = await get("/api/memory/documents?limit=25&offset=0");
+			expect(ok.status).toBe(200);
+			const body = await ok.json() as { total: number; items: Array<{ conversationId: string | null }> };
+			expect(body.total).toBe(37);
+			expect(body.items[0]?.conversationId).toBe("topic:1:2");
+			expect(calls[0]).toBe("q=null 25@0");
+			// q filter rides through.
+			await get("/api/memory/documents?q=topic%3A1&limit=10&offset=5");
+			expect(calls[1]).toBe("q=topic:1 10@5");
+			// Re-pointed config degrades to the reason, never reads the stale bank.
+			configRef.current = { ...configRef.current, memory: { ...configRef.current.memory!, bankId: "elsewhere" } };
+			const stale = await get("/api/memory/documents");
+			expect(stale.status).toBe(503);
+			expect(((await stale.json()) as { error: string }).error).toContain("restart");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("bad page params are a 422, and upstream failures map to the chat command's line", async () => {
+		const client = stubClient();
+		const { http, get } = setup({
+			counts: () => ({ pending: 0, submitted: 0, completed: 0, blocked: 0, dismissed: 0 }),
+			blockedDetail: () => [], lastRecallOk: () => null, lastRecallAt: () => null,
+			client,
+		});
+		try {
+			expect((await get("/api/memory/documents?limit=0")).status).toBe(422);
+			expect((await get("/api/memory/documents?limit=abc")).status).toBe(422);
+			expect((await get("/api/memory/documents?offset=-1")).status).toBe(422);
+			client.listDocuments = () => Promise.reject(new HindsightError("http", 500));
+			const res = await get("/api/memory/documents");
+			expect(res.status).toBe(503);
+			expect(((await res.json()) as { error: string }).error).toContain("memory unavailable");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("document detail serves original text and facts; unknown ids 404", async () => {
+		const doc: StoredMemoryDocument = {
+			id: "exchange/topic:1:2/3/abc", bank_id: "goblin",
+			original_text: "Operator: hi\nGoblin: hello",
+			created_at: "2026-09-30T01:14:46.511505+00:00",
+			updated_at: "2026-09-30T01:14:46.511505+00:00",
+			memory_unit_count: 2,
+		};
+		const facts: MemoryDocPage<MemoryFact> = {
+			items: [{
+				id: "f1", text: "The operator says hello.", fact_type: "experience",
+				document_id: doc.id, state: "invalidated",
+				date: null, mentioned_at: "2026-09-30T01:14:28Z", occurred_start: null, occurred_end: null,
+				entities: null, context: null,
+			}],
+			total: 1, limit: 200, offset: 0,
+		};
+		const client = stubClient();
+		client.getDocument = (id) => Promise.resolve(id === doc.id ? doc : null);
+		client.listMemories = () => Promise.resolve(facts);
+		const { http, get } = setup({
+			counts: () => ({ pending: 0, submitted: 0, completed: 0, blocked: 0, dismissed: 0 }),
+			blockedDetail: () => [], lastRecallOk: () => null, lastRecallAt: () => null,
+			client,
+		});
+		try {
+			const res = await get("/api/memory/documents/exchange%2Ftopic%3A1%3A2%2F3%2Fabc");
+			expect(res.status).toBe(200);
+			const body = await res.json() as { document: { id: string; factCount: number }, originalText: string | null, facts: Array<{ state: string | null }> };
+			expect(body.document.id).toBe(doc.id);
+			expect(body.originalText).toBe(doc.original_text);
+			expect(body.facts[0]?.state).toBe("invalidated");
+			expect((await get("/api/memory/documents/exchange%2Fmissing")).status).toBe(404);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("forget runs the shared protocol and reports the outcome; status-only wiring refuses", async () => {
+		const deleted: string[] = [];
+		const suppressed: string[] = [];
+		const cancelled: string[] = [];
+		const client = stubClient();
+		client.deleteDocument = (id) => { deleted.push(id); return Promise.resolve(); };
+		const contexts = { suppress: (id: string) => suppressed.push(id), deleteByDocument: (id: string) => { cancelled.push(id); return 2; } } as unknown as MemoryContexts;
+		const queue = { inflightOps: () => [], cancelDocument: (id: string) => { cancelled.push(`cancel:${id}`); return 1; } } as unknown as MemoryQueue;
+		const paused: boolean[] = [];
+		const mem: NonNullable<HttpDeps["memory"]> = {
+			counts: () => ({ pending: 0, submitted: 0, completed: 0, blocked: 0, dismissed: 0 }),
+			blockedDetail: () => [], lastRecallOk: () => null, lastRecallAt: () => null,
+			client,
+			contexts,
+			queue,
+			withWorkerPaused: async (fn) => { paused.push(true); return fn(); },
+		};
+		const { http, get } = setup(mem);
+		const del = (path: string, authed = true) =>
+			fetch(`http://127.0.0.1:${http.port}${path}`, {
+				method: "DELETE",
+				headers: authed ? { "x-init-data": makeInitData({
+					auth_date: String(Math.floor(Date.now() / 1000)),
+					user: JSON.stringify({ id: 42 }),
+				}) } : {},
+			});
+		try {
+			const res = await del("/api/memory/documents/exchange%2Ftopic%3A1%3A2%2F3%2Fabc");
+			expect(res.status).toBe(200);
+			const body = await res.json() as { ok: boolean; cancelled: number; redacted: number };
+			expect(body).toEqual({ ok: true, cancelled: 1, redacted: 2 });
+			expect(deleted).toEqual(["exchange/topic:1:2/3/abc"]);
+			expect(suppressed).toEqual(["exchange/topic:1:2/3/abc"]);
+			expect(paused).toEqual([true]);
+			// Status-only wiring (no forget seams) refuses loudly, not 500.
+			const { http: http2, get: get2 } = setup({
+				counts: () => ({ pending: 0, submitted: 0, completed: 0, blocked: 0, dismissed: 0 }),
+				blockedDetail: () => [], lastRecallOk: () => null, lastRecallAt: () => null,
+			});
+			try {
+				const refused = await get2("/api/memory/documents/exchange%2Fmissing");
+				expect(refused.status).toBe(503);
+				expect(((await refused.json()) as { error: string }).error).toContain("not wired");
+			} finally {
+				http2.stop();
+			}
+		} finally {
+			http.stop();
+		}
+	});
+});

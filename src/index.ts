@@ -558,6 +558,18 @@ async function boot() {
 						blockedDetail: () => store.memoryQueue.blockedDetail(memoryClient.target),
 						lastRecallOk: () => memoryState.lastRecallOk,
 						lastRecallAt: () => memoryState.lastRecallAt,
+						// Memories browser: reads and forgetting ride the same
+						// client and seams /forget delete uses — including the
+						// retention-worker quiesce (holder read lazily; the worker
+						// is assigned before the first request can arrive).
+						client: memoryClient,
+						contexts: store.memoryContexts,
+						queue: store.memoryQueue,
+						withWorkerPaused: <T>(fn: () => Promise<T>): Promise<T> => {
+							const worker = retentionQuiesce.worker;
+							if (worker === null) throw new Error("retention worker not wired");
+							return worker.withWorkerPaused(fn);
+						},
 					},
 				}
 			: {}),

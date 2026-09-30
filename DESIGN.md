@@ -1876,11 +1876,12 @@ src/
   runtime.ts        per-conversation queue, turn loop, checkAuthority
   agent/
     providers.ts    registry: name → AI SDK provider
-    models-dev.ts   input-modality catalog (fetch, cache, backoff) — two
-                    catalog fetchers live here (models.dev, openrouter);
-                    the next change to either extracts one
-                    fetchCachedCatalog helper and migrates both. No third
-                    copy.
+    catalog-fetch.ts  the cached-catalog skeleton: single-flight fetch,
+                    failure backoff, TTL, validated disk cache — a spec
+                    supplies wire/disk shapes and path
+    models-dev.ts   the two model catalogs (models.dev modalities +
+                    context limits; openrouter per-route params) as
+                    specs over catalog-fetch.ts
     codex/          the codex provider: auth.ts (OAuth file lifecycle —
                     expiry, single-flight refresh, durable write-back)
                     and model.ts (LanguageModelV4 — prompt→responses

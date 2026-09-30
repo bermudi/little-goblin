@@ -1,22 +1,20 @@
-// Model capabilities via the models.dev catalog — what other agent tools
-// already do. We only need input modalities (does this model eat
-// image/audio/pdf natively?). Fetched once, cached in state/, refreshed
-// daily. A failing endpoint is retried on a backoff, not on every call —
-// the disk cache (or text-only) covers the gap. Unavailable catalog →
-// text-only, the conservative answer.
+// Model capability catalogs — what other agent tools already read off
+// models.dev. Two catalogs over the shared cached-catalog skeleton
+// (catalog-fetch.ts: single-flight fetch, backoff on failure, validated
+// disk cache):
+//   - models.dev: input modalities (does this model eat image/audio/pdf
+//     natively?) + context window limits
+//   - openrouter: per-route supported_parameters — the only honest
+//     source for whether a routed model takes reasoning_effort, a bare
+//     reasoning toggle, or no reasoning at all
+// An unavailable catalog degrades conservatively (text-only / unknown),
+// never fatally.
 
-import { readFileSync } from "node:fs";
 import { z } from "zod";
-import { durableWriteFile } from "../durable.ts";
 import { paths } from "../config.ts";
-import { log } from "../log.ts";
+import { createCachedCatalog, type CachedCatalog } from "./catalog-fetch.ts";
 
-const API_URL = "https://models.dev/api.json";
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-// Backoff after any failure — an unreachable endpoint must not be hit on
-// every media message (the intake chain is serial; a 10s timeout per call
-// would stall it).
-const RETRY_MS = 10 * 60 * 1000;
+// ---------- models.dev ----------
 
 const catalogSchema = z.record(
 	z.string(),
@@ -32,7 +30,7 @@ const catalogSchema = z.record(
 						.optional(),
 						// Context window limit — the denominator for window
 						// utilization logging (DESIGN.md, Cache stability).
-						limit: z.object({ context: z.number().optional() }).optional(),
+					limit: z.object({ context: z.number().optional() }).optional(),
 				}),
 			)
 			.default({}),
@@ -41,81 +39,35 @@ const catalogSchema = z.record(
 
 type Catalog = z.infer<typeof catalogSchema>;
 
-let catalog: Catalog | null = null;
-// Don't hit the network before this time. A successful fetch sets it a
-// day out; any failure leaves the RETRY_MS backoff armed below.
-let nextFetchAt = 0;
-// Concurrent callers share one fetch.
-let inflight: Promise<Catalog | null> | null = null;
-
-function ensureCatalog(): Promise<Catalog | null> {
-	// Join an in-flight fetch before consulting the backoff — refresh
-	// arms the backoff synchronously on entry, so a nextFetchAt-first
-	// order hands same-tick callers (index.ts awaits inputModalities and
-	// contextLimit together) a cold null instead of the shared flight.
-	if (inflight) return inflight;
-	if (Date.now() < nextFetchAt) return Promise.resolve(catalog);
-	inflight ??= refresh().finally(() => {
-		inflight = null;
-	});
-	return inflight;
-}
-
-async function refresh(): Promise<Catalog | null> {
-	// Arm the backoff first — a failure anywhere below must not send the
-	// next caller straight back to the network.
-	nextFetchAt = Date.now() + RETRY_MS;
-	try {
-		const res = await fetch(API_URL, { signal: AbortSignal.timeout(10_000) });
-		if (!res.ok) throw new Error(`models.dev HTTP ${res.status}`);
-		const parsed = catalogSchema.safeParse(await res.json());
-		if (!parsed.success) throw new Error(`models.dev schema: ${parsed.error.message}`);
-		catalog = parsed.data;
-		nextFetchAt = Date.now() + CACHE_TTL_MS;
-		try {
-			durableWriteFile(paths.modelsDevCache(), JSON.stringify(catalog));
-		} catch (err) {
-			log.warn("models.dev cache write failed", { error: String(err) });
-		}
-		return catalog;
-	} catch (err) {
-		log.warn("models.dev fetch failed — media will fall back to file paths", {
-			error: String(err),
-		});
-		if (catalog) return catalog;
-		try {
-			const cached = JSON.parse(readFileSync(paths.modelsDevCache(), "utf8")) as unknown;
-			const parsed = catalogSchema.safeParse(cached);
-			if (parsed.success) {
-				catalog = parsed.data;
-			} else {
-				// Wrong shape degrades with a line, not a silent null — the
-				// log bar: a symptom here must not need a REPL to explain.
-				log.warn("models.dev cache invalid — ignoring", {
-					error: parsed.error.message,
-				});
-				catalog = null;
-			}
-		} catch (cacheErr) {
-			// ENOENT just means no cache; anything else (corrupt file) is
-			// warned and ignored — a bad cache must not break media intake.
-			if ((cacheErr as NodeJS.ErrnoException).code !== "ENOENT") {
-				log.warn("models.dev cache unreadable — ignoring", {
-					error: String(cacheErr),
-				});
-			}
-			catalog = null;
-		}
-		return catalog;
+function parseCatalog(disk: boolean, wire: unknown): Catalog {
+	const parsed = catalogSchema.safeParse(wire);
+	if (!parsed.success) {
+		// "schema" names a fetch that went bad; "cache" names the disk
+		// copy — the helper's warn lines carry this message either way.
+		throw new Error(`models.dev ${disk ? "cache" : "schema"}: ${parsed.error.message}`);
 	}
+	return parsed.data;
 }
+
+const modelsDev: CachedCatalog<Catalog> = createCachedCatalog<Catalog>({
+	name: "models.dev",
+	url: "https://models.dev/api.json",
+	cachePath: () => paths.modelsDevCache(),
+	// Media intake rides this catalog — a stale one means file paths
+	// instead of inline attachments.
+	staleNote: "media will fall back to file paths",
+	parseWire: (wire) => parseCatalog(false, wire),
+	parseDisk: (disk) => parseCatalog(true, disk),
+	// The wire shape is the disk shape — persisted verbatim.
+	toDisk: (catalog) => catalog,
+});
 
 // Input modalities for "<provider>/<model-id>" as configured. Falls back to
 // scanning every catalog provider for the model id (openrouter keeps full
 // "anthropic/claude-…" ids; zai coding-plan models may live under a sibling
 // provider key). Text-only when unknown.
 export async function inputModalities(provider: string, modelId: string): Promise<Set<string>> {
-	const cat = await ensureCatalog();
+	const cat = await modelsDev.ensure();
 	if (!cat) return new Set(["text"]);
 	const direct = cat[provider]?.models[modelId]?.modalities?.input;
 	if (direct) return new Set(direct);
@@ -130,7 +82,7 @@ export async function inputModalities(provider: string, modelId: string): Promis
 // lookup rule as inputModalities. Null when the catalog is cold or doesn't
 // list the model — callers treat null as "unknown", never "unlimited".
 export async function contextLimit(provider: string, modelId: string): Promise<number | null> {
-	const cat = await ensureCatalog();
+	const cat = await modelsDev.ensure();
 	if (!cat) return null;
 	const direct = cat[provider]?.models[modelId]?.limit?.context;
 	if (direct !== undefined) return direct;
@@ -141,14 +93,7 @@ export async function contextLimit(provider: string, modelId: string): Promise<n
 	return null;
 }
 
-// ---------- OpenRouter per-route capability catalog ----------
-//
-// openrouter.ai/api/v1/models is public and lists each route's
-// supported_parameters — the only honest source for whether a routed
-// model takes reasoning_effort, a bare reasoning toggle, or no reasoning
-// at all. Same fetch/cache/backoff shape as the models.dev catalog above.
-
-const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
+// ---------- openrouter ----------
 
 const openrouterCatalogSchema = z.object({
 	data: z.array(
@@ -159,94 +104,49 @@ const openrouterCatalogSchema = z.object({
 	),
 });
 
-// The disk cache stores the flattened {modelId: [params...]} shape —
-// disk state is a boundary, so it is validated on read like the
-// models.dev cache, never trusted.
+// The disk cache stores the flattened {modelId: [params...]} shape.
 const openrouterCacheSchema = z.record(z.string(), z.array(z.string()));
 
-let openrouterCatalog: Map<string, Set<string>> | null = null;
-let openrouterNextFetchAt = 0;
-let openrouterInflight: Promise<Map<string, Set<string>> | null> | null = null;
+const openrouter: CachedCatalog<Map<string, Set<string>>> =
+	createCachedCatalog<Map<string, Set<string>>>({
+		name: "openrouter catalog",
+		url: "https://openrouter.ai/api/v1/models",
+		cachePath: () => paths.openrouterModelsCache(),
+		// thinkingLevelsFor reads this catalog — stale means generic
+		// ladders instead of per-route ones.
+		staleNote: "thinking levels stay generic",
+		parseWire(wire) {
+			const parsed = openrouterCatalogSchema.safeParse(wire);
+			if (!parsed.success) {
+				throw new Error(`openrouter models schema: ${parsed.error.message}`);
+			}
+			return new Map(parsed.data.data.map((m) => [m.id, new Set(m.supported_parameters)]));
+		},
+		parseDisk(disk) {
+			const parsed = openrouterCacheSchema.safeParse(disk);
+			if (!parsed.success) {
+				throw new Error(`openrouter cache schema: ${parsed.error.message}`);
+			}
+			return new Map(Object.entries(parsed.data).map(([id, params]) => [id, new Set(params)]));
+		},
+		toDisk(catalog) {
+			return Object.fromEntries([...catalog].map(([id, p]) => [id, [...p]]));
+		},
+	});
 
 // Cache read on its own so the shape-validation boundary is testable
-// without a network round-trip. A valid-JSON-wrong-shape file (hand
-// edit, partial write, future format change) must degrade to null with
-// a warn line — the previous blind cast happily built a Set of
-// *characters* out of a string and reasoning ladders went quietly wrong
-// forever.
+// without a network round-trip.
 export function readOpenRouterCache(): Map<string, Set<string>> | null {
-	try {
-		const raw: unknown = JSON.parse(readFileSync(paths.openrouterModelsCache(), "utf8"));
-		const parsed = openrouterCacheSchema.safeParse(raw);
-		if (!parsed.success) {
-			log.warn("openrouter catalog cache invalid — ignoring", {
-				error: parsed.error.message,
-			});
-			return null;
-		}
-		return new Map(Object.entries(parsed.data).map(([id, params]) => [id, new Set(params)]));
-	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-			log.warn("openrouter catalog cache unreadable — ignoring", {
-				error: String(err),
-			});
-		}
-		return null;
-	}
+	return openrouter.readDisk();
 }
 
-async function refreshOpenRouter(): Promise<Map<string, Set<string>> | null> {
-	openrouterNextFetchAt = Date.now() + RETRY_MS;
-	try {
-		const res = await fetch(OPENROUTER_MODELS_URL, {
-			signal: AbortSignal.timeout(10_000),
-		});
-		if (!res.ok) throw new Error(`openrouter models HTTP ${res.status}`);
-		const parsed = openrouterCatalogSchema.safeParse(await res.json());
-		if (!parsed.success) {
-			throw new Error(`openrouter models schema: ${parsed.error.message}`);
-		}
-		openrouterCatalog = new Map(
-			parsed.data.data.map((m) => [m.id, new Set(m.supported_parameters)]),
-		);
-		openrouterNextFetchAt = Date.now() + CACHE_TTL_MS;
-		try {
-			durableWriteFile(
-				paths.openrouterModelsCache(),
-				JSON.stringify(
-					Object.fromEntries(
-						[...openrouterCatalog].map(([id, p]) => [id, [...p]]),
-					),
-				),
-			);
-		} catch (err) {
-			log.warn("openrouter catalog cache write failed", { error: String(err) });
-		}
-		return openrouterCatalog;
-	} catch (err) {
-		log.warn("openrouter catalog fetch failed — thinking levels stay generic", {
-			error: String(err),
-		});
-		if (openrouterCatalog) return openrouterCatalog;
-		openrouterCatalog = readOpenRouterCache();
-		return openrouterCatalog;
-	}
-}
-
-// Boot warm + cold-read share one flight; a failure backs off RETRY_MS.
+// Boot warm + cold-read share one flight; a failure backs off and the
+// disk cache covers the gap.
 export function ensureOpenRouterCatalog(): Promise<Map<
 	string,
 	Set<string>
 > | null> {
-	// In-flight before backoff, same reason as ensureCatalog above.
-	if (openrouterInflight) return openrouterInflight;
-	if (Date.now() < openrouterNextFetchAt) {
-		return Promise.resolve(openrouterCatalog);
-	}
-	openrouterInflight ??= refreshOpenRouter().finally(() => {
-		openrouterInflight = null;
-	});
-	return openrouterInflight;
+	return openrouter.ensure();
 }
 
 // Per-route supported_parameters for an openrouter model id, or null when
@@ -254,34 +154,27 @@ export function ensureOpenRouterCatalog(): Promise<Map<
 // as "unknown", never "unsupported". A cold read kicks the fetch so the
 // next caller sees the real answer.
 export function openrouterSupportedParams(modelId: string): Set<string> | null {
-	if (!openrouterCatalog && Date.now() >= openrouterNextFetchAt) {
-		void ensureOpenRouterCatalog();
+	if (!openrouter.current() && !openrouter.backoffArmed()) {
+		void openrouter.ensure();
 	}
-	return openrouterCatalog?.get(modelId) ?? null;
+	return openrouter.current()?.get(modelId) ?? null;
 }
 
 // Test hook: prime or clear the sync cache without a network round-trip.
 export function _primeOpenRouterCatalog(
 	catalog: Map<string, Set<string>> | null,
 ): void {
-	openrouterCatalog = catalog;
-	openrouterNextFetchAt = Date.now() + CACHE_TTL_MS;
+	openrouter.prime(catalog);
 }
 
 // Test hook: force the next ensure onto the network path with a cold
-// in-memory catalog — the models.dev twin of _resetOpenRouterForTest.
+// in-memory catalog.
 export function _resetModelsDevForTest(): void {
-	catalog = null;
-	nextFetchAt = 0;
-	inflight = null;
+	modelsDev.resetForTest();
 }
 
 // Test hook: force the next ensure onto the network path with a cold
 // in-memory catalog.
 export function _resetOpenRouterForTest(): void {
-	openrouterCatalog = null;
-	openrouterNextFetchAt = 0;
-	// The ensure functions now return an in-flight promise before any
-	// other check — a reset that left one armed would serve it stale.
-	openrouterInflight = null;
+	openrouter.resetForTest();
 }

@@ -507,7 +507,17 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 					return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
 				}
 				const rawId = docMatch[1];
-				const parsedId = rawId === undefined ? undefined : identifier.safeParse(decodeURIComponent(rawId));
+				// Malformed percent-encoding (%E0%A4%A, a bare %) throws URIError
+				// out of decodeURIComponent — undecodable is just another invalid
+				// id here, so answer the route's 404 instead of letting it escape
+				// the fetch handler as a generic 500.
+				let decoded: string | undefined;
+				try {
+					decoded = rawId === undefined ? undefined : decodeURIComponent(rawId);
+				} catch {
+					decoded = undefined;
+				}
+				const parsedId = decoded === undefined ? undefined : identifier.safeParse(decoded);
 				if (!parsedId || !parsedId.success) {
 					return Response.json({ error: "no such document" }, { status: 404, headers: NO_STORE });
 				}

@@ -764,6 +764,11 @@ describe("mini-app memories browser", () => {
 			expect(body.originalText).toBe(doc.original_text);
 			expect(body.facts[0]?.state).toBe("invalidated");
 			expect((await get("/api/memory/documents/exchange%2Fmissing")).status).toBe(404);
+			// Malformed percent-encoding must land on the same 404 contract —
+			// decodeURIComponent throws URIError on these, which used to
+			// escape the handler as a generic 500.
+			expect((await get("/api/memory/documents/%E0%A4%A")).status).toBe(404);
+			expect((await get("/api/memory/documents/%")).status).toBe(404);
 		} finally {
 			http.stop();
 		}

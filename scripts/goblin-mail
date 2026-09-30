@@ -51,8 +51,11 @@ usage() {
 # non-200 including the checker's 503-unconfigured, unparsable
 # response) falls back to the unavailable line with the reason on
 # stderr, and the read proceeds (fail-open).
+# The endpoint caps at 64KiB/64000 chars and checkInjection head-cuts
+# at 8000 anyway (src/http/check.ts, src/injection.ts) — sending more
+# could only trip the cap, so the head is all that goes over the wire.
 check_verdict() {
-	if ! jq -Rs '{text: .}' "$1/out" >"$1/check-body" 2>/dev/null; then
+	if ! jq -Rs '{text: .[0:8000]}' "$1/out" >"$1/check-body" 2>/dev/null; then
 		check_unavailable "could not shape the request"
 		printf '%s' "$verdict_unavailable"
 		return 0

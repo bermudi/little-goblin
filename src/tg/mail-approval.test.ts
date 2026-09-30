@@ -256,6 +256,40 @@ describe("draft requests", () => {
 		outbox.close();
 	});
 
+	test("a timeout before the buttons chunk cancels — no tap can ever decide the row", async () => {
+		const store = openOutbox(tmpdb());
+		let seenId = 0;
+		const outbox: OutboxStore = {
+			...store,
+			queue: (input, now) => {
+				const row = store.queue(input, now);
+				seenId = row.id;
+				return row;
+			},
+		};
+		const { calls, deps, gate } = setup(fakeSender(), fakeReader(), outbox);
+		deps.api = {
+			...deps.api,
+			sendMessage: async (chat: number, text: string, extra?: { reply_markup?: unknown }) => {
+				calls.sends.push({ chat, text, keyboard: extra?.reply_markup !== undefined });
+				// Three-chunk draft; the second (non-buttons) chunk's response
+				// is lost — posting stops before the buttons ever run.
+				if (calls.sends.length === 2) throw new TelegramTimeoutError("sendMessage", 30_000);
+				return { message_id: 500 + calls.sends.length } as never;
+			},
+		} as unknown as Api;
+		const out = await gate.requestDraft(
+			{ to: ["a@x.com"], subject: "hi", body: "x".repeat(8000) }, ADDRESS,
+		);
+		if (!("error" in out)) throw new Error("expected a cancelled error verdict");
+		expect(out.error).toContain(`draft #${seenId}`);
+		expect(out.error).toContain("cancelled");
+		// Stopped at the timed-out chunk — the buttons chunk never ran.
+		expect(calls.sends.map((s) => s.keyboard)).toEqual([false, false]);
+		expect(outbox.get(seenId)).toMatchObject({ status: "cancelled", draftMessageId: null });
+		outbox.close();
+	});
+
 	test("a failed draft post cancels the row and returns a retryable error", async () => {
 		const store = openOutbox(tmpdb());
 		let seenId = 0;

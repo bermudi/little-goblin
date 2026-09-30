@@ -299,9 +299,14 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 }
 
 // The coalescing-buffer flush: one batch of buffered items → one turn
-// submit (plus at most one topic-titling attempt). The sink-release on
-// submit failure is load-bearing — a constructed sink is already
-// "typing" and ghosts forever if the submit throws past it.
+// submit (plus at most one topic-titling attempt). The sink is built
+// only after the batch commits — it starts typing on construction, so
+// a failed commit would otherwise send a "⚠" bubble per buffer retry
+// while the store is down. And the sink-release on submit failure is
+// load-bearing: a constructed sink ghosts "typing…" forever if the
+// submit throws past it, but the committed batch cannot be retried
+// (the rows are already consumed), so the failure is logged, answered
+// once through the sink's error path, and never rethrown.
 export function flushConversation(env: FlushEnv, convId: string, items: BufferedItem[]): void {
 	const { deps } = env;
 	const conv = deps.store.get(convId);
@@ -338,6 +343,11 @@ export function flushConversation(env: FlushEnv, convId: string, items: Buffered
 	}
 	const tts = deps.configRef.current.tts;
 	const message = userMessage(parts);
+	// Throws on a failed commit — the buffer retains the batch and
+	// retries; nothing reached Telegram, so nothing needs answering.
+	env.inbox.commitBatch(items.map((i) => i.updateId), convId, () => {
+		deps.store.append(convId, [message]);
+	});
 	const sink = makeDeliverySink(
 		env.api,
 		conv,
@@ -348,18 +358,16 @@ export function flushConversation(env: FlushEnv, convId: string, items: Buffered
 			: undefined,
 	);
 	try {
-		env.inbox.commitBatch(items.map((i) => i.updateId), convId, () => {
-			deps.store.append(convId, [message]);
-		});
 		deps.runtime.submitPersisted(conv, message, sink);
 	} catch (err) {
-		// The sink was already constructed (typing interval running) —
-		// release it or it ghosts "typing…" forever.
+		// The batch committed — a buffer retry would hit "missing,
+		// committed" forever. The sink was already constructed (typing
+		// interval running) — release it or it ghosts "typing…" forever.
+		log.error("turn submit failed after inbox commit", err, { conversation: convId });
 		void sink.onDone({
 			kind: "error",
 			message: err instanceof Error ? err.message : String(err),
 		});
-		throw err;
 	}
 }
 

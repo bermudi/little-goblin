@@ -411,7 +411,7 @@ describe("flushConversation", () => {
 		await submitted[0]!.sink.onDone({ kind: "completed" });
 	});
 
-	test("a submit failure rethrows and releases the sink with the error", async () => {
+	test("a submit failure after commit releases the sink with the error — never rethrown", async () => {
 		const h = routerHarness(baseConfig);
 		const conv = h.store.resolve({ kind: "dm", chatId: 9 }, "/w");
 		let seen: TurnSink | null = null;
@@ -424,11 +424,13 @@ describe("flushConversation", () => {
 				},
 			} as unknown as Runtime,
 		};
+		// The batch committed before admission failed, so a rethrow would
+		// make the buffer retry forever against already-consumed rows.
 		expect(() =>
 			flushTest(h.env, conv.id, [
 				{ parts: [{ type: "text", text: "hi" }], replyTo: 1 },
 			]),
-		).toThrow("queue closed");
+		).not.toThrow();
 		expect(seen).not.toBeNull();
 		// The sink was released (not left ghosting "typing…"): its error
 		// path delivers the failure to Telegram.
@@ -437,6 +439,32 @@ describe("flushConversation", () => {
 			h.apiCalls.some((c) => c.method === "sendMessage" && c.text?.includes("queue closed")),
 		).toBe(true);
 		expect(h.env.inbox.pending()).toEqual([]); // commit precedes admission
+	});
+
+	test("a failed commit builds no sink — no typing ping, no error bubble", async () => {
+		const h = routerHarness(baseConfig);
+		const conv = h.store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		let pings = 0;
+		h.env.api = {
+			...h.env.api,
+			sendChatAction: () => {
+				pings++;
+				return Promise.resolve(true);
+			},
+		} as unknown as Api;
+		h.env.inbox.record(710, { conversationId: conv.id, chatId: 1, messageId: 71,
+			text: "hi", media: null, mediaError: null });
+		h.env.deps.store = { ...h.store, append: () => { throw new Error("disk failed"); } };
+		expect(() =>
+			flushConversation(h.env, conv.id, [
+				{ updateId: 710, parts: [{ type: "text", text: "hi" }], replyTo: 71 },
+			]),
+		).toThrow("disk failed");
+		await Bun.sleep(10);
+		expect(pings).toBe(0);
+		expect(h.apiCalls.filter((c) => c.method === "sendMessage")).toEqual([]);
+		expect(h.env.inbox.pending()).toHaveLength(1); // retained for retry
+		h.store.close();
 	});
 
 	test("a flush for a missing conversation fails without consuming its row", () => {

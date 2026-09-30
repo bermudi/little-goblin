@@ -27,6 +27,19 @@ const MAX_DRAFT_CHUNKS = 4;
 
 const SWEEP_TICK_MS = 5 * 60_000;
 
+// A sendMessage timeout inside postMailDraft, tagged with whether the
+// Send/Cancel chunk had already been attempted. Buttons ride only the
+// last chunk: a timeout before it means none can ever land, so
+// "delivery uncertain — the buttons may be live" would be a lie and the
+// row is a definite dead-end the caller cancels.
+export class MailDraftTimeoutError extends TelegramTimeoutError {
+	constructor(err: TelegramTimeoutError, readonly buttonsAttempted: boolean) {
+		super(err.label, err.ms);
+		this.name = "MailDraftTimeoutError";
+		this.cause = err;
+	}
+}
+
 // Structural subset of Telegram's CallbackQuery — the fields this flow
 // reads (the speak-button pattern: grammy's full type is assignable).
 export interface MailApprovalQuery {
@@ -55,8 +68,10 @@ export interface MailApproval {
 	/** The mail tool's whole send path: queue the row, post the draft
 	 *  with its buttons into the pinned conversation, bind the buttons'
 	 *  message id. A definite Telegram post failure cancels the row
-	 *  and resolves a retryable error; a timeout leaves it pending
-	 *  because the buttons may have landed without an id to bind. */
+	 *  and resolves a retryable error; a timeout on the buttons chunk
+	 *  leaves it pending because the buttons may have landed without an
+	 *  id to bind — an earlier timeout cancels too, since the buttons
+	 *  then provably never ran. */
 	requestDraft(
 		input: { to: string[]; cc?: string[]; subject: string; body: string; replyToId?: string },
 		address: { chatId: number; threadId: number | null },
@@ -92,6 +107,19 @@ export function startMailApproval(deps: MailApprovalDeps, tickMs = SWEEP_TICK_MS
 		try {
 			messageId = await postMailDraft(deps.api, address, row.id, draftText(row.id, input, row.expiresAt));
 		} catch (err) {
+			// A timeout before the buttons chunk: posting stopped early,
+			// so no Send/Cancel can ever land and the row could only wait
+			// out its expiry. That's a definite failure — cancel it.
+			if (err instanceof MailDraftTimeoutError && !err.buttonsAttempted) {
+				deps.outbox.decide(row.id, "cancelled", new Date());
+				log.warn("mail draft timed out before its buttons — draft cancelled", {
+					outbox: row.id, chat: address.chatId, thread: address.threadId,
+				});
+				return {
+					error:
+						`draft #${row.id} timed out posting to Telegram before its approval buttons — the draft was cancelled (delivered chunks may be visible); retry the send when delivery recovers`,
+				};
+			}
 			if (err instanceof TelegramTimeoutError) {
 				return {
 					queued: row.id,
@@ -258,10 +286,11 @@ async function postMailDraft(
 			messageId = sent.message_id;
 		} catch (err) {
 			if (err instanceof TelegramTimeoutError) {
-				log.warn("mail draft posting timed out — delivery uncertain; no automatic cancellation", {
+				log.warn("mail draft posting timed out — delivery uncertain", {
 					outbox: outboxId, chat: address.chatId, thread: address.threadId,
 					chunk: i + 1, chunks: chunks.length, buttons: last, error: String(err),
 				});
+				throw new MailDraftTimeoutError(err, last);
 			}
 			throw err;
 		}

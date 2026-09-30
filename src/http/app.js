@@ -969,6 +969,7 @@ const DOC_PAGE = 25;
 let docOffset = 0;
 let docTotal = 0;
 let docsInFlight = false;
+let docsReloadPending = false;
 /** The document the detail sheet is currently showing (null = closed).
  * @type {string | null} */
 let openDocId = null;
@@ -1011,7 +1012,9 @@ function docRow(d) {
 
 /** @param {boolean} reset */
 async function loadDocs(reset) {
-  if (docsInFlight) return;
+  // A reset dropped while a load is in flight would leave stale results
+  // under a new filter — queue it to re-run with the latest input.
+  if (docsInFlight) { if (reset) docsReloadPending = true; return; }
   docsInFlight = true;
   const q = inputEl("docSearch").value.trim();
   const offset = reset ? 0 : docOffset;
@@ -1041,6 +1044,7 @@ async function loadDocs(reset) {
     renderBrowserUnavailable("could not reach goblin — " + e);
   } finally {
     docsInFlight = false;
+    if (docsReloadPending) { docsReloadPending = false; void loadDocs(true); }
   }
 }
 const loadDocsSoon = debounce(() => { void loadDocs(true); }, 300);

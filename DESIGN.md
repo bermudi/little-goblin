@@ -1567,6 +1567,11 @@ configuration must be resolved before the live-verification step.
 
 ## Auth
 
+The trust model — assets, trust classes, entry points, failure policy, and
+what is deliberately out of scope — lives in [`docs/security.md`](docs/security.md).
+This section owns *why* the secret discipline looks the way it does; that doc
+owns *who is trusted with what*. A change that widens trust belongs in both.
+
 No secrets in env — the agent's `bash` tool inherits the process environment,
 and env vars leak. Instead: `$GOBLIN_HOME/auth.jsonl`, mode `0600`, one record
 per line:

@@ -95,6 +95,7 @@ systemctl --user restart goblin  # restart
 - [`docs/voice.md`](docs/voice.md) — voice notes in and out, transcription, `/voice`
 - [`docs/skills.md`](docs/skills.md) — teaching the bot repeatable tasks
 - [`docs/operations.md`](docs/operations.md) — service, logs, backups, troubleshooting
+- [`docs/security.md`](docs/security.md) — trust model: who is trusted, what crosses each boundary, fail-open vs fail-closed
 - [`docs/memory.md`](docs/memory.md) — optional Hindsight memory; opt-in, live since 2026-09-24
 - [`DESIGN.md`](DESIGN.md) — the design spec (why it's built this way)
 - [`V1-V2-MAP.md`](V1-V2-MAP.md) — what changed from little-goblin, feature by feature

@@ -84,39 +84,71 @@ export function hookTokenHash(token: string): string {
 	return new Bun.CryptoHasher("sha256").update(token).digest("hex");
 }
 
+const listSchema = z.object({ action: z.literal("list") });
+const createSchema = z.object({
+	action: z.literal("create"),
+	name: z.string().min(1).max(100),
+	charter: z.string().min(1),
+	cron: z.string().min(5).optional(),
+	hook: z.boolean().optional(),
+	mailFilter: z.string().min(1).max(500).optional(),
+});
+const updateSchema = z.object({
+	action: z.literal("update"),
+	id: z.number().int().positive(),
+	name: z.string().min(1).max(100).optional(),
+	charter: z.string().min(1).optional(),
+	// null clears the cron — allowed only while a hook remains.
+	cron: z.string().min(5).nullable().optional(),
+	// null clears the mail filter — allowed only while another trigger remains.
+	mailFilter: z.string().min(1).max(500).nullable().optional(),
+});
+const deleteSchema = z.object({ action: z.literal("delete"), id: z.number().int().positive() });
+const toggleSchema = z.object({ action: z.literal("toggle"), id: z.number().int().positive() });
+const hookSchema = z.object({
+	action: z.literal("hook"),
+	id: z.number().int().positive(),
+	op: z.enum(["enable", "rotate", "disable"]),
+});
+// The strict per-action contract, enforced inside execute.
+const actionSchema = z.discriminatedUnion("action", [
+	listSchema,
+	createSchema,
+	updateSchema,
+	deleteSchema,
+	toggleSchema,
+	hookSchema,
+]);
+
+// Tool providers expect an object at the root. A discriminated union
+// serializes to root-level oneOf, which some providers cannot use to
+// generate arguments — every call then arrives as `{}` and fails
+// validation (took down mail on Sep 28, then program the same way).
+// Keep the wire schema flat; actionSchema still owns the exact
+// per-action contract.
+export const programInputSchema = z.object({
+	action: z.enum(["list", "create", "update", "delete", "toggle", "hook"]),
+	name: createSchema.shape.name.optional(),
+	charter: createSchema.shape.charter.optional(),
+	cron: updateSchema.shape.cron,
+	hook: createSchema.shape.hook,
+	mailFilter: updateSchema.shape.mailFilter,
+	id: updateSchema.shape.id.optional(),
+	op: hookSchema.shape.op.optional(),
+}).superRefine((value, ctx) => {
+	const result = actionSchema.safeParse(value);
+	if (!result.success) for (const issue of result.error.issues) {
+		ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
+	}
+});
+
 export const programTool = (deps: ProgramToolDeps) =>
 	tool({
 		description:
 			"Manage programs — a program is standing authority for one concern. Its charter says what it owns: scope, what needs the operator's OK, when to escalate, what not to do, and the steps — write that, not a one-line instruction. A cron is 5 fields (minute hour day month weekday) in server local time; translate the operator's wording into cron yourself (e.g. \"weekdays 8:30\" → \"30 8 * * 1-5\") and confirm the cron with them if ambiguous. The 'hook' action gives a program a secret URL that external services POST to wake it — the URL is sent to the operator privately and never appears to you. A mail filter (Gmail query syntax, e.g. from:bank is:important) wakes the program when new matching mail arrives. Creating a program or widening its authority needs the operator's explicit ask — you may propose one, never grant yourself one. Rewording, rescheduling, or toggling within the charter's intent needs no go-ahead.",
-		inputSchema: z.discriminatedUnion("action", [
-			z.object({ action: z.literal("list") }),
-			z.object({
-				action: z.literal("create"),
-				name: z.string().min(1).max(100),
-				charter: z.string().min(1),
-				cron: z.string().min(5).optional(),
-				hook: z.boolean().optional(),
-				mailFilter: z.string().min(1).max(500).optional(),
-			}),
-			z.object({
-				action: z.literal("update"),
-				id: z.number().int().positive(),
-				name: z.string().min(1).max(100).optional(),
-				charter: z.string().min(1).optional(),
-				// null clears the cron — allowed only while a hook remains.
-				cron: z.string().min(5).nullable().optional(),
-				// null clears the mail filter — allowed only while another trigger remains.
-				mailFilter: z.string().min(1).max(500).nullable().optional(),
-			}),
-			z.object({ action: z.literal("delete"), id: z.number().int().positive() }),
-			z.object({ action: z.literal("toggle"), id: z.number().int().positive() }),
-			z.object({
-				action: z.literal("hook"),
-				id: z.number().int().positive(),
-				op: z.enum(["enable", "rotate", "disable"]),
-			}),
-		]),
-		execute: async (input) => {
+		inputSchema: programInputSchema,
+		execute: async (raw) => {
+			const input = actionSchema.parse(raw);
 			switch (input.action) {
 				case "list":
 					return { programs: deps.programs.list().map(programView) };

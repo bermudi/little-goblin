@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UIMessage } from "ai";
 import { openStore, type ConversationStore } from "../../conversation.ts";
-import { excerpt, historySearchTool } from "./history.ts";
+import { z } from "zod";
+import { excerpt, historyInputSchema, historySearchTool } from "./history.ts";
 
 let dirs: string[] = [];
 function tmpdb(): string {
@@ -33,6 +34,19 @@ const msg = (text: string): UIMessage => ({
 });
 
 describe("history_search tool", () => {
+	test("provider sees an object schema; missing action arguments still fail validation", () => {
+		const wire = z.toJSONSchema(historyInputSchema);
+		expect(wire.type).toBe("object");
+		expect(wire.properties?.action).toEqual({ type: "string", enum: ["search", "context"] });
+		expect(wire.required).toContain("action");
+		expect(historyInputSchema.safeParse({}).success).toBe(false);
+		expect(historyInputSchema.safeParse({ action: "search" }).success).toBe(false);
+		expect(historyInputSchema.safeParse({ action: "search", query: "x" }).success).toBe(true);
+		expect(historyInputSchema.safeParse({ action: "context", conversation: "c" }).success)
+			.toBe(false);
+		expect(historyInputSchema.safeParse({ action: "context", conversation: "c", seq: 1 }).success)
+			.toBe(true);
+	});
 	test("search returns addressable hits with a paging footer", async () => {
 		const store = openStore(tmpdb());
 		const c = store.resolve({ kind: "topic", chatId: -100, threadId: 7 }, "/w");

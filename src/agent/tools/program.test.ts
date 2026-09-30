@@ -8,7 +8,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore } from "../../conversation.ts";
-import { hookTokenHash, makePrivateSender, programTool } from "./program.ts";
+import { z } from "zod";
+import { hookTokenHash, makePrivateSender, programInputSchema, programTool } from "./program.ts";
 import { openPrograms } from "../../programs.ts";
 
 let dirs: string[] = [];
@@ -52,6 +53,28 @@ const exec = (t: ReturnType<typeof programTool>, input: unknown) =>
 	(t as unknown as { execute: (i: unknown) => Promise<unknown> }).execute(input);
 
 describe("program tool", () => {
+	test("provider sees an object schema; missing action arguments still fail validation", () => {
+		const wire = z.toJSONSchema(programInputSchema);
+		expect(wire.type).toBe("object");
+		expect(wire.properties?.action).toEqual({
+			type: "string",
+			enum: ["list", "create", "update", "delete", "toggle", "hook"],
+		});
+		expect(wire.required).toContain("action");
+		expect(programInputSchema.safeParse({}).success).toBe(false);
+		expect(programInputSchema.safeParse({ action: "create" }).success).toBe(false);
+		expect(programInputSchema.safeParse({ action: "create", name: "x" }).success).toBe(false);
+		// null only clears on update — never on create.
+		expect(
+			programInputSchema.safeParse({ action: "create", name: "x", charter: "y", cron: null })
+				.success,
+		).toBe(false);
+		expect(
+			programInputSchema.safeParse({ action: "create", name: "x", charter: "y" }).success,
+		).toBe(true);
+		expect(programInputSchema.safeParse({ action: "update", id: 1, cron: null }).success).toBe(true);
+		expect(programInputSchema.safeParse({ action: "toggle", id: 3 }).success).toBe(true);
+	});
 	test("create pins the live conversation's address onto the program", async () => {
 		const { tool, programs } = toolFor(-100, 7);
 		const out = (await exec(tool, {

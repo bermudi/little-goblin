@@ -136,32 +136,63 @@ function renderRead(out: ReadOutcome): Record<string, unknown> {
 	}
 }
 
+const startSchema = z.object({
+	action: z.literal("start"),
+	harness: z.string().min(1),
+	task: z.string().min(1),
+	cwd: z.string().min(1).optional(),
+	name: z.string().min(1).max(40).optional(),
+});
+const listSchema = z.object({ action: z.literal("list") });
+const readSchema = z.object({
+	action: z.literal("read"),
+	id: z.number().int().positive(),
+	lines: z.number().int().min(1).max(200).optional(),
+});
+const sendSchema = z.object({
+	action: z.literal("send"),
+	id: z.number().int().positive(),
+	text: z.string().min(1),
+});
+const stopSchema = z.object({ action: z.literal("stop"), id: z.number().int().positive() });
+// The strict per-action contract, enforced inside execute.
+const actionSchema = z.discriminatedUnion("action", [
+	startSchema,
+	listSchema,
+	readSchema,
+	sendSchema,
+	stopSchema,
+]);
+
+// Tool providers expect an object at the root. A discriminated union
+// serializes to root-level oneOf, which some providers cannot use to
+// generate arguments — every call then arrives as `{}` and fails
+// validation (took down mail on Sep 28, then program the same way).
+// Keep the wire schema flat; actionSchema still owns the exact
+// per-action contract.
+export const delegateInputSchema = z.object({
+	action: z.enum(["start", "list", "read", "send", "stop"]),
+	harness: startSchema.shape.harness.optional(),
+	task: startSchema.shape.task.optional(),
+	cwd: startSchema.shape.cwd,
+	name: startSchema.shape.name,
+	id: readSchema.shape.id.optional(),
+	lines: readSchema.shape.lines,
+	text: sendSchema.shape.text.optional(),
+}).superRefine((value, ctx) => {
+	const result = actionSchema.safeParse(value);
+	if (!result.success) for (const issue of result.error.issues) {
+		ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
+	}
+});
+
 export const delegateTool = (deps: DelegateToolDeps) =>
 	tool({
 		description:
 			"Delegate a task to an external coding harness (a separate agent in its own workspace, running full-auto — you may delegate on your own judgment for long or coding-heavy work instead of blocking the chat with bash, and you must tell the operator you did). Results arrive later as a [delegation: …] message — the task does not answer immediately. If a delegation ends at 'needs input' (an approval, a question, a startup dialog), relay it to the operator and send back their answer with 'send' — never answer an agent's question on the operator's behalf. Follow-ups to a finished delegation also go through 'send' — it re-prompts the agent in the workspace it kept.",
-		inputSchema: z.discriminatedUnion("action", [
-			z.object({
-				action: z.literal("start"),
-				harness: z.string().min(1),
-				task: z.string().min(1),
-				cwd: z.string().min(1).optional(),
-				name: z.string().min(1).max(40).optional(),
-			}),
-			z.object({ action: z.literal("list") }),
-			z.object({
-				action: z.literal("read"),
-				id: z.number().int().positive(),
-				lines: z.number().int().min(1).max(200).optional(),
-			}),
-			z.object({
-				action: z.literal("send"),
-				id: z.number().int().positive(),
-				text: z.string().min(1),
-			}),
-			z.object({ action: z.literal("stop"), id: z.number().int().positive() }),
-		]),
-		execute: async (input) => {
+		inputSchema: delegateInputSchema,
+		execute: async (raw) => {
+			const input = actionSchema.parse(raw);
 			switch (input.action) {
 				case "start": {
 					const h = deps.config.harnesses[input.harness];

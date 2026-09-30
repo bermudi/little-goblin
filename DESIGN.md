@@ -313,6 +313,15 @@ All tools run in the deployment workspace — conversations have no cwd and
 there is no `/cd`. Working elsewhere is the agent's own business (`cd x &&
 …` inside `bash`), not conversation state.
 
+Tool input schemas are flat objects at the root; the per-action contract
+is a discriminated union enforced inside `execute`. A root
+`discriminatedUnion` serializes to root-level oneOf, which some providers
+cannot generate arguments against — every call arrives as `{}` and fails
+validation. That silently took out mail (Sep 28); program, delegate, and
+history_search were found carrying the same shape and flattened too.
+Mail's flattening (`programInputSchema`-style: wide flat object +
+`superRefine` delegating to the union) is the pattern.
+
 `speak` is the voice-out twin of intake transcription: it *synthesizes*,
 it does not send. The tool hands audio bytes to the turn's delivery sink
 (`sink.onVoiceNote`), which owns the Telegram call — so "Telegram send is

@@ -15,7 +15,8 @@ import {
 	type DelegationLifecycle,
 } from "../../delegation-lifecycle.ts";
 import { HerdrError, type AgentInfo, type Herdr } from "../../herdr.ts";
-import { delegateTool, type DelegateToolDeps } from "./delegate.ts";
+import { z } from "zod";
+import { delegateInputSchema, delegateTool, type DelegateToolDeps } from "./delegate.ts";
 
 let dirs: string[] = [];
 afterEach(() => {
@@ -117,6 +118,23 @@ const exec = (t: ReturnType<typeof delegateTool>, input: unknown) =>
 	(t as unknown as { execute: (i: unknown) => Promise<unknown> }).execute(input);
 
 describe("delegate tool", () => {
+	test("provider sees an object schema; missing action arguments still fail validation", () => {
+		const wire = z.toJSONSchema(delegateInputSchema);
+		expect(wire.type).toBe("object");
+		expect(wire.properties?.action).toEqual({
+			type: "string",
+			enum: ["start", "list", "read", "send", "stop"],
+		});
+		expect(wire.required).toContain("action");
+		expect(delegateInputSchema.safeParse({}).success).toBe(false);
+		expect(delegateInputSchema.safeParse({ action: "start" }).success).toBe(false);
+		expect(
+			delegateInputSchema.safeParse({ action: "start", harness: "codex", task: "do it" })
+				.success,
+		).toBe(true);
+		expect(delegateInputSchema.safeParse({ action: "read", id: 1 }).success).toBe(true);
+		expect(delegateInputSchema.safeParse({ action: "send", id: 1 }).success).toBe(false);
+	});
 	test("an unknown harness is rejected listing the configured ones", async () => {
 		const h = harness();
 		const out = (await exec(h.tool, {

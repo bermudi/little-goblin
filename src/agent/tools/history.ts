@@ -52,29 +52,52 @@ function hitLine(
 	return `${head}\n   ${excerpt(h.text, query)}`;
 }
 
+const searchSchema = z.object({
+	action: z.literal("search"),
+	query: z.string().min(1).max(400),
+	limit: z.number().int().min(1).max(20).optional(),
+});
+const contextSchema = z.object({
+	action: z.literal("context"),
+	conversation: z.string().min(1).max(200),
+	seq: z.number().int().min(1),
+	window: z.number().int().min(0).max(10).optional(),
+});
+// The strict per-action contract, enforced inside execute.
+const actionSchema = z.discriminatedUnion("action", [searchSchema, contextSchema]);
+
+// Tool providers expect an object at the root. A discriminated union
+// serializes to root-level oneOf, which some providers cannot use to
+// generate arguments — every call then arrives as `{}` and fails
+// validation (took down mail on Sep 28, then program the same way).
+// Keep the wire schema flat; actionSchema still owns the exact
+// per-action contract.
+export const historyInputSchema = z.object({
+	action: z.enum(["search", "context"]),
+	query: searchSchema.shape.query.optional(),
+	limit: searchSchema.shape.limit,
+	conversation: contextSchema.shape.conversation.optional(),
+	seq: contextSchema.shape.seq.optional(),
+	window: contextSchema.shape.window,
+}).superRefine((value, ctx) => {
+	const result = actionSchema.safeParse(value);
+	if (!result.success) for (const issue of result.error.issues) {
+		ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
+	}
+});
+
 export const historySearchTool = (deps: HistorySearchDeps) =>
 	tool({
 		description:
 			"Search goblin's own past conversations across every topic (\"what did we decide about X?\"). " +
 			"Search returns topic · role · date · snippet lines, each with its conversation id and event seq — " +
 			"page context around a hit with the context action. Topics excluded from memory are never searched.",
-		inputSchema: z.discriminatedUnion("action", [
-			z.object({
-				action: z.literal("search"),
-				query: z.string().min(1).max(400),
-				limit: z.number().int().min(1).max(20).optional(),
-			}),
-			z.object({
-				action: z.literal("context"),
-				conversation: z.string().min(1).max(200),
-				seq: z.number().int().min(1),
-				window: z.number().int().min(0).max(10).optional(),
-			}),
-		]),
-		execute: async (input) => {
+		inputSchema: historyInputSchema,
+		execute: async (raw) => {
 			if (deps.isExcluded()) {
 				return { error: "memory is excluded in this conversation" };
 			}
+			const input = actionSchema.parse(raw);
 			switch (input.action) {
 				case "search": {
 					const started = Date.now();

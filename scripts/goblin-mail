@@ -19,10 +19,17 @@ check_unavailable() { echo "goblin-mail: injection check unavailable ($*)" >&2; 
 # the wrapper follows goblin.json5's http.port — a box-local port
 # override must not silently fail every read open (the old env-dance
 # bug); 8787 is the last resort when the config is unreadable. JSON5
-# comments defeat jq, so the read is best-effort.
+# comments defeat jq, so a parse failure warns on stderr instead of
+# silently pinning that default — a wrong checker port reads as
+# "injection check unavailable" with no hint why.
 conf_port=""
 if command -v jq >/dev/null 2>&1 && [ -f "${GOBLIN_HOME:-$HOME/goblin}/goblin.json5" ]; then
-	conf_port="$(jq -r '.http.port // empty' "${GOBLIN_HOME:-$HOME/goblin}/goblin.json5" 2>/dev/null || true)"
+	if conf_port="$(jq -r '.http.port // empty' "${GOBLIN_HOME:-$HOME/goblin}/goblin.json5" 2>/dev/null)"; then
+		: # parsed — an empty conf_port just means no http.port configured
+	else
+		conf_port=""
+		echo "goblin-mail: could not parse ${GOBLIN_HOME:-$HOME/goblin}/goblin.json5 — injection check will probe ${GOBLIN_MAIL_PORT:-8787}; set GOBLIN_MAIL_PORT if that is wrong" >&2
+	fi
 fi
 case "$conf_port" in '' | *[!0-9]*) conf_port="" ;; esac
 if [ -z "$mail_port" ]; then

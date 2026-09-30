@@ -193,8 +193,9 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 		mediaError = err;
 	}
 	if (text !== "" && !media && mediaError === null && COMMAND_RE.test(text)) {
-		if (
-			handleCommand(
+		let handled = false;
+		try {
+			handled = handleCommand(
 				{
 					api: env.api,
 					configRef: deps.configRef,
@@ -205,10 +206,24 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 				},
 				conv,
 				text,
-			)
-		) {
+			);
+		} catch (err) {
+			// Commands bypass the inbox entirely — a failure here is not an
+			// InboxRecordError, and must not reach handleMessageDurably as
+			// one. Log it, tell the operator, let grammy consume the update.
+			log.error("command failed", err, { conversation: conv.id });
+			env.api
+				.sendMessage(
+					conv.chatId,
+					`command failed: ${err instanceof Error ? err.message : String(err)}`,
+					conv.threadId === null ? {} : { message_thread_id: conv.threadId },
+				)
+				.catch((e: unknown) => {
+					log.warn("command failure reply failed", { error: String(e) });
+				});
 			return;
 		}
+		if (handled) return;
 	}
 
 	if (text === "" && !media && mediaError === null) {

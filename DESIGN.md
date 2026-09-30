@@ -319,8 +319,8 @@ is a discriminated union enforced inside `execute`. A root
 cannot generate arguments against — every call arrives as `{}` and fails
 validation. That silently took out mail (Sep 28); program, delegate, and
 history_search were found carrying the same shape and flattened too.
-Mail's flattening (`programInputSchema`-style: wide flat object +
-`superRefine` delegating to the union) is the pattern.
+`programInputSchema` is the flattened-union pattern: a wide flat object
++ `superRefine` delegating to the per-action union.
 
 `speak` is the voice-out twin of intake transcription: it *synthesizes*,
 it does not send. The tool hands audio bytes to the turn's delivery sink
@@ -346,17 +346,21 @@ see `Delegation`. Both are bound per-turn to the running conversation
 so what they create is pinned to the chat/topic it was born in; the
 model never handles chat ids.
 
-**Tool results are text.** Every provider goblin speaks (OpenAI-compatible
-chat completions, the codex Responses shim) serializes tool results as a
-string — the SDK's `toModelOutput` media-parts hook exists, but the wire
-formats can't carry it, and an image sent as stringified JSON is garbage,
-not vision. So tools never put image bytes in results: `read_file` sniffs
+**Tool results are text — except where the pipe verifiably carries
+documents.** The SDK's `toModelOutput` media-parts hook exists, but
+whether bytes survive depends on the provider's converter:
+openai-compatible stringifies tool-result content and the codex
+Responses shim filters it to text — an image sent as stringified JSON is
+garbage, not vision. The exceptions are probe-verified (Web access,
+above): z.ai's Responses endpoint parses `input_file` inside
+`function_call_output`, and OpenRouter's normalizer maps tool-result
+parts — which is why `carriesMedia` is position-aware, and why fetch's
+`toModelOutput` may legitimately return a `file` part. Within that, the
+tool-side rule stands: no image bytes in results. `read_file` sniffs
 magic bytes and returns a structured note (type, dimensions when the
 header carries them, size) naming the two working channels — the operator
 sending the image via Telegram (intake materializes it natively for vision
-models) or `bash`/`ffmpeg` for metadata work. If a provider whose tool
-results carry media ever arrives, revisit this ruling — the hook is the
-door.
+models) or `bash`/`ffmpeg` for metadata work.
 
 **Bounded, self-describing output.** Read tool: line window + byte ceiling
 + per-line clamp — three ceilings because each catches a shape the others

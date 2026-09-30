@@ -59,6 +59,47 @@ describe("CodexLanguageModel — request shape", () => {
 		expect(result.usage.inputTokens.cacheRead).toBe(3);
 	});
 
+	test("the bare 'image' wildcard pins a concrete subtype in data URLs only", async () => {
+		const path = authDir({ access_token: jwt(FUTURE) });
+		let sent: Record<string, unknown> = {};
+		const model = new CodexLanguageModel("gpt-6-astra", path, async (_url, init) => {
+			sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			return sse([
+				{
+					type: "response.completed",
+					response: { status: "completed", usage: {} },
+				},
+			]);
+		});
+		await model.doGenerate({
+			prompt: [
+				{
+					role: "user",
+					content: [
+						{
+							type: "file",
+							mediaType: "image",
+							data: { type: "data", data: new Uint8Array([1, 2, 3]) },
+						},
+						{
+							type: "file",
+							mediaType: "image",
+							data: { type: "url", url: new URL("https://example.com/x.png") },
+						},
+					],
+				},
+			],
+		});
+		const content = (sent.input as Array<{ content: Array<{ image_url: string }> }>)[0]!
+			.content;
+		// A data URL needs a concrete subtype — "data:image;base64" is
+		// malformed. URL payloads ride through untouched.
+		expect(content[0]!.image_url).toBe(
+			`data:image/png;base64,${Buffer.from([1, 2, 3]).toString("base64")}`,
+		);
+		expect(content[1]!.image_url).toBe("https://example.com/x.png");
+	});
+
 	test("a tool result round-trips as function_call_output", async () => {
 		const path = authDir({ access_token: jwt(FUTURE) });
 		let sent: Record<string, unknown> = {};

@@ -318,6 +318,34 @@ describe("handleMessage", () => {
 		expect(h.env.intake.size).toBe(0);
 	});
 
+	test("a command failure is answered, not promoted to InboxRecordError", async () => {
+		const h = routerHarness();
+		h.env.deps.runtime = {
+			stop: () => {
+				throw new Error("runtime wedged");
+			},
+		} as unknown as Runtime;
+		// Commands are never inbox-recorded, so a throw inside one is an
+		// operator-facing failure — logged and replied — not the fatal
+		// intake class.
+		expect(() =>
+			handleMessageDurably(
+				h.env,
+				tgMsg({ message_id: 9, chat: { id: 1, type: "private" }, text: "/stop" }),
+				900,
+			),
+		).not.toThrow();
+		await Promise.resolve();
+		expect(h.pushed).toEqual([]);
+		expect(h.env.inbox.pending()).toEqual([]);
+		expect(
+			h.apiCalls.some(
+				(c) => c.method === "sendMessage" && c.text?.includes("command failed: runtime wedged"),
+			),
+		).toBe(true);
+		h.store.close();
+	});
+
 	test("an unmatched /word falls through to a normal message", async () => {
 		const h = routerHarness();
 		handleTestMessage(

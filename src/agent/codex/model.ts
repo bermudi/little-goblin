@@ -42,15 +42,18 @@ function fileToDataUrl(data: SharedV4FileData, mediaType: string): string {
 	if (data.type === "reference") {
 		throw new Error("codex: provider file references are not supported");
 	}
+	// "image" alone is a wildcard, not a data-URL media type — pin a
+	// concrete subtype. URL payloads returned above keep it untouched.
+	const mime = mediaType === "image" ? "image/png" : mediaType;
 	if (data.type === "text") {
-		return `data:${mediaType};base64,${Buffer.from(data.text, "utf8").toString("base64")}`;
+		return `data:${mime};base64,${Buffer.from(data.text, "utf8").toString("base64")}`;
 	}
 	// 'data': raw bytes or base64 string. A data: string rides through
 	// untouched rather than double-encoding a middleware's gift.
 	if (typeof data.data === "string") {
-		return data.data.startsWith("data:") ? data.data : `data:${mediaType};base64,${data.data}`;
+		return data.data.startsWith("data:") ? data.data : `data:${mime};base64,${data.data}`;
 	}
-	return `data:${mediaType};base64,${Buffer.from(data.data).toString("base64")}`;
+	return `data:${mime};base64,${Buffer.from(data.data).toString("base64")}`;
 }
 
 function toolResultText(output: {

@@ -337,6 +337,7 @@ export function flushConversation(env: FlushEnv, convId: string, items: Buffered
 		}
 	}
 	const tts = deps.configRef.current.tts;
+	const message = userMessage(parts);
 	const sink = makeDeliverySink(
 		env.api,
 		conv,
@@ -348,9 +349,9 @@ export function flushConversation(env: FlushEnv, convId: string, items: Buffered
 	);
 	try {
 		env.inbox.commitBatch(items.map((i) => i.updateId), convId, () => {
-			deps.store.append(convId, [userMessage(parts)]);
+			deps.store.append(convId, [message]);
 		});
-		deps.runtime.submitPersisted(conv, sink);
+		deps.runtime.submitPersisted(conv, message, sink);
 	} catch (err) {
 		// The sink was already constructed (typing interval running) —
 		// release it or it ghosts "typing…" forever.

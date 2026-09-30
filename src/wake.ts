@@ -3,8 +3,9 @@
 // conversation, build a normal delivery sink, runtime.submit. This is
 // the shared door program fires and delegation notices take
 // (DESIGN.md, "Programs" / "Delegation") — no special execution
-// path, the lane queue orders it behind any live turn, epoch fencing
-// applies.
+// path. A live turn steers the message in at its next step boundary;
+// otherwise the lane queue orders it into a fresh turn. Epoch
+// fencing applies either way.
 //
 // Returns true only when the submit was admitted to a turn (not merely
 // appended to history by a closed runtime). On a throw the constructed sink

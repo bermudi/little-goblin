@@ -15,6 +15,7 @@ import {
 	toUIMessageStream,
 	type CallWarning,
 	type LanguageModel,
+	type ModelMessage,
 	type ToolSet,
 	type UIMessage,
 } from "ai";
@@ -181,6 +182,10 @@ export class FencedError extends Error {
 // ---------- runtime ----------
 
 interface QueuedTurn {
+	// The user message this submit appended to history. Steering input:
+	// a live predecessor folds it into its next model call (DESIGN.md,
+	// Turn).
+	message: UIMessage;
 	sink: TurnSink;
 	// Guards the exactly-once onDone contract: a sink whose onDone throws
 	// must not be re-notified by the drain guard below.
@@ -235,23 +240,25 @@ export class Runtime {
 	// True means admitted to a lane; false means history-only after close.
 	submit(conv: Conversation, message: UIMessage, sink: TurnSink): boolean {
 		this.deps.store.append(conv.id, [message]);
-		return this.admit(conv, sink);
+		return this.admit(conv, message, sink);
 	}
 
 	// Telegram's durable inbox commits its user event and consumes the
 	// inbox batch in one SQLite transaction before reaching this method.
 	// Never append again here: that would duplicate a recovered turn.
-	submitPersisted(conv: Conversation, sink: TurnSink): boolean {
-		return this.admit(conv, sink);
+	// The just-appended message rides along: steering input for a live
+	// turn.
+	submitPersisted(conv: Conversation, message: UIMessage, sink: TurnSink): boolean {
+		return this.admit(conv, message, sink);
 	}
 
-	private admit(conv: Conversation, sink: TurnSink): boolean {
+	private admit(conv: Conversation, message: UIMessage, sink: TurnSink): boolean {
 		if (this.closed) {
-			void this.notifyDone({ sink, doneSent: false }, { kind: "fenced" });
+			void this.notifyDone({ message, sink, doneSent: false }, { kind: "fenced" });
 			return false;
 		}
 		const lane = this.lane(conv.id);
-		lane.pending.push({ sink, doneSent: false });
+		lane.pending.push({ message, sink, doneSent: false });
 		if (!lane.running) lane.draining = this.drain(conv.id);
 		return true;
 	}
@@ -659,25 +666,27 @@ export class Runtime {
 		}
 		const epoch = conv.epoch;
 		sink.setAuthorityCheck?.(() => this.deps.store.get(convId)?.epoch === epoch);
-		// History snapshot is part of admission: a message submitted while
-		// the model step resolves lands in history but must NOT join this
-		// turn's context — it stays queued for its own turn. Reading it
-		// here, before the awaits, is what keeps that boundary — and because
-		// the snapshot is the compacted model view (summary + tail, DESIGN.md
-		// Compaction), a /compact landing mid-turn can't rewrite what this
-		// turn already sees. The anchor
-		// rides along: this turn's response is stamped with the seq of
-		// the user message that triggered it, so the causal view can
-		// place the reply immediately after its question. One snapshot
-		// serves history, anchor, and retention-source together — a message
-		// landing between two reads must not split them.
+		// History snapshot is part of admission: the turn's context is the
+		// compacted model view (summary + tail, DESIGN.md Compaction) as it
+		// stood at admission — a /compact landing mid-turn can't rewrite
+		// what this turn already sees. Newer input steers in later (see
+		// prepareStep below), but recall and the reply anchor read THIS
+		// snapshot; the retention source is recomputed at completion over
+		// the exchange as it ended. Reading here, before the awaits, is
+		// what keeps the boundary. The anchor rides along: recall blocks
+		// and the causal view key off the triggering user message's seq.
 		const entries = store.modelEntries(convId);
 		const history = entries.map((e) => e.message);
 		let anchorSeq: number | null = null;
 		for (const e of entries) {
 			if (e.message.role === "user" && (anchorSeq === null || e.seq > anchorSeq)) anchorSeq = e.seq;
 		}
-		const retentionSource = retentionSourceFrom(entries);
+		// Ownership high-water mark: the newest event this turn is answer-
+		// ing. Steering advances it (below); queued input this turn never
+		// saw stays above the mark, so the reply never causally sorts after
+		// input it didn't read (DESIGN.md, causal view).
+		let steerHighWater = 0;
+		for (const e of entries) steerHighWater = Math.max(steerHighWater, e.seq);
 		log.info("turn started", { conversation: convId, epoch, history: history.length });
 		const controller = new AbortController();
 		this.lane(convId).controller = controller;
@@ -769,6 +778,76 @@ export class Runtime {
 				instructions: step.system,
 				messages,
 				tools,
+				// Steering (DESIGN.md, Turn): prepareStep runs before every
+				// model call inside the tool loop — including the first, so a
+				// submit landing during the turn's startup (recall, attachments)
+				// steers in too. Submits that arrived while this turn runs sit
+				// in the lane queue; each boundary folds them into the next
+				// request as an appended tail. Prefix bytes are untouched, so
+				// the provider cache stays warm (DESIGN.md, Cache stability),
+				// and the override carries forward to later steps.
+				prepareStep: async ({ messages: stepMessages, stepNumber }) => {
+					const lane = this.lane(convId);
+					const steered = lane.pending.splice(0);
+					if (steered.length === 0) return undefined;
+					if (this.deps.store.get(convId)?.epoch !== epoch) {
+						// Fenced on the way out (/stop bumped the epoch): put the
+						// input back — stop() owns the queue and drops it. Never
+						// throw here: a thrown prepareStep fails the stream as an
+						// error instead of a fence.
+						lane.pending.unshift(...steered);
+						return undefined;
+					}
+					const injected: ModelMessage[] = [];
+					const requeue: QueuedTurn[] = [];
+					let admittedCount = 0;
+					for (const t of steered) {
+						try {
+							// Same treatment as the admission snapshot: media
+							// materializes against this turn's model or degrades
+							// to a path reference.
+							const materialized = await materializeAttachments(
+								[t.message],
+								step.inputModalities,
+								INLINE_ITEM_MAX_BYTES,
+								accepts.current.carries,
+							);
+							injected.push(
+								...(await convertToModelMessages(materialized, {
+									tools,
+									ignoreIncompleteToolCalls: true,
+								})),
+								);
+							turns.push(t);
+							admittedCount++;
+						} catch (err) {
+							// The message is already in history; the running turn
+							// just never sees it. A successor turn answers it —
+							// failing this one over a bad steer would take the
+							// reply down with it.
+							log.warn("steer conversion failed — requeued for a successor turn", {
+								conversation: convId,
+								error: err instanceof Error ? err.message : String(err),
+							});
+							requeue.push(t);
+						}
+					}
+					if (requeue.length > 0) lane.pending.unshift(...requeue);
+					if (injected.length === 0) return undefined;
+					// The lane is serial: every event above the old mark is a
+					// steer this turn just folded in. (An arrival landing after
+					// the splice is already pending here — admitted in the same
+					// synchronous block as its append — and stays above the mark.)
+					for (const e of this.deps.store.modelEntries(convId)) {
+						if (e.seq > steerHighWater) steerHighWater = e.seq;
+					}
+					log.info("steered into turn", {
+						conversation: convId,
+						submits: admittedCount,
+						step: stepNumber,
+					});
+					return { messages: [...stepMessages, ...injected] };
+				},
 				...(step.providerOptions ? { providerOptions: step.providerOptions } : {}),
 				stopWhen: isStepCount(MAX_STEPS),
 				abortSignal: controller.signal,
@@ -958,6 +1037,21 @@ export class Runtime {
 			// landing while usage settles must not deliver an unstamped
 			// reply into history.
 			this.checkAuthority(convId, epoch);
+			// Steering folded mid-turn submits into this exchange, so the
+			// retention source and anchor read history as the exchange ENDED —
+			// but only up to the ownership mark: queued input this turn never
+			// read must not anchor the reply. Nothing else can have appended
+			// meanwhile — the lane is serial and every mid-turn submit funnels
+			// through it. The admission-time anchor stays for recall (recall
+			// already ran on the snapshot).
+			const finalEntries = store.modelEntries(convId).filter((e) => e.seq <= steerHighWater);
+			let finalAnchor: number | null = null;
+			for (const e of finalEntries) {
+				if (e.message.role === "user" && (finalAnchor === null || e.seq > finalAnchor)) {
+					finalAnchor = e.seq;
+				}
+			}
+			const finalSource = retentionSourceFrom(finalEntries);
 			if (responseMessage !== null) {
 				// responseMessage already carries an SDK-assigned id.
 				// The anchor ties it to the user message that triggered
@@ -965,11 +1059,11 @@ export class Runtime {
 				// after its question, not after later arrivals. Completed
 				// text exchanges also enqueue retention in the same
 				// transaction; fenced/failed turns never reach here.
-				const memoryOpt = this.retentionOpt(conv, anchorSeq, retentionSource, responseMessage);
+				const memoryOpt = this.retentionOpt(conv, finalAnchor, finalSource, responseMessage);
 				store.append(
 					convId,
 					[responseMessage],
-					memoryOpt ? { anchorSeq, memory: memoryOpt } : { anchorSeq },
+					memoryOpt ? { anchorSeq: finalAnchor, memory: memoryOpt } : { anchorSeq: finalAnchor },
 				);
 			}
 			// Window utilization rides the completion line: the last step's
@@ -1026,7 +1120,7 @@ export class Runtime {
 					const snapshot: CompletedTurn = {
 						conversationId: convId,
 						turnSeq,
-						operatorTexts: retentionSource.userTexts,
+						operatorTexts: finalSource.userTexts,
 						replyText: responseMessage ? messageText(responseMessage) : "",
 						toolNames: toolCalls,
 						toolDigest: digestRing.map((p) => p.entry),

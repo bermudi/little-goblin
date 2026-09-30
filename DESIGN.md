@@ -54,9 +54,20 @@ Conversation ─────── (chatId, threadId?) → durable event history
   bare chat itself. Owns `events` (user msgs, assistant msgs, tool calls,
   system events), `meta` (created, model/thinking overrides).
 - **Turn** — a unit of work enqueued on a conversation. Per-conversation
-  serial queue; one active turn. A turn's history snapshot is taken at
-  admission: messages submitted while it runs join the queue and its
-  successor's context, never its own. `/stop` fences the running turn and
+  serial queue; one active turn. A message submitted while a turn runs
+  **steers** (ruled 2026-09-28, replacing queue-behind): the running turn
+  folds it into its next model call at the step boundary — the SDK's
+  `prepareStep`, which runs before every model call, the first one
+  included, so a submit landing during the turn's startup (recall,
+  attachments) steers in too. Injection is an appended tail: prefix bytes
+  untouched, per-conversation prompt cache stays warm (Cache stability).
+  Recall stays admission-time — steered input is not re-recalled. The
+  reply's anchor, retention source, and reviewer evidence read the
+  exchange as it ended, so a steered message is part of the burst the
+  reply answers. Input arriving after the final model call has no
+  boundary left to steer into — it queues into an immediate successor
+  turn, as does a steered submit whose conversion failed (a bad steer
+  never fails the running turn). `/stop` fences the running turn and
   drops queued ones; messages still in the intake buffer are user input,
   not queued turns, and flush into a fresh turn at the new epoch.
 
@@ -151,12 +162,13 @@ agent loop.
   both shapes.
 - **Causal view, arrival-order storage.** `events` appends in arrival seq —
   that stays the truth. What the model sees interleaves replies by
-  `anchor_seq`: each assistant response is stamped with the seq of the user
-  message that triggered its turn and sorts immediately after it, so a reply
-  never reads as having seen input that arrived while it ran. Submits queued
-  behind a running turn coalesce into one successor turn — a single model
-  call answers them all — and consecutive user messages merge into one at
-  conversion.
+  `anchor_seq`: each assistant response is stamped with the seq of the
+  last user message of the burst it answers (steered submits included)
+  and sorts immediately after it, so a reply never reads as having seen
+  input that arrived after it finished. Input that queues behind a
+  finished turn — post-stream arrivals, failed steer conversions —
+  coalesces into one successor turn — a single model call answers it —
+  and consecutive user messages merge into one at conversion.
 - **Compaction**: history is unbounded on disk, bounded in the window by
   pointer relocation, never deletion. A conversation whose completed turn
   crosses **75% of its model's catalog context window** — or the operator's
@@ -730,9 +742,10 @@ program's state, never a workspace file.** Rulings:
   (chat/topic address pinned by the tool from the live conversation
   — the model never handles chat ids). The fired message gets a sink
   built like any other (voice per conversation setting); replies
-  land in that chat/topic. The lane queue orders it behind any live
-  turn — no interleaving, no special execution path, epoch fencing
-  applies.
+  land in that chat/topic. A live turn steers the fire in at its
+  next step boundary; otherwise the lane queue orders it into a
+  fresh turn — no interleaving, no special execution path, epoch
+  fencing applies either way.
 - **Management is the `program` tool** (list/create/update/delete/
   toggle/hook), zod-validated, one tool not a CLI — state mutation
   belongs behind validation and logging. `hook` takes

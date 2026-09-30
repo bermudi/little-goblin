@@ -344,7 +344,7 @@ describe("flushConversation", () => {
 				return Promise.resolve(title === "" ? null : title);
 			},
 			runtime: {
-				submitPersisted: (c: { id: string }, s: TurnSink) => {
+				submitPersisted: (c: { id: string }, _m: unknown, s: TurnSink) => {
 					submitted.push({ conv: c.id, parts: h.store.history(c.id).at(-1)!.parts, sink: s });
 				},
 			} as unknown as Runtime,
@@ -418,7 +418,7 @@ describe("flushConversation", () => {
 		h.env.deps = {
 			...h.env.deps,
 			runtime: {
-				submitPersisted: (_c: unknown, s: TurnSink) => {
+				submitPersisted: (_c: unknown, _m: unknown, s: TurnSink) => {
 					seen = s;
 					throw new Error("queue closed");
 				},
@@ -481,7 +481,7 @@ describe("durable intake", () => {
 		// parts are lost; replay uses only the normalized SQLite payload.
 		const submitted: UIMessage[][] = [];
 		h.env.deps.runtime = {
-			submitPersisted: (conv: { id: string }, sink: TurnSink) => {
+			submitPersisted: (conv: { id: string }, _m: unknown, sink: TurnSink) => {
 				submitted.push(h.store.history(conv.id));
 				void sink.onDone({ kind: "completed" });
 			},

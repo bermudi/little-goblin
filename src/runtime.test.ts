@@ -572,44 +572,6 @@ describe("turn authority", () => {
 		store.close();
 	});
 
-	test("a message landing while the model step resolves stays out of the running turn", async () => {
-		const store = openStore(tmpdb());
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const prompts: string[] = [];
-		let resolveStep!: (step: { model: LanguageModel; system: string }) => void;
-		const stepReady = new Promise<{ model: LanguageModel; system: string }>((r) => {
-			resolveStep = r;
-		});
-		const base = fakeModel(["ok"], 5) as unknown as {
-			doStream(o: { prompt: unknown }): { stream: ReadableStream<LanguageModelV4StreamPart> };
-		};
-		const recording = {
-			...base,
-			doStream(o: { prompt: unknown }) {
-				prompts.push(JSON.stringify(o.prompt));
-				return base.doStream(o);
-			},
-		} as unknown as LanguageModel;
-		const runtime = new Runtime({
-			store,
-			buildStep: () => stepReady,
-			makeTools: () => ({}),
-		});
-		const s1 = new RecordingSink();
-		const s2 = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "first" }]), s1);
-		await sleep(0); // turn 1 is now parked inside buildStep
-		runtime.submit(conv, userMessage([{ type: "text", text: "second" }]), s2);
-		resolveStep({ model: recording, system: "test" });
-		await Promise.all([s1.done, s2.done]);
-		// turn 1 admitted before "second" landed — it must not answer it;
-		// turn 2 owns it.
-		expect(prompts[0]).toContain("first");
-		expect(prompts[0]).not.toContain("second");
-		expect(prompts[1]).toContain("second");
-		store.close();
-	});
-
 	test("an attachment part the model can't consume degrades to its path reference", async () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -1486,6 +1448,198 @@ describe("skill reviewer hook", () => {
 		expect(prompts[0]).toContain("- bash — ok");
 		expect(prompts[0]).toContain("listed");
 		expect(prompts[0]).toContain("list the files");
+		store.close();
+	});
+});
+
+// ---------- steering ----------
+
+// Two-step model: call #1 finishes with a tool call, call #2 streams
+// `secondText`. The test's gate promise blocks the tool's execute, so
+// the step boundary (prepareStep before call #2) opens exactly when the
+// test decides. Every wire prompt is captured JSON-stringified.
+function gatedToolModel(secondText: string) {
+	const prompts: string[] = [];
+	let calls = 0;
+	const finish = (reason: "tool-calls" | "stop"): LanguageModelV4StreamPart => ({
+		type: "finish",
+		finishReason: { unified: reason, raw: undefined },
+		usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
+	});
+	const base = {
+		specificationVersion: "v4",
+		provider: "fake",
+		modelId: "fake-1",
+		supportedUrls: {},
+		doGenerate() {
+			throw new Error("unimplemented");
+		},
+		doStream() {
+			const n = ++calls;
+			const parts: LanguageModelV4StreamPart[] = [
+				{ type: "stream-start", warnings: [] },
+			];
+			if (n === 1) {
+				parts.push(
+					{ type: "tool-call", toolCallId: "c1", toolName: "probe", input: "{}" },
+					finish("tool-calls"),
+				);
+			} else {
+				parts.push(
+					{ type: "text-start", id: "t2" },
+					{ type: "text-delta", id: "t2", delta: secondText },
+					{ type: "text-end", id: "t2" },
+					finish("stop"),
+				);
+			}
+			return {
+				stream: new ReadableStream<LanguageModelV4StreamPart>({
+					start(controller) {
+						for (const p of parts) controller.enqueue(p);
+						controller.close();
+					},
+				}),
+			};
+		},
+	};
+	const model = {
+		...base,
+		doStream(o: { prompt: unknown }) {
+			prompts.push(JSON.stringify(o.prompt));
+			return (base as unknown as { doStream(o: unknown): { stream: ReadableStream<LanguageModelV4StreamPart> } }).doStream(o);
+		},
+	} as unknown as LanguageModel;
+	return { model, prompts };
+}
+
+function steeringSetup(model: LanguageModel, gate?: Promise<void>) {
+	const store = openStore(tmpdb());
+	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+	const runtime = new Runtime({
+		store,
+		buildStep: () => ({ model, system: "test" }),
+		makeTools: () => ({
+			probe: tool({
+				inputSchema: z.object({}),
+				execute: async () => {
+					if (gate) await gate;
+					return { ok: true };
+				},
+			}),
+		}),
+	});
+	return { store, conv, runtime };
+}
+
+describe("steering", () => {
+	test("a submit during a live turn joins the next model call", async () => {
+		let releaseTool: () => void = () => {};
+		const gate = new Promise<void>((r) => {
+			releaseTool = r;
+		});
+		const { model, prompts } = gatedToolModel("adjusted");
+		const { store, conv, runtime } = steeringSetup(model, gate);
+		const s1 = new RecordingSink();
+		const s2 = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "start this" }]), s1);
+		// Turn 1 is mid-tool-call (step 1 done, tool gated). Submit —
+		// this is the steer.
+		await sleep(20);
+		runtime.submit(conv, userMessage([{ type: "text", text: "actually pivot" }]), s2);
+		releaseTool();
+		expect(await s1.done).toEqual({ kind: "completed" });
+		expect(await s2.done).toEqual({ kind: "completed" });
+		expect(s1.text).toBe("adjusted"); // call #1 streams no text — only the tool call
+		expect(s2.text).toBe(""); // only the first sink streams
+		// One turn, two model calls; the second call's wire prompt
+		// carries the steered message as an appended user message.
+		expect(prompts).toHaveLength(2);
+		const wire = JSON.parse(prompts[1]!) as {
+			role: string;
+			content: { type: string; text?: string }[];
+		}[];
+		const texts = wire
+			.filter((m) => m.role === "user")
+			.flatMap((m) => m.content.filter((c) => c.type === "text").map((c) => c.text!));
+		expect(texts).toEqual(["start this", "actually pivot"]);
+		// History: both user messages, then one assistant exchange. The
+		// reply anchors after the steered message — the burst it
+		// actually answered.
+		const detail = store.historyDetail(conv.id);
+		expect(detail.map((d) => d.message.role)).toEqual(["user", "user", "assistant"]);
+		const steeredSeq = detail[1]!.seq;
+		expect(detail[2]!.anchorSeq).toBe(steeredSeq);
+		store.close();
+	});
+
+	test("a submit during the turn's startup steers into the first call", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const { model, prompts } = recordingModel(["done"], 5);
+		let releaseStep: () => void = () => {};
+		const stepGate = new Promise<void>((r) => {
+			releaseStep = r;
+		});
+		const runtime = new Runtime({
+			store,
+			// buildStep still pending when the second submit lands.
+			buildStep: async () => {
+				await stepGate;
+				return { model, system: "test" };
+			},
+			makeTools: () => ({}),
+		});
+		const s1 = new RecordingSink();
+		const s2 = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
+		await sleep(10);
+		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), s2);
+		releaseStep();
+		expect(await s1.done).toEqual({ kind: "completed" });
+		expect(await s2.done).toEqual({ kind: "completed" });
+		expect(s2.text).toBe(""); // only the first sink streams
+		expect(prompts).toHaveLength(1);
+		expect(prompts[0]).toContain("one");
+		expect(prompts[0]).toContain("two");
+		store.close();
+	});
+
+	test("input after the final model call queues into a successor turn", async () => {
+		const { model, prompts } = gatedToolModel("second");
+		const { store, conv, runtime } = steeringSetup(model);
+		const s1 = new RecordingSink();
+		const s2 = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
+		await s1.done; // turn fully over — no boundary left
+		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), s2);
+		expect(await s2.done).toEqual({ kind: "completed" });
+		expect(prompts).toHaveLength(3); // turn 1's tool loop = 2 calls + successor
+		const roles = store.history(conv.id).map((m) => m.role);
+		expect(roles).toEqual(["user", "assistant", "user", "assistant"]);
+		store.close();
+	});
+
+	test("a fenced turn requeues the steer instead of consuming it", async () => {
+		let releaseTool: () => void = () => {};
+		const gate = new Promise<void>((r) => {
+			releaseTool = r;
+		});
+		const { model, prompts } = gatedToolModel("never seen");
+		const { store, conv, runtime } = steeringSetup(model, gate);
+		const s1 = new RecordingSink();
+		const s2 = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
+		await sleep(20); // mid-tool-call
+		store.bumpEpoch(conv.id); // fence, without stop()'s queue drop
+		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), s2);
+		releaseTool();
+		expect(await s1.done).toEqual({ kind: "fenced" });
+		// The steered submit was requeued at the fence, not consumed —
+		// the successor turn answers it.
+		expect(await s2.done).toEqual({ kind: "completed" });
+		expect(prompts).toHaveLength(3);
+		expect(prompts[2]).toContain("two");
+		await sleep(20); // let the successor's post-completion authority check land before close
 		store.close();
 	});
 });

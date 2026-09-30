@@ -11,6 +11,7 @@ import { openStore } from "./conversation.ts";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { setLogFile } from "./log.ts";
 import { Runtime, userMessage, type TurnDone, type TurnSink } from "./runtime.ts";
+import { readFileTool } from "./agent/tools/read.ts";
 
 let dirs: string[] = [];
 function tmpdb(): string {
@@ -826,6 +827,155 @@ describe("cache stability", () => {
 			const completed = lines.find((l) => l.msg === "turn completed");
 			expect(completed?.window).toEqual({ input: 900, limit: 1000, pct: 90 });
 			expect(completed?.usage).toEqual({ input: 900, cacheRead: 700, cacheWrite: null, output: 1 });
+		} finally {
+			setLogFile(null);
+			store.close();
+		}
+	});
+
+	test("a schema-rejected tool call leaves a trace in the log", async () => {
+		// The Sep 28 outage class: a provider that cannot fill a tool
+		// schema emits {} and the call dies in validation — before the
+		// fix, nothing was logged and the only witness was the model.
+		const dir = mkdtempSync(join(tmpdir(), "goblin-rt-log-"));
+		dirs.push(dir);
+		const logFile = join(dir, "goblin.log");
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		let call = 0;
+		const model = {
+			specificationVersion: "v4",
+			provider: "fake",
+			modelId: "fake-1",
+			supportedUrls: {},
+			doGenerate() {
+				throw new Error("unimplemented");
+			},
+			doStream() {
+				call++;
+				const stream = new ReadableStream<LanguageModelV4StreamPart>({
+					start(controller) {
+						controller.enqueue({ type: "stream-start", warnings: [] });
+						if (call === 1) {
+							// read_file requires `path`; the model sent {}.
+							controller.enqueue({
+								type: "tool-call",
+								toolCallId: "c1",
+								toolName: "read_file",
+								input: "{}",
+							});
+						} else {
+							controller.enqueue({ type: "text-start", id: "t1" });
+							controller.enqueue({ type: "text-delta", id: "t1", delta: "sorry" });
+							controller.enqueue({ type: "text-end", id: "t1" });
+						}
+						controller.enqueue({
+							type: "finish",
+							finishReason: { unified: call === 1 ? "tool-calls" : "stop", raw: undefined },
+							usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
+						});
+						controller.close();
+					},
+				});
+				return { stream };
+			},
+		} as unknown as LanguageModel;
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
+			// The real read_file tool: its schema rejects {} at validation.
+			makeTools: () => ({ read_file: readFileTool("/tmp") }),
+		});
+		setLogFile(logFile);
+		try {
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "read a file" }]), sink);
+			expect(await sink.done).toEqual({ kind: "completed" });
+			const lines = readFileSync(logFile, "utf8")
+				.trim()
+				.split("\n")
+				.map((l) => JSON.parse(l) as Record<string, unknown>);
+			const rejected = lines.find((l) => l.msg === "tool call rejected");
+			expect(rejected).toMatchObject({ tool: "read_file", arg: "{}" });
+			// The validation error names the missing field — the whole
+			// diagnosis in one line.
+			expect(String(rejected?.error)).toContain("path");
+			// And the stop reason rides the completion line.
+			expect(lines.find((l) => l.msg === "turn completed")?.finish).toBe("stop");
+		} finally {
+			setLogFile(null);
+			store.close();
+		}
+	});
+
+	test("a throwing tool execute leaves a trace in the log", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-rt-log-"));
+		dirs.push(dir);
+		const logFile = join(dir, "goblin.log");
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		let call = 0;
+		const model = {
+			specificationVersion: "v4",
+			provider: "fake",
+			modelId: "fake-1",
+			supportedUrls: {},
+			doGenerate() {
+				throw new Error("unimplemented");
+			},
+			doStream() {
+				call++;
+				const stream = new ReadableStream<LanguageModelV4StreamPart>({
+					start(controller) {
+						controller.enqueue({ type: "stream-start", warnings: [] });
+						if (call === 1) {
+							controller.enqueue({
+								type: "tool-call",
+								toolCallId: "c1",
+								toolName: "boom",
+								input: "{}",
+							});
+						} else {
+							controller.enqueue({ type: "text-start", id: "t1" });
+							controller.enqueue({ type: "text-delta", id: "t1", delta: "ok" });
+							controller.enqueue({ type: "text-end", id: "t1" });
+						}
+						controller.enqueue({
+							type: "finish",
+							finishReason: { unified: call === 1 ? "tool-calls" : "stop", raw: undefined },
+							usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
+						});
+						controller.close();
+					},
+				});
+				return { stream };
+			},
+		} as unknown as LanguageModel;
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
+			makeTools: () => ({
+				boom: tool({
+					description: "always throws",
+					inputSchema: z.object({}),
+					execute: async (): Promise<string> => {
+						throw new Error("kapow");
+					},
+				}),
+			}),
+		});
+		setLogFile(logFile);
+		try {
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "boom" }]), sink);
+			expect(await sink.done).toEqual({ kind: "completed" });
+			const lines = readFileSync(logFile, "utf8")
+				.trim()
+				.split("\n")
+				.map((l) => JSON.parse(l) as Record<string, unknown>);
+			const failed = lines.find((l) => l.msg === "tool execute failed");
+			expect(failed).toMatchObject({ tool: "boom" });
+			expect(String(failed?.error)).toContain("kapow");
 		} finally {
 			setLogFile(null);
 			store.close();

@@ -1004,6 +1004,9 @@ export class Runtime {
 				},
 			});
 
+			// call id → tool name: output-error chunks carry only the id,
+			// and the failure line must name the tool.
+			const toolNameByCallId = new Map<string, string>();
 			for await (const chunk of uiStream) {
 				this.checkAuthority(convId, epoch);
 				switch (chunk.type) {
@@ -1034,6 +1037,7 @@ export class Runtime {
 					case "tool-input-available":
 						sink.onToolCall(chunk.toolName, chunk.input);
 						toolCalls.push(chunk.toolName);
+						toolNameByCallId.set(chunk.toolCallId, chunk.toolName);
 						if (evidence !== undefined) {
 							digestRing.push({
 								id: chunk.toolCallId,
@@ -1056,6 +1060,19 @@ export class Runtime {
 							arg: JSON.stringify(chunk.input).slice(0, 200),
 						});
 						break;
+					case "tool-input-error":
+						// A schema-rejected call never executes, so the "tool
+						// call" line never fires — and without this case the
+						// only trace of a provider that cannot fill a schema is
+						// the model's own complaints. Mail went dark for two
+						// days exactly like that (Sep 28).
+						log.warn("tool call rejected", {
+							conversation: convId,
+							tool: chunk.toolName,
+							arg: JSON.stringify(chunk.input ?? null).slice(0, 200),
+							error: chunk.errorText.slice(0, 300),
+						});
+						break;
 					case "tool-output-available":
 						// Reviewer evidence: what the call actually returned.
 						if (evidence !== undefined) {
@@ -1068,6 +1085,15 @@ export class Runtime {
 						}
 						break;
 					case "tool-output-error":
+						// A throw out of execute surfaces to the model as a
+						// retryable error and to nobody else — without this line
+						// it only lives in the reviewer's evidence ring, when
+						// one is open at all.
+						log.warn("tool execute failed", {
+							conversation: convId,
+							tool: toolNameByCallId.get(chunk.toolCallId) ?? chunk.toolCallId,
+							error: chunk.errorText.slice(0, 300),
+						});
 						if (evidence !== undefined) {
 							for (let i = digestRing.length - 1; i >= 0; i--) {
 								if (digestRing[i]!.id !== chunk.toolCallId) continue;
@@ -1089,6 +1115,16 @@ export class Runtime {
 				// Totals are observability, not control — but a dropped usage
 				// promise must be visible, not a silent null on the log line.
 				log.warn("turn usage unavailable — totals skipped", {
+					conversation: convId,
+					error: String(err),
+				});
+				return null;
+			});
+			// The stop reason is a signal, not noise: "length" means the
+			// reply was cut off mid-flight, "content-filter" that the
+			// provider withheld it. Joins usage in the fenced seam below.
+			const finishReason = await Promise.resolve(result.finishReason).catch((err) => {
+				log.warn("turn finish reason unavailable", {
 					conversation: convId,
 					error: String(err),
 				});
@@ -1144,6 +1180,7 @@ export class Runtime {
 			log.info("turn completed", {
 				conversation: convId,
 				epoch,
+				finish: finishReason,
 				usage:
 					usage && {
 						input: usage.inputTokens ?? null,

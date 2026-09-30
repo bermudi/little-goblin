@@ -31,10 +31,10 @@ and the standing untrusted-data note after the close. A down,
 unconfigured, or over-large (64KB cap) checker call prints
 `[injection check unavailable]` and the read still proceeds
 (fail-open) — say so when you quote it, and treat the body as
-untrusted either way. The checker endpoint lives on
-goblin's own HTTP port: `GOBLIN_MAIL_PORT` must match the `http.port`
-from goblin.json5 (default 8787) or every read reports the check
-unavailable — a changed `http.port` needs the env var to follow it.
+untrusted either way. The checker endpoint lives on goblin's own HTTP
+port: the wrapper follows `goblin.json5`'s `http.port` automatically
+(set `GOBLIN_MAIL_PORT` only to override; a wrong override warns and
+reads fail open).
 
 ## Honest limit
 

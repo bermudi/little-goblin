@@ -1050,9 +1050,11 @@ token plumbing in-process was a pita, and gws owns it instead — one
   anything else propagates loud) via the loopback route
   (`POST /api/check-injection`: loopback Host check, 64 KiB body cap,
   never logs the text) for wrapper reads and directly through the
-  shared instance for watcher fires. `GOBLIN_MAIL_PORT` must match
-  `http.port` (default 8787) or every wrapper read reports
-  unavailable. The `goblin-mail` shim (`$GOBLIN_HOME/goblin-mail` →
+  shared instance for watcher fires. The wrapper follows
+  `goblin.json5`'s `http.port` automatically (`GOBLIN_MAIL_PORT`
+  overrides; a wrong override warns and reads fail open — the old
+  env-dance default of 8787 died with the first box-local port
+  override). The `goblin-mail` shim (`$GOBLIN_HOME/goblin-mail` →
   `scripts/goblin-mail`, boot-repointed symlink, never clobbers a
   real file) and the `gws` skill (`deploy/skills/gws/SKILL.md`, seeded
   write-if-absent) are the model's contract: reads ONLY through the

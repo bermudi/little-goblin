@@ -226,6 +226,32 @@ describe("goblin-mail", () => {
 		expect(out).toContain("abc123");
 	});
 
+	test("with no GOBLIN_MAIL_PORT, the checker port follows goblin.json5's http.port (the env-dance default died)", async () => {
+		const dir = tmp();
+		fakeGws(dir);
+		const checker = fakeChecker("ok");
+		const port = new URL(checker).port;
+		writeFileSync(join(dir, "goblin.json5"), `{"http": {"port": ${port}}}`);
+		const proc = Bun.spawn([SCRIPT, "read", "abc123"], {
+			env: {
+				...process.env,
+				PATH: `${join(dir, "bin")}:/usr/bin:/bin`,
+				GOBLIN_HOME: dir,
+				// No GOBLIN_MAIL_PORT — resolution rides the config port.
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [out, err, code] = await Promise.all([
+				new Response(proc.stdout).text(),
+				new Response(proc.stderr).text(),
+				proc.exited,
+		]);
+		expect(code).toBe(0);
+		expect(out).toContain("[injection check: clean p=0.02 sev=0.01]");
+		expect(err).not.toContain("injection check unavailable");
+	});
+
 	test("usage errors fail loud", async () => {
 		const dir = tmp();
 		fakeGws(dir);

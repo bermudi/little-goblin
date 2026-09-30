@@ -270,7 +270,11 @@ function zaiCodingEndpoint(baseUrl?: string): boolean {
 	try {
 		const u = new URL(baseUrl);
 		if (u.hostname !== "api.z.ai") return false;
-		return u.pathname.split("/").includes("coding") || u.pathname === "/api/v1";
+		// Trailing slashes are a base-URL spelling choice, not a different
+		// door — compare the non-empty path segments so /api/v1 and /api/v1/
+		// both match (the coding sniff is already segment-based).
+		const segments = u.pathname.split("/").filter(Boolean);
+		return segments.includes("coding") || segments.join("/") === "api/v1";
 	} catch {
 		return false;
 	}

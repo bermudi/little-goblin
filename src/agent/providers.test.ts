@@ -291,6 +291,23 @@ describe("responses kind — the /api/v1 door", () => {
 		]);
 	});
 
+	test("the /api/v1 door matches with or without a trailing slash, and only that path", () => {
+		// glm-5.2's own ladder is off|high|max — low|high|max proves the
+		// coding-endpoint arm fired, whichever way the base URL is spelled.
+		expect(thinkingLevelsFor("responses", "glm-5.2", "https://api.z.ai/api/v1/")).toEqual([
+			"low",
+			"high",
+			"max",
+		]);
+		expect(
+			thinkingLevelsFor("openai-compatible", "glm-5.2", "https://api.z.ai/api/v1/"),
+		).toEqual(["low", "high", "max"]);
+		// The general paas path is not the coding door — 5.2 keeps its ladder.
+		expect(
+			thinkingLevelsFor("openai-compatible", "glm-5.2", "https://api.z.ai/api/paas/v4"),
+		).toEqual(["off", "high", "max"]);
+	});
+
 	test("glm thinking maps to the OpenAI effort knob (probe: low→7, high→37 reasoning tokens)", () => {
 		expect(thinkingOptions(cfg, "zai_responses/glm-5.3-flash", "off")).toEqual({
 			zai_responses: { reasoningEffort: "low" },

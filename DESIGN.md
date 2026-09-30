@@ -63,11 +63,18 @@ Conversation ─────── (chatId, threadId?) → durable event history
   untouched, per-conversation prompt cache stays warm (Cache stability).
   Recall stays admission-time — steered input is not re-recalled. The
   reply's anchor, retention source, and reviewer evidence read the
-  exchange as it ended, so a steered message is part of the burst the
-  reply answers. Input arriving after the final model call has no
-  boundary left to steer into — it queues into an immediate successor
-  turn, as does a steered submit whose conversion failed (a bad steer
-  never fails the running turn). `/stop` fences the running turn and
+  exchange as it ended **bounded by an ownership high-water mark**: the
+  mark advances only over entries the turn actually injected (claimed by
+  message id), so input the turn never read — a mid-conversion arrival
+  still sitting in the queue, a steer it couldn't carry — never anchors
+  its reply. Input arriving after the final model call has no boundary
+  left to steer into — it queues into an immediate successor turn. A
+  submit that cannot be prepared for the model errors its own delivery
+  and is never re-queued (requeue would fail every successor turn's
+  admission conversion identically — a poison pill); its message stays
+  in history and degrades to a readable placeholder in later model
+  views, the corrupt-row precedent one step later at the conversion
+  boundary. `/stop` fences the running turn and
   drops queued ones; messages still in the intake buffer are user input,
   not queued turns, and flush into a fresh turn at the new epoch.
 
@@ -163,12 +170,13 @@ agent loop.
 - **Causal view, arrival-order storage.** `events` appends in arrival seq —
   that stays the truth. What the model sees interleaves replies by
   `anchor_seq`: each assistant response is stamped with the seq of the
-  last user message of the burst it answers (steered submits included)
-  and sorts immediately after it, so a reply never reads as having seen
-  input that arrived after it finished. Input that queues behind a
-  finished turn — post-stream arrivals, failed steer conversions —
-  coalesces into one successor turn — a single model call answers it —
-  and consecutive user messages merge into one at conversion.
+  last user message of the burst it answers (steered submits included,
+  bounded by the turn's ownership mark) and sorts immediately after it,
+  so a reply never reads as having seen input that arrived after it
+  finished. Input that queues behind a finished turn — post-stream
+  arrivals — coalesces into one successor turn — a single model call
+  answers it — and consecutive user messages merge into one at
+  conversion.
 - **Compaction**: history is unbounded on disk, bounded in the window by
   pointer relocation, never deletion. A conversation whose completed turn
   crosses **75% of its model's catalog context window** — or the operator's

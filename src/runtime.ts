@@ -67,6 +67,25 @@ function describeWarning(w: CallWarning): string {
 	}
 }
 
+// A message that cannot convert to the wire format degrades to a
+// readable placeholder in position — role and id preserved — instead of
+// failing every future turn identically. The corrupt-row precedent lives
+// at the store boundary (conversation.ts, corruptPlaceholder); this is
+// the same degradation one step later, at the conversion boundary. The
+// original message stays in history: arrival-order storage is the truth.
+function unconvertiblePlaceholder(m: UIMessage): UIMessage {
+	return {
+		id: m.id,
+		role: m.role,
+		parts: [
+			{
+				type: "text",
+				text: `[this message could not be prepared for the model (${m.role} role) — it is kept in history; any attachment it carried may still be readable with read_file or bash tools]`,
+			},
+		],
+	};
+}
+
 // ---------- sink: what the turn streams into (tg implements) ----------
 
 export type TurnDone =
@@ -747,16 +766,51 @@ export class Runtime {
 			// message (persisted, never regenerated); without memory the
 			// sequence is byte-identical to history.
 			const prepared = await materializeAttachments(
-				mergeConsecutiveUsers(withMemoryBlocks(entries, memory.prior, memory.current)),
+				withMemoryBlocks(entries, memory.prior, memory.current),
 				step.inputModalities,
 				INLINE_ITEM_MAX_BYTES,
 				accepts.current.carries,
 			);
 			this.checkAuthority(convId, epoch);
-			const messages = await convertToModelMessages(prepared, {
-				tools,
-				ignoreIncompleteToolCalls: true,
-			});
+			// Convert per message: one malformed message must not fail the
+			// turn. History is durable — a whole-array conversion failure
+			// would repeat identically on every future turn and brick the
+			// conversation (a failed steer leaves exactly such a message
+			// behind). Degrade the offending message to a readable
+			// placeholder in position — the corrupt-row precedent at the
+			// store boundary (conversation.ts); the original stays on disk.
+			// Per-message conversion is output-identical: the converter is a
+			// pure per-message mapper (its only cross-message step, the
+			// incomplete-tool-call filter, is itself per-message).
+			const messages: ModelMessage[] = [];
+			for (const m of prepared) {
+				try {
+					messages.push(
+						...(await convertToModelMessages([m], {
+							tools,
+							ignoreIncompleteToolCalls: true,
+						})),
+					);
+				} catch (err) {
+					log.warn("message unconvertible — degrading to placeholder", {
+						conversation: convId,
+						message: m.id,
+						role: m.role,
+						error: err instanceof Error ? err.message : String(err),
+					});
+					messages.push(
+						...(await convertToModelMessages([unconvertiblePlaceholder(m)], {
+							tools,
+							ignoreIncompleteToolCalls: true,
+						})),
+					);
+				}
+			}
+
+			// Merge after conversion: one malformed message must degrade
+			// ALONE — a UIMessage-level merge would fuse it with its
+			// burst-mates and the placeholder would swallow their text.
+			const merged = mergeConsecutiveUserModels(messages);
 
 			// Cache observability (DESIGN.md, Cache stability): the per-call
 			// request hashes — head (system + tools) and full request — are
@@ -765,7 +819,7 @@ export class Runtime {
 			// agent/providers.ts; this line only anchors the turn.
 			log.info("model request", {
 				conversation: convId,
-				messages: messages.length,
+				messages: merged.length,
 			});
 
 			// The last step's input is the fullest prompt this turn sent —
@@ -776,7 +830,7 @@ export class Runtime {
 				// `instructions` is the v7 primary; the internal ModelStep keeps
 				// its own `system` field name — the seam stays one property deep.
 				instructions: step.system,
-				messages,
+				messages: merged,
 				tools,
 				// Steering (DESIGN.md, Turn): prepareStep runs before every
 				// model call inside the tool loop — including the first, so a
@@ -799,7 +853,7 @@ export class Runtime {
 						return undefined;
 					}
 					const injected: ModelMessage[] = [];
-					const requeue: QueuedTurn[] = [];
+					const claimedIds = new Set<string>();
 					let admittedCount = 0;
 					for (const t of steered) {
 						try {
@@ -819,27 +873,35 @@ export class Runtime {
 								})),
 								);
 							turns.push(t);
+							claimedIds.add(t.message.id);
 							admittedCount++;
 						} catch (err) {
-							// The message is already in history; the running turn
-							// just never sees it. A successor turn answers it —
-							// failing this one over a bad steer would take the
-							// reply down with it.
-							log.warn("steer conversion failed — requeued for a successor turn", {
+							// The message is durable history but this turn cannot
+							// carry it. Error that submit's own delivery — never
+							// requeue: the message would sit in history and fail
+							// every successor turn's admission conversion the same
+							// way, a poison pill. Later model views degrade it to a
+							// placeholder at the admission boundary (runTurn's
+							// conversion), so the conversation stays answerable.
+							log.warn("steer conversion failed — submit errored, message degrades in later views", {
 								conversation: convId,
+								message: t.message.id,
 								error: err instanceof Error ? err.message : String(err),
 							});
-							requeue.push(t);
+							void this.notifyDone(t, {
+								kind: "error",
+								message: `that message could not be prepared for the model: ${err instanceof Error ? err.message : String(err)}`,
+							});
 						}
 					}
-					if (requeue.length > 0) lane.pending.unshift(...requeue);
 					if (injected.length === 0) return undefined;
-					// The lane is serial: every event above the old mark is a
-					// steer this turn just folded in. (An arrival landing after
-					// the splice is already pending here — admitted in the same
-					// synchronous block as its append — and stays above the mark.)
+					// Advance the ownership mark by identity, not position. The
+					// lane is serial but the queue is not this turn's: a submit
+					// landing mid-conversion sits pending (never spliced), and a
+					// failed steer is dropped above — neither may anchor this
+					// reply (DESIGN.md, causal view).
 					for (const e of this.deps.store.modelEntries(convId)) {
-						if (e.seq > steerHighWater) steerHighWater = e.seq;
+						if (e.seq > steerHighWater && claimedIds.has(e.message.id)) steerHighWater = e.seq;
 					}
 					log.info("steered into turn", {
 						conversation: convId,
@@ -1242,14 +1304,20 @@ function retentionSourceFrom(entries: { seq: number; message: UIMessage }[]): Re
 }
 
 // A burst of user input with no answer between the messages is one
-// conversational beat — merge adjacent user messages so the model
-// reads them as a single message, not N. Keeps the first id.
-function mergeConsecutiveUsers(messages: UIMessage[]): UIMessage[] {
-	const out: UIMessage[] = [];
+// conversational beat — merge adjacent user messages so the model reads
+// them as a single message, not N. Runs on the CONVERTED messages: the
+// conversion must stay per-message (one malformed message degrades
+// alone — a merge before conversion would let its placeholder swallow
+// burst-mates' text), and the wire bytes are identical either way for
+// valid input.
+function mergeConsecutiveUserModels(messages: ModelMessage[]): ModelMessage[] {
+	const out: ModelMessage[] = [];
 	for (const m of messages) {
 		const prev = out[out.length - 1];
 		if (m.role === "user" && prev?.role === "user") {
-			prev.parts.push(...m.parts);
+			const prevContent = typeof prev.content === "string" ? [{ type: "text" as const, text: prev.content }] : prev.content;
+			const content = typeof m.content === "string" ? [{ type: "text" as const, text: m.content }] : m.content;
+			prev.content = [...prevContent, ...content];
 		} else {
 			out.push(m);
 		}

@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tool, type LanguageModel, type UIMessage } from "ai";
 import { z } from "zod";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { openStore } from "./conversation.ts";
+import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { setLogFile } from "./log.ts";
 import { Runtime, userMessage, type TurnDone, type TurnSink } from "./runtime.ts";
 
@@ -1512,12 +1515,16 @@ function gatedToolModel(secondText: string) {
 	return { model, prompts };
 }
 
-function steeringSetup(model: LanguageModel, gate?: Promise<void>) {
+function steeringSetup(model: LanguageModel, gate?: Promise<void>, modalities?: Set<string>) {
 	const store = openStore(tmpdb());
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 	const runtime = new Runtime({
 		store,
-		buildStep: () => ({ model, system: "test" }),
+		buildStep: () => ({
+			model,
+			system: "test",
+			...(modalities ? { inputModalities: modalities } : {}),
+		}),
 		makeTools: () => ({
 			probe: tool({
 				inputSchema: z.object({}),
@@ -1640,6 +1647,109 @@ describe("steering", () => {
 		expect(prompts).toHaveLength(3);
 		expect(prompts[2]).toContain("two");
 		await sleep(20); // let the successor's post-completion authority check land before close
+		store.close();
+	});
+
+	test("a submit landing mid-conversion stays above the ownership mark", async () => {
+		// The steer is a photo whose readFile parks on a FIFO — a
+		// deterministic window to land a follow-up while the boundary is
+		// mid-conversion. The mark must claim the photo (injected) and
+		// never the follow-up (still pending, never read).
+		const dir = mkdtempSync(join(tmpdir(), "goblin-rt-fifo-"));
+		dirs.push(dir);
+		const fifo = join(dir, "photo.png");
+		execSync(`mkfifo '${fifo}'`);
+		let releaseTool: () => void = () => {};
+		const gate = new Promise<void>((r) => {
+			releaseTool = r;
+		});
+		const { model, prompts } = gatedToolModel("adjusted");
+		const { store, conv, runtime } = steeringSetup(model, gate, new Set(["text", "image"]));
+		const s1 = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "start this" }]), s1);
+		await sleep(20); // parked mid-tool-call
+		const s2 = new RecordingSink();
+		runtime.submit(conv, {
+			id: "steer-photo",
+			role: "user",
+			parts: [
+				{ type: ATTACHMENT_PART, data: { path: fifo, mediaType: "image/png", filename: "photo.png", size: 7 } },
+			],
+		} as UIMessage, s2);
+		releaseTool(); // tool resolves → prepareStep splices the photo → readFile parks on the FIFO
+		await sleep(30);
+		const s3 = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "follow-up" }]), s3);
+		// Unpark the photo and let the turn finish.
+		await writeFile(fifo, "pngdata");
+		expect(await s1.done).toEqual({ kind: "completed" });
+		expect(await s2.done).toEqual({ kind: "completed" });
+		// Swap the FIFO for a regular file: the successor's admission would
+		// otherwise re-read the FIFO with no writer left and park forever.
+		unlinkSync(fifo);
+		writeFileSync(fifo, "pngdata");
+		// The follow-up was never injected — a successor turn answers it.
+		expect(await s3.done).toEqual({ kind: "completed" });
+		expect(prompts).toHaveLength(3);
+		// Call #2 carried the photo, not the follow-up.
+		expect(prompts[1]).toContain("photo.png");
+		expect(prompts[1]).not.toContain("follow-up");
+		// Turn 1's reply anchors after the photo — never after input it
+		// didn't read. The successor's reply anchors after the follow-up.
+		const detail = store.historyDetail(conv.id);
+		const seqOf = (id: string) => detail.find((d) => d.message.id === id)!.seq;
+		const assistants = detail.filter((d) => d.message.role === "assistant");
+		expect(assistants).toHaveLength(2);
+		expect(assistants[0]!.anchorSeq).toBe(seqOf("steer-photo"));
+		// The follow-up is the newest user message; the successor's reply
+		// anchors there.
+		const followUpSeq = Math.max(
+			...detail.filter((d) => d.message.role === "user").map((d) => d.seq),
+		);
+		expect(assistants[1]!.anchorSeq).toBe(followUpSeq);
+		store.close();
+	});
+
+	test("a steered message that cannot convert errors its own delivery, not the conversation", async () => {
+		let releaseTool: () => void = () => {};
+		const gate = new Promise<void>((r) => {
+			releaseTool = r;
+		});
+		const { model, prompts } = gatedToolModel("adjusted");
+		const { store, conv, runtime } = steeringSetup(model, gate);
+		const s1 = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "start this" }]), s1);
+		await sleep(20); // parked mid-tool-call
+		// Poison: a file part with an invalid URL — materializeAttachments
+		// passes it through untouched, convertToModelMessages throws.
+		const s2 = new RecordingSink();
+		runtime.submit(conv, {
+			id: "poison",
+			role: "user",
+			parts: [
+				{ type: "text", text: "read this" },
+				{ type: "file", mediaType: "image/png", filename: "x.png", url: "not a url" },
+			],
+		} as UIMessage, s2);
+		releaseTool();
+		// The poison's own delivery errors; turn 1 completes over the rest.
+		expect(await s1.done).toEqual({ kind: "completed" });
+		const poisoned = await s2.done;
+		expect(poisoned.kind).toBe("error");
+		// Call #2 never saw the poison; the reply anchors at the trigger,
+		// not at the message it couldn't carry.
+		expect(prompts[1]).not.toContain("read this");
+		const first = store.historyDetail(conv.id);
+		const firstReply = first.filter((d) => d.message.role === "assistant")[0]!;
+		expect(firstReply.anchorSeq).toBe(first.find((d) => d.message.id === "poison")!.seq - 1);
+		// A successor turn must survive the poison sitting in history:
+		// admission degrades it to a placeholder and the turn completes.
+		const s3 = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "still there?" }]), s3);
+		expect(await s3.done).toEqual({ kind: "completed" });
+		expect(prompts).toHaveLength(3);
+		expect(prompts[2]).toContain("could not be prepared for the model");
+		expect(prompts[2]).toContain("still there?");
 		store.close();
 	});
 });

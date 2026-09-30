@@ -25,34 +25,42 @@ earns its place.
   than crash-loop it. That script plus first-boot scaffolding (home layout,
   SOUL.md/AGENTS.md stubs, fail-loud config pointer) is the entire setup
   story — no onboarding wizard, ever.
-- Telegram is the UI: long polling, topics, reactions, files, voice — **and
-  Mini Apps, designed in from the start** (the process serves them over HTTP;
-  see Intake & delivery).
+- Telegram is one of two channels: long polling, topics, reactions, files,
+  voice — **and Mini Apps, designed in from the start** (the process serves
+  them over HTTP; see Telegram intake & delivery). The second channel is
+  the app: a React client, PWA while testing and a Capacitor APK when
+  stable, speaking the AI SDK UIMessage protocol over the process's own
+  HTTP surface (see App channel). The channels are disjoint — a
+  conversation is born on the surface where it starts and stays there.
 - Goblin's machine state lives in SQLite (`bun:sqlite`, WAL); files stay
   where humans edit them — config, auth, workspace. Optional long-term
   memory lives in a separate Hindsight service backed by PostgreSQL (see
   Long-term memory). This does not migrate Goblin's conversation store.
-- No standalone web UI beyond Telegram Mini Apps, no multi-channel, no plugin
-  SDK, no k8s.
+- No third channel — two exist now (Telegram and the app, `App channel`,
+  ruling 2026-09-30; another needs a ruling here) — no plugin SDK, no k8s.
 
 ## Domain model
 
-Two concepts. Conversation identity **is** the Telegram address.
+Two concepts. Conversation identity **is** its channel address — a Telegram
+address (chat + optional topic thread) or an app address (`app/<id>`),
+ruling 2026-09-30. The two pools are disjoint; see App channel.
 
 ```text
 Telegram update
       │
       ▼
-Conversation ─────── (chatId, threadId?) → durable event history
+Conversation ─────── (channel address) → durable event history
       │ while a turn is running
       ▼
     Turn ──────────── ephemeral: one agent loop + serialized queue
 ```
 
-- **Conversation** — keyed by its Telegram address: a forum topic — in the
-  operator's group or in the bot's DM, which supports topics too — or the
-  bare chat itself. Owns `events` (user msgs, assistant msgs, tool calls,
-  system events), `meta` (created, model/thinking overrides).
+- **Conversation** — keyed by its channel address. A Telegram address is a
+  forum topic — in the operator's group or in the bot's DM, which supports
+  topics too — or the bare chat itself; an app address is a client-minted
+  id that exists only in the app channel. Owns `events` (user msgs,
+  assistant msgs, tool calls, system events), `meta` (created,
+  model/thinking overrides).
 - **Turn** — a unit of work enqueued on a conversation. Per-conversation
   serial queue; one active turn. A message submitted while a turn runs
   **steers** (ruled 2026-09-28, replacing queue-behind): the running turn
@@ -1780,6 +1788,75 @@ failing message by message.
   case = re-fetch via `file_id`). Deploy: static binary + systemd unit (no
   docker); build off-box, TDLib compile would crush lithium.
 
+## App channel (PWA → APK)
+
+Ruling 2026-09-30, operator ask. Telegram stops being the only channel:
+goblin grows a second, disjoint one — the app.
+
+**Why.** The operator's reading pains live in Telegram's client, not in
+goblin: long replies read as 4096-chunked fragments, topic lists desync
+between devices (a client cache bug goblin cannot fix), and Mini Apps
+cold-start in 4-5s on Android — that is Telegram's WebView container, not
+our payload (BotFather's own app is equally slow, which is the proof).
+Arrival is fine where it is; reading moves.
+
+**The shape: disjoint channels.** Two conversation pools, one store. A
+conversation is born on the surface where it starts and stays there —
+Telegram conversations deliver to Telegram exactly as before, app
+conversations (`app/<id>`) stream to the app. No mirroring, no fan-out,
+no cross-surface reading: routing is decided by the address kind alone.
+The channels share the turn loop, tools, config, memories, skills — and
+nothing else. Deliberately dumber than the aliasing and mirroring
+proposals considered and rejected in the same conversation: the moment
+"where does this answer appear" has any answer longer than "where you
+asked", the operator has to think before reading, and that thinking is
+the bug.
+
+**Protocol: the store already speaks it.** History is UIMessage JSON
+(envelope v1); the turn loop already produces a UIMessage stream
+(`toUIMessageStream`) that the Telegram sink consumes today. The app
+endpoints pipe what exists: history reads serve stored UIMessages
+verbatim, chat requests run a turn and stream the same shape. Store
+format = wire format — no translation layer to design, drift, or test
+twice.
+
+**Auth.** No Telegram `initData` exists outside Telegram, so the app
+authenticates with a static token from config (`appToken`), sent as a
+bearer header on `/api/app/*`, rotated by config edit. The mini app keeps
+its initData validation untouched. `appToken` unset → the app surface
+refuses requests fail-loud with a log line, never silently open.
+
+**Client.** React + `@ai-sdk/react` (`useChat`) in `app/` — Vite, strict
+TS, its own tsconfig program wired into `bun run typecheck`. This is the
+recorded amendment to the no-build rule: `src/http/app.js` (the settings
+mini app) keeps the ships-as-served treatment forever; the app client is
+a built artifact because React is the price of the SDK's chat pieces, and
+built artifacts are allowed exactly there and nowhere else. `src/http`
+serves `app/dist` under `/app/`; a missing build is a fail-loud 500 with
+a log line, never a silent empty page. Tool activity renders as an
+expandable "Worked" row (pattern lifted from openclaw's app — mechanism
+only, zero code adopted).
+
+**Packaging ladder.** PWA first, on the tailnet URL through the existing
+`tailscale serve` door — manifest + service worker make it installable
+(home-screen icon, ~1s open, zero APK churn while iterating; the operator
+evaluated twenty-APK development and declined). APK via Capacitor when
+stable: same build output wrapped, plus the Android share-target intent —
+the thing PWAs cannot do (Android's share sheet lists only real installed
+apps, observed 2026-09-30) — and later FCM if push is ever demanded. TWA
+is rejected on mechanism: Google's assetlinks verification cannot pass on
+a tailnet-only domain. PWA and APK are one channel in two shells; nothing
+in the server knows which is talking.
+
+**Logging.** The app boundary joins the existing bar: intake (message →
+app address), auth failures, stream start/finish, attachment uploads —
+each a line with the fields to reconstruct it from `goblin.log`.
+
+**Out, explicitly:** mirroring or cross-channel reading of any kind
+(revisit needs a ruling here), app-side push (Telegram stays the bell for
+its own conversations; app conversations ring nothing until FCM is
+demanded), widgets, in-app voice mode, iOS.
+
 ## State layout
 
 ```text
@@ -1949,7 +2026,9 @@ and self-grading skill machinery stay out) · conversation-lifecycle
 commands · subagents · ACP ·
 project environments · onboarding wizard · state
 migrations (general framework; additive memory schema changes are in scope) ·
-in-process embeddings (delegated to Hindsight for memory) · multi-user
+in-process embeddings (delegated to Hindsight for memory) · app client
+(returned on demand 2026-09-30 — `App channel`; a third channel stays
+out) · multi-user
 
 ## Test posture — the real change
 

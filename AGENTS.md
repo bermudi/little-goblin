@@ -11,13 +11,21 @@ non-goals list.
   external input with zod at boundaries (config, Telegram updates, tool args,
   disk state).
 - **The mini app client is plain, checked JS.** `src/http/app.js` ships as
-  served — no bundler, no framework, no build step (design rule). It is
-  type-checked (`bun run typecheck` runs both tsc programs) with wire types
-  imported from `mod.ts`/`config.ts`, so config schema changes break
-  typecheck, not the page. Don't add `.js` files without the same treatment,
-  and don't let the server program see `telegram-webapp.d.ts` — its `Window`
-  declaration changes how linkedom's `parseHTML` resolves in
-  `agent/tools/fetch.ts` (that's why tsconfig.json excludes it).
+  served — no bundler, no framework, no build step (design rule, scoped to
+  the mini app by DESIGN.md → App channel, 2026-09-30). It is type-checked
+  (`bun run typecheck` runs the tsc programs) with wire types imported from
+  `mod.ts`/`config.ts`, so config schema changes break typecheck, not the
+  page. Don't add `.js` files without the same treatment, and don't let the
+  server program see `telegram-webapp.d.ts` — its `Window` declaration
+  changes how linkedom's `parseHTML` resolves in `agent/tools/fetch.ts`
+  (that's why tsconfig.json excludes it).
+- **The app client is the one built client.** `app/` is Vite + React +
+  strict TS — `@ai-sdk/react` `useChat` over the UIMessage stream endpoints
+  (DESIGN.md → App channel). It gets a build step because React is the
+  price of the SDK's chat pieces; nothing else gets one. Same discipline
+  otherwise: no `any`, wire types imported from server sources, its tsconfig
+  program joins `bun run typecheck`, and `src/http` serves `app/dist` under
+  `/app/` with a fail-loud 500 + log line when the build is missing.
 - **Fail loud.** `ENOENT` means null. Everything else propagates with context.
   Never swallow an exception.
 - **Durable writes.** Whole-file state: tmp + `fsync` + `renameSync`,

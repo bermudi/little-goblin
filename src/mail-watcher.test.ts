@@ -11,7 +11,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api } from "grammy";
+import type { DeliveryApi } from "./tg/delivery.ts";
 import type { UIMessage } from "ai";
 import { HistoryExpiredError, type MailHit, type MailPoller } from "./mail.ts";
 import { JevError } from "./jev.ts";
@@ -111,7 +111,7 @@ function harness(): Harness {
 		setMessageReaction: () => Promise.resolve(true),
 		sendChatAction: () => Promise.resolve(true),
 		sendVoice: () => Promise.resolve({ message_id: 1 }),
-	} as unknown as Api;
+	} as unknown as DeliveryApi;
 	const firingDeps: SchedulerDeps & { checkMail?: Harness["checkMail"] } = {
 		programs: h.programs,
 		store,

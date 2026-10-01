@@ -107,6 +107,11 @@ function windowEnd(body: string, start: number): number {
 	return end;
 }
 
+// The bot's telegram API, named here so domain modules (wake.ts's
+// WakeDeps, the scheduler deps it feeds) can declare the dependency
+// without importing grammy — only tg/ knows grammy.
+export type DeliveryApi = Api;
+
 export function makeDeliverySink(
 	api: Api,
 	conv: Conversation,

@@ -9,7 +9,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api } from "grammy";
+import type { DeliveryApi } from "./tg/delivery.ts";
 import type { UIMessage } from "ai";
 import { openStore } from "./conversation.ts";
 import type { ConversationStore } from "./conversation.ts";
@@ -79,7 +79,7 @@ function harness(): Harness {
 		setMessageReaction: () => Promise.resolve(true),
 		sendChatAction: () => Promise.resolve(true),
 		sendVoice: () => Promise.resolve({ message_id: 1 }),
-	} as unknown as Api;
+	} as unknown as DeliveryApi;
 	const deps: SchedulerDeps = {
 		programs,
 		store,

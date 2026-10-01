@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api } from "grammy";
+import type { DeliveryApi } from "./tg/delivery.ts";
 import { openStore } from "./conversation.ts";
 import type { Config } from "./config.ts";
 import { Runtime } from "./runtime.ts";
@@ -32,7 +32,7 @@ test("wake after runtime close records history but does not report delivery", as
 	const api = {
 		sendMessage: () => { throw new Error("history-only notice must not reach Telegram"); },
 		sendChatAction: () => Promise.resolve(true), // sink sends an initial typing ping on construction
-	} as unknown as Api;
+	} as unknown as DeliveryApi;
 	const landed = wake({
 		store, runtime, api, configRef: { current: config, ttsDown: false },
 		synthesize: async () => [],

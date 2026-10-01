@@ -12,17 +12,16 @@
 // is released with the error — same contract as the intake flush: a
 // constructed sink is already "typing" and would ghost forever.
 
-import type { Api } from "grammy";
 import type { ConversationAddress, ConversationStore } from "./conversation.ts";
 import { paths, type ConfigRef, type TtsConfig } from "./config.ts";
 import { userMessage, type Runtime } from "./runtime.ts";
 import { log } from "./log.ts";
-import { makeDeliverySink } from "./tg/delivery.ts";
+import { makeDeliverySink, type DeliveryApi } from "./tg/delivery.ts";
 
 export interface WakeDeps {
 	store: ConversationStore;
 	runtime: Runtime;
-	api: Api;
+	api: DeliveryApi;
 	configRef: ConfigRef;
 	synthesize(text: string, tts: TtsConfig): Promise<Uint8Array[]>;
 }

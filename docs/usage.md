@@ -1,7 +1,9 @@
 # Daily use
 
-Everything happens in Telegram. There is no other UI except the Settings
-mini app (which also lives behind a Telegram button).
+Two conversation doors: Telegram chat, and the app — a small web client
+for the reading Telegram's client does badly (long replies, long lists).
+A third surface, the Settings mini app, lives behind a Telegram button
+and owns settings, not conversations.
 
 ## Topics are conversations
 
@@ -87,6 +89,32 @@ Behind the scenes it's a page served by the bot on localhost, loaded by your
 Telegram client over HTTPS — which is why `publicUrl` (a tailnet serve,
 funnel, or reverse proxy in front of `http://127.0.0.1:<port>`) is needed.
 Only people in `allowedUsers` can load it, and logins expire after a day.
+
+## The app
+
+`<publicUrl>/app/` serves a standalone client — same door, no Telegram
+client involved. It exists for the reading Telegram does badly: unchunked
+long replies with real markdown, a proper conversation list, and no
+4-second WebView cold start. It's installable as a PWA — add it to your
+home screen and it opens in about a second.
+
+Conversations are **disjoint**. A conversation born in the app lives only
+in the app; Telegram topics live only in Telegram — nothing mirrors or
+crosses, and an app reply can't ring your phone (Telegram stays the bell
+for its own). Both pools share the same model, tools, config, and memory:
+it's the same goblin behind a different door.
+
+What works there: text, file uploads, hold-to-record voice notes
+(transcribed at intake like Telegram voice notes when `transcription` is
+set), read-aloud on replies, stop, retry, rename, delete, search, and the
+model + thinking knobs. What's absent by design: the delegation and mail
+tools — their results wake Telegram surfaces an app turn doesn't have, so
+they're simply not in the app channel's tool set.
+
+With `appToken` set, the app asks for the token once, proves it, and
+keeps it on the device; unset means trust mode — anyone who can reach the
+tailnet door is in. Trust mode must never sit behind a public `funnel`
+URL — see [Security](security.md#the-app-channels-auth).
 
 ## The bot's identity files
 

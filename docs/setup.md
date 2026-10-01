@@ -106,13 +106,19 @@ take effect on the next message. No restart needed.
 
 ## Updating
 
-Pull the repo, re-run `scripts/install.sh`, restart:
+Pull the repo, re-run `scripts/install.sh`, rebuild the app client, restart:
 
 ```sh
 git pull
 scripts/install.sh
+bun run app:build
 systemctl --user restart goblin
 ```
+
+The rebuild matters if you use `/app/`: its client is a build artifact
+(`app/dist`), not part of the checkout, so a `git pull` alone leaves last
+release's client serving against the new API. A missing build fails loud —
+`/app/` answers 500 and the log says to run `app:build`.
 
 History, settings overrides, and workspace files all live in `~/goblin`,
 not in the checkout, so updating never touches them.

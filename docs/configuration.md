@@ -126,11 +126,19 @@ http: { port: 8787 },
   self-hosted `telegram-bot-api` in `--local` mode for large files (uploads
   up to 2 GB, files read straight off disk). Needs an `api_id`/`api_hash`
   app registration on the server side.
-- `publicUrl` — the external HTTPS address of the mini app (e.g. via
-  `tailscale serve`, `tailscale funnel`, or any reverse proxy pointing at
+- `publicUrl` — the external HTTPS address of the web surfaces (the mini
+  app and the app channel both hang off it — e.g. via `tailscale serve`,
+  `tailscale funnel`, or any reverse proxy pointing at
   `http://127.0.0.1:<port>`). The bot itself only listens on localhost;
-  this URL is what Telegram clients load. Unset = no Settings menu button.
+  this URL is what Telegram clients and the app load. Unset = no Settings
+  menu button, and the app client is unreachable off-loopback.
 - `http.port` — the localhost port (default `8787`).
+- `appToken` — names the `auth.jsonl` record holding the bearer token
+  `/api/app/*` demands (the app prompts for the token value once, then
+  stores it on the device). Unset = trust mode: every `/api/app/*` request
+  passes unauthenticated — fine when the only door is tailnet, **wrong**
+  when `publicUrl` is a funnel address. Boot-pinned: changing it by hand
+  needs a restart.
 - `logLevel` — `debug` | `info` | `warn` | `error` (default `info`).
 
 ## `auth.jsonl`

@@ -46,6 +46,10 @@ Full walkthrough: [`docs/setup.md`](docs/setup.md).
   [`docs/memory.md`](docs/memory.md).
 - **Settings mini app:** a Settings button in the chat opens the common
   settings; delegation, Gmail, and the skill reviewer remain hand-configured.
+- **The app:** `<publicUrl>/app/` is a second door — a standalone web client
+  (installable PWA) for the reading Telegram does badly. App conversations
+  live only in the app; nothing mirrors. Bearer token or tailnet trust —
+  see [`docs/security.md`](docs/security.md#the-app-channels-auth).
 
 Details: [`docs/usage.md`](docs/usage.md). Voice features:
 [`docs/voice.md`](docs/voice.md). Skills: [`docs/skills.md`](docs/skills.md).

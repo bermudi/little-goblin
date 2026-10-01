@@ -96,25 +96,35 @@ is also the thing an injection is trying to reach.
 
 These are the ways text gets into a turn. Ordered by reach.
 
-1. **Telegram messages** — the only human door. `allowedUsers` gates every
+1. **Telegram messages** — a human door. `allowedUsers` gates every
    update first thing. Media (photos, documents, voice) is materialized to
    `workspace/attachments/`; Telegram's `file_unique_id` is validated against
    `^[A-Za-z0-9_-]+$` before it is used as a path component
    (`src/tg/media.ts`).
-2. **Webhooks** — `POST /hook/<token>` (`src/http/mod.ts` `handleHook`). The
+2. **The app channel** — `/api/app/*` (`src/http/app-channel.ts`), the
+   second human door. A submitted message takes the same `runtime.submit`
+   path a Telegram one does; the `app/`-prefixed conversation id pins the
+   conversation to this pool (the chat route's schema rejects
+   telegram-shaped ids outright). Auth is `appToken` bearer or trust mode —
+   §4. A client-supplied attachment `ref.path` is confined to files this
+   process wrote into `workspace/attachments/` (`isStoredAttachmentPath`),
+   so a chat body can't name an arbitrary host file to read.
+3. **Webhooks** — `POST /hook/<token>` (`src/http/mod.ts` `handleHook`). The
    token is a 32-byte capability; only its sha256 is stored. Unknown and
    disabled read identically (404, no existence oracle); the route re-resolves
    the token after reading the body; a closed runtime answers 503 instead of a
    fake 202. **The token is the whole check** — no initData, no signature.
-3. **Mail** — Gmail arrivals matching a program's filter fire a turn.
-4. **Program cron** — a 5-field cron fires the program's charter.
-5. **Delegated harnesses** — a spawned coding agent can write a report that
+4. **Mail** — Gmail arrivals matching a program's filter fire a turn.
+5. **Program cron** — a 5-field cron fires the program's charter.
+6. **Delegated harnesses** — a spawned coding agent can write a report that
    wakes the runtime (`src/delegation-lifecycle.ts`).
 
-Entries 2–5 all convert to the same thing: `runtime.submit` of a user message
+Entries 3–6 all convert to the same thing: `runtime.submit` of a user message
 into a pinned conversation. None of them grants new authority; what the
 resulting turn may do is bounded by its charter and the operator's standing
-rules, exactly like a typed message.
+rules, exactly like a typed message. Entry 2 differs only in who knocks:
+in trust mode "the operator" is whoever can reach the door — the check is
+reachability, not identity (§4).
 
 **Webhook reachability is the sharpest edge here.** `/hook/` is mounted on the
 same server as the mini app, which is bound to `127.0.0.1` and fronted by
@@ -129,6 +139,9 @@ fronts"). Operationally:
   reach it. That is not the same set as "you".
 - `funnel` makes it public. Do not enable funnel on this port unless you mean it.
 - A reverse proxy should strip or refuse `/hook/*` unless a hook must be public.
+- `/api/app/*` rides the same front. In bearer mode a funnel front publishes a
+  locked door; in trust mode it publishes *the operator* — see the auth
+  subsection below.
 
 ## 4. Secrets and egress
 
@@ -196,6 +209,30 @@ Two different checks, deliberately:
   fails *closed* under the proxy — a proxy that preserved `Host` would make it
   publicly callable, which is the failure mode to watch for.
 
+### The app channel's auth
+
+Same server, different check — no Telegram `initData` exists outside
+Telegram. The mode resolves once at boot (`src/http/app-channel.ts`
+`resolveAppAuth`), so a mid-run flip applies only after restart:
+
+- **`appToken` set** — every `/api/app/*` request needs
+  `Authorization: Bearer <value>` where the value is whatever the named
+  `auth.jsonl` record resolves to (`!`-commands included). Compare is
+  sha256-digest equality, so a wrong token's length leaks nothing. Wrong or
+  missing → **401**; an unresolvable record → **503**; both logged. Rotating
+  the record needs a restart (`loadAuth` is a boot snapshot, `resolve`
+  memoizes) — the client re-prompts on 401 and keeps the token only in
+  localStorage.
+- **`appToken` unset** — trust mode: no credential exists, so whoever can
+  reach the front *is* the operator. Defensible only because the intended
+  front is `tailscale serve` — device-level trust on the tailnet (the collie
+  precedent), not person-level. Boot warns
+  `app channel trust mode must never sit behind a public URL (funnel)` —
+  that line is the guardrail. **If `publicUrl` is a funnel address,
+  `appToken` is mandatory.** The consequence is total: `/api/app/*` exposes
+  chat history, config writes, file upload, and turns that run tools — trust
+  mode + funnel is remote code execution as the operator, for anyone.
+
 ## 5. Failure policy — fail open vs fail closed
 
 This is the part a change is most likely to break, so it is stated per
@@ -205,6 +242,7 @@ boundary.
 |---|---|---|
 | `allowedUsers` gate | **closed** — reject the update | Auth must never fail open |
 | `initData` validation | **closed** — 401 | Same |
+| `appToken` bearer (when set) | **closed** — 401; 503 if the record can't resolve | Same. When unset the check doesn't exist by design — trust mode is "no check," not fail-open |
 | `/api/check-injection` host check | **closed** — 403 | Only reachable on-loopback anyway |
 | Webhook token | **closed** — 404/405/503 | Unknown == disabled, no oracle |
 | Injection scoring (Jev) | **open** — "unavailable", read proceeds | A checker outage must not block mail; the hard limit is read-only Gmail scopes |
@@ -250,6 +288,10 @@ tailscale serve status                      # what the tailnet door fronts (funn
 # the loopback-only check, through the real door and locally
 curl -s -o /dev/null -w '%{http_code}\n' https://<publicUrl>/api/check-injection   # expect 403
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:<port>/api/config        # expect 401
+
+# the app channel's auth mode, through the front it actually uses
+curl -s -o /dev/null -w '%{http_code}\n' https://<publicUrl>/api/app/conversations # 401 = bearer enforced; 200 = trust mode — funnel + 200 means stop and set appToken
+grep 'app channel' ~/goblin/state/goblin.log | tail -3                             # the boot-mode lines
 
 # secrets that exist (structure only — never print values)
 jq -r '.name' ~/goblin/auth.jsonl

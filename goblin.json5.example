@@ -106,6 +106,13 @@
   //   // model: "provider/model", // default: the conversation's own
   // },
 
+  // --- System One (the small gate model) ---
+  // One block feeding the reviewer's Jev gate, mail-event scoring, and
+  // the loopback injection check. Unset = those consumers fall back to
+  // reviewer.auth and built-in defaults. `model` is a Jev model id
+  // (e.g. respan/span-01-lite), NOT a <provider>/<model> chat ref.
+  // system1: { auth: "openrouter" },
+
   // --- Delegation (other coding harnesses, via herdr) ---
   // Unset = no delegate tool. Harnesses run in the `goblin` herdr
   // session, each in its own workspace; the session name lives in the
@@ -143,6 +150,22 @@
   //   sendAuth: "gmail-send",
   // },
 
+  // --- Long-term memory (Hindsight) ---
+  // Unset = no retention and no recall — nothing is remembered between
+  // conversations. The service runs separately (docs/memory.md,
+  // deploy/memory/); bankId names your memory bank. `auth` names an
+  // auth.jsonl record only when the service isn't loopback. The bounds
+  // keep recall from stalling a turn. Boot-pinned: changing the block
+  // mid-run needs a restart.
+  // memory: {
+  //   baseUrl: "http://127.0.0.1:8888",
+  //   bankId: "goblin",
+  //   // auth: "hindsight",         // bearer — only when off loopback
+  //   // budget: "low",             // low | mid | high — retention effort
+  //   // maxTokens: 1024,           // recall injection cap
+  //   // recallTimeoutMs: 2000,
+  // },
+
   // --- Telegram ---
   // Your user id (DM @userinfobot to find it). Only these users can talk.
   allowedUsers: [123456789],
@@ -150,11 +173,17 @@
   // Leave unset for the cloud API.
   // telegram: { apiRoot: "http://127.0.0.1:8081" },
 
-  // --- Mini app ---
+  // --- Mini app + app channel ---
   // External HTTPS door (tailscale serve/funnel or any reverse proxy)
   // pointed at http://127.0.0.1:<http.port>. Unset = no menu button.
   // publicUrl: "https://goblin.your-tailnet.ts.net",
   http: { port: 8787 },
+  // The app channel (/app/, the React client) shares this door.
+  // `appToken` names an auth.jsonl record whose value is the bearer
+  // token /api/app/* demands. Unset = trust mode — the tailnet is the
+  // only lock; NEVER put trust mode behind a public URL (funnel).
+  // Boot-pinned: a mid-run change applies on restart.
+  // appToken: "app",
 
   logLevel: "info", // debug | info | warn | error
 }

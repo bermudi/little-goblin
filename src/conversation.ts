@@ -539,15 +539,17 @@ export function openStore(dbPath: string): ConversationStore {
 		[]
 	>(
 		`SELECT id, title, created_at FROM conversations
-		WHERE id LIKE 'app/%' ORDER BY created_at`,
+		WHERE id LIKE 'app/%' ORDER BY created_at, rowid`,
 	);
 	// A list row's freshness + subtitle: the newest event's timestamp and
-	// its text projection (empty when it carries no text parts).
+	// its text projection (empty when it carries no text parts). The
+	// rowid rides along as the activity order — created_at ties within a
+	// millisecond can't order two writes.
 	const qLastAppEvent = db.query<
-		{ seq: number; role: string; data: string; created_at: string },
+		{ id: number; seq: number; role: string; data: string; created_at: string },
 		[string]
 	>(
-		`SELECT seq, role, data, created_at FROM events
+		`SELECT id, seq, role, data, created_at FROM events
 		WHERE conversation_id = ? ORDER BY seq DESC LIMIT 1`,
 	);
 
@@ -726,7 +728,7 @@ export function openStore(dbPath: string): ConversationStore {
 		listAppConversations() {
 			// One operator, one pool — the list is small; a per-row latest
 			// event lookup is cheaper than the join bookkeeping.
-			const out: AppConversationSummary[] = [];
+			const out: (AppConversationSummary & { activity: number })[] = [];
 			for (const r of qListApp.all()) {
 				const last = qLastAppEvent.get(r.id);
 				const message = last === null ? null : parseEvent(r.id, last.seq, last.role, last.data);
@@ -736,10 +738,11 @@ export function openStore(dbPath: string): ConversationStore {
 					createdAt: r.created_at,
 					updatedAt: last?.created_at ?? r.created_at,
 					preview: message === null ? "" : messageText(message).slice(0, 200),
+					activity: last?.id ?? 0,
 				});
 			}
-			out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-			return out;
+			out.sort((a, b) => b.activity - a.activity);
+			return out.map(({ activity: _activity, ...summary }) => summary);
 		},
 
 		history(id) {

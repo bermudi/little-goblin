@@ -89,6 +89,15 @@ export interface HttpDeps {
 	// SAME JevClient instance the reviewer holds; http only calls decide.
 	// Absent = no reviewer/system1 gate, the route answers 503.
 	checkInjection?: { gate: Pick<JevClient, "decide"> };
+	// The app channel's API (DESIGN.md, App channel): bearer auth on
+	// config.appToken — a credential name resolved per request, separate
+	// from initData. The handler is injected opaque by the composition
+	// root (index.ts) so the app channel's import graph — runtime, the AI
+	// SDK, undici form types — stays out of this module entirely; a type
+	// or value edge here would drag them into the client tsconfig's DOM
+	// program via app.js's wire types. Absent = every /api/app/* refuses
+	// 503 with a log line; an unset appToken refuses identically.
+	appApi?: (req: Request, url: URL, appToken: string | undefined) => Promise<Response>;
 }
 
 const NO_STORE = { "cache-control": "no-store" };
@@ -416,6 +425,18 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 			const url = new URL(req.url);
 			if (url.pathname.startsWith("/hook/")) {
 				return handleHook(req, url.pathname.slice("/hook/".length));
+			}
+			if (url.pathname.startsWith("/api/app/")) {
+				// The app channel — bearer auth reads config live, so a
+				// token rotation or removal applies without a restart.
+				if (deps.appApi === undefined) {
+					log.warn("app api refused — app surface not wired", { path: url.pathname });
+					return Response.json(
+						{ error: "app channel is not configured" },
+						{ status: 503, headers: NO_STORE },
+					);
+				}
+				return deps.appApi(req, url, deps.configRef.current.appToken);
 			}
 			if (url.pathname === "/" || url.pathname === "/index.html") {
 				// no-store: a webview must never pair stale page code with a

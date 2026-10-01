@@ -501,6 +501,12 @@ const configSchema = z
 		// Optional automatic skill saving — same hand-edited-only rule.
 		reviewer: reviewerConfigSchema.optional(),
 		system1: system1ConfigSchema.optional(),
+		// The app channel's bearer credential (DESIGN.md, App channel) —
+		// an auth.jsonl record NAME, resolved per request like every
+		// other credential; the token value never sits in this file.
+		// Absent = every /api/app/* refuses with a log line — the
+		// surface is never silently open. Hand-edited only.
+		appToken: z.string().min(1).optional(),
 	})
 	// Cross-field: every model ref must parse and name a configured provider.
 	.superRefine((cfg, ctx) => {

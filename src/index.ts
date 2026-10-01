@@ -39,6 +39,7 @@ import { cleanupStaging } from "./reviewer.ts";
 import { OutageTracker } from "./memory-outage.ts";
 import { fireMail, fireWebhook, startScheduler, type SchedulerDeps } from "./scheduler.ts";
 import { startHttp } from "./http/mod.ts";
+import { handleAppApi } from "./http/app-channel.ts";
 import { wake } from "./wake.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { Runtime } from "./runtime.ts";
@@ -589,6 +590,12 @@ async function boot() {
 		// checker — same instance, no second auth closure. Absent
 		// reviewer block = no gate = the route answers 503.
 		...(jevGate ? { checkInjection: { gate: jevGate } } : {}),
+		// The app channel's API — always wired; an unset appToken in
+		// config refuses every /api/app/* request, so the door exists
+		// only when the operator names a credential. The handler injects
+		// opaque (app-channel.ts imports the runtime/AI-SDK graph, which
+		// must not enter http/mod.ts's DOM-lib typecheck program).
+		appApi: (req, url, appToken) => handleAppApi(req, url, appToken, { store, runtime, auth }),
 		onConfigWritten: () => {
 			setLogLevel(configRef.current.logLevel);
 			// publicUrl is operator-editable through the app — keep the menu

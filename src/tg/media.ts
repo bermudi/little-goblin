@@ -4,16 +4,16 @@
 // the runtime against the current model's capability data, so intake
 // doesn't need to know the model at all.
 
-import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { copyFile, mkdir, open, rename, stat, unlink } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { copyFile } from "node:fs/promises";
 import type { File as TgFile } from "grammy/types";
 import type { UIMessage } from "ai";
 import { z } from "zod";
-import { paths } from "../config.ts";
-import { attachmentPart } from "../agent/attachments.ts";
-import { log } from "../log.ts";
+import {
+	attachmentPart,
+	persistAttachment,
+	type SavedAttachment,
+} from "../agent/attachments.ts";
 
 export interface IncomingMedia {
 	fileId: string;
@@ -125,15 +125,16 @@ export function mediaFromMessage(msg: {
 	return null;
 }
 
-export interface SavedAttachment {
-	path: string;
-	size: number;
-}
+export type { SavedAttachment };
 
 // Persist to workspace/attachments/ (Telegram still owns the file; this is
 // the agent-reachable copy) without ever buffering the whole file —
 // uploads run to 2GB on a self-hosted bot-api. Local-mode files are
 // copied on disk; cloud downloads stream to a same-directory temp file.
+// The write ritual itself is shared: persistAttachment in
+// agent/attachments.ts owns mkdir/sync/rename/cleanup — this function is
+// only the telegram-shaped byte source (local path copy or bot-api
+// download, token redacted).
 export async function saveAttachment(
 	media: IncomingMedia,
 	file: TgFile,
@@ -144,25 +145,7 @@ export async function saveAttachment(
 	if (!filePath) throw new Error("telegram returned no file_path");
 	// Telegram's unique id is untrusted input, not a path component.
 	const uniqueId = z.string().regex(/^[A-Za-z0-9_-]+$/).parse(media.fileUniqueId);
-	await mkdir(paths.attachments(), { recursive: true });
-	// ensureHomeLayout syncs first-boot directory creation. Also cover
-	// attachments/ being recreated later: its name must be durable in
-	// workspace/ before history can commit a path inside it.
-	try {
-		const parent = await open(dirname(paths.attachments()), "r");
-		try {
-			await parent.sync();
-		} finally {
-			await parent.close();
-		}
-	} catch (err) {
-		const detail = String(err);
-		throw new Error(`telegram attachment parent directory sync failed: ${token ? detail.replaceAll(token, "***") : detail}`);
-	}
-	const safe = basename(media.fileName).replace(/[^\w.\-]+/g, "_");
-	const dest = join(paths.attachments(), `${uniqueId}-${safe}`);
-	const temp = join(paths.attachments(), `.${uniqueId}-${randomUUID()}.tmp`);
-	try {
+	return persistAttachment(uniqueId, media.fileName, "telegram", async (temp) => {
 		if (filePath.startsWith("/")) {
 			// Self-hosted bot-api in --local mode: copy on disk, no HTTP fetch.
 			await copyFile(filePath, temp, constants.COPYFILE_EXCL);
@@ -179,48 +162,7 @@ export async function saveAttachment(
 				throw new Error(`telegram file download failed: ${token ? msg.replaceAll(token, "***") : msg}`);
 			}
 		}
-		const { size } = await stat(temp);
-		// The copy/download must reach disk before its name can enter history.
-		try {
-			const handle = await open(temp, "r");
-			try {
-				await handle.sync();
-			} finally {
-				await handle.close();
-			}
-		} catch (err) {
-			const detail = String(err);
-			throw new Error(`telegram attachment file sync failed for ${dest}: ${token ? detail.replaceAll(token, "***") : detail}`);
-		}
-		await rename(temp, dest);
-		// Persist the rename too. A failure here leaves the new destination in
-		// place, but must not commit an unproven path to history.
-		try {
-			const handle = await open(paths.attachments(), "r");
-			try {
-				await handle.sync();
-			} finally {
-				await handle.close();
-			}
-		} catch (err) {
-			const detail = String(err);
-			throw new Error(`telegram attachment directory sync failed for ${dest}: ${token ? detail.replaceAll(token, "***") : detail}`);
-		}
-		return { path: dest, size };
-	} catch (err) {
-		// Never delete the destination: history may already reference it.
-		try {
-			await unlink(temp);
-		} catch (cleanupErr) {
-			if ((cleanupErr as NodeJS.ErrnoException).code !== "ENOENT") {
-				const msg = String(cleanupErr);
-				log.warn("telegram attachment temp cleanup failed", {
-					dest, temp, error: token ? msg.replaceAll(token, "***") : msg,
-				});
-			}
-		}
-		throw err;
-	}
+	}, token);
 }
 
 // Media → parts: one data-attachment part carrying the saved path (plus

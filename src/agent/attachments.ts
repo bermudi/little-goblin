@@ -11,9 +11,12 @@
 // recomputes representations once, which is free — the switch already
 // lands on a cold cache.
 
-import { readFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
 import type { UIMessage } from "ai";
 import { z } from "zod";
+import { paths } from "../config.ts";
 import { log } from "../log.ts";
 
 // Inline payloads get a per-item ceiling — a data URL inflates ~1.33× and
@@ -48,6 +51,91 @@ export type AttachmentRef = z.infer<typeof attachmentRefSchema>;
 // reference, not model content.
 export function attachmentPart(ref: AttachmentRef): UIMessage["parts"][number] {
 	return { type: ATTACHMENT_PART, data: ref };
+}
+
+// ---------- durable save ----------
+
+export interface SavedAttachment {
+	path: string;
+	size: number;
+}
+
+// The save every channel shares (tg/media.ts for telegram downloads,
+// http/app-channel.ts for app uploads): workspace/attachments/, a
+// same-directory temp, file sync → atomic rename → directory sync, so a
+// path that reaches history is provably on disk. `stem` is the caller's
+// unique name-stem — untrusted input, validated as a path-safe token
+// before the directory exists. `label` prefixes error/log lines
+// ("telegram", "app") so the channel survives in the message;
+// `redact` scrubs a credential out of propagated details.
+export async function persistAttachment(
+	stem: string,
+	fileName: string,
+	label: string,
+	writeTemp: (temp: string) => Promise<void>,
+	redact?: string,
+): Promise<SavedAttachment> {
+	const safeStem = z.string().regex(/^[A-Za-z0-9_-]+$/).parse(stem);
+	const scrub = (detail: string) => (redact ? detail.replaceAll(redact, "***") : detail);
+	await mkdir(paths.attachments(), { recursive: true });
+	// ensureHomeLayout syncs first-boot directory creation. Also cover
+	// attachments/ being recreated later: its name must be durable in
+	// workspace/ before history can commit a path inside it.
+	try {
+		const parent = await open(dirname(paths.attachments()), "r");
+		try {
+			await parent.sync();
+		} finally {
+			await parent.close();
+		}
+	} catch (err) {
+		throw new Error(`${label} attachment parent directory sync failed: ${scrub(String(err))}`);
+	}
+	const safe = basename(fileName).replace(/[^\w.\-]+/g, "_");
+	const dest = join(paths.attachments(), `${safeStem}-${safe}`);
+	const temp = join(paths.attachments(), `.${safeStem}-${randomUUID()}.tmp`);
+	try {
+		await writeTemp(temp);
+		const { size } = await stat(temp);
+		// The bytes must reach disk before the path can enter history.
+		try {
+			const handle = await open(temp, "r");
+			try {
+				await handle.sync();
+			} finally {
+				await handle.close();
+			}
+		} catch (err) {
+			throw new Error(`${label} attachment file sync failed for ${dest}: ${scrub(String(err))}`);
+		}
+		await rename(temp, dest);
+		// Persist the rename too. A failure here leaves the new
+		// destination in place, but must not commit an unproven path to
+		// history.
+		try {
+			const handle = await open(paths.attachments(), "r");
+			try {
+				await handle.sync();
+			} finally {
+				await handle.close();
+			}
+		} catch (err) {
+			throw new Error(`${label} attachment directory sync failed for ${dest}: ${scrub(String(err))}`);
+		}
+		return { path: dest, size };
+	} catch (err) {
+		// Never delete the destination: history may already reference it.
+		try {
+			await unlink(temp);
+		} catch (cleanupErr) {
+			if ((cleanupErr as NodeJS.ErrnoException).code !== "ENOENT") {
+				log.warn(`${label} attachment temp cleanup failed`, {
+					dest, temp, error: scrub(String(cleanupErr)),
+				});
+			}
+		}
+		throw err;
+	}
 }
 
 // Where a media part rides in a request. The pipe's answer differs by

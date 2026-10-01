@@ -829,6 +829,80 @@ describe("app channel http", () => {
 		}
 	});
 
+	test("retry re-runs the newest user message without duplicating it", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await createAndChat(call);
+			const res = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ conversationId: "app/chat-01", retry: true }),
+			});
+			expect(res.status).toBe(200);
+			expect((await res.text()).trimEnd().endsWith("data: [DONE]")).toBe(true);
+			// One user event, two anchored answers — history stays honest.
+			const roles = store.history("app/chat-01").map((m) => m.role);
+			expect(roles).toEqual(["user", "assistant", "assistant"]);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("retry refuses an empty history and a live lane", async () => {
+		const { http, call } = setup({
+			token: APP_TOKEN_NAME,
+			deltas: ["a", "b", "c"],
+			delayMs: 50,
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			const empty = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ conversationId: "app/chat-01", retry: true }),
+			});
+			expect(empty.status).toBe(409);
+
+			const chat = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-01",
+					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
+				}),
+			});
+			const busy = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ conversationId: "app/chat-01", retry: true }),
+			});
+			expect(busy.status).toBe(409);
+			await call("/api/app/conversations/chat-01/stop", { method: "POST" });
+			await chat.text();
+
+			// retry:true with a message attached is a client bug, not a turn.
+			expect(
+				(
+					await call("/api/app/chat", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({
+							conversationId: "app/chat-01",
+							retry: true,
+							message: { id: "m2", role: "user", parts: [{ type: "text", text: "x" }] },
+						}),
+					})
+				).status,
+			).toBe(422);
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("a failed transcription keeps the attachment and the turn runs", async () => {
 		const { http, call, store } = setup({
 			token: APP_TOKEN_NAME,

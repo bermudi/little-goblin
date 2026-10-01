@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useChat } from "@ai-sdk/react";
 import {
 	DefaultChatTransport,
@@ -7,102 +7,20 @@ import {
 	type ToolUIPart,
 	type UIMessage,
 } from "ai";
-import { getMessages, stopConversation, uploadAttachment } from "./api.ts";
+import {
+	getConfig,
+	getMessages,
+	patchConfig,
+	stopConversation,
+	synthesize,
+	uploadAttachment,
+} from "./api.ts";
+import { Markdown } from "./markdown.tsx";
 import { ToolRun, partFailed, partRunning, partSummaryLine } from "./tools/mod.tsx";
 import type { AttachmentRef } from "../../src/agent/attachments.ts";
+import type { AppConfigView, TurnMetadata } from "../../src/http/app-wire.ts";
 
 // ---------- transcript rendering ----------
-
-// Inline marks: [links](url), `code` spans, **bold**, *italic*, _italic_,
-// and bare URLs become elements; everything else stays text. Long
-// answers are the reason this channel exists — the renderer's job is
-// comfortable reading, not markdown completeness. The link alternative
-// must lead: it swallows the URL inside its own parens before the
-// bare-URL branch can split it. ** leads * so `**bold**` never halves
-// into `*…*`; emphasis content may not start/end in whitespace, so
-// `2 * 3 * 4` stays literal; `_` only opens/closes on non-word edges so
-// snake_case identifiers stay literal.
-const INLINE =
-	/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|`([^`]+)`|\*\*([^\s*](?:[^\n]*?[^\s*])?)\*\*|\*([^\s*](?:[^\n]*?[^\s*])?)\*|(?<![\w*])_([^\s_](?:[^\n]*?[^\s_])?)_(?!\w)|(https?:\/\/[^\s<>"')\]]+)/g;
-
-function inline(text: string): ReactNode[] {
-	const out: ReactNode[] = [];
-	let last = 0;
-	let i = 0;
-	for (const m of text.matchAll(INLINE)) {
-		if (m.index > last) out.push(text.slice(last, m.index));
-		if (m[1] !== undefined)
-			out.push(
-				<a key={i} href={m[2]} target="_blank" rel="noreferrer">
-					{m[1]}
-				</a>,
-			);
-		else if (m[3] !== undefined) out.push(<code key={i}>{m[3]}</code>);
-		else if (m[4] !== undefined) out.push(<strong key={i}>{m[4]}</strong>);
-		else if (m[5] !== undefined) out.push(<em key={i}>{m[5]}</em>);
-		else if (m[6] !== undefined) out.push(<em key={i}>{m[6]}</em>);
-		else
-			out.push(
-				<a key={i} href={m[7]} target="_blank" rel="noreferrer">
-					{m[7]}
-				</a>,
-			);
-		last = m.index + m[0].length;
-		i++;
-	}
-	if (last < text.length) out.push(text.slice(last));
-	return out;
-}
-
-// Fenced blocks render as a card: mono language label, copy button, then
-// the code. No syntax coloring — mono + label + copy (the Computer v1).
-function CodeBlock({ lang, code }: { lang: string; code: string }) {
-	const [copied, setCopied] = useState(false);
-	const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
-	useEffect(() => () => clearTimeout(timer.current), []);
-	const copy = () => {
-		void navigator.clipboard.writeText(code).catch(() => {});
-		setCopied(true);
-		clearTimeout(timer.current);
-		timer.current = setTimeout(() => setCopied(false), 1500);
-	};
-	return (
-		<div className="codeblock">
-			<div className="codeblock-head">
-				<span className="codeblock-lang">{lang === "" ? "text" : lang}</span>
-				<button type="button" className="codeblock-copy" onClick={copy}>
-					{copied ? "✓" : "copy"}
-				</button>
-			</div>
-			<pre>
-				<code>{code}</code>
-			</pre>
-		</div>
-	);
-}
-
-function TextBlock({ text }: { text: string }) {
-	// Fenced blocks are code; the rest is paragraphs separated by blank
-	// lines. pre-wrap keeps single newlines readable.
-	const blocks: ReactNode[] = [];
-	const fence = /```([^\n`]*)\n?([\s\S]*?)(?:```|$)/g;
-	let last = 0;
-	let i = 0;
-	for (const m of text.matchAll(fence)) {
-		const prose = text.slice(last, m.index);
-		for (const para of prose.split(/\n{2,}/)) {
-			const trimmed = para.trim();
-			if (trimmed !== "") blocks.push(<p key={i++}>{inline(trimmed)}</p>);
-		}
-		blocks.push(<CodeBlock key={i++} lang={(m[1] ?? "").trim()} code={m[2] ?? ""} />);
-		last = m.index + m[0].length;
-	}
-	for (const para of text.slice(last).split(/\n{2,}/)) {
-		const trimmed = para.trim();
-		if (trimmed !== "") blocks.push(<p key={i++}>{inline(trimmed)}</p>);
-	}
-	return <>{blocks}</>;
-}
 
 // Tool activity collapses into one expandable fold per run — the answer
 // stays readable, the work stays inspectable. The fold opens itself
@@ -163,6 +81,9 @@ function AttachmentChip({ data }: { data: unknown }) {
 			<FileIcon />
 			<span className="attachment-name">{ref.filename}</span>
 			{typeof ref.size === "number" && <span className="attachment-size">{formatSize(ref.size)}</span>}
+			{ref.speech === true && ref.transcript !== undefined && (
+				<span className="attachment-transcript">“{ref.transcript}”</span>
+			)}
 		</span>
 	);
 }
@@ -183,8 +104,14 @@ export function MessageParts({ parts }: { parts: UIMessage["parts"] }) {
 			i = j - 1;
 			continue;
 		}
-		if (p.type === "text") out.push(<TextBlock key={i} text={p.text} />);
-		else if (p.type === "reasoning") out.push(<div key={i} className="reasoning">{p.text}</div>);
+		if (p.type === "text") out.push(<Markdown key={i} text={p.text} />);
+		else if (p.type === "reasoning")
+			out.push(
+				<details key={i} className="reasoning-fold">
+					<summary>Thought</summary>
+					<div className="reasoning">{p.text}</div>
+				</details>,
+			);
 		else if (p.type === "data-attachment") out.push(<AttachmentChip key={i} data={p.data} />);
 		else if (p.type === "file")
 			out.push(
@@ -196,6 +123,156 @@ export function MessageParts({ parts }: { parts: UIMessage["parts"] }) {
 		// step-start and other plumbing parts render as nothing.
 	}
 	return <>{out}</>;
+}
+
+// ---------- per-message actions + turn stats ----------
+
+// The runtime stamps finish metadata on the assistant message (model,
+// duration, token counts) — it rides the live stream and persists into
+// history. Narrow the unknown blob rather than trusting the shape.
+function turnMeta(m: UIMessage): TurnMetadata | null {
+	const md = (m as { metadata?: unknown }).metadata;
+	if (typeof md !== "object" || md === null) return null;
+	const o = md as Record<string, unknown>;
+	if (typeof o.model !== "string" || typeof o.durationMs !== "number") return null;
+	const usage = (o.usage ?? {}) as Record<string, unknown>;
+	const num = (v: unknown) => (typeof v === "number" ? v : null);
+	return {
+		model: o.model,
+		finishReason: typeof o.finishReason === "string" ? o.finishReason : "",
+		durationMs: o.durationMs,
+		usage: {
+			input: num(usage.input),
+			output: num(usage.output),
+			cacheRead: num(usage.cacheRead),
+			cacheWrite: num(usage.cacheWrite),
+		},
+	};
+}
+
+function messageText(m: UIMessage): string {
+	return m.parts
+		.map((p) => (p.type === "text" ? p.text : ""))
+		.join("\n")
+		.trim();
+}
+
+// Compact stat formatting — "1.2k", "340", "4.2s".
+const kfmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
+
+function MetaLine({ meta }: { meta: TurnMetadata }) {
+	const bits: string[] = [meta.model];
+	if (meta.finishReason !== "" && meta.finishReason !== "stop") bits.push(meta.finishReason);
+	bits.push(`${(meta.durationMs / 1000).toFixed(1)}s`);
+	const { input, output, cacheRead } = meta.usage;
+	if (input !== null || output !== null) {
+		let tok = `${input === null ? "?" : kfmt(input)}→${output === null ? "?" : kfmt(output)} tok`;
+		if (cacheRead !== null && cacheRead > 0) tok += ` (${kfmt(cacheRead)} cached)`;
+		bits.push(tok);
+	}
+	return <div className="msg-meta">{bits.join(" · ")}</div>;
+}
+
+// Read-aloud: fetch the speech chunks once, then toggle play/stop.
+// Ogg/opus arrives base64'd — the Audio element owns the sequence.
+function useSpeech(token: string | null) {
+	const [state, setState] = useState<"idle" | "loading" | "playing">("idle");
+	const audio = useRef<HTMLAudioElement | null>(null);
+	const cancelled = useRef(false);
+	useEffect(
+		() => () => {
+			cancelled.current = true;
+			audio.current?.pause();
+		},
+		[],
+	);
+	const stop = useCallback(() => {
+		cancelled.current = true;
+		audio.current?.pause();
+		audio.current = null;
+		setState("idle");
+	}, []);
+	const play = useCallback(
+		async (text: string) => {
+			if (state === "playing" || state === "loading") {
+				stop();
+				return;
+			}
+			setState("loading");
+			cancelled.current = false;
+			try {
+				const r = await synthesize(token, text);
+				if (cancelled.current) return;
+				setState("playing");
+				for (const b64 of r.chunks) {
+					if (cancelled.current) break;
+					const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+					const url = URL.createObjectURL(new Blob([bytes.buffer as ArrayBuffer], { type: "audio/ogg" }));
+					await new Promise<void>((resolve) => {
+						const a = new Audio(url);
+						audio.current = a;
+						a.onended = () => resolve();
+						a.onerror = () => resolve();
+						void a.play().catch(() => resolve());
+					});
+					URL.revokeObjectURL(url);
+				}
+			} catch {
+				/* speech unconfigured (503) or the network is down — quiet */
+			}
+			if (!cancelled.current) setState("idle");
+		},
+		[token, state, stop],
+	);
+	return { speech: state, play };
+}
+
+function ActionBar({
+	message,
+	isLastAssistant,
+	busy,
+	onRetry,
+	token,
+}: {
+	message: UIMessage;
+	isLastAssistant: boolean;
+	busy: boolean;
+	onRetry: () => void;
+	token: string | null;
+}) {
+	const text = messageText(message);
+	const [copied, setCopied] = useState(false);
+	const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+	useEffect(() => () => clearTimeout(timer.current), []);
+	const { speech, play } = useSpeech(token);
+	const copy = () => {
+		void navigator.clipboard.writeText(text).catch(() => {});
+		setCopied(true);
+		clearTimeout(timer.current);
+		timer.current = setTimeout(() => setCopied(false), 1500);
+	};
+	return (
+		<div className="msg-actions">
+			<button type="button" onClick={copy} aria-label="Copy">
+				{copied ? "✓ copied" : "copy"}
+			</button>
+			{text !== "" && (
+				<button
+					type="button"
+					onClick={() => void play(text)}
+					aria-label="Read aloud"
+					disabled={speech === "loading"}
+				>
+					{speech === "playing" ? "■ stop" : speech === "loading" ? "…" : "▶ read"}
+				</button>
+			)}
+			{isLastAssistant && !busy && (
+				<button type="button" onClick={onRetry} aria-label="Retry">
+					↻ retry
+				</button>
+			)}
+		</div>
+	);
 }
 
 // ---------- the composer ----------
@@ -216,16 +293,120 @@ export function Composer({
 	onStop?: () => void;
 }) {
 	const [draft, setDraft] = useState("");
-	const [pending, setPending] = useState<{ ref: AttachmentRef; uploading?: boolean; failed?: boolean }[]>([]);
+	const [pending, setPending] = useState<
+		{ ref: AttachmentRef; uploading?: boolean; failed?: boolean }[]
+	>([]);
 	const fileInput = useRef<HTMLInputElement>(null);
 
+	// Model + thinking pickers ride the same operator settings the mini
+	// app owns — GET once, PATCH on change, the response is the truth.
+	const [cfg, setCfg] = useState<AppConfigView | null>(null);
+	useEffect(() => {
+		let live = true;
+		getConfig(token).then(
+			(c) => live && setCfg(c),
+			() => {},
+		);
+		return () => {
+			live = false;
+		};
+	}, [token]);
+	const setKnob = (patch: { model?: string; thinking?: string }) => {
+		void patchConfig(token, patch).then(
+			(c) => setCfg(c),
+			() => {},
+		);
+	};
+
+	// Voice notes: hold-to-record is MediaRecorder + upload; the server
+	// transcribes speech:true attachments at intake. Release sends —
+	// the same shape Telegram voice notes take in this channel.
+	const [recording, setRecording] = useState(false);
+	const [recSec, setRecSec] = useState(0);
+	const recorder = useRef<MediaRecorder | null>(null);
+	const recCancel = useRef(false);
+	useEffect(() => {
+		if (!recording) return;
+		const t = setInterval(
+			() => setRecSec(Math.floor((Date.now() - recStart.current) / 1000)),
+			250,
+		);
+		return () => clearInterval(t);
+	}, [recording]);
+	const recStart = useRef(0);
+	const micSupported =
+		typeof navigator !== "undefined" &&
+		navigator.mediaDevices !== undefined &&
+		typeof MediaRecorder !== "undefined";
+	const startRecording = async () => {
+		if (recording || !micSupported) return;
+		try {
+			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+			const mime = ["audio/ogg;codecs=opus", "audio/webm;codecs=opus", "audio/mp4"].find((m) =>
+				MediaRecorder.isTypeSupported(m),
+			);
+			const r = new MediaRecorder(stream, mime === undefined ? undefined : { mimeType: mime });
+			const chunks: Blob[] = [];
+			r.ondataavailable = (e) => {
+				if (e.data.size > 0) chunks.push(e.data);
+			};
+			r.onstop = () => {
+				for (const t of stream.getTracks()) t.stop();
+				recorder.current = null;
+				setRecording(false);
+				if (recCancel.current || chunks.length === 0) return;
+				const type = r.mimeType || "audio/webm";
+				const ext = type.includes("ogg") ? "ogg" : type.includes("mp4") ? "m4a" : "webm";
+				const file = new File(chunks, `voice-note.${ext}`, { type });
+				void (async () => {
+					try {
+						const { ref } = await uploadAttachment(token, file);
+						onSend([{ type: "data-attachment", data: { ...ref, speech: true } }]);
+					} catch {
+						setPending((p) => [
+							...p,
+							{
+								ref: { path: "", mediaType: file.type, filename: file.name, size: file.size },
+								failed: true,
+							},
+						]);
+					}
+				})();
+			};
+			recCancel.current = false;
+			recStart.current = Date.now();
+			setRecSec(0);
+			r.start(250);
+			recorder.current = r;
+			setRecording(true);
+		} catch {
+			/* permission denied or no device — the button just does nothing */
+		}
+	};
+	const stopRecording = (cancel: boolean) => {
+		recCancel.current = cancel;
+		recorder.current?.stop();
+	};
+
 	const pickFile = async (file: File) => {
-		setPending((p) => [...p, { ref: { path: "", mediaType: file.type, filename: file.name, size: file.size }, uploading: true }]);
+		setPending((p) => [
+			...p,
+			{
+				ref: { path: "", mediaType: file.type, filename: file.name, size: file.size },
+				uploading: true,
+			},
+		]);
 		try {
 			const { ref } = await uploadAttachment(token, file);
 			setPending((p) => p.map((e) => (e.uploading && e.ref.filename === file.name ? { ref } : e)));
 		} catch {
-			setPending((p) => p.map((e) => (e.uploading && e.ref.filename === file.name ? { ...e, uploading: false, failed: true } : e)));
+			setPending((p) =>
+				p.map((e) =>
+					e.uploading && e.ref.filename === file.name
+						? { ...e, uploading: false, failed: true }
+						: e,
+				),
+			);
 		}
 	};
 
@@ -235,15 +416,18 @@ export function Composer({
 		if (text === "" && ready.length === 0) return;
 		const parts: UIMessage["parts"] = [];
 		if (text !== "") parts.push({ type: "text", text });
-		for (const e of ready) parts.push({ type: "data-attachment", data: e.ref } as UIMessage["parts"][number]);
+		for (const e of ready)
+			parts.push({ type: "data-attachment", data: e.ref } as UIMessage["parts"][number]);
 		setDraft("");
 		setPending([]);
 		onSend(parts);
 	};
 
+	const modelName = cfg === null ? null : (cfg.model.split("/").pop() ?? cfg.model);
+
 	return (
 		<form
-			className="composer"
+			className={recording ? "composer recording" : "composer"}
 			onSubmit={(e) => {
 				e.preventDefault();
 				send();
@@ -269,32 +453,119 @@ export function Composer({
 								{e.ref.filename}
 							</span>
 							<span className="attachment-size">{formatSize(e.ref.size)}</span>
-							<button type="button" aria-label="Remove" onClick={() => setPending((p) => p.filter((_, j) => j !== i))}>
+							<button
+								type="button"
+								aria-label="Remove"
+								onClick={() => setPending((p) => p.filter((_, j) => j !== i))}
+							>
 								×
 							</button>
 						</span>
 					))}
 				</div>
 			)}
-			<textarea
-				value={draft}
-				rows={1}
-				placeholder="Message goblin"
-				onChange={(e) => setDraft(e.target.value)}
-				onKeyDown={(e) => {
-					if (e.key === "Enter" && !e.shiftKey) {
-						e.preventDefault();
-						send();
-					}
-				}}
-			/>
+			{recording ? (
+				<div className="rec-row">
+					<span className="rec-dot" />
+					<span className="rec-time">
+						{Math.floor(recSec / 60)}:{String(recSec % 60).padStart(2, "0")}
+					</span>
+					<span className="rec-hint">recording — release sends</span>
+					<button type="button" className="rec-cancel" onClick={() => stopRecording(true)}>
+						cancel
+					</button>
+				</div>
+			) : (
+				<textarea
+					value={draft}
+					rows={1}
+					placeholder="Message goblin"
+					onChange={(e) => setDraft(e.target.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter" && !e.shiftKey) {
+							e.preventDefault();
+							send();
+						}
+					}}
+				/>
+			)}
 			<div className="composer-bar">
-				<button type="button" className="icon-btn" aria-label="Attach" onClick={() => fileInput.current?.click()}>
-					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" width="16" height="16">
+				<button
+					type="button"
+					className="icon-btn"
+					aria-label="Attach"
+					onClick={() => fileInput.current?.click()}
+				>
+					<svg
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						strokeWidth="1.75"
+						strokeLinecap="round"
+						width="16"
+						height="16"
+					>
 						<line x1="12" y1="5" x2="12" y2="19" />
 						<line x1="5" y1="12" x2="19" y2="12" />
 					</svg>
 				</button>
+				{micSupported && (
+					<button
+						type="button"
+						className={recording ? "icon-btn rec-active" : "icon-btn"}
+						aria-label={recording ? "Stop and send" : "Record a voice note"}
+						onClick={() => (recording ? stopRecording(false) : void startRecording())}
+					>
+						<svg
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							strokeWidth="1.75"
+							strokeLinecap="round"
+							strokeLinejoin="round"
+							width="16"
+							height="16"
+						>
+							<rect x="9" y="2" width="6" height="12" rx="3" />
+							<path d="M5 10a7 7 0 0 0 14 0" />
+							<line x1="12" y1="17" x2="12" y2="22" />
+						</svg>
+					</button>
+				)}
+				{cfg !== null && (
+					<>
+						<label className="knob" title="Model">
+							<select
+								value={cfg.model}
+								onChange={(e) => setKnob({ model: e.target.value })}
+								disabled={busy}
+							>
+								{cfg.favorites.length === 0 ? (
+									<option value={cfg.model}>{modelName}</option>
+								) : (
+									[...new Set([cfg.model, ...cfg.favorites])].map((m) => (
+										<option key={m} value={m}>
+											{m.split("/").pop()}
+										</option>
+									))
+								)}
+							</select>
+						</label>
+						<label className="knob" title="Thinking level">
+							<select
+								value={cfg.thinking}
+								onChange={(e) => setKnob({ thinking: e.target.value })}
+								disabled={busy}
+							>
+								{[...new Set([cfg.thinking, ...cfg.thinkingLevels])].map((l) => (
+									<option key={l} value={l}>
+										{l === "off" ? "think off" : `think ${l}`}
+									</option>
+								))}
+							</select>
+						</label>
+					</>
+				)}
 				{busy && onStop !== undefined ? (
 					// Stop means stop: ask the runtime to abort the turn, then
 					// let go of this client's stream. History keeps what was written.
@@ -308,7 +579,12 @@ export function Composer({
 						type="submit"
 						className="send-btn"
 						aria-label="Send"
-						disabled={busy || (draft.trim() === "" && pending.every((e) => e.failed === true || e.uploading === true))}
+						disabled={
+							busy ||
+							recording ||
+							(draft.trim() === "" &&
+								pending.every((e) => e.failed === true || e.uploading === true))
+						}
 					>
 						<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
 							<path
@@ -326,15 +602,35 @@ export function Composer({
 
 // ---------- the chat ----------
 
+// A finished turn pings the OS only when the window isn't looking —
+// the notification carries the answer's first line. Permission is
+// requested once, from the send path's user gesture.
+function notifyDone(title: string, text: string) {
+	if (document.visibilityState !== "hidden") return;
+	if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+	const body = text.replace(/\s+/g, " ").trim().slice(0, 140);
+	try {
+		new Notification(title === "" ? "goblin" : `goblin — ${title}`, { body });
+	} catch {
+		/* some browsers only allow notifications from a service worker */
+	}
+}
+function askNotifyPermission() {
+	if (typeof Notification === "undefined" || Notification.permission !== "default") return;
+	void Notification.requestPermission().catch(() => {});
+}
+
 export function ChatView({
 	token,
 	conversationId,
+	title,
 	seed,
 	onSeeded,
 	onTurnDone,
 }: {
 	token: string | null;
 	conversationId: string;
+	title: string | null;
 	// The message an empty-state send parked while its conversation was
 	// being created — delivered once, on mount.
 	seed: UIMessage["parts"] | null;
@@ -347,7 +643,9 @@ export function ChatView({
 		let live = true;
 		getMessages(token, conversationId).then(
 			(r) => live && setInitial(r.messages),
-			(err) => live && setLoadError(err instanceof Error ? err.message : "history failed to load"),
+			(err) =>
+				live &&
+				setLoadError(err instanceof Error ? err.message : "history failed to load"),
 		);
 		return () => {
 			live = false;
@@ -359,6 +657,7 @@ export function ChatView({
 	return (
 		<Chat
 			conversationId={conversationId}
+			title={title}
 			token={token}
 			initial={initial}
 			seed={seed}
@@ -371,6 +670,7 @@ export function ChatView({
 function Chat({
 	token,
 	conversationId,
+	title,
 	initial,
 	seed,
 	onSeeded,
@@ -378,6 +678,7 @@ function Chat({
 }: {
 	token: string | null;
 	conversationId: string;
+	title: string | null;
 	initial: UIMessage[];
 	seed: UIMessage["parts"] | null;
 	onSeeded: () => void;
@@ -385,6 +686,8 @@ function Chat({
 }) {
 	// The transport speaks this channel's contract: one user message per
 	// POST, keyed by the app conversation id (DESIGN.md, App channel).
+	// A regenerate rides the same endpoint as `retry` — no append, the
+	// stored user event anchors the new answer.
 	// token null = trust mode — the server wants no credential.
 	const transport = useMemo(
 		() =>
@@ -392,22 +695,29 @@ function Chat({
 				api: "/api/app/chat",
 				headers: token === null ? {} : { authorization: `Bearer ${token}` },
 				prepareSendMessagesRequest: ({ trigger, messageId, messages }) => ({
-					body: {
-						conversationId,
-						message:
-							trigger === "submit-message"
-								? messages.find((m) => m.id === messageId) ?? messages[messages.length - 1]
-								: messages[messages.length - 1],
-					},
+					body:
+						trigger === "regenerate-message"
+							? { conversationId, retry: true }
+							: {
+									conversationId,
+									message:
+										trigger === "submit-message"
+											? (messages.find((m) => m.id === messageId) ??
+												messages[messages.length - 1])
+											: messages[messages.length - 1],
+								},
 				}),
 			}),
 		[token, conversationId],
 	);
-	const { messages, sendMessage, status, error, stop } = useChat({
+	const { messages, sendMessage, regenerate, status, error, stop } = useChat({
 		id: conversationId,
 		messages: initial,
 		transport,
-		onFinish: onTurnDone,
+		onFinish: ({ message }) => {
+			notifyDone(title ?? "", messageText(message));
+			onTurnDone();
+		},
 	});
 
 	const scrollRef = useRef<HTMLDivElement>(null);
@@ -435,6 +745,10 @@ function Chat({
 		void sendMessage({ parts: seed });
 	}, [seed, sendMessage, onSeeded]);
 
+	// The retry affordance belongs to the newest answer — anything older
+	// gets copy/read only.
+	const lastAssistantId = [...messages].reverse().find((m) => m.role === "assistant")?.id;
+
 	return (
 		<div className="chat">
 			<div
@@ -447,13 +761,32 @@ function Chat({
 			>
 				<div className="transcript-inner">
 					{messages.length === 0 && <p className="empty">Say something.</p>}
-					{messages.map((m) => (
-						<div key={m.id} className={m.role === "user" ? "msg user" : "msg assistant"}>
-							<MessageParts parts={m.parts} />
-						</div>
-					))}
+					{messages.map((m) => {
+						if (m.role === "user")
+							return (
+								<div key={m.id} className="msg user">
+									<MessageParts parts={m.parts} />
+								</div>
+							);
+						const meta = turnMeta(m);
+						return (
+							<div key={m.id} className="msg assistant">
+								<MessageParts parts={m.parts} />
+								<ActionBar
+									message={m}
+									isLastAssistant={m.id === lastAssistantId}
+									busy={busy}
+									onRetry={() => void regenerate()}
+									token={token}
+								/>
+								{meta !== null && <MetaLine meta={meta} />}
+							</div>
+						);
+					})}
 					{busy && <div className="msg assistant pending shimmer">…</div>}
-					{error !== undefined && <div className="error">The turn failed: {error.message}</div>}
+					{error !== undefined && (
+						<div className="error">The turn failed: {error.message}</div>
+					)}
 				</div>
 			</div>
 			<Composer
@@ -461,6 +794,7 @@ function Chat({
 				busy={busy}
 				onSend={(parts) => {
 					pinned.current = true;
+					askNotifyPermission();
 					void sendMessage({ parts });
 				}}
 				onStop={() => {

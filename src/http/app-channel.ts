@@ -150,35 +150,51 @@ const conversationIdSchema = z
 	.string()
 	.regex(/^app\/[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/, "expected an app/<id> conversation id");
 
-const chatBody = z.object({
-	conversationId: conversationIdSchema,
-	message: z.looseObject({
-		id: z.string().min(1),
-		role: z.literal("user"),
-		parts: z
-			.array(z.looseObject({ type: z.string() }))
-			.min(1)
-			// A data-attachment ref is a client-supplied string pointing at
-			// a server path; materializeAttachments hands ref.path to
-			// readFile. Confine it to the directory persistAttachment
-			// writes, or the part is an arbitrary-file read. Parts that
-			// aren't attachments pass through — the runtime owns their
-			// semantics.
-			.superRefine((parts, ctx) => {
-				for (const [i, p] of parts.entries()) {
-					if (p.type !== ATTACHMENT_PART) continue;
-					const ref = attachmentRefSchema.safeParse(p.data);
-					if (!ref.success || !isStoredAttachmentPath(ref.data.path)) {
-						ctx.addIssue({
-							code: "custom",
-							path: [i, "data", "path"],
-							message: "attachment path must name a file the attachments pipeline wrote",
-						});
-					}
-				}
-			}),
-	}),
-});
+const chatBody = z
+	.object({
+		conversationId: conversationIdSchema,
+		// `retry` re-runs the newest user message — no append, the same
+		// event anchors the new answer (history stays append-only; the
+		// client prunes the stale answer locally).
+		retry: z.literal(true).optional(),
+		message: z
+			.looseObject({
+				id: z.string().min(1),
+				role: z.literal("user"),
+				parts: z
+					.array(z.looseObject({ type: z.string() }))
+					.min(1)
+					// A data-attachment ref is a client-supplied string pointing at
+					// a server path; materializeAttachments hands ref.path to
+					// readFile. Confine it to the directory persistAttachment
+					// writes, or the part is an arbitrary-file read. Parts that
+					// aren't attachments pass through — the runtime owns their
+					// semantics.
+					.superRefine((parts, ctx) => {
+						for (const [i, p] of parts.entries()) {
+							if (p.type !== ATTACHMENT_PART) continue;
+							const ref = attachmentRefSchema.safeParse(p.data);
+							if (!ref.success || !isStoredAttachmentPath(ref.data.path)) {
+								ctx.addIssue({
+									code: "custom",
+									path: [i, "data", "path"],
+									message:
+										"attachment path must name a file the attachments pipeline wrote",
+								});
+							}
+						}
+					}),
+			})
+			.optional(),
+	})
+	.superRefine((d, ctx) => {
+		if (d.retry === true && d.message !== undefined) {
+			ctx.addIssue({ code: "custom", message: "retry takes no message" });
+		}
+		if (d.retry !== true && d.message === undefined) {
+			ctx.addIssue({ code: "custom", path: ["message"], message: "message is required" });
+		}
+	});
 
 const renameBody = z.object({ title: z.string().min(1).max(200) });
 
@@ -575,12 +591,43 @@ export async function handleAppApi(
 			);
 		}
 
+		// Retry re-runs the newest user message — the stored event rides
+		// along so the answer anchors to the same seq and nothing is
+		// appended twice. A live lane refuses: re-admitting the same user
+		// text mid-turn would read as steering input, not "again".
+		if (parsed.data.retry === true) {
+			if (runtime.busy(convId)) {
+				return Response.json(
+					{ error: "a turn is already running" },
+					{ status: 409, headers: NO_STORE },
+				);
+			}
+			const lastUser = store
+				.history(convId)
+				.findLast((m) => m.role === "user");
+			if (lastUser === undefined) {
+				return Response.json(
+					{ error: "nothing to retry" },
+					{ status: 409, headers: NO_STORE },
+				);
+			}
+			log.info("app retry", { conversation: convId, message: lastUser.id });
+			const { sink, body } = appStreamSink(convId);
+			runtime.submitPersisted(conv, lastUser, sink);
+			log.info("app stream start", { conversation: convId, retry: true });
+			return new Response(body, {
+				headers: { ...UI_MESSAGE_STREAM_HEADERS, ...NO_STORE },
+			});
+		}
+
+		const message = parsed.data.message!;
+
 		// Voice-note intake, the same seam tg runs: speech-flagged
 		// attachments get their transcript before submit, so a model that
 		// can't hear audio reads the words instead of a bare path. A
 		// failed transcription keeps the attachment — degrade, don't drop.
 		if (deps.transcribe !== undefined) {
-			for (const part of parsed.data.message.parts) {
+			for (const part of message.parts) {
 				if (part.type !== ATTACHMENT_PART) continue;
 				const ref = attachmentRefSchema.safeParse(part.data);
 				if (!ref.success || ref.data.speech !== true || ref.data.transcript !== undefined) {
@@ -616,7 +663,7 @@ export async function handleAppApi(
 		// title===null re-check keeps an operator PATCH the winner and a
 		// deleted row (mid-flight DELETE) is just skipped.
 		if (deps.titleFor !== undefined && conv.title === null) {
-			const firstText = parsed.data.message.parts
+			const firstText = message.parts
 				.map((p) => (p.type === "text" && typeof p.text === "string" ? p.text : ""))
 				.join("\n")
 				.trim();
@@ -641,11 +688,11 @@ export async function handleAppApi(
 		}
 
 		// Intake boundary: message → app address.
-		log.info("app intake", { conversation: convId, message: parsed.data.message.id });
+		log.info("app intake", { conversation: convId, message: message.id });
 		const { sink, body } = appStreamSink(convId);
 		// Steering and /stop ride the existing lane — a second chat POST
 		// while a turn runs queues or steers exactly like Telegram.
-		runtime.submit(conv, parsed.data.message as UIMessage, sink);
+		runtime.submit(conv, message as UIMessage, sink);
 		log.info("app stream start", { conversation: convId });
 		return new Response(body, {
 			headers: { ...UI_MESSAGE_STREAM_HEADERS, ...NO_STORE },

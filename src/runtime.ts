@@ -300,6 +300,14 @@ export class Runtime {
 		return !this.closed;
 	}
 
+	// True while the lane holds live or queued work — the app's retry
+	// route gates on it so "run again" can't land mid-turn as steering
+	// input.
+	busy(convId: string): boolean {
+		const lane = this.lanes.get(convId);
+		return lane !== undefined && (lane.pending.length > 0 || lane.controller !== null);
+	}
+
 	// Graceful stop: close intake, then fence every live lane — running
 	// turns abort, queued ones drop. Resolves when the drains settle,
 	// which includes each sink's final flush (the "⏹ superseded" stamp).

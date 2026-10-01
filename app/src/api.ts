@@ -3,10 +3,15 @@
 
 import type {
 	AppAttachmentResponse,
+	AppConfigPatch,
+	AppConfigView,
 	AppConversationCreate,
 	AppConversationList,
+	AppConversationRename,
 	AppMessageList,
+	AppSearchResponse,
 	AppStopResponse,
+	AppTtsResponse,
 } from "../../src/http/app-wire.ts";
 
 const TOKEN_KEY = "goblin.appToken";
@@ -84,4 +89,57 @@ export async function uploadAttachment(token: string | null, file: File): Promis
 	const form = new FormData();
 	form.append("file", file, file.name);
 	return request(token, "/api/app/attachments", { method: "POST", body: form });
+}
+
+// The app conversation ids are full "app/<id>" addresses — path segments
+// carry the bare id only.
+const seg = (id: string) => encodeURIComponent(id.slice("app/".length));
+
+export function renameConversation(
+	token: string | null,
+	id: string,
+	title: string,
+): Promise<AppConversationRename> {
+	return request(token, `/api/app/conversations/${seg(id)}`, {
+		method: "PATCH",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ title }),
+	});
+}
+
+export function deleteConversation(token: string | null, id: string): Promise<{ ok: true }> {
+	return request(token, `/api/app/conversations/${seg(id)}`, { method: "DELETE" });
+}
+
+export function searchConversations(
+	token: string | null,
+	q: string,
+): Promise<AppSearchResponse> {
+	return request(token, `/api/app/search?q=${encodeURIComponent(q)}`);
+}
+
+// The composer's model/thinking knobs — same operator settings the mini
+// app owns; a patch is last-wins over the on-disk file.
+export function getConfig(token: string | null): Promise<AppConfigView> {
+	return request(token, "/api/app/config");
+}
+
+export function patchConfig(
+	token: string | null,
+	patch: AppConfigPatch,
+): Promise<AppConfigView> {
+	return request(token, "/api/app/config", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(patch),
+	});
+}
+
+// Read-aloud — reply text in, base64 ogg chunks out.
+export function synthesize(token: string | null, text: string): Promise<AppTtsResponse> {
+	return request(token, "/api/app/tts", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ text }),
+	});
 }

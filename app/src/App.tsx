@@ -1,8 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { UIMessage } from "ai";
-import { ApiError, clearToken, createConversation, listConversations, loadToken, saveToken } from "./api.ts";
+import {
+	ApiError,
+	clearToken,
+	createConversation,
+	deleteConversation,
+	listConversations,
+	loadToken,
+	renameConversation,
+	saveToken,
+	searchConversations,
+} from "./api.ts";
 import { ChatView, Composer } from "./ChatView.tsx";
-import type { AppConversationList } from "../../src/http/app-wire.ts";
+import type { AppConversationList, AppSearchHit } from "../../src/http/app-wire.ts";
 
 // Sidebar timestamps are relative: "now", minutes, hours, days, then a
 // short date — the format Open WebUI's chat list uses.
@@ -101,6 +111,99 @@ function TokenGate({ hint, onToken }: { hint: string | null; onToken: (token: st
 	);
 }
 
+// One rail row: the conversation button plus hover affordances —
+// rename turns the title into an input, delete asks then removes.
+function ConversationRow({
+	conv,
+	current,
+	onOpen,
+	onRenamed,
+	onDeleted,
+	token,
+}: {
+	conv: AppConversationList["conversations"][number];
+	current: string | null;
+	onOpen: (id: string) => void;
+	onRenamed: () => void;
+	onDeleted: (id: string) => void;
+	token: string | null;
+}) {
+	const title = flatTitle(conv.title);
+	const preview = flatLine(conv.preview);
+	const [editing, setEditing] = useState(false);
+	const [draft, setDraft] = useState("");
+	const editRef = useRef<HTMLInputElement>(null);
+	useEffect(() => {
+		if (editing) {
+			editRef.current?.focus();
+			editRef.current?.select();
+		}
+	}, [editing]);
+
+	const commitRename = () => {
+		const t = draft.trim();
+		setEditing(false);
+		if (t === "" || t === title) return;
+		void renameConversation(token, conv.id, t).then(onRenamed, () => {});
+	};
+	const remove = () => {
+		if (!window.confirm(`Delete "${title ?? preview ?? "this conversation"}"?`)) return;
+		void deleteConversation(token, conv.id).then(() => onDeleted(conv.id), () => {});
+	};
+
+	if (editing) {
+		return (
+			<div className="conv editing">
+				<input
+					ref={editRef}
+					value={draft}
+					onChange={(e) => setDraft(e.target.value)}
+					onBlur={commitRename}
+					onKeyDown={(e) => {
+						if (e.key === "Enter") commitRename();
+						if (e.key === "Escape") setEditing(false);
+					}}
+				/>
+			</div>
+		);
+	}
+	return (
+		<div className={conv.id === current ? "conv current" : "conv"}>
+			<button
+				type="button"
+				className="conv-main"
+				onClick={() => onOpen(conv.id)}
+			>
+				<span className="conv-head">
+					<span className="conv-title">
+						{title ?? (preview === "" ? "new conversation" : preview)}
+					</span>
+					<span className="conv-time">{relTime(conv.updatedAt)}</span>
+				</span>
+				{title !== null && preview !== "" && (
+					<span className="conv-preview">{preview}</span>
+				)}
+			</button>
+			<span className="conv-actions">
+				<button
+					type="button"
+					aria-label="Rename"
+					title="Rename"
+					onClick={() => {
+						setDraft(title ?? "");
+						setEditing(true);
+					}}
+				>
+					✎
+				</button>
+				<button type="button" aria-label="Delete" title="Delete" onClick={remove}>
+					×
+				</button>
+			</span>
+		</div>
+	);
+}
+
 export function App() {
 	const [token, setToken] = useState<string | null>(loadToken);
 	// The gate is conditional: the server may be in trust mode (appToken
@@ -112,10 +215,17 @@ export function App() {
 		token === null ? "probing" : "passed",
 	);
 	const [probeHint, setProbeHint] = useState<string | null>(null);
-	const [conversations, setConversations] = useState<AppConversationList["conversations"] | null>(null);
+	const [conversations, setConversations] = useState<
+		AppConversationList["conversations"] | null
+	>(null);
 	const [current, setCurrent] = useState<string | null>(null);
 	const [listError, setListError] = useState<string | null>(null);
 	const [navOpen, setNavOpen] = useState(false);
+	// Rail search: debounced against the app-pool FTS endpoint. A non-
+	// empty query swaps the conversation list for the hit list.
+	const [query, setQuery] = useState("");
+	const [hits, setHits] = useState<AppSearchHit[] | null>(null);
+	const searchSeq = useRef(0);
 	// The empty state has the composer too — its send creates the
 	// conversation, then ChatView delivers the parked message as `seed`.
 	const [seed, setSeed] = useState<{ id: string; parts: UIMessage["parts"] } | null>(null);
@@ -153,13 +263,32 @@ export function App() {
 			setConversations(list.conversations);
 			setListError(null);
 		} catch (err) {
-			setListError(err instanceof ApiError && err.status === 401 ? "unauthorized" : "list failed");
+			setListError(
+				err instanceof ApiError && err.status === 401 ? "unauthorized" : "list failed",
+			);
 		}
 	}, [token]);
 
 	useEffect(() => {
 		if (gate === "passed") void refresh();
 	}, [gate, refresh]);
+
+	// Debounced app-pool search — an empty box clears back to the list.
+	useEffect(() => {
+		const q = query.trim();
+		if (q === "") {
+			setHits(null);
+			return;
+		}
+		const seq = ++searchSeq.current;
+		const t = setTimeout(() => {
+			void searchConversations(token, q).then(
+				(r) => seq === searchSeq.current && setHits(r.hits),
+				() => {},
+			);
+		}, 250);
+		return () => clearTimeout(t);
+	}, [query, token]);
 
 	// A dead token means 401s forever — offer a way back to the gate.
 	if (listError === "unauthorized") {
@@ -212,6 +341,11 @@ export function App() {
 		setCurrent(null);
 	};
 
+	const openConversation = (id: string) => {
+		setCurrent(id);
+		setNavOpen(false);
+	};
+
 	const startConversation = async (parts: UIMessage["parts"]) => {
 		setStarting(true);
 		setStartFailed(false);
@@ -227,48 +361,79 @@ export function App() {
 		}
 	};
 
+	const currentTitle =
+		conversations?.find((c) => c.id === current)?.title ??
+		null;
+
 	return (
 		<div className="shell">
 			<nav className={navOpen ? "rail open" : "rail"}>
 				<button type="button" className="new" onClick={newConversation}>
 					New conversation
 				</button>
-				<ul>
-					{(conversations ?? []).map((c) => {
-						// Both single-line labels get the display-side flatten —
-						// an old server hands over the raw store fields, and the
-						// preview is as markdown-laced as the title.
-						const title = flatTitle(c.title);
-						const preview = flatLine(c.preview);
-						return (
+				<input
+					className="rail-search"
+					type="search"
+					placeholder="Search history"
+					value={query}
+					onChange={(e) => setQuery(e.target.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Escape") setQuery("");
+					}}
+				/>
+				{hits !== null ? (
+					<>
+						<ul className="search-results">
+							{hits.map((h) => (
+								<li key={`${h.conversationId}:${h.seq}`}>
+									<button
+										type="button"
+										className="hit"
+										onClick={() => {
+											openConversation(h.conversationId);
+											setQuery("");
+										}}
+									>
+										<span className="hit-role">
+											{h.role === "user" ? "you" : "goblin"}
+										</span>
+										<span className="hit-text">{flatLine(h.text)}</span>
+										<span className="hit-conv">
+											{flatTitle(h.title) ?? h.conversationId.slice(4)}
+											{" · "}
+											{relTime(h.createdAt)}
+										</span>
+									</button>
+								</li>
+							))}
+						</ul>
+						{hits.length === 0 && <p className="empty">No matches.</p>}
+					</>
+				) : (
+					<ul>
+						{(conversations ?? []).map((c) => (
 							<li key={c.id}>
-								<button
-									type="button"
-									className={c.id === current ? "conv current" : "conv"}
-									onClick={() => {
-										setCurrent(c.id);
-										setNavOpen(false);
+								<ConversationRow
+									conv={c}
+									current={current}
+									token={token}
+									onOpen={openConversation}
+									onRenamed={() => void refresh()}
+									onDeleted={(id) => {
+										if (id === current) setCurrent(null);
+										void refresh();
 									}}
-								>
-									<span className="conv-head">
-										<span className="conv-title">{title ?? (preview === "" ? "new conversation" : preview)}</span>
-										<span className="conv-time">{relTime(c.updatedAt)}</span>
-									</span>
-									{title !== null && preview !== "" && <span className="conv-preview">{preview}</span>}
-								</button>
+								/>
 							</li>
-						);
-					})}
-				</ul>
-				{conversations !== null && conversations.length === 0 && (
+						))}
+					</ul>
+				)}
+				{hits === null && conversations !== null && conversations.length === 0 && (
 					<p className="empty">Nothing here yet — start a conversation.</p>
 				)}
 				{listError !== null && <p className="error">Couldn't refresh the list.</p>}
 			</nav>
-			<div
-				className={navOpen ? "scrim open" : "scrim"}
-				onClick={() => setNavOpen(false)}
-			/>
+			<div className={navOpen ? "scrim open" : "scrim"} onClick={() => setNavOpen(false)} />
 			<main>
 				<header>
 					<button
@@ -291,22 +456,36 @@ export function App() {
 						</svg>
 					</button>
 					<h1>goblin</h1>
+					{current !== null && (
+						<span className="header-title">{flatTitle(currentTitle)}</span>
+					)}
 				</header>
 				{current === null ? (
 					<div className="chat">
 						<div className="transcript">
 							<div className="transcript-inner">
-								<p className="empty">Pick a conversation, or say something — a new one starts here.</p>
-								{startFailed && <p className="error">Couldn't start a conversation — check the tailnet, then resend.</p>}
+								<p className="empty">
+									Pick a conversation, or say something — a new one starts here.
+								</p>
+								{startFailed && (
+									<p className="error">
+										Couldn't start a conversation — check the tailnet, then resend.
+									</p>
+								)}
 							</div>
 						</div>
-						<Composer token={token} busy={starting} onSend={(parts) => void startConversation(parts)} />
+						<Composer
+							token={token}
+							busy={starting}
+							onSend={(parts) => void startConversation(parts)}
+						/>
 					</div>
 				) : (
 					<ChatView
 						key={current}
 						token={token}
 						conversationId={current}
+						title={flatTitle(currentTitle)}
 						seed={seed !== null && seed.id === current ? seed.parts : null}
 						onSeeded={() => setSeed(null)}
 						onTurnDone={() => void refresh()}

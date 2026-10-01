@@ -3,7 +3,8 @@
 // chips, badges, the skeleton). Kept leaf-level — views and the
 // dispatcher import from here, never the reverse.
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
+import { useCopy } from "../useCopy.ts";
 import { clipHead } from "./parse.ts";
 
 /** What a view produces for one call: the collapsed-row summary fragment
@@ -71,17 +72,9 @@ export function ErrBox({ text }: { text: string }) {
 }
 
 export function CopyBtn({ text }: { text: string }) {
-	const [copied, setCopied] = useState(false);
-	const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
-	useEffect(() => () => clearTimeout(timer.current), []);
-	const copy = () => {
-		void navigator.clipboard.writeText(text).catch(() => {});
-		setCopied(true);
-		clearTimeout(timer.current);
-		timer.current = setTimeout(() => setCopied(false), 1500);
-	};
+	const { copied, copy } = useCopy();
 	return (
-		<button type="button" className="codeblock-copy" onClick={copy}>
+		<button type="button" className="codeblock-copy" onClick={() => copy(text)}>
 			{copied ? "✓" : "copy"}
 		</button>
 	);

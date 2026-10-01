@@ -16,6 +16,7 @@ import {
 	uploadAttachment,
 } from "./api.ts";
 import { Markdown } from "./markdown.tsx";
+import { useCopy } from "./useCopy.ts";
 import { ToolRun, partFailed, partRunning, partSummaryLine } from "./tools/mod.tsx";
 import type { AttachmentRef } from "../../src/agent/attachments.ts";
 import type { AppConfigView, TurnMetadata } from "../../src/http/app-wire.ts";
@@ -244,19 +245,11 @@ function ActionBar({
 	token: string | null;
 }) {
 	const text = messageText(message);
-	const [copied, setCopied] = useState(false);
-	const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
-	useEffect(() => () => clearTimeout(timer.current), []);
+	const { copied, copy } = useCopy();
 	const { speech, play } = useSpeech(token);
-	const copy = () => {
-		void navigator.clipboard.writeText(text).catch(() => {});
-		setCopied(true);
-		clearTimeout(timer.current);
-		timer.current = setTimeout(() => setCopied(false), 1500);
-	};
 	return (
 		<div className="msg-actions">
-			<button type="button" onClick={copy} aria-label="Copy">
+			<button type="button" onClick={() => copy(text)} aria-label="Copy">
 				{copied ? "✓ copied" : "copy"}
 			</button>
 			{text !== "" && (

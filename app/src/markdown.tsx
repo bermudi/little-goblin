@@ -5,7 +5,8 @@
 // URLs. This is comfortable reading, not CommonMark conformance —
 // anything unrecognized stays literal text.
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
+import { useCopy } from "./useCopy.ts";
 // core + the languages a chat model actually fences — the /common bundle
 // is ~40 grammars of COBOL the bundle doesn't need.
 import hljs from "highlight.js/lib/core";
@@ -96,15 +97,7 @@ export function inline(text: string): ReactNode[] {
 // code with syntax coloring. An unknown language falls back to plain
 // text — a model's made-up fence tag must never blank the code.
 function CodeBlock({ lang, code }: { lang: string; code: string }) {
-	const [copied, setCopied] = useState(false);
-	const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
-	useEffect(() => () => clearTimeout(timer.current), []);
-	const copy = () => {
-		void navigator.clipboard.writeText(code).catch(() => {});
-		setCopied(true);
-		clearTimeout(timer.current);
-		timer.current = setTimeout(() => setCopied(false), 1500);
-	};
+	const { copied, copy } = useCopy();
 	// highlight() throws on a grammar bug or unregistered language —
 	// hljs escapes markup in its output, so the value is safe HTML.
 	const html = useMemo(() => {
@@ -122,7 +115,7 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
 		<div className="codeblock">
 			<div className="codeblock-head">
 				<span className="codeblock-lang">{lang === "" ? "text" : lang}</span>
-				<button type="button" className="codeblock-copy" onClick={copy}>
+				<button type="button" className="codeblock-copy" onClick={() => copy(code)}>
 					{copied ? "✓" : "copy"}
 				</button>
 			</div>

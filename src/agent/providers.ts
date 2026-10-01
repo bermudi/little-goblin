@@ -18,6 +18,7 @@ import {
 import { log } from "../log.ts";
 import { codexModel } from "./codex/model.ts";
 import type { MediaPosition } from "./attachments.ts";
+import { isZaiHost, zaiReasoningFetch } from "./zai-responses.ts";
 import { openrouterSupportedParams } from "./models-dev.ts";
 
 export async function resolveModel(
@@ -42,11 +43,14 @@ export async function resolveModel(
 		case "responses":
 			// `name` pins the providerOptions key to the config name — the
 			// SDK resolves options under provider.split(".")[0], same rule
-			// glmThinking applies.
+			// glmThinking applies. api.z.ai streams the spec's raw-CoT arm
+			// (reasoning_text events) which the SDK doesn't model — the
+			// fetch shim rewrites them to reasoning_summary events.
 			return createOpenAI({
 				name: provider,
 				baseURL: p.baseUrl,
 				apiKey: await auth.resolve(p.auth),
+				...(isZaiHost(p.baseUrl) ? { fetch: zaiReasoningFetch() } : {}),
 			}).responses(modelId);
 		case "openrouter": {
 			const apiKey = await auth.resolve(p.auth);

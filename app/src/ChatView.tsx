@@ -105,7 +105,10 @@ export function MessageParts({ parts }: { parts: UIMessage["parts"] }) {
 			continue;
 		}
 		if (p.type === "text") out.push(<Markdown key={i} text={p.text} />);
-		else if (p.type === "reasoning")
+		// Empty reasoning parts exist in history — providers that seal
+		// chain-of-thought (encrypted, or an unmapped dialect) still emit the
+		// part. A fold with nothing inside reads as a bug; skip it.
+		else if (p.type === "reasoning" && p.text.trim() !== "")
 			out.push(
 				<details key={i} className="reasoning-fold">
 					<summary>Thought</summary>

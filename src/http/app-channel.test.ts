@@ -294,6 +294,44 @@ describe("app channel http", () => {
 		}
 	});
 
+	test("a data-attachment part must name a file the pipeline wrote", async () => {
+		const { http, call, home } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			const chat = (ref: Record<string, unknown>) =>
+				call("/api/app/chat", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						conversationId: "app/chat-01",
+						message: { id: "m1", role: "user", parts: [{ type: "data-attachment", data: ref }] },
+					}),
+				});
+			const base = { mediaType: "text/plain", filename: "x", size: 1 };
+			// Outside the attachments dir outright, or escaping it through
+			// a `..` segment — both would become readFile targets at turn
+			// time.
+			expect((await chat({ ...base, path: join(home, "goblin.sqlite") })).status).toBe(422);
+			expect(
+				(await chat({ ...base, path: join(home, "workspace", "attachments", "..", "evil") })).status,
+			).toBe(422);
+			// A ref the upload endpoint minted passes the pin.
+			const form = new FormData();
+			form.append("file", new Blob([new Uint8Array([1, 2, 3])], { type: "text/plain" }), "note.txt");
+			const up = await call("/api/app/attachments", { method: "POST", body: form });
+			const { ref } = (await up.json()) as { ref: Record<string, unknown> };
+			const ok = await chat(ref);
+			expect(ok.status).toBe(200);
+			expect((await ok.text()).trimEnd().endsWith("data: [DONE]")).toBe(true);
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("chat refuses a non-app conversation id and an unknown one", async () => {
 		const { http, call } = setup({ token: APP_TOKEN_NAME });
 		try {

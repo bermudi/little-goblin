@@ -1818,13 +1818,22 @@ the bug.
 endpoints pipe what exists: history reads serve stored UIMessages
 verbatim, chat requests run a turn and stream the same shape. Store
 format = wire format — no translation layer to design, drift, or test
-twice.
+twice. `POST /api/app/conversations/<id>/stop` rides `runtime.stop` —
+the same epoch bump + abort the Telegram `/stop` command owns — so the
+client's Stop button ends the turn server-side, not just its stream.
 
 **Auth.** No Telegram `initData` exists outside Telegram, so the app
-authenticates with a static token from config (`appToken`), sent as a
-bearer header on `/api/app/*`, rotated by config edit. The mini app keeps
-its initData validation untouched. `appToken` unset → the app surface
-refuses requests fail-loud with a log line, never silently open.
+authenticates with a bearer token on `/api/app/*`. `appToken` in config
+names an auth.jsonl record — config stays secret-free per the Config
+invariant — resolved per request through the same `resolve()` every
+other credential rides (pass-keys `!command` records included). Rotation
+has two speeds: pointing `appToken` at a different record name applies
+live (config is read per request); rotating a record's value needs a
+restart, because `loadAuth` is a boot-time snapshot and `resolve`
+memoizes per name. `appToken` unset or unresolvable → every route
+refuses 503 fail-loud with a log line, never silently open; a wrong
+token → 401, also logged. The mini app keeps its initData validation
+untouched.
 
 **Client.** React + `@ai-sdk/react` (`useChat`) in `app/` — Vite, strict
 TS, its own tsconfig program wired into `bun run typecheck`. This is the
@@ -1851,6 +1860,12 @@ in the server knows which is talking.
 **Logging.** The app boundary joins the existing bar: intake (message →
 app address), auth failures, stream start/finish, attachment uploads —
 each a line with the fields to reconstruct it from `goblin.log`.
+
+**Landing note.** The channel landed in three staged commits behind the
+gate "existing telegram tests pass unmodified". The gate means no
+pre-existing assertion was modified or removed; additive assertions
+inside existing files are allowed (the address round-trip test gained
+its `app/` rejection line in place, `src/tg/notify.test.ts`).
 
 **Out, explicitly:** mirroring or cross-channel reading of any kind
 (revisit needs a ruling here), app-side push (Telegram stays the bell for

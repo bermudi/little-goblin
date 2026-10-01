@@ -12,7 +12,7 @@
 // lands on a cold cache.
 
 import { mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { UIMessage } from "ai";
 import { z } from "zod";
@@ -29,7 +29,11 @@ export const INLINE_ITEM_MAX_BYTES = 8 * 1024 * 1024;
 
 export const ATTACHMENT_PART = "data-attachment";
 
-const attachmentRefSchema = z.object({
+// Exported for the app channel's intake boundary: a client-supplied
+// data-attachment part must parse against this AND pass
+// isStoredAttachmentPath — otherwise ref.path is a client-chosen string
+// that materializeAttachments would hand to readFile below.
+export const attachmentRefSchema = z.object({
 	path: z.string(),
 	mediaType: z.string(),
 	filename: z.string(),
@@ -136,6 +140,16 @@ export async function persistAttachment(
 		}
 		throw err;
 	}
+}
+
+// Intake-side confinement for client-supplied refs: persistAttachment
+// writes only inside workspace/attachments/, so a ref.path that resolves
+// anywhere else is not a file this process saved — it's a request to
+// readFile an arbitrary path at materialize time. resolve() collapses
+// `..` and absolutizes before the prefix check, so neither escapes.
+export function isStoredAttachmentPath(path: string): boolean {
+	const dir = resolve(paths.attachments());
+	return resolve(path).startsWith(dir + sep);
 }
 
 // Where a media part rides in a request. The pipe's answer differs by

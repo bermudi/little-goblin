@@ -21,7 +21,13 @@ import {
 } from "../conversation.ts";
 import type { AuthStore } from "../auth.ts";
 import type { Runtime, TurnSink } from "../runtime.ts";
-import { persistAttachment, type AttachmentRef } from "../agent/attachments.ts";
+import {
+	ATTACHMENT_PART,
+	attachmentRefSchema,
+	isStoredAttachmentPath,
+	persistAttachment,
+	type AttachmentRef,
+} from "../agent/attachments.ts";
 import { paths } from "../config.ts";
 import { log } from "../log.ts";
 import type {
@@ -105,7 +111,28 @@ const chatBody = z.object({
 	message: z.looseObject({
 		id: z.string().min(1),
 		role: z.literal("user"),
-		parts: z.array(z.looseObject({ type: z.string() })).min(1),
+		parts: z
+			.array(z.looseObject({ type: z.string() }))
+			.min(1)
+			// A data-attachment ref is a client-supplied string pointing at
+			// a server path; materializeAttachments hands ref.path to
+			// readFile. Confine it to the directory persistAttachment
+			// writes, or the part is an arbitrary-file read. Parts that
+			// aren't attachments pass through — the runtime owns their
+			// semantics.
+			.superRefine((parts, ctx) => {
+				for (const [i, p] of parts.entries()) {
+					if (p.type !== ATTACHMENT_PART) continue;
+					const ref = attachmentRefSchema.safeParse(p.data);
+					if (!ref.success || !isStoredAttachmentPath(ref.data.path)) {
+						ctx.addIssue({
+							code: "custom",
+							path: [i, "data", "path"],
+							message: "attachment path must name a file the attachments pipeline wrote",
+						});
+					}
+				}
+			}),
 	}),
 });
 

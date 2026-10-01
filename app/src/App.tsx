@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { UIMessage } from "ai";
 import { ApiError, clearToken, createConversation, listConversations, loadToken, saveToken } from "./api.ts";
-import { ChatView } from "./ChatView.tsx";
+import { ChatView, Composer } from "./ChatView.tsx";
 import type { AppConversationList } from "../../src/http/app-wire.ts";
 
 // Sidebar timestamps are relative: "now", minutes, hours, days, then a
@@ -90,6 +91,11 @@ export function App() {
 	const [current, setCurrent] = useState<string | null>(null);
 	const [listError, setListError] = useState<string | null>(null);
 	const [navOpen, setNavOpen] = useState(false);
+	// The empty state has the composer too — its send creates the
+	// conversation, then ChatView delivers the parked message as `seed`.
+	const [seed, setSeed] = useState<{ id: string; parts: UIMessage["parts"] } | null>(null);
+	const [starting, setStarting] = useState(false);
+	const [startFailed, setStartFailed] = useState(false);
 	const listSeq = useRef(0);
 
 	useEffect(() => {
@@ -173,21 +179,33 @@ export function App() {
 		);
 	}
 
-	const newConversation = async () => {
+	// "New conversation" opens the empty state; the conversation itself is
+	// created lazily, on the first send — an untouched composer never
+	// leaves an empty row in the store.
+	const newConversation = () => {
+		setNavOpen(false);
+		setCurrent(null);
+	};
+
+	const startConversation = async (parts: UIMessage["parts"]) => {
+		setStarting(true);
+		setStartFailed(false);
 		try {
 			const created = await createConversation(token);
-			setNavOpen(false);
+			setSeed({ id: created.id, parts });
 			setCurrent(created.id);
 			await refresh();
 		} catch {
-			setListError("create failed");
+			setStartFailed(true);
+		} finally {
+			setStarting(false);
 		}
 	};
 
 	return (
 		<div className="shell">
 			<nav className={navOpen ? "rail open" : "rail"}>
-				<button type="button" className="new" onClick={() => void newConversation()}>
+				<button type="button" className="new" onClick={newConversation}>
 					New conversation
 				</button>
 				<ul>
@@ -213,9 +231,7 @@ export function App() {
 				{conversations !== null && conversations.length === 0 && (
 					<p className="empty">Nothing here yet — start a conversation.</p>
 				)}
-				{listError !== null && (
-					<p className="error">{listError === "create failed" ? "Couldn't start a conversation." : "Couldn't refresh the list."}</p>
-				)}
+				{listError !== null && <p className="error">Couldn't refresh the list.</p>}
 			</nav>
 			<div
 				className={navOpen ? "scrim open" : "scrim"}
@@ -245,11 +261,24 @@ export function App() {
 					<h1>goblin</h1>
 				</header>
 				{current === null ? (
-					<div className="placeholder">
-						<p>Pick a conversation, or start a new one.</p>
+					<div className="chat">
+						<div className="transcript">
+							<div className="transcript-inner">
+								<p className="empty">Pick a conversation, or say something — a new one starts here.</p>
+								{startFailed && <p className="error">Couldn't start a conversation — check the tailnet, then resend.</p>}
+							</div>
+						</div>
+						<Composer token={token} busy={starting} onSend={(parts) => void startConversation(parts)} />
 					</div>
 				) : (
-					<ChatView key={current} token={token} conversationId={current} onTurnDone={() => void refresh()} />
+					<ChatView
+						key={current}
+						token={token}
+						conversationId={current}
+						seed={seed !== null && seed.id === current ? seed.parts : null}
+						onSeeded={() => setSeed(null)}
+						onTurnDone={() => void refresh()}
+					/>
 				)}
 			</main>
 		</div>

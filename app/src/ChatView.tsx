@@ -13,10 +13,13 @@ import type { AttachmentRef } from "../../src/agent/attachments.ts";
 
 // ---------- transcript rendering ----------
 
-// Inline marks: `code` spans and bare URLs become elements; everything
-// else stays text. Long answers are the reason this channel exists —
-// the renderer's job is comfortable reading, not markdown completeness.
-const INLINE = /`([^`]+)`|(https?:\/\/[^\s<>"')\]]+)/g;
+// Inline marks: [links](url), `code` spans, and bare URLs become
+// elements; everything else stays text. Long answers are the reason
+// this channel exists — the renderer's job is comfortable reading, not
+// markdown completeness. The link alternative must lead: it swallows the
+// URL inside its own parens before the bare-URL branch can split it.
+const INLINE =
+	/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|`([^`]+)`|(https?:\/\/[^\s<>"')\]]+)/g;
 
 function inline(text: string): ReactNode[] {
 	const out: ReactNode[] = [];
@@ -24,8 +27,19 @@ function inline(text: string): ReactNode[] {
 	let i = 0;
 	for (const m of text.matchAll(INLINE)) {
 		if (m.index > last) out.push(text.slice(last, m.index));
-		if (m[1] !== undefined) out.push(<code key={i}>{m[1]}</code>);
-		else out.push(<a key={i} href={m[2]} target="_blank" rel="noreferrer">{m[2]}</a>);
+		if (m[1] !== undefined)
+			out.push(
+				<a key={i} href={m[2]} target="_blank" rel="noreferrer">
+					{m[1]}
+				</a>,
+			);
+		else if (m[3] !== undefined) out.push(<code key={i}>{m[3]}</code>);
+		else
+			out.push(
+				<a key={i} href={m[4]} target="_blank" rel="noreferrer">
+					{m[4]}
+				</a>,
+			);
 		last = m.index + m[0].length;
 		i++;
 	}
@@ -170,7 +184,7 @@ function AttachmentChip({ data }: { data: unknown }) {
 	);
 }
 
-function MessageParts({ parts }: { parts: UIMessage["parts"] }) {
+export function MessageParts({ parts }: { parts: UIMessage["parts"] }) {
 	const out: ReactNode[] = [];
 	for (let i = 0; i < parts.length; i++) {
 		const p = parts[i]!;
@@ -201,15 +215,147 @@ function MessageParts({ parts }: { parts: UIMessage["parts"] }) {
 	return <>{out}</>;
 }
 
+// ---------- the composer ----------
+
+// Always present — on an empty conversation too. Draft + staged
+// attachments are local; onSend hands the assembled parts up, where the
+// caller either streams them into the open conversation or creates one.
+export function Composer({
+	token,
+	busy,
+	onSend,
+	onStop,
+}: {
+	token: string | null;
+	busy: boolean;
+	onSend: (parts: UIMessage["parts"]) => void;
+	// Present only where a live turn exists to interrupt (ChatView).
+	onStop?: () => void;
+}) {
+	const [draft, setDraft] = useState("");
+	const [pending, setPending] = useState<{ ref: AttachmentRef; uploading?: boolean; failed?: boolean }[]>([]);
+	const fileInput = useRef<HTMLInputElement>(null);
+
+	const pickFile = async (file: File) => {
+		setPending((p) => [...p, { ref: { path: "", mediaType: file.type, filename: file.name, size: file.size }, uploading: true }]);
+		try {
+			const { ref } = await uploadAttachment(token, file);
+			setPending((p) => p.map((e) => (e.uploading && e.ref.filename === file.name ? { ref } : e)));
+		} catch {
+			setPending((p) => p.map((e) => (e.uploading && e.ref.filename === file.name ? { ...e, uploading: false, failed: true } : e)));
+		}
+	};
+
+	const send = () => {
+		const text = draft.trim();
+		const ready = pending.filter((e) => e.uploading !== true && e.failed !== true);
+		if (text === "" && ready.length === 0) return;
+		const parts: UIMessage["parts"] = [];
+		if (text !== "") parts.push({ type: "text", text });
+		for (const e of ready) parts.push({ type: "data-attachment", data: e.ref } as UIMessage["parts"][number]);
+		setDraft("");
+		setPending([]);
+		onSend(parts);
+	};
+
+	return (
+		<form
+			className="composer"
+			onSubmit={(e) => {
+				e.preventDefault();
+				send();
+			}}
+		>
+			<input
+				ref={fileInput}
+				type="file"
+				hidden
+				multiple
+				onChange={(e) => {
+					for (const f of Array.from(e.target.files ?? [])) void pickFile(f);
+					e.target.value = "";
+				}}
+			/>
+			{pending.length > 0 && (
+				<div className="composer-attachments">
+					{pending.map((e, i) => (
+						<span key={i} className={e.failed === true ? "attachment failed" : "attachment"}>
+							<FileIcon />
+							<span className="attachment-name">
+								{e.uploading === true ? "↑ " : e.failed === true ? "✗ " : ""}
+								{e.ref.filename}
+							</span>
+							<span className="attachment-size">{formatSize(e.ref.size)}</span>
+							<button type="button" aria-label="Remove" onClick={() => setPending((p) => p.filter((_, j) => j !== i))}>
+								×
+							</button>
+						</span>
+					))}
+				</div>
+			)}
+			<textarea
+				value={draft}
+				rows={1}
+				placeholder="Message goblin"
+				onChange={(e) => setDraft(e.target.value)}
+				onKeyDown={(e) => {
+					if (e.key === "Enter" && !e.shiftKey) {
+						e.preventDefault();
+						send();
+					}
+				}}
+			/>
+			<div className="composer-bar">
+				<button type="button" className="icon-btn" aria-label="Attach" onClick={() => fileInput.current?.click()}>
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" width="16" height="16">
+						<line x1="12" y1="5" x2="12" y2="19" />
+						<line x1="5" y1="12" x2="19" y2="12" />
+					</svg>
+				</button>
+				{busy && onStop !== undefined ? (
+					// Stop means stop: ask the runtime to abort the turn, then
+					// let go of this client's stream. History keeps what was written.
+					<button type="button" className="stop-btn" aria-label="Stop" onClick={onStop}>
+						<svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12">
+							<rect x="7" y="7" width="10" height="10" rx="2" />
+						</svg>
+					</button>
+				) : (
+					<button
+						type="submit"
+						className="send-btn"
+						aria-label="Send"
+						disabled={busy || (draft.trim() === "" && pending.every((e) => e.failed === true || e.uploading === true))}
+					>
+						<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+							<path
+								fillRule="evenodd"
+								d="M8 14a.75.75 0 0 1-.75-.75V4.56L4.03 7.78a.75.75 0 0 1-1.06-1.06l4.5-4.5a.75.75 0 0 1 1.06 0l4.5 4.5a.75.75 0 0 1-1.06 1.06L8.75 4.56v8.69A.75.75 0 0 1 8 14Z"
+								clipRule="evenodd"
+							/>
+						</svg>
+					</button>
+				)}
+			</div>
+		</form>
+	);
+}
+
 // ---------- the chat ----------
 
 export function ChatView({
 	token,
 	conversationId,
+	seed,
+	onSeeded,
 	onTurnDone,
 }: {
 	token: string | null;
 	conversationId: string;
+	// The message an empty-state send parked while its conversation was
+	// being created — delivered once, on mount.
+	seed: UIMessage["parts"] | null;
+	onSeeded: () => void;
 	onTurnDone: () => void;
 }) {
 	const [initial, setInitial] = useState<UIMessage[] | null>(null);
@@ -227,18 +373,31 @@ export function ChatView({
 
 	if (loadError !== null) return <div className="error">History failed to load: {loadError}</div>;
 	if (initial === null) return <div className="loading">…</div>;
-	return <Chat conversationId={conversationId} token={token} initial={initial} onTurnDone={onTurnDone} />;
+	return (
+		<Chat
+			conversationId={conversationId}
+			token={token}
+			initial={initial}
+			seed={seed}
+			onSeeded={onSeeded}
+			onTurnDone={onTurnDone}
+		/>
+	);
 }
 
 function Chat({
 	token,
 	conversationId,
 	initial,
+	seed,
+	onSeeded,
 	onTurnDone,
 }: {
 	token: string | null;
 	conversationId: string;
 	initial: UIMessage[];
+	seed: UIMessage["parts"] | null;
+	onSeeded: () => void;
 	onTurnDone: () => void;
 }) {
 	// The transport speaks this channel's contract: one user message per
@@ -268,138 +427,64 @@ function Chat({
 		onFinish: onTurnDone,
 	});
 
-	const [draft, setDraft] = useState("");
-	const [pending, setPending] = useState<{ ref: AttachmentRef; uploading?: boolean; failed?: boolean }[]>([]);
-	const fileInput = useRef<HTMLInputElement>(null);
 	const scrollRef = useRef<HTMLDivElement>(null);
+	// Follow-mode: the transcript auto-scrolls to the tail while the view
+	// is pinned there; scrolling up unpins it, scrolling back (or sending)
+	// re-pins. Streaming chunks ride the same effect — the tail follows
+	// output only while the operator is already at the tail.
+	const pinned = useRef(true);
 	const busy = status === "submitted" || status === "streaming";
 
 	useEffect(() => {
 		const el = scrollRef.current;
-		if (el !== null) el.scrollTop = el.scrollHeight;
+		if (el !== null && pinned.current) el.scrollTop = el.scrollHeight;
 	}, [messages]);
 
-	const pickFile = async (file: File) => {
-		setPending((p) => [...p, { ref: { path: "", mediaType: file.type, filename: file.name, size: file.size }, uploading: true }]);
-		try {
-			const { ref } = await uploadAttachment(token, file);
-			setPending((p) => p.map((e) => (e.uploading && e.ref.filename === file.name ? { ref } : e)));
-		} catch {
-			setPending((p) => p.map((e) => (e.uploading && e.ref.filename === file.name ? { ...e, uploading: false, failed: true } : e)));
-		}
-	};
-
-	const send = () => {
-		const text = draft.trim();
-		const ready = pending.filter((e) => e.uploading !== true && e.failed !== true);
-		if (text === "" && ready.length === 0) return;
-		const parts: UIMessage["parts"] = [];
-		if (text !== "") parts.push({ type: "text", text });
-		for (const e of ready) parts.push({ type: "data-attachment", data: e.ref } as UIMessage["parts"][number]);
-		setDraft("");
-		setPending([]);
-		void sendMessage({ parts });
-	};
+	// A seed arrives once (empty-state send → conversation created → this
+	// view mounts with it). The ref guards re-runs; onSeeded clears the
+	// parking slot so a remount can never re-deliver it.
+	const seeded = useRef(false);
+	useEffect(() => {
+		if (seeded.current || seed === null || seed.length === 0) return;
+		seeded.current = true;
+		pinned.current = true;
+		onSeeded();
+		void sendMessage({ parts: seed });
+	}, [seed, sendMessage, onSeeded]);
 
 	return (
 		<div className="chat">
-			<div className="transcript" ref={scrollRef}>
-				{messages.length === 0 && <p className="empty">Say something.</p>}
-				{messages.map((m) => (
-					<div key={m.id} className={m.role === "user" ? "msg user" : "msg assistant"}>
-						<MessageParts parts={m.parts} />
-					</div>
-				))}
-				{busy && <div className="msg assistant pending shimmer">…</div>}
-				{error !== undefined && <div className="error">The turn failed: {error.message}</div>}
-			</div>
-			<form
-				className="composer"
-				onSubmit={(e) => {
-					e.preventDefault();
-					send();
+			<div
+				className="transcript"
+				ref={scrollRef}
+				onScroll={(e) => {
+					const el = e.currentTarget;
+					pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
 				}}
 			>
-				<input
-					ref={fileInput}
-					type="file"
-					hidden
-					multiple
-					onChange={(e) => {
-						for (const f of Array.from(e.target.files ?? [])) void pickFile(f);
-						e.target.value = "";
-					}}
-				/>
-				{pending.length > 0 && (
-					<div className="composer-attachments">
-						{pending.map((e, i) => (
-							<span key={i} className={e.failed === true ? "attachment failed" : "attachment"}>
-								<FileIcon />
-								<span className="attachment-name">
-									{e.uploading === true ? "↑ " : e.failed === true ? "✗ " : ""}
-									{e.ref.filename}
-								</span>
-								<span className="attachment-size">{formatSize(e.ref.size)}</span>
-								<button type="button" aria-label="Remove" onClick={() => setPending((p) => p.filter((_, j) => j !== i))}>
-									×
-								</button>
-							</span>
-						))}
-					</div>
-				)}
-				<textarea
-					value={draft}
-					rows={1}
-					placeholder="Message goblin"
-					onChange={(e) => setDraft(e.target.value)}
-					onKeyDown={(e) => {
-						if (e.key === "Enter" && !e.shiftKey) {
-							e.preventDefault();
-							send();
-						}
-					}}
-				/>
-				<div className="composer-bar">
-					<button type="button" className="icon-btn" aria-label="Attach" onClick={() => fileInput.current?.click()}>
-						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" width="16" height="16">
-							<line x1="12" y1="5" x2="12" y2="19" />
-							<line x1="5" y1="12" x2="19" y2="12" />
-						</svg>
-					</button>
-					{busy ? (
-						// Stop means stop: ask the runtime to abort the turn, then
-						// let go of this client's stream. History keeps what was written.
-						<button
-							type="button"
-							className="stop-btn"
-							aria-label="Stop"
-							onClick={() => {
-								void stopConversation(token, conversationId).catch(() => {});
-								void stop();
-							}}
-						>
-							<svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12">
-								<rect x="7" y="7" width="10" height="10" rx="2" />
-							</svg>
-						</button>
-					) : (
-						<button
-							type="submit"
-							className="send-btn"
-							aria-label="Send"
-							disabled={draft.trim() === "" && pending.every((e) => e.failed === true || e.uploading === true)}
-						>
-							<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
-								<path
-									fillRule="evenodd"
-									d="M8 14a.75.75 0 0 1-.75-.75V4.56L4.03 7.78a.75.75 0 0 1-1.06-1.06l4.5-4.5a.75.75 0 0 1 1.06 0l4.5 4.5a.75.75 0 0 1-1.06 1.06L8.75 4.56v8.69A.75.75 0 0 1 8 14Z"
-									clipRule="evenodd"
-								/>
-							</svg>
-						</button>
-					)}
+				<div className="transcript-inner">
+					{messages.length === 0 && <p className="empty">Say something.</p>}
+					{messages.map((m) => (
+						<div key={m.id} className={m.role === "user" ? "msg user" : "msg assistant"}>
+							<MessageParts parts={m.parts} />
+						</div>
+					))}
+					{busy && <div className="msg assistant pending shimmer">…</div>}
+					{error !== undefined && <div className="error">The turn failed: {error.message}</div>}
 				</div>
-			</form>
+			</div>
+			<Composer
+				token={token}
+				busy={busy}
+				onSend={(parts) => {
+					pinned.current = true;
+					void sendMessage({ parts });
+				}}
+				onStop={() => {
+					void stopConversation(token, conversationId).catch(() => {});
+					void stop();
+				}}
+			/>
 		</div>
 	);
 }

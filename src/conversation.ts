@@ -322,6 +322,24 @@ export function toFtsQuery(query: string): string | null {
 	return terms.map((t) => `"${t}"`).join(" ");
 }
 
+// One flat display line out of message text — the app list's title and
+// preview rows are single-line labels, so markdown furniture comes off:
+// fences and their language tag, inline-code backticks, link syntax
+// (text survives), paired emphasis, and line-lead markers. Without it a
+// reply that opens on a code block titles the row "```typescript const
+// slug = (s:…".
+function flatLine(text: string): string {
+	return text
+		.replace(/```+[ \t]*[^\s`\n]*/g, " ")
+		.replace(/`([^`]*)`/g, "$1")
+		.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+		.replace(/(\*\*|__|~~)(.+?)\1/g, "$2")
+		.replace(/(\*|_)([^\s*_][^*_]*?[^\s*]|[^\s*_])\1/g, "$2")
+		.replace(/^[ \t]*(?:#{1,6}|>|[-*+]|\d+\.)[ \t]+/gm, "")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
 // Parse one event row's envelope — null when the row is unreadable.
 // The caller decides: history degrades to a placeholder in position,
 // search and context skip the row. Warns either way — a silent skip
@@ -734,10 +752,13 @@ export function openStore(dbPath: string): ConversationStore {
 				const message = last === null ? null : parseEvent(r.id, last.seq, last.role, last.data);
 				out.push({
 					id: r.id,
-					title: r.title,
+					// Display projection: titles are single-line labels too —
+					// a markdown-decked title flattens or, reduced to nothing,
+					// falls through to the preview.
+					title: r.title === null ? null : flatLine(r.title) || null,
 					createdAt: r.created_at,
 					updatedAt: last?.created_at ?? r.created_at,
-					preview: message === null ? "" : messageText(message).slice(0, 200),
+					preview: message === null ? "" : flatLine(messageText(message)).slice(0, 200),
 					activity: last?.id ?? 0,
 				});
 			}

@@ -530,4 +530,19 @@ describe("app channel store", () => {
 		expect(list[1]!.preview).toBe("");
 		store.close();
 	});
+
+	test("list rows flatten markdown — raw syntax never reaches the sidebar", () => {
+		const store = openStore(tmpdb());
+		const c = store.resolve(appAddress("chat-01"), "/w");
+		store.append(c.id, [{
+			id: "a1",
+			role: "assistant",
+			parts: [{ type: "text", text: "```typescript\nconst slug = (s: string) => s.trim()\n```" }],
+		}]);
+		store.setMeta(c.id, { title: "the `slug` helper — [docs](https://x.dev)" });
+		const row = store.listAppConversations()[0]!;
+		expect(row.preview).toBe("const slug = (s: string) => s.trim()");
+		expect(row.title).toBe("the slug helper — docs");
+		store.close();
+	});
 });

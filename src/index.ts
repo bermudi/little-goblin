@@ -229,6 +229,7 @@ async function boot() {
 				// tool-loop continuations included — logs its request hashes.
 				model: observedModel(model, { conversation: conv.id }),
 				system: prompt.text,
+				label: modelRef,
 				inputModalities: modalities,
 				carries,
 				...(contextWindow !== null ? { contextWindow } : {}),
@@ -367,21 +368,24 @@ async function boot() {
 	// update can be handled with the holder still empty; the throw is a
 	// wiring-bug alarm, not a runtime state.
 	const retentionQuiesce: { worker: MemoryWorker | null } = { worker: null };
+	// One titler for both channels: telegram implicit topics and the app
+	// channel's first-turn naming (app-channel.ts) share the titleModel.
+	const titleFor = async (text: string): Promise<string | null> => {
+		const cfg = configRef.current;
+		if (!cfg.titleModel) return null;
+		const model = await resolveModel(cfg, auth, cfg.titleModel);
+		return generateTopicTitle(
+			observedModel(model, { purpose: "topic-title" }),
+			text,
+			thinkingOptions(cfg, cfg.titleModel, "off"),
+		);
+	};
 	const tg = await startBot({
 		configRef,
 		auth,
 		store,
 		runtime,
-		async titleFor(text) {
-			const cfg = configRef.current;
-			if (!cfg.titleModel) return null;
-			const model = await resolveModel(cfg, auth, cfg.titleModel);
-			return generateTopicTitle(
-				observedModel(model, { purpose: "topic-title" }),
-				text,
-				thinkingOptions(cfg, cfg.titleModel, "off"),
-			);
-		},
+		titleFor,
 		async synthesize(text, tts) {
 			return synthesizeSpeech(text, tts);
 		},
@@ -552,6 +556,43 @@ async function boot() {
 	// mode — the tailnet is the only lock. Boot-pinned per process, so a
 	// mid-run flip applies only after restart — onConfigWritten warns.
 	const appTokenName = resolveAppAuth(config.appToken);
+	// One post-write path for every config door (mini app form, app
+	// channel's model/thinking knobs): hot-apply what's live, warn on
+	// what's boot-pinned.
+	const onConfigWritten = () => {
+		setLogLevel(configRef.current.logLevel);
+		// publicUrl is operator-editable through the app — keep the menu
+		// button (the door) in sync without a restart.
+		applyMenuButton(tg.bot.api, configRef.current.publicUrl);
+		const searchNow = configRef.current.search !== undefined;
+		if (searchNow !== searchInSet) {
+			log.info(
+				searchNow
+					? "search tool enabled — joins the set next turn"
+					: "search tool disabled — leaves the set next turn",
+			);
+			searchInSet = searchNow;
+		}
+		const transcribeNow = configRef.current.transcription !== undefined;
+		if (transcribeNow !== transcribeInSet) {
+			log.info(
+				transcribeNow
+					? "transcribe tool enabled — joins the set next turn"
+					: "transcribe tool disabled — leaves the set next turn",
+			);
+			transcribeInSet = transcribeNow;
+		}
+		// Memory is a boot-time snapshot (queue rows bind to the
+		// endpoint+bank hash) — a changed block needs a restart.
+		if (JSON.stringify(configRef.current.memory ?? null) !== JSON.stringify(memoryBootConfig ?? null)) {
+			log.warn("memory config changed — restart to apply");
+		}
+		// The app channel's auth mode is boot-pinned like memory —
+		// a flipped appToken applies only after restart.
+		if (configRef.current.appToken !== appTokenName) {
+			log.warn("appToken changed — restart to apply");
+		}
+	};
 	const http = startHttp({
 		configRef,
 		botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN),
@@ -600,41 +641,28 @@ async function boot() {
 		// The handler injects opaque (app-channel.ts imports the
 		// runtime/AI-SDK graph, which must not enter http/mod.ts's
 		// DOM-lib typecheck program).
-		appApi: (req, url) => handleAppApi(req, url, appTokenName, { store, runtime, auth }),
-		onConfigWritten: () => {
-			setLogLevel(configRef.current.logLevel);
-			// publicUrl is operator-editable through the app — keep the menu
-			// button (the door) in sync without a restart.
-			applyMenuButton(tg.bot.api, configRef.current.publicUrl);
-			const searchNow = configRef.current.search !== undefined;
-			if (searchNow !== searchInSet) {
-				log.info(
-					searchNow
-						? "search tool enabled — joins the set next turn"
-						: "search tool disabled — leaves the set next turn",
-				);
-				searchInSet = searchNow;
-			}
-			const transcribeNow = configRef.current.transcription !== undefined;
-			if (transcribeNow !== transcribeInSet) {
-				log.info(
-					transcribeNow
-						? "transcribe tool enabled — joins the set next turn"
-						: "transcribe tool disabled — leaves the set next turn",
-				);
-				transcribeInSet = transcribeNow;
-			}
-			// Memory is a boot-time snapshot (queue rows bind to the
-			// endpoint+bank hash) — a changed block needs a restart.
-			if (JSON.stringify(configRef.current.memory ?? null) !== JSON.stringify(memoryBootConfig ?? null)) {
-				log.warn("memory config changed — restart to apply");
-			}
-			// The app channel's auth mode is boot-pinned like memory —
-			// a flipped appToken applies only after restart.
-			if (configRef.current.appToken !== appTokenName) {
-				log.warn("appToken changed — restart to apply");
-			}
-		},
+		appApi: (req, url) =>
+			handleAppApi(req, url, appTokenName, {
+				store,
+				runtime,
+				auth,
+				configRef,
+				onConfigWritten,
+				// Same intake seam the tg lane runs for voice notes —
+				// speech:true uploads get their transcript before submit.
+				transcribe: transcribeFile,
+				// Read-aloud for replies. Null = unconfigured or ffmpeg-down;
+				// the endpoint answers 503 rather than failing mid-synthesis.
+				speak: async (text) => {
+					const tts = configRef.current.tts;
+					// "", false, or unset all mean speech is off; ttsDown is
+					// the boot ffmpeg probe.
+					if (!tts || configRef.ttsDown) return null;
+					return synthesizeSpeech(text, tts);
+				},
+				titleFor,
+			}),
+		onConfigWritten,
 	});
 
 	// Scheduler after the bot: it submits into conversations and delivers

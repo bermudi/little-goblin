@@ -128,6 +128,10 @@ export interface ModelStep {
 	model: LanguageModel;
 	system: string;
 	providerOptions?: ProviderOptions;
+	// The config ref this step resolved ("zai/glm-5.3") — observability
+	// only; it rides the finish metadata so a stored reply remembers
+	// which model wrote it after a later switch.
+	label?: string;
 	// The model's input modalities (models.dev) — decides which stored
 	// attachment parts materialize as file parts this turn. Absent =
 	// text-only, everything degrades to path references.
@@ -691,6 +695,9 @@ export class Runtime {
 			return;
 		}
 		const epoch = conv.epoch;
+		// Turn wall-clock for the finish metadata — admission to done,
+		// so recall/attachments are inside the number the app displays.
+		const turnStartMs = Date.now();
 		sink.setAuthorityCheck?.(() => this.deps.store.get(convId)?.epoch === epoch);
 		// History snapshot is part of admission: the turn's context is the
 		// compacted model view (summary + tail, DESIGN.md Compaction) as it
@@ -992,6 +999,25 @@ export class Runtime {
 				// message identity — without a generator the SDK leaves it
 				// blank, so every completed turn mints one here.
 				generateMessageId: randomUUID,
+				// Finish metadata lands on the wire finish chunk AND the
+				// stored response message — the app client reads live
+				// stats and history reloads carry the same numbers.
+				messageMetadata: ({ part }) =>
+					part.type === "finish"
+						? {
+								model:
+									step.label ??
+									(typeof step.model === "string" ? step.model : step.model.modelId),
+								finishReason: part.finishReason,
+								durationMs: Date.now() - turnStartMs,
+								usage: {
+									input: part.totalUsage.inputTokens ?? null,
+									output: part.totalUsage.outputTokens ?? null,
+									cacheRead: part.totalUsage.inputTokenDetails?.cacheReadTokens ?? null,
+									cacheWrite: part.totalUsage.inputTokenDetails?.cacheWriteTokens ?? null,
+								},
+							}
+						: undefined,
 				// The default serializer emits "An error occurred." — meant
 				// for public HTTP clients. This stream feeds the operator's
 				// own chat; the real message is what they need.

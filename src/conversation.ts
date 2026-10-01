@@ -156,8 +156,10 @@ export interface ConversationStore {
 	// Full-text search over user/assistant event text (DESIGN.md, Chat
 	// search). Memory-excluded conversations are filtered at query time
 	// against the live flag — retroactive. Empty when the query has no
-	// searchable terms. Rank-best-first, bounded by limit.
-	searchHistory(query: string, limit: number): HistoryHit[];
+	// searchable terms. Rank-best-first, bounded by limit. channelPrefix
+	// (a LIKE pattern like "app/%") scopes the pool — the app surface
+	// searches only its own channel (DESIGN.md, disjoint pools).
+	searchHistory(query: string, limit: number, channelPrefix?: string): HistoryHit[];
 	// Arrival-ordered window around one event — paging context around a
 	// search hit. No exclusion check here: the tool checks the live flag
 	// before calling, the way search filters it in SQL.
@@ -166,6 +168,11 @@ export interface ConversationStore {
 	// pools never mix, so the list is filtered on the id prefix, not a
 	// flag (DESIGN.md, App channel).
 	listAppConversations(): AppConversationSummary[];
+	// Drop a conversation and everything it owns: events (the FTS delete
+	// trigger keeps the index honest), the compaction audit, recall
+	// blocks, and queued retention for its documents. A live turn must be
+	// fenced first (runtime.stop) — this only touches the store.
+	deleteConversation(id: string): void;
 	close(): void;
 }
 
@@ -534,15 +541,16 @@ export function openStore(dbPath: string): ConversationStore {
 	// Rank-best-first — FTS5's default rank orders best match first.
 	const qSearch = db.query<
 		{ cid: string; seq: number; role: string; data: string; created_at: string; title: string | null },
-		[string, number]
+		[string, string | null, number]
 	>(
 		`SELECT e.conversation_id AS cid, e.seq AS seq, e.role AS role,
 			e.data AS data, e.created_at AS created_at, c.title AS title
 		FROM events_fts
 		JOIN events e ON events_fts.rowid = e.id
 		JOIN conversations c ON c.id = e.conversation_id
-		WHERE events_fts MATCH ? AND c.memory_excluded = 0
-		ORDER BY rank LIMIT ?`,
+		WHERE events_fts MATCH ?1 AND c.memory_excluded = 0
+		  AND (?2 IS NULL OR e.conversation_id LIKE ?2)
+		ORDER BY rank LIMIT ?3`,
 	);
 	const qContext = db.query<
 		{ seq: number; role: string; data: string; created_at: string },
@@ -570,6 +578,13 @@ export function openStore(dbPath: string): ConversationStore {
 		`SELECT id, seq, role, data, created_at FROM events
 		WHERE conversation_id = ? ORDER BY seq DESC LIMIT 1`,
 	);
+	// deleteConversation's sweep — children before the row, the FK on
+	// events/compactions demands it. The events delete fires the FTS
+	// delete trigger per row, so the index stays honest for free.
+	const qDeleteEvents = db.query("DELETE FROM events WHERE conversation_id = ?");
+	const qDeleteCompactions = db.query("DELETE FROM compactions WHERE conversation_id = ?");
+	const qDeleteContexts = db.query("DELETE FROM memory_contexts WHERE conversation_id = ?");
+	const qDeleteConv = db.query("DELETE FROM conversations WHERE id = ?");
 
 	function applyPatch(id: string, patch: ConversationMetaPatch): void {
 		const sets: string[] = [];
@@ -713,11 +728,11 @@ export function openStore(dbPath: string): ConversationStore {
 			return qLastUserSeq.get(id)?.seq ?? null;
 		},
 
-		searchHistory(query, limit) {
+		searchHistory(query, limit, channelPrefix) {
 			const match = toFtsQuery(query);
 			if (match === null) return [];
 			const hits: HistoryHit[] = [];
-			for (const r of qSearch.all(match, Math.max(1, Math.min(limit, 50)))) {
+			for (const r of qSearch.all(match, channelPrefix ?? null, Math.max(1, Math.min(limit, 50)))) {
 				const message = parseEvent(r.cid, r.seq, r.role, r.data);
 				if (message === null) continue;
 				hits.push({
@@ -764,6 +779,26 @@ export function openStore(dbPath: string): ConversationStore {
 			}
 			out.sort((a, b) => b.activity - a.activity);
 			return out.map(({ activity: _activity, ...summary }) => summary);
+		},
+
+		deleteConversation(id) {
+			// Pending retention rides the outbox's own sweeper — a corrupt
+			// payload must not bar the delete, so a failure here is a warn,
+			// not a rollback of the conversation rows.
+			try {
+				memoryQueue.cancelConversation(id);
+			} catch (err) {
+				log.warn("retention purge failed during conversation delete", {
+					conversation: id,
+					error: String(err),
+				});
+			}
+			db.transaction(() => {
+				qDeleteEvents.run(id);
+				qDeleteCompactions.run(id);
+				qDeleteContexts.run(id);
+				qDeleteConv.run(id);
+			})();
 		},
 
 		history(id) {

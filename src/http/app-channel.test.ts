@@ -4,12 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModel } from "ai";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
-import type { Config } from "../config.ts";
-import { openStore, type ConversationStore } from "../conversation.ts";
+import type { Config, ConfigRef } from "../config.ts";
+import { appAddress, openStore, type ConversationStore } from "../conversation.ts";
 import { Runtime } from "../runtime.ts";
 import type { AuthStore } from "../auth.ts";
 import { startHttp } from "./mod.ts";
-import { handleAppApi, resolveAppAuth } from "./app-channel.ts";
+import { handleAppApi, resolveAppAuth, type AppChannelDeps } from "./app-channel.ts";
 import { setLogFile } from "../log.ts";
 
 // End-to-end over the real HTTP listener with the model faked at the
@@ -84,7 +84,17 @@ afterEach(() => {
 	dirs = [];
 });
 
-function setup(opts: { token?: string | undefined; wireApp?: boolean; deltas?: string[]; delayMs?: number } = {}) {
+function setup(
+	opts: {
+		token?: string | undefined;
+		wireApp?: boolean;
+		deltas?: string[];
+		delayMs?: number;
+		transcribe?: AppChannelDeps["transcribe"];
+		speak?: AppChannelDeps["speak"];
+		titleFor?: AppChannelDeps["titleFor"];
+	} = {},
+) {
 	const home = useHome();
 	const store = openStore(join(home, "goblin.sqlite"));
 	const runtime = new Runtime({
@@ -96,7 +106,7 @@ function setup(opts: { token?: string | undefined; wireApp?: boolean; deltas?: s
 		resolve: (name) =>
 			name === APP_TOKEN_NAME ? Promise.resolve(APP_TOKEN_VALUE) : Promise.reject(new Error("no such auth record")),
 	};
-	const configRef = {
+	const configRef: ConfigRef = {
 		current: {
 			providers: { zai: { kind: "openai-compatible", baseUrl: "https://api.example.com", auth: "zai" } },
 			model: "zai/m",
@@ -109,11 +119,24 @@ function setup(opts: { token?: string | undefined; wireApp?: boolean; deltas?: s
 			logLevel: "info",
 			...(opts.token !== undefined ? { appToken: opts.token } : {}),
 		} as Config,
+		ttsDown: false,
 	};
+	const configWrites = { count: 0 };
 	// Boot-time resolution, verbatim index.ts: the mode pins for the
 	// life of this "process" — a configRef flip below must not reach it.
 	const appTokenName = resolveAppAuth(opts.token);
-	const appDeps = { store, runtime, auth };
+	const appDeps: AppChannelDeps = {
+		store,
+		runtime,
+		auth,
+		configRef,
+		onConfigWritten: () => {
+			configWrites.count += 1;
+		},
+		...(opts.transcribe !== undefined ? { transcribe: opts.transcribe } : {}),
+		...(opts.speak !== undefined ? { speak: opts.speak } : {}),
+		...(opts.titleFor !== undefined ? { titleFor: opts.titleFor } : {}),
+	};
 	const http = startHttp({
 		configRef,
 		botToken: "test-bot-token",
@@ -129,7 +152,31 @@ function setup(opts: { token?: string | undefined; wireApp?: boolean; deltas?: s
 			...init,
 			headers: { ...(init.headers ?? {}), ...(bearer !== null ? { authorization: `Bearer ${bearer}` } : {}) },
 		});
-	return { http, store, runtime, configRef, call, home };
+	return { http, store, runtime, configRef, configWrites, call, home };
+}
+
+// The minted conversation + one chat turn, drained — the shape every
+// feature test below starts from.
+async function createAndChat(
+	call: (path: string, init?: RequestInit) => Promise<Response>,
+	text = "hi",
+	id = "chat-01",
+) {
+	await call("/api/app/conversations", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ id }),
+	});
+	const res = await call("/api/app/chat", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({
+			conversationId: `app/${id}`,
+			message: { id: "m1", role: "user", parts: [{ type: "text", text }] },
+		}),
+	});
+	const sse = await res.text();
+	return { res, sse };
 }
 
 describe("app channel http", () => {
@@ -442,6 +489,380 @@ describe("app channel http", () => {
 			const attDir = join(home, "workspace", "attachments");
 			const stat = statSync(attDir, { throwIfNoEntry: false });
 			expect(stat === undefined || readdirSync(attDir).length === 0).toBe(true);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("rename writes an explicit title; empty or unknown ids refuse", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await createAndChat(call);
+			const res = await call("/api/app/conversations/chat-01", {
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ title: "Renamed thread" }),
+			});
+			expect(res.status).toBe(200);
+			expect((await res.json()) as { title: string }).toEqual({ title: "Renamed thread" });
+			const conv = store.get("app/chat-01");
+			expect(conv?.title).toBe("Renamed thread");
+			// An operator title is explicit — the auto-title rule must
+			// never overwrite it.
+			expect(conv?.titleImplicit).toBe(false);
+
+			const empty = await call("/api/app/conversations/chat-01", {
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ title: "" }),
+			});
+			expect(empty.status).toBe(422);
+			expect(
+				(await call("/api/app/conversations/ghost", {
+					method: "PATCH",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ title: "x" }),
+				})).status,
+			).toBe(404);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("delete removes the row, its events, and the FTS index", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await createAndChat(call, "deletable-marker text");
+			expect((await call("/api/app/search?q=deletable")).status).toBe(200);
+			const hitsBefore = (await (await call("/api/app/search?q=deletable")).json()) as {
+				hits: { conversationId: string }[];
+			};
+			expect(hitsBefore.hits.length).toBeGreaterThan(0);
+
+			const res = await call("/api/app/conversations/chat-01", { method: "DELETE" });
+			expect(res.status).toBe(200);
+			expect(store.get("app/chat-01")).toBeNull();
+			expect(store.history("app/chat-01")).toEqual([]);
+			expect(store.listAppConversations()).toEqual([]);
+			// The FTS delete triggers kept the index honest.
+			const hitsAfter = (await (await call("/api/app/search?q=deletable")).json()) as {
+				hits: { conversationId: string }[];
+			};
+			expect(hitsAfter.hits).toEqual([]);
+			expect((await call("/api/app/conversations/ghost", { method: "DELETE" })).status).toBe(404);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("delete fences a live turn before the row goes", async () => {
+		const { http, call, store } = setup({
+			token: APP_TOKEN_NAME,
+			deltas: ["a", "b", "c", "d", "e"],
+			delayMs: 50,
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			const chat = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-01",
+					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
+				}),
+			});
+			expect(chat.status).toBe(200);
+			const del = await call("/api/app/conversations/chat-01", { method: "DELETE" });
+			expect(del.status).toBe(200);
+			expect(store.get("app/chat-01")).toBeNull();
+			// The fenced turn's stream still terminates cleanly.
+			const body = await chat.text();
+			expect(body.trimEnd().endsWith("data: [DONE]")).toBe(true);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("search scopes to the app pool — telegram hits never leak", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			// Same term in both pools; only the app hit may come back.
+			const tg = store.resolve({ kind: "dm", chatId: 99 }, "/w");
+			store.append(tg.id, [
+				{ id: "tg1", role: "user", parts: [{ type: "text", text: "needle in telegram" }] },
+			]);
+			await createAndChat(call, "needle in the app pool");
+
+			const res = await call("/api/app/search?q=needle");
+			expect(res.status).toBe(200);
+			const body = (await res.json()) as {
+				hits: { conversationId: string; role: string; text: string }[];
+			};
+			expect(body.hits.length).toBeGreaterThan(0);
+			expect(body.hits.every((h) => h.conversationId.startsWith("app/"))).toBe(true);
+			expect(body.hits.some((h) => h.text.includes("needle in the app pool"))).toBe(true);
+
+			// A telegram-only term returns empty — the pool filter is on
+			// the SQL side, not a post-filter that could under-fill.
+			const tgOnly = (await (await call("/api/app/search?q=telegram")).json()) as {
+				hits: unknown[];
+			};
+			expect(tgOnly.hits).toEqual([]);
+			// Non-token queries are a clean empty, not a 500.
+			expect((await call("/api/app/search?q=")).status).toBe(200);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("config GET reports the live knobs; POST patches model and thinking", async () => {
+		const { http, call, configRef, configWrites, home } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const view = (await (await call("/api/app/config")).json()) as {
+				model: string;
+				thinking: string;
+				favorites: string[];
+				thinkingLevels: string[];
+			};
+			expect(view.model).toBe("zai/m");
+			expect(view.thinking).toBe("medium");
+			expect(view.thinkingLevels).toContain("medium");
+
+			const write = await call("/api/app/config", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ thinking: "high" }),
+			});
+			expect(write.status).toBe(200);
+			expect(configRef.current.thinking).toBe("high");
+			expect(configWrites.count).toBe(1);
+			// The write is durable — the file under GOBLIN_HOME carries it.
+			expect(readFileSync(join(home, "goblin.json5"), "utf8")).toContain("'high'");
+
+			const model = await call("/api/app/config", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ model: "zai/m2" }),
+			});
+			expect(model.status).toBe(200);
+			expect(configRef.current.model).toBe("zai/m2");
+
+			// A ref naming an unconfigured provider fails validation.
+			const badModel = await call("/api/app/config", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ model: "ghost/x" }),
+			});
+			expect(badModel.status).toBe(422);
+			// An empty patch and a bogus level are client bugs, not writes.
+			expect(
+				(
+					await call("/api/app/config", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({}),
+					})
+				).status,
+			).toBe(422);
+			expect(
+				(
+					await call("/api/app/config", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ thinking: "ultra" }),
+					})
+				).status,
+			).toBe(422);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("tts serves base64 chunks when speech is wired, 503s otherwise", async () => {
+		const { http: h1, call: c1 } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const res = await c1("/api/app/tts", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ text: "read me" }),
+			});
+			expect(res.status).toBe(503);
+		} finally {
+			h1.stop();
+		}
+
+		const spoken = new Uint8Array([9, 8, 7]);
+		const { http: h2, call: c2 } = setup({
+			token: APP_TOKEN_NAME,
+			speak: async () => [spoken],
+		});
+		try {
+			const res = await c2("/api/app/tts", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ text: "read me" }),
+			});
+			expect(res.status).toBe(200);
+			const body = (await res.json()) as { chunks: string[]; mediaType: string };
+			expect(body.mediaType).toBe("audio/ogg");
+			expect(body.chunks.map((c) => [...Buffer.from(c, "base64")])).toEqual([[9, 8, 7]]);
+		} finally {
+			h2.stop();
+		}
+
+		// A null return is "speech unavailable at runtime" — same 503.
+		const { http: h3, call: c3 } = setup({ token: APP_TOKEN_NAME, speak: async () => null });
+		try {
+			expect(
+				(
+					await c3("/api/app/tts", {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ text: "x" }),
+					})
+				).status,
+			).toBe(503);
+		} finally {
+			h3.stop();
+		}
+	});
+
+	test("the first turn auto-titles an unnamed conversation", async () => {
+		const titled: string[] = [];
+		const { http, call, store } = setup({
+			token: APP_TOKEN_NAME,
+			titleFor: async (text) => {
+				titled.push(text);
+				return "First Burst Title";
+			},
+		});
+		try {
+			await createAndChat(call, "what is the meaning of this");
+			// titleFor fires beside the turn — poll briefly for the write.
+			for (let i = 0; i < 50 && store.get("app/chat-01")?.title === null; i++) await sleep(10);
+			const conv = store.get("app/chat-01");
+			expect(conv?.title).toBe("First Burst Title");
+			expect(conv?.titleImplicit).toBe(true);
+			expect(titled).toEqual(["what is the meaning of this"]);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a preset title keeps titleFor out of the first turn", async () => {
+		let calls = 0;
+		const { http, call, store } = setup({
+			token: APP_TOKEN_NAME,
+			titleFor: async () => {
+				calls += 1;
+				return "implicit";
+			},
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01", title: "Named by hand" }),
+			});
+			const res = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-01",
+					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
+				}),
+			});
+			await res.text();
+			await sleep(20);
+			expect(calls).toBe(0);
+			expect(store.get("app/chat-01")?.title).toBe("Named by hand");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a speech-flagged attachment gets its transcript before submit", async () => {
+		const heard: { filename: string }[] = [];
+		const { http, call, store } = setup({
+			token: APP_TOKEN_NAME,
+			transcribe: async (file) => {
+				heard.push({ filename: file.filename });
+				return "spoken words here";
+			},
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			const form = new FormData();
+			form.append("file", new Blob([new Uint8Array([1, 2, 3])], { type: "audio/ogg" }), "note.ogg");
+			const up = await call("/api/app/attachments", { method: "POST", body: form });
+			const { ref } = (await up.json()) as { ref: Record<string, unknown> };
+
+			const res = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-01",
+					message: {
+						id: "m1",
+						role: "user",
+						parts: [{ type: "data-attachment", data: { ...ref, speech: true } }],
+					},
+				}),
+			});
+			expect(res.status).toBe(200);
+			await res.text();
+			expect(heard).toEqual([{ filename: "note.ogg" }]);
+			// The transcript rode into durable history with the ref.
+			const stored = store.history("app/chat-01")[0]!;
+			const part = stored.parts[0] as { type: string; data: { transcript?: string } };
+			expect(part.data.transcript).toBe("spoken words here");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a failed transcription keeps the attachment and the turn runs", async () => {
+		const { http, call, store } = setup({
+			token: APP_TOKEN_NAME,
+			transcribe: () => Promise.reject(new Error("stt down")),
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			const form = new FormData();
+			form.append("file", new Blob([new Uint8Array([1])], { type: "audio/ogg" }), "n.ogg");
+			const { ref } = (await (
+				await call("/api/app/attachments", { method: "POST", body: form })
+			).json()) as { ref: Record<string, unknown> };
+			const res = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-01",
+					message: {
+						id: "m1",
+						role: "user",
+						parts: [{ type: "data-attachment", data: { ...ref, speech: true } }],
+					},
+				}),
+			});
+			expect(res.status).toBe(200);
+			expect((await res.text()).trimEnd().endsWith("data: [DONE]")).toBe(true);
+			const stored = store.history("app/chat-01")[0]!;
+			const part = stored.parts[0] as { data: { transcript?: string; path: string } };
+			expect(part.data.transcript).toBeUndefined();
+			expect(part.data.path).toBe(String(ref.path));
 		} finally {
 			http.stop();
 		}

@@ -41,3 +41,61 @@ export interface AppAttachmentResponse {
 export interface AppStopResponse {
 	stopped: boolean;
 }
+
+/** PATCH /api/app/conversations/<id> — an explicit rename always wins. */
+export interface AppConversationRename {
+	title: string;
+}
+
+/** GET /api/app/search — one FTS hit inside the app pool. */
+export interface AppSearchHit {
+	conversationId: string;
+	title: string | null;
+	seq: number;
+	role: string;
+	// The hit's flattened text — the client's own flatLine gets the
+	// single-line label the rail rows use.
+	text: string;
+	createdAt: string;
+}
+export interface AppSearchResponse {
+	hits: AppSearchHit[];
+}
+
+/** GET /api/app/config — the operator knobs the composer shows. */
+export interface AppConfigView {
+	/** The active "<provider>/<model>" ref. */
+	model: string;
+	thinking: string;
+	/** The pickable model list (config.favorites). */
+	favorites: string[];
+	/** Thinking rungs the active model can express. */
+	thinkingLevels: string[];
+}
+
+/** POST /api/app/config — last-wins patch over the on-disk config. */
+export interface AppConfigPatch {
+	model?: string;
+	thinking?: string;
+}
+
+/** POST /api/app/tts — reply text → speech chunks, base64 ogg/opus. */
+export interface AppTtsResponse {
+	chunks: string[];
+	mediaType: "audio/ogg";
+}
+
+/** Turn stats stamped on assistant message.metadata at stream finish
+ * (runtime.ts's messageMetadata callback writes it; stored history
+ * carries it back to the client on reload). */
+export interface TurnMetadata {
+	model: string;
+	finishReason: string;
+	durationMs: number;
+	usage: {
+		input: number | null;
+		output: number | null;
+		cacheRead: number | null;
+		cacheWrite: number | null;
+	};
+}

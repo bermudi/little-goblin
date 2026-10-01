@@ -22,6 +22,8 @@ import {
 } from "../conversation.ts";
 import type { AuthStore } from "../auth.ts";
 import type { Runtime, TurnSink } from "../runtime.ts";
+import { thinkingLevelsFor } from "../agent/providers.ts";
+import type { SpeechFile } from "../agent/transcribe.ts";
 import {
 	ATTACHMENT_PART,
 	attachmentRefSchema,
@@ -29,14 +31,27 @@ import {
 	persistAttachment,
 	type AttachmentRef,
 } from "../agent/attachments.ts";
-import { paths } from "../config.ts";
+import {
+	loadConfig,
+	parseConfig,
+	paths,
+	splitModelRef,
+	thinkingLevels,
+	writeConfig,
+	type Config,
+	type ConfigRef,
+} from "../config.ts";
 import { log } from "../log.ts";
 import type {
 	AppAttachmentResponse,
+	AppConfigView,
 	AppConversationCreate,
 	AppConversationList,
+	AppConversationRename,
 	AppMessageList,
+	AppSearchResponse,
 	AppStopResponse,
+	AppTtsResponse,
 } from "./app-wire.ts";
 
 const NO_STORE = { "cache-control": "no-store" };
@@ -46,6 +61,23 @@ export interface AppChannelDeps {
 	runtime: Runtime;
 	// auth.jsonl resolution — the record config.appToken names.
 	auth: Pick<AuthStore, "resolve">;
+	// Live config + the shared post-write hook: the app channel's
+	// model/thinking knobs are the same operator-facing settings the
+	// mini app owns (DESIGN.md, Config) — last-wins patch over the
+	// freshest on-disk file, never a stale form.
+	configRef: ConfigRef;
+	onConfigWritten(): void;
+	// Speech→text for speech-flagged attachments, the same seam tg
+	// intake runs on voice notes. Absent = transcription unconfigured —
+	// the ref keeps speech:true with no transcript and materialization
+	// degrades to the path reference.
+	transcribe?: (file: SpeechFile) => Promise<string | null>;
+	// Reply read-aloud — synthesizeSpeech over the live tts block.
+	// Absent or a null return = speech unavailable (503 to the client).
+	speak?: (text: string) => Promise<Uint8Array[] | null>;
+	// First-turn naming via titleModel — the same closure the tg lane
+	// uses for implicit topics. Absent = no auto-titling.
+	titleFor?: (text: string) => Promise<string | null>;
 }
 
 // ---------- auth ----------
@@ -148,6 +180,23 @@ const chatBody = z.object({
 	}),
 });
 
+const renameBody = z.object({ title: z.string().min(1).max(200) });
+
+// The composer's two knobs. A patch with neither is a client bug —
+// refuse rather than write a no-op through the file.
+const configPatchBody = z
+	.object({
+		model: z.string().min(1).optional(),
+		thinking: z.enum(thinkingLevels).optional(),
+	})
+	.refine((p) => p.model !== undefined || p.thinking !== undefined, {
+		message: "nothing to write",
+	});
+
+// Synthesis cost scales with input — 40k chars is well past any real
+// reply and still inside chunkSpeech's stride.
+const ttsBody = z.object({ text: z.string().min(1).max(40_000) });
+
 // Multipart uploads buffer — cap before formData reads the body, so a
 // hostile content-length never reaches memory. 32 MiB covers phone-grade
 // photos/video clips; larger belongs to a real upload channel anyway.
@@ -217,6 +266,23 @@ function appStreamSink(convId: string): {
 }
 
 // ---------- routes ----------
+
+// The composer's readout: the live model ref and thinking rung, the
+// favorites list to switch between, and the rungs the active model can
+// actually express (thinkingLevelsFor — same table the mini app reads).
+function configView(cfg: Config): AppConfigView {
+	const { provider, modelId } = splitModelRef(cfg.model);
+	const p = cfg.providers[provider];
+	return {
+		model: cfg.model,
+		thinking: cfg.thinking,
+		favorites: cfg.favorites,
+		thinkingLevels:
+			p === undefined
+				? [...thinkingLevels]
+				: [...thinkingLevelsFor(p.kind, modelId, "baseUrl" in p ? p.baseUrl : undefined)],
+	};
+}
 
 // Conversation id path segment: the minted id alone (the "app/" prefix
 // can't appear inside a path segment, so the full id is rebuilt here).
@@ -317,6 +383,169 @@ export async function handleAppApi(
 		return Response.json(body, { headers: NO_STORE });
 	}
 
+	// PATCH /api/app/conversations/<id> — rename; an explicit operator
+	// title wins over the implicit auto-title rule.
+	// DELETE /api/app/conversations/<id> — remove the row and everything
+	// it owns; a live turn is fenced first so the lane is quiet when the
+	// delete lands.
+	const convItemMatch = path.match(/^\/api\/app\/conversations\/([^/]+)$/);
+	if (convItemMatch) {
+		const convId = conversationFromSegment(convItemMatch[1]!);
+		if (convId instanceof Response) return convId;
+		if (store.get(convId.id) === null) {
+			return Response.json(
+				{ error: "no such conversation" },
+				{ status: 404, headers: NO_STORE },
+			);
+		}
+		if (req.method === "PATCH") {
+			let json: unknown;
+			try {
+				json = await req.json();
+			} catch {
+				return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+			}
+			const parsed = renameBody.safeParse(json);
+			if (!parsed.success) {
+				return Response.json(
+					{ error: z.prettifyError(parsed.error) },
+					{ status: 422, headers: NO_STORE },
+				);
+			}
+			store.setMeta(convId.id, { title: parsed.data.title, titleImplicit: false });
+			log.info("app conversation renamed", { conversation: convId.id });
+			const body: AppConversationRename = { title: parsed.data.title };
+			return Response.json(body, { headers: NO_STORE });
+		}
+		if (req.method === "DELETE") {
+			const { stopped } = runtime.stop(convId.id);
+			store.deleteConversation(convId.id);
+			log.info("app conversation deleted", {
+				conversation: convId.id,
+				turnFenced: stopped,
+			});
+			return Response.json({ ok: true }, { headers: NO_STORE });
+		}
+		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+	}
+
+	// GET /api/app/search?q=…&limit= — FTS over the app pool only; the
+	// channels' histories never cross (DESIGN.md: disjoint channels).
+	if (path === "/api/app/search") {
+		if (req.method !== "GET") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const q = (url.searchParams.get("q") ?? "").slice(0, 256);
+		const limitParam = Number(url.searchParams.get("limit") ?? "");
+		const limit =
+			Number.isFinite(limitParam) && limitParam >= 1
+				? Math.min(25, Math.floor(limitParam))
+				: 10;
+		const hits = store.searchHistory(q, limit, "app/%");
+		log.debug("app history search", { q, hits: hits.length });
+		const body: AppSearchResponse = { hits };
+		return Response.json(body, { headers: NO_STORE });
+	}
+
+	// /api/app/config — the composer's model/thinking knobs. Same
+	// last-wins semantics as the mini app's save path: merge the patch
+	// over the freshest on-disk file, revalidate, write, swap the ref.
+	if (path === "/api/app/config") {
+		if (req.method === "GET") {
+			return Response.json(configView(deps.configRef.current), { headers: NO_STORE });
+		}
+		if (req.method === "POST") {
+			let json: unknown;
+			try {
+				json = await req.json();
+			} catch {
+				return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+			}
+			const parsed = configPatchBody.safeParse(json);
+			if (!parsed.success) {
+				return Response.json(
+					{ error: z.prettifyError(parsed.error) },
+					{ status: 422, headers: NO_STORE },
+				);
+			}
+			try {
+				const base = loadConfig() ?? deps.configRef.current;
+				const merged = parseConfig({ ...base, ...parsed.data });
+				writeConfig(merged);
+				const fresh = loadConfig();
+				if (fresh !== null) deps.configRef.current = fresh;
+				deps.onConfigWritten();
+				log.info("config written via app channel", {
+					model: parsed.data.model,
+					thinking: parsed.data.thinking,
+				});
+				return Response.json(configView(fresh ?? merged), { headers: NO_STORE });
+			} catch (err) {
+				if (err instanceof z.ZodError) {
+					return Response.json(
+						{ error: z.prettifyError(err) },
+						{ status: 422, headers: NO_STORE },
+					);
+				}
+				log.error("app config write failed", err);
+				return Response.json(
+					{ error: "config write failed" },
+					{ status: 500, headers: NO_STORE },
+				);
+			}
+		}
+		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+	}
+
+	// POST /api/app/tts — read-aloud: reply text → base64 ogg chunks the
+	// client plays back-to-back. 503 when speech is unconfigured or
+	// ffmpeg was down at boot (configRef.ttsDown), never mid-synthesis.
+	if (path === "/api/app/tts") {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		if (deps.speak === undefined) {
+			return Response.json(
+				{ error: "speech is not configured" },
+				{ status: 503, headers: NO_STORE },
+			);
+		}
+		let json: unknown;
+		try {
+			json = await req.json();
+		} catch {
+			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+		}
+		const parsed = ttsBody.safeParse(json);
+		if (!parsed.success) {
+			return Response.json(
+				{ error: z.prettifyError(parsed.error) },
+				{ status: 422, headers: NO_STORE },
+			);
+		}
+		try {
+			const chunks = await deps.speak(parsed.data.text);
+			if (chunks === null) {
+				return Response.json(
+					{ error: "speech is unavailable" },
+					{ status: 503, headers: NO_STORE },
+				);
+			}
+			log.info("app tts served", { chars: parsed.data.text.length, chunks: chunks.length });
+			const body: AppTtsResponse = {
+				chunks: chunks.map((c) => Buffer.from(c).toString("base64")),
+				mediaType: "audio/ogg",
+			};
+			return Response.json(body, { headers: NO_STORE });
+		} catch (err) {
+			log.error("app tts failed", err);
+			return Response.json(
+				{ error: "speech synthesis failed" },
+				{ status: 500, headers: NO_STORE },
+			);
+		}
+	}
+
 	if (path === "/api/app/chat") {
 		if (req.method !== "POST") {
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
@@ -345,6 +574,72 @@ export async function handleAppApi(
 				{ status: 503, headers: { ...NO_STORE, "retry-after": "30" } },
 			);
 		}
+
+		// Voice-note intake, the same seam tg runs: speech-flagged
+		// attachments get their transcript before submit, so a model that
+		// can't hear audio reads the words instead of a bare path. A
+		// failed transcription keeps the attachment — degrade, don't drop.
+		if (deps.transcribe !== undefined) {
+			for (const part of parsed.data.message.parts) {
+				if (part.type !== ATTACHMENT_PART) continue;
+				const ref = attachmentRefSchema.safeParse(part.data);
+				if (!ref.success || ref.data.speech !== true || ref.data.transcript !== undefined) {
+					continue;
+				}
+				try {
+					const transcript = await deps.transcribe({
+						path: ref.data.path,
+						mediaType: ref.data.mediaType,
+						filename: ref.data.filename,
+					});
+					if (transcript !== null) {
+						part.data = { ...ref.data, transcript };
+						log.info("app speech transcribed", {
+							conversation: convId,
+							filename: ref.data.filename,
+							chars: transcript.length,
+						});
+					}
+				} catch (err) {
+					log.warn("app speech transcription failed — attachment kept", {
+						conversation: convId,
+						filename: ref.data.filename,
+						error: String(err),
+					});
+				}
+			}
+		}
+
+		// First-burst titling — the tg lane's implicit-topic rule applied
+		// to app conversations: the first real text burst names the row
+		// via titleModel. Fires beside the turn, not after — the
+		// title===null re-check keeps an operator PATCH the winner and a
+		// deleted row (mid-flight DELETE) is just skipped.
+		if (deps.titleFor !== undefined && conv.title === null) {
+			const firstText = parsed.data.message.parts
+				.map((p) => (p.type === "text" && typeof p.text === "string" ? p.text : ""))
+				.join("\n")
+				.trim();
+			if (firstText !== "") {
+				void deps
+					.titleFor(firstText)
+					.then((title) => {
+						if (title === null || title === "") return;
+						const fresh = store.get(convId);
+						if (fresh !== null && fresh.title === null) {
+							store.setMeta(convId, { title, titleImplicit: true });
+							log.info("app conversation titled", { conversation: convId, title });
+						}
+					})
+					.catch((err: unknown) => {
+						log.warn("app conversation titling failed", {
+							conversation: convId,
+							error: String(err),
+						});
+					});
+			}
+		}
+
 		// Intake boundary: message → app address.
 		log.info("app intake", { conversation: convId, message: parsed.data.message.id });
 		const { sink, body } = appStreamSink(convId);

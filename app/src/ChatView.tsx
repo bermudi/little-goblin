@@ -9,6 +9,7 @@ import {
 	type UIMessage,
 } from "ai";
 import { getMessages, stopConversation, uploadAttachment } from "./api.ts";
+import { ToolRun, partFailed, partRunning } from "./tools/mod.tsx";
 import type { AttachmentRef } from "../../src/agent/attachments.ts";
 
 // ---------- transcript rendering ----------
@@ -97,51 +98,24 @@ function TextBlock({ text }: { text: string }) {
 	return <>{blocks}</>;
 }
 
-const TOOL_STATE_LABEL: Record<string, string> = {
-	"input-streaming": "running",
-	"input-available": "running",
-	"approval-requested": "waiting",
-	"approval-responded": "waiting",
-	"output-available": "done",
-	"output-error": "failed",
-	"output-denied": "refused",
-};
-
-function summarizeValue(value: unknown): string {
-	try {
-		const s = JSON.stringify(value);
-		return s.length > 300 ? `${s.slice(0, 300)}…` : s;
-	} catch {
-		return "(unprintable)";
-	}
-}
-
-// Tool activity collapses into one expandable row per run — the answer
-// stays readable, the work stays inspectable.
+// Tool activity collapses into one expandable fold per run — the answer
+// stays readable, the work stays inspectable. The fold opens itself
+// while a call is live (streaming rows show skeletons) and stays open
+// when a call failed; each row is its own fold inside, collapsed to
+// tool name + one-line outcome, expanding to the tool's component.
 function Worked({ parts }: { parts: (ToolUIPart | DynamicToolUIPart)[] }) {
-	const running = parts.some((p) => TOOL_STATE_LABEL[p.state] === "running");
-	const failed = parts.some((p) => p.state === "output-error");
+	const running = parts.some(partRunning);
+	const failures = parts.filter(partFailed).length;
 	const names = [...new Set(parts.map((p) => getToolName(p)))];
 	return (
-		<details className="worked">
+		<details className="worked" open={running || failures > 0}>
 			<summary>
 				{running ? "Working" : "Worked"} · {names.join(", ")}
-				{failed ? " — one failed" : ""}
+				{failures > 0 ? ` — ${failures} failed` : ""}
 			</summary>
 			<ul>
 				{parts.map((p, i) => (
-					<li key={i}>
-						<span className={`tool-state ${TOOL_STATE_LABEL[p.state] ?? "done"}`}>
-							{TOOL_STATE_LABEL[p.state] ?? p.state}
-						</span>{" "}
-						{getToolName(p)}
-						{p.state === "output-error" && (
-							<pre className="tool-detail">{p.errorText ?? "tool failed"}</pre>
-						)}
-						{p.state === "input-available" || p.state === "output-available" ? (
-							<pre className="tool-detail">{summarizeValue(p.input)}</pre>
-						) : null}
-					</li>
+					<ToolRun key={p.toolCallId === "" ? i : p.toolCallId} part={p} />
 				))}
 			</ul>
 		</details>

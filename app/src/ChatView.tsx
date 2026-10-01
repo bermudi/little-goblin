@@ -438,7 +438,7 @@ function Chat({
 	useEffect(() => {
 		const el = scrollRef.current;
 		if (el !== null && pinned.current) el.scrollTop = el.scrollHeight;
-	}, [messages]);
+	}, [messages, busy]);
 
 	// A seed arrives once (empty-state send → conversation created → this
 	// view mounts with it). The ref guards re-runs; onSeeded clears the

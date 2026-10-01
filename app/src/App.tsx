@@ -20,6 +20,31 @@ function relTime(iso: string): string {
 	return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+// Sidebar rows are single-line labels, so markdown furniture comes off
+// the stored title at display time: fences and their language tag,
+// inline-code backticks, link syntax (text survives), paired emphasis,
+// and line-lead markers. Mirrors conversation.ts's flatLine — the client
+// does its own pass because a running server may predate the store-side
+// flattening and still hand over a fenced title.
+export function flatLine(text: string): string {
+	return text
+		.replace(/```+[ \t]*[^\s`\n]*/g, " ")
+		.replace(/`([^`]*)`/g, "$1")
+		.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+		.replace(/(\*\*|__|~~)(.+?)\1/g, "$2")
+		.replace(/(\*|_)([^\s*_][^*_]*?[^\s*]|[^\s*_])\1/g, "$2")
+		.replace(/^[ \t]*(?:#{1,6}|>|[-*+]|\d+\.)[ \t]+/gm, "")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+// A title reduced to nothing falls through to the preview, same as the
+// server's `flatLine(r.title) || null` projection.
+function flatTitle(title: string | null): string | null {
+	if (title === null) return null;
+	return flatLine(title) || null;
+}
+
 // The token is the operator-pasted credential (the value behind the
 // auth.jsonl record config.appToken names), kept in localStorage. When
 // the server runs trust mode (appToken unset) no credential exists —
@@ -209,24 +234,31 @@ export function App() {
 					New conversation
 				</button>
 				<ul>
-					{(conversations ?? []).map((c) => (
-						<li key={c.id}>
-							<button
-								type="button"
-								className={c.id === current ? "conv current" : "conv"}
-								onClick={() => {
-									setCurrent(c.id);
-									setNavOpen(false);
-								}}
-							>
-								<span className="conv-head">
-									<span className="conv-title">{c.title ?? c.preview ?? "new conversation"}</span>
-									<span className="conv-time">{relTime(c.updatedAt)}</span>
-								</span>
-								{c.title !== null && c.preview !== "" && <span className="conv-preview">{c.preview}</span>}
-							</button>
-						</li>
-					))}
+					{(conversations ?? []).map((c) => {
+						// Both single-line labels get the display-side flatten —
+						// an old server hands over the raw store fields, and the
+						// preview is as markdown-laced as the title.
+						const title = flatTitle(c.title);
+						const preview = flatLine(c.preview);
+						return (
+							<li key={c.id}>
+								<button
+									type="button"
+									className={c.id === current ? "conv current" : "conv"}
+									onClick={() => {
+										setCurrent(c.id);
+										setNavOpen(false);
+									}}
+								>
+									<span className="conv-head">
+										<span className="conv-title">{title ?? (preview === "" ? "new conversation" : preview)}</span>
+										<span className="conv-time">{relTime(c.updatedAt)}</span>
+									</span>
+									{title !== null && preview !== "" && <span className="conv-preview">{preview}</span>}
+								</button>
+							</li>
+						);
+					})}
 				</ul>
 				{conversations !== null && conversations.length === 0 && (
 					<p className="empty">Nothing here yet — start a conversation.</p>

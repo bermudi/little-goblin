@@ -9,7 +9,8 @@ import { openStore, type ConversationStore } from "../conversation.ts";
 import { Runtime } from "../runtime.ts";
 import type { AuthStore } from "../auth.ts";
 import { startHttp } from "./mod.ts";
-import { handleAppApi } from "./app-channel.ts";
+import { handleAppApi, resolveAppAuth } from "./app-channel.ts";
+import { setLogFile } from "../log.ts";
 
 // End-to-end over the real HTTP listener with the model faked at the
 // provider edge (the suite's convention). The appApi closure mirrors
@@ -109,6 +110,9 @@ function setup(opts: { token?: string | undefined; wireApp?: boolean; deltas?: s
 			...(opts.token !== undefined ? { appToken: opts.token } : {}),
 		} as Config,
 	};
+	// Boot-time resolution, verbatim index.ts: the mode pins for the
+	// life of this "process" — a configRef flip below must not reach it.
+	const appTokenName = resolveAppAuth(opts.token);
 	const appDeps = { store, runtime, auth };
 	const http = startHttp({
 		configRef,
@@ -118,7 +122,7 @@ function setup(opts: { token?: string | undefined; wireApp?: boolean; deltas?: s
 		// module only through the opaque dep.
 		...(opts.wireApp === false
 			? {}
-			: { appApi: (req: Request, url: URL, tok: string | undefined) => handleAppApi(req, url, tok, appDeps) }),
+			: { appApi: (req: Request, url: URL) => handleAppApi(req, url, appTokenName, appDeps) }),
 	});
 	const call = (path: string, init: RequestInit = {}, bearer: string | null = APP_TOKEN_VALUE) =>
 		fetch(`http://127.0.0.1:${http.port}${path}`, {
@@ -129,17 +133,63 @@ function setup(opts: { token?: string | undefined; wireApp?: boolean; deltas?: s
 }
 
 describe("app channel http", () => {
-	test("unset appToken refuses every /api/app/* request", async () => {
+	test("boot resolution logs the auth mode — trust mode warns about funnel", () => {
+		const home = useHome();
+		const logFile = join(home, "goblin.log");
+		setLogFile(logFile);
+		try {
+			expect(resolveAppAuth(undefined)).toBeUndefined();
+			expect(resolveAppAuth(APP_TOKEN_NAME)).toBe(APP_TOKEN_NAME);
+			const lines = readFileSync(logFile, "utf8")
+				.trim()
+				.split("\n")
+				.map((l) => JSON.parse(l) as { level: string; msg: string });
+			expect(
+				lines.some(
+					(l) => l.level === "warn" && l.msg === "app channel auth: trust mode (no token; tailnet only)",
+				),
+			).toBe(true);
+			expect(lines.some((l) => l.level === "warn" && l.msg.includes("funnel"))).toBe(true);
+			expect(lines.some((l) => l.level === "info" && l.msg === "app channel auth: token required")).toBe(
+				true,
+			);
+		} finally {
+			setLogFile(null);
+		}
+	});
+
+	test("unset appToken is trust mode — /api/app/* serves unauthenticated", async () => {
 		const { http, call } = setup({ token: undefined });
 		try {
-			for (const [method, path] of [
-				["GET", "/api/app/conversations"],
-				["POST", "/api/app/conversations"],
-				["POST", "/api/app/chat"],
-			] as const) {
-				const res = await call(path, { method });
-				expect(res.status).toBe(503);
-			}
+			// No Authorization header at all — and a stray bearer is
+			// ignored too: there is nothing to check it against.
+			expect((await call("/api/app/conversations", {}, null)).status).toBe(200);
+			expect((await call("/api/app/conversations", {}, "bogus")).status).toBe(200);
+			const created = await call(
+				"/api/app/conversations",
+				{
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ id: "trust-01" }),
+				},
+				null,
+			);
+			expect(created.status).toBe(201);
+			expect((await call("/api/app/conversations/trust-01/messages", {}, null)).status).toBe(200);
+			const chat = await call(
+				"/api/app/chat",
+				{
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						conversationId: "app/trust-01",
+						message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
+					}),
+				},
+				null,
+			);
+			expect(chat.status).toBe(200);
+			await chat.text();
 		} finally {
 			http.stop();
 		}
@@ -166,12 +216,15 @@ describe("app channel http", () => {
 		}
 	});
 
-	test("token removal takes effect without a restart", async () => {
+	test("the auth mode is boot-pinned — a mid-run appToken flip does not apply", async () => {
 		const { http, call, configRef } = setup({ token: APP_TOKEN_NAME });
 		try {
 			expect((await call("/api/app/conversations")).status).toBe(200);
 			configRef.current = { ...configRef.current, appToken: undefined };
-			expect((await call("/api/app/conversations")).status).toBe(503);
+			// Live config now says trust, but the mode resolved at boot
+			// owns the gate: bare requests stay refused until a restart.
+			expect((await call("/api/app/conversations", {}, null)).status).toBe(401);
+			expect((await call("/api/app/conversations")).status).toBe(200);
 		} finally {
 			http.stop();
 		}

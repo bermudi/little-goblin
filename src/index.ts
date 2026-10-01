@@ -39,7 +39,7 @@ import { cleanupStaging } from "./reviewer.ts";
 import { OutageTracker } from "./memory-outage.ts";
 import { fireMail, fireWebhook, startScheduler, type SchedulerDeps } from "./scheduler.ts";
 import { startHttp } from "./http/mod.ts";
-import { handleAppApi } from "./http/app-channel.ts";
+import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
 import { wake } from "./wake.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { Runtime } from "./runtime.ts";
@@ -547,6 +547,11 @@ async function boot() {
 	// config-written one.
 	let searchInSet = config.search !== undefined;
 	let transcribeInSet = config.transcription !== undefined;
+	// The app channel's auth mode resolves once here at boot (DESIGN.md,
+	// App channel → Auth): appToken set → bearer required; unset → trust
+	// mode — the tailnet is the only lock. Boot-pinned per process, so a
+	// mid-run flip applies only after restart — onConfigWritten warns.
+	const appTokenName = resolveAppAuth(config.appToken);
 	const http = startHttp({
 		configRef,
 		botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN),
@@ -590,12 +595,12 @@ async function boot() {
 		// checker — same instance, no second auth closure. Absent
 		// reviewer block = no gate = the route answers 503.
 		...(jevGate ? { checkInjection: { gate: jevGate } } : {}),
-		// The app channel's API — always wired; an unset appToken in
-		// config refuses every /api/app/* request, so the door exists
-		// only when the operator names a credential. The handler injects
-		// opaque (app-channel.ts imports the runtime/AI-SDK graph, which
-		// must not enter http/mod.ts's DOM-lib typecheck program).
-		appApi: (req, url, appToken) => handleAppApi(req, url, appToken, { store, runtime, auth }),
+		// The app channel's API — always wired; the auth mode resolved
+		// above at boot (trust or bearer — no per-request config read).
+		// The handler injects opaque (app-channel.ts imports the
+		// runtime/AI-SDK graph, which must not enter http/mod.ts's
+		// DOM-lib typecheck program).
+		appApi: (req, url) => handleAppApi(req, url, appTokenName, { store, runtime, auth }),
 		onConfigWritten: () => {
 			setLogLevel(configRef.current.logLevel);
 			// publicUrl is operator-editable through the app — keep the menu
@@ -623,6 +628,11 @@ async function boot() {
 			// endpoint+bank hash) — a changed block needs a restart.
 			if (JSON.stringify(configRef.current.memory ?? null) !== JSON.stringify(memoryBootConfig ?? null)) {
 				log.warn("memory config changed — restart to apply");
+			}
+			// The app channel's auth mode is boot-pinned like memory —
+			// a flipped appToken applies only after restart.
+			if (configRef.current.appToken !== appTokenName) {
+				log.warn("appToken changed — restart to apply");
 			}
 		},
 	});

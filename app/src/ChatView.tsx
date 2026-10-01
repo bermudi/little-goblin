@@ -145,7 +145,7 @@ export function ChatView({
 	conversationId,
 	onTurnDone,
 }: {
-	token: string;
+	token: string | null;
 	conversationId: string;
 	onTurnDone: () => void;
 }) {
@@ -173,18 +173,19 @@ function Chat({
 	initial,
 	onTurnDone,
 }: {
-	token: string;
+	token: string | null;
 	conversationId: string;
 	initial: UIMessage[];
 	onTurnDone: () => void;
 }) {
 	// The transport speaks this channel's contract: one user message per
 	// POST, keyed by the app conversation id (DESIGN.md, App channel).
+	// token null = trust mode — the server wants no credential.
 	const transport = useMemo(
 		() =>
 			new DefaultChatTransport({
 				api: "/api/app/chat",
-				headers: { authorization: `Bearer ${token}` },
+				headers: token === null ? {} : { authorization: `Bearer ${token}` },
 				prepareSendMessagesRequest: ({ trigger, messageId, messages }) => ({
 					body: {
 						conversationId,

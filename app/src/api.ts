@@ -32,10 +32,16 @@ export class ApiError extends Error {
 	}
 }
 
-async function request<T>(token: string, path: string, init?: RequestInit): Promise<T> {
+// token null = trust mode: the server has no appToken, the tailnet is
+// the only lock, and requests go bare. A stored token is always sent
+// when present — trust mode ignores it either way.
+async function request<T>(token: string | null, path: string, init?: RequestInit): Promise<T> {
 	const res = await fetch(path, {
 		...init,
-		headers: { authorization: `Bearer ${token}`, ...(init?.headers ?? {}) },
+		headers: {
+			...(token === null ? {} : { authorization: `Bearer ${token}` }),
+			...(init?.headers ?? {}),
+		},
 	});
 	if (!res.ok) {
 		let detail = `http ${res.status}`;
@@ -50,11 +56,11 @@ async function request<T>(token: string, path: string, init?: RequestInit): Prom
 	return (await res.json()) as T;
 }
 
-export function listConversations(token: string): Promise<AppConversationList> {
+export function listConversations(token: string | null): Promise<AppConversationList> {
 	return request(token, "/api/app/conversations");
 }
 
-export function createConversation(token: string, title?: string): Promise<AppConversationCreate> {
+export function createConversation(token: string | null, title?: string): Promise<AppConversationCreate> {
 	return request(token, "/api/app/conversations", {
 		method: "POST",
 		headers: { "content-type": "application/json" },
@@ -62,19 +68,19 @@ export function createConversation(token: string, title?: string): Promise<AppCo
 	});
 }
 
-export function getMessages(token: string, id: string): Promise<AppMessageList> {
+export function getMessages(token: string | null, id: string): Promise<AppMessageList> {
 	return request(token, `/api/app/conversations/${encodeURIComponent(id.slice("app/".length))}/messages`);
 }
 
 // /stop rides the runtime's own stop — abort the turn server-side, not
 // just this client's stream (history keeps whatever the turn wrote).
-export function stopConversation(token: string, id: string): Promise<AppStopResponse> {
+export function stopConversation(token: string | null, id: string): Promise<AppStopResponse> {
 	return request(token, `/api/app/conversations/${encodeURIComponent(id.slice("app/".length))}/stop`, {
 		method: "POST",
 	});
 }
 
-export async function uploadAttachment(token: string, file: File): Promise<AppAttachmentResponse> {
+export async function uploadAttachment(token: string | null, file: File): Promise<AppAttachmentResponse> {
 	const form = new FormData();
 	form.append("file", file, file.name);
 	return request(token, "/api/app/attachments", { method: "POST", body: form });

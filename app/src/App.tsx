@@ -4,11 +4,13 @@ import { ChatView } from "./ChatView.tsx";
 import type { AppConversationList } from "../../src/http/app-wire.ts";
 
 // The token is the operator-pasted credential (the value behind the
-// auth.jsonl record config.appToken names), kept in localStorage.
+// auth.jsonl record config.appToken names), kept in localStorage. When
+// the server runs trust mode (appToken unset) no credential exists —
+// App probes unauthenticated first so the gate never shows.
 
-function TokenGate({ onToken }: { onToken: (token: string) => void }) {
+function TokenGate({ hint, onToken }: { hint: string | null; onToken: (token: string) => void }) {
 	const [draft, setDraft] = useState("");
-	const [error, setError] = useState<string | null>(null);
+	const [error, setError] = useState<string | null>(hint);
 	const [busy, setBusy] = useState(false);
 	const submit = async () => {
 		const token = draft.trim();
@@ -59,14 +61,44 @@ function TokenGate({ onToken }: { onToken: (token: string) => void }) {
 
 export function App() {
 	const [token, setToken] = useState<string | null>(loadToken);
+	// The gate is conditional: the server may be in trust mode (appToken
+	// unset — the tailnet is the only lock), where a bare request just
+	// works and the token screen must never show. A stored token answers
+	// the question itself through refresh(); with none stored, probe
+	// unauthenticated first — 200 means trust mode, 401 shows the gate.
+	const [gate, setGate] = useState<"probing" | "shown" | "passed">(
+		token === null ? "probing" : "passed",
+	);
+	const [probeHint, setProbeHint] = useState<string | null>(null);
 	const [conversations, setConversations] = useState<AppConversationList["conversations"] | null>(null);
 	const [current, setCurrent] = useState<string | null>(null);
 	const [listError, setListError] = useState<string | null>(null);
 	const [navOpen, setNavOpen] = useState(false);
 	const listSeq = useRef(0);
 
+	useEffect(() => {
+		if (gate !== "probing") return;
+		let live = true;
+		listConversations(null).then(
+			() => live && setGate("passed"),
+			(err) => {
+				if (!live) return;
+				if (!(err instanceof ApiError) || err.status !== 401) {
+					setProbeHint(
+						err instanceof ApiError
+							? `The app channel answered ${err.status} — check goblin's log.`
+							: "Couldn't reach goblin — check the tailnet.",
+					);
+				}
+				setGate("shown");
+			},
+		);
+		return () => {
+			live = false;
+		};
+	}, [gate]);
+
 	const refresh = useCallback(async () => {
-		if (token === null) return;
 		const seq = ++listSeq.current;
 		try {
 			const list = await listConversations(token);
@@ -79,8 +111,8 @@ export function App() {
 	}, [token]);
 
 	useEffect(() => {
-		void refresh();
-	}, [refresh]);
+		if (gate === "passed") void refresh();
+	}, [gate, refresh]);
 
 	// A dead token means 401s forever — offer a way back to the gate.
 	if (listError === "unauthorized") {
@@ -94,6 +126,8 @@ export function App() {
 						clearToken();
 						setToken(null);
 						setListError(null);
+						setProbeHint(null);
+						setGate("shown");
 					}}
 				>
 					Paste a new token
@@ -102,7 +136,26 @@ export function App() {
 		);
 	}
 
-	if (token === null) return <TokenGate onToken={setToken} />;
+	if (gate === "probing") {
+		return (
+			<div className="gate">
+				<h1>goblin</h1>
+				<p className="gate-hint">Connecting…</p>
+			</div>
+		);
+	}
+
+	if (gate === "shown") {
+		return (
+			<TokenGate
+				hint={probeHint}
+				onToken={(t) => {
+					setToken(t);
+					setGate("passed");
+				}}
+			/>
+		);
+	}
 
 	const newConversation = async () => {
 		try {

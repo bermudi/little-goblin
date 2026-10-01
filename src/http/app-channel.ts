@@ -1,8 +1,9 @@
 // App channel HTTP surface (DESIGN.md, App channel) — the React client's
-// API under /api/app/*. Bearer-token auth, separate from the mini app's
-// initData path: the credential is an auth.jsonl record named by
-// config.appToken, resolved per request. An unset appToken refuses every
-// request with a log line — the surface is never silently open.
+// API under /api/app/*. The auth mode resolves once at boot
+// (resolveAppAuth, wired by index.ts): config.appToken names an
+// auth.jsonl record → bearer required per request; unset → trust mode —
+// the tailnet is the only lock and requests pass unauthenticated
+// (device-level trust, the collie precedent).
 //
 // Chat rides the shared runtime unchanged: a submitted message lands in
 // the same serial lane, the same steering and /stop fencing apply, and
@@ -49,6 +50,22 @@ export interface AppChannelDeps {
 
 // ---------- auth ----------
 
+// Boot-time auth mode resolution, called once by the composition root —
+// never per request. The return is the auth.jsonl record name
+// handleAppApi checks bearer tokens against; undefined means trust
+// mode. Both lines are deliberate: the mode states the posture, and the
+// funnel warn is the guardrail — trust mode behind a public URL is a
+// misconfiguration this line exists to catch.
+export function resolveAppAuth(appToken: string | undefined): string | undefined {
+	if (appToken === undefined) {
+		log.warn("app channel auth: trust mode (no token; tailnet only)");
+		log.warn("app channel trust mode must never sit behind a public URL (funnel) — set appToken first");
+	} else {
+		log.info("app channel auth: token required", { record: appToken });
+	}
+	return appToken;
+}
+
 // Bearer equality without a timing oracle: fixed-length digests of both
 // sides, so a wrong token's length leaks nothing.
 function bearerMatches(presented: string, expected: string): boolean {
@@ -59,21 +76,16 @@ function bearerMatches(presented: string, expected: string): boolean {
 }
 
 // Every /api/app/* request passes here first. Returns null when the
-// request may proceed; the Response is the refusal. Both refusal kinds
-// log — a silently open door is the failure this gate exists against.
+// request may proceed; the Response is the refusal. Trust mode (the
+// boot-resolved undefined) passes unconditionally — the tailnet is the
+// lock, and the mode was logged once at boot, not per request.
 async function appAuth(
 	req: Request,
 	pathname: string,
 	deps: AppChannelDeps,
 	appToken: string | undefined,
 ): Promise<Response | null> {
-	if (appToken === undefined) {
-		log.warn("app api refused — appToken not configured", { path: pathname });
-		return Response.json(
-			{ error: "app channel is not configured" },
-			{ status: 503, headers: NO_STORE },
-		);
-	}
+	if (appToken === undefined) return null;
 	let expected: string;
 	try {
 		expected = await deps.auth.resolve(appToken);

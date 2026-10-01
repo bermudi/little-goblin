@@ -1822,18 +1822,25 @@ twice. `POST /api/app/conversations/<id>/stop` rides `runtime.stop` —
 the same epoch bump + abort the Telegram `/stop` command owns — so the
 client's Stop button ends the turn server-side, not just its stream.
 
-**Auth.** No Telegram `initData` exists outside Telegram, so the app
-authenticates with a bearer token on `/api/app/*`. `appToken` in config
-names an auth.jsonl record — config stays secret-free per the Config
-invariant — resolved per request through the same `resolve()` every
-other credential rides (pass-keys `!command` records included). Rotation
-has two speeds: pointing `appToken` at a different record name applies
-live (config is read per request); rotating a record's value needs a
-restart, because `loadAuth` is a boot-time snapshot and `resolve`
-memoizes per name. `appToken` unset or unresolvable → every route
-refuses 503 fail-loud with a log line, never silently open; a wrong
-token → 401, also logged. The mini app keeps its initData validation
-untouched.
+**Auth.** No Telegram `initData` exists outside Telegram. The app
+channel's lock is a bearer token on `/api/app/*` — optional since
+2026-09-30 by operator ruling, on the collie precedent: device-level
+trust — tailscale proves the device — with no person-level auth.
+`appToken` in config names an auth.jsonl record — config stays
+secret-free per the Config invariant — and the mode resolves once per
+process at boot (boot-pinned: a mid-run `appToken` flip applies only
+after restart, `onConfigWritten` warns). Set → bearer required: the
+record resolves per request through the same `resolve()` every other
+credential rides (pass-keys `!command` records included); a wrong or
+missing token → 401, an unresolvable record → 503 — both logged.
+Rotating a record's value needs a restart, because `loadAuth` is a
+boot-time snapshot and `resolve` memoizes per name. Unset → trust
+mode: `/api/app/*` serves unauthenticated — the tailnet is the only
+lock. Boot logs the mode either way, and trust mode adds a warn that
+is the guardrail: **funnel is a misconfiguration** — if `publicUrl`
+ever points at a funnel address (public HTTPS), a token becomes
+MANDATORY; the warn line exists to catch it. The mini app keeps its
+initData validation untouched.
 
 **Client.** React + `@ai-sdk/react` (`useChat`) in `app/` — Vite, strict
 TS, its own tsconfig program wired into `bun run typecheck`. This is the

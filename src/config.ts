@@ -504,8 +504,9 @@ const configSchema = z
 		// The app channel's bearer credential (DESIGN.md, App channel) —
 		// an auth.jsonl record NAME, resolved per request like every
 		// other credential; the token value never sits in this file.
-		// Absent = every /api/app/* refuses with a log line — the
-		// surface is never silently open. Hand-edited only.
+		// Absent = trust mode: /api/app/* serves unauthenticated — the
+		// tailnet is the only lock. The mode is boot-pinned; a mid-run
+		// flip needs a restart. Hand-edited only.
 		appToken: z.string().min(1).optional(),
 	})
 	// Cross-field: every model ref must parse and name a configured provider.

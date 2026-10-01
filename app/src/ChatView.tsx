@@ -33,11 +33,38 @@ function inline(text: string): ReactNode[] {
 	return out;
 }
 
+// Fenced blocks render as a card: mono language label, copy button, then
+// the code. No syntax coloring — mono + label + copy (the Computer v1).
+function CodeBlock({ lang, code }: { lang: string; code: string }) {
+	const [copied, setCopied] = useState(false);
+	const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+	useEffect(() => () => clearTimeout(timer.current), []);
+	const copy = () => {
+		void navigator.clipboard.writeText(code).catch(() => {});
+		setCopied(true);
+		clearTimeout(timer.current);
+		timer.current = setTimeout(() => setCopied(false), 1500);
+	};
+	return (
+		<div className="codeblock">
+			<div className="codeblock-head">
+				<span className="codeblock-lang">{lang === "" ? "text" : lang}</span>
+				<button type="button" className="codeblock-copy" onClick={copy}>
+					{copied ? "✓" : "copy"}
+				</button>
+			</div>
+			<pre>
+				<code>{code}</code>
+			</pre>
+		</div>
+	);
+}
+
 function TextBlock({ text }: { text: string }) {
 	// Fenced blocks are code; the rest is paragraphs separated by blank
 	// lines. pre-wrap keeps single newlines readable.
 	const blocks: ReactNode[] = [];
-	const fence = /```[^\n]*\n?([\s\S]*?)(?:```|$)/g;
+	const fence = /```([^\n`]*)\n?([\s\S]*?)(?:```|$)/g;
 	let last = 0;
 	let i = 0;
 	for (const m of text.matchAll(fence)) {
@@ -46,7 +73,7 @@ function TextBlock({ text }: { text: string }) {
 			const trimmed = para.trim();
 			if (trimmed !== "") blocks.push(<p key={i++}>{inline(trimmed)}</p>);
 		}
-		blocks.push(<pre key={i++}><code>{m[1]}</code></pre>);
+		blocks.push(<CodeBlock key={i++} lang={(m[1] ?? "").trim()} code={m[2] ?? ""} />);
 		last = m.index + m[0].length;
 	}
 	for (const para of text.slice(last).split(/\n{2,}/)) {
@@ -107,10 +134,40 @@ function Worked({ parts }: { parts: (ToolUIPart | DynamicToolUIPart)[] }) {
 	);
 }
 
+function formatSize(n: number): string {
+	if (n < 1024) return `${n} B`;
+	if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+	return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function FileIcon() {
+	return (
+		<svg
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth="1.75"
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			width="12"
+			height="12"
+		>
+			<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+			<polyline points="14 2 14 8 20 8" />
+		</svg>
+	);
+}
+
 function AttachmentChip({ data }: { data: unknown }) {
 	const ref = data as AttachmentRef;
 	if (typeof ref?.filename !== "string") return null;
-	return <span className="attachment">📎 {ref.filename}</span>;
+	return (
+		<span className="attachment">
+			<FileIcon />
+			<span className="attachment-name">{ref.filename}</span>
+			{typeof ref.size === "number" && <span className="attachment-size">{formatSize(ref.size)}</span>}
+		</span>
+	);
 }
 
 function MessageParts({ parts }: { parts: UIMessage["parts"] }) {
@@ -132,7 +189,13 @@ function MessageParts({ parts }: { parts: UIMessage["parts"] }) {
 		if (p.type === "text") out.push(<TextBlock key={i} text={p.text} />);
 		else if (p.type === "reasoning") out.push(<div key={i} className="reasoning">{p.text}</div>);
 		else if (p.type === "data-attachment") out.push(<AttachmentChip key={i} data={p.data} />);
-		else if (p.type === "file") out.push(<span key={i} className="attachment">📎 {p.filename ?? "attachment"}</span>);
+		else if (p.type === "file")
+			out.push(
+				<span key={i} className="attachment">
+					<FileIcon />
+					<span className="attachment-name">{p.filename ?? "attachment"}</span>
+				</span>,
+			);
 		// step-start and other plumbing parts render as nothing.
 	}
 	return <>{out}</>;
@@ -247,22 +310,9 @@ function Chat({
 						<MessageParts parts={m.parts} />
 					</div>
 				))}
-				{busy && <div className="msg assistant pending">…</div>}
+				{busy && <div className="msg assistant pending shimmer">…</div>}
 				{error !== undefined && <div className="error">The turn failed: {error.message}</div>}
 			</div>
-			{pending.length > 0 && (
-				<div className="pending-attachments">
-					{pending.map((e, i) => (
-						<span key={i} className={e.failed === true ? "attachment failed" : "attachment"}>
-							{e.uploading === true ? "↑ " : e.failed === true ? "✗ " : ""}
-							{e.ref.filename}
-							<button type="button" aria-label="Remove" onClick={() => setPending((p) => p.filter((_, j) => j !== i))}>
-								×
-							</button>
-						</span>
-					))}
-				</div>
-			)}
 			<form
 				className="composer"
 				onSubmit={(e) => {
@@ -280,9 +330,23 @@ function Chat({
 						e.target.value = "";
 					}}
 				/>
-				<button type="button" aria-label="Attach" onClick={() => fileInput.current?.click()}>
-					📎
-				</button>
+				{pending.length > 0 && (
+					<div className="composer-attachments">
+						{pending.map((e, i) => (
+							<span key={i} className={e.failed === true ? "attachment failed" : "attachment"}>
+								<FileIcon />
+								<span className="attachment-name">
+									{e.uploading === true ? "↑ " : e.failed === true ? "✗ " : ""}
+									{e.ref.filename}
+								</span>
+								<span className="attachment-size">{formatSize(e.ref.size)}</span>
+								<button type="button" aria-label="Remove" onClick={() => setPending((p) => p.filter((_, j) => j !== i))}>
+									×
+								</button>
+							</span>
+						))}
+					</div>
+				)}
 				<textarea
 					value={draft}
 					rows={1}
@@ -295,23 +359,46 @@ function Chat({
 						}
 					}}
 				/>
-				{busy ? (
-					// Stop means stop: ask the runtime to abort the turn, then
-					// let go of this client's stream. History keeps what was written.
-					<button
-						type="button"
-						onClick={() => {
-							void stopConversation(token, conversationId).catch(() => {});
-							void stop();
-						}}
-					>
-						Stop
+				<div className="composer-bar">
+					<button type="button" className="icon-btn" aria-label="Attach" onClick={() => fileInput.current?.click()}>
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" width="16" height="16">
+							<line x1="12" y1="5" x2="12" y2="19" />
+							<line x1="5" y1="12" x2="19" y2="12" />
+						</svg>
 					</button>
-				) : (
-					<button type="submit" disabled={draft.trim() === "" && pending.every((e) => e.failed === true || e.uploading === true)}>
-						Send
-					</button>
-				)}
+					{busy ? (
+						// Stop means stop: ask the runtime to abort the turn, then
+						// let go of this client's stream. History keeps what was written.
+						<button
+							type="button"
+							className="stop-btn"
+							aria-label="Stop"
+							onClick={() => {
+								void stopConversation(token, conversationId).catch(() => {});
+								void stop();
+							}}
+						>
+							<svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12">
+								<rect x="7" y="7" width="10" height="10" rx="2" />
+							</svg>
+						</button>
+					) : (
+						<button
+							type="submit"
+							className="send-btn"
+							aria-label="Send"
+							disabled={draft.trim() === "" && pending.every((e) => e.failed === true || e.uploading === true)}
+						>
+							<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+								<path
+									fillRule="evenodd"
+									d="M8 14a.75.75 0 0 1-.75-.75V4.56L4.03 7.78a.75.75 0 0 1-1.06-1.06l4.5-4.5a.75.75 0 0 1 1.06 0l4.5 4.5a.75.75 0 0 1-1.06 1.06L8.75 4.56v8.69A.75.75 0 0 1 8 14Z"
+									clipRule="evenodd"
+								/>
+							</svg>
+						</button>
+					)}
+				</div>
 			</form>
 		</div>
 	);

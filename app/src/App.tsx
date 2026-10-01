@@ -3,6 +3,22 @@ import { ApiError, clearToken, createConversation, listConversations, loadToken,
 import { ChatView } from "./ChatView.tsx";
 import type { AppConversationList } from "../../src/http/app-wire.ts";
 
+// Sidebar timestamps are relative: "now", minutes, hours, days, then a
+// short date — the format Open WebUI's chat list uses.
+function relTime(iso: string): string {
+	const ts = Date.parse(iso);
+	if (Number.isNaN(ts)) return "";
+	const diffSec = Math.floor((Date.now() - ts) / 1000);
+	if (diffSec < 60) return "now";
+	const diffMin = Math.floor(diffSec / 60);
+	if (diffMin < 60) return `${diffMin}m`;
+	const diffHr = Math.floor(diffMin / 60);
+	if (diffHr < 24) return `${diffHr}h`;
+	const diffDay = Math.floor(diffHr / 24);
+	if (diffDay < 7) return `${diffDay}d`;
+	return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 // The token is the operator-pasted credential (the value behind the
 // auth.jsonl record config.appToken names), kept in localStorage. When
 // the server runs trust mode (appToken unset) no credential exists —
@@ -185,7 +201,10 @@ export function App() {
 									setNavOpen(false);
 								}}
 							>
-								<span className="conv-title">{c.title ?? c.preview ?? "new conversation"}</span>
+								<span className="conv-head">
+									<span className="conv-title">{c.title ?? c.preview ?? "new conversation"}</span>
+									<span className="conv-time">{relTime(c.updatedAt)}</span>
+								</span>
 								{c.title !== null && c.preview !== "" && <span className="conv-preview">{c.preview}</span>}
 							</button>
 						</li>
@@ -198,6 +217,10 @@ export function App() {
 					<p className="error">{listError === "create failed" ? "Couldn't start a conversation." : "Couldn't refresh the list."}</p>
 				)}
 			</nav>
+			<div
+				className={navOpen ? "scrim open" : "scrim"}
+				onClick={() => setNavOpen(false)}
+			/>
 			<main>
 				<header>
 					<button
@@ -206,7 +229,18 @@ export function App() {
 						aria-label="Conversations"
 						onClick={() => setNavOpen((v) => !v)}
 					>
-						≡
+						<svg
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							strokeWidth="1.75"
+							strokeLinecap="round"
+							width="18"
+							height="18"
+						>
+							<rect x="3" y="4" width="18" height="16" rx="3" />
+							<line x1="9.5" y1="4" x2="9.5" y2="20" />
+						</svg>
 					</button>
 					<h1>goblin</h1>
 				</header>

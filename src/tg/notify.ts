@@ -5,6 +5,7 @@
 // grammy-aware module by design: domain code hands over ids, never
 // context objects.
 import type { Api } from "grammy";
+import { channelOf } from "../conversation.ts";
 import { log } from "../log.ts";
 
 export function parseConversationAddress(
@@ -17,6 +18,16 @@ export function parseConversationAddress(
 	return null;
 }
 
+// The door each notice needs. An app conversation is a deliberate skip,
+// not a parse failure — app conversations ring nothing (DESIGN.md, App
+// channel: no push), and their own history stays the durable record.
+function noticeDoor(
+	conversationId: string,
+): { chatId: number; threadId: number | null } | "app" | null {
+	if (channelOf(conversationId) === "app") return "app";
+	return parseConversationAddress(conversationId);
+}
+
 // Throws on delivery failure — the outage tracker retries on the next
 // worker failure, so the error must propagate, never log-and-swallow.
 export async function sendMemoryOutageNotice(
@@ -25,7 +36,14 @@ export async function sendMemoryOutageNotice(
 	sinceMs: number,
 	queued: number,
 ): Promise<void> {
-	const addr = parseConversationAddress(conversationId);
+	const addr = noticeDoor(conversationId);
+	if (addr === "app") {
+		log.info("memory outage notice skipped — app conversation rings nothing", {
+			conversation: conversationId,
+			queued,
+		});
+		return;
+	}
 	if (!addr) throw new Error(`unparseable conversation id: ${conversationId}`);
 	const hours = Math.max(1, Math.round(sinceMs / 3_600_000));
 	const text =
@@ -52,7 +70,14 @@ export async function sendMemoryBlockedNotice(
 	error: string | null,
 	attempts: number,
 ): Promise<void> {
-	const addr = parseConversationAddress(conversationId);
+	const addr = noticeDoor(conversationId);
+	if (addr === "app") {
+		log.info("memory blocked notice skipped — app conversation rings nothing", {
+			conversation: conversationId,
+			attempts,
+		});
+		return;
+	}
 	if (!addr) throw new Error(`unparseable conversation id: ${conversationId}`);
 	const text =
 		`memory retention blocked for one exchange: ${(error ?? "unknown error").slice(0, 120)} — ` +
@@ -75,7 +100,14 @@ export async function sendSkillSavedNotice(
 	conversationId: string,
 	skills: string[],
 ): Promise<void> {
-	const addr = parseConversationAddress(conversationId);
+	const addr = noticeDoor(conversationId);
+	if (addr === "app") {
+		log.info("skill saved notice skipped — app conversation rings nothing", {
+			conversation: conversationId,
+			skills,
+		});
+		return;
+	}
 	if (!addr) throw new Error(`unparseable conversation id: ${conversationId}`);
 	const names = skills.length === 1 ? `skill: ${skills[0]}` : `skills: ${skills.join(", ")}`;
 	await api.sendMessage(

@@ -16,7 +16,7 @@ import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import { paths } from "../config.ts";
 import { log } from "../log.ts";
-import type { Conversation } from "../conversation.ts";
+import { channelOf, type Conversation } from "../conversation.ts";
 import { formatSkillsSection, loadCatalog } from "./skills.ts";
 
 // Last-seen content hash per prompt source, process-wide. An operator
@@ -135,12 +135,17 @@ export function buildSystemPrompt(
 	noteSource("USER.md", user);
 	noteSource("skills", skillsSection.join("\n"));
 
+	// The channel's name is the only prompt line the address flips —
+	// everything else is shared machinery (DESIGN.md, App channel).
+	const onApp = channelOf(conv.id) === "app";
+	const channel = onApp ? "the goblin app" : "Telegram";
+
 	const text = [
 		(soul ?? "You are goblin, a personal AI agent.").trim(),
 		"",
 		"## environment",
 		"",
-		`- You are talking to your operator on Telegram (${conv.id}).`,
+		`- You are talking to your operator via ${channel} (${conv.id}).`,
 		`- Working directory: ${paths.workspace()} — fixed, same for every chat.`,
 		`- No clock: the current date/time is not in this prompt — run \`date\` via`,
 		`  bash whenever it matters.`,
@@ -183,7 +188,7 @@ export function buildSystemPrompt(
 					`  operator statements take precedence.`,
 			]
 			: []),
-		`- Telegram is the UI: messages are plain text/Markdown, media arrives as`,
+		`- ${onApp ? "The goblin app" : "Telegram"} is the UI: messages are plain text/Markdown, media arrives as`,
 		`  file paths or inline parts. Keep replies chat-sized; write files for`,
 		`  anything long.`,
 		`- SOUL.md in the workspace root is your identity; AGENTS.md is your own`,

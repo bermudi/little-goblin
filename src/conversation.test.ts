@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UIMessage } from "ai";
-import { addressId, openStore, type ConversationStore } from "./conversation.ts";
+import { addressId, appAddress, channelOf, openStore, type ConversationStore } from "./conversation.ts";
 
 let dirs: string[] = [];
 function tmpdb(): string {
@@ -457,6 +457,77 @@ describe("chat search", () => {
 		const mid = store.eventContext(c.id, 3, 0);
 		expect(mid).toHaveLength(1);
 		expect(mid[0]!.text).toBe("three");
+		store.close();
+	});
+});
+
+describe("app channel addresses", () => {
+	test("addressId serializes an app address to its app/ id", () => {
+		expect(addressId(appAddress("chat-01"))).toBe("app/chat-01");
+		expect(addressId({ kind: "dm", chatId: 5 })).toBe("dm:5");
+		expect(addressId({ kind: "topic", chatId: -100, threadId: 7 })).toBe("topic:-100:7");
+	});
+
+	test("channelOf routes on the id prefix — the whole discriminant", () => {
+		expect(channelOf("app/chat-01")).toBe("app");
+		expect(channelOf("dm:5")).toBe("telegram");
+		expect(channelOf("topic:-100:7")).toBe("telegram");
+		// A telegram id can never collide: ':' can't follow "app" in the
+		// telegram formats, and "/" can't appear in either.
+		expect(channelOf("dm:app/1")).toBe("telegram");
+	});
+
+	test("malformed app ids are rejected at the boundary, never stored", () => {
+		for (const bad of ["", "a b", "a/b", "../x", "-lead", "_lead", "x".repeat(65), "é"]) {
+			expect(() => appAddress(bad)).toThrow();
+		}
+		// The literal path is guarded too — addressId revalidates.
+		expect(() =>
+			addressId({ kind: "app", appId: "a/b", chatId: 0, threadId: 0 }),
+		).toThrow();
+	});
+});
+
+describe("app channel store", () => {
+	test("resolve creates an app conversation with no telegram coordinates", () => {
+		const store = openStore(tmpdb());
+		const a = store.resolve(appAddress("chat-01"), "/w");
+		expect(a.id).toBe("app/chat-01");
+		expect(a.chatId).toBe(0);
+		expect(a.threadId).toBeNull();
+		expect(a.epoch).toBe(0);
+		const b = store.resolve(appAddress("chat-01"), "/other");
+		expect(b.id).toBe(a.id);
+		store.close();
+	});
+
+	test("app and telegram pools never mix in the same store", () => {
+		const store = openStore(tmpdb());
+		const tg = store.resolve({ kind: "dm", chatId: 42 }, "/w");
+		const app = store.resolve(appAddress("chat-01"), "/w");
+		expect(store.listAppConversations().map((c) => c.id)).toEqual([app.id]);
+		expect(channelOf(tg.id)).toBe("telegram");
+		expect(channelOf(app.id)).toBe("app");
+		// Histories are disjoint — writes on one side never cross.
+		store.append(app.id, [msg("app side")]);
+		store.append(tg.id, [msg("telegram side")]);
+		expect(store.history(app.id).map((m) => (m.parts[0] as { text: string }).text)).toEqual(["app side"]);
+		expect(store.history(tg.id).map((m) => (m.parts[0] as { text: string }).text)).toEqual(["telegram side"]);
+		store.close();
+	});
+
+	test("listAppConversations: newest activity first, preview off the last event", () => {
+		const store = openStore(tmpdb());
+		const idle = store.resolve(appAddress("chat-01"), "/w");
+		const active = store.resolve(appAddress("chat-02"), "/w");
+		expect(store.listAppConversations().map((c) => c.id)).toEqual([idle.id, active.id]);
+		store.append(active.id, [msg("latest app exchange")]);
+		const list = store.listAppConversations();
+		expect(list[0]!.id).toBe(active.id);
+		expect(list[0]!.preview).toBe("latest app exchange");
+		expect(list[0]!.updatedAt >= list[0]!.createdAt).toBe(true);
+		expect(list[1]!.id).toBe(idle.id);
+		expect(list[1]!.preview).toBe("");
 		store.close();
 	});
 });

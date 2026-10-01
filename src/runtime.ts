@@ -18,6 +18,7 @@ import {
 	type ModelMessage,
 	type ToolSet,
 	type UIMessage,
+	type UIMessageChunk,
 } from "ai";
 import type { ProviderOptions, ToolExecutionOptions } from "@ai-sdk/provider-utils";
 import { randomUUID } from "node:crypto";
@@ -100,6 +101,12 @@ export interface TurnSink {
 	onTextDelta(delta: string): void;
 	onReasoningDelta(delta: string): void;
 	onToolCall(toolName: string, input: unknown): void;
+	// Raw UIMessage-stream pass-through — the app channel's HTTP surface
+	// forwards every chunk to the client verbatim, where the delta
+	// methods above are telegram delivery (DESIGN.md, App channel).
+	// Called on the head sink only, after the authority check, for every
+	// chunk the runtime consumes — including finish/error/abort.
+	onStreamChunk?(chunk: UIMessageChunk): void;
 	onVoiceNote?(audio: Uint8Array): Promise<void>;
 	// The send_file tool's door, matching speak's: the tool hands a
 	// workspace path to the sink, which owns the Telegram send — so
@@ -1009,6 +1016,11 @@ export class Runtime {
 			const toolNameByCallId = new Map<string, string>();
 			for await (const chunk of uiStream) {
 				this.checkAuthority(convId, epoch);
+				// The app channel's sink rides the raw stream — it serializes
+				// each chunk to the SSE wire verbatim (DESIGN.md, App
+				// channel). The fence above is its back-pressure-free cut:
+				// a fenced turn stops streaming to the client too.
+				sink.onStreamChunk?.(chunk);
 				switch (chunk.type) {
 					case "start-step":
 						// A new step is always a new block — and id comparison

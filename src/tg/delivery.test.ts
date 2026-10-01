@@ -881,3 +881,16 @@ describe("delivery files", () => {
 		}
 	});
 });
+
+describe("channel guard", () => {
+	// The grammy door refuses app conversations outright (DESIGN.md, App
+	// channel): app/<id> has no chat, so a routing bug must throw here —
+	// never silently address the chat_id 0 filler.
+	test("an app conversation cannot get a telegram sink", () => {
+		const { api, msgs } = fakeApi({});
+		expect(() =>
+			makeDeliverySink(api, { ...conv, id: "app/chat-01", chatId: 0 }, undefined, 0),
+		).toThrow("app conversation");
+		expect(msgs).toHaveLength(0);
+	});
+});

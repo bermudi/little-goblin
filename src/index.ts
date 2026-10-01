@@ -21,7 +21,7 @@ import {
 	type ThinkingLevel,
 	type TtsConfig,
 } from "./config.ts";
-import { openStore } from "./conversation.ts";
+import { channelOf, openStore, type Conversation } from "./conversation.ts";
 import { openDelegations } from "./delegations.ts";
 import {
 	startDelegationLifecycle,
@@ -118,7 +118,11 @@ async function boot() {
 	// startBot sits inside startHttp — the assignment happens before
 	// it), so a null read there is a wiring bug, not a runtime state.
 	let delegationLifecycle: DelegationLifecycle | null = null;
-	const delegateDeps = (conv: { chatId: number; threadId: number | null }) => {
+	const delegateDeps = (conv: Conversation) => {
+		// App conversations get no delegate tool: delegation results wake
+		// a Telegram sink the channel doesn't have (DESIGN.md, App
+		// channel — disjoint pools).
+		if (channelOf(conv.id) === "app") return undefined;
 		if (configRef.current.delegation === undefined || delegations === null || herdr === null) {
 			return undefined;
 		}
@@ -248,6 +252,12 @@ async function boot() {
 		},
 		makeTools: (conv, deliverVoice, recording, deliverFile, accepts) => {
 			const tts = configRef.current.tts;
+			// Telegram-bound tools don't exist on the app channel: program
+			// hooks and delegate results wake Telegram sinks, mail drafts
+			// post Telegram approval buttons. Their dep slots go undefined,
+			// so the tools never register on an app turn (DESIGN.md, App
+			// channel — disjoint pools).
+			const telegram = channelOf(conv.id) === "telegram";
 			return makeTools(
 				paths.workspace(),
 				tts && !configRef.ttsDown && deliverVoice
@@ -274,16 +284,18 @@ async function boot() {
 				// bare api.sendMessage never lands in history, so the token
 				// stays out of model context. publicUrl reads live: the mini app
 				// can change it between turns.
-				{
-					programs,
-					chatId: conv.chatId,
-					threadId: conv.threadId,
-					publicUrl: () => configRef.current.publicUrl,
-					sendPrivate: makePrivateSender(
-						(id, text) => tg.bot.api.sendMessage(id, text),
-						() => configRef.current.allowedUsers,
-					),
-				},
+				telegram
+					? {
+							programs,
+							chatId: conv.chatId,
+							threadId: conv.threadId,
+							publicUrl: () => configRef.current.publicUrl,
+							sendPrivate: makePrivateSender(
+								(id, text) => tg.bot.api.sendMessage(id, text),
+								() => configRef.current.allowedUsers,
+							),
+						}
+					: undefined,
 				// The send_file tool hands workspace paths to the turn's
 				// delivery sink, which owns the Telegram send.
 				deliverFile ? { deliver: deliverFile } : undefined,
@@ -319,7 +331,7 @@ async function boot() {
 				// taps hold it instead), and the draft's address is
 				// pinned here, per conversation. Reads left for the
 				// goblin-mail wrapper (bash + gws skill).
-				configRef.current.mail !== undefined
+				telegram && configRef.current.mail !== undefined
 					? {
 							requestDraft: (input) =>
 								mailApproval.requestDraft(input, {

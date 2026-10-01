@@ -1,7 +1,8 @@
 // Conversation store — SQLite (bun:sqlite, WAL). A conversation is keyed by
-// its Telegram address: the DM itself, or a forum topic in the operator's
-// group. Owns meta (model/thinking overrides, epoch) and the durable
-// event history as UIMessage-format JSON rows.
+// its channel address: a Telegram DM or forum topic, or a client-minted app
+// id (DESIGN.md, App channel — two disjoint pools, one store). Owns meta
+// (model/thinking overrides, epoch) and the durable event history as
+// UIMessage-format JSON rows.
 //
 // Durability = WAL + transactions, not tmp/fsync/rename.
 
@@ -15,19 +16,56 @@ import type { MemoryDocument } from "./hindsight.ts";
 
 // ---------- identity ----------
 
-// The Telegram address IS the conversation identity.
+// The channel address IS the conversation identity (DESIGN.md, App
+// channel): a Telegram DM or forum topic, or an app conversation keyed by
+// a client-minted id. Routing picks the door on this kind alone. The app
+// member's Telegram coordinates are literal-0 fillers — an app address
+// has none; the typed zeros keep existing coordinate reads on the union
+// honest (always a number, never a real chat) instead of forcing every
+// telegram-side reader to re-narrow.
 export type ConversationAddress =
 	| { kind: "dm"; chatId: number }
-	| { kind: "topic"; chatId: number; threadId: number };
+	| { kind: "topic"; chatId: number; threadId: number }
+	| { kind: "app"; appId: string; chatId: 0; threadId: 0 };
+
+export const APP_ID_PREFIX = "app/";
+
+// App ids are client-minted but not arbitrary: the id rides the "app/"
+// conversation id and an HTTP path segment, so it stays url-safe and
+// slash-free (a uuid or nanoid fits). Validated at addressId — the single
+// writer of the format — so a malformed id can never reach the store.
+export const appIdSchema = z
+	.string()
+	.regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/, "app ids are [A-Za-z0-9_-], 1-64 chars");
 
 export function addressId(addr: ConversationAddress): string {
-	return addr.kind === "dm" ? `dm:${addr.chatId}` : `topic:${addr.chatId}:${addr.threadId}`;
+	if (addr.kind === "dm") return `dm:${addr.chatId}`;
+	if (addr.kind === "topic") return `topic:${addr.chatId}:${addr.threadId}`;
+	return `${APP_ID_PREFIX}${appIdSchema.parse(addr.appId)}`;
+}
+
+// The one well-formed way to build an app address — validated here and
+// again in addressId so a client-minted id can never smuggle a path
+// segment or a slash into the conversation id.
+export function appAddress(appId: string): ConversationAddress {
+	return { kind: "app", appId: appIdSchema.parse(appId), chatId: 0, threadId: 0 };
+}
+
+// The channel a conversation id belongs to — the address is the id, so
+// the prefix is the whole discriminant. chat_id/thread_id are only the
+// decoded Telegram coordinates; nothing app-side may read them.
+export function channelOf(conversationId: string): "telegram" | "app" {
+	return conversationId.startsWith(APP_ID_PREFIX) ? "app" : "telegram";
 }
 
 // ---------- types ----------
 
 export interface Conversation {
 	id: string;
+	// The Telegram coordinates decoded from the id — real only on
+	// dm:/topic: conversations. App rows store 0/NULL (the columns are
+	// legacy NOT NULL): an app conversation has no Telegram door, and
+	// channelOf(id) is the routing check, never these fields.
 	chatId: number;
 	threadId: number | null;
 	title: string | null;
@@ -76,7 +114,7 @@ export interface ConversationStore {
 	// row per conversation steers the model view.
 	getCompaction(id: string): Compaction | null;
 	setCompaction(id: string, compaction: Compaction): void;
-	// Get-or-create by Telegram address. New conversations start at epoch 0.
+	// Get-or-create by channel address. New conversations start at epoch 0.
 	// The cwd column still exists in the table (NOT NULL, no default —
 	// existing DBs need it stamped) but cwd is no longer per-conversation
 	// state: tools always run in the deployment workspace.
@@ -124,6 +162,10 @@ export interface ConversationStore {
 	// search hit. No exclusion check here: the tool checks the live flag
 	// before calling, the way search filters it in SQL.
 	eventContext(id: string, seq: number, window: number): HistoryContextRow[];
+	// The app channel's own pool, most recently active first — the two
+	// pools never mix, so the list is filtered on the id prefix, not a
+	// flag (DESIGN.md, App channel).
+	listAppConversations(): AppConversationSummary[];
 	close(): void;
 }
 
@@ -143,6 +185,21 @@ export interface HistoryContextRow {
 	role: string;
 	text: string;
 	createdAt: string;
+}
+
+// One row of the app conversation list. id is the full address
+// ("app/<appId>") — the prefix is the channel marker; the client's minted
+// id is the part after it.
+export interface AppConversationSummary {
+	id: string;
+	title: string | null;
+	createdAt: string;
+	// Newest event's timestamp, or createdAt for a conversation nobody
+	// has spoken in yet — the list's ordering.
+	updatedAt: string;
+	// The newest event's text, capped for the list row. "" when the
+	// latest event carries no text parts (an attachment-only message).
+	preview: string;
 }
 
 // ---------- store ----------
@@ -476,6 +533,23 @@ export function openStore(dbPath: string): ConversationStore {
 		`SELECT seq, role, data, created_at FROM events
 		WHERE conversation_id = ? AND seq BETWEEN ? AND ? ORDER BY seq`,
 	);
+	// The app channel's own pool — the id prefix is the channel marker.
+	const qListApp = db.query<
+		{ id: string; title: string | null; created_at: string },
+		[]
+	>(
+		`SELECT id, title, created_at FROM conversations
+		WHERE id LIKE 'app/%' ORDER BY created_at`,
+	);
+	// A list row's freshness + subtitle: the newest event's timestamp and
+	// its text projection (empty when it carries no text parts).
+	const qLastAppEvent = db.query<
+		{ seq: number; role: string; data: string; created_at: string },
+		[string]
+	>(
+		`SELECT seq, role, data, created_at FROM events
+		WHERE conversation_id = ? ORDER BY seq DESC LIMIT 1`,
+	);
 
 	function applyPatch(id: string, patch: ConversationMetaPatch): void {
 		const sets: string[] = [];
@@ -549,6 +623,11 @@ export function openStore(dbPath: string): ConversationStore {
 			const id = addressId(addr);
 			const existing = qGet.get(id);
 			if (existing) return toConversation(existing);
+			// chat_id/thread_id are the decoded Telegram coordinates — on
+			// an app address they're the typed-0 fillers, so the row
+			// carries 0/NULL for the legacy NOT NULL schema. Nothing reads
+			// them on an app id: channelOf routes on the id prefix
+			// (DESIGN.md, App channel).
 			qInsertConv.run(
 				id,
 				addr.chatId,
@@ -642,6 +721,25 @@ export function openStore(dbPath: string): ConversationStore {
 				rows.push({ seq: r.seq, role: r.role, text: messageText(message), createdAt: r.created_at });
 			}
 			return rows;
+		},
+
+		listAppConversations() {
+			// One operator, one pool — the list is small; a per-row latest
+			// event lookup is cheaper than the join bookkeeping.
+			const out: AppConversationSummary[] = [];
+			for (const r of qListApp.all()) {
+				const last = qLastAppEvent.get(r.id);
+				const message = last === null ? null : parseEvent(r.id, last.seq, last.role, last.data);
+				out.push({
+					id: r.id,
+					title: r.title,
+					createdAt: r.created_at,
+					updatedAt: last?.created_at ?? r.created_at,
+					preview: message === null ? "" : messageText(message).slice(0, 200),
+				});
+			}
+			out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+			return out;
 		},
 
 		history(id) {

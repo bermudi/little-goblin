@@ -4,10 +4,10 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { tool, type LanguageModel, type UIMessage } from "ai";
+import { tool, type LanguageModel, type UIMessage, type UIMessageChunk } from "ai";
 import { z } from "zod";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
-import { openStore } from "./conversation.ts";
+import { appAddress, openStore } from "./conversation.ts";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { setLogFile } from "./log.ts";
 import { Runtime, userMessage, type TurnDone, type TurnSink } from "./runtime.ts";
@@ -75,6 +75,9 @@ function fakeModel(deltas: string[], delayMs = 15): LanguageModel {
 
 class RecordingSink implements TurnSink {
 	text = "";
+	// The raw pass-through hook, recorded verbatim — the app channel's
+	// SSE surface is built on this stream.
+	chunkTypes: string[] = [];
 	done: Promise<TurnDone>;
 	// Resolves when the runtime admits the turn — setAuthorityCheck
 	// fires before any model work, the deterministic moment for tests
@@ -108,6 +111,9 @@ class RecordingSink implements TurnSink {
 	}
 	onReasoningDelta() {}
 	onToolCall() {}
+	onStreamChunk(chunk: UIMessageChunk) {
+		this.chunkTypes.push(chunk.type);
+	}
 	onDone(d: TurnDone) {
 		this.resolveDone(d);
 	}
@@ -1900,6 +1906,72 @@ describe("steering", () => {
 		expect(prompts).toHaveLength(3);
 		expect(prompts[2]).toContain("could not be prepared for the model");
 		expect(prompts[2]).toContain("still there?");
+		store.close();
+	});
+});
+
+describe("app channel", () => {
+	// The turn loop is shared machinery: an app conversation submits,
+	// steers, fences and persists exactly like a telegram one — the only
+	// difference is the sink it streams into (DESIGN.md, App channel).
+	test("an app conversation runs a turn and streams raw chunks to its sink", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve(appAddress("chat-01"), "/w");
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model: fakeModel(["hello", " app"], 0), system: "test" }),
+			makeTools: () => ({}),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		expect(sink.text).toBe("hello app");
+		// The raw pass-through saw the same stream the delta methods
+		// consumed — the app client's SSE surface rides verbatim.
+		expect(sink.chunkTypes).toContain("text-delta");
+		expect(sink.chunkTypes[0]).toBe("start");
+		expect(sink.chunkTypes[sink.chunkTypes.length - 1]).toBe("finish");
+		expect(store.history(conv.id).map((m) => m.role)).toEqual(["user", "assistant"]);
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("steering into a running app turn works through the same queue", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve(appAddress("chat-01"), "/w");
+		const { model, prompts } = recordingModel(["done"], 0);
+		let releaseStep: () => void = () => {};
+		const stepGate = new Promise<void>((r) => {
+			releaseStep = r;
+		});
+		const runtime = new Runtime({
+			store,
+			// buildStep still pending when the second submit lands — the
+			// steer folds it into the first model call.
+			buildStep: async () => {
+				await stepGate;
+				return { model, system: "test" };
+			},
+			makeTools: () => ({}),
+		});
+		const s1 = new RecordingSink();
+		const s2 = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), s1);
+		await sleep(10);
+		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), s2);
+		releaseStep();
+		expect(await s1.done).toEqual({ kind: "completed" });
+		expect(await s2.done).toEqual({ kind: "completed" });
+		expect(s2.text).toBe(""); // only the first sink streams
+		expect(prompts).toHaveLength(1);
+		expect(prompts[0]).toContain("one");
+		expect(prompts[0]).toContain("two");
+		expect(store.history(conv.id).map((m) => m.role)).toEqual([
+			"user",
+			"user",
+			"assistant",
+		]);
+		await runtime.shutdown();
 		store.close();
 	});
 });

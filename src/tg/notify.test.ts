@@ -27,6 +27,7 @@ describe("conversation address round trip", () => {
 		expect(parseConversationAddress("topic:1")).toBeNull(); // missing thread
 		expect(parseConversationAddress("dm:1:2")).toBeNull(); // dm with thread
 		expect(parseConversationAddress("group:1")).toBeNull(); // unknown kind
+		expect(parseConversationAddress("app/chat-01")).toBeNull(); // not a telegram door
 		expect(parseConversationAddress("")).toBeNull();
 	});
 });
@@ -116,5 +117,24 @@ describe("skill saved notice send", () => {
 		expect(sends[0]).toMatchObject({ chatId: -100200300, threadId: 546216 });
 		expect(sends[0]?.text).toBe("saved skill: pdf-tables — reply to undo");
 		expect(sends[1]?.text).toBe("saved skills: a, b — reply to undo");
+	});
+});
+
+describe("app conversation notices", () => {
+	// App conversations ring nothing (DESIGN.md, App channel — no push):
+	// every notice is a deliberate skip, not a parse failure — the api is
+	// never touched and nothing throws for the caller's retry loop.
+	test("all three notices skip app ids without sending", async () => {
+		let calls = 0;
+		const api = {
+			sendMessage: async () => {
+				calls++;
+				throw new Error("must not be called");
+			},
+		} as unknown as Api;
+		await sendMemoryOutageNotice(api, "app/chat-01", 3_600_000, 2);
+		await sendMemoryBlockedNotice(api, "app/chat-01", "err", 1);
+		await sendSkillSavedNotice(api, "app/chat-01", ["x"]);
+		expect(calls).toBe(0);
 	});
 });

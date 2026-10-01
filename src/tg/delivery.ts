@@ -4,7 +4,7 @@
 
 import { InputFile, type Api } from "grammy";
 import { stat } from "node:fs/promises";
-import type { Conversation } from "../conversation.ts";
+import { channelOf, type Conversation } from "../conversation.ts";
 import type { TurnDone, TurnSink } from "../runtime.ts";
 import { sniffImage } from "../agent/tools/read.ts";
 import type { OutgoingFile } from "../agent/tools/send.ts";
@@ -116,6 +116,12 @@ export function makeDeliverySink(
 	typingIntervalMs = TYPING_INTERVAL_MS,
 	maxDrainIterations = MAX_DRAIN_ITERATIONS,
 ): TurnSink {
+	// Routing bug alarm (DESIGN.md, App channel): app conversations have
+	// no Telegram door — their sink is the HTTP stream. A silent send
+	// into the chat_id filler is worse than a throw.
+	if (channelOf(conv.id) === "app") {
+		throw new Error(`telegram delivery sink requested for app conversation ${conv.id}`);
+	}
 	let text = "";
 	const toolStatus: string[] = [];
 	// At most one send is in flight and it is always the earliest unsent

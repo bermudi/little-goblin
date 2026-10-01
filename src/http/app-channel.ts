@@ -17,7 +17,6 @@ import { z } from "zod";
 import {
 	appAddress,
 	appIdSchema,
-	type AppConversationSummary,
 	type ConversationStore,
 } from "../conversation.ts";
 import type { AuthStore } from "../auth.ts";
@@ -25,6 +24,13 @@ import type { Runtime, TurnSink } from "../runtime.ts";
 import { persistAttachment, type AttachmentRef } from "../agent/attachments.ts";
 import { paths } from "../config.ts";
 import { log } from "../log.ts";
+import type {
+	AppAttachmentResponse,
+	AppConversationCreate,
+	AppConversationList,
+	AppMessageList,
+	AppStopResponse,
+} from "./app-wire.ts";
 
 const NO_STORE = { "cache-control": "no-store" };
 
@@ -33,36 +39,6 @@ export interface AppChannelDeps {
 	runtime: Runtime;
 	// auth.jsonl resolution — the record config.appToken names.
 	auth: Pick<AuthStore, "resolve">;
-}
-
-// ---------- wire types (the app client imports these, never redeclares) ----------
-
-/** GET /api/app/conversations — the app pool, newest activity first. */
-export interface AppConversationList {
-	conversations: AppConversationSummary[];
-}
-
-/** POST /api/app/conversations — id is client-minted or server-minted. */
-export interface AppConversationCreate {
-	id: string;
-	title: string | null;
-	createdAt: string;
-}
-
-/** GET /api/app/conversations/<id>/messages — stored UIMessages verbatim. */
-export interface AppMessageList {
-	messages: UIMessage[];
-}
-
-/** POST /api/app/chat — one user message into an app conversation. */
-export interface AppChatRequest {
-	conversationId: string;
-	message: UIMessage;
-}
-
-/** POST /api/app/attachments — the durable ref the message part carries. */
-export interface AppAttachmentResponse {
-	ref: AttachmentRef;
 }
 
 // ---------- auth ----------
@@ -281,6 +257,24 @@ export async function handleAppApi(
 		// store and the client (DESIGN.md, App channel).
 		const body: AppMessageList = { messages: store.history(convId.id) };
 		log.debug("app history served", { conversation: convId.id, messages: body.messages.length });
+		return Response.json(body, { headers: NO_STORE });
+	}
+
+	// /stop rides the existing lane: the same epoch bump + abort the
+	// telegram command invokes — the client only reaches it through here.
+	const stopMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/stop$/);
+	if (stopMatch) {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const convId = conversationFromSegment(stopMatch[1]!);
+		if (convId instanceof Response) return convId;
+		if (store.get(convId.id) === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		const { stopped } = runtime.stop(convId.id);
+		log.info("app stop", { conversation: convId.id, stopped });
+		const body: AppStopResponse = { stopped };
 		return Response.json(body, { headers: NO_STORE });
 	}
 

@@ -27,6 +27,7 @@ import { forgetDocument, type ForgetSource } from "../memory-forget.ts";
 import { HindsightError, identifier, type MemoryDocSummary, type MemoryFact } from "../hindsight.ts";
 import { readBodyCapped, serveInjectionCheck } from "./check.ts";
 import { APP_HTML } from "./app.ts";
+import { serveAppDist } from "./app-dist.ts";
 import { validateInitData, type InitDataUser } from "./auth.ts";
 
 // The mini app's client script, read once at boot and served verbatim at
@@ -437,6 +438,14 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 					);
 				}
 				return deps.appApi(req, url, deps.configRef.current.appToken);
+			}
+			// The app channel's built client (Vite output in app/dist).
+			// Public like the mini app's page — the API carries the auth.
+			if (url.pathname === "/app") {
+				return Response.redirect(`${url.origin}/app/`, 302);
+			}
+			if (url.pathname.startsWith("/app/")) {
+				return serveAppDist(url.pathname.slice("/app/".length));
 			}
 			if (url.pathname === "/" || url.pathname === "/index.html") {
 				// no-store: a webview must never pair stale page code with a

@@ -83,12 +83,12 @@ afterEach(() => {
 	dirs = [];
 });
 
-function setup(opts: { token?: string | undefined; wireApp?: boolean; deltas?: string[] } = {}) {
+function setup(opts: { token?: string | undefined; wireApp?: boolean; deltas?: string[]; delayMs?: number } = {}) {
 	const home = useHome();
 	const store = openStore(join(home, "goblin.sqlite"));
 	const runtime = new Runtime({
 		store,
-		buildStep: () => ({ model: fakeModel(opts.deltas ?? ["hello", " app"]), system: "test" }),
+		buildStep: () => ({ model: fakeModel(opts.deltas ?? ["hello", " app"], opts.delayMs), system: "test" }),
 		makeTools: () => ({}),
 	});
 	const auth: Pick<AuthStore, "resolve"> = {
@@ -242,6 +242,53 @@ describe("app channel http", () => {
 
 			// The turn landed in durable history — user + assistant.
 			expect(store.history("app/chat-01").map((m) => m.role)).toEqual(["user", "assistant"]);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("stop aborts a live turn — the stream ends with the error chunk", async () => {
+		// 50ms deltas keep the turn alive well past the stop POST below.
+		const { http, call } = setup({ token: APP_TOKEN_NAME, deltas: ["a", "b", "c", "d", "e"], delayMs: 50 });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			const chat = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-01",
+					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
+				}),
+			});
+			expect(chat.status).toBe(200);
+			const stop = await call("/api/app/conversations/chat-01/stop", { method: "POST" });
+			expect(stop.status).toBe(200);
+			expect((await stop.json()) as { stopped: boolean }).toEqual({ stopped: true });
+			// The fenced turn's stream ends with an error chunk + [DONE].
+			const body = await chat.text();
+			expect(body).toContain('"type":"error"');
+			expect(body.trimEnd().endsWith("data: [DONE]")).toBe(true);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("stop on an idle or unknown conversation stays honest", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			const idle = await call("/api/app/conversations/chat-01/stop", { method: "POST" });
+			expect(idle.status).toBe(200);
+			expect((await idle.json()) as { stopped: boolean }).toEqual({ stopped: false });
+			expect((await call("/api/app/conversations/ghost/stop", { method: "POST" })).status).toBe(404);
 		} finally {
 			http.stop();
 		}

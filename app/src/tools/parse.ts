@@ -23,9 +23,30 @@ function unescapeFence(text: string): string {
 	return text.replace(/<\\\/web/g, "</web");
 }
 
+// Providers leak markup into titles/snippets (brave wraps matches in
+// <strong> inside the description) — renderHits stores them verbatim,
+// so display strips tags and decodes the entities search.ts's stripTags
+// handles on the ddg path. Same entity table, mirrored.
+export function stripHtml(html: string): string {
+	return html
+		.replace(/<[^>]*>/g, "")
+		.replace(/&amp;/g, "&")
+		.replace(/&lt;/g, "<")
+		.replace(/&gt;/g, ">")
+		.replace(/&quot;/g, '"')
+		.replace(/&#x27;|&#39;/g, "'")
+		.replace(/&nbsp;/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
 // renderHits emits "N. title — URL" lines inside the <web> fence, the
 // snippet indented three spaces on the following line. The URL rides
 // last so a title containing " — " still parses off the final separator.
+// Deviations still display: a newline inside a title splits the head
+// line, leaving an unindented orphan carrying " — url" — reattach it;
+// anything else unparseable becomes the last hit's snippet (or its own
+// row when no hit exists) rather than vanishing while the count grows.
 export function parseSearchOutput(text: string): SearchResult | null {
 	const trimmed = text.trim();
 	if (trimmed === "No results.") return { hits: [], note: null };
@@ -37,27 +58,44 @@ export function parseSearchOutput(text: string): SearchResult | null {
 		if (head !== null) {
 			const body = head[1] ?? "";
 			const sep = body.lastIndexOf(" — ");
+			// Empty title renders "N.  — url": the sep can't start the body.
+			const orphan = sep === -1 && body.startsWith("— ") ? 0 : sep;
 			hits.push(
-				sep === -1
-					? { title: unescapeFence(body), url: "", snippet: "" }
+				orphan === -1
+					? { title: stripHtml(unescapeFence(body)), url: "", snippet: "" }
 					: {
-							title: unescapeFence(body.slice(0, sep)),
-							url: body.slice(sep + 3),
+							title: stripHtml(unescapeFence(body.slice(0, orphan))),
+							url: body.slice(orphan === 0 ? 2 : orphan + 3).trim(),
 							snippet: "",
 						},
 			);
 			continue;
 		}
+		if (line.trim() === "") continue;
 		const last = hits.at(-1);
-		if (last !== undefined && /^\s+\S/.test(line)) {
-			const cont = unescapeFence(line.trim());
-			last.snippet = last.snippet === "" ? cont : `${last.snippet} ${cont}`;
+		const cont = stripHtml(unescapeFence(line.trim()));
+		if (last === undefined) {
+			// A fenced line before any "N." head — show it, don't drop it.
+			hits.push({ title: cont, url: "", snippet: "" });
+			continue;
 		}
+		if (!/^\s+\S/.test(line)) {
+			// Unindented orphan: a title newline's tail. If it ends in
+			// " — url" and the hit never got a url, it IS the url tail —
+			// reattach instead of swallowing it into the snippet.
+			const tail = /^(.*) — (\S+)$/.exec(cont);
+			if (tail !== null && last.url === "") {
+				last.title = last.title === "" ? tail[1]! : `${last.title} ${tail[1]}`;
+				last.url = tail[2]!;
+				continue;
+			}
+		}
+		last.snippet = last.snippet === "" ? cont : `${last.snippet} ${cont}`;
 	}
 	// The tail is the standing fence note plus an optional fallback line;
 	// only the "(via …)" part is worth a row.
 	const via = /\(via [^\n]*\)/.exec(fence[2] ?? "");
-	return { hits, note: via === null ? null : via[0] };
+	return { hits, note: via === null ? null : stripHtml(via[0]) };
 }
 
 export interface FetchText {

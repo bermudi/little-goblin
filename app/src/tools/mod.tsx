@@ -38,61 +38,91 @@ export function partFailed(part: ToolUIPart | DynamicToolUIPart): boolean {
 	return part.state === "output-error" || part.state === "output-denied";
 }
 
-export function ToolRun({ part }: { part: ToolUIPart | DynamicToolUIPart }) {
+interface PartFace {
+	face: Face;
+	open: boolean;
+	stateLabel: string | null;
+}
+
+// The part → face mapping, shared by the row renderer and the Worked
+// fold's collapsed summary (which needs the same one-liner without the
+// detail body).
+function faceFor(part: ToolUIPart | DynamicToolUIPart): PartFace {
 	const name = getToolName(part);
 	const view = VIEWS[name] ?? genericView;
-	let face: Face;
-	let open = false;
-	let stateLabel: string | null = null;
 	switch (part.state) {
 		case "output-available":
-			face = view.done(part.input, part.output) ?? genericView.done(part.input, part.output)!;
-			break;
+			return {
+				face: view.done(part.input, part.output) ?? genericView.done(part.input, part.output)!,
+				open: false,
+				stateLabel: null,
+			};
 		case "output-error": {
 			const text = part.errorText ?? "tool failed";
-			face = {
-				summary: joinSummary(view.inputHint(part.input), `failed — ${firstLine(text, 96)}`),
-				detail: (
-					<div className="tool-body">
-						<ErrBox text={text} />
-					</div>
-				),
-				failed: true,
+			return {
+				face: {
+					summary: joinSummary(view.inputHint(part.input), `failed — ${firstLine(text, 96)}`),
+					detail: (
+						<div className="tool-body">
+							<ErrBox text={text} />
+						</div>
+					),
+					failed: true,
+				},
+				open: true,
+				stateLabel: null,
 			};
-			open = true;
-			break;
 		}
 		case "output-denied":
-			face = {
-				summary: joinSummary(view.inputHint(part.input), "refused"),
-				detail: (
-					<div className="tool-body">
-						<span className="tool-meta">the call was refused</span>
-					</div>
-				),
-				failed: true,
+			return {
+				face: {
+					summary: joinSummary(view.inputHint(part.input), "refused"),
+					detail: (
+						<div className="tool-body">
+							<span className="tool-meta">the call was refused</span>
+						</div>
+					),
+					failed: true,
+				},
+				open: true,
+				stateLabel: null,
 			};
-			open = true;
-			break;
 		default: {
 			// input-streaming / input-available / approval-requested and any
 			// future state: running rows get the skeleton, waiting rows the
 			// input dump — never a blank.
 			const running = RUNNING.has(part.state);
-			stateLabel = running ? "running" : WAITING.has(part.state) ? "waiting" : part.state;
-			open = running;
-			face = {
-				summary: view.inputHint(part.input) ?? "",
-				detail: running ? (
-					<Skeleton />
-				) : (
-					<div className="tool-body">
-						<Clip text={shortJson(part.input)} />
-					</div>
-				),
+			return {
+				face: {
+					summary: view.inputHint(part.input) ?? "",
+					detail: running ? (
+						<Skeleton />
+					) : (
+						<div className="tool-body">
+							<Clip text={shortJson(part.input)} />
+						</div>
+					),
+				},
+				open: running,
+				stateLabel: running ? "running" : WAITING.has(part.state) ? "waiting" : part.state,
 			};
 		}
 	}
+}
+
+// The collapsed-Worked fragment for one part — "search «q» · 5
+// results", "fetch github.com · 15.0k chars", "bash npm test · exit 1".
+// The name glues to the input hint with a space; the face summary's own
+// "·" separates the outcome.
+export function partSummaryLine(part: ToolUIPart | DynamicToolUIPart): string {
+	const summary = faceFor(part).face.summary;
+	return summary === "" ? getToolName(part) : `${getToolName(part)} ${summary}`;
+}
+
+export function ToolRun({ part }: { part: ToolUIPart | DynamicToolUIPart }) {
+	const name = getToolName(part);
+	const view = VIEWS[name] ?? genericView;
+	const { face, open, stateLabel } = faceFor(part);
 	return (
 		<li>
 			<details className="tool-run" open={open}>

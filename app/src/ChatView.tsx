@@ -2,25 +2,28 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useChat } from "@ai-sdk/react";
 import {
 	DefaultChatTransport,
-	getToolName,
 	isToolUIPart,
 	type DynamicToolUIPart,
 	type ToolUIPart,
 	type UIMessage,
 } from "ai";
 import { getMessages, stopConversation, uploadAttachment } from "./api.ts";
-import { ToolRun, partFailed, partRunning } from "./tools/mod.tsx";
+import { ToolRun, partFailed, partRunning, partSummaryLine } from "./tools/mod.tsx";
 import type { AttachmentRef } from "../../src/agent/attachments.ts";
 
 // ---------- transcript rendering ----------
 
-// Inline marks: [links](url), `code` spans, and bare URLs become
-// elements; everything else stays text. Long answers are the reason
-// this channel exists — the renderer's job is comfortable reading, not
-// markdown completeness. The link alternative must lead: it swallows the
-// URL inside its own parens before the bare-URL branch can split it.
+// Inline marks: [links](url), `code` spans, **bold**, *italic*, _italic_,
+// and bare URLs become elements; everything else stays text. Long
+// answers are the reason this channel exists — the renderer's job is
+// comfortable reading, not markdown completeness. The link alternative
+// must lead: it swallows the URL inside its own parens before the
+// bare-URL branch can split it. ** leads * so `**bold**` never halves
+// into `*…*`; emphasis content may not start/end in whitespace, so
+// `2 * 3 * 4` stays literal; `_` only opens/closes on non-word edges so
+// snake_case identifiers stay literal.
 const INLINE =
-	/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|`([^`]+)`|(https?:\/\/[^\s<>"')\]]+)/g;
+	/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|`([^`]+)`|\*\*([^\s*](?:[^\n]*?[^\s*])?)\*\*|\*([^\s*](?:[^\n]*?[^\s*])?)\*|(?<![\w*])_([^\s_](?:[^\n]*?[^\s_])?)_(?!\w)|(https?:\/\/[^\s<>"')\]]+)/g;
 
 function inline(text: string): ReactNode[] {
 	const out: ReactNode[] = [];
@@ -35,10 +38,13 @@ function inline(text: string): ReactNode[] {
 				</a>,
 			);
 		else if (m[3] !== undefined) out.push(<code key={i}>{m[3]}</code>);
+		else if (m[4] !== undefined) out.push(<strong key={i}>{m[4]}</strong>);
+		else if (m[5] !== undefined) out.push(<em key={i}>{m[5]}</em>);
+		else if (m[6] !== undefined) out.push(<em key={i}>{m[6]}</em>);
 		else
 			out.push(
-				<a key={i} href={m[4]} target="_blank" rel="noreferrer">
-					{m[4]}
+				<a key={i} href={m[7]} target="_blank" rel="noreferrer">
+					{m[7]}
 				</a>,
 			);
 		last = m.index + m[0].length;
@@ -102,16 +108,19 @@ function TextBlock({ text }: { text: string }) {
 // stays readable, the work stays inspectable. The fold opens itself
 // while a call is live (streaming rows show skeletons) and stays open
 // when a call failed; each row is its own fold inside, collapsed to
-// tool name + one-line outcome, expanding to the tool's component.
+// tool name + one-line outcome, expanding to the tool's component. The
+// collapsed summary carries the same one-liners — "search «q» · 5
+// results" — so the outcome is legible without expanding.
 function Worked({ parts }: { parts: (ToolUIPart | DynamicToolUIPart)[] }) {
 	const running = parts.some(partRunning);
 	const failures = parts.filter(partFailed).length;
-	const names = [...new Set(parts.map((p) => getToolName(p)))];
+	const lines = parts.map(partSummaryLine);
 	return (
 		<details className="worked" open={running || failures > 0}>
 			<summary>
-				{running ? "Working" : "Worked"} · {names.join(", ")}
-				{failures > 0 ? ` — ${failures} failed` : ""}
+				{running ? "Working" : "Worked"} ·{" "}
+				<span className="worked-sum">{lines.join("; ")}</span>
+				{failures > 0 && <span className="worked-fail">— {failures} failed</span>}
 			</summary>
 			<ul>
 				{parts.map((p, i) => (

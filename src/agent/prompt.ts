@@ -159,10 +159,13 @@ export function buildSystemPrompt(
 			: []),
 		...(tools.includes("delegate")
 			? [
-					`- delegate hands work to external coding agents (they run in your`,
-					`  own herdr session — the operator watches via herdr session`,
-					`  attach). Prefer it over long bash sessions; results arrive as`,
-					`  [delegation: …] messages in the chat they were born in.`,
+					`- delegate hands work to external coding agents — they run in`,
+					`  your own herdr session named \`goblin\` (he watches via`,
+					`  \`herdr session attach goblin\`; you inspect with`,
+					`  \`herdr --session goblin …\` — bare \`herdr\` is his session,`,
+					`  not yours; see the herdr skill). Prefer it over long bash`,
+					`  sessions; results arrive as [delegation: …] messages in`,
+					`  the chat they were born in.`,
 				]
 			: []),
 		...(tools.includes("mail")

@@ -407,6 +407,10 @@ export function Composer({
 	};
 
 	const send = () => {
+		// The button is disabled while busy; Enter and form submit are
+		// not — gate here so a mid-turn send can't fork a second request
+		// (or a second conversation from the empty state).
+		if (busy) return;
 		const text = draft.trim();
 		const ready = pending.filter((e) => e.uploading !== true && e.failed !== true);
 		if (text === "" && ready.length === 0) return;

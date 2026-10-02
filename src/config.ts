@@ -283,7 +283,7 @@ export const memoryConfigSchema = z.object({
 	baseUrl: hindsightConnectionSchema.shape.baseUrl,
 	bankId: hindsightConnectionSchema.shape.bankId,
 	auth: z.string().min(1).optional(),
-	recallTimeoutMs: z.number().int().min(100).max(10_000).default(2000),
+	recallTimeoutMs: z.number().int().min(100).max(10_000).default(5000),
 	maxTokens: z.number().int().min(1).max(8192).default(1024),
 	budget: z.enum(["low", "mid", "high"]).default("low"),
 });

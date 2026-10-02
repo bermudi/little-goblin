@@ -314,7 +314,7 @@ describe("goblin.json5", () => {
 		);
 		const mem = loadConfig()!.memory!;
 		expect(mem.bankId).toBe("goblin");
-		expect(mem.recallTimeoutMs).toBe(2000);
+		expect(mem.recallTimeoutMs).toBe(5000);
 		expect(mem.maxTokens).toBe(1024);
 		expect(mem.budget).toBe("low");
 		// Remote plain HTTP is rejected — loopback or HTTPS only.

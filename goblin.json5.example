@@ -163,7 +163,7 @@
   //   // auth: "hindsight",         // bearer — only when off loopback
   //   // budget: "low",             // low | mid | high — retention effort
   //   // maxTokens: 1024,           // recall injection cap
-  //   // recallTimeoutMs: 2000,
+  //   // recallTimeoutMs: 5000,
   // },
 
   // --- Telegram ---

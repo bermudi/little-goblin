@@ -1298,8 +1298,12 @@ No MCP, replacement turn loop, or generic multi-backend framework.
 1. **Config key: `memory`.** Optional `goblin.json5` block `{baseUrl,
    bankId, auth?, recallTimeoutMs?, maxTokens?, budget?}`; absent =
    exact current behavior. `auth` names an `auth.jsonl` secret for the
-   Bearer token (loopback needs none). Recall defaults: 2000ms timeout,
+   Bearer token (loopback needs none). Recall defaults: 5000ms timeout,
    1024 max tokens, `low` budget — turns must not wait on memory.
+   (Timeout raised 2026-10-02: measured cold recall is ~2.3–2.7s — the
+   remote embedding leg re-colds within ~8s of idle, so every chat turn
+   pays it; 2s silently disabled recall on every cold turn rather than
+   bounding the wait.)
 2. **Exclusions: per-topic setting, command-first.** `memoryExcluded`
    boolean on the conversation (settings-command pattern: `/memory
    on|off|status`, epoch-bumped like `/voice`; mini-app toggle follows).

@@ -39,6 +39,46 @@ herdr --session goblin agent read NAME --source recent-unwrapped --lines 80
 herdr session list                    # every session on the machine
 ```
 
+## First-run gates — seed *before* `delegate`
+
+Harnesses park on first-run dialogs that no-approval flags don't
+skip. The dialog appears at launch, so seeding after `delegate` is
+too late — do it via bash first. These are the operator's own state
+files (panes run his shell): only ever SET flags to true, never
+delete keys, and write tmp+mv so a crash can't tear the file.
+
+**claude** — `~/.claude.json`:
+
+- `--dangerously-skip-permissions` parks on a disclaimer until
+  `bypassPermissionsModeAccepted` is true — one write, machine-wide.
+- Each new cwd parks on a trust prompt until that dir's
+  `projects` entry accepts — seed the delegation's resolved cwd:
+
+```bash
+D="$(realpath <cwd>)"; jq --arg d "$D" '
+  .bypassPermissionsModeAccepted = true
+  | .hasCompletedOnboarding = true
+  | .projects[$d].hasTrustDialogAccepted = true
+  | .projects[$d].hasCompletedProjectOnboarding = true
+' ~/.claude.json > /tmp/claude.json && mv /tmp/claude.json ~/.claude.json
+```
+
+If a claude instance is running elsewhere it can clobber the write
+when it exits — seed right before `delegate`, and if the pane still
+parks, `delegate read` shows which dialog it is.
+
+**codex** — `~/.codex/config.toml`, append per new cwd:
+
+```toml
+[projects."<abs cwd>"]
+trust_level = "trusted"
+```
+
+**pi / devin / opencode** — no known first-run gates on this box.
+If a pane parks anyway, `delegate read` shows the screen: relay it
+to the operator and `send` his answer, or find that harness's trust
+store and seed it the same way.
+
 ## The operator's session: `default`
 
 Bare `herdr …` — `status`, `api snapshot`, everything — talks to

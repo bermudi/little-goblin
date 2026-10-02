@@ -17,34 +17,34 @@ herdr fits *you* — it is not the usage guide (`herdr --skill` prints
 that, written for agents running inside panes; you are never inside
 one — you are a client that owns one named session).
 
+**Never run `herdr` from bash — full stop.** Everything you do with
+your session goes through the `delegate` tool: `start`, `list`,
+`read`, `send`, `stop`. The CLI bypasses what makes delegation safe —
+the state rows, the watcher that delivers results, and the fencing
+that marks agent output as untrusted. If the tool can't express what
+you need, that's a missing tool verb — tell the operator, don't reach
+for the binary.
+
 ## Your session: `goblin`
 
 A dedicated herdr server under `goblin-herdr.service` (systemd user
 unit) so delegated panes survive your restarts. Everything in it is a
 delegation — one workspace per `delegate` call.
 
-**Drive it through the `delegate` tool, not the CLI.** `start`,
-`list`, `read`, `send`, `stop` cover the whole lifecycle and keep the
-delegation rows, the watcher, and output fencing intact. Raw
-`herdr --session goblin …` via bash bypasses all three — screens come
-back unfenced (agent output is untrusted data), and mutations create
-panes the lifecycle can't see. Reserve raw reads (`api snapshot`,
-`agent wait`) for diagnostics the tool genuinely can't express.
-
 Watching is not your job: the watcher polls and drops
 `[delegation: …]` messages into the chat a delegation was born in.
-Don't block in bash waiting — answer the operator and let the notice
-arrive. He watches live via `herdr session attach goblin` and may
-answer an agent's prompt himself; relay that command when a
-delegation needs his eyes.
+Answer the operator and let the notice arrive. He watches live via
+`herdr session attach goblin` and may answer an agent's prompt
+himself; relay that command when a delegation needs his eyes.
 
 ## First-run gates — seed *before* `delegate`
 
-Harnesses park on first-run dialogs that no-approval flags don't
-skip. The dialog appears at launch, so seeding after `delegate` is
-too late — do it via bash first. These are the operator's own state
-files (panes run his shell): only ever SET flags to true, never
-delete keys, and write tmp+mv so a crash can't tear the file.
+The one bash use adjacent to herdr: these are file writes to the
+*harnesses'* own state, not herdr commands. Harnesses park on
+first-run dialogs that no-approval flags don't skip, and the dialog
+appears at launch — seed first, delegate second. Only ever SET flags
+to true, never delete keys, write tmp+mv so a crash can't tear the
+file.
 
 **claude** — `~/.claude.json`:
 
@@ -80,9 +80,8 @@ store and seed it the same way.
 
 ## The operator's session: `default`
 
-Bare `herdr …` — `status`, `api snapshot`, everything — talks to
-`default`: his interactive session, his workspaces (including the ones
-he runs agents on you from). A bare snapshot describes *his* desk, not
-your delegated work — don't report it as yours, and don't go there
-unless he asks. `herdr session list` enumerates every session on the
-machine; others besides these two are not yours unless he says so.
+Bare `herdr` talks to `default`: his interactive session, his
+workspaces (including the ones he runs agents on you from). It is
+his desk, not yours — you never need to look inside it. If he asks
+what herdr sessions exist, you know the answer already: `goblin` is
+yours, `default` is his, anything else is his too.

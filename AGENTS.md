@@ -103,6 +103,10 @@ suite stays smaller than `src/`.
 
 ## Process
 
+The polish backlog (gaps vs openclaw/hermes, audited 2026-10-02) lives in
+GitHub issues labeled `polish`, ranked `P1`–`P3`, with `area:*` labels;
+#52 records the ideas declined as non-goals — check it before re-proposing.
+
 No Litespec, no specs tree, no decision records. Small commits, often, on
 main or short-lived branches. If a design tension is real enough to argue
 about, write the ruling into `DESIGN.md` — the doc is the spec.

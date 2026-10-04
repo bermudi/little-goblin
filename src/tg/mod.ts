@@ -7,7 +7,7 @@ import type { MenuButton, Message } from "grammy/types";
 import type { UIMessage } from "ai";
 import type { AuthStore } from "../auth.ts";
 import { paths, type Config, type ConfigRef, type TtsConfig } from "../config.ts";
-import { addressId, type Conversation, type ConversationAddress, type ConversationStore } from "../conversation.ts";
+import { addressId, channelOf, type Conversation, type ConversationAddress, type ConversationStore } from "../conversation.ts";
 import type { JevClient } from "../jev.ts";
 import {
 	isRollingChat,
@@ -17,8 +17,9 @@ import {
 	routeDmMessage,
 	type RollDeps,
 } from "../rolling.ts";
-import { userMessage, type Runtime } from "../runtime.ts";
+import { userMessage, type Runtime, type TurnSink } from "../runtime.ts";
 import { log } from "../log.ts";
+import { makeBellSink } from "./bell.ts";
 import { CoalescingBuffer } from "./buffer.ts";
 import { COMMAND_RE, COMMANDS, handleCommand, type CommandMemoryDeps } from "./commands.ts";
 import { withTimeout } from "./deadline.ts";
@@ -29,6 +30,7 @@ import { handleSpeakButton } from "./speak-button.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
 import { mediaFromMessage, mediaParts, saveAttachment } from "./media.ts";
 import { openTelegramInbox, validatedInboxMedia, type InboxEntry, type InboxPayload } from "./inbox.ts";
+import { openPings, type PingStore } from "./pings.ts";
 import { maybeRenameTopic, titleMetaFromService } from "./titles.ts";
 
 export const AUTH_TELEGRAM_TOKEN = "telegram";
@@ -73,6 +75,10 @@ export function conversationAddress(msg: {
 
 interface BufferedItem {
 	updateId: number;
+	// The chat the message arrived in — an app lane needs it to ack
+	// the ping reply ("sent to <title>") since the conversation's own
+	// chat_id is the 0 filler (Spin-off).
+	chatId: number;
 	parts: UIMessage["parts"];
 	replyTo: number | undefined;
 	// Set when the message quoted another (msg.reply_to_message): the
@@ -171,9 +177,15 @@ export interface IntakeEnv {
 	buffer: CoalescingBuffer<BufferedItem>;
 	intake: Map<string, Promise<void>>;
 	inbox: ReturnType<typeof openTelegramInbox>;
+	// The ping→conversation map (Spin-off): a swipe-reply to a
+	// delegation ping routes into the app conversation that rang.
+	pings: PingStore;
+	// The headless sink app-lane turns submit with — the ping reply's
+	// turn rings Telegram when it lands (Spin-off → Background turns).
+	bell(conv: Conversation): TurnSink;
 }
 
-export type FlushEnv = Pick<IntakeEnv, "deps" | "api" | "titleAttempts" | "inbox">;
+export type FlushEnv = Pick<IntakeEnv, "deps" | "api" | "titleAttempts" | "inbox" | "bell">;
 
 // The RollDeps the intake paths share — assembled per call so a
 // mini-app save (dmGapMinutes) and the late-built reviewer's gate both
@@ -298,10 +310,22 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 		(msg.message_thread_id !== undefined && replyTo.message_id === msg.message_thread_id)
 			? undefined
 			: replyTo;
+	// A swipe-reply to a delegation ping routes into the app
+	// conversation that rang (Spin-off): the lane IS that conversation
+	// id and the payload carries no quoted part — the app conversation
+	// doesn't need the ping text. A deleted target degrades to an
+	// ordinary reply, routed like any other.
+	const pingedConv =
+		quotedReply === undefined
+			? null
+			: (() => {
+					const hit = env.pings.lookup(msg.chat.id, quotedReply.message_id);
+					return hit !== null && deps.store.get(hit) !== null ? hit : null;
+				})();
 	const payload: InboxPayload = {
-		conversationId: lane, chatId: msg.chat.id, messageId: msg.message_id,
+		conversationId: pingedConv ?? lane, chatId: msg.chat.id, messageId: msg.message_id,
 		text, media, mediaError: mediaError === null ? null : String(mediaError),
-		...(quotedReply === undefined
+		...(quotedReply === undefined || pingedConv !== null
 			? {}
 			: { quoted: { messageId: quotedReply.message_id, text: quotedReply.text ?? quotedReply.caption ?? "" } }),
 	};
@@ -384,7 +408,7 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 		}
 
 		env.buffer.push(convId, {
-			updateId, parts, replyTo: messageId,
+			updateId, parts, chatId: payload.chatId, replyTo: messageId,
 			...(quoted !== undefined ? { quoted } : {}),
 		});
 	});
@@ -420,6 +444,13 @@ export function flushConversation(
 	}
 	const parts = items.flatMap((i) => i.parts);
 	log.debug("coalesced turn input", { conversation: convId, items: items.length });
+	// A ping reply's lane IS the app conversation — the turn runs
+	// headless (the bell rings when it lands), the DM gets a "sent
+	// to" ack, and no topic titling exists to attempt (Spin-off).
+	if (channelOf(conv.id) === "app") {
+		admitAppBatch(env, conv, convId, items, parts);
+		return;
+	}
 	if (
 		conv.threadId !== null &&
 		conv.titleImplicit &&
@@ -507,6 +538,57 @@ function admitBatch(
 	}
 }
 
+// The app lane's tail (Spin-off → Telegram rings): the ping reply
+// commits like any batch, the DM gets a delivery-only "sent to"
+// ack (never history — the ping already shows what it answers), and
+// the turn submits headless — the bell rings back when it lands.
+function admitAppBatch(
+	env: FlushEnv,
+	conv: Conversation,
+	laneKey: string,
+	items: BufferedItem[],
+	parts: UIMessage["parts"],
+): void {
+	const { deps } = env;
+	const message = userMessage(parts);
+	env.inbox.commitBatch(items.map((i) => i.updateId), laneKey, () => {
+		deps.store.append(conv.id, [message]);
+	});
+	for (const item of items) {
+		log.info("ping reply routed", {
+			chat: item.chatId,
+			message: item.replyTo,
+			conversation: conv.id,
+		});
+	}
+	// One ack per chat that replied — coalescing can merge replies
+	// from several operators into the same app batch. Delivery only,
+	// never history.
+	for (const chat of new Set(items.map((i) => i.chatId))) {
+		void env.api
+			.sendMessage(chat, `sent to ${conv.title ?? "app conversation"}`)
+			.catch((err: unknown) => {
+				log.warn("ping reply ack failed", {
+					chat,
+					conversation: conv.id,
+					error: String(err),
+				});
+			});
+	}
+	const sink = env.bell(conv);
+	try {
+		deps.runtime.submitPersisted(conv, message, sink);
+	} catch (err) {
+		// Same release contract as admitBatch — a constructed sink
+		// must never be abandoned after a committed batch.
+		log.error("turn submit failed after inbox commit", err, { conversation: conv.id });
+		void sink.onDone({
+			kind: "error",
+			message: err instanceof Error ? err.message : String(err),
+		});
+	}
+}
+
 // Per-conversation intake chain. Media resolution (getFile, download,
 // models.dev) is slow, so it runs off the update hot path — grammy's
 // runner processes updates sequentially and a 60s download would stall
@@ -566,12 +648,28 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	};
 	const intake = new Map<string, Promise<void>>();
 	const inbox = openTelegramInbox(deps.store.db);
+	// The ping→conversation map shares the store's handle like the
+	// inbox (Spin-off), and the bell builds per-turn so allowedUsers
+	// and publicUrl read live config.
+	const pings = openPings(deps.store.db);
+	const bell = (conv: Conversation): TurnSink =>
+		makeBellSink(
+			{
+				api: bot.api,
+				store: deps.store,
+				pings,
+				allowedUsers: () => deps.configRef.current.allowedUsers,
+				publicUrl: () => deps.configRef.current.publicUrl || undefined,
+			},
+			conv,
+			"ping reply",
+		);
 	const buffer = new CoalescingBuffer<BufferedItem>(
 		QUIET_WINDOW_MS,
-		(convId, items) => flushConversation({ ...base, inbox }, convId, items),
+		(convId, items) => flushConversation({ ...base, inbox, bell }, convId, items),
 		COALESCE_MAX_WAIT_MS,
 	);
-	const env: IntakeEnv = { ...base, buffer, intake, inbox };
+	const env: IntakeEnv = { ...base, buffer, intake, inbox, pings, bell };
 
 	bot.use(allowedUserGate(deps.configRef));
 

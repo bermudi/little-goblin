@@ -349,6 +349,93 @@ describe("compaction pointers", () => {
 	});
 });
 
+// Spin-off (design/app.md → Spin-off): the fork copies the DM's model
+// view — events verbatim, only the latest compaction pointer, memory
+// contexts — into a fresh app conversation; the source never changes
+// and the memory queue never re-enqueues what was already retained.
+describe("forkToApp (Spin-off)", () => {
+	const asst = (text: string): UIMessage => ({
+		id: `a-${text}`,
+		role: "assistant",
+		parts: [{ type: "text", text }],
+	});
+	const eventRows = (store: ConversationStore, id: string): unknown[] =>
+		store.db
+			.query(
+				"SELECT seq, role, data, anchor_seq, created_at FROM events WHERE conversation_id = ? ORDER BY seq",
+			)
+			.all(id);
+
+	test("copies events verbatim with anchors, only the latest compaction, and memory contexts — source untouched", () => {
+		const store = openStore(tmpdb());
+		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
+		store.append(src.id, [msg("one")]);
+		store.append(src.id, [asst("reply")], { anchorSeq: 1 });
+		store.setCompaction(src.id, {
+			boundarySeq: 1,
+			summary: "first fold",
+			tokensBefore: 100,
+			model: "m",
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+		store.setCompaction(src.id, {
+			boundarySeq: 2,
+			summary: "latest fold",
+			tokensBefore: 200,
+			model: "m",
+			createdAt: "2026-01-02T00:00:00Z",
+		});
+		store.memoryContexts.save(src.id, 1, "recall ctx", ["doc-1"]);
+		const app = store.forkToApp(src.id, "spun-1", "/w", "the work");
+		expect(app.id).toBe("app/spun-1");
+		expect(app.title).toBe("the work");
+		expect(app.titleImplicit).toBe(true);
+		expect(channelOf(app.id)).toBe("app");
+		// The raw copy — same seqs, roles, payloads, anchors, and
+		// created_at stamps, not a re-append.
+		expect(eventRows(store, app.id)).toEqual(eventRows(store, src.id));
+		// Only the latest pointer steers the model view — the audit
+		// trail stays behind, and the fork's model view equals the DM's.
+		expect(store.getCompaction(app.id)).toMatchObject({
+			boundarySeq: 2,
+			summary: "latest fold",
+		});
+		expect(store.modelEntries(app.id)).toEqual(store.modelEntries(src.id));
+		// Contexts swap only the conversation id.
+		expect(store.memoryContexts.load(app.id)).toEqual(store.memoryContexts.load(src.id));
+		// The DM is a copy source, never a move victim.
+		expect(store.history(src.id)).toHaveLength(2);
+		expect(store.get(src.id)).not.toBeNull();
+		store.close();
+	});
+
+	test("the memory queue never re-enqueues a copied exchange", () => {
+		const store = openStore(tmpdb());
+		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
+		store.append(src.id, [msg("one")]);
+		const before = store.db.query("SELECT COUNT(*) AS n FROM memory_outbox").get() as {
+			n: number;
+		};
+		store.forkToApp(src.id, "spun-1", "/w", "the work");
+		const after = store.db.query("SELECT COUNT(*) AS n FROM memory_outbox").get() as {
+			n: number;
+		};
+		expect(after.n).toBe(before.n);
+		store.close();
+	});
+
+	test("an uncompacted source forks a clean, empty copy", () => {
+		const store = openStore(tmpdb());
+		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
+		const app = store.forkToApp(src.id, "empty-1", "/w", "quiet");
+		expect(app.id).toBe("app/empty-1");
+		expect(store.history(app.id)).toEqual([]);
+		expect(store.getCompaction(app.id)).toBeNull();
+		expect(store.memoryContexts.load(app.id)).toEqual([]);
+		store.close();
+	});
+});
+
 describe("chat search", () => {
 	const asst = (id: string, text: string): UIMessage => ({
 		id,

@@ -5,9 +5,16 @@ import { join } from "node:path";
 import type { DeliveryApi } from "./tg/delivery.ts";
 import { openStore, type Conversation } from "./conversation.ts";
 import type { Config } from "./config.ts";
-import { Runtime } from "./runtime.ts";
+import { Runtime, type TurnSink } from "./runtime.ts";
 import type { RollDeps } from "./rolling.ts";
-import { wake, type WakeDeps } from "./wake.ts";
+import { wake, wakeApp, type WakeDeps } from "./wake.ts";
+
+const nullSink: TurnSink = {
+	onTextDelta: () => {},
+	onReasoningDelta: () => {},
+	onToolCall: () => {},
+	onDone: () => {},
+};
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -45,13 +52,18 @@ function harness(gapMinutes: number) {
 		},
 	} as unknown as Runtime;
 	const roll: RollDeps = { store, runtime, gapMinutes: () => gapMinutes };
+	const sinks: TurnSink[] = [];
 	const deps: WakeDeps = {
 		store, runtime, api,
 		configRef: { current: config, ttsDown: false },
 		synthesize: async () => [],
 		roll,
+		bell: () => {
+			sinks.push(nullSink);
+			return nullSink;
+		},
 	};
-	return { deps, store, submitted, sends };
+	return { deps, store, submitted, sends, sinks };
 }
 
 test("wake after runtime close records history but does not report delivery", async () => {
@@ -74,6 +86,7 @@ test("wake after runtime close records history but does not report delivery", as
 		// A topic address never consults the roller — wired because the
 		// type requires it.
 		roll: { store, runtime, gapMinutes: () => 45 },
+		bell: () => nullSink,
 	}, { chatId: 1, threadId: 42 }, "delegation notice");
 	await Promise.resolve(); // closed runtime fences the sink asynchronously
 	expect(landed).toBe(false);
@@ -113,5 +126,26 @@ test("a DM fire within the gap joins the current conversation", () => {
 	expect(landed).toBe(true);
 	expect(submitted).toEqual(["dm:7:1"]);
 	expect(sends).toEqual([]); // no roll, no marker
+	store.close();
+});
+
+// ---------- wakeApp (Spin-off → Background turns) ----------
+
+test("wakeApp submits into the app conversation with the bell sink", () => {
+	const { deps, store, submitted, sinks } = harness(45);
+	const app = store.forkToApp(store.resolve({ kind: "dm", chatId: 1 }, "/w").id, "x1", "/w", "job");
+	const landed = wakeApp(deps, app.id, "delegation finished");
+	expect(landed).toBe(true);
+	expect(submitted).toEqual([app.id]);
+	expect(sinks).toHaveLength(1); // the bell, not a delivery sink
+	store.close();
+});
+
+test("wakeApp on a deleted app conversation drops landed — no submit, no retry loop", () => {
+	const { deps, store, submitted, sinks } = harness(45);
+	const landed = wakeApp(deps, "app/deleted-conv", "delegation finished");
+	expect(landed).toBe(true);
+	expect(submitted).toEqual([]);
+	expect(sinks).toEqual([]);
 	store.close();
 });

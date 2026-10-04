@@ -20,14 +20,35 @@ import type {
 	SendOutcome,
 	StopOutcome,
 } from "../../delegation-lifecycle.ts";
+import { log } from "../../log.ts";
 import { fenceUntrusted } from "./web.ts";
+
+/** Where a launch pins its notices — decided per call by the
+ *  composition root, which knows the source conversation's kind:
+ *  Telegram address (group topic, legacy DM), self-pinned app
+ *  conversation, or a freshly spun-off app copy (design/app.md →
+ *  Spin-off). */
+export interface DelegationPin {
+	/** The row's Telegram address — the 0/NULL fillers when
+	 *  appConversation carries the real target. */
+	address: { chatId: number; threadId: number | null };
+	/** The app conversation the row pins instead — notices wake its
+	 *  background turns. */
+	appConversation?: string;
+	/** Set on a spin-off — rendered to the model so it can tell the
+	 *  operator where the work went. */
+	movedToApp?: { title: string; link: string | null };
+	/** Undo a spin-off when the launch doesn't start — the forked
+	 *  conversation would otherwise be an orphan nobody watches. */
+	discard?: (reason?: string) => void;
+}
 
 export interface DelegateToolDeps {
 	lifecycle: DelegationLifecycle;
 	config: DelegationConfig;
-	/** The conversation this tool call runs in — pinned onto new rows. */
-	chatId: number;
-	threadId: number | null;
+	/** Resolve this launch's pin — runs the spin-off fork for a
+	 *  rolling-DM source. Called with the row's final name. */
+	pin(name: string): DelegationPin;
 	/** Goblin's workspace — the default and the relative-cwd anchor. */
 	workspaceDir: string;
 }
@@ -46,7 +67,7 @@ function view(d: Delegation): Record<string, unknown> {
 	};
 }
 
-function renderLaunch(out: LaunchOutcome): Record<string, unknown> {
+function renderLaunch(out: LaunchOutcome, pin: DelegationPin): Record<string, unknown> {
 	switch (out.kind) {
 		case "started": {
 			const d = out.delegation;
@@ -59,6 +80,12 @@ function renderLaunch(out: LaunchOutcome): Record<string, unknown> {
 				// (--session goblin); the unit is the single source of truth,
 				// no config knob (DESIGN.md, Delegation).
 				attach: "herdr session attach goblin",
+				...(pin.movedToApp === undefined
+					? {}
+					: {
+							moved_to_app: pin.movedToApp,
+							note: "This work now lives in its own app conversation — tell the operator its name and link.",
+						}),
 			};
 		}
 		case "stopped":
@@ -189,7 +216,7 @@ export const delegateInputSchema = z.object({
 export const delegateTool = (deps: DelegateToolDeps) =>
 	tool({
 		description:
-			"Delegate a task to an external coding harness (a separate agent in its own workspace, running full-auto — you may delegate on your own judgment for long or coding-heavy work instead of blocking the chat with bash, and you must tell the operator you did). Results arrive later as a [delegation: …] message — the task does not answer immediately. If a delegation ends at 'needs input' (an approval, a question, a startup dialog), relay it to the operator and send back their answer with 'send' — never answer an agent's question on the operator's behalf. Follow-ups to a finished delegation also go through 'send' — it re-prompts the agent in the workspace it kept.",
+			"Delegate a task to an external coding harness (a separate agent in its own workspace, running full-auto — you may delegate on your own judgment for long or coding-heavy work instead of blocking the chat with bash, and you must tell the operator you did). Results arrive later as a [delegation: …] message — the task does not answer immediately. If a delegation ends at 'needs input' (an approval, a question, a startup dialog), relay it to the operator and send back their answer with 'send' — never answer an agent's question on the operator's behalf. Follow-ups to a finished delegation also go through 'send' — it re-prompts the agent in the workspace it kept. Started from the operator's private chat, a delegation moves into its own app conversation (results land there and Telegram pings) — tell the operator where it went.",
 		inputSchema: delegateInputSchema,
 		execute: async (raw) => {
 			const input = actionSchema.parse(raw);
@@ -212,16 +239,29 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 					const name =
 						input.name ??
 						(input.task.split("\n", 1)[0]!.slice(0, 40).trim() || "delegation");
-					return renderLaunch(
-						await deps.lifecycle.launch({
-							harness: { name: input.harness, kind: h.kind, args: h.args ?? [] },
-							task: input.task,
-							cwd,
-							name,
-							maxRunning: deps.config.maxRunning,
-							address: { chatId: deps.chatId, threadId: deps.threadId },
-						}),
-					);
+					// The pin forks before the launch is known to start —
+					// cap/failed outcomes owe it a discard or the spun-off
+					// conversation orphans.
+					const pin = deps.pin(name);
+					const out = await deps.lifecycle.launch({
+						harness: { name: input.harness, kind: h.kind, args: h.args ?? [] },
+						task: input.task,
+						cwd,
+						name,
+						maxRunning: deps.config.maxRunning,
+						address: pin.address,
+						...(pin.appConversation === undefined
+							? {}
+							: { appConversation: pin.appConversation }),
+					});
+					if (out.kind === "cap reached" || out.kind === "failed") {
+						try {
+							pin.discard?.(out.kind);
+						} catch (err) {
+							log.error("spin-off discard failed", err, { name });
+						}
+					}
+					return renderLaunch(out, pin);
 				}
 				case "list": {
 					// Everything live, plus a tail of finished rows for

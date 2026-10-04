@@ -26,6 +26,10 @@ export interface Delegation {
 	/** Pinned Telegram address — notices land where it was delegated. */
 	chatId: number;
 	threadId: number | null;
+	/** Pinned app conversation instead — a spin-off (or an app-native
+	 *  delegation) wakes its own background turn; chat_id/thread_id
+	 *  are the 0/NULL fillers then (design/app.md → Spin-off). */
+	appConversation: string | null;
 	agentName: string;
 	workspaceId: string;
 	paneId: string;
@@ -43,6 +47,9 @@ export interface CreateDelegation {
 	cwd: string;
 	task: string;
 	address: { chatId: number; threadId: number | null };
+	/** Set by a spin-off launch — the row pins the app conversation
+	 *  and address carries the 0/NULL fillers. */
+	appConversation?: string;
 }
 
 export interface DelegationsStore {
@@ -92,6 +99,7 @@ const delegationSchema = z.object({
 	task: z.string(),
 	chat_id: z.number(),
 	thread_id: z.number().nullable(),
+	app_conversation: z.string().nullable(),
 	agent_name: z.string(),
 	workspace_id: z.string(),
 	pane_id: z.string(),
@@ -114,6 +122,7 @@ function rowToDelegation(row: unknown): Delegation {
 		task: r.task,
 		chatId: r.chat_id,
 		threadId: r.thread_id,
+		appConversation: r.app_conversation,
 		agentName: r.agent_name,
 		workspaceId: r.workspace_id,
 		paneId: r.pane_id,
@@ -152,8 +161,17 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		baseline_seq INTEGER NOT NULL DEFAULT 0,
 		prompted_at TEXT NOT NULL,
 		created_at TEXT NOT NULL,
-		finished_at TEXT
+		finished_at TEXT,
+		app_conversation TEXT
 	)`);
+	// Existing DBs predate the spin-off pin — additive column, no rebuild
+	// (design/app.md → Spin-off). NULL = Telegram-pinned like always.
+	const cols = new Set(
+		db.query<{ name: string }, []>("PRAGMA table_info(delegations)").all().map((c) => c.name),
+	);
+	if (!cols.has("app_conversation")) {
+		db.exec("ALTER TABLE delegations ADD COLUMN app_conversation TEXT");
+	}
 
 	const qGet = db.query("SELECT * FROM delegations WHERE id = ?");
 	const qList = db.query("SELECT * FROM delegations ORDER BY id");
@@ -167,8 +185,8 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		"SELECT * FROM delegations WHERE status = 'starting' ORDER BY id",
 	);
 	const qInsert = db.query(`INSERT INTO delegations
-		(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, baseline_seq, prompted_at, created_at, finished_at)
-		VALUES (?, ?, ?, ?, ?, ?, '', '', '', 'starting', 0, ?, ?, NULL)`);
+		(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, baseline_seq, prompted_at, created_at, finished_at, app_conversation)
+		VALUES (?, ?, ?, ?, ?, ?, '', '', '', 'starting', 0, ?, ?, NULL, ?)`);
 	const qBind = db.query(
 		"UPDATE delegations SET agent_name = ?, workspace_id = ?, pane_id = ? WHERE id = ?",
 	);
@@ -185,10 +203,11 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	);
 
 	return {
-		create({ name, harness, cwd, task, address }, now = new Date()) {
+		create({ name, harness, cwd, task, address, appConversation }, now = new Date()) {
 			const ts = now.toISOString();
 			const res = qInsert.run(
 				name, harness, cwd, task, address.chatId, address.threadId, ts, ts,
+				appConversation ?? null,
 			);
 			return rowToDelegation(qGet.get(Number(res.lastInsertRowid)));
 		},

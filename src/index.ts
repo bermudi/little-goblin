@@ -27,6 +27,7 @@ import {
 	startDelegationLifecycle,
 	type DelegationLifecycle,
 } from "./delegation-lifecycle.ts";
+import type { DelegationPin } from "./agent/tools/delegate.ts";
 import { makeHerdr } from "./herdr.ts";
 import { makeSender, type MailPoller, type MailSender } from "./mail.ts";
 import { makeGwsReader } from "./mail-gws.ts";
@@ -40,12 +41,16 @@ import { OutageTracker } from "./memory-outage.ts";
 import { fireMail, fireWebhook, startScheduler, type SchedulerDeps } from "./scheduler.ts";
 import { startHttp } from "./http/mod.ts";
 import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
-import { wake } from "./wake.ts";
+import { isRollingChat } from "./rolling.ts";
+import { spinOff } from "./spinoff.ts";
+import { wake, wakeApp } from "./wake.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { Runtime } from "./runtime.ts";
 import { applyMenuButton, AUTH_TELEGRAM_TOKEN, startBot } from "./tg/mod.ts";
+import { makeBellSink } from "./tg/bell.ts";
 import { sendMailNotice, startMailApproval } from "./tg/mail-approval.ts";
 import { sendMemoryBlockedNotice, sendMemoryOutageNotice, sendSkillSavedNotice } from "./tg/notify.ts";
+import { openPings } from "./tg/pings.ts";
 
 // The file sink attaches before anything that can fail — a malformed
 // config, bad auth file, corrupt DB, or occupied port must land in
@@ -124,10 +129,6 @@ async function boot() {
 	// it), so a null read there is a wiring bug, not a runtime state.
 	let delegationLifecycle: DelegationLifecycle | null = null;
 	const delegateDeps = (conv: Conversation) => {
-		// App conversations get no delegate tool: delegation results wake
-		// a Telegram sink the channel doesn't have (DESIGN.md, App
-		// channel — disjoint pools).
-		if (channelOf(conv.id) === "app") return undefined;
 		if (configRef.current.delegation === undefined || delegations === null || herdr === null) {
 			return undefined;
 		}
@@ -135,9 +136,48 @@ async function boot() {
 		return {
 			lifecycle: delegationLifecycle,
 			config: configRef.current.delegation,
-			chatId: conv.chatId,
-			threadId: conv.threadId,
 			workspaceDir: paths.workspace(),
+			// Where a launch pins its notices — decided by the source
+			// conversation's kind. App conversations DO get the tool
+			// since the spin-off: an app-pinned row wakes its own
+			// background turns and the bell rings Telegram — the "results
+			// wake a Telegram sink the channel lacks" reason is what
+			// background turns answered (design/app.md → Spin-off).
+			// program and mail stay Telegram-only (disjoint pools).
+			pin: (name: string): DelegationPin => {
+				// App-native: the conversation IS the durable home — pin it
+				// to itself, no fork.
+				if (channelOf(conv.id) === "app") {
+					return { address: { chatId: 0, threadId: null }, appConversation: conv.id };
+				}
+				// Rolling DM: fork the model view into a named app
+				// conversation — a copy, never a move; the DM stays the
+				// quick lane. discard undoes the fork when the launch
+				// doesn't start (cap reached, failed).
+				if (/^dm:\d+:\d+$/.test(conv.id) && isRollingChat(conv.chatId)) {
+					const spun = spinOff(
+						{
+							store,
+							titleFor,
+							publicUrl: () => configRef.current.publicUrl || undefined,
+						},
+						conv,
+						name,
+					);
+					return {
+						address: { chatId: 0, threadId: null },
+						appConversation: spun.conv.id,
+						movedToApp: { title: name, link: spun.link },
+						discard: (reason) => {
+							store.deleteConversation(spun.conv.id);
+							log.info("spin-off discarded", { conversation: spun.conv.id, reason });
+						},
+					};
+				}
+				// Group topics and legacy bare DMs pin their Telegram
+				// address like always.
+				return { address: { chatId: conv.chatId, threadId: conv.threadId } };
+			},
 		};
 	};
 
@@ -259,10 +299,12 @@ async function boot() {
 		makeTools: (conv, deliverVoice, recording, deliverFile, accepts) => {
 			const tts = configRef.current.tts;
 			// Telegram-bound tools don't exist on the app channel: program
-			// hooks and delegate results wake Telegram sinks, mail drafts
-			// post Telegram approval buttons. Their dep slots go undefined,
-			// so the tools never register on an app turn (DESIGN.md, App
-			// channel — disjoint pools).
+			// hooks wake Telegram sinks and mail drafts post Telegram
+			// approval buttons. Their dep slots go undefined, so the tools
+			// never register on an app turn (DESIGN.md, App channel —
+			// disjoint pools). delegate is the exception — it registers
+			// everywhere since the spin-off: an app turn's launches pin
+			// the conversation itself (design/app.md → Spin-off).
 			const telegram = channelOf(conv.id) === "telegram";
 			return makeTools(
 				paths.workspace(),
@@ -515,6 +557,11 @@ async function boot() {
 	// The shared wake path — program fires (cron, webhook, mail) submit
 	// through it into the pinned conversation. The firing owner's deps:
 	// the trigger entry points take this plus the programs store.
+	// The ping→conversation map — shared with the bell below so a
+	// swipe-reply to a spin-off ping routes into the app conversation
+	// that rang (design/app.md → Spin-off). Intake opens its own handle
+	// on the same db inside createBot.
+	const pings = openPings(store.db);
 	const wakeDeps = {
 		store,
 		runtime,
@@ -530,6 +577,21 @@ async function boot() {
 			gapMinutes: () => configRef.current.telegram.dmGapMinutes,
 			gate: () => jevGate ?? undefined,
 		},
+		// The headless sink app-channel background turns submit with —
+		// a delegation notice to an app conversation pings the
+		// operator's DM with the deep link when the turn lands.
+		bell: (conv: Conversation) =>
+			makeBellSink(
+				{
+					api: tg.bot.api,
+					store,
+					pings,
+					allowedUsers: () => configRef.current.allowedUsers,
+					publicUrl: () => configRef.current.publicUrl || undefined,
+				},
+				conv,
+				"delegation notice",
+			),
 	};
 	const firingDeps: SchedulerDeps = {
 		...wakeDeps,
@@ -556,6 +618,9 @@ async function boot() {
 					// arriving past the gap still belongs to the live
 					// conversation (Rolling DM).
 					wake: (address, text) => wake(wakeDeps, address, text, { dmTrigger: "current" }),
+					// An app-pinned row wakes its app conversation's
+					// background turn — the bell rings the DM (Spin-off).
+					wakeApp: (conversationId, text) => wakeApp(wakeDeps, conversationId, text),
 				})
 			: null;
 

@@ -140,6 +140,7 @@ import type { AuthStore } from "../auth.ts";
 import { CoalescingBuffer } from "./buffer.ts";
 import { flushConversation, handleMessage, handleMessageDurably, replayInbox, InboxRecordError, type IntakeEnv } from "./mod.ts";
 import { openTelegramInbox } from "./inbox.ts";
+import { openPings, type PingStore } from "./pings.ts";
 
 let intakeDirs: string[] = [];
 function tmpdb(): string {
@@ -157,12 +158,21 @@ function tgMsg(p: Record<string, unknown>): Message {
 	return { date: 0, ...p } as unknown as Message;
 }
 
+const nullSink: TurnSink = {
+	onTextDelta: () => {},
+	onReasoningDelta: () => {},
+	onToolCall: () => {},
+	onDone: () => {},
+};
+
 interface RouterHarness {
 	env: IntakeEnv;
 	pushed: Array<{ conv: string; parts: UIMessage["parts"]; replyTo: number | undefined; updateId: number }>;
-	apiCalls: Array<{ method: string; text?: string }>;
+	apiCalls: Array<{ method: string; text?: string; chat?: unknown }>;
 	stopped: string[];
 	store: ConversationStore;
+	pings: PingStore;
+	bellConvs: string[];
 }
 
 function routerHarness(config: Config = baseConfig): RouterHarness {
@@ -170,10 +180,12 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 	const pushed: RouterHarness["pushed"] = [];
 	const apiCalls: RouterHarness["apiCalls"] = [];
 	const stopped: string[] = [];
+	const pings = openPings(store.db);
+	const bellConvs: string[] = [];
 	const api = {
 		getFile: (_id: string) => Promise.reject(new Error("file api down")),
-		sendMessage: (_chat: unknown, text: string) => {
-			apiCalls.push({ method: "sendMessage", text });
+		sendMessage: (chat: unknown, text: string) => {
+			apiCalls.push({ method: "sendMessage", text, chat });
 			return Promise.resolve({ message_id: apiCalls.length });
 		},
 		editMessageText: (_c: unknown, _m: unknown, text: string) => {
@@ -214,8 +226,13 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 		buffer,
 		intake: new Map<string, Promise<void>>(),
 		inbox: openTelegramInbox(store.db),
+		pings,
+		bell: (conv) => {
+			bellConvs.push(conv.id);
+			return nullSink;
+		},
 	};
-	return { env, pushed, apiCalls, stopped, store };
+	return { env, pushed, apiCalls, stopped, store, pings, bellConvs };
 }
 
 function handleTestMessage(env: IntakeEnv, msg: Message): void {
@@ -226,16 +243,17 @@ let nextFlushUpdate = 100;
 function flushTest(
 	env: IntakeEnv,
 	convId: string,
-	items: Array<{parts: UIMessage["parts"]; replyTo?: number; quoted?: { messageId: number; text: string }}>,
+	items: Array<{parts: UIMessage["parts"]; replyTo?: number; chatId?: number; quoted?: { messageId: number; text: string }}>,
 ): void | Promise<void> {
 	const buffered = items.map((item) => {
 		const updateId = nextFlushUpdate++;
 		env.inbox.record(updateId, {
-			conversationId: convId, chatId: -100, messageId: updateId,
+			conversationId: convId, chatId: item.chatId ?? -100, messageId: updateId,
 			text: "", media: null, mediaError: null,
 		});
 		return {
 			parts: item.parts, replyTo: item.replyTo, updateId,
+			chatId: item.chatId ?? -100,
 			...(item.quoted !== undefined ? { quoted: item.quoted } : {}),
 		};
 	});
@@ -367,6 +385,93 @@ describe("handleMessage", () => {
 	});
 });
 
+describe("ping replies (Spin-off)", () => {
+	// A swipe-reply to a delegation ping routes into the app
+	// conversation that rang — the lane IS that id, the quoted ping
+	// text never becomes a part.
+	test("a reply to a recorded ping routes into the app conversation", async () => {
+		const h = routerHarness();
+		const src = h.store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const app = h.store.forkToApp(src.id, "spun-1", "/w", "the work");
+		h.pings.record(1, 99, app.id);
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 7,
+				chat: { id: 1, type: "private" },
+				text: "looks good",
+				reply_to_message: { message_id: 99, text: "the work: deployed" },
+			}),
+		);
+		await h.env.intake.get(app.id);
+		expect(h.env.inbox.pending()[0]!.payload.conversationId).toBe(app.id);
+		expect(h.pushed.map((p) => p.conv)).toEqual([app.id]);
+		expect(h.pushed[0]!.parts).toEqual([{ type: "text", text: "looks good" }]);
+		h.store.close();
+	});
+
+	// The app lane's flush: commit, a delivery-only "sent to" ack on
+	// the DM, and a headless submit — the bell rings back when the
+	// turn lands. No topic titling exists on this lane to attempt.
+	test("the app flush acks the DM and submits with the bell sink", async () => {
+		const h = routerHarness({ ...baseConfig, titleModel: "zai/t" });
+		const app = h.store.forkToApp(
+			h.store.resolve({ kind: "dm", chatId: 1 }, "/w").id,
+			"spun-1",
+			"/w",
+			"the work",
+		);
+		const submitted: Array<{ conv: string; sink: TurnSink }> = [];
+		h.env.deps = {
+			...h.env.deps,
+			runtime: {
+				submitPersisted: (c: { id: string }, _m: unknown, s: TurnSink) => {
+					submitted.push({ conv: c.id, sink: s });
+				},
+				busy: () => false,
+			} as unknown as Runtime,
+		};
+		flushTest(h.env, app.id, [
+			{ parts: [{ type: "text", text: "looks good" }], replyTo: 7, chatId: 1 },
+		]);
+		await Bun.sleep(10);
+		expect(
+			h.apiCalls.some(
+				(c) => c.method === "sendMessage" && c.chat === 1 && c.text === "sent to the work",
+			),
+		).toBe(true);
+		expect(submitted).toHaveLength(1);
+		expect(submitted[0]!.sink).toBe(nullSink); // the bell, never a delivery sink
+		expect(h.bellConvs).toEqual([app.id]);
+		expect(h.env.titleAttempts.size).toBe(0);
+		// The reply is real history on the app side — no quoted part.
+		expect(h.store.history(app.id).at(-1)!.parts).toEqual([
+			{ type: "text", text: "looks good" },
+		]);
+		h.store.close();
+	});
+
+	// A ping whose app conversation was deleted degrades to the
+	// ordinary reply path: DM lane, quote leading the parts.
+	test("a deleted ping target falls back to ordinary reply routing", async () => {
+		const h = routerHarness();
+		h.pings.record(1, 99, "app/gone-forever");
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 8,
+				chat: { id: 1, type: "private" },
+				text: "and?",
+				reply_to_message: { message_id: 99, text: "old ping" },
+			}),
+		);
+		await h.env.intake.get("dm:1");
+		expect(h.pushed.map((p) => p.conv)).toEqual(["dm:1"]);
+		expect((h.pushed[0]!.parts[0] as { text: string }).text).toBe('[replying to: "old ping"]');
+		h.store.close();
+	});
+});
+
 describe("flushConversation", () => {
 	function topicHarness(config: Config) {
 		const h = routerHarness(config);
@@ -494,7 +599,7 @@ describe("flushConversation", () => {
 		// dm:1 is a rolling lane — the flush is async and the failure is a rejection.
 		await expect(
 			flushConversation(h.env, conv.id, [
-				{ updateId: 710, parts: [{ type: "text", text: "hi" }], replyTo: 71 },
+				{ updateId: 710, parts: [{ type: "text", text: "hi" }], replyTo: 71, chatId: 1 },
 			]) as Promise<void>,
 		).rejects.toThrow("disk failed");
 		await Bun.sleep(10);
@@ -582,7 +687,7 @@ describe("durable intake", () => {
 		// dm:1 is a rolling lane — the flush routes to dm:1:1.
 		h.env.inbox.record(700, { conversationId: "dm:1", chatId: 1, messageId: 70,
 			text: "retry", media: null, mediaError: null });
-		const item = { updateId: 700, parts: [{ type: "text" as const, text: "retry" }], replyTo: 70 };
+		const item = { updateId: 700, parts: [{ type: "text" as const, text: "retry" }], replyTo: 70, chatId: 1 };
 		const originalStore = h.store;
 		h.env.deps.store = { ...originalStore, append: () => { throw new Error("disk failed"); } };
 		await expect(

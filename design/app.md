@@ -158,3 +158,20 @@ delegation, title); `app background turn` (conversation, trigger,
 outcome); `spin-off ping` (app conversation, ping message id);
 `ping reply routed` (ping message id → app conversation).
 
+
+**Landing rulings (stage 2, 2026-10-03).** Settled while building:
+- *Who gets rung:* every `allowedUsers` id, as a private chat, the way
+  webhook URLs travel (`sendPrivate`). One operator today, so one ping.
+- *App-pinned delegation rows* store `chat_id = 0, thread_id = NULL`
+  plus `app_conversation`. Notices for them go through `wakeApp`. If
+  the operator deleted the conversation, the notice is dropped with a
+  warning, so the scan doesn't retry it forever.
+- *Naming:* the fork is titled with the delegation's name straight
+  away (that name is what the DM reply quotes), then `titleModel`
+  retitles it in the background. An operator rename always wins.
+- *A launch that doesn't start* (cap reached, failed) deletes the fork.
+- *The ack goes once per replying chat* — coalescing can merge
+  replies from more than one operator.
+- *Deep links:* the client applies `/app/c/<id>` once, after the first
+  list load; an unknown id falls back to `/app/`. Selecting a
+  conversation keeps the URL in sync.

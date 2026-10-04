@@ -50,6 +50,7 @@ interface Harness {
 	agents: Map<string, AgentInfo | null>;
 	screens: Map<string, string>;
 	wakes: string[];
+	appWakes: { conv: string; text: string }[];
 	delegationsDir: string;
 }
 
@@ -61,6 +62,7 @@ function harness(): Harness {
 	const agents = new Map<string, AgentInfo | null>();
 	const screens = new Map<string, string>();
 	const wakes: string[] = [];
+	const appWakes: { conv: string; text: string }[] = [];
 	const herdr: Herdr = {
 		createWorkspace: () => Promise.reject(new Error("not used")),
 		startAgent: () => Promise.reject(new Error("not used")),
@@ -79,6 +81,7 @@ function harness(): Harness {
 		agents,
 		screens,
 		wakes,
+		appWakes,
 		delegationsDir,
 		deps: {
 			delegations: store,
@@ -86,6 +89,10 @@ function harness(): Harness {
 			delegationsDir,
 			wake: (_a, text) => {
 				wakes.push(text);
+				return true;
+			},
+			wakeApp: (conv, text) => {
+				appWakes.push({ conv, text });
 				return true;
 			},
 		},
@@ -604,6 +611,32 @@ describe("delegation watcher", () => {
 		// later scan while it still holds a live() concurrency slot.
 		expect(h.store.get(d.id)!.status).toBe("failed");
 		expect(h.wakes).toHaveLength(1);
+	});
+
+	test("an app-pinned row's notice lands through wakeApp, never wake", async () => {
+		const h = harness();
+		const d = h.store.create({
+			name: "app work",
+			harness: "codex",
+			cwd: "/w",
+			task: "t",
+			address: { chatId: 0, threadId: null },
+			appConversation: "app/spun-off",
+		});
+		h.store.bindLaunch(d.id, {
+			agentName: "g1-app-work",
+			workspaceId: "w1",
+			paneId: "w1:p1",
+		});
+		h.store.markRunning(d.id, 1, new Date());
+		h.agents.set("g1-app-work", agent("g1-app-work", "done", 9));
+		const w = startDelegationLifecycle(h.deps);
+		await w.tick();
+		w.stopTicker();
+		expect(h.appWakes.map((a) => a.conv)).toEqual(["app/spun-off"]);
+		expect(h.appWakes[0]!.text).toContain("[delegation: app work · done]");
+		expect(h.wakes).toEqual([]);
+		expect(h.store.get(d.id)!.status).toBe("done");
 	});
 
 	test("a second watcher over the same DB resumes a running row", async () => {

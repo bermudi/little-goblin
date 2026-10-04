@@ -97,6 +97,13 @@ function harness(): Harness {
 		// Rolling DM wiring — fires into a private chat roll like intake
 		// does. The fake runtime stands in for busy().
 		roll: { store, runtime, gapMinutes: () => config.telegram.dmGapMinutes },
+		// Fires never take the app path — wired because WakeDeps requires it.
+		bell: () => ({
+			onTextDelta: () => {},
+			onReasoningDelta: () => {},
+			onToolCall: () => {},
+			onDone: () => {},
+		}),
 	};
 	return { deps, submitted, apiCalls, store };
 }

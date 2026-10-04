@@ -130,6 +130,13 @@ function harness(): Harness {
 		synthesize: () => Promise.resolve([]),
 		// Rolling DM wiring — a private-chat fire rolls like intake does.
 		roll: { store, runtime, gapMinutes: () => config.telegram.dmGapMinutes },
+		// Fires never take the app path — wired because WakeDeps requires it.
+		bell: () => ({
+			onTextDelta: () => {},
+			onReasoningDelta: () => {},
+			onToolCall: () => {},
+			onDone: () => {},
+		}),
 	};
 	h.fireMail = (program, hits, checkpoint, now) =>
 		fireMail(firingDeps, program, hits, checkpoint, now);

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config, MemoryConfig } from "../config.ts";
@@ -820,6 +820,54 @@ describe("mini-app memories browser", () => {
 			} finally {
 				http2.stop();
 			}
+		} finally {
+			http.stop();
+		}
+	});
+});
+
+// The spin-off deep link (design/app.md → Spin-off → Links):
+// /app/c/<appId> serves the same client shell as /app/ — same
+// no-store, same fail-loud-500 when the build is missing — and an id
+// that fails the appIdSchema shape is a 404, never an error page.
+describe("app deep link (Spin-off)", () => {
+	// The dist dir is build output — absent on a checkout before
+	// `bun run app:build`, which is exactly the loud-500 path.
+	const distExists = existsSync(join(import.meta.dir, "..", "..", "app", "dist"));
+
+	test("a valid id serves the client shell", async () => {
+		const { http, get } = setup();
+		try {
+			const res = await get("/app/c/spun-1_valid");
+			if (distExists) {
+				expect(res.status).toBe(200);
+				expect(res.headers.get("content-type")).toContain("text/html");
+				expect(res.headers.get("cache-control")).toBe("no-store");
+				expect(await res.text()).toContain("<html");
+			} else {
+				// Same fail-loud contract as /app/ — never a silent page.
+				expect(res.status).toBe(500);
+				expect(((await res.json()) as { error: string }).error).toContain(
+					"app client not built",
+				);
+			}
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("malformed ids are 404 — the schema shape is the whole gate", async () => {
+		const { http, get } = setup();
+		try {
+			// Leading punctuation fails the first-char rule.
+			expect((await get("/app/c/-bad")).status).toBe(404);
+			// A decoded space is not in the charset.
+			expect((await get("/app/c/not%20valid")).status).toBe(404);
+			// The empty segment and an over-long id fail the same way.
+			expect((await get("/app/c/")).status).toBe(404);
+			expect((await get(`/app/c/${"x".repeat(65)}`)).status).toBe(404);
+			// An extra path segment isn't part of the id.
+			expect((await get("/app/c/valid/extra")).status).toBe(404);
 		} finally {
 			http.stop();
 		}

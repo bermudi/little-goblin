@@ -132,6 +132,15 @@ export interface ConversationStore {
 	// Newest event's created_at, else the conversation's own — the
 	// quiet-gap clock the roller reads.
 	lastActivityAt(id: string): string;
+	// Spin-off (design/app.md → Spin-off): copy a conversation's model
+	// state into a fresh app conversation, in one transaction — every
+	// event (seq/role/data/anchor/created_at verbatim), the latest
+	// compaction pointer only, and every memory_contexts row. A copy,
+	// never a move: the source is untouched. The memory queue is NOT
+	// replayed — copied exchanges are already retained, and re-enqueue
+	// would re-process them against a bank that already has them.
+	// Nothing logs here — the caller owns the `spin-off` line.
+	forkToApp(fromId: string, appId: string, defaultCwd: string, title: string): Conversation;
 	setMeta(id: string, patch: ConversationMetaPatch): void;
 	// Settings changes and cancellation bump the epoch; in-flight turns
 	// fence themselves against it.
@@ -564,6 +573,24 @@ export function openStore(dbPath: string): ConversationStore {
 	const qInsertEvent = db.query(
 		"INSERT INTO events (conversation_id, seq, role, data, anchor_seq, created_at) VALUES (?, ?, ?, ?, ?, ?)",
 	);
+	// forkToApp's copy sources — events verbatim (created_at included,
+	// unlike the history view), and memory_contexts with only the
+	// conversation_id swapped.
+	const qAllEvents = db.query<
+		{ seq: number; role: string; data: string; anchor_seq: number | null; created_at: string },
+		[string]
+	>(
+		"SELECT seq, role, data, anchor_seq, created_at FROM events WHERE conversation_id = ? ORDER BY seq",
+	);
+	const qContextsFor = db.query<
+		{ anchor_seq: number; content: string; source_ids: string; created_at: string },
+		[string]
+	>(
+		"SELECT anchor_seq, content, source_ids, created_at FROM memory_contexts WHERE conversation_id = ? ORDER BY anchor_seq",
+	);
+	const qInsertContext = db.query(
+		"INSERT INTO memory_contexts (conversation_id, anchor_seq, content, source_ids, created_at) VALUES (?, ?, ?, ?, ?)",
+	);
 	const qEpoch = db.query<{ epoch: number }, [string]>(
 		"SELECT epoch FROM conversations WHERE id = ?",
 	);
@@ -736,6 +763,38 @@ export function openStore(dbPath: string): ConversationStore {
 			const conv = qGet.get(id);
 			if (!conv) throw new Error(`conversation ${id} not found`);
 			return conv.created_at;
+		},
+
+		forkToApp(fromId, appId, defaultCwd, title) {
+			return db.transaction(() => {
+				const id = addressId(appAddress(appId));
+				qInsertConv.run(id, 0, null, defaultCwd, new Date().toISOString());
+				applyPatch(id, { title, titleImplicit: true });
+				// The FTS triggers fire on these inserts — correct: the app
+				// pool's search should see the copied exchange.
+				for (const e of qAllEvents.all(fromId)) {
+					qInsertEvent.run(id, e.seq, e.role, e.data, e.anchor_seq, e.created_at);
+				}
+				// Compaction rows are append-only audit — only the latest
+				// pointer steers the model view, so only it copies.
+				const compaction = qCompaction.get(fromId);
+				if (compaction !== null) {
+					qInsertCompaction.run(
+						id,
+						compaction.boundary_seq,
+						compaction.summary,
+						compaction.tokens_before,
+						compaction.model,
+						compaction.created_at,
+					);
+				}
+				for (const c of qContextsFor.all(fromId)) {
+					qInsertContext.run(id, c.anchor_seq, c.content, c.source_ids, c.created_at);
+				}
+				const created = qGet.get(id);
+				if (!created) throw new Error(`conversation ${id} insert failed`);
+				return toConversation(created);
+			})();
 		},
 
 		setMeta(id, patch) {

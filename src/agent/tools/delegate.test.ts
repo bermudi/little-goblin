@@ -45,6 +45,8 @@ interface Harness {
 	herdr: Herdr;
 	workspaceDir: string;
 	delegationsDir: string;
+	pinned: string[];
+	pinOverride: DelegateToolDeps["pin"] | undefined;
 }
 
 function harness(maxRunning = 3, startError?: string): Harness {
@@ -85,9 +87,14 @@ function harness(maxRunning = 3, startError?: string): Harness {
 			herdr,
 			delegationsDir,
 			wake: () => true,
+			wakeApp: () => true,
 		},
 		3_600_000,
 	);
+	// The pin stands in for the composition root's per-conversation
+	// choice — tests that exercise a spin-off override it through
+	// `pinOverride`.
+	const pinned: string[] = [];
 	const deps: DelegateToolDeps = {
 		lifecycle,
 		config: {
@@ -97,11 +104,15 @@ function harness(maxRunning = 3, startError?: string): Harness {
 				pi: { kind: "pi" },
 			},
 		},
-		chatId: -100,
-		threadId: 7,
+		pin(name) {
+			pinned.push(name);
+			return h.pinOverride === undefined
+				? { address: { chatId: -100, threadId: 7 } }
+				: h.pinOverride(name);
+		},
 		workspaceDir,
 	};
-	return {
+	const h: Harness = {
 		tool: delegateTool(deps),
 		lifecycle,
 		store,
@@ -110,7 +121,10 @@ function harness(maxRunning = 3, startError?: string): Harness {
 		herdr,
 		workspaceDir,
 		delegationsDir,
+		pinned,
+		pinOverride: undefined,
 	};
+	return h;
 }
 
 const exec = (t: ReturnType<typeof delegateTool>, input: unknown) =>
@@ -325,6 +339,7 @@ describe("delegate tool", () => {
 				wakes.push(text);
 				return true;
 			},
+			wakeApp: () => true,
 		});
 		await w.tick(); // drain the boot scan before the row exists
 		const starting = exec(h.tool, {
@@ -453,10 +468,104 @@ describe("delegate tool", () => {
 				wakes.push(text);
 				return true;
 			},
+			wakeApp: () => true,
 		});
 		await w.tick();
 		w.stopTicker();
 		expect(h.store.get(out.id)!.status).toBe("done");
 		expect(wakes[0]).toContain("· done]");
+	});
+
+	// ---------- the pin (Spin-off) ----------
+	// The composition root owns the per-conversation pin; the tool's
+	// contract is: pin before launch, carry appConversation into the
+	// row, discard on cap/failure, render moved_to_app on started.
+
+	test("a rolling-DM pin renders moved_to_app and pins the row to the app conversation", async () => {
+		const h = harness();
+		h.pinOverride = (name) => ({
+			address: { chatId: 0, threadId: null },
+			appConversation: "app/spun-off",
+			movedToApp: { title: name, link: "https://g.example/app/c/spun-off" },
+		});
+		const out = (await exec(h.tool, {
+			action: "start",
+			harness: "codex",
+			task: "do it",
+			name: "spun work",
+		})) as {
+			id: number;
+			moved_to_app: { title: string; link: string };
+			note: string;
+		};
+		expect(out.moved_to_app).toEqual({
+			title: "spun work",
+			link: "https://g.example/app/c/spun-off",
+		});
+		expect(out.note).toContain("app conversation");
+		expect(h.pinned).toEqual(["spun work"]); // the pin sees the final name
+		const row = h.store.get(out.id)!;
+		expect(row.appConversation).toBe("app/spun-off");
+		expect(row.chatId).toBe(0); // the app-pinned fillers
+		expect(row.threadId).toBeNull();
+	});
+
+	test("cap reached discards the pin — the fork must not orphan", async () => {
+		const h = harness(1);
+		h.store.create({
+			name: "occupant",
+			harness: "codex",
+			cwd: "/w",
+			task: "t",
+			address: { chatId: 1, threadId: null },
+		});
+		const discarded: string[] = [];
+		h.pinOverride = () => ({
+			address: { chatId: 0, threadId: null },
+			appConversation: "app/spun-off",
+			movedToApp: { title: "x", link: null },
+			discard: (reason) => discarded.push(reason ?? ""),
+		});
+		const out = (await exec(h.tool, {
+			action: "start",
+			harness: "codex",
+			task: "do it",
+		})) as { error: string };
+		expect(out.error).toContain("cap reached");
+		expect(discarded).toEqual(["cap reached"]);
+	});
+
+	test("a failed launch discards the pin too", async () => {
+		const h = harness(3, "agent g1-x is blocked during startup and is not ready");
+		const discarded: string[] = [];
+		h.pinOverride = () => ({
+			address: { chatId: 0, threadId: null },
+			appConversation: "app/spun-off",
+			discard: (reason) => discarded.push(reason ?? ""),
+		});
+		const out = (await exec(h.tool, {
+			action: "start",
+			harness: "codex",
+			task: "do it",
+			name: "x",
+		})) as { error: string };
+		expect(out.error).toContain("blocked during startup");
+		expect(discarded).toEqual(["failed"]);
+	});
+
+	test("an app-source pin pins to itself — no moved_to_app in the result", async () => {
+		const h = harness();
+		h.pinOverride = () => ({
+			address: { chatId: 0, threadId: null },
+			appConversation: "app/self-hosted",
+		});
+		const out = (await exec(h.tool, {
+			action: "start",
+			harness: "codex",
+			task: "do it",
+		})) as { id: number; moved_to_app?: unknown; note?: string };
+		expect("moved_to_app" in out).toBe(false);
+		expect("note" in out).toBe(false);
+		expect(h.store.get(out.id)!.appConversation).toBe("app/self-hosted");
 	});
 });

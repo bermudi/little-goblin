@@ -104,6 +104,12 @@ export interface HttpDeps {
 
 const NO_STORE = { "cache-control": "no-store" };
 const HTML = { "content-type": "text/html; charset=utf-8", ...NO_STORE };
+
+// The deep link's path segment — mirrors conversation.ts's
+// appIdSchema, kept local because a value import of that module would
+// drag the server graph (sqlite, memory) into this file's DOM-lib
+// typecheck program (the import comment above explains the boundary).
+const APP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const JS = { "content-type": "text/javascript; charset=utf-8", ...NO_STORE };
 
 // The page's single load-time fetch: the config plus the schema's kind
@@ -444,6 +450,18 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 			// Public like the mini app's page — the API carries the auth.
 			if (url.pathname === "/app") {
 				return Response.redirect(`${url.origin}/app/`, 302);
+			}
+			// The spin-off deep link (design/app.md → Spin-off → Links):
+			// /app/c/<appId> opens one conversation — serve the same
+			// client shell, which selects it once the list loads. The id
+			// is url-safe by schema, so the raw segment validates — a
+			// malformed id is a 404, never an error page.
+			if (url.pathname.startsWith("/app/c/")) {
+				const appId = url.pathname.slice("/app/c/".length);
+				if (!APP_ID_RE.test(appId)) {
+					return Response.json({ error: "not found" }, { status: 404 });
+				}
+				return serveAppDist("");
 			}
 			if (url.pathname.startsWith("/app/")) {
 				return serveAppDist(url.pathname.slice("/app/".length));

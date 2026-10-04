@@ -14,7 +14,7 @@
 
 import type { Conversation, ConversationAddress, ConversationStore } from "./conversation.ts";
 import { paths, type ConfigRef, type TtsConfig } from "./config.ts";
-import { userMessage, type Runtime } from "./runtime.ts";
+import { userMessage, type Runtime, type TurnSink } from "./runtime.ts";
 import { isRollingChat, routeDm, type RollDeps } from "./rolling.ts";
 import { log } from "./log.ts";
 import { makeDeliverySink, type DeliveryApi } from "./tg/delivery.ts";
@@ -29,6 +29,10 @@ export interface WakeDeps {
 	// Rolling DM wiring — a fire into a private chat routes through the
 	// roller like a message would (design/telegram.md → Rolling DM).
 	roll: RollDeps;
+	// The headless sink app-channel background turns ring through —
+	// a Telegram delivery sink can't exist on an app conversation
+	// (design/app.md → Spin-off → Background turns).
+	bell(conv: Conversation): TurnSink;
 }
 
 export interface WakeAddress {
@@ -84,6 +88,44 @@ export function wake(
 			message: err instanceof Error ? err.message : String(err),
 		});
 		log.error("wake submit failed", err, { conversation: conv.id });
+		return false;
+	}
+	return true;
+}
+
+// The app-pinned twin (design/app.md → Spin-off → Background turns):
+// a delegation notice becomes a user message in the pinned app
+// conversation's background turn, run through the ordinary lane queue
+// with the headless bell sink — the ring reaches Telegram when the
+// turn lands, not when it's submitted. Same admitted/throw contract
+// as wake — true only on a live submit, so a failed wake retries.
+// A deleted conversation is the one drop: retrying would pin a dead
+// row in the scan forever, so it warns and reports landed.
+export function wakeApp(deps: WakeDeps, conversationId: string, text: string): boolean {
+	const conv = deps.store.get(conversationId);
+	if (conv === null) {
+		log.warn("delegation notice dropped — app conversation deleted", {
+			conversation: conversationId,
+		});
+		return true;
+	}
+	const sink = deps.bell(conv);
+	try {
+		const admitted = deps.runtime.submit(
+			conv,
+			userMessage([{ type: "text", text }]),
+			sink,
+		);
+		if (!admitted) {
+			log.warn("app wake history only — runtime closed", { conversation: conv.id });
+			return false;
+		}
+	} catch (err) {
+		void sink.onDone({
+			kind: "error",
+			message: err instanceof Error ? err.message : String(err),
+		});
+		log.error("app wake submit failed", err, { conversation: conv.id });
 		return false;
 	}
 	return true;

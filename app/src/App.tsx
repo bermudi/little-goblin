@@ -55,6 +55,14 @@ function flatTitle(title: string | null): string | null {
 	return flatLine(title) || null;
 }
 
+// The spin-off deep link (design/app.md → Spin-off → Links):
+// /app/c/<appId> opens one conversation — the id matches the server's
+// appIdSchema and the conversation id is "app/<appId>".
+export function deepLinkConv(pathname: string): string | null {
+	const m = /^\/app\/c\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})$/.exec(pathname);
+	return m === null ? null : `app/${m[1]}`;
+}
+
 // The token is the operator-pasted credential (the value behind the
 // auth.jsonl record config.appToken names), kept in localStorage. When
 // the server runs trust mode (appToken unset) no credential exists —
@@ -232,6 +240,9 @@ export function App() {
 	const [starting, setStarting] = useState(false);
 	const [startFailed, setStartFailed] = useState(false);
 	const listSeq = useRef(0);
+	// The deep link applies once — after the first list load — so an
+	// operator's own navigation is never overridden later.
+	const deepApplied = useRef(false);
 
 	useEffect(() => {
 		if (gate !== "probing") return;
@@ -272,6 +283,21 @@ export function App() {
 	useEffect(() => {
 		if (gate === "passed") void refresh();
 	}, [gate, refresh]);
+
+	// A /app/c/<id> load selects that conversation once the list
+	// arrives — an unknown id just shows the list.
+	useEffect(() => {
+		if (conversations === null || deepApplied.current) return;
+		deepApplied.current = true;
+		const id = deepLinkConv(window.location.pathname);
+		if (id === null) return;
+		if (conversations.some((c) => c.id === id)) {
+			setCurrent(id);
+		} else {
+			// A dead link must not masquerade — normalize to the root.
+			window.history.replaceState(null, "", "/app/");
+		}
+	}, [conversations]);
 
 	// Debounced app-pool search — an empty box clears back to the list.
 	useEffect(() => {
@@ -333,16 +359,27 @@ export function App() {
 		);
 	}
 
+	// Selection owns the URL — /app/c/<id> for a conversation, /app/
+	// for the list/empty state, matching the deep link the pings carry.
+	const select = (id: string | null) => {
+		setCurrent(id);
+		window.history.replaceState(
+			null,
+			"",
+			id === null ? "/app/" : `/app/c/${id.slice("app/".length)}`,
+		);
+	};
+
 	// "New conversation" opens the empty state; the conversation itself is
 	// created lazily, on the first send — an untouched composer never
 	// leaves an empty row in the store.
 	const newConversation = () => {
 		setNavOpen(false);
-		setCurrent(null);
+		select(null);
 	};
 
 	const openConversation = (id: string) => {
-		setCurrent(id);
+		select(id);
 		setNavOpen(false);
 	};
 
@@ -352,7 +389,7 @@ export function App() {
 		try {
 			const created = await createConversation(token);
 			setSeed({ id: created.id, parts });
-			setCurrent(created.id);
+			select(created.id);
 			await refresh();
 		} catch {
 			setStartFailed(true);
@@ -420,7 +457,7 @@ export function App() {
 									onOpen={openConversation}
 									onRenamed={() => void refresh()}
 									onDeleted={(id) => {
-										if (id === current) setCurrent(null);
+										if (id === current) select(null);
 										void refresh();
 									}}
 								/>

@@ -255,7 +255,31 @@ describe("gws mail reader", () => {
 
 	test("an unexpected gws shape fails loud, never as empty results", async () => {
 		const run: GwsRunner = async () => ({ code: 0, stdout: JSON.stringify({ nope: true }), stderr: "" });
-		await expect(makeGwsReader(run).profileHistoryId()).rejects.toThrow("carried no historyId");
+		await expect(makeGwsReader(run).profileHistoryId()).rejects.toThrow("unexpected shape");
+	});
+
+	test("a send-shaped drift on reads fails loud too — an id-less meta.get and a historyId-less page", async () => {
+		// meta.get without id: used to silently substitute the request id —
+		// exercise it through threadFor (the public seam over getMetadata).
+		const noId: GwsRunner = async () => ({
+			code: 0,
+			stdout: JSON.stringify({ threadId: "t", snippet: "s" }),
+			stderr: "",
+		});
+		await expect(makeGwsReader(noId).threadFor("m9")).rejects.toThrow(
+			"reply.get returned an unexpected shape",
+		);
+		// history.list without historyId: used to collapse to "" and
+		// leave the checkpoint to a warn-and-retry; drift should name
+		// itself at the boundary instead.
+		const noHistoryId: GwsRunner = async () => ({
+			code: 0,
+			stdout: JSON.stringify({ history: [] }),
+			stderr: "",
+		});
+		await expect(makeGwsReader(noHistoryId).poll("from:x", "1")).rejects.toThrow(
+			"poll.history returned an unexpected shape",
+		);
 	});
 
 	test("profileHistoryId returns the baseline checkpoint", async () => {

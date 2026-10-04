@@ -10,6 +10,7 @@
 
 import type { AuthStore } from "./auth.ts";
 import { log } from "./log.ts";
+import { z } from "zod";
 import {
 	fetchOk,
 	ProviderError,
@@ -192,8 +193,26 @@ class Gmail {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(body),
 		});
-		const sent = data as { id?: unknown; threadId?: unknown };
-		return { id: str(sent.id), threadId: str(sent.threadId) };
+		// The wire's own contract, not a mask: a 2xx send owes an id and a
+		// threadId. Shape drift here used to collapse to `sentId: ""` via
+		// str() — a silent lie in the outbox row (audit #8); now it fails
+		// loud as a ProviderError so the row stays pending and re-tappable.
+		const sent = parseOrThrow(
+			"send",
+			z.object({ id: z.string(), threadId: z.string() }).passthrough(),
+			data,
+		);
+		return { id: sent.id, threadId: sent.threadId };
+	}
+}
+
+// Parse a Gmail wire response against its schema — the boundary's
+// fail-loud seam (zod at the edge, ProviderError naming the action).
+function parseOrThrow<T>(action: string, schema: z.ZodType<T>, data: unknown): T {
+	try {
+		return schema.parse(data);
+	} catch (err) {
+		throw new ProviderError("gmail", `${action} returned an unexpected shape — ${(err as Error).message.slice(0, 200)}`);
 	}
 }
 

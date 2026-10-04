@@ -55,43 +55,48 @@ const defaultRunner: GwsRunner = async (args) => {
 export interface GwsMailReader extends MailPoller {}
 
 // ---------- gws output shapes (raw Discovery JSON, --format json) ----------
+// Load-bearing leaves are typed: a missing id or historyId is provider
+// drift and must throw (parseOrThrow → ProviderError), not collapse to
+// "" through str() and masquerade as success (audit #8). Display-only
+// fields (snippet, resultSizeEstimate) stay lenient — absence is a
+// legitimate empty, not drift.
 
 const historyMessageSchema = z.object({
-	message: z.object({ id: z.unknown().optional(), threadId: z.unknown().optional() }).passthrough(),
+	message: z.object({ id: z.string(), threadId: z.string().optional() }).passthrough(),
 }).passthrough();
 
 const historyRecordSchema = z.object({
-	id: z.unknown().optional(),
+	id: z.string(),
 	messagesAdded: z.array(historyMessageSchema).optional(),
 }).passthrough();
 
 const historyPageSchema = z.object({
 	history: z.array(historyRecordSchema).optional(),
-	historyId: z.unknown().optional(),
-	nextPageToken: z.unknown().optional(),
+	historyId: z.string(),
+	nextPageToken: z.string().optional(),
 }).passthrough();
 
 const messagesListSchema = z.object({
 	messages: z.array(
-		z.object({ id: z.unknown().optional(), threadId: z.unknown().optional() }).passthrough(),
+		z.object({ id: z.string(), threadId: z.string().optional() }).passthrough(),
 	).optional(),
-	nextPageToken: z.unknown().optional(),
+	nextPageToken: z.string().optional(),
 	resultSizeEstimate: z.unknown().optional(),
 }).passthrough();
 
 const messageGetSchema = z.object({
-	id: z.unknown().optional(),
-	threadId: z.unknown().optional(),
-	snippet: z.unknown().optional(),
+	id: z.string(),
+	threadId: z.string(),
+	snippet: z.string().optional(),
 	payload: z.object({
 		headers: z.array(
-			z.object({ name: z.unknown().optional(), value: z.unknown().optional() }).passthrough(),
+			z.object({ name: z.string(), value: z.string() }).passthrough(),
 		).optional(),
 	}).passthrough().optional(),
 }).passthrough();
 
 const profileSchema = z.object({
-	historyId: z.unknown().optional(),
+	historyId: z.string(),
 }).passthrough();
 
 function parseOrThrow<T>(action: string, schema: z.ZodType<T>, data: unknown): T {
@@ -175,8 +180,10 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 		);
 		const body = parseOrThrow("meta.get", messageGetSchema, data);
 		return {
-			id: str(body.id) || id,
-			threadId: str(body.threadId),
+			// No request-id substitution: an id-less get is drift and threw
+			// above — the hit's identity is the wire's, always.
+			id: body.id,
+			threadId: body.threadId,
 			from: header(body.payload, "From"),
 			subject: header(body.payload, "Subject"),
 			date: header(body.payload, "Date"),
@@ -304,9 +311,7 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 			{},
 		);
 		const body = parseOrThrow("profile.get", profileSchema, data);
-		const historyId = str(body.historyId);
-		if (historyId === "") throw new ProviderError("gws", "profile response carried no historyId");
-		return historyId;
+		return body.historyId;
 	}
 
 	async function threadFor(replyToId: string): Promise<{ threadId: string; messageId: string | null } | null> {

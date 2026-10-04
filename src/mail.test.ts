@@ -80,6 +80,25 @@ describe("buildRaw", () => {
 
 
 describe("gmail send", () => {
+	test("a 2xx send missing its id is a ProviderError, never a silent empty sentId", async () => {
+		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
+		// Shape drift: Google's contract owes { id, threadId } — a 200
+		// without them must fail loud so the outbox row stays pending,
+		// not record sentId: "" as a lie (audit #8).
+		const gmail = serve(() => Response.json({ status: "done, trust me" }));
+		const sender = makeSender({
+			auth: fakeAuth,
+			clientId: "cid",
+			clientSecretAuth: "gmail-secret",
+			sendAuth: "gmail-send",
+			gmailBase: `${gmail}/gmail/v1`,
+			oauthBase: oauth,
+		});
+		await expect(sender.send({ to: ["a@x.com"], subject: "hi", body: "hello" })).rejects.toThrow(
+			"send returned an unexpected shape",
+		);
+	});
+
 	test("an oauth failure fails the call with the provider named", async () => {
 		const oauth = serve(() => new Response("bad", { status: 401 }));
 		const sender = makeSender({

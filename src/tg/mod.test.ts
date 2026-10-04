@@ -622,6 +622,22 @@ describe("flushConversation", () => {
 		).toThrow("flush for missing conversation");
 		expect(h.env.inbox.pending()).toHaveLength(1);
 	});
+
+	test("a ping reply to a deleted app conversation is tombstoned and acked, not retried", () => {
+		const h = routerHarness(baseConfig);
+		expect(() =>
+			flushTest(h.env, "app/gone", [
+				{ parts: [{ type: "text", text: "hi" }], replyTo: 1, chatId: 7 },
+			]),
+		).not.toThrow();
+		// The rows are consumed — no 5-minute retry ladder, no boot replay.
+		expect(h.env.inbox.pending()).toHaveLength(0);
+		// The DM learns the reply never landed instead of waiting for an
+		// ack that would never come.
+		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
+			"not sent — that app conversation was deleted",
+		]);
+	});
 });
 
 describe("durable intake", () => {

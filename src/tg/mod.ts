@@ -440,6 +440,17 @@ export function flushConversation(
 	const { deps } = env;
 	const conv = deps.store.get(convId);
 	if (!conv) {
+		// Only the app channel deletes its conversations (the operator's
+		// DELETE) — a missing Telegram row is a store anomaly and keeps
+		// the throw+retry. A deleted app conversation is a dead end, not
+		// a transient failure: per the Spin-off ruling (design/app.md —
+		// a deleted conversation drops with a warning), tombstone the
+		// batch — a retry would hit the same missing row every 5 minutes
+		// forever, and the pending inbox rows replay at every boot.
+		if (channelOf(convId) === "app") {
+			dropAppBatch(env, convId, items);
+			return;
+		}
 		throw new Error(`flush for missing conversation: ${convId}`);
 	}
 	const parts = items.flatMap((i) => i.parts);
@@ -542,6 +553,39 @@ function admitBatch(
 // commits like any batch, the DM gets a delivery-only "sent to"
 // ack (never history — the ping already shows what it answers), and
 // the turn submits headless — the bell rings back when it lands.
+// A ping reply whose app conversation was deleted: consume the inbox
+// rows without appending — a tombstone, so the buffer stops retrying
+// and the rows stop replaying at every boot — and tell each replying
+// chat it never landed. The operator swiped-reply expecting an "sent
+// to" ack; silence would be a lie by omission.
+function dropAppBatch(env: FlushEnv, convId: string, items: BufferedItem[]): void {
+	env.inbox.commitBatch(items.map((i) => i.updateId), convId, () => {});
+	log.warn("ping reply dropped — app conversation deleted", {
+		conversation: convId,
+		items: items.length,
+	});
+	for (const chat of new Set(items.map((i) => i.chatId))) {
+		void withTimeout(
+			env.api.sendMessage(chat, "not sent — that app conversation was deleted"),
+			"sendMessage (ping reply drop)",
+		).catch((err: unknown) => {
+			if (err instanceof TelegramTimeoutError) {
+				log.warn("ping reply drop ack delivery uncertain — send timed out", {
+					chat,
+					conversation: convId,
+					label: err.label,
+				});
+				return;
+			}
+			log.warn("ping reply drop ack failed", {
+				chat,
+				conversation: convId,
+				error: String(err),
+			});
+		});
+	}
+}
+
 function admitAppBatch(
 	env: FlushEnv,
 	conv: Conversation,

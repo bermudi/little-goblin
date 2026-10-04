@@ -138,8 +138,9 @@ function seedCodex(cwd: string, file: string): string[] {
 
 	const lines = text.split("\n");
 	// The key may appear as "escaped" (basic) or 'raw' (literal) — a cwd
-	// containing a single quote only has the basic form.
-	const basic = `"${cwd.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+	// containing a single quote or a control character only has the
+	// basic form.
+	const basic = tomlBasic(cwd);
 	const quoted = cwd.includes("'")
 		? reEscape(basic)
 		: `(?:${reEscape(basic)}|'${reEscape(cwd)}')`;
@@ -204,6 +205,24 @@ function appendProjectTable(
 	while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
 	lines.push(`[projects.${basic}]`, 'trust_level = "trusted"', "");
 	return lines.join("\n");
+}
+
+const TOML_ESCAPES: Record<string, string> = {
+	"\b": "\\b",
+	"\t": "\\t",
+	"\n": "\\n",
+	"\f": "\\f",
+	"\r": "\\r",
+	'"': '\\"',
+	"\\": "\\\\",
+};
+
+// TOML basic strings must escape the quote, backslash, and every
+// control character — a cwd named with a newline or tab still yields
+// a valid key, and the escaped form is what on-disk matching finds.
+function tomlBasic(s: string): string {
+	return `"${s.replace(/[\\"\x00-\x1f\x7f]/g, (c) =>
+		TOML_ESCAPES[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`)}"`;
 }
 
 function reEscape(s: string): string {

@@ -188,6 +188,18 @@ describe("codex", () => {
 		expect(readFileSync(path, "utf8")).toBe(original);
 	});
 
+	test("a cwd with control characters still writes valid TOML", () => {
+		const h = home();
+		// Tab, newline, and a char with no shorthand escape — all legal
+		// in directory names, all invalid bare inside a TOML basic key.
+		const cwd = "/we\tr\ndi\x01r";
+		seedHarnessTrust("codex", cwd, h);
+		expect(codexTrust(h, cwd)).toBe("trusted");
+		// The escaped key round-trips: a second seed finds the entry and
+		// is a no-op.
+		expect(seedHarnessTrust("codex", cwd, h)).toEqual([]);
+	});
+
 	test("an explicit trust_level stands — the operator's call wins", () => {
 		const h = home();
 		mkdirSync(join(h, ".codex"), { recursive: true });

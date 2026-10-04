@@ -511,7 +511,11 @@ export function startMemoryWorker(
 			try {
 				worked = await tick();
 			} catch (err) {
-				log.warn("memory worker tick failed", { error: String(err) });
+				// A tick failure is a bug or a broken boundary, not an
+				// expected degradation — the queue's own HindsightError
+				// handling covers outages. Structured at error, so the log
+				// carries the real object (audit #22).
+				log.error("memory worker tick failed", err, {});
 				return;
 			}
 			if (!worked) return;

@@ -729,6 +729,17 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 
 	bot.on("message", (ctx) => handleMessageDurably(env, ctx.message, ctx.update.update_id));
 
+	// Edits carry no new content for the model — the original is already
+	// history — but the operator's edit must not vanish without a trace:
+	// a screenshot of "nothing happened" plus the log has to explain it
+	// (audit #18). Acked, logged, never re-entered.
+	bot.on("edited_message", (ctx) => {
+		log.info("edited message acked — edits do not re-enter history", {
+			chat: ctx.editedMessage.chat.id,
+			message: ctx.editedMessage.message_id,
+		});
+	});
+
 	bot.callbackQuery(SPEAK_CALLBACK, (ctx) => {
 		void handleSpeakButton(ctx.callbackQuery, {
 			api: bot.api,

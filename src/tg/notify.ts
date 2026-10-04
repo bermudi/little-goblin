@@ -85,10 +85,13 @@ export async function sendMemoryOutageNotice(
 		`⚠️ memory service has been unreachable for ~${hours}h — ` +
 		`${queued} exchange${queued === 1 ? "" : "s"} queued locally, nothing lost. ` +
 		"/memory status for detail.";
-	await api.sendMessage(
-		addr.chatId,
-		text,
-		addr.threadId !== null ? { message_thread_id: addr.threadId } : {},
+	await withTimeout(
+		api.sendMessage(
+			addr.chatId,
+			text,
+			addr.threadId !== null ? { message_thread_id: addr.threadId } : {},
+		),
+		"sendMessage (memory outage notice)",
 	);
 	log.info("memory outage notice sent", { conversation: conversationId, hours, queued });
 }
@@ -117,10 +120,13 @@ export async function sendMemoryBlockedNotice(
 	const text =
 		`memory retention blocked for one exchange: ${(error ?? "unknown error").slice(0, 120)} — ` +
 		"/memory retry to resend, /memory dismiss to drop";
-	await api.sendMessage(
-		addr.chatId,
-		text,
-		addr.threadId !== null ? { message_thread_id: addr.threadId } : {},
+	await withTimeout(
+		api.sendMessage(
+			addr.chatId,
+			text,
+			addr.threadId !== null ? { message_thread_id: addr.threadId } : {},
+		),
+		"sendMessage (memory blocked notice)",
 	);
 	log.info("memory blocked notice sent", { conversation: conversationId, attempts });
 }
@@ -145,10 +151,13 @@ export async function sendSkillSavedNotice(
 	}
 	if (!addr) throw new Error(`unparseable conversation id: ${conversationId}`);
 	const names = skills.length === 1 ? `skill: ${skills[0]}` : `skills: ${skills.join(", ")}`;
-	await api.sendMessage(
-		addr.chatId,
-		`saved ${names} — reply to undo`,
-		addr.threadId !== null ? { message_thread_id: addr.threadId } : {},
+	await withTimeout(
+		api.sendMessage(
+			addr.chatId,
+			`saved ${names} — reply to undo`,
+			addr.threadId !== null ? { message_thread_id: addr.threadId } : {},
+		),
+		"sendMessage (skill saved notice)",
 	);
 	log.info("skill saved notice sent", { conversation: conversationId, skills });
 }

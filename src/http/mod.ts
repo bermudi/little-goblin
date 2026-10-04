@@ -426,6 +426,73 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 		return validateInitData(initData, deps.botToken, allowed);
 	}
 
+	// Serialized config saves (audit #15): the POST route chains one save
+	// at a time through configSaveQueue — If-Match checks the on-disk tag,
+	// and two tabs passing against the same tag must not both write; the
+	// second write would silently discard the first (lost update).
+	let configSaveQueue: Promise<unknown> = Promise.resolve();
+	const saveConfig = async (
+		userId: number,
+		req: Request,
+		body: object,
+	): Promise<Response> => {
+		let wrote = false;
+		try {
+					// The page sends a partial; merge over the freshest on-disk
+					// config — a hand edit since boot must not be silently
+					// discarded by an app save. An invalid on-disk file fails
+					// here with its own parse error.
+					const base = loadConfig() ?? deps.configRef.current;
+					const expected = req.headers.get("if-match");
+					if (!expected) {
+						log.warn("mini app config save refused — missing version", { userId: userId });
+						return Response.json(
+							{ error: "load settings before saving" },
+							{ status: 428, headers: NO_STORE },
+						);
+					}
+					if (expected !== configTag(base)) {
+						log.warn("mini app config save refused — stale version", { userId: userId });
+						return Response.json(
+							{ error: "settings changed since this page loaded — reopen settings before saving" },
+							{ status: 409, headers: NO_STORE },
+						);
+					}
+					const merged = parseConfig({ ...base, ...body });
+					// The mini app is an operator's only door that doesn't need
+					// a shell — a save that drops the requester's own id locks
+					// them out of it and the bot gate. Refuse before writing.
+					if (!merged.allowedUsers.includes(userId)) {
+						return Response.json(
+							{ error: `config would remove your own telegram user id (${userId})` },
+							{ status: 422, headers: NO_STORE },
+						);
+					}
+					writeConfig(merged);
+					wrote = true;
+					const fresh = loadConfig();
+					if (fresh) deps.configRef.current = fresh;
+					deps.onConfigWritten();
+					log.info("config written via mini app");
+					return Response.json({ ok: true }, {
+						headers: { ...NO_STORE, etag: configTag(fresh ?? merged) },
+					});
+		} catch (err) {
+
+			if (!(err instanceof z.ZodError)) {
+				log.error("mini app config save failed", err, { userId: userId, wrote });
+				return Response.json({
+					error: wrote
+						? "settings were saved but could not be applied — check the service log"
+						: "settings could not be written — check the service log",
+				}, { status: 500, headers: NO_STORE });
+			}
+			const msg =
+				z.prettifyError(err);
+			return Response.json({ error: msg }, { status: 422, headers: NO_STORE });
+		}
+	};
+
 	const server = Bun.serve({
 		hostname: "127.0.0.1",
 		port: deps.configRef.current.http.port,
@@ -678,7 +745,6 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 			}
 			if (req.method === "POST") {
 				let body: unknown;
-				let wrote = false;
 				try {
 					body = await req.json();
 				} catch {
@@ -690,59 +756,12 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 						{ status: 400, headers: NO_STORE },
 					);
 				}
-				try {
-					// The page sends a partial; merge over the freshest on-disk
-					// config — a hand edit since boot must not be silently
-					// discarded by an app save. An invalid on-disk file fails
-					// here with its own parse error.
-					const base = loadConfig() ?? deps.configRef.current;
-					const expected = req.headers.get("if-match");
-					if (!expected) {
-						log.warn("mini app config save refused — missing version", { userId: user.id });
-						return Response.json(
-							{ error: "load settings before saving" },
-							{ status: 428, headers: NO_STORE },
-						);
-					}
-					if (expected !== configTag(base)) {
-						log.warn("mini app config save refused — stale version", { userId: user.id });
-						return Response.json(
-							{ error: "settings changed since this page loaded — reopen settings before saving" },
-							{ status: 409, headers: NO_STORE },
-						);
-					}
-					const merged = parseConfig({ ...base, ...body });
-					// The mini app is an operator's only door that doesn't need
-					// a shell — a save that drops the requester's own id locks
-					// them out of it and the bot gate. Refuse before writing.
-					if (!merged.allowedUsers.includes(user.id)) {
-						return Response.json(
-							{ error: `config would remove your own telegram user id (${user.id})` },
-							{ status: 422, headers: NO_STORE },
-						);
-					}
-					writeConfig(merged);
-					wrote = true;
-					const fresh = loadConfig();
-					if (fresh) deps.configRef.current = fresh;
-					deps.onConfigWritten();
-					log.info("config written via mini app");
-					return Response.json({ ok: true }, {
-						headers: { ...NO_STORE, etag: configTag(fresh ?? merged) },
-					});
-				} catch (err) {
-					if (!(err instanceof z.ZodError)) {
-						log.error("mini app config save failed", err, { userId: user.id, wrote });
-						return Response.json({
-							error: wrote
-								? "settings were saved but could not be applied — check the service log"
-								: "settings could not be written — check the service log",
-						}, { status: 500, headers: NO_STORE });
-					}
-					const msg =
-						z.prettifyError(err);
-					return Response.json({ error: msg }, { status: 422, headers: NO_STORE });
-				}
+				// One save at a time (see saveConfig): the queue swallows
+				// rejections so a failed save never poisons the next; each
+				// attempt answers for itself.
+				const attempt = configSaveQueue.then(() => saveConfig(user.id, req, body));
+				configSaveQueue = attempt.catch(() => {});
+				return attempt;
 			}
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		}

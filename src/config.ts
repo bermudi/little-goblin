@@ -367,7 +367,10 @@ export type ReviewerConfig = z.infer<typeof reviewerConfigSchema>;
 export const system1ConfigSchema = z.object({
 	auth: z.string().min(1),
 	model: z.string().min(1).optional(),
-	baseUrl: z.string().min(1).optional(),
+	// A URL like every other URL — a typo'd edit must fail at load,
+	// not surface later as a mislabeled transport failure riding the
+	// injection checker's fail-open (audit #14).
+	baseUrl: z.url().optional(),
 });
 export type System1Config = z.infer<typeof system1ConfigSchema>;
 

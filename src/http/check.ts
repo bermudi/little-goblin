@@ -21,9 +21,19 @@ export interface InjectionCheckResponse {
 const CHECK_BODY_CAP = 64 * 1024;
 const CHECK_MAX_CHARS = 64000;
 
+// The route's auth IS its host check — the server binds loopback, and
+// only loopback names may reach the check. Parsed against an explicit
+// allowlist, not prefix-matched: the header is client-controlled, and
+// the loopback bind being the real lock should be true by construction
+// here too, not by string luck (audit #19).
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
 export function isLoopbackHost(req: Request): boolean {
 	const host = req.headers.get("host") ?? "";
-	return host.startsWith("127.0.0.1:") || host.startsWith("localhost:");
+	const name = host.startsWith("[")
+		? host.slice(0, host.indexOf("]") + 1)
+		: host.replace(/:\d+$/, "");
+	return LOOPBACK_HOSTS.has(name.toLowerCase());
 }
 
 // Read a request body's bytes with a hard cap — Content-Length is a

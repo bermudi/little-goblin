@@ -75,12 +75,27 @@ const rowSchema = z.object({
 	sent_id: z.string().nullable(),
 });
 
+const addressArraySchema = z.array(z.string());
+
+// Address columns are JSON arrays — parse them against the shape so
+// corruption names itself with the row, instead of surfacing later as
+// a mislabeled `to.map is not a function` (audit #23).
+function parseAddresses(id: number, field: string, json: string): string[] {
+	try {
+		return addressArraySchema.parse(JSON.parse(json));
+	} catch (err) {
+		throw new Error(
+			`mail outbox row ${id}: corrupt ${field} — ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
+}
+
 function rowToEntry(row: unknown): OutboxEntry {
 	const r = rowSchema.parse(row);
 	return {
 		id: r.id,
-		to: JSON.parse(r.to_json) as string[],
-		cc: r.cc_json === null ? [] : (JSON.parse(r.cc_json) as string[]),
+		to: parseAddresses(r.id, "to", r.to_json),
+		cc: r.cc_json === null ? [] : parseAddresses(r.id, "cc", r.cc_json),
 		subject: r.subject,
 		body: r.body,
 		replyToId: r.reply_to_id,
@@ -173,15 +188,20 @@ export function openOutbox(dbPath: string): OutboxStore {
 		},
 
 		expireDue(now = new Date(), exclude?: (id: number) => boolean) {
-			const rows = qExpired
+			const due = qExpired
 				.all(now.toISOString())
 				.map(rowToEntry)
 				.filter((row) => !exclude?.(row.id));
-			for (const row of rows) {
-				// decide() re-checks pending — a tap racing the sweep wins.
-				this.decide(row.id, "expired", now);
+			// The returned set is exactly the rows THIS sweep decided:
+			// decide() re-checks pending and a racing tap wins its CAS, so
+			// a row that lost would return with someone else's verdict —
+			// and the caller would stamp "expired — never sent" over it
+			// (audit #24; unreachable today, honest under any refactor).
+			const expired: OutboxEntry[] = [];
+			for (const row of due) {
+				if (this.decide(row.id, "expired", now)) expired.push(this.get(row.id)!);
 			}
-			return rows.map((r) => this.get(r.id)!);
+			return expired;
 		},
 
 		close() {

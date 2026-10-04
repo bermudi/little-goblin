@@ -400,15 +400,38 @@ export function openPrograms(dbPath: string): ProgramsStore {
 // One-shot upgrade path: the `jobs` table predates programs (DESIGN.md).
 // Called inside the table-creation transaction only when `programs` is
 // new. Copies same ids (prompt → charter) and leaves `jobs` untouched.
+// A cron that no longer parses is skipped loudly rather than copied
+// verbatim: a bad schedule on the row would refire (and re-fail) every
+// tick once markRan advances past it (audit #21's reachable half).
 function copyLegacyJobs(db: Database): number {
 	const jobsTable = db
 		.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'")
 		.get();
 	if (jobsTable === null) return 0;
-	return db
-		.query(`INSERT INTO programs
+	const rows = db
+		.query<{ id: number; name: string; prompt: string; cron: string | null; chat_id: number; thread_id: number | null; enabled: number; created_at: string; last_run: string | null; next_run: string | null }, []>(
+			`SELECT id, name, prompt, cron, chat_id, thread_id, enabled, created_at, last_run, next_run FROM jobs`,
+		).all();
+	let copied = 0;
+	for (const r of rows) {
+		try {
+			if (r.cron !== null) nextFire(r.cron, new Date(r.last_run ?? r.created_at));
+		} catch (err) {
+			log.warn("legacy job skipped — unparsable cron", {
+				job: r.id,
+				name: r.name,
+				cron: r.cron,
+					error: err instanceof Error ? err.message : String(err),
+			});
+			continue;
+		}
+		db.run(
+			`INSERT INTO programs
 			(id, name, charter, cron, hook_hash, chat_id, thread_id, enabled, created_at, last_run, next_run)
-			SELECT id, name, prompt, cron, NULL, chat_id, thread_id, enabled, created_at, last_run, next_run
-			FROM jobs`)
-		.run().changes;
+			VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
+			[r.id, r.name, r.prompt, r.cron, r.chat_id, r.thread_id, r.enabled, r.created_at, r.last_run, r.next_run],
+		);
+		copied++;
+	}
+	return copied;
 }

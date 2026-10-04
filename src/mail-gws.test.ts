@@ -235,6 +235,21 @@ describe("gws mail reader", () => {
 		await expect(makeGwsReader(run).poll("from:bank", "1")).rejects.toBeInstanceOf(HistoryExpiredError);
 	});
 
+	test("a failure that merely MENTIONS 404 in stderr is not expiry (parsed code, not substring)", async () => {
+		// No API error envelope on stdout — the stderr happens to say
+		// "404". The old substring match silently re-baselined here,
+		// skipping owed mail; the parsed apiCode must refuse the leap.
+		const { run } = fakeGws({
+			fail: {
+				code: 1,
+				stdout: "",
+				stderr: "gws: connection reset while fetching (last status 404 in a log line)",
+			},
+		});
+		await expect(makeGwsReader(run).poll("from:bank", "1")).rejects.not.toBeInstanceOf(HistoryExpiredError);
+		await expect(makeGwsReader(run).threadFor("m1")).rejects.toBeInstanceOf(Error);
+	});
+
 	test("a non-404 gws failure propagates as a poll failure with the exit code", async () => {
 		const { run } = fakeGws({
 			fail: {

@@ -122,6 +122,21 @@ function header(
 /** The API error code gws carried on stdout, if any (Google error
  *  envelope `{error:{code}}` — the unauthenticated probe showed code
  *  401 there). Empty when stdout isn't that shape. */
+/** A gws failure carrying the API error code it failed with — callers
+ *  match on the parsed code ("404" means history-expiry or a missing
+ *  target), never on message substrings: the message embeds stderr for
+ *  the log, and an unrelated failure mentioning 404 must not silently
+ *  re-baseline or swallow (audit #12). Empty code = no envelope. */
+export class GwsApiError extends ProviderError {
+	constructor(
+		message: string,
+		public readonly apiCode: string,
+	) {
+		super("gws", message);
+		this.name = "GwsApiError";
+	}
+}
+
 function apiCode(stdout: string): string {
 	try {
 		const parsed = JSON.parse(stdout) as { error?: { code?: unknown } };
@@ -153,11 +168,11 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 			const code = apiCode(r.stdout);
 			const detail = (r.stderr || "").replace(/\s+/g, " ").trim().slice(0, 300);
 			log.warn("gws mail call failed", { action, ...fields, status: r.code, ms });
-			throw new ProviderError(
-				"gws",
+			throw new GwsApiError(
 				code !== ""
 					? `${action} failed — HTTP ${code}${detail ? ` — ${detail}` : ""}`
 					: `${action} failed — exit ${r.code}${detail ? ` — ${detail}` : ""}`,
+				code,
 			);
 		}
 		let data: unknown;
@@ -216,7 +231,7 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 			} catch (err) {
 				// Expired ids 404 — the only 404 here that means "re-baseline";
 				// anything else propagates as a poll failure.
-				if (err instanceof ProviderError && err.message.includes("404")) {
+				if (err instanceof GwsApiError && err.apiCode === "404") {
 					throw new HistoryExpiredError();
 				}
 				throw err;
@@ -327,7 +342,7 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 		} catch (err) {
 			// A missing reply target is model-actionable (don't thread a
 			// ghost); anything else is a failure.
-			if (err instanceof ProviderError && err.message.includes("404")) return null;
+			if (err instanceof GwsApiError && err.apiCode === "404") return null;
 			throw err;
 		}
 		const body = parseOrThrow("reply.get", messageGetSchema, data);

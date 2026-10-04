@@ -1094,6 +1094,15 @@ export class Runtime {
 							claimedIds.add(t.message.id);
 							admittedCount++;
 						} catch (err) {
+							// A fence landing mid-conversion (/stop or a settings toggle
+							// bumping the epoch during the materialize await) is not a
+							// preparation failure — reporting "could not be prepared"
+							// for a message the operator deliberately stopped would be
+							// a mislabel. The fenced verdict is the honest one.
+							if (this.deps.store.get(convId)?.epoch !== epoch) {
+								void this.notifyDone(t, { kind: "fenced" });
+								continue;
+							}
 							// The message is durable history but this turn cannot
 							// carry it. Error that submit's own delivery — never
 							// requeue: the message would sit in history and fail
@@ -1517,6 +1526,16 @@ export class Runtime {
 			// await revokes this turn before it can start fresh background
 			// work (in particular auto-compaction with a new controller).
 			this.checkAuthority(convId, epoch);
+			// The reply has landed — nothing generating remains. Drop the
+			// lane's controller BEFORE the post-reply work (retention,
+			// reviewer, threshold compaction) so a /stop in that window
+			// reports "nothing was running" instead of "stopped" for a
+			// turn that already answered. Compaction keeps its own
+			// compactController, which the stopped flag still counts.
+			{
+				const lane = this.lanes.get(convId);
+				if (lane !== undefined && lane.controller === controller) lane.controller = null;
+			}
 			// Skill reviewer (DESIGN.md): every completed turn gates a
 			// possible background review — fire-and-forget, off the lane,
 			// never delaying the successor. Fenced/failed turns never

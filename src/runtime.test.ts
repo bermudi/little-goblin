@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tool, type LanguageModel, type UIMessage, type UIMessageChunk } from "ai";
 import { z } from "zod";
-import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
+import { APICallError, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { appAddress, openStore } from "./conversation.ts";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { setLogFile } from "./log.ts";
@@ -78,6 +78,7 @@ class RecordingSink implements TurnSink {
 	// The raw pass-through hook, recorded verbatim — the app channel's
 	// SSE surface is built on this stream.
 	chunkTypes: string[] = [];
+	chunks: UIMessageChunk[] = [];
 	done: Promise<TurnDone>;
 	// Resolves when the runtime admits the turn — setAuthorityCheck
 	// fires before any model work, the deterministic moment for tests
@@ -113,6 +114,7 @@ class RecordingSink implements TurnSink {
 	onToolCall() {}
 	onStreamChunk(chunk: UIMessageChunk) {
 		this.chunkTypes.push(chunk.type);
+		this.chunks.push(chunk);
 	}
 	onDone(d: TurnDone) {
 		this.resolveDone(d);
@@ -689,6 +691,312 @@ describe("turn authority", () => {
 		});
 		await sleep(100);
 		expect(calls).toBe(1);
+		store.close();
+	});
+});
+
+// ---------- context overflow recovery ----------
+
+// A provider-side context overflow: the OpenAI wording over a 400
+// APICallError — the shape a provider actually throws out of doStream.
+function overflowError(): APICallError {
+	return new APICallError({
+		message:
+			"This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens.",
+		url: "https://api.openai.com/v1/chat/completions",
+		requestBodyValues: {},
+		statusCode: 400,
+	});
+}
+
+function textReply(text: string): LanguageModelV4StreamPart[] {
+	return [
+		{ type: "stream-start", warnings: [] },
+		{ type: "text-start", id: "t1" },
+		{ type: "text-delta", id: "t1", delta: text },
+		{ type: "text-end", id: "t1" },
+		{
+			type: "finish",
+			finishReason: { unified: "stop", raw: undefined },
+			usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
+		},
+	];
+}
+
+// A model scripted per doStream call: a part list streams verbatim, an
+// Error throws out of doStream (a provider rejection — the SDK surfaces
+// it as an `error` chunk). Every wire prompt is captured.
+function scriptedModel(scripts: Array<LanguageModelV4StreamPart[] | Error>) {
+	const prompts: string[] = [];
+	let calls = 0;
+	const model = {
+		specificationVersion: "v4",
+		provider: "fake",
+		modelId: "fake-1",
+		supportedUrls: {},
+		doGenerate() {
+			throw new Error("unimplemented");
+		},
+		doStream(o: { prompt: unknown }) {
+			prompts.push(JSON.stringify(o.prompt));
+			const script = scripts[calls++] ?? textReply("ok");
+			if (script instanceof Error) throw script;
+			return {
+				stream: new ReadableStream<LanguageModelV4StreamPart>({
+					start(controller) {
+						for (const p of script) controller.enqueue(p);
+						controller.close();
+					},
+				}),
+			};
+		},
+	} as unknown as LanguageModel;
+	return { model, prompts };
+}
+
+// Enough completed exchanges that chooseBoundary has a span to fold.
+function seedExchanges(store: ReturnType<typeof openStore>, convId: string): void {
+	const big = "x".repeat(600);
+	for (let i = 0; i < 3; i++) {
+		store.append(convId, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
+		store.append(
+			convId,
+			[{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
+			{ anchorSeq: store.lastUserSeq(convId) },
+		);
+	}
+}
+
+describe("context overflow recovery", () => {
+	test("an overflow on the first call compacts and resumes — one stored reply", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		seedExchanges(store, conv.id);
+		const { model, prompts } = scriptedModel([overflowError(), textReply("the answer")]);
+		const summaries: string[] = [];
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
+			makeTools: () => ({}),
+			compaction: {
+				modelRef: () => "m",
+				summarize: async (_conv, _system, prompt) => {
+					summaries.push(prompt);
+					return "the folded era";
+				},
+			},
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "live question" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		expect(sink.text).toBe("the answer");
+		// Exactly one compaction ran; the resumed call read the compacted
+		// view — summary carried first, the live question kept in the tail.
+		expect(summaries).toHaveLength(1);
+		expect(prompts).toHaveLength(2);
+		expect(prompts[1]).toContain("the folded era");
+		expect(prompts[1]).toContain("live question");
+		// The held error never reached the client stream.
+		expect(sink.chunkTypes).not.toContain("error");
+		// One stored assistant reply — the failed attempt left nothing.
+		const history = store.history(conv.id);
+		expect(history.filter((m) => m.role === "assistant")).toHaveLength(4); // 3 seeded + this turn's
+		const last = history.at(-1)!;
+		expect(last.role).toBe("assistant");
+		const lastText = last.parts.find((p) => p.type === "text") as { text: string } | undefined;
+		expect(lastText?.text).toBe("the answer");
+		store.close();
+	});
+
+	test("a mid-turn overflow resumes without re-running tools — one merged reply", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		seedExchanges(store, conv.id);
+		const toolCallScript: LanguageModelV4StreamPart[] = [
+			{ type: "stream-start", warnings: [] },
+			{ type: "tool-call", toolCallId: "c1", toolName: "probe", input: "{}" },
+			{
+				type: "finish",
+				finishReason: { unified: "tool-calls", raw: undefined },
+				usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
+			},
+		];
+		const { model, prompts } = scriptedModel([
+			toolCallScript,
+			overflowError(),
+			textReply("the final answer"),
+		]);
+		let executions = 0;
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
+			makeTools: () => ({
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						executions++;
+						return "probe-result-7f3a";
+					},
+				}),
+			}),
+			compaction: { modelRef: () => "m", summarize: async () => "folded past" },
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "run the probe" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		// The whole point of the continuation: the failed attempt's tool
+		// work is never re-run.
+		expect(executions).toBe(1);
+		expect(prompts).toHaveLength(3);
+		// The resumed prompt carries the failed attempt's tool result —
+		// the model continues from where it died, not from scratch.
+		expect(prompts[2]).toContain("probe-result-7f3a");
+		// The held error never reached the wire, and every `start` chunk —
+		// the failed attempt's and the resume's — names the ONE stored
+		// message id: the resume continues the partial, it doesn't start
+		// a sibling.
+		expect(sink.chunkTypes).not.toContain("error");
+		const stored = store.history(conv.id).at(-1)!;
+		expect(stored.role).toBe("assistant");
+		const starts = sink.chunks.filter((c) => c.type === "start");
+		expect(starts.length).toBeGreaterThanOrEqual(2);
+		for (const c of starts) {
+			expect((c as { messageId?: string }).messageId).toBe(stored.id);
+		}
+		// ONE stored reply holds the completed tool part AND the answer.
+		const types = stored.parts.map((p) => p.type);
+		expect(types).toContain("tool-probe");
+		expect(types).toContain("text");
+		const text = stored.parts.find((p) => p.type === "text") as { text: string } | undefined;
+		expect(text?.text).toBe("the final answer");
+		expect(store.history(conv.id).filter((m) => m.role === "assistant")).toHaveLength(4);
+		store.close();
+	});
+
+	test("an overflow with nothing left to compact ends with a plain message", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const { model, prompts } = scriptedModel([overflowError(), textReply("unreached")]);
+		let summarizeCalls = 0;
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
+			makeTools: () => ({}),
+			compaction: {
+				modelRef: () => "m",
+				summarize: async () => {
+					summarizeCalls++;
+					return "folded";
+				},
+			},
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		const done = await sink.done;
+		expect(done.kind).toBe("error");
+		if (done.kind !== "error") return;
+		expect(done.message).toContain("nothing left to compact");
+		expect(done.message.length).toBeLessThan(200);
+		// No boundary was written, and the turn never re-asked the model.
+		expect(summarizeCalls).toBe(0);
+		expect(prompts).toHaveLength(1);
+		store.close();
+	});
+
+	test("a second overflow on the resumed attempt ends the turn", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		seedExchanges(store, conv.id);
+		const { model, prompts } = scriptedModel([
+			overflowError(),
+			overflowError(),
+			textReply("unreached"),
+		]);
+		let summarizeCalls = 0;
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
+			makeTools: () => ({}),
+			compaction: {
+				modelRef: () => "m",
+				summarize: async () => {
+					summarizeCalls++;
+					return "folded past";
+				},
+			},
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "live question" }]), sink);
+		const done = await sink.done;
+		expect(done.kind).toBe("error");
+		if (done.kind !== "error") return;
+		expect(done.message).toContain("still full after compacting");
+		expect(done.message.length).toBeLessThan(200);
+		// One recovery per turn: one compaction, one resume call, no loop.
+		expect(summarizeCalls).toBe(1);
+		expect(prompts).toHaveLength(2);
+		store.close();
+	});
+
+	test("a non-overflow provider error does not compact or resume", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		seedExchanges(store, conv.id);
+		const auth = new APICallError({
+			message: "Authentication Failed",
+			url: "https://api.openai.com/v1/chat/completions",
+			requestBodyValues: {},
+			statusCode: 401,
+		});
+		const { model, prompts } = scriptedModel([auth, textReply("unreached")]);
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
+			makeTools: () => ({}),
+			compaction: { modelRef: () => "m", summarize: async () => "folded" },
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		expect(await sink.done).toEqual({ kind: "error", message: "Authentication Failed" });
+		expect(prompts).toHaveLength(1);
+		expect(store.getCompaction(conv.id)).toBeNull();
+		store.close();
+	});
+
+	test("/stop during the overflow compaction fences the turn — no resume", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		seedExchanges(store, conv.id);
+		const { model, prompts } = scriptedModel([overflowError(), textReply("unreached")]);
+		// Gate the summary call so the stop lands mid-compaction: the
+		// compact abort controller must end the attempt, never resume.
+		let summarizeStarted!: () => void;
+		const started = new Promise<void>((r) => {
+			summarizeStarted = r;
+		});
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
+			makeTools: () => ({}),
+			compaction: {
+				modelRef: () => "m",
+				summarize: (_conv, _system, _prompt, signal) => {
+					summarizeStarted();
+					return signal.aborted
+						? Promise.reject(new Error("summarize aborted"))
+						: new Promise<string>(() => {});
+				},
+			},
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "live question" }]), sink);
+		await started;
+		runtime.stop(conv.id);
+		expect(await sink.done).toEqual({ kind: "fenced" });
+		// The compaction died with the stop; no resume call ever ran.
+		await sleep(30);
+		expect(prompts).toHaveLength(1);
+		expect(store.getCompaction(conv.id)).toBeNull();
 		store.close();
 	});
 });

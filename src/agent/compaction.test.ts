@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { UIMessage } from "ai";
 import {
 	chooseBoundary,
+	estimateTokens,
 	runCompaction,
 	serializeSpan,
 	type CompactionEvent,
@@ -135,7 +136,7 @@ describe("runCompaction", () => {
 				prompts.push({ system, prompt });
 				return "the folded summary";
 			},
-			{ tailTokenBudget: 1 },
+			{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
 			signal(),
 		);
 		expect(outcome.kind).toBe("compacted");
@@ -159,7 +160,7 @@ describe("runCompaction", () => {
 				async () => {
 					throw new Error("provider down");
 				},
-				{ tailTokenBudget: 1 },
+				{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
 				signal(),
 			),
 		).rejects.toThrow("provider down");
@@ -176,7 +177,7 @@ describe("runCompaction", () => {
 					controller.abort();
 					return "late summary";
 				},
-				{ tailTokenBudget: 1 }, controller.signal,
+				{ tailTokenBudget: 1, inputTokenBudget: 32_000 }, controller.signal,
 			),
 		).rejects.toThrow();
 		expect(writes).toHaveLength(0);
@@ -185,7 +186,7 @@ describe("runCompaction", () => {
 	test("an empty summary is a failure, not a silent wipe", async () => {
 		const { store, writes } = fakeStore(sample());
 		await expect(
-			runCompaction("dm:1", store, "m", async () => "  ", { tailTokenBudget: 1 }, signal()),
+			runCompaction("dm:1", store, "m", async () => "  ", { tailTokenBudget: 1, inputTokenBudget: 32_000 }, signal()),
 		).rejects.toThrow("empty summary");
 		expect(writes).toHaveLength(0);
 	});
@@ -213,7 +214,7 @@ describe("runCompaction", () => {
 				prompts.push(prompt);
 				return "fold two";
 			},
-			{ tailTokenBudget: 1 },
+			{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
 			signal(),
 		);
 		expect(outcome.kind).toBe("compacted");
@@ -225,5 +226,92 @@ describe("runCompaction", () => {
 		expect(prompts[0]).not.toContain("hello");
 		expect(prompts[0]).not.toContain("newest question");
 		expect(writes[0]).toMatchObject({ boundarySeq: 8, summary: "fold two" });
+	});
+
+	test("an oversized span folds through sequential calls inside the input budget", async () => {
+		// Ten exchanges of ~200-token events; the tail keeps the last
+		// exchange, so the span is 18 events — several chunks' worth at
+		// the tiny input budget below.
+		const detail: CompactionEvent[] = [];
+		for (let i = 0; i < 10; i++) {
+			const u = 2 * i + 1;
+			detail.push(ev(u, "user", `question ${i} `.repeat(50)));
+			detail.push(ev(u + 1, "assistant", `answer ${i} `.repeat(50), u));
+		}
+		const inputTokenBudget = 1_200;
+		const { store, writes } = fakeStore(detail);
+		const prompts: string[] = [];
+		const outcome = await runCompaction(
+			"dm:1",
+			store,
+			"m",
+			async (_system, prompt) => {
+				prompts.push(prompt);
+				return `fold ${prompts.length}`;
+			},
+			{ tailTokenBudget: 1, inputTokenBudget },
+			signal(),
+		);
+		expect(outcome.kind).toBe("compacted");
+		// One call could never hold the span — the fold must be sequential.
+		expect(prompts.length).toBeGreaterThan(1);
+		// Every call honors the input budget by the same estimate the
+		// chunker uses.
+		for (const prompt of prompts) {
+			expect(estimateTokens(prompt)).toBeLessThanOrEqual(inputTokenBudget);
+		}
+		// Each later call carries the previous call's output forward —
+		// the running summary is the only memory between calls.
+		for (let i = 1; i < prompts.length; i++) {
+			expect(prompts[i]).toContain(`fold ${i}`);
+			expect(prompts[i]).toContain("running summary of the earlier part of this span");
+		}
+		// The final call's output is the stored summary.
+		expect(writes[0]!.summary).toBe(`fold ${prompts.length}`);
+	});
+
+	test("a single event bigger than the allowance is truncated, never dropped", async () => {
+		const detail = [
+			ev(1, "user", "z".repeat(20_000)),
+			ev(2, "assistant", "ok", 1),
+			ev(3, "user", "follow up".repeat(100)),
+			ev(4, "assistant", "done".repeat(100), 3),
+		];
+		const { store } = fakeStore(detail);
+		const prompts: string[] = [];
+		await runCompaction(
+			"dm:1",
+			store,
+			"m",
+			async (_system, prompt) => {
+				prompts.push(prompt);
+				return "folded";
+			},
+			{ tailTokenBudget: 1, inputTokenBudget: 1_200 },
+			signal(),
+		);
+		const all = prompts.join("\n");
+		expect(all).toContain("chars truncated for summarization");
+		// The truncated event still shows up — its head, not nothing.
+		expect(all).toContain("zzz");
+		// And its tail beyond the kept window did not leak into a prompt.
+		expect(all).not.toContain("z".repeat(5_000));
+	});
+
+	test("a wedged summarizer still settles — the call timeout is an ordinary failure", async () => {
+		const { store, writes } = fakeStore(sample());
+		await expect(
+			runCompaction(
+				"dm:1",
+				store,
+				"m",
+				// Ignores its abort signal entirely — the race, not the
+				// model's good behavior, is what bounds the call.
+				() => new Promise<string>(() => {}),
+				{ tailTokenBudget: 1, inputTokenBudget: 32_000, callTimeoutMs: 50 },
+				signal(),
+			),
+		).rejects.toThrow(/timed out/);
+		expect(writes).toHaveLength(0);
 	});
 });

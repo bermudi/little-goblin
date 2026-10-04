@@ -76,7 +76,12 @@ agent loop.
   than splitting them. The summarizer input is the delta since the
   previous boundary plus the previous summary — never the re-serialized
   whole past, so the summary call stays bounded by one compaction
-  interval, not by total history. The result lands in a first-class `compactions`
+  interval, not by total history. Within that bound it is chunked
+  further: sequential calls, each carrying the running summary forward,
+  sized so system + carried + span text fit half the window (32k when
+  the window is unknown); a single oversized event is truncated, never
+  allowed to stall the fold. Each call races a 3-minute timeout — a
+  wedged request must settle — and a timeout is an ordinary failure. The result lands in a first-class `compactions`
   table (boundary seq, summary, tokens before, model, timestamp); the latest
   row is the conversation's active pointer and earlier rows are the audit
   trail. The event stream is untouched — arrival-order storage stays the
@@ -99,7 +104,18 @@ agent loop.
   numbers; with the context
   window unknown it still compacts (manual is a forced scrub). The ≥80%
   utilization warn stays as the alarm that compaction didn't happen or
-  didn't keep up.
+  didn't keep up. A provider's **context-overflow error** mid-turn is a
+  recovery, not a failure — the mechanism borrowed from pi
+  (`~/build/pi-mono` `agent-session._checkCompaction`): the failed
+  attempt's partial reply is held off the wire, one compaction runs with
+  a halved tail budget (the overflow proved the estimate optimistic for
+  this conversation), and the turn resumes on the compacted view,
+  continuing the partial as the same message so tools never re-run. One
+  attempt per turn: a second overflow, a failed compaction, or nothing
+  left to compact ends the turn with a plain operator message. Ruling
+  2026-10-04: no deterministic fallback summary — the summarizer is the
+  conversation's own model, so when it can't summarize the turn can't
+  answer either, and a degraded summary silently harms every later turn.
 - **Capabilities**: don't hand-maintain a matrix. Use what the SDK exposes on
   model objects (`supportedUrls`, unsupported-feature warnings) plus the
   `models.dev` catalog for per-model input modalities (image/audio/document),

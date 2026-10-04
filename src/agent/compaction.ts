@@ -144,10 +144,12 @@ function messageText(message: UIMessage): string {
 	return parts.join("\n").trim();
 }
 
+export function serializeEvent(e: CompactionEvent): string {
+	return `${e.message.role === "assistant" ? "goblin" : e.message.role}: ${messageText(e.message)}`;
+}
+
 export function serializeSpan(detail: CompactionEvent[]): string {
-	return detail
-		.map((e) => `${e.message.role === "assistant" ? "goblin" : e.message.role}: ${messageText(e.message)}`)
-		.join("\n\n");
+	return detail.map(serializeEvent).join("\n\n");
 }
 
 // ---------- orchestration ----------
@@ -163,16 +165,29 @@ export type CompactionOutcome =
 	  }
 	| { kind: "noop"; reason: string };
 
+// Per summary call. Three minutes is long enough for a large chunk on a
+// slow endpoint — and a wedged request must settle anyway so it can't
+// hold the conversation's lane forever (issue #13).
+export const SUMMARY_CALL_TIMEOUT_MS = 180_000;
+
 // The full compaction: choose the cut, summarize the span with the
-// conversation's own model, persist the pointer. A summarizer failure
-// propagates — the caller warns and leaves the view untouched; the next
-// threshold crossing retries.
+// conversation's own model, persist the pointer. The span folds into
+// the summary through sequential calls bounded by inputTokenBudget —
+// each call carries the running summary forward, so the last call's
+// output is the stored summary and no call ever sees the whole past.
+// A summarizer failure propagates — the caller warns and leaves the
+// view untouched; the next threshold crossing retries.
 export async function runCompaction(
 	id: string,
 	store: CompactionStore,
 	model: string,
 	summarize: (system: string, prompt: string, signal: AbortSignal) => Promise<string>,
-	opts: { tailTokenBudget: number },
+	opts: {
+		tailTokenBudget: number;
+		inputTokenBudget: number;
+		callTimeoutMs?: number;
+		reason?: "threshold" | "manual" | "overflow";
+	},
 	signal: AbortSignal,
 ): Promise<CompactionOutcome> {
 	const detail = store.historyDetail(id);
@@ -192,26 +207,114 @@ export async function runCompaction(
 	}
 	// The span is the DELTA since the previous boundary (DESIGN.md,
 	// Compaction) — already-folded events never re-enter the prompt, so
-	// the summary call stays bounded by one compaction interval, not by
-	// total history. The previous summary rides in the prompt instead.
+	// the summary calls stay bounded by one compaction interval, not by
+	// total history. The previous summary rides the first call instead.
 	const spanStart =
 		(previous ? detail.findIndex((e) => e.seq === previous.boundarySeq) : -1) + 1;
 	const span = detail.slice(spanStart, boundaryIndex + 1);
 	const tokensBefore = span.reduce((sum, e) => sum + estimateTokens(JSON.stringify(e.message)), 0);
-	const prompt =
-		(previous ? `[summary carried from the previous compaction — fold it in]\n${previous.summary}\n\n---\n\n` : "") +
-		serializeSpan(span);
+	const reason = opts.reason ?? "threshold";
 	log.info("compaction summarizing", {
 		conversation: id,
 		boundary,
 		events: span.length,
 		estimatedTokens: tokensBefore,
+		reason,
 	});
-	const summary = (await summarize(SUMMARY_SYSTEM, prompt, signal)).trim();
-	// Providers may resolve successfully even after an abort. The pointer
-	// must never commit a summary minted under revoked authority.
-	signal.throwIfAborted();
-	if (summary === "") throw new Error("summarizer returned an empty summary");
+	const callTimeoutMs = opts.callTimeoutMs ?? SUMMARY_CALL_TIMEOUT_MS;
+	const systemTokens = estimateTokens(SUMMARY_SYSTEM);
+	let carried = previous?.summary ?? null;
+	let carriedHeader = previous !== null
+		? "[summary carried from the previous compaction — fold it in]"
+		: null;
+	let summary: string | null = null;
+	let chunks = 0;
+	for (let i = 0; i < span.length; ) {
+		chunks++;
+		// The allowance shrinks as the running summary grows; the floor
+		// keeps a degenerate budget from zeroing the chunk — better an
+		// oversized call than none at all.
+		const allowance = Math.max(
+			opts.inputTokenBudget - systemTokens - (carried === null ? 0 : estimateTokens(carried)) - 200,
+			1000,
+			Math.floor(opts.inputTokenBudget / 4),
+		);
+		const texts: string[] = [];
+		let chunkTokens = 0;
+		let events = 0;
+		while (i < span.length) {
+			const e = span[i]!;
+			let text = serializeEvent(e);
+			if (events === 0) {
+				// Always take at least one event — a single message bigger
+				// than the allowance is cut down rather than stalling the
+				// whole compaction on it.
+				if (estimateTokens(text) > allowance) {
+					const keptChars = allowance * 4;
+					log.warn("compaction event truncated for summarizer", {
+						conversation: id,
+						seq: e.seq,
+						chars: text.length,
+						keptChars,
+					});
+					text = `${text.slice(0, keptChars)}\n[… ${text.length - keptChars} chars truncated for summarization]`;
+				}
+			} else if (chunkTokens + estimateTokens(text) > allowance) {
+				break;
+			}
+			texts.push(text);
+			chunkTokens += estimateTokens(text);
+			events++;
+			i++;
+		}
+		const prompt =
+			(carried !== null && carriedHeader !== null
+				? `${carriedHeader}\n${carried}\n\n---\n\n`
+				: "") + texts.join("\n\n");
+		// The timeout rides a combined signal AND races the await: a
+		// summarizer that ignores its abort still settles, so a wedged
+		// request can't hold the lane forever.
+		const callSignal = AbortSignal.any([signal, AbortSignal.timeout(callTimeoutMs)]);
+		let abortRace: (err: unknown) => void = () => {};
+		const aborted = new Promise<never>((_, reject) => {
+			abortRace = reject;
+		});
+		const onAbort = () => abortRace(callSignal.reason);
+		callSignal.addEventListener("abort", onAbort, { once: true });
+		let raw: string;
+		try {
+			raw = await Promise.race([summarize(SUMMARY_SYSTEM, prompt, callSignal), aborted]);
+		} catch (err) {
+			if (signal.aborted) throw err;
+			if (callSignal.aborted) {
+				throw new Error(`summary call timed out after ${callTimeoutMs / 1000}s (chunk ${chunks})`);
+			}
+			throw err;
+		} finally {
+			callSignal.removeEventListener("abort", onAbort);
+		}
+		// Providers may resolve successfully even after an abort. The
+		// pointer must never commit a summary minted under revoked
+		// authority.
+		signal.throwIfAborted();
+		const out = raw.trim();
+		if (out === "") throw new Error(`summarizer returned an empty summary (chunk ${chunks})`);
+		log.info("compaction chunk summarized", {
+			conversation: id,
+			chunk: chunks,
+			events,
+			estimatedTokens: chunkTokens,
+			summaryChars: out.length,
+		});
+		carried = out;
+		carriedHeader = "[running summary of the earlier part of this span — fold it in]";
+		summary = out;
+	}
+	if (summary === null) {
+		// Unreachable — chooseBoundary only returns a boundary that has a
+		// non-empty span before it. Fail loud, never write a blank pointer.
+		throw new Error("compaction produced no summary");
+	}
 	// A verbose summarizer can emit a summary comparable to the span —
 	// compaction would buy nothing and re-fire every turn. Warn, don't
 	// fail: the pointer still moves, the log explains the churn.
@@ -237,6 +340,8 @@ export async function runCompaction(
 		tailEvents: detail.length - spanStart - span.length,
 		estimatedTokensBefore: tokensBefore,
 		summaryChars: summary.length,
+		chunks,
+		reason,
 		model,
 	});
 	return {

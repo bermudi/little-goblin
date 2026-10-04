@@ -119,6 +119,27 @@ class RecordingSink implements TurnSink {
 	}
 }
 
+// The bell's shape (design/app.md → Spin-off): delivery hooks only —
+// no onStreamChunk, so the streaming-lane boundary treats it as
+// headless. It only ever sees the turn's terminal outcome.
+class HeadlessSink implements TurnSink {
+	done: Promise<TurnDone>;
+	private resolveDone: (d: TurnDone) => void;
+	constructor() {
+		let r: (d: TurnDone) => void = () => {};
+		this.done = new Promise<TurnDone>((res) => {
+			r = res;
+		});
+		this.resolveDone = r;
+	}
+	onTextDelta() {}
+	onReasoningDelta() {}
+	onToolCall() {}
+	onDone(d: TurnDone) {
+		this.resolveDone(d);
+	}
+}
+
 function setup(deltas: string[], delayMs = 15) {
 	const store = openStore(tmpdb());
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -1972,6 +1993,78 @@ describe("app channel", () => {
 			"assistant",
 		]);
 		await runtime.shutdown();
+		store.close();
+	});
+});
+
+// A submit "streams" iff its sink defines onStreamChunk. A turn headed
+// by a headless sink — the spin-off's bell — must never absorb a
+// streaming submit: the merged sink would see only onDone and the
+// client watching the stream would wait forever (design/app.md →
+// Spin-off).
+describe("streaming lane boundary", () => {
+	test("a headless turn never absorbs a streaming submit — it heads the next turn", async () => {
+		let releaseTool: () => void = () => {};
+		const gate = new Promise<void>((r) => {
+			releaseTool = r;
+		});
+		const { model, prompts } = gatedToolModel("adjusted");
+		const { store, conv, runtime } = steeringSetup(model, gate);
+		const headless = new HeadlessSink();
+		const streaming = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "start this" }]), headless);
+		await sleep(20); // parked mid-tool-call
+		runtime.submit(conv, userMessage([{ type: "text", text: "watch me" }]), streaming);
+		releaseTool();
+		expect(await headless.done).toEqual({ kind: "completed" });
+		// Not folded into the headless turn — a successor turn ran and
+		// the streaming sink got the raw chunks as its head.
+		expect(await streaming.done).toEqual({ kind: "completed" });
+		expect(streaming.chunkTypes).toContain("text-delta");
+		expect(streaming.text).toBe("adjusted");
+		expect(prompts[1]).not.toContain("watch me");
+		expect(prompts[2]).toContain("watch me");
+		store.close();
+	});
+
+	test("a streaming head absorbs both sink kinds, as before", async () => {
+		let releaseTool: () => void = () => {};
+		const gate = new Promise<void>((r) => {
+			releaseTool = r;
+		});
+		const { model, prompts } = gatedToolModel("adjusted");
+		const { store, conv, runtime } = steeringSetup(model, gate);
+		const streaming = new RecordingSink();
+		const headless = new HeadlessSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), streaming);
+		await sleep(20); // parked mid-tool-call
+		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), headless);
+		releaseTool();
+		expect(await streaming.done).toEqual({ kind: "completed" });
+		expect(await headless.done).toEqual({ kind: "completed" });
+		// One turn — the steered message rode call #2's prompt.
+		expect(prompts).toHaveLength(2);
+		expect(prompts[1]).toContain("two");
+		store.close();
+	});
+
+	test("a headless turn still steers headless followers into the live call", async () => {
+		let releaseTool: () => void = () => {};
+		const gate = new Promise<void>((r) => {
+			releaseTool = r;
+		});
+		const { model, prompts } = gatedToolModel("adjusted");
+		const { store, conv, runtime } = steeringSetup(model, gate);
+		const first = new HeadlessSink();
+		const second = new HeadlessSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "one" }]), first);
+		await sleep(20); // parked mid-tool-call
+		runtime.submit(conv, userMessage([{ type: "text", text: "two" }]), second);
+		releaseTool();
+		expect(await first.done).toEqual({ kind: "completed" });
+		expect(await second.done).toEqual({ kind: "completed" });
+		expect(prompts).toHaveLength(2);
+		expect(prompts[1]).toContain("two");
 		store.close();
 	});
 });

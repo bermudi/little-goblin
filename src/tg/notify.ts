@@ -7,6 +7,7 @@
 import type { Api } from "grammy";
 import { channelOf } from "../conversation.ts";
 import { log } from "../log.ts";
+import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 
 export function parseConversationAddress(
 	id: string,
@@ -32,8 +33,18 @@ export async function sendRollMarker(
 	toConversation: string,
 ): Promise<void> {
 	try {
-		await api.sendMessage(chatId, ROLL_MARKER);
+		await withTimeout(api.sendMessage(chatId, ROLL_MARKER), "sendMessage (roll marker)");
 	} catch (err) {
+		// Abandoned, not cancelled — the marker may still have landed;
+		// either way it never blocks the turn.
+		if (err instanceof TelegramTimeoutError) {
+			log.warn("dm roll marker delivery uncertain — send timed out", {
+				chat: chatId,
+				conversation: toConversation,
+				label: err.label,
+			});
+			return;
+		}
 		log.warn("dm roll marker send failed", {
 			chat: chatId,
 			conversation: toConversation,

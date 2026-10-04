@@ -535,6 +535,33 @@ describe("delegate tool", () => {
 		expect(discarded).toEqual(["cap reached"]);
 	});
 
+	test("a failing discard on a returned outcome surfaces in the result", async () => {
+		const h = harness(1);
+		h.store.create({
+			name: "occupant",
+			harness: "codex",
+			cwd: "/w",
+			task: "t",
+			address: { chatId: 1, threadId: null },
+		});
+		h.pinOverride = () => ({
+			address: { chatId: 0, threadId: null },
+			appConversation: "app/spun-off",
+			discard: () => {
+				throw new Error("store wedged");
+			},
+		});
+		const out = (await exec(h.tool, {
+			action: "start",
+			harness: "codex",
+			task: "do it",
+		})) as { error: string; spin_off_cleanup_failed?: string };
+		expect(out.error).toContain("cap reached");
+		// The fork may have orphaned — the model needs to know so it
+		// can tell the operator instead of hiding the cleanup failure.
+		expect(out.spin_off_cleanup_failed).toBe("store wedged");
+	});
+
 	test("a failed launch discards the pin too", async () => {
 		const h = harness(3, "agent g1-x is blocked during startup and is not ready");
 		const discarded: string[] = [];

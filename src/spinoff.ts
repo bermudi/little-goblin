@@ -42,6 +42,29 @@ export function spinOff(deps: SpinOffDeps, from: Conversation, name: string): Sp
 	return { conv, link: publicUrl === undefined ? null : appLink(publicUrl, appId) };
 }
 
+// Undo a spin-off whose launch never started — but only while the
+// fork still holds exactly what it copied. The fork is visible in the
+// app before the async launch settles: input the operator wrote into
+// it meanwhile is theirs, so a touched fork stays instead of being
+// deleted out from under them. seqAtFork is the fork's lastSeq
+// captured right after forkToApp — the pin owns the capture, this
+// owns the compare.
+export function discardSpinOff(
+	store: ConversationStore,
+	conversationId: string,
+	seqAtFork: number | null,
+	reason: string,
+): void {
+	// An already-deleted fork and an untouched one are the same
+	// outcome: nothing of the operator's rides it anymore.
+	if (store.get(conversationId) === null || store.lastSeq(conversationId) === seqAtFork) {
+		store.deleteConversation(conversationId);
+		log.info("spin-off discarded", { conversation: conversationId, reason });
+		return;
+	}
+	log.info("spin-off kept — operator wrote in it", { conversation: conversationId, reason });
+}
+
 async function retitle(deps: SpinOffDeps, conversationId: string): Promise<void> {
 	try {
 		const lastUser = deps.store

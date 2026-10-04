@@ -434,6 +434,20 @@ describe("forkToApp (Spin-off)", () => {
 		expect(store.memoryContexts.load(app.id)).toEqual([]);
 		store.close();
 	});
+
+	test("the memory exclusion copies — an excluded DM's fork stays unsearchable", () => {
+		const store = openStore(tmpdb());
+		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
+		store.append(src.id, [msg("a secret only memory forgets")]);
+		store.setMeta(src.id, { memoryExcluded: true });
+		const app = store.forkToApp(src.id, "spun-1", "/w", "the work");
+		expect(app.memoryExcluded).toBe(true);
+		expect(store.get(app.id)!.memoryExcluded).toBe(true);
+		// The FTS triggers index the copied rows regardless — the flag
+		// is what keeps them out of search, so it had to come along.
+		expect(store.searchHistory("secret", 10)).toEqual([]);
+		store.close();
+	});
 });
 
 describe("chat search", () => {

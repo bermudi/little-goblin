@@ -243,6 +243,22 @@ interface Lane {
 	draining: Promise<void> | null;
 }
 
+// A queued submit "streams" iff its sink defines onStreamChunk — the
+// app channel's raw chunk pass-through (DESIGN.md, App channel) is the
+// only sink that does. A turn headed by a NON-streaming sink (the
+// spin-off's headless bell — design/app.md → Spin-off — or a Telegram
+// delivery sink) must never absorb a streaming submit: merged into its
+// turn, that sink would get only onDone and the client watching the
+// stream would see no reply at all. How many leading pending items a
+// turn may claim: the whole queue when the head streams; otherwise
+// only the leading run of non-streaming items, leaving the first
+// streaming one to head its own turn.
+function claimableCount(pending: QueuedTurn[], headStreams: boolean): number {
+	if (headStreams) return pending.length;
+	const first = pending.findIndex((t) => t.sink.onStreamChunk !== undefined);
+	return first === -1 ? pending.length : first;
+}
+
 export class Runtime {
 	private lanes = new Map<string, Lane>();
 	// Set by shutdown(): submits still land in history but never run.
@@ -636,8 +652,14 @@ export class Runtime {
 			for (;;) {
 				// Drain everything queued into ONE turn — messages that
 				// piled up behind a running turn are one conversational
-				// beat, and a single model call answers them all.
-				const turns = lane.pending.splice(0);
+				// beat, and a single model call answers them all. A
+				// non-streaming head claims only non-streaming followers
+				// (claimableCount); a left-behind streaming item heads
+				// the next pass.
+				const turns = lane.pending.splice(
+					0,
+					claimableCount(lane.pending, lane.pending[0]?.sink.onStreamChunk !== undefined),
+				);
 				if (turns.length > 0) {
 					if (turns.length > 1) {
 					log.info("queued submits coalesced", {
@@ -864,7 +886,14 @@ export class Runtime {
 				// and the override carries forward to later steps.
 				prepareStep: async ({ messages: stepMessages, stepNumber }) => {
 					const lane = this.lane(convId);
-					const steered = lane.pending.splice(0);
+					// Steering folds pending submits into the live request —
+					// but a headless head (no onStreamChunk) must not absorb
+					// a streaming submit; it stays queued to head the next
+					// turn (claimableCount).
+					const steered = lane.pending.splice(
+						0,
+						claimableCount(lane.pending, sink.onStreamChunk !== undefined),
+					);
 					if (steered.length === 0) return undefined;
 					if (this.deps.store.get(convId)?.epoch !== epoch) {
 						// Fenced on the way out (/stop bumped the epoch): put the

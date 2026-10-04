@@ -260,6 +260,13 @@ export async function routeDmMessage(
 			ms: Date.now() - started,
 			kind: err instanceof JevError ? err.kind : "deadline",
 		});
+		// The address can still have rolled while the failed check ran
+		// — same re-read as the resolved path: join the new current
+		// rather than answering the superseded one.
+		const pinned = deps.store.currentDm(chatId);
+		if (pinned !== null && pinned.id !== current.id) {
+			return continued(pinned, "gap", gapMinutes);
+		}
 		return continued(current, "fallback", gapMinutes);
 	}
 	const probability = decision.answers["follow_up"] ?? 1;
@@ -278,6 +285,20 @@ export async function routeDmMessage(
 	const pinned = deps.store.currentDm(chatId);
 	if (pinned !== null && pinned.id !== current.id) {
 		return continued(pinned, "gap", gapMinutes, probability);
+	}
+	// The pin didn't move, but the conversation may have gone busy or
+	// absorbed fresh activity while the check ran — a roll now would
+	// strand that exchange on a stale fork.
+	if (deps.runtime.busy(current.id)) {
+		return {
+			conv: current,
+			rolled: false,
+			decidedBy: "busy",
+			...(probability !== undefined ? { probability } : {}),
+		};
+	}
+	if (elapsedMs(deps, current) < deps.gapMinutes() * 60_000) {
+		return continued(current, "gap", gapMinutes, probability);
 	}
 	if (fresh) return roll(deps, chatId, current, "check", gapMinutes, probability);
 	return continued(current, "check", gapMinutes, probability);

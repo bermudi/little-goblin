@@ -244,6 +244,87 @@ describe("routeDmMessage", () => {
 		store.close();
 	});
 
+	test("a roll during a failing check joins the new current, not the stale one", async () => {
+		const store = openStore(tmpdb());
+		const racingGate: Pick<JevClient, "decide"> = {
+			decide: async () => {
+				// A fire rolled while the check was in flight — then the
+				// check died. The pin re-read still wins.
+				store.rollDm(7, "/w");
+				throw new JevError("timeout");
+			},
+		};
+		const deps: RollDeps = {
+			store,
+			runtime: { busy: () => false },
+			gapMinutes: () => 45,
+			gate: () => racingGate,
+			now: anHourHence,
+		};
+		store.rollDm(7, "/w"); // dm:7:1
+		const r = await routeDmMessage(deps, 7, "hello");
+		expect(r.rolled).toBe(false);
+		expect(r.decidedBy).toBe("gap");
+		expect(r.conv.id).toBe("dm:7:2");
+		store.close();
+	});
+
+	test("a lane that went busy during the check absorbs instead of rolling", async () => {
+		const store = openStore(tmpdb());
+		let wentBusy = false;
+		const gate: Pick<JevClient, "decide"> = {
+			decide: async () => {
+				// A turn started on the current conversation mid-check —
+				// rolling would strand this burst from the turn that must
+				// see it.
+				wentBusy = true;
+				return { answers: { follow_up: 0.1 }, inputTokens: 1, cost: 0 };
+			},
+		};
+		const deps: RollDeps = {
+			store,
+			runtime: { busy: () => wentBusy },
+			gapMinutes: () => 45,
+			gate: () => gate,
+			now: anHourHence,
+		};
+		const current = store.rollDm(7, "/w");
+		const r = await routeDmMessage(deps, 7, "new subject");
+		expect(r.rolled).toBe(false);
+		expect(r.decidedBy).toBe("busy");
+		expect(r.conv.id).toBe(current.id);
+		store.close();
+	});
+
+	test("fresh activity during the check joins the gap instead of rolling", async () => {
+		const store = openStore(tmpdb());
+		let now = anHourHence();
+		const gate: Pick<JevClient, "decide"> = {
+			decide: async () => {
+				// Another burst landed meanwhile — it resets the quiet
+				// clock, and a roll now would split two adjacent inputs.
+				store.append("dm:7:1", [
+					{ id: "u-mid", role: "user", parts: [{ type: "text", text: "meanwhile" }] },
+				]);
+				now = new Date();
+				return { answers: { follow_up: 0.1 }, inputTokens: 1, cost: 0 };
+			},
+		};
+		const deps: RollDeps = {
+			store,
+			runtime: { busy: () => false },
+			gapMinutes: () => 45,
+			gate: () => gate,
+			now: () => now,
+		};
+		const current = store.rollDm(7, "/w");
+		const r = await routeDmMessage(deps, 7, "new subject");
+		expect(r.rolled).toBe(false);
+		expect(r.decidedBy).toBe("gap");
+		expect(r.conv.id).toBe(current.id);
+		store.close();
+	});
+
 	test("the check state carries the last exchange and the burst, head-cut", async () => {
 		const calls: GateCall[] = [];
 		const { store, deps } = harness({ gate: fakeGate({ follow_up: 0.6 }, calls), now: anHourHence });

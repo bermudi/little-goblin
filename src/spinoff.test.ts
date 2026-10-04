@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore } from "./conversation.ts";
-import { spinOff } from "./spinoff.ts";
+import { discardSpinOff, spinOff, type SpinOffDeps } from "./spinoff.ts";
 
 let dirs: string[] = [];
 afterEach(() => {
@@ -92,6 +92,45 @@ describe("spinOff", () => {
 		store.setMeta(conv.id, { title: "operator named", titleImplicit: false });
 		await Bun.sleep(20);
 		expect(store.get(conv.id)!.title).toBe("operator named");
+		store.close();
+	});
+});
+
+describe("discardSpinOff", () => {
+	const deps = (store: ReturnType<typeof openStore>): SpinOffDeps => ({
+		store,
+		titleFor: () => Promise.resolve(null),
+		publicUrl: () => undefined,
+	});
+	const user = (text: string) => ({
+		id: `u-${text}`,
+		role: "user" as const,
+		parts: [{ type: "text" as const, text }],
+	});
+
+	test("an untouched fork is deleted", () => {
+		const store = openStore(tmpdb());
+		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
+		store.append(src.id, [user("deploy it")]);
+		const { conv } = spinOff(deps(store), src, "the work");
+		discardSpinOff(store, conv.id, store.lastSeq(conv.id), "cap reached");
+		expect(store.get(conv.id)).toBeNull();
+		expect(store.history(src.id)).toHaveLength(1);
+		store.close();
+	});
+
+	test("a fork the operator wrote into is kept — input never rides the discard", () => {
+		const store = openStore(tmpdb());
+		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
+		store.append(src.id, [user("deploy it")]);
+		const { conv } = spinOff(deps(store), src, "the work");
+		const seqAtFork = store.lastSeq(conv.id);
+		// The launch hadn't settled; the operator found the fork and
+		// typed into it — deleting would eat their message.
+		store.append(conv.id, [user("wait, also the cache")]);
+		discardSpinOff(store, conv.id, seqAtFork, "failed");
+		expect(store.get(conv.id)).not.toBeNull();
+		expect(store.history(conv.id)).toHaveLength(2);
 		store.close();
 	});
 });

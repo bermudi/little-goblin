@@ -132,6 +132,11 @@ export interface ConversationStore {
 	// Newest event's created_at, else the conversation's own — the
 	// quiet-gap clock the roller reads.
 	lastActivityAt(id: string): string;
+	// Highest event seq written so far — null when the conversation
+	// holds none. The spin-off discard compares it against the seq at
+	// fork time: a change means operator input arrived and the fork
+	// must not be deleted (design/app.md → Spin-off).
+	lastSeq(id: string): number | null;
 	// Spin-off (design/app.md → Spin-off): copy a conversation's model
 	// state into a fresh app conversation, in one transaction — every
 	// event (seq/role/data/anchor/created_at verbatim), the latest
@@ -765,11 +770,22 @@ export function openStore(dbPath: string): ConversationStore {
 			return conv.created_at;
 		},
 
+		lastSeq(id) {
+			return qNextSeq.get(id)?.n ?? null;
+		},
+
 		forkToApp(fromId, appId, defaultCwd, title) {
 			return db.transaction(() => {
 				const id = addressId(appAddress(appId));
 				qInsertConv.run(id, 0, null, defaultCwd, new Date().toISOString());
-				applyPatch(id, { title, titleImplicit: true });
+				// The memory opt-out is part of the copied state — an
+				// excluded DM's text must stay unsearchable and
+				// unretained in the app fork too.
+				applyPatch(id, {
+					title,
+					titleImplicit: true,
+					memoryExcluded: qGet.get(fromId)?.memory_excluded === 1,
+				});
 				// The FTS triggers fire on these inserts — correct: the app
 				// pool's search should see the copied exchange.
 				for (const e of qAllEvents.all(fromId)) {

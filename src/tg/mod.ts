@@ -22,7 +22,7 @@ import { log } from "../log.ts";
 import { makeBellSink } from "./bell.ts";
 import { CoalescingBuffer } from "./buffer.ts";
 import { COMMAND_RE, COMMANDS, handleCommand, type CommandMemoryDeps } from "./commands.ts";
-import { withTimeout } from "./deadline.ts";
+import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import { makeDeliverySink, SPEAK_CALLBACK } from "./delivery.ts";
 import { MAIL_CALLBACK_RE, type MailApproval } from "./mail-approval.ts";
 import { sendRollMarker } from "./notify.ts";
@@ -565,15 +565,25 @@ function admitAppBatch(
 	// from several operators into the same app batch. Delivery only,
 	// never history.
 	for (const chat of new Set(items.map((i) => i.chatId))) {
-		void env.api
-			.sendMessage(chat, `sent to ${conv.title ?? "app conversation"}`)
-			.catch((err: unknown) => {
-				log.warn("ping reply ack failed", {
+		void withTimeout(
+			env.api.sendMessage(chat, `sent to ${conv.title ?? "app conversation"}`),
+			"sendMessage (ping reply ack)",
+		).catch((err: unknown) => {
+			// Abandoned, not cancelled — the ack may still have landed.
+			if (err instanceof TelegramTimeoutError) {
+				log.warn("ping reply ack delivery uncertain — send timed out", {
 					chat,
 					conversation: conv.id,
-					error: String(err),
+					label: err.label,
 				});
+				return;
+			}
+			log.warn("ping reply ack failed", {
+				chat,
+				conversation: conv.id,
+				error: String(err),
 			});
+		});
 	}
 	const sink = env.bell(conv);
 	try {

@@ -42,7 +42,7 @@ import { fireMail, fireWebhook, startScheduler, type SchedulerDeps } from "./sch
 import { startHttp } from "./http/mod.ts";
 import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
 import { isRollingChat } from "./rolling.ts";
-import { spinOff } from "./spinoff.ts";
+import { discardSpinOff, spinOff } from "./spinoff.ts";
 import { wake, wakeApp } from "./wake.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { Runtime } from "./runtime.ts";
@@ -164,14 +164,15 @@ async function boot() {
 						conv,
 						name,
 					);
+					// The fork's high-water mark at copy time — discard
+					// deletes only while nothing newer landed, so input
+					// the operator wrote into the visible fork survives.
+					const seqAtFork = store.lastSeq(spun.conv.id);
 					return {
 						address: { chatId: 0, threadId: null },
 						appConversation: spun.conv.id,
 						movedToApp: { title: name, link: spun.link },
-						discard: (reason) => {
-							store.deleteConversation(spun.conv.id);
-							log.info("spin-off discarded", { conversation: spun.conv.id, reason });
-						},
+						discard: (reason) => discardSpinOff(store, spun.conv.id, seqAtFork, reason ?? "unspecified"),
 					};
 				}
 				// Group topics and legacy bare DMs pin their Telegram

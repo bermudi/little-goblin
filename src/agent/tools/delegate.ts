@@ -244,12 +244,18 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 					// a discard or the spun-off conversation orphans.
 					const pin = deps.pin(name);
 					// A guarded discard: its own failure is logged, never
-					// allowed to mask the outcome or error it answers for.
-					const discard = (reason: string): void => {
+					// allowed to mask the outcome or error it answers for —
+					// but a returned outcome still surfaces it (a possibly-
+					// orphaned fork is exactly what the model should tell
+					// the operator about). Returns the failure message, null
+					// on success.
+					const discard = (reason: string): string | null => {
 						try {
 							pin.discard?.(reason);
+							return null;
 						} catch (err) {
 							log.error("spin-off discard failed", err, { name });
+							return err instanceof Error ? err.message : String(err);
 						}
 					};
 					let out: LaunchOutcome;
@@ -267,12 +273,17 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 						});
 					} catch (err) {
 						// No outcome exists — but the fork does. Discard it,
-						// then let the launch error reach the turn as-is.
+						// then let the launch error reach the turn as-is. The
+						// discard's own failure stays log-only here: nothing
+						// may displace the launch error.
 						discard("threw");
 						throw err;
 					}
 					if (out.kind === "cap reached" || out.kind === "failed") {
-						discard(out.kind);
+						const cleanupError = discard(out.kind);
+						if (cleanupError !== null) {
+							return { ...renderLaunch(out, pin), spin_off_cleanup_failed: cleanupError };
+						}
 					}
 					return renderLaunch(out, pin);
 				}

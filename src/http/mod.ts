@@ -429,307 +429,328 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 	const server = Bun.serve({
 		hostname: "127.0.0.1",
 		port: deps.configRef.current.http.port,
+		// The HTTP boundary's error trap. Bun.serve has an onError
+		// option, but it never fires for handler throws in this Bun
+		// (verified: sync and async fetch throws both serve the
+		// framework's default error page with the error on stderr) — so
+		// the dispatcher is wrapped instead. An unexpected handler
+		// throw must land in goblin.log with the request's shape and
+		// answer a plain 500: "a screenshot of the symptom plus the log
+		// reconstructs what the process did", not a stack page the
+		// operator can't correlate.
 		async fetch(req) {
 			const url = new URL(req.url);
-			if (url.pathname.startsWith("/hook/")) {
-				return handleHook(req, url.pathname.slice("/hook/".length));
-			}
-			if (url.pathname.startsWith("/api/app/")) {
-				// The app channel — the wired closure carries the
-				// boot-resolved auth mode (trust or bearer).
-				if (deps.appApi === undefined) {
-					log.warn("app api refused — app surface not wired", { path: url.pathname });
-					return Response.json(
-						{ error: "app channel is not configured" },
-						{ status: 503, headers: NO_STORE },
-					);
-				}
-				return deps.appApi(req, url);
-			}
-			// The app channel's built client (Vite output in app/dist).
-			// Public like the mini app's page — the API carries the auth.
-			if (url.pathname === "/app") {
-				return Response.redirect(`${url.origin}/app/`, 302);
-			}
-			// The spin-off deep link (design/app.md → Spin-off → Links):
-			// /app/c/<appId> opens one conversation — serve the same
-			// client shell, which selects it once the list loads. The id
-			// is url-safe by schema, so the raw segment validates — a
-			// malformed id is a 404, never an error page.
-			if (url.pathname.startsWith("/app/c/")) {
-				const appId = url.pathname.slice("/app/c/".length);
-				if (!APP_ID_RE.test(appId)) {
-					return Response.json({ error: "not found" }, { status: 404 });
-				}
-				return serveAppDist("");
-			}
-			if (url.pathname.startsWith("/app/")) {
-				return serveAppDist(url.pathname.slice("/app/".length));
-			}
-			if (url.pathname === "/" || url.pathname === "/index.html") {
-				// no-store: a webview must never pair stale page code with a
-				// fresh /api/config after an update.
-				return new Response(APP_HTML, { headers: HTML });
-			}
-			if (url.pathname === "/app.js") {
-				// Static client code, no secrets — same no-store reasoning as the
-				// page: never run last version's script against this API.
-				return new Response(APP_JS, { headers: JS });
-			}
-			if (url.pathname === "/api/thinking-levels") {
-				const user = authedUser(req);
-				if (!user) {
-					return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
-				}
-				// The page passes provider kind + base url from its own form
-				// state — an unsaved provider card still resolves correctly.
-				const levels = thinkingLevelsFor(
-					url.searchParams.get("kind") ?? "",
-					url.searchParams.get("model") ?? "",
-					url.searchParams.get("base") ?? undefined,
-				);
-				return Response.json({ levels }, { headers: NO_STORE });
-			}
-			if (url.pathname === "/api/memory-status") {
-				const user = authedUser(req);
-				if (!user) {
-					return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
-				}
-				const view = memoryStatusResponse(deps);
-				// A read the page polls every 10s — debug, so the boundary is
-				// observable without drowning the log at the default level.
-				log.debug("memory status served", {
-					state: view.state,
-					queued: view.queued,
-					blocked: view.blocked,
+			try {
+				return await dispatch(req, url);
+			} catch (err) {
+				log.error("http request failed", err, {
+					method: req.method,
+					path: url.pathname,
 				});
-				return Response.json(view, { headers: NO_STORE });
+				return Response.json({ error: "internal" }, { status: 500, headers: NO_STORE });
 			}
-			// ---------- memories browser ----------
-			// Read through goblin's own Hindsight client — the service never
-			// faces the page. Reads bind to the boot-time destination (the
-			// shared gate); a changed block degrades to an operator-facing
-			// reason until restart, exactly like the status card.
-			if (url.pathname === "/api/memory/documents") {
-				const user = authedUser(req);
-				if (!user) {
-					return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
-				}
-				if (req.method !== "GET") return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		},
+	});
+
+	async function dispatch(req: Request, url: URL): Promise<Response> {
+		if (url.pathname.startsWith("/hook/")) {
+			return handleHook(req, url.pathname.slice("/hook/".length));
+		}
+			if (url.pathname.startsWith("/api/app/")) {
+			// The app channel — the wired closure carries the
+			// boot-resolved auth mode (trust or bearer).
+			if (deps.appApi === undefined) {
+				log.warn("app api refused — app surface not wired", { path: url.pathname });
+				return Response.json(
+					{ error: "app channel is not configured" },
+					{ status: 503, headers: NO_STORE },
+				);
+			}
+			return deps.appApi(req, url);
+		}
+		// The app channel's built client (Vite output in app/dist).
+		// Public like the mini app's page — the API carries the auth.
+		if (url.pathname === "/app") {
+			return Response.redirect(`${url.origin}/app/`, 302);
+		}
+		// The spin-off deep link (design/app.md → Spin-off → Links):
+		// /app/c/<appId> opens one conversation — serve the same
+		// client shell, which selects it once the list loads. The id
+		// is url-safe by schema, so the raw segment validates — a
+		// malformed id is a 404, never an error page.
+		if (url.pathname.startsWith("/app/c/")) {
+			const appId = url.pathname.slice("/app/c/".length);
+			if (!APP_ID_RE.test(appId)) {
+				return Response.json({ error: "not found" }, { status: 404 });
+			}
+			return serveAppDist("");
+		}
+		if (url.pathname.startsWith("/app/")) {
+			return serveAppDist(url.pathname.slice("/app/".length));
+		}
+		if (url.pathname === "/" || url.pathname === "/index.html") {
+			// no-store: a webview must never pair stale page code with a
+			// fresh /api/config after an update.
+			return new Response(APP_HTML, { headers: HTML });
+		}
+		if (url.pathname === "/app.js") {
+			// Static client code, no secrets — same no-store reasoning as the
+			// page: never run last version's script against this API.
+			return new Response(APP_JS, { headers: JS });
+		}
+		if (url.pathname === "/api/thinking-levels") {
+			const user = authedUser(req);
+			if (!user) {
+				return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
+			}
+			// The page passes provider kind + base url from its own form
+			// state — an unsaved provider card still resolves correctly.
+			const levels = thinkingLevelsFor(
+				url.searchParams.get("kind") ?? "",
+				url.searchParams.get("model") ?? "",
+				url.searchParams.get("base") ?? undefined,
+			);
+			return Response.json({ levels }, { headers: NO_STORE });
+		}
+		if (url.pathname === "/api/memory-status") {
+			const user = authedUser(req);
+			if (!user) {
+				return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
+			}
+			const view = memoryStatusResponse(deps);
+			// A read the page polls every 10s — debug, so the boundary is
+			// observable without drowning the log at the default level.
+			log.debug("memory status served", {
+				state: view.state,
+				queued: view.queued,
+				blocked: view.blocked,
+			});
+			return Response.json(view, { headers: NO_STORE });
+		}
+		// ---------- memories browser ----------
+		// Read through goblin's own Hindsight client — the service never
+		// faces the page. Reads bind to the boot-time destination (the
+		// shared gate); a changed block degrades to an operator-facing
+		// reason until restart, exactly like the status card.
+		if (url.pathname === "/api/memory/documents") {
+			const user = authedUser(req);
+			if (!user) {
+				return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
+			}
+			if (req.method !== "GET") return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+			const gate = browseGate(deps);
+			if (typeof gate === "string") {
+				return Response.json({ error: gate }, { status: 503, headers: NO_STORE });
+			}
+			const parsed = browseQuerySchema.safeParse({
+				...(url.searchParams.has("q") ? { q: url.searchParams.get("q") ?? undefined } : {}),
+				limit: url.searchParams.get("limit") ?? undefined,
+				offset: url.searchParams.get("offset") ?? undefined,
+			});
+			if (!parsed.success) {
+				return Response.json({ error: z.prettifyError(parsed.error) }, { status: 422, headers: NO_STORE });
+			}
+			try {
+				const page = await gate.client.listDocuments({
+					...(parsed.data.q !== undefined ? { q: parsed.data.q } : {}),
+					limit: parsed.data.limit,
+					offset: parsed.data.offset,
+				});
+				const body: MemoriesListResponse = {
+					items: page.items.map(memoryDocListItem),
+					total: page.total,
+					limit: page.limit,
+					offset: page.offset,
+				};
+				log.debug("memory browse served", {
+					userId: user.id, q: parsed.data.q ?? null,
+					total: body.total, offset: body.offset, returned: body.items.length,
+				});
+				return Response.json(body, { headers: NO_STORE });
+			} catch (err) {
+				return memoryUpstreamError(err, "memory browse failed");
+			}
+		}
+		const docMatch = url.pathname.match(/^\/api\/memory\/documents\/([^/]+)$/);
+		if (docMatch) {
+			const user = authedUser(req);
+			if (!user) {
+				return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
+			}
+			const rawId = docMatch[1];
+			// Malformed percent-encoding (%E0%A4%A, a bare %) throws URIError
+			// out of decodeURIComponent — undecodable is just another invalid
+			// id here, so answer the route's 404 instead of letting it escape
+			// the fetch handler as a generic 500.
+			let decoded: string | undefined;
+			try {
+				decoded = rawId === undefined ? undefined : decodeURIComponent(rawId);
+			} catch {
+				decoded = undefined;
+			}
+			const parsedId = decoded === undefined ? undefined : identifier.safeParse(decoded);
+			if (!parsedId || !parsedId.success) {
+				return Response.json({ error: "no such document" }, { status: 404, headers: NO_STORE });
+			}
+			const id = parsedId.data;
+			if (req.method === "GET") {
 				const gate = browseGate(deps);
 				if (typeof gate === "string") {
 					return Response.json({ error: gate }, { status: 503, headers: NO_STORE });
 				}
-				const parsed = browseQuerySchema.safeParse({
-					...(url.searchParams.has("q") ? { q: url.searchParams.get("q") ?? undefined } : {}),
-					limit: url.searchParams.get("limit") ?? undefined,
-					offset: url.searchParams.get("offset") ?? undefined,
-				});
-				if (!parsed.success) {
-					return Response.json({ error: z.prettifyError(parsed.error) }, { status: 422, headers: NO_STORE });
-				}
+				const started = Date.now();
 				try {
-					const page = await gate.client.listDocuments({
-						...(parsed.data.q !== undefined ? { q: parsed.data.q } : {}),
-						limit: parsed.data.limit,
-						offset: parsed.data.offset,
-					});
-					const body: MemoriesListResponse = {
-						items: page.items.map(memoryDocListItem),
-						total: page.total,
-						limit: page.limit,
-						offset: page.offset,
+					const [doc, facts] = await Promise.all([
+						gate.client.getDocument(id),
+						gate.client.listMemories({ documentId: id, limit: 200, offset: 0 }),
+					]);
+					if (doc === null) {
+						return Response.json({ error: "no such document" }, { status: 404, headers: NO_STORE });
+					}
+					const body: MemoryDocDetailResponse = {
+						document: memoryDocListItem({
+							id: doc.id,
+							created_at: doc.created_at,
+							updated_at: doc.updated_at,
+							text_length: doc.original_text === null ? 0 : doc.original_text.length,
+							memory_unit_count: doc.memory_unit_count,
+						}),
+						originalText: doc.original_text,
+						facts: facts.items.map(memoryFactItem),
+						factsTotal: facts.total,
 					};
-					log.debug("memory browse served", {
-						userId: user.id, q: parsed.data.q ?? null,
-						total: body.total, offset: body.offset, returned: body.items.length,
+					log.debug("memory document served", {
+						userId: user.id, document: id, facts: facts.total, ms: Date.now() - started,
 					});
 					return Response.json(body, { headers: NO_STORE });
 				} catch (err) {
-					return memoryUpstreamError(err, "memory browse failed");
+					return memoryUpstreamError(err, "memory document failed");
 				}
 			}
-			const docMatch = url.pathname.match(/^\/api\/memory\/documents\/([^/]+)$/);
-			if (docMatch) {
-				const user = authedUser(req);
-				if (!user) {
-					return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
+			if (req.method === "DELETE") {
+				const gate = forgetGate(deps);
+				if (typeof gate === "string") {
+					return Response.json({ error: gate }, { status: 503, headers: NO_STORE });
 				}
-				const rawId = docMatch[1];
-				// Malformed percent-encoding (%E0%A4%A, a bare %) throws URIError
-				// out of decodeURIComponent — undecodable is just another invalid
-				// id here, so answer the route's 404 instead of letting it escape
-				// the fetch handler as a generic 500.
-				let decoded: string | undefined;
+				const started = Date.now();
 				try {
-					decoded = rawId === undefined ? undefined : decodeURIComponent(rawId);
-				} catch {
-					decoded = undefined;
-				}
-				const parsedId = decoded === undefined ? undefined : identifier.safeParse(decoded);
-				if (!parsedId || !parsedId.success) {
-					return Response.json({ error: "no such document" }, { status: 404, headers: NO_STORE });
-				}
-				const id = parsedId.data;
-				if (req.method === "GET") {
-					const gate = browseGate(deps);
-					if (typeof gate === "string") {
-						return Response.json({ error: gate }, { status: 503, headers: NO_STORE });
-					}
-					const started = Date.now();
-					try {
-						const [doc, facts] = await Promise.all([
-							gate.client.getDocument(id),
-							gate.client.listMemories({ documentId: id, limit: 200, offset: 0 }),
-						]);
-						if (doc === null) {
-							return Response.json({ error: "no such document" }, { status: 404, headers: NO_STORE });
-						}
-						const body: MemoryDocDetailResponse = {
-							document: memoryDocListItem({
-								id: doc.id,
-								created_at: doc.created_at,
-								updated_at: doc.updated_at,
-								text_length: doc.original_text === null ? 0 : doc.original_text.length,
-								memory_unit_count: doc.memory_unit_count,
-							}),
-							originalText: doc.original_text,
-							facts: facts.items.map(memoryFactItem),
-							factsTotal: facts.total,
-						};
-						log.debug("memory document served", {
-							userId: user.id, document: id, facts: facts.total, ms: Date.now() - started,
+					const result = await forgetDocument(gate.source, id, { channel: "mini-app" });
+					if (result.outcome === "busy") {
+						log.warn("memory forget via mini app refused", {
+							userId: user.id, document: id, unsettled: result.unsettled, ms: Date.now() - started,
 						});
-						return Response.json(body, { headers: NO_STORE });
-					} catch (err) {
-						return memoryUpstreamError(err, "memory document failed");
+						return Response.json({
+							error: "memory for that document is still processing remotely — retry in a minute",
+						}, { status: 409, headers: NO_STORE });
 					}
+					log.info("memory forget via mini app", {
+						userId: user.id, document: id, cancelled: result.cancelled,
+						redacted: result.redacted, ms: Date.now() - started,
+					});
+					const body: MemoryForgetResponse = {
+						ok: true,
+						cancelled: result.cancelled,
+						redacted: result.redacted,
+					};
+					return Response.json(body, { headers: NO_STORE });
+				} catch (err) {
+					return memoryUpstreamError(err, "memory forget failed");
 				}
-				if (req.method === "DELETE") {
-					const gate = forgetGate(deps);
-					if (typeof gate === "string") {
-						return Response.json({ error: gate }, { status: 503, headers: NO_STORE });
-					}
-					const started = Date.now();
-					try {
-						const result = await forgetDocument(gate.source, id, { channel: "mini-app" });
-						if (result.outcome === "busy") {
-							log.warn("memory forget via mini app refused", {
-								userId: user.id, document: id, unsettled: result.unsettled, ms: Date.now() - started,
-							});
-							return Response.json({
-								error: "memory for that document is still processing remotely — retry in a minute",
-							}, { status: 409, headers: NO_STORE });
-						}
-						log.info("memory forget via mini app", {
-							userId: user.id, document: id, cancelled: result.cancelled,
-							redacted: result.redacted, ms: Date.now() - started,
-						});
-						const body: MemoryForgetResponse = {
-							ok: true,
-							cancelled: result.cancelled,
-							redacted: result.redacted,
-						};
-						return Response.json(body, { headers: NO_STORE });
-					} catch (err) {
-						return memoryUpstreamError(err, "memory forget failed");
-					}
-				}
-				return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 			}
-			if (url.pathname === "/api/config") {
-				const user = authedUser(req);
-				if (!user) {
-					return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		if (url.pathname === "/api/config") {
+			const user = authedUser(req);
+			if (!user) {
+				return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
+			}
+			if (req.method === "GET") {
+				const config = loadConfig() ?? deps.configRef.current;
+				return Response.json(
+					{
+						config,
+						providerKinds,
+						searchKinds,
+						fetchKinds,
+					} satisfies ConfigResponse,
+					{ headers: { ...NO_STORE, etag: configTag(config) } },
+				);
+			}
+			if (req.method === "POST") {
+				let body: unknown;
+				let wrote = false;
+				try {
+					body = await req.json();
+				} catch {
+					return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
 				}
-				if (req.method === "GET") {
-					const config = loadConfig() ?? deps.configRef.current;
+				if (typeof body !== "object" || body === null || Array.isArray(body)) {
 					return Response.json(
-						{
-							config,
-							providerKinds,
-							searchKinds,
-							fetchKinds,
-						} satisfies ConfigResponse,
-						{ headers: { ...NO_STORE, etag: configTag(config) } },
+						{ error: "expected a json object" },
+						{ status: 400, headers: NO_STORE },
 					);
 				}
-				if (req.method === "POST") {
-					let body: unknown;
-					let wrote = false;
-					try {
-						body = await req.json();
-					} catch {
-						return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
-					}
-					if (typeof body !== "object" || body === null || Array.isArray(body)) {
+				try {
+					// The page sends a partial; merge over the freshest on-disk
+					// config — a hand edit since boot must not be silently
+					// discarded by an app save. An invalid on-disk file fails
+					// here with its own parse error.
+					const base = loadConfig() ?? deps.configRef.current;
+					const expected = req.headers.get("if-match");
+					if (!expected) {
+						log.warn("mini app config save refused — missing version", { userId: user.id });
 						return Response.json(
-							{ error: "expected a json object" },
-							{ status: 400, headers: NO_STORE },
+							{ error: "load settings before saving" },
+							{ status: 428, headers: NO_STORE },
 						);
 					}
-					try {
-						// The page sends a partial; merge over the freshest on-disk
-						// config — a hand edit since boot must not be silently
-						// discarded by an app save. An invalid on-disk file fails
-						// here with its own parse error.
-						const base = loadConfig() ?? deps.configRef.current;
-						const expected = req.headers.get("if-match");
-						if (!expected) {
-							log.warn("mini app config save refused — missing version", { userId: user.id });
-							return Response.json(
-								{ error: "load settings before saving" },
-								{ status: 428, headers: NO_STORE },
-							);
-						}
-						if (expected !== configTag(base)) {
-							log.warn("mini app config save refused — stale version", { userId: user.id });
-							return Response.json(
-								{ error: "settings changed since this page loaded — reopen settings before saving" },
-								{ status: 409, headers: NO_STORE },
-							);
-						}
-						const merged = parseConfig({ ...base, ...body });
-						// The mini app is an operator's only door that doesn't need
-						// a shell — a save that drops the requester's own id locks
-						// them out of it and the bot gate. Refuse before writing.
-						if (!merged.allowedUsers.includes(user.id)) {
-							return Response.json(
-								{ error: `config would remove your own telegram user id (${user.id})` },
-								{ status: 422, headers: NO_STORE },
-							);
-						}
-						writeConfig(merged);
-						wrote = true;
-						const fresh = loadConfig();
-						if (fresh) deps.configRef.current = fresh;
-						deps.onConfigWritten();
-						log.info("config written via mini app");
-						return Response.json({ ok: true }, {
-							headers: { ...NO_STORE, etag: configTag(fresh ?? merged) },
-						});
-					} catch (err) {
-						if (!(err instanceof z.ZodError)) {
-							log.error("mini app config save failed", err, { userId: user.id, wrote });
-							return Response.json({
-								error: wrote
-									? "settings were saved but could not be applied — check the service log"
-									: "settings could not be written — check the service log",
-							}, { status: 500, headers: NO_STORE });
-						}
-						const msg =
-							z.prettifyError(err);
-						return Response.json({ error: msg }, { status: 422, headers: NO_STORE });
+					if (expected !== configTag(base)) {
+						log.warn("mini app config save refused — stale version", { userId: user.id });
+						return Response.json(
+							{ error: "settings changed since this page loaded — reopen settings before saving" },
+							{ status: 409, headers: NO_STORE },
+						);
 					}
+					const merged = parseConfig({ ...base, ...body });
+					// The mini app is an operator's only door that doesn't need
+					// a shell — a save that drops the requester's own id locks
+					// them out of it and the bot gate. Refuse before writing.
+					if (!merged.allowedUsers.includes(user.id)) {
+						return Response.json(
+							{ error: `config would remove your own telegram user id (${user.id})` },
+							{ status: 422, headers: NO_STORE },
+						);
+					}
+					writeConfig(merged);
+					wrote = true;
+					const fresh = loadConfig();
+					if (fresh) deps.configRef.current = fresh;
+					deps.onConfigWritten();
+					log.info("config written via mini app");
+					return Response.json({ ok: true }, {
+						headers: { ...NO_STORE, etag: configTag(fresh ?? merged) },
+					});
+				} catch (err) {
+					if (!(err instanceof z.ZodError)) {
+						log.error("mini app config save failed", err, { userId: user.id, wrote });
+						return Response.json({
+							error: wrote
+								? "settings were saved but could not be applied — check the service log"
+								: "settings could not be written — check the service log",
+						}, { status: 500, headers: NO_STORE });
+					}
+					const msg =
+						z.prettifyError(err);
+					return Response.json({ error: msg }, { status: 422, headers: NO_STORE });
 				}
-				return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 			}
-			if (url.pathname === "/api/check-injection") {
-				return serveInjectionCheck(req, deps.checkInjection);
-			}
-			return new Response("not found", { status: 404 });
-		},
-	});
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+	if (url.pathname === "/api/check-injection") {
+			return serveInjectionCheck(req, deps.checkInjection);
+		}
+		return new Response("not found", { status: 404 });
+	}
 
 	const port = server.port ?? deps.configRef.current.http.port;
 	log.info("mini-app http listening", { port });

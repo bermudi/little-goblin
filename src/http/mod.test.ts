@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config, MemoryConfig } from "../config.ts";
 import { loadConfig, memoryConfigSchema } from "../config.ts";
+import { setLogFile } from "../log.ts";
 import { startHttp, type HttpDeps } from "./mod.ts";
 import { hookTokenHash } from "../agent/tools/program.ts";
 import { openPrograms, type ProgramsStore } from "../programs.ts";
@@ -91,6 +92,37 @@ function setup(memory?: HttpDeps["memory"]) {
 }
 
 describe("mini-app http", () => {
+	test("an unexpected handler throw is a logged 500, not a framework error page", async () => {
+		useHome();
+		const logFile = join(process.env.GOBLIN_HOME!, "goblin.log");
+		setLogFile(logFile);
+		const http = startHttp({
+			configRef: { current: { ...baseConfig } },
+			botToken: TOKEN,
+			onConfigWritten: () => {},
+			appApi: async () => {
+				throw new Error("handler exploded");
+			},
+		});
+		try {
+			const res = await fetch(`http://127.0.0.1:${http.port}/api/app/anything`);
+			expect(res.status).toBe(500);
+			expect(await res.json()).toEqual({ error: "internal" });
+			// The trap's whole point: the failure lands in goblin.log with
+			// the request's shape — a framework-default 500 on stderr
+			// cannot be correlated with a screenshot of the symptom.
+			const lines = readFileSync(logFile, "utf8")
+				.trim()
+				.split("\n")
+				.map((l) => JSON.parse(l) as { level: string; msg: string; path?: string });
+			const trap = lines.find((l) => l.msg === "http request failed");
+			expect(trap?.level).toBe("error");
+			expect(trap?.path).toBe("/api/app/anything");
+		} finally {
+			http.stop();
+			setLogFile(null);
+		}
+	});
 	test("a save that would lock out the requester is refused before writing", async () => {
 		const { configRef, http, post } = setup();
 		try {

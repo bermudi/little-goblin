@@ -614,7 +614,16 @@ export async function handleAppApi(
 			}
 			log.info("app retry", { conversation: convId, message: lastUser.id });
 			const { sink, body } = appStreamSink(convId);
-			runtime.submitPersisted(conv, lastUser, sink);
+			// The submit can throw (history append, lane admission) — the
+			// Telegram lane wraps the same seam (admitBatch). The stream was
+			// never returned, so there is no wire to answer: log with the
+			// boundary's own line and hand back a plain 500.
+			try {
+				runtime.submitPersisted(conv, lastUser, sink);
+			} catch (err) {
+				log.error("app retry submit failed", err, { conversation: convId });
+				return Response.json({ error: "turn could not be started" }, { status: 500, headers: NO_STORE });
+			}
 			log.info("app stream start", { conversation: convId, retry: true });
 			return new Response(body, {
 				headers: { ...UI_MESSAGE_STREAM_HEADERS, ...NO_STORE },
@@ -692,8 +701,17 @@ export async function handleAppApi(
 		log.info("app intake", { conversation: convId, message: message.id });
 		const { sink, body } = appStreamSink(convId);
 		// Steering and /stop ride the existing lane — a second chat POST
-		// while a turn runs queues or steers exactly like Telegram.
-		runtime.submit(conv, message as UIMessage, sink);
+		// while a turn runs queues or steers exactly like Telegram. The
+		// submit can throw (history append, lane admission) — the Telegram
+		// lane wraps the same seam (admitBatch); here the stream was never
+		// returned so there is no wire to answer: log with the boundary's
+		// own line and hand back a plain 500.
+		try {
+			runtime.submit(conv, message as UIMessage, sink);
+		} catch (err) {
+			log.error("app submit failed", err, { conversation: convId, message: message.id });
+			return Response.json({ error: "turn could not be started" }, { status: 500, headers: NO_STORE });
+		}
 		log.info("app stream start", { conversation: convId });
 		return new Response(body, {
 			headers: { ...UI_MESSAGE_STREAM_HEADERS, ...NO_STORE },

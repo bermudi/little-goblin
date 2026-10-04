@@ -216,7 +216,7 @@ describe("mail watcher", () => {
 			const h = harness();
 			const p = mailProgram(h);
 			if (expired) {
-				h.programs.setMailHistory(p.id, "old");
+				h.programs.setMailHistory(p.id, "old", 0);
 				h.pollImpl = async () => { throw new HistoryExpiredError(); };
 			}
 			h.reader!.profileHistoryId = async () => {
@@ -244,7 +244,7 @@ describe("mail watcher", () => {
 	test("an edit while an expired cursor re-baselines cannot inherit its stale head", async () => {
 		const h = harness();
 		const p = mailProgram(h);
-		h.programs.setMailHistory(p.id, "old");
+		h.programs.setMailHistory(p.id, "old", 0);
 		h.pollImpl = async () => { throw new HistoryExpiredError(); };
 		h.reader!.profileHistoryId = async () => {
 			h.programs.update(p.id, { mailFilter: "from:new" });
@@ -258,7 +258,7 @@ describe("mail watcher", () => {
 	test("matches fire once, batched, and the cursor advances", async () => {
 		const h = harness();
 		const p = mailProgram(h);
-		h.programs.setMailHistory(p.id, "100");
+		h.programs.setMailHistory(p.id, "100", 0);
 		h.pollImpl = async () => ({ hits: [hit("m1"), hit("m2")], historyId: "120" });
 		const w = start(h);
 		await w.tick();
@@ -278,7 +278,7 @@ describe("mail watcher", () => {
 	test("a fired event carries the injection verdict line — outage still fires, marked unavailable", async () => {
 		const h = harness();
 		const p = mailProgram(h);
-		h.programs.setMailHistory(p.id, "100");
+		h.programs.setMailHistory(p.id, "100", 0);
 		h.pollImpl = async () => ({ hits: [hit("m1")], historyId: "120" });
 		// The shared gate, wired the way index.ts wires jevGate into
 		// firingDeps.checkMail: a scripted clean verdict first.
@@ -311,7 +311,7 @@ describe("mail watcher", () => {
 	test("an empty poll advances the cursor without a turn", async () => {
 		const h = harness();
 		const p = mailProgram(h);
-		h.programs.setMailHistory(p.id, "100");
+		h.programs.setMailHistory(p.id, "100", 0);
 		h.pollImpl = async () => ({ hits: [], historyId: "110" });
 		const w = start(h);
 		await w.tick();
@@ -323,7 +323,7 @@ describe("mail watcher", () => {
 	test("an expired cursor re-baselines instead of failing", async () => {
 		const h = harness();
 		const p = mailProgram(h);
-		h.programs.setMailHistory(p.id, "1");
+		h.programs.setMailHistory(p.id, "1", 0);
 		h.pollImpl = async () => { throw new HistoryExpiredError(); };
 		const w = start(h);
 		await w.tick();
@@ -335,7 +335,7 @@ describe("mail watcher", () => {
 	test("a failing check notices once per episode, then recovers silently", async () => {
 		const h = harness();
 		const p = mailProgram(h);
-		h.programs.setMailHistory(p.id, "100");
+		h.programs.setMailHistory(p.id, "100", 0);
 		h.pollImpl = async () => { throw new Error("gmail: HTTP 500"); };
 		const w = start(h);
 		await w.tick();
@@ -362,8 +362,8 @@ describe("mail watcher", () => {
 		const h = harness();
 		const bad = mailProgram(h, "bad", "from:bad");
 		const good = mailProgram(h, "good", "from:good");
-		h.programs.setMailHistory(bad.id, "100");
-		h.programs.setMailHistory(good.id, "100");
+		h.programs.setMailHistory(bad.id, "100", 0);
+		h.programs.setMailHistory(good.id, "100", 0);
 		h.pollImpl = async (filter) => {
 			if (filter === "from:bad") throw new Error("gmail: HTTP 500");
 			return { hits: [hit("m1")], historyId: "120" };
@@ -389,7 +389,7 @@ describe("mail watcher", () => {
 	test("a disable mid-poll consumes the checkpoint without firing a turn", async () => {
 		const h = harness();
 		const p = mailProgram(h);
-		h.programs.setMailHistory(p.id, "100");
+		h.programs.setMailHistory(p.id, "100", 0);
 		h.pollImpl = async () => {
 			// The toggle lands while the poll is in flight.
 			h.programs.update(p.id, { enabled: false });
@@ -407,7 +407,7 @@ describe("mail watcher", () => {
 	test("a filter edit mid-poll wins — no fire, and the re-baseline cursor survives", async () => {
 		const h = harness();
 		const p = mailProgram(h);
-		h.programs.setMailHistory(p.id, "100");
+		h.programs.setMailHistory(p.id, "100", 0);
 		h.pollImpl = async () => {
 			// update() nulls mailHistoryId on a filter change to force a
 			// re-baseline — the stale poll must not write its cursor over it.
@@ -427,7 +427,7 @@ describe("mail watcher", () => {
 	test("a delete mid-poll writes nothing and fires nothing", async () => {
 		const h = harness();
 		const p = mailProgram(h);
-		h.programs.setMailHistory(p.id, "100");
+		h.programs.setMailHistory(p.id, "100", 0);
 		h.pollImpl = async () => {
 			h.programs.remove(p.id);
 			return { hits: [hit("m1")], historyId: "120" };
@@ -442,7 +442,7 @@ describe("mail watcher", () => {
 	test("a fire that does not land holds the checkpoint, then retries next tick", async () => {
 		const h = harness();
 		const p = mailProgram(h);
-		h.programs.setMailHistory(p.id, "100");
+		h.programs.setMailHistory(p.id, "100", 0);
 		h.pollImpl = async () => ({ hits: [hit("m1")], historyId: "120" });
 		h.failSubmit = true;
 		const captured: string[] = [];

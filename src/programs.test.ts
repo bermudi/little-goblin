@@ -292,7 +292,7 @@ describe("mail trigger", () => {
 			{ name: "w", charter: "c", mailFilter: "from:a", address: ADDRESS },
 			NOW,
 		);
-		s.setMailHistory(p.id, "12345");
+		s.setMailHistory(p.id, "12345", s.get(p.id)!.mailRevision);
 		expect(s.get(p.id)!.mailHistoryId).toBe("12345");
 
 		s.setMailFilter(p.id, "from:a"); // same filter — cursor survives
@@ -304,10 +304,10 @@ describe("mail trigger", () => {
 		expect(s.get(p.id)!.mailHistoryId).toBeNull();
 		expect(s.get(p.id)!.mailRevision).toBe(1);
 
-		s.setMailHistory(p.id, "999");
+		s.setMailHistory(p.id, "999", s.get(p.id)!.mailRevision);
 		s.update(p.id, { mailFilter: "from:c" }); // update path resets too
 		expect(s.get(p.id)!.mailHistoryId).toBeNull();
-		s.setMailHistory(p.id, "1000");
+		s.setMailHistory(p.id, "1000", s.get(p.id)!.mailRevision);
 		s.update(p.id, { charter: "c2" }); // other patches leave it
 		expect(s.get(p.id)!.mailHistoryId).toBe("1000");
 		expect(s.get(p.id)!.mailRevision).toBe(2);
@@ -321,7 +321,7 @@ describe("mail trigger", () => {
 			{ name: "w", charter: "old", mailFilter: "from:a", address: ADDRESS },
 			NOW,
 		);
-		a.setMailHistory(p.id, "123");
+		a.setMailHistory(p.id, "123", 0);
 
 		// patch.charter is read after update() has loaded the row. Without
 		// a writer reservation b's filter edit succeeds here, then a's
@@ -343,7 +343,7 @@ describe("mail trigger", () => {
 		// Once the failed edit rolls back, the other connection may write;
 		// a later charter edit observes its filter, cursor and revision.
 		b.setMailFilter(p.id, "from:b");
-		b.setMailHistory(p.id, "456");
+		b.setMailHistory(p.id, "456", b.get(p.id)!.mailRevision);
 		expect(a.update(p.id, { charter: "new" })).toMatchObject({
 			charter: "new", mailFilter: "from:b", mailHistoryId: "456", mailRevision: 1,
 		});
@@ -361,7 +361,7 @@ describe("mail trigger", () => {
 			{ name: "w", charter: "c", mailFilter: "from:a", address: ADDRESS },
 			NOW,
 		);
-		s.setMailHistory(p.id, "12345");
+		s.setMailHistory(p.id, "12345", s.get(p.id)!.mailRevision);
 		s.update(p.id, { enabled: false });
 		// Disabling keeps the cursor — the watcher just doesn't scan it.
 		expect(s.get(p.id)!.mailHistoryId).toBe("12345");

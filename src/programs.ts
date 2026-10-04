@@ -89,8 +89,12 @@ export interface ProgramsStore {
 	 *  re-baselines instead of firing the mailbox's backlog. */
 	setMailFilter(id: number, filter: string | null): Program | null;
 	/** Advance the mail watcher's checkpoint — cursor only, no trigger
-	 *  semantics. */
-	setMailHistory(id: number, historyId: string): void;
+	 *  semantics. CAS on mail_revision: a filter edit or re-enable that
+	 *  landed while a fire was mid-flight bumps the revision and
+	 *  re-baselines, and the stale fire's checkpoint must not clobber
+	 *  that (the invariant mail-watcher enforces at read time — this is
+	 *  its write-time half). False = skipped. */
+	setMailHistory(id: number, historyId: string, expectRevision: number): boolean;
 	/** Baseline only if the original filter, cursor, enabled state and
 	 *  revision still hold; one SQL write, safe across connections. */
 	baselineMail(program: Program, historyId: string): boolean;
@@ -230,7 +234,9 @@ export function openPrograms(dbPath: string): ProgramsStore {
 	const qFired = db.query("UPDATE programs SET last_run = ? WHERE id = ?");
 	const qHook = db.query("UPDATE programs SET hook_hash = ? WHERE id = ?");
 	const qMailFilter = db.query("UPDATE programs SET mail_filter = ?, mail_history_id = ?, mail_revision = mail_revision + ? WHERE id = ?");
-	const qMailHistory = db.query("UPDATE programs SET mail_history_id = ? WHERE id = ?");
+	const qMailHistory = db.query(
+		"UPDATE programs SET mail_history_id = ? WHERE id = ? AND mail_revision = ?",
+	);
 	const qBaselineMail = db.query(`UPDATE programs SET mail_history_id = ?
 		WHERE id = ? AND enabled = 1 AND mail_revision = ?
 		AND mail_filter IS ? AND mail_history_id IS ?`);
@@ -353,8 +359,8 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		setMailFilter(id, filter) {
 			return setMailFilter.immediate(id, filter);
 		},
-		setMailHistory(id, historyId) {
-			qMailHistory.run(historyId, id);
+		setMailHistory(id, historyId, expectRevision) {
+			return qMailHistory.run(historyId, id, expectRevision).changes === 1;
 		},
 		baselineMail(program, historyId) {
 			return qBaselineMail.run(

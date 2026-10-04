@@ -108,7 +108,14 @@ export async function fireMail(
 		return;
 	}
 	if (hits.length === 0 || !program.enabled) {
-		deps.programs.setMailHistory(program.id, checkpoint);
+		// CAS: a mid-poll edit re-baselines — the empty poll's cursor
+		// must not resurrect the old filter's checkpoint over it.
+		if (!deps.programs.setMailHistory(program.id, checkpoint, program.mailRevision)) {
+			log.info("mail checkpoint skipped — program edited mid-poll, re-baseline wins", {
+				program: program.id,
+				name: program.name,
+			});
+		}
 		return;
 	}
 	// The whole event is what the model sees — one call scores it all.
@@ -123,7 +130,20 @@ export async function fireMail(
 		});
 		return;
 	}
-	deps.programs.setMailHistory(program.id, checkpoint);
+	if (!deps.programs.setMailHistory(program.id, checkpoint, program.mailRevision)) {
+		// The fire landed under the old filter, but a filter edit raced
+		// it to the row — the edit's re-baseline (mail_history_id NULL,
+		// revision bumped) wins over this checkpoint, or backlog matching
+		// the NEW filter would fire as if new. last_run still stamps: the
+		// fire itself happened.
+		log.warn("mail checkpoint skipped — program edited mid-fire, re-baseline wins", {
+			program: program.id,
+			name: program.name,
+			matches: hits.length,
+		});
+		deps.programs.markFired(program.id, now);
+		return;
+	}
 	deps.programs.markFired(program.id, now);
 	log.info("mail fired", {
 		program: program.id,

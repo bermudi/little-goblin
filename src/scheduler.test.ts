@@ -324,7 +324,7 @@ describe("scheduler", () => {
 			{ name: "bank watch", mailFilter: "from:bank", charter: "flag bank mail", address: { chatId: 1, threadId: null } },
 			new Date(),
 		);
-		h.deps.programs.setMailHistory(program.id, "100");
+		h.deps.programs.setMailHistory(program.id, "100", program.mailRevision);
 		const now = new Date();
 		const fresh = h.deps.programs.get(program.id)!;
 		h.deps.checkMail = {
@@ -341,6 +341,39 @@ describe("scheduler", () => {
 		const after = h.deps.programs.get(program.id)!;
 		expect(after.mailHistoryId).toBe("120");
 		expect(after.lastRun).toBe(now.toISOString());
+		await closeSinks(h);
+	});
+
+	test("a filter edit mid-fire wins over the stale fire's checkpoint (CAS)", async () => {
+		const h = harness();
+		const program = h.deps.programs.create(
+			{ name: "bank watch", mailFilter: "from:bank", charter: "flag bank mail", address: { chatId: 1, threadId: null } },
+			new Date(),
+		);
+		h.deps.programs.setMailHistory(program.id, "100", program.mailRevision);
+		const now = new Date();
+		// The watcher scanned this row…
+		const stale = h.deps.programs.get(program.id)!;
+		h.deps.checkMail = {
+			decide: async () => ({ answers: { injection: 0, severity: 0 }, inputTokens: null, cost: null }),
+		};
+		// …and while the fire was mid-flight (scoredMailEvent's await), the
+		// operator edited the filter: revision bumped, cursor reset for
+		// re-baselining.
+		const gate = h.deps.checkMail.decide;
+		h.deps.checkMail.decide = async (...args) => {
+			h.deps.programs.setMailFilter(program.id, "from:newbank");
+			return gate(...args);
+		};
+		await fireMail(h.deps, stale, [hit("m1")], "120", now);
+		// The fire itself landed and stamped last_run…
+		const after = h.deps.programs.get(program.id)!;
+		expect(after.lastRun).toBe(now.toISOString());
+		expect(after.mailFilter).toBe("from:newbank");
+		// …but the stale checkpoint must NOT clobber the edit's re-baseline:
+		// backlog matching the new filter would otherwise fire as if new.
+		expect(after.mailHistoryId).toBeNull();
+		expect(after.mailRevision).toBe(1);
 		await closeSinks(h);
 	});
 });
@@ -370,7 +403,7 @@ describe("post-submit accounting (trigger-owned)", () => {
 			{ name: "bank watch", mailFilter: "from:bank", charter: "c", address: { chatId: 1, threadId: null } },
 			new Date(),
 		);
-		h.deps.programs.setMailHistory(program.id, "100");
+		h.deps.programs.setMailHistory(program.id, "100", program.mailRevision);
 		const fresh = h.deps.programs.get(program.id)!;
 		const captured: string[] = [];
 		setLogFile("fire-mail-test.log");
@@ -405,7 +438,7 @@ describe("post-submit accounting (trigger-owned)", () => {
 			{ name: "bank watch", mailFilter: "from:bank", charter: "c", address: { chatId: 1, threadId: null } },
 			new Date(),
 		);
-		h.deps.programs.setMailHistory(program.id, "100");
+		h.deps.programs.setMailHistory(program.id, "100", program.mailRevision);
 		const fresh = h.deps.programs.get(program.id)!;
 		fireMail(h.deps, fresh, [], "110", new Date());
 		expect(h.submitted).toHaveLength(0);
@@ -420,7 +453,7 @@ describe("post-submit accounting (trigger-owned)", () => {
 			{ name: "bank watch", mailFilter: "from:bank", charter: "c", address: { chatId: 1, threadId: null } },
 			new Date(),
 		);
-		h.deps.programs.setMailHistory(program.id, "100");
+		h.deps.programs.setMailHistory(program.id, "100", program.mailRevision);
 		h.deps.programs.update(program.id, { enabled: false });
 		const fresh = h.deps.programs.get(program.id)!;
 		fireMail(h.deps, fresh, [hit("m1")], "120", new Date());
@@ -437,7 +470,7 @@ describe("post-submit accounting (trigger-owned)", () => {
 			{ name: "bank watch", mailFilter: "from:bank", charter: "c", address: { chatId: 1, threadId: null } },
 			new Date(),
 		);
-		h.deps.programs.setMailHistory(program.id, "100");
+		h.deps.programs.setMailHistory(program.id, "100", program.mailRevision);
 		const fresh = h.deps.programs.get(program.id)!;
 		const captured: string[] = [];
 		setLogFile("fire-mail-nocheckpoint-test.log");

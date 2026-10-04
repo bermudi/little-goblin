@@ -78,6 +78,10 @@ async function boot() {
 	// Programs live in the same SQLite file (own connection) — standing
 	// orders, DESIGN.md "Programs".
 	const programs = openPrograms(paths.db());
+	// Rolling DM cutover (design/telegram.md → Rolling DM): DM-topic
+	// program pins re-pin to the bare chat — idempotent, one log line
+	// per program.
+	programs.rePinDmTopics();
 	// The mail outbox opens unconditionally — drafts stay readable (and
 	// cancellable) even when the mail block is removed; only the Gmail
 	// clients gate on it.
@@ -411,6 +415,10 @@ async function boot() {
 		// itself is constructed right below (it needs bot.api), so taps
 		// resolve it per-tap through this getter.
 		mail: () => mailApproval,
+		// The Rolling DM follow-up check rides the reviewer's JevClient —
+		// also built after the bot, so the roller resolves it per call
+		// through this getter. Absent = no check, bursts join current.
+		followUpGate: () => jevGate ?? undefined,
 	});
 
 	// The mail approval gate — the draft's one owner: the tool's send
@@ -513,6 +521,15 @@ async function boot() {
 		api: tg.bot.api,
 		configRef,
 		synthesize: (text: string, tts: TtsConfig) => synthesizeSpeech(text, tts),
+		// Rolling DM: fires into a private chat route through the roller
+		// (past the gap they roll, inside it they join) — the gap reads
+		// config live, the gate is the reviewer's JevClient above.
+		roll: {
+			store,
+			runtime,
+			gapMinutes: () => configRef.current.telegram.dmGapMinutes,
+			gate: () => jevGate ?? undefined,
+		},
 	};
 	const firingDeps: SchedulerDeps = {
 		...wakeDeps,
@@ -535,7 +552,10 @@ async function boot() {
 					delegations,
 					herdr,
 					delegationsDir: paths.delegations(),
-					wake: (address, text) => wake(wakeDeps, address, text),
+					// Delegation notices never roll the DM — a result
+					// arriving past the gap still belongs to the live
+					// conversation (Rolling DM).
+					wake: (address, text) => wake(wakeDeps, address, text, { dmTrigger: "current" }),
 				})
 			: null;
 

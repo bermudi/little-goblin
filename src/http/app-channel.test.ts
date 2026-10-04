@@ -114,7 +114,7 @@ function setup(
 			favorites: [],
 			thinking: "medium",
 			allowedUsers: [42],
-			telegram: {},
+			telegram: { dmGapMinutes: 45 },
 			http: { port: 0 },
 			logLevel: "info",
 			...(opts.token !== undefined ? { appToken: opts.token } : {}),

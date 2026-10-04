@@ -6,7 +6,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 describe("coalescing buffer", () => {
 	test("rapid pushes merge into one flush", async () => {
 		const flushes: string[][] = [];
-		const buf = new CoalescingBuffer<string>(40, (_k, items) => flushes.push(items));
+		const buf = new CoalescingBuffer<string>(40, (_k, items) => {
+			flushes.push(items);
+		});
 		buf.push("c1", "a");
 		await sleep(15);
 		buf.push("c1", "b");
@@ -30,10 +32,12 @@ describe("coalescing buffer", () => {
 
 	test("drain flushes pending buckets immediately and disarms their timers", async () => {
 		const flushes: string[][] = [];
-		const buf = new CoalescingBuffer<string>(40, (_k, items) => flushes.push(items));
+		const buf = new CoalescingBuffer<string>(40, (_k, items) => {
+			flushes.push(items);
+		});
 		buf.push("c1", "a");
 		buf.push("c2", "x");
-		buf.drain();
+		await buf.drain();
 		expect(flushes).toEqual([["a"], ["x"]]);
 		await sleep(80); // disarmed timers must not re-fire
 		expect(flushes).toEqual([["a"], ["x"]]);
@@ -41,7 +45,9 @@ describe("coalescing buffer", () => {
 
 	test("a quiet gap starts a new batch", async () => {
 		const flushes: string[][] = [];
-		const buf = new CoalescingBuffer<string>(30, (_k, items) => flushes.push(items));
+		const buf = new CoalescingBuffer<string>(30, (_k, items) => {
+			flushes.push(items);
+		});
 		buf.push("c1", "first");
 		await sleep(60);
 		buf.push("c1", "second");
@@ -53,7 +59,9 @@ describe("coalescing buffer", () => {
 		const flushes: string[][] = [];
 		// Quiet 40ms, ceiling 70ms: pushes every 25ms reset the quiet
 		// timer forever, so only the ceiling can fire.
-		const buf = new CoalescingBuffer<string>(40, (_k, items) => flushes.push(items), 70);
+		const buf = new CoalescingBuffer<string>(40, (_k, items) => {
+			flushes.push(items);
+		}, 70);
 		buf.push("c1", "a");
 		await sleep(25);
 		buf.push("c1", "b");
@@ -73,15 +81,17 @@ describe("coalescing buffer", () => {
 
 	test("drain disarms the max-wait timer too", async () => {
 		const flushes: string[][] = [];
-		const buf = new CoalescingBuffer<string>(40, (_k, items) => flushes.push(items), 70);
+		const buf = new CoalescingBuffer<string>(40, (_k, items) => {
+			flushes.push(items);
+		}, 70);
 		buf.push("c1", "a");
-		buf.drain();
+		await buf.drain();
 		expect(flushes).toEqual([["a"]]);
 		await sleep(120); // neither timer may re-fire
 		expect(flushes).toEqual([["a"]]);
 	});
 
-	test("a rejected submit retains the batch and retries it before later arrivals", () => {
+	test("a rejected submit retains the batch and retries it before later arrivals", async () => {
 		const flushes: string[][] = [];
 		let fail = true;
 		const buf = new CoalescingBuffer<string>(40, (_key, items) => {
@@ -89,10 +99,10 @@ describe("coalescing buffer", () => {
 			flushes.push(items);
 		});
 		buf.push("c1", "first");
-		expect(() => buf.drain()).toThrow("messages retained for retry");
+		await expect(buf.drain()).rejects.toThrow("messages retained for retry");
 		buf.push("c1", "second");
 		fail = false;
-		buf.drain();
+		await buf.drain();
 		expect(flushes).toEqual([["first", "second"]]);
 	});
 
@@ -113,12 +123,80 @@ describe("coalescing buffer", () => {
 		buf.push("c1", "first");
 		// Two failures back to back: the pending retry is re-armed at the
 		// doubled delay (~2s), not the old constant max(window, 1s) = 1s.
-		expect(() => buf.drain()).toThrow("messages retained for retry");
-		expect(() => buf.drain()).toThrow("messages retained for retry");
+		await expect(buf.drain()).rejects.toThrow("messages retained for retry");
+		await expect(buf.drain()).rejects.toThrow("messages retained for retry");
 		await sleep(1_200); // past 1s — the constant delay would have fired
 		expect(flushes).toEqual([]);
 		// The batch is still intact and complete for the next attempt.
-		buf.drain();
+		await buf.drain();
 		expect(flushes).toEqual([["first"]]);
 	}, 10_000);
+
+	test("a rejected async flush retains the batch and the retry re-runs it", async () => {
+		const flushes: string[][] = [];
+		let fail = true;
+		const buf = new CoalescingBuffer<string>(40, async (_key, items) => {
+			if (fail) throw new Error("follow-up check unreachable");
+			flushes.push(items);
+		});
+		buf.push("c1", "first");
+		await expect(buf.drain()).rejects.toThrow("messages retained for retry");
+		buf.push("c1", "second");
+		fail = false;
+		await buf.drain();
+		expect(flushes).toEqual([["first", "second"]]);
+	});
+
+	test("a key's next bucket waits for its in-flight async flush", async () => {
+		const calls: string[][] = [];
+		let overlap = false;
+		let inflight = false;
+		let release: () => void = () => {};
+		const buf = new CoalescingBuffer<string>(30, (_key, items) => {
+			if (inflight) overlap = true;
+			inflight = true;
+			calls.push(items);
+			return new Promise<void>((resolve) => {
+				release = () => {
+					inflight = false;
+					resolve();
+				};
+			});
+		});
+		buf.push("c1", "first");
+		await sleep(50); // quiet window elapsed — flush 1 in flight
+		buf.push("c1", "second");
+		await sleep(60); // its quiet AND max timers elapsed during flight
+		expect(calls).toEqual([["first"]]); // the second batch never fired early
+		release();
+		await sleep(20); // deferred fire lands right after the settle
+		expect(calls).toEqual([["first"], ["second"]]);
+		expect(overlap).toBe(false);
+		release(); // let flush 2 settle — it was captured by the deferred fire
+		await buf.drain();
+	});
+
+	test("drain awaits an in-flight async flush and its deferred successor", async () => {
+		const flushes: string[][] = [];
+		let release: () => void = () => {};
+		const buf = new CoalescingBuffer<string>(20, (_key, items) => {
+			if (flushes.length === 0) {
+				return new Promise<void>((resolve) => {
+					release = () => {
+						flushes.push(items);
+						resolve();
+					};
+				});
+			}
+			flushes.push(items);
+		});
+		buf.push("c1", "first");
+		await sleep(40); // flush 1 in flight
+		buf.push("c1", "second");
+		const drained = buf.drain(); // disarms timers; second fire defers
+		await sleep(50);
+		release();
+		await drained;
+		expect(flushes).toEqual([["first"], ["second"]]);
+	});
 });

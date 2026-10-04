@@ -13,7 +13,7 @@ const baseConfig: Config = {
 	favorites: [],
 	thinking: "medium",
 	allowedUsers: [1],
-	telegram: {},
+	telegram: { dmGapMinutes: 45 },
 	http: { port: 8787 },
 	logLevel: "info",
 };
@@ -58,13 +58,12 @@ describe("applyCommands", () => {
 });
 
 describe("conversationAddress", () => {
-	// Regression: bot DMs with topics enabled carry message_thread_id on
-	// private-chat messages — dropping it collapses every topic into the
-	// DM lane and replies land outside the topic.
-	test("private chat with thread id is a topic", () => {
+	// Rolling DM: private chats always address the dm lane — DM topics
+	// are retired, so a thread id on a private message is ignored.
+	test("private chat with thread id is the rolling dm lane", () => {
 		expect(
 			conversationAddress({ chat: { id: 42, type: "private" }, message_thread_id: 7 }),
-		).toEqual({ kind: "topic", chatId: 42, threadId: 7 });
+		).toEqual({ kind: "dm", chatId: 42 });
 	});
 
 	test("forum supergroup topic", () => {
@@ -197,6 +196,7 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 			store,
 			runtime: {
 				submitPersisted: () => {},
+				busy: () => false,
 				stop: (id: string) => {
 					stopped.push(id);
 					return { stopped: true, settled: Promise.resolve() };
@@ -223,16 +223,23 @@ function handleTestMessage(env: IntakeEnv, msg: Message): void {
 }
 
 let nextFlushUpdate = 100;
-function flushTest(env: IntakeEnv, convId: string, items: Array<{parts: UIMessage["parts"]; replyTo?: number}>): void {
+function flushTest(
+	env: IntakeEnv,
+	convId: string,
+	items: Array<{parts: UIMessage["parts"]; replyTo?: number; quoted?: { messageId: number; text: string }}>,
+): void | Promise<void> {
 	const buffered = items.map((item) => {
 		const updateId = nextFlushUpdate++;
 		env.inbox.record(updateId, {
 			conversationId: convId, chatId: -100, messageId: updateId,
 			text: "", media: null, mediaError: null,
 		});
-		return { parts: item.parts, replyTo: item.replyTo, updateId };
+		return {
+			parts: item.parts, replyTo: item.replyTo, updateId,
+			...(item.quoted !== undefined ? { quoted: item.quoted } : {}),
+		};
 	});
-	flushConversation(env, convId, buffered);
+	return flushConversation(env, convId, buffered);
 }
 
 describe("handleMessage", () => {
@@ -249,8 +256,10 @@ describe("handleMessage", () => {
 		);
 		expect(h.pushed).toEqual([]);
 		expect(h.env.intake.size).toBe(0);
-		// The command really ran: the voice toggle and epoch bump landed.
-		const conv = h.store.get("dm:1")!;
+		// The command really ran: the voice toggle and epoch bump landed —
+		// on the rolling conversation /voice rolled into, not a legacy id.
+		const conv = h.store.get(h.store.currentDm(1)!.id)!;
+		expect(conv.id).toBe("dm:1:1");
 		expect(conv.voice).toBe(true);
 		expect(conv.epoch).toBe(1);
 	});
@@ -454,11 +463,10 @@ describe("flushConversation", () => {
 		};
 		// The batch committed before admission failed, so a rethrow would
 		// make the buffer retry forever against already-consumed rows.
-		expect(() =>
-			flushTest(h.env, conv.id, [
-				{ parts: [{ type: "text", text: "hi" }], replyTo: 1 },
-			]),
-		).not.toThrow();
+		// dm:9 is a rolling lane — the flush is async.
+		await flushTest(h.env, conv.id, [
+			{ parts: [{ type: "text", text: "hi" }], replyTo: 1 },
+		]);
 		expect(seen).not.toBeNull();
 		// The sink was released (not left ghosting "typing…"): its error
 		// path delivers the failure to Telegram.
@@ -483,14 +491,19 @@ describe("flushConversation", () => {
 		h.env.inbox.record(710, { conversationId: conv.id, chatId: 1, messageId: 71,
 			text: "hi", media: null, mediaError: null });
 		h.env.deps.store = { ...h.store, append: () => { throw new Error("disk failed"); } };
-		expect(() =>
+		// dm:1 is a rolling lane — the flush is async and the failure is a rejection.
+		await expect(
 			flushConversation(h.env, conv.id, [
 				{ updateId: 710, parts: [{ type: "text", text: "hi" }], replyTo: 71 },
-			]),
-		).toThrow("disk failed");
+			]) as Promise<void>,
+		).rejects.toThrow("disk failed");
 		await Bun.sleep(10);
 		expect(pings).toBe(0);
-		expect(h.apiCalls.filter((c) => c.method === "sendMessage")).toEqual([]);
+		// The roll marker is the only send — the roll happened even though
+		// the batch's history append did not.
+		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
+			"— new conversation —",
+		]);
 		expect(h.env.inbox.pending()).toHaveLength(1); // retained for retry
 		h.store.close();
 	});
@@ -498,7 +511,7 @@ describe("flushConversation", () => {
 	test("a flush for a missing conversation fails without consuming its row", () => {
 		const h = routerHarness(baseConfig);
 		expect(() =>
-			flushTest(h.env, "dm:404", [
+			flushTest(h.env, "dm:-404", [
 				{ parts: [{ type: "text", text: "hi" }], replyTo: 1 },
 			]),
 		).toThrow("flush for missing conversation");
@@ -541,6 +554,7 @@ describe("durable intake", () => {
 				submitted.push(h.store.history(conv.id));
 				void sink.onDone({ kind: "completed" });
 			},
+			busy: () => false,
 		} as unknown as Runtime;
 		h.env.intake = new Map();
 		h.env.buffer = new CoalescingBuffer(60_000,
@@ -549,7 +563,7 @@ describe("durable intake", () => {
 		// Scheduling recovery is non-blocking: new polling can start while
 		// a media download waits, but each conversation keeps its order.
 		await Promise.all([...h.env.intake.values()]);
-		h.env.buffer.drain();
+		await h.env.buffer.drain();
 		expect(submitted).toHaveLength(1);
 		expect(submitted[0]).toHaveLength(1);
 		expect(JSON.stringify(submitted[0])).toContain("[attachment failed to download:");
@@ -558,24 +572,27 @@ describe("durable intake", () => {
 		await replayInbox(h.env);
 		handleMessage(h.env, msg, 601); // Telegram redelivery after commit
 		expect(submitted).toHaveLength(1);
-		expect(h.store.history("dm:1")).toHaveLength(1);
+		// dm:1 is a rolling lane — the replayed batch rolled into dm:1:1.
+		expect(h.store.history("dm:1:1")).toHaveLength(1);
 		h.store.close();
 	});
 
-	test("failed history append rolls back inbox acknowledgement; retry commits exactly once", () => {
+	test("failed history append rolls back inbox acknowledgement; retry commits exactly once", async () => {
 		const h = routerHarness();
-		const conv = h.store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		h.env.inbox.record(700, { conversationId: conv.id, chatId: 1, messageId: 70,
+		// dm:1 is a rolling lane — the flush routes to dm:1:1.
+		h.env.inbox.record(700, { conversationId: "dm:1", chatId: 1, messageId: 70,
 			text: "retry", media: null, mediaError: null });
 		const item = { updateId: 700, parts: [{ type: "text" as const, text: "retry" }], replyTo: 70 };
 		const originalStore = h.store;
 		h.env.deps.store = { ...originalStore, append: () => { throw new Error("disk failed"); } };
-		expect(() => flushConversation(h.env, conv.id, [item])).toThrow("disk failed");
-		expect(originalStore.history(conv.id)).toHaveLength(0);
+		await expect(
+			flushConversation(h.env, "dm:1", [item]) as Promise<void>,
+		).rejects.toThrow("disk failed");
+		expect(originalStore.history("dm:1:1")).toHaveLength(0);
 		expect(h.env.inbox.pending()).toHaveLength(1);
 		h.env.deps.store = originalStore;
-		flushConversation(h.env, conv.id, [item]);
-		expect(originalStore.history(conv.id)).toHaveLength(1);
+		await flushConversation(h.env, "dm:1", [item]);
+		expect(originalStore.history("dm:1:1")).toHaveLength(1);
 		expect(h.env.inbox.pending()).toEqual([]);
 		originalStore.close();
 	});
@@ -595,8 +612,12 @@ describe("durable intake", () => {
 			...h.store,
 			resolve: () => { throw new Error("database unavailable"); },
 		};
+		// Topic lanes still resolve eagerly at intake; private chats do
+		// not (the rolling lane defers routing to the flush).
 		expect(() => handleMessageDurably(h.env, tgMsg({
-			message_id: 81, chat: { id: 1, type: "private" }, text: "hello",
+			message_id: 81,
+			chat: { id: -100, type: "supergroup" },
+			message_thread_id: 7, is_topic_message: true, text: "hello",
 		}), 801)).toThrow(InboxRecordError);
 		expect(h.env.inbox.pending()).toEqual([]);
 		h.store.close();
@@ -627,6 +648,116 @@ describe("durable intake", () => {
 		await Promise.all([...h.env.intake.values()]);
 		expect(h.pushed.map((item) => item.conv)).toEqual(["dm:2", "dm:1", "dm:1"]);
 		expect(h.pushed[2]!.parts).toEqual([{ type: "text", text: "second" }]);
+		h.store.close();
+	});
+});
+
+describe("rolling dm", () => {
+	test("a private message carrying a thread id still lands in the rolling lane", async () => {
+		const h = routerHarness();
+		handleTestMessage(h.env, tgMsg({
+			message_id: 40, chat: { id: 7, type: "private" },
+			message_thread_id: 5, text: "hello",
+		}));
+		await h.env.intake.get("dm:7");
+		// The lane key is the rolling address; the dm:<chat>:<n>
+		// conversation is chosen at flush.
+		expect(h.pushed.map((p) => p.conv)).toEqual(["dm:7"]);
+		await flushTest(h.env, "dm:7", [
+			{ parts: [{ type: "text", text: "hello" }], replyTo: 40 },
+		]);
+		const current = h.store.currentDm(7)!;
+		expect(current.id).toBe("dm:7:1");
+		expect(h.store.history(current.id).at(-1)?.parts).toEqual([
+			{ type: "text", text: "hello" },
+		]);
+		h.store.close();
+	});
+
+	test("a rolled flush sends the boundary marker before the turn's delivery", async () => {
+		const h = routerHarness();
+		// submitPersisted stands in for the turn's first Telegram write —
+		// the marker must already be on the wire when it runs.
+		h.env.deps.runtime = {
+			submitPersisted: (_c: unknown, _m: unknown, _s: TurnSink) => {
+				void h.env.api.sendMessage(7, "turn output");
+			},
+			busy: () => false,
+		} as unknown as Runtime;
+		await flushTest(h.env, "dm:7", [
+			{ parts: [{ type: "text", text: "hello" }], replyTo: 1 },
+		]);
+		const sends = h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text);
+		expect(sends[0]).toBe("— new conversation —");
+		expect(sends[1]).toBe("turn output");
+		h.store.close();
+	});
+
+	test("a quoted reply's context leads the parts", async () => {
+		const h = routerHarness();
+		handleTestMessage(h.env, tgMsg({
+			message_id: 40, chat: { id: 7, type: "private" }, text: "yep",
+			reply_to_message: { message_id: 39, text: "come back?" },
+		}));
+		await h.env.intake.get("dm:7");
+		expect(h.pushed[0]!.parts[0]).toEqual({ type: "text", text: '[replying to: "come back?"]' });
+		expect(h.pushed[0]!.parts[1]).toEqual({ type: "text", text: "yep" });
+		h.store.close();
+	});
+
+	test("a reply target that is the topic root is thread plumbing, not a reply", async () => {
+		// dmGapMinutes 0 makes every flush past the gap — the check is
+		// the only path a plain burst can take.
+		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0 } });
+		const calls: unknown[] = [];
+		h.env.deps.followUpGate = () => ({
+			decide: (state: string) => {
+				calls.push(state);
+				return Promise.resolve({ answers: { follow_up: 0.9 }, inputTokens: null, cost: null });
+			},
+		});
+		h.store.rollDm(7, "/w"); // dm:7:1 — current, past the gap
+		handleTestMessage(h.env, tgMsg({
+			message_id: 40, chat: { id: 7, type: "private" },
+			message_thread_id: 5,
+			// The thread's root service message — Telegram reports it as
+			// reply_to_message on ordinary messages in a threaded chat.
+			reply_to_message: { message_id: 5, text: "" },
+			text: "a fresh thought",
+		}));
+		await h.env.intake.get("dm:7");
+		// No quoted context was journaled or projected.
+		expect(h.env.inbox.pending()[0]?.payload.quoted).toBeUndefined();
+		expect(h.pushed[0]!.parts).toEqual([{ type: "text", text: "a fresh thought" }]);
+		await flushTest(h.env, "dm:7", [
+			{ parts: [{ type: "text", text: "a fresh thought" }], replyTo: 40 },
+		]);
+		// Past the gap and NOT a reply — the follow-up check ran.
+		expect(calls).toHaveLength(1);
+		expect(h.store.currentDm(7)?.id).toBe("dm:7:1");
+		h.store.close();
+	});
+
+	test("a reply past the gap joins without asking the gate", async () => {
+		// dmGapMinutes 0 makes every flush past the gap.
+		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0 } });
+		const calls: unknown[] = [];
+		h.env.deps.followUpGate = () => ({
+			decide: (state: string) => {
+				calls.push(state);
+				return Promise.resolve({ answers: { follow_up: 0.1 }, inputTokens: null, cost: null });
+			},
+		});
+		h.store.rollDm(7, "/w"); // dm:7:1 is current, now past the gap
+		await flushTest(h.env, "dm:7", [
+			{ parts: [{ type: "text", text: "and this too" }], replyTo: 9,
+				quoted: { messageId: 8, text: "earlier" } },
+		]);
+		expect(calls).toHaveLength(0);
+		expect(h.store.currentDm(7)?.id).toBe("dm:7:1"); // joined, not rolled
+		expect(h.store.history("dm:7:1").at(-1)?.parts).toEqual([
+			{ type: "text", text: "and this too" },
+		]);
 		h.store.close();
 	});
 });

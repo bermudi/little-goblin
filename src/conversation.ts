@@ -117,9 +117,21 @@ export interface ConversationStore {
 	// Get-or-create by channel address. New conversations start at epoch 0.
 	// The cwd column still exists in the table (NOT NULL, no default —
 	// existing DBs need it stamped) but cwd is no longer per-conversation
-	// state: tools always run in the deployment workspace.
+	// state: tools always run in the deployment workspace. Private DMs
+	// route through rolling.ts, never here — the legacy dm:<chat>
+	// conversation this resolves to is history, never current.
 	resolve(addr: ConversationAddress, defaultCwd: string): Conversation;
 	get(id: string): Conversation | null;
+	// Rolling DM (design/telegram.md → Rolling DM): the bot DM is a
+	// rolling address — dm:<chat>:<n> conversations with one current per
+	// chat, the boundary drawn by a quiet gap. currentDm returns the
+	// current conversation (null = never rolled); rollDm creates
+	// dm:<chat>:<n+1> and points the chat at it, in one transaction.
+	currentDm(chatId: number): Conversation | null;
+	rollDm(chatId: number, defaultCwd: string): Conversation;
+	// Newest event's created_at, else the conversation's own — the
+	// quiet-gap clock the roller reads.
+	lastActivityAt(id: string): string;
 	setMeta(id: string, patch: ConversationMetaPatch): void;
 	// Settings changes and cancellation bump the epoch; in-flight turns
 	// fence themselves against it.
@@ -481,6 +493,15 @@ export function openStore(dbPath: string): ConversationStore {
 			model TEXT NOT NULL,
 			created_at TEXT NOT NULL
 		)`);
+	// Rolling DM (design/telegram.md → Rolling DM): one current
+	// dm:<chat>:<n> conversation per private chat; n only grows, so a
+	// reverted db still mints fresh ids.
+	db.run(`
+		CREATE TABLE IF NOT EXISTS dm_rolls (
+			chat_id INTEGER PRIMARY KEY,
+			current_id TEXT NOT NULL REFERENCES conversations(id),
+			n INTEGER NOT NULL
+		)`);
 	// Legacy rows predate the versioned envelope — wrap them once, in
 	// place, before anything reads them this boot. Only well-formed bare
 	// UIMessage objects match (top-level string `id`); corrupt rows are
@@ -517,6 +538,16 @@ export function openStore(dbPath: string): ConversationStore {
 	const qInsertConv = db.query(
 		`INSERT INTO conversations (id, chat_id, thread_id, title, cwd, created_at)
 		 VALUES (?, ?, ?, NULL, ?, ?)`,
+	);
+	const qDmRoll = db.query<{ current_id: string; n: number }, [number]>(
+		"SELECT current_id, n FROM dm_rolls WHERE chat_id = ?",
+	);
+	const qUpsertRoll = db.query(
+		`INSERT INTO dm_rolls (chat_id, current_id, n) VALUES (?, ?, ?)
+		 ON CONFLICT(chat_id) DO UPDATE SET current_id = excluded.current_id, n = excluded.n`,
+	);
+	const qLastActivity = db.query<{ created_at: string }, [string]>(
+		"SELECT created_at FROM events WHERE conversation_id = ? ORDER BY seq DESC LIMIT 1",
 	);
 	const qHistory = db.query<
 		{ seq: number; anchor_seq: number | null; role: string; data: string },
@@ -678,6 +709,33 @@ export function openStore(dbPath: string): ConversationStore {
 		get(id) {
 			const row = qGet.get(id);
 			return row ? toConversation(row) : null;
+		},
+
+		currentDm(chatId) {
+			const roll = qDmRoll.get(chatId);
+			if (!roll) return null;
+			const row = qGet.get(roll.current_id);
+			return row ? toConversation(row) : null;
+		},
+
+		rollDm(chatId, defaultCwd) {
+			return db.transaction(() => {
+				const n = (qDmRoll.get(chatId)?.n ?? 0) + 1;
+				const id = `dm:${chatId}:${n}`;
+				qInsertConv.run(id, chatId, null, defaultCwd, new Date().toISOString());
+				qUpsertRoll.run(chatId, id, n);
+				const created = qGet.get(id);
+				if (!created) throw new Error(`conversation ${id} insert failed`);
+				return toConversation(created);
+			})();
+		},
+
+		lastActivityAt(id) {
+			const event = qLastActivity.get(id);
+			if (event) return event.created_at;
+			const conv = qGet.get(id);
+			if (!conv) throw new Error(`conversation ${id} not found`);
+			return conv.created_at;
 		},
 
 		setMeta(id, patch) {

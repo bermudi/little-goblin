@@ -7,7 +7,16 @@ import type { MenuButton, Message } from "grammy/types";
 import type { UIMessage } from "ai";
 import type { AuthStore } from "../auth.ts";
 import { paths, type Config, type ConfigRef, type TtsConfig } from "../config.ts";
-import type { ConversationAddress, ConversationStore } from "../conversation.ts";
+import { addressId, type Conversation, type ConversationAddress, type ConversationStore } from "../conversation.ts";
+import type { JevClient } from "../jev.ts";
+import {
+	isRollingChat,
+	projectRollText,
+	rollingChatId,
+	routeDm,
+	routeDmMessage,
+	type RollDeps,
+} from "../rolling.ts";
 import { userMessage, type Runtime } from "../runtime.ts";
 import { log } from "../log.ts";
 import { CoalescingBuffer } from "./buffer.ts";
@@ -15,6 +24,7 @@ import { COMMAND_RE, COMMANDS, handleCommand, type CommandMemoryDeps } from "./c
 import { withTimeout } from "./deadline.ts";
 import { makeDeliverySink, SPEAK_CALLBACK } from "./delivery.ts";
 import { MAIL_CALLBACK_RE, type MailApproval } from "./mail-approval.ts";
+import { sendRollMarker } from "./notify.ts";
 import { handleSpeakButton } from "./speak-button.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
 import { mediaFromMessage, mediaParts, saveAttachment } from "./media.ts";
@@ -40,21 +50,21 @@ const COALESCE_MAX_WAIT_MS = 10_000;
 // or a download error becomes the conversation's name.
 const ATTACHMENT_FAILED_PREFIX = "[attachment failed to download:";
 
-// Conversation identity IS the Telegram address: a topic — forum
-// supergroup or bot DM with topics enabled — or the bare chat.
-// `message_thread_id` also rides on comment threads in non-forum
-// groups, where `is_topic_message` stays unset and bots can't post;
-// those stay bare-chat. Private chats keep a thread-id fallback:
-// is_topic_message coverage for DM topics is newer than the field
-// itself.
+// Conversation identity IS the Telegram address: a forum-supergroup
+// topic or the bare chat. `message_thread_id` also rides on comment
+// threads in non-forum groups, where `is_topic_message` stays unset and
+// bots can't post; those stay bare-chat. Private chats always address
+// the rolling DM lane — DM topics are retired (design/telegram.md →
+// Rolling DM).
 export function conversationAddress(msg: {
 	chat: { id: number; type: string };
 	message_thread_id?: number;
 	is_topic_message?: boolean;
 }): ConversationAddress {
 	if (
+		msg.chat.type !== "private" &&
 		msg.message_thread_id !== undefined &&
-		(msg.is_topic_message === true || msg.chat.type === "private")
+		msg.is_topic_message === true
 	) {
 		return { kind: "topic", chatId: msg.chat.id, threadId: msg.message_thread_id };
 	}
@@ -65,6 +75,10 @@ interface BufferedItem {
 	updateId: number;
 	parts: UIMessage["parts"];
 	replyTo: number | undefined;
+	// Set when the message quoted another (msg.reply_to_message): the
+	// quoted id + its text (head-cut). Presence alone counts the item
+	// as a reply for rolling-DM routing — an empty quote still joins.
+	quoted?: { messageId: number; text: string };
 }
 
 // A failed durable insert must stop polling, not allow grammy to acknowledge
@@ -96,6 +110,11 @@ export interface BotDeps {
 	// Absent = mail never wired this run — a stale button still gets
 	// an answer, never a hang.
 	mail?: () => MailApproval;
+	// The follow-up check for Rolling DM — the reviewer's JevClient,
+	// resolved per call because it is constructed after the bot in the
+	// composition root. Absent = no check available: a past-gap burst
+	// joins the current conversation.
+	followUpGate?: () => Pick<JevClient, "decide"> | undefined;
 }
 
 export interface RunningBot {
@@ -156,21 +175,40 @@ export interface IntakeEnv {
 
 export type FlushEnv = Pick<IntakeEnv, "deps" | "api" | "titleAttempts" | "inbox">;
 
+// The RollDeps the intake paths share — assembled per call so a
+// mini-app save (dmGapMinutes) and the late-built reviewer's gate both
+// read live instead of whatever was wired at boot.
+function rollDepsOf(deps: BotDeps): RollDeps {
+	return {
+		store: deps.store,
+		runtime: deps.runtime,
+		gapMinutes: () => deps.configRef.current.telegram.dmGapMinutes,
+		...(deps.followUpGate === undefined ? {} : { gate: deps.followUpGate }),
+	};
+}
+
 export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): void {
 	const { deps } = env;
 	const text = msg.text ?? msg.caption ?? "";
 	const addr = conversationAddress(msg);
-	const conv = deps.store.resolve(addr, paths.workspace());
+	// A private chat's lane is the rolling address — the payload carries
+	// the lane key and the concrete dm:<chat>:<n> conversation is routed
+	// at flush (Rolling DM). Every other lane IS its conversation id, so
+	// those still resolve eagerly here.
+	const rolling = addr.kind === "dm" && isRollingChat(addr.chatId);
+	const conv = rolling ? null : deps.store.resolve(addr, paths.workspace());
+	const lane = conv === null ? addressId(addr) : conv.id;
 	log.debug("intake", {
 		updateId,
-		conversation: conv.id,
+		conversation: lane,
 		message: msg.message_id,
-		...(conv.threadId !== null ? { thread: conv.threadId } : {}),
+		...(conv !== null && conv.threadId !== null ? { thread: conv.threadId } : {}),
 	});
 	// conv is read before this patch — titleImplicit transitions both
 	// ways get a line, so "why is it still New Chat" never needs a REPL.
-	const topicMeta = titleMetaFromService(msg);
-	if (topicMeta) {
+	// Topic service meta only exists on non-private lanes.
+	const topicMeta = conv !== null ? titleMetaFromService(msg) : null;
+	if (topicMeta && conv !== null) {
 		deps.store.setMeta(conv.id, topicMeta);
 		if (topicMeta.titleImplicit) {
 			log.info("implicit topic name — titling owed", {
@@ -193,8 +231,21 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 		mediaError = err;
 	}
 	if (text !== "" && !media && mediaError === null && COMMAND_RE.test(text)) {
+		let target: Conversation | null = conv;
 		let handled = false;
 		try {
+			// Rolling DM: /voice and /memory own their roll; every other
+			// command acts on the current conversation and never rolls.
+			if (target === null) {
+				const cmd = /^\/(\w+)/.exec(text)?.[1] ?? "";
+				const routed = routeDm(
+					rollDepsOf(deps),
+					addr.chatId,
+					cmd === "voice" || cmd === "memory" ? "command" : "current",
+				);
+				if (routed.rolled) void sendRollMarker(env.api, addr.chatId, routed.conv.id);
+				target = routed.conv;
+			}
 			handled = handleCommand(
 				{
 					api: env.api,
@@ -204,19 +255,19 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 					botUsername: env.botUsername,
 					...(deps.memory ? { memory: deps.memory } : {}),
 				},
-				conv,
+				target,
 				text,
 			);
 		} catch (err) {
 			// Commands bypass the inbox entirely — a failure here is not an
 			// InboxRecordError, and must not reach handleMessageDurably as
 			// one. Log it, tell the operator, let grammy consume the update.
-			log.error("command failed", err, { conversation: conv.id });
+			log.error("command failed", err, { conversation: target?.id ?? lane });
 			env.api
 				.sendMessage(
-					conv.chatId,
+					target?.chatId ?? msg.chat.id,
 					`command failed: ${err instanceof Error ? err.message : String(err)}`,
-					conv.threadId === null ? {} : { message_thread_id: conv.threadId },
+					target == null || target.threadId === null ? {} : { message_thread_id: target.threadId },
 				)
 				.catch((e: unknown) => {
 					log.warn("command failure reply failed", { error: String(e) });
@@ -229,13 +280,30 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 	if (text === "" && !media && mediaError === null) {
 		// Service messages, join/leave, and media kinds intake doesn't
 		// cover — routine, but worth a debug line when it isn't.
-		log.debug("dropped message with no text or media", { conversation: conv.id });
+		log.debug("dropped message with no text or media", { conversation: lane });
 		return;
 	}
 
+	const replyTo = msg.reply_to_message;
+	// Telegram reports the topic's root service message as
+	// reply_to_message on every ordinary message inside a forum topic
+	// (and in a private chat while its threaded mode is on) — either
+	// flagged forum_topic_created or, for the flagless variant, the
+	// reply target IS the thread's root message. That is thread
+	// plumbing, not an operator reply: counting it would route every
+	// burst as "reply" and the follow-up check would never run.
+	const quotedReply =
+		replyTo === undefined ||
+		replyTo.forum_topic_created !== undefined ||
+		(msg.message_thread_id !== undefined && replyTo.message_id === msg.message_thread_id)
+			? undefined
+			: replyTo;
 	const payload: InboxPayload = {
-		conversationId: conv.id, chatId: msg.chat.id, messageId: msg.message_id,
+		conversationId: lane, chatId: msg.chat.id, messageId: msg.message_id,
 		text, media, mediaError: mediaError === null ? null : String(mediaError),
+		...(quotedReply === undefined
+			? {}
+			: { quoted: { messageId: quotedReply.message_id, text: quotedReply.text ?? quotedReply.caption ?? "" } }),
 	};
 	try {
 		if (!env.inbox.record(updateId, payload)) return;
@@ -258,10 +326,16 @@ export function handleMessageDurably(env: IntakeEnv, msg: Message, updateId: num
 }
 
 function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Promise<void> {
-	const { conversationId: convId, text, media, mediaError, messageId } = payload;
+	const { conversationId: convId, text, media, mediaError, messageId, quoted } = payload;
 	const { deps } = env;
 	return enqueueIntake(env.intake, convId, async () => {
 		const parts: UIMessage["parts"] = [];
+		// The quoted context leads the message (Rolling DM): it reads as
+		// the operator's own "about this" prefix, and presence counts the
+		// item as a reply for routing even when the quote carried no text.
+		if (quoted !== undefined && quoted.text !== "") {
+			parts.push({ type: "text", text: `[replying to: "${quoted.text.slice(0, 2_000)}"]` });
+		}
 		if (text !== "") parts.push({ type: "text", text });
 		if (mediaError !== null) {
 			log.error("media intake failed", mediaError, { conversation: convId });
@@ -309,7 +383,10 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 			}
 		}
 
-		env.buffer.push(convId, { updateId, parts, replyTo: messageId });
+		env.buffer.push(convId, {
+			updateId, parts, replyTo: messageId,
+			...(quoted !== undefined ? { quoted } : {}),
+		});
 	});
 }
 
@@ -322,14 +399,26 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 // submit throws past it, but the committed batch cannot be retried
 // (the rows are already consumed), so the failure is logged, answered
 // once through the sink's error path, and never rethrown.
-export function flushConversation(env: FlushEnv, convId: string, items: BufferedItem[]): void {
+//
+// Rolling-DM lanes (dm:<positive chat>) route asynchronously first —
+// a quoted reply joins without a check, a plain burst past the gap asks
+// the follow-up check — so the flush returns a promise the buffer
+// serializes on. A retry after a failed commit simply re-routes: a roll
+// that already happened left the new conversation current with fresh
+// activity, so the retry joins it — no double roll.
+export function flushConversation(
+	env: FlushEnv,
+	convId: string,
+	items: BufferedItem[],
+): void | Promise<void> {
+	const chatId = rollingChatId(convId);
+	if (chatId !== null) return flushRolling(env, chatId, convId, items);
 	const { deps } = env;
 	const conv = deps.store.get(convId);
 	if (!conv) {
 		throw new Error(`flush for missing conversation: ${convId}`);
 	}
 	const parts = items.flatMap((i) => i.parts);
-	const replyTo = items[0]?.replyTo;
 	log.debug("coalesced turn input", { conversation: convId, items: items.length });
 	if (
 		conv.threadId !== null &&
@@ -356,17 +445,49 @@ export function flushConversation(env: FlushEnv, convId: string, items: Buffered
 			});
 		}
 	}
+	admitBatch(env, conv, convId, items, parts);
+}
+
+// The rolling lane's async half: route, mark the boundary if one
+// happened (the marker must land before the turn — the operator reads
+// it as "this is a fresh conversation"), then commit + submit into the
+// routed conversation exactly like a topic flush.
+async function flushRolling(
+	env: FlushEnv,
+	chatId: number,
+	laneKey: string,
+	items: BufferedItem[],
+): Promise<void> {
+	const { deps } = env;
+	const parts = items.flatMap((i) => i.parts);
+	log.debug("coalesced turn input", { conversation: laneKey, items: items.length });
+	const result = items.some((i) => i.quoted !== undefined)
+		? routeDm(rollDepsOf(deps), chatId, "reply")
+		: await routeDmMessage(rollDepsOf(deps), chatId, projectRollText(parts));
+	if (result.rolled) await sendRollMarker(env.api, chatId, result.conv.id);
+	admitBatch(env, result.conv, laneKey, items, parts);
+}
+
+// Commit → sink → submit — the tail every lane shares after routing.
+// Throws on a failed commit — the buffer retains the batch and
+// retries; nothing reached Telegram, so nothing needs answering.
+function admitBatch(
+	env: FlushEnv,
+	conv: Conversation,
+	laneKey: string,
+	items: BufferedItem[],
+	parts: UIMessage["parts"],
+): void {
+	const { deps } = env;
 	const tts = deps.configRef.current.tts;
 	const message = userMessage(parts);
-	// Throws on a failed commit — the buffer retains the batch and
-	// retries; nothing reached Telegram, so nothing needs answering.
-	env.inbox.commitBatch(items.map((i) => i.updateId), convId, () => {
-		deps.store.append(convId, [message]);
+	env.inbox.commitBatch(items.map((i) => i.updateId), laneKey, () => {
+		deps.store.append(conv.id, [message]);
 	});
 	const sink = makeDeliverySink(
 		env.api,
 		conv,
-		replyTo,
+		items[0]?.replyTo,
 		undefined,
 		tts && !deps.configRef.ttsDown
 			? { voiceMode: conv.voice, synthesize: (text) => deps.synthesize(text, tts) }
@@ -378,7 +499,7 @@ export function flushConversation(env: FlushEnv, convId: string, items: Buffered
 		// The batch committed — a buffer retry would hit "missing,
 		// committed" forever. The sink was already constructed (typing
 		// interval running) — release it or it ghosts "typing…" forever.
-		log.error("turn submit failed after inbox commit", err, { conversation: convId });
+		log.error("turn submit failed after inbox commit", err, { conversation: conv.id });
 		void sink.onDone({
 			kind: "error",
 			message: err instanceof Error ? err.message : String(err),
@@ -502,7 +623,7 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 			// pass. Anything later still submits via its own timer —
 			// the closed runtime records it history-only.
 			try {
-				buffer.drain();
+				await buffer.drain();
 			} catch (err) {
 				// Keep draining media; the failed batch remains in memory
 				// and gets another attempt after those chains settle.
@@ -511,7 +632,7 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 				});
 			}
 			await Promise.allSettled([...intake.values()]);
-			buffer.drain();
+			await buffer.drain();
 		},
 	};
 }

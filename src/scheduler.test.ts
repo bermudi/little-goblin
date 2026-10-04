@@ -49,7 +49,7 @@ const config: Config = {
 	favorites: [],
 	thinking: "medium",
 	allowedUsers: [1],
-	telegram: {},
+	telegram: { dmGapMinutes: 45 },
 	http: { port: 8787 },
 	logLevel: "info",
 };
@@ -80,18 +80,23 @@ function harness(): Harness {
 		sendChatAction: () => Promise.resolve(true),
 		sendVoice: () => Promise.resolve({ message_id: 1 }),
 	} as unknown as DeliveryApi;
+	const runtime = {
+		submit: (conv: { id: string }, message: UIMessage, sink: TurnSink) => {
+			submitted.push({ conv: conv.id, parts: message.parts, sink });
+			return true;
+		},
+		busy: () => false,
+	} as unknown as Runtime;
 	const deps: SchedulerDeps = {
 		programs,
 		store,
-		runtime: {
-			submit: (conv: { id: string }, message: UIMessage, sink: TurnSink) => {
-				submitted.push({ conv: conv.id, parts: message.parts, sink });
-				return true;
-			},
-		} as unknown as Runtime,
+		runtime,
 		api,
 		configRef: { current: config, ttsDown: false },
 		synthesize: () => Promise.resolve([]),
+		// Rolling DM wiring — fires into a private chat roll like intake
+		// does. The fake runtime stands in for busy().
+		roll: { store, runtime, gapMinutes: () => config.telegram.dmGapMinutes },
 	};
 	return { deps, submitted, apiCalls, store };
 }
@@ -227,14 +232,16 @@ describe("scheduler", () => {
 	test("a fire that throws still advances past the occurrence", () => {
 		const h = harness();
 		// wake() resolves the conversation before submit — when that
-		// throws, the fire explodes with no sink to release.
+		// throws, the fire explodes with no sink to release. A topic pin
+		// still resolves eagerly at fire time (a private pin routes
+		// through the roller instead).
 		h.deps.store = {
 			resolve: () => {
 				throw new Error("db gone");
 			},
 		} as unknown as ConversationStore;
 		const job = h.deps.programs.create(
-			{ name: "x", cron: "* * * * *", charter: "p", address: { chatId: 1, threadId: null } },
+			{ name: "x", cron: "* * * * *", charter: "p", address: { chatId: -100, threadId: 7 } },
 			new Date(Date.now() - 5 * 60_000),
 		);
 		const s = startScheduler(h.deps); // boot scan: the fire throws
@@ -273,7 +280,9 @@ describe("scheduler", () => {
 		} as unknown as Runtime;
 		const s = startScheduler(h.deps);
 		s.stop();
-		expect(h.submitted.map((x) => x.conv)).toEqual(["dm:2"]);
+		// Chat 2's pin is a private address — the fire rolled into its
+		// first rolling conversation.
+		expect(h.submitted.map((x) => x.conv)).toEqual(["dm:2:1"]);
 		await closeSinks(h);
 	});
 

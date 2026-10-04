@@ -54,7 +54,7 @@ const valid: Config = {
 	favorites: [],
 	thinking: "medium",
 	allowedUsers: [1],
-	telegram: {},
+	telegram: { dmGapMinutes: 45 },
 	http: { port: 8787 },
 	logLevel: "info",
 };

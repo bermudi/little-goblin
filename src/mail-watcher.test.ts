@@ -44,7 +44,7 @@ const config: Config = {
 	favorites: [],
 	thinking: "medium",
 	allowedUsers: [1],
-	telegram: {},
+	telegram: { dmGapMinutes: 45 },
 	http: { port: 8787 },
 	logLevel: "info",
 };
@@ -112,20 +112,24 @@ function harness(): Harness {
 		sendChatAction: () => Promise.resolve(true),
 		sendVoice: () => Promise.resolve({ message_id: 1 }),
 	} as unknown as DeliveryApi;
+	const runtime = {
+		submit: (conv: { id: string }, message: UIMessage, sink: TurnSink) => {
+			if (h.failSubmit) throw new Error("queue closed");
+			const part = message.parts[0] as { text?: string } | undefined;
+			h.submitted.push({ conv: conv.id, text: part?.text ?? "", sink });
+			return true;
+		},
+		busy: () => false,
+	} as unknown as Runtime;
 	const firingDeps: SchedulerDeps & { checkMail?: Harness["checkMail"] } = {
 		programs: h.programs,
 		store,
-		runtime: {
-			submit: (conv: { id: string }, message: UIMessage, sink: TurnSink) => {
-				if (h.failSubmit) throw new Error("queue closed");
-				const part = message.parts[0] as { text?: string } | undefined;
-				h.submitted.push({ conv: conv.id, text: part?.text ?? "", sink });
-				return true;
-			},
-		} as unknown as Runtime,
+		runtime,
 		api,
 		configRef: { current: config, ttsDown: false },
 		synthesize: () => Promise.resolve([]),
+		// Rolling DM wiring — a private-chat fire rolls like intake does.
+		roll: { store, runtime, gapMinutes: () => config.telegram.dmGapMinutes },
 	};
 	h.fireMail = (program, hits, checkpoint, now) =>
 		fireMail(firingDeps, program, hits, checkpoint, now);

@@ -25,6 +25,8 @@ const payloadSchema = z.strictObject({
 	text: z.string(),
 	media: mediaSchema.nullable(),
 	mediaError: z.string().nullable(),
+	// Optional so rows journaled before the Rolling DM cutover still parse.
+	quoted: z.strictObject({ messageId: idSchema, text: z.string() }).optional(),
 });
 
 export interface InboxPayload {
@@ -34,6 +36,9 @@ export interface InboxPayload {
 	text: string;
 	media: IncomingMedia | null;
 	mediaError: string | null;
+	// The message this one quoted (msg.reply_to_message): id + its own
+	// text/caption, head-cut at intake into the leading parts line.
+	quoted?: { messageId: number; text: string } | undefined;
 }
 export interface InboxEntry { updateId: number; payload: InboxPayload }
 

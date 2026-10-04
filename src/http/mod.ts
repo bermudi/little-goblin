@@ -133,7 +133,7 @@ export interface ConfigPostBody {
 	search: "" | Array<{ kind: string; auth?: string }>;
 	fetch: "" | Array<{ kind: string; auth?: string }>;
 	allowedUsers: number[];
-	telegram: { apiRoot: string | undefined };
+	telegram: { apiRoot: string | undefined; dmGapMinutes: number };
 	publicUrl: string;
 	http: { port: number };
 	memory:

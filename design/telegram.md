@@ -247,3 +247,23 @@ DM topic. Group topics are untouched.
 decided by `gap|reply|check|fallback|command|first`, probability when
 checked); `follow-up check` (probability, ms, cost, outcome — never
 message text); `dm cutover re-pin` per program.
+
+**Landing rulings (stage 1, 2026-10-03).** Settled while building:
+- *Which chats roll:* private chats only, detected as `chatId > 0`
+  (Telegram: user ids positive, group ids negative). That's the one
+  test call sites holding a bare id (program pins, lane keys) can use.
+- *Lanes:* a private chat's intake lane (inbox row, coalescing
+  buffer, intake chain) is keyed by the rolling address `dm:<chat>`.
+  Routing happens at flush, after coalescing. Rolling conversations
+  are `dm:<chat>:<n>`; the pre-ruling `dm:<chat>` conversation stays
+  as history and is never current.
+- *A live turn always absorbs input* (it steers), whatever the gap.
+- *The check has a 3 s interactive deadline*, separate from the shared
+  Jev client's 30 s timeout; losing the race is a fallback. If the
+  address rolled while the check ran (a fire), the burst joins the new
+  current conversation — never two rolls.
+- *Delegation notices join, never roll:* they continue work the
+  operator started. Program fires roll past the gap.
+- *Topic-root replies are not replies:* Telegram marks ordinary
+  messages in a topic as replies to the topic's root message, so that
+  `reply_to_message` is ignored, or every burst would skip the check.

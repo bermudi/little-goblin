@@ -23,9 +23,15 @@ describe("conversation address round trip", () => {
 		});
 	}
 
+	test("a rolling conversation id decodes to its bare chat", () => {
+		// dm:<chat>:<n> — the rolling DM's door is the private chat,
+		// never a thread (Rolling DM).
+		expect(parseConversationAddress("dm:1:2")).toEqual({ chatId: 1, threadId: null });
+		expect(parseConversationAddress("dm:-100:3")).toEqual({ chatId: -100, threadId: null });
+	});
+
 	test("malformed ids are rejected, not guessed", () => {
 		expect(parseConversationAddress("topic:1")).toBeNull(); // missing thread
-		expect(parseConversationAddress("dm:1:2")).toBeNull(); // dm with thread
 		expect(parseConversationAddress("group:1")).toBeNull(); // unknown kind
 		expect(parseConversationAddress("app/chat-01")).toBeNull(); // not a telegram door
 		expect(parseConversationAddress("")).toBeNull();

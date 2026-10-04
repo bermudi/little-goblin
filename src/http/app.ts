@@ -690,6 +690,11 @@ export const APP_HTML = `<!doctype html>
           <input id="apiRoot" placeholder="http://127.0.0.1:8081" autocomplete="off" spellcheck="false" autocapitalize="off">
           <div class="cap">Self-hosted telegram-bot-api in --local mode, for large files. Blank = Telegram cloud. Restart applies.</div>
         </div>
+        <div class="frow">
+          <label for="dmGap">New conversation after (quiet minutes)</label>
+          <input id="dmGap" placeholder="45" inputmode="numeric" autocomplete="off" spellcheck="false">
+          <div class="cap">Quiet minutes before a DM may roll into a new conversation. Applies immediately.</div>
+        </div>
       </div>
 
       <h2>Advanced</h2>

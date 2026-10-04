@@ -30,7 +30,7 @@ const config: Config = {
 	favorites: ["zai/glm-5.3"],
 	thinking: "medium",
 	allowedUsers: [1],
-	telegram: {},
+	telegram: { dmGapMinutes: 45 },
 	http: { port: 8787 },
 	logLevel: "info",
 };

@@ -48,7 +48,7 @@ const baseConfig: Config = {
 	favorites: [],
 	thinking: "medium",
 	allowedUsers: [42],
-	telegram: {},
+	telegram: { dmGapMinutes: 45 },
 	http: { port: 0 }, // ephemeral
 	logLevel: "info",
 };

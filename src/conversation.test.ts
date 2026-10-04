@@ -546,3 +546,43 @@ describe("app channel store", () => {
 		store.close();
 	});
 });
+
+describe("rolling dm", () => {
+	test("rollDm ids increment dm:<chat>:<n> and currentDm follows", () => {
+		const store = openStore(tmpdb());
+		expect(store.currentDm(7)).toBeNull();
+		const first = store.rollDm(7, "/w");
+		expect(first.id).toBe("dm:7:1");
+		expect(first.chatId).toBe(7);
+		expect(first.threadId).toBeNull();
+		expect(store.currentDm(7)?.id).toBe("dm:7:1");
+		const second = store.rollDm(7, "/w");
+		expect(second.id).toBe("dm:7:2");
+		expect(store.currentDm(7)?.id).toBe("dm:7:2");
+		// A different chat rolls its own counter.
+		expect(store.rollDm(8, "/w").id).toBe("dm:8:1");
+		expect(store.currentDm(7)?.id).toBe("dm:7:2");
+		store.close();
+	});
+
+	test("the legacy dm:<chat> conversation stays history, never current", () => {
+		const store = openStore(tmpdb());
+		const legacy = store.resolve({ kind: "dm", chatId: 9 }, "/w");
+		expect(legacy.id).toBe("dm:9");
+		expect(store.currentDm(9)).toBeNull();
+		store.rollDm(9, "/w");
+		expect(store.currentDm(9)?.id).toBe("dm:9:1");
+		expect(store.history(legacy.id)).toEqual([]);
+		store.close();
+	});
+
+	test("lastActivityAt is the newest event's stamp, else created_at", () => {
+		const store = openStore(tmpdb());
+		const conv = store.rollDm(3, "/w");
+		const created = store.lastActivityAt(conv.id);
+		expect(created).toBe(conv.createdAt);
+		store.append(conv.id, [msg("hello")]);
+		expect(store.lastActivityAt(conv.id) >= created).toBe(true);
+		store.close();
+	});
+});

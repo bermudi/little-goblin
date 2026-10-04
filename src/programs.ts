@@ -99,6 +99,12 @@ export interface ProgramsStore {
 	/** Reverse lookup for the /hook route — returns the row regardless
 	 *  of enabled; the route decides what disabled means. */
 	findByHook(hash: string): Program | null;
+	/** Rolling DM cutover (design/telegram.md → Rolling DM): programs
+	 *  pinned to a DM topic (private chat + thread) re-pin to the bare
+	 *  chat — DM topics are retired and replies land in the main chat.
+	 *  Group topics and already-bare pins are untouched. Idempotent,
+	 *  logged per program. */
+	rePinDmTopics(): number;
 	close(): void;
 }
 
@@ -361,6 +367,23 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		findByHook(hash) {
 			const row = qByHook.get(hash);
 			return row === null ? null : rowToProgram(row);
+		},
+		rePinDmTopics() {
+			const rows = db
+				.query<{ id: number; name: string; chat_id: number; thread_id: number }, []>(
+					"SELECT id, name, chat_id, thread_id FROM programs WHERE chat_id > 0 AND thread_id IS NOT NULL",
+				)
+				.all();
+			for (const r of rows) {
+				db.run("UPDATE programs SET thread_id = NULL WHERE id = ?", [r.id]);
+				log.info("dm cutover re-pin", {
+					program: r.id,
+					name: r.name,
+					chat: r.chat_id,
+					fromThread: r.thread_id,
+				});
+			}
+			return rows.length;
 		},
 		close() {
 			db.close();

@@ -531,3 +531,29 @@ describe("legacy jobs copy", () => {
 		expect(s.list()).toHaveLength(1);
 	});
 });
+
+describe("dm cutover re-pin (Rolling DM)", () => {
+	// DM topics are retired: a program pinned to a private chat's thread
+	// re-pins to the bare chat; group topics and already-bare pins are
+	// untouched; the sweep is idempotent.
+	test("private-chat thread pins re-pin to the bare chat, idempotently", () => {
+		const s = store();
+		const dmTopic = s.create(
+			{ name: "dm topic", cron: "0 9 * * *", charter: "c", address: { chatId: 5, threadId: 42 } },
+		);
+		const bare = s.create(
+			{ name: "bare dm", cron: "0 9 * * *", charter: "c", address: { chatId: 6, threadId: null } },
+		);
+		const group = s.create(
+			{ name: "group topic", cron: "0 9 * * *", charter: "c", address: ADDRESS },
+		);
+		expect(s.rePinDmTopics()).toBe(1);
+		expect(s.get(dmTopic.id)!.threadId).toBeNull();
+		expect(s.get(dmTopic.id)!.chatId).toBe(5);
+		expect(s.get(bare.id)!.threadId).toBeNull();
+		expect(s.get(group.id)!.threadId).toBe(7);
+		// A second sweep finds nothing left.
+		expect(s.rePinDmTopics()).toBe(0);
+		s.close();
+	});
+});

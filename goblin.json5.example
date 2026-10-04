@@ -170,8 +170,10 @@
   // Your user id (DM @userinfobot to find it). Only these users can talk.
   allowedUsers: [123456789],
   // Self-hosted telegram-bot-api in --local mode for large files.
-  // Leave unset for the cloud API.
-  // telegram: { apiRoot: "http://127.0.0.1:8081" },
+  // Leave unset for the cloud API. dmGapMinutes is the quiet gap before
+  // a DM may roll into a new conversation (Rolling DM) — it applies
+  // immediately and is also settable in the settings app.
+  // telegram: { apiRoot: "http://127.0.0.1:8081", dmGapMinutes: 45 },
 
   // --- Mini app + app channel ---
   // External HTTPS door (tailscale serve/funnel or any reverse proxy)

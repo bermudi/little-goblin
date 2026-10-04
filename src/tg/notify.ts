@@ -11,11 +11,35 @@ import { log } from "../log.ts";
 export function parseConversationAddress(
 	id: string,
 ): { chatId: number; threadId: number | null } | null {
-	const dm = /^dm:(-?\d+)$/.exec(id);
+	// dm:<chat>:<n> decodes to the bare chat — a rolling conversation's
+	// door is the private chat itself, never a thread (Rolling DM).
+	const dm = /^dm:(-?\d+)(?::\d+)?$/.exec(id);
 	if (dm) return { chatId: Number(dm[1]), threadId: null };
 	const topic = /^topic:(-?\d+):(\d+)$/.exec(id);
 	if (topic) return { chatId: Number(topic[1]), threadId: Number(topic[2]) };
 	return null;
+}
+
+// Rolling DM boundary marker (design/telegram.md → Rolling DM): a plain
+// message in the chat, never a thread — delivery, not history, so it
+// never lands in store.append. Failure warns and never blocks the
+// turn: the `dm rolled` log line is the record, the marker is a nicety.
+const ROLL_MARKER = "— new conversation —";
+
+export async function sendRollMarker(
+	api: Api,
+	chatId: number,
+	toConversation: string,
+): Promise<void> {
+	try {
+		await api.sendMessage(chatId, ROLL_MARKER);
+	} catch (err) {
+		log.warn("dm roll marker send failed", {
+			chat: chatId,
+			conversation: toConversation,
+			error: String(err),
+		});
+	}
 }
 
 // The door each notice needs. An app conversation is a deliberate skip,

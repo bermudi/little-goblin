@@ -62,6 +62,7 @@
  * @property {number[]} allowedUsers
  * @property {string} publicUrl
  * @property {string} apiRoot
+ * @property {string} dmGap
  * @property {string} port
  * @property {string} logLevel
  * @property {MemDraft | null} memory
@@ -143,7 +144,7 @@ const VOICE_SUGGESTIONS = [
 const EMPTY_DRAFT = {
   model: "", titleModel: "", favorites: [], thinking: "medium",
   tts: null, transcription: null, search: null, fetch: null,
-  allowedUsers: [], publicUrl: "", apiRoot: "", port: "8787", logLevel: "info", memory: null
+  allowedUsers: [], publicUrl: "", apiRoot: "", dmGap: "45", port: "8787", logLevel: "info", memory: null
 };
 // cfg mirrors the server schema for everything this page manages.
 let cfg = EMPTY_DRAFT;
@@ -751,7 +752,10 @@ function buildBody() {
     search: cfg.search === null ? "" : chainOut(cfg.search, SEARCH_META),
     fetch: cfg.fetch === null ? "" : chainOut(cfg.fetch, FETCH_META),
     allowedUsers: cfg.allowedUsers.slice(),
-    telegram: { apiRoot: cfg.apiRoot.trim() || undefined },
+    telegram: {
+      apiRoot: cfg.apiRoot.trim() || undefined,
+      dmGapMinutes: Number(cfg.dmGap) // raw like http.port — the server validates
+    },
     publicUrl: cfg.publicUrl.trim(), // "" clears — server normalizes
     http: { port: Number(cfg.port) },
     memory: cfg.memory === null ? "" : {
@@ -1185,6 +1189,7 @@ function populate(c) {
     allowedUsers: (c.allowedUsers || []).slice(),
     publicUrl: c.publicUrl || "",
     apiRoot: (c.telegram && c.telegram.apiRoot) || "",
+    dmGap: c.telegram && c.telegram.dmGapMinutes !== undefined ? String(c.telegram.dmGapMinutes) : "45",
     port: c.http && c.http.port !== undefined ? String(c.http.port) : "8787",
     logLevel: c.logLevel || "info",
     memory: c.memory ? {
@@ -1302,9 +1307,11 @@ function populate(c) {
   initChips({ box: "userChips", input: "userInput", add: "userAdd", numeric: true, get: () => cfg.allowedUsers, set: (a) => cfg.allowedUsers = /** @type {number[]} */ (a), empty: "nobody — add your telegram user id" });
   bindText("publicUrl", (v) => cfg.publicUrl = v);
   bindText("apiRoot", (v) => cfg.apiRoot = v);
+  bindText("dmGap", (v) => cfg.dmGap = v);
   bindText("httpPort", (v) => cfg.port = v);
   inputEl("publicUrl").value = cfg.publicUrl;
   inputEl("apiRoot").value = cfg.apiRoot;
+  inputEl("dmGap").value = cfg.dmGap;
   inputEl("httpPort").value = cfg.port;
   segmented("logSeg", ["debug", "info", "warn", "error"], () => cfg.logLevel, (v) => cfg.logLevel = v);
 

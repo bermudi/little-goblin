@@ -470,8 +470,15 @@ const configSchema = z
 			.optional(),
 		allowedUsers: z.array(z.number().int().positive()).min(1),
 		// Self-hosted telegram-bot-api in --local mode, e.g. http://127.0.0.1:8081.
-		// Absent = default api.telegram.org.
-		telegram: z.object({ apiRoot: z.url().optional() }).default({}),
+		// Absent = default api.telegram.org. dmGapMinutes is the Rolling DM
+		// quiet gap — past it a new DM may roll to a fresh conversation
+		// (design/telegram.md → Rolling DM); read live, applies immediately.
+		telegram: z
+			.object({
+				apiRoot: z.url().optional(),
+				dmGapMinutes: z.number().int().min(1).default(45),
+			})
+			.default({ dmGapMinutes: 45 }),
 		// External HTTPS door for mini apps (tailscale serve/funnel, reverse
 		// proxy). Nothing in-process assumes a public IP. "" means unset —
 		// the settings form can't express undefined over JSON.

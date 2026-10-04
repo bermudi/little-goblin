@@ -112,6 +112,25 @@ describe("search tool", () => {
 		expect(hits).toEqual([{ title: "Real Title", url: "https://real.example/x", snippet: "the &snippet" }]);
 	});
 
+	test("ddg: a skipped snippet does not drift onto the wrong hit", async () => {
+		// Hit one has no snippet node (DDG omits some); hit two's snippet
+		// must stay on hit two — the old positional zip slid it onto one.
+		const base = serve(() =>
+			new Response(
+				[
+					`<a class="result__a" href="https://one.example/a">One</a>`,
+					`<a class="result__a" href="https://two.example/b">Two</a>`,
+					`<a class="result__snippet">second hit's words</a>`,
+				].join("\n"),
+				{ headers: { "content-type": "text/html" } },
+			),
+		);
+		const run = bindSearch({ kind: "ddg" }, fakeAuth);
+		const { hits } = await run({ query: "q", count: 5, baseUrl: base });
+		expect(hits[0]).toMatchObject({ url: "https://one.example/a", snippet: "" });
+		expect(hits[1]).toMatchObject({ url: "https://two.example/b", snippet: "second hit's words" });
+	});
+
 
 	test("ddg: an oversized html response fails at the cap instead of buffering forever", async () => {
 		// Endless stream: an uncapped read would hang the test — the

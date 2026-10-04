@@ -201,23 +201,30 @@ const ddgSearch: SearchAdapter = async (opts) => {
 		throw new ProviderError("ddg", "html response exceeds the 8 MiB download cap");
 	}
 	const hits: SearchHit[] = [];
-	for (const anchor of html.matchAll(
+	// One pass in document order: an anchor opens a hit, and the next
+	// result__snippet belongs to the most recent anchor — DDG omits
+	// snippet nodes for some results (ads, video cards), and a
+	// positional zip after the fact drifts every snippet past the
+	// first skip onto the wrong hit (audit #17).
+	const anchorNodes = [...html.matchAll(
 		/<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g,
-	)) {
-		const url = unwrapDdgHref(anchor[1] ?? "");
-		const title = stripTags(anchor[2] ?? "");
-		if (url === "" || title === "") continue;
-		hits.push({ title, url, snippet: "" });
-		if (hits.length >= opts.count) break;
+	)].map((m) => ({ anchor: true as const, at: m.index ?? 0, m }));
+	const snippetNodes = [...html.matchAll(
+		/<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g,
+	)].map((m) => ({ anchor: false as const, at: m.index ?? 0, m }));
+	for (const node of [...anchorNodes, ...snippetNodes].sort((x, y) => x.at - y.at)) {
+		if (node.anchor) {
+			const url = unwrapDdgHref(node.m[1] ?? "");
+			const title = stripTags(node.m[2] ?? "");
+			if (url === "" || title === "") continue;
+			if (hits.length >= opts.count) break;
+			hits.push({ title, url, snippet: "" });
+		} else {
+			const snippet = stripTags(node.m[1] ?? "");
+			const last = hits[hits.length - 1];
+			if (snippet !== "" && last !== undefined && last.snippet === "") last.snippet = snippet;
+		}
 	}
-	// Snippets are optional per result and appear in document order;
-	// attach them positionally after the anchors are collected.
-	const snippets = [...html.matchAll(/<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g)].map(
-		(m) => stripTags(m[1] ?? ""),
-	);
-	hits.forEach((hit, i) => {
-		hit.snippet = snippets[i] ?? "";
-	});
 	return { hits, status };
 };
 

@@ -331,6 +331,10 @@ function mapEvent(
 		}
 		case "response.failed":
 		case "error": {
+			// Terminal: mark it, or the loop-end guard pushes a second error
+			// part ("ended before a terminal response") that masks this one —
+			// the real failure (audit #16).
+			state.sawTerminal = true;
 			const resp = event.response as Record<string, unknown> | undefined;
 			push({
 				type: "error",

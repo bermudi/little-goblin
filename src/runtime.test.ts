@@ -196,6 +196,39 @@ describe("turn authority", () => {
 		store.close();
 	});
 
+	test("a settings fence aborts the provider stream, not just the turn loop", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		let seen: AbortSignal | undefined;
+		const base = fakeModel(["a", "b", "c", "d", "e"], 20) as unknown as {
+			doStream(o: {
+				prompt: unknown;
+				abortSignal?: AbortSignal;
+			}): { stream: ReadableStream<LanguageModelV4StreamPart> };
+		};
+		const model = {
+			...base,
+			doStream(o: { prompt: unknown; abortSignal?: AbortSignal }) {
+				seen = o.abortSignal;
+				return base.doStream(o);
+			},
+		} as unknown as LanguageModel;
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({}),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		await sink.firstDelta; // mid-stream
+		store.bumpEpoch(conv.id); // /voice or /memory toggle — no /stop, no abort
+		expect(await sink.done).toEqual({ kind: "fenced" });
+		// the fence must kill the model call itself: the provider stream
+		// cannot keep generating into a stream nobody reads
+		expect(seen?.aborted).toBe(true);
+		store.close();
+	});
+
 	test("/stop aborts and drains the queue", async () => {
 		const { store, conv, runtime } = setup(["x", "y", "z", "w"], 30);
 		const sink = new RecordingSink();

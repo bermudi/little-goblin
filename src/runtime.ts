@@ -1448,7 +1448,13 @@ export class Runtime {
 			}
 		} catch (err) {
 			if (err instanceof FencedError || controller.signal.aborted) {
-				// Fenced turns abort quietly and log it.
+				// Fenced turns abort quietly and log it. The abort is
+				// load-bearing: a settings fence (/voice, /memory) bumps the
+				// epoch without touching the controller, so without it the
+				// provider keeps generating into a stream nobody reads —
+				// billed tokens on a held connection. Aborting an already
+				// aborted controller (/stop's path) is a no-op.
+				controller.abort();
 				log.info("turn fenced", { conversation: convId, epoch, error: String(err) });
 				await notifyAll({ kind: "fenced" });
 			} else if (err instanceof ContextOverflowError) {

@@ -26,16 +26,18 @@ export function isLoopbackHost(req: Request): boolean {
 	return host.startsWith("127.0.0.1:") || host.startsWith("localhost:");
 }
 
-// Read a request body with a hard cap — Content-Length is a hint, not
-// the contract, so the stream itself is bounded too.
-export async function readBodyCapped(
-	req: Request,
-	cap: number,
-): Promise<{ text: string; oversize: boolean }> {
+// Read a request body's bytes with a hard cap — Content-Length is a
+// hint, not the contract, so the stream itself is bounded too: a
+// chunked upload skips the header entirely. Null = oversize (or a
+// lying header); the caller answers without ever holding the bytes.
+// Shared by the injection check's text reader and the app channel's
+// attachment route — the one place the "bound before buffering" rule
+// lives.
+export async function readBodyBytesCapped(req: Request, cap: number): Promise<Uint8Array | null> {
 	const declared = Number(req.headers.get("content-length") ?? 0);
-	if (declared > cap) return { text: "", oversize: true };
+	if (declared > cap) return null;
 	const body = req.body;
-	if (body === null) return { text: "", oversize: false };
+	if (body === null) return new Uint8Array(0);
 	const reader = body.getReader();
 	const chunks: Uint8Array[] = [];
 	let total = 0;
@@ -44,13 +46,23 @@ export async function readBodyCapped(
 			const { done, value } = await reader.read();
 			if (done) break;
 			total += value.byteLength;
-			if (total > cap) return { text: "", oversize: true };
+			if (total > cap) return null;
 			chunks.push(value);
 		}
 	} finally {
 		reader.releaseLock();
 	}
-	return { text: new TextDecoder().decode(Buffer.concat(chunks)), oversize: false };
+	return Buffer.concat(chunks);
+}
+
+// The text flavor the injection check reads.
+export async function readBodyCapped(
+	req: Request,
+	cap: number,
+): Promise<{ text: string; oversize: boolean }> {
+	const bytes = await readBodyBytesCapped(req, cap);
+	if (bytes === null) return { text: "", oversize: true };
+	return { text: new TextDecoder().decode(bytes), oversize: false };
 }
 
 const checkBodySchema = z.object({

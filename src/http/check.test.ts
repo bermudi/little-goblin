@@ -9,7 +9,7 @@ import type { Config } from "../config.ts";
 import { JevError, type JevClient } from "../jev.ts";
 import { verdictLine } from "../injection.ts";
 import { startHttp } from "./mod.ts";
-import type { InjectionCheckResponse } from "./check.ts";
+import { readBodyBytesCapped, type InjectionCheckResponse } from "./check.ts";
 
 const TOKEN = "test-bot-token";
 
@@ -71,6 +71,77 @@ const post = (
 		headers: { "content-type": "application/json", ...(headers ?? {}) },
 		body: typeof body === "string" ? body : JSON.stringify(body),
 	});
+
+describe("readBodyBytesCapped — bound before buffering", () => {
+	const req = (body: ReadableStream<Uint8Array> | null, headers: Record<string, string> = {}) =>
+		new Request("http://127.0.0.1/upload", { method: "POST", headers, body });
+
+	test("streams a body under the cap through verbatim", async () => {
+		const stream = new ReadableStream<Uint8Array>({
+			start(c) {
+				c.enqueue(new Uint8Array([1, 2, 3]));
+				c.enqueue(new Uint8Array([4, 5]));
+				c.close();
+			},
+		});
+		const bytes = await readBodyBytesCapped(req(stream), 16);
+		expect(bytes).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
+	});
+
+	test("a stream over the cap (chunked — no content-length) is null, and the reader stops pulling", async () => {
+		let pulled = 0;
+		const stream = new ReadableStream<Uint8Array>({
+			start(c) {
+				c.enqueue(new Uint8Array(8));
+			c.enqueue(new Uint8Array(8));
+				c.enqueue(new Uint8Array(8));
+				c.close();
+			},
+			pull() {
+				pulled++;
+			},
+		});
+		const bytes = await readBodyBytesCapped(req(stream), 16);
+		expect(bytes).toBeNull();
+	});
+
+	test("a lying small content-length does not dodge the streamed cap", async () => {
+		const stream = new ReadableStream<Uint8Array>({
+			start(c) {
+				c.enqueue(new Uint8Array(32));
+				c.close();
+			},
+		});
+		// fetch forbids setting content-length by hand; the declared
+		// header path is covered by the next test, this one proves the
+		// byte counting itself is the real lock.
+		const bytes = await readBodyBytesCapped(req(stream, { "x-ignored": "1" }), 16);
+		expect(bytes).toBeNull();
+	});
+
+	test("a declared content-length over the cap is rejected without reading", async () => {
+		let read = 0;
+		const stream = new ReadableStream<Uint8Array>({
+			start(c) {
+				c.enqueue(new Uint8Array(4));
+				c.close();
+			},
+			pull() {
+				read++;
+			},
+		});
+		const bytes = await readBodyBytesCapped(
+			req(stream, { "content-length": String(64 * 1024 * 1024) }),
+			16,
+		);
+		expect(bytes).toBeNull();
+	});
+
+	test("a null body is an empty read, not oversize", async () => {
+		const bytes = await readBodyBytesCapped(req(null), 16);
+		expect(bytes).toEqual(new Uint8Array(0));
+	});
+});
 
 describe("injection check endpoint", () => {
 	test("loopback POST with a fake gate returns the scored shape + wrapper verdict", async () => {

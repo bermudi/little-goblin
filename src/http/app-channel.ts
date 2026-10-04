@@ -15,6 +15,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { UI_MESSAGE_STREAM_HEADERS, type UIMessage } from "ai";
 import { z } from "zod";
+import { readBodyBytesCapped } from "./check.ts";
 import {
 	appAddress,
 	appIdSchema,
@@ -703,13 +704,23 @@ export async function handleAppApi(
 		if (req.method !== "POST") {
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		}
-		const length = Number(req.headers.get("content-length") ?? "0");
-		if (length > UPLOAD_CAP) {
+		// Bound the wire BEFORE parsing: formData() buffers the whole
+		// body in memory, and a chunked upload carries no Content-Length
+		// at all — the header check alone would let an unbounded stream
+		// OOM the process (one process, the bot dies with it). Copy the
+		// stream into a capped buffer (check.ts's shared reader), then
+		// parse the form from the bounded copy.
+		const bytes = await readBodyBytesCapped(req, UPLOAD_CAP);
+		if (bytes === null) {
 			return Response.json({ error: "attachment too large" }, { status: 413, headers: NO_STORE });
 		}
+		// Drop the stale content-length so the rebuilt request's body and
+		// header agree; the bounded bytes are the truth now.
+		const headers = new Headers(req.headers);
+		headers.delete("content-length");
 		let form: Awaited<ReturnType<Request["formData"]>>;
 		try {
-			form = await req.formData();
+			form = await new Request(req.url, { method: "POST", headers, body: bytes }).formData();
 		} catch {
 			return Response.json({ error: "expected multipart form" }, { status: 400, headers: NO_STORE });
 		}

@@ -675,6 +675,44 @@ describe("delegate tool", () => {
 		expect(discarded).toEqual(["failed"]);
 	});
 
+	test("a launch stopped mid-startup discards the pin — the fork must not strand", async () => {
+		// The operator's stop lands while createWorkspace is pending: the
+		// launch honors it (closes the workspace, returns kind "stopped",
+		// row inert) — the forked app conversation must not survive that.
+		const h = harness(3);
+		let releaseWs!: () => void;
+		const wsGate = new Promise<void>((r) => {
+			releaseWs = r;
+		});
+		h.herdr.createWorkspace = () =>
+			wsGate.then(() => ({ workspaceId: "w-gated", paneId: "w-gated:p1" }));
+		const discarded: string[] = [];
+		h.pinOverride = () => ({
+			address: { chatId: 0, threadId: null },
+			appConversation: "app/spun-off",
+			discard: (reason) => discarded.push(reason ?? ""),
+		});
+		const startP = exec(h.tool, {
+			action: "start",
+			harness: "codex",
+			task: "do it",
+			name: "x",
+		});
+		await Bun.sleep(30); // row inserted, createWorkspace gated
+		const row = h.store.list()[0]!;
+		await h.lifecycle.stop(row.id);
+		releaseWs();
+		const out = (await startP) as { id: number; status: string };
+		expect(out.id).toBe(row.id);
+		expect(out.status).toBe("stopped");
+		// The stranded-fork fix: stopped joins cap/failed/threw in the
+		// discard set (audit #9).
+		expect(discarded).toEqual(["stopped"]);
+		// The launch honored the stop — the workspace it had just bound
+		// is closed, nothing runs unseen.
+		expect(h.closed).toContain("w-gated");
+	});
+
 	test("an app-source pin pins to itself — no moved_to_app in the result", async () => {
 		const h = harness();
 		h.pinOverride = () => ({

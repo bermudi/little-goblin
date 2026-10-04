@@ -386,6 +386,14 @@ async function launch(
 	} catch (err) {
 		return fail(err instanceof Error ? err.message : String(err));
 	}
+	// Crash window (accepted, documented): a hard kill between
+	// createWorkspace resolving and bindLaunch writing leaves a herdr
+	// workspace no row can name (workspaceId still empty) — the boot
+	// recovery scan can't see it, and the orphan lingers on disk until
+	// noticed by hand. herdr owns workspace identity, so there is no id
+	// to bind before this await; narrowing the window means teaching
+	// herdr a create-or-adopt verb, which is not worth it for a crash
+	// this narrow (audit #20, documented-not-fixed).
 	const agentName = agentNameFor(d.id, input.name);
 	deps.delegations.bindLaunch(d.id, {
 		agentName,

@@ -348,7 +348,12 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 						discard("threw");
 						throw err;
 					}
-					if (out.kind === "cap reached" || out.kind === "failed") {
+					if (out.kind === "cap reached" || out.kind === "failed" || out.kind === "stopped") {
+						// "stopped" joins the discard set: the launch was fenced
+						// mid-startup (a /stop) — the row is inert (send refuses a
+						// stopped delegation) and nothing will ever watch the fork,
+						// so it would sit in the app forever: a full DM copy plus
+						// title, stranded (audit #9).
 						const cleanupError = discard(out.kind);
 						if (cleanupError !== null) {
 							return { ...renderLaunch(out, pin), spin_off_cleanup_failed: cleanupError };

@@ -32,6 +32,9 @@ earns its place.
   stable, speaking the AI SDK UIMessage protocol over the process's own
   HTTP surface (see App channel). The channels are disjoint — a
   conversation is born on the surface where it starts and stays there.
+  One sanctioned crossing (ruling 2026-10-03): a delegation launched
+  from the Telegram DM spins off a named app conversation, and Telegram
+  rings for it (see Spin-off).
 - Goblin's machine state lives in SQLite (`bun:sqlite`, WAL); files stay
   where humans edit them — config, auth, workspace. Optional long-term
   memory lives in a separate Hindsight service backed by PostgreSQL (see
@@ -43,7 +46,10 @@ earns its place.
 
 Two concepts. Conversation identity **is** its channel address — a Telegram
 address (chat + optional topic thread) or an app address (`app/<id>`),
-ruling 2026-09-30. The two pools are disjoint; see App channel.
+ruling 2026-09-30. The two pools are disjoint; see App channel. One
+exception (ruling 2026-10-03): the bot DM is a *rolling* address — it
+resolves to its current conversation, and a quiet gap can start the
+next one (see Rolling DM).
 
 ```text
 Telegram update
@@ -56,8 +62,9 @@ Conversation ─────── (channel address) → durable event history
 ```
 
 - **Conversation** — keyed by its channel address. A Telegram address is a
-  forum topic — in the operator's group or in the bot's DM, which supports
-  topics too — or the bare chat itself; an app address is a client-minted
+  forum topic in the operator's group, or the bare chat itself — for the
+  bot DM, a sequence of conversations with one current (Rolling DM; DM
+  topics retired 2026-10-03); an app address is a client-minted
   id that exists only in the app channel. Owns `events` (user msgs,
   assistant msgs, tool calls, system events), `meta` (created,
   model/thinking overrides).
@@ -86,7 +93,9 @@ Conversation ─────── (channel address) → durable event history
   drops queued ones; messages still in the intake buffer are user input,
   not queued turns, and flush into a fresh turn at the new epoch.
 
-**Topics are the UX.** There are no `/new` or `/resume` commands. A forum
+**Topics are the UX — in the group.** There are no `/new` or `/resume`
+commands. In the bot DM, quiet gaps draw the boundaries instead (Rolling
+DM), and durable work moves to the app (Spin-off). In the group, a forum
 topic is a conversation: create a topic to start one, post in an old topic to
 resume it. The bot may also create topics itself (`createForumTopic`). A chat
 without topics is one standing conversation. Conversation management is
@@ -181,8 +190,8 @@ or the non-goals goes here.
 - [`design/mail.md`](design/mail.md) — Email (Gmail) + Workspace via gws, Reads ride gws; goblin holds no read credential, Scopes: readonly is the wall, The `mail` tool is send-only, Google OAuth with split authority, Mail is a program trigger, System One (`system1` block + Jev gate) feeds two consumers, Logging
 - [`design/memory.md`](design/memory.md) — Long-term memory, Slice 2 rulings (locked), Deployment and configuration, Retain: a durable projection of completed exchanges, Recall: evidence, not instructions, Control, correction, and forgetting, Operations and verification
 - [`design/auth.md`](design/auth.md) — Auth, Proton Pass (2026-09-26), Goblin's own agent token, Never the owner session, by mechanism, Goblin's own keys resolve through pass-keys, Warmer, Secrets during tasks: the `pass-cli` skill, Honest boundary
-- [`design/telegram.md`](design/telegram.md) — Telegram intake & delivery, Coalescing buffer, Delivery, TTS, Files, Voice mode, Mini Apps, Commands, Large files
-- [`design/app.md`](design/app.md) — App channel (PWA → APK)
+- [`design/telegram.md`](design/telegram.md) — Telegram intake & delivery, Coalescing buffer, Delivery, TTS, Files, Voice mode, Mini Apps, Commands, Large files, Rolling DM (ruling 2026-10-03)
+- [`design/app.md`](design/app.md) — App channel (PWA → APK), Spin-off (ruling 2026-10-03)
 
 ## State layout
 

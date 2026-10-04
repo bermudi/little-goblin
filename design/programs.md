@@ -89,7 +89,12 @@ program's state, never a workspace file.** Rulings:
   land in that chat/topic. A live turn steers the fire in at its
   next step boundary; otherwise the lane queue orders it into a
   fresh turn — no interleaving, no special execution path, epoch
-  fencing applies either way.
+  fencing applies either way. A program born in the bot DM pins the
+  DM's rolling address (Telegram → Rolling DM, 2026-10-03): a fire
+  within the gap joins the current conversation; past it, the fire
+  starts a fresh one without the follow-up check — a fire is
+  self-contained, never a follow-up. Either way the operator can
+  follow up on it in the DM.
 - **Management is the `program` tool** (list/create/update/delete/
   toggle/hook), zod-validated, one tool not a CLI — state mutation
   belongs behind validation and logging. `hook` takes

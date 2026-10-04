@@ -90,7 +90,71 @@ inside existing files are allowed (the address round-trip test gained
 its `app/` rejection line in place, `src/tg/notify.test.ts`).
 
 **Out, explicitly:** mirroring or cross-channel reading of any kind
-(revisit needs a ruling here), app-side push (Telegram stays the bell for
-its own conversations; app conversations ring nothing until FCM is
-demanded), widgets, in-app voice mode, iOS.
+(revisit needs a ruling here — Spin-off below is the one ruled
+crossing, and it is a copy plus a bell, not mirroring), app-side push
+(Telegram stays the bell for its own conversations and, since Spin-off,
+for app background turns; app-native push waits until demanded),
+widgets, in-app voice mode, iOS.
+
+## Spin-off (ruling 2026-10-03)
+
+Operator ask, paired with Rolling DM: the DM is the quick lane, so
+durable work — something that runs, reports back later, and gets
+followed up on — gets a durable, named home in the app instead of
+landing in whatever rolling conversation happens to be current when
+the result arrives.
+
+**Trigger: automatic, on delegation launch from the DM.** When the
+`delegate` tool launches from a rolling-DM conversation (operator ask
+or goblin's own judgment), the spin-off happens — no model choice, no
+command. Nothing else triggers it: scheduled programs post into the
+DM like any message (a fire is self-contained; see Programs), group
+topics keep their delegations, and a delegation launched from an app
+conversation stays in that conversation.
+
+**A copy, not a move.** Moving the conversation would strand the
+operator's next DM message ("also make it use bun") — either its
+answer appears in the app, not where it was asked, or the DM starts
+blank. So at launch Goblin creates an app conversation seeded with a
+copy of the DM conversation's model view so far (compaction summary +
+tail, as stored). The two diverge from that moment and are never
+synced. The delegation pins to the app conversation. It is titled
+by `titleModel` from the copied exchange (fallback: the delegation's
+name), renameable in the app like any other. The tool result hands
+the model the title and link, so the DM reply says where the work
+went; the DM conversation carries on as the quick lane.
+
+**Background turns.** Delegation notices (done, blocked, a question
+from the harness) wake turns in the app conversation with a headless
+sink: the turn runs and persists exactly like a client-driven one
+(turns already outlive a disconnected client), with nothing streaming.
+The app shows them on next open; live refresh of an already-open
+conversation is out of scope. The app channel gains the `delegate`
+tool for this — the reason it was withheld (results wake a Telegram
+sink the app lacks) is what background turns answer. `program` and
+`mail` stay Telegram-only.
+
+**Telegram rings.** Every completed background turn sends a DM ping:
+`<title>: <head of the reply, ≤200 chars>` plus a link that opens that
+conversation. The ping is appended to the *current* DM conversation as
+an assistant event — what the operator sees in the chat is history, so
+"what was that about?" in the DM is answerable — and it counts as
+activity for the gap rule. A swipe-reply to a ping goes to the app
+conversation instead (submitted headless, so it rings back when
+answered), and the DM acknowledges with `sent to <title>` (delivery
+only, logged). The ping → app-conversation mapping is durable
+(SQLite, keyed by the ping's message id), so a reply after a restart
+still routes.
+
+**Links.** `{publicUrl}/app/c/<appId>` opens one conversation; the
+server serves the client for that path. When the APK lands it claims
+links under `/app/`. Unverified until then: Android's automatic link
+claiming needs Google to verify the domain, which cannot reach a
+tailnet-only host (the same wall that rejected TWA), so expect a
+one-time "open supported links" toggle in Android settings.
+
+**Logging.** `spin-off` (from DM conversation, to app conversation,
+delegation, title); `app background turn` (conversation, trigger,
+outcome); `spin-off ping` (app conversation, ping message id);
+`ping reply routed` (ping message id → app conversation).
 

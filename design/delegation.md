@@ -7,7 +7,9 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 On demand (2026-09-26): goblin hands work to other coding harnesses
 (codex, claude, pi, devin, opencode, …) and gets on with the chat;
-the result comes back to the topic it was delegated from. The AI SDK
+the result comes back to the topic it was delegated from — or, when
+launched from the bot DM, to the app conversation it spins off (App
+channel → Spin-off, ruling 2026-10-03). The AI SDK
 wrappers for harnesses (`ai-sdk-provider-codex-cli`,
 `…-claude-code`) were considered and rejected: they cover two
 harnesses, run in-process (die on restart), and nobody can watch

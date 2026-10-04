@@ -121,7 +121,7 @@ failing message by message.
   `/compact`. `/model` and `/think` are retired — the mini app owns
   model and thinking settings (config lives where config lives), which
   keeps the chat surface small. No conversation-lifecycle commands —
-  topics own that. The one exception is
+  group topics and the DM's gap rule (Rolling DM) own that. The one exception is
   `/start`: clients fire it automatically on first open, so it gets a canned
   greeting (consumed before intake, never a model turn) and stays hidden
   from the advertised command menu.
@@ -139,3 +139,111 @@ failing message by message.
   case = re-fetch via `file_id`). Deploy: static binary + systemd unit (no
   docker); build off-box, TDLib compile would crush lithium.
 
+
+## Rolling DM (ruling 2026-10-03)
+
+Operator ask: the app is where deliberate, named conversations live
+(the chatgpt.com shape); the bot DM becomes the quick lane — one-off
+questions, web lookups, small chats — and reads like messaging a
+person: one long chat, no topics. But one forever-conversation drags
+a stale, expensive context into every unrelated question, so the DM is
+a **rolling address**: a sequence of conversations, one current, with
+boundaries drawn by quiet gaps.
+
+**Why gaps, and why not just a timer.** The cache argument is moot:
+measured from goblin.log on 2026-10-03, z.ai's prefix cache holds for
+messages a few minutes apart, is mostly gone by ~8 minutes, and every
+gap past 13 minutes was fully cold (small sample, consistent). A long
+gap therefore means the next message re-reads the whole conversation
+at full price — 30–40k tokens in the logs — and a new subject drags
+the old one along. Hermes is the warning on the other side: it shipped
+idle (24h) + daily (4am) resets, defaulted them off because "surprise
+context loss hurts more than it helps," then removed them, after a
+run of bugs where reset sessions were resurrected. The failure was
+surprise, not the idea. Goblin's position is better — recall runs on
+every message and `history_search` reaches old conversations, so a
+wrong fresh start is a "no, the earlier thing" away, not amnesia —
+and the rules below exist to keep it unsurprising.
+
+**The rule.** For each DM burst (post-coalescing, before admission):
+
+1. **Within the gap** — the current conversation's last event (either
+   side: a message, a reply, a program fire, a spin-off ping) is less
+   than `telegram.dmGapMinutes` old (config, default 45, on the
+   settings page) — the burst joins the current conversation. No
+   check. A burst landing while a turn runs steers as always.
+2. **Swipe-reply** — the burst replies to a message in the chat
+   (`reply_to_message`): it joins the current conversation, no check,
+   and intake carries the replied-to message's text into the burst as
+   a quoted part (head-cut, like the check's state) — a reply to a
+   message from an older conversation must still say what "this" is.
+   Intake drops that text today; this ruling adds it.
+   (A reply to a spin-off ping is routed to the app conversation
+   instead — see App channel → Spin-off.)
+3. **Past the gap** — the follow-up check below decides. Follow-up →
+   current conversation. New subject → a fresh conversation becomes
+   current.
+4. **No current conversation** (first message ever, or after cutover)
+   → a fresh one, no check.
+
+A fresh conversation starts with an empty window: system prompt,
+admission-time recall, the burst. Nothing is carried over by Goblin —
+memory and `history_search` are the bridge, by design.
+
+**The follow-up check.** One System One (Jev) noul call through the
+shared `JevClient` — the reviewer's gate client, so the `reviewer`
+block is its on/off switch like every other Jev consumer. State:
+`{gapMinutes, previous: {user, assistant}, next}` — the last user
+message and last assistant reply of the current conversation and the
+incoming burst, text only (attachments render as `[photo]`,
+`[voice: <transcript>]`, `[file: <name>]`), each head-cut at 2000
+chars. The question (id `follow_up`):
+
+- instructions: "The operator messaged their personal assistant after
+  a quiet gap. Decide whether the new message continues the previous
+  exchange or starts a new subject."
+- true: "The new message continues the previous exchange: it refers
+  back to it (a pronoun, ellipsis, or 'and also' that only makes sense
+  with it), answers a question the assistant asked, or asks more about
+  the same subject."
+- false: "The new message starts a new subject: it is understandable
+  on its own and is not about the previous exchange."
+
+Fresh only when `p(follow_up) < 0.3` — the threshold leans toward
+continuing because a wrong continuation costs one cold read, while a
+wrong fresh start is the surprise above. The constant lives in code
+and every check logs its probability, so a retune is an evidence-based
+edit, not a guess. **Failure** (no reviewer block, `JevError`,
+timeout) → follow-up, warn-logged. A backup model before that fallback
+is parked in #53 — the operator picks its model if it ever lands.
+
+**The marker.** When a fresh conversation starts, delivery sends a
+separate `— new conversation —` message before admission work begins
+(recall, thinking), so it always lands first and the operator sees the
+boundary before the answer. The marker is delivery, not history — it
+is in neither conversation's events; the `dm rolled` log line is its
+record.
+
+**Settings stay per conversation** (operator ruling): `/voice` and
+`/memory` belong to the conversation they were set in, so a fresh
+conversation starts at the defaults. A settings command arriving past
+the gap rolls first (no check — a command is not a follow-up), so the
+setting lands on the conversation about to happen rather than the one
+that just ended. `/stop` and `/compact` act on the current
+conversation and never roll.
+
+**DM topics are retired.** Old DM-topic conversations stay in the
+store — readable, searchable by `history_search` — and are never
+routed to again. Any DM message, thread id or not, resolves to the
+rolling address and replies go to the main chat. Programs pinned to a
+DM topic are re-pinned to the DM at cutover (one-off, logged per
+program). Unverified: whether the bot's threaded mode must be switched
+off in BotFather for the DM to render as a plain chat, and whether a
+send without a thread id behaves while it is on — probe at
+implementation; cutover also waits for no delegation in flight from a
+DM topic. Group topics are untouched.
+
+**Logging.** `dm rolled` (address, from → to conversation, gap,
+decided by `gap|reply|check|fallback|command|first`, probability when
+checked); `follow-up check` (probability, ms, cost, outcome — never
+message text); `dm cutover re-pin` per program.

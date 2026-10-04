@@ -1,93 +1,231 @@
-// Harness trust seeding (DESIGN.md, "Delegation" — startup dialogs are
-// the known trap). A delegated agent launches full-auto inside the
-// operator's shell, where first-run dialogs park the pane before the
-// prompt ever lands: claude's bypass disclaimer and per-directory
-// trust prompt, codex's directory trust. Launch seeds each harness's
-// own state files so the gates never appear — keyed on the herdr
-// `kind` because the gate belongs to the binary, not our harness name.
+// Pre-seed harness first-run gates for a delegation launch
+// (design/delegation.md — "First-run gates"). Harnesses gate on
+// dialogs that no-approval flags don't bypass, and the launcher's
+// plain shell doesn't carry the operator's alias flags — so the
+// launcher's kind is consulted and the corresponding state file gets
+// its "already accepted" markers before the agent starts. The
+// alternative — scripting answers into the pane — hides a consent
+// dialog from the operator; seeding makes explicit what a keypress
+// would hide.
 //
-// Two rules keep this safe against the operator's own files: only
-// ever SET acceptance flags — an explicit value he wrote stands,
-// untouched — and every write goes through durableWriteFile so a
-// crash can't tear the file. A corrupt file throws: the launch fails
-// loud rather than silently delegating into a broken state dir.
+// Preservation rule: these are the operator's own config files —
+// the same ones a hand-edit or a stitch-managed dotfile produced —
+// so a launch may add flags but never change or delete what the
+// operator wrote, and a file we can't extend safely fails the
+// launch loudly rather than corrupt it.
 
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	realpathSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { durableWriteFile } from "./durable.ts";
 
-/** Seed first-run gates for `kind` in `home` ahead of a launch into
- *  `cwd`. Returns what was ensured (for the launch log line); an
- *  empty list means no recipe exists for this kind. Throws with
- *  context on unreadable/corrupt state — callers fail the launch. */
-export function seedHarnessTrust(kind: string, cwd: string, home: string): string[] {
+// Returns a short description of what was seeded (for the launch
+// log line) — [] means nothing to do or kind has no known gates.
+// A corrupt or unextendable state file throws: failing the launch
+// loudly beats silently losing the delegation.
+export function seedHarnessTrust(kind: string, cwd: string, homeDir: string): string[] {
 	switch (kind) {
 		case "claude":
-			return seedClaude(cwd, join(home, ".claude.json"));
+			return seedClaude(cwd, join(homeDir, ".claude.json"));
 		case "codex":
-			return seedCodex(cwd, join(home, ".codex", "config.toml"));
+			return seedCodex(cwd, join(homeDir, ".codex", "config.toml"));
 		default:
 			return [];
 	}
 }
 
-// claude — one JSON state file. `bypassPermissionsModeAccepted` kills
-// the --dangerously-skip-permissions disclaimer machine-wide;
-// `projects["<cwd>"].hasTrustDialogAccepted` kills the per-directory
-// trust prompt. `hasCompletedOnboarding`/`…ProjectOnboarding` head off
-// the remaining first-run wizards. Verified against claude 2.1.211.
-function seedClaude(cwd: string, path: string): string[] {
-	let doc: Record<string, unknown> = {};
-	if (existsSync(path)) {
-		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-			throw new Error(`${path} is not a JSON object`);
+// The settings file may be a symlink (stitch-managed dots); writing
+// through the symlink path replaces it with a regular file and forks
+// the config. Resolve to the managed target first — a missing file
+// resolves to itself and is created at the given path.
+function managedPath(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return path;
+		throw err;
+	}
+}
+
+// ---------- claude: ~/.claude.json ----------
+
+// Claude's own writer replaces this file wholesale on exit (it holds
+// install counters, oauth state, tipsShown…), so JSON.parse→stringify
+// preserves semantics exactly like claude's own saves do. The gates
+// are write-if-absent only: an explicit false is the operator's
+// answer to that dialog, and flipping it re-asks nothing — it
+// forges consent they recorded refusing.
+function seedClaude(cwd: string, file: string): string[] {
+	const path = managedPath(file);
+	const doc = readJsonObject(path, ".claude.json");
+	const set: string[] = [];
+
+	const ensure = (obj: Record<string, unknown>, key: string): void => {
+		if (!(key in obj)) {
+			obj[key] = true;
+			set.push(key);
 		}
-		doc = parsed as Record<string, unknown>;
+	};
+
+	ensure(doc, "bypassPermissionsModeAccepted");
+	ensure(doc, "hasCompletedOnboarding");
+
+	if (doc.projects !== undefined && !isRecord(doc.projects)) {
+		throw new Error(`${path}: 'projects' is not an object — refusing to overwrite`);
 	}
-	doc.bypassPermissionsModeAccepted = true;
-	doc.hasCompletedOnboarding = true;
-	const proj = recordEntry(recordEntry(doc, "projects", path), cwd, path);
-	proj.hasTrustDialogAccepted = true;
-	proj.hasCompletedProjectOnboarding = true;
-	durableWriteFile(path, `${JSON.stringify(doc, null, "\t")}\n`, 0o600);
-	return ["claude bypass disclaimer", `claude dir trust ${cwd}`];
+	const projects: Record<string, unknown> = doc.projects ?? {};
+	doc.projects = projects;
+	let entry = projects[cwd];
+	if (entry === undefined) {
+		entry = {};
+		projects[cwd] = entry;
+	}
+	if (!isRecord(entry)) {
+		throw new Error(`${path}: projects entry for ${cwd} is not an object — refusing to overwrite`);
+	}
+	const before = set.length;
+	ensure(entry, "hasTrustDialogAccepted");
+	ensure(entry, "hasCompletedProjectOnboarding");
+	const touchedProject = set.length > before;
+
+	if (set.length === 0) return [];
+	mkdirSync(dirname(path), { recursive: true });
+	// 0600 when creating — the file can carry machine identity/oauth.
+	durableWriteFile(path, `${JSON.stringify(doc, null, 2)}\n`, 0o600);
+	return touchedProject ? [...set, `project ${cwd}`] : set;
 }
 
-function recordEntry(
-	obj: Record<string, unknown>,
-	key: string,
+// ---------- codex: ~/.codex/config.toml ----------
+
+// TOML survives only as text: Bun.TOML.parse validates the file and
+// answers "is the entry already trusted?", but a parse→stringify
+// round-trip would lose comments and reorder tables — the operator's
+// file, not ours to reformat. The write is one line inserted at a
+// location the grammar guarantees lands in the right scope: after the
+// table's own `[projects."<cwd>"]` header, after its last
+// `projects."<cwd>".` dotted key, or as a fresh appended section when
+// no entry exists. Anything else — inline tables, forms we can't
+// locate — is refused, not rewritten.
+function seedCodex(cwd: string, file: string): string[] {
+	const path = managedPath(file);
+	const text = existsSync(path) ? readFileSync(path, "utf8") : "";
+	let parsed: unknown;
+	try {
+		parsed = text.trim() === "" ? {} : Bun.TOML.parse(text);
+	} catch (err) {
+		throw new Error(
+			`${path}: invalid TOML — fix by hand before delegating (${err instanceof Error ? err.message : String(err)})`,
+		);
+	}
+	if (!isRecord(parsed)) {
+		throw new Error(`${path}: expected a TOML table at the root — refusing to write`);
+	}
+
+	const projects = parsed.projects;
+	if (projects !== undefined && !isRecord(projects)) {
+		throw new Error(`${path}: 'projects' is not a table — refusing to write`);
+	}
+	const entry = isRecord(projects) ? projects[cwd] : undefined;
+	if (entry !== undefined && !isRecord(entry)) {
+		throw new Error(`${path}: projects entry for ${cwd} is not a table — refusing to write`);
+	}
+	// A trust_level the operator set — including "untrusted" — stands.
+	if (isRecord(entry) && entry.trust_level !== undefined) return [];
+
+	const lines = text.split("\n");
+	// The key may appear as "escaped" (basic) or 'raw' (literal) — a cwd
+	// containing a single quote only has the basic form.
+	const basic = `"${cwd.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+	const quoted = cwd.includes("'")
+		? reEscape(basic)
+		: `(?:${reEscape(basic)}|'${reEscape(cwd)}')`;
+
+	const out =
+		entry !== undefined
+			? insertIntoExisting(lines, quoted, basic, cwd, path)
+			: appendProjectTable(lines, text, quoted, basic, cwd, path);
+
+	mkdirSync(dirname(path), { recursive: true });
+	durableWriteFile(path, out);
+	return [`dir trust ${cwd}`];
+}
+
+// The entry exists but carries no trust_level — extend it in place.
+function insertIntoExisting(
+	lines: string[],
+	quoted: string,
+	basic: string,
+	cwd: string,
 	path: string,
-): Record<string, unknown> {
-	const v = obj[key];
-	if (v !== undefined && (v === null || typeof v !== "object" || Array.isArray(v))) {
-		throw new Error(`${path}: ${key} is not an object`);
+): string {
+	const header = new RegExp(
+		`^\\s*\\[\\s*projects\\s*\\.\\s*${quoted}\\s*\\]`,
+	);
+	for (const [i, line] of lines.entries()) {
+		if (header.test(line)) {
+			lines.splice(i + 1, 0, 'trust_level = "trusted"');
+			return lines.join("\n");
+		}
 	}
-	return (obj[key] ??= {}) as Record<string, unknown>;
+	// Defined by root-level dotted keys — a dotted line after the last
+	// one inherits the same (root) scope.
+	const dotted = new RegExp(`^\\s*projects\\s*\\.\\s*${quoted}\\s*\\.`);
+	let last = -1;
+	for (const [i, line] of lines.entries()) if (dotted.test(line)) last = i;
+	if (last >= 0) {
+		lines.splice(last + 1, 0, `projects.${basic}.trust_level = "trusted"`);
+		return lines.join("\n");
+	}
+	throw new Error(
+		`${path}: projects entry for ${cwd} exists in a form that can't be extended safely — set trust_level by hand`,
+	);
 }
 
-// codex — config.toml `[projects."<cwd>"] trust_level = "trusted"`.
-// Text surgery, not a parse-and-rewrite: the file is hand-maintained
-// and comments must survive. A section that already carries
-// trust_level — any value — is the operator's call; leave it.
-function seedCodex(cwd: string, path: string): string[] {
-	const header = `[projects."${cwd.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"]`;
-	const lines = existsSync(path) ? readFileSync(path, "utf8").split("\n") : [];
-	const idx = lines.findIndex((l) => l.trim() === header);
-	if (idx === -1) {
-		const out = [...lines];
-		if (out.length > 0 && out[out.length - 1]!.trim() !== "") out.push("");
-		out.push(header, 'trust_level = "trusted"');
-		mkdirSync(dirname(path), { recursive: true });
-		durableWriteFile(path, out.join("\n"));
-		return [`codex dir trust ${cwd}`];
+// No entry: a new [projects."<cwd>"] section appended at EOF is a
+// fresh table — legal under every way `projects` was declared except
+// the root inline-table form, which no appended text can extend.
+function appendProjectTable(
+	lines: string[],
+	text: string,
+	quoted: string,
+	basic: string,
+	cwd: string,
+	path: string,
+): string {
+	if (/^\s*projects\s*=\s*\{/m.test(text)) {
+		throw new Error(
+			`${path}: 'projects' is an inline table — add trust_level for ${cwd} by hand`,
+		);
 	}
-	// Section exists — scan its body (up to the next header) for a
-	// trust_level the operator already set.
-	let end = idx + 1;
-	while (end < lines.length && !lines[end]!.trimStart().startsWith("[")) end++;
-	if (lines.slice(idx + 1, end).some((l) => /^\s*trust_level\s*=/.test(l))) return [];
-	lines.splice(idx + 1, 0, 'trust_level = "trusted"');
-	durableWriteFile(path, lines.join("\n"));
-	return [`codex dir trust ${cwd}`];
+	while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+	lines.push(`[projects.${basic}]`, 'trust_level = "trusted"', "");
+	return lines.join("\n");
+}
+
+function reEscape(s: string): string {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+	return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function readJsonObject(path: string, label: string): Record<string, unknown> {
+	if (!existsSync(path)) return {};
+	let doc: unknown;
+	try {
+		doc = JSON.parse(readFileSync(path, "utf8"));
+	} catch (err) {
+		throw new Error(
+			`${path}: invalid JSON — fix by hand before delegating (${err instanceof Error ? err.message : String(err)})`,
+		);
+	}
+	if (!isRecord(doc)) {
+		throw new Error(`${path}: ${label} is not a JSON object — refusing to write`);
+	}
+	return doc;
 }

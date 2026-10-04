@@ -7,11 +7,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
 	chmodSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
 	statSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -63,38 +65,127 @@ describe("claude", () => {
 		writeFileSync(join(h, ".claude.json"), "[1,2]");
 		expect(() => seedHarnessTrust("claude", "/w", h)).toThrow("not a JSON object");
 	});
+
+	test("an explicit false is the operator's recorded answer — seeding never flips it", () => {
+		const h = home();
+		const path = join(h, ".claude.json");
+		writeFileSync(path, JSON.stringify({
+			bypassPermissionsModeAccepted: false,
+			hasCompletedOnboarding: false,
+			projects: { "/work/task": { hasTrustDialogAccepted: false } },
+		}));
+		seedHarnessTrust("claude", "/work/task", h);
+		const doc = JSON.parse(readFileSync(path, "utf8"));
+		expect(doc.bypassPermissionsModeAccepted).toBe(false);
+		expect(doc.hasCompletedOnboarding).toBe(false);
+		// the project's explicit distrust stands…
+		expect(doc.projects["/work/task"].hasTrustDialogAccepted).toBe(false);
+		// …while keys it never answered still seed
+		expect(doc.projects["/work/task"].hasCompletedProjectOnboarding).toBe(true);
+	});
+
+	test("a symlinked .claude.json writes through to the managed target", () => {
+		const h = home();
+		const target = join(h, "dots", "claude.json");
+		mkdirSync(join(h, "dots"), { recursive: true });
+		writeFileSync(target, JSON.stringify({ machineID: "m" }));
+		const link = join(h, ".claude.json");
+		symlinkSync(target, link);
+		seedHarnessTrust("claude", "/work/task", h);
+		// the link is still a link, and the write landed on the target
+		expect(lstatSync(link).isSymbolicLink()).toBe(true);
+		const doc = JSON.parse(readFileSync(target, "utf8"));
+		expect(doc.machineID).toBe("m");
+		expect(doc.bypassPermissionsModeAccepted).toBe(true);
+	});
 });
 
 describe("codex", () => {
-	test("creates config.toml with a trusted projects section", () => {
+	// The write must be *semantically* right — a still-valid TOML file
+	// whose projects.<cwd>.trust_level reads "trusted" — and the
+	// operator's bytes must survive verbatim: the seeded file starts
+	// with the original text and adds exactly one line.
+	const codexTrust = (dir: string, cwd: string): unknown => {
+		const projects = (Bun.TOML.parse(
+			readFileSync(join(dir, ".codex", "config.toml"), "utf8"),
+		) as { projects: Record<string, { trust_level?: string }> }).projects;
+		return projects[cwd]?.trust_level;
+	};
+
+	test("creates config.toml with the cwd trusted", () => {
 		const h = home();
 		seedHarnessTrust("codex", "/work/task", h);
-		const text = readFileSync(join(h, ".codex", "config.toml"), "utf8");
-		expect(text).toContain('[projects."/work/task"]');
-		expect(text).toContain('trust_level = "trusted"');
+		expect(codexTrust(h, "/work/task")).toBe("trusted");
 	});
 
-	test("appends without disturbing existing content", () => {
+	test("appends one line without disturbing existing content", () => {
 		const h = home();
 		mkdirSync(join(h, ".codex"), { recursive: true });
 		const path = join(h, ".codex", "config.toml");
-		writeFileSync(path, '# hand-maintained\n[projects."/keep"]\ntrust_level = "trusted"\n');
+		const original = '# hand-maintained\n[projects."/keep"]\ntrust_level = "trusted"\n';
+		writeFileSync(path, original);
 		seedHarnessTrust("codex", "/work/task", h);
 		const text = readFileSync(path, "utf8");
-		expect(text).toContain("# hand-maintained");
-		expect(text).toContain('[projects."/keep"]\ntrust_level = "trusted"');
-		expect(text).toContain('[projects."/work/task"]\ntrust_level = "trusted"');
+		expect(text.startsWith(original)).toBe(true);
+		expect(codexTrust(h, "/work/task")).toBe("trusted");
+		expect(codexTrust(h, "/keep")).toBe("trusted");
 	});
 
-	test("inserts trust_level into a section that lacks it", () => {
+	test("trust_level lands on a table that lacks it — whatever its form", () => {
 		const h = home();
 		mkdirSync(join(h, ".codex"), { recursive: true });
 		const path = join(h, ".codex", "config.toml");
-		writeFileSync(path, '[projects."/work/task"]\nother = 1\n\n[projects."/b"]\ntrust_level = "trusted"\n');
+		// Section-defined table with other keys, single-quoted keys,
+		// comments and whitespace — the shapes sed-style edits used to
+		// mangle.
+		const original =
+			'[projects."/work/task"]\nother = 1\n\n' +
+			"[projects.'/b'] # literal-quote form\ntrust_level = 'trusted'\n";
+		writeFileSync(path, original);
 		seedHarnessTrust("codex", "/work/task", h);
 		const text = readFileSync(path, "utf8");
-		expect(text).toContain('[projects."/work/task"]\ntrust_level = "trusted"\nother = 1');
-		expect(text).toContain('[projects."/b"]\ntrust_level = "trusted"');
+		// Exactly one line inserted, right inside the existing section —
+		// everything else byte-identical.
+		expect(text).toBe(
+			original.replace(
+				'[projects."/work/task"]\n',
+				'[projects."/work/task"]\ntrust_level = "trusted"\n',
+			),
+		);
+		expect(codexTrust(h, "/work/task")).toBe("trusted");
+		expect(codexTrust(h, "/b")).toBe("trusted");
+	});
+
+	test("projects declared by dotted keys extends the same way", () => {
+		const h = home();
+		mkdirSync(join(h, ".codex"), { recursive: true });
+		const path = join(h, ".codex", "config.toml");
+		const original = 'projects."/a".trust_level = "untrusted"\nmodel = "gpt-5"\n';
+		writeFileSync(path, original);
+		seedHarnessTrust("codex", "/work/task", h);
+		expect(readFileSync(path, "utf8").startsWith(original)).toBe(true);
+		expect(codexTrust(h, "/work/task")).toBe("trusted");
+		expect(codexTrust(h, "/a")).toBe("untrusted");
+	});
+
+	test("an inline-table projects cannot be extended — loud refusal, file untouched", () => {
+		const h = home();
+		mkdirSync(join(h, ".codex"), { recursive: true });
+		const path = join(h, ".codex", "config.toml");
+		const original = 'projects = {"/a" = {trust_level = "untrusted"}}\n';
+		writeFileSync(path, original);
+		expect(() => seedHarnessTrust("codex", "/work/task", h)).toThrow("inline table");
+		expect(readFileSync(path, "utf8")).toBe(original);
+	});
+
+	test("corrupt TOML fails the seed before any write", () => {
+		const h = home();
+		mkdirSync(join(h, ".codex"), { recursive: true });
+		const path = join(h, ".codex", "config.toml");
+		const original = '[projects."/a"\ntrust_level = \n';
+		writeFileSync(path, original);
+		expect(() => seedHarnessTrust("codex", "/work/task", h)).toThrow("invalid TOML");
+		expect(readFileSync(path, "utf8")).toBe(original);
 	});
 
 	test("an explicit trust_level stands — the operator's call wins", () => {
@@ -104,6 +195,21 @@ describe("codex", () => {
 		writeFileSync(path, '[projects."/work/task"]\ntrust_level = "untrusted"\n');
 		expect(seedHarnessTrust("codex", "/work/task", h)).toEqual([]);
 		expect(readFileSync(path, "utf8")).toBe('[projects."/work/task"]\ntrust_level = "untrusted"\n');
+	});
+
+	test("a symlinked config.toml writes through to the managed target", () => {
+		const h = home();
+		const target = join(h, "dots", "codex.toml");
+		mkdirSync(join(h, "dots"), { recursive: true });
+		const original = 'model = "gpt-5"\n';
+		writeFileSync(target, original);
+		mkdirSync(join(h, ".codex"), { recursive: true });
+		const link = join(h, ".codex", "config.toml");
+		symlinkSync(target, link);
+		seedHarnessTrust("codex", "/work/task", h);
+		expect(lstatSync(link).isSymbolicLink()).toBe(true);
+		expect(readFileSync(target, "utf8").startsWith(original)).toBe(true);
+		expect(codexTrust(h, "/work/task")).toBe("trusted");
 	});
 });
 

@@ -37,6 +37,10 @@ export interface Delegation {
 	/** state_change_seq observed right after the last prompt. */
 	baselineSeq: number;
 	promptedAt: string;
+	/** The task text was never delivered — the launch parked on a
+	 *  startup dialog before `agent prompt` could run. The watcher
+	 *  delivers it on the first seq advance past the park. */
+	promptPending: boolean;
 	createdAt: string;
 	finishedAt: string | null;
 }
@@ -62,9 +66,13 @@ export interface DelegationsStore {
 		launch: { agentName: string; workspaceId: string; paneId: string },
 	): Delegation | null;
 	/** Launch completed: baseline + prompt timestamp + status running
-	 *  in one UPDATE. Returns the row, or null when a `stop` won the
-	 *  race while herdr was launching (a stopped row stays stopped). */
+	 *  in one UPDATE — also clears a pending task prompt (the deliverer
+	 *  writes prompted_at exactly once). Returns the row, or null when
+	 *  a `stop` won the race while herdr was launching. */
 	markRunning(id: number, baselineSeq: number, promptedAt: Date): Delegation | null;
+	/** The launch parked on a startup dialog before the task could be
+	 *  prompted: needs_input + prompt_pending, atomically. */
+	markParked(id: number): void;
 	/** Watcher-side compare-and-set: apply the transition only if the
 	 *  row is still exactly what the scan read (same status and
 	 *  prompted_at) — a tool-side send/stop that landed while the
@@ -106,6 +114,7 @@ const delegationSchema = z.object({
 	status: z.enum(["starting", "running", "needs_input", "done", "failed", "stopped"]),
 	baseline_seq: z.number(),
 	prompted_at: z.string(),
+	prompt_pending: z.number(),
 	created_at: z.string(),
 	finished_at: z.string().nullable(),
 });
@@ -129,6 +138,7 @@ function rowToDelegation(row: unknown): Delegation {
 		status: r.status,
 		baselineSeq: r.baseline_seq,
 		promptedAt: r.prompted_at,
+		promptPending: r.prompt_pending === 1,
 		createdAt: r.created_at,
 		finishedAt: r.finished_at,
 	};
@@ -172,6 +182,11 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	if (!cols.has("app_conversation")) {
 		db.exec("ALTER TABLE delegations ADD COLUMN app_conversation TEXT");
 	}
+	// Predates startup-park launches: the prompt could be owed forever
+	// when a first-run dialog blocked the send. 0 = delivered.
+	if (!cols.has("prompt_pending")) {
+		db.exec("ALTER TABLE delegations ADD COLUMN prompt_pending INTEGER NOT NULL DEFAULT 0");
+	}
 
 	const qGet = db.query("SELECT * FROM delegations WHERE id = ?");
 	const qList = db.query("SELECT * FROM delegations ORDER BY id");
@@ -191,7 +206,10 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		"UPDATE delegations SET agent_name = ?, workspace_id = ?, pane_id = ? WHERE id = ?",
 	);
 	const qRunning = db.query(
-		"UPDATE delegations SET baseline_seq = ?, prompted_at = ?, status = 'running', finished_at = NULL WHERE id = ? AND status != 'stopped'",
+		"UPDATE delegations SET baseline_seq = ?, prompted_at = ?, status = 'running', finished_at = NULL, prompt_pending = 0 WHERE id = ? AND status != 'stopped'",
+	);
+	const qParked = db.query(
+		"UPDATE delegations SET status = 'needs_input', prompt_pending = 1 WHERE id = ? AND status != 'stopped'",
 	);
 	const qTransition = db.query(
 		`UPDATE delegations SET status = ?, finished_at = ?,
@@ -222,6 +240,9 @@ export function openDelegations(dbPath: string): DelegationsStore {
 			if (row === null) return null;
 			const d = rowToDelegation(row);
 			return d.status === "running" ? d : null;
+		},
+		markParked(id) {
+			qParked.run(id);
 		},
 		transitionIf(id, expect, to, baseline, now = new Date()) {
 			const res = qTransition.run(

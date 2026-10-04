@@ -41,6 +41,7 @@ interface Harness {
 	lifecycle: DelegationLifecycle;
 	store: DelegationsStore;
 	prompts: string[];
+	keys: string[];
 	closed: string[];
 	herdr: Herdr;
 	workspaceDir: string;
@@ -50,24 +51,32 @@ interface Harness {
 	pinOverride: DelegateToolDeps["pin"] | undefined;
 }
 
-function harness(maxRunning = 3, startError?: string): Harness {
+function harness(
+	maxRunning = 3,
+	startError?: { code: string; message: string },
+): Harness {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-delegtool-"));
 	dirs.push(dir);
 	const workspaceDir = join(dir, "workspace");
 	mkdirSync(workspaceDir, { recursive: true });
 	const store = openDelegations(join(dir, "goblin.sqlite"));
 	const prompts: string[] = [];
+	const keys: string[] = [];
 	const closed: string[] = [];
 	const herdr: Herdr = {
 		createWorkspace: (cwd, label) =>
 			Promise.resolve({ workspaceId: "w1", paneId: "w1:p1" }),
 		startAgent: (name) =>
 			startError
-				? Promise.reject(new HerdrError("agent start", "agent_not_ready", startError))
+				? Promise.reject(new HerdrError("agent start", startError.code, startError.message))
 				: Promise.resolve(agent(name)),
 		get: (name) => Promise.resolve(agent(name)),
 		prompt: (_name, text) => {
 			prompts.push(text);
+			return Promise.resolve();
+		},
+		sendKey: (_name, key) => {
+			keys.push(key);
 			return Promise.resolve();
 		},
 		readAgent: () => Promise.resolve("agent screen"),
@@ -121,6 +130,7 @@ function harness(maxRunning = 3, startError?: string): Harness {
 		lifecycle,
 		store,
 		prompts,
+		keys,
 		closed,
 		herdr,
 		workspaceDir,
@@ -142,7 +152,7 @@ describe("delegate tool", () => {
 		expect(wire.type).toBe("object");
 		expect(wire.properties?.action).toEqual({
 			type: "string",
-			enum: ["start", "list", "read", "send", "stop"],
+			enum: ["start", "list", "read", "send", "answer", "stop"],
 		});
 		expect(wire.required).toContain("action");
 		expect(delegateInputSchema.safeParse({}).success).toBe(false);
@@ -153,6 +163,15 @@ describe("delegate tool", () => {
 		).toBe(true);
 		expect(delegateInputSchema.safeParse({ action: "read", id: 1 }).success).toBe(true);
 		expect(delegateInputSchema.safeParse({ action: "send", id: 1 }).success).toBe(false);
+		// 'answer' takes a whitelisted key — free-text keystroke input is
+		// not a thing this tool does.
+		expect(delegateInputSchema.safeParse({ action: "answer", id: 1 }).success).toBe(false);
+		expect(
+			delegateInputSchema.safeParse({ action: "answer", id: 1, key: "enter" }).success,
+		).toBe(true);
+		expect(
+			delegateInputSchema.safeParse({ action: "answer", id: 1, key: "rm -rf /" }).success,
+		).toBe(false);
 	});
 	test("an unknown harness is rejected listing the configured ones", async () => {
 		const h = harness();
@@ -219,18 +238,84 @@ describe("delegate tool", () => {
 		expect(row.agentName).toBe("g1-parser-work");
 	});
 
-	test("a blocked start fails the row, closes the workspace, and returns the screen", async () => {
-		const h = harness(3, "agent g1-x is blocked during startup and is not ready");
+	test("a start that dies outright fails the row, closes the workspace, and returns the screen fenced", async () => {
+		const h = harness(3, { code: "spawn_failed", message: "binary not found" });
 		const out = (await exec(h.tool, {
 			action: "start",
 			harness: "codex",
 			task: "do it",
 			name: "x",
-		})) as { error: string };
-		expect(out.error).toContain("blocked during startup");
-		expect(out.error).toContain("pane screen");
+		})) as { error: string; screen: string };
+		expect(out.error).toContain("binary not found");
+		// The pane tail is the failed agent's output — fenced like a
+		// `read` screen, not interpolated into the error prose.
+		expect(out.screen).toContain("<delegation>");
+		expect(out.screen).toContain("pane screen");
+		expect(out.error).not.toContain("pane screen");
 		expect(h.closed).toEqual(["w1"]);
 		expect(h.store.get(1)!.status).toBe("failed");
+	});
+
+	test("a startup-blocked launch parks needs_input — the row keeps its workspace and owes the task", async () => {
+		const h = harness(3, {
+			code: "agent_not_ready",
+			message: "agent g1-x is blocked during startup and is not ready",
+		});
+		const out = (await exec(h.tool, {
+			action: "start",
+			harness: "codex",
+			task: "do it",
+			name: "x",
+		})) as { id: number; status: string; note: string };
+		expect(out.status).toBe("needs_input");
+		expect(out.note).toContain("answer");
+		expect(h.closed).toEqual([]); // the workspace stays up for the dialog
+		const row = h.store.get(out.id)!;
+		expect(row.status).toBe("needs_input");
+		expect(row.promptPending).toBe(true);
+		// 'send' can't reach a blocked agent — the refusal points at 'answer'.
+		const sent = (await exec(h.tool, {
+			action: "send",
+			id: out.id,
+			text: "enter",
+		})) as { error: string };
+		expect(sent.error).toContain("parked on a startup dialog");
+		expect(sent.error).toContain("'answer'");
+	});
+
+	test("answer relays a whitelisted keypress; the watcher delivers the owed task once the dialog clears", async () => {
+		const h = harness(3, {
+			code: "agent_not_ready",
+			message: "blocked during startup",
+		});
+		const out = (await exec(h.tool, {
+			action: "start",
+			harness: "codex",
+			task: "do it",
+			name: "x",
+		})) as { id: number };
+		const sent = (await exec(h.tool, {
+			action: "answer",
+			id: out.id,
+			key: "enter",
+		})) as { id: number };
+		expect(sent.id).toBe(out.id);
+		expect(h.keys).toEqual(["enter"]);
+		expect(h.prompts).toEqual([]); // keys don't prompt
+
+		// The dialog's answer moved the seq — the next scan delivers the
+		// owed task itself and flips the row running.
+		const d = h.store.get(out.id)!;
+		h.herdr.get = (name) =>
+			Promise.resolve({ ...agent(name), state_change_seq: d.baselineSeq + 1 });
+		await h.lifecycle.tick();
+		expect(h.prompts).toHaveLength(1);
+		expect(h.prompts[0]).toContain("do it");
+		expect(h.prompts[0]).toContain(`delegations/${out.id}/report.md`);
+		const row = h.store.get(out.id)!;
+		expect(row.status).toBe("running");
+		expect(row.promptPending).toBe(false);
+		h.lifecycle.stopTicker();
 	});
 
 	test("send re-prompts, resets the baseline, and flips needs_input back to running", async () => {
@@ -248,7 +333,10 @@ describe("delegate tool", () => {
 			text: "yes, proceed",
 		})) as { sent: number; status: string };
 		expect(sent.status).toBe("running");
-		expect(h.prompts[1]).toBe("yes, proceed");
+		expect(h.prompts[1]).toContain("yes, proceed");
+		// the report instruction rides every prompt — the harness keeps
+		// no memory of it across turns
+		expect(h.prompts[1]).toContain(`delegations/${out.id}/report.md`);
 		expect(h.store.get(out.id)!.status).toBe("running");
 	});
 
@@ -268,7 +356,7 @@ describe("delegate tool", () => {
 			text: "also fix the tests",
 		})) as { sent: number; status: string };
 		expect(sent.status).toBe("running");
-		expect(h.prompts[1]).toBe("also fix the tests");
+		expect(h.prompts[1]).toContain("also fix the tests");
 		const row = h.store.get(out.id)!;
 		expect(row.status).toBe("running");
 		expect(row.finishedAt).toBeNull(); // setStatus cleared it
@@ -570,7 +658,7 @@ describe("delegate tool", () => {
 	});
 
 	test("a failed launch discards the pin too", async () => {
-		const h = harness(3, "agent g1-x is blocked during startup and is not ready");
+		const h = harness(3, { code: "spawn_failed", message: "binary not found" });
 		const discarded: string[] = [];
 		h.pinOverride = () => ({
 			address: { chatId: 0, threadId: null },
@@ -583,7 +671,7 @@ describe("delegate tool", () => {
 			task: "do it",
 			name: "x",
 		})) as { error: string };
-		expect(out.error).toContain("blocked during startup");
+		expect(out.error).toContain("binary not found");
 		expect(discarded).toEqual(["failed"]);
 	});
 

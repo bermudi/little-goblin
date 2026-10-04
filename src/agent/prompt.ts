@@ -164,8 +164,12 @@ export function buildSystemPrompt(
 					`  \`herdr session attach goblin\`; you drive it through this`,
 					`  tool, never the raw CLI — the herdr skill has the`,
 					`  topology). Prefer it over long bash sessions; results`,
-					`  arrive as [delegation: …] messages in the chat they were`,
-					`  born in.`,
+					`  arrive as [delegation: #id …] messages in the conversation`,
+					`  they were born in — a private-chat delegation moves into`,
+					`  its own app conversation and pings Telegram from there.`,
+					`  An agent parked on a dialog is needs_input: relay the`,
+					`  question to him verbatim and send his choice back —`,
+					`  'answer' for a keypress, 'send' for text.`,
 				]
 			: []),
 		...(tools.includes("mail")

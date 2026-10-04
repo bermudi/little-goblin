@@ -65,10 +65,15 @@ Rulings:
   `[projects."<dir>"] trust_level` in `~/.codex/config.toml`; claude:
   `bypassPermissionsModeAccepted` + `projects["<cwd>"]` trust flags in
   `~/.claude.json`). So launch pre-seeds those stores per kind
-  (`harness-trust.ts`, added 2026-10-03 — set-flags-only over the
-  operator's existing files, durable writes, a seed failure fails the
-  launch rather than parking on a dialog the harness was supposed to
-  be past). Panes
+  (`harness-trust.ts`, added 2026-10-03, hardened 2026-10-04 —
+  **write-if-absent only**: an explicit `false`/`"untrusted"` the
+  operator recorded stands; seeding never manufactures a "yes" out of
+  a remembered "no". Files are edited, never reformatted — TOML gets
+  a parse-first check plus a single surgical line (into the existing
+  section, after its last dotted key, or as an appended table), and a
+  file we can't extend safely fails the launch instead of corrupting;
+  symlinked settings write through to the managed target, never
+  replace the link). Panes
   run the operator's interactive shell, so shell aliases apply: args
   that duplicate an alias's flags make the harness refuse to start.
   Start relies on herdr's ready gate plus the watcher's stall rule,
@@ -84,7 +89,16 @@ Rulings:
   flips to `running` in one write once the prompt landed; a
   `starting` row seen at watcher boot means goblin died mid-start →
   close its workspace, notify, `failed`. The cap counts
-  starting+running+needs_input.
+  starting+running+needs_input — and a follow-up that reactivates a
+  `done`/`failed` row spends a slot too (the tool refuses it like a
+  fresh launch past the cap). `prompt_pending` marks a row whose task
+  never reached the agent: a startup-blocked launch parks
+  `needs_input` with the task owed rather than dying — herdr rejects
+  `agent start` on a blocked agent (`agent_not_ready`) and `agent
+  prompt` on one too (`agent_blocked`), so the task is delivered by
+  the watcher on the first seq advance past the park — whether the
+  dialog was answered through `delegate answer` or the operator's own
+  attach.
 - **Watcher writes are compare-and-set; the notice lands first.**
   Every watcher transition applies only if status and prompt time
   still match what it read (a `send` or `stop` mid-poll wins), and
@@ -102,7 +116,13 @@ Rulings:
   lossy transport. Concurrency cap `delegation.maxRunning` (default
   3) — the tool refuses beyond it, naming what's running.
 - **The watcher is an in-process ticker** (15 s), the scheduler's
-  twin: for each `running`/`needs_input` row, `agent get`. Done =
+  twin: for each `running`/`needs_input` row, `agent get`. Scans share
+  one in-flight promise — but the shared slot must be a `.finally`
+  wrapper, never the work promise itself: a scan that completes
+  without a single `await` (an empty store at boot) runs its cleanup
+  before the assignment lands and wedges the ticker on a dead promise
+  forever (found 2026-10-04 — the boot scan on an empty DB killed the
+  watcher for the process's lifetime). Done =
   status `idle|done` **and** either `state_change_seq` advanced past
   the recorded one (a fresh prompt is idle before it's working) or a
   report file newer than the last prompt (catches an agent that
@@ -115,7 +135,8 @@ Rulings:
   the whole exchange between two polls. Agent gone (pane closed,
   process exited) → `failed`. Every transition submits one message
   into the pinned conversation, the same path as program fires:
-  `[delegation: <name> · <done|needs input|failed>]` + the report
+  `[delegation: #<id> <name> · <done|needs input|failed>]` + the
+  report
   file (capped at 16 KiB; beyond that, the path to read) or, absent a
   report, the screen tail (`recent-unwrapped`, last ~80 lines). The
   resulting turn tells the operator what happened, in goblin's
@@ -125,12 +146,19 @@ Rulings:
   a malicious repo it processed) gains no authority by arriving in
   goblin's voice. The `read` action's screen output rides the same
   fence.
-- **Management is the `delegate` tool** (start/list/read/send/stop),
-  bound per-turn to the running conversation like `program`.
-  `read` peeks the screen tail; `send` prompts the agent (an answer,
-  or a follow-up to a finished delegation — any status but
-  `stopped`; it resets the seq baseline and flips the row back to
-  `running`); `stop` interrupts and closes the workspace. Done
+- **Management is the `delegate` tool**
+  (start/list/read/send/answer/stop), bound per-turn to the running
+  conversation like `program`. `read` peeks the screen tail; `send`
+  prompts the agent (an answer, or a follow-up to a finished
+  delegation — any status but `stopped`; it re-appends the
+  report-file instruction on every prompt, resets the seq baseline,
+  and flips the row back to `running`); `answer` presses one
+  whitelisted key on a *blocked* agent's dialog via `send-keys` —
+  the only input a blocked agent accepts — strictly relaying the
+  operator's stated choice; `stop` interrupts and closes the
+  workspace. Notices and `list` carry the stable `#id` and the
+  report-file path. A launch's failure screen travels fenced like a
+  `read` result, never interpolated into error prose. Done
   delegations keep their workspace so the operator can inspect it;
   `stop` on a finished one is the cleanup.
 - **Goblin may delegate on its own judgment** within a turn — long or

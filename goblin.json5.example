@@ -121,7 +121,12 @@
   // `kind` is a herdr agent kind (herdr agent → kind list); `args` are
   // native CLI args — full-auto flags and model choice live here.
   // First-run dialogs (trust prompts) are seeded in the harness's own
-  // state files at launch — see src/harness-trust.ts.
+  // state files at launch — write-if-absent only: a value you set
+  // (including false/"untrusted") is never flipped; a file that can't
+  // be extended safely fails the launch rather than corrupting. See
+  // src/harness-trust.ts. A gate that still shows up parks the row
+  // `needs_input` — the agent relays the dialog and presses your key
+  // via `delegate answer`.
   // Panes run your interactive shell, so aliases apply — never repeat a
   // flag an alias already adds (the codex alias's bypass flag, devin's
   // --permission-mode): a duplicate makes the harness refuse to start.

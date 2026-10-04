@@ -87,7 +87,14 @@ describe("toolNames ↔ makeTools", () => {
 				auth: {} as AuthStore,
 			},
 			{ transcribe: async () => null },
-			{} as unknown as Parameters<typeof makeTools>[7],
+			// delegateTool's description lists the configured harnesses,
+			// so the dep needs a real config block even in a shape test.
+			{
+				config: { maxRunning: 3, harnesses: { codex: { kind: "codex" } } },
+				lifecycle: {},
+				pin: () => ({ address: { chatId: 0, threadId: null } }),
+				workspaceDir: "/tmp",
+			} as unknown as Parameters<typeof makeTools>[7],
 			{} as unknown as Parameters<typeof makeTools>[8],
 			{} as unknown as Parameters<typeof makeTools>[9],
 		);

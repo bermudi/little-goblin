@@ -100,6 +100,11 @@ export interface Herdr {
 	 *  every other failure throws with context. */
 	get(name: string): Promise<AgentInfo | null>;
 	prompt(name: string, text: string): Promise<void>;
+	/** A single keypress into the agent's pane — the only input a
+	 *  `blocked` agent accepts (dialog answers); `prompt` is rejected
+	 *  while blocked. Key names are herdr's: enter, esc, arrows, or a
+	 *  literal character. */
+	sendKey(name: string, key: string): Promise<void>;
 	readAgent(name: string, lines: number): Promise<string>;
 	readPane(paneId: string, lines: number): Promise<string>;
 	interrupt(name: string): Promise<void>;
@@ -192,6 +197,11 @@ export function makeHerdr(session: string, run: HerdrRunner = defaultRunner): He
 			return call("pane read", paneId, [
 				"pane", "read", paneId, "--source", "recent-unwrapped", "--lines", String(lines),
 			], (stdout) => stdout);
+		},
+
+		async sendKey(name, key) {
+			await call("agent send-keys", name, ["agent", "send-keys", name, key],
+				(stdout) => envelopeSchema.parse(parseJson("agent send-keys", stdout)));
 		},
 
 		async interrupt(name) {

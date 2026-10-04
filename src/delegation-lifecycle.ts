@@ -439,7 +439,25 @@ async function launch(
 		// whether the dialog was answered by `delegate answer` or the
 		// operator's own attach.
 		if (err instanceof HerdrError && err.code === "agent_not_ready") {
-			deps.delegations.markParked(d.id);
+			// Baseline the park at the agent's current seq: the watcher
+			// delivers the owed prompt on an advance *past* it, and a
+			// fresh row's 0 would fire on the first poll — the blocked
+			// agent's seq is already past that — burning a
+			// guaranteed-rejected prompt (the rejection re-baselines,
+			// but only after the wasted attempt).
+			let parkedSeq = d.baselineSeq;
+			try {
+				parkedSeq = (await deps.herdr.get(agentName))?.state_change_seq ?? parkedSeq;
+			} catch (err2) {
+				// Same rule as the launch baseline read below: a failed
+				// get must not fail the park — the watcher's next poll
+				// reconciles.
+				log.warn("delegation park baseline read failed", {
+					delegation: d.id,
+					error: err2 instanceof Error ? err2.message : String(err2),
+				});
+			}
+			deps.delegations.markParked(d.id, parkedSeq);
 			const parked = deps.delegations.get(d.id) ?? d;
 			if (parked.status === "stopped") {
 				await closeWorkspaceQuietly(deps, d.id, ws.workspaceId);

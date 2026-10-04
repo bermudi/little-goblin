@@ -97,7 +97,12 @@ function renderLaunch(out: LaunchOutcome, pin: DelegationPin): Record<string, un
 				agent_name: out.delegation.agentName,
 				status: "needs_input",
 				attach: "herdr session attach goblin",
-				note: "Blocked at startup — a first-run or trust dialog is showing. Read the screen ('read'), tell the operator what it asks, and relay their choice as a keypress with action 'answer'. The task prompt sends itself once the dialog clears.",
+				note:
+					"Blocked at startup — a first-run or trust dialog is showing. Read the screen ('read'), tell the operator what it asks, and relay their choice as a keypress with action 'answer'. The task prompt sends itself once the dialog clears." +
+					(pin.movedToApp === undefined
+						? ""
+						: " This work now lives in its own app conversation — tell the operator its name and link."),
+				...(pin.movedToApp === undefined ? {} : { moved_to_app: pin.movedToApp }),
 			};
 		case "stopped":
 			return { id: out.delegation.id, name: out.delegation.name, status: "stopped" };

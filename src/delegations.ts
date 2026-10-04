@@ -71,8 +71,10 @@ export interface DelegationsStore {
 	 *  a `stop` won the race while herdr was launching. */
 	markRunning(id: number, baselineSeq: number, promptedAt: Date): Delegation | null;
 	/** The launch parked on a startup dialog before the task could be
-	 *  prompted: needs_input + prompt_pending, atomically. */
-	markParked(id: number): void;
+	 *  prompted: needs_input + prompt_pending + the park-time seq
+	 *  baseline, atomically — the watcher owes the prompt only on an
+	 *  advance past that point. */
+	markParked(id: number, baselineSeq: number): void;
 	/** Watcher-side compare-and-set: apply the transition only if the
 	 *  row is still exactly what the scan read (same status and
 	 *  prompted_at) — a tool-side send/stop that landed while the
@@ -209,7 +211,7 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		"UPDATE delegations SET baseline_seq = ?, prompted_at = ?, status = 'running', finished_at = NULL, prompt_pending = 0 WHERE id = ? AND status != 'stopped'",
 	);
 	const qParked = db.query(
-		"UPDATE delegations SET status = 'needs_input', prompt_pending = 1 WHERE id = ? AND status != 'stopped'",
+		"UPDATE delegations SET status = 'needs_input', prompt_pending = 1, baseline_seq = ? WHERE id = ? AND status != 'stopped'",
 	);
 	const qTransition = db.query(
 		`UPDATE delegations SET status = ?, finished_at = ?,
@@ -241,8 +243,8 @@ export function openDelegations(dbPath: string): DelegationsStore {
 			const d = rowToDelegation(row);
 			return d.status === "running" ? d : null;
 		},
-		markParked(id) {
-			qParked.run(id);
+		markParked(id, baselineSeq) {
+			qParked.run(baselineSeq, id);
 		},
 		transitionIf(id, expect, to, baseline, now = new Date()) {
 			const res = qTransition.run(

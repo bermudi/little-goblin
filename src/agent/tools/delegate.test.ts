@@ -283,6 +283,25 @@ describe("delegate tool", () => {
 		expect(sent.error).toContain("'answer'");
 	});
 
+	test("a parked row holds its owed prompt until the seq actually moves", async () => {
+		const h = harness(3, {
+			code: "agent_not_ready",
+			message: "blocked during startup",
+		});
+		const out = (await exec(h.tool, {
+			action: "start",
+			harness: "codex",
+			task: "do it",
+			name: "x",
+		})) as { id: number };
+		// The park baselines at the agent's current seq — a 0 would fire
+		// the pending prompt on the first poll, blocked agent or not.
+		expect(h.store.get(out.id)!.baselineSeq).toBe(7);
+		await h.lifecycle.tick(); // still blocked at seq 7 — nothing owed yet
+		expect(h.prompts).toEqual([]);
+		h.lifecycle.stopTicker();
+	});
+
 	test("answer relays a whitelisted keypress; the watcher delivers the owed task once the dialog clears", async () => {
 		const h = harness(3, {
 			code: "agent_not_ready",
@@ -603,6 +622,31 @@ describe("delegate tool", () => {
 		expect(row.appConversation).toBe("app/spun-off");
 		expect(row.chatId).toBe(0); // the app-pinned fillers
 		expect(row.threadId).toBeNull();
+	});
+
+	test("a parked spin-off still renders moved_to_app — the fork is kept, not orphaned", async () => {
+		const h = harness(3, {
+			code: "agent_not_ready",
+			message: "blocked during startup",
+		});
+		h.pinOverride = (name) => ({
+			address: { chatId: 0, threadId: null },
+			appConversation: "app/spun-off",
+			movedToApp: { title: name, link: "https://g.example/app/c/spun-off" },
+		});
+		const out = (await exec(h.tool, {
+			action: "start",
+			harness: "codex",
+			task: "do it",
+			name: "spun work",
+		})) as { status: string; moved_to_app: { title: string; link: string }; note: string };
+		expect(out.status).toBe("needs_input");
+		expect(out.moved_to_app).toEqual({
+			title: "spun work",
+			link: "https://g.example/app/c/spun-off",
+		});
+		expect(out.note).toContain("app conversation");
+		h.lifecycle.stopTicker();
 	});
 
 	test("cap reached discards the pin — the fork must not orphan", async () => {

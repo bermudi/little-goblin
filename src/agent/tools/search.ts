@@ -212,17 +212,25 @@ const ddgSearch: SearchAdapter = async (opts) => {
 	const snippetNodes = [...html.matchAll(
 		/<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g,
 	)].map((m) => ({ anchor: false as const, at: m.index ?? 0, m }));
+	// A snippet only attaches to the *accepted* anchor it follows —
+	// a rejected anchor (bad href, empty title) must not let its
+	// snippet drift onto the previous hit.
+	let anchorAccepted = false;
 	for (const node of [...anchorNodes, ...snippetNodes].sort((x, y) => x.at - y.at)) {
 		if (node.anchor) {
+			anchorAccepted = false;
 			const url = unwrapDdgHref(node.m[1] ?? "");
 			const title = stripTags(node.m[2] ?? "");
 			if (url === "" || title === "") continue;
 			if (hits.length >= opts.count) break;
 			hits.push({ title, url, snippet: "" });
+			anchorAccepted = true;
 		} else {
 			const snippet = stripTags(node.m[1] ?? "");
 			const last = hits[hits.length - 1];
-			if (snippet !== "" && last !== undefined && last.snippet === "") last.snippet = snippet;
+			if (anchorAccepted && snippet !== "" && last !== undefined && last.snippet === "") {
+				last.snippet = snippet;
+			}
 		}
 	}
 	return { hits, status };

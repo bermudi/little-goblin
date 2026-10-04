@@ -132,6 +132,24 @@ describe("search tool", () => {
 	});
 
 
+	test("ddg: a rejected anchor's snippet cannot drift back onto the previous hit", async () => {
+		// The ad card's href unwraps to nothing — its snippet node must
+		// not land on the good hit that preceded it.
+		const base = serve(() =>
+			new Response(
+				[
+					`<a class="result__a" href="https://one.example/a">One</a>`,
+					`<a class="result__a" href="/ads/click">Ad</a>`,
+					`<a class="result__snippet">buy our thing</a>`,
+				].join("\n"),
+				{ headers: { "content-type": "text/html" } },
+			),
+		);
+		const run = bindSearch({ kind: "ddg" }, fakeAuth);
+		const { hits } = await run({ query: "q", count: 5, baseUrl: base });
+		expect(hits).toEqual([{ title: "One", url: "https://one.example/a", snippet: "" }]);
+	});
+
 	test("ddg: an oversized html response fails at the cap instead of buffering forever", async () => {
 		// Endless stream: an uncapped read would hang the test — the
 		// read cancelling at the cap is the only way this resolves.

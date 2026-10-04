@@ -2075,7 +2075,12 @@ describe("steering", () => {
 		expect(await s1.done).toEqual({ kind: "completed" });
 		expect(await s2.done).toEqual({ kind: "completed" });
 		expect(s1.text).toBe("adjusted"); // call #1 streams no text — only the tool call
-		expect(s2.text).toBe(""); // only the first sink streams
+		expect(s2.text).toBe(""); // delta-style text is the head's delivery seam
+		// The steered member's chunk stream did NOT run dry (audit #4):
+		// it saw the same wire as the head — replay of what preceded the
+		// join, live tail after. One turn, one reply, every screen sees it.
+		expect(s2.chunks).toEqual(s1.chunks);
+		expect(s2.chunks.some((c) => c.type === "start")).toBe(true);
 		// One turn, two model calls; the second call's wire prompt
 		// carries the steered message as an appended user message.
 		expect(prompts).toHaveLength(2);
@@ -2095,6 +2100,44 @@ describe("steering", () => {
 		const steeredSeq = detail[1]!.seq;
 		expect(detail[2]!.anchorSeq).toBe(steeredSeq);
 		store.close();
+	});
+
+	describe("live chunk subscription (resumable streams)", () => {
+		test("a mid-turn subscriber gets replay + live tail + one end; idle lanes are null", async () => {
+			let releaseTool: () => void = () => {};
+			const gate = new Promise<void>((r) => {
+				releaseTool = r;
+			});
+			const { model } = gatedToolModel("tail text");
+			const { store, conv, runtime } = steeringSetup(model, gate);
+			const s1 = new RecordingSink();
+			// No submit yet — no lane, nothing to attach to.
+			expect(runtime.subscribeLiveChunks(conv.id, () => {}, () => {})).toBeNull();
+			runtime.submit(conv, userMessage([{ type: "text", text: "go" }]), s1);
+			await sleep(20); // step 1 (the tool call) is on the wire, tool gated
+			const seen: UIMessageChunk[] = [];
+			const endedRef: { done: TurnDone | null } = { done: null };
+			const replay = runtime.subscribeLiveChunks(
+				conv.id,
+				(c) => seen.push(c),
+				(d) => {
+					endedRef.done = d;
+				},
+			);
+			expect(replay).not.toBeNull();
+			// Replay begins at the wire's first chunk — the tool call the
+			// late joiner missed is included, not resumed mid-sentence.
+			expect(replay!.some((c) => c.type === "start")).toBe(true);
+			expect(replay!.some((c) => c.type === "tool-input-available")).toBe(true);
+			releaseTool();
+			expect(await s1.done).toEqual({ kind: "completed" });
+			expect(endedRef.done?.kind).toBe("completed");
+			// The subscriber saw the same wire as the head, gapless.
+			expect(seen).toEqual(s1.chunks.slice(replay!.length));
+			// After the turn settles, there is nothing left to attach to.
+			expect(runtime.subscribeLiveChunks(conv.id, () => {}, () => {})).toBeNull();
+			store.close();
+		});
 	});
 
 	test("a submit during the turn's startup steers into the first call", async () => {
@@ -2122,7 +2165,8 @@ describe("steering", () => {
 		releaseStep();
 		expect(await s1.done).toEqual({ kind: "completed" });
 		expect(await s2.done).toEqual({ kind: "completed" });
-		expect(s2.text).toBe(""); // only the first sink streams
+		expect(s2.text).toBe(""); // delta-style text stays the head's seam
+		expect(s2.chunks).toEqual(s1.chunks); // the chunk stream fans out to every member
 		expect(prompts).toHaveLength(1);
 		expect(prompts[0]).toContain("one");
 		expect(prompts[0]).toContain("two");
@@ -2324,7 +2368,8 @@ describe("app channel", () => {
 		releaseStep();
 		expect(await s1.done).toEqual({ kind: "completed" });
 		expect(await s2.done).toEqual({ kind: "completed" });
-		expect(s2.text).toBe(""); // only the first sink streams
+		expect(s2.text).toBe(""); // delta-style text stays the head's seam
+		expect(s2.chunks).toEqual(s1.chunks); // the chunk stream fans out to every member
 		expect(prompts).toHaveLength(1);
 		expect(prompts[0]).toContain("one");
 		expect(prompts[0]).toContain("two");

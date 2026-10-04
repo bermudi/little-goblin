@@ -87,7 +87,10 @@ Conversation ─────── (channel address) → durable event history
   exception (2026-10-03, Spin-off): a turn led by a sink that doesn't
   stream (the background-turn bell) never absorbs a submit from a
   streaming sink (the app client). That submit waits and leads its
-  own turn, or the client would never see the reply. A
+  own turn, or the client would never see the reply. The inverse
+  holds and is deliberate (2026-10-04, app.md → Streaming members): a
+  streaming turn fans its chunks out to every streaming member, so a
+  merged or steered second client watches the whole reply. A
   submit that cannot be prepared for the model errors its own delivery
   and is never re-queued (requeue would fail every successor turn's
   admission conversion identically — a poison pill); its message stays

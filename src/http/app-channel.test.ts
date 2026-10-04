@@ -494,6 +494,55 @@ describe("app channel http", () => {
 		}
 	});
 
+	test("GET stream: 204 when idle; replay + tail + [DONE] mid-turn", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME, deltas: ["a", "b", "c", "d", "e"], delayMs: 60 });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			// No live turn: the SDK's reconnect contract expects 204 and
+			// falls back to history.
+			const idle = await call("/api/app/conversations/chat-01/stream");
+			expect(idle.status).toBe(204);
+			// Non-GET is refused.
+			const wrongMethod = await call("/api/app/conversations/chat-01/stream", { method: "POST" });
+			expect(wrongMethod.status).toBe(405);
+			// Unknown conversation.
+			const missing = await call("/api/app/conversations/nope/stream");
+			expect(missing.status).toBe(404);
+			// A live turn: attach mid-stream (deltas land every 60ms).
+			const chatP = call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-01",
+					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
+				}),
+			});
+			await Bun.sleep(140);
+			const res = await call("/api/app/conversations/chat-01/stream");
+			expect(res.status).toBe(200);
+			expect(res.headers.get("content-type")).toContain("text/event-stream");
+			const text = await res.text(); // resolves when the turn ends
+			const events = text
+				.split("\n\n")
+				.filter((l) => l.startsWith("data: "))
+				.map((l) => l.slice("data: ".length));
+			expect(events.at(-1)).toBe("[DONE]");
+			// The replay starts at the wire's first chunk — a reload sees
+			// the reply from its beginning, not mid-sentence.
+			expect(JSON.parse(events[0]!) as { type: string }).toMatchObject({ type: "start" });
+			const types = events.filter((e) => e !== "[DONE]").map((e) => (JSON.parse(e) as { type: string }).type);
+			expect(types).toContain("text-delta");
+			expect(types.filter((t) => t === "start")).toHaveLength(1); // no duplicate start from replay + tail
+			await chatP;
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("rename writes an explicit title; empty or unknown ids refuse", async () => {
 		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
 		try {

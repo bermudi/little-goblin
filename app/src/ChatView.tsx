@@ -694,6 +694,15 @@ function Chat({
 			new DefaultChatTransport({
 				api: "/api/app/chat",
 				headers: token === null ? {} : { authorization: `Bearer ${token}` },
+				// Resumable streams (design/app.md → Streaming members): on
+				// mount, useChat(resume) asks the transport to reconnect to a
+				// live turn — the GET returns the wire's replay + tail, or 204
+				// when nothing is running and history stands. The URL is
+				// ours, not the SDK's default append, so the conversation id
+				// keeps the app channel's shape.
+				prepareReconnectToStreamRequest: ({ id }) => ({
+					api: `/api/app/conversations/${encodeURIComponent(id.slice(4))}/stream`,
+				}),
 				prepareSendMessagesRequest: ({ trigger, messageId, messages }) => ({
 					body:
 						trigger === "regenerate-message"
@@ -714,6 +723,10 @@ function Chat({
 		id: conversationId,
 		messages: initial,
 		transport,
+		// Reconnect to a live turn on mount: a reload mid-turn resumes the
+		// in-flight reply instead of showing a finished-looking chat whose
+		// next send would steer a ghost turn (#43).
+		resume: true,
 		onFinish: ({ message }) => {
 			notifyDone(title ?? "", messageText(message));
 			onTurnDone();

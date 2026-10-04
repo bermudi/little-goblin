@@ -13,7 +13,7 @@
 // @ai-sdk/react's useChat consumes.
 
 import { createHash, randomUUID } from "node:crypto";
-import { UI_MESSAGE_STREAM_HEADERS, type UIMessage } from "ai";
+import { UI_MESSAGE_STREAM_HEADERS, type UIMessage, type UIMessageChunk } from "ai";
 import { z } from "zod";
 import { readBodyBytesCapped } from "./check.ts";
 import {
@@ -22,7 +22,7 @@ import {
 	type ConversationStore,
 } from "../conversation.ts";
 import type { AuthStore } from "../auth.ts";
-import type { Runtime, TurnSink } from "../runtime.ts";
+import type { Runtime, TurnDone, TurnSink } from "../runtime.ts";
 import { thinkingLevelsFor } from "../agent/providers.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
 import {
@@ -221,9 +221,13 @@ const UPLOAD_CAP = 32 * 1024 * 1024;
 
 // ---------- the app's TurnSink: UIMessage stream → SSE verbatim ----------
 
-function appStreamSink(convId: string): {
-	sink: TurnSink;
+// The app channel's SSE wire — one shape shared by the submit stream
+// (appStreamSink: chunks from the turn's member sink) and the attach
+// stream (GET .../stream: chunks from a live-turn subscription).
+function appSseWriter(): {
 	body: ReadableStream<Uint8Array>;
+	write(chunk: UIMessageChunk): void;
+	finish(done: TurnDone): void;
 } {
 	const enc = new TextEncoder();
 	let controller!: ReadableStreamDefaultController<Uint8Array>;
@@ -248,6 +252,39 @@ function appStreamSink(convId: string): {
 	};
 	return {
 		body,
+		write(chunk) {
+			push(`data: ${JSON.stringify(chunk)}\n\n`);
+		},
+		finish(done) {
+			// A turn that ended without a finish chunk (fenced by /stop,
+			// or crashed) still owes the client a terminal event.
+			if (done.kind !== "completed") {
+				push(
+					`data: ${JSON.stringify({
+						type: "error",
+						errorText:
+							done.kind === "error" ? done.message : "turn stopped before finishing",
+					})}\n\n`,
+				);
+			}
+			push("data: [DONE]\n\n");
+			closed = true;
+			try {
+				controller.close();
+			} catch {
+				/* already closed */
+			}
+		},
+	};
+}
+
+function appStreamSink(convId: string): {
+	sink: TurnSink;
+	body: ReadableStream<Uint8Array>;
+} {
+	const writer = appSseWriter();
+	return {
+		body: writer.body,
 		sink: {
 			// Delta-style delivery hooks are telegram's — the app stream is
 			// the raw chunk pass-through alone.
@@ -255,33 +292,15 @@ function appStreamSink(convId: string): {
 			onReasoningDelta() {},
 			onToolCall() {},
 			onStreamChunk(chunk) {
-				push(`data: ${JSON.stringify(chunk)}\n\n`);
-			},
-			onDone(done) {
-				// A turn that ended without a finish chunk (fenced by /stop,
-				// or crashed) still owes the client a terminal event.
-				if (done.kind !== "completed") {
-					push(
-						`data: ${JSON.stringify({
-							type: "error",
-							errorText:
-								done.kind === "error" ? done.message : "turn stopped before finishing",
-						})}\n\n`,
-					);
-				}
-				push("data: [DONE]\n\n");
-				closed = true;
-				try {
-					controller.close();
-				} catch {
-					/* already closed */
-				}
-				log.info("app stream finish", { conversation: convId, outcome: done.kind });
-			},
+			writer.write(chunk);
+		},
+		onDone(done) {
+			writer.finish(done);
+			log.info("app stream finish", { conversation: convId, outcome: done.kind });
+		},
 		},
 	};
 }
-
 // ---------- routes ----------
 
 // The composer's readout: the live model ref and thinking rung, the
@@ -398,6 +417,42 @@ export async function handleAppApi(
 		log.info("app stop", { conversation: convId.id, stopped });
 		const body: AppStopResponse = { stopped };
 		return Response.json(body, { headers: NO_STORE });
+	}
+
+	// GET /api/app/conversations/<id>/stream — the resumable-stream
+	// attach point (AI SDK reconnectToStream): the wire log of a live
+	// turn, replayed from the first chunk, then a live tail until the
+	// turn's outcome. A reload mid-turn, a tunnel blip, a second screen
+	// — the caller re-watches the in-flight reply instead of staring at
+	// a finished-looking chat. No live turn → 204, and the client falls
+	// back to history (the SDK's contract).
+	const streamMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/stream$/);
+	if (streamMatch) {
+		if (req.method !== "GET") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const convId = conversationFromSegment(streamMatch[1]!);
+		if (convId instanceof Response) return convId;
+		if (store.get(convId.id) === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		const writer = appSseWriter();
+		const replay = runtime.subscribeLiveChunks(
+			convId.id,
+			(chunk) => writer.write(chunk),
+			(done) => {
+				writer.finish(done);
+				log.info("app stream finish", { conversation: convId.id, outcome: done.kind, attach: true });
+			},
+		);
+		if (replay === null) {
+			return new Response(null, { status: 204, headers: NO_STORE });
+		}
+		for (const chunk of replay) writer.write(chunk);
+		log.info("app stream attach", { conversation: convId.id, replay: replay.length });
+		return new Response(writer.body, {
+			headers: { ...UI_MESSAGE_STREAM_HEADERS, ...NO_STORE },
+		});
 	}
 
 	// PATCH /api/app/conversations/<id> — rename; an explicit operator

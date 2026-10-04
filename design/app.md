@@ -96,6 +96,41 @@ crossing, and it is a copy plus a bell, not mirroring), app-side push
 for app background turns; app-native push waits until demanded),
 widgets, in-app voice mode, iOS.
 
+## Streaming members & resumable streams (ruling 2026-10-04)
+
+The reply belongs to the conversation, not to the connection that
+submitted. Two defects shared that root (audit 2026-10-04): a second
+client submitting mid-turn received an empty stream — chunks went to
+the turn's first member only — and a reload mid-turn showed a
+finished-looking chat whose next send steered a ghost turn (#43).
+
+- **Chunk fan-out.** Every *streaming* member of a turn receives the
+  chunks; delta-style hooks (text/reasoning/tool) stay the head's —
+  Telegram delivery is one message per turn, and the app sink ignores
+  them anyway. A throwing streaming sink is detached, never fatal to
+  the turn. `claimableCount` is unchanged: a streaming head still
+  claims the whole queue — one burst, one reply.
+- **Join replay.** A member that attaches mid-turn (steering) first
+  receives everything the wire already saw — from sentence one, not
+  mid-thought. The turn keeps a wire log (exactly what was emitted,
+  held failures excluded), carried across overflow recovery so the
+  resumed attempt continues the same wire seamlessly.
+- **Attach endpoint.** `GET /api/app/conversations/<id>/stream` serves
+  the wire log + a live tail; 204 when no turn is running (the AI
+  SDK's `reconnectToStream` contract — the client falls back to
+  history). The client runs `useChat({ resume: true })` with
+  `prepareReconnectToStreamRequest` pointing here, so a reload
+  mid-turn re-watches the in-flight reply (#43 closed by the same
+  mechanism). The log is in-memory, live turns only: after a crash
+  there is history and no stream, exactly as before.
+- **Parked, with a trigger.** A *passive* screen (no submit, no
+  reload) still doesn't live-update — `resumeStream()` on focus would
+  ride the same endpoint as client policy alone. Promote when
+  outer-loop usage makes "app open on a screen while turns happen" a
+  daily pattern; the server machinery is already in place. Until
+  then this stays the deliberate descendant of the "live refresh out
+  of scope" ruling in Spin-off.
+
 ## Spin-off (ruling 2026-10-03)
 
 Operator ask, paired with Rolling DM: the DM is the quick lane, so

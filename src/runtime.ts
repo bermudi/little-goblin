@@ -222,6 +222,10 @@ interface TurnRecovery {
 	toolCalls: string[];
 	digest: { id: string; entry: ToolCallDigest }[];
 	startedAt: number;
+	// The live wire log carries across an overflow recovery: the resume
+	// continues the same wire (holdForRecovery kept the failure off it),
+	// so attached subscribers and the log must survive the recursion.
+	live: LiveChunks;
 }
 
 // The provider rejected the request for context size mid-turn. Not an
@@ -252,6 +256,23 @@ interface QueuedTurn {
 	// Guards the exactly-once onDone contract: a sink whose onDone throws
 	// must not be re-notified by the drain guard below.
 	doneSent: boolean;
+	// A streaming sink whose onStreamChunk threw is detached from the
+	// fan-out — one dead client must not kill the turn for the others.
+	streamFailed?: boolean;
+}
+
+// A live turn's wire log + subscribers — the resumable-stream half of
+// the app channel (design/app.md → Streaming members): every chunk the
+// wire has seen, appended at the single emission point, plus HTTP
+// subscribers attached mid-flight (GET .../stream — a reload, a second
+// screen). One object per turn.
+interface LiveChunks {
+	chunks: UIMessageChunk[];
+	subscribers: Set<{
+		onChunk(chunk: UIMessageChunk): void;
+		onEnd(done: TurnDone): void;
+	}>;
+	ended: boolean;
 }
 
 // A /compact waiting for the lane — run between turns so a running
@@ -273,6 +294,8 @@ interface Lane {
 	// The drain loop's promise — shutdown awaits it so a fenced sink's
 	// final flush finishes before the process exits.
 	draining: Promise<void> | null;
+	// The running turn's wire log — see LiveChunks. Null between turns.
+	live: LiveChunks | null;
 }
 
 // A queued submit "streams" iff its sink defines onStreamChunk — the
@@ -354,6 +377,25 @@ export class Runtime {
 	busy(convId: string): boolean {
 		const lane = this.lanes.get(convId);
 		return lane !== undefined && (lane.pending.length > 0 || lane.controller !== null);
+	}
+
+	// Attach to a live turn's chunk stream — the resumable-stream half of
+	// the app channel (a reload mid-turn, a second screen, the SDK's
+	// reconnectToStream). Returns everything the wire has seen so far,
+	// and the callbacks receive what follows; onEnd fires exactly once
+	// with the turn's final outcome (the same TurnDone member sinks
+	// receive). Null = no live turn: the caller answers 204 and the
+	// client falls back to history. Snapshot + subscribe happen in one
+	// synchronous step, so replay ∪ live is gapless.
+	subscribeLiveChunks(
+		convId: string,
+		onChunk: (chunk: UIMessageChunk) => void,
+		onEnd: (done: TurnDone) => void,
+	): UIMessageChunk[] | null {
+		const live = this.lanes.get(convId)?.live;
+		if (live === undefined || live === null || live.ended) return null;
+		live.subscribers.add({ onChunk, onEnd });
+		return [...live.chunks];
 	}
 
 	// Graceful stop: close intake, then fence every live lane — running
@@ -488,7 +530,7 @@ export class Runtime {
 	private lane(convId: string): Lane {
 		let l = this.lanes.get(convId);
 		if (!l) {
-			l = { pending: [], compacts: [], running: false, controller: null, compactController: null, draining: null };
+			l = { pending: [], compacts: [], running: false, controller: null, compactController: null, draining: null, live: null };
 			this.lanes.set(convId, l);
 		}
 		return l;
@@ -746,6 +788,19 @@ export class Runtime {
 			lane.running = false;
 			lane.controller = null;
 			lane.draining = null;
+			// A wire log no exit path ended is a bug — the notifyAll wrap and
+			// this guard are the two ends of the contract. Close the attached
+			// streams loudly instead of hanging them on a turn that will never
+			// emit again.
+			if (lane.live !== null && !lane.live.ended) {
+				log.error(
+					"live chunk log never ended — closing attach streams",
+					undefined,
+					{ conversation: convId },
+				);
+				endLive(lane.live, { kind: "error", message: "turn ended without an outcome" });
+			}
+			lane.live = null;
 			// A drained lane is cheap to recreate on the next submit —
 			// don't pin one per conversation for the life of the process.
 			if (lane.pending.length === 0 && lane.compacts.length === 0) this.lanes.delete(convId);
@@ -754,10 +809,19 @@ export class Runtime {
 
 	private async runTurn(convId: string, turns: QueuedTurn[], recovery?: TurnRecovery): Promise<void> {
 		const { store } = this.deps;
-		// The first queued sink streams the response; the rest get the
-		// same terminal outcome and nothing else — one onDone per submit.
+		// The first queued sink is the turn's delivery head (delta hooks,
+		// voice, files); every streaming member receives the chunks (the
+		// reply belongs to the conversation, not to the connection that
+		// submitted first — design/app.md → Streaming members) and every
+		// member gets exactly one onDone.
 		const sink = turns[0]!.sink;
+		// The wire log: everything the wire has seen this turn, plus any
+		// HTTP subscribers attached mid-flight (GET .../stream). Carried
+		// across overflow recovery by TurnRecovery — the resume continues
+		// the same wire.
+		const live = recovery?.live ?? { chunks: [], subscribers: new Set(), ended: false } as LiveChunks;
 		const notifyAll = async (done: TurnDone) => {
+			endLive(live, done);
 			for (const t of turns) await this.notifyDone(t, done);
 		};
 		// Admission: capture the epoch this turn holds authority under.
@@ -811,6 +875,7 @@ export class Runtime {
 		log.info("turn started", { conversation: convId, epoch, history: history.length });
 		const controller = new AbortController();
 		this.lane(convId).controller = controller;
+		this.lanes.get(convId)!.live = live;
 
 		// Hoisted so the catch can hand a resume attempt the same recall
 		// result — recall must not re-run: the query was issued against a
@@ -996,6 +1061,25 @@ export class Runtime {
 								})),
 								);
 							turns.push(t);
+							// A streaming member that joined mid-turn missed everything
+							// emitted before the join — replay the wire log so its
+							// client sees the reply from the first token, not from
+							// mid-sentence (sync code: nothing can interleave). A
+							// dead client is detached, not fatal.
+							if (t.sink.onStreamChunk !== undefined) {
+								for (const c of live.chunks) {
+									try {
+										t.sink.onStreamChunk(c);
+									} catch (err) {
+										t.streamFailed = true;
+										log.warn("sink onStreamChunk failed during replay — stream detached", {
+											conversation: convId,
+											error: String(err),
+										});
+										break;
+									}
+									}
+								}
 							claimedIds.add(t.message.id);
 							admittedCount++;
 						} catch (err) {
@@ -1191,13 +1275,40 @@ export class Runtime {
 						holdForRecovery = true;
 					}
 				}
-				// The app channel's sink rides the raw stream — it serializes
-				// each chunk to the SSE wire verbatim (DESIGN.md, App
-				// channel). The fence above is its back-pressure-free cut:
-				// a fenced turn stops streaming to the client too. A held
-				// failure takes its error chunk — and everything after —
+				// The app channel's sinks ride the raw stream — each chunk is
+				// serialized to the SSE wire verbatim (DESIGN.md, App channel).
+				// Fan-out: every streaming member receives it (audit #4 — a
+				// second client's stream used to run dry), a throwing sink is
+				// detached rather than allowed to kill the turn, and the wire
+				// log records exactly what the wire saw for late joiners and
+				// resumers. The fence above is the app stream's back-pressure-
+				// free cut: a fenced turn stops streaming to the client too. A
+				// held failure takes its error chunk — and everything after —
 				// with it.
-				if (!holdForRecovery) sink.onStreamChunk?.(chunk);
+				if (!holdForRecovery) {
+					for (const t of turns) {
+						if (t.streamFailed === true) continue;
+						try {
+							t.sink.onStreamChunk?.(chunk);
+						} catch (err) {
+							t.streamFailed = true;
+							log.warn("sink onStreamChunk failed — stream detached", {
+								conversation: convId,
+								error: String(err),
+							});
+						}
+					}
+					live.chunks.push(chunk);
+					for (const sub of live.subscribers) {
+						try {
+							sub.onChunk(chunk);
+						} catch {
+							// The SSE writer self-guards; a throwing subscriber is
+							// dead weight until the turn ends.
+							live.subscribers.delete(sub);
+						}
+					}
+				}
 				switch (chunk.type) {
 					case "start-step":
 						// A new step is always a new block — and id comparison
@@ -1521,6 +1632,7 @@ export class Runtime {
 					toolCalls: err.toolCalls,
 					digest: err.digest,
 					startedAt: turnStartMs,
+					live,
 				});
 			} else {
 				log.error("turn failed", err, { conversation: convId });
@@ -1536,6 +1648,23 @@ export class Runtime {
 			}
 		}
 	}
+}
+
+// Fire each subscriber's onEnd exactly once and retire the log. The
+// turn's outcome rides along — an attach stream needs the same terminal
+// semantics a member sink gets (an error event on a non-completed
+// outcome, then [DONE]).
+function endLive(live: LiveChunks, done: TurnDone): void {
+	if (live.ended) return;
+	live.ended = true;
+	for (const sub of live.subscribers) {
+		try {
+			sub.onEnd(done);
+		} catch {
+			// The SSE writer self-guards; nothing to do.
+		}
+	}
+	live.subscribers.clear();
 }
 
 // What a completed turn retains: the user burst it answered (everything

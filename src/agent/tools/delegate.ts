@@ -240,26 +240,39 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 						input.name ??
 						(input.task.split("\n", 1)[0]!.slice(0, 40).trim() || "delegation");
 					// The pin forks before the launch is known to start —
-					// cap/failed outcomes owe it a discard or the spun-off
-					// conversation orphans.
+					// cap/failed outcomes and a throwing launch all owe it
+					// a discard or the spun-off conversation orphans.
 					const pin = deps.pin(name);
-					const out = await deps.lifecycle.launch({
-						harness: { name: input.harness, kind: h.kind, args: h.args ?? [] },
-						task: input.task,
-						cwd,
-						name,
-						maxRunning: deps.config.maxRunning,
-						address: pin.address,
-						...(pin.appConversation === undefined
-							? {}
-							: { appConversation: pin.appConversation }),
-					});
-					if (out.kind === "cap reached" || out.kind === "failed") {
+					// A guarded discard: its own failure is logged, never
+					// allowed to mask the outcome or error it answers for.
+					const discard = (reason: string): void => {
 						try {
-							pin.discard?.(out.kind);
+							pin.discard?.(reason);
 						} catch (err) {
 							log.error("spin-off discard failed", err, { name });
 						}
+					};
+					let out: LaunchOutcome;
+					try {
+						out = await deps.lifecycle.launch({
+							harness: { name: input.harness, kind: h.kind, args: h.args ?? [] },
+							task: input.task,
+							cwd,
+							name,
+							maxRunning: deps.config.maxRunning,
+							address: pin.address,
+							...(pin.appConversation === undefined
+								? {}
+								: { appConversation: pin.appConversation }),
+						});
+					} catch (err) {
+						// No outcome exists — but the fork does. Discard it,
+						// then let the launch error reach the turn as-is.
+						discard("threw");
+						throw err;
+					}
+					if (out.kind === "cap reached" || out.kind === "failed") {
+						discard(out.kind);
 					}
 					return renderLaunch(out, pin);
 				}

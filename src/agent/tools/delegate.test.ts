@@ -568,4 +568,51 @@ describe("delegate tool", () => {
 		expect("note" in out).toBe(false);
 		expect(h.store.get(out.id)!.appConversation).toBe("app/self-hosted");
 	});
+
+	// launch() can throw before any outcome exists (a SQLite write
+	// inside create): the fork still owes its discard, and the launch
+	// error itself must reach the caller.
+	test("a launch that throws discards the pin and rethrows the launch error", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-delegtool-"));
+		dirs.push(dir);
+		const discarded: string[] = [];
+		const tool = delegateTool({
+			lifecycle: {
+				launch: () => Promise.reject(new Error("launch exploded")),
+			} as unknown as DelegationLifecycle,
+			config: { maxRunning: 3, harnesses: { codex: { kind: "codex" } } },
+			pin: () => ({
+				address: { chatId: 0, threadId: null },
+				appConversation: "app/spun-off",
+				discard: (reason) => discarded.push(reason ?? ""),
+			}),
+			workspaceDir: dir,
+		});
+		await expect(
+			exec(tool, { action: "start", harness: "codex", task: "do it" }),
+		).rejects.toThrow("launch exploded");
+		expect(discarded).toEqual(["threw"]);
+	});
+
+	test("a failing discard never masks the launch error that triggered it", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-delegtool-"));
+		dirs.push(dir);
+		const tool = delegateTool({
+			lifecycle: {
+				launch: () => Promise.reject(new Error("launch exploded")),
+			} as unknown as DelegationLifecycle,
+			config: { maxRunning: 3, harnesses: { codex: { kind: "codex" } } },
+			pin: () => ({
+				address: { chatId: 0, threadId: null },
+				appConversation: "app/spun-off",
+				discard: () => {
+					throw new Error("store wedged");
+				},
+			}),
+			workspaceDir: dir,
+		});
+		await expect(
+			exec(tool, { action: "start", harness: "codex", task: "do it" }),
+		).rejects.toThrow("launch exploded");
+	});
 });

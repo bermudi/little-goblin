@@ -806,9 +806,11 @@ async function shutdown(signal: string): Promise<void> {
 	const delegationScan = delegationLifecycle?.stopTicker() ?? Promise.resolve();
 	// The mail watcher only stops polling — cursors and drafts persist.
 	mailWatcher.stop();
-	// The approval gate's sweep timer joins it — pending rows persist
-	// and re-settle on the next boot's catch-up sweep.
-	mailApproval.stop();
+	// The approval gate stops sweeping AND joins an in-flight Gmail
+	// send — a SIGTERM mid-send would otherwise re-settle the row as
+	// pending and the next boot's sweep would re-tap it (possible
+	// duplicate email). Bounded by the drain budget below.
+	const mailSends = mailApproval.stop();
 	// The retention worker only drains the outbox — stopping it leaves
 	// pending rows durable for the next boot.
 	await memoryWorker?.stop();
@@ -823,7 +825,7 @@ async function shutdown(signal: string): Promise<void> {
 	// lands coalescing-buffer messages in history the same way.
 	const drained = runtime.shutdown();
 	const flushed = tg.drainIntake();
-	const settled = Promise.allSettled([stopping, drained, flushed, delegationScan]);
+	const settled = Promise.allSettled([stopping, drained, flushed, delegationScan, mailSends]);
 	const finished = await Promise.race([
 		settled.then(() => true),
 		sleep(SHUTDOWN_DRAIN_MS).then(() => false),

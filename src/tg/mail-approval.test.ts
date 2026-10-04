@@ -479,6 +479,36 @@ describe("mail approval taps", () => {
 		outbox.close();
 	});
 
+	test("stop() joins an in-flight send — the graceful path doesn't share the crash window", async () => {
+		let release!: () => void;
+		const gatePromise = new Promise<void>((r) => (release = r));
+		const sender = fakeSender({
+			send: async () => {
+				await gatePromise;
+				return { id: "gmail-1", threadId: "t" };
+			},
+		});
+		const { outbox, gate } = setup(sender);
+		const row = queue(outbox);
+		const first = gate.handleTap({ ...tap(row.id, "send"), id: "q-first" });
+		await Bun.sleep(10);
+		// SIGTERM lands mid-send: stop resolves only once the send has
+		// settled — not while the row could still re-settle as pending
+		// and get re-tapped (duplicate email) on the next boot.
+		let stopped = false;
+		const stopP = gate.stop().then(() => {
+			stopped = true;
+		});
+		await Bun.sleep(10);
+		expect(stopped).toBe(false); // still joining
+		release();
+		await first;
+		await stopP;
+		expect(stopped).toBe(true);
+		expect(outbox.get(row.id)!.status).toBe("sent");
+		outbox.close();
+	});
+
 	test("cancel during a slow send is refused — the send's verdict wins", async () => {
 		let release!: () => void;
 		const gatePromise = new Promise<void>((r) => (release = r));

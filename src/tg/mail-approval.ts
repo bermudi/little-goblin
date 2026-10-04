@@ -83,18 +83,24 @@ export interface MailApproval {
 	/** One expiry sweep now — the timer's body and the test door. */
 	sweep(): Promise<void>;
 
-	stop(): void;
+	/** Stop sweeping and join any in-flight Gmail send. The graceful
+	 *  path must not share the crash window: a SIGTERM mid-send would
+	 *  re-settle the row as pending and the next boot's sweep would
+	 *  re-tap it — a possible duplicate email. The process shutdown's
+	 *  outer budget bounds the wait. */
+	stop(): Promise<void>;
 }
 
 export function startMailApproval(deps: MailApprovalDeps, tickMs = SWEEP_TICK_MS): MailApproval {
-	// One in-flight send per draft: the Gmail call is slow, and a second
-	// tap inside it would otherwise double-send. The set also fences the
-	// other deciders — a Cancel tap from a second device, the tap-time
-	// expiry branch, and the expiry sweep must not stamp a row whose
-	// mail is already leaving; the send's own verdict wins. (A restart
-	// clears the set; a pending row stays re-tappable — the crash
+	// One in-flight send per draft, tracked as its promise: the Gmail
+	// call is slow, and a second tap inside it would otherwise
+	// double-send. The map also fences the other deciders — a Cancel
+	// tap from a second device, the tap-time expiry branch, and the
+	// expiry sweep must not stamp a row whose mail is already leaving;
+	// the send's own verdict wins. And it is what stop() joins. (A
+	// restart clears it; a pending row stays re-tappable — the crash
 	// window is one tap.)
-	const sending = new Set<number>();
+	const inFlight = new Map<number, Promise<void>>();
 
 	const requestDraft = async (
 		input: { to: string[]; cc?: string[]; subject: string; body: string; replyToId?: string },
@@ -194,7 +200,7 @@ export function startMailApproval(deps: MailApprovalDeps, tickMs = SWEEP_TICK_MS
 		// a second device or a stale client, and the expiry branch below,
 		// must not decide a row whose mail is already leaving — "never
 		// sent" would be a lie stamped over a send in progress.
-		if (sending.has(outboxId)) {
+		if (inFlight.has(outboxId)) {
 			await answer("sending — wait for the verdict");
 			return;
 		}
@@ -216,23 +222,45 @@ export function startMailApproval(deps: MailApprovalDeps, tickMs = SWEEP_TICK_MS
 		}
 
 		// Send: the slow path — spinner off first, outcomes in the chat.
-		sending.add(outboxId);
-		try {
-			await answer();
-			await sendApproved(deps, row, query, now);
-		} finally {
-			sending.delete(outboxId);
-		}
+		// The promise rides the in-flight map (what stop() joins) AND is
+		// awaited here — decide settles only once the verdict has.
+		const send = (async () => {
+			try {
+				await answer();
+				await sendApproved(deps, row, query, now);
+			} finally {
+				inFlight.delete(outboxId);
+			}
+		})();
+		inFlight.set(outboxId, send);
+		await send;
 	};
 
-	const sweep = (): Promise<void> => sweepExpired(deps, sending);
+	const sweep = (): Promise<void> => sweepExpired(deps, inFlight);
 
 	const timer = setInterval(() => {
 		void sweep();
 	}, tickMs);
 	void sweep(); // boot catch-up: rows that expired while down settle now
 
-	return { requestDraft, handleTap, sweep, stop: () => clearInterval(timer) };
+	return {
+		requestDraft,
+		handleTap,
+		sweep,
+		stop: async () => {
+			clearInterval(timer);
+			// Join the in-flight sends captured now — a tap racing the
+			// shutdown's final milliseconds still owns itself, same as a
+			// crash; everything else settles before the store closes.
+			const waits = [...inFlight.values()];
+			if (waits.length > 0) {
+				log.info("mail approval — joining in-flight send on shutdown", {
+					sends: waits.length,
+				});
+			}
+			await Promise.allSettled(waits);
+		},
+	};
 }
 
 // Render the draft the operator approves — the tool's send input, plus
@@ -494,7 +522,7 @@ export async function sendMailNotice(
 // best-effort per row — a Telegram failure must not stop the sweep,
 // and the row is already expired, so a stale tap answers "already
 // expired" and strips its own buttons.
-async function sweepExpired(deps: MailApprovalDeps, sending: Set<number>): Promise<void> {
+async function sweepExpired(deps: MailApprovalDeps, sending: { has(id: number): boolean }): Promise<void> {
 	const now = deps.now?.() ?? new Date();
 	let rows: ReturnType<OutboxStore["expireDue"]>;
 	try {

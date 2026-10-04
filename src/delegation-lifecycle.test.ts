@@ -52,6 +52,7 @@ interface Harness {
 	wakes: string[];
 	appWakes: { conv: string; text: string }[];
 	delegationsDir: string;
+	homeDir: string;
 }
 
 function harness(): Harness {
@@ -59,6 +60,7 @@ function harness(): Harness {
 	const dbPath = join(dir, "goblin.sqlite");
 	const store = openDelegations(dbPath);
 	const delegationsDir = join(dir, "delegations");
+	const homeDir = join(dir, "home");
 	const agents = new Map<string, AgentInfo | null>();
 	const screens = new Map<string, string>();
 	const wakes: string[] = [];
@@ -83,10 +85,12 @@ function harness(): Harness {
 		wakes,
 		appWakes,
 		delegationsDir,
+		homeDir,
 		deps: {
 			delegations: store,
 			herdr,
 			delegationsDir,
+			homeDir,
 			wake: (_a, text) => {
 				wakes.push(text);
 				return true;
@@ -662,6 +666,41 @@ describe("delegation watcher", () => {
 	});
 
 	describe("owner sequence", () => {
+		test("a launch seeds the harness's trust file before the agent starts", async () => {
+			const h = harness();
+			h.deps.herdr = {
+				...h.deps.herdr,
+				createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1" }),
+				startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
+			};
+			const owner = startDelegationLifecycle(h.deps);
+			const out = await owner.launch({
+				harness: { name: "codex", kind: "codex", args: [] },
+				task: "do it", cwd: "/w", name: "x", maxRunning: 3,
+				address: { chatId: 1, threadId: null },
+			});
+			expect(out.kind).toBe("started");
+			expect(readFileSync(join(h.homeDir, ".codex", "config.toml"), "utf8"))
+				.toContain('[projects."/w"]\ntrust_level = "trusted"');
+			owner.stopTicker();
+		});
+
+		test("a trust seed failure fails the launch before any workspace exists", async () => {
+			const h = harness();
+			mkdirSync(h.homeDir, { recursive: true });
+			writeFileSync(join(h.homeDir, ".claude.json"), "[1,2]");
+			const owner = startDelegationLifecycle(h.deps);
+			const out = await owner.launch({
+				harness: { name: "claude", kind: "claude", args: [] },
+				task: "do it", cwd: "/w", name: "x", maxRunning: 3,
+				address: { chatId: 1, threadId: null },
+			});
+			expect(out.kind).toBe("failed");
+			if (out.kind === "failed") expect(out.why).toContain("trust seed");
+			expect(h.store.get(1)?.status).toBe("failed");
+			owner.stopTicker();
+		});
+
 		test("a report directory failure marks the row failed instead of stranding starting", async () => {
 			const h = harness();
 			mkdirSync(h.delegationsDir, { recursive: true });

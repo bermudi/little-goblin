@@ -7,6 +7,7 @@ import { observedModel, carriesMedia, resolveModel, thinkingOptions } from "./ag
 import type { MediaPosition } from "./agent/attachments.ts";
 import { generateTopicTitle } from "./agent/title.ts";
 import { generateText } from "ai";
+import { homedir } from "node:os";
 import { probeFfmpeg, transcribeAudio, transcriptionModel } from "./agent/transcribe.ts";
 import { synthesizeSpeech } from "./agent/tts.ts";
 import { makeTools, toolNames } from "./agent/tools/mod.ts";
@@ -615,6 +616,9 @@ async function boot() {
 					delegations,
 					herdr,
 					delegationsDir: paths.delegations(),
+					// Harness trust files live under the real home —
+					// delegation panes run the operator's shell there.
+					homeDir: homedir(),
 					// Delegation notices never roll the DM — a result
 					// arriving past the gap still belongs to the live
 					// conversation (Rolling DM).

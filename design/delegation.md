@@ -62,7 +62,13 @@ Rulings:
   codex trust-directory prompt as `idle` in the 2026-09-26 probe, and
   `--dangerously-bypass-approvals-and-sandbox` does not skip it
   (codex 0.155.1) — directory trust is harness config (codex:
-  `[projects."<dir>"] trust_level` in `~/.codex/config.toml`). Panes
+  `[projects."<dir>"] trust_level` in `~/.codex/config.toml`; claude:
+  `bypassPermissionsModeAccepted` + `projects["<cwd>"]` trust flags in
+  `~/.claude.json`). So launch pre-seeds those stores per kind
+  (`harness-trust.ts`, added 2026-10-03 — set-flags-only over the
+  operator's existing files, durable writes, a seed failure fails the
+  launch rather than parking on a dialog the harness was supposed to
+  be past). Panes
   run the operator's interactive shell, so shell aliases apply: args
   that duplicate an alias's flags make the harness refuse to start.
   Start relies on herdr's ready gate plus the watcher's stall rule,

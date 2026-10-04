@@ -45,6 +45,7 @@ interface Harness {
 	herdr: Herdr;
 	workspaceDir: string;
 	delegationsDir: string;
+	homeDir: string;
 	pinned: string[];
 	pinOverride: DelegateToolDeps["pin"] | undefined;
 }
@@ -78,6 +79,8 @@ function harness(maxRunning = 3, startError?: string): Harness {
 		},
 	};
 	const delegationsDir = join(dir, "delegations");
+	const homeDir = join(dir, "home");
+	mkdirSync(homeDir, { recursive: true });
 	// The real owner under the tool — the timer never fires inside a
 	// test (huge tick); scans happen through explicit tick() calls on
 	// ad-hoc instances, as before.
@@ -86,6 +89,7 @@ function harness(maxRunning = 3, startError?: string): Harness {
 			delegations: store,
 			herdr,
 			delegationsDir,
+			homeDir,
 			wake: () => true,
 			wakeApp: () => true,
 		},
@@ -121,6 +125,7 @@ function harness(maxRunning = 3, startError?: string): Harness {
 		herdr,
 		workspaceDir,
 		delegationsDir,
+		homeDir,
 		pinned,
 		pinOverride: undefined,
 	};
@@ -335,6 +340,7 @@ describe("delegate tool", () => {
 			delegations: h.store,
 			herdr: h.herdr,
 			delegationsDir: h.delegationsDir,
+			homeDir: h.homeDir,
 			wake: (_a, text) => {
 				wakes.push(text);
 				return true;
@@ -464,6 +470,7 @@ describe("delegate tool", () => {
 			delegations: h.store,
 			herdr: h.herdr,
 			delegationsDir: h.delegationsDir,
+			homeDir: h.homeDir,
 			wake: (_a, text) => {
 				wakes.push(text);
 				return true;

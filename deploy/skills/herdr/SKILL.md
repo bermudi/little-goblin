@@ -37,46 +37,13 @@ Answer the operator and let the notice arrive. He watches live via
 `herdr session attach goblin` and may answer an agent's prompt
 himself; relay that command when a delegation needs his eyes.
 
-## First-run gates — seed *before* `delegate`
+## First-run gates — handled at launch
 
-The one bash use adjacent to herdr: these are file writes to the
-*harnesses'* own state, not herdr commands. Harnesses park on
-first-run dialogs that no-approval flags don't skip, and the dialog
-appears at launch — seed first, delegate second. Only ever SET flags
-to true, never delete keys, write tmp+mv so a crash can't tear the
-file.
-
-**claude** — `~/.claude.json`:
-
-- `--dangerously-skip-permissions` parks on a disclaimer until
-  `bypassPermissionsModeAccepted` is true — one write, machine-wide.
-- Each new cwd parks on a trust prompt until that dir's
-  `projects` entry accepts — seed the delegation's resolved cwd:
-
-```bash
-D="$(realpath <cwd>)"; jq --arg d "$D" '
-  .bypassPermissionsModeAccepted = true
-  | .hasCompletedOnboarding = true
-  | .projects[$d].hasTrustDialogAccepted = true
-  | .projects[$d].hasCompletedProjectOnboarding = true
-' ~/.claude.json > /tmp/claude.json && mv /tmp/claude.json ~/.claude.json
-```
-
-If a claude instance is running elsewhere it can clobber the write
-when it exits — seed right before `delegate`, and if the pane still
-parks, `delegate read` shows which dialog it is.
-
-**codex** — `~/.codex/config.toml`, append per new cwd:
-
-```toml
-[projects."<abs cwd>"]
-trust_level = "trusted"
-```
-
-**pi / devin / opencode** — no known first-run gates on this box.
-If a pane parks anyway, `delegate read` shows the screen: relay it
-to the operator and `send` his answer, or find that harness's trust
-store and seed it the same way.
+`delegate` seeds each harness's trust store itself before the agent
+starts (claude's bypass disclaimer and per-directory trust, codex's
+trust_level) — first-run dialogs should never appear. If a pane
+still parks, `delegate read` shows the screen: relay it to the
+operator and `send` his answer.
 
 ## The operator's session: `default`
 

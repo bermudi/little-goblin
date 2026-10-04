@@ -119,8 +119,9 @@
   // goblin-herdr systemd unit, not here. Results come back to the topic
   // as a `[delegation: …]` message.
   // `kind` is a herdr agent kind (herdr agent → kind list); `args` are
-  // native CLI args — full-auto flags and model choice live here, and
-  // they must suppress startup dialogs (trust prompts report as idle).
+  // native CLI args — full-auto flags and model choice live here.
+  // First-run dialogs (trust prompts) are seeded in the harness's own
+  // state files at launch — see src/harness-trust.ts.
   // Panes run your interactive shell, so aliases apply — never repeat a
   // flag an alias already adds (the codex alias's bypass flag, devin's
   // --permission-mode): a duplicate makes the harness refuse to start.

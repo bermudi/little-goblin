@@ -37,6 +37,7 @@ import {
 	type DelegationsStore,
 } from "./delegations.ts";
 import type { Herdr } from "./herdr.ts";
+import { seedHarnessTrust } from "./harness-trust.ts";
 
 export interface DelegationLifecycleDeps {
 	delegations: DelegationsStore;
@@ -50,6 +51,11 @@ export interface DelegationLifecycleDeps {
 	 *  turn — the headless bell sink rings Telegram when it lands.
 	 *  Same contract: true = landed, false = retry next tick. */
 	wakeApp(conversationId: string, text: string): boolean;
+	/** HOME for harness trust-file seeding (harness-trust.ts) — the
+	 *  files live under the operator's home because panes run his
+	 *  shell. Tests pass a tmp dir: a codex/claude launch must never
+	 *  touch the real ~/.codex or ~/.claude.json. */
+	homeDir: string;
 }
 
 /** A validated launch request — the tool resolved the harness from its
@@ -327,6 +333,22 @@ async function launch(
 		mkdirSync(reportDirFor(deps, d.id), { recursive: true });
 	} catch (err) {
 		return fail(`report directory unavailable: ${err instanceof Error ? err.message : String(err)}`);
+	}
+
+	// Seed the harness's first-run gates before anything launches —
+	// once the pane is up the dialog is already showing. A corrupt
+	// state file fails the launch loud: better than parking on a
+	// dialog the harness was supposed to be past.
+	try {
+		const seeded = seedHarnessTrust(input.harness.kind, input.cwd, deps.homeDir);
+		log.info("delegation trust seed", {
+			delegation: d.id,
+			kind: input.harness.kind,
+			cwd: input.cwd,
+			seeded: seeded.length > 0 ? seeded : "no recipe",
+		});
+	} catch (err) {
+		return fail(`trust seed failed: ${err instanceof Error ? err.message : String(err)}`);
 	}
 
 	let ws: { workspaceId: string; paneId: string };

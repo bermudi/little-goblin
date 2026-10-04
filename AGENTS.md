@@ -1,9 +1,10 @@
 # goblin v2
 
 Telegram-native personal AI agent for one operator. Rewrite of
-`~/build/little-goblin` on the Vercel AI SDK. Read `DESIGN.md` before any
-structural work — it owns the domain model, the authority rule, and the
-non-goals list.
+`~/build/little-goblin` on the Vercel AI SDK. Read `DESIGN.md` (the
+core: domain model, authority rule, cache stability, non-goals) plus the
+`design/` file for the area you're touching before any structural work.
+`docs/` is operator documentation, not spec.
 
 ## Guardrails
 
@@ -50,7 +51,7 @@ non-goals list.
 The non-goals list in `DESIGN.md` is load-bearing. Do not add subagents,
 skills, MCP, projects, or inner-life machinery without an explicit ask —
 "it would be nice" is how v1 happened. When a dropped capability returns, it
-gets designed into `DESIGN.md` first.
+gets designed into the design docs first.
 
 ## Design inspiration
 
@@ -65,7 +66,7 @@ its HEARTBEAT.md post-mortem (a scheduled job's instructions are the job's
 state in the DB, never a shared workspace file); hermes' cache discipline
 ("per-conversation prompt caching is sacred" — both projects converged on
 this independently, treat it as settled). Consult their AGENTS.md, docs/
-and templates before designing; cite what you took in `DESIGN.md`.
+and templates before designing; cite what you took in the design docs.
 
 ## Live services
 
@@ -109,4 +110,5 @@ GitHub issues labeled `polish`, ranked `P1`–`P3`, with `area:*` labels;
 
 No Litespec, no specs tree, no decision records. Small commits, often, on
 main or short-lived branches. If a design tension is real enough to argue
-about, write the ruling into `DESIGN.md` — the doc is the spec.
+about, write the ruling into the design docs (`DESIGN.md` or
+`design/<area>.md`) — the docs are the spec.

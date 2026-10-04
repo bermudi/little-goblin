@@ -85,9 +85,11 @@ systemctl --user restart goblin  # restart
 - `bun test` runs the suite, `bun run typecheck` typechecks (both tsc
   programs). Both should pass
   before committing.
-- Read `DESIGN.md` before any structural work — it owns the domain model, the
-  authority rule, and the non-goals list. Read `AGENTS.md` for the working
-  rules (strict TypeScript, zod at boundaries, fail loud, log everything).
+- Read `DESIGN.md` (the core: domain model, authority rule, cache
+  stability, non-goals) plus the `design/` file for the area you're
+  touching before any structural work. `docs/` is operator documentation,
+  not spec. Read `AGENTS.md` for the working rules (strict TypeScript, zod
+  at boundaries, fail loud, log everything).
 - Only `src/tg/` knows about Telegram internals; everything else is plain
   domain code. Tests live next to the files they cover.
 
@@ -101,5 +103,5 @@ systemctl --user restart goblin  # restart
 - [`docs/operations.md`](docs/operations.md) — service, logs, backups, troubleshooting
 - [`docs/security.md`](docs/security.md) — trust model: who is trusted, what crosses each boundary, fail-open vs fail-closed
 - [`docs/memory.md`](docs/memory.md) — optional Hindsight memory; opt-in, live since 2026-09-24
-- [`DESIGN.md`](DESIGN.md) — the design spec (why it's built this way)
+- [`DESIGN.md`](DESIGN.md) + [`design/`](design/) — the design spec (why it's built this way)
 - [`V1-V2-MAP.md`](V1-V2-MAP.md) — what changed from little-goblin, feature by feature

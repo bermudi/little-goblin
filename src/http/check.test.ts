@@ -103,6 +103,9 @@ describe("readBodyBytesCapped — bound before buffering", () => {
 		});
 		const bytes = await readBodyBytesCapped(req(stream), 16);
 		expect(bytes).toBeNull();
+		// The reader stopped at the cap — the oversize body is not
+		// drained into memory on its way to the rejection.
+		expect(pulled).toBe(0);
 	});
 
 	test("a lying small content-length does not dodge the streamed cap", async () => {
@@ -135,6 +138,7 @@ describe("readBodyBytesCapped — bound before buffering", () => {
 			16,
 		);
 		expect(bytes).toBeNull();
+		expect(read).toBe(0); // rejected on the header alone — the body never read
 	});
 
 	test("a null body is an empty read, not oversize", async () => {

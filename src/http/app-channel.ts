@@ -292,12 +292,12 @@ function appStreamSink(convId: string): {
 			onReasoningDelta() {},
 			onToolCall() {},
 			onStreamChunk(chunk) {
-			writer.write(chunk);
-		},
-		onDone(done) {
-			writer.finish(done);
-			log.info("app stream finish", { conversation: convId, outcome: done.kind });
-		},
+				writer.write(chunk);
+			},
+			onDone(done) {
+				writer.finish(done);
+				log.info("app stream finish", { conversation: convId, outcome: done.kind });
+			},
 		},
 	};
 }

@@ -266,12 +266,14 @@ interface QueuedTurn {
 // wire has seen, appended at the single emission point, plus HTTP
 // subscribers attached mid-flight (GET .../stream — a reload, a second
 // screen). One object per turn.
+interface LiveSubscriber {
+	onChunk(chunk: UIMessageChunk): void;
+	onEnd(done: TurnDone): void;
+}
+
 interface LiveChunks {
 	chunks: UIMessageChunk[];
-	subscribers: Set<{
-		onChunk(chunk: UIMessageChunk): void;
-		onEnd(done: TurnDone): void;
-	}>;
+	subscribers: Set<LiveSubscriber>;
 	ended: boolean;
 }
 
@@ -763,6 +765,14 @@ export class Runtime {
 						kind: "error",
 						message: err instanceof Error ? err.message : String(err),
 					};
+					// End the live log HERE, not only in the finally below: a
+					// successor turn in this same drain pass re-pins lane.live,
+					// which would orphan the crashed turn's subscribers — their
+					// attach streams would hang without a terminal event.
+					// endLive is idempotent, so a live already ended by the
+					// turn's own notifyAll is untouched.
+					const crashed = this.lanes.get(convId)?.live;
+					if (crashed != null) endLive(crashed, done);
 					for (const t of turns) await this.notifyDone(t, done);
 				}
 				// Between turns the lane holds no live controller — /stop's
@@ -819,7 +829,8 @@ export class Runtime {
 		// HTTP subscribers attached mid-flight (GET .../stream). Carried
 		// across overflow recovery by TurnRecovery — the resume continues
 		// the same wire.
-		const live = recovery?.live ?? { chunks: [], subscribers: new Set(), ended: false } as LiveChunks;
+		const live: LiveChunks =
+			recovery?.live ?? { chunks: [], subscribers: new Set<LiveSubscriber>(), ended: false };
 		const notifyAll = async (done: TurnDone) => {
 			endLive(live, done);
 			for (const t of turns) await this.notifyDone(t, done);
@@ -1059,7 +1070,7 @@ export class Runtime {
 									tools,
 									ignoreIncompleteToolCalls: true,
 								})),
-								);
+							);
 							turns.push(t);
 							// A streaming member that joined mid-turn missed everything
 							// emitted before the join — replay the wire log so its
@@ -1078,8 +1089,8 @@ export class Runtime {
 										});
 										break;
 									}
-									}
 								}
+							}
 							claimedIds.add(t.message.id);
 							admittedCount++;
 						} catch (err) {
@@ -1635,6 +1646,11 @@ export class Runtime {
 					live,
 				});
 			} else {
+				// Same bill as the fenced branch: any other exception escaping
+				// mid-stream (a throwing sink hook, a tool-path bug) must kill
+				// the provider call too — exiting the chunk loop alone leaves
+				// it generating into a stream nobody reads.
+				controller.abort();
 				log.error("turn failed", err, { conversation: convId });
 				await notifyAll({
 					kind: "error",

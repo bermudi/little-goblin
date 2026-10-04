@@ -344,6 +344,27 @@ describe("scheduler", () => {
 		await closeSinks(h);
 	});
 
+	test("an empty poll's checkpoint loses the same CAS race — the edit's re-baseline wins", async () => {
+		const h = harness();
+		const program = h.deps.programs.create(
+			{ name: "bank watch", mailFilter: "from:bank", charter: "flag bank mail", address: { chatId: 1, threadId: null } },
+			new Date(),
+		);
+		h.deps.programs.setMailHistory(program.id, "100", program.mailRevision);
+		// The watcher scanned this row; while its (empty) poll resolved,
+		// the operator edited the filter.
+		const stale = h.deps.programs.get(program.id)!;
+		h.deps.programs.setMailFilter(program.id, "from:newbank");
+		await fireMail(h.deps, stale, [], "110", new Date());
+		// The empty poll's cursor must not resurrect over the edit's
+		// re-baseline — no fire happened, so nothing else is owed.
+		const after = h.deps.programs.get(program.id)!;
+		expect(after.mailHistoryId).toBeNull();
+		expect(after.lastRun).toBeNull();
+		expect(after.mailRevision).toBe(1);
+		await closeSinks(h);
+	});
+
 	test("a filter edit mid-fire wins over the stale fire's checkpoint (CAS)", async () => {
 		const h = harness();
 		const program = h.deps.programs.create(

@@ -84,10 +84,13 @@ export interface MailApproval {
 	sweep(): Promise<void>;
 
 	/** Stop sweeping and join any in-flight Gmail send. The graceful
-	 *  path must not share the crash window: a SIGTERM mid-send would
-	 *  re-settle the row as pending and the next boot's sweep would
-	 *  re-tap it — a possible duplicate email. The process shutdown's
-	 *  outer budget bounds the wait. */
+	 *  path must not share the crash window: a SIGTERM mid-send kills
+	 *  the send before its verdict lands, leaving the row pending and
+	 *  un-stamped — the operator's re-tap (or, once the fuse burns, the
+	 *  sweep's "expired — never sent" stamp over mail that DID go out)
+	 *  then decides on stale information. Joining means the verdict
+	 *  lands before the store closes. The process shutdown's outer
+	 *  budget bounds the wait. */
 	stop(): Promise<void>;
 }
 

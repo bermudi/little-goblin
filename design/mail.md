@@ -136,13 +136,28 @@ token plumbing in-process was a pita, and gws owns it instead — one
   follows the submit, so a crash between the two re-fires a batch
   rather than dropping it (at-least-once). An empty poll, or one
   whose program was disabled mid-flight, consumes the checkpoint —
-  that mail is skipped, not owed (the cron rule). The filter's
+  that mail is skipped, not owed (the cron rule). The checkpoint
+  write itself is a CAS on `mail_revision` (ruling 2026-10-04): the
+  fire's snapshot carries the revision it scanned, and a filter edit
+  or re-enable that lands while the fire was mid-flight bumps the
+  revision and re-baselines — the stale fire's checkpoint loses the
+  write, logs, and still stamps `last_run` (the fire itself landed).
+  This is the write-time half of the read-time re-read rule below.
+  The filter's
   50-entry list page is the intersection window; a full page warns
   that older matches may be invisible to it. After each poll the watcher re-reads the program
   row — a disable, delete, or filter edit that lands mid-poll wins
   over the stale snapshot, and an edited filter keeps its
   re-baseline. A dead token or quota error warns once per outage
   episode, never per tick.
+- **Approved sends join shutdown (ruling 2026-10-04).** The approval
+  gate's stop clears the sweep timer and awaits any in-flight Gmail
+  send, inside the process shutdown's drain budget. A SIGTERM
+  mid-send otherwise kills the send before its verdict lands — the
+  row stays pending and un-stamped, so a later re-tap (or the sweep's
+  expiry stamp, after the fuse) decides on stale information. The
+  crash window (power loss, kill -9) remains accepted as before;
+  graceful shutdown no longer shares it.
 - **System One (`system1` block + Jev gate) feeds two consumers.**
   The optional hand-edited `system1` block (`{auth, model?,
   baseUrl?}` — a Jev model id like `respan/span-01-lite`, NOT a

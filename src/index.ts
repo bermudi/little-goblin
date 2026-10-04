@@ -807,9 +807,10 @@ async function shutdown(signal: string): Promise<void> {
 	// The mail watcher only stops polling — cursors and drafts persist.
 	mailWatcher.stop();
 	// The approval gate stops sweeping AND joins an in-flight Gmail
-	// send — a SIGTERM mid-send would otherwise re-settle the row as
-	// pending and the next boot's sweep would re-tap it (possible
-	// duplicate email). Bounded by the drain budget below.
+	// send — a SIGTERM mid-send would otherwise kill the send before its
+	// verdict landed, leaving the row pending and un-stamped (stale
+	// information for a re-tap or the sweep's expiry stamp). Bounded by
+	// the drain budget below.
 	const mailSends = mailApproval.stop();
 	// The retention worker only drains the outbox — stopping it leaves
 	// pending rows durable for the next boot.

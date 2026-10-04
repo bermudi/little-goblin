@@ -222,16 +222,16 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 				throw err;
 			}
 			const body = parseOrThrow("poll.history", historyPageSchema, data);
-			latest = str(body.historyId) || latest;
+			latest = body.historyId || latest;
 			for (const h of body.history ?? []) {
 				const ids: string[] = [];
 				for (const m of h.messagesAdded ?? []) {
-					const id = str(m.message?.id);
+					const id = m.message.id;
 					if (id !== "") ids.push(id);
 				}
-				records.push({ id: str(h.id), ids });
+				records.push({ id: h.id, ids });
 			}
-			pageToken = str(body.nextPageToken);
+			pageToken = body.nextPageToken ?? "";
 			if (pageToken !== "" && (seenTokens.has(pageToken) || seenTokens.size >= 100)) {
 				throw new ProviderError("gws", "history pagination repeated or exceeded 100 pages — cursor unchanged");
 			}
@@ -261,7 +261,7 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 				listed: matching.length,
 			});
 		}
-		const matched = matching.map((m) => str(m.id)).filter((id) => id !== "" && added.has(id));
+		const matched = matching.map((m) => m.id).filter((id) => added.has(id));
 		matched.reverse();
 		// Within a record, keep the oldest-first order the list established.
 		const order = new Map(matched.map((id, i) => [id, i] as const));

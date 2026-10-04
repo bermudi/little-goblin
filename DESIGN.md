@@ -83,7 +83,11 @@ Conversation ─────── (channel address) → durable event history
   message id), so input the turn never read — a mid-conversion arrival
   still sitting in the queue, a steer it couldn't carry — never anchors
   its reply. Input arriving after the final model call has no boundary
-  left to steer into — it queues into an immediate successor turn. A
+  left to steer into — it queues into an immediate successor turn. One
+  exception (2026-10-03, Spin-off): a turn led by a sink that doesn't
+  stream (the background-turn bell) never absorbs a submit from a
+  streaming sink (the app client). That submit waits and leads its
+  own turn, or the client would never see the reply. A
   submit that cannot be prepared for the model errors its own delivery
   and is never re-queued (requeue would fail every successor turn's
   admission conversion identically — a poison pill); its message stays

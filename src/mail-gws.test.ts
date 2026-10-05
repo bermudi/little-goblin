@@ -11,7 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import { setLogFile, setLogWriter } from "./log.ts";
 import { HistoryExpiredError, type MailHit } from "./mail.ts";
-import { makeGwsReader, type GwsRunResult, type GwsRunner } from "./mail-gws.ts";
+import { makeGwsReader, type GwsRunner } from "./mail-gws.ts";
 
 interface Call {
 	args: string[];
@@ -328,8 +328,4 @@ describe("gws mail reader", () => {
 		await expect(makeGwsReader(run).profileHistoryId()).rejects.toThrow("could not spawn gws");
 	});
 
-	test("gws result contract: exit code, stdout, stderr", () => {
-		const r: GwsRunResult = { code: 0, stdout: "{}", stderr: "" };
-		expect(r.code).toBe(0);
-	});
 });

@@ -115,10 +115,14 @@ describe("readBodyBytesCapped — bound before buffering", () => {
 				c.close();
 			},
 		});
-		// fetch forbids setting content-length by hand; the declared
-		// header path is covered by the next test, this one proves the
-		// byte counting itself is the real lock.
-		const bytes = await readBodyBytesCapped(req(stream, { "x-ignored": "1" }), 16);
+		// fetch won't set content-length by hand, but a hand-built
+		// Request (or any hostile client) can lie: declared 8, actually
+		// 32. The streamed byte count — not the declared header — is
+		// the lock, and this is the only test that pins it.
+		const bytes = await readBodyBytesCapped(
+			req(stream, { "content-length": "8" }),
+			16,
+		);
 		expect(bytes).toBeNull();
 	});
 

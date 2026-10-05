@@ -46,39 +46,47 @@ export function filterErrorStream(model: LanguageModel, conversation: string): L
 								buffered.length = 0;
 							};
 							try {
-								const { done, value } = await reader.read();
-								if (cancelled) return;
-								if (done) {
-									flush();
-									controller.close();
-								} else if (
-									(value.type === "error" && isContentFilter(value.error)) ||
-									(value.type === "finish" && value.finishReason.unified === "content-filter")
-								) {
-									buffered.length = 0;
-									const error = value.type === "error"
-										? value.error
-										: new ProviderContentFilterError(value.finishReason, value.usage);
-									try {
-										await reader.cancel(error);
-									} catch (cleanupError) {
-										// Cleanup must not erase the already-classified failure.
-										log.error("provider filtered stream cancellation failed", cleanupError, {
-											conversation,
-											model: `${model.provider}/${model.modelId}`,
-											filter: String(error),
-										});
-									}
+								// A buffered part produces no output. Keep reading until
+								// there is something to enqueue or the stream ends:
+								// ReadableStream won't call pull again just because this
+								// invocation returned without satisfying its pending read.
+								while (!cancelled) {
+									const { done, value } = await reader.read();
 									if (cancelled) return;
-									controller.enqueue({ type: "error", error });
-									controller.close();
-								} else if (value.type === "finish" || value.type === "error") {
-									flush();
-									controller.enqueue(value);
-								} else if (buffered.length > 0 || isToolPart(value)) {
-									buffered.push(value);
-								} else {
-									controller.enqueue(value);
+									if (done) {
+										flush();
+										controller.close();
+									} else if (
+										(value.type === "error" && isContentFilter(value.error)) ||
+										(value.type === "finish" && value.finishReason.unified === "content-filter")
+									) {
+										buffered.length = 0;
+										const error = value.type === "error"
+											? value.error
+											: new ProviderContentFilterError(value.finishReason, value.usage);
+										try {
+											await reader.cancel(error);
+										} catch (cleanupError) {
+											// Cleanup must not erase the already-classified failure.
+											log.error("provider filtered stream cancellation failed", cleanupError, {
+												conversation,
+												model: `${model.provider}/${model.modelId}`,
+												filter: String(error),
+											});
+										}
+										if (cancelled) return;
+										controller.enqueue({ type: "error", error });
+										controller.close();
+									} else if (value.type === "finish" || value.type === "error") {
+										flush();
+										controller.enqueue(value);
+									} else if (buffered.length > 0 || isToolPart(value)) {
+										buffered.push(value);
+										continue;
+									} else {
+										controller.enqueue(value);
+									}
+									return;
 								}
 							} catch (error) {
 								if (cancelled) return;

@@ -131,7 +131,10 @@ agent loop.
   app streams, history and retention; a second filter ends the turn with
   a plain explanation. Already-streamed partial text/reasoning cannot
   be retracted and stays visible and in UI history; the SDK excludes it
-  from its recovered model-step result. Keep token streaming live rather
+  from its recovered model-step result. While buffering tool-input parts,
+  the wrapper keeps pulling upstream until it can emit a part or finish:
+  returning from `pull()` without enqueueing can strand a pending read
+  forever (chunked-tool regression, 2026-10-05). Keep token streaming live rather
   than buffering whole answers. No prompt rewriting or cache-busting.
   Log retry, recovery and exhaustion. Recovered-step usage excludes
   blocked attempts; log reported filtered-finish usage separately.

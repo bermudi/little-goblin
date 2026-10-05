@@ -272,6 +272,42 @@ describe("provider-filter retry", () => {
 		store.close();
 	});
 
+	test("chunked tool input completes the turn instead of leaving the sink running forever", async () => {
+		const { model, requests } = scripted([
+			[
+				{ type: "tool-input-start", id: "call", toolName: "probe" },
+				{ type: "tool-input-delta", id: "call", delta: "{" },
+				{ type: "tool-input-delta", id: "call", delta: "}" },
+				{ type: "tool-input-end", id: "call" },
+				call,
+				finish("tool-calls"),
+			],
+			answer(),
+		]);
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		let executions = 0;
+		const runtime = new Runtime({
+			store, buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: () => { executions++; return { ok: true }; },
+				}),
+			}),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "Use the tool then answer" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		while (runtime.busy(conv.id)) await sleep(1);
+		await runtime.shutdown();
+		expect(executions).toBe(1);
+		expect(requests).toHaveLength(2);
+		expect(sink.text).toBe("Recovered answer");
+		expect(store.history(conv.id)).toHaveLength(2);
+		store.close();
+	}, 3_000);
+
 	test("a second filter later in the turn exhausts the budget and saves no failed reply", async () => {
 		const { model, requests } = scripted([
 			[blocked], [call, finish("tool-calls")], [finish("content-filter")],

@@ -73,6 +73,7 @@ export function makeBellSink(
 			const title =
 				deps.store.get(conv.id)?.title ?? conv.title ?? "app conversation";
 			let ping: string;
+			let pingKey: string | undefined;
 			if (done.kind === "completed") {
 				// The response the turn appended before onDone is the summary.
 				const assistant = deps.store
@@ -86,15 +87,15 @@ export function makeBellSink(
 					});
 					return;
 				}
-				const key = `${conv.id}:${assistant.id}`;
-				if (pingedResponses.has(key)) {
+				pingKey = `${conv.id}:${assistant.id}`;
+				if (pingedResponses.has(pingKey)) {
 					log.debug("spin-off ping skipped — response already pinged", {
 						conversation: conv.id,
 						trigger,
 					});
 					return;
 				}
-				pingedResponses.add(key);
+				pingedResponses.add(pingKey);
 				if (pingedResponses.size > PINGED_CAP) {
 					const oldest = pingedResponses.values().next().value;
 					if (oldest !== undefined) pingedResponses.delete(oldest);
@@ -104,6 +105,7 @@ export function makeBellSink(
 				ping = `${title}: the turn failed — ${headCut(done.message, ERROR_HEAD_LIMIT)}`;
 			}
 			const publicUrl = deps.publicUrl();
+			let delivered = false;
 			for (const chat of deps.allowedUsers()) {
 				// Each chat independently — one failing operator must not
 				// silence the rest, and nothing escapes onDone.
@@ -125,6 +127,7 @@ export function makeBellSink(
 						"sendMessage (spin-off ping)",
 						deps.timeoutMs ?? API_CALL_TIMEOUT_MS,
 					);
+					delivered = true;
 					deps.pings.record(chat, sent.message_id, conv.id);
 					const dm = deps.store.currentDm(chat);
 					if (dm === null) {
@@ -168,6 +171,18 @@ export function makeBellSink(
 						chat,
 					});
 				}
+			}
+			// A response whose ping reached nobody keeps its dedup key —
+			// consuming it would make the next bell for the same reply
+			// skip, and the operator would never hear about the turn. A
+			// timed-out send counts as undelivered: if it secretly landed,
+			// a re-ping is noise; if it didn't, a consumed key is silence.
+			if (pingKey !== undefined && !delivered) {
+				pingedResponses.delete(pingKey);
+				log.warn("spin-off ping reached no chat — response stays unpinged", {
+					conversation: conv.id,
+					trigger,
+				});
 			}
 		},
 	};

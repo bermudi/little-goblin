@@ -146,6 +146,23 @@ describe("makeBellSink", () => {
 		h.store.close();
 	});
 
+	test("a ping that reaches nobody stays unpinged — the next bell retries", async () => {
+		// failChats is read per send, so emptying it mid-test is a
+		// Telegram outage ending.
+		const failChats = [1];
+		const h = harness({ allowedUsers: [1], failChats });
+		const conv = appConv(h.store);
+		reply(h.store, conv.id, "done");
+		await makeBellSink(h.deps, conv).onDone({ kind: "completed" });
+		expect(h.sent).toEqual([]);
+		failChats.length = 0;
+		// Every send failed — the dedup key wasn't consumed, so a second
+		// bell for the same response still rings.
+		await makeBellSink(h.deps, conv).onDone({ kind: "completed" });
+		expect(h.sent.map((s) => s.chat)).toEqual([1]);
+		h.store.close();
+	});
+
 	test("a completed turn with no stored reply pings nobody", async () => {
 		const h = harness({ allowedUsers: [1] });
 		const conv = appConv(h.store);

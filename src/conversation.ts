@@ -126,11 +126,19 @@ export interface ConversationStore {
 	// rolling address — dm:<chat>:<n> conversations with one current per
 	// chat, the boundary drawn by a quiet gap. currentDm returns the
 	// current conversation (null = never rolled); rollDm creates
-	// dm:<chat>:<n+1> and points the chat at it, in one transaction.
+	// dm:<chat>:<n+1> linked to the selected source, then selects it
+	// atomically. n is a creation high-water, never rewound by /back.
 	currentDm(chatId: number): Conversation | null;
 	rollDm(chatId: number, defaultCwd: string): Conversation;
-	// Newest event's created_at, else the conversation's own — the
-	// quiet-gap clock the roller reads.
+	// Read-only predecessor candidate, restricted to rolling private
+	// DMs in this chat. Legacy DM/topic/app conversations never qualify.
+	previousDm(chatId: number): Conversation | null;
+	// Atomically select that predecessor and reset the quiet-gap clock.
+	// Null means no predecessor and no state change. Caller owns logs,
+	// cancellation, and pending-input assignment; no history is replayed.
+	backDm(chatId: number): Conversation | null;
+	// Latest event/creation timestamp, plus the selection timestamp only
+	// when this is the current DM — the quiet-gap clock the roller reads.
 	lastActivityAt(id: string): string;
 	// Highest event seq written so far — null when the conversation
 	// holds none. The spin-off discard compares it against the seq at
@@ -250,6 +258,19 @@ interface Row {
 	memory_excluded: number;
 	epoch: number;
 	created_at: string;
+	previous_dm_id: string | null; // internal navigation link, never on the wire
+}
+
+const privateChatIdSchema = z.number().int().positive();
+
+// Only canonical rolling private DM identities can enter a back chain.
+// Checking coordinates too prevents a malformed disk link crossing pools.
+function rollingDmOrdinal(row: Pick<Row, "id" | "chat_id" | "thread_id">, chatId: number): number | null {
+	const prefix = `dm:${chatId}:`;
+	const n = row.id.slice(prefix.length);
+	return row.chat_id === chatId && row.thread_id === null &&
+		row.id.startsWith(prefix) && /^[1-9]\d*$/.test(n) && Number.isSafeInteger(Number(n))
+		? Number(n) : null;
 }
 
 // Disk state is a boundary: history rows are validated on read, not
@@ -516,6 +537,42 @@ export function openStore(dbPath: string): ConversationStore {
 			current_id TEXT NOT NULL REFERENCES conversations(id),
 			n INTEGER NOT NULL
 		)`);
+	// Manual DM navigation is additive. The presence of the link column
+	// is the one-time migration marker: never rebuild links on later boots,
+	// or a /back → /new branch would silently become chronological again.
+	const rollCols = new Set(
+		db.query<{ name: string }, []>("PRAGMA table_info(dm_rolls)").all().map((c) => c.name),
+	);
+	db.transaction(() => {
+		if (!convCols.has("previous_dm_id")) {
+			db.run("ALTER TABLE conversations ADD COLUMN previous_dm_id TEXT REFERENCES conversations(id) ON DELETE SET NULL");
+			const sessionsByChat = new Map<number, { id: string; ordinal: number }[]>();
+			const rows = db.query<Pick<Row, "id" | "chat_id" | "thread_id">, []>(
+				"SELECT id, chat_id, thread_id FROM conversations",
+			).all();
+			for (const row of rows) {
+				if (!privateChatIdSchema.safeParse(row.chat_id).success) continue;
+				const ordinal = rollingDmOrdinal(row, row.chat_id);
+				if (ordinal === null) continue;
+				const sessions = sessionsByChat.get(row.chat_id) ?? [];
+				sessions.push({ id: row.id, ordinal });
+				sessionsByChat.set(row.chat_id, sessions);
+			}
+			// The numeric suffix is the creation high-water mark. Wall-clock
+			// timestamps can run backwards; row insertion order is not identity.
+			for (const sessions of sessionsByChat.values()) {
+				sessions.sort((a, b) => a.ordinal - b.ordinal);
+				let previous: string | null = null;
+				for (const session of sessions) {
+					db.run("UPDATE conversations SET previous_dm_id = ? WHERE id = ?", [previous, session.id]);
+					previous = session.id;
+				}
+			}
+		}
+		if (!rollCols.has("selected_at")) {
+			db.run("ALTER TABLE dm_rolls ADD COLUMN selected_at TEXT");
+		}
+	})();
 	// Legacy rows predate the versioned envelope — wrap them once, in
 	// place, before anything reads them this boot. Only well-formed bare
 	// UIMessage objects match (top-level string `id`); corrupt rows are
@@ -553,15 +610,19 @@ export function openStore(dbPath: string): ConversationStore {
 		`INSERT INTO conversations (id, chat_id, thread_id, title, cwd, created_at)
 		 VALUES (?, ?, ?, NULL, ?, ?)`,
 	);
-	const qDmRoll = db.query<{ current_id: string; n: number }, [number]>(
-		"SELECT current_id, n FROM dm_rolls WHERE chat_id = ?",
+	const qDmRoll = db.query<{ current_id: string; n: number; selected_at: string | null }, [number]>(
+		"SELECT current_id, n, selected_at FROM dm_rolls WHERE chat_id = ?",
 	);
 	const qUpsertRoll = db.query(
-		`INSERT INTO dm_rolls (chat_id, current_id, n) VALUES (?, ?, ?)
-		 ON CONFLICT(chat_id) DO UPDATE SET current_id = excluded.current_id, n = excluded.n`,
+		`INSERT INTO dm_rolls (chat_id, current_id, n, selected_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(chat_id) DO UPDATE SET current_id = excluded.current_id,
+		 n = excluded.n, selected_at = excluded.selected_at`,
+	);
+	const qSelectPrevious = db.query(
+		"UPDATE dm_rolls SET current_id = ?, selected_at = ? WHERE chat_id = ?",
 	);
 	const qLastActivity = db.query<{ created_at: string }, [string]>(
-		"SELECT created_at FROM events WHERE conversation_id = ? ORDER BY seq DESC LIMIT 1",
+		"SELECT created_at FROM events WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1",
 	);
 	const qHistory = db.query<
 		{ seq: number; anchor_seq: number | null; role: string; data: string },
@@ -648,6 +709,22 @@ export function openStore(dbPath: string): ConversationStore {
 	const qDeleteCompactions = db.query("DELETE FROM compactions WHERE conversation_id = ?");
 	const qDeleteContexts = db.query("DELETE FROM memory_contexts WHERE conversation_id = ?");
 	const qDeleteConv = db.query("DELETE FROM conversations WHERE id = ?");
+
+	function previousDmRow(chatId: number): Row | null {
+		if (!privateChatIdSchema.safeParse(chatId).success) return null;
+		const roll = qDmRoll.get(chatId);
+		if (!roll) return null;
+		const current = qGet.get(roll.current_id);
+		if (!current || current.previous_dm_id === null) return null;
+		const currentOrdinal = rollingDmOrdinal(current, chatId);
+		if (currentOrdinal === null) return null;
+		const previous = qGet.get(current.previous_dm_id);
+		if (!previous || previous.id === current.id) return null;
+		const previousOrdinal = rollingDmOrdinal(previous, chatId);
+		// Every back step must decrease the creation ordinal, including
+		// branch source links. A corrupt forward link can otherwise cycle.
+		return previousOrdinal !== null && previousOrdinal < currentOrdinal ? previous : null;
+	}
 
 	function applyPatch(id: string, patch: ConversationMetaPatch): void {
 		const sets: string[] = [];
@@ -751,23 +828,45 @@ export function openStore(dbPath: string): ConversationStore {
 		},
 
 		rollDm(chatId, defaultCwd) {
+			privateChatIdSchema.parse(chatId);
 			return db.transaction(() => {
-				const n = (qDmRoll.get(chatId)?.n ?? 0) + 1;
+				const roll = qDmRoll.get(chatId);
+				const n = (roll?.n ?? 0) + 1;
 				const id = `dm:${chatId}:${n}`;
-				qInsertConv.run(id, chatId, null, defaultCwd, new Date().toISOString());
-				qUpsertRoll.run(chatId, id, n);
+				const now = new Date().toISOString();
+				const source = roll ? qGet.get(roll.current_id) : null;
+				qInsertConv.run(id, chatId, null, defaultCwd, now);
+				db.run("UPDATE conversations SET previous_dm_id = ? WHERE id = ?", [
+					source && rollingDmOrdinal(source, chatId) !== null ? source.id : null, id,
+				]);
+				qUpsertRoll.run(chatId, id, n, now);
 				const created = qGet.get(id);
 				if (!created) throw new Error(`conversation ${id} insert failed`);
 				return toConversation(created);
 			})();
 		},
 
+		previousDm(chatId) {
+			const row = previousDmRow(chatId);
+			return row ? toConversation(row) : null;
+		},
+
+		backDm(chatId) {
+			return db.transaction(() => {
+				const row = previousDmRow(chatId);
+				if (!row) return null;
+				qSelectPrevious.run(row.id, new Date().toISOString(), chatId);
+				return toConversation(row);
+			})();
+		},
+
 		lastActivityAt(id) {
-			const event = qLastActivity.get(id);
-			if (event) return event.created_at;
 			const conv = qGet.get(id);
 			if (!conv) throw new Error(`conversation ${id} not found`);
-			return conv.created_at;
+			const event = qLastActivity.get(id);
+			const roll = qDmRoll.get(conv.chat_id);
+			const selectedAt = roll?.current_id === id ? roll.selected_at : null;
+			return [conv.created_at, event?.created_at ?? "", selectedAt ?? ""].sort().at(-1)!;
 		},
 
 		lastSeq(id) {

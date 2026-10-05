@@ -70,9 +70,34 @@ function decode(row: unknown): InboxEntry {
 	return { updateId: r.update_id, payload: parsed.data };
 }
 
+const updateIdSchema = idSchema.nonnegative();
+const dmLaneSchema = z.string().regex(/^dm:[1-9]\d*$/);
+const rollingTargetSchema = z.string().regex(/^dm:[1-9]\d*:[1-9]\d*$/);
+
+function archiveScope(laneKey: string, targetId?: string): number {
+	dmLaneSchema.parse(laneKey);
+	const chatId = idSchema.positive().parse(Number(laneKey.slice(3)));
+	if (targetId !== undefined) {
+		rollingTargetSchema.parse(targetId);
+		const [kind, chat, ordinal] = targetId.split(":");
+		if (kind !== "dm" || idSchema.positive().parse(Number(chat)) !== chatId ||
+			!idSchema.positive().safeParse(Number(ordinal)).success) {
+			throw new Error("Telegram inbox archive target is outside its DM lane");
+		}
+	}
+	return chatId;
+}
+
+const assignmentSchema = z.object({ target_id: rollingTargetSchema });
+
 export function openTelegramInbox(db: Database): {
 	record(updateId: number, payload: InboxPayload): boolean;
 	pending(): InboxEntry[];
+	pendingIds(updateIds: readonly number[], laneKey: string): number[];
+	archivePendingBefore(laneKey: string, beforeUpdateId: number, targetId: string): number;
+	archivedTarget(updateId: number, laneKey: string): string | null;
+	hasPendingBefore(laneKey: string, beforeUpdateId: number): boolean;
+	assertRouteable(updateIds: number[], laneKey: string): boolean;
 	commitBatch(updateIds: number[], conversationId: string, append: () => void): void;
 } {
 	db.run(`CREATE TABLE IF NOT EXISTS tg_inbox (
@@ -86,6 +111,29 @@ export function openTelegramInbox(db: Database): {
 		CHECK ((committed_at IS NULL AND payload_json IS NOT NULL) OR
 		       (committed_at IS NOT NULL AND payload_json IS NULL))
 	)`);
+	// The original lane/payload is never rewritten: redelivery must still
+	// match its intake identity, even after navigation or acknowledgement.
+	db.run(`CREATE TABLE IF NOT EXISTS tg_inbox_archives (
+		update_id INTEGER PRIMARY KEY REFERENCES tg_inbox(update_id),
+		target_id TEXT NOT NULL
+	)`);
+	const selectArchive = db.query("SELECT target_id FROM tg_inbox_archives WHERE update_id = ?");
+	const insertArchive = db.query("INSERT INTO tg_inbox_archives (update_id, target_id) VALUES (?, ?)");
+	const selectBefore = db.query(`SELECT update_id, chat_id, message_id, conversation_id, payload_json, committed_at
+		FROM tg_inbox WHERE conversation_id = ? AND update_id < ? AND committed_at IS NULL ORDER BY update_id`);
+	function archivedTarget(updateId: number, laneKey: string): string | null {
+		updateIdSchema.parse(updateId);
+		archiveScope(laneKey);
+		const assignment = selectArchive.get(updateId);
+		if (!assignment) return null;
+		const target = assignmentSchema.parse(assignment).target_id;
+		archiveScope(laneKey, target);
+		const row = rowSchema.parse(selectOne.get(updateId));
+		if (row.conversation_id !== laneKey || row.chat_id !== archiveScope(laneKey)) {
+			throw new Error("Telegram inbox archive has a mismatched lane");
+		}
+		return target;
+	}
 	const insert = db.query(`INSERT INTO tg_inbox
 		(update_id, chat_id, message_id, conversation_id, payload_json)
 		VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`);
@@ -121,7 +169,12 @@ export function openTelegramInbox(db: Database): {
 				log.info(inserted ? "telegram inbox recorded" : "telegram inbox duplicate", fields);
 				return inserted;
 			} catch (err) {
-				log.error("telegram inbox record failed", err, fields);
+				log.error("telegram inbox record failed", undefined, {
+					updateId: idSchema.safeParse(updateId).success ? updateId : null,
+					chatId: idSchema.safeParse(payload.chatId).success ? payload.chatId : null,
+					messageId: idSchema.safeParse(payload.messageId).success ? payload.messageId : null,
+					errorKind: err instanceof Error ? err.name : "unknown",
+				});
 				throw err;
 			}
 		},
@@ -129,9 +182,78 @@ export function openTelegramInbox(db: Database): {
 			try {
 				return selectPending.all().map(decode);
 			} catch (err) {
-				log.error("telegram inbox pending read failed", err);
+				log.error("telegram inbox pending read failed", undefined, { errorKind: err instanceof Error ? err.name : "unknown" });
 				throw err;
 			}
+		},
+		pendingIds(updateIds, laneKey) {
+			z.array(updateIdSchema).parse(updateIds);
+			z.string().min(1).parse(laneKey);
+			if (new Set(updateIds).size !== updateIds.length) throw new Error("Duplicate Telegram inbox batch identities");
+			return updateIds.filter((id) => {
+				const row = rowSchema.parse(selectOne.get(id));
+				if (row.conversation_id !== laneKey) throw new Error(`Telegram inbox update ${id} is in another lane`);
+				if (row.committed_at !== null) return false;
+				decode(row);
+				return true;
+			});
+		},
+		archivePendingBefore(laneKey, beforeUpdateId, targetId) {
+			const fields = { laneKey, beforeUpdateId, targetId };
+			try {
+				const chatId = archiveScope(laneKey, targetId);
+				updateIdSchema.parse(beforeUpdateId);
+				const count = db.transaction(() => {
+					const target = z.object({ id: rollingTargetSchema, chat_id: idSchema }).parse(
+						db.query("SELECT id, chat_id FROM conversations WHERE id = ?").get(targetId),
+					);
+					if (target.chat_id !== chatId) throw new Error("Telegram inbox archive target has a mismatched chat");
+					let assigned = 0;
+					for (const raw of selectBefore.all(laneKey, beforeUpdateId)) {
+						const entry = decode(raw);
+						if (entry.payload.chatId !== chatId) throw new Error("Telegram inbox archive input has a mismatched chat");
+						if (archivedTarget(entry.updateId, laneKey) !== null) continue;
+						insertArchive.run(entry.updateId, targetId);
+						assigned++;
+					}
+					return assigned;
+				})();
+				log.info("telegram inbox inputs archived", { ...fields, archivedInputs: count });
+				return count;
+			} catch (err) {
+				log.error("telegram inbox archive failed — rolled back", undefined, {
+					laneKey: dmLaneSchema.safeParse(laneKey).success ? laneKey : null,
+					beforeUpdateId: updateIdSchema.safeParse(beforeUpdateId).success ? beforeUpdateId : null,
+					targetId: rollingTargetSchema.safeParse(targetId).success ? targetId : null,
+					errorKind: err instanceof Error ? err.name : "unknown",
+				});
+				throw err;
+			}
+		},
+		archivedTarget,
+		hasPendingBefore(laneKey, beforeUpdateId) {
+			const chatId = archiveScope(laneKey);
+			updateIdSchema.parse(beforeUpdateId);
+			const entries = selectBefore.all(laneKey, beforeUpdateId).map(decode);
+			for (const entry of entries) {
+				if (entry.payload.chatId !== chatId) throw new Error("Telegram inbox pending input has a mismatched chat");
+			}
+			return entries.length !== 0;
+		},
+		assertRouteable(updateIds, laneKey) {
+			z.string().min(1).parse(laneKey);
+			z.array(updateIdSchema).min(1).parse(updateIds);
+			if (new Set(updateIds).size !== updateIds.length) return false;
+			return updateIds.every((id) => {
+				const raw = selectOne.get(id);
+				if (!raw) return false;
+				const row = rowSchema.parse(raw);
+				if (row.committed_at !== null || row.conversation_id !== laneKey) return false;
+				decode(row);
+				// Any assignment fences classification, even if its target
+				// happens to be the currently selected conversation.
+				return selectArchive.get(id) === null;
+			});
 		},
 		commitBatch(updateIds, conversationId, append) {
 			const fields = { updateIds, conversationId };
@@ -144,8 +266,13 @@ export function openTelegramInbox(db: Database): {
 				db.transaction(() => {
 					for (const id of updateIds) {
 						const row = selectOne.get(id);
-						if (!row || decode(row).payload.conversationId !== conversationId) {
-							throw new Error(`Telegram inbox update ${id} is missing, committed, or in another conversation`);
+						if (!row) throw new Error(`Telegram inbox update ${id} is missing`);
+						const lane = decode(row).payload.conversationId;
+						const target = selectArchive.get(id) ? archivedTarget(id, lane) : null;
+						// Normal routing commits by original lane; history-only
+						// intake may also commit directly by its assigned target.
+						if (lane !== conversationId && target !== conversationId) {
+							throw new Error(`Telegram inbox update ${id} is in another conversation`);
 						}
 					}
 					append(); // ConversationStore.append opens a savepoint on this same handle.
@@ -156,7 +283,10 @@ export function openTelegramInbox(db: Database): {
 				})();
 				log.info("telegram inbox batch committed", fields);
 			} catch (err) {
-				log.error("telegram inbox batch failed — rolled back", err, fields);
+				log.error("telegram inbox batch failed — rolled back", undefined, {
+					updateIds: z.array(idSchema).safeParse(updateIds).success ? updateIds : null,
+					errorKind: err instanceof Error ? err.name : "unknown",
+				});
 				throw err;
 			}
 		},

@@ -100,13 +100,14 @@ Conversation ─────── (channel address) → durable event history
   drops queued ones; messages still in the intake buffer are user input,
   not queued turns, and flush into a fresh turn at the new epoch.
 
-**Topics are the UX — in the group.** There are no `/new` or `/resume`
-commands. In the bot DM, quiet gaps draw the boundaries instead (Rolling
-DM), and durable work moves to the app (Spin-off). In the group, a forum
+**Topics are the UX — in the group.** In the bot DM, quiet gaps draw the
+boundaries (Rolling DM), with explicit `/new` and `/back` overrides
+(operator ruling, 2026-10-05). Neither command applies to group topics;
+there is no `/resume` command. Durable work moves to the app (Spin-off). In the group, a forum
 topic is a conversation: create a topic to start one, post in an old topic to
 resume it. The bot may also create topics itself (`createForumTopic`). A chat
 without topics is one standing conversation. Conversation management is
-Telegram's job, not a command set's. A topic created without an explicit name
+Telegram's job in the group, not a command set's. A topic created without an explicit name
 (`is_name_implicit`) carries a placeholder; the first text burst triggers a
 one-shot rename via the optional `titleModel` config ref — an explicit
 operator rename always wins.

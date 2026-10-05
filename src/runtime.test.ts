@@ -604,6 +604,22 @@ describe("turn authority", () => {
 		store.close();
 	});
 
+	test("post-commit cancellation requires the committed fence and does not advance it again", async () => {
+		const { store, conv, runtime } = setup(["a", "b", "c", "d"], 20);
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		await sink.firstDelta;
+		expect(() => runtime.cancelFenced(conv.id, 0)).toThrow("committed epoch");
+		expect(() => runtime.cancelFenced(conv.id, 1)).toThrow("committed epoch");
+		const epoch = store.bumpEpoch(conv.id);
+		expect(runtime.cancelFenced(conv.id, epoch).stopped).toBe(true);
+		expect(store.get(conv.id)?.epoch).toBe(epoch);
+		expect(await sink.done).toEqual({ kind: "fenced" });
+		await runtime.shutdown();
+		expect(store.history(conv.id).map((message) => message.role)).toEqual(["user"]);
+		store.close();
+	});
+
 	test("/stop notifies queued turns — every sink gets exactly one onDone", async () => {
 		const { store, conv, runtime } = setup(["a", "b", "c", "d"], 30);
 		const s1 = new RecordingSink();

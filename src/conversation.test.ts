@@ -687,3 +687,283 @@ describe("rolling dm", () => {
 		store.close();
 	});
 });
+
+describe("manual rolling DM navigation", () => {
+	const pin = (store: ConversationStore, chatId: number) => store.db.query<
+		{ current_id: string; n: number; selected_at: string | null }, [number]
+	>("SELECT current_id, n, selected_at FROM dm_rolls WHERE chat_id = ?").get(chatId);
+
+	test("no current or predecessor is a read-only no-op; repeated back walks the source chain", () => {
+		const store = openStore(tmpdb());
+		expect(store.previousDm(7)).toBeNull();
+		expect(store.backDm(7)).toBeNull();
+		expect(pin(store, 7)).toBeNull();
+		const first = store.rollDm(7, "/w");
+		const initialPin = pin(store, 7);
+		expect(store.previousDm(7)).toBeNull();
+		expect(store.backDm(7)).toBeNull();
+		expect(pin(store, 7)).toEqual(initialPin);
+		const second = store.rollDm(7, "/w");
+		const third = store.rollDm(7, "/w");
+		const thirdPin = pin(store, 7);
+		expect(store.previousDm(7)?.id).toBe(second.id);
+		expect(pin(store, 7)).toEqual(thirdPin);
+		expect(store.backDm(7)?.id).toBe(second.id);
+		expect(store.currentDm(7)?.id).toBe(second.id);
+		expect(store.backDm(7)?.id).toBe(first.id);
+		const firstPin = pin(store, 7);
+		expect(store.backDm(7)).toBeNull();
+		expect(pin(store, 7)).toEqual(firstPin);
+		expect(pin(store, 7)?.n).toBe(3);
+		expect(store.get(third.id)).not.toBeNull();
+		store.close();
+	});
+
+	test("back → new → back returns to the selected source, never an abandoned sibling; ids stay unique", () => {
+		const path = tmpdb();
+		const store = openStore(path);
+		const first = store.rollDm(7, "/w");
+		const sibling = store.rollDm(7, "/w");
+		store.backDm(7);
+		const branch = store.rollDm(7, "/w");
+		expect(branch.id).toBe("dm:7:3");
+		expect(store.previousDm(7)?.id).toBe(first.id);
+		store.close();
+
+		const reopened = openStore(path);
+		expect(reopened.currentDm(7)?.id).toBe(branch.id);
+		expect(reopened.previousDm(7)?.id).toBe(first.id);
+		expect(reopened.backDm(7)?.id).toBe(first.id);
+		const selectedAt = pin(reopened, 7)?.selected_at;
+		expect(reopened.get(sibling.id)).not.toBeNull();
+		reopened.close();
+
+		const again = openStore(path);
+		expect(again.currentDm(7)?.id).toBe(first.id);
+		expect(pin(again, 7)?.selected_at).toBe(selectedAt);
+		expect(again.lastActivityAt(first.id)).toBe(selectedAt!);
+		expect(again.rollDm(7, "/w").id).toBe("dm:7:4");
+		expect(again.previousDm(7)?.id).toBe(first.id);
+		again.close();
+	});
+
+	test("navigation preserves events, settings, compaction audits and recall without copying or replay", () => {
+		const store = openStore(tmpdb());
+		const first = store.rollDm(7, "/w");
+		store.append(first.id, [msg("question"), {
+			id: "a1", role: "assistant", parts: [{ type: "text", text: "reply" }],
+		}], { anchorSeq: 1 });
+		store.applySettings(first.id, { voice: true, memoryExcluded: true, model: "old/model", thinking: "high" });
+		store.memoryContexts.save(first.id, 1, "recall evidence", ["doc-1"]);
+		for (const summary of ["initial summary", "revised summary"]) {
+			store.setCompaction(first.id, {
+				boundarySeq: 1, summary, tokensBefore: 500, model: "old/model", createdAt: "2020-01-01T00:00:00.000Z",
+			});
+		}
+		const snapshot = () => ({
+			conversations: store.db.query("SELECT * FROM conversations ORDER BY id").all(),
+			events: store.db.query("SELECT * FROM events ORDER BY id").all(),
+			compactions: store.db.query("SELECT * FROM compactions ORDER BY id").all(),
+			contexts: store.db.query("SELECT * FROM memory_contexts ORDER BY conversation_id, anchor_seq").all(),
+		});
+		const second = store.rollDm(7, "/w");
+		store.append(second.id, [msg("abandoned question")]);
+		const before = snapshot();
+		expect(store.backDm(7)).toEqual(store.get(first.id));
+		expect(snapshot()).toEqual(before);
+		const fresh = store.rollDm(7, "/w");
+		expect(store.history(fresh.id)).toEqual([]);
+		expect(store.getCompaction(fresh.id)).toBeNull();
+		expect(store.memoryContexts.load(fresh.id)).toEqual([]);
+		expect(fresh).toMatchObject({ voice: false, memoryExcluded: false, model: null, thinking: null, epoch: 0 });
+		expect(fresh).not.toHaveProperty("previous_dm_id");
+		expect(store.get(first.id)).toMatchObject({ voice: true, memoryExcluded: true, epoch: 1 });
+		expect(store.history(first.id)).toHaveLength(2);
+		expect(store.history(second.id)).toHaveLength(1);
+		expect(store.getCompaction(first.id)?.summary).toBe("revised summary");
+		expect(store.memoryContexts.load(first.id)).toHaveLength(1);
+		expect(snapshot().events).toEqual(before.events);
+		expect(snapshot().compactions).toEqual(before.compactions);
+		expect(snapshot().contexts).toEqual(before.contexts);
+		store.close();
+	});
+
+	test("predecessors cannot cross chats or select legacy DM, retired topic, app, or self identities", () => {
+		const store = openStore(tmpdb());
+		const first = store.rollDm(7, "/w");
+		const current = store.rollDm(7, "/w");
+		const other = store.rollDm(8, "/w");
+		const otherCurrent = store.rollDm(8, "/w");
+		const legacy = store.resolve({ kind: "dm", chatId: 7 }, "/w");
+		const topic = store.resolve({ kind: "topic", chatId: 7, threadId: 4 }, "/w");
+		const app = store.resolve(appAddress("unrelated"), "/w");
+		for (const invalid of [other, legacy, topic, app, current]) {
+			store.db.run("UPDATE conversations SET previous_dm_id = ? WHERE id = ?", [invalid.id, current.id]);
+			const before = pin(store, 7);
+			expect(store.previousDm(7)).toBeNull();
+			expect(store.backDm(7)).toBeNull();
+			expect(pin(store, 7)).toEqual(before);
+		}
+		// An invalid current pin must not expose even a valid predecessor.
+		store.db.run("UPDATE conversations SET previous_dm_id = ? WHERE id = ?", [first.id, legacy.id]);
+		store.db.run("UPDATE dm_rolls SET current_id = ? WHERE chat_id = 7", [legacy.id]);
+		expect(store.backDm(7)).toBeNull();
+		store.db.run("UPDATE dm_rolls SET current_id = ? WHERE chat_id = 7", [current.id]);
+		store.db.run("UPDATE conversations SET previous_dm_id = ? WHERE id = ?", [first.id, current.id]);
+		expect(store.backDm(7)?.id).toBe(first.id);
+		expect(store.currentDm(8)?.id).toBe(otherCurrent.id);
+		expect(store.previousDm(8)?.id).toBe(other.id);
+		for (const invalidChat of [-7, 0, 7.5, NaN, Infinity]) {
+			expect(store.previousDm(invalidChat)).toBeNull();
+			expect(store.backDm(invalidChat)).toBeNull();
+			expect(() => store.rollDm(invalidChat, "/w")).toThrow();
+		}
+		store.close();
+	});
+
+	test("same-chat forward links and unsafe ordinals cannot change the selection", () => {
+		const store = openStore(tmpdb());
+		const first = store.rollDm(7, "/w");
+		const second = store.rollDm(7, "/w");
+		const third = store.rollDm(7, "/w");
+		expect(store.backDm(7)?.id).toBe(second.id);
+		const unsafeId = "dm:7:9007199254740992";
+		store.db.run(`INSERT INTO conversations (id, chat_id, cwd, created_at, previous_dm_id)
+			VALUES (?, 7, '/w', '2020-01-01T00:00:00.000Z', ?)`, [unsafeId, first.id]);
+		// third already points to second: accepting this forward link
+		// would make repeated /back alternate between the two forever.
+		for (const invalidId of [third.id, unsafeId]) {
+			store.db.run("UPDATE conversations SET previous_dm_id = ? WHERE id = ?", [invalidId, second.id]);
+			const before = pin(store, 7);
+			expect(store.previousDm(7)).toBeNull();
+			expect(store.backDm(7)).toBeNull();
+			expect(pin(store, 7)).toEqual(before);
+		}
+		// Neither end of a link may have an unsafe ordinal, even when
+		// its predecessor is canonical and numerically smaller.
+		store.db.run("UPDATE dm_rolls SET current_id = ? WHERE chat_id = 7", [unsafeId]);
+		const before = pin(store, 7);
+		expect(store.previousDm(7)).toBeNull();
+		expect(store.backDm(7)).toBeNull();
+		expect(pin(store, 7)).toEqual(before);
+		store.close();
+	});
+
+	test("back resets only the selected DM quiet-gap clock, without touching stored timestamps", () => {
+		const store = openStore(tmpdb());
+		const first = store.rollDm(7, "/w");
+		store.append(first.id, [msg("older event"), msg("newer event")]);
+		const second = store.rollDm(7, "/w");
+		const other = store.rollDm(8, "/w");
+		const creation = "2020-01-01T00:00:00.000Z";
+		const event = "2020-01-02T00:00:00.000Z";
+		store.db.run("UPDATE conversations SET created_at = ?", [creation]);
+		store.db.run("UPDATE events SET created_at = ? WHERE seq = 1", [event]);
+		store.db.run("UPDATE events SET created_at = ? WHERE seq = 2", [creation]);
+		store.db.run("UPDATE dm_rolls SET selected_at = NULL");
+		expect(store.lastActivityAt(first.id)).toBe(event); // timestamp, not seq order
+		const timestamps = store.db.query("SELECT created_at FROM events ORDER BY id").all();
+		const before = new Date().toISOString();
+		store.backDm(7);
+		const activation = pin(store, 7)?.selected_at;
+		expect(activation).not.toBeNull();
+		expect(activation! >= before).toBe(true);
+		expect(activation! <= new Date().toISOString()).toBe(true);
+		expect(store.lastActivityAt(first.id)).toBe(activation!);
+		expect(store.get(first.id)?.createdAt).toBe(creation);
+		expect(store.db.query("SELECT created_at FROM events ORDER BY id").all()).toEqual(timestamps);
+		expect(store.lastActivityAt(second.id)).toBe(creation);
+		expect(store.lastActivityAt(other.id)).toBe(creation);
+		store.rollDm(7, "/w");
+		expect(store.lastActivityAt(first.id)).toBe(event); // activation belongs only to the selected pin
+		expect(store.backDm(7)?.id).toBe(first.id);
+		// A later event beats activation, even if followed by an older stamp.
+		store.db.run("UPDATE events SET created_at = '2099-01-01T00:00:00.000Z' WHERE seq = 1");
+		expect(store.lastActivityAt(first.id)).toBe("2099-01-01T00:00:00.000Z");
+		store.rollDm(7, "/w");
+		expect(store.lastActivityAt(first.id)).toBe("2099-01-01T00:00:00.000Z");
+		store.close();
+	});
+
+	test("failed selection rolls back new creation/link and back selection; enclosing transactions also own navigation", () => {
+		const store = openStore(tmpdb());
+		const first = store.rollDm(7, "/w");
+		const second = store.rollDm(7, "/w");
+		const before = pin(store, 7);
+		store.db.run(`CREATE TRIGGER reject_dm_selection BEFORE UPDATE ON dm_rolls
+			BEGIN SELECT RAISE(ABORT, 'selection rejected'); END`);
+		expect(() => store.rollDm(7, "/w")).toThrow("selection rejected");
+		expect(store.get("dm:7:3")).toBeNull();
+		expect(pin(store, 7)).toEqual(before);
+		expect(() => store.backDm(7)).toThrow("selection rejected");
+		expect(pin(store, 7)).toEqual(before);
+		expect(store.previousDm(7)?.id).toBe(first.id);
+		store.db.run("DROP TRIGGER reject_dm_selection");
+		expect(() => store.db.transaction(() => {
+			store.backDm(7);
+			store.rollDm(7, "/w");
+			throw new Error("enclosing journal failed");
+		})()).toThrow("enclosing journal failed");
+		expect(pin(store, 7)).toEqual(before);
+		expect(store.get("dm:7:3")).toBeNull();
+		expect(store.currentDm(7)?.id).toBe(second.id);
+		store.close();
+	});
+
+	test("old schema migrates numeric creation-order links despite reversed timestamps, once and without changing the pin", () => {
+		const path = tmpdb();
+		const old = new Database(path);
+		old.run(`CREATE TABLE conversations (
+			id TEXT PRIMARY KEY, chat_id INTEGER NOT NULL, thread_id INTEGER,
+			title TEXT, cwd TEXT NOT NULL, model TEXT, thinking TEXT,
+			epoch INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+		)`);
+		old.run(`CREATE TABLE dm_rolls (
+			chat_id INTEGER PRIMARY KEY, current_id TEXT NOT NULL REFERENCES conversations(id), n INTEGER NOT NULL
+		)`);
+		for (const [id, chatId, threadId] of [
+			["dm:7", 7, null], ["topic:7:4", 7, 4], ["app/old", 0, null],
+			["dm:7:3", 7, null], ["dm:8:2", 8, null], ["dm:7:1", 7, null],
+			["dm:8:1", 8, null], ["dm:7:2", 7, null], ["dm:-9:1", -9, null],
+			["dm:7:04", 7, null], ["dm:7:5", 8, null], ["dm:7:6", 7, 6],
+			["dm:7:9007199254740992", 7, null],
+		] as const) {
+			// Deliberately insert out of ordinal order, including timestamp ties.
+			old.run("INSERT INTO conversations (id, chat_id, thread_id, cwd, created_at) VALUES (?, ?, ?, '/w', '2020-01-01T00:00:00.000Z')", [id, chatId, threadId]);
+		}
+		// A backwards wall clock must still migrate the chain 3 → 2 → 1.
+		old.run("UPDATE conversations SET created_at = '2022-01-01T00:00:00.000Z' WHERE id = 'dm:7:1'");
+		old.run("UPDATE conversations SET created_at = '2021-01-01T00:00:00.000Z' WHERE id = 'dm:7:2'");
+		old.run("INSERT INTO dm_rolls VALUES (7, 'dm:7:3', 3), (8, 'dm:8:2', 2)");
+		old.close();
+
+		const store = openStore(path);
+		expect(pin(store, 7)).toEqual({ current_id: "dm:7:3", n: 3, selected_at: null });
+		expect(store.previousDm(7)?.id).toBe("dm:7:2");
+		expect(store.previousDm(8)?.id).toBe("dm:8:1");
+		const migratedLinks = store.db.query<{ id: string; previous_dm_id: string | null }, []>(
+			"SELECT id, previous_dm_id FROM conversations WHERE previous_dm_id IS NOT NULL ORDER BY id",
+		).all();
+		expect(migratedLinks).toEqual([
+			{ id: "dm:7:2", previous_dm_id: "dm:7:1" },
+			{ id: "dm:7:3", previous_dm_id: "dm:7:2" },
+			{ id: "dm:8:2", previous_dm_id: "dm:8:1" },
+		]);
+		expect(store.backDm(7)?.id).toBe("dm:7:2");
+		expect(store.backDm(7)?.id).toBe("dm:7:1");
+		expect(store.backDm(7)).toBeNull();
+		const fresh = store.rollDm(7, "/w");
+		expect(fresh.id).toBe("dm:7:4");
+		const selection = pin(store, 7);
+		store.close();
+
+		const reopened = openStore(path);
+		expect(pin(reopened, 7)).toEqual(selection);
+		expect(reopened.previousDm(7)?.id).toBe("dm:7:1"); // not creation-order dm:7:3
+		expect(reopened.backDm(7)?.id).toBe("dm:7:1");
+		expect(reopened.backDm(7)).toBeNull();
+		expect(reopened.currentDm(8)?.id).toBe("dm:8:2");
+		expect(reopened.get("dm:7")?.createdAt).toBe("2020-01-01T00:00:00.000Z");
+		reopened.close();
+	});
+});

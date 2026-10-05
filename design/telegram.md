@@ -236,6 +236,54 @@ setting lands on the conversation about to happen rather than the one
 that just ended. `/stop` and `/compact` act on the current
 conversation and never roll.
 
+**Manual DM navigation (operator ruling, 2026-10-05).** `/new` stops
+the current turn and queued reviews, then creates a fresh current
+conversation immediately — no gap or System One check, even while
+busy. `/back` stops the current turn and returns to the conversation
+it was started from. Repeated `/back` walks further back; at the first
+conversation (or with no current one), it reports that there is no
+earlier conversation and changes nothing. Both are DM-only; group
+topics keep their existing identity and get an explanatory reply.
+The commands are advertised in Telegram's slash menu.
+
+All histories, settings, compactions, and recall contexts stay intact.
+There is no automatic replay or copying of user messages or tool calls;
+the operator resends their question after navigating. A new conversation
+records its predecessor; existing rolling conversations get their
+creation-order links at migration. `/back` follows that link rather
+than rewinding the id counter: `/back` → `/new` → `/back` returns to
+the conversation the new one came from, and future ids never reuse
+an abandoned conversation. Selecting an old conversation resets the
+quiet-gap clock without rewriting historical timestamps; the configured
+gap rule then applies normally. Navigation selection and creation/link
+writes are atomic.
+
+Commands bypass slow media intake, as `/stop` already does. Pending
+input received before navigation is durably assigned to the outgoing
+conversation as history-only: intake may finish later, but it never
+starts a turn or enters the newly selected conversation. Input received
+after the command follows the selected pin normally. Admission re-reads
+this assignment after every routing/delivery await, including a held
+follow-up check or marker send; archived input cannot roll the pin.
+Navigation commands are deduplicated by update and chat/message identity,
+and pending assignments, command receipt, selection, and the outgoing
+turn's epoch fence commit together. Runtime aborts, queued-work cleanup,
+and review cancellation happen synchronously after that commit, never
+inside a transaction that could roll back.
+A failure to persist them stops acknowledgement, not silent loss.
+A command addressed to another bot makes no routing change.
+
+A coalesced batch can contain multiple archive destinations and normal
+input. If a later append fails after an earlier group commits, retry
+filters already-committed inbox identities before doing anything else;
+it never tries to append the same archived input again or blocks the
+rest of the lane on a completed row.
+
+Delivery acknowledges `/new` with `— new conversation —` and `/back`
+with `— previous conversation —`; markers are not model history.
+Every manual transition logs the chat address, from/to conversation,
+command, and whether a turn/review was stopped.
+
 **DM topics are retired.** Old DM-topic conversations stay in the
 store — readable, searchable by `history_search` — and are never
 routed to again. Any DM message, thread id or not, resolves to the

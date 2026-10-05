@@ -440,6 +440,17 @@ export class Runtime {
 	// "Skill reviewer").
 	stop(convId: string): { stopped: boolean; settled: Promise<void>; reviewsCancelled: number } {
 		const epoch = this.deps.store.bumpEpoch(convId);
+		return this.cancelFenced(convId, epoch);
+	}
+
+	// Navigation commits the epoch together with the pin and its receipt,
+	// then calls this synchronously. Abort/drop/cancel are runtime effects:
+	// doing them inside SQLite's transaction would make rollback dishonest.
+	// No await or new submission may intervene between fencing and cancellation.
+	cancelFenced(convId: string, epoch: number): { stopped: boolean; settled: Promise<void>; reviewsCancelled: number } {
+		if (!Number.isSafeInteger(epoch) || epoch <= 0 || this.deps.store.get(convId)?.epoch !== epoch) {
+			throw new Error(`cannot cancel conversation ${convId}: committed epoch ${epoch} no longer matches`);
+		}
 		const lane = this.lanes.get(convId);
 		const stopped =
 			lane !== undefined &&

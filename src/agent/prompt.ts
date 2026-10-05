@@ -1,22 +1,23 @@
 // System prompt assembly: shell + tool list + SOUL.md + optional
-// AGENTS.md/USER.md (each capped — see readCapped). Read fresh
-// every turn — the operator or the agent itself may edit either file and
-// the change is live on the next turn. No command, no restart.
-// The tool list comes from the caller (tools/mod.ts's toolNames):
-// availability is deployment-config state, and config only changes by
-// operator action — a sanctioned cache boundary like any other edit.
+// AGENTS.md/USER.md (each capped — see readCapped). Frozen per
+// conversation (systemPromptFor, DESIGN.md → Cache stability): built
+// once at the conversation's first turn and served byte-identical
+// every turn after — file edits load at conversation boundaries (a
+// DM roll, a compaction, a spin-off), never mid-run. The tool list
+// comes from the caller (tools/mod.ts's toolNames): availability is
+// deployment-config state, frozen into the snapshot with the rest.
 //
 // Cache stability: nothing here may vary turn-to-turn on its own (no
 // clock, no counters) — the prompt is the head of the provider prefix
-// cache, and any automatic change invalidates the whole thing. Operator
-// edits are fine: they're explicit and logged as cache boundaries.
+// cache, and any automatic change invalidates the whole thing. Edits
+// are fine: they load at the next boundary, logged by noteSource.
 
 import { createHash } from "node:crypto";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
 import { paths } from "../config.ts";
 import { log } from "../log.ts";
-import { channelOf, type Conversation } from "../conversation.ts";
+import { channelOf, type Conversation, type ConversationStore } from "../conversation.ts";
 import { formatSkillsSection, loadCatalog } from "./skills.ts";
 
 // Last-seen content hash per prompt source, process-wide. An operator
@@ -48,7 +49,16 @@ export function _resetPromptSourcesForTest(): void {
 // meant to stay small; a runaway AGENTS.md must not silently eat the
 // prompt head (and the cache) every turn — it truncates with an
 // in-prompt notice and a warn line instead.
-const MAX_PROMPT_FILE_CHARS = 8_000;
+// Cap is the safety net, not the budget: AGENTS.md is goblin's own
+// operating memory (appends land at the end), SOUL.md its identity —
+// 20k matches both mature neighbors' converged floor. USER.md stays
+// directive-sized at 4k (openclaw's rule: profile guidance must not
+// balloon into per-turn dead weight). Over the cap the head and tail
+// are kept and the middle drops — never the tail, where the newest
+// notes live (hermes' 8k head-chop silently ate a file's tail for
+// months; both neighbors keep head+tail for exactly this reason).
+const MAX_PROMPT_FILE_CHARS = 20_000;
+const USER_PROMPT_FILE_CHARS = 4_000;
 
 // Byte ceiling for the bounded read: producing cap+1 chars never needs
 // more than 3 bytes per char (3-byte UTF-8 sequences are the worst case
@@ -63,7 +73,7 @@ interface PromptFile {
 	bytes: number;
 }
 
-function readOptional(path: string): PromptFile | null {
+function readOptional(path: string, cap: number): PromptFile | null {
 	let fd: number;
 	try {
 		fd = openSync(path, "r");
@@ -86,12 +96,8 @@ function readOptional(path: string): PromptFile | null {
 		const decoder = new StringDecoder("utf8");
 		let text = decoder.write(buf.subarray(0, n));
 		if (n === bytes) text += decoder.end();
-		const truncated = n < bytes || text.length > MAX_PROMPT_FILE_CHARS;
-		return {
-			content: truncated ? text.slice(0, MAX_PROMPT_FILE_CHARS) : text,
-			truncated,
-			bytes,
-		};
+		const truncated = n < bytes || text.length > cap;
+		return { content: text, truncated, bytes };
 	} finally {
 		closeSync(fd);
 	}
@@ -99,23 +105,34 @@ function readOptional(path: string): PromptFile | null {
 
 // Read a workspace file for injection, capped. Truncation is a warn —
 // "why does the bot ignore half my notes" must not need a REPL.
-function readCapped(source: string, path: string): string | null {
-	const file = readOptional(path);
+function readCapped(source: string, path: string, cap: number): string | null {
+	const file = readOptional(path, cap);
 	if (file === null) return null;
 	if (!file.truncated) return file.content;
+	const headLen = Math.min(file.content.length, Math.floor(cap * 0.7));
+	const tailLen = Math.min(file.content.length - headLen, Math.floor(cap * 0.2));
+	const dropped = file.content.length - headLen - tailLen;
 	log.warn("prompt file truncated", {
 		file: source,
 		bytes: file.bytes,
-		cap: MAX_PROMPT_FILE_CHARS,
+		cap,
+		dropped,
 	});
-	return `${file.content}\n\n… (${source} truncated at ${MAX_PROMPT_FILE_CHARS} chars — read the file for the rest)`;
+	if (dropped <= 0) {
+		// Only the byte-bound read cut us off (a file between cap and
+		// 3×cap bytes): everything read is kept, the notice points on.
+		return `${file.content}\n\n… (${source} longer than the read bound — read the file for the rest)`;
+	}
+	const head = file.content.slice(0, headLen);
+	const tail = tailLen > 0 ? file.content.slice(-tailLen) : "";
+	return `${head}\n\n… (${source} truncated at ${cap} chars — kept the first ${headLen} and last ${tailLen}, dropped ${dropped} from the middle — read the file for the rest) …\n${tail}`;
 }
 
 export function buildSystemPrompt(
 	conv: Conversation,
 	tools: readonly string[],
 ): { text: string; sources: string[] } {
-	const soul = readCapped("SOUL.md", paths.soul());
+	const soul = readCapped("SOUL.md", paths.soul(), MAX_PROMPT_FILE_CHARS);
 	if (soul === null) {
 		// Not a reason to fail the turn — but a deleted SOUL.md silently
 		// swaps the bot's personality, and the log must explain that.
@@ -124,10 +141,11 @@ export function buildSystemPrompt(
 			path: paths.soul(),
 		});
 	}
-	const agents = readCapped("AGENTS.md", paths.agents());
-	const user = readCapped("USER.md", paths.user());
-	// Rescanned every turn — a skill written or edited now is live next
-	// message, like the prompt files above.
+	const agents = readCapped("AGENTS.md", paths.agents(), MAX_PROMPT_FILE_CHARS);
+	const user = readCapped("USER.md", paths.user(), USER_PROMPT_FILE_CHARS);
+	// Scanned at snapshot build (conversation start / compaction refresh)
+	// — a skill written mid-conversation appears when the next
+	// conversation starts; its SKILL.md is read fresh on use regardless.
 	const catalog = loadCatalog(paths.skills());
 	const skillsSection = formatSkillsSection(catalog);
 	noteSource("SOUL.md", soul);
@@ -209,8 +227,10 @@ export function buildSystemPrompt(
 					`  three — conversations share nothing else; these files are your only`,
 					`  memory between them.`,
 				]),
-		`  Reads are fresh every turn: edits take effect`,
-		`  next message.`,
+		`  This prompt loaded when this conversation started and stays frozen`,
+		`  while it runs — edits to these files apply when the next`,
+		`  conversation starts (or after compaction). Read a file fresh when`,
+		`  you need what changed; your edits land the same way.`,
 		`- Verify before saying done: run it, read it back, then report.`,
 		`- Act freely on this machine (read, write, run); ask first before`,
 		`  anything leaves it or can't be undone.`,
@@ -228,4 +248,30 @@ export function buildSystemPrompt(
 	if (catalog.entries.length > 0 || catalog.skipped > 0) sources.push("skills");
 
 	return { text, sources };
+}
+
+// The frozen-per-conversation entry point (DESIGN.md → Cache
+// stability): build once at the conversation's first turn, serve the
+// same bytes every turn after. File edits load at conversation
+// boundaries — a DM roll, a compaction, a spin-off — never mid-run:
+// a live conversation's prefix cache is never rewritten under it.
+// Compaction clears the snapshot (runtime.ts) because the history
+// rewrite busts the prefix anyway — the refresh there is free.
+export function systemPromptFor(
+	store: Pick<ConversationStore, "promptSnapshot" | "savePromptSnapshot">,
+	conv: Conversation,
+	tools: readonly string[],
+): { text: string; sources: string[] } {
+	const frozen = store.promptSnapshot(conv.id);
+	if (frozen !== null) return frozen;
+	const built = buildSystemPrompt(conv, tools);
+	store.savePromptSnapshot(conv.id, built.text, built.sources);
+	// The boundary line: the snapshot's birth is a cache write, and
+	// noteSource diffs above explain any source change since the last
+	// build process-wide.
+	log.info("prompt snapshot built", {
+		conversation: conv.id,
+		sources: built.sources.join("+"),
+	});
+	return built;
 }

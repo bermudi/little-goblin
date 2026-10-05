@@ -1,7 +1,8 @@
 // Skill catalog — scan workspace/skills/*/SKILL.md, validate frontmatter
 // per the Agent Skills spec, and render the "## skills" prompt section.
-// Rescanned every turn by buildSystemPrompt, so edits are live next
-// message. A malformed entry warns and skips; it never kills a turn.
+// Catalog scan + frontmatter validation → ## skills section of the
+// system prompt. Scanned at snapshot build (conversation start), not
+// per turn — see prompt.ts. A malformed entry warns and skips; it never kills a turn.
 // See DESIGN.md "Skills" for the rulings.
 
 import { closeSync, openSync, readdirSync, readSync, statSync } from "node:fs";
@@ -186,7 +187,7 @@ export function formatSkillsSection(catalog: SkillCatalog): string[] {
 		"When a request matches one, read_file its SKILL.md and follow it. This",
 		"catalog is yours: write skills/<name>/SKILL.md when you learn a",
 		"repeatable task, then `skills-ref validate ./skills/<name>` via bash.",
-		"Edits are live next turn.",
+		"Edits load when the next conversation starts.",
 		"",
 	];
 	if (catalog.entries.length === 0) {

@@ -529,7 +529,7 @@ export class Runtime {
 			// summary, and the model's answer in the same request.
 			const inputTokenBudget =
 				step.contextWindow !== undefined ? Math.floor(step.contextWindow * 0.5) : 32_000;
-			return await runCompaction(
+			const outcome = await runCompaction(
 				conv.id,
 				this.deps.store,
 				compaction.modelRef(conv),
@@ -537,6 +537,18 @@ export class Runtime {
 				{ tailTokenBudget: tail, inputTokenBudget, reason },
 				controller.signal,
 			);
+			if (outcome.kind === "compacted") {
+				// Compaction rewrote history — the prefix busts anyway, so this
+				// is the free moment to refresh the frozen prompt snapshot
+				// from current files (DESIGN.md → Cache stability). The next
+				// turn (or the summarizer below) rebuilds and re-freezes.
+				this.deps.store.clearPromptSnapshot(conv.id);
+				log.info("prompt snapshot cleared for rebuild", {
+					conversation: conv.id,
+					reason,
+				});
+			}
+			return outcome;
 		} finally {
 			if (lane.compactController === controller) lane.compactController = null;
 		}

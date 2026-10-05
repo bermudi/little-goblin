@@ -2,7 +2,7 @@
 
 import { loadAuth } from "./auth.ts";
 import { contextLimit, ensureOpenRouterCatalog, inputModalities } from "./agent/models-dev.ts";
-import { buildSystemPrompt } from "./agent/prompt.ts";
+import { systemPromptFor } from "./agent/prompt.ts";
 import { observedModel, carriesMedia, resolveModel, thinkingOptions } from "./agent/providers.ts";
 import type { MediaPosition } from "./agent/attachments.ts";
 import { generateTopicTitle } from "./agent/title.ts";
@@ -259,7 +259,8 @@ async function boot() {
 				carriesMedia(kind ?? "", mediaType, position);
 			const level: ThinkingLevel = cfg.thinking;
 			const providerOptions = thinkingOptions(cfg, modelRef, level);
-			const prompt = buildSystemPrompt(
+			const prompt = systemPromptFor(
+				store,
 				conv,
 				// The registered set already reflects TTS and sink availability.
 				toolNames(tools),

@@ -9,8 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths } from "../config.ts";
 import { setLogFile } from "../log.ts";
-import type { Conversation } from "../conversation.ts";
-import { _resetPromptSourcesForTest, buildSystemPrompt } from "./prompt.ts";
+import { openStore, type Conversation } from "../conversation.ts";
+import { _resetPromptSourcesForTest, buildSystemPrompt, systemPromptFor } from "./prompt.ts";
 
 let dirs: string[] = [];
 function useHome(): string {
@@ -214,16 +214,24 @@ describe("workspace file injection", () => {
 		}
 	});
 
-	test("an oversized file truncates with an in-prompt notice and a warn", () => {
+	test("an oversized file keeps head and tail, warns, and names the drop", () => {
 		const home = useHome();
 		process.env.GOBLIN_HOME = home;
 		const logFile = join(home, "goblin.log");
 		setLogFile(logFile);
 		try {
 			mkdirSync(paths.workspace(), { recursive: true });
-			writeFileSync(paths.soul(), `You are goblin. ${"x".repeat(9_000)}`);
+			// Appends land at the end of these files — the sentinel is the
+			// newest standing note, and it must survive the cut.
+			writeFileSync(
+				paths.soul(),
+				`You are goblin. ${"x".repeat(25_000)}\nFINAL-STANDING-RULE: never drop the tail`,
+			);
 			const { text } = buildSystemPrompt(conv, tools);
-			expect(text).toContain("SOUL.md truncated at 8000 chars");
+			expect(text).toContain("SOUL.md truncated at 20000 chars");
+			expect(text).toContain("dropped");
+			// The tail — the newest notes — survives the truncation.
+			expect(text).toContain("FINAL-STANDING-RULE: never drop the tail");
 			// And the log explains it — no REPL needed.
 			const warned = readFileSync(logFile, "utf8")
 				.trim()
@@ -237,6 +245,53 @@ describe("workspace file injection", () => {
 		}
 	});
 
+	test("USER.md is capped tighter — a profile stays directive-sized", () => {
+		const home = useHome();
+		process.env.GOBLIN_HOME = home;
+		try {
+			mkdirSync(paths.workspace(), { recursive: true });
+			writeFileSync(paths.soul(), "You are goblin.");
+			writeFileSync(
+				paths.user(),
+				`- terse operator ${"y".repeat(6_000)}\n- prefers plain language`,
+			);
+			const { text } = buildSystemPrompt(conv, tools);
+			expect(text).toContain("USER.md truncated at 4000 chars");
+			// Openclaw's rule: profile guidance must not balloon into
+			// per-turn dead weight — 4k, and the newest lines survive.
+			expect(text).toContain("- prefers plain language");
+		} finally {
+			delete process.env.GOBLIN_HOME;
+		}
+	});
+
+	test("systemPromptFor freezes per conversation — edits load only at boundaries", () => {
+		const home = useHome();
+		process.env.GOBLIN_HOME = home;
+		const store = openStore(join(home, "goblin.sqlite"));
+		// A real conversation row — the snapshot references it.
+		const live = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		try {
+			mkdirSync(paths.workspace(), { recursive: true });
+			writeFileSync(paths.soul(), "You are goblin, v1.");
+			const frozen = systemPromptFor(store, live, tools);
+			// A mid-conversation edit — by the operator or the agent itself.
+			writeFileSync(paths.soul(), "You are goblin, v2.");
+			// The live conversation keeps its frozen bytes: its prefix
+			// cache is never rewritten underneath it.
+			expect(systemPromptFor(store, live, tools).text).toBe(frozen.text);
+			// A boundary (compaction clears; a roll mints a new id) —
+			// the next build picks the edit up.
+			store.clearPromptSnapshot(live.id);
+			expect(systemPromptFor(store, live, tools).text).toContain("You are goblin, v2.");
+			// And freezes again from there.
+			writeFileSync(paths.soul(), "You are goblin, v3.");
+			expect(systemPromptFor(store, live, tools).text).not.toContain("You are goblin, v3.");
+		} finally {
+			store.close();
+			delete process.env.GOBLIN_HOME;
+		}
+	});
 	test("the shell carries the memory model, verify, and act-vs-ask rules", () => {
 		const home = useHome();
 		process.env.GOBLIN_HOME = home;

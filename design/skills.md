@@ -19,7 +19,9 @@ pass through — real skills in the wild carry extra fields.
 
 One catalog, fixed: `workspace/skills/`. It sits inside the agent's cwd so
 goblin can author its own — writing `skills/<name>/SKILL.md` is the entire
-publishing flow, live next turn. Three exceptions ship from the repo: the
+publishing flow, live at the next conversation boundary (a DM roll
+or compaction — the system prompt is frozen per conversation; the
+SKILL.md itself is read fresh on use). Three exceptions ship from the repo: the
 browser, pass-cli, and mcp skills are seeded by `ensureHomeLayout` (write-if-absent,
 from `deploy/skills/<name>/SKILL.md`) because DESIGN mandates the
 capabilities — a rebuilt box must regain them without operator prompting
@@ -80,7 +82,7 @@ name, description) with instructions plus any scripts/files it needs.
 When a request matches one, read_file its SKILL.md and follow it. This
 catalog is yours: write skills/<name>/SKILL.md when you learn a
 repeatable task, then `skills-ref validate ./skills/<name>` via bash.
-Edits are live next turn.
+Edits load when the next conversation starts.
 
 - mq — jq for Markdown … [Requires the mq CLI] (skills/mq/SKILL.md)
 - pdf — Extract PDF text … (skills/pdf/SKILL.md)

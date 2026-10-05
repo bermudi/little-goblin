@@ -158,6 +158,13 @@ export interface ConversationStore {
 	// Settings changes and cancellation bump the epoch; in-flight turns
 	// fence themselves against it.
 	bumpEpoch(id: string): number;
+	// Frozen system-prompt snapshot (DESIGN.md → Cache stability).
+	// Null = none yet (first turn, or cleared by compaction to refresh).
+	promptSnapshot(id: string): { text: string; sources: string[] } | null;
+	savePromptSnapshot(id: string, text: string, sources: string[]): void;
+	// Compaction rewrites history — the prefix busts anyway, so the
+	// snapshot rebuilds from current files on the next turn.
+	clearPromptSnapshot(id: string): void;
 	// Settings patch + epoch bump in one transaction — a settings write
 	// that fences in-flight turns must never land half-applied.
 	applySettings(id: string, patch: ConversationMetaPatch): number;
@@ -527,6 +534,18 @@ export function openStore(dbPath: string): ConversationStore {
 			tokens_before INTEGER NOT NULL,
 			model TEXT NOT NULL,
 			created_at TEXT NOT NULL
+		)`);
+	// Frozen system prompts (DESIGN.md → Cache stability): the bytes a
+	// conversation started with, served verbatim every turn — file edits
+	// load at conversation boundaries (roll, compaction), never
+	// mid-run, so a live conversation's prefix cache is never rewritten
+	// underneath it.
+	db.run(`
+		CREATE TABLE IF NOT EXISTS prompt_snapshots (
+			conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+			text TEXT NOT NULL,
+			sources TEXT NOT NULL,
+			built_at TEXT NOT NULL
 		)`);
 	// Rolling DM (design/telegram.md → Rolling DM): one current
 	// dm:<chat>:<n> conversation per private chat; n only grows, so a
@@ -918,6 +937,34 @@ export function openStore(dbPath: string): ConversationStore {
 
 		bumpEpoch(id) {
 			return bump(id);
+		},
+
+		promptSnapshot(id) {
+			const row = db.query<{ text: string; sources: string }, [string]>(
+				"SELECT text, sources FROM prompt_snapshots WHERE conversation_id = ?",
+			).get(id);
+			if (!row) return null;
+			let sources: unknown;
+			try {
+				sources = JSON.parse(row.sources);
+			} catch (err) {
+				throw new Error(`corrupt prompt snapshot sources: ${id}: ${String(err)}`);
+			}
+			if (!Array.isArray(sources) || sources.some((s) => typeof s !== "string")) {
+				throw new Error(`corrupt prompt snapshot: ${id}`);
+			}
+			return { text: row.text, sources: sources as string[] };
+		},
+
+		savePromptSnapshot(id, text, sources) {
+			db.run(
+				"INSERT INTO prompt_snapshots (conversation_id, text, sources, built_at) VALUES (?, ?, ?, ?) ON CONFLICT(conversation_id) DO UPDATE SET text = excluded.text, sources = excluded.sources, built_at = excluded.built_at",
+				[id, text, JSON.stringify(sources), new Date().toISOString()],
+			);
+		},
+
+		clearPromptSnapshot(id) {
+			db.run("DELETE FROM prompt_snapshots WHERE conversation_id = ?", [id]);
 		},
 
 		applySettings(id, patch) {

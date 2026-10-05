@@ -157,8 +157,16 @@ the orphaned turn to the operator, don't replay it.
     reference because newer ones arrived.
   - The system prompt carries no automatic per-turn variability — no
     clock. Current time comes from `date` via bash when it matters.
-    Operator edits (SOUL.md, AGENTS.md, USER.md, skills) stay live next turn;
-    they are explicit cache boundaries and log the cost they incur.
+    Operator edits (SOUL.md, AGENTS.md, USER.md, skills) load at
+    conversation boundaries, not mid-run: the system prompt is frozen
+    per conversation (`prompt_snapshots`, built at the first turn), so
+    a live conversation's prefix cache is never rewritten under it.
+    Boundaries are a DM roll, a compaction (which clears the snapshot —
+    the history rewrite busts the prefix anyway, so the refresh is
+    free), and a spin-off/new conversation. Mid-conversation edits are
+    visible to the agent via the read tools immediately; injection
+    waits for the boundary, logged by `noteSource` diffs and the
+    `prompt snapshot built` line.
   - Every model call logs usage with the cached split
     (`cacheReadTokens`/`cacheWriteTokens` in the per-step line — spec v4
     splits reads from writes — null when the provider doesn't report)
@@ -316,8 +324,11 @@ src/
                     intake + transcribe tool share it
     tts.ts          text or file → speech (edge read-aloud ws, opus out)
     prompt.ts       system prompt assembly (shell + SOUL.md + agent-owned
-                    AGENTS.md/USER.md, each capped at 8k chars; re-read
-                    every turn, edits live next message)
+                    AGENTS.md/USER.md — capped at 20k chars each, USER.md
+                    at 4k; overage keeps head 70%/tail 20%, drops the
+                    middle — newest notes live at the end). Frozen per
+                    conversation (prompt_snapshots): edits load at
+                    boundaries (roll/compaction), never mid-run
     skills.ts       catalog scan + frontmatter validation → ## skills section
     tools/          the fourteen tools (read, write, edit, bash, speak,
                     transcribe, program, delegate, mail (send-only; reads

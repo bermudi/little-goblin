@@ -42,7 +42,8 @@ import {
 } from "./memory.ts";
 import { log } from "./log.ts";
 import { runCompaction, type CompactionOutcome } from "./agent/compaction.ts";
-import { isContextOverflow } from "./agent/provider-errors.ts";
+import { isContentFilter, isContextOverflow, ProviderContentFilterError } from "./agent/provider-errors.ts";
+import { filterErrorStream } from "./agent/filter-stream.ts";
 import type { CompletedTurn, PriorTurnContext, ReviewerDeps, ToolCallDigest } from "./reviewer.ts";
 import { cancelAllReviews, cancelReviews, considerTurn, summarize, toolOk } from "./reviewer.ts";
 
@@ -226,6 +227,7 @@ interface TurnRecovery {
 	// continues the same wire (holdForRecovery kept the failure off it),
 	// so attached subscribers and the log must survive the recursion.
 	live: LiveChunks;
+	filterRetryUsed: boolean;
 }
 
 // The provider rejected the request for context size mid-turn. Not an
@@ -819,6 +821,7 @@ export class Runtime {
 
 	private async runTurn(convId: string, turns: QueuedTurn[], recovery?: TurnRecovery): Promise<void> {
 		const { store } = this.deps;
+		let filterRetryUsed = recovery?.filterRetryUsed ?? false;
 		// The first queued sink is the turn's delivery head (delta hooks,
 		// voice, files); every streaming member receives the chunks (the
 		// reply belongs to the conversation, not to the connection that
@@ -1017,8 +1020,9 @@ export class Runtime {
 			// the chunk carries only the serialized message, and the
 			// overflow classifier needs the body/cause chain too.
 			let rawError: unknown = null;
+			let filterRetryPending = false;
 			const result = streamText({
-				model: step.model,
+				model: filterErrorStream(step.model, convId),
 				// `instructions` is the v7 primary; the internal ModelStep keeps
 				// its own `system` field name — the seam stays one property deep.
 				instructions: step.system,
@@ -1140,14 +1144,46 @@ export class Runtime {
 				...(step.providerOptions ? { providerOptions: step.providerOptions } : {}),
 				stopWhen: isStepCount(MAX_STEPS),
 				abortSignal: controller.signal,
+				// Opt into callback-directed step retries, not blanket retries.
+				// The SDK buffers tool parts until the attempt ends cleanly;
+				// completed prior steps/results remain in the identical prompt.
+				streamRetries: 0,
 				onError: ({ error }) => {
+					if (isContentFilter(error)) {
+						this.checkAuthority(convId, epoch);
+						if (!filterRetryUsed) {
+							filterRetryUsed = true;
+							filterRetryPending = true;
+							log.warn("provider content filter — retrying unchanged model call once", {
+								conversation: convId,
+								epoch,
+								model: step.label ?? (typeof step.model === "string" ? step.model : step.model.modelId),
+								error: String(error),
+								blockedUsage: error instanceof ProviderContentFilterError ? error.usage ?? null : null,
+							});
+							return { retry: true };
+						}
+						log.warn("provider content filter — retry budget exhausted", {
+							conversation: convId,
+							epoch,
+							error: String(error),
+							blockedUsage: error instanceof ProviderContentFilterError ? error.usage ?? null : null,
+						});
+					}
 					// Kept for classification: the ui stream's error chunk
 					// carries only the message string, but the overflow check
 					// needs the provider's body/cause chain too.
 					rawError = error;
 					log.error("model stream error", error, { conversation: convId });
 				},
-				onStepEnd: ({ usage }) => {
+				onStepEnd: ({ usage, finishReason }) => {
+					if (filterRetryPending && finishReason !== "error") {
+						filterRetryPending = false;
+						log.info("provider content filter retry recovered", {
+							conversation: convId,
+							epoch,
+						});
+					}
 					lastStepInputTokens = usage.inputTokens ?? null;
 					// The cached split is how cache health is read off the log:
 					// null means the provider didn't report it, 0 means
@@ -1258,7 +1294,10 @@ export class Runtime {
 				// The default serializer emits "An error occurred." — meant
 				// for public HTTP clients. This stream feeds the operator's
 				// own chat; the real message is what they need.
-				onError: (error) => (error instanceof Error ? error.message : String(error)),
+				onError: (error) =>
+					isContentFilter(error)
+						? "Provider blocked this request again after one retry."
+						: error instanceof Error ? error.message : String(error),
 				onFinish: ({ responseMessage: rm, isAborted, outcome }) => {
 					if (isAborted) return;
 					if (outcome.status === "failed") {
@@ -1663,6 +1702,7 @@ export class Runtime {
 					digest: err.digest,
 					startedAt: turnStartMs,
 					live,
+					filterRetryUsed,
 				});
 			} else {
 				// Same bill as the fenced branch: any other exception escaping

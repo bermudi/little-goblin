@@ -116,6 +116,29 @@ agent loop.
   2026-10-04: no deterministic fallback summary — the summarizer is the
   conversation's own model, so when it can't summarize the turn can't
   answer either, and a degraded summary silently harms every later turn.
+- **Provider-filter recovery** (2026-10-05): one automatic retry per turn,
+  same model, unchanged request, no fallback. Only explicit signals qualify:
+  the SDK's `content-filter` finish reason or the verbatim provider warning
+  reported by the operator; ordinary assistant refusals are not inspected.
+  HTTP rejections and stream errors share the SDK's callback-directed
+  step retry (`streamRetries: 0`), preserving earlier tool results and
+  buffering the current attempt's tool parts until it ends cleanly. The
+  model-boundary adapter also discards filtered tool parts on exhaustion
+  (the SDK otherwise flushes them on terminal failure). Cancellation
+  cleanup errors are logged without replacing the original filter signal.
+  Never restart the turn or re-run completed actions. The retry budget
+  survives overflow compaction. The first error stays out of Telegram,
+  app streams, history and retention; a second filter ends the turn with
+  a plain explanation. Already-streamed partial text/reasoning cannot
+  be retracted and stays visible and in UI history; the SDK excludes it
+  from its recovered model-step result. Keep token streaming live rather
+  than buffering whole answers. No prompt rewriting or cache-busting.
+  Log retry, recovery and exhaustion. Recovered-step usage excludes
+  blocked attempts; log reported filtered-finish usage separately.
+  Unreported billing remains unknown. Ordinary transport retries retain
+  their existing SDK policy. Cache reuse and blocked-request charges
+  are provider-dependent. The pasted warning is real operator evidence;
+  its underlying HTTP/SSE envelope remains unverified.
 - **Capabilities**: don't hand-maintain a matrix. Use what the SDK exposes on
   model objects (`supportedUrls`, unsupported-feature warnings) plus the
   `models.dev` catalog for per-model input modalities (image/audio/document),
@@ -169,4 +192,3 @@ agent loop.
   names it but PATH lacks it. A failed transcription — whisper down,
   ffmpeg missing, corrupt media — leaves the attachment path-referenced
   and warn-logged: it must never eat a voice message.
-

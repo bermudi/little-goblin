@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { RetryError } from "ai";
 import { APICallError } from "@ai-sdk/provider";
-import { isContextOverflow } from "./provider-errors.ts";
+import { isContentFilter, isContextOverflow, ProviderContentFilterError } from "./provider-errors.ts";
 
 // Every positive pins a real provider string to its source so the
 // phrase list stays evidence, not vibes. None of these errors were
@@ -141,5 +141,31 @@ describe("isContextOverflow — negatives", () => {
 	test("null and undefined are not overflow", () => {
 		expect(isContextOverflow(undefined)).toBe(false);
 		expect(isContextOverflow(null)).toBe(false);
+	});
+});
+
+describe("isContentFilter", () => {
+	// Operator's pasted Telegram warning; the HTTP/SSE envelope is unverified.
+	const warning =
+		"[System detected potentially unsafe or sensitive content in input or generation. Please avoid using prompts that may generate sensitive content. Thank you for your cooperation.][20261005061517b57fc824";
+
+	test("recognizes the reported warning through SDK error wrapping", () => {
+		expect(isContentFilter(new Error(warning))).toBe(true);
+		expect(isContentFilter({ cause: { responseBody: warning } })).toBe(true);
+		expect(isContentFilter({ error: { message: warning } })).toBe(true);
+		expect(isContentFilter({ response: { error: { message: warning } } })).toBe(true);
+		expect(isContentFilter(new ProviderContentFilterError())).toBe(true);
+		expect(isContentFilter(new Error("wrapped", { cause: new ProviderContentFilterError() }))).toBe(true);
+	});
+
+	test("does not guess from generic refusals, status codes, or sensitive words", () => {
+		for (const error of [
+			new Error("I cannot help with that request."),
+			new Error("Potentially sensitive content"),
+			{ statusCode: 400, message: "Bad Request" },
+			{ statusCode: 403, message: "Forbidden" },
+			new Error("socket hangup"),
+			null,
+		]) expect(isContentFilter(error)).toBe(false);
 	});
 });

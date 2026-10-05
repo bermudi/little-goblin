@@ -1,9 +1,9 @@
 // Provider-error classification for turn recovery (issue #12). The
 // question a classifier answers is "does this failure deserve a
-// recovery attempt" — today only context overflow is recoverable
-// (compact and resume); the walker is shared so the next recoverable
-// class (rate-limit backoff, etc.) reuses it instead of re-learning
-// where providers hide the real message.
+// recovery attempt". Context overflow compacts and resumes; an explicit
+// provider content filter gets one unchanged-request retry.
+
+import type { LanguageModelV4Usage } from "@ai-sdk/provider";
 
 // Provider errors arrive deeply wrapped: APICallError carries the HTTP
 // status on statusCode and the provider's own body on responseBody, the
@@ -16,6 +16,7 @@ const MAX_DEPTH = 4;
 interface Collected {
 	texts: string[];
 	rateLimited: boolean;
+	contentFiltered: boolean;
 }
 
 function collect(value: unknown, depth: number, seen: Set<object>, out: Collected): void {
@@ -28,6 +29,7 @@ function collect(value: unknown, depth: number, seen: Set<object>, out: Collecte
 	if (seen.has(value)) return;
 	seen.add(value);
 	const o = value as Record<string, unknown>;
+	if (value instanceof ProviderContentFilterError) out.contentFiltered = true;
 	if (typeof o.message === "string") out.texts.push(o.message);
 	if (o.statusCode === 429) out.rateLimited = true;
 	if (typeof o.responseBody === "string") out.texts.push(o.responseBody);
@@ -43,6 +45,10 @@ function collect(value: unknown, depth: number, seen: Set<object>, out: Collecte
 	}
 	collect(o.cause, depth + 1, seen, out);
 	collect(o.lastError, depth + 1, seen, out);
+	// These two envelopes are accepted by the SDK's stream-error
+	// normalizer. Our model adapter sees them before that normalization.
+	collect(o.error, depth + 1, seen, out);
+	collect(o.response, depth + 1, seen, out);
 	if (Array.isArray(o.errors)) {
 		for (const e of o.errors) collect(e, depth + 1, seen, out);
 	}
@@ -84,7 +90,7 @@ const ZAI_1261 = /"code"\s*:\s*"?1261"?/;
 // NOT a rate limit (TPM rejections mention "tokens" generously and a
 // 429 statusCode is decisive) and not a reasoning-mode rejection.
 export function isContextOverflow(err: unknown): boolean {
-	const collected: Collected = { texts: [], rateLimited: false };
+	const collected: Collected = { texts: [], rateLimited: false, contentFiltered: false };
 	collect(err, 0, new Set(), collected);
 	const text = collected.texts.join("\n").toLowerCase();
 	if (collected.rateLimited) return false;
@@ -97,4 +103,25 @@ export function isContextOverflow(err: unknown): boolean {
 		return true;
 	}
 	return ZAI_1261.test(text);
+}
+
+// Verbatim warning reported by the operator in Telegram on 2026-10-04.
+// The provider's underlying HTTP/SSE envelope is unverified. Match the
+// specific warning, not "sensitive", "unsafe", or normal assistant refusals.
+const FILTER_WARNING =
+	"system detected potentially unsafe or sensitive content in input or generation.";
+
+export class ProviderContentFilterError extends Error {
+	constructor(cause?: unknown, readonly usage?: LanguageModelV4Usage) {
+		super("Provider content filter blocked this request.", { cause });
+		this.name = "ProviderContentFilterError";
+	}
+}
+
+export function isContentFilter(err: unknown): boolean {
+	if (err instanceof ProviderContentFilterError) return true;
+	const collected: Collected = { texts: [], rateLimited: false, contentFiltered: false };
+	collect(err, 0, new Set(), collected);
+	return collected.contentFiltered ||
+		collected.texts.some((text) => text.toLowerCase().includes(FILTER_WARNING));
 }

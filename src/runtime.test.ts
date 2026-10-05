@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tool, type LanguageModel, type UIMessage, type UIMessageChunk } from "ai";
 import { z } from "zod";
-import { APICallError, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
+import { APICallError, type LanguageModelV4, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { appAddress, openStore } from "./conversation.ts";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { setLogFile } from "./log.ts";
@@ -152,6 +152,334 @@ function setup(deltas: string[], delayMs = 15) {
 	});
 	return { store, conv, runtime };
 }
+
+describe("provider-filter retry", () => {
+	// Verbatim Telegram warning supplied by the operator. These scripted
+	// model-edge failures exercise SDK recovery, not an assumed z.ai envelope.
+	const warning =
+		"[System detected potentially unsafe or sensitive content in input or generation. Please avoid using prompts that may generate sensitive content. Thank you for your cooperation.][20261005061517b57fc824";
+	const finish = (reason: "stop" | "tool-calls" | "content-filter"): LanguageModelV4StreamPart => ({
+		type: "finish",
+		finishReason: { unified: reason, raw: undefined },
+		usage: {
+			inputTokens: { total: 10, noCache: 2, cacheRead: 8, cacheWrite: undefined },
+			outputTokens: { total: 1, text: 1, reasoning: undefined },
+		},
+	});
+	const answer = (text = "Recovered answer"): LanguageModelV4StreamPart[] => [
+		{ type: "text-start", id: "text" },
+		{ type: "text-delta", id: "text", delta: text },
+		{ type: "text-end", id: "text" },
+		finish("stop"),
+	];
+	const call: LanguageModelV4StreamPart = {
+		type: "tool-call", toolCallId: "call", toolName: "probe", input: "{}",
+	};
+	const blocked: LanguageModelV4StreamPart = { type: "error", error: new Error(warning) };
+
+	function scripted(attempts: (LanguageModelV4StreamPart[] | Error | { readError: Error } | { cancelError: Error })[]) {
+		const requests: string[] = [];
+		const model: LanguageModelV4 = {
+			specificationVersion: "v4", provider: "fake", modelId: "filter-test", supportedUrls: {},
+			doGenerate() { throw new Error("unused"); },
+			async doStream(options) {
+				const attempt = attempts[requests.length];
+				requests.push(JSON.stringify(options));
+				if (attempt === undefined) throw new Error("unexpected extra model request");
+				if (attempt instanceof Error) throw attempt;
+				return {
+					stream: new ReadableStream<LanguageModelV4StreamPart>({
+						start(controller) {
+							if ("readError" in attempt) {
+								controller.error(attempt.readError);
+								return;
+							}
+							if ("cancelError" in attempt) {
+								controller.enqueue(blocked);
+								return; // Leave open so reader.cancel exercises cleanup.
+							}
+							controller.enqueue({ type: "stream-start", warnings: [] });
+							for (const part of attempt) controller.enqueue(part);
+							controller.close();
+						},
+						cancel() {
+							if ("cancelError" in attempt) throw attempt.cancelError;
+						},
+					}),
+				};
+			},
+		};
+		return { model, requests };
+	}
+
+	for (const [name, failure] of [
+		["SSE error chunk", [blocked]],
+		["HTTP rejection", new Error(warning)],
+		["stream read rejection", { readError: new Error(warning) }],
+		["content-filter finish reason", [finish("content-filter")]],
+	] satisfies [string, LanguageModelV4StreamPart[] | Error | { readError: Error }][]) {
+		test(`${name}: retries identical request, hides first error from both delivery hooks and history`, async () => {
+			const { model, requests } = scripted([failure, answer()]);
+			const store = openStore(tmpdb());
+			const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+			const runtime = new Runtime({
+				store, buildStep: () => ({ model, system: "unchanged system" }), makeTools: () => ({}),
+			});
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "Discuss German politics" }]), sink);
+			expect(await sink.done).toEqual({ kind: "completed" });
+			while (runtime.busy(conv.id)) await sleep(1);
+			await runtime.shutdown();
+			expect(requests).toHaveLength(2);
+			expect(requests[0]).toBe(requests[1]);
+			expect(sink.text).toBe("Recovered answer");
+			expect(sink.chunkTypes).not.toContain("error");
+			expect(JSON.stringify(store.history(conv.id))).not.toContain(warning);
+			expect(store.history(conv.id)).toHaveLength(2);
+			store.close();
+		});
+	}
+
+	test("preserves earlier tool results and never executes tools from the blocked attempt", async () => {
+		const { model, requests } = scripted([
+			[call, finish("tool-calls")],
+			[{ ...call, toolCallId: "blocked-call" }, blocked],
+			answer(),
+		]);
+		const store = openStore(tmpdb());
+		const conv = store.resolve(appAddress("filter-retry"), "/w");
+		let executions = 0;
+		const runtime = new Runtime({
+			store, buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: () => { executions++; return { result: "already completed" }; },
+				}),
+			}),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "Do the action then answer" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		while (runtime.busy(conv.id)) await sleep(1);
+		await runtime.shutdown();
+		expect(executions).toBe(1);
+		expect(requests).toHaveLength(3);
+		expect(requests[1]).toBe(requests[2]);
+		expect(requests[2]).toContain("already completed");
+		expect(sink.chunkTypes).not.toContain("error");
+		expect(JSON.stringify(store.history(conv.id))).not.toContain("blocked-call");
+		store.close();
+	});
+
+	test("a second filter later in the turn exhausts the budget and saves no failed reply", async () => {
+		const { model, requests } = scripted([
+			[blocked], [call, finish("tool-calls")], [finish("content-filter")],
+		]);
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const runtime = new Runtime({
+			store, buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({ probe: tool({ inputSchema: z.object({}), execute: () => "done" }) }),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
+		expect(await sink.done).toEqual({
+			kind: "error", message: "Provider blocked this request again after one retry.",
+		});
+		while (runtime.busy(conv.id)) await sleep(1);
+		await runtime.shutdown();
+		expect(requests).toHaveLength(3);
+		expect(sink.chunkTypes.filter((type) => type === "error")).toHaveLength(1);
+		expect(store.history(conv.id)).toHaveLength(1);
+		store.close();
+	});
+
+	test("ordinary assistant refusal text is an answer, not a retry signal", async () => {
+		const { model, requests } = scripted([answer(warning)]);
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const runtime = new Runtime({
+			store, buildStep: () => ({ model, system: "test" }), makeTools: () => ({}),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		while (runtime.busy(conv.id)) await sleep(1);
+		await runtime.shutdown();
+		expect(requests).toHaveLength(1);
+		expect(sink.text).toBe(warning);
+		store.close();
+	});
+
+	for (const [name, error] of [
+		["plain error", blocked.error],
+		["nested error", { error: { message: warning } }],
+		["nested response error", { response: { error: { message: warning } } }],
+	] satisfies [string, unknown][]) test(`two blocked attempts (${name}) cannot expose their tool calls`, async () => {
+		const failure: LanguageModelV4StreamPart = { type: "error", error };
+		const { model, requests } = scripted([[call, failure], [call, failure]]);
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		let executions = 0;
+		const runtime = new Runtime({
+			store, buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({
+				probe: tool({ inputSchema: z.object({}), execute: () => { executions++; return "done"; } }),
+			}),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
+		expect((await sink.done).kind).toBe("error");
+		while (runtime.busy(conv.id)) await sleep(1);
+		await runtime.shutdown();
+		expect(requests).toHaveLength(2);
+		expect(executions).toBe(0);
+		expect(sink.chunkTypes).not.toContain("tool-input-available");
+		store.close();
+	});
+
+	test("cancellation cleanup failure is logged without replacing the filter retry", async () => {
+		const { model, requests } = scripted([{ cancelError: new Error("cancel failed") }, answer()]);
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const runtime = new Runtime({
+			store, buildStep: () => ({ model, system: "test" }), makeTools: () => ({}),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		while (runtime.busy(conv.id)) await sleep(1);
+		await runtime.shutdown();
+		expect(requests).toHaveLength(2);
+		expect(sink.text).toBe("Recovered answer");
+		expect(sink.chunkTypes).not.toContain("error");
+		store.close();
+	});
+
+	test("ordinary retryable HTTP failures retain the existing SDK retry policy", async () => {
+		const { model, requests } = scripted([
+			new APICallError({
+				message: "Service unavailable", url: "https://provider.invalid/responses",
+				requestBodyValues: {}, statusCode: 503, isRetryable: true,
+			}),
+			answer(),
+		]);
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const runtime = new Runtime({
+			store, buildStep: () => ({ model, system: "test" }), makeTools: () => ({}),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		while (runtime.busy(conv.id)) await sleep(1);
+		await runtime.shutdown();
+		expect(requests).toHaveLength(2);
+		expect(sink.chunkTypes).not.toContain("error");
+		store.close();
+	});
+
+	test("stop during filter cleanup prevents a second model request", async () => {
+		let entered: () => void = () => {};
+		let release: () => void = () => {};
+		const cleaning = new Promise<void>((resolve) => { entered = resolve; });
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		let requests = 0;
+		const model: LanguageModelV4 = {
+			specificationVersion: "v4", provider: "fake", modelId: "filter-test", supportedUrls: {},
+			doGenerate() { throw new Error("unused"); },
+			async doStream() {
+				requests++;
+				return {
+					stream: new ReadableStream<LanguageModelV4StreamPart>({
+						start(controller) { controller.enqueue(blocked); },
+						async cancel() { entered(); await gate; },
+					}),
+				};
+			},
+		};
+		const store = openStore(tmpdb());
+		const conv = store.resolve(appAddress("filter-cleanup"), "/w");
+		const runtime = new Runtime({
+			store, buildStep: () => ({ model, system: "test" }), makeTools: () => ({}),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
+		await cleaning;
+		runtime.stop(conv.id);
+		release();
+		expect(await sink.done).toEqual({ kind: "fenced" });
+		while (runtime.busy(conv.id)) await sleep(1);
+		await runtime.shutdown();
+		expect(requests).toBe(1);
+		expect(sink.chunkTypes).not.toContain("error");
+		expect(store.history(conv.id)).toHaveLength(1);
+		store.close();
+	});
+
+	test("a late filter preserves already-streamed text, without exposing the filter error", async () => {
+		const { model, requests } = scripted([
+			[
+				{ type: "text-start", id: "partial" },
+				{ type: "text-delta", id: "partial", delta: "Partial answer. " },
+				finish("content-filter"),
+			],
+			answer(),
+		]);
+		const store = openStore(tmpdb());
+		const conv = store.resolve(appAddress("late-filter"), "/w");
+		const runtime = new Runtime({
+			store, buildStep: () => ({ model, system: "test" }), makeTools: () => ({}),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		while (runtime.busy(conv.id)) await sleep(1);
+		await runtime.shutdown();
+		expect(requests).toHaveLength(2);
+		expect(requests[0]).toBe(requests[1]);
+		expect(sink.text.replace(/\s+/g, " ").trim()).toBe("Partial answer. Recovered answer");
+		expect(sink.chunkTypes).not.toContain("error");
+		// UI history is what the operator actually saw, including the partial.
+		expect(JSON.stringify(store.history(conv.id))).toContain("Partial answer.");
+		expect(JSON.stringify(store.history(conv.id))).not.toContain("Provider content filter");
+		store.close();
+	});
+
+	test("stop while a rejected call is pending prevents its retry", async () => {
+		const { model, requests } = scripted([new Error(warning)]);
+		let entered: () => void = () => {};
+		let release: () => void = () => {};
+		const started = new Promise<void>((resolve) => { entered = resolve; });
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const slowModel: LanguageModelV4 = {
+			...model,
+			async doStream(options) {
+				entered();
+				await gate;
+				return model.doStream(options);
+			},
+		};
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const runtime = new Runtime({
+			store, buildStep: () => ({ model: slowModel, system: "test" }), makeTools: () => ({}),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
+		await started;
+		runtime.stop(conv.id);
+		release();
+		expect(await sink.done).toEqual({ kind: "fenced" });
+		while (runtime.busy(conv.id)) await sleep(1);
+		await runtime.shutdown();
+		expect(requests).toHaveLength(1);
+		expect(sink.text).toBe("");
+		expect(store.history(conv.id)).toHaveLength(1);
+		store.close();
+	});
+});
 
 // Records the prompt each doStream call receives — JSON-stringified so
 // requests compare bytewise across turns (cache-stability tests).

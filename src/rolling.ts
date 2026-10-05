@@ -37,6 +37,7 @@ export function rollingChatId(laneKey: string): number | null {
 
 export type RollDecidedBy =
 	| "gap" // inside the quiet window, or a forced join of current
+	| "unanswered" // no assistant reply yet — no exchange to judge against
 	| "busy" // a live turn absorbs the input as steering
 	| "reply" // a quoted reply continues what it quotes — no check
 	| "command" // /voice, /memory — settings commands own their roll
@@ -165,13 +166,12 @@ export function projectRollText(parts: readonly UIMessage["parts"][number][]): s
 }
 
 // The check's evidence: how long the quiet lasted, the last exchange
-// of the current conversation, and the new burst. Missing sides read
-// as "" — a conversation with no assistant answer yet is still a fair
-// question.
-function checkState(deps: RollDeps, current: Conversation, gapMinutes: number, burstText: string): string {
+// of the current conversation, and the new burst. The caller only runs
+// the check once an assistant reply exists, so a missing side here is
+// the rare all-assistant or unrenderable edge — it still reads "".
+function checkState(history: UIMessage[], gapMinutes: number, burstText: string): string {
 	let user = "";
 	let assistant = "";
-	const history = deps.store.history(current.id);
 	for (let i = history.length - 1; i >= 0 && (user === "" || assistant === ""); i--) {
 		const m = history[i]!;
 		if (m.role === "user" && user === "") user = projectRollText(m.parts);
@@ -240,6 +240,15 @@ export async function routeDmMessage(
 	if (elapsed < deps.gapMinutes() * 60_000) {
 		return { conv: current, rolled: false, decidedBy: "gap" };
 	}
+	const history = deps.store.history(current.id);
+	// The check weighs the burst against the previous exchange — a
+	// conversation the assistant has never answered (a fresh /new
+	// nobody has spoken into, a first burst still awaiting its reply)
+	// has none, so the burst joins without asking. Rolling here would
+	// orphan a fragment behind a second "— new conversation —" marker.
+	if (!history.some((m) => m.role === "assistant")) {
+		return continued(current, "unanswered", gapMinutes);
+	}
 	const gate = deps.gate?.();
 	if (gate === undefined) {
 		log.warn("follow-up check", {
@@ -252,7 +261,7 @@ export async function routeDmMessage(
 	try {
 		decision = await withDeadline(
 			gate.decide(
-				checkState(deps, current, gapMinutes, burstText),
+				checkState(history, gapMinutes, burstText),
 				FOLLOW_UP_QUESTIONS,
 				{ timeoutMs: deps.checkDeadlineMs ?? CHECK_DEADLINE_MS },
 			),

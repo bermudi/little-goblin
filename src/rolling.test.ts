@@ -153,9 +153,34 @@ describe("routeDmMessage", () => {
 		store.close();
 	});
 
+	test("a /new nobody spoke into joins past the gap — no exchange to judge", async () => {
+		const calls: GateCall[] = [];
+		const { store, deps } = harness({ gate: fakeGate({ follow_up: 0 }, calls), now: anHourHence });
+		const current = store.rollDm(7, "/w");
+		const r = await routeDmMessage(deps, 7, "let's see how you do");
+		expect(r.rolled).toBe(false);
+		expect(r.decidedBy).toBe("unanswered");
+		expect(r.conv.id).toBe(current.id);
+		expect(calls).toHaveLength(0);
+		store.close();
+	});
+
+	test("a first burst still awaiting its reply joins without a check", async () => {
+		const calls: GateCall[] = [];
+		const { store, deps } = harness({ gate: fakeGate({ follow_up: 0 }, calls), now: anHourHence });
+		const current = store.rollDm(7, "/w");
+		store.append(current.id, [msg("user", "still waiting on this")]);
+		const r = await routeDmMessage(deps, 7, "and another thing");
+		expect(r.rolled).toBe(false);
+		expect(r.decidedBy).toBe("unanswered");
+		expect(r.conv.id).toBe(current.id);
+		expect(calls).toHaveLength(0);
+		store.close();
+	});
+
 	test("p below the threshold rolls, above joins — both decided by the check", async () => {
 		const fresh = harness({ gate: fakeGate({ follow_up: 0.1 }), now: anHourHence });
-		fresh.store.rollDm(7, "/w");
+		fresh.store.append(fresh.store.rollDm(7, "/w").id, [msg("user", "q"), msg("assistant", "a")]);
 		const rolled = await routeDmMessage(fresh.deps, 7, "new subject");
 		expect(rolled.rolled).toBe(true);
 		expect(rolled.decidedBy).toBe("check");
@@ -165,6 +190,7 @@ describe("routeDmMessage", () => {
 
 		const cont = harness({ gate: fakeGate({ follow_up: 0.6 }), now: anHourHence });
 		const current = cont.store.rollDm(8, "/w");
+		cont.store.append(current.id, [msg("user", "q"), msg("assistant", "a")]);
 		const joined = await routeDmMessage(cont.deps, 8, "and also this");
 		expect(joined.rolled).toBe(false);
 		expect(joined.decidedBy).toBe("check");
@@ -180,6 +206,7 @@ describe("routeDmMessage", () => {
 			now: anHourHence,
 		});
 		const current = store.rollDm(7, "/w");
+		store.append(current.id, [msg("user", "q"), msg("assistant", "a")]);
 		const r = await routeDmMessage(deps, 7, "hello");
 		expect(r.rolled).toBe(false);
 		expect(r.decidedBy).toBe("fallback");
@@ -193,6 +220,7 @@ describe("routeDmMessage", () => {
 		};
 		const { store, deps } = harness({ gate: hanging, now: anHourHence, checkDeadlineMs: 30 });
 		const current = store.rollDm(7, "/w");
+		store.append(current.id, [msg("user", "q"), msg("assistant", "a")]);
 		const r = await routeDmMessage(deps, 7, "hello");
 		expect(r.rolled).toBe(false);
 		expect(r.decidedBy).toBe("fallback");
@@ -214,6 +242,7 @@ describe("routeDmMessage", () => {
 				...(deadline === undefined ? {} : { checkDeadlineMs: deadline }),
 			});
 			const current = store.rollDm(7, "/w");
+			store.append(current.id, [msg("user", "q"), msg("assistant", "a")]);
 			expect((await routeDmMessage(deps, 7, "or what do you think?")).conv.id).toBe(current.id);
 			expect(budget).toBe(deadline ?? 3_000);
 			store.close();
@@ -238,6 +267,7 @@ describe("routeDmMessage", () => {
 		const { store, deps } = harness({ gate, now: anHourHence, checkDeadlineMs: 400 });
 		try {
 			const current = store.rollDm(7, "/w");
+			store.append(current.id, [msg("user", "q"), msg("assistant", "a")]);
 			const result = await routeDmMessage(deps, 7, "or what do you think?");
 			expect(result.conv.id).toBe(current.id);
 			expect(result.rolled).toBe(false);
@@ -253,6 +283,7 @@ describe("routeDmMessage", () => {
 	test("no gate falls back into current", async () => {
 		const { store, deps } = harness({ now: anHourHence });
 		const current = store.rollDm(7, "/w");
+		store.append(current.id, [msg("user", "q"), msg("assistant", "a")]);
 		const r = await routeDmMessage(deps, 7, "hello");
 		expect(r.rolled).toBe(false);
 		expect(r.decidedBy).toBe("fallback");
@@ -265,7 +296,7 @@ describe("routeDmMessage", () => {
 			gate: fakeGate(new TypeError("bug in the gate")),
 			now: anHourHence,
 		});
-		store.rollDm(7, "/w");
+		store.append(store.rollDm(7, "/w").id, [msg("user", "q"), msg("assistant", "a")]);
 		await expect(routeDmMessage(deps, 7, "hello")).rejects.toThrow("bug in the gate");
 		store.close();
 	});
@@ -286,7 +317,7 @@ describe("routeDmMessage", () => {
 			gate: () => racingGate,
 			now: anHourHence,
 		};
-		store.rollDm(7, "/w"); // dm:7:1 — current when the burst arrived
+		store.append(store.rollDm(7, "/w").id, [msg("user", "q"), msg("assistant", "a")]); // dm:7:1 — current when the burst arrived
 		const r = await routeDmMessage(deps, 7, "hello");
 		expect(r.rolled).toBe(false);
 		expect(r.decidedBy).toBe("gap");
@@ -312,7 +343,7 @@ describe("routeDmMessage", () => {
 			gate: () => racingGate,
 			now: anHourHence,
 		};
-		store.rollDm(7, "/w"); // dm:7:1
+		store.append(store.rollDm(7, "/w").id, [msg("user", "q"), msg("assistant", "a")]); // dm:7:1
 		const r = await routeDmMessage(deps, 7, "hello");
 		expect(r.rolled).toBe(false);
 		expect(r.decidedBy).toBe("gap");
@@ -340,6 +371,7 @@ describe("routeDmMessage", () => {
 			now: anHourHence,
 		};
 		const current = store.rollDm(7, "/w");
+		store.append(current.id, [msg("user", "q"), msg("assistant", "a")]);
 		const r = await routeDmMessage(deps, 7, "new subject");
 		expect(r.rolled).toBe(false);
 		expect(r.decidedBy).toBe("busy");
@@ -369,6 +401,7 @@ describe("routeDmMessage", () => {
 			now: () => now,
 		};
 		const current = store.rollDm(7, "/w");
+		store.append(current.id, [msg("user", "q"), msg("assistant", "a")]);
 		const r = await routeDmMessage(deps, 7, "new subject");
 		expect(r.rolled).toBe(false);
 		expect(r.decidedBy).toBe("gap");

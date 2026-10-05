@@ -180,9 +180,13 @@ and the rules below exist to keep it unsurprising.
    Intake drops that text today; this ruling adds it.
    (A reply to a spin-off ping is routed to the app conversation
    instead — see App channel → Spin-off.)
-3. **Past the gap** — the follow-up check below decides. Follow-up →
-   current conversation. New subject → a fresh conversation becomes
-   current.
+3. **Past the gap** — if the current conversation has no assistant
+   reply yet (a `/new` nobody has spoken into, a first burst still
+   awaiting its answer), the burst joins it: there is no previous
+   exchange for the check to weigh, and rolling would orphan a
+   fragment behind a second boundary marker. Otherwise the follow-up
+   check below decides. Follow-up → current conversation. New
+   subject → a fresh conversation becomes current.
 4. **No current conversation** (first message ever, or after cutover)
    → a fresh one, no check.
 
@@ -296,9 +300,10 @@ implementation; cutover also waits for no delegation in flight from a
 DM topic. Group topics are untouched.
 
 **Logging.** `dm rolled` (address, from → to conversation, gap,
-decided by `gap|reply|check|fallback|command|first`, probability when
-checked); `follow-up check` (probability, ms, cost, outcome — never
-message text); `dm cutover re-pin` per program.
+decided by
+`gap|unanswered|busy|reply|command|fire|first|check|fallback`,
+probability when checked); `follow-up check` (probability, ms, cost,
+outcome — never message text); `dm cutover re-pin` per program.
 
 **Landing rulings (stage 1, 2026-10-03).** Settled while building:
 - *Which chats roll:* private chats only, detected as `chatId > 0`

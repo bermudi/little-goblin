@@ -844,7 +844,10 @@ describe("rolling dm", () => {
 				return Promise.resolve({ answers: { follow_up: 0.9 }, inputTokens: null, cost: null });
 			},
 		});
-		h.store.rollDm(7, "/w"); // dm:7:1 — current, past the gap
+		h.store.append(h.store.rollDm(7, "/w").id, [
+			{ id: "u", role: "user", parts: [{ type: "text", text: "q" }] },
+			{ id: "a", role: "assistant", parts: [{ type: "text", text: "a" }] },
+		]); // dm:7:1 — current, answered once, past the gap
 		handleTestMessage(h.env, tgMsg({
 			message_id: 40, chat: { id: 7, type: "private" },
 			message_thread_id: 5,
@@ -995,6 +998,11 @@ describe("manual DM navigation", () => {
 	test("navigation during a follow-up check cannot reroll the pin or execute archived input", async () => {
 		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0 } });
 		const old = h.store.rollDm(chat.id, "/w");
+		// An answered exchange — without one the burst never reaches the check.
+		h.store.append(old.id, [
+			{ id: "u", role: "user", parts: [{ type: "text", text: "q" }] },
+			{ id: "a", role: "assistant", parts: [{ type: "text", text: "a" }] },
+		]);
 		let entered: () => void = () => {};
 		let release: () => void = () => {};
 		const checking = new Promise<void>((resolve) => { entered = resolve; });
@@ -1019,7 +1027,7 @@ describe("manual DM navigation", () => {
 		await flushing;
 		expect(h.store.currentDm(chat.id)?.id).toBe(old.id);
 		expect(h.store.get("dm:7:3")).toBeNull();
-		expect(h.store.history(old.id)).toHaveLength(1);
+		expect(h.store.history(old.id)).toHaveLength(3);
 		expect(submits).toBe(0);
 		h.store.close();
 	});

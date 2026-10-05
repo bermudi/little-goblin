@@ -214,8 +214,12 @@ continuing because a wrong continuation costs one cold read, while a
 wrong fresh start is the surprise above. The constant lives in code
 and every check logs its probability, so a retune is an evidence-based
 edit, not a guess. **Failure** (no reviewer block, `JevError`,
-timeout) → follow-up, warn-logged. A backup model before that fallback
-is parked in #53 — the operator picks its model if it ever lands.
+timeout) → follow-up, warn-logged. The shared client first tries its
+backup model (`typesafe/jev-1.13`) on primary failure, within the same
+3s check budget — half reserved for each attempt. See
+`design/mail.md` for the common retry policy. The original deadline
+still bounds fake or unavailable gates; no abandoned 30s request
+continues after the check times out.
 
 **The marker.** When a fresh conversation starts, delivery sends a
 separate `— new conversation —` message before admission work begins
@@ -258,8 +262,9 @@ message text); `dm cutover re-pin` per program.
   are `dm:<chat>:<n>`; the pre-ruling `dm:<chat>` conversation stays
   as history and is never current.
 - *A live turn always absorbs input* (it steers), whatever the gap.
-- *The check has a 3 s interactive deadline*, separate from the shared
-  Jev client's 30 s timeout; losing the race is a fallback. If the
+- *The check has a 3 s interactive deadline*, passed into the shared
+  Jev client instead of its usual 30 s timeout and externally raced as
+  a backstop; losing the race is a fallback. If the
   address rolled while the check ran (a fire), the burst joins the new
   current conversation — never two rolls.
 - *Delegation notices join, never roll:* they continue work the

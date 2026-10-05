@@ -3,8 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UIMessage } from "ai";
+import { z } from "zod";
 import { openStore } from "./conversation.ts";
-import { JevError, type JevClient, type JevQuestion } from "./jev.ts";
+import { JevClient, JevError, JEV_FALLBACK_MODEL, type JevQuestion } from "./jev.ts";
 import {
 	FRESH_BELOW,
 	isRollingChat,
@@ -197,6 +198,56 @@ describe("routeDmMessage", () => {
 		expect(r.decidedBy).toBe("fallback");
 		expect(r.conv.id).toBe(current.id);
 		store.close();
+	});
+
+	test("passes the interactive deadline into the client as well as racing it", async () => {
+		for (const deadline of [undefined, 200]) {
+			let budget: number | undefined;
+			const gate: Pick<JevClient, "decide"> = {
+				async decide(_state, _questions, options) {
+					budget = options?.timeoutMs;
+					return { answers: { follow_up: 0.9 }, inputTokens: null, cost: null };
+				},
+			};
+			const { store, deps } = harness({
+				gate, now: anHourHence,
+				...(deadline === undefined ? {} : { checkDeadlineMs: deadline }),
+			});
+			const current = store.rollDm(7, "/w");
+			expect((await routeDmMessage(deps, 7, "or what do you think?")).conv.id).toBe(current.id);
+			expect(budget).toBe(deadline ?? 3_000);
+			store.close();
+		}
+	});
+
+	test("a hung primary can recover via the backup without losing the current conversation", async () => {
+		const models: string[] = [];
+		const server = Bun.serve({
+			hostname: "127.0.0.1", port: 0,
+			async fetch(request) {
+				const body = z.object({ model: z.string() }).parse(await request.json());
+				models.push(body.model);
+				return body.model === JEV_FALLBACK_MODEL
+					? Response.json({ answers: { follow_up: { type: "noul", noul: 0.92 } } })
+					: new Promise<Response>(() => {});
+			},
+		});
+		const gate = new JevClient({
+			baseUrl: `http://127.0.0.1:${server.port}`, model: "primary", auth: async () => "key",
+		});
+		const { store, deps } = harness({ gate, now: anHourHence, checkDeadlineMs: 400 });
+		try {
+			const current = store.rollDm(7, "/w");
+			const result = await routeDmMessage(deps, 7, "or what do you think?");
+			expect(result.conv.id).toBe(current.id);
+			expect(result.rolled).toBe(false);
+			expect(result.decidedBy).toBe("check");
+			expect(result.probability).toBe(0.92);
+			expect(models).toEqual(["primary", JEV_FALLBACK_MODEL]);
+		} finally {
+			server.stop(true);
+			store.close();
+		}
 	});
 
 	test("no gate falls back into current", async () => {

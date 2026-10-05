@@ -158,14 +158,28 @@ token plumbing in-process was a pita, and gws owns it instead — one
   expiry stamp, after the fuse) decides on stale information. The
   crash window (power loss, kill -9) remains accepted as before;
   graceful shutdown no longer shares it.
-- **System One (`system1` block + Jev gate) feeds two consumers.**
+- **System One (`system1` block + Jev gate) feeds the shared gates.**
   The optional hand-edited `system1` block (`{auth, model?,
-  baseUrl?}` — a Jev model id like `respan/span-01-lite`, NOT a
+  baseUrl?}` — a decision model id like `typesafe/jev-1.13`, NOT a
   `<provider>/<model>` chat ref, so never provider-validated) rides
   the reviewer's single `JevClient`: `auth` resolves live per call
   (falling back to `reviewer.auth`), `model`/`baseUrl` are
   boot-captured with the reviewer's gate auth/thresholds (a hand edit
-  applies on restart), and `reviewer` stays the on/off switch — no
+  applies on restart). The built-in default and backup model are
+  **`typesafe/jev-1.13`** (operator ruling, 2026-10-05); the operator's
+  configured primary is `inception/mercury-decide:free`. A failed
+  configured-model call retries the identical state/questions once
+  against the backup on the same endpoint, except auth failures and
+  HTTP 401/403 (the same credential cannot fix those). No duplicate
+  attempt when primary and backup are the same; no retry of a valid
+  low-probability answer. Primary gets half the call's time budget to
+  reserve room for the backup; both attempts share the original total
+  deadline (30s normally, 3s for Rolling DM). If both fail, the
+  existing consumer-specific failure behavior remains. Attempt,
+  selected model, probabilities, usage, latency, and sanitized failure
+  kind/status are logged with one request id; never state text,
+  credentials, response bodies, or endpoint URLs.
+  `reviewer` stays the on/off switch — no
   reviewer block means no gate at all (the loopback endpoint 503s,
   watcher events fire unscored, reads report unavailable). Consumer
   one: the skill-review gate (below). Consumer two: the injection
@@ -184,9 +198,10 @@ token plumbing in-process was a pita, and gws owns it instead — one
   write-if-absent) are the model's contract: reads ONLY through the
   wrapper, never raw `+read`; `gws` discovery beyond mail (drive /
   calendar / sheets) rides the same CLI and scopes.
+  Consumer three: Rolling DM's follow-up check (see
+  `design/telegram.md`), with its 3s total check budget.
 - **Logging**: every gws/Gmail call (action, query or id, exit code or
   status, ms — never bodies); every injection check (verdict,
   probabilities, ms) and every served loopback check (verdict, ms);
   every outbox transition (queued, sent, cancelled,
   expired — recipient domain, never the body).
-

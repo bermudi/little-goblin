@@ -359,10 +359,10 @@ export const reviewerConfigSchema = z.object({
 export type ReviewerConfig = z.infer<typeof reviewerConfigSchema>;
 
 // System One / Jev decisions config (DESIGN.md Email + Skill reviewer) —
-// one block feeding the injection checker and the skill-review gate;
+// one block feeding injection, skill-review, and DM follow-up gates;
 // absent pieces fall back to reviewer.auth / JEV_MODEL defaults so the live
 // reviewer never breaks; model is a Jev model id (e.g.
-// respan/span-01-lite), NOT a <provider>/<model-id> chat ref, so it is NOT
+// typesafe/jev-1.13), NOT a <provider>/<model-id> chat ref, so it is NOT
 // provider-validated in superRefine (leave superRefine untouched).
 export const system1ConfigSchema = z.object({
 	auth: z.string().min(1),

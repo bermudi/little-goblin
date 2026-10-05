@@ -108,8 +108,9 @@ learned into a skill without being asked. A better model of the
 operator is **not** this feature — that is Hindsight's job (tune it,
 don't duplicate it).
 
-- **Gate: Jev on every completed turn** — `respan/span-01-lite`
-  (operator-chosen; replaced `typesafe/jev-1.13` on 2026-09-27) via
+- **Gate: Jev on every completed turn** — the shared System One client
+  (default and backup `typesafe/jev-1.13`, configured primary
+  `inception/mercury-decide:free`; see `design/mail.md`) via
   OpenRouter's Decisions API, a typed-decision
   model, not a chat model. `POST openrouter.ai/api/alpha/decisions`
   with `{model, state, questions}`; each `noul` answer is a
@@ -223,4 +224,3 @@ don't duplicate it).
   (system1's auth/model/baseUrl ride the same capture; the shared
   JevClient's auth closure resolves live per call); the
   review model resolves live per review.
-

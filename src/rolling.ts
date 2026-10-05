@@ -64,8 +64,9 @@ export interface RollDeps {
 	// Injectable clock — tests steer the gap without sleeping.
 	now?: () => Date;
 	// Interactive ceiling for the check: the shared JevClient's own 30s
-	// timeout is too long to hold an operator's message; the losing
-	// request is abandoned, not aborted.
+	// timeout is too long to hold an operator's message. Pass this
+	// budget into the client so primary + backup are aborted within it;
+	// the outer deadline also bounds a gate that ignores the option.
 	checkDeadlineMs?: number;
 }
 
@@ -249,7 +250,11 @@ export async function routeDmMessage(
 	let decision: JevDecision;
 	try {
 		decision = await withDeadline(
-			gate.decide(checkState(deps, current, gapMinutes, burstText), FOLLOW_UP_QUESTIONS),
+			gate.decide(
+				checkState(deps, current, gapMinutes, burstText),
+				FOLLOW_UP_QUESTIONS,
+				{ timeoutMs: deps.checkDeadlineMs ?? CHECK_DEADLINE_MS },
+			),
 			deps.checkDeadlineMs ?? CHECK_DEADLINE_MS,
 		);
 	} catch (err) {

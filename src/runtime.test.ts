@@ -847,6 +847,60 @@ describe("turn authority", () => {
 		store.close();
 	});
 
+	test("a history system event reaches the model as a bracketed user-role note", async () => {
+		// The reviewer lands its save note in history as role "system"
+		// (design/skills.md — "lands in history as a system event"). The
+		// SDK's streamText rejects system messages in `messages`, so the
+		// runtime renders the event as a user-role note in position —
+		// the stored role is untouched.
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const event =
+			"saved skill: talk-first — announced in this topic with an undo invite; " +
+			"an undo request means deleting skills/talk-first/";
+		store.append(conv.id, [
+			{ id: "u1", role: "user", parts: [{ type: "text", text: "earlier question" }] },
+			{ id: "a1", role: "assistant", parts: [{ type: "text", text: "earlier answer" }] },
+			{ id: "sys1", role: "system", parts: [{ type: "text", text: event }] },
+		]);
+		const { model, prompts } = recordingModel(["answer"], 5);
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test instructions" }),
+			makeTools: () => ({}),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "what did you save?" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		expect(prompts).toHaveLength(1);
+		const wire = JSON.parse(prompts[0]!) as {
+			role: string;
+			content: { type: string; text?: string }[];
+		}[];
+		// The only system-role entry on the wire is `instructions` — the
+		// frozen per-conversation prefix the fake provider sees as one
+		// system prompt item.
+		expect(wire.filter((m) => m.role === "system")).toHaveLength(1);
+		const msgs = wire.filter((m) => m.role !== "system");
+		expect(msgs.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+		// The event merges with the trailing user submit: the bracketed
+		// note leads the merged message's content, the submit follows.
+		expect(msgs[2]!.content.map((c) => c.text)).toEqual([
+			`[system event: ${event}]`,
+			"what did you save?",
+		]);
+		// History on disk keeps the system role — the mapping is
+		// render-only, at the conversion boundary.
+		expect(store.history(conv.id).map((m) => m.role)).toEqual([
+			"user",
+			"assistant",
+			"system",
+			"user",
+			"assistant",
+		]);
+		store.close();
+	});
+
 	test("distinct text parts stream with a seam — blocks must not fuse in the bubble", async () => {
 		// A multi-step turn (text, tool call, more text) emits several text
 		// parts. The chat bubble must show them as blocks, not one run-on —

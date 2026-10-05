@@ -89,6 +89,22 @@ function unconvertiblePlaceholder(m: UIMessage): UIMessage {
 	};
 }
 
+// A history system event (the reviewer's save note — design/skills.md)
+// cannot reach the model as a system message: streamText rejects system
+// roles in `messages`, and `instructions` is the frozen per-conversation
+// prefix — per-event text can't join it without breaking the prompt
+// cache. Rendered instead as a bracketed user-role note in position,
+// the same way memory recall blocks ride the wire (memory.ts,
+// withMemoryBlocks). Deterministic: identical history bytes turn to
+// turn. The stored role stays "system" — this mapping is render-only.
+function systemEventAsUser(m: UIMessage): UIMessage {
+	return {
+		id: m.id,
+		role: "user",
+		parts: [{ type: "text", text: `[system event: ${messageText(m)}]` }],
+	};
+}
+
 // ---------- sink: what the turn streams into (tg implements) ----------
 
 export type TurnDone =
@@ -998,9 +1014,14 @@ export class Runtime {
 			// incomplete-tool-call filter, is itself per-message).
 			const messages: ModelMessage[] = [];
 			for (const m of prepared) {
+				// System events render as user-role notes — the SDK rejects
+				// system roles in `messages` (see systemEventAsUser). The
+				// placeholder fallback sees the mapped message, so a doubly
+				// broken event degrades to a user-role note too.
+				const rendered = m.role === "system" ? systemEventAsUser(m) : m;
 				try {
 					messages.push(
-						...(await convertToModelMessages([m], {
+						...(await convertToModelMessages([rendered], {
 							tools,
 							ignoreIncompleteToolCalls: true,
 						})),
@@ -1013,7 +1034,7 @@ export class Runtime {
 						error: err instanceof Error ? err.message : String(err),
 					});
 					messages.push(
-						...(await convertToModelMessages([unconvertiblePlaceholder(m)], {
+						...(await convertToModelMessages([unconvertiblePlaceholder(rendered)], {
 							tools,
 							ignoreIncompleteToolCalls: true,
 						})),

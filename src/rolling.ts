@@ -230,6 +230,7 @@ export async function routeDmMessage(
 	deps: RollDeps,
 	chatId: number,
 	burstText: string,
+	stillRouteable: () => boolean = () => true,
 ): Promise<RollResult> {
 	const current = deps.store.currentDm(chatId);
 	if (current === null) return roll(deps, chatId, null, "first", null);
@@ -265,6 +266,7 @@ export async function routeDmMessage(
 			ms: Date.now() - started,
 			kind: err instanceof JevError ? err.kind : "deadline",
 		});
+		if (!stillRouteable()) return { conv: current, rolled: false, decidedBy: "command" };
 		// The address can still have rolled while the failed check ran
 		// — same re-read as the resolved path: join the new current
 		// rather than answering the superseded one.
@@ -275,6 +277,13 @@ export async function routeDmMessage(
 		return continued(current, "fallback", gapMinutes);
 	}
 	const probability = decision.answers["follow_up"] ?? 1;
+	if (!stillRouteable()) {
+		log.info("follow-up check superseded by navigation", {
+			chat: chatId, conversation: current.id, probability,
+			ms: Date.now() - started, inputTokens: decision.inputTokens, cost: decision.cost,
+		});
+		return { conv: current, rolled: false, decidedBy: "command", probability };
+	}
 	const fresh = probability < FRESH_BELOW;
 	log.info("follow-up check", {
 		chat: chatId,

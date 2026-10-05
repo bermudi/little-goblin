@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { Api } from "grammy";
 import type { Config } from "../config.ts";
 import { allowedUserGate, applyCommands, applyMenuButton, conversationAddress } from "./mod.ts";
-import { COMMANDS } from "./commands.ts";
+import { COMMANDS, DM_COMMANDS } from "./commands.ts";
 
 const baseConfig: Config = {
 	providers: {
@@ -44,8 +44,8 @@ describe("applyCommands", () => {
 	test("registers exactly the handled command set", async () => {
 		const calls: unknown[] = [];
 		const api = {
-			setMyCommands: (cmds: unknown) => {
-				calls.push(cmds);
+			setMyCommands: (cmds: unknown, options?: unknown) => {
+				calls.push({ cmds, options });
 				return Promise.resolve(true);
 			},
 		} as unknown as Api;
@@ -53,7 +53,10 @@ describe("applyCommands", () => {
 		applyCommands(api);
 		await Promise.resolve();
 
-		expect(calls).toEqual([[...COMMANDS]]);
+		expect(calls).toEqual([
+			{ cmds: [...COMMANDS], options: undefined },
+			{ cmds: [...DM_COMMANDS], options: { scope: { type: "all_private_chats" } } },
+		]);
 	});
 });
 
@@ -211,7 +214,11 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 				busy: () => false,
 				stop: (id: string) => {
 					stopped.push(id);
-					return { stopped: true, settled: Promise.resolve() };
+					return { stopped: true, settled: Promise.resolve(), reviewsCancelled: 0 };
+				},
+				cancelFenced: (id: string) => {
+					stopped.push(id);
+					return { stopped: true, settled: Promise.resolve(), reviewsCancelled: 0 };
 				},
 			} as unknown as Runtime,
 			titleFor: () => Promise.resolve(null),
@@ -881,4 +888,284 @@ describe("rolling dm", () => {
 		]);
 		h.store.close();
 	});
+});
+
+describe("manual DM navigation", () => {
+	const chat = { id: 7, type: "private" } as const;
+	function batch(h: RouterHarness) {
+		return h.pushed.map((item) => ({ ...item, chatId: chat.id }));
+	}
+
+	test("/new is immediate while busy, stops the outgoing turn, and preserves its history", () => {
+		const h = routerHarness();
+		const old = h.store.rollDm(chat.id, "/w");
+		h.store.append(old.id, [{ id: "old", role: "user", parts: [{ type: "text", text: "politics" }] }]);
+		h.env.deps.runtime.busy = () => true;
+		handleMessage(h.env, tgMsg({ message_id: 10, chat, text: "/new" }), 10);
+		expect(h.stopped).toEqual([old.id]);
+		expect(h.store.currentDm(chat.id)?.id).toBe("dm:7:2");
+		expect(h.store.history(old.id)).toHaveLength(1);
+		expect(h.store.history("dm:7:2")).toEqual([]);
+		expect(h.pushed).toEqual([]);
+		expect(h.apiCalls.at(-1)?.text).toBe("— new conversation —");
+		// Redelivery is not another manual /new.
+		handleMessage(h.env, tgMsg({ message_id: 10, chat, text: "/new" }), 10);
+		expect(h.store.currentDm(chat.id)?.id).toBe("dm:7:2");
+		expect(h.stopped).toEqual([old.id]);
+		h.store.close();
+	});
+
+	test("/back steps back without replay, and /new keeps ids unique after returning", () => {
+		const h = routerHarness();
+		const first = h.store.rollDm(chat.id, "/w");
+		h.store.rollDm(chat.id, "/w");
+		h.store.rollDm(chat.id, "/w");
+		handleMessage(h.env, tgMsg({ message_id: 10, chat, text: "/back" }), 10);
+		handleMessage(h.env, tgMsg({ message_id: 11, chat, text: "/back@goblin" }), 11);
+		expect(h.store.currentDm(chat.id)?.id).toBe(first.id);
+		expect(h.stopped).toEqual(["dm:7:3", "dm:7:2"]);
+		expect(h.pushed).toEqual([]);
+		handleMessage(h.env, tgMsg({ message_id: 12, chat, text: "/new" }), 12);
+		expect(h.store.currentDm(chat.id)?.id).toBe("dm:7:4");
+		handleMessage(h.env, tgMsg({ message_id: 13, chat, text: "/back" }), 13);
+		expect(h.store.currentDm(chat.id)?.id).toBe(first.id);
+		expect(h.store.get("dm:7:2")).not.toBeNull();
+		expect(h.store.get("dm:7:3")).not.toBeNull();
+		h.store.close();
+	});
+
+	test("/back before any conversation changes nothing", () => {
+		const h = routerHarness();
+		handleMessage(h.env, tgMsg({ message_id: 10, chat, text: "/back" }), 10);
+		expect(h.store.currentDm(chat.id)).toBeNull();
+		expect(h.stopped).toEqual([]);
+		expect(h.pushed).toEqual([]);
+		expect(h.apiCalls.at(-1)?.text).toBe("no earlier conversation");
+		h.store.close();
+	});
+
+	test("group/topic navigation is rejected before creating or stopping a conversation", () => {
+		const h = routerHarness();
+		for (const text of ["/new", "/back"]) {
+			handleMessage(h.env, tgMsg({
+				message_id: text === "/new" ? 10 : 11,
+				chat: { id: -100, type: "supergroup" },
+				message_thread_id: 5, is_topic_message: true, text,
+			}), text === "/new" ? 10 : 11);
+		}
+		expect(h.store.get("topic:-100:5")).toBeNull();
+		expect(h.stopped).toEqual([]);
+		expect(h.pushed).toEqual([]);
+		expect(h.apiCalls.map((call) => call.text)).toEqual([
+			"/new and /back work only in our private chat — group topics keep their own conversations.",
+			"/new and /back work only in our private chat — group topics keep their own conversations.",
+		]);
+		h.store.close();
+	});
+
+	test("other-bot commands make no routing changes, including unknown commands", async () => {
+		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0 } });
+		for (const [i, text] of ["/new@otherbot", "/back@otherbot", "/voice@otherbot", "/unknown@otherbot"].entries()) {
+			handleMessage(h.env, tgMsg({ message_id: 10 + i, chat, text }), 10 + i);
+		}
+		await Promise.all([...h.env.intake.values()]);
+		expect(h.store.currentDm(chat.id)).toBeNull();
+		expect(h.stopped).toEqual([]);
+		expect(h.pushed).toEqual([]);
+		expect(h.apiCalls).toEqual([]);
+		h.store.close();
+	});
+
+	test("buffered pre-command input stays in old history, never the fresh prompt", async () => {
+		const h = routerHarness();
+		const old = h.store.rollDm(chat.id, "/w");
+		let submits = 0;
+		h.env.deps.runtime.submitPersisted = () => { submits++; return true; };
+		handleMessage(h.env, tgMsg({ message_id: 9, chat, text: "old question" }), 9);
+		await h.env.intake.get("dm:7");
+		handleMessage(h.env, tgMsg({ message_id: 10, chat, text: "/new" }), 10);
+		await flushConversation(h.env, "dm:7", batch(h));
+		expect(h.store.history(old.id)[0]?.parts).toEqual([{ type: "text", text: "old question" }]);
+		expect(h.store.history("dm:7:2")).toEqual([]);
+		expect(h.env.inbox.pending()).toEqual([]);
+		expect(submits).toBe(0);
+		h.store.close();
+	});
+
+	test("navigation during a follow-up check cannot reroll the pin or execute archived input", async () => {
+		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0 } });
+		const old = h.store.rollDm(chat.id, "/w");
+		let entered: () => void = () => {};
+		let release: () => void = () => {};
+		const checking = new Promise<void>((resolve) => { entered = resolve; });
+		const held = new Promise<void>((resolve) => { release = resolve; });
+		h.env.deps.followUpGate = () => ({
+			async decide() {
+				entered();
+				await held;
+				return { answers: { follow_up: 0.01 }, inputTokens: 1, cost: 0 };
+			},
+		});
+		let submits = 0;
+		h.env.deps.runtime.submitPersisted = () => { submits++; return true; };
+		handleMessage(h.env, tgMsg({ message_id: 9, chat, text: "old question" }), 9);
+		await h.env.intake.get("dm:7");
+		const flushing = flushConversation(h.env, "dm:7", batch(h));
+		await checking;
+		handleMessage(h.env, tgMsg({ message_id: 10, chat, text: "/new" }), 10);
+		// Away and back makes id comparison alone insufficient.
+		handleMessage(h.env, tgMsg({ message_id: 11, chat, text: "/back" }), 11);
+		release();
+		await flushing;
+		expect(h.store.currentDm(chat.id)?.id).toBe(old.id);
+		expect(h.store.get("dm:7:3")).toBeNull();
+		expect(h.store.history(old.id)).toHaveLength(1);
+		expect(submits).toBe(0);
+		h.store.close();
+	});
+
+	test("navigation while the automatic boundary marker is pending prevents late admission", async () => {
+		const h = routerHarness();
+		let entered: () => void = () => {};
+		let release: () => void = () => {};
+		const sending = new Promise<void>((resolve) => { entered = resolve; });
+		const held = new Promise<void>((resolve) => { release = resolve; });
+		h.env.api.sendMessage = (async (_chat: unknown, text: string) => {
+			if (text === "— new conversation —") { entered(); await held; }
+			return { message_id: 1 };
+		}) as unknown as IntakeEnv["api"]["sendMessage"];
+		let submits = 0;
+		h.env.deps.runtime.submitPersisted = () => { submits++; return true; };
+		handleMessage(h.env, tgMsg({ message_id: 9, chat, text: "old question" }), 9);
+		await h.env.intake.get("dm:7");
+		const flushing = flushConversation(h.env, "dm:7", batch(h));
+		await sending;
+		handleMessage(h.env, tgMsg({ message_id: 10, chat, text: "/new" }), 10);
+		release();
+		await flushing;
+		expect(h.store.currentDm(chat.id)?.id).toBe("dm:7:2");
+		expect(h.store.history("dm:7:1")).toHaveLength(1);
+		expect(h.store.history("dm:7:2")).toEqual([]);
+		expect(submits).toBe(0);
+		h.store.close();
+	});
+
+	test("held pre-command media is archived while post-command text enters only the new conversation", async () => {
+		const h = routerHarness();
+		const old = h.store.rollDm(chat.id, "/w");
+		let entered: () => void = () => {};
+		let release: () => void = () => {};
+		const downloading = new Promise<void>((resolve) => { entered = resolve; });
+		const held = new Promise<void>((resolve) => { release = resolve; });
+		h.env.api.getFile = async () => {
+			entered();
+			await held;
+			throw new Error("synthetic download failure");
+		};
+		const targets: string[] = [];
+		h.env.deps.runtime.submitPersisted = (conv, _message, sink) => {
+			targets.push(conv.id);
+			void sink.onDone({ kind: "completed" });
+			return true;
+		};
+		handleMessage(h.env, tgMsg({
+			message_id: 9, chat, caption: "old photo",
+			photo: [{ file_id: "f", file_unique_id: "u", width: 8, height: 8 }],
+		}), 9);
+		await downloading;
+		handleMessage(h.env, tgMsg({ message_id: 10, chat, text: "/new" }), 10);
+		handleMessage(h.env, tgMsg({ message_id: 11, chat, text: "new question" }), 11);
+		release();
+		await h.env.intake.get("dm:7");
+		await flushConversation(h.env, "dm:7", batch(h));
+		expect(JSON.stringify(h.store.history(old.id))).toContain("old photo");
+		expect(h.store.history("dm:7:2")[0]?.parts).toEqual([{ type: "text", text: "new question" }]);
+		expect(targets).toEqual(["dm:7:2"]);
+		expect(h.env.inbox.pending()).toEqual([]);
+		h.store.close();
+	});
+
+	test("boot replay honours the durable history-only assignment without starting a turn", async () => {
+		const h = routerHarness();
+		const old = h.store.rollDm(chat.id, "/w");
+		handleMessage(h.env, tgMsg({ message_id: 9, chat, text: "old question" }), 9);
+		await h.env.intake.get("dm:7");
+		handleMessage(h.env, tgMsg({ message_id: 10, chat, text: "/new" }), 10);
+		const filename = h.store.db.filename;
+		h.store.close();
+		const reopened = openStore(filename);
+		h.env.deps.store = reopened;
+		h.env.inbox = openTelegramInbox(reopened.db);
+		h.env.pings = openPings(reopened.db);
+		h.env.intake = new Map();
+		h.env.buffer = new CoalescingBuffer(60_000,
+			(id, items) => flushConversation(h.env, id, items), 120_000);
+		let submits = 0;
+		h.env.deps.runtime.submitPersisted = () => { submits++; return true; };
+		await replayInbox(h.env);
+		await Promise.all([...h.env.intake.values()]);
+		await h.env.buffer.drain();
+		expect(reopened.history(old.id)[0]?.parts).toEqual([{ type: "text", text: "old question" }]);
+		expect(reopened.history("dm:7:2")).toEqual([]);
+		expect(submits).toBe(0);
+		expect(h.env.inbox.pending()).toEqual([]);
+		reopened.close();
+	});
+
+	test("navigation persistence failure rolls back the selection and prevents update acknowledgement", async () => {
+		const h = routerHarness();
+		handleMessage(h.env, tgMsg({ message_id: 10, chat, text: "/new" }), 10);
+		const old = h.store.currentDm(chat.id)!;
+		handleMessage(h.env, tgMsg({ message_id: 11, chat, text: "pending" }), 11);
+		await h.env.intake.get("dm:7");
+		h.store.db.run(`CREATE TRIGGER reject_navigation BEFORE INSERT ON tg_dm_navigation
+			BEGIN SELECT RAISE(ABORT, 'synthetic write failure'); END`);
+		expect(() => handleMessageDurably(h.env, tgMsg({ message_id: 12, chat, text: "/new" }), 12))
+			.toThrow(InboxRecordError);
+		expect(h.store.currentDm(chat.id)?.id).toBe(old.id);
+		expect(h.store.get("dm:7:2")).toBeNull();
+		expect(h.env.inbox.archivedTarget(11, "dm:7")).toBeNull();
+		expect(h.env.inbox.pending().map((row) => row.updateId)).toEqual([11]);
+		expect(h.stopped).toEqual([]);
+		h.store.close();
+	});
+
+	for (const multipleArchives of [false, true]) {
+		test(`partial flush failure retries only pending rows${multipleArchives ? " across multiple archive targets" : ""}`, async () => {
+			const h = routerHarness();
+			h.store.rollDm(chat.id, "/w");
+			const targets: string[] = [];
+			h.env.deps.runtime.submitPersisted = (conv, _message, sink) => {
+				targets.push(conv.id);
+				void sink.onDone({ kind: "completed" });
+				return true;
+			};
+			h.env.buffer = new CoalescingBuffer(60_000,
+				(id, items) => flushConversation(h.env, id, items), 120_000);
+			handleMessage(h.env, tgMsg({ message_id: 1, chat, text: "first archived" }), 1);
+			await h.env.intake.get("dm:7");
+			handleMessage(h.env, tgMsg({ message_id: 2, chat, text: "/new" }), 2);
+			handleMessage(h.env, tgMsg({ message_id: 3, chat, text: "second input" }), 3);
+			await h.env.intake.get("dm:7");
+			if (multipleArchives) {
+				handleMessage(h.env, tgMsg({ message_id: 4, chat, text: "/new" }), 4);
+				handleMessage(h.env, tgMsg({ message_id: 5, chat, text: "normal input" }), 5);
+				await h.env.intake.get("dm:7");
+			}
+			h.store.db.run(`CREATE TRIGGER reject_later_append BEFORE INSERT ON events
+				WHEN NEW.conversation_id = 'dm:7:2'
+				BEGIN SELECT RAISE(ABORT, 'synthetic later append failure'); END`);
+			await expect(h.env.buffer.drain()).rejects.toThrow("buffer drain failed");
+			expect(h.store.history("dm:7:1")).toHaveLength(1);
+			expect(targets).toEqual([]);
+			h.store.db.run("DROP TRIGGER reject_later_append");
+			await h.env.buffer.drain();
+			expect(h.store.history("dm:7:1")).toHaveLength(1);
+			expect(h.store.history("dm:7:2")).toHaveLength(1);
+			if (multipleArchives) expect(h.store.history("dm:7:3")).toHaveLength(1);
+			expect(targets).toEqual([multipleArchives ? "dm:7:3" : "dm:7:2"]);
+			expect(h.env.inbox.pending()).toEqual([]);
+			h.store.close();
+		});
+	}
 });

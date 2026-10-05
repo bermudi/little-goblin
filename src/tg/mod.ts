@@ -1,8 +1,9 @@
 // Telegram composition: grammy long polling, allowed-user gate first
-// thing, commands → settings, everything else → coalescing buffer → turn.
+// thing, commands → settings/navigation, everything else → buffer → turn.
 // Only this directory knows grammy.
 
 import { Bot, type Api } from "grammy";
+import { z } from "zod";
 import type { MenuButton, Message } from "grammy/types";
 import type { UIMessage } from "ai";
 import type { AuthStore } from "../auth.ts";
@@ -21,7 +22,7 @@ import { userMessage, type Runtime, type TurnSink } from "../runtime.ts";
 import { log } from "../log.ts";
 import { makeBellSink } from "./bell.ts";
 import { CoalescingBuffer } from "./buffer.ts";
-import { COMMAND_RE, COMMANDS, handleCommand, type CommandMemoryDeps } from "./commands.ts";
+import { COMMAND_RE, COMMANDS, DM_COMMANDS, handleCommand, parseCommand, type CommandMemoryDeps } from "./commands.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import { makeDeliverySink, SPEAK_CALLBACK } from "./delivery.ts";
 import { MAIL_CALLBACK_RE, type MailApproval } from "./mail-approval.ts";
@@ -32,6 +33,7 @@ import { mediaFromMessage, mediaParts, saveAttachment } from "./media.ts";
 import { openTelegramInbox, validatedInboxMedia, type InboxEntry, type InboxPayload } from "./inbox.ts";
 import { openPings, type PingStore } from "./pings.ts";
 import { maybeRenameTopic, titleMetaFromService } from "./titles.ts";
+import { navigateDm } from "./navigation.ts";
 
 export const AUTH_TELEGRAM_TOKEN = "telegram";
 // 500ms of quiet seals a burst — measured, not vibes (2026-09-25): a
@@ -199,6 +201,31 @@ function rollDepsOf(deps: BotDeps): RollDeps {
 	};
 }
 
+function replyNavigation(env: IntakeEnv, msg: Message, text: string): void {
+	const addr = conversationAddress(msg);
+	void withTimeout(
+		env.api.sendMessage(
+			msg.chat.id, text,
+			addr.kind === "topic" ? { message_thread_id: addr.threadId } : {},
+		),
+		"sendMessage (navigation reply)",
+	).then((sent) => {
+		const messageId = z.object({ message_id: z.number().int().positive().safe() }).parse(sent).message_id;
+		log.info("dm navigation reply delivered", {
+			chat: msg.chat.id, thread: addr.kind === "topic" ? addr.threadId : null,
+			replyTo: msg.message_id, messageId,
+		});
+	}).catch((err: unknown) => {
+		log.warn("dm navigation reply failed", {
+			chat: msg.chat.id,
+			replyTo: msg.message_id,
+			kind: err instanceof TelegramTimeoutError ? "timeout" : err instanceof Error ? err.name : "unknown",
+			...(typeof err === "object" && err !== null && "error_code" in err &&
+				typeof err.error_code === "number" ? { status: err.error_code } : {}),
+		});
+	});
+}
+
 export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): void {
 	const { deps } = env;
 	const text = msg.text ?? msg.caption ?? "";
@@ -207,15 +234,59 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 	// the lane key and the concrete dm:<chat>:<n> conversation is routed
 	// at flush (Rolling DM). Every other lane IS its conversation id, so
 	// those still resolve eagerly here.
-	const rolling = addr.kind === "dm" && isRollingChat(addr.chatId);
-	const conv = rolling ? null : deps.store.resolve(addr, paths.workspace());
-	const lane = conv === null ? addressId(addr) : conv.id;
+	const rolling = msg.chat.type === "private" && addr.kind === "dm" && isRollingChat(addr.chatId);
+	const lane = addressId(addr);
 	log.debug("intake", {
 		updateId,
 		conversation: lane,
 		message: msg.message_id,
-		...(conv !== null && conv.threadId !== null ? { thread: conv.threadId } : {}),
+		...(addr.kind === "topic" ? { thread: addr.threadId } : {}),
 	});
+	// Media wins over slash-looking captions. Parse command ownership
+	// before any conversation creation or routing, including other-bot
+	// commands that are not in our advertised menu.
+	let media: ReturnType<typeof mediaFromMessage> = null;
+	let mediaError: unknown = null;
+	try {
+		const extracted = mediaFromMessage(msg);
+		media = extracted === null ? null : validatedInboxMedia(extracted);
+	} catch (err) {
+		mediaError = err;
+	}
+	const command = text !== "" && !media && mediaError === null
+		? parseCommand(text, env.botUsername) : null;
+	if (command !== null && !command.forThisBot) return;
+	if (command?.command === "/new" || command?.command === "/back") {
+		if (!rolling) {
+			replyNavigation(env, msg, "/new and /back work only in our private chat — group topics keep their own conversations.");
+			return;
+		}
+		if (command.arg !== "") {
+			replyNavigation(env, msg, `use ${command.command} without arguments, then send your question.`);
+			return;
+		}
+		try {
+			const result = navigateDm(
+				{ store: deps.store, runtime: deps.runtime, inbox: env.inbox },
+				{
+					chatId: addr.chatId, updateId, messageId: msg.message_id,
+					command: command.command === "/new" ? "new" : "back",
+				},
+			);
+			if (!result.duplicate) {
+				replyNavigation(env, msg, result.outcome === "new"
+					? "— new conversation —"
+					: result.outcome === "back" ? "— previous conversation —" : "no earlier conversation");
+			}
+		} catch (err) {
+			log.error("dm navigation failed before durable admission", undefined, {
+				updateId, chat: addr.chatId, errorKind: err instanceof Error ? err.name : "unknown",
+			});
+			throw new InboxRecordError(updateId, err);
+		}
+		return;
+	}
+	const conv = rolling ? null : deps.store.resolve(addr, paths.workspace());
 	// conv is read before this patch — titleImplicit transitions both
 	// ways get a line, so "why is it still New Chat" never needs a REPL.
 	// Topic service meta only exists on non-private lanes.
@@ -232,28 +303,18 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 		}
 	}
 
-	// Commands are settings-only — but a caption that looks like a
-	// command must not silently eat the media it rides on; media wins.
-	let media: ReturnType<typeof mediaFromMessage> = null;
-	let mediaError: unknown = null;
-	try {
-		const extracted = mediaFromMessage(msg);
-		media = extracted === null ? null : validatedInboxMedia(extracted);
-	} catch (err) {
-		mediaError = err;
-	}
-	if (text !== "" && !media && mediaError === null && COMMAND_RE.test(text)) {
+	if (command !== null && COMMAND_RE.test(text)) {
 		let target: Conversation | null = conv;
 		let handled = false;
 		try {
 			// Rolling DM: /voice and /memory own their roll; every other
 			// command acts on the current conversation and never rolls.
 			if (target === null) {
-				const cmd = /^\/(\w+)/.exec(text)?.[1] ?? "";
+				const cmd = command.command;
 				const routed = routeDm(
 					rollDepsOf(deps),
 					addr.chatId,
-					cmd === "voice" || cmd === "memory" ? "command" : "current",
+					cmd === "/voice" || cmd === "/memory" ? "command" : "current",
 				);
 				if (routed.rolled) void sendRollMarker(env.api, addr.chatId, routed.conv.id);
 				target = routed.conv;
@@ -501,13 +562,73 @@ async function flushRolling(
 	items: BufferedItem[],
 ): Promise<void> {
 	const { deps } = env;
-	const parts = items.flatMap((i) => i.parts);
 	log.debug("coalesced turn input", { conversation: laneKey, items: items.length });
-	const result = items.some((i) => i.quoted !== undefined)
-		? routeDm(rollDepsOf(deps), chatId, "reply")
-		: await routeDmMessage(rollDepsOf(deps), chatId, projectRollText(parts));
-	if (result.rolled) await sendRollMarker(env.api, chatId, result.conv.id);
-	admitBatch(env, result.conv, laneKey, items, parts);
+	let remaining = archiveNavigatedInput(env, laneKey, items);
+	while (remaining.length > 0) {
+		const batch = remaining;
+		const stillRouteable = (): boolean =>
+			env.inbox.assertRouteable(batch.map((item) => item.updateId), laneKey);
+		const result = batch.some((i) => i.quoted !== undefined)
+			? routeDm(rollDepsOf(deps), chatId, "reply")
+			: await routeDmMessage(
+				rollDepsOf(deps), chatId, projectRollText(batch.flatMap((i) => i.parts)), stillRouteable,
+			);
+		remaining = archiveNavigatedInput(env, laneKey, batch);
+		if (remaining.length !== batch.length) continue;
+		if (result.rolled) await sendRollMarker(env.api, chatId, result.conv.id);
+		remaining = archiveNavigatedInput(env, laneKey, batch);
+		if (remaining.length !== batch.length) continue;
+		// Navigation or a scheduled fire may have moved the pin while
+		// the route/marker awaited. Never admit into a cached old target.
+		const current = deps.store.currentDm(chatId);
+		if (current === null) throw new Error(`DM ${chatId} has no current conversation after routing`);
+		if (current.id !== result.conv.id) {
+			log.info("dm admission re-pinned", {
+				address: laneKey, from: result.conv.id, to: current.id,
+			});
+		}
+		admitBatch(env, current, laneKey, remaining, remaining.flatMap((i) => i.parts));
+		return;
+	}
+}
+
+// Manual navigation preserves input still in intake, but cancels its
+// work. Consult durable dispositions, not only an in-memory generation:
+// held attachments, retained batches and boot recovery all use this path.
+function archiveNavigatedInput(
+	env: FlushEnv,
+	laneKey: string,
+	items: BufferedItem[],
+): BufferedItem[] {
+	const groups = new Map<string, BufferedItem[]>();
+	const normal: BufferedItem[] = [];
+	const pending = new Set(env.inbox.pendingIds(items.map((item) => item.updateId), laneKey));
+	const committed = items.filter((item) => !pending.has(item.updateId));
+	if (committed.length > 0) {
+		log.info("telegram flush skipping already committed input", {
+			address: laneKey, updateIds: committed.map((item) => item.updateId),
+		});
+	}
+	for (const item of items) {
+		if (!pending.has(item.updateId)) continue;
+		const target = env.inbox.archivedTarget(item.updateId, laneKey);
+		if (target === null) normal.push(item);
+		else {
+			const group = groups.get(target) ?? [];
+			group.push(item);
+			groups.set(target, group);
+		}
+	}
+	for (const [target, group] of groups) {
+		const updateIds = group.map((item) => item.updateId);
+		env.inbox.commitBatch(updateIds, laneKey, () => {
+			env.deps.store.append(target, [userMessage(group.flatMap((item) => item.parts))]);
+		});
+		log.info("telegram navigation input archived without replay", {
+			address: laneKey, conversation: target, updateIds,
+		});
+	}
+	return normal;
 }
 
 // Commit → sink → submit — the tail every lane shares after routing.
@@ -818,6 +939,9 @@ export function applyMenuButton(api: Api, publicUrl: string | undefined): void {
 export function applyCommands(api: Api): void {
 	api.setMyCommands([...COMMANDS]).catch((err: unknown) =>
 		log.warn("setMyCommands failed", { error: String(err) }),
+	);
+	api.setMyCommands([...DM_COMMANDS], { scope: { type: "all_private_chats" } }).catch((err: unknown) =>
+		log.warn("setMyCommands private scope failed", { error: String(err) }),
 	);
 }
 

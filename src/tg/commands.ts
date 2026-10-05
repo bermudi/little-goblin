@@ -1,8 +1,9 @@
 // Commands are deliberately few: /voice /memory /forget /stop /compact
+// plus DM-only /new /back (handled by intake before settings routing).
 // — plus /start, the one non-settings command: a canned greeting for the
 // message every Telegram client fires automatically on first open.
 // /model and /think are retired — the mini app owns model and thinking
-// settings. No conversation-lifecycle commands — topics own that. Every
+// settings. Topics still own conversation lifecycle in groups. Every
 // settings change bumps the conversation epoch, fencing in-flight turns.
 
 import type { Database } from "bun:sqlite";
@@ -44,6 +45,20 @@ export interface CommandDeps {
 	botUsername: string;
 	// Long-term memory wiring — absent = memory not configured.
 	memory?: CommandMemoryDeps;
+}
+
+export function parseCommand(
+	text: string,
+	botUsername: string,
+): { command: string; arg: string; forThisBot: boolean } | null {
+	const trimmed = text.trim();
+	const match = /^\/(\w+)(?:@(\w+))?(?:\s|$)/.exec(trimmed);
+	if (!match) return null;
+	return {
+		command: `/${match[1]!}`,
+		arg: trimmed.slice(match[0].length).trim(),
+		forThisBot: match[2] === undefined || match[2].toLowerCase() === botUsername.toLowerCase(),
+	};
 }
 
 function target(conv: Conversation) {
@@ -92,15 +107,14 @@ export function handleCommand(
 	conv: Conversation,
 	text: string,
 ): boolean {
-	const [rawCmd, ...rest] = text.trim().split(/\s+/);
-	const at = rawCmd!.indexOf("@");
+	const parsed = parseCommand(text, deps.botUsername);
+	if (parsed === null) return false;
 	// "/stop@otherbot" is not for this bot — consumed silently rather than
 	// fed to the model as a user message.
-	if (at !== -1 && rawCmd!.slice(at + 1).toLowerCase() !== deps.botUsername.toLowerCase()) {
+	if (!parsed.forThisBot) {
 		return true;
 	}
-	const cmd = at === -1 ? rawCmd! : rawCmd!.slice(0, at);
-	const arg = rest.join(" ").trim();
+	const { command: cmd, arg } = parsed;
 
 	switch (cmd) {
 		case "/start": {
@@ -110,7 +124,9 @@ export function handleCommand(
 			reply(
 				deps,
 				conv,
-				"goblin online. just talk — each topic is its own conversation.\n/voice · /memory · /forget · /stop · /compact",
+				conv.chatId > 0
+					? "goblin online. just talk — quiet gaps start fresh conversations.\n/new · /back · /voice · /memory · /forget · /stop · /compact"
+					: "goblin online. just talk — each topic is its own conversation.\n/voice · /memory · /forget · /stop · /compact",
 			);
 			return true;
 		}
@@ -389,8 +405,8 @@ export function handleCommand(
 
 // The settings surface Telegram advertises — registered via
 // setMyCommands at boot so autocomplete shows exactly what works.
-// COMMAND_RE derives from this list plus HIDDEN_COMMANDS: the two can
-// never drift apart.
+// COMMAND_RE derives from the registered DM list plus HIDDEN_COMMANDS.
+// Groups receive only COMMANDS; the private scope adds navigation.
 export const COMMANDS = [
 	{ command: "voice", description: "toggle voice-note replies" },
 	{ command: "memory", description: "memory status, retry or dismiss blocked retention" },
@@ -399,10 +415,16 @@ export const COMMANDS = [
 	{ command: "compact", description: "summarize older history to free context" },
 ] as const;
 
+export const DM_COMMANDS = [
+	{ command: "new", description: "stop the current turn and start a fresh conversation" },
+	{ command: "back", description: "stop the current turn and return to the previous conversation" },
+	...COMMANDS,
+] as const;
+
 // Handled but not advertised: /start is the client's automatic opener,
 // not an operator command — it stays out of the command menu.
 const HIDDEN_COMMANDS = ["start"] as const;
 
 export const COMMAND_RE = new RegExp(
-	`^/(${[...COMMANDS.map((c) => c.command), ...HIDDEN_COMMANDS].join("|")})(@\\w+)?(\\s|$)`,
+	`^/(${[...DM_COMMANDS.map((c) => c.command), ...HIDDEN_COMMANDS].join("|")})(@\\w+)?(\\s|$)`,
 );

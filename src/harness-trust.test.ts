@@ -168,6 +168,25 @@ describe("codex", () => {
 		expect(codexTrust(h, "/a")).toBe("untrusted");
 	});
 
+	test("a dotted projects key scoped under a foreign [table] refuses — the insert would land in that table", () => {
+		const h = home();
+		mkdirSync(join(h, ".codex"), { recursive: true });
+		const path = join(h, ".codex", "config.toml");
+		// The root dotted key defines the entry, but the last matching
+		// dotted line sits below [other]: inserting after it would write
+		// other.projects."…".trust_level — file stays valid TOML, root
+		// trust stays unset, and the launch logs trust as seeded.
+		const original =
+			'projects."/work/task".model = "gpt-5"\n' +
+			"[other]\n" +
+			'projects."/work/task".extra = "nested"\n';
+		writeFileSync(path, original);
+		expect(() => seedHarnessTrust("codex", "/work/task", h)).toThrow(
+			"can't be extended safely",
+		);
+		expect(readFileSync(path, "utf8")).toBe(original);
+	});
+
 	test("an inline-table projects cannot be extended — loud refusal, file untouched", () => {
 		const h = home();
 		mkdirSync(join(h, ".codex"), { recursive: true });

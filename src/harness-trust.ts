@@ -172,12 +172,23 @@ function insertIntoExisting(
 			return lines.join("\n");
 		}
 	}
-	// Defined by root-level dotted keys — a dotted line after the last
-	// one inherits the same (root) scope.
+	// Defined by root-level dotted keys — a dotted line after the
+	// last one inherits the same scope. That scope is root only when
+	// no [table] header precedes the match: under a header the
+	// inserted key would land in that table
+	// (other.projects."<cwd>".trust_level) with the file still valid
+	// TOML — root trust unset, no error anywhere. Refuse instead.
+	// (A multi-line string holding a "["-leading line also refuses —
+	// the wrong side of that mistake is loud, not silent.)
 	const dotted = new RegExp(`^\\s*projects\\s*\\.\\s*${quoted}\\s*\\.`);
 	let last = -1;
 	for (const [i, line] of lines.entries()) if (dotted.test(line)) last = i;
 	if (last >= 0) {
+		if (lines.slice(0, last).some((line) => /^\s*\[/.test(line))) {
+			throw new Error(
+				`${path}: projects entry for ${cwd} exists in a form that can't be extended safely — set trust_level by hand`,
+			);
+		}
 		lines.splice(last + 1, 0, `projects.${basic}.trust_level = "trusted"`);
 		return lines.join("\n");
 	}

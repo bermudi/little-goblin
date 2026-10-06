@@ -67,7 +67,7 @@ Conversation ─────── (channel address) → durable event history
   topics retired 2026-10-03); an app address is a client-minted
   id that exists only in the app channel. Owns `events` (user msgs,
   assistant msgs, tool calls, system events), `meta` (created,
-  model/thinking overrides).
+  app model/thinking snapshots; Telegram selection is shared).
 - **Turn** — a unit of work enqueued on a conversation. Per-conversation
   serial queue; one active turn. A message submitted while a turn runs
   **steers** (ruled 2026-09-28, replacing queue-behind): the running turn
@@ -121,9 +121,12 @@ advanced since enqueue.
 
 Implementation: each conversation carries a monotonic `epoch`, bumped on
 conversation-scoped settings changes (`/voice`, `/memory on|off`) and
-explicit cancellation. Model and thinking are config-global since
-`/model` and `/think` retired — the mini app writes global config, not
-conversation state, so nothing there needs fencing. A turn
+explicit cancellation. Model/thinking edits do **not** bump the epoch:
+Telegram has one shared selection, app conversations own durable snapshots,
+and root config holds app defaults for future conversations (ruling
+2026-10-06). A turn captures its selection at admission; edits apply to
+its next turn without interrupting this one, including overflow recovery
+and automatic compaction. `/model` and `/think` stay retired. A turn
 captures `(conversationId, epoch)` at admission and calls `checkAuthority()`
 around every await. Fenced turns abort quietly and log it. No machines, no
 drain sets — one counter and one function. Delivery checks authority when each
@@ -252,7 +255,8 @@ is an export/query command, not a format property.
 
 ## Config
 
-`goblin.json5`: provider registry, per-conversation default model/thinking,
+`goblin.json5`: provider registry, root `model`/`thinking` app defaults for
+future conversations, independent shared `telegram.model`/`telegram.thinking`,
 optional `transcription` block, optional `vision` block (absent =
 vision tool absent; `model` + `maxTokens`), optional `search` block (absent =
 search tool absent), optional `memory` block (absent = memory

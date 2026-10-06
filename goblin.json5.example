@@ -31,7 +31,9 @@
     // codex: { kind: "codex" },
   },
 
-  // Default model: "<provider>/<model-id>". Model ids may contain slashes.
+  // App default for NEW conversations: "<provider>/<model-id>".
+  // Each app chat saves its own model/thinking; changing these defaults
+  // leaves existing chats alone. Model ids may contain slashes.
   // The zai coding plan only serves glm-5.3-gen — older glm-* ids are
   // silently routed to 5.3/5.3-flash, so write the real ones.
   model: "zai/glm-5.3-flash",
@@ -207,7 +209,15 @@
   // Leave unset for the cloud API. dmGapMinutes is the quiet gap before
   // a DM may roll into a new conversation (Rolling DM) — it applies
   // immediately and is also settable in the settings app.
-  // telegram: { apiRoot: "http://127.0.0.1:8081", dmGapMinutes: 45 },
+  // One independent model/thinking selection shared by all Telegram
+  // conversations. Legacy configs without these keys start at the app
+  // defaults above; a settings save pins the Telegram values explicitly.
+  telegram: {
+    model: "zai/glm-5.3-flash",
+    thinking: "medium",
+    dmGapMinutes: 45,
+    // apiRoot: "http://127.0.0.1:8081",
+  },
 
   // --- Mini app + app channel ---
   // External HTTPS door (tailscale serve/funnel or any reverse proxy)

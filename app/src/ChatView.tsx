@@ -9,8 +9,10 @@ import {
 } from "ai";
 import {
 	getConfig,
+	getConversationConfig,
 	getMessages,
 	patchConfig,
+	patchConversationConfig,
 	stopConversation,
 	synthesize,
 	uploadAttachment,
@@ -472,6 +474,7 @@ function QuoteFab({
 // caller either streams them into the open conversation or creates one.
 export function Composer({
 	token,
+	conversationId,
 	busy,
 	onSend,
 	onStop,
@@ -479,6 +482,7 @@ export function Composer({
 	focusSignal,
 }: {
 	token: string | null;
+	conversationId?: string;
 	busy: boolean;
 	onSend: (parts: UIMessage["parts"]) => void;
 	// Present only where a live turn exists to interrupt (ChatView).
@@ -540,24 +544,36 @@ export function Composer({
 	};
 	const fileInput = useRef<HTMLInputElement>(null);
 
-	// Model + thinking pickers ride the same operator settings the mini
-	// app owns — GET once, PATCH on change, the response is the truth.
+	// Existing chats own their settings. The empty start screen edits only
+	// the app's new-chat defaults; neither path changes Telegram.
 	const [cfg, setCfg] = useState<AppConfigView | null>(null);
+	const [configError, setConfigError] = useState<string | null>(null);
+	const [configSaving, setConfigSaving] = useState(false);
 	useEffect(() => {
 		let live = true;
-		getConfig(token).then(
+		setCfg(null);
+		setConfigError(null);
+		const load = conversationId === undefined
+			? getConfig(token)
+			: getConversationConfig(token, conversationId);
+		load.then(
 			(c) => live && setCfg(c),
-			() => {},
+			(err: unknown) => live && setConfigError(String(err)),
 		);
 		return () => {
 			live = false;
 		};
-	}, [token]);
+	}, [token, conversationId]);
 	const setKnob = (patch: { model?: string; thinking?: string }) => {
-		void patchConfig(token, patch).then(
+		setConfigSaving(true);
+		setConfigError(null);
+		const save = conversationId === undefined
+			? patchConfig(token, patch)
+			: patchConversationConfig(token, conversationId, patch);
+		void save.then(
 			(c) => setCfg(c),
-			() => {},
-		);
+			(err: unknown) => setConfigError(String(err)),
+		).finally(() => setConfigSaving(false));
 	};
 
 	// Voice notes: hold-to-record is MediaRecorder + upload; the server
@@ -702,7 +718,7 @@ export function Composer({
 		// The button is disabled while busy; Enter and form submit are
 		// not — gate here so a mid-turn send can't fork a second request
 		// (or a second conversation from the empty state).
-		if (busy) return;
+		if (busy || configSaving) return;
 		const text = draft.trim();
 		const ready = pending.filter((e) => e.uploading !== true && e.failed !== true);
 		if (text === "" && ready.length === 0) return;
@@ -754,6 +770,7 @@ export function Composer({
 					e.target.value = "";
 				}}
 			/>
+			{configError !== null && <div className="error" role="alert">Model settings failed: {configError}</div>}
 			{pending.length > 0 && (
 				<div className="composer-attachments">
 					{pending.map((e, i) => (
@@ -855,11 +872,12 @@ export function Composer({
 				)}
 				{cfg !== null && (
 					<>
-						<label className="knob" title="Model">
+						<label className="knob" title={conversationId === undefined ? "Default model for new app chats" : "Model for this conversation"}>
 							<select
+								aria-label={conversationId === undefined ? "New app chat model" : "Conversation model"}
 								value={cfg.model}
 								onChange={(e) => setKnob({ model: e.target.value })}
-								disabled={busy}
+								disabled={busy || configSaving}
 							>
 								{cfg.favorites.length === 0 ? (
 									<option value={cfg.model}>{modelName}</option>
@@ -872,11 +890,12 @@ export function Composer({
 								)}
 							</select>
 						</label>
-						<label className="knob" title="Thinking level">
+						<label className="knob" title={conversationId === undefined ? "Default thinking level for new app chats" : "Thinking level for this conversation"}>
 							<select
+								aria-label={conversationId === undefined ? "New app chat thinking" : "Conversation thinking"}
 								value={cfg.thinking}
 								onChange={(e) => setKnob({ thinking: e.target.value })}
-								disabled={busy}
+								disabled={busy || configSaving}
 							>
 								{[...new Set([cfg.thinking, ...cfg.thinkingLevels])].map((l) => (
 									<option key={l} value={l}>
@@ -902,6 +921,7 @@ export function Composer({
 						aria-label="Send"
 						disabled={
 							busy ||
+							configSaving ||
 							recording ||
 							(draft.trim() === "" &&
 								pending.every((e) => e.failed === true || e.uploading === true))
@@ -1132,6 +1152,7 @@ function Chat({
 			</div>
 			<Composer
 				token={token}
+				conversationId={conversationId}
 				busy={busy}
 				quote={quote}
 				onSend={(parts) => {

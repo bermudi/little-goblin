@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { tool, type LanguageModel, type UIMessage, type UIMessageChunk } from "ai";
 import { z } from "zod";
 import { APICallError, type LanguageModelV4, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
-import { appAddress, openStore } from "./conversation.ts";
+import { appAddress, captureConversationSettings, openStore } from "./conversation.ts";
+import { parseConfig } from "./config.ts";
 import type { JevClient } from "./jev.ts";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { setLogFile } from "./log.ts";
@@ -3261,4 +3262,124 @@ describe("forced-landing defiance guard", () => {
 		expect(sink.text).toContain("My context window filled up before I wrote my answer");
 		store.close();
 	});
+test("model/thinking changes do not interrupt admitted turns; next turn and manual compaction resolve latest channel settings", async () => {
+	const store = openStore(tmpdb());
+	let cfg = parseConfig({ providers: { test: { kind: "codex" } }, model: "test/app", thinking: "high", allowedUsers: [7],
+		telegram: { model: "test/telegram", thinking: "low" },
+	});
+	const app = store.resolve(appAddress("channel-settings"), "/work");
+	const dm = store.resolve({ kind: "dm", chatId: 7 }, "/work");
+	store.setMeta(dm.id, { model: "test/retired", thinking: "max" });
+	let release: () => void = () => {};
+	const held = new Promise<void>((r) => { release = r; });
+	let calls = 0;
+	const summaries: string[] = [];
+	const runtime = new Runtime({
+		store,
+		captureConversation: (conv) => captureConversationSettings(store, conv, cfg),
+		async buildStep(conv) {
+			if (++calls === 1) await held;
+			return { model: fakeModel([`${conv.model}:${conv.thinking}`], 1), system: "test", label: conv.model! };
+		},
+		makeTools: () => ({}),
+		compaction: {
+			modelRef: (conv) => conv.model!,
+			summarize: async (conv) => { summaries.push(`${conv.model}:${conv.thinking}`); return "summary"; },
+		},
+	});
+	try {
+		const first = new RecordingSink();
+		runtime.submit(app, userMessage([{ type: "text", text: "first" }]), first);
+		await first.admitted;
+		store.setMeta(app.id, { model: "test/personal", thinking: "max" });
+		cfg = parseConfig({ ...cfg, model: "test/future", thinking: "off", telegram: { ...cfg.telegram, model: "test/telegram-new", thinking: "medium" } });
+		release();
+		expect((await first.done).kind).toBe("completed");
+		expect(first.text).toBe("test/app:high");
+		const second = new RecordingSink();
+		runtime.submit(app, userMessage([{ type: "text", text: "second" }]), second);
+		expect((await second.done).kind).toBe("completed");
+		expect(second.text).toBe("test/personal:max");
+		const telegram = new RecordingSink();
+		runtime.submit(dm, userMessage([{ type: "text", text: "telegram" }]), telegram);
+		expect((await telegram.done).kind).toBe("completed");
+		expect(telegram.text).toBe("test/telegram-new:medium");
+		// Force enough history to compact, then use an intentionally stale
+		// Conversation object: /compact resolves at execution, not enqueue.
+		for (let i = 0; i < 4; i++) store.append(app.id, [
+			userMessage([{ type: "text", text: "past ".repeat(25000) }]),
+			{ id: `past-${i}`, role: "assistant", parts: [{ type: "text", text: "done" }] },
+		]);
+		store.setMeta(app.id, { model: "test/compact", thinking: "low" });
+		expect((await runtime.compact(app)).kind).toBe("compacted");
+		expect(summaries.every((s) => s === "test/compact:low")).toBe(true);
+		expect(summaries.length).toBeGreaterThan(0);
+		expect(store.getCompaction(app.id)!.model).toBe("test/compact");
+	} finally { await runtime.shutdown(); store.close(); }
+});
+
+test("overflow compaction and resumed model call keep the admitted selection across settings edits", async () => {
+	const store = openStore(tmpdb());
+	const conv = store.resolve(appAddress("overflow-settings"), "/work");
+	seedExchanges(store, conv.id);
+	const cfg = parseConfig({ providers: { test: { kind: "codex" } }, model: "test/original", thinking: "high", allowedUsers: [7] });
+	const { model } = scriptedModel([overflowError(), textReply("recovered"), textReply("next")]);
+	const selections: string[] = [];
+	const summarySelections: string[] = [];
+	const runtime = new Runtime({
+		store,
+		captureConversation: (row) => captureConversationSettings(store, row, cfg),
+		buildStep: (row) => {
+			selections.push(`${row.model}:${row.thinking}`);
+			return { model, system: "test", contextWindow: 1000 };
+		},
+		makeTools: () => ({}),
+		compaction: {
+			modelRef: (row) => row.model!,
+			summarize: async (row) => {
+				store.setMeta(row.id, { model: "test/changed", thinking: "low" });
+				summarySelections.push(`${row.model}:${row.thinking}`);
+				return "summary";
+			},
+		},
+	});
+	try {
+		const first = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "recover" }]), first);
+		expect((await first.done).kind).toBe("completed");
+		expect(first.text).toBe("recovered");
+		expect(selections).toEqual(["test/original:high", "test/original:high", "test/original:high"]);
+		expect(summarySelections).toEqual(["test/original:high"]);
+		expect(store.getCompaction(conv.id)!.model).toBe("test/original");
+		const next = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "continue" }]), next);
+		expect((await next.done).kind).toBe("completed");
+		expect(selections.at(-1)).toBe("test/changed:low");
+	} finally { await runtime.shutdown(); store.close(); }
+});
+
+test("invalid durable app settings report admission error exactly once without starting a model call", async () => {
+	const store = openStore(tmpdb());
+	const conv = store.resolve(appAddress("bad-settings"), "/work");
+	store.setMeta(conv.id, { thinking: "corrupt-disk-value" });
+	const cfg = parseConfig({ providers: { test: { kind: "codex" } }, model: "test/chat", allowedUsers: [7] });
+	let modelCalls = 0;
+	let completions = 0;
+	const sink = new RecordingSink();
+	const runtime = new Runtime({
+		store,
+		captureConversation: (row) => captureConversationSettings(store, row, cfg),
+		buildStep: () => { modelCalls++; return { model: fakeModel(["unused"]), system: "test" }; },
+		makeTools: () => ({}),
+	});
+	try {
+		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), {
+			onTextDelta() {}, onReasoningDelta() {}, onToolCall() {},
+			onDone(done) { completions++; sink.onDone(done); },
+		});
+		expect((await sink.done).kind).toBe("error");
+		await runtime.shutdown();
+		expect(modelCalls).toBe(0);
+		expect(completions).toBe(1);
+	} finally { store.close(); }
 });

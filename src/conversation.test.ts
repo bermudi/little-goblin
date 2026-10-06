@@ -967,3 +967,37 @@ describe("manual rolling DM navigation", () => {
 		reopened.close();
 	});
 });
+
+test("app settings initialize once, survive reopening, and spin-offs snapshot app defaults", () => {
+	const path = tmpdb();
+	let store = openStore(path);
+	const old = store.resolve(appAddress("old-settings"), "/work");
+	const defaults = { model: "test/app", thinking: "high" as const };
+	expect(store.initializeAppSettings(old.id, defaults)).toEqual(defaults);
+	const changed = { model: "test/future", thinking: "low" as const };
+	expect(store.initializeAppSettings(old.id, changed)).toEqual(defaults);
+	const dm = store.resolve({ kind: "dm", chatId: 7 }, "/work");
+	store.setMeta(dm.id, { model: "test/telegram", thinking: "max" });
+	const fork = store.forkToApp(dm.id, "settings-fork", "/work", "work", changed);
+	expect(fork).toMatchObject(changed);
+	expect(() => store.initializeAppSettings(dm.id, changed)).toThrow("no app conversation");
+	expect(() => store.initializeAppSettings("app/missing", changed)).toThrow("no app conversation");
+	expect(store.get("app/missing")).toBeNull();
+	store.close();
+	store = openStore(path);
+	expect(store.initializeAppSettings(old.id, changed)).toEqual(defaults);
+	expect(store.get(fork.id)).toMatchObject(changed);
+	store.close();
+});
+
+test("app resolve commits creation and its initial settings atomically and never resets an existing selection", () => {
+	const store = openStore(tmpdb());
+	try {
+		expect(() => store.resolve(appAddress("invalid-create"), "/work", { model: "", thinking: "high" })).toThrow();
+		expect(store.get("app/invalid-create")).toBeNull();
+		const first = store.resolve(appAddress("atomic-settings"), "/work", { model: "test/first", thinking: "high" });
+		expect(first).toMatchObject({ model: "test/first", thinking: "high" });
+		const again = store.resolve(appAddress("atomic-settings"), "/work", { model: "test/changed", thinking: "low" });
+		expect(again).toMatchObject({ model: "test/first", thinking: "high" });
+	} finally { store.close(); }
+});

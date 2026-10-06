@@ -15,6 +15,29 @@ currently on disk so a hand-edit you made doesn't get silently discarded.
 
 Annotated example ships as `goblin.json5.example`. Every knob, in one place:
 
+### Independent channel settings
+
+Root `model` and `thinking` are **app defaults for future conversations**.
+Each app conversation keeps its own durable selection; changing defaults
+never changes existing chats. The app chat's model/thinking controls edit
+that conversation only.
+On the app's empty start screen, the controls edit defaults for new chats.
+
+Telegram uses one shared selection across all DMs and topics:
+
+```json5
+telegram: { model: "zai/glm-5.3-flash", thinking: "high", dmGapMinutes: 45 },
+```
+
+The Telegram Settings mini app offers separate Telegram and App default
+controls. Old configs without Telegram model/thinking keys start with the
+root values; a save writes them explicitly, so later app-default edits do
+not change Telegram. Existing app chats initialize once at startup.
+Changes affect the next turn, **not** an answer already running; no need to
+stop it. Compaction follows the same channel/conversation selection.
+Removing a provider still selected in an app chat is refused with the
+affected chat ids; switch those chats to another provider first.
+
 ### Providers
 
 ```json5
@@ -193,8 +216,8 @@ refuses to load it otherwise):
 ## Per-topic settings
 
 Voice mode and memory inclusion are the per-topic settings, toggled from
-chat (`/voice`, `/memory on`·`off`). Model and thinking are config-only —
-set once in `goblin.json5` or the mini app, they apply everywhere (`/model`
-and `/think` are retired). Changing a per-topic setting interrupts whatever
+chat (`/voice`, `/memory on`·`off`). Changing either interrupts whatever
 the topic is currently doing, so a reply never comes from a half-applied
-setting.
+setting. `/model` and `/think` remain retired: Telegram model/thinking
+are shared channel settings, while each app conversation remembers its own.
+Model/thinking changes take effect on the next turn without interruption.

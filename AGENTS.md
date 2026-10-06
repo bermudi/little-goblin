@@ -72,6 +72,12 @@ and templates before designing; cite what you took in the design docs.
 
 - `goblin.service` runs from this working tree — code changes go live
   only on `systemctl --user restart goblin`, which needs bermudi's OK.
+- **Exception: app assets are live per request.** `app/dist` and
+  `src/http/app.js` are read from disk by the running service. Do not
+  build into `app/dist` to verify a backend-dependent client change:
+  use `bun run vite build app --outDir /tmp/<unique-dir>` instead.
+  Publishing the client and restarting the backend are one coordinated
+  rollout, requiring bermudi's OK.
 - `goblin-herdr.service` owns the `goblin` herdr session where delegated
   harnesses run. Probe herdr only in a throwaway named session
   (`herdr --session goblin-probe server`), never `default` or `goblin`.

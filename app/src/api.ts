@@ -118,8 +118,7 @@ export function searchConversations(
 	return request(token, `/api/app/search?q=${encodeURIComponent(q)}`);
 }
 
-// The composer's model/thinking knobs — same operator settings the mini
-// app owns; a patch is last-wins over the on-disk file.
+// New-chat defaults, not an existing conversation's selection.
 export function getConfig(token: string | null): Promise<AppConfigView> {
 	return request(token, "/api/app/config");
 }
@@ -130,6 +129,22 @@ export function patchConfig(
 ): Promise<AppConfigView> {
 	return request(token, "/api/app/config", {
 		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(patch),
+	});
+}
+
+export function getConversationConfig(token: string | null, id: string): Promise<AppConfigView> {
+	return request(token, `/api/app/conversations/${seg(id)}/config`);
+}
+
+export function patchConversationConfig(
+	token: string | null,
+	id: string,
+	patch: AppConfigPatch,
+): Promise<AppConfigView> {
+	return request(token, `/api/app/conversations/${seg(id)}/config`, {
+		method: "PATCH",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify(patch),
 	});

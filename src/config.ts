@@ -470,7 +470,8 @@ export const fetchEntrySchema = z.discriminatedUnion("kind", [
 const configSchema = z
 	.object({
 		providers: z.record(z.string(), providerSchema),
-		// "<provider>/<model-id>" — provider must exist in `providers`.
+		// Default for new app conversations. "<provider>/<model-id>" —
+		// provider must exist in `providers`. Telegram owns its selection.
 		model: z.string().min(1),
 		// Optional model for auto-titling implicitly-named topics. "" means
 		// unset (mini-app clearing convention); absent/"" = placeholders stay.
@@ -538,6 +539,9 @@ const configSchema = z
 		// (design/telegram.md → Rolling DM); read live, applies immediately.
 		telegram: z
 			.object({
+				// Shared Telegram selection; absent legacy values are pinned below.
+				model: z.string().min(1).optional(),
+				thinking: z.enum(thinkingLevels).optional(),
 				apiRoot: z.url().optional(),
 				dmGapMinutes: z.number().int().min(1).default(45),
 			})
@@ -547,7 +551,7 @@ const configSchema = z
 		// the settings form can't express undefined over JSON.
 		publicUrl: z
 			.union([
-				z.url().refine((url) => new URL(url).protocol === "https:", "Public URL must use HTTPS for Telegram Web Apps"),
+				z.url().refine((url) => URL.canParse(url) && new URL(url).protocol === "https:", "Public URL must use HTTPS for Telegram Web Apps"),
 				z.literal(""),
 			])
 			.transform((v) => v || undefined)
@@ -579,10 +583,18 @@ const configSchema = z
 		// flip needs a restart. Hand-edited only.
 		appToken: z.string().min(1).optional(),
 	})
+	.transform((cfg) => {
+		// Normalize before merging/writing: changing app defaults must not
+		// silently change Telegram on a legacy config's first save.
+		cfg.telegram.model ??= cfg.model;
+		cfg.telegram.thinking ??= cfg.thinking;
+		return cfg;
+	})
 	// Cross-field: every model ref must parse and name a configured provider.
 	.superRefine((cfg, ctx) => {
 		for (const [path, ref] of [
 			["model", cfg.model],
+			["telegram.model", cfg.telegram.model],
 			["titleModel", cfg.titleModel],
 			["reviewer.model", cfg.reviewer?.model],
 			["vision.model", cfg.vision?.model],

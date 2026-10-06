@@ -460,10 +460,34 @@ export const APP_HTML = `<!doctype html>
 
     <!-- CHAT -->
     <section class="panel" id="panel-chat" role="tabpanel" aria-label="Chat">
-      <h2>Model</h2>
+      <h2>Telegram</h2>
       <div class="card">
         <div class="row">
-          <div class="rstack"><div class="rlabel" id="modelLabel">Default model</div></div>
+          <div class="rstack">
+            <div class="rlabel" id="telegramModelLabel">Model</div>
+            <div class="cap">Shared by all Telegram conversations.</div>
+          </div>
+          <button class="valuebtn" id="telegramModelBtn" aria-labelledby="telegramModelLabel">
+            <span class="val" id="telegramModelVal"></span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+          </button>
+        </div>
+        <div class="row col">
+          <div class="rstack">
+            <div class="rlabel">Thinking</div>
+            <div class="cap">Only levels this model can express are shown.</div>
+          </div>
+          <div class="seg" id="telegramThinkingSeg" role="group" aria-label="Telegram thinking level"></div>
+        </div>
+      </div>
+
+      <h2>App defaults</h2>
+      <div class="card">
+        <div class="row">
+          <div class="rstack">
+            <div class="rlabel" id="modelLabel">Default model</div>
+            <div class="cap">New app conversations only. Each chat remembers its own model and thinking level.</div>
+          </div>
           <button class="valuebtn" id="modelBtn" aria-labelledby="modelLabel">
             <span class="val" id="modelVal"></span>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
@@ -474,7 +498,7 @@ export const APP_HTML = `<!doctype html>
             <div class="rlabel">Thinking</div>
             <div class="cap">Only levels this model can express are shown.</div>
           </div>
-          <div class="seg" id="thinkingSeg" role="group" aria-label="Thinking level"></div>
+          <div class="seg" id="thinkingSeg" role="group" aria-label="App default thinking level"></div>
         </div>
         <div class="row">
           <div class="rstack">

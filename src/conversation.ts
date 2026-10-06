@@ -10,6 +10,7 @@ import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
 import { z } from "zod";
 import { log } from "./log.ts";
+import { splitModelRef, thinkingLevels, type Config, type ThinkingLevel } from "./config.ts";
 import { MemoryContexts, messageText } from "./memory.ts";
 import { MemoryQueue } from "./memory-queue.ts";
 import type { MemoryDocument } from "./hindsight.ts";
@@ -73,15 +74,51 @@ export interface Conversation {
 	// is_name_implicit) — the bot owes it a real one. Cleared by any
 	// explicit rename or a successful auto-title.
 	titleImplicit: boolean;
-	// Retired with /model and /think — the mini app (config) owns model
-	// and thinking, and nothing reads these at turn time. Columns persist
-	// for existing DBs, same ruling as cwd.
+	// App conversations own durable model/thinking snapshots. Telegram
+	// ignores these columns and uses its one shared config selection.
 	model: string | null;
 	thinking: string | null;
 	voice: boolean;
 	memoryExcluded: boolean; // operator opt-out: this topic sends/recalls no memory
 	epoch: number;
 	createdAt: string;
+}
+
+export interface ModelSettings {
+	model: string;
+	thinking: ThinkingLevel;
+}
+const modelSettingsSchema = z.object({ model: z.string().min(1), thinking: z.enum(thinkingLevels) });
+
+// Called at admission (and manual compaction), never at submit time:
+// a queued turn sees the latest settings, a running turn keeps its copy.
+export function captureConversationSettings(
+	store: ConversationStore, conv: Conversation, cfg: Config,
+): Conversation & ModelSettings {
+	const settings: ModelSettings = channelOf(conv.id) === "app"
+		? store.initializeAppSettings(conv.id, cfg)
+		: { model: cfg.telegram.model ?? cfg.model, thinking: cfg.telegram.thinking ?? cfg.thinking };
+	return { ...conv, ...settings };
+}
+
+// Config provider edits must not strand persisted app selections. Check
+// every row before initializing anything; a refusal leaves disk untouched.
+export function prepareAppSettingsForConfig(store: ConversationStore, previous: Config, next: Config): void {
+	const rows = store.listAppConversations().map((conv) => ({
+		id: conv.id, model: store.get(conv.id)!.model ?? previous.model,
+	}));
+	z.array(z.object({ id: z.string(), model: z.string() })).superRefine((selections, ctx) => {
+		for (const row of selections) {
+			const { provider } = splitModelRef(row.model);
+			if (!(provider in next.providers)) {
+				ctx.addIssue({ code: "custom", path: [row.id],
+					message: `provider "${provider}" is still selected by ${row.id}; change that conversation's model before removing it` });
+			}
+		}
+	}).parse(rows);
+	store.db.transaction(() => {
+		for (const row of rows) store.initializeAppSettings(row.id, previous);
+	})();
 }
 
 export interface ConversationMetaPatch {
@@ -120,7 +157,7 @@ export interface ConversationStore {
 	// state: tools always run in the deployment workspace. Private DMs
 	// route through rolling.ts, never here — the legacy dm:<chat>
 	// conversation this resolves to is history, never current.
-	resolve(addr: ConversationAddress, defaultCwd: string): Conversation;
+	resolve(addr: ConversationAddress, defaultCwd: string, defaults?: ModelSettings): Conversation;
 	get(id: string): Conversation | null;
 	// Rolling DM (design/telegram.md → Rolling DM): the bot DM is a
 	// rolling address — dm:<chat>:<n> conversations with one current per
@@ -153,7 +190,10 @@ export interface ConversationStore {
 	// replayed — copied exchanges are already retained, and re-enqueue
 	// would re-process them against a bank that already has them.
 	// Nothing logs here — the caller owns the `spin-off` line.
-	forkToApp(fromId: string, appId: string, defaultCwd: string, title: string): Conversation;
+	forkToApp(fromId: string, appId: string, defaultCwd: string, title: string, defaults?: ModelSettings): Conversation;
+	// Initialize missing app settings once, without resetting existing
+	// snapshots or fencing a running turn. Missing/non-app ids throw.
+	initializeAppSettings(id: string, defaults: ModelSettings): ModelSettings;
 	setMeta(id: string, patch: ConversationMetaPatch): void;
 	// Settings changes and cancellation bump the epoch; in-flight turns
 	// fence themselves against it.
@@ -777,6 +817,20 @@ export function openStore(dbPath: string): ConversationStore {
 		db.run(`UPDATE conversations SET ${sets.join(", ")} WHERE id = ?`, vals);
 	}
 
+	function initializeSettings(id: string, defaults: ModelSettings): ModelSettings {
+		const row = qGet.get(id);
+		if (!row || channelOf(id) !== "app") throw new Error(`no app conversation ${id}`);
+		const settings = modelSettingsSchema.parse({
+			model: row.model ?? defaults.model,
+			thinking: row.thinking ?? defaults.thinking,
+		});
+		if (row.model === null || row.thinking === null) {
+			applyPatch(id, settings);
+			log.info("app conversation settings initialized", { conversation: id, ...settings });
+		}
+		return settings;
+	}
+
 	function bump(id: string): number {
 		db.run("UPDATE conversations SET epoch = epoch + 1 WHERE id = ?", [id]);
 		const row = qEpoch.get(id);
@@ -813,25 +867,28 @@ export function openStore(dbPath: string): ConversationStore {
 				);
 		},
 
-		resolve(addr, defaultCwd) {
-			const id = addressId(addr);
-			const existing = qGet.get(id);
-			if (existing) return toConversation(existing);
-			// chat_id/thread_id are the decoded Telegram coordinates — on
-			// an app address they're the typed-0 fillers, so the row
-			// carries 0/NULL for the legacy NOT NULL schema. Nothing reads
-			// them on an app id: channelOf routes on the id prefix
-			// (DESIGN.md, App channel).
-			qInsertConv.run(
-				id,
-				addr.chatId,
-				addr.kind === "topic" ? addr.threadId : null,
-				defaultCwd,
-				new Date().toISOString(),
-			);
-			const created = qGet.get(id);
-			if (!created) throw new Error(`conversation ${id} insert failed`);
-			return toConversation(created);
+		resolve(addr, defaultCwd, defaults) {
+			return db.transaction(() => {
+				const id = addressId(addr);
+				const existing = qGet.get(id);
+				if (existing) {
+					if (addr.kind === "app" && defaults) initializeSettings(id, defaults);
+					return toConversation(qGet.get(id)!);
+				}
+				// Telegram coordinates are fillers on app rows; channelOf
+				// routes on the id prefix, never these legacy columns.
+				qInsertConv.run(
+					id,
+					addr.chatId,
+					addr.kind === "topic" ? addr.threadId : null,
+					defaultCwd,
+					new Date().toISOString(),
+				);
+				if (addr.kind === "app" && defaults) initializeSettings(id, defaults);
+				const created = qGet.get(id);
+				if (!created) throw new Error(`conversation ${id} insert failed`);
+				return toConversation(created);
+			})();
 		},
 
 		get(id) {
@@ -892,7 +949,11 @@ export function openStore(dbPath: string): ConversationStore {
 			return qNextSeq.get(id)?.n ?? null;
 		},
 
-		forkToApp(fromId, appId, defaultCwd, title) {
+		initializeAppSettings(id, defaults) {
+			return db.transaction(() => initializeSettings(id, defaults))();
+		},
+
+		forkToApp(fromId, appId, defaultCwd, title, defaults) {
 			return db.transaction(() => {
 				const id = addressId(appAddress(appId));
 				qInsertConv.run(id, 0, null, defaultCwd, new Date().toISOString());
@@ -903,6 +964,7 @@ export function openStore(dbPath: string): ConversationStore {
 					title,
 					titleImplicit: true,
 					memoryExcluded: qGet.get(fromId)?.memory_excluded === 1,
+					...(defaults === undefined ? {} : modelSettingsSchema.parse(defaults)),
 				});
 				// The FTS triggers fire on these inserts — correct: the app
 				// pool's search should see the copied exchange.

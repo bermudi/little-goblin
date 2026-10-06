@@ -9,6 +9,7 @@ import { setLogFile } from "../log.ts";
 import { startHttp, type HttpDeps } from "./mod.ts";
 import { hookTokenHash } from "../agent/tools/program.ts";
 import { openPrograms, type ProgramsStore } from "../programs.ts";
+import { appAddress, openStore, prepareAppSettingsForConfig } from "../conversation.ts";
 
 const TOKEN = "test-bot-token";
 
@@ -56,7 +57,7 @@ const baseConfig: Config = {
 
 // Provider present ⇔ the boot config carried a memory block — the same
 // pairing src/index.ts builds (client from boot config, deps from client).
-function setup(memory?: HttpDeps["memory"]) {
+function setup(memory?: HttpDeps["memory"], beforeConfigWritten?: HttpDeps["beforeConfigWritten"]) {
 	useHome();
 	const memoryBlock: MemoryConfig | undefined = memory
 		? memoryConfigSchema.parse({ baseUrl: "http://127.0.0.1:8888", bankId: "goblin" })
@@ -69,6 +70,7 @@ function setup(memory?: HttpDeps["memory"]) {
 		botToken: TOKEN,
 		onConfigWritten: () => {},
 		...(memory ? { memory } : {}),
+		...(beforeConfigWritten ? { beforeConfigWritten } : {}),
 	});
 	const initData = makeInitData({
 		auth_date: String(Math.floor(Date.now() / 1000)),
@@ -154,6 +156,35 @@ describe("mini-app http", () => {
 			expect(res.ok).toBe(true);
 			expect(configRef.current.allowedUsers).toEqual([42, 7]);
 			expect(configRef.current.logLevel).toBe("debug");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("app-default edits pin legacy Telegram settings, then Telegram edits stay independent", async () => {
+		const { configRef, http, post } = setup();
+		try {
+			expect((await post({ model: "zai/app-new", thinking: "low" })).status).toBe(200);
+			expect(configRef.current.telegram.model).toBe("zai/m");
+			expect(configRef.current.telegram.thinking).toBe("medium");
+			expect((await post({ telegram: { model: "zai/telegram-new", thinking: "high" } })).status).toBe(200);
+			expect(configRef.current.model).toBe("zai/app-new");
+			expect(configRef.current.thinking).toBe("low");
+			expect(configRef.current.telegram.dmGapMinutes).toBe(45);
+			const saved = loadConfig()!;
+			expect(saved.telegram.model).toBe("zai/telegram-new");
+			expect(saved.telegram.thinking).toBe("high");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a Telegram model naming an unknown provider is rejected without writing", async () => {
+		const { configRef, http, post } = setup();
+		try {
+			expect((await post({ telegram: { model: "missing/m" } })).status).toBe(422);
+			expect(configRef.current.model).toBe("zai/m");
+			expect(loadConfig()).toBeNull();
 		} finally {
 			http.stop();
 		}
@@ -443,6 +474,10 @@ describe("mini-app page serving", () => {
 			const html = await res.text();
 			expect(res.ok).toBe(true);
 			expect(html).toContain('<script src="/app.js"></script>');
+			expect(html).toContain("Shared by all Telegram conversations.");
+			expect(html).toContain("New app conversations only.");
+			expect(html).toContain('id="telegramModelBtn"');
+			expect(html).toContain('id="telegramThinkingSeg"');
 		} finally {
 			http.stop();
 		}
@@ -904,4 +939,41 @@ describe("app deep link (Spin-off)", () => {
 			http.stop();
 		}
 	});
+});
+
+test("mini-app default saves freeze untouched legacy app settings before updating defaults", async () => {
+	const store = openStore(":memory:");
+	const legacy = store.resolve(appAddress("untouched"), "/work");
+	const { http, post, configRef } = setup(undefined, (previous) => {
+		for (const conv of store.listAppConversations()) store.initializeAppSettings(conv.id, previous);
+	});
+	try {
+		expect((await post({ model: "zai/future", thinking: "low", publicUrl: "" })).status).toBe(200);
+		expect(store.get(legacy.id)).toMatchObject({ model: "zai/m", thinking: "medium" });
+		expect(configRef.current.model).toBe("zai/future");
+		expect(configRef.current.telegram.model).toBe("zai/m");
+	} finally { http.stop(); store.close(); }
+});
+
+test("provider removal refuses to strand app selections, lists affected ids, and writes nothing", async () => {
+	const store = openStore(":memory:");
+	const legacy = store.resolve(appAddress("legacy-provider"), "/work");
+	const pinned = store.resolve(appAddress("pinned-provider"), "/work", { model: "zai/personal", thinking: "high" });
+	const { http, post, configRef } = setup(undefined,
+		(previous, next) => prepareAppSettingsForConfig(store, previous, next));
+	try {
+		const proposed = { providers: { replacement: { kind: "codex" } }, model: "replacement/chat", telegram: { model: "replacement/chat" } };
+		const refused = await post(proposed);
+		expect(refused.status).toBe(422);
+		const detail = await refused.text();
+		expect(detail).toContain(legacy.id);
+		expect(detail).toContain(pinned.id);
+		expect(loadConfig()).toBeNull();
+		expect(store.get(legacy.id)!.model).toBeNull();
+		expect(configRef.current.model).toBe("zai/m");
+		// Move both selections first; the same provider removal can save.
+		store.setMeta(legacy.id, { model: "replacement/chat", thinking: "low" });
+		store.setMeta(pinned.id, { model: "replacement/chat", thinking: "high" });
+		expect((await post(proposed)).status).toBe(200);
+	} finally { http.stop(); store.close(); }
 });

@@ -223,6 +223,9 @@ export interface RuntimeDeps {
 	// options (thinking level) fresh at each turn. May be async (auth
 	// `!command` resolution shells out).
 	buildStep(conv: Conversation, tools: ToolSet): ModelStep | Promise<ModelStep>;
+	// Capture channel settings once at admission; compaction and overflow
+	// recovery share this copy so edits affect only the next turn.
+	captureConversation?(conv: Conversation): Conversation;
 	// Build the tool set — bound to the deployment workspace by the
 	// composition root. deliverVoice/recording wire the speak tool into
 	// the running turn's sink (voice delivery + chat-action indicator).
@@ -306,6 +309,7 @@ interface LoopTurnState {
 // moved), and the turn-scoped evidence so block separation, the
 // reviewer's gate, and durationMs cover the whole turn.
 interface TurnRecovery {
+	conversation: Conversation;
 	partial: UIMessage | null;
 	memory: { prior: RecallContext[]; current: RecallContext | null };
 	seenText: boolean;
@@ -604,6 +608,10 @@ export class Runtime {
 		conv: Conversation,
 		reason: "threshold" | "manual" | "overflow",
 	): Promise<CompactionOutcome> {
+		if (reason === "manual") {
+			conv = this.deps.store.get(conv.id) ?? conv;
+			conv = this.deps.captureConversation?.(conv) ?? conv;
+		}
 		const compaction = this.deps.compaction;
 		if (!compaction) return { kind: "noop", reason: "compaction not configured" };
 		// The controller registers BEFORE the first await: a /stop arriving
@@ -992,11 +1000,18 @@ export class Runtime {
 			for (const t of turns) await this.notifyDone(t, done);
 		};
 		// Admission: capture the epoch this turn holds authority under.
-		const conv = store.get(convId);
+		let conv = store.get(convId);
 		if (!conv) {
 			log.error("turn for missing conversation", undefined, { conversation: convId });
 			// The sink contract still holds: exactly one onDone per submit.
 			await notifyAll({ kind: "error", message: "conversation missing" });
+			return;
+		}
+		try {
+			conv = recovery?.conversation ?? this.deps.captureConversation?.(conv) ?? conv;
+		} catch (err) {
+			log.error("turn settings admission failed", err, { conversation: convId });
+			await notifyAll({ kind: "error", message: err instanceof Error ? err.message : String(err) });
 			return;
 		}
 		const epoch = conv.epoch;
@@ -2043,6 +2058,7 @@ export class Runtime {
 					return;
 				}
 				return this.runTurn(convId, turns, {
+					conversation: conv,
 					partial: hasContent(err.partial) ? err.partial : null,
 					memory,
 					seenText: err.seenText,

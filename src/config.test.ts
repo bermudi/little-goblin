@@ -19,6 +19,10 @@ import {
 	type Config,
 } from "./config.ts";
 
+test("mini-app clearing an absent public URL does not throw or retain an empty URL", () => {
+	expect(parseConfig({ providers: { test: { kind: "codex" } }, model: "test/m", allowedUsers: [7], publicUrl: "" }).publicUrl).toBeUndefined();
+});
+
 test("the mini-app public URL must be HTTPS, unlike the local bot API URL", () => {
 	const config = { providers: { test: { kind: "openai-compatible", baseUrl: "https://api.example.org", auth: "ref" } },
 		model: "test/m", allowedUsers: [42] };
@@ -676,4 +680,20 @@ describe("splitModelRef", () => {
 	test("rejects refs without a provider", () => {
 		expect(() => splitModelRef("glm-4.6")).toThrow();
 	});
+});
+
+test("legacy Telegram selection pins independently from app-default patches and survives saves", () => {
+	useHome();
+	const legacy = parseConfig({
+		providers: { test: { kind: "codex" } }, model: "test/old", thinking: "high", allowedUsers: [7],
+	});
+	expect(legacy.telegram.model).toBe("test/old");
+	expect(legacy.telegram.thinking).toBe("high");
+	const changed = parseConfig({ ...legacy, model: "test/new", thinking: "low" });
+	writeConfig(changed);
+	expect(loadConfig()!.telegram).toMatchObject({ model: "test/old", thinking: "high" });
+	expect(loadConfig()!.model).toBe("test/new");
+	expect(() => parseConfig({ ...changed, telegram: { model: "missing/x" } })).toThrow("which is not in providers");
+	expect(() => parseConfig({ ...changed, telegram: { model: "bare" } })).toThrow("provider>/<model-id>");
+	expect(() => parseConfig({ ...changed, telegram: { thinking: "invalid" } })).toThrow();
 });

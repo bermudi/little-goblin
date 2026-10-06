@@ -3,6 +3,21 @@
 Part of the goblin design spec. The core — domain model, authority rule,
 cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
+## Shared model/thinking selection (ruling 2026-10-06)
+
+All Telegram conversations (rolling DMs and group topics) use one shared
+`telegram.model`/`telegram.thinking` selection. The Settings mini app edits
+it separately from root `model`/`thinking`, which now mean defaults for
+future **app** conversations. Telegram never reads retired conversation
+model/thinking overrides. An absent Telegram selection in legacy config
+normalizes to the root values; config saves write that pin explicitly.
+
+Changes take effect on the next turn without interrupting the current
+answer. Manual `/compact` uses Telegram's selection when its queued job
+executes; automatic/overflow compaction uses the active turn's captured
+selection. A delegation spin-off snapshots app defaults, not Telegram's
+model/thinking (history still copies, as specified in design/app.md).
+
 ## Telegram intake & delivery
 
 - grammy long polling; the `allowedUsers` config key gates access first thing.

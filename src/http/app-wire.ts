@@ -62,7 +62,8 @@ export interface AppSearchResponse {
 	hits: AppSearchHit[];
 }
 
-/** GET /api/app/config — the operator knobs the composer shows. */
+/** GET /api/app/config — app defaults for future conversations.
+ * GET /api/app/conversations/<id>/config — that conversation's settings. */
 export interface AppConfigView {
 	/** The active "<provider>/<model>" ref. */
 	model: string;
@@ -73,7 +74,8 @@ export interface AppConfigView {
 	thinkingLevels: string[];
 }
 
-/** POST /api/app/config — last-wins patch over the on-disk config. */
+/** PATCH /api/app/config (POST alias) — future app defaults.
+ * PATCH /api/app/conversations/<id>/config — applies next turn only. */
 export interface AppConfigPatch {
 	model?: string;
 	thinking?: string;

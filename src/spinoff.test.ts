@@ -26,6 +26,7 @@ describe("spinOff", () => {
 	test("forks a uuid app copy, links off publicUrl, and retitles through titleFor", async () => {
 		const store = openStore(tmpdb());
 		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
+		store.setMeta(src.id, { model: "test/telegram", thinking: "max" });
 		store.append(src.id, [
 			{ id: "m", role: "user", parts: [{ type: "text", text: "deploy the thing" }] },
 		]);
@@ -38,12 +39,14 @@ describe("spinOff", () => {
 					return Promise.resolve("Deploy the thing");
 				},
 				publicUrl: () => "https://g.example/",
+				appDefaults: () => ({ model: "test/app", thinking: "low" }),
 			},
 			src,
 			"the work",
 		);
 		expect(conv.id).toMatch(/^app\/[0-9a-f-]{36}$/);
 		expect(conv.title).toBe("the work");
+		expect(conv).toMatchObject({ model: "test/app", thinking: "low" });
 		expect(conv.titleImplicit).toBe(true);
 		expect(link).toBe(`https://g.example/app/c/${conv.id.slice("app/".length)}`);
 		// The model view came along — the DM is a copy source.

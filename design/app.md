@@ -131,6 +131,40 @@ finished-looking chat whose next send steered a ghost turn (#43).
   then this stays the deliberate descendant of the "live refresh out
   of scope" ruling in Spin-off.
 
+## Model/thinking scope (ruling 2026-10-06)
+
+Each app conversation snapshots root config `model` and `thinking` when
+created and retains both until the operator changes that conversation.
+New HTTP conversations, lazy runtime-created rows, and Telegram spin-offs
+all use **app defaults**, never Telegram's selection. Spin-off copies
+history and memory policy, not the source channel's model settings.
+Existing null app settings initialize once from current defaults at boot;
+settings/default HTTP saves also initialize missing snapshots before
+changing defaults. Values live in the existing SQLite `model`/`thinking`
+columns and survive restarts, idempotent creates, and default edits.
+
+`GET/PATCH /api/app/conversations/<id>/config` returns `AppConfigView`
+(model, thinking, favorites, supported thinking levels). Patches validate
+thinking vocabulary and provider refs, require an existing app row, and
+never create rows or expose Telegram settings. Favorites/provider registry
+remain shared configuration, not per-conversation copies. Removing a
+provider still selected by an app conversation is refused with 422 and
+the affected conversation ids; change those conversations' models first.
+Validation precedes any snapshot/config mutation. PATCH rereads the live
+registry and row after body intake, so a concurrent delete yields 404.
+
+`GET/PATCH /api/app/config` edits root app defaults **only for future
+conversations**; POST remains a compatibility alias. The Telegram settings
+mini app can edit these defaults and the independent Telegram selection.
+Its whole-file writes preserve both scopes and Telegram transport settings.
+
+Changes apply at the **next admitted turn**, not the next model step:
+no epoch bump, abort, or interrupted answer. Running turns (including
+steered input, overflow retries and their compactions) keep their captured
+model/thinking. Queued successors use the latest conversation selection;
+manual compaction resolves settings when its lane job runs. Changing model
+legitimately makes the next turn's prompt cache cold.
+
 ## Spin-off (ruling 2026-10-03)
 
 Operator ask, paired with Rolling DM: the DM is the quick lane, so

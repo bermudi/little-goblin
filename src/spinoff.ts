@@ -10,7 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { appLink } from "./app-link.ts";
 import { paths } from "./config.ts";
-import type { Conversation, ConversationStore } from "./conversation.ts";
+import type { Conversation, ConversationStore, ModelSettings } from "./conversation.ts";
 import { log } from "./log.ts";
 import { projectRollText } from "./rolling.ts";
 
@@ -21,6 +21,8 @@ export interface SpinOffDeps {
 	titleFor(text: string): Promise<string | null>;
 	/** The deep-link host — live read; unset = no link to render. */
 	publicUrl(): string | undefined;
+	/** New app home snapshots app defaults, never the source DM's model. */
+	appDefaults?(): ModelSettings;
 }
 
 export interface SpinOffResult {
@@ -31,7 +33,7 @@ export interface SpinOffResult {
 
 export function spinOff(deps: SpinOffDeps, from: Conversation, name: string): SpinOffResult {
 	const appId = randomUUID();
-	const conv = deps.store.forkToApp(from.id, appId, paths.workspace(), name);
+	const conv = deps.store.forkToApp(from.id, appId, paths.workspace(), name, deps.appDefaults?.());
 	log.info("spin-off", { from: from.id, to: conv.id, title: name });
 	// The delegation's name titles the fork immediately; the model
 	// retitle lands whenever it resolves — fire-and-forget like the

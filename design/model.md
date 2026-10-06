@@ -23,6 +23,20 @@ agent loop.
     reads `~/.codex/auth.json` per call (auth.ts), refreshes expired
     access tokens against the OAuth endpoint, and writes rotated refresh
     tokens back — not writing back would invalidate the CLI's own login.
+- **Selection scope (2026-10-06)**: Telegram uses one shared
+  `telegram.model`/`telegram.thinking` selection across all DMs/topics;
+  retired per-Telegram-conversation columns never override it. Root
+  `model`/`thinking` are app defaults, snapshotted durably into each new
+  app conversation. Legacy config without Telegram keys normalizes them
+  from root values before patches, and saves persist the explicit pin so
+  app-default changes cannot leak into Telegram. Existing app rows
+  initialize once (see design/app.md). Settings are captured at turn
+  admission, including attachment/vision capability gates, and remain
+  fixed through overflow retry and automatic compaction; edits apply to
+  the next turn without fencing this one. Manual `/compact` resolves the
+  channel selection when it executes. Summaries use that same model and
+  thinking; reviewer fallback uses the conversation's model, while
+  explicit `reviewer.model` and `titleModel` remain independent.
 - **Thinking**: `off|low|medium|high|xhigh|max` is an operator vocabulary,
   not a provider contract — `thinkingOptions` maps each family to the
   nearest honest knob and writes the collapse down; `thinkingLevelsFor`

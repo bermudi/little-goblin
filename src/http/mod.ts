@@ -47,6 +47,9 @@ export interface HttpDeps {
 	// Called after a successful config write so the process hot-applies
 	// model/thinking/favorites (structural fields apply on restart).
 	onConfigWritten(): void;
+	// Freeze legacy app rows against old defaults before a save. Opaque
+	// callback keeps SQLite/runtime out of the client wire graph.
+	beforeConfigWritten?(previous: Config, next: Config): void;
 	// Long-term memory status — the same seams the /memory command reads
 	// (queue counts + blocked detail, bound to the boot-time target, and
 	// recall telemetry). Absent = memory not configured at boot. The
@@ -142,7 +145,7 @@ export interface ConfigPostBody {
 	search: "" | Array<{ kind: string; auth?: string }>;
 	fetch: "" | Array<{ kind: string; auth?: string }>;
 	allowedUsers: number[];
-	telegram: { apiRoot: string | undefined; dmGapMinutes: number };
+	telegram: { apiRoot: string | undefined; dmGapMinutes: number; model?: string; thinking?: ThinkingLevel };
 	publicUrl: string;
 	http: { port: number };
 	memory:
@@ -461,7 +464,15 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 							{ status: 409, headers: NO_STORE },
 						);
 					}
-					const merged = parseConfig({ ...base, ...body });
+					// Pin legacy Telegram settings before applying app-default
+					// edits. A channel patch must also preserve its transport
+					// settings (apiRoot, rolling-DM gap).
+					const normalized = parseConfig(base);
+					const candidate = { ...normalized, ...body };
+					if ("telegram" in body && typeof body.telegram === "object" && body.telegram !== null && !Array.isArray(body.telegram)) {
+						candidate.telegram = { ...normalized.telegram, ...body.telegram };
+					}
+					const merged = parseConfig(candidate);
 					// The mini app is an operator's only door that doesn't need
 					// a shell — a save that drops the requester's own id locks
 					// them out of it and the bot gate. Refuse before writing.
@@ -471,12 +482,16 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 							{ status: 422, headers: NO_STORE },
 						);
 					}
+					deps.beforeConfigWritten?.(normalized, merged);
 					writeConfig(merged);
 					wrote = true;
 					const fresh = loadConfig();
 					if (fresh) deps.configRef.current = fresh;
 					deps.onConfigWritten();
-					log.info("config written via mini app");
+					log.info("config written via mini app", {
+						appModel: merged.model, appThinking: merged.thinking,
+						telegramModel: merged.telegram.model, telegramThinking: merged.telegram.thinking,
+					});
 					return Response.json({ ok: true }, {
 						headers: { ...NO_STORE, etag: configTag(fresh ?? merged) },
 					});

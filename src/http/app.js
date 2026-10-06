@@ -56,6 +56,8 @@
  * @property {string} titleModel
  * @property {string[]} favorites
  * @property {string} thinking
+ * @property {string} telegramModel
+ * @property {string} telegramThinking
  * @property {TtsDraft | null} tts
  * @property {TrDraft | null} transcription
  * @property {VisDraft | null} vision
@@ -145,6 +147,7 @@ const VOICE_SUGGESTIONS = [
 /** @type {DraftState} */
 const EMPTY_DRAFT = {
   model: "", titleModel: "", favorites: [], thinking: "medium",
+  telegramModel: "", telegramThinking: "medium",
   tts: null, transcription: null, vision: null, search: null, fetch: null,
   allowedUsers: [], publicUrl: "", apiRoot: "", dmGap: "45", port: "8787", logLevel: "info", memory: null
 };
@@ -374,6 +377,7 @@ function initChips(opts) {
 /** @type {string} */
 let sheetMode = "model";
 function sheetTarget() {
+  if (sheetMode === "telegram") return cfg.telegramModel;
   if (sheetMode === "title") return cfg.titleModel;
   if (sheetMode === "vision") return cfg.vision ? cfg.vision.model : "";
   return cfg.model;
@@ -388,6 +392,9 @@ function pickModel(ref) {
       cfg.vision = { model: ref, maxTokens: prev.maxTokens, mode: prev.mode };
     }
     $("visionVal").textContent = ref || "Off";
+  }
+  else if (sheetMode === "telegram") {
+    cfg.telegramModel = ref; $("telegramModelVal").textContent = ref; refreshThinking();
   }
   else { cfg.model = ref; $("modelVal").textContent = ref; refreshThinking(); }
   markDirty();
@@ -408,7 +415,7 @@ function sheetRow(ref, label, current) {
 /** @param {string} mode */
 function openSheet(mode) {
   sheetMode = mode;
-  $("sheetTitle").textContent = mode === "title" ? "Topic-title model" : mode === "vision" ? "Vision model" : "Default model";
+  $("sheetTitle").textContent = mode === "title" ? "Topic-title model" : mode === "vision" ? "Vision model" : mode === "telegram" ? "Telegram model" : "App default model";
   const body = $("sheetBody");
   body.replaceChildren();
   const current = sheetTarget();
@@ -437,6 +444,11 @@ function closeSheet() {
 }
 function initSheet() {
   $("modelBtn").onclick = () => openSheet("model");
+  // The script is served from disk, while HTML is boot-pinned. Keep
+  // the previous settings page usable until the coordinated restart.
+  if (document.getElementById("telegramModelBtn")) {
+    $("telegramModelBtn").onclick = () => openSheet("telegram");
+  }
   $("titleBtn").onclick = () => openSheet("title");
   $("visionBtn").onclick = () => openSheet("vision");
   $("sheetClose").onclick = closeSheet;
@@ -452,34 +464,42 @@ function initSheet() {
 }
 
 // ---------- thinking (server-owned capability table) ----------
-/** @type {string[]} */
-let thinkLevels = ORDER;
+/** @type {Record<"app" | "telegram", string[]>} */
+let thinkLevels = { app: ORDER, telegram: ORDER };
 /** @param {string} name @returns {ProvDraftItem | null} */
 function findProvByName(name) {
   for (const p of provDraft) if (p.name === name) return p;
   return null;
 }
-/** @returns {string | undefined} */
-function displayLevel() {
-  const idx = ORDER.indexOf(cfg.thinking);
-  return thinkLevels.find((l) => ORDER.indexOf(l) >= idx) ?? thinkLevels[thinkLevels.length - 1];
+/** @param {"app" | "telegram"} channel @returns {string | undefined} */
+function displayLevel(channel) {
+  const idx = ORDER.indexOf(channel === "telegram" ? cfg.telegramThinking : cfg.thinking);
+  const levels = thinkLevels[channel];
+  return levels.find((l) => ORDER.indexOf(l) >= idx) ?? levels[levels.length - 1];
 }
-function renderThinking() {
-  const box = $("thinkingSeg");
+/** @param {"app" | "telegram"} channel */
+function renderThinking(channel) {
+  const box = $(channel === "telegram" ? "telegramThinkingSeg" : "thinkingSeg");
   box.replaceChildren();
-  const shown = cfg ? displayLevel() : null;
-  for (const l of thinkLevels) {
+  const shown = displayLevel(channel);
+  for (const l of thinkLevels[channel]) {
     const b = /** @type {HTMLButtonElement} */ (el("button", null, l));
     b.type = "button";
     b.setAttribute("aria-pressed", String(shown === l));
-    b.onclick = () => { cfg.thinking = l; renderThinking(); markDirty(); tap(); };
+    b.onclick = () => {
+      if (channel === "telegram") cfg.telegramThinking = l;
+      else cfg.thinking = l;
+      renderThinking(channel); markDirty(); tap();
+    };
     box.append(b);
   }
 }
-let thinkingRequest = 0;
-async function refreshThinking() {
-  const request = ++thinkingRequest;
-  const ref = cfg.model || "";
+const thinkingRequest = { app: 0, telegram: 0 };
+/** @param {"app" | "telegram"} channel */
+async function refreshChannelThinking(channel) {
+  if (channel === "telegram" && !document.getElementById("telegramThinkingSeg")) return;
+  const request = ++thinkingRequest[channel];
+  const ref = (channel === "telegram" ? cfg.telegramModel : cfg.model) || "";
   const i = ref.indexOf("/");
   const modelId = i > 0 ? ref.slice(i + 1) : "";
   const prov = i > 0 ? findProvByName(ref.slice(0, i)) : null;
@@ -501,9 +521,13 @@ async function refreshThinking() {
   }
   // Model switches can finish before an older request: only the latest
   // selection is allowed to repaint the segmented control.
-  if (request !== thinkingRequest || ref !== cfg.model) return;
-  thinkLevels = levels;
-  renderThinking();
+  if (request !== thinkingRequest[channel] || ref !== (channel === "telegram" ? cfg.telegramModel : cfg.model)) return;
+  thinkLevels[channel] = levels;
+  renderThinking(channel);
+}
+function refreshThinking() {
+  void refreshChannelThinking("app");
+  void refreshChannelThinking("telegram");
 }
 const refreshThinkingSoon = debounce(refreshThinking, 300);
 
@@ -590,7 +614,8 @@ function initChain(prefix, kinds, meta, getArr, setArr) {
 /** @param {string} name @returns {string[]} */
 function providerRefs(name) {
   const refs = [];
-  if (cfg.model.indexOf(name + "/") === 0) refs.push("default model");
+  if (cfg.model.indexOf(name + "/") === 0) refs.push("app default model");
+  if (cfg.telegramModel.indexOf(name + "/") === 0) refs.push("Telegram model");
   if (cfg.titleModel.indexOf(name + "/") === 0) refs.push("topic titles");
   if (cfg.vision && cfg.vision.model.indexOf(name + "/") === 0) refs.push("vision");
   for (const f of cfg.favorites) if (f.indexOf(name + "/") === 0) { refs.push("favorites"); break; }
@@ -685,7 +710,8 @@ function validate() {
       return 'Provider "' + p.name + '" needs a secret name.';
     }
   }
-  if (!cfg.model) return "Pick a default model.";
+  if (!cfg.model) return "Pick an app default model.";
+  if (!cfg.telegramModel) return "Pick a Telegram model.";
   if (cfg.tts && !cfg.tts.voice.trim()) return "Text to speech is on — set a voice.";
   if (cfg.transcription && !cfg.transcription.auth.trim()) return "Transcription is on — set a secret name.";
   if (cfg.vision && !cfg.vision.model.trim()) return "Vision is on — pick a model.";
@@ -776,6 +802,8 @@ function buildBody() {
     fetch: cfg.fetch === null ? "" : chainOut(cfg.fetch, FETCH_META),
     allowedUsers: cfg.allowedUsers.slice(),
     telegram: {
+      model: cfg.telegramModel,
+      thinking: /** @type {ConfigPostBody["thinking"]} */ (cfg.telegramThinking),
       apiRoot: cfg.apiRoot.trim() || undefined,
       dmGapMinutes: Number(cfg.dmGap) // raw like http.port — the server validates
     },
@@ -1193,6 +1221,8 @@ function populate(c) {
     titleModel: c.titleModel || "",
     favorites: (c.favorites || []).slice(),
     thinking: c.thinking || "medium",
+    telegramModel: c.telegram.model || c.model,
+    telegramThinking: c.telegram.thinking || c.thinking,
     tts: c.tts ? { voice: c.tts.voice || "", rate: c.tts.rate || "", voices: (c.tts.voices || []).slice() } : null,
     transcription: c.transcription ? { model: c.transcription.model || "", auth: c.transcription.auth || "" } : null,
     vision: c.vision ? { model: c.vision.model || "", maxTokens: c.vision.maxTokens || 2000, mode: c.vision.mode || "auto" } : null,
@@ -1235,6 +1265,9 @@ function populate(c) {
 
   // Chat
   $("modelVal").textContent = cfg.model;
+  if (document.getElementById("telegramModelVal")) {
+    $("telegramModelVal").textContent = cfg.telegramModel;
+  }
   $("titleVal").textContent = cfg.titleModel || "Off";
   $("visionVal").textContent = cfg.vision ? cfg.vision.model : "Off";
   // Voice — toggles keep the block's last content (lastTts etc.) so

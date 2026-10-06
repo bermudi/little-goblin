@@ -24,7 +24,7 @@ import {
 	type ThinkingLevel,
 	type TtsConfig,
 } from "./config.ts";
-import { channelOf, openStore, type Conversation } from "./conversation.ts";
+import { captureConversationSettings, channelOf, openStore, prepareAppSettingsForConfig, type Conversation } from "./conversation.ts";
 import { openDelegations } from "./delegations.ts";
 import {
 	startDelegationLifecycle,
@@ -84,6 +84,8 @@ async function boot() {
 	const configRef: ConfigRef = { current: config, ttsDown: false };
 	const auth = loadAuth();
 	const store = openStore(paths.db());
+	// Existing app rows initialize once at boot, before any default edit.
+	for (const conv of store.listAppConversations()) store.initializeAppSettings(conv.id, config);
 	// Programs live in the same SQLite file (own connection) — standing
 	// orders, DESIGN.md "Programs".
 	const programs = openPrograms(paths.db());
@@ -201,6 +203,7 @@ async function boot() {
 							store,
 							titleFor,
 							publicUrl: () => configRef.current.publicUrl || undefined,
+							appDefaults: () => configRef.current,
 						},
 						conv,
 						name,
@@ -281,28 +284,27 @@ async function boot() {
 	// A cold catalog counts as blind — a spare tool beats a blind agent.
 	// mode "always" keeps it for vision-capable models too: a file on
 	// disk is invisible regardless (tool results carry no image bytes).
-	const visionDepsFor = (convId: string): VisionToolDeps | undefined => {
+	const visionDepsFor = (conv: Conversation): VisionToolDeps | undefined => {
 		const cfg = configRef.current;
 		if (!cfg.vision) return undefined;
 		if (cfg.vision.mode !== "always") {
-			const { provider, modelId } = splitModelRef(cfg.model);
+			const { provider, modelId } = splitModelRef(conv.model!);
 			const mods = inputModalitiesCached(provider, modelId);
 			const kind = cfg.providers[provider]?.kind ?? "";
 			if (mods !== null && mods.has("image") && carriesMedia(kind, "image/jpeg", "user")) {
 				return undefined;
 			}
 		}
-		return { configRef, auth, conversation: convId };
+		return { configRef, auth, conversation: conv.id };
 	};
 
 	const runtime = new Runtime({
 		store,
+		captureConversation: (conv) => captureConversationSettings(store, conv, configRef.current),
 		async buildStep(conv, tools) {
 			const cfg = configRef.current;
-			// Model and thinking are config-only since /model and /think
-			// retired (DESIGN.md, Commands) — stale per-topic overrides in
-			// the db must never beat the mini app's defaults.
-			const modelRef = cfg.model;
+			// Runtime captured the channel selection at admission.
+			const modelRef = conv.model!;
 			const { provider, modelId } = splitModelRef(modelRef);
 			// All may be slow (auth "!command", models.dev fetch) — run in
 			// parallel inside the same admission window.
@@ -318,7 +320,7 @@ async function boot() {
 			const kind = cfg.providers[provider]?.kind;
 			const carries = (mediaType: string, position: MediaPosition): boolean =>
 				carriesMedia(kind ?? "", mediaType, position);
-			const level: ThinkingLevel = cfg.thinking;
+			const level = conv.thinking as ThinkingLevel;
 			const providerOptions = thinkingOptions(cfg, modelRef, level);
 			const prompt = systemPromptFor(
 				store,
@@ -346,17 +348,20 @@ async function boot() {
 		},
 		// Compaction wiring (DESIGN.md, Compaction): the conversation's own
 		// model writes the summary — same resolution path as turns (auth,
-		// relays), plain generate, no tools, default thinking.
+		// relays), plain generate, no tools, captured conversation thinking.
 		compaction: {
-			modelRef: () => configRef.current.model,
+			modelRef: (conv) => conv.model!,
 			summarize: async (conv, system, prompt, signal) => {
 				const cfg = configRef.current;
-				const modelRef = cfg.model;
+				const modelRef = conv.model!;
 				const model = observedModel(await resolveModel(cfg, auth, modelRef), {
 					conversation: conv.id,
 					purpose: "compaction",
 				});
-				const { text } = await generateText({ model, instructions: system, prompt, abortSignal: signal });
+				const providerOptions = thinkingOptions(cfg, modelRef, conv.thinking as ThinkingLevel);
+				const { text } = await generateText({ model, instructions: system, prompt, abortSignal: signal,
+					...(providerOptions ? { providerOptions } : {}),
+				});
 				return text;
 			},
 		},
@@ -459,7 +464,7 @@ async function boot() {
 				// same live-read rule as transcribe/search. Threads are
 				// process-global; a model change inside the block drops
 				// them on the next call (src/agent/vision.ts).
-				visionDepsFor(conv.id),
+				visionDepsFor(conv),
 			);
 		},
 		...(memoryClient && memoryBootConfig
@@ -607,7 +612,9 @@ async function boot() {
 			evidence: block.evidence,
 			reviewModel: async (conversationId) => {
 				const cfg = configRef.current;
-				const ref = cfg.reviewer?.model ?? cfg.model;
+				const conv = store.get(conversationId);
+				if (!conv) throw new Error(`conversation ${conversationId} not found`);
+				const ref = cfg.reviewer?.model ?? captureConversationSettings(store, conv, cfg).model;
 				return {
 					ref,
 					model: observedModel(await resolveModel(cfg, auth, ref), {
@@ -769,6 +776,7 @@ async function boot() {
 	};
 	const http = startHttp({
 		configRef,
+		beforeConfigWritten: (previous, next) => prepareAppSettingsForConfig(store, previous, next),
 		botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN),
 		// POST /hook/<token> — the token is the credential; the hit wakes
 		// the program through the webhook entry point, which owns the

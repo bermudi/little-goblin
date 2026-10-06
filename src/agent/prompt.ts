@@ -71,6 +71,9 @@ interface PromptFile {
 	content: string;
 	truncated: boolean;
 	bytes: number;
+	// Decoded from the file's real end — null when the bounded read
+	// reached EOF (content is then the whole file).
+	tail: string | null;
 }
 
 function readOptional(path: string, cap: number): PromptFile | null {
@@ -96,8 +99,29 @@ function readOptional(path: string, cap: number): PromptFile | null {
 		const decoder = new StringDecoder("utf8");
 		let text = decoder.write(buf.subarray(0, n));
 		if (n === bytes) text += decoder.end();
+		// A file past the byte bound is read only at its head — but the
+		// kept tail must come from the real end, where the newest notes
+		// live. The window is sized to always yield the tail share (3
+		// bytes/UTF-16 unit worst case, +4 absorbs a partial lead
+		// sequence).
+		let tail: string | null = null;
+		if (n < bytes) {
+			const window = Math.min(bytes, 3 * Math.floor(cap * 0.2) + 4);
+			const tbuf = Buffer.allocUnsafe(window);
+			let tn = 0;
+			while (tn < window) {
+				const r = readSync(fd, tbuf, tn, window - tn, bytes - window + tn);
+				if (r === 0) break;
+				tn += r;
+			}
+			// A window starting mid-character decodes to a leading U+FFFD —
+			// drop it; the file's real end can't be mid-sequence.
+			let decoded = new StringDecoder("utf8").write(tbuf.subarray(0, tn));
+			while (decoded.charCodeAt(0) === 0xfffd) decoded = decoded.slice(1);
+			tail = decoded;
+		}
 		const truncated = n < bytes || text.length > cap;
-		return { content: text, truncated, bytes };
+		return { content: text, truncated, bytes, tail };
 	} finally {
 		closeSync(fd);
 	}
@@ -110,6 +134,24 @@ function readCapped(source: string, path: string, cap: number): string | null {
 	if (file === null) return null;
 	if (!file.truncated) return file.content;
 	const headLen = Math.min(file.content.length, Math.floor(cap * 0.7));
+	const head = file.content.slice(0, headLen);
+	if (file.tail !== null) {
+		// Past the read bound: content is only the head window, so the
+		// kept tail comes from the file's real end (readOptional). The
+		// middle's char count is unknowable without decoding the whole
+		// file — the notice reports bytes, marked as an estimate (exact
+		// for valid UTF-8).
+		const tailLen = Math.min(file.tail.length, Math.floor(cap * 0.2));
+		const tail = tailLen > 0 ? file.tail.slice(-tailLen) : "";
+		const droppedBytes = file.bytes - Buffer.byteLength(head) - Buffer.byteLength(tail);
+		log.warn("prompt file truncated", {
+			file: source,
+			bytes: file.bytes,
+			cap,
+			droppedBytes,
+		});
+		return `${head}\n\n… (${source} truncated at ${cap} chars — kept the first ${headLen} and last ${tailLen}, dropped ~${droppedBytes} bytes from the middle — read the file for the rest) …\n${tail}`;
+	}
 	const tailLen = Math.min(file.content.length - headLen, Math.floor(cap * 0.2));
 	const dropped = file.content.length - headLen - tailLen;
 	log.warn("prompt file truncated", {
@@ -119,11 +161,11 @@ function readCapped(source: string, path: string, cap: number): string | null {
 		dropped,
 	});
 	if (dropped <= 0) {
-		// Only the byte-bound read cut us off (a file between cap and
-		// 3×cap bytes): everything read is kept, the notice points on.
+		// Everything read is kept, the notice points on. (Unreachable
+		// today: over-bound files take the tail branch above, and a fully
+		// read file only truncates when over cap — always dropped > 0.)
 		return `${file.content}\n\n… (${source} longer than the read bound — read the file for the rest)`;
 	}
-	const head = file.content.slice(0, headLen);
 	const tail = tailLen > 0 ? file.content.slice(-tailLen) : "";
 	return `${head}\n\n… (${source} truncated at ${cap} chars — kept the first ${headLen} and last ${tailLen}, dropped ${dropped} from the middle — read the file for the rest) …\n${tail}`;
 }

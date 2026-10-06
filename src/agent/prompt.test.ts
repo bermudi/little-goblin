@@ -245,6 +245,39 @@ describe("workspace file injection", () => {
 		}
 	});
 
+	test("a file past the read bound still yields its real tail", () => {
+		const home = useHome();
+		process.env.GOBLIN_HOME = home;
+		const logFile = join(home, "goblin.log");
+		setLogFile(logFile);
+		try {
+			mkdirSync(paths.workspace(), { recursive: true });
+			// ~100KB > the ~60KB bounded read: the head window's own end
+			// must not be passed off as the file's tail.
+			writeFileSync(
+				paths.soul(),
+				`You are goblin. ${"x".repeat(59_500)}WINDOW-END-MARKER${"y".repeat(40_000)}\nFINAL-STANDING-RULE`,
+			);
+			const { text } = buildSystemPrompt(conv, tools);
+			// The file's true end — the newest notes — survives.
+			expect(text).toContain("FINAL-STANDING-RULE");
+			// The head window's tail (last ~430 bytes of the read) does not.
+			expect(text).not.toContain("WINDOW-END-MARKER");
+			// The dropped middle is bytes, marked an estimate — the char
+			// count is unknowable without decoding the whole file.
+			expect(text).toMatch(/dropped ~\d+ bytes from the middle/);
+			const warned = readFileSync(logFile, "utf8")
+				.trim()
+				.split("\n")
+				.map((l) => JSON.parse(l) as Record<string, unknown>)
+				.some((l) => l.msg === "prompt file truncated" && typeof l.droppedBytes === "number");
+			expect(warned).toBe(true);
+		} finally {
+			setLogFile(null);
+			delete process.env.GOBLIN_HOME;
+		}
+	});
+
 	test("USER.md is capped tighter — a profile stays directive-sized", () => {
 		const home = useHome();
 		process.env.GOBLIN_HOME = home;

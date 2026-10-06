@@ -49,6 +49,13 @@ export function visionTool(cwd: string, deps: VisionToolDeps) {
 			"Ask targeted questions ('what error does the dialog show?', 'which element is highlighted?'), and pass followUp=true to continue the previous thread about the same image.",
 		inputSchema: visionInputSchema,
 		execute: async ({ path, prompt, followUp }, options) => {
+			// Cheapest validation first: a blank question has no answer
+			// worth a model call, and must not reach the provider.
+			if (!prompt.trim()) {
+				return {
+					error: "prompt is empty — ask a specific question about the image",
+				};
+			}
 			const abs = resolvePath(cwd, path);
 			const target = unicodeTwin(abs) ?? abs;
 			let st: ReturnType<typeof statSync>;

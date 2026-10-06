@@ -119,6 +119,20 @@ function unusedEdge(): LanguageModel {
 }
 
 describe("vision tool", () => {
+	test("blank questions are rejected before any I/O or model call", async () => {
+		const dir = workdir();
+		writeFileSync(join(dir, "q.png"), pngBytes(1, 1));
+		edgeCalls.length = 0;
+		const t = visionTool(dir, deps(async () => unusedEdge()));
+		for (const blank of ["", "   ", "\n\t "]) {
+			const out = (await t.execute!({ path: "q.png", prompt: blank }, opts)) as {
+				error?: string;
+			};
+			expect(out.error).toContain("prompt");
+		}
+		expect(edgeCalls).toHaveLength(0);
+	});
+
 	test("answers fenced, with image metadata, through the real seam", async () => {
 		const dir = workdir();
 		writeFileSync(join(dir, "shot.png"), pngBytes(640, 480));

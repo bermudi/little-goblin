@@ -228,7 +228,7 @@ function clampLine(line: string): string {
 	);
 }
 
-export const readFileTool = (cwd: string) =>
+export const readFileTool = (cwd: string, visionAvailable = false) =>
 	tool({
 		description:
 			"Read a file's contents with line numbers. offset is 1-based; a negative offset reads the tail (-5 = last 5 lines); limit caps lines returned. " +
@@ -258,10 +258,17 @@ export const readFileTool = (cwd: string) =>
 							sniff.width !== undefined && sniff.height !== undefined
 							? ` ${sniff.width}x${sniff.height}`
 							: "";
+						// The note names the working channels in order of preference;
+						// which ones exist is decided by the caller (the vision tool
+						// rides its config block, Telegram materialization is always
+						// there) — read_file itself knows neither.
+						const channels = visionAvailable
+							? `Use the vision tool to ask questions about what it shows; `
+							: `Have the operator send it via Telegram so I can see it natively; `;
 						return {
 							content:
 								`[image file ${sniff.mediaType}${dims}, ${size} bytes — read_file cannot show images to the model. ` +
-								`To let me actually see it, have the operator send it via Telegram; otherwise inspect it via bash (ffmpeg -i gives full metadata).]`,
+								`${channels}otherwise inspect it via bash (ffmpeg -i gives full metadata).]`,
 							lines: 0,
 							shown: 0,
 						};

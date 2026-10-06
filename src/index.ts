@@ -394,6 +394,13 @@ async function boot() {
 				// Past-chat search rides the store — always present, local
 				// state, no config block. Excluded topics recall nothing.
 				{ store, isExcluded: () => conv.memoryExcluded },
+				// Image Q&A joins the set with the vision block — same
+				// live-read rule as transcribe/search. Threads are
+				// process-global; a model change inside the block drops
+				// them on the next call (src/agent/vision.ts).
+				configRef.current.vision !== undefined
+					? { configRef, auth, conversation: conv.id }
+					: undefined,
 			);
 		},
 		...(memoryClient && memoryBootConfig

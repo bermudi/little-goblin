@@ -60,9 +60,12 @@ parts — which is why `carriesMedia` is position-aware, and why fetch's
 `toModelOutput` may legitimately return a `file` part. Within that, the
 tool-side rule stands: no image bytes in results. `read_file` sniffs
 magic bytes and returns a structured note (type, dimensions when the
-header carries them, size) naming the two working channels — the operator
-sending the image via Telegram (intake materializes it natively for vision
-models) or `bash`/`ffmpeg` for metadata work.
+header carries them, size) naming the working channels in preference
+order — the `vision` tool when its block is configured (the note knows
+because tool registration and the note share makeTools), the operator
+sending the image via Telegram otherwise (intake materializes it
+natively for vision models), and always `bash`/`ffmpeg` for metadata
+work.
 
 **Bounded, self-describing output.** Read tool: line window + byte ceiling
 + per-line clamp — three ceilings because each catches a shape the others
@@ -82,6 +85,59 @@ External agents arrived as `delegate` (see `Delegation`); MCP arrived
 as a skill over goblin's own mcporter (see `Web access`). Subagent
 tools do not exist — they arrive with the feature that needs them,
 designed then, not spec'd now.
+
+## Vision
+
+On demand (2026-10-06). A `vision` tool: query-driven image Q&A — the
+agent asks a configured vision model a specific question about an
+image file on disk, the answer comes back as text. Mechanism ported
+from pi's vision extension
+(`agent-extensions/pi-packages/bermudis-pi-goodies/vision.ts` +
+`vision-core.ts`): targeted questions instead of one frozen generic
+description, and follow-up threads keyed by absolute path + size +
+mtime — a rewritten file starts a clean thread; a vision-model switch
+drops every thread so a new model never "remembers" answers its
+predecessor gave.
+
+- **Why it exists despite the no-image-bytes rule.** The pipe rule
+  above makes a disk image invisible to the conversation's model,
+  vision-capable or not — intake materialization only covers media
+  that arrived through a channel as history. Files the agent itself
+  produces or meets (a browser-skill screenshot, an ffmpeg-extracted
+  frame, a downloaded image) had exactly one consumer left: the
+  operator's eyes. The vision tool is the second. It is therefore
+  registered for every conversation when configured — no
+  vision-capable self-hiding like pi's extension, because pi's read
+  tool can put an image in front of a vision model and goblin's
+  cannot (tool results are text, above).
+- **Config**: a `vision` block (`model` — a "<provider>/<model-id>"
+  ref through the same registry as the daily driver, so auth rides
+  the provider's own `auth.jsonl` ref; `maxTokens`, default 2000).
+  Absent = the tool is not in the set; hand-edited only, like
+  `delegation` — the mini app does not get a surface. The ref is
+  provider-validated in config `superRefine` like `model` and
+  `titleModel`; it is deliberately not capability-gated at load
+  time — input modalities are runtime catalog knowledge, and the
+  provider fails loud on a text-only model.
+- **The call**: one `generateText` per question — system prompt
+  refuses instructions embedded in the image, prior turns replay as
+  plain text with the image riding only the final user turn,
+  `maxOutputTokens` capped, 120s timeout racing the turn's abort
+  signal, wrapped in `observedModel` (purpose `vision`) and logged
+  with the usage split (the title-call rule).
+- **The answer rides fenced** — same rule as search results and
+  delegate screens: a vision model's reading of arbitrary image
+  content is remotely controlled text, and the fence keeps it from
+  quoting goblin's own framing.
+- **No resize.** Bytes go as-read under the shared 8 MiB per-item
+  cap (`INLINE_ITEM_MAX_BYTES` — parity with inline attachments);
+  an over-cap image errors with the ffmpeg downscale one-liner.
+  Known limit, accepted: resize machinery arrives when a real image
+  flow needs it, not before.
+- **Threads are process-local**, capped (8 images × 10 turns, LRU),
+  never persisted — a restart forgets them and a follow-up starts
+  fresh, which the tool contract permits ("may remember", not
+  "will remember").
 
 ## Chat search
 

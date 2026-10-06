@@ -16,7 +16,8 @@ describe("toolNames ↔ makeTools", () => {
 			for (const file of [false, true]) {
 				for (const memory of [false, true]) {
 					for (const transcribe of [false, true]) {
-						test(`voice=${voice}, program=${program}, file=${file}, memory=${memory}, transcribe=${transcribe}`, () => {
+						for (const vision of [false, true]) {
+						test(`voice=${voice}, program=${program}, file=${file}, memory=${memory}, transcribe=${transcribe}, vision=${vision}`, () => {
 							const tools = makeTools(
 								"/tmp",
 								voice ? { synthesize: async () => [], deliver: async () => {} } : undefined,
@@ -41,16 +42,22 @@ describe("toolNames ↔ makeTools", () => {
 									: undefined,
 								undefined,
 								transcribe ? { transcribe: async () => null } : undefined,
+								undefined,
+								undefined,
+								undefined,
+								vision ? ({} as Parameters<typeof makeTools>[10]) : undefined,
 							);
 							expect(toolNames(tools)).toEqual([
 								"read_file", "write_file", "edit_file", "bash",
 								...(voice ? ["speak"] : []),
 								...(transcribe ? ["transcribe"] : []),
+								...(vision ? ["vision"] : []),
 								...(program ? ["program"] : []),
 								...(file ? ["send_file"] : []),
 								...(memory ? ["memory_search"] : []),
 							]);
 						});
+					}
 					}
 				}
 			}
@@ -97,6 +104,8 @@ describe("toolNames ↔ makeTools", () => {
 			} as unknown as Parameters<typeof makeTools>[7],
 			{} as unknown as Parameters<typeof makeTools>[8],
 			{} as unknown as Parameters<typeof makeTools>[9],
+			// Mounted so the wire-schema invariant covers vision too.
+			{} as unknown as Parameters<typeof makeTools>[10],
 		);
 		for (const [name, t] of Object.entries(tools)) {
 			const schema = (t as unknown as { inputSchema?: unknown }).inputSchema;

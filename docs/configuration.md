@@ -84,6 +84,21 @@ tool for other audio files on request. TTS needs
 `ffmpeg` in `PATH`; transcription needs it for files over the provider's
 upload cap. Details in [Voice](voice.md).
 
+### Vision
+
+```json5
+// vision: { model: "openrouter/google/gemini-2.5-flash", maxTokens: 2000 },
+```
+
+Off when unset. With a `vision` block, the bot gets a `vision` tool: it
+asks the configured vision model targeted questions about image files on
+disk — screenshots, downloaded images, frames it extracted with ffmpeg —
+and relays the answers. This is the only way the bot can see an image
+file's content (images you send in chat are already visible to
+vision-capable models); `followUp: true` continues the previous thread
+about the same image. The model ref uses the same `providers` map as your
+daily driver, and its output is capped by `maxTokens` (default 2000).
+
 ### Web access
 
 ```json5

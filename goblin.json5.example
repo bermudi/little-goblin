@@ -76,6 +76,19 @@
   //   auth: "groq", // resolves auth.jsonl record named "groq"
   // },
 
+  // --- Vision (image Q&A) ---
+  // Unset = no vision tool. With it, the bot can ask a vision model
+  // targeted questions about image files on disk (screenshots,
+  // downloaded images, ffmpeg-extracted frames) — the only way it can
+  // see an image's content, since read_file refuses images. `model` is
+  // any "<provider>/<model-id>" ref from `providers` above (auth rides
+  // the provider's own auth.jsonl ref). followUp=true continues the
+  // previous thread about the same image.
+  // vision: {
+  //   model: "openrouter/google/gemini-2.5-flash",
+  //   maxTokens: 2000, // default
+  // },
+
   // --- Web access ---
   // Search provider(s) behind the `search` tool. Unset = no search tool.
   // One entry or an ordered list — the list is a fallback chain:

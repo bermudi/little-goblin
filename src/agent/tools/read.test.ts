@@ -273,6 +273,24 @@ describe("read_file images", () => {
 		expect(out.content).toContain("[image file image/png 8x4");
 		expect(out.content).toContain(`${png.length} bytes`);
 		expect(out.content).toContain("cannot show images");
+		// Default note (no vision block): the operator's Telegram re-send
+		// is the seeing channel.
+		expect(out.content).toContain("send it via Telegram");
+	});
+
+	test("the image note points at the vision tool when it is configured", async () => {
+		const dir = tmpdir_();
+		const png = Buffer.concat([
+			Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+			Buffer.from([0x00, 0x00, 0x00, 0x0d]),
+			Buffer.from("IHDR", "latin1"),
+			Buffer.from([0, 0, 0, 8, 0, 0, 0, 4, 8, 6, 0, 0, 0]),
+		]);
+		writeFileSync(join(dir, "img.png"), png);
+		const t = readFileTool(dir, true);
+		const out = (await t.execute!({ path: "img.png" }, opts)) as { content?: string };
+		expect(out.content).toContain("Use the vision tool");
+		expect(out.content).not.toContain("send it via Telegram");
 	});
 
 	test("a non-image binary still errors plainly", async () => {

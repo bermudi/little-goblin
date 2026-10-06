@@ -18,6 +18,7 @@ import { type OutgoingFile, sendFileTool } from "./send.ts";
 import { speakTool } from "./speak.ts";
 import { searchTool } from "./search.ts";
 import { transcribeTool } from "./transcribe.ts";
+import { visionTool, type VisionToolDeps } from "./vision.ts";
 import { writeFileTool } from "./write.ts";
 import type { MailToolDeps } from "./mail.ts";
 import type { WebToolDeps } from "./web.ts";
@@ -51,6 +52,8 @@ export interface TranscribeToolDeps {
 	transcribe(file: SpeechFile): Promise<string | null>;
 }
 
+export type { VisionToolDeps };
+
 export type { DelegateToolDeps };
 export type { HistorySearchDeps };
 export type { MailToolDeps };
@@ -72,9 +75,10 @@ export function makeTools(
 	delegate?: DelegateToolDeps,
 	mail?: MailToolDeps,
 	history?: HistorySearchDeps,
+	vision?: VisionToolDeps,
 ): ToolSet {
 	return {
-		read_file: readFileTool(cwd),
+		read_file: readFileTool(cwd, vision !== undefined),
 		write_file: writeFileTool(cwd),
 		edit_file: editFileTool(cwd),
 		bash: bashTool(cwd),
@@ -85,6 +89,10 @@ export function makeTools(
 		// like search is on its own config — presence is decided per turn
 		// by the caller, which reads configRef live.
 		...(transcribe ? { transcribe: transcribeTool(cwd, transcribe.transcribe) } : {}),
+		// Image Q&A rides its config block — same per-turn gate as
+		// transcribe/search. The vision model never has to be the
+		// conversation's model: read_file's image note points here.
+		...(vision ? { vision: visionTool(cwd, vision) } : {}),
 		...(program ? { program: programTool(program) } : {}),
 		// Same per-turn gate as search/transcribe: the caller passes deps
 		// only when the delegation block exists in the live config.

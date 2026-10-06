@@ -289,6 +289,16 @@ export const memoryConfigSchema = z.object({
 });
 export type MemoryConfig = z.infer<typeof memoryConfigSchema>;
 
+// Image Q&A (DESIGN.md, Tools → Vision) — absent = no vision tool.
+// `model` is a "<provider>/<model-id>" chat ref resolved through the
+// same registry as the daily driver (auth rides the provider's own
+// auth.jsonl ref, never this block). Hand-edited only, like delegation.
+export const visionConfigSchema = z.object({
+	model: z.string().min(1),
+	maxTokens: z.number().int().min(1).max(32_768).default(2000),
+});
+export type VisionConfig = z.infer<typeof visionConfigSchema>;
+
 // Edge read-aloud (DESIGN.md, Delivery/TTS) — no auth, unofficial, can
 // break. Default-on: the only dependency is ffmpeg, probed at boot.
 export const DEFAULT_TTS_VOICE = "en-US-AriaNeural";
@@ -454,6 +464,9 @@ const configSchema = z
 			])
 			.transform((v) => (v === "" ? undefined : v))
 			.optional(),
+		// Image Q&A behind the vision tool — same optional-block rule as
+		// search: absent = the tool is not in the set. Live-read per turn.
+		vision: visionConfigSchema.optional(),
 		// Web search providers (DESIGN.md, "Web access"). Absent or "" →
 		// the search tool is not in the set. One entry or an ordered list:
 		// first is primary, the rest are explicit fallbacks (transport/
@@ -525,6 +538,7 @@ const configSchema = z
 			["model", cfg.model],
 			["titleModel", cfg.titleModel],
 			["reviewer.model", cfg.reviewer?.model],
+			["vision.model", cfg.vision?.model],
 		] as const) {
 			if (ref === undefined) continue;
 			let provider: string;

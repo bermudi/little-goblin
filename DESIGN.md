@@ -198,7 +198,7 @@ or the non-goals goes here.
 
 - this file — Why, Product boundary, Domain model, Conversation, Turn, The authority rule, Cache stability, Design areas, State layout, Config, Module map, Non-goals (v1 — return only on demand), Test posture — the real change
 - [`design/model.md`](design/model.md) — Model layer, Provider registry, Thinking, History, Causal view, arrival-order storage, Compaction, Capabilities, Content, Transcription
-- [`design/tools.md`](design/tools.md) — Tools (v1), Chat search, SQLite FTS5, Scope: every conversation except memory-excluded ones
+- [`design/tools.md`](design/tools.md) — Tools (v1), Vision (image Q&A), Chat search, SQLite FTS5, Scope: every conversation except memory-excluded ones
 - [`design/web.md`](design/web.md) — Web access (search, fetch, browser), `search` is one tool with a provider behind it, Config, Fallback chains are explicit config, never implicit, Wire formats, Input, Output is deterministic text, Search results and fetched page text ride fenced, `fetch` is always in the set, PDFs ride as documents, not text, Overflow goes to disk, recovery named, No SSRF policy — recorded as a ruling, Auth never enters tool env, Logging, The browser is a skill, not a tool, MCP returns as a skill over goblin's own mcporter, Goblin owns its mcporter; it never rides the host's, Imports stay off by gate, not by convention, No daemon, by mechanism, The `goblin-mcp-dev` profile starts empty and stays warm, Known limits, accepted
 - [`design/skills.md`](design/skills.md) — Skills, Skill reviewer, Gate: Jev on every completed turn, Evidence: a bounded tool digest, captured per turn, Reviewer: staging, validation, then atomic publish, /stop cancels the conversation's reviews, Off the record means no distillation, It publishes, then tells, Instrumentation
 - [`design/programs.md`](design/programs.md) — Programs (standing orders), State is rows, not files, Firing is one path for every trigger, Post-submit accounting is trigger-owned, Authority is granted, never self-issued, Webhooks: one secret address per program, Recurrence is cron, evaluated in the server's local timezone, A program belongs to the conversation where it was created, Management is the `program` tool, The scheduler is an in-process ticker
@@ -253,7 +253,8 @@ is an export/query command, not a format property.
 ## Config
 
 `goblin.json5`: provider registry, per-conversation default model/thinking,
-optional `transcription` block, optional `search` block (absent =
+optional `transcription` block, optional `vision` block (absent =
+vision tool absent; `model` + `maxTokens`), optional `search` block (absent =
 search tool absent), optional `memory` block (absent = memory
 disabled), optional `delegation` block (`maxRunning`, default 3;
 `harnesses`: name → `{ kind, args? }` — absent = delegate tool
@@ -330,10 +331,11 @@ src/
                     conversation (prompt_snapshots): edits load at
                     boundaries (roll/compaction), never mid-run
     skills.ts       catalog scan + frontmatter validation → ## skills section
-    tools/          the fourteen tools (read, write, edit, bash, speak,
-                    transcribe, program, delegate, mail (send-only; reads
-                    ride the goblin-mail wrapper via bash), send_file,
-                    memory_search, search, fetch, history_search)
+    tools/          the fifteen tools (read, write, edit, bash, speak,
+                    transcribe, vision, program, delegate, mail
+                    (send-only; reads ride the goblin-mail wrapper via
+                    bash), send_file, memory_search, search, fetch,
+                    history_search)
   http/             mini-app serving + POST /hook/<token> +
                     loopback POST /api/check-injection (the wrapper's gate;
                     value imports live in check.ts, never mod.ts — the

@@ -84,12 +84,35 @@ Goblin never creates banks. With the stack running:
 curl -s -X PUT http://127.0.0.1:8888/v1/default/banks/goblin \
   -H 'content-type: application/json' \
   -d '{"mission": "Remember the operator'"'"'s preferences, decisions, commitments, people, and ongoing work. Assistant suggestions are not operator decisions. Date every fact."}'
+
+# Then steer the knobs Goblin actually exercises. The generic `mission`
+# above lands on reflect_mission (Hindsight 0.10), which only affects
+# reflect() — an endpoint Goblin never calls. Extraction follows
+# retain_mission; consolidation follows observations_mission:
+curl -s -X PATCH http://127.0.0.1:8888/v1/default/banks/goblin/config \
+  -H 'content-type: application/json' \
+  -d '{"updates": {
+    "retain_mission": "Remember the operator'"'"'s preferences, decisions, commitments, people, and ongoing work. Assistant suggestions are not operator decisions. Date every fact.",
+    "observations_mission": "Consolidate the operator'"'"'s preferences, decisions, commitments, people, and ongoing work. Assistant suggestions are not operator decisions. Preserve corrections as dated evolution."
+  }}'
 ```
 
-The mission guides extraction quality, not privacy — exclusions are
-enforced in Goblin before any external request. Keep the bank ID stable:
-changing embedding models for an existing bank needs an explicit
-compatibility/re-indexing procedure, not a config edit.
+The missions guide extraction and consolidation quality, not privacy —
+exclusions are enforced in Goblin before any external request. Keep the
+bank ID stable: changing embedding models for an existing bank needs an
+explicit compatibility/re-indexing procedure, not a config edit.
+
+## Consolidation (observations)
+
+The bank consolidates retained facts into deduplicated, evidence-grounded
+observations automatically after retain/delete/update (verified live,
+2026-10-06: auto-consolidation and observations enabled; 14 observations
+present). This is server-side LLM work on the same configured extraction
+model — provider credit is a live dependency here too, and a failed
+consolidation round surfaces through `/memory status`, not chat. Recall
+returns observations alongside raw facts by default; they are dated
+evidence like anything else recalled. The Memories browser shows
+documents and extracted facts, not observations.
 
 ## Verified launch profile
 

@@ -243,8 +243,43 @@ Before a model turn, build a bounded query from its admitted message
 snapshot and recent conversational context. No additional query-generation
 model initially. Recall has explicit time/search/output bounds and source
 references. Also expose a validated memory-search tool for deeper searches.
-Do not use Hindsight `reflect` initially: Goblin already reasons over the
-evidence with its selected model.
+
+**Reflect stays declined (reaffirmed 2026-10-06, after revisit).** The
+original one-line rationale undersold the decision. Hindsight `reflect` is
+not consolidation — it is an agentic reasoning loop inside the service:
+a question in, a disposition-shaped prose answer out, up to ten tool
+iterations under the bank's mission, disposition traits, and directives.
+Goblin declines it for the same reason it declines a replacement turn
+loop: Goblin owns reasoning, and recalled text must stay dated evidence,
+not a second engine's conclusions. The feature that makes reflect
+attractive elsewhere — curated precomputed answers ("mental models") —
+is already Goblin's workspace-file territory (SOUL.md/AGENTS.md), by
+design.
+
+**Consolidation is live, and it is Hindsight's, not Goblin's (recorded
+2026-10-06; it had never been ruled on).** The deployed bank runs
+auto-consolidation with observations (both observed `true` on the live
+bank config) and holds synthesized, deduplicated beliefs that are
+refined — not overwritten — when new evidence arrives: contradictions
+capture the evolution ("previously X, now Y"), near-duplicates reconcile
+at the default 0.97 cosine threshold, and delete/update/retain trigger
+consolidation server-side. Recall returns observations by default —
+Goblin sends no `types` filter and the wire default is all fact types
+including `observation` — so observations are already recall evidence
+under the existing rules: dated, sourced, outranked by current operator
+statements. Goblin's own projection stays append-only; the converging
+layer belongs to the service. Unresolved follow-ups from the revisit:
+(1) `prefer_observations` (recall flag, default false) would drop raw
+facts superseded by a returned observation and backfill the freed token
+budget — recommended, but it changes what the model sees, so it waits
+for an explicit operator decision; (2) `/forget delete` removes source
+documents, but whether delete-triggered consolidation reconciles the
+observations derived from those facts is unverified — Goblin's code has
+no observation handling anywhere (the word appears in no src file), so
+forgotten facts may survive as derived beliefs until a synthetic
+retain → consolidate → delete → observation-recall drill verifies the
+cascade. Observations are also a redaction surface the forget protocol
+does not yet account for.
 
 Retrieved text is dated, potentially stale evidence, not system
 instructions. Current operator statements outrank retrieved preferences;

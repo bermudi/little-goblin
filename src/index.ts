@@ -53,6 +53,7 @@ import { Runtime } from "./runtime.ts";
 import { applyMenuButton, AUTH_TELEGRAM_TOKEN, startBot } from "./tg/mod.ts";
 import { makeBellSink } from "./tg/bell.ts";
 import { sendMailNotice, startMailApproval } from "./tg/mail-approval.ts";
+import { filterGuestTools } from "./tg/guest.ts";
 import { sendMemoryBlockedNotice, sendMemoryOutageNotice, sendSkillSavedNotice } from "./tg/notify.ts";
 import { openPings } from "./tg/pings.ts";
 
@@ -375,7 +376,7 @@ async function boot() {
 			// everywhere since the spin-off: an app turn's launches pin
 			// the conversation itself (design/app.md → Spin-off).
 			const telegram = channelOf(conv.id) === "telegram";
-			return makeTools(
+			const tools = makeTools(
 				paths.workspace(),
 				tts && !configRef.ttsDown && deliverVoice
 					? {
@@ -466,6 +467,11 @@ async function boot() {
 				// them on the next call (src/agent/vision.ts).
 				visionDepsFor(conv),
 			);
+			// Guest mode (design/telegram.md → Guest mode): hard toolset
+			// exclusion after assembly — sandbox personas keep search/fetch,
+			// personal guest turns lose everything that pins or reaches
+			// beyond the chat.
+			return filterGuestTools(conv, tools);
 		},
 		...(memoryClient && memoryBootConfig
 			? {

@@ -33,6 +33,7 @@ const conv: Conversation = {
 	thinking: null,
 	voice: false,
 	memoryExcluded: false,
+	persona: "personal",
 	epoch: 0,
 	createdAt: new Date().toISOString(),
 };
@@ -333,6 +334,24 @@ describe("workspace file injection", () => {
 			expect(text).toContain("these files are your only");
 			expect(text).toContain("Verify before saying done");
 			expect(text).toContain("ask first before");
+		} finally {
+			delete process.env.GOBLIN_HOME;
+		}
+	});
+	// The sandbox boundary (design/telegram.md → Guest mode): a guest
+	// persona build touches no operator file — SOUL, USER, skills, none
+	// of it — and says so in its own words.
+	test("a guest persona prompt reads nothing private", () => {
+		const home = useHome();
+		process.env.GOBLIN_HOME = home;
+		try {
+			const guest = { ...conv, id: "guest:-100:9", persona: "guest" as const };
+			const { text, sources } = buildSystemPrompt(guest, ["search", "fetch"]);
+			expect(sources).toEqual(["guest persona"]);
+			expect(text).toContain("third-party chat");
+			expect(text).toContain("Do not discuss the bot's operator");
+			expect(text).not.toContain("SOUL.md");
+			expect(text).not.toContain("USER.md");
 		} finally {
 			delete process.env.GOBLIN_HOME;
 		}

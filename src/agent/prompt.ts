@@ -174,6 +174,28 @@ export function buildSystemPrompt(
 	conv: Conversation,
 	tools: readonly string[],
 ): { text: string; sources: string[] } {
+	// Guest persona (design/telegram.md → Guest mode): a third-party
+	// summons never reads the operator's files — no SOUL.md, no
+	// USER.md, no skills, nothing private in, nothing about the
+	// operator out. Built before any file read so a sandbox build
+	// touches nothing on disk.
+	if (conv.persona === "guest") {
+		const text = [
+			"You are goblin, a helpful assistant answering a message in a",
+			"third-party chat. You help whoever summoned you — answer briefly,",
+			"plainly, and self-containedly.",
+			"",
+			"## environment",
+			"",
+			`- Tools: ${tools.join(", ")}.`,
+			"- You are a guest here: one reply per summons. Keep it short —",
+			"  a few paragraphs at most.",
+			"- You have no memory of this person or this chat and you keep no",
+			"  record. Do not discuss the bot's operator or anything private",
+			"  about them; politely decline and answer the question asked.",
+		].join("\n");
+		return { text, sources: ["guest persona"] };
+	}
 	const soul = readCapped("SOUL.md", paths.soul(), MAX_PROMPT_FILE_CHARS);
 	if (soul === null) {
 		// Not a reason to fail the turn — but a deleted SOUL.md silently
@@ -199,6 +221,9 @@ export function buildSystemPrompt(
 	// everything else is shared machinery (DESIGN.md, App channel).
 	const onApp = channelOf(conv.id) === "app";
 	const channel = onApp ? "the goblin app" : "Telegram";
+	// A personal turn summoned as a guest (operator, non-member chat):
+	// full persona, but the one-message physics still applies.
+	const guestOf = channelOf(conv.id) === "guest";
 
 	const text = [
 		(soul ?? "You are goblin, a personal AI agent.").trim(),
@@ -258,6 +283,13 @@ export function buildSystemPrompt(
 		`- ${onApp ? "The goblin app" : "Telegram"} is the UI: messages are plain text/Markdown, media arrives as`,
 		`  file paths or inline parts. Keep replies chat-sized; write files for`,
 		`  anything long.`,
+		...(guestOf
+			? [
+					`- You are a guest in a third-party chat: one reply per summons, no`,
+					`  follow-up messages — keep the answer inside a single short`,
+					`  message and point long work at the bot's own chat.`,
+			]
+			: []),
 		`- SOUL.md in the workspace root is your identity; AGENTS.md is your own`,
 		`  operating notes; USER.md is your model of the operator. You own all`,
 		...(tools.includes("memory_search")

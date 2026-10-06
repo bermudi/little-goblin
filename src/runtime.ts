@@ -444,6 +444,15 @@ export class Runtime {
 			watchdog === null ? null : { decide: watchdog.decide, every: watchdog.every ?? LOOP_CHECK_EVERY };
 	}
 
+	// Is a turn queued or running on this conversation? Guest summons
+	// consults this before submitting: steering would fold a second
+	// summons into a running turn and deliver its reply into another
+	// summons' message (design/telegram.md → Guest mode).
+	hasActiveTurn(conversationId: string): boolean {
+		const lane = this.lanes.get(conversationId);
+		return lane !== undefined && (lane.running || lane.pending.length > 0);
+	}
+
 	// Enqueue a user message + a sink. The message lands in history
 	// immediately — it's real regardless of when the turn runs, or
 	// whether it runs at all (post-shutdown submits record only).

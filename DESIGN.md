@@ -266,6 +266,9 @@ absent; the herdr session name is not config, it belongs to
 `deploy/goblin-herdr.service`), optional `mail` block (`clientId`,
 `clientSecretAuth`, `sendAuth` — the send credential only; reads ride
 `gws auth login`, absent = no mail tool, no mail watcher), optional
+`guest` block (absent = guest intake off; `perUserDailyTurns`
+default 25, `outputChars` default 3500 — third-party summonses in
+opened chats, `design/telegram.md` → Guest mode), optional
 `reviewer` + `system1` blocks (the skill-review gate and the shared
 System One gate behind it — Email + Skill reviewer). No secrets —
 those live in `auth.jsonl`.
@@ -284,7 +287,8 @@ src/
   auth.ts           auth.jsonl reader + "!" command resolution +
                     pass-cli-direct poisoning (resolve rejects, never spawns)
   log.ts            structured log; no console.log anywhere else
-  tg/               grammy: intake, buffer, delivery, commands (only grammy-aware dir)
+  tg/               grammy: intake, buffer, delivery, commands, guest
+                    mode (only grammy-aware dir)
   conversation.ts   store: SQLite-backed resolve/load/append events, meta, epoch
   memory.ts         recall contexts, retention builders, status, worker timer
                     (wire client in hindsight.ts, outbox in memory-queue.ts,
@@ -389,7 +393,10 @@ project environments · onboarding wizard · state
 migrations (general framework; additive memory schema changes are in scope) ·
 in-process embeddings (delegated to Hindsight for memory) · app client
 (returned on demand 2026-09-30 — `App channel`; a third channel stays
-out) · multi-user
+out) · multi-user (bounded slice returned on demand 2026-10-06 —
+third-party guest summonses in opened chats, sandboxed to a guest
+persona + `search`/`fetch`; full multi-user stays out —
+`design/telegram.md` → Guest mode)
 
 ## Test posture — the real change
 

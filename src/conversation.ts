@@ -27,6 +27,11 @@ import type { MemoryDocument } from "./hindsight.ts";
 export type ConversationAddress =
 	| { kind: "dm"; chatId: number }
 	| { kind: "topic"; chatId: number; threadId: number }
+	// Guest mode (design/telegram.md → Guest mode): one conversation per
+	// (chat, summoner) — third-party sandboxed turns and the operator's
+	// own guest summons. chatId is the summoned chat (negative for
+	// groups), userId the summoner (positive).
+	| { kind: "guest"; chatId: number; userId: number }
 	| { kind: "app"; appId: string; chatId: 0; threadId: 0 };
 
 export const APP_ID_PREFIX = "app/";
@@ -42,6 +47,7 @@ export const appIdSchema = z
 export function addressId(addr: ConversationAddress): string {
 	if (addr.kind === "dm") return `dm:${addr.chatId}`;
 	if (addr.kind === "topic") return `topic:${addr.chatId}:${addr.threadId}`;
+	if (addr.kind === "guest") return `guest:${addr.chatId}:${addr.userId}`;
 	return `${APP_ID_PREFIX}${appIdSchema.parse(addr.appId)}`;
 }
 
@@ -55,8 +61,20 @@ export function appAddress(appId: string): ConversationAddress {
 // The channel a conversation id belongs to — the address is the id, so
 // the prefix is the whole discriminant. chat_id/thread_id are only the
 // decoded Telegram coordinates; nothing app-side may read them.
-export function channelOf(conversationId: string): "telegram" | "app" {
-	return conversationId.startsWith(APP_ID_PREFIX) ? "app" : "telegram";
+// "guest" is its own channel, not a telegram flavor: tool assembly and
+// delivery branch on it (no program/mail/delegate/memory/history tools,
+// no pinned programs) even though settings still follow Telegram's
+// shared selection.
+export function channelOf(conversationId: string): "telegram" | "app" | "guest" {
+	if (conversationId.startsWith(APP_ID_PREFIX)) return "app";
+	if (conversationId.startsWith("guest:")) return "guest";
+	return "telegram";
+}
+
+// The one well-formed way to build a guest address — same validated-
+// constructor rule as appAddress.
+export function guestAddress(chatId: number, userId: number): ConversationAddress {
+	return { kind: "guest", chatId, userId };
 }
 
 // ---------- types ----------
@@ -80,6 +98,7 @@ export interface Conversation {
 	thinking: string | null;
 	voice: boolean;
 	memoryExcluded: boolean; // operator opt-out: this topic sends/recalls no memory
+	persona: "personal" | "guest"; // prompt class + sandbox tool filter (Guest mode)
 	epoch: number;
 	createdAt: string;
 }
@@ -128,6 +147,7 @@ export interface ConversationMetaPatch {
 	thinking?: string | null;
 	voice?: boolean;
 	memoryExcluded?: boolean;
+	persona?: "personal" | "guest";
 }
 
 // A compaction pointer (DESIGN.md, Compaction). Rows append forever —
@@ -195,6 +215,9 @@ export interface ConversationStore {
 	// snapshots or fencing a running turn. Missing/non-app ids throw.
 	initializeAppSettings(id: string, defaults: ModelSettings): ModelSettings;
 	setMeta(id: string, patch: ConversationMetaPatch): void;
+	// All guest conversations in a chat — closing the chat's guest
+	// access fences their running turns (epoch bumps, Guest mode).
+	listGuestConversationIds(chatId: number): string[];
 	// Settings changes and cancellation bump the epoch; in-flight turns
 	// fence themselves against it.
 	bumpEpoch(id: string): number;
@@ -303,6 +326,10 @@ interface Row {
 	thinking: string | null;
 	voice: number;
 	memory_excluded: number;
+	// Prompt class (Guest mode): "personal" (normal persona, SOUL et al.)
+	// or "guest" (sandbox persona — no private files in, nothing about
+	// the operator out). Frozen at creation; drives the tool filter too.
+	persona: string;
 	epoch: number;
 	created_at: string;
 	previous_dm_id: string | null; // internal navigation link, never on the wire
@@ -391,6 +418,7 @@ function toConversation(r: Row): Conversation {
 		thinking: r.thinking,
 		voice: r.voice !== 0,
 		memoryExcluded: r.memory_excluded !== 0,
+		persona: r.persona === "guest" ? "guest" : "personal",
 		epoch: r.epoch,
 		createdAt: r.created_at,
 	};
@@ -506,6 +534,9 @@ export function openStore(dbPath: string): ConversationStore {
 	}
 	if (!convCols.has("memory_excluded")) {
 		db.run("ALTER TABLE conversations ADD COLUMN memory_excluded INTEGER NOT NULL DEFAULT 0");
+	}
+	if (!convCols.has("persona")) {
+		db.run("ALTER TABLE conversations ADD COLUMN persona TEXT NOT NULL DEFAULT 'personal'");
 	}
 	db.run(`
 		CREATE TABLE IF NOT EXISTS events (
@@ -812,6 +843,10 @@ export function openStore(dbPath: string): ConversationStore {
 			sets.push("memory_excluded = ?");
 			vals.push(patch.memoryExcluded ? 1 : 0);
 		}
+		if (patch.persona !== undefined) {
+			sets.push("persona = ?");
+			vals.push(patch.persona);
+		}
 		if (sets.length === 0) return;
 		vals.push(id);
 		db.run(`UPDATE conversations SET ${sets.join(", ")} WHERE id = ?`, vals);
@@ -894,6 +929,15 @@ export function openStore(dbPath: string): ConversationStore {
 		get(id) {
 			const row = qGet.get(id);
 			return row ? toConversation(row) : null;
+		},
+
+		listGuestConversationIds(chatId) {
+			return db
+				.query<{ id: string }, [string]>(
+				"SELECT id FROM conversations WHERE id LIKE 'guest:' || ? || ':%'",
+				)
+				.all(String(chatId))
+				.map((r) => r.id);
 		},
 
 		currentDm(chatId) {

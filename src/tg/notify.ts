@@ -58,8 +58,13 @@ export async function sendRollMarker(
 // channel: no push), and their own history stays the durable record.
 function noticeDoor(
 	conversationId: string,
-): { chatId: number; threadId: number | null } | "app" | null {
+): { chatId: number; threadId: number | null } | "app" | "guest" | null {
 	if (channelOf(conversationId) === "app") return "app";
+	// Guest conversations never queue memory or reviews (off the record
+	// by construction), so no notice source should name one — but if a
+	// future path does, skip rather than send operator-facing text into
+	// a third-party chat (or throw into a retry loop).
+	if (channelOf(conversationId) === "guest") return "guest";
 	return parseConversationAddress(conversationId);
 }
 
@@ -72,7 +77,7 @@ export async function sendMemoryOutageNotice(
 	queued: number,
 ): Promise<void> {
 	const addr = noticeDoor(conversationId);
-	if (addr === "app") {
+	if (addr === "app" || addr === "guest") {
 		log.info("memory outage notice skipped — app conversation rings nothing", {
 			conversation: conversationId,
 			queued,
@@ -109,7 +114,7 @@ export async function sendMemoryBlockedNotice(
 	attempts: number,
 ): Promise<void> {
 	const addr = noticeDoor(conversationId);
-	if (addr === "app") {
+	if (addr === "app" || addr === "guest") {
 		log.info("memory blocked notice skipped — app conversation rings nothing", {
 			conversation: conversationId,
 			attempts,
@@ -142,7 +147,7 @@ export async function sendSkillSavedNotice(
 	skills: string[],
 ): Promise<void> {
 	const addr = noticeDoor(conversationId);
-	if (addr === "app") {
+	if (addr === "app" || addr === "guest") {
 		log.info("skill saved notice skipped — app conversation rings nothing", {
 			conversation: conversationId,
 			skills,

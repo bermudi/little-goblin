@@ -340,3 +340,97 @@ outcome — never message text); `dm cutover re-pin` per program.
 - *Topic-root replies are not replies:* Telegram marks ordinary
   messages in a topic as replies to the topic's root message, so that
   `reply_to_message` is ignored, or every burst would skip the check.
+
+## Guest mode (ruling 2026-10-06)
+
+Goblin answers in third-party chats, summoned by mention. The operator
+asked for both surfaces Telegram offers:
+
+- **Guest summons** — `@goblin …` in a chat the bot is *not* a member of
+  arrives as a `guest_message` update (the summoning message plus the
+  message it replied to, nothing else — no history, no participant
+  list). One reply per summons: `answerGuestQuery` fires a placeholder
+  article immediately, and the returned `inline_message_id` is the
+  delivery surface — streamed `editMessageText` under the standard
+  ~1/s throttle. A guest reply is **one message**: no multi-bubble
+  chunking, no files, no voice — output is capped (`guest.outputChars`,
+  default 3500) with an explicit truncation notice pointing at the bot
+  DM.
+- **Member mentions** — in chats the bot *is* a member of, mentions
+  and replies-to-goblin from third parties route to a guest turn with
+  the **normal delivery sink** (multi-bubble streaming, reactions) —
+  the bot may speak there like any member. The operator's own messages
+  in those chats are allowed-user traffic and route through ordinary
+  intake — a standing conversation in that chat, full agent, no guest
+  machinery at all.
+
+**The unit of trust is the chat.** An `open_chats` row (state, not
+config — the programs precedent) admits third-party summonses in that
+chat. The operator opens with a `@goblin /open` summons (either
+surface; confirmed by reply) and closes with `@goblin /off` — closing
+also epoch-bumps every guest conversation in that chat, fencing
+running turns. Non-operator `/open`/`/off` attempts are ignored.
+Third-party summons in a chat that is not open: silence (no answer,
+nothing rendered). Group privacy mode stays ON deliberately: the bot
+receives only mentions/replies in member chats, mirroring guest
+mode's no-history property.
+
+**Two caller classes, decided per summons, enforced by hard exclusion.**
+`from.id ∈ allowedUsers` (read live at summons — the platform-side
+BotFather restriction is OFF, so goblin owns every gate) → a
+*personal* guest turn: the normal prompt persona (SOUL et al.) and
+the personal toolset minus everything that pins, reaches beyond the
+chat, or speaks in another medium — `program`, `mail`, `delegate`,
+`memory_search`, `history_search`, `speak`, `send_file` never
+register on the guest channel (one ruling everywhere, even where the
+member surface's sink could deliver them). Everyone else
+→ a *sandbox* turn: a **guest persona** prompt (no SOUL.md, no
+USER.md, no skills — nothing private in, nothing about the operator
+out) and a toolset of `search` + `fetch` only. The sandbox is a
+constructed toolset, never a prompt-level promise. A per-user daily
+turn budget (`guest.perUserDailyTurns`, default 25, operator exempt,
+denied with a one-line refusal) bounds model spend; a busy guest
+conversation refuses new summons with one line rather than steering
+— a steered reply would land in another summoner's message.
+
+**Identity and record.** Guest conversations are keyed
+`guest:<chatId>:<Id>` — per chat per summoner, so reply chains and
+budgets scope to a person and the operator's summons never share a
+thread with a friend's. Summonses are discrete: no coalescing, no
+rolling — each is one turn; reply context arrives as a quoted part
+(the swipe-reply shape, head-cut). All guest conversations are
+`memory_excluded` by construction: no recall, no distillation, no
+skill review (the reviewer kill-switch coupling is deliberate), and
+out of FTS — guest exchanges are off the record entirely. A `persona`
+column (`personal` | `guest`) freezes the prompt class at creation
+and drives the sandbox tool filter; a later flip (an allowedUsers
+edit) busts the frozen prompt snapshot with the persona — a demoted
+caller must never keep the personal persona's bytes.
+
+**Intake plumbing.** Guest handlers register **before**
+`allowedUserGate` — the gate stays pure and unchanged, and guest	raffic never hits it. `guest_message` updates bypass `tg_inbox`
+entirely (guest message ids share no namespace with the bot's own
+chats — a `UNIQUE(chat_id, message_id)` hit would exit the process);
+at-most-once rides a `guest_dedup(update_id)` insert-or-ignore
+instead. Member-surface third-party mentions run the same dedup then
+the lightweight guest path (they never enter the coalescing buffer —
+burst semantics belong to conversations, not summonses). BotFather
+toggles are the operator's: Guest Mode on, Restrict bot usage **off**
+(zero platform restrictions; goblin's gates decide everything —
+stray summonses from strangers arrive, are classified deny, and cost
+one log line and nothing else).
+
+**Logging.** `guest summons` (chat, from, update id, verdict
+`personal|sandbox|deny|busy|budget`, open-chat state),
+`guest answered` (inline message id, edit count, chars),
+`guest chat opened/closed` (chat, by which summons), budget denies,
+and every drop with its reason.
+
+**Probes (unverified, resolve at enablement).** Whether `guest_message`
+arrives in Telegram's default update set (else pass explicit
+`allowed_updates`); whether member-chat mentions double-fire as both
+`message` and `guest_message` (if so, dedupe by chat+message id,
+preferring the normal path); the `answerGuestQuery` deadline
+(placeholder-first makes it moot); the edit window on guest messages.
+Media in third-party summonses is caption text only in v1 — photo
+intake for the member surface is a follow-up, not a ruling.

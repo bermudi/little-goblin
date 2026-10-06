@@ -385,6 +385,21 @@ export const mailConfigSchema = z.object({
 });
 export type MailConfig = z.infer<typeof mailConfigSchema>;
 
+// Guest mode (design/telegram.md → Guest mode, 2026-10-06): goblin
+// answers as a guest in third-party chats. Absent = guest intake off
+// entirely — no guest_message handling, no member-chat third-party
+// routing. Presence enables; knobs carry defaults. Hand-edited only
+// (no mini-app surface).
+export const guestConfigSchema = z.object({
+	// Third-party summons budget per user per local day. The operator
+	// is exempt — this bounds model spend on friends, not on bermudi.
+	perUserDailyTurns: z.number().int().min(1).max(1000).default(25),
+	// A guest reply is one message (guest-mode physics): the final
+	// edit truncates past this with a pointer to the bot DM.
+	outputChars: z.number().int().min(500).max(4000).default(3500),
+});
+export type GuestConfig = z.infer<typeof guestConfigSchema>;
+
 // Automatic skill saving (DESIGN.md, "Skill reviewer"). Absent = off.
 // auth names the auth.jsonl record holding the OpenRouter key behind
 // the Jev gate; model overrides the review model (default: the
@@ -572,6 +587,8 @@ const configSchema = z
 		delegation: delegationConfigSchema.optional(),
 		// Optional Gmail — same hand-edited-only rule as delegation.
 		mail: mailConfigSchema.optional(),
+		// Optional guest mode — absent = off, defaults inside.
+		guest: guestConfigSchema.optional(),
 		// Optional automatic skill saving — same hand-edited-only rule.
 		reviewer: reviewerConfigSchema.optional(),
 		system1: system1ConfigSchema.optional(),

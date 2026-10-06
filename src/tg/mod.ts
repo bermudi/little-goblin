@@ -25,6 +25,12 @@ import { CoalescingBuffer } from "./buffer.ts";
 import { COMMAND_RE, COMMANDS, DM_COMMANDS, handleCommand, parseCommand, type CommandMemoryDeps } from "./commands.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import { makeDeliverySink, SPEAK_CALLBACK } from "./delivery.ts";
+import {
+	type GuestEnv,
+	handleGuestUpdate,
+	openGuestStore,
+	routeMemberGuestMessage,
+} from "./guest.ts";
 import { MAIL_CALLBACK_RE, type MailApproval } from "./mail-approval.ts";
 import { sendRollMarker } from "./notify.ts";
 import { handleSpeakButton } from "./speak-button.ts";
@@ -845,6 +851,36 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 		COALESCE_MAX_WAIT_MS,
 	);
 	const env: IntakeEnv = { ...base, buffer, intake, inbox, pings, bell };
+
+	// Guest mode (design/telegram.md → Guest mode): both surfaces
+	// register BEFORE the access gate — the gate stays pure and guest
+	// traffic (which includes strangers once the BotFather usage
+	// restriction is off) never reaches it. Handlers no-op per update
+	// when the config block is absent, so removing it disables guest
+	// intake without a restart.
+	const guestEnv: GuestEnv = {
+		api: bot.api,
+		store: deps.store,
+		runtime: deps.runtime,
+		configRef: deps.configRef,
+		guestStore: openGuestStore(deps.store.db),
+		botUsername: bot.botInfo.username,
+		botUserId: bot.botInfo.id,
+	};
+	bot.on("guest_message", (ctx) => {
+		if (ctx.guestMessage === undefined) return;
+		void handleGuestUpdate(guestEnv, ctx.guestMessage, ctx.update.update_id).catch(
+			(err: unknown) => {
+				// Handler failures are log-and-continue: a guest summons is a
+				// one-shot, never worth the poller's life.
+				log.error("guest handler failed", err, { update: ctx.update.update_id });
+			},
+		);
+	});
+	bot.on("message", async (ctx, next) => {
+		if (await routeMemberGuestMessage(guestEnv, ctx.message, ctx.update.update_id)) return;
+		await next();
+	});
 
 	bot.use(allowedUserGate(deps.configRef));
 

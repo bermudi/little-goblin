@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { UIMessage } from "ai";
-import { MessageParts } from "./ChatView.tsx";
+import { appendQuote, MessageParts } from "./ChatView.tsx";
 
 // Static markup only — these guard the transcript's render contract
 // (links become anchors, tool runs fold), not React behavior.
@@ -117,5 +117,21 @@ describe("MessageParts", () => {
 		expect(html).toContain("worked-fail");
 		expect(html).toContain("— 1 failed");
 		expect(html).toContain("a.dev");
+	});
+});
+
+describe("appendQuote", () => {
+	test("an empty draft becomes the blockquote plus room to reply", () => {
+		expect(appendQuote("", "AGENTS.md is capped")).toBe("> AGENTS.md is capped\n\n");
+	});
+
+	test("quotes stack with a blank line between them and the reply", () => {
+		expect(appendQuote("> first\n\nabout that", "second")).toBe(
+			"> first\n\nabout that\n\n> second\n\n",
+		);
+	});
+
+	test("multi-line selections quote every line", () => {
+		expect(appendQuote("", "line one\n\nline two")).toBe("> line one\n>\n> line two\n\n");
 	});
 });

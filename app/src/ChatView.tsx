@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useChat } from "@ai-sdk/react";
 import {
 	DefaultChatTransport,
@@ -273,6 +273,100 @@ function ActionBar({
 
 // ---------- the composer ----------
 
+// A quote goes into the draft as a markdown blockquote — appended, never
+// replaced, so one reply can collect quotes from several sections of a
+// message. Trailing blank line lands the cursor under the block, ready
+// to type the answer.
+export function appendQuote(draft: string, text: string): string {
+	const block = text
+		.trim()
+		.split("\n")
+		.map((l) => (l.trim() === "" ? ">" : `> ${l}`))
+		.join("\n");
+	const head = draft.trimEnd();
+	return head === "" ? `${block}\n\n` : `${head}\n\n${block}\n\n`;
+}
+
+// Selection → quote: a pill parked at the selection's rect while a
+// non-collapsed selection lives inside the transcript. The browser owns
+// the selection (native callout included) — we only read it; the
+// pointerdown preventDefault keeps the click from collapsing it first.
+function QuoteFab({
+	root,
+	onQuote,
+}: {
+	root: RefObject<HTMLElement | null>;
+	onQuote: (text: string) => void;
+}) {
+	const [pos, setPos] = useState<{ x: number; y: number; above: boolean } | null>(null);
+	useEffect(() => {
+		const update = () => {
+			const sel = document.getSelection();
+			const el = root.current;
+			if (
+				sel === null ||
+				el === null ||
+				sel.isCollapsed ||
+				sel.rangeCount === 0 ||
+				sel.toString().trim() === ""
+			) {
+				setPos(null);
+				return;
+			}
+			const range = sel.getRangeAt(0);
+			const node = range.commonAncestorContainer;
+			const container = node instanceof Element ? node : node.parentElement;
+			if (container === null || !el.contains(container)) {
+				setPos(null);
+				return;
+			}
+			const rect = range.getBoundingClientRect();
+			if (rect.bottom < 0 || rect.top > window.innerHeight) {
+				setPos(null);
+				return;
+			}
+			const x = Math.min(
+				Math.max(rect.left + rect.width / 2, 48),
+				window.innerWidth - 48,
+			);
+			setPos(
+				rect.top > 44 ? { x, y: rect.top - 8, above: true } : { x, y: rect.bottom + 8, above: false },
+			);
+		};
+		document.addEventListener("selectionchange", update);
+		window.addEventListener("resize", update);
+		const el = root.current;
+		el?.addEventListener("scroll", update);
+		return () => {
+			document.removeEventListener("selectionchange", update);
+			window.removeEventListener("resize", update);
+			el?.removeEventListener("scroll", update);
+		};
+	}, [root]);
+	if (pos === null) return null;
+	return (
+		<button
+			type="button"
+			className="quote-fab"
+			style={{
+				left: pos.x,
+				top: pos.y,
+				transform: pos.above ? "translate(-50%, -100%)" : "translate(-50%, 0)",
+			}}
+			onPointerDown={(e) => e.preventDefault()}
+			onClick={() => {
+				const sel = document.getSelection();
+				const text = sel === null ? "" : sel.toString();
+				sel?.removeAllRanges();
+				setPos(null);
+				if (text.trim() !== "") onQuote(text);
+			}}
+		>
+			Quote
+		</button>
+	);
+}
+
 // Always present — on an empty conversation too. Draft + staged
 // attachments are local; onSend hands the assembled parts up, where the
 // caller either streams them into the open conversation or creates one.
@@ -281,14 +375,30 @@ export function Composer({
 	busy,
 	onSend,
 	onStop,
+	quote,
 }: {
 	token: string | null;
 	busy: boolean;
 	onSend: (parts: UIMessage["parts"]) => void;
 	// Present only where a live turn exists to interrupt (ChatView).
 	onStop?: () => void;
+	// A select-to-quote request — `n` bumps per click, so even repeated
+	// text appends again.
+	quote?: { text: string; n: number } | null;
 }) {
 	const [draft, setDraft] = useState("");
+	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	useEffect(() => {
+		if (quote == null || quote.n === 0) return;
+		setDraft((d) => appendQuote(d, quote.text));
+		const ta = textareaRef.current;
+		if (ta !== null) {
+			ta.focus();
+			// The new draft isn't in the DOM yet — park the cursor at its
+			// end on the next frame.
+			requestAnimationFrame(() => ta.setSelectionRange(ta.value.length, ta.value.length));
+		}
+	}, [quote]);
 	const [pending, setPending] = useState<
 		{ ref: AttachmentRef; uploading?: boolean; failed?: boolean }[]
 	>([]);
@@ -477,6 +587,7 @@ export function Composer({
 				</div>
 			) : (
 				<textarea
+					ref={textareaRef}
 					value={draft}
 					rows={1}
 					placeholder="Message goblin"
@@ -734,6 +845,9 @@ function Chat({
 	});
 
 	const scrollRef = useRef<HTMLDivElement>(null);
+	// Select-to-quote: each QuoteFab click bumps `n`; the Composer appends
+	// the text as a blockquote.
+	const [quote, setQuote] = useState<{ text: string; n: number }>({ text: "", n: 0 });
 	// Follow-mode: the transcript auto-scrolls to the tail while the view
 	// is pinned there; scrolling up unpins it, scrolling back (or sending)
 	// re-pins. Streaming chunks ride the same effect — the tail follows
@@ -764,6 +878,10 @@ function Chat({
 
 	return (
 		<div className="chat">
+			<QuoteFab
+				root={scrollRef}
+				onQuote={(text) => setQuote((q) => ({ text, n: q.n + 1 }))}
+			/>
 			<div
 				className="transcript"
 				ref={scrollRef}
@@ -805,6 +923,7 @@ function Chat({
 			<Composer
 				token={token}
 				busy={busy}
+				quote={quote}
 				onSend={(parts) => {
 					pinned.current = true;
 					askNotifyPermission();

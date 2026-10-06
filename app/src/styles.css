@@ -576,6 +576,21 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 1em; }
 .msg-actions button:hover { color: var(--app-fg); background: var(--app-hover); }
 .msg-actions button:disabled { color: var(--app-fg-subtle); }
 
+/* Select-to-quote pill — floats at the selection's rect while it's
+   live; the only element allowed a fixed overlay position (under the
+   scrim's z-9 so a drawer still covers it). */
+.quote-fab {
+	position: fixed;
+	z-index: 8;
+	background: var(--app-fg);
+	color: var(--app-bg);
+	border-radius: 8px;
+	padding: 0.3rem 0.75rem;
+	font-size: 12px;
+	font-weight: 500;
+	white-space: nowrap;
+}
+
 .msg-meta {
 	font-family: var(--font-mono);
 	font-size: 10.5px;

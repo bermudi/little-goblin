@@ -5,7 +5,7 @@
 // the same DB resumes where the dead one left off.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -842,6 +842,87 @@ describe("delegation watcher", () => {
 			expect(out.kind).toBe("stopped");
 			expect(closed).toEqual(["w5"]);
 			expect(h.store.get(1)!.status).toBe("stopped");
+		});
+	});
+
+	describe("remote machine mode", () => {
+		test("launch targets the remote cwd, keeps nothing local, and prompts the remote report path", async () => {
+			const h = harness();
+			h.deps.machine = { label: "g7", cwd: "/remote/goblin" };
+			const cwds: string[] = [];
+			h.deps.herdr = {
+				...h.deps.herdr,
+				createWorkspace: async (cwd) => {
+					cwds.push(cwd);
+					return { workspaceId: "w5", paneId: "w5:p1" };
+				},
+				startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
+			};
+			const owner = startDelegationLifecycle(h.deps);
+			const out = await owner.launch({
+				harness: { name: "codex", kind: "codex", args: [] },
+				task: "do it remotely", cwd: "/remote/goblin/task", name: "remote",
+				maxRunning: 3, address: { chatId: 1, threadId: null },
+			});
+			expect(out.kind).toBe("started");
+			owner.stopTicker();
+			expect(cwds).toEqual(["/remote/goblin/task"]);
+			// No local report dir, no trust seed: the remote host owns both.
+			expect(existsSync(join(h.delegationsDir, String((out as { delegation: Delegation }).delegation.id)))).toBe(false);
+			expect(existsSync(join(h.homeDir, ".codex"))).toBe(false);
+		});
+
+		test("a machine row finishes on seq advance with no local report file — the notice carries the screen tail", async () => {
+			const h = harness();
+			h.deps.machine = { label: "g7", cwd: "/remote/goblin" };
+			const prompts: string[] = [];
+			h.deps.herdr = {
+				...h.deps.herdr,
+				createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1" }),
+				startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
+				prompt: (_name, text) => {
+					prompts.push(text);
+					return Promise.resolve();
+				},
+			};
+			const owner = startDelegationLifecycle(h.deps);
+			const out = await owner.launch({
+				harness: { name: "codex", kind: "codex", args: [] },
+				task: "remote work", cwd: "/remote/goblin", name: "screenwork",
+				maxRunning: 3, address: { chatId: 1, threadId: null },
+			});
+			expect(out.kind).toBe("started");
+			const d = (out as { delegation: Delegation }).delegation;
+			// The report instruction names the REMOTE path and the mkdir nudge.
+			expect(prompts[0]).toContain(`/remote/goblin/delegations/${d.id}/report.md (create the directory if needed)`);
+			// Finished remotely: seq advances past the baseline, agent reads
+			// done — no local report file ever exists.
+			h.agents.set(d.agentName!, agent(d.agentName!, "done", 2));
+			h.screens.set(`agent:${d.agentName}`, "REMOTE RESULT ON SCREEN");
+			await owner.tick();
+			owner.stopTicker();
+			expect(h.store.get(d.id)!.status).toBe("done");
+			expect(h.wakes[0]).toContain("REMOTE RESULT ON SCREEN");
+		});
+
+		test("send on a machine row prompts without the local archive dance", async () => {
+			const h = harness();
+			h.deps.machine = { label: "g7", cwd: "/remote/goblin" };
+			const prompts: string[] = [];
+			h.deps.herdr = {
+				...h.deps.herdr,
+				prompt: (_name, text) => {
+					prompts.push(text);
+					return Promise.resolve();
+				},
+			};
+			const owner = startDelegationLifecycle(h.deps, 3_600_000);
+			const d = runningRow(h, "follow-up target", 1);
+			const out = await owner.send(d.id, "and then this", 3);
+			owner.stopTicker();
+			expect(out.kind).toBe("sent");
+			expect(prompts[0]).toContain("and then this");
+			expect(existsSync(h.delegationsDir)).toBe(false);
 		});
 	});
 });

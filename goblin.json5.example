@@ -153,6 +153,13 @@
   //     codex: { kind: "codex" }, // the shell alias carries the bypass flag
   //     pi: { kind: "pi", args: ["--model", "<provider>/<model>"] },
   //   },
+  //   // Remote delegation (design/delegation.md): run harnesses in a
+  //   // herdr session on ANOTHER host through a saved-machine profile
+  //   // (herdr machine add <ssh-target> --remote-session goblin). The
+  //   // label names the profile on THIS box; cwd is the remote root for
+  //   // delegated workspaces and reports. Absent (the default) runs
+  //   // everything in the local `goblin` herdr session.
+  //   // machine: { label: "g7", cwd: "/home/daniel/goblin/delegated" },
   // },
 
   // --- Gmail ---

@@ -72,8 +72,22 @@ sed \
 # The herdr session is a sibling unit (DESIGN.md, "Delegation") — its
 # panes outlive goblin restarts. goblin.service's Wants= tolerates it
 # being absent, so a missing herdr is a warning, not a failed install.
+# Remote delegation (design/delegation.md, "Remote delegation"): a
+# delegation.machine block targets a saved-machine profile whose session
+# runs on ANOTHER host — this box must not host a local session unit,
+# so the probe below skips it and says why.
 herdr_bin="$(command -v herdr || true)"
+delegation_machine=""
 if [ -n "$herdr_bin" ]; then
+	delegation_machine="$(cd "$repo_root" && GOBLIN_HOME="$goblin_home" "$bun_bin" -e \
+		'import { readFileSync } from "node:fs";
+		import JSON5 from "json5";
+		try {
+			const c = JSON5.parse(readFileSync(`${process.env.GOBLIN_HOME}/goblin.json5`, "utf8"));
+			if (c?.delegation?.machine) console.log(c.delegation.machine.label);
+		} catch {}' 2>/dev/null || true)"
+fi
+if [ -n "$herdr_bin" ] && [ -z "$delegation_machine" ]; then
 	sed \
 		-e "s|/home/daniel/.local/bin/herdr|$herdr_bin|g" \
 		-e "s|/home/daniel/bin|$HOME/bin|g" \
@@ -81,6 +95,9 @@ if [ -n "$herdr_bin" ]; then
 		"$repo_root/deploy/goblin-herdr.service" > "$unit_dir/goblin-herdr.service"
 else
 	echo "install: warning — herdr not found in PATH; delegation will be unavailable" >&2
+fi
+if [ -n "$delegation_machine" ]; then
+	echo "install: delegation targets remote machine '$delegation_machine' — no local goblin-herdr session installed (design/delegation.md)" >&2
 fi
 
 # Key warming (DESIGN.md, "Proton Pass"): a cold pass-cli login runs
@@ -109,7 +126,7 @@ if [ "$(loginctl show-user "$USER" -p Linger 2>/dev/null)" != "Linger=yes" ]; th
 		echo "install: could not enable linger — run: loginctl enable-linger $USER" >&2
 fi
 
-if [ -n "$herdr_bin" ]; then
+if [ -n "$herdr_bin" ] && [ -z "$delegation_machine" ]; then
 	systemctl --user enable --now goblin-herdr
 fi
 if [ -n "$passkeys_bin" ]; then

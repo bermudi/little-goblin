@@ -32,8 +32,29 @@ Rulings:
   name `goblin` exists only in the unit's `--session`, and
   `delegation` has no session knob (dropped 2026-09-26 — an
   override could target a herdr session the unit does not host).
+- **Remote delegation (2026-10-06): `delegation.machine` moves the
+  session to another host.** A `machine: { label, cwd }` block makes
+  every herdr call ride `herdr --machine <label>` — a saved-machine
+  profile on THIS box that pins the remote host and its `goblin`
+  session (`herdr machine add <ssh-target> --remote-session goblin`;
+  forwarding needs the remote server already running — the unit above
+  hosts it on that host, and `install.sh` skips the local session
+  unit when `machine` is set). Rationale: goblin runs on an always-on
+  server while the harnesses, their auths, and the operator's
+  visibility live on the workstation. Consequences, ruled with it:
+  cwds and reports name REMOTE paths (the tool resolves relative
+  cwds against `machine.cwd`; no local existence check — herdr
+  validates at workspace create, fail-loud through the adapter);
+  harness trust stores cannot be seeded from here (the remote
+  operator pre-seeds `~/.codex`/`~/.claude.json` there — the launch
+  logs the skip); and completion is seq-advance + herdr's
+  `done`/`idle` over the machine link — there is no local report
+  file to stat, so the rare finished-before-baseline corner parks at
+  `needs_input` with the screen tail showing the truth, and notices
+  quote the screen instead of the report. The report instruction
+  still names a remote path under `machine.cwd/delegations/<id>/`.
 - **Only `src/herdr.ts` knows herdr** — a thin adapter over the CLI
-  (`herdr --session <name> …`, JSON out, zod-parsed; CLI errors are
+  (`herdr --session <name> …` / `herdr --machine <label> …`, JSON out, zod-parsed; CLI errors are
   JSON on stderr with exit 1 and propagate with context). Every call
   logs (verb, target, outcome, ms).
 - **One lifecycle owner.** `src/delegation-lifecycle.ts` owns the

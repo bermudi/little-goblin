@@ -11,6 +11,11 @@ import { z } from "zod";
 import { log } from "./log.ts";
 import { boundedRun, spawnProc } from "./proc.ts";
 
+/** Where harnesses run: the local `--session <name>` server, or a
+ *  saved-machine profile (`--machine <label>`) whose pinned remote
+ *  session lives on another host (design/delegation.md). */
+export type HerdrTarget = { session: string } | { machine: string };
+
 export interface HerdrRunResult {
 	code: number;
 	stdout: string;
@@ -111,7 +116,11 @@ export interface Herdr {
 	closeWorkspace(id: string): Promise<void>;
 }
 
-export function makeHerdr(session: string, run: HerdrRunner = defaultRunner): Herdr {
+export function makeHerdr(target: HerdrTarget, run: HerdrRunner = defaultRunner): Herdr {
+	// `--machine` and `--session` are mutually exclusive per herdr's CLI
+	// (the machine profile pins its own remote session); each call site
+	// logs through `call` below regardless of the target kind.
+	const prefix = "session" in target ? ["--session", target.session] : ["--machine", target.machine];
 	// The one call site: log success only after this verb's result has
 	// passed validation. Runner rejection and invalid output each get
 	// their own boundary line; neither can masquerade as a good call.
@@ -124,7 +133,7 @@ export function makeHerdr(session: string, run: HerdrRunner = defaultRunner): He
 		const t0 = Date.now();
 		let r: HerdrRunResult;
 		try {
-			r = await run(["--session", session, ...args]);
+			r = await run([...prefix, ...args]);
 		} catch (err) {
 			log.error("herdr call runner failed", err, { verb, target, ms: Date.now() - t0 });
 			throw err;

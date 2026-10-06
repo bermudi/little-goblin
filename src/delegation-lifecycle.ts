@@ -56,6 +56,12 @@ export interface DelegationLifecycleDeps {
 	 *  shell. Tests pass a tmp dir: a codex/claude launch must never
 	 *  touch the real ~/.codex or ~/.claude.json. */
 	homeDir: string;
+	/** Remote delegation (design/delegation.md, "Remote delegation"):
+	 *  when set, harnesses run through the `--machine <label>` profile
+	 *  and cwd/report paths name locations on the REMOTE host — the
+	 *  local report-file machinery (dir creation, freshness, archival)
+	 *  does not apply. Absent = local `goblin` session, unchanged. */
+	machine?: { label: string; cwd: string } | undefined;
 }
 
 /** A validated launch request — the tool resolved the harness from its
@@ -250,7 +256,17 @@ function reportDirFor(deps: DelegationLifecycleDeps, id: number): string {
 	return join(deps.delegationsDir, String(id));
 }
 function reportPathFor(deps: DelegationLifecycleDeps, id: number): string {
+	// Machine rows record the REMOTE report path — the agent writes it
+	// on its own host; nobody stats or archives it here.
+	if (deps.machine) return join(deps.machine.cwd, "delegations", String(id), "report.md");
 	return join(reportDirFor(deps, id), "report.md");
+}
+
+// The report instruction for a prompt: the path, plus (machine mode
+// only) the nudge to create the directory — nothing locally prepares
+// the remote directory the way launch() does for local rows.
+function reportNote(deps: DelegationLifecycleDeps, id: number): string {
+	return REPORT_NOTE + reportPathFor(deps, id) + (deps.machine ? " (create the directory if needed)" : "");
 }
 
 // The one "nobody else will close this" path: a row that stopped or
@@ -359,7 +375,9 @@ async function launch(
 			: { kind: "failed", delegation: bound ?? d, why, screen };
 	};
 	try {
-		mkdirSync(reportDirFor(deps, d.id), { recursive: true });
+		// Machine rows keep no local report dir — the report lives on the
+		// remote host; the note tells the agent to create it there.
+		if (!deps.machine) mkdirSync(reportDirFor(deps, d.id), { recursive: true });
 	} catch (err) {
 		return fail(`report directory unavailable: ${err instanceof Error ? err.message : String(err)}`);
 	}
@@ -367,17 +385,27 @@ async function launch(
 	// Seed the harness's first-run gates before anything launches —
 	// once the pane is up the dialog is already showing. A corrupt
 	// state file fails the launch loud: better than parking on a
-	// dialog the harness was supposed to be past.
-	try {
-		const seeded = seedHarnessTrust(input.harness.kind, input.cwd, deps.homeDir);
-		log.info("delegation trust seed", {
+	// dialog the harness was supposed to be past. Machine mode skips
+	// the seed: the trust stores live on the REMOTE host (the
+	// operator's to pre-seed there — design/delegation.md).
+	if (deps.machine) {
+		log.info("delegation trust seed skipped — remote machine", {
 			delegation: d.id,
 			kind: input.harness.kind,
-			cwd: input.cwd,
-			seeded: seeded.length > 0 ? seeded : "no recipe",
+			machine: deps.machine.label,
 		});
-	} catch (err) {
-		return fail(`trust seed failed: ${err instanceof Error ? err.message : String(err)}`);
+	} else {
+		try {
+			const seeded = seedHarnessTrust(input.harness.kind, input.cwd, deps.homeDir);
+			log.info("delegation trust seed", {
+				delegation: d.id,
+				kind: input.harness.kind,
+				cwd: input.cwd,
+				seeded: seeded.length > 0 ? seeded : "no recipe",
+			});
+		} catch (err) {
+			return fail(`trust seed failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
 	}
 
 	let ws: { workspaceId: string; paneId: string };
@@ -487,7 +515,7 @@ async function launch(
 	// it done instead of stuck.
 	const promptedAt = new Date();
 	try {
-		await deps.herdr.prompt(agentName, input.task + REPORT_NOTE + reportPathFor(deps, d.id));
+		await deps.herdr.prompt(agentName, input.task + reportNote(deps, d.id));
 	} catch (err) {
 		return fail(err instanceof Error ? err.message : String(err));
 	}
@@ -556,39 +584,44 @@ async function send(
 	// Its mtime may fall inside the watcher's 200 ms clock-skew allowance;
 	// only a report written to this path after the send can finish the new run.
 	// Keep the old report inspectable rather than deleting it.
-	const reportPath = reportPathFor(deps, d.id);
 	let archivedPath: string | null = null;
-	try {
-		const destination = join(reportDirFor(deps, d.id), `report-${randomUUID()}.md`);
-		renameSync(reportPath, destination);
-		archivedPath = destination;
-		// A writer may already have report.md open. A rename alone leaves
-		// that file descriptor pointing at the archive. Replace the archive
-		// with a separate snapshot before the new prompt can be sent.
-		const snapshot = join(reportDirFor(deps, d.id), `.report-snapshot-${randomUUID()}`);
+	// Machine rows have no local report to archive — the remote agent
+	// owns the whole write cycle on its host; the new prompt re-points
+	// the same remote path and the agent overwrites it.
+	if (!deps.machine) {
+		const reportPath = reportPathFor(deps, d.id);
 		try {
-			const oldTimes = statSync(destination);
-			copyFileSync(destination, snapshot);
-			utimesSync(snapshot, oldTimes.atime, oldTimes.mtime);
-			renameSync(snapshot, destination);
-		} finally {
+			const destination = join(reportDirFor(deps, d.id), `report-${randomUUID()}.md`);
+			renameSync(reportPath, destination);
+			archivedPath = destination;
+			// A writer may already have report.md open. A rename alone leaves
+			// that file descriptor pointing at the archive. Replace the archive
+			// with a separate snapshot before the new prompt can be sent.
+			const snapshot = join(reportDirFor(deps, d.id), `.report-snapshot-${randomUUID()}`);
 			try {
-				unlinkSync(snapshot);
-			} catch (cleanupErr) {
-				if ((cleanupErr as NodeJS.ErrnoException).code !== "ENOENT") {
-					log.warn("delegation snapshot temp cleanup failed", {
-						delegation: d.id, snapshot, error: String(cleanupErr),
-					});
+				const oldTimes = statSync(destination);
+				copyFileSync(destination, snapshot);
+				utimesSync(snapshot, oldTimes.atime, oldTimes.mtime);
+				renameSync(snapshot, destination);
+			} finally {
+				try {
+					unlinkSync(snapshot);
+				} catch (cleanupErr) {
+					if ((cleanupErr as NodeJS.ErrnoException).code !== "ENOENT") {
+						log.warn("delegation snapshot temp cleanup failed", {
+							delegation: d.id, snapshot, error: String(cleanupErr),
+						});
+					}
 				}
 			}
-		}
-		log.info("delegation previous report archived", {
-			delegation: d.id, reportPath, archivedPath,
-		});
-	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-			log.error("delegation report archive failed", err, { delegation: d.id, reportPath });
-			return { kind: "prompt failed", error: `report archive failed: ${String(err)}` };
+			log.info("delegation previous report archived", {
+				delegation: d.id, reportPath: reportPathFor(deps, d.id), archivedPath,
+			});
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+				log.error("delegation report archive failed", err, { delegation: d.id, reportPath });
+				return { kind: "prompt failed", error: `report archive failed: ${String(err)}` };
+			}
 		}
 	}
 	// The prompt clock starts before the send: an agent that finishes
@@ -599,7 +632,7 @@ async function send(
 		// The report instruction rides every prompt — the harness keeps
 		// no memory across turns, and a follow-up that forgot to write
 		// report.md leaves the notice without its result channel.
-		await deps.herdr.prompt(d.agentName, text + REPORT_NOTE + reportPath);
+		await deps.herdr.prompt(d.agentName, text + reportNote(deps, d.id));
 	} catch (err) {
 		let error = err instanceof Error ? err.message : String(err);
 		// Ordinary prompts can't reach a blocked agent — name the verb
@@ -621,16 +654,16 @@ async function send(
 				// Freshness belongs to the writer, not this restoration;
 				// otherwise the watcher mistakes an old report for a new run.
 				utimesSync(restoreTemp, oldTimes.atime, oldTimes.mtime);
-				linkSync(restoreTemp, reportPath);
-				log.info("delegation previous report restored", { delegation: d.id, reportPath, archivedPath });
+				linkSync(restoreTemp, reportPathFor(deps, d.id));
+				log.info("delegation previous report restored", { delegation: d.id, reportPath: reportPathFor(deps, d.id), archivedPath });
 			} catch (restoreErr) {
 				if ((restoreErr as NodeJS.ErrnoException).code === "EEXIST") {
 					log.warn("delegation previous report not restored — newer report exists", {
-						delegation: d.id, reportPath, archivedPath,
+						delegation: d.id, reportPath: reportPathFor(deps, d.id), archivedPath,
 					});
 				} else {
 					log.error("delegation previous report restoration failed", restoreErr, {
-						delegation: d.id, reportPath, archivedPath,
+						delegation: d.id, reportPath: reportPathFor(deps, d.id), archivedPath,
 					});
 					return { kind: "prompt failed", error: `${error}; report restoration failed: ${String(restoreErr)}` };
 				}
@@ -936,7 +969,7 @@ async function check(deps: DelegationLifecycleDeps, d: Delegation): Promise<void
 			try {
 				await deps.herdr.prompt(
 					d.agentName,
-					d.task + REPORT_NOTE + reportPathFor(deps, d.id),
+					d.task + reportNote(deps, d.id),
 				);
 			} catch (err) {
 				log.warn("delegation pending prompt rejected", {
@@ -988,16 +1021,22 @@ async function check(deps: DelegationLifecycleDeps, d: Delegation): Promise<void
 		// without this it would sit idle until the stall rule mislabels
 		// it stuck. The freshness check is what lets `send` reuse a
 		// finished delegation: the old report predates the new prompt.
+		// Machine rows have no local report file at all: they finish on
+		// seq advance alone, and the rare finished-before-baseline corner
+		// parks at needs_input — the screen tail shows the operator the
+		// truth (design/delegation.md, "Remote delegation").
 		let freshReport = false;
-		try {
-			// The prompt clock starts before the send and the report can
-			// land in the same millisecond — >=, with headroom for the
-			// fs clock lagging Date.now() (REPORT_SKEW_MS).
-			freshReport =
-				statSync(reportPathFor(deps, d.id)).mtimeMs >=
-				Date.parse(d.promptedAt) - REPORT_SKEW_MS;
-		} catch (err) {
-			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+		if (!deps.machine) {
+			try {
+				// The prompt clock starts before the send and the report can
+				// land in the same millisecond — >=, with headroom for the
+				// fs clock lagging Date.now() (REPORT_SKEW_MS).
+				freshReport =
+					statSync(reportPathFor(deps, d.id)).mtimeMs >=
+					Date.parse(d.promptedAt) - REPORT_SKEW_MS;
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+			}
 		}
 		if (info.state_change_seq > d.baselineSeq || freshReport) {
 			const landed = await notify(deps, d, "done");

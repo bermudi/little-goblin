@@ -313,11 +313,31 @@ export const DEFAULT_TTS_VOICE = "en-US-AriaNeural";
 // are named operator choices — a herdr agent kind plus native args;
 // goblin never picks a model or flags for one. Harness names double as
 // herdr agent-name prefixes, so they live in herdr's name charset.
+// Remote delegation: run harnesses in a herdr session on ANOTHER host
+// (the operator's workstation) through a saved-machine profile
+// (design/delegation.md, "Remote delegation", 2026-10-06). Absent =
+// harnesses run in the local `goblin` session exactly as before.
+export const delegationMachineSchema = z.object({
+	// The saved-machine label on THIS host (herdr machine list). Not
+	// validated against herdr at parse time — a wrong label fails loud
+	// at the first herdr call, with its error, through the adapter.
+	label: z.string().regex(/^[a-z][a-z0-9_-]{0,15}$/),
+	// Remote cwd root: delegated workspaces and reports live ON THE
+	// REMOTE HOST under this path. herdr requires absolute paths (or
+	// `~`/`~/…`) for remote targets, so relative values are rejected
+	// here rather than at launch time.
+	cwd: z.string().regex(/^\/|~/, "delegation.machine.cwd must be absolute or start with ~"),
+});
+export type DelegationMachine = z.infer<typeof delegationMachineSchema>;
+
 export const delegationConfigSchema = z.object({
-	// No `session` knob: the herdr session name is fixed by the unit
-	// (deploy/goblin-herdr.service: `herdr --session goblin server`) — the
-	// single source of truth. A config override could target a session
-	// the unit does not host, so consumers use the literal "goblin".
+	// No `session` knob: the herdr session is either the local unit's
+	// (deploy/goblin-herdr.service: `herdr --session goblin server` —
+	// absent `machine`) or pinned by the saved-machine profile the
+	// `machine.label` names on its own host. A config override beyond
+	// those two could target a session nothing hosts, so consumers use
+	// the literal "goblin" or the machine label only.
+	machine: delegationMachineSchema.optional(),
 	maxRunning: z.number().int().min(1).default(3),
 	harnesses: z
 		.record(

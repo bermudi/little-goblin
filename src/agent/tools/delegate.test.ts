@@ -215,6 +215,37 @@ describe("delegate tool", () => {
 		expect(h.prompts).toEqual([]);
 	});
 
+	test("machine mode resolves cwd against the remote root and skips the local stat", async () => {
+		const h = harness();
+		const tool = delegateTool({
+			lifecycle: h.lifecycle,
+			config: {
+				maxRunning: 3,
+				harnesses: { codex: { kind: "codex" } },
+				machine: { label: "g7", cwd: "/remote/goblin" },
+			},
+			pin: () => ({ address: { chatId: 1, threadId: null } }),
+			workspaceDir: h.workspaceDir,
+		});
+		// Relative → resolved against the REMOTE root; the local stat
+		// (which would reject: /remote/goblin/sub does not exist here)
+		// must not fire in machine mode.
+		const out = (await exec(tool, {
+			action: "start",
+			harness: "codex",
+			task: "remote thing",
+			cwd: "sub/dir",
+		})) as { id: number };
+		expect(h.store.get(out.id)!.cwd).toBe("/remote/goblin/sub/dir");
+		// Default cwd (absent input.cwd) = the machine root itself.
+		const out2 = (await exec(tool, {
+			action: "start",
+			harness: "codex",
+			task: "remote default",
+		})) as { id: number };
+		expect(h.store.get(out2.id)!.cwd).toBe("/remote/goblin");
+	});
+
 	test("start launches, prompts with the report instruction, and binds the row", async () => {
 		const h = harness();
 		const out = (await exec(h.tool, {

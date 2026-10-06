@@ -302,12 +302,17 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 							error: `unknown harness "${input.harness}" — configured: ${Object.keys(deps.config.harnesses).join(", ")}`,
 						};
 					}
+					// Machine mode: cwd names a directory ON THE REMOTE HOST — the
+					// local stat cannot see it, so existence is herdr's to check at
+					// workspace create (a bad path fails loud through the adapter).
+					const machine = deps.config.machine;
+					const cwdRoot = machine ? machine.cwd : deps.workspaceDir;
 					const cwd = input.cwd
 						? isAbsolute(input.cwd)
 							? input.cwd
-							: resolve(deps.workspaceDir, input.cwd)
-						: deps.workspaceDir;
-					if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
+							: resolve(cwdRoot, input.cwd)
+						: cwdRoot;
+					if (!machine && (!existsSync(cwd) || !statSync(cwd).isDirectory())) {
 						return { error: `cwd "${cwd}" does not exist or is not a directory` };
 					}
 					const name =

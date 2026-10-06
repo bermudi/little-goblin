@@ -105,6 +105,25 @@ describe("goblin.json5", () => {
 		}
 	});
 
+	test("delegation.machine parses with a label and an absolute remote cwd; relative cwds are rejected", () => {
+		const dir = useHome();
+		const delegation = (machine: unknown) =>
+			`{machine:${JSON.stringify(machine)},maxRunning:2,harnesses:{pi:{kind:"pi"}}}`;
+		writeFileSync(
+				join(dir, "goblin.json5"),
+				`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"},openrouter:{kind:"openai-compatible",baseUrl:"https://openrouter.ai/api/v1",auth:"or"}},model:"zai/glm-4.6",allowedUsers:[7],delegation:${delegation({ label: "g7", cwd: "/remote/goblin" })}}`,
+		);
+		const c = loadConfig()!;
+		expect(c.delegation?.machine).toEqual({ label: "g7", cwd: "/remote/goblin" });
+		expect(c.delegation?.maxRunning).toBe(2);
+		// A relative cwd names nothing on the remote host — reject at parse.
+		writeFileSync(
+				join(dir, "goblin.json5"),
+				`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7],delegation:${delegation({ label: "g7", cwd: "relative/path" })}}`,
+		);
+		expect(() => loadConfig()).toThrow(/machine\.cwd/);
+	});
+
 	test("invalid config throws with file path", () => {
 		const dir = useHome();
 		writeFileSync(join(dir, "goblin.json5"), `{providers:{},model:"x",allowedUsers:[]}`);

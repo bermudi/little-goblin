@@ -111,15 +111,18 @@ async function boot() {
 			sendAuth: m.sendAuth,
 		});
 	};
-	// Delegation is a boot-time snapshot like memory: the store and the
-	// herdr adapter only exist when the block was configured at boot —
-	// the herdr session is systemd's, not ours (DESIGN.md, Delegation).
+	// The herdr target is boot-fixed like memory: the store and the
+	// adapter only exist when the block was configured at boot — the
+	// session is systemd's (or the remote host's), not ours (DESIGN.md,
+	// Delegation).
 	const delegationBoot = config.delegation;
 	const delegations = delegationBoot ? openDelegations(paths.db()) : null;
-	// "goblin" is not config: deploy/goblin-herdr.service's --session is
-	// the single source of truth for the session name — no knob to drift
-	// from the unit (DESIGN.md, Delegation).
-	const herdr = delegationBoot ? makeHerdr("goblin") : null;
+	// "goblin" is not config: it is the local unit's --session; a
+	// delegation.machine block instead targets that machine's pinned
+	// remote session by its saved label — one authority either way.
+	const herdr = delegationBoot
+		? makeHerdr(delegationBoot.machine ? { machine: delegationBoot.machine.label } : { session: "goblin" })
+		: null;
 
 	// The delegation lifecycle — the protocol's one owner (DESIGN.md,
 	// "Delegation") — is constructed after tg because its notices wake
@@ -646,6 +649,10 @@ async function boot() {
 					// Harness trust files live under the real home —
 					// delegation panes run the operator's shell there.
 					homeDir: homedir(),
+					// Remote delegation target, when configured — the adapter
+					// carries the label; the lifecycle needs the cwd root for
+					// remote report paths.
+					machine: delegationBoot?.machine,
 					// Delegation notices never roll the DM — a result
 					// arriving past the gap still belongs to the live
 					// conversation (Rolling DM).

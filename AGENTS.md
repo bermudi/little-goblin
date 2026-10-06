@@ -1,91 +1,114 @@
----
-role: record
-owns: operational-context
----
+# goblin v2
 
-# little-goblin
-
-Telegram-native personal AI agent. Single user (bermudi), single process, homelab.
-
-Goblin lives in Telegram. You message it, it thinks, it responds. It can spawn subagents for focused work, persist conversation history, and evolve its own skills. Deep use of Telegram as UI — reactions, voice, topics, files — not just a chat wrapper.
-
-## Architecture stabilization gate
-
-> **This project is being architecturally stabilized. Do not add new product features on top of known-bad seams.** Repair ownership, lifetime, authority, storage, and module interfaces first; otherwise each feature makes the eventual migration harder.
-
-Before proposing or implementing feature work:
-
-- Read the current code and tests, [`specs/product.md`](specs/product.md), [`ARCHITECTURE.md`](ARCHITECTURE.md), relevant accepted decisions and designated contract records, and the active labeled Litespec issue when one exists. Frozen legacy material and [`PARKED.md`](PARKED.md) may supply historical context, but they do not override those authorities.
-- Name the owner and lifetime of every new piece of state: Surface, Conversation, conversation runtime, Execution Environment, delegated run, or deployment.
-- Name its authority source and persistence location. Do not infer authority from convenience fields or duplicate it across callers.
-- Put cross-cutting behavior behind a deep module with one interface; do not add orchestration choreography to commands, Telegram intake, or other callers.
-- Do not extend legacy `Session`/`ChatLocator`, mutable-project, `scratch/`, or ad-hoc skill-loading patterns. Migrate or replace the seam.
-- A bug fix may land during stabilization, but it must move toward the target architecture or explicitly document why it is a containment patch.
-- Source-code and internal API compatibility is not maintained during stabilization; callers migrate atomically with interface changes. Persisted state, offline migration inputs, Telegram behavior, and other external contracts remain governed by their schemas, decisions, and migration policy.
-
-New feature work resumes when its architectural dependencies are explicit and the relevant stabilization changes are accepted. “It fits the current code” is not sufficient.
-
-### Planning discipline
-
-- **WIP limit: one active Litespec issue, with at most one plainly described candidate next.** Labeled GitHub issues own active delivery work. [`PARKED.md`](PARKED.md) contains unshaped candidates and historical context, not a queue.
-- **Litespec v2 is the sole work-delivery process.** Use the generated `litespec-plan`, `litespec-build`, and `litespec-review` skills. Small fixes use the zero-ceremony lane; shaped work uses one dedicated `litespec/<change-name>` branch per issue.
-- A shaped issue records immutable `Base:` and `Branch:` ownership, contains demo-able units with exact `Done means:` and `Verify:`, and builds one unit at a time. Build commits first, verifies the clean committed tree, then posts the verbatim red-green evidence receipt. A fresh reviewer returns `PASS` before closure.
-- Authority is role-based: code and tests own current implemented behavior; explicitly designated contract records own their promises; `specs/decisions/` owns accepted architectural rulings; `ARCHITECTURE.md` owns the system map; `specs/glossary.md` owns domain language; this file owns repository practice; labeled Litespec issues own active work.
-- `specs/product.md`, `specs/glossary.md`, and `specs/decisions/` are active v2 records. The nested `specs/canon/`, `specs/changes/`, `specs/parked/`, `specs/v1-decisions/`, and `specs/research/` trees are frozen v1 input. Do not update, archive, or mechanically translate them. Before retiring historical material, extract still-valid behavior into code/tests or an explicitly designated contract record. Git is the archive.
-- A bug fix may land during stabilization, but it must move toward the target architecture or explicitly document why it is a containment patch.
-
-## Run
-
-```sh
-bun install
-cp .env.example .env   # BOT_TOKEN, ALLOWED_TG_USER_IDS, MODEL_NAME + API key
-bun run migrate        # write state-version.json and run offline migrations
-bun run src/index.ts   # or: bun run dev
-```
-
-## Shape
-
-Entry is `src/index.ts`; `src/bot.ts` is the Telegram composition root. The implemented system is currently migrating from an overloaded Telegram/session/agent shape to explicit Surface, Binding, Conversation, ConversationRuntime, and Execution Environment lifetimes.
-
-Read [`ARCHITECTURE.md`](ARCHITECTURE.md) before structural work. It distinguishes implemented **CURRENT** behavior, accepted **TARGET** architecture, and unresolved **OPEN** questions. Code/tests and explicitly designated contract records own current behavior; accepted decisions own architectural rulings; this file remains the operational guardrail.
+Telegram-native personal AI agent for one operator. Rewrite of
+`~/build/little-goblin` on the Vercel AI SDK. Read `DESIGN.md` (the
+core: domain model, authority rule, cache stability, non-goals) plus the
+`design/` file for the area you're touching before any structural work.
+`docs/` is operator documentation, not spec.
 
 ## Guardrails
 
-- **TypeScript strict.** No `any`. Use `unknown` and narrow. Validate at boundaries.
-- **Durable filesystem writes.** Replace-whole-file state uses tmp + `fsync` + `renameSync`, preserving the existing file's mode (so a hardened `0600` config is never downgraded). Create-only files use exclusive creation (`"wx"`); that is an atomic no-overwrite reservation, not replacement. Append-only JSONL uses append mode with one serialized record per write; it must propagate failures and must not be described as tmp/rename atomic replacement. JSON for state, JSONL for logs. No database except the memory store at `$GOBLIN_HOME/state/memory/memory.sqlite`.
-- **Fail loud.** `ENOENT` is expected — return null. Everything else propagates.
-- **No `console.log`.** Use `log` from `src/log.ts`.
-- **One module, one job.** Flat modules with `mod.ts` barrels. Colocate tests.
+- **Bun + strict TypeScript.** No `any` — `unknown` and narrow. Validate
+  external input with zod at boundaries (config, Telegram updates, tool args,
+  disk state).
+- **The mini app client is plain, checked JS.** `src/http/app.js` ships as
+  served — no bundler, no framework, no build step (design rule, scoped to
+  the mini app by DESIGN.md → App channel, 2026-09-30). It is type-checked
+  (`bun run typecheck` runs the tsc programs) with wire types imported from
+  `mod.ts`/`config.ts`, so config schema changes break typecheck, not the
+  page. Don't add `.js` files without the same treatment, and don't let the
+  server program see `telegram-webapp.d.ts` — its `Window` declaration
+  changes how linkedom's `parseHTML` resolves in `agent/tools/fetch.ts`
+  (that's why tsconfig.json excludes it).
+- **The app client is the one built client.** `app/` is Vite + React +
+  strict TS — `@ai-sdk/react` `useChat` over the UIMessage stream endpoints
+  (DESIGN.md → App channel). It gets a build step because React is the
+  price of the SDK's chat pieces; nothing else gets one. Same discipline
+  otherwise: no `any`, wire types imported from server sources, its tsconfig
+  program joins `bun run typecheck`, and `src/http` serves `app/dist` under
+  `/app/` with a fail-loud 500 + log line when the build is missing.
+- **Fail loud.** `ENOENT` means null. Everything else propagates with context.
+  Never swallow an exception.
+- **Durable writes.** Whole-file state: tmp + `fsync` + `renameSync`,
+  preserving the existing file's mode. Append-only JSONL: one serialized
+  record per write, failures propagate.
+- **No `console.log`.** Use `log` from `src/log.ts` — JSONL on stdout and
+  appended to `$GOBLIN_HOME/state/goblin.log`. The bar: a screenshot of
+  weird behavior plus the log file must fully reconstruct what the process
+  did. Every external boundary emits a line with the fields to explain it
+  — intake (update → conversation address), delivery (send →
+  chat/thread), model calls, tool calls — plus critical state mutations
+  and error paths. If explaining a symptom needs a REPL or a guess, the
+  logging is insufficient: add the line.
+- **One module, one job.** Flat modules, colocated tests (`foo.ts` /
+  `foo.test.ts`). `bun test` to run, `bun run typecheck` (both tsc
+  programs) before committing.
+- **Only `src/tg/` knows grammy.** Domain modules never see a Telegram
+  context object.
 
-## Temporary Notes
+## Scope discipline
 
-## Memory
+The non-goals list in `DESIGN.md` is load-bearing. Do not add subagents,
+skills, MCP, projects, or inner-life machinery without an explicit ask —
+"it would be nice" is how v1 happened. When a dropped capability returns, it
+gets designed into the design docs first.
 
-Persistent memory lives in a SQLite database at `$GOBLIN_HOME/state/memory/memory.sqlite`. Markdown files in `$GOBLIN_HOME/state/memory/` are an export-only view:
+## Design inspiration
 
-- `memory.md` — notes about the environment, projects, conventions, decisions.
-- `user.md` — user preferences, communication style, recurring people/places.
-- `agents/<name>/memory.md` — named subagent persona memory.
-- Entries are stored as rows; `\n§\n` delimiters are used only during markdown export.
-- Goblin curates memory via the `memory_write` tool (`add` / `replace` / `remove` / `rewrite` / `set_description`). A global character budget (default **50,000 chars**) applies to curated memory; only auto-promoted "dreaming" entries are eligible for compaction, user entries are preserved.
-- The store is canonical; direct edits to markdown files are overwritten on the next `memory export`.
-- A frozen memory summary is injected into the system prompt at session creation. A per-turn `## relevant memory` aside is computed via hybrid search on the prompt text.
-- Inspect: `memory status` for counts, `memory export` to regenerate markdown, `cat $GOBLIN_HOME/state/memory/memory.md` after export.
+When designing workspace layout, identity/memory files, prompt assembly, or
+scheduled work: two mature agents live locally and already paid for these
+lessons — `~/build/testing/openclaw/` (TypeScript, multi-channel) and
+`~/build/testing/hermes-agent/` (Python, Nous Research). Borrow their
+*mechanisms*, never their scope: both carry 10x goblin's feature list, most
+of it on our non-goals list. Worth stealing outright: openclaw's bootstrap
+file protocol (trigger→file memory rules, supersede-in-place directives) and
+its HEARTBEAT.md post-mortem (a scheduled job's instructions are the job's
+state in the DB, never a shared workspace file); hermes' cache discipline
+("per-conversation prompt caching is sacred" — both projects converged on
+this independently, treat it as settled). Consult their AGENTS.md, docs/
+and templates before designing; cite what you took in the design docs.
 
-This file (`AGENTS.md`) is **not** auto-injected into the system prompt today; that's a separate concern.
+## Live services
 
-## Test conventions
+- `goblin.service` runs from this working tree — code changes go live
+  only on `systemctl --user restart goblin`, which needs bermudi's OK.
+- `goblin-herdr.service` owns the `goblin` herdr session where delegated
+  harnesses run. Probe herdr only in a throwaway named session
+  (`herdr --session goblin-probe server`), never `default` or `goblin`.
+  Panes run bermudi's interactive zsh: aliases (codex, devin) already
+  add no-approval flags, and repeating them in harness args is fatal.
 
-- **Colocated.** `foo.ts` ↔ `foo.test.ts` in the same directory. `bun test` discovers them automatically.
-- **One exception: `src/subagents/`.** Its tests live in `src/subagents/test/*.suite.ts`, bootstrapped from `mod.test.ts`. The reason: `bun:test` `mock.module()` is process-global, so the suites must run under a single mock install. The `.suite.ts` extension prevents bun from auto-discovering them (which would race the mock). If bun ever gets per-file mock scoping, collapse this back to colocated `.test.ts` files.
-- Add `"test": "bun test"` to package.json if it's still missing.
-- Run `bun run typecheck` (`tsc --noEmit`) before committing.
+## Keys (live since 2026-09-26)
 
-## Things not to do
+- Every `auth.jsonl` record is `!pass-keys run goblin-dev -- printenv NAME`
+  — the `goblin-dev` profile in `~/.config/pass-keys/config.json` (dots
+  `passkeys` store), authenticating as the **`goblin-dev`** agent token
+  (`~/goblin/pass-cli.env`), each key item-granted from the Keys vault
+  and ID-addressed. `goblin-keys.timer` keeps the tmpfs cache warm.
+  Profiles are environment-scoped (`goblin-dev`, `goblin-mcp-dev`) because
+  the config syncs via dots — a future prod box gets `goblin-prod`, never
+  these refs.
+- Adding a key: `pass-keys add goblin-dev NAME Keys/<Item>` (or no item
+  spec to paste a new key; rerun to rotate; `pass-keys drop goblin-dev
+  NAME` to retire) — grants, refs, and warm in one step — then add the
+  `auth.jsonl` record. Symptom decoder: a key error at request time → `pass-keys
+  status goblin-dev` and `journalctl --user -u goblin-keys` first.
+- `pass-keys run`'s stdout is the child's (fixed 2026-09-26 — operational
+  lines used to corrupt resolved keys).
 
-- Agents running inside herdr-managed panes must not create, modify, or close herdr layout (`herdr workspace close`, `tab close`, `pane close`, splits, moves). Closing a workspace kills every sibling pane and agent in it — including yourself and unrelated work. Report stale layout to the operator instead of cleaning it up. (2026-09-03 incident: an agent closed workspace w6D mid-turn, killing itself, a sleeping supervisor agent, and three other agent panes.)
-- Telegram is the UI, including Telegram Mini Apps.
-- No multi-channel, no plugin SDK, no Docker, no k8s
-- No security audit system
-- No multi-agent gateway
-- Don't touch `$GOBLIN_HOME` from the code tree except through `ConversationStore` (canonical conversation persistence), `ConversationLifecycle` (bindings, lifecycle transitions, and project assignment), `InternalSessionStore` (Surface-free internal runtime persistence), `MemoryStore`, `MetricsStore` (sole metric-record reader/appender and lazy metrics-artifact materializer through `metricsPath`; decision 0014), `McpSelectionStore` (`src/mcp/selection-store.ts`: sole writer of the deployment `mcp` section in `goblin.json5`; decision 0042 boundary), `WakeStore` (`src/inner-life/wake-store.ts`: sole owner of wake-record I/O under `state/inner-life/wakes`; decision 0035 and the designated contract `specs/inner-life/spec.md`), `paths.ts`, and `config.ts`'s `ensureGoblinHome()` (startup directory creation only — see decision `config-startup-filesystem-mutation` 0007). One read-only exception: agent-owned prompt files — `workspace/SOUL.md`, `workspace/AGENTS.md`, `workspace/HEARTBEAT.md`, future deployment prompt files, and the Surface-scoped `state/surfaces/<SurfaceId>/HEARTBEAT.md` — may be read at request time through `WorkspacePrompts` (`src/workspace/prompts.ts`, surfaced via `src/workspace/mod.ts`), the sole reader of deployment prompt files; path construction stays in the path helpers (see decisions `workspace-prompt-file-reads` 0009 as amended by 0050 and `path-helper-only-path-construction` 0008). Two prompt-file-adjacent paths stay outside the module: named-agent persona files (`workspace/agents/<name>/AGENTS.md`) are subagent-owned and read by `named-agents.ts`, and `onboard.ts` may still probe prompt-file existence for wizard flow. This covers only read access by source code; the agent runtime may rewrite these files during a user-facing turn per decision `prompt-files-are-agent-owned` 0039. Recovery from agent rewrites is the operator's responsibility: keep `$GOBLIN_HOME/workspace` in a git repo and revert as needed. The Surface-scoped `state/surfaces/<SurfaceId>/HEARTBEAT.md` lives outside that directory — version it the same way if its content matters; it is optional with a built-in fallback, so deleting or rewriting it always restores a working heartbeat prompt. Non-ENOENT read errors propagate per the fail-loud rule.
+## Tests
+
+Tests guard boundaries and invariants, not implementations. Fake the model
+provider and the Telegram API at the edge; don't mock module internals. The
+suite stays smaller than `src/`.
+
+## Process
+
+The polish backlog (gaps vs openclaw/hermes, audited 2026-10-02) lives in
+GitHub issues labeled `polish`, ranked `P1`–`P3`, with `area:*` labels;
+#52 records the ideas declined as non-goals — check it before re-proposing.
+
+No Litespec, no specs tree, no decision records. Small commits, often, on
+main or short-lived branches. If a design tension is real enough to argue
+about, write the ruling into the design docs (`DESIGN.md` or
+`design/<area>.md`) — the docs are the spec.

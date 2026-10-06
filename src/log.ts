@@ -1,64 +1,136 @@
-export type Level = "debug" | "info" | "warn" | "error";
+// Structured logging. JSONL on stdout plus an append sink at
+// $GOBLIN_HOME/state/goblin.log — a stable, durable location no matter
+// how the process was launched. The only output channel — no
+// console.log anywhere else in the codebase.
+//
+// The file sink must never take the process down or recurse. Failures
+// split two ways: permanent ones (bad path, permissions) kill the sink
+// for the run after one warn; transient ones (disk full, EIO) keep the
+// sink alive and retry on later writes — a full disk is exactly when
+// the durable log matters most. Recovery logs one line.
 
-const order: Record<Level, number> = { debug: 0, info: 1, warn: 2, error: 3 };
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
-// Default threshold until initLog() is called
-let threshold = order.info;
+export type LogLevel = "debug" | "info" | "warn" | "error";
 
-/** Initialize the log level from config. Call after loadConfig(). */
-export function initLog(level: Level): void {
-  if (order[level] === undefined) {
-    process.stderr.write(
-      `[log] Warning: Invalid LOG_LEVEL="${level}". Valid: debug, info, warn, error. Falling back to "info".\n`,
-    );
-    threshold = order.info;
-  } else {
-    threshold = order[level];
-  }
+const LEVELS: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
+
+let threshold: number = LEVELS.info;
+
+export function setLogLevel(level: LogLevel): void {
+	threshold = LEVELS[level];
 }
 
-function emit(level: Level, msg: string, extra?: unknown): void {
-  if (order[level] < threshold) return;
-  const ts = new Date().toISOString();
-  const line = `${ts} ${level.toUpperCase().padEnd(5)} ${msg}`;
-  const stream = level === "error" || level === "warn" ? process.stderr : process.stdout;
-  if (extra !== undefined) {
-    stream.write(`${line} ${JSON.stringify(extra)}\n`);
-  } else {
-    stream.write(`${line}\n`);
-  }
+// The file sink is opt-in: the composition root attaches it at boot
+// (setLogFile). Anything else that logs — tests, one-off scripts — goes
+// stdout-only and can't pollute the operator's log file. Passing null
+// detaches (tests do this after reading the file back).
+let fileTarget: string | null = null;
+let fileSinkDead = false;
+let fileSinkDegraded = false;
+let lastDegradedWarn = 0;
+
+// Throttled while degraded — a full disk must not double every log
+// line on stdout, but the condition may not go silent either.
+const DEGRADED_WARN_INTERVAL_MS = 60_000;
+
+// Errno that can clear without operator action — retry, don't die.
+const TRANSIENT_ERRNOS = new Set(["ENOSPC", "EIO", "EAGAIN", "ENFILE", "EMFILE"]);
+
+export function setLogFile(path: string | null): void {
+	fileTarget = path;
+	// Attaching a sink starts fresh: a dead or degraded sink from an
+	// earlier target must not silence the new one.
+	fileSinkDead = false;
+	fileSinkDegraded = false;
+}
+
+// Injectable for tests (same pattern as codex/auth.ts's fetchImpl): a fake
+// writer can fail with a chosen errno, which the real filesystem can't
+// be asked to do portably. Passing null restores the real one.
+export type AppendFn = (path: string, line: string) => void;
+let appendImpl: AppendFn = (path, line) => appendFileSync(path, line);
+
+export function setLogWriter(fn: AppendFn | null): void {
+	appendImpl = fn ?? ((path, line) => appendFileSync(path, line));
+}
+
+// stdout warn that bypasses emit() — the file sink's own health must
+// never route through the machinery whose failure it is reporting.
+function warnStdout(msg: string, fields: Record<string, unknown>): void {
+	process.stdout.write(
+		JSON.stringify({ ts: new Date().toISOString(), level: "warn", msg, ...fields }) + "\n",
+	);
+}
+
+function writeFile(line: string): void {
+	if (fileSinkDead || fileTarget === null) return;
+	const target = fileTarget;
+	try {
+		try {
+			appendImpl(target, line);
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+			mkdirSync(dirname(target), { recursive: true });
+			appendImpl(target, line);
+		}
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code !== undefined && TRANSIENT_ERRNOS.has(code)) {
+			// Transient — from either append, including the ENOENT retry:
+			// keep the sink, retry on later writes. The line itself
+			// already reached stdout; the warn is throttled.
+			if (
+				!fileSinkDegraded ||
+				Date.now() - lastDegradedWarn >= DEGRADED_WARN_INTERVAL_MS
+			) {
+				lastDegradedWarn = Date.now();
+				warnStdout("goblin.log sink degraded — retrying on later writes", {
+					error: String(err),
+				});
+			}
+			fileSinkDegraded = true;
+			return;
+		}
+		fileSinkDead = true;
+		warnStdout("goblin.log sink failed — stdout only for this run", {
+			error: String(err),
+		});
+		return;
+	}
+	if (fileSinkDegraded) {
+		fileSinkDegraded = false;
+		warnStdout("goblin.log sink recovered", {});
+	}
+}
+
+type Fields = Record<string, unknown>;
+
+function emit(level: LogLevel, msg: string, fields?: Fields): void {
+	if (LEVELS[level] < threshold) return;
+	const line =
+		JSON.stringify({
+			ts: new Date().toISOString(),
+			level,
+			msg,
+			...fields,
+		}) + "\n";
+	process.stdout.write(line);
+	writeFile(line);
+}
+
+function errFields(err: unknown): Fields {
+	if (err instanceof Error) {
+		return { error: err.message, stack: err.stack };
+	}
+	return { error: String(err) };
 }
 
 export const log = {
-  debug: (msg: string, extra?: unknown) => emit("debug", msg, extra),
-  info: (msg: string, extra?: unknown) => emit("info", msg, extra),
-  warn: (msg: string, extra?: unknown) => emit("warn", msg, extra),
-  error: (msg: string, extra?: unknown) => emit("error", msg, extra),
+	debug: (msg: string, fields?: Fields) => emit("debug", msg, fields),
+	info: (msg: string, fields?: Fields) => emit("info", msg, fields),
+	warn: (msg: string, fields?: Fields) => emit("warn", msg, fields),
+	error: (msg: string, err?: unknown, fields?: Fields) =>
+		emit("error", msg, { ...(err !== undefined ? errFields(err) : {}), ...fields }),
 };
-
-/** Default cap for structured error summaries written to the log stream. */
-export const STRUCTURED_ERROR_CAP = 256;
-
-function safeErrorString(err: unknown): string {
-  if (typeof err === "string") return err;
-  if (err instanceof Error) return err.message;
-  try {
-    return String(err);
-  } catch {
-    return "[unstringifiable error]";
-  }
-}
-
-/**
- * Produce a bounded error summary suitable for structured log fields.
- *
- * Never throws, even for circular or otherwise unstringifiable values.
- * Durable error records (e.g. subagent meta.json) should keep the full
- * diagnostic; log emission uses this cap to avoid unbounded line lengths.
- */
-export function boundedError(err: unknown, cap = STRUCTURED_ERROR_CAP): { error: string } {
-  const raw = safeErrorString(err);
-  if (raw.length <= cap) return { error: raw };
-  if (cap <= 3) return { error: raw.slice(0, cap) };
-  return { error: `${raw.slice(0, cap - 3)}...` };
-}

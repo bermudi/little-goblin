@@ -1,0 +1,27 @@
+[Unit]
+Description=Goblin keys — warm the pass-keys tmpfs caches (goblin-dev + goblin-mcp-dev profiles)
+# goblin.service Wants=/After= this: a cold pass-cli login runs ~100s of
+# retries, far past auth's 15s resolve bound, so resolves at boot must
+# hit a warm tmpfs cache (DESIGN.md, "Proton Pass"). Never give up
+# restarting — boot without network is expected, and a phone-only
+# operator can't run systemctl reset-failed.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+# Same PATH as goblin.service — pass-keys and pass-cli resolve under
+# THIS unit's env, not a login shell's.
+Environment=PATH=/home/daniel/bin:/home/daniel/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin
+# pass-keys' own retry/negative-cache discipline applies inside the
+# call; this restart is the outer net for a dead-network boot.
+# Two profiles, one lane: goblin-dev (provider keys for auth.jsonl !records)
+# and goblin-mcp-dev (MCP server keys for scripts/mcp) share the session —
+# oneshot runs these sequentially, and the second warm rides the first's
+# login.
+ExecStart=/home/daniel/.local/bin/pass-keys warm goblin-dev
+ExecStart=/home/daniel/.local/bin/pass-keys warm goblin-mcp-dev
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=default.target

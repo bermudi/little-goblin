@@ -1,16 +1,4 @@
 node_modules/
-dist/
 .env
-.env.local
-*.log
-bun.lockb
-.DS_Store
-.pi/settings.json
-.pi/npm/
-.worktrees/
-.superpowers/
-
-# e2e smoke harness
-e2e/.env
-e2e/.session.json
-e2e/e2e
+__pycache__/
+app/dist/

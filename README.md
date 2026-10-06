@@ -1,161 +1,107 @@
-# Little Goblin
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/bermudi/little-goblin)[![zread](https://img.shields.io/badge/Ask_Zread-_.svg?style=flat&color=00b0aa&labelColor=000000&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTQuOTYxNTYgMS42MDAxSDIuMjQxNTZDMS44ODgxIDEuNjAwMSAxLjYwMTU2IDEuODg2NjQgMS42MDE1NiAyLjI0MDFWNC45NjAxQzEuNjAxNTYgNS4zMTM1NiAxLjg4ODEgNS42MDAxIDIuMjQxNTYgNS42MDAxSDQuOTYxNTZDNS4zMTUwMiA1LjYwMDEgNS42MDE1NiA1LjMxMzU2IDUuNjAxNTYgNC45NjAxVjIuMjQwMUM1LjYwMTU2IDEuODg2NjQgNS4zMTUwMiAxLjYwMDEgNC45NjE1NiAxLjYwMDFaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00Ljk2MTU2IDEwLjM5OTlIMi4yNDE1NkMxLjg4ODEgMTAuMzk5OSAxLjYwMTU2IDEwLjY4NjQgMS42MDE1NiAxMS4wMzk5VjEzLjc1OTlDMS42MDE1NiAxNC4xMTM0IDEuODg4MSAxNC4zOTk5IDIuMjQxNTYgMTQuMzk5OUg0Ljk2MTU2QzUuMzE1MDIgMTQuMzk5OSA1LjYwMTU2IDE0LjExMzQgNS42MDE1NiAxMy43NTk5VjExLjAzOTlDNS42MDE1NiAxMC42ODY0IDUuMzE1MDIgMTAuMzk5OSA0Ljk2MTU2IDEwLjM5OTlaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik0xMy43NTg0IDEuNjAwMUgxMS4wMzg0QzEwLjY4NSAxLjYwMDEgMTAuMzk4NCAxLjg4NjY0IDEwLjM5ODQgMi4yNDAxVjQuOTYwMUMxMC4zOTg0IDUuMzEzNTYgMTAuNjg1IDUuNjAwMSAxMS4wMzg0IDUuNjAwMUgxMy43NTg0QzE0LjExMTkgNS42MDAxIDE0LjM5ODQgNS4zMTM1NiAxNC4zOTg0IDQuOTYwMVYyLjI0MDFDMTQuMzk4NCAxLjg4NjY0IDE0LjExMTkgMS42MDAxIDEzLjc1ODQgMS42MDAxWiIgZmlsbD0iI2ZmZiIvPgo8cGF0aCBkPSJNNCAxMkwxMiA0TDQgMTJaIiBmaWxsPSIjZmZmIi8%2BCjxwYXRoIGQ9Ik00IDEyTDEyIDQiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K&logoColor=ffffff)](https://zread.ai/bermudi/little-goblin)
+# goblin v2
 
-> Telegram-native personal AI agent. Single user, single process, homelab.
+A personal AI assistant that lives in Telegram. One operator, one process,
+running on your own machine. Talk to it in a chat; it answers, runs shell
+commands, reads and writes files, handles photos and voice notes, and can
+speak replies back as voice notes.
 
-Little Goblin is an autonomous agent that lives in Telegram. You message it, it thinks, it responds. It can read and edit files, run shell commands, spawn focused subagents, curate persistent memory, and send media back to you — all from a chat window.
+This is a rewrite of `little-goblin` on the Vercel AI SDK (see `DESIGN.md`
+for why). The old bot still runs on lithium until cutover; nothing is
+shared between them (no code, no state, no specs).
 
-No web UI. No external database. No webhooks. Just a Bun process, Telegram long-polling, filesystem state, and one local SQLite memory store.
+## How it works, in one paragraph
 
----
+You message the bot on Telegram. Each forum topic (or the bare chat, if there
+are no topics) is its own conversation with its own history — make a topic to
+start something, post in an old topic to pick it back up. Your messages get
+answered by whatever model you've picked, with tools for files, shell,
+speech, scheduling, memory recall, web search and more. Common settings live
+in Telegram's Settings mini app; some optional integrations are configured
+by hand. Everything is stored under one folder
+(`~/goblin` by default).
 
-## What it looks like
+## Quick start
 
-```
-You: refactor the auth middleware in src/auth.ts
-Goblin: 🤔 thinking…
-        🔧 read src/auth.ts
-        🔧 bash git diff
-        ✅ bash git diff
-        ✅ read src/auth.ts
-        ✅ write src/auth.ts
-Goblin: Done. I inlined the helper, added a test, and saved the diff to /tmp/auth-refactor.diff.
-```
+1. Install [bun](https://bun.sh) (>= 1.1) and make sure it's in your `PATH`.
+2. Copy `goblin.json5.example` to `~/goblin/goblin.json5` and fill it in
+   (bot token goes in `~/goblin/auth.jsonl`, not the config — see below).
+3. Run `scripts/install.sh`. It refuses to start a half-configured service,
+   so if something's missing it tells you what to fix instead of crash-looping.
+4. Message your bot on Telegram.
 
-## Get started
+Full walkthrough: [`docs/setup.md`](docs/setup.md).
 
-```sh
-# 1. Install dependencies
-bun install
+## Daily use
 
-# 2. Copy the env template (optional — only needed if you want to reference env vars)
-cp .env.example .env
+- **Topics are conversations.** No `/new`, no `/resume` — Telegram does that job.
+- **Six commands:** `/voice` (voice-note replies on/off), `/stop`
+  (interrupt), `/memory` (memory status, per-topic inclusion), `/forget`
+  (delete remembered content), `/compact` (summarize older history), and
+  `/start` (a canned hello). The settings ones are per-topic; model and
+  thinking effort live in the Settings mini app.
+- **Send anything:** photos, files, voice notes, videos. Voice gets
+  transcribed so even text-only models can "hear" it.
+- **Memory is automatic (when enabled):** exchanges are remembered and
+  recalled on their own — no "remember this". `/forget` removes; see
+  [`docs/memory.md`](docs/memory.md).
+- **Settings mini app:** a Settings button in the chat opens the common
+  settings; delegation, Gmail, and the skill reviewer remain hand-configured.
+- **The app:** `<publicUrl>/app/` is a second door — a standalone web client
+  (installable PWA) for the reading Telegram does badly. App conversations
+  live only in the app; nothing mirrors. Bearer token or tailnet trust —
+  see [`docs/security.md`](docs/security.md#the-app-channels-auth).
 
-# 3. Run the interactive onboarding wizard.
-#    It creates $GOBLIN_HOME/goblin.json5 and the SOUL.md/AGENTS.md prompt files
-#    and runs the offline state migration for you.
-bun run onboard
+Details: [`docs/usage.md`](docs/usage.md). Voice features:
+[`docs/voice.md`](docs/voice.md). Skills: [`docs/skills.md`](docs/skills.md).
 
-# 4. Start the bot
-bun run src/index.ts
-```
+## Configuration in 30 seconds
 
-Then open Telegram and send `/start` to inspect the current Conversation in a DM or forum topic. Send ordinary text (or `/new`) to create a Conversation on an unbound Surface.
+Two files, side by side in `~/goblin/`:
 
-See <ref_file file="/home/daniel/build/little-goblin/goblin.json5.example" /> for a complete annotated config.
+| File | What | Secrets? |
+|---|---|---|
+| `goblin.json5` | providers, default model, thinking, speech, Telegram, web UI | never |
+| `auth.jsonl` | one `{"name": ..., "value": ...}` per line, file mode `0600` | always |
 
-## Production install
+A secret value is either the credential itself or a `!command` that fetches
+it when needed. Direct Pass commands are refused; use a configured
+`pass-keys` profile for Pass-backed secrets.
+Full reference: [`docs/configuration.md`](docs/configuration.md).
 
-For a homelab server that survives reboots, run the packaging installer as root on a Linux host:
+## Running it
 
-```sh
-sudo bash scripts/install.sh
-```
-
-This creates a dedicated `goblin` user, installs `bun` if needed, clones the repo to `/opt/little-goblin`, runs `bun run onboard` if no config exists, validates the config, and installs a systemd service that auto-starts on boot. (The same script is aliased as `bun run install:prod` for discovery, but it must still be run as root.)
-
-Once installed:
-
-```sh
-systemctl start goblin     # start now
-systemctl stop goblin      # stop
-systemctl status goblin    # status
-journalctl -u goblin -f    # follow live logs
-```
-
-Updates are scripted:
-
-```sh
-sudo bash scripts/update.sh   # pull latest code, validate config, migrate state, then restart goblin
-```
-
-`scripts/update.sh` validates configuration before stopping Goblin, then runs the offline migration with the service stopped. It restarts only after migration succeeds; on migration failure it deliberately leaves the service stopped so the operator can restore from the migration backup, which the migration writes to `$GOBLIN_HOME/.migration-backup-<timestamp>/` (a `snapshot.json` manifest plus copies of the persisted roots). If the pull changes `update.sh` itself, the updater hands off to the pulled revision before any post-pull deployment step, so it never mixes old control flow with new code. Run CI/typecheck before invoking it—it does not run them.
-
-## Core ideas
-
-- **Telegram is the UI.** Every feature is designed around chat, topics, replies, and file sharing.
-- **Surfaces and conversations are separate.** A Surface is a DM, topic, or group routing lane. Its Binding points to one current Conversation; `/resume` moves compatible history rather than sharing a live runtime.
-- **Immutable project environments.** `/project <dir>` assigns an unassigned Surface once and starts fresh project history. Existing history remains resumable; switch projects by using another Surface.
-- **Curated memory.** The agent decides what to remember. The canonical store is local SQLite and its active scope is derived from the current Surface.
-- **Subagents.** Delegate work to headless workers that can recursively spawn up to depth 3, then revive them later.
-- **Local durable state.** Bindings and Conversation metadata are atomic JSON/JSONL files; memory is the one local SQLite store.
-
-## Commands
-
-Send any of these in Telegram:
-
-| Command | What it does |
-|---------|--------------|
-| `/start` | Report the active Conversation on this Surface; if none is bound, explain how to start one. |
-| `/new` | Start a fresh Conversation on this Surface; prior history remains resumable. |
-| `/resume <id>` | Move a compatible Conversation to this Surface. |
-| `/archive` | Archive the active Conversation. |
-| `/name <name>` | Name the active Conversation. |
-| `/project <dir>` | Assign this unassigned Surface to one project environment and start fresh project history. |
-| `/model [index]` | List or switch favorite models. |
-| `/think [level]` | Show or set thinking level (`off` to `max`). |
-| `/compact` | Manually compact the active Conversation runtime's context. |
-| `/queue <text>` | Enqueue a follow-up turn. |
-| `/subagents` | List running/persisted subagents. |
-| `/cancel_subagent <id>` | Cancel a subagent. |
-| `/revive <id> <prompt>` | Revive a subagent with a follow-up. |
-| `/cancel` | Abort the current turn (cascades to subagents). |
-| `/voice` | Convert the last assistant message to a voice note. |
-| `/debug` | Dump Conversation and runtime diagnostics. |
-| `/ping` | Smoke test. |
-| `/help` | Show the command list. |
-
-For full details see <ref_file file="/home/daniel/build/little-goblin/features.md" />.
-
-## Models
-
-Goblin supports multiple provider namespaces via prefixed model IDs:
-
-- `or/anthropic/claude-sonnet-4.5`, `or/openai/gpt-5`
-- `openai/gpt-5.4`, `openai/gpt-5.4-mini`, `openai/o4`
-- `anthropic/claude-opus-4`, `anthropic/claude-sonnet-4.6`
-- `zai/glm-5.2`, `zai/glm-5.1`
-- `opencode-go/glm-5.2`, `opencode-go/minimax-m3`, `opencode-go/kimi-k2.6`
-
-Pattern-built entries are also available for unknown `or/<slug>`, `openai/<id>`, `anthropic/<id>`, `zai/<id>`, and `opencode-go/<id>` models. Set the matching API key in `goblin.json5`.
-
-## Development
+It runs as a systemd user service (`deploy/goblin.service`): restarts on
+failure, starts on boot. Logs stream as JSON lines to stdout and to
+`~/goblin/state/goblin.log`. Ops guide — restarts, logs, backups, what to do
+when it misbehaves: [`docs/operations.md`](docs/operations.md).
 
 ```sh
-bun run dev          # watch mode
-bun run test         # run all tests
-bun run typecheck    # TypeScript check
-bun run onboard      # first-time setup wizard
-bash scripts/deployment-order.test.sh  # isolated fake-command deployment ordering checks
+journalctl --user -u goblin -f   # live logs
+systemctl --user restart goblin  # restart
 ```
 
-Tests are colocated with source files (`foo.ts` ↔ `foo.test.ts`). `src/subagents/` is the one exception: its suites live under `src/subagents/test/*.suite.ts` and are bootstrapped from `src/subagents/mod.test.ts` because `bun:test` `mock.module()` is process-global.
+## Developing
 
-## Architecture
+- `bun test` runs the suite, `bun run typecheck` typechecks (both tsc
+  programs). Both should pass
+  before committing.
+- Read `DESIGN.md` (the core: domain model, authority rule, cache
+  stability, non-goals) plus the `design/` file for the area you're
+  touching before any structural work. `docs/` is operator documentation,
+  not spec. Read `AGENTS.md` for the working rules (strict TypeScript, zod
+  at boundaries, fail loud, log everything).
+- Only `src/tg/` knows about Telegram internals; everything else is plain
+  domain code. Tests live next to the files they cover.
 
-The core ownership boundary is `Surface → Binding → Conversation → ConversationRuntime`:
+## Docs map
 
-1. **Telegram layer** (`src/tg/`) normalizes and delivers complete Surfaces.
-2. **Lifecycle/orchestration** (`src/orchestration/`) owns binding transitions, pending-assignment recovery, runtime authority, and queue invalidation.
-3. **Persistence** (`src/sessions/`) owns Conversations, bindings, and Surface settings; **agent** (`src/agent/`) owns pi runtime construction.
-
-Read `ARCHITECTURE.md` for current/target boundaries. Code/tests and explicitly designated contract records own current behavior; accepted architectural rulings live in `specs/decisions/`. Internal guardrails are in <ref_file file="/home/daniel/build/little-goblin/AGENTS.md" />.
-
-## Documentation map
-
-| File | What it covers |
-|------|----------------|
-| <ref_file file="/home/daniel/build/little-goblin/README.md" /> | This file — quick start, overview, command cheat-sheet. |
-| <ref_file file="/home/daniel/build/little-goblin/features.md" /> | Full user guide: Surfaces, Conversations, tools, memory, subagents, media, config, security. |
-| <ref_file file="/home/daniel/build/little-goblin/goblin.json5.example" /> | Annotated configuration example. |
-| <ref_file file="/home/daniel/build/little-goblin/AGENTS.md" /> | Project guardrails and planning discipline. |
-| `specs/product.md` | Product boundary, authority map, and core flows. |
-| `ARCHITECTURE.md` | Current/target/open system map and stabilization order. |
-| `PARKED.md` | Unshaped candidates, completed context, and open questions; not an active queue. |
-| `specs/decisions/` | Accepted architectural rulings. |
-| `specs/glossary.md` | Canonical domain language. |
-| `specs/README.md` | Boundary between active Litespec v2 authority and frozen v1 records. |
-
----
-
-Built for homelab. Operated from Telegram. Kept small on purpose.
+- [`docs/setup.md`](docs/setup.md) — install, first boot, what gets created where
+- [`docs/configuration.md`](docs/configuration.md) — every config knob and secret
+- [`docs/usage.md`](docs/usage.md) — topics, commands, media, the mini app
+- [`docs/voice.md`](docs/voice.md) — voice notes in and out, transcription, `/voice`
+- [`docs/skills.md`](docs/skills.md) — teaching the bot repeatable tasks
+- [`docs/operations.md`](docs/operations.md) — service, logs, backups, troubleshooting
+- [`docs/security.md`](docs/security.md) — trust model: who is trusted, what crosses each boundary, fail-open vs fail-closed
+- [`docs/memory.md`](docs/memory.md) — optional Hindsight memory; opt-in, live since 2026-09-24
+- [`DESIGN.md`](DESIGN.md) + [`design/`](design/) — the design spec (why it's built this way)
+- [`V1-V2-MAP.md`](V1-V2-MAP.md) — what changed from little-goblin, feature by feature

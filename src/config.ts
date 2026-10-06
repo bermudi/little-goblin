@@ -1,281 +1,647 @@
-import { mkdirSync, readFileSync } from "node:fs";
+// goblin.json5 — the only config file. Providers, models, defaults.
+// No secrets here; those live in auth.jsonl. The mini app is the
+// operator-facing editing surface; hand-editing always works.
+
+import { closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, statSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import JSON5 from "json5";
-import {
-  ConfigFileSchema,
-  type ConfigFile,
-  type EmbeddingsConfig,
-  type ExternalAgentsConfig,
-  type McpConfig,
-  type SettingsConfig,
-} from "./schema.ts";
-import { resolveConfigValue } from "./resolve-value.ts";
-import { goblinConfigPath, sessionsDir, stateDir } from "./sessions/paths.ts";
-import { piAgentDir } from "./pi-host.ts";
-import { goblinSkillsPath, personalEnvironmentSkillsPath, workspacePath } from "./workspace/paths.ts";
-import { memoryDir } from "./memory/paths.ts";
-import { namedAgentsRoot } from "./subagents/paths.ts";
-import { delegatedWorkRunsRoot } from "./delegated-work/paths.ts";
+import { z } from "zod";
+import { durableWriteFile } from "./durable.ts";
+import { hindsightConnectionSchema } from "./hindsight.ts";
+import { log } from "./log.ts";
 
-/** Resolve `$GOBLIN_HOME` from the environment with the shared default. */
-export function resolveGoblinHome(): string {
-  return process.env.GOBLIN_HOME ?? join(homedir(), ".goblin");
+// ---------- paths ----------
+
+export function goblinHome(): string {
+	return process.env.GOBLIN_HOME ?? join(homedir(), "goblin");
 }
 
-export interface Config {
-  botToken: string;
-  allowedTgUserIds: Set<number>;
-  /** Model id — must be a key in `MODELS` (see src/agent/models.ts). */
-  modelName: string;
-  /** OpenRouter API key. Required iff selected model uses it. */
-  openrouterApiKey?: string;
-  /** OpenAI API key. Required iff selected model uses it. */
-  openaiApiKey?: string;
-  /** Anthropic API key. Required iff selected model uses it. */
-  anthropicApiKey?: string;
-  /** Z.AI Coding Plan API key. Required iff selected model uses it. */
-  zaiApiKey?: string;
-  /** OpenCode Go subscription API key. Required iff selected model uses it. */
-  opencodeApiKey?: string;
-  goblinHome: string;
-  logLevel: "debug" | "info" | "warn" | "error";
-  /** Status-line tool visibility level. See `src/tg/buffer.ts`. */
-  toolVisibility: "none" | "minimal" | "standard" | "verbose" | "debug";
-  /** Favorite model ids for /model switching. */
-  favorites: string[];
-  /** Microsoft Edge TTS voice for /voice and text_to_speech. */
-  voiceName: string;
-  /** Groq API key for voice-note ASR. Undefined when not configured. */
-  groqApiKey?: string;
-  /**
-   * Groq Whisper model for voice-note ASR. Optional on the interface so
-   * hand-built test fixtures stay valid; `loadConfig` always populates it from
-   * the schema default (`whisper-large-v3-turbo`).
-   */
-  asrModel?: "whisper-large-v3-turbo" | "whisper-large-v3";
-  /** External agent runner configuration. */
-  externalAgents?: ExternalAgentsConfig;
-  /** MCP bridge configuration. */
-  mcp?: McpConfig;
-  /** Memory embeddings endpoint configuration (overrides env fallbacks per key). */
-  embeddings?: EmbeddingsConfig;
-  /**
-   * Optional loopback Settings Mini App API (decision 0049). Undefined or
-   * disabled means no listener and no Telegram entry; the deployment owns the
-   * stable port and public URL when enabled.
-   */
-  settings?: SettingsConfig;
+export const paths = {
+	config: () => join(goblinHome(), "goblin.json5"),
+	auth: () => join(goblinHome(), "auth.jsonl"),
+	mcporter: () => join(goblinHome(), "mcporter.json"),
+	mcpShim: () => join(goblinHome(), "mcp"),
+	goblinMailShim: () => join(goblinHome(), "goblin-mail"),
+	workspace: () => join(goblinHome(), "workspace"),
+	soul: () => join(goblinHome(), "workspace", "SOUL.md"),
+	agents: () => join(goblinHome(), "workspace", "AGENTS.md"),
+	user: () => join(goblinHome(), "workspace", "USER.md"),
+	skills: () => join(goblinHome(), "workspace", "skills"),
+	attachments: () => join(goblinHome(), "workspace", "attachments"),
+	state: () => join(goblinHome(), "state"),
+	db: () => join(goblinHome(), "state", "goblin.sqlite"),
+	logFile: () => join(goblinHome(), "state", "goblin.log"),
+	delegations: () => join(goblinHome(), "state", "delegations"),
+	modelsDevCache: () => join(goblinHome(), "state", "models.dev.json"),
+	openrouterModelsCache: () => join(goblinHome(), "state", "openrouter-models.json"),
+	webcache: () => join(goblinHome(), "state", "webcache"),
+};
+
+export function ensureHomeLayout(): void {
+	for (const dir of [goblinHome(), paths.workspace(), paths.skills(), paths.attachments(), paths.state()]) {
+		// A WAL/FULL inbox commit cannot protect a database or attachment
+		// inside a directory whose name vanishes on first-boot power loss.
+		// Create missing ancestors from the oldest down and sync each
+		// parent after publishing its child's directory entry.
+		const missing: string[] = [];
+		for (let next = dir; ; next = dirname(next)) {
+			try {
+				if (!statSync(next).isDirectory()) throw new Error(`layout directory is not a directory: ${next}`);
+				break;
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+				missing.unshift(next);
+				if (dirname(next) === next) throw new Error(`no existing parent for ${dir}`);
+			}
+		}
+		for (const next of missing) {
+			mkdirSync(next);
+			const parent = openSync(dirname(next), constants.O_RDONLY);
+			try {
+				fsyncSync(parent);
+			} finally {
+				closeSync(parent);
+			}
+		}
+	}
+	seedFile(
+		paths.soul(),
+		[
+			"# SOUL.md",
+			"",
+			"You are goblin, a personal AI agent living in Telegram. You serve one",
+			"operator. You are direct, competent, and terse by default — this is a",
+			"chat, not a report generator. You have a shell, a filesystem, and",
+			"opinions. Use them.",
+			"",
+		].join("\n"),
+	);
+	seedFile(
+		paths.agents(),
+		[
+			"# AGENTS.md",
+			"",
+			"Your operating notes. Each conversation starts from this file and",
+			"nothing else — it is your only memory between them. Write things down:",
+			"",
+			"- Operator says \"remember this\" → it goes here.",
+			"- You learn a deployment fact (a path, a host, a service, where",
+			"  things live on this machine) → it goes here.",
+			"- You make a mistake you could repeat → the lesson goes here.",
+			"- A rule stops being true → replace it in place. Never keep two",
+			"  rules that contradict.",
+			"",
+			"Facts, not plans. Short lines. No secrets. Read before writing —",
+			"update what exists instead of stacking a new entry.",
+			"",
+		].join("\n"),
+	);
+	// Repo-shipped skills (DESIGN.md, "Web access" and "Auth → Proton
+	// Pass"): their compatibility lines carry the dependency + recovery
+	// command into the system prompt's catalog, and a rebuilt box
+	// regains the whole capability — stub, modes, recovery — without
+	// operator prompting or agent memory. Write-if-absent: once seeded,
+	// each workspace copy is goblin's to evolve.
+	for (const skill of ["browser", "pass-cli", "mcp", "gws"]) {
+		mkdirSync(join(paths.skills(), skill), { recursive: true });
+		const template = readFileSync(
+			join(import.meta.dir, "..", "deploy", "skills", skill, "SKILL.md"),
+			"utf8",
+		);
+		seedFile(join(paths.skills(), skill, "SKILL.md"), template);
+	}
+	// Goblin's own MCP servers (DESIGN.md, "Web access" → "MCP"): the
+	// server set is config, not code, so a fresh home starts empty. The
+	// seed carries `"imports": []` — without it mcporter merges the
+	// operator's editor servers, and the call-time gate refuses anything
+	// else. Write-if-absent like the skills: the operator's (and
+	// goblin's) server set is never clobbered.
+	seedFile(
+		paths.mcporter(),
+		[
+			"{",
+			'\t// Goblin\'s own MCP servers (DESIGN.md, "Web access" → "MCP").',
+			"\t// Secrets are ${VAR} placeholders only — values ride the",
+			"\t// goblin-mcp-dev pass-keys profile into mcporter's child env,",
+			"\t// never this file. \"imports\" MUST stay []: without it",
+			"\t// mcporter merges the operator's editor servers, and the",
+			"\t// call-time gate refuses anything else.",
+			'\t"mcpServers": {},',
+			'\t"imports": []',
+			"}",
+			"",
+		].join("\n"),
+	);
+	refreshMcpShim();
+	refreshGoblinMailShim();
+	seedFile(
+		paths.user(),
+		[
+			"# USER.md",
+			"",
+			"Your model of the operator — stable preferences and facts they",
+			"would endorse, one directive per entry:",
+			"",
+			"<!-- observed: YYYY-MM-DD | status: active -->",
+			"- Always/Never/Prefer …",
+			"",
+			"When a preference changes, mark the old entry superseded and write",
+			"the replacement — never two active directives that contradict.",
+			"Date every entry. An empty file is correct until something real is",
+			"learned; don't invent entries to fill it.",
+			"",
+		].join("\n"),
+	);
 }
 
-/**
- * Load and validate configuration from goblin.json5.
- * Resolution order:
- *   1. GOBLIN_HOME env var -> use as directory
- *   2. Default: ~/goblin
- *
- * Config file is read from $GOBLIN_HOME/goblin.json5.
- * All string values are resolved via resolveConfigValue() before validation.
- */
-export function loadConfig(): Config {
-  // Resolve goblinHome first (not from config file, but from env/default)
-  const goblinHome = resolveGoblinHome();
-  const configFilePath = goblinConfigPath(goblinHome);
-
-  // Read and parse config file
-  let raw: unknown;
-  try {
-    const content = readFileSync(configFilePath, "utf-8");
-    raw = JSON5.parse(content);
-  } catch (err) {
-    if (err instanceof Error && "code" in err && err.code === "ENOENT") {
-      throw new Error(`Config file not found: ${configFilePath}`);
-    }
-    throw new Error(`Failed to parse config file: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  // Resolve all string values in the raw config object (with `!command`
-  // execution — this is boot), then validate the resolved tree.
-  const boot = validateBootConfig(raw, { executeCommands: true });
-  if (!boot.bootable) {
-    throw new Error(`Config validation failed: ${boot.issues}`);
-  }
-  const cfg = boot.config!;
-
-  // Build frozen Config object
-  const config: Config = Object.freeze({
-    botToken: cfg.botToken,
-    allowedTgUserIds: new Set(cfg.allowedUsers),
-    modelName: cfg.model,
-    openrouterApiKey: cfg.openrouterApiKey,
-    openaiApiKey: cfg.openaiApiKey,
-    anthropicApiKey: cfg.anthropicApiKey,
-    zaiApiKey: cfg.zaiApiKey,
-    opencodeApiKey: cfg.opencodeApiKey,
-    goblinHome,
-    logLevel: cfg.logLevel,
-    toolVisibility: cfg.toolVisibility,
-    favorites: cfg.favorites ?? [],
-    voiceName: cfg.voiceName,
-    groqApiKey: cfg.groqApiKey,
-    asrModel: cfg.asrModel,
-    externalAgents: cfg.externalAgents,
-    mcp: cfg.mcp,
-    embeddings: cfg.embeddings,
-    settings: cfg.settings,
-  });
-
-  if (config.externalAgents) {
-    Object.freeze(config.externalAgents);
-    Object.freeze(config.externalAgents.backends);
-  }
-
-  if (config.mcp) {
-    Object.freeze(config.mcp);
-    if (config.mcp.enabled) {
-      Object.freeze(config.mcp.enabled);
-    }
-  }
-
-  if (config.embeddings) {
-    Object.freeze(config.embeddings);
-  }
-
-  if (config.settings) {
-    Object.freeze(config.settings);
-    if (config.settings.allowedOrigins) {
-      Object.freeze(config.settings.allowedOrigins);
-    }
-  }
-
-  return config;
+// First-boot scaffolding: create if (and only if) absent — an operator's
+// hand or the agent's own edits are never clobbered. The AGENTS.md stub
+// exists because a standing instruction ("you own AGENTS.md") is not a
+// mechanism: a model edits a file it can see in its prompt head every
+// turn, but won't create one out of nothing — the stub carries the
+// growth rule where it's read every turn.
+function seedFile(path: string, content: string): void {
+	if (existsSync(path)) return;
+	durableWriteFile(path, content, 0o644);
 }
 
-/**
- * Recursively resolve all string values in an object using resolveConfigValue().
- * Handles arrays and nested objects. When `executeCommands` is false, `!
- * command` values pass through unresolved (see `validateBootConfig`).
- */
-function resolveAllStrings(obj: Record<string, unknown>, executeCommands: boolean): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(obj)) {
-    result[key] = resolveValue(value, executeCommands);
-  }
-  return result;
+// The `mcp` entry point (DESIGN.md, "Web access" → "MCP"): goblin's bash
+// runs in the workspace, which can't see the repo — so scripts/mcp is
+// reachable as $GOBLIN_HOME/mcp. A symlink, not a copy, so repo updates
+// propagate: repointed every boot when it already is a link (a repo move
+// heals itself), never clobbering a real file — that refuses loud and
+// leaves boot running, since the skill without its shim is a degraded
+// capability, not a crash loop.
+function refreshMcpShim(): void {
+	const shim = paths.mcpShim();
+	const target = join(import.meta.dir, "..", "scripts", "mcp");
+	let isLink: boolean | null = null;
+	try {
+		isLink = lstatSync(shim).isSymbolicLink();
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+	}
+	if (isLink === null) {
+		symlinkSync(target, shim);
+		return;
+	}
+	if (!isLink) {
+		log.error("not clobbering the mcp shim: a real file is in the way", undefined, { path: shim });
+		return;
+	}
+	if (readlinkSync(shim) !== target) {
+		unlinkSync(shim);
+		symlinkSync(target, shim);
+	}
 }
 
-/**
- * Resolve a single value: strings get resolved, arrays get their strings resolved,
- * nested objects are resolved recursively, other values pass through.
- */
-function resolveValue(value: unknown, executeCommands: boolean): unknown {
-  if (typeof value === "string") {
-    // Guard contexts (Settings store validation, the restart boot-loop guard)
-    // must stay side-effect-free, so `!command` values are not executed
-    // there; the literal passes through exactly as boot will find it.
-    if (!executeCommands && value.startsWith("!")) {
-      return value;
-    }
-    return resolveConfigValue(value);
-  }
-  if (Array.isArray(value)) {
-    return value.map((v) => resolveValue(v, executeCommands));
-  }
-  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-    return resolveAllStrings(value as Record<string, unknown>, executeCommands);
-  }
-  return value;
+// The `goblin-mail` entry point (the sanctioned mail-read path —
+// Gmail reads fenced and injection-checked): goblin's bash runs in
+// the workspace, which can't see the repo — so scripts/goblin-mail is
+// reachable as $GOBLIN_HOME/goblin-mail. Same contract as the mcp
+// shim: a symlink so repo updates propagate, repointed every boot,
+// never clobbering a real file — a refusal logs loud and leaves boot
+// running, since the skill without its shim is degraded, not fatal.
+function refreshGoblinMailShim(): void {
+	const shim = paths.goblinMailShim();
+	const target = join(import.meta.dir, "..", "scripts", "goblin-mail");
+	let isLink: boolean | null = null;
+	try {
+		isLink = lstatSync(shim).isSymbolicLink();
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+	}
+	if (isLink === null) {
+		symlinkSync(target, shim);
+		return;
+	}
+	if (!isLink) {
+		log.error("not clobbering the goblin-mail shim: a real file is in the way", undefined, { path: shim });
+		return;
+	}
+	if (readlinkSync(shim) !== target) {
+		unlinkSync(shim);
+		symlinkSync(target, shim);
+	}
 }
 
-export interface BootConfigValidation {
-  /** True when boot would accept this config (resolved tree passes the schema). */
-  readonly bootable: boolean;
-  /** Compact `path: message` issue list; empty when bootable. */
-  readonly issues: string;
-  /** The schema-parsed resolved config; defined only when bootable. */
-  readonly config?: ConfigFile;
+// ---------- schema ----------
+
+// The kinds the mini app's provider form may offer, in schema order.
+// Single source: the schema literals below are what actually parses —
+// config.test.ts pins this array against them in both directions
+// (schema-only kind → settings UI can't render/save it; array-only
+// kind → the UI offers what the config rejects). The config GET
+// serves it to the page (http/mod.ts, ConfigResponse).
+export const providerKinds = ["openai-compatible", "responses", "openrouter", "codex"] as const;
+
+export const providerSchema = z.discriminatedUnion("kind", [
+	z.object({
+		kind: z.literal("openai-compatible"),
+		baseUrl: z.url(),
+		auth: z.string().min(1),
+	}),
+	// OpenAI Responses protocol — the one chat-family protocol whose
+	// tool outputs carry documents (function_call_output content arrays).
+	// z.ai serves it at https://api.z.ai/api/v1 (devpack endpoint table);
+	// probe-verified 2026-09-27: input_file in user messages AND in tool
+	// outputs both parse (glm-5.3-flash read a marker PDF through each).
+	z.object({
+		kind: z.literal("responses"),
+		baseUrl: z.url(),
+		auth: z.string().min(1),
+	}),
+	z.object({
+		kind: z.literal("openrouter"),
+		auth: z.string().min(1),
+	}),
+	z.object({
+		kind: z.literal("codex"),
+		// Codex CLI OAuth file (~/.codex/auth.json when unset) — read and
+		// refreshed in-process; it is not an auth.jsonl record.
+		authFile: z.string().min(1).optional(),
+	}),
+]);
+
+export const thinkingLevels = [
+	"off",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+] as const;
+export type ThinkingLevel = (typeof thinkingLevels)[number];
+
+// Optional long-term memory (DESIGN.md, Slice 2 rulings). Absent =
+// disabled, exact current behavior. baseUrl/bankId reuse the Hindsight
+// connection validation as the single source; auth names an auth.jsonl
+// secret for the Bearer token (loopback needs none). Recall bounds are
+// tight by default — turns must not wait on memory.
+export const memoryConfigSchema = z.object({
+	baseUrl: hindsightConnectionSchema.shape.baseUrl,
+	bankId: hindsightConnectionSchema.shape.bankId,
+	auth: z.string().min(1).optional(),
+	recallTimeoutMs: z.number().int().min(100).max(10_000).default(5000),
+	maxTokens: z.number().int().min(1).max(8192).default(1024),
+	budget: z.enum(["low", "mid", "high"]).default("low"),
+});
+export type MemoryConfig = z.infer<typeof memoryConfigSchema>;
+
+// Image Q&A (DESIGN.md, Tools → Vision) — absent = no vision tool.
+// `model` is a "<provider>/<model-id>" chat ref resolved through the
+// same registry as the daily driver (auth rides the provider's own
+// auth.jsonl ref, never this block). mode "auto" (default) puts the
+// tool in the set only while the conversation's chat model can't
+// consume images; "always" keeps it for vision-capable models too — a
+// file on disk is invisible to either (tool results carry no image
+// bytes).
+export const visionConfigSchema = z.object({
+	model: z.string().min(1),
+	maxTokens: z.number().int().min(1).max(32_768).default(2000),
+	mode: z.enum(["auto", "always"]).default("auto"),
+});
+export type VisionConfig = z.infer<typeof visionConfigSchema>;
+
+// Edge read-aloud (DESIGN.md, Delivery/TTS) — no auth, unofficial, can
+// break. Default-on: the only dependency is ffmpeg, probed at boot.
+export const DEFAULT_TTS_VOICE = "en-US-AriaNeural";
+
+// Delegation to external coding harnesses via herdr (DESIGN.md,
+// "Delegation"). Absent = the delegate tool is not in the set. Harnesses
+// are named operator choices — a herdr agent kind plus native args;
+// goblin never picks a model or flags for one. Harness names double as
+// herdr agent-name prefixes, so they live in herdr's name charset.
+export const delegationConfigSchema = z.object({
+	// No `session` knob: the herdr session name is fixed by the unit
+	// (deploy/goblin-herdr.service: `herdr --session goblin server`) — the
+	// single source of truth. A config override could target a session
+	// the unit does not host, so consumers use the literal "goblin".
+	maxRunning: z.number().int().min(1).default(3),
+	harnesses: z
+		.record(
+			z.string().regex(/^[a-z][a-z0-9_-]{0,15}$/),
+			z.object({
+				kind: z.string().min(1),
+				args: z.array(z.string()).optional(),
+			}),
+		)
+		.refine((h) => Object.keys(h).length > 0, {
+			message: "delegation.harnesses must name at least one harness",
+		}),
+});
+export type DelegationConfig = z.infer<typeof delegationConfigSchema>;
+
+// Gmail (DESIGN.md, "Email"). Absent = no mail tool, no mail watcher.
+// clientId is the Google Cloud OAuth client ID — a public identifier,
+// not a secret. The client secret and the SEND refresh token live in
+// auth.jsonl under these names; reads ride gws's own auth (`gws auth
+// login`), so there is no read credential here to leak — the send
+// credential never reaches the model.
+export const mailConfigSchema = z.object({
+	clientId: z.string().min(1),
+	clientSecretAuth: z.string().min(1),
+	sendAuth: z.string().min(1),
+});
+export type MailConfig = z.infer<typeof mailConfigSchema>;
+
+// Automatic skill saving (DESIGN.md, "Skill reviewer"). Absent = off.
+// auth names the auth.jsonl record holding the OpenRouter key behind
+// the Jev gate; model overrides the review model (default: the
+// conversation's own model); threshold is the gate's shared review
+// cutoff, overridable per question by thresholds; queueCap bounds the
+// queued (not running) reviews — a full queue drops the incoming;
+// evidence bounds the tool-call digest the review sees.
+export const reviewerEvidenceSchema = z.object({
+	calls: z.number().int().min(1).max(32).default(8),
+	argChars: z.number().int().min(50).max(4000).default(300),
+	outChars: z.number().int().min(50).max(4000).default(300),
+});
+export const reviewerConfigSchema = z.object({
+	threshold: z.number().min(0).max(1).default(0.8),
+	thresholds: z
+		.object({
+			correction: z.number().min(0).max(1).optional(),
+			procedure: z.number().min(0).max(1).optional(),
+		})
+		.optional(),
+	queueCap: z.number().int().min(1).max(10).default(3),
+	evidence: reviewerEvidenceSchema.prefault({}),
+	model: z.string().min(1).optional(),
+	auth: z.string().min(1),
+});
+export type ReviewerConfig = z.infer<typeof reviewerConfigSchema>;
+
+// System One / Jev decisions config (DESIGN.md Email + Skill reviewer) —
+// one block feeding injection, skill-review, and DM follow-up gates;
+// absent pieces fall back to reviewer.auth / JEV_MODEL defaults so the live
+// reviewer never breaks; model is a Jev model id (e.g.
+// typesafe/jev-1.13), NOT a <provider>/<model-id> chat ref, so it is NOT
+// provider-validated in superRefine (leave superRefine untouched).
+export const system1ConfigSchema = z.object({
+	auth: z.string().min(1),
+	model: z.string().min(1).optional(),
+	// A URL like every other URL — a typo'd edit must fail at load,
+	// not surface later as a mislabeled transport failure riding the
+	// injection checker's fail-open (audit #14).
+	baseUrl: z.url().optional(),
+});
+export type System1Config = z.infer<typeof system1ConfigSchema>;
+
+export const ttsConfigSchema = z.object({
+	kind: z.literal("edge"),
+	voice: z.string().min(1),
+	rate: z.string().regex(/^[+-]\d+%$/).optional(),
+	// The cast beyond the default voice — language follows the voice
+	// name. The speak tool picks per call; /voice mode and the 🔊 button
+	// sniff each reply's language and cast the matching voice, falling
+	// back to `voice` when nothing matches.
+	voices: z.array(z.string().min(1)).optional(),
+});
+export type TtsConfig = z.infer<typeof ttsConfigSchema>;
+
+// One web provider selection. Search and fetch each accept one of
+// these or an ordered list of them (DESIGN.md, "Web access") — the
+// list is the fallback chain, config order, first entry primary.
+// The chain-entry kinds the mini app's search/fetch builders may offer,
+// in schema order. Same single-source contract as providerKinds —
+// config.test.ts pins both against the unions below.
+export const searchKinds = ["brave", "exa", "jina", "tavily", "firecrawl", "parallel", "ddg"] as const;
+
+export const searchEntrySchema = z.discriminatedUnion("kind", [
+	z.object({ kind: z.literal("brave"), auth: z.string().min(1) }),
+	z.object({ kind: z.literal("exa"), auth: z.string().min(1) }),
+	z.object({ kind: z.literal("jina"), auth: z.string().min(1).optional() }),
+	z.object({ kind: z.literal("tavily"), auth: z.string().min(1) }),
+	z.object({ kind: z.literal("firecrawl"), auth: z.string().min(1) }),
+	z.object({ kind: z.literal("parallel"), auth: z.string().min(1) }),
+	z.object({ kind: z.literal("ddg") }),
+]);
+export const fetchKinds = ["local", "jina", "tavily", "firecrawl", "parallel"] as const;
+
+export const fetchEntrySchema = z.discriminatedUnion("kind", [
+	z.object({ kind: z.literal("local") }),
+	z.object({ kind: z.literal("jina"), auth: z.string().min(1).optional() }),
+	z.object({ kind: z.literal("tavily"), auth: z.string().min(1) }),
+	z.object({ kind: z.literal("firecrawl"), auth: z.string().min(1) }),
+	z.object({ kind: z.literal("parallel"), auth: z.string().min(1) }),
+]);
+
+const configSchema = z
+	.object({
+		providers: z.record(z.string(), providerSchema),
+		// "<provider>/<model-id>" — provider must exist in `providers`.
+		model: z.string().min(1),
+		// Optional model for auto-titling implicitly-named topics. "" means
+		// unset (mini-app clearing convention); absent/"" = placeholders stay.
+		titleModel: z
+			.union([z.string().min(1), z.literal("")])
+			.transform((v) => v || undefined)
+			.optional(),
+		favorites: z.array(z.string()).default([]),
+		thinking: z.enum(thinkingLevels).default("medium"),
+		// Default-on (no keys — the only dependency is ffmpeg): absent →
+		// edge with the default voice. `""` is the explicit off and
+		// parses to `false` so it survives the mini app's whole-file
+		// rewrite — an undefined key would be dropped and reload as on.
+		tts: z
+			.union([ttsConfigSchema, z.literal(""), z.literal(false)])
+			.optional()
+			.transform((v) =>
+				v === undefined
+					? { kind: "edge" as const, voice: DEFAULT_TTS_VOICE }
+					: v === "" || v === false
+						? false
+						: v,
+			),
+		// Speech → text: voice/video notes at intake, other audio on
+		// demand via the transcribe tool. "" means unset (mini-app
+		// clearing convention).
+		transcription: z
+			.union([
+				z.object({
+					kind: z.literal("groq"),
+					model: z.string().min(1).default("whisper-large-v3-turbo"),
+					auth: z.string().min(1),
+				}),
+				z.literal(""),
+			])
+			.transform((v) => (v === "" ? undefined : v))
+			.optional(),
+		// Image Q&A behind the vision tool — "" means unset (mini-app
+		// clearing convention), absent the same. Live-read per turn.
+		vision: z
+			.union([visionConfigSchema, z.literal("")])
+			.transform((v) => (v === "" ? undefined : v))
+			.optional(),
+		// Web search providers (DESIGN.md, "Web access"). Absent or "" →
+		// the search tool is not in the set. One entry or an ordered list:
+		// first is primary, the rest are explicit fallbacks (transport/
+		// HTTP/auth failures advance; an empty result set is an answer).
+		// ddg is keyless; jina tolerates keyless (rate-limited); every
+		// other kind requires an auth ref.
+		search: z
+			.union([searchEntrySchema, z.array(searchEntrySchema).min(1), z.literal("")])
+			.transform((v) => (v === "" ? undefined : Array.isArray(v) ? v : [v]))
+			.optional(),
+		// Fetch/extract providers (DESIGN.md, "Web access"). Same shape
+		// rule as search: one entry or an ordered chain. Absent or "" →
+		// local (direct HTTP + in-process readability extraction).
+		fetch: z
+			.union([fetchEntrySchema, z.array(fetchEntrySchema).min(1), z.literal("")])
+			.transform((v) => (v === "" ? undefined : Array.isArray(v) ? v : [v]))
+			.optional(),
+		allowedUsers: z.array(z.number().int().positive()).min(1),
+		// Self-hosted telegram-bot-api in --local mode, e.g. http://127.0.0.1:8081.
+		// Absent = default api.telegram.org. dmGapMinutes is the Rolling DM
+		// quiet gap — past it a new DM may roll to a fresh conversation
+		// (design/telegram.md → Rolling DM); read live, applies immediately.
+		telegram: z
+			.object({
+				apiRoot: z.url().optional(),
+				dmGapMinutes: z.number().int().min(1).default(45),
+			})
+			.default({ dmGapMinutes: 45 }),
+		// External HTTPS door for mini apps (tailscale serve/funnel, reverse
+		// proxy). Nothing in-process assumes a public IP. "" means unset —
+		// the settings form can't express undefined over JSON.
+		publicUrl: z
+			.union([
+				z.url().refine((url) => new URL(url).protocol === "https:", "Public URL must use HTTPS for Telegram Web Apps"),
+				z.literal(""),
+			])
+			.transform((v) => v || undefined)
+			.optional(),
+		http: z
+			.object({ port: z.number().int().min(0).max(65535).default(8787) })
+			.default({ port: 8787 }),
+		logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
+		// Optional long-term memory — "" clears to unset (mini-app
+		// clearing convention, like tts/transcription).
+		memory: z
+			.union([memoryConfigSchema, z.literal("")])
+			.transform((v) => (v === "" ? undefined : v))
+			.optional(),
+		// Optional delegation to external harnesses — no mini-app
+		// surface, hand-edited only; a mini-app save round-trips it
+		// through the merge untouched.
+		delegation: delegationConfigSchema.optional(),
+		// Optional Gmail — same hand-edited-only rule as delegation.
+		mail: mailConfigSchema.optional(),
+		// Optional automatic skill saving — same hand-edited-only rule.
+		reviewer: reviewerConfigSchema.optional(),
+		system1: system1ConfigSchema.optional(),
+		// The app channel's bearer credential (DESIGN.md, App channel) —
+		// an auth.jsonl record NAME, resolved per request like every
+		// other credential; the token value never sits in this file.
+		// Absent = trust mode: /api/app/* serves unauthenticated — the
+		// tailnet is the only lock. The mode is boot-pinned; a mid-run
+		// flip needs a restart. Hand-edited only.
+		appToken: z.string().min(1).optional(),
+	})
+	// Cross-field: every model ref must parse and name a configured provider.
+	.superRefine((cfg, ctx) => {
+		for (const [path, ref] of [
+			["model", cfg.model],
+			["titleModel", cfg.titleModel],
+			["reviewer.model", cfg.reviewer?.model],
+			["vision.model", cfg.vision?.model],
+		] as const) {
+			if (ref === undefined) continue;
+			let provider: string;
+			try {
+				provider = splitModelRef(ref).provider;
+			} catch (err) {
+				ctx.addIssue({ code: "custom", path: [path], message: (err as Error).message });
+				continue;
+			}
+			if (!(provider in cfg.providers)) {
+				ctx.addIssue({
+					code: "custom",
+					path: [path],
+					message: `model "${ref}" names provider "${provider}", which is not in providers`,
+				});
+			}
+		}
+	});
+
+export type ProviderConfig = z.infer<typeof providerSchema>;
+export type Config = z.infer<typeof configSchema>;
+export type TranscriptionConfig = NonNullable<Config["transcription"]>;
+
+// The shared config handle plus boot-time liveness gates. ttsDown is
+// decided once, at boot (ffmpeg probe): a config mutation instead would
+// leak into the mini app's round-trip as an explicit operator "off".
+// Install ffmpeg and restart to re-enable.
+export interface ConfigRef {
+	current: Config;
+	ttsDown: boolean;
+}
+export type SearchConfig = NonNullable<Config["search"]>;
+export type FetchConfig = NonNullable<Config["fetch"]>;
+
+// ---------- load / write ----------
+
+// ENOENT → null (caller decides; index.ts exits with a pointer to the
+// example). Parse/validation failures propagate with the file path attached.
+export function loadConfig(): Config | null {
+	let raw: string;
+	try {
+		raw = readFileSync(paths.config(), "utf8");
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw err;
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON5.parse(raw);
+	} catch (err) {
+		throw new Error(`${paths.config()}: invalid JSON5 — ${(err as Error).message}`);
+	}
+	warnLegacyDelegationSession(parsed);
+	const result = configSchema.safeParse(parsed);
+	if (!result.success) {
+		throw new Error(`${paths.config()}: ${z.prettifyError(result.error)}`);
+	}
+	return result.data;
 }
 
-/**
- * Validate a parsed goblin.json5 tree exactly the way boot (`loadConfig`)
- * validates it: resolve every string value and validate the resolved tree
- * against `ConfigFileSchema`. This is the single boot-equivalence authority
- * shared by boot and the deployment-config guards (Settings store pre-commit,
- * restart boot-loop guard), so a raw-valid but unbootable config (e.g. an
- * env-style literal that resolves to nothing) is rejected before it can be
- * committed or restarted into.
- *
- * Deliberate boundary: `!command` values are executed only when
- * `executeCommands` is true (boot). Validation in guard contexts runs without
- * side effects, so a command value passes through as a literal string — never
- * rejected, never run. Boot itself resolves it; a failing command on a
- * boot-required field is a blind spot the side-effect-free guard cannot
- * close. Set env names resolve from the live process environment — the same
- * environment boot uses — so required fields that only resolve via a
- * now-missing env name are correctly rejected.
- */
-export function validateBootConfig(
-  raw: unknown,
-  options?: { executeCommands?: boolean },
-): BootConfigValidation {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    return { bootable: false, issues: "config must be a top-level object" };
-  }
-  const resolved = resolveAllStrings(raw as Record<string, unknown>, options?.executeCommands === true);
-  const parsed = ConfigFileSchema.safeParse(resolved);
-  if (parsed.success) {
-    return { bootable: true, issues: "", config: parsed.data };
-  }
-  return {
-    bootable: false,
-    issues: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
-  };
+// Validate a candidate config — the mini app parses before writing so it
+// can inspect the result (e.g. refuse a self-lockout) without touching
+// the file first.
+// A legacy `delegation.session` strips silently under zod — a box that
+// relied on the knob must learn where the session lives now (the unit
+// file), not discover delegation broken by surprise. Both load paths
+// (parseConfig and loadConfig) check it before validation.
+function warnLegacyDelegationSession(raw: unknown): void {
+	if (typeof raw === "object" && raw !== null) {
+		const delegation = (raw as Record<string, unknown>).delegation;
+		if (typeof delegation === "object" && delegation !== null && "session" in delegation) {
+			log.warn(
+				"delegation.session is gone — the herdr session is fixed by deploy/goblin-herdr.service (--session goblin); the key is ignored",
+			);
+		}
+	}
 }
 
-export interface GoblinHomeDirectory {
-  /** Stable diagnostic label relative to `$GOBLIN_HOME`. */
-  readonly label: string;
-  /** Absolute path constructed through the owning path helper. */
-  readonly path: string;
+export function parseConfig(raw: unknown): Config {
+	warnLegacyDelegationSession(raw);
+	return configSchema.parse(raw);
 }
 
-/**
- * Canonical deployment-owned inventory of directories startup materializes.
- * Layout validation must use this rather than reproducing a partial list.
- */
-export function requiredGoblinHomeDirectories(home: string): readonly GoblinHomeDirectory[] {
-  return [
-    { label: "workspace", path: workspacePath(home) },
-    { label: ".agents/skills", path: goblinSkillsPath(home) },
-    { label: "workspace/.agents/skills", path: personalEnvironmentSkillsPath(home) },
-    { label: "workspace/agents", path: namedAgentsRoot(home) },
-    { label: "state", path: stateDir(home) },
-    { label: "state/sessions", path: sessionsDir(home) },
-    { label: "state/memory", path: memoryDir(home) },
-    { label: "state/pi", path: piAgentDir(home) },
-    { label: "state/delegated-work/runs", path: delegatedWorkRunsRoot(home) },
-  ];
+// The mini app writes through here. Whole-file durable write; a hardened
+// mode on the existing file survives the rewrite.
+export function writeConfig(config: Config): void {
+	durableWriteFile(paths.config(), JSON5.stringify(parseConfig(config), null, 2) + "\n");
 }
 
-/**
- * Ensure GOBLIN_HOME directory exists with required subdirectories.
- * Call once at startup before any consumer tries to use the paths.
- *
- * Creates the canonical layout:
- *   workspace/  — user-authored prompt files and the personal execution CWD
- *   .agents/    — deployment-wide Goblin skill catalog
- *   state/      — machine-managed state
- *
- * Startup creates no scratch/ tree.
- *
- * Per decision `config-startup-filesystem-mutation` (0007), this function is
- * exempt from the AGENTS.md "Don't touch $GOBLIN_HOME" guardrail for
- * directory creation. Per decision `path-helper-only-path-construction`
- * (0008), all path construction here goes through the path-helper modules.
- */
-export function ensureGoblinHome(cfg: Config): void {
-  const home = cfg.goblinHome;
-  for (const dir of [home, ...requiredGoblinHomeDirectories(home).map(({ path }) => path)]) {
-    mkdirSync(dir, { recursive: true });
-  }
+// Split "<provider>/<model-id>" — model IDs themselves contain slashes
+// (openrouter's "anthropic/claude-sonnet-4.5"), so split on the first only.
+export function splitModelRef(ref: string): { provider: string; modelId: string } {
+	const idx = ref.indexOf("/");
+	if (idx <= 0 || idx === ref.length - 1) {
+		throw new Error(`model ref must be "<provider>/<model-id>", got "${ref}"`);
+	}
+	return { provider: ref.slice(0, idx), modelId: ref.slice(idx + 1) };
 }

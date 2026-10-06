@@ -1,0 +1,3 @@
+[Network]
+NetworkName=goblin-memory
+# Private membership, but API needs outbound HTTPS to model providers.

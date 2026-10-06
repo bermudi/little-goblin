@@ -1,0 +1,212 @@
+# App channel — goblin design
+
+Part of the goblin design spec. The core — domain model, authority rule,
+cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
+
+## App channel (PWA → APK)
+
+Ruling 2026-09-30, operator ask. Telegram stops being the only channel:
+goblin grows a second, disjoint one — the app.
+
+**Why.** The operator's reading pains live in Telegram's client, not in
+goblin: long replies read as 4096-chunked fragments, topic lists desync
+between devices (a client cache bug goblin cannot fix), and Mini Apps
+cold-start in 4-5s on Android — that is Telegram's WebView container, not
+our payload (BotFather's own app is equally slow, which is the proof).
+Arrival is fine where it is; reading moves.
+
+**The shape: disjoint channels.** Two conversation pools, one store. A
+conversation is born on the surface where it starts and stays there —
+Telegram conversations deliver to Telegram exactly as before, app
+conversations (`app/<id>`) stream to the app. No mirroring, no fan-out,
+no cross-surface reading: routing is decided by the address kind alone.
+The channels share the turn loop, tools, config, memories, skills — and
+nothing else. Deliberately dumber than the aliasing and mirroring
+proposals considered and rejected in the same conversation: the moment
+"where does this answer appear" has any answer longer than "where you
+asked", the operator has to think before reading, and that thinking is
+the bug.
+
+**Protocol: the store already speaks it.** History is UIMessage JSON
+(envelope v1); the turn loop already produces a UIMessage stream
+(`toUIMessageStream`) that the Telegram sink consumes today. The app
+endpoints pipe what exists: history reads serve stored UIMessages
+verbatim, chat requests run a turn and stream the same shape. Store
+format = wire format — no translation layer to design, drift, or test
+twice. `POST /api/app/conversations/<id>/stop` rides `runtime.stop` —
+the same epoch bump + abort the Telegram `/stop` command owns — so the
+client's Stop button ends the turn server-side, not just its stream.
+
+**Auth.** No Telegram `initData` exists outside Telegram. The app
+channel's lock is a bearer token on `/api/app/*` — optional since
+2026-09-30 by operator ruling, on the collie precedent: device-level
+trust — tailscale proves the device — with no person-level auth.
+`appToken` in config names an auth.jsonl record — config stays
+secret-free per the Config invariant — and the mode resolves once per
+process at boot (boot-pinned: a mid-run `appToken` flip applies only
+after restart, `onConfigWritten` warns). Set → bearer required: the
+record resolves per request through the same `resolve()` every other
+credential rides (pass-keys `!command` records included); a wrong or
+missing token → 401, an unresolvable record → 503 — both logged.
+Rotating a record's value needs a restart, because `loadAuth` is a
+boot-time snapshot and `resolve` memoizes per name. Unset → trust
+mode: `/api/app/*` serves unauthenticated — the tailnet is the only
+lock. Boot logs the mode either way, and trust mode adds a warn that
+is the guardrail: **funnel is a misconfiguration** — if `publicUrl`
+ever points at a funnel address (public HTTPS), a token becomes
+MANDATORY; the warn line exists to catch it. The mini app keeps its
+initData validation untouched.
+
+**Client.** React + `@ai-sdk/react` (`useChat`) in `app/` — Vite, strict
+TS, its own tsconfig program wired into `bun run typecheck`. This is the
+recorded amendment to the no-build rule: `src/http/app.js` (the settings
+mini app) keeps the ships-as-served treatment forever; the app client is
+a built artifact because React is the price of the SDK's chat pieces, and
+built artifacts are allowed exactly there and nowhere else. `src/http`
+serves `app/dist` under `/app/`; a missing build is a fail-loud 500 with
+a log line, never a silent empty page. Tool activity renders as an
+expandable "Worked" row (pattern lifted from openclaw's app — mechanism
+only, zero code adopted).
+
+**Packaging ladder.** PWA first, on the tailnet URL through the existing
+`tailscale serve` door — manifest + service worker make it installable
+(home-screen icon, ~1s open, zero APK churn while iterating; the operator
+evaluated twenty-APK development and declined). APK via Capacitor when
+stable: same build output wrapped, plus the Android share-target intent —
+the thing PWAs cannot do (Android's share sheet lists only real installed
+apps, observed 2026-09-30) — and later FCM if push is ever demanded. TWA
+is rejected on mechanism: Google's assetlinks verification cannot pass on
+a tailnet-only domain. PWA and APK are one channel in two shells; nothing
+in the server knows which is talking.
+
+**Logging.** The app boundary joins the existing bar: intake (message →
+app address), auth failures, stream start/finish, attachment uploads —
+each a line with the fields to reconstruct it from `goblin.log`.
+
+**Landing note.** The channel landed in three staged commits behind the
+gate "existing telegram tests pass unmodified". The gate means no
+pre-existing assertion was modified or removed; additive assertions
+inside existing files are allowed (the address round-trip test gained
+its `app/` rejection line in place, `src/tg/notify.test.ts`).
+
+**Out, explicitly:** mirroring or cross-channel reading of any kind
+(revisit needs a ruling here — Spin-off below is the one ruled
+crossing, and it is a copy plus a bell, not mirroring), app-side push
+(Telegram stays the bell for its own conversations and, since Spin-off,
+for app background turns; app-native push waits until demanded),
+widgets, in-app voice mode, iOS.
+
+## Streaming members & resumable streams (ruling 2026-10-04)
+
+The reply belongs to the conversation, not to the connection that
+submitted. Two defects shared that root (audit 2026-10-04): a second
+client submitting mid-turn received an empty stream — chunks went to
+the turn's first member only — and a reload mid-turn showed a
+finished-looking chat whose next send steered a ghost turn (#43).
+
+- **Chunk fan-out.** Every *streaming* member of a turn receives the
+  chunks; delta-style hooks (text/reasoning/tool) stay the head's —
+  Telegram delivery is one message per turn, and the app sink ignores
+  them anyway. A throwing streaming sink is detached, never fatal to
+  the turn. `claimableCount` is unchanged: a streaming head still
+  claims the whole queue — one burst, one reply.
+- **Join replay.** A member that attaches mid-turn (steering) first
+  receives everything the wire already saw — from sentence one, not
+  mid-thought. The turn keeps a wire log (exactly what was emitted,
+  held failures excluded), carried across overflow recovery so the
+  resumed attempt continues the same wire seamlessly.
+- **Attach endpoint.** `GET /api/app/conversations/<id>/stream` serves
+  the wire log + a live tail; 204 when no turn is running (the AI
+  SDK's `reconnectToStream` contract — the client falls back to
+  history). The client runs `useChat({ resume: true })` with
+  `prepareReconnectToStreamRequest` pointing here, so a reload
+  mid-turn re-watches the in-flight reply (#43 closed by the same
+  mechanism). The log is in-memory, live turns only: after a crash
+  there is history and no stream, exactly as before.
+- **Parked, with a trigger.** A *passive* screen (no submit, no
+  reload) still doesn't live-update — `resumeStream()` on focus would
+  ride the same endpoint as client policy alone. Promote when
+  outer-loop usage makes "app open on a screen while turns happen" a
+  daily pattern; the server machinery is already in place. Until
+  then this stays the deliberate descendant of the "live refresh out
+  of scope" ruling in Spin-off.
+
+## Spin-off (ruling 2026-10-03)
+
+Operator ask, paired with Rolling DM: the DM is the quick lane, so
+durable work — something that runs, reports back later, and gets
+followed up on — gets a durable, named home in the app instead of
+landing in whatever rolling conversation happens to be current when
+the result arrives.
+
+**Trigger: automatic, on delegation launch from the DM.** When the
+`delegate` tool launches from a rolling-DM conversation (operator ask
+or goblin's own judgment), the spin-off happens — no model choice, no
+command. Nothing else triggers it: scheduled programs post into the
+DM like any message (a fire is self-contained; see Programs), group
+topics keep their delegations, and a delegation launched from an app
+conversation stays in that conversation.
+
+**A copy, not a move.** Moving the conversation would strand the
+operator's next DM message ("also make it use bun") — either its
+answer appears in the app, not where it was asked, or the DM starts
+blank. So at launch Goblin creates an app conversation seeded with a
+copy of the DM conversation's model view so far (compaction summary +
+tail, as stored). The two diverge from that moment and are never
+synced. The delegation pins to the app conversation. It is titled
+by `titleModel` from the copied exchange (fallback: the delegation's
+name), renameable in the app like any other. The tool result hands
+the model the title and link, so the DM reply says where the work
+went; the DM conversation carries on as the quick lane.
+
+**Background turns.** Delegation notices (done, blocked, a question
+from the harness) wake turns in the app conversation with a headless
+sink: the turn runs and persists exactly like a client-driven one
+(turns already outlive a disconnected client), with nothing streaming.
+The app shows them on next open; live refresh of an already-open
+conversation is out of scope. The app channel gains the `delegate`
+tool for this — the reason it was withheld (results wake a Telegram
+sink the app lacks) is what background turns answer. `program` and
+`mail` stay Telegram-only.
+
+**Telegram rings.** Every completed background turn sends a DM ping:
+`<title>: <head of the reply, ≤200 chars>` plus a link that opens that
+conversation. The ping is appended to the *current* DM conversation as
+an assistant event — what the operator sees in the chat is history, so
+"what was that about?" in the DM is answerable — and it counts as
+activity for the gap rule. A swipe-reply to a ping goes to the app
+conversation instead (submitted headless, so it rings back when
+answered), and the DM acknowledges with `sent to <title>` (delivery
+only, logged). The ping → app-conversation mapping is durable
+(SQLite, keyed by the ping's message id), so a reply after a restart
+still routes.
+
+**Links.** `{publicUrl}/app/c/<appId>` opens one conversation; the
+server serves the client for that path. When the APK lands it claims
+links under `/app/`. Unverified until then: Android's automatic link
+claiming needs Google to verify the domain, which cannot reach a
+tailnet-only host (the same wall that rejected TWA), so expect a
+one-time "open supported links" toggle in Android settings.
+
+**Logging.** `spin-off` (from DM conversation, to app conversation,
+delegation, title); `app background turn` (conversation, trigger,
+outcome); `spin-off ping` (app conversation, ping message id);
+`ping reply routed` (ping message id → app conversation).
+
+
+**Landing rulings (stage 2, 2026-10-03).** Settled while building:
+- *Who gets rung:* every `allowedUsers` id, as a private chat, the way
+  webhook URLs travel (`sendPrivate`). One operator today, so one ping.
+- *App-pinned delegation rows* store `chat_id = 0, thread_id = NULL`
+  plus `app_conversation`. Notices for them go through `wakeApp`. If
+  the operator deleted the conversation, the notice is dropped with a
+  warning, so the scan doesn't retry it forever.
+- *Naming:* the fork is titled with the delegation's name straight
+  away (that name is what the DM reply quotes), then `titleModel`
+  retitles it in the background. An operator rename always wins.
+- *A launch that doesn't start* (cap reached, failed) deletes the fork.
+- *The ack goes once per replying chat* — coalescing can merge
+  replies from more than one operator.
+- *Deep links:* the client applies `/app/c/<id>` once, after the first
+  list load; an unknown id falls back to `/app/`. Selecting a
+  conversation keeps the URL in sync.

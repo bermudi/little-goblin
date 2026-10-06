@@ -1,0 +1,9 @@
+[Unit]
+Description=Check the goblin memory stack health
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=default.target

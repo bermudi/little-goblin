@@ -1,121 +1,214 @@
-// Copy to ~/goblin/goblin.json5 (or $GOBLIN_HOME/goblin.json5) and fill in.
+// Copy to $GOBLIN_HOME/goblin.json5 and fill in. No secrets here — those
+// live in auth.jsonl. Editable at runtime via the Telegram mini app
+// (chat menu button when publicUrl is set); hand-editing always works.
+//
+// auth.jsonl sits next to this file (mode 0600), one JSON record per line:
+//   {"name": "telegram", "value": "123456:ABC-your-bot-token"}
+//   {"name": "openrouter", "value": "!pass show api/openrouter"}
+// A value starting with "!" is resolved by running it as a command at the
+// point of use. Required records: "telegram" (the bot token) plus one per
+// provider `auth` name below.
 {
-  // --- Telegram ---
-  // BotFather token. Can be literal, env var name, or shell command.
-  // botToken: "!pass show bots/goblin",  // get from password store
-  // botToken: "BOT_TOKEN",               // read from env var
-  botToken: "your-bot-token-here",
+  // --- Provider registry: name → factory + auth.jsonl key ---
+  providers: {
+    // GLM via Z.AI coding plan — daily driver. The `responses` kind is
+    // z.ai's OpenAI Responses door (https://api.z.ai/api/v1): the one
+    // chat-family protocol whose tool outputs carry documents, so
+    // fetched/sent PDFs reach the model natively (DESIGN.md, Web access).
+    zai: {
+      kind: "responses",
+      baseUrl: "https://api.z.ai/api/v1",
+      auth: "zai", // resolves auth.jsonl record named "zai"
+    },
+    openrouter: {
+      kind: "openrouter",
+      auth: "openrouter",
+    },
+    // ChatGPT-subscription Codex models — auth comes from the codex CLI's
+    // own OAuth file, not auth.jsonl. Run `codex login` first; expired
+    // tokens are refreshed in-process and written back. authFile defaults
+    // to ~/.codex/auth.json.
+    // codex: { kind: "codex" },
+  },
 
-  // Telegram user IDs allowed to talk to the goblin. At least one required.
-  // Find yours by DMing @userinfobot.
-  allowedUsers: [123456789],
-
-  // --- Model ---
-  // MODEL uses prefixed IDs to pick provider. Set the matching API key.
-  // Format: <provider>/<model-id>
-  //
-  // OpenRouter:
-  //   or/anthropic/claude-sonnet-4.5, or/openai/gpt-5, ...
-  //
-  // Direct providers:
-  //   openai/gpt-5.4, openai/gpt-5.4-mini, openai/o4
-  //   anthropic/claude-opus-4, anthropic/claude-sonnet-4.6
-  //   zai/glm-5.2, zai/glm-5.1  (Z.AI Coding Plan, Chat Completions)
-  //   opencode-go/glm-5.2, opencode-go/minimax-m3, opencode-go/kimi-k2.6
-  //   (OpenCode Go subscription — curated open coding models)
-  model: "anthropic/claude-sonnet-4.6",
-
-  // API keys. Set whichever your model needs. Values support env var names
-  // and !commands just like botToken.
-  // openrouterApiKey: "!pass-cli item view 'pass://Keys/OpenRouter/Api Key'",
-  // openaiApiKey: "OPENAI_API_KEY",
-  // anthropicApiKey: "ANTHROPIC_API_KEY",
-  // zaiApiKey: "ZAI_API_KEY",
-  // opencodeApiKey: "OPENCODE_API_KEY",
-
-  // --- Favorite Models (for /model switching) ---
-  // List model IDs you switch between often. Use /model to list and switch.
+  // Default model: "<provider>/<model-id>". Model ids may contain slashes.
+  // The zai coding plan only serves glm-5.3-gen — older glm-* ids are
+  // silently routed to 5.3/5.3-flash, so write the real ones.
+  model: "zai/glm-5.3-flash",
+  // Auto-titles for Telegram's placeholder topic names ("New Chat"). Small
+  // and cheap is the right shape — unset = topics keep the placeholder.
+  // titleModel: "openrouter/openrouter/free",
   favorites: [
-    "openai/gpt-5.4",
-    "anthropic/claude-sonnet-4.6",
-    "zai/glm-5.2",
-    "zai/glm-5.1",
-    "opencode-go/glm-5.2",
-    "opencode-go/minimax-m3",
-    "opencode-go/kimi-k2.6",
-    "opencode-go/kimi-k2.7-code",
+    "zai/glm-5.3",
+    "zai/glm-5.3-flash",
+    "openrouter/anthropic/claude-sonnet-4.5",
   ],
+  // Operator vocabulary — each model clamps it to its real ladder and the
+  // mini app only offers levels the model can express (glm-5.3: low|high|
+  // max — thinking is forced; gpt-6: low…xhigh|max; non-thinkers: off).
+  thinking: "medium", // off | low | medium | high | xhigh | max
 
-  // --- Logging ---
-  // debug | info | warn | error
-  logLevel: "info",
-
-  // --- UI ---
-  // Tool-call visibility in the status line:
-  //   none     no status line
-  //   minimal  state-changing tools only (bash, write, edit, spawn_subagent)
-  //   standard all α tools (default)
-  //   verbose  α + γ tools (revive_subagent, list_subagents)
-  //   debug    everything
-  toolVisibility: "standard",
-
-  // --- Voice ---
-  // Microsoft Edge TTS voice for /voice and the text_to_speech tool.
-  // Examples: en-US-EmmaMultilingualNeural, en-US-AndrewMultilingualNeural
-  // Can be literal, env var name, or shell command. VOICE_NAME env overrides.
-  // voiceName: "VOICE_NAME",
-  // voiceName: "en-US-AndrewMultilingualNeural",
-
-  // --- MCP (Model Context Protocol tools via mcporter) ---
-  // Optional. Goblin wraps the `mcporter` CLI (invoked as `bunx mcporter`),
-  // which owns server definitions, transports, and OAuth. Enable in two steps:
-  //   1. Configure servers for the user running goblin, e.g.:
-  //        bunx mcporter config add tavily https://mcp.tavily.com/mcp
-  //      (writes ~/.mcporter/mcporter.json — or point mcp.configPath at a file)
-  //   2. Add this block and restart:
-  // mcp: {
-  //   // Omit `enabled` to expose every server in the mcporter config.
-  //   // enabled: ["tavily", "deepwiki"],
-  //   // disabledServers: ["noisy-server"],  // deny-list; wins over `enabled`
-  //   // configPath: "mcporter.json",        // relative paths resolve in $GOBLIN_HOME
-  //   // defaultTimeoutMs: 120000,
-  //   // maxResultChars: 16000,
-  // },
-  // Then `/mcp` in Telegram shows the live catalog; `/mcp refresh` re-scans.
-
-  // --- Voice-note ASR (Groq Whisper) ---
-  // Optional. When set, Telegram voice messages are transcribed and prompted
-  // as a transcript turn (with the original file still saved for project-bound
-  // sessions). Omit to leave voice intake unconfigured.
-  // groqApiKey: "GROQ_API_KEY",
-  // asrModel: "whisper-large-v3-turbo",  // or "whisper-large-v3"
-
-  // --- Memory embeddings (hybrid semantic + FTS search) ---
-  // Optional. Any OpenAI-compatible /v1/embeddings endpoint. All keys optional;
-  // each falls back to its GOBLIN_MEMORY_EMBEDDING_* env var, then the client
-  // default (api.openai.com + text-embedding-3-small). Omit the whole block to
-  // run without semantic memory search. baseUrl has NO trailing /v1.
-  // Values support env var names and !commands just like the keys above.
-  // embeddings: {
-  //   // apiKey: "!pass-cli item view 'pass://Keys/OpenRouter/Api Key'",
-  //   // baseUrl: "https://openrouter.ai/api",
-  //   // model: "perplexity/pplx-embed-v1-0.6b",
-  //   // provider: "openrouter",  // label in memory_embeddings; model/provider change triggers reindex
-  //   // cooldownSeconds: 60,
+  // Text → Telegram voice notes (/voice mode, the speak tool, 🔊
+  // buttons). ON BY DEFAULT — edge read-aloud needs no keys, just ffmpeg
+  // on PATH (a failed boot probe disables it with a warning; install
+  // ffmpeg and restart to re-enable). Uncomment to pick a different
+  // voice/rate or alternates; `tts: ""` turns it off. Edge is
+  // unofficial and may break.
+  // tts: {
+  //   kind: "edge",
+  //   voice: "en-US-AriaNeural",
+  //   rate: "+0%", // optional
+  //   // The cast beyond `voice` — language follows the voice name, e.g.
+  //   // ["es-MX-JorgeNeural"]. The speak tool picks per call; /voice
+  //   // mode and the 🔊 button sniff each reply's language and cast the
+  //   // matching voice, falling back to `voice` above.
+  //   voices: [],
   // },
 
-  // --- Settings Mini App (deployment defaults inside Telegram) ---
-  // Optional. Disabled unless `enabled: true`. When enabled Goblin listens on
-  // loopback 127.0.0.1 at the stable `port` (default 3423) and exposes
-  // /settings plus a Telegram menu button opening `publicUrl` as a Mini App.
-  // Operator-managed Tailscale Serve supplies private HTTPS: map your tailnet
-  // HTTPS URL to http://127.0.0.1:3423 (do not configure Tailscale here).
-  // Restart Goblin after changing this block.
-  // settings: {
-  //   enabled: true,
-  //   port: 3423,
-  //   publicUrl: "https://<tailnet-name>/settings/",
-  //   // allowedOrigins defaults to the publicUrl origin; override only for custom setups.
-  //   // allowedOrigins: ["https://<tailnet-name>"],
+  // Speech → text for voice and video notes — transcribed once at
+  // intake, and models that can't consume audio read the transcript
+  // instead of a bare path. Also enables the transcribe tool so the
+  // bot can transcribe attached audio/video files on request.
+  // Unset = no transcription.
+  // transcription: {
+  //   kind: "groq",
+  //   model: "whisper-large-v3-turbo", // default
+  //   auth: "groq", // resolves auth.jsonl record named "groq"
   // },
+
+  // --- Vision (image Q&A) ---
+  // Unset = no vision tool. With it, the bot can ask a vision model
+  // targeted questions about image files on disk (screenshots,
+  // downloaded images, ffmpeg-extracted frames) — the only way it can
+  // see an image's content, since read_file refuses images. `model` is
+  // any "<provider>/<model-id>" ref from `providers` above (auth rides
+  // the provider's own auth.jsonl ref). followUp=true continues the
+  // previous thread about the same image.
+  // vision: {
+  //   model: "openrouter/google/gemini-2.5-flash",
+  //   maxTokens: 2000, // default
+  //   // "auto" (default) registers the tool only while the chat model
+  //   // can't consume images; "always" keeps it for vision-capable
+  //   // models too — a file on disk is invisible to either.
+  //   mode: "auto",
+  // },
+
+  // --- Web access ---
+  // Search provider(s) behind the `search` tool. Unset = no search tool.
+  // One entry or an ordered list — the list is a fallback chain:
+  // transport/HTTP/auth failures advance; empty results are an answer.
+  // Kinds: brave | exa | jina | tavily | firecrawl | parallel | ddg
+  // (jina/ddg work without a key; the rest need an auth.jsonl record).
+  // search: { kind: "brave", auth: "brave" },
+  // search: [{ kind: "brave", auth: "brave" }, { kind: "ddg" }],
+  // Fetch/extract provider(s) behind the `fetch` tool. Unset = local
+  // (direct HTTP + in-process readability — no key, handles plain HTML
+  // and text; JS-heavy sites route through the browser skill).
+  // Same list rule: [{ kind: "parallel", auth: "parallel" }, { kind: "local" }]
+  // fetch: [{ kind: "parallel", auth: "parallel" }, { kind: "local" }],
+
+  // --- Skill reviewer ---
+  // Unset = automatic skill saving off. `auth` names the auth.jsonl
+  // record holding your OpenRouter key (the Jev gate rides it).
+  // threshold is the gate's shared yes-cutoff; thresholds overrides it
+  // per question. queueCap bounds queued reviews (a full queue drops
+  // the incoming). evidence bounds the tool-call digest the review
+  // sees (last N calls, truncated arguments and results).
+  // reviewer: {
+  //   auth: "openrouter",
+  //   threshold: 0.8,
+  //   thresholds: { correction: 0.8, procedure: 0.85 },
+  //   queueCap: 3,
+  //   evidence: { calls: 8, argChars: 300, outChars: 300 },
+  //   // model: "provider/model", // default: the conversation's own
+  // },
+
+  // --- System One (the small gate model) ---
+  // One block feeding the reviewer's Jev gate, mail-event scoring, and
+  // the loopback injection check. Unset = those consumers fall back to
+  // reviewer.auth and built-in defaults. `model` is a Jev model id
+  // (e.g. respan/span-01-lite), NOT a <provider>/<model> chat ref.
+  // system1: { auth: "openrouter" },
+
+  // --- Delegation (other coding harnesses, via herdr) ---
+  // Unset = no delegate tool. Harnesses run in the `goblin` herdr
+  // session, each in its own workspace; the session name lives in the
+  // goblin-herdr systemd unit, not here. Results come back to the topic
+  // as a `[delegation: …]` message.
+  // `kind` is a herdr agent kind (herdr agent → kind list); `args` are
+  // native CLI args — full-auto flags and model choice live here.
+  // First-run dialogs (trust prompts) are seeded in the harness's own
+  // state files at launch — write-if-absent only: a value you set
+  // (including false/"untrusted") is never flipped; a file that can't
+  // be extended safely fails the launch rather than corrupting. See
+  // src/harness-trust.ts. A gate that still shows up parks the row
+  // `needs_input` — the agent relays the dialog and presses your key
+  // via `delegate answer`.
+  // Panes run your interactive shell, so aliases apply — never repeat a
+  // flag an alias already adds (the codex alias's bypass flag, devin's
+  // --permission-mode): a duplicate makes the harness refuse to start.
+  // delegation: {
+  //   maxRunning: 3,     // default
+  //   harnesses: {
+  //     codex: { kind: "codex" }, // the shell alias carries the bypass flag
+  //     pi: { kind: "pi", args: ["--model", "<provider>/<model>"] },
+  //   },
+  // },
+
+  // --- Gmail ---
+  // Unset = no mail tool, no mail watcher. Reads ride the gws CLI
+  // (`gws auth login` with the Workspace scopes in the gws skill —
+  // gmail.readonly, drive.readonly, calendar + sheets read-write).
+  // Your own Google Cloud OAuth client (desktop-app flow, consent
+  // screen in production — a "testing" app's refresh tokens die after
+  // 7 days) covers only the SEND: the client secret and the send
+  // refresh token live in auth.jsonl (via pass-keys, like every other
+  // key); access tokens are minted per send and never touch disk.
+  // Sending is always operator-gated: the tool queues a draft and
+  // Telegram gets Send/Cancel buttons — nothing sends on the model's
+  // word alone.
+  // mail: {
+  //   clientId: "xxx.apps.googleusercontent.com",
+  //   clientSecretAuth: "gmail-client-secret",
+  //   sendAuth: "gmail-send",
+  // },
+
+  // --- Long-term memory (Hindsight) ---
+  // Unset = no retention and no recall — nothing is remembered between
+  // conversations. The service runs separately (docs/memory.md,
+  // deploy/memory/); bankId names your memory bank. `auth` names an
+  // auth.jsonl record only when the service isn't loopback. The bounds
+  // keep recall from stalling a turn. Boot-pinned: changing the block
+  // mid-run needs a restart.
+  // memory: {
+  //   baseUrl: "http://127.0.0.1:8888",
+  //   bankId: "goblin",
+  //   // auth: "hindsight",         // bearer — only when off loopback
+  //   // budget: "low",             // low | mid | high — retention effort
+  //   // maxTokens: 1024,           // recall injection cap
+  //   // recallTimeoutMs: 5000,
+  // },
+
+  // --- Telegram ---
+  // Your user id (DM @userinfobot to find it). Only these users can talk.
+  allowedUsers: [123456789],
+  // Self-hosted telegram-bot-api in --local mode for large files.
+  // Leave unset for the cloud API. dmGapMinutes is the quiet gap before
+  // a DM may roll into a new conversation (Rolling DM) — it applies
+  // immediately and is also settable in the settings app.
+  // telegram: { apiRoot: "http://127.0.0.1:8081", dmGapMinutes: 45 },
+
+  // --- Mini app + app channel ---
+  // External HTTPS door (tailscale serve/funnel or any reverse proxy)
+  // pointed at http://127.0.0.1:<http.port>. Unset = no menu button.
+  // publicUrl: "https://goblin.your-tailnet.ts.net",
+  http: { port: 8787 },
+  // The app channel (/app/, the React client) shares this door.
+  // `appToken` names an auth.jsonl record whose value is the bearer
+  // token /api/app/* demands. Unset = trust mode — the tailnet is the
+  // only lock; NEVER put trust mode behind a public URL (funnel).
+  // Boot-pinned: a mid-run change applies on restart.
+  // appToken: "app",
+
+  logLevel: "info", // debug | info | warn | error
 }

@@ -1,0 +1,37 @@
+[Unit]
+Description=Goblin v2 — Telegram-native personal agent
+After=network-online.target
+# Delegation rides a sibling herdr session (DESIGN.md, "Delegation") —
+# weak dep: goblin still boots when the unit is absent; the delegate
+# tool is what degrades, not the bot.
+Wants=goblin-herdr.service
+After=goblin-herdr.service
+# Key warming rides a sibling oneshot (DESIGN.md, "Proton Pass") — same
+# weak-dep shape as herdr: goblin boots without it; pass-keys-routed
+# auth records then fail loud on a cold cache instead of stalling.
+Wants=goblin-keys.service
+After=goblin-keys.service
+# Never give up restarting — a phone-only operator can't run systemctl reset-failed.
+# ([Unit], not [Service]: systemd ignores it in [Service] with an
+# "Unknown key" warning — the intent silently never applied.)
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=/home/daniel/build/goblin-v2
+Environment=GOBLIN_HOME=/home/daniel/goblin
+# Auth commands (auth.jsonl "!cmd" records) resolve under THIS process's
+# PATH — not the login shell's. The systemd user manager's default PATH is
+# /usr/local/sbin:/usr/local/bin:/usr/bin only, which misses operator tools
+# in the home dir (pass-cli lives in ~/bin) — every resolve would exit 127.
+# Keep this list covering every tool the auth records call — and ffmpeg
+# (/usr/bin), which the transcription segment path shells out to.
+Environment=PATH=/home/daniel/bin:/home/daniel/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin
+ExecStart=/usr/bin/bun run src/index.ts
+# SIGTERM rides the app's own graceful shutdown (fence lanes, drain intake).
+KillSignal=SIGTERM
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

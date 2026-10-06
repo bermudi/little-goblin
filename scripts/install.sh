@@ -1,151 +1,125 @@
 #!/usr/bin/env bash
+# Install goblin as a systemd user service. Idempotent — safe to re-run.
+# Not a wizard: it refuses to enable a service that would crash-loop
+# (missing config or auth) and tells you what to copy first.
 set -euo pipefail
 
-if [[ "$(id -u)" -ne 0 ]]; then
-  echo "Error: install.sh must be run as root." >&2
-  exit 1
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+goblin_home="${GOBLIN_HOME:-$HOME/goblin}"
+unit_dir="$HOME/.config/systemd/user"
+bun_bin="$(command -v bun || true)"
+
+fail() { echo "install: $*" >&2; exit 1; }
+[ -n "$bun_bin" ] || fail "bun not found in PATH — install it first"
+
+# Pre-flight: the service restarts forever, so enabling it half-configured
+# means a crash loop nobody is watching. Stop before that.
+[ -f "$goblin_home/goblin.json5" ] ||
+	fail "no config at $goblin_home/goblin.json5 — copy goblin.json5.example from the repo and fill it in"
+[ -f "$goblin_home/auth.jsonl" ] ||
+	fail "no auth at $goblin_home/auth.jsonl — one record per line, mode 0600 (see DESIGN.md: Auth)"
+# The process refuses any group/world-readable auth.jsonl at boot — the
+# same rule here, or a lax mode passes install and boot-loops the service
+# with restart-on-failure. Mirrors auth.ts: only the group/world bits
+# matter (0600, 0400, … all fine).
+auth_mode="$(stat -c '%a' "$goblin_home/auth.jsonl")"
+if [ "$(( 8#$auth_mode & 8#077 ))" -ne 0 ]; then
+	fail "auth.jsonl mode is $auth_mode — tighten it first: chmod 600 $goblin_home/auth.jsonl"
+fi
+# A `!` record that invokes pass-cli directly resolves as the OWNER
+# session — full account, no audit (DESIGN.md: Proton Pass). The loader
+# only poisons such records (boot must never crash-loop), so install is
+# where they get refused. check-auth prints names only, never values,
+# and reserves exit 2 for "offenders found" — any other nonzero means
+# the check itself failed (its stderr already showed why), which is a
+# different failure than a refused record.
+offenders=""
+check_exit=0
+offenders="$(GOBLIN_HOME="$goblin_home" "$bun_bin" "$repo_root/scripts/check-auth.ts")" || check_exit=$?
+if [ "$check_exit" -eq 2 ]; then
+	fail "auth.jsonl records invoke pass-cli directly (${offenders//$'\n'/, }) — route them through pass-keys (DESIGN.md: Proton Pass)"
+elif [ "$check_exit" -ne 0 ]; then
+	fail "auth check failed (check-auth.ts exit $check_exit) — see the error above"
 fi
 
-if [[ "$(uname -s)" != "Linux" ]]; then
-  echo "Error: install.sh is intended for Linux hosts only." >&2
-  exit 1
+# Dependencies — node_modules, not the world. Always sync: a new dep
+# (mcporter for the mcp skill, …) must land on re-run, not just on a
+# fresh checkout — frozen-lockfile keeps it deterministic.
+(cd "$repo_root" && bun install --frozen-lockfile)
+
+# ffmpeg powers TTS's WebM→Ogg remux and over-cap transcription.
+# Comment lines are stripped first so commented-out examples don't count.
+if grep -vE '^[[:space:]]*//' "$goblin_home/goblin.json5" | grep -Eq '(^|[[:space:]])(tts|transcription)[[:space:]]*:' &&
+	! command -v ffmpeg >/dev/null; then
+	echo "install: warning — speech is configured but ffmpeg is not in PATH; TTS or oversized transcription may fail" >&2
 fi
 
-for cmd in git curl systemctl; do
-  if ! command -v "${cmd}" >/dev/null 2>&1; then
-    echo "Error: ${cmd} is required but not installed." >&2
-    exit 1
-  fi
-done
+# Unit generation: substitute the paths baked into the committed unit so
+# the same file works on any box. No-ops where the defaults already match.
+# PATH is per-account too (Environment=PATH=/home/daniel/bin:…): rewrite
+# the operator's home there like the other baked paths. Specific (binary)
+# substitutions run first so the generic PATH rules never eat their
+# prefixes.
+mkdir -p "$unit_dir"
+sed \
+	-e "s|/home/daniel/build/goblin-v2|$repo_root|g" \
+	-e "s|/home/daniel/goblin|$goblin_home|g" \
+	-e "s|/usr/bin/bun|$bun_bin|g" \
+	-e "s|/home/daniel/bin|$HOME/bin|g" \
+	-e "s|/home/daniel/.local/bin|$HOME/.local/bin|g" \
+	"$repo_root/deploy/goblin.service" > "$unit_dir/goblin.service"
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Defaults are production paths. The explicit deployment overrides keep the
-# ordering contract testable in an isolated temporary tree.
-repo_dir="${GOBLIN_DEPLOY_REPO_DIR:-/opt/little-goblin}"
-goblin_home="${GOBLIN_DEPLOY_HOME:-/var/lib/goblin}"
-user="${GOBLIN_DEPLOY_USER:-goblin}"
-group="${GOBLIN_DEPLOY_GROUP:-goblin}"
-
-changed_head_handoff=0
-repo_url=""
-for arg in "$@"; do
-  if [[ "${arg}" == "--changed-head-handoff" ]]; then
-    changed_head_handoff=1
-  else
-    repo_url="${arg}"
-  fi
-done
-if [[ -z "${repo_url}" ]]; then
-  repo_url="$(git -C "${script_dir}" remote get-url origin 2>/dev/null || true)"
-fi
-if [[ -z "${repo_url}" ]]; then
-  repo_url="https://github.com/bermudi/little-goblin.git"
-fi
-
-if ! id -u "${user}" >/dev/null 2>&1; then
-  echo "Creating ${user} system user..."
-  useradd -r -m -d "${goblin_home}" -s /usr/sbin/nologin "${user}"
-fi
-
-mkdir -p "${goblin_home}"
-chown "${user}:${group}" "${goblin_home}"
-
-if [[ -x /usr/local/bin/bun ]]; then
-  : # service unit path is already satisfied
-elif command -v bun >/dev/null 2>&1; then
-  bun_path="$(command -v bun)"
-  echo "Linking bun from ${bun_path} to /usr/local/bin/bun..."
-  ln -sf "${bun_path}" /usr/local/bin/bun
+# The herdr session is a sibling unit (DESIGN.md, "Delegation") — its
+# panes outlive goblin restarts. goblin.service's Wants= tolerates it
+# being absent, so a missing herdr is a warning, not a failed install.
+herdr_bin="$(command -v herdr || true)"
+if [ -n "$herdr_bin" ]; then
+	sed \
+		-e "s|/home/daniel/.local/bin/herdr|$herdr_bin|g" \
+		-e "s|/home/daniel/bin|$HOME/bin|g" \
+		-e "s|/home/daniel/.local/bin|$HOME/.local/bin|g" \
+		"$repo_root/deploy/goblin-herdr.service" > "$unit_dir/goblin-herdr.service"
 else
-  if ! command -v unzip >/dev/null 2>&1; then
-    echo "Error: unzip is required to install bun but not installed." >&2
-    exit 1
-  fi
-  echo "Installing bun..."
-  curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash
+	echo "install: warning — herdr not found in PATH; delegation will be unavailable" >&2
 fi
 
-repo_existed=0
-old_head=""
-new_head=""
+# Key warming (DESIGN.md, "Proton Pass"): a cold pass-cli login runs
+# ~100s of retries, past auth's 15s resolve bound, so goblin.service
+# Wants= a oneshot warmer + a twice-daily timer that keep the pass-keys
+# tmpfs cache hot. Only installed when an auth record's command routes
+# through pass-keys — and then pass-keys must exist, or the records
+# could never resolve at all.
+passkeys_bin=""
+if grep -Eq '"value"[[:space:]]*:[[:space:]]*"!.*pass-keys' "$goblin_home/auth.jsonl"; then
+	passkeys_bin="$(command -v pass-keys || true)"
+	[ -n "$passkeys_bin" ] ||
+		fail "auth.jsonl routes keys through pass-keys but pass-keys is not in PATH — install it first (~/build/pass-keys)"
+	sed \
+		-e "s|/home/daniel/.local/bin/pass-keys|$passkeys_bin|g" \
+		-e "s|/home/daniel/bin|$HOME/bin|g" \
+		-e "s|/home/daniel/.local/bin|$HOME/.local/bin|g" \
+		"$repo_root/deploy/goblin-keys.service" > "$unit_dir/goblin-keys.service"
+	cp "$repo_root/deploy/goblin-keys.timer" "$unit_dir/goblin-keys.timer"
+fi
+systemctl --user daemon-reload
 
-if [[ -d "${repo_dir}/.git" ]] && su -s /bin/bash "${user}" -c "git -C ${repo_dir} rev-parse --git-dir" >/dev/null 2>&1; then
-  repo_existed=1
-  if [[ -n "$(su -s /bin/bash "${user}" -c "git -C ${repo_dir} status --porcelain")" ]]; then
-    echo "Error: ${repo_dir} has uncommitted changes; commit or stash them before updating." >&2
-    exit 1
-  fi
-  old_head="$(su -s /bin/bash "${user}" -c "git -C ${repo_dir} rev-parse HEAD")"
-  echo "Updating existing repository at ${repo_dir}..."
-  su -s /bin/bash "${user}" -c "git -C ${repo_dir} fetch origin"
-  su -s /bin/bash "${user}" -c "git -C ${repo_dir} checkout main"
-  su -s /bin/bash "${user}" -c "git -C ${repo_dir} pull origin main"
-  new_head="$(su -s /bin/bash "${user}" -c "git -C ${repo_dir} rev-parse HEAD")"
-
-  # The pull may replace this file while the current Bash process is still
-  # executing the old revision. Hand off before continuing with installation,
-  # migration, or service changes so all post-pull work uses the pulled code.
-  if [[ "${old_head}" != "${new_head}" ]]; then
-    echo "Code changed; handing off to the pulled installer revision..."
-    exec "${BASH:-bash}" "${repo_dir}/scripts/install.sh" "${repo_url}" --changed-head-handoff
-  fi
-else
-  if [[ -d "${repo_dir}" ]] && [[ -n "$(find "${repo_dir}" -mindepth 1 -maxdepth 1 -not -name '.git' -print -quit 2>/dev/null)" ]]; then
-    echo "Error: ${repo_dir} exists and is not a valid git repository; remove it and re-run." >&2
-    exit 1
-  fi
-  rm -rf "${repo_dir}"
-  mkdir -p "${repo_dir}"
-  echo "Cloning repository into ${repo_dir}..."
-  if ! git clone "${repo_url}" "${repo_dir}"; then
-    rm -rf "${repo_dir}"
-    echo "Error: git clone failed; partial directory removed." >&2
-    exit 1
-  fi
+# User units need linger to run without a login session.
+if [ "$(loginctl show-user "$USER" -p Linger 2>/dev/null)" != "Linger=yes" ]; then
+	loginctl enable-linger "$USER" 2>/dev/null ||
+		echo "install: could not enable linger — run: loginctl enable-linger $USER" >&2
 fi
 
-chown -R "${user}:${group}" "${repo_dir}"
-
-echo "Installing dependencies..."
-su -s /bin/bash "${user}" -c "cd ${repo_dir} && bun install"
-
-if [[ ! -f "${goblin_home}/goblin.json5" ]]; then
-  echo "No goblin.json5 found; running onboard wizard..."
-  su -s /bin/bash "${user}" -c "cd ${repo_dir} && GOBLIN_HOME=${goblin_home} bun run onboard"
+if [ -n "$herdr_bin" ]; then
+	systemctl --user enable --now goblin-herdr
 fi
-
-echo "Validating configuration..."
-su -s /bin/bash "${user}" -c "cd ${repo_dir} && GOBLIN_HOME=${goblin_home} bun run validate-config"
-
-service_was_active=0
-if [[ "${repo_existed}" -eq 1 ]] && systemctl is-active --quiet goblin; then
-  echo "Stopping goblin service before offline migration..."
-  systemctl stop goblin
-  service_was_active=1
+if [ -n "$passkeys_bin" ]; then
+	# The service is a oneshot warmer: enable puts it in default.target's
+	# wants for boot; the timer --now schedules the twice-daily refresh.
+	systemctl --user enable goblin-keys.service
+	systemctl --user enable --now goblin-keys.timer
 fi
-
-echo "Running offline state migration..."
-if ! su -s /bin/bash "${user}" -c "cd ${repo_dir} && GOBLIN_HOME=${goblin_home} bun run migrate"; then
-  echo "Error: offline migration failed; goblin was not restarted." >&2
-  echo "Restore the migration backup reported above before retrying." >&2
-  exit 1
-fi
-
-echo "Installing systemd service..."
-"${repo_dir}/scripts/install-service.sh"
-
-if [[ "${repo_existed}" -eq 0 ]]; then
-  echo "Starting goblin service..."
-  systemctl start goblin
-  echo "Goblin installed and started."
-elif [[ "${old_head}" != "${new_head}" ]] || [[ "${changed_head_handoff}" -eq 1 ]]; then
-  echo "Code changed; starting goblin service..."
-  systemctl start goblin
-  echo "Goblin updated and started."
-elif [[ "${service_was_active}" -eq 1 ]]; then
-  echo "Code unchanged; resuming goblin service after migration..."
-  systemctl start goblin
-  echo "Goblin resumed."
-else
-  echo "Code unchanged; goblin service left stopped."
-fi
+systemctl --user enable --now goblin
+sleep 1
+systemctl --user --no-pager --full status goblin | head -6 || true
+echo
+echo "logs:  journalctl --user -u goblin -f   (durable copy: $goblin_home/state/goblin.log)"

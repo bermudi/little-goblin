@@ -1,1398 +1,181 @@
-import { InputFile } from "grammy";
-import type { Bot } from "grammy";
-import { writeFile, unlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { TurnCallbacks } from "../agent/mod.ts";
+// Coalescing buffer — rapid-fire messages in one conversation merge into
+// one turn. A message resets the quiet-window timer; when it fires, all
+// buffered items flush as a single batch. The quiet window alone is
+// unbounded — a source dribbling messages faster than the window resets
+// it forever — so the first push also arms a max-wait ceiling that flushes
+// without a quiet gap, warn-logged with the wait.
+//
+// Flushes may be sync or async (a rolling-DM flush can await the
+// follow-up check): a returned promise is tracked as in-flight work.
+// A rejected promise is treated exactly like a sync throw — the batch
+// is retained and retried on the same backoff ladder. Per key, flushes
+// serialize: while a key's flush is in flight, that key's next bucket
+// does not fire until it settles (it fires immediately after if its
+// timer already elapsed — the follow-up check's deadline must not
+// extend the burst's wait past maxWait). flush() is on the hook to
+// stay single-threaded-safe per key; the buffer guarantees it.
+//
+// Retained batches keep their firstAt (the clock measures the oldest
+// item's age, not the latest attempt's) and are merged front-first
+// with anything newer that arrived while the failed flush ran — a
+// message sent during a failing flush must not overtake the batch it
+// follows in the conversation.
 import { log } from "../log.ts";
-import { MetricsStore, type TelegramMetricsEvent } from "../metrics/mod.ts";
-import type { Surface } from "../surface.ts";
-import { chatActionDeliveryOpts, deliveryOpts } from "./delivery.ts";
-import { sendSystemReply, type ReplyOpts, stripRichMarkdown, isParseError, classifyTelegramError } from "./format.ts";
-import { ResponseLane } from "./response-lane.ts";
 
-/**
- * MessageBuffer turns AgentSession events (via TurnCallbacks) into Telegram
- * UI: a coalesced status line message and a streamed response message.
- *
- * Status line uses an ordered per-tool slot model:
- *   Line 1: "🤔 thinking…" (header, persists for the whole turn)
- *   Lines 2+: one slot per visible tool, in observation order
- * Each slot transitions independently: 🔧 → ✅ / ❌.
- */
-
-export interface MessageBufferOptions {
-  visibility?: string;
-  /** Clock injection for deterministic throttle tests. Defaults to `Date.now`. */
-  now?: () => number;
-  /** Approximate min ms between status edits. Defaults to 1100. */
-  statusThrottleMs?: number;
-  /**
-   * Approximate min ms between response edits. Defaults to 1100.
-   *
-   * Telegram's per-chat write/edit budget is ~1/sec sustained. Going
-   * faster (e.g. the old 200ms / 5-per-sec default) earns 429s with
-   * `retry_after` of 20+ seconds, which then stalls the whole stream.
-   */
-  responseThrottleMs?: number;
-  /** Chat-action ("typing") refresh interval in ms. Defaults to 4000. */
-  chatActionMs?: number;
-  /** Scheduler injection for tests. Defaults to global `setInterval`. */
-  setIntervalFn?: (fn: () => void, ms: number) => unknown;
-  /** Scheduler injection for tests. Defaults to global `clearInterval`. */
-  clearIntervalFn?: (handle: unknown) => void;
-  /**
-   * Called once when a "topic not found" error is detected from Telegram.
-   * Used to archive orphaned topic memory scopes.
-   */
-  onTopicNotFound?: () => void | Promise<void>;
-  /** Called once after the turn's final status and response flushes. */
-  onTurnEnd?: () => void | Promise<void>;
-  /**
-   * Optional session-scoped metrics store. When present, every
-   * `sendMessage`/`editMessageText` attempt (and local throttle short-circuit)
-   * is recorded as a `telegram` metrics event.
-   */
-  metrics?: MetricsStore;
-  /**
-   * Use `sendRichMessageDraft` / `sendMessageDraft` for streaming response
-   * previews, finalizing to a persistent message at segment boundaries. Useful
-   * for private chats where Telegram animates draft updates. Defaults to false.
-   */
-  drafts?: boolean;
+interface Bucket<T> {
+	items: T[];
+	timer: ReturnType<typeof setTimeout>;
+	maxTimer: ReturnType<typeof setTimeout>;
+	firstAt: number;
+	attempts: number;
 }
 
-/** Per-tool slot tracking running/completed invocations and error state. */
-export interface ToolSlot {
-  /** Active concurrent invocations. Effective state is `running` while > 0. */
-  runningCount: number;
-  /** Total finished invocations (ok or err). */
-  completedCount: number;
-  /** Start time of the most recent `onToolStart` for this slot. */
-  startedAt: number;
-  /** End time of the most recent `onToolEnd` for this slot. */
-  endedAt?: number;
-  /** Outcome of the most recent completed invocation. */
-  lastCompletedError: boolean;
-}
-
-/**
- * Threshold above which response text is escaped to a `reply.md` attachment
- * instead of being sent as a rich message. Past ~20KB readability suffers;
- * files are friendlier.
- */
-export const BIG_OUTPUT_THRESHOLD = 20000;
-
-/** Number of characters from the head of the response shown alongside the file. */
-export const SUMMARY_PREFIX_LEN = 500;
-
-/**
- * Tool visibility levels and the tool names each level surfaces in the
- * status line. Unknown levels fall back to `standard`. The string "*"
- * means "every tool" (debug).
- *
- *   none     no status line at all
- *   minimal  destructive / state-changing tools only
- *   standard all α tools (default)
- *   verbose  α + γ (subagent management)
- *   debug    every tool ever observed
- */
-export const VISIBILITY_TOOLS: Record<string, readonly string[] | "*"> = {
-  none: [],
-  minimal: ["bash", "write", "edit", "spawn_subagent"],
-  standard: ["bash", "write", "edit", "read", "grep", "spawn_subagent", "text_to_speech"],
-  verbose: [
-    "bash",
-    "write",
-    "edit",
-    "read",
-    "grep",
-    "spawn_subagent",
-    "text_to_speech",
-    "revive_subagent",
-    "list_subagents",
-  ],
-  debug: "*",
-};
-
-/** Default visibility when no level is configured or an unknown level is given. */
-export const DEFAULT_VISIBILITY = "standard";
-
-/**
- * Per-visibility slot cap and timing flags. Every level present in
- * `VISIBILITY_TOOLS` must have a matching entry here; a parity test
- * enforces this.
- */
-export const VISIBILITY_LIMITS: Record<string, { cap: number; timing: boolean }> = {
-  none:     { cap: 0,  timing: false },
-  minimal:  { cap: 8,  timing: false },
-  standard: { cap: 12, timing: false },
-  verbose:  { cap: 20, timing: true },
-  debug:    { cap: 25, timing: true },
-};
-
-/** Resolve the active level's limits, falling back to `DEFAULT_VISIBILITY`. */
-export function getVisibilityLimits(visibility: string): { cap: number; timing: boolean } {
-  return VISIBILITY_LIMITS[visibility] ?? VISIBILITY_LIMITS[DEFAULT_VISIBILITY]!;
-}
-
-/**
- * Returns true if the given tool should appear in the status line for the
- * given visibility level. Unknown levels fall back to `DEFAULT_VISIBILITY`.
- */
-export function shouldShowTool(name: string, visibility: string): boolean {
-  const list =
-    VISIBILITY_TOOLS[visibility] ?? VISIBILITY_TOOLS[DEFAULT_VISIBILITY]!;
-  if (list === "*") return true;
-  return list.includes(name);
-}
-
-export class MessageBuffer implements TurnCallbacks {
-  private bot: Bot;
-  private surface: Surface;
-  private visibility: string;
-
-  private get chatId(): number {
-    return this.surface.chatId;
-  }
-
-  // Telegram message tracking.
-  private statusMessageId: number | undefined = undefined;
-  private responseMessageId: number | undefined = undefined;
-  private responseDraftId: number | undefined = undefined;
-  private accumulatedText: string = "";
-  private lastEditTime: number = 0;
-  private isStreaming: boolean = false;
-  private useDrafts: boolean = false;
-  private nextDraftId: number = 1;
-
-  // Per-tool slot state. Ordered by first observation (Map insertion order).
-  private slots: Map<string, ToolSlot> = new Map();
-  /** Once true, `flushStatus` becomes a no-op (set on `onAgentEnd`). */
-  private statusFrozen: boolean = false;
-  /** Tracks whether the eager placeholder has been emitted. */
-  private placeholderSent: boolean = false;
-  /**
-   * The rendered status text most recently committed to Telegram (or
-   * attempted, in the success path). Used to suppress no-op edits when
-   * the same text would be rewritten — Telegram rejects identical edits
-   * with a 400, and the user-visible chat doesn't change anyway. Also
-   * caps the typical turn at 3 writes (placeholder + working + done).
-   */
-  private lastRenderedStatusText: string = "";
-  /**
-   * Mirror of `lastRenderedStatusText` for the response message. Suppresses
-   * no-op `editMessageText` calls when the throttle re-fires with no new
-   * text (e.g. a force-flush at `onAgentEnd` after the last delta already
-   * landed). Telegram would otherwise return 400 "message is not modified".
-   * Reset to "" whenever the response message is recreated or goes away.
-   */
-  private lastRenderedResponseText: string = "";
-  /**
-   * Sticky flag: once a rich-message parse error forces a plain-text retry,
-   * subsequent response sends use `sendMessage` and edits use `editMessageText`
-   * without `parse_mode` for the rest of the current response message's lifetime.
-   * Reset whenever `responseMessageId` is cleared (tool boundary seal, file escape).
-   */
-  private responseIsPlainText: boolean = false;
-
-  private now: () => number;
-  private statusThrottleMs: number;
-  private responseThrottleMs: number;
-  private lastResponseEditTime: number = 0;
-
-  private chatActionMs: number;
-  private setIntervalFn: (fn: () => void, ms: number) => unknown;
-  private clearIntervalFn: (handle: unknown) => void;
-  private chatActionHandle: unknown = undefined;
-
-  /** Called once when a "topic not found" error is detected. */
-  private onTopicNotFound: (() => void | Promise<void>) | undefined;
-  /** Called once after the turn's final status and response flushes. */
-  private onTurnEnd: (() => void | Promise<void>) | undefined;
-  /** Optional session-scoped metrics store. */
-  private metrics?: MetricsStore;
-  /** Ensures onTopicNotFound is only called once. */
-  private topicNotFoundReported: boolean = false;
-
-  /**
-   * Lane tracking an in-flight `sendRichMessage` (or `sendMessage` during a
-   * plain-text fallback) that is creating the response message. Any concurrent
-   * flush whose throttle window opens before the send resolves would otherwise
-   * see `responseMessageId === undefined` and call `sendRichMessage` a second
-   * time — producing duplicate Telegram messages. Non-force flushes skip when
-   * this is busy; force flushes await it.
-   */
-  private creatingResponse = new ResponseLane();
-
-  /**
-   * Lane tracking an in-flight status edit (send or edit). Concurrent
-   * status events (e.g. four sequential `onToolStart` in rapid succession)
-   * all see the busy lane and bail; the loop inside the in-flight
-   * work re-renders `buildStatusLine()` after each round-trip and picks
-   * up whatever state mutated during the wait. This collapses N events
-   * into ≤2 Telegram round-trips per turn.
-   */
-  private editingStatus = new ResponseLane();
-
-  /**
-   * Lane tracking an in-flight `editMessageText` against the response
-   * message. Telegram does NOT guarantee ordering across concurrent edits
-   * to the same message: a later-issued edit can land first and a stale
-   * earlier edit overwrite it. Without serialization, the final text the
-   * user sees can be a partial mid-stream snapshot. New flushes await this
-   * (force=true) or skip (non-force, the natural throttle picks it up
-   * later). The agent_end force flush therefore always lands LAST, with
-   * the full accumulated text.
-   */
-  private editingResponse = new ResponseLane();
-
-  /**
-   * Lane tracking the whole response flush. Serializing at this level keeps
-   * a concurrent force flush from observing a half-written state and duplicating
-   * the response bubble.
-   */
-  private flushingResponse = new ResponseLane();
-
-  /**
-   * Lane tracking a segment seal (boundary flush + draft finalization + state
-   * reset). Other response flushes await this so a follow-up `onTextDelta` does
-   * not update a draft that is about to be finalized.
-   */
-  private sealingResponse = new ResponseLane();
-
-  /**
-   * True while `sealResponseSegment` is in the flush phase. Prevents the inner
-   * `flushResponse` from awaiting `sealingResponse` (which would deadlock) while
-   * still letting `finalizeResponse` block concurrent flushes.
-   */
-  private inSeal: boolean = false;
-
-  /**
-   * Per-turn Telegram acceptance evidence (issue #54 unit 1). Owned by the
-   * response sink for this exact Surface turn. `responseAccepted` is set only
-   * by confirmed persistent sends/edits, confirmed message-not-modified, or
-   * confirmed file fallback. Draft/status writes never set it. `responseFailed`
-   * records a terminal persistent failure; a later persistent success clears
-   * it so a retry can recover. The buffer freezes after onAgentEnd, so
-   * evidence cannot leak to another turn sharing the instance.
-   */
-  private responseAccepted = false;
-  private responseFailed = false;
-  private responseFailureCause: unknown = undefined;
-  /**
-   * Segment epoch of the persistent failure. Bumped on every sealed
-   * segment; a later segment's success must not clear an earlier
-   * segment's failure, while a same-segment retry success recovers.
-   */
-  private responseEpoch = 0;
-  private responseFailedEpoch: number | undefined = undefined;
-
-  constructor(bot: Bot, surface: Surface, options?: MessageBufferOptions) {
-    this.bot = bot;
-    this.surface = surface;
-
-    const resolvedOptions = options ?? {};
-
-    this.visibility = resolvedOptions.visibility ?? DEFAULT_VISIBILITY;
-    this.now = resolvedOptions.now ?? Date.now;
-    this.statusThrottleMs = resolvedOptions.statusThrottleMs ?? 1100;
-    this.responseThrottleMs = resolvedOptions.responseThrottleMs ?? 1100;
-    this.chatActionMs = resolvedOptions.chatActionMs ?? 4000;
-    this.setIntervalFn =
-      resolvedOptions.setIntervalFn ??
-      ((fn, ms) => setInterval(fn, ms) as unknown);
-    this.clearIntervalFn =
-      resolvedOptions.clearIntervalFn ??
-      ((handle) => clearInterval(handle as Parameters<typeof clearInterval>[0]));
-    this.onTopicNotFound = resolvedOptions.onTopicNotFound;
-    this.onTurnEnd = resolvedOptions.onTurnEnd;
-    this.metrics = resolvedOptions.metrics;
-    this.useDrafts = resolvedOptions.drafts ?? false;
-  }
-
-  /** Best-effort record of a `telegram` metrics event; swallows metric errors. */
-  private recordTelegramEvent(event: TelegramMetricsEvent): void {
-    if (!this.metrics) return;
-    try {
-      this.metrics.record(event);
-    } catch (err) {
-      log.warn("failed to record telegram metric", { error: String(err) });
-    }
-  }
-
-  onTextDelta(delta: string): void {
-    if (this.statusFrozen) return;
-    const prevLen = this.accumulatedText.length;
-    this.accumulatedText += delta;
-    this.isStreaming = true;
-    this.startChatAction();
-    // No status flush per delta — the phase machine only edits the status
-    // on phase transitions (thinking tokens → onStatusUpdate, tools →
-    // onToolStart/onToolEnd). Liveness is conveyed by the chat-action above.
-    log.debug("response: delta", {
-      deltaLen: delta.length,
-      accLen: this.accumulatedText.length,
-      accGrow: prevLen === 0,
-      msgId: this.responseMessageId,
-    });
-    void this.flushResponse();
-  }
-
-  onToolStart(name: string, _input: unknown): void {
-    // Stray tool events arriving after onAgentEnd SHALL NOT mutate slot
-    // state or trigger a response flush. Without this guard the
-    // force-flush IIFE below would bypass the freeze (flushResponse has
-    // no statusFrozen check) and issue a Telegram send post-turn.
-    if (this.statusFrozen) return;
-    // Force-flush any accumulated response text before the tool runs,
-    // regardless of whether this tool is visible in the status line.
-    // Without this, text that arrived after the last throttle window
-    // sits invisible in accumulatedText for the entire tool execution,
-    // so the user sees a truncated prefix (e.g. "Let" instead of
-    // "Let me check the pi docs...").
-    if (this.accumulatedText.length > 0 || this.responseMessageId !== undefined || this.responseDraftId !== undefined) {
-      log.debug("response: seal segment before tool", {
-        tool: name,
-        accLen: this.accumulatedText.length,
-        msgId: this.responseMessageId,
-        draftId: this.responseDraftId,
-      });
-      // Seal the current response segment using a detached snapshot so any
-      // text that arrives after this boundary becomes the next segment.
-      const sealedText = this.accumulatedText;
-      void this.sealResponseSegment(sealedText);
-    }
-
-    if (!shouldShowTool(name, this.visibility)) return;
-    const existing = this.slots.get(name);
-    if (existing) {
-      existing.runningCount++;
-      existing.startedAt = this.now();
-      existing.endedAt = undefined;
-    } else {
-      this.slots.set(name, {
-        runningCount: 1,
-        completedCount: 0,
-        startedAt: this.now(),
-        endedAt: undefined,
-        lastCompletedError: false,
-      });
-    }
-    this.commitStatus();
-  }
-
-  onToolEnd(name: string, isError: boolean): void {
-    if (this.statusFrozen) return;
-    if (!shouldShowTool(name, this.visibility)) return;
-    const slot = this.slots.get(name);
-    if (!slot) return;
-    slot.runningCount--;
-    slot.completedCount++;
-    slot.endedAt = this.now();
-    slot.lastCompletedError = isError;
-    this.commitStatus();
-  }
-
-  onStatusUpdate(_message: string): void {
-    // Fired by agent_start (turn start), thinking_start / thinking_delta,
-    // and compaction. We use this as the cue to send the eager placeholder,
-    // guaranteeing the status message exists before any response message
-    // can be created. Starting the chat-action here (not just in
-    // onTextDelta) means the typing indicator shows from turn start even
-    // on plain-text turns where no thinking block arrives.
-    if (this.statusFrozen) return;
-    this.startChatAction();
-    if (!this.placeholderSent) this.commitStatus();
-  }
-
-  onMessageStart(_message?: AgentMessage): void {
-    if (this.statusFrozen) return;
-    // Seal the current response segment so the next assistant message starts
-    // a fresh Telegram bubble. This is the primary boundary signal for
-    // follow-up turns where two assistant messages are emitted in one run.
-    if (this.accumulatedText.length > 0 || this.responseMessageId !== undefined || this.responseDraftId !== undefined) {
-      log.debug("response: seal segment before message", {
-        accLen: this.accumulatedText.length,
-        msgId: this.responseMessageId,
-        draftId: this.responseDraftId,
-      });
-      // Seal the current response segment using a detached snapshot. The active
-      // message id (if any) is cleared so the next message becomes a new bubble.
-      const sealedText = this.accumulatedText;
-      void this.sealResponseSegment(sealedText);
-    }
-  }
-
-  onMessageEnd(_message?: AgentMessage): void {
-    if (this.statusFrozen) return;
-    // Force-flush the current assistant message so the final text lands in
-    // full. In draft mode this is a segment boundary, so finalize the active
-    // draft and reset state so the next assistant message starts fresh. In
-    // persistent mode keep the responseMessageId so the following message_start
-    // can seal it into a fresh bubble.
-    log.debug("response: message end flush", {
-      accLen: this.accumulatedText.length,
-      msgId: this.responseMessageId,
-      draftId: this.responseDraftId,
-    });
-    const sealedText = this.accumulatedText;
-    const isDraft = this.responseDraftId !== undefined || (this.useDrafts && this.responseMessageId === undefined && sealedText.length > 0);
-    if (sealedText.length > 0 || this.responseMessageId !== undefined || this.responseDraftId !== undefined) {
-      void this.sealResponseSegment(sealedText, {
-        finalizeDraft: isDraft,
-        clearState: isDraft,
-      });
-    }
-  }
-
-  onAgentEnd(): void {
-    this.isStreaming = false;
-    this.stopChatAction();
-    log.debug("response: agent_end", {
-      accLen: this.accumulatedText.length,
-      msgId: this.responseMessageId,
-      draftId: this.responseDraftId,
-    });
-
-    // Flush BEFORE freezing so this final write is the one that survives.
-    // The `lastRenderedStatusText` guard inside flushStatus skips the
-    // edit if Done was already committed by the last onToolEnd — keeping
-    // typical turns at ≤3 writes per the spec.
-    if (this.visibility !== "none" && this.buildStatusLine().length > 0) {
-      this.placeholderSent = true;
-      void this.flushStatus(true);
-    }
-    this.statusFrozen = true;
-    const sealedText = this.accumulatedText;
-    void (async () => {
-      await this.sealResponseSegment(sealedText, { finalizeDraft: true, clearState: false });
-      // End of turn: spend any remaining in-memory text and reset formatting,
-      // but keep responseMessageId so tests can observe the final message.
-      this.accumulatedText = "";
-      this.responseIsPlainText = false;
-      this.responseDraftId = undefined;
-      await Promise.resolve(this.onTurnEnd?.());
-    })();
-  }
-
-  /**
-   * Send an out-of-band informational notice to the surface. Used for
-   * bounded, non-blocking notifications such as a prompt-file write summary.
-   * Formatting and plain-text fallback are shared with other system messages.
-   * This is the delivery boundary: it emits exactly one aggregate metric and
-   * propagates a final Telegram failure to its best-effort caller.
-   */
-  async sendNotice(text: string): Promise<void> {
-    const op: "sendMessage" = "sendMessage";
-    const sender = {
-      reply: async (formatted: string, opts?: ReplyOpts) => {
-        const sendOpts = opts ? this.withThread(opts as Record<string, unknown>) : this.withThread();
-        await this.bot.api.sendMessage(this.chatId, formatted, sendOpts);
-      },
-    };
-    try {
-      await sendSystemReply(sender, text, "info", { silent: true, propagateErrors: true });
-      this.recordTelegramEvent({ type: "telegram", op, channel: "system", outcome: "success" });
-    } catch (err) {
-      const { outcome, errorCode, errorDescription, retryAfterSec } = classifyTelegramError(err);
-      this.recordTelegramEvent({
-        type: "telegram",
-        op,
-        channel: "system",
-        outcome,
-        errorCode,
-        errorDescription,
-        retryAfterSec,
-      });
-      throw err;
-    }
-  }
-
-  private markResponseAccepted(): void {
-    this.responseAccepted = true;
-    // Sticky failure: a later segment's success must not erase an earlier
-    // segment's persistent failure. Only a same-segment retry success
-    // (same epoch) recovers.
-    if (this.responseFailedEpoch === undefined || this.responseFailedEpoch === this.responseEpoch) {
-      this.responseFailed = false;
-      this.responseFailureCause = undefined;
-      this.responseFailedEpoch = undefined;
-    }
-  }
-
-  private markResponseFailed(cause: unknown): void {
-    this.responseFailed = true;
-    this.responseFailureCause = cause;
-    this.responseFailedEpoch = this.responseEpoch;
-  }
-
-  /**
-   * Await confirmation of the complete final user-visible response for this
-   * turn. Resolves only when a persistent response was confirmed and no
-   * terminal failure remains; rejects otherwise (absent response, send/edit
-   * rejection, timeout, topic-not-found, incomplete split/file fallback).
-   * Draft/status success alone never resolves; status failures never reject.
-   */
-  async awaitResponseAcceptance(): Promise<void> {
-    await Promise.resolve();
-    for (let i = 0; i < 20; i++) {
-      const pending: Promise<unknown>[] = [];
-      const sealing = this.sealingResponse.current;
-      if (sealing !== null) pending.push(sealing.catch(() => {}));
-      const flushing = this.flushingResponse.current;
-      if (flushing !== null) pending.push(flushing.catch(() => {}));
-      const creating = this.creatingResponse.current;
-      if (creating !== null) pending.push(creating.catch(() => {}));
-      const editing = this.editingResponse.current;
-      if (editing !== null) pending.push(editing.catch(() => {}));
-      if (pending.length === 0) break;
-      await Promise.all(pending);
-    }
-    if (!this.responseAccepted) {
-      throw new Error("Telegram response not accepted: no confirmed final response");
-    }
-    if (this.responseFailed) {
-      const cause = this.responseFailureCause;
-      throw cause instanceof Error ? cause : new Error(`Telegram response not accepted: ${String(cause ?? "delivery failed")}`);
-    }
-  }
-
-  /**
-   * Single entry point for any state-changing status flush: phase
-   * transitions and eager placeholders. Marks the placeholder as sent (so
-   * future entries don't re-trigger the eager path) and fires exactly one
-   * `flushStatus(force=true)`. Visibility "none" suppresses everything.
-   */
-  private commitStatus(): void {
-    if (this.visibility === "none") return;
-    this.placeholderSent = true;
-    void this.flushStatus(true);
-  }
-
-  /**
-   * Begin (or no-op if already running) the periodic "typing" chat-action
-   * refresh. Telegram shows the indicator for ~5s after each call, so we
-   * refresh every 4s while the agent is producing text. The first call
-   * fires immediately so the indicator appears without waiting one tick.
-   */
-  private startChatAction(): void {
-    if (this.chatActionHandle !== undefined) return;
-    this.sendChatActionSafe();
-    this.chatActionHandle = this.setIntervalFn(
-      () => this.sendChatActionSafe(),
-      this.chatActionMs,
-    );
-  }
-
-  /** Stop the periodic chat-action refresh. Idempotent. */
-  private stopChatAction(): void {
-    if (this.chatActionHandle === undefined) return;
-    this.clearIntervalFn(this.chatActionHandle);
-    this.chatActionHandle = undefined;
-  }
-
-  /** Build API options with the correct topic parameter for this surface. */
-  private withThread(opts: Record<string, unknown> = {}): Record<string, unknown> {
-    return deliveryOpts(this.surface, opts);
-  }
-
-  /**
-   * Response-path content builder. By default the response is sent as a rich
-   * message using Telegram's Markdown dialect. When the sticky
-   * `responseIsPlainText` flag is set (after a 400 parse-error fallback),
-   * markdown is stripped and the message is sent/edited as plain text.
-   */
-  private responsePayload(text: string = this.accumulatedText):
-    | { kind: "rich"; richMessage: { markdown: string } }
-    | { kind: "plain"; text: string } {
-    if (this.responseIsPlainText) return { kind: "plain", text: stripRichMarkdown(text) };
-    return { kind: "rich", richMessage: { markdown: text } };
-  }
-
-  /** Send the response text as a rich message, or as plain text when falling back. */
-  private async sendResponseContent(text: string): Promise<{ message_id: number }> {
-    const content = this.responsePayload(text);
-    if (content.kind === "rich") {
-      return this.bot.api.sendRichMessage(this.chatId, content.richMessage, this.withThread());
-    }
-    return this.bot.api.sendMessage(this.chatId, content.text, this.withThread());
-  }
-
-  /** Edit the response message with rich content, or with plain text when falling back. */
-  private async editResponseContent(messageId: number, text: string): Promise<void> {
-    const content = this.responsePayload(text);
-    if (content.kind === "rich") {
-      await this.bot.api.editMessageText(this.chatId, messageId, content.richMessage, this.withThread());
-    } else {
-      await this.bot.api.editMessageText(this.chatId, messageId, content.text, this.withThread());
-    }
-  }
-
-  /**
-   * Update a streaming draft. When the sticky `responseIsPlainText` flag is set,
-   * the draft is sent as plain text via `sendMessageDraft`; otherwise it is sent
-   * as a rich message via `sendRichMessageDraft`.
-   */
-  private async sendResponseDraft(text: string, draftId: number): Promise<true> {
-    const content = this.responsePayload(text);
-    if (content.kind === "rich") {
-      return this.bot.api.sendRichMessageDraft(this.chatId, draftId, content.richMessage, this.withThread());
-    }
-    return this.bot.api.sendMessageDraft(this.chatId, draftId, content.text, this.withThread());
-  }
-
-  /**
-   * Convert the active draft into a persistent message. When `text` is provided
-   * it is used instead of `accumulatedText` (used by file-escape to finalize the
-   * draft with a short summary). Does nothing when no draft is active.
-   */
-  private async finalizeResponse(text?: string): Promise<void> {
-    if (this.responseDraftId === undefined) return;
-    const finalText = text ?? this.accumulatedText;
-    if (finalText.length === 0) return;
-    const op: "sendRichMessage" | "sendMessage" = this.responseIsPlainText ? "sendMessage" : "sendRichMessage";
-    try {
-      const msg = await this.sendResponseContent(finalText);
-      this.recordTelegramEvent({ type: "telegram", op, channel: "response", outcome: "success" });
-      log.debug("response: finalized draft", {
-        msgId: msg.message_id,
-        draftId: this.responseDraftId,
-        accLen: finalText.length,
-      });
-    } catch (err) {
-      await this.handleResponseError(err, op, finalText);
-    }
-  }
-
-  /**
-   * Clear response message/draft identifiers and the last-rendered guard while
-   * preserving `accumulatedText`. Used when a message is reported gone so the
-   * next flush can re-send the same content.
-   */
-  private clearResponseIdentifiers(): void {
-    this.responseMessageId = undefined;
-    this.responseDraftId = undefined;
-    this.lastRenderedResponseText = "";
-  }
-
-  /** Clear all response message/draft state. Called after a segment is sealed. */
-  private resetResponse(): void {
-    this.clearResponseIdentifiers();
-    this.accumulatedText = "";
-    this.responseIsPlainText = false;
-  }
-
-  /** Clear identifiers and sticky formatting flag while preserving accumulatedText. */
-  private clearResponseState(): void {
-    this.clearResponseIdentifiers();
-    this.responseIsPlainText = false;
-  }
-
-  /**
-   * Seal a response segment at a boundary (tool, assistant message, or agent end).
-   * Detaches `sealedText` from `accumulatedText` before the async flush so any
-   * text that arrives after the boundary is not merged into the segment being
-   * sealed. Finalizes an active draft when `finalizeDraft` is true and clears
-   * response identifiers when `clearState` is true.
-   */
-  private async sealResponseSegment(
-    sealedText: string,
-    { finalizeDraft = true, clearState = true }: { finalizeDraft?: boolean; clearState?: boolean } = {},
-  ): Promise<void> {
-    const prev = this.sealingResponse.current;
-    const work = (async () => {
-      await prev;
-      if (sealedText.length === 0 && this.responseMessageId === undefined && this.responseDraftId === undefined) {
-        if (clearState) this.clearResponseState();
-        return;
-      }
-
-      // Detach the snapshot. Subsequent onTextDelta calls append to the now
-      // empty accumulatedText and become the next segment.
-      const overflow = this.accumulatedText.slice(sealedText.length);
-      this.accumulatedText = overflow;
-      // New segment epoch: success in this segment must not clear a
-      // persistent failure recorded for an earlier segment.
-      this.responseEpoch++;
-
-      this.inSeal = true;
-      try {
-        await this.flushResponse(true, sealedText);
-      } finally {
-        this.inSeal = false;
-      }
-
-      if (finalizeDraft && this.responseDraftId !== undefined) {
-        await this.finalizeResponse(sealedText);
-      }
-
-      if (clearState) {
-        this.clearResponseState();
-      }
-    })();
-    await this.sealingResponse.track(work);
-  }
-
-  /** Best-effort `sendChatAction("typing")`; never throws out. */
-  private sendChatActionSafe(): void {
-    Promise.resolve(this.bot.api.sendChatAction(this.chatId, "typing", chatActionDeliveryOpts(this.surface))).catch(
-      (err: unknown) => {
-        log.warn("sendChatAction failed", { error: String(err) });
-      },
-    );
-  }
-
-  /**
-   * Build the rendered status line based on the per-tool slot model.
-   *
-   *   Line 1 (header): "🤔 thinking…" — persists for the whole turn.
-   *   Lines 2+: one line per slot, in observation order.
-   *     running → "🔧 <name>"
-   *     ok      → "✅ <name>"
-   *     err     → "❌ <name>"
-   *   Repeat invocations fold: "✅ read ×3"
-   *
-   * Visibility "none" suppresses the line entirely.
-   */
-  buildStatusLine(): string {
-    if (this.visibility === "none") return "";
-    if (!this.placeholderSent && this.slots.size === 0) return "";
-
-    const lines: string[] = ["🤔 thinking…"];
-    const { cap, timing } = getVisibilityLimits(this.visibility);
-
-    // Determine which slots to elide. Running slots are never elided.
-    const elided = new Set<string>();
-    if (cap > 0 && this.slots.size > cap) {
-      let kept = this.slots.size;
-      for (const [name, slot] of this.slots) {
-        if (kept <= cap) break;
-        const effectiveState =
-          slot.runningCount > 0 ? "running" : slot.lastCompletedError ? "err" : "ok";
-        if (effectiveState !== "running") {
-          elided.add(name);
-          kept--;
-        }
-      }
-    }
-
-    for (const [name, slot] of this.slots) {
-      if (elided.has(name)) continue;
-      const effectiveState =
-        slot.runningCount > 0 ? "running" : slot.lastCompletedError ? "err" : "ok";
-      const icon =
-        effectiveState === "running" ? "🔧" : effectiveState === "err" ? "❌" : "✅";
-      const count = slot.runningCount + slot.completedCount;
-      const countSuffix = count > 1 ? ` ×${count}` : "";
-      const timingSuffix =
-        timing && effectiveState !== "running" && slot.endedAt !== undefined
-          ? ` (${((slot.endedAt - slot.startedAt) / 1000).toFixed(1)}s)`
-          : "";
-      lines.push(`${icon} ${name}${countSuffix}${timingSuffix}`);
-    }
-
-    if (elided.size > 0) {
-      lines.push(`… +${elided.size} earlier`);
-    }
-
-    return lines.join("\n");
-  }
-
-  /**
-   * Flush the rendered status line to Telegram. Internal but exposed for
-   * tests. `force` bypasses the ~1/sec throttle (used by `onAgentEnd`).
-   *
-   * Behavior:
-   *   - First call: `sendMessage` and remember `statusMessageId`.
-   *   - Subsequent calls: `editMessageText` against `statusMessageId`.
-   *   - Throttled: skip if last edit was less than `statusThrottleMs` ago.
-   *   - 429 rate-limit: log and skip; throttle window already prevents
-   *     re-attempts in tight loops.
-   *   - Message-gone (400): drop `statusMessageId` so the next flush re-sends.
-   *   - All errors are swallowed; we never throw out of this method.
-   */
-  async flushStatus(force: boolean = false): Promise<void> {
-    // Once the turn is finished, the status text is the resting summary.
-    // Refuse any further edits — stray async events SHALL NOT mutate it.
-    if (this.statusFrozen) return;
-    const now = this.now();
-    if (!force && now - this.lastEditTime < this.statusThrottleMs) {
-      this.recordTelegramEvent({
-        type: "telegram",
-        op: null,
-        channel: "status",
-        outcome: "throttled",
-        elapsedMs: now - this.lastEditTime,
-        throttleMs: this.statusThrottleMs,
-      });
-      return;
-    }
-
-    // Quick-exit before scheduling: nothing to render OR nothing changed.
-    const initial = this.buildStatusLine();
-    if (!initial) return;
-    if (initial === this.lastRenderedStatusText) return;
-
-    // Coalesce concurrent flushes. If an edit is in flight, just bail —
-    // the in-flight loop below re-renders `buildStatusLine()` after each
-    // round-trip and picks up whatever state was mutated during the wait.
-    if (this.editingStatus.isBusy()) return;
-
-    this.lastEditTime = now;
-
-    const inFlight: Promise<void> = (async () => {
-      // Yield to a microtask before the first network call. Synchronous
-      // siblings that fired alongside this flush (e.g. four onToolStart
-      // in a row) all bail at the `editingStatus` check above; by the
-      // time we resume, their state mutations are visible in
-      // `buildStatusLine()`, so the FIRST edit captures the full set.
-      await Promise.resolve();
-
-      while (true) {
-        if (this.statusFrozen) return;
-        const t = this.buildStatusLine();
-        if (!t || t === this.lastRenderedStatusText) return;
-        const op: "sendMessage" | "editMessageText" = this.statusMessageId === undefined ? "sendMessage" : "editMessageText";
-        try {
-          if (this.statusMessageId === undefined) {
-            const msg = await this.bot.api.sendMessage(this.chatId, t, this.withThread());
-            this.statusMessageId = msg.message_id;
-          } else {
-            await this.bot.api.editMessageText(
-              this.chatId,
-              this.statusMessageId,
-              t,
-              this.withThread(),
-            );
-          }
-          this.recordTelegramEvent({ type: "telegram", op, channel: "status", outcome: "success" });
-          this.lastRenderedStatusText = t;
-        } catch (err) {
-          await this.handleStatusError(err, op);
-          // Don't loop on errors; the next non-duplicate transition will
-          // re-trigger via the normal flushStatus path.
-          return;
-        }
-        // Loop continues; checks above re-render to see if state mutated
-        // during the round-trip and another edit is needed.
-      }
-    })();
-
-    // Awaiting here makes `await buffer.flushStatus(...)` deterministic
-    // for tests; in production the call site uses `void flushStatus(...)`
-    // so this await never blocks event-handler return.
-    await this.editingStatus.track(inFlight);
-  }
-
-  private async handleStatusError(err: unknown, op: "sendMessage" | "editMessageText"): Promise<void> {
-    await this.handleApiError(err, "status", op, () => {
-      // Message gone — reset both id and lastRenderedStatusText so the
-      // next flush re-sends a fresh placeholder.
-      this.statusMessageId = undefined;
-      this.lastRenderedStatusText = "";
-    });
-  }
-
-  /**
-   * Flush accumulated response text to Telegram. Implements the response
-   * throttle and basic error recovery. Big outputs are sent as a file
-   * attachment once they exceed the configured threshold.
-   *
-   * `sealedText` is used by boundary seal paths that have already detached a
-   * snapshot from `accumulatedText`; when provided, `accumulatedText` is not
-   * read or mutated by the flush itself.
-   */
-  async flushResponse(force: boolean = false, sealedText?: string): Promise<void> {
-    // Await any segment seal that is finalizing. The inner flush of a seal runs
-    // with `inSeal` true so it does not await itself.
-    if (!this.inSeal) {
-      const sealing = this.sealingResponse.wait();
-      if (sealing !== null) await sealing;
-    }
-
-    // Ensure the status message lands before creating the first response
-    // message or streaming draft, so the status appears above the response
-    // in the chat. editingStatus becomes busy synchronously via
-    // commitStatus/flushStatus and clears when the status sendMessage
-    // resolves. Once the first response exists this is a no-op.
-    if (this.responseMessageId === undefined && this.responseDraftId === undefined) {
-      const statusEdit = this.editingStatus.wait();
-      if (statusEdit !== null) await statusEdit;
-    }
-
-    const textLen = (sealedText ?? this.accumulatedText).length;
-    const entry = this.flushingResponse.enter(force);
-    if (entry === "skipped") {
-      log.debug("response: skip (flush in-flight)", { accLen: textLen });
-      return;
-    }
-    if (entry !== "proceed") {
-      log.debug("response: await flush in-flight (force)", { accLen: textLen });
-      await entry;
-    }
-
-    await this.flushingResponse.track(this.flushResponseOnce(force, sealedText));
-  }
-
-  private async flushResponseOnce(force: boolean = false, sealedText?: string): Promise<void> {
-    const text = sealedText ?? this.accumulatedText;
-    const now = this.now();
-    if (!force && now - this.lastResponseEditTime < this.responseThrottleMs) {
-      this.recordTelegramEvent({
-        type: "telegram",
-        op: null,
-        channel: "response",
-        outcome: "throttled",
-        elapsedMs: now - this.lastResponseEditTime,
-        throttleMs: this.responseThrottleMs,
-      });
-      log.debug("response: skip (throttled)", {
-        elapsed: now - this.lastResponseEditTime,
-        throttleMs: this.responseThrottleMs,
-        accLen: text.length,
-      });
-      return;
-    }
-
-    if (text.length === 0) return;
-
-    // Coalesce concurrent sends. If the response message/draft is being created
-    // by an earlier flush, a non-force flush skips (the next throttle tick will
-    // edit/update, by which time the id is set). A force flush — used by
-    // `onAgentEnd` to land the final state — must wait, otherwise it would see
-    // an unset id and issue a duplicate create.
-    if (this.responseMessageId === undefined && this.responseDraftId === undefined) {
-      const createEntry = this.creatingResponse.enter(force);
-      if (createEntry === "skipped") {
-        log.debug("response: skip (send in-flight)", { accLen: text.length });
-        return;
-      }
-      if (createEntry !== "proceed") {
-        log.debug("response: await send in-flight (force)", { accLen: text.length });
-        await createEntry;
-      }
-    }
-
-    // Serialize edits/draft updates. Telegram does not guarantee ordering for
-    // concurrent edits against the same message; a stale edit can land last and
-    // overwrite the latest text. A non-force flush whose throttle window
-    // opened while another update is in flight just skips — the next window
-    // will pick up the latest text. The force flush from onAgentEnd MUST wait,
-    // so the final write contains the full text.
-    const editEntry = this.editingResponse.enter(force);
-    if (editEntry === "skipped") {
-      log.debug("response: skip (edit in-flight)", { accLen: text.length });
-      return;
-    }
-    if (editEntry !== "proceed") {
-      log.debug("response: await edit in-flight (force)", { accLen: text.length });
-      await editEntry;
-    }
-
-    log.debug("response: flush", {
-      force,
-      accLen: text.length,
-      mode: this.responseMessageId !== undefined ? "edit" : this.responseDraftId !== undefined ? "draft" : this.useDrafts ? "create-draft" : "send",
-      msgId: this.responseMessageId,
-      draftId: this.responseDraftId,
-    });
-
-    // Big output? Escape to file before doing anything else; rich messages
-    // remove the 4096 limit but 20KB+ readability is still poor as chat text.
-    if (await this.maybeFileEscape(text, sealedText !== undefined)) {
-      this.lastResponseEditTime = now;
-      return;
-    }
-
-    if (text.length === 0) return;
-
-    // Idempotence guard: if the message/draft already has this exact text we'd
-    // just earn a 400 "message is not modified" or burn a no-op draft update.
-    // Returning early here means we also do NOT touch `lastResponseEditTime` —
-    // otherwise a subsequent real delta would get throttled-out by a fake
-    // "edit" that never happened.
-    if (
-      (this.responseMessageId !== undefined || this.responseDraftId !== undefined) &&
-      text === this.lastRenderedResponseText
-    ) {
-      log.debug("response: skip (no-op update)", {
-        msgId: this.responseMessageId,
-        draftId: this.responseDraftId,
-        accLen: text.length,
-      });
-      // Confirmed unchanged persistent message counts as acceptance without
-      // a new Telegram write. Draft-only no-ops do not.
-      if (this.responseMessageId !== undefined) this.markResponseAccepted();
-      return;
-    }
-
-    this.lastResponseEditTime = now;
-
-    try {
-      if (this.responseMessageId !== undefined) {
-        // Existing persistent message: edit it.
-        const messageId = this.responseMessageId;
-        const op: "editMessageText" = "editMessageText";
-        const inFlight = (async () => {
-          try {
-            await this.editResponseContent(messageId, text);
-            this.lastRenderedResponseText = text;
-            this.recordTelegramEvent({ type: "telegram", op, channel: "response", outcome: "success" });
-            log.debug("response: edited", {
-              msgId: messageId,
-              accLen: text.length,
-            });
-          } catch (err) {
-            await this.handleResponseError(err, op, text);
-            if (force && this.responseMessageId === undefined && text.length > 0) {
-              try {
-                const msg = await this.sendResponseContent(text);
-                this.responseMessageId = msg.message_id;
-                this.lastRenderedResponseText = text;
-                const fallbackOp: "sendRichMessage" | "sendMessage" = this.responseIsPlainText ? "sendMessage" : "sendRichMessage";
-                this.recordTelegramEvent({ type: "telegram", op: fallbackOp, channel: "response", outcome: "success" });
-                this.markResponseAccepted();
-              } catch (fallbackErr) {
-                throw fallbackErr;
-              }
-            }
-          }
-        })();
-        await this.editingResponse.track(inFlight);
-      } else if (this.responseDraftId !== undefined) {
-        // Active draft: update it with the latest text.
-        const draftId = this.responseDraftId;
-        const op: "sendRichMessageDraft" | "sendMessageDraft" = this.responseIsPlainText ? "sendMessageDraft" : "sendRichMessageDraft";
-        const inFlight = (async () => {
-          try {
-            await this.sendResponseDraft(text, draftId);
-            this.lastRenderedResponseText = text;
-            this.recordTelegramEvent({ type: "telegram", op, channel: "response", outcome: "success" });
-            log.debug("response: draft updated", {
-              draftId,
-              accLen: text.length,
-            });
-          } catch (err) {
-            await this.handleResponseError(err, op, text);
-          }
-        })();
-        await this.editingResponse.track(inFlight);
-      } else if (this.useDrafts) {
-        // No existing response: start a new streaming draft.
-        const draftId = this.nextDraftId++;
-        this.responseDraftId = draftId;
-        const op: "sendRichMessageDraft" | "sendMessageDraft" = this.responseIsPlainText ? "sendMessageDraft" : "sendRichMessageDraft";
-        const inFlight = (async () => {
-          try {
-            await this.sendResponseDraft(text, draftId);
-            this.lastRenderedResponseText = text;
-            this.recordTelegramEvent({ type: "telegram", op, channel: "response", outcome: "success" });
-            log.debug("response: draft created", {
-              draftId,
-              accLen: text.length,
-            });
-          } catch (err) {
-            await this.handleResponseError(err, op, text);
-          }
-        })();
-        await this.creatingResponse.track(inFlight);
-      } else {
-        // No existing response and drafts disabled: create a persistent message.
-        const initialContent = this.responsePayload(text);
-        const initialOp: "sendRichMessage" | "sendMessage" = initialContent.kind === "rich" ? "sendRichMessage" : "sendMessage";
-        const inFlight = (async () => {
-          try {
-            const msg = await this.sendResponseContent(text);
-            this.responseMessageId = msg.message_id;
-            // Seed the idempotence guard so a force-flush at agent_end
-            // with the same text becomes a no-op rather than a 400.
-            // Track the raw captured text (not the stripped render) so the
-            // guard compares raw-to-raw and correctly detects no-op edits.
-            this.lastRenderedResponseText = text;
-            this.recordTelegramEvent({ type: "telegram", op: initialOp, channel: "response", outcome: "success" });
-            this.markResponseAccepted();
-            log.debug("response: sent", {
-              msgId: msg.message_id,
-              accLen: text.length,
-            });
-          } catch (err) {
-            await this.handleResponseError(err, initialOp, text);
-          }
-        })();
-        await this.creatingResponse.track(inFlight);
-      }
-    } catch (err) {
-      await this.handleResponseError(err);
-    }
-  }
-
-  private async maybeFileEscape(
-    text: string = this.accumulatedText,
-    textWasDetached: boolean = false,
-  ): Promise<boolean> {
-    if (text.length <= BIG_OUTPUT_THRESHOLD) return false;
-
-    const summary =
-      text.slice(0, SUMMARY_PREFIX_LEN) +
-      "... [truncated, see attached reply.md]";
-    const tmpName = `goblin-reply-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.md`;
-    const tmpPath = join(tmpdir(), tmpName);
-
-    // If we were streaming a draft, finalize it with the summary so the user
-    // sees the summary bubble instead of the oversized draft text.
-    await this.finalizeResponse(summary);
-
-    let wrote = false;
-    let documentError: unknown = null;
-    try {
-      await writeFile(tmpPath, text, "utf-8");
-      wrote = true;
-      await this.bot.api.sendDocument(
-        this.chatId,
-        new InputFile(tmpPath, "reply.md"),
-        this.withThread(),
-      );
-    } catch (err) {
-      documentError = err;
-    } finally {
-      if (wrote) await unlink(tmpPath).catch(() => {});
-    }
-
-    // Preserve only text that arrived after this flush's snapshot. A normal
-    // flush retains the snapshot in `accumulatedText`, so remove that prefix;
-    // otherwise each concurrent delta would restore the entire uploaded body
-    // and trigger another reply.md upload forever. A boundary seal has already
-    // detached its next-segment tail before calling this method.
-    const overflow = textWasDetached
-      ? this.accumulatedText
-      : this.accumulatedText.startsWith(text)
-        ? this.accumulatedText.slice(text.length)
-        : this.accumulatedText;
-
-    if (documentError !== null) {
-      // Document upload failures are not recorded as `sendMessage` metrics.
-      // Still apply response error handling (e.g. backoff / topic-not-found).
-      await this.handleApiError(documentError, "response", null, () => this.resetResponse());
-      this.markResponseFailed(documentError);
-      // The active text has been "spent" — clear regardless of outcome.
-      this.resetResponse();
-      this.accumulatedText = overflow;
-      return true;
-    }
-    // Document upload confirmed. Record tentative acceptance without clearing
-    // a prior finalize failure: in draft mode a failed summary finalize must
-    // still prevent acknowledgement even though the file landed.
-    this.responseAccepted = true;
-
-    // In persistent mode there is no draft to finalize above, so surface the
-    // summary. If a response message already exists, edit it in place so the
-    // user doesn't see a separate partial bubble; otherwise send a new one.
-    if (this.responseDraftId === undefined) {
-      const summaryContent = this.responsePayload(summary);
-      const summaryOp: "sendRichMessage" | "sendMessage" | "editMessageText" =
-        this.responseMessageId !== undefined
-          ? "editMessageText"
-          : summaryContent.kind === "rich"
-            ? "sendRichMessage"
-            : "sendMessage";
-      try {
-        if (this.responseMessageId !== undefined) {
-          await this.editResponseContent(this.responseMessageId, summary);
-        } else {
-          const msg = await this.sendResponseContent(summary);
-          this.responseMessageId = msg.message_id;
-        }
-        this.recordTelegramEvent({ type: "telegram", op: summaryOp, channel: "response", outcome: "success" });
-        this.markResponseAccepted();
-      } catch (err) {
-        await this.handleResponseError(err, summaryOp, summary);
-      }
-    }
-
-    // The active in-memory text has been "spent" — clear regardless of
-    // outcome so we do not loop trying to upload it again. Restore any
-    // overflow that belongs to the next segment.
-    this.resetResponse();
-    this.accumulatedText = overflow;
-    return true;
-  }
-
-  private async handleResponseError(
-    err: unknown,
-    op?: "sendMessage" | "sendRichMessage" | "sendMessageDraft" | "sendRichMessageDraft" | "editMessageText",
-    text: string = this.accumulatedText,
-  ): Promise<void> {
-    // Rich-message parse error: strip markdown and retry as plain text. The
-    // sticky `responseIsPlainText` flag keeps subsequent sends/edits/drafts plain
-    // for the rest of this response message's lifetime, so we don't loop.
-    if (!this.responseIsPlainText && isParseError(err)) {
-      this.responseIsPlainText = true;
-      const initialOp: "sendMessage" | "sendRichMessage" | "sendMessageDraft" | "sendRichMessageDraft" | "editMessageText" =
-        op ?? (this.responseMessageId === undefined ? (this.responseDraftId !== undefined ? "sendRichMessageDraft" : "sendRichMessage") : "editMessageText");
-      const e = err as { error_code?: number; description?: string };
-      this.recordTelegramEvent({
-        type: "telegram",
-        op: initialOp,
-        channel: "response",
-        outcome: "error",
-        errorCode: e.error_code,
-        errorDescription: e.description ?? String(err),
-      });
-      log.warn("response rich-message parse error, falling back to plain text", {
-        description: e.description,
-      });
-      // Retry once with stripped markdown as a plain message/draft.
-      // Derive the retry target from the initial operation, not from current
-      // identifiers, so finalizing a draft (sendRichMessage) falls back to a
-      // persistent plain message instead of re-updating the draft.
-      const retryWasDraft =
-        initialOp === "sendMessageDraft" || initialOp === "sendRichMessageDraft";
-      const retryWasEdit = initialOp === "editMessageText";
-      const retryOp: "sendMessage" | "editMessageText" | "sendMessageDraft" =
-        retryWasDraft ? "sendMessageDraft" : retryWasEdit ? "editMessageText" : "sendMessage";
-      try {
-        if (retryWasDraft && this.responseDraftId !== undefined) {
-          await this.sendResponseDraft(text, this.responseDraftId);
-        } else if (!retryWasEdit) {
-          const msg = await this.sendResponseContent(text);
-          this.responseMessageId = msg.message_id;
-        } else {
-          await this.editResponseContent(this.responseMessageId!, text);
-        }
-        this.lastRenderedResponseText = text;
-        this.recordTelegramEvent({ type: "telegram", op: retryOp, channel: "response", outcome: "success" });
-        if (retryOp === "sendMessage" || retryOp === "editMessageText") this.markResponseAccepted();
-        return;
-      } catch (retryErr) {
-        log.warn("response plain-text retry failed", { error: String(retryErr) });
-        // Fall through to handleApiError for the retry error.
-        await this.handleApiError(retryErr, "response", retryOp, () => this.clearResponseIdentifiers());
-        return;
-      }
-    }
-    const actualOp: "sendMessage" | "sendRichMessage" | "sendMessageDraft" | "sendRichMessageDraft" | "editMessageText" =
-      op ?? (this.responseMessageId === undefined ? (this.responseDraftId !== undefined ? (this.responseIsPlainText ? "sendMessageDraft" : "sendRichMessageDraft") : (this.responseIsPlainText ? "sendMessage" : "sendRichMessage")) : "editMessageText");
-    await this.handleApiError(err, "response", actualOp, () => this.clearResponseIdentifiers());
-  }
-
-  /**
-   * Shared error policy for status and response flushes. 429 → log + skip;
-   * 400 message-gone → reset id via `onMessageGone`; otherwise log.
-   * Also detects "topic not found" errors to trigger orphan archival.
-   * Records a `telegram` metrics event when `op` is provided.
-   */
-  private async handleApiError(
-    err: unknown,
-    kind: "status" | "response",
-    op: "sendMessage" | "sendRichMessage" | "sendMessageDraft" | "sendRichMessageDraft" | "editMessageText" | null,
-    onMessageGone: () => void,
-  ): Promise<void> {
-    const channel = kind === "status" ? "status" : "response";
-    const { outcome, errorCode, errorDescription, retryAfterSec } = classifyTelegramError(err);
-
-    if (kind === "response") {
-      if (outcome === "message_not_modified") {
-        this.markResponseAccepted();
-      } else if (outcome === "message_gone") {
-        // Recoverable: the next flush recreates. Do not mark failed; final
-        // acceptance fails if no persistent write is ever confirmed.
-      } else if (op === null) {
-        // Document/file fallback failure.
-        this.markResponseFailed(err);
-      } else if (op === "sendMessageDraft" || op === "sendRichMessageDraft") {
-        // Streaming draft preview failure alone never decides acceptance;
-        // the required persistent finalize decides.
-      } else {
-        this.markResponseFailed(err);
-      }
-    }
-
-    if (op !== null) {
-      this.recordTelegramEvent({
-        type: "telegram",
-        op,
-        channel,
-        outcome,
-        errorCode,
-        errorDescription,
-        retryAfterSec,
-      });
-    }
-
-    if (outcome === "rate_limited") {
-      // Honor `retry_after` (seconds) so we don't keep slamming the API and
-      // making the server angrier. Store the synthetic "last edit" time that
-      // makes the next flush eligible exactly when retry_after expires.
-      if (retryAfterSec && retryAfterSec > 0) {
-        const until = this.now() + retryAfterSec * 1000;
-        if (kind === "response") {
-          this.lastResponseEditTime = Math.max(this.lastResponseEditTime, until - this.responseThrottleMs);
-        } else {
-          this.lastEditTime = Math.max(this.lastEditTime, until - this.statusThrottleMs);
-        }
-      }
-      log.warn(`${kind} edit rate-limited, backing off`, {
-        description: errorDescription ?? String(err),
-        retryAfterSec,
-      });
-      return;
-    }
-
-    // Detect "topic not found" errors (distinct from "message not found")
-    // Telegram returns these when the topic/thread ID is invalid (deleted topic)
-    if (outcome === "topic_not_found") {
-      log.warn(`${kind} topic not found, archiving orphaned scope`, { description: errorDescription });
-      if (!this.topicNotFoundReported && this.onTopicNotFound) {
-        this.topicNotFoundReported = true;
-        try {
-          await this.onTopicNotFound();
-        } catch (cbErr) {
-          log.error("onTopicNotFound callback failed", { error: String(cbErr) });
-        }
-      }
-      return;
-    }
-
-    if (outcome === "message_gone") {
-      log.warn(`${kind} message gone, will re-create on next flush`, {
-        description: errorDescription,
-      });
-      onMessageGone();
-      return;
-    }
-    if (outcome === "message_not_modified") {
-      // Telegram already has the desired content — duplicate edit is a
-      // no-op, not a failure. Belt-and-braces alongside the local
-      // `lastRendered*Text` guards: covers any edge case where the
-      // guard misses (e.g. concurrent edits with the same final text).
-      log.debug(`${kind} edit not modified, skipping`, { description: errorDescription });
-      return;
-    }
-    log.warn(`${kind} flush failed`, { description: errorDescription ?? String(err) });
-  }
-
-  /** Internal accessors for tests — not part of the public API. */
-  _state() {
-    return {
-      bot: this.bot,
-      chatId: this.chatId,
-      visibility: this.visibility,
-      statusMessageId: this.statusMessageId,
-      responseMessageId: this.responseMessageId,
-      responseDraftId: this.responseDraftId,
-      accumulatedText: this.accumulatedText,
-      slots: Array.from(this.slots.entries()),
-      statusFrozen: this.statusFrozen,
-      placeholderSent: this.placeholderSent,
-      lastEditTime: this.lastEditTime,
-      lastResponseEditTime: this.lastResponseEditTime,
-      isStreaming: this.isStreaming,
-      chatActionHandle: this.chatActionHandle,
-      metrics: this.metrics,
-      useDrafts: this.useDrafts,
-      responseIsPlainText: this.responseIsPlainText,
-    };
-  }
+export class CoalescingBuffer<T> {
+	private buckets = new Map<string, Bucket<T>>();
+	// Per-key async flush in flight — the next bucket for that key
+	// waits on it. `deferred` marks a key whose timer already elapsed
+	// during the in-flight flush: it fires the moment the flush settles.
+	private inflight = new Map<string, Promise<boolean>>();
+	private deferred = new Set<string>();
+
+	constructor(
+		private windowMs: number,
+		private flush: (key: string, items: T[]) => void | Promise<void>,
+		private maxWaitMs: number = windowMs * 4,
+	) {}
+
+	push(key: string, item: T): void {
+		const existing = this.buckets.get(key);
+		if (existing) {
+			// Quiet window resets; the ceiling from the first push stands.
+			clearTimeout(existing.timer);
+			existing.items.push(item);
+			existing.timer = setTimeout(() => this.fire(key), this.windowMs);
+		} else {
+			this.buckets.set(key, {
+				items: [item],
+				timer: setTimeout(() => this.fire(key), this.windowMs),
+				maxTimer: setTimeout(() => this.fireMax(key), this.maxWaitMs),
+				firstAt: Date.now(),
+				attempts: 0,
+			});
+		}
+	}
+
+	// Flush every pending bucket now, then wait out in-flight flushes —
+	// shutdown calls this so buffered input reaches history instead of
+	// dying in memory with the process. Async now: it also awaits every
+	// flush a deferred timer started mid-drain, and throws after the
+	// wait so a shutdown path learns which lanes are still owed a flush.
+	async drain(): Promise<void> {
+		let failed = 0;
+		const started = new Set<Promise<boolean>>();
+		for (const [key, bucket] of [...this.buckets]) {
+			clearTimeout(bucket.timer);
+			clearTimeout(bucket.maxTimer);
+			const r = this.fire(key);
+			if (r === false) failed += 1;
+			else if (r instanceof Promise) started.add(r);
+		}
+		while (this.inflight.size > 0 || started.size > 0) {
+			const waits = [...new Set([...started, ...this.inflight.values()])];
+			started.clear();
+			for (const ok of await Promise.all(waits)) {
+				if (!ok) failed += 1;
+			}
+		}
+		if (failed > 0) {
+			throw new Error(`buffer drain failed for ${failed} conversations — messages retained for retry`);
+		}
+	}
+
+	private fireMax(key: string): void {
+		const bucket = this.buckets.get(key);
+		if (!bucket) return;
+		log.info("coalescing buffer max-wait — flushing without quiet window", {
+			key,
+			items: bucket.items.length,
+			waitedMs: Date.now() - bucket.firstAt,
+		});
+		clearTimeout(bucket.timer);
+		this.fire(key);
+	}
+
+	private fire(key: string): boolean | Promise<boolean> {
+		const bucket = this.buckets.get(key);
+		if (!bucket) return true;
+		if (this.inflight.has(key)) {
+			// An async flush for this lane is still running — its settle
+			// handler fires this bucket immediately after.
+			this.deferred.add(key);
+			return true;
+		}
+		clearTimeout(bucket.timer);
+		clearTimeout(bucket.maxTimer);
+		this.buckets.delete(key);
+		// fire() runs in a timer — a throwing flush would escape as an
+		// uncaught exception and kill the process mid-update.
+		let result: void | Promise<void>;
+		try {
+			result = this.flush(key, bucket.items);
+		} catch (err) {
+			// submit did not admit this batch. Restore it before any new
+			// arrivals (including a reentrant push during flush), then
+			// retry; a timer failure must never discard acknowledged input.
+			this.retain(key, bucket, err);
+			return false;
+		}
+		if (result === undefined || result === null) return true;
+		const p = Promise.resolve(result).then(
+			(): boolean => true,
+			(err: unknown): boolean => {
+				// An async rejection is the same failure a sync throw was —
+				// the batch is retained and retried on the backoff ladder.
+				this.retain(key, bucket, err);
+				return false;
+			},
+		);
+		this.inflight.set(key, p);
+		void p.finally(() => {
+			this.inflight.delete(key);
+			if (this.deferred.delete(key)) this.fire(key);
+		});
+		return p;
+	}
+
+	// A failed flush retains its batch for retry: the bucket goes back,
+	// merged front-first with anything that arrived while the flush ran.
+	// Consecutive failures back off exponentially — a persistently
+	// failing flush (full disk, dead history file) must not hot-loop
+	// once a second forever. Doubling from the base delay, capped at
+	// five minutes; a successful flush deletes the bucket, so any
+	// later batch starts the ladder over. The deferred flag is consumed
+	// — the retry timer is the fire, so the backoff ladder is not
+	// bypassed.
+	private retain(key: string, bucket: Bucket<T>, err: unknown): void {
+		const newer = this.buckets.get(key);
+		if (newer) {
+			clearTimeout(newer.timer);
+			clearTimeout(newer.maxTimer);
+		}
+		this.deferred.delete(key);
+		const attempts = bucket.attempts + 1;
+		const retryMs = Math.min(
+			Math.max(this.windowMs, 1_000) * 2 ** (attempts - 1),
+			300_000,
+		);
+		this.buckets.set(key, {
+			items: [...bucket.items, ...(newer?.items ?? [])],
+			timer: setTimeout(() => this.fire(key), retryMs),
+			maxTimer: setTimeout(() => this.fireMax(key), Math.max(retryMs, this.maxWaitMs)),
+			firstAt: bucket.firstAt,
+			attempts,
+		});
+		log.error("buffer flush failed — batch retained for retry", err, {
+			key,
+			items: bucket.items.length,
+			attempts,
+			retryMs,
+		});
+	}
 }

@@ -1,7 +1,7 @@
 // Composition root: config → auth → conversations → bot → http.
 
 import { loadAuth } from "./auth.ts";
-import { contextLimit, ensureOpenRouterCatalog, inputModalities } from "./agent/models-dev.ts";
+import { contextLimit, ensureOpenRouterCatalog, inputModalities, inputModalitiesCached } from "./agent/models-dev.ts";
 import { systemPromptFor } from "./agent/prompt.ts";
 import { observedModel, carriesMedia, resolveModel, thinkingOptions } from "./agent/providers.ts";
 import type { MediaPosition } from "./agent/attachments.ts";
@@ -10,7 +10,7 @@ import { generateText } from "ai";
 import { homedir } from "node:os";
 import { probeFfmpeg, transcribeAudio, transcriptionModel } from "./agent/transcribe.ts";
 import { synthesizeSpeech } from "./agent/tts.ts";
-import { makeTools, toolNames } from "./agent/tools/mod.ts";
+import { makeTools, toolNames, type VisionToolDeps } from "./agent/tools/mod.ts";
 import { makePrivateSender } from "./agent/tools/program.ts";
 import {
 	ensureHomeLayout,
@@ -234,6 +234,27 @@ async function boot() {
 		return transcribeAudio(await transcriptionModel(cfg, auth), file);
 	};
 
+	// The vision tool's per-turn gate (design/tools.md → Vision). mode
+	// "auto" (default) registers it only while the chat model can't
+	// consume images itself — the same two gates attachment
+	// materialization applies: catalog modality AND the provider pipe.
+	// A cold catalog counts as blind — a spare tool beats a blind agent.
+	// mode "always" keeps it for vision-capable models too: a file on
+	// disk is invisible regardless (tool results carry no image bytes).
+	const visionDepsFor = (convId: string): VisionToolDeps | undefined => {
+		const cfg = configRef.current;
+		if (!cfg.vision) return undefined;
+		if (cfg.vision.mode !== "always") {
+			const { provider, modelId } = splitModelRef(cfg.model);
+			const mods = inputModalitiesCached(provider, modelId);
+			const kind = cfg.providers[provider]?.kind ?? "";
+			if (mods !== null && mods.has("image") && carriesMedia(kind, "image/jpeg", "user")) {
+				return undefined;
+			}
+		}
+		return { configRef, auth, conversation: convId };
+	};
+
 	const runtime = new Runtime({
 		store,
 		async buildStep(conv, tools) {
@@ -394,13 +415,11 @@ async function boot() {
 				// Past-chat search rides the store — always present, local
 				// state, no config block. Excluded topics recall nothing.
 				{ store, isExcluded: () => conv.memoryExcluded },
-				// Image Q&A joins the set with the vision block — same
-				// live-read rule as transcribe/search. Threads are
+				// Image Q&A joins the set per the vision block's mode —
+				// same live-read rule as transcribe/search. Threads are
 				// process-global; a model change inside the block drops
 				// them on the next call (src/agent/vision.ts).
-				configRef.current.vision !== undefined
-					? { configRef, auth, conversation: conv.id }
-					: undefined,
+				visionDepsFor(conv.id),
 			);
 		},
 		...(memoryClient && memoryBootConfig

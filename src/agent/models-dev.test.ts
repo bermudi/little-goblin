@@ -7,6 +7,7 @@ import {
 	_resetOpenRouterForTest,
 	ensureOpenRouterCatalog,
 	inputModalities,
+	inputModalitiesCached,
 	contextLimit,
 	readOpenRouterCache,
 } from "./models-dev.ts";
@@ -106,6 +107,45 @@ describe("models.dev catalog", () => {
 			expect(mods.has("image")).toBe(true);
 			expect(limit).toBe(123456);
 			expect(calls).toBe(1);
+		} finally {
+			globalThis.fetch = prevFetch;
+			_resetModelsDevForTest();
+		}
+	});
+
+	// The sync read is the vision tool's registration gate — tool
+	// building can't await a fetch. Cold reads null and kick the fetch;
+	// warm reads match the async path, including the cross-provider
+	// fallback scan and the text-only default for unlisted models.
+	test("inputModalitiesCached: cold → null + kicks fetch; warm → the async answer", async () => {
+		const dir = useHome();
+		mkdirSync(join(dir, "state"), { recursive: true });
+		_resetModelsDevForTest();
+		const prevFetch = globalThis.fetch;
+		let calls = 0;
+		globalThis.fetch = (() => {
+			calls++;
+			return Promise.resolve(
+				new Response(
+					JSON.stringify({
+						testprov: {
+							models: {
+								seer: { modalities: { input: ["text", "image"] } },
+								blind: { modalities: { input: ["text"] } },
+							},
+						},
+					}),
+				),
+			);
+		}) as unknown as typeof fetch;
+		try {
+			expect(inputModalitiesCached("testprov", "seer")).toBeNull();
+			await inputModalities("testprov", "seer"); // warm via the kicked fetch
+			expect(calls).toBe(1);
+			expect(inputModalitiesCached("testprov", "seer")!.has("image")).toBe(true);
+			expect(inputModalitiesCached("testprov", "blind")!.has("image")).toBe(false);
+			expect(inputModalitiesCached("testprov", "ghost")).toEqual(new Set(["text"]));
+			expect(inputModalitiesCached("other", "seer")!.has("image")).toBe(true);
 		} finally {
 			globalThis.fetch = prevFetch;
 			_resetModelsDevForTest();

@@ -46,6 +46,7 @@
 /** TTS block while editing — numeric-ish fields stay strings. */
 /** @typedef {{ voice: string, rate: string, voices: string[] }} TtsDraft */
 /** @typedef {{ model: string, auth: string }} TrDraft */
+/** @typedef {{ model: string, maxTokens: number, mode: "auto" | "always" }} VisDraft */
 /** @typedef {{ baseUrl: string, bankId: string, auth: string, budget: string, tokens: string, timeout: string }} MemDraft */
 /**
  * The page's editable mirror of the config. null blocks mean "unset" —
@@ -57,6 +58,7 @@
  * @property {string} thinking
  * @property {TtsDraft | null} tts
  * @property {TrDraft | null} transcription
+ * @property {VisDraft | null} vision
  * @property {ChainEntry[] | null} search
  * @property {ChainEntry[] | null} fetch
  * @property {number[]} allowedUsers
@@ -143,7 +145,7 @@ const VOICE_SUGGESTIONS = [
 /** @type {DraftState} */
 const EMPTY_DRAFT = {
   model: "", titleModel: "", favorites: [], thinking: "medium",
-  tts: null, transcription: null, search: null, fetch: null,
+  tts: null, transcription: null, vision: null, search: null, fetch: null,
   allowedUsers: [], publicUrl: "", apiRoot: "", dmGap: "45", port: "8787", logLevel: "info", memory: null
 };
 // cfg mirrors the server schema for everything this page manages.
@@ -163,6 +165,7 @@ let me = 0;
 // through the toggle; the save simply sends "").
 /** @type {TtsDraft | null} */ let lastTts = null;
 /** @type {TrDraft | null} */ let lastTranscription = null;
+/** @type {VisDraft | null} */ let lastVision = null;
 /** @type {MemDraft | null} */ let lastMemory = null;
 /** @type {ChainEntry[] | null} */ let lastSearch = null;
 /** @type {ChainEntry[] | null} */ let lastFetch = null;
@@ -370,10 +373,22 @@ function initChips(opts) {
 // ---------- model sheet ----------
 /** @type {string} */
 let sheetMode = "model";
-function sheetTarget() { return sheetMode === "title" ? cfg.titleModel : cfg.model; }
+function sheetTarget() {
+  if (sheetMode === "title") return cfg.titleModel;
+  if (sheetMode === "vision") return cfg.vision ? cfg.vision.model : "";
+  return cfg.model;
+}
 /** @param {string} ref */
 function pickModel(ref) {
   if (sheetMode === "title") { cfg.titleModel = ref; $("titleVal").textContent = ref || "Off"; }
+  else if (sheetMode === "vision") {
+    if (ref === "") { lastVision = cfg.vision; cfg.vision = null; }
+    else {
+      const prev = cfg.vision || lastVision || { maxTokens: 2000, mode: "auto" };
+      cfg.vision = { model: ref, maxTokens: prev.maxTokens, mode: prev.mode };
+    }
+    $("visionVal").textContent = ref || "Off";
+  }
   else { cfg.model = ref; $("modelVal").textContent = ref; refreshThinking(); }
   markDirty();
   closeSheet();
@@ -393,11 +408,11 @@ function sheetRow(ref, label, current) {
 /** @param {string} mode */
 function openSheet(mode) {
   sheetMode = mode;
-  $("sheetTitle").textContent = mode === "title" ? "Topic-title model" : "Default model";
+  $("sheetTitle").textContent = mode === "title" ? "Topic-title model" : mode === "vision" ? "Vision model" : "Default model";
   const body = $("sheetBody");
   body.replaceChildren();
   const current = sheetTarget();
-  if (mode === "title") body.append(sheetRow("", "Off", current));
+  if (mode === "title" || mode === "vision") body.append(sheetRow("", "Off", current));
   const favs = cfg.favorites;
   if (favs.length) {
     body.append(el("div", "mgroup", "Favorites"));
@@ -423,6 +438,7 @@ function closeSheet() {
 function initSheet() {
   $("modelBtn").onclick = () => openSheet("model");
   $("titleBtn").onclick = () => openSheet("title");
+  $("visionBtn").onclick = () => openSheet("vision");
   $("sheetClose").onclick = closeSheet;
   $("veil").onclick = () => { closeSheet(); closeDocSheet(); };
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeSheet(); closeDocSheet(); } });
@@ -576,6 +592,7 @@ function providerRefs(name) {
   const refs = [];
   if (cfg.model.indexOf(name + "/") === 0) refs.push("default model");
   if (cfg.titleModel.indexOf(name + "/") === 0) refs.push("topic titles");
+  if (cfg.vision && cfg.vision.model.indexOf(name + "/") === 0) refs.push("vision");
   for (const f of cfg.favorites) if (f.indexOf(name + "/") === 0) { refs.push("favorites"); break; }
   return refs;
 }
@@ -671,6 +688,7 @@ function validate() {
   if (!cfg.model) return "Pick a default model.";
   if (cfg.tts && !cfg.tts.voice.trim()) return "Text to speech is on — set a voice.";
   if (cfg.transcription && !cfg.transcription.auth.trim()) return "Transcription is on — set a secret name.";
+  if (cfg.vision && !cfg.vision.model.trim()) return "Vision is on — pick a model.";
   if (cfg.search) {
     if (!cfg.search.length) return "Search is on — add at least one provider, or switch it off.";
     for (const [i, e] of cfg.search.entries()) {
@@ -748,6 +766,11 @@ function buildBody() {
       kind: "groq",
       model: cfg.transcription.model.trim() || "whisper-large-v3-turbo",
       auth: cfg.transcription.auth.trim()
+    },
+    vision: cfg.vision === null ? "" : {
+      model: cfg.vision.model.trim(),
+      maxTokens: cfg.vision.maxTokens,
+      mode: cfg.vision.mode
     },
     search: cfg.search === null ? "" : chainOut(cfg.search, SEARCH_META),
     fetch: cfg.fetch === null ? "" : chainOut(cfg.fetch, FETCH_META),
@@ -1172,6 +1195,7 @@ function populate(c) {
     thinking: c.thinking || "medium",
     tts: c.tts ? { voice: c.tts.voice || "", rate: c.tts.rate || "", voices: (c.tts.voices || []).slice() } : null,
     transcription: c.transcription ? { model: c.transcription.model || "", auth: c.transcription.auth || "" } : null,
+    vision: c.vision ? { model: c.vision.model || "", maxTokens: c.vision.maxTokens || 2000, mode: c.vision.mode || "auto" } : null,
     // The config's chain-entry arms differ (some keyless) — widen once;
     // absent fields read as undefined either way.
     search: Array.isArray(c.search)
@@ -1212,6 +1236,7 @@ function populate(c) {
   // Chat
   $("modelVal").textContent = cfg.model;
   $("titleVal").textContent = cfg.titleModel || "Off";
+  $("visionVal").textContent = cfg.vision ? cfg.vision.model : "Off";
   // Voice — toggles keep the block's last content (lastTts etc.) so
   // flipping off is never "delete my work"; paint* re-syncs the controls
   // with the draft state on every toggle.

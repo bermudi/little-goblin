@@ -136,6 +136,9 @@ export interface ConfigPostBody {
 	thinking: ThinkingLevel;
 	tts: "" | { kind: "edge"; voice: string; rate: string | undefined; voices: string[] | undefined };
 	transcription: "" | { kind: "groq"; model: string; auth: string };
+	// The vision tool's image-Q&A model — "" clears, like titleModel.
+	// mode is a hand-edit escape hatch the page round-trips untouched.
+	vision: "" | { model: string; maxTokens: number; mode?: "auto" | "always" };
 	search: "" | Array<{ kind: string; auth?: string }>;
 	fetch: "" | Array<{ kind: string; auth?: string }>;
 	allowedUsers: number[];

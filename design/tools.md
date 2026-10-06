@@ -5,11 +5,11 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 ## Tools (v1)
 
-Hand-rolled, zod-validated, fourteen:
+Hand-rolled, zod-validated, fifteen:
 
 `read_file` `write_file` `edit_file` `bash` (timeout) `speak` `transcribe`
-`program` `delegate` `mail` `send_file` `memory_search` `search` `fetch`
-`history_search`
+`vision` `program` `delegate` `mail` `send_file` `memory_search` `search`
+`fetch` `history_search`
 
 All tools run in the deployment workspace — conversations have no cwd and
 there is no `/cd`. Working elsewhere is the agent's own business (`cd x &&
@@ -105,20 +105,33 @@ predecessor gave.
   that arrived through a channel as history. Files the agent itself
   produces or meets (a browser-skill screenshot, an ffmpeg-extracted
   frame, a downloaded image) had exactly one consumer left: the
-  operator's eyes. The vision tool is the second. It is therefore
-  registered for every conversation when configured — no
-  vision-capable self-hiding like pi's extension, because pi's read
-  tool can put an image in front of a vision model and goblin's
+  operator's eyes. The vision tool is the second.
+- **Registration is per-mode, live-read each turn** (ruling
+  2026-10-05, replacing the always-on-when-configured draft). The
+  block's `mode` field defaults to `"auto"`: the tool joins the set
+  only while the conversation's chat model can't consume images —
+  the same two gates attachment materialization applies, catalog
+  modality AND the provider pipe (`inputModalitiesCached` +
+  `carriesMedia`, user position). A cold catalog counts as blind — a
+  spare tool beats a blind agent. `mode: "always"` keeps the original
+  ruling available: registered for every conversation, because a file
+  on disk is invisible to a vision-capable chat model too — pi's read
+  tool could put an image in front of a vision model and goblin's
   cannot (tool results are text, above).
 - **Config**: a `vision` block (`model` — a "<provider>/<model-id>"
   ref through the same registry as the daily driver, so auth rides
-  the provider's own `auth.jsonl` ref; `maxTokens`, default 2000).
-  Absent = the tool is not in the set; hand-edited only, like
-  `delegation` — the mini app does not get a surface. The ref is
+  the provider's own `auth.jsonl` ref; `maxTokens`, default 2000;
+  `mode`, default `"auto"`). Absent or `""` = the tool is not in the
+  set. The mini app gets a Vision row on the model-sheet pattern —
+  the picker chooses the answering model, Off clears to `""`; `mode`
+  stays a hand edit the page round-trips untouched. The ref is
   provider-validated in config `superRefine` like `model` and
   `titleModel`; it is deliberately not capability-gated at load
   time — input modalities are runtime catalog knowledge, and the
   provider fails loud on a text-only model.
+- **Thinking pinned off** for the Q&A calls — a forced-thinking
+  vision model answers in prose anyway and burns a reasoning
+  round-trip per question.
 - **The call**: one `generateText` per question — system prompt
   refuses instructions embedded in the image, prior turns replay as
   plain text with the image riding only the final user turn,

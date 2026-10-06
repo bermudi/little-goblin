@@ -63,7 +63,7 @@ function _testConfig(vision: { model: string; maxTokens?: number }): Config {
 		telegram: { dmGapMinutes: 45 },
 		http: { port: 8787 },
 		logLevel: "info",
-		vision: { model: vision.model, maxTokens: vision.maxTokens ?? 2000 },
+		vision: { model: vision.model, maxTokens: vision.maxTokens ?? 2000, mode: "auto" },
 	};
 }
 

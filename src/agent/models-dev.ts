@@ -78,6 +78,29 @@ export async function inputModalities(provider: string, modelId: string): Promis
 	return new Set(["text"]);
 }
 
+// Sync sibling of inputModalities for gates that can't await — tool
+// registration runs before buildStep's catalog fetch resolves. Reads
+// only the in-memory catalog: null when cold (and kicks the fetch so
+// the next call sees the real answer), text-only when the model is
+// unlisted — same conservative reading as the async path.
+export function inputModalitiesCached(
+	provider: string,
+	modelId: string,
+): Set<string> | null {
+	const cat = modelsDev.current();
+	if (!cat) {
+		if (!modelsDev.backoffArmed()) void modelsDev.ensure();
+		return null;
+	}
+	const direct = cat[provider]?.models[modelId]?.modalities?.input;
+	if (direct) return new Set(direct);
+	for (const p of Object.values(cat)) {
+		const found = p.models[modelId]?.modalities?.input;
+		if (found) return new Set(found);
+	}
+	return new Set(["text"]);
+}
+
 // Context window (tokens) for "<provider>/<model-id>" as configured, same
 // lookup rule as inputModalities. Null when the catalog is cold or doesn't
 // list the model — callers treat null as "unknown", never "unlimited".

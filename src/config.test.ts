@@ -149,7 +149,7 @@ describe("goblin.json5", () => {
 		expect(() => loadConfig()).toThrow('provider "other"');
 	});
 
-	test("vision: absent by default, maxTokens default, model provider-validated", () => {
+	test("vision: absent by default, defaults + mode, \"\" clears, model provider-validated", () => {
 		const dir = useHome();
 		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"},openrouter:{kind:"openrouter",auth:"openrouter"}},model:"zai/glm-4.6",allowedUsers:[7]`;
 		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
@@ -158,12 +158,17 @@ describe("goblin.json5", () => {
 		expect(loadConfig()!.vision).toEqual({
 			model: "openrouter/google/gemini-2.5-flash",
 			maxTokens: 2000,
+			mode: "auto",
 		});
-		writeFileSync(join(dir, "goblin.json5"), `${base},vision:{model:"zai/glm-4.6",maxTokens:512}}`);
-		expect(loadConfig()!.vision).toEqual({ model: "zai/glm-4.6", maxTokens: 512 });
+		writeFileSync(join(dir, "goblin.json5"), `${base},vision:{model:"zai/glm-4.6",maxTokens:512,mode:"always"}}`);
+		expect(loadConfig()!.vision).toEqual({ model: "zai/glm-4.6", maxTokens: 512, mode: "always" });
+		writeFileSync(join(dir, "goblin.json5"), `${base},vision:""}`);
+		expect(loadConfig()!.vision).toBeUndefined();
 		writeFileSync(join(dir, "goblin.json5"), `${base},vision:{model:"other/x"}}`);
 		expect(() => loadConfig()).toThrow('provider "other"');
 		writeFileSync(join(dir, "goblin.json5"), `${base},vision:{model:"zai/glm-4.6",maxTokens:0}}`);
+		expect(() => loadConfig()).toThrow();
+		writeFileSync(join(dir, "goblin.json5"), `${base},vision:{model:"zai/glm-4.6",mode:"sometimes"}}`);
 		expect(() => loadConfig()).toThrow();
 	});
 

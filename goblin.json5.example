@@ -87,6 +87,10 @@
   // vision: {
   //   model: "openrouter/google/gemini-2.5-flash",
   //   maxTokens: 2000, // default
+  //   // "auto" (default) registers the tool only while the chat model
+  //   // can't consume images; "always" keeps it for vision-capable
+  //   // models too — a file on disk is invisible to either.
+  //   mode: "auto",
   // },
 
   // --- Web access ---

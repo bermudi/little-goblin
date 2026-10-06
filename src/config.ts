@@ -292,10 +292,15 @@ export type MemoryConfig = z.infer<typeof memoryConfigSchema>;
 // Image Q&A (DESIGN.md, Tools → Vision) — absent = no vision tool.
 // `model` is a "<provider>/<model-id>" chat ref resolved through the
 // same registry as the daily driver (auth rides the provider's own
-// auth.jsonl ref, never this block). Hand-edited only, like delegation.
+// auth.jsonl ref, never this block). mode "auto" (default) puts the
+// tool in the set only while the conversation's chat model can't
+// consume images; "always" keeps it for vision-capable models too — a
+// file on disk is invisible to either (tool results carry no image
+// bytes).
 export const visionConfigSchema = z.object({
 	model: z.string().min(1),
 	maxTokens: z.number().int().min(1).max(32_768).default(2000),
+	mode: z.enum(["auto", "always"]).default("auto"),
 });
 export type VisionConfig = z.infer<typeof visionConfigSchema>;
 
@@ -464,9 +469,12 @@ const configSchema = z
 			])
 			.transform((v) => (v === "" ? undefined : v))
 			.optional(),
-		// Image Q&A behind the vision tool — same optional-block rule as
-		// search: absent = the tool is not in the set. Live-read per turn.
-		vision: visionConfigSchema.optional(),
+		// Image Q&A behind the vision tool — "" means unset (mini-app
+		// clearing convention), absent the same. Live-read per turn.
+		vision: z
+			.union([visionConfigSchema, z.literal("")])
+			.transform((v) => (v === "" ? undefined : v))
+			.optional(),
 		// Web search providers (DESIGN.md, "Web access"). Absent or "" →
 		// the search tool is not in the set. One entry or an ordered list:
 		// first is primary, the rest are explicit fallbacks (transport/

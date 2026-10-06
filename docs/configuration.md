@@ -87,7 +87,7 @@ upload cap. Details in [Voice](voice.md).
 ### Vision
 
 ```json5
-// vision: { model: "openrouter/google/gemini-2.5-flash", maxTokens: 2000 },
+// vision: { model: "openrouter/google/gemini-2.5-flash", maxTokens: 2000, mode: "auto" },
 ```
 
 Off when unset. With a `vision` block, the bot gets a `vision` tool: it
@@ -98,6 +98,12 @@ file's content (images you send in chat are already visible to
 vision-capable models); `followUp: true` continues the previous thread
 about the same image. The model ref uses the same `providers` map as your
 daily driver, and its output is capped by `maxTokens` (default 2000).
+
+`mode` decides when the tool is in the set: `"auto"` (default) registers
+it only while the chat model can't consume images itself — exactly the
+case the tool exists for; `"always"` keeps it for vision-capable models
+too, since a file on disk is still invisible to them (tool results carry
+text, not image bytes).
 
 ### Web access
 

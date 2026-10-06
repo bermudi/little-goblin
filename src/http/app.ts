@@ -486,6 +486,16 @@ export const APP_HTML = `<!doctype html>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
           </button>
         </div>
+        <div class="row">
+          <div class="rstack">
+            <div class="rlabel" id="visionLabel">Vision</div>
+            <div class="cap">Adds a vision tool — answers questions about image files. Needed when the chat model can't see attachments.</div>
+          </div>
+          <button class="valuebtn" id="visionBtn" aria-labelledby="visionLabel">
+            <span class="val" id="visionVal"></span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+          </button>
+        </div>
       </div>
 
       <h2>Favorites</h2>

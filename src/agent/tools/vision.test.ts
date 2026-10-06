@@ -95,7 +95,7 @@ function deps(
 		telegram: { dmGapMinutes: 45 },
 		http: { port: 8787 },
 		logLevel: "info",
-		vision: { model: "zai/glm-5.3-flash", maxTokens: 2000 },
+		vision: { model: "zai/glm-5.3-flash", maxTokens: 2000, mode: "auto" },
 	};
 	return {
 		configRef: { current: cfg, ttsDown: false },

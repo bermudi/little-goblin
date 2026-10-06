@@ -17,7 +17,7 @@ import { generateText, type LanguageModel, type ModelMessage } from "ai";
 import type { AuthStore } from "../auth.ts";
 import type { Config, ConfigRef } from "../config.ts";
 import { log } from "../log.ts";
-import { observedModel, resolveModel } from "./providers.ts";
+import { observedModel, resolveModel, thinkingOptions } from "./providers.ts";
 
 // One side model call must settle — a wedged vision request would pin
 // the turn's serial lane (transcribe's 60s rule, doubled: image calls
@@ -218,6 +218,9 @@ export async function askVision(
 	]);
 
 	const started = Date.now();
+	// Thinking pinned off — a forced-thinking vision model answers in
+	// prose anyway and burns a reasoning round-trip per question.
+	const providerOptions = thinkingOptions(deps.configRef.current, cfg.model, "off");
 	const { text, usage } = await generateText({
 		model,
 		instructions: VISION_SYSTEM_PROMPT,
@@ -227,6 +230,7 @@ export async function askVision(
 			history,
 		),
 		maxOutputTokens: cfg.maxTokens,
+		...(providerOptions ? { providerOptions } : {}),
 		abortSignal: signal,
 	});
 	const result = { text, usage } as { text: string; usage?: VisionUsage };

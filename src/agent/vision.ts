@@ -15,7 +15,7 @@
 
 import { generateText, type LanguageModel, type ModelMessage } from "ai";
 import type { AuthStore } from "../auth.ts";
-import type { ConfigRef } from "../config.ts";
+import type { Config, ConfigRef } from "../config.ts";
 import { log } from "../log.ts";
 import { observedModel, resolveModel } from "./providers.ts";
 
@@ -134,16 +134,18 @@ export interface VisionCallDeps {
 	conversation: string;
 	/** The turn's abort signal (/stop, Esc-equivalent) — rides the call. */
 	signal?: AbortSignal | undefined;
-	/** Test door; production path is generateText. */
-	complete?: (
-		model: LanguageModel,
-		opts: {
-			instructions: string;
-			messages: ModelMessage[];
-			maxOutputTokens: number;
-			abortSignal?: AbortSignal;
-		},
-	) => Promise<{ text: string; usage?: VisionUsage }>;
+	/** Test door over the provider edge — production is resolveModel.
+	 *  Everything between this seam and the tool is real: generateText,
+	 *  the ModelMessage→LanguageModelV4Prompt conversion, the observed
+	 *  middleware, the abort wiring (the 77661ae lesson: stages tested
+	 *  in isolation hide the seam between them). */
+	resolve?: (
+		config: Config,
+		auth: AuthStore,
+		modelRef: string,
+	) => Promise<LanguageModel>;
+	/** Test door over the timeout race (production: VISION_TIMEOUT_MS). */
+	timeoutMs?: number | undefined;
 }
 
 /** Build the message list: prior turns replay as plain text, the image
@@ -170,23 +172,12 @@ export function buildVisionMessages(
 	];
 }
 
-async function defaultComplete(
-	model: LanguageModel,
-	opts: {
-		instructions: string;
-		messages: ModelMessage[];
-		maxOutputTokens: number;
-		abortSignal?: AbortSignal;
-	},
-): Promise<{ text: string; usage?: VisionUsage }> {
-	const { text, usage } = await generateText({
-		model,
-		instructions: opts.instructions,
-		messages: opts.messages,
-		maxOutputTokens: opts.maxOutputTokens,
-		...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
-	});
-	return { text, usage };
+async function defaultResolve(
+	config: Config,
+	auth: AuthStore,
+	modelRef: string,
+): Promise<LanguageModel> {
+	return resolveModel(config, auth, modelRef);
 }
 
 /** Full engine flow: config → model → threads → one generateText call.
@@ -209,7 +200,7 @@ export async function askVision(
 	const history = query.followUp ? threads.getTurns(key) : [];
 
 	const model = observedModel(
-		await resolveModel(deps.configRef.current, deps.auth, cfg.model),
+		await (deps.resolve ?? defaultResolve)(deps.configRef.current, deps.auth, cfg.model),
 		{ conversation: deps.conversation, purpose: "vision" },
 	);
 	// The configured ref IS the label — resolveModel's instances spell
@@ -220,24 +211,22 @@ export async function askVision(
 	// The turn's signal and the timeout race — either one settles the call.
 	const signal = AbortSignal.any([
 		...(deps.signal ? [deps.signal] : []),
-		AbortSignal.timeout(VISION_TIMEOUT_MS),
+		AbortSignal.timeout(deps.timeoutMs ?? VISION_TIMEOUT_MS),
 	]);
 
-	const complete = deps.complete ?? defaultComplete;
 	const started = Date.now();
-	const result = await complete(
+	const { text, usage } = await generateText({
 		model,
-		{
-			instructions: VISION_SYSTEM_PROMPT,
-			messages: buildVisionMessages(
-				query.prompt,
-				{ bytes: query.bytes, mediaType: query.mediaType },
-				history,
-			),
-			maxOutputTokens: cfg.maxTokens,
-			abortSignal: signal,
-		},
-	);
+		instructions: VISION_SYSTEM_PROMPT,
+		messages: buildVisionMessages(
+			query.prompt,
+			{ bytes: query.bytes, mediaType: query.mediaType },
+			history,
+		),
+		maxOutputTokens: cfg.maxTokens,
+		abortSignal: signal,
+	});
+	const result = { text, usage } as { text: string; usage?: VisionUsage };
 	const answer = result.text.trim();
 	if (!answer) {
 		throw new Error(

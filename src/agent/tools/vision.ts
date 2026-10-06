@@ -22,9 +22,9 @@ export interface VisionToolDeps {
 	auth: AuthStore;
 	/** Conversation id for the model-call log lines. */
 	conversation: string;
-	/** Test door over the model call (production omits it — the engine
-	 *  runs generateText against the resolved provider). */
-	complete?: import("../vision.ts").VisionCallDeps["complete"];
+	/** Test door over the provider edge (production omits it — the
+	 *  engine resolves through the configured provider registry). */
+	resolve?: import("../vision.ts").VisionCallDeps["resolve"];
 }
 
 export const visionInputSchema = z.object({
@@ -101,7 +101,7 @@ export function visionTool(cwd: string, deps: VisionToolDeps) {
 						// exactOptionalPropertyTypes: never assign an explicit
 						// undefined to an optional field.
 						...(options.abortSignal ? { signal: options.abortSignal } : {}),
-						...(deps.complete ? { complete: deps.complete } : {}),
+						...(deps.resolve ? { resolve: deps.resolve } : {}),
 					},
 				);
 				return {

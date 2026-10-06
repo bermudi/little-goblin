@@ -94,7 +94,9 @@ if [ -n "$herdr_bin" ] && [ -z "$delegation_machine" ]; then
 		-e "s|/home/daniel/.local/bin|$HOME/.local/bin|g" \
 		"$repo_root/deploy/goblin-herdr.service" > "$unit_dir/goblin-herdr.service"
 else
-	echo "install: warning — herdr not found in PATH; delegation will be unavailable" >&2
+	if [ -z "$herdr_bin" ]; then
+		echo "install: warning — herdr not found in PATH; delegation will be unavailable" >&2
+	fi
 fi
 if [ -n "$delegation_machine" ]; then
 	echo "install: delegation targets remote machine '$delegation_machine' — no local goblin-herdr session installed (design/delegation.md)" >&2

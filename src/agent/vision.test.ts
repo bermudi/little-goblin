@@ -161,16 +161,16 @@ describe("createVisionThreads", () => {
 
 	test("thread cap evicts least-recently-used", () => {
 		const t = createVisionThreads();
-		for (let i = 0; i < 9; i++) t.record(`k${i}`, { question: "q", answer: "a" }, "fresh");
-		expect(t.getTurns("k0")).toEqual([]); // evicted by the 9th record
-		expect(t.getTurns("k8")).toEqual([{ question: "q", answer: "a" }]);
+		for (let i = 0; i < 17; i++) t.record(`k${i}`, { question: "q", answer: "a" }, "fresh");
+		expect(t.getTurns("k0")).toEqual([]); // evicted by the 17th record
+		expect(t.getTurns("k16")).toEqual([{ question: "q", answer: "a" }]);
 	});
 
 	test("getTurns refreshes LRU order", () => {
 		const t = createVisionThreads();
-		for (let i = 0; i < 8; i++) t.record(`k${i}`, { question: "q", answer: "a" }, "fresh");
+		for (let i = 0; i < 16; i++) t.record(`k${i}`, { question: "q", answer: "a" }, "fresh");
 		expect(t.getTurns("k0")).toEqual([{ question: "q", answer: "a" }]); // refresh
-		t.record("k9", { question: "q", answer: "a" }, "fresh"); // would evict k1, not k0
+		t.record("k16", { question: "q", answer: "a" }, "fresh"); // would evict k1, not k0
 		expect(t.getTurns("k0")).toEqual([{ question: "q", answer: "a" }]);
 		expect(t.getTurns("k1")).toEqual([]);
 	});
@@ -260,6 +260,25 @@ describe("askVision — provider edge", () => {
 		expect(roles).toEqual(["system", "user", "assistant", "user"]);
 		// The replayed turns are text — the file part count stays at one.
 		expect(JSON.stringify(calls[1]!.prompt).match(/"type":"file"/g)).toHaveLength(1);
+	});
+
+	test("threads never cross conversations — B must not replay A", async () => {
+		_resetVisionThreadsForTest();
+		const a: Recorded[] = [];
+		const b: Recorded[] = [];
+		const q = query();
+		await askVision(q, deps({ model: "zai/glm-5.3-flash" }, a, undefined, "conv-a"));
+		// Same image, same stat — only the conversation differs.
+		const fromB = await askVision(
+			{ ...q, followUp: true },
+			deps({ model: "zai/glm-5.3-flash" }, b, undefined, "conv-b"),
+		);
+		expect(fromB.followUps).toBe(0);
+		expect(JSON.stringify(b[0]!.prompt).match(/"type":"file"/g)).toHaveLength(1);
+		// Within one conversation the thread still holds.
+		await askVision({ ...q, prompt: "a2", followUp: true }, deps({ model: "zai/glm-5.3-flash" }, a, undefined, "conv-a"));
+		const roles = a[1]!.prompt.map((m) => (m as { role: string }).role);
+		expect(roles).toEqual(["system", "user", "assistant", "user"]);
 	});
 
 	test("a rewritten file (new stat) starts a clean thread", async () => {

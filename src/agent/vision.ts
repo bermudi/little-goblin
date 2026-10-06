@@ -50,7 +50,7 @@ export interface VisionThreads {
 	clear(): void;
 }
 
-const MAX_THREADS = 8;
+const MAX_THREADS = 16;
 const MAX_TURNS = 10;
 
 /** In-memory follow-up threads, LRU-capped. Process-local by design:
@@ -196,7 +196,10 @@ export async function askVision(
 		threadsModel = cfg.model;
 	}
 
-	const key = `${query.path}|${query.stat.size}|${query.stat.mtimeMs}`;
+	// The thread key carries the conversation: a follow-up must never
+	// replay another conversation's Q&A about the same image (the tool
+	// is per-turn bound to its conversation, delegate's rule).
+	const key = `${deps.conversation}|${query.path}|${query.stat.size}|${query.stat.mtimeMs}`;
 	const history = query.followUp ? threads.getTurns(key) : [];
 
 	const model = observedModel(

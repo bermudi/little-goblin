@@ -134,9 +134,15 @@ predecessor gave.
   an over-cap image errors with the ffmpeg downscale one-liner.
   Known limit, accepted: resize machinery arrives when a real image
   flow needs it, not before.
-- **Threads are process-local**, capped (8 images × 10 turns, LRU),
-  never persisted — a restart forgets them and a follow-up starts
-  fresh, which the tool contract permits ("may remember", not
+- **Threads are process-local, keyed by conversation + image**
+  (conversation id + absolute path + size + mtime — the tool is
+  per-turn bound to its conversation, delegate's rule): a follow-up
+  never replays another conversation's Q&A about the same image, and
+  a rewritten file starts clean. Capped (16 threads × 10 turns,
+  LRU — per-conversation keying doubles the resident set a single
+  conversation could claim, so the cap doubles with it; still O(1)
+  memory), never persisted — a restart forgets them and a follow-up
+  starts fresh, which the tool contract permits ("may remember", not
   "will remember").
 
 ## Chat search

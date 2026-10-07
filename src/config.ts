@@ -354,7 +354,7 @@ export const delegationTargetSchema = z
 	.object({
 		machine: harnessNameSchema.optional(),
 		session: sessionNameSchema.optional(),
-		root: z.string().regex(/^\/|~/, "delegation target root must be absolute or start with ~").optional(),
+		root: z.string().regex(/^(?:\/|~)/, "delegation target root must be absolute or start with ~").optional(),
 		harnesses: harnessMapSchema.optional(),
 	})
 	.refine((t) => (t.machine !== undefined) !== (t.session !== undefined), {

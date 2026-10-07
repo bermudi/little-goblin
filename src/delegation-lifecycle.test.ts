@@ -19,6 +19,7 @@ import {
 	type DelegationLifecycleDeps,
 } from "./delegation-lifecycle.ts";
 import type { AgentInfo, Herdr } from "./herdr.ts";
+import type { DelegationTargetDeps } from "./delegation-lifecycle.ts";
 
 let dirs: string[] = [];
 function tmpdirPath(): string {
@@ -77,6 +78,8 @@ function harness(): Harness {
 			Promise.resolve(screens.get(`pane:${id}`) ?? `pane screen ${id}`),
 		interrupt: () => Promise.resolve(),
 		closeWorkspace: () => Promise.resolve(),
+		paneRun: () => Promise.resolve(),
+		paneWaitOutput: () => Promise.resolve(),
 	};
 	return {
 		store,
@@ -90,6 +93,7 @@ function harness(): Harness {
 		deps: {
 			delegations: store,
 			herdr,
+			targets: new Map(),
 			delegationsDir,
 			homeDir,
 			wake: (_a, text) => {
@@ -111,6 +115,7 @@ function runningRow(
 	name = "fix the thing",
 	seq = 1,
 	promptedAgoMs = 0,
+	target: string | null = null,
 ): Delegation {
 	const d = h.store.create({
 		name,
@@ -118,6 +123,7 @@ function runningRow(
 		cwd: "/w",
 		task: "do it",
 		address: { chatId: 1, threadId: null },
+		target,
 	});
 	h.store.bindLaunch(d.id, {
 		agentName: agentNameFor(d.id, name),
@@ -249,7 +255,7 @@ describe("delegation watcher", () => {
 		// A report written immediately before send remains within 200 ms
 		// of the new prompt, even on a filesystem with coarse mtimes.
 		utimesSync(reportPath, new Date(), new Date());
-		expect((await owner.send(d.id, "another task", 10)).kind).toBe("sent");
+		expect((await owner.send(d.id, "another task")).kind).toBe("sent");
 		expect(readdirSync(dir).filter((name) => name.startsWith("report-"))).toHaveLength(1);
 		const archived = readdirSync(dir).find((name) => name.startsWith("report-"))!;
 		expect(readFileSync(join(dir, archived), "utf8")).toBe("# previous run");
@@ -263,7 +269,7 @@ describe("delegation watcher", () => {
 			...h.deps.herdr,
 			prompt: async () => { writeFileSync(reportPath, "# current run"); },
 		};
-		expect((await owner.send(d.id, "next task", 10)).kind).toBe("sent");
+		expect((await owner.send(d.id, "next task")).kind).toBe("sent");
 		await owner.tick();
 		owner.stopTicker();
 		expect(h.store.get(d.id)!.status).toBe("done");
@@ -286,7 +292,7 @@ describe("delegation watcher", () => {
 			...h.deps.herdr,
 			prompt: async () => { throw new Error("herdr rejected prompt"); },
 		};
-		const out = await owner.send(d.id, "follow up", 10);
+		const out = await owner.send(d.id, "follow up");
 		expect(out).toEqual({ kind: "prompt failed", error: "herdr rejected prompt" });
 		expect(readFileSync(reportPath, "utf8")).toBe("# previous result");
 		const archived = readdirSync(dir).find((name) => name.startsWith("report-"))!;
@@ -311,7 +317,7 @@ describe("delegation watcher", () => {
 		const reportPath = join(dir, "report.md");
 		writeFileSync(reportPath, "# previous result");
 		h.deps.herdr = { ...h.deps.herdr, prompt: async () => { throw new Error("late failure"); } };
-		expect((await owner.send(d.id, "follow up", 10)).kind).toBe("prompt failed");
+		expect((await owner.send(d.id, "follow up")).kind).toBe("prompt failed");
 		// A remote prompt may have landed despite the local rejection.
 		writeFileSync(reportPath, "# new result");
 		const archived = readdirSync(dir).find((name) => name.startsWith("report-"))!;
@@ -332,7 +338,7 @@ describe("delegation watcher", () => {
 		writeFileSync(reportPath, "# long before this run");
 		utimesSync(reportPath, new Date(0), new Date(0));
 		h.deps.herdr = { ...h.deps.herdr, prompt: async () => { throw new Error("rejected"); } };
-		expect((await owner.send(d.id, "follow up", 10)).kind).toBe("prompt failed");
+		expect((await owner.send(d.id, "follow up")).kind).toBe("prompt failed");
 		expect(statSync(reportPath).mtimeMs).toBe(0);
 		h.agents.set(d.agentName, agent(d.agentName, "idle", 5));
 		await owner.tick();
@@ -352,7 +358,7 @@ describe("delegation watcher", () => {
 		try {
 			h.deps.herdr = { ...h.deps.herdr, prompt: async () => { throw new Error("rejected"); } };
 			const owner = startDelegationLifecycle(h.deps);
-			expect((await owner.send(d.id, "follow up", 10)).kind).toBe("prompt failed");
+			expect((await owner.send(d.id, "follow up")).kind).toBe("prompt failed");
 			writeSync(writer, "# changed through old descriptor", 0);
 			const archived = readdirSync(dir).find((name) => name.startsWith("report-"))!;
 			expect(readFileSync(join(dir, archived), "utf8")).toBe("# previous result");
@@ -380,7 +386,7 @@ describe("delegation watcher", () => {
 				throw new Error("herdr rejected prompt");
 			},
 		};
-		expect(await owner.send(d.id, "follow up", 10)).toEqual({
+		expect(await owner.send(d.id, "follow up")).toEqual({
 			kind: "prompt failed", error: "herdr rejected prompt",
 		});
 		expect(readFileSync(reportPath, "utf8")).toBe("# newer result");
@@ -396,7 +402,7 @@ describe("delegation watcher", () => {
 		let prompted = false;
 		h.deps.herdr = { ...h.deps.herdr, prompt: async () => { prompted = true; } };
 		const owner = startDelegationLifecycle(h.deps);
-		const out = await owner.send(d.id, "another task", 10);
+		const out = await owner.send(d.id, "another task");
 		owner.stopTicker();
 		expect(out.kind).toBe("prompt failed");
 		expect(prompted).toBe(false);
@@ -677,7 +683,7 @@ describe("delegation watcher", () => {
 			const owner = startDelegationLifecycle(h.deps);
 			const out = await owner.launch({
 				harness: { name: "codex", kind: "codex", args: [] },
-				task: "do it", cwd: "/w", name: "x", maxRunning: 3,
+				task: "do it", cwd: "/w", name: "x",
 				address: { chatId: 1, threadId: null },
 			});
 			expect(out.kind).toBe("started");
@@ -686,19 +692,32 @@ describe("delegation watcher", () => {
 			owner.stopTicker();
 		});
 
-		test("a trust seed failure fails the launch before any workspace exists", async () => {
+		test("a trust seed failure fails the launch and closes the workspace it opened", async () => {
 			const h = harness();
 			mkdirSync(h.homeDir, { recursive: true });
 			writeFileSync(join(h.homeDir, ".claude.json"), "[1,2]");
+			const closed: string[] = [];
+			h.deps.herdr = {
+				...h.deps.herdr,
+				createWorkspace: async () => ({ workspaceId: "w1", paneId: "w1:p1" }),
+				closeWorkspace: (id) => {
+					closed.push(id);
+					return Promise.resolve();
+				},
+			};
 			const owner = startDelegationLifecycle(h.deps);
 			const out = await owner.launch({
 				harness: { name: "claude", kind: "claude", args: [] },
-				task: "do it", cwd: "/w", name: "x", maxRunning: 3,
+				task: "do it", cwd: "/w", name: "x",
 				address: { chatId: 1, threadId: null },
 			});
 			expect(out.kind).toBe("failed");
 			if (out.kind === "failed") expect(out.why).toContain("trust seed");
 			expect(h.store.get(1)?.status).toBe("failed");
+			// Seeding sits between workspace bind and agent start now (the
+			// pane-run path for machine targets needs the pane): the opened
+			// workspace must not survive a seed failure unwatched.
+			expect(closed).toEqual(["w1"]);
 			owner.stopTicker();
 		});
 
@@ -709,7 +728,7 @@ describe("delegation watcher", () => {
 			const owner = startDelegationLifecycle(h.deps);
 			const out = await owner.launch({
 				harness: { name: "codex", kind: "codex", args: [] },
-				task: "do it", cwd: "/w", name: "x", maxRunning: 3,
+				task: "do it", cwd: "/w", name: "x",
 				address: { chatId: 1, threadId: null },
 			});
 			expect(out.kind).toBe("failed");
@@ -731,7 +750,7 @@ describe("delegation watcher", () => {
 			const owner = startDelegationLifecycle(h.deps);
 			const launching = owner.launch({
 				harness: { name: "codex", kind: "codex", args: [] },
-				task: "do it", cwd: "/w", name: "x", maxRunning: 3,
+				task: "do it", cwd: "/w", name: "x",
 				address: { chatId: 1, threadId: null },
 			});
 			for (let i = 0; i < 200 && h.store.get(1)?.workspaceId === ""; i++) {
@@ -773,7 +792,6 @@ describe("delegation watcher", () => {
 				task: "do it",
 				cwd: "/w",
 				name: "x",
-				maxRunning: 3,
 				address: { chatId: 1, threadId: null },
 			});
 			for (let i = 0; i < 200 && h.store.list().length === 0; i++) {
@@ -820,7 +838,6 @@ describe("delegation watcher", () => {
 				task: "do it",
 				cwd: "/w",
 				name: "x",
-				maxRunning: 3,
 				address: { chatId: 1, threadId: null },
 			});
 			// Wait for the bind so the stop sees a workspace to close —
@@ -846,50 +863,68 @@ describe("delegation watcher", () => {
 	});
 
 	describe("remote machine mode", () => {
-		test("launch targets the remote cwd, keeps nothing local, and prompts the remote report path", async () => {
+		test("a machine-target launch preflights the link, targets the remote cwd, keeps nothing local, and seeds through the pane", async () => {
 			const h = harness();
-			h.deps.machine = { label: "g7", cwd: "/remote/goblin" };
 			const cwds: string[] = [];
-			h.deps.herdr = {
-				...h.deps.herdr,
-				createWorkspace: async (cwd) => {
-					cwds.push(cwd);
-					return { workspaceId: "w5", paneId: "w5:p1" };
+			const paneRuns: string[] = [];
+			(h.deps.targets as Map<string, DelegationTargetDeps>).set("g7", {
+				machine: "g7",
+				root: "/remote/goblin",
+				herdr: {
+					...h.deps.herdr,
+					createWorkspace: async (cwd) => {
+						cwds.push(cwd);
+						return { workspaceId: "w5", paneId: "w5:p1" };
+					},
+					startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
+					paneRun: (_pane, command) => {
+						paneRuns.push(command);
+						return Promise.resolve();
+					},
 				},
-				startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
-			};
+			});
 			const owner = startDelegationLifecycle(h.deps);
 			const out = await owner.launch({
 				harness: { name: "codex", kind: "codex", args: [] },
 				task: "do it remotely", cwd: "/remote/goblin/task", name: "remote",
-				maxRunning: 3, address: { chatId: 1, threadId: null },
+				target: "g7",
+				address: { chatId: 1, threadId: null },
 			});
 			expect(out.kind).toBe("started");
 			owner.stopTicker();
 			expect(cwds).toEqual(["/remote/goblin/task"]);
-			// No local report dir, no trust seed: the remote host owns both.
+			// The same write-if-absent codex trust marker harness-trust
+			// seeds locally runs through the delegation's own pane.
+			expect(paneRuns.length).toBe(1);
+			expect(paneRuns[0]).toContain("trust_level = \"trusted\"");
+			expect(paneRuns[0]).toContain("/remote/goblin/task");
+			// No local report dir, no local trust seed: the remote host owns both.
 			expect(existsSync(join(h.delegationsDir, String((out as { delegation: Delegation }).delegation.id)))).toBe(false);
 			expect(existsSync(join(h.homeDir, ".codex"))).toBe(false);
 		});
 
-		test("a machine row finishes on seq advance with no local report file — the notice carries the screen tail", async () => {
+		test("a machine row finishes on seq advance with no local report file — the notice carries the deep agent read", async () => {
 			const h = harness();
-			h.deps.machine = { label: "g7", cwd: "/remote/goblin" };
 			const prompts: string[] = [];
-			h.deps.herdr = {
-				...h.deps.herdr,
-				createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1" }),
-				startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
-				prompt: (_name, text) => {
-					prompts.push(text);
-					return Promise.resolve();
+			(h.deps.targets as Map<string, DelegationTargetDeps>).set("g7", {
+				machine: "g7",
+				root: "/remote/goblin",
+				herdr: {
+					...h.deps.herdr,
+					createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1" }),
+					startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
+					prompt: (_name, text) => {
+						prompts.push(text);
+						return Promise.resolve();
+					},
 				},
-			};
+			});
 			const owner = startDelegationLifecycle(h.deps);
 			const out = await owner.launch({
 				harness: { name: "codex", kind: "codex", args: [] },
 				task: "remote work", cwd: "/remote/goblin", name: "screenwork",
-				maxRunning: 3, address: { chatId: 1, threadId: null },
+				target: "g7",
+				address: { chatId: 1, threadId: null },
 			});
 			expect(out.kind).toBe("started");
 			const d = (out as { delegation: Delegation }).delegation;
@@ -907,18 +942,21 @@ describe("delegation watcher", () => {
 
 		test("send on a machine row prompts without the local archive dance", async () => {
 			const h = harness();
-			h.deps.machine = { label: "g7", cwd: "/remote/goblin" };
 			const prompts: string[] = [];
-			h.deps.herdr = {
-				...h.deps.herdr,
-				prompt: (_name, text) => {
-					prompts.push(text);
-					return Promise.resolve();
+			(h.deps.targets as Map<string, DelegationTargetDeps>).set("g7", {
+				machine: "g7",
+				root: "/remote/goblin",
+				herdr: {
+					...h.deps.herdr,
+					prompt: (_name, text) => {
+						prompts.push(text);
+						return Promise.resolve();
+					},
 				},
-			};
+			});
 			const owner = startDelegationLifecycle(h.deps, 3_600_000);
-			const d = runningRow(h, "follow-up target", 1);
-			const out = await owner.send(d.id, "and then this", 3);
+			const d = runningRow(h, "follow-up target", 1, 0, "g7");
+			const out = await owner.send(d.id, "and then this");
 			owner.stopTicker();
 			expect(out.kind).toBe("sent");
 			expect(prompts[0]).toContain("and then this");

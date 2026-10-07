@@ -8,8 +8,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { guestAddress, openStore, type Conversation, type ConversationStore } from "../conversation.ts";
-import type { Config, ConfigRef } from "../config.ts";
+import { guestAddress, openStore, type Conversation, type ConversationStore } from "../conversation.ts";import type { Config, ConfigRef } from "../config.ts";
 import type { Runtime, TurnSink } from "../runtime.ts";
 import type { UIMessage } from "ai";
 import type { Message, User } from "grammy/types";
@@ -24,6 +23,7 @@ import {
 	openGuestStore,
 	routeMemberGuestMessage,
 } from "./guest.ts";
+import { sharedChatPart } from "./mod.ts";
 
 const dirs: string[] = [];
 function tmpdb(): string {
@@ -490,3 +490,16 @@ describe("routeMemberGuestMessage", () => {
 function guestStore_open(env: { guestStore: { open(id: number, by: number): void } }): void {
 	env.guestStore.open(-100, 7);
 }
+
+describe("sharedChatPart — the audience note", () => {
+	test("an open group chat's bursts carry the note; closed and private chats don't", () => {
+		const open = (_id: number): boolean => true;
+		const closed = (_id: number): boolean => false;
+		expect(sharedChatPart("topic:-100:5", -100, open)?.text).toContain("shared chat");
+		expect(sharedChatPart("topic:-100:5", -100, closed)).toBeNull();
+		// Private chats: a bot member chat IS the DM — never a shared room.
+		expect(sharedChatPart("dm:7", 7, open)).toBeNull();
+		// Guest conversations know their audience from the persona.
+		expect(sharedChatPart("guest:-100:9", -100, open)).toBeNull();
+	});
+});

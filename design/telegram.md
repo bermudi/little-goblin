@@ -378,9 +378,12 @@ mode's no-history property.
 **Two caller classes, decided per summons, enforced by hard exclusion.**
 `from.id ∈ allowedUsers` (read live at summons — the platform-side
 BotFather restriction is OFF, so goblin owns every gate) → a
-*personal* guest turn: the normal prompt persona (SOUL et al.) and
-the personal toolset minus everything that pins, reaches beyond the
-chat, or speaks in another medium — `program`, `mail`, `delegate`,
+*personal* guest turn: the normal prompt persona (SOUL et al.),
+explicitly told **other people can read the chat** — guest replies
+are public to the room, and the model must be deliberate before
+surfacing private material — with the personal toolset minus
+everything that pins, reaches beyond the chat, or speaks in another
+medium — `program`, `mail`, `delegate`,
 `memory_search`, `history_search`, `speak`, `send_file` never
 register on the guest channel (one ruling everywhere, even where the
 member surface's sink could deliver them). Everyone else
@@ -419,6 +422,19 @@ toggles are the operator's: Guest Mode on, Restrict bot usage **off**
 (zero platform restrictions; goblin's gates decide everything —
 stray summonses from strangers arrive, are classified deny, and cost
 one log line and nothing else).
+
+**Audience awareness rides the burst, not the snapshot.** Openness
+changes with `/open` and `/off`, but the system prompt is frozen per
+conversation (cache stability) — so the audience note is a text part
+injected at the head of every burst admitted in an open chat
+(`[note: this is a shared chat — everyone in it can read your
+replies…]`, the swipe-reply quoted-part precedent): always current,
+append-only, prefix-stable. It applies to the operator's ordinary
+conversations in that chat (topics and the standing group
+conversation) — guest conversations need no note, their persona
+already knows. Private chats never get one: a chat where the bot is
+a member and the id is positive *is* the bot DM, which cannot be
+opened.
 
 **Logging.** `guest summons` (chat, from, update id, verdict
 `personal|sandbox|deny|busy|budget`, open-chat state),

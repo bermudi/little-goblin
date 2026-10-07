@@ -288,6 +288,10 @@ export function buildSystemPrompt(
 					`- You are a guest in a third-party chat: one reply per summons, no`,
 					`  follow-up messages — keep the answer inside a single short`,
 					`  message and point long work at the bot's own chat.`,
+					`- Other people can read this chat. The operator summoned you`,
+					`  here knowingly, but the audience is not only them — be`,
+					`  deliberate before surfacing private material (workspace`,
+					`  files, your notes, past conversations).`,
 			]
 			: []),
 		`- SOUL.md in the workspace root is your identity; AGENTS.md is your own`,

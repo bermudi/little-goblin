@@ -3262,6 +3262,8 @@ describe("forced-landing defiance guard", () => {
 		expect(sink.text).toContain("My context window filled up before I wrote my answer");
 		store.close();
 	});
+});
+
 test("model/thinking changes do not interrupt admitted turns; next turn and manual compaction resolve latest channel settings", async () => {
 	const store = openStore(tmpdb());
 	let cfg = parseConfig({ providers: { test: { kind: "codex" } }, model: "test/app", thinking: "high", allowedUsers: [7],

@@ -205,6 +205,7 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 		},
 	} as unknown as IntakeEnv["buffer"];
 	const env: IntakeEnv = {
+		isChatOpen: () => false,
 		deps: {
 			configRef: { current: config, ttsDown: false },
 			auth: {} as unknown as AuthStore,

@@ -356,4 +356,18 @@ describe("workspace file injection", () => {
 			delete process.env.GOBLIN_HOME;
 		}
 	});
+	// The operator's own guest summons keep the personal persona but
+	// must know the room has readers (design/telegram.md → Guest mode).
+	test("a personal guest-channel prompt says who can read it", () => {
+		const home = useHome();
+		process.env.GOBLIN_HOME = home;
+		try {
+			const guestChannel = { ...conv, id: "guest:-100:7" };
+			const { text } = buildSystemPrompt(guestChannel, tools);
+			expect(text).toContain("guest in a third-party chat");
+			expect(text).toContain("Other people can read this chat");
+		} finally {
+			delete process.env.GOBLIN_HOME;
+		}
+	});
 });

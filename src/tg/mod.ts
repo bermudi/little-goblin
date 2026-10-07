@@ -191,9 +191,17 @@ export interface IntakeEnv {
 	// The headless sink app-lane turns submit with — the ping reply's
 	// turn rings Telegram when it lands (Spin-off → Background turns).
 	bell(conv: Conversation): TurnSink;
+	// Guest mode: is this chat open to third-party summonses? Injected
+	// per burst so the model knows its audience — the system prompt is
+	// frozen per conversation (cache stability) while openness changes
+	// with /open and /off.
+	isChatOpen: (chatId: number) => boolean;
 }
 
-export type FlushEnv = Pick<IntakeEnv, "deps" | "api" | "titleAttempts" | "inbox" | "bell">;
+export type FlushEnv = Pick<
+	IntakeEnv,
+	"deps" | "api" | "titleAttempts" | "inbox" | "bell" | "isChatOpen"
+>;
 
 // The RollDeps the intake paths share — assembled per call so a
 // mini-app save (dmGapMinutes) and the late-built reviewer's gate both
@@ -637,6 +645,24 @@ function archiveNavigatedInput(
 	return normal;
 }
 
+// The audience note a shared chat's turns carry (Guest mode): one
+// text part at the head of the burst, never in the frozen system
+// prompt. Guest conversations don't need it — their persona already
+// knows the shape.
+export const SHARED_CHAT_NOTE =
+	"[note: this is a shared chat — everyone in it can read your replies. " +
+	"Be deliberate before surfacing private material (workspace files, notes, past conversations).]";
+
+export function sharedChatPart(
+	conversationId: string,
+	chatId: number,
+	isChatOpen: (chatId: number) => boolean,
+): { type: "text"; text: string } | null {
+	if (channelOf(conversationId) === "guest") return null;
+	if (chatId > 0) return null; // private chats: a bot member chat IS the DM
+	return isChatOpen(chatId) ? { type: "text", text: SHARED_CHAT_NOTE } : null;
+}
+
 // Commit → sink → submit — the tail every lane shares after routing.
 // Throws on a failed commit — the buffer retains the batch and
 // retries; nothing reached Telegram, so nothing needs answering.
@@ -649,7 +675,10 @@ function admitBatch(
 ): void {
 	const { deps } = env;
 	const tts = deps.configRef.current.tts;
-	const message = userMessage(parts);
+	// Audience first (Guest mode): the note leads the burst so the
+	// model reads it before the content it qualifies.
+	const audience = sharedChatPart(conv.id, conv.chatId, env.isChatOpen);
+	const message = userMessage(audience === null ? parts : [audience, ...parts]);
 	env.inbox.commitBatch(items.map((i) => i.updateId), laneKey, () => {
 		deps.store.append(conv.id, [message]);
 	});
@@ -845,12 +874,15 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 			conv,
 			"ping reply",
 		);
+	const guestStore = openGuestStore(deps.store.db);
+	const isChatOpen = (chatId: number): boolean => guestStore.isOpen(chatId);
 	const buffer = new CoalescingBuffer<BufferedItem>(
 		QUIET_WINDOW_MS,
-		(convId, items) => flushConversation({ ...base, inbox, bell }, convId, items),
+		(convId, items) =>
+			flushConversation({ ...base, inbox, bell, isChatOpen }, convId, items),
 		COALESCE_MAX_WAIT_MS,
 	);
-	const env: IntakeEnv = { ...base, buffer, intake, inbox, pings, bell };
+	const env: IntakeEnv = { ...base, buffer, intake, inbox, pings, bell, isChatOpen };
 
 	// Guest mode (design/telegram.md → Guest mode): both surfaces
 	// register BEFORE the access gate — the gate stays pure and guest
@@ -863,7 +895,7 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 		store: deps.store,
 		runtime: deps.runtime,
 		configRef: deps.configRef,
-		guestStore: openGuestStore(deps.store.db),
+		guestStore,
 		botUsername: bot.botInfo.username,
 		botUserId: bot.botInfo.id,
 	};

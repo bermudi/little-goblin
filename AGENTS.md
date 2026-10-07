@@ -95,6 +95,18 @@ and templates before designing; cite what you took in the design docs.
   status goblin-dev` and `journalctl --user -u goblin-keys` first.
 - `pass-keys run`'s stdout is the child's (fixed 2026-09-26 — operational
   lines used to corrupt resolved keys).
+- lithium is headless with `Linger=yes`: every reboot starts the user
+  manager without a PAM login, gnome-keyring's login keyring stays
+  LOCKED, and pass-cli's DBus keyring backend can't fetch its local DB
+  key — `goblin-keys` crash-loops from boot and every `auth.jsonl`
+  `!record` exits 1 (2026-10-07, first linger boot since setup). Fix in
+  place: lithium's `~/bin/pass-cli` is a LOCAL FORK of the dots wrapper
+  exporting `PROTON_PASS_KEY_PROVIDER=fs` (pre-fs backup beside it;
+  g7's symlink to dots is untouched). pass-keys strips every caller
+  `PROTON_PASS_*` env var, so the wrapper is the ONLY injection point —
+  a unit `Environment=` line cannot set it. lithium also had no NTP at
+  all (60s skew post-reboot); chrony installed 2026-10-07. g7 shares
+  the reboot landmine but the desktop login unlocks its keyring.
 
 ## Tests
 

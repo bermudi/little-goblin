@@ -87,9 +87,6 @@ else
 		echo "install: warning — herdr not found in PATH; delegation will be unavailable" >&2
 	fi
 fi
-if [ -n "$delegation_machine" ]; then
-	echo "install: delegation targets remote machine '$delegation_machine' — no local goblin-herdr session installed (design/delegation.md)" >&2
-fi
 
 # Key warming (DESIGN.md, "Proton Pass"): a cold pass-cli login runs
 # ~100s of retries, past auth's 15s resolve bound, so goblin.service
@@ -117,7 +114,7 @@ if [ "$(loginctl show-user "$USER" -p Linger 2>/dev/null)" != "Linger=yes" ]; th
 		echo "install: could not enable linger — run: loginctl enable-linger $USER" >&2
 fi
 
-if [ -n "$herdr_bin" ] && [ -z "$delegation_machine" ]; then
+if [ -n "$herdr_bin" ]; then
 	systemctl --user enable --now goblin-herdr
 fi
 if [ -n "$passkeys_bin" ]; then

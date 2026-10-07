@@ -32,6 +32,54 @@ function tmpdirPath(): string {
 // The app-pinned pin (design/app.md → Spin-off): app_conversation
 // round-trips, and rows written before the column existed read null.
 describe("delegations store", () => {
+	test("legacy machine-mode rows retarget onto the translated label; terminal rows stay NULL", () => {
+		const path = join(tmpdirPath(), "goblin.sqlite");
+		const db = new Database(path);
+		db.exec(`CREATE TABLE delegations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			harness TEXT NOT NULL,
+			cwd TEXT NOT NULL,
+			task TEXT NOT NULL,
+			chat_id INTEGER NOT NULL,
+			thread_id INTEGER,
+			agent_name TEXT NOT NULL,
+			workspace_id TEXT NOT NULL,
+			pane_id TEXT NOT NULL,
+			status TEXT NOT NULL,
+			baseline_seq INTEGER NOT NULL DEFAULT 0,
+			prompted_at TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			finished_at TEXT,
+			app_conversation TEXT
+		)`);
+		// Three machine-era rows: two live (running, starting), one
+		// terminal. Under delegation.machine every LIVE row ran on the
+		// machine — the migration must claim exactly those.
+		const ins = db.prepare(`INSERT INTO delegations
+			(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, prompted_at, created_at)
+			VALUES (?, 'codex', '/w', 't', 1, NULL, 'g1', 'w1', 'w1:p1', ?, '1970-01-01', '1970-01-01')`);
+		ins.run("remote-live", "running");
+		ins.run("remote-starting", "starting");
+		ins.run("old-done", "done");
+		db.close();
+		// Opens through the migration (target column added).
+		const store = openDelegations(path);
+		try {
+			expect(store.liveRowsWithNullTarget()).toBe(2);
+			expect(store.retargetLegacyLiveRows("g7")).toBe(2);
+			expect(store.get(1)?.target).toBe("g7");
+			expect(store.get(2)?.target).toBe("g7");
+			// Terminal rows are inert history — NULL (local) is fine.
+			expect(store.get(3)?.target).toBeNull();
+			expect(store.liveRowsWithNullTarget()).toBe(0);
+			// Idempotent: a second pass moves nothing.
+			expect(store.retargetLegacyLiveRows("g7")).toBe(0);
+		} finally {
+			store.close();
+		}
+	});
+
 	test("app_conversation round-trips; unset reads null", () => {
 		const store = openDelegations(join(tmpdirPath(), "goblin.sqlite"));
 		const tg = store.create({

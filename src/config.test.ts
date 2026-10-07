@@ -131,6 +131,50 @@ describe("goblin.json5", () => {
 				`${base}${cfg({ both: { machine: "g7", session: "goblin" } })}}`,
 		);
 		expect(() => loadConfig()).toThrow(/exactly one of machine/);
+		// Session names ride herdr's session contract, not the harness
+		// charset: dots and case are real (goblin.dev, side-session).
+		writeFileSync(
+				join(dir, "goblin.json5"),
+				`${base}${cfg({ dev: { session: "goblin.dev" } })}}`,
+		);
+		expect(loadConfig()!.delegation?.machines?.["dev"]?.session).toBe("goblin.dev");
+	});
+
+	test("a legacy delegation.machine is translated to a machines entry, not dropped", () => {
+		const dir = useHome();
+		writeFileSync(
+				join(dir, "goblin.json5"),
+				`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7],delegation:{machine:{label:"g7",cwd:"/home/daniel/goblin/delegated"},harnesses:{pi:{kind:"pi"}}}}`,
+		);
+		const captured: string[] = [];
+		setLogFile("config-legacy-machine-test.log");
+		setLogWriter((_path, line) => {
+			captured.push(line);
+		});
+		try {
+			const c = loadConfig()!;
+			// Under single-machine mode every delegation went to that
+			// machine — booting local instead would misroute live rows.
+			expect(c.delegation?.machines?.["g7"]).toEqual({
+				machine: "g7",
+				root: "/home/daniel/goblin/delegated",
+			});
+			const warns = captured
+				.map((l) => JSON.parse(l) as Record<string, unknown>)
+				.filter((l) => typeof l.msg === "string" && l.msg.includes("translated to a machines entry"));
+			expect(warns).toHaveLength(1);
+			// An explicit machines entry of the same label wins — the
+			// file's newer form is the truth, the legacy block is noise.
+			writeFileSync(
+					join(dir, "goblin.json5"),
+					`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7],delegation:{machine:{label:"g7",cwd:"/legacy/root"},machines:{g7:{machine:"g7",root:"~/build"}},harnesses:{pi:{kind:"pi"}}}}`,
+			);
+			const c2 = loadConfig()!;
+			expect(c2.delegation?.machines?.["g7"]?.root).toBe("~/build");
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
 	});
 
 	test("invalid config throws with file path", () => {

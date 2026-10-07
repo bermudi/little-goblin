@@ -102,6 +102,16 @@ export interface DelegationsStore {
 	/** Rows stuck mid-launch — only meaningful to a fresh watcher:
 	 *  a `starting` row across a restart means goblin died mid-start. */
 	starting(): Delegation[];
+	/** One-shot upgrade (single-machine era → targets): under
+	 *  delegation.machine, EVERY live row ran on that machine —
+	 *  stamp the translated label onto rows that predate the target
+	 *  column so NULL (own local session) never misroutes remote
+	 *  work. Returns how many rows moved. */
+	retargetLegacyLiveRows(label: string): number;
+	/** Live rows still carrying NULL target — used only to warn when
+	 *  no legacy machine block explains them (they are assumed
+	 *  local, the pre-machines meaning). */
+	liveRowsWithNullTarget(): number;
 	close(): void;
 }
 
@@ -281,6 +291,19 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		},
 		starting() {
 			return qStarting.all().map(rowToDelegation);
+		},
+		retargetLegacyLiveRows(label) {
+			const r = db.run(
+				"UPDATE delegations SET target = ? WHERE target IS NULL AND status IN ('starting','running','needs_input')",
+				[label],
+			);
+			return r.changes;
+		},
+		liveRowsWithNullTarget() {
+			const row = db
+				.query("SELECT COUNT(*) AS n FROM delegations WHERE target IS NULL AND status IN ('starting','running','needs_input')")
+				.get() as { n: number } | null;
+			return row?.n ?? 0;
 		},
 		close() {
 			db.close();

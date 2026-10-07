@@ -337,6 +337,14 @@ export const harnessMapSchema = z
 // machine profile pins its own remote session (herdr's registry owns
 // the ssh target + session — `machine add <host> --remote-session`),
 // and `--machine`/`--session` are mutually exclusive on the CLI.
+// Session names ride herdr's own contract, not the harness-name one:
+// sessions allow case and dots ("goblin.dev", "side-session") — we
+// stay filename-safe (they become socket-dir names): alnum start,
+// alnum/._- body, bounded length.
+const sessionNameSchema = z
+	.string()
+	.regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "session name must start alphanumeric and contain only [A-Za-z0-9._-]");
+
 // root resolves the target's relative cwds; remote paths must be
 // absolute or `~`/`~/…` (server-expanded), so relative values are
 // rejected here rather than at launch. Labels are not validated
@@ -345,7 +353,7 @@ export const harnessMapSchema = z
 export const delegationTargetSchema = z
 	.object({
 		machine: harnessNameSchema.optional(),
-		session: harnessNameSchema.optional(),
+		session: sessionNameSchema.optional(),
 		root: z.string().regex(/^\/|~/, "delegation target root must be absolute or start with ~").optional(),
 		harnesses: harnessMapSchema.optional(),
 	})
@@ -617,6 +625,21 @@ export type FetchConfig = NonNullable<Config["fetch"]>;
 // ENOENT → null (caller decides; index.ts exits with a pointer to the
 // example). Parse/validation failures propagate with the file path attached.
 export function loadConfig(): Config | null {
+	const parsed = readConfigRaw();
+	if (parsed === null) return null;
+	warnLegacyDelegationKeys(parsed);
+	const result = configSchema.safeParse(parsed);
+	if (!result.success) {
+		throw new Error(`${paths.config()}: ${z.prettifyError(result.error)}`);
+	}
+	if (result.data.delegation !== undefined) translateLegacyMachine(parsed, result.data.delegation);
+	return result.data;
+}
+
+/** The parsed-but-unvalidated config file (null when absent) —
+ *  boot-time callers need the legacy shape the schema strips
+ *  (e.g. migrating single-machine-era rows). */
+export function readConfigRaw(): unknown {
 	let raw: string;
 	try {
 		raw = readFileSync(paths.config(), "utf8");
@@ -624,18 +647,11 @@ export function loadConfig(): Config | null {
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
 		throw err;
 	}
-	let parsed: unknown;
 	try {
-		parsed = JSON5.parse(raw);
+		return JSON5.parse(raw);
 	} catch (err) {
 		throw new Error(`${paths.config()}: invalid JSON5 — ${(err as Error).message}`);
 	}
-	warnLegacyDelegationKeys(parsed);
-	const result = configSchema.safeParse(parsed);
-	if (!result.success) {
-		throw new Error(`${paths.config()}: ${z.prettifyError(result.error)}`);
-	}
-	return result.data;
 }
 
 // Validate a candidate config — the mini app parses before writing so it
@@ -656,7 +672,7 @@ function warnLegacyDelegationKeys(raw: unknown): void {
 			}
 			if ("machine" in delegation) {
 				log.warn(
-					"delegation.machine became delegation.machines (2026-10-06) — the default target is goblin's own local session; name the saved-machine profile as a machines entry; the key is ignored",
+					"delegation.machine became delegation.machines (2026-10-06) — translated to a machines entry for this boot; move it into the machines map in goblin.json5",
 				);
 			}
 			if ("maxRunning" in delegation) {
@@ -668,9 +684,47 @@ function warnLegacyDelegationKeys(raw: unknown): void {
 	}
 }
 
+// The legacy single-machine block (2026-10-06's `delegation.machine
+// {label, cwd}`), read loosely: a bad shape is null, not an error —
+// the machines schema still validates what we translate into.
+export function legacyDelegationMachine(raw: unknown): { label: string; root?: string } | null {
+	if (typeof raw !== "object" || raw === null) return null;
+	const delegation = (raw as Record<string, unknown>).delegation;
+	if (typeof delegation !== "object" || delegation === null) return null;
+	const machine = (delegation as Record<string, unknown>).machine;
+	if (typeof machine !== "object" || machine === null) return null;
+	const label = (machine as Record<string, unknown>).label;
+	const cwd = (machine as Record<string, unknown>).cwd;
+	if (typeof label !== "string") return null;
+	return {
+		label,
+		...(typeof cwd === "string" ? { root: cwd } : {}),
+	};
+}
+
+// A legacy `machine` block is TRANSLATED, not dropped: under
+// single-machine mode every delegation went to that machine, so
+// silently booting local would retarget live remote rows to the
+// wrong host. It becomes machines.<label> for this boot (and the
+// operator moves it into the file); an explicit machines entry of
+// the same label wins — the file's newer form is the truth.
+function translateLegacyMachine(raw: unknown, delegation: DelegationConfig): void {
+	const legacy = legacyDelegationMachine(raw);
+	if (legacy === null || delegation.machines?.[legacy.label] !== undefined) return;
+	delegation.machines = {
+		...(delegation.machines ?? {}),
+		[legacy.label]: {
+			machine: legacy.label,
+			...(legacy.root === undefined ? {} : { root: legacy.root }),
+		},
+	};
+}
+
 export function parseConfig(raw: unknown): Config {
 	warnLegacyDelegationKeys(raw);
-	return configSchema.parse(raw);
+	const config = configSchema.parse(raw);
+	if (config.delegation !== undefined) translateLegacyMachine(raw, config.delegation);
+	return config;
 }
 
 // The mini app writes through here. Whole-file durable write; a hardened

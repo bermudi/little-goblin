@@ -15,8 +15,10 @@ import { makePrivateSender } from "./agent/tools/program.ts";
 import {
 	ensureHomeLayout,
 	goblinHome,
+	legacyDelegationMachine,
 	loadConfig,
 	paths,
+	readConfigRaw,
 	splitModelRef,
 	type ConfigRef,
 	type ThinkingLevel,
@@ -118,6 +120,26 @@ async function boot() {
 	// Delegation).
 	const delegationBoot = config.delegation;
 	const delegations = delegationBoot ? openDelegations(paths.db()) : null;
+	// Single-machine-era upgrade (design/delegation.md, "Targets"):
+	// under delegation.machine EVERY live row ran on that machine —
+	// a translated legacy block stamps those rows with its label so
+	// NULL (own local session) never misroutes remote work. With no
+	// legacy block, live NULL rows are pre-machines local rows; warn
+	// loudly that they're assumed local rather than guess silently.
+	if (delegations !== null) {
+		const legacy = legacyDelegationMachine(readConfigRaw());
+		if (legacy !== null) {
+			const moved = delegations.retargetLegacyLiveRows(legacy.label);
+			if (moved > 0) {
+				log.warn("retargeted legacy machine-mode rows", { label: legacy.label, count: moved });
+			}
+		} else {
+			const nullLive = delegations.liveRowsWithNullTarget();
+			if (nullLive > 0) {
+				log.warn("live delegation rows predate targets and are assumed local", { count: nullLive });
+			}
+		}
+	}
 	// "goblin" is not config: it is the local unit's --session — the
 	// own local session, delegation's default target. Each machines
 	// entry gets its own adapter: a saved-machine label (forwarded
@@ -143,13 +165,18 @@ async function boot() {
 	// it), so a null read there is a wiring bug, not a runtime state.
 	let delegationLifecycle: DelegationLifecycle | null = null;
 	const delegateDeps = (conv: Conversation) => {
-		if (configRef.current.delegation === undefined || delegations === null || herdr === null) {
+		if (delegationBoot === undefined || configRef.current.delegation === undefined || delegations === null || herdr === null) {
 			return undefined;
 		}
 		if (delegationLifecycle === null) throw new Error("delegation lifecycle not wired");
 		return {
 			lifecycle: delegationLifecycle,
-			config: configRef.current.delegation,
+			// BOOT-frozen, deliberately: the lifecycle's target adapters
+			// are boot-built, and a live definition here could send a
+			// launch's paths/harness choice from a NEW definition into
+			// the OLD adapter's session. Config saves warn "restart to
+		// apply"; until then the snapshot is the truth.
+			config: delegationBoot,
 			workspaceDir: paths.workspace(),
 			// Where a launch pins its notices — decided by the source
 			// conversation's kind. App conversations DO get the tool
@@ -723,15 +750,15 @@ async function boot() {
 		if (configRef.current.appToken !== appTokenName) {
 			log.warn("appToken changed — restart to apply");
 		}
-		// Delegation targets are boot-fixed adapters (each holds a
-		// built herdr handle): the tool validates `on` against THIS
-		// live map, so a post-boot change desyncs the two — launch
-		// fails the row with this same hint until the restart lands.
+		// The whole delegation block is boot-frozen (the lifecycle's
+		// adapters and the tool's definitions are one snapshot): any
+		// change — machines redefined, harness maps, roots — applies
+		// only after restart, and the save says so.
 		if (
-			JSON.stringify(configRef.current.delegation?.machines ?? null) !==
-			JSON.stringify(delegationBoot?.machines ?? null)
+			JSON.stringify(configRef.current.delegation ?? null) !==
+			JSON.stringify(delegationBoot ?? null)
 		) {
-			log.warn("delegation machines changed — restart to apply");
+			log.warn("delegation config changed — restart to apply");
 		}
 	};
 	const http = startHttp({

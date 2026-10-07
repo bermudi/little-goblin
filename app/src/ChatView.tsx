@@ -146,7 +146,7 @@ function turnMeta(m: UIMessage): TurnMetadata | null {
 		finishReason: typeof o.finishReason === "string" ? o.finishReason : "",
 		durationMs: o.durationMs,
 		forcedCompletion:
-			o.forcedCompletion === "budget" || o.forcedCompletion === "watchdog"
+			o.forcedCompletion === "budget"
 				? o.forcedCompletion
 				: null,
 		usage: {
@@ -172,10 +172,8 @@ function MetaLine({ meta }: { meta: TurnMetadata }) {
 	const bits: string[] = [meta.model];
 	if (meta.finishReason !== "" && meta.finishReason !== "stop") bits.push(meta.finishReason);
 	// A forced answer is degraded goods — stamped, never passed off as
-	// natural (design/model.md, 2026-10-07). Budget: the step cap fired;
-	// watchdog: system1 judged the tool loop repetitive.
+	// natural (design/model.md, 2026-10-07). Budget: the step cap fired.
 	if (meta.forcedCompletion === "budget") bits.push("step-budget cap — answer forced");
-	if (meta.forcedCompletion === "watchdog") bits.push("loop watchdog — answer forced");
 	bits.push(`${(meta.durationMs / 1000).toFixed(1)}s`);
 	const { input, output, cacheRead } = meta.usage;
 	if (input !== null || output !== null) {

@@ -213,30 +213,35 @@ final answer now"), so a spent budget forces an answer instead of
 truncating. `stopWhen` allows exactly that one extra step. The nudge is
 user-role and never lands in durable history.
 
-**The loop watchdog: system1 judges progress mid-turn.** The operator's
-insight: system1 already answers "is this a follow-up?" and "worth
-saving as a skill?" — it can answer "is the model looping?" too. Every
-16 tool calls the reviewer's JevClient scores the turn's digest ring on
-one noul question; a ≥0.6 "looping" verdict cuts the turn early into
-the same tools-off landing, with its own nudge. The question is worded
-to separate volume from repetition — twenty distinct diffs are
-progress, near-identical re-calls are not. Both error modes are mild:
-a false positive answers a bit early, a false negative waits for the
-budget. It is async and fail-open (an unavailable system1 never blocks
-or cuts a turn), rides the shared JevClient with reviewer-enabled as
-the switch, and the cut logs loudly (`loop watchdog cut`).
+**The loop watchdog was built (2026-10-07) and removed same day.**
+The idea — system1 scoring the digest ring "is this looping?" every 16
+tool calls — died on contact with the evidence: across the 84-turn log
+only four turns ever reached 16 calls, none repeated a call exactly,
+and the one flailing turn (19 searches for variants of a nonexistent
+thing) is exactly the case the question wording excluded ("many
+similar-looking but distinct commands are NOT looping"). What remained
+for a model to judge was near-exact repetition — which a hash does
+deterministically. Worse, prod config (`reviewer.evidence.calls: 8`)
+capped the ring below the evidence depth the 16-call cadence commit
+itself called necessary, and a false positive would cut precisely the
+deep turns the budget raise was meant to protect. **Ruling: no model
+judges repetition mid-turn. If a real loop ever shows in the log, the
+tool is a deterministic detector — the same `(tool, args)` hash seen K
+times in a turn triggers the existing tools-off landing and reuses the
+`forced` stamp channel (widen the kind then: `"budget" | "repeat"`).**
+Do not re-propose the JevClient version.
 
-The invariant these two share: **a turn always ends in an answer** —
-whatever the budget, the watchdog, or the provider does, the operator
-gets prose, and the log explains every early landing.
+The invariant that stays: **a turn always ends in an answer** —
+whatever the budget or the provider does, the operator gets prose, and
+the log explains every early landing.
 
-**Forced answers are stamped, not passed off as natural.** Both
-landings set `forcedCompletion: "budget" | "watchdog"` in the finish
+**Forced answers are stamped, not passed off as natural.** A budget
+landing sets `forcedCompletion: "budget"` in the finish
 chunk's message metadata (the `TurnMetadata` wire type, shared with the
 app client), and the app's turn footer renders it: "step-budget cap —
-answer forced" / "loop watchdog — answer forced". An answer produced
-under "tools are disabled, answer now" is degraded goods — the operator
-sees that it is, on the message itself, live and on history reload.
+answer forced". An answer produced under "tools are disabled, answer
+now" is degraded goods — the operator sees that it is, on the message
+itself, live and on history reload.
 
 **Every reading surface carries the stamp.** The app channel reads it
 from turn metadata (footer line); Telegram has no footer, so the stamp
@@ -245,7 +250,7 @@ so the final flush publishes it on the last bubble (🫡 lands on the
 stamped message) and TTS never speaks it; voice turns ship it as its
 own notice line after the audio. The mini app is the settings surface,
 not a chat — no stamp there by design. `TurnDone` carries
-`forced?: "budget" | "watchdog"` so any future delivery surface
+`forced?: "budget"` so any future delivery surface
 inherits the contract.
 
 **Review round, same day (fresh-context reviewer): three holes closed.**

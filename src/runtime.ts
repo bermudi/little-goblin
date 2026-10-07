@@ -59,30 +59,6 @@ const STEP_BUDGET = 64;
 // system-in-messages questions.
 const STEP_BUDGET_NUDGE =
 	"Step budget spent — tools are disabled for this final step. Write the final answer to the operator now from what you already have, and say plainly what you could not verify.";
-// The loop watchdog (operator ask, 2026-10-07): system1 — the same tiny
-// decision model that gates reviews — reads the turn's tool-call digest
-// every LOOP_CHECK_EVERY calls and scores "is this loop making
-// progress?". A looping verdict cuts the turn early into the same
-// tools-off landing a spent budget gets. Volume alone is not looping
-// (twenty distinct diffs are progress); repetition without new
-// information is.
-const LOOP_CHECK_EVERY = 16;
-const LOOP_CUT_SCORE = 0.6;
-const LOOP_DIGEST_CAP = 24;
-const LOOP_NUDGE =
-	"A progress check judged your recent tool calls repetitive — repeating or near-repeating earlier calls without gaining new information. Tools are disabled for this final step: write the best answer you can from what you already have, and say plainly what is left unverified.";
-const LOOP_QUESTIONS: Record<string, JevQuestion> = {
-	looping: {
-		type: "noul",
-		instructions:
-			"An agent is mid-turn, making tool calls. Judging only the recent calls listed in the state, is it stuck in a loop — repeating the same or near-identical calls, re-reading what it already read, or otherwise calling without gaining new information? Many similar-looking but distinct commands are NOT looping; exact or near-exact repetition is.",
-		criteria: {
-			true: "Recent calls repeat the same or near-identical commands, or re-fetch known information with no new result",
-			false: "Each call is distinct or plainly builds toward the task, even if numerous and similar in shape",
-		},
-	},
-};
-
 // Auto-compaction trigger (DESIGN.md, Compaction): a completed turn at
 // or past this fraction of the catalog context window compacts in-lane.
 // The ≥80% utilization warn stays as the alarm that it didn't keep up.
@@ -142,7 +118,7 @@ function systemEventAsUser(m: UIMessage): UIMessage {
 // ---------- sink: what the turn streams into (tg implements) ----------
 
 export type TurnDone =
-	| { kind: "completed"; forced?: "budget" | "watchdog" }
+	| { kind: "completed"; forced?: "budget" }
 	| { kind: "fenced" }
 	| { kind: "error"; message: string };
 
@@ -379,11 +355,6 @@ export class Runtime {
 	// The skill reviewer — attached after the bot exists (its save note
 	// delivers through bot.api). Absent = the feature is off.
 	private reviewer: ReviewerDeps | undefined;
-	// The loop watchdog — setReviewer's twin: index.ts wires the
-	// reviewer's JevClient here (one instance, shared auth closure).
-	// Absent = watchdog off; the budget landing still guarantees the
-	// answer.
-	private loopWatchdog: { decide: JevClient["decide"]; every: number } | null = null;
 	// Turn-completion counter — the reviewer queue's serialization
 	// order (gate latency must not reorder reviews).
 	private turnCounter = 0;
@@ -396,11 +367,6 @@ export class Runtime {
 
 	setReviewer(reviewer: ReviewerDeps): void {
 		this.reviewer = reviewer;
-	}
-
-	setLoopWatchdog(watchdog: { decide: JevClient["decide"]; every?: number } | null): void {
-		this.loopWatchdog =
-			watchdog === null ? null : { decide: watchdog.decide, every: watchdog.every ?? LOOP_CHECK_EVERY };
 	}
 
 	// Enqueue a user message + a sink. The message lands in history
@@ -909,14 +875,9 @@ export class Runtime {
 	private async runTurn(convId: string, turns: QueuedTurn[], recovery?: TurnRecovery): Promise<void> {
 		const { store } = this.deps;
 		let filterRetryUsed = recovery?.filterRetryUsed ?? false;
-		// The loop watchdog's cut flag — set asynchronously by system1
-		// between steps; prepareStep folds it into the landing decision.
-		// Declared here (before streamText): prepareStep's closure reads it
-		// the moment the SDK fires step 0.
-		let loopCut = false;
 		// Which landing fired, if any — rides the finish chunk's metadata
 		// so the operator's UI can stamp forced answers (design/model.md).
-		let forcedKind: "budget" | "watchdog" | null = null;
+		let forcedKind: "budget" | null = null;
 		// The first queued sink is the turn's delivery head (delta hooks,
 		// voice, files); every streaming member receives the chunks (the
 		// reply belongs to the conversation, not to the connection that
@@ -1140,29 +1101,18 @@ export class Runtime {
 					// The budget's soft landing: the step AFTER the last tool step
 					// locks toolChoice to none and appends the nudge — the model
 					// can only answer. stopWhen allows exactly that one extra
-					// step. The loop watchdog's cut folds in identically:
-					// whichever fired first owns the nudge's wording.
+					// step.
 					const budget = this.deps.stepBudget ?? STEP_BUDGET;
 					const lastCall = stepNumber === budget;
-					const forced = lastCall || loopCut;
+					const forced = lastCall;
 					if (lastCall) {
 						forcedKind = "budget";
 						log.warn("step budget spent — forcing tools-off completion", {
 							conversation: convId,
 							steps: budget,
 						});
-					} else if (loopCut) {
-						forcedKind ??= "watchdog";
-						log.warn("loop watchdog cut — forcing tools-off completion", {
-							conversation: convId,
-							step: stepNumber,
-						});
 					}
-					const nudge: ModelMessage[] = lastCall
-						? [{ role: "user", content: STEP_BUDGET_NUDGE }]
-						: loopCut
-							? [{ role: "user", content: LOOP_NUDGE }]
-							: [];
+					const nudge: ModelMessage[] = lastCall ? [{ role: "user", content: STEP_BUDGET_NUDGE }] : [];
 					const lane = this.lane(convId);
 					// Steering folds pending submits into the live request —
 					// but a headless head (no onStreamChunk) must not absorb
@@ -1380,9 +1330,6 @@ export class Runtime {
 			const digestRing: { id: string; entry: ToolCallDigest }[] = recovery
 				? [...recovery.digest]
 				: [];
-		// The watchdog reads the same digest ring the reviewer's evidence
-		// fills — either consumer is reason enough to keep it populated.
-		const watchdog = this.loopWatchdog;
 			// Block-boundary tracking for the live stream: last text part id
 			// within a step, plus whether any text has streamed at all (see
 			// the text-delta and start-step cases). A resume inherits the
@@ -1424,7 +1371,7 @@ export class Runtime {
 								finishReason: part.finishReason,
 								durationMs: Date.now() - turnStartMs,
 								// Forced landings stamp themselves — the operator's UI must
-								// never present a budget/watchdog-forced answer as natural
+								// never present a budget-forced answer as natural
 								// (design/model.md, 2026-10-07).
 								...(forcedKind !== null ? { forcedCompletion: forcedKind } : {}),
 								usage: {
@@ -1541,7 +1488,7 @@ export class Runtime {
 						sink.onToolCall(chunk.toolName, chunk.input);
 						toolCalls.push(chunk.toolName);
 						toolNameByCallId.set(chunk.toolCallId, chunk.toolName);
-						if (evidence !== undefined || watchdog !== null) {
+						if (evidence !== undefined) {
 							digestRing.push({
 								id: chunk.toolCallId,
 								entry: {
@@ -1552,37 +1499,7 @@ export class Runtime {
 										ok: true,
 									},
 								});
-								if (digestRing.length > (evidence?.calls ?? LOOP_DIGEST_CAP)) digestRing.shift();
-							}
-							// The loop watchdog samples every N tool calls — async and
-							// fail-open: the verdict lands between steps, and an
-							// unavailable system1 never blocks or cuts a turn.
-							if (watchdog !== null && toolCalls.length % watchdog.every === 0) {
-								void watchdog
-									.decide(
-										{
-											purpose: "mid-turn progress check",
-											totalToolCalls: toolCalls.length,
-											recentCalls: digestRing.map((d) => d.entry),
-										},
-										LOOP_QUESTIONS,
-									)
-									.then((decision) => {
-										const score = decision.answers["looping"] ?? 0;
-										log.info("loop watchdog", {
-											conversation: convId,
-											toolCalls: toolCalls.length,
-											looping: score,
-											cut: score >= LOOP_CUT_SCORE,
-										});
-										if (score >= LOOP_CUT_SCORE) loopCut = true;
-									})
-									.catch((err: unknown) => {
-										log.warn("loop watchdog unavailable — fail-open", {
-											conversation: convId,
-											error: String(err),
-										});
-									});
+								if (digestRing.length > evidence.calls) digestRing.shift();
 							}
 						// Side-effecting boundary — the chat shows a status
 						// line, the log gets the durable record. Args are
@@ -1705,9 +1622,7 @@ export class Runtime {
 				(finishReason === "tool-calls" || !landed.parts.some((p) => p.type === "text" && p.text.trim() !== ""))
 			) {
 				const note =
-					forcedKind === "budget"
-						? "I hit the turn's step budget before writing my answer — the work above is what I managed to check. Say \"continue\" and I'll pick up from those findings."
-						: "A progress check stopped me here as repetitive and I never wrote the final answer. Say \"continue\" and I'll answer from what I have.";
+					"I hit the turn's step budget before writing my answer — the work above is what I managed to check. Say \"continue\" and I'll pick up from those findings.";
 				log.warn("forced landing produced no prose — synthetic answer appended", {
 					conversation: convId,
 					forced: forcedKind,

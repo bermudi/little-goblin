@@ -56,14 +56,12 @@ function replyKey(chatId: number, messageId: number): string {
 	return `${chatId}:${messageId}`;
 }
 
-// The forced-landing stamp (design/model.md): a budget- or watchdog-cut
-// answer is degraded goods — telegram reads that on the reply itself,
-// riding the status-tail mark so TTS never speaks it.
+// The forced-landing stamp (design/model.md): a budget-cut answer is
+// degraded goods — telegram reads that on the reply itself, riding the
+// status-tail mark so TTS never speaks it.
 function forcedNotice(done: TurnDone): string | null {
 	if (done.kind !== "completed" || done.forced === undefined) return null;
-	return done.forced === "budget"
-		? "⚠ step-budget cap — answer forced"
-		: "⚠ loop watchdog — answer forced";
+	return "⚠ step-budget cap — answer forced";
 }
 
 // Exported for speak-button tests: prime the reply cache directly

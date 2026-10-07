@@ -895,8 +895,8 @@ describe("channel guard", () => {
 	});
 });
 
-// The forced-landing stamp (design/model.md): a budget- or watchdog-cut
-// answer is degraded goods — telegram reads that on the reply itself.
+// The forced-landing stamp (design/model.md): a budget-cut answer is
+// degraded goods — telegram reads that on the reply itself.
 describe("forced-completion stamp", () => {
 	const TAIL = "\n\n—\n";
 
@@ -907,15 +907,6 @@ describe("forced-completion stamp", () => {
 		await sleep(0);
 		await sink.onDone({ kind: "completed", forced: "budget" });
 		expect(msgs).toEqual([`the wrapped answer${TAIL}⚠ step-budget cap — answer forced`]);
-	});
-
-	test("watchdog cut stamps with its own wording", async () => {
-		const { api, msgs } = fakeApi({});
-		const sink = makeDeliverySink(api, conv, undefined, 0);
-		sink.onTextDelta("cut short");
-		await sleep(0);
-		await sink.onDone({ kind: "completed", forced: "watchdog" });
-		expect(msgs).toEqual([`cut short${TAIL}⚠ loop watchdog — answer forced`]);
 	});
 
 	test("natural completion adds no stamp", async () => {

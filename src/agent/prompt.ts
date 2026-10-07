@@ -173,11 +173,6 @@ function readCapped(source: string, path: string, cap: number): string | null {
 export function buildSystemPrompt(
 	conv: Conversation,
 	tools: readonly string[],
-	/** The delegation machine label when delegation is remote — the
-	 *  prompt must tell the model where its agents live (and that a
-	 *  missing local herdr is expected), or it diagnoses itself as
-	 *  broken the way a local probe invites. Null = local session. */
-	delegationMachine: string | null = null,
 ): { text: string; sources: string[] } {
 	const soul = readCapped("SOUL.md", paths.soul(), MAX_PROMPT_FILE_CHARS);
 	if (soul === null) {
@@ -224,22 +219,10 @@ export function buildSystemPrompt(
 			: []),
 		...(tools.includes("delegate")
 			? [
-					...(delegationMachine === null
-						? [
-								`- delegate hands work to external coding agents — they run in`,
-								`  your own herdr session named \`goblin\` (he watches via`,
-								`  \`herdr session attach goblin\`; you drive it through this`,
-							]
-						: [
-								`- delegate hands work to external coding agents — they run`,
-								`  remotely, in the \`goblin\` herdr session on the operator's`,
-								`  workstation (machine profile \`${delegationMachine}\`). This`,
-								`  box has NO herdr server, by design — never probe one, never`,
-								`  install goblin-herdr; local herdr state means nothing. He`,
-								`  watches via \`herdr session attach goblin\` on that machine;`,
-								`  you drive delegation through this tool, never the raw CLI —`,
-							]),
-					`  the herdr skill has the`,
+					`- delegate hands work to external coding agents — they run in`,
+					`  your own herdr session named \`goblin\` (he watches via`,
+					`  \`herdr session attach goblin\`; you drive it through this`,
+					`  tool, never the raw CLI — the herdr skill has the`,
 					`  topology). Prefer it over long bash sessions; results`,
 					`  arrive as [delegation: #id …] messages in the conversation`,
 					`  they were born in — a private-chat delegation moves into`,
@@ -320,11 +303,10 @@ export function systemPromptFor(
 	store: Pick<ConversationStore, "promptSnapshot" | "savePromptSnapshot">,
 	conv: Conversation,
 	tools: readonly string[],
-	delegationMachine: string | null = null,
 ): { text: string; sources: string[] } {
 	const frozen = store.promptSnapshot(conv.id);
 	if (frozen !== null) return frozen;
-	const built = buildSystemPrompt(conv, tools, delegationMachine);
+	const built = buildSystemPrompt(conv, tools);
 	store.savePromptSnapshot(conv.id, built.text, built.sources);
 	// The boundary line: the snapshot's birth is a cache write, and
 	// noteSource diffs above explain any source change since the last

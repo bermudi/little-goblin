@@ -495,7 +495,7 @@ async function launch(
 				delegation: d.id, name: d.name,
 			});
 			await notify(deps, parked, "needs input", {
-				extra: `(blocked at startup — the task hasn't been sent yet; relay a keypress with action 'answer' or attach with \`herdr session attach goblin\`${deps.machine ? ` on ${deps.machine.label}` : ""})`,
+				extra: "(blocked at startup — the task hasn't been sent yet; relay a keypress with action 'answer' or attach with `herdr session attach goblin`)",
 			});
 			return { kind: "parked", delegation: parked };
 		}

@@ -175,6 +175,33 @@ describe("delegate tool", () => {
 			delegateInputSchema.safeParse({ action: "answer", id: 1, key: "rm -rf /" }).success,
 		).toBe(false);
 	});
+	test("the wire schema preserves 'on' — a parsed start still resolves its target", async () => {
+		const targets = new Map<string, import("../../delegation-lifecycle.ts").DelegationTargetDeps>();
+		const h = harness(undefined, targets);
+		targets.set("g7", { machine: "g7", root: "/remote/goblin", herdr: h.herdr });
+		const tool = delegateTool({
+			lifecycle: h.lifecycle,
+			config: {
+				harnesses: { codex: { kind: "codex" } },
+				machines: { g7: { machine: "g7", root: "/remote/goblin" } },
+			},
+			pin: () => ({ address: { chatId: 1, threadId: null } }),
+			workspaceDir: h.workspaceDir,
+		});
+		// The provider validates args against delegateInputSchema before
+		// execute — the parsed value is what execute actually receives,
+		// so a field the wire schema drops can never reach a launch.
+		const parsed = delegateInputSchema.parse({
+			action: "start",
+			harness: "codex",
+			task: "remote thing",
+			on: "g7",
+		});
+		const out = (await exec(tool, parsed)) as { id: number };
+		expect(h.store.get(out.id)!.target).toBe("g7");
+		expect(h.store.get(out.id)!.cwd).toBe("/remote/goblin");
+	});
+
 	test("an unknown harness is rejected listing the configured ones", async () => {
 		const h = harness();
 		const out = (await exec(h.tool, {

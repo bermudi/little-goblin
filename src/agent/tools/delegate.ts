@@ -72,6 +72,12 @@ function view(d: Delegation, reportPath: string): Record<string, unknown> {
 	};
 }
 
+// `~` and `~/...` name a home directory; `~foo` is shell
+// user-expansion we do NOT perform — treating it as home-relative
+// would stat/resolve it under the operator's home while the literal
+// path reaches herdr.
+const isHomePath = (p: string) => p === "~" || p.startsWith("~/");
+
 function renderLaunch(out: LaunchOutcome, pin: DelegationPin, attach: string): Record<string, unknown> {
 	switch (out.kind) {
 		case "started": {
@@ -275,6 +281,7 @@ export const delegateInputSchema = z.object({
 	task: startSchema.shape.task.optional(),
 	cwd: startSchema.shape.cwd,
 	name: startSchema.shape.name,
+	on: startSchema.shape.on,
 	id: readSchema.shape.id.optional(),
 	lines: readSchema.shape.lines,
 	text: sendSchema.shape.text.optional(),
@@ -322,12 +329,12 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 							? deps.workspaceDir
 							: (target?.root ?? (isMachine ? "~" : deps.workspaceDir));
 					const cwd = input.cwd
-						? isAbsolute(input.cwd) || input.cwd.startsWith("~")
+						? isAbsolute(input.cwd) || isHomePath(input.cwd)
 							? input.cwd
 							: // A `~` root names the TARGET's home — path.resolve
 							// would eat it as a relative segment under OUR cwd.
 							// Join textually; herdr expands it on the target.
-								cwdRoot.startsWith("~")
+								isHomePath(cwdRoot)
 									? `${cwdRoot.replace(/\/+$/, "")}/${input.cwd}`
 									: resolve(cwdRoot, input.cwd)
 						: cwdRoot;
@@ -335,7 +342,7 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 					// real home before the stat, or a directory that exists
 					// reads as missing. Machine rows pass through verbatim
 					// (the target expands its own `~`).
-					const cwdForStat = !isMachine && cwd.startsWith("~")
+					const cwdForStat = !isMachine && isHomePath(cwd)
 						? resolve(homedir(), cwd.replace(/^~\/?/, ""))
 						: cwd;
 					if (!isMachine && (!existsSync(cwdForStat) || !statSync(cwdForStat).isDirectory())) {

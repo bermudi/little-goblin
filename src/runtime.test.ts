@@ -2970,6 +2970,12 @@ describe("step budget soft landing", () => {
 		expect(executions).toBe(2);
 		expect(sink.text).toBe("the wrapped answer");
 		expect(store.history(conv.id)).toHaveLength(2);
+		// The forced landing stamps itself in the stored metadata — the UI
+		// must never pass a budget-forced answer off as natural.
+		const md = (store.history(conv.id)[1] as { metadata?: unknown }).metadata as
+			| { forcedCompletion?: unknown }
+			| undefined;
+		expect(md?.forcedCompletion).toBe("budget");
 		store.close();
 	});
 });
@@ -3089,6 +3095,30 @@ describe("loop watchdog", () => {
 		expect(requests[4]!.toolChoice).toBe("none");
 		expect(requests[4]!.prompt).toContain("Step budget spent");
 		expect(requests[4]!.prompt).not.toContain("repetitive");
+		store.close();
+	});
+
+	test("a cut turn's metadata stamps the watchdog — a passing one stays clean", async () => {
+		const { model } = greedyModel();
+		const store = openStore(tmpdb());
+		const conv = store.resolve(appAddress("watchdog-stamp"), "/w");
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({
+				probe: tool({ inputSchema: z.object({}), execute: async () => { await sleep(20); return "ok"; } }),
+			}),
+		});
+		runtime.setLoopWatchdog({ decide: decideReturning(0.91), every: 2 });
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "spin" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		while (runtime.busy(conv.id)) await sleep(1);
+		await runtime.shutdown();
+		const md = (store.history(conv.id)[1] as { metadata?: unknown }).metadata as
+			| { forcedCompletion?: unknown }
+			| undefined;
+		expect(md?.forcedCompletion).toBe("watchdog");
 		store.close();
 	});
 });

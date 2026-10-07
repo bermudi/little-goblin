@@ -914,6 +914,9 @@ export class Runtime {
 		// Declared here (before streamText): prepareStep's closure reads it
 		// the moment the SDK fires step 0.
 		let loopCut = false;
+		// Which landing fired, if any — rides the finish chunk's metadata
+		// so the operator's UI can stamp forced answers (design/model.md).
+		let forcedKind: "budget" | "watchdog" | null = null;
 		// The first queued sink is the turn's delivery head (delta hooks,
 		// voice, files); every streaming member receives the chunks (the
 		// reply belongs to the conversation, not to the connection that
@@ -1143,11 +1146,13 @@ export class Runtime {
 					const lastCall = stepNumber === budget;
 					const forced = lastCall || loopCut;
 					if (lastCall) {
+						forcedKind = "budget";
 						log.warn("step budget spent — forcing tools-off completion", {
 							conversation: convId,
 							steps: budget,
 						});
 					} else if (loopCut) {
+						forcedKind ??= "watchdog";
 						log.warn("loop watchdog cut — forcing tools-off completion", {
 							conversation: convId,
 							step: stepNumber,
@@ -1413,6 +1418,10 @@ export class Runtime {
 									(typeof step.model === "string" ? step.model : step.model.modelId),
 								finishReason: part.finishReason,
 								durationMs: Date.now() - turnStartMs,
+								// Forced landings stamp themselves — the operator's UI must
+								// never present a budget/watchdog-forced answer as natural
+								// (design/model.md, 2026-10-07).
+								...(forcedKind !== null ? { forcedCompletion: forcedKind } : {}),
 								usage: {
 									input: part.totalUsage.inputTokens ?? null,
 									output: part.totalUsage.outputTokens ?? null,

@@ -229,3 +229,11 @@ the switch, and the cut logs loudly (`loop watchdog cut`).
 The invariant these two share: **a turn always ends in an answer** —
 whatever the budget, the watchdog, or the provider does, the operator
 gets prose, and the log explains every early landing.
+
+**Forced answers are stamped, not passed off as natural.** Both
+landings set `forcedCompletion: "budget" | "watchdog"` in the finish
+chunk's message metadata (the `TurnMetadata` wire type, shared with the
+app client), and the app's turn footer renders it: "step-budget cap —
+answer forced" / "loop watchdog — answer forced". An answer produced
+under "tools are disabled, answer now" is degraded goods — the operator
+sees that it is, on the message itself, live and on history reload.

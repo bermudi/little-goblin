@@ -216,7 +216,7 @@ user-role and never lands in durable history.
 **The loop watchdog: system1 judges progress mid-turn.** The operator's
 insight: system1 already answers "is this a follow-up?" and "worth
 saving as a skill?" — it can answer "is the model looping?" too. Every
-8 tool calls the reviewer's JevClient scores the turn's digest ring on
+16 tool calls the reviewer's JevClient scores the turn's digest ring on
 one noul question; a ≥0.6 "looping" verdict cuts the turn early into
 the same tools-off landing, with its own nudge. The question is worded
 to separate volume from repetition — twenty distinct diffs are

@@ -66,7 +66,7 @@ const STEP_BUDGET_NUDGE =
 // tools-off landing a spent budget gets. Volume alone is not looping
 // (twenty distinct diffs are progress); repetition without new
 // information is.
-const LOOP_CHECK_EVERY = 8;
+const LOOP_CHECK_EVERY = 16;
 const LOOP_CUT_SCORE = 0.6;
 const LOOP_DIGEST_CAP = 24;
 const LOOP_NUDGE =

@@ -13,6 +13,7 @@
 // @ai-sdk/react's useChat consumes.
 
 import { createHash, randomUUID } from "node:crypto";
+import { basename, join } from "node:path";
 import { UI_MESSAGE_STREAM_HEADERS, type UIMessage, type UIMessageChunk } from "ai";
 import { z } from "zod";
 import { readBodyBytesCapped } from "./check.ts";
@@ -897,6 +898,44 @@ export async function handleAppApi(
 		});
 		const body: AppAttachmentResponse = { ref };
 		return Response.json(body, { status: 201, headers: NO_STORE });
+	}
+
+	// GET /api/app/attachments/<name> — read-back for stored files (image
+	// previews in the transcript, click-through to the full file). The
+	// segment must be a plain basename inside workspace/attachments/ —
+	// isStoredAttachmentPath is the same confinement check intake runs
+	// on client-supplied refs. Dotfiles are upload temps; never serve.
+	if (path.startsWith("/api/app/attachments/")) {
+		if (req.method !== "GET") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		let name: string;
+		try {
+			name = decodeURIComponent(path.slice("/api/app/attachments/".length));
+		} catch {
+			return Response.json({ error: "bad name" }, { status: 400, headers: NO_STORE });
+		}
+		const file = join(paths.attachments(), name);
+		if (
+			name === "" ||
+			name.startsWith(".") ||
+			basename(name) !== name ||
+			!isStoredAttachmentPath(file)
+		) {
+			return Response.json({ error: "bad name" }, { status: 400, headers: NO_STORE });
+		}
+		const blob = Bun.file(file);
+		if (!(await blob.exists())) {
+			return Response.json({ error: "not found" }, { status: 404, headers: NO_STORE });
+		}
+		// Saved names carry a uuid stem — the bytes behind a name never
+		// change, so the response is immutable-cacheable.
+		return new Response(blob, {
+			headers: {
+				"content-type": blob.type === "" ? "application/octet-stream" : blob.type,
+				"cache-control": "public, max-age=31536000, immutable",
+			},
+		});
 	}
 
 	return Response.json({ error: "not found" }, { status: 404, headers: NO_STORE });

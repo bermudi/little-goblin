@@ -139,7 +139,8 @@ const args = process.argv.slice(2);
 const topIdx = args.indexOf("--top");
 const topN = topIdx === -1 ? 10 : Number.parseInt(args[topIdx + 1] ?? "", 10);
 if (!Number.isInteger(topN) || topN < 1) throw new Error("--top expects a positive integer");
-const models = args.filter((a, i) => a !== "--top" && i !== topIdx + 1);
+const models =
+	topIdx === -1 ? [...args] : args.filter((_, i) => i !== topIdx && i !== topIdx + 1);
 if (models.length === 0) models.push(config.system1?.model ?? JEV_MODEL);
 
 // Expectations for stored turns are verified by hand — label a turn's

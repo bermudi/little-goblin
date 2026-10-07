@@ -34,6 +34,11 @@ export interface Delegation {
 	workspaceId: string;
 	paneId: string;
 	status: DelegationStatus;
+	/** herdr target label (config `delegation.machines` key) — null =
+	 *  goblin's own local session, the default target. IDs and agent
+	 *  names are scoped per server, so every herdr call resolves its
+	 *  adapter through this. */
+	target: string | null;
 	/** state_change_seq observed right after the last prompt. */
 	baselineSeq: number;
 	promptedAt: string;
@@ -54,6 +59,8 @@ export interface CreateDelegation {
 	/** Set by a spin-off launch — the row pins the app conversation
 	 *  and address carries the 0/NULL fillers. */
 	appConversation?: string;
+	/** Target label; omitted/null = own local session. */
+	target?: string | null;
 }
 
 export interface DelegationsStore {
@@ -92,9 +99,6 @@ export interface DelegationsStore {
 	list(): Delegation[];
 	/** Rows the watcher still owes a verdict: running + needs_input. */
 	active(): Delegation[];
-	/** Everything that can still consume a herdr slot — the start
-	 *  tool's concurrency cap: starting + running + needs_input. */
-	live(): Delegation[];
 	/** Rows stuck mid-launch — only meaningful to a fresh watcher:
 	 *  a `starting` row across a restart means goblin died mid-start. */
 	starting(): Delegation[];
@@ -114,6 +118,7 @@ const delegationSchema = z.object({
 	workspace_id: z.string(),
 	pane_id: z.string(),
 	status: z.enum(["starting", "running", "needs_input", "done", "failed", "stopped"]),
+	target: z.string().nullable(),
 	baseline_seq: z.number(),
 	prompted_at: z.string(),
 	prompt_pending: z.number(),
@@ -138,6 +143,7 @@ function rowToDelegation(row: unknown): Delegation {
 		workspaceId: r.workspace_id,
 		paneId: r.pane_id,
 		status: r.status,
+		target: r.target,
 		baselineSeq: r.baseline_seq,
 		promptedAt: r.prompted_at,
 		promptPending: r.prompt_pending === 1,
@@ -170,6 +176,7 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		workspace_id TEXT NOT NULL,
 		pane_id TEXT NOT NULL,
 		status TEXT NOT NULL,
+		target TEXT,
 		baseline_seq INTEGER NOT NULL DEFAULT 0,
 		prompted_at TEXT NOT NULL,
 		created_at TEXT NOT NULL,
@@ -189,21 +196,23 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	if (!cols.has("prompt_pending")) {
 		db.exec("ALTER TABLE delegations ADD COLUMN prompt_pending INTEGER NOT NULL DEFAULT 0");
 	}
+	// Predates machine targets: rows always meant the own local session.
+	// NULL = own local session (design/delegation.md, "Targets").
+	if (!cols.has("target")) {
+		db.exec("ALTER TABLE delegations ADD COLUMN target TEXT");
+	}
 
 	const qGet = db.query("SELECT * FROM delegations WHERE id = ?");
 	const qList = db.query("SELECT * FROM delegations ORDER BY id");
 	const qActive = db.query(
 		"SELECT * FROM delegations WHERE status IN ('running','needs_input') ORDER BY id",
 	);
-	const qLive = db.query(
-		"SELECT * FROM delegations WHERE status IN ('starting','running','needs_input') ORDER BY id",
-	);
 	const qStarting = db.query(
 		"SELECT * FROM delegations WHERE status = 'starting' ORDER BY id",
 	);
 	const qInsert = db.query(`INSERT INTO delegations
-		(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, baseline_seq, prompted_at, created_at, finished_at, app_conversation)
-		VALUES (?, ?, ?, ?, ?, ?, '', '', '', 'starting', 0, ?, ?, NULL, ?)`);
+		(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, target, baseline_seq, prompted_at, created_at, finished_at, app_conversation)
+		VALUES (?, ?, ?, ?, ?, ?, '', '', '', 'starting', ?, 0, ?, ?, NULL, ?)`);
 	const qBind = db.query(
 		"UPDATE delegations SET agent_name = ?, workspace_id = ?, pane_id = ? WHERE id = ?",
 	);
@@ -223,10 +232,10 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	);
 
 	return {
-		create({ name, harness, cwd, task, address, appConversation }, now = new Date()) {
+		create({ name, harness, cwd, task, address, appConversation, target }, now = new Date()) {
 			const ts = now.toISOString();
 			const res = qInsert.run(
-				name, harness, cwd, task, address.chatId, address.threadId, ts, ts,
+				name, harness, cwd, task, address.chatId, address.threadId, target ?? null, ts, ts,
 				appConversation ?? null,
 			);
 			return rowToDelegation(qGet.get(Number(res.lastInsertRowid)));
@@ -269,9 +278,6 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		},
 		active() {
 			return qActive.all().map(rowToDelegation);
-		},
-		live() {
-			return qLive.all().map(rowToDelegation);
 		},
 		starting() {
 			return qStarting.all().map(rowToDelegation);

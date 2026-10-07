@@ -659,7 +659,13 @@ export function Composer({
 			]);
 			try {
 				const { ref } = await uploadAttachment(token, file);
-				setPending((p) => p.map((e) => (e.key === key ? { key, ref } : e)));
+				setPending((p) =>
+					p.map((e) =>
+						e.key === key
+							? { key, ref, ...(e.thumb === undefined ? {} : { thumb: e.thumb }) }
+							: e,
+					),
+				);
 			} catch {
 				setPending((p) =>
 					p.map((e) => (e.key === key ? { ...e, uploading: false, failed: true } : e)),

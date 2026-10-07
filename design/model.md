@@ -196,50 +196,101 @@ agent loop.
   ffmpeg missing, corrupt media — leaves the attachment path-referenced
   and warn-logged: it must never eat a voice message.
 
-## The turn budget lands soft — and system1 watches the loop
+## No step budget — loops are caught, not capped
 
-Ruling 2026-10-07, operator ask, from a failed turn. Symptom: a deep
-exploration turn (Safari Zone mechanics from ROM disassembly diffs) ran
-25 steps, hit the scaffold-era `MAX_STEPS` cliff with `finish=tool-calls`,
-and ended with **no reply at all** — 25 tool calls of findings, zero
-prose, no notice to operator, model, or log. Two rulings landed:
+Ruling 2026-10-07 (second, supersedes the same-day "soft budget +
+watchdog" ruling and its removal). Operator intent, stated plainly: **a
+turn has no step budget.** Current models work reliably on one task for
+hours; a step count is a design constraint dressed as a safety net, and
+the scaffold-era `MAX_STEPS = 25` cliff already ate one whole reply (the
+Safari Zone turn: 25 steps of ROM diffs, `finish=tool-calls`, zero
+prose). The first ruling raised the cap to 64 *and* added the system1
+watchdog — keeping the cap is what made the watchdog look redundant, and
+the removal (`7d9e1dc`) judged the half-built thing. The watchdog was
+always meant to *replace* the cap.
 
-**The budget is a safety net, not a design constraint — and it lands
-soft.** `STEP_BUDGET` (64; `deps.stepBudget` for tests) still bounds the
-loop — an unbounded agent loop is a runaway cost loop, and no harness
-worth copying runs without one — but the step *after* the budget locks
-`toolChoice: "none"` and appends a request-only user nudge ("write the
-final answer now"), so a spent budget forces an answer instead of
-truncating. `stopWhen` allows exactly that one extra step. The nudge is
-user-role and never lands in durable history.
+What bounds a turn now, in order of who fires first:
 
-**The loop watchdog was built (2026-10-07) and removed same day.**
-The idea — system1 scoring the digest ring "is this looping?" every 16
-tool calls — died on contact with the evidence: across the 84-turn log
-only four turns ever reached 16 calls, none repeated a call exactly,
-and the one flailing turn (19 searches for variants of a nonexistent
-thing) is exactly the case the question wording excluded ("many
-similar-looking but distinct commands are NOT looping"). What remained
-for a model to judge was near-exact repetition — which a hash does
-deterministically. Worse, prod config (`reviewer.evidence.calls: 8`)
-capped the ring below the evidence depth the 16-call cadence commit
-itself called necessary, and a false positive would cut precisely the
-deep turns the budget raise was meant to protect. **Ruling: no model
-judges repetition mid-turn. If a real loop ever shows in the log, the
-tool is a deterministic detector — the same `(tool, args)` hash seen K
-times in a turn triggers the existing tools-off landing and reuses the
-`forced` stamp channel (widen the kind then: `"budget" | "repeat"`).**
-Do not re-propose the JevClient version.
+**1. The repeat detector (deterministic, always on).** Ported from
+openclaw's `src/agents/tool-loop-detection.ts` — the mechanism, not its
+eight detector kinds. Every completed tool call records
+`argsHash = sha256(tool + stable-JSON(input))` and
+`resultHash = sha256(stable-JSON(output | errorText))` (full values,
+not truncated). Over the turn's last 40 records, the count of records
+matching the newest `(argsHash, resultHash)` pair: **10 warns, 20 cuts.**
+Same call *and* same result is the definition — a re-run whose output
+changed is progress, and an A↔B edit/revert ping-pong with stable
+results trips it too (each side reaches 20 inside the 40-window). It
+needs no model and works when system1 is down. Deliberate polling with
+an unchanging result is the known false positive; the warning tells the
+model to wait longer between checks, and 20 identical answers is a
+genuinely stuck wait.
 
-The invariant that stays: **a turn always ends in an answer** —
-whatever the budget or the provider does, the operator gets prose, and
-the log explains every early landing.
+**2. The loop watchdog (system1, for what a hash can't see).** Every 16
+completed tool calls, system1 scores one noul question (`stuck`,
+`src/loop-watchdog.ts`) over the operator's request plus the last 24
+calls with args and results (300 chars each) — its own ring, independent
+of `reviewer.evidence` (prod caps that at 8, which is why v1's evidence
+was thin). The question is worded for *non-convergence*: rephrased
+searches returning the same nothing, cosmetic retries of the same
+error, cycling approaches — the exact cases v1's wording excluded.
+**≥0.7 warns; a second consecutive ≥0.7 cuts; a sub-threshold check in
+between resets.** Async and fail-open (an unavailable system1 logs and
+skips; the detector still stands), one check in flight at a time,
+wired from the shared JevClient (reviewer-enabled is the switch).
 
-**Forced answers are stamped, not passed off as natural.** A budget
-landing sets `forcedCompletion: "budget"` in the finish
+Calibration (`scripts/loop-calibrate.ts`, 2026-10-07: the six longest
+stored tool turns plus six synthetic cases, three runs each —
+deterministic per input):
+
+| | progress cases (max) | stuck cases (min) | MCPi flail @16 |
+|---|---|---|---|
+| `inception/mercury-decide:free` (prod) | 0.085 | 0.963 | 0.963 |
+| `typesafe/jev-1.13` (fallback) | 0.22 | 0.97 | 0.54 |
+
+0.7 sits in the gap for both. The MCPi turn (16 searches for variants
+of an unannounced project) scores stuck on the prod model — correctly:
+the right outcome there was the warning ("stop searching, report what
+you know"), which is exactly what warn-first delivers. The sample is
+small and no real turn has exceeded 28 calls; rerun the script when a
+long turn lands, and re-calibrate before changing either model.
+
+**3. The context landing.** When a step's reported input tokens reach
+85% of the model's catalog context window, the next step is the
+tools-off landing. With no budget, an overflow is the one remaining way
+a long turn could die without an answer — the overflow resume runs once
+per turn and the in-flight reply itself isn't compactable (compaction
+cuts stored history; the partial isn't stored until the turn ends).
+Landing at 85% ends the turn with prose and a "continue" handoff
+instead. Measured headroom today: ~700 input tokens per tool call
+(the 28-call Safari turn finished at 24k on a 1M window), so this is
+the physical bound on a turn, not a practical one. In-turn compaction
+of the partial is deliberately not built; revisit when a context
+landing shows up in the log.
+
+**4. The operator.** `/stop` is the backstop for everything above.
+
+**Escalation: warn, then cut.** A warning is a request-only user message
+appended once at the next step boundary, tools still on ("change
+approach, or stop and report what's blocking you"). The SDK carries a
+`prepareStep` message override forward, so the warning stays in context
+for the rest of the turn without being re-appended — appended at the
+tail, cache-neutral. A cut is the tools-off landing: `toolChoice:
+"none"` plus a kind-specific request-only nudge, and a stop condition
+that ends the loop after that one step (no step count; `stopWhen`
+otherwise is `isLoopFinished()`). Nudges never land in durable history.
+Every warn, cut, and verdict logs (`loop detector`, `loop watchdog`,
+`context landing`) with the counts and scores that explain it.
+
+The invariant stands: **a turn always ends in an answer**, and the log
+explains every early landing.
+
+**Forced answers are stamped, not passed off as natural.** A landing
+sets `forcedCompletion: "repeat" | "watchdog" | "context"` in the finish
 chunk's message metadata (the `TurnMetadata` wire type, shared with the
-app client), and the app's turn footer renders it: "step-budget cap —
-answer forced". An answer produced under "tools are disabled, answer
+app client), and the app's turn footer renders it ("loop detector —
+answer forced", "loop watchdog — answer forced", "context nearly full —
+answer forced"). An answer produced under "tools are disabled, answer
 now" is degraded goods — the operator sees that it is, on the message
 itself, live and on history reload.
 
@@ -249,19 +300,15 @@ joins the reply body itself at `onDone` — riding the status-tail mark,
 so the final flush publishes it on the last bubble (🫡 lands on the
 stamped message) and TTS never speaks it; voice turns ship it as its
 own notice line after the audio. The mini app is the settings surface,
-not a chat — no stamp there by design. `TurnDone` carries
-`forced?: "budget"` so any future delivery surface
-inherits the contract.
+not a chat — no stamp there by design. `TurnDone` carries the same
+`forced?` kind so any future delivery surface inherits the contract.
 
-**Review round, same day (fresh-context reviewer): three holes closed.**
-The budget is *per-attempt* — an overflow compact-and-resume starts a
-fresh counter, so one logical turn is bounded at 2×(STEP_BUDGET+1);
-accepted (one recovery per turn, overflow+deep-loop coincidence).
-A steer whose every conversion fails at the budget step no longer eats
-the forced landing (the poison-pill return carries it too). And a
-provider that defies `toolChoice: "none"` — still emitting tool calls
-on the forced step, or no prose at all — gets the invariant's last
-word: a synthetic plain-language answer ("I hit the step budget before
-writing my answer… say 'continue'") appended to the stored message and
-the live delta path, warn-logged. The stamp never lies about a
-nothing.
+**Carried from the first ruling's review round.** Detector records and
+watchdog state ride `TurnRecovery` across an overflow resume — one
+logical turn, one loop history. A steer whose every conversion fails at
+the landing step does not eat the landing (the poison-pill return
+carries `toolChoice: "none"` + nudge). And a provider that defies
+`toolChoice: "none"` — still emitting tool calls on the forced step, or
+no prose at all — gets a synthetic plain-language answer per kind,
+appended to the stored message and the live delta path, warn-logged.
+The stamp never lies about a nothing.

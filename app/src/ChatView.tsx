@@ -77,13 +77,20 @@ function FileIcon() {
 // Read-back for a stored attachment — bearer header, blob, object URL.
 // The name segment is the stored path's basename; the server confines
 // reads to workspace/attachments/ regardless.
+// Raster formats keep their type for inline rendering (<img> and a
+// top-level image document run no script). Everything else — SVG
+// carries script, and blob: URLs execute in this origin — is
+// re-wrapped as octet-stream so opening it downloads, never executes.
+const INLINE_IMAGE = /^image\/(png|jpe?g|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon)$/;
 async function fetchAttachmentUrl(token: string | null, path: string): Promise<string> {
 	const name = path.split("/").pop() ?? "";
 	const res = await fetch(`/api/app/attachments/${encodeURIComponent(name)}`, {
 		headers: token === null ? {} : { authorization: `Bearer ${token}` },
 	});
 	if (!res.ok) throw new Error(`http ${res.status}`);
-	return URL.createObjectURL(await res.blob());
+	const bytes = await res.blob();
+	if (INLINE_IMAGE.test(bytes.type)) return URL.createObjectURL(bytes);
+	return URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
 }
 
 function AttachmentChip({ data, token }: { data: unknown; token: string | null }) {
@@ -122,14 +129,23 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 		<span className="attachment">
 			<FileIcon />
 			{path !== "" ? (
-				// Click opens the stored file — fetched lazily so non-image
-				// attachments cost nothing until asked.
+				// Click downloads the stored file — fetched lazily so
+				// non-image attachments cost nothing until asked. A
+				// download, not window.open: the bytes aren't render-safe
+				// (fetchAttachmentUrl wraps them as octet-stream) and the
+				// object URL can be revoked the moment it starts.
 				<button
 					type="button"
 					className="attachment-name link"
 					onClick={() => {
 						void fetchAttachmentUrl(token, path).then(
-							(u) => window.open(u, "_blank"),
+							(u) => {
+								const a = document.createElement("a");
+								a.href = u;
+								a.download = ref.filename;
+								a.click();
+								URL.revokeObjectURL(u);
+							},
 							() => {},
 						);
 					}}

@@ -621,6 +621,12 @@ async function boot() {
 			workspaceDir: paths.workspace(),
 			notify: (conversationId, skills) => sendSkillSavedNotice(tg.bot.api, conversationId, skills),
 		});
+		// The loop watchdog rides the same JevClient (design/model.md →
+		// "No step budget"): every 16 completed tool calls, system1 scores
+		// the turn's own digest ring for non-convergence — warn once, cut
+		// on the second consecutive stuck verdict. Reviewer-enabled is the
+		// switch, same as every other system1 use.
+		runtime.setLoopWatchdog({ decide: jevGate.decide.bind(jevGate) });
 	}
 
 	// The shared wake path — program fires (cron, webhook, mail) submit

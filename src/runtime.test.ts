@@ -309,7 +309,7 @@ describe("provider-filter retry", () => {
 		store.close();
 	}, 3_000);
 
-	test("a second filter later in the turn exhausts the budget and saves no failed reply", async () => {
+	test("a second filter later in the turn exhausts the retry budget and saves no failed reply", async () => {
 		const { model, requests } = scripted([
 			[blocked], [call, finish("tool-calls")], [finish("content-filter")],
 		]);
@@ -2890,41 +2890,47 @@ describe("streaming lane boundary", () => {
 	});
 });
 
-describe("step budget soft landing", () => {
-	// 2026-10-07: a turn hit the old MAX_STEPS cliff with finish=tool-calls
-	// and the operator got no reply at all. The landing is soft now — the
-	// step after the budget strips tools and nudges the model to answer.
-	const finish = (reason: "stop" | "tool-calls"): LanguageModelV4StreamPart => ({
+describe("loop landings", () => {
+	// Design/model.md → "No step budget — loops are caught, not capped":
+	// a turn has no step count. What bounds it is the repeat detector
+	// (10 identical call+result pairs warn, 20 cut), the system1 loop
+	// watchdog (two consecutive stuck verdicts cut), and the context
+	// landing (a step at ≥85% of the catalog window lands tools-off).
+	const finish = (reason: "stop" | "tool-calls", inputTokens = 10): LanguageModelV4StreamPart => ({
 		type: "finish",
 		finishReason: { unified: reason, raw: undefined },
 		usage: {
-			inputTokens: { total: 10, noCache: 2, cacheRead: 8, cacheWrite: undefined },
+			inputTokens: { total: inputTokens, noCache: 2, cacheRead: 8, cacheWrite: undefined },
 			outputTokens: { total: 1, text: 1, reasoning: undefined },
 		},
 	});
-	// Tool-greedy while tools exist, answering the moment they're gone —
-	// exactly the compliant model the forced step relies on.
-	function budgetModel(): { model: LanguageModel; requests: { tools: unknown[]; toolChoice: unknown; prompt: string }[] } {
-		const requests: { tools: unknown[]; toolChoice: unknown; prompt: string }[] = [];
+	// Tool-greedy while tools exist (and under the call cap, if any),
+	// answering the moment toolChoice goes none — the compliant model
+	// every forced step relies on.
+	function loopModel(opts: { calls?: number; input?: (n: number) => unknown; inputTokens?: number } = {}): {
+		model: LanguageModel;
+		requests: { toolChoice: unknown; prompt: string }[];
+	} {
+		const requests: { toolChoice: unknown; prompt: string }[] = [];
 		const model: LanguageModel = {
-			specificationVersion: "v4", provider: "fake", modelId: "budget-test", supportedUrls: {},
+			specificationVersion: "v4", provider: "fake", modelId: "loop-test", supportedUrls: {},
 			doGenerate() { throw new Error("unused"); },
 			async doStream(options) {
-				const tools = options.tools ?? [];
+				const n = requests.length + 1;
+				requests.push({ toolChoice: options.toolChoice?.type ?? null, prompt: JSON.stringify(options.prompt ?? []) });
 				const noTools = options.toolChoice?.type === "none";
-				requests.push({ tools, toolChoice: options.toolChoice?.type ?? null, prompt: JSON.stringify(options.prompt ?? []) });
-				const parts: LanguageModelV4StreamPart[] =
-					noTools
-						? [
-							{ type: "text-start", id: "t" },
-							{ type: "text-delta", id: "t", delta: "the wrapped answer" },
-							{ type: "text-end", id: "t" },
-							finish("stop"),
-						]
-						: [
-							{ type: "tool-call", toolCallId: `c${requests.length}`, toolName: "probe", input: "{}" },
-							finish("tool-calls"),
-						];
+				const callTool = !noTools && (opts.calls === undefined || n <= opts.calls);
+				const parts: LanguageModelV4StreamPart[] = callTool
+					? [
+						{ type: "tool-call", toolCallId: `c${n}`, toolName: "probe", input: JSON.stringify(opts.input?.(n) ?? {}) },
+						finish("tool-calls", opts.inputTokens ?? 10),
+					]
+					: [
+						{ type: "text-start", id: "t" },
+						{ type: "text-delta", id: "t", delta: "the wrapped answer" },
+						{ type: "text-end", id: "t" },
+						finish("stop", opts.inputTokens ?? 10),
+					];
 				return {
 					stream: new ReadableStream<LanguageModelV4StreamPart>({
 						start(controller) {
@@ -2938,44 +2944,257 @@ describe("step budget soft landing", () => {
 		};
 		return { model, requests };
 	}
-
-	test("spent budget forces a tools-off final step — the turn ends in an answer", async () => {
-		const { model, requests } = budgetModel();
+	function loopSetup(
+		model: LanguageModel,
+		opts: { execute?: () => unknown; executeAsync?: () => Promise<unknown>; contextWindow?: number } = {},
+	) {
 		const store = openStore(tmpdb());
-		const conv = store.resolve(appAddress("budget"), "/w");
+		const conv = store.resolve(appAddress("loop"), "/w");
 		let executions = 0;
 		const runtime = new Runtime({
 			store,
-			buildStep: () => ({ model, system: "test" }),
+			buildStep: () => ({ model, system: "test", ...(opts.contextWindow !== undefined ? { contextWindow: opts.contextWindow } : {}) }),
 			makeTools: () => ({
 				probe: tool({
-					inputSchema: z.object({}),
-					execute: () => { executions++; return { result: "ok" }; },
+					inputSchema: z.looseObject({}),
+					execute: opts.executeAsync
+						? async () => { executions++; return opts.executeAsync!(); }
+						: () => { executions++; return opts.execute ? opts.execute() : "ok"; },
 				}),
 			}),
-			stepBudget: 2,
 		});
+		return { store, conv, runtime, executions: () => executions };
+	}
+	const occurrences = (haystack: string, needle: string) => haystack.split(needle).length - 1;
+	const WARN_BIT = "same tool call and gotten the same result 10 times";
+	const CUT_BIT = "kept returning the same result";
+
+	test("no cap: 80 distinct tool calls complete normally, unforced", async () => {
+		const { model, requests } = loopModel({ calls: 80, input: (n) => ({ n }) });
+		const { store, conv, runtime, executions } = loopSetup(model);
 		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "dig forever" }]), sink);
-		expect(await sink.done).toEqual({ kind: "completed", forced: "budget" });
+		runtime.submit(conv, userMessage([{ type: "text", text: "dig everywhere" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
 		while (runtime.busy(conv.id)) await sleep(1);
 		await runtime.shutdown();
-		// Two tool steps, then the forced toolChoice=none landing.
-		expect(requests).toHaveLength(3);
-		expect(requests[0]!.tools.length).toBeGreaterThan(0);
-		expect(requests[0]!.toolChoice).not.toBe("none");
-		expect(requests[1]!.tools.length).toBeGreaterThan(0);
-		expect(requests[2]!.toolChoice).toBe("none");
-		expect(requests[2]!.prompt).toContain("Step budget spent");
-		expect(executions).toBe(2);
+		// 80 tool steps then the answer step — no forced landing.
+		expect(requests).toHaveLength(81);
+		expect(requests.every((r) => r.toolChoice !== "none")).toBe(true);
+		expect(executions()).toBe(80);
 		expect(sink.text).toBe("the wrapped answer");
-		expect(store.history(conv.id)).toHaveLength(2);
-		// The forced landing stamps itself in the stored metadata — the UI
-		// must never pass a budget-forced answer off as natural.
 		const md = (store.history(conv.id)[1] as { metadata?: unknown }).metadata as
 			| { forcedCompletion?: unknown }
 			| undefined;
-		expect(md?.forcedCompletion).toBe("budget");
+		expect(md?.forcedCompletion).toBeUndefined();
+		store.close();
+	});
+
+	test("repeat detector: identical call+result warns once at 10, cuts at 20", async () => {
+		// Every step re-issues the same call; the tool returns the same
+		// result — the definition of no progress.
+		const { model, requests } = loopModel();
+		const { store, conv, runtime } = loopSetup(model, { execute: () => "same result" });
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "spin" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed", forced: "repeat" });
+		while (runtime.busy(conv.id)) await sleep(1);
+		await runtime.shutdown();
+		// 20 tool steps: warn appended at the request after the 10th
+		// result, cut lands tools-off on the request after the 20th.
+		expect(requests).toHaveLength(21);
+		// The warning lands exactly once per request — appended once at a
+		// boundary and carried forward by the SDK, never re-appended.
+		expect(requests.slice(0, 10).every((r) => !r.prompt.includes(WARN_BIT))).toBe(true);
+		for (const r of requests.slice(10)) {
+			expect(occurrences(r.prompt, WARN_BIT)).toBe(1);
+		}
+		expect(requests[20]!.toolChoice).toBe("none");
+		expect(occurrences(requests[20]!.prompt, CUT_BIT)).toBe(1);
+		expect(requests.slice(0, 20).every((r) => !r.prompt.includes(CUT_BIT))).toBe(true);
+		expect(sink.text).toBe("the wrapped answer");
+		// The landing stamps itself in the stored metadata.
+		const md = (store.history(conv.id)[1] as { metadata?: unknown }).metadata as
+			| { forcedCompletion?: unknown }
+			| undefined;
+		expect(md?.forcedCompletion).toBe("repeat");
+		store.close();
+	});
+
+	test("same call with changing results never trips the detector", async () => {
+		const { model, requests } = loopModel({ calls: 25, input: () => ({ poll: true }) });
+		const { store, conv, runtime } = loopSetup(model, { execute: () => `fresh ${Math.random()}` });
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "poll" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		expect(requests.every((r) => r.toolChoice !== "none")).toBe(true);
+		expect(requests.every((r) => !r.prompt.includes(WARN_BIT))).toBe(true);
+		store.close();
+	});
+
+	describe("loop watchdog", () => {
+		// The system1 progress check (design/model.md): every N completed
+		// calls the turn's own digest ring is scored "stuck". ≥0.7 warns;
+		// a second consecutive ≥0.7 cuts; a pass resets. Fail-open.
+		function decideScript(scores: (number | Error)[]): {
+			decide: JevClient["decide"];
+			states: { totalToolCalls: number; recentCalls: { result: string }[] }[];
+			// A check in flight survives onDone (the verdict lands after the
+			// turn's last request) — tests that assert on calls must await it.
+			settled(): Promise<void>;
+		} {
+			const states: { totalToolCalls: number; recentCalls: { result: string }[] }[] = [];
+			let i = 0;
+			let pending = 0;
+			const decide: JevClient["decide"] = async (state, questions) => {
+				pending++;
+				try {
+					// Settle inside the next tool's execution so the verdict is
+					// deterministic in time (probe's 20ms execution pads it).
+					await sleep(5);
+					expect(questions["stuck"]).toBeDefined();
+					const s = state as { totalToolCalls: number; recentCalls: { result: string; tool: string }[] };
+					expect(s.totalToolCalls).toBeGreaterThan(0);
+					// The watchdog's own ring carries real results — never the
+					// "(no result)" placeholder an evidence ring would show.
+					expect(s.recentCalls.length).toBeGreaterThan(0);
+					for (const c of s.recentCalls) {
+						expect(c.result).not.toBe("(no result)");
+						expect(c.result.length).toBeGreaterThan(0);
+					}
+					states.push({ totalToolCalls: s.totalToolCalls, recentCalls: s.recentCalls });
+					const score = scores[i++];
+					if (score instanceof Error) throw score;
+					return { answers: { stuck: score ?? 0 }, inputTokens: 5, cost: 0 };
+				} finally {
+					pending--;
+				}
+			};
+			return { decide, states, settled: async () => { while (pending > 0) await sleep(1); } };
+		}
+
+		test("two consecutive stuck verdicts cut — the first warns", async () => {
+			const { model, requests } = loopModel();
+			const { decide, states } = decideScript([0.9, 0.9]);
+			const { store, conv, runtime } = loopSetup(model, {
+				executeAsync: async () => { await sleep(20); return "ok"; },
+			});
+			runtime.setLoopWatchdog({ decide, every: 2 });
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "spin" }]), sink);
+			expect(await sink.done).toEqual({ kind: "completed", forced: "watchdog" });
+			while (runtime.busy(conv.id)) await sleep(1);
+			await runtime.shutdown();
+			// Checks at calls 2 and 4: the first warns (lands in the next
+			// boundary's request, tools still on), the second cuts — the
+			// last request is the tools-off landing with the cut nudge.
+			expect(states).toHaveLength(2);
+			const cut = requests.length - 1;
+			expect(requests[cut]!.toolChoice).toBe("none");
+			expect(occurrences(requests[cut]!.prompt, "judged stuck twice in a row")).toBe(1);
+			// The warning was appended once and carried forward — once in
+			// the cut request too, never duplicated.
+			expect(occurrences(requests[cut]!.prompt, "look stuck")).toBe(1);
+			expect(requests.slice(0, cut).every((r) => r.toolChoice !== "none")).toBe(true);
+			expect(sink.text).toBe("the wrapped answer");
+			const md = (store.history(conv.id)[1] as { metadata?: unknown }).metadata as
+				| { forcedCompletion?: unknown }
+				| undefined;
+			expect(md?.forcedCompletion).toBe("watchdog");
+			store.close();
+		});
+
+		test("a sub-threshold check resets the escalation — no cut", async () => {
+			const { model, requests } = loopModel({ calls: 6 });
+			const { decide, states, settled } = decideScript([0.9, 0.1, 0.9]);
+			const { store, conv, runtime } = loopSetup(model, {
+				executeAsync: async () => { await sleep(20); return "ok"; },
+			});
+			runtime.setLoopWatchdog({ decide, every: 2 });
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "grind" }]), sink);
+			expect(await sink.done).toEqual({ kind: "completed" });
+			while (runtime.busy(conv.id)) await sleep(1);
+			await runtime.shutdown();
+			await settled(); // the last check can outlive the answer step
+			// warn, reset, warn — never two consecutive stuck verdicts.
+			expect(states).toHaveLength(3);
+			expect(requests.every((r) => r.toolChoice !== "none")).toBe(true);
+			store.close();
+		});
+
+		test("an unavailable system1 fails open — the turn completes", async () => {
+			const { model, requests } = loopModel({ calls: 4 });
+			const { decide, settled } = decideScript([new Error("system1 down"), new Error("system1 down")]);
+			const { store, conv, runtime } = loopSetup(model, {
+				executeAsync: async () => { await sleep(20); return "ok"; },
+			});
+			runtime.setLoopWatchdog({ decide, every: 2 });
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "grind" }]), sink);
+			expect(await sink.done).toEqual({ kind: "completed" });
+			while (runtime.busy(conv.id)) await sleep(1);
+			await runtime.shutdown();
+			await settled();
+			expect(requests.every((r) => r.toolChoice !== "none")).toBe(true);
+			store.close();
+		});
+	});
+
+	test("context landing: a step at ≥85% of the window forces tools-off", async () => {
+		const { model, requests } = loopModel({ calls: 5, inputTokens: 900 });
+		const { store, conv, runtime } = loopSetup(model, { contextWindow: 1000 });
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "fill me" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed", forced: "context" });
+		while (runtime.busy(conv.id)) await sleep(1);
+		await runtime.shutdown();
+		// Step 1's 900/1000 input crossed the line — request 2 is the
+		// tools-off landing with the context nudge, not call 5.
+		expect(requests).toHaveLength(2);
+		expect(requests[1]!.toolChoice).toBe("none");
+		expect(occurrences(requests[1]!.prompt, "context window is nearly full")).toBe(1);
+		expect(sink.text).toBe("the wrapped answer");
+		const md = (store.history(conv.id)[1] as { metadata?: unknown }).metadata as
+			| { forcedCompletion?: unknown }
+			| undefined;
+		expect(md?.forcedCompletion).toBe("context");
+		store.close();
+	});
+
+	test("a poisoned steer at the landing step does not eat the cut", async () => {
+		// The steer claims the pending queue but its conversion fails —
+		// the landing must still land tools-off (review m1).
+		let releaseTool: () => void = () => {};
+		const gate = new Promise<void>((r) => {
+			releaseTool = r;
+		});
+		const { model, requests } = loopModel({ inputTokens: 900 });
+		const { store, conv, runtime } = loopSetup(model, {
+			contextWindow: 1000,
+			executeAsync: async () => { await gate; return "ok"; },
+		});
+		const s1 = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "start" }]), s1);
+		await sleep(20); // parked mid-tool-call
+		const s2 = new RecordingSink();
+		runtime.submit(conv, {
+			id: "poison",
+			role: "user",
+			parts: [
+				{ type: "text", text: "read this" },
+				{ type: "file", mediaType: "image/png", filename: "x.png", url: "not a url" },
+			],
+		} as UIMessage, s2);
+		releaseTool();
+		// The context cut (900/1000 on step 1) still lands: the steer
+		// errored its own delivery and the forced step went tools-off.
+		expect(await s1.done).toEqual({ kind: "completed", forced: "context" });
+		expect((await s2.done).kind).toBe("error");
+		while (runtime.busy(conv.id)) await sleep(1);
+		await runtime.shutdown();
+		expect(requests.at(-1)!.toolChoice).toBe("none");
+		expect(requests.at(-1)!.prompt).toContain("context window is nearly full");
+		expect(s1.text).toBe("the wrapped answer");
 		store.close();
 	});
 });
@@ -3005,7 +3224,7 @@ describe("forced-landing defiance guard", () => {
 								type: "finish",
 								finishReason: { unified: "tool-calls", raw: undefined },
 								usage: {
-									inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+									inputTokens: { total: 900, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
 									outputTokens: { total: 1, text: undefined, reasoning: undefined },
 								},
 							} satisfies LanguageModelV4StreamPart);
@@ -3020,25 +3239,26 @@ describe("forced-landing defiance guard", () => {
 		let executions = 0;
 		const runtime = new Runtime({
 			store,
-			buildStep: () => ({ model, system: "test" }),
+			// 900/1000 on every step — the context landing drives the cut.
+			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
 			makeTools: () => ({
 				probe: tool({ inputSchema: z.object({}), execute: () => { executions++; return "ok"; } }),
 			}),
-			stepBudget: 2,
 		});
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "never answer" }]), sink);
-		expect(await sink.done).toEqual({ kind: "completed", forced: "budget" });
+		expect(await sink.done).toEqual({ kind: "completed", forced: "context" });
 		while (runtime.busy(conv.id)) await sleep(1);
 		await runtime.shutdown();
 		// The forced step was sent with toolChoice none — and defied.
 		expect(requests.at(-1)!.toolChoice).toBe("none");
-		expect(executions).toBeGreaterThanOrEqual(2);
-		// The invariant's last word: prose in history AND on the delta wire.
+		expect(executions).toBeGreaterThanOrEqual(1);
+		// The invariant's last word: prose in history AND on the delta
+		// wire, worded for the landing that fired.
 		const reply = store.history(conv.id)[1] as UIMessage;
 		const text = reply.parts.filter((p) => p.type === "text").map((p) => p.text).join("");
-		expect(text).toContain("step budget before writing my answer");
-		expect(sink.text).toContain("step budget before writing my answer");
+		expect(text).toContain("My context window filled up before I wrote my answer");
+		expect(sink.text).toContain("My context window filled up before I wrote my answer");
 		store.close();
 	});
 });

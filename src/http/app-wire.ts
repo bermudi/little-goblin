@@ -92,11 +92,12 @@ export interface TurnMetadata {
 	model: string;
 	finishReason: string;
 	durationMs: number;
-	/** Set when the turn's answer was forced — the step budget cut
-	 * the tool loop and made the model answer. Null on natural finishes;
-	 * the UI stamps it so degraded-goods answers are never silent
+	/** Set when the turn's answer was forced — a loop landing (repeat
+	 * detector, loop watchdog, or context) cut the tool loop and made the
+	 * model answer. Null on natural finishes; the UI stamps it so
+	 * degraded-goods answers are never silent
 	 * (2026-10-07 ruling, design/model.md). */
-	forcedCompletion: "budget" | null;
+	forcedCompletion: "repeat" | "watchdog" | "context" | null;
 	usage: {
 		input: number | null;
 		output: number | null;

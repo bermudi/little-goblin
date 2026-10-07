@@ -895,18 +895,25 @@ describe("channel guard", () => {
 	});
 });
 
-// The forced-landing stamp (design/model.md): a budget-cut answer is
+// The forced-landing stamp (design/model.md): a loop-cut answer is
 // degraded goods — telegram reads that on the reply itself.
 describe("forced-completion stamp", () => {
 	const TAIL = "\n\n—\n";
 
-	test("budget cut stamps the reply's last bubble", async () => {
-		const { api, msgs } = fakeApi({});
-		const sink = makeDeliverySink(api, conv, undefined, 0);
-		sink.onTextDelta("the wrapped answer");
-		await sleep(0);
-		await sink.onDone({ kind: "completed", forced: "budget" });
-		expect(msgs).toEqual([`the wrapped answer${TAIL}⚠ step-budget cap — answer forced`]);
+	test("each landing kind stamps the reply's last bubble", async () => {
+		const cases: { forced: "repeat" | "watchdog" | "context"; stamp: string }[] = [
+			{ forced: "repeat", stamp: "⚠ loop detector — answer forced" },
+			{ forced: "watchdog", stamp: "⚠ loop watchdog — answer forced" },
+			{ forced: "context", stamp: "⚠ context nearly full — answer forced" },
+		];
+		for (const { forced, stamp } of cases) {
+			const { api, msgs } = fakeApi({});
+			const sink = makeDeliverySink(api, conv, undefined, 0);
+			sink.onTextDelta("the wrapped answer");
+			await sleep(0);
+			await sink.onDone({ kind: "completed", forced });
+			expect(msgs).toEqual([`the wrapped answer${TAIL}${stamp}`]);
+		}
 	});
 
 	test("natural completion adds no stamp", async () => {
@@ -924,13 +931,13 @@ describe("forced-completion stamp", () => {
 			voiceMode: true,
 			synthesize: async (text: string) => {
 				// The spoken payload must not carry the stamp.
-				expect(text).not.toContain("step-budget cap");
+				expect(text).not.toContain("answer forced");
 				return [new Uint8Array([1])];
 			},
 		});
 		sink.onTextDelta("spoken answer");
-		await sink.onDone({ kind: "completed", forced: "budget" });
+		await sink.onDone({ kind: "completed", forced: "repeat" });
 		expect(voices).toEqual([1]);
-		expect(msgs).toEqual(["⚠ step-budget cap — answer forced"]);
+		expect(msgs).toEqual(["⚠ loop detector — answer forced"]);
 	});
 });

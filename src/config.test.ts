@@ -93,7 +93,6 @@ describe("goblin.json5", () => {
 		try {
 			const c = loadConfig()!;
 			// The knob strips; the rest of the delegation block stands.
-			expect(c.delegation?.maxRunning).toBe(3);
 			expect(c.delegation?.harnesses["pi"]?.kind).toBe("pi");
 			const warns = captured
 				.map((l) => JSON.parse(l) as Record<string, unknown>)
@@ -105,23 +104,33 @@ describe("goblin.json5", () => {
 		}
 	});
 
-	test("delegation.machine parses with a label and an absolute remote cwd; relative cwds are rejected", () => {
+	test("delegation.machines parses saved-machine and local-session targets; bad roots and both-kind targets are rejected", () => {
 		const dir = useHome();
-		const delegation = (machine: unknown) =>
-			`{machine:${JSON.stringify(machine)},maxRunning:2,harnesses:{pi:{kind:"pi"}}}`;
+		const cfg = (machines: unknown) =>
+			`{machines:${JSON.stringify(machines)},harnesses:{pi:{kind:"pi"}}}`;
+		const base =
+			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7],delegation:`;
 		writeFileSync(
 				join(dir, "goblin.json5"),
-				`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"},openrouter:{kind:"openai-compatible",baseUrl:"https://openrouter.ai/api/v1",auth:"or"}},model:"zai/glm-4.6",allowedUsers:[7],delegation:${delegation({ label: "g7", cwd: "/remote/goblin" })}}`,
+				`${base}${cfg({ g7: { machine: "g7", root: "~/build" }, bench: { session: "bench", harnesses: { devin: { kind: "devin" } } } })}}`,
 		);
 		const c = loadConfig()!;
-		expect(c.delegation?.machine).toEqual({ label: "g7", cwd: "/remote/goblin" });
-		expect(c.delegation?.maxRunning).toBe(2);
-		// A relative cwd names nothing on the remote host — reject at parse.
+		expect(c.delegation?.machines?.["g7"]).toEqual({ machine: "g7", root: "~/build" });
+		expect(c.delegation?.machines?.["bench"]?.session).toBe("bench");
+		expect(c.delegation?.machines?.["bench"]?.harnesses?.["devin"]?.kind).toBe("devin");
+		// A relative root names nothing on a remote host — reject at parse.
 		writeFileSync(
 				join(dir, "goblin.json5"),
-				`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7],delegation:${delegation({ label: "g7", cwd: "relative/path" })}}`,
+				`${base}${cfg({ g7: { machine: "g7", root: "relative/path" } })}}`,
 		);
-		expect(() => loadConfig()).toThrow(/machine\.cwd/);
+		expect(() => loadConfig()).toThrow(/root must be absolute/);
+		// machine + session on one target is a contradiction — herdr's
+		// CLI treats --machine and --session as mutually exclusive.
+		writeFileSync(
+				join(dir, "goblin.json5"),
+				`${base}${cfg({ both: { machine: "g7", session: "goblin" } })}}`,
+		);
+		expect(() => loadConfig()).toThrow(/exactly one of machine/);
 	});
 
 	test("invalid config throws with file path", () => {

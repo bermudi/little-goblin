@@ -313,43 +313,54 @@ export const DEFAULT_TTS_VOICE = "en-US-AriaNeural";
 // are named operator choices — a herdr agent kind plus native args;
 // goblin never picks a model or flags for one. Harness names double as
 // herdr agent-name prefixes, so they live in herdr's name charset.
-// Remote delegation: run harnesses in a herdr session on ANOTHER host
-// (the operator's workstation) through a saved-machine profile
-// (design/delegation.md, "Remote delegation", 2026-10-06). Absent =
-// harnesses run in the local `goblin` session exactly as before.
-export const delegationMachineSchema = z.object({
-	// The saved-machine label on THIS host (herdr machine list). Not
-	// validated against herdr at parse time — a wrong label fails loud
-	// at the first herdr call, with its error, through the adapter.
-	label: z.string().regex(/^[a-z][a-z0-9_-]{0,15}$/),
-	// Remote cwd root: delegated workspaces and reports live ON THE
-	// REMOTE HOST under this path. herdr requires absolute paths (or
-	// `~`/`~/…`) for remote targets, so relative values are rejected
-	// here rather than at launch time.
-	cwd: z.string().regex(/^\/|~/, "delegation.machine.cwd must be absolute or start with ~"),
-});
-export type DelegationMachine = z.infer<typeof delegationMachineSchema>;
+// Targets (design/delegation.md, "Targets", 2026-10-06): goblin's own
+// LOCAL session is the implicit default — never a config knob. The
+// `machines` map names additional targets: a saved-machine label
+// (remote host) or another local session, each with its own cwd root
+// and optionally its own harnesses — harness availability is a
+// property of the target host.
+const harnessNameRe = /^[a-z][a-z0-9_-]{0,15}$/;
+const harnessNameSchema = z.string().regex(harnessNameRe);
+export const harnessMapSchema = z
+	.record(
+		harnessNameSchema,
+		z.object({
+			kind: z.string().min(1),
+			args: z.array(z.string()).optional(),
+		}),
+	)
+	.refine((h) => Object.keys(h).length > 0, {
+		message: "delegation.harnesses must name at least one harness",
+	});
+
+// One delegation target. Exactly one of machine|session: a saved-
+// machine profile pins its own remote session (herdr's registry owns
+// the ssh target + session — `machine add <host> --remote-session`),
+// and `--machine`/`--session` are mutually exclusive on the CLI.
+// root resolves the target's relative cwds; remote paths must be
+// absolute or `~`/`~/…` (server-expanded), so relative values are
+// rejected here rather than at launch. Labels are not validated
+// against herdr at parse time — a wrong label fails loud at the
+// first herdr call, with its error, through the adapter.
+export const delegationTargetSchema = z
+	.object({
+		machine: harnessNameSchema.optional(),
+		session: harnessNameSchema.optional(),
+		root: z.string().regex(/^\/|~/, "delegation target root must be absolute or start with ~").optional(),
+		harnesses: harnessMapSchema.optional(),
+	})
+	.refine((t) => (t.machine !== undefined) !== (t.session !== undefined), {
+		message: "a delegation target needs exactly one of machine (saved-machine label) or session (another local session)",
+	});
+export type DelegationTargetConfig = z.infer<typeof delegationTargetSchema>;
 
 export const delegationConfigSchema = z.object({
-	// No `session` knob: the herdr session is either the local unit's
-	// (deploy/goblin-herdr.service: `herdr --session goblin server` —
-	// absent `machine`) or pinned by the saved-machine profile the
-	// `machine.label` names on its own host. A config override beyond
-	// those two could target a session nothing hosts, so consumers use
-	// the literal "goblin" or the machine label only.
-	machine: delegationMachineSchema.optional(),
-	maxRunning: z.number().int().min(1).default(3),
-	harnesses: z
-		.record(
-			z.string().regex(/^[a-z][a-z0-9_-]{0,15}$/),
-			z.object({
-				kind: z.string().min(1),
-				args: z.array(z.string()).optional(),
-			}),
-		)
-		.refine((h) => Object.keys(h).length > 0, {
-			message: "delegation.harnesses must name at least one harness",
-		}),
+	// No `session`/`machine` top-level knobs and no cap: the default
+	// target is the local unit's session (deploy/goblin-herdr.service:
+	// `herdr --session goblin server`); volume is goblin's judgment
+	// (operator ruling 2026-10-06 — maxRunning removed).
+	machines: z.record(harnessNameSchema, delegationTargetSchema).optional(),
+	harnesses: harnessMapSchema,
 });
 export type DelegationConfig = z.infer<typeof delegationConfigSchema>;
 
@@ -619,7 +630,7 @@ export function loadConfig(): Config | null {
 	} catch (err) {
 		throw new Error(`${paths.config()}: invalid JSON5 — ${(err as Error).message}`);
 	}
-	warnLegacyDelegationSession(parsed);
+	warnLegacyDelegationKeys(parsed);
 	const result = configSchema.safeParse(parsed);
 	if (!result.success) {
 		throw new Error(`${paths.config()}: ${z.prettifyError(result.error)}`);
@@ -630,23 +641,35 @@ export function loadConfig(): Config | null {
 // Validate a candidate config — the mini app parses before writing so it
 // can inspect the result (e.g. refuse a self-lockout) without touching
 // the file first.
-// A legacy `delegation.session` strips silently under zod — a box that
-// relied on the knob must learn where the session lives now (the unit
-// file), not discover delegation broken by surprise. Both load paths
-// (parseConfig and loadConfig) check it before validation.
-function warnLegacyDelegationSession(raw: unknown): void {
+// Legacy delegation keys strip silently under zod — a box that relied
+// on them must learn where things live now, not discover delegation
+// broken by surprise. Both load paths (parseConfig and loadConfig)
+// check them before validation.
+function warnLegacyDelegationKeys(raw: unknown): void {
 	if (typeof raw === "object" && raw !== null) {
 		const delegation = (raw as Record<string, unknown>).delegation;
-		if (typeof delegation === "object" && delegation !== null && "session" in delegation) {
-			log.warn(
-				"delegation.session is gone — the herdr session is fixed by deploy/goblin-herdr.service (--session goblin); the key is ignored",
-			);
+		if (typeof delegation === "object" && delegation !== null) {
+			if ("session" in delegation) {
+				log.warn(
+					"delegation.session is gone — the herdr session is fixed by deploy/goblin-herdr.service (--session goblin); the key is ignored",
+				);
+			}
+			if ("machine" in delegation) {
+				log.warn(
+					"delegation.machine became delegation.machines (2026-10-06) — the default target is goblin's own local session; name the saved-machine profile as a machines entry; the key is ignored",
+				);
+			}
+			if ("maxRunning" in delegation) {
+				log.warn(
+					"delegation.maxRunning is gone (operator ruling 2026-10-06) — delegation volume is goblin's judgment, not a cap; the key is ignored",
+				);
+			}
 		}
 	}
 }
 
 export function parseConfig(raw: unknown): Config {
-	warnLegacyDelegationSession(raw);
+	warnLegacyDelegationKeys(raw);
 	return configSchema.parse(raw);
 }
 

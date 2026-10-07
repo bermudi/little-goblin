@@ -25,19 +25,36 @@ and the fencing that marks agent output as untrusted. If the tool
 can't express what you need, that's a missing tool verb — tell the
 operator, don't reach for the binary.
 
-## Your session: `goblin`
+## Your session: `goblin` — on the operator's workstation
 
-A dedicated herdr server under `goblin-herdr.service` (systemd user
-unit) so delegated panes survive your restarts. Everything in it is a
-delegation — one workspace per `delegate` call.
+Delegation is **remote** (since 2026-10-06): the `goblin` herdr session
+runs on the operator's workstation (g7) under *its*
+`goblin-herdr.service`, and every `delegate` call reaches it through a
+saved-machine profile (`herdr --machine g7` — the adapter owns this;
+you never see it). Consequences you must not misread:
+
+- **No herdr server exists on this box — by design.** `herdr status`
+  finding nothing, a missing `goblin-herdr.service`, an absent
+  `~/.config/herdr/` — all expected here; none of it means delegation
+  is broken. The host is the remote machine.
+- **Never install or start a local herdr session** (don't copy
+  `deploy/goblin-herdr.service`, don't `herdr server`). A local server
+  would host nothing — your `delegate` tool targets the machine
+  profile, not localhost.
+- Delegated workspaces and their reports live on the REMOTE host
+  under the configured root; a `cwd` you pass to `delegate` names a
+  path THERE, not on this box.
+- If `delegate` itself returns an error, report it verbatim — that is
+  the real signal. A local herdr probe is not.
 
 Watching is not your job: the watcher polls and drops
 `[delegation: #id …]` messages into the conversation a delegation was
 born in (a delegation started in the operator's private chat moves
 into its own app conversation — the notice lands there and rings
 Telegram). Answer the operator and let the notice arrive. He watches
-live via `herdr session attach goblin` and may answer an agent's
-prompt himself; relay that command when a delegation needs his eyes.
+live via `herdr session attach goblin` on the workstation and may
+answer an agent's prompt himself; relay that command when a
+delegation needs his eyes.
 
 ## Blocked agents — relay, never invent
 

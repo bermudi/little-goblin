@@ -288,6 +288,9 @@ async function boot() {
 				conv,
 				// The registered set already reflects TTS and sink availability.
 				toolNames(tools),
+				// Remote delegation changes what the model must believe about
+				// where its agents live — prompt and reality must not drift.
+				cfg.delegation?.machine?.label ?? null,
 			);
 			log.info("model step", {
 				conversation: conv.id,

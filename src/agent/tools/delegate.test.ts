@@ -234,7 +234,7 @@ describe("delegate tool", () => {
 		})) as { id: number; attach: string };
 		expect(h.store.get(out2.id)!.cwd).toBe("/remote/goblin");
 		// The attach hint names the machine's TUI, not the local session.
-		expect(out2.attach).toBe("herdr --machine g7");
+		expect(out2.attach).toBe("herdr --remote <ssh-target> (see herdr machine list)");
 		// A `~` root names the TARGET's home: a textual join, never
 		// path.resolve (which would bury `~` as a relative segment
 		// under goblin's process cwd).

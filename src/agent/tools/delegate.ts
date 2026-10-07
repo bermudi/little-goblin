@@ -22,6 +22,7 @@ import type {
 	SendOutcome,
 	StopOutcome,
 } from "../../delegation-lifecycle.ts";
+import { attachHintFor } from "../../herdr.ts";
 import { log } from "../../log.ts";
 import { fenceUntrusted } from "./web.ts";
 
@@ -340,16 +341,9 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 					if (!isMachine && (!existsSync(cwdForStat) || !statSync(cwdForStat).isDirectory())) {
 						return { error: `cwd "${cwdForStat}" does not exist or is not a directory` };
 					}
-					// The operator's attach path for this launch: `session attach`
-					// for local sessions (the own session is the unit's --session
-					// goblin), `--machine` for remote targets — forwarded attach
-					// isn't a machine-mode command; the TUI over ssh is.
-					const attachHint =
-						on === null
-							? "herdr session attach goblin"
-							: target?.machine !== undefined
-								? `herdr --machine ${target.machine}`
-								: `herdr session attach ${target?.session ?? "goblin"}`;
+					// The operator's attach path for this launch — one shared
+					// helper (herdr.ts) for the tool results and park notices.
+					const attachHint = attachHintFor(on === null ? null : target);
 					const name =
 						input.name ??
 						(input.task.split("\n", 1)[0]!.slice(0, 40).trim() || "delegation");

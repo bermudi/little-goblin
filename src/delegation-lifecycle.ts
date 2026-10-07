@@ -36,7 +36,7 @@ import {
 	type DelegationStatus,
 	type DelegationsStore,
 } from "./delegations.ts";
-import { HerdrError, type AgentInfo, type Herdr } from "./herdr.ts";
+import { attachHintFor, HerdrError, type AgentInfo, type Herdr } from "./herdr.ts";
 import { claudeFreshTrustJson, codexTrustSection, seedHarnessTrust } from "./harness-trust.ts";
 
 export interface DelegationLifecycleDeps {
@@ -299,16 +299,13 @@ function herdrFor(deps: DelegationLifecycleDeps, target: string | null): Herdr {
 	return t.herdr;
 }
 
-// The operator-facing attach command for a row: `session attach` for
-// local sessions (own or named), `--machine` for remote targets —
-// forwarded `session attach` is not a machine-mode command, so the
-// interactive TUI over ssh is the remote attach path.
-function attachHintFor(deps: DelegationLifecycleDeps, target: string | null): string {
-	if (target === null) return "herdr session attach goblin";
+// The operator-facing attach path for a row, resolved through the
+// target map into herdr.ts's shared hint (one source for the tool's
+// results and the watcher's park notices).
+function attachHintForRow(deps: DelegationLifecycleDeps, target: string | null): string {
+	if (target === null) return attachHintFor(null);
 	const t = deps.targets.get(target);
-	if (t === undefined) return "herdr session attach goblin"; // gone from config — best hint
-	if (t.machine !== undefined) return `herdr --machine ${t.machine}`;
-	return `herdr session attach ${t.session ?? "goblin"}`;
+	return attachHintFor(t === undefined ? null : t); // gone from config — best hint
 }
 
 // Machine rows: cwd and report paths name the REMOTE host — no local
@@ -655,7 +652,7 @@ async function launch(
 				delegation: d.id, name: d.name,
 			});
 			await notify(deps, parked, "needs input", {
-				extra: `(blocked at startup — the task hasn't been sent yet; relay a keypress with action 'answer' or attach with \`${attachHintFor(deps, d.target)}\`)`,
+				extra: `(blocked at startup — the task hasn't been sent yet; relay a keypress with action 'answer' or attach with \`${attachHintForRow(deps, d.target)}\`)`,
 			});
 			return { kind: "parked", delegation: parked };
 		}

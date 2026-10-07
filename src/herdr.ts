@@ -138,6 +138,23 @@ export interface Herdr {
 	closeWorkspace(id: string): Promise<void>;
 }
 
+// The operator-facing attach path for a delegation target — used by
+// the delegate tool's results and the watcher's park notices (one
+// source: both surfaces must agree). Local sessions attach by name
+// (the own session is the unit's --session goblin). Machine targets
+// have NO attachable command form: `--machine` is an API-command
+// prefix (bare `herdr --machine <label>` is a usage error) and
+// `session attach` is not machine-forwardable — the interactive TUI
+// over ssh (`--remote <ssh-target>`) is the remote attach path, and
+// the ssh target lives in herdr's machine registry, not our config.
+export function attachHintFor(
+	t: { machine?: string | undefined; session?: string | undefined } | null | undefined,
+): string {
+	if (t === null || t === undefined) return "herdr session attach goblin";
+	if (t.machine !== undefined) return "herdr --remote <ssh-target> (see herdr machine list)";
+	return `herdr session attach ${t.session ?? "goblin"}`;
+}
+
 export function makeHerdr(
 	target: HerdrTarget,
 	run: HerdrRunner = defaultRunner,

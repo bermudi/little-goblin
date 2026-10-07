@@ -2888,3 +2888,87 @@ describe("streaming lane boundary", () => {
 		store.close();
 	});
 });
+
+describe("step budget soft landing", () => {
+	// 2026-10-07: a turn hit the old MAX_STEPS cliff with finish=tool-calls
+	// and the operator got no reply at all. The landing is soft now — the
+	// step after the budget strips tools and nudges the model to answer.
+	const finish = (reason: "stop" | "tool-calls"): LanguageModelV4StreamPart => ({
+		type: "finish",
+		finishReason: { unified: reason, raw: undefined },
+		usage: {
+			inputTokens: { total: 10, noCache: 2, cacheRead: 8, cacheWrite: undefined },
+			outputTokens: { total: 1, text: 1, reasoning: undefined },
+		},
+	});
+	// Tool-greedy while tools exist, answering the moment they're gone —
+	// exactly the compliant model the forced step relies on.
+	function budgetModel(): { model: LanguageModel; requests: { tools: unknown[]; toolChoice: unknown; prompt: string }[] } {
+		const requests: { tools: unknown[]; toolChoice: unknown; prompt: string }[] = [];
+		const model: LanguageModel = {
+			specificationVersion: "v4", provider: "fake", modelId: "budget-test", supportedUrls: {},
+			doGenerate() { throw new Error("unused"); },
+			async doStream(options) {
+				const tools = options.tools ?? [];
+				const noTools = options.toolChoice?.type === "none";
+				requests.push({ tools, toolChoice: options.toolChoice?.type ?? null, prompt: JSON.stringify(options.prompt ?? []) });
+				const parts: LanguageModelV4StreamPart[] =
+					noTools
+						? [
+							{ type: "text-start", id: "t" },
+							{ type: "text-delta", id: "t", delta: "the wrapped answer" },
+							{ type: "text-end", id: "t" },
+							finish("stop"),
+						]
+						: [
+							{ type: "tool-call", toolCallId: `c${requests.length}`, toolName: "probe", input: "{}" },
+							finish("tool-calls"),
+						];
+				return {
+					stream: new ReadableStream<LanguageModelV4StreamPart>({
+						start(controller) {
+							controller.enqueue({ type: "stream-start", warnings: [] });
+							for (const p of parts) controller.enqueue(p);
+							controller.close();
+						},
+					}),
+				};
+			},
+		};
+		return { model, requests };
+	}
+
+	test("spent budget forces a tools-off final step — the turn ends in an answer", async () => {
+		const { model, requests } = budgetModel();
+		const store = openStore(tmpdb());
+		const conv = store.resolve(appAddress("budget"), "/w");
+		let executions = 0;
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: () => { executions++; return { result: "ok" }; },
+				}),
+			}),
+			stepBudget: 2,
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "dig forever" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		while (runtime.busy(conv.id)) await sleep(1);
+		await runtime.shutdown();
+		// Two tool steps, then the forced toolChoice=none landing.
+		expect(requests).toHaveLength(3);
+		expect(requests[0]!.tools.length).toBeGreaterThan(0);
+		expect(requests[0]!.toolChoice).not.toBe("none");
+		expect(requests[1]!.tools.length).toBeGreaterThan(0);
+		expect(requests[2]!.toolChoice).toBe("none");
+		expect(requests[2]!.prompt).toContain("Step budget spent");
+		expect(executions).toBe(2);
+		expect(sink.text).toBe("the wrapped answer");
+		expect(store.history(conv.id)).toHaveLength(2);
+		store.close();
+	});
+});

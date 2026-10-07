@@ -47,7 +47,17 @@ import { filterErrorStream } from "./agent/filter-stream.ts";
 import type { CompletedTurn, PriorTurnContext, ReviewerDeps, ToolCallDigest } from "./reviewer.ts";
 import { cancelAllReviews, cancelReviews, considerTurn, summarize, toolOk } from "./reviewer.ts";
 
-const MAX_STEPS = 25;
+const STEP_BUDGET = 64;
+// A turn's step budget is a safety net, not a design constraint — the
+// landing is soft. When the budget is spent with tools still in hand,
+// prepareStep forces one final tools-off step, so a turn always ends in
+// an answer: never the silent finish=tool-calls cliff that ate a whole
+// reply on 2026-10-07 (25 steps of Safari Zone diffs, zero prose).
+// The forced step's instruction. User-role, request-only: it never
+// lands in durable history, and every provider accepts it without
+// system-in-messages questions.
+const STEP_BUDGET_NUDGE =
+	"Step budget spent — tools are disabled for this final step. Write the final answer to the operator now from what you already have, and say plainly what you could not verify.";
 
 // Auto-compaction trigger (DESIGN.md, Compaction): a completed turn at
 // or past this fraction of the catalog context window compacts in-lane.
@@ -184,6 +194,10 @@ export interface RuntimeDeps {
 		// PDF references (see attachments.ts, AcceptsMedia).
 		accepts?: { current: AcceptsMedia },
 	): ToolSet;
+	// Turn step budget override — absent = STEP_BUDGET (64). The landing
+	// is soft regardless: a spent budget forces a tools-off final step.
+	// Tests shrink it to drive that landing without 64 real steps.
+	stepBudget?: number;
 	// Long-term memory — absent = exact current behavior. When present,
 	// admitted turns recall bounded evidence pre-turn (fail-open,
 	// cache-stable) and completed text exchanges enqueue retention under
@@ -1081,6 +1095,20 @@ export class Runtime {
 				// the provider cache stays warm (DESIGN.md, Cache stability),
 				// and the override carries forward to later steps.
 				prepareStep: async ({ messages: stepMessages, stepNumber }) => {
+					// The budget's soft landing: the step AFTER the last tool step
+					// locks toolChoice to none and appends the nudge — the model
+					// can only answer. stopWhen allows exactly that one extra step.
+					const budget = this.deps.stepBudget ?? STEP_BUDGET;
+					const lastCall = stepNumber === budget;
+					if (lastCall) {
+						log.warn("step budget spent — forcing tools-off completion", {
+							conversation: convId,
+							steps: budget,
+						});
+					}
+					const nudge: ModelMessage[] = lastCall
+						? [{ role: "user", content: STEP_BUDGET_NUDGE }]
+						: [];
 					const lane = this.lane(convId);
 					// Steering folds pending submits into the live request —
 					// but a headless head (no onStreamChunk) must not absorb
@@ -1090,7 +1118,11 @@ export class Runtime {
 						0,
 						claimableCount(lane.pending, sink.onStreamChunk !== undefined),
 					);
-					if (steered.length === 0) return undefined;
+					if (steered.length === 0) {
+						return lastCall
+							? { toolChoice: "none", messages: [...stepMessages, ...nudge] }
+							: undefined;
+					}
 					if (this.deps.store.get(convId)?.epoch !== epoch) {
 						// Fenced on the way out (/stop bumped the epoch): put the
 						// input back — stop() owns the queue and drops it. Never
@@ -1183,10 +1215,14 @@ export class Runtime {
 						submits: admittedCount,
 						step: stepNumber,
 					});
-					return { messages: [...stepMessages, ...injected] };
+					return {
+						messages: [...stepMessages, ...injected, ...nudge],
+						...(lastCall ? { toolChoice: "none" as const } : {}),
+					};
 				},
 				...(step.providerOptions ? { providerOptions: step.providerOptions } : {}),
-				stopWhen: isStepCount(MAX_STEPS),
+				// Budget + 1: the extra step is the forced tools-off landing.
+				stopWhen: isStepCount((this.deps.stepBudget ?? STEP_BUDGET) + 1),
 				abortSignal: controller.signal,
 				// Opt into callback-directed step retries, not blanket retries.
 				// The SDK buffers tool parts until the attempt ends cleanly;

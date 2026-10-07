@@ -3122,3 +3122,65 @@ describe("loop watchdog", () => {
 		store.close();
 	});
 });
+
+describe("forced-landing defiance guard", () => {
+	// Review 2026-10-07, m3: the "turn always ends in an answer" invariant
+	// rested on provider compliance with toolChoice:none. This model
+	// ignores it — every step, forced or not, emits a tool call and
+	// finish=tool-calls. The guard must close the turn with synthetic
+	// prose anyway: stored, and live on the delta path (telegram's wire).
+	test("defiant model still gets an answer — synthetic prose, stamped", async () => {
+		const requests: { toolChoice: unknown }[] = [];
+		const model: LanguageModel = {
+			specificationVersion: "v4", provider: "fake", modelId: "defiant", supportedUrls: {},
+			doGenerate() { throw new Error("unused"); },
+			async doStream(options) {
+				requests.push({ toolChoice: options.toolChoice?.type ?? null });
+				return {
+					stream: new ReadableStream({
+						start(controller) {
+							controller.enqueue({ type: "stream-start", warnings: [] });
+							controller.enqueue({
+								type: "tool-call", toolCallId: `c${requests.length}`, toolName: "probe", input: "{}",
+							} satisfies LanguageModelV4StreamPart);
+							controller.enqueue({
+								type: "finish",
+								finishReason: { unified: "tool-calls", raw: undefined },
+								usage: {
+									inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+									outputTokens: { total: 1, text: undefined, reasoning: undefined },
+								},
+							} satisfies LanguageModelV4StreamPart);
+							controller.close();
+						},
+					}),
+				};
+			},
+		};
+		const store = openStore(tmpdb());
+		const conv = store.resolve(appAddress("defiant"), "/w");
+		let executions = 0;
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({
+				probe: tool({ inputSchema: z.object({}), execute: () => { executions++; return "ok"; } }),
+			}),
+			stepBudget: 2,
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "never answer" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed", forced: "budget" });
+		while (runtime.busy(conv.id)) await sleep(1);
+		await runtime.shutdown();
+		// The forced step was sent with toolChoice none — and defied.
+		expect(requests.at(-1)!.toolChoice).toBe("none");
+		expect(executions).toBeGreaterThanOrEqual(2);
+		// The invariant's last word: prose in history AND on the delta wire.
+		const reply = store.history(conv.id)[1] as UIMessage;
+		const text = reply.parts.filter((p) => p.type === "text").map((p) => p.text).join("");
+		expect(text).toContain("step budget before writing my answer");
+		expect(sink.text).toContain("step budget before writing my answer");
+		store.close();
+	});
+});

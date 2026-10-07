@@ -241,6 +241,7 @@ function appSseWriter(
 	body: ReadableStream<Uint8Array>;
 	write(chunk: UIMessageChunk): void;
 	finish(done: TurnDone): void;
+	dispose(): void;
 } {
 	const enc = new TextEncoder();
 	let controller!: ReadableStreamDefaultController<Uint8Array>;
@@ -320,16 +321,34 @@ function appSseWriter(
 				/* already closed */
 			}
 		},
+		// Orphan paths (204 attach, submit-threw 500s): the writer was
+		// constructed — the heartbeat is armed — but no wire will ever
+		// consume the body. Stop the beat and close quietly: no frames, no
+		// finish line (review 2026-10-07, M1 — a leaked beat enqueues into
+		// a stream nobody reads, forever).
+		dispose() {
+			stopBeat();
+			closed = true;
+			try {
+				controller.close();
+			} catch {
+				/* already closed */
+			}
+		},
 	};
 }
 
 function appStreamSink(convId: string): {
 	sink: TurnSink;
 	body: ReadableStream<Uint8Array>;
+	// Orphan-path cleanup (review M1): a submit that throws after this
+	// sink was built leaves the writer's heartbeat armed with no wire.
+	dispose(): void;
 } {
 	const writer = appSseWriter(convId);
 	return {
 		body: writer.body,
+		dispose: writer.dispose,
 		sink: {
 			// Delta-style delivery hooks are telegram's — the app stream is
 			// the raw chunk pass-through alone.
@@ -491,6 +510,10 @@ export async function handleAppApi(
 			},
 		);
 		if (replay === null) {
+			// No live turn — but the writer (and its heartbeat) was already
+			// constructed (review M1): dispose or the beat leaks for the
+			// process lifetime on every attach-with-nothing-to-attach.
+			writer.dispose();
 			return new Response(null, { status: 204, headers: NO_STORE });
 		}
 		for (const chunk of replay) writer.write(chunk);
@@ -713,7 +736,7 @@ export async function handleAppApi(
 				);
 			}
 			log.info("app retry", { conversation: convId, message: lastUser.id });
-			const { sink, body } = appStreamSink(convId);
+			const { sink, body, dispose } = appStreamSink(convId);
 			// The submit can throw (history append, lane admission) — the
 			// Telegram lane wraps the same seam (admitBatch). The stream was
 			// never returned, so there is no wire to answer: log with the
@@ -722,6 +745,7 @@ export async function handleAppApi(
 				runtime.submitPersisted(conv, lastUser, sink);
 			} catch (err) {
 				log.error("app retry submit failed", err, { conversation: convId });
+				dispose();
 				return Response.json({ error: "turn could not be started" }, { status: 500, headers: NO_STORE });
 			}
 			log.info("app stream start", { conversation: convId, retry: true });
@@ -799,7 +823,7 @@ export async function handleAppApi(
 
 		// Intake boundary: message → app address.
 		log.info("app intake", { conversation: convId, message: message.id });
-		const { sink, body } = appStreamSink(convId);
+		const { sink, body, dispose } = appStreamSink(convId);
 		// Steering and /stop ride the existing lane — a second chat POST
 		// while a turn runs queues or steers exactly like Telegram. The
 		// submit can throw (history append, lane admission) — the Telegram
@@ -810,6 +834,7 @@ export async function handleAppApi(
 			runtime.submit(conv, message as UIMessage, sink);
 		} catch (err) {
 			log.error("app submit failed", err, { conversation: convId, message: message.id });
+			dispose();
 			return Response.json({ error: "turn could not be started" }, { status: 500, headers: NO_STORE });
 		}
 		log.info("app stream start", { conversation: convId });

@@ -1253,7 +1253,12 @@ export class Runtime {
 							});
 						}
 					}
-					if (injected.length === 0) return undefined;
+					// A claimed steer whose every conversion failed (the poison-pill
+					// path) must not eat the forced landing: forcedKind is already
+					// set and this is the budget's only shot (review 2026-10-07, m1).
+					if (injected.length === 0) {
+						return forced ? { toolChoice: "none", messages: [...stepMessages, ...nudge] } : undefined;
+					}
 					// Advance the ownership mark by identity, not position. The
 					// lane is serial but the queue is not this turn's: a submit
 					// landing mid-conversion sits pending (never spliced), and a
@@ -1683,6 +1688,37 @@ export class Runtime {
 				}
 			}
 			const finalSource = retentionSourceFrom(finalEntries);
+			// The defiance guard (review 2026-10-07, m3): a forced landing
+			// whose step STILL ended in tool calls (a provider ignoring
+			// toolChoice:none) or produced no prose would deliver a stamped
+			// nothing — the exact incident shape. The invariant gets the last
+		// word: append plain-language prose, to the stored message AND the
+			// live delta path (telegram delivers text only through deltas).
+			// (const alias — responseMessage is only assigned inside the
+			// stream's onFinish callback, which flow analysis can't see, so here
+			// it still narrows as never-assigned null; the cast restores the
+			// declared union.)
+			const landed = responseMessage as UIMessage | null;
+			if (
+				forcedKind !== null &&
+				landed !== null &&
+				(finishReason === "tool-calls" || !landed.parts.some((p) => p.type === "text" && p.text.trim() !== ""))
+			) {
+				const note =
+					forcedKind === "budget"
+						? "I hit the turn's step budget before writing my answer — the work above is what I managed to check. Say \"continue\" and I'll pick up from those findings."
+						: "A progress check stopped me here as repetitive and I never wrote the final answer. Say \"continue\" and I'll answer from what I have.";
+				log.warn("forced landing produced no prose — synthetic answer appended", {
+					conversation: convId,
+					forced: forcedKind,
+					finishReason,
+				});
+				responseMessage = {
+					...landed,
+					parts: [...landed.parts, { type: "text", text: note }],
+				};
+				sink.onTextDelta(`\n\n${note}`);
+			}
 			if (responseMessage !== null) {
 				// responseMessage already carries an SDK-assigned id.
 				// The anchor ties it to the user message that triggered

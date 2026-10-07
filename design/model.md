@@ -247,3 +247,16 @@ own notice line after the audio. The mini app is the settings surface,
 not a chat — no stamp there by design. `TurnDone` carries
 `forced?: "budget" | "watchdog"` so any future delivery surface
 inherits the contract.
+
+**Review round, same day (fresh-context reviewer): three holes closed.**
+The budget is *per-attempt* — an overflow compact-and-resume starts a
+fresh counter, so one logical turn is bounded at 2×(STEP_BUDGET+1);
+accepted (one recovery per turn, overflow+deep-loop coincidence).
+A steer whose every conversion fails at the budget step no longer eats
+the forced landing (the poison-pill return carries it too). And a
+provider that defies `toolChoice: "none"` — still emitting tool calls
+on the forced step, or no prose at all — gets the invariant's last
+word: a synthetic plain-language answer ("I hit the step budget before
+writing my answer… say 'continue'") appended to the stored message and
+the live delta path, warn-logged. The stamp never lies about a
+nothing.

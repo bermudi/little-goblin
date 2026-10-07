@@ -28,21 +28,28 @@ export type HerdrRunner = (args: string[]) => Promise<HerdrRunResult>;
 // herdr's `timeout` code rather than our kill; the cap covers the
 // largest payload in play (a couple hundred lines of screen text).
 const HERDR_TIMEOUT_MS = 45_000;
+// Forwarded machine calls ride ssh — give the round trip its own,
+// larger budget before we call it dead.
+const HERDR_REMOTE_TIMEOUT_MS = 90_000;
 const HERDR_MAX_OUTPUT = 1 << 20;
 
-const defaultRunner: HerdrRunner = async (args) => {
-	const proc = spawnProc(["herdr", ...args]);
-	const r = await boundedRun(proc, {
-		timeoutMs: HERDR_TIMEOUT_MS,
-		maxOutput: HERDR_MAX_OUTPUT,
-	});
-	return {
-		code: r.exitCode ?? -1,
-		stdout: r.stdout,
-		// A killed run's real story is the timeout, not partial stderr.
-		stderr: r.timedOut ? `herdr timed out after ${HERDR_TIMEOUT_MS}ms` : r.stderr,
+const defaultRunner: HerdrRunner = makeRunner(HERDR_TIMEOUT_MS);
+
+function makeRunner(timeoutMs: number): HerdrRunner {
+	return async (args) => {
+		const proc = spawnProc(["herdr", ...args]);
+		const r = await boundedRun(proc, {
+			timeoutMs,
+			maxOutput: HERDR_MAX_OUTPUT,
+		});
+		return {
+			code: r.exitCode ?? -1,
+			stdout: r.stdout,
+			// A killed run's real story is the timeout, not partial stderr.
+			stderr: r.timedOut ? `herdr timed out after ${timeoutMs}ms` : r.stderr,
+		};
 	};
-};
+}
 
 export class HerdrError extends Error {
 	readonly code: string;
@@ -63,6 +70,11 @@ const agentSchema = z.object({
 	pane_id: z.string(),
 	workspace_id: z.string(),
 	state_change_seq: z.number().int(),
+	/** Set on an idle transition that is completed work — startup and
+	 *  session changes do not set it; matches that transition's
+	 *  state_change_seq. Optional: older servers omit it and done
+	 *  detection falls back to the seq-advance rule. */
+	completion_seq: z.number().int().optional(),
 	cwd: z.string(),
 	interactive_ready: z.boolean().optional(),
 	launch_pending: z.boolean().optional(),
@@ -112,15 +124,29 @@ export interface Herdr {
 	sendKey(name: string, key: string): Promise<void>;
 	readAgent(name: string, lines: number): Promise<string>;
 	readPane(paneId: string, lines: number): Promise<string>;
+	/** Submit a shell command in a pane (text + Enter, one ordered
+	 *  submission). Used to seed remote trust stores in the
+	 *  delegation's own root pane before `agent start`. */
+	paneRun(paneId: string, command: string): Promise<void>;
+	/** Poll a pane's recent snapshot until a literal substring shows
+	 *  (Rust-regex via --regex, but the seed only needs --match). */
+	paneWaitOutput(paneId: string, match: string, timeoutMs: number): Promise<void>;
 	interrupt(name: string): Promise<void>;
 	closeWorkspace(id: string): Promise<void>;
 }
 
-export function makeHerdr(target: HerdrTarget, run: HerdrRunner = defaultRunner): Herdr {
+export function makeHerdr(
+	target: HerdrTarget,
+	run: HerdrRunner = defaultRunner,
+	timeoutMs = "machine" in target ? HERDR_REMOTE_TIMEOUT_MS : HERDR_TIMEOUT_MS,
+): Herdr {
 	// `--machine` and `--session` are mutually exclusive per herdr's CLI
 	// (the machine profile pins its own remote session); each call site
 	// logs through `call` below regardless of the target kind.
 	const prefix = "session" in target ? ["--session", target.session] : ["--machine", target.machine];
+	// Forwarded calls are ssh round trips — machine adapters get the
+	// longer budget (design/delegation.md, "Targets").
+	const runner = run === defaultRunner ? makeRunner(timeoutMs) : run;
 	// The one call site: log success only after this verb's result has
 	// passed validation. Runner rejection and invalid output each get
 	// their own boundary line; neither can masquerade as a good call.
@@ -133,7 +159,7 @@ export function makeHerdr(target: HerdrTarget, run: HerdrRunner = defaultRunner)
 		const t0 = Date.now();
 		let r: HerdrRunResult;
 		try {
-			r = await run([...prefix, ...args]);
+			r = await runner([...prefix, ...args]);
 		} catch (err) {
 			log.error("herdr call runner failed", err, { verb, target, ms: Date.now() - t0 });
 			throw err;
@@ -206,6 +232,17 @@ export function makeHerdr(target: HerdrTarget, run: HerdrRunner = defaultRunner)
 			return call("pane read", paneId, [
 				"pane", "read", paneId, "--source", "recent-unwrapped", "--lines", String(lines),
 			], (stdout) => stdout);
+		},
+
+		async paneRun(paneId, command) {
+			await call("pane run", paneId, ["pane", "run", paneId, command],
+				(stdout) => envelopeSchema.parse(parseJson("pane run", stdout)));
+		},
+
+		async paneWaitOutput(paneId, match, timeoutMs) {
+			await call("pane wait-output", paneId, [
+				"pane", "wait-output", paneId, "--match", match, "--timeout", String(timeoutMs),
+			], (stdout) => envelopeSchema.parse(parseJson("pane wait-output", stdout)));
 		},
 
 		async sendKey(name, key) {

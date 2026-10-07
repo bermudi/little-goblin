@@ -195,3 +195,37 @@ agent loop.
   names it but PATH lacks it. A failed transcription — whisper down,
   ffmpeg missing, corrupt media — leaves the attachment path-referenced
   and warn-logged: it must never eat a voice message.
+
+## The turn budget lands soft — and system1 watches the loop
+
+Ruling 2026-10-07, operator ask, from a failed turn. Symptom: a deep
+exploration turn (Safari Zone mechanics from ROM disassembly diffs) ran
+25 steps, hit the scaffold-era `MAX_STEPS` cliff with `finish=tool-calls`,
+and ended with **no reply at all** — 25 tool calls of findings, zero
+prose, no notice to operator, model, or log. Two rulings landed:
+
+**The budget is a safety net, not a design constraint — and it lands
+soft.** `STEP_BUDGET` (64; `deps.stepBudget` for tests) still bounds the
+loop — an unbounded agent loop is a runaway cost loop, and no harness
+worth copying runs without one — but the step *after* the budget locks
+`toolChoice: "none"` and appends a request-only user nudge ("write the
+final answer now"), so a spent budget forces an answer instead of
+truncating. `stopWhen` allows exactly that one extra step. The nudge is
+user-role and never lands in durable history.
+
+**The loop watchdog: system1 judges progress mid-turn.** The operator's
+insight: system1 already answers "is this a follow-up?" and "worth
+saving as a skill?" — it can answer "is the model looping?" too. Every
+8 tool calls the reviewer's JevClient scores the turn's digest ring on
+one noul question; a ≥0.6 "looping" verdict cuts the turn early into
+the same tools-off landing, with its own nudge. The question is worded
+to separate volume from repetition — twenty distinct diffs are
+progress, near-identical re-calls are not. Both error modes are mild:
+a false positive answers a bit early, a false negative waits for the
+budget. It is async and fail-open (an unavailable system1 never blocks
+or cuts a turn), rides the shared JevClient with reviewer-enabled as
+the switch, and the cut logs loudly (`loop watchdog cut`).
+
+The invariant these two share: **a turn always ends in an answer** —
+whatever the budget, the watchdog, or the provider does, the operator
+gets prose, and the log explains every early landing.

@@ -210,3 +210,40 @@ outcome); `spin-off ping` (app conversation, ping message id);
 - *Deep links:* the client applies `/app/c/<id>` once, after the first
   list load; an unknown id falls back to `/app/`. Selecting a
   conversation keeps the URL in sync.
+
+## The app wire must never idle — SSE heartbeat
+
+Ruling 2026-10-07, from a failed operator turn. Symptom: the app
+showed "The turn failed: Error in input stream" mid-turn while the
+log insisted `app stream finish: completed` — the turn had actually
+finished fine, streamed into a socket the client no longer had.
+
+**Cause, verified on the box (bun 1.4.2).** `Bun.serve` closes
+connections that send no bytes for its `idleTimeout` — 10s by
+default: a silent SSE response died at exactly +10.0s in a scratch
+repro, while one emitting comment pings every 5s survived the full
+25s. Tool calls (`git clone`, long diffs) silence the UIMessage
+stream for tens of seconds; the first >10s silence of that turn
+(06:59:49Z) killed the wire at ~07:00:00Z, 3 minutes before the turn
+ended. The writer swallowed every subsequent enqueue failure
+(`catch { closed = true }`), so the server logged nothing — the
+fail-loud rule broken at exactly the moment it mattered.
+
+**The rules.**
+
+- `appSseWriter` heartbeats: an SSE comment line (`: ping`) pushed
+  after 5s of wire silence. Comments are skipped by spec parsers and
+  by `eventsource-parser` (the AI SDK client's — it checks
+  `firstCharCode === 58`), so the wire stays warm without touching
+  the UIMessage stream. The mini app never reads this stream (it
+  polls), so nothing else sees them. The silence check samples 4x per
+  window — a tick period equal to the threshold phase-locks with
+  arriving chunks and never fires.
+- `Bun.serve` sets `idleTimeout: 255` (the max) — a ceiling behind
+  the heartbeat, not a substitute for it.
+- Wire death is loud, turn death is not: `cancel()` (client gone) and
+  the enqueue catch (controller closed by Bun) each log a warn with
+  the conversation. The turn itself keeps running by design —
+  durable history plus the resumable attach stream mean a reload
+  re-watches the in-flight turn. Only the wire is lost, and now it
+  says so.

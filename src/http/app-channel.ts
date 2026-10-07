@@ -224,7 +224,20 @@ const UPLOAD_CAP = 32 * 1024 * 1024;
 // The app channel's SSE wire — one shape shared by the submit stream
 // (appStreamSink: chunks from the turn's member sink) and the attach
 // stream (GET .../stream: chunks from a live-turn subscription).
-function appSseWriter(): {
+//
+// Bun.serve closes connections that send no bytes for its idleTimeout
+// — 10s by default (verified 2026-10-07 on 1.4.2: a silent SSE response
+// died at exactly +10.0s; 5s comment pings survived). Tool calls
+// silence the UIMessage stream for tens of seconds, so the wire needs a
+// heartbeat: SSE comment lines, which spec parsers and eventsource-
+// parser (the AI SDK client's) skip without emitting. Ruling recorded in
+// design/app.md.
+const SSE_HEARTBEAT_MS = 5_000;
+
+function appSseWriter(
+	convId: string,
+	heartbeatMs: number = SSE_HEARTBEAT_MS,
+): {
 	body: ReadableStream<Uint8Array>;
 	write(chunk: UIMessageChunk): void;
 	finish(done: TurnDone): void;
@@ -232,30 +245,62 @@ function appSseWriter(): {
 	const enc = new TextEncoder();
 	let controller!: ReadableStreamDefaultController<Uint8Array>;
 	let closed = false;
-	const body = new ReadableStream<Uint8Array>({
-		start(c) {
-			controller = c;
-		},
-		// Client disconnected mid-turn — the turn keeps writing durable
-		// history; only the wire closes.
-		cancel() {
-			closed = true;
-		},
-	});
+	let lastByte = Date.now();
+	let beat: ReturnType<typeof setInterval> | undefined;
+	const stopBeat = () => {
+		if (beat !== undefined) clearInterval(beat);
+		beat = undefined;
+	};
 	const push = (line: string) => {
 		if (closed) return;
 		try {
 			controller.enqueue(enc.encode(line));
-		} catch {
+			lastByte = Date.now();
+		} catch (err) {
+			// Bun closes the controller when the wire dies (idle kill or
+			// client vanish). The turn keeps writing durable history — but
+			// the boundary owes the log a line: this exact silence once ate
+			// a whole turn's reply unnoticed (2026-10-07).
 			closed = true;
+			stopBeat();
+			log.warn("app stream wire died mid-turn — writes dropped, turn continues", {
+				conversation: convId,
+				err: String(err),
+			});
 		}
 	};
+	const body = new ReadableStream<Uint8Array>({
+		start(c) {
+			controller = c;
+			// Beats only while the wire is silent — real chunks reset the clock.
+			// The tick samples 4x per heartbeat window: a tick period equal to
+			// the threshold phase-locks with real chunks landing just before
+			// each tick and never fires (caught by the ping test, 2026-10-07).
+			if (heartbeatMs > 0) {
+				beat = setInterval(() => {
+					if (!closed && Date.now() - lastByte >= heartbeatMs) push(": ping\n\n");
+				}, Math.max(200, Math.floor(heartbeatMs / 4)));
+				// A leaked beat must never hold the process (or a test run) open.
+				(beat as unknown as { unref?: () => void }).unref?.();
+			}
+		},
+		// Client disconnected mid-turn — the turn keeps writing durable
+		// history; only the wire closes. Loudly: same 2026-10-07 lesson.
+		cancel() {
+			closed = true;
+			stopBeat();
+			log.warn("app stream client gone — wire closed, turn continues", {
+				conversation: convId,
+			});
+		},
+	});
 	return {
 		body,
 		write(chunk) {
 			push(`data: ${JSON.stringify(chunk)}\n\n`);
 		},
 		finish(done) {
+			stopBeat();
 			// A turn that ended without a finish chunk (fenced by /stop,
 			// or crashed) still owes the client a terminal event.
 			if (done.kind !== "completed") {
@@ -282,7 +327,7 @@ function appStreamSink(convId: string): {
 	sink: TurnSink;
 	body: ReadableStream<Uint8Array>;
 } {
-	const writer = appSseWriter();
+	const writer = appSseWriter(convId);
 	return {
 		body: writer.body,
 		sink: {
@@ -436,7 +481,7 @@ export async function handleAppApi(
 		if (store.get(convId.id) === null) {
 			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 		}
-		const writer = appSseWriter();
+		const writer = appSseWriter(convId.id);
 		const replay = runtime.subscribeLiveChunks(
 			convId.id,
 			(chunk) => writer.write(chunk),

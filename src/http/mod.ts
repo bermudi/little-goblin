@@ -499,6 +499,12 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 	const server = Bun.serve({
 		hostname: "127.0.0.1",
 		port: deps.configRef.current.http.port,
+		// 255 (the max): Bun's 10s default kills long-quiet SSE — tool
+		// calls silence the app stream wire for tens of seconds, and a
+		// killed wire reads client-side as a dead fetch body (verified
+		// 2026-10-07). The appSseWriter heartbeat is the actual guarantee;
+		// this is the ceiling behind it. Ruling in design/app.md.
+		idleTimeout: 255,
 		// The HTTP boundary's error trap. Bun.serve has an onError
 		// option, but it never fires for handler throws in this Bun
 		// (verified: sync and async fetch throws both serve the

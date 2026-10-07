@@ -347,6 +347,49 @@ describe("app channel http", () => {
 		}
 	});
 
+	test("long silent stretches get SSE comment pings — the wire never idles out", async () => {
+		// Bun.serve's default idleTimeout (10s) killed silent streams
+		// mid-tool-call before the heartbeat existed (2026-10-07): the
+		// browser's fetch body died with the wire. Slow deltas fake the
+		// tool-call silence; the heartbeat must keep comment pings flowing
+		// without polluting data frames.
+		const { http, call } = setup({
+			token: APP_TOKEN_NAME,
+			deltas: ["a", "b"],
+			delayMs: 6_000,
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-ping" }),
+			});
+			const res = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-ping",
+					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
+				}),
+			});
+			expect(res.status).toBe(200);
+			const body = await res.text();
+			// Comment keepalives rode the wire through the silence…
+			expect(body).toContain(": ping\n\n");
+			// …and stay invisible to data-frame parsing — exactly how the
+			// client's eventsource parser skips them.
+			const frames = body
+				.split("\n\n")
+				.filter((f) => f.startsWith("data: "))
+				.map((f) => f.slice("data: ".length));
+			expect(frames.at(-1)).toBe("[DONE]");
+			const chunks = frames.slice(0, -1).map((f) => JSON.parse(f) as { type: string });
+			expect(chunks.map((c) => c.type)).toContain("finish");
+		} finally {
+			http.stop();
+		}
+	}, 20_000);
+
 	test("stop aborts a live turn — the stream ends with the error chunk", async () => {
 		// 50ms deltas keep the turn alive well past the stop POST below.
 		const { http, call } = setup({ token: APP_TOKEN_NAME, deltas: ["a", "b", "c", "d", "e"], delayMs: 50 });

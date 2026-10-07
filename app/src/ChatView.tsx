@@ -401,9 +401,10 @@ export function Composer({
 	}, [quote]);
 	// Entries carry a client key — pasted images all arrive named
 	// "image.png", so filename can't pick which staging row an upload
-	// resolves.
+	// resolves. `speech` marks a voice note staged while a turn was
+	// running — send() re-applies the flag so intake still transcribes.
 	const [pending, setPending] = useState<
-		{ key: string; ref: AttachmentRef; uploading?: boolean; failed?: boolean }[]
+		{ key: string; ref: AttachmentRef; uploading?: boolean; failed?: boolean; speech?: boolean }[]
 	>([]);
 	const fileInput = useRef<HTMLInputElement>(null);
 
@@ -443,6 +444,10 @@ export function Composer({
 		return () => clearInterval(t);
 	}, [recording]);
 	const recStart = useRef(0);
+	// The recorder's onstop runs after render — read the live busy flag
+	// through a ref, not the prop captured when recording started.
+	const busyRef = useRef(busy);
+	busyRef.current = busy;
 	const micSupported =
 		typeof navigator !== "undefined" &&
 		navigator.mediaDevices !== undefined &&
@@ -470,7 +475,15 @@ export function Composer({
 				void (async () => {
 					try {
 						const { ref } = await uploadAttachment(token, file);
-						onSend([{ type: "data-attachment", data: { ...ref, speech: true } }]);
+						// Release-sends, but not mid-turn — a second send while a
+						// turn streams is the fork send()'s busy gate exists to
+						// prevent. Stage the ref instead: the chip shows it, the
+						// next send carries it with speech intact.
+						if (busyRef.current) {
+							setPending((p) => [...p, { key: crypto.randomUUID(), ref, speech: true }]);
+						} else {
+							onSend([{ type: "data-attachment", data: { ...ref, speech: true } }]);
+						}
 					} catch {
 						setPending((p) => [
 							...p,
@@ -498,25 +511,51 @@ export function Composer({
 		recorder.current?.stop();
 	};
 
-	const pickFile = async (file: File) => {
-		const key = crypto.randomUUID();
-		setPending((p) => [
-			...p,
-			{
-				key,
-				ref: { path: "", mediaType: file.type, filename: file.name, size: file.size },
-				uploading: true,
-			},
-		]);
-		try {
-			const { ref } = await uploadAttachment(token, file);
-			setPending((p) => p.map((e) => (e.key === key ? { key, ref } : e)));
-		} catch {
-			setPending((p) =>
-				p.map((e) => (e.key === key ? { ...e, uploading: false, failed: true } : e)),
-			);
-		}
-	};
+	const pickFile = useCallback(
+		async (file: File) => {
+			const key = crypto.randomUUID();
+			setPending((p) => [
+				...p,
+				{
+					key,
+					ref: { path: "", mediaType: file.type, filename: file.name, size: file.size },
+					uploading: true,
+				},
+			]);
+			try {
+				const { ref } = await uploadAttachment(token, file);
+				setPending((p) => p.map((e) => (e.key === key ? { key, ref } : e)));
+			} catch {
+				setPending((p) =>
+					p.map((e) => (e.key === key ? { ...e, uploading: false, failed: true } : e)),
+				);
+			}
+		},
+		[token],
+	);
+
+	// Drop target: the whole window. Unhandled file drops trigger the
+	// browser default — navigating the PWA to the file and losing the
+	// page — so preventDefault runs even when nothing gets staged.
+	// Non-file drags (selected text into the textarea, links) keep
+	// their native handling.
+	useEffect(() => {
+		const isFile = (e: DragEvent) => e.dataTransfer?.types.includes("Files") === true;
+		const over = (e: DragEvent) => {
+			if (isFile(e)) e.preventDefault();
+		};
+		const drop = (e: DragEvent) => {
+			if (!isFile(e)) return;
+			e.preventDefault();
+			for (const f of Array.from(e.dataTransfer?.files ?? [])) void pickFile(f);
+		};
+		window.addEventListener("dragover", over);
+		window.addEventListener("drop", drop);
+		return () => {
+			window.removeEventListener("dragover", over);
+			window.removeEventListener("drop", drop);
+		};
+	}, [pickFile]);
 
 	const send = () => {
 		// The button is disabled while busy; Enter and form submit are
@@ -529,9 +568,15 @@ export function Composer({
 		const parts: UIMessage["parts"] = [];
 		if (text !== "") parts.push({ type: "text", text });
 		for (const e of ready)
-			parts.push({ type: "data-attachment", data: e.ref } as UIMessage["parts"][number]);
+			parts.push({
+				type: "data-attachment",
+				data: e.speech === true ? { ...e.ref, speech: true } : e.ref,
+			} as UIMessage["parts"][number]);
 		setDraft("");
-		setPending([]);
+		// Entries that weren't sent — uploads still in flight, failed
+		// chips — stay staged. Clearing them would drop files the
+		// operator still sees in the composer.
+		setPending((p) => p.filter((e) => !ready.includes(e)));
 		onSend(parts);
 	};
 
@@ -607,7 +652,9 @@ export function Composer({
 					placeholder="Message goblin"
 					onChange={(e) => setDraft(e.target.value)}
 					onKeyDown={(e) => {
-						if (e.key === "Enter" && !e.shiftKey) {
+						// isComposing: Enter that confirms an IME candidate is
+						// not a send.
+						if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
 							e.preventDefault();
 							send();
 						}

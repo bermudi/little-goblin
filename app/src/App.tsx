@@ -141,14 +141,20 @@ function ConversationRow({
 	const [editing, setEditing] = useState(false);
 	const [draft, setDraft] = useState("");
 	const editRef = useRef<HTMLInputElement>(null);
+	// Enter commits and unmounts the input — its blur then fires
+	// commitRename a second time, a duplicate PATCH with the same title.
+	const committed = useRef(false);
 	useEffect(() => {
 		if (editing) {
+			committed.current = false;
 			editRef.current?.focus();
 			editRef.current?.select();
 		}
 	}, [editing]);
 
 	const commitRename = () => {
+		if (committed.current) return;
+		committed.current = true;
 		const t = draft.trim();
 		setEditing(false);
 		if (t === "" || t === title) return;

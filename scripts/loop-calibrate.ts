@@ -1,12 +1,14 @@
 // Loop-watchdog calibration (design/model.md → "No step budget"): replays
-// the longest stored tool turns plus synthetic loops through system1 and
-// prints each checkpoint's "stuck" score, so the cut threshold is set
-// from observed separation, not a guess.
+// the longest stored tool turns (auto-selected from the events table)
+// plus synthetic loops through system1 and prints each checkpoint's
+// "stuck" score, so the cut threshold is set from observed separation,
+// not a guess.
 //
-//   bun scripts/loop-calibrate.ts [model ...]
+//   bun scripts/loop-calibrate.ts [--top N] [model ...]
 //
-// Read-only over goblin.sqlite. Defaults to the configured system1 model.
-// Prints via process.stdout.write (CLI convention, see check-auth.ts).
+// Read-only over goblin.sqlite. Defaults to the configured system1 model
+// and the 10 longest turns. Prints via process.stdout.write (CLI
+// convention, see check-auth.ts).
 
 import { Database } from "bun:sqlite";
 import { loadAuth } from "../src/auth.ts";
@@ -133,18 +135,34 @@ if (config === null) throw new Error("no goblin config");
 const auth = loadAuth();
 const authRef = config.system1?.auth ?? config.reviewer?.auth;
 if (authRef === undefined) throw new Error("no system1/reviewer auth ref in config");
-const models = process.argv.length > 2 ? process.argv.slice(2) : [config.system1?.model ?? JEV_MODEL];
+const args = process.argv.slice(2);
+const topIdx = args.indexOf("--top");
+const topN = topIdx === -1 ? 10 : Number.parseInt(args[topIdx + 1] ?? "", 10);
+if (!Number.isInteger(topN) || topN < 1) throw new Error("--top expects a positive integer");
+const models = args.filter((a, i) => a !== "--top" && i !== topIdx + 1);
+if (models.length === 0) models.push(config.system1?.model ?? JEV_MODEL);
+
+// Expectations for stored turns are verified by hand — label a turn's
+// event id after reading what it did, never by guessing. 105 (the MCPi
+// turn: 16 searches for variants of an unannounced thing) is the one
+// real-world stuck example; 182 (Safari Zone) and 169 (whisper setup)
+// are real long progress.
+const LABELS: Record<number, Case["expect"]> = { 182: "progress", 169: "progress", 105: "stuck" };
 
 const db = new Database(paths.db(), { readonly: true });
+const longest = db
+	.query(
+		`select id from events where role = 'assistant'
+		 order by (select count(*) from json_each(data, '$.message.parts')
+		           where json_extract(value, '$.type') like 'tool-%') desc
+		 limit ?`,
+	)
+	.all(topN) as { id: number }[];
 const cases = [
-	...storedCases(db, [
-		{ id: 182, expect: "progress" },
-		{ id: 123, expect: "?" },
-		{ id: 105, expect: "?" },
-		{ id: 121, expect: "?" },
-		{ id: 169, expect: "progress" },
-		{ id: 153, expect: "?" },
-	]),
+	...storedCases(
+		db,
+		longest.map(({ id }) => ({ id, expect: LABELS[id] ?? "?" })),
+	),
 	...synthetic,
 ];
 db.close();

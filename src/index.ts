@@ -621,6 +621,11 @@ async function boot() {
 			workspaceDir: paths.workspace(),
 			notify: (conversationId, skills) => sendSkillSavedNotice(tg.bot.api, conversationId, skills),
 		});
+		// The loop watchdog rides the same JevClient (operator ask,
+		// 2026-10-07): mid-turn "is this looping?" checks over the digest
+		// ring, cutting a looping turn into the forced-answer landing.
+		// Reviewer-enabled is the switch, same as every other system1 use.
+		runtime.setLoopWatchdog({ decide: jevGate.decide.bind(jevGate) });
 	}
 
 	// The shared wake path — program fires (cron, webhook, mail) submit

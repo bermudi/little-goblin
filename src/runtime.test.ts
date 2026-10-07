@@ -8,6 +8,7 @@ import { tool, type LanguageModel, type UIMessage, type UIMessageChunk } from "a
 import { z } from "zod";
 import { APICallError, type LanguageModelV4, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { appAddress, openStore } from "./conversation.ts";
+import type { JevClient } from "./jev.ts";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { setLogFile } from "./log.ts";
 import { Runtime, userMessage, type TurnDone, type TurnSink } from "./runtime.ts";
@@ -2969,6 +2970,125 @@ describe("step budget soft landing", () => {
 		expect(executions).toBe(2);
 		expect(sink.text).toBe("the wrapped answer");
 		expect(store.history(conv.id)).toHaveLength(2);
+		store.close();
+	});
+});
+
+describe("loop watchdog", () => {
+	// The operator ask (2026-10-07): system1 already answers "is this a
+	// follow-up?" / "worth a skill?" — it can also answer "is the model
+	// looping?" mid-turn. A looping verdict cuts the turn into the same
+	// tools-off landing a spent budget forces; fail-open everywhere.
+	const finish = (reason: "stop" | "tool-calls"): LanguageModelV4StreamPart => ({
+		type: "finish",
+		finishReason: { unified: reason, raw: undefined },
+		usage: {
+			inputTokens: { total: 10, noCache: 2, cacheRead: 8, cacheWrite: undefined },
+			outputTokens: { total: 1, text: 1, reasoning: undefined },
+		},
+	});
+	function greedyModel(): { model: LanguageModel; requests: { toolChoice: unknown; prompt: string }[] } {
+		const requests: { toolChoice: unknown; prompt: string }[] = [];
+		const model: LanguageModel = {
+			specificationVersion: "v4", provider: "fake", modelId: "watchdog-test", supportedUrls: {},
+			doGenerate() { throw new Error("unused"); },
+			async doStream(options) {
+				requests.push({
+					toolChoice: options.toolChoice?.type ?? null,
+					prompt: JSON.stringify(options.prompt ?? []),
+				});
+				const noTools = options.toolChoice?.type === "none";
+				const parts: LanguageModelV4StreamPart[] = noTools
+					? [
+						{ type: "text-start", id: "t" },
+						{ type: "text-delta", id: "t", delta: "cut short, answered anyway" },
+						{ type: "text-end", id: "t" },
+						finish("stop"),
+					]
+					: [
+						{ type: "tool-call", toolCallId: `c${requests.length}`, toolName: "probe", input: "{}" },
+						finish("tool-calls"),
+					];
+				return {
+					stream: new ReadableStream<LanguageModelV4StreamPart>({
+						start(controller) {
+							controller.enqueue({ type: "stream-start", warnings: [] });
+							for (const p of parts) controller.enqueue(p);
+							controller.close();
+						},
+					}),
+				};
+			},
+		};
+		return { model, requests };
+	}
+	function decideReturning(score: number): JevClient["decide"] {
+		return async (state, questions) => {
+			// Settle before the turn's next step so the cut flag is
+			// deterministic in time (probe's 20ms execution pads it).
+			await sleep(5);
+			expect(questions["looping"]).toBeDefined();
+			expect((state as { totalToolCalls: number }).totalToolCalls).toBeGreaterThan(0);
+			return { answers: { looping: score }, inputTokens: 5, cost: 0 };
+		};
+	}
+
+	test("looping verdict cuts the turn early into the tools-off landing", async () => {
+		const { model, requests } = greedyModel();
+		const store = openStore(tmpdb());
+		const conv = store.resolve(appAddress("watchdog-cut"), "/w");
+		let executions = 0;
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => { executions++; await sleep(20); return "ok"; },
+				}),
+			}),
+		});
+		runtime.setLoopWatchdog({ decide: decideReturning(0.91), every: 2 });
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "spin" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		while (runtime.busy(conv.id)) await sleep(1);
+		await runtime.shutdown();
+		// Two tool steps, then the watchdog's cut — budget (64) never reached.
+		expect(requests).toHaveLength(3);
+		expect(requests[0]!.toolChoice).not.toBe("none");
+		expect(requests[2]!.toolChoice).toBe("none");
+		expect(requests[2]!.prompt).toContain("repetitive");
+		expect(requests[2]!.prompt).not.toContain("Step budget spent");
+		expect(executions).toBe(2);
+		expect(sink.text).toBe("cut short, answered anyway");
+		store.close();
+	});
+
+	test("progressing verdict never cuts — the budget landing still applies", async () => {
+		const { model, requests } = greedyModel();
+		const store = openStore(tmpdb());
+		const conv = store.resolve(appAddress("watchdog-pass"), "/w");
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({
+				probe: tool({ inputSchema: z.object({}), execute: async () => "ok" }),
+			}),
+			stepBudget: 4,
+		});
+		runtime.setLoopWatchdog({ decide: decideReturning(0.1), every: 2 });
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "grind" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		while (runtime.busy(conv.id)) await sleep(1);
+		await runtime.shutdown();
+		// Watchdog checked twice (calls 2 and 4) and passed both — the
+		// landing that ends the turn is the budget's, with its own nudge.
+		expect(requests).toHaveLength(5);
+		expect(requests[4]!.toolChoice).toBe("none");
+		expect(requests[4]!.prompt).toContain("Step budget spent");
+		expect(requests[4]!.prompt).not.toContain("repetitive");
 		store.close();
 	});
 });

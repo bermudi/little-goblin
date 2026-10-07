@@ -13,11 +13,17 @@ channel → Spin-off, ruling 2026-10-03). The AI SDK
 wrappers for harnesses (`ai-sdk-provider-codex-cli`,
 `…-claude-code`) were considered and rejected: they cover two
 harnesses, run in-process (die on restart), and nobody can watch
-them. Instead harnesses run **interactively in goblin's own herdr
-session** — herdr is the terminal multiplexer already on the host,
-it recognizes agents in panes and reports their state
-(`idle|working|blocked|done|unknown`). The operator can `herdr
+them. Instead harnesses run **interactively in herdr** — herdr is
+the agent automation layer already on the host: it recognizes
+agents in panes, owns their lifecycle
+(`idle|working|blocked|done|unknown`), gates startup readiness,
+submits prompts, relays UI keys, waits on lifecycle states, and
+collects transcript history on demand. The operator can `herdr
 session attach goblin` at any time to watch or take over.
+Delegations are **goblin's own acts**: a result returns to the
+conversation that spawned it, goblin decides what the operator
+hears, and Telegram rings for `needs_input` (goblin needs a human) —
+not for routine completions.
 
 Rulings:
 
@@ -32,27 +38,36 @@ Rulings:
   name `goblin` exists only in the unit's `--session`, and
   `delegation` has no session knob (dropped 2026-09-26 — an
   override could target a herdr session the unit does not host).
-- **Remote delegation (2026-10-06): `delegation.machine` moves the
-  session to another host.** A `machine: { label, cwd }` block makes
-  every herdr call ride `herdr --machine <label>` — a saved-machine
-  profile on THIS box that pins the remote host and its `goblin`
-  session (`herdr machine add <ssh-target> --remote-session goblin`;
-  forwarding needs the remote server already running — the unit above
-  hosts it on that host, and `install.sh` skips the local session
-  unit when `machine` is set). Rationale: goblin runs on an always-on
-  server while the harnesses, their auths, and the operator's
-  visibility live on the workstation. Consequences, ruled with it:
-  cwds and reports name REMOTE paths (the tool resolves relative
-  cwds against `machine.cwd`; no local existence check — herdr
-  validates at workspace create, fail-loud through the adapter);
-  harness trust stores cannot be seeded from here (the remote
-  operator pre-seeds `~/.codex`/`~/.claude.json` there — the launch
-  logs the skip); and completion is seq-advance + herdr's
-  `done`/`idle` over the machine link — there is no local report
-  file to stat, so the rare finished-before-baseline corner parks at
-  `needs_input` with the screen tail showing the truth, and notices
-  quote the screen instead of the report. The report instruction
-  still names a remote path under `machine.cwd/delegations/<id>/`.
+- **Targets (2026-10-06, superseding single-`machine` mode): the
+  own **local** session plus configured machines.** Goblin's own
+  local session — the unit's on the host goblin itself runs on,
+  never a config knob (2026-09-26 stands) — is the default target
+  for goblin's internal work. `delegation.machines`
+  maps a label to `{ machine?: "<herdr machine label>", session?:
+  "<name>", root?: "~/…", harnesses?: {…} }`: `machine` names a
+  saved-machine profile (ssh target + pinned remote session live in
+  herdr's registry, added by the operator with `machine add <host>
+  --remote-session <name>` — goblin never duplicates ssh config);
+  `session` alone is another local session; `root` resolves the
+  target's relative cwds (remote paths must be absolute or `~/` —
+  server-expanded, so no local stat: herdr validates at workspace
+  create, fail-loud through the adapter). `--machine` and
+  `--session` are mutually exclusive on the CLI, so the adapter
+  builds one prefix per target. Harness availability is a property
+  of the target host: `machines.<label>.harnesses` (same shape as
+  the global map) declares what runs there; absent = the global map
+  applies. Rows carry their target; ids and agent names are scoped
+  per server and never mix.
+- **One protocol, target-agnostic (operator, 2026-10-06: "unify").**
+  Launch, send, read, answer, stop behave identically local and
+  forwarded. Results are collected by `agent read` (deep reads page
+  alternate-screen transcript history for full-screen agents) — the
+  report file demotes to the fallback herdr's own docs give it
+  (output a transcript cannot hold): instructed as ever, attached
+  when readable on this host, path named when it is not. Done =
+  herdr `idle|done` **and** `completion_seq` advanced past the
+  recorded baseline when the server reports it, else the
+  seq-advance rule.
 - **Only `src/herdr.ts` knows herdr** — a thin adapter over the CLI
   (`herdr --session <name> …` / `herdr --machine <label> …`, JSON out, zod-parsed; CLI errors are
   JSON on stderr with exit 1 and propagate with context). Every call
@@ -94,7 +109,12 @@ Rulings:
   section, after its last dotted key, or as an appended table), and a
   file we can't extend safely fails the launch instead of corrupting;
   symlinked settings write through to the managed target, never
-  replace the link). Panes
+  replace the link). Remote targets get the same markers through
+  the delegation's own root pane (`pane run` of a write-if-absent
+  shell snippet, before `agent start` — a fresh host starts with no
+  harness state, so `[ -f ] || write` is the whole job; the pane is
+  a shell goblin just created, so no new transport is owed).
+  Panes
   run the operator's interactive shell, so shell aliases apply: args
   that duplicate an alias's flags make the harness refuse to start.
   Start relies on herdr's ready gate plus the watcher's stall rule,
@@ -109,10 +129,7 @@ Rulings:
   panes alive meanwhile. `starting` is invisible to the watcher and
   flips to `running` in one write once the prompt landed; a
   `starting` row seen at watcher boot means goblin died mid-start →
-  close its workspace, notify, `failed`. The cap counts
-  starting+running+needs_input — and a follow-up that reactivates a
-  `done`/`failed` row spends a slot too (the tool refuses it like a
-  fresh launch past the cap). `prompt_pending` marks a row whose task
+  close its workspace, notify, `failed`. `prompt_pending` marks a row whose task
   never reached the agent: a startup-blocked launch parks
   `needs_input` with the task owed rather than dying — herdr rejects
   `agent start` on a blocked agent (`agent_not_ready`) and `agent
@@ -131,14 +148,18 @@ Rulings:
   directory, label = name), `agent start <name> --kind <kind> --pane
   <root> -- <args>`, then `agent prompt` with the task plus one
   appended instruction: write the final report to
-  `$GOBLIN_HOME/state/delegations/<id>/report.md`. herdr's own guide
+  `$GOBLIN_HOME/state/delegations/<id>/report.md`; on a machine
+  target the instruction names the same shape under the target's
+  `root` (the fallback file — see One protocol). herdr's own guide
   treats file output as the fallback for results a screen can't
-  hold; here it is the primary channel because a TUI screen is a
-  lossy transport. Concurrency cap `delegation.maxRunning` (default
-  3) — the tool refuses beyond it, naming what's running.
+  hold. **No concurrency cap** (operator, 2026-10-06): `maxRunning`
+  is gone — the tool never refuses on volume; how much runs, where,
+  is goblin's judgment.
 - **The watcher is an in-process ticker** (15 s), the scheduler's
-  twin: for each `running`/`needs_input` row, `agent get`. Scans share
-  one in-flight promise — but the shared slot must be a `.finally`
+  twin: for each `running`/`needs_input` row, `agent get`,
+  serialized per target (forwarded calls are ssh round trips —
+  45 s local, 90 s forwarded budget). Scans share one in-flight
+  promise — but the shared slot must be a `.finally`
   wrapper, never the work promise itself: a scan that completes
   without a single `await` (an empty store at boot) runs its cleanup
   before the assignment lands and wedges the ticker on a dead promise
@@ -154,12 +175,20 @@ Rulings:
   a parked row resumes on *any* seq advance, not a `working` glimpse
   — an operator answering through `herdr session attach` can finish
   the whole exchange between two polls. Agent gone (pane closed,
-  process exited) → `failed`. Every transition submits one message
+  process exited) → `failed`. A machine target that cannot be
+  reached (ssh, auth, ACL — the launch proves the link with one
+  forwarded `agent get` for a name that cannot exist:
+  `agent_not_found` means the link answered; anything else fails
+  the launch with herdr's own error, and herdr forwarding never
+  falls back and never retries) is **cannot observe**, not agent gone:
+  rows stay watched, the error is logged, and the agent keeps
+  running host-side. Every transition submits one message
   into the pinned conversation, the same path as program fires:
   `[delegation: #<id> <name> · <done|needs input|failed>]` + the
-  report
-  file (capped at 16 KiB; beyond that, the path to read) or, absent a
-  report, the screen tail (`recent-unwrapped`, last ~80 lines). The
+  transcript collected by `agent read` (deep — pages alternate-screen
+  history for full-screen agents), or the report file when one is
+  readable on this host (capped at 16 KiB; beyond that, the path to
+  read), or the file's path named when it lives on another host. The
   resulting turn tells the operator what happened, in goblin's
   voice. Reports and screen tails ride fenced like program events
   (`<event source="delegation">`, any `</event` neutralized) —
@@ -184,7 +213,9 @@ Rulings:
   `stop` on a finished one is the cleanup.
 - **Goblin may delegate on its own judgment** within a turn — long or
   coding-heavy work belongs in a harness, not in a lane-blocking
-  `bash` call — and says that it did. `/stop` fences goblin's turn,
+  `bash` call — and says that it did. That judgment includes the
+  target: work tied to another host's repos runs there, and the
+  machine list rides the tool's description. `/stop` fences goblin's turn,
   not delegations: they aren't turns. `delegate stop` ends one.
 
 Still out: subagent fleets inside goblin (a delegation is one

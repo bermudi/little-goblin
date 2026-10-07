@@ -131,35 +131,39 @@
   // system1: { auth: "openrouter" },
 
   // --- Delegation (other coding harnesses, via herdr) ---
-  // Unset = no delegate tool. Harnesses run in the `goblin` herdr
-  // session, each in its own workspace; the session name lives in the
-  // goblin-herdr systemd unit, not here. Results come back to the topic
-  // as a `[delegation: …]` message.
-  // `kind` is a herdr agent kind (herdr agent → kind list); `args` are
-  // native CLI args — full-auto flags and model choice live here.
-  // First-run dialogs (trust prompts) are seeded in the harness's own
-  // state files at launch — write-if-absent only: a value you set
-  // (including false/"untrusted") is never flipped; a file that can't
-  // be extended safely fails the launch rather than corrupting. See
-  // src/harness-trust.ts. A gate that still shows up parks the row
-  // `needs_input` — the agent relays the dialog and presses your key
-  // via `delegate answer`.
+  // Unset = no delegate tool. Harnesses run in goblin's OWN LOCAL
+  // herdr session (the goblin-herdr systemd unit's --session goblin
+  // — the name lives in the unit, not here), each in its own
+  // workspace. Results come back to the topic as a
+  // `[delegation: …]` message. `kind` is a herdr agent kind
+  // (herdr agent → kind list); `args` are native CLI args —
+  // full-auto flags and model choice live here.
+  // `machines` adds other targets for work that belongs on another
+  // host: `machine` names a herdr saved-machine profile (the ssh
+  // target and pinned remote session live in herdr:
+  // `herdr machine add <host> --remote-session goblin`), `session`
+  // alone is another local session, `root` resolves that target's
+  // relative cwds and reports (absolute or ~/…), and optional
+  // `harnesses` declares what runs there — harness availability is
+  // a property of the host. delegate start takes `on: <label>`;
+  // omitted = own local session. First-run trust dialogs are seeded
+  // silently on every host (locally at launch, remotely through the
+  // delegation's own pane); a gate that still appears parks
+  // `needs_input` — relay it and press the operator's key via
+  // `delegate answer`.
   // Panes run your interactive shell, so aliases apply — never repeat a
   // flag an alias already adds (the codex alias's bypass flag, devin's
   // --permission-mode): a duplicate makes the harness refuse to start.
   // delegation: {
-  //   maxRunning: 3,     // default
   //   harnesses: {
   //     codex: { kind: "codex" }, // the shell alias carries the bypass flag
   //     pi: { kind: "pi", args: ["--model", "<provider>/<model>"] },
   //   },
-  //   // Remote delegation (design/delegation.md): run harnesses in a
-  //   // herdr session on ANOTHER host through a saved-machine profile
-  //   // (herdr machine add <ssh-target> --remote-session goblin). The
-  //   // label names the profile on THIS box; cwd is the remote root for
-  //   // delegated workspaces and reports. Absent (the default) runs
-  //   // everything in the local `goblin` herdr session.
-  //   // machine: { label: "g7", cwd: "/home/daniel/goblin/delegated" },
+  //   machines: {
+  //     // lithium: { session: "goblin" },
+  //     // g7: { machine: "g7", root: "~/build",
+  //     //       harnesses: { devin: { kind: "devin" } } },
+  //   },
   // },
 
   // --- Gmail ---

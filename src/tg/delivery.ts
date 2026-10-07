@@ -56,6 +56,16 @@ function replyKey(chatId: number, messageId: number): string {
 	return `${chatId}:${messageId}`;
 }
 
+// The forced-landing stamp (design/model.md): a budget- or watchdog-cut
+// answer is degraded goods — telegram reads that on the reply itself,
+// riding the status-tail mark so TTS never speaks it.
+function forcedNotice(done: TurnDone): string | null {
+	if (done.kind !== "completed" || done.forced === undefined) return null;
+	return done.forced === "budget"
+		? "⚠ step-budget cap — answer forced"
+		: "⚠ loop watchdog — answer forced";
+}
+
 // Exported for speak-button tests: prime the reply cache directly
 // instead of driving a full delivery sink to completion.
 export function rememberReply(chatId: number, messageId: number, text: string): void {
@@ -503,6 +513,11 @@ export function makeDeliverySink(
 		},
 		async onDone(done: TurnDone) {
 			if (done.kind === "fenced") cancelled = true;
+			// The forced-landing stamp joins the body BEFORE the final flush,
+			// so the drain's re-edit publishes it on the last bubble and the
+			// 🫡 still lands on the same (now stamped) message.
+			const notice = forcedNotice(done);
+			if (notice !== null) text += `${STATUS_TAIL_MARK}${notice}`;
 			clearInterval(typing);
 			for (const interval of recordings) clearInterval(interval);
 			recordings.clear();
@@ -573,6 +588,20 @@ export function makeDeliverySink(
 						if (failure) throw failure.error;
 					}
 					for (const chunk of audio) await sendVoice(chunk);
+					// The stamp is visual — speechContent strips the status
+					// tail from spoken text — so voice turns ship it as its own
+					// notice line after the audio, not inside it.
+					if (notice !== null) {
+						enqueue(async () => {
+							if (!mayDeliver()) return;
+							await withTimeout(
+								api.sendMessage(conv.chatId, notice, {
+										...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+								}),
+								"sendMessage",
+							);
+						});
+					}
 					await chain;
 				} catch (err) {
 					if (!authoritative()) return;

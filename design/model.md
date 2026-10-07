@@ -237,3 +237,13 @@ app client), and the app's turn footer renders it: "step-budget cap —
 answer forced" / "loop watchdog — answer forced". An answer produced
 under "tools are disabled, answer now" is degraded goods — the operator
 sees that it is, on the message itself, live and on history reload.
+
+**Every reading surface carries the stamp.** The app channel reads it
+from turn metadata (footer line); Telegram has no footer, so the stamp
+joins the reply body itself at `onDone` — riding the status-tail mark,
+so the final flush publishes it on the last bubble (🫡 lands on the
+stamped message) and TTS never speaks it; voice turns ship it as its
+own notice line after the audio. The mini app is the settings surface,
+not a chat — no stamp there by design. `TurnDone` carries
+`forced?: "budget" | "watchdog"` so any future delivery surface
+inherits the contract.

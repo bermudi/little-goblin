@@ -2957,7 +2957,7 @@ describe("step budget soft landing", () => {
 		});
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "dig forever" }]), sink);
-		expect(await sink.done).toEqual({ kind: "completed" });
+		expect(await sink.done).toEqual({ kind: "completed", forced: "budget" });
 		while (runtime.busy(conv.id)) await sleep(1);
 		await runtime.shutdown();
 		// Two tool steps, then the forced toolChoice=none landing.
@@ -3057,7 +3057,7 @@ describe("loop watchdog", () => {
 		runtime.setLoopWatchdog({ decide: decideReturning(0.91), every: 2 });
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "spin" }]), sink);
-		expect(await sink.done).toEqual({ kind: "completed" });
+		expect(await sink.done).toEqual({ kind: "completed", forced: "watchdog" });
 		while (runtime.busy(conv.id)) await sleep(1);
 		await runtime.shutdown();
 		// Two tool steps, then the watchdog's cut — budget (64) never reached.
@@ -3086,7 +3086,7 @@ describe("loop watchdog", () => {
 		runtime.setLoopWatchdog({ decide: decideReturning(0.1), every: 2 });
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "grind" }]), sink);
-		expect(await sink.done).toEqual({ kind: "completed" });
+		expect(await sink.done).toEqual({ kind: "completed", forced: "budget" });
 		while (runtime.busy(conv.id)) await sleep(1);
 		await runtime.shutdown();
 		// Watchdog checked twice (calls 2 and 4) and passed both — the
@@ -3112,7 +3112,7 @@ describe("loop watchdog", () => {
 		runtime.setLoopWatchdog({ decide: decideReturning(0.91), every: 2 });
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "spin" }]), sink);
-		expect(await sink.done).toEqual({ kind: "completed" });
+		expect(await sink.done).toEqual({ kind: "completed", forced: "watchdog" });
 		while (runtime.busy(conv.id)) await sleep(1);
 		await runtime.shutdown();
 		const md = (store.history(conv.id)[1] as { metadata?: unknown }).metadata as

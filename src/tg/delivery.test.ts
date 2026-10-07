@@ -894,3 +894,52 @@ describe("channel guard", () => {
 		expect(msgs).toHaveLength(0);
 	});
 });
+
+// The forced-landing stamp (design/model.md): a budget- or watchdog-cut
+// answer is degraded goods — telegram reads that on the reply itself.
+describe("forced-completion stamp", () => {
+	const TAIL = "\n\n—\n";
+
+	test("budget cut stamps the reply's last bubble", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, undefined, 0);
+		sink.onTextDelta("the wrapped answer");
+		await sleep(0);
+		await sink.onDone({ kind: "completed", forced: "budget" });
+		expect(msgs).toEqual([`the wrapped answer${TAIL}⚠ step-budget cap — answer forced`]);
+	});
+
+	test("watchdog cut stamps with its own wording", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, undefined, 0);
+		sink.onTextDelta("cut short");
+		await sleep(0);
+		await sink.onDone({ kind: "completed", forced: "watchdog" });
+		expect(msgs).toEqual([`cut short${TAIL}⚠ loop watchdog — answer forced`]);
+	});
+
+	test("natural completion adds no stamp", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, undefined, 0);
+		sink.onTextDelta("plain answer");
+		await sleep(0);
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toEqual(["plain answer"]);
+	});
+
+	test("voice mode ships the stamp as its own notice line — never spoken", async () => {
+		const { api, msgs, voices } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, undefined, 0, {
+			voiceMode: true,
+			synthesize: async (text: string) => {
+				// The spoken payload must not carry the stamp.
+				expect(text).not.toContain("step-budget cap");
+				return [new Uint8Array([1])];
+			},
+		});
+		sink.onTextDelta("spoken answer");
+		await sink.onDone({ kind: "completed", forced: "budget" });
+		expect(voices).toEqual([1]);
+		expect(msgs).toEqual(["⚠ step-budget cap — answer forced"]);
+	});
+});

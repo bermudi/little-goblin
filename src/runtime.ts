@@ -142,7 +142,7 @@ function systemEventAsUser(m: UIMessage): UIMessage {
 // ---------- sink: what the turn streams into (tg implements) ----------
 
 export type TurnDone =
-	| { kind: "completed" }
+	| { kind: "completed"; forced?: "budget" | "watchdog" }
 	| { kind: "fenced" }
 	| { kind: "error"; message: string };
 
@@ -1729,7 +1729,9 @@ export class Runtime {
 					...window,
 				});
 			}
-			await notifyAll({ kind: "completed" });
+			await notifyAll(
+				forcedKind !== null ? { kind: "completed", forced: forcedKind } : { kind: "completed" },
+			);
 			// onDone may itself await a slow delivery. A stop during that
 			// await revokes this turn before it can start fresh background
 			// work (in particular auto-compaction with a new controller).

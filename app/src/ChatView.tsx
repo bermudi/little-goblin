@@ -74,13 +74,71 @@ function FileIcon() {
 	);
 }
 
-function AttachmentChip({ data }: { data: unknown }) {
-	const ref = data as AttachmentRef;
-	if (typeof ref?.filename !== "string") return null;
+// Read-back for a stored attachment — bearer header, blob, object URL.
+// The name segment is the stored path's basename; the server confines
+// reads to workspace/attachments/ regardless.
+async function fetchAttachmentUrl(token: string | null, path: string): Promise<string> {
+	const name = path.split("/").pop() ?? "";
+	const res = await fetch(`/api/app/attachments/${encodeURIComponent(name)}`, {
+		headers: token === null ? {} : { authorization: `Bearer ${token}` },
+	});
+	if (!res.ok) throw new Error(`http ${res.status}`);
+	return URL.createObjectURL(await res.blob());
+}
+
+function AttachmentChip({ data, token }: { data: unknown; token: string | null }) {
+	const ref = (typeof data === "object" && data !== null ? data : {}) as AttachmentRef;
+	const isImage = typeof ref.mediaType === "string" && ref.mediaType.startsWith("image/");
+	const path = typeof ref.path === "string" ? ref.path : "";
+	const [thumb, setThumb] = useState<string | null>(null);
+	useEffect(() => {
+		if (!isImage || path === "") return;
+		let live = true;
+		let url: string | null = null;
+		void fetchAttachmentUrl(token, path)
+			.then((u) => {
+				url = u;
+				if (live) setThumb(u);
+			})
+			.catch(() => {});
+		return () => {
+			live = false;
+			if (url !== null) URL.revokeObjectURL(url);
+		};
+	}, [isImage, path, token]);
+	if (typeof ref.filename !== "string") return null;
+	if (isImage && thumb !== null) {
+		return (
+			<a className="attachment image" href={thumb} target="_blank" rel="noreferrer">
+				<img src={thumb} alt={ref.filename} />
+				<span className="attachment-name">{ref.filename}</span>
+				{typeof ref.size === "number" && (
+					<span className="attachment-size">{formatSize(ref.size)}</span>
+				)}
+			</a>
+		);
+	}
 	return (
 		<span className="attachment">
 			<FileIcon />
-			<span className="attachment-name">{ref.filename}</span>
+			{path !== "" ? (
+				// Click opens the stored file — fetched lazily so non-image
+				// attachments cost nothing until asked.
+				<button
+					type="button"
+					className="attachment-name link"
+					onClick={() => {
+						void fetchAttachmentUrl(token, path).then(
+							(u) => window.open(u, "_blank"),
+							() => {},
+						);
+					}}
+				>
+					{ref.filename}
+				</button>
+			) : (
+				<span className="attachment-name">{ref.filename}</span>
+			)}
 			{typeof ref.size === "number" && <span className="attachment-size">{formatSize(ref.size)}</span>}
 			{ref.speech === true && ref.transcript !== undefined && (
 				<span className="attachment-transcript">“{ref.transcript}”</span>
@@ -89,7 +147,13 @@ function AttachmentChip({ data }: { data: unknown }) {
 	);
 }
 
-export function MessageParts({ parts }: { parts: UIMessage["parts"] }) {
+export function MessageParts({
+	parts,
+	token,
+}: {
+	parts: UIMessage["parts"];
+	token?: string | null;
+}) {
 	const out: ReactNode[] = [];
 	for (let i = 0; i < parts.length; i++) {
 		const p = parts[i]!;
@@ -116,7 +180,8 @@ export function MessageParts({ parts }: { parts: UIMessage["parts"] }) {
 					<div className="reasoning">{p.text}</div>
 				</details>,
 			);
-		else if (p.type === "data-attachment") out.push(<AttachmentChip key={i} data={p.data} />);
+		else if (p.type === "data-attachment")
+			out.push(<AttachmentChip key={i} data={p.data} token={token ?? null} />);
 		else if (p.type === "file")
 			out.push(
 				<span key={i} className="attachment">
@@ -188,6 +253,10 @@ function MetaLine({ meta }: { meta: TurnMetadata }) {
 // Ogg/opus arrives base64'd — the Audio element owns the sequence.
 function useSpeech(token: string | null) {
 	const [state, setState] = useState<"idle" | "loading" | "playing">("idle");
+	// A silent catch made read failures invisible — the button looked
+	// dead. The API's error string (e.g. "speech is unavailable") is
+	// shown next to the button until the next attempt.
+	const [err, setErr] = useState<string | null>(null);
 	const audio = useRef<HTMLAudioElement | null>(null);
 	const cancelled = useRef(false);
 	useEffect(
@@ -210,6 +279,7 @@ function useSpeech(token: string | null) {
 				return;
 			}
 			setState("loading");
+			setErr(null);
 			cancelled.current = false;
 			try {
 				const r = await synthesize(token, text);
@@ -228,14 +298,14 @@ function useSpeech(token: string | null) {
 					});
 					URL.revokeObjectURL(url);
 				}
-			} catch {
-				/* speech unconfigured (503) or the network is down — quiet */
+			} catch (e) {
+				setErr(e instanceof Error ? e.message : "speech failed");
 			}
 			if (!cancelled.current) setState("idle");
 		},
 		[token, state, stop],
 	);
-	return { speech: state, play };
+	return { speech: state, play, err };
 }
 
 function ActionBar({
@@ -253,7 +323,7 @@ function ActionBar({
 }) {
 	const text = messageText(message);
 	const { copied, copy } = useCopy();
-	const { speech, play } = useSpeech(token);
+	const { speech, play, err: speechErr } = useSpeech(token);
 	return (
 		<div className="msg-actions">
 			<button type="button" onClick={() => copy(text)} aria-label="Copy">
@@ -269,6 +339,7 @@ function ActionBar({
 					{speech === "playing" ? "■ stop" : speech === "loading" ? "…" : "▶ read"}
 				</button>
 			)}
+			{speechErr !== null && <span className="msg-err">{speechErr}</span>}
 			{isLastAssistant && !busy && (
 				<button type="button" onClick={onRetry} aria-label="Retry">
 					↻ retry
@@ -383,6 +454,7 @@ export function Composer({
 	onSend,
 	onStop,
 	quote,
+	focusSignal,
 }: {
 	token: string | null;
 	busy: boolean;
@@ -392,9 +464,16 @@ export function Composer({
 	// A select-to-quote request — `n` bumps per click, so even repeated
 	// text appends again.
 	quote?: { text: string; n: number } | null;
+	// Bumped by the caller when the composer should grab focus (the
+	// "New conversation" click) — covers the already-mounted case that
+	// an autoFocus attribute can't.
+	focusSignal?: number;
 }) {
 	const [draft, setDraft] = useState("");
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	useEffect(() => {
+		if ((focusSignal ?? 0) > 0) textareaRef.current?.focus();
+	}, [focusSignal]);
 	useEffect(() => {
 		if (quote == null || quote.n === 0) return;
 		setDraft((d) => appendQuote(d, quote.text));
@@ -411,8 +490,32 @@ export function Composer({
 	// resolves. `speech` marks a voice note staged while a turn was
 	// running — send() re-applies the flag so intake still transcribes.
 	const [pending, setPending] = useState<
-		{ key: string; ref: AttachmentRef; uploading?: boolean; failed?: boolean; speech?: boolean }[]
+		{
+			key: string;
+			ref: AttachmentRef;
+			uploading?: boolean;
+			failed?: boolean;
+			speech?: boolean;
+			// Object URL for a local image preview — created at stage time,
+			// revoked when the entry leaves the composer.
+			thumb?: string;
+		}[]
 	>([]);
+	// Every object URL this composer minted — revoked on unmount so a
+	// conversation switch can't leak them.
+	const thumbUrls = useRef<Set<string>>(new Set());
+	useEffect(
+		() => () => {
+			for (const u of thumbUrls.current) URL.revokeObjectURL(u);
+		},
+		[],
+	);
+	const dropEntry = (e: (typeof pending)[number]) => {
+		if (e.thumb !== undefined) {
+			URL.revokeObjectURL(e.thumb);
+			thumbUrls.current.delete(e.thumb);
+		}
+	};
 	const fileInput = useRef<HTMLInputElement>(null);
 
 	// Model + thinking pickers ride the same operator settings the mini
@@ -521,12 +624,15 @@ export function Composer({
 	const pickFile = useCallback(
 		async (file: File) => {
 			const key = crypto.randomUUID();
+			const thumb = file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined;
+			if (thumb !== undefined) thumbUrls.current.add(thumb);
 			setPending((p) => [
 				...p,
 				{
 					key,
 					ref: { path: "", mediaType: file.type, filename: file.name, size: file.size },
 					uploading: true,
+					...(thumb !== undefined ? { thumb } : {}),
 				},
 			]);
 			try {
@@ -583,6 +689,7 @@ export function Composer({
 		// Entries that weren't sent — uploads still in flight, failed
 		// chips — stay staged. Clearing them would drop files the
 		// operator still sees in the composer.
+		for (const e of ready) dropEntry(e);
 		setPending((p) => p.filter((e) => !ready.includes(e)));
 		onSend(parts);
 	};
@@ -623,7 +730,11 @@ export function Composer({
 				<div className="composer-attachments">
 					{pending.map((e, i) => (
 						<span key={e.key} className={e.failed === true ? "attachment failed" : "attachment"}>
-							<FileIcon />
+							{e.thumb !== undefined ? (
+								<img className="attachment-thumb" src={e.thumb} alt="" />
+							) : (
+								<FileIcon />
+							)}
 							<span className="attachment-name">
 								{e.uploading === true ? "↑ " : e.failed === true ? "✗ " : ""}
 								{e.ref.filename}
@@ -632,7 +743,10 @@ export function Composer({
 							<button
 								type="button"
 								aria-label="Remove"
-								onClick={() => setPending((p) => p.filter((_, j) => j !== i))}
+								onClick={() => {
+									dropEntry(e);
+									setPending((p) => p.filter((_, j) => j !== i));
+								}}
 							>
 								×
 							</button>
@@ -964,13 +1078,13 @@ function Chat({
 						if (m.role === "user")
 							return (
 								<div key={m.id} className="msg user">
-									<MessageParts parts={m.parts} />
+									<MessageParts parts={m.parts} token={token} />
 								</div>
 							);
 						const meta = turnMeta(m);
 						return (
 							<div key={m.id} className="msg assistant">
-								<MessageParts parts={m.parts} />
+								<MessageParts parts={m.parts} token={token} />
 								<ActionBar
 									message={m}
 									isLastAssistant={m.id === lastAssistantId}

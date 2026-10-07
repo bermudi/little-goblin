@@ -237,6 +237,9 @@ export function App() {
 	// The empty state has the composer too — its send creates the
 	// conversation, then ChatView delivers the parked message as `seed`.
 	const [seed, setSeed] = useState<{ id: string; parts: UIMessage["parts"] } | null>(null);
+	// Bump on "New conversation" — the composer focuses itself, mounted
+	// or not (a remount sees the non-zero signal on first effect).
+	const [composerFocus, setComposerFocus] = useState(0);
 	const [starting, setStarting] = useState(false);
 	const [startFailed, setStartFailed] = useState(false);
 	const listSeq = useRef(0);
@@ -375,6 +378,7 @@ export function App() {
 	// leaves an empty row in the store.
 	const newConversation = () => {
 		setNavOpen(false);
+		setComposerFocus((t) => t + 1);
 		select(null);
 	};
 
@@ -514,6 +518,7 @@ export function App() {
 						<Composer
 							token={token}
 							busy={starting}
+							focusSignal={composerFocus}
 							onSend={(parts) => void startConversation(parts)}
 						/>
 					</div>

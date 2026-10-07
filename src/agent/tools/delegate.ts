@@ -61,6 +61,7 @@ function view(d: Delegation, reportPath: string): Record<string, unknown> {
 		harness: d.harness,
 		cwd: d.cwd,
 		status: d.status,
+		target: d.target ?? "local",
 		agent_name: d.agentName || undefined,
 		workspace_id: d.workspaceId || undefined,
 		report: reportPath,
@@ -121,10 +122,6 @@ function renderLaunch(out: LaunchOutcome, pin: DelegationPin): Record<string, un
 							),
 						}),
 			};
-		case "cap reached":
-			return {
-				error: `delegation cap reached (${out.maxRunning} running): ${out.live.map((d) => `#${d.id} ${d.name}`).join(", ")}`,
-			};
 	}
 }
 
@@ -147,10 +144,6 @@ function renderSend(out: SendOutcome): Record<string, unknown> {
 			};
 		case "prompt failed":
 			return { error: out.error };
-		case "cap reached":
-			return {
-				error: `delegation cap reached (${out.maxRunning} live) — reactivating this one would exceed it`,
-			};
 		case "stopped mid send":
 			return { error: `delegation ${out.id} was stopped while the send was in flight` };
 	}
@@ -228,6 +221,9 @@ const startSchema = z.object({
 	task: z.string().min(1),
 	cwd: z.string().min(1).optional(),
 	name: z.string().min(1).max(40).optional(),
+	/** Target label (config delegation.machines key) — omitted =
+	 *  goblin's own local session. */
+	on: z.string().min(1).optional(),
 });
 const listSchema = z.object({ action: z.literal("list") });
 const readSchema = z.object({
@@ -290,29 +286,44 @@ export const delegateInputSchema = z.object({
 export const delegateTool = (deps: DelegateToolDeps) =>
 	tool({
 		description:
-			`Delegate a task to an external coding harness (a separate agent in its own workspace, running full-auto — you may delegate on your own judgment for long or coding-heavy work instead of blocking the chat with bash, and you must tell the operator you did). Configured harnesses: ${Object.keys(deps.config.harnesses).join(", ")}. Actions — start {harness, task, cwd?, name?}; list {}; read {id, lines?}; send {id, text} (operator answers, follow-ups to finished work); answer {id, key: enter|esc|arrows|space|tab|y|n|1-9} (a single keypress for a blocked agent's dialog — only ever relay the operator's explicit choice); stop {id}. Results arrive later as a [delegation: #id …] message — the task does not answer immediately. If a delegation ends at 'needs input' (an approval, a question, a startup dialog), relay it to the operator and send back their answer — 'send' for text, 'answer' for a dialog keypress — never answer an agent's question on the operator's behalf. Started from the operator's private chat, a delegation moves into its own app conversation (results land there and Telegram pings) — tell the operator where it went.`,
+			`Delegate a task to an external coding harness — a separate agent in its own workspace, running full-auto. Delegations are your own acts: delegate on your own judgment for long or coding-heavy work instead of blocking the chat with bash, and say that you did; you own the result when it arrives and decide what the operator needs to hear. Targets: your own local session (default)${Object.keys(deps.config.machines ?? {}).length > 0 ? ` plus configured machines (${Object.keys(deps.config.machines ?? {}).join(", ")})` : " (no machines configured)"} — pass 'on' to pick one; work tied to another host's repos runs there, and each target runs the harnesses installed on that host. Harnesses (own session): ${Object.keys(deps.config.harnesses).join(", ")}. Actions — start {harness, task, cwd?, name?, on?}; list {}; read {id, lines?}; send {id, text} (operator answers, follow-ups to finished work); answer {id, key: enter|esc|arrows|space|tab|y|n|1-9} (a single keypress for a blocked agent's dialog — only ever relay the operator's explicit choice); stop {id}. Results arrive later as a [delegation: #id …] message in the conversation the delegation was born in — the task does not answer immediately. If a delegation ends at 'needs input' (an approval, a question, a startup dialog), relay it to the operator and send back their answer — 'send' for text, 'answer' for a dialog keypress — never answer an agent's question on the operator's behalf. Started from the operator's private chat, a delegation moves into its own app conversation (results land there) — tell the operator where it went.`,
 		inputSchema: delegateInputSchema,
 		execute: async (raw) => {
 			const input = actionSchema.parse(raw);
 			switch (input.action) {
 				case "start": {
-					const h = deps.config.harnesses[input.harness];
+					const on = input.on ?? null;
+					const target = on !== null ? deps.config.machines?.[on] : undefined;
+					if (on !== null && target === undefined) {
+						const known = Object.keys(deps.config.machines ?? {}).join(", ") || "none configured";
+						return { error: `unknown delegation target "${on}" — configured: ${known}` };
+					}
+					// Harness availability is a property of the target host: a
+					// machine's own map declares what runs there; absent = the
+					// global map applies (design/delegation.md, "Targets").
+					const harnesses = (on !== null ? target?.harnesses : undefined) ?? deps.config.harnesses;
+					const h = harnesses[input.harness];
 					if (!h) {
 						return {
-							error: `unknown harness "${input.harness}" — configured: ${Object.keys(deps.config.harnesses).join(", ")}`,
+							error: `unknown harness "${input.harness}" on ${on ?? "the local session"} — configured: ${Object.keys(harnesses).join(", ")}`,
 						};
 					}
-					// Machine mode: cwd names a directory ON THE REMOTE HOST — the
-					// local stat cannot see it, so existence is herdr's to check at
-					// workspace create (a bad path fails loud through the adapter).
-					const machine = deps.config.machine;
-					const cwdRoot = machine ? machine.cwd : deps.workspaceDir;
+					// Machine targets: cwd names a directory ON THE TARGET HOST —
+					// the local stat cannot see it, so existence is herdr's to
+					// check at workspace create (a bad path fails loud through
+					// the adapter). Relative cwds resolve under the target's
+					// root (default `~` for machines, the workspace for local).
+					const isMachine = target?.machine !== undefined;
+					const cwdRoot =
+						on === null
+							? deps.workspaceDir
+							: (target?.root ?? (isMachine ? "~" : deps.workspaceDir));
 					const cwd = input.cwd
-						? isAbsolute(input.cwd)
+						? isAbsolute(input.cwd) || input.cwd.startsWith("~")
 							? input.cwd
 							: resolve(cwdRoot, input.cwd)
 						: cwdRoot;
-					if (!machine && (!existsSync(cwd) || !statSync(cwd).isDirectory())) {
+					if (!isMachine && (!existsSync(cwd) || !statSync(cwd).isDirectory())) {
 						return { error: `cwd "${cwd}" does not exist or is not a directory` };
 					}
 					const name =
@@ -344,7 +355,7 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 							task: input.task,
 							cwd,
 							name,
-							maxRunning: deps.config.maxRunning,
+							target: on,
 							address: pin.address,
 							...(pin.appConversation === undefined
 								? {}
@@ -358,7 +369,7 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 						discard("threw");
 						throw err;
 					}
-					if (out.kind === "cap reached" || out.kind === "failed" || out.kind === "stopped") {
+					if (out.kind === "failed" || out.kind === "stopped") {
 						// "stopped" joins the discard set: the launch was fenced
 						// mid-startup (a /stop) — the row is inert (send refuses a
 						// stopped delegation) and nothing will ever watch the fork,
@@ -390,9 +401,7 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 				case "read":
 					return renderRead(await deps.lifecycle.read(input.id, input.lines ?? 60));
 				case "send":
-					return renderSend(
-						await deps.lifecycle.send(input.id, input.text, deps.config.maxRunning),
-					);
+					return renderSend(await deps.lifecycle.send(input.id, input.text));
 				case "answer":
 					return renderAnswer(await deps.lifecycle.answer(input.id, input.key));
 				case "stop":

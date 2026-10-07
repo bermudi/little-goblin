@@ -97,7 +97,7 @@ describe("toolNames ↔ makeTools", () => {
 			// delegateTool's description lists the configured harnesses,
 			// so the dep needs a real config block even in a shape test.
 			{
-				config: { maxRunning: 3, harnesses: { codex: { kind: "codex" } } },
+				config: { harnesses: { codex: { kind: "codex" } } },
 				lifecycle: {},
 				pin: () => ({ address: { chatId: 0, threadId: null } }),
 				workspaceDir: "/tmp",

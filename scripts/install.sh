@@ -72,22 +72,11 @@ sed \
 # The herdr session is a sibling unit (DESIGN.md, "Delegation") — its
 # panes outlive goblin restarts. goblin.service's Wants= tolerates it
 # being absent, so a missing herdr is a warning, not a failed install.
-# Remote delegation (design/delegation.md, "Remote delegation"): a
-# delegation.machine block targets a saved-machine profile whose session
-# runs on ANOTHER host — this box must not host a local session unit,
-# so the probe below skips it and says why.
+# The own local session is delegation's default target regardless of
+# any machines config (design/delegation.md, "Targets") — whenever
+# herdr is installed here, this box hosts its unit.
 herdr_bin="$(command -v herdr || true)"
-delegation_machine=""
 if [ -n "$herdr_bin" ]; then
-	delegation_machine="$(cd "$repo_root" && GOBLIN_HOME="$goblin_home" "$bun_bin" -e \
-		'import { readFileSync } from "node:fs";
-		import JSON5 from "json5";
-		try {
-			const c = JSON5.parse(readFileSync(`${process.env.GOBLIN_HOME}/goblin.json5`, "utf8"));
-			if (c?.delegation?.machine) console.log(c.delegation.machine.label);
-		} catch {}' 2>/dev/null || true)"
-fi
-if [ -n "$herdr_bin" ] && [ -z "$delegation_machine" ]; then
 	sed \
 		-e "s|/home/daniel/.local/bin/herdr|$herdr_bin|g" \
 		-e "s|/home/daniel/bin|$HOME/bin|g" \

@@ -253,7 +253,7 @@ describe("mini-app http", () => {
 	test("a save never drops config blocks the page can't express (delegation)", async () => {
 		useHome();
 		const delegation = {
-			maxRunning: 2,
+			machines: { g7: { machine: "g7", root: "~/build" } },
 			harnesses: { codex: { kind: "codex", args: ["--x"] } },
 		};
 		writeFileSync(

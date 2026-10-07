@@ -27,6 +27,7 @@ import { openDelegations } from "./delegations.ts";
 import {
 	startDelegationLifecycle,
 	type DelegationLifecycle,
+	type DelegationTargetDeps,
 } from "./delegation-lifecycle.ts";
 import type { DelegationPin } from "./agent/tools/delegate.ts";
 import { makeHerdr } from "./herdr.ts";
@@ -117,12 +118,21 @@ async function boot() {
 	// Delegation).
 	const delegationBoot = config.delegation;
 	const delegations = delegationBoot ? openDelegations(paths.db()) : null;
-	// "goblin" is not config: it is the local unit's --session; a
-	// delegation.machine block instead targets that machine's pinned
-	// remote session by its saved label — one authority either way.
-	const herdr = delegationBoot
-		? makeHerdr(delegationBoot.machine ? { machine: delegationBoot.machine.label } : { session: "goblin" })
-		: null;
+	// "goblin" is not config: it is the local unit's --session — the
+	// own local session, delegation's default target. Each machines
+	// entry gets its own adapter: a saved-machine label (forwarded
+	// over ssh by herdr) or another local named session.
+	const herdr = delegationBoot ? makeHerdr({ session: "goblin" }) : null;
+	const delegationTargets = new Map<string, DelegationTargetDeps>();
+	if (delegationBoot && herdr !== null) {
+		for (const [label, t] of Object.entries(delegationBoot.machines ?? {})) {
+			delegationTargets.set(label, {
+				...(t.machine !== undefined ? { machine: t.machine } : {}),
+				...(t.root !== undefined ? { root: t.root } : {}),
+				herdr: makeHerdr(t.machine !== undefined ? { machine: t.machine } : { session: t.session! }),
+			});
+		}
+	}
 
 	// The delegation lifecycle — the protocol's one owner (DESIGN.md,
 	// "Delegation") — is constructed after tg because its notices wake
@@ -645,14 +655,11 @@ async function boot() {
 			? startDelegationLifecycle({
 					delegations,
 					herdr,
+					targets: delegationTargets,
 					delegationsDir: paths.delegations(),
 					// Harness trust files live under the real home —
 					// delegation panes run the operator's shell there.
 					homeDir: homedir(),
-					// Remote delegation target, when configured — the adapter
-					// carries the label; the lifecycle needs the cwd root for
-					// remote report paths.
-					machine: delegationBoot?.machine,
 					// Delegation notices never roll the DM — a result
 					// arriving past the gap still belongs to the live
 					// conversation (Rolling DM).

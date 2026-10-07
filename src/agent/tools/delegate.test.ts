@@ -52,8 +52,8 @@ interface Harness {
 }
 
 function harness(
-	maxRunning = 3,
 	startError?: { code: string; message: string },
+	targets: ReadonlyMap<string, import("../../delegation-lifecycle.ts").DelegationTargetDeps> = new Map(),
 ): Harness {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-delegtool-"));
 	dirs.push(dir);
@@ -86,6 +86,8 @@ function harness(
 			closed.push(id);
 			return Promise.resolve();
 		},
+		paneRun: () => Promise.resolve(),
+		paneWaitOutput: () => Promise.resolve(),
 	};
 	const delegationsDir = join(dir, "delegations");
 	const homeDir = join(dir, "home");
@@ -101,6 +103,7 @@ function harness(
 			homeDir,
 			wake: () => true,
 			wakeApp: () => true,
+			targets,
 		},
 		3_600_000,
 	);
@@ -111,7 +114,6 @@ function harness(
 	const deps: DelegateToolDeps = {
 		lifecycle,
 		config: {
-			maxRunning,
 			harnesses: {
 				codex: { kind: "codex", args: ["--sandbox", "workspace-write"] },
 				pi: { kind: "pi" },
@@ -185,24 +187,6 @@ describe("delegate tool", () => {
 		expect(out.error).toContain("pi");
 	});
 
-	test("the running cap refuses, naming what's running", async () => {
-		const h = harness(1);
-		const d = h.store.create({
-			name: "occupant",
-			harness: "codex",
-			cwd: "/w",
-			task: "t",
-			address: { chatId: -100, threadId: 7 },
-		});
-		const out = (await exec(h.tool, {
-			action: "start",
-			harness: "codex",
-			task: "do it",
-		})) as { error: string };
-		expect(out.error).toContain("cap reached");
-		expect(out.error).toContain("occupant");
-	});
-
 	test("a bad cwd is rejected before any herdr call", async () => {
 		const h = harness();
 		const out = (await exec(h.tool, {
@@ -216,13 +200,16 @@ describe("delegate tool", () => {
 	});
 
 	test("machine mode resolves cwd against the remote root and skips the local stat", async () => {
-		const h = harness();
+		const targets = new Map<string, import("../../delegation-lifecycle.ts").DelegationTargetDeps>();
+		const h = harness(undefined, targets);
+		// The lifecycle holds the map by reference — wire the machine's
+		// adapter (the harness fake) now that h exists.
+		targets.set("g7", { machine: "g7", root: "/remote/goblin", herdr: h.herdr });
 		const tool = delegateTool({
 			lifecycle: h.lifecycle,
 			config: {
-				maxRunning: 3,
 				harnesses: { codex: { kind: "codex" } },
-				machine: { label: "g7", cwd: "/remote/goblin" },
+				machines: { g7: { machine: "g7", root: "/remote/goblin" } },
 			},
 			pin: () => ({ address: { chatId: 1, threadId: null } }),
 			workspaceDir: h.workspaceDir,
@@ -235,6 +222,7 @@ describe("delegate tool", () => {
 			harness: "codex",
 			task: "remote thing",
 			cwd: "sub/dir",
+			on: "g7",
 		})) as { id: number };
 		expect(h.store.get(out.id)!.cwd).toBe("/remote/goblin/sub/dir");
 		// Default cwd (absent input.cwd) = the machine root itself.
@@ -242,6 +230,7 @@ describe("delegate tool", () => {
 			action: "start",
 			harness: "codex",
 			task: "remote default",
+			on: "g7",
 		})) as { id: number };
 		expect(h.store.get(out2.id)!.cwd).toBe("/remote/goblin");
 	});
@@ -270,7 +259,7 @@ describe("delegate tool", () => {
 	});
 
 	test("a start that dies outright fails the row, closes the workspace, and returns the screen fenced", async () => {
-		const h = harness(3, { code: "spawn_failed", message: "binary not found" });
+		const h = harness({ code: "spawn_failed", message: "binary not found" });
 		const out = (await exec(h.tool, {
 			action: "start",
 			harness: "codex",
@@ -288,7 +277,7 @@ describe("delegate tool", () => {
 	});
 
 	test("a startup-blocked launch parks needs_input — the row keeps its workspace and owes the task", async () => {
-		const h = harness(3, {
+		const h = harness({
 			code: "agent_not_ready",
 			message: "agent g1-x is blocked during startup and is not ready",
 		});
@@ -315,7 +304,7 @@ describe("delegate tool", () => {
 	});
 
 	test("a parked row holds its owed prompt until the seq actually moves", async () => {
-		const h = harness(3, {
+		const h = harness({
 			code: "agent_not_ready",
 			message: "blocked during startup",
 		});
@@ -334,7 +323,7 @@ describe("delegate tool", () => {
 	});
 
 	test("answer relays a whitelisted keypress; the watcher delivers the owed task once the dialog clears", async () => {
-		const h = harness(3, {
+		const h = harness({
 			code: "agent_not_ready",
 			message: "blocked during startup",
 		});
@@ -477,6 +466,7 @@ describe("delegate tool", () => {
 		const w = startDelegationLifecycle({
 			delegations: h.store,
 			herdr: h.herdr,
+			targets: new Map(),
 			delegationsDir: h.delegationsDir,
 			homeDir: h.homeDir,
 			wake: (_a, text) => {
@@ -607,6 +597,7 @@ describe("delegate tool", () => {
 		const w = startDelegationLifecycle({
 			delegations: h.store,
 			herdr: h.herdr,
+			targets: new Map(),
 			delegationsDir: h.delegationsDir,
 			homeDir: h.homeDir,
 			wake: (_a, text) => {
@@ -656,7 +647,7 @@ describe("delegate tool", () => {
 	});
 
 	test("a parked spin-off still renders moved_to_app — the fork is kept, not orphaned", async () => {
-		const h = harness(3, {
+		const h = harness({
 			code: "agent_not_ready",
 			message: "blocked during startup",
 		});
@@ -680,40 +671,8 @@ describe("delegate tool", () => {
 		h.lifecycle.stopTicker();
 	});
 
-	test("cap reached discards the pin — the fork must not orphan", async () => {
-		const h = harness(1);
-		h.store.create({
-			name: "occupant",
-			harness: "codex",
-			cwd: "/w",
-			task: "t",
-			address: { chatId: 1, threadId: null },
-		});
-		const discarded: string[] = [];
-		h.pinOverride = () => ({
-			address: { chatId: 0, threadId: null },
-			appConversation: "app/spun-off",
-			movedToApp: { title: "x", link: null },
-			discard: (reason) => discarded.push(reason ?? ""),
-		});
-		const out = (await exec(h.tool, {
-			action: "start",
-			harness: "codex",
-			task: "do it",
-		})) as { error: string };
-		expect(out.error).toContain("cap reached");
-		expect(discarded).toEqual(["cap reached"]);
-	});
-
 	test("a failing discard on a returned outcome surfaces in the result", async () => {
-		const h = harness(1);
-		h.store.create({
-			name: "occupant",
-			harness: "codex",
-			cwd: "/w",
-			task: "t",
-			address: { chatId: 1, threadId: null },
-		});
+		const h = harness({ code: "spawn_failed", message: "binary not found" });
 		h.pinOverride = () => ({
 			address: { chatId: 0, threadId: null },
 			appConversation: "app/spun-off",
@@ -726,14 +685,14 @@ describe("delegate tool", () => {
 			harness: "codex",
 			task: "do it",
 		})) as { error: string; spin_off_cleanup_failed?: string };
-		expect(out.error).toContain("cap reached");
+		expect(out.error).toContain("failed at start");
 		// The fork may have orphaned — the model needs to know so it
 		// can tell the operator instead of hiding the cleanup failure.
 		expect(out.spin_off_cleanup_failed).toBe("store wedged");
 	});
 
 	test("a failed launch discards the pin too", async () => {
-		const h = harness(3, { code: "spawn_failed", message: "binary not found" });
+		const h = harness({ code: "spawn_failed", message: "binary not found" });
 		const discarded: string[] = [];
 		h.pinOverride = () => ({
 			address: { chatId: 0, threadId: null },
@@ -754,7 +713,7 @@ describe("delegate tool", () => {
 		// The operator's stop lands while createWorkspace is pending: the
 		// launch honors it (closes the workspace, returns kind "stopped",
 		// row inert) — the forked app conversation must not survive that.
-		const h = harness(3);
+		const h = harness();
 		let releaseWs!: () => void;
 		const wsGate = new Promise<void>((r) => {
 			releaseWs = r;
@@ -815,7 +774,7 @@ describe("delegate tool", () => {
 			lifecycle: {
 				launch: () => Promise.reject(new Error("launch exploded")),
 			} as unknown as DelegationLifecycle,
-			config: { maxRunning: 3, harnesses: { codex: { kind: "codex" } } },
+			config: { harnesses: { codex: { kind: "codex" } } },
 			pin: () => ({
 				address: { chatId: 0, threadId: null },
 				appConversation: "app/spun-off",
@@ -836,7 +795,7 @@ describe("delegate tool", () => {
 			lifecycle: {
 				launch: () => Promise.reject(new Error("launch exploded")),
 			} as unknown as DelegationLifecycle,
-			config: { maxRunning: 3, harnesses: { codex: { kind: "codex" } } },
+			config: { harnesses: { codex: { kind: "codex" } } },
 			pin: () => ({
 				address: { chatId: 0, threadId: null },
 				appConversation: "app/spun-off",

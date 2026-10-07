@@ -1,7 +1,12 @@
 # goblin v2
 
 Telegram-native personal AI agent for one operator. Rewrite of
-`~/build/little-goblin` on the Vercel AI SDK. Read `DESIGN.md` (the
+the original v1 (long gone) on the Vercel AI SDK; **this tree is the
+one true tree** — `goblin.service` runs from it, and every session
+works here. `~/build/goblin-v2` is an archived stale clone
+(GitHub `bermudi/goblin-v2`, archived 2026-10-07): never edit, push,
+or follow paths into it — a session that did on 2026-10-07 nearly
+shipped its work into a void. Read `DESIGN.md` (the
 core: domain model, authority rule, cache stability, non-goals) plus the
 `design/` file for the area you're touching before any structural work.
 `docs/` is operator documentation, not spec.

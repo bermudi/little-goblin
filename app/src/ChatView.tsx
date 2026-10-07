@@ -399,8 +399,11 @@ export function Composer({
 			requestAnimationFrame(() => ta.setSelectionRange(ta.value.length, ta.value.length));
 		}
 	}, [quote]);
+	// Entries carry a client key — pasted images all arrive named
+	// "image.png", so filename can't pick which staging row an upload
+	// resolves.
 	const [pending, setPending] = useState<
-		{ ref: AttachmentRef; uploading?: boolean; failed?: boolean }[]
+		{ key: string; ref: AttachmentRef; uploading?: boolean; failed?: boolean }[]
 	>([]);
 	const fileInput = useRef<HTMLInputElement>(null);
 
@@ -472,6 +475,7 @@ export function Composer({
 						setPending((p) => [
 							...p,
 							{
+								key: crypto.randomUUID(),
 								ref: { path: "", mediaType: file.type, filename: file.name, size: file.size },
 								failed: true,
 							},
@@ -495,23 +499,21 @@ export function Composer({
 	};
 
 	const pickFile = async (file: File) => {
+		const key = crypto.randomUUID();
 		setPending((p) => [
 			...p,
 			{
+				key,
 				ref: { path: "", mediaType: file.type, filename: file.name, size: file.size },
 				uploading: true,
 			},
 		]);
 		try {
 			const { ref } = await uploadAttachment(token, file);
-			setPending((p) => p.map((e) => (e.uploading && e.ref.filename === file.name ? { ref } : e)));
+			setPending((p) => p.map((e) => (e.key === key ? { key, ref } : e)));
 		} catch {
 			setPending((p) =>
-				p.map((e) =>
-					e.uploading && e.ref.filename === file.name
-						? { ...e, uploading: false, failed: true }
-						: e,
-				),
+				p.map((e) => (e.key === key ? { ...e, uploading: false, failed: true } : e)),
 			);
 		}
 	};
@@ -542,6 +544,18 @@ export function Composer({
 				e.preventDefault();
 				send();
 			}}
+			// A paste carrying files stages them like the picker did; a
+			// text-only clipboard falls through to the textarea's own paste.
+			// Read items, not files — WebKit leaves files empty on image
+			// paste and only populates items.
+			onPaste={(e) => {
+				const files = Array.from(e.clipboardData?.items ?? []).flatMap((i) =>
+					i.kind === "file" ? (i.getAsFile() ?? []) : [],
+				);
+				if (files.length === 0) return;
+				e.preventDefault();
+				for (const f of files) void pickFile(f);
+			}}
 		>
 			<input
 				ref={fileInput}
@@ -556,7 +570,7 @@ export function Composer({
 			{pending.length > 0 && (
 				<div className="composer-attachments">
 					{pending.map((e, i) => (
-						<span key={i} className={e.failed === true ? "attachment failed" : "attachment"}>
+						<span key={e.key} className={e.failed === true ? "attachment failed" : "attachment"}>
 							<FileIcon />
 							<span className="attachment-name">
 								{e.uploading === true ? "↑ " : e.failed === true ? "✗ " : ""}

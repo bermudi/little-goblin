@@ -7,7 +7,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDelegations, type DelegationsStore } from "../../delegations.ts";
 import {
@@ -65,7 +65,7 @@ function harness(
 	const closed: string[] = [];
 	const herdr: Herdr = {
 		createWorkspace: (cwd, label) =>
-			Promise.resolve({ workspaceId: "w1", paneId: "w1:p1" }),
+			Promise.resolve({ workspaceId: "w1", paneId: "w1:p1", cwd: "/w" }),
 		startAgent: (name) =>
 			startError
 				? Promise.reject(new HerdrError("agent start", startError.code, startError.message))
@@ -231,8 +231,63 @@ describe("delegate tool", () => {
 			harness: "codex",
 			task: "remote default",
 			on: "g7",
-		})) as { id: number };
+		})) as { id: number; attach: string };
 		expect(h.store.get(out2.id)!.cwd).toBe("/remote/goblin");
+		// The attach hint names the machine's TUI, not the local session.
+		expect(out2.attach).toBe("herdr --machine g7");
+		// A `~` root names the TARGET's home: a textual join, never
+		// path.resolve (which would bury `~` as a relative segment
+		// under goblin's process cwd).
+		const toolTilde = delegateTool({
+			lifecycle: h.lifecycle,
+			config: {
+				harnesses: { codex: { kind: "codex" } },
+				machines: { lth: { machine: "lth", root: "~/build" } },
+			},
+			pin: () => ({ address: { chatId: 1, threadId: null } }),
+			workspaceDir: h.workspaceDir,
+		});
+		targets.set("lth", { machine: "lth", root: "~/build", herdr: h.herdr });
+		const out3 = (await exec(toolTilde, {
+			action: "start",
+			harness: "codex",
+			task: "tilde root",
+			cwd: "sub/dir",
+			on: "lth",
+		})) as { id: number };
+		expect(h.store.get(out3.id)!.cwd).toBe("~/build/sub/dir");
+		// A `~`-cwd on the LOCAL target expands against the real home
+		// for the existence check — the error must name the expanded
+		// path, not the literal `~` form.
+		const localErr = (await exec(h.tool, {
+			action: "start",
+			harness: "codex",
+			task: "tilde local",
+			cwd: "~/definitely-not-here-goblin-test",
+		})) as { error: string };
+		expect(localErr.error).toContain(join(homedir(), "definitely-not-here-goblin-test"));
+	});
+
+	test("a session target's attach hint names that session", async () => {
+		const targets = new Map<string, import("../../delegation-lifecycle.ts").DelegationTargetDeps>();
+		const h = harness(undefined, targets);
+		targets.set("bench", { session: "goblin-bench", herdr: h.herdr });
+		const tool = delegateTool({
+			lifecycle: h.lifecycle,
+			config: {
+				harnesses: { codex: { kind: "codex" } },
+				machines: { bench: { session: "goblin-bench" } },
+			},
+			pin: () => ({ address: { chatId: 1, threadId: null } }),
+			workspaceDir: h.workspaceDir,
+		});
+		const out = (await exec(tool, {
+			action: "start",
+			harness: "codex",
+			task: "bench it",
+			on: "bench",
+		})) as { id: number; attach: string };
+		expect(out.attach).toBe("herdr session attach goblin-bench");
 	});
 
 	test("start launches, prompts with the report instruction, and binds the row", async () => {
@@ -503,7 +558,7 @@ describe("delegate tool", () => {
 		const gate = new Promise<void>((r) => {
 			release = r;
 		});
-		h.herdr.createWorkspace = () => gate.then(() => ({ workspaceId: "w1", paneId: "w1:p1" }));
+		h.herdr.createWorkspace = () => gate.then(() => ({ workspaceId: "w1", paneId: "w1:p1", cwd: "/w" }));
 		const started: string[] = [];
 		h.herdr.startAgent = (name) => {
 			started.push(name);
@@ -719,7 +774,7 @@ describe("delegate tool", () => {
 			releaseWs = r;
 		});
 		h.herdr.createWorkspace = () =>
-			wsGate.then(() => ({ workspaceId: "w-gated", paneId: "w-gated:p1" }));
+			wsGate.then(() => ({ workspaceId: "w-gated", paneId: "w-gated:p1", cwd: "/w" }));
 		const discarded: string[] = [];
 		h.pinOverride = () => ({
 			address: { chatId: 0, threadId: null },

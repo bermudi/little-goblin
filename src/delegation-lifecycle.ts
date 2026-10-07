@@ -37,7 +37,7 @@ import {
 	type DelegationsStore,
 } from "./delegations.ts";
 import { HerdrError, type AgentInfo, type Herdr } from "./herdr.ts";
-import { seedHarnessTrust } from "./harness-trust.ts";
+import { claudeFreshTrustJson, codexTrustSection, seedHarnessTrust } from "./harness-trust.ts";
 
 export interface DelegationLifecycleDeps {
 	delegations: DelegationsStore;
@@ -72,6 +72,9 @@ export interface DelegationTargetDeps {
 	 *  lives in herdr's registry. Absent = another LOCAL named session
 	 *  (same host: local report machinery applies). */
 	machine?: string;
+	/** The named local session (machine targets carry none — the
+	 *  profile pins the remote session inside herdr). */
+	session?: string;
 	/** Target-side root for relative cwds and the report instruction —
 	 *  herdr expands `~` on the target; absolute for remote targets. */
 	root?: string;
@@ -275,15 +278,37 @@ function reportDirFor(deps: DelegationLifecycleDeps, id: number): string {
 	return join(deps.delegationsDir, String(id));
 }
 // Row → adapter: null target = the own local session. A label that
-// vanished from config throws — the row's session is unreachable by
-// goblin and every verb must say so, never silently retarget.
+// vanished from config throws TargetGoneError — the row's session is
+// unreachable by goblin and every verb must say so, never silently
+// retarget.
+export class TargetGoneError extends Error {
+	constructor(readonly target: string) {
+		super(
+			`delegation target "${target}" is no longer in config — restore the machines entry, or stop the row knowing the agent may still run host-side`,
+		);
+		this.name = "TargetGoneError";
+	}
+}
+
 function herdrFor(deps: DelegationLifecycleDeps, target: string | null): Herdr {
 	if (target === null) return deps.herdr;
 	const t = deps.targets.get(target);
 	if (t === undefined) {
-		throw new Error(`delegation target "${target}" is no longer in config — restore the machines entry or stop the row`);
+		throw new TargetGoneError(target);
 	}
 	return t.herdr;
+}
+
+// The operator-facing attach command for a row: `session attach` for
+// local sessions (own or named), `--machine` for remote targets —
+// forwarded `session attach` is not a machine-mode command, so the
+// interactive TUI over ssh is the remote attach path.
+function attachHintFor(deps: DelegationLifecycleDeps, target: string | null): string {
+	if (target === null) return "herdr session attach goblin";
+	const t = deps.targets.get(target);
+	if (t === undefined) return "herdr session attach goblin"; // gone from config — best hint
+	if (t.machine !== undefined) return `herdr --machine ${t.machine}`;
+	return `herdr session attach ${t.session ?? "goblin"}`;
 }
 
 // Machine rows: cwd and report paths name the REMOTE host — no local
@@ -388,18 +413,10 @@ function remoteSeedCommand(kind: string, cwd: string): string | null {
 		case "codex":
 			return [
 				"mkdir -p ~/.codex",
-				`{ [ -f ~/.codex/config.toml ] || printf %s ${sh(`[projects."${cwd}"]\ntrust_level = "trusted"\n`)} > ~/.codex/config.toml; }`,
+				`{ [ -f ~/.codex/config.toml ] || printf %s ${sh(codexTrustSection(cwd))} > ~/.codex/config.toml; }`,
 			].join(" && ");
-		case "claude": {
-			const json = JSON.stringify({
-				bypassPermissionsModeAccepted: true,
-				hasCompletedOnboarding: true,
-				projects: {
-					[cwd]: { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true },
-				},
-			});
-			return `mkdir -p ~ && { [ -f ~/.claude.json ] || printf %s ${sh(`${json}\n`)} > ~/.claude.json; }`;
-		}
+		case "claude":
+			return `mkdir -p ~ && { [ -f ~/.claude.json ] || printf %s ${sh(claudeFreshTrustJson(cwd))} > ~/.claude.json; }`;
 		default:
 			return null; // no known first-run gates for this kind
 	}
@@ -408,7 +425,10 @@ function remoteSeedCommand(kind: string, cwd: string): string | null {
 // Best-effort by contract: the marker echo proves the seed landed;
 // a timeout logs and proceeds (a missed gate parks the row and
 // relays — the launch must not block on a guess). Only a herdr
-// error (transport) fails the launch, from the caller.
+// error (transport) fails the launch, from the caller. The echoed
+// marker is split (`gob''lin-seed…`) so the terminal's echo of the
+// typed command never satisfies the wait — only the executed
+// output can.
 async function seedRemoteTrust(
 	herdr: Herdr,
 	paneId: string,
@@ -418,8 +438,9 @@ async function seedRemoteTrust(
 ): Promise<void> {
 	const cmd = remoteSeedCommand(kind, cwd);
 	if (cmd === null) return;
-	const marker = `goblin-seed-${randomUUID().slice(0, 8)}`;
-	await herdr.paneRun(paneId, `{ ${cmd}; } && echo ${marker}`);
+	const tag = randomUUID().slice(0, 8);
+	const marker = `goblin-seed-${tag}`;
+	await herdr.paneRun(paneId, `{ ${cmd}; } && echo gob''lin-seed-${tag}`);
 	try {
 		await herdr.paneWaitOutput(paneId, marker, 15_000);
 	} catch (err) {
@@ -484,7 +505,20 @@ async function launch(
 		return fail(`report directory unavailable: ${err instanceof Error ? err.message : String(err)}`);
 	}
 
-	const herdr = herdrFor(deps, d.target);
+	// The tool validates `on` against its LIVE config; the targets map
+	// is boot-fixed — a machine added since boot lands here. Fail the
+	// row (never strand a `starting` row with no watcher) with the
+	// restart the config save already warned about.
+	let herdr: Herdr;
+	try {
+		herdr = herdrFor(deps, d.target);
+	} catch (err) {
+		return fail(
+			err instanceof TargetGoneError
+				? `${err.message} (a config save may have added it after boot — restart goblin to apply)`
+				: err instanceof Error ? err.message : String(err),
+		);
+	}
 	// A machine launch first proves the link: one forwarded get for a
 	// name that cannot exist. `agent_not_found` means transport, auth,
 	// and the remote session all answered; anything else (ssh, auth,
@@ -500,7 +534,7 @@ async function launch(
 		}
 	}
 
-	let ws: { workspaceId: string; paneId: string };
+	let ws: { workspaceId: string; paneId: string; cwd: string };
 	try {
 		ws = await herdr.createWorkspace(input.cwd, input.name);
 	} catch (err) {
@@ -547,11 +581,13 @@ async function launch(
 	// relays — never corrupt, never block on a guess).
 	if (machineRootFor(deps, d.target) === null) {
 		try {
-			const seeded = seedHarnessTrust(input.harness.kind, input.cwd, deps.homeDir);
+			// ws.cwd is the pane's real cwd — the local stat already
+			// proved input.cwd, but the marker must key what codex sees.
+			const seeded = seedHarnessTrust(input.harness.kind, ws.cwd, deps.homeDir);
 			log.info("delegation trust seed", {
 				delegation: d.id,
 				kind: input.harness.kind,
-				cwd: input.cwd,
+				cwd: ws.cwd,
 				seeded: seeded.length > 0 ? seeded : "no recipe",
 			});
 		} catch (err) {
@@ -559,7 +595,9 @@ async function launch(
 		}
 	} else {
 		try {
-			await seedRemoteTrust(herdr, ws.paneId, input.harness.kind, input.cwd, d.id);
+				// ws.cwd: the target-side expansion of the `~`-form we sent
+				// — the remote seed must key the path the harness runs in.
+				await seedRemoteTrust(herdr, ws.paneId, input.harness.kind, ws.cwd, d.id);
 		} catch (err) {
 			return fail(`remote trust seed failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -617,7 +655,7 @@ async function launch(
 				delegation: d.id, name: d.name,
 			});
 			await notify(deps, parked, "needs input", {
-				extra: "(blocked at startup — the task hasn't been sent yet; relay a keypress with action 'answer' or attach with `herdr session attach goblin`)",
+				extra: `(blocked at startup — the task hasn't been sent yet; relay a keypress with action 'answer' or attach with \`${attachHintFor(deps, d.target)}\`)`,
 			});
 			return { kind: "parked", delegation: parked };
 		}
@@ -845,6 +883,26 @@ async function stop(deps: DelegationLifecycleDeps, id: number): Promise<StopOutc
 	const d = deps.delegations.get(id);
 	if (d === null) return { kind: "no row", id };
 	const notes: string[] = [];
+	// A vanished target flips the stop contract: the operator's
+	// explicit stop is a verdict, not an observation — it wins over
+	// "can't prove dead" (the watcher's cannot-observe rule is for
+	// unsolicited checks; this row is retired with the caveat that
+	// the agent may still run host-side, unseen).
+	try {
+		herdrFor(deps, d.target);
+	} catch (err) {
+		if (!(err instanceof TargetGoneError)) throw err;
+		notes.push(
+			`target "${err.target}" is gone from config — the agent may still be running on that host; restore the entry to retire it by hand`,
+		);
+		deps.delegations.setStatus(d.id, "stopped");
+		log.warn("delegation stopped with target gone — agent may still run host-side", {
+			delegation: d.id,
+			name: d.name,
+			target: err.target,
+		});
+		return { kind: "stopped", delegation: deps.delegations.get(d.id) ?? d, notes };
+	}
 	if (d.status === "running" || d.status === "needs_input") {
 		try {
 			await herdrFor(deps, d.target).interrupt(d.agentName);

@@ -38,7 +38,7 @@ const fail = (code: string, message: string): HerdrRunResult => ({
 describe("herdr adapter", () => {
 	test("a machine target prefixes --machine and never --session", async () => {
 		const f = fakeRunner([
-			ok({ result: { workspace: { workspace_id: "w9" }, root_pane: { pane_id: "w9:p1" } } }),
+			ok({ result: { workspace: { workspace_id: "w9" }, root_pane: { pane_id: "w9:p1", cwd: "/tmp/x" } } }),
 		]);
 		const h = makeHerdr({ machine: "g7" }, f.run);
 		await h.createWorkspace("/remote/x", "task one");
@@ -50,11 +50,11 @@ describe("herdr adapter", () => {
 
 	test("createWorkspace runs under the session and parses ids", async () => {
 		const f = fakeRunner([
-			ok({ result: { workspace: { workspace_id: "w9" }, root_pane: { pane_id: "w9:p1" } } }),
+			ok({ result: { workspace: { workspace_id: "w9" }, root_pane: { pane_id: "w9:p1", cwd: "/tmp/x" } } }),
 		]);
 		const h = makeHerdr({ session: "goblin" }, f.run);
 		const ws = await h.createWorkspace("/tmp/x", "task one");
-		expect(ws).toEqual({ workspaceId: "w9", paneId: "w9:p1" });
+		expect(ws).toEqual({ workspaceId: "w9", paneId: "w9:p1", cwd: "/tmp/x" });
 		expect(f.calls[0]).toEqual([
 			"--session", "goblin",
 			"workspace", "create", "--cwd", "/tmp/x", "--label", "task one", "--no-focus",

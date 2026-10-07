@@ -144,6 +144,11 @@ Rulings:
   as-is for the next tick. `stop` marks `stopped` only when the
   workspace closed, none was bound, or herdr confirms the agent is
   gone; otherwise the row stays watched and the tool reports it.
+  One exception: a row whose target label left config stops by
+  verdict, not observation — the operator's explicit stop wins over
+  "can't prove dead", and the note says the agent may still run
+  host-side (restoring the entry is the way to retire it by hand).
+  For the watcher, an unreachable target stays cannot-observe.
 - **Start**: one herdr workspace per delegation (cwd = the task's
   directory, label = name), `agent start <name> --kind <kind> --pane
   <root> -- <args>`, then `agent prompt` with the task plus one

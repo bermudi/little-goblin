@@ -236,6 +236,33 @@ function tomlBasic(s: string): string {
 		TOML_ESCAPES[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`)}"`;
 }
 
+// ---------- remote (machine-target) trust seeding payloads ----------
+
+// The delegation lifecycle applies these same markers on machine
+// targets through the delegation's root pane (`pane run`, fresh-host
+// write-if-absent). They live HERE so "what the markers are" has one
+// owner — a harness changing its trust format updates this module,
+// and both transports follow.
+
+/** The TOML a fresh codex config needs for `cwd` to be trusted —
+ *  the key is TOML-escaped exactly like the local append path. */
+export function codexTrustSection(cwd: string): string {
+	return `[projects.${tomlBasic(cwd)}]\ntrust_level = "trusted"\n`;
+}
+
+/** The JSON a fresh ~/.claude.json needs for `cwd` to be accepted
+ *  (the local path extends an existing doc instead — a fresh remote
+ *  host has none, so the whole doc is the payload). */
+export function claudeFreshTrustJson(cwd: string): string {
+	return `${JSON.stringify({
+		bypassPermissionsModeAccepted: true,
+		hasCompletedOnboarding: true,
+		projects: {
+			[cwd]: { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true },
+		},
+	})}\n`;
+}
+
 function reEscape(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

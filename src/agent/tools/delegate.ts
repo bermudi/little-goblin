@@ -9,6 +9,7 @@
 
 import { tool } from "ai";
 import { existsSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { z } from "zod";
 import type { Delegation } from "../../delegations.ts";
@@ -70,7 +71,7 @@ function view(d: Delegation, reportPath: string): Record<string, unknown> {
 	};
 }
 
-function renderLaunch(out: LaunchOutcome, pin: DelegationPin): Record<string, unknown> {
+function renderLaunch(out: LaunchOutcome, pin: DelegationPin, attach: string): Record<string, unknown> {
 	switch (out.kind) {
 		case "started": {
 			const d = out.delegation;
@@ -79,10 +80,11 @@ function renderLaunch(out: LaunchOutcome, pin: DelegationPin): Record<string, un
 				name: d.name,
 				agent_name: d.agentName,
 				status: "running",
-				// "goblin" — the session deploy/goblin-herdr.service runs
-				// (--session goblin); the unit is the single source of truth,
-				// no config knob (DESIGN.md, Delegation).
-				attach: "herdr session attach goblin",
+				// Computed by the caller from the launch target —
+				// `session attach` for local sessions, `--machine` for
+				// remote (forwarded attach isn't a machine-mode
+				// command; the interactive TUI over ssh is).
+				attach,
 				...(pin.movedToApp === undefined
 					? {}
 					: {
@@ -97,7 +99,7 @@ function renderLaunch(out: LaunchOutcome, pin: DelegationPin): Record<string, un
 				name: out.delegation.name,
 				agent_name: out.delegation.agentName,
 				status: "needs_input",
-				attach: "herdr session attach goblin",
+				attach,
 				note:
 					"Blocked at startup — a first-run or trust dialog is showing. Read the screen ('read'), tell the operator what it asks, and relay their choice as a keypress with action 'answer'. The task prompt sends itself once the dialog clears." +
 					(pin.movedToApp === undefined
@@ -321,11 +323,33 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 					const cwd = input.cwd
 						? isAbsolute(input.cwd) || input.cwd.startsWith("~")
 							? input.cwd
-							: resolve(cwdRoot, input.cwd)
+							: // A `~` root names the TARGET's home — path.resolve
+							// would eat it as a relative segment under OUR cwd.
+							// Join textually; herdr expands it on the target.
+								cwdRoot.startsWith("~")
+									? `${cwdRoot.replace(/\/+$/, "")}/${input.cwd}`
+									: resolve(cwdRoot, input.cwd)
 						: cwdRoot;
-					if (!isMachine && (!existsSync(cwd) || !statSync(cwd).isDirectory())) {
-						return { error: `cwd "${cwd}" does not exist or is not a directory` };
+					// Local rows: `~`-cwds name THIS host — expand against the
+					// real home before the stat, or a directory that exists
+					// reads as missing. Machine rows pass through verbatim
+					// (the target expands its own `~`).
+					const cwdForStat = !isMachine && cwd.startsWith("~")
+						? resolve(homedir(), cwd.replace(/^~\/?/, ""))
+						: cwd;
+					if (!isMachine && (!existsSync(cwdForStat) || !statSync(cwdForStat).isDirectory())) {
+						return { error: `cwd "${cwdForStat}" does not exist or is not a directory` };
 					}
+					// The operator's attach path for this launch: `session attach`
+					// for local sessions (the own session is the unit's --session
+					// goblin), `--machine` for remote targets — forwarded attach
+					// isn't a machine-mode command; the TUI over ssh is.
+					const attachHint =
+						on === null
+							? "herdr session attach goblin"
+							: target?.machine !== undefined
+								? `herdr --machine ${target.machine}`
+								: `herdr session attach ${target?.session ?? "goblin"}`;
 					const name =
 						input.name ??
 						(input.task.split("\n", 1)[0]!.slice(0, 40).trim() || "delegation");
@@ -377,10 +401,10 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 						// title, stranded (audit #9).
 						const cleanupError = discard(out.kind);
 						if (cleanupError !== null) {
-							return { ...renderLaunch(out, pin), spin_off_cleanup_failed: cleanupError };
+							return { ...renderLaunch(out, pin, attachHint), spin_off_cleanup_failed: cleanupError };
 						}
 					}
-					return renderLaunch(out, pin);
+					return renderLaunch(out, pin, attachHint);
 				}
 				case "list": {
 					// Everything live, plus a tail of finished rows for

@@ -88,7 +88,10 @@ const cliErrorSchema = z.object({
 const workspaceCreatedSchema = z.object({
 	result: z.object({
 		workspace: z.object({ workspace_id: z.string() }),
-		root_pane: z.object({ pane_id: z.string() }),
+		// The pane's real cwd: the CLI expanded any `~` (locally or, for
+		// machine-forwarded creates, on the target) — trust markers must
+		// key THIS path, not the `~`-form we sent.
+		root_pane: z.object({ pane_id: z.string(), cwd: z.string() }),
 	}),
 });
 
@@ -111,7 +114,7 @@ function parseJson(verb: string, stdout: string): unknown {
 }
 
 export interface Herdr {
-	createWorkspace(cwd: string, label: string): Promise<{ workspaceId: string; paneId: string }>;
+	createWorkspace(cwd: string, label: string): Promise<{ workspaceId: string; paneId: string; cwd: string }>;
 	startAgent(name: string, kind: string, paneId: string, args: string[]): Promise<AgentInfo>;
 	/** null only when herdr says the agent doesn't exist (agent_not_found);
 	 *  every other failure throws with context. */
@@ -197,6 +200,7 @@ export function makeHerdr(
 			return {
 				workspaceId: parsed.result.workspace.workspace_id,
 				paneId: parsed.result.root_pane.pane_id,
+				cwd: parsed.result.root_pane.cwd,
 			};
 		},
 

@@ -677,7 +677,7 @@ describe("delegation watcher", () => {
 			const h = harness();
 			h.deps.herdr = {
 				...h.deps.herdr,
-				createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1" }),
+				createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1", cwd: "/w" }),
 				startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
 			};
 			const owner = startDelegationLifecycle(h.deps);
@@ -699,7 +699,7 @@ describe("delegation watcher", () => {
 			const closed: string[] = [];
 			h.deps.herdr = {
 				...h.deps.herdr,
-				createWorkspace: async () => ({ workspaceId: "w1", paneId: "w1:p1" }),
+				createWorkspace: async () => ({ workspaceId: "w1", paneId: "w1:p1", cwd: "/w" }),
 				closeWorkspace: (id) => {
 					closed.push(id);
 					return Promise.resolve();
@@ -743,7 +743,7 @@ describe("delegation watcher", () => {
 			const prompts: string[] = [];
 			h.deps.herdr = {
 				...h.deps.herdr,
-				createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1" }),
+				createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1", cwd: "/w" }),
 				startAgent: (name) => gate.then(() => agent(name, "working", 1)),
 				prompt: async (_name, text) => { prompts.push(text); },
 			};
@@ -775,7 +775,7 @@ describe("delegation watcher", () => {
 			const started: string[] = [];
 			h.deps.herdr = {
 				...h.deps.herdr,
-				createWorkspace: () => gate.then(() => ({ workspaceId: "w5", paneId: "w5:p1" })),
+				createWorkspace: () => gate.then(() => ({ workspaceId: "w5", paneId: "w5:p1", cwd: "/w" })),
 				startAgent: (name) => {
 					started.push(name);
 					return Promise.resolve(agent(name, "working", 1));
@@ -825,7 +825,7 @@ describe("delegation watcher", () => {
 			const closed: string[] = [];
 			h.deps.herdr = {
 				...h.deps.herdr,
-				createWorkspace: () => Promise.resolve({ workspaceId: "w5", paneId: "w5:p1" }),
+				createWorkspace: () => Promise.resolve({ workspaceId: "w5", paneId: "w5:p1", cwd: "/w" }),
 				startAgent: () => gate.then(() => Promise.reject(new Error("harness refused"))),
 				closeWorkspace: (id) => {
 					closed.push(id);
@@ -874,7 +874,7 @@ describe("delegation watcher", () => {
 					...h.deps.herdr,
 					createWorkspace: async (cwd) => {
 						cwds.push(cwd);
-						return { workspaceId: "w5", paneId: "w5:p1" };
+						return { workspaceId: "w5", paneId: "w5:p1", cwd };
 					},
 					startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
 					paneRun: (_pane, command) => {
@@ -898,9 +898,79 @@ describe("delegation watcher", () => {
 			expect(paneRuns.length).toBe(1);
 			expect(paneRuns[0]).toContain("trust_level = \"trusted\"");
 			expect(paneRuns[0]).toContain("/remote/goblin/task");
+			// The echoed marker is split so the terminal's echo of the typed
+			// command can never satisfy the wait — only executed output can.
+			expect(paneRuns[0]).toContain("echo gob''lin-seed-");
+			expect(paneRuns[0]).not.toContain("goblin-seed-");
 			// No local report dir, no local trust seed: the remote host owns both.
 			expect(existsSync(join(h.delegationsDir, String((out as { delegation: Delegation }).delegation.id)))).toBe(false);
 			expect(existsSync(join(h.homeDir, ".codex"))).toBe(false);
+		});
+
+		test("a machine seed writes TOML-escaped keys — a cwd with quotes stays a valid remote config", async () => {
+			const h = harness();
+			const paneRuns: string[] = [];
+			(h.deps.targets as Map<string, DelegationTargetDeps>).set("g7", {
+				machine: "g7",
+				herdr: {
+					...h.deps.herdr,
+					createWorkspace: async (cwd) => ({ workspaceId: "w5", paneId: "w5:p1", cwd }),
+					startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
+					paneRun: (_pane, command) => {
+					paneRuns.push(command);
+						return Promise.resolve();
+					},
+				},
+			});
+			const owner = startDelegationLifecycle(h.deps);
+			// The pane's real cwd (ws.cwd) keys the marker — a quote in it
+			// must land TOML-escaped, same rule as the local seed.
+			const out = await owner.launch({
+				harness: { name: "codex", kind: "codex", args: [] },
+				task: "quoted", cwd: '/remote/go"bin\\x', name: "quoted",
+				target: "g7",
+				address: { chatId: 1, threadId: null },
+			});
+			owner.stopTicker();
+			expect(out.kind).toBe("started");
+			expect(paneRuns[0]).toContain('[projects."/remote/go\\"bin\\\\x"]');
+		});
+
+		test("stopping a row whose target left config retires it — the stop is a verdict, not an observation", async () => {
+			const h = harness();
+			const d = h.store.create({
+				name: "orphan", harness: "codex", cwd: "/w", task: "t",
+				address: { chatId: 1, threadId: null }, target: "gone",
+			});
+			h.store.setStatus(d.id, "running");
+			const owner = startDelegationLifecycle(h.deps);
+			const out = await owner.stop(d.id);
+			owner.stopTicker();
+			expect(out.kind).toBe("stopped");
+			if (out.kind === "stopped") {
+				expect(out.notes?.join(" ")).toContain("gone from config");
+				expect(out.notes?.join(" ")).toContain("may still be running");
+			}
+			expect(h.store.get(d.id)?.status).toBe("stopped");
+		});
+
+		test("a launch for a target added after boot fails the row instead of stranding it", async () => {
+			const h = harness();
+			const owner = startDelegationLifecycle(h.deps);
+			const out = await owner.launch({
+				harness: { name: "codex", kind: "codex", args: [] },
+				task: "late", cwd: "/w", name: "late",
+				target: "late",
+				address: { chatId: 1, threadId: null },
+			});
+			owner.stopTicker();
+			expect(out.kind).toBe("failed");
+			if (out.kind === "failed") {
+				expect(out.why).toContain("no longer in config");
+				expect(out.why).toContain("restart goblin to apply");
+			}
+			const row = h.store.get(1);
+			expect(row?.status).toBe("failed"); // never a stranded `starting`
 		});
 
 		test("a machine row finishes on seq advance with no local report file — the notice carries the deep agent read", async () => {
@@ -911,7 +981,7 @@ describe("delegation watcher", () => {
 				root: "/remote/goblin",
 				herdr: {
 					...h.deps.herdr,
-					createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1" }),
+					createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1", cwd: "/w" }),
 					startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
 					prompt: (_name, text) => {
 						prompts.push(text);

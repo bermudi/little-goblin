@@ -127,7 +127,7 @@ async function boot() {
 	if (delegationBoot && herdr !== null) {
 		for (const [label, t] of Object.entries(delegationBoot.machines ?? {})) {
 			delegationTargets.set(label, {
-				...(t.machine !== undefined ? { machine: t.machine } : {}),
+				...(t.machine !== undefined ? { machine: t.machine } : { session: t.session! }),
 				...(t.root !== undefined ? { root: t.root } : {}),
 				herdr: makeHerdr(t.machine !== undefined ? { machine: t.machine } : { session: t.session! }),
 			});
@@ -722,6 +722,16 @@ async function boot() {
 		// a flipped appToken applies only after restart.
 		if (configRef.current.appToken !== appTokenName) {
 			log.warn("appToken changed — restart to apply");
+		}
+		// Delegation targets are boot-fixed adapters (each holds a
+		// built herdr handle): the tool validates `on` against THIS
+		// live map, so a post-boot change desyncs the two — launch
+		// fails the row with this same hint until the restart lands.
+		if (
+			JSON.stringify(configRef.current.delegation?.machines ?? null) !==
+			JSON.stringify(delegationBoot?.machines ?? null)
+		) {
+			log.warn("delegation machines changed — restart to apply");
 		}
 	};
 	const http = startHttp({

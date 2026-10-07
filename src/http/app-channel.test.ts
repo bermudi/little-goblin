@@ -535,6 +535,11 @@ describe("app channel http", () => {
 			const res = await call(`/api/app/attachments/${encodeURIComponent(name)}`);
 			expect(res.status).toBe(200);
 			expect(res.headers.get("content-type")).toBe("image/png");
+			// Operator content serves inert: no shared caches, no sniffing,
+			// a navigated document lands sandboxed.
+			expect(res.headers.get("cache-control")).toContain("private");
+			expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+			expect(res.headers.get("content-security-policy")).toBe("sandbox");
 			expect(Buffer.from(await res.arrayBuffer())).toEqual(Buffer.from(bytes));
 
 			// A path segment is a basename, not a route out of the dir —

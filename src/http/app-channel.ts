@@ -929,11 +929,21 @@ export async function handleAppApi(
 			return Response.json({ error: "not found" }, { status: 404, headers: NO_STORE });
 		}
 		// Saved names carry a uuid stem — the bytes behind a name never
-		// change, so the response is immutable-cacheable.
+		// change, so the response is immutable-cacheable (private: it's
+		// bearer-gated operator content). Uploads are arbitrary bytes —
+		// nosniff plus a sandboxed document context keeps them inert, and
+		// anything the client doesn't embed inline (non-media types)
+		// downloads rather than rendering same-origin.
+		const type = blob.type === "" ? "application/octet-stream" : blob.type;
 		return new Response(blob, {
 			headers: {
-				"content-type": blob.type === "" ? "application/octet-stream" : blob.type,
-				"cache-control": "public, max-age=31536000, immutable",
+				"content-type": type,
+				"cache-control": "private, max-age=31536000, immutable",
+				"x-content-type-options": "nosniff",
+				"content-security-policy": "sandbox",
+				...(/^(image|audio|video)\//.test(type)
+					? {}
+					: { "content-disposition": "attachment" }),
 			},
 		});
 	}

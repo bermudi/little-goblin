@@ -30,18 +30,17 @@ import {
 } from "./agent/attachments.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
-import type { MemoryConfig } from "./config.ts";
-import { HindsightClient, HindsightError, type MemoryDocument } from "./hindsight.ts";
-import { isCompactionSummaryId, isMachineryText } from "./tags.ts";
+import type { MemoryDocument } from "./hindsight.ts";
 import {
-	buildRecallQuery,
 	buildRetentionDocument,
-	formatRecallBlock,
 	memoryBoundEntries,
 	messageText,
+	recallMemory,
+	retentionSourceFrom,
 	withMemoryBlocks,
-	type MemoryContexts,
+	type MemoryTurnDeps,
 	type RecallContext,
+	type RetentionSource,
 } from "./memory.ts";
 import { log } from "./log.ts";
 import { runCompaction, type CompactionOutcome } from "./agent/compaction.ts";
@@ -54,6 +53,7 @@ import { filterErrorStream } from "./agent/filter-stream.ts";
 import type { CompletedTurn, PriorTurnContext, ReviewerDeps, ToolCallDigest } from "./reviewer.ts";
 import type { JevClient } from "./jev.ts";
 import { cancelAllReviews, cancelReviews, considerTurn, summarize, toolOk } from "./reviewer.ts";
+import { admitTurn, type LiveWire } from "./turn/admission.ts";
 import { TurnState, type ForcedKind, type LoopTurnState } from "./turn/state.ts";
 
 // Loop landings (design/model.md → "No step budget — loops are caught,
@@ -252,19 +252,6 @@ export interface RuntimeDeps {
 	};
 }
 
-// Everything a memory-enabled turn needs. Built once at boot from the
-// boot-time memory config (mini-app memory edits apply on restart, so a
-// config change can never redirect queued personal content mid-run).
-export interface MemoryTurnDeps {
-	client: HindsightClient;
-	config: MemoryConfig;
-	contexts: MemoryContexts;
-	// Records the latest recall outcome for /memory status. True =
-	// service answered (results or empty); false = outage. Skips and
-	// cancellations leave it untouched.
-	noteRecall(ok: boolean): void;
-}
-
 // ---------- fencing ----------
 
 export class FencedError extends Error {
@@ -382,6 +369,33 @@ function claimableCount(pending: QueuedTurn[], headStreams: boolean): number {
 	if (headStreams) return pending.length;
 	const first = pending.findIndex((t) => t.sink.onStreamChunk !== undefined);
 	return first === -1 ? pending.length : first;
+}
+
+// Claim the leading pending items a turn may absorb — the claim half
+// of the membership seam (design/runtime-turn.md → admission). The
+// head-streaming rule is claimableCount's; every claim site (drain,
+// steering, the resume claim) goes through here.
+function claimPending(lane: Lane, headStreams: boolean): QueuedTurn[] {
+	return lane.pending.splice(0, claimableCount(lane.pending, headStreams));
+}
+
+// The replay half: a streaming member that joined late — claimed by a
+// resume, or steered in mid-turn — sees the whole wire so far, not
+// from mid-sentence. Sync code: nothing interleaves with the replay.
+// A dead client is detached, not fatal.
+function replayWire(convId: string, turn: QueuedTurn, chunks: UIMessageChunk[]): void {
+	if (turn.sink.onStreamChunk === undefined) return;
+	for (const c of chunks) {
+		try {
+			turn.sink.onStreamChunk(c);
+		} catch (err) {
+			turn.streamFailed = true;
+			log.warn("sink onStreamChunk failed during replay — stream detached", err, {
+				conversation: convId,
+			});
+			break;
+		}
+	}
 }
 
 export class Runtime {
@@ -721,10 +735,19 @@ export class Runtime {
 		return tools;
 	}
 
-	// Bounded recall before the turn's model calls. Fail-open: outages
-	// persist an "unavailable" block (stable prefix, model sees the
-	// difference from empty); anything unpersistable is left out so the
-	// prefix never carries bytes that won't survive a restart.
+	// The membership seam's runtime half: claim what queued for a
+	// resuming turn and replay the wire to streaming joiners (#96).
+	// Injected into admission as claimQueued; the steer path claims
+	// through the same two helpers. Queue policy never leaves here.
+	private claimQueuedMembers(convId: string, sink: TurnSink, live: LiveWire): QueuedTurn[] {
+		const claimed = claimPending(this.lane(convId), sink.onStreamChunk !== undefined);
+		for (const t of claimed) replayWire(convId, t, live.chunks);
+		return claimed;
+	}
+
+	// Bounded recall before the turn's model calls — the body lives in
+	// memory.ts (recall contexts are memory's surface); the epoch
+	// re-check around the awaits is injected per the authority rule.
 	private async recallMemory(
 		conv: Conversation,
 		anchorSeq: number | null,
@@ -732,85 +755,14 @@ export class Runtime {
 		signal: AbortSignal,
 		epoch: number,
 	): Promise<{ prior: RecallContext[]; current: RecallContext | null }> {
-		const mem = this.deps.memory;
-		if (!mem || anchorSeq === null || conv.memoryExcluded) return { prior: [], current: null };
-		// Local store failures are memory outages too — a corrupt
-		// contexts table must degrade the turn, never fail it.
-		let prior: RecallContext[];
-		try {
-			prior = mem.contexts.load(conv.id);
-		} catch (err) {
-			log.warn("memory contexts unreadable — continuing without prior blocks", err, {
-				conversation: conv.id,
-			});
-			prior = [];
-		}
-		const query = buildRecallQuery(history);
-		if (query === "") {
-			log.debug("memory recall skipped — no text to query", { conversation: conv.id });
-			return { prior, current: null };
-		}
-		try {
-			const facts = await mem.client.recall(query, {
-				signal,
-				maxTokens: mem.config.maxTokens,
-				budget: mem.config.budget,
-			});
-			this.checkAuthority(conv.id, epoch);
-			const block = formatRecallBlock(facts, facts.length > 0 ? "results" : "empty");
-			const sources = [
-				...new Set(
-					facts.map((f) => f.document_id).filter((d): d is string => typeof d === "string"),
-				),
-			].slice(0, 100);
-			const current: RecallContext = { anchorSeq, content: block, sourceIds: sources };
-			try {
-				mem.contexts.save(conv.id, anchorSeq, block, sources);
-			} catch (err) {
-				log.warn("memory recall not persisted — continuing without it", err, {
-					conversation: conv.id,
-				});
-				return { prior, current: null };
-			}
-			mem.noteRecall(true);
-			log.info("memory recall stored", {
-				conversation: conv.id,
-				anchor: anchorSeq,
-				facts: facts.length,
-			});
-			return { prior, current };
-		} catch (err) {
-			this.checkAuthority(conv.id, epoch);
-			// A /stop during recall owns the outcome via the fence check —
-			// don't mark the service degraded for an operator action.
-			if (err instanceof HindsightError && err.kind === "cancelled") {
-				return { prior, current: null };
-			}
-			if (err instanceof HindsightError) {
-				mem.noteRecall(false);
-				log.warn("memory recall unavailable — proceeding without it", {
-					conversation: conv.id,
-					kind: err.kind,
-					status: err.status ?? null,
-					retryable: err.retryable,
-				});
-				const block = formatRecallBlock(null, "unavailable");
-				const current: RecallContext = { anchorSeq, content: block, sourceIds: [] };
-				try {
-					mem.contexts.save(conv.id, anchorSeq, block, []);
-				} catch (saveErr) {
-					log.warn("memory outage marker not persisted — continuing without it", saveErr, {
-						conversation: conv.id,
-					});
-					return { prior, current: null };
-				}
-				return { prior, current };
-			}
-			log.warn("memory recall failed without a service error — continuing without it", err, {
-				conversation: conv.id,
-			});
-			return { prior, current: null };
-		}
+		return recallMemory({
+			conv,
+			anchorSeq,
+			history,
+			signal,
+			memory: this.deps.memory,
+			assertAuthority: () => this.checkAuthority(conv.id, epoch),
+		});
 	}
 
 	// Retention for a completed exchange: text only, program
@@ -888,10 +840,7 @@ export class Runtime {
 				// non-streaming head claims only non-streaming followers
 				// (claimableCount); a left-behind streaming item heads
 				// the next pass.
-				const turns = lane.pending.splice(
-					0,
-					claimableCount(lane.pending, lane.pending[0]?.sink.onStreamChunk !== undefined),
-				);
+				const turns = claimPending(lane, lane.pending[0]?.sink.onStreamChunk !== undefined);
 				if (turns.length > 0) {
 					if (turns.length > 1) {
 						log.info("queued submits coalesced", {
@@ -997,89 +946,39 @@ export class Runtime {
 			endLive(live, done);
 			for (const t of turns) await this.notifyDone(t, done);
 		};
-		// Admission: capture the epoch this turn holds authority under.
-		let conv = store.get(convId);
-		if (!conv) {
-			log.error("turn for missing conversation", undefined, { conversation: convId });
+		// Admission (design/runtime-turn.md → admission): the snapshot
+		// fixes what this attempt owns, sees, and answers — immutable
+		// input to every phase below.
+		const admitted = admitTurn(
+			{
+				convId,
+				live,
+				getConversation: () => store.get(convId),
+				captureConversation: this.deps.captureConversation,
+				claimQueued: (wire) => this.claimQueuedMembers(convId, sink, wire),
+				pendingIds: () => new Set(this.lane(convId).pending.map((t) => t.message.id)),
+				modelEntries: () => store.modelEntries(convId),
+				now: Date.now,
+			},
+			recovery === undefined
+				? undefined
+				: { conversation: recovery.conversation, startedAt: recovery.startedAt },
+		);
+		if (admitted.kind !== "admitted") {
 			// The sink contract still holds: exactly one onDone per submit.
-			await notifyAll({ kind: "error", message: "conversation missing" });
+			await notifyAll({
+				kind: "error",
+				message: admitted.kind === "missing" ? "conversation missing" : admitted.message,
+			});
 			return;
 		}
-		try {
-			conv = recovery?.conversation ?? this.deps.captureConversation?.(conv) ?? conv;
-		} catch (err) {
-			log.error("turn settings admission failed", err, { conversation: convId });
-			await notifyAll({ kind: "error", message: err instanceof Error ? err.message : String(err) });
-			return;
-		}
-		const epoch = conv.epoch;
-		// A resume attempt owns whatever queued while the overflow
-		// compaction ran: those messages are already inside the fresh
-		// snapshot below, so leaving them pending would steer them in a
-		// second time. Claim them the way drain does — and replay the wire
-		// to streaming members claimed here, same as the steer path's join
-		// replay: a client that submitted during the recovery window missed
-		// everything the failed attempt emitted (#96). A dead client is
-		// detached, not fatal.
-		if (recovery !== undefined) {
-			const lane = this.lane(convId);
-			const claimed = lane.pending.splice(
-				0,
-				claimableCount(lane.pending, sink.onStreamChunk !== undefined),
-			);
-			for (const t of claimed) {
-				turns.push(t);
-				if (t.sink.onStreamChunk === undefined) continue;
-				for (const c of live.chunks) {
-					try {
-						t.sink.onStreamChunk(c);
-					} catch (err) {
-						t.streamFailed = true;
-						log.warn("sink onStreamChunk failed during replay — stream detached", err, {
-							conversation: convId,
-						});
-						break;
-					}
-				}
-			}
-		}
-		// Turn wall-clock for the finish metadata — admission to done,
-		// so recall/attachments are inside the number the app displays.
-		// A resume continues the failed attempt's clock, not a new one.
-		const turnStartMs = recovery?.startedAt ?? Date.now();
+		const { snapshot } = admitted;
+		const { conv, epoch, entries, anchorSeq, turnStartMs } = snapshot;
+		// Claimed resume members join this turn's membership here — the
+		// snapshot carries them as data; the member list is runtime's.
+		for (const t of snapshot.claimed) turns.push(t);
+		let steerHighWater = snapshot.steerMarkSeed;
 		sink.setAuthorityCheck?.(() => this.deps.store.get(convId)?.epoch === epoch);
-		// History snapshot is part of admission: the turn's context is the
-		// compacted model view (summary + tail, DESIGN.md Compaction) as it
-		// stood at admission — a /compact landing mid-turn can't rewrite
-		// what this turn already sees. Newer input steers in later (see
-		// prepareStep below), but recall and the reply anchor read THIS
-		// snapshot; the retention source is recomputed at completion over
-		// the exchange as it ended. Reading here, before the awaits, is
-		// what keeps the boundary. The anchor rides along: recall blocks
-		// and the causal view key off the triggering user message's seq.
-		//
-		// The snapshot is bounded by OWNERSHIP, not durability (#82):
-		// every submit appends to history before admission, so a submit
-		// drain's claim left queued — a streaming submit behind this
-		// non-streaming head (claimableCount), waiting to lead its own
-		// turn — is durable but not this turn's input. Read it here and
-		// this turn would answer the client's message, anchor its reply
-		// to it, and the client's successor turn would answer it again.
-		// Same rule as the steer mark below: claimed by id, or unseen.
-		const queuedIds = new Set(this.lane(convId).pending.map((t) => t.message.id));
-		const entries = store.modelEntries(convId).filter((e) => !queuedIds.has(e.message.id));
-		const history = entries.map((e) => e.message);
-		let anchorSeq: number | null = null;
-		for (const e of entries) {
-			if (e.message.role === "user" && (anchorSeq === null || e.seq > anchorSeq)) anchorSeq = e.seq;
-		}
-		// Ownership high-water mark: the newest event this turn is answer-
-		// ing. Steering advances it (below); queued input this turn never
-		// saw stays above the mark, so the reply never causally sorts after
-		// input it didn't read (DESIGN.md, causal view).
-		let steerHighWater = 0;
-		for (const e of entries) steerHighWater = Math.max(steerHighWater, e.seq);
-		log.info("turn started", { conversation: convId, epoch, history: history.length });
 		const controller = new AbortController();
 		this.lane(convId).controller = controller;
 		this.lanes.get(convId)!.live = live;
@@ -1287,15 +1186,12 @@ export class Runtime {
 						.map((content): ModelMessage => ({ role: "user", content }));
 					const nudge: ModelMessage[] =
 						cut !== null ? [{ role: "user", content: CUT_NUDGE[cut] }] : [];
-					const lane = this.lane(convId);
 					// Steering folds pending submits into the live request —
 					// but a headless head (no onStreamChunk) must not absorb
-					// a streaming submit; it stays queued to head the next
+					// a streaming submit; it stays queued to head its own
 					// turn (claimableCount).
-					const steered = lane.pending.splice(
-						0,
-						claimableCount(lane.pending, sink.onStreamChunk !== undefined),
-					);
+					const lane = this.lane(convId);
+					const steered = claimPending(lane, sink.onStreamChunk !== undefined);
 					if (steered.length === 0) {
 						return forced || warnMsgs.length > 0
 							? {
@@ -1333,24 +1229,7 @@ export class Runtime {
 								})),
 							);
 							turns.push(t);
-							// A streaming member that joined mid-turn missed everything
-							// emitted before the join — replay the wire log so its
-							// client sees the reply from the first token, not from
-							// mid-sentence (sync code: nothing can interleave). A
-							// dead client is detached, not fatal.
-							if (t.sink.onStreamChunk !== undefined) {
-								for (const c of live.chunks) {
-									try {
-										t.sink.onStreamChunk(c);
-									} catch (err) {
-										t.streamFailed = true;
-										log.warn("sink onStreamChunk failed during replay — stream detached", err, {
-											conversation: convId,
-										});
-										break;
-									}
-								}
-							}
+							replayWire(convId, t, live.chunks);
 							claimedIds.add(t.message.id);
 							admittedCount++;
 						} catch (err) {
@@ -2082,72 +1961,6 @@ function endLive(live: LiveChunks, done: TurnDone): void {
 		}
 	}
 	live.subscribers.clear();
-}
-
-// What a completed turn retains: the user burst it answered (everything
-// after the previous assistant message), bounded prior text for
-// reference resolution, and whether the burst is program housekeeping
-// alone (which is never retained — it isn't operator memory). A mixed
-// burst — the scheduler firing while an operator message waits for its
-// turn — keeps the operator's messages and drops the housekeeping text
-// instead.
-interface RetentionSource {
-	userTexts: string[];
-	userIds: string[];
-	priorContext: string;
-	program: boolean;
-}
-
-function retentionSourceFrom(entries: { seq: number; message: UIMessage }[]): RetentionSource {
-	// The burst boundary is causal, not arrival: a message that lands
-	// mid-turn has an arrival seq below the response it interrupted, so
-	// comparing seqs would demote the operator's follow-up to prior
-	// context. Split on the last assistant position in the causally
-	// sorted view instead.
-	let lastAsstIndex = -1;
-	for (let i = 0; i < entries.length; i++) {
-		const m = entries[i]!.message;
-		if (m.role === "assistant" && !isCompactionSummaryId(m.id)) lastAsstIndex = i;
-	}
-	const userTexts: string[] = [];
-	const userIds: string[] = [];
-	const priorParts: string[] = [];
-	let sawProgram = false;
-	for (let i = 0; i < entries.length; i++) {
-		const e = entries[i]!;
-		// The compaction summary rides the model view as a user-role
-		// message — carried context, not operator speech. In a tail with
-		// no assistant reply yet (a failed turn, a just-run /compact) it
-		// would otherwise retain the whole summary blob as something the
-		// operator said.
-		if (isCompactionSummaryId(e.message.id)) continue;
-		if (e.message.role !== "user" && e.message.role !== "assistant") continue;
-		const t = messageText(e.message);
-		if (t === "") continue;
-		if (e.message.role === "user" && i > lastAsstIndex) {
-			// Program fires and delegation notices are housekeeping, not
-			// operator memory — but an operator message in the same burst
-			// is, so housekeeping drops out of the retained set rather
-			// than fencing the whole burst.
-			if (isMachineryText(t)) {
-				sawProgram = true;
-				continue;
-			}
-			userTexts.push(t);
-			userIds.push(e.message.id);
-		} else {
-			priorParts.push(t);
-		}
-	}
-	const priorContext = priorParts.join("\n").slice(-500);
-	return {
-		userTexts,
-		userIds,
-		priorContext,
-		// Retention is skipped only for program-only bursts — once
-		// operator text remains, there is real memory to keep.
-		program: sawProgram && userTexts.length === 0,
-	};
 }
 
 // A burst of user input with no answer between the messages is one

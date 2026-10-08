@@ -9,15 +9,17 @@ import type { UIMessage } from "ai";
 import { z } from "zod";
 import type { AuthStore } from "./auth.ts";
 import type { MemoryConfig } from "./config.ts";
+import type { Conversation } from "./conversation.ts";
 import {
 	HindsightClient,
+	HindsightError,
 	memoryDocumentSchema,
 	type MemoryDocument,
 	type RecalledFact,
 } from "./hindsight.ts";
 import { log } from "./log.ts";
 import { OutageTracker } from "./memory-outage.ts";
-import { isCompactionSummaryId, memoryBlockId } from "./tags.ts";
+import { isCompactionSummaryId, isMachineryText, memoryBlockId } from "./tags.ts";
 import {
 	MemoryQueueWorker,
 	type BlockedRetention,
@@ -190,6 +192,116 @@ export function formatRecallBlock(
 	return lines.join("\n").slice(0, 8000);
 }
 
+// ---------- turn recall ----------
+
+// Everything a memory-enabled turn needs, built once at boot from the
+// boot-time memory config: a config change can never redirect queued
+// personal content mid-run (mini-app memory edits apply on restart).
+export interface MemoryTurnDeps {
+	client: HindsightClient;
+	config: MemoryConfig;
+	contexts: MemoryContexts;
+	// Records the latest recall outcome for /memory status. True =
+	// service answered (results or empty); false = outage. Skips and
+	// cancellations leave it untouched.
+	noteRecall(ok: boolean): void;
+}
+
+// Bounded recall before the turn's model calls. Fail-open: outages
+// persist an "unavailable" block (stable prefix, the model sees the
+// difference from empty); anything unpersistable is left out so the
+// prefix never carries bytes that won't survive a restart. The epoch
+// re-check around the awaits is injected — the authority rule stays
+// the runtime's (design/runtime-turn.md → What must not change).
+export async function recallMemory(options: {
+	conv: Conversation;
+	anchorSeq: number | null;
+	// The memory-bound projection of the admission snapshot (#85).
+	history: UIMessage[];
+	signal: AbortSignal;
+	assertAuthority(): void;
+	memory: MemoryTurnDeps | undefined;
+}): Promise<{ prior: RecallContext[]; current: RecallContext | null }> {
+	const { conv, anchorSeq, history, signal, assertAuthority } = options;
+	const mem = options.memory;
+	if (!mem || anchorSeq === null || conv.memoryExcluded) return { prior: [], current: null };
+	// Local store failures are memory outages too — a corrupt
+	// contexts table must degrade the turn, never fail it.
+	let prior: RecallContext[];
+	try {
+		prior = mem.contexts.load(conv.id);
+	} catch (err) {
+		log.warn("memory contexts unreadable — continuing without prior blocks", err, {
+			conversation: conv.id,
+		});
+		prior = [];
+	}
+	const query = buildRecallQuery(history);
+	if (query === "") {
+		log.debug("memory recall skipped — no text to query", { conversation: conv.id });
+		return { prior, current: null };
+	}
+	try {
+		const facts = await mem.client.recall(query, {
+			signal,
+			maxTokens: mem.config.maxTokens,
+			budget: mem.config.budget,
+		});
+		assertAuthority();
+		const block = formatRecallBlock(facts, facts.length > 0 ? "results" : "empty");
+		const sources = [
+			...new Set(facts.map((f) => f.document_id).filter((d): d is string => typeof d === "string")),
+		].slice(0, 100);
+		const current: RecallContext = { anchorSeq, content: block, sourceIds: sources };
+		try {
+			mem.contexts.save(conv.id, anchorSeq, block, sources);
+		} catch (err) {
+			log.warn("memory recall not persisted — continuing without it", err, {
+				conversation: conv.id,
+			});
+			return { prior, current: null };
+		}
+		mem.noteRecall(true);
+		log.info("memory recall stored", {
+			conversation: conv.id,
+			anchor: anchorSeq,
+			facts: facts.length,
+		});
+		return { prior, current };
+	} catch (err) {
+		assertAuthority();
+		// A /stop during recall owns the outcome via the fence check —
+		// don't mark the service degraded for an operator action.
+		if (err instanceof HindsightError && err.kind === "cancelled") {
+			return { prior, current: null };
+		}
+		if (err instanceof HindsightError) {
+			mem.noteRecall(false);
+			log.warn("memory recall unavailable — proceeding without it", {
+				conversation: conv.id,
+				kind: err.kind,
+				status: err.status ?? null,
+				retryable: err.retryable,
+			});
+			const block = formatRecallBlock(null, "unavailable");
+			const current: RecallContext = { anchorSeq, content: block, sourceIds: [] };
+			try {
+				mem.contexts.save(conv.id, anchorSeq, block, []);
+			} catch (saveErr) {
+				log.warn("memory outage marker not persisted — continuing without it", saveErr, {
+					conversation: conv.id,
+				});
+				return { prior, current: null };
+			}
+			return { prior, current };
+		}
+		log.warn("memory recall failed without a service error — continuing without it", err, {
+			conversation: conv.id,
+		});
+		return { prior, current: null };
+	}
+}
+
 // ---------- retention ----------
 
 const MAX_RETAIN_CHARS = 2000;
@@ -236,6 +348,74 @@ export function buildRetentionDocument(options: {
 		sourceIds,
 	};
 	return memoryDocumentSchema.parse(doc);
+}
+
+// What a completed turn retains: the user burst it answered (everything
+// after the previous assistant message), bounded prior text for
+// reference resolution, and whether the burst is program housekeeping
+// alone (which is never retained — it isn't operator memory). A mixed
+// burst — the scheduler firing while an operator message waits for its
+// turn — keeps the operator's messages and drops the housekeeping text
+// instead.
+export interface RetentionSource {
+	userTexts: string[];
+	userIds: string[];
+	priorContext: string;
+	program: boolean;
+}
+
+export function retentionSourceFrom(
+	entries: { seq: number; message: UIMessage }[],
+): RetentionSource {
+	// The burst boundary is causal, not arrival: a message that lands
+	// mid-turn has an arrival seq below the response it interrupted, so
+	// comparing seqs would demote the operator's follow-up to prior
+	// context. Split on the last assistant position in the causally
+	// sorted view instead.
+	let lastAsstIndex = -1;
+	for (let i = 0; i < entries.length; i++) {
+		const m = entries[i]!.message;
+		if (m.role === "assistant" && !isCompactionSummaryId(m.id)) lastAsstIndex = i;
+	}
+	const userTexts: string[] = [];
+	const userIds: string[] = [];
+	const priorParts: string[] = [];
+	let sawProgram = false;
+	for (let i = 0; i < entries.length; i++) {
+		const e = entries[i]!;
+		// The compaction summary rides the model view as a user-role
+		// message — carried context, not operator speech. In a tail with
+		// no assistant reply yet (a failed turn, a just-run /compact) it
+		// would otherwise retain the whole summary blob as something the
+		// operator said.
+		if (isCompactionSummaryId(e.message.id)) continue;
+		if (e.message.role !== "user" && e.message.role !== "assistant") continue;
+		const t = messageText(e.message);
+		if (t === "") continue;
+		if (e.message.role === "user" && i > lastAsstIndex) {
+			// Program fires and delegation notices are housekeeping, not
+			// operator memory — but an operator message in the same burst
+			// is, so housekeeping drops out of the retained set rather
+			// than fencing the whole burst.
+			if (isMachineryText(t)) {
+				sawProgram = true;
+				continue;
+			}
+			userTexts.push(t);
+			userIds.push(e.message.id);
+		} else {
+			priorParts.push(t);
+		}
+	}
+	const priorContext = priorParts.join("\n").slice(-500);
+	return {
+		userTexts,
+		userIds,
+		priorContext,
+		// Retention is skipped only for program-only bursts — once
+		// operator text remains, there is real memory to keep.
+		program: sawProgram && userTexts.length === 0,
+	};
 }
 
 // ---------- persisted recall contexts + suppressions ----------

@@ -329,8 +329,8 @@ src/
   runtime.ts        per-conversation queue, lane drain, checkAuthority,
                     stop/shutdown, the attempt loop — the turn's phases
                     move to turn/ (W3 target; design/runtime-turn.md)
-  turn/             the turn's phases (planned — W3 target, not yet
-                    extracted; rulings in design/runtime-turn.md)
+  turn/             the turn's phases (W3 extraction in progress,
+                    design/runtime-turn.md)
     state.ts        TurnState: attempt-scoped state + the TurnRecovery
                     whitelist projection
     loop.ts         loop machinery: repeat detector, watchdog cadence,

@@ -409,6 +409,56 @@ describe("mail watcher", () => {
 		expect(h.submitted).toHaveLength(0);
 	});
 
+	// The idle-to-active transitions (#76): a tick whose body has
+	// nothing to await must not wedge the single-flight latch — an
+	// empty, unconfigured, or all-disabled scan completes synchronously,
+	// so naive try/finally cleanup runs before the in-flight assignment
+	// lands and every later tick would return the dead promise.
+	test("a filter created after an empty tick still baselines and fires", async () => {
+		const h = harness();
+		// No programs at boot: the scan body has nothing to await.
+		const w = start(h);
+		await w.tick();
+		const p = mailProgram(h);
+		await w.tick();
+		expect(h.profiles).toBe(1);
+		expect(h.programs.get(p.id)!.mailHistoryId).toBe("100");
+		h.pollImpl = async () => ({ hits: [hit("m1")], historyId: "120" });
+		await w.tick();
+		expect(h.fired).toHaveLength(1);
+		await closeSinks(h);
+	});
+
+	test("mail configured after an unconfigured tick still scans", async () => {
+		const h = harness();
+		const reader = h.reader!;
+		h.reader = null;
+		const w = start(h);
+		await w.tick(); // idle: mail unconfigured at boot
+		h.reader = reader;
+		const p = mailProgram(h);
+		await w.tick();
+		expect(h.profiles).toBe(1);
+		expect(h.programs.get(p.id)!.mailHistoryId).toBe("100");
+	});
+
+	test("a re-enable after an all-disabled tick still scans", async () => {
+		const h = harness();
+		const p = mailProgram(h);
+		h.programs.setMailHistory(p.id, "100", 0);
+		const w = start(h);
+		await w.tick(); // active scan — a poll happens, the latch clears
+		expect(h.polls).toHaveLength(1);
+		h.programs.update(p.id, { enabled: false });
+		await w.tick(); // empty tick: no enabled rows, nothing to await
+		// A re-enable nulls the cursor — the next scan must re-baseline.
+		h.programs.update(p.id, { enabled: true });
+		expect(h.programs.get(p.id)!.mailHistoryId).toBeNull();
+		await w.tick();
+		expect(h.profiles).toBe(1);
+		expect(h.programs.get(p.id)!.mailHistoryId).toBe("100");
+	});
+
 	test("a disable mid-poll consumes the checkpoint without firing a turn", async () => {
 		const h = harness();
 		const p = mailProgram(h);

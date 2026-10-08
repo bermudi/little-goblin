@@ -54,32 +54,37 @@ export function startMailWatcher(deps: MailWatcherDeps, tickMs = TICK_MS): MailW
 
 	const scan = (): Promise<void> => {
 		if (current !== null) return current;
-		current = (async () => {
-			try {
-				const now = deps.now?.() ?? new Date();
-				const gmail = deps.reader();
-				if (gmail === null) {
-					log.debug("mail watcher idle — mail is not configured");
-				} else {
-					for (const program of deps.programs.withMailFilter()) {
-						try {
-							await check(deps, failing, gmail, program, now);
-						} catch (err) {
-							// One bad row must not take the scan down — but
-							// it surfaces as an error line, never a swallow.
-							// (check() handles its own Gmail failures; this
-							// is for store throws and programming errors.)
-							log.error("mail check failed", err, {
-								program: program.id,
-								name: program.name,
-							});
-						}
-					}
+		// Assign the .finally wrapper, not the work promise: a body that
+		// finishes without awaiting (mail unconfigured, or no enabled
+		// filters) would run its cleanup before the assignment lands,
+		// wedging `current` on a resolved promise — every later tick then
+		// returns the dead promise and the watcher silently never scans
+		// again (the delegation watcher's rule).
+		const work = (async () => {
+			const now = deps.now?.() ?? new Date();
+			const gmail = deps.reader();
+			if (gmail === null) {
+				log.debug("mail watcher idle — mail is not configured");
+				return;
+			}
+			for (const program of deps.programs.withMailFilter()) {
+				try {
+					await check(deps, failing, gmail, program, now);
+				} catch (err) {
+					// One bad row must not take the scan down — but
+					// it surfaces as an error line, never a swallow.
+					// (check() handles its own Gmail failures; this
+					// is for store throws and programming errors.)
+					log.error("mail check failed", err, {
+						program: program.id,
+						name: program.name,
+					});
 				}
-			} finally {
-				current = null;
 			}
 		})();
+		current = work.finally(() => {
+			current = null;
+		});
 		return current;
 	};
 	const timer = setInterval(() => {

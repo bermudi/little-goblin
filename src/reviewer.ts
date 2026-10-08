@@ -943,7 +943,22 @@ async function runStagedReview(
 	// writes apply to.
 	const catalog = loadCatalog(stagedSkills);
 	const catalogLines = catalog.entries.map((e) => `- ${e.name} — ${e.description}`);
-	const { ref, model } = await deps.reviewModel(conv);
+	let ref: string;
+	let model: LanguageModel;
+	try {
+		({ ref, model } = await deps.reviewModel(conv));
+	} catch (err) {
+		// The most likely real-world review failure (model resolve/auth)
+		// gets the same containment as a model-call failure: a line that
+		// carries the review id — not an escape to the runtime backstop's
+		// conversation-only line — with staging discarded by runReview's
+		// finally and nothing live touched (#107).
+		log.error("reviewer write discarded — review model resolution failed", err, {
+			review_id: reviewId,
+			conversation: conv,
+		});
+		return;
+	}
 	log.info("reviewer review started", {
 		review_id: reviewId,
 		conversation: conv,

@@ -583,6 +583,32 @@ describe("review run — staging and publication", () => {
 		h.store.close();
 	});
 
+	test("a reviewModel rejection is contained, logged with the review id, staging discarded", async () => {
+		const h = harness();
+		const logFile = join(h.workspace, "goblin.log");
+		setLogFile(logFile);
+		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0.9 } });
+		deps.reviewModel = async () => {
+			throw new Error("review model auth rejected");
+		};
+		// The most likely real-world review failure (model resolve/auth)
+		// must not escape to the runtime backstop's uncorrelatable
+		// {conversation}-only line — it answers to its review id like
+		// every other review line (#107).
+		await considerTurn(deps, turn());
+		expect(readdirSync(h.staging)).toEqual([]);
+		expect(h.notified).toEqual([]);
+		expect(h.store.history(h.convId)).toHaveLength(0);
+		const lines = readFileSync(logFile, "utf8").trim().split("\n");
+		const discarded = lines
+			.map((l) => JSON.parse(l) as Record<string, unknown>)
+			.find((e) => e.msg === "reviewer write discarded — review model resolution failed");
+		expect(discarded).toMatchObject({ conversation: "dm:1" });
+		expect(typeof discarded?.review_id).toBe("string");
+		expect(String(discarded?.error)).toContain("review model auth rejected");
+		h.store.close();
+	});
+
 	test("a write over the byte budget is discarded unvalidated", async () => {
 		const h = harness();
 		const deps = h.depsFor({
@@ -1069,7 +1095,9 @@ describe("review queue", () => {
 			if (resolves === 1) throw new Error("model resolve failed");
 			return inner(conv);
 		};
-		await expect(considerTurn(deps, turn())).rejects.toThrow("model resolve failed");
+		// The rejection is contained now (#107) — it must not escape to
+		// the caller, and the settled review must not hold the queue.
+		await considerTurn(deps, turn());
 		expect(readdirSync(h.staging)).toEqual([]);
 		await considerTurn(deps, turn({ turnSeq: 2 }));
 		expect(resolves).toBe(2);

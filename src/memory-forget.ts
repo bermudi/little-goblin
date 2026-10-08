@@ -5,8 +5,9 @@
 // replace-mode retain accepted remotely finishing after the delete would
 // resurrect the document (unpaused delete), and suppression must exist
 // before anything else could re-enqueue. Fail-loud: Hindsight and store
-// errors propagate; only the settle-budget refusal is an expected
-// outcome (the caller tells the operator to retry).
+// errors propagate; the settle-budget refusal and the unaddressable-
+// destination refusal are the expected outcomes (the caller tells the
+// operator to retry or reconcile).
 //
 // A queue row reading `pending` is not proof its retention was never
 // sent: the worker's submit can be accepted remotely while its
@@ -17,6 +18,16 @@
 // included, before any tracking is dropped or success reported; the
 // durable operation UUID (persisted at enqueue, before any submit) is
 // what makes the reconciliation always possible (#86, #99).
+//
+// The reconciliation is per-destination (#87): rows bind to the
+// endpoint+bank target hash, and that hash is one-way — an operation
+// accepted by a PREVIOUS bank can never be reconciled through the
+// current client (the new bank's bank-scoped 404 reads as settled).
+// Each destination named by the outbox is settled and deleted through
+// its own client — reconstructed from destination history — and the
+// current destination is always deleted. A destination nothing can
+// address refuses the whole forget with every row preserved; old-bank
+// rows are never silently cancelled on a new-bank delete.
 //
 // No conversation fencing here: /forget fences the conversation it was
 // typed in (its own courtesy, kept in commands.ts); the mini app has no
@@ -69,6 +80,11 @@ async function settleInflightRetention(
 
 export interface ForgetSource {
 	client: HindsightInstance;
+	// Reconstruct the client owning a queue target — destination history
+	// (memory-destinations.ts) makes previous banks addressable after a
+	// config change. Optional only so partial wirings compile: without it,
+	// any foreign-target row refuses the forget (never a foreign poll).
+	clientForTarget?: (target: string) => HindsightInstance | null;
 	contexts: MemoryContexts;
 	queue: MemoryQueue;
 	// Quiesce the retention worker around the delete (see
@@ -83,11 +99,14 @@ export interface ForgetSource {
 
 export type ForgetOutcome =
 	| { outcome: "forgotten"; cancelled: number; redacted: number; settledOps: number }
-	| { outcome: "busy"; unsettled: number };
+	| { outcome: "busy"; unsettled: number }
+	| { outcome: "foreign-bank"; target: string };
 
-// Structural view of the client — the forget protocol only needs
-// operation() and deleteDocument(); tests can stub it.
+// Structural view of the client — the forget protocol needs
+// operation(), deleteDocument(), and the target identity rows bind to;
+// tests can stub the rest away.
 export interface HindsightInstance {
+	readonly target: string;
 	operation(operationId: string, signal?: AbortSignal): Promise<MemoryOperation | null>;
 	deleteDocument(documentId: string, signal?: AbortSignal): Promise<void>;
 }
@@ -115,29 +134,67 @@ export async function forgetDocument(
 		// can tell the difference — a pending UUID absent remotely settles
 		// on its first poll, an accepted one waits out like any submitted
 		// operation. The worker pause settled local HTTP work, not remote
-		// async processing; this loop is what covers that gap.
-		const inflight = source.queue.inflightOps(id);
-		const operationIds = inflight.map((op) => op.operationId);
+		// async processing; the settle loop covers that gap.
+		const destinations = source.queue.documentDestinations(id);
+		// Resolve every destination's client BEFORE any settling: an
+		// old-bank row can only be reconciled through the old bank's own
+		// client, and a destination nothing can address must refuse the
+		// whole forget up front — settling some banks first would leave a
+		// half-finished protocol the refusal cannot roll back.
+		const clients = new Map<string, HindsightInstance>();
+		for (const destination of destinations) {
+			if (destination.target === source.client.target) {
+				clients.set(destination.target, source.client);
+				continue;
+			}
+			const foreign = source.clientForTarget?.(destination.target) ?? null;
+			if (foreign === null) {
+				log.warn("forget refused — previous memory bank not addressable", {
+					...fields,
+					target: destination.target,
+				});
+				return { outcome: "foreign-bank", target: destination.target };
+			}
+			clients.set(destination.target, foreign);
+		}
 		let settledOps = 0;
-		if (operationIds.length > 0) {
+		for (const destination of destinations) {
+			if (destination.inflight.length === 0) continue;
+			const operationIds = destination.inflight.map((op) => op.operationId);
 			const startedAt = Date.now();
-			if (!(await settleInflightRetention(source.client, operationIds, source.settleTiming))) {
+			if (
+				!(await settleInflightRetention(
+					clients.get(destination.target)!,
+					operationIds,
+					source.settleTiming,
+				))
+			) {
 				log.warn("forget refused — retention still processing remotely", {
 					...fields,
+					target: destination.target,
 					operations: operationIds.length,
 				});
 				return { outcome: "busy", unsettled: operationIds.length };
 			}
-			settledOps = operationIds.length;
+			settledOps += operationIds.length;
 			log.info("forget settled in-flight retention", {
 				...fields,
+				target: destination.target,
 				operations: operationIds.length,
-				pending: inflight.filter((op) => op.state === "pending").length,
+				pending: destination.inflight.filter((op) => op.state === "pending").length,
 				waitedMs: Date.now() - startedAt,
 			});
 		}
 		source.contexts.suppress(id);
 		const cancelled = source.queue.cancelDocument(id);
+		// Delete through every destination the outbox names — a completed
+		// or blocked row means its bank may hold the document — plus the
+		// current one (the browsing surface's view; harmless when absent:
+		// a 404 delete reads as success).
+		for (const destination of destinations) {
+			if (destination.target === source.client.target) continue;
+			await clients.get(destination.target)!.deleteDocument(id);
+		}
 		await source.client.deleteDocument(id);
 		const redacted = source.contexts.deleteByDocument(id);
 		log.info("memory forgotten", {
@@ -145,6 +202,7 @@ export async function forgetDocument(
 			cancelled,
 			redacted,
 			settledOps,
+			destinations: clients.size,
 			prefixReset: true,
 		});
 		return { outcome: "forgotten", cancelled, redacted, settledOps };

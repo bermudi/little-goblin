@@ -48,7 +48,12 @@ import { makeGwsReader } from "./mail-gws.ts";
 import { openOutbox } from "./mail-outbox.ts";
 import { startMailWatcher } from "./mail-watcher.ts";
 import { openPrograms } from "./programs.ts";
-import { buildMemoryClient, startMemoryWorker, type MemoryWorker } from "./memory.ts";
+import {
+	buildDestinationClient,
+	buildMemoryClient,
+	startMemoryWorker,
+	type MemoryWorker,
+} from "./memory.ts";
 import { JevClient } from "./jev.ts";
 import { cleanupStaging } from "./reviewer.ts";
 import { OutageTracker } from "./memory-outage.ts";
@@ -275,6 +280,12 @@ async function boot() {
 		memoryState.lastRecallAt = new Date().toISOString();
 	};
 	if (memoryClient && memoryBootConfig) {
+		// Destination history (#87): the outbox binds rows to the endpoint+bank
+		// hash, which is one-way — recording each boot's destination lets
+		// /forget reconstruct the owning client after a later change instead
+		// of polling a foreign bank. Auth stores the key NAME; tokens still
+		// resolve lazily through auth.jsonl at client construction.
+		store.memoryDestinations.record(memoryBootConfig);
 		log.info("memory enabled", {
 			baseUrl: memoryBootConfig.baseUrl,
 			bank: memoryBootConfig.bankId,
@@ -532,6 +543,12 @@ async function boot() {
 			? {
 					memory: {
 						client: memoryClient,
+						// Destination history reconstruction (#87): a previous bank's
+						// rows settle and delete through their own client.
+						clientForTarget: (target: string) => {
+							const destination = store.memoryDestinations.get(target);
+							return destination === null ? null : buildDestinationClient(destination, auth);
+						},
 						contexts: store.memoryContexts,
 						queue: store.memoryQueue,
 						withWorkerPaused: <T>(fn: () => Promise<T>): Promise<T> => {
@@ -834,6 +851,13 @@ async function boot() {
 						// retention-worker quiesce (holder read lazily; the worker
 						// is assigned before the first request can arrive).
 						client: memoryClient,
+						// Destination history reconstruction (#87), same seam as the
+						// command surface: a previous bank's rows settle and delete
+						// through their own client.
+						clientForTarget: (target: string) => {
+							const destination = store.memoryDestinations.get(target);
+							return destination === null ? null : buildDestinationClient(destination, auth);
+						},
 						contexts: store.memoryContexts,
 						queue: store.memoryQueue,
 						withWorkerPaused: <T>(fn: () => Promise<T>): Promise<T> => {

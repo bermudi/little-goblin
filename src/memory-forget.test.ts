@@ -10,9 +10,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AuthStore } from "./auth.ts";
 import { openStore, type ConversationStore } from "./conversation.ts";
 import { HindsightClient, type MemoryDocument, type MemoryOperation } from "./hindsight.ts";
-import { forgetDocument, type HindsightInstance } from "./memory-forget.ts";
+import { buildDestinationClient } from "./memory.ts";
+import { forgetDocument, type ForgetSource, type HindsightInstance } from "./memory-forget.ts";
 import { MemoryQueueWorker } from "./memory-queue.ts";
 
 const documentId = "exchange/dm:1/1/a";
@@ -44,8 +46,12 @@ function storeAt(): ConversationStore {
 
 // A scripted remote: operation() walks the statuses in order (last one
 // sticks), null models an operation absent remotely; the delete records
-// itself so tests can pin request ordering.
-function fakeRemote(statuses: (MemoryOperation["status"] | null)[]): {
+// itself so tests can pin request ordering. `of` names the target the
+// stub answers for (rows must be enqueued against the same one).
+function fakeRemote(
+	statuses: (MemoryOperation["status"] | null)[],
+	of: string = target,
+): {
 	instance: HindsightInstance;
 	polled: string[];
 	deleted: string[];
@@ -57,6 +63,7 @@ function fakeRemote(statuses: (MemoryOperation["status"] | null)[]): {
 		polled,
 		deleted,
 		instance: {
+			target: of,
 			async operation(operationId: string) {
 				polled.push(operationId);
 				const status = statuses[Math.min(step++, statuses.length - 1)] ?? null;
@@ -186,5 +193,153 @@ describe("forget reconciles uncertain pending retention", () => {
 		expect(remote.polled).toEqual([operationId]);
 		expect(remote.deleted).toEqual([documentId]);
 		expect(store.memoryQueue.get(operationId)).toBeNull();
+	});
+});
+
+// #87: the destination-change case. Queue rows bind to the endpoint+bank
+// target hash, and that hash is one-way — an operation accepted by a
+// PREVIOUS bank can never be reconciled through the current client: the
+// new bank's bank-scoped 404 reads as "settled", the old rows get
+// cancelled, the delete lands only in the new bank, and the old bank
+// keeps both the document and its live retention while forget reports
+// success. Forgetting must settle each destination's in-flight
+// operations and delete the document through the owning destination.
+describe("forget after a memory destination change", () => {
+	// No recorded destination exercises an auth path — destinations here
+	// carry no key; a resolution attempt means a wiring bug.
+	const auth: AuthStore = {
+		resolve: () => Promise.reject(new Error("unexpected auth resolution")),
+		has: () => false,
+		names: () => [],
+	};
+	// Two loopback banks. The old bank accepts the retain under the
+	// persisted UUID but its acknowledgement degrades to a 503 (the #86
+	// premise), so the row reads pending while the operation runs remotely
+	// against the OLD bank. Each modeled boot records its destination —
+	// production sequencing (index.ts) — and the restart is modeled by
+	// forgetting through a client pointed at the NEW bank whose
+	// clientForTarget reconstructs the old bank from that history.
+	function twoBanks(): {
+		store: ConversationStore;
+		oldClient: HindsightClient;
+		newClient: HindsightClient;
+		oldEvents: string[];
+		newEvents: string[];
+	} {
+		const store = storeAt();
+		const oldEvents: string[] = [];
+		const newEvents: string[] = [];
+		const oldServer = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: (request) => {
+				const path = new URL(request.url).pathname;
+				if (request.method === "POST" && path.endsWith("/memories")) {
+					oldEvents.push("accepted"); // the retain landed; only the ack degrades
+					return new Response("try later", { status: 503 });
+				}
+				if (path.includes("/operations/")) {
+					const polls = oldEvents.filter((e) => e === "old-poll").length;
+					oldEvents.push("old-poll");
+					return new Response(
+						JSON.stringify({
+							operation_id: path.split("/").pop(),
+							status: polls >= 1 ? "completed" : "processing",
+						}),
+					);
+				}
+				if (request.method === "DELETE") {
+					oldEvents.push("old-delete");
+					return Response.json({ success: true, document_id: documentId });
+				}
+				return Response.json({ results: [] });
+			},
+		});
+		const newServer = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: (request) => {
+				const path = new URL(request.url).pathname;
+				newEvents.push(`${request.method} ${path}`);
+				if (request.method === "DELETE") {
+					return Response.json({ success: true, document_id: documentId });
+				}
+				// Bank-scoped: the old bank's operation id is unknown here.
+				return new Response(null, { status: 404 });
+			},
+		});
+		servers.push(oldServer, newServer);
+		const oldClient = new HindsightClient({
+			baseUrl: `http://127.0.0.1:${oldServer.port}`,
+			bankId: "old",
+		});
+		const newClient = new HindsightClient({
+			baseUrl: `http://127.0.0.1:${newServer.port}`,
+			bankId: "new",
+		});
+		// Boot 1 ran the old bank; boot 2 (the restart) runs the new one.
+		store.memoryDestinations.record({
+			baseUrl: `http://127.0.0.1:${oldServer.port}`,
+			bankId: "old",
+		});
+		store.memoryDestinations.record({
+			baseUrl: `http://127.0.0.1:${newServer.port}`,
+			bankId: "new",
+		});
+		return { store, oldClient, newClient, oldEvents, newEvents };
+	}
+
+	test("settles and deletes through the owning bank, never polls the new bank for old ops", async () => {
+		const { store, oldClient, newClient, oldEvents, newEvents } = twoBanks();
+		const operationId = store.memoryQueue.enqueue(oldClient.target, doc);
+		await new MemoryQueueWorker(store.memoryQueue, oldClient).tick();
+		expect(store.memoryQueue.get(operationId)?.state).toBe("pending");
+
+		// The restart: forget runs through the new bank's client and
+		// reconstructs the old bank's from destination history — the
+		// production clientForTarget wiring from index.ts.
+		const source: ForgetSource = {
+			...sourceOf(newClient, store),
+			clientForTarget: (t) => {
+				const destination = store.memoryDestinations.get(t);
+				return destination === null ? null : buildDestinationClient(destination, auth);
+			},
+		};
+		const result = await forgetDocument(source, documentId, { channel: "telegram" });
+		expect(result).toEqual({ outcome: "forgotten", cancelled: 1, redacted: 0, settledOps: 1 });
+		// The owning bank reconciled its own operation: polls, then the
+		// delete after the last one — no resurrect window.
+		expect(oldEvents[0]).toBe("accepted");
+		expect(oldEvents.filter((e) => e === "old-poll").length).toBeGreaterThanOrEqual(2);
+		expect(oldEvents.lastIndexOf("old-delete")).toBeGreaterThan(oldEvents.lastIndexOf("old-poll"));
+		// The new bank saw exactly its own document delete — never an
+		// operation poll for the old bank's UUID. (Ids are percent-encoded
+		// in the wire path, as the client's encodeURIComponent does.)
+		expect(newEvents).toEqual([
+			`DELETE /v1/default/banks/new/documents/${encodeURIComponent(documentId)}`,
+		]);
+		expect(store.memoryQueue.get(operationId)).toBeNull();
+		expect(store.memoryContexts.isSuppressed(documentId)).toBe(true);
+	});
+
+	test("an old bank no longer addressable refuses and preserves its tracking", async () => {
+		const { store, oldClient, newClient, oldEvents, newEvents } = twoBanks();
+		const operationId = store.memoryQueue.enqueue(oldClient.target, doc);
+		await new MemoryQueueWorker(store.memoryQueue, oldClient).tick();
+
+		// Destination history cannot reconstruct that target — rows that
+		// predate the table are exactly this case — so forget must refuse
+		// rather than poll the new bank and drop the old rows on a
+		// foreign delete.
+		const source: ForgetSource = {
+			...sourceOf(newClient, store),
+			clientForTarget: () => null,
+		};
+		const result = await forgetDocument(source, documentId, { channel: "mini-app" });
+		expect(result).toEqual({ outcome: "foreign-bank", target: oldClient.target });
+		expect(oldEvents).toEqual(["accepted"]); // nothing reconciled, nothing deleted
+		expect(newEvents).toEqual([]);
+		expect(store.memoryQueue.get(operationId)?.state).toBe("pending");
+		expect(store.memoryContexts.isSuppressed(documentId)).toBe(false);
 	});
 });

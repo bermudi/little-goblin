@@ -43,6 +43,25 @@ export function buildMemoryClient(
 	});
 }
 
+// Rebuild the client for a destination the outbox still holds rows
+// against — forget's cross-bank reconciliation path (design/memory.md,
+// forgetting amendment: settle and delete through the owning
+// destination). The connection re-validates through HindsightClient's
+// own schema; auth resolves through the same lazy auth.jsonl mechanism
+// as boot. No per-destination timeout is recorded — the client's own
+// default applies (this is bookkeeping, not turn recall).
+export function buildDestinationClient(
+	destination: { baseUrl: string; bankId: string; auth: string | null },
+	auth: AuthStore,
+): HindsightClient {
+	const authName = destination.auth;
+	return new HindsightClient({
+		baseUrl: destination.baseUrl,
+		bankId: destination.bankId,
+		...(authName !== null ? { auth: () => auth.resolve(authName) } : {}),
+	});
+}
+
 // ---------- text extraction ----------
 
 // Only fresh text evidence: no attachments, no tool output, no reasoning,

@@ -12,6 +12,11 @@ export const identifier = z
 	.min(1)
 	.max(256)
 	.refine((value) => value !== "." && value !== "..");
+// The outbox's destination identity: sha256 over the normalized
+// endpoint+bank pair. One-way on purpose — it names a destination
+// without carrying connection details — which is why destination
+// history (memory-destinations.ts) exists to map it back.
+export const targetHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const baseUrlSchema = z.url().superRefine((value, ctx) => {
 	let url: URL;
 	try {
@@ -195,6 +200,15 @@ async function readJson(response: Response): Promise<unknown> {
 	}
 }
 
+// The destination identity every queue row and destination-history
+// record carries. Normalized exactly like the constructor's base URL so
+// a recorded destination and a live client always agree on the hash.
+export function hindsightTarget(baseUrl: string, bankId: string): string {
+	return createHash("sha256")
+		.update(JSON.stringify([new URL(baseUrl).href.replace(/\/+$/, ""), bankId]))
+		.digest("hex");
+}
+
 export class HindsightClient {
 	readonly target: string;
 	private readonly base: string;
@@ -212,11 +226,7 @@ export class HindsightClient {
 		// Validation errors must not echo credentials accidentally supplied in a URL.
 		if (!parsed.success) throw new Error("Invalid Hindsight connection configuration");
 		this.base = `${parsed.data.baseUrl.replace(/\/+$/, "")}/v1/default/banks/${encodeURIComponent(parsed.data.bankId)}`;
-		this.target = createHash("sha256")
-			.update(
-				JSON.stringify([new URL(parsed.data.baseUrl).href.replace(/\/+$/, ""), parsed.data.bankId]),
-			)
-			.digest("hex");
+		this.target = hindsightTarget(parsed.data.baseUrl, parsed.data.bankId);
 		this.bankId = parsed.data.bankId;
 		this.timeoutMs = parsed.data.timeoutMs;
 		this.auth = options.auth;

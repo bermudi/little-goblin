@@ -113,6 +113,23 @@ No MCP, replacement turn loop, or generic multi-backend framework.
    affected recall snapshots (global prefix reset, logged). Suppression
    lives in SQLite and is checked before every enqueue, so restarts and
    future backfills cannot resurrect forgotten sources.
+   Amendment (2026-10-08, #87): forgetting is destination-aware. The
+   outbox binds rows to the endpoint+bank target hash, and that hash is
+   one-way — after a destination change, the bank that owns a row could
+   not be addressed again, so `/forget delete` polled old-bank UUIDs
+   against the new bank (a bank-scoped 404 reads as settled), cancelled
+   the old rows, deleted only in the new bank, and reported forgotten
+   while the old bank kept the document and its live retention. Every
+   boot now records its destination (baseUrl, bank, auth key name —
+   never a token) in `memory_destinations` keyed by the target hash;
+   the protocol settles each destination's in-flight operations and
+   deletes the document through every destination the outbox names,
+   plus the current one. A destination the history cannot reconstruct
+   (rows predating the table) refuses the forget outright with all
+   tracking preserved — old-bank rows are never silently cancelled on
+   a new-bank delete. Suppression stays bank-agnostic. Pending rows
+   against a previous bank still never drain through the current worker
+   (the binding rule above); forgetting is their reconciliation path.
 8. **Memories browser: the mini app grows a Memories tab (operator ask,
    2026-09-30).** The settings page restructures to two tabs — Settings
    (the six config sections one level deep behind an index; settings

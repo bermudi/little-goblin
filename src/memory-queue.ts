@@ -7,11 +7,14 @@ import {
 	HindsightClient,
 	HindsightError,
 	memoryDocumentSchema,
+	targetHashSchema,
 	type MemoryDocument,
 } from "./hindsight.ts";
 import { log } from "./log.ts";
 
-const targetSchema = z.string().regex(/^[a-f0-9]{64}$/);
+// The destination-identity vocabulary lives in hindsight.ts; this local
+// alias keeps the queue's validation reads the same as before.
+const targetSchema = targetHashSchema;
 export interface MemoryQueueCounts {
 	pending: number;
 	submitted: number;
@@ -162,27 +165,46 @@ export class MemoryQueue {
 		});
 	}
 
-	// In-flight retention for one document, across every target —
-	// every row whose operation may still matter remotely. Pending is
-	// NOT proof of never-sent: a submit can be accepted remotely while
-	// its acknowledgement degrades (a retryable failure leaves the row
-	// pending), and a crash between acceptance and the submitted-state
-	// write does the same. Callers reconcile both states through to
-	// terminal — /forget settles them before deleting, or a
-	// replace-mode retain finishing after the delete re-creates the
-	// document with its local row already gone (DESIGN.md: serialize
-	// against in-flight writes before deleting).
-	inflightOps(documentId: string): { operationId: string; state: "pending" | "submitted" }[] {
+	// Forgetting's per-destination map: every target holding a row for
+	// this document, with that target's in-flight operations. A queue
+	// row reading `pending` is NOT proof its retention was never sent: a
+	// submit can be accepted remotely while its acknowledgement degrades
+	// (a retryable failure leaves the row pending), and a crash between
+	// acceptance and the submitted-state write does the same — callers
+	// reconcile both states through to terminal. Terminal rows
+	// (completed/blocked/dismissed) keep their target listed with an empty
+	// inflight list: all three mean the destination may hold the document,
+	// so forget must delete there too — through the owning destination,
+	// never a foreign one (#87). First-seen rowid order for determinism.
+	documentDestinations(documentId: string): {
+		target: string;
+		inflight: { operationId: string; state: "pending" | "submitted" }[];
+	}[] {
 		const state = z.enum(["pending", "submitted"]);
 		const rows = this.db
-			.query<{ operation_id: string; state: string }, [string]>(
-				`SELECT operation_id, state FROM memory_outbox WHERE document_id = ? AND state IN ('pending', 'submitted')`,
+			.query<{ target: string; operation_id: string; state: string }, [string]>(
+				`SELECT target, operation_id, state FROM memory_outbox WHERE document_id = ? ORDER BY rowid`,
 			)
 			.all(documentId);
-		return rows.map((row) => ({
-			operationId: z.uuid().parse(row.operation_id),
-			state: state.parse(row.state),
-		}));
+		const byTarget = new Map<
+			string,
+			{ target: string; inflight: { operationId: string; state: "pending" | "submitted" }[] }
+		>();
+		for (const row of rows) {
+			const target = targetSchema.parse(row.target);
+			let entry = byTarget.get(target);
+			if (entry === undefined) {
+				entry = { target, inflight: [] };
+				byTarget.set(target, entry);
+			}
+			if (row.state === "pending" || row.state === "submitted") {
+				entry.inflight.push({
+					operationId: z.uuid().parse(row.operation_id),
+					state: state.parse(row.state),
+				});
+			}
+		}
+		return [...byTarget.values()];
 	}
 
 	// Forgetting cancels pending ingestion across all targets — a config

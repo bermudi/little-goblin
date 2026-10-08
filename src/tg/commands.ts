@@ -20,6 +20,10 @@ import { ForgetListings, renderNumberedListing, type ForgetItem } from "./forget
 
 export interface CommandMemoryDeps {
 	client: HindsightClient;
+	// Reconstruct the client owning a queue target — destination history
+	// for previous banks after a config change (#87); wired from index.ts.
+	// Absent = foreign-target forgetting refuses (never a foreign poll).
+	clientForTarget?: (target: string) => HindsightClient | null;
 	contexts: MemoryContexts;
 	queue: MemoryQueue;
 	// Quiesce the retention worker around /forget delete (see
@@ -352,6 +356,14 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 								deps,
 								conv,
 								"memory for that document is still processing remotely — try /forget delete again in a minute",
+							);
+							return;
+						}
+						if (result.outcome === "foreign-bank") {
+							reply(
+								deps,
+								conv,
+								"that document has memory work bound to a previous memory bank that can't be reached from here — nothing was forgotten; point memory back at that bank (restart) and retry",
 							);
 							return;
 						}

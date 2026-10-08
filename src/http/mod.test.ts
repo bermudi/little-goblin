@@ -945,7 +945,7 @@ describe("mini-app memories browser", () => {
 			},
 		} as unknown as MemoryContexts;
 		const queue = {
-			inflightOps: () => [],
+			documentDestinations: () => [],
 			cancelDocument: (id: string) => {
 				cancelled.push(`cancel:${id}`);
 				return 1;

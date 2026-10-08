@@ -80,6 +80,8 @@ export interface HttpDeps {
 		lastRecallAt(): string | null;
 		/** Memories browser: read Hindsight through goblin's own client. */
 		client?: HindsightClient;
+		/** Forgetting: reconstruct a previous bank's client from destination history (#87). */
+		clientForTarget?: (target: string) => HindsightClient | null;
 		/** Forgetting: suppression + recall-snapshot redaction. */
 		contexts?: MemoryContexts;
 		/** Forgetting: cancel queued retention rows for a document. */
@@ -329,6 +331,7 @@ function forgetGate(
 		client: mem.client,
 		source: {
 			client: mem.client,
+			...(mem.clientForTarget ? { clientForTarget: mem.clientForTarget } : {}),
 			contexts: mem.contexts,
 			queue: mem.queue,
 			withWorkerPaused: mem.withWorkerPaused,
@@ -780,6 +783,21 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 						return Response.json(
 							{
 								error: "memory for that document is still processing remotely — retry in a minute",
+							},
+							{ status: 409, headers: NO_STORE },
+						);
+					}
+					if (result.outcome === "foreign-bank") {
+						log.warn("memory forget via mini app refused — previous bank not addressable", {
+							userId: user.id,
+							document: id,
+							target: result.target,
+							ms: Date.now() - started,
+						});
+						return Response.json(
+							{
+								error:
+									"that document has memory work bound to a previous memory bank that can't be reached — nothing was changed; point memory back at that bank (restart) and retry",
 							},
 							{ status: 409, headers: NO_STORE },
 						);

@@ -12,6 +12,7 @@ import { z } from "zod";
 import { log } from "./log.ts";
 import { splitModelRef, thinkingLevels, type Config, type ThinkingLevel } from "./config.ts";
 import { MemoryContexts, type MemoryEligibility, messageText } from "./memory.ts";
+import { MemoryDestinations } from "./memory-destinations.ts";
 import { MemoryQueue } from "./memory-queue.ts";
 import { compactionSummaryId, corruptRowId } from "./tags.ts";
 import type { MemoryDocument } from "./hindsight.ts";
@@ -251,11 +252,14 @@ export interface Compaction {
 export type CompactionWrite = Omit<Compaction, "summaryEligible">;
 
 export interface ConversationStore {
-	// The shared handle — memory-queue, memory-contexts, and the outage
-	// tracker each own one table in the same database file.
+	// The shared handle — memory-queue, memory-contexts, memory-destinations,
+	// and the outage tracker each own one table in the same database file.
 	readonly db: Database;
 	readonly memoryQueue: MemoryQueue;
 	readonly memoryContexts: MemoryContexts;
+	// Destination history: boot records the live endpoint+bank so forget
+	// can reconstruct a previous bank's client (#87).
+	readonly memoryDestinations: MemoryDestinations;
 	// The active compaction pointer (latest row) — null = uncompacted.
 	// The compactions table itself is append-only audit; only the newest
 	// row per conversation steers the model view.
@@ -728,6 +732,7 @@ export function openStore(dbPath: string): ConversationStore {
 
 	const memoryQueue = new MemoryQueue(db);
 	const memoryContexts = new MemoryContexts(db);
+	const memoryDestinations = new MemoryDestinations(db);
 	// Compaction pointers — append-only audit; the newest row per
 	// conversation is the active boundary (DESIGN.md, Compaction).
 	// summary_eligible carries the folded span's memory eligibility: a
@@ -1066,6 +1071,7 @@ export function openStore(dbPath: string): ConversationStore {
 		db,
 		memoryQueue,
 		memoryContexts,
+		memoryDestinations,
 
 		getCompaction(id) {
 			const row = qCompaction.get(id);

@@ -14,7 +14,14 @@
 // operator wrote, and a file we can't extend safely fails the
 // launch loudly rather than corrupt it.
 
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readFileSync,
+	readlinkSync,
+	realpathSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { durableWriteFile } from "./durable.ts";
 
@@ -35,14 +42,28 @@ export function seedHarnessTrust(kind: string, cwd: string, homeDir: string): st
 
 // The settings file may be a symlink (stitch-managed dots); writing
 // through the symlink path replaces it with a regular file and forks
-// the config. Resolve to the managed target first — a missing file
-// resolves to itself and is created at the given path.
+// the config — tmp+rename over the link is exactly that. Resolve to
+// the managed target first. lstat, never stat: a dangling link is
+// still a link and must fail the launch loudly with its target named,
+// not count as an absent path a write may quietly create at the link
+// path (#97 — the same discipline as paths.ts's writeThroughTarget;
+// design/delegation.md's "never replace the link" ruling).
 function managedPath(path: string): string {
+	try {
+		if (!lstatSync(path).isSymbolicLink()) return path;
+	} catch (err) {
+		// A plainly missing file is created at the given path.
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return path;
+		throw err;
+	}
 	try {
 		return realpathSync(path);
 	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code === "ENOENT") return path;
-		throw err;
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+		throw new Error(
+			`${path} is a dangling symlink (→ ${readlinkSync(path)}) — repair or remove the ` +
+				"link before delegating; refusing to replace it",
+		);
 	}
 }
 

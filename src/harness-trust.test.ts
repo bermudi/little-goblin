@@ -104,6 +104,20 @@ describe("claude", () => {
 		expect(doc.machineID).toBe("m");
 		expect(doc.bypassPermissionsModeAccepted).toBe(true);
 	});
+
+	test("a dangling .claude.json refuses the launch and the link survives", () => {
+		const h = home();
+		const link = join(h, ".claude.json");
+		// Stitch shape: the link points into a dots checkout that hasn't
+		// landed this file yet — realpath ENOENTs, existsSync reads false.
+		symlinkSync(join(h, "dots", "claude.json"), link);
+		expect(() => seedHarnessTrust("claude", "/w", h)).toThrow(/dangling symlink/);
+		// The launch failed loudly, the link is still a link, and the
+		// target was not quietly created — the dots store keeps its
+		// authority once the file appears there.
+		expect(lstatSync(link).isSymbolicLink()).toBe(true);
+		expect(existsSync(join(h, "dots", "claude.json"))).toBe(false);
+	});
 });
 
 describe("codex", () => {
@@ -247,6 +261,20 @@ describe("codex", () => {
 		expect(lstatSync(link).isSymbolicLink()).toBe(true);
 		expect(readFileSync(target, "utf8").startsWith(original)).toBe(true);
 		expect(codexTrust(h, "/work/task")).toBe("trusted");
+	});
+
+	test("a dangling config.toml refuses the launch and the link survives", () => {
+		const h = home();
+		mkdirSync(join(h, ".codex"), { recursive: true });
+		const link = join(h, ".codex", "config.toml");
+		// Relative target, also dangling — existsSync reads false, and
+		// the error must name where the link points.
+		symlinkSync("../dots/codex.toml", link);
+		expect(() => seedHarnessTrust("codex", "/work/task", h)).toThrow(
+			/dangling symlink.*\.\.\/dots\/codex\.toml/,
+		);
+		expect(lstatSync(link).isSymbolicLink()).toBe(true);
+		expect(existsSync(join(h, "dots", "codex.toml"))).toBe(false);
 	});
 });
 

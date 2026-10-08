@@ -1,6 +1,4 @@
-// goblin.json5 — the only config file. Providers, models, defaults.
-// No secrets here; those live in auth.jsonl. The mini app is the
-// operator-facing editing surface; hand-editing always works.
+// goblin.json5 — the one config file; no secrets (those live in auth.jsonl).
 
 import {
 	closeSync,
@@ -59,10 +57,9 @@ export function ensureHomeLayout(): void {
 		paths.attachments(),
 		paths.state(),
 	]) {
-		// A WAL/FULL inbox commit cannot protect a database or attachment
-		// inside a directory whose name vanishes on first-boot power loss.
-		// Create missing ancestors from the oldest down and sync each
-		// parent after publishing its child's directory entry.
+		// Missing ancestors are created oldest-first, each parent fsynced:
+		// a WAL commit can't protect a file inside a directory that
+		// vanishes on first-boot power loss.
 		const missing: string[] = [];
 		for (let next = dir; ; next = dirname(next)) {
 			try {
@@ -117,12 +114,7 @@ export function ensureHomeLayout(): void {
 			"",
 		].join("\n"),
 	);
-	// Repo-shipped skills (DESIGN.md, "Web access" and "Auth → Proton
-	// Pass"): their compatibility lines carry the dependency + recovery
-	// command into the system prompt's catalog, and a rebuilt box
-	// regains the whole capability — stub, modes, recovery — without
-	// operator prompting or agent memory. Write-if-absent: once seeded,
-	// each workspace copy is goblin's to evolve.
+	// Repo-shipped skills: a rebuilt box regains the capability without prompting.
 	for (const skill of ["browser", "pass-cli", "mcp", "gws"]) {
 		mkdirSync(join(paths.skills(), skill), { recursive: true });
 		const template = readFileSync(
@@ -131,12 +123,8 @@ export function ensureHomeLayout(): void {
 		);
 		seedFile(join(paths.skills(), skill, "SKILL.md"), template);
 	}
-	// Goblin's own MCP servers (DESIGN.md, "Web access" → "MCP"): the
-	// server set is config, not code, so a fresh home starts empty. The
-	// seed carries `"imports": []` — without it mcporter merges the
-	// operator's editor servers, and the call-time gate refuses anything
-	// else. Write-if-absent like the skills: the operator's (and
-	// goblin's) server set is never clobbered.
+	// The seed's `"imports": []` is load-bearing: without it mcporter
+	// merges the operator's editor servers.
 	seedFile(
 		paths.mcporter(),
 		[
@@ -175,24 +163,17 @@ export function ensureHomeLayout(): void {
 	);
 }
 
-// First-boot scaffolding: create if (and only if) absent — an operator's
-// hand or the agent's own edits are never clobbered. The AGENTS.md stub
-// exists because a standing instruction ("you own AGENTS.md") is not a
-// mechanism: a model edits a file it can see in its prompt head every
-// turn, but won't create one out of nothing — the stub carries the
-// growth rule where it's read every turn.
+// First-boot scaffolding: create iff absent — operator and agent edits
+// are never clobbered. Stubs, not just standing instructions: a model
+// edits a file in its prompt head but won't create one out of nothing.
 function seedFile(path: string, content: string): void {
 	if (existsSync(path)) return;
 	durableWriteFile(path, content, 0o644);
 }
 
-// The `mcp` entry point (DESIGN.md, "Web access" → "MCP"): goblin's bash
-// runs in the workspace, which can't see the repo — so scripts/mcp is
-// reachable as $GOBLIN_HOME/mcp. A symlink, not a copy, so repo updates
-// propagate: repointed every boot when it already is a link (a repo move
-// heals itself), never clobbering a real file — that refuses loud and
-// leaves boot running, since the skill without its shim is a degraded
-// capability, not a crash loop.
+// Workspace bash can't see the repo, so the `mcp` skill's entry point is
+// a symlink — repo updates propagate, repointed every boot. A real file
+// in the way refuses loud: a missing shim is degraded, not fatal.
 function refreshMcpShim(): void {
 	const shim = paths.mcpShim();
 	const target = join(import.meta.dir, "..", "scripts", "mcp");
@@ -216,13 +197,8 @@ function refreshMcpShim(): void {
 	}
 }
 
-// The `goblin-mail` entry point (the sanctioned mail-read path —
-// Gmail reads fenced and injection-checked): goblin's bash runs in
-// the workspace, which can't see the repo — so scripts/goblin-mail is
-// reachable as $GOBLIN_HOME/goblin-mail. Same contract as the mcp
-// shim: a symlink so repo updates propagate, repointed every boot,
-// never clobbering a real file — a refusal logs loud and leaves boot
-// running, since the skill without its shim is degraded, not fatal.
+// The `goblin-mail` skill's entry point — same symlink-not-copy contract
+// as the mcp shim above.
 function refreshGoblinMailShim(): void {
 	const shim = paths.goblinMailShim();
 	const target = join(import.meta.dir, "..", "scripts", "goblin-mail");
@@ -250,12 +226,9 @@ function refreshGoblinMailShim(): void {
 
 // ---------- schema ----------
 
-// The kinds the mini app's provider form may offer, in schema order.
-// Single source: the schema literals below are what actually parses —
-// config.test.ts pins this array against them in both directions
-// (schema-only kind → settings UI can't render/save it; array-only
-// kind → the UI offers what the config rejects). The config GET
-// serves it to the page (http/mod.ts, ConfigResponse).
+// Single source: config.test.ts pins this array against the schema
+// literals below in both directions — schema-only kind → the settings UI
+// can't offer it; array-only kind → the UI offers what the config rejects.
 export const providerKinds = ["openai-compatible", "responses", "openrouter", "codex"] as const;
 
 export const providerSchema = z.discriminatedUnion("kind", [
@@ -264,11 +237,8 @@ export const providerSchema = z.discriminatedUnion("kind", [
 		baseUrl: z.url(),
 		auth: z.string().min(1),
 	}),
-	// OpenAI Responses protocol — the one chat-family protocol whose
-	// tool outputs carry documents (function_call_output content arrays).
-	// z.ai serves it at https://api.z.ai/api/v1 (devpack endpoint table);
-	// probe-verified 2026-09-27: input_file in user messages AND in tool
-	// outputs both parse (glm-5.3-flash read a marker PDF through each).
+	// OpenAI Responses protocol — the one chat-family protocol whose tool
+	// outputs carry documents (function_call_output content arrays).
 	z.object({
 		kind: z.literal("responses"),
 		baseUrl: z.url(),
@@ -289,11 +259,8 @@ export const providerSchema = z.discriminatedUnion("kind", [
 export const thinkingLevels = ["off", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = (typeof thinkingLevels)[number];
 
-// Optional long-term memory (DESIGN.md, Slice 2 rulings). Absent =
-// disabled, exact current behavior. baseUrl/bankId reuse the Hindsight
-// connection validation as the single source; auth names an auth.jsonl
-// secret for the Bearer token (loopback needs none). Recall bounds are
-// tight by default — turns must not wait on memory.
+// Optional long-term memory. auth names an auth.jsonl record (loopback
+// needs none); recall bounds are tight — turns must not wait on memory.
 export const memoryConfigSchema = z.object({
 	baseUrl: hindsightConnectionSchema.shape.baseUrl,
 	bankId: hindsightConnectionSchema.shape.bankId,
@@ -304,14 +271,9 @@ export const memoryConfigSchema = z.object({
 });
 export type MemoryConfig = z.infer<typeof memoryConfigSchema>;
 
-// Image Q&A (DESIGN.md, Tools → Vision) — absent = no vision tool.
-// `model` is a "<provider>/<model-id>" chat ref resolved through the
-// same registry as the daily driver (auth rides the provider's own
-// auth.jsonl ref, never this block). mode "auto" (default) puts the
-// tool in the set only while the conversation's chat model can't
-// consume images; "always" keeps it for vision-capable models too — a
-// file on disk is invisible to either (tool results carry no image
-// bytes).
+// Image Q&A behind the vision tool — absent = off. mode "auto" adds the
+// tool only while the chat model can't consume images; a file on disk is
+// invisible either way (tool results carry no image bytes).
 export const visionConfigSchema = z.object({
 	model: z.string().min(1),
 	maxTokens: z.number().int().min(1).max(32_768).default(2000),
@@ -319,21 +281,12 @@ export const visionConfigSchema = z.object({
 });
 export type VisionConfig = z.infer<typeof visionConfigSchema>;
 
-// Edge read-aloud (DESIGN.md, Delivery/TTS) — no auth, unofficial, can
-// break. Default-on: the only dependency is ffmpeg, probed at boot.
+// Edge read-aloud: no auth, unofficial, can break — ffmpeg is the only dependency.
 export const DEFAULT_TTS_VOICE = "en-US-AriaNeural";
 
-// Delegation to external coding harnesses via herdr (DESIGN.md,
-// "Delegation"). Absent = the delegate tool is not in the set. Harnesses
-// are named operator choices — a herdr agent kind plus native args;
-// goblin never picks a model or flags for one. Harness names double as
-// herdr agent-name prefixes, so they live in herdr's name charset.
-// Targets (design/delegation.md, "Targets", 2026-10-06): goblin's own
-// LOCAL session is the implicit default — never a config knob. The
-// `machines` map names additional targets: a saved-machine label
-// (remote host) or another local session, each with its own cwd root
-// and optionally its own harnesses — harness availability is a
-// property of the target host.
+// Delegation to external harnesses via herdr — absent = no delegate
+// tool. Harness names double as herdr agent-name prefixes (hence the
+// charset); the LOCAL session is the implicit default, never a knob.
 const harnessNameRe = /^[a-z][a-z0-9_-]{0,15}$/;
 const harnessNameSchema = z.string().regex(harnessNameRe);
 export const harnessMapSchema = z
@@ -348,14 +301,9 @@ export const harnessMapSchema = z
 		message: "delegation.harnesses must name at least one harness",
 	});
 
-// One delegation target. Exactly one of machine|session: a saved-
-// machine profile pins its own remote session (herdr's registry owns
-// the ssh target + session — `machine add <host> --remote-session`),
-// and `--machine`/`--session` are mutually exclusive on the CLI.
-// Session names ride herdr's own contract, not the harness-name one:
-// sessions allow case and dots ("goblin.dev", "side-session") — we
-// stay filename-safe (they become socket-dir names): alnum start,
-// alnum/._- body, bounded length.
+// One delegation target — exactly one of machine|session, mirroring the
+// herdr CLI's own mutual exclusion. Session names stay stricter than
+// herdr's own contract because they become socket-dir names.
 const sessionNameSchema = z
 	.string()
 	.regex(
@@ -363,11 +311,9 @@ const sessionNameSchema = z
 		"session name must start alphanumeric and contain only [A-Za-z0-9._-]",
 	);
 
-// root resolves the target's relative cwds; remote paths must be
-// absolute or `~`/`~/…` (server-expanded), so relative values are
-// rejected here rather than at launch. Labels are not validated
-// against herdr at parse time — a wrong label fails loud at the
-// first herdr call, with its error, through the adapter.
+// root must be absolute or `~`-rooted (server-expanded) — rejected here,
+// not at launch. machine labels are not checked against herdr's registry
+// at parse time: a wrong label fails loud at the first herdr call.
 export const delegationTargetSchema = z
 	.object({
 		machine: harnessNameSchema.optional(),
@@ -385,21 +331,15 @@ export const delegationTargetSchema = z
 export type DelegationTargetConfig = z.infer<typeof delegationTargetSchema>;
 
 export const delegationConfigSchema = z.object({
-	// No `session`/`machine` top-level knobs and no cap: the default
-	// target is the local unit's session (deploy/goblin-herdr.service:
-	// `herdr --session goblin server`); volume is goblin's judgment
-	// (operator ruling 2026-10-06 — maxRunning removed).
+	// No cap by design — volume is goblin's judgment, not a knob.
 	machines: z.record(harnessNameSchema, delegationTargetSchema).optional(),
 	harnesses: harnessMapSchema,
 });
 export type DelegationConfig = z.infer<typeof delegationConfigSchema>;
 
-// Gmail (DESIGN.md, "Email"). Absent = no mail tool, no mail watcher.
-// clientId is the Google Cloud OAuth client ID — a public identifier,
-// not a secret. The client secret and the SEND refresh token live in
-// auth.jsonl under these names; reads ride gws's own auth (`gws auth
-// login`), so there is no read credential here to leak — the send
-// credential never reaches the model.
+// Gmail — absent = no mail tool or watcher. clientId is a public
+// identifier, not a secret; the client secret and SEND token live in
+// auth.jsonl; reads ride gws's auth — the send credential never reaches the model.
 export const mailConfigSchema = z.object({
 	clientId: z.string().min(1),
 	clientSecretAuth: z.string().min(1),
@@ -407,28 +347,17 @@ export const mailConfigSchema = z.object({
 });
 export type MailConfig = z.infer<typeof mailConfigSchema>;
 
-// Guest mode (design/telegram.md → Guest mode, 2026-10-06): goblin
-// answers as a guest in third-party chats. Absent = guest intake off
-// entirely — no guest_message handling, no member-chat third-party
-// routing. Presence enables; knobs carry defaults. Hand-edited only
-// (no mini-app surface).
+// Guest answering in third-party chats — absent = intake off entirely; hand-edited only.
 export const guestConfigSchema = z.object({
-	// Third-party summons budget per user per local day. The operator
-	// is exempt — this bounds model spend on friends, not on bermudi.
+	// Summons budget per user per local day; the operator is exempt.
 	perUserDailyTurns: z.number().int().min(1).max(1000).default(25),
-	// A guest reply is one message (guest-mode physics): the final
-	// edit truncates past this with a pointer to the bot DM.
+	// One message per reply: the final edit truncates past this, pointing at the bot DM.
 	outputChars: z.number().int().min(500).max(4000).default(3500),
 });
 export type GuestConfig = z.infer<typeof guestConfigSchema>;
 
-// Automatic skill saving (DESIGN.md, "Skill reviewer"). Absent = off.
-// auth names the auth.jsonl record holding the OpenRouter key behind
-// the Jev gate; model overrides the review model (default: the
-// conversation's own model); threshold is the gate's shared review
-// cutoff, overridable per question by thresholds; queueCap bounds the
-// queued (not running) reviews — a full queue drops the incoming;
-// evidence bounds the tool-call digest the review sees.
+// Automatic skill saving — absent = off. auth names the auth.jsonl
+// record holding the OpenRouter key behind the Jev gate.
 export const reviewerEvidenceSchema = z.object({
 	calls: z.number().int().min(1).max(32).default(8),
 	argChars: z.number().int().min(50).max(4000).default(300),
@@ -449,18 +378,16 @@ export const reviewerConfigSchema = z.object({
 });
 export type ReviewerConfig = z.infer<typeof reviewerConfigSchema>;
 
-// System One / Jev decisions config (DESIGN.md Email + Skill reviewer) —
-// one block feeding injection, skill-review, and DM follow-up gates;
-// absent pieces fall back to reviewer.auth / JEV_MODEL defaults so the live
-// reviewer never breaks; model is a Jev model id (e.g.
-// typesafe/jev-1.13), NOT a <provider>/<model-id> chat ref, so it is NOT
-// provider-validated in superRefine (leave superRefine untouched).
+// Jev decisions — one block feeding injection, skill-review, and DM
+// follow-up gates; absent pieces fall back to reviewer.auth/JEV_MODEL.
+// model is a bare Jev model id, NOT a "<provider>/<model-id>" chat ref —
+// deliberately outside superRefine's provider validation.
 export const system1ConfigSchema = z.object({
 	auth: z.string().min(1),
 	model: z.string().min(1).optional(),
-	// A URL like every other URL — a typo'd edit must fail at load,
-	// not surface later as a mislabeled transport failure riding the
-	// injection checker's fail-open (audit #14).
+	// z.url(), not a bare string: a typo must fail at load, not surface
+	// later as a mislabeled transport failure riding the injection
+	// checker's fail-open.
 	baseUrl: z.url().optional(),
 });
 export type System1Config = z.infer<typeof system1ConfigSchema>;
@@ -472,20 +399,14 @@ export const ttsConfigSchema = z.object({
 		.string()
 		.regex(/^[+-]\d+%$/)
 		.optional(),
-	// The cast beyond the default voice — language follows the voice
-	// name. The speak tool picks per call; /voice mode and the 🔊 button
-	// sniff each reply's language and cast the matching voice, falling
-	// back to `voice` when nothing matches.
+	// Language-cast voices: /voice and the 🔊 button pick by each
+	// reply's language, falling back to `voice`.
 	voices: z.array(z.string().min(1)).optional(),
 });
 export type TtsConfig = z.infer<typeof ttsConfigSchema>;
 
-// One web provider selection. Search and fetch each accept one of
-// these or an ordered list of them (DESIGN.md, "Web access") — the
-// list is the fallback chain, config order, first entry primary.
-// The chain-entry kinds the mini app's search/fetch builders may offer,
-// in schema order. Same single-source contract as providerKinds —
-// config.test.ts pins both against the unions below.
+// Chain-entry kinds for search/fetch builders — config.test.ts pins
+// both arrays against the unions below, like providerKinds.
 export const searchKinds = [
 	"brave",
 	"exa",
@@ -518,21 +439,19 @@ export const fetchEntrySchema = z.discriminatedUnion("kind", [
 const configSchema = z
 	.object({
 		providers: z.record(z.string(), providerSchema),
-		// Default for new app conversations. "<provider>/<model-id>" —
-		// provider must exist in `providers`. Telegram owns its selection.
+		// Default for new app conversations only — Telegram owns its own selection.
 		model: z.string().min(1),
-		// Optional model for auto-titling implicitly-named topics. "" means
-		// unset (mini-app clearing convention); absent/"" = placeholders stay.
+		// Auto-titling model for implicitly-named topics; "" = unset
+		// (mini-app clearing convention).
 		titleModel: z
 			.union([z.string().min(1), z.literal("")])
 			.transform((v) => v || undefined)
 			.optional(),
 		favorites: z.array(z.string()).default([]),
 		thinking: z.enum(thinkingLevels).default("medium"),
-		// Default-on (no keys — the only dependency is ffmpeg): absent →
-		// edge with the default voice. `""` is the explicit off and
-		// parses to `false` so it survives the mini app's whole-file
-		// rewrite — an undefined key would be dropped and reload as on.
+		// Absent → edge with the default voice. "" is explicit off and
+		// parses to `false`, not undefined — an undefined key would be
+		// dropped by the mini app's whole-file rewrite and reload as on.
 		tts: z
 			.union([ttsConfigSchema, z.literal(""), z.literal(false)])
 			.optional()
@@ -543,9 +462,7 @@ const configSchema = z
 						? false
 						: v,
 			),
-		// Speech → text: voice/video notes at intake, other audio on
-		// demand via the transcribe tool. "" means unset (mini-app
-		// clearing convention).
+		// Speech → text: voice/video notes at intake, other audio via the transcribe tool.
 		transcription: z
 			.union([
 				z.object({
@@ -557,46 +474,37 @@ const configSchema = z
 			])
 			.transform((v) => (v === "" ? undefined : v))
 			.optional(),
-		// Image Q&A behind the vision tool — "" means unset (mini-app
-		// clearing convention), absent the same. Live-read per turn.
+		// Live-read per turn — changes apply without a restart.
 		vision: z
 			.union([visionConfigSchema, z.literal("")])
 			.transform((v) => (v === "" ? undefined : v))
 			.optional(),
-		// Web search providers (DESIGN.md, "Web access"). Absent or "" →
-		// the search tool is not in the set. One entry or an ordered list:
-		// first is primary, the rest are explicit fallbacks (transport/
-		// HTTP/auth failures advance; an empty result set is an answer).
-		// ddg is keyless; jina tolerates keyless (rate-limited); every
-		// other kind requires an auth ref.
+		// One entry or an ordered fallback chain (first is primary). Only
+		// transport/HTTP/auth failures advance the chain — an empty result
+		// set is an answer.
 		search: z
 			.union([searchEntrySchema, z.array(searchEntrySchema).min(1), z.literal("")])
 			.transform((v) => (v === "" ? undefined : Array.isArray(v) ? v : [v]))
 			.optional(),
-		// Fetch/extract providers (DESIGN.md, "Web access"). Same shape
-		// rule as search: one entry or an ordered chain. Absent or "" →
-		// local (direct HTTP + in-process readability extraction).
+		// Same one-or-chain shape as search; absent or "" → local fetch.
 		fetch: z
 			.union([fetchEntrySchema, z.array(fetchEntrySchema).min(1), z.literal("")])
 			.transform((v) => (v === "" ? undefined : Array.isArray(v) ? v : [v]))
 			.optional(),
 		allowedUsers: z.array(z.number().int().positive()).min(1),
-		// Self-hosted telegram-bot-api in --local mode, e.g. http://127.0.0.1:8081.
-		// Absent = default api.telegram.org. dmGapMinutes is the Rolling DM
-		// quiet gap — past it a new DM may roll to a fresh conversation
-		// (design/telegram.md → Rolling DM); read live, applies immediately.
+		// apiRoot: self-hosted telegram-bot-api in --local mode. dmGapMinutes:
+		// the Rolling DM quiet gap — read live, applies immediately.
 		telegram: z
 			.object({
-				// Shared Telegram selection; absent legacy values are pinned below.
+				// Absent here → pinned to the top-level model/thinking below.
 				model: z.string().min(1).optional(),
 				thinking: z.enum(thinkingLevels).optional(),
 				apiRoot: z.url().optional(),
 				dmGapMinutes: z.number().int().min(1).default(45),
 			})
 			.default({ dmGapMinutes: 45 }),
-		// External HTTPS door for mini apps (tailscale serve/funnel, reverse
-		// proxy). Nothing in-process assumes a public IP. "" means unset —
-		// the settings form can't express undefined over JSON.
+		// External HTTPS door for mini apps — nothing in-process assumes
+		// a public IP. "" = unset (the form can't express undefined).
 		publicUrl: z
 			.union([
 				z
@@ -613,29 +521,20 @@ const configSchema = z
 			.object({ port: z.number().int().min(0).max(65535).default(8787) })
 			.default({ port: 8787 }),
 		logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
-		// Optional long-term memory — "" clears to unset (mini-app
-		// clearing convention, like tts/transcription).
 		memory: z
 			.union([memoryConfigSchema, z.literal("")])
 			.transform((v) => (v === "" ? undefined : v))
 			.optional(),
-		// Optional delegation to external harnesses — no mini-app
-		// surface, hand-edited only; a mini-app save round-trips it
-		// through the merge untouched.
+		// Hand-edited only; a mini-app save round-trips it through the merge untouched.
 		delegation: delegationConfigSchema.optional(),
-		// Optional Gmail — same hand-edited-only rule as delegation.
+		// Hand-edited only, like delegation.
 		mail: mailConfigSchema.optional(),
-		// Optional guest mode — absent = off, defaults inside.
 		guest: guestConfigSchema.optional(),
-		// Optional automatic skill saving — same hand-edited-only rule.
 		reviewer: reviewerConfigSchema.optional(),
 		system1: system1ConfigSchema.optional(),
-		// The app channel's bearer credential (DESIGN.md, App channel) —
-		// an auth.jsonl record NAME, resolved per request like every
-		// other credential; the token value never sits in this file.
-		// Absent = trust mode: /api/app/* serves unauthenticated — the
-		// tailnet is the only lock. The mode is boot-pinned; a mid-run
-		// flip needs a restart. Hand-edited only.
+		// auth.jsonl record NAME — the token value never sits in this
+		// file. Absent = trust mode: /api/app/* unauthenticated, the
+		// tailnet is the only lock. Boot-pinned; a flip needs a restart.
 		appToken: z.string().min(1).optional(),
 	})
 	.transform((cfg) => {
@@ -645,7 +544,6 @@ const configSchema = z
 		cfg.telegram.thinking ??= cfg.thinking;
 		return cfg;
 	})
-	// Cross-field: every model ref must parse and name a configured provider.
 	.superRefine((cfg, ctx) => {
 		for (const [path, ref] of [
 			["model", cfg.model],
@@ -676,10 +574,8 @@ export type ProviderConfig = z.infer<typeof providerSchema>;
 export type Config = z.infer<typeof configSchema>;
 export type TranscriptionConfig = NonNullable<Config["transcription"]>;
 
-// The shared config handle plus boot-time liveness gates. ttsDown is
-// decided once, at boot (ffmpeg probe): a config mutation instead would
-// leak into the mini app's round-trip as an explicit operator "off".
-// Install ffmpeg and restart to re-enable.
+// ttsDown is decided once, at boot (ffmpeg probe) — a config mutation
+// instead would leak into the mini app's round-trip as an operator "off".
 export interface ConfigRef {
 	current: Config;
 	ttsDown: boolean;
@@ -689,8 +585,7 @@ export type FetchConfig = NonNullable<Config["fetch"]>;
 
 // ---------- load / write ----------
 
-// ENOENT → null (caller decides; index.ts exits with a pointer to the
-// example). Parse/validation failures propagate with the file path attached.
+// ENOENT → null; every other failure propagates with the path attached.
 export function loadConfig(): Config | null {
 	let raw: string;
 	try {
@@ -712,17 +607,14 @@ export function loadConfig(): Config | null {
 	return result.data;
 }
 
-// Validate a candidate config — the mini app parses before writing so it
-// can inspect the result (e.g. refuse a self-lockout) without touching
-// the file first. Retired delegation keys (machine, session, maxRunning)
-// strip silently under zod — the W2.2 purge removed their translations
-// and warnings.
+// The mini app parses before writing to inspect the result (e.g. refuse
+// a self-lockout). Retired delegation keys (machine, session, maxRunning)
+// strip silently under zod — the W2.2 purge removed their translations.
 export function parseConfig(raw: unknown): Config {
 	return configSchema.parse(raw);
 }
 
-// The mini app writes through here. Whole-file durable write; a hardened
-// mode on the existing file survives the rewrite.
+// A hardened mode on the existing file survives this whole-file rewrite.
 export function writeConfig(config: Config): void {
 	durableWriteFile(paths.config(), JSON5.stringify(parseConfig(config), null, 2) + "\n");
 }

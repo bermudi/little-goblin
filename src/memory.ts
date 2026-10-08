@@ -480,12 +480,15 @@ export interface MemoryWorker {
 	// Serialize an async section against the worker: no new drain starts,
 	// the in-flight drain settles first, then fn runs, then the timer
 	// resumes — also on throw. /forget delete runs its whole
-	// settle→suppress→cancel→delete→redact block inside this: the worker
+	// reconcile→suppress→cancel→delete→redact block inside this: the worker
 	// flips a row to "submitted" only after submit() returns, so a delete
 	// racing the HTTP call cancels a row that still reads "pending" while
 	// its document lands remotely — the forgotten source resurrects with
 	// no local row left to settle (DESIGN.md: serialize against in-flight
-	// writes before deleting).
+	// writes before deleting). The pause settles local HTTP work only —
+	// a submit whose acknowledgement was lost leaves its row pending
+	// while the operation runs remotely, which is why forget reconciles
+	// every in-flight UUID, pending rows included (#86).
 	withWorkerPaused<T>(fn: () => Promise<T>): Promise<T>;
 }
 

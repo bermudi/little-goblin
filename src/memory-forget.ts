@@ -1,12 +1,22 @@
-// The forgetting protocol's one owner: settle in-flight retention, then
-// suppress → cancel → remote delete → redact. Both surfaces — the
+// The forgetting protocol's one owner: reconcile in-flight retention,
+// then suppress → cancel → remote delete → redact. Both surfaces — the
 // /forget delete command and the mini app's forget button — call this;
 // neither re-implements the order. The order is load-bearing: a
-// submitted replace-mode retain finishing after the delete would
+// replace-mode retain accepted remotely finishing after the delete would
 // resurrect the document (unpaused delete), and suppression must exist
 // before anything else could re-enqueue. Fail-loud: Hindsight and store
 // errors propagate; only the settle-budget refusal is an expected
 // outcome (the caller tells the operator to retry).
+//
+// A queue row reading `pending` is not proof its retention was never
+// sent: the worker's submit can be accepted remotely while its
+// acknowledgement degrades (a retryable timeout/5xx leaves the row
+// pending), and a crash between acceptance and the submitted-state
+// write does the same — attempts=0 is no proof either. Every in-flight
+// UUID is therefore reconciled through to terminal state, pending rows
+// included, before any tracking is dropped or success reported; the
+// durable operation UUID (persisted at enqueue, before any submit) is
+// what makes the reconciliation always possible (#86, #99).
 //
 // No conversation fencing here: /forget fences the conversation it was
 // typed in (its own courtesy, kept in commands.ts); the mini app has no
@@ -14,12 +24,7 @@
 // command already tolerates — same tolerance here, re-runnable
 // (suppression persists; deleteByDocument can run again).
 
-import {
-	HindsightError,
-	identifier,
-	type HindsightClient,
-	type MemoryOperation,
-} from "./hindsight.ts";
+import { HindsightError, identifier, type MemoryOperation } from "./hindsight.ts";
 import { log } from "./log.ts";
 import type { MemoryContexts } from "./memory.ts";
 import type { MemoryQueue } from "./memory-queue.ts";
@@ -63,7 +68,7 @@ async function settleInflightRetention(
 }
 
 export interface ForgetSource {
-	client: HindsightClient;
+	client: HindsightInstance;
 	contexts: MemoryContexts;
 	queue: MemoryQueue;
 	// Quiesce the retention worker around the delete (see
@@ -104,24 +109,30 @@ export async function forgetDocument(
 	const id = identifier.parse(documentId);
 	const fields = { ...context, document: id };
 	return source.withWorkerPaused(async () => {
-		const submitted = source.queue
-			.inflightOps(id)
-			.filter((op) => op.state === "submitted")
-			.map((op) => op.operationId);
+		// Pending rows are reconciled like submitted ones: their submit
+		// may already be accepted remotely with the acknowledgement lost
+		// (or crashed before the submitted-state write), and only the poll
+		// can tell the difference — a pending UUID absent remotely settles
+		// on its first poll, an accepted one waits out like any submitted
+		// operation. The worker pause settled local HTTP work, not remote
+		// async processing; this loop is what covers that gap.
+		const inflight = source.queue.inflightOps(id);
+		const operationIds = inflight.map((op) => op.operationId);
 		let settledOps = 0;
-		if (submitted.length > 0) {
+		if (operationIds.length > 0) {
 			const startedAt = Date.now();
-			if (!(await settleInflightRetention(source.client, submitted, source.settleTiming))) {
+			if (!(await settleInflightRetention(source.client, operationIds, source.settleTiming))) {
 				log.warn("forget refused — retention still processing remotely", {
 					...fields,
-					operations: submitted.length,
+					operations: operationIds.length,
 				});
-				return { outcome: "busy", unsettled: submitted.length };
+				return { outcome: "busy", unsettled: operationIds.length };
 			}
-			settledOps = submitted.length;
+			settledOps = operationIds.length;
 			log.info("forget settled in-flight retention", {
 				...fields,
-				operations: submitted.length,
+				operations: operationIds.length,
+				pending: inflight.filter((op) => op.state === "pending").length,
 				waitedMs: Date.now() - startedAt,
 			});
 		}

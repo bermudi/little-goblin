@@ -162,12 +162,16 @@ export class MemoryQueue {
 		});
 	}
 
-	// In-flight retention for one document, across every target. Pending
-	// rows were never sent (safe to cancel outright); submitted rows are
-	// acknowledged and may still be processing remotely — /forget settles
-	// those before deleting, or a replace-mode retain finishing after the
-	// delete re-creates the document with its local row already gone
-	// (DESIGN.md: serialize against in-flight writes before deleting).
+	// In-flight retention for one document, across every target —
+	// every row whose operation may still matter remotely. Pending is
+	// NOT proof of never-sent: a submit can be accepted remotely while
+	// its acknowledgement degrades (a retryable failure leaves the row
+	// pending), and a crash between acceptance and the submitted-state
+	// write does the same. Callers reconcile both states through to
+	// terminal — /forget settles them before deleting, or a
+	// replace-mode retain finishing after the delete re-creates the
+	// document with its local row already gone (DESIGN.md: serialize
+	// against in-flight writes before deleting).
 	inflightOps(documentId: string): { operationId: string; state: "pending" | "submitted" }[] {
 		const state = z.enum(["pending", "submitted"]);
 		const rows = this.db

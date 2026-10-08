@@ -632,6 +632,15 @@ describe("memory commands", () => {
 			hostname: "127.0.0.1",
 			port: 0,
 			fetch: (request) => {
+				const path = new URL(request.url).pathname;
+				if (path.includes("/operations/")) {
+					// The queued row is pending; the delete still reconciles its
+					// UUID — terminal on the first poll.
+					return Response.json({
+						operation_id: path.split("/").pop(),
+						status: "completed",
+					});
+				}
 				if (request.method === "DELETE") {
 					return Response.json({ success: true, document_id: "exchange/dm:1/1/a" });
 				}
@@ -729,7 +738,12 @@ describe("forget delete against in-flight retention", () => {
 		}
 	});
 
-	test("a pending (never-sent) row is cancelled without polling", async () => {
+	// A pending row is not proof of never-sent — a lost submit
+	// acknowledgement (or a crash before the submitted-state write)
+	// leaves the row pending while its operation may be live remotely.
+	// The delete must reconcile the UUID: one poll, absent remotely →
+	// settled, then the cancel (#86).
+	test("a pending row is reconciled with one poll before its cancel", async () => {
 		const { store, conv, sent, deps } = setupMemory();
 		const deleted: string[] = [];
 		const polled: string[] = [];
@@ -756,7 +770,7 @@ describe("forget delete against in-flight retention", () => {
 				bankId: "g",
 			});
 			deps.memory = { ...deps.memory!, client, settleTiming: { pollMs: 5, budgetMs: 2_000 } };
-			store.memoryQueue.enqueue(client.target, {
+			const operationId = store.memoryQueue.enqueue(client.target, {
 				id: "exchange/dm:1/1/a",
 				content: "Operator: hi\nGoblin: hello",
 				timestamp: new Date().toISOString(),
@@ -765,10 +779,12 @@ describe("forget delete against in-flight retention", () => {
 			});
 			expect(handleCommand(deps, conv, "/forget delete exchange/dm:1/1/a")).toBe(true);
 			await waitFor(sent, 1);
-			// Pending rows were never sent — cancelling them is not a race.
-			expect(polled).toEqual([]);
+			// The operation is absent remotely — one poll reconciles the
+			// uncertain UUID, then the row is cancelled without a wait.
+			expect(polled.length).toBe(1);
 			expect(deleted).toEqual(["exchange/dm:1/1/a"]);
 			expect(sent[0]).toContain("1 queued cancelled");
+			expect(store.memoryQueue.get(operationId)).toBeNull();
 			expect(store.memoryQueue.next(client.target, Date.now())).toBeNull();
 		} finally {
 			server.stop(true);

@@ -137,7 +137,7 @@ function messageText(message: UIMessage): string {
 			const data = part.data;
 			const ref =
 				typeof data === "object" && data !== null
-					? (data as { path?: unknown; filename?: unknown })
+					? (data as { path?: unknown; filename?: unknown; transcript?: unknown })
 					: null;
 			const path =
 				typeof ref?.path === "string"
@@ -145,7 +145,15 @@ function messageText(message: UIMessage): string {
 					: typeof ref?.filename === "string"
 						? ref.filename
 						: "unnamed";
-			parts.push(`[attachment: ${path}]`);
+			// A stored transcript is durable operator speech (issue #84):
+			// the words were already paid for at intake, so the fold keeps
+			// them next to the path reference. Media bytes never ride —
+			// text only.
+			parts.push(
+				typeof ref?.transcript === "string"
+					? `[attachment: ${path} — transcript: ${JSON.stringify(ref.transcript)}]`
+					: `[attachment: ${path}]`,
+			);
 		} else if (part.type.startsWith("tool-")) {
 			// Keep bounded evidence of what the tool actually did. Merely
 			// naming the tool loses the command and result after the cut.

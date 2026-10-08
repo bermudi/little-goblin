@@ -65,6 +65,53 @@ describe("chooseBoundary", () => {
 		expect(text).toContain("pwd");
 		expect(text).toContain("/workspace");
 	});
+
+	test("a voice transcript rides into the serialized span — spoken words are not dropped at the cut", () => {
+		const event = ev(1, "user", "here is a voice note");
+		event.message.parts.push(
+			attachmentPart({
+				path: "/workspace/attachments/ogg-u1.oga",
+				filename: "voice.oga",
+				mediaType: "audio/ogg",
+				size: 1024,
+				speech: true,
+				transcript: "water the fern before friday, and reply to Marta",
+			}),
+		);
+		expect(serializeSpan([event])).toContain("water the fern before friday, and reply to Marta");
+	});
+
+	test("a video-note transcript rides into the serialized span too", () => {
+		const event = ev(1, "user", "");
+		event.message.parts.push(
+			attachmentPart({
+				path: "/workspace/attachments/mp4-u2.mp4",
+				filename: "note.mp4",
+				mediaType: "video/mp4",
+				size: 4096,
+				speech: true,
+				transcript: "the garage code changed to 4471",
+			}),
+		);
+		const text = serializeSpan([event]);
+		expect(text).toContain("the garage code changed to 4471");
+		// The path stays too — continuity of the file reference is kept.
+		expect(text).toContain("/workspace/attachments/mp4-u2.mp4");
+	});
+
+	test("an attachment with no transcript keeps the bare path reference", () => {
+		const event = ev(1, "user", "please read this");
+		event.message.parts.push(
+			attachmentPart({
+				path: "/workspace/attachments/report.pdf",
+				filename: "report.pdf",
+				mediaType: "application/pdf",
+				size: 42,
+			}),
+		);
+		expect(serializeSpan([event])).toContain("[attachment: /workspace/attachments/report.pdf]");
+		expect(serializeSpan([event])).not.toContain("transcript");
+	});
 	test("the cut lands at a completed exchange — no anchored response is orphaned", () => {
 		// Tiny budget: keep only the last exchange. The boundary must be the
 		// seq of the assistant response that closes the second exchange —
@@ -166,6 +213,44 @@ describe("runCompaction", () => {
 			summary: "the folded summary",
 			model: "zai/glm-5.3",
 		});
+	});
+
+	test("spoken instructions survive into the summarizer prompt — the loss precedes any model judgment", async () => {
+		// The same span chooseBoundary folds: an early voice-note exchange
+		// whose words are durable history. If serialization drops the
+		// transcript, no summarizer — however good — can preserve them.
+		const detail = [
+			ev(1, "user", "here is a voice note".repeat(50)),
+			ev(2, "assistant", "got it".repeat(200), 1),
+			ev(3, "user", "do a thing".repeat(200)),
+			ev(4, "assistant", "did it".repeat(200), 3),
+			ev(5, "user", "and now".repeat(200)),
+			ev(6, "assistant", "done".repeat(200), 5),
+		];
+		detail[0]!.message.parts.push(
+			attachmentPart({
+				path: "/workspace/attachments/ogg-u1.oga",
+				filename: "voice.oga",
+				mediaType: "audio/ogg",
+				size: 1024,
+				speech: true,
+				transcript: "water the fern before friday, and reply to Marta",
+			}),
+		);
+		const { store } = fakeStore(detail);
+		const prompts: string[] = [];
+		await runCompaction(
+			"dm:1",
+			store,
+			"m",
+			async (_system, prompt) => {
+				prompts.push(prompt);
+				return "folded";
+			},
+			{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
+			signal(),
+		);
+		expect(prompts.join("\n")).toContain("water the fern before friday, and reply to Marta");
 	});
 
 	test("a summarizer failure propagates and writes nothing", async () => {

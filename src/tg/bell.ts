@@ -68,9 +68,12 @@ export function makeBellSink(
 				outcome: done.kind,
 			});
 			// Re-read the title at completion — the async retitle can land
-			// while the turn runs, and a deleted conversation degrades to
-			// the generic label rather than a stale name.
-			const title = deps.store.get(conv.id)?.title ?? conv.title ?? "app conversation";
+			// while the turn runs. A deleted conversation (get → null) must
+			// degrade to the generic label, never the captured stale title,
+			// and its ping carries no deep link into a dead conversation.
+			const live = deps.store.get(conv.id);
+			const title =
+				live === null ? "app conversation" : (live.title ?? conv.title ?? "app conversation");
 			let ping: string;
 			let pingKey: string | undefined;
 			if (done.kind === "completed") {
@@ -111,7 +114,7 @@ export function makeBellSink(
 						deps.api.sendMessage(
 							chat,
 							ping,
-							publicUrl === undefined || appId === null
+							publicUrl === undefined || appId === null || live === null
 								? {}
 								: {
 										reply_markup: {

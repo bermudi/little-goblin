@@ -194,6 +194,19 @@ describe("makeBellSink", () => {
 		h.store.close();
 	});
 
+	test("a deleted app conversation degrades to the generic label, no button", async () => {
+		// store.get() === null — the ping must not ride the captured
+		// stale title nor deep-link into a dead conversation.
+		const h = harness({ allowedUsers: [1], publicUrl: "https://g.example/" });
+		const conv = appConv(h.store);
+		h.store.deleteConversation(conv.id);
+		await makeBellSink(h.deps, conv).onDone({ kind: "error", message: "model exploded" });
+		expect(h.sent).toHaveLength(1);
+		expect(h.sent[0]!.text).toBe("app conversation: the turn failed — model exploded");
+		expect(h.sent[0]!.markup).toBeUndefined();
+		h.store.close();
+	});
+
 	test("a fenced turn rings nobody", async () => {
 		const h = harness({ allowedUsers: [1] });
 		const sink = makeBellSink(h.deps, appConv(h.store));

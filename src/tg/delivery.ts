@@ -568,6 +568,20 @@ export function makeDeliverySink(
 					return;
 				}
 				const content = speechContent(text);
+				// A completed turn that renders to nothing — no spoken text,
+				// no supplemental, no forced-landing notice — would end in
+				// total silence: no voice note, no bubble, no log line
+				// (finding 15). Warn with the address; the delivery contract
+				// sanctions a short chat message for errors only, so no
+				// placeholder bubble is invented here.
+				if (content.spoken === "" && content.supplemental === null && notice === null) {
+					log.warn("completed turn rendered empty", {
+						conversation: conv.id,
+						chat: conv.chatId,
+						...(conv.threadId !== null ? { thread: conv.threadId } : {}),
+					});
+					return;
+				}
 				try {
 					let audio: Uint8Array[] = [];
 					if (content.spoken !== "") {
@@ -774,6 +788,18 @@ export function makeDeliverySink(
 					}
 					await chain;
 					if (!mayDeliver()) await stampSuperseded();
+				} else {
+					// Same empty-render warn as the voice path (finding 15):
+					// reaching the clean-finish check with no sent chunk means
+					// no text, no tool status, no forced notice ever rendered —
+					// the operator saw typing… then nothing. Warn with the
+					// address rather than inventing a bubble the delivery
+					// contract doesn't provide for.
+					log.warn("completed turn rendered empty", {
+						conversation: conv.id,
+						chat: conv.chatId,
+						...(conv.threadId !== null ? { thread: conv.threadId } : {}),
+					});
 				}
 			}
 		},

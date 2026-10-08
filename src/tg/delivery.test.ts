@@ -466,6 +466,63 @@ describe("delivery", () => {
 		expect(gaveUp[0]).toMatchObject({ level: "warn", conversation: "dm:1", unsent: 2 });
 	});
 
+	test("a completed turn that renders empty warns with the conversation id", async () => {
+		// A provider returning an empty final message must not end in
+		// total silence (no bubble, no reaction, no log line). The design's
+		// delivery contract sanctions a short message for *errors* only —
+		// so this warns, it never invents a placeholder bubble.
+		const { api, msgs } = fakeApi({});
+		const captured: string[] = [];
+		setLogFile("delivery-empty-test.log");
+		setLogWriter((_path, line) => {
+			captured.push(line);
+		});
+		try {
+			const sink = makeDeliverySink(api, conv, undefined, 0);
+			await sink.onDone({ kind: "completed" });
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		expect(msgs).toEqual([]);
+		const empties = captured
+			.map((l) => JSON.parse(l) as Record<string, unknown>)
+			.filter((l) => l.msg === "completed turn rendered empty");
+		expect(empties).toHaveLength(1);
+		expect(empties[0]).toMatchObject({ level: "warn", conversation: "dm:1", chat: 1 });
+	});
+
+	test("a voice-mode turn that renders empty warns instead of going silent", async () => {
+		const { api, msgs, voices } = fakeApi({});
+		const synthesized: string[] = [];
+		const captured: string[] = [];
+		setLogFile("delivery-empty-voice-test.log");
+		setLogWriter((_path, line) => {
+			captured.push(line);
+		});
+		try {
+			const sink = makeDeliverySink(api, conv, undefined, 0, {
+				voiceMode: true,
+				synthesize: async (t: string) => {
+					synthesized.push(t);
+					return [];
+				},
+			});
+			await sink.onDone({ kind: "completed" });
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		expect(msgs).toEqual([]);
+		expect(voices).toEqual([]);
+		expect(synthesized).toEqual([]); // nothing to speak — no synthesis call
+		const empties = captured
+			.map((l) => JSON.parse(l) as Record<string, unknown>)
+			.filter((l) => l.msg === "completed turn rendered empty");
+		expect(empties).toHaveLength(1);
+		expect(empties[0]).toMatchObject({ level: "warn", conversation: "dm:1", chat: 1 });
+	});
+
 	test("configured text delivery stamps a speak button and remembers the whole reply", async () => {
 		const { api, markups } = fakeApi({});
 		const sink = makeDeliverySink(api, conv, undefined, 0, {

@@ -1,13 +1,14 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { durableWriteFile } from "../../durable.ts";
-import { resolvePath, unicodeTwin } from "./paths.ts";
+import { log } from "../../log.ts";
+import { resolvePath, unicodeTwin, writeThroughTarget } from "./paths.ts";
 import { readTextFile } from "./read.ts";
 
 export const editFileTool = (cwd: string) =>
 	tool({
 		description:
-			"Replace exact text in a file. old_string must match uniquely unless replace_all is set.",
+			"Replace exact text in a file. old_string must match uniquely unless replace_all is set. Leaf symlinks are followed to the file they manage.",
 		inputSchema: z.object({
 			path: z.string().describe("File path, relative to the working directory or absolute"),
 			old_string: z.string().min(1),
@@ -20,7 +21,13 @@ export const editFileTool = (cwd: string) =>
 			// the requested spelling silently forks the file into two names.
 			const abs = resolvePath(cwd, path);
 			const target = unicodeTwin(abs) ?? abs;
-			const read = readTextFile(target, path);
+			// And write through a leaf symlink to the file it manages —
+			// tmp+rename over the link would replace it and fork the config.
+			const through = writeThroughTarget(target);
+			if ("error" in through) return { error: through.error };
+			const file = through.target;
+			if (file !== target) log.info("edit_through_symlink", { requested: target, resolved: file });
+			const read = readTextFile(file, path);
 			if ("error" in read) return read;
 			const text = read.text;
 			const count = text.split(old_string).length - 1;
@@ -37,7 +44,7 @@ export const editFileTool = (cwd: string) =>
 			const next = replace_all
 				? text.split(old_string).join(new_string)
 				: text.replace(old_string, () => new_string);
-			durableWriteFile(target, next);
-			return { path: target, replaced: replace_all ? count : 1 };
+			durableWriteFile(file, next);
+			return { path: file, replaced: replace_all ? count : 1 };
 		},
 	});

@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
 	closeSync,
+	existsSync,
 	ftruncateSync,
+	lstatSync,
 	mkdtempSync,
 	openSync,
 	readFileSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -88,5 +91,65 @@ describe("edit_file", () => {
 		)) as { error?: string };
 		expect(out.error).toContain("not found");
 		expect(readFileSync(join(dir, "f.txt"), "utf8")).toBe("original content\n");
+	});
+});
+
+describe("edit_file through leaf symlinks", () => {
+	// design/delegation.md: symlinked files are written through to the
+	// managed target, never replaced — tmp+rename over the link path
+	// silently forks the config and the dots store stops propagating.
+	test("relative leaf symlink: edit lands on the target, link survives", async () => {
+		const dir = tmpdir_();
+		writeFileSync(join(dir, "real.txt"), "one\ntwo\n");
+		symlinkSync("real.txt", join(dir, "link.txt"));
+		const out = (await editFileTool(dir).execute!(
+			{ path: "link.txt", old_string: "two", new_string: "TWO" },
+			opts,
+		)) as { path?: string; error?: string; replaced?: number };
+		expect(out.error).toBeUndefined();
+		expect(readFileSync(join(dir, "real.txt"), "utf8")).toBe("one\nTWO\n");
+		expect(lstatSync(join(dir, "link.txt")).isSymbolicLink()).toBe(true);
+		expect(readFileSync(join(dir, "link.txt"), "utf8")).toBe("one\nTWO\n");
+		expect(out.path).toBe(join(dir, "real.txt"));
+	});
+
+	test("absolute leaf symlink: edit lands on the target", async () => {
+		const dir = tmpdir_();
+		writeFileSync(join(dir, "real.txt"), "alpha\n");
+		symlinkSync(join(dir, "real.txt"), join(dir, "abs-link.txt"));
+		const out = (await editFileTool(dir).execute!(
+			{ path: "abs-link.txt", old_string: "alpha", new_string: "beta" },
+			opts,
+		)) as { error?: string };
+		expect(out.error).toBeUndefined();
+		expect(readFileSync(join(dir, "real.txt"), "utf8")).toBe("beta\n");
+		expect(lstatSync(join(dir, "abs-link.txt")).isSymbolicLink()).toBe(true);
+	});
+
+	test("symlink chain resolves to the file it manages", async () => {
+		const dir = tmpdir_();
+		writeFileSync(join(dir, "real.txt"), "x\n");
+		symlinkSync("real.txt", join(dir, "link1.txt"));
+		symlinkSync("link1.txt", join(dir, "link2.txt"));
+		const out = (await editFileTool(dir).execute!(
+			{ path: "link2.txt", old_string: "x", new_string: "y" },
+			opts,
+		)) as { error?: string };
+		expect(out.error).toBeUndefined();
+		expect(readFileSync(join(dir, "real.txt"), "utf8")).toBe("y\n");
+		expect(lstatSync(join(dir, "link1.txt")).isSymbolicLink()).toBe(true);
+		expect(lstatSync(join(dir, "link2.txt")).isSymbolicLink()).toBe(true);
+	});
+
+	test("dangling leaf symlink fails loudly and the link is untouched", async () => {
+		const dir = tmpdir_();
+		symlinkSync("missing.txt", join(dir, "dangling.txt"));
+		const out = (await editFileTool(dir).execute!(
+			{ path: "dangling.txt", old_string: "x", new_string: "y" },
+			opts,
+		)) as { error?: string };
+		expect(out.error).toContain("dangling");
+		expect(lstatSync(join(dir, "dangling.txt")).isSymbolicLink()).toBe(true);
+		expect(existsSync(join(dir, "missing.txt"))).toBe(false);
 	});
 });

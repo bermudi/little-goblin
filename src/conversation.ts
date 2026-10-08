@@ -491,8 +491,10 @@ function corruptPlaceholder(seq: number, role: string): UIMessage {
 
 // Rows are versioned envelopes {"v":1,"message":…} — the SDK owns the
 // part shapes, so every row stamps the format that wrote it (DESIGN.md,
-// History). Bare rows are pre-envelope legacy and still read; openStore
-// migrates them once at open.
+// History). The read is envelope-only (the W2.2 purge killed the
+// bare-row fallback): openStore still wraps any straggler bare rows
+// once at open, and anything else — corrupt or bare — fails the schema
+// below and degrades to a placeholder.
 function envelopeOf(raw: unknown): unknown {
 	if (
 		typeof raw === "object" &&
@@ -503,7 +505,7 @@ function envelopeOf(raw: unknown): unknown {
 	) {
 		return (raw as { message: unknown }).message;
 	}
-	return raw;
+	return null;
 }
 
 // The compacted view's synthetic first message (DESIGN.md, Compaction):
@@ -820,9 +822,10 @@ export function openStore(dbPath: string): ConversationStore {
 		}
 	})();
 	// Legacy rows predate the versioned envelope — wrap them once, in
-	// place, before anything reads them this boot. Only well-formed bare
-	// UIMessage objects match (top-level string `id`); corrupt rows are
-	// left alone and keep degrading to placeholders on read.
+	// place, before anything reads them this boot (reads are strict;
+	// without this a bare row would placeholder-degrade). Only
+	// well-formed bare UIMessage objects match (top-level string `id`);
+	// corrupt rows are left alone and degrade to placeholders on read.
 	const bare =
 		db
 			.query<{ n: number }, []>(

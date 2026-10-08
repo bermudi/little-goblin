@@ -248,15 +248,17 @@ describe("history payload envelope", () => {
 		expect(parsed.message!.parts[0]).toMatchObject({ type: "text", text: "one" });
 	});
 
-	test("bare legacy rows still read, and are wrapped once at next open", () => {
+	test("bare legacy rows are wrapped once at next open; the read itself is envelope-only", () => {
 		const path = tmpdb();
 		const store = openStore(path);
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(c.id, [msg("legacy")]);
-		// Forcibly age the row back to the pre-envelope format.
+		// Forcibly age the row back to the pre-envelope format. The read
+		// no longer tolerates the bare shape (W2.2) — it placeholder-
+		// degrades until the next open wraps it.
 		store.db.run("UPDATE events SET data = json_extract(data, '$.message')");
 		expect(store.history(c.id).map((m) => (m.parts[0] as { text: string }).text)).toEqual([
-			"legacy",
+			"[unreadable history row seq 1 — stored message failed validation. Any attachment it carried may still be readable with read_file or bash tools.]",
 		]);
 		store.close();
 		// Migration at open: wrap, and never re-wrap (idempotent).

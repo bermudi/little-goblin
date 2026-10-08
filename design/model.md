@@ -64,8 +64,9 @@ agent loop.
   `{"v":1,"message":…}`: the SDK owns the part shapes, so every row stamps
   the format that wrote it — a future shape change is a deliberate
   `v1→v2` converter at open, never silent placeholder degradation of old
-  rows. `openStore` migrates bare (pre-envelope) rows once; reads accept
-  both shapes.
+  rows. `openStore` migrates bare (pre-envelope) rows once; the read is
+  envelope-only (a straggler that somehow skips the wrap degrades to a
+  placeholder, never parses as speech).
 - **Causal view, arrival-order storage.** `events` appends in arrival seq —
   that stays the truth. What the model sees interleaves replies by
   `anchor_seq`: each assistant response is stamped with the seq of the

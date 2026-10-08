@@ -1069,12 +1069,32 @@ export class Runtime {
 		// A resume attempt owns whatever queued while the overflow
 		// compaction ran: those messages are already inside the fresh
 		// snapshot below, so leaving them pending would steer them in a
-		// second time. Claim them the way drain does.
+		// second time. Claim them the way drain does — and replay the wire
+		// to streaming members claimed here, same as the steer path's join
+		// replay: a client that submitted during the recovery window missed
+		// everything the failed attempt emitted (#96). A dead client is
+		// detached, not fatal.
 		if (recovery !== undefined) {
 			const lane = this.lane(convId);
-			turns.push(
-				...lane.pending.splice(0, claimableCount(lane.pending, sink.onStreamChunk !== undefined)),
+			const claimed = lane.pending.splice(
+				0,
+				claimableCount(lane.pending, sink.onStreamChunk !== undefined),
 			);
+			for (const t of claimed) {
+				turns.push(t);
+				if (t.sink.onStreamChunk === undefined) continue;
+				for (const c of live.chunks) {
+					try {
+						t.sink.onStreamChunk(c);
+					} catch (err) {
+						t.streamFailed = true;
+						log.warn("sink onStreamChunk failed during replay — stream detached", err, {
+							conversation: convId,
+						});
+						break;
+					}
+				}
+			}
 		}
 		// Turn wall-clock for the finish metadata — admission to done,
 		// so recall/attachments are inside the number the app displays.

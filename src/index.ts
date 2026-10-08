@@ -20,10 +20,8 @@ import { makePrivateSender } from "./agent/tools/program.ts";
 import {
 	ensureHomeLayout,
 	goblinHome,
-	legacyDelegationMachine,
 	loadConfig,
 	paths,
-	readConfigRaw,
 	splitModelRef,
 	type ConfigRef,
 	type ThinkingLevel,
@@ -139,24 +137,13 @@ async function boot() {
 	// Delegation).
 	const delegationBoot = config.delegation;
 	const delegations = delegationBoot ? openDelegations(paths.db()) : null;
-	// Single-machine-era upgrade (design/delegation.md, "Targets"):
-	// under delegation.machine EVERY live row ran on that machine —
-	// a translated legacy block stamps those rows with its label so
-	// NULL (own local session) never misroutes remote work. With no
-	// legacy block, live NULL rows are pre-machines local rows; warn
-	// loudly that they're assumed local rather than guess silently.
+	// Live rows with a NULL target predate the machines era — NULL is
+	// the own local session, the pre-machines meaning. Warn loudly
+	// that they're assumed local rather than guess silently.
 	if (delegations !== null) {
-		const legacy = legacyDelegationMachine(readConfigRaw());
-		if (legacy !== null) {
-			const moved = delegations.retargetLegacyLiveRows(legacy.label);
-			if (moved > 0) {
-				log.warn("retargeted legacy machine-mode rows", { label: legacy.label, count: moved });
-			}
-		} else {
-			const nullLive = delegations.liveRowsWithNullTarget();
-			if (nullLive > 0) {
-				log.warn("live delegation rows predate targets and are assumed local", { count: nullLive });
-			}
+		const nullLive = delegations.liveRowsWithNullTarget();
+		if (nullLive > 0) {
+			log.warn("live delegation rows predate targets and are assumed local", { count: nullLive });
 		}
 	}
 	// "goblin" is not config: it is the local unit's --session — the

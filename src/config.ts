@@ -692,21 +692,6 @@ export type FetchConfig = NonNullable<Config["fetch"]>;
 // ENOENT → null (caller decides; index.ts exits with a pointer to the
 // example). Parse/validation failures propagate with the file path attached.
 export function loadConfig(): Config | null {
-	const parsed = readConfigRaw();
-	if (parsed === null) return null;
-	warnLegacyDelegationKeys(parsed);
-	const result = configSchema.safeParse(parsed);
-	if (!result.success) {
-		throw new Error(`${paths.config()}: ${z.prettifyError(result.error)}`);
-	}
-	if (result.data.delegation !== undefined) translateLegacyMachine(parsed, result.data.delegation);
-	return result.data;
-}
-
-/** The parsed-but-unvalidated config file (null when absent) —
- *  boot-time callers need the legacy shape the schema strips
- *  (e.g. migrating single-machine-era rows). */
-export function readConfigRaw(): unknown {
 	let raw: string;
 	try {
 		raw = readFileSync(paths.config(), "utf8");
@@ -714,84 +699,26 @@ export function readConfigRaw(): unknown {
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
 		throw err;
 	}
+	let parsed: unknown;
 	try {
-		return JSON5.parse(raw);
+		parsed = JSON5.parse(raw);
 	} catch (err) {
 		throw new Error(`${paths.config()}: invalid JSON5 — ${(err as Error).message}`);
 	}
+	const result = configSchema.safeParse(parsed);
+	if (!result.success) {
+		throw new Error(`${paths.config()}: ${z.prettifyError(result.error)}`);
+	}
+	return result.data;
 }
 
 // Validate a candidate config — the mini app parses before writing so it
 // can inspect the result (e.g. refuse a self-lockout) without touching
-// the file first.
-// Legacy delegation keys strip silently under zod — a box that relied
-// on them must learn where things live now, not discover delegation
-// broken by surprise. Both load paths (parseConfig and loadConfig)
-// check them before validation.
-function warnLegacyDelegationKeys(raw: unknown): void {
-	if (typeof raw === "object" && raw !== null) {
-		const delegation = (raw as Record<string, unknown>).delegation;
-		if (typeof delegation === "object" && delegation !== null) {
-			if ("session" in delegation) {
-				log.warn(
-					"delegation.session is gone — the herdr session is fixed by deploy/goblin-herdr.service (--session goblin); the key is ignored",
-				);
-			}
-			if ("machine" in delegation) {
-				log.warn(
-					"delegation.machine became delegation.machines (2026-10-06) — translated to a machines entry for this boot; move it into the machines map in goblin.json5",
-				);
-			}
-			if ("maxRunning" in delegation) {
-				log.warn(
-					"delegation.maxRunning is gone (operator ruling 2026-10-06) — delegation volume is goblin's judgment, not a cap; the key is ignored",
-				);
-			}
-		}
-	}
-}
-
-// The legacy single-machine block (2026-10-06's `delegation.machine
-// {label, cwd}`), read loosely: a bad shape is null, not an error —
-// the machines schema still validates what we translate into.
-export function legacyDelegationMachine(raw: unknown): { label: string; root?: string } | null {
-	if (typeof raw !== "object" || raw === null) return null;
-	const delegation = (raw as Record<string, unknown>).delegation;
-	if (typeof delegation !== "object" || delegation === null) return null;
-	const machine = (delegation as Record<string, unknown>).machine;
-	if (typeof machine !== "object" || machine === null) return null;
-	const label = (machine as Record<string, unknown>).label;
-	const cwd = (machine as Record<string, unknown>).cwd;
-	if (typeof label !== "string") return null;
-	return {
-		label,
-		...(typeof cwd === "string" ? { root: cwd } : {}),
-	};
-}
-
-// A legacy `machine` block is TRANSLATED, not dropped: under
-// single-machine mode every delegation went to that machine, so
-// silently booting local would retarget live remote rows to the
-// wrong host. It becomes machines.<label> for this boot (and the
-// operator moves it into the file); an explicit machines entry of
-// the same label wins — the file's newer form is the truth.
-function translateLegacyMachine(raw: unknown, delegation: DelegationConfig): void {
-	const legacy = legacyDelegationMachine(raw);
-	if (legacy === null || delegation.machines?.[legacy.label] !== undefined) return;
-	delegation.machines = {
-		...(delegation.machines ?? {}),
-		[legacy.label]: {
-			machine: legacy.label,
-			...(legacy.root === undefined ? {} : { root: legacy.root }),
-		},
-	};
-}
-
+// the file first. Retired delegation keys (machine, session, maxRunning)
+// strip silently under zod — the W2.2 purge removed their translations
+// and warnings.
 export function parseConfig(raw: unknown): Config {
-	warnLegacyDelegationKeys(raw);
-	const config = configSchema.parse(raw);
-	if (config.delegation !== undefined) translateLegacyMachine(raw, config.delegation);
-	return config;
+	return configSchema.parse(raw);
 }
 
 // The mini app writes through here. Whole-file durable write; a hardened

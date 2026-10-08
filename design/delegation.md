@@ -64,13 +64,10 @@ Rulings:
   snapshot (a live definition feeding a boot-built adapter could
   send a launch's paths from a new definition into the old
   adapter's session). Config saves warn "restart to apply"; a
-  post-boot label fails its launch loud with that hint. The legacy
-  single-`machine` block translates into `machines.<label>` for the
-  boot (warned; an explicit entry of the same label wins), and —
-  because under single-machine mode EVERY live row ran on that
-  machine — live rows predating the `target` column are stamped
-  with the translated label at upgrade, so NULL (own local
-  session) never misroutes remote work.
+  post-boot label fails its launch loud with that hint. A live row
+  with NULL target predates the `target` column: NULL is the own
+  local session (the pre-machines meaning), and boot warns rather
+  than guessing silently.
 - **One protocol, target-agnostic (operator, 2026-10-06: "unify").**
   Launch, send, read, answer, stop behave identically local and
   forwarded. Results are collected by `agent read` (deep reads page

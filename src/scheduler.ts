@@ -123,6 +123,33 @@ export async function fireMail(
 	// The whole event is what the model sees — one call scores it all.
 	// Fail-open: a gate outage annotates unavailable, never holds fire.
 	const event = await scoredMailEvent(deps.checkMail, formatMailEvent(hits));
+	// The gate is another await the row can change across (the
+	// rolling.ts re-read rule): a disable or delete that landed mid-gate
+	// wins over this snapshot — revoked authority fences the submit
+	// itself. Filter edits and re-enables still let the old fire land
+	// (the mid-fire CAS ruling below); only the checkpoint loses that
+	// race.
+	const admitted = deps.programs.get(program.id);
+	if (admitted === null) {
+		// Deleted mid-gate — nothing to write, nothing to fire.
+		log.info("mail program deleted mid-gate — nothing fired", {
+			program: program.id,
+			name: program.name,
+		});
+		return;
+	}
+	if (!admitted.enabled) {
+		// Disabled mid-gate — the cron rule: that mail is skipped, not
+		// owed. Consumed under the snapshot revision's CAS, so a
+		// concurrent filter edit's re-baseline still wins.
+		if (!deps.programs.setMailHistory(program.id, checkpoint, program.mailRevision)) {
+			log.info("mail checkpoint skipped — program edited mid-gate, re-baseline wins", {
+				program: program.id,
+				name: program.name,
+			});
+		}
+		return;
+	}
 	const landed = fireProgram(deps, program, "mail", event, now);
 	if (!landed) {
 		log.error("mail fire did not land — checkpoint held, matches retry next poll", undefined, {

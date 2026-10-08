@@ -143,6 +143,12 @@ token plumbing in-process was a pita, and gws owns it instead — one
   revision and re-baselines — the stale fire's checkpoint loses the
   write, logs, and still stamps `last_run` (the fire itself landed).
   This is the write-time half of the read-time re-read rule below.
+  Final admission re-reads the row after the gate scores the event
+  (ruling 2026-10-08, #81): a disable or delete that lands mid-gate
+  fences the submit itself — no turn lands on revoked authority — and
+  a mid-gate disable consumes the checkpoint under the snapshot CAS
+  (skipped, not owed). Filter edits and re-enables deliberately keep
+  landing the old fire; only the checkpoint loses that race.
   The filter's
   50-entry list page is the intersection window; a full page warns
   that older matches may be invisible to it. After each poll the watcher re-reads the program

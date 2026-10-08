@@ -439,6 +439,85 @@ describe("scheduler", () => {
 		expect(after.mailRevision).toBe(1);
 		await closeSinks(h);
 	});
+
+	test("a disable mid-gate fences the submit — no turn, checkpoint consumed", async () => {
+		const h = harness();
+		const program = h.deps.programs.create(
+			{
+				name: "bank watch",
+				mailFilter: "from:bank",
+				charter: "flag bank mail",
+				address: { chatId: 1, threadId: null },
+			},
+			new Date(),
+		);
+		h.deps.programs.setMailHistory(program.id, "100", program.mailRevision);
+		// The watcher scanned this row; the gate holds its verdict back.
+		const fresh = h.deps.programs.get(program.id)!;
+		let release!: (v: { answers: Record<string, number>; inputTokens: null; cost: null }) => void;
+		h.deps.checkMail = {
+			decide: () =>
+				new Promise((resolve) => {
+					release = resolve;
+				}),
+		};
+		const firing = fireMail(h.deps, fresh, [hit("m1")], "120", new Date());
+		// …and while the event scored, the operator disabled the program.
+		h.deps.programs.update(program.id, { enabled: false });
+		release({ answers: { injection: 0.02, severity: 0.01 }, inputTokens: null, cost: null });
+		await firing;
+		// No turn landed on revoked authority…
+		expect(h.submitted).toHaveLength(0);
+		const after = h.deps.programs.get(program.id)!;
+		// …and the matched mail is skipped, not owed (the cron rule).
+		expect(after.enabled).toBe(false);
+		expect(after.mailHistoryId).toBe("120");
+		expect(after.lastRun).toBeNull();
+		await closeSinks(h);
+	});
+
+	test("a delete mid-gate fences the submit — no turn, nothing to write", async () => {
+		const h = harness();
+		const program = h.deps.programs.create(
+			{
+				name: "bank watch",
+				mailFilter: "from:bank",
+				charter: "flag bank mail",
+				address: { chatId: 1, threadId: null },
+			},
+			new Date(),
+		);
+		h.deps.programs.setMailHistory(program.id, "100", program.mailRevision);
+		const fresh = h.deps.programs.get(program.id)!;
+		let release!: (v: { answers: Record<string, number>; inputTokens: null; cost: null }) => void;
+		h.deps.checkMail = {
+			decide: () =>
+				new Promise((resolve) => {
+					release = resolve;
+				}),
+		};
+		const captured: string[] = [];
+		setLogFile("mail-midgate-delete-test.log");
+		setLogWriter((_path, line) => {
+			captured.push(line);
+		});
+		try {
+			const firing = fireMail(h.deps, fresh, [hit("m1")], "120", new Date());
+			// …and while the event scored, the operator deleted the program.
+			h.deps.programs.remove(program.id);
+			release({ answers: { injection: 0.02, severity: 0.01 }, inputTokens: null, cost: null });
+			await firing;
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		expect(h.submitted).toHaveLength(0);
+		expect(h.deps.programs.get(program.id)).toBeNull();
+		// The row is gone — the fence's only trace is the log line.
+		const lines = captured.map((l) => JSON.parse(l) as Record<string, unknown>);
+		expect(lines.some((l) => l.msg === "mail program deleted mid-gate — nothing fired")).toBe(true);
+		await closeSinks(h);
+	});
 });
 
 describe("post-submit accounting (trigger-owned)", () => {

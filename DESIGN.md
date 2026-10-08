@@ -328,13 +328,12 @@ src/
                     gate and the checker's shared client)
   runtime.ts        per-conversation queue, lane drain, checkAuthority,
                     stop/shutdown, the attempt loop — the turn's phases
-                    move to turn/ (W3 target; design/runtime-turn.md)
-  turn/             the turn's phases (W3 extraction in progress,
-                    design/runtime-turn.md)
-    state.ts        TurnState: attempt-scoped state + the TurnRecovery
-                    whitelist projection
-    loop.ts         loop machinery: repeat detector, watchdog cadence,
-                    warn/cut landings (no step budget)
+                    live in turn/ (design/runtime-turn.md)
+  turn/             the turn's phases (design/runtime-turn.md)
+    state.ts        TurnState: attempt-scoped state, the loop machinery
+                    (detector, watchdog cadence, warn/cut landings — no
+                    step budget), and the TurnRecovery whitelist
+                    projection
     admission.ts    the admission snapshot: epoch, ownership filter
                     (#82), anchor, steer-mark seed
     view.ts         pure model-view assembly — byte-stable

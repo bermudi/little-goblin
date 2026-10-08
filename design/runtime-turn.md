@@ -204,8 +204,10 @@ Rulings:
   classifier (`recovery !== undefined` ⇒ a second overflow is a
   terminal error, 2167–2170), not of the loop; the loop is written
   unbounded so the invariant lives in exactly one place.
-- The epoch re-check before iterating (2138–2144) stays in the loop
-  body, before the next admission.
+- The epoch re-check before iterating (2138–2144) lives in the overflow
+  recovery's packaging step (`turn/overflow.ts` → recoverFromOverflow,
+  between the compaction and the resume decision) — before the loop
+  hands the recovery to the next admission.
 - One logical turn, one loop history — unchanged (model.md → carried
   from the first ruling's review round). The loop is where that sentence
   becomes visible.

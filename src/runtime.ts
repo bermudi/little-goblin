@@ -8,40 +8,37 @@
 // conversation epoch hasn't advanced since admission. Fenced turns abort
 // quietly and log it.
 
-import { type LanguageModel, type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
-import type { ProviderOptions, ToolExecutionOptions } from "@ai-sdk/provider-utils";
 import { randomUUID } from "node:crypto";
+import type { ProviderOptions, ToolExecutionOptions } from "@ai-sdk/provider-utils";
+import { type LanguageModel, type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
 import type { AcceptsMedia, MediaPosition } from "./agent/attachments.ts";
+import { type CompactionOutcome, runCompaction } from "./agent/compaction.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
-import type { MemoryDocument } from "./hindsight.ts";
+import type { JevClient } from "./jev.ts";
+import { log } from "./log.ts";
 import {
-	buildRetentionDocument,
+	type MemoryTurnDeps,
 	memoryBoundEntries,
 	messageText,
-	recallMemory,
-	retentionSourceFrom,
-	type MemoryTurnDeps,
 	type RecallContext,
-	type RetentionSource,
+	recallMemory,
 } from "./memory.ts";
-import { log } from "./log.ts";
-import { runCompaction, type CompactionOutcome } from "./agent/compaction.ts";
-import type { CompletedTurn, PriorTurnContext, ReviewerDeps } from "./reviewer.ts";
-import type { JevClient } from "./jev.ts";
-import { cancelAllReviews, cancelReviews, considerTurn } from "./reviewer.ts";
+import type { PriorTurnContext, ReviewerDeps } from "./reviewer.ts";
+import { cancelAllReviews, cancelReviews } from "./reviewer.ts";
 import { admitTurn, type LiveWire } from "./turn/admission.ts";
+import { landAttempt, submitTurnReview } from "./turn/finish.ts";
 import {
 	ContextOverflowError,
 	failureFromStream,
 	overflowHoldable,
 	recoverFromOverflow,
-	terminalFailureMessage,
 	type TurnRecovery,
+	terminalFailureMessage,
 } from "./turn/overflow.ts";
-import { TurnState, type ForcedKind } from "./turn/state.ts";
+import { type ForcedKind, TurnState } from "./turn/state.ts";
+import { claimMembers, driveStream, endLive, type LiveChunks, openLive } from "./turn/stream.ts";
 import { buildModelView, type ViewContext } from "./turn/view.ts";
-import { claimMembers, driveStream, endLive, openLive, type LiveChunks } from "./turn/stream.ts";
 
 // Loop landings (design/model.md → "No step budget — loops are caught,
 // not capped"): a turn has no step budget; whichever cut fires first —
@@ -51,17 +48,9 @@ import { claimMembers, driveStream, endLive, openLive, type LiveChunks } from ".
 // instruction text and its fold into the request live in the stream
 // driver (turn/stream.ts).
 
-// A provider that defies toolChoice "none" on the forced step — still
-// emitting tool calls or no prose — gets this plain-language answer
-// appended so the stamp never lies about a nothing.
-const DEFIANCE_NOTE: Record<ForcedKind, string> = {
-	repeat:
-		'I got stuck repeating the same tool call and was stopped before writing my answer — the work above is what I checked. Say "continue" and I\'ll pick up from there with a different approach.',
-	watchdog:
-		'A progress check stopped me as stuck before I wrote my answer — the work above is what I checked. Say "continue" and I\'ll pick up from there with a different approach.',
-	context:
-		'My context window filled up before I wrote my answer — the work above is what I checked. Say "continue" and I\'ll pick up from those findings.',
-};
+// A provider that defies toolChoice "none" on the forced landing gets
+// plain-language prose appended — the defiance guard and its note
+// live in turn/finish.ts, where the attempt lands.
 // The watchdog's cadence — one check every N completed calls.
 const LOOP_CHECK_EVERY = 16;
 // Auto-compaction trigger (DESIGN.md, Compaction): a completed turn at
@@ -634,69 +623,7 @@ export class Runtime {
 		});
 	}
 
-	// Retention for a completed exchange: text only, program
-	// housekeeping excluded, suppressed documents skipped. Null = append
-	// history alone.
-	private retentionOpt(
-		conv: Conversation,
-		anchorSeq: number | null,
-		source: RetentionSource,
-		responseMessage: UIMessage,
-	): { target: string; document: MemoryDocument } | null {
-		const mem = this.deps.memory;
-		if (!mem || anchorSeq === null || conv.memoryExcluded) return null;
-		if (source.program) {
-			log.debug("memory retention skipped — program housekeeping", {
-				conversation: conv.id,
-			});
-			return null;
-		}
-		// The document ID and source refs are keyed to the assistant
-		// message identity — without one there is nothing stable to
-		// retain. Providers normally assign it; a blank one fails open
-		// loudly here rather than forging an identity.
-		if (responseMessage.id.trim() === "") {
-			log.warn("memory retention skipped — assistant message has no id", {
-				conversation: conv.id,
-			});
-			return null;
-		}
-		const doc = buildRetentionDocument({
-			conversationId: conv.id,
-			anchorSeq,
-			userTexts: source.userTexts,
-			userIds: source.userIds,
-			assistant: responseMessage,
-			priorContext: source.priorContext,
-			timestamp: new Date().toISOString(),
-		});
-		if (!doc) {
-			log.debug("memory retention skipped — no text to retain", {
-				conversation: conv.id,
-			});
-			return null;
-		}
-		// Suppression is checked after the model already streamed — a
-		// store failure here must skip retention, never drop the response.
-		let suppressed = false;
-		try {
-			suppressed = mem.contexts.isSuppressed(doc.id);
-		} catch (err) {
-			log.warn("memory suppression unreadable — skipping retention", err, {
-				conversation: conv.id,
-			});
-			return null;
-		}
-		if (suppressed) {
-			log.info("memory retention suppressed", {
-				conversation: conv.id,
-				document: doc.id,
-			});
-			return null;
-		}
-		return { target: mem.client.target, document: doc };
-	}
-
+	// The logical turn: drive attempts until one is terminal.
 	private async drain(convId: string): Promise<void> {
 		const lane = this.lane(convId);
 		if (lane.running) return;
@@ -994,103 +921,31 @@ export class Runtime {
 				filterRetryUsed = outcome.filterRetryUsed;
 				throw failureFromStream(outcome);
 			}
-			// Steering folded mid-turn submits into this exchange, so the
-			// retention source and anchor read history as the exchange ENDED —
-			// but only up to the ownership mark: queued input this turn never
-			// read must not anchor the reply. Nothing else can have appended
-			// meanwhile — the lane is serial and every mid-turn submit funnels
-			// through it. The admission-time anchor stays for recall (recall
-			// already ran on the snapshot).
-			const finalEntries = store.modelEntries(convId).filter((e) => e.seq <= outcome.steerMark);
-			let finalAnchor: number | null = null;
-			for (const e of finalEntries) {
-				if (e.message.role === "user" && (finalAnchor === null || e.seq > finalAnchor)) {
-					finalAnchor = e.seq;
-				}
-			}
-			// Retention is memory-bound: the burst and prior context read the
-			// eligible projection of the exchange as it ended (#85) — messages
-			// and replies written while the topic was excluded never enter a
-			// document, not even as labelled context. Eligibility re-reads
-			// here (with finalEntries) so steered-in messages carry their own
-			// append-time stamps.
-			const finalSource = retentionSourceFrom(
-				memoryBoundEntries(finalEntries, store.memoryEligibility(convId)),
-			);
-			// The defiance guard: a forced landing whose step STILL ended in
-			// tool calls (a provider ignoring toolChoice:none) or produced no
-			// prose would deliver a stamped nothing. The invariant gets the
-			// last word: append plain-language prose, to the stored message
-			// AND the live delta path (telegram delivers text only through
-			// deltas).
-			let reply = outcome.responseMessage;
-			const forcedKind = state.forcedCompletion();
-			if (
-				forcedKind !== null &&
-				reply !== null &&
-				(outcome.finishReason === "tool-calls" ||
-					!reply.parts.some((p) => p.type === "text" && p.text.trim() !== ""))
-			) {
-				const note = DEFIANCE_NOTE[forcedKind];
-				log.warn("forced landing produced no prose — synthetic answer appended", {
-					conversation: convId,
-					forced: forcedKind,
-					finishReason: outcome.finishReason,
-				});
-				reply = {
-					...reply,
-					parts: [...reply.parts, { type: "text", text: note }],
-				};
-				sink.onTextDelta(`\n\n${note}`);
-			}
-			if (reply !== null) {
-				// reply already carries an SDK-assigned id.
-				// The anchor ties it to the user message that triggered
-				// this turn — the causal view places the reply right
-				// after its question, not after later arrivals. Completed
-				// text exchanges also enqueue retention in the same
-				// transaction; fenced/failed turns never reach here.
-				const memoryOpt = this.retentionOpt(conv, finalAnchor, finalSource, reply);
-				store.append(
-					convId,
-					[reply],
-					memoryOpt ? { anchorSeq: finalAnchor, memory: memoryOpt } : { anchorSeq: finalAnchor },
-				);
-			}
-			// Window utilization rides the completion line: the last step's
-			// input against the catalog context limit. Cached tokens still
-			// occupy the window, so this is the filling gauge regardless of
-			// cache health. Logged BEFORE the final notify — onDone means the
-			// turn is fully finished, log included.
-			const window =
-				step.contextWindow !== undefined && outcome.lastStepInputTokens !== null
-					? {
-							input: outcome.lastStepInputTokens,
-							limit: step.contextWindow,
-							pct: Math.round((outcome.lastStepInputTokens / step.contextWindow) * 100),
-						}
-					: null;
-			log.info("turn completed", {
-				conversation: convId,
+			// Finish (design/runtime-turn.md → phase 6): the attempt's
+			// durable landing — ownership-bounded anchor + retention
+			// source, defiance guard, persist + retention enqueue, window
+			// signal, the completion line. Delivery and the authority
+			// checks bracketing the finish path stay here: exactly-one
+			// onDone is the sink contract, and the post-delivery check
+			// owns the stop-during-flush window.
+			const landed = landAttempt({
+				convId,
 				epoch,
-				finish: outcome.finishReason,
-				usage: outcome.usage && {
-					input: outcome.usage.inputTokens ?? null,
-					cacheRead: outcome.usage.inputTokenDetails?.cacheReadTokens ?? null,
-					cacheWrite: outcome.usage.inputTokenDetails?.cacheWriteTokens ?? null,
-					output: outcome.usage.outputTokens ?? null,
-				},
-				window,
+				conv,
+				modelEntries: () => store.modelEntries(convId),
+				memoryEligibility: () => store.memoryEligibility(convId),
+				steerMark: outcome.steerMark,
+				responseMessage: outcome.responseMessage,
+				finishReason: outcome.finishReason,
+				usage: outcome.usage,
+				lastStepInputTokens: outcome.lastStepInputTokens,
+				contextWindow: step.contextWindow,
+				forcedKind: state.forcedCompletion(),
+				sink,
+				append: (messages, opts) => store.append(convId, messages, opts),
+				memory: this.deps.memory,
 			});
-			if (window && window.pct >= 80) {
-				log.warn("context window ≥80% — history is approaching the limit", {
-					conversation: convId,
-					...window,
-				});
-			}
-			await notifyAll(
-				forcedKind !== null ? { kind: "completed", forced: forcedKind } : { kind: "completed" },
-			);
+			await notifyAll(landed.done);
 			// onDone may itself await a slow delivery. A stop during that
 			// await revokes this turn before it can start fresh background
 			// work (in particular auto-compaction with a new controller).
@@ -1105,48 +960,29 @@ export class Runtime {
 				const lane = this.lanes.get(convId);
 				if (lane !== undefined && lane.controller === controller) lane.controller = null;
 			}
-			// Skill reviewer (DESIGN.md): every completed turn gates a
-			// possible background review — fire-and-forget, off the lane,
-			// never delaying the successor. Fenced/failed turns never
-			// reach here, and neither do memory-excluded ones: off the
-			// record means no durable distillation, so the reviewer never
-			// sees the turn and the prior-turn chain breaks there (an
-			// excluded turn is never evidence for the next review either).
-			// The backstop only sees bugs: gate failures fall back inside
-			// considerTurn, review failures log their own lines.
-			if (this.reviewer) {
-				if (store.get(convId)?.memoryExcluded ?? conv.memoryExcluded) {
-					log.info("reviewer skipped — memory excluded", { conversation: convId });
-					this.lastTurns.delete(convId);
-				} else {
-					const turnSeq = ++this.turnCounter;
-					const snapshot: CompletedTurn = {
-						conversationId: convId,
-						turnSeq,
-						operatorTexts: finalSource.userTexts,
-						replyText: reply ? messageText(reply) : "",
-						toolNames: outcome.toolCalls,
-						toolDigest: outcome.digestRing.map((p) => p.entry),
-					};
-					void considerTurn(this.reviewer, snapshot, this.lastTurns.get(convId)).catch(
-						(err: unknown) => {
-							log.error("reviewer failed", err, { conversation: convId });
-						},
-					);
-					this.lastTurns.set(convId, {
-						operatorTexts: snapshot.operatorTexts,
-						replyText: snapshot.replyText,
-						toolDigest: snapshot.toolDigest,
-					});
-				}
-			}
+			// The exchange as it ended rides the reviewer's snapshot —
+			// fire-and-forget off the lane, with the runtime's counter and
+			// prior-turn chain injected (turn/finish.ts).
+			submitTurnReview({
+				convId,
+				reviewer: this.reviewer,
+				memoryExcluded: () => store.get(convId)?.memoryExcluded ?? conv.memoryExcluded,
+				nextTurnSeq: () => ++this.turnCounter,
+				priorTurn: () => this.lastTurns.get(convId),
+				rememberTurn: (prior) => this.lastTurns.set(convId, prior),
+				forgetTurn: () => this.lastTurns.delete(convId),
+				source: landed.source,
+				reply: landed.reply,
+				toolCalls: outcome.toolCalls,
+				digestRing: outcome.digestRing,
+			});
 			// Auto-compaction (DESIGN.md, Compaction): the reply has landed and
 			// the sinks are released; the lane stays busy through the summary
 			// call so a queued successor reads the compacted view, not a
 			// mid-flight one. Failure is loud but lossless — no boundary
 			// written, the next threshold crossing retries. Deliberately NOT
 			// thrown to the outer handler: onDone already fired.
-			if (window && window.pct >= COMPACT_AT_PCT) {
+			if (landed.window && landed.window.pct >= COMPACT_AT_PCT) {
 				try {
 					await this.doCompact(conv, "threshold");
 				} catch (err) {

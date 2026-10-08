@@ -4,20 +4,20 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { tool, type LanguageModel, type UIMessage, type UIMessageChunk } from "ai";
-import { z } from "zod";
 import {
 	APICallError,
 	type LanguageModelV4,
 	type LanguageModelV4StreamPart,
 } from "@ai-sdk/provider";
-import { appAddress, captureConversationSettings, openStore } from "./conversation.ts";
-import { parseConfig } from "./config.ts";
-import type { JevClient } from "./jev.ts";
+import { type LanguageModel, tool, type UIMessage, type UIMessageChunk } from "ai";
+import { z } from "zod";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
-import { setLogFile } from "./log.ts";
-import { Runtime, userMessage, type TurnDone, type TurnSink } from "./runtime.ts";
 import { readFileTool } from "./agent/tools/read.ts";
+import { parseConfig } from "./config.ts";
+import { appAddress, captureConversationSettings, openStore } from "./conversation.ts";
+import type { JevClient } from "./jev.ts";
+import { setLogFile } from "./log.ts";
+import { Runtime, type TurnDone, type TurnSink, userMessage } from "./runtime.ts";
 
 let dirs: string[] = [];
 function tmpdb(): string {
@@ -2509,111 +2509,11 @@ describe("skill reviewer hook", () => {
 		release();
 		await sleep(20);
 	});
-	// A model that calls a tool, then answers — scripted streams per step.
-	function toolThenText(toolName: string, deltas: string[]): LanguageModel {
-		let step = 0;
-		return {
-			specificationVersion: "v4",
-			provider: "fake",
-			modelId: "fake-tool",
-			supportedUrls: {},
-			doGenerate() {
-				throw new Error("unimplemented");
-			},
-			doStream() {
-				const n = step++;
-				const stream = new ReadableStream<LanguageModelV4StreamPart>({
-					start(controller) {
-						controller.enqueue({ type: "stream-start", warnings: [] });
-						if (n === 0) {
-							controller.enqueue({ type: "tool-call", toolCallId: "c1", toolName, input: "{}" });
-							controller.enqueue({
-								type: "finish",
-								finishReason: { unified: "tool-calls", raw: undefined },
-								usage: {
-									inputTokens: {
-										total: 1,
-										noCache: undefined,
-										cacheRead: undefined,
-										cacheWrite: undefined,
-									},
-									outputTokens: { total: 1, text: undefined, reasoning: undefined },
-								},
-							});
-						} else {
-							controller.enqueue({ type: "text-start", id: "t1" });
-							for (const d of deltas)
-								controller.enqueue({ type: "text-delta", id: "t1", delta: d });
-							controller.enqueue({ type: "text-end", id: "t1" });
-							controller.enqueue({
-								type: "finish",
-								finishReason: { unified: "stop", raw: undefined },
-								usage: {
-									inputTokens: {
-										total: 1,
-										noCache: undefined,
-										cacheRead: undefined,
-										cacheWrite: undefined,
-									},
-									outputTokens: { total: 1, text: undefined, reasoning: undefined },
-								},
-							});
-						}
-						controller.close();
-					},
-				});
-				return { stream };
-			},
-		} as unknown as LanguageModel;
-	}
-
-	test("a completed turn gates its snapshot — operator burst, reply, tool names", async () => {
-		const store = openStore(tmpdb());
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model: toolThenText("bash", ["do", "ne"]), system: "test" }),
-			makeTools: () => ({
-				bash: tool({ inputSchema: z.object({}), execute: async () => "ok" }),
-			}),
-		});
-		let gated: unknown = null;
-		let markGated: () => void = () => {};
-		const gatedIt = new Promise<void>((res) => {
-			markGated = res;
-		});
-		runtime.setReviewer({
-			// The gate stub records the state considerTurn built — the
-			// hook's snapshot, observed through the real call path.
-			gate: {
-				decide: async (state) => {
-					gated = state;
-					markGated();
-					return { answers: {}, inputTokens: null, cost: null };
-				},
-			},
-			thresholds: { correction: 0.8, procedure: 0.8 },
-			queueCap: 3,
-			evidence: { calls: 8, argChars: 300, outChars: 300 },
-			reviewModel: async () => {
-				throw new Error("empty answers never review — must not resolve");
-			},
-			store,
-			skillsDir: "/none",
-			workspaceDir: "/none",
-			notify: async () => {},
-		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "run it" }]), sink);
-		expect(await sink.done).toEqual({ kind: "completed" });
-		// Off-lane: completion never waits for the gate.
-		await gatedIt;
-		expect(gated as string).toContain("run it");
-		expect(gated as string).toContain("done");
-		expect(gated as string).toContain("tools: bash (1 total)");
-		store.close();
-	});
-
+	// The finish-side behaviors (snapshot construction, exclusion,
+	// prior-turn chain, the digest payload) moved to turn/finish.test.ts
+	// at the module seam; what stays here is the cross-phase net:
+	// shutdown fencing a held gate, and authority (a fenced turn never
+	// reaches the finish path at all).
 	test("a fenced turn never gates", async () => {
 		const { store, conv, runtime } = setup(["a", "b", "c", "d", "e"], 20);
 		let gated = false;
@@ -2642,165 +2542,6 @@ describe("skill reviewer hook", () => {
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		await sleep(50); // the fire-and-forget gate would have fired by now
 		expect(gated).toBe(false);
-		store.close();
-	});
-
-	test("a memory-excluded turn never gates — the reviewer skips it and logs why", async () => {
-		const store = openStore(tmpdb());
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const root = mkdtempSync(join(tmpdir(), "goblin-rt-"));
-		dirs.push(root);
-		const logFile = join(root, "goblin.log");
-		setLogFile(logFile);
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model: fakeModel(["answer"], 5), system: "test" }),
-			makeTools: () => ({}),
-		});
-		runtime.setReviewer({
-			gate: {
-				decide: async () => {
-					throw new Error("memory-excluded turns must never gate");
-				},
-			},
-			thresholds: { correction: 0.8, procedure: 0.8 },
-			queueCap: 3,
-			evidence: { calls: 8, argChars: 300, outChars: 300 },
-			reviewModel: async () => {
-				throw new Error("must not resolve");
-			},
-			store,
-			skillsDir: "/none",
-			workspaceDir: "/none",
-			notify: async () => {},
-		});
-		store.applySettings(conv.id, { memoryExcluded: true });
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "off the record" }]), sink);
-		expect(await sink.done).toEqual({ kind: "completed" });
-		await sleep(50);
-		const skipped = readFileSync(logFile, "utf8")
-			.trim()
-			.split("\n")
-			.map((l) => JSON.parse(l) as Record<string, unknown>)
-			.find((e) => e.msg === "reviewer skipped — memory excluded");
-		expect(skipped).toMatchObject({ conversation: conv.id });
-		store.close();
-	});
-
-	test("memory switched off mid-turn prevents review at completion", async () => {
-		const store = openStore(tmpdb());
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model: fakeModel(["first", "last"], 30), system: "test" }),
-			makeTools: () => ({}),
-		});
-		let gated = false;
-		runtime.setReviewer({
-			gate: {
-				decide: async () => {
-					gated = true;
-					return { answers: {}, inputTokens: null, cost: null };
-				},
-			},
-			thresholds: { correction: 0.8, procedure: 0.8 },
-			queueCap: 3,
-			evidence: { calls: 8, argChars: 300, outChars: 300 },
-			reviewModel: async () => {
-				throw new Error("must not review");
-			},
-			store,
-			skillsDir: "/none",
-			workspaceDir: "/none",
-			notify: async () => {},
-		});
-		const sink = new RecordingSink();
-		const onDone = sink.onDone.bind(sink);
-		sink.onDone = (done) => {
-			if (done.kind === "completed") store.applySettings(conv.id, { memoryExcluded: true });
-			onDone(done);
-		};
-		runtime.submit(conv, userMessage([{ type: "text", text: "private now" }]), sink);
-		expect(await sink.done).toEqual({ kind: "completed" });
-		await sleep(20);
-		expect(gated).toBe(false);
-		store.close();
-	});
-
-	test("the turn's tool digest reaches the review payload through the real stream path", async () => {
-		const store = openStore(tmpdb());
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		const root = mkdtempSync(join(tmpdir(), "goblin-rt-"));
-		dirs.push(root);
-		const workspace = join(root, "ws");
-		const skills = join(workspace, "skills");
-		mkdirSync(skills, { recursive: true });
-		const logFile = join(root, "goblin.log");
-		setLogFile(logFile);
-		const prompts: string[] = [];
-		const reviewModel = {
-			specificationVersion: "v4",
-			provider: "fake",
-			modelId: "fake-review",
-			supportedUrls: {},
-			doGenerate: async (options: unknown) => {
-				prompts.push(JSON.stringify((options as { prompt?: unknown }).prompt ?? null));
-				return {
-					content: [{ type: "text", text: "nothing worth saving" }],
-					finishReason: { unified: "stop", raw: undefined },
-					usage: {
-						inputTokens: {
-							total: 1,
-							noCache: undefined,
-							cacheRead: undefined,
-							cacheWrite: undefined,
-						},
-						outputTokens: { total: 1, text: undefined, reasoning: undefined },
-					},
-					warnings: [],
-				};
-			},
-			doStream: () => {
-				throw new Error("unimplemented");
-			},
-		} as unknown as LanguageModel;
-		const runtime = new Runtime({
-			store,
-			buildStep: () => ({ model: toolThenText("bash", ["done"]), system: "test" }),
-			makeTools: () => ({
-				bash: tool({
-					inputSchema: z.object({}),
-					execute: async () => ({ exit_code: 0, stdout: "listed" }),
-				}),
-			}),
-		});
-		runtime.setReviewer({
-			gate: {
-				decide: async () => ({
-					answers: { correction: 0, procedure: 0.99 },
-					inputTokens: 1,
-					cost: 0,
-				}),
-			},
-			thresholds: { correction: 0.8, procedure: 0.8 },
-			queueCap: 3,
-			evidence: { calls: 8, argChars: 300, outChars: 300 },
-			reviewModel: async () => ({ ref: "fake/review", model: reviewModel }),
-			store,
-			skillsDir: skills,
-			workspaceDir: workspace,
-			notify: async () => {},
-			skillsRefBin: join(root, "nonexistent-skills-ref"),
-		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "list the files" }]), sink);
-		expect(await sink.done).toEqual({ kind: "completed" });
-		for (let i = 0; i < 500 && prompts.length === 0; i++) await sleep(2);
-		expect(prompts).toHaveLength(1);
-		expect(prompts[0]).toContain("- bash — ok");
-		expect(prompts[0]).toContain("listed");
-		expect(prompts[0]).toContain("list the files");
 		store.close();
 	});
 });
@@ -3731,91 +3472,6 @@ describe("loop landings", () => {
 		expect(requests.at(-1)!.toolChoice).toBe("none");
 		expect(requests.at(-1)!.prompt).toContain("context window is nearly full");
 		expect(s1.text).toBe("the wrapped answer");
-		store.close();
-	});
-});
-
-describe("forced-landing defiance guard", () => {
-	// Review 2026-10-07, m3: the "turn always ends in an answer" invariant
-	// rested on provider compliance with toolChoice:none. This model
-	// ignores it — every step, forced or not, emits a tool call and
-	// finish=tool-calls. The guard must close the turn with synthetic
-	// prose anyway: stored, and live on the delta path (telegram's wire).
-	test("defiant model still gets an answer — synthetic prose, stamped", async () => {
-		const requests: { toolChoice: unknown }[] = [];
-		const model: LanguageModel = {
-			specificationVersion: "v4",
-			provider: "fake",
-			modelId: "defiant",
-			supportedUrls: {},
-			doGenerate() {
-				throw new Error("unused");
-			},
-			async doStream(options) {
-				requests.push({ toolChoice: options.toolChoice?.type ?? null });
-				return {
-					stream: new ReadableStream({
-						start(controller) {
-							controller.enqueue({ type: "stream-start", warnings: [] });
-							controller.enqueue({
-								type: "tool-call",
-								toolCallId: `c${requests.length}`,
-								toolName: "probe",
-								input: "{}",
-							} satisfies LanguageModelV4StreamPart);
-							controller.enqueue({
-								type: "finish",
-								finishReason: { unified: "tool-calls", raw: undefined },
-								usage: {
-									inputTokens: {
-										total: 900,
-										noCache: undefined,
-										cacheRead: undefined,
-										cacheWrite: undefined,
-									},
-									outputTokens: { total: 1, text: undefined, reasoning: undefined },
-								},
-							} satisfies LanguageModelV4StreamPart);
-							controller.close();
-						},
-					}),
-				};
-			},
-		};
-		const store = openStore(tmpdb());
-		const conv = store.resolve(appAddress("defiant"), "/w");
-		let executions = 0;
-		const runtime = new Runtime({
-			store,
-			// 900/1000 on every step — the context landing drives the cut.
-			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
-			makeTools: () => ({
-				probe: tool({
-					inputSchema: z.object({}),
-					execute: () => {
-						executions++;
-						return "ok";
-					},
-				}),
-			}),
-		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "never answer" }]), sink);
-		expect(await sink.done).toEqual({ kind: "completed", forced: "context" });
-		while (runtime.busy(conv.id)) await sleep(1);
-		await runtime.shutdown();
-		// The forced step was sent with toolChoice none — and defied.
-		expect(requests.at(-1)!.toolChoice).toBe("none");
-		expect(executions).toBeGreaterThanOrEqual(1);
-		// The invariant's last word: prose in history AND on the delta
-		// wire, worded for the landing that fired.
-		const reply = store.history(conv.id)[1] as UIMessage;
-		const text = reply.parts
-			.filter((p) => p.type === "text")
-			.map((p) => p.text)
-			.join("");
-		expect(text).toContain("My context window filled up before I wrote my answer");
-		expect(sink.text).toContain("My context window filled up before I wrote my answer");
 		store.close();
 	});
 });

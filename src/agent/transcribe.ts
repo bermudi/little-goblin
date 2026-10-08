@@ -83,10 +83,13 @@ export interface TranscribeOptions {
 	segmentSeconds?: number;
 }
 
-// null = no transcript produced (no speech found, or every segment
-// failed — the per-segment warn carries why). ffmpeg absence, a corrupt
-// file, and other IO/provider failures propagate — the intake caller
-// degrades them to a warn + path-referenced attachment.
+// null = no speech found (an empty transcript under the cap, or every
+// segment empty over it). Failures — including a provider outage that
+// leaves the over-cap path with zero transcribed segments — propagate
+// instead: a failure must never read as silence. ffmpeg absence, a
+// corrupt file, and other IO/provider failures propagate the same way
+// — the intake caller degrades them to a warn + path-referenced
+// attachment.
 export async function transcribeAudio(
 	model: TranscriptionModel,
 	file: SpeechFile,
@@ -119,6 +122,10 @@ export async function transcribeAudio(
 					file: file.filename,
 					segment: seg,
 				});
+				// Nothing transcribed means there is no partial to keep:
+				// returning null would read as "no speech" to every caller
+				// (#101) — the provider error must name itself instead.
+				if (texts.length === 0) throw err;
 				break;
 			}
 		}

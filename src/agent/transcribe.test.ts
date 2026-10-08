@@ -121,6 +121,85 @@ describe("transcribeAudio", () => {
 		expect(codecs).toEqual(["opus", "opus", "opus"]);
 	});
 
+	test("an over-cap outage with nothing transcribed fails loud, never reads as no-speech", async () => {
+		if (Bun.which("ffmpeg") === null) return; // environment dep
+		const dir = tmpdir_();
+		const src = join(dir, "long.ogg");
+		const gen = Bun.spawnSync([
+			"ffmpeg",
+			"-hide_banner",
+			"-loglevel",
+			"error",
+			"-f",
+			"lavfi",
+			"-i",
+			"sine=frequency=440:duration=5",
+			"-ac",
+			"1",
+			"-b:a",
+			"48k",
+			src,
+		]);
+		if (gen.exitCode !== 0) throw new Error(`test audio gen: ${gen.stderr.toString()}`);
+		const model: TranscriptionModelV2 = {
+			specificationVersion: "v2",
+			provider: "test",
+			modelId: "fake-whisper",
+			doGenerate: async () => {
+				throw new Error("whisper is down");
+			},
+		};
+		// A null here would ride the tool's fixed "may contain no
+		// speech" string — the provider error must reach the caller.
+		await expect(transcribeAudio(model, file(src), { maxBytes: 1 })).rejects.toThrow(
+			"whisper is down",
+		);
+	});
+
+	test("an over-cap outage mid-stream keeps the segments before it", async () => {
+		if (Bun.which("ffmpeg") === null) return; // environment dep
+		const dir = tmpdir_();
+		const src = join(dir, "long.ogg");
+		const gen = Bun.spawnSync([
+			"ffmpeg",
+			"-hide_banner",
+			"-loglevel",
+			"error",
+			"-f",
+			"lavfi",
+			"-i",
+			"sine=frequency=440:duration=25",
+			"-ac",
+			"1",
+			"-b:a",
+			"48k",
+			src,
+		]);
+		if (gen.exitCode !== 0) throw new Error(`test audio gen: ${gen.stderr.toString()}`);
+		let n = 0;
+		const model: TranscriptionModelV2 = {
+			specificationVersion: "v2",
+			provider: "test",
+			modelId: "fake-whisper",
+			doGenerate: async () => {
+				n += 1;
+				if (n === 2) throw new Error("whisper dropped mid-stream");
+				return {
+					text: `chunk-${n}`,
+					segments: [],
+					language: "en",
+					durationInSeconds: 1,
+					warnings: [],
+					response: { timestamp: new Date(), modelId: "fake-whisper" },
+				};
+			},
+		};
+		// Partial beats nothing — the boundary is logged and the prefix kept.
+		expect(await transcribeAudio(model, file(src), { maxBytes: 1, segmentSeconds: 10 })).toBe(
+			"chunk-1",
+		);
+	});
+
 	test("a corrupt source fails loud through ffmpeg", async () => {
 		if (Bun.which("ffmpeg") === null) return;
 		const f = join(tmpdir_(), "junk.ogg");

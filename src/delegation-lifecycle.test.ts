@@ -750,6 +750,30 @@ describe("delegation watcher", () => {
 		expect(h.wakes[0]).not.toContain("agent screen");
 	});
 
+	// #106: a directory named report.md (harness misbehavior) used to
+	// throw EISDIR out of reportBody — the scan's per-row catch logged
+	// it every 15 s forever while the row held its live slot and the
+	// completion never fired. A non-regular file at the report path is
+	// no report: the screen tail is the fallback channel.
+	test("a directory named report.md completes on the screen tail, not a wedge", async () => {
+		const h = harness();
+		const d = runningRow(h, "wedge", 1);
+		h.agents.set(d.agentName, agent(d.agentName, "done", 2));
+		h.screens.set(`agent:${d.agentName}`, "the real result on screen");
+		mkdirSync(join(h.delegationsDir, String(d.id), "report.md"), { recursive: true });
+		const w = startDelegationLifecycle(h.deps);
+		await w.tick();
+		w.stopTicker();
+		expect(h.store.get(d.id)!.status).toBe("done");
+		expect(h.wakes).toHaveLength(1);
+		expect(h.wakes[0]).toContain("the real result on screen");
+		// And it stays settled — a second scan adds no notice, no error.
+		const w2 = startDelegationLifecycle(h.deps);
+		await w2.tick();
+		w2.stopTicker();
+		expect(h.wakes).toHaveLength(1);
+	});
+
 	test("the notice body rides fenced — a report can't close its fence or give orders", async () => {
 		const h = harness();
 		const d = runningRow(h, "pwned", 1);

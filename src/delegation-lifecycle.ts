@@ -1014,12 +1014,41 @@ async function reportBody(
 	agentGone = false,
 	deep = false,
 ): Promise<string> {
-	const reportPath = reportPathFor(deps, d);
+	const report = readReport(reportPathFor(deps, d), d.id);
+	if (report !== null) return report;
+	// No report — the screen is the fallback channel, and a done
+	// verdict reads DEEP (agent read pages alternate-screen transcript
+	// history for full-screen agents); needs-input and failed read the
+	// shallow tail — the relay wants the dialog, not the transcript.
+	try {
+		return await readScreenTail(deps, d, deep ? DEEP_LINES : TAIL_LINES, { agentGone });
+	} catch (err) {
+		return `(screen unreadable: ${err instanceof Error ? err.message : String(err)})`;
+	}
+}
+
+// The report bytes, capped at REPORT_CAP — null when there is no
+// report to read. ENOENT (and only ENOENT) is "no report"; so is a
+// non-regular file at the path: a directory named report.md (harness
+// misbehavior, #106) used to throw EISDIR out of every scan, wedging
+// the row's completion forever in the per-row catch while it held a
+// live slot. The screen tail is the fallback channel; one warn line
+// records the oddity, and the completion it unblocks settles the row
+// so the warn does not repeat.
+function readReport(path: string, id: number): string | null {
 	let fd: number | null = null;
 	try {
+		const st = statSync(path);
+		if (!st.isFile()) {
+			log.warn("delegation report path is not a regular file — screen tail fallback", {
+				delegation: id,
+				reportPath: path,
+			});
+			return null;
+		}
 		// The cap holds before the read: a runaway report is never
 		// loaded whole just to be truncated.
-		fd = openSync(reportPath, "r");
+		fd = openSync(path, "r");
 		const size = fstatSync(fd).size;
 		const buf = Buffer.alloc(Math.min(size, REPORT_CAP));
 		readSync(fd, buf, 0, buf.length, 0);
@@ -1038,22 +1067,14 @@ async function reportBody(
 				}
 				head = safe;
 			}
-			return `${head}\n\n… full report at ${reportPath}`;
+			return `${head}\n\n… full report at ${path}`;
 		}
 		return buf.toString("utf8");
 	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw err;
 	} finally {
 		if (fd !== null) closeSync(fd);
-	}
-	// No report — the screen is the fallback channel, and a done
-	// verdict reads DEEP (agent read pages alternate-screen transcript
-	// history for full-screen agents); needs-input and failed read the
-	// shallow tail — the relay wants the dialog, not the transcript.
-	try {
-		return await readScreenTail(deps, d, deep ? DEEP_LINES : TAIL_LINES, { agentGone });
-	} catch (err) {
-		return `(screen unreadable: ${err instanceof Error ? err.message : String(err)})`;
 	}
 }
 

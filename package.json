@@ -10,6 +10,8 @@
     "dev": "bun --watch run src/index.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.client.json && tsc --noEmit -p app/tsconfig.json",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
     "app:build": "vite build app"
   },
   "dependencies": {
@@ -32,6 +34,7 @@
   "devDependencies": {
     "@ai-sdk/provider": "4.0.18",
     "@ai-sdk/react": "4.0.116",
+    "@biomejs/biome": "^2.5.15",
     "@types/bun": "latest",
     "@types/json5": "^2.2.0",
     "@types/react": "19.3.0",

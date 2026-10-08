@@ -425,15 +425,16 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 			// InboxRecordError, and must not reach handleMessageDurably as
 			// one. Log it, tell the operator, let grammy consume the update.
 			log.error("command failed", err, { conversation: target?.id ?? lane });
-			env.api
-				.sendMessage(
+			withTimeout(
+				env.api.sendMessage(
 					target?.chatId ?? msg.chat.id,
 					`command failed: ${err instanceof Error ? err.message : String(err)}`,
 					target == null || target.threadId === null ? {} : { message_thread_id: target.threadId },
-				)
-				.catch((e: unknown) => {
-					log.warn("command failure reply failed", e);
-				});
+				),
+				"sendMessage (command reply)",
+			).catch((e: unknown) => {
+				log.warn("command failure reply failed", e);
+			});
 			return;
 		}
 		if (handled) return;

@@ -16,6 +16,7 @@ import { forgetDocument } from "../memory-forget.ts";
 import type { MemoryQueue } from "../memory-queue.ts";
 import type { Runtime } from "../runtime.ts";
 import { log } from "../log.ts";
+import { withTimeout } from "./deadline.ts";
 import { ForgetListings, renderNumberedListing, type ForgetItem } from "./forget-listings.ts";
 
 export interface CommandMemoryDeps {
@@ -80,7 +81,12 @@ function clockHM(iso: string): string {
 }
 
 function reply(deps: CommandDeps, conv: Conversation, text: string): void {
-	deps.api.sendMessage(conv.chatId, text, target(conv)).catch((err: unknown) => {
+	// Same 30s send budget as every sibling call — a wedged bot-api
+	// fails here instead of hanging grammy's client-wide 500s default.
+	withTimeout(
+		deps.api.sendMessage(conv.chatId, text, target(conv)),
+		"sendMessage (command reply)",
+	).catch((err: unknown) => {
 		log.warn("command reply failed", err);
 	});
 }

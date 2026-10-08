@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,8 @@ import { HindsightClient } from "../hindsight.ts";
 import { startMemoryWorker } from "../memory.ts";
 import type { Runtime } from "../runtime.ts";
 import { handleCommand, type CommandDeps } from "./commands.ts";
+import { TelegramTimeoutError } from "./deadline.ts";
+import { log } from "../log.ts";
 
 let dirs: string[] = [];
 function tmpdb(): string {
@@ -161,6 +163,30 @@ describe("commands", () => {
 			() => ({ stopped: false, settled: Promise.resolve() });
 		expect(handleCommand(deps, conv, "/stop")).toBe(true);
 		expect(sent[0]).toBe("nothing was running");
+		store.close();
+	});
+
+	test("a wedged bot-api fails the command reply at the send budget, not grammy's 500s", async () => {
+		const { store, conv, deps } = setup();
+		// Never settles — a hung-but-alive bot-api connection. The reply is
+		// fire-and-forget, so the only observable bound is the warn firing
+		// at the 30s budget every sibling send uses (bug-hunt finding 16).
+		deps.api.sendMessage = () => new Promise<never>(() => {});
+		const warn = spyOn(log, "warn");
+		jest.useFakeTimers();
+		try {
+			expect(handleCommand(deps, conv, "/stop")).toBe(true);
+			jest.advanceTimersByTime(30_000);
+			await new Promise<void>((r) => process.nextTick(r));
+			const call = warn.mock.calls.find(([msg]) => msg === "command reply failed");
+			expect(call).toBeDefined();
+			const err = call![1];
+			expect(err).toBeInstanceOf(TelegramTimeoutError);
+			expect((err as TelegramTimeoutError).label).toBe("sendMessage (command reply)");
+		} finally {
+			jest.useRealTimers();
+			warn.mockRestore();
+		}
 		store.close();
 	});
 

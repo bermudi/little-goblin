@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
 import type { Api } from "grammy";
 import type { Config } from "../config.ts";
 import { allowedUserGate, applyCommands, applyMenuButton, conversationAddress } from "./mod.ts";
@@ -150,6 +150,8 @@ import {
 } from "./mod.ts";
 import { openTelegramInbox } from "./inbox.ts";
 import { openPings, type PingStore } from "./pings.ts";
+import { TelegramTimeoutError } from "./deadline.ts";
+import { log } from "../log.ts";
 
 let intakeDirs: string[] = [];
 function tmpdb(): string {
@@ -410,6 +412,47 @@ describe("handleMessage", () => {
 				(c) => c.method === "sendMessage" && c.text?.includes("command failed: runtime wedged"),
 			),
 		).toBe(true);
+		h.store.close();
+	});
+
+	test("the command-failure reply is bounded by the send budget, not grammy's 500s", async () => {
+		const h = routerHarness();
+		h.env.deps.runtime = {
+			stop: () => {
+				throw new Error("runtime wedged");
+			},
+		} as unknown as Runtime;
+		// The failure reply wedges mid-send — it must still fail (and warn)
+		// at the 30s budget every sibling send uses.
+		(
+			h.env.api as unknown as { sendMessage: (chat: number, text: string) => Promise<never> }
+		).sendMessage = (chat, text) => {
+			h.apiCalls.push({ method: "sendMessage", text, chat });
+			return new Promise(() => {});
+		};
+		const warn = spyOn(log, "warn");
+		jest.useFakeTimers();
+		try {
+			expect(() =>
+				handleMessageDurably(
+					h.env,
+					tgMsg({ message_id: 11, chat: { id: 1, type: "private" }, text: "/stop" }),
+					901,
+				),
+			).not.toThrow();
+			// Drain the async intake chain to the command-failure catch.
+			for (let i = 0; i < 10; i++) await Promise.resolve();
+			jest.advanceTimersByTime(30_000);
+			await new Promise<void>((r) => process.nextTick(r));
+			const call = warn.mock.calls.find(([msg]) => msg === "command failure reply failed");
+			expect(call).toBeDefined();
+			const err = call![1];
+			expect(err).toBeInstanceOf(TelegramTimeoutError);
+			expect((err as TelegramTimeoutError).label).toBe("sendMessage (command reply)");
+		} finally {
+			jest.useRealTimers();
+			warn.mockRestore();
+		}
 		h.store.close();
 	});
 

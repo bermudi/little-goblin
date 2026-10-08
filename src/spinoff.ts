@@ -9,10 +9,17 @@
 
 import { randomUUID } from "node:crypto";
 import { appLink } from "./app-link.ts";
+import type { DelegationPin } from "./agent/tools/delegate.ts";
 import { paths } from "./config.ts";
-import type { Conversation, ConversationStore, ModelSettings } from "./conversation.ts";
+import {
+	channelOf,
+	parseAddress,
+	type Conversation,
+	type ConversationStore,
+	type ModelSettings,
+} from "./conversation.ts";
 import { log } from "./log.ts";
-import { projectRollText } from "./rolling.ts";
+import { isRollingChat, projectRollText } from "./rolling.ts";
 
 export interface SpinOffDeps {
 	store: ConversationStore;
@@ -65,6 +72,33 @@ export function discardSpinOff(
 		return;
 	}
 	log.info("spin-off kept — operator wrote in it", { conversation: conversationId, reason });
+}
+
+// Where a delegation launch pins its notices — the Spin-off trigger
+// map (design/app.md → Spin-off): an app conversation is already the
+// durable home and pins to itself, a rolling DM gets the fork, and
+// group topics / legacy DMs keep their Telegram address. Only the
+// rolling fork spins off: nothing else triggers it.
+export function launchPin(deps: SpinOffDeps, conv: Conversation, name: string): DelegationPin {
+	if (channelOf(conv.id) === "app") {
+		return { address: { chatId: 0, threadId: null }, appConversation: conv.id };
+	}
+	const source = parseAddress(conv.id);
+	if (source !== null && source.kind === "rolling" && isRollingChat(conv.chatId)) {
+		const spun = spinOff(deps, conv, name);
+		// The fork's high-water mark at copy time: discard deletes only
+		// while nothing newer landed, so operator input written into the
+		// visible fork survives a failed launch.
+		const seqAtFork = deps.store.lastSeq(spun.conv.id);
+		return {
+			address: { chatId: 0, threadId: null },
+			appConversation: spun.conv.id,
+			movedToApp: { title: name, link: spun.link },
+			discard: (reason?: string) =>
+				discardSpinOff(deps.store, spun.conv.id, seqAtFork, reason ?? "unspecified"),
+		};
+	}
+	return { address: { chatId: conv.chatId, threadId: conv.threadId } };
 }
 
 async function retitle(deps: SpinOffDeps, conversationId: string): Promise<void> {

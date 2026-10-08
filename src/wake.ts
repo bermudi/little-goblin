@@ -14,11 +14,14 @@
 
 import type { Conversation, ConversationAddress, ConversationStore } from "./conversation.ts";
 import { paths, type ConfigRef, type TtsConfig } from "./config.ts";
+import type { JevClient } from "./jev.ts";
 import { userMessage, type Runtime, type TurnSink } from "./runtime.ts";
 import { isRollingChat, routeDm, type RollDeps } from "./rolling.ts";
 import { log } from "./log.ts";
+import { makeBellSink, type BellDeps } from "./tg/bell.ts";
 import { makeDeliverySink, type DeliveryApi } from "./tg/delivery.ts";
 import { sendRollMarker } from "./tg/notify.ts";
+import type { PingStore } from "./tg/pings.ts";
 
 export interface WakeDeps {
 	store: ConversationStore;
@@ -38,6 +41,52 @@ export interface WakeDeps {
 export interface WakeAddress {
 	chatId: number;
 	threadId: number | null;
+}
+
+/** The fixtures makeWakeDeps derives the routing rules over — the
+ *  composition root supplies these; this module decides how a fire
+ *  routes. */
+export interface WakeBase {
+	store: ConversationStore;
+	runtime: Runtime;
+	api: DeliveryApi;
+	configRef: ConfigRef;
+	synthesize(text: string, tts: TtsConfig): Promise<Uint8Array[]>;
+	// The Rolling DM follow-up gate — the reviewer's JevClient; absent
+	// means a past-gap burst joins current unscored.
+	followUpGate(): Pick<JevClient, "decide"> | undefined;
+	// Shared with intake's reply routing so a swipe-reply to a spin-off
+	// ping reaches the app conversation that rang (design/app.md →
+	// Spin-off → Telegram rings).
+	pings: PingStore;
+}
+
+// The wake path's routing rules, assembled once at boot: a fire into
+// a private chat routes through the roller exactly like intake (the
+// gap reads config live), and an app conversation's background turn
+// rings Telegram through the bell — the headless sink it submits with.
+export function makeWakeDeps(base: WakeBase): WakeDeps {
+	const bell: BellDeps = {
+		api: base.api,
+		store: base.store,
+		pings: base.pings,
+		allowedUsers: () => base.configRef.current.allowedUsers,
+		publicUrl: () => base.configRef.current.publicUrl || undefined,
+	};
+	return {
+		store: base.store,
+		runtime: base.runtime,
+		api: base.api,
+		configRef: base.configRef,
+		synthesize: base.synthesize,
+		roll: {
+			store: base.store,
+			runtime: base.runtime,
+			gapMinutes: () => base.configRef.current.telegram.dmGapMinutes,
+			gate: base.followUpGate,
+		},
+		bell: (conv: Conversation): TurnSink => makeBellSink(bell, conv, "delegation notice"),
+	};
 }
 
 export function wake(

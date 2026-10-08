@@ -293,7 +293,9 @@ works; it is never required.
 
 ```text
 src/
-  index.ts          composition root: config → auth → conversations → bot → http
+  index.ts          composition root: config → auth → conversations → bot →
+                    http — it wires, it never rules; a rule with no owning
+                    module gets one before it may live here
   config.ts         goblin.json5, zod-validated
   auth.ts           auth.jsonl reader + "!" command resolution +
                     pass-cli-direct poisoning (resolve rejects, never spawns)
@@ -314,7 +316,16 @@ src/
                     stop, read + the watcher's verdicts and boot
                     recovery — herdr state → turns in the pinned
                     conversation; the ticker is a thin timer over
-                    the owner's scan
+                    the owner's scan; delegationWake owns the notice
+                    routing (never roll the DM; app-pinned rows wake
+                    their conversation)
+  wake.ts           the shared wake path: system messages submit into
+                    pinned conversations through the ordinary turn
+                    path — makeWakeDeps owns the routing rules (the
+                    rolling gap, the bell for app conversations)
+  spinoff.ts        the spin-off fork and where a delegation launch
+                    pins its notices (launchPin — the Spin-off trigger
+                    map, design/app.md → Spin-off)
   mail-gws.ts       the watcher's poll surface over the gws CLI (raw
                     Discovery calls, JSON out) — the only gws-aware
                     module; runner injectable, gws owns its auth

@@ -7,6 +7,7 @@ import { openStore, type Conversation } from "./conversation.ts";
 import type { Config } from "./config.ts";
 import { Runtime, type TurnSink } from "./runtime.ts";
 import type { RollDeps } from "./rolling.ts";
+import { delegationWake } from "./delegation-lifecycle.ts";
 import { wake, wakeApp, type WakeDeps } from "./wake.ts";
 
 const nullSink: TurnSink = {
@@ -145,6 +146,18 @@ test("a DM fire within the gap joins the current conversation", () => {
 	expect(landed).toBe(true);
 	expect(submitted).toEqual(["dm:7:1"]);
 	expect(sends).toEqual([]); // no roll, no marker
+	store.close();
+});
+
+test("a delegation result never rolls the DM — delegationWake pins the join", () => {
+	const { deps, store, submitted, sends } = harness(0); // gap 0 → always past
+	store.rollDm(7, "/w"); // dm:7:1 — current when the notice arrives
+	const landed = delegationWake(deps).wake({ chatId: 7, threadId: null }, "delegation finished");
+	expect(landed).toBe(true);
+	// Past the gap an ordinary fire rolls (dm:7:2, marker sent); the
+	// lifecycle's notice joins dm:7:1 instead.
+	expect(submitted).toEqual(["dm:7:1"]);
+	expect(sends).toEqual([]);
 	store.close();
 });
 

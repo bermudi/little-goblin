@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore } from "./conversation.ts";
-import { discardSpinOff, spinOff, type SpinOffDeps } from "./spinoff.ts";
+import { discardSpinOff, launchPin, spinOff, type SpinOffDeps } from "./spinoff.ts";
 
 let dirs: string[] = [];
 afterEach(() => {
@@ -93,6 +93,55 @@ describe("spinOff", () => {
 		store.setMeta(conv.id, { title: "operator named", titleImplicit: false });
 		await Bun.sleep(20);
 		expect(store.get(conv.id)!.title).toBe("operator named");
+		store.close();
+	});
+});
+
+describe("launchPin", () => {
+	const deps = (store: ReturnType<typeof openStore>): SpinOffDeps => ({
+		store,
+		titleFor: () => Promise.resolve(null),
+		publicUrl: () => "https://g.example/",
+		appDefaults: () => ({ model: "test/app", thinking: "low" }),
+	});
+
+	test("an app conversation pins to itself — no fork", () => {
+		const store = openStore(tmpdb());
+		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
+		const app = store.forkToApp(src.id, "x1", "/w", "job");
+		expect(launchPin(deps(store), app, "the work")).toEqual({
+			address: { chatId: 0, threadId: null },
+			appConversation: app.id,
+		});
+		store.close();
+	});
+
+	test("a rolling DM gets the fork, and discard undoes an unstarted launch", async () => {
+		const store = openStore(tmpdb());
+		const dm = store.rollDm(7, "/w");
+		store.append(dm.id, [
+			{ id: "m", role: "user", parts: [{ type: "text", text: "deploy the thing" }] },
+		]);
+		const pin = launchPin(deps(store), dm, "the work");
+		expect(pin.address).toEqual({ chatId: 0, threadId: null });
+		expect(pin.appConversation).toMatch(/^app\//);
+		expect(pin.movedToApp).toEqual({
+			title: "the work",
+			link: `https://g.example/app/c/${pin.appConversation!.slice("app/".length)}`,
+		});
+		// The DM stays the quick lane — the fork is a copy.
+		expect(store.get(dm.id)).not.toBeNull();
+		pin.discard!("failed");
+		expect(store.get(pin.appConversation!)).toBeNull();
+		store.close();
+	});
+
+	test("a group topic keeps its Telegram address", () => {
+		const store = openStore(tmpdb());
+		const topic = store.resolve({ kind: "topic", chatId: 3, threadId: 42 }, "/w");
+		expect(launchPin(deps(store), topic, "the work")).toEqual({
+			address: { chatId: 3, threadId: 42 },
+		});
 		store.close();
 	});
 });

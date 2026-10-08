@@ -1,4 +1,4 @@
-// Composition root: config → auth → conversations → bot → http.
+// Composition root — it wires, it never rules (DESIGN.md → Module map).
 
 import { loadAuth } from "./auth.ts";
 import {
@@ -31,17 +31,16 @@ import {
 	captureConversationSettings,
 	channelOf,
 	openStore,
-	parseAddress,
 	prepareAppSettingsForConfig,
 	type Conversation,
 } from "./conversation.ts";
 import { openDelegations } from "./delegations.ts";
 import {
+	delegationWake,
 	startDelegationLifecycle,
 	type DelegationLifecycle,
 	type DelegationTargetDeps,
 } from "./delegation-lifecycle.ts";
-import type { DelegationPin } from "./agent/tools/delegate.ts";
 import { makeHerdr } from "./herdr.ts";
 import { makeSender, type MailPoller, type MailSender } from "./mail.ts";
 import { makeGwsReader } from "./mail-gws.ts";
@@ -60,13 +59,11 @@ import { OutageTracker } from "./memory-outage.ts";
 import { fireMail, fireWebhook, startScheduler, type SchedulerDeps } from "./scheduler.ts";
 import { startHttp } from "./http/mod.ts";
 import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
-import { isRollingChat } from "./rolling.ts";
-import { discardSpinOff, spinOff } from "./spinoff.ts";
-import { wake, wakeApp } from "./wake.ts";
+import { launchPin, type SpinOffDeps } from "./spinoff.ts";
+import { makeWakeDeps } from "./wake.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { Runtime } from "./runtime.ts";
 import { applyMenuButton, AUTH_TELEGRAM_TOKEN, startBot } from "./tg/mod.ts";
-import { makeBellSink } from "./tg/bell.ts";
 import { sendMailNotice, startMailApproval } from "./tg/mail-approval.ts";
 import { filterGuestTools } from "./tg/guest.ts";
 import {
@@ -76,10 +73,8 @@ import {
 } from "./tg/notify.ts";
 import { openPings } from "./tg/pings.ts";
 
-// The file sink attaches before anything that can fail — a malformed
-// config, bad auth file, corrupt DB, or occupied port must land in
-// goblin.log, not die to stderr against an empty log. Late async
-// failures ride the rejection handler for the same reason.
+// The file sink attaches before anything that can fail — boot errors
+// must land in goblin.log, not stderr against an empty log.
 setLogFile(paths.logFile());
 process.on("unhandledRejection", (reason: unknown) => {
 	log.error("unhandled rejection", reason);
@@ -99,28 +94,19 @@ async function boot() {
 	}
 	setLogLevel(config.logLevel);
 
-	// Shared ref: the mini app writes goblin.json5 and swaps this in place;
-	// everything reads .current at point of use.
+	// Shared ref: the mini app swaps this in place on save; everything
+	// reads .current at point of use.
 	const configRef: ConfigRef = { current: config, ttsDown: false };
 	const auth = loadAuth();
 	const store = openStore(paths.db());
-	// Existing app rows initialize once at boot, before any default edit.
 	for (const conv of store.listAppConversations()) store.initializeAppSettings(conv.id, config);
-	// Programs live in the same SQLite file (own connection) — standing
-	// orders, DESIGN.md "Programs".
 	const programs = openPrograms(paths.db());
-	// Rolling DM cutover (design/telegram.md → Rolling DM): DM-topic
-	// program pins re-pin to the bare chat — idempotent, one log line
-	// per program.
 	programs.rePinDmTopics();
-	// The mail outbox opens unconditionally — drafts stay readable (and
-	// cancellable) even when the mail block is removed; only the Gmail
-	// clients gate on it.
+	// The outbox opens unconditionally — drafts stay readable and
+	// cancellable without the mail block; only the clients gate on it.
 	const outbox = openOutbox(paths.db());
-	// Split authority, live closures: the gws-backed poller serves the
-	// watcher, the send client serves only the approval taps and mints
-	// its token in-process per call (mail.ts). No Gmail OAuth secret is
-	// held here — gws owns its own auth (`gws auth login`).
+	// Split mail authority: gws polling serves the watcher, the send client
+	// only approval taps — gws owns its own auth, no OAuth secret here.
 	const mailPoller = (): MailPoller | null => {
 		const m = configRef.current.mail;
 		if (!m) return null;
@@ -136,25 +122,19 @@ async function boot() {
 			sendAuth: m.sendAuth,
 		});
 	};
-	// The herdr target is boot-fixed like memory: the store and the
-	// adapter only exist when the block was configured at boot — the
-	// session is systemd's (or the remote host's), not ours (DESIGN.md,
-	// Delegation).
+	// Delegation is boot-fixed like memory — the session is systemd's, not
+	// ours.
 	const delegationBoot = config.delegation;
 	const delegations = delegationBoot ? openDelegations(paths.db()) : null;
-	// Live rows with a NULL target predate the machines era — NULL is
-	// the own local session, the pre-machines meaning. Warn loudly
-	// that they're assumed local rather than guess silently.
+	// NULL-target live rows predate the machines era (the own local
+	// session) — warn, never guess.
 	if (delegations !== null) {
 		const nullLive = delegations.liveRowsWithNullTarget();
 		if (nullLive > 0) {
 			log.warn("live delegation rows predate targets and are assumed local", { count: nullLive });
 		}
 	}
-	// "goblin" is not config: it is the local unit's --session — the
-	// own local session, delegation's default target. Each machines
-	// entry gets its own adapter: a saved-machine label (forwarded
-	// over ssh by herdr) or another local named session.
+	// "goblin" is the local unit's --session — the default target, never a config knob.
 	const herdr = delegationBoot ? makeHerdr({ session: "goblin" }) : null;
 	const delegationTargets = new Map<string, DelegationTargetDeps>();
 	if (delegationBoot && herdr !== null) {
@@ -169,14 +149,46 @@ async function boot() {
 		}
 	}
 
-	// The delegation lifecycle — the protocol's one owner (DESIGN.md,
-	// "Delegation") — is constructed after tg because its notices wake
-	// through bot.api. The tool resolves it per turn through this
-	// binding: no turn can run before the assignment below (turns start
-	// from intake/scheduler/webhook wakes, and the first await after
-	// startBot sits inside startHttp — the assignment happens before
-	// it), so a null read there is a wiring bug, not a runtime state.
-	let delegationLifecycle: DelegationLifecycle | null = null;
+	// ---------- the wire step ----------
+	//
+	// Two construction cycles force late binding: the runtime's tools
+	// reach the delegation lifecycle, whose wakes need bot.api — which
+	// needs the bot, whose intake needs the runtime; and the retention
+	// worker's notices need bot.api while the memory surfaces quiesce
+	// through it. completeBoot() below is the one fill point, before
+	// replayInbox (the first await after startBot) — an unwired read past
+	// it is a boot-order bug.
+
+	interface LateBoot {
+		delegationLifecycle(): DelegationLifecycle;
+		retention: MemoryWorker["withWorkerPaused"];
+	}
+	const lateBoot: { current: LateBoot | null } = { current: null };
+	const completeBoot = (
+		lifecycle: DelegationLifecycle | null,
+		worker: MemoryWorker | null,
+	): void => {
+		if (lateBoot.current !== null) throw new Error("completeBoot called twice — boot-order bug");
+		lateBoot.current = {
+			delegationLifecycle: () => {
+				if (lifecycle === null) throw new Error("delegation lifecycle not wired");
+				return lifecycle;
+			},
+			retention: <T>(fn: () => Promise<T>): Promise<T> => {
+				if (worker === null) throw new Error("retention worker not wired");
+				return worker.withWorkerPaused(fn);
+			},
+		};
+	};
+	const late = (): LateBoot => {
+		if (lateBoot.current === null) throw new Error("late boot not completed — wiring bug");
+		return lateBoot.current;
+	};
+
+	// The delegate tool's per-turn deps: a live config read hides the tool
+	// next turn while the lifecycle keeps tracking owned rows; config stays
+	// the boot snapshot — a live definition could send a new launch's paths
+	// into the old adapter's session (spinoff.ts owns the pin).
 	const delegateDeps = (conv: Conversation) => {
 		if (
 			delegationBoot === undefined ||
@@ -186,71 +198,17 @@ async function boot() {
 		) {
 			return undefined;
 		}
-		if (delegationLifecycle === null) throw new Error("delegation lifecycle not wired");
 		return {
-			lifecycle: delegationLifecycle,
-			// BOOT-frozen, deliberately: the lifecycle's target adapters
-			// are boot-built, and a live definition here could send a
-			// launch's paths/harness choice from a NEW definition into
-			// the OLD adapter's session. Config saves warn "restart to
-			// apply"; until then the snapshot is the truth.
+			lifecycle: late().delegationLifecycle(),
 			config: delegationBoot,
 			workspaceDir: paths.workspace(),
-			// Where a launch pins its notices — decided by the source
-			// conversation's kind. App conversations DO get the tool
-			// since the spin-off: an app-pinned row wakes its own
-			// background turns and the bell rings Telegram — the "results
-			// wake a Telegram sink the channel lacks" reason is what
-			// background turns answered (design/app.md → Spin-off).
-			// program and mail stay Telegram-only (disjoint pools).
-			pin: (name: string): DelegationPin => {
-				// App-native: the conversation IS the durable home — pin it
-				// to itself, no fork.
-				if (channelOf(conv.id) === "app") {
-					return { address: { chatId: 0, threadId: null }, appConversation: conv.id };
-				}
-				// Rolling DM: fork the model view into a named app
-				// conversation — a copy, never a move; the DM stays the
-				// quick lane. discard undoes the fork when the launch
-				// doesn't start (cap reached, failed).
-				const pinSource = parseAddress(conv.id);
-				if (pinSource !== null && pinSource.kind === "rolling" && isRollingChat(conv.chatId)) {
-					const spun = spinOff(
-						{
-							store,
-							titleFor,
-							publicUrl: () => configRef.current.publicUrl || undefined,
-							appDefaults: () => configRef.current,
-						},
-						conv,
-						name,
-					);
-					// The fork's high-water mark at copy time — discard
-					// deletes only while nothing newer landed, so input
-					// the operator wrote into the visible fork survives.
-					const seqAtFork = store.lastSeq(spun.conv.id);
-					return {
-						address: { chatId: 0, threadId: null },
-						appConversation: spun.conv.id,
-						movedToApp: { title: name, link: spun.link },
-						discard: (reason) =>
-							discardSpinOff(store, spun.conv.id, seqAtFork, reason ?? "unspecified"),
-					};
-				}
-				// Group topics and legacy bare DMs pin their Telegram
-				// address like always.
-				return { address: { chatId: conv.chatId, threadId: conv.threadId } };
-			},
+			pin: (name: string) => launchPin(launchPinDeps, conv, name),
 		};
 	};
 
-	// ffmpeg powers TTS remuxing and over-cap transcription — probe it
-	// once at boot so a missing binary surfaces before the first speech
-	// request. TTS is default-on and ffmpeg is its only dependency, so a
-	// failed probe takes TTS down for the run (warn + /voice and the
-	// speak tool report it) instead of failing message by message —
-	// install ffmpeg and restart to re-enable. Transcription only needs
-	// ffmpeg over the provider upload cap; the probe's warn covers that.
+	// Probe ffmpeg at boot: TTS is default-on with ffmpeg as its only
+	// dependency — a missing binary takes TTS down for the run instead of
+	// failing per message; transcription needs it only over the upload cap.
 	if (config.transcription || config.tts) {
 		const ok = await probeFfmpeg(config.tts ? "tts" : "transcription");
 		if (!ok && config.tts) {
@@ -261,30 +219,23 @@ async function boot() {
 		}
 	}
 
-	// Warm the openrouter route-capability catalog so turn-time thinking
-	// options and the mini app see real per-model thinking levels instead
-	// of the cold-start fallback.
+	// Warm the openrouter catalog so thinking options and the mini app
+	// see real levels, not the cold-start fallback.
 	void ensureOpenRouterCatalog();
 
-	// Long-term memory is a boot-time snapshot: the queue binds rows to
-	// the endpoint+bank hash, so mini-app memory edits apply on restart —
-	// a config change can never redirect queued personal content mid-run.
+	// Long-term memory is a boot-time snapshot — queue rows bind to the
+	// endpoint+bank hash, so mini-app edits apply on restart, never mid-run.
 	const memoryBootConfig = config.memory;
 	const memoryClient = buildMemoryClient(memoryBootConfig ?? undefined, auth);
 	const memoryState = { lastRecallOk: null as boolean | null, lastRecallAt: null as string | null };
-	// Runtime recall telemetry for /memory status: the latest outcome and
-	// when it happened. One closure serves both recall paths (pre-turn
-	// recall and the memory_search tool).
+	// Recall telemetry for /memory status — one closure serves both recall paths.
 	const noteRecall = (ok: boolean): void => {
 		memoryState.lastRecallOk = ok;
 		memoryState.lastRecallAt = new Date().toISOString();
 	};
 	if (memoryClient && memoryBootConfig) {
-		// Destination history (#87): the outbox binds rows to the endpoint+bank
-		// hash, which is one-way — recording each boot's destination lets
-		// /forget reconstruct the owning client after a later change instead
-		// of polling a foreign bank. Auth stores the key NAME; tokens still
-		// resolve lazily through auth.jsonl at client construction.
+		// Destination history (#87): each boot's destination is recorded so
+		// /forget reconstructs the owning client after a change.
 		store.memoryDestinations.record(memoryBootConfig);
 		log.info("memory enabled", {
 			baseUrl: memoryBootConfig.baseUrl,
@@ -292,22 +243,17 @@ async function boot() {
 		});
 	}
 
-	// Speech → text, one seam shared by intake (voice/video notes) and
-	// the transcribe tool (everything else, on demand). Read per call —
-	// a mini-app save applies to the next voice note, no restart.
+	// Read per call — a mini-app save applies to the next voice note.
 	const transcribeFile = async (file: Parameters<typeof transcribeAudio>[1]) => {
 		const cfg = configRef.current.transcription;
 		if (!cfg) return null;
 		return transcribeAudio(await transcriptionModel(cfg, auth), file);
 	};
 
-	// The vision tool's per-turn gate (design/tools.md → Vision). mode
-	// "auto" (default) registers it only while the chat model can't
-	// consume images itself — the same two gates attachment
-	// materialization applies: catalog modality AND the provider pipe.
-	// A cold catalog counts as blind — a spare tool beats a blind agent.
-	// mode "always" keeps it for vision-capable models too: a file on
-	// disk is invisible regardless (tool results carry no image bytes).
+	// The vision tool's per-turn gate (design/tools.md → Vision): "auto"
+	// registers it only while the chat model can't consume images (catalog
+	// AND pipe gates — cold counts as blind); "always" keeps it — a file
+	// on disk is invisible regardless.
 	const visionDepsFor = (conv: Conversation): VisionToolDeps | undefined => {
 		const cfg = configRef.current;
 		if (!cfg.vision) return undefined;
@@ -327,31 +273,23 @@ async function boot() {
 		captureConversation: (conv) => captureConversationSettings(store, conv, configRef.current),
 		async buildStep(conv, tools) {
 			const cfg = configRef.current;
-			// Runtime captured the channel selection at admission.
 			const modelRef = conv.model!;
 			const { provider, modelId } = splitModelRef(modelRef);
-			// All may be slow (auth "!command", models.dev fetch) — run in
-			// parallel inside the same admission window.
+			// Auth "!command" and the catalog fetch may both be slow — run in parallel.
 			const [model, modalities, contextWindow] = await Promise.all([
 				resolveModel(cfg, auth, modelRef),
 				inputModalities(provider, modelId),
 				contextLimit(provider, modelId),
 			]);
-			// The pipe gate: what the provider's SDK converter can actually
-			// deliver (carriesMedia, providers.ts). Catalog truth alone once
-			// cost a thrown turn — openai-compatible < v3 rejected any
-			// non-image file part the catalog said the model could take.
+			// The pipe gate is what the provider's SDK converter can deliver — catalog
+			// truth alone once cost a thrown turn (openai-compatible < v3 rejected
+			// allowed file parts).
 			const kind = cfg.providers[provider]?.kind;
 			const carries = (mediaType: string, position: MediaPosition): boolean =>
 				carriesMedia(kind ?? "", mediaType, position);
 			const level = conv.thinking as ThinkingLevel;
 			const providerOptions = thinkingOptions(cfg, modelRef, level);
-			const prompt = systemPromptFor(
-				store,
-				conv,
-				// The registered set already reflects TTS and sink availability.
-				toolNames(tools),
-			);
+			const prompt = systemPromptFor(store, conv, toolNames(tools));
 			log.info("model step", {
 				conversation: conv.id,
 				model: modelRef,
@@ -359,8 +297,7 @@ async function boot() {
 				prompt: prompt.sources.join("+"),
 			});
 			return {
-				// Observed at the model boundary: every call this turn makes —
-				// tool-loop continuations included — logs its request hashes.
+				// Observed at the model boundary — tool-loop continuations included.
 				model: observedModel(model, { conversation: conv.id }),
 				system: prompt.text,
 				label: modelRef,
@@ -370,9 +307,7 @@ async function boot() {
 				...(providerOptions ? { providerOptions } : {}),
 			};
 		},
-		// Compaction wiring (DESIGN.md, Compaction): the conversation's own
-		// model writes the summary — same resolution path as turns (auth,
-		// relays), plain generate, no tools, captured conversation thinking.
+		// Compaction: the conversation's own model, plain generate, no tools (DESIGN.md → Compaction).
 		compaction: {
 			modelRef: (conv) => conv.model!,
 			summarize: async (conv, system, prompt, signal) => {
@@ -395,39 +330,27 @@ async function boot() {
 		},
 		makeTools: (conv, deliverVoice, recording, deliverFile, accepts) => {
 			const tts = configRef.current.tts;
-			// Telegram-bound tools don't exist on the app channel: program
-			// hooks wake Telegram sinks and mail drafts post Telegram
-			// approval buttons. Their dep slots go undefined, so the tools
-			// never register on an app turn (DESIGN.md, App channel —
-			// disjoint pools). delegate is the exception — it registers
-			// everywhere since the spin-off: an app turn's launches pin
-			// the conversation itself (design/app.md → Spin-off).
+			// Telegram-bound tools don't register on app turns — disjoint
+			// pools (DESIGN.md → App channel); delegate is the exception
+			// since the spin-off.
 			const telegram = channelOf(conv.id) === "telegram";
 			const tools = makeTools({
 				cwd: paths.workspace(),
 				voice:
 					tts && !configRef.ttsDown && deliverVoice
 						? {
-								// A per-call voice replaces the whole config voice — Edge
-								// derives the language from the voice name, so an
-								// alternate voice is an alternate language. An explicit
-								// pick wins outright: with no alternates to sniff
-								// against, pickVoice can't override it.
+								// A per-call voice replaces the config voice outright — Edge
+								// derives the language from the voice name; the allowlist
+								// always carries the default.
 								synthesize: (text, voice) =>
 									synthesizeSpeech(text, voice ? { ...tts, voice, voices: [] } : tts),
 								deliver: deliverVoice,
 								...(recording ? { recording } : {}),
-								// The allowlist always carries the default: picking it
-								// explicitly is a no-op.
 								...(tts.voices?.length ? { voices: [...new Set([tts.voice, ...tts.voices])] } : {}),
 							}
 						: undefined,
-				// The program tool pins new programs to the conversation it runs
-				// in. Hook URLs go through sendPrivate — a DM to each operator
-				// (a group topic's readers aren't implicitly authorized), and a
-				// bare api.sendMessage never lands in history, so the token
-				// stays out of model context. publicUrl reads live: the mini app
-				// can change it between turns.
+				// sendPrivate keeps hook URLs out of model context — a DM per
+				// operator, never in history. publicUrl reads live.
 				program: telegram
 					? {
 							programs,
@@ -440,11 +363,7 @@ async function boot() {
 							),
 						}
 					: undefined,
-				// The send_file tool hands workspace paths to the turn's
-				// delivery sink, which owns the Telegram send.
 				file: deliverFile ? { deliver: deliverFile } : undefined,
-				// Memory search recalls the shared bank; excluded topics
-				// recall nothing by any path.
 				memory:
 					memoryClient && memoryBootConfig
 						? {
@@ -455,28 +374,16 @@ async function boot() {
 								noteRecall,
 							}
 						: undefined,
-				// Web tools: fetch always (local needs no config), search
-				// behind its config block — both read configRef live. The
-				// accepts ref rides along for the fetch tool's per-turn PDF
-				// rendering.
+				// fetch is local (always on), search behind its config block —
+				// both read configRef live; the accepts ref rides for PDF rendering.
 				web: { configRef, auth, ...(accepts ? { accepts } : {}) },
-				// The transcribe tool joins/leaves the set with the
-				// transcription block — same live-read rule as search.
 				transcribe:
 					configRef.current.transcription !== undefined
 						? { transcribe: transcribeFile }
 						: undefined,
-				// The delegate tool rides the live config like search —
-				// but the store/adapter are boot fixtures, so removing
-				// the block hides the tool next turn while the lifecycle
-				// keeps tracking rows it already owns.
+				// Boot fixtures under a live gate (see delegateDeps above).
 				delegate: delegateDeps(conv),
-				// The mail tool rides the same live gate — and holds only
-				// the approval gate's request closure: the send
-				// credential is nowhere in this dep tree (the approval
-				// taps hold it instead), and the draft's address is
-				// pinned here, per conversation. Reads left for the
-				// goblin-mail wrapper (bash + gws skill).
+				// Only the approval gate's request closure — the send credential lives behind the taps.
 				mail:
 					telegram && configRef.current.mail !== undefined
 						? {
@@ -487,19 +394,11 @@ async function boot() {
 									}),
 							}
 						: undefined,
-				// Past-chat search rides the store — always present, local
-				// state, no config block. Excluded topics recall nothing.
 				history: { store, isExcluded: () => conv.memoryExcluded },
-				// Image Q&A joins the set per the vision block's mode —
-				// same live-read rule as transcribe/search. Threads are
-				// process-global; a model change inside the block drops
-				// them on the next call (src/agent/vision.ts).
+				// Threads are process-global; a model change drops them on the next call.
 				vision: visionDepsFor(conv),
 			});
-			// Guest mode (design/telegram.md → Guest mode): hard toolset
-			// exclusion after assembly — sandbox personas keep search/fetch,
-			// personal guest turns lose everything that pins or reaches
-			// beyond the chat.
+			// Guest mode: hard toolset exclusion after assembly (design/telegram.md → Guest mode).
 			return filterGuestTools(conv, tools);
 		},
 		...(memoryClient && memoryBootConfig
@@ -514,17 +413,7 @@ async function boot() {
 			: {}),
 	});
 
-	// /forget delete quiesces the retention worker through this holder: the
-	// worker is created below, after the bot (its notices deliver through
-	// bot.api), but the bot's memory deps close over the quiesce seam at
-	// construction — a submit in flight while the delete cancels its row
-	// re-creates the document remotely (see MemoryWorker.withWorkerPaused).
-	// Nothing between startBot resolving and the assignment is async, so no
-	// update can be handled with the holder still empty; the throw is a
-	// wiring-bug alarm, not a runtime state.
-	const retentionQuiesce: { worker: MemoryWorker | null } = { worker: null };
-	// One titler for both channels: telegram implicit topics and the app
-	// channel's first-turn naming (app-channel.ts) share the titleModel.
+	// One titler for both channels — implicit topics and app first-turn naming.
 	const titleFor = async (text: string): Promise<string | null> => {
 		const cfg = configRef.current;
 		if (!cfg.titleModel) return null;
@@ -535,6 +424,32 @@ async function boot() {
 			thinkingOptions(cfg, cfg.titleModel, "off"),
 		);
 	};
+	const launchPinDeps: SpinOffDeps = {
+		store,
+		titleFor,
+		publicUrl: () => configRef.current.publicUrl || undefined,
+		appDefaults: () => configRef.current,
+	};
+
+	// The memory surfaces every door answers from (bot commands, mini app
+	// status + browser); the worker seam reads through the wire step — built
+	// after the bot.
+	const memorySurfaces =
+		memoryClient === null
+			? null
+			: {
+					client: memoryClient,
+					clientForTarget: (target: string) => {
+						const destination = store.memoryDestinations.get(target);
+						return destination === null ? null : buildDestinationClient(destination, auth);
+					},
+					contexts: store.memoryContexts,
+					queue: store.memoryQueue,
+					lastRecallOk: () => memoryState.lastRecallOk,
+					lastRecallAt: () => memoryState.lastRecallAt,
+					withWorkerPaused: <T>(fn: () => Promise<T>): Promise<T> => late().retention(fn),
+				};
+
 	const tg = await startBot({
 		configRef,
 		auth,
@@ -545,44 +460,13 @@ async function boot() {
 			return synthesizeSpeech(text, tts);
 		},
 		transcribe: transcribeFile,
-		...(memoryClient
-			? {
-					memory: {
-						client: memoryClient,
-						// Destination history reconstruction (#87): a previous bank's
-						// rows settle and delete through their own client.
-						clientForTarget: (target: string) => {
-							const destination = store.memoryDestinations.get(target);
-							return destination === null ? null : buildDestinationClient(destination, auth);
-						},
-						contexts: store.memoryContexts,
-						queue: store.memoryQueue,
-						withWorkerPaused: <T>(fn: () => Promise<T>): Promise<T> => {
-							const worker = retentionQuiesce.worker;
-							if (worker === null) throw new Error("retention worker not wired");
-							return worker.withWorkerPaused(fn);
-						},
-						lastRecallOk: () => memoryState.lastRecallOk,
-						lastRecallAt: () => memoryState.lastRecallAt,
-					},
-				}
-			: {}),
-		// Draft approvals always wire up — the outbox outlives the mail
-		// block, and the taps degrade to toasts without it. The gate
-		// itself is constructed right below (it needs bot.api), so taps
-		// resolve it per-tap through this getter.
+		...(memorySurfaces ? { memory: { ...memorySurfaces } } : {}),
 		mail: () => mailApproval,
-		// The Rolling DM follow-up check rides the reviewer's JevClient —
-		// also built after the bot, so the roller resolves it per call
-		// through this getter. Absent = no check, bursts join current.
 		followUpGate: () => jevGate ?? undefined,
 	});
 
-	// The mail approval gate — the draft's one owner: the tool's send
-	// request lands here (queue → post → bind), the Send/Cancel taps
-	// decide here, and the expiry sweep runs here on its own ticker.
-	// Always started — orphaned drafts still settle without a mail
-	// block.
+	// The mail approval gate — the draft's one owner (queue → post →
+	// bind; taps; expiry sweep). Always started: orphaned drafts still settle.
 	const mailApproval = startMailApproval({
 		api: tg.bot.api,
 		outbox,
@@ -590,11 +474,8 @@ async function boot() {
 		reader: mailPoller,
 	});
 
-	// Memory worker after the bot: a persistent outage notices the
-	// operator through bot.api (one message per episode, into the topic
-	// whose retention is stuck — DESIGN.md, Slice 2 ruling 5 amendment),
-	// and a blocked retention does the same once per document (retry
-	// requeues with fresh operation ids — MemoryQueue.retryBlocked).
+	// The retention worker runs after the bot — outage and blocked
+	// notices deliver through bot.api (one per episode / per document).
 	const memoryWorker = memoryClient
 		? startMemoryWorker(store.memoryQueue, memoryClient, {
 				outage: {
@@ -608,25 +489,15 @@ async function boot() {
 				},
 			})
 		: null;
-	if (memoryWorker !== null) retentionQuiesce.worker = memoryWorker;
 
-	// Skill reviewer after the bot: its save note delivers through
-	// bot.api, so the runtime can't hold it before tg exists. Absent
-	// block = the feature is off. The block is hand-edited-only (no
-	// mini-app surface), so gate auth and threshold are boot-captured
-	// (system1's auth/model/baseUrl ride the same capture — a hand-edit
-	// applies on restart); the review model resolves live per review —
-	// the mini app owns the default between reviews.
-	// The reviewer's JevClient doubles as the loopback injection-check
-	// gate below — one instance, its auth closure resolves per call.
+	// The skill reviewer runs after the bot (save notes deliver through
+	// bot.api); the hand-edited block boot-captures auth and threshold, the
+	// review model resolves live.
 	const reviewerBlock = configRef.current.reviewer;
 	const jevGate = reviewerBlock
 		? new JevClient({
 				auth: () => auth.resolve(configRef.current.system1?.auth ?? reviewerBlock.auth),
-				// System One is the Jev gate source when present; absent
-				// pieces fall back to reviewer.auth / JevClient defaults
-				// so the live reviewer never breaks. reviewerBlock stays
-				// the on/off switch.
+				// System One is the gate source when present; absent falls back to defaults.
 				...(configRef.current.system1?.model !== undefined
 					? { model: configRef.current.system1.model }
 					: {}),
@@ -648,8 +519,7 @@ async function boot() {
 			evidence: block.evidence,
 			system1: configRef.current.system1 !== undefined,
 		});
-		// Staging from a killed run can only be garbage — clear it before
-		// any review can publish alongside it.
+		// Staging from a killed run is garbage — clear before any review publishes.
 		cleanupStaging(paths.workspace());
 		runtime.setReviewer({
 			gate: jevGate,
@@ -674,112 +544,65 @@ async function boot() {
 			workspaceDir: paths.workspace(),
 			notify: (conversationId, skills) => sendSkillSavedNotice(tg.bot.api, conversationId, skills),
 		});
-		// The loop watchdog rides the same JevClient (design/model.md →
-		// "No step budget"): every 16 completed tool calls, system1 scores
-		// the turn's own digest ring for non-convergence — warn once, cut
-		// on the second consecutive stuck verdict. Reviewer-enabled is the
-		// switch, same as every other system1 use.
+		// The loop watchdog rides the same JevClient (design/model.md → "No step
+		// budget"): every 16 completed calls system1 scores the digest ring — warn
+		// once, cut on the second stuck verdict.
 		runtime.setLoopWatchdog({ decide: jevGate.decide.bind(jevGate) });
 	}
 
-	// The shared wake path — program fires (cron, webhook, mail) submit
-	// through it into the pinned conversation. The firing owner's deps:
-	// the trigger entry points take this plus the programs store.
-	// The ping→conversation map — shared with the bell below so a
-	// swipe-reply to a spin-off ping routes into the app conversation
-	// that rang (design/app.md → Spin-off). Intake opens its own handle
-	// on the same db inside createBot.
+	// The shared wake path — program fires and delegation notices submit
+	// through it; wake.ts owns the routing. Intake opens its own pings handle
+	// inside createBot.
 	const pings = openPings(store.db);
-	const wakeDeps = {
+	const wakeDeps = makeWakeDeps({
 		store,
 		runtime,
 		api: tg.bot.api,
 		configRef,
 		synthesize: (text: string, tts: TtsConfig) => synthesizeSpeech(text, tts),
-		// Rolling DM: fires into a private chat route through the roller
-		// (past the gap they roll, inside it they join) — the gap reads
-		// config live, the gate is the reviewer's JevClient above.
-		roll: {
-			store,
-			runtime,
-			gapMinutes: () => configRef.current.telegram.dmGapMinutes,
-			gate: () => jevGate ?? undefined,
-		},
-		// The headless sink app-channel background turns submit with —
-		// a delegation notice to an app conversation pings the
-		// operator's DM with the deep link when the turn lands.
-		bell: (conv: Conversation) =>
-			makeBellSink(
-				{
-					api: tg.bot.api,
-					store,
-					pings,
-					allowedUsers: () => configRef.current.allowedUsers,
-					publicUrl: () => configRef.current.publicUrl || undefined,
-				},
-				conv,
-				"delegation notice",
-			),
-	};
+		followUpGate: () => jevGate ?? undefined,
+		pings,
+	});
 	const firingDeps: SchedulerDeps = {
 		...wakeDeps,
 		programs,
-		// The reviewer's Jev gate doubles as the watcher-event
-		// scorer (fail-open) — same instance the loopback checker
-		// route holds. Absent reviewer block = events fire unscored.
+		// The Jev gate doubles as the watcher-event scorer (fail-open) — unscored absent.
 		...(jevGate ? { checkMail: jevGate as Pick<typeof jevGate, "decide"> } : {}),
 	};
 
-	// The delegation lifecycle — the protocol's one owner: the tool's
-	// launch/send/stop/read land here and the watcher's verdicts fire
-	// here, on the scheduler's ticker pattern. This exact spot is
-	// load-bearing: after tg (notices wake through bot.api) but before
-	// the first await after startBot (inside startHttp below), so the
-	// delegateDeps binding is filled before any update can start a turn.
-	delegationLifecycle =
+	// The delegation lifecycle — after tg (notices wake through bot.api),
+	// before replayInbox (the first await after startBot): the wire step
+	// lands before any turn.
+	const delegationLifecycle =
 		delegations !== null && herdr !== null
 			? startDelegationLifecycle({
 					delegations,
 					herdr,
 					targets: delegationTargets,
 					delegationsDir: paths.delegations(),
-					// Harness trust files live under the real home —
-					// delegation panes run the operator's shell there.
 					homeDir: homedir(),
-					// Delegation notices never roll the DM — a result
-					// arriving past the gap still belongs to the live
-					// conversation (Rolling DM).
-					wake: (address, text) => wake(wakeDeps, address, text, { dmTrigger: "current" }),
-					// An app-pinned row wakes its app conversation's
-					// background turn — the bell rings the DM (Spin-off).
-					wakeApp: (conversationId, text) => wakeApp(wakeDeps, conversationId, text),
+					...delegationWake(wakeDeps),
 				})
 			: null;
+	completeBoot(delegationLifecycle, memoryWorker);
 
-	// Recover inbox rows before polling new updates. The delegation/tool
-	// closures above must exist before recovered turns can run, and the
-	// polling offset must not advance ahead of journaled input.
+	// Recover inbox rows before polling: the wirings above must exist before
+	// recovered turns run, and the offset must not advance past journaled input.
 	await tg.replayInbox();
 	tg.startPolling();
 
-	// The search and transcription blocks' enable/disable redraw the
-	// registered tool set — a cache boundary per DESIGN.md "Web access" —
-	// so each flip gets its own line, not just the generic
-	// config-written one.
+	// Search/transcription flips redraw the registered tool set — a cache
+	// boundary (DESIGN.md → Web access) — so each flip gets its own log line.
 	let searchInSet = config.search !== undefined;
 	let transcribeInSet = config.transcription !== undefined;
-	// The app channel's auth mode resolves once here at boot (DESIGN.md,
-	// App channel → Auth): appToken set → bearer required; unset → trust
-	// mode — the tailnet is the only lock. Boot-pinned per process, so a
-	// mid-run flip applies only after restart — onConfigWritten warns.
+	// App auth mode resolves once at boot: appToken set → bearer, unset →
+	// trust (the tailnet is the lock); a mid-run flip needs a restart.
 	const appTokenName = resolveAppAuth(config.appToken);
-	// One post-write path for every config door (mini app form, app
-	// channel's model/thinking knobs): hot-apply what's live, warn on
-	// what's boot-pinned.
+	// One post-write path for every config door: hot-apply what's live,
+	// warn on what's boot-pinned.
 	const onConfigWritten = () => {
 		setLogLevel(configRef.current.logLevel);
-		// publicUrl is operator-editable through the app — keep the menu
-		// button (the door) in sync without a restart.
+		// publicUrl is operator-editable — keep the menu button in sync without a restart.
 		applyMenuButton(tg.bot.api, configRef.current.publicUrl);
 		const searchNow = configRef.current.search !== undefined;
 		if (searchNow !== searchInSet) {
@@ -799,22 +622,17 @@ async function boot() {
 			);
 			transcribeInSet = transcribeNow;
 		}
-		// Memory is a boot-time snapshot (queue rows bind to the
-		// endpoint+bank hash) — a changed block needs a restart.
+		// Memory is a boot-time snapshot (queue rows bind to the endpoint+bank hash).
 		if (
 			JSON.stringify(configRef.current.memory ?? null) !== JSON.stringify(memoryBootConfig ?? null)
 		) {
 			log.warn("memory config changed — restart to apply");
 		}
-		// The app channel's auth mode is boot-pinned like memory —
-		// a flipped appToken applies only after restart.
 		if (configRef.current.appToken !== appTokenName) {
 			log.warn("appToken changed — restart to apply");
 		}
-		// The whole delegation block is boot-frozen (the lifecycle's
-		// adapters and the tool's definitions are one snapshot): any
-		// change — machines redefined, harness maps, roots — applies
-		// only after restart, and the save says so.
+		// The delegation block is boot-frozen (adapters + definitions are
+		// one snapshot) — changes need a restart.
 		if (
 			JSON.stringify(configRef.current.delegation ?? null) !==
 			JSON.stringify(delegationBoot ?? null)
@@ -826,20 +644,18 @@ async function boot() {
 		configRef,
 		beforeConfigWritten: (previous, next) => prepareAppSettingsForConfig(store, previous, next),
 		botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN),
-		// POST /hook/<token> — the token is the credential; the hit wakes
-		// the program through the webhook entry point, which owns the
-		// fire's accounting (last_run only when landed).
+		// POST /hook/<token> — the token is the credential; the webhook
+		// entry point owns the fire's accounting (last_run only when landed).
 		hooks: {
 			programs,
 			accepting: () => runtime.accepting(),
 			fire: (program, event, now) => fireWebhook(firingDeps, program, event, now),
 		},
-		// Same memory seams the /memory command reads, bound to the
-		// boot-time target — the mini app's status card renders the same
-		// truth the command does. Absent when memory is unconfigured.
-		...(memoryClient
+		// Same memory surfaces the /memory command reads, bound to the boot-time target.
+		...(memorySurfaces
 			? {
 					memory: {
+						...memorySurfaces,
 						...(memoryBootConfig
 							? {
 									target: {
@@ -848,41 +664,16 @@ async function boot() {
 									},
 								}
 							: {}),
-						counts: () => store.memoryQueue.counts(memoryClient.target),
-						blockedDetail: () => store.memoryQueue.blockedDetail(memoryClient.target),
-						lastRecallOk: () => memoryState.lastRecallOk,
-						lastRecallAt: () => memoryState.lastRecallAt,
-						// Memories browser: reads and forgetting ride the same
-						// client and seams /forget delete uses — including the
-						// retention-worker quiesce (holder read lazily; the worker
-						// is assigned before the first request can arrive).
-						client: memoryClient,
-						// Destination history reconstruction (#87), same seam as the
-						// command surface: a previous bank's rows settle and delete
-						// through their own client.
-						clientForTarget: (target: string) => {
-							const destination = store.memoryDestinations.get(target);
-							return destination === null ? null : buildDestinationClient(destination, auth);
-						},
-						contexts: store.memoryContexts,
-						queue: store.memoryQueue,
-						withWorkerPaused: <T>(fn: () => Promise<T>): Promise<T> => {
-							const worker = retentionQuiesce.worker;
-							if (worker === null) throw new Error("retention worker not wired");
-							return worker.withWorkerPaused(fn);
-						},
+						counts: () => store.memoryQueue.counts(memorySurfaces.client.target),
+						blockedDetail: () => store.memoryQueue.blockedDetail(memorySurfaces.client.target),
 					},
 				}
 			: {}),
-		// The reviewer's Jev gate doubles as the loopback injection
-		// checker — same instance, no second auth closure. Absent
-		// reviewer block = no gate = the route answers 503.
+		// The Jev gate doubles as the loopback injection checker — absent = 503.
 		...(jevGate ? { checkInjection: { gate: jevGate } } : {}),
-		// The app channel's API — always wired; the auth mode resolved
-		// above at boot (trust or bearer — no per-request config read).
-		// The handler injects opaque (app-channel.ts imports the
-		// runtime/AI-SDK graph, which must not enter http/mod.ts's
-		// DOM-lib typecheck program).
+		// The app handler stays opaque here: app-channel.ts imports the
+		// runtime/AI-SDK graph, which must not enter http/mod.ts's DOM-lib
+		// typecheck program.
 		appApi: (req, url) =>
 			handleAppApi(req, url, appTokenName, {
 				store,
@@ -890,15 +681,12 @@ async function boot() {
 				auth,
 				configRef,
 				onConfigWritten,
-				// Same intake seam the tg lane runs for voice notes —
-				// speech:true uploads get their transcript before submit.
+				// Same intake seam as the tg lane — speech uploads transcribe before submit.
 				transcribe: transcribeFile,
-				// Read-aloud for replies. Null = unconfigured or ffmpeg-down;
-				// the endpoint answers 503 rather than failing mid-synthesis.
+				// Null = unconfigured or ffmpeg-down — the endpoint answers 503
+				// rather than failing mid-synthesis.
 				speak: async (text) => {
 					const tts = configRef.current.tts;
-					// "", false, or unset all mean speech is off; ttsDown is
-					// the boot ffmpeg probe.
 					if (!tts || configRef.ttsDown) return null;
 					return synthesizeSpeech(text, tts);
 				},
@@ -907,16 +695,13 @@ async function boot() {
 		onConfigWritten,
 	});
 
-	// Scheduler after the bot: it submits into conversations and delivers
-	// through bot.api — both must exist. The boot scan fires anything
-	// missed while the process was down (DESIGN.md, Programs).
+	// The scheduler submits through bot.api; the boot scan fires anything
+	// missed while down.
 	const scheduler = startScheduler(firingDeps);
 
-	// The mail watcher is the scheduler's twin: it polls Gmail through
-	// gws for enabled mail filters and hands matches to the mail entry
-	// point, which owns the checkpoint policy. Always started — without
-	// the mail block it idles (draft expiry lives in the approval gate,
-	// not here).
+	// The mail watcher is the scheduler's twin over gws, handing matches to the
+	// mail entry point (which owns checkpoints); always started — it idles
+	// without the block.
 	const mailWatcher = startMailWatcher({
 		programs,
 		reader: mailPoller,
@@ -979,20 +764,16 @@ async function shutdown(signal: string): Promise<void> {
 	log.info("shutting down", { signal });
 	// Scheduler first — no new program submits once the drain begins.
 	scheduler.stop();
-	// Join any in-flight scan before closing the store. Runtime closes
-	// below without waiting for it, so late notices remain retryable.
-	// Running agents belong to herdr and resume on next boot.
+	// Join any in-flight scan before closing the store; running agents
+	// belong to herdr and resume on next boot.
 	const delegationScan = delegationLifecycle?.stopTicker() ?? Promise.resolve();
 	// The mail watcher only stops polling — cursors and drafts persist.
 	mailWatcher.stop();
-	// The approval gate stops sweeping AND joins an in-flight Gmail
-	// send — a SIGTERM mid-send would otherwise kill the send before its
-	// verdict landed, leaving the row pending and un-stamped (stale
-	// information for a re-tap or the sweep's expiry stamp). Bounded by
-	// the drain budget below.
+	// The approval gate stops sweeping AND joins an in-flight Gmail send
+	// bounded by the drain budget below.
 	const mailSends = mailApproval.stop();
-	// The retention worker only drains the outbox — stopping it leaves
-	// pending rows durable for the next boot.
+	// The retention worker only drains the outbox — pending rows stay
+	// durable for the next boot.
 	await memoryWorker?.stop();
 	// bot.stop confirms the polling offset so handled updates don't
 	// redeliver on the next boot.
@@ -1000,9 +781,7 @@ async function shutdown(signal: string): Promise<void> {
 		log.warn("bot stop failed", err);
 	});
 	// Close the runtime first — intake that lands during the drain still
-	// reaches history but never starts a turn. Fencing each lane makes
-	// its sink stamp "⏹ superseded" and run a final flush; drainIntake
-	// lands coalescing-buffer messages in history the same way.
+	// reaches history but never starts a turn.
 	const drained = runtime.shutdown();
 	const flushed = tg.drainIntake();
 	const settled = Promise.allSettled([stopping, drained, flushed, delegationScan, mailSends]);

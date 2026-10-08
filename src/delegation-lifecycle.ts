@@ -60,6 +60,7 @@ import {
 import { attachHintFor, HerdrError, type AgentInfo, type Herdr } from "./herdr.ts";
 import { claudeFreshTrustJson, codexTrustSection, seedHarnessTrust } from "./harness-trust.ts";
 import { delegationNoticeTag } from "./tags.ts";
+import { wake, wakeApp, type WakeDeps } from "./wake.ts";
 
 export interface DelegationLifecycleDeps {
 	delegations: DelegationsStore;
@@ -216,6 +217,18 @@ const DEEP_LINES = 300;
 // TUI screen is a lossy transport).
 const REPORT_NOTE =
 	"\n\nWhen you are completely finished, write your final report (what you did, what's left, anything you need from the operator) as Markdown to ";
+
+// The lifecycle's notice routing, one place: a delegation result never
+// rolls the DM — arriving past the gap, it still belongs to the live
+// conversation (design/telegram.md → Rolling DM) — and an app-pinned
+// row wakes its conversation's background turn, where the bell rings
+// Telegram on landing (design/app.md → Spin-off → Background turns).
+export function delegationWake(deps: WakeDeps): Pick<DelegationLifecycleDeps, "wake" | "wakeApp"> {
+	return {
+		wake: (address, text) => wake(deps, address, text, { dmTrigger: "current" }),
+		wakeApp: (conversationId, text) => wakeApp(deps, conversationId, text),
+	};
+}
 
 export function startDelegationLifecycle(
 	deps: DelegationLifecycleDeps,

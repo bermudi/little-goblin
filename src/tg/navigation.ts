@@ -49,7 +49,11 @@ function assertScope(id: string | null, chatId: number): void {
 }
 
 export function navigateDm(
-	deps: { store: ConversationStore; runtime: Pick<Runtime, "cancelFenced">; inbox: ReturnType<typeof openTelegramInbox> },
+	deps: {
+		store: ConversationStore;
+		runtime: Pick<Runtime, "cancelFenced">;
+		inbox: ReturnType<typeof openTelegramInbox>;
+	},
 	input: { chatId: number; updateId: number; messageId: number; command: "new" | "back" },
 ): DmNavigationResult {
 	let phase = "validate";
@@ -74,31 +78,46 @@ export function navigateDm(
 				update_id INTEGER PRIMARY KEY,
 				receipt_id INTEGER NOT NULL REFERENCES tg_dm_navigation(update_id)
 			)`);
-			const byUpdate = db.query(`SELECT n.* FROM tg_dm_navigation_updates u
-				JOIN tg_dm_navigation n ON n.update_id = u.receipt_id WHERE u.update_id = ?`).get(valid.updateId);
-			const byMessage = db.query("SELECT * FROM tg_dm_navigation WHERE chat_id = ? AND message_id = ?")
+			const byUpdate = db
+				.query(`SELECT n.* FROM tg_dm_navigation_updates u
+				JOIN tg_dm_navigation n ON n.update_id = u.receipt_id WHERE u.update_id = ?`)
+				.get(valid.updateId);
+			const byMessage = db
+				.query("SELECT * FROM tg_dm_navigation WHERE chat_id = ? AND message_id = ?")
 				.get(valid.chatId, valid.messageId);
-			const alias = db.query("INSERT INTO tg_dm_navigation_updates (update_id, receipt_id) VALUES (?, ?)");
+			const alias = db.query(
+				"INSERT INTO tg_dm_navigation_updates (update_id, receipt_id) VALUES (?, ?)",
+			);
 			if (byUpdate || byMessage) {
 				const row = storedSchema.parse(byUpdate ?? byMessage);
-				if (row.chat_id !== valid.chatId || row.message_id !== valid.messageId || row.command !== valid.command ||
-					(byMessage && storedSchema.parse(byMessage).update_id !== row.update_id)) {
+				if (
+					row.chat_id !== valid.chatId ||
+					row.message_id !== valid.messageId ||
+					row.command !== valid.command ||
+					(byMessage && storedSchema.parse(byMessage).update_id !== row.update_id)
+				) {
 					throw new Error("DM navigation conflicting command identity");
 				}
 				const json: unknown = JSON.parse(row.result_json);
 				const receipt = receiptSchema.parse(json);
 				assertScope(receipt.fromId, valid.chatId);
 				assertScope(receipt.toId, valid.chatId);
-				if ((receipt.outcome === "no_previous") !== (receipt.toId === null) ||
+				if (
+					(receipt.outcome === "no_previous") !== (receipt.toId === null) ||
 					(receipt.outcome === "no_previous" && receipt.archivedInputs !== 0) ||
 					(valid.command === "new" && receipt.outcome !== "new") ||
-					(valid.command === "back" && receipt.outcome === "new")) {
+					(valid.command === "back" && receipt.outcome === "new")
+				) {
 					throw new Error("DM navigation invalid command receipt");
 				}
 				const conv = receipt.toId === null ? null : store.get(receipt.toId);
-				if (receipt.toId !== null && !conv) throw new Error("DM navigation selected history is missing");
+				if (receipt.toId !== null && !conv)
+					throw new Error("DM navigation selected history is missing");
 				if (!byUpdate) alias.run(valid.updateId, row.update_id);
-				return { result: { ...receipt, conv, duplicate: true, stopped: false, reviewsCancelled: 0 }, fence: null };
+				return {
+					result: { ...receipt, conv, duplicate: true, stopped: false, reviewsCancelled: 0 },
+					fence: null,
+				};
 			}
 
 			phase = "current_lookup";
@@ -111,12 +130,17 @@ export function navigateDm(
 			let outcome: Receipt["outcome"] = "no_previous";
 			// The cwd column is a retired NOT NULL compatibility field, not
 			// tool state. This helper needs no deployment/workspace configuration.
-			if (valid.command === "new" && outgoing === null && inbox.hasPendingBefore(laneKey, valid.updateId)) {
+			if (
+				valid.command === "new" &&
+				outgoing === null &&
+				inbox.hasPendingBefore(laneKey, valid.updateId)
+			) {
 				phase = "historical_create";
 				outgoing = store.rollDm(valid.chatId, "");
 			}
 			phase = "previous_lookup";
-			const previous = valid.command === "back" && outgoing !== null ? store.previousDm(valid.chatId) : null;
+			const previous =
+				valid.command === "back" && outgoing !== null ? store.previousDm(valid.chatId) : null;
 			if (valid.command === "new" || previous !== null) {
 				if (outgoing !== null) {
 					assertScope(outgoing.id, valid.chatId);
@@ -128,20 +152,38 @@ export function navigateDm(
 					archivedInputs = inbox.archivePendingBefore(laneKey, valid.updateId, outgoing.id);
 				}
 				phase = "selection";
-				selected = valid.command === "new" ? store.rollDm(valid.chatId, "") : store.backDm(valid.chatId);
+				selected =
+					valid.command === "new" ? store.rollDm(valid.chatId, "") : store.backDm(valid.chatId);
 				if (!selected) throw new Error("DM navigation predecessor disappeared during selection");
 				assertScope(selected.id, valid.chatId);
 				outcome = valid.command;
 			}
 			const receipt = receiptSchema.parse({
-				fromId: outgoing?.id ?? null, toId: selected?.id ?? null,
-				outcome, archivedInputs,
+				fromId: outgoing?.id ?? null,
+				toId: selected?.id ?? null,
+				outcome,
+				archivedInputs,
 			});
 			phase = "receipt_write";
 			db.query(`INSERT INTO tg_dm_navigation (update_id, chat_id, message_id, command, result_json)
-				VALUES (?, ?, ?, ?, ?)`).run(valid.updateId, valid.chatId, valid.messageId, valid.command, JSON.stringify(receipt));
+				VALUES (?, ?, ?, ?, ?)`).run(
+				valid.updateId,
+				valid.chatId,
+				valid.messageId,
+				valid.command,
+				JSON.stringify(receipt),
+			);
 			alias.run(valid.updateId, valid.updateId);
-			return { result: { ...receipt, conv: selected, duplicate: false, stopped: false, reviewsCancelled: 0 }, fence };
+			return {
+				result: {
+					...receipt,
+					conv: selected,
+					duplicate: false,
+					stopped: false,
+					reviewsCancelled: 0,
+				},
+				fence,
+			};
 		})();
 		committed = true;
 		const { result, fence } = navigation;
@@ -155,19 +197,32 @@ export function navigateDm(
 		}
 		phase = "log";
 		log.info(result.duplicate ? "dm navigation duplicate" : "dm navigated", {
-			chatId: valid.chatId, updateId: valid.updateId, messageId: valid.messageId, command: valid.command,
-			fromId: result.fromId, toId: result.toId, outcome: result.outcome, duplicate: result.duplicate,
-			stopped: result.stopped, reviewsCancelled: result.reviewsCancelled, archivedInputs: result.archivedInputs,
+			chatId: valid.chatId,
+			updateId: valid.updateId,
+			messageId: valid.messageId,
+			command: valid.command,
+			fromId: result.fromId,
+			toId: result.toId,
+			outcome: result.outcome,
+			duplicate: result.duplicate,
+			stopped: result.stopped,
+			reviewsCancelled: result.reviewsCancelled,
+			archivedInputs: result.archivedInputs,
 		});
 		return result;
 	} catch (err) {
 		// Never log exception messages/stacks here: validation and SQLite
 		// exceptions may contain persisted input. The caller gets the original error.
 		const safe = inputSchema.safeParse(input);
-		log.error(committed ? "dm navigation failed after commit" : "dm navigation failed — rolled back", undefined, {
-			...(safe.success ? safe.data : {}), phase,
-			errorKind: err instanceof Error ? err.name : "unknown",
-		});
+		log.error(
+			committed ? "dm navigation failed after commit" : "dm navigation failed — rolled back",
+			undefined,
+			{
+				...(safe.success ? safe.data : {}),
+				phase,
+				errorKind: err instanceof Error ? err.name : "unknown",
+			},
+		);
 		throw err;
 	}
 }

@@ -196,7 +196,10 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	// Existing DBs predate the spin-off pin — additive column, no rebuild
 	// (design/app.md → Spin-off). NULL = Telegram-pinned like always.
 	const cols = new Set(
-		db.query<{ name: string }, []>("PRAGMA table_info(delegations)").all().map((c) => c.name),
+		db
+			.query<{ name: string }, []>("PRAGMA table_info(delegations)")
+			.all()
+			.map((c) => c.name),
 	);
 	if (!cols.has("app_conversation")) {
 		db.exec("ALTER TABLE delegations ADD COLUMN app_conversation TEXT");
@@ -217,9 +220,7 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	const qActive = db.query(
 		"SELECT * FROM delegations WHERE status IN ('running','needs_input') ORDER BY id",
 	);
-	const qStarting = db.query(
-		"SELECT * FROM delegations WHERE status = 'starting' ORDER BY id",
-	);
+	const qStarting = db.query("SELECT * FROM delegations WHERE status = 'starting' ORDER BY id");
 	const qInsert = db.query(`INSERT INTO delegations
 		(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, target, baseline_seq, prompted_at, created_at, finished_at, app_conversation)
 		VALUES (?, ?, ?, ?, ?, ?, '', '', '', 'starting', ?, 0, ?, ?, NULL, ?)`);
@@ -237,15 +238,21 @@ export function openDelegations(dbPath: string): DelegationsStore {
 			baseline_seq = COALESCE(?, baseline_seq)
 		WHERE id = ? AND status = ? AND prompted_at = ?`,
 	);
-	const qStatus = db.query(
-		"UPDATE delegations SET status = ?, finished_at = ? WHERE id = ?",
-	);
+	const qStatus = db.query("UPDATE delegations SET status = ?, finished_at = ? WHERE id = ?");
 
 	return {
 		create({ name, harness, cwd, task, address, appConversation, target }, now = new Date()) {
 			const ts = now.toISOString();
 			const res = qInsert.run(
-				name, harness, cwd, task, address.chatId, address.threadId, target ?? null, ts, ts,
+				name,
+				harness,
+				cwd,
+				task,
+				address.chatId,
+				address.threadId,
+				target ?? null,
+				ts,
+				ts,
 				appConversation ?? null,
 			);
 			return rowToDelegation(qGet.get(Number(res.lastInsertRowid)));
@@ -301,7 +308,9 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		},
 		liveRowsWithNullTarget() {
 			const row = db
-				.query("SELECT COUNT(*) AS n FROM delegations WHERE target IS NULL AND status IN ('starting','running','needs_input')")
+				.query(
+					"SELECT COUNT(*) AS n FROM delegations WHERE target IS NULL AND status IN ('starting','running','needs_input')",
+				)
 				.get() as { n: number } | null;
 			return row?.n ?? 0;
 		},

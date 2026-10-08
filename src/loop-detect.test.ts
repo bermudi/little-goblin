@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { LOOP_DETECT_CUT, LOOP_DETECT_WARN, LOOP_DETECT_WINDOW, LoopDetector } from "./loop-detect.ts";
+import {
+	LOOP_DETECT_CUT,
+	LOOP_DETECT_WARN,
+	LOOP_DETECT_WINDOW,
+	LoopDetector,
+} from "./loop-detect.ts";
 
 describe("loop detector", () => {
 	test("an identical call+result warns once at 10 and cuts at 20", () => {
@@ -8,7 +13,9 @@ describe("loop detector", () => {
 		expect(verdicts.slice(0, LOOP_DETECT_WARN - 1).every((a) => a === "none")).toBe(true);
 		expect(verdicts[LOOP_DETECT_WARN - 1]).toBe("warn");
 		// Warned once per pair: the climb from 10 to 20 stays quiet.
-		expect(verdicts.slice(LOOP_DETECT_WARN, LOOP_DETECT_CUT - 1).every((a) => a === "none")).toBe(true);
+		expect(verdicts.slice(LOOP_DETECT_WARN, LOOP_DETECT_CUT - 1).every((a) => a === "none")).toBe(
+			true,
+		);
 		expect(verdicts[LOOP_DETECT_CUT - 1]).toBe("cut");
 		// The pair stays at/over the cut line for every repeat after.
 		expect(verdicts.slice(LOOP_DETECT_CUT).every((a) => a === "cut")).toBe(true);
@@ -34,7 +41,8 @@ describe("loop detector", () => {
 		let firstCut = -1;
 		const warns: number[] = [];
 		for (let i = 0; i < LOOP_DETECT_WINDOW + 4; i++) {
-			const v = i % 2 === 0 ? d.record("edit", { n: "a" }, "ok") : d.record("test", { n: "b" }, "1 fail");
+			const v =
+				i % 2 === 0 ? d.record("edit", { n: "a" }, "ok") : d.record("test", { n: "b" }, "1 fail");
 			if (v.action === "warn") warns.push(i);
 			if (v.action === "cut" && firstCut === -1) firstCut = i;
 		}

@@ -69,9 +69,7 @@ export function discardSpinOff(
 
 async function retitle(deps: SpinOffDeps, conversationId: string): Promise<void> {
 	try {
-		const lastUser = deps.store
-			.history(conversationId)
-			.findLast((m) => m.role === "user");
+		const lastUser = deps.store.history(conversationId).findLast((m) => m.role === "user");
 		const text = lastUser === undefined ? "" : projectRollText(lastUser.parts);
 		if (text === "") return;
 		const title = await deps.titleFor(text);

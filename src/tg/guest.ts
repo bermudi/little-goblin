@@ -147,7 +147,10 @@ export function mentionsBot(msg: Message, botUsername: string, botUserId: number
 // the guest surface the leading @username mention is stripped first
 // (the summons is inherently addressed to the bot).
 export function guestCommand(text: string): "open" | "off" | null {
-	const stripped = text.replace(/^@\S+\s*/, "").trim().toLowerCase();
+	const stripped = text
+		.replace(/^@\S+\s*/, "")
+		.trim()
+		.toLowerCase();
 	const m = /^\/(open|off)(@\S+)?$/.exec(stripped);
 	return m ? (m[1] as "open" | "off") : null;
 }
@@ -164,7 +167,7 @@ function localDay(): string {
 function summonParts(msg: Message): { type: "text"; text: string }[] {
 	const text = (msg.text ?? msg.caption ?? "").replace(/^@\S+\s*/, "").trim();
 	const quoted = msg.reply_to_message;
-	const quotedText = quoted === undefined ? "" : quoted.text ?? quoted.caption ?? "";
+	const quotedText = quoted === undefined ? "" : (quoted.text ?? quoted.caption ?? "");
 	const parts: { type: "text"; text: string }[] = [];
 	if (quotedText !== "") {
 		parts.push({ type: "text", text: `[replying to: "${quotedText.slice(0, 2_000)}"]` });
@@ -246,7 +249,10 @@ export class GuestSink implements TurnSink {
 	private async edit(body: string): Promise<void> {
 		if (this.dead) return;
 		try {
-			await withTimeout(this.api.editMessageTextInline(this.inlineMessageId, body), "editMessageText");
+			await withTimeout(
+				this.api.editMessageTextInline(this.inlineMessageId, body),
+				"editMessageText",
+			);
 			this.edits++;
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -330,8 +336,10 @@ async function answerGuestArticle(
 		// Narrow by hand: grammy types the method's return loosely, and
 		// the id is the whole point of the call.
 		if (
-				typeof sent === "object" && sent !== null && "inline_message_id" in sent &&
-				typeof (sent as { inline_message_id: unknown }).inline_message_id === "string"
+			typeof sent === "object" &&
+			sent !== null &&
+			"inline_message_id" in sent &&
+			typeof (sent as { inline_message_id: unknown }).inline_message_id === "string"
 		) {
 			return (sent as { inline_message_id: string }).inline_message_id;
 		}
@@ -366,7 +374,12 @@ function closeGuestChat(env: GuestEnv, chatId: number): number {
 	return ids.length;
 }
 
-function resolveGuestConversation(env: GuestEnv, chatId: number, userId: number, sandbox: boolean): Conversation {
+function resolveGuestConversation(
+	env: GuestEnv,
+	chatId: number,
+	userId: number,
+	sandbox: boolean,
+): Conversation {
 	const conv = env.store.resolve(guestAddress(chatId, userId), paths.workspace());
 	// All guest conversations are off the record (no recall, no
 	// distillation, no review, no FTS); persona freezes the prompt
@@ -394,12 +407,14 @@ const guestTurnLanes = new Map<string, Promise<void>>();
 function serializeGuestTurn<T>(conversationId: string, fn: () => Promise<T>): Promise<T> {
 	const prev = guestTurnLanes.get(conversationId) ?? Promise.resolve();
 	const run = prev.then(fn, fn);
-	const tail = run.then(
-		() => undefined,
-		() => undefined,
-	).finally(() => {
-		if (guestTurnLanes.get(conversationId) === tail) guestTurnLanes.delete(conversationId);
-	});
+	const tail = run
+		.then(
+			() => undefined,
+			() => undefined,
+		)
+		.finally(() => {
+			if (guestTurnLanes.get(conversationId) === tail) guestTurnLanes.delete(conversationId);
+		});
 	guestTurnLanes.set(conversationId, tail);
 	return run;
 }
@@ -431,8 +446,12 @@ export async function handleGuestUpdate(
 		if (cmd === "open") {
 			env.guestStore.open(chatId, from.id);
 			log.info("guest chat opened", { chat: chatId, by: from.id });
-			await answerGuestArticle(env.api, guestQueryId, "goblin",
-				"🟢 guest access open — anyone in this chat can summon me");
+			await answerGuestArticle(
+				env.api,
+				guestQueryId,
+				"goblin",
+				"🟢 guest access open — anyone in this chat can summon me",
+			);
 		} else {
 			closeGuestChat(env, chatId);
 			await answerGuestArticle(env.api, guestQueryId, "goblin", "🔴 guest access closed");
@@ -442,7 +461,11 @@ export async function handleGuestUpdate(
 
 	const verdict = classifySummon(from.id, chatId, allowed, env.guestStore.isOpen(chatId));
 	if (verdict.kind === "deny") {
-		log.info("guest summons denied — chat not open", { chat: chatId, from: from.id, update: updateId });
+		log.info("guest summons denied — chat not open", {
+			chat: chatId,
+			from: from.id,
+			update: updateId,
+		});
 		return;
 	}
 	const sandbox = verdict.kind === "sandbox";
@@ -454,8 +477,12 @@ export async function handleGuestUpdate(
 		if (env.runtime.hasActiveTurn(conv.id)) {
 			// Never steer a guest turn: the reply would land in another
 			// summons' message.
-			await answerGuestArticle(env.api, guestQueryId, "goblin",
-				"⏳ still answering an earlier summons here — try again in a moment");
+			await answerGuestArticle(
+				env.api,
+				guestQueryId,
+				"goblin",
+				"⏳ still answering an earlier summons here — try again in a moment",
+			);
 			return;
 		}
 
@@ -464,16 +491,29 @@ export async function handleGuestUpdate(
 			const limit = cfg.perUserDailyTurns;
 			if (!env.guestStore.tryChargeBudget(from.id, localDay(), limit)) {
 				log.warn("guest budget exhausted", { chat: chatId, from: from.id, limit });
-				await answerGuestArticle(env.api, guestQueryId, "goblin",
-					`⏳ daily guest limit reached (${limit} answers) — try again tomorrow`);
+				await answerGuestArticle(
+					env.api,
+					guestQueryId,
+					"goblin",
+					`⏳ daily guest limit reached (${limit} answers) — try again tomorrow`,
+				);
 				return;
 			}
 		}
 
-		const inlineMessageId = await answerGuestArticle(env.api, guestQueryId, "goblin", "⏳ goblin is on it…");
+		const inlineMessageId = await answerGuestArticle(
+			env.api,
+			guestQueryId,
+			"goblin",
+			"⏳ goblin is on it…",
+		);
 		if (inlineMessageId === null) return;
 
-		const admitted = env.runtime.submit(conv, summonMessage(msg), new GuestSink(env.api, inlineMessageId, cfg.outputChars));
+		const admitted = env.runtime.submit(
+			conv,
+			summonMessage(msg),
+			new GuestSink(env.api, inlineMessageId, cfg.outputChars),
+		);
 		log.info("guest summons", {
 			chat: chatId,
 			from: from.id,
@@ -535,13 +575,21 @@ export async function routeMemberGuestMessage(
 	if (!mentionsBot(msg, env.botUsername, env.botUserId)) return false;
 	if (!env.guestStore.seen(updateId)) return true; // duplicate redelivery
 	if (!env.guestStore.isOpen(chatId)) {
-		log.info("guest summons denied — chat not open", { chat: chatId, from: from.id, update: updateId });
+		log.info("guest summons denied — chat not open", {
+			chat: chatId,
+			from: from.id,
+			update: updateId,
+		});
 		return true;
 	}
 
 	const conv = resolveGuestConversation(env, chatId, from.id, true);
 	if (env.runtime.hasActiveTurn(conv.id)) {
-		void sendMemberLine(env, chatId, "⏳ still answering an earlier summons — try again in a moment");
+		void sendMemberLine(
+			env,
+			chatId,
+			"⏳ still answering an earlier summons — try again in a moment",
+		);
 		return true;
 	}
 
@@ -549,7 +597,11 @@ export async function routeMemberGuestMessage(
 	const limit = cfg.perUserDailyTurns;
 	if (!env.guestStore.tryChargeBudget(from.id, localDay(), limit)) {
 		log.warn("guest budget exhausted", { chat: chatId, from: from.id, limit });
-		void sendMemberLine(env, chatId, `⏳ daily guest limit reached (${limit} answers) — try again tomorrow`);
+		void sendMemberLine(
+			env,
+			chatId,
+			`⏳ daily guest limit reached (${limit} answers) — try again tomorrow`,
+		);
 		return true;
 	}
 
@@ -598,7 +650,10 @@ export const GUEST_CHANNEL_EXCLUDED: ReadonlySet<string> = new Set([
 // everything except GUEST_CHANNEL_EXCLUDED. Constructed toolsets, never
 // prompt-level promises — a sandboxed caller's model never sees a tool
 // it must merely be asked not to use.
-export function filterGuestTools<T extends Record<string, unknown>>(conv: Conversation, tools: T): T {
+export function filterGuestTools<T extends Record<string, unknown>>(
+	conv: Conversation,
+	tools: T,
+): T {
 	if (channelOf(conv.id) !== "guest") return tools;
 	const out: Record<string, unknown> = {};
 	for (const [name, tool] of Object.entries(tools)) {

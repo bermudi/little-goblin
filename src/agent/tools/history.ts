@@ -44,11 +44,17 @@ export function excerpt(text: string, query: string, budget = 360): string {
 
 function hitLine(
 	i: number,
-	h: { conversationId: string; title: string | null; seq: number; role: string; text: string; createdAt: string },
+	h: {
+		conversationId: string;
+		title: string | null;
+		seq: number;
+		role: string;
+		text: string;
+		createdAt: string;
+	},
 	query: string,
 ): string {
-	const head =
-		`${i + 1}. ${h.title ?? "(untitled)"} (${h.conversationId}) · ${h.role} · ${h.createdAt.slice(0, 10)} · seq ${h.seq}`;
+	const head = `${i + 1}. ${h.title ?? "(untitled)"} (${h.conversationId}) · ${h.role} · ${h.createdAt.slice(0, 10)} · seq ${h.seq}`;
 	return `${head}\n   ${excerpt(h.text, query)}`;
 }
 
@@ -72,24 +78,27 @@ const actionSchema = z.discriminatedUnion("action", [searchSchema, contextSchema
 // validation (took down mail on Sep 28, then program the same way).
 // Keep the wire schema flat; actionSchema still owns the exact
 // per-action contract.
-export const historyInputSchema = z.object({
-	action: z.enum(["search", "context"]),
-	query: searchSchema.shape.query.optional(),
-	limit: searchSchema.shape.limit,
-	conversation: contextSchema.shape.conversation.optional(),
-	seq: contextSchema.shape.seq.optional(),
-	window: contextSchema.shape.window,
-}).superRefine((value, ctx) => {
-	const result = actionSchema.safeParse(value);
-	if (!result.success) for (const issue of result.error.issues) {
-		ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
-	}
-});
+export const historyInputSchema = z
+	.object({
+		action: z.enum(["search", "context"]),
+		query: searchSchema.shape.query.optional(),
+		limit: searchSchema.shape.limit,
+		conversation: contextSchema.shape.conversation.optional(),
+		seq: contextSchema.shape.seq.optional(),
+		window: contextSchema.shape.window,
+	})
+	.superRefine((value, ctx) => {
+		const result = actionSchema.safeParse(value);
+		if (!result.success)
+			for (const issue of result.error.issues) {
+				ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
+			}
+	});
 
 export const historySearchTool = (deps: HistorySearchDeps) =>
 	tool({
 		description:
-			"Search goblin's own past conversations across every topic (\"what did we decide about X?\"). " +
+			'Search goblin\'s own past conversations across every topic ("what did we decide about X?"). ' +
 			"Search returns topic · role · date · snippet lines, each with its conversation id and event seq — " +
 			"page context around a hit with the context action. Topics excluded from memory are never searched.",
 		inputSchema: historyInputSchema,

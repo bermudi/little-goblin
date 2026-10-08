@@ -59,9 +59,13 @@ describe("coalescing buffer", () => {
 		const flushes: string[][] = [];
 		// Quiet 40ms, ceiling 70ms: pushes every 25ms reset the quiet
 		// timer forever, so only the ceiling can fire.
-		const buf = new CoalescingBuffer<string>(40, (_k, items) => {
-			flushes.push(items);
-		}, 70);
+		const buf = new CoalescingBuffer<string>(
+			40,
+			(_k, items) => {
+				flushes.push(items);
+			},
+			70,
+		);
 		buf.push("c1", "a");
 		await sleep(25);
 		buf.push("c1", "b");
@@ -73,17 +77,18 @@ describe("coalescing buffer", () => {
 		// The post-ceiling dribble starts a fresh bucket on its own timer.
 		buf.push("c1", "d");
 		await sleep(60);
-		expect(flushes).toEqual([
-			["a", "b", "c"],
-			["d"],
-		]);
+		expect(flushes).toEqual([["a", "b", "c"], ["d"]]);
 	});
 
 	test("drain disarms the max-wait timer too", async () => {
 		const flushes: string[][] = [];
-		const buf = new CoalescingBuffer<string>(40, (_k, items) => {
-			flushes.push(items);
-		}, 70);
+		const buf = new CoalescingBuffer<string>(
+			40,
+			(_k, items) => {
+				flushes.push(items);
+			},
+			70,
+		);
 		buf.push("c1", "a");
 		await buf.drain();
 		expect(flushes).toEqual([["a"]]);

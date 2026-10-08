@@ -65,7 +65,10 @@ export function listConversations(token: string | null): Promise<AppConversation
 	return request(token, "/api/app/conversations");
 }
 
-export function createConversation(token: string | null, title?: string): Promise<AppConversationCreate> {
+export function createConversation(
+	token: string | null,
+	title?: string,
+): Promise<AppConversationCreate> {
 	return request(token, "/api/app/conversations", {
 		method: "POST",
 		headers: { "content-type": "application/json" },
@@ -74,18 +77,28 @@ export function createConversation(token: string | null, title?: string): Promis
 }
 
 export function getMessages(token: string | null, id: string): Promise<AppMessageList> {
-	return request(token, `/api/app/conversations/${encodeURIComponent(id.slice("app/".length))}/messages`);
+	return request(
+		token,
+		`/api/app/conversations/${encodeURIComponent(id.slice("app/".length))}/messages`,
+	);
 }
 
 // /stop rides the runtime's own stop — abort the turn server-side, not
 // just this client's stream (history keeps whatever the turn wrote).
 export function stopConversation(token: string | null, id: string): Promise<AppStopResponse> {
-	return request(token, `/api/app/conversations/${encodeURIComponent(id.slice("app/".length))}/stop`, {
-		method: "POST",
-	});
+	return request(
+		token,
+		`/api/app/conversations/${encodeURIComponent(id.slice("app/".length))}/stop`,
+		{
+			method: "POST",
+		},
+	);
 }
 
-export async function uploadAttachment(token: string | null, file: File): Promise<AppAttachmentResponse> {
+export async function uploadAttachment(
+	token: string | null,
+	file: File,
+): Promise<AppAttachmentResponse> {
 	const form = new FormData();
 	form.append("file", file, file.name);
 	return request(token, "/api/app/attachments", { method: "POST", body: form });
@@ -111,10 +124,7 @@ export function deleteConversation(token: string | null, id: string): Promise<{ 
 	return request(token, `/api/app/conversations/${seg(id)}`, { method: "DELETE" });
 }
 
-export function searchConversations(
-	token: string | null,
-	q: string,
-): Promise<AppSearchResponse> {
+export function searchConversations(token: string | null, q: string): Promise<AppSearchResponse> {
 	return request(token, `/api/app/search?q=${encodeURIComponent(q)}`);
 }
 
@@ -123,10 +133,7 @@ export function getConfig(token: string | null): Promise<AppConfigView> {
 	return request(token, "/api/app/config");
 }
 
-export function patchConfig(
-	token: string | null,
-	patch: AppConfigPatch,
-): Promise<AppConfigView> {
+export function patchConfig(token: string | null, patch: AppConfigPatch): Promise<AppConfigView> {
 	return request(token, "/api/app/config", {
 		method: "POST",
 		headers: { "content-type": "application/json" },

@@ -4,11 +4,7 @@
 // edit time: a rename the operator lands mid-flight wins.
 
 import type { Api } from "grammy";
-import type {
-	Conversation,
-	ConversationMetaPatch,
-	ConversationStore,
-} from "../conversation.ts";
+import type { Conversation, ConversationMetaPatch, ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
 

@@ -89,12 +89,7 @@ function reply(store: ConversationStore, convId: string, text: string): string {
 }
 
 function appConv(store: ConversationStore, title = "the work") {
-	return store.forkToApp(
-		store.resolve({ kind: "dm", chatId: 1 }, "/w").id,
-		"spun-1",
-		"/w",
-		title,
-	);
+	return store.forkToApp(store.resolve({ kind: "dm", chatId: 1 }, "/w").id, "spun-1", "/w", title);
 }
 
 describe("makeBellSink", () => {
@@ -110,9 +105,7 @@ describe("makeBellSink", () => {
 		expect(h.sent[0]!.text).toBe("the work: deployed the thing and all tests pass");
 		// Trailing-slash hosts normalize; the button rides every ping.
 		expect(h.sent[0]!.markup).toEqual({
-			inline_keyboard: [
-				[{ text: "Open in app", url: "https://g.example/app/c/spun-1" }],
-			],
+			inline_keyboard: [[{ text: "Open in app", url: "https://g.example/app/c/spun-1" }]],
 		});
 		// Recorded for reply routing and journaled into each current DM.
 		expect(h.pings.lookup(1, 1001)).toBe(conv.id);

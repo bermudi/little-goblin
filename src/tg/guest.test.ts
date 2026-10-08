@@ -8,7 +8,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { guestAddress, openStore, type Conversation, type ConversationStore } from "../conversation.ts";import type { Config, ConfigRef } from "../config.ts";
+import {
+	guestAddress,
+	openStore,
+	type Conversation,
+	type ConversationStore,
+} from "../conversation.ts";
+import type { Config, ConfigRef } from "../config.ts";
 import type { Runtime, TurnSink } from "../runtime.ts";
 import type { UIMessage } from "ai";
 import type { Message, User } from "grammy/types";
@@ -79,7 +85,10 @@ describe("mentionsBot", () => {
 	test("a text_mention of the bot id addresses the bot", () => {
 		expect(
 			mentionsBot(
-				msg({ text: "hey there", entities: [{ type: "text_mention", offset: 4, length: 5, user: user(42, "g") }] }),
+				msg({
+					text: "hey there",
+					entities: [{ type: "text_mention", offset: 4, length: 5, user: user(42, "g") }],
+				}),
 				bot.username,
 				bot.id,
 			),
@@ -88,7 +97,10 @@ describe("mentionsBot", () => {
 	test("a reply to one of the bot's messages addresses the bot", () => {
 		expect(
 			mentionsBot(
-				msg({ text: "go on", reply_to_message: msg({ text: "earlier", from: user(42, "goblin") }) as never }),
+				msg({
+					text: "go on",
+					reply_to_message: msg({ text: "earlier", from: user(42, "goblin") }) as never,
+				}),
 				bot.username,
 				bot.id,
 			),
@@ -121,21 +133,52 @@ describe("guestCommand", () => {
 
 describe("filterGuestTools — the sandbox invariant", () => {
 	const tools = {
-		read_file: 1, write_file: 1, edit_file: 1, bash: 1, speak: 1, transcribe: 1,
-		vision: 1, program: 1, delegate: 1, mail: 1, send_file: 1, memory_search: 1,
-		search: 1, fetch: 1, history_search: 1,
+		read_file: 1,
+		write_file: 1,
+		edit_file: 1,
+		bash: 1,
+		speak: 1,
+		transcribe: 1,
+		vision: 1,
+		program: 1,
+		delegate: 1,
+		mail: 1,
+		send_file: 1,
+		memory_search: 1,
+		search: 1,
+		fetch: 1,
+		history_search: 1,
 	};
 	const conv = (persona: "personal" | "guest"): Conversation =>
-		({ id: `guest:-100:9`, chatId: -100, threadId: null, title: null, titleImplicit: false,
-			model: null, thinking: null, voice: false, memoryExcluded: true, persona,
-			epoch: 0, createdAt: "" }) as unknown as Conversation;
+		({
+			id: `guest:-100:9`,
+			chatId: -100,
+			threadId: null,
+			title: null,
+			titleImplicit: false,
+			model: null,
+			thinking: null,
+			voice: false,
+			memoryExcluded: true,
+			persona,
+			epoch: 0,
+			createdAt: "",
+		}) as unknown as Conversation;
 
 	test("sandbox personas keep search and fetch only", () => {
 		expect(Object.keys(filterGuestTools(conv("guest"), tools)).sort()).toEqual(["fetch", "search"]);
 	});
 	test("personal guest turns lose tools that pin or reach beyond the chat", () => {
 		const kept = Object.keys(filterGuestTools(conv("personal"), tools)).sort();
-		for (const gone of ["program", "mail", "delegate", "memory_search", "history_search", "speak", "send_file"]) {
+		for (const gone of [
+			"program",
+			"mail",
+			"delegate",
+			"memory_search",
+			"history_search",
+			"speak",
+			"send_file",
+		]) {
 			expect(kept).not.toContain(gone);
 		}
 		expect(kept).toContain("bash");
@@ -269,7 +312,9 @@ function makeEnv(over: { busy?: boolean; guest?: boolean } = {}) {
 	return { env, api, guestStore, store, submitted, configRef };
 }
 
-const guestMsg = (over: Partial<Message> & { guest_query_id?: string }): Message & { guest_query_id?: string } =>
+const guestMsg = (
+	over: Partial<Message> & { guest_query_id?: string },
+): Message & { guest_query_id?: string } =>
 	({
 		message_id: 10,
 		date: 0,
@@ -283,7 +328,11 @@ const guestMsg = (over: Partial<Message> & { guest_query_id?: string }): Message
 describe("handleGuestUpdate", () => {
 	test("operator summons anywhere: personal turn, memory off, placeholder first", async () => {
 		const { env, api, submitted } = makeEnv();
-		await handleGuestUpdate(env, guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, guest_query_id: "q1" }), 1);
+		await handleGuestUpdate(
+			env,
+			guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, guest_query_id: "q1" }),
+			1,
+		);
 		expect(submitted.length).toBe(1);
 		const turn = submitted[0];
 		expect(turn !== undefined).toBe(true);
@@ -328,8 +377,16 @@ describe("handleGuestUpdate", () => {
 	});
 	test("duplicate update ids are swallowed", async () => {
 		const { env, submitted } = makeEnv();
-		await handleGuestUpdate(env, guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, guest_query_id: "q6" }), 6);
-		await handleGuestUpdate(env, guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, guest_query_id: "q6" }), 6);
+		await handleGuestUpdate(
+			env,
+			guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, guest_query_id: "q6" }),
+			6,
+		);
+		await handleGuestUpdate(
+			env,
+			guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, guest_query_id: "q6" }),
+			6,
+		);
 		expect(submitted.length).toBe(1);
 	});
 	test("operator /open opens the chat and confirms; /off closes and fences", async () => {
@@ -339,7 +396,11 @@ describe("handleGuestUpdate", () => {
 		await handleGuestUpdate(env, guestMsg({ guest_query_id: "q7" }), 7); // sandbox conversation exists
 		await handleGuestUpdate(
 			env,
-			guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, text: "@goblin_bot /off", guest_query_id: "q8" }),
+			guestMsg({
+				from: { id: 7, is_bot: false, first_name: "Op" },
+				text: "@goblin_bot /off",
+				guest_query_id: "q8",
+			}),
 			8,
 		);
 		expect(guestStore.isOpen(-100)).toBe(false);
@@ -354,13 +415,21 @@ describe("handleGuestUpdate", () => {
 	});
 	test("feature off (no guest block): summons are silent", async () => {
 		const { env, submitted } = makeEnv({ guest: false });
-		await handleGuestUpdate(env, guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, guest_query_id: "q10" }), 10);
+		await handleGuestUpdate(
+			env,
+			guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, guest_query_id: "q10" }),
+			10,
+		);
 		expect(submitted.length).toBe(0);
 	});
 	test("a failed answerGuestQuery never runs the turn blind", async () => {
 		const { env, submitted } = makeEnv();
 		(env.api as { answerGuestQuery: unknown }).answerGuestQuery = (async () => ({})) as never;
-		await handleGuestUpdate(env, guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, guest_query_id: "q11" }), 11);
+		await handleGuestUpdate(
+			env,
+			guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, guest_query_id: "q11" }),
+			11,
+		);
 		expect(submitted.length).toBe(0);
 	});
 	test("the operator is exempt from the budget", async () => {
@@ -369,7 +438,11 @@ describe("handleGuestUpdate", () => {
 		// Exhaust the limit for user 7 — the operator's summons still runs.
 		expect(guestStore.tryChargeBudget(7, day, 2)).toBe(true);
 		expect(guestStore.tryChargeBudget(7, day, 2)).toBe(true);
-		await handleGuestUpdate(env, guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, guest_query_id: "q12" }), 12);
+		await handleGuestUpdate(
+			env,
+			guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, guest_query_id: "q12" }),
+			12,
+		);
 		expect(submitted.length).toBe(1);
 	});
 	test("a persona flip busts the frozen prompt snapshot", async () => {
@@ -377,7 +450,10 @@ describe("handleGuestUpdate", () => {
 		guestStore.open(-100, 7);
 		await handleGuestUpdate(env, guestMsg({ guest_query_id: "q13" }), 13); // sandbox conv
 		// Flip: user 9 joins allowedUsers → same conversation, personal turn.
-		env.configRef.current = { ...env.configRef.current, allowedUsers: [7, 9] } as typeof env.configRef.current;
+		env.configRef.current = {
+			...env.configRef.current,
+			allowedUsers: [7, 9],
+		} as typeof env.configRef.current;
 		await handleGuestUpdate(env, guestMsg({ guest_query_id: "q14" }), 14);
 		const conv = store.get("guest:-100:9");
 		expect(conv?.persona).toBe("personal");
@@ -390,12 +466,20 @@ describe("routeMemberGuestMessage", () => {
 
 	test("operator messages fall through to normal intake", async () => {
 		const { env } = makeEnv();
-		expect(await routeMemberGuestMessage(env, memberMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, text: "@goblin_bot hi" }), 20)).toBe(false);
+		expect(
+			await routeMemberGuestMessage(
+				env,
+				memberMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, text: "@goblin_bot hi" }),
+				20,
+			),
+		).toBe(false);
 	});
 	test("non-mention chatter falls through (the gate drops it as today)", async () => {
 		const { env } = makeEnv();
 		guestStore_open(env);
-		expect(await routeMemberGuestMessage(env, memberMsg({ text: "just talking", entities: [] }), 21)).toBe(false);
+		expect(
+			await routeMemberGuestMessage(env, memberMsg({ text: "just talking", entities: [] }), 21),
+		).toBe(false);
 	});
 	test("third-party mention in an open chat submits a sandbox turn with normal delivery", async () => {
 		const { env, submitted } = makeEnv();
@@ -416,7 +500,11 @@ describe("routeMemberGuestMessage", () => {
 		expect(
 			await routeMemberGuestMessage(
 				env,
-				memberMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, text: "/open@goblin_bot", entities: [{ type: "bot_command", offset: 0, length: 17 }] }),
+				memberMsg({
+					from: { id: 7, is_bot: false, first_name: "Op" },
+					text: "/open@goblin_bot",
+					entities: [{ type: "bot_command", offset: 0, length: 17 }],
+				}),
 				24,
 			),
 		).toBe(true);
@@ -424,7 +512,11 @@ describe("routeMemberGuestMessage", () => {
 		expect(
 			await routeMemberGuestMessage(
 				env,
-				memberMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, text: "/open", entities: [{ type: "bot_command", offset: 0, length: 5 }] }),
+				memberMsg({
+					from: { id: 7, is_bot: false, first_name: "Op" },
+					text: "/open",
+					entities: [{ type: "bot_command", offset: 0, length: 5 }],
+				}),
 				25,
 			),
 		).toBe(false);
@@ -434,7 +526,11 @@ describe("routeMemberGuestMessage", () => {
 		expect(
 			await routeMemberGuestMessage(
 				env,
-				memberMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, text: "/open @somehuman", entities: [{ type: "bot_command", offset: 0, length: 5 }] }),
+				memberMsg({
+					from: { id: 7, is_bot: false, first_name: "Op" },
+					text: "/open @somehuman",
+					entities: [{ type: "bot_command", offset: 0, length: 5 }],
+				}),
 				26,
 			),
 		).toBe(false);
@@ -451,7 +547,7 @@ describe("routeMemberGuestMessage", () => {
 					text: "/off@goblin_bot",
 					entities: [{ type: "bot_command", offset: 0, length: 16 }],
 				}),
-			27,
+				27,
 			),
 		).toBe(false);
 		expect(guestStore.isOpen(-100)).toBe(false);
@@ -459,13 +555,9 @@ describe("routeMemberGuestMessage", () => {
 	test("non-operator member /off is swallowed", async () => {
 		const { env, guestStore } = makeEnv();
 		guestStore.open(-100, 7);
-		expect(
-			await routeMemberGuestMessage(
-				env,
-				memberMsg({ text: "@goblin_bot /off" }),
-				28,
-			),
-		).toBe(true);
+		expect(await routeMemberGuestMessage(env, memberMsg({ text: "@goblin_bot /off" }), 28)).toBe(
+			true,
+		);
 		expect(guestStore.isOpen(-100)).toBe(true);
 	});
 	test("a busy member conversation refuses instead of steering", async () => {
@@ -477,7 +569,10 @@ describe("routeMemberGuestMessage", () => {
 	test("redelivered member commands never re-run", async () => {
 		const { env, guestStore } = makeEnv();
 		guestStore.open(-100, 7);
-		const off = memberMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, text: "@goblin_bot /off" });
+		const off = memberMsg({
+			from: { id: 7, is_bot: false, first_name: "Op" },
+			text: "@goblin_bot /off",
+		});
 		expect(await routeMemberGuestMessage(env, off, 30)).toBe(true);
 		expect(guestStore.isOpen(-100)).toBe(false);
 		// Re-open, then the SAME update id arrives again: nothing re-closes.

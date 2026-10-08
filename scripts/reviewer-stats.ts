@@ -190,22 +190,32 @@ const p = (s: string): void => {
 
 const fired = gates.filter((g) => g.review);
 const fallbacks = gates.filter((g) => g.fallback);
-const avg = (xs: number[]): number => (xs.length === 0 ? 0 : xs.reduce((a, b) => a + b, 0) / xs.length);
+const avg = (xs: number[]): number =>
+	xs.length === 0 ? 0 : xs.reduce((a, b) => a + b, 0) / xs.length;
 const pct = (n: number, d: number): string => (d === 0 ? "—" : `${((n / d) * 100).toFixed(1)}%`);
 const f2 = (n: number): string => n.toFixed(2);
 
 p(`reviewer-stats — ${file}`);
-p(`gates: ${gates.length} total · ${fired.length} fired a review (${pct(fired.length, gates.length)}) · ${fallbacks.length} fallback (${pct(fallbacks.length, gates.length)})`);
-p(`fallback: max consecutive streak ${gates.reduce((m, g) => Math.max(m, g.streak), 0)} · skipped memory-excluded turns: ${skippedMemory.count}`);
+p(
+	`gates: ${gates.length} total · ${fired.length} fired a review (${pct(fired.length, gates.length)}) · ${fallbacks.length} fallback (${pct(fallbacks.length, gates.length)})`,
+);
+p(
+	`fallback: max consecutive streak ${gates.reduce((m, g) => Math.max(m, g.streak), 0)} · skipped memory-excluded turns: ${skippedMemory.count}`,
+);
 if (gates.length > 0) {
-	p(`scores (all gates):   correction avg ${f2(avg(gates.flatMap((g) => (g.correction === null ? [] : [g.correction]))))} · procedure avg ${f2(avg(gates.flatMap((g) => (g.procedure === null ? [] : [g.procedure]))))}`);
+	p(
+		`scores (all gates):   correction avg ${f2(avg(gates.flatMap((g) => (g.correction === null ? [] : [g.correction]))))} · procedure avg ${f2(avg(gates.flatMap((g) => (g.procedure === null ? [] : [g.procedure]))))}`,
+	);
 }
 if (fired.length > 0) {
 	const byTrigger = new Map<string, number>();
-	for (const g of fired) byTrigger.set(g.trigger ?? "?", (byTrigger.get(g.trigger ?? "?") ?? 0) + 1);
+	for (const g of fired)
+		byTrigger.set(g.trigger ?? "?", (byTrigger.get(g.trigger ?? "?") ?? 0) + 1);
 	p(`fired triggers: ${[...byTrigger.entries()].map(([k, v]) => `${k} ${v}`).join(" · ")}`);
 	const knownCosts = fired.flatMap((g) => (g.cost === null ? [] : [g.cost]));
-	p(`gate cost: avg ${knownCosts.length === 0 ? "—" : avg(knownCosts).toPrecision(3)} (known) · avg ${Math.round(avg(fired.map((g) => g.ms)))}ms`);
+	p(
+		`gate cost: avg ${knownCosts.length === 0 ? "—" : avg(knownCosts).toPrecision(3)} (known) · avg ${Math.round(avg(fired.map((g) => g.ms)))}ms`,
+	);
 }
 
 const rs = [...reviews.values()];

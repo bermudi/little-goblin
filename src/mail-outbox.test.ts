@@ -29,10 +29,7 @@ function store(): OutboxStore {
 describe("mail outbox", () => {
 	test("queue writes a pending row with a 24h fuse", () => {
 		const s = store();
-		const row = s.queue(
-			{ to: ["a@x.com"], subject: "hi", body: "hello", address: ADDRESS },
-			NOW,
-		);
+		const row = s.queue({ to: ["a@x.com"], subject: "hi", body: "hello", address: ADDRESS }, NOW);
 		expect(row.status).toBe("pending");
 		expect(row.draftMessageId).toBeNull();
 		expect(row.cc).toEqual([]);
@@ -85,7 +82,10 @@ describe("mail outbox", () => {
 			new Date(NOW.getTime() - OUTBOX_TTL_MS - 1000),
 		);
 		const fresh = s.queue({ to: ["b@y.com"], subject: "h", body: "b", address: ADDRESS }, NOW);
-		const done = s.queue({ to: ["c@z.com"], subject: "h", body: "b", address: ADDRESS }, new Date(NOW.getTime() - OUTBOX_TTL_MS - 1000));
+		const done = s.queue(
+			{ to: ["c@z.com"], subject: "h", body: "b", address: ADDRESS },
+			new Date(NOW.getTime() - OUTBOX_TTL_MS - 1000),
+		);
 		s.decide(done.id, "cancelled", NOW);
 		const expired = s.expireDue(NOW);
 		expect(expired.map((r) => r.id)).toEqual([old.id]);

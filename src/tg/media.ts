@@ -9,11 +9,7 @@ import { copyFile } from "node:fs/promises";
 import type { File as TgFile } from "grammy/types";
 import type { UIMessage } from "ai";
 import { z } from "zod";
-import {
-	attachmentPart,
-	persistAttachment,
-	type SavedAttachment,
-} from "../agent/attachments.ts";
+import { attachmentPart, persistAttachment, type SavedAttachment } from "../agent/attachments.ts";
 
 export interface IncomingMedia {
 	fileId: string;
@@ -44,10 +40,12 @@ export function mediaFromMessage(msg: {
 	};
 }): IncomingMedia | null {
 	if (msg.photo && msg.photo.length > 0) {
-		const largest = z.object({
-			file_id: z.string().min(1),
-			file_unique_id: z.string().min(1),
-		}).parse(msg.photo[msg.photo.length - 1]);
+		const largest = z
+			.object({
+				file_id: z.string().min(1),
+				file_unique_id: z.string().min(1),
+			})
+			.parse(msg.photo[msg.photo.length - 1]);
 		return {
 			fileId: largest.file_id,
 			fileUniqueId: largest.file_unique_id,
@@ -144,25 +142,36 @@ export async function saveAttachment(
 	const filePath = file.file_path;
 	if (!filePath) throw new Error("telegram returned no file_path");
 	// Telegram's unique id is untrusted input, not a path component.
-	const uniqueId = z.string().regex(/^[A-Za-z0-9_-]+$/).parse(media.fileUniqueId);
-	return persistAttachment(uniqueId, media.fileName, "telegram", async (temp) => {
-		if (filePath.startsWith("/")) {
-			// Self-hosted bot-api in --local mode: copy on disk, no HTTP fetch.
-			await copyFile(filePath, temp, constants.COPYFILE_EXCL);
-		} else {
-			const root = apiRoot ?? "https://api.telegram.org";
-			// The URL carries the bot token. Never propagate its raw errors.
-			const url = `${root}/file/bot${token}/${filePath}`;
-			try {
-				const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
-				if (!res.ok) throw new Error(`HTTP ${res.status}`);
-				await Bun.write(temp, res);
-			} catch (err) {
-				const msg = String(err instanceof Error ? err.message : err);
-				throw new Error(`telegram file download failed: ${token ? msg.replaceAll(token, "***") : msg}`);
+	const uniqueId = z
+		.string()
+		.regex(/^[A-Za-z0-9_-]+$/)
+		.parse(media.fileUniqueId);
+	return persistAttachment(
+		uniqueId,
+		media.fileName,
+		"telegram",
+		async (temp) => {
+			if (filePath.startsWith("/")) {
+				// Self-hosted bot-api in --local mode: copy on disk, no HTTP fetch.
+				await copyFile(filePath, temp, constants.COPYFILE_EXCL);
+			} else {
+				const root = apiRoot ?? "https://api.telegram.org";
+				// The URL carries the bot token. Never propagate its raw errors.
+				const url = `${root}/file/bot${token}/${filePath}`;
+				try {
+					const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+					if (!res.ok) throw new Error(`HTTP ${res.status}`);
+					await Bun.write(temp, res);
+				} catch (err) {
+					const msg = String(err instanceof Error ? err.message : err);
+					throw new Error(
+						`telegram file download failed: ${token ? msg.replaceAll(token, "***") : msg}`,
+					);
+				}
 			}
-		}
-	}, token);
+		},
+		token,
+	);
 }
 
 // Media → parts: one data-attachment part carrying the saved path (plus

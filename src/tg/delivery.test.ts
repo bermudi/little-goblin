@@ -107,11 +107,7 @@ describe("delivery", () => {
 		// msg2 must be patched to its full window, not left short —
 		// otherwise the slice between what it showed and the boundary is
 		// dropped silently.
-		expect(msgs).toEqual([
-			"a".repeat(CHUNK),
-			"b".repeat(CHUNK),
-			"b".repeat(100),
-		]);
+		expect(msgs).toEqual(["a".repeat(CHUNK), "b".repeat(CHUNK), "b".repeat(100)]);
 	});
 
 	test("failed send at final flush is retried, not dropped", async () => {
@@ -161,9 +157,13 @@ describe("delivery", () => {
 		const { api, msgs, reactions } = fakeApi({});
 		let live = true;
 		let release: () => void = () => {};
-		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 		let started: () => void = () => {};
-		const entered = new Promise<void>((resolve) => { started = resolve; });
+		const entered = new Promise<void>((resolve) => {
+			started = resolve;
+		});
 		let calls = 0;
 		api.sendMessage = async () => {
 			calls++;
@@ -189,9 +189,13 @@ describe("delivery", () => {
 		const original = api.sendMessage.bind(api);
 		let calls = 0;
 		let release: () => void = () => {};
-		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 		let started: () => void = () => {};
-		const entered = new Promise<void>((resolve) => { started = resolve; });
+		const entered = new Promise<void>((resolve) => {
+			started = resolve;
+		});
 		api.sendMessage = async (...args) => {
 			calls++;
 			if (calls === 2) {
@@ -237,7 +241,8 @@ describe("delivery", () => {
 			throw new TelegramTimeoutError("sendVoice", 30_000);
 		};
 		const sink = makeDeliverySink(api, conv, undefined, 0, {
-			voiceMode: true, synthesize: async () => [new Uint8Array([1])],
+			voiceMode: true,
+			synthesize: async () => [new Uint8Array([1])],
 		});
 		sink.onTextDelta("spoken answer");
 		await sink.onDone({ kind: "completed" });
@@ -270,7 +275,8 @@ describe("delivery", () => {
 			return original(...args);
 		};
 		const sink = makeDeliverySink(api, conv, undefined, 0, {
-			voiceMode: true, synthesize: async () => [new Uint8Array([1])],
+			voiceMode: true,
+			synthesize: async () => [new Uint8Array([1])],
 		});
 		sink.onTextDelta("spoken answer\n```\ncode\n```\nend");
 		await sink.onDone({ kind: "completed" });
@@ -287,7 +293,8 @@ describe("delivery", () => {
 			throw new TelegramTimeoutError("sendVoice", 30_000);
 		};
 		const sink = makeDeliverySink(api, conv, undefined, 0, {
-			voiceMode: true, synthesize: async () => [new Uint8Array([1])],
+			voiceMode: true,
+			synthesize: async () => [new Uint8Array([1])],
 		});
 		sink.setAuthorityCheck?.(() => live);
 		sink.onTextDelta("spoken answer");
@@ -326,9 +333,7 @@ describe("delivery", () => {
 		for (let i = 0; i < 4; i++) sink.onToolCall("t", { path: "p" });
 		await sink.onDone({ kind: "completed" });
 		expect(msgs[1]!.startsWith("\u{1f600}")).toBe(true);
-		expect(msgs.join("")).toBe(
-			"a".repeat(3791) + "\n\n—\n⚙ t \u{1f600}" + "\n⚙ t p".repeat(4),
-		);
+		expect(msgs.join("")).toBe("a".repeat(3791) + "\n\n—\n⚙ t \u{1f600}" + "\n⚙ t p".repeat(4));
 	});
 
 	test("a failed final edit is retried by the drain, not declared done", async () => {
@@ -493,7 +498,9 @@ describe("delivery", () => {
 
 	test("a rejected voice send fails its caller instead of claiming delivery", async () => {
 		const { api } = fakeApi({});
-		api.sendVoice = async () => { throw new Error("voice send failed"); };
+		api.sendVoice = async () => {
+			throw new Error("voice send failed");
+		};
 		const sink = makeDeliverySink(api, conv, undefined);
 		await expect(sink.onVoiceNote!(new Uint8Array([1]))).rejects.toThrow("voice send failed");
 		await sink.onDone({ kind: "fenced" });
@@ -503,7 +510,8 @@ describe("delivery", () => {
 		const { api, msgs } = fakeApi({});
 		let authoritative = true;
 		const sink = makeDeliverySink(api, conv, undefined, 0, {
-			voiceMode: true, synthesize: async () => [],
+			voiceMode: true,
+			synthesize: async () => [],
 		});
 		sink.setAuthorityCheck?.(() => authoritative);
 		const done = sink.onDone({ kind: "error", message: "failed" });
@@ -514,9 +522,12 @@ describe("delivery", () => {
 
 	test("voice-mode send failure falls back in Telegram-sized text chunks", async () => {
 		const { api, msgs } = fakeApi({});
-		api.sendVoice = async () => { throw new Error("voice send failed"); };
+		api.sendVoice = async () => {
+			throw new Error("voice send failed");
+		};
 		const sink = makeDeliverySink(api, conv, undefined, 0, {
-			voiceMode: true, synthesize: async () => [new Uint8Array([1])],
+			voiceMode: true,
+			synthesize: async () => [new Uint8Array([1])],
 		});
 		const text = "x".repeat(CHUNK + 100);
 		sink.onTextDelta(text);
@@ -689,16 +700,21 @@ describe("delivery", () => {
 		const { api, msgs, markups } = fakeApi({});
 		let live = true;
 		let release: () => void = () => {};
-		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 		let reactionStarted: () => void = () => {};
-		const started = new Promise<void>((resolve) => { reactionStarted = resolve; });
+		const started = new Promise<void>((resolve) => {
+			reactionStarted = resolve;
+		});
 		api.setMessageReaction = async () => {
 			reactionStarted();
 			await gate;
 			return true;
 		};
 		const sink = makeDeliverySink(api, conv, undefined, 0, {
-			voiceMode: false, synthesize: async () => [],
+			voiceMode: false,
+			synthesize: async () => [],
 		});
 		sink.setAuthorityCheck?.(() => live);
 		sink.onTextDelta("partial");

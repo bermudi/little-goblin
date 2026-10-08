@@ -26,11 +26,17 @@ afterEach(() => {
 	dirs = [];
 });
 
-interface GateCall { state: string; questions: Record<string, JevQuestion> }
+interface GateCall {
+	state: string;
+	questions: Record<string, JevQuestion>;
+}
 
 // Fake the gate at the edge like injection.test.ts: scripted answers or
 // a thrown error; calls are captured so tests can read the state.
-function fakeGate(answersOrError: Record<string, number> | Error, calls?: GateCall[]): Pick<JevClient, "decide"> {
+function fakeGate(
+	answersOrError: Record<string, number> | Error,
+	calls?: GateCall[],
+): Pick<JevClient, "decide"> {
 	return {
 		decide: async (state: string, questions: Record<string, JevQuestion>) => {
 			calls?.push({ state, questions });
@@ -114,7 +120,10 @@ describe("routeDm", () => {
 
 	test("past the gap: reply and current join, command and fire roll — none call the gate", () => {
 		const calls: GateCall[] = [];
-		const { store, deps } = harness({ gate: fakeGate({ follow_up: 0.1 }, calls), now: anHourHence });
+		const { store, deps } = harness({
+			gate: fakeGate({ follow_up: 0.1 }, calls),
+			now: anHourHence,
+		});
 		store.rollDm(7, "/w");
 		expect(routeDm(deps, 7, "reply").decidedBy).toBe("reply");
 		expect(routeDm(deps, 7, "current").decidedBy).toBe("gap");
@@ -238,7 +247,8 @@ describe("routeDmMessage", () => {
 				},
 			};
 			const { store, deps } = harness({
-				gate, now: anHourHence,
+				gate,
+				now: anHourHence,
 				...(deadline === undefined ? {} : { checkDeadlineMs: deadline }),
 			});
 			const current = store.rollDm(7, "/w");
@@ -252,7 +262,8 @@ describe("routeDmMessage", () => {
 	test("a hung primary can recover via the backup without losing the current conversation", async () => {
 		const models: string[] = [];
 		const server = Bun.serve({
-			hostname: "127.0.0.1", port: 0,
+			hostname: "127.0.0.1",
+			port: 0,
 			async fetch(request) {
 				const body = z.object({ model: z.string() }).parse(await request.json());
 				models.push(body.model);
@@ -262,7 +273,9 @@ describe("routeDmMessage", () => {
 			},
 		});
 		const gate = new JevClient({
-			baseUrl: `http://127.0.0.1:${server.port}`, model: "primary", auth: async () => "key",
+			baseUrl: `http://127.0.0.1:${server.port}`,
+			model: "primary",
+			auth: async () => "key",
 		});
 		const { store, deps } = harness({ gate, now: anHourHence, checkDeadlineMs: 400 });
 		try {
@@ -411,7 +424,10 @@ describe("routeDmMessage", () => {
 
 	test("the check state carries the last exchange and the burst, head-cut", async () => {
 		const calls: GateCall[] = [];
-		const { store, deps } = harness({ gate: fakeGate({ follow_up: 0.6 }, calls), now: anHourHence });
+		const { store, deps } = harness({
+			gate: fakeGate({ follow_up: 0.6 }, calls),
+			now: anHourHence,
+		});
 		const conv = store.rollDm(7, "/w");
 		store.append(conv.id, [
 			msg("user", "what's the weather"),
@@ -420,7 +436,10 @@ describe("routeDmMessage", () => {
 				id: "u2",
 				role: "user",
 				parts: [
-					{ type: "data-attachment", data: { path: "/a.jpg", mediaType: "image/jpeg", filename: "a.jpg" } },
+					{
+						type: "data-attachment",
+						data: { path: "/a.jpg", mediaType: "image/jpeg", filename: "a.jpg" },
+					},
 					{ type: "text", text: "and this pic" },
 				],
 			},

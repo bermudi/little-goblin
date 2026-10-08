@@ -84,7 +84,8 @@ const FOLLOW_UP_QUESTIONS: Record<string, JevQuestion> = {
 			"The operator messaged their personal assistant after a quiet gap. Decide whether the new message continues the previous exchange or starts a new subject.",
 		criteria: {
 			true: "The new message continues the previous exchange: it refers back to it (a pronoun, ellipsis, or 'and also' that only makes sense with it), answers a question the assistant asked, or asks more about the same subject.",
-			false: "The new message starts a new subject: it is understandable on its own and is not about the previous exchange.",
+			false:
+				"The new message starts a new subject: it is understandable on its own and is not about the previous exchange.",
 		},
 	},
 };
@@ -151,9 +152,10 @@ export function projectRollText(parts: readonly UIMessage["parts"][number][]): s
 		}
 		if (part.type !== "data-attachment") continue;
 		const data = (part as { data?: unknown }).data;
-		const ref = typeof data === "object" && data !== null
-			? data as { transcript?: unknown; mediaType?: unknown; filename?: unknown }
-			: null;
+		const ref =
+			typeof data === "object" && data !== null
+				? (data as { transcript?: unknown; mediaType?: unknown; filename?: unknown })
+				: null;
 		if (typeof ref?.transcript === "string" && ref.transcript !== "") {
 			out.push(`[voice: ${ref.transcript}]`);
 		} else if (typeof ref?.mediaType === "string" && ref.mediaType.startsWith("image/")) {
@@ -252,7 +254,10 @@ export async function routeDmMessage(
 	const gate = deps.gate?.();
 	if (gate === undefined) {
 		log.warn("follow-up check", {
-			chat: chatId, conversation: current.id, ms: 0, kind: "no gate",
+			chat: chatId,
+			conversation: current.id,
+			ms: 0,
+			kind: "no gate",
 		});
 		return continued(current, "fallback", gapMinutes);
 	}
@@ -260,11 +265,9 @@ export async function routeDmMessage(
 	let decision: JevDecision;
 	try {
 		decision = await withDeadline(
-			gate.decide(
-				checkState(history, gapMinutes, burstText),
-				FOLLOW_UP_QUESTIONS,
-				{ timeoutMs: deps.checkDeadlineMs ?? CHECK_DEADLINE_MS },
-			),
+			gate.decide(checkState(history, gapMinutes, burstText), FOLLOW_UP_QUESTIONS, {
+				timeoutMs: deps.checkDeadlineMs ?? CHECK_DEADLINE_MS,
+			}),
 			deps.checkDeadlineMs ?? CHECK_DEADLINE_MS,
 		);
 	} catch (err) {
@@ -288,8 +291,12 @@ export async function routeDmMessage(
 	const probability = decision.answers["follow_up"] ?? 1;
 	if (!stillRouteable()) {
 		log.info("follow-up check superseded by navigation", {
-			chat: chatId, conversation: current.id, probability,
-			ms: Date.now() - started, inputTokens: decision.inputTokens, cost: decision.cost,
+			chat: chatId,
+			conversation: current.id,
+			probability,
+			ms: Date.now() - started,
+			inputTokens: decision.inputTokens,
+			cost: decision.cost,
 		});
 		return { conv: current, rolled: false, decidedBy: "command", probability };
 	}

@@ -216,7 +216,11 @@ function setupMemory() {
 
 // Enqueue one retention row for this conversation and mark it blocked —
 // the /memory degraded fixture.
-function blockOne(store: ReturnType<typeof setup>["store"], client: HindsightClient, documentId: string): string {
+function blockOne(
+	store: ReturnType<typeof setup>["store"],
+	client: HindsightClient,
+	documentId: string,
+): string {
 	const id = store.memoryQueue.enqueue(client.target, {
 		id: documentId,
 		content: "Operator: hi\nGoblin: hello",
@@ -430,11 +434,29 @@ describe("memory commands", () => {
 		const server = Bun.serve({
 			hostname: "127.0.0.1",
 			port: 0,
-			fetch: () => Response.json({ results: [
-				{ id: "f1", text: "Lighthouse weekends.", document_id: "exchange/a", occurred_start: "2026-02-01" },
-				{ id: "f2", text: "Lighthouse again.", document_id: "exchange/a", occurred_start: "2026-02-02" },
-				{ id: "f3", text: "Quiet mornings.", document_id: "exchange/b", occurred_start: "2026-01-01" },
-			] }),
+			fetch: () =>
+				Response.json({
+					results: [
+						{
+							id: "f1",
+							text: "Lighthouse weekends.",
+							document_id: "exchange/a",
+							occurred_start: "2026-02-01",
+						},
+						{
+							id: "f2",
+							text: "Lighthouse again.",
+							document_id: "exchange/a",
+							occurred_start: "2026-02-02",
+						},
+						{
+							id: "f3",
+							text: "Quiet mornings.",
+							document_id: "exchange/b",
+							occurred_start: "2026-01-01",
+						},
+					],
+				}),
 		});
 		try {
 			deps.memory = {
@@ -466,10 +488,22 @@ describe("memory commands", () => {
 					deleted.push(id);
 					return Response.json({ success: true, document_id: id });
 				}
-				return Response.json({ results: [
-					{ id: "f1", text: "Lighthouse weekends.", document_id: "exchange/a", occurred_start: "2026-02-01" },
-					{ id: "f2", text: "Quiet mornings.", document_id: "exchange/b", occurred_start: "2026-01-01" },
-				] });
+				return Response.json({
+					results: [
+						{
+							id: "f1",
+							text: "Lighthouse weekends.",
+							document_id: "exchange/a",
+							occurred_start: "2026-02-01",
+						},
+						{
+							id: "f2",
+							text: "Quiet mornings.",
+							document_id: "exchange/b",
+							occurred_start: "2026-01-01",
+						},
+					],
+				});
 			},
 		});
 		try {
@@ -506,9 +540,16 @@ describe("memory commands", () => {
 					deleted.push(id);
 					return Response.json({ success: true, document_id: id });
 				}
-				return Response.json({ results: [
-					{ id: "f1", text: "Lighthouse weekends.", document_id: "exchange/a", occurred_start: "2026-02-01" },
-				] });
+				return Response.json({
+					results: [
+						{
+							id: "f1",
+							text: "Lighthouse weekends.",
+							document_id: "exchange/a",
+							occurred_start: "2026-02-01",
+						},
+					],
+				});
 			},
 		});
 		try {
@@ -520,13 +561,15 @@ describe("memory commands", () => {
 			await waitFor(sent, 1);
 			// Age the cached listing past its ttl — row surgery is the only
 			// lever a test has over wall-clock.
-			store.db.run(
-				"UPDATE forget_listings SET created_at = ? WHERE conversation_id = ?",
-				[new Date(Date.now() - 60_000_000).toISOString(), conv.id],
-			);
+			store.db.run("UPDATE forget_listings SET created_at = ? WHERE conversation_id = ?", [
+				new Date(Date.now() - 60_000_000).toISOString(),
+				conv.id,
+			]);
 			expect(handleCommand(deps, conv, "/forget delete 1")).toBe(true);
 			await waitFor(sent, 2);
-			expect(sent[1]).toBe("no usable listing for that number — run /forget <query> and pick within 10 minutes");
+			expect(sent[1]).toBe(
+				"no usable listing for that number — run /forget <query> and pick within 10 minutes",
+			);
 			expect(deleted).toEqual([]);
 			expect(store.memoryContexts.isSuppressed("exchange/a")).toBe(false);
 		} finally {
@@ -547,9 +590,16 @@ describe("memory commands", () => {
 					deleted.push(id);
 					return Response.json({ success: true, document_id: id });
 				}
-				return Response.json({ results: [
-					{ id: "f1", text: "Lighthouse weekends.", document_id: "exchange/a", occurred_start: "2026-02-01" },
-				] });
+				return Response.json({
+					results: [
+						{
+							id: "f1",
+							text: "Lighthouse weekends.",
+							document_id: "exchange/a",
+							occurred_start: "2026-02-01",
+						},
+					],
+				});
 			},
 		});
 		try {
@@ -565,7 +615,9 @@ describe("memory commands", () => {
 			const other = store.resolve({ kind: "dm", chatId: 424242 }, "/unused");
 			expect(handleCommand(deps, other, "/forget delete 1")).toBe(true);
 			await waitFor(sent, 2);
-			expect(sent[1]).toBe("no usable listing for that number — run /forget <query> and pick within 10 minutes");
+			expect(sent[1]).toBe(
+				"no usable listing for that number — run /forget <query> and pick within 10 minutes",
+			);
 			expect(deleted).toEqual([]);
 			expect(store.memoryContexts.isSuppressed("exchange/a")).toBe(false);
 		} finally {
@@ -587,7 +639,10 @@ describe("memory commands", () => {
 			},
 		});
 		try {
-			const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
+			const client = new HindsightClient({
+				baseUrl: `http://127.0.0.1:${server.port}`,
+				bankId: "g",
+			});
 			deps.memory = { ...deps.memory!, client };
 			// A queued retention and a snapshot citing the document.
 			store.memoryQueue.enqueue(client.target, {
@@ -615,7 +670,11 @@ describe("memory commands", () => {
 // Enqueue one retention row for this document and mark it submitted —
 // acknowledged remotely, still processing there: the /forget delete
 // settle fixture (reachable in production via /memory retry).
-function submitOne(store: ReturnType<typeof setup>["store"], client: HindsightClient, documentId: string): string {
+function submitOne(
+	store: ReturnType<typeof setup>["store"],
+	client: HindsightClient,
+	documentId: string,
+): string {
 	const id = store.memoryQueue.enqueue(client.target, {
 		id: documentId,
 		content: "Operator: hi\nGoblin: hello",
@@ -690,15 +749,18 @@ describe("forget delete against in-flight retention", () => {
 				}
 				return Response.json({ results: [] });
 			},
-			});
+		});
 		try {
-			const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
+			const client = new HindsightClient({
+				baseUrl: `http://127.0.0.1:${server.port}`,
+				bankId: "g",
+			});
 			deps.memory = { ...deps.memory!, client, settleTiming: { pollMs: 5, budgetMs: 2_000 } };
 			store.memoryQueue.enqueue(client.target, {
 				id: "exchange/dm:1/1/a",
 				content: "Operator: hi\nGoblin: hello",
 				timestamp: new Date().toISOString(),
-			conversationId: conv.id,
+				conversationId: conv.id,
 				sourceIds: ["u1", "a1"],
 			});
 			expect(handleCommand(deps, conv, "/forget delete exchange/dm:1/1/a")).toBe(true);
@@ -740,7 +802,10 @@ describe("forget delete against in-flight retention", () => {
 			},
 		});
 		try {
-			const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
+			const client = new HindsightClient({
+				baseUrl: `http://127.0.0.1:${server.port}`,
+				bankId: "g",
+			});
 			deps.memory = { ...deps.memory!, client, settleTiming: { pollMs: 5, budgetMs: 2_000 } };
 			const operationId = submitOne(store, client, "exchange/dm:1/1/a");
 			expect(handleCommand(deps, conv, "/forget delete exchange/dm:1/1/a")).toBe(true);
@@ -778,9 +843,12 @@ describe("forget delete against in-flight retention", () => {
 				}
 				return Response.json({ results: [] });
 			},
-			});
+		});
 		try {
-			const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
+			const client = new HindsightClient({
+				baseUrl: `http://127.0.0.1:${server.port}`,
+				bankId: "g",
+			});
 			deps.memory = { ...deps.memory!, client, settleTiming: { pollMs: 5, budgetMs: 80 } };
 			const operationId = submitOne(store, client, "exchange/dm:1/1/a");
 			expect(handleCommand(deps, conv, "/forget delete exchange/dm:1/1/a")).toBe(true);
@@ -841,12 +909,19 @@ describe("forget delete against in-flight retention", () => {
 				return Response.json({ results: [] });
 			},
 		});
-		const worker = startMemoryWorker(store.memoryQueue, new HindsightClient({
-			baseUrl: `http://127.0.0.1:${server.port}`,
-			bankId: "g",
-		}), { intervalMs: 5 });
+		const worker = startMemoryWorker(
+			store.memoryQueue,
+			new HindsightClient({
+				baseUrl: `http://127.0.0.1:${server.port}`,
+				bankId: "g",
+			}),
+			{ intervalMs: 5 },
+		);
 		try {
-			const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
+			const client = new HindsightClient({
+				baseUrl: `http://127.0.0.1:${server.port}`,
+				bankId: "g",
+			});
 			deps.memory = {
 				...deps.memory!,
 				client,

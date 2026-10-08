@@ -28,7 +28,11 @@ const AGENT = {
 	interactive_ready: true,
 };
 
-const ok = (body: unknown): HerdrRunResult => ({ code: 0, stdout: JSON.stringify(body), stderr: "" });
+const ok = (body: unknown): HerdrRunResult => ({
+	code: 0,
+	stdout: JSON.stringify(body),
+	stderr: "",
+});
 const fail = (code: string, message: string): HerdrRunResult => ({
 	code: 1,
 	stdout: "",
@@ -38,26 +42,50 @@ const fail = (code: string, message: string): HerdrRunResult => ({
 describe("herdr adapter", () => {
 	test("a machine target prefixes --machine and never --session", async () => {
 		const f = fakeRunner([
-			ok({ result: { workspace: { workspace_id: "w9" }, root_pane: { pane_id: "w9:p1", cwd: "/tmp/x" } } }),
+			ok({
+				result: {
+					workspace: { workspace_id: "w9" },
+					root_pane: { pane_id: "w9:p1", cwd: "/tmp/x" },
+				},
+			}),
 		]);
 		const h = makeHerdr({ machine: "g7" }, f.run);
 		await h.createWorkspace("/remote/x", "task one");
 		expect(f.calls[0]).toEqual([
-			"--machine", "g7",
-			"workspace", "create", "--cwd", "/remote/x", "--label", "task one", "--no-focus",
+			"--machine",
+			"g7",
+			"workspace",
+			"create",
+			"--cwd",
+			"/remote/x",
+			"--label",
+			"task one",
+			"--no-focus",
 		]);
 	});
 
 	test("createWorkspace runs under the session and parses ids", async () => {
 		const f = fakeRunner([
-			ok({ result: { workspace: { workspace_id: "w9" }, root_pane: { pane_id: "w9:p1", cwd: "/tmp/x" } } }),
+			ok({
+				result: {
+					workspace: { workspace_id: "w9" },
+					root_pane: { pane_id: "w9:p1", cwd: "/tmp/x" },
+				},
+			}),
 		]);
 		const h = makeHerdr({ session: "goblin" }, f.run);
 		const ws = await h.createWorkspace("/tmp/x", "task one");
 		expect(ws).toEqual({ workspaceId: "w9", paneId: "w9:p1", cwd: "/tmp/x" });
 		expect(f.calls[0]).toEqual([
-			"--session", "goblin",
-			"workspace", "create", "--cwd", "/tmp/x", "--label", "task one", "--no-focus",
+			"--session",
+			"goblin",
+			"workspace",
+			"create",
+			"--cwd",
+			"/tmp/x",
+			"--label",
+			"task one",
+			"--no-focus",
 		]);
 	});
 
@@ -69,9 +97,17 @@ describe("herdr adapter", () => {
 		expect(info.agent_status).toBe("idle");
 		expect(info.state_change_seq).toBe(3);
 		expect(f.calls[0]).toEqual([
-			"--session", "goblin",
-			"agent", "start", "g1-test", "--kind", "codex", "--pane", "w9:p1",
-			"--", "--yolo",
+			"--session",
+			"goblin",
+			"agent",
+			"start",
+			"g1-test",
+			"--kind",
+			"codex",
+			"--pane",
+			"w9:p1",
+			"--",
+			"--yolo",
 		]);
 	});
 
@@ -119,8 +155,15 @@ describe("herdr adapter", () => {
 		const h = makeHerdr({ session: "goblin" }, f.run);
 		expect(await h.readAgent("g1-x", 40)).toBe("line1\nline2\n");
 		expect(f.calls[0]).toEqual([
-			"--session", "goblin",
-			"agent", "read", "g1-x", "--source", "recent-unwrapped", "--lines", "40",
+			"--session",
+			"goblin",
+			"agent",
+			"read",
+			"g1-x",
+			"--source",
+			"recent-unwrapped",
+			"--lines",
+			"40",
 		]);
 	});
 
@@ -133,11 +176,19 @@ describe("herdr adapter", () => {
 	test("invalid output and runner rejection never log a successful call", async () => {
 		const lines: Array<{ msg: string; outcome?: string }> = [];
 		setLogFile("herdr-test.log");
-		setLogWriter((_path, line) => { lines.push(JSON.parse(line) as { msg: string; outcome?: string }); });
+		setLogWriter((_path, line) => {
+			lines.push(JSON.parse(line) as { msg: string; outcome?: string });
+		});
 		try {
-			const invalid = makeHerdr({ session: "probe" }, async () => ({ code: 0, stdout: "not json", stderr: "" }));
+			const invalid = makeHerdr({ session: "probe" }, async () => ({
+				code: 0,
+				stdout: "not json",
+				stderr: "",
+			}));
 			await expect(invalid.get("a")).rejects.toThrow("not JSON");
-			const rejected = makeHerdr({ session: "probe" }, async () => { throw new Error("socket refused"); });
+			const rejected = makeHerdr({ session: "probe" }, async () => {
+				throw new Error("socket refused");
+			});
 			await expect(rejected.get("a")).rejects.toThrow("socket refused");
 			expect(lines.map((line) => line.msg)).toContain("herdr call returned invalid output");
 			expect(lines.map((line) => line.msg)).toContain("herdr call runner failed");

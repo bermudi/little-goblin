@@ -12,7 +12,18 @@ import { z } from "zod";
 import type { AuthStore } from "../../auth.ts";
 import type { Config } from "../../config.ts";
 import { log } from "../../log.ts";
-import { clampChars, fetchOk, fenceUntrusted, readJson, readTextCapped, renderHits, str, ProviderError, type SearchHit, type WebToolDeps } from "./web.ts";
+import {
+	clampChars,
+	fetchOk,
+	fenceUntrusted,
+	readJson,
+	readTextCapped,
+	renderHits,
+	str,
+	ProviderError,
+	type SearchHit,
+	type WebToolDeps,
+} from "./web.ts";
 
 const TIMEOUT_MS = 15_000;
 // The html endpoint's response is the one search body that isn't JSON
@@ -102,7 +113,8 @@ const braveSearch: SearchAdapter = async (opts) => {
 		"X-Subscription-Token": opts.key ?? "",
 	});
 	const body = z.object({ web: z.object({ results: z.array(z.unknown()) }) }).safeParse(data);
-	if (!body.success) throw new ProviderError("brave", "invalid search response (missing web.results)");
+	if (!body.success)
+		throw new ProviderError("brave", "invalid search response (missing web.results)");
 	return {
 		hits: body.data.web.results.slice(0, opts.count).map(toHit("description")),
 		status,
@@ -131,7 +143,10 @@ const exaSearch: SearchAdapter = async (opts) => {
 
 const jinaSearch: SearchAdapter = async (opts) => {
 	const url = `${opts.baseUrl ?? BASES.jina}/${encodeURIComponent(opts.query)}`;
-	const { data, status } = await getJson("jina", url, { Accept: "application/json", ...bearer(opts.key) });
+	const { data, status } = await getJson("jina", url, {
+		Accept: "application/json",
+		...bearer(opts.key),
+	});
 	const rows = (data as { data?: unknown[] }).data;
 	return {
 		hits: (Array.isArray(rows) ? rows : []).slice(0, opts.count).map(toHit("description")),
@@ -140,21 +155,31 @@ const jinaSearch: SearchAdapter = async (opts) => {
 };
 
 const tavilySearch: SearchAdapter = async (opts) => {
-	const { data, status } = await postJson("tavily", `${opts.baseUrl ?? BASES.tavily}/search`, bearer(opts.key), {
-		query: opts.query,
-		max_results: opts.count,
-		include_raw_content: false,
-		include_images: false,
-	});
+	const { data, status } = await postJson(
+		"tavily",
+		`${opts.baseUrl ?? BASES.tavily}/search`,
+		bearer(opts.key),
+		{
+			query: opts.query,
+			max_results: opts.count,
+			include_raw_content: false,
+			include_images: false,
+		},
+	);
 	const rows = (data as { results?: unknown[] }).results ?? [];
 	return { hits: rows.map(toHit("content")), status };
 };
 
 const firecrawlSearch: SearchAdapter = async (opts) => {
-	const { data, status } = await postJson("firecrawl", `${opts.baseUrl ?? BASES.firecrawl}/v2/search`, bearer(opts.key), {
-		query: opts.query,
-		limit: opts.count,
-	});
+	const { data, status } = await postJson(
+		"firecrawl",
+		`${opts.baseUrl ?? BASES.firecrawl}/v2/search`,
+		bearer(opts.key),
+		{
+			query: opts.query,
+			limit: opts.count,
+		},
+	);
 	const body = data as { success?: boolean; search?: unknown[]; error?: string };
 	if (body.success === false) {
 		throw new ProviderError("firecrawl", str(body.error) || "search failed");
@@ -163,11 +188,16 @@ const firecrawlSearch: SearchAdapter = async (opts) => {
 };
 
 const parallelSearch: SearchAdapter = async (opts) => {
-	const { data, status } = await postJson("parallel", `${opts.baseUrl ?? BASES.parallel}/v1/search`, bearer(opts.key), {
-		search_queries: [opts.query],
-		objective: opts.query,
-		max_results: opts.count,
-	});
+	const { data, status } = await postJson(
+		"parallel",
+		`${opts.baseUrl ?? BASES.parallel}/v1/search`,
+		bearer(opts.key),
+		{
+			search_queries: [opts.query],
+			objective: opts.query,
+			max_results: opts.count,
+		},
+	);
 	const rows = (data as { results?: unknown[] }).results ?? [];
 	return {
 		hits: rows.slice(0, opts.count).map((r) => {
@@ -206,12 +236,12 @@ const ddgSearch: SearchAdapter = async (opts) => {
 	// snippet nodes for some results (ads, video cards), and a
 	// positional zip after the fact drifts every snippet past the
 	// first skip onto the wrong hit (audit #17).
-	const anchorNodes = [...html.matchAll(
-		/<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g,
-	)].map((m) => ({ anchor: true as const, at: m.index ?? 0, m }));
-	const snippetNodes = [...html.matchAll(
-		/<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g,
-	)].map((m) => ({ anchor: false as const, at: m.index ?? 0, m }));
+	const anchorNodes = [
+		...html.matchAll(/<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g),
+	].map((m) => ({ anchor: true as const, at: m.index ?? 0, m }));
+	const snippetNodes = [
+		...html.matchAll(/<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g),
+	].map((m) => ({ anchor: false as const, at: m.index ?? 0, m }));
 	// A snippet only attaches to the *accepted* anchor it follows —
 	// a rejected anchor (bad href, empty title) must not let its
 	// snippet drift onto the previous hit.
@@ -288,7 +318,11 @@ export interface BoundSearch {
 export function bindSearch(
 	cfg: { kind: SearchKind; auth?: string | undefined },
 	auth: AuthStore,
-): (opts: { query: string; count: number; baseUrl?: string | undefined }) => Promise<SearchOutcome> {
+): (opts: {
+	query: string;
+	count: number;
+	baseUrl?: string | undefined;
+}) => Promise<SearchOutcome> {
 	return async (opts) => {
 		const key = cfg.auth ? await auth.resolve(cfg.auth) : undefined;
 		return ADAPTERS[cfg.kind]({ ...opts, key });
@@ -358,7 +392,7 @@ export function withFallbackNote(result: string, outcome: ChainOutcome): string 
 export const searchTool = (deps: WebToolDeps) =>
 	tool({
 		description:
-			"Search the web. Returns numbered results (title, URL, snippet) — fetch a result's URL for full content. Express recency in the query itself (\"today\", \"this week\", \"March 2026\"); there are no other knobs.",
+			'Search the web. Returns numbered results (title, URL, snippet) — fetch a result\'s URL for full content. Express recency in the query itself ("today", "this week", "March 2026"); there are no other knobs.',
 		inputSchema: z.object({
 			query: z.string().min(1).max(400),
 			count: z.number().int().min(1).max(10).default(5),
@@ -389,9 +423,6 @@ export const searchTool = (deps: WebToolDeps) =>
 			});
 			const rendered = renderHits(outcome.hits);
 			// "No results." is goblin's own line — nothing remote to fence.
-			return withFallbackNote(
-				outcome.hits.length === 0 ? rendered : fenceHits(rendered),
-				outcome,
-			);
+			return withFallbackNote(outcome.hits.length === 0 ? rendered : fenceHits(rendered), outcome);
 		},
 	});

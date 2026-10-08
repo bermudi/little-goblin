@@ -20,12 +20,7 @@ import type {
 	SharedV4FileData,
 	SharedV4Warning,
 } from "@ai-sdk/provider";
-import {
-	codexCredentials,
-	defaultCodexAuthFile,
-	expandHome,
-	type FetchLike,
-} from "./auth.ts";
+import { codexCredentials, defaultCodexAuthFile, expandHome, type FetchLike } from "./auth.ts";
 
 const RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
 
@@ -56,11 +51,7 @@ function fileToDataUrl(data: SharedV4FileData, mediaType: string): string {
 	return `data:${mime};base64,${Buffer.from(data.data).toString("base64")}`;
 }
 
-function toolResultText(output: {
-	type: string;
-	value?: unknown;
-	reason?: unknown;
-}): string {
+function toolResultText(output: { type: string; value?: unknown; reason?: unknown }): string {
 	if (output.type === "text" || output.type === "error-text") {
 		return String(output.value ?? "");
 	}
@@ -100,10 +91,7 @@ function convertPrompt(prompt: LanguageModelV4Prompt): {
 				for (const part of msg.content) {
 					if (part.type === "text") {
 						content.push({ type: "input_text", text: part.text });
-					} else if (
-						part.mediaType === "image" ||
-						part.mediaType.startsWith("image/")
-					) {
+					} else if (part.mediaType === "image" || part.mediaType.startsWith("image/")) {
 						content.push({
 							type: "input_image",
 							image_url: fileToDataUrl(part.data, part.mediaType),
@@ -359,8 +347,7 @@ function itemText(
 	return parts
 		.filter(
 			(p): p is { type: string; text?: unknown } =>
-				typeof p === "object" && p !== null &&
-				(p as { type?: unknown }).type === partType,
+				typeof p === "object" && p !== null && (p as { type?: unknown }).type === partType,
 		)
 		.map((p) => String(p.text ?? ""))
 		.join("");
@@ -370,10 +357,7 @@ function num(v: unknown): number | undefined {
 	return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
-function finishReasonOf(
-	state: StreamState,
-	status: unknown,
-): LanguageModelV4FinishReason {
+function finishReasonOf(state: StreamState, status: unknown): LanguageModelV4FinishReason {
 	// Spec v4 pairs the unified reason with the provider's raw string.
 	if (state.sawToolCall) return { unified: "tool-calls", raw: rawStatus(status) };
 	if (status === "incomplete") return { unified: "length", raw: rawStatus(status) };
@@ -442,9 +426,7 @@ export class CodexLanguageModel implements LanguageModelV4 {
 			headers: {
 				authorization: `Bearer ${auth.tokens.access_token}`,
 				"content-type": "application/json",
-				...(auth.tokens.account_id
-					? { "chatgpt-account-id": auth.tokens.account_id }
-					: {}),
+				...(auth.tokens.account_id ? { "chatgpt-account-id": auth.tokens.account_id } : {}),
 				"OpenAI-Beta": "responses=experimental",
 				originator: "codex_cli_rs",
 				accept: "text/event-stream",
@@ -481,7 +463,11 @@ export class CodexLanguageModel implements LanguageModelV4 {
 		return warnings;
 	}
 
-	private async post(body: Record<string, unknown>, headers: Record<string, string>, signal?: AbortSignal) {
+	private async post(
+		body: Record<string, unknown>,
+		headers: Record<string, string>,
+		signal?: AbortSignal,
+	) {
 		const res = await this.fetchImpl(RESPONSES_URL, {
 			method: "POST",
 			headers,
@@ -502,7 +488,12 @@ export class CodexLanguageModel implements LanguageModelV4 {
 		const { body, headers } = await this.buildRequest(options);
 		const res = await this.post(body, headers, options.abortSignal);
 		const warnings = this.warningsFor(options);
-		const state: StreamState = { textOpen: null, reasoningOpen: null, sawToolCall: false, sawTerminal: false };
+		const state: StreamState = {
+			textOpen: null,
+			reasoningOpen: null,
+			sawToolCall: false,
+			sawTerminal: false,
+		};
 		let cancelled = false;
 		const stream = new ReadableStream<LanguageModelV4StreamPart>({
 			start: (controller) => {
@@ -546,7 +537,12 @@ export class CodexLanguageModel implements LanguageModelV4 {
 		const reasoningBuf = new Map<string, string>();
 		let finishReason: LanguageModelV4FinishReason = { unified: "other", raw: undefined };
 		let usage: LanguageModelV4Usage = {
-			inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+			inputTokens: {
+				total: undefined,
+				noCache: undefined,
+				cacheRead: undefined,
+				cacheWrite: undefined,
+			},
 			outputTokens: { total: undefined, text: undefined, reasoning: undefined },
 		};
 		const reader = stream.getReader();
@@ -586,9 +582,7 @@ export class CodexLanguageModel implements LanguageModelV4 {
 				...[...reasoningBuf.values()].map(
 					(text): LanguageModelV4Content => ({ type: "reasoning", text }),
 				),
-				...[...textBuf.values()].map(
-					(text): LanguageModelV4Content => ({ type: "text", text }),
-				),
+				...[...textBuf.values()].map((text): LanguageModelV4Content => ({ type: "text", text })),
 				...content,
 			],
 			finishReason,

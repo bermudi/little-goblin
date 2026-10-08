@@ -28,8 +28,8 @@ const catalogSchema = z.record(
 							input: z.array(z.string()).default(["text"]),
 						})
 						.optional(),
-						// Context window limit — the denominator for window
-						// utilization logging (DESIGN.md, Cache stability).
+					// Context window limit — the denominator for window
+					// utilization logging (DESIGN.md, Cache stability).
 					limit: z.object({ context: z.number().optional() }).optional(),
 				}),
 			)
@@ -83,10 +83,7 @@ export async function inputModalities(provider: string, modelId: string): Promis
 // only the in-memory catalog: null when cold (and kicks the fetch so
 // the next call sees the real answer), text-only when the model is
 // unlisted — same conservative reading as the async path.
-export function inputModalitiesCached(
-	provider: string,
-	modelId: string,
-): Set<string> | null {
+export function inputModalitiesCached(provider: string, modelId: string): Set<string> | null {
 	const cat = modelsDev.current();
 	if (!cat) {
 		if (!modelsDev.backoffArmed()) void modelsDev.ensure();
@@ -130,32 +127,33 @@ const openrouterCatalogSchema = z.object({
 // The disk cache stores the flattened {modelId: [params...]} shape.
 const openrouterCacheSchema = z.record(z.string(), z.array(z.string()));
 
-const openrouter: CachedCatalog<Map<string, Set<string>>> =
-	createCachedCatalog<Map<string, Set<string>>>({
-		name: "openrouter catalog",
-		url: "https://openrouter.ai/api/v1/models",
-		cachePath: () => paths.openrouterModelsCache(),
-		// thinkingLevelsFor reads this catalog — stale means generic
-		// ladders instead of per-route ones.
-		staleNote: "thinking levels stay generic",
-		parseWire(wire) {
-			const parsed = openrouterCatalogSchema.safeParse(wire);
-			if (!parsed.success) {
-				throw new Error(`openrouter models schema: ${parsed.error.message}`);
-			}
-			return new Map(parsed.data.data.map((m) => [m.id, new Set(m.supported_parameters)]));
-		},
-		parseDisk(disk) {
-			const parsed = openrouterCacheSchema.safeParse(disk);
-			if (!parsed.success) {
-				throw new Error(`openrouter cache schema: ${parsed.error.message}`);
-			}
-			return new Map(Object.entries(parsed.data).map(([id, params]) => [id, new Set(params)]));
-		},
-		toDisk(catalog) {
-			return Object.fromEntries([...catalog].map(([id, p]) => [id, [...p]]));
-		},
-	});
+const openrouter: CachedCatalog<Map<string, Set<string>>> = createCachedCatalog<
+	Map<string, Set<string>>
+>({
+	name: "openrouter catalog",
+	url: "https://openrouter.ai/api/v1/models",
+	cachePath: () => paths.openrouterModelsCache(),
+	// thinkingLevelsFor reads this catalog — stale means generic
+	// ladders instead of per-route ones.
+	staleNote: "thinking levels stay generic",
+	parseWire(wire) {
+		const parsed = openrouterCatalogSchema.safeParse(wire);
+		if (!parsed.success) {
+			throw new Error(`openrouter models schema: ${parsed.error.message}`);
+		}
+		return new Map(parsed.data.data.map((m) => [m.id, new Set(m.supported_parameters)]));
+	},
+	parseDisk(disk) {
+		const parsed = openrouterCacheSchema.safeParse(disk);
+		if (!parsed.success) {
+			throw new Error(`openrouter cache schema: ${parsed.error.message}`);
+		}
+		return new Map(Object.entries(parsed.data).map(([id, params]) => [id, new Set(params)]));
+	},
+	toDisk(catalog) {
+		return Object.fromEntries([...catalog].map(([id, p]) => [id, [...p]]));
+	},
+});
 
 // Cache read on its own so the shape-validation boundary is testable
 // without a network round-trip.
@@ -165,10 +163,7 @@ export function readOpenRouterCache(): Map<string, Set<string>> | null {
 
 // Boot warm + cold-read share one flight; a failure backs off and the
 // disk cache covers the gap.
-export function ensureOpenRouterCatalog(): Promise<Map<
-	string,
-	Set<string>
-> | null> {
+export function ensureOpenRouterCatalog(): Promise<Map<string, Set<string>> | null> {
 	return openrouter.ensure();
 }
 
@@ -184,9 +179,7 @@ export function openrouterSupportedParams(modelId: string): Set<string> | null {
 }
 
 // Test hook: prime or clear the sync cache without a network round-trip.
-export function _primeOpenRouterCatalog(
-	catalog: Map<string, Set<string>> | null,
-): void {
+export function _primeOpenRouterCatalog(catalog: Map<string, Set<string>> | null): void {
 	openrouter.prime(catalog);
 }
 

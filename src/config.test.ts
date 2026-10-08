@@ -1,7 +1,18 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { setLogFile, setLogWriter } from "./log.ts";
 import * as fs from "node:fs";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readlinkSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -20,14 +31,28 @@ import {
 } from "./config.ts";
 
 test("mini-app clearing an absent public URL does not throw or retain an empty URL", () => {
-	expect(parseConfig({ providers: { test: { kind: "codex" } }, model: "test/m", allowedUsers: [7], publicUrl: "" }).publicUrl).toBeUndefined();
+	expect(
+		parseConfig({
+			providers: { test: { kind: "codex" } },
+			model: "test/m",
+			allowedUsers: [7],
+			publicUrl: "",
+		}).publicUrl,
+	).toBeUndefined();
 });
 
 test("the mini-app public URL must be HTTPS, unlike the local bot API URL", () => {
-	const config = { providers: { test: { kind: "openai-compatible", baseUrl: "https://api.example.org", auth: "ref" } },
-		model: "test/m", allowedUsers: [42] };
+	const config = {
+		providers: {
+			test: { kind: "openai-compatible", baseUrl: "https://api.example.org", auth: "ref" },
+		},
+		model: "test/m",
+		allowedUsers: [42],
+	};
 	expect(() => parseConfig({ ...config, publicUrl: "http://example.org" })).toThrow();
-	expect(parseConfig({ ...config, publicUrl: "https://example.org" }).publicUrl).toBe("https://example.org");
+	expect(parseConfig({ ...config, publicUrl: "https://example.org" }).publicUrl).toBe(
+		"https://example.org",
+	);
 });
 
 let dirs: string[] = [];
@@ -86,8 +111,8 @@ describe("goblin.json5", () => {
 	test("a legacy delegation.session warns and is ignored — the unit owns the session", () => {
 		const dir = useHome();
 		writeFileSync(
-				join(dir, "goblin.json5"),
-				`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7],delegation:{session:"other",harnesses:{pi:{kind:"pi"}}}}`,
+			join(dir, "goblin.json5"),
+			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7],delegation:{session:"other",harnesses:{pi:{kind:"pi"}}}}`,
 		);
 		const captured: string[] = [];
 		setLogFile("config-legacy-session-test.log");
@@ -112,11 +137,10 @@ describe("goblin.json5", () => {
 		const dir = useHome();
 		const cfg = (machines: unknown) =>
 			`{machines:${JSON.stringify(machines)},harnesses:{pi:{kind:"pi"}}}`;
-		const base =
-			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7],delegation:`;
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7],delegation:`;
 		writeFileSync(
-				join(dir, "goblin.json5"),
-				`${base}${cfg({ g7: { machine: "g7", root: "~/build" }, bench: { session: "bench", harnesses: { devin: { kind: "devin" } } } })}}`,
+			join(dir, "goblin.json5"),
+			`${base}${cfg({ g7: { machine: "g7", root: "~/build" }, bench: { session: "bench", harnesses: { devin: { kind: "devin" } } } })}}`,
 		);
 		const c = loadConfig()!;
 		expect(c.delegation?.machines?.["g7"]).toEqual({ machine: "g7", root: "~/build" });
@@ -124,31 +148,28 @@ describe("goblin.json5", () => {
 		expect(c.delegation?.machines?.["bench"]?.harnesses?.["devin"]?.kind).toBe("devin");
 		// A relative root names nothing on a remote host — reject at parse.
 		writeFileSync(
-				join(dir, "goblin.json5"),
-				`${base}${cfg({ g7: { machine: "g7", root: "relative/path" } })}}`,
+			join(dir, "goblin.json5"),
+			`${base}${cfg({ g7: { machine: "g7", root: "relative/path" } })}}`,
 		);
 		expect(() => loadConfig()).toThrow(/root must be absolute/);
 		// machine + session on one target is a contradiction — herdr's
 		// CLI treats --machine and --session as mutually exclusive.
 		writeFileSync(
-				join(dir, "goblin.json5"),
-				`${base}${cfg({ both: { machine: "g7", session: "goblin" } })}}`,
+			join(dir, "goblin.json5"),
+			`${base}${cfg({ both: { machine: "g7", session: "goblin" } })}}`,
 		);
 		expect(() => loadConfig()).toThrow(/exactly one of machine/);
 		// Session names ride herdr's session contract, not the harness
 		// charset: dots and case are real (goblin.dev, side-session).
-		writeFileSync(
-				join(dir, "goblin.json5"),
-				`${base}${cfg({ dev: { session: "goblin.dev" } })}}`,
-		);
+		writeFileSync(join(dir, "goblin.json5"), `${base}${cfg({ dev: { session: "goblin.dev" } })}}`);
 		expect(loadConfig()!.delegation?.machines?.["dev"]?.session).toBe("goblin.dev");
 	});
 
 	test("a legacy delegation.machine is translated to a machines entry, not dropped", () => {
 		const dir = useHome();
 		writeFileSync(
-				join(dir, "goblin.json5"),
-				`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7],delegation:{machine:{label:"g7",cwd:"/home/daniel/goblin/delegated"},harnesses:{pi:{kind:"pi"}}}}`,
+			join(dir, "goblin.json5"),
+			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7],delegation:{machine:{label:"g7",cwd:"/home/daniel/goblin/delegated"},harnesses:{pi:{kind:"pi"}}}}`,
 		);
 		const captured: string[] = [];
 		setLogFile("config-legacy-machine-test.log");
@@ -165,13 +186,15 @@ describe("goblin.json5", () => {
 			});
 			const warns = captured
 				.map((l) => JSON.parse(l) as Record<string, unknown>)
-				.filter((l) => typeof l.msg === "string" && l.msg.includes("translated to a machines entry"));
+				.filter(
+					(l) => typeof l.msg === "string" && l.msg.includes("translated to a machines entry"),
+				);
 			expect(warns).toHaveLength(1);
 			// An explicit machines entry of the same label wins — the
 			// file's newer form is the truth, the legacy block is noise.
 			writeFileSync(
-					join(dir, "goblin.json5"),
-					`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7],delegation:{machine:{label:"g7",cwd:"/legacy/root"},machines:{g7:{machine:"g7",root:"~/build"}},harnesses:{pi:{kind:"pi"}}}}`,
+				join(dir, "goblin.json5"),
+				`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7],delegation:{machine:{label:"g7",cwd:"/legacy/root"},machines:{g7:{machine:"g7",root:"~/build"}},harnesses:{pi:{kind:"pi"}}}}`,
 			);
 			const c2 = loadConfig()!;
 			expect(c2.delegation?.machines?.["g7"]?.root).toBe("~/build");
@@ -214,7 +237,7 @@ describe("goblin.json5", () => {
 		expect(() => loadConfig()).toThrow("provider>/<model-id>");
 	});
 
-	test("titleModel is provider-validated like model; \"\" clears to unset", () => {
+	test('titleModel is provider-validated like model; "" clears to unset', () => {
 		const dir = useHome();
 		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"},openrouter:{kind:"openrouter",auth:"openrouter"}},model:"zai/glm-4.6",allowedUsers:[7]`;
 		writeFileSync(join(dir, "goblin.json5"), `${base},titleModel:"openrouter/openrouter/free"}`);
@@ -225,18 +248,24 @@ describe("goblin.json5", () => {
 		expect(() => loadConfig()).toThrow('provider "other"');
 	});
 
-	test("vision: absent by default, defaults + mode, \"\" clears, model provider-validated", () => {
+	test('vision: absent by default, defaults + mode, "" clears, model provider-validated', () => {
 		const dir = useHome();
 		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"},openrouter:{kind:"openrouter",auth:"openrouter"}},model:"zai/glm-4.6",allowedUsers:[7]`;
 		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
 		expect(loadConfig()!.vision).toBeUndefined();
-		writeFileSync(join(dir, "goblin.json5"), `${base},vision:{model:"openrouter/google/gemini-2.5-flash"}}`);
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},vision:{model:"openrouter/google/gemini-2.5-flash"}}`,
+		);
 		expect(loadConfig()!.vision).toEqual({
 			model: "openrouter/google/gemini-2.5-flash",
 			maxTokens: 2000,
 			mode: "auto",
 		});
-		writeFileSync(join(dir, "goblin.json5"), `${base},vision:{model:"zai/glm-4.6",maxTokens:512,mode:"always"}}`);
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},vision:{model:"zai/glm-4.6",maxTokens:512,mode:"always"}}`,
+		);
 		expect(loadConfig()!.vision).toEqual({ model: "zai/glm-4.6", maxTokens: 512, mode: "always" });
 		writeFileSync(join(dir, "goblin.json5"), `${base},vision:""}`);
 		expect(loadConfig()!.vision).toBeUndefined();
@@ -244,7 +273,10 @@ describe("goblin.json5", () => {
 		expect(() => loadConfig()).toThrow('provider "other"');
 		writeFileSync(join(dir, "goblin.json5"), `${base},vision:{model:"zai/glm-4.6",maxTokens:0}}`);
 		expect(() => loadConfig()).toThrow();
-		writeFileSync(join(dir, "goblin.json5"), `${base},vision:{model:"zai/glm-4.6",mode:"sometimes"}}`);
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},vision:{model:"zai/glm-4.6",mode:"sometimes"}}`,
+		);
 		expect(() => loadConfig()).toThrow();
 	});
 
@@ -273,7 +305,10 @@ describe("goblin.json5", () => {
 		});
 		writeFileSync(join(dir, "goblin.json5"), `${base},reviewer:{auth:"openrouter",queueCap:0}}`);
 		expect(() => loadConfig()).toThrow();
-		writeFileSync(join(dir, "goblin.json5"), `${base},reviewer:{auth:"openrouter",model:"other/x"}}`);
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},reviewer:{auth:"openrouter",model:"other/x"}}`,
+		);
 		expect(() => loadConfig()).toThrow('provider "other"');
 		writeFileSync(join(dir, "goblin.json5"), `${base},reviewer:{threshold:0.5}}`);
 		expect(() => loadConfig()).toThrow();
@@ -318,10 +353,7 @@ describe("goblin.json5", () => {
 			join(dir, "goblin.json5"),
 			`${base},search:[{kind:"brave",auth:"brave"},{kind:"ddg"}]}`,
 		);
-		expect(loadConfig()!.search).toEqual([
-			{ kind: "brave", auth: "brave" },
-			{ kind: "ddg" },
-		]);
+		expect(loadConfig()!.search).toEqual([{ kind: "brave", auth: "brave" }, { kind: "ddg" }]);
 		// Empty chain is no chain.
 		writeFileSync(join(dir, "goblin.json5"), `${base},search:[]}`);
 		expect(() => loadConfig()).toThrow();
@@ -340,12 +372,15 @@ describe("goblin.json5", () => {
 		expect(loadConfig()!.fetch).toEqual([{ kind: "local" }]);
 	});
 
-	test("tts defaults to edge; \"\" is an explicit off that round-trips", () => {
+	test('tts defaults to edge; "" is an explicit off that round-trips', () => {
 		const dir = useHome();
 		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
 		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
 		expect(loadConfig()!.tts).toEqual({ kind: "edge", voice: "en-US-AriaNeural" });
-		writeFileSync(join(dir, "goblin.json5"), `${base},tts:{kind:"edge",voice:"en-US-AriaNeural",rate:"+10%"}}`);
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},tts:{kind:"edge",voice:"en-US-AriaNeural",rate:"+10%"}}`,
+		);
 		expect(loadConfig()!.tts).toEqual({ kind: "edge", voice: "en-US-AriaNeural", rate: "+10%" });
 		writeFileSync(
 			join(dir, "goblin.json5"),
@@ -367,15 +402,12 @@ describe("goblin.json5", () => {
 		expect(() => loadConfig()).toThrow("goblin.json5");
 	});
 
-	test("transcription defaults its model; \"\" clears to unset", () => {
+	test('transcription defaults its model; "" clears to unset', () => {
 		const dir = useHome();
 		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
 		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
 		expect(loadConfig()!.transcription).toBeUndefined();
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},transcription:{kind:"groq",auth:"groq"}}`,
-		);
+		writeFileSync(join(dir, "goblin.json5"), `${base},transcription:{kind:"groq",auth:"groq"}}`);
 		expect(loadConfig()!.transcription).toEqual({
 			kind: "groq",
 			model: "whisper-large-v3-turbo",
@@ -383,10 +415,7 @@ describe("goblin.json5", () => {
 		});
 		writeFileSync(join(dir, "goblin.json5"), `${base},transcription:""}`);
 		expect(loadConfig()!.transcription).toBeUndefined();
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},transcription:{kind:"elevenlabs",auth:"x"}}`,
-		);
+		writeFileSync(join(dir, "goblin.json5"), `${base},transcription:{kind:"elevenlabs",auth:"x"}}`);
 		expect(() => loadConfig()).toThrow("goblin.json5");
 	});
 
@@ -402,7 +431,7 @@ describe("goblin.json5", () => {
 		expect(loadConfig()!.tts).toBe(false);
 	});
 
-	test("memory is optional, validated, and \"\" clears to unset", () => {
+	test('memory is optional, validated, and "" clears to unset', () => {
 		const dir = useHome();
 		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
 		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
@@ -685,7 +714,10 @@ describe("splitModelRef", () => {
 test("legacy Telegram selection pins independently from app-default patches and survives saves", () => {
 	useHome();
 	const legacy = parseConfig({
-		providers: { test: { kind: "codex" } }, model: "test/old", thinking: "high", allowedUsers: [7],
+		providers: { test: { kind: "codex" } },
+		model: "test/old",
+		thinking: "high",
+		allowedUsers: [7],
 	});
 	expect(legacy.telegram.model).toBe("test/old");
 	expect(legacy.telegram.thinking).toBe("high");
@@ -693,7 +725,11 @@ test("legacy Telegram selection pins independently from app-default patches and 
 	writeConfig(changed);
 	expect(loadConfig()!.telegram).toMatchObject({ model: "test/old", thinking: "high" });
 	expect(loadConfig()!.model).toBe("test/new");
-	expect(() => parseConfig({ ...changed, telegram: { model: "missing/x" } })).toThrow("which is not in providers");
-	expect(() => parseConfig({ ...changed, telegram: { model: "bare" } })).toThrow("provider>/<model-id>");
+	expect(() => parseConfig({ ...changed, telegram: { model: "missing/x" } })).toThrow(
+		"which is not in providers",
+	);
+	expect(() => parseConfig({ ...changed, telegram: { model: "bare" } })).toThrow(
+		"provider>/<model-id>",
+	);
 	expect(() => parseConfig({ ...changed, telegram: { thinking: "invalid" } })).toThrow();
 });

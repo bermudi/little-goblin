@@ -9,12 +9,7 @@ import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { wrapLanguageModel, type LanguageModel, type LanguageModelMiddleware } from "ai";
 import type { AuthStore } from "../auth.ts";
-import {
-	splitModelRef,
-	thinkingLevels,
-	type Config,
-	type ThinkingLevel,
-} from "../config.ts";
+import { splitModelRef, thinkingLevels, type Config, type ThinkingLevel } from "../config.ts";
 import { log } from "../log.ts";
 import { codexModel } from "./codex/model.ts";
 import type { MediaPosition } from "./attachments.ts";
@@ -29,9 +24,7 @@ export async function resolveModel(
 	const { provider, modelId } = splitModelRef(modelRef);
 	const p = config.providers[provider];
 	if (!p) {
-		throw new Error(
-			`model "${modelRef}": provider "${provider}" not in goblin.json5 providers`,
-		);
+		throw new Error(`model "${modelRef}": provider "${provider}" not in goblin.json5 providers`);
 	}
 	switch (p.kind) {
 		case "openai-compatible":
@@ -119,8 +112,7 @@ export function carriesMedia(
 			// goblin's own converter (codex.ts): user messages take images
 			// and PDFs; tool results keep text only.
 			return (
-				position === "user" &&
-				(mediaType.startsWith("image/") || mediaType === "application/pdf")
+				position === "user" && (mediaType.startsWith("image/") || mediaType === "application/pdf")
 			);
 		default:
 			// Unknown kinds carry the universal minimum, user messages only.
@@ -301,10 +293,7 @@ export function thinkingLevelsFor(
 	// the endpoint aliases older ids to the two models it actually serves.
 	const bare = modelId.split("/").pop() ?? modelId;
 	if (bare.startsWith("glm-")) {
-		if (
-			(kind === "openai-compatible" || kind === "responses") &&
-			zaiCodingEndpoint(baseUrl)
-		) {
+		if ((kind === "openai-compatible" || kind === "responses") && zaiCodingEndpoint(baseUrl)) {
 			return ["low", "high", "max"];
 		}
 		const { major, minor } = glmVersion(bare);
@@ -333,23 +322,15 @@ function gptLevels(modelId: string): readonly ThinkingLevel[] {
 // Clamp an arbitrary level onto a ladder: nearest rung at-or-above in
 // vocabulary order, else the top rung. "off" lands on the lowest rung —
 // "the least thinking available", never an invented disable.
-function clampToLadder(
-	ladder: readonly ThinkingLevel[],
-	level: ThinkingLevel,
-): ThinkingLevel {
+function clampToLadder(ladder: readonly ThinkingLevel[], level: ThinkingLevel): ThinkingLevel {
 	const idx = thinkingLevels.indexOf(level);
-	return (
-		ladder.find((l) => thinkingLevels.indexOf(l) >= idx) ??
-		ladder[ladder.length - 1]!
-	);
+	return ladder.find((l) => thinkingLevels.indexOf(l) >= idx) ?? ladder[ladder.length - 1]!;
 }
 
 // OpenRouter per-route capability from its public /models catalog
 // (supported_parameters). Cold/unknown catalog → full vocabulary: the
 // passthrough fails loud rather than pretending knowledge we don't have.
-function openrouterLevels(
-	params: Set<string> | null,
-): readonly ThinkingLevel[] {
+function openrouterLevels(params: Set<string> | null): readonly ThinkingLevel[] {
 	if (!params) return thinkingLevels;
 	if (!params.has("reasoning") && !params.has("reasoning_effort")) {
 		return ["off"];

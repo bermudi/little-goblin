@@ -27,17 +27,28 @@ const deps = (client: HindsightClient, excluded = false) => ({
 
 describe("memory_search tool", () => {
 	test("returns dated evidence with source references", async () => {
-		const client = served(() => Response.json({ results: [{
-			id: "fact-1", text: "Prefers quiet mornings.", type: "world",
-			document_id: "exchange/dm:1/1/a", occurred_start: "2026-01-01",
-		}] }));
+		const client = served(() =>
+			Response.json({
+				results: [
+					{
+						id: "fact-1",
+						text: "Prefers quiet mornings.",
+						type: "world",
+						document_id: "exchange/dm:1/1/a",
+						occurred_start: "2026-01-01",
+					},
+				],
+			}),
+		);
 		const out = (await exec(memorySearchTool(deps(client)), { query: "mornings" })) as {
 			memory: string;
 			sources: { fact: string; document: string | null; date: string | null }[];
 		};
 		expect(out.memory).toContain("Prefers quiet mornings.");
 		expect(out.memory).toContain("take precedence");
-		expect(out.sources).toEqual([{ fact: "fact-1", document: "exchange/dm:1/1/a", date: "2026-01-01" }]);
+		expect(out.sources).toEqual([
+			{ fact: "fact-1", document: "exchange/dm:1/1/a", date: "2026-01-01" },
+		]);
 	});
 
 	test("empty results are evidence of absence, outages are errors", async () => {
@@ -58,7 +69,9 @@ describe("memory_search tool", () => {
 			calls++;
 			return Response.json({ results: [] });
 		});
-		const out = (await exec(memorySearchTool(deps(client, true)), { query: "x" })) as { error: string };
+		const out = (await exec(memorySearchTool(deps(client, true)), { query: "x" })) as {
+			error: string;
+		};
 		expect(out).toEqual({ error: "memory is excluded in this conversation" });
 		expect(calls).toBe(0);
 	});

@@ -162,7 +162,10 @@ function ConversationRow({
 	};
 	const remove = () => {
 		if (!window.confirm(`Delete "${title ?? preview ?? "this conversation"}"?`)) return;
-		void deleteConversation(token, conv.id).then(() => onDeleted(conv.id), () => {});
+		void deleteConversation(token, conv.id).then(
+			() => onDeleted(conv.id),
+			() => {},
+		);
 	};
 
 	if (editing) {
@@ -183,20 +186,14 @@ function ConversationRow({
 	}
 	return (
 		<div className={conv.id === current ? "conv current" : "conv"}>
-			<button
-				type="button"
-				className="conv-main"
-				onClick={() => onOpen(conv.id)}
-			>
+			<button type="button" className="conv-main" onClick={() => onOpen(conv.id)}>
 				<span className="conv-head">
 					<span className="conv-title">
 						{title ?? (preview === "" ? "new conversation" : preview)}
 					</span>
 					<span className="conv-time">{relTime(conv.updatedAt)}</span>
 				</span>
-				{title !== null && preview !== "" && (
-					<span className="conv-preview">{preview}</span>
-				)}
+				{title !== null && preview !== "" && <span className="conv-preview">{preview}</span>}
 			</button>
 			<span className="conv-actions">
 				<button
@@ -229,9 +226,9 @@ export function App() {
 		token === null ? "probing" : "passed",
 	);
 	const [probeHint, setProbeHint] = useState<string | null>(null);
-	const [conversations, setConversations] = useState<
-		AppConversationList["conversations"] | null
-	>(null);
+	const [conversations, setConversations] = useState<AppConversationList["conversations"] | null>(
+		null,
+	);
 	const [current, setCurrent] = useState<string | null>(null);
 	const [listError, setListError] = useState<string | null>(null);
 	const [navOpen, setNavOpen] = useState(false);
@@ -283,9 +280,7 @@ export function App() {
 			setConversations(list.conversations);
 			setListError(null);
 		} catch (err) {
-			setListError(
-				err instanceof ApiError && err.status === 401 ? "unauthorized" : "list failed",
-			);
+			setListError(err instanceof ApiError && err.status === 401 ? "unauthorized" : "list failed");
 		}
 	}, [token]);
 
@@ -408,9 +403,7 @@ export function App() {
 		}
 	};
 
-	const currentTitle =
-		conversations?.find((c) => c.id === current)?.title ??
-		null;
+	const currentTitle = conversations?.find((c) => c.id === current)?.title ?? null;
 
 	return (
 		<div className="shell">
@@ -441,9 +434,7 @@ export function App() {
 											setQuery("");
 										}}
 									>
-										<span className="hit-role">
-											{h.role === "user" ? "you" : "goblin"}
-										</span>
+										<span className="hit-role">{h.role === "user" ? "you" : "goblin"}</span>
 										<span className="hit-text">{flatLine(h.text)}</span>
 										<span className="hit-conv">
 											{flatTitle(h.title) ?? h.conversationId.slice(4)}
@@ -503,9 +494,7 @@ export function App() {
 						</svg>
 					</button>
 					<h1>goblin</h1>
-					{current !== null && (
-						<span className="header-title">{flatTitle(currentTitle)}</span>
-					)}
+					{current !== null && <span className="header-title">{flatTitle(currentTitle)}</span>}
 				</header>
 				{current === null ? (
 					<div className="chat">

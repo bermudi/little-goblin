@@ -40,9 +40,7 @@ describe("codexCredentials — oauth refresh write-back", () => {
 		const auth = await codexCredentials(path, async (url, init) => {
 			seen.url = String(url);
 			seen.body = String(init?.body);
-			return new Response(
-				JSON.stringify({ access_token: jwt(FUTURE), refresh_token: "new-rt" }),
-			);
+			return new Response(JSON.stringify({ access_token: jwt(FUTURE), refresh_token: "new-rt" }));
 		});
 		expect(seen.url).toContain("oauth/token");
 		expect(JSON.parse(seen.body!)).toMatchObject({
@@ -92,9 +90,7 @@ describe("codexCredentials — oauth refresh write-back", () => {
 		try {
 			const auth = await codexCredentials(path, async () => {
 				chmodSync(path, 0o000);
-				return new Response(
-					JSON.stringify({ access_token: jwt(FUTURE), refresh_token: "new-rt" }),
-				);
+				return new Response(JSON.stringify({ access_token: jwt(FUTURE), refresh_token: "new-rt" }));
 			});
 			expect(auth.tokens.refresh_token).toBe("new-rt");
 		} finally {
@@ -132,11 +128,7 @@ describe("codexCredentials — oauth refresh write-back", () => {
 			return gate;
 		});
 		await Bun.sleep(0); // let both callers reach the inflight check
-		resolveFetch(
-			new Response(
-				JSON.stringify({ access_token: jwt(FUTURE), refresh_token: "rt2" }),
-			),
-		);
+		resolveFetch(new Response(JSON.stringify({ access_token: jwt(FUTURE), refresh_token: "rt2" })));
 		const [a, b] = await Promise.all([p1, p2]);
 		// Two overlapping turns must not both POST the single-use token.
 		expect(fetches).toBe(1);

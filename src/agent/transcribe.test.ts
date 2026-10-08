@@ -58,9 +58,7 @@ describe("transcribeAudio", () => {
 		const dir = tmpdir_();
 		const f = join(dir, "v.ogg");
 		writeFileSync(f, "oggdata");
-		expect(await transcribeAudio(fakeModel("  call me back  "), file(f))).toBe(
-			"call me back",
-		);
+		expect(await transcribeAudio(fakeModel("  call me back  "), file(f))).toBe("call me back");
 	});
 
 	test("silence (empty transcript) → null", async () => {
@@ -77,9 +75,19 @@ describe("transcribeAudio", () => {
 		// 25s of audio → 3 segments at a shrunken 10s split. A 1-byte cap
 		// forces the segment path without a real 25MiB fixture.
 		const gen = Bun.spawnSync([
-			"ffmpeg", "-hide_banner", "-loglevel", "error",
-			"-f", "lavfi", "-i", "sine=frequency=440:duration=25",
-			"-ac", "1", "-b:a", "48k", src,
+			"ffmpeg",
+			"-hide_banner",
+			"-loglevel",
+			"error",
+			"-f",
+			"lavfi",
+			"-i",
+			"sine=frequency=440:duration=25",
+			"-ac",
+			"1",
+			"-b:a",
+			"48k",
+			src,
 		]);
 		if (gen.exitCode !== 0) throw new Error(`test audio gen: ${gen.stderr.toString()}`);
 		let n = 0;
@@ -106,9 +114,9 @@ describe("transcribeAudio", () => {
 				};
 			},
 		};
-		expect(
-			await transcribeAudio(model, file(src), { maxBytes: 1, segmentSeconds: 10 }),
-		).toBe("chunk-1 chunk-2 chunk-3");
+		expect(await transcribeAudio(model, file(src), { maxBytes: 1, segmentSeconds: 10 })).toBe(
+			"chunk-1 chunk-2 chunk-3",
+		);
 		expect(n).toBe(3);
 		expect(codecs).toEqual(["opus", "opus", "opus"]);
 	});
@@ -117,9 +125,9 @@ describe("transcribeAudio", () => {
 		if (Bun.which("ffmpeg") === null) return;
 		const f = join(tmpdir_(), "junk.ogg");
 		writeFileSync(f, "definitely not audio");
-		await expect(
-			transcribeAudio(fakeModel("x"), file(f), { maxBytes: 1 }),
-		).rejects.toThrow("ffmpeg");
+		await expect(transcribeAudio(fakeModel("x"), file(f), { maxBytes: 1 })).rejects.toThrow(
+			"ffmpeg",
+		);
 	});
 
 	test("a missing file fails loud", async () => {

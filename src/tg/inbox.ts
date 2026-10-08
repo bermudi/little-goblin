@@ -6,14 +6,18 @@ import { log } from "../log.ts";
 import type { IncomingMedia } from "./media.ts";
 
 const idSchema = z.number().int().safe();
-const mediaSchema = z.strictObject({
-	fileId: z.string().min(1),
-	fileUniqueId: z.string().min(1),
-	fileName: z.string(),
-	mimeType: z.string().min(1),
-	transcribable: z.boolean().optional(),
-}).transform(({ transcribable, ...rest }): IncomingMedia =>
-	transcribable === undefined ? rest : { ...rest, transcribable });
+const mediaSchema = z
+	.strictObject({
+		fileId: z.string().min(1),
+		fileUniqueId: z.string().min(1),
+		fileName: z.string(),
+		mimeType: z.string().min(1),
+		transcribable: z.boolean().optional(),
+	})
+	.transform(
+		({ transcribable, ...rest }): IncomingMedia =>
+			transcribable === undefined ? rest : { ...rest, transcribable },
+	);
 
 export function validatedInboxMedia(media: unknown): IncomingMedia {
 	return mediaSchema.parse(media);
@@ -40,7 +44,10 @@ export interface InboxPayload {
 	// text/caption, head-cut at intake into the leading parts line.
 	quoted?: { messageId: number; text: string } | undefined;
 }
-export interface InboxEntry { updateId: number; payload: InboxPayload }
+export interface InboxEntry {
+	updateId: number;
+	payload: InboxPayload;
+}
 
 const rowSchema = z.object({
 	update_id: idSchema,
@@ -63,8 +70,12 @@ function decode(row: unknown): InboxEntry {
 		throw new Error(`Invalid Telegram inbox JSON for update ${r.update_id}`, { cause: err });
 	}
 	const parsed = payloadSchema.safeParse(json);
-	if (!parsed.success || parsed.data.conversationId !== r.conversation_id ||
-		parsed.data.chatId !== r.chat_id || parsed.data.messageId !== r.message_id) {
+	if (
+		!parsed.success ||
+		parsed.data.conversationId !== r.conversation_id ||
+		parsed.data.chatId !== r.chat_id ||
+		parsed.data.messageId !== r.message_id
+	) {
 		throw new Error(`Invalid Telegram inbox payload for update ${r.update_id}`);
 	}
 	return { updateId: r.update_id, payload: parsed.data };
@@ -80,8 +91,11 @@ function archiveScope(laneKey: string, targetId?: string): number {
 	if (targetId !== undefined) {
 		rollingTargetSchema.parse(targetId);
 		const [kind, chat, ordinal] = targetId.split(":");
-		if (kind !== "dm" || idSchema.positive().parse(Number(chat)) !== chatId ||
-			!idSchema.positive().safeParse(Number(ordinal)).success) {
+		if (
+			kind !== "dm" ||
+			idSchema.positive().parse(Number(chat)) !== chatId ||
+			!idSchema.positive().safeParse(Number(ordinal)).success
+		) {
 			throw new Error("Telegram inbox archive target is outside its DM lane");
 		}
 	}
@@ -118,8 +132,11 @@ export function openTelegramInbox(db: Database): {
 		target_id TEXT NOT NULL
 	)`);
 	const selectArchive = db.query("SELECT target_id FROM tg_inbox_archives WHERE update_id = ?");
-	const insertArchive = db.query("INSERT INTO tg_inbox_archives (update_id, target_id) VALUES (?, ?)");
-	const selectBefore = db.query(`SELECT update_id, chat_id, message_id, conversation_id, payload_json, committed_at
+	const insertArchive = db.query(
+		"INSERT INTO tg_inbox_archives (update_id, target_id) VALUES (?, ?)",
+	);
+	const selectBefore =
+		db.query(`SELECT update_id, chat_id, message_id, conversation_id, payload_json, committed_at
 		FROM tg_inbox WHERE conversation_id = ? AND update_id < ? AND committed_at IS NULL ORDER BY update_id`);
 	function archivedTarget(updateId: number, laneKey: string): string | null {
 		updateIdSchema.parse(updateId);
@@ -137,22 +154,37 @@ export function openTelegramInbox(db: Database): {
 	const insert = db.query(`INSERT INTO tg_inbox
 		(update_id, chat_id, message_id, conversation_id, payload_json)
 		VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`);
-	const selectPending = db.query(`SELECT update_id, chat_id, message_id, conversation_id, payload_json, committed_at
+	const selectPending =
+		db.query(`SELECT update_id, chat_id, message_id, conversation_id, payload_json, committed_at
 		FROM tg_inbox WHERE committed_at IS NULL ORDER BY update_id`);
-	const selectOne = db.query(`SELECT update_id, chat_id, message_id, conversation_id, payload_json, committed_at
+	const selectOne =
+		db.query(`SELECT update_id, chat_id, message_id, conversation_id, payload_json, committed_at
 		FROM tg_inbox WHERE update_id = ?`);
-	const selectMessage = db.query(`SELECT update_id, chat_id, message_id, conversation_id, payload_json, committed_at
+	const selectMessage =
+		db.query(`SELECT update_id, chat_id, message_id, conversation_id, payload_json, committed_at
 		FROM tg_inbox WHERE chat_id = ? AND message_id = ?`);
 	const commit = db.query(`UPDATE tg_inbox SET committed_at = ?, payload_json = NULL
 		WHERE update_id = ? AND committed_at IS NULL`);
 
 	return {
 		record(updateId, payload) {
-			const fields = { updateId, conversationId: payload.conversationId, chatId: payload.chatId, messageId: payload.messageId };
+			const fields = {
+				updateId,
+				conversationId: payload.conversationId,
+				chatId: payload.chatId,
+				messageId: payload.messageId,
+			};
 			try {
 				idSchema.parse(updateId);
 				const valid = payloadSchema.parse(payload);
-				const inserted = insert.run(updateId, valid.chatId, valid.messageId, valid.conversationId, JSON.stringify(valid)).changes === 1;
+				const inserted =
+					insert.run(
+						updateId,
+						valid.chatId,
+						valid.messageId,
+						valid.conversationId,
+						JSON.stringify(valid),
+					).changes === 1;
 				if (!inserted) {
 					// An update ID and a chat-scoped message ID both identify
 					// one message. A conflict on either with a different
@@ -160,9 +192,12 @@ export function openTelegramInbox(db: Database): {
 					const existing = rowSchema.parse(
 						selectOne.get(updateId) ?? selectMessage.get(valid.chatId, valid.messageId),
 					);
-					if (existing.chat_id !== valid.chatId || existing.message_id !== valid.messageId ||
+					if (
+						existing.chat_id !== valid.chatId ||
+						existing.message_id !== valid.messageId ||
 						existing.conversation_id !== valid.conversationId ||
-						(existing.payload_json !== null && existing.payload_json !== JSON.stringify(valid))) {
+						(existing.payload_json !== null && existing.payload_json !== JSON.stringify(valid))
+					) {
 						throw new Error(`Telegram inbox conflicting identity for update ${updateId}`);
 					}
 				}
@@ -182,17 +217,21 @@ export function openTelegramInbox(db: Database): {
 			try {
 				return selectPending.all().map(decode);
 			} catch (err) {
-				log.error("telegram inbox pending read failed", undefined, { errorKind: err instanceof Error ? err.name : "unknown" });
+				log.error("telegram inbox pending read failed", undefined, {
+					errorKind: err instanceof Error ? err.name : "unknown",
+				});
 				throw err;
 			}
 		},
 		pendingIds(updateIds, laneKey) {
 			z.array(updateIdSchema).parse(updateIds);
 			z.string().min(1).parse(laneKey);
-			if (new Set(updateIds).size !== updateIds.length) throw new Error("Duplicate Telegram inbox batch identities");
+			if (new Set(updateIds).size !== updateIds.length)
+				throw new Error("Duplicate Telegram inbox batch identities");
 			return updateIds.filter((id) => {
 				const row = rowSchema.parse(selectOne.get(id));
-				if (row.conversation_id !== laneKey) throw new Error(`Telegram inbox update ${id} is in another lane`);
+				if (row.conversation_id !== laneKey)
+					throw new Error(`Telegram inbox update ${id} is in another lane`);
 				if (row.committed_at !== null) return false;
 				decode(row);
 				return true;
@@ -204,14 +243,16 @@ export function openTelegramInbox(db: Database): {
 				const chatId = archiveScope(laneKey, targetId);
 				updateIdSchema.parse(beforeUpdateId);
 				const count = db.transaction(() => {
-					const target = z.object({ id: rollingTargetSchema, chat_id: idSchema }).parse(
-						db.query("SELECT id, chat_id FROM conversations WHERE id = ?").get(targetId),
-					);
-					if (target.chat_id !== chatId) throw new Error("Telegram inbox archive target has a mismatched chat");
+					const target = z
+						.object({ id: rollingTargetSchema, chat_id: idSchema })
+						.parse(db.query("SELECT id, chat_id FROM conversations WHERE id = ?").get(targetId));
+					if (target.chat_id !== chatId)
+						throw new Error("Telegram inbox archive target has a mismatched chat");
 					let assigned = 0;
 					for (const raw of selectBefore.all(laneKey, beforeUpdateId)) {
 						const entry = decode(raw);
-						if (entry.payload.chatId !== chatId) throw new Error("Telegram inbox archive input has a mismatched chat");
+						if (entry.payload.chatId !== chatId)
+							throw new Error("Telegram inbox archive input has a mismatched chat");
 						if (archivedTarget(entry.updateId, laneKey) !== null) continue;
 						insertArchive.run(entry.updateId, targetId);
 						assigned++;
@@ -236,7 +277,8 @@ export function openTelegramInbox(db: Database): {
 			updateIdSchema.parse(beforeUpdateId);
 			const entries = selectBefore.all(laneKey, beforeUpdateId).map(decode);
 			for (const entry of entries) {
-				if (entry.payload.chatId !== chatId) throw new Error("Telegram inbox pending input has a mismatched chat");
+				if (entry.payload.chatId !== chatId)
+					throw new Error("Telegram inbox pending input has a mismatched chat");
 			}
 			return entries.length !== 0;
 		},
@@ -258,9 +300,12 @@ export function openTelegramInbox(db: Database): {
 		commitBatch(updateIds, conversationId, append) {
 			const fields = { updateIds, conversationId };
 			try {
-				if (updateIds.length === 0 || new Set(updateIds).size !== updateIds.length ||
+				if (
+					updateIds.length === 0 ||
+					new Set(updateIds).size !== updateIds.length ||
 					!updateIds.every((id) => idSchema.safeParse(id).success) ||
-					!z.string().min(1).safeParse(conversationId).success) {
+					!z.string().min(1).safeParse(conversationId).success
+				) {
 					throw new Error("Invalid Telegram inbox batch");
 				}
 				db.transaction(() => {
@@ -278,7 +323,8 @@ export function openTelegramInbox(db: Database): {
 					append(); // ConversationStore.append opens a savepoint on this same handle.
 					const now = new Date().toISOString();
 					for (const id of updateIds) {
-						if (commit.run(now, id).changes !== 1) throw new Error(`Telegram inbox update ${id} changed during commit`);
+						if (commit.run(now, id).changes !== 1)
+							throw new Error(`Telegram inbox update ${id} changed during commit`);
 					}
 				})();
 				log.info("telegram inbox batch committed", fields);

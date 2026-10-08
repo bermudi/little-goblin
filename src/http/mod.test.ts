@@ -82,7 +82,11 @@ function setup(memory?: HttpDeps["memory"], beforeConfigWritten?: HttpDeps["befo
 		});
 		return fetch(`http://127.0.0.1:${http.port}/api/config`, {
 			method: "POST",
-			headers: { "content-type": "application/json", "x-init-data": initData, "if-match": loaded.headers.get("etag") ?? "" },
+			headers: {
+				"content-type": "application/json",
+				"x-init-data": initData,
+				"if-match": loaded.headers.get("etag") ?? "",
+			},
 			body: JSON.stringify(body),
 		});
 	};
@@ -167,7 +171,9 @@ describe("mini-app http", () => {
 			expect((await post({ model: "zai/app-new", thinking: "low" })).status).toBe(200);
 			expect(configRef.current.telegram.model).toBe("zai/m");
 			expect(configRef.current.telegram.thinking).toBe("medium");
-			expect((await post({ telegram: { model: "zai/telegram-new", thinking: "high" } })).status).toBe(200);
+			expect(
+				(await post({ telegram: { model: "zai/telegram-new", thinking: "high" } })).status,
+			).toBe(200);
 			expect(configRef.current.model).toBe("zai/app-new");
 			expect(configRef.current.thinking).toBe("low");
 			expect(configRef.current.telegram.dmGapMinutes).toBe(45);
@@ -205,22 +211,27 @@ describe("mini-app http", () => {
 			});
 			const url = `http://127.0.0.1:${http.port}/api/config`;
 			const saved = await fetch(url, {
-				method: "POST", headers: headers(a.headers.get("etag")!),
+				method: "POST",
+				headers: headers(a.headers.get("etag")!),
 				body: JSON.stringify({ logLevel: "debug" }),
 			});
 			expect(saved.ok).toBe(true);
 			const stale = await fetch(url, {
-				method: "POST", headers: headers(b.headers.get("etag")!),
+				method: "POST",
+				headers: headers(b.headers.get("etag")!),
 				body: JSON.stringify({ http: { port: 9999 }, logLevel: "info" }),
 			});
 			expect(stale.status).toBe(409);
 			expect(configRef.current.logLevel).toBe("debug");
 			expect(configRef.current.http.port).not.toBe(9999);
 			// A direct disk edit also invalidates the version the page saw.
-			writeFileSync(join(process.env.GOBLIN_HOME!, "goblin.json5"),
-				JSON.stringify({ ...configRef.current, logLevel: "warn" }));
+			writeFileSync(
+				join(process.env.GOBLIN_HOME!, "goblin.json5"),
+				JSON.stringify({ ...configRef.current, logLevel: "warn" }),
+			);
 			const edited = await fetch(url, {
-				method: "POST", headers: headers(saved.headers.get("etag")!),
+				method: "POST",
+				headers: headers(saved.headers.get("etag")!),
 				body: JSON.stringify({ logLevel: "error" }),
 			});
 			expect(edited.status).toBe(409);
@@ -256,7 +267,11 @@ describe("mini-app http", () => {
 		useHome();
 		const configRef = { current: { ...baseConfig } };
 		const http = startHttp({
-			configRef, botToken: TOKEN, onConfigWritten: () => { throw new Error("apply failed"); },
+			configRef,
+			botToken: TOKEN,
+			onConfigWritten: () => {
+				throw new Error("apply failed");
+			},
 		});
 		const auth = makeInitData({
 			auth_date: String(Math.floor(Date.now() / 1000)),
@@ -268,13 +283,14 @@ describe("mini-app http", () => {
 			const saved = await fetch(url, {
 				method: "POST",
 				headers: {
-					"x-init-data": auth, "content-type": "application/json",
+					"x-init-data": auth,
+					"content-type": "application/json",
 					"if-match": loaded.headers.get("etag")!,
 				},
 				body: JSON.stringify({ logLevel: "debug" }),
 			});
 			expect(saved.status).toBe(500);
-			expect((await saved.json() as { error: string }).error).toContain("were saved");
+			expect(((await saved.json()) as { error: string }).error).toContain("were saved");
 			expect(loadConfig()?.logLevel).toBe("debug");
 		} finally {
 			http.stop();
@@ -303,10 +319,14 @@ describe("mini-app http", () => {
 			const res = await fetch(`http://127.0.0.1:${http.port}/api/config`, {
 				method: "POST",
 				headers: {
-					"content-type": "application/json", "x-init-data": initData,
-					"if-match": (await fetch(`http://127.0.0.1:${http.port}/api/config`, {
-						headers: { "x-init-data": initData },
-					})).headers.get("etag") ?? "",
+					"content-type": "application/json",
+					"x-init-data": initData,
+					"if-match":
+						(
+							await fetch(`http://127.0.0.1:${http.port}/api/config`, {
+								headers: { "x-init-data": initData },
+							})
+						).headers.get("etag") ?? "",
 				},
 				body: JSON.stringify({ logLevel: "debug" }),
 			});
@@ -369,7 +389,9 @@ describe("mini-app memory status", () => {
 		const mem: NonNullable<HttpDeps["memory"]> = {
 			target: { baseUrl: "http://127.0.0.1:8888", bankId: "goblin" },
 			counts: () => ({ pending: 2, submitted: 0, completed: 1, blocked: 0, dismissed: 0 }),
-			blockedDetail: () => [], lastRecallOk: () => true, lastRecallAt: () => null,
+			blockedDetail: () => [],
+			lastRecallOk: () => true,
+			lastRecallAt: () => null,
 		};
 		const { http, get, configRef } = setup(mem);
 		try {
@@ -377,7 +399,10 @@ describe("mini-app memory status", () => {
 				...configRef.current,
 				memory: { ...configRef.current.memory!, bankId: "elsewhere" },
 			};
-			const status = (await (await get("/api/memory-status")).json()) as { detail: string; queued: number };
+			const status = (await (await get("/api/memory-status")).json()) as {
+				detail: string;
+				queued: number;
+			};
 			expect(status.detail).toContain("restart");
 			expect(status.queued).toBe(0);
 		} finally {
@@ -448,7 +473,9 @@ describe("mini-app memory status", () => {
 			expect(j.state).toBe("degraded");
 			expect(j.detail).toContain("operator review");
 			expect(j.blocked).toBe(1);
-			expect(j.blockedDetail).toEqual([{ document: "msg-1234", error: "hindsight 500", attempts: 3 }]);
+			expect(j.blockedDetail).toEqual([
+				{ document: "msg-1234", error: "hindsight 500", attempts: 3 },
+			]);
 			// queued sums what the worker still owes: pending + submitted.
 			expect(j.queued).toBe(2);
 			expect(j.dismissed).toBe(1);
@@ -459,7 +486,6 @@ describe("mini-app memory status", () => {
 	});
 });
 
-
 // The page is static markup (app.ts) + a served-verbatim client
 // (app.js, tsc-checked via tsconfig.client.json — no build step). The
 // provider/chain kind lists ride the authed config GET (single source:
@@ -468,7 +494,11 @@ describe("mini-app memory status", () => {
 describe("mini-app page serving", () => {
 	test("GET / serves the page, which loads the client from /app.js", async () => {
 		useHome();
-		const http = startHttp({ configRef: { current: { ...baseConfig } }, botToken: TOKEN, onConfigWritten: () => {} });
+		const http = startHttp({
+			configRef: { current: { ...baseConfig } },
+			botToken: TOKEN,
+			onConfigWritten: () => {},
+		});
 		try {
 			const res = await fetch(`http://127.0.0.1:${http.port}/`);
 			const html = await res.text();
@@ -485,7 +515,11 @@ describe("mini-app page serving", () => {
 
 	test("GET /app.js serves the client as javascript, and it parses", async () => {
 		useHome();
-		const http = startHttp({ configRef: { current: { ...baseConfig } }, botToken: TOKEN, onConfigWritten: () => {} });
+		const http = startHttp({
+			configRef: { current: { ...baseConfig } },
+			botToken: TOKEN,
+			onConfigWritten: () => {},
+		});
 		try {
 			const res = await fetch(`http://127.0.0.1:${http.port}/app.js`);
 			expect(res.ok).toBe(true);
@@ -508,7 +542,15 @@ describe("mini-app page serving", () => {
 			};
 			expect(j.config.model).toBe("zai/m");
 			expect(j.providerKinds).toEqual(["openai-compatible", "responses", "openrouter", "codex"]);
-			expect(j.searchKinds).toEqual(["brave", "exa", "jina", "tavily", "firecrawl", "parallel", "ddg"]);
+			expect(j.searchKinds).toEqual([
+				"brave",
+				"exa",
+				"jina",
+				"tavily",
+				"firecrawl",
+				"parallel",
+				"ddg",
+			]);
 			expect(j.fetchKinds).toEqual(["local", "jina", "tavily", "firecrawl", "parallel"]);
 		} finally {
 			http.stop();
@@ -630,7 +672,9 @@ describe("program webhooks", () => {
 		const programs = openPrograms(join(dir, "goblin.sqlite"));
 		const token = "tok-fail";
 		const program = programs.create({
-			name: "ci", charter: "c", cron: "0 9 * * *",
+			name: "ci",
+			charter: "c",
+			cron: "0 9 * * *",
 			address: { chatId: -100, threadId: 7 },
 		});
 		programs.setHook(program.id, hookTokenHash(token));
@@ -639,11 +683,15 @@ describe("program webhooks", () => {
 			configRef: { current: { ...baseConfig } },
 			botToken: TOKEN,
 			onConfigWritten: () => {},
-			hooks: { programs, accepting: () => true, fire: () => {
-				fired.push(true);
-				// First attempt's wake submit fails (500); the retry lands.
-				return fired.length > 1;
-			} },
+			hooks: {
+				programs,
+				accepting: () => true,
+				fire: () => {
+					fired.push(true);
+					// First attempt's wake submit fails (500); the retry lands.
+					return fired.length > 1;
+				},
+			},
 		});
 		try {
 			const res = await fetch(`http://127.0.0.1:${http.port}/hook/${token}`, {
@@ -693,10 +741,7 @@ describe("program webhooks", () => {
 		// or the caller's Retry-After — the exact moment the runtime comes
 		// back — would be answered 429 for a hit that never fired.
 		let accepting = false;
-		const { http, hit, programs, program, token, fired } = hookSetup(
-			true,
-			() => accepting,
-		);
+		const { http, hit, programs, program, token, fired } = hookSetup(true, () => accepting);
 		try {
 			const res = await hit(token, { body: "x" });
 			expect(res.status).toBe(503);
@@ -719,7 +764,14 @@ describe("program webhooks", () => {
 });
 
 // ---------- memories browser ----------
-import { HindsightError, type HindsightClient, type MemoryDocPage, type MemoryDocSummary, type MemoryFact, type StoredMemoryDocument } from "../hindsight.ts";
+import {
+	HindsightError,
+	type HindsightClient,
+	type MemoryDocPage,
+	type MemoryDocSummary,
+	type MemoryFact,
+	type StoredMemoryDocument,
+} from "../hindsight.ts";
 import type { MemoryContexts } from "../memory.ts";
 import type { MemoryQueue } from "../memory-queue.ts";
 
@@ -736,23 +788,32 @@ function stubClient(): HindsightClient {
 describe("mini-app memories browser", () => {
 	test("list requires init data, honors the boot-target gate, and serves pages", async () => {
 		const page: MemoryDocPage<MemoryDocSummary> = {
-			items: [{
-				id: "exchange/topic:1:2/3/abc",
-				created_at: "2026-09-30T01:14:46.511505+00:00",
-				updated_at: "2026-09-30T01:14:46.511505+00:00",
-				text_length: 2453,
-				memory_unit_count: 3,
-				document_metadata: { conversation_id: "topic:1:2" },
-			}],
-			total: 37, limit: 25, offset: 0,
+			items: [
+				{
+					id: "exchange/topic:1:2/3/abc",
+					created_at: "2026-09-30T01:14:46.511505+00:00",
+					updated_at: "2026-09-30T01:14:46.511505+00:00",
+					text_length: 2453,
+					memory_unit_count: 3,
+					document_metadata: { conversation_id: "topic:1:2" },
+				},
+			],
+			total: 37,
+			limit: 25,
+			offset: 0,
 		};
 		const calls: string[] = [];
 		const client = stubClient();
-		client.listDocuments = (o) => { calls.push(`q=${"q" in o ? o.q : null} ${o.limit}@${o.offset}`); return Promise.resolve(page); };
+		client.listDocuments = (o) => {
+			calls.push(`q=${"q" in o ? o.q : null} ${o.limit}@${o.offset}`);
+			return Promise.resolve(page);
+		};
 		const mem: NonNullable<HttpDeps["memory"]> = {
 			target: { baseUrl: "http://127.0.0.1:8888", bankId: "goblin" },
 			counts: () => ({ pending: 0, submitted: 0, completed: 0, blocked: 0, dismissed: 0 }),
-			blockedDetail: () => [], lastRecallOk: () => null, lastRecallAt: () => null,
+			blockedDetail: () => [],
+			lastRecallOk: () => null,
+			lastRecallAt: () => null,
 			client,
 		};
 		const { http, get, configRef } = setup(mem);
@@ -761,7 +822,10 @@ describe("mini-app memories browser", () => {
 			// Same authed path; gate passes (config matches boot target).
 			const ok = await get("/api/memory/documents?limit=25&offset=0");
 			expect(ok.status).toBe(200);
-			const body = await ok.json() as { total: number; items: Array<{ conversationId: string | null }> };
+			const body = (await ok.json()) as {
+				total: number;
+				items: Array<{ conversationId: string | null }>;
+			};
 			expect(body.total).toBe(37);
 			expect(body.items[0]?.conversationId).toBe("topic:1:2");
 			expect(calls[0]).toBe("q=null 25@0");
@@ -769,7 +833,10 @@ describe("mini-app memories browser", () => {
 			await get("/api/memory/documents?q=topic%3A1&limit=10&offset=5");
 			expect(calls[1]).toBe("q=topic:1 10@5");
 			// Re-pointed config degrades to the reason, never reads the stale bank.
-			configRef.current = { ...configRef.current, memory: { ...configRef.current.memory!, bankId: "elsewhere" } };
+			configRef.current = {
+				...configRef.current,
+				memory: { ...configRef.current.memory!, bankId: "elsewhere" },
+			};
 			const stale = await get("/api/memory/documents");
 			expect(stale.status).toBe(503);
 			expect(((await stale.json()) as { error: string }).error).toContain("restart");
@@ -782,7 +849,9 @@ describe("mini-app memories browser", () => {
 		const client = stubClient();
 		const { http, get } = setup({
 			counts: () => ({ pending: 0, submitted: 0, completed: 0, blocked: 0, dismissed: 0 }),
-			blockedDetail: () => [], lastRecallOk: () => null, lastRecallAt: () => null,
+			blockedDetail: () => [],
+			lastRecallOk: () => null,
+			lastRecallAt: () => null,
 			client,
 		});
 		try {
@@ -800,33 +869,51 @@ describe("mini-app memories browser", () => {
 
 	test("document detail serves original text and facts; unknown ids 404", async () => {
 		const doc: StoredMemoryDocument = {
-			id: "exchange/topic:1:2/3/abc", bank_id: "goblin",
+			id: "exchange/topic:1:2/3/abc",
+			bank_id: "goblin",
 			original_text: "Operator: hi\nGoblin: hello",
 			created_at: "2026-09-30T01:14:46.511505+00:00",
 			updated_at: "2026-09-30T01:14:46.511505+00:00",
 			memory_unit_count: 2,
 		};
 		const facts: MemoryDocPage<MemoryFact> = {
-			items: [{
-				id: "f1", text: "The operator says hello.", fact_type: "experience",
-				document_id: doc.id, state: "invalidated",
-				date: null, mentioned_at: "2026-09-30T01:14:28Z", occurred_start: null, occurred_end: null,
-				entities: null, context: null,
-			}],
-			total: 1, limit: 200, offset: 0,
+			items: [
+				{
+					id: "f1",
+					text: "The operator says hello.",
+					fact_type: "experience",
+					document_id: doc.id,
+					state: "invalidated",
+					date: null,
+					mentioned_at: "2026-09-30T01:14:28Z",
+					occurred_start: null,
+					occurred_end: null,
+					entities: null,
+					context: null,
+				},
+			],
+			total: 1,
+			limit: 200,
+			offset: 0,
 		};
 		const client = stubClient();
 		client.getDocument = (id) => Promise.resolve(id === doc.id ? doc : null);
 		client.listMemories = () => Promise.resolve(facts);
 		const { http, get } = setup({
 			counts: () => ({ pending: 0, submitted: 0, completed: 0, blocked: 0, dismissed: 0 }),
-			blockedDetail: () => [], lastRecallOk: () => null, lastRecallAt: () => null,
+			blockedDetail: () => [],
+			lastRecallOk: () => null,
+			lastRecallAt: () => null,
 			client,
 		});
 		try {
 			const res = await get("/api/memory/documents/exchange%2Ftopic%3A1%3A2%2F3%2Fabc");
 			expect(res.status).toBe(200);
-			const body = await res.json() as { document: { id: string; factCount: number }, originalText: string | null, facts: Array<{ state: string | null }> };
+			const body = (await res.json()) as {
+				document: { id: string; factCount: number };
+				originalText: string | null;
+				facts: Array<{ state: string | null }>;
+			};
 			expect(body.document.id).toBe(doc.id);
 			expect(body.originalText).toBe(doc.original_text);
 			expect(body.facts[0]?.state).toBe("invalidated");
@@ -846,31 +933,55 @@ describe("mini-app memories browser", () => {
 		const suppressed: string[] = [];
 		const cancelled: string[] = [];
 		const client = stubClient();
-		client.deleteDocument = (id) => { deleted.push(id); return Promise.resolve(); };
-		const contexts = { suppress: (id: string) => suppressed.push(id), deleteByDocument: (id: string) => { cancelled.push(id); return 2; } } as unknown as MemoryContexts;
-		const queue = { inflightOps: () => [], cancelDocument: (id: string) => { cancelled.push(`cancel:${id}`); return 1; } } as unknown as MemoryQueue;
+		client.deleteDocument = (id) => {
+			deleted.push(id);
+			return Promise.resolve();
+		};
+		const contexts = {
+			suppress: (id: string) => suppressed.push(id),
+			deleteByDocument: (id: string) => {
+				cancelled.push(id);
+				return 2;
+			},
+		} as unknown as MemoryContexts;
+		const queue = {
+			inflightOps: () => [],
+			cancelDocument: (id: string) => {
+				cancelled.push(`cancel:${id}`);
+				return 1;
+			},
+		} as unknown as MemoryQueue;
 		const paused: boolean[] = [];
 		const mem: NonNullable<HttpDeps["memory"]> = {
 			counts: () => ({ pending: 0, submitted: 0, completed: 0, blocked: 0, dismissed: 0 }),
-			blockedDetail: () => [], lastRecallOk: () => null, lastRecallAt: () => null,
+			blockedDetail: () => [],
+			lastRecallOk: () => null,
+			lastRecallAt: () => null,
 			client,
 			contexts,
 			queue,
-			withWorkerPaused: async (fn) => { paused.push(true); return fn(); },
+			withWorkerPaused: async (fn) => {
+				paused.push(true);
+				return fn();
+			},
 		};
 		const { http, get } = setup(mem);
 		const del = (path: string, authed = true) =>
 			fetch(`http://127.0.0.1:${http.port}${path}`, {
 				method: "DELETE",
-				headers: authed ? { "x-init-data": makeInitData({
-					auth_date: String(Math.floor(Date.now() / 1000)),
-					user: JSON.stringify({ id: 42 }),
-				}) } : {},
+				headers: authed
+					? {
+							"x-init-data": makeInitData({
+								auth_date: String(Math.floor(Date.now() / 1000)),
+								user: JSON.stringify({ id: 42 }),
+							}),
+						}
+					: {},
 			});
 		try {
 			const res = await del("/api/memory/documents/exchange%2Ftopic%3A1%3A2%2F3%2Fabc");
 			expect(res.status).toBe(200);
-			const body = await res.json() as { ok: boolean; cancelled: number; redacted: number };
+			const body = (await res.json()) as { ok: boolean; cancelled: number; redacted: number };
 			expect(body).toEqual({ ok: true, cancelled: 1, redacted: 2 });
 			expect(deleted).toEqual(["exchange/topic:1:2/3/abc"]);
 			expect(suppressed).toEqual(["exchange/topic:1:2/3/abc"]);
@@ -878,7 +989,9 @@ describe("mini-app memories browser", () => {
 			// Status-only wiring (no forget seams) refuses loudly, not 500.
 			const { http: http2, get: get2 } = setup({
 				counts: () => ({ pending: 0, submitted: 0, completed: 0, blocked: 0, dismissed: 0 }),
-				blockedDetail: () => [], lastRecallOk: () => null, lastRecallAt: () => null,
+				blockedDetail: () => [],
+				lastRecallOk: () => null,
+				lastRecallAt: () => null,
 			});
 			try {
 				const refused = await get2("/api/memory/documents/exchange%2Fmissing");
@@ -914,9 +1027,7 @@ describe("app deep link (Spin-off)", () => {
 			} else {
 				// Same fail-loud contract as /app/ — never a silent page.
 				expect(res.status).toBe(500);
-				expect(((await res.json()) as { error: string }).error).toContain(
-					"app client not built",
-				);
+				expect(((await res.json()) as { error: string }).error).toContain("app client not built");
 			}
 		} finally {
 			http.stop();
@@ -952,17 +1063,28 @@ test("mini-app default saves freeze untouched legacy app settings before updatin
 		expect(store.get(legacy.id)).toMatchObject({ model: "zai/m", thinking: "medium" });
 		expect(configRef.current.model).toBe("zai/future");
 		expect(configRef.current.telegram.model).toBe("zai/m");
-	} finally { http.stop(); store.close(); }
+	} finally {
+		http.stop();
+		store.close();
+	}
 });
 
 test("provider removal refuses to strand app selections, lists affected ids, and writes nothing", async () => {
 	const store = openStore(":memory:");
 	const legacy = store.resolve(appAddress("legacy-provider"), "/work");
-	const pinned = store.resolve(appAddress("pinned-provider"), "/work", { model: "zai/personal", thinking: "high" });
-	const { http, post, configRef } = setup(undefined,
-		(previous, next) => prepareAppSettingsForConfig(store, previous, next));
+	const pinned = store.resolve(appAddress("pinned-provider"), "/work", {
+		model: "zai/personal",
+		thinking: "high",
+	});
+	const { http, post, configRef } = setup(undefined, (previous, next) =>
+		prepareAppSettingsForConfig(store, previous, next),
+	);
 	try {
-		const proposed = { providers: { replacement: { kind: "codex" } }, model: "replacement/chat", telegram: { model: "replacement/chat" } };
+		const proposed = {
+			providers: { replacement: { kind: "codex" } },
+			model: "replacement/chat",
+			telegram: { model: "replacement/chat" },
+		};
 		const refused = await post(proposed);
 		expect(refused.status).toBe(422);
 		const detail = await refused.text();
@@ -975,5 +1097,8 @@ test("provider removal refuses to strand app selections, lists affected ids, and
 		store.setMeta(legacy.id, { model: "replacement/chat", thinking: "low" });
 		store.setMeta(pinned.id, { model: "replacement/chat", thinking: "high" });
 		expect((await post(proposed)).status).toBe(200);
-	} finally { http.stop(); store.close(); }
+	} finally {
+		http.stop();
+		store.close();
+	}
 });

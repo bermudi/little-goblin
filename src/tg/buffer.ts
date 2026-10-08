@@ -85,7 +85,9 @@ export class CoalescingBuffer<T> {
 			}
 		}
 		if (failed > 0) {
-			throw new Error(`buffer drain failed for ${failed} conversations — messages retained for retry`);
+			throw new Error(
+				`buffer drain failed for ${failed} conversations — messages retained for retry`,
+			);
 		}
 	}
 
@@ -160,10 +162,7 @@ export class CoalescingBuffer<T> {
 		}
 		this.deferred.delete(key);
 		const attempts = bucket.attempts + 1;
-		const retryMs = Math.min(
-			Math.max(this.windowMs, 1_000) * 2 ** (attempts - 1),
-			300_000,
-		);
+		const retryMs = Math.min(Math.max(this.windowMs, 1_000) * 2 ** (attempts - 1), 300_000);
 		this.buckets.set(key, {
 			items: [...bucket.items, ...(newer?.items ?? [])],
 			timer: setTimeout(() => this.fire(key), retryMs),

@@ -53,7 +53,15 @@ function fakeModel(deltas: string[], delayMs = 5): LanguageModel {
 					push({
 						type: "finish",
 						finishReason: { unified: "stop", raw: undefined },
-						usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
+						usage: {
+							inputTokens: {
+								total: 1,
+								noCache: undefined,
+								cacheRead: undefined,
+								cacheWrite: undefined,
+							},
+							outputTokens: { total: 1, text: undefined, reasoning: undefined },
+						},
 					});
 					try {
 						controller.close();
@@ -129,27 +137,42 @@ function harness(opts: { recallStatus?: number; factText?: string } = {}): Harne
 					return new Response("down", { status: opts.recallStatus ?? 503 });
 				}
 				return Response.json({
-					results: opts.factText === undefined ? [] : [{
-						id: "fact-1", text: opts.factText, type: "world",
-						document_id: "exchange/dm:1/1/a", occurred_start: "2026-01-01",
-					}],
+					results:
+						opts.factText === undefined
+							? []
+							: [
+									{
+										id: "fact-1",
+										text: opts.factText,
+										type: "world",
+										document_id: "exchange/dm:1/1/a",
+										occurred_start: "2026-01-01",
+									},
+								],
 				});
 			}
 			if (request.method === "POST") {
 				retains.push(await request.json());
 				return Response.json({
-					success: true, bank_id: "g", items_count: 1, async: true,
+					success: true,
+					bank_id: "g",
+					items_count: 1,
+					async: true,
 					operation_id: "00000000-0000-4000-8000-000000000001",
 				});
 			}
-			return Response.json({ operation_id: "00000000-0000-4000-8000-000000000001", status: "processing" });
+			return Response.json({
+				operation_id: "00000000-0000-4000-8000-000000000001",
+				status: "processing",
+			});
 		},
 	});
 	servers.push(server);
 	const store = openStore(tmpdb());
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 	const client = new HindsightClient({
-		baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g",
+		baseUrl: `http://127.0.0.1:${server.port}`,
+		bankId: "g",
 	});
 	const recallOk = { current: null as boolean | null };
 	const runtime = new Runtime({
@@ -165,7 +188,15 @@ function harness(opts: { recallStatus?: number; factText?: string } = {}): Harne
 			},
 		},
 	});
-	return { recallCount: () => recalls.length, retains, conversation: conv.id, runtime, store, client, recallOk };
+	return {
+		recallCount: () => recalls.length,
+		retains,
+		conversation: conv.id,
+		runtime,
+		store,
+		client,
+		recallOk,
+	};
 }
 
 describe("memory turn integration", () => {
@@ -233,9 +264,12 @@ describe("memory turn integration", () => {
 				new URL(request.url).pathname.endsWith("/memories/recall")
 					? Response.json({ results: [] })
 					: Response.json({
-						success: true, bank_id: "g", items_count: 1, async: true,
-						operation_id: "00000000-0000-4000-8000-000000000002",
-					}),
+							success: true,
+							bank_id: "g",
+							items_count: 1,
+							async: true,
+							operation_id: "00000000-0000-4000-8000-000000000002",
+						}),
 		});
 		servers.push(server);
 		const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
@@ -272,27 +306,41 @@ describe("memory turn integration", () => {
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		let recallStarted!: () => void;
 		let release!: () => void;
-		const started = new Promise<void>((resolve) => { recallStarted = resolve; });
-		const parked = new Promise<void>((resolve) => { release = resolve; });
+		const started = new Promise<void>((resolve) => {
+			recallStarted = resolve;
+		});
+		const parked = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 		const server = Bun.serve({
-			hostname: "127.0.0.1", port: 0,
+			hostname: "127.0.0.1",
+			port: 0,
 			fetch: async () => {
 				recallStarted();
 				await parked;
-				return Response.json({ results: [{
-					id: "fact-1", text: "forget this", type: "world",
-					document_id: "exchange/dm:1/1/a",
-				}] });
+				return Response.json({
+					results: [
+						{
+							id: "fact-1",
+							text: "forget this",
+							type: "world",
+							document_id: "exchange/dm:1/1/a",
+						},
+					],
+				});
 			},
 		});
 		servers.push(server);
 		const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
 		const runtime = new Runtime({
-			store, buildStep: () => ({ model: fakeModel(["ok"]), system: "test" }),
+			store,
+			buildStep: () => ({ model: fakeModel(["ok"]), system: "test" }),
 			makeTools: () => ({}),
 			memory: {
-				client, config: { ...memConfig, baseUrl: `http://127.0.0.1:${server.port}` },
-				contexts: store.memoryContexts, noteRecall: () => {},
+				client,
+				config: { ...memConfig, baseUrl: `http://127.0.0.1:${server.port}` },
+				contexts: store.memoryContexts,
+				noteRecall: () => {},
 			},
 		});
 		const sink = new RecordingSink();
@@ -359,13 +407,10 @@ describe("memory turn integration", () => {
 		// The scheduler and the delegation watcher both fire while the
 		// operator's message still waits for its turn — one mixed burst.
 		// Housekeeping must not fence the operator's memory out of it.
-		h.store.append(
-			h.conversation,
-			[
-				userMessage([{ type: "text", text: "remember: i take my coffee black" }]),
-				userMessage([{ type: "text", text: "[delegation: deploy · done] all green" }]),
-			],
-		);
+		h.store.append(h.conversation, [
+			userMessage([{ type: "text", text: "remember: i take my coffee black" }]),
+			userMessage([{ type: "text", text: "[delegation: deploy · done] all green" }]),
+		]);
 		const sink = new RecordingSink();
 		h.runtime.submit(
 			h.store.get(h.conversation)!,

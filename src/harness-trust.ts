@@ -14,12 +14,7 @@
 // operator wrote, and a file we can't extend safely fails the
 // launch loudly rather than corrupt it.
 
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	realpathSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { durableWriteFile } from "./durable.ts";
 
@@ -141,9 +136,7 @@ function seedCodex(cwd: string, file: string): string[] {
 	// containing a single quote or a control character only has the
 	// basic form.
 	const basic = tomlBasic(cwd);
-	const quoted = cwd.includes("'")
-		? reEscape(basic)
-		: `(?:${reEscape(basic)}|'${reEscape(cwd)}')`;
+	const quoted = cwd.includes("'") ? reEscape(basic) : `(?:${reEscape(basic)}|'${reEscape(cwd)}')`;
 
 	const out =
 		entry !== undefined
@@ -163,9 +156,7 @@ function insertIntoExisting(
 	cwd: string,
 	path: string,
 ): string {
-	const header = new RegExp(
-		`^\\s*\\[\\s*projects\\s*\\.\\s*${quoted}\\s*\\]`,
-	);
+	const header = new RegExp(`^\\s*\\[\\s*projects\\s*\\.\\s*${quoted}\\s*\\]`);
 	for (const [i, line] of lines.entries()) {
 		if (header.test(line)) {
 			lines.splice(i + 1, 0, 'trust_level = "trusted"');
@@ -209,9 +200,7 @@ function appendProjectTable(
 	path: string,
 ): string {
 	if (/^\s*projects\s*=\s*\{/m.test(text)) {
-		throw new Error(
-			`${path}: 'projects' is an inline table — add trust_level for ${cwd} by hand`,
-		);
+		throw new Error(`${path}: 'projects' is an inline table — add trust_level for ${cwd} by hand`);
 	}
 	while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
 	lines.push(`[projects.${basic}]`, 'trust_level = "trusted"', "");
@@ -232,8 +221,10 @@ const TOML_ESCAPES: Record<string, string> = {
 // control character — a cwd named with a newline or tab still yields
 // a valid key, and the escaped form is what on-disk matching finds.
 function tomlBasic(s: string): string {
-	return `"${s.replace(/[\\"\x00-\x1f\x7f]/g, (c) =>
-		TOML_ESCAPES[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`)}"`;
+	return `"${s.replace(
+		/[\\"\x00-\x1f\x7f]/g,
+		(c) => TOML_ESCAPES[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+	)}"`;
 }
 
 // ---------- remote (machine-target) trust seeding payloads ----------

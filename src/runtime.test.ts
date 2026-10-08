@@ -6,7 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { tool, type LanguageModel, type UIMessage, type UIMessageChunk } from "ai";
 import { z } from "zod";
-import { APICallError, type LanguageModelV4, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
+import {
+	APICallError,
+	type LanguageModelV4,
+	type LanguageModelV4StreamPart,
+} from "@ai-sdk/provider";
 import { appAddress, captureConversationSettings, openStore } from "./conversation.ts";
 import { parseConfig } from "./config.ts";
 import type { JevClient } from "./jev.ts";
@@ -61,7 +65,15 @@ function fakeModel(deltas: string[], delayMs = 15): LanguageModel {
 					push({
 						type: "finish",
 						finishReason: { unified: "stop", raw: undefined },
-						usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: deltas.length, text: undefined, reasoning: undefined } },
+						usage: {
+							inputTokens: {
+								total: 1,
+								noCache: undefined,
+								cacheRead: undefined,
+								cacheWrite: undefined,
+							},
+							outputTokens: { total: deltas.length, text: undefined, reasoning: undefined },
+						},
 					});
 					try {
 						controller.close();
@@ -175,15 +187,30 @@ describe("provider-filter retry", () => {
 		finish("stop"),
 	];
 	const call: LanguageModelV4StreamPart = {
-		type: "tool-call", toolCallId: "call", toolName: "probe", input: "{}",
+		type: "tool-call",
+		toolCallId: "call",
+		toolName: "probe",
+		input: "{}",
 	};
 	const blocked: LanguageModelV4StreamPart = { type: "error", error: new Error(warning) };
 
-	function scripted(attempts: (LanguageModelV4StreamPart[] | Error | { readError: Error } | { cancelError: Error })[]) {
+	function scripted(
+		attempts: (
+			| LanguageModelV4StreamPart[]
+			| Error
+			| { readError: Error }
+			| { cancelError: Error }
+		)[],
+	) {
 		const requests: string[] = [];
 		const model: LanguageModelV4 = {
-			specificationVersion: "v4", provider: "fake", modelId: "filter-test", supportedUrls: {},
-			doGenerate() { throw new Error("unused"); },
+			specificationVersion: "v4",
+			provider: "fake",
+			modelId: "filter-test",
+			supportedUrls: {},
+			doGenerate() {
+				throw new Error("unused");
+			},
 			async doStream(options) {
 				const attempt = attempts[requests.length];
 				requests.push(JSON.stringify(options));
@@ -225,7 +252,9 @@ describe("provider-filter retry", () => {
 			const store = openStore(tmpdb());
 			const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 			const runtime = new Runtime({
-				store, buildStep: () => ({ model, system: "unchanged system" }), makeTools: () => ({}),
+				store,
+				buildStep: () => ({ model, system: "unchanged system" }),
+				makeTools: () => ({}),
 			});
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "Discuss German politics" }]), sink);
@@ -252,11 +281,15 @@ describe("provider-filter retry", () => {
 		const conv = store.resolve(appAddress("filter-retry"), "/w");
 		let executions = 0;
 		const runtime = new Runtime({
-			store, buildStep: () => ({ model, system: "test" }),
+			store,
+			buildStep: () => ({ model, system: "test" }),
 			makeTools: () => ({
 				probe: tool({
 					inputSchema: z.object({}),
-					execute: () => { executions++; return { result: "already completed" }; },
+					execute: () => {
+						executions++;
+						return { result: "already completed" };
+					},
 				}),
 			}),
 		});
@@ -290,11 +323,15 @@ describe("provider-filter retry", () => {
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		let executions = 0;
 		const runtime = new Runtime({
-			store, buildStep: () => ({ model, system: "test" }),
+			store,
+			buildStep: () => ({ model, system: "test" }),
 			makeTools: () => ({
 				probe: tool({
 					inputSchema: z.object({}),
-					execute: () => { executions++; return { ok: true }; },
+					execute: () => {
+						executions++;
+						return { ok: true };
+					},
 				}),
 			}),
 		});
@@ -312,18 +349,22 @@ describe("provider-filter retry", () => {
 
 	test("a second filter later in the turn exhausts the retry budget and saves no failed reply", async () => {
 		const { model, requests } = scripted([
-			[blocked], [call, finish("tool-calls")], [finish("content-filter")],
+			[blocked],
+			[call, finish("tool-calls")],
+			[finish("content-filter")],
 		]);
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
-			store, buildStep: () => ({ model, system: "test" }),
+			store,
+			buildStep: () => ({ model, system: "test" }),
 			makeTools: () => ({ probe: tool({ inputSchema: z.object({}), execute: () => "done" }) }),
 		});
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
 		expect(await sink.done).toEqual({
-			kind: "error", message: "Provider blocked this request again after one retry.",
+			kind: "error",
+			message: "Provider blocked this request again after one retry.",
 		});
 		while (runtime.busy(conv.id)) await sleep(1);
 		await runtime.shutdown();
@@ -338,7 +379,9 @@ describe("provider-filter retry", () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
-			store, buildStep: () => ({ model, system: "test" }), makeTools: () => ({}),
+			store,
+			buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({}),
 		});
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
@@ -354,35 +397,48 @@ describe("provider-filter retry", () => {
 		["plain error", blocked.error],
 		["nested error", { error: { message: warning } }],
 		["nested response error", { response: { error: { message: warning } } }],
-	] satisfies [string, unknown][]) test(`two blocked attempts (${name}) cannot expose their tool calls`, async () => {
-		const failure: LanguageModelV4StreamPart = { type: "error", error };
-		const { model, requests } = scripted([[call, failure], [call, failure]]);
-		const store = openStore(tmpdb());
-		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		let executions = 0;
-		const runtime = new Runtime({
-			store, buildStep: () => ({ model, system: "test" }),
-			makeTools: () => ({
-				probe: tool({ inputSchema: z.object({}), execute: () => { executions++; return "done"; } }),
-			}),
+	] satisfies [string, unknown][])
+		test(`two blocked attempts (${name}) cannot expose their tool calls`, async () => {
+			const failure: LanguageModelV4StreamPart = { type: "error", error };
+			const { model, requests } = scripted([
+				[call, failure],
+				[call, failure],
+			]);
+			const store = openStore(tmpdb());
+			const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+			let executions = 0;
+			const runtime = new Runtime({
+				store,
+				buildStep: () => ({ model, system: "test" }),
+				makeTools: () => ({
+					probe: tool({
+						inputSchema: z.object({}),
+						execute: () => {
+							executions++;
+							return "done";
+						},
+					}),
+				}),
+			});
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
+			expect((await sink.done).kind).toBe("error");
+			while (runtime.busy(conv.id)) await sleep(1);
+			await runtime.shutdown();
+			expect(requests).toHaveLength(2);
+			expect(executions).toBe(0);
+			expect(sink.chunkTypes).not.toContain("tool-input-available");
+			store.close();
 		});
-		const sink = new RecordingSink();
-		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
-		expect((await sink.done).kind).toBe("error");
-		while (runtime.busy(conv.id)) await sleep(1);
-		await runtime.shutdown();
-		expect(requests).toHaveLength(2);
-		expect(executions).toBe(0);
-		expect(sink.chunkTypes).not.toContain("tool-input-available");
-		store.close();
-	});
 
 	test("cancellation cleanup failure is logged without replacing the filter retry", async () => {
 		const { model, requests } = scripted([{ cancelError: new Error("cancel failed") }, answer()]);
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
-			store, buildStep: () => ({ model, system: "test" }), makeTools: () => ({}),
+			store,
+			buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({}),
 		});
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
@@ -398,15 +454,20 @@ describe("provider-filter retry", () => {
 	test("ordinary retryable HTTP failures retain the existing SDK retry policy", async () => {
 		const { model, requests } = scripted([
 			new APICallError({
-				message: "Service unavailable", url: "https://provider.invalid/responses",
-				requestBodyValues: {}, statusCode: 503, isRetryable: true,
+				message: "Service unavailable",
+				url: "https://provider.invalid/responses",
+				requestBodyValues: {},
+				statusCode: 503,
+				isRetryable: true,
 			}),
 			answer(),
 		]);
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
-			store, buildStep: () => ({ model, system: "test" }), makeTools: () => ({}),
+			store,
+			buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({}),
 		});
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
@@ -421,18 +482,32 @@ describe("provider-filter retry", () => {
 	test("stop during filter cleanup prevents a second model request", async () => {
 		let entered: () => void = () => {};
 		let release: () => void = () => {};
-		const cleaning = new Promise<void>((resolve) => { entered = resolve; });
-		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const cleaning = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 		let requests = 0;
 		const model: LanguageModelV4 = {
-			specificationVersion: "v4", provider: "fake", modelId: "filter-test", supportedUrls: {},
-			doGenerate() { throw new Error("unused"); },
+			specificationVersion: "v4",
+			provider: "fake",
+			modelId: "filter-test",
+			supportedUrls: {},
+			doGenerate() {
+				throw new Error("unused");
+			},
 			async doStream() {
 				requests++;
 				return {
 					stream: new ReadableStream<LanguageModelV4StreamPart>({
-						start(controller) { controller.enqueue(blocked); },
-						async cancel() { entered(); await gate; },
+						start(controller) {
+							controller.enqueue(blocked);
+						},
+						async cancel() {
+							entered();
+							await gate;
+						},
 					}),
 				};
 			},
@@ -440,7 +515,9 @@ describe("provider-filter retry", () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve(appAddress("filter-cleanup"), "/w");
 		const runtime = new Runtime({
-			store, buildStep: () => ({ model, system: "test" }), makeTools: () => ({}),
+			store,
+			buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({}),
 		});
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
@@ -468,7 +545,9 @@ describe("provider-filter retry", () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve(appAddress("late-filter"), "/w");
 		const runtime = new Runtime({
-			store, buildStep: () => ({ model, system: "test" }), makeTools: () => ({}),
+			store,
+			buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({}),
 		});
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
@@ -489,8 +568,12 @@ describe("provider-filter retry", () => {
 		const { model, requests } = scripted([new Error(warning)]);
 		let entered: () => void = () => {};
 		let release: () => void = () => {};
-		const started = new Promise<void>((resolve) => { entered = resolve; });
-		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const started = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 		const slowModel: LanguageModelV4 = {
 			...model,
 			async doStream(options) {
@@ -502,7 +585,9 @@ describe("provider-filter retry", () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
-			store, buildStep: () => ({ model: slowModel, system: "test" }), makeTools: () => ({}),
+			store,
+			buildStep: () => ({ model: slowModel, system: "test" }),
+			makeTools: () => ({}),
 		});
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), sink);
@@ -567,10 +652,9 @@ describe("turn authority", () => {
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		let seen: AbortSignal | undefined;
 		const base = fakeModel(["a", "b", "c", "d", "e"], 20) as unknown as {
-			doStream(o: {
-				prompt: unknown;
-				abortSignal?: AbortSignal;
-			}): { stream: ReadableStream<LanguageModelV4StreamPart> };
+			doStream(o: { prompt: unknown; abortSignal?: AbortSignal }): {
+				stream: ReadableStream<LanguageModelV4StreamPart>;
+			};
 		};
 		const model = {
 			...base,
@@ -763,7 +847,15 @@ describe("turn authority", () => {
 								push({
 									type: "finish",
 									finishReason: { unified: "tool-calls", raw: undefined },
-									usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
+									usage: {
+										inputTokens: {
+											total: 1,
+											noCache: undefined,
+											cacheRead: undefined,
+											cacheWrite: undefined,
+										},
+										outputTokens: { total: 1, text: undefined, reasoning: undefined },
+									},
 								});
 								try {
 									controller.close();
@@ -941,7 +1033,15 @@ describe("turn authority", () => {
 								controller.enqueue({
 									type: "finish",
 									finishReason: { unified: "stop", raw: undefined },
-									usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 2, text: undefined, reasoning: undefined } },
+									usage: {
+										inputTokens: {
+											total: 1,
+											noCache: undefined,
+											cacheRead: undefined,
+											cacheWrite: undefined,
+										},
+										outputTokens: { total: 2, text: undefined, reasoning: undefined },
+									},
 								});
 								controller.close();
 							},
@@ -994,7 +1094,15 @@ describe("turn authority", () => {
 									push({
 										type: "finish",
 										finishReason: { unified: "tool-calls", raw: undefined },
-										usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
+										usage: {
+											inputTokens: {
+												total: 1,
+												noCache: undefined,
+												cacheRead: undefined,
+												cacheWrite: undefined,
+											},
+											outputTokens: { total: 1, text: undefined, reasoning: undefined },
+										},
 									});
 								} else {
 									// Same id as step 1 — deliberate.
@@ -1004,7 +1112,15 @@ describe("turn authority", () => {
 									push({
 										type: "finish",
 										finishReason: { unified: "stop", raw: undefined },
-										usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
+										usage: {
+											inputTokens: {
+												total: 1,
+												noCache: undefined,
+												cacheRead: undefined,
+												cacheWrite: undefined,
+											},
+											outputTokens: { total: 1, text: undefined, reasoning: undefined },
+										},
 									});
 								}
 								controller.close();
@@ -1187,7 +1303,10 @@ function textReply(text: string): LanguageModelV4StreamPart[] {
 		{
 			type: "finish",
 			finishReason: { unified: "stop", raw: undefined },
-			usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
+			usage: {
+				inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+				outputTokens: { total: 1, text: undefined, reasoning: undefined },
+			},
 		},
 	];
 }
@@ -1287,7 +1406,15 @@ describe("context overflow recovery", () => {
 			{
 				type: "finish",
 				finishReason: { unified: "tool-calls", raw: undefined },
-				usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
+				usage: {
+					inputTokens: {
+						total: 1,
+						noCache: undefined,
+						cacheRead: undefined,
+						cacheWrite: undefined,
+					},
+					outputTokens: { total: 1, text: undefined, reasoning: undefined },
+				},
 			},
 		];
 		const { model, prompts } = scriptedModel([
@@ -1531,22 +1658,12 @@ describe("cache stability", () => {
 		const s1 = new RecordingSink();
 		runtime.submit(
 			conv,
-			userMessage([
-				att(a, "a.png", 9),
-				{ type: "text", text: "what is this" },
-			]),
+			userMessage([att(a, "a.png", 9), { type: "text", text: "what is this" }]),
 			s1,
 		);
 		expect(await s1.done).toEqual({ kind: "completed" });
 		const s2 = new RecordingSink();
-		runtime.submit(
-			conv,
-			userMessage([
-				att(b, "b.png", 9),
-				{ type: "text", text: "and this" },
-			]),
-			s2,
-		);
+		runtime.submit(conv, userMessage([att(b, "b.png", 9), { type: "text", text: "and this" }]), s2);
 		expect(await s2.done).toEqual({ kind: "completed" });
 		expect(prompts.length).toBe(2);
 		// The first photo's inlined bytes ride the head of the second
@@ -1618,8 +1735,8 @@ describe("cache stability", () => {
 				.split("\n")
 				.map((l) => JSON.parse(l) as Record<string, unknown>);
 			const warn = lines.find(
-					(l) => l.msg === "context window ≥80% — history is approaching the limit",
-				);
+				(l) => l.msg === "context window ≥80% — history is approaching the limit",
+			);
 			expect(warn).toMatchObject({ input: 900, limit: 1000, pct: 90 });
 			const stepUsage = lines.find((l) => l.msg === "model step usage");
 			expect(stepUsage).toMatchObject({
@@ -1676,7 +1793,15 @@ describe("cache stability", () => {
 						controller.enqueue({
 							type: "finish",
 							finishReason: { unified: call === 1 ? "tool-calls" : "stop", raw: undefined },
-							usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
+							usage: {
+								inputTokens: {
+									total: 1,
+									noCache: undefined,
+									cacheRead: undefined,
+									cacheWrite: undefined,
+								},
+								outputTokens: { total: 1, text: undefined, reasoning: undefined },
+							},
 						});
 						controller.close();
 					},
@@ -1747,7 +1872,15 @@ describe("cache stability", () => {
 						controller.enqueue({
 							type: "finish",
 							finishReason: { unified: call === 1 ? "tool-calls" : "stop", raw: undefined },
-							usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
+							usage: {
+								inputTokens: {
+									total: 1,
+									noCache: undefined,
+									cacheRead: undefined,
+									cacheWrite: undefined,
+								},
+								outputTokens: { total: 1, text: undefined, reasoning: undefined },
+							},
 						});
 						controller.close();
 					},
@@ -1808,7 +1941,7 @@ describe("cache stability", () => {
 				supportedUrls: {},
 				doGenerate() {
 					throw new Error("unimplemented");
-			},
+				},
 				doStream() {
 					const stream = new ReadableStream<LanguageModelV4StreamPart>({
 						start(controller) {
@@ -1838,20 +1971,20 @@ describe("cache stability", () => {
 					});
 					return { stream };
 				},
-			} as unknown as LanguageModel);
+			}) as unknown as LanguageModel;
 		const summaries: string[] = [];
 		const runtime = new Runtime({
-				store,
-				buildStep: () => ({ model: model(750), system: "test", contextWindow: 1000 }),
-				makeTools: () => ({}),
-				compaction: {
-					modelRef: () => "zai/glm-5.3",
-					summarize: async (_conv, _system, prompt, _signal) => {
-						summaries.push(prompt);
-						return "the folded era";
-					},
+			store,
+			buildStep: () => ({ model: model(750), system: "test", contextWindow: 1000 }),
+			makeTools: () => ({}),
+			compaction: {
+				modelRef: () => "zai/glm-5.3",
+				summarize: async (_conv, _system, prompt, _signal) => {
+					summaries.push(prompt);
+					return "the folded era";
 				},
-			});
+			},
+		});
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "live question" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
@@ -1870,7 +2003,11 @@ describe("cache stability", () => {
 		// The budget keeps a chunky recent tail (whole exchanges only), so
 		// the cut lands at the end of the second exchange — seq 4 — with the
 		// live exchange (u7/a7) whole in the tail.
-		expect(pointer).toMatchObject({ boundarySeq: 4, summary: "the folded era", model: "zai/glm-5.3" });
+		expect(pointer).toMatchObject({
+			boundarySeq: 4,
+			summary: "the folded era",
+			model: "zai/glm-5.3",
+		});
 		// The record stays whole; the model view is summary + kept tail.
 		expect(store.history(conv.id)).toHaveLength(8);
 		const view = store.modelEntries(conv.id);
@@ -1878,7 +2015,9 @@ describe("cache stability", () => {
 		expect((view[0]!.message.parts[0] as { text: string }).text).toContain("the folded era");
 		const lastText = view
 			.at(-1)!
-			.message.parts.find((p) => (p as { type: string }).type === "text") as { text: string } | undefined;
+			.message.parts.find((p) => (p as { type: string }).type === "text") as
+			| { text: string }
+			| undefined;
 		expect(lastText?.text).toBe("ok");
 		store.close();
 
@@ -1917,7 +2056,11 @@ describe("cache stability", () => {
 		}
 		const runtime = new Runtime({
 			store,
-			buildStep: () => ({ model: fakeModel(["slow ", "reply"], 40), system: "test", contextWindow: 1000 }),
+			buildStep: () => ({
+				model: fakeModel(["slow ", "reply"], 40),
+				system: "test",
+				contextWindow: 1000,
+			}),
 			makeTools: () => ({}),
 			compaction: {
 				modelRef: () => "m",
@@ -1937,7 +2080,10 @@ describe("cache stability", () => {
 		// exactly the events whose causal position follows the boundary —
 		// nothing orphaned (an anchored reply without its question), and
 		// nothing silently swallowed (an event neither summarized nor shown).
-		const tail = store.modelEntries(conv.id).slice(1).map((e) => e.seq);
+		const tail = store
+			.modelEntries(conv.id)
+			.slice(1)
+			.map((e) => e.seq);
 		const expected = store
 			.historyDetail(conv.id)
 			.filter((e) => (e.anchorSeq ?? e.seq) > boundary)
@@ -1951,7 +2097,11 @@ describe("cache stability", () => {
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
 			store,
-			buildStep: () => ({ model: fakeModel(["slow ", "reply"], 40), system: "test", contextWindow: 1000 }),
+			buildStep: () => ({
+				model: fakeModel(["slow ", "reply"], 40),
+				system: "test",
+				contextWindow: 1000,
+			}),
 			makeTools: () => ({}),
 			compaction: { modelRef: () => "m", summarize: async () => "folded" },
 		});
@@ -1991,7 +2141,11 @@ describe("cache stability", () => {
 		const runtime = new Runtime({
 			store,
 			buildStep: () =>
-				buildGate.then(() => ({ model: fakeModel(["reply"], 5), system: "test", contextWindow: 1000 })),
+				buildGate.then(() => ({
+					model: fakeModel(["reply"], 5),
+					system: "test",
+					contextWindow: 1000,
+				})),
 			makeTools: () => ({}),
 			compaction: {
 				modelRef: () => "m",
@@ -2021,7 +2175,9 @@ describe("cache stability", () => {
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		let builds = 0;
 		let release!: () => void;
-		const pendingDelivery = new Promise<void>((resolve) => { release = resolve; });
+		const pendingDelivery = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 		const runtime = new Runtime({
 			store,
 			buildStep: () => {
@@ -2071,18 +2227,24 @@ describe("cache stability", () => {
 					start(controller) {
 						controller.enqueue({
 							type: "stream-start",
-							warnings: [
-								{ type: "unsupported", feature: "temperature" },
-							],
+							warnings: [{ type: "unsupported", feature: "temperature" }],
 						});
 						controller.enqueue({ type: "text-start", id: "t1" });
 						controller.enqueue({ type: "text-delta", id: "t1", delta: "ok" });
 						controller.enqueue({ type: "text-end", id: "t1" });
 						controller.enqueue({
-								type: "finish",
-								finishReason: { unified: "stop", raw: undefined },
-								usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
-							});
+							type: "finish",
+							finishReason: { unified: "stop", raw: undefined },
+							usage: {
+								inputTokens: {
+									total: 1,
+									noCache: undefined,
+									cacheRead: undefined,
+									cacheWrite: undefined,
+								},
+								outputTokens: { total: 1, text: undefined, reasoning: undefined },
+							},
+						});
 						controller.close();
 					},
 				});
@@ -2126,19 +2288,30 @@ describe("skill reviewer hook", () => {
 		});
 		let release!: () => void;
 		let entered!: () => void;
-		const held = new Promise<void>((r) => { release = r; });
-		const atGate = new Promise<void>((r) => { entered = r; });
+		const held = new Promise<void>((r) => {
+			release = r;
+		});
+		const atGate = new Promise<void>((r) => {
+			entered = r;
+		});
 		runtime.setReviewer({
-			gate: { decide: async () => {
-				entered();
-				await held;
-				return { answers: { correction: 1 }, inputTokens: 1, cost: 0 };
-			} },
+			gate: {
+				decide: async () => {
+					entered();
+					await held;
+					return { answers: { correction: 1 }, inputTokens: 1, cost: 0 };
+				},
+			},
 			thresholds: { correction: 0.8, procedure: 0.8 },
 			queueCap: 3,
 			evidence: { calls: 8, argChars: 300, outChars: 300 },
-			reviewModel: async () => { throw new Error("shutdown let a review start"); },
-			store, skillsDir: "/none", workspaceDir: "/none", notify: async () => {},
+			reviewModel: async () => {
+				throw new Error("shutdown let a review start");
+			},
+			store,
+			skillsDir: "/none",
+			workspaceDir: "/none",
+			notify: async () => {},
 		});
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "save this" }]), sink);
@@ -2172,16 +2345,33 @@ describe("skill reviewer hook", () => {
 							controller.enqueue({
 								type: "finish",
 								finishReason: { unified: "tool-calls", raw: undefined },
-								usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
+								usage: {
+									inputTokens: {
+										total: 1,
+										noCache: undefined,
+										cacheRead: undefined,
+										cacheWrite: undefined,
+									},
+									outputTokens: { total: 1, text: undefined, reasoning: undefined },
+								},
 							});
 						} else {
 							controller.enqueue({ type: "text-start", id: "t1" });
-							for (const d of deltas) controller.enqueue({ type: "text-delta", id: "t1", delta: d });
+							for (const d of deltas)
+								controller.enqueue({ type: "text-delta", id: "t1", delta: d });
 							controller.enqueue({ type: "text-end", id: "t1" });
 							controller.enqueue({
 								type: "finish",
 								finishReason: { unified: "stop", raw: undefined },
-								usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
+								usage: {
+									inputTokens: {
+										total: 1,
+										noCache: undefined,
+										cacheRead: undefined,
+										cacheWrite: undefined,
+									},
+									outputTokens: { total: 1, text: undefined, reasoning: undefined },
+								},
 							});
 						}
 						controller.close();
@@ -2304,7 +2494,9 @@ describe("skill reviewer hook", () => {
 		runtime.submit(conv, userMessage([{ type: "text", text: "off the record" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
 		await sleep(50);
-		const skipped = readFileSync(logFile, "utf8").trim().split("\n")
+		const skipped = readFileSync(logFile, "utf8")
+			.trim()
+			.split("\n")
 			.map((l) => JSON.parse(l) as Record<string, unknown>)
 			.find((e) => e.msg === "reviewer skipped — memory excluded");
 		expect(skipped).toMatchObject({ conversation: conv.id });
@@ -2321,14 +2513,18 @@ describe("skill reviewer hook", () => {
 		});
 		let gated = false;
 		runtime.setReviewer({
-			gate: { decide: async () => {
-				gated = true;
-				return { answers: {}, inputTokens: null, cost: null };
-			} },
+			gate: {
+				decide: async () => {
+					gated = true;
+					return { answers: {}, inputTokens: null, cost: null };
+				},
+			},
 			thresholds: { correction: 0.8, procedure: 0.8 },
 			queueCap: 3,
 			evidence: { calls: 8, argChars: 300, outChars: 300 },
-			reviewModel: async () => { throw new Error("must not review"); },
+			reviewModel: async () => {
+				throw new Error("must not review");
+			},
 			store,
 			skillsDir: "/none",
 			workspaceDir: "/none",
@@ -2368,7 +2564,15 @@ describe("skill reviewer hook", () => {
 				return {
 					content: [{ type: "text", text: "nothing worth saving" }],
 					finishReason: { unified: "stop", raw: undefined },
-					usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
+					usage: {
+						inputTokens: {
+							total: 1,
+							noCache: undefined,
+							cacheRead: undefined,
+							cacheWrite: undefined,
+						},
+						outputTokens: { total: 1, text: undefined, reasoning: undefined },
+					},
 					warnings: [],
 				};
 			},
@@ -2380,12 +2584,19 @@ describe("skill reviewer hook", () => {
 			store,
 			buildStep: () => ({ model: toolThenText("bash", ["done"]), system: "test" }),
 			makeTools: () => ({
-				bash: tool({ inputSchema: z.object({}), execute: async () => ({ exit_code: 0, stdout: "listed" }) }),
+				bash: tool({
+					inputSchema: z.object({}),
+					execute: async () => ({ exit_code: 0, stdout: "listed" }),
+				}),
 			}),
 		});
 		runtime.setReviewer({
 			gate: {
-				decide: async () => ({ answers: { correction: 0, procedure: 0.99 }, inputTokens: 1, cost: 0 }),
+				decide: async () => ({
+					answers: { correction: 0, procedure: 0.99 },
+					inputTokens: 1,
+					cost: 0,
+				}),
 			},
 			thresholds: { correction: 0.8, procedure: 0.8 },
 			queueCap: 3,
@@ -2421,7 +2632,10 @@ function gatedToolModel(secondText: string) {
 	const finish = (reason: "tool-calls" | "stop"): LanguageModelV4StreamPart => ({
 		type: "finish",
 		finishReason: { unified: reason, raw: undefined },
-		usage: { inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: undefined, reasoning: undefined } },
+		usage: {
+			inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+			outputTokens: { total: 1, text: undefined, reasoning: undefined },
+		},
 	});
 	const base = {
 		specificationVersion: "v4",
@@ -2433,9 +2647,7 @@ function gatedToolModel(secondText: string) {
 		},
 		doStream() {
 			const n = ++calls;
-			const parts: LanguageModelV4StreamPart[] = [
-				{ type: "stream-start", warnings: [] },
-			];
+			const parts: LanguageModelV4StreamPart[] = [{ type: "stream-start", warnings: [] }];
 			if (n === 1) {
 				parts.push(
 					{ type: "tool-call", toolCallId: "c1", toolName: "probe", input: "{}" },
@@ -2463,7 +2675,11 @@ function gatedToolModel(secondText: string) {
 		...base,
 		doStream(o: { prompt: unknown }) {
 			prompts.push(JSON.stringify(o.prompt));
-			return (base as unknown as { doStream(o: unknown): { stream: ReadableStream<LanguageModelV4StreamPart> } }).doStream(o);
+			return (
+				base as unknown as {
+					doStream(o: unknown): { stream: ReadableStream<LanguageModelV4StreamPart> };
+				}
+			).doStream(o);
 		},
 	} as unknown as LanguageModel;
 	return { model, prompts };
@@ -2548,7 +2764,13 @@ describe("steering", () => {
 			const { store, conv, runtime } = steeringSetup(model, gate);
 			const s1 = new RecordingSink();
 			// No submit yet — no lane, nothing to attach to.
-			expect(runtime.subscribeLiveChunks(conv.id, () => {}, () => {})).toBeNull();
+			expect(
+				runtime.subscribeLiveChunks(
+					conv.id,
+					() => {},
+					() => {},
+				),
+			).toBeNull();
 			runtime.submit(conv, userMessage([{ type: "text", text: "go" }]), s1);
 			await sleep(20); // step 1 (the tool call) is on the wire, tool gated
 			const seen: UIMessageChunk[] = [];
@@ -2571,7 +2793,13 @@ describe("steering", () => {
 			// The subscriber saw the same wire as the head, gapless.
 			expect(seen).toEqual(s1.chunks.slice(replay!.length));
 			// After the turn settles, there is nothing left to attach to.
-			expect(runtime.subscribeLiveChunks(conv.id, () => {}, () => {})).toBeNull();
+			expect(
+				runtime.subscribeLiveChunks(
+					conv.id,
+					() => {},
+					() => {},
+				),
+			).toBeNull();
 			store.close();
 		});
 	});
@@ -2667,13 +2895,20 @@ describe("steering", () => {
 		runtime.submit(conv, userMessage([{ type: "text", text: "start this" }]), s1);
 		await sleep(20); // parked mid-tool-call
 		const s2 = new RecordingSink();
-		runtime.submit(conv, {
-			id: "steer-photo",
-			role: "user",
-			parts: [
-				{ type: ATTACHMENT_PART, data: { path: fifo, mediaType: "image/png", filename: "photo.png", size: 7 } },
-			],
-		} as UIMessage, s2);
+		runtime.submit(
+			conv,
+			{
+				id: "steer-photo",
+				role: "user",
+				parts: [
+					{
+						type: ATTACHMENT_PART,
+						data: { path: fifo, mediaType: "image/png", filename: "photo.png", size: 7 },
+					},
+				],
+			} as UIMessage,
+			s2,
+		);
 		releaseTool(); // tool resolves → prepareStep splices the photo → readFile parks on the FIFO
 		await sleep(30);
 		const s3 = new RecordingSink();
@@ -2721,14 +2956,18 @@ describe("steering", () => {
 		// Poison: a file part with an invalid URL — materializeAttachments
 		// passes it through untouched, convertToModelMessages throws.
 		const s2 = new RecordingSink();
-		runtime.submit(conv, {
-			id: "poison",
-			role: "user",
-			parts: [
-				{ type: "text", text: "read this" },
-				{ type: "file", mediaType: "image/png", filename: "x.png", url: "not a url" },
-			],
-		} as UIMessage, s2);
+		runtime.submit(
+			conv,
+			{
+				id: "poison",
+				role: "user",
+				parts: [
+					{ type: "text", text: "read this" },
+					{ type: "file", mediaType: "image/png", filename: "x.png", url: "not a url" },
+				],
+			} as UIMessage,
+			s2,
+		);
 		releaseTool();
 		// The poison's own delivery errors; turn 1 completes over the rest.
 		expect(await s1.done).toEqual({ kind: "completed" });
@@ -2809,11 +3048,7 @@ describe("app channel", () => {
 		expect(prompts).toHaveLength(1);
 		expect(prompts[0]).toContain("one");
 		expect(prompts[0]).toContain("two");
-		expect(store.history(conv.id).map((m) => m.role)).toEqual([
-			"user",
-			"user",
-			"assistant",
-		]);
+		expect(store.history(conv.id).map((m) => m.role)).toEqual(["user", "user", "assistant"]);
 		await runtime.shutdown();
 		store.close();
 	});
@@ -2908,30 +3143,45 @@ describe("loop landings", () => {
 	// Tool-greedy while tools exist (and under the call cap, if any),
 	// answering the moment toolChoice goes none — the compliant model
 	// every forced step relies on.
-	function loopModel(opts: { calls?: number; input?: (n: number) => unknown; inputTokens?: number } = {}): {
+	function loopModel(
+		opts: { calls?: number; input?: (n: number) => unknown; inputTokens?: number } = {},
+	): {
 		model: LanguageModel;
 		requests: { toolChoice: unknown; prompt: string }[];
 	} {
 		const requests: { toolChoice: unknown; prompt: string }[] = [];
 		const model: LanguageModel = {
-			specificationVersion: "v4", provider: "fake", modelId: "loop-test", supportedUrls: {},
-			doGenerate() { throw new Error("unused"); },
+			specificationVersion: "v4",
+			provider: "fake",
+			modelId: "loop-test",
+			supportedUrls: {},
+			doGenerate() {
+				throw new Error("unused");
+			},
 			async doStream(options) {
 				const n = requests.length + 1;
-				requests.push({ toolChoice: options.toolChoice?.type ?? null, prompt: JSON.stringify(options.prompt ?? []) });
+				requests.push({
+					toolChoice: options.toolChoice?.type ?? null,
+					prompt: JSON.stringify(options.prompt ?? []),
+				});
 				const noTools = options.toolChoice?.type === "none";
 				const callTool = !noTools && (opts.calls === undefined || n <= opts.calls);
 				const parts: LanguageModelV4StreamPart[] = callTool
 					? [
-						{ type: "tool-call", toolCallId: `c${n}`, toolName: "probe", input: JSON.stringify(opts.input?.(n) ?? {}) },
-						finish("tool-calls", opts.inputTokens ?? 10),
-					]
+							{
+								type: "tool-call",
+								toolCallId: `c${n}`,
+								toolName: "probe",
+								input: JSON.stringify(opts.input?.(n) ?? {}),
+							},
+							finish("tool-calls", opts.inputTokens ?? 10),
+						]
 					: [
-						{ type: "text-start", id: "t" },
-						{ type: "text-delta", id: "t", delta: "the wrapped answer" },
-						{ type: "text-end", id: "t" },
-						finish("stop", opts.inputTokens ?? 10),
-					];
+							{ type: "text-start", id: "t" },
+							{ type: "text-delta", id: "t", delta: "the wrapped answer" },
+							{ type: "text-end", id: "t" },
+							finish("stop", opts.inputTokens ?? 10),
+						];
 				return {
 					stream: new ReadableStream<LanguageModelV4StreamPart>({
 						start(controller) {
@@ -2947,20 +3197,34 @@ describe("loop landings", () => {
 	}
 	function loopSetup(
 		model: LanguageModel,
-		opts: { execute?: () => unknown; executeAsync?: () => Promise<unknown>; contextWindow?: number } = {},
+		opts: {
+			execute?: () => unknown;
+			executeAsync?: () => Promise<unknown>;
+			contextWindow?: number;
+		} = {},
 	) {
 		const store = openStore(tmpdb());
 		const conv = store.resolve(appAddress("loop"), "/w");
 		let executions = 0;
 		const runtime = new Runtime({
 			store,
-			buildStep: () => ({ model, system: "test", ...(opts.contextWindow !== undefined ? { contextWindow: opts.contextWindow } : {}) }),
+			buildStep: () => ({
+				model,
+				system: "test",
+				...(opts.contextWindow !== undefined ? { contextWindow: opts.contextWindow } : {}),
+			}),
 			makeTools: () => ({
 				probe: tool({
 					inputSchema: z.looseObject({}),
 					execute: opts.executeAsync
-						? async () => { executions++; return opts.executeAsync!(); }
-						: () => { executions++; return opts.execute ? opts.execute() : "ok"; },
+						? async () => {
+								executions++;
+								return opts.executeAsync!();
+							}
+						: () => {
+								executions++;
+								return opts.execute ? opts.execute() : "ok";
+							},
 				}),
 			}),
 		});
@@ -3053,7 +3317,10 @@ describe("loop landings", () => {
 					// deterministic in time (probe's 20ms execution pads it).
 					await sleep(5);
 					expect(questions["stuck"]).toBeDefined();
-					const s = state as { totalToolCalls: number; recentCalls: { result: string; tool: string }[] };
+					const s = state as {
+						totalToolCalls: number;
+						recentCalls: { result: string; tool: string }[];
+					};
 					expect(s.totalToolCalls).toBeGreaterThan(0);
 					// The watchdog's own ring carries real results — never the
 					// "(no result)" placeholder an evidence ring would show.
@@ -3070,14 +3337,23 @@ describe("loop landings", () => {
 					pending--;
 				}
 			};
-			return { decide, states, settled: async () => { while (pending > 0) await sleep(1); } };
+			return {
+				decide,
+				states,
+				settled: async () => {
+					while (pending > 0) await sleep(1);
+				},
+			};
 		}
 
 		test("two consecutive stuck verdicts cut — the first warns", async () => {
 			const { model, requests } = loopModel();
 			const { decide, states } = decideScript([0.9, 0.9]);
 			const { store, conv, runtime } = loopSetup(model, {
-				executeAsync: async () => { await sleep(20); return "ok"; },
+				executeAsync: async () => {
+					await sleep(20);
+					return "ok";
+				},
 			});
 			runtime.setLoopWatchdog({ decide, every: 2 });
 			const sink = new RecordingSink();
@@ -3108,7 +3384,10 @@ describe("loop landings", () => {
 			const { model, requests } = loopModel({ calls: 6 });
 			const { decide, states, settled } = decideScript([0.9, 0.1, 0.9]);
 			const { store, conv, runtime } = loopSetup(model, {
-				executeAsync: async () => { await sleep(20); return "ok"; },
+				executeAsync: async () => {
+					await sleep(20);
+					return "ok";
+				},
 			});
 			runtime.setLoopWatchdog({ decide, every: 2 });
 			const sink = new RecordingSink();
@@ -3125,9 +3404,15 @@ describe("loop landings", () => {
 
 		test("an unavailable system1 fails open — the turn completes", async () => {
 			const { model, requests } = loopModel({ calls: 4 });
-			const { decide, settled } = decideScript([new Error("system1 down"), new Error("system1 down")]);
+			const { decide, settled } = decideScript([
+				new Error("system1 down"),
+				new Error("system1 down"),
+			]);
 			const { store, conv, runtime } = loopSetup(model, {
-				executeAsync: async () => { await sleep(20); return "ok"; },
+				executeAsync: async () => {
+					await sleep(20);
+					return "ok";
+				},
 			});
 			runtime.setLoopWatchdog({ decide, every: 2 });
 			const sink = new RecordingSink();
@@ -3172,20 +3457,27 @@ describe("loop landings", () => {
 		const { model, requests } = loopModel({ inputTokens: 900 });
 		const { store, conv, runtime } = loopSetup(model, {
 			contextWindow: 1000,
-			executeAsync: async () => { await gate; return "ok"; },
+			executeAsync: async () => {
+				await gate;
+				return "ok";
+			},
 		});
 		const s1 = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "start" }]), s1);
 		await sleep(20); // parked mid-tool-call
 		const s2 = new RecordingSink();
-		runtime.submit(conv, {
-			id: "poison",
-			role: "user",
-			parts: [
-				{ type: "text", text: "read this" },
-				{ type: "file", mediaType: "image/png", filename: "x.png", url: "not a url" },
-			],
-		} as UIMessage, s2);
+		runtime.submit(
+			conv,
+			{
+				id: "poison",
+				role: "user",
+				parts: [
+					{ type: "text", text: "read this" },
+					{ type: "file", mediaType: "image/png", filename: "x.png", url: "not a url" },
+				],
+			} as UIMessage,
+			s2,
+		);
 		releaseTool();
 		// The context cut (900/1000 on step 1) still lands: the steer
 		// errored its own delivery and the forced step went tools-off.
@@ -3200,7 +3492,6 @@ describe("loop landings", () => {
 	});
 });
 
-
 describe("forced-landing defiance guard", () => {
 	// Review 2026-10-07, m3: the "turn always ends in an answer" invariant
 	// rested on provider compliance with toolChoice:none. This model
@@ -3210,8 +3501,13 @@ describe("forced-landing defiance guard", () => {
 	test("defiant model still gets an answer — synthetic prose, stamped", async () => {
 		const requests: { toolChoice: unknown }[] = [];
 		const model: LanguageModel = {
-			specificationVersion: "v4", provider: "fake", modelId: "defiant", supportedUrls: {},
-			doGenerate() { throw new Error("unused"); },
+			specificationVersion: "v4",
+			provider: "fake",
+			modelId: "defiant",
+			supportedUrls: {},
+			doGenerate() {
+				throw new Error("unused");
+			},
 			async doStream(options) {
 				requests.push({ toolChoice: options.toolChoice?.type ?? null });
 				return {
@@ -3219,13 +3515,21 @@ describe("forced-landing defiance guard", () => {
 						start(controller) {
 							controller.enqueue({ type: "stream-start", warnings: [] });
 							controller.enqueue({
-								type: "tool-call", toolCallId: `c${requests.length}`, toolName: "probe", input: "{}",
+								type: "tool-call",
+								toolCallId: `c${requests.length}`,
+								toolName: "probe",
+								input: "{}",
 							} satisfies LanguageModelV4StreamPart);
 							controller.enqueue({
 								type: "finish",
 								finishReason: { unified: "tool-calls", raw: undefined },
 								usage: {
-									inputTokens: { total: 900, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+									inputTokens: {
+										total: 900,
+										noCache: undefined,
+										cacheRead: undefined,
+										cacheWrite: undefined,
+									},
 									outputTokens: { total: 1, text: undefined, reasoning: undefined },
 								},
 							} satisfies LanguageModelV4StreamPart);
@@ -3243,7 +3547,13 @@ describe("forced-landing defiance guard", () => {
 			// 900/1000 on every step — the context landing drives the cut.
 			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
 			makeTools: () => ({
-				probe: tool({ inputSchema: z.object({}), execute: () => { executions++; return "ok"; } }),
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: () => {
+						executions++;
+						return "ok";
+					},
+				}),
 			}),
 		});
 		const sink = new RecordingSink();
@@ -3257,7 +3567,10 @@ describe("forced-landing defiance guard", () => {
 		// The invariant's last word: prose in history AND on the delta
 		// wire, worded for the landing that fired.
 		const reply = store.history(conv.id)[1] as UIMessage;
-		const text = reply.parts.filter((p) => p.type === "text").map((p) => p.text).join("");
+		const text = reply.parts
+			.filter((p) => p.type === "text")
+			.map((p) => p.text)
+			.join("");
 		expect(text).toContain("My context window filled up before I wrote my answer");
 		expect(sink.text).toContain("My context window filled up before I wrote my answer");
 		store.close();
@@ -3266,14 +3579,20 @@ describe("forced-landing defiance guard", () => {
 
 test("model/thinking changes do not interrupt admitted turns; next turn and manual compaction resolve latest channel settings", async () => {
 	const store = openStore(tmpdb());
-	let cfg = parseConfig({ providers: { test: { kind: "codex" } }, model: "test/app", thinking: "high", allowedUsers: [7],
+	let cfg = parseConfig({
+		providers: { test: { kind: "codex" } },
+		model: "test/app",
+		thinking: "high",
+		allowedUsers: [7],
 		telegram: { model: "test/telegram", thinking: "low" },
 	});
 	const app = store.resolve(appAddress("channel-settings"), "/work");
 	const dm = store.resolve({ kind: "dm", chatId: 7 }, "/work");
 	store.setMeta(dm.id, { model: "test/retired", thinking: "max" });
 	let release: () => void = () => {};
-	const held = new Promise<void>((r) => { release = r; });
+	const held = new Promise<void>((r) => {
+		release = r;
+	});
 	let calls = 0;
 	const summaries: string[] = [];
 	const runtime = new Runtime({
@@ -3281,12 +3600,19 @@ test("model/thinking changes do not interrupt admitted turns; next turn and manu
 		captureConversation: (conv) => captureConversationSettings(store, conv, cfg),
 		async buildStep(conv) {
 			if (++calls === 1) await held;
-			return { model: fakeModel([`${conv.model}:${conv.thinking}`], 1), system: "test", label: conv.model! };
+			return {
+				model: fakeModel([`${conv.model}:${conv.thinking}`], 1),
+				system: "test",
+				label: conv.model!,
+			};
 		},
 		makeTools: () => ({}),
 		compaction: {
 			modelRef: (conv) => conv.model!,
-			summarize: async (conv) => { summaries.push(`${conv.model}:${conv.thinking}`); return "summary"; },
+			summarize: async (conv) => {
+				summaries.push(`${conv.model}:${conv.thinking}`);
+				return "summary";
+			},
 		},
 	});
 	try {
@@ -3294,7 +3620,12 @@ test("model/thinking changes do not interrupt admitted turns; next turn and manu
 		runtime.submit(app, userMessage([{ type: "text", text: "first" }]), first);
 		await first.admitted;
 		store.setMeta(app.id, { model: "test/personal", thinking: "max" });
-		cfg = parseConfig({ ...cfg, model: "test/future", thinking: "off", telegram: { ...cfg.telegram, model: "test/telegram-new", thinking: "medium" } });
+		cfg = parseConfig({
+			...cfg,
+			model: "test/future",
+			thinking: "off",
+			telegram: { ...cfg.telegram, model: "test/telegram-new", thinking: "medium" },
+		});
 		release();
 		expect((await first.done).kind).toBe("completed");
 		expect(first.text).toBe("test/app:high");
@@ -3308,23 +3639,32 @@ test("model/thinking changes do not interrupt admitted turns; next turn and manu
 		expect(telegram.text).toBe("test/telegram-new:medium");
 		// Force enough history to compact, then use an intentionally stale
 		// Conversation object: /compact resolves at execution, not enqueue.
-		for (let i = 0; i < 4; i++) store.append(app.id, [
-			userMessage([{ type: "text", text: "past ".repeat(25000) }]),
-			{ id: `past-${i}`, role: "assistant", parts: [{ type: "text", text: "done" }] },
-		]);
+		for (let i = 0; i < 4; i++)
+			store.append(app.id, [
+				userMessage([{ type: "text", text: "past ".repeat(25000) }]),
+				{ id: `past-${i}`, role: "assistant", parts: [{ type: "text", text: "done" }] },
+			]);
 		store.setMeta(app.id, { model: "test/compact", thinking: "low" });
 		expect((await runtime.compact(app)).kind).toBe("compacted");
 		expect(summaries.every((s) => s === "test/compact:low")).toBe(true);
 		expect(summaries.length).toBeGreaterThan(0);
 		expect(store.getCompaction(app.id)!.model).toBe("test/compact");
-	} finally { await runtime.shutdown(); store.close(); }
+	} finally {
+		await runtime.shutdown();
+		store.close();
+	}
 });
 
 test("overflow compaction and resumed model call keep the admitted selection across settings edits", async () => {
 	const store = openStore(tmpdb());
 	const conv = store.resolve(appAddress("overflow-settings"), "/work");
 	seedExchanges(store, conv.id);
-	const cfg = parseConfig({ providers: { test: { kind: "codex" } }, model: "test/original", thinking: "high", allowedUsers: [7] });
+	const cfg = parseConfig({
+		providers: { test: { kind: "codex" } },
+		model: "test/original",
+		thinking: "high",
+		allowedUsers: [7],
+	});
 	const { model } = scriptedModel([overflowError(), textReply("recovered"), textReply("next")]);
 	const selections: string[] = [];
 	const summarySelections: string[] = [];
@@ -3357,31 +3697,48 @@ test("overflow compaction and resumed model call keep the admitted selection acr
 		runtime.submit(conv, userMessage([{ type: "text", text: "continue" }]), next);
 		expect((await next.done).kind).toBe("completed");
 		expect(selections.at(-1)).toBe("test/changed:low");
-	} finally { await runtime.shutdown(); store.close(); }
+	} finally {
+		await runtime.shutdown();
+		store.close();
+	}
 });
 
 test("invalid durable app settings report admission error exactly once without starting a model call", async () => {
 	const store = openStore(tmpdb());
 	const conv = store.resolve(appAddress("bad-settings"), "/work");
 	store.setMeta(conv.id, { thinking: "corrupt-disk-value" });
-	const cfg = parseConfig({ providers: { test: { kind: "codex" } }, model: "test/chat", allowedUsers: [7] });
+	const cfg = parseConfig({
+		providers: { test: { kind: "codex" } },
+		model: "test/chat",
+		allowedUsers: [7],
+	});
 	let modelCalls = 0;
 	let completions = 0;
 	const sink = new RecordingSink();
 	const runtime = new Runtime({
 		store,
 		captureConversation: (row) => captureConversationSettings(store, row, cfg),
-		buildStep: () => { modelCalls++; return { model: fakeModel(["unused"]), system: "test" }; },
+		buildStep: () => {
+			modelCalls++;
+			return { model: fakeModel(["unused"]), system: "test" };
+		},
 		makeTools: () => ({}),
 	});
 	try {
 		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), {
-			onTextDelta() {}, onReasoningDelta() {}, onToolCall() {},
-			onDone(done) { completions++; sink.onDone(done); },
+			onTextDelta() {},
+			onReasoningDelta() {},
+			onToolCall() {},
+			onDone(done) {
+				completions++;
+				sink.onDone(done);
+			},
 		});
 		expect((await sink.done).kind).toBe("error");
 		await runtime.shutdown();
 		expect(modelCalls).toBe(0);
 		expect(completions).toBe(1);
-	} finally { store.close(); }
+	} finally {
+		store.close();
+	}
 });

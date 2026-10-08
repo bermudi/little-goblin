@@ -23,7 +23,11 @@ export const searchView: ToolView = {
 		if (typeof o.data !== "string") {
 			return {
 				summary: joinSummary(q, `failed — ${firstLine(o.data.error)}`),
-				detail: <div className="tool-body"><ErrBox text={o.data.error} /></div>,
+				detail: (
+					<div className="tool-body">
+						<ErrBox text={o.data.error} />
+					</div>
+				),
 				failed: true,
 			};
 		}

@@ -33,7 +33,9 @@ export interface MailToolDeps {
 	 *  (pre-bound at the composition root — the model never sees chat
 	 *  ids), binds the buttons' message id, and resolves the
 	 *  model-facing verdict. */
-	requestDraft(input: MailDraftInput): Promise<{ queued: number; status: string } | { error: string }>;
+	requestDraft(
+		input: MailDraftInput,
+	): Promise<{ queued: number; status: string } | { error: string }>;
 }
 
 const sendSchema = z.object({
@@ -48,19 +50,22 @@ const sendSchema = z.object({
 // Tool providers expect an object at the root; the single-action tool
 // keeps the flat wire shape the old search/read/send union had (action
 // first) so the provider's argument generation never moves.
-export const mailInputSchema = z.object({
-	action: z.literal("send"),
-	to: sendSchema.shape.to.optional(),
-	cc: sendSchema.shape.cc,
-	subject: sendSchema.shape.subject,
-	body: sendSchema.shape.body.optional(),
-	replyToId: sendSchema.shape.replyToId,
-}).superRefine((value, ctx) => {
-	const result = sendSchema.safeParse(value);
-	if (!result.success) for (const issue of result.error.issues) {
-		ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
-	}
-});
+export const mailInputSchema = z
+	.object({
+		action: z.literal("send"),
+		to: sendSchema.shape.to.optional(),
+		cc: sendSchema.shape.cc,
+		subject: sendSchema.shape.subject,
+		body: sendSchema.shape.body.optional(),
+		replyToId: sendSchema.shape.replyToId,
+	})
+	.superRefine((value, ctx) => {
+		const result = sendSchema.safeParse(value);
+		if (!result.success)
+			for (const issue of result.error.issues) {
+				ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
+			}
+	});
 
 export const mailTool = (deps: MailToolDeps) =>
 	tool({

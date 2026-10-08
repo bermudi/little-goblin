@@ -70,15 +70,12 @@ export function makeBellSink(
 			// Re-read the title at completion — the async retitle can land
 			// while the turn runs, and a deleted conversation degrades to
 			// the generic label rather than a stale name.
-			const title =
-				deps.store.get(conv.id)?.title ?? conv.title ?? "app conversation";
+			const title = deps.store.get(conv.id)?.title ?? conv.title ?? "app conversation";
 			let ping: string;
 			let pingKey: string | undefined;
 			if (done.kind === "completed") {
 				// The response the turn appended before onDone is the summary.
-				const assistant = deps.store
-					.history(conv.id)
-					.findLast((m) => m.role === "assistant");
+				const assistant = deps.store.history(conv.id).findLast((m) => m.role === "assistant");
 				const text = assistant === undefined ? "" : messageText(assistant);
 				if (assistant === undefined || text === "") {
 					log.warn("spin-off ping skipped — no assistant reply", {
@@ -118,9 +115,7 @@ export function makeBellSink(
 								? {}
 								: {
 										reply_markup: {
-											inline_keyboard: [
-												[{ text: "Open in app", url: appLink(publicUrl, appId) }],
-											],
+											inline_keyboard: [[{ text: "Open in app", url: appLink(publicUrl, appId) }]],
 										},
 									},
 						),

@@ -23,9 +23,15 @@ afterEach(() => {
 });
 
 const config: Config = {
-	providers: {}, model: "unused/m", tts: false, favorites: [],
-	thinking: "medium", allowedUsers: [1], telegram: { dmGapMinutes: 45 },
-	http: { port: 8787 }, logLevel: "info",
+	providers: {},
+	model: "unused/m",
+	tts: false,
+	favorites: [],
+	thinking: "medium",
+	allowedUsers: [1],
+	telegram: { dmGapMinutes: 45 },
+	http: { port: 8787 },
+	logLevel: "info",
 };
 
 // A wake harness over a fake runtime: submit records its conversation,
@@ -54,7 +60,9 @@ function harness(gapMinutes: number) {
 	const roll: RollDeps = { store, runtime, gapMinutes: () => gapMinutes };
 	const sinks: TurnSink[] = [];
 	const deps: WakeDeps = {
-		store, runtime, api,
+		store,
+		runtime,
+		api,
 		configRef: { current: config, ttsDown: false },
 		synthesize: async () => [],
 		roll,
@@ -72,22 +80,33 @@ test("wake after runtime close records history but does not report delivery", as
 	const store = openStore(join(dir, "goblin.sqlite"));
 	const runtime = new Runtime({
 		store,
-		buildStep: () => { throw new Error("closed runtime must not run a turn"); },
+		buildStep: () => {
+			throw new Error("closed runtime must not run a turn");
+		},
 		makeTools: () => ({}),
 	});
 	await runtime.shutdown();
 	const api = {
-		sendMessage: () => { throw new Error("history-only notice must not reach Telegram"); },
+		sendMessage: () => {
+			throw new Error("history-only notice must not reach Telegram");
+		},
 		sendChatAction: () => Promise.resolve(true), // sink sends an initial typing ping on construction
 	} as unknown as DeliveryApi;
-	const landed = wake({
-		store, runtime, api, configRef: { current: config, ttsDown: false },
-		synthesize: async () => [],
-		// A topic address never consults the roller — wired because the
-		// type requires it.
-		roll: { store, runtime, gapMinutes: () => 45 },
-		bell: () => nullSink,
-	}, { chatId: 1, threadId: 42 }, "delegation notice");
+	const landed = wake(
+		{
+			store,
+			runtime,
+			api,
+			configRef: { current: config, ttsDown: false },
+			synthesize: async () => [],
+			// A topic address never consults the roller — wired because the
+			// type requires it.
+			roll: { store, runtime, gapMinutes: () => 45 },
+			bell: () => nullSink,
+		},
+		{ chatId: 1, threadId: 42 },
+		"delegation notice",
+	);
 	await Promise.resolve(); // closed runtime fences the sink asynchronously
 	expect(landed).toBe(false);
 	expect(store.history("topic:1:42").map((message) => message.parts)).toEqual([

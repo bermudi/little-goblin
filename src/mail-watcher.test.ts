@@ -50,7 +50,14 @@ const config: Config = {
 };
 
 function hit(id: string): MailHit {
-	return { id, threadId: "t", from: "a@x.com", subject: `sub-${id}`, date: "today", snippet: `snip-${id}` };
+	return {
+		id,
+		threadId: "t",
+		from: "a@x.com",
+		subject: `sub-${id}`,
+		date: "today",
+		snippet: `snip-${id}`,
+	};
 }
 
 interface Harness {
@@ -217,7 +224,9 @@ describe("mail watcher", () => {
 			const p = mailProgram(h);
 			if (expired) {
 				h.programs.setMailHistory(p.id, "old", 0);
-				h.pollImpl = async () => { throw new HistoryExpiredError(); };
+				h.pollImpl = async () => {
+					throw new HistoryExpiredError();
+				};
 			}
 			h.reader!.profileHistoryId = async () => {
 				// The same filter and null cursor return before the Gmail await
@@ -245,7 +254,9 @@ describe("mail watcher", () => {
 		const h = harness();
 		const p = mailProgram(h);
 		h.programs.setMailHistory(p.id, "old", 0);
-		h.pollImpl = async () => { throw new HistoryExpiredError(); };
+		h.pollImpl = async () => {
+			throw new HistoryExpiredError();
+		};
 		h.reader!.profileHistoryId = async () => {
 			h.programs.update(p.id, { mailFilter: "from:new" });
 			return "120";
@@ -283,7 +294,11 @@ describe("mail watcher", () => {
 		// The shared gate, wired the way index.ts wires jevGate into
 		// firingDeps.checkMail: a scripted clean verdict first.
 		h.checkMail = {
-			decide: async () => ({ answers: { injection: 0.02, severity: 0.01 }, inputTokens: null, cost: null }),
+			decide: async () => ({
+				answers: { injection: 0.02, severity: 0.01 },
+				inputTokens: null,
+				cost: null,
+			}),
 		};
 		const w = start(h);
 		await w.tick();
@@ -324,7 +339,9 @@ describe("mail watcher", () => {
 		const h = harness();
 		const p = mailProgram(h);
 		h.programs.setMailHistory(p.id, "1", 0);
-		h.pollImpl = async () => { throw new HistoryExpiredError(); };
+		h.pollImpl = async () => {
+			throw new HistoryExpiredError();
+		};
 		const w = start(h);
 		await w.tick();
 		expect(h.submitted).toHaveLength(0);
@@ -336,7 +353,9 @@ describe("mail watcher", () => {
 		const h = harness();
 		const p = mailProgram(h);
 		h.programs.setMailHistory(p.id, "100", 0);
-		h.pollImpl = async () => { throw new Error("gmail: HTTP 500"); };
+		h.pollImpl = async () => {
+			throw new Error("gmail: HTTP 500");
+		};
 		const w = start(h);
 		await w.tick();
 		expect(h.notices).toHaveLength(1);
@@ -345,14 +364,18 @@ describe("mail watcher", () => {
 		await w.tick();
 		expect(h.notices).toHaveLength(1);
 		// A changed error re-warns.
-		h.pollImpl = async () => { throw new Error("gmail: HTTP 403"); };
+		h.pollImpl = async () => {
+			throw new Error("gmail: HTTP 403");
+		};
 		await w.tick();
 		expect(h.notices).toHaveLength(2);
 		// Success clears the episode — the next failure warns again.
 		h.pollImpl = async () => ({ hits: [], historyId: "130" });
 		await w.tick();
 		expect(h.notices).toHaveLength(2);
-		h.pollImpl = async () => { throw new Error("gmail: HTTP 500"); };
+		h.pollImpl = async () => {
+			throw new Error("gmail: HTTP 500");
+		};
 		await w.tick();
 		expect(h.notices).toHaveLength(3);
 		expect(h.programs.get(p.id)!.mailHistoryId).toBe("130");

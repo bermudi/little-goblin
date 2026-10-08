@@ -18,7 +18,10 @@ function fakeGate(answersOrError: Record<string, number> | Error): Pick<JevClien
 	};
 }
 
-const verdict = (injection: number, severity = 0.1): Record<string, number> => ({ injection, severity });
+const verdict = (injection: number, severity = 0.1): Record<string, number> => ({
+	injection,
+	severity,
+});
 
 describe("checkInjection", () => {
 	test("maps clean/suspicious/malicious at custom thresholds", async () => {

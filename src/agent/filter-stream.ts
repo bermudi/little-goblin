@@ -3,10 +3,7 @@
 // as well as SSE error chunks. No retries here: the runtime owns the
 // one-per-turn budget. Ordinary assistant refusal text is never inspected.
 
-import type {
-	LanguageModelV4StreamPart,
-	LanguageModelV4StreamResult,
-} from "@ai-sdk/provider";
+import type { LanguageModelV4StreamPart, LanguageModelV4StreamResult } from "@ai-sdk/provider";
 import { wrapLanguageModel, type LanguageModel } from "ai";
 import { isContentFilter, ProviderContentFilterError } from "./provider-errors.ts";
 import { log } from "../log.ts";
@@ -61,9 +58,10 @@ export function filterErrorStream(model: LanguageModel, conversation: string): L
 										(value.type === "finish" && value.finishReason.unified === "content-filter")
 									) {
 										buffered.length = 0;
-										const error = value.type === "error"
-											? value.error
-											: new ProviderContentFilterError(value.finishReason, value.usage);
+										const error =
+											value.type === "error"
+												? value.error
+												: new ProviderContentFilterError(value.finishReason, value.usage);
 										try {
 											await reader.cancel(error);
 										} catch (cleanupError) {
@@ -112,7 +110,12 @@ export function filterErrorStream(model: LanguageModel, conversation: string): L
 }
 
 function isToolPart(part: LanguageModelV4StreamPart): boolean {
-	return part.type === "tool-input-start" || part.type === "tool-input-delta" ||
-		part.type === "tool-input-end" || part.type === "tool-call" ||
-		part.type === "tool-result" || part.type === "tool-approval-request";
+	return (
+		part.type === "tool-input-start" ||
+		part.type === "tool-input-delta" ||
+		part.type === "tool-input-end" ||
+		part.type === "tool-call" ||
+		part.type === "tool-result" ||
+		part.type === "tool-approval-request"
+	);
 }

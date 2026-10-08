@@ -10,7 +10,15 @@ const DIFF_CHARS = 3000;
 
 function diffClip(text: string, mark: string, cls: string) {
 	const shown = clipHead(text, DIFF_CHARS);
-	return <Clip className={cls} text={shown.split("\n").map((l) => `${mark} ${l}`).join("\n")} />;
+	return (
+		<Clip
+			className={cls}
+			text={shown
+				.split("\n")
+				.map((l) => `${mark} ${l}`)
+				.join("\n")}
+		/>
+	);
 }
 
 export const editView: ToolView = {

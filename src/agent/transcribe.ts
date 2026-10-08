@@ -50,9 +50,7 @@ export async function transcriptionModel(
 ): Promise<TranscriptionModel> {
 	switch (cfg.kind) {
 		case "groq":
-			return createGroq({ apiKey: await auth.resolve(cfg.auth) }).transcription(
-				cfg.model,
-			);
+			return createGroq({ apiKey: await auth.resolve(cfg.auth) }).transcription(cfg.model);
 	}
 }
 
@@ -102,11 +100,7 @@ export async function transcribeAudio(
 	// Over the cap: audio-only opus segments in a scratch dir.
 	const dir = await mkdtemp(join(tmpdir(), "goblin-tr-"));
 	try {
-		const segments = await segmentAudio(
-			file.path,
-			dir,
-			opts.segmentSeconds ?? SEGMENT_SECONDS,
-		);
+		const segments = await segmentAudio(file.path, dir, opts.segmentSeconds ?? SEGMENT_SECONDS);
 		log.info("transcription segmented", {
 			file: file.filename,
 			path: file.path,
@@ -140,11 +134,7 @@ export async function transcribeAudio(
 // Extract the audio track to mono opus and split into fixed-length
 // chunks — one pass handles both "video whose audio fits" (one segment)
 // and "genuinely long recording" (many). Returns sorted chunk paths.
-async function segmentAudio(
-	src: string,
-	dir: string,
-	segmentSeconds: number,
-): Promise<string[]> {
+async function segmentAudio(src: string, dir: string, segmentSeconds: number): Promise<string[]> {
 	const proc = spawnProc([
 		"ffmpeg",
 		"-hide_banner",
@@ -179,19 +169,14 @@ async function segmentAudio(
 			`ffmpeg segmentation exited ${r.exitCode ?? "unreaped"} — ${r.stderr.trim().slice(0, 400)}`,
 		);
 	}
-	const segments = (await readdir(dir))
-		.filter((f) => f.endsWith(".ogg"))
-		.sort();
+	const segments = (await readdir(dir)).filter((f) => f.endsWith(".ogg")).sort();
 	if (segments.length === 0) {
 		throw new Error("ffmpeg produced no segments — no audio track?");
 	}
 	return segments.map((f) => join(dir, f));
 }
 
-async function transcribeOne(
-	model: TranscriptionModel,
-	file: SpeechFile,
-): Promise<string | null> {
+async function transcribeOne(model: TranscriptionModel, file: SpeechFile): Promise<string | null> {
 	const audio = await readFile(file.path);
 	const result = await transcribe({
 		model,
@@ -204,9 +189,7 @@ async function transcribeOne(
 		path: file.path,
 		chars: text.length,
 		...(result.language !== undefined ? { language: result.language } : {}),
-		...(result.durationInSeconds !== undefined
-			? { durationSec: result.durationInSeconds }
-			: {}),
+		...(result.durationInSeconds !== undefined ? { durationSec: result.durationInSeconds } : {}),
 		...(result.warnings.length > 0 ? { warnings: result.warnings } : {}),
 	});
 	return text === "" ? null : text;

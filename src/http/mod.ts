@@ -9,7 +9,17 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { thinkingLevelsFor } from "../agent/providers.ts";
-import { loadConfig, parseConfig, fetchKinds, providerKinds, searchKinds, writeConfig, type Config, type ProviderConfig, type ThinkingLevel } from "../config.ts";
+import {
+	loadConfig,
+	parseConfig,
+	fetchKinds,
+	providerKinds,
+	searchKinds,
+	writeConfig,
+	type Config,
+	type ProviderConfig,
+	type ThinkingLevel,
+} from "../config.ts";
 import { log } from "../log.ts";
 import { memoryStatus, type MemoryState, type MemoryContexts } from "../memory.ts";
 import type { BlockedRetention, MemoryQueue, MemoryQueueCounts } from "../memory-queue.ts";
@@ -24,7 +34,12 @@ import type { HindsightClient } from "../hindsight.ts";
 import type { Program, ProgramsStore } from "../programs.ts";
 import type { JevClient } from "../jev.ts";
 import { forgetDocument, type ForgetSource } from "../memory-forget.ts";
-import { HindsightError, identifier, type MemoryDocSummary, type MemoryFact } from "../hindsight.ts";
+import {
+	HindsightError,
+	identifier,
+	type MemoryDocSummary,
+	type MemoryFact,
+} from "../hindsight.ts";
 import { readBodyCapped, serveInjectionCheck } from "./check.ts";
 import { APP_HTML } from "./app.ts";
 import { serveAppDist } from "./app-dist.ts";
@@ -145,7 +160,12 @@ export interface ConfigPostBody {
 	search: "" | Array<{ kind: string; auth?: string }>;
 	fetch: "" | Array<{ kind: string; auth?: string }>;
 	allowedUsers: number[];
-	telegram: { apiRoot: string | undefined; dmGapMinutes: number; model?: string; thinking?: ThinkingLevel };
+	telegram: {
+		apiRoot: string | undefined;
+		dmGapMinutes: number;
+		model?: string;
+		thinking?: ThinkingLevel;
+	};
 	publicUrl: string;
 	http: { port: number };
 	memory:
@@ -157,7 +177,7 @@ export interface ConfigPostBody {
 				budget: "low" | "mid" | "high";
 				maxTokens: number | undefined;
 				recallTimeoutMs: number | undefined;
-			};
+		  };
 	logLevel: "debug" | "info" | "warn" | "error";
 }
 
@@ -270,26 +290,33 @@ const browseQuerySchema = z.object({
 // usable deps or the operator-facing reason.
 function memoryGate(deps: HttpDeps): NonNullable<HttpDeps["memory"]> | string {
 	const configured = deps.configRef.current.memory;
-	const targetChanged = configured && deps.memory?.target &&
-		(configured.baseUrl !== deps.memory.target.baseUrl || configured.bankId !== deps.memory.target.bankId);
+	const targetChanged =
+		configured &&
+		deps.memory?.target &&
+		(configured.baseUrl !== deps.memory.target.baseUrl ||
+			configured.bankId !== deps.memory.target.bankId);
 	if (!deps.memory || !configured || targetChanged) {
-		return targetChanged ? "memory destination changed — restart to apply" : "memory is not configured";
+		return targetChanged
+			? "memory destination changed — restart to apply"
+			: "memory is not configured";
 	}
 	return deps.memory;
 }
 
 // The memories browser's extra seams — a status-only wiring (tests,
 // partial composition) serves status but not browse/delete.
-function browseGate(deps: HttpDeps):
-	| { mem: NonNullable<HttpDeps["memory"]>; client: HindsightClient }
-	| string {
+function browseGate(
+	deps: HttpDeps,
+): { mem: NonNullable<HttpDeps["memory"]>; client: HindsightClient } | string {
 	const mem = memoryGate(deps);
 	if (typeof mem === "string") return mem;
 	if (!mem.client) return "memory browsing is not wired";
 	return { mem, client: mem.client };
 }
 
-function forgetGate(deps: HttpDeps):
+function forgetGate(
+	deps: HttpDeps,
+):
 	| { mem: NonNullable<HttpDeps["memory"]>; client: HindsightClient; source: ForgetSource }
 	| string {
 	const mem = memoryGate(deps);
@@ -437,76 +464,83 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 	// and two tabs passing against the same tag must not both write; the
 	// second write would silently discard the first (lost update).
 	let configSaveQueue: Promise<unknown> = Promise.resolve();
-	const saveConfig = async (
-		userId: number,
-		req: Request,
-		body: object,
-	): Promise<Response> => {
+	const saveConfig = async (userId: number, req: Request, body: object): Promise<Response> => {
 		let wrote = false;
 		try {
-					// The page sends a partial; merge over the freshest on-disk
-					// config — a hand edit since boot must not be silently
-					// discarded by an app save. An invalid on-disk file fails
-					// here with its own parse error.
-					const base = loadConfig() ?? deps.configRef.current;
-					const expected = req.headers.get("if-match");
-					if (!expected) {
-						log.warn("mini app config save refused — missing version", { userId: userId });
-						return Response.json(
-							{ error: "load settings before saving" },
-							{ status: 428, headers: NO_STORE },
-						);
-					}
-					if (expected !== configTag(base)) {
-						log.warn("mini app config save refused — stale version", { userId: userId });
-						return Response.json(
-							{ error: "settings changed since this page loaded — reopen settings before saving" },
-							{ status: 409, headers: NO_STORE },
-						);
-					}
-					// Pin legacy Telegram settings before applying app-default
-					// edits. A channel patch must also preserve its transport
-					// settings (apiRoot, rolling-DM gap).
-					const normalized = parseConfig(base);
-					const candidate = { ...normalized, ...body };
-					if ("telegram" in body && typeof body.telegram === "object" && body.telegram !== null && !Array.isArray(body.telegram)) {
-						candidate.telegram = { ...normalized.telegram, ...body.telegram };
-					}
-					const merged = parseConfig(candidate);
-					// The mini app is an operator's only door that doesn't need
-					// a shell — a save that drops the requester's own id locks
-					// them out of it and the bot gate. Refuse before writing.
-					if (!merged.allowedUsers.includes(userId)) {
-						return Response.json(
-							{ error: `config would remove your own telegram user id (${userId})` },
-							{ status: 422, headers: NO_STORE },
-						);
-					}
-					deps.beforeConfigWritten?.(normalized, merged);
-					writeConfig(merged);
-					wrote = true;
-					const fresh = loadConfig();
-					if (fresh) deps.configRef.current = fresh;
-					deps.onConfigWritten();
-					log.info("config written via mini app", {
-						appModel: merged.model, appThinking: merged.thinking,
-						telegramModel: merged.telegram.model, telegramThinking: merged.telegram.thinking,
-					});
-					return Response.json({ ok: true }, {
-						headers: { ...NO_STORE, etag: configTag(fresh ?? merged) },
-					});
+			// The page sends a partial; merge over the freshest on-disk
+			// config — a hand edit since boot must not be silently
+			// discarded by an app save. An invalid on-disk file fails
+			// here with its own parse error.
+			const base = loadConfig() ?? deps.configRef.current;
+			const expected = req.headers.get("if-match");
+			if (!expected) {
+				log.warn("mini app config save refused — missing version", { userId: userId });
+				return Response.json(
+					{ error: "load settings before saving" },
+					{ status: 428, headers: NO_STORE },
+				);
+			}
+			if (expected !== configTag(base)) {
+				log.warn("mini app config save refused — stale version", { userId: userId });
+				return Response.json(
+					{ error: "settings changed since this page loaded — reopen settings before saving" },
+					{ status: 409, headers: NO_STORE },
+				);
+			}
+			// Pin legacy Telegram settings before applying app-default
+			// edits. A channel patch must also preserve its transport
+			// settings (apiRoot, rolling-DM gap).
+			const normalized = parseConfig(base);
+			const candidate = { ...normalized, ...body };
+			if (
+				"telegram" in body &&
+				typeof body.telegram === "object" &&
+				body.telegram !== null &&
+				!Array.isArray(body.telegram)
+			) {
+				candidate.telegram = { ...normalized.telegram, ...body.telegram };
+			}
+			const merged = parseConfig(candidate);
+			// The mini app is an operator's only door that doesn't need
+			// a shell — a save that drops the requester's own id locks
+			// them out of it and the bot gate. Refuse before writing.
+			if (!merged.allowedUsers.includes(userId)) {
+				return Response.json(
+					{ error: `config would remove your own telegram user id (${userId})` },
+					{ status: 422, headers: NO_STORE },
+				);
+			}
+			deps.beforeConfigWritten?.(normalized, merged);
+			writeConfig(merged);
+			wrote = true;
+			const fresh = loadConfig();
+			if (fresh) deps.configRef.current = fresh;
+			deps.onConfigWritten();
+			log.info("config written via mini app", {
+				appModel: merged.model,
+				appThinking: merged.thinking,
+				telegramModel: merged.telegram.model,
+				telegramThinking: merged.telegram.thinking,
+			});
+			return Response.json(
+				{ ok: true },
+				{
+					headers: { ...NO_STORE, etag: configTag(fresh ?? merged) },
+				},
+			);
 		} catch (err) {
-
 			if (!(err instanceof z.ZodError)) {
 				log.error("mini app config save failed", err, { userId: userId, wrote });
-				return Response.json({
-					error: wrote
-						? "settings were saved but could not be applied — check the service log"
-						: "settings could not be written — check the service log",
-				}, { status: 500, headers: NO_STORE });
+				return Response.json(
+					{
+						error: wrote
+							? "settings were saved but could not be applied — check the service log"
+							: "settings could not be written — check the service log",
+					},
+					{ status: 500, headers: NO_STORE },
+				);
 			}
-			const msg =
-				z.prettifyError(err);
+			const msg = z.prettifyError(err);
 			return Response.json({ error: msg }, { status: 422, headers: NO_STORE });
 		}
 	};
@@ -547,7 +581,7 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 		if (url.pathname.startsWith("/hook/")) {
 			return handleHook(req, url.pathname.slice("/hook/".length));
 		}
-			if (url.pathname.startsWith("/api/app/")) {
+		if (url.pathname.startsWith("/api/app/")) {
 			// The app channel — the wired closure carries the
 			// boot-resolved auth mode (trust or bearer).
 			if (deps.appApi === undefined) {
@@ -628,7 +662,8 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 			if (!user) {
 				return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
 			}
-			if (req.method !== "GET") return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+			if (req.method !== "GET")
+				return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 			const gate = browseGate(deps);
 			if (typeof gate === "string") {
 				return Response.json({ error: gate }, { status: 503, headers: NO_STORE });
@@ -639,7 +674,10 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 				offset: url.searchParams.get("offset") ?? undefined,
 			});
 			if (!parsed.success) {
-				return Response.json({ error: z.prettifyError(parsed.error) }, { status: 422, headers: NO_STORE });
+				return Response.json(
+					{ error: z.prettifyError(parsed.error) },
+					{ status: 422, headers: NO_STORE },
+				);
 			}
 			try {
 				const page = await gate.client.listDocuments({
@@ -654,8 +692,11 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 					offset: page.offset,
 				};
 				log.debug("memory browse served", {
-					userId: user.id, q: parsed.data.q ?? null,
-					total: body.total, offset: body.offset, returned: body.items.length,
+					userId: user.id,
+					q: parsed.data.q ?? null,
+					total: body.total,
+					offset: body.offset,
+					returned: body.items.length,
 				});
 				return Response.json(body, { headers: NO_STORE });
 			} catch (err) {
@@ -711,7 +752,10 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 						factsTotal: facts.total,
 					};
 					log.debug("memory document served", {
-						userId: user.id, document: id, facts: facts.total, ms: Date.now() - started,
+						userId: user.id,
+						document: id,
+						facts: facts.total,
+						ms: Date.now() - started,
 					});
 					return Response.json(body, { headers: NO_STORE });
 				} catch (err) {
@@ -728,15 +772,24 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 					const result = await forgetDocument(gate.source, id, { channel: "mini-app" });
 					if (result.outcome === "busy") {
 						log.warn("memory forget via mini app refused", {
-							userId: user.id, document: id, unsettled: result.unsettled, ms: Date.now() - started,
+							userId: user.id,
+							document: id,
+							unsettled: result.unsettled,
+							ms: Date.now() - started,
 						});
-						return Response.json({
-							error: "memory for that document is still processing remotely — retry in a minute",
-						}, { status: 409, headers: NO_STORE });
+						return Response.json(
+							{
+								error: "memory for that document is still processing remotely — retry in a minute",
+							},
+							{ status: 409, headers: NO_STORE },
+						);
 					}
 					log.info("memory forget via mini app", {
-						userId: user.id, document: id, cancelled: result.cancelled,
-						redacted: result.redacted, ms: Date.now() - started,
+						userId: user.id,
+						document: id,
+						cancelled: result.cancelled,
+						redacted: result.redacted,
+						ms: Date.now() - started,
 					});
 					const body: MemoryForgetResponse = {
 						ok: true,
@@ -789,7 +842,7 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 			}
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		}
-	if (url.pathname === "/api/check-injection") {
+		if (url.pathname === "/api/check-injection") {
 			return serveInjectionCheck(req, deps.checkInjection);
 		}
 		return new Response("not found", { status: 404 });

@@ -37,10 +37,14 @@ function memdb(): Database {
 }
 
 const user = (id: string, text: string): UIMessage => ({
-	id, role: "user", parts: [{ type: "text", text }],
+	id,
+	role: "user",
+	parts: [{ type: "text", text }],
 });
 const asst = (id: string, text: string): UIMessage => ({
-	id, role: "assistant", parts: [{ type: "text", text }],
+	id,
+	role: "assistant",
+	parts: [{ type: "text", text }],
 });
 
 describe("recall query", () => {
@@ -49,13 +53,16 @@ describe("recall query", () => {
 	});
 
 	test("non-text parts never enter the query", () => {
-		const q = buildRecallQuery([{
-			id: "u1", role: "user",
-			parts: [
-				{ type: "data-attachment", data: { path: "/x.png" } },
-				{ type: "text", text: "remember the lighthouse" },
-			],
-		}]);
+		const q = buildRecallQuery([
+			{
+				id: "u1",
+				role: "user",
+				parts: [
+					{ type: "data-attachment", data: { path: "/x.png" } },
+					{ type: "text", text: "remember the lighthouse" },
+				],
+			},
+		]);
 		expect(q).toContain("lighthouse");
 		expect(q).not.toContain("x.png");
 	});
@@ -69,7 +76,14 @@ describe("recall query", () => {
 describe("recall formatting", () => {
 	test("results, empty, and unavailable are never confused", () => {
 		const results = formatRecallBlock(
-			[{ id: "f1", text: "Quiet mornings.", document_id: "exchange/a/1/m", occurred_start: "2026-01-01" }],
+			[
+				{
+					id: "f1",
+					text: "Quiet mornings.",
+					document_id: "exchange/a/1/m",
+					occurred_start: "2026-01-01",
+				},
+			],
 			"results",
 		);
 		const empty = formatRecallBlock([], "empty");
@@ -93,19 +107,34 @@ describe("retention documents", () => {
 
 	test("tool-only turns retain nothing", () => {
 		const doc = buildRetentionDocument({
-			conversationId: "dm:1", anchorSeq: 1, userTexts: ["hi"], userIds: ["u1"],
-			assistant: { id: "a1", role: "assistant", parts: [{ type: "data-attachment", data: { path: "/x.png" } }] },
-			priorContext: "", timestamp: new Date().toISOString(),
+			conversationId: "dm:1",
+			anchorSeq: 1,
+			userTexts: ["hi"],
+			userIds: ["u1"],
+			assistant: {
+				id: "a1",
+				role: "assistant",
+				parts: [{ type: "data-attachment", data: { path: "/x.png" } }],
+			},
+			priorContext: "",
+			timestamp: new Date().toISOString(),
 		});
 		expect(doc).toBeNull();
 	});
 
 	test("content labels speakers and skips non-text", () => {
 		const doc = buildRetentionDocument({
-			conversationId: "dm:1", anchorSeq: 2, userTexts: ["i like quiet"], userIds: ["u2"],
+			conversationId: "dm:1",
+			anchorSeq: 2,
+			userTexts: ["i like quiet"],
+			userIds: ["u2"],
 			assistant: {
-				id: "a2", role: "assistant",
-				parts: [{ type: "text", text: "noted" }, { type: "data-attachment", data: {} }],
+				id: "a2",
+				role: "assistant",
+				parts: [
+					{ type: "text", text: "noted" },
+					{ type: "data-attachment", data: {} },
+				],
 			},
 			priorContext: "talking about mornings",
 			timestamp: "2026-09-22T10:00:00Z",
@@ -209,7 +238,11 @@ describe("status", () => {
 	});
 
 	test("disabled without config; degraded on blocked or failed recall; pending on queued work", () => {
-		expect(memoryStatus(input({ enabled: false, counts: counts({ pending: 5, blocked: 1 }), lastRecallOk: false })).state).toBe("disabled");
+		expect(
+			memoryStatus(
+				input({ enabled: false, counts: counts({ pending: 5, blocked: 1 }), lastRecallOk: false }),
+			).state,
+		).toBe("disabled");
 		expect(memoryStatus(input()).state).toBe("healthy");
 		expect(memoryStatus(input({ counts: counts({ submitted: 2 }) })).state).toBe("pending");
 		expect(memoryStatus(input({ counts: counts({ blocked: 1 }) })).state).toBe("degraded");
@@ -231,19 +264,31 @@ describe("status", () => {
 			expect(s.detail).not.toContain(`memory ${s.state}`);
 		}
 		expect(states).toHaveLength(4); // every state sampled above
-		expect(memoryStatus(input({ counts: counts({ blocked: 1 }) })).detail).toContain("1 blocked retention needs");
-		expect(memoryStatus(input({ counts: counts({ blocked: 2 }) })).detail).toContain("2 blocked retentions need");
+		expect(memoryStatus(input({ counts: counts({ blocked: 1 }) })).detail).toContain(
+			"1 blocked retention needs",
+		);
+		expect(memoryStatus(input({ counts: counts({ blocked: 2 }) })).detail).toContain(
+			"2 blocked retentions need",
+		);
 	});
 });
 
 describe("client construction", () => {
 	test("absent config disables without touching the network", () => {
-		expect(buildMemoryClient(undefined, { resolve: async () => "x", has: () => false, names: () => [] })).toBeNull();
+		expect(
+			buildMemoryClient(undefined, { resolve: async () => "x", has: () => false, names: () => [] }),
+		).toBeNull();
 	});
 
 	test("present config builds a bound client", () => {
 		const client = buildMemoryClient(
-			{ baseUrl: "http://127.0.0.1:1", bankId: "g", recallTimeoutMs: 500, maxTokens: 256, budget: "low" },
+			{
+				baseUrl: "http://127.0.0.1:1",
+				bankId: "g",
+				recallTimeoutMs: 500,
+				maxTokens: 256,
+				budget: "low",
+			},
 			{ resolve: async () => "x", has: () => true, names: () => ["h"] },
 		);
 		expect(client).toBeInstanceOf(HindsightClient);
@@ -333,18 +378,30 @@ describe("worker timer", () => {
 					const op = typeof body.operation_id === "string" ? body.operation_id : "?";
 					const park = parked.get(op);
 					if (park !== undefined) await park;
-					return Response.json({ success: true, bank_id: "g", items_count: 1, async: true, operation_id: op });
+					return Response.json({
+						success: true,
+						bank_id: "g",
+						items_count: 1,
+						async: true,
+						operation_id: op,
+					});
 				}
 				const id = new URL(request.url).pathname.split("/").pop() ?? "";
 				return Response.json({ operation_id: id, status: "completed" });
 			},
 		});
 		try {
-			const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
+			const client = new HindsightClient({
+				baseUrl: `http://127.0.0.1:${server.port}`,
+				bankId: "g",
+			});
 			const queue = new MemoryQueue(memdb());
 			const op1 = queue.enqueue(client.target, {
-				id: "exchange-1", conversationId: "dm:1", sourceIds: ["u1", "a1"],
-				timestamp: "2026-09-27T10:00:00Z", content: "one",
+				id: "exchange-1",
+				conversationId: "dm:1",
+				sourceIds: ["u1", "a1"],
+				timestamp: "2026-09-27T10:00:00Z",
+				content: "one",
 			});
 			parked.set(op1, new Promise<void>((resolve) => gates.set(op1, resolve)));
 			const w = startMemoryWorker(queue, client, { intervalMs: 10 });
@@ -361,8 +418,11 @@ describe("worker timer", () => {
 			// row 2 reads "submitted" here.)
 			const out = await w.withWorkerPaused(async () => {
 				const op2 = queue.enqueue(client.target, {
-					id: "exchange-2", conversationId: "dm:1", sourceIds: ["u2", "a2"],
-					timestamp: "2026-09-27T10:01:00Z", content: "two",
+					id: "exchange-2",
+					conversationId: "dm:1",
+					sourceIds: ["u2", "a2"],
+					timestamp: "2026-09-27T10:01:00Z",
+					content: "two",
 				});
 				await Bun.sleep(80); // ≥ 8 intervals at 10 ms
 				const row2 = queue.get(op2);
@@ -400,7 +460,10 @@ describe("worker timer", () => {
 			},
 		});
 		try {
-			const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
+			const client = new HindsightClient({
+				baseUrl: `http://127.0.0.1:${server.port}`,
+				bankId: "g",
+			});
 			const db = memdb();
 			const queue = new MemoryQueue(db);
 			queue.enqueue(client.target, {
@@ -408,7 +471,7 @@ describe("worker timer", () => {
 				conversationId: "dm:1",
 				sourceIds: ["u-1", "a-1"],
 				timestamp: "2026-09-22T10:00:00Z",
-					content: "Operator: hi.\nGoblin: hello.",
+				content: "Operator: hi.\nGoblin: hello.",
 			});
 			const notices: { conversationId: string; error: string | null; attempts: number }[] = [];
 			const w = startMemoryWorker(queue, client, {
@@ -450,13 +513,16 @@ describe("worker timer", () => {
 		});
 		const calls: { msg: string; err: unknown; fields: Record<string, unknown> }[] = [];
 		const original = log.error;
-		(log as { error: (msg: string, err?: unknown, fields?: Record<string, unknown>) => void }).error = (
-			msg, err, fields,
-		) => {
+		(
+			log as { error: (msg: string, err?: unknown, fields?: Record<string, unknown>) => void }
+		).error = (msg, err, fields) => {
 			calls.push({ msg, err, fields: fields ?? {} });
 		};
 		try {
-			const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
+			const client = new HindsightClient({
+				baseUrl: `http://127.0.0.1:${server.port}`,
+				bankId: "g",
+			});
 			const queue = new MemoryQueue(memdb());
 			queue.enqueue(client.target, {
 				id: "exchange-9",

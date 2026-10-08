@@ -78,7 +78,11 @@ function view(d: Delegation, reportPath: string): Record<string, unknown> {
 // path reaches herdr.
 const isHomePath = (p: string) => p === "~" || p.startsWith("~/");
 
-function renderLaunch(out: LaunchOutcome, pin: DelegationPin, attach: string): Record<string, unknown> {
+function renderLaunch(
+	out: LaunchOutcome,
+	pin: DelegationPin,
+	attach: string,
+): Record<string, unknown> {
 	switch (out.kind) {
 		case "started": {
 			const d = out.delegation;
@@ -254,9 +258,25 @@ const answerSchema = z.object({
 	action: z.literal("answer"),
 	id: z.number().int().positive(),
 	key: z.enum([
-		"enter", "esc", "tab", "space",
-		"up", "down", "left", "right",
-		"y", "n", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+		"enter",
+		"esc",
+		"tab",
+		"space",
+		"up",
+		"down",
+		"left",
+		"right",
+		"y",
+		"n",
+		"1",
+		"2",
+		"3",
+		"4",
+		"5",
+		"6",
+		"7",
+		"8",
+		"9",
 	]),
 });
 // The strict per-action contract, enforced inside execute.
@@ -275,28 +295,30 @@ const actionSchema = z.discriminatedUnion("action", [
 // validation (took down mail on Sep 28, then program the same way).
 // Keep the wire schema flat; actionSchema still owns the exact
 // per-action contract.
-export const delegateInputSchema = z.object({
-	action: z.enum(["start", "list", "read", "send", "answer", "stop"]),
-	harness: startSchema.shape.harness.optional(),
-	task: startSchema.shape.task.optional(),
-	cwd: startSchema.shape.cwd,
-	name: startSchema.shape.name,
-	on: startSchema.shape.on,
-	id: readSchema.shape.id.optional(),
-	lines: readSchema.shape.lines,
-	text: sendSchema.shape.text.optional(),
-	key: answerSchema.shape.key.optional(),
-}).superRefine((value, ctx) => {
-	const result = actionSchema.safeParse(value);
-	if (!result.success) for (const issue of result.error.issues) {
-		ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
-	}
-});
+export const delegateInputSchema = z
+	.object({
+		action: z.enum(["start", "list", "read", "send", "answer", "stop"]),
+		harness: startSchema.shape.harness.optional(),
+		task: startSchema.shape.task.optional(),
+		cwd: startSchema.shape.cwd,
+		name: startSchema.shape.name,
+		on: startSchema.shape.on,
+		id: readSchema.shape.id.optional(),
+		lines: readSchema.shape.lines,
+		text: sendSchema.shape.text.optional(),
+		key: answerSchema.shape.key.optional(),
+	})
+	.superRefine((value, ctx) => {
+		const result = actionSchema.safeParse(value);
+		if (!result.success)
+			for (const issue of result.error.issues) {
+				ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
+			}
+	});
 
 export const delegateTool = (deps: DelegateToolDeps) =>
 	tool({
-		description:
-			`Delegate a task to an external coding harness — a separate agent in its own workspace, running full-auto. Delegations are your own acts: delegate on your own judgment for long or coding-heavy work instead of blocking the chat with bash, and say that you did; you own the result when it arrives and decide what the operator needs to hear. Targets: your own local session (default)${Object.keys(deps.config.machines ?? {}).length > 0 ? ` plus configured machines (${Object.keys(deps.config.machines ?? {}).join(", ")})` : " (no machines configured)"} — pass 'on' to pick one; work tied to another host's repos runs there, and each target runs the harnesses installed on that host. Harnesses (own session): ${Object.keys(deps.config.harnesses).join(", ")}. Actions — start {harness, task, cwd?, name?, on?}; list {}; read {id, lines?}; send {id, text} (operator answers, follow-ups to finished work); answer {id, key: enter|esc|arrows|space|tab|y|n|1-9} (a single keypress for a blocked agent's dialog — only ever relay the operator's explicit choice); stop {id}. Results arrive later as a [delegation: #id …] message in the conversation the delegation was born in — the task does not answer immediately. If a delegation ends at 'needs input' (an approval, a question, a startup dialog), relay it to the operator and send back their answer — 'send' for text, 'answer' for a dialog keypress — never answer an agent's question on the operator's behalf. Started from the operator's private chat, a delegation moves into its own app conversation (results land there) — tell the operator where it went.`,
+		description: `Delegate a task to an external coding harness — a separate agent in its own workspace, running full-auto. Delegations are your own acts: delegate on your own judgment for long or coding-heavy work instead of blocking the chat with bash, and say that you did; you own the result when it arrives and decide what the operator needs to hear. Targets: your own local session (default)${Object.keys(deps.config.machines ?? {}).length > 0 ? ` plus configured machines (${Object.keys(deps.config.machines ?? {}).join(", ")})` : " (no machines configured)"} — pass 'on' to pick one; work tied to another host's repos runs there, and each target runs the harnesses installed on that host. Harnesses (own session): ${Object.keys(deps.config.harnesses).join(", ")}. Actions — start {harness, task, cwd?, name?, on?}; list {}; read {id, lines?}; send {id, text} (operator answers, follow-ups to finished work); answer {id, key: enter|esc|arrows|space|tab|y|n|1-9} (a single keypress for a blocked agent's dialog — only ever relay the operator's explicit choice); stop {id}. Results arrive later as a [delegation: #id …] message in the conversation the delegation was born in — the task does not answer immediately. If a delegation ends at 'needs input' (an approval, a question, a startup dialog), relay it to the operator and send back their answer — 'send' for text, 'answer' for a dialog keypress — never answer an agent's question on the operator's behalf. Started from the operator's private chat, a delegation moves into its own app conversation (results land there) — tell the operator where it went.`,
 		inputSchema: delegateInputSchema,
 		execute: async (raw) => {
 			const input = actionSchema.parse(raw);
@@ -332,19 +354,18 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 						? isAbsolute(input.cwd) || isHomePath(input.cwd)
 							? input.cwd
 							: // A `~` root names the TARGET's home — path.resolve
-							// would eat it as a relative segment under OUR cwd.
-							// Join textually; herdr expands it on the target.
+								// would eat it as a relative segment under OUR cwd.
+								// Join textually; herdr expands it on the target.
 								isHomePath(cwdRoot)
-									? `${cwdRoot.replace(/\/+$/, "")}/${input.cwd}`
-									: resolve(cwdRoot, input.cwd)
+								? `${cwdRoot.replace(/\/+$/, "")}/${input.cwd}`
+								: resolve(cwdRoot, input.cwd)
 						: cwdRoot;
 					// Local rows: `~`-cwds name THIS host — expand against the
 					// real home before the stat, or a directory that exists
 					// reads as missing. Machine rows pass through verbatim
 					// (the target expands its own `~`).
-					const cwdForStat = !isMachine && isHomePath(cwd)
-						? resolve(homedir(), cwd.replace(/^~\/?/, ""))
-						: cwd;
+					const cwdForStat =
+						!isMachine && isHomePath(cwd) ? resolve(homedir(), cwd.replace(/^~\/?/, "")) : cwd;
 					if (!isMachine && (!existsSync(cwdForStat) || !statSync(cwdForStat).isDirectory())) {
 						return { error: `cwd "${cwdForStat}" does not exist or is not a directory` };
 					}
@@ -352,8 +373,7 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 					// helper (herdr.ts) for the tool results and park notices.
 					const attachHint = attachHintFor(on === null ? null : target);
 					const name =
-						input.name ??
-						(input.task.split("\n", 1)[0]!.slice(0, 40).trim() || "delegation");
+						input.name ?? (input.task.split("\n", 1)[0]!.slice(0, 40).trim() || "delegation");
 					// The pin forks before the launch is known to start —
 					// cap/failed outcomes and a throwing launch all owe it
 					// a discard or the spun-off conversation orphans.
@@ -402,7 +422,10 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 						// title, stranded (audit #9).
 						const cleanupError = discard(out.kind);
 						if (cleanupError !== null) {
-							return { ...renderLaunch(out, pin, attachHint), spin_off_cleanup_failed: cleanupError };
+							return {
+								...renderLaunch(out, pin, attachHint),
+								spin_off_cleanup_failed: cleanupError,
+							};
 						}
 					}
 					return renderLaunch(out, pin, attachHint);
@@ -412,15 +435,11 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 					// context — the table only ever grows.
 					const rows = deps.lifecycle.list();
 					const isLive = (d: Delegation) =>
-						d.status === "starting" ||
-						d.status === "running" ||
-						d.status === "needs_input";
+						d.status === "starting" || d.status === "running" || d.status === "needs_input";
 					const live = rows.filter(isLive);
 					const recent = rows.filter((d) => !isLive(d)).slice(-10);
 					return {
-						delegations: [...live, ...recent].map((d) =>
-							view(d, deps.lifecycle.reportPath(d.id)),
-						),
+						delegations: [...live, ...recent].map((d) => view(d, deps.lifecycle.reportPath(d.id))),
 					};
 				}
 				case "read":

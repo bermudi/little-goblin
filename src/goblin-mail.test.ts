@@ -79,7 +79,8 @@ function fakeChecker(mode: "ok" | "down" | "unconfigured" | "garbage"): string {
 		hostname: "127.0.0.1",
 		port: 0,
 		fetch: (req) => {
-			if (mode === "unconfigured") return Response.json({ error: "injection checker not configured" }, { status: 503 });
+			if (mode === "unconfigured")
+				return Response.json({ error: "injection checker not configured" }, { status: 503 });
 			if (mode === "garbage") return Response.json({ nope: true });
 			return Response.json({
 				status: "clean",
@@ -111,7 +112,11 @@ async function run(
 		stdout: "pipe",
 		stderr: "pipe",
 	});
-	const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+	const [out, err, code] = await Promise.all([
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+		proc.exited,
+	]);
 	return { code, out, err };
 }
 
@@ -217,9 +222,9 @@ describe("goblin-mail", () => {
 			stderr: "pipe",
 		});
 		const [out, err, code] = await Promise.all([
-				new Response(proc.stdout).text(),
-				new Response(proc.stderr).text(),
-				proc.exited,
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
 		]);
 		expect(code).toBe(0);
 		expect(err).toContain("GOBLIN_MAIL_PORT=9999 but goblin.json5 http.port=8787");
@@ -243,9 +248,9 @@ describe("goblin-mail", () => {
 			stderr: "pipe",
 		});
 		const [out, err, code] = await Promise.all([
-				new Response(proc.stdout).text(),
-				new Response(proc.stderr).text(),
-				proc.exited,
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
 		]);
 		expect(code).toBe(0);
 		expect(out).toContain("[injection check: clean p=0.02 sev=0.01]");

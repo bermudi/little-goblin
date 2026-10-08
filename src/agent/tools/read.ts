@@ -149,7 +149,10 @@ function readTextFileSmart(abs: string, display: string): { text: string } | Rea
 	if (!("error" in read) || read.kind !== "not-found") return read;
 	const alts = suggestAlternatives(abs);
 	if (alts.length === 0) return read;
-	return { error: `file not found: ${display} — did you mean: ${alts.join(", ")}?`, kind: "not-found" };
+	return {
+		error: `file not found: ${display} — did you mean: ${alts.join(", ")}?`,
+		kind: "not-found",
+	};
 }
 
 // Image sniffing for the tool layer: providers carry tool results as
@@ -157,7 +160,9 @@ function readTextFileSmart(abs: string, display: string): { text: string } | Rea
 // first few KB — never the whole file. JPEG needs the headroom: APP0/
 // EXIF/DQT segments routinely push the SOF frame header past 64 bytes.
 const SNIFF_BYTES = 4096;
-export function sniffImage(abs: string): { mediaType: string; width?: number; height?: number } | null {
+export function sniffImage(
+	abs: string,
+): { mediaType: string; width?: number; height?: number } | null {
 	let fd: number;
 	try {
 		fd = openSync(abs, "r");
@@ -182,7 +187,13 @@ export function sniffImage(abs: string): { mediaType: string; width?: number; he
 				}
 				const marker = b[i + 1]!;
 				// SOF0..SOF15, excluding DAC (C4), JPG (C8), RST segments.
-				if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+				if (
+					marker >= 0xc0 &&
+					marker <= 0xcf &&
+					marker !== 0xc4 &&
+					marker !== 0xc8 &&
+					marker !== 0xcc
+				) {
 					return {
 						mediaType: "image/jpeg",
 						height: b.readUInt16BE(i + 5),
@@ -205,7 +216,11 @@ export function sniffImage(abs: string): { mediaType: string; width?: number; he
 		}
 		// WEBP: RIFF container with WEBP fourcc — dims live deeper in the
 		// chunk stream, mediaType only.
-		if (b.length >= 12 && b.subarray(0, 4).toString("latin1") === "RIFF" && b.subarray(8, 12).toString("latin1") === "WEBP") {
+		if (
+			b.length >= 12 &&
+			b.subarray(0, 4).toString("latin1") === "RIFF" &&
+			b.subarray(8, 12).toString("latin1") === "WEBP"
+		) {
 			return { mediaType: "image/webp" };
 		}
 		return null;
@@ -256,8 +271,8 @@ export const readFileTool = (cwd: string, visionAvailable = false) =>
 						const size = statSync(abs).size;
 						const dims =
 							sniff.width !== undefined && sniff.height !== undefined
-							? ` ${sniff.width}x${sniff.height}`
-							: "";
+								? ` ${sniff.width}x${sniff.height}`
+								: "";
 						// The note names the working channels in order of preference;
 						// which ones exist is decided by the caller (the vision tool
 						// rides its config block, Telegram materialization is always
@@ -295,7 +310,8 @@ export const readFileTool = (cwd: string, visionAvailable = false) =>
 			if (offset !== undefined && offset > 0 && offset > total) {
 				return { error: `offset ${offset} is beyond end of file (${total} lines)` };
 			}
-			const start = offset !== undefined && offset < 0 ? Math.max(0, total + offset) : (offset ?? 1) - 1;
+			const start =
+				offset !== undefined && offset < 0 ? Math.max(0, total + offset) : (offset ?? 1) - 1;
 			// The user's limit is honored first; caps apply to what they asked for.
 			const limitEnd = limit !== undefined ? Math.min(start + limit, total) : total;
 

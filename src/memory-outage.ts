@@ -56,7 +56,10 @@ export class OutageTracker {
 		)`);
 		// Additive migration, the conversation.ts anchor_seq pattern.
 		const cols = new Set(
-			db.query<{ name: string }, []>("PRAGMA table_info(memory_outage)").all().map((c) => c.name),
+			db
+				.query<{ name: string }, []>("PRAGMA table_info(memory_outage)")
+				.all()
+				.map((c) => c.name),
 		);
 		if (!cols.has("last_failure")) {
 			db.run("ALTER TABLE memory_outage ADD COLUMN last_failure INTEGER NOT NULL DEFAULT 0");
@@ -121,9 +124,11 @@ export class OutageTracker {
 
 	private row(): OutageRow | null {
 		return (
-			this.db.query<OutageRow, []>(
-				"SELECT started_at, last_failure, conversation, notified FROM memory_outage WHERE id = 1",
-			).get() ?? null
+			this.db
+				.query<OutageRow, []>(
+					"SELECT started_at, last_failure, conversation, notified FROM memory_outage WHERE id = 1",
+				)
+				.get() ?? null
 		);
 	}
 }

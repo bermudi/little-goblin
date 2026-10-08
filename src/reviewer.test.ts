@@ -1,5 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModel, ToolSet } from "ai";
@@ -46,7 +57,10 @@ function fakeSkillsRef(dir: string, code: number): string {
 }
 function skillsRefCalls(dir: string): string[] {
 	try {
-		return readFileSync(join(dir, "calls"), "utf8").trim().split("\n").filter((l) => l !== "");
+		return readFileSync(join(dir, "calls"), "utf8")
+			.trim()
+			.split("\n")
+			.filter((l) => l !== "");
 	} catch {
 		return [];
 	}
@@ -95,7 +109,15 @@ function fakeReviewModel(
 					(s.calls?.length ?? 0) > 0
 						? { unified: "tool-calls", raw: undefined }
 						: { unified: "stop", raw: undefined },
-				usage: { inputTokens: { total: 10, noCache: undefined, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 5, text: undefined, reasoning: undefined } },
+				usage: {
+					inputTokens: {
+						total: 10,
+						noCache: undefined,
+						cacheRead: undefined,
+						cacheWrite: undefined,
+					},
+					outputTokens: { total: 5, text: undefined, reasoning: undefined },
+				},
 				warnings: [],
 			};
 		},
@@ -208,7 +230,13 @@ function promptText(recorded: string): string {
 		.map((m) => {
 			const content = (m as { content?: unknown }).content;
 			return Array.isArray(content)
-				? content.map((c) => (typeof (c as { text?: unknown }).text === "string" ? (c as { text: string }).text : "")).join("\n")
+				? content
+						.map((c) =>
+							typeof (c as { text?: unknown }).text === "string"
+								? (c as { text: string }).text
+								: "",
+						)
+						.join("\n")
 				: "";
 		})
 		.join("\n");
@@ -297,7 +325,9 @@ describe("reviewer gate", () => {
 
 	test("a non-gate error propagates — bugs stay loud, never fall back", async () => {
 		const h = harness();
-		await expect(considerTurn(h.depsFor({ nouls: new Error("boom") }), turn())).rejects.toThrow("boom");
+		await expect(considerTurn(h.depsFor({ nouls: new Error("boom") }), turn())).rejects.toThrow(
+			"boom",
+		);
 		h.store.close();
 	});
 
@@ -310,11 +340,17 @@ describe("reviewer gate", () => {
 		await considerTurn(fallback, turn({ toolNames: ["bash"] }));
 		const ok = h.depsFor({ nouls: { correction: 0.1, procedure: 0.1 } });
 		await considerTurn(ok, turn({ toolNames: ["bash", "send"] }));
-		const gates = readFileSync(logFile, "utf8").trim().split("\n")
+		const gates = readFileSync(logFile, "utf8")
+			.trim()
+			.split("\n")
 			.map((l) => JSON.parse(l) as Record<string, unknown>)
 			.filter((e) => e.msg === "reviewer gate");
 		expect(gates).toHaveLength(3);
-		expect(gates[0]).toMatchObject({ fallback: true, fallbackStreak: 1, tools: ["bash", "read_file"] });
+		expect(gates[0]).toMatchObject({
+			fallback: true,
+			fallbackStreak: 1,
+			tools: ["bash", "read_file"],
+		});
 		expect(gates[1]).toMatchObject({ fallback: true, fallbackStreak: 2 });
 		expect(gates[2]).toMatchObject({ fallback: false, fallbackStreak: 0, tools: ["bash", "send"] });
 		expect(gates[2]!.thresholds).toEqual({ correction: 0.8, procedure: 0.8 });
@@ -329,16 +365,20 @@ describe("review run — staging and publication", () => {
 			nouls: { correction: 0.9, procedure: 0.1 },
 			script: [
 				{
-					calls: [{
-						name: "write_file",
-						input: { path: "pdf-tables/SKILL.md", content: SKILL_MD("pdf-tables") },
-					}],
+					calls: [
+						{
+							name: "write_file",
+							input: { path: "pdf-tables/SKILL.md", content: SKILL_MD("pdf-tables") },
+						},
+					],
 				},
 				{ text: "saved" },
 			],
 		});
 		await considerTurn(deps, turn());
-		expect(readFileSync(join(h.skills, "pdf-tables", "SKILL.md"), "utf8")).toContain("name: pdf-tables");
+		expect(readFileSync(join(h.skills, "pdf-tables", "SKILL.md"), "utf8")).toContain(
+			"name: pdf-tables",
+		);
 		// Validated from the review's staging copy, one skill, then told.
 		const binDir = join(deps.workspaceDir, "..", "bin");
 		const calls = skillsRefCalls(binDir);
@@ -362,15 +402,26 @@ describe("review run — staging and publication", () => {
 		const helper = join(h.skills, "existing", "helper.sh");
 		writeFileSync(helper, "#!/bin/sh\nexit 0\n");
 		chmodSync(helper, 0o755);
-		await considerTurn(h.depsFor({
-			nouls: { correction: 0.9, procedure: 0 },
-			script: [
-				{ calls: [{ name: "write_file", input: {
-					path: "existing/SKILL.md", content: SKILL_MD("existing", "after"),
-				} }] },
-				{ text: "saved" },
-			],
-		}), turn());
+		await considerTurn(
+			h.depsFor({
+				nouls: { correction: 0.9, procedure: 0 },
+				script: [
+					{
+						calls: [
+							{
+								name: "write_file",
+								input: {
+									path: "existing/SKILL.md",
+									content: SKILL_MD("existing", "after"),
+								},
+							},
+						],
+					},
+					{ text: "saved" },
+				],
+			}),
+			turn(),
+		);
 		expect(lstatSync(helper).mode & 0o777).toBe(0o755);
 		h.store.close();
 	});
@@ -382,23 +433,30 @@ describe("review run — staging and publication", () => {
 		const deps = h.depsFor({
 			nouls: { correction: 0.9, procedure: 0 },
 			script: [
-				{ calls: [
-					{ name: "write_file", input: { path: "a/SKILL.md", content: SKILL_MD("a") } },
-					{ name: "write_file", input: { path: "b/SKILL.md", content: SKILL_MD("b") } },
-				] },
+				{
+					calls: [
+						{ name: "write_file", input: { path: "a/SKILL.md", content: SKILL_MD("a") } },
+						{ name: "write_file", input: { path: "b/SKILL.md", content: SKILL_MD("b") } },
+					],
+				},
 				{ text: "saved" },
 			],
 		});
 		// Simulate a mechanical failure between validation and the swap:
 		// a validates and publishes, but b's staged source goes missing.
 		const bin = deps.skillsRefBin!;
-		writeFileSync(bin, '#!/bin/sh\nif [ "$2" = "./skills/b" ]; then mv "$PWD/skills/b" "$PWD/skills/moved"; fi\n');
+		writeFileSync(
+			bin,
+			'#!/bin/sh\nif [ "$2" = "./skills/b" ]; then mv "$PWD/skills/b" "$PWD/skills/moved"; fi\n',
+		);
 		chmodSync(bin, 0o755);
 		await expect(considerTurn(deps, turn())).rejects.toThrow();
 		expect(readFileSync(join(h.skills, "a", "SKILL.md"), "utf8")).toContain("name: a");
 		expect(existsSync(join(h.skills, "b"))).toBe(false);
 		expect(h.store.history(h.convId)).toHaveLength(1);
-		expect((h.store.history(h.convId)[0]!.parts[0] as { text: string }).text).toContain("saved skill: a");
+		expect((h.store.history(h.convId)[0]!.parts[0] as { text: string }).text).toContain(
+			"saved skill: a",
+		);
 		expect(h.notified).toEqual([{ conversationId: h.convId, skills: ["a"] }]);
 		expect(readFileSync(logFile, "utf8")).toContain("reviewer publish failed");
 		h.store.close();
@@ -416,9 +474,13 @@ describe("review run — staging and publication", () => {
 			ref: "fake/park",
 			model: fakeReviewModel(
 				[
-					{ calls: [{ name: "write_file", input: { path: "fresh/SKILL.md", content: SKILL_MD("fresh") } }] },
+					{
+						calls: [
+							{ name: "write_file", input: { path: "fresh/SKILL.md", content: SKILL_MD("fresh") } },
+						],
+					},
 					{ text: "saved" },
-			],
+				],
 				async () => {
 					if (++step === 2) await parked;
 				},
@@ -447,7 +509,10 @@ describe("review run — staging and publication", () => {
 	test("no tool calls means no save, no note, no history", async () => {
 		const h = harness();
 		await considerTurn(
-			h.depsFor({ nouls: { correction: 0.0, procedure: 0.99 }, script: [{ text: "nothing worth saving" }] }),
+			h.depsFor({
+				nouls: { correction: 0.0, procedure: 0.99 },
+				script: [{ text: "nothing worth saving" }],
+			}),
 			turn(),
 		);
 		expect(h.notified).toEqual([]);
@@ -477,7 +542,9 @@ describe("review run — staging and publication", () => {
 		});
 		await considerTurn(deps, turn());
 		expect(() => readFileSync(join(h.skills, "fresh", "SKILL.md"))).toThrow();
-		expect(readFileSync(join(h.skills, "existing", "SKILL.md"), "utf8")).toBe(SKILL_MD("existing", "original"));
+		expect(readFileSync(join(h.skills, "existing", "SKILL.md"), "utf8")).toBe(
+			SKILL_MD("existing", "original"),
+		);
 		expect(readdirSync(h.staging)).toEqual([]);
 		expect(h.notified).toEqual([]);
 		expect(h.store.history(h.convId)).toHaveLength(0);
@@ -492,7 +559,12 @@ describe("review run — staging and publication", () => {
 			nouls: { correction: 0.9, procedure: 0.9 },
 			script: [
 				{
-					calls: [{ name: "write_file", input: { path: "partial/SKILL.md", content: SKILL_MD("partial") } }],
+					calls: [
+						{
+							name: "write_file",
+							input: { path: "partial/SKILL.md", content: SKILL_MD("partial") },
+						},
+					],
 				},
 				{ error: "provider exploded mid-review" },
 			],
@@ -503,7 +575,8 @@ describe("review run — staging and publication", () => {
 		expect(h.notified).toEqual([]);
 		expect(h.store.history(h.convId)).toHaveLength(0);
 		const lines = readFileSync(logFile, "utf8").trim().split("\n");
-		const discarded = lines.map((l) => JSON.parse(l) as Record<string, unknown>)
+		const discarded = lines
+			.map((l) => JSON.parse(l) as Record<string, unknown>)
 			.find((e) => e.msg === "reviewer write discarded — model call failed");
 		expect(discarded).toMatchObject({ conversation: "dm:1" });
 		expect(String(discarded?.error)).toContain("provider exploded mid-review");
@@ -516,10 +589,12 @@ describe("review run — staging and publication", () => {
 			nouls: { correction: 0.9, procedure: 0.9 },
 			script: [
 				{
-					calls: [{
-						name: "write_file",
-						input: { path: "big/SKILL.md", content: `x`.repeat(120 * 1024) },
-					}],
+					calls: [
+						{
+							name: "write_file",
+							input: { path: "big/SKILL.md", content: `x`.repeat(120 * 1024) },
+						},
+					],
 				},
 				{ text: "saved" },
 			],
@@ -539,7 +614,11 @@ describe("review run — staging and publication", () => {
 		const deps = h.depsFor({
 			nouls: { correction: 0.9, procedure: 0.1 },
 			script: [
-				{ calls: [{ name: "write_file", input: { path: "same/SKILL.md", content: SKILL_MD("same") } }] },
+				{
+					calls: [
+						{ name: "write_file", input: { path: "same/SKILL.md", content: SKILL_MD("same") } },
+					],
+				},
 				{ text: "saved" },
 			],
 		});
@@ -561,7 +640,10 @@ describe("review run — staging and publication", () => {
 			script: [
 				{
 					calls: [
-						{ name: "write_file", input: { path: "editme/SKILL.md", content: SKILL_MD("editme", "new body") } },
+						{
+							name: "write_file",
+							input: { path: "editme/SKILL.md", content: SKILL_MD("editme", "new body") },
+						},
 						{ name: "write_file", input: { path: "editme/helper.md", content: "new helper" } },
 					],
 				},
@@ -587,14 +669,24 @@ describe("review run — staging and publication", () => {
 			ref: "fake/review",
 			model: fakeReviewModel(
 				[
-					{ calls: [{ name: "write_file", input: { path: "clash/SKILL.md", content: SKILL_MD("clash", "review's take") } }] },
+					{
+						calls: [
+							{
+								name: "write_file",
+								input: { path: "clash/SKILL.md", content: SKILL_MD("clash", "review's take") },
+							},
+						],
+					},
 					{ text: "saved" },
 				],
 				async () => {
 					// Between the staged write and the publish — exactly when a
 					// hand edit can land in the live tree.
 					if (++step === 2) {
-						writeFileSync(join(h.skills, "clash", "SKILL.md"), SKILL_MD("clash", "operator's edit"));
+						writeFileSync(
+							join(h.skills, "clash", "SKILL.md"),
+							SKILL_MD("clash", "operator's edit"),
+						);
 					}
 				},
 			),
@@ -603,7 +695,9 @@ describe("review run — staging and publication", () => {
 		expect(readFileSync(join(h.skills, "clash", "SKILL.md"), "utf8")).toContain("operator's edit");
 		expect(h.notified).toEqual([]);
 		expect(h.store.history(h.convId)).toHaveLength(0);
-		const skipped = readFileSync(logFile, "utf8").trim().split("\n")
+		const skipped = readFileSync(logFile, "utf8")
+			.trim()
+			.split("\n")
 			.map((l) => JSON.parse(l) as Record<string, unknown>)
 			.find((e) => e.msg === "reviewer publish skipped — live skills changed mid-review");
 		expect(skipped).toMatchObject({ conversation: "dm:1" });
@@ -625,10 +719,12 @@ describe("review run — staging and publication", () => {
 			nouls: { correction: 0.9, procedure: 0.1 },
 			script: [
 				{
-					calls: [{
-						name: "write_file",
-						input: { path: "linked/SKILL.md", content: SKILL_MD("linked", "review's take") },
-					}],
+					calls: [
+						{
+							name: "write_file",
+							input: { path: "linked/SKILL.md", content: SKILL_MD("linked", "review's take") },
+						},
+					],
 				},
 				{ text: "saved" },
 			],
@@ -639,8 +735,12 @@ describe("review run — staging and publication", () => {
 		expect(readFileSync(join(h.skills, "linked", "SKILL.md"), "utf8")).toContain("source of truth");
 		expect(h.notified).toEqual([]);
 		expect(h.store.history(h.convId)).toHaveLength(0);
-		const skipped = readFileSync(logFile, "utf8").trim().split("\n")
-			.map((l) => JSON.parse(l) as { msg: string; skipped?: { skill: string; drifted: string[] }[] })
+		const skipped = readFileSync(logFile, "utf8")
+			.trim()
+			.split("\n")
+			.map(
+				(l) => JSON.parse(l) as { msg: string; skipped?: { skill: string; drifted: string[] }[] },
+			)
 			.find((e) => e.msg === "reviewer publish skipped — live skills changed mid-review");
 		expect(skipped?.skipped).toEqual([{ skill: "linked", drifted: ["linked"] }]);
 		h.store.close();
@@ -657,10 +757,12 @@ describe("review run — staging and publication", () => {
 			nouls: { correction: 0.9, procedure: 0.1 },
 			script: [
 				{
-					calls: [{
-						name: "write_file",
-						input: { path: "partly/SKILL.md", content: SKILL_MD("partly", "review's take") },
-					}],
+					calls: [
+						{
+							name: "write_file",
+							input: { path: "partly/SKILL.md", content: SKILL_MD("partly", "review's take") },
+						},
+					],
 				},
 				{ text: "saved" },
 			],
@@ -686,7 +788,9 @@ describe("review run — staging and publication", () => {
 			}),
 		});
 		await considerTurn(deps, turn());
-		expect(readFileSync(join(h.skills, "unrelated", "SKILL.md"), "utf8")).toContain("name: unrelated");
+		expect(readFileSync(join(h.skills, "unrelated", "SKILL.md"), "utf8")).toContain(
+			"name: unrelated",
+		);
 		const binDir = join(deps.workspaceDir, "..", "bin");
 		expect(skillsRefCalls(binDir)).toEqual([]);
 		expect(h.notified).toEqual([]);
@@ -708,8 +812,11 @@ describe("review run — staging and publication", () => {
 		// unresolvable entry doesn't veto the whole review.
 		expect(lstatSync(join(h.skills, "broken")).isSymbolicLink()).toBe(true);
 		expect(readdirSync(h.staging)).toEqual([]);
-		const msgs = readFileSync(logFile, "utf8").trim().split("\n")
-			.map((l) => JSON.parse(l) as { msg: string }).map((e) => e.msg);
+		const msgs = readFileSync(logFile, "utf8")
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l) as { msg: string })
+			.map((e) => e.msg);
 		expect(msgs).toContain("reviewer staging skipped unresolved skills-tree entry");
 		expect(msgs).toContain("reviewer review done");
 		expect(msgs).not.toContain("reviewer review skipped — skills tree copy failed");
@@ -736,7 +843,9 @@ describe("review run — staging and publication", () => {
 			return original(conv);
 		};
 		await considerTurn(deps, turn());
-		const skipped = readFileSync(logFile, "utf8").trim().split("\n")
+		const skipped = readFileSync(logFile, "utf8")
+			.trim()
+			.split("\n")
 			.map((l) => JSON.parse(l) as { msg: string; path?: string })
 			.filter((e) => e.msg === "reviewer staging skipped out-of-root skills-tree entry")
 			.map((e) => e.path);
@@ -756,8 +865,11 @@ describe("review run — staging and publication", () => {
 		expect(readdirSync(h.staging)).toEqual([]);
 		const binDir = join(deps.workspaceDir, "..", "bin");
 		expect(skillsRefCalls(binDir)).toEqual([]);
-		const msgs = readFileSync(logFile, "utf8").trim().split("\n")
-			.map((l) => JSON.parse(l) as { msg: string }).map((e) => e.msg);
+		const msgs = readFileSync(logFile, "utf8")
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l) as { msg: string })
+			.map((e) => e.msg);
 		expect(msgs).toContain("reviewer review skipped — skills tree over staging budget");
 		expect(msgs).not.toContain("reviewer review skipped — skills tree copy failed");
 		h.store.close();
@@ -770,17 +882,27 @@ describe("review queue", () => {
 		const prompts: string[] = [];
 		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 }, prompts });
 		let release!: () => void;
-		const held = new Promise<void>((r) => { release = r; });
-		const first = considerTurn({ ...deps, gate: { decide: async () => {
-			await held;
-			return { answers: { correction: 0.9 }, inputTokens: 1, cost: 0 };
-		} } }, turn({ turnSeq: 1, operatorTexts: ["FIRST"] }));
+		const held = new Promise<void>((r) => {
+			release = r;
+		});
+		const first = considerTurn(
+			{
+				...deps,
+				gate: {
+					decide: async () => {
+						await held;
+						return { answers: { correction: 0.9 }, inputTokens: 1, cost: 0 };
+					},
+				},
+			},
+			turn({ turnSeq: 1, operatorTexts: ["FIRST"] }),
+		);
 		const second = considerTurn(deps, turn({ turnSeq: 2, operatorTexts: ["SECOND"] }));
 		await Bun.sleep(20);
 		expect(prompts).toEqual([]);
 		release();
 		await Promise.all([first, second]);
-		expect(prompts.map((p) => p.includes("FIRST") ? 1 : 2)).toEqual([1, 2]);
+		expect(prompts.map((p) => (p.includes("FIRST") ? 1 : 2))).toEqual([1, 2]);
 		h.store.close();
 	});
 
@@ -851,7 +973,12 @@ describe("review queue", () => {
 			return inner(conv).then((r) => {
 				if (n === 1) {
 					parked = true;
-					return { ref: r.ref, model: fakeReviewModel([{ text: "hang" }], async () => { await park; }) };
+					return {
+						ref: r.ref,
+						model: fakeReviewModel([{ text: "hang" }], async () => {
+							await park;
+						}),
+					};
 				}
 				return r;
 			});
@@ -864,7 +991,9 @@ describe("review queue", () => {
 			considerTurn(deps, turn({ turnSeq: 4 })),
 		];
 		for (let i = 0; i < 500 && !parked; i++) await Bun.sleep(1);
-		const dropped = readFileSync(logFile, "utf8").trim().split("\n")
+		const dropped = readFileSync(logFile, "utf8")
+			.trim()
+			.split("\n")
 			.map((l) => JSON.parse(l) as Record<string, unknown>)
 			.find((e) => e.msg === "reviewer queue full — review dropped");
 		expect(dropped).toMatchObject({ conversation: "dm:1", queued: 2, cap: 2, seq: 4 });
@@ -881,7 +1010,11 @@ describe("review queue", () => {
 		const parked = new Promise<void>((r) => {
 			releasePark = r;
 		});
-		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 }, prompts, script: [{ text: "nothing worth saving" }] });
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0 },
+			prompts,
+			script: [{ text: "nothing worth saving" }],
+		});
 		// One shared fake: its first doGenerate parks until released, so
 		// review 1 runs (parked) while the others queue.
 		deps.reviewModel = async () => ({
@@ -949,23 +1082,26 @@ describe("review queue", () => {
 	test.skipIf(process.geteuid?.() === 0)(
 		"a failed staging copy removes its partial tree and logs the real cause",
 		async () => {
-		const h = harness();
-		const logFile = join(h.workspace, "goblin.log");
-		setLogFile(logFile);
-		// An unreadable file kills the copy after the staging dir exists —
-		// a mechanical failure that must not wear the budget label.
-		writeFileSync(join(h.skills, "secret.md"), "unreadable");
-		chmodSync(join(h.skills, "secret.md"), 0o000);
-		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 } });
-		await considerTurn(deps, turn());
-		expect(readdirSync(h.staging)).toEqual([]);
-		const binDir = join(deps.workspaceDir, "..", "bin");
-		expect(skillsRefCalls(binDir)).toEqual([]);
-		const msgs = readFileSync(logFile, "utf8").trim().split("\n")
-			.map((l) => JSON.parse(l) as { msg: string }).map((e) => e.msg);
-		expect(msgs).toContain("reviewer review skipped — skills tree copy failed");
-		expect(msgs).not.toContain("reviewer review skipped — skills tree over staging budget");
-		h.store.close();
+			const h = harness();
+			const logFile = join(h.workspace, "goblin.log");
+			setLogFile(logFile);
+			// An unreadable file kills the copy after the staging dir exists —
+			// a mechanical failure that must not wear the budget label.
+			writeFileSync(join(h.skills, "secret.md"), "unreadable");
+			chmodSync(join(h.skills, "secret.md"), 0o000);
+			const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 } });
+			await considerTurn(deps, turn());
+			expect(readdirSync(h.staging)).toEqual([]);
+			const binDir = join(deps.workspaceDir, "..", "bin");
+			expect(skillsRefCalls(binDir)).toEqual([]);
+			const msgs = readFileSync(logFile, "utf8")
+				.trim()
+				.split("\n")
+				.map((l) => JSON.parse(l) as { msg: string })
+				.map((e) => e.msg);
+			expect(msgs).toContain("reviewer review skipped — skills tree copy failed");
+			expect(msgs).not.toContain("reviewer review skipped — skills tree over staging budget");
+			h.store.close();
 		},
 	);
 });
@@ -975,12 +1111,18 @@ describe("/stop cancellation", () => {
 		const h = harness();
 		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 } });
 		let release!: () => void;
-		const held = new Promise<void>((r) => { release = r; });
-		deps.gate = { decide: async () => {
-			await held;
-			return { answers: { correction: 0.9 }, inputTokens: 1, cost: 0 };
-		} };
-		deps.reviewModel = async () => { throw new Error("cancelled gate started a review"); };
+		const held = new Promise<void>((r) => {
+			release = r;
+		});
+		deps.gate = {
+			decide: async () => {
+				await held;
+				return { answers: { correction: 0.9 }, inputTokens: 1, cost: 0 };
+			},
+		};
+		deps.reviewModel = async () => {
+			throw new Error("cancelled gate started a review");
+		};
 		const pending = considerTurn(deps, turn());
 		expect(cancelReviews(h.convId)).toBe(1);
 		release();
@@ -994,13 +1136,26 @@ describe("/stop cancellation", () => {
 		const h = harness();
 		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 } });
 		let release!: () => void;
-		const held = new Promise<void>((r) => { release = r; });
+		const held = new Promise<void>((r) => {
+			release = r;
+		});
 		let started = 0;
-		deps.reviewModel = async () => { started++; throw new Error("shutdown started a review"); };
-		const first = considerTurn({ ...deps, gate: { decide: async () => {
-			await held;
-			return { answers: { correction: 0.9 }, inputTokens: 1, cost: 0 };
-		} } }, turn({ turnSeq: 1 }));
+		deps.reviewModel = async () => {
+			started++;
+			throw new Error("shutdown started a review");
+		};
+		const first = considerTurn(
+			{
+				...deps,
+				gate: {
+					decide: async () => {
+						await held;
+						return { answers: { correction: 0.9 }, inputTokens: 1, cost: 0 };
+					},
+				},
+			},
+			turn({ turnSeq: 1 }),
+		);
 		const second = considerTurn(deps, turn({ conversationId: "dm:2", turnSeq: 2 }));
 		const third = considerTurn(deps, turn({ conversationId: "dm:3", turnSeq: 3 }));
 		await Bun.sleep(10);
@@ -1016,10 +1171,26 @@ describe("/stop cancellation", () => {
 		const prompts: string[] = [];
 		let release!: () => void;
 		let started!: () => void;
-		const parked = new Promise<void>((r) => { release = r; });
-		const atModel = new Promise<void>((r) => { started = r; });
-		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 }, prompts,
-			script: [{ calls: [{ name: "write_file", input: { path: "shutdown/SKILL.md", content: SKILL_MD("shutdown") } }] }, { text: "saved" }],
+		const parked = new Promise<void>((r) => {
+			release = r;
+		});
+		const atModel = new Promise<void>((r) => {
+			started = r;
+		});
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0 },
+			prompts,
+			script: [
+				{
+					calls: [
+						{
+							name: "write_file",
+							input: { path: "shutdown/SKILL.md", content: SKILL_MD("shutdown") },
+						},
+					],
+				},
+				{ text: "saved" },
+			],
 		});
 		const inner = deps.reviewModel;
 		deps.reviewModel = async (conv) => {
@@ -1044,11 +1215,24 @@ describe("/stop cancellation", () => {
 		const started = join(binDir, "started");
 		const release = join(binDir, "release");
 		const bin = join(binDir, "skills-ref");
-		writeFileSync(bin, `#!/bin/sh\ntouch "${started}"\nwhile [ ! -e "${release}" ]; do sleep 0.01; done\nexit 0\n`);
+		writeFileSync(
+			bin,
+			`#!/bin/sh\ntouch "${started}"\nwhile [ ! -e "${release}" ]; do sleep 0.01; done\nexit 0\n`,
+		);
 		chmodSync(bin, 0o755);
 		const deps = h.depsFor({
 			nouls: { correction: 0.9, procedure: 0 },
-			script: [{ calls: [{ name: "write_file", input: { path: "stopped/SKILL.md", content: SKILL_MD("stopped") } }] }, { text: "saved" }],
+			script: [
+				{
+					calls: [
+						{
+							name: "write_file",
+							input: { path: "stopped/SKILL.md", content: SKILL_MD("stopped") },
+						},
+					],
+				},
+				{ text: "saved" },
+			],
 		});
 		deps.skillsRefBin = bin;
 		const pending = considerTurn(deps, turn());
@@ -1072,7 +1256,9 @@ describe("/stop cancellation", () => {
 		setLogFile(logFile);
 		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 } });
 		let release!: () => void;
-		const parked = new Promise<void>((resolve) => { release = resolve; });
+		const parked = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 		const inner = deps.reviewModel;
 		let resolving = false;
 		deps.reviewModel = async (conv) => {
@@ -1088,7 +1274,9 @@ describe("/stop cancellation", () => {
 		await pending;
 		expect(readdirSync(h.staging)).toEqual([]);
 		expect(h.notified).toEqual([]);
-		const messages = readFileSync(logFile, "utf8").trim().split("\n")
+		const messages = readFileSync(logFile, "utf8")
+			.trim()
+			.split("\n")
 			.map((line) => (JSON.parse(line) as { msg: string }).msg);
 		expect(messages).toContain("reviewer review cancelled — staging discarded");
 		expect(messages).not.toContain("review model call");
@@ -1113,7 +1301,14 @@ describe("/stop cancellation", () => {
 					ref: "fake/hang",
 					model: fakeReviewModel(
 						[
-							{ calls: [{ name: "write_file", input: { path: "doomed/SKILL.md", content: SKILL_MD("doomed") } }] },
+							{
+								calls: [
+									{
+										name: "write_file",
+										input: { path: "doomed/SKILL.md", content: SKILL_MD("doomed") },
+									},
+								],
+							},
 							{ text: "saved" },
 						],
 						() => park,
@@ -1137,7 +1332,9 @@ describe("/stop cancellation", () => {
 		expect(() => readFileSync(join(h.skills, "doomed", "SKILL.md"))).toThrow();
 		expect(readdirSync(h.staging)).toEqual([]);
 		expect(h.notified).toEqual([]);
-		const cancelled = readFileSync(logFile, "utf8").trim().split("\n")
+		const cancelled = readFileSync(logFile, "utf8")
+			.trim()
+			.split("\n")
 			.map((l) => JSON.parse(l) as Record<string, unknown>)
 			.filter((e) => typeof e.msg === "string" && e.msg.startsWith("reviewer review cancelled"))
 			.map((e) => e.msg);
@@ -1176,13 +1373,26 @@ describe("reviewer evidence payload", () => {
 			prompts,
 			script: [{ text: "nothing worth saving" }],
 		});
-		await considerTurn(deps, turn({
-			toolDigest: [
-				digestEntry(),
-				digestEntry({ tool: "read_file", args: '{"path":"a.pdf"}', result: "binary file (a.pdf)", ok: true }),
-				digestEntry({ tool: "bash", args: '{"cmd":"rm -rf x"}', result: "command failed: nope", ok: false }),
-			],
-		}));
+		await considerTurn(
+			deps,
+			turn({
+				toolDigest: [
+					digestEntry(),
+					digestEntry({
+						tool: "read_file",
+						args: '{"path":"a.pdf"}',
+						result: "binary file (a.pdf)",
+						ok: true,
+					}),
+					digestEntry({
+						tool: "bash",
+						args: '{"cmd":"rm -rf x"}',
+						result: "command failed: nope",
+						ok: false,
+					}),
+				],
+			}),
+		);
 		const prompt = prompts.map(promptText).join("\n");
 		expect(prompt).toContain("- bash — ok");
 		expect(prompt).toContain('args: {"cmd":"ls"}');
@@ -1229,11 +1439,15 @@ describe("reviewer evidence payload", () => {
 			prompts,
 			script: [{ text: "nothing worth saving" }],
 		});
-		await considerTurn(deps, turn({
-			operatorTexts: [`OLDHEAD ${"old noise ".repeat(2000)}TAILMARKER`, "the actual correction"],
-			replyText: `HEAD${"x".repeat(20_000)}`,
-			toolDigest: new Array(8).fill(digestEntry()),
-		}), prior());
+		await considerTurn(
+			deps,
+			turn({
+				operatorTexts: [`OLDHEAD ${"old noise ".repeat(2000)}TAILMARKER`, "the actual correction"],
+				replyText: `HEAD${"x".repeat(20_000)}`,
+				toolDigest: new Array(8).fill(digestEntry()),
+			}),
+			prior(),
+		);
 		const prompt = promptText(prompts[0]!);
 		expect(prompt).toContain("the actual correction");
 		expect(prompt).toContain("HEAD");
@@ -1262,7 +1476,9 @@ describe("reviewer confinement", () => {
 		const h = harness();
 		const tools = reviewTools(h.skills);
 		const write = tools.write_file as unknown as { execute: (i: unknown) => Promise<unknown> };
-		expect(await write.execute({ path: join(h.workspace, "..", "evil.txt"), content: "x" })).toEqual({
+		expect(
+			await write.execute({ path: join(h.workspace, "..", "evil.txt"), content: "x" }),
+		).toEqual({
 			error: expect.stringContaining("escapes the skills directory"),
 		});
 		expect(await write.execute({ path: "../evil.txt", content: "x" })).toEqual({
@@ -1279,10 +1495,12 @@ describe("reviewer confinement", () => {
 		const h = harness();
 		const tools = reviewTools(h.skills);
 		const write = tools.write_file as unknown as { execute: (i: unknown) => Promise<unknown> };
-		expect(await write.execute({ path: "brand/new/SKILL.md", content: SKILL_MD("brand") })).toEqual({
-			path: join(h.skills, "brand", "new", "SKILL.md"),
-			bytes: expect.any(Number),
-		});
+		expect(await write.execute({ path: "brand/new/SKILL.md", content: SKILL_MD("brand") })).toEqual(
+			{
+				path: join(h.skills, "brand", "new", "SKILL.md"),
+				bytes: expect.any(Number),
+			},
+		);
 		h.store.close();
 	});
 
@@ -1311,7 +1529,10 @@ describe("reviewer confinement", () => {
 		await considerTurn(
 			h.depsFor({
 				nouls: { correction: 0.9, procedure: 0.1 },
-				script: [{ calls: [{ name: "write_file", input: { path: outside, content: "nope" } }] }, { text: "done" }],
+				script: [
+					{ calls: [{ name: "write_file", input: { path: outside, content: "nope" } }] },
+					{ text: "done" },
+				],
 			}),
 			turn(),
 		);
@@ -1322,18 +1543,23 @@ describe("reviewer confinement", () => {
 	});
 
 	test("confineTools leaves tool-less entries alone", () => {
-		const tools = confineTools({ plain: { description: "no execute" } } as unknown as ToolSet, "/root");
+		const tools = confineTools(
+			{ plain: { description: "no execute" } } as unknown as ToolSet,
+			"/root",
+		);
 		expect(tools as unknown).toEqual({ plain: { description: "no execute" } });
 	});
 });
 
 describe("buildGateState", () => {
 	test("bounded, tail-first operator text, counted tools", () => {
-		const state = buildGateState(turn({
-			operatorTexts: [`HEADMARKER ${"old ".repeat(5000)}CORRECTION`, "latest"],
-			replyText: `HEAD${"x".repeat(20_000)}TAILMARKER`,
-			toolNames: ["bash", "read_file", "bash", "bash"],
-		}));
+		const state = buildGateState(
+			turn({
+				operatorTexts: [`HEADMARKER ${"old ".repeat(5000)}CORRECTION`, "latest"],
+				replyText: `HEAD${"x".repeat(20_000)}TAILMARKER`,
+				toolNames: ["bash", "read_file", "bash", "bash"],
+			}),
+		);
 		expect(state.length).toBeLessThan(24_000);
 		expect(state).toContain("CORRECTION");
 		expect(state).toContain("latest");
@@ -1344,7 +1570,9 @@ describe("buildGateState", () => {
 	});
 
 	test("empty turns still shape a state", () => {
-		const state = buildGateState(turn({ operatorTexts: [], replyText: "", toolNames: [], toolDigest: [] }));
+		const state = buildGateState(
+			turn({ operatorTexts: [], replyText: "", toolNames: [], toolDigest: [] }),
+		);
 		expect(state).toContain("tools: (none) (0 total)");
 	});
 });

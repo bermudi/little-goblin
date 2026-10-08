@@ -119,9 +119,7 @@ export function nextFire(cron: string, from: Date): Date {
 	// here is exactly 5 (min hour dom month dow). Check before parsing —
 	// "*/5 * * * * *" would otherwise silently mean every five seconds.
 	if (cron.trim().split(/\s+/).length !== 5) {
-		throw new Error(
-			`invalid cron "${cron}": expected exactly 5 fields (min hour dom month dow)`,
-		);
+		throw new Error(`invalid cron "${cron}": expected exactly 5 fields (min hour dom month dow)`);
 	}
 	try {
 		return CronExpressionParser.parse(cron, { currentDate: from }).next().toDate();
@@ -132,7 +130,11 @@ export function nextFire(cron: string, from: Date): Date {
 
 // The load-bearing invariant: a program with no trigger can never
 // wake — it would be a row that does nothing.
-function requireTrigger(cron: string | null, hookHash: string | null, mailFilter: string | null): void {
+function requireTrigger(
+	cron: string | null,
+	hookHash: string | null,
+	mailFilter: string | null,
+): void {
 	if (cron === null && hookHash === null && mailFilter === null) {
 		throw new Error("a program needs at least one trigger — set a cron, a hook, or a mail filter");
 	}
@@ -183,9 +185,9 @@ export function openPrograms(dbPath: string): ProgramsStore {
 	// An existing table, even if empty, never re-copies deleted jobs.
 	const copied = db.transaction((): number => {
 		const isNewTable =
-			db.query(
-				"SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'programs'",
-			).get() === null;
+			db
+				.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'programs'")
+				.get() === null;
 		db.exec(`CREATE TABLE IF NOT EXISTS programs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
@@ -206,10 +208,14 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		// Existing DBs predate the mail trigger/revision — additive only.
 		// Keep the legacy copy gated on table creation, never row count.
 		const progCols = new Set(
-			db.query<{ name: string }, []>("PRAGMA table_info(programs)").all().map((c) => c.name),
+			db
+				.query<{ name: string }, []>("PRAGMA table_info(programs)")
+				.all()
+				.map((c) => c.name),
 		);
 		if (!progCols.has("mail_filter")) db.exec("ALTER TABLE programs ADD COLUMN mail_filter TEXT");
-		if (!progCols.has("mail_history_id")) db.exec("ALTER TABLE programs ADD COLUMN mail_history_id TEXT");
+		if (!progCols.has("mail_history_id"))
+			db.exec("ALTER TABLE programs ADD COLUMN mail_history_id TEXT");
 		if (!progCols.has("mail_revision")) {
 			db.exec("ALTER TABLE programs ADD COLUMN mail_revision INTEGER NOT NULL DEFAULT 0");
 		}
@@ -233,7 +239,9 @@ export function openPrograms(dbPath: string): ProgramsStore {
 	const qMark = db.query("UPDATE programs SET last_run = ?, next_run = ? WHERE id = ?");
 	const qFired = db.query("UPDATE programs SET last_run = ? WHERE id = ?");
 	const qHook = db.query("UPDATE programs SET hook_hash = ? WHERE id = ?");
-	const qMailFilter = db.query("UPDATE programs SET mail_filter = ?, mail_history_id = ?, mail_revision = mail_revision + ? WHERE id = ?");
+	const qMailFilter = db.query(
+		"UPDATE programs SET mail_filter = ?, mail_history_id = ?, mail_revision = mail_revision + ? WHERE id = ?",
+	);
 	const qMailHistory = db.query(
 		"UPDATE programs SET mail_history_id = ? WHERE id = ? AND mail_revision = ?",
 	);
@@ -255,10 +263,8 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		if (current === null) return null;
 		const before = rowToProgram(current);
 		const cron = patch.cron !== undefined ? patch.cron : before.cron;
-		const hookHash =
-			patch.hookHash !== undefined ? patch.hookHash : before.hookHash;
-		const mailFilter =
-			patch.mailFilter !== undefined ? patch.mailFilter : before.mailFilter;
+		const hookHash = patch.hookHash !== undefined ? patch.hookHash : before.hookHash;
+		const mailFilter = patch.mailFilter !== undefined ? patch.mailFilter : before.mailFilter;
 		requireTrigger(cron, hookHash, mailFilter);
 		const enabled = patch.enabled ?? before.enabled;
 		// Recompute from `now` whenever anything recurrence-shaped moved —
@@ -275,8 +281,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		// query's backlog must not fire as if it just arrived, and mail
 		// that landed while disabled is skipped, not owed (the cron
 		// rule above: re-enable re-baselines from now).
-		const filterChanged =
-			patch.mailFilter !== undefined && patch.mailFilter !== before.mailFilter;
+		const filterChanged = patch.mailFilter !== undefined && patch.mailFilter !== before.mailFilter;
 		const invalidated = filterChanged || (enabled && !before.enabled);
 		const mailHistoryId = invalidated ? null : before.mailHistoryId;
 		qUpdate.run(
@@ -306,12 +311,22 @@ export function openPrograms(dbPath: string): ProgramsStore {
 	});
 
 	return {
-		create({ name, charter, cron = null, hookHash = null, mailFilter = null, address }, now = new Date()) {
+		create(
+			{ name, charter, cron = null, hookHash = null, mailFilter = null, address },
+			now = new Date(),
+		) {
 			requireTrigger(cron, hookHash, mailFilter);
 			const next = cron === null ? null : nextFire(cron, now).toISOString();
 			const res = qInsert.run(
-				name, charter, cron, hookHash, mailFilter, address.chatId, address.threadId,
-				now.toISOString(), next,
+				name,
+				charter,
+				cron,
+				hookHash,
+				mailFilter,
+				address.chatId,
+				address.threadId,
+				now.toISOString(),
+				next,
 			);
 			return rowToProgram(qGet.get(Number(res.lastInsertRowid)));
 		},
@@ -340,9 +355,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			if (row === null) return;
 			const program = rowToProgram(row);
 			const next =
-				program.cron === null
-					? program.nextRun
-					: nextFire(program.cron, now).toISOString();
+				program.cron === null ? program.nextRun : nextFire(program.cron, now).toISOString();
 			qMark.run(now.toISOString(), next, id);
 		},
 		markFired(id, now) {
@@ -363,9 +376,15 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			return qMailHistory.run(historyId, id, expectRevision).changes === 1;
 		},
 		baselineMail(program, historyId) {
-			return qBaselineMail.run(
-				historyId, program.id, program.mailRevision, program.mailFilter, program.mailHistoryId,
-			).changes === 1;
+			return (
+				qBaselineMail.run(
+					historyId,
+					program.id,
+					program.mailRevision,
+					program.mailFilter,
+					program.mailHistoryId,
+				).changes === 1
+			);
 		},
 		withMailFilter() {
 			return qWithMail.all().map(rowToProgram);
@@ -409,9 +428,24 @@ function copyLegacyJobs(db: Database): number {
 		.get();
 	if (jobsTable === null) return 0;
 	const rows = db
-		.query<{ id: number; name: string; prompt: string; cron: string | null; chat_id: number; thread_id: number | null; enabled: number; created_at: string; last_run: string | null; next_run: string | null }, []>(
+		.query<
+			{
+				id: number;
+				name: string;
+				prompt: string;
+				cron: string | null;
+				chat_id: number;
+				thread_id: number | null;
+				enabled: number;
+				created_at: string;
+				last_run: string | null;
+				next_run: string | null;
+			},
+			[]
+		>(
 			`SELECT id, name, prompt, cron, chat_id, thread_id, enabled, created_at, last_run, next_run FROM jobs`,
-		).all();
+		)
+		.all();
 	let copied = 0;
 	for (const r of rows) {
 		try {
@@ -421,7 +455,7 @@ function copyLegacyJobs(db: Database): number {
 				job: r.id,
 				name: r.name,
 				cron: r.cron,
-					error: err instanceof Error ? err.message : String(err),
+				error: err instanceof Error ? err.message : String(err),
 			});
 			continue;
 		}
@@ -429,7 +463,18 @@ function copyLegacyJobs(db: Database): number {
 			`INSERT INTO programs
 			(id, name, charter, cron, hook_hash, chat_id, thread_id, enabled, created_at, last_run, next_run)
 			VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
-			[r.id, r.name, r.prompt, r.cron, r.chat_id, r.thread_id, r.enabled, r.created_at, r.last_run, r.next_run],
+			[
+				r.id,
+				r.name,
+				r.prompt,
+				r.cron,
+				r.chat_id,
+				r.thread_id,
+				r.enabled,
+				r.created_at,
+				r.last_run,
+				r.next_run,
+			],
 		);
 		copied++;
 	}

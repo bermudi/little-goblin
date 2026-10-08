@@ -126,21 +126,24 @@ const actionSchema = z.discriminatedUnion("action", [
 // validation (took down mail on Sep 28, then program the same way).
 // Keep the wire schema flat; actionSchema still owns the exact
 // per-action contract.
-export const programInputSchema = z.object({
-	action: z.enum(["list", "create", "update", "delete", "toggle", "hook"]),
-	name: createSchema.shape.name.optional(),
-	charter: createSchema.shape.charter.optional(),
-	cron: updateSchema.shape.cron,
-	hook: createSchema.shape.hook,
-	mailFilter: updateSchema.shape.mailFilter,
-	id: updateSchema.shape.id.optional(),
-	op: hookSchema.shape.op.optional(),
-}).superRefine((value, ctx) => {
-	const result = actionSchema.safeParse(value);
-	if (!result.success) for (const issue of result.error.issues) {
-		ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
-	}
-});
+export const programInputSchema = z
+	.object({
+		action: z.enum(["list", "create", "update", "delete", "toggle", "hook"]),
+		name: createSchema.shape.name.optional(),
+		charter: createSchema.shape.charter.optional(),
+		cron: updateSchema.shape.cron,
+		hook: createSchema.shape.hook,
+		mailFilter: updateSchema.shape.mailFilter,
+		id: updateSchema.shape.id.optional(),
+		op: hookSchema.shape.op.optional(),
+	})
+	.superRefine((value, ctx) => {
+		const result = actionSchema.safeParse(value);
+		if (!result.success)
+			for (const issue of result.error.issues) {
+				ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
+			}
+	});
 
 export const programTool = (deps: ProgramToolDeps) =>
 	tool({
@@ -165,16 +168,14 @@ export const programTool = (deps: ProgramToolDeps) =>
 					const minted = input.hook === true ? mintHook(deps) : null;
 					if (minted !== null && "error" in minted) return { error: minted.error };
 					try {
-						const program = deps.programs.create(
-							{
-								name: input.name,
-								charter: input.charter,
-								...(input.cron !== undefined ? { cron: input.cron } : {}),
-								...(minted !== null ? { hookHash: hookTokenHash(minted.token) } : {}),
-								...(input.mailFilter !== undefined ? { mailFilter: input.mailFilter } : {}),
-								address: { chatId: deps.chatId, threadId: deps.threadId },
-							},
-						);
+						const program = deps.programs.create({
+							name: input.name,
+							charter: input.charter,
+							...(input.cron !== undefined ? { cron: input.cron } : {}),
+							...(minted !== null ? { hookHash: hookTokenHash(minted.token) } : {}),
+							...(input.mailFilter !== undefined ? { mailFilter: input.mailFilter } : {}),
+							address: { chatId: deps.chatId, threadId: deps.threadId },
+						});
 						log.info("program created", {
 							program: program.id,
 							name: program.name,
@@ -210,7 +211,12 @@ export const programTool = (deps: ProgramToolDeps) =>
 						}
 					}
 					// exactOptionalPropertyTypes: never pass an explicit undefined.
-					const patch: { name?: string; charter?: string; cron?: string | null; mailFilter?: string | null } = {};
+					const patch: {
+						name?: string;
+						charter?: string;
+						cron?: string | null;
+						mailFilter?: string | null;
+					} = {};
 					if (input.name !== undefined) patch.name = input.name;
 					if (input.charter !== undefined) patch.charter = input.charter;
 					if (input.cron !== undefined) patch.cron = input.cron;
@@ -266,7 +272,9 @@ export const programTool = (deps: ProgramToolDeps) =>
 					if (err !== null) {
 						// The hook IS set — the failure is delivery, and rotate
 						// is the recovery path.
-						return { error: `hook ${op} but the URL delivery failed: ${err} — run hook/rotate to resend` };
+						return {
+							error: `hook ${op} but the URL delivery failed: ${err} — run hook/rotate to resend`,
+						};
 					}
 					log.info(`program hook ${op}`, { program: input.id, name: current.name });
 					return { hook: op, url_sent: true };

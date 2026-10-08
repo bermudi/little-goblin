@@ -35,7 +35,15 @@ describe("CodexLanguageModel — request shape", () => {
 			return sse([
 				{
 					type: "response.completed",
-					response: { status: "completed", usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8, input_tokens_details: { cached_tokens: 3 } } },
+					response: {
+						status: "completed",
+						usage: {
+							input_tokens: 5,
+							output_tokens: 3,
+							total_tokens: 8,
+							input_tokens_details: { cached_tokens: 3 },
+						},
+					},
 				},
 			]);
 		});
@@ -51,7 +59,10 @@ describe("CodexLanguageModel — request shape", () => {
 		expect(sent.store).toBe(false);
 		expect(sent.stream).toBe(true);
 		expect(sent.reasoning).toEqual({ effort: "xhigh", summary: "auto" });
-		const input = sent.input as Array<{ role: string; content: Array<{ type: string; text: string }> }>;
+		const input = sent.input as Array<{
+			role: string;
+			content: Array<{ type: string; text: string }>;
+		}>;
 		expect(input[0]!.role).toBe("user");
 		expect(input[0]!.content[0]).toEqual({ type: "input_text", text: "hi" });
 		expect(result.finishReason).toEqual({ unified: "stop", raw: "completed" });
@@ -90,8 +101,7 @@ describe("CodexLanguageModel — request shape", () => {
 				},
 			],
 		});
-		const content = (sent.input as Array<{ content: Array<{ image_url: string }> }>)[0]!
-			.content;
+		const content = (sent.input as Array<{ content: Array<{ image_url: string }> }>)[0]!.content;
 		// A data URL needs a concrete subtype — "data:image;base64" is
 		// malformed. URL payloads ride through untouched.
 		expect(content[0]!.image_url).toBe(
@@ -118,7 +128,12 @@ describe("CodexLanguageModel — request shape", () => {
 				{
 					role: "assistant",
 					content: [
-						{ type: "tool-call", toolCallId: "call_1", toolName: "bash", input: '{"command":"ls"}' },
+						{
+							type: "tool-call",
+							toolCallId: "call_1",
+							toolName: "bash",
+							input: '{"command":"ls"}',
+						},
 					],
 				},
 				{

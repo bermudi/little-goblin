@@ -168,7 +168,9 @@ async function resolveCommand(command: string, name: string): Promise<string> {
 	try {
 		proc = spawnProc(["/bin/sh", "-c", command]);
 	} catch (err) {
-		throw new Error(`auth.jsonl: command for "${name}" failed to spawn — ${(err as Error).message}`);
+		throw new Error(
+			`auth.jsonl: command for "${name}" failed to spawn — ${(err as Error).message}`,
+		);
 	}
 	const result = await boundedRun(proc, {
 		timeoutMs: RESOLVE_TIMEOUT_MS,

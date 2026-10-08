@@ -111,11 +111,7 @@ export function wakeApp(deps: WakeDeps, conversationId: string, text: string): b
 	}
 	const sink = deps.bell(conv);
 	try {
-		const admitted = deps.runtime.submit(
-			conv,
-			userMessage([{ type: "text", text }]),
-			sink,
-		);
+		const admitted = deps.runtime.submit(conv, userMessage([{ type: "text", text }]), sink);
 		if (!admitted) {
 			log.warn("app wake history only — runtime closed", { conversation: conv.id });
 			return false;

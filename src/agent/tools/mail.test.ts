@@ -29,7 +29,9 @@ describe("mail tool", () => {
 		expect(wire.required).toContain("action");
 		expect(mailInputSchema.safeParse({}).success).toBe(false);
 		expect(mailInputSchema.safeParse({ action: "send", body: "hello" }).success).toBe(false);
-		expect(mailInputSchema.safeParse({ action: "send", to: ["a@x.com"], body: "hello" }).success).toBe(true);
+		expect(
+			mailInputSchema.safeParse({ action: "send", to: ["a@x.com"], body: "hello" }).success,
+		).toBe(true);
 		// No read surface: search/read actions are rejected at the schema.
 		expect(mailInputSchema.safeParse({ action: "search", q: "in:inbox" }).success).toBe(false);
 		expect(mailInputSchema.safeParse({ action: "read", id: "m1" }).success).toBe(false);
@@ -46,7 +48,10 @@ describe("mail tool", () => {
 		const asked: MailDraftInput[] = [];
 		const t = toolFor(async (input) => {
 			asked.push(input);
-			return { queued: 7, status: "awaiting operator approval — the draft is in Telegram with Send/Cancel buttons" };
+			return {
+				queued: 7,
+				status: "awaiting operator approval — the draft is in Telegram with Send/Cancel buttons",
+			};
 		});
 		const out = (await exec(t, {
 			action: "send",
@@ -60,7 +65,13 @@ describe("mail tool", () => {
 		// the same words the operator's tap will answer.
 		expect(out.queued).toBe(7);
 		expect(out.status).toContain("awaiting operator approval");
-		expect(asked[0]).toEqual({ to: ["a@x.com"], cc: ["b@y.com"], subject: "hi", body: "hello", replyToId: "m9" });
+		expect(asked[0]).toEqual({
+			to: ["a@x.com"],
+			cc: ["b@y.com"],
+			subject: "hi",
+			body: "hello",
+			replyToId: "m9",
+		});
 	});
 
 	test("an omitted subject queues as empty; a gate error verdict passes through", async () => {
@@ -72,7 +83,9 @@ describe("mail tool", () => {
 					"posting the draft to Telegram failed — the draft was cancelled; retry the send when delivery recovers",
 			};
 		});
-		const out = (await exec(t, { action: "send", to: ["a@x.com"], body: "hello" })) as { error: string };
+		const out = (await exec(t, { action: "send", to: ["a@x.com"], body: "hello" })) as {
+			error: string;
+		};
 		expect(out.error).toContain("posting the draft to Telegram failed");
 		expect(asked[0]).toEqual({ to: ["a@x.com"], subject: "", body: "hello" });
 	});

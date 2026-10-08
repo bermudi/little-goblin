@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import {
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+	type ReactNode,
+	type RefObject,
+} from "react";
 import { useChat } from "@ai-sdk/react";
 import {
 	DefaultChatTransport,
@@ -39,8 +47,7 @@ function Worked({ parts }: { parts: (ToolUIPart | DynamicToolUIPart)[] }) {
 	return (
 		<details className="worked" open={running || failures > 0}>
 			<summary>
-				{running ? "Working" : "Worked"} ·{" "}
-				<span className="worked-sum">{lines.join("; ")}</span>
+				{running ? "Working" : "Worked"} · <span className="worked-sum">{lines.join("; ")}</span>
 				{failures > 0 && <span className="worked-fail">— {failures} failed</span>}
 			</summary>
 			<ul>
@@ -157,7 +164,9 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 			) : (
 				<span className="attachment-name">{ref.filename}</span>
 			)}
-			{typeof ref.size === "number" && <span className="attachment-size">{formatSize(ref.size)}</span>}
+			{typeof ref.size === "number" && (
+				<span className="attachment-size">{formatSize(ref.size)}</span>
+			)}
 			{ref.speech === true && ref.transcript !== undefined && (
 				<span className="attachment-transcript">“{ref.transcript}”</span>
 			)}
@@ -312,7 +321,9 @@ function useSpeech(token: string | null) {
 				for (const b64 of r.chunks) {
 					if (cancelled.current) break;
 					const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-					const url = URL.createObjectURL(new Blob([bytes.buffer as ArrayBuffer], { type: "audio/ogg" }));
+					const url = URL.createObjectURL(
+						new Blob([bytes.buffer as ArrayBuffer], { type: "audio/ogg" }),
+					);
 					await new Promise<void>((resolve) => {
 						const a = new Audio(url);
 						audio.current = a;
@@ -427,12 +438,11 @@ function QuoteFab({
 				setPos(null);
 				return;
 			}
-			const x = Math.min(
-				Math.max(rect.left + rect.width / 2, 48),
-				window.innerWidth - 48,
-			);
+			const x = Math.min(Math.max(rect.left + rect.width / 2, 48), window.innerWidth - 48);
 			setPos(
-				rect.top > 44 ? { x, y: rect.top - 8, above: true } : { x, y: rect.bottom + 8, above: false },
+				rect.top > 44
+					? { x, y: rect.top - 8, above: true }
+					: { x, y: rect.bottom + 8, above: false },
 			);
 		};
 		document.addEventListener("selectionchange", update);
@@ -553,9 +563,10 @@ export function Composer({
 		let live = true;
 		setCfg(null);
 		setConfigError(null);
-		const load = conversationId === undefined
-			? getConfig(token)
-			: getConversationConfig(token, conversationId);
+		const load =
+			conversationId === undefined
+				? getConfig(token)
+				: getConversationConfig(token, conversationId);
 		load.then(
 			(c) => live && setCfg(c),
 			(err: unknown) => live && setConfigError(String(err)),
@@ -567,13 +578,16 @@ export function Composer({
 	const setKnob = (patch: { model?: string; thinking?: string }) => {
 		setConfigSaving(true);
 		setConfigError(null);
-		const save = conversationId === undefined
-			? patchConfig(token, patch)
-			: patchConversationConfig(token, conversationId, patch);
-		void save.then(
-			(c) => setCfg(c),
-			(err: unknown) => setConfigError(String(err)),
-		).finally(() => setConfigSaving(false));
+		const save =
+			conversationId === undefined
+				? patchConfig(token, patch)
+				: patchConversationConfig(token, conversationId, patch);
+		void save
+			.then(
+				(c) => setCfg(c),
+				(err: unknown) => setConfigError(String(err)),
+			)
+			.finally(() => setConfigSaving(false));
 	};
 
 	// Voice notes: hold-to-record is MediaRecorder + upload; the server
@@ -585,10 +599,7 @@ export function Composer({
 	const recCancel = useRef(false);
 	useEffect(() => {
 		if (!recording) return;
-		const t = setInterval(
-			() => setRecSec(Math.floor((Date.now() - recStart.current) / 1000)),
-			250,
-		);
+		const t = setInterval(() => setRecSec(Math.floor((Date.now() - recStart.current) / 1000)), 250);
 		return () => clearInterval(t);
 	}, [recording]);
 	const recStart = useRef(0);
@@ -677,9 +688,7 @@ export function Composer({
 				const { ref } = await uploadAttachment(token, file);
 				setPending((p) =>
 					p.map((e) =>
-						e.key === key
-							? { key, ref, ...(e.thumb === undefined ? {} : { thumb: e.thumb }) }
-							: e,
+						e.key === key ? { key, ref, ...(e.thumb === undefined ? {} : { thumb: e.thumb }) } : e,
 					),
 				);
 			} catch {
@@ -770,7 +779,11 @@ export function Composer({
 					e.target.value = "";
 				}}
 			/>
-			{configError !== null && <div className="error" role="alert">Model settings failed: {configError}</div>}
+			{configError !== null && (
+				<div className="error" role="alert">
+					Model settings failed: {configError}
+				</div>
+			)}
 			{pending.length > 0 && (
 				<div className="composer-attachments">
 					{pending.map((e, i) => (
@@ -872,9 +885,18 @@ export function Composer({
 				)}
 				{cfg !== null && (
 					<>
-						<label className="knob" title={conversationId === undefined ? "Default model for new app chats" : "Model for this conversation"}>
+						<label
+							className="knob"
+							title={
+								conversationId === undefined
+									? "Default model for new app chats"
+									: "Model for this conversation"
+							}
+						>
 							<select
-								aria-label={conversationId === undefined ? "New app chat model" : "Conversation model"}
+								aria-label={
+									conversationId === undefined ? "New app chat model" : "Conversation model"
+								}
 								value={cfg.model}
 								onChange={(e) => setKnob({ model: e.target.value })}
 								disabled={busy || configSaving}
@@ -890,9 +912,18 @@ export function Composer({
 								)}
 							</select>
 						</label>
-						<label className="knob" title={conversationId === undefined ? "Default thinking level for new app chats" : "Thinking level for this conversation"}>
+						<label
+							className="knob"
+							title={
+								conversationId === undefined
+									? "Default thinking level for new app chats"
+									: "Thinking level for this conversation"
+							}
+						>
 							<select
-								aria-label={conversationId === undefined ? "New app chat thinking" : "Conversation thinking"}
+								aria-label={
+									conversationId === undefined ? "New app chat thinking" : "Conversation thinking"
+								}
 								value={cfg.thinking}
 								onChange={(e) => setKnob({ thinking: e.target.value })}
 								disabled={busy || configSaving}
@@ -984,9 +1015,7 @@ export function ChatView({
 		let live = true;
 		getMessages(token, conversationId).then(
 			(r) => live && setInitial(r.messages),
-			(err) =>
-				live &&
-				setLoadError(err instanceof Error ? err.message : "history failed to load"),
+			(err) => live && setLoadError(err instanceof Error ? err.message : "history failed to load"),
 		);
 		return () => {
 			live = false;
@@ -1052,8 +1081,7 @@ function Chat({
 									conversationId,
 									message:
 										trigger === "submit-message"
-											? (messages.find((m) => m.id === messageId) ??
-												messages[messages.length - 1])
+											? (messages.find((m) => m.id === messageId) ?? messages[messages.length - 1])
 											: messages[messages.length - 1],
 								},
 				}),
@@ -1108,10 +1136,7 @@ function Chat({
 
 	return (
 		<div className="chat">
-			<QuoteFab
-				root={scrollRef}
-				onQuote={(text) => setQuote((q) => ({ text, n: q.n + 1 }))}
-			/>
+			<QuoteFab root={scrollRef} onQuote={(text) => setQuote((q) => ({ text, n: q.n + 1 }))} />
 			<div
 				className="transcript"
 				ref={scrollRef}
@@ -1145,9 +1170,7 @@ function Chat({
 						);
 					})}
 					{busy && <div className="msg assistant pending shimmer">…</div>}
-					{error !== undefined && (
-						<div className="error">The turn failed: {error.message}</div>
-					)}
+					{error !== undefined && <div className="error">The turn failed: {error.message}</div>}
 				</div>
 			</div>
 			<Composer

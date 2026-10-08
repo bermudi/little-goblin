@@ -4,8 +4,10 @@ import { type Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
-	HindsightClient, HindsightError,
-	memoryDocumentSchema, type MemoryDocument,
+	HindsightClient,
+	HindsightError,
+	memoryDocumentSchema,
+	type MemoryDocument,
 } from "./hindsight.ts";
 import { log } from "./log.ts";
 
@@ -39,7 +41,9 @@ const rowSchema = z.object({
 	next_attempt: z.number().int().nonnegative(),
 	error: z.string().nullable(),
 });
-export type MemoryQueueItem = Omit<z.infer<typeof rowSchema>, "payload"> & { document: MemoryDocument };
+export type MemoryQueueItem = Omit<z.infer<typeof rowSchema>, "payload"> & {
+	document: MemoryDocument;
+};
 
 export class MemoryQueue {
 	constructor(private readonly db: Database) {
@@ -54,7 +58,9 @@ export class MemoryQueue {
 			error TEXT,
 			UNIQUE(target, document_id)
 		)`);
-		db.run("CREATE INDEX IF NOT EXISTS memory_outbox_due ON memory_outbox(target, state, next_attempt)");
+		db.run(
+			"CREATE INDEX IF NOT EXISTS memory_outbox_due ON memory_outbox(target, state, next_attempt)",
+		);
 		// One-notice-per-document latch for blocked retention (the other
 		// half of the 2026-09-25 incident: nothing in chat ever surfaced a
 		// blocked document). A row here means the operator was already
@@ -72,11 +78,14 @@ export class MemoryQueue {
 		targetSchema.parse(target);
 		const doc = memoryDocumentSchema.parse(document);
 		const payload = JSON.stringify(doc);
-		const existing = this.db.query<{ operation_id: string; payload: string }, [string, string]>(
-			"SELECT operation_id, payload FROM memory_outbox WHERE target = ? AND document_id = ?",
-		).get(target, doc.id);
+		const existing = this.db
+			.query<{ operation_id: string; payload: string }, [string, string]>(
+				"SELECT operation_id, payload FROM memory_outbox WHERE target = ? AND document_id = ?",
+			)
+			.get(target, doc.id);
 		if (existing) {
-			if (existing.payload !== payload) throw new Error("Memory document identity reused with different content");
+			if (existing.payload !== payload)
+				throw new Error("Memory document identity reused with different content");
 			return z.uuid().parse(existing.operation_id);
 		}
 		const id = randomUUID();
@@ -91,7 +100,9 @@ export class MemoryQueue {
 		const row = rowSchema.safeParse(raw);
 		if (!row.success) throw new Error("Invalid memory queue row");
 		let payload: unknown;
-		try { payload = JSON.parse(row.data.payload); } catch {
+		try {
+			payload = JSON.parse(row.data.payload);
+		} catch {
 			throw new Error(`Invalid memory queue payload for operation ${row.data.operation_id}`);
 		}
 		const document = memoryDocumentSchema.safeParse(payload);
@@ -110,20 +121,29 @@ export class MemoryQueue {
 	// so submitted rows poll FIFO among themselves.
 	next(target: string, now: number): MemoryQueueItem | null {
 		targetSchema.parse(target);
-		const raw = this.db.query(
-			`SELECT * FROM memory_outbox WHERE target = ? AND state IN ('pending', 'submitted')
+		const raw = this.db
+			.query(
+				`SELECT * FROM memory_outbox WHERE target = ? AND state IN ('pending', 'submitted')
 			 AND next_attempt <= ? ORDER BY CASE WHEN state = 'pending' THEN 0 ELSE 1 END, rowid LIMIT 1`,
-		).get(target, now);
+			)
+			.get(target, now);
 		return raw === null ? null : this.decode(raw);
 	}
 
 	get(operationId: string): MemoryQueueItem | null {
 		z.uuid().parse(operationId);
-		const raw = this.db.query("SELECT * FROM memory_outbox WHERE operation_id = ?").get(operationId);
+		const raw = this.db
+			.query("SELECT * FROM memory_outbox WHERE operation_id = ?")
+			.get(operationId);
 		return raw === null ? null : this.decode(raw);
 	}
 
-		update(item: MemoryQueueItem, state: MemoryQueueItem["state"], nextAttempt: number, error: string | null): void {
+	update(
+		item: MemoryQueueItem,
+		state: MemoryQueueItem["state"],
+		nextAttempt: number,
+		error: string | null,
+	): void {
 		const change = this.db.run(
 			`UPDATE memory_outbox SET state = ?, next_attempt = ?, attempts = attempts + 1, error = ?
 			 WHERE operation_id = ? AND state = ? AND attempts = ?`,
@@ -131,8 +151,14 @@ export class MemoryQueue {
 		);
 		if (change.changes !== 1) throw new Error("Memory queue changed during processing");
 		log.info("memory queue transition", {
-			operation: item.operation_id, document: item.document_id, target: item.target,
-			from: item.state, to: state, attempts: item.attempts + 1, nextAttempt, error,
+			operation: item.operation_id,
+			document: item.document_id,
+			target: item.target,
+			from: item.state,
+			to: state,
+			attempts: item.attempts + 1,
+			nextAttempt,
+			error,
 		});
 	}
 
@@ -144,9 +170,11 @@ export class MemoryQueue {
 	// (DESIGN.md: serialize against in-flight writes before deleting).
 	inflightOps(documentId: string): { operationId: string; state: "pending" | "submitted" }[] {
 		const state = z.enum(["pending", "submitted"]);
-		const rows = this.db.query<{ operation_id: string; state: string }, [string]>(
-			`SELECT operation_id, state FROM memory_outbox WHERE document_id = ? AND state IN ('pending', 'submitted')`,
-		).all(documentId);
+		const rows = this.db
+			.query<{ operation_id: string; state: string }, [string]>(
+				`SELECT operation_id, state FROM memory_outbox WHERE document_id = ? AND state IN ('pending', 'submitted')`,
+			)
+			.all(documentId);
 		return rows.map((row) => ({
 			operationId: z.uuid().parse(row.operation_id),
 			state: state.parse(row.state),
@@ -171,9 +199,11 @@ export class MemoryQueue {
 	// accepted remotely and must remain tracked through completion.
 	// Finished, blocked, and other topics' rows are untouched.
 	cancelConversation(conversationId: string): number {
-		const rows = this.db.query<{ operation_id: string; payload: string }, []>(
-			`SELECT operation_id, payload FROM memory_outbox WHERE state = 'pending'`,
-		).all();
+		const rows = this.db
+			.query<{ operation_id: string; payload: string }, []>(
+				`SELECT operation_id, payload FROM memory_outbox WHERE state = 'pending'`,
+			)
+			.all();
 		let removed = 0;
 		for (const row of rows) {
 			let payload: unknown;
@@ -187,10 +217,11 @@ export class MemoryQueue {
 				throw new Error(`Invalid memory document for operation ${row.operation_id}`);
 			}
 			if (doc.data.conversationId === conversationId) {
-				removed += Number(this.db.run(
-					"DELETE FROM memory_outbox WHERE operation_id = ? AND state = 'pending'",
-					[row.operation_id],
-				).changes);
+				removed += Number(
+					this.db.run("DELETE FROM memory_outbox WHERE operation_id = ? AND state = 'pending'", [
+						row.operation_id,
+					]).changes,
+				);
 			}
 		}
 		return removed;
@@ -198,10 +229,18 @@ export class MemoryQueue {
 
 	counts(target: string): MemoryQueueCounts {
 		targetSchema.parse(target);
-		const rows = this.db.query<{ state: string; n: number }, [string]>(
-			`SELECT state, COUNT(*) AS n FROM memory_outbox WHERE target = ? GROUP BY state`,
-		).all(target);
-		const out: MemoryQueueCounts = { pending: 0, submitted: 0, completed: 0, blocked: 0, dismissed: 0 };
+		const rows = this.db
+			.query<{ state: string; n: number }, [string]>(
+				`SELECT state, COUNT(*) AS n FROM memory_outbox WHERE target = ? GROUP BY state`,
+			)
+			.all(target);
+		const out: MemoryQueueCounts = {
+			pending: 0,
+			submitted: 0,
+			completed: 0,
+			blocked: 0,
+			dismissed: 0,
+		};
 		for (const r of rows) {
 			if (r.state === "pending") out.pending = r.n;
 			else if (r.state === "submitted") out.submitted = r.n;
@@ -221,9 +260,11 @@ export class MemoryQueue {
 	// still holds.
 	retryBlocked(target: string): number {
 		targetSchema.parse(target);
-		const rows = this.db.query<{ operation_id: string; document_id: string }, [string]>(
-			"SELECT operation_id, document_id FROM memory_outbox WHERE target = ? AND state = 'blocked'",
-		).all(target);
+		const rows = this.db
+			.query<{ operation_id: string; document_id: string }, [string]>(
+				"SELECT operation_id, document_id FROM memory_outbox WHERE target = ? AND state = 'blocked'",
+			)
+			.all(target);
 		for (const row of rows) {
 			const fresh = randomUUID();
 			const change = this.db.run(
@@ -247,9 +288,11 @@ export class MemoryQueue {
 	// selected by next() again.
 	dismissBlocked(target: string): number {
 		targetSchema.parse(target);
-		const rows = this.db.query<{ operation_id: string; document_id: string }, [string]>(
-			"SELECT operation_id, document_id FROM memory_outbox WHERE target = ? AND state = 'blocked'",
-		).all(target);
+		const rows = this.db
+			.query<{ operation_id: string; document_id: string }, [string]>(
+				"SELECT operation_id, document_id FROM memory_outbox WHERE target = ? AND state = 'blocked'",
+			)
+			.all(target);
 		for (const row of rows) {
 			const change = this.db.run(
 				"UPDATE memory_outbox SET state = 'dismissed' WHERE operation_id = ? AND state = 'blocked'",
@@ -275,11 +318,15 @@ export class MemoryQueue {
 
 	blockedDetail(target: string): BlockedRetention[] {
 		targetSchema.parse(target);
-		const rows = this.db.query<{ document_id: string; error: string | null; attempts: number }, [string]>(
-			"SELECT document_id, error, attempts FROM memory_outbox WHERE target = ? AND state = 'blocked' ORDER BY rowid LIMIT 10",
-		).all(target);
+		const rows = this.db
+			.query<{ document_id: string; error: string | null; attempts: number }, [string]>(
+				"SELECT document_id, error, attempts FROM memory_outbox WHERE target = ? AND state = 'blocked' ORDER BY rowid LIMIT 10",
+			)
+			.all(target);
 		return rows.map((r) => ({
-			document: r.document_id.includes("/") ? (r.document_id.split("/").pop() ?? r.document_id) : r.document_id,
+			document: r.document_id.includes("/")
+				? (r.document_id.split("/").pop() ?? r.document_id)
+				: r.document_id,
 			error: r.error === null ? null : r.error.slice(0, 120),
 			attempts: r.attempts,
 		}));
@@ -305,7 +352,7 @@ export type WorkerOutcome =
 			documentId: string;
 			error: string | null;
 			attempts: number;
-		};
+	  };
 
 // One caller/process owns the outbox. tick() coalesces concurrent invocations;
 // it deliberately has no timer or implicit network activity at construction.
@@ -368,7 +415,8 @@ export class MemoryQueueWorker {
 		this.queue.update(item, state, this.clock() + delayMs, error);
 		const conversationId = item.document.conversationId;
 		if (transportFailure) this.observe?.({ ok: false, transport: true, conversationId });
-		else if (state === "submitted" || state === "completed") this.observe?.({ ok: true, conversationId });
+		else if (state === "submitted" || state === "completed")
+			this.observe?.({ ok: true, conversationId });
 		else
 			this.observe?.({
 				ok: false,

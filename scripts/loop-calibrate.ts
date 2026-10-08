@@ -43,7 +43,8 @@ function storedCases(db: Database, ids: { id: number; expect: Case["expect"] }[]
 			seq: number;
 			data: string;
 		};
-		const parts = (JSON.parse(row.data) as { message: { parts: Record<string, unknown>[] } }).message.parts;
+		const parts = (JSON.parse(row.data) as { message: { parts: Record<string, unknown>[] } })
+			.message.parts;
 		const calls: ToolCallDigest[] = parts
 			.filter((p) => typeof p.type === "string" && p.type.startsWith("tool-"))
 			.map((p) => {
@@ -57,23 +58,32 @@ function storedCases(db: Database, ids: { id: number; expect: Case["expect"] }[]
 				};
 			});
 		const users = db
-			.query("select data from events where conversation_id = ? and seq < ? and role = 'user' order by seq desc limit 5")
+			.query(
+				"select data from events where conversation_id = ? and seq < ? and role = 'user' order by seq desc limit 5",
+			)
 			.all(row.conversation_id, row.seq) as { data: string }[];
 		const request =
-			users.map((u) => textOf((JSON.parse(u.data) as { message: { parts: unknown } }).message.parts)).find((t) => t !== "") ??
-			"(attachment only)";
+			users
+				.map((u) => textOf((JSON.parse(u.data) as { message: { parts: unknown } }).message.parts))
+				.find((t) => t !== "") ?? "(attachment only)";
 		return { name: `event ${id}`, expect, request, calls };
 	});
 }
 
-const rep = (n: number, f: (i: number) => ToolCallDigest): ToolCallDigest[] => Array.from({ length: n }, (_, i) => f(i));
+const rep = (n: number, f: (i: number) => ToolCallDigest): ToolCallDigest[] =>
+	Array.from({ length: n }, (_, i) => f(i));
 
 const synthetic: Case[] = [
 	{
 		name: "exact repeat",
 		expect: "stuck",
 		request: "Why does the build fail?",
-		calls: rep(16, () => ({ tool: "bash", args: '{"command":"bun run build"}', result: "error: Could not resolve \"./missing.ts\"", ok: false })),
+		calls: rep(16, () => ({
+			tool: "bash",
+			args: '{"command":"bun run build"}',
+			result: 'error: Could not resolve "./missing.ts"',
+			ok: false,
+		})),
 	},
 	{
 		name: "cosmetic retry, same error",
@@ -81,7 +91,14 @@ const synthetic: Case[] = [
 		request: "Install faster-whisper and transcribe the voice note.",
 		calls: rep(16, (i) => ({
 			tool: "bash",
-			args: JSON.stringify({ command: ["pip install faster-whisper", "pip3 install faster-whisper", "python3 -m pip install faster-whisper", "pip install --user faster-whisper"][i % 4] }),
+			args: JSON.stringify({
+				command: [
+					"pip install faster-whisper",
+					"pip3 install faster-whisper",
+					"python3 -m pip install faster-whisper",
+					"pip install --user faster-whisper",
+				][i % 4],
+			}),
 			result: "error: externally-managed-environment × This environment is externally managed",
 			ok: false,
 		})),
@@ -92,8 +109,11 @@ const synthetic: Case[] = [
 		request: "What is the new Zorblax framework everyone is talking about this week?",
 		calls: rep(16, (i) => ({
 			tool: "search",
-			args: JSON.stringify({ query: `${["Zorblax framework", "\"Zorblax\" release", "Zorblax announcement 2026", "zorblax github", "Zorblax JS framework news"][i % 5]} ${i}` }),
-			result: "<web>\n1. Zorbl — https://zorbl.example/ — a Hungarian bakery\n2. Blax Industries — https://blax.example/",
+			args: JSON.stringify({
+				query: `${["Zorblax framework", '"Zorblax" release', "Zorblax announcement 2026", "zorblax github", "Zorblax JS framework news"][i % 5]} ${i}`,
+			}),
+			result:
+				"<web>\n1. Zorbl — https://zorbl.example/ — a Hungarian bakery\n2. Blax Industries — https://blax.example/",
 			ok: true,
 		})),
 	},
@@ -103,8 +123,18 @@ const synthetic: Case[] = [
 		request: "Make the tests pass.",
 		calls: rep(16, (i) =>
 			i % 2 === 0
-				? { tool: "edit", args: '{"path":"src/a.ts","old":"x + 1","new":"x - 1"}', result: "ok", ok: true }
-				: { tool: "bash", args: '{"command":"bun test"}', result: "1 fail: expected 3, got 1", ok: false },
+				? {
+						tool: "edit",
+						args: '{"path":"src/a.ts","old":"x + 1","new":"x - 1"}',
+						result: "ok",
+						ok: true,
+					}
+				: {
+						tool: "bash",
+						args: '{"command":"bun test"}',
+						result: "1 fail: expected 3, got 1",
+						ok: false,
+					},
 		),
 	},
 	{
@@ -124,8 +154,18 @@ const synthetic: Case[] = [
 		request: "Make the typecheck pass.",
 		calls: rep(16, (i) =>
 			i % 2 === 0
-				? { tool: "edit", args: JSON.stringify({ path: `src/f${i}.ts`, old: `a${i}`, new: `b${i}` }), result: "ok", ok: true }
-				: { tool: "bash", args: '{"command":"bun run typecheck"}', result: `${16 - i} errors remaining; first: src/f${i + 1}.ts(3,1) TS2322`, ok: false },
+				? {
+						tool: "edit",
+						args: JSON.stringify({ path: `src/f${i}.ts`, old: `a${i}`, new: `b${i}` }),
+						result: "ok",
+						ok: true,
+					}
+				: {
+						tool: "bash",
+						args: '{"command":"bun run typecheck"}',
+						result: `${16 - i} errors remaining; first: src/f${i + 1}.ts(3,1) TS2322`,
+						ok: false,
+					},
 		),
 	},
 ];
@@ -139,8 +179,7 @@ const args = process.argv.slice(2);
 const topIdx = args.indexOf("--top");
 const topN = topIdx === -1 ? 10 : Number.parseInt(args[topIdx + 1] ?? "", 10);
 if (!Number.isInteger(topN) || topN < 1) throw new Error("--top expects a positive integer");
-const models =
-	topIdx === -1 ? [...args] : args.filter((_, i) => i !== topIdx && i !== topIdx + 1);
+const models = topIdx === -1 ? [...args] : args.filter((_, i) => i !== topIdx && i !== topIdx + 1);
 if (models.length === 0) models.push(config.system1?.model ?? JEV_MODEL);
 
 // Expectations for stored turns are verified by hand — label a turn's
@@ -169,18 +208,30 @@ const cases = [
 db.close();
 
 for (const model of models) {
-	const client = new JevClient({ model, auth: () => auth.resolve(authRef), ...(config.system1?.baseUrl ? { baseUrl: config.system1.baseUrl } : {}) });
+	const client = new JevClient({
+		model,
+		auth: () => auth.resolve(authRef),
+		...(config.system1?.baseUrl ? { baseUrl: config.system1.baseUrl } : {}),
+	});
 	process.stdout.write(`\n== ${model}\n`);
 	for (const c of cases) {
-		const checkpoints = [CHECK_EVERY, ...(c.calls.length > CHECK_EVERY ? [c.calls.length] : [])].filter((n) => n <= c.calls.length);
+		const checkpoints = [
+			CHECK_EVERY,
+			...(c.calls.length > CHECK_EVERY ? [c.calls.length] : []),
+		].filter((n) => n <= c.calls.length);
 		if (checkpoints.length === 0) checkpoints.push(c.calls.length);
 		for (const at of checkpoints) {
 			const scores: string[] = [];
 			for (let r = 0; r < 3; r++) {
-				const d = await client.decide(loopState(c.request, at, c.calls.slice(0, at)), LOOP_QUESTIONS);
+				const d = await client.decide(
+					loopState(c.request, at, c.calls.slice(0, at)),
+					LOOP_QUESTIONS,
+				);
 				scores.push((d.answers.stuck ?? NaN).toFixed(3));
 			}
-			process.stdout.write(`${c.expect.padEnd(8)} ${c.name.padEnd(32)} @${String(at).padEnd(3)} ${scores.join(" ")}\n`);
+			process.stdout.write(
+				`${c.expect.padEnd(8)} ${c.name.padEnd(32)} @${String(at).padEnd(3)} ${scores.join(" ")}\n`,
+			);
 		}
 	}
 }

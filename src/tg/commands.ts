@@ -97,16 +97,16 @@ function listingsFor(db: Database): ForgetListings {
 
 // Apply a settings change: patch meta + bump epoch (fences in-flight
 // turns) atomically.
-function apply(deps: CommandDeps, conv: Conversation, patch: Parameters<ConversationStore["setMeta"]>[1]): void {
+function apply(
+	deps: CommandDeps,
+	conv: Conversation,
+	patch: Parameters<ConversationStore["setMeta"]>[1],
+): void {
 	deps.store.applySettings(conv.id, patch);
 }
 
 // Returns true if the text was a command and got handled.
-export function handleCommand(
-	deps: CommandDeps,
-	conv: Conversation,
-	text: string,
-): boolean {
+export function handleCommand(deps: CommandDeps, conv: Conversation, text: string): boolean {
 	const parsed = parseCommand(text, deps.botUsername);
 	if (parsed === null) return false;
 	// "/stop@otherbot" is not for this bot — consumed silently rather than
@@ -133,7 +133,10 @@ export function handleCommand(
 
 		case "/stop": {
 			const { stopped, reviewsCancelled } = deps.runtime.stop(conv.id);
-			const suffix = reviewsCancelled > 0 ? ` — ${reviewsCancelled} review${reviewsCancelled === 1 ? "" : "s"} cancelled` : "";
+			const suffix =
+				reviewsCancelled > 0
+					? ` — ${reviewsCancelled} review${reviewsCancelled === 1 ? "" : "s"} cancelled`
+					: "";
 			reply(deps, conv, stopped ? `stopped${suffix}` : `nothing was running${suffix}`);
 			return true;
 		}
@@ -255,11 +258,15 @@ export function handleCommand(
 			];
 			if (counts.blocked > 0) {
 				for (const [i, b] of status.blockedDetail.entries()) {
-					lines.push(`  ${i + 1}. ${b.document} (${b.attempts} attempt${b.attempts === 1 ? "" : "s"}): ${b.error ?? "unknown error"}`);
+					lines.push(
+						`  ${i + 1}. ${b.document} (${b.attempts} attempt${b.attempts === 1 ? "" : "s"}): ${b.error ?? "unknown error"}`,
+					);
 				}
 				// blockedDetail caps at 10 — the header count is the truth.
 				if (counts.blocked > status.blockedDetail.length) {
-					lines.push(`  … and ${counts.blocked - status.blockedDetail.length} more (goblin.log has every id)`);
+					lines.push(
+						`  … and ${counts.blocked - status.blockedDetail.length} more (goblin.log has every id)`,
+					);
 				}
 				lines.push("actions: /memory retry · /memory dismiss");
 			}
@@ -297,7 +304,11 @@ export function handleCommand(
 			if (arg === "delete" || arg.startsWith("delete ")) {
 				const ref = arg.slice("delete".length).trim();
 				if (ref === "" || ref.length > 256 || ref === "." || ref === "..") {
-					reply(deps, conv, "/forget delete <n> — or the document id from a /forget <query> listing");
+					reply(
+						deps,
+						conv,
+						"/forget delete <n> — or the document id from a /forget <query> listing",
+					);
 					return true;
 				}
 				// A pure integer addresses the listing this conversation last
@@ -309,7 +320,11 @@ export function handleCommand(
 				if (/^\d+$/.test(ref)) {
 					const picked = listingsFor(deps.store.db).resolve(conv.id, ref, Date.now());
 					if (picked === null) {
-						reply(deps, conv, "no usable listing for that number — run /forget <query> and pick within 10 minutes");
+						reply(
+							deps,
+							conv,
+							"no usable listing for that number — run /forget <query> and pick within 10 minutes",
+						);
 						return true;
 					}
 					id = picked.documentId;
@@ -328,7 +343,10 @@ export function handleCommand(
 						// fresh one. Revoke its epoch before redacting snapshots:
 						// a late recall must not reinsert the forgotten source.
 						deps.runtime.stop(conv.id);
-						const result = await forgetDocument(mem, id, { channel: "telegram", conversation: conv.id });
+						const result = await forgetDocument(mem, id, {
+							channel: "telegram",
+							conversation: conv.id,
+						});
 						if (result.outcome === "busy") {
 							reply(
 								deps,

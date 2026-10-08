@@ -133,10 +133,7 @@ function setup(
 }
 
 function queue(s: OutboxStore, at: Date = NOW) {
-	return s.queue(
-		{ to: ["a@x.com"], subject: "hi", body: "hello", address: ADDRESS },
-		at,
-	);
+	return s.queue({ to: ["a@x.com"], subject: "hi", body: "hello", address: ADDRESS }, at);
 }
 
 const tap = (id: number, op: "send" | "cancel") => ({
@@ -223,13 +220,17 @@ describe("draft requests", () => {
 		expect(calls.sends[0]!.keyboard).toBe(true);
 		expect(calls.sends[0]!.text).toContain(`Draft #${out.queued}`);
 		expect(outbox.get(out.queued)).toMatchObject({
-			status: "pending", draftMessageId: null, decidedAt: null,
+			status: "pending",
+			draftMessageId: null,
+			decidedAt: null,
 		});
 		await gate.handleTap(tap(out.queued, "send"));
 		expect(sender.sent).toHaveLength(1);
 		expect(outbox.get(out.queued)!.status).toBe("sent");
 		expect(calls.edits).toContainEqual({
-			chat: -100, message: 500, text: expect.stringContaining("sent to a@x.com"),
+			chat: -100,
+			message: 500,
+			text: expect.stringContaining("sent to a@x.com"),
 		});
 		outbox.close();
 	});
@@ -245,13 +246,16 @@ describe("draft requests", () => {
 			},
 		} as unknown as Api;
 		const out = await gate.requestDraft(
-			{ to: ["a@x.com"], subject: "hi", body: "x".repeat(4000) }, ADDRESS,
+			{ to: ["a@x.com"], subject: "hi", body: "x".repeat(4000) },
+			ADDRESS,
 		);
 		if (!("queued" in out)) throw new Error("expected uncertain queued verdict");
 		expect(out.status).toContain("check Telegram before retrying");
 		expect(calls.sends.map((s) => s.keyboard)).toEqual([false, true]);
 		expect(outbox.get(out.queued)).toMatchObject({
-			status: "pending", draftMessageId: null, decidedAt: null,
+			status: "pending",
+			draftMessageId: null,
+			decidedAt: null,
 		});
 		outbox.close();
 	});
@@ -279,7 +283,8 @@ describe("draft requests", () => {
 			},
 		} as unknown as Api;
 		const out = await gate.requestDraft(
-			{ to: ["a@x.com"], subject: "hi", body: "x".repeat(8000) }, ADDRESS,
+			{ to: ["a@x.com"], subject: "hi", body: "x".repeat(8000) },
+			ADDRESS,
 		);
 		if (!("error" in out)) throw new Error("expected a cancelled error verdict");
 		expect(out.error).toContain(`draft #${seenId}`);
@@ -474,7 +479,10 @@ describe("mail approval taps", () => {
 		await gate.handleTap({ ...tap(row.id, "send"), id: "q-second" });
 		release();
 		await first;
-		expect(calls.answers).toContainEqual({ id: "q-second", text: "sending — wait for the verdict" });
+		expect(calls.answers).toContainEqual({
+			id: "q-second",
+			text: "sending — wait for the verdict",
+		});
 		expect(outbox.get(row.id)!.status).toBe("sent");
 		outbox.close();
 	});
@@ -525,7 +533,10 @@ describe("mail approval taps", () => {
 		await gate.handleTap({ ...tap(row.id, "cancel"), id: "q-cancel" });
 		release();
 		await first;
-		expect(calls.answers).toContainEqual({ id: "q-cancel", text: "sending — wait for the verdict" });
+		expect(calls.answers).toContainEqual({
+			id: "q-cancel",
+			text: "sending — wait for the verdict",
+		});
 		expect(calls.edits[0]!.text).toContain("sent to a@x.com");
 		expect(outbox.get(row.id)!.status).toBe("sent");
 		outbox.close();
@@ -619,7 +630,10 @@ describe("the expiry sweep", () => {
 			new Date(NOW.getTime() - OUTBOX_TTL_MS - 1000),
 		);
 		outbox.bindDraft(stale.id, 555);
-		const pending = outbox.queue({ to: ["b@y.com"], subject: "h", body: "b", address: ADDRESS }, NOW);
+		const pending = outbox.queue(
+			{ to: ["b@y.com"], subject: "h", body: "b", address: ADDRESS },
+			NOW,
+		);
 		const { calls, gate } = setup(fakeSender(), fakeReader(), outbox);
 		// The boot catch-up runs inside the factory — the stale row is
 		// already settled when it returns; give its stamp a beat to land.

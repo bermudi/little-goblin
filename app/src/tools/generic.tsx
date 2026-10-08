@@ -5,7 +5,14 @@
 // best-effort scalar off well-known keys, the detail is capped JSON.
 
 import { Clip, Icon, type ToolView } from "./bits.tsx";
-import { clipHead, firstLine, inputSummary, joinSummary, outputSummary, shortJson } from "./parse.ts";
+import {
+	clipHead,
+	firstLine,
+	inputSummary,
+	joinSummary,
+	outputSummary,
+	shortJson,
+} from "./parse.ts";
 
 export const genericView: ToolView = {
 	icon: (

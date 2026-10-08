@@ -161,9 +161,7 @@ export function byteLen(text: string): number {
 
 /** Join the fragments of a collapsed-row summary, skipping empties. */
 export function joinSummary(...parts: (string | null | undefined)[]): string {
-	return parts
-		.filter((p): p is string => typeof p === "string" && p !== "")
-		.join(" · ");
+	return parts.filter((p): p is string => typeof p === "string" && p !== "").join(" · ");
 }
 
 function scalar(v: unknown): string | null {
@@ -210,7 +208,16 @@ export function inputSummary(input: unknown): string | null {
 
 // Same trick on the output side, for the collapsed row of generic tools
 // whose input carried no hint.
-const OUT_KEYS = ["status", "sent", "queued", "stopped", "replaced", "bytes", "id", "name"] as const;
+const OUT_KEYS = [
+	"status",
+	"sent",
+	"queued",
+	"stopped",
+	"replaced",
+	"bytes",
+	"id",
+	"name",
+] as const;
 
 export function outputSummary(output: unknown): string | null {
 	if (typeof output !== "object" || output === null) return null;

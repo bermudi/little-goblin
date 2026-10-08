@@ -42,10 +42,9 @@ describe("edit_file", () => {
 		const dir = tmpdir_();
 		writeFileSync(join(dir, "f.txt"), "x x\n");
 		const t = editFileTool(dir);
-		const dup = (await t.execute!(
-			{ path: "f.txt", old_string: "x", new_string: "y" },
-			opts,
-		)) as { error?: string };
+		const dup = (await t.execute!({ path: "f.txt", old_string: "x", new_string: "y" }, opts)) as {
+			error?: string;
+		};
 		expect(dup.error).toContain("2 times");
 		const all = (await t.execute!(
 			{ path: "f.txt", old_string: "x", new_string: "y", replace_all: true },
@@ -61,10 +60,9 @@ describe("edit_file", () => {
 		ftruncateSync(fd, 9 * 1024 * 1024);
 		closeSync(fd);
 		const t = editFileTool(dir);
-		const out = (await t.execute!(
-			{ path: "big.log", old_string: "x", new_string: "y" },
-			opts,
-		)) as { error?: string };
+		const out = (await t.execute!({ path: "big.log", old_string: "x", new_string: "y" }, opts)) as {
+			error?: string;
+		};
 		expect(out.error).toContain("file too large");
 	});
 
@@ -73,10 +71,9 @@ describe("edit_file", () => {
 		const bytes = Buffer.from([0x89, 0x00, 0x50, 0x4e, 0x47]);
 		writeFileSync(join(dir, "b.bin"), bytes);
 		const t = editFileTool(dir);
-		const out = (await t.execute!(
-			{ path: "b.bin", old_string: "x", new_string: "y" },
-			opts,
-		)) as { error?: string };
+		const out = (await t.execute!({ path: "b.bin", old_string: "x", new_string: "y" }, opts)) as {
+			error?: string;
+		};
 		expect(out.error).toContain("binary file");
 		expect(readFileSync(join(dir, "b.bin"))).toEqual(bytes); // untouched
 	});

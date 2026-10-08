@@ -41,7 +41,12 @@ describe("serveAppDist", () => {
 
 	test("traversal attempts never escape the dist dir", async () => {
 		const dist = makeDist();
-		for (const rel of ["../conversation.ts", "..", "assets/../../secret", "a/../../../etc/passwd"]) {
+		for (const rel of [
+			"../conversation.ts",
+			"..",
+			"assets/../../secret",
+			"a/../../../etc/passwd",
+		]) {
 			const res = await serveAppDist(rel, dist);
 			expect(res.status).toBe(404);
 		}

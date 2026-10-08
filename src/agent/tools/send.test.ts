@@ -67,9 +67,9 @@ describe("send_file", () => {
 		expect(((await t.execute!({ path: "sub" }, opts)) as { error?: string }).error).toContain(
 			"is a directory",
 		);
-		expect(
-			((await t.execute!({ path: "empty.txt" }, opts)) as { error?: string }).error,
-		).toContain("is empty");
+		expect(((await t.execute!({ path: "empty.txt" }, opts)) as { error?: string }).error).toContain(
+			"is empty",
+		);
 	});
 
 	test("a failed delivery surfaces as an error result", async () => {
@@ -87,9 +87,9 @@ describe("send_file input rule", () => {
 	test("caption is optional and capped at 1024 chars", () => {
 		expect(sendFileInputSchema.safeParse({ path: "a.txt" }).success).toBe(true);
 		expect(sendFileInputSchema.safeParse({ path: "a.txt", caption: "hi" }).success).toBe(true);
-		expect(sendFileInputSchema.safeParse({ path: "a.txt", caption: "x".repeat(1025) }).success).toBe(
-			false,
-		);
+		expect(
+			sendFileInputSchema.safeParse({ path: "a.txt", caption: "x".repeat(1025) }).success,
+		).toBe(false);
 		expect(sendFileInputSchema.safeParse({}).success).toBe(false);
 	});
 });

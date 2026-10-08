@@ -177,7 +177,9 @@ export function makeDeliverySink(
 	async function notifyUncertain(): Promise<void> {
 		if (cancelled || !authoritative()) {
 			log.info("delivery uncertainty notice fenced", {
-				conversation: conv.id, chat: conv.chatId, thread: conv.threadId,
+				conversation: conv.id,
+				chat: conv.chatId,
+				thread: conv.threadId,
 			});
 			return;
 		}
@@ -248,7 +250,9 @@ export function makeDeliverySink(
 
 	async function sendVoice(audio: Uint8Array): Promise<void> {
 		if (uncertain) {
-			throw new Error("Telegram delivery uncertain — voice not sent again; check Telegram before retrying");
+			throw new Error(
+				"Telegram delivery uncertain — voice not sent again; check Telegram before retrying",
+			);
 		}
 		if (!mayDeliver()) return;
 		let failure: { error: unknown } | undefined;
@@ -275,7 +279,9 @@ export function makeDeliverySink(
 		await chain;
 		if (failure) throw failure.error;
 		if (uncertain) {
-			throw new Error("Telegram delivery uncertain — voice not sent again; check Telegram before retrying");
+			throw new Error(
+				"Telegram delivery uncertain — voice not sent again; check Telegram before retrying",
+			);
 		}
 	}
 
@@ -310,7 +316,10 @@ export function makeDeliverySink(
 			};
 			try {
 				const sent = photo
-					? await withTimeout(api.sendPhoto(conv.chatId, new InputFile(file.path, file.filename), extra), "sendPhoto")
+					? await withTimeout(
+							api.sendPhoto(conv.chatId, new InputFile(file.path, file.filename), extra),
+							"sendPhoto",
+						)
 					: await withTimeout(
 							api.sendDocument(conv.chatId, new InputFile(file.path, file.filename), extra),
 							"sendDocument",
@@ -373,9 +382,7 @@ export function makeDeliverySink(
 					try {
 						const sent = await withTimeout(
 							api.sendMessage(conv.chatId, out, {
-								...(conv.threadId !== null
-									? { message_thread_id: conv.threadId }
-									: {}),
+								...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
 								...(idx === 0 && replyTo !== undefined
 									? { reply_parameters: { message_id: replyTo } }
 									: {}),
@@ -546,8 +553,7 @@ export function makeDeliverySink(
 								"sendMessage",
 							);
 						} catch (error) {
-							if (error instanceof TelegramTimeoutError)
-								markUncertain(error, "sendMessage error");
+							if (error instanceof TelegramTimeoutError) markUncertain(error, "sendMessage error");
 							throw error;
 						}
 					});
@@ -601,7 +607,7 @@ export function makeDeliverySink(
 							if (!mayDeliver()) return;
 							await withTimeout(
 								api.sendMessage(conv.chatId, notice, {
-										...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+									...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
 								}),
 								"sendMessage",
 							);
@@ -628,11 +634,15 @@ export function makeDeliverySink(
 						enqueue(async () => {
 							if (!mayDeliver()) return;
 							try {
-								await withTimeout(api.sendMessage(conv.chatId, chunk, {
-									...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
-								}), "sendMessage");
+								await withTimeout(
+									api.sendMessage(conv.chatId, chunk, {
+										...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+									}),
+									"sendMessage",
+								);
 							} catch (error) {
-								if (error instanceof TelegramTimeoutError) markUncertain(error, "sendMessage fallback");
+								if (error instanceof TelegramTimeoutError)
+									markUncertain(error, "sendMessage fallback");
 								failed = error;
 								throw error;
 							}
@@ -734,9 +744,7 @@ export function makeDeliverySink(
 						if (!mayDeliver()) return;
 						if (voice) rememberReply(conv.chatId, mid, text);
 						await withTimeout(
-							api.setMessageReaction(conv.chatId, mid, [
-								{ type: "emoji", emoji: "🫡" },
-							]),
+							api.setMessageReaction(conv.chatId, mid, [{ type: "emoji", emoji: "🫡" }]),
 							"setMessageReaction",
 						);
 					});

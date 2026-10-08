@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,12 +64,11 @@ describe("mediaFromMessage", () => {
 	});
 
 	test("only recordings are marked transcribable; attached audio is data", () => {
+		expect(mediaFromMessage({ voice: { file_id: "v", file_unique_id: "u" } })!.transcribable).toBe(
+			true,
+		);
 		expect(
-			mediaFromMessage({ voice: { file_id: "v", file_unique_id: "u" } })!.transcribable,
-		).toBe(true);
-		expect(
-			mediaFromMessage({ video_note: { file_id: "n", file_unique_id: "u" } })!
-				.transcribable,
+			mediaFromMessage({ video_note: { file_id: "n", file_unique_id: "u" } })!.transcribable,
 		).toBe(true);
 		// Attached audio — a song, a podcast — is a file, not speech.
 		// Transcribing it eagerly burns provider calls on content nobody
@@ -84,8 +91,7 @@ describe("mediaFromMessage", () => {
 			mediaFromMessage({ video: { file_id: "vv", file_unique_id: "u" } })!.transcribable,
 		).toBeUndefined();
 		expect(
-			mediaFromMessage({ animation: { file_id: "g", file_unique_id: "u" } })!
-				.transcribable,
+			mediaFromMessage({ animation: { file_id: "g", file_unique_id: "u" } })!.transcribable,
 		).toBeUndefined();
 	});
 });
@@ -133,12 +139,7 @@ describe("saveAttachment", () => {
 		const dir = useHome();
 		const src = join(dir, "upload.bin");
 		writeFileSync(src, "payload");
-		const saved = await saveAttachment(
-			media,
-			{ file_path: src } as TgFile,
-			undefined,
-			"token",
-		);
+		const saved = await saveAttachment(media, { file_path: src } as TgFile, undefined, "token");
 		expect(saved.size).toBe(7);
 		expect(saved.path).toBe(join(paths.attachments(), "u1-clip.mp4"));
 		expect(readFileSync(saved.path, "utf8")).toBe("payload");
@@ -153,15 +154,23 @@ describe("saveAttachment", () => {
 			const handle = await realOpen(path, flags, mode);
 			const realSync = handle.sync.bind(handle);
 			handle.sync = async () => {
-				synced.push(String(path) === paths.attachments() ? "directory" :
-					String(path) === paths.workspace() ? "workspace" : "temp");
+				synced.push(
+					String(path) === paths.attachments()
+						? "directory"
+						: String(path) === paths.workspace()
+							? "workspace"
+							: "temp",
+				);
 				await realSync();
 			};
 			return handle;
 		});
 		try {
 			const saved = await saveAttachment(
-				media, { file_path: "cloud/file" } as TgFile, undefined, "token",
+				media,
+				{ file_path: "cloud/file" } as TgFile,
+				undefined,
+				"token",
 			);
 			expect(readFileSync(saved.path, "utf8")).toBe("downloaded");
 			expect(synced).toEqual(["workspace", "temp", "directory"]);
@@ -181,8 +190,12 @@ describe("saveAttachment", () => {
 		const realRename = fsPromises.rename;
 		const opened = spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
 			const handle = await realOpen(path, flags, mode);
-			const kind = String(path) === paths.attachments() ? "directory" :
-				String(path) === paths.workspace() ? "workspace" : "temp";
+			const kind =
+				String(path) === paths.attachments()
+					? "directory"
+					: String(path) === paths.workspace()
+						? "workspace"
+						: "temp";
 			const realSync = handle.sync.bind(handle);
 			handle.sync = async () => {
 				events.push(`sync:${kind}`);
@@ -212,13 +225,16 @@ describe("saveAttachment", () => {
 		const opened = spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
 			const handle = await realOpen(path, flags, mode);
 			if (String(path) === paths.workspace()) {
-				handle.sync = async () => { throw new Error("parent I/O failure"); };
+				handle.sync = async () => {
+					throw new Error("parent I/O failure");
+				};
 			}
 			return handle;
 		});
 		try {
-			await expect(saveAttachment(media, { file_path: src } as TgFile, undefined, "token"))
-				.rejects.toThrow("attachment parent directory sync failed");
+			await expect(
+				saveAttachment(media, { file_path: src } as TgFile, undefined, "token"),
+			).rejects.toThrow("attachment parent directory sync failed");
 		} finally {
 			opened.mockRestore();
 		}
@@ -236,13 +252,18 @@ describe("saveAttachment", () => {
 		const opened = spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
 			const handle = await realOpen(path, flags, mode);
 			if (String(path) !== paths.workspace()) {
-				handle.sync = async () => { throw new Error("disk I/O failure token"); };
+				handle.sync = async () => {
+					throw new Error("disk I/O failure token");
+				};
 			}
 			return handle;
 		});
 		try {
 			const failure: unknown = await saveAttachment(
-				media, { file_path: src } as TgFile, undefined, "token",
+				media,
+				{ file_path: src } as TgFile,
+				undefined,
+				"token",
 			).catch((err: unknown) => err);
 			expect(failure).toBeInstanceOf(Error);
 			if (!(failure instanceof Error)) throw new Error("expected sync failure");
@@ -267,13 +288,16 @@ describe("saveAttachment", () => {
 		const opened = spyOn(fsPromises, "open").mockImplementation(async (path, flags, mode) => {
 			const handle = await realOpen(path, flags, mode);
 			if (String(path) === paths.attachments()) {
-				handle.sync = async () => { throw new Error("directory I/O failure"); };
+				handle.sync = async () => {
+					throw new Error("directory I/O failure");
+				};
 			}
 			return handle;
 		});
 		try {
-			await expect(saveAttachment(media, { file_path: src } as TgFile, undefined, "token"))
-				.rejects.toThrow("telegram attachment directory sync failed");
+			await expect(
+				saveAttachment(media, { file_path: src } as TgFile, undefined, "token"),
+			).rejects.toThrow("telegram attachment directory sync failed");
 		} finally {
 			opened.mockRestore();
 		}
@@ -294,8 +318,9 @@ describe("saveAttachment", () => {
 			throw new Error("copy interrupted");
 		});
 		try {
-			await expect(saveAttachment(media, { file_path: src } as TgFile, undefined, "token"))
-				.rejects.toThrow("copy interrupted");
+			await expect(
+				saveAttachment(media, { file_path: src } as TgFile, undefined, "token"),
+			).rejects.toThrow("copy interrupted");
 		} finally {
 			copy.mockRestore();
 		}
@@ -318,17 +343,21 @@ describe("saveAttachment", () => {
 
 	test("rejects a unique id that could escape the attachments directory", async () => {
 		useHome();
-		await expect(saveAttachment(
-			{ ...media, fileUniqueId: "../escape" },
-			{ file_path: "/not-read" } as TgFile, undefined, "token",
-		)).rejects.toThrow();
+		await expect(
+			saveAttachment(
+				{ ...media, fileUniqueId: "../escape" },
+				{ file_path: "/not-read" } as TgFile,
+				undefined,
+				"token",
+			),
+		).rejects.toThrow();
 		expect(existsSync(paths.attachments())).toBe(false);
 	});
 
 	test("a missing file_path fails loud", async () => {
 		useHome();
-		await expect(
-			saveAttachment(media, {} as TgFile, undefined, "token"),
-		).rejects.toThrow("no file_path");
+		await expect(saveAttachment(media, {} as TgFile, undefined, "token")).rejects.toThrow(
+			"no file_path",
+		);
 	});
 });

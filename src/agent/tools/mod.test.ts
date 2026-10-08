@@ -17,47 +17,50 @@ describe("toolNames ↔ makeTools", () => {
 				for (const memory of [false, true]) {
 					for (const transcribe of [false, true]) {
 						for (const vision of [false, true]) {
-						test(`voice=${voice}, program=${program}, file=${file}, memory=${memory}, transcribe=${transcribe}, vision=${vision}`, () => {
-							const tools = makeTools(
-								"/tmp",
-								voice ? { synthesize: async () => [], deliver: async () => {} } : undefined,
-								program
-									? {
-											programs,
-											chatId: 1,
-											threadId: null,
-											publicUrl: () => "https://g.ts.net",
-											sendPrivate: async () => {},
-										}
-									: undefined,
-								file ? { deliver: async () => {} } : undefined,
-								memory
-									? {
-											client: memoryClient,
-											maxTokens: 256,
-											budget: "low",
-											isExcluded: () => false,
-											noteRecall: () => {},
-										}
-									: undefined,
-								undefined,
-								transcribe ? { transcribe: async () => null } : undefined,
-								undefined,
-								undefined,
-								undefined,
-								vision ? ({} as Parameters<typeof makeTools>[10]) : undefined,
-							);
-							expect(toolNames(tools)).toEqual([
-								"read_file", "write_file", "edit_file", "bash",
-								...(voice ? ["speak"] : []),
-								...(transcribe ? ["transcribe"] : []),
-								...(vision ? ["vision"] : []),
-								...(program ? ["program"] : []),
-								...(file ? ["send_file"] : []),
-								...(memory ? ["memory_search"] : []),
-							]);
-						});
-					}
+							test(`voice=${voice}, program=${program}, file=${file}, memory=${memory}, transcribe=${transcribe}, vision=${vision}`, () => {
+								const tools = makeTools(
+									"/tmp",
+									voice ? { synthesize: async () => [], deliver: async () => {} } : undefined,
+									program
+										? {
+												programs,
+												chatId: 1,
+												threadId: null,
+												publicUrl: () => "https://g.ts.net",
+												sendPrivate: async () => {},
+											}
+										: undefined,
+									file ? { deliver: async () => {} } : undefined,
+									memory
+										? {
+												client: memoryClient,
+												maxTokens: 256,
+												budget: "low",
+												isExcluded: () => false,
+												noteRecall: () => {},
+											}
+										: undefined,
+									undefined,
+									transcribe ? { transcribe: async () => null } : undefined,
+									undefined,
+									undefined,
+									undefined,
+									vision ? ({} as Parameters<typeof makeTools>[10]) : undefined,
+								);
+								expect(toolNames(tools)).toEqual([
+									"read_file",
+									"write_file",
+									"edit_file",
+									"bash",
+									...(voice ? ["speak"] : []),
+									...(transcribe ? ["transcribe"] : []),
+									...(vision ? ["vision"] : []),
+									...(program ? ["program"] : []),
+									...(file ? ["send_file"] : []),
+									...(memory ? ["memory_search"] : []),
+								]);
+							});
+						}
 					}
 				}
 			}
@@ -111,8 +114,7 @@ describe("toolNames ↔ makeTools", () => {
 			const schema = (t as unknown as { inputSchema?: unknown }).inputSchema;
 			expect(schema, `${name} exposes an input schema`).toBeDefined();
 			const wire = z.toJSONSchema(schema as z.ZodType);
-			expect(wire.type, `${name} wire schema must be an object, got ${wire.type}`)
-				.toBe("object");
+			expect(wire.type, `${name} wire schema must be an object, got ${wire.type}`).toBe("object");
 		}
 	});
 });

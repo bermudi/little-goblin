@@ -27,12 +27,7 @@ export interface MailWatcherDeps {
 	/** The firing owner's mail entry point (scheduler.ts's fireMail) —
 	 *  owns the fire and the checkpoint policy. Async: the injection
 	 *  check scores the event before the turn lands. */
-	fire(
-		program: Program,
-		hits: MailHit[],
-		checkpoint: string,
-		now: Date,
-	): Promise<void>;
+	fire(program: Program, hits: MailHit[], checkpoint: string, now: Date): Promise<void>;
 	/** Direct sends into the pinned conversation (built in tg/): outage
 	 *  notices. Throwing retries next tick. */
 	notify(address: { chatId: number; threadId: number | null }, text: string): Promise<void>;
@@ -110,7 +105,10 @@ async function check(
 			if (deps.programs.baselineMail(program, head)) {
 				log.info("mail filter baselined", { program: program.id, name: program.name, filter });
 			} else {
-				log.info("mail baseline lost to a mid-poll program edit — cursor skipped", { program: program.id, filter });
+				log.info("mail baseline lost to a mid-poll program edit — cursor skipped", {
+					program: program.id,
+					filter,
+				});
 			}
 			recovered(deps, failing, program);
 			return;
@@ -131,7 +129,10 @@ async function check(
 					name: program.name,
 				});
 			} else {
-				log.info("mail baseline lost to a mid-poll program edit — cursor skipped", { program: program.id, filter });
+				log.info("mail baseline lost to a mid-poll program edit — cursor skipped", {
+					program: program.id,
+					filter,
+				});
 			}
 			recovered(deps, failing, program);
 			return;
@@ -173,11 +174,7 @@ async function check(
 	}
 }
 
-function recovered(
-	deps: MailWatcherDeps,
-	failing: Map<number, string>,
-	program: Program,
-): void {
+function recovered(deps: MailWatcherDeps, failing: Map<number, string>, program: Program): void {
 	if (!failing.has(program.id)) return;
 	failing.delete(program.id);
 	log.info("mail check recovered", { program: program.id, name: program.name });

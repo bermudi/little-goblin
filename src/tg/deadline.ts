@@ -12,22 +12,18 @@
 export const API_CALL_TIMEOUT_MS = 30_000;
 
 export class TelegramTimeoutError extends Error {
-	constructor(readonly label: string, readonly ms: number) {
+	constructor(
+		readonly label: string,
+		readonly ms: number,
+	) {
 		super(`${label} timed out after ${ms}ms`);
 		this.name = "TelegramTimeoutError";
 	}
 }
 
-export function withTimeout<T>(
-	p: Promise<T>,
-	label: string,
-	ms = API_CALL_TIMEOUT_MS,
-): Promise<T> {
+export function withTimeout<T>(p: Promise<T>, label: string, ms = API_CALL_TIMEOUT_MS): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
-		const t = setTimeout(
-			() => reject(new TelegramTimeoutError(label, ms)),
-			ms,
-		);
+		const t = setTimeout(() => reject(new TelegramTimeoutError(label, ms)), ms);
 		t.unref();
 		p.then(
 			(v) => {

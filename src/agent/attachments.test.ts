@@ -122,12 +122,16 @@ describe("materializeAttachments", () => {
 			{
 				id: "u-old",
 				role: "user",
-				parts: [attachmentPart({ path: old, mediaType: "image/png", filename: "old.png", size: 64 })],
+				parts: [
+					attachmentPart({ path: old, mediaType: "image/png", filename: "old.png", size: 64 }),
+				],
 			},
 			{
 				id: "u-new",
 				role: "user",
-				parts: [attachmentPart({ path: fresh, mediaType: "image/png", filename: "fresh.png", size: 8 })],
+				parts: [
+					attachmentPart({ path: fresh, mediaType: "image/png", filename: "fresh.png", size: 8 }),
+				],
 			},
 		];
 		const out = await materializeAttachments(history, new Set(["image"]), 16);
@@ -144,7 +148,11 @@ describe("materializeAttachments", () => {
 		const turn1: UIMessage[] = [msg(a)];
 		const turn2: UIMessage[] = [
 			...turn1,
-			{ id: "u2", role: "user", parts: [attachmentPart({ path: b, mediaType: "image/png", filename: "b.png", size: 7 })] },
+			{
+				id: "u2",
+				role: "user",
+				parts: [attachmentPart({ path: b, mediaType: "image/png", filename: "b.png", size: 7 })],
+			},
 		];
 		const run1 = await materializeAttachments(turn1, new Set(["image"]));
 		const run2 = await materializeAttachments(turn2, new Set(["image"]));
@@ -277,25 +285,32 @@ describe("materializeAttachments", () => {
 	});
 });
 
-	test("capable model + incapable pipe = path reference — two gates, both must pass", async () => {
-		const dir = tmpdir_();
-		const f = join(dir, "doc.pdf");
-		writeFileSync(f, "pdfbytes");
-		const history: UIMessage[] = [
-			{
-				id: "u1",
-				role: "user",
-				parts: [attachmentPart({ path: f, mediaType: "application/pdf", filename: "doc.pdf", size: 8 })],
-			},
-		];
-		// Catalog truth (pdf modality) without pipe truth (carriesMedia)
-		// once meant a thrown turn mid-request — openai-compatible rejected
-		// non-image file parts the catalog said the model could take.
-		const blocked = await materializeAttachments(history, new Set(["text", "pdf"]), 1024, () => false);
-		expect(blocked[0]!.parts[0]!.type).toBe("text");
-		expect((blocked[0]!.parts[0] as { text: string }).text).toContain(f);
+test("capable model + incapable pipe = path reference — two gates, both must pass", async () => {
+	const dir = tmpdir_();
+	const f = join(dir, "doc.pdf");
+	writeFileSync(f, "pdfbytes");
+	const history: UIMessage[] = [
+		{
+			id: "u1",
+			role: "user",
+			parts: [
+				attachmentPart({ path: f, mediaType: "application/pdf", filename: "doc.pdf", size: 8 }),
+			],
+		},
+	];
+	// Catalog truth (pdf modality) without pipe truth (carriesMedia)
+	// once meant a thrown turn mid-request — openai-compatible rejected
+	// non-image file parts the catalog said the model could take.
+	const blocked = await materializeAttachments(
+		history,
+		new Set(["text", "pdf"]),
+		1024,
+		() => false,
+	);
+	expect(blocked[0]!.parts[0]!.type).toBe("text");
+	expect((blocked[0]!.parts[0] as { text: string }).text).toContain(f);
 
-		const open = await materializeAttachments(history, new Set(["text", "pdf"]), 1024, () => true);
-		expect(open[0]!.parts[0]!.type).toBe("file");
-		expect((open[0]!.parts[0] as { mediaType: string }).mediaType).toBe("application/pdf");
-	});
+	const open = await materializeAttachments(history, new Set(["text", "pdf"]), 1024, () => true);
+	expect(open[0]!.parts[0]!.type).toBe("file");
+	expect((open[0]!.parts[0] as { mediaType: string }).mediaType).toBe("application/pdf");
+});

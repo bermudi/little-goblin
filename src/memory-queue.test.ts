@@ -32,10 +32,17 @@ function service(handler: (request: Request) => Response | Promise<Response>): H
 	return new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
 }
 const doc: MemoryDocument = {
-	id: "exchange-1", conversationId: "dm:1", sourceIds: ["user-1", "assistant-1"],
-	timestamp: "2026-09-22T10:00:00Z", content: "Operator: Quiet please.\nGoblin: Understood.",
+	id: "exchange-1",
+	conversationId: "dm:1",
+	sourceIds: ["user-1", "assistant-1"],
+	timestamp: "2026-09-22T10:00:00Z",
+	content: "Operator: Quiet please.\nGoblin: Understood.",
 };
-const reply: UIMessage = { id: "assistant-1", role: "assistant", parts: [{ type: "text", text: "Understood." }] };
+const reply: UIMessage = {
+	id: "assistant-1",
+	role: "assistant",
+	parts: [{ type: "text", text: "Understood." }],
+};
 function enqueue(store: ConversationStore, client: HindsightClient): string {
 	store.append("dm:1", [reply], { memory: { target: client.target, document: doc } });
 	const item = store.memoryQueue.next(client.target, Date.now());
@@ -46,17 +53,21 @@ function enqueue(store: ConversationStore, client: HindsightClient): string {
 test("history and retention commit together; invalid memory rolls history back", () => {
 	const store = storeAt(database());
 	const client = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
-	expect(() => store.append("dm:1", [reply], {
-		memory: { target: client.target, document: { ...doc, timestamp: "bad" } },
-	})).toThrow();
+	expect(() =>
+		store.append("dm:1", [reply], {
+			memory: { target: client.target, document: { ...doc, timestamp: "bad" } },
+		}),
+	).toThrow();
 	expect(store.history("dm:1")).toEqual([]);
 	expect(store.memoryQueue.next(client.target, Date.now())).toBeNull();
 	const id = enqueue(store, client);
 	expect(store.history("dm:1")).toEqual([reply]);
 	expect(store.memoryQueue.get(id)?.document).toEqual(doc);
-	expect(() => store.append("dm:1", [reply], {
-		memory: { target: client.target, document: { ...doc, content: "changed content" } },
-	})).toThrow("identity reused");
+	expect(() =>
+		store.append("dm:1", [reply], {
+			memory: { target: client.target, document: { ...doc, content: "changed content" } },
+		}),
+	).toThrow("identity reused");
 	expect(store.history("dm:1")).toHaveLength(1);
 });
 
@@ -68,7 +79,11 @@ test("restart preserves operation identity; acknowledgement alone is not complet
 			const body: unknown = await request.json();
 			expect(body).toMatchObject({ operation_id: operationId, async: true });
 			return Response.json({
-				success: true, bank_id: "g", items_count: 1, async: true, operation_id: operationId,
+				success: true,
+				bank_id: "g",
+				items_count: 1,
+				async: true,
+				operation_id: operationId,
 			});
 		}
 		return Response.json({ operation_id: operationId, status: remoteStatus });
@@ -101,7 +116,13 @@ test("lost acknowledgement retries the same operation with backoff; ticks never 
 	const client = service(async (request) => {
 		received.push(await request.json());
 		if (received.length === 1) return new Response("unavailable", { status: 503 });
-		return Response.json({ success: true, bank_id: "g", items_count: 1, async: true, operation_id: id });
+		return Response.json({
+			success: true,
+			bank_id: "g",
+			items_count: 1,
+			async: true,
+			operation_id: id,
+		});
 	});
 	const store = storeAt(database());
 	id = enqueue(store, client);
@@ -120,7 +141,10 @@ test("lost acknowledgement retries the same operation with backoff; ticks never 
 
 test("destination changes cannot redirect queued personal content", async () => {
 	let requests = 0;
-	const client = service(() => { requests++; return Response.json({ results: [] }); });
+	const client = service(() => {
+		requests++;
+		return Response.json({ results: [] });
+	});
 	const store = storeAt(database());
 	const other = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "different" });
 	const id = enqueue(store, other);
@@ -136,9 +160,8 @@ test("worker outcome classification: transport failure vs advance (feeds the out
 	const dead = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
 	const deadStore = storeAt(database());
 	const deadId = enqueue(deadStore, dead);
-	const deadWorker = new MemoryQueueWorker(
-		deadStore.memoryQueue, dead, Date.now,
-		(o) => outcomes.push({ ok: o.ok, transport: "transport" in o && o.transport }),
+	const deadWorker = new MemoryQueueWorker(deadStore.memoryQueue, dead, Date.now, (o) =>
+		outcomes.push({ ok: o.ok, transport: "transport" in o && o.transport }),
 	);
 	await deadWorker.tick();
 	expect(outcomes).toEqual([{ ok: false, transport: true }]);
@@ -146,15 +169,19 @@ test("worker outcome classification: transport failure vs advance (feeds the out
 
 	// Live service: submit acknowledged — an advance, not an outage.
 	let opId = "";
-	const client = service(() => Response.json({
-		success: true, bank_id: "g", items_count: 1, async: true,
-		operation_id: opId,
-	}));
+	const client = service(() =>
+		Response.json({
+			success: true,
+			bank_id: "g",
+			items_count: 1,
+			async: true,
+			operation_id: opId,
+		}),
+	);
 	const store = storeAt(database());
 	opId = enqueue(store, client);
-	const worker = new MemoryQueueWorker(
-		store.memoryQueue, client, Date.now,
-		(o) => outcomes.push({ ok: o.ok, transport: "transport" in o && o.transport }),
+	const worker = new MemoryQueueWorker(store.memoryQueue, client, Date.now, (o) =>
+		outcomes.push({ ok: o.ok, transport: "transport" in o && o.transport }),
 	);
 	await worker.tick();
 	expect(outcomes).toEqual([
@@ -167,7 +194,10 @@ test("excluding a topic purges only its pending rows", async () => {
 	const client = service(() => Response.json({ results: [] }));
 	const store = storeAt(database());
 	const other = { ...doc, id: "exchange-2", conversationId: "dm:2" };
-	const submittedId = store.memoryQueue.enqueue(client.target, { ...doc, id: "exchange-submitted" });
+	const submittedId = store.memoryQueue.enqueue(client.target, {
+		...doc,
+		id: "exchange-submitted",
+	});
 	const submitted = store.memoryQueue.get(submittedId)!;
 	store.memoryQueue.update(submitted, "submitted", 0, null);
 	store.memoryQueue.enqueue(client.target, doc);
@@ -183,7 +213,13 @@ test("pruned operations and permanent HTTP errors remain inspectable, not blindl
 	const client = service(() => {
 		if (responseMode === "auth") return new Response("private upstream body", { status: 401 });
 		if (responseMode === "missing") return Response.json({ operation_id: id, status: "not_found" });
-		return Response.json({ success: true, bank_id: "g", items_count: 1, async: true, operation_id: id });
+		return Response.json({
+			success: true,
+			bank_id: "g",
+			items_count: 1,
+			async: true,
+			operation_id: id,
+		});
 	});
 	const store = storeAt(database());
 	id = enqueue(store, client);
@@ -207,7 +243,10 @@ test("pruned operations and permanent HTTP errors remain inspectable, not blindl
 
 test("cancelled work stays queued without incrementing retry state", async () => {
 	let requests = 0;
-	const client = service(() => { requests++; return Response.json({ results: [] }); });
+	const client = service(() => {
+		requests++;
+		return Response.json({ results: [] });
+	});
 	const store = storeAt(database());
 	const id = enqueue(store, client);
 	const worker = new MemoryQueueWorker(store.memoryQueue, client);
@@ -258,7 +297,13 @@ test("retryBlocked mints a fresh operation id and the replay completes", async (
 		if (request.method === "POST") {
 			const body = (await request.json()) as { operation_id?: unknown };
 			const id = typeof body.operation_id === "string" ? body.operation_id : "";
-			return Response.json({ success: true, bank_id: "g", items_count: 1, async: true, operation_id: id });
+			return Response.json({
+				success: true,
+				bank_id: "g",
+				items_count: 1,
+				async: true,
+				operation_id: id,
+			});
 		}
 		const id = new URL(request.url).pathname.split("/").pop() ?? "";
 		return Response.json({ operation_id: id, status: remoteStatus });
@@ -299,7 +344,11 @@ test("dismissed rows stay for audit: never due, counted apart, forgotten with th
 	store.memoryQueue.update(first, "blocked", 0, "Hindsight http failure (HTTP 401)");
 	expect(store.memoryQueue.dismissBlocked(client.target)).toBe(1);
 	expect(store.memoryQueue.counts(client.target)).toEqual({
-		pending: 1, submitted: 0, completed: 0, blocked: 0, dismissed: 1,
+		pending: 1,
+		submitted: 0,
+		completed: 0,
+		blocked: 0,
+		dismissed: 1,
 	});
 	// Dismissed is a terminal operator verdict — next() never offers it again.
 	expect(store.memoryQueue.next(client.target, Date.now())?.document.id).toBe("exchange-2");
@@ -314,7 +363,12 @@ test("cancelDocument removes blocked rows — a forgotten document is not 'needs
 	const id = store.memoryQueue.enqueue(client.target, doc);
 	const item = store.memoryQueue.get(id);
 	if (!item) throw new Error("expected queued memory");
-	store.memoryQueue.update(item, "blocked", 0, "operation missing; operator reconciliation required");
+	store.memoryQueue.update(
+		item,
+		"blocked",
+		0,
+		"operation missing; operator reconciliation required",
+	);
 	expect(store.memoryQueue.cancelDocument(doc.id)).toBe(1);
 	expect(store.memoryQueue.get(id)).toBeNull();
 	expect(store.memoryQueue.next(client.target, Date.now())).toBeNull();

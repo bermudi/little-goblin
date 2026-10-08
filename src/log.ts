@@ -81,10 +81,7 @@ function writeFile(line: string): void {
 			// Transient — from either append, including the ENOENT retry:
 			// keep the sink, retry on later writes. The line itself
 			// already reached stdout; the warn is throttled.
-			if (
-				!fileSinkDegraded ||
-				Date.now() - lastDegradedWarn >= DEGRADED_WARN_INTERVAL_MS
-			) {
+			if (!fileSinkDegraded || Date.now() - lastDegradedWarn >= DEGRADED_WARN_INTERVAL_MS) {
 				lastDegradedWarn = Date.now();
 				warnStdout("goblin.log sink degraded — retrying on later writes", {
 					error: String(err),

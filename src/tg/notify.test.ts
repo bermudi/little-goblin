@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { Api } from "grammy";
 import { addressId, type ConversationAddress } from "../conversation.ts";
-import { parseConversationAddress, sendMemoryBlockedNotice, sendMemoryOutageNotice, sendSkillSavedNotice } from "./notify.ts";
+import {
+	parseConversationAddress,
+	sendMemoryBlockedNotice,
+	sendMemoryOutageNotice,
+	sendSkillSavedNotice,
+} from "./notify.ts";
 
 // addressId ∘ parseConversationAddress must be the identity on every
 // address goblin stores — the outage notice depends on the round trip.
@@ -45,7 +50,8 @@ describe("outage notice send", () => {
 		const api = {
 			sendMessage: async (chatId: number, text: string, other?: { message_thread_id?: number }) => {
 				sends.push({
-					chatId, text,
+					chatId,
+					text,
 					...(other?.message_thread_id !== undefined ? { threadId: other.message_thread_id } : {}),
 				});
 			},
@@ -63,7 +69,11 @@ describe("outage notice send", () => {
 	});
 
 	test("an unparseable id throws — the caller's retry/logging depends on it", async () => {
-		const api = { sendMessage: async () => { throw new Error("must not be called"); } } as unknown as Api;
+		const api = {
+			sendMessage: async () => {
+				throw new Error("must not be called");
+			},
+		} as unknown as Api;
 		await expect(sendMemoryOutageNotice(api, "garbage", 3_600_000, 1)).rejects.toThrow(
 			/unparseable conversation id/,
 		);
@@ -77,7 +87,8 @@ describe("blocked notice send", () => {
 		const api = {
 			sendMessage: async (chatId: number, text: string, other?: { message_thread_id?: number }) => {
 				sends.push({
-					chatId, text,
+					chatId,
+					text,
 					...(other?.message_thread_id !== undefined ? { threadId: other.message_thread_id } : {}),
 				});
 			},
@@ -98,7 +109,11 @@ describe("blocked notice send", () => {
 	});
 
 	test("an unparseable id throws — the caller logs it", async () => {
-		const api = { sendMessage: async () => { throw new Error("must not be called"); } } as unknown as Api;
+		const api = {
+			sendMessage: async () => {
+				throw new Error("must not be called");
+			},
+		} as unknown as Api;
 		await expect(sendMemoryBlockedNotice(api, "garbage", "err", 1)).rejects.toThrow(
 			/unparseable conversation id/,
 		);
@@ -112,7 +127,8 @@ describe("skill saved notice send", () => {
 		const api = {
 			sendMessage: async (chatId: number, text: string, other?: { message_thread_id?: number }) => {
 				sends.push({
-					chatId, text,
+					chatId,
+					text,
 					...(other?.message_thread_id !== undefined ? { threadId: other.message_thread_id } : {}),
 				});
 			},

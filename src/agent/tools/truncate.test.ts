@@ -44,7 +44,6 @@ describe("truncateTail", () => {
 		expect([...kept.slice(1)].every((c) => c === "🎉")).toBe(true);
 		expect(Buffer.byteLength(kept.slice(1), "utf-8")).toBeLessThanOrEqual(50); // input bytes; the … marker is free
 		expect(Buffer.byteLength(kept, "utf-8")).toBeGreaterThanOrEqual(48); // boundary walked < 4 bytes
-
 	});
 
 	test("empty input", () => {

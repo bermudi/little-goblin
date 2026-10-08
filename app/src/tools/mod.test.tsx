@@ -193,7 +193,7 @@ describe("ToolRun", () => {
 		);
 		expect(html).toContain("skel");
 		expect(html).toContain("running");
-		expect(html).toContain("<details class=\"tool-run\" open=\"\"");
+		expect(html).toContain('<details class="tool-run" open=""');
 		expect(html).toContain("npm i");
 	});
 

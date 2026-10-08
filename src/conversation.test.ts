@@ -4,7 +4,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UIMessage } from "ai";
-import { addressId, appAddress, channelOf, openStore, type ConversationStore } from "./conversation.ts";
+import {
+	addressId,
+	appAddress,
+	channelOf,
+	openStore,
+	type ConversationStore,
+} from "./conversation.ts";
 
 let dirs: string[] = [];
 function tmpdb(): string {
@@ -88,14 +94,8 @@ describe("conversation store", () => {
 		const store = openStore(tmpdb());
 		const c = store.resolve({ kind: "dm", chatId: 42 }, "/w");
 		store.append(c.id, [msg("one"), msg("two")]);
-		store.append(c.id, [
-			{ id: "a1", role: "assistant", parts: [{ type: "text", text: "hi" }] },
-		]);
-		expect(store.history(c.id).map((m) => m.role)).toEqual([
-			"user",
-			"user",
-			"assistant",
-		]);
+		store.append(c.id, [{ id: "a1", role: "assistant", parts: [{ type: "text", text: "hi" }] }]);
+		expect(store.history(c.id).map((m) => m.role)).toEqual(["user", "user", "assistant"]);
 		store.close();
 	});
 
@@ -132,7 +132,11 @@ describe("conversation store", () => {
 				('dm:9', 2, 'assistant', ?, 't')`,
 			[
 				JSON.stringify(msg("old question")),
-				JSON.stringify({ id: "a0", role: "assistant", parts: [{ type: "text", text: "old reply" }] }),
+				JSON.stringify({
+					id: "a0",
+					role: "assistant",
+					parts: [{ type: "text", text: "old reply" }],
+				}),
 			],
 		);
 		old.close();
@@ -248,16 +252,22 @@ describe("history payload envelope", () => {
 		store.append(c.id, [msg("legacy")]);
 		// Forcibly age the row back to the pre-envelope format.
 		store.db.run("UPDATE events SET data = json_extract(data, '$.message')");
-		expect(store.history(c.id).map((m) => (m.parts[0] as { text: string }).text)).toEqual(["legacy"]);
+		expect(store.history(c.id).map((m) => (m.parts[0] as { text: string }).text)).toEqual([
+			"legacy",
+		]);
 		store.close();
 		// Migration at open: wrap, and never re-wrap (idempotent).
 		const reopened = openStore(path);
-		expect(reopened.history(c.id).map((m) => (m.parts[0] as { text: string }).text)).toEqual(["legacy"]);
+		expect(reopened.history(c.id).map((m) => (m.parts[0] as { text: string }).text)).toEqual([
+			"legacy",
+		]);
 		const raw = reopened.db.query<{ data: string }, []>("SELECT data FROM events").all()[0]!.data;
 		expect(JSON.parse(raw)).toMatchObject({ v: 1 });
 		reopened.close();
 		const twice = openStore(path);
-		expect(JSON.parse(twice.db.query<{ data: string }, []>("SELECT data FROM events").all()[0]!.data)).toMatchObject({ v: 1 });
+		expect(
+			JSON.parse(twice.db.query<{ data: string }, []>("SELECT data FROM events").all()[0]!.data),
+		).toMatchObject({ v: 1 });
 		twice.close();
 	});
 	test("a corrupt bare row is left unmigrated and still placeholder-degrades", () => {
@@ -282,7 +292,10 @@ describe("compaction pointers", () => {
 	test("getCompaction returns the latest row; modelEntries is summary + tail", () => {
 		const store = openStore(tmpdb());
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		store.append(c.id, [msg("one"), { id: "a", role: "assistant", parts: [{ type: "text", text: "two" }] }]);
+		store.append(c.id, [
+			msg("one"),
+			{ id: "a", role: "assistant", parts: [{ type: "text", text: "two" }] },
+		]);
 		store.append(c.id, [msg("three")]);
 		store.setCompaction(c.id, {
 			boundarySeq: 2,
@@ -481,16 +494,25 @@ describe("chat search", () => {
 	test("tool payloads and system events are never indexed", () => {
 		const store = openStore(tmpdb());
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		store.append(c.id, [{
-			id: "t1",
-			role: "assistant",
-			parts: [{ type: "tool-zebracakesecret", input: "zebracakesecret payload" } as unknown as UIMessage["parts"][number]],
-		}]);
-		store.append(c.id, [{
-			id: "s1",
-			role: "system",
-			parts: [{ type: "text", text: "system note about zebracakesecret" }],
-		}]);
+		store.append(c.id, [
+			{
+				id: "t1",
+				role: "assistant",
+				parts: [
+					{
+						type: "tool-zebracakesecret",
+						input: "zebracakesecret payload",
+					} as unknown as UIMessage["parts"][number],
+				],
+			},
+		]);
+		store.append(c.id, [
+			{
+				id: "s1",
+				role: "system",
+				parts: [{ type: "text", text: "system note about zebracakesecret" }],
+			},
+		]);
 		expect(store.searchHistory("zebracakesecret", 10)).toEqual([]);
 		store.close();
 	});
@@ -583,9 +605,7 @@ describe("app channel addresses", () => {
 			expect(() => appAddress(bad)).toThrow();
 		}
 		// The literal path is guarded too — addressId revalidates.
-		expect(() =>
-			addressId({ kind: "app", appId: "a/b", chatId: 0, threadId: 0 }),
-		).toThrow();
+		expect(() => addressId({ kind: "app", appId: "a/b", chatId: 0, threadId: 0 })).toThrow();
 	});
 });
 
@@ -612,8 +632,12 @@ describe("app channel store", () => {
 		// Histories are disjoint — writes on one side never cross.
 		store.append(app.id, [msg("app side")]);
 		store.append(tg.id, [msg("telegram side")]);
-		expect(store.history(app.id).map((m) => (m.parts[0] as { text: string }).text)).toEqual(["app side"]);
-		expect(store.history(tg.id).map((m) => (m.parts[0] as { text: string }).text)).toEqual(["telegram side"]);
+		expect(store.history(app.id).map((m) => (m.parts[0] as { text: string }).text)).toEqual([
+			"app side",
+		]);
+		expect(store.history(tg.id).map((m) => (m.parts[0] as { text: string }).text)).toEqual([
+			"telegram side",
+		]);
 		store.close();
 	});
 
@@ -635,11 +659,13 @@ describe("app channel store", () => {
 	test("list rows flatten markdown — raw syntax never reaches the sidebar", () => {
 		const store = openStore(tmpdb());
 		const c = store.resolve(appAddress("chat-01"), "/w");
-		store.append(c.id, [{
-			id: "a1",
-			role: "assistant",
-			parts: [{ type: "text", text: "```typescript\nconst slug = (s: string) => s.trim()\n```" }],
-		}]);
+		store.append(c.id, [
+			{
+				id: "a1",
+				role: "assistant",
+				parts: [{ type: "text", text: "```typescript\nconst slug = (s: string) => s.trim()\n```" }],
+			},
+		]);
 		store.setMeta(c.id, { title: "the `slug` helper — [docs](https://x.dev)" });
 		const row = store.listAppConversations()[0]!;
 		expect(row.preview).toBe("const slug = (s: string) => s.trim()");
@@ -689,9 +715,12 @@ describe("rolling dm", () => {
 });
 
 describe("manual rolling DM navigation", () => {
-	const pin = (store: ConversationStore, chatId: number) => store.db.query<
-		{ current_id: string; n: number; selected_at: string | null }, [number]
-	>("SELECT current_id, n, selected_at FROM dm_rolls WHERE chat_id = ?").get(chatId);
+	const pin = (store: ConversationStore, chatId: number) =>
+		store.db
+			.query<{ current_id: string; n: number; selected_at: string | null }, [number]>(
+				"SELECT current_id, n, selected_at FROM dm_rolls WHERE chat_id = ?",
+			)
+			.get(chatId);
 
 	test("no current or predecessor is a read-only no-op; repeated back walks the source chain", () => {
 		const store = openStore(tmpdb());
@@ -750,21 +779,41 @@ describe("manual rolling DM navigation", () => {
 	test("navigation preserves events, settings, compaction audits and recall without copying or replay", () => {
 		const store = openStore(tmpdb());
 		const first = store.rollDm(7, "/w");
-		store.append(first.id, [msg("question"), {
-			id: "a1", role: "assistant", parts: [{ type: "text", text: "reply" }],
-		}], { anchorSeq: 1 });
-		store.applySettings(first.id, { voice: true, memoryExcluded: true, model: "old/model", thinking: "high" });
+		store.append(
+			first.id,
+			[
+				msg("question"),
+				{
+					id: "a1",
+					role: "assistant",
+					parts: [{ type: "text", text: "reply" }],
+				},
+			],
+			{ anchorSeq: 1 },
+		);
+		store.applySettings(first.id, {
+			voice: true,
+			memoryExcluded: true,
+			model: "old/model",
+			thinking: "high",
+		});
 		store.memoryContexts.save(first.id, 1, "recall evidence", ["doc-1"]);
 		for (const summary of ["initial summary", "revised summary"]) {
 			store.setCompaction(first.id, {
-				boundarySeq: 1, summary, tokensBefore: 500, model: "old/model", createdAt: "2020-01-01T00:00:00.000Z",
+				boundarySeq: 1,
+				summary,
+				tokensBefore: 500,
+				model: "old/model",
+				createdAt: "2020-01-01T00:00:00.000Z",
 			});
 		}
 		const snapshot = () => ({
 			conversations: store.db.query("SELECT * FROM conversations ORDER BY id").all(),
 			events: store.db.query("SELECT * FROM events ORDER BY id").all(),
 			compactions: store.db.query("SELECT * FROM compactions ORDER BY id").all(),
-			contexts: store.db.query("SELECT * FROM memory_contexts ORDER BY conversation_id, anchor_seq").all(),
+			contexts: store.db
+				.query("SELECT * FROM memory_contexts ORDER BY conversation_id, anchor_seq")
+				.all(),
 		});
 		const second = store.rollDm(7, "/w");
 		store.append(second.id, [msg("abandoned question")]);
@@ -775,7 +824,13 @@ describe("manual rolling DM navigation", () => {
 		expect(store.history(fresh.id)).toEqual([]);
 		expect(store.getCompaction(fresh.id)).toBeNull();
 		expect(store.memoryContexts.load(fresh.id)).toEqual([]);
-		expect(fresh).toMatchObject({ voice: false, memoryExcluded: false, model: null, thinking: null, epoch: 0 });
+		expect(fresh).toMatchObject({
+			voice: false,
+			memoryExcluded: false,
+			model: null,
+			thinking: null,
+			epoch: 0,
+		});
 		expect(fresh).not.toHaveProperty("previous_dm_id");
 		expect(store.get(first.id)).toMatchObject({ voice: true, memoryExcluded: true, epoch: 1 });
 		expect(store.history(first.id)).toHaveLength(2);
@@ -798,7 +853,10 @@ describe("manual rolling DM navigation", () => {
 		const topic = store.resolve({ kind: "topic", chatId: 7, threadId: 4 }, "/w");
 		const app = store.resolve(appAddress("unrelated"), "/w");
 		for (const invalid of [other, legacy, topic, app, current]) {
-			store.db.run("UPDATE conversations SET previous_dm_id = ? WHERE id = ?", [invalid.id, current.id]);
+			store.db.run("UPDATE conversations SET previous_dm_id = ? WHERE id = ?", [
+				invalid.id,
+				current.id,
+			]);
 			const before = pin(store, 7);
 			expect(store.previousDm(7)).toBeNull();
 			expect(store.backDm(7)).toBeNull();
@@ -809,7 +867,10 @@ describe("manual rolling DM navigation", () => {
 		store.db.run("UPDATE dm_rolls SET current_id = ? WHERE chat_id = 7", [legacy.id]);
 		expect(store.backDm(7)).toBeNull();
 		store.db.run("UPDATE dm_rolls SET current_id = ? WHERE chat_id = 7", [current.id]);
-		store.db.run("UPDATE conversations SET previous_dm_id = ? WHERE id = ?", [first.id, current.id]);
+		store.db.run("UPDATE conversations SET previous_dm_id = ? WHERE id = ?", [
+			first.id,
+			current.id,
+		]);
 		expect(store.backDm(7)?.id).toBe(first.id);
 		expect(store.currentDm(8)?.id).toBe(otherCurrent.id);
 		expect(store.previousDm(8)?.id).toBe(other.id);
@@ -828,12 +889,18 @@ describe("manual rolling DM navigation", () => {
 		const third = store.rollDm(7, "/w");
 		expect(store.backDm(7)?.id).toBe(second.id);
 		const unsafeId = "dm:7:9007199254740992";
-		store.db.run(`INSERT INTO conversations (id, chat_id, cwd, created_at, previous_dm_id)
-			VALUES (?, 7, '/w', '2020-01-01T00:00:00.000Z', ?)`, [unsafeId, first.id]);
+		store.db.run(
+			`INSERT INTO conversations (id, chat_id, cwd, created_at, previous_dm_id)
+			VALUES (?, 7, '/w', '2020-01-01T00:00:00.000Z', ?)`,
+			[unsafeId, first.id],
+		);
 		// third already points to second: accepting this forward link
 		// would make repeated /back alternate between the two forever.
 		for (const invalidId of [third.id, unsafeId]) {
-			store.db.run("UPDATE conversations SET previous_dm_id = ? WHERE id = ?", [invalidId, second.id]);
+			store.db.run("UPDATE conversations SET previous_dm_id = ? WHERE id = ?", [
+				invalidId,
+				second.id,
+			]);
 			const before = pin(store, 7);
 			expect(store.previousDm(7)).toBeNull();
 			expect(store.backDm(7)).toBeNull();
@@ -899,11 +966,13 @@ describe("manual rolling DM navigation", () => {
 		expect(pin(store, 7)).toEqual(before);
 		expect(store.previousDm(7)?.id).toBe(first.id);
 		store.db.run("DROP TRIGGER reject_dm_selection");
-		expect(() => store.db.transaction(() => {
-			store.backDm(7);
-			store.rollDm(7, "/w");
-			throw new Error("enclosing journal failed");
-		})()).toThrow("enclosing journal failed");
+		expect(() =>
+			store.db.transaction(() => {
+				store.backDm(7);
+				store.rollDm(7, "/w");
+				throw new Error("enclosing journal failed");
+			})(),
+		).toThrow("enclosing journal failed");
 		expect(pin(store, 7)).toEqual(before);
 		expect(store.get("dm:7:3")).toBeNull();
 		expect(store.currentDm(7)?.id).toBe(second.id);
@@ -922,14 +991,25 @@ describe("manual rolling DM navigation", () => {
 			chat_id INTEGER PRIMARY KEY, current_id TEXT NOT NULL REFERENCES conversations(id), n INTEGER NOT NULL
 		)`);
 		for (const [id, chatId, threadId] of [
-			["dm:7", 7, null], ["topic:7:4", 7, 4], ["app/old", 0, null],
-			["dm:7:3", 7, null], ["dm:8:2", 8, null], ["dm:7:1", 7, null],
-			["dm:8:1", 8, null], ["dm:7:2", 7, null], ["dm:-9:1", -9, null],
-			["dm:7:04", 7, null], ["dm:7:5", 8, null], ["dm:7:6", 7, 6],
+			["dm:7", 7, null],
+			["topic:7:4", 7, 4],
+			["app/old", 0, null],
+			["dm:7:3", 7, null],
+			["dm:8:2", 8, null],
+			["dm:7:1", 7, null],
+			["dm:8:1", 8, null],
+			["dm:7:2", 7, null],
+			["dm:-9:1", -9, null],
+			["dm:7:04", 7, null],
+			["dm:7:5", 8, null],
+			["dm:7:6", 7, 6],
 			["dm:7:9007199254740992", 7, null],
 		] as const) {
 			// Deliberately insert out of ordinal order, including timestamp ties.
-			old.run("INSERT INTO conversations (id, chat_id, thread_id, cwd, created_at) VALUES (?, ?, ?, '/w', '2020-01-01T00:00:00.000Z')", [id, chatId, threadId]);
+			old.run(
+				"INSERT INTO conversations (id, chat_id, thread_id, cwd, created_at) VALUES (?, ?, ?, '/w', '2020-01-01T00:00:00.000Z')",
+				[id, chatId, threadId],
+			);
 		}
 		// A backwards wall clock must still migrate the chain 3 → 2 → 1.
 		old.run("UPDATE conversations SET created_at = '2022-01-01T00:00:00.000Z' WHERE id = 'dm:7:1'");
@@ -941,9 +1021,11 @@ describe("manual rolling DM navigation", () => {
 		expect(pin(store, 7)).toEqual({ current_id: "dm:7:3", n: 3, selected_at: null });
 		expect(store.previousDm(7)?.id).toBe("dm:7:2");
 		expect(store.previousDm(8)?.id).toBe("dm:8:1");
-		const migratedLinks = store.db.query<{ id: string; previous_dm_id: string | null }, []>(
-			"SELECT id, previous_dm_id FROM conversations WHERE previous_dm_id IS NOT NULL ORDER BY id",
-		).all();
+		const migratedLinks = store.db
+			.query<{ id: string; previous_dm_id: string | null }, []>(
+				"SELECT id, previous_dm_id FROM conversations WHERE previous_dm_id IS NOT NULL ORDER BY id",
+			)
+			.all();
 		expect(migratedLinks).toEqual([
 			{ id: "dm:7:2", previous_dm_id: "dm:7:1" },
 			{ id: "dm:7:3", previous_dm_id: "dm:7:2" },
@@ -993,11 +1075,21 @@ test("app settings initialize once, survive reopening, and spin-offs snapshot ap
 test("app resolve commits creation and its initial settings atomically and never resets an existing selection", () => {
 	const store = openStore(tmpdb());
 	try {
-		expect(() => store.resolve(appAddress("invalid-create"), "/work", { model: "", thinking: "high" })).toThrow();
+		expect(() =>
+			store.resolve(appAddress("invalid-create"), "/work", { model: "", thinking: "high" }),
+		).toThrow();
 		expect(store.get("app/invalid-create")).toBeNull();
-		const first = store.resolve(appAddress("atomic-settings"), "/work", { model: "test/first", thinking: "high" });
+		const first = store.resolve(appAddress("atomic-settings"), "/work", {
+			model: "test/first",
+			thinking: "high",
+		});
 		expect(first).toMatchObject({ model: "test/first", thinking: "high" });
-		const again = store.resolve(appAddress("atomic-settings"), "/work", { model: "test/changed", thinking: "low" });
+		const again = store.resolve(appAddress("atomic-settings"), "/work", {
+			model: "test/changed",
+			thinking: "low",
+		});
 		expect(again).toMatchObject({ model: "test/first", thinking: "high" });
-	} finally { store.close(); }
+	} finally {
+		store.close();
+	}
 });

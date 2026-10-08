@@ -11,12 +11,7 @@
 import type { AuthStore } from "./auth.ts";
 import { log } from "./log.ts";
 import { z } from "zod";
-import {
-	fetchOk,
-	ProviderError,
-	readJson,
-	str,
-} from "./agent/tools/web.ts";
+import { fetchOk, ProviderError, readJson, str } from "./agent/tools/web.ts";
 
 // ---------- shapes ----------
 
@@ -151,7 +146,8 @@ class Gmail {
 		}
 		const { data } = await readJson("gmail-oauth", res);
 		const access = str((data as Record<string, unknown>).access_token);
-		if (access === "") throw new ProviderError("gmail-oauth", "token response carried no access_token");
+		if (access === "")
+			throw new ProviderError("gmail-oauth", "token response carried no access_token");
 		log.debug("gmail oauth mint", { ms: Date.now() - started });
 		return access;
 	}
@@ -164,10 +160,15 @@ class Gmail {
 		init?: RequestInit,
 	): Promise<{ data: unknown; status: number }> {
 		const started = Date.now();
-		const res = await fetchOk("gmail", `${this.gmailBase}${path}`, {
-			...init,
-			headers: { Authorization: `Bearer ${token}`, ...(init?.headers ?? {}) },
-		}, TIMEOUT_MS);
+		const res = await fetchOk(
+			"gmail",
+			`${this.gmailBase}${path}`,
+			{
+				...init,
+				headers: { Authorization: `Bearer ${token}`, ...(init?.headers ?? {}) },
+			},
+			TIMEOUT_MS,
+		);
 		const { data, bytes } = await readJson("gmail", res);
 		log.info("gmail call", {
 			action,
@@ -184,15 +185,21 @@ class Gmail {
 		const raw = buildRaw(draft);
 		const body: Record<string, unknown> = { raw };
 		if (draft.threadId !== undefined) body.threadId = draft.threadId;
-		const { data } = await this.call("send", "/users/me/messages/send", token, {
-			to: draft.to.map(domainOf),
-			...(draft.cc?.length ? { cc: draft.cc.map(domainOf) } : {}),
-			...(draft.threadId !== undefined ? { threaded: true } : {}),
-		}, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(body),
-		});
+		const { data } = await this.call(
+			"send",
+			"/users/me/messages/send",
+			token,
+			{
+				to: draft.to.map(domainOf),
+				...(draft.cc?.length ? { cc: draft.cc.map(domainOf) } : {}),
+				...(draft.threadId !== undefined ? { threaded: true } : {}),
+			},
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(body),
+			},
+		);
 		// The wire's own contract, not a mask: a 2xx send owes an id and a
 		// threadId. Shape drift here used to collapse to `sentId: ""` via
 		// str() — a silent lie in the outbox row (audit #8); now it fails
@@ -212,7 +219,10 @@ function parseOrThrow<T>(action: string, schema: z.ZodType<T>, data: unknown): T
 	try {
 		return schema.parse(data);
 	} catch (err) {
-		throw new ProviderError("gmail", `${action} returned an unexpected shape — ${(err as Error).message.slice(0, 200)}`);
+		throw new ProviderError(
+			"gmail",
+			`${action} returned an unexpected shape — ${(err as Error).message.slice(0, 200)}`,
+		);
 	}
 }
 
@@ -220,20 +230,30 @@ function parseOrThrow<T>(action: string, schema: z.ZodType<T>, data: unknown): T
 // subjects and display names arrive in. Undecodable words survive
 // verbatim rather than vanishing.
 export function decodeRfc2047(value: string): string {
-	return value.replace(/=\?([^?\s]+)\?([bBqQ])\?([^?]*)\?=/g, (match, charset: string, enc: string, text: string) => {
-		try {
-			const bytes = enc.toLowerCase() === "b"
-				? Buffer.from(text, "base64")
-				: Buffer.from(text.replace(/_/g, " ").replace(/=([0-9A-Fa-f]{2})/g, (_, hex: string) =>
-					String.fromCharCode(Number.parseInt(hex, 16))), "latin1");
-			// Bun types narrow TextDecoder's label to its Encoding union;
-			// the runtime takes any WHATWG label and throws RangeError
-			// otherwise — the catch turns that into a verbatim word.
-			return new TextDecoder(charset.toLowerCase() as "utf-8", { fatal: false }).decode(bytes);
-		} catch {
-			return match;
-		}
-	});
+	return value.replace(
+		/=\?([^?\s]+)\?([bBqQ])\?([^?]*)\?=/g,
+		(match, charset: string, enc: string, text: string) => {
+			try {
+				const bytes =
+					enc.toLowerCase() === "b"
+						? Buffer.from(text, "base64")
+						: Buffer.from(
+								text
+									.replace(/_/g, " ")
+									.replace(/=([0-9A-Fa-f]{2})/g, (_, hex: string) =>
+										String.fromCharCode(Number.parseInt(hex, 16)),
+									),
+								"latin1",
+							);
+				// Bun types narrow TextDecoder's label to its Encoding union;
+				// the runtime takes any WHATWG label and throws RangeError
+				// otherwise — the catch turns that into a verbatim word.
+				return new TextDecoder(charset.toLowerCase() as "utf-8", { fatal: false }).decode(bytes);
+			} catch {
+				return match;
+			}
+		},
+	);
 }
 
 // ---------- sending ----------
@@ -248,7 +268,9 @@ export function buildRaw(draft: MailDraft): string {
 		"MIME-Version: 1.0",
 		'Content-Type: text/plain; charset="UTF-8"',
 		"Content-Transfer-Encoding: 8bit",
-		...(draft.inReplyTo ? [`In-Reply-To: ${draft.inReplyTo}`, `References: ${draft.inReplyTo}`] : []),
+		...(draft.inReplyTo
+			? [`In-Reply-To: ${draft.inReplyTo}`, `References: ${draft.inReplyTo}`]
+			: []),
 		"",
 		draft.body,
 	];

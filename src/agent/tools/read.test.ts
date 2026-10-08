@@ -73,7 +73,9 @@ describe("read_file", () => {
 		const emitted = out.content!.split("\n").filter((l) => /^\d+\t/.test(l));
 		expect(emitted.length).toBe(out.shown!);
 		// The notice names the exact resumption offset.
-		expect(out.content).toMatch(/\[Showing lines 1–\d+ of 3000 \(64KB limit\)\. Use offset=\d+ to continue\.\]/);
+		expect(out.content).toMatch(
+			/\[Showing lines 1–\d+ of 3000 \(64KB limit\)\. Use offset=\d+ to continue\.\]/,
+		);
 		const next = Number(out.content!.match(/Use offset=(\d+)/)![1]);
 		// Following the notice resumes exactly where the cap stopped.
 		const page2 = (await t.execute!({ path: "f.txt", offset: next }, opts)) as { content?: string };
@@ -227,7 +229,10 @@ describe("read_file empty files", () => {
 		const dir = tmpdir_();
 		writeFileSync(join(dir, "ws.txt"), " \n\t\n");
 		const t = readFileTool(dir);
-		const out = (await t.execute!({ path: "ws.txt" }, opts)) as { content?: string; lines?: number };
+		const out = (await t.execute!({ path: "ws.txt" }, opts)) as {
+			content?: string;
+			lines?: number;
+		};
 		expect(out.lines).toBe(2);
 		expect(out.content!.startsWith("1\t \n")).toBe(true);
 	});
@@ -337,10 +342,9 @@ describe("unicode twins — read, edit, and write land on one file", () => {
 		const dir = tmpdir_();
 		writeFileSync(join(dir, nfd), "old");
 		const { writeFileTool } = await import("./write.ts");
-		const out = (await writeFileTool(dir).execute!(
-			{ path: nfc, content: "new" },
-			opts,
-		)) as { path?: string };
+		const out = (await writeFileTool(dir).execute!({ path: nfc, content: "new" }, opts)) as {
+			path?: string;
+		};
 		expect(out.path).toBe(join(dir, nfd));
 		expect(existsSync(join(dir, nfc))).toBe(false); // no fork
 	});

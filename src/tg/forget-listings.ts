@@ -22,9 +22,7 @@ export interface ForgetItem {
 
 // What actually lands in SQLite — and the zod boundary it is re-validated
 // through on read (disk state is external input).
-const listingSchema = z.array(
-	z.object({ documentId: z.string(), preview: z.string() }),
-);
+const listingSchema = z.array(z.object({ documentId: z.string(), preview: z.string() }));
 
 const MAX_ITEMS = 20;
 export const FORGET_LISTING_TTL_MS = 600_000;

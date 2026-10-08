@@ -13,7 +13,9 @@ describe("checkMcpConfig", () => {
 	});
 
 	test("JSONC comments pass — mcporter.json accepts them", () => {
-		expect(checkMcpConfig('{\n// seed comment\n"mcpServers": {},\n"imports": [],\n}')).toEqual({ ok: true });
+		expect(checkMcpConfig('{\n// seed comment\n"mcpServers": {},\n"imports": [],\n}')).toEqual({
+			ok: true,
+		});
 	});
 
 	test("a missing imports key fails — omission means the editor defaults", () => {
@@ -43,7 +45,9 @@ describe("checkMcpConfig", () => {
 
 describe("checkMcpConfigFile", () => {
 	test("a missing file fails with the recovery, not a stack", () => {
-		const checked = checkMcpConfigFile(join(mkdtempSync(join(tmpdir(), "goblin-mcp-")), "mcporter.json"));
+		const checked = checkMcpConfigFile(
+			join(mkdtempSync(join(tmpdir(), "goblin-mcp-")), "mcporter.json"),
+		);
 		expect(checked.ok).toBe(false);
 		if (!checked.ok) expect(checked.reason).toContain("seeds an empty one");
 	});

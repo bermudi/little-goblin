@@ -30,10 +30,10 @@ export interface VisionToolDeps {
 export const visionInputSchema = z.object({
 	path: z
 		.string()
-		.describe("Path to the image file (png, jpeg, gif, webp, bmp), relative to the working directory or absolute"),
-	prompt: z
-		.string()
-		.describe("The specific question to answer about the image"),
+		.describe(
+			"Path to the image file (png, jpeg, gif, webp, bmp), relative to the working directory or absolute",
+		),
+	prompt: z.string().describe("The specific question to answer about the image"),
 	followUp: z
 		.boolean()
 		.optional()

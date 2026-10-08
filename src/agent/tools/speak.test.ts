@@ -110,9 +110,19 @@ describe("speak voice choice", () => {
 	});
 
 	test("the description offers the configured voices, and stays bare without them", () => {
-		const withVoices = speakTool("/tmp", async () => [], async () => {}, undefined, allow);
+		const withVoices = speakTool(
+			"/tmp",
+			async () => [],
+			async () => {},
+			undefined,
+			allow,
+		);
 		expect(withVoices.description).toContain("es-ES-ElviraNeural");
-		const bare = speakTool("/tmp", async () => [], async () => {});
+		const bare = speakTool(
+			"/tmp",
+			async () => [],
+			async () => {},
+		);
 		expect(bare.description).toBe(
 			"Synthesize text or a plain-text/Markdown file and send it as Telegram voice notes.",
 		);

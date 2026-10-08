@@ -79,7 +79,10 @@ export async function persistAttachment(
 	writeTemp: (temp: string) => Promise<void>,
 	redact?: string,
 ): Promise<SavedAttachment> {
-	const safeStem = z.string().regex(/^[A-Za-z0-9_-]+$/).parse(stem);
+	const safeStem = z
+		.string()
+		.regex(/^[A-Za-z0-9_-]+$/)
+		.parse(stem);
 	const scrub = (detail: string) => (redact ? detail.replaceAll(redact, "***") : detail);
 	await mkdir(paths.attachments(), { recursive: true });
 	// ensureHomeLayout syncs first-boot directory creation. Also cover
@@ -124,7 +127,9 @@ export async function persistAttachment(
 				await handle.close();
 			}
 		} catch (err) {
-			throw new Error(`${label} attachment directory sync failed for ${dest}: ${scrub(String(err))}`);
+			throw new Error(
+				`${label} attachment directory sync failed for ${dest}: ${scrub(String(err))}`,
+			);
 		}
 		return { path: dest, size };
 	} catch (err) {
@@ -134,7 +139,9 @@ export async function persistAttachment(
 		} catch (cleanupErr) {
 			if ((cleanupErr as NodeJS.ErrnoException).code !== "ENOENT") {
 				log.warn(`${label} attachment temp cleanup failed`, {
-					dest, temp, error: scrub(String(cleanupErr)),
+					dest,
+					temp,
+					error: scrub(String(cleanupErr)),
 				});
 			}
 		}
@@ -180,10 +187,7 @@ export function acceptsMedia(modalities: ReadonlySet<string>, mediaType: string)
 	if (top === "image") return modalities.has("image");
 	if (top === "audio") return modalities.has("audio");
 	if (top === "video") return modalities.has("video");
-	return (
-		modalities.has("file") ||
-		(mediaType === "application/pdf" && modalities.has("pdf"))
-	);
+	return modalities.has("file") || (mediaType === "application/pdf" && modalities.has("pdf"));
 }
 
 // The fallback when the file can't go inline: a stored transcript

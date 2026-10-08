@@ -33,7 +33,10 @@ const SWEEP_TICK_MS = 5 * 60_000;
 // "delivery uncertain — the buttons may be live" would be a lie and the
 // row is a definite dead-end the caller cancels.
 export class MailDraftTimeoutError extends TelegramTimeoutError {
-	constructor(err: TelegramTimeoutError, readonly buttonsAttempted: boolean) {
+	constructor(
+		err: TelegramTimeoutError,
+		readonly buttonsAttempted: boolean,
+	) {
 		super(err.label, err.ms);
 		this.name = "MailDraftTimeoutError";
 		this.cause = err;
@@ -114,7 +117,12 @@ export function startMailApproval(deps: MailApprovalDeps, tickMs = SWEEP_TICK_MS
 		// does not prove delivery failed, even if no message id was returned.
 		let messageId: number;
 		try {
-			messageId = await postMailDraft(deps.api, address, row.id, draftText(row.id, input, row.expiresAt));
+			messageId = await postMailDraft(
+				deps.api,
+				address,
+				row.id,
+				draftText(row.id, input, row.expiresAt),
+			);
 		} catch (err) {
 			// A timeout before the buttons chunk: posting stopped early,
 			// so no Send/Cancel can ever land and the row could only wait
@@ -122,11 +130,12 @@ export function startMailApproval(deps: MailApprovalDeps, tickMs = SWEEP_TICK_MS
 			if (err instanceof MailDraftTimeoutError && !err.buttonsAttempted) {
 				deps.outbox.decide(row.id, "cancelled", new Date());
 				log.warn("mail draft timed out before its buttons — draft cancelled", {
-					outbox: row.id, chat: address.chatId, thread: address.threadId,
+					outbox: row.id,
+					chat: address.chatId,
+					thread: address.threadId,
 				});
 				return {
-					error:
-						`draft #${row.id} timed out posting to Telegram before its approval buttons — the draft was cancelled (delivered chunks may be visible); retry the send when delivery recovers`,
+					error: `draft #${row.id} timed out posting to Telegram before its approval buttons — the draft was cancelled (delivered chunks may be visible); retry the send when delivery recovers`,
 				};
 			}
 			if (err instanceof TelegramTimeoutError) {
@@ -137,7 +146,9 @@ export function startMailApproval(deps: MailApprovalDeps, tickMs = SWEEP_TICK_MS
 			}
 			deps.outbox.decide(row.id, "cancelled", new Date());
 			log.error("mail draft posting failed — draft cancelled", err, {
-				outbox: row.id, chat: address.chatId, thread: address.threadId,
+				outbox: row.id,
+				chat: address.chatId,
+				thread: address.threadId,
 			});
 			return {
 				error:
@@ -304,10 +315,12 @@ async function postMailDraft(
 					...(last
 						? {
 								reply_markup: {
-									inline_keyboard: [[
-										{ text: "✅ Send", callback_data: `${MAIL_SEND_PREFIX}${outboxId}` },
-										{ text: "🚫 Cancel", callback_data: `${MAIL_CANCEL_PREFIX}${outboxId}` },
-									]],
+									inline_keyboard: [
+										[
+											{ text: "✅ Send", callback_data: `${MAIL_SEND_PREFIX}${outboxId}` },
+											{ text: "🚫 Cancel", callback_data: `${MAIL_CANCEL_PREFIX}${outboxId}` },
+										],
+									],
 								},
 							}
 						: {}),
@@ -318,8 +331,13 @@ async function postMailDraft(
 		} catch (err) {
 			if (err instanceof TelegramTimeoutError) {
 				log.warn("mail draft posting timed out — delivery uncertain", {
-					outbox: outboxId, chat: address.chatId, thread: address.threadId,
-					chunk: i + 1, chunks: chunks.length, buttons: last, error: String(err),
+					outbox: outboxId,
+					chat: address.chatId,
+					thread: address.threadId,
+					chunk: i + 1,
+					chunks: chunks.length,
+					buttons: last,
+					error: String(err),
 				});
 				throw new MailDraftTimeoutError(err, last);
 			}
@@ -328,7 +346,10 @@ async function postMailDraft(
 	}
 	log.info("mail draft posted", {
 		outbox: outboxId,
-		conversation: address.threadId === null ? `dm:${address.chatId}` : `topic:${address.chatId}:${address.threadId}`,
+		conversation:
+			address.threadId === null
+				? `dm:${address.chatId}`
+				: `topic:${address.chatId}:${address.threadId}`,
 		message: messageId,
 		chunks: chunks.length,
 	});
@@ -354,7 +375,8 @@ export function chunkDraft(text: string): string[] {
 		rest = rest.slice(cut).replace(/^\n/, "");
 	}
 	if (rest.length > 0) {
-		chunks[chunks.length - 1] += `\n\n[… draft truncated for Telegram — ${text.length} chars total]`;
+		chunks[chunks.length - 1] +=
+			`\n\n[… draft truncated for Telegram — ${text.length} chars total]`;
 	}
 	return chunks;
 }
@@ -391,7 +413,11 @@ async function sendApproved(
 			ctx = await reader.threadFor(row.replyToId);
 		} catch (err) {
 			log.error("mail send threading lookup failed", err, { outbox: row.id });
-			await notice(deps, row, `⚠️ couldn't reach Gmail to thread the reply (${(err as Error).message}) — tap Send to retry.`);
+			await notice(
+				deps,
+				row,
+				`⚠️ couldn't reach Gmail to thread the reply (${(err as Error).message}) — tap Send to retry.`,
+			);
 			return;
 		}
 		if (ctx === null) {
@@ -525,7 +551,10 @@ export async function sendMailNotice(
 // best-effort per row — a Telegram failure must not stop the sweep,
 // and the row is already expired, so a stale tap answers "already
 // expired" and strips its own buttons.
-async function sweepExpired(deps: MailApprovalDeps, sending: { has(id: number): boolean }): Promise<void> {
+async function sweepExpired(
+	deps: MailApprovalDeps,
+	sending: { has(id: number): boolean },
+): Promise<void> {
 	const now = deps.now?.() ?? new Date();
 	let rows: ReturnType<OutboxStore["expireDue"]>;
 	try {

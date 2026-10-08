@@ -54,10 +54,7 @@ describe("bash", () => {
 		const started = Date.now();
 		// The shell exits instantly; the orphaned sleep would hold stdout's
 		// write end open for 60s — EOF must not outlive the command.
-		const out = (await t.execute!(
-			{ command: "sleep 60 & echo hi" },
-			opts,
-		)) as BashResult;
+		const out = (await t.execute!({ command: "sleep 60 & echo hi" }, opts)) as BashResult;
 		expect(Date.now() - started).toBeLessThan(5_000);
 		expect(out.output).toContain("hi");
 		expect(out.exit_code).toBe(0);

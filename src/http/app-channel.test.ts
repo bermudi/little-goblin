@@ -51,7 +51,12 @@ function fakeModel(deltas: string[], delayMs = 5): LanguageModel {
 						type: "finish",
 						finishReason: { unified: "stop", raw: undefined },
 						usage: {
-							inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+							inputTokens: {
+								total: 1,
+								noCache: undefined,
+								cacheRead: undefined,
+								cacheWrite: undefined,
+							},
 							outputTokens: { total: deltas.length, text: undefined, reasoning: undefined },
 						},
 					});
@@ -99,16 +104,23 @@ function setup(
 	const store = openStore(join(home, "goblin.sqlite"));
 	const runtime = new Runtime({
 		store,
-		buildStep: () => ({ model: fakeModel(opts.deltas ?? ["hello", " app"], opts.delayMs), system: "test" }),
+		buildStep: () => ({
+			model: fakeModel(opts.deltas ?? ["hello", " app"], opts.delayMs),
+			system: "test",
+		}),
 		makeTools: () => ({}),
 	});
 	const auth: Pick<AuthStore, "resolve"> = {
 		resolve: (name) =>
-			name === APP_TOKEN_NAME ? Promise.resolve(APP_TOKEN_VALUE) : Promise.reject(new Error("no such auth record")),
+			name === APP_TOKEN_NAME
+				? Promise.resolve(APP_TOKEN_VALUE)
+				: Promise.reject(new Error("no such auth record")),
 	};
 	const configRef: ConfigRef = {
 		current: {
-			providers: { zai: { kind: "openai-compatible", baseUrl: "https://api.example.com", auth: "zai" } },
+			providers: {
+				zai: { kind: "openai-compatible", baseUrl: "https://api.example.com", auth: "zai" },
+			},
 			model: "zai/m",
 			tts: false,
 			favorites: [],
@@ -150,7 +162,10 @@ function setup(
 	const call = (path: string, init: RequestInit = {}, bearer: string | null = APP_TOKEN_VALUE) =>
 		fetch(`http://127.0.0.1:${http.port}${path}`, {
 			...init,
-			headers: { ...(init.headers ?? {}), ...(bearer !== null ? { authorization: `Bearer ${bearer}` } : {}) },
+			headers: {
+				...(init.headers ?? {}),
+				...(bearer !== null ? { authorization: `Bearer ${bearer}` } : {}),
+			},
 		});
 	return { http, store, runtime, configRef, configWrites, call, home, appDeps };
 }
@@ -193,13 +208,14 @@ describe("app channel http", () => {
 				.map((l) => JSON.parse(l) as { level: string; msg: string });
 			expect(
 				lines.some(
-					(l) => l.level === "warn" && l.msg === "app channel auth: trust mode (no token; tailnet only)",
+					(l) =>
+						l.level === "warn" && l.msg === "app channel auth: trust mode (no token; tailnet only)",
 				),
 			).toBe(true);
 			expect(lines.some((l) => l.level === "warn" && l.msg.includes("funnel"))).toBe(true);
-			expect(lines.some((l) => l.level === "info" && l.msg === "app channel auth: token required")).toBe(
-				true,
-			);
+			expect(
+				lines.some((l) => l.level === "info" && l.msg === "app channel auth: token required"),
+			).toBe(true);
 		} finally {
 			setLogFile(null);
 		}
@@ -392,7 +408,11 @@ describe("app channel http", () => {
 
 	test("stop aborts a live turn — the stream ends with the error chunk", async () => {
 		// 50ms deltas keep the turn alive well past the stop POST below.
-		const { http, call } = setup({ token: APP_TOKEN_NAME, deltas: ["a", "b", "c", "d", "e"], delayMs: 50 });
+		const { http, call } = setup({
+			token: APP_TOKEN_NAME,
+			deltas: ["a", "b", "c", "d", "e"],
+			delayMs: 50,
+		});
 		try {
 			await call("/api/app/conversations", {
 				method: "POST",
@@ -431,7 +451,9 @@ describe("app channel http", () => {
 			const idle = await call("/api/app/conversations/chat-01/stop", { method: "POST" });
 			expect(idle.status).toBe(200);
 			expect((await idle.json()) as { stopped: boolean }).toEqual({ stopped: false });
-			expect((await call("/api/app/conversations/ghost/stop", { method: "POST" })).status).toBe(404);
+			expect((await call("/api/app/conversations/ghost/stop", { method: "POST" })).status).toBe(
+				404,
+			);
 		} finally {
 			http.stop();
 		}
@@ -460,11 +482,16 @@ describe("app channel http", () => {
 			// time.
 			expect((await chat({ ...base, path: join(home, "goblin.sqlite") })).status).toBe(422);
 			expect(
-				(await chat({ ...base, path: join(home, "workspace", "attachments", "..", "evil") })).status,
+				(await chat({ ...base, path: join(home, "workspace", "attachments", "..", "evil") }))
+					.status,
 			).toBe(422);
 			// A ref the upload endpoint minted passes the pin.
 			const form = new FormData();
-			form.append("file", new Blob([new Uint8Array([1, 2, 3])], { type: "text/plain" }), "note.txt");
+			form.append(
+				"file",
+				new Blob([new Uint8Array([1, 2, 3])], { type: "text/plain" }),
+				"note.txt",
+			);
 			const up = await call("/api/app/attachments", { method: "POST", body: form });
 			const { ref } = (await up.json()) as { ref: Record<string, unknown> };
 			const ok = await chat(ref);
@@ -571,7 +598,11 @@ describe("app channel http", () => {
 	});
 
 	test("GET stream: 204 when idle; replay + tail + [DONE] mid-turn", async () => {
-		const { http, call } = setup({ token: APP_TOKEN_NAME, deltas: ["a", "b", "c", "d", "e"], delayMs: 60 });
+		const { http, call } = setup({
+			token: APP_TOKEN_NAME,
+			deltas: ["a", "b", "c", "d", "e"],
+			delayMs: 60,
+		});
 		try {
 			await call("/api/app/conversations", {
 				method: "POST",
@@ -610,7 +641,9 @@ describe("app channel http", () => {
 			// The replay starts at the wire's first chunk — a reload sees
 			// the reply from its beginning, not mid-sentence.
 			expect(JSON.parse(events[0]!) as { type: string }).toMatchObject({ type: "start" });
-			const types = events.filter((e) => e !== "[DONE]").map((e) => (JSON.parse(e) as { type: string }).type);
+			const types = events
+				.filter((e) => e !== "[DONE]")
+				.map((e) => (JSON.parse(e) as { type: string }).type);
 			expect(types).toContain("text-delta");
 			expect(types.filter((t) => t === "start")).toHaveLength(1); // no duplicate start from replay + tail
 			await chatP;
@@ -643,11 +676,13 @@ describe("app channel http", () => {
 			});
 			expect(empty.status).toBe(422);
 			expect(
-				(await call("/api/app/conversations/ghost", {
-					method: "PATCH",
-					headers: { "content-type": "application/json" },
-					body: JSON.stringify({ title: "x" }),
-				})).status,
+				(
+					await call("/api/app/conversations/ghost", {
+						method: "PATCH",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ title: "x" }),
+					})
+				).status,
 			).toBe(404);
 		} finally {
 			http.stop();
@@ -1070,16 +1105,22 @@ describe("app channel http", () => {
 
 test("conversation settings are isolated, durable, validated, and only future chats use changed app defaults", async () => {
 	const { http, call, store, configRef, configWrites, home } = setup();
-	const patch = (path: string, body: unknown) => call(path, {
-		method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
-	});
+	const patch = (path: string, body: unknown) =>
+		call(path, {
+			method: "PATCH",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		});
 	try {
 		// Legacy row never read through settings: changing defaults still
 		// freezes it against the previous selection before writing.
 		const legacy = store.resolve(appAddress("legacy-settings"), "/work");
-		const create = (id: string) => call("/api/app/conversations", {
-			method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id }),
-		});
+		const create = (id: string) =>
+			call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id }),
+			});
 		await create("settings-a");
 		await create("settings-b");
 		const a = "/api/app/conversations/settings-a/config";
@@ -1092,24 +1133,48 @@ test("conversation settings are isolated, durable, validated, and only future ch
 		expect((await patch(a, { model: "bare" })).status).toBe(422);
 		expect((await patch(a, { thinking: "invalid" })).status).toBe(422);
 		expect((await patch(a, {})).status).toBe(422);
-		expect((await patch("/api/app/conversations/not-created/config", { model: "zai/x" })).status).toBe(404);
+		expect(
+			(await patch("/api/app/conversations/not-created/config", { model: "zai/x" })).status,
+		).toBe(404);
 		expect(store.get("app/not-created")).toBeNull();
 		store.resolve({ kind: "dm", chatId: 42 }, "/work");
-		expect((await patch("/api/app/conversations/dm%3A42/config", { model: "zai/x" })).status).toBe(404);
-		expect((await patch("/api/app/conversations/app%2Fsettings-a/config", { model: "zai/x" })).status).toBe(404);
-		expect((await patch("/api/app/config", { model: "zai/future", thinking: "low" })).status).toBe(200);
+		expect((await patch("/api/app/conversations/dm%3A42/config", { model: "zai/x" })).status).toBe(
+			404,
+		);
+		expect(
+			(await patch("/api/app/conversations/app%2Fsettings-a/config", { model: "zai/x" })).status,
+		).toBe(404);
+		expect((await patch("/api/app/config", { model: "zai/future", thinking: "low" })).status).toBe(
+			200,
+		);
 		expect(configRef.current.telegram).toMatchObject({ model: "zai/m", thinking: "medium" });
 		expect(store.get(legacy.id)).toMatchObject({ model: "zai/m", thinking: "medium" });
 		await create("settings-future");
 		await create("settings-a"); // idempotent create never resets settings
-		expect(store.get("app/settings-future")).toMatchObject({ model: "zai/future", thinking: "low" });
+		expect(store.get("app/settings-future")).toMatchObject({
+			model: "zai/future",
+			thinking: "low",
+		});
 		const view = await (await call(a)).json();
-		expect(view).toMatchObject({ model: "zai/personal", thinking: "high", favorites: [], thinkingLevels: expect.any(Array) });
+		expect(view).toMatchObject({
+			model: "zai/personal",
+			thinking: "high",
+			favorites: [],
+			thinkingLevels: expect.any(Array),
+		});
 		store.close();
 		const reopened = openStore(join(home, "goblin.sqlite"));
-		try { expect(reopened.get("app/settings-a")).toMatchObject({ model: "zai/personal", thinking: "high" }); }
-		finally { reopened.close(); }
-	} finally { http.stop(); }
+		try {
+			expect(reopened.get("app/settings-a")).toMatchObject({
+				model: "zai/personal",
+				thinking: "high",
+			});
+		} finally {
+			reopened.close();
+		}
+	} finally {
+		http.stop();
+	}
 });
 
 test("conversation PATCH rechecks the live registry and row after awaiting its request body", async () => {
@@ -1118,13 +1183,26 @@ test("conversation PATCH rechecks the live registry and row after awaiting its r
 	async function heldPatch(body: unknown, mutate: () => void): Promise<Response> {
 		let release: () => void = () => {};
 		let entered: () => void = () => {};
-		const waiting = new Promise<void>((r) => { release = r; });
-		const reading = new Promise<void>((r) => { entered = r; });
+		const waiting = new Promise<void>((r) => {
+			release = r;
+		});
+		const reading = new Promise<void>((r) => {
+			entered = r;
+		});
 		class HeldRequest extends Request {
-			override json = async (): Promise<unknown> => { entered(); await waiting; return body; };
+			override json = async (): Promise<unknown> => {
+				entered();
+				await waiting;
+				return body;
+			};
 		}
 		const url = new URL("http://localhost/api/app/conversations/held-config/config");
-		const pending = handleAppApi(new HeldRequest(url.href, { method: "PATCH" }), url, undefined, appDeps);
+		const pending = handleAppApi(
+			new HeldRequest(url.href, { method: "PATCH" }),
+			url,
+			undefined,
+			appDeps,
+		);
 		await reading;
 		mutate();
 		release();
@@ -1132,11 +1210,20 @@ test("conversation PATCH rechecks the live registry and row after awaiting its r
 	}
 	try {
 		configRef.current.providers.other = { kind: "codex" };
-		expect((await heldPatch({ model: "other/chat" }, () => {
-			delete configRef.current.providers.other;
-		})).status).toBe(422);
+		expect(
+			(
+				await heldPatch({ model: "other/chat" }, () => {
+					delete configRef.current.providers.other;
+				})
+			).status,
+		).toBe(422);
 		expect(store.get(row.id)!.model).toBe("zai/m");
-		expect((await heldPatch({ thinking: "high" }, () => store.deleteConversation(row.id))).status).toBe(404);
+		expect(
+			(await heldPatch({ thinking: "high" }, () => store.deleteConversation(row.id))).status,
+		).toBe(404);
 		expect(store.get(row.id)).toBeNull();
-	} finally { http.stop(); store.close(); }
+	} finally {
+		http.stop();
+		store.close();
+	}
 });

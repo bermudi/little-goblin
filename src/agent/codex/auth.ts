@@ -21,10 +21,7 @@ const EXPIRY_MARGIN_S = 60;
 
 // Injectable for tests — narrower than `typeof fetch`, which in Bun
 // carries extra members (preconnect) a fake can't satisfy.
-export type FetchLike = (
-	url: string | URL | Request,
-	init?: RequestInit,
-) => Promise<Response>;
+export type FetchLike = (url: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 const authFileSchema = z.object({
 	tokens: z.object({
@@ -73,9 +70,9 @@ function tokenExpiryS(token: string): number | null {
 	const parts = token.split(".");
 	if (parts.length !== 3) return null;
 	try {
-		const payload = JSON.parse(
-			Buffer.from(parts[1]!, "base64url").toString("utf8"),
-		) as { exp?: number };
+		const payload = JSON.parse(Buffer.from(parts[1]!, "base64url").toString("utf8")) as {
+			exp?: number;
+		};
 		return typeof payload.exp === "number" ? payload.exp : null;
 	} catch {
 		return null;
@@ -112,18 +109,13 @@ export async function codexCredentials(
 	return p;
 }
 
-async function refreshAuth(
-	path: string,
-	fetchImpl: FetchLike,
-): Promise<CodexAuthFile> {
+async function refreshAuth(path: string, fetchImpl: FetchLike): Promise<CodexAuthFile> {
 	// Re-read inside the flight — a sibling refresh (ours or the CLI's)
 	// may already have rotated the pair while this caller queued.
 	const auth = readAuthFile(path);
 	if (!expired(auth.tokens.access_token)) return auth;
 	if (!auth.tokens.refresh_token) {
-		throw new Error(
-			`${path}: access token expired and no refresh_token — run \`codex login\``,
-		);
+		throw new Error(`${path}: access token expired and no refresh_token — run \`codex login\``);
 	}
 	const res = await fetchImpl(OAUTH_TOKEN_URL, {
 		method: "POST",

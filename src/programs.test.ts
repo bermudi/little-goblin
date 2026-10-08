@@ -55,7 +55,7 @@ describe("nextFire", () => {
 			"", // 0
 		]) {
 			expect(() => nextFire(bad, NOW)).toThrow(
-				'expected exactly 5 fields (min hour dom month dow)',
+				"expected exactly 5 fields (min hour dom month dow)",
 			);
 		}
 	});
@@ -68,9 +68,9 @@ describe("nextFire", () => {
 describe("programs store", () => {
 	test("create validates cron before a row exists; next_run is future", () => {
 		const s = store();
-		expect(() =>
-			s.create({ name: "x", cron: "nope", charter: "c", address: ADDRESS }),
-		).toThrow("invalid cron");
+		expect(() => s.create({ name: "x", cron: "nope", charter: "c", address: ADDRESS })).toThrow(
+			"invalid cron",
+		);
 		expect(s.list()).toEqual([]);
 
 		const p = s.create(
@@ -85,9 +85,9 @@ describe("programs store", () => {
 
 	test("a program always has a trigger", () => {
 		const s = store();
-		expect(() =>
-			s.create({ name: "x", charter: "c", address: ADDRESS }),
-		).toThrow("at least one trigger");
+		expect(() => s.create({ name: "x", charter: "c", address: ADDRESS })).toThrow(
+			"at least one trigger",
+		);
 		expect(s.list()).toEqual([]);
 
 		// A hook alone is a valid trigger — the cron stays null.
@@ -101,18 +101,13 @@ describe("programs store", () => {
 
 		// And the invariant can't be patched away: clearing the only
 		// trigger is a readable error, not a dead row.
-		expect(() => s.update(hooked.id, { hookHash: null })).toThrow(
-			"at least one trigger",
-		);
+		expect(() => s.update(hooked.id, { hookHash: null })).toThrow("at least one trigger");
 		expect(s.get(hooked.id)!.hookHash).toBe("abc123");
 	});
 
 	test("due() matches next_run; disabled and cron-less programs never due", () => {
 		const s = store();
-		const p = s.create(
-			{ name: "x", cron: "* * * * *", charter: "c", address: ADDRESS },
-			NOW,
-		);
+		const p = s.create({ name: "x", cron: "* * * * *", charter: "c", address: ADDRESS }, NOW);
 		expect(s.due(NOW)).toEqual([]); // next_run is strictly future
 		// A fire missed while the process was down is just "due".
 		const later = new Date(NOW.getTime() + 5 * 60_000);
@@ -125,10 +120,7 @@ describe("programs store", () => {
 
 	test("markRan records the run and advances to the next occurrence", () => {
 		const s = store();
-		const p = s.create(
-			{ name: "x", cron: "0 * * * *", charter: "c", address: ADDRESS },
-			NOW,
-		);
+		const p = s.create({ name: "x", cron: "0 * * * *", charter: "c", address: ADDRESS }, NOW);
 		const ranAt = new Date("2026-09-20T11:00:00");
 		s.markRan(p.id, ranAt);
 		const after = s.get(p.id)!;
@@ -139,10 +131,7 @@ describe("programs store", () => {
 
 	test("markRan without a cron stamps last_run and keeps next_run null", () => {
 		const s = store();
-		const p = s.create(
-			{ name: "hooked", charter: "c", hookHash: "abc123", address: ADDRESS },
-			NOW,
-		);
+		const p = s.create({ name: "hooked", charter: "c", hookHash: "abc123", address: ADDRESS }, NOW);
 		s.markRan(p.id, new Date("2026-09-20T11:00:00"));
 		const after = s.get(p.id)!;
 		expect(after.lastRun).toBe("2026-09-20T11:00:00.000Z");
@@ -151,10 +140,7 @@ describe("programs store", () => {
 
 	test("update re-validates a changed cron; remove is permanent", () => {
 		const s = store();
-		const p = s.create(
-			{ name: "x", cron: "0 * * * *", charter: "c", address: ADDRESS },
-			NOW,
-		);
+		const p = s.create({ name: "x", cron: "0 * * * *", charter: "c", address: ADDRESS }, NOW);
 		expect(() => s.update(p.id, { cron: "bogus" })).toThrow("invalid cron");
 		const patched = s.update(p.id, { name: "y", cron: "0 6 * * *" }, NOW)!;
 		expect(patched.name).toBe("y");
@@ -167,10 +153,7 @@ describe("programs store", () => {
 
 	test("re-enabling recomputes next_run — skipped occurrences are not owed", () => {
 		const s = store();
-		const p = s.create(
-			{ name: "x", cron: "0 * * * *", charter: "c", address: ADDRESS },
-			NOW,
-		);
+		const p = s.create({ name: "x", cron: "0 * * * *", charter: "c", address: ADDRESS }, NOW);
 		s.update(p.id, { enabled: false });
 		// A day passes while disabled; the stale next_run (11:00 yesterday)
 		// must not make the program instantly due the moment it's re-enabled.
@@ -198,10 +181,7 @@ describe("programs store", () => {
 
 	test("setHook/findByHook/markFired — the webhook half of the store", () => {
 		const s = store();
-		const p = s.create(
-			{ name: "x", cron: "0 * * * *", charter: "c", address: ADDRESS },
-			NOW,
-		);
+		const p = s.create({ name: "x", cron: "0 * * * *", charter: "c", address: ADDRESS }, NOW);
 		expect(s.setHook(999, "h")).toBeNull(); // missing row → null
 		s.setHook(p.id, "deadbeef");
 		expect(s.findByHook("deadbeef")!.id).toBe(p.id);
@@ -217,10 +197,7 @@ describe("programs store", () => {
 	test("rows survive a reopen — same file, fresh connection", () => {
 		const path = tmpdb();
 		const a = openPrograms(path);
-		const p = a.create(
-			{ name: "x", cron: "* * * * *", charter: "c", address: ADDRESS },
-			NOW,
-		);
+		const p = a.create({ name: "x", cron: "* * * * *", charter: "c", address: ADDRESS }, NOW);
 		a.close();
 		const b = openPrograms(path);
 		expect(b.get(p.id)!.charter).toBe("c");
@@ -246,8 +223,16 @@ describe("programs store", () => {
 		)`);
 		db.query(`INSERT INTO programs
 			(name, charter, cron, hook_hash, chat_id, thread_id, enabled, created_at, last_run, next_run)
-			VALUES (?, ?, ?, ?, ?, ?, 1, ?, NULL, ?)`)
-			.run("old", "c", "0 9 * * *", null, -100, 7, NOW.toISOString(), "2026-09-21T09:00:00.000Z");
+			VALUES (?, ?, ?, ?, ?, ?, 1, ?, NULL, ?)`).run(
+			"old",
+			"c",
+			"0 9 * * *",
+			null,
+			-100,
+			7,
+			NOW.toISOString(),
+			"2026-09-21T09:00:00.000Z",
+		);
 		db.close();
 
 		const s = openPrograms(path);
@@ -288,10 +273,7 @@ describe("mail trigger", () => {
 
 	test("changing the filter resets the cursor; a no-op keeps it", () => {
 		const s = store();
-		const p = s.create(
-			{ name: "w", charter: "c", mailFilter: "from:a", address: ADDRESS },
-			NOW,
-		);
+		const p = s.create({ name: "w", charter: "c", mailFilter: "from:a", address: ADDRESS }, NOW);
 		s.setMailHistory(p.id, "12345", s.get(p.id)!.mailRevision);
 		expect(s.get(p.id)!.mailHistoryId).toBe("12345");
 
@@ -317,10 +299,7 @@ describe("mail trigger", () => {
 		const path = tmpdb();
 		const a = openPrograms(path);
 		const b = openPrograms(path);
-		const p = a.create(
-			{ name: "w", charter: "old", mailFilter: "from:a", address: ADDRESS },
-			NOW,
-		);
+		const p = a.create({ name: "w", charter: "old", mailFilter: "from:a", address: ADDRESS }, NOW);
 		a.setMailHistory(p.id, "123", 0);
 
 		// patch.charter is read after update() has loaded the row. Without
@@ -337,7 +316,10 @@ describe("mail trigger", () => {
 		expect(() => a.update(p.id, patch)).toThrow(/locked|busy/i);
 		expect(attempted).toBe(true);
 		expect(a.get(p.id)).toMatchObject({
-			charter: "old", mailFilter: "from:a", mailHistoryId: "123", mailRevision: 0,
+			charter: "old",
+			mailFilter: "from:a",
+			mailHistoryId: "123",
+			mailRevision: 0,
 		});
 
 		// Once the failed edit rolls back, the other connection may write;
@@ -345,11 +327,16 @@ describe("mail trigger", () => {
 		b.setMailFilter(p.id, "from:b");
 		b.setMailHistory(p.id, "456", b.get(p.id)!.mailRevision);
 		expect(a.update(p.id, { charter: "new" })).toMatchObject({
-			charter: "new", mailFilter: "from:b", mailHistoryId: "456", mailRevision: 1,
+			charter: "new",
+			mailFilter: "from:b",
+			mailHistoryId: "456",
+			mailRevision: 1,
 		});
 		// A no-op filter set also must preserve that cursor/revision.
 		expect(b.setMailFilter(p.id, "from:b")).toMatchObject({
-			mailFilter: "from:b", mailHistoryId: "456", mailRevision: 1,
+			mailFilter: "from:b",
+			mailHistoryId: "456",
+			mailRevision: 1,
 		});
 		a.close();
 		b.close();
@@ -357,10 +344,7 @@ describe("mail trigger", () => {
 
 	test("re-enabling resets the cursor — mail while disabled is skipped, not owed", () => {
 		const s = store();
-		const p = s.create(
-			{ name: "w", charter: "c", mailFilter: "from:a", address: ADDRESS },
-			NOW,
-		);
+		const p = s.create({ name: "w", charter: "c", mailFilter: "from:a", address: ADDRESS }, NOW);
 		s.setMailHistory(p.id, "12345", s.get(p.id)!.mailRevision);
 		s.update(p.id, { enabled: false });
 		// Disabling keeps the cursor — the watcher just doesn't scan it.
@@ -406,8 +390,14 @@ function createLegacyJobs(path: string, rows: number): void {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 	for (let i = 0; i < rows; i++) {
 		q.run(
-			`job ${i + 1}`, "30 8 * * *", `prompt ${i + 1}`, -100, 7, i % 2,
-			"2026-09-20T09:00:00.000Z", "2026-09-20T09:30:00.000Z",
+			`job ${i + 1}`,
+			"30 8 * * *",
+			`prompt ${i + 1}`,
+			-100,
+			7,
+			i % 2,
+			"2026-09-20T09:00:00.000Z",
+			"2026-09-20T09:30:00.000Z",
 			"2026-09-21T08:30:00.000Z",
 		);
 	}
@@ -460,7 +450,9 @@ describe("legacy jobs copy", () => {
 		// nor a partial migration may survive the failed open.
 		expect(() => openPrograms(path)).toThrow("no such column: prompt");
 		const db = new Database(path);
-		expect(db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'programs'").get()).toBeNull();
+		expect(
+			db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'programs'").get(),
+		).toBeNull();
 		expect(db.query("SELECT COUNT(*) AS count FROM jobs").get()).toEqual({ count: 2 });
 		db.exec("ALTER TABLE jobs RENAME COLUMN missing_prompt TO prompt");
 		db.close();
@@ -538,15 +530,24 @@ describe("dm cutover re-pin (Rolling DM)", () => {
 	// untouched; the sweep is idempotent.
 	test("private-chat thread pins re-pin to the bare chat, idempotently", () => {
 		const s = store();
-		const dmTopic = s.create(
-			{ name: "dm topic", cron: "0 9 * * *", charter: "c", address: { chatId: 5, threadId: 42 } },
-		);
-		const bare = s.create(
-			{ name: "bare dm", cron: "0 9 * * *", charter: "c", address: { chatId: 6, threadId: null } },
-		);
-		const group = s.create(
-			{ name: "group topic", cron: "0 9 * * *", charter: "c", address: ADDRESS },
-		);
+		const dmTopic = s.create({
+			name: "dm topic",
+			cron: "0 9 * * *",
+			charter: "c",
+			address: { chatId: 5, threadId: 42 },
+		});
+		const bare = s.create({
+			name: "bare dm",
+			cron: "0 9 * * *",
+			charter: "c",
+			address: { chatId: 6, threadId: null },
+		});
+		const group = s.create({
+			name: "group topic",
+			cron: "0 9 * * *",
+			charter: "c",
+			address: ADDRESS,
+		});
 		expect(s.rePinDmTopics()).toBe(1);
 		expect(s.get(dmTopic.id)!.threadId).toBeNull();
 		expect(s.get(dmTopic.id)!.chatId).toBe(5);

@@ -23,32 +23,42 @@ function fixture() {
 	return { file, store, runtime, stopped, inbox: openTelegramInbox(store.db) };
 }
 function runtimeEdge(store: ConversationStore, stopped: string[]): Pick<Runtime, "cancelFenced"> {
-	return { cancelFenced(id: string, epoch: number) {
-		expect(store.get(id)?.epoch).toBe(epoch);
-		expect(store.currentDm(42)?.id).not.toBe(id);
-		// Both the fence and receipt must already be visible to another
-		// connection: checking only this connection would miss an open tx.
-		const committed = openStore(store.db.filename);
-		try {
-			expect(committed.get(id)?.epoch).toBe(epoch);
-			expect(committed.currentDm(42)?.id).toBe(store.currentDm(42)?.id);
-			expect(committed.db.query("SELECT COUNT(*) AS count FROM tg_dm_navigation").get()).toEqual(
-				store.db.query("SELECT COUNT(*) AS count FROM tg_dm_navigation").get(),
-			);
-		} finally {
-			committed.close();
-		}
-		stopped.push(id);
-		return { stopped: true, reviewsCancelled: 2, settled: Promise.resolve() };
-	} };
+	return {
+		cancelFenced(id: string, epoch: number) {
+			expect(store.get(id)?.epoch).toBe(epoch);
+			expect(store.currentDm(42)?.id).not.toBe(id);
+			// Both the fence and receipt must already be visible to another
+			// connection: checking only this connection would miss an open tx.
+			const committed = openStore(store.db.filename);
+			try {
+				expect(committed.get(id)?.epoch).toBe(epoch);
+				expect(committed.currentDm(42)?.id).toBe(store.currentDm(42)?.id);
+				expect(committed.db.query("SELECT COUNT(*) AS count FROM tg_dm_navigation").get()).toEqual(
+					store.db.query("SELECT COUNT(*) AS count FROM tg_dm_navigation").get(),
+				);
+			} finally {
+				committed.close();
+			}
+			stopped.push(id);
+			return { stopped: true, reviewsCancelled: 2, settled: Promise.resolve() };
+		},
+	};
 }
 function command(updateId: number, kind: "new" | "back" = "new") {
 	return { chatId: 42, updateId, messageId: updateId, command: kind };
 }
 function record(deps: ReturnType<typeof fixture>, updateId: number) {
 	deps.inbox.record(updateId, {
-		conversationId: "dm:42", chatId: 42, messageId: updateId, text: "pending input",
-		media: { fileId: "file", fileUniqueId: "unique", fileName: "photo.jpg", mimeType: "image/jpeg" },
+		conversationId: "dm:42",
+		chatId: 42,
+		messageId: updateId,
+		text: "pending input",
+		media: {
+			fileId: "file",
+			fileUniqueId: "unique",
+			fileName: "photo.jpg",
+			mimeType: "image/jpeg",
+		},
 		mediaError: null,
 	});
 }
@@ -56,13 +66,20 @@ function record(deps: ReturnType<typeof fixture>, updateId: number) {
 test("new durably fences and selects before cancellation, preserving history and assigning only earlier pending input", () => {
 	const deps = fixture();
 	const first = deps.store.rollDm(42, "/workspace");
-	deps.store.append(first.id, [{ id: "old", role: "user", parts: [{ type: "text", text: "old history" }] }]);
+	deps.store.append(first.id, [
+		{ id: "old", role: "user", parts: [{ type: "text", text: "old history" }] },
+	]);
 	record(deps, 1);
 	record(deps, 11);
 	const result = navigateDm(deps, command(10));
 	expect(result).toMatchObject({
-		fromId: first.id, toId: "dm:42:2", outcome: "new", duplicate: false,
-		stopped: true, reviewsCancelled: 2, archivedInputs: 1,
+		fromId: first.id,
+		toId: "dm:42:2",
+		outcome: "new",
+		duplicate: false,
+		stopped: true,
+		reviewsCancelled: 2,
+		archivedInputs: 1,
 	});
 	expect(deps.store.currentDm(42)?.id ?? null).toBe(result.toId);
 	expect(deps.store.get(first.id)?.epoch).toBe(1);
@@ -87,7 +104,13 @@ test("new with no current creates only the first, or an outgoing history followe
 	const pending = fixture();
 	record(pending, 1);
 	const fresh = navigateDm(pending, command(10));
-	expect(fresh).toMatchObject({ fromId: "dm:42:1", toId: "dm:42:2", archivedInputs: 1, stopped: false, reviewsCancelled: 0 });
+	expect(fresh).toMatchObject({
+		fromId: "dm:42:1",
+		toId: "dm:42:2",
+		archivedInputs: 1,
+		stopped: false,
+		reviewsCancelled: 0,
+	});
 	expect(pending.stopped).toEqual([]);
 	expect(pending.inbox.archivedTarget(1, "dm:42")).toBe("dm:42:1");
 	expect(pending.store.history("dm:42:1")).toEqual([]);
@@ -105,18 +128,31 @@ test("command receipt deduplicates updates, message identities and aliases acros
 	expect(navigateDm(deps, { ...command(11), messageId: 10 })).toMatchObject(replay);
 	expect(deps.store.get(outgoing.id)?.epoch).toBe(epoch);
 	expect(deps.stopped).toEqual([outgoing.id]);
-	const receipt = deps.store.db.query("SELECT result_json FROM tg_dm_navigation WHERE update_id = 10").get();
-	expect(receipt).toEqual({ result_json: JSON.stringify({
-		fromId: outgoing.id, toId: original.toId, outcome: "new", archivedInputs: 0,
-	}) });
+	const receipt = deps.store.db
+		.query("SELECT result_json FROM tg_dm_navigation WHERE update_id = 10")
+		.get();
+	expect(receipt).toEqual({
+		result_json: JSON.stringify({
+			fromId: outgoing.id,
+			toId: original.toId,
+			outcome: "new",
+			archivedInputs: 0,
+		}),
+	});
 	expect(() => navigateDm(deps, command(11))).toThrow("conflicting command identity");
 	expect(() => navigateDm(deps, command(10, "back"))).toThrow("conflicting command identity");
-	expect(() => navigateDm(deps, { ...command(10), chatId: 43 })).toThrow("conflicting command identity");
+	expect(() => navigateDm(deps, { ...command(10), chatId: 43 })).toThrow(
+		"conflicting command identity",
+	);
 	navigateDm(deps, command(20));
 	deps.store.close();
 	const store = openStore(deps.file);
 	const stopped: string[] = [];
-	const reopened = { store, runtime: runtimeEdge(store, stopped), inbox: openTelegramInbox(store.db) };
+	const reopened = {
+		store,
+		runtime: runtimeEdge(store, stopped),
+		inbox: openTelegramInbox(store.db),
+	};
 	const duplicate = navigateDm(reopened, command(10));
 	expect(duplicate.toId).toBe(original.toId);
 	expect(duplicate.conv?.id ?? null).toBe(original.toId); // candidate, not today's pin
@@ -151,7 +187,12 @@ test("back walks predecessors, new branches from the selection, and earliest bac
 	const third = navigateDm(deps, command(30));
 	record(deps, 31);
 	const back = navigateDm(deps, command(40, "back"));
-	expect(back).toMatchObject({ fromId: third.toId, toId: second.toId, outcome: "back", archivedInputs: 1 });
+	expect(back).toMatchObject({
+		fromId: third.toId,
+		toId: second.toId,
+		outcome: "back",
+		archivedInputs: 1,
+	});
 	const fourth = navigateDm(deps, command(50));
 	expect(fourth.toId).toBe("dm:42:4");
 	expect(navigateDm(deps, command(60, "back")).toId).toBe(second.toId);
@@ -160,12 +201,23 @@ test("back walks predecessors, new branches from the selection, and earliest bac
 	const epoch = deps.store.get(first.toId!)?.epoch;
 	const count = deps.stopped.length;
 	const noPrevious = navigateDm(deps, command(80, "back"));
-	expect(noPrevious).toMatchObject({ fromId: first.toId, toId: null, conv: null, outcome: "no_previous", stopped: false, archivedInputs: 0 });
+	expect(noPrevious).toMatchObject({
+		fromId: first.toId,
+		toId: null,
+		conv: null,
+		outcome: "no_previous",
+		stopped: false,
+		archivedInputs: 0,
+	});
 	expect(deps.store.get(first.toId!)?.epoch).toBe(epoch);
 	expect(deps.stopped).toHaveLength(count);
 	expect(deps.inbox.archivedTarget(71, "dm:42")).toBeNull();
 	expect(deps.inbox.archivedTarget(31, "dm:42")).toBe(third.toId);
-	expect(navigateDm(deps, command(80, "back"))).toMatchObject({ duplicate: true, stopped: false, reviewsCancelled: 0 });
+	expect(navigateDm(deps, command(80, "back"))).toMatchObject({
+		duplicate: true,
+		stopped: false,
+		reviewsCancelled: 0,
+	});
 	expect(deps.store.get(first.toId!)?.epoch).toBe(epoch);
 	expect(deps.stopped).toHaveLength(count);
 	deps.store.close();
@@ -175,7 +227,14 @@ test("back before any conversation does not create or archive anything, and its 
 	const deps = fixture();
 	record(deps, 1);
 	const noPrevious = navigateDm(deps, command(10, "back"));
-	expect(noPrevious).toMatchObject({ fromId: null, toId: null, conv: null, outcome: "no_previous", stopped: false, archivedInputs: 0 });
+	expect(noPrevious).toMatchObject({
+		fromId: null,
+		toId: null,
+		conv: null,
+		outcome: "no_previous",
+		stopped: false,
+		archivedInputs: 0,
+	});
 	expect(deps.store.currentDm(42)).toBeNull();
 	expect(deps.inbox.archivedTarget(1, "dm:42")).toBeNull();
 	navigateDm(deps, command(20));
@@ -195,11 +254,18 @@ test("manual navigation rejects non-DM addresses and invalid Telegram identifier
 test("malformed or cross-chat persisted command outcomes fail loudly rather than navigating", () => {
 	const deps = fixture();
 	const original = navigateDm(deps, command(10));
-	deps.store.db.run("UPDATE tg_dm_navigation SET result_json = ? WHERE update_id = 10", ["{broken"]);
+	deps.store.db.run("UPDATE tg_dm_navigation SET result_json = ? WHERE update_id = 10", [
+		"{broken",
+	]);
 	expect(() => navigateDm(deps, command(10))).toThrow();
-	deps.store.db.run("UPDATE tg_dm_navigation SET result_json = ? WHERE update_id = 10", [JSON.stringify({
-		fromId: original.fromId, toId: "dm:43:1", outcome: "new", archivedInputs: 0,
-	})]);
+	deps.store.db.run("UPDATE tg_dm_navigation SET result_json = ? WHERE update_id = 10", [
+		JSON.stringify({
+			fromId: original.fromId,
+			toId: "dm:43:1",
+			outcome: "new",
+			archivedInputs: 0,
+		}),
+	]);
 	expect(() => navigateDm(deps, command(10))).toThrow("mismatched conversation");
 	expect(deps.store.currentDm(42)?.id ?? null).toBe(original.toId);
 	expect(deps.stopped).toEqual([]);
@@ -213,8 +279,13 @@ function heldTurn(deps: ReturnType<typeof fixture>) {
 	const held = Promise.withResolvers<void>();
 	let calls = 0;
 	const model: LanguageModelV4 = {
-		specificationVersion: "v4", provider: "fake", modelId: "navigation-test", supportedUrls: {},
-		doGenerate() { throw new Error("unused"); },
+		specificationVersion: "v4",
+		provider: "fake",
+		modelId: "navigation-test",
+		supportedUrls: {},
+		doGenerate() {
+			throw new Error("unused");
+		},
 		async doStream(options) {
 			calls++;
 			if (!options.abortSignal) throw new Error("runtime did not supply an abort signal");
@@ -228,9 +299,15 @@ function heldTurn(deps: ReturnType<typeof fixture>) {
 						controller.enqueue({ type: "text-delta", id: "answer", delta: "Completed normally" });
 						controller.enqueue({ type: "text-end", id: "answer" });
 						controller.enqueue({
-							type: "finish", finishReason: { unified: "stop", raw: undefined },
+							type: "finish",
+							finishReason: { unified: "stop", raw: undefined },
 							usage: {
-								inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+								inputTokens: {
+									total: 1,
+									noCache: undefined,
+									cacheRead: undefined,
+									cacheWrite: undefined,
+								},
 								outputTokens: { total: 1, text: undefined, reasoning: undefined },
 							},
 						});
@@ -241,18 +318,33 @@ function heldTurn(deps: ReturnType<typeof fixture>) {
 		},
 	};
 	const runtime = new Runtime({
-		store: deps.store, buildStep: () => ({ model, system: "test" }), makeTools: () => ({}),
+		store: deps.store,
+		buildStep: () => ({ model, system: "test" }),
+		makeTools: () => ({}),
 	});
 	const completed = Promise.withResolvers<TurnDone>();
 	let text = "";
 	const sink: TurnSink = {
-		onTextDelta(delta) { text += delta; }, onReasoningDelta() {}, onToolCall() {},
-		onDone(done) { completed.resolve(done); },
+		onTextDelta(delta) {
+			text += delta;
+		},
+		onReasoningDelta() {},
+		onToolCall() {},
+		onDone(done) {
+			completed.resolve(done);
+		},
 	};
 	const conv = deps.store.currentDm(42)!;
 	runtime.submit(conv, userMessage([{ type: "text", text: "original question" }]), sink);
-	return { runtime, started: started.promise, release: () => held.resolve(), done: completed.promise,
-		text: () => text, calls: () => calls, conv };
+	return {
+		runtime,
+		started: started.promise,
+		release: () => held.resolve(),
+		done: completed.promise,
+		text: () => text,
+		calls: () => calls,
+		conv,
+	};
 }
 
 test("receipt failure leaves a real held Runtime provider un-aborted and able to complete", async () => {
@@ -264,7 +356,9 @@ test("receipt failure leaves a real held Runtime provider un-aborted and able to
 		const signal = await turn.started;
 		deps.store.db.run(`CREATE TRIGGER fail_navigation BEFORE INSERT ON tg_dm_navigation
 			BEGIN SELECT RAISE(ABORT, 'receipt failed'); END`);
-		expect(() => navigateDm({ ...deps, runtime: turn.runtime }, command(20))).toThrow("receipt failed");
+		expect(() => navigateDm({ ...deps, runtime: turn.runtime }, command(20))).toThrow(
+			"receipt failed",
+		);
 		expect(signal.aborted).toBe(false);
 		expect(deps.store.get(turn.conv.id)?.epoch).toBe(turn.conv.epoch);
 		expect(deps.store.currentDm(42)?.id).toBe(turn.conv.id);
@@ -274,7 +368,10 @@ test("receipt failure leaves a real held Runtime provider un-aborted and able to
 		expect(await turn.done).toEqual({ kind: "completed" });
 		expect(turn.text()).toBe("Completed normally");
 		expect(turn.calls()).toBe(1);
-		expect(deps.store.history(turn.conv.id).map((message) => message.role)).toEqual(["user", "assistant"]);
+		expect(deps.store.history(turn.conv.id).map((message) => message.role)).toEqual([
+			"user",
+			"assistant",
+		]);
 		while (turn.runtime.busy(turn.conv.id)) await Bun.sleep(1);
 	} finally {
 		turn.release();
@@ -290,11 +387,19 @@ test("successful navigation cancels a real Runtime at the committed fence withou
 	try {
 		const signal = await turn.started;
 		const result = navigateDm({ ...deps, runtime: turn.runtime }, command(20));
-		expect(result).toMatchObject({ fromId: turn.conv.id, toId: "dm:42:2", stopped: true, reviewsCancelled: 0 });
+		expect(result).toMatchObject({
+			fromId: turn.conv.id,
+			toId: "dm:42:2",
+			stopped: true,
+			reviewsCancelled: 0,
+		});
 		expect(signal.aborted).toBe(true);
 		expect(deps.store.get(turn.conv.id)?.epoch).toBe(turn.conv.epoch + 1);
 		expect(navigateDm({ ...deps, runtime: turn.runtime }, command(20))).toMatchObject({
-			toId: result.toId, duplicate: true, stopped: false, reviewsCancelled: 0,
+			toId: result.toId,
+			duplicate: true,
+			stopped: false,
+			reviewsCancelled: 0,
 		});
 		expect(deps.store.get(turn.conv.id)?.epoch).toBe(turn.conv.epoch + 1);
 		turn.release();

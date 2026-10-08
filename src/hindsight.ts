@@ -7,7 +7,11 @@ import { log } from "./log.ts";
 // Bank/document identifier vocabulary — shared with the forget
 // protocol (memory-forget.ts validates operator-supplied ids before
 // touching local state) and the mini-app routes.
-export const identifier = z.string().min(1).max(256).refine((value) => value !== "." && value !== "..");
+export const identifier = z
+	.string()
+	.min(1)
+	.max(256)
+	.refine((value) => value !== "." && value !== "..");
 const baseUrlSchema = z.url().superRefine((value, ctx) => {
 	let url: URL;
 	try {
@@ -19,11 +23,15 @@ const baseUrlSchema = z.url().superRefine((value, ctx) => {
 	const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
 	if (
 		!(url.protocol === "https:" || (url.protocol === "http:" && loopback)) ||
-		url.username || url.password || url.search || url.hash
+		url.username ||
+		url.password ||
+		url.search ||
+		url.hash
 	) {
 		ctx.addIssue({
 			code: "custom",
-			message: "Hindsight URL must use HTTPS (or loopback HTTP), without credentials, query, or fragment",
+			message:
+				"Hindsight URL must use HTTPS (or loopback HTTP), without credentials, query, or fragment",
 		});
 	}
 });
@@ -78,9 +86,11 @@ const documentSummarySchema = z.object({
 	memory_unit_count: z.number().int().nonnegative().nullish(),
 	// Goblin's own retain metadata — conversation_id is what the browser
 	// groups by. Optional: only id is required server-side.
-	document_metadata: z.object({
-		conversation_id: z.string().max(256).nullish(),
-	}).nullish(),
+	document_metadata: z
+		.object({
+			conversation_id: z.string().max(256).nullish(),
+		})
+		.nullish(),
 });
 export type MemoryDocSummary = z.infer<typeof documentSummarySchema>;
 const factListItemSchema = z.object({
@@ -142,10 +152,12 @@ export class HindsightError extends Error {
 	}
 
 	get retryable(): boolean {
-		return this.kind === "transport" || this.kind === "timeout" ||
-			(this.kind === "http" && (
-				this.status === 408 || this.status === 429 || (this.status ?? 0) >= 500
-			));
+		return (
+			this.kind === "transport" ||
+			this.kind === "timeout" ||
+			(this.kind === "http" &&
+				(this.status === 408 || this.status === 429 || (this.status ?? 0) >= 500))
+		);
 	}
 }
 
@@ -201,7 +213,9 @@ export class HindsightClient {
 		if (!parsed.success) throw new Error("Invalid Hindsight connection configuration");
 		this.base = `${parsed.data.baseUrl.replace(/\/+$/, "")}/v1/default/banks/${encodeURIComponent(parsed.data.bankId)}`;
 		this.target = createHash("sha256")
-			.update(JSON.stringify([new URL(parsed.data.baseUrl).href.replace(/\/+$/, ""), parsed.data.bankId]))
+			.update(
+				JSON.stringify([new URL(parsed.data.baseUrl).href.replace(/\/+$/, ""), parsed.data.bankId]),
+			)
 			.digest("hex");
 		this.bankId = parsed.data.bankId;
 		this.timeoutMs = parsed.data.timeoutMs;
@@ -213,7 +227,12 @@ export class HindsightClient {
 		path: string,
 		method: "GET" | "POST" | "DELETE",
 		schema: z.ZodType<T>,
-		options: { body?: unknown; signal?: AbortSignal | undefined; missing?: boolean; document?: string } = {},
+		options: {
+			body?: unknown;
+			signal?: AbortSignal | undefined;
+			missing?: boolean;
+			document?: string;
+		} = {},
 	): Promise<T | null> {
 		const started = Date.now();
 		const controller = new AbortController();
@@ -268,16 +287,23 @@ export class HindsightClient {
 			};
 			const result = await Promise.race([work(), aborted]);
 			log.info("memory request completed", {
-				...fields, durationMs: Date.now() - started, missing: result === null,
+				...fields,
+				durationMs: Date.now() - started,
+				missing: result === null,
 			});
 			return result;
 		} catch (err) {
 			const failure = controller.signal.aborted
 				? new HindsightError(timedOut ? "timeout" : "cancelled")
-				: err instanceof HindsightError ? err : new HindsightError("transport");
+				: err instanceof HindsightError
+					? err
+					: new HindsightError("transport");
 			log.warn("memory request failed", {
-				...fields, durationMs: Date.now() - started,
-				kind: failure.kind, status: failure.status, retryable: failure.retryable,
+				...fields,
+				durationMs: Date.now() - started,
+				kind: failure.kind,
+				status: failure.status,
+				retryable: failure.retryable,
 			});
 			throw failure;
 		} finally {
@@ -287,18 +313,24 @@ export class HindsightClient {
 		}
 	}
 
-	async recall(query: string, options: {
-		signal?: AbortSignal;
-		maxTokens?: number;
-		budget?: "low" | "mid" | "high";
-	} = {}): Promise<RecalledFact[]> {
-		const input = z.object({
-			query: z.string().min(1).max(8_000),
-			max_tokens: z.number().int().min(1).max(8_192),
-			budget: z.enum(["low", "mid", "high"]),
-		}).parse({ query, max_tokens: options.maxTokens ?? 2_048, budget: options.budget ?? "low" });
+	async recall(
+		query: string,
+		options: {
+			signal?: AbortSignal;
+			maxTokens?: number;
+			budget?: "low" | "mid" | "high";
+		} = {},
+	): Promise<RecalledFact[]> {
+		const input = z
+			.object({
+				query: z.string().min(1).max(8_000),
+				max_tokens: z.number().int().min(1).max(8_192),
+				budget: z.enum(["low", "mid", "high"]),
+			})
+			.parse({ query, max_tokens: options.maxTokens ?? 2_048, budget: options.budget ?? "low" });
 		const result = await this.request("recall", "/memories/recall", "POST", recallSchema, {
-			body: input, signal: options.signal,
+			body: input,
+			signal: options.signal,
 		});
 		if (!result) throw new HindsightError("protocol");
 		log.info("memory recalled", { bank: this.bankId, count: result.results.length });
@@ -311,52 +343,75 @@ export class HindsightClient {
 	async submit(document: MemoryDocument, operationId: string, signal?: AbortSignal): Promise<void> {
 		const doc = memoryDocumentSchema.parse(document);
 		const id = z.uuid().parse(operationId);
-		const responseSchema = retainSchema.refine((r) =>
-			r.bank_id === this.bankId && r.async && r.operation_id === id &&
-			(!r.operation_ids || (r.operation_ids.length === 1 && r.operation_ids[0] === id)));
+		const responseSchema = retainSchema.refine(
+			(r) =>
+				r.bank_id === this.bankId &&
+				r.async &&
+				r.operation_id === id &&
+				(!r.operation_ids || (r.operation_ids.length === 1 && r.operation_ids[0] === id)),
+		);
 		await this.request("retain", "/memories", "POST", responseSchema, {
-			signal, document: doc.id,
+			signal,
+			document: doc.id,
 			body: {
 				async: true,
 				operation_id: id,
-				items: [{
-					document_id: doc.id,
-					update_mode: "replace",
-					content: doc.content,
-					timestamp: doc.timestamp,
-					context: "Telegram exchange. Operator and Goblin speakers are labelled. Assistant suggestions are not operator decisions.",
-					metadata: {
-						source: "goblin",
-						conversation_id: doc.conversationId,
-						source_ids: JSON.stringify(doc.sourceIds),
+				items: [
+					{
+						document_id: doc.id,
+						update_mode: "replace",
+						content: doc.content,
+						timestamp: doc.timestamp,
+						context:
+							"Telegram exchange. Operator and Goblin speakers are labelled. Assistant suggestions are not operator decisions.",
+						metadata: {
+							source: "goblin",
+							conversation_id: doc.conversationId,
+							source_ids: JSON.stringify(doc.sourceIds),
+						},
 					},
-				}],
+				],
 			},
 		});
 	}
 
 	async operation(operationId: string, signal?: AbortSignal): Promise<MemoryOperation | null> {
 		const id = z.uuid().parse(operationId);
-		const result = await this.request("operation", `/operations/${encodeURIComponent(id)}`, "GET",
+		const result = await this.request(
+			"operation",
+			`/operations/${encodeURIComponent(id)}`,
+			"GET",
 			operationSchema.refine((r) => r.operation_id === id),
-			{ signal, missing: true });
+			{ signal, missing: true },
+		);
 		return result?.status === "not_found" ? null : result;
 	}
 
-	async getDocument(documentId: string, signal?: AbortSignal): Promise<StoredMemoryDocument | null> {
+	async getDocument(
+		documentId: string,
+		signal?: AbortSignal,
+	): Promise<StoredMemoryDocument | null> {
 		const id = identifier.parse(documentId);
-		return this.request("document", `/documents/${encodeURIComponent(id)}`, "GET",
+		return this.request(
+			"document",
+			`/documents/${encodeURIComponent(id)}`,
+			"GET",
 			documentSchema.refine((r) => r.id === id && r.bank_id === this.bankId),
-			{ signal, missing: true, document: id });
+			{ signal, missing: true, document: id },
+		);
 	}
 
 	// Caller owns operator confirmation, suppression, and settling any in-flight
 	// retain operation first. HTTP success alone is not a complete forgetting policy.
 	async deleteDocument(documentId: string, signal?: AbortSignal): Promise<void> {
 		const id = identifier.parse(documentId);
-		await this.request("delete", `/documents/${encodeURIComponent(id)}`, "DELETE",
+		await this.request(
+			"delete",
+			`/documents/${encodeURIComponent(id)}`,
+			"DELETE",
 			z.object({ success: z.literal(true), document_id: z.literal(id) }),
-			{ signal, missing: true, document: id });
+			{ signal, missing: true, document: id },
+		);
 	}
 
 	// ---------- browse (mini-app memories browser, read-only) ----------
@@ -372,18 +427,21 @@ export class HindsightClient {
 		offset: number;
 		signal?: AbortSignal;
 	}): Promise<MemoryDocPage<MemoryDocSummary>> {
-		const input = z.object({
-			q: z.string().min(1).max(256).optional(),
-			limit: z.number().int().min(1).max(100),
-			offset: z.number().int().min(0),
-		}).parse(options);
+		const input = z
+			.object({
+				q: z.string().min(1).max(256).optional(),
+				limit: z.number().int().min(1).max(100),
+				offset: z.number().int().min(0),
+			})
+			.parse(options);
 		const query = new URLSearchParams({
 			limit: String(input.limit),
 			offset: String(input.offset),
 			...(input.q !== undefined ? { q: input.q } : {}),
 		});
-		const result = await this.request("documents", `/documents?${query}`, "GET",
-			docListSchema, { signal: options.signal });
+		const result = await this.request("documents", `/documents?${query}`, "GET", docListSchema, {
+			signal: options.signal,
+		});
 		if (!result) throw new HindsightError("protocol");
 		return { items: result.items, total: result.total, limit: input.limit, offset: input.offset };
 	}
@@ -397,20 +455,27 @@ export class HindsightClient {
 		offset: number;
 		signal?: AbortSignal;
 	}): Promise<MemoryDocPage<MemoryFact>> {
-		const input = z.object({
-			documentId: identifier.optional(),
-			q: z.string().min(1).max(256).optional(),
-			limit: z.number().int().min(1).max(200),
-			offset: z.number().int().min(0),
-		}).parse(options);
+		const input = z
+			.object({
+				documentId: identifier.optional(),
+				q: z.string().min(1).max(256).optional(),
+				limit: z.number().int().min(1).max(200),
+				offset: z.number().int().min(0),
+			})
+			.parse(options);
 		const query = new URLSearchParams({
 			limit: String(input.limit),
 			offset: String(input.offset),
 			...(input.documentId !== undefined ? { document_id: input.documentId } : {}),
 			...(input.q !== undefined ? { q: input.q } : {}),
 		});
-		const result = await this.request("memories", `/memories/list?${query}`, "GET",
-			memoryListSchema, { signal: options.signal });
+		const result = await this.request(
+			"memories",
+			`/memories/list?${query}`,
+			"GET",
+			memoryListSchema,
+			{ signal: options.signal },
+		);
 		if (!result) throw new HindsightError("protocol");
 		return { items: result.items, total: result.total, limit: input.limit, offset: input.offset };
 	}

@@ -42,10 +42,12 @@ describe("history_search tool", () => {
 		expect(historyInputSchema.safeParse({}).success).toBe(false);
 		expect(historyInputSchema.safeParse({ action: "search" }).success).toBe(false);
 		expect(historyInputSchema.safeParse({ action: "search", query: "x" }).success).toBe(true);
-		expect(historyInputSchema.safeParse({ action: "context", conversation: "c" }).success)
-			.toBe(false);
-		expect(historyInputSchema.safeParse({ action: "context", conversation: "c", seq: 1 }).success)
-			.toBe(true);
+		expect(historyInputSchema.safeParse({ action: "context", conversation: "c" }).success).toBe(
+			false,
+		);
+		expect(
+			historyInputSchema.safeParse({ action: "context", conversation: "c", seq: 1 }).success,
+		).toBe(true);
 	});
 	test("search returns addressable hits with a paging footer", async () => {
 		const store = openStore(tmpdb());

@@ -63,7 +63,9 @@ export function Skeleton() {
 
 /** Scrollable, height-capped mono block — output tails and previews. */
 export function Clip({ text, className }: { text: string; className?: string }) {
-	return <pre className={className === undefined ? "tool-clip" : `tool-clip ${className}`}>{text}</pre>;
+	return (
+		<pre className={className === undefined ? "tool-clip" : `tool-clip ${className}`}>{text}</pre>
+	);
 }
 
 /** The failure renderer — returned {error} refusals and thrown errors. */

@@ -2,7 +2,20 @@
 // No secrets here; those live in auth.jsonl. The mini app is the
 // operator-facing editing surface; hand-editing always works.
 
-import { closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, statSync, symlinkSync, unlinkSync } from "node:fs";
+import {
+	closeSync,
+	constants,
+	existsSync,
+	fsyncSync,
+	lstatSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	readlinkSync,
+	statSync,
+	symlinkSync,
+	unlinkSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import JSON5 from "json5";
@@ -39,7 +52,13 @@ export const paths = {
 };
 
 export function ensureHomeLayout(): void {
-	for (const dir of [goblinHome(), paths.workspace(), paths.skills(), paths.attachments(), paths.state()]) {
+	for (const dir of [
+		goblinHome(),
+		paths.workspace(),
+		paths.skills(),
+		paths.attachments(),
+		paths.state(),
+	]) {
 		// A WAL/FULL inbox commit cannot protect a database or attachment
 		// inside a directory whose name vanishes on first-boot power loss.
 		// Create missing ancestors from the oldest down and sync each
@@ -47,7 +66,8 @@ export function ensureHomeLayout(): void {
 		const missing: string[] = [];
 		for (let next = dir; ; next = dirname(next)) {
 			try {
-				if (!statSync(next).isDirectory()) throw new Error(`layout directory is not a directory: ${next}`);
+				if (!statSync(next).isDirectory())
+					throw new Error(`layout directory is not a directory: ${next}`);
 				break;
 			} catch (err) {
 				if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
@@ -85,7 +105,7 @@ export function ensureHomeLayout(): void {
 			"Your operating notes. Each conversation starts from this file and",
 			"nothing else — it is your only memory between them. Write things down:",
 			"",
-			"- Operator says \"remember this\" → it goes here.",
+			'- Operator says "remember this" → it goes here.',
 			"- You learn a deployment fact (a path, a host, a service, where",
 			"  things live on this machine) → it goes here.",
 			"- You make a mistake you could repeat → the lesson goes here.",
@@ -124,7 +144,7 @@ export function ensureHomeLayout(): void {
 			'\t// Goblin\'s own MCP servers (DESIGN.md, "Web access" → "MCP").',
 			"\t// Secrets are ${VAR} placeholders only — values ride the",
 			"\t// goblin-mcp-dev pass-keys profile into mcporter's child env,",
-			"\t// never this file. \"imports\" MUST stay []: without it",
+			'\t// never this file. "imports" MUST stay []: without it',
 			"\t// mcporter merges the operator's editor servers, and the",
 			"\t// call-time gate refuses anything else.",
 			'\t"mcpServers": {},',
@@ -217,7 +237,9 @@ function refreshGoblinMailShim(): void {
 		return;
 	}
 	if (!isLink) {
-		log.error("not clobbering the goblin-mail shim: a real file is in the way", undefined, { path: shim });
+		log.error("not clobbering the goblin-mail shim: a real file is in the way", undefined, {
+			path: shim,
+		});
 		return;
 	}
 	if (readlinkSync(shim) !== target) {
@@ -264,14 +286,7 @@ export const providerSchema = z.discriminatedUnion("kind", [
 	}),
 ]);
 
-export const thinkingLevels = [
-	"off",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-	"max",
-] as const;
+export const thinkingLevels = ["off", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = (typeof thinkingLevels)[number];
 
 // Optional long-term memory (DESIGN.md, Slice 2 rulings). Absent =
@@ -343,7 +358,10 @@ export const harnessMapSchema = z
 // alnum/._- body, bounded length.
 const sessionNameSchema = z
 	.string()
-	.regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "session name must start alphanumeric and contain only [A-Za-z0-9._-]");
+	.regex(
+		/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/,
+		"session name must start alphanumeric and contain only [A-Za-z0-9._-]",
+	);
 
 // root resolves the target's relative cwds; remote paths must be
 // absolute or `~`/`~/…` (server-expanded), so relative values are
@@ -354,11 +372,15 @@ export const delegationTargetSchema = z
 	.object({
 		machine: harnessNameSchema.optional(),
 		session: sessionNameSchema.optional(),
-		root: z.string().regex(/^(?:\/|~)/, "delegation target root must be absolute or start with ~").optional(),
+		root: z
+			.string()
+			.regex(/^(?:\/|~)/, "delegation target root must be absolute or start with ~")
+			.optional(),
 		harnesses: harnessMapSchema.optional(),
 	})
 	.refine((t) => (t.machine !== undefined) !== (t.session !== undefined), {
-		message: "a delegation target needs exactly one of machine (saved-machine label) or session (another local session)",
+		message:
+			"a delegation target needs exactly one of machine (saved-machine label) or session (another local session)",
 	});
 export type DelegationTargetConfig = z.infer<typeof delegationTargetSchema>;
 
@@ -446,7 +468,10 @@ export type System1Config = z.infer<typeof system1ConfigSchema>;
 export const ttsConfigSchema = z.object({
 	kind: z.literal("edge"),
 	voice: z.string().min(1),
-	rate: z.string().regex(/^[+-]\d+%$/).optional(),
+	rate: z
+		.string()
+		.regex(/^[+-]\d+%$/)
+		.optional(),
 	// The cast beyond the default voice — language follows the voice
 	// name. The speak tool picks per call; /voice mode and the 🔊 button
 	// sniff each reply's language and cast the matching voice, falling
@@ -461,7 +486,15 @@ export type TtsConfig = z.infer<typeof ttsConfigSchema>;
 // The chain-entry kinds the mini app's search/fetch builders may offer,
 // in schema order. Same single-source contract as providerKinds —
 // config.test.ts pins both against the unions below.
-export const searchKinds = ["brave", "exa", "jina", "tavily", "firecrawl", "parallel", "ddg"] as const;
+export const searchKinds = [
+	"brave",
+	"exa",
+	"jina",
+	"tavily",
+	"firecrawl",
+	"parallel",
+	"ddg",
+] as const;
 
 export const searchEntrySchema = z.discriminatedUnion("kind", [
 	z.object({ kind: z.literal("brave"), auth: z.string().min(1) }),
@@ -566,7 +599,12 @@ const configSchema = z
 		// the settings form can't express undefined over JSON.
 		publicUrl: z
 			.union([
-				z.url().refine((url) => URL.canParse(url) && new URL(url).protocol === "https:", "Public URL must use HTTPS for Telegram Web Apps"),
+				z
+					.url()
+					.refine(
+						(url) => URL.canParse(url) && new URL(url).protocol === "https:",
+						"Public URL must use HTTPS for Telegram Web Apps",
+					),
 				z.literal(""),
 			])
 			.transform((v) => v || undefined)

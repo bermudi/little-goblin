@@ -61,49 +61,67 @@ export interface GwsMailReader extends MailPoller {}
 // fields (snippet, resultSizeEstimate) stay lenient — absence is a
 // legitimate empty, not drift.
 
-const historyMessageSchema = z.object({
-	message: z.object({ id: z.string(), threadId: z.string().optional() }).passthrough(),
-}).passthrough();
+const historyMessageSchema = z
+	.object({
+		message: z.object({ id: z.string(), threadId: z.string().optional() }).passthrough(),
+	})
+	.passthrough();
 
-const historyRecordSchema = z.object({
-	id: z.string(),
-	messagesAdded: z.array(historyMessageSchema).optional(),
-}).passthrough();
+const historyRecordSchema = z
+	.object({
+		id: z.string(),
+		messagesAdded: z.array(historyMessageSchema).optional(),
+	})
+	.passthrough();
 
-const historyPageSchema = z.object({
-	history: z.array(historyRecordSchema).optional(),
-	historyId: z.string(),
-	nextPageToken: z.string().optional(),
-}).passthrough();
+const historyPageSchema = z
+	.object({
+		history: z.array(historyRecordSchema).optional(),
+		historyId: z.string(),
+		nextPageToken: z.string().optional(),
+	})
+	.passthrough();
 
-const messagesListSchema = z.object({
-	messages: z.array(
-		z.object({ id: z.string(), threadId: z.string().optional() }).passthrough(),
-	).optional(),
-	nextPageToken: z.string().optional(),
-	resultSizeEstimate: z.unknown().optional(),
-}).passthrough();
+const messagesListSchema = z
+	.object({
+		messages: z
+			.array(z.object({ id: z.string(), threadId: z.string().optional() }).passthrough())
+			.optional(),
+		nextPageToken: z.string().optional(),
+		resultSizeEstimate: z.unknown().optional(),
+	})
+	.passthrough();
 
-const messageGetSchema = z.object({
-	id: z.string(),
-	threadId: z.string(),
-	snippet: z.string().optional(),
-	payload: z.object({
-		headers: z.array(
-			z.object({ name: z.string(), value: z.string() }).passthrough(),
-		).optional(),
-	}).passthrough().optional(),
-}).passthrough();
+const messageGetSchema = z
+	.object({
+		id: z.string(),
+		threadId: z.string(),
+		snippet: z.string().optional(),
+		payload: z
+			.object({
+				headers: z
+					.array(z.object({ name: z.string(), value: z.string() }).passthrough())
+					.optional(),
+			})
+			.passthrough()
+			.optional(),
+	})
+	.passthrough();
 
-const profileSchema = z.object({
-	historyId: z.string(),
-}).passthrough();
+const profileSchema = z
+	.object({
+		historyId: z.string(),
+	})
+	.passthrough();
 
 function parseOrThrow<T>(action: string, schema: z.ZodType<T>, data: unknown): T {
 	try {
 		return schema.parse(data);
 	} catch (err) {
-		throw new ProviderError("gws", `${action} returned an unexpected shape — ${(err as Error).message.slice(0, 200)}`);
+		throw new ProviderError(
+			"gws",
+			`${action} returned an unexpected shape — ${(err as Error).message.slice(0, 200)}`,
+		);
 	}
 }
 
@@ -155,7 +173,11 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 	// history-expiry and missing-target signals callers match on) or the
 	// exit code otherwise. Stderr is truncated and whitespace-collapsed:
 	// it names the fix (re-login, bad args), never mail content.
-	async function gwsJson(args: string[], action: string, fields: Record<string, unknown>): Promise<unknown> {
+	async function gwsJson(
+		args: string[],
+		action: string,
+		fields: Record<string, unknown>,
+	): Promise<unknown> {
 		const started = Date.now();
 		let r: GwsRunResult;
 		try {
@@ -187,9 +209,21 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 
 	async function getMetadata(id: string): Promise<MailHit> {
 		const data = await gwsJson(
-			["gmail", "users", "messages", "get", "--params",
-				JSON.stringify({ userId: "me", id, format: "METADATA", metadataHeaders: ["From", "Subject", "Date"] }),
-				"--format", "json"],
+			[
+				"gmail",
+				"users",
+				"messages",
+				"get",
+				"--params",
+				JSON.stringify({
+					userId: "me",
+					id,
+					format: "METADATA",
+					metadataHeaders: ["From", "Subject", "Date"],
+				}),
+				"--format",
+				"json",
+			],
 			"meta.get",
 			{ id },
 		);
@@ -206,7 +240,10 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 		};
 	}
 
-	async function poll(filter: string, startHistoryId: string): Promise<{ hits: MailHit[]; historyId: string }> {
+	async function poll(
+		filter: string,
+		startHistoryId: string,
+	): Promise<{ hits: MailHit[]; historyId: string }> {
 		const records: Array<{ id: string; ids: string[] }> = [];
 		let latest = "";
 		let pageToken = "";
@@ -224,7 +261,16 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 			let data: unknown;
 			try {
 				data = await gwsJson(
-					["gmail", "users", "history", "list", "--params", JSON.stringify(params), "--format", "json"],
+					[
+						"gmail",
+						"users",
+						"history",
+						"list",
+						"--params",
+						JSON.stringify(params),
+						"--format",
+						"json",
+					],
 					"poll.history",
 					{ filter },
 				);
@@ -248,11 +294,18 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 			}
 			pageToken = body.nextPageToken ?? "";
 			if (pageToken !== "" && (seenTokens.has(pageToken) || seenTokens.size >= 100)) {
-				throw new ProviderError("gws", "history pagination repeated or exceeded 100 pages — cursor unchanged");
+				throw new ProviderError(
+					"gws",
+					"history pagination repeated or exceeded 100 pages — cursor unchanged",
+				);
 			}
 			if (pageToken !== "") seenTokens.add(pageToken);
 		} while (pageToken !== "");
-		log.info("mail poll history pages loaded", { filter, pages: seenTokens.size + 1, records: records.length });
+		log.info("mail poll history pages loaded", {
+			filter,
+			pages: seenTokens.size + 1,
+			records: records.length,
+		});
 		records.sort((a, b) => Number(a.id) - Number(b.id));
 		const added = new Set(records.flatMap((r) => r.ids));
 		if (added.size === 0) return { hits: [], historyId: latest };
@@ -260,8 +313,16 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 		// arrivals with the filter's own recent matches (newest first),
 		// then present oldest first.
 		const listData = await gwsJson(
-			["gmail", "users", "messages", "list", "--params",
-				JSON.stringify({ userId: "me", q: filter, maxResults: LIST_PAGE }), "--format", "json"],
+			[
+				"gmail",
+				"users",
+				"messages",
+				"list",
+				"--params",
+				JSON.stringify({ userId: "me", q: filter, maxResults: LIST_PAGE }),
+				"--format",
+				"json",
+			],
 			"poll.list",
 			{ filter },
 		);
@@ -271,10 +332,13 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 			// The intersection window may have truncated: arrivals older
 			// than the newest LIST_PAGE matches are invisible to it, and a
 			// head checkpoint would skip them silently — the log says so.
-			log.warn("mail poll filter list page full — matches older than the newest 50 may be skipped by this checkpoint", {
-				filter,
-				listed: matching.length,
-			});
+			log.warn(
+				"mail poll filter list page full — matches older than the newest 50 may be skipped by this checkpoint",
+				{
+					filter,
+					listed: matching.length,
+				},
+			);
 		}
 		const matched = matching.map((m) => m.id).filter((id) => added.has(id));
 		matched.reverse();
@@ -321,7 +385,15 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 
 	async function profileHistoryId(): Promise<string> {
 		const data = await gwsJson(
-			["gmail", "users", "getProfile", "--params", JSON.stringify({ userId: "me" }), "--format", "json"],
+			[
+				"gmail",
+				"users",
+				"getProfile",
+				"--params",
+				JSON.stringify({ userId: "me" }),
+				"--format",
+				"json",
+			],
 			"profile.get",
 			{},
 		);
@@ -329,13 +401,27 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 		return body.historyId;
 	}
 
-	async function threadFor(replyToId: string): Promise<{ threadId: string; messageId: string | null } | null> {
+	async function threadFor(
+		replyToId: string,
+	): Promise<{ threadId: string; messageId: string | null } | null> {
 		let data: unknown;
 		try {
 			data = await gwsJson(
-				["gmail", "users", "messages", "get", "--params",
-					JSON.stringify({ userId: "me", id: replyToId, format: "METADATA", metadataHeaders: ["Message-ID"] }),
-					"--format", "json"],
+				[
+					"gmail",
+					"users",
+					"messages",
+					"get",
+					"--params",
+					JSON.stringify({
+						userId: "me",
+						id: replyToId,
+						format: "METADATA",
+						metadataHeaders: ["Message-ID"],
+					}),
+					"--format",
+					"json",
+				],
 				"reply.get",
 				{ id: replyToId },
 			);

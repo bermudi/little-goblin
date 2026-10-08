@@ -33,9 +33,16 @@ export const memorySearchTool = (deps: MemorySearchDeps) =>
 			"Results may be stale; verify before acting on them.",
 		inputSchema: z.object({
 			query: z.string().min(1).max(8000).describe("What to search memory for"),
-			maxTokens: z.number().int().min(1).max(8192).optional()
+			maxTokens: z
+				.number()
+				.int()
+				.min(1)
+				.max(8192)
+				.optional()
 				.describe("Cap on recall output (defaults to the configured bound)"),
-			budget: z.enum(["low", "mid", "high"]).optional()
+			budget: z
+				.enum(["low", "mid", "high"])
+				.optional()
 				.describe("Search effort (defaults to the configured budget)"),
 		}),
 		execute: async ({ query, maxTokens, budget }) => {

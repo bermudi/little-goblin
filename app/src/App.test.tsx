@@ -6,9 +6,9 @@ import { deepLinkConv, flatLine } from "./App.tsx";
 
 describe("flatLine", () => {
 	test("a fenced title loses the fence and language tag", () => {
-		expect(
-			flatLine('```typescript const slug = (s: string): string => s.trim(); ```'),
-		).toBe("const slug = (s: string): string => s.trim();");
+		expect(flatLine("```typescript const slug = (s: string): string => s.trim(); ```")).toBe(
+			"const slug = (s: string): string => s.trim();",
+		);
 	});
 
 	test("inline backticks, links, and emphasis flatten", () => {

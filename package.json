@@ -1,52 +1,52 @@
 {
-  "name": "goblin",
-  "version": "0.2.0",
-  "private": true,
-  "description": "Telegram-native personal AI goblin. One operator, one Bun process.",
-  "type": "module",
-  "main": "src/index.ts",
-  "scripts": {
-    "start": "bun run src/index.ts",
-    "dev": "bun --watch run src/index.ts",
-    "test": "bun test",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.client.json && tsc --noEmit -p app/tsconfig.json",
-    "format": "biome format --write .",
-    "format:check": "biome format .",
-    "app:build": "vite build app"
-  },
-  "dependencies": {
-    "@ai-sdk/groq": "4.0.50",
-    "@ai-sdk/openai": "4.0.78",
-    "@ai-sdk/openai-compatible": "^3.0.0",
-    "@ai-sdk/provider-utils": "5",
-    "@mozilla/readability": "^0.6.0",
-    "@openrouter/ai-sdk-provider": "^3.0.0",
-    "ai": "^7.0.0",
-    "cron-parser": "^5.10.1",
-    "grammy": "^1.38.0",
-    "highlight.js": "^11.12.0",
-    "json5": "^2.2.3",
-    "linkedom": "^0.18.13",
-    "mcporter": "0.13.13",
-    "ws": "8.21.3",
-    "zod": "^4.0.0"
-  },
-  "devDependencies": {
-    "@ai-sdk/provider": "4.0.18",
-    "@ai-sdk/react": "4.0.116",
-    "@biomejs/biome": "^2.5.15",
-    "@types/bun": "latest",
-    "@types/json5": "^2.2.0",
-    "@types/react": "19.3.0",
-    "@types/react-dom": "19.3.0",
-    "@types/ws": "8.18.1",
-    "@vitejs/plugin-react": "6.1.1",
-    "react": "19.3.0",
-    "react-dom": "19.3.0",
-    "typescript": "^5.6.0",
-    "vite": "8.3.0"
-  },
-  "engines": {
-    "bun": ">=1.1.0"
-  }
+	"name": "goblin",
+	"version": "0.2.0",
+	"private": true,
+	"description": "Telegram-native personal AI goblin. One operator, one Bun process.",
+	"type": "module",
+	"main": "src/index.ts",
+	"scripts": {
+		"start": "bun run src/index.ts",
+		"dev": "bun --watch run src/index.ts",
+		"test": "bun test",
+		"typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.client.json && tsc --noEmit -p app/tsconfig.json",
+		"format": "biome format --write .",
+		"format:check": "biome format .",
+		"app:build": "vite build app"
+	},
+	"dependencies": {
+		"@ai-sdk/groq": "4.0.50",
+		"@ai-sdk/openai": "4.0.78",
+		"@ai-sdk/openai-compatible": "^3.0.0",
+		"@ai-sdk/provider-utils": "5",
+		"@mozilla/readability": "^0.6.0",
+		"@openrouter/ai-sdk-provider": "^3.0.0",
+		"ai": "^7.0.0",
+		"cron-parser": "^5.10.1",
+		"grammy": "^1.38.0",
+		"highlight.js": "^11.12.0",
+		"json5": "^2.2.3",
+		"linkedom": "^0.18.13",
+		"mcporter": "0.13.13",
+		"ws": "8.21.3",
+		"zod": "^4.0.0"
+	},
+	"devDependencies": {
+		"@ai-sdk/provider": "4.0.18",
+		"@ai-sdk/react": "4.0.116",
+		"@biomejs/biome": "^2.5.15",
+		"@types/bun": "latest",
+		"@types/json5": "^2.2.0",
+		"@types/react": "19.3.0",
+		"@types/react-dom": "19.3.0",
+		"@types/ws": "8.18.1",
+		"@vitejs/plugin-react": "6.1.1",
+		"react": "19.3.0",
+		"react-dom": "19.3.0",
+		"typescript": "^5.6.0",
+		"vite": "8.3.0"
+	},
+	"engines": {
+		"bun": ">=1.1.0"
+	}
 }

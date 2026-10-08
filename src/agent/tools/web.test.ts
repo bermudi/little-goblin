@@ -4,13 +4,7 @@
 // vendor.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import {
-	fenceUntrusted,
-	fetchOk,
-	ProviderError,
-	readJson,
-	readTextCapped,
-} from "./web.ts";
+import { fenceUntrusted, fetchOk, ProviderError, readJson, readTextCapped } from "./web.ts";
 
 let servers: ReturnType<typeof Bun.serve>[] = [];
 afterEach(() => {
@@ -58,7 +52,11 @@ describe("readTextCapped", () => {
 
 	test("an oversized stream is cancelled the moment the cap trips", async () => {
 		let produced = 0;
-		const res = new Response(endlessStream(1024 * 1024, () => { produced += 1; }));
+		const res = new Response(
+			endlessStream(1024 * 1024, () => {
+				produced += 1;
+			}),
+		);
 		const { tooLarge } = await readTextCapped(res, 1024 * 1024);
 		expect(tooLarge).toBe(true);
 		// Cancelled ~1 chunk past the 1 MiB cap, nowhere near endless.
@@ -75,7 +73,11 @@ describe("readJson", () => {
 
 	test("an oversized provider response throws ProviderError naming the cap", async () => {
 		let produced = 0;
-		const res = new Response(endlessStream(1024 * 1024, () => { produced += 1; }));
+		const res = new Response(
+			endlessStream(1024 * 1024, () => {
+				produced += 1;
+			}),
+		);
 		try {
 			await readJson("fake", res);
 			expect.unreachable();
@@ -95,7 +97,13 @@ describe("fetchOk error body", () => {
 		let produced = 0;
 		const server = Bun.serve({
 			port: 0,
-			fetch: () => new Response(endlessStream(64 * 1024, () => { produced += 1; }), { status: 502 }),
+			fetch: () =>
+				new Response(
+					endlessStream(64 * 1024, () => {
+						produced += 1;
+					}),
+					{ status: 502 },
+				),
 		});
 		servers.push(server);
 		try {

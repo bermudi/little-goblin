@@ -38,29 +38,16 @@ const FULL = ["off", "low", "medium", "high", "xhigh", "max"] as const;
 
 describe("thinkingLevelsFor — the offered set", () => {
 	test("glm-5.3+ has no off — thinking is forced", () => {
-		expect(thinkingLevelsFor("openai-compatible", "glm-5.3-flash")).toEqual([
-			"low",
-			"high",
-			"max",
-		]);
+		expect(thinkingLevelsFor("openai-compatible", "glm-5.3-flash")).toEqual(["low", "high", "max"]);
 	});
 	test("glm-5.2 toggles and tops out at max", () => {
-		expect(thinkingLevelsFor("openai-compatible", "glm-5.2")).toEqual([
-			"off",
-			"high",
-			"max",
-		]);
+		expect(thinkingLevelsFor("openai-compatible", "glm-5.2")).toEqual(["off", "high", "max"]);
 	});
 	test("older glm is a bare toggle", () => {
 		expect(thinkingLevelsFor("openai-compatible", "glm-4.6")).toEqual(["off", "low"]);
 	});
 	test("gpt ladders: no off; gpt-6 adds max", () => {
-		expect(thinkingLevelsFor("codex", "gpt-5.3-codex")).toEqual([
-			"low",
-			"medium",
-			"high",
-			"xhigh",
-		]);
+		expect(thinkingLevelsFor("codex", "gpt-5.3-codex")).toEqual(["low", "medium", "high", "xhigh"]);
 		expect(thinkingLevelsFor("codex", "gpt-6-astra")).toEqual([
 			"low",
 			"medium",
@@ -72,11 +59,7 @@ describe("thinkingLevelsFor — the offered set", () => {
 	test("family ladders follow the bare model id under any kind", () => {
 		// A glm-5.3 is forced-thinking wherever it's served — even via a
 		// relay that nests a vendor prefix or an unknown provider kind.
-		expect(thinkingLevelsFor("openrouter", "z-ai/glm-5.3")).toEqual([
-			"low",
-			"high",
-			"max",
-		]);
+		expect(thinkingLevelsFor("openrouter", "z-ai/glm-5.3")).toEqual(["low", "high", "max"]);
 		expect(thinkingLevelsFor("openai-compatible", "gpt-6-astra")).toEqual([
 			"low",
 			"medium",
@@ -170,20 +153,12 @@ describe("z.ai coding plan — older glm ids alias to 5.3-gen", () => {
 	// endpoint, not the id. cfg.zai's baseUrl is the coding-plan URL.
 	test("offered set is the 5.3 ladder for any glm id", () => {
 		expect(
-			thinkingLevelsFor(
-				"openai-compatible",
-				"glm-4.6",
-				"https://api.z.ai/api/coding/paas/v4",
-			),
+			thinkingLevelsFor("openai-compatible", "glm-4.6", "https://api.z.ai/api/coding/paas/v4"),
 		).toEqual(["low", "high", "max"]);
 	});
 	test("the general paas endpoint still serves real generations", () => {
 		expect(
-			thinkingLevelsFor(
-				"openai-compatible",
-				"glm-4.6",
-				"https://api.z.ai/api/paas/v4",
-			),
+			thinkingLevelsFor("openai-compatible", "glm-4.6", "https://api.z.ai/api/paas/v4"),
 		).toEqual(["off", "low"]);
 	});
 	test("wire mapping follows the routed model", () => {
@@ -299,9 +274,11 @@ describe("responses kind — the /api/v1 door", () => {
 			"high",
 			"max",
 		]);
-		expect(
-			thinkingLevelsFor("openai-compatible", "glm-5.2", "https://api.z.ai/api/v1/"),
-		).toEqual(["low", "high", "max"]);
+		expect(thinkingLevelsFor("openai-compatible", "glm-5.2", "https://api.z.ai/api/v1/")).toEqual([
+			"low",
+			"high",
+			"max",
+		]);
 		// The general paas path is not the coding door — 5.2 keeps its ladder.
 		expect(
 			thinkingLevelsFor("openai-compatible", "glm-5.2", "https://api.z.ai/api/paas/v4"),

@@ -5,11 +5,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import type { AuthStore } from "./auth.ts";
-import {
-	buildRaw,
-	decodeRfc2047,
-	makeSender,
-} from "./mail.ts";
+import { buildRaw, decodeRfc2047, makeSender } from "./mail.ts";
 
 const fakeAuth: AuthStore = {
 	resolve: async (name) => `secret:${name}`,
@@ -78,7 +74,6 @@ describe("buildRaw", () => {
 	});
 });
 
-
 describe("gmail send", () => {
 	test("a 2xx send missing its id is a ProviderError, never a silent empty sentId", async () => {
 		const oauth = serve(() => Response.json({ access_token: "t", expires_in: 3600 }));
@@ -109,7 +104,9 @@ describe("gmail send", () => {
 			gmailBase: "http://127.0.0.1:1/gmail/v1",
 			oauthBase: oauth,
 		});
-		await expect(sender.send({ to: ["a@x.com"], subject: "hi", body: "hello" })).rejects.toThrow("gmail-oauth");
+		await expect(sender.send({ to: ["a@x.com"], subject: "hi", body: "hello" })).rejects.toThrow(
+			"gmail-oauth",
+		);
 	});
 
 	test("send posts MIME + thread id; the mint used the SEND token", async () => {

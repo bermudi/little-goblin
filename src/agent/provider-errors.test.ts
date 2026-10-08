@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { RetryError } from "ai";
 import { APICallError } from "@ai-sdk/provider";
-import { isContentFilter, isContextOverflow, ProviderContentFilterError } from "./provider-errors.ts";
+import {
+	isContentFilter,
+	isContextOverflow,
+	ProviderContentFilterError,
+} from "./provider-errors.ts";
 
 // Every positive pins a real provider string to its source so the
 // phrase list stays evidence, not vibes. None of these errors were
@@ -48,9 +52,9 @@ describe("isContextOverflow — positives", () => {
 	});
 
 	test("Anthropic (field corpus, not observed by goblin)", () => {
-		expect(
-			isContextOverflow(new Error("prompt is too long: 208423 tokens > 200000 maximum")),
-		).toBe(true);
+		expect(isContextOverflow(new Error("prompt is too long: 208423 tokens > 200000 maximum"))).toBe(
+			true,
+		);
 	});
 
 	test("Kimi (field corpus, not observed by goblin)", () => {
@@ -95,8 +99,7 @@ describe("isContextOverflow — positives", () => {
 describe("isContextOverflow — negatives", () => {
 	test("a 429 TPM rejection is a rate limit, not overflow", () => {
 		const err = new APICallError({
-			message:
-				"Request too large for gpt-4o on tokens per min (TPM): Limit 30000, Requested 50000",
+			message: "Request too large for gpt-4o on tokens per min (TPM): Limit 30000, Requested 50000",
 			url: "https://api.openai.com/v1/chat/completions",
 			requestBodyValues: {},
 			statusCode: 429,
@@ -155,7 +158,9 @@ describe("isContentFilter", () => {
 		expect(isContentFilter({ error: { message: warning } })).toBe(true);
 		expect(isContentFilter({ response: { error: { message: warning } } })).toBe(true);
 		expect(isContentFilter(new ProviderContentFilterError())).toBe(true);
-		expect(isContentFilter(new Error("wrapped", { cause: new ProviderContentFilterError() }))).toBe(true);
+		expect(isContentFilter(new Error("wrapped", { cause: new ProviderContentFilterError() }))).toBe(
+			true,
+		);
 	});
 
 	test("does not guess from generic refusals, status codes, or sensitive words", () => {
@@ -166,6 +171,7 @@ describe("isContentFilter", () => {
 			{ statusCode: 403, message: "Forbidden" },
 			new Error("socket hangup"),
 			null,
-		]) expect(isContentFilter(error)).toBe(false);
+		])
+			expect(isContentFilter(error)).toBe(false);
 	});
 });

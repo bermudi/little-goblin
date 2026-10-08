@@ -10,7 +10,13 @@ import { join } from "node:path";
 import type { AuthStore } from "../../auth.ts";
 import type { Config } from "../../config.ts";
 import { setLogFile } from "../../log.ts";
-import { bindSearch, runSearchChain, searchTool, withFallbackNote, type SearchKind } from "./search.ts";
+import {
+	bindSearch,
+	runSearchChain,
+	searchTool,
+	withFallbackNote,
+	type SearchKind,
+} from "./search.ts";
 import { renderHits, type SearchHit } from "./web.ts";
 
 const fakeAuth: AuthStore = {
@@ -51,14 +57,20 @@ describe("search tool", () => {
 		const base = serve((req) => {
 			sawToken = req.headers.get("x-subscription-token") ?? "";
 			return Response.json({
-				web: { results: [{ title: "Brave Result", url: "https://example.com/a", description: "the snippet" }] },
+				web: {
+					results: [
+						{ title: "Brave Result", url: "https://example.com/a", description: "the snippet" },
+					],
+				},
 			});
 		});
 		const run = bindSearch({ kind: "brave", auth: "brave" }, fakeAuth);
 		const { hits, status } = await run({ query: "test", count: 5, baseUrl: base });
 		expect(sawToken).toBe("key-for-brave");
 		expect(status).toBe(200);
-		expect(hits).toEqual([{ title: "Brave Result", url: "https://example.com/a", snippet: "the snippet" }]);
+		expect(hits).toEqual([
+			{ title: "Brave Result", url: "https://example.com/a", snippet: "the snippet" },
+		]);
 		expect(renderHits(hits)).toBe("1. Brave Result — https://example.com/a\n   the snippet");
 	});
 
@@ -98,32 +110,36 @@ describe("search tool", () => {
 	});
 
 	test("ddg: parses the unofficial html markup and unwraps redirect hrefs", async () => {
-		const base = serve(() =>
-			new Response(
-				[
-					`<a class="result__a" href="//duckduckgo.com/l/?uddg=${encodeURIComponent("https://real.example/x")}&rut=abc">Real&nbsp;Title</a>`,
-					`<a class="result__snippet">the &amp;snippet</a>`,
-				].join("\n"),
-				{ headers: { "content-type": "text/html" } },
-			),
+		const base = serve(
+			() =>
+				new Response(
+					[
+						`<a class="result__a" href="//duckduckgo.com/l/?uddg=${encodeURIComponent("https://real.example/x")}&rut=abc">Real&nbsp;Title</a>`,
+						`<a class="result__snippet">the &amp;snippet</a>`,
+					].join("\n"),
+					{ headers: { "content-type": "text/html" } },
+				),
 		);
 		const run = bindSearch({ kind: "ddg" }, fakeAuth);
 		const { hits } = await run({ query: "q", count: 5, baseUrl: base });
-		expect(hits).toEqual([{ title: "Real Title", url: "https://real.example/x", snippet: "the &snippet" }]);
+		expect(hits).toEqual([
+			{ title: "Real Title", url: "https://real.example/x", snippet: "the &snippet" },
+		]);
 	});
 
 	test("ddg: a skipped snippet does not drift onto the wrong hit", async () => {
 		// Hit one has no snippet node (DDG omits some); hit two's snippet
 		// must stay on hit two — the old positional zip slid it onto one.
-		const base = serve(() =>
-			new Response(
-				[
-					`<a class="result__a" href="https://one.example/a">One</a>`,
-					`<a class="result__a" href="https://two.example/b">Two</a>`,
-					`<a class="result__snippet">second hit's words</a>`,
-				].join("\n"),
-				{ headers: { "content-type": "text/html" } },
-			),
+		const base = serve(
+			() =>
+				new Response(
+					[
+						`<a class="result__a" href="https://one.example/a">One</a>`,
+						`<a class="result__a" href="https://two.example/b">Two</a>`,
+						`<a class="result__snippet">second hit's words</a>`,
+					].join("\n"),
+					{ headers: { "content-type": "text/html" } },
+				),
 		);
 		const run = bindSearch({ kind: "ddg" }, fakeAuth);
 		const { hits } = await run({ query: "q", count: 5, baseUrl: base });
@@ -131,19 +147,19 @@ describe("search tool", () => {
 		expect(hits[1]).toMatchObject({ url: "https://two.example/b", snippet: "second hit's words" });
 	});
 
-
 	test("ddg: a rejected anchor's snippet cannot drift back onto the previous hit", async () => {
 		// The ad card's href unwraps to nothing — its snippet node must
 		// not land on the good hit that preceded it.
-		const base = serve(() =>
-			new Response(
-				[
-					`<a class="result__a" href="https://one.example/a">One</a>`,
-					`<a class="result__a" href="/ads/click">Ad</a>`,
-					`<a class="result__snippet">buy our thing</a>`,
-				].join("\n"),
-				{ headers: { "content-type": "text/html" } },
-			),
+		const base = serve(
+			() =>
+				new Response(
+					[
+						`<a class="result__a" href="https://one.example/a">One</a>`,
+						`<a class="result__a" href="/ads/click">Ad</a>`,
+						`<a class="result__snippet">buy our thing</a>`,
+					].join("\n"),
+					{ headers: { "content-type": "text/html" } },
+				),
 		);
 		const run = bindSearch({ kind: "ddg" }, fakeAuth);
 		const { hits } = await run({ query: "q", count: 5, baseUrl: base });
@@ -227,9 +243,9 @@ describe("search fallback chain", () => {
 				ddgCalls++;
 				if (ddgStatus !== 200) return new Response("upstream broke", { status: ddgStatus });
 				return new Response(
-						`<a class="result__a" href="https://fallback.example/a">Fallback Hit</a>\n` +
-							`<a class="result__snippet">served by the fallback</a>`,
-						{ headers: { "content-type": "text/html" } },
+					`<a class="result__a" href="https://fallback.example/a">Fallback Hit</a>\n` +
+						`<a class="result__snippet">served by the fallback</a>`,
+					{ headers: { "content-type": "text/html" } },
 				);
 			}
 			return new Response("no route", { status: 404 });
@@ -279,7 +295,8 @@ describe("search fallback chain", () => {
 		);
 		const outcome = await runSearchChain(
 			[{ kind: "brave", auth: "brave" }, { kind: "ddg" }],
-			fakeAuth, { query: "test", count: 1, baseUrl: base },
+			fakeAuth,
+			{ query: "test", count: 1, baseUrl: base },
 		);
 		expect(outcome.servedBy).toBe("ddg");
 		expect(outcome.hits).toHaveLength(1);
@@ -311,11 +328,11 @@ describe("search fallback chain", () => {
 	test("exhaustion throws with every provider's error", async () => {
 		const { base } = serveChain(402, 503);
 		try {
-			await runSearchChain(
-					[{ kind: "brave", auth: "brave" }, { kind: "ddg" }],
-					fakeAuth,
-					{ query: "everything down", count: 5, baseUrl: base },
-				);
+			await runSearchChain([{ kind: "brave", auth: "brave" }, { kind: "ddg" }], fakeAuth, {
+				query: "everything down",
+				count: 5,
+				baseUrl: base,
+			});
 			expect.unreachable();
 		} catch (err) {
 			expect((err as Error).message).toContain("search failed");

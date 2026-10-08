@@ -93,7 +93,9 @@ export interface AppChannelDeps {
 export function resolveAppAuth(appToken: string | undefined): string | undefined {
 	if (appToken === undefined) {
 		log.warn("app channel auth: trust mode (no token; tailnet only)");
-		log.warn("app channel trust mode must never sit behind a public URL (funnel) — set appToken first");
+		log.warn(
+			"app channel trust mode must never sit behind a public URL (funnel) — set appToken first",
+		);
 	} else {
 		log.info("app channel auth: token required", { record: appToken });
 	}
@@ -180,8 +182,7 @@ const chatBody = z
 								ctx.addIssue({
 									code: "custom",
 									path: [i, "data", "path"],
-									message:
-										"attachment path must name a file the attachments pipeline wrote",
+									message: "attachment path must name a file the attachments pipeline wrote",
 								});
 							}
 						}
@@ -279,9 +280,12 @@ function appSseWriter(
 			// the threshold phase-locks with real chunks landing just before
 			// each tick and never fires (caught by the ping test, 2026-10-07).
 			if (heartbeatMs > 0) {
-				beat = setInterval(() => {
-					if (!closed && Date.now() - lastByte >= heartbeatMs) push(": ping\n\n");
-				}, Math.max(200, Math.floor(heartbeatMs / 4)));
+				beat = setInterval(
+					() => {
+						if (!closed && Date.now() - lastByte >= heartbeatMs) push(": ping\n\n");
+					},
+					Math.max(200, Math.floor(heartbeatMs / 4)),
+				);
 				// A leaked beat must never hold the process (or a test run) open.
 				(beat as unknown as { unref?: () => void }).unref?.();
 			}
@@ -309,8 +313,7 @@ function appSseWriter(
 				push(
 					`data: ${JSON.stringify({
 						type: "error",
-						errorText:
-							done.kind === "error" ? done.message : "turn stopped before finishing",
+						errorText: done.kind === "error" ? done.message : "turn stopped before finishing",
 					})}\n\n`,
 				);
 			}
@@ -435,7 +438,11 @@ export async function handleAppApi(
 			// Creation + snapshot commit together. Reposting the same id
 			// preserves its selection rather than reapplying defaults.
 			const conv = store.db.transaction(() => {
-				const row = store.resolve(appAddress(parsed.data.id ?? randomUUID()), paths.workspace(), deps.configRef.current);
+				const row = store.resolve(
+					appAddress(parsed.data.id ?? randomUUID()),
+					paths.workspace(),
+					deps.configRef.current,
+				);
 				if (parsed.data.title !== undefined) {
 					store.setMeta(row.id, { title: parsed.data.title, titleImplicit: false });
 				}
@@ -467,12 +474,17 @@ export async function handleAppApi(
 		}
 		if (req.method === "PATCH") {
 			let json: unknown;
-			try { json = await req.json(); } catch {
+			try {
+				json = await req.json();
+			} catch {
 				return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
 			}
 			const parsed = configPatchBody.safeParse(json);
 			if (!parsed.success) {
-				return Response.json({ error: z.prettifyError(parsed.error) }, { status: 422, headers: NO_STORE });
+				return Response.json(
+					{ error: z.prettifyError(parsed.error) },
+					{ status: 422, headers: NO_STORE },
+				);
 			}
 			// Body reads yield: recheck the row and live registry now.
 			if (store.get(convId.id) === null) {
@@ -492,7 +504,11 @@ export async function handleAppApi(
 				...(parsed.data.model !== undefined ? { model: parsed.data.model } : {}),
 				...(parsed.data.thinking !== undefined ? { thinking: parsed.data.thinking } : {}),
 			});
-			log.info("app conversation settings changed", { conversation: convId.id, ...parsed.data, applies: "next turn" });
+			log.info("app conversation settings changed", {
+				conversation: convId.id,
+				...parsed.data,
+				applies: "next turn",
+			});
 		}
 		const cfg = deps.configRef.current;
 		const settings = store.initializeAppSettings(convId.id, cfg);
@@ -557,7 +573,11 @@ export async function handleAppApi(
 			(chunk) => writer.write(chunk),
 			(done) => {
 				writer.finish(done);
-				log.info("app stream finish", { conversation: convId.id, outcome: done.kind, attach: true });
+				log.info("app stream finish", {
+					conversation: convId.id,
+					outcome: done.kind,
+					attach: true,
+				});
 			},
 		);
 		if (replay === null) {
@@ -584,10 +604,7 @@ export async function handleAppApi(
 		const convId = conversationFromSegment(convItemMatch[1]!);
 		if (convId instanceof Response) return convId;
 		if (store.get(convId.id) === null) {
-			return Response.json(
-				{ error: "no such conversation" },
-				{ status: 404, headers: NO_STORE },
-			);
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 		}
 		if (req.method === "PATCH") {
 			let json: unknown;
@@ -629,9 +646,7 @@ export async function handleAppApi(
 		const q = (url.searchParams.get("q") ?? "").slice(0, 256);
 		const limitParam = Number(url.searchParams.get("limit") ?? "");
 		const limit =
-			Number.isFinite(limitParam) && limitParam >= 1
-				? Math.min(25, Math.floor(limitParam))
-				: 10;
+			Number.isFinite(limitParam) && limitParam >= 1 ? Math.min(25, Math.floor(limitParam)) : 10;
 		const hits = store.searchHistory(q, limit, "app/%");
 		log.debug("app history search", { q, hits: hits.length });
 		const body: AppSearchResponse = { hits };
@@ -674,16 +689,10 @@ export async function handleAppApi(
 				return Response.json(configView(fresh ?? merged), { headers: NO_STORE });
 			} catch (err) {
 				if (err instanceof z.ZodError) {
-					return Response.json(
-						{ error: z.prettifyError(err) },
-						{ status: 422, headers: NO_STORE },
-					);
+					return Response.json({ error: z.prettifyError(err) }, { status: 422, headers: NO_STORE });
 				}
 				log.error("app config write failed", err);
-				return Response.json(
-					{ error: "config write failed" },
-					{ status: 500, headers: NO_STORE },
-				);
+				return Response.json({ error: "config write failed" }, { status: 500, headers: NO_STORE });
 			}
 		}
 		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
@@ -778,14 +787,9 @@ export async function handleAppApi(
 					{ status: 409, headers: NO_STORE },
 				);
 			}
-			const lastUser = store
-				.history(convId)
-				.findLast((m) => m.role === "user");
+			const lastUser = store.history(convId).findLast((m) => m.role === "user");
 			if (lastUser === undefined) {
-				return Response.json(
-					{ error: "nothing to retry" },
-					{ status: 409, headers: NO_STORE },
-				);
+				return Response.json({ error: "nothing to retry" }, { status: 409, headers: NO_STORE });
 			}
 			log.info("app retry", { conversation: convId, message: lastUser.id });
 			const { sink, body, dispose } = appStreamSink(convId);
@@ -798,7 +802,10 @@ export async function handleAppApi(
 			} catch (err) {
 				log.error("app retry submit failed", err, { conversation: convId });
 				dispose();
-				return Response.json({ error: "turn could not be started" }, { status: 500, headers: NO_STORE });
+				return Response.json(
+					{ error: "turn could not be started" },
+					{ status: 500, headers: NO_STORE },
+				);
 			}
 			log.info("app stream start", { conversation: convId, retry: true });
 			return new Response(body, {
@@ -887,7 +894,10 @@ export async function handleAppApi(
 		} catch (err) {
 			log.error("app submit failed", err, { conversation: convId, message: message.id });
 			dispose();
-			return Response.json({ error: "turn could not be started" }, { status: 500, headers: NO_STORE });
+			return Response.json(
+				{ error: "turn could not be started" },
+				{ status: 500, headers: NO_STORE },
+			);
 		}
 		log.info("app stream start", { conversation: convId });
 		return new Response(body, {
@@ -917,7 +927,10 @@ export async function handleAppApi(
 		try {
 			form = await new Request(req.url, { method: "POST", headers, body: bytes }).formData();
 		} catch {
-			return Response.json({ error: "expected multipart form" }, { status: 400, headers: NO_STORE });
+			return Response.json(
+				{ error: "expected multipart form" },
+				{ status: 400, headers: NO_STORE },
+			);
 		}
 		const file = form.get("file");
 		if (typeof file !== "object" || file === null || file.size === 0) {
@@ -992,9 +1005,7 @@ export async function handleAppApi(
 				"cache-control": "private, max-age=31536000, immutable",
 				"x-content-type-options": "nosniff",
 				"content-security-policy": "sandbox",
-				...(/^(image|audio|video)\//.test(type)
-					? {}
-					: { "content-disposition": "attachment" }),
+				...(/^(image|audio|video)\//.test(type) ? {} : { "content-disposition": "attachment" }),
 			},
 		});
 	}

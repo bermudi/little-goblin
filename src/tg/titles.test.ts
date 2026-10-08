@@ -34,13 +34,15 @@ describe("titleMetaFromService", () => {
 			}),
 		).toEqual({ title: "New Chat", titleImplicit: true });
 		// Explicit name at creation — never auto-title.
-		expect(
-			titleMetaFromService({ forum_topic_created: { name: "mine" } }),
-		).toEqual({ title: "mine", titleImplicit: false });
+		expect(titleMetaFromService({ forum_topic_created: { name: "mine" } })).toEqual({
+			title: "mine",
+			titleImplicit: false,
+		});
 		// A named edit settles the debt; an icon-only edit leaves it alone.
-		expect(
-			titleMetaFromService({ forum_topic_edited: { name: "mine" } }),
-		).toEqual({ title: "mine", titleImplicit: false });
+		expect(titleMetaFromService({ forum_topic_edited: { name: "mine" } })).toEqual({
+			title: "mine",
+			titleImplicit: false,
+		});
 		expect(titleMetaFromService({ forum_topic_edited: {} })).toBeUndefined();
 		expect(titleMetaFromService({})).toBeUndefined();
 	});

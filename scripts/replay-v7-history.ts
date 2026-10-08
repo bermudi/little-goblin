@@ -17,7 +17,9 @@ for (const suffix of ["", "-wal", "-shm"]) {
 		cpSync(live + suffix, join(dir, "db.sqlite" + suffix));
 	} catch (err) {
 		if (suffix !== "" && (err as NodeJS.ErrnoException).code === "ENOENT") continue;
-		throw new Error(`cannot copy ${live + suffix} for history replay: ${String(err)}`, { cause: err });
+		throw new Error(`cannot copy ${live + suffix} for history replay: ${String(err)}`, {
+			cause: err,
+		});
 	}
 }
 const store = openStore(join(dir, "db.sqlite"));

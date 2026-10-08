@@ -79,9 +79,7 @@ describe("spinOff", () => {
 	test("an explicit title already on the row is never overwritten", async () => {
 		const store = openStore(tmpdb());
 		const src = store.resolve({ kind: "dm", chatId: 5 }, "/w");
-		store.append(src.id, [
-			{ id: "m", role: "user", parts: [{ type: "text", text: "hi" }] },
-		]);
+		store.append(src.id, [{ id: "m", role: "user", parts: [{ type: "text", text: "hi" }] }]);
 		const { conv } = spinOff(
 			{
 				store,

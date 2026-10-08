@@ -8,7 +8,13 @@ import type { MenuButton, Message } from "grammy/types";
 import type { UIMessage } from "ai";
 import type { AuthStore } from "../auth.ts";
 import { paths, type Config, type ConfigRef, type TtsConfig } from "../config.ts";
-import { addressId, channelOf, type Conversation, type ConversationAddress, type ConversationStore } from "../conversation.ts";
+import {
+	addressId,
+	channelOf,
+	type Conversation,
+	type ConversationAddress,
+	type ConversationStore,
+} from "../conversation.ts";
 import type { JevClient } from "../jev.ts";
 import {
 	isRollingChat,
@@ -22,7 +28,14 @@ import { userMessage, type Runtime, type TurnSink } from "../runtime.ts";
 import { log } from "../log.ts";
 import { makeBellSink } from "./bell.ts";
 import { CoalescingBuffer } from "./buffer.ts";
-import { COMMAND_RE, COMMANDS, DM_COMMANDS, handleCommand, parseCommand, type CommandMemoryDeps } from "./commands.ts";
+import {
+	COMMAND_RE,
+	COMMANDS,
+	DM_COMMANDS,
+	handleCommand,
+	parseCommand,
+	type CommandMemoryDeps,
+} from "./commands.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import { makeDeliverySink, SPEAK_CALLBACK } from "./delivery.ts";
 import {
@@ -36,7 +49,12 @@ import { sendRollMarker } from "./notify.ts";
 import { handleSpeakButton } from "./speak-button.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
 import { mediaFromMessage, mediaParts, saveAttachment } from "./media.ts";
-import { openTelegramInbox, validatedInboxMedia, type InboxEntry, type InboxPayload } from "./inbox.ts";
+import {
+	openTelegramInbox,
+	validatedInboxMedia,
+	type InboxEntry,
+	type InboxPayload,
+} from "./inbox.ts";
 import { openPings, type PingStore } from "./pings.ts";
 import { maybeRenameTopic, titleMetaFromService } from "./titles.ts";
 import { navigateDm } from "./navigation.ts";
@@ -219,25 +237,41 @@ function replyNavigation(env: IntakeEnv, msg: Message, text: string): void {
 	const addr = conversationAddress(msg);
 	void withTimeout(
 		env.api.sendMessage(
-			msg.chat.id, text,
+			msg.chat.id,
+			text,
 			addr.kind === "topic" ? { message_thread_id: addr.threadId } : {},
 		),
 		"sendMessage (navigation reply)",
-	).then((sent) => {
-		const messageId = z.object({ message_id: z.number().int().positive().safe() }).parse(sent).message_id;
-		log.info("dm navigation reply delivered", {
-			chat: msg.chat.id, thread: addr.kind === "topic" ? addr.threadId : null,
-			replyTo: msg.message_id, messageId,
+	)
+		.then((sent) => {
+			const messageId = z
+				.object({ message_id: z.number().int().positive().safe() })
+				.parse(sent).message_id;
+			log.info("dm navigation reply delivered", {
+				chat: msg.chat.id,
+				thread: addr.kind === "topic" ? addr.threadId : null,
+				replyTo: msg.message_id,
+				messageId,
+			});
+		})
+		.catch((err: unknown) => {
+			log.warn("dm navigation reply failed", {
+				chat: msg.chat.id,
+				replyTo: msg.message_id,
+				kind:
+					err instanceof TelegramTimeoutError
+						? "timeout"
+						: err instanceof Error
+							? err.name
+							: "unknown",
+				...(typeof err === "object" &&
+				err !== null &&
+				"error_code" in err &&
+				typeof err.error_code === "number"
+					? { status: err.error_code }
+					: {}),
+			});
 		});
-	}).catch((err: unknown) => {
-		log.warn("dm navigation reply failed", {
-			chat: msg.chat.id,
-			replyTo: msg.message_id,
-			kind: err instanceof TelegramTimeoutError ? "timeout" : err instanceof Error ? err.name : "unknown",
-			...(typeof err === "object" && err !== null && "error_code" in err &&
-				typeof err.error_code === "number" ? { status: err.error_code } : {}),
-		});
-	});
 }
 
 export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): void {
@@ -267,34 +301,52 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 	} catch (err) {
 		mediaError = err;
 	}
-	const command = text !== "" && !media && mediaError === null
-		? parseCommand(text, env.botUsername) : null;
+	const command =
+		text !== "" && !media && mediaError === null ? parseCommand(text, env.botUsername) : null;
 	if (command !== null && !command.forThisBot) return;
 	if (command?.command === "/new" || command?.command === "/back") {
 		if (!rolling) {
-			replyNavigation(env, msg, "/new and /back work only in our private chat — group topics keep their own conversations.");
+			replyNavigation(
+				env,
+				msg,
+				"/new and /back work only in our private chat — group topics keep their own conversations.",
+			);
 			return;
 		}
 		if (command.arg !== "") {
-			replyNavigation(env, msg, `use ${command.command} without arguments, then send your question.`);
+			replyNavigation(
+				env,
+				msg,
+				`use ${command.command} without arguments, then send your question.`,
+			);
 			return;
 		}
 		try {
 			const result = navigateDm(
 				{ store: deps.store, runtime: deps.runtime, inbox: env.inbox },
 				{
-					chatId: addr.chatId, updateId, messageId: msg.message_id,
+					chatId: addr.chatId,
+					updateId,
+					messageId: msg.message_id,
 					command: command.command === "/new" ? "new" : "back",
 				},
 			);
 			if (!result.duplicate) {
-				replyNavigation(env, msg, result.outcome === "new"
-					? "— new conversation —"
-					: result.outcome === "back" ? "— previous conversation —" : "no earlier conversation");
+				replyNavigation(
+					env,
+					msg,
+					result.outcome === "new"
+						? "— new conversation —"
+						: result.outcome === "back"
+							? "— previous conversation —"
+							: "no earlier conversation",
+				);
 			}
 		} catch (err) {
 			log.error("dm navigation failed before durable admission", undefined, {
-				updateId, chat: addr.chatId, errorKind: err instanceof Error ? err.name : "unknown",
+				updateId,
+				chat: addr.chatId,
+				errorKind: err instanceof Error ? err.name : "unknown",
 			});
 			throw new InboxRecordError(updateId, err);
 		}
@@ -398,11 +450,20 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 					return hit !== null && deps.store.get(hit) !== null ? hit : null;
 				})();
 	const payload: InboxPayload = {
-		conversationId: pingedConv ?? lane, chatId: msg.chat.id, messageId: msg.message_id,
-		text, media, mediaError: mediaError === null ? null : String(mediaError),
+		conversationId: pingedConv ?? lane,
+		chatId: msg.chat.id,
+		messageId: msg.message_id,
+		text,
+		media,
+		mediaError: mediaError === null ? null : String(mediaError),
 		...(quotedReply === undefined || pingedConv !== null
 			? {}
-			: { quoted: { messageId: quotedReply.message_id, text: quotedReply.text ?? quotedReply.caption ?? "" } }),
+			: {
+					quoted: {
+						messageId: quotedReply.message_id,
+						text: quotedReply.text ?? quotedReply.caption ?? "",
+					},
+				}),
 	};
 	try {
 		if (!env.inbox.record(updateId, payload)) return;
@@ -452,13 +513,11 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 				if (media.transcribable) {
 					try {
 						transcript =
-							(
-								await deps.transcribe({
-									path: saved.path,
-									mediaType: media.mimeType,
-									filename: media.fileName,
-								})
-							) ?? undefined;
+							(await deps.transcribe({
+								path: saved.path,
+								mediaType: media.mimeType,
+								filename: media.fileName,
+							})) ?? undefined;
 					} catch (err) {
 						// Transcription is enrichment, not intake — a whisper
 						// outage leaves the attachment path-referenced, not eaten.
@@ -483,7 +542,10 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 		}
 
 		env.buffer.push(convId, {
-			updateId, parts, chatId: payload.chatId, replyTo: messageId,
+			updateId,
+			parts,
+			chatId: payload.chatId,
+			replyTo: messageId,
 			...(quoted !== undefined ? { quoted } : {}),
 		});
 	});
@@ -544,11 +606,7 @@ export function flushConversation(
 		!env.titleAttempts.has(conv.id)
 	) {
 		const text = parts
-			.map((p) =>
-				p.type === "text" && !p.text.startsWith(ATTACHMENT_FAILED_PREFIX)
-					? p.text
-					: "",
-			)
+			.map((p) => (p.type === "text" && !p.text.startsWith(ATTACHMENT_FAILED_PREFIX) ? p.text : ""))
 			.join("\n")
 			.trim();
 		if (text !== "") {
@@ -581,12 +639,18 @@ async function flushRolling(
 	while (remaining.length > 0) {
 		const batch = remaining;
 		const stillRouteable = (): boolean =>
-			env.inbox.assertRouteable(batch.map((item) => item.updateId), laneKey);
+			env.inbox.assertRouteable(
+				batch.map((item) => item.updateId),
+				laneKey,
+			);
 		const result = batch.some((i) => i.quoted !== undefined)
 			? routeDm(rollDepsOf(deps), chatId, "reply")
 			: await routeDmMessage(
-				rollDepsOf(deps), chatId, projectRollText(batch.flatMap((i) => i.parts)), stillRouteable,
-			);
+					rollDepsOf(deps),
+					chatId,
+					projectRollText(batch.flatMap((i) => i.parts)),
+					stillRouteable,
+				);
 		remaining = archiveNavigatedInput(env, laneKey, batch);
 		if (remaining.length !== batch.length) continue;
 		if (result.rolled) await sendRollMarker(env.api, chatId, result.conv.id);
@@ -598,10 +662,18 @@ async function flushRolling(
 		if (current === null) throw new Error(`DM ${chatId} has no current conversation after routing`);
 		if (current.id !== result.conv.id) {
 			log.info("dm admission re-pinned", {
-				address: laneKey, from: result.conv.id, to: current.id,
+				address: laneKey,
+				from: result.conv.id,
+				to: current.id,
 			});
 		}
-		admitBatch(env, current, laneKey, remaining, remaining.flatMap((i) => i.parts));
+		admitBatch(
+			env,
+			current,
+			laneKey,
+			remaining,
+			remaining.flatMap((i) => i.parts),
+		);
 		return;
 	}
 }
@@ -616,11 +688,17 @@ function archiveNavigatedInput(
 ): BufferedItem[] {
 	const groups = new Map<string, BufferedItem[]>();
 	const normal: BufferedItem[] = [];
-	const pending = new Set(env.inbox.pendingIds(items.map((item) => item.updateId), laneKey));
+	const pending = new Set(
+		env.inbox.pendingIds(
+			items.map((item) => item.updateId),
+			laneKey,
+		),
+	);
 	const committed = items.filter((item) => !pending.has(item.updateId));
 	if (committed.length > 0) {
 		log.info("telegram flush skipping already committed input", {
-			address: laneKey, updateIds: committed.map((item) => item.updateId),
+			address: laneKey,
+			updateIds: committed.map((item) => item.updateId),
 		});
 	}
 	for (const item of items) {
@@ -639,7 +717,9 @@ function archiveNavigatedInput(
 			env.deps.store.append(target, [userMessage(group.flatMap((item) => item.parts))]);
 		});
 		log.info("telegram navigation input archived without replay", {
-			address: laneKey, conversation: target, updateIds,
+			address: laneKey,
+			conversation: target,
+			updateIds,
 		});
 	}
 	return normal;
@@ -679,9 +759,13 @@ function admitBatch(
 	// model reads it before the content it qualifies.
 	const audience = sharedChatPart(conv.id, conv.chatId, env.isChatOpen);
 	const message = userMessage(audience === null ? parts : [audience, ...parts]);
-	env.inbox.commitBatch(items.map((i) => i.updateId), laneKey, () => {
-		deps.store.append(conv.id, [message]);
-	});
+	env.inbox.commitBatch(
+		items.map((i) => i.updateId),
+		laneKey,
+		() => {
+			deps.store.append(conv.id, [message]);
+		},
+	);
 	const sink = makeDeliverySink(
 		env.api,
 		conv,
@@ -715,7 +799,11 @@ function admitBatch(
 // chat it never landed. The operator swiped-reply expecting an "sent
 // to" ack; silence would be a lie by omission.
 function dropAppBatch(env: FlushEnv, convId: string, items: BufferedItem[]): void {
-	env.inbox.commitBatch(items.map((i) => i.updateId), convId, () => {});
+	env.inbox.commitBatch(
+		items.map((i) => i.updateId),
+		convId,
+		() => {},
+	);
 	log.warn("ping reply dropped — app conversation deleted", {
 		conversation: convId,
 		items: items.length,
@@ -751,9 +839,13 @@ function admitAppBatch(
 ): void {
 	const { deps } = env;
 	const message = userMessage(parts);
-	env.inbox.commitBatch(items.map((i) => i.updateId), laneKey, () => {
-		deps.store.append(conv.id, [message]);
-	});
+	env.inbox.commitBatch(
+		items.map((i) => i.updateId),
+		laneKey,
+		() => {
+			deps.store.append(conv.id, [message]);
+		},
+	);
 	for (const item of items) {
 		log.info("ping reply routed", {
 			chat: item.chatId,
@@ -814,12 +906,15 @@ function enqueueIntake(
 	intake.set(convId, next);
 	// Keep the rejection visible to replay, while avoiding an unhandled
 	// rejection for the live (fire-and-forget) update path.
-	void next.then(() => {
-		if (intake.get(convId) === next) intake.delete(convId);
-	}, (err: unknown) => {
-		log.error("intake step failed", err, { conversation: convId });
-		if (intake.get(convId) === next) intake.delete(convId);
-	});
+	void next.then(
+		() => {
+			if (intake.get(convId) === next) intake.delete(convId);
+		},
+		(err: unknown) => {
+			log.error("intake step failed", err, { conversation: convId });
+			if (intake.get(convId) === next) intake.delete(convId);
+		},
+	);
 	return next;
 }
 
@@ -878,8 +973,7 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	const isChatOpen = (chatId: number): boolean => guestStore.isOpen(chatId);
 	const buffer = new CoalescingBuffer<BufferedItem>(
 		QUIET_WINDOW_MS,
-		(convId, items) =>
-			flushConversation({ ...base, inbox, bell, isChatOpen }, convId, items),
+		(convId, items) => flushConversation({ ...base, inbox, bell, isChatOpen }, convId, items),
 		COALESCE_MAX_WAIT_MS,
 	);
 	const env: IntakeEnv = { ...base, buffer, intake, inbox, pings, bell, isChatOpen };
@@ -996,21 +1090,23 @@ export function applyMenuButton(api: Api, publicUrl: string | undefined): void {
 	const menu_button: MenuButton = publicUrl
 		? { type: "web_app", text: "Settings", web_app: { url: publicUrl } }
 		: { type: "default" };
-	api.setChatMenuButton({ menu_button }).catch((err: unknown) =>
-		log.warn("menu button failed", { error: String(err) }),
-	);
+	api
+		.setChatMenuButton({ menu_button })
+		.catch((err: unknown) => log.warn("menu button failed", { error: String(err) }));
 }
 
 // setMyCommands persists server-side on the bot token — v1's command
 // list will sit there forever unless we overwrite it. Cosmetic, so a
 // failure is a warn, not a boot error.
 export function applyCommands(api: Api): void {
-	api.setMyCommands([...COMMANDS]).catch((err: unknown) =>
-		log.warn("setMyCommands failed", { error: String(err) }),
-	);
-	api.setMyCommands([...DM_COMMANDS], { scope: { type: "all_private_chats" } }).catch((err: unknown) =>
-		log.warn("setMyCommands private scope failed", { error: String(err) }),
-	);
+	api
+		.setMyCommands([...COMMANDS])
+		.catch((err: unknown) => log.warn("setMyCommands failed", { error: String(err) }));
+	api
+		.setMyCommands([...DM_COMMANDS], { scope: { type: "all_private_chats" } })
+		.catch((err: unknown) =>
+			log.warn("setMyCommands private scope failed", { error: String(err) }),
+		);
 }
 
 export async function startBot(deps: BotDeps): Promise<RunningBot> {

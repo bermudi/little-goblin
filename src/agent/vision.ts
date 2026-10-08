@@ -68,8 +68,7 @@ export function createVisionThreads(): VisionThreads {
 			return turns;
 		},
 		record(key, turn, mode) {
-			const turns =
-				mode === "follow" ? [...(threads.get(key) ?? []), turn] : [turn];
+			const turns = mode === "follow" ? [...(threads.get(key) ?? []), turn] : [turn];
 			threads.delete(key);
 			threads.set(key, turns.slice(-MAX_TURNS));
 			while (threads.size > MAX_THREADS) {
@@ -122,10 +121,13 @@ export interface VisionAnswer {
 export interface VisionUsage {
 	inputTokens?: number | undefined;
 	outputTokens?: number | undefined;
-	inputTokenDetails?: {
-		cacheReadTokens?: number | null | undefined;
-		cacheWriteTokens?: number | null | undefined;
-	} | null | undefined;
+	inputTokenDetails?:
+		| {
+				cacheReadTokens?: number | null | undefined;
+				cacheWriteTokens?: number | null | undefined;
+		  }
+		| null
+		| undefined;
 }
 
 export interface VisionCallDeps {
@@ -139,11 +141,7 @@ export interface VisionCallDeps {
 	 *  the ModelMessage→LanguageModelV4Prompt conversion, the observed
 	 *  middleware, the abort wiring (the 77661ae lesson: stages tested
 	 *  in isolation hide the seam between them). */
-	resolve?: (
-		config: Config,
-		auth: AuthStore,
-		modelRef: string,
-	) => Promise<LanguageModel>;
+	resolve?: (config: Config, auth: AuthStore, modelRef: string) => Promise<LanguageModel>;
 	/** Test door over the timeout race (production: VISION_TIMEOUT_MS). */
 	timeoutMs?: number | undefined;
 }
@@ -183,10 +181,7 @@ async function defaultResolve(
 /** Full engine flow: config → model → threads → one generateText call.
  *  Failures throw (the tool layer reports them); aborts ride the
  *  combined signal and surface as the SDK's AbortError. */
-export async function askVision(
-	query: VisionQuery,
-	deps: VisionCallDeps,
-): Promise<VisionAnswer> {
+export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promise<VisionAnswer> {
 	const cfg = deps.configRef.current.vision;
 	if (!cfg) {
 		throw new Error("vision block absent — the tool should not be registered");
@@ -242,11 +237,7 @@ export async function askVision(
 		);
 	}
 
-	threads.record(
-		key,
-		{ question: query.prompt, answer },
-		query.followUp ? "follow" : "fresh",
-	);
+	threads.record(key, { question: query.prompt, answer }, query.followUp ? "follow" : "fresh");
 
 	// A model call is a cost line (DESIGN.md, Cache stability) — the
 	// title-call rule. Request hashes ride the observedModel wrapper.

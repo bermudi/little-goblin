@@ -27,7 +27,8 @@ export function checkMcpConfig(text: string): McpConfigCheck {
 	if (!Array.isArray(imports)) {
 		return {
 			ok: false,
-			reason: 'mcporter.json must carry "imports": [] — without it mcporter merges the operator\'s editor servers',
+			reason:
+				'mcporter.json must carry "imports": [] — without it mcporter merges the operator\'s editor servers',
 		};
 	}
 	if (imports.length > 0) {
@@ -50,7 +51,10 @@ export function checkMcpConfigFile(path: string): McpConfigCheck {
 				reason: `no mcporter config at ${path} — start goblin once (it seeds an empty one) or create it`,
 			};
 		}
-		return { ok: false, reason: `cannot read mcporter config at ${path}: ${(err as Error).message}` };
+		return {
+			ok: false,
+			reason: `cannot read mcporter config at ${path}: ${(err as Error).message}`,
+		};
 	}
 	return checkMcpConfig(text);
 }

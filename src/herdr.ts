@@ -114,7 +114,10 @@ function parseJson(verb: string, stdout: string): unknown {
 }
 
 export interface Herdr {
-	createWorkspace(cwd: string, label: string): Promise<{ workspaceId: string; paneId: string; cwd: string }>;
+	createWorkspace(
+		cwd: string,
+		label: string,
+	): Promise<{ workspaceId: string; paneId: string; cwd: string }>;
 	startAgent(name: string, kind: string, paneId: string, args: string[]): Promise<AgentInfo>;
 	/** null only when herdr says the agent doesn't exist (agent_not_found);
 	 *  every other failure throws with context. */
@@ -163,7 +166,8 @@ export function makeHerdr(
 	// `--machine` and `--session` are mutually exclusive per herdr's CLI
 	// (the machine profile pins its own remote session); each call site
 	// logs through `call` below regardless of the target kind.
-	const prefix = "session" in target ? ["--session", target.session] : ["--machine", target.machine];
+	const prefix =
+		"session" in target ? ["--session", target.session] : ["--machine", target.machine];
 	// Forwarded calls are ssh round trips — machine adapters get the
 	// longer budget (design/delegation.md, "Targets").
 	const runner = run === defaultRunner ? makeRunner(timeoutMs) : run;
@@ -211,9 +215,12 @@ export function makeHerdr(
 
 	return {
 		async createWorkspace(cwd, label) {
-			const parsed = await call("workspace create", label, [
-				"workspace", "create", "--cwd", cwd, "--label", label, "--no-focus",
-			], (stdout) => workspaceCreatedSchema.parse(parseJson("workspace create", stdout)));
+			const parsed = await call(
+				"workspace create",
+				label,
+				["workspace", "create", "--cwd", cwd, "--label", label, "--no-focus"],
+				(stdout) => workspaceCreatedSchema.parse(parseJson("workspace create", stdout)),
+			);
 			return {
 				workspaceId: parsed.result.workspace.workspace_id,
 				paneId: parsed.result.root_pane.pane_id,
@@ -224,14 +231,20 @@ export function makeHerdr(
 		async startAgent(name, kind, paneId, args) {
 			const argv = ["agent", "start", name, "--kind", kind, "--pane", paneId];
 			if (args.length > 0) argv.push("--", ...args);
-			return (await call("agent start", name, argv,
-				(stdout) => agentResultSchema.parse(parseJson("agent start", stdout)))).result.agent;
+			return (
+				await call("agent start", name, argv, (stdout) =>
+					agentResultSchema.parse(parseJson("agent start", stdout)),
+				)
+			).result.agent;
 		},
 
 		async get(name) {
 			try {
-				return (await call("agent get", name, ["agent", "get", name],
-					(stdout) => agentResultSchema.parse(parseJson("agent get", stdout)))).result.agent;
+				return (
+					await call("agent get", name, ["agent", "get", name], (stdout) =>
+						agentResultSchema.parse(parseJson("agent get", stdout)),
+					)
+				).result.agent;
 			} catch (err) {
 				if (err instanceof HerdrError && err.code === "agent_not_found") return null;
 				throw err;
@@ -239,46 +252,60 @@ export function makeHerdr(
 		},
 
 		async prompt(name, text) {
-			await call("agent prompt", name, ["agent", "prompt", name, text],
-				(stdout) => envelopeSchema.parse(parseJson("agent prompt", stdout)));
+			await call("agent prompt", name, ["agent", "prompt", name, text], (stdout) =>
+				envelopeSchema.parse(parseJson("agent prompt", stdout)),
+			);
 		},
 
 		async readAgent(name, lines) {
-			return call("agent read", name, [
-				"agent", "read", name, "--source", "recent-unwrapped", "--lines", String(lines),
-			], (stdout) => stdout);
+			return call(
+				"agent read",
+				name,
+				["agent", "read", name, "--source", "recent-unwrapped", "--lines", String(lines)],
+				(stdout) => stdout,
+			);
 		},
 
 		async readPane(paneId, lines) {
-			return call("pane read", paneId, [
-				"pane", "read", paneId, "--source", "recent-unwrapped", "--lines", String(lines),
-			], (stdout) => stdout);
+			return call(
+				"pane read",
+				paneId,
+				["pane", "read", paneId, "--source", "recent-unwrapped", "--lines", String(lines)],
+				(stdout) => stdout,
+			);
 		},
 
 		async paneRun(paneId, command) {
-			await call("pane run", paneId, ["pane", "run", paneId, command],
-				(stdout) => envelopeSchema.parse(parseJson("pane run", stdout)));
+			await call("pane run", paneId, ["pane", "run", paneId, command], (stdout) =>
+				envelopeSchema.parse(parseJson("pane run", stdout)),
+			);
 		},
 
 		async paneWaitOutput(paneId, match, timeoutMs) {
-			await call("pane wait-output", paneId, [
-				"pane", "wait-output", paneId, "--match", match, "--timeout", String(timeoutMs),
-			], (stdout) => envelopeSchema.parse(parseJson("pane wait-output", stdout)));
+			await call(
+				"pane wait-output",
+				paneId,
+				["pane", "wait-output", paneId, "--match", match, "--timeout", String(timeoutMs)],
+				(stdout) => envelopeSchema.parse(parseJson("pane wait-output", stdout)),
+			);
 		},
 
 		async sendKey(name, key) {
-			await call("agent send-keys", name, ["agent", "send-keys", name, key],
-				(stdout) => envelopeSchema.parse(parseJson("agent send-keys", stdout)));
+			await call("agent send-keys", name, ["agent", "send-keys", name, key], (stdout) =>
+				envelopeSchema.parse(parseJson("agent send-keys", stdout)),
+			);
 		},
 
 		async interrupt(name) {
-			await call("agent send-keys", name, ["agent", "send-keys", name, "ctrl+c"],
-				(stdout) => envelopeSchema.parse(parseJson("agent send-keys", stdout)));
+			await call("agent send-keys", name, ["agent", "send-keys", name, "ctrl+c"], (stdout) =>
+				envelopeSchema.parse(parseJson("agent send-keys", stdout)),
+			);
 		},
 
 		async closeWorkspace(id) {
-			await call("workspace close", id, ["workspace", "close", id],
-				(stdout) => envelopeSchema.parse(parseJson("workspace close", stdout)));
+			await call("workspace close", id, ["workspace", "close", id], (stdout) =>
+				envelopeSchema.parse(parseJson("workspace close", stdout)),
+			);
 		},
 	};
 }

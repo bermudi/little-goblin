@@ -41,18 +41,25 @@ function sample(): CompactionEvent[] {
 describe("chooseBoundary", () => {
 	test("attachment summaries retain the stored path rather than saying unnamed", () => {
 		const event = ev(1, "user", "please read this");
-		event.message.parts.push(attachmentPart({
-			path: "/workspace/attachments/a.pdf", filename: "a.pdf",
-			mediaType: "application/pdf", size: 42,
-		}));
+		event.message.parts.push(
+			attachmentPart({
+				path: "/workspace/attachments/a.pdf",
+				filename: "a.pdf",
+				mediaType: "application/pdf",
+				size: 42,
+			}),
+		);
 		expect(serializeSpan([event])).toContain("[attachment: /workspace/attachments/a.pdf]");
 	});
 
 	test("tool summaries retain bounded command and result evidence", () => {
 		const event = ev(2, "assistant", "");
 		event.message.parts.push({
-			type: "tool-bash", toolCallId: "t1", state: "output-available",
-			input: { command: "pwd" }, output: "/workspace",
+			type: "tool-bash",
+			toolCallId: "t1",
+			state: "output-available",
+			input: { command: "pwd" },
+			output: "/workspace",
 		} as UIMessage["parts"][number]);
 		const text = serializeSpan([event]);
 		expect(text).toContain("pwd");
@@ -87,7 +94,11 @@ describe("chooseBoundary", () => {
 		// u_b arrived while u_a's turn ran; a_a anchors to u_a. No seq
 		// between them is a valid cut, so with a tiny budget the whole
 		// burst is kept and there is nothing to compact.
-		const burst = [ev(1, "user", "first question".repeat(200)), ev(2, "user", "queued follow-up".repeat(200)), ev(3, "assistant", "the answer".repeat(200), 1)];
+		const burst = [
+			ev(1, "user", "first question".repeat(200)),
+			ev(2, "user", "queued follow-up".repeat(200)),
+			ev(3, "assistant", "the answer".repeat(200), 1),
+		];
 		expect(chooseBoundary(burst, { tailTokenBudget: 1, previousBoundary: null })).toBeNull();
 	});
 
@@ -112,7 +123,10 @@ describe("chooseBoundary", () => {
 	});
 });
 
-function fakeStore(detail: CompactionEvent[], previous: { boundarySeq: number; summary: string } | null = null) {
+function fakeStore(
+	detail: CompactionEvent[],
+	previous: { boundarySeq: number; summary: string } | null = null,
+) {
 	const writes: Parameters<CompactionStore["setCompaction"]>[1][] = [];
 	const store: CompactionStore = {
 		historyDetail: () => detail,
@@ -147,7 +161,11 @@ describe("runCompaction", () => {
 		expect(prompts[0]!.prompt).toContain("earlier era");
 		expect(prompts[0]!.prompt).toContain("did it");
 		expect(writes).toHaveLength(1);
-		expect(writes[0]).toMatchObject({ boundarySeq: 4, summary: "the folded summary", model: "zai/glm-5.3" });
+		expect(writes[0]).toMatchObject({
+			boundarySeq: 4,
+			summary: "the folded summary",
+			model: "zai/glm-5.3",
+		});
 	});
 
 	test("a summarizer failure propagates and writes nothing", async () => {
@@ -172,12 +190,15 @@ describe("runCompaction", () => {
 		const controller = new AbortController();
 		await expect(
 			runCompaction(
-				"dm:1", store, "m",
+				"dm:1",
+				store,
+				"m",
 				async () => {
 					controller.abort();
 					return "late summary";
 				},
-				{ tailTokenBudget: 1, inputTokenBudget: 32_000 }, controller.signal,
+				{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
+				controller.signal,
 			),
 		).rejects.toThrow();
 		expect(writes).toHaveLength(0);
@@ -186,7 +207,14 @@ describe("runCompaction", () => {
 	test("an empty summary is a failure, not a silent wipe", async () => {
 		const { store, writes } = fakeStore(sample());
 		await expect(
-			runCompaction("dm:1", store, "m", async () => "  ", { tailTokenBudget: 1, inputTokenBudget: 32_000 }, signal()),
+			runCompaction(
+				"dm:1",
+				store,
+				"m",
+				async () => "  ",
+				{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
+				signal(),
+			),
 		).rejects.toThrow("empty summary");
 		expect(writes).toHaveLength(0);
 	});

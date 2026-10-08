@@ -61,11 +61,7 @@ function boot(checkInjection?: { gate: Gate }) {
 	});
 }
 
-const post = (
-	port: number,
-	body: unknown,
-	headers?: Record<string, string>,
-) =>
+const post = (port: number, body: unknown, headers?: Record<string, string>) =>
 	fetch(`http://127.0.0.1:${port}/api/check-injection`, {
 		method: "POST",
 		headers: { "content-type": "application/json", ...(headers ?? {}) },
@@ -93,7 +89,7 @@ describe("readBodyBytesCapped — bound before buffering", () => {
 		const stream = new ReadableStream<Uint8Array>({
 			start(c) {
 				c.enqueue(new Uint8Array(8));
-			c.enqueue(new Uint8Array(8));
+				c.enqueue(new Uint8Array(8));
 				c.enqueue(new Uint8Array(8));
 				c.close();
 			},
@@ -119,10 +115,7 @@ describe("readBodyBytesCapped — bound before buffering", () => {
 		// Request (or any hostile client) can lie: declared 8, actually
 		// 32. The streamed byte count — not the declared header — is
 		// the lock, and this is the only test that pins it.
-		const bytes = await readBodyBytesCapped(
-			req(stream, { "content-length": "8" }),
-			16,
-		);
+		const bytes = await readBodyBytesCapped(req(stream, { "content-length": "8" }), 16);
 		expect(bytes).toBeNull();
 	});
 

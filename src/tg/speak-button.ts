@@ -79,7 +79,7 @@ async function speak(query: SpeakQuery, deps: SpeakButtonDeps): Promise<void> {
 	inFlight.add(key);
 	try {
 		const full = recentReplyText(message.chat.id, message.message_id);
-		const tapped = "text" in message ? message.text ?? "" : "";
+		const tapped = "text" in message ? (message.text ?? "") : "";
 		if (full === null) {
 			log.warn("voice button reply cache miss", {
 				chat: message.chat.id,

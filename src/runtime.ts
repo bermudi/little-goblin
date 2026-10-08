@@ -22,15 +22,16 @@ import {
 } from "ai";
 import type { ProviderOptions, ToolExecutionOptions } from "@ai-sdk/provider-utils";
 import { randomUUID } from "node:crypto";
-import { INLINE_ITEM_MAX_BYTES, materializeAttachments, type AcceptsMedia, type MediaPosition } from "./agent/attachments.ts";
+import {
+	INLINE_ITEM_MAX_BYTES,
+	materializeAttachments,
+	type AcceptsMedia,
+	type MediaPosition,
+} from "./agent/attachments.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import type { MemoryConfig } from "./config.ts";
-import {
-	HindsightClient,
-	HindsightError,
-	type MemoryDocument,
-} from "./hindsight.ts";
+import { HindsightClient, HindsightError, type MemoryDocument } from "./hindsight.ts";
 import {
 	buildRecallQuery,
 	buildRetentionDocument,
@@ -42,7 +43,11 @@ import {
 } from "./memory.ts";
 import { log } from "./log.ts";
 import { runCompaction, type CompactionOutcome } from "./agent/compaction.ts";
-import { isContentFilter, isContextOverflow, ProviderContentFilterError } from "./agent/provider-errors.ts";
+import {
+	isContentFilter,
+	isContextOverflow,
+	ProviderContentFilterError,
+} from "./agent/provider-errors.ts";
 import { filterErrorStream } from "./agent/filter-stream.ts";
 import type { CompletedTurn, PriorTurnContext, ReviewerDeps, ToolCallDigest } from "./reviewer.ts";
 import type { JevClient } from "./jev.ts";
@@ -72,7 +77,7 @@ const REPEAT_CUT =
 const WATCHDOG_CUT =
 	"Progress check: your tool calls were judged stuck twice in a row. Tools are disabled for this final step. Write your answer to the operator now from what you have, and say plainly what is unverified and what was blocking you.";
 const CONTEXT_CUT =
-	"The context window is nearly full. Tools are disabled for this final step. Write your answer to the operator now: what you found, what is left, and what you would pick up next if they say \"continue\".";
+	'The context window is nearly full. Tools are disabled for this final step. Write your answer to the operator now: what you found, what is left, and what you would pick up next if they say "continue".';
 const CUT_NUDGE: Record<ForcedKind, string> = {
 	repeat: REPEAT_CUT,
 	watchdog: WATCHDOG_CUT,
@@ -83,11 +88,11 @@ const CUT_NUDGE: Record<ForcedKind, string> = {
 // appended so the stamp never lies about a nothing.
 const DEFIANCE_NOTE: Record<ForcedKind, string> = {
 	repeat:
-		"I got stuck repeating the same tool call and was stopped before writing my answer — the work above is what I checked. Say \"continue\" and I'll pick up from there with a different approach.",
+		'I got stuck repeating the same tool call and was stopped before writing my answer — the work above is what I checked. Say "continue" and I\'ll pick up from there with a different approach.',
 	watchdog:
-		"A progress check stopped me as stuck before I wrote my answer — the work above is what I checked. Say \"continue\" and I'll pick up from there with a different approach.",
+		'A progress check stopped me as stuck before I wrote my answer — the work above is what I checked. Say "continue" and I\'ll pick up from there with a different approach.',
 	context:
-		"My context window filled up before I wrote my answer — the work above is what I checked. Say \"continue\" and I'll pick up from those findings.",
+		'My context window filled up before I wrote my answer — the work above is what I checked. Say "continue" and I\'ll pick up from those findings.',
 };
 // Watchdog verdicts: at/over this score is "stuck". First consecutive
 // hit warns, the second cuts, a sub-threshold check resets (design —
@@ -441,7 +446,9 @@ export class Runtime {
 
 	setLoopWatchdog(watchdog: { decide: JevClient["decide"]; every?: number } | null): void {
 		this.loopWatchdog =
-			watchdog === null ? null : { decide: watchdog.decide, every: watchdog.every ?? LOOP_CHECK_EVERY };
+			watchdog === null
+				? null
+				: { decide: watchdog.decide, every: watchdog.every ?? LOOP_CHECK_EVERY };
 	}
 
 	// Is a turn queued or running on this conversation? Guest summons
@@ -561,9 +568,18 @@ export class Runtime {
 	// then calls this synchronously. Abort/drop/cancel are runtime effects:
 	// doing them inside SQLite's transaction would make rollback dishonest.
 	// No await or new submission may intervene between fencing and cancellation.
-	cancelFenced(convId: string, epoch: number): { stopped: boolean; settled: Promise<void>; reviewsCancelled: number } {
-		if (!Number.isSafeInteger(epoch) || epoch <= 0 || this.deps.store.get(convId)?.epoch !== epoch) {
-			throw new Error(`cannot cancel conversation ${convId}: committed epoch ${epoch} no longer matches`);
+	cancelFenced(
+		convId: string,
+		epoch: number,
+	): { stopped: boolean; settled: Promise<void>; reviewsCancelled: number } {
+		if (
+			!Number.isSafeInteger(epoch) ||
+			epoch <= 0 ||
+			this.deps.store.get(convId)?.epoch !== epoch
+		) {
+			throw new Error(
+				`cannot cancel conversation ${convId}: committed epoch ${epoch} no longer matches`,
+			);
 		}
 		const lane = this.lanes.get(convId);
 		const stopped =
@@ -675,7 +691,15 @@ export class Runtime {
 	private lane(convId: string): Lane {
 		let l = this.lanes.get(convId);
 		if (!l) {
-			l = { pending: [], compacts: [], running: false, controller: null, compactController: null, draining: null, live: null };
+			l = {
+				pending: [],
+				compacts: [],
+				running: false,
+				controller: null,
+				compactController: null,
+				draining: null,
+				live: null,
+			};
 			this.lanes.set(convId, l);
 		}
 		return l;
@@ -755,9 +779,11 @@ export class Runtime {
 			});
 			this.checkAuthority(conv.id, epoch);
 			const block = formatRecallBlock(facts, facts.length > 0 ? "results" : "empty");
-			const sources = [...new Set(
-				facts.map((f) => f.document_id).filter((d): d is string => typeof d === "string"),
-			)].slice(0, 100);
+			const sources = [
+				...new Set(
+					facts.map((f) => f.document_id).filter((d): d is string => typeof d === "string"),
+				),
+			].slice(0, 100);
 			const current: RecallContext = { anchorSeq, content: block, sourceIds: sources };
 			try {
 				mem.contexts.save(conv.id, anchorSeq, block, sources);
@@ -893,34 +919,34 @@ export class Runtime {
 				);
 				if (turns.length > 0) {
 					if (turns.length > 1) {
-					log.info("queued submits coalesced", {
-						conversation: convId,
-						count: turns.length,
-					});
-				}
-				try {
-					await this.runTurn(convId, turns);
-				} catch (err) {
-					// runTurn handles expected failures; this is a last-ditch guard
-					// so one bad turn can't stall the lane or leak its sinks.
-					log.error("turn crashed", err, { conversation: convId });
-					const done: TurnDone = {
-						kind: "error",
-						message: err instanceof Error ? err.message : String(err),
-					};
-					// End the live log HERE, not only in the finally below: a
-					// successor turn in this same drain pass re-pins lane.live,
-					// which would orphan the crashed turn's subscribers — their
-					// attach streams would hang without a terminal event.
-					// endLive is idempotent, so a live already ended by the
-					// turn's own notifyAll is untouched.
-					const crashed = this.lanes.get(convId)?.live;
-					if (crashed != null) endLive(crashed, done);
-					for (const t of turns) await this.notifyDone(t, done);
-				}
-				// Between turns the lane holds no live controller — /stop's
-				// stopped flag must not false-positive on a finished turn.
-				this.lane(convId).controller = null;
+						log.info("queued submits coalesced", {
+							conversation: convId,
+							count: turns.length,
+						});
+					}
+					try {
+						await this.runTurn(convId, turns);
+					} catch (err) {
+						// runTurn handles expected failures; this is a last-ditch guard
+						// so one bad turn can't stall the lane or leak its sinks.
+						log.error("turn crashed", err, { conversation: convId });
+						const done: TurnDone = {
+							kind: "error",
+							message: err instanceof Error ? err.message : String(err),
+						};
+						// End the live log HERE, not only in the finally below: a
+						// successor turn in this same drain pass re-pins lane.live,
+						// which would orphan the crashed turn's subscribers — their
+						// attach streams would hang without a terminal event.
+						// endLive is idempotent, so a live already ended by the
+						// turn's own notifyAll is untouched.
+						const crashed = this.lanes.get(convId)?.live;
+						if (crashed != null) endLive(crashed, done);
+						for (const t of turns) await this.notifyDone(t, done);
+					}
+					// Between turns the lane holds no live controller — /stop's
+					// stopped flag must not false-positive on a finished turn.
+					this.lane(convId).controller = null;
 					continue;
 				}
 				// /compact jobs run between turns — any running turn's exchange
@@ -946,11 +972,9 @@ export class Runtime {
 			// streams loudly instead of hanging them on a turn that will never
 			// emit again.
 			if (lane.live !== null && !lane.live.ended) {
-				log.error(
-					"live chunk log never ended — closing attach streams",
-					undefined,
-					{ conversation: convId },
-				);
+				log.error("live chunk log never ended — closing attach streams", undefined, {
+					conversation: convId,
+				});
 				endLive(lane.live, { kind: "error", message: "turn ended without an outcome" });
 			}
 			lane.live = null;
@@ -960,7 +984,11 @@ export class Runtime {
 		}
 	}
 
-	private async runTurn(convId: string, turns: QueuedTurn[], recovery?: TurnRecovery): Promise<void> {
+	private async runTurn(
+		convId: string,
+		turns: QueuedTurn[],
+		recovery?: TurnRecovery,
+	): Promise<void> {
 		const { store } = this.deps;
 		let filterRetryUsed = recovery?.filterRetryUsed ?? false;
 		// The loop machinery (design/model.md → "No step budget"): the
@@ -1002,8 +1030,11 @@ export class Runtime {
 		// HTTP subscribers attached mid-flight (GET .../stream). Carried
 		// across overflow recovery by TurnRecovery — the resume continues
 		// the same wire.
-		const live: LiveChunks =
-			recovery?.live ?? { chunks: [], subscribers: new Set<LiveSubscriber>(), ended: false };
+		const live: LiveChunks = recovery?.live ?? {
+			chunks: [],
+			subscribers: new Set<LiveSubscriber>(),
+			ended: false,
+		};
 		const notifyAll = async (done: TurnDone) => {
 			endLive(live, done);
 			for (const t of turns) await this.notifyDone(t, done);
@@ -1031,10 +1062,7 @@ export class Runtime {
 		if (recovery !== undefined) {
 			const lane = this.lane(convId);
 			turns.push(
-				...lane.pending.splice(
-					0,
-					claimableCount(lane.pending, sink.onStreamChunk !== undefined),
-				),
+				...lane.pending.splice(0, claimableCount(lane.pending, sink.onStreamChunk !== undefined)),
 			);
 		}
 		// Turn wall-clock for the finish metadata — admission to done,
@@ -1075,7 +1103,9 @@ export class Runtime {
 		let memory: TurnRecovery["memory"] = { prior: [], current: null };
 		try {
 			this.checkAuthority(convId, epoch);
-			memory = recovery?.memory ?? (await this.recallMemory(conv, anchorSeq, history, controller.signal, epoch));
+			memory =
+				recovery?.memory ??
+				(await this.recallMemory(conv, anchorSeq, history, controller.signal, epoch));
 			this.checkAuthority(convId, epoch);
 			const deliverVoice = sink.onVoiceNote
 				? async (audio: Uint8Array) => {
@@ -1352,11 +1382,14 @@ export class Runtime {
 							// way, a poison pill. Later model views degrade it to a
 							// placeholder at the admission boundary (runTurn's
 							// conversion), so the conversation stays answerable.
-							log.warn("steer conversion failed — submit errored, message degrades in later views", {
-								conversation: convId,
-								message: t.message.id,
-								error: err instanceof Error ? err.message : String(err),
-							});
+							log.warn(
+								"steer conversion failed — submit errored, message degrades in later views",
+								{
+									conversation: convId,
+									message: t.message.id,
+									error: err instanceof Error ? err.message : String(err),
+								},
+							);
 							void this.notifyDone(t, {
 								kind: "error",
 								message: `that message could not be prepared for the model: ${err instanceof Error ? err.message : String(err)}`,
@@ -1412,9 +1445,11 @@ export class Runtime {
 							log.warn("provider content filter — retrying unchanged model call once", {
 								conversation: convId,
 								epoch,
-								model: step.label ?? (typeof step.model === "string" ? step.model : step.model.modelId),
+								model:
+									step.label ?? (typeof step.model === "string" ? step.model : step.model.modelId),
 								error: String(error),
-								blockedUsage: error instanceof ProviderContentFilterError ? error.usage ?? null : null,
+								blockedUsage:
+									error instanceof ProviderContentFilterError ? (error.usage ?? null) : null,
 							});
 							return { retry: true };
 						}
@@ -1422,7 +1457,8 @@ export class Runtime {
 							conversation: convId,
 							epoch,
 							error: String(error),
-							blockedUsage: error instanceof ProviderContentFilterError ? error.usage ?? null : null,
+							blockedUsage:
+								error instanceof ProviderContentFilterError ? (error.usage ?? null) : null,
 						});
 					}
 					// Kept for classification: the ui stream's error chunk
@@ -1465,8 +1501,8 @@ export class Runtime {
 				.then((ws) => {
 					if (ws !== undefined && ws.length > 0) {
 						log.warn("model warnings", {
-						conversation: convId,
-						warnings: ws.map(describeWarning),
+							conversation: convId,
+							warnings: ws.map(describeWarning),
 						});
 					}
 				})
@@ -1534,8 +1570,7 @@ export class Runtime {
 					part.type === "finish"
 						? {
 								model:
-									step.label ??
-									(typeof step.model === "string" ? step.model : step.model.modelId),
+									step.label ?? (typeof step.model === "string" ? step.model : step.model.modelId),
 								finishReason: part.finishReason,
 								durationMs: Date.now() - turnStartMs,
 								// Forced landings stamp themselves — the operator's UI must
@@ -1556,7 +1591,9 @@ export class Runtime {
 				onError: (error) =>
 					isContentFilter(error)
 						? "Provider blocked this request again after one retry."
-						: error instanceof Error ? error.message : String(error),
+						: error instanceof Error
+							? error.message
+							: String(error),
 				onFinish: ({ responseMessage: rm, isAborted, outcome }) => {
 					if (isAborted) return;
 					if (outcome.status === "failed") {
@@ -1607,7 +1644,9 @@ export class Runtime {
 				watchdogRing.push({
 					tool: toolName,
 					args: summarize(call?.input, LOOP_CHARS),
-					result: failed ? summarize(result, LOOP_CHARS) : summarize(result ?? "(no result)", LOOP_CHARS),
+					result: failed
+						? summarize(result, LOOP_CHARS)
+						: summarize(result ?? "(no result)", LOOP_CHARS),
 					ok: !failed && toolOk(result),
 				});
 				if (watchdogRing.length > LOOP_WINDOW) watchdogRing.shift();
@@ -1660,8 +1699,7 @@ export class Runtime {
 					// failure off the wire. The resumed stream continues the
 					// same message, so an error event now would lie — and if
 					// recovery later gives up, onDone reports it.
-					const overflow =
-						isContextOverflow(chunk.errorText) || isContextOverflow(rawError);
+					const overflow = isContextOverflow(chunk.errorText) || isContextOverflow(rawError);
 					if (overflow && recovery === undefined && this.deps.compaction !== undefined) {
 						holdForRecovery = true;
 					}
@@ -1733,15 +1771,15 @@ export class Runtime {
 							digestRing.push({
 								id: chunk.toolCallId,
 								entry: {
-										tool: chunk.toolName,
-										args: summarize(chunk.input, evidence?.argChars ?? 160),
-										result: "(no result)",
-										// A result that never arrives (cut stream) stays neutral.
-										ok: true,
-									},
-								});
-								if (digestRing.length > evidence.calls) digestRing.shift();
-							}
+									tool: chunk.toolName,
+									args: summarize(chunk.input, evidence?.argChars ?? 160),
+									result: "(no result)",
+									// A result that never arrives (cut stream) stays neutral.
+									ok: true,
+								},
+							});
+							if (digestRing.length > evidence.calls) digestRing.shift();
+						}
 						// Side-effecting boundary — the chat shows a status
 						// line, the log gets the durable record. Args are
 						// truncated metadata, not payloads.
@@ -1860,7 +1898,7 @@ export class Runtime {
 			// whose step STILL ended in tool calls (a provider ignoring
 			// toolChoice:none) or produced no prose would deliver a stamped
 			// nothing — the exact incident shape. The invariant gets the last
-		// word: append plain-language prose, to the stored message AND the
+			// word: append plain-language prose, to the stored message AND the
 			// live delta path (telegram delivers text only through deltas).
 			// (const alias — responseMessage is only assigned inside the
 			// stream's onFinish callback, which flow analysis can't see, so here
@@ -1870,7 +1908,8 @@ export class Runtime {
 			if (
 				forcedKind !== null &&
 				landed !== null &&
-				(finishReason === "tool-calls" || !landed.parts.some((p) => p.type === "text" && p.text.trim() !== ""))
+				(finishReason === "tool-calls" ||
+					!landed.parts.some((p) => p.type === "text" && p.text.trim() !== ""))
 			) {
 				const note = DEFIANCE_NOTE[forcedKind];
 				log.warn("forced landing produced no prose — synthetic answer appended", {
@@ -1915,13 +1954,12 @@ export class Runtime {
 				conversation: convId,
 				epoch,
 				finish: finishReason,
-				usage:
-					usage && {
-						input: usage.inputTokens ?? null,
-						cacheRead: usage.inputTokenDetails?.cacheReadTokens ?? null,
-						cacheWrite: usage.inputTokenDetails?.cacheWriteTokens ?? null,
-						output: usage.outputTokens ?? null,
-					},
+				usage: usage && {
+					input: usage.inputTokens ?? null,
+					cacheRead: usage.inputTokenDetails?.cacheReadTokens ?? null,
+					cacheWrite: usage.inputTokenDetails?.cacheWriteTokens ?? null,
+					output: usage.outputTokens ?? null,
+				},
 				window,
 			});
 			if (window && window.pct >= 80) {
@@ -1987,7 +2025,7 @@ export class Runtime {
 			// call so a queued successor reads the compacted view, not a
 			// mid-flight one. Failure is loud but lossless — no boundary
 			// written, the next threshold crossing retries. Deliberately NOT
-		// thrown to the outer handler: onDone already fired.
+			// thrown to the outer handler: onDone already fired.
 			if (window && window.pct >= COMPACT_AT_PCT) {
 				try {
 					await this.doCompact(conv, "threshold");
@@ -2037,8 +2075,7 @@ export class Runtime {
 							conversation: convId,
 							error: String(compactErr),
 						});
-						const msg =
-							compactErr instanceof Error ? compactErr.message : String(compactErr);
+						const msg = compactErr instanceof Error ? compactErr.message : String(compactErr);
 						await notifyAll({
 							kind: "error",
 							message: `context window full and compacting failed: ${msg.slice(0, 120)}`,
@@ -2200,8 +2237,12 @@ function mergeConsecutiveUserModels(messages: ModelMessage[]): ModelMessage[] {
 	for (const m of messages) {
 		const prev = out[out.length - 1];
 		if (m.role === "user" && prev?.role === "user") {
-			const prevContent = typeof prev.content === "string" ? [{ type: "text" as const, text: prev.content }] : prev.content;
-			const content = typeof m.content === "string" ? [{ type: "text" as const, text: m.content }] : m.content;
+			const prevContent =
+				typeof prev.content === "string"
+					? [{ type: "text" as const, text: prev.content }]
+					: prev.content;
+			const content =
+				typeof m.content === "string" ? [{ type: "text" as const, text: m.content }] : m.content;
 			prev.content = [...prevContent, ...content];
 		} else {
 			out.push(m);

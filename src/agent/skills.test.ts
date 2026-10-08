@@ -59,7 +59,7 @@ describe("loadCatalog", () => {
 		writeSkill(
 			root,
 			"browser",
-			'name: browser\ndescription: drive Chrome\nallowed-tools:\n  - Bash(agent-browser:*)',
+			"name: browser\ndescription: drive Chrome\nallowed-tools:\n  - Bash(agent-browser:*)",
 		);
 		const catalog = loadCatalog(root);
 		expect(catalog.skipped).toBe(0);
@@ -196,9 +196,7 @@ describe("formatSkillsSection", () => {
 			],
 			skipped: 0,
 		}).join("\n");
-		expect(text).toContain(
-			"- mq — jq for Markdown [Requires the mq CLI] (skills/mq/SKILL.md)",
-		);
+		expect(text).toContain("- mq — jq for Markdown [Requires the mq CLI] (skills/mq/SKILL.md)");
 	});
 
 	test("the skip count is noted for the agent to surface", () => {

@@ -47,10 +47,13 @@ describe("claude", () => {
 	test("preserves existing keys, other projects, and file mode", () => {
 		const h = home();
 		const path = join(h, ".claude.json");
-		writeFileSync(path, JSON.stringify({
-			machineID: "m",
-			projects: { "/other": { hasTrustDialogAccepted: true, allowedTools: ["Bash"] } },
-		}));
+		writeFileSync(
+			path,
+			JSON.stringify({
+				machineID: "m",
+				projects: { "/other": { hasTrustDialogAccepted: true, allowedTools: ["Bash"] } },
+			}),
+		);
 		chmodSync(path, 0o444);
 		seedHarnessTrust("claude", "/work/task", h);
 		const doc = JSON.parse(readFileSync(path, "utf8"));
@@ -69,11 +72,14 @@ describe("claude", () => {
 	test("an explicit false is the operator's recorded answer — seeding never flips it", () => {
 		const h = home();
 		const path = join(h, ".claude.json");
-		writeFileSync(path, JSON.stringify({
-			bypassPermissionsModeAccepted: false,
-			hasCompletedOnboarding: false,
-			projects: { "/work/task": { hasTrustDialogAccepted: false } },
-		}));
+		writeFileSync(
+			path,
+			JSON.stringify({
+				bypassPermissionsModeAccepted: false,
+				hasCompletedOnboarding: false,
+				projects: { "/work/task": { hasTrustDialogAccepted: false } },
+			}),
+		);
 		seedHarnessTrust("claude", "/work/task", h);
 		const doc = JSON.parse(readFileSync(path, "utf8"));
 		expect(doc.bypassPermissionsModeAccepted).toBe(false);
@@ -106,9 +112,11 @@ describe("codex", () => {
 	// operator's bytes must survive verbatim: the seeded file starts
 	// with the original text and adds exactly one line.
 	const codexTrust = (dir: string, cwd: string): unknown => {
-		const projects = (Bun.TOML.parse(
-			readFileSync(join(dir, ".codex", "config.toml"), "utf8"),
-		) as { projects: Record<string, { trust_level?: string }> }).projects;
+		const projects = (
+			Bun.TOML.parse(readFileSync(join(dir, ".codex", "config.toml"), "utf8")) as {
+				projects: Record<string, { trust_level?: string }>;
+			}
+		).projects;
 		return projects[cwd]?.trust_level;
 	};
 
@@ -181,9 +189,7 @@ describe("codex", () => {
 			"[other]\n" +
 			'projects."/work/task".extra = "nested"\n';
 		writeFileSync(path, original);
-		expect(() => seedHarnessTrust("codex", "/work/task", h)).toThrow(
-			"can't be extended safely",
-		);
+		expect(() => seedHarnessTrust("codex", "/work/task", h)).toThrow("can't be extended safely");
 		expect(readFileSync(path, "utf8")).toBe(original);
 	});
 

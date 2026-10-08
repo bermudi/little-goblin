@@ -99,7 +99,10 @@ export function isContextOverflow(err: unknown): boolean {
 	for (const phrase of OVERFLOW_PHRASES) {
 		if (text.includes(phrase)) return true;
 	}
-	if ((text.includes("context window") || text.includes("context size")) && CONTEXT_WORDED.test(text)) {
+	if (
+		(text.includes("context window") || text.includes("context size")) &&
+		CONTEXT_WORDED.test(text)
+	) {
 		return true;
 	}
 	return ZAI_1261.test(text);
@@ -112,7 +115,10 @@ const FILTER_WARNING =
 	"system detected potentially unsafe or sensitive content in input or generation.";
 
 export class ProviderContentFilterError extends Error {
-	constructor(cause?: unknown, readonly usage?: LanguageModelV4Usage) {
+	constructor(
+		cause?: unknown,
+		readonly usage?: LanguageModelV4Usage,
+	) {
 		super("Provider content filter blocked this request.", { cause });
 		this.name = "ProviderContentFilterError";
 	}
@@ -122,6 +128,8 @@ export function isContentFilter(err: unknown): boolean {
 	if (err instanceof ProviderContentFilterError) return true;
 	const collected: Collected = { texts: [], rateLimited: false, contentFiltered: false };
 	collect(err, 0, new Set(), collected);
-	return collected.contentFiltered ||
-		collected.texts.some((text) => text.toLowerCase().includes(FILTER_WARNING));
+	return (
+		collected.contentFiltered ||
+		collected.texts.some((text) => text.toLowerCase().includes(FILTER_WARNING))
+	);
 }

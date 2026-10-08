@@ -4,7 +4,15 @@
 // size, not "200".
 
 import { Clip, ErrBox, Icon, PathChip, type ToolView } from "./bits.tsx";
-import { clipHead, firstLine, fmtBytes, fmtChars, hostOf, joinSummary, parseFetchText } from "./parse.ts";
+import {
+	clipHead,
+	firstLine,
+	fmtBytes,
+	fmtChars,
+	hostOf,
+	joinSummary,
+	parseFetchText,
+} from "./parse.ts";
 import { fetchInputSchema, fetchOutputSchema } from "./schemas.ts";
 
 export const fetchView: ToolView = {

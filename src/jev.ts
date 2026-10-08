@@ -128,8 +128,12 @@ export class JevClient {
 			const canFallback = this.model !== JEV_FALLBACK_MODEL;
 			const attempt = (attemptModel: string, budgetMs: number): Promise<JevDecision> => {
 				log.info("system1 request", {
-					requestId, model: attemptModel, fallback: attemptModel !== this.model,
-					questionIds, inputHash, timeoutMs: Math.floor(budgetMs),
+					requestId,
+					model: attemptModel,
+					fallback: attemptModel !== this.model,
+					questionIds,
+					inputHash,
+					timeoutMs: Math.floor(budgetMs),
 				});
 				// input is a serialized object. Insert only the model field;
 				// all state/question bytes remain identical across attempts.
@@ -148,26 +152,37 @@ export class JevClient {
 					err.status === 403 ||
 					controller.signal.aborted ||
 					remaining() <= 0
-				) throw err;
+				)
+					throw err;
 				log.warn("system1 fallback", {
-					requestId, model, fallbackModel: JEV_FALLBACK_MODEL,
-					kind: err.kind, status: err.status ?? null,
+					requestId,
+					model,
+					fallbackModel: JEV_FALLBACK_MODEL,
+					kind: err.kind,
+					status: err.status ?? null,
 					ms: Math.round(performance.now() - started),
 				});
 				model = JEV_FALLBACK_MODEL;
 				decision = await attempt(model, remaining());
 			}
 			log.info("system1 decision", {
-				requestId, model, fallback: model !== this.model,
-				answers: decision.answers, inputTokens: decision.inputTokens, cost: decision.cost,
+				requestId,
+				model,
+				fallback: model !== this.model,
+				answers: decision.answers,
+				inputTokens: decision.inputTokens,
+				cost: decision.cost,
 				ms: Math.round(performance.now() - started),
 			});
 			return decision;
 		} catch (err) {
 			if (err instanceof JevError) {
 				log.warn("system1 failed", {
-					requestId, model, fallback: model !== this.model,
-					kind: err.kind, status: err.status ?? null,
+					requestId,
+					model,
+					fallback: model !== this.model,
+					kind: err.kind,
+					status: err.status ?? null,
 					ms: Math.round(performance.now() - started),
 				});
 			}

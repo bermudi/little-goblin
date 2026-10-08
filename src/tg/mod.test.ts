@@ -123,7 +123,6 @@ describe("applyMenuButton", () => {
 	});
 });
 
-
 // ---------- handleMessage / flushConversation ----------
 //
 // The intake router and the coalescing flush, driven through explicit
@@ -141,7 +140,14 @@ import { openStore, type ConversationStore } from "../conversation.ts";
 import type { Runtime, TurnSink } from "../runtime.ts";
 import type { AuthStore } from "../auth.ts";
 import { CoalescingBuffer } from "./buffer.ts";
-import { flushConversation, handleMessage, handleMessageDurably, replayInbox, InboxRecordError, type IntakeEnv } from "./mod.ts";
+import {
+	flushConversation,
+	handleMessage,
+	handleMessageDurably,
+	replayInbox,
+	InboxRecordError,
+	type IntakeEnv,
+} from "./mod.ts";
 import { openTelegramInbox } from "./inbox.ts";
 import { openPings, type PingStore } from "./pings.ts";
 
@@ -170,7 +176,12 @@ const nullSink: TurnSink = {
 
 interface RouterHarness {
 	env: IntakeEnv;
-	pushed: Array<{ conv: string; parts: UIMessage["parts"]; replyTo: number | undefined; updateId: number }>;
+	pushed: Array<{
+		conv: string;
+		parts: UIMessage["parts"];
+		replyTo: number | undefined;
+		updateId: number;
+	}>;
 	apiCalls: Array<{ method: string; text?: string; chat?: unknown }>;
 	stopped: string[];
 	store: ConversationStore;
@@ -200,7 +211,10 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 		sendVoice: () => Promise.resolve({ message_id: 1 }),
 	} as unknown as IntakeEnv["api"];
 	const buffer = {
-		push: (conv: string, item: { parts: UIMessage["parts"]; replyTo: number | undefined; updateId: number }) => {
+		push: (
+			conv: string,
+			item: { parts: UIMessage["parts"]; replyTo: number | undefined; updateId: number },
+		) => {
 			pushed.push({ conv, parts: item.parts, replyTo: item.replyTo, updateId: item.updateId });
 		},
 	} as unknown as IntakeEnv["buffer"];
@@ -251,16 +265,27 @@ let nextFlushUpdate = 100;
 function flushTest(
 	env: IntakeEnv,
 	convId: string,
-	items: Array<{parts: UIMessage["parts"]; replyTo?: number; chatId?: number; quoted?: { messageId: number; text: string }}>,
+	items: Array<{
+		parts: UIMessage["parts"];
+		replyTo?: number;
+		chatId?: number;
+		quoted?: { messageId: number; text: string };
+	}>,
 ): void | Promise<void> {
 	const buffered = items.map((item) => {
 		const updateId = nextFlushUpdate++;
 		env.inbox.record(updateId, {
-			conversationId: convId, chatId: item.chatId ?? -100, messageId: updateId,
-			text: "", media: null, mediaError: null,
+			conversationId: convId,
+			chatId: item.chatId ?? -100,
+			messageId: updateId,
+			text: "",
+			media: null,
+			mediaError: null,
 		});
 		return {
-			parts: item.parts, replyTo: item.replyTo, updateId,
+			parts: item.parts,
+			replyTo: item.replyTo,
+			updateId,
 			chatId: item.chatId ?? -100,
 			...(item.quoted !== undefined ? { quoted: item.quoted } : {}),
 		};
@@ -308,32 +333,39 @@ describe("handleMessage", () => {
 		expect(h.pushed).toHaveLength(1);
 		expect(h.pushed[0]!.replyTo).toBe(2);
 		expect(h.pushed[0]!.parts[0]).toEqual({ type: "text", text: "/stop" });
-		expect(JSON.stringify(h.pushed[0]!.parts[1])).toContain(
-			"[attachment failed to download:",
-		);
+		expect(JSON.stringify(h.pushed[0]!.parts[1])).toContain("[attachment failed to download:");
 	});
 
 	test("malformed photo metadata becomes a failed attachment, not a dropped update", async () => {
 		const h = routerHarness();
-		handleTestMessage(h.env, tgMsg({
-			message_id: 3,
-			chat: { id: 1, type: "private" },
-			photo: [null],
-		}));
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 3,
+				chat: { id: 1, type: "private" },
+				photo: [null],
+			}),
+		);
 		await h.env.intake.get("dm:1");
 		expect(h.pushed).toHaveLength(1);
 		expect(h.pushed[0]!.parts[0]?.type).toBe("text");
-		expect((h.pushed[0]!.parts[0] as { text: string }).text).toContain("[attachment failed to download:");
+		expect((h.pushed[0]!.parts[0] as { text: string }).text).toContain(
+			"[attachment failed to download:",
+		);
 		h.store.close();
 	});
 
 	test("malformed document metadata is journaled as a failed attachment, not a boot loop", async () => {
 		const h = routerHarness();
-		handleMessage(h.env, tgMsg({
-			message_id: 33,
-			chat: { id: 1, type: "private" },
-			document: { file_id: "f", file_unique_id: null },
-		}), 330);
+		handleMessage(
+			h.env,
+			tgMsg({
+				message_id: 33,
+				chat: { id: 1, type: "private" },
+				document: { file_id: "f", file_unique_id: null },
+			}),
+			330,
+		);
 		expect(h.env.inbox.pending()[0]!.payload.media).toBeNull();
 		expect(h.env.inbox.pending()[0]!.payload.mediaError).not.toBeNull();
 		await h.env.intake.get("dm:1");
@@ -453,9 +485,7 @@ describe("ping replies (Spin-off)", () => {
 		expect(h.bellConvs).toEqual([app.id]);
 		expect(h.env.titleAttempts.size).toBe(0);
 		// The reply is real history on the app side — no quoted part.
-		expect(h.store.history(app.id).at(-1)!.parts).toEqual([
-			{ type: "text", text: "looks good" },
-		]);
+		expect(h.store.history(app.id).at(-1)!.parts).toEqual([{ type: "text", text: "looks good" }]);
 		h.store.close();
 	});
 
@@ -536,15 +566,11 @@ describe("flushConversation", () => {
 			titleModel: "zai/t",
 		});
 		setTitle(null); // first attempt: provider unusable
-		flushTest(h.env, conv.id, [
-			{ parts: [{ type: "text", text: "hello" }], replyTo: 1 },
-		]);
+		flushTest(h.env, conv.id, [{ parts: [{ type: "text", text: "hello" }], replyTo: 1 }]);
 		expect(titleCalls).toEqual(["hello"]);
 		await Bun.sleep(10);
 		setTitle("Titled");
-		flushTest(h.env, conv.id, [
-			{ parts: [{ type: "text", text: "again" }], replyTo: 2 },
-		]);
+		flushTest(h.env, conv.id, [{ parts: [{ type: "text", text: "again" }], replyTo: 2 }]);
 		await Bun.sleep(10);
 		// Attempt burned on the first flush — never retried this process.
 		expect(titleCalls).toEqual(["hello"]);
@@ -553,9 +579,7 @@ describe("flushConversation", () => {
 
 	test("no titleModel configured — titling never fires, the turn still submits", async () => {
 		const { h, conv, submitted, titleCalls } = topicHarness(baseConfig);
-		flushTest(h.env, conv.id, [
-			{ parts: [{ type: "text", text: "hello" }], replyTo: 1 },
-		]);
+		flushTest(h.env, conv.id, [{ parts: [{ type: "text", text: "hello" }], replyTo: 1 }]);
 		expect(titleCalls).toEqual([]);
 		expect(submitted).toHaveLength(1);
 		await submitted[0]!.sink.onDone({ kind: "completed" });
@@ -577,9 +601,7 @@ describe("flushConversation", () => {
 		// The batch committed before admission failed, so a rethrow would
 		// make the buffer retry forever against already-consumed rows.
 		// dm:9 is a rolling lane — the flush is async.
-		await flushTest(h.env, conv.id, [
-			{ parts: [{ type: "text", text: "hi" }], replyTo: 1 },
-		]);
+		await flushTest(h.env, conv.id, [{ parts: [{ type: "text", text: "hi" }], replyTo: 1 }]);
 		expect(seen).not.toBeNull();
 		// The sink was released (not left ghosting "typing…"): its error
 		// path delivers the failure to Telegram.
@@ -601,9 +623,20 @@ describe("flushConversation", () => {
 				return Promise.resolve(true);
 			},
 		} as unknown as Api;
-		h.env.inbox.record(710, { conversationId: conv.id, chatId: 1, messageId: 71,
-			text: "hi", media: null, mediaError: null });
-		h.env.deps.store = { ...h.store, append: () => { throw new Error("disk failed"); } };
+		h.env.inbox.record(710, {
+			conversationId: conv.id,
+			chatId: 1,
+			messageId: 71,
+			text: "hi",
+			media: null,
+			mediaError: null,
+		});
+		h.env.deps.store = {
+			...h.store,
+			append: () => {
+				throw new Error("disk failed");
+			},
+		};
 		// dm:1 is a rolling lane — the flush is async and the failure is a rejection.
 		await expect(
 			flushConversation(h.env, conv.id, [
@@ -624,9 +657,7 @@ describe("flushConversation", () => {
 	test("a flush for a missing conversation fails without consuming its row", () => {
 		const h = routerHarness(baseConfig);
 		expect(() =>
-			flushTest(h.env, "dm:-404", [
-				{ parts: [{ type: "text", text: "hi" }], replyTo: 1 },
-			]),
+			flushTest(h.env, "dm:-404", [{ parts: [{ type: "text", text: "hi" }], replyTo: 1 }]),
 		).toThrow("flush for missing conversation");
 		expect(h.env.inbox.pending()).toHaveLength(1);
 	});
@@ -664,16 +695,36 @@ describe("durable intake", () => {
 
 	test("replay resolves persisted media and commits once before admitting a turn", async () => {
 		const h = routerHarness();
-		const msg = tgMsg({ message_id: 61, chat: { id: 1, type: "private" },
-			caption: "look", photo: [{ file_id: "f", file_unique_id: "u", width: 8, height: 8 }] });
+		const msg = tgMsg({
+			message_id: 61,
+			chat: { id: 1, type: "private" },
+			caption: "look",
+			photo: [{ file_id: "f", file_unique_id: "u", width: 8, height: 8 }],
+		});
 		handleMessage(h.env, msg, 601);
-		expect(h.env.inbox.pending()).toEqual([{
-			updateId: 601,
-			payload: { conversationId: "dm:1", chatId: 1, messageId: 61, text: "look",
-				media: { fileId: "f", fileUniqueId: "u", fileName: "photo-u.jpg", mimeType: "image/jpeg" },
-				mediaError: null },
-		}]);
-		handleMessage(h.env, tgMsg({ message_id: 62, chat: { id: 1, type: "private" }, text: "after" }), 602);
+		expect(h.env.inbox.pending()).toEqual([
+			{
+				updateId: 601,
+				payload: {
+					conversationId: "dm:1",
+					chatId: 1,
+					messageId: 61,
+					text: "look",
+					media: {
+						fileId: "f",
+						fileUniqueId: "u",
+						fileName: "photo-u.jpg",
+						mimeType: "image/jpeg",
+					},
+					mediaError: null,
+				},
+			},
+		]);
+		handleMessage(
+			h.env,
+			tgMsg({ message_id: 62, chat: { id: 1, type: "private" }, text: "after" }),
+			602,
+		);
 		await h.env.intake.get("dm:1");
 		// Simulate a restart after journaling but before flush: old buffered
 		// parts are lost; replay uses only the normalized SQLite payload.
@@ -686,8 +737,11 @@ describe("durable intake", () => {
 			busy: () => false,
 		} as unknown as Runtime;
 		h.env.intake = new Map();
-		h.env.buffer = new CoalescingBuffer(60_000,
-			(id, items) => flushConversation(h.env, id, items), 120_000);
+		h.env.buffer = new CoalescingBuffer(
+			60_000,
+			(id, items) => flushConversation(h.env, id, items),
+			120_000,
+		);
 		await replayInbox(h.env);
 		// Scheduling recovery is non-blocking: new polling can start while
 		// a media download waits, but each conversation keeps its order.
@@ -709,14 +763,30 @@ describe("durable intake", () => {
 	test("failed history append rolls back inbox acknowledgement; retry commits exactly once", async () => {
 		const h = routerHarness();
 		// dm:1 is a rolling lane — the flush routes to dm:1:1.
-		h.env.inbox.record(700, { conversationId: "dm:1", chatId: 1, messageId: 70,
-			text: "retry", media: null, mediaError: null });
-		const item = { updateId: 700, parts: [{ type: "text" as const, text: "retry" }], replyTo: 70, chatId: 1 };
+		h.env.inbox.record(700, {
+			conversationId: "dm:1",
+			chatId: 1,
+			messageId: 70,
+			text: "retry",
+			media: null,
+			mediaError: null,
+		});
+		const item = {
+			updateId: 700,
+			parts: [{ type: "text" as const, text: "retry" }],
+			replyTo: 70,
+			chatId: 1,
+		};
 		const originalStore = h.store;
-		h.env.deps.store = { ...originalStore, append: () => { throw new Error("disk failed"); } };
-		await expect(
-			flushConversation(h.env, "dm:1", [item]) as Promise<void>,
-		).rejects.toThrow("disk failed");
+		h.env.deps.store = {
+			...originalStore,
+			append: () => {
+				throw new Error("disk failed");
+			},
+		};
+		await expect(flushConversation(h.env, "dm:1", [item]) as Promise<void>).rejects.toThrow(
+			"disk failed",
+		);
 		expect(originalStore.history("dm:1:1")).toHaveLength(0);
 		expect(h.env.inbox.pending()).toHaveLength(1);
 		h.env.deps.store = originalStore;
@@ -729,8 +799,13 @@ describe("durable intake", () => {
 	test("journal insert failure is a fatal-class synchronous error", () => {
 		const h = routerHarness();
 		h.store.db.run("DROP TABLE tg_inbox");
-		expect(() => handleMessage(h.env, tgMsg({ message_id: 80,
-			chat: { id: 1, type: "private" }, text: "hello" }), 800)).toThrow(InboxRecordError);
+		expect(() =>
+			handleMessage(
+				h.env,
+				tgMsg({ message_id: 80, chat: { id: 1, type: "private" }, text: "hello" }),
+				800,
+			),
+		).toThrow(InboxRecordError);
 		expect(h.pushed).toHaveLength(0);
 		h.store.close();
 	});
@@ -739,15 +814,25 @@ describe("durable intake", () => {
 		const h = routerHarness();
 		h.env.deps.store = {
 			...h.store,
-			resolve: () => { throw new Error("database unavailable"); },
+			resolve: () => {
+				throw new Error("database unavailable");
+			},
 		};
 		// Topic lanes still resolve eagerly at intake; private chats do
 		// not (the rolling lane defers routing to the flush).
-		expect(() => handleMessageDurably(h.env, tgMsg({
-			message_id: 81,
-			chat: { id: -100, type: "supergroup" },
-			message_thread_id: 7, is_topic_message: true, text: "hello",
-		}), 801)).toThrow(InboxRecordError);
+		expect(() =>
+			handleMessageDurably(
+				h.env,
+				tgMsg({
+					message_id: 81,
+					chat: { id: -100, type: "supergroup" },
+					message_thread_id: 7,
+					is_topic_message: true,
+					text: "hello",
+				}),
+				801,
+			),
+		).toThrow(InboxRecordError);
 		expect(h.env.inbox.pending()).toEqual([]);
 		h.store.close();
 	});
@@ -756,15 +841,34 @@ describe("durable intake", () => {
 		const h = routerHarness();
 		const first = h.store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const other = h.store.resolve({ kind: "dm", chatId: 2 }, "/w");
-		h.env.inbox.record(901, { conversationId: first.id, chatId: 1, messageId: 91,
-			text: "", media: { fileId: "f", fileUniqueId: "u", fileName: "a.jpg", mimeType: "image/jpeg" },
-			mediaError: null });
-		h.env.inbox.record(902, { conversationId: first.id, chatId: 1, messageId: 92,
-			text: "second", media: null, mediaError: null });
-		h.env.inbox.record(903, { conversationId: other.id, chatId: 2, messageId: 93,
-			text: "other", media: null, mediaError: null });
+		h.env.inbox.record(901, {
+			conversationId: first.id,
+			chatId: 1,
+			messageId: 91,
+			text: "",
+			media: { fileId: "f", fileUniqueId: "u", fileName: "a.jpg", mimeType: "image/jpeg" },
+			mediaError: null,
+		});
+		h.env.inbox.record(902, {
+			conversationId: first.id,
+			chatId: 1,
+			messageId: 92,
+			text: "second",
+			media: null,
+			mediaError: null,
+		});
+		h.env.inbox.record(903, {
+			conversationId: other.id,
+			chatId: 2,
+			messageId: 93,
+			text: "other",
+			media: null,
+			mediaError: null,
+		});
 		let release: () => void = () => {};
-		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 		h.env.api.getFile = async () => {
 			await gate;
 			throw new Error("download unavailable");
@@ -784,22 +888,23 @@ describe("durable intake", () => {
 describe("rolling dm", () => {
 	test("a private message carrying a thread id still lands in the rolling lane", async () => {
 		const h = routerHarness();
-		handleTestMessage(h.env, tgMsg({
-			message_id: 40, chat: { id: 7, type: "private" },
-			message_thread_id: 5, text: "hello",
-		}));
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 40,
+				chat: { id: 7, type: "private" },
+				message_thread_id: 5,
+				text: "hello",
+			}),
+		);
 		await h.env.intake.get("dm:7");
 		// The lane key is the rolling address; the dm:<chat>:<n>
 		// conversation is chosen at flush.
 		expect(h.pushed.map((p) => p.conv)).toEqual(["dm:7"]);
-		await flushTest(h.env, "dm:7", [
-			{ parts: [{ type: "text", text: "hello" }], replyTo: 40 },
-		]);
+		await flushTest(h.env, "dm:7", [{ parts: [{ type: "text", text: "hello" }], replyTo: 40 }]);
 		const current = h.store.currentDm(7)!;
 		expect(current.id).toBe("dm:7:1");
-		expect(h.store.history(current.id).at(-1)?.parts).toEqual([
-			{ type: "text", text: "hello" },
-		]);
+		expect(h.store.history(current.id).at(-1)?.parts).toEqual([{ type: "text", text: "hello" }]);
 		h.store.close();
 	});
 
@@ -813,9 +918,7 @@ describe("rolling dm", () => {
 			},
 			busy: () => false,
 		} as unknown as Runtime;
-		await flushTest(h.env, "dm:7", [
-			{ parts: [{ type: "text", text: "hello" }], replyTo: 1 },
-		]);
+		await flushTest(h.env, "dm:7", [{ parts: [{ type: "text", text: "hello" }], replyTo: 1 }]);
 		const sends = h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text);
 		expect(sends[0]).toBe("— new conversation —");
 		expect(sends[1]).toBe("turn output");
@@ -824,10 +927,15 @@ describe("rolling dm", () => {
 
 	test("a quoted reply's context leads the parts", async () => {
 		const h = routerHarness();
-		handleTestMessage(h.env, tgMsg({
-			message_id: 40, chat: { id: 7, type: "private" }, text: "yep",
-			reply_to_message: { message_id: 39, text: "come back?" },
-		}));
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 40,
+				chat: { id: 7, type: "private" },
+				text: "yep",
+				reply_to_message: { message_id: 39, text: "come back?" },
+			}),
+		);
 		await h.env.intake.get("dm:7");
 		expect(h.pushed[0]!.parts[0]).toEqual({ type: "text", text: '[replying to: "come back?"]' });
 		expect(h.pushed[0]!.parts[1]).toEqual({ type: "text", text: "yep" });
@@ -849,14 +957,18 @@ describe("rolling dm", () => {
 			{ id: "u", role: "user", parts: [{ type: "text", text: "q" }] },
 			{ id: "a", role: "assistant", parts: [{ type: "text", text: "a" }] },
 		]); // dm:7:1 — current, answered once, past the gap
-		handleTestMessage(h.env, tgMsg({
-			message_id: 40, chat: { id: 7, type: "private" },
-			message_thread_id: 5,
-			// The thread's root service message — Telegram reports it as
-			// reply_to_message on ordinary messages in a threaded chat.
-			reply_to_message: { message_id: 5, text: "" },
-			text: "a fresh thought",
-		}));
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 40,
+				chat: { id: 7, type: "private" },
+				message_thread_id: 5,
+				// The thread's root service message — Telegram reports it as
+				// reply_to_message on ordinary messages in a threaded chat.
+				reply_to_message: { message_id: 5, text: "" },
+				text: "a fresh thought",
+			}),
+		);
 		await h.env.intake.get("dm:7");
 		// No quoted context was journaled or projected.
 		expect(h.env.inbox.pending()[0]?.payload.quoted).toBeUndefined();
@@ -882,8 +994,11 @@ describe("rolling dm", () => {
 		});
 		h.store.rollDm(7, "/w"); // dm:7:1 is current, now past the gap
 		await flushTest(h.env, "dm:7", [
-			{ parts: [{ type: "text", text: "and this too" }], replyTo: 9,
-				quoted: { messageId: 8, text: "earlier" } },
+			{
+				parts: [{ type: "text", text: "and this too" }],
+				replyTo: 9,
+				quoted: { messageId: 8, text: "earlier" },
+			},
 		]);
 		expect(calls).toHaveLength(0);
 		expect(h.store.currentDm(7)?.id).toBe("dm:7:1"); // joined, not rolled
@@ -903,7 +1018,9 @@ describe("manual DM navigation", () => {
 	test("/new is immediate while busy, stops the outgoing turn, and preserves its history", () => {
 		const h = routerHarness();
 		const old = h.store.rollDm(chat.id, "/w");
-		h.store.append(old.id, [{ id: "old", role: "user", parts: [{ type: "text", text: "politics" }] }]);
+		h.store.append(old.id, [
+			{ id: "old", role: "user", parts: [{ type: "text", text: "politics" }] },
+		]);
 		h.env.deps.runtime.busy = () => true;
 		handleMessage(h.env, tgMsg({ message_id: 10, chat, text: "/new" }), 10);
 		expect(h.stopped).toEqual([old.id]);
@@ -951,11 +1068,17 @@ describe("manual DM navigation", () => {
 	test("group/topic navigation is rejected before creating or stopping a conversation", () => {
 		const h = routerHarness();
 		for (const text of ["/new", "/back"]) {
-			handleMessage(h.env, tgMsg({
-				message_id: text === "/new" ? 10 : 11,
-				chat: { id: -100, type: "supergroup" },
-				message_thread_id: 5, is_topic_message: true, text,
-			}), text === "/new" ? 10 : 11);
+			handleMessage(
+				h.env,
+				tgMsg({
+					message_id: text === "/new" ? 10 : 11,
+					chat: { id: -100, type: "supergroup" },
+					message_thread_id: 5,
+					is_topic_message: true,
+					text,
+				}),
+				text === "/new" ? 10 : 11,
+			);
 		}
 		expect(h.store.get("topic:-100:5")).toBeNull();
 		expect(h.stopped).toEqual([]);
@@ -969,7 +1092,12 @@ describe("manual DM navigation", () => {
 
 	test("other-bot commands make no routing changes, including unknown commands", async () => {
 		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0 } });
-		for (const [i, text] of ["/new@otherbot", "/back@otherbot", "/voice@otherbot", "/unknown@otherbot"].entries()) {
+		for (const [i, text] of [
+			"/new@otherbot",
+			"/back@otherbot",
+			"/voice@otherbot",
+			"/unknown@otherbot",
+		].entries()) {
 			handleMessage(h.env, tgMsg({ message_id: 10 + i, chat, text }), 10 + i);
 		}
 		await Promise.all([...h.env.intake.values()]);
@@ -984,7 +1112,10 @@ describe("manual DM navigation", () => {
 		const h = routerHarness();
 		const old = h.store.rollDm(chat.id, "/w");
 		let submits = 0;
-		h.env.deps.runtime.submitPersisted = () => { submits++; return true; };
+		h.env.deps.runtime.submitPersisted = () => {
+			submits++;
+			return true;
+		};
 		handleMessage(h.env, tgMsg({ message_id: 9, chat, text: "old question" }), 9);
 		await h.env.intake.get("dm:7");
 		handleMessage(h.env, tgMsg({ message_id: 10, chat, text: "/new" }), 10);
@@ -1006,8 +1137,12 @@ describe("manual DM navigation", () => {
 		]);
 		let entered: () => void = () => {};
 		let release: () => void = () => {};
-		const checking = new Promise<void>((resolve) => { entered = resolve; });
-		const held = new Promise<void>((resolve) => { release = resolve; });
+		const checking = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 		h.env.deps.followUpGate = () => ({
 			async decide() {
 				entered();
@@ -1016,7 +1151,10 @@ describe("manual DM navigation", () => {
 			},
 		});
 		let submits = 0;
-		h.env.deps.runtime.submitPersisted = () => { submits++; return true; };
+		h.env.deps.runtime.submitPersisted = () => {
+			submits++;
+			return true;
+		};
 		handleMessage(h.env, tgMsg({ message_id: 9, chat, text: "old question" }), 9);
 		await h.env.intake.get("dm:7");
 		const flushing = flushConversation(h.env, "dm:7", batch(h));
@@ -1037,14 +1175,24 @@ describe("manual DM navigation", () => {
 		const h = routerHarness();
 		let entered: () => void = () => {};
 		let release: () => void = () => {};
-		const sending = new Promise<void>((resolve) => { entered = resolve; });
-		const held = new Promise<void>((resolve) => { release = resolve; });
+		const sending = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 		h.env.api.sendMessage = (async (_chat: unknown, text: string) => {
-			if (text === "— new conversation —") { entered(); await held; }
+			if (text === "— new conversation —") {
+				entered();
+				await held;
+			}
 			return { message_id: 1 };
 		}) as unknown as IntakeEnv["api"]["sendMessage"];
 		let submits = 0;
-		h.env.deps.runtime.submitPersisted = () => { submits++; return true; };
+		h.env.deps.runtime.submitPersisted = () => {
+			submits++;
+			return true;
+		};
 		handleMessage(h.env, tgMsg({ message_id: 9, chat, text: "old question" }), 9);
 		await h.env.intake.get("dm:7");
 		const flushing = flushConversation(h.env, "dm:7", batch(h));
@@ -1064,8 +1212,12 @@ describe("manual DM navigation", () => {
 		const old = h.store.rollDm(chat.id, "/w");
 		let entered: () => void = () => {};
 		let release: () => void = () => {};
-		const downloading = new Promise<void>((resolve) => { entered = resolve; });
-		const held = new Promise<void>((resolve) => { release = resolve; });
+		const downloading = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 		h.env.api.getFile = async () => {
 			entered();
 			await held;
@@ -1077,10 +1229,16 @@ describe("manual DM navigation", () => {
 			void sink.onDone({ kind: "completed" });
 			return true;
 		};
-		handleMessage(h.env, tgMsg({
-			message_id: 9, chat, caption: "old photo",
-			photo: [{ file_id: "f", file_unique_id: "u", width: 8, height: 8 }],
-		}), 9);
+		handleMessage(
+			h.env,
+			tgMsg({
+				message_id: 9,
+				chat,
+				caption: "old photo",
+				photo: [{ file_id: "f", file_unique_id: "u", width: 8, height: 8 }],
+			}),
+			9,
+		);
 		await downloading;
 		handleMessage(h.env, tgMsg({ message_id: 10, chat, text: "/new" }), 10);
 		handleMessage(h.env, tgMsg({ message_id: 11, chat, text: "new question" }), 11);
@@ -1107,10 +1265,16 @@ describe("manual DM navigation", () => {
 		h.env.inbox = openTelegramInbox(reopened.db);
 		h.env.pings = openPings(reopened.db);
 		h.env.intake = new Map();
-		h.env.buffer = new CoalescingBuffer(60_000,
-			(id, items) => flushConversation(h.env, id, items), 120_000);
+		h.env.buffer = new CoalescingBuffer(
+			60_000,
+			(id, items) => flushConversation(h.env, id, items),
+			120_000,
+		);
 		let submits = 0;
-		h.env.deps.runtime.submitPersisted = () => { submits++; return true; };
+		h.env.deps.runtime.submitPersisted = () => {
+			submits++;
+			return true;
+		};
 		await replayInbox(h.env);
 		await Promise.all([...h.env.intake.values()]);
 		await h.env.buffer.drain();
@@ -1129,8 +1293,9 @@ describe("manual DM navigation", () => {
 		await h.env.intake.get("dm:7");
 		h.store.db.run(`CREATE TRIGGER reject_navigation BEFORE INSERT ON tg_dm_navigation
 			BEGIN SELECT RAISE(ABORT, 'synthetic write failure'); END`);
-		expect(() => handleMessageDurably(h.env, tgMsg({ message_id: 12, chat, text: "/new" }), 12))
-			.toThrow(InboxRecordError);
+		expect(() =>
+			handleMessageDurably(h.env, tgMsg({ message_id: 12, chat, text: "/new" }), 12),
+		).toThrow(InboxRecordError);
 		expect(h.store.currentDm(chat.id)?.id).toBe(old.id);
 		expect(h.store.get("dm:7:2")).toBeNull();
 		expect(h.env.inbox.archivedTarget(11, "dm:7")).toBeNull();
@@ -1149,8 +1314,11 @@ describe("manual DM navigation", () => {
 				void sink.onDone({ kind: "completed" });
 				return true;
 			};
-			h.env.buffer = new CoalescingBuffer(60_000,
-				(id, items) => flushConversation(h.env, id, items), 120_000);
+			h.env.buffer = new CoalescingBuffer(
+				60_000,
+				(id, items) => flushConversation(h.env, id, items),
+				120_000,
+			);
 			handleMessage(h.env, tgMsg({ message_id: 1, chat, text: "first archived" }), 1);
 			await h.env.intake.get("dm:7");
 			handleMessage(h.env, tgMsg({ message_id: 2, chat, text: "/new" }), 2);

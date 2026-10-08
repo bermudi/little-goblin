@@ -72,7 +72,9 @@ describe("program tool", () => {
 		expect(
 			programInputSchema.safeParse({ action: "create", name: "x", charter: "y" }).success,
 		).toBe(true);
-		expect(programInputSchema.safeParse({ action: "update", id: 1, cron: null }).success).toBe(true);
+		expect(programInputSchema.safeParse({ action: "update", id: 1, cron: null }).success).toBe(
+			true,
+		);
 		expect(programInputSchema.safeParse({ action: "toggle", id: 3 }).success).toBe(true);
 	});
 	test("create pins the live conversation's address onto the program", async () => {
@@ -137,7 +139,15 @@ describe("program tool", () => {
 		expect(toggled.program.enabled).toBe(false);
 		for (const view of [listed.programs[0], updated.program, toggled.program]) {
 			expect(Object.keys(view!).sort()).toEqual([
-				"charter", "cron", "enabled", "has_hook", "id", "last_run", "mail_filter", "name", "next_run",
+				"charter",
+				"cron",
+				"enabled",
+				"has_hook",
+				"id",
+				"last_run",
+				"mail_filter",
+				"name",
+				"next_run",
 			]);
 		}
 
@@ -161,24 +171,39 @@ describe("program tool", () => {
 	test("invalid update cron leaves the stored program unchanged", async () => {
 		const { tool, programs } = toolFor();
 		const program = programs.create({
-			name: "x", cron: "0 9 * * *", charter: "c",
+			name: "x",
+			cron: "0 9 * * *",
+			charter: "c",
 			address: { chatId: -100, threadId: 7 },
 		});
-		expect(await exec(tool, {
-			action: "update", id: program.id, name: "changed", cron: "61 8 * * *",
-		})).toEqual({ error: expect.stringContaining("invalid cron") });
+		expect(
+			await exec(tool, {
+				action: "update",
+				id: program.id,
+				name: "changed",
+				cron: "61 8 * * *",
+			}),
+		).toEqual({ error: expect.stringContaining("invalid cron") });
 		expect(programs.get(program.id)).toEqual(program);
 	});
 
 	test("update validates before storage and propagates storage failures", async () => {
 		const { tool, programs } = toolFor();
 		programs.close();
-		expect(await exec(tool, {
-			action: "update", id: 1, cron: "61 8 * * *",
-		})).toEqual({ error: expect.stringContaining("invalid cron") });
-		await expect(exec(tool, {
-			action: "update", id: 1, cron: "0 9 * * *",
-		})).rejects.toThrow();
+		expect(
+			await exec(tool, {
+				action: "update",
+				id: 1,
+				cron: "61 8 * * *",
+			}),
+		).toEqual({ error: expect.stringContaining("invalid cron") });
+		await expect(
+			exec(tool, {
+				action: "update",
+				id: 1,
+				cron: "0 9 * * *",
+			}),
+		).rejects.toThrow();
 	});
 
 	test("a mail filter alone is a trigger; clearing the last one is refused", async () => {
@@ -194,7 +219,9 @@ describe("program tool", () => {
 		expect(programs.withMailFilter()).toHaveLength(1);
 
 		const cleared = (await exec(tool, {
-			action: "update", id: created.program.id, mailFilter: null,
+			action: "update",
+			id: created.program.id,
+			mailFilter: null,
 		})) as { error: string };
 		expect(cleared.error).toContain("at least one trigger");
 		expect(programs.get(created.program.id)!.mailFilter).toBe("from:bank is:important");
@@ -203,11 +230,16 @@ describe("program tool", () => {
 	test("hook enable sends the URL privately; the token never reaches the model", async () => {
 		const { tool, programs, store, sent } = toolFor(-100, 7, "https://goblin.ts.net/");
 		const created = (await exec(tool, {
-			action: "create", name: "ci", charter: "c", cron: "0 9 * * *",
+			action: "create",
+			name: "ci",
+			charter: "c",
+			cron: "0 9 * * *",
 		})) as { program: { id: number } };
 
 		const out = (await exec(tool, {
-			action: "hook", id: created.program.id, op: "enable",
+			action: "hook",
+			id: created.program.id,
+			op: "enable",
 		})) as { hook: string; url_sent: boolean };
 		expect(out).toEqual({ hook: "enabled", url_sent: true });
 
@@ -236,10 +268,15 @@ describe("program tool", () => {
 			operatorIds: [42, 7],
 		});
 		const created = (await exec(tool, {
-			action: "create", name: "ci", charter: "c", cron: "0 9 * * *",
+			action: "create",
+			name: "ci",
+			charter: "c",
+			cron: "0 9 * * *",
 		})) as { program: { id: number } };
 		const out = (await exec(tool, {
-			action: "hook", id: created.program.id, op: "enable",
+			action: "hook",
+			id: created.program.id,
+			op: "enable",
 		})) as { hook: string; url_sent: boolean };
 		expect(out).toEqual({ hook: "enabled", url_sent: true });
 		expect(sent.map((s) => s.chatId)).toEqual([42, 7]);
@@ -251,10 +288,15 @@ describe("program tool", () => {
 			sendError: "chat not found",
 		});
 		const created = (await exec(tool, {
-			action: "create", name: "ci", charter: "c", cron: "0 9 * * *",
+			action: "create",
+			name: "ci",
+			charter: "c",
+			cron: "0 9 * * *",
 		})) as { program: { id: number } };
 		const out = (await exec(tool, {
-			action: "hook", id: created.program.id, op: "enable",
+			action: "hook",
+			id: created.program.id,
+			op: "enable",
 		})) as { error: string };
 		expect(out.error).toContain("couldn't DM");
 		expect(out.error).toContain("rotate");
@@ -269,7 +311,10 @@ describe("program tool", () => {
 		const { tool, programs, sent } = toolFor(-100, 7, "https://g.ts.net");
 		// Hook-only program — the hook is its only trigger.
 		const created = (await exec(tool, {
-			action: "create", name: "ci", charter: "c", hook: true,
+			action: "create",
+			name: "ci",
+			charter: "c",
+			hook: true,
 		})) as { program: { id: number } };
 		expect(sent).toHaveLength(1);
 		const oldToken = sent[0]!.text.match(/\/hook\/(\S+)/)![1]!;
@@ -277,7 +322,9 @@ describe("program tool", () => {
 		expect(programs.get(created.program.id)!.nextRun).toBeNull();
 
 		const rotated = (await exec(tool, {
-			action: "hook", id: created.program.id, op: "rotate",
+			action: "hook",
+			id: created.program.id,
+			op: "rotate",
 		})) as { hook: string; url_sent: boolean };
 		expect(rotated).toEqual({ hook: "rotated", url_sent: true });
 		const newToken = sent[1]!.text.match(/\/hook\/(\S+)/)![1]!;
@@ -288,7 +335,9 @@ describe("program tool", () => {
 		// Disabling the only trigger refuses — the invariant holds at the
 		// tool boundary too.
 		const refused = (await exec(tool, {
-			action: "hook", id: created.program.id, op: "disable",
+			action: "hook",
+			id: created.program.id,
+			op: "disable",
 		})) as { error: string };
 		expect(refused.error).toContain("at least one trigger");
 		expect(programs.get(created.program.id)!.hookHash).toBe(hookTokenHash(newToken));
@@ -297,10 +346,15 @@ describe("program tool", () => {
 	test("hook needs publicUrl — unset is an error, no row change", async () => {
 		const { tool, programs, sent } = toolFor(-100, 7); // no publicUrl
 		const created = (await exec(tool, {
-			action: "create", name: "ci", charter: "c", cron: "0 9 * * *",
+			action: "create",
+			name: "ci",
+			charter: "c",
+			cron: "0 9 * * *",
 		})) as { program: { id: number } };
 		const out = (await exec(tool, {
-			action: "hook", id: created.program.id, op: "enable",
+			action: "hook",
+			id: created.program.id,
+			op: "enable",
 		})) as { error: string };
 		expect(out.error).toContain("publicUrl");
 		expect(programs.get(created.program.id)!.hookHash).toBeNull();

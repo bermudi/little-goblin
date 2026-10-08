@@ -27,7 +27,19 @@
 // failed once.
 
 import { randomUUID } from "node:crypto";
-import { closeSync, copyFileSync, fstatSync, linkSync, mkdirSync, openSync, readSync, renameSync, statSync, unlinkSync, utimesSync } from "node:fs";
+import {
+	closeSync,
+	copyFileSync,
+	fstatSync,
+	linkSync,
+	mkdirSync,
+	openSync,
+	readSync,
+	renameSync,
+	statSync,
+	unlinkSync,
+	utimesSync,
+} from "node:fs";
 import { join } from "node:path";
 import { log } from "./log.ts";
 import {
@@ -258,7 +270,9 @@ export function startDelegationLifecycle(
 		read: (id, lines) => read(deps, id, lines),
 		reportPath: (id) => {
 			const d = deps.delegations.get(id);
-			return d === null ? join(deps.delegationsDir, String(id), "report.md") : reportPathFor(deps, d);
+			return d === null
+				? join(deps.delegationsDir, String(id), "report.md")
+				: reportPathFor(deps, d);
 		},
 		list: () => deps.delegations.list(),
 		tick: scan,
@@ -331,7 +345,11 @@ function reportPathFor(deps: DelegationLifecycleDeps, d: Delegation): string {
 // targets only) the nudge to create the directory — nothing locally
 // prepares the remote directory the way launch() does for local rows.
 function reportNote(deps: DelegationLifecycleDeps, d: Delegation): string {
-	return REPORT_NOTE + reportPathFor(deps, d) + (machineRootFor(deps, d.target) !== null ? " (create the directory if needed)" : "");
+	return (
+		REPORT_NOTE +
+		reportPathFor(deps, d) +
+		(machineRootFor(deps, d.target) !== null ? " (create the directory if needed)" : "")
+	);
 }
 
 // The one "nobody else will close this" path: a row that stopped or
@@ -389,9 +407,7 @@ async function readScreenTail(
 			delegation: d.id,
 			error: err instanceof Error ? err.message : String(err),
 		});
-		throw firstError instanceof Error
-			? firstError
-			: new Error(String(firstError));
+		throw firstError instanceof Error ? firstError : new Error(String(firstError));
 	}
 }
 
@@ -453,10 +469,7 @@ async function seedRemoteTrust(
 
 // ---------- the verbs ----------
 
-async function launch(
-	deps: DelegationLifecycleDeps,
-	input: LaunchInput,
-): Promise<LaunchOutcome> {
+async function launch(deps: DelegationLifecycleDeps, input: LaunchInput): Promise<LaunchOutcome> {
 	const d = deps.delegations.create({
 		name: input.name,
 		harness: input.harness.name,
@@ -464,9 +477,7 @@ async function launch(
 		task: input.task,
 		address: input.address,
 		target: input.target ?? null,
-		...(input.appConversation === undefined
-			? {}
-			: { appConversation: input.appConversation }),
+		...(input.appConversation === undefined ? {} : { appConversation: input.appConversation }),
 	});
 	// Launch failed after the row existed: fail the row, close
 	// whatever got bound, report why. The row is the record — the
@@ -497,9 +508,12 @@ async function launch(
 	try {
 		// Machine rows keep no local report dir — the report lives on the
 		// remote host; the note tells the agent to create it there.
-		if (machineRootFor(deps, d.target) === null) mkdirSync(reportDirFor(deps, d.id), { recursive: true });
+		if (machineRootFor(deps, d.target) === null)
+			mkdirSync(reportDirFor(deps, d.id), { recursive: true });
 	} catch (err) {
-		return fail(`report directory unavailable: ${err instanceof Error ? err.message : String(err)}`);
+		return fail(
+			`report directory unavailable: ${err instanceof Error ? err.message : String(err)}`,
+		);
 	}
 
 	// The tool validates `on` against its LIVE config; the targets map
@@ -513,7 +527,9 @@ async function launch(
 		return fail(
 			err instanceof TargetGoneError
 				? `${err.message} (a config save may have added it after boot — restart goblin to apply)`
-				: err instanceof Error ? err.message : String(err),
+				: err instanceof Error
+					? err.message
+					: String(err),
 		);
 	}
 	// A machine launch first proves the link: one forwarded get for a
@@ -526,7 +542,9 @@ async function launch(
 			await herdr.get("goblin-link-probe");
 		} catch (err) {
 			if (!(err instanceof HerdrError && err.code === "agent_not_found")) {
-				return fail(`machine target unreachable: ${err instanceof Error ? err.message : String(err)}`);
+				return fail(
+					`machine target unreachable: ${err instanceof Error ? err.message : String(err)}`,
+				);
 			}
 		}
 	}
@@ -592,9 +610,9 @@ async function launch(
 		}
 	} else {
 		try {
-				// ws.cwd: the target-side expansion of the `~`-form we sent
-				// — the remote seed must key the path the harness runs in.
-				await seedRemoteTrust(herdr, ws.paneId, input.harness.kind, ws.cwd, d.id);
+			// ws.cwd: the target-side expansion of the `~`-form we sent
+			// — the remote seed must key the path the harness runs in.
+			await seedRemoteTrust(herdr, ws.paneId, input.harness.kind, ws.cwd, d.id);
 		} catch (err) {
 			return fail(`remote trust seed failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -649,7 +667,8 @@ async function launch(
 				return { kind: "stopped", delegation: parked };
 			}
 			log.info("delegation parked at startup dialog", {
-				delegation: d.id, name: d.name,
+				delegation: d.id,
+				name: d.name,
 			});
 			await notify(deps, parked, "needs input", {
 				extra: `(blocked at startup — the task hasn't been sent yet; relay a keypress with action 'answer' or attach with \`${attachHintForRow(deps, d.target)}\`)`,
@@ -712,11 +731,7 @@ async function launch(
 	return { kind: "started", delegation: deps.delegations.get(d.id) ?? applied };
 }
 
-async function send(
-	deps: DelegationLifecycleDeps,
-	id: number,
-	text: string,
-): Promise<SendOutcome> {
+async function send(deps: DelegationLifecycleDeps, id: number, text: string): Promise<SendOutcome> {
 	const d = deps.delegations.get(id);
 	if (d === null) return { kind: "no row", id };
 	// Everything but stopped takes input — follow-ups to a finished
@@ -759,13 +774,17 @@ async function send(
 				} catch (cleanupErr) {
 					if ((cleanupErr as NodeJS.ErrnoException).code !== "ENOENT") {
 						log.warn("delegation snapshot temp cleanup failed", {
-							delegation: d.id, snapshot, error: String(cleanupErr),
+							delegation: d.id,
+							snapshot,
+							error: String(cleanupErr),
 						});
 					}
 				}
 			}
 			log.info("delegation previous report archived", {
-				delegation: d.id, reportPath: reportPathFor(deps, d), archivedPath,
+				delegation: d.id,
+				reportPath: reportPathFor(deps, d),
+				archivedPath,
 			});
 		} catch (err) {
 			if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -788,7 +807,8 @@ async function send(
 		// Ordinary prompts can't reach a blocked agent — name the verb
 		// that can so the error is an instruction, not a dead end.
 		if (err instanceof HerdrError && err.code === "agent_blocked") {
-			error += " — the agent is blocked on a dialog; relay the operator's keypress with action 'answer'";
+			error +=
+				" — the agent is blocked on a dialog; relay the operator's keypress with action 'answer'";
 		}
 		log.error("delegation prompt failed", err, { delegation: d.id, name: d.name });
 		if (archivedPath !== null) {
@@ -805,17 +825,28 @@ async function send(
 				// otherwise the watcher mistakes an old report for a new run.
 				utimesSync(restoreTemp, oldTimes.atime, oldTimes.mtime);
 				linkSync(restoreTemp, reportPathFor(deps, d));
-				log.info("delegation previous report restored", { delegation: d.id, reportPath: reportPathFor(deps, d), archivedPath });
+				log.info("delegation previous report restored", {
+					delegation: d.id,
+					reportPath: reportPathFor(deps, d),
+					archivedPath,
+				});
 			} catch (restoreErr) {
 				if ((restoreErr as NodeJS.ErrnoException).code === "EEXIST") {
 					log.warn("delegation previous report not restored — newer report exists", {
-						delegation: d.id, reportPath: reportPathFor(deps, d), archivedPath,
+						delegation: d.id,
+						reportPath: reportPathFor(deps, d),
+						archivedPath,
 					});
 				} else {
 					log.error("delegation previous report restoration failed", restoreErr, {
-						delegation: d.id, reportPath: reportPathFor(deps, d), archivedPath,
+						delegation: d.id,
+						reportPath: reportPathFor(deps, d),
+						archivedPath,
 					});
-					return { kind: "prompt failed", error: `${error}; report restoration failed: ${String(restoreErr)}` };
+					return {
+						kind: "prompt failed",
+						error: `${error}; report restoration failed: ${String(restoreErr)}`,
+					};
 				}
 			} finally {
 				try {
@@ -823,7 +854,9 @@ async function send(
 				} catch (cleanupErr) {
 					if ((cleanupErr as NodeJS.ErrnoException).code !== "ENOENT") {
 						log.warn("delegation restore temp cleanup failed", {
-							delegation: d.id, restoreTemp, error: String(cleanupErr),
+							delegation: d.id,
+							restoreTemp,
+							error: String(cleanupErr),
 						});
 					}
 				}
@@ -1097,10 +1130,7 @@ function transition(
 // wins) and the notice is best-effort: notify logs a miss, and a
 // reportBody throw reaches the scan's catch after the finally has
 // recorded the verdict.
-async function recoverStart(
-	deps: DelegationLifecycleDeps,
-	d: Delegation,
-): Promise<void> {
+async function recoverStart(deps: DelegationLifecycleDeps, d: Delegation): Promise<void> {
 	if (d.workspaceId) {
 		await closeWorkspaceQuietly(deps, d.id, d.workspaceId, d.target);
 	}
@@ -1156,10 +1186,7 @@ async function check(deps: DelegationLifecycleDeps, d: Delegation): Promise<void
 		if (d.promptPending) {
 			const promptedAt = new Date();
 			try {
-				await herdrFor(deps, d.target).prompt(
-					d.agentName,
-					d.task + reportNote(deps, d),
-				);
+				await herdrFor(deps, d.target).prompt(d.agentName, d.task + reportNote(deps, d));
 			} catch (err) {
 				log.warn("delegation pending prompt rejected", {
 					delegation: d.id,
@@ -1180,12 +1207,14 @@ async function check(deps: DelegationLifecycleDeps, d: Delegation): Promise<void
 			}
 			if (deps.delegations.markRunning(d.id, seq, promptedAt) === null) {
 				log.info("delegation stopped while delivering pending prompt", {
-					delegation: d.id, name: d.name,
+					delegation: d.id,
+					name: d.name,
 				});
 				return;
 			}
 			log.info("delegation task delivered after dialog", {
-				delegation: d.id, name: d.name,
+				delegation: d.id,
+				name: d.name,
 			});
 			return;
 		}
@@ -1221,8 +1250,7 @@ async function check(deps: DelegationLifecycleDeps, d: Delegation): Promise<void
 				// land in the same millisecond — >=, with headroom for the
 				// fs clock lagging Date.now() (REPORT_SKEW_MS).
 				freshReport =
-					statSync(reportPathFor(deps, d)).mtimeMs >=
-					Date.parse(d.promptedAt) - REPORT_SKEW_MS;
+					statSync(reportPathFor(deps, d)).mtimeMs >= Date.parse(d.promptedAt) - REPORT_SKEW_MS;
 			} catch (err) {
 				if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 			}
@@ -1238,10 +1266,7 @@ async function check(deps: DelegationLifecycleDeps, d: Delegation): Promise<void
 			if (landed) transition(deps, d, "done");
 			return;
 		}
-		if (
-			info.agent_status === "idle" &&
-			Date.now() - Date.parse(d.promptedAt) > STALL_MS
-		) {
+		if (info.agent_status === "idle" && Date.now() - Date.parse(d.promptedAt) > STALL_MS) {
 			const landed = await notify(deps, d, "needs input", {
 				extra: "(agent never started working — likely stuck on a startup dialog)",
 			});

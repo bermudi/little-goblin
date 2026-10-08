@@ -5,7 +5,14 @@
 // way portably — via setLogWriter, same pattern as codex/auth.ts's fetchImpl.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { log, setLogFile, setLogWriter } from "./log.ts";

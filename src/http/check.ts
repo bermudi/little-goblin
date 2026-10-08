@@ -112,7 +112,10 @@ export async function serveInjectionCheck(
 		const parsed: unknown = body.text ? JSON.parse(body.text) : undefined;
 		const shaped = checkBodySchema.safeParse(parsed);
 		if (!shaped.success) {
-			return Response.json({ error: "expected {text: string} of length 1..64000" }, { status: 400, headers: NO_STORE });
+			return Response.json(
+				{ error: "expected {text: string} of length 1..64000" },
+				{ status: 400, headers: NO_STORE },
+			);
 		}
 		text = shaped.data.text;
 	} catch {

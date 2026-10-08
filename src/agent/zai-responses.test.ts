@@ -10,22 +10,23 @@ import { isZaiHost, zaiReasoningFetch } from "./zai-responses.ts";
 
 // Verbatim z.ai SSE events (data payloads; event: lines elided in the
 // capture but carried here as z.ai sends them).
-const ZAI_STREAM = [
-	`event: response.output_item.added\ndata: {"item":{"content":[],"id":"rs_resp_abc","status":"in_progress","summary":[],"type":"reasoning"},"output_index":0,"sequence_number":2,"type":"response.output_item.added"}`,
-	`event: response.content_part.added\ndata: {"content_index":0,"item_id":"rs_resp_abc","output_index":0,"part":{"text":"","type":"reasoning_text"},"sequence_number":3,"type":"response.content_part.added"}`,
-	`event: response.reasoning_text.delta\ndata: {"content_index":0,"delta":"s","item_id":"rs_resp_abc","output_index":0,"sequence_number":4,"type":"response.reasoning_text.delta"}`,
-	`event: response.reasoning_text.delta\ndata: {"content_index":0,"delta":"omet","item_id":"rs_resp_abc","output_index":0,"sequence_number":5,"type":"response.reasoning_text.delta"}`,
-	`event: response.reasoning_text.done\ndata: {"content_index":0,"item_id":"rs_resp_abc","output_index":0,"sequence_number":15,"text":"somet","type":"response.reasoning_text.done"}`,
-	`event: response.content_part.done\ndata: {"content_index":0,"item_id":"rs_resp_abc","output_index":0,"part":{"text":"somet","type":"reasoning_text"},"sequence_number":16,"type":"response.content_part.done"}`,
-	`event: response.output_item.done\ndata: {"item":{"content":[{"text":"somet","type":"reasoning_text"}],"encrypted_content":null,"id":"rs_resp_abc","status":"completed","summary":[],"type":"reasoning"},"output_index":0,"sequence_number":17,"type":"response.output_item.done"}`,
-	`event: response.output_item.added\ndata: {"item":{"content":[],"id":"msg_resp_abc","role":"assistant","status":"in_progress","type":"message"},"output_index":1,"sequence_number":18,"type":"response.output_item.added"}`,
-	`event: response.content_part.added\ndata: {"content_index":0,"item_id":"msg_resp_abc","output_index":1,"part":{"annotations":[],"text":"","type":"output_text"},"sequence_number":19,"type":"response.content_part.added"}`,
-	`event: response.output_text.delta\ndata: {"content_index":0,"delta":"Hi","item_id":"msg_resp_abc","output_index":1,"sequence_number":20,"type":"response.output_text.delta"}`,
-	`event: response.output_text.done\ndata: {"content_index":0,"item_id":"msg_resp_abc","output_index":1,"text":"Hi","type":"response.output_text.done"}`,
-	`event: response.output_item.done\ndata: {"item":{"content":[{"text":"Hi","type":"output_text"}],"id":"msg_resp_abc","role":"assistant","status":"completed","type":"message"},"output_index":1,"sequence_number":21,"type":"response.output_item.done"}`,
-	`event: response.completed\ndata: {"response":{"id":"resp_abc","model":"glm-5.3-flash","object":"response","status":"completed","usage":{"input_tokens":10,"output_tokens":20,"total_tokens":30}},"sequence_number":22,"type":"response.completed"}`,
-	`data: [DONE]`,
-].join("\n\n") + "\n\n";
+const ZAI_STREAM =
+	[
+		`event: response.output_item.added\ndata: {"item":{"content":[],"id":"rs_resp_abc","status":"in_progress","summary":[],"type":"reasoning"},"output_index":0,"sequence_number":2,"type":"response.output_item.added"}`,
+		`event: response.content_part.added\ndata: {"content_index":0,"item_id":"rs_resp_abc","output_index":0,"part":{"text":"","type":"reasoning_text"},"sequence_number":3,"type":"response.content_part.added"}`,
+		`event: response.reasoning_text.delta\ndata: {"content_index":0,"delta":"s","item_id":"rs_resp_abc","output_index":0,"sequence_number":4,"type":"response.reasoning_text.delta"}`,
+		`event: response.reasoning_text.delta\ndata: {"content_index":0,"delta":"omet","item_id":"rs_resp_abc","output_index":0,"sequence_number":5,"type":"response.reasoning_text.delta"}`,
+		`event: response.reasoning_text.done\ndata: {"content_index":0,"item_id":"rs_resp_abc","output_index":0,"sequence_number":15,"text":"somet","type":"response.reasoning_text.done"}`,
+		`event: response.content_part.done\ndata: {"content_index":0,"item_id":"rs_resp_abc","output_index":0,"part":{"text":"somet","type":"reasoning_text"},"sequence_number":16,"type":"response.content_part.done"}`,
+		`event: response.output_item.done\ndata: {"item":{"content":[{"text":"somet","type":"reasoning_text"}],"encrypted_content":null,"id":"rs_resp_abc","status":"completed","summary":[],"type":"reasoning"},"output_index":0,"sequence_number":17,"type":"response.output_item.done"}`,
+		`event: response.output_item.added\ndata: {"item":{"content":[],"id":"msg_resp_abc","role":"assistant","status":"in_progress","type":"message"},"output_index":1,"sequence_number":18,"type":"response.output_item.added"}`,
+		`event: response.content_part.added\ndata: {"content_index":0,"item_id":"msg_resp_abc","output_index":1,"part":{"annotations":[],"text":"","type":"output_text"},"sequence_number":19,"type":"response.content_part.added"}`,
+		`event: response.output_text.delta\ndata: {"content_index":0,"delta":"Hi","item_id":"msg_resp_abc","output_index":1,"sequence_number":20,"type":"response.output_text.delta"}`,
+		`event: response.output_text.done\ndata: {"content_index":0,"item_id":"msg_resp_abc","output_index":1,"text":"Hi","type":"response.output_text.done"}`,
+		`event: response.output_item.done\ndata: {"item":{"content":[{"text":"Hi","type":"output_text"}],"id":"msg_resp_abc","role":"assistant","status":"completed","type":"message"},"output_index":1,"sequence_number":21,"type":"response.output_item.done"}`,
+		`event: response.completed\ndata: {"response":{"id":"resp_abc","model":"glm-5.3-flash","object":"response","status":"completed","usage":{"input_tokens":10,"output_tokens":20,"total_tokens":30}},"sequence_number":22,"type":"response.completed"}`,
+		`data: [DONE]`,
+	].join("\n\n") + "\n\n";
 
 function sseResponse(body: string): Response {
 	return new Response(new TextEncoder().encode(body), {
@@ -110,9 +111,7 @@ describe("zaiReasoningFetch", () => {
 			fetch: zaiReasoningFetch(async () => sseResponse(ZAI_STREAM)),
 		}).responses("glm-5.3-flash");
 		const { stream } = await model.doStream({
-			prompt: [
-				{ role: "user", content: [{ type: "text", text: "hi" }] },
-			],
+			prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
 		});
 		const parts: { type: string; delta?: string }[] = [];
 		const reader = stream.getReader();
@@ -128,10 +127,18 @@ describe("zaiReasoningFetch", () => {
 			"reasoning-delta",
 			"reasoning-end",
 		]);
-		expect(reasoning.filter((p) => p.type === "reasoning-delta").map((p) => p.delta).join("")).toBe(
-			"somet",
-		);
-		expect(parts.filter((p) => p.type === "text-delta").map((p) => p.delta).join("")).toBe("Hi");
+		expect(
+			reasoning
+				.filter((p) => p.type === "reasoning-delta")
+				.map((p) => p.delta)
+				.join(""),
+		).toBe("somet");
+		expect(
+			parts
+				.filter((p) => p.type === "text-delta")
+				.map((p) => p.delta)
+				.join(""),
+		).toBe("Hi");
 	});
 });
 

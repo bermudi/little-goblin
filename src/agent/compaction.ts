@@ -78,7 +78,8 @@ export function chooseBoundary(
 			continue;
 		}
 		if (tailTokens >= opts.tailTokenBudget) break;
-		if (opts.previousBoundary !== null && detail[boundaryIndex]!.seq <= opts.previousBoundary) break;
+		if (opts.previousBoundary !== null && detail[boundaryIndex]!.seq <= opts.previousBoundary)
+			break;
 		i = boundaryIndex;
 		tailTokens += estimateTokens(JSON.stringify(detail[boundaryIndex]!.message));
 	}
@@ -93,7 +94,9 @@ export function chooseBoundary(
 	// unfound previous boundary falls back to 0, matching runCompaction's
 	// spanStart.
 	const spanStart =
-		opts.previousBoundary === null ? 0 : detail.findIndex((e) => e.seq === opts.previousBoundary) + 1;
+		opts.previousBoundary === null
+			? 0
+			: detail.findIndex((e) => e.seq === opts.previousBoundary) + 1;
 	let spanTokens = 0;
 	for (let j = spanStart; j <= boundaryIndex; j++) {
 		spanTokens += estimateTokens(JSON.stringify(detail[j]!.message));
@@ -116,28 +119,39 @@ function messageText(message: UIMessage): string {
 	const parts: string[] = [];
 	const brief = (value: unknown): string => {
 		if (value === undefined) return "(not recorded)";
-		const text = typeof value === "string" ? value : JSON.stringify(value) ?? String(value);
+		const text = typeof value === "string" ? value : (JSON.stringify(value) ?? String(value));
 		return text.length > 8_000 ? `${text.slice(0, 8_000)}… [truncated]` : text;
 	};
 	for (const p of message.parts) {
-		const part = p as { type: string; text?: string; data?: unknown; input?: unknown; output?: unknown; errorText?: unknown };
+		const part = p as {
+			type: string;
+			text?: string;
+			data?: unknown;
+			input?: unknown;
+			output?: unknown;
+			errorText?: unknown;
+		};
 		if (part.type === "text" && typeof part.text === "string") {
 			parts.push(part.text);
 		} else if (part.type === "data-attachment") {
 			const data = part.data;
-			const ref = typeof data === "object" && data !== null
-				? data as { path?: unknown; filename?: unknown }
-				: null;
-			const path = typeof ref?.path === "string"
-				? ref.path
-				: typeof ref?.filename === "string" ? ref.filename : "unnamed";
+			const ref =
+				typeof data === "object" && data !== null
+					? (data as { path?: unknown; filename?: unknown })
+					: null;
+			const path =
+				typeof ref?.path === "string"
+					? ref.path
+					: typeof ref?.filename === "string"
+						? ref.filename
+						: "unnamed";
 			parts.push(`[attachment: ${path}]`);
 		} else if (part.type.startsWith("tool-")) {
 			// Keep bounded evidence of what the tool actually did. Merely
 			// naming the tool loses the command and result after the cut.
 			parts.push(
 				`[${part.type}]\ninput: ${brief(part.input)}\n` +
-				`result: ${brief(part.output ?? part.errorText)}`,
+					`result: ${brief(part.output ?? part.errorText)}`,
 			);
 		}
 	}
@@ -202,15 +216,17 @@ export async function runCompaction(
 	}
 	const boundaryIndex = detail.findIndex((e) => e.seq === boundary);
 	if (boundaryIndex < 0) {
-		log.info("compaction skipped", { conversation: id, reason: "boundary vanished — history changed mid-compaction" });
+		log.info("compaction skipped", {
+			conversation: id,
+			reason: "boundary vanished — history changed mid-compaction",
+		});
 		return { kind: "noop", reason: "boundary vanished — history changed mid-compaction" };
 	}
 	// The span is the DELTA since the previous boundary (DESIGN.md,
 	// Compaction) — already-folded events never re-enter the prompt, so
 	// the summary calls stay bounded by one compaction interval, not by
 	// total history. The previous summary rides the first call instead.
-	const spanStart =
-		(previous ? detail.findIndex((e) => e.seq === previous.boundarySeq) : -1) + 1;
+	const spanStart = (previous ? detail.findIndex((e) => e.seq === previous.boundarySeq) : -1) + 1;
 	const span = detail.slice(spanStart, boundaryIndex + 1);
 	const tokensBefore = span.reduce((sum, e) => sum + estimateTokens(JSON.stringify(e.message)), 0);
 	const reason = opts.reason ?? "threshold";
@@ -224,9 +240,8 @@ export async function runCompaction(
 	const callTimeoutMs = opts.callTimeoutMs ?? SUMMARY_CALL_TIMEOUT_MS;
 	const systemTokens = estimateTokens(SUMMARY_SYSTEM);
 	let carried = previous?.summary ?? null;
-	let carriedHeader = previous !== null
-		? "[summary carried from the previous compaction — fold it in]"
-		: null;
+	let carriedHeader =
+		previous !== null ? "[summary carried from the previous compaction — fold it in]" : null;
 	let summary: string | null = null;
 	let chunks = 0;
 	for (let i = 0; i < span.length; ) {

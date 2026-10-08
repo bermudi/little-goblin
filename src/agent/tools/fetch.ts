@@ -26,7 +26,16 @@ import { paths } from "../../config.ts";
 // mid-write crash can never leave a truncated "full text" behind.
 import { durableWriteBytes, durableWriteFile } from "../../durable.ts";
 import { log } from "../../log.ts";
-import { clampChars, fetchOk, fenceUntrusted, readJson, resMeta, str, type HttpMeta, type WebToolDeps } from "./web.ts";
+import {
+	clampChars,
+	fetchOk,
+	fenceUntrusted,
+	readJson,
+	resMeta,
+	str,
+	type HttpMeta,
+	type WebToolDeps,
+} from "./web.ts";
 
 const TIMEOUT_MS = 30_000;
 const LOCAL_TIMEOUT_MS = 20_000;
@@ -97,14 +106,22 @@ async function postJson(
 	return { data, meta: resMeta(res, bytes) };
 }
 
-const extractors: Record<Exclude<FetchKind, "local">, (url: string, key: string | undefined, baseUrl?: string) => Promise<Extracted>> = {
+const extractors: Record<
+	Exclude<FetchKind, "local">,
+	(url: string, key: string | undefined, baseUrl?: string) => Promise<Extracted>
+> = {
 	parallel: async (url, key, baseUrl) => {
-		const { data, meta } = await postJson("parallel", `${baseUrl ?? BASES.parallel}/v1/extract`, key ? { Authorization: `Bearer ${key}` } : {}, {
-			urls: [url],
-			// v1 API: full content rides advanced_settings, not the top level
-			// (top-level `full_content` was the /v1beta shape hermes' SDK used).
-			advanced_settings: { full_content: true },
-		});
+		const { data, meta } = await postJson(
+			"parallel",
+			`${baseUrl ?? BASES.parallel}/v1/extract`,
+			key ? { Authorization: `Bearer ${key}` } : {},
+			{
+				urls: [url],
+				// v1 API: full content rides advanced_settings, not the top level
+				// (top-level `full_content` was the /v1beta shape hermes' SDK used).
+				advanced_settings: { full_content: true },
+			},
+		);
 		const body = data as { results?: unknown[]; errors?: unknown[] };
 		const row = (body.results ?? [])[0] as Record<string, unknown> | undefined;
 		if (!row) {
@@ -119,10 +136,15 @@ const extractors: Record<Exclude<FetchKind, "local">, (url: string, key: string 
 		return { title: str(row.title), text: str(row.full_content) || excerpts.join("\n\n"), meta };
 	},
 	tavily: async (url, key, baseUrl) => {
-		const { data, meta } = await postJson("tavily", `${baseUrl ?? BASES.tavily}/extract`, key ? { Authorization: `Bearer ${key}` } : {}, {
-			urls: [url],
-			include_images: false,
-		});
+		const { data, meta } = await postJson(
+			"tavily",
+			`${baseUrl ?? BASES.tavily}/extract`,
+			key ? { Authorization: `Bearer ${key}` } : {},
+			{
+				urls: [url],
+				include_images: false,
+			},
+		);
 		const body = data as { results?: unknown[]; failed_results?: unknown[] };
 		const row = (body.results ?? [])[0] as Record<string, unknown> | undefined;
 		if (!row) {
@@ -132,10 +154,15 @@ const extractors: Record<Exclude<FetchKind, "local">, (url: string, key: string 
 		return { title: str(row.title), text: str(row.raw_content) || str(row.content), meta };
 	},
 	firecrawl: async (url, key, baseUrl) => {
-		const { data, meta } = await postJson("firecrawl", `${baseUrl ?? BASES.firecrawl}/v2/scrape`, key ? { Authorization: `Bearer ${key}` } : {}, {
-			url,
-			formats: ["markdown"],
-		});
+		const { data, meta } = await postJson(
+			"firecrawl",
+			`${baseUrl ?? BASES.firecrawl}/v2/scrape`,
+			key ? { Authorization: `Bearer ${key}` } : {},
+			{
+				url,
+				formats: ["markdown"],
+			},
+		);
 		const body = data as { success?: boolean; error?: string; data?: Record<string, unknown> };
 		if (body.success === false || !body.data) {
 			throw new Error(`firecrawl: ${str(body.error) || "scrape failed"}`);
@@ -147,7 +174,9 @@ const extractors: Record<Exclude<FetchKind, "local">, (url: string, key: string 
 		const res = await fetchOk(
 			"jina",
 			`${baseUrl ?? BASES.jina}/${url}`,
-			{ headers: { Accept: "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) } },
+			{
+				headers: { Accept: "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+			},
 			TIMEOUT_MS,
 		);
 		const { data, bytes } = await readJson("jina", res);
@@ -202,21 +231,37 @@ async function localExtract(url: string, baseUrl?: string): Promise<Extracted | 
 	const res = await fetchOk(
 		"local",
 		target,
-		{ headers: { Accept: "text/html,application/xhtml+xml,text/plain;q=0.9,application/json;q=0.9,*/*;q=0.5" }, redirect: "follow" },
+		{
+			headers: {
+				Accept: "text/html,application/xhtml+xml,text/plain;q=0.9,application/json;q=0.9,*/*;q=0.5",
+			},
+			redirect: "follow",
+		},
 		LOCAL_TIMEOUT_MS,
 	);
-	const contentType = (res.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+	const contentType =
+		(res.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
 	const length = Number(res.headers.get("content-length") ?? 0);
 	if (length > DOWNLOAD_CAP) {
-		return { error: `page is ${Math.round(length / 1024 / 1024)} MiB (cap 8 MiB) — use bash + curl for oversized fetches`, kind: "too-large", meta: resMeta(res, length) };
+		return {
+			error: `page is ${Math.round(length / 1024 / 1024)} MiB (cap 8 MiB) — use bash + curl for oversized fetches`,
+			kind: "too-large",
+			meta: resMeta(res, length),
+		};
 	}
 	const body = await readBodyCapped(res, DOWNLOAD_CAP);
 	if (body.tooLarge) {
-		return { error: `page exceeds the 8 MiB download cap — use bash + curl`, kind: "too-large", meta: resMeta(res, body.seen) };
+		return {
+			error: `page exceeds the 8 MiB download cap — use bash + curl`,
+			kind: "too-large",
+			meta: resMeta(res, body.seen),
+		};
 	}
 	const meta = resMeta(res, body.bytes.byteLength);
 	const text = new TextDecoder("utf-8", { fatal: false }).decode(body.bytes);
-	const looksHtml = contentType === "text/html" || contentType === "application/xhtml+xml" ||
+	const looksHtml =
+		contentType === "text/html" ||
+		contentType === "application/xhtml+xml" ||
 		(/^\s*<(?:!doctype html|html[\s>])/i.test(text) && contentType === "");
 	if (looksHtml) {
 		return { ...extractReadable(url, text), meta };
@@ -254,7 +299,10 @@ async function localExtract(url: string, baseUrl?: string): Promise<Extracted | 
 }
 
 /** HTML → readable text. Pure so the same input materializes identically. */
-function extractReadable(url: string, html: string): Omit<Extracted, "meta"> | Omit<Rejected, "meta"> {
+function extractReadable(
+	url: string,
+	html: string,
+): Omit<Extracted, "meta"> | Omit<Rejected, "meta"> {
 	type ParsedArticle = ReturnType<Readability["parse"]>;
 	let article: ParsedArticle = null;
 	try {
@@ -296,7 +344,12 @@ export function windowText(text: string, budget: number): { window: string; trun
 	return { window: `${head}\n\n[…]\n\n${tail}`, truncated: true };
 }
 
-export function shapeResult(url: string, extracted: Extracted, budget: number, note?: string): string {
+export function shapeResult(
+	url: string,
+	extracted: Extracted,
+	budget: number,
+	note?: string,
+): string {
 	// The title is the site's words too — it rides fenced and clamped
 	// (search clamps its titles the same way). Only the Source: line and
 	// the recovery footer are ours and stay outside, so the recovery
@@ -447,7 +500,9 @@ export const fetchTool = (deps: WebToolDeps) =>
 						fetchedSize: ref.size,
 						actual: bytes.byteLength,
 					});
-					return reference("The saved copy no longer fits the inline cap — extract text with bash, or send_file to hand it to the operator.");
+					return reference(
+						"The saved copy no longer fits the inline cap — extract text with bash, or send_file to hand it to the operator.",
+					);
 				}
 				// Trusted framing outside the payload, the fence discipline's
 				// binary twin: a PDF can carry prompt-injection text, so the
@@ -476,7 +531,9 @@ export const fetchTool = (deps: WebToolDeps) =>
 					path: ref.path,
 					error: String(err),
 				});
-				return reference("The saved copy is unreadable — refetch the URL, or extract via bash if you saved a copy elsewhere.");
+				return reference(
+					"The saved copy is unreadable — refetch the URL, or extract via bash if you saved a copy elsewhere.",
+				);
 			}
 		},
 		execute: async (input) => {
@@ -486,11 +543,11 @@ export const fetchTool = (deps: WebToolDeps) =>
 
 			// Per-attempt failures already logged by the chain; exhaustion
 			// throws with every error joined — the model sees the whole story.
-			const { extracted, servedBy: kind, failures } = await runFetchChain(
-				entries,
-				deps.auth,
-				input.url,
-			);
+			const {
+				extracted,
+				servedBy: kind,
+				failures,
+			} = await runFetchChain(entries, deps.auth, input.url);
 			const note =
 				failures.length > 0
 					? `(extracted via ${kind} — ${clampChars(failures.map((f) => f.error).join("; "), 300)})`

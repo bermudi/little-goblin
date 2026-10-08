@@ -29,9 +29,16 @@ interface StreamSource {
 
 async function wrappedStream(source: StreamSource) {
 	const model: LanguageModelV4 = {
-		specificationVersion: "v4", provider: "test", modelId: "tool-stream", supportedUrls: {},
-		doGenerate() { throw new Error("unused"); },
-		async doStream() { return { stream: new ReadableStream<LanguageModelV4StreamPart>(source) }; },
+		specificationVersion: "v4",
+		provider: "test",
+		modelId: "tool-stream",
+		supportedUrls: {},
+		doGenerate() {
+			throw new Error("unused");
+		},
+		async doStream() {
+			return { stream: new ReadableStream<LanguageModelV4StreamPart>(source) };
+		},
 	};
 	const wrapped = filterErrorStream(model, "test");
 	if (typeof wrapped === "string" || wrapped.specificationVersion !== "v4") {
@@ -86,7 +93,9 @@ describe("provider filter stream", () => {
 				for (const part of toolParts) controller.enqueue(part);
 				// Intentionally remain open: cancellation must settle the pending read.
 			},
-			cancel() { cancelled = true; },
+			cancel() {
+				cancelled = true;
+			},
 		});
 		const reader = stream.getReader();
 		expect((await reader.read()).value?.type).toBe("stream-start");

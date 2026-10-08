@@ -107,34 +107,50 @@ export interface ModelSettings {
 	model: string;
 	thinking: ThinkingLevel;
 }
-const modelSettingsSchema = z.object({ model: z.string().min(1), thinking: z.enum(thinkingLevels) });
+const modelSettingsSchema = z.object({
+	model: z.string().min(1),
+	thinking: z.enum(thinkingLevels),
+});
 
 // Called at admission (and manual compaction), never at submit time:
 // a queued turn sees the latest settings, a running turn keeps its copy.
 export function captureConversationSettings(
-	store: ConversationStore, conv: Conversation, cfg: Config,
+	store: ConversationStore,
+	conv: Conversation,
+	cfg: Config,
 ): Conversation & ModelSettings {
-	const settings: ModelSettings = channelOf(conv.id) === "app"
-		? store.initializeAppSettings(conv.id, cfg)
-		: { model: cfg.telegram.model ?? cfg.model, thinking: cfg.telegram.thinking ?? cfg.thinking };
+	const settings: ModelSettings =
+		channelOf(conv.id) === "app"
+			? store.initializeAppSettings(conv.id, cfg)
+			: { model: cfg.telegram.model ?? cfg.model, thinking: cfg.telegram.thinking ?? cfg.thinking };
 	return { ...conv, ...settings };
 }
 
 // Config provider edits must not strand persisted app selections. Check
 // every row before initializing anything; a refusal leaves disk untouched.
-export function prepareAppSettingsForConfig(store: ConversationStore, previous: Config, next: Config): void {
+export function prepareAppSettingsForConfig(
+	store: ConversationStore,
+	previous: Config,
+	next: Config,
+): void {
 	const rows = store.listAppConversations().map((conv) => ({
-		id: conv.id, model: store.get(conv.id)!.model ?? previous.model,
+		id: conv.id,
+		model: store.get(conv.id)!.model ?? previous.model,
 	}));
-	z.array(z.object({ id: z.string(), model: z.string() })).superRefine((selections, ctx) => {
-		for (const row of selections) {
-			const { provider } = splitModelRef(row.model);
-			if (!(provider in next.providers)) {
-				ctx.addIssue({ code: "custom", path: [row.id],
-					message: `provider "${provider}" is still selected by ${row.id}; change that conversation's model before removing it` });
+	z.array(z.object({ id: z.string(), model: z.string() }))
+		.superRefine((selections, ctx) => {
+			for (const row of selections) {
+				const { provider } = splitModelRef(row.model);
+				if (!(provider in next.providers)) {
+					ctx.addIssue({
+						code: "custom",
+						path: [row.id],
+						message: `provider "${provider}" is still selected by ${row.id}; change that conversation's model before removing it`,
+					});
+				}
 			}
-		}
-	}).parse(rows);
+		})
+		.parse(rows);
 	store.db.transaction(() => {
 		for (const row of rows) store.initializeAppSettings(row.id, previous);
 	})();
@@ -210,7 +226,13 @@ export interface ConversationStore {
 	// replayed — copied exchanges are already retained, and re-enqueue
 	// would re-process them against a bank that already has them.
 	// Nothing logs here — the caller owns the `spin-off` line.
-	forkToApp(fromId: string, appId: string, defaultCwd: string, title: string, defaults?: ModelSettings): Conversation;
+	forkToApp(
+		fromId: string,
+		appId: string,
+		defaultCwd: string,
+		title: string,
+		defaults?: ModelSettings,
+	): Conversation;
 	// Initialize missing app settings once, without resetting existing
 	// snapshots or fencing a running turn. Missing/non-app ids throw.
 	initializeAppSettings(id: string, defaults: ModelSettings): ModelSettings;
@@ -234,10 +256,14 @@ export interface ConversationStore {
 	// Append UIMessages in one transaction; seq is assigned here.
 	// anchorSeq marks a response with the seq of the user event that
 	// triggered its turn — history() uses it for causal ordering.
-	append(id: string, messages: UIMessage[], opts?: {
-		anchorSeq?: number | null;
-		memory?: { target: string; document: MemoryDocument };
-	}): void;
+	append(
+		id: string,
+		messages: UIMessage[],
+		opts?: {
+			anchorSeq?: number | null;
+			memory?: { target: string; document: MemoryDocument };
+		},
+	): void;
 	// The model-facing view: causal order, not arrival order. Anchored
 	// assistant events sort immediately after their triggering user
 	// event; everything else falls back to seq.
@@ -339,12 +365,19 @@ const privateChatIdSchema = z.number().int().positive();
 
 // Only canonical rolling private DM identities can enter a back chain.
 // Checking coordinates too prevents a malformed disk link crossing pools.
-function rollingDmOrdinal(row: Pick<Row, "id" | "chat_id" | "thread_id">, chatId: number): number | null {
+function rollingDmOrdinal(
+	row: Pick<Row, "id" | "chat_id" | "thread_id">,
+	chatId: number,
+): number | null {
 	const prefix = `dm:${chatId}:`;
 	const n = row.id.slice(prefix.length);
-	return row.chat_id === chatId && row.thread_id === null &&
-		row.id.startsWith(prefix) && /^[1-9]\d*$/.test(n) && Number.isSafeInteger(Number(n))
-		? Number(n) : null;
+	return row.chat_id === chatId &&
+		row.thread_id === null &&
+		row.id.startsWith(prefix) &&
+		/^[1-9]\d*$/.test(n) &&
+		Number.isSafeInteger(Number(n))
+		? Number(n)
+		: null;
 }
 
 // Disk state is a boundary: history rows are validated on read, not
@@ -383,8 +416,11 @@ function corruptPlaceholder(seq: number, role: string): UIMessage {
 // migrates them once at open.
 function envelopeOf(raw: unknown): unknown {
 	if (
-		typeof raw === "object" && raw !== null && "v" in raw &&
-		(raw as { v?: unknown }).v === 1 && "message" in raw
+		typeof raw === "object" &&
+		raw !== null &&
+		"v" in raw &&
+		(raw as { v?: unknown }).v === 1 &&
+		"message" in raw
 	) {
 		return (raw as { message: unknown }).message;
 	}
@@ -473,7 +509,12 @@ function flatLine(text: string): string {
 // The caller decides: history degrades to a placeholder in position,
 // search and context skip the row. Warns either way — a silent skip
 // would hide corruption.
-function parseEvent(conversation: string, seq: number, role: string, data: string): UIMessage | null {
+function parseEvent(
+	conversation: string,
+	seq: number,
+	role: string,
+	data: string,
+): UIMessage | null {
 	let raw: unknown;
 	try {
 		raw = JSON.parse(data);
@@ -569,9 +610,9 @@ export function openStore(dbPath: string): ConversationStore {
 	// Created before the envelope migration further down so the update
 	// trigger re-indexes migrated rows.
 	const ftsFresh =
-		db.query<{ n: number }, []>(
-			"SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'events_fts'",
-		).get()?.n === 0;
+		db
+			.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'events_fts'")
+			.get()?.n === 0;
 	db.run(
 		"CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(text, content='', content_rowid='id', tokenize='porter')",
 	);
@@ -631,15 +672,22 @@ export function openStore(dbPath: string): ConversationStore {
 	// is the one-time migration marker: never rebuild links on later boots,
 	// or a /back → /new branch would silently become chronological again.
 	const rollCols = new Set(
-		db.query<{ name: string }, []>("PRAGMA table_info(dm_rolls)").all().map((c) => c.name),
+		db
+			.query<{ name: string }, []>("PRAGMA table_info(dm_rolls)")
+			.all()
+			.map((c) => c.name),
 	);
 	db.transaction(() => {
 		if (!convCols.has("previous_dm_id")) {
-			db.run("ALTER TABLE conversations ADD COLUMN previous_dm_id TEXT REFERENCES conversations(id) ON DELETE SET NULL");
+			db.run(
+				"ALTER TABLE conversations ADD COLUMN previous_dm_id TEXT REFERENCES conversations(id) ON DELETE SET NULL",
+			);
 			const sessionsByChat = new Map<number, { id: string; ordinal: number }[]>();
-			const rows = db.query<Pick<Row, "id" | "chat_id" | "thread_id">, []>(
-				"SELECT id, chat_id, thread_id FROM conversations",
-			).all();
+			const rows = db
+				.query<Pick<Row, "id" | "chat_id" | "thread_id">, []>(
+					"SELECT id, chat_id, thread_id FROM conversations",
+				)
+				.all();
 			for (const row of rows) {
 				if (!privateChatIdSchema.safeParse(row.chat_id).success) continue;
 				const ordinal = rollingDmOrdinal(row, row.chat_id);
@@ -654,7 +702,10 @@ export function openStore(dbPath: string): ConversationStore {
 				sessions.sort((a, b) => a.ordinal - b.ordinal);
 				let previous: string | null = null;
 				for (const session of sessions) {
-					db.run("UPDATE conversations SET previous_dm_id = ? WHERE id = ?", [previous, session.id]);
+					db.run("UPDATE conversations SET previous_dm_id = ? WHERE id = ?", [
+						previous,
+						session.id,
+					]);
 					previous = session.id;
 				}
 			}
@@ -667,15 +718,16 @@ export function openStore(dbPath: string): ConversationStore {
 	// place, before anything reads them this boot. Only well-formed bare
 	// UIMessage objects match (top-level string `id`); corrupt rows are
 	// left alone and keep degrading to placeholders on read.
-	const bare = db
-		.query<{ n: number }, []>(
-			`SELECT COUNT(*) AS n FROM events
+	const bare =
+		db
+			.query<{ n: number }, []>(
+				`SELECT COUNT(*) AS n FROM events
 			 WHERE json_valid(data)
 			   AND json_type(data, '$.v') IS NULL
 			   AND json_type(data, '$.message') IS NULL
 			   AND json_type(data, '$.id') = 'text'`,
-		)
-		.get()?.n ?? 0;
+			)
+			.get()?.n ?? 0;
 	if (bare > 0) {
 		db.run(
 			`UPDATE events SET data = json_object('v', 1, 'message', json(data))
@@ -687,7 +739,13 @@ export function openStore(dbPath: string): ConversationStore {
 		log.info("history payload envelopes migrated", { rows: bare });
 	}
 	const qCompaction = db.query<
-		{ boundary_seq: number; summary: string; tokens_before: number; model: string; created_at: string },
+		{
+			boundary_seq: number;
+			summary: string;
+			tokens_before: number;
+			model: string;
+			created_at: string;
+		},
 		[string]
 	>(
 		"SELECT boundary_seq, summary, tokens_before, model, created_at FROM compactions WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
@@ -717,9 +775,7 @@ export function openStore(dbPath: string): ConversationStore {
 	const qHistory = db.query<
 		{ seq: number; anchor_seq: number | null; role: string; data: string },
 		[string]
-	>(
-		"SELECT seq, anchor_seq, role, data FROM events WHERE conversation_id = ? ORDER BY seq",
-	);
+	>("SELECT seq, anchor_seq, role, data FROM events WHERE conversation_id = ? ORDER BY seq");
 	const qLastUserSeq = db.query<{ seq: number }, [string]>(
 		"SELECT seq FROM events WHERE conversation_id = ? AND role = 'user' ORDER BY seq DESC LIMIT 1",
 	);
@@ -754,7 +810,14 @@ export function openStore(dbPath: string): ConversationStore {
 	// hit, conversations for the title and the live exclusion flag.
 	// Rank-best-first — FTS5's default rank orders best match first.
 	const qSearch = db.query<
-		{ cid: string; seq: number; role: string; data: string; created_at: string; title: string | null },
+		{
+			cid: string;
+			seq: number;
+			role: string;
+			data: string;
+			created_at: string;
+			title: string | null;
+		},
 		[string, string | null, number]
 	>(
 		`SELECT e.conversation_id AS cid, e.seq AS seq, e.role AS role,
@@ -774,10 +837,7 @@ export function openStore(dbPath: string): ConversationStore {
 		WHERE conversation_id = ? AND seq BETWEEN ? AND ? ORDER BY seq`,
 	);
 	// The app channel's own pool — the id prefix is the channel marker.
-	const qListApp = db.query<
-		{ id: string; title: string | null; created_at: string },
-		[]
-	>(
+	const qListApp = db.query<{ id: string; title: string | null; created_at: string }, []>(
 		`SELECT id, title, created_at FROM conversations
 		WHERE id LIKE 'app/%' ORDER BY created_at, rowid`,
 	);
@@ -893,13 +953,13 @@ export function openStore(dbPath: string): ConversationStore {
 
 		setCompaction(id, compaction) {
 			qInsertCompaction.run(
-					id,
-					compaction.boundarySeq,
-					compaction.summary,
-					compaction.tokensBefore,
-					compaction.model,
-					compaction.createdAt,
-				);
+				id,
+				compaction.boundarySeq,
+				compaction.summary,
+				compaction.tokensBefore,
+				compaction.model,
+				compaction.createdAt,
+			);
 		},
 
 		resolve(addr, defaultCwd, defaults) {
@@ -934,7 +994,7 @@ export function openStore(dbPath: string): ConversationStore {
 		listGuestConversationIds(chatId) {
 			return db
 				.query<{ id: string }, [string]>(
-				"SELECT id FROM conversations WHERE id LIKE 'guest:' || ? || ':%'",
+					"SELECT id FROM conversations WHERE id LIKE 'guest:' || ? || ':%'",
 				)
 				.all(String(chatId))
 				.map((r) => r.id);
@@ -957,7 +1017,8 @@ export function openStore(dbPath: string): ConversationStore {
 				const source = roll ? qGet.get(roll.current_id) : null;
 				qInsertConv.run(id, chatId, null, defaultCwd, now);
 				db.run("UPDATE conversations SET previous_dm_id = ? WHERE id = ?", [
-					source && rollingDmOrdinal(source, chatId) !== null ? source.id : null, id,
+					source && rollingDmOrdinal(source, chatId) !== null ? source.id : null,
+					id,
 				]);
 				qUpsertRoll.run(chatId, id, n, now);
 				const created = qGet.get(id);
@@ -1046,9 +1107,11 @@ export function openStore(dbPath: string): ConversationStore {
 		},
 
 		promptSnapshot(id) {
-			const row = db.query<{ text: string; sources: string }, [string]>(
-				"SELECT text, sources FROM prompt_snapshots WHERE conversation_id = ?",
-			).get(id);
+			const row = db
+				.query<{ text: string; sources: string }, [string]>(
+					"SELECT text, sources FROM prompt_snapshots WHERE conversation_id = ?",
+				)
+				.get(id);
 			if (!row) return null;
 			let sources: unknown;
 			try {
@@ -1096,17 +1159,25 @@ export function openStore(dbPath: string): ConversationStore {
 					);
 				}
 				if (opts?.memory) {
-					if (opts.memory.document.conversationId !== id ||
-						!messages.some((message) => message.role === "assistant" &&
-							opts.memory!.document.sourceIds.includes(message.id))) {
+					if (
+						opts.memory.document.conversationId !== id ||
+						!messages.some(
+							(message) =>
+								message.role === "assistant" &&
+								opts.memory!.document.sourceIds.includes(message.id),
+						)
+					) {
 						throw new Error("Memory retention must accompany its completed assistant event");
 					}
 					operation = memoryQueue.enqueue(opts.memory.target, opts.memory.document);
 				}
 			})();
-			if (operation) log.info("memory queued", {
-				conversation: id, operation, document: opts?.memory?.document.id,
-			});
+			if (operation)
+				log.info("memory queued", {
+					conversation: id,
+					operation,
+					document: opts?.memory?.document.id,
+				});
 		},
 
 		lastUserSeq(id) {
@@ -1138,7 +1209,12 @@ export function openStore(dbPath: string): ConversationStore {
 			for (const r of qContext.all(id, seq - w, seq + w)) {
 				const message = parseEvent(id, r.seq, r.role, r.data);
 				if (message === null) continue;
-				rows.push({ seq: r.seq, role: r.role, text: messageText(message), createdAt: r.created_at });
+				rows.push({
+					seq: r.seq,
+					role: r.role,
+					text: messageText(message),
+					createdAt: r.created_at,
+				});
 			}
 			return rows;
 		},

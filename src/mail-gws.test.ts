@@ -17,7 +17,11 @@ interface Call {
 	args: string[];
 }
 
-function headers(from = "a@x.com", subject = "s", date = "d"): Array<{ name: string; value: string }> {
+function headers(
+	from = "a@x.com",
+	subject = "s",
+	date = "d",
+): Array<{ name: string; value: string }> {
 	return [
 		{ name: "From", value: from },
 		{ name: "Subject", value: subject },
@@ -26,7 +30,12 @@ function headers(from = "a@x.com", subject = "s", date = "d"): Array<{ name: str
 }
 
 function msgGet(id: string, thread = "t"): unknown {
-	return { id, threadId: thread, snippet: `snip-${id}`, payload: { headers: headers(`a-${id}@x.com`, `sub-${id}`, "today") } };
+	return {
+		id,
+		threadId: thread,
+		snippet: `snip-${id}`,
+		payload: { headers: headers(`a-${id}@x.com`, `sub-${id}`, "today") },
+	};
 }
 
 // A fake gws: route on (resource, method) with the handler's queued
@@ -49,16 +58,32 @@ function fakeGws(routes: {
 		const params = pi === -1 ? {} : (JSON.parse(args[pi + 1]!) as Record<string, unknown>);
 		const [resource, method] = [args[2], args[3]];
 		if (resource === "history" && method === "list") {
-			return { code: 0, stdout: JSON.stringify(routes.history?.(params, n) ?? { historyId: "200" }), stderr: "" };
+			return {
+				code: 0,
+				stdout: JSON.stringify(routes.history?.(params, n) ?? { historyId: "200" }),
+				stderr: "",
+			};
 		}
 		if (resource === "messages" && method === "list") {
-			return { code: 0, stdout: JSON.stringify(routes.list?.(params, n) ?? { messages: [] }), stderr: "" };
+			return {
+				code: 0,
+				stdout: JSON.stringify(routes.list?.(params, n) ?? { messages: [] }),
+				stderr: "",
+			};
 		}
 		if (resource === "messages" && method === "get") {
-			return { code: 0, stdout: JSON.stringify(routes.get?.(params, n) ?? msgGet(String(params.id ?? "m"))) , stderr: "" };
+			return {
+				code: 0,
+				stdout: JSON.stringify(routes.get?.(params, n) ?? msgGet(String(params.id ?? "m"))),
+				stderr: "",
+			};
 		}
 		if (resource === "getProfile") {
-			return { code: 0, stdout: JSON.stringify(routes.profile?.(params, n) ?? { historyId: "999" }), stderr: "" };
+			return {
+				code: 0,
+				stdout: JSON.stringify(routes.profile?.(params, n) ?? { historyId: "999" }),
+				stderr: "",
+			};
 		}
 		throw new Error(`unexpected gws argv: ${args.join(" ")}`);
 	};
@@ -120,7 +145,10 @@ describe("gws mail reader", () => {
 				seen.push(p.pageToken ?? "");
 				return p.pageToken === undefined || p.pageToken === ""
 					? { history: [], historyId: "150", nextPageToken: "more" }
-					: { history: [{ id: "120", messagesAdded: [{ message: { id: "late" } }] }], historyId: "150" };
+					: {
+							history: [{ id: "120", messagesAdded: [{ message: { id: "late" } }] }],
+							historyId: "150",
+						};
 			},
 			list: () => ({ messages: [{ id: "late" }] }),
 		});
@@ -178,7 +206,9 @@ describe("gws mail reader", () => {
 		expect(out.historyId).toBe("150");
 		const warns = captured
 			.map((l) => JSON.parse(l) as Record<string, unknown>)
-			.filter((l) => l.msg === "Gmail collapsed a burst into one history record — 2 matches skipped");
+			.filter(
+				(l) => l.msg === "Gmail collapsed a burst into one history record — 2 matches skipped",
+			);
 		expect(warns).toHaveLength(1);
 		expect(warns[0]).toMatchObject({ level: "warn", filter: "from:bank", matched: 12, firing: 10 });
 	});
@@ -193,7 +223,11 @@ describe("gws mail reader", () => {
 				historyId: "200",
 			}),
 			list: () => ({
-				messages: [{ id: "m2" }, { id: "m1" }, ...Array.from({ length: 48 }, (_, i) => ({ id: `x${i}` }))],
+				messages: [
+					{ id: "m2" },
+					{ id: "m1" },
+					...Array.from({ length: 48 }, (_, i) => ({ id: `x${i}` })),
+				],
 			}),
 		});
 		const captured: string[] = [];
@@ -212,7 +246,11 @@ describe("gws mail reader", () => {
 		expect(out.historyId).toBe("200");
 		const warns = captured
 			.map((l) => JSON.parse(l) as Record<string, unknown>)
-			.filter((l) => l.msg === "mail poll filter list page full — matches older than the newest 50 may be skipped by this checkpoint");
+			.filter(
+				(l) =>
+					l.msg ===
+					"mail poll filter list page full — matches older than the newest 50 may be skipped by this checkpoint",
+			);
 		expect(warns).toHaveLength(1);
 		expect(warns[0]).toMatchObject({ level: "warn", filter: "from:bank", listed: 50 });
 	});
@@ -228,11 +266,15 @@ describe("gws mail reader", () => {
 		const { run } = fakeGws({
 			fail: {
 				code: 1,
-				stdout: JSON.stringify({ error: { code: 404, message: "Requested entity was not found." } }),
+				stdout: JSON.stringify({
+					error: { code: 404, message: "Requested entity was not found." },
+				}),
 				stderr: "error[api]: ...",
 			},
 		});
-		await expect(makeGwsReader(run).poll("from:bank", "1")).rejects.toBeInstanceOf(HistoryExpiredError);
+		await expect(makeGwsReader(run).poll("from:bank", "1")).rejects.toBeInstanceOf(
+			HistoryExpiredError,
+		);
 	});
 
 	test("a failure that merely MENTIONS 404 in stderr is not expiry (parsed code, not substring)", async () => {
@@ -246,7 +288,9 @@ describe("gws mail reader", () => {
 				stderr: "gws: connection reset while fetching (last status 404 in a log line)",
 			},
 		});
-		await expect(makeGwsReader(run).poll("from:bank", "1")).rejects.not.toBeInstanceOf(HistoryExpiredError);
+		await expect(makeGwsReader(run).poll("from:bank", "1")).rejects.not.toBeInstanceOf(
+			HistoryExpiredError,
+		);
 		await expect(makeGwsReader(run).threadFor("m1")).rejects.toBeInstanceOf(Error);
 	});
 
@@ -258,18 +302,26 @@ describe("gws mail reader", () => {
 				stderr: "error[auth]: Access denied. Run `gws auth login`.",
 			},
 		});
-		await expect(makeGwsReader(run).poll("from:bank", "1")).rejects.toThrow("gws: poll.history failed — HTTP 401");
+		await expect(makeGwsReader(run).poll("from:bank", "1")).rejects.toThrow(
+			"gws: poll.history failed — HTTP 401",
+		);
 	});
 
 	test("a repeated history page token fails loud with the cursor unchanged", async () => {
 		const { run } = fakeGws({
 			history: () => ({ history: [], historyId: "150", nextPageToken: "loop" }),
 		});
-		await expect(makeGwsReader(run).poll("from:bank", "100")).rejects.toThrow("repeated or exceeded 100 pages");
+		await expect(makeGwsReader(run).poll("from:bank", "100")).rejects.toThrow(
+			"repeated or exceeded 100 pages",
+		);
 	});
 
 	test("an unexpected gws shape fails loud, never as empty results", async () => {
-		const run: GwsRunner = async () => ({ code: 0, stdout: JSON.stringify({ nope: true }), stderr: "" });
+		const run: GwsRunner = async () => ({
+			code: 0,
+			stdout: JSON.stringify({ nope: true }),
+			stderr: "",
+		});
 		await expect(makeGwsReader(run).profileHistoryId()).rejects.toThrow("unexpected shape");
 	});
 
@@ -309,10 +361,17 @@ describe("gws mail reader", () => {
 				if (p.id === "ghost") {
 					throw new Error("unreachable — the 404 arm below handles ghosts");
 				}
-				return { id: "m1", threadId: "thread-9", payload: { headers: [{ name: "Message-ID", value: "<orig@mail>" }] } };
+				return {
+					id: "m1",
+					threadId: "thread-9",
+					payload: { headers: [{ name: "Message-ID", value: "<orig@mail>" }] },
+				};
 			},
 		});
-		expect(await makeGwsReader(run).threadFor("m1")).toEqual({ threadId: "thread-9", messageId: "<orig@mail>" });
+		expect(await makeGwsReader(run).threadFor("m1")).toEqual({
+			threadId: "thread-9",
+			messageId: "<orig@mail>",
+		});
 		const ghost: GwsRunner = async () => ({
 			code: 1,
 			stdout: JSON.stringify({ error: { code: 404, message: "not found" } }),
@@ -327,5 +386,4 @@ describe("gws mail reader", () => {
 		};
 		await expect(makeGwsReader(run).profileHistoryId()).rejects.toThrow("could not spawn gws");
 	});
-
 });

@@ -192,7 +192,9 @@ const FALLBACK_TOOL_CALLS = 8;
 export function buildGateState(turn: CompletedTurn): string {
 	const counts = new Map<string, number>();
 	for (const name of turn.toolNames) counts.set(name, (counts.get(name) ?? 0) + 1);
-	const tools = [...counts.entries()].map(([name, n]) => (n === 1 ? name : `${name} ×${n}`)).join(", ");
+	const tools = [...counts.entries()]
+		.map(([name, n]) => (n === 1 ? name : `${name} ×${n}`))
+		.join(", ");
 	return [
 		"operator:",
 		turn.operatorTexts.join("\n---\n").slice(-MAX_OPERATOR_CHARS),
@@ -253,7 +255,14 @@ export async function considerTurn(
 			cost: decision.cost,
 			ms: Date.now() - started,
 		});
-		if (review && !pending.cancelled) return enqueueReview(deps, turn, trigger === "correction" ? priorTurn : undefined, trigger, reviewId!);
+		if (review && !pending.cancelled)
+			return enqueueReview(
+				deps,
+				turn,
+				trigger === "correction" ? priorTurn : undefined,
+				trigger,
+				reviewId!,
+			);
 	} catch (err) {
 		// Only the gate's own failures fall back — anything else is a
 		// bug and propagates to the runtime's backstop, loud.
@@ -279,12 +288,15 @@ export async function considerTurn(
 			cost: null,
 			ms: Date.now() - started,
 		});
-		if (review && !pending.cancelled) return enqueueReview(deps, turn, undefined, trigger, reviewId!);
+		if (review && !pending.cancelled)
+			return enqueueReview(deps, turn, undefined, trigger, reviewId!);
 	} finally {
 		pendingGates.delete(pending);
-		if (pending.cancelled) log.info("reviewer gate cancelled — no review enqueued", {
-			conversation: turn.conversationId, seq: turn.turnSeq,
-		});
+		if (pending.cancelled)
+			log.info("reviewer gate cancelled — no review enqueued", {
+				conversation: turn.conversationId,
+				seq: turn.turnSeq,
+			});
 		drainQueue();
 	}
 }
@@ -342,7 +354,10 @@ export function cancelReviews(conversationId: string): number {
 		if (gate.conversationId !== conversationId || gate.cancelled) continue;
 		gate.cancelled = true;
 		pendingGates.delete(gate);
-		log.info("reviewer gate cancelled — pending decision", { conversation: conversationId, seq: gate.seq });
+		log.info("reviewer gate cancelled — pending decision", {
+			conversation: conversationId,
+			seq: gate.seq,
+		});
 		n += 1;
 	}
 	for (const entry of [...reviewQueue]) {
@@ -357,7 +372,11 @@ export function cancelReviews(conversationId: string): number {
 		});
 		n += 1;
 	}
-	if (inFlight !== null && inFlight.entry.conversationId === conversationId && !inFlight.entry.cancelled) {
+	if (
+		inFlight !== null &&
+		inFlight.entry.conversationId === conversationId &&
+		!inFlight.entry.cancelled
+	) {
 		inFlight.entry.cancelled = true;
 		inFlight.controller.abort();
 		log.info("reviewer review cancelled — aborting in-flight", {
@@ -530,10 +549,11 @@ export function reviewPrompt(
 	// Tail-first operator, head-first reply — when space is tight the
 	// latest operator message and the current answer always survive.
 	const operator = turn.operatorTexts.join("\n---\n").slice(-MAX_OPERATOR_CHARS);
-	const transcript = `operator:\n${operator}\n\nassistant reply:\n${turn.replyText.slice(0, MAX_REPLY_CHARS)}`.slice(
-		0,
-		MAX_REVIEW_TRANSCRIPT_CHARS,
-	);
+	const transcript =
+		`operator:\n${operator}\n\nassistant reply:\n${turn.replyText.slice(0, MAX_REPLY_CHARS)}`.slice(
+			0,
+			MAX_REVIEW_TRANSCRIPT_CHARS,
+		);
 	return [
 		"The turn:",
 		"",
@@ -756,7 +776,11 @@ interface ValidateOutcome {
 	output: string;
 }
 
-async function validateSkill(deps: ReviewerDeps, cwd: string, skill: string): Promise<ValidateOutcome> {
+async function validateSkill(
+	deps: ReviewerDeps,
+	cwd: string,
+	skill: string,
+): Promise<ValidateOutcome> {
 	const bin = deps.skillsRefBin ?? "skills-ref";
 	let proc: ReturnType<typeof spawnProc>;
 	try {
@@ -775,7 +799,9 @@ async function validateSkill(deps: ReviewerDeps, cwd: string, skill: string): Pr
 
 // ---------- publish ----------
 
-type PublishOutcome = { published: true } | { published: false; reason: "conflict"; drifted: string[] };
+type PublishOutcome =
+	| { published: true }
+	| { published: false; reason: "conflict"; drifted: string[] };
 
 /** Does the live skill dir still byte-match the copy the review worked
  * from? Operator edits, undos, or hand-added files mid-review are never
@@ -783,15 +809,9 @@ type PublishOutcome = { published: true } | { published: false; reason: "conflic
  * too (lstat, never resolved): publishing over a link — the whole
  * skill or one file inside it — would replace it with plain bytes and
  * silently fork whatever it points to. */
-function liveDrifted(
-	skillsDir: string,
-	manifest: Map<string, string>,
-	skill: string,
-): string[] {
+function liveDrifted(skillsDir: string, manifest: Map<string, string>, skill: string): string[] {
 	const prefix = `${skill}/`;
-	const expected = new Map(
-		[...manifest.entries()].filter(([rel]) => rel.startsWith(prefix)),
-	);
+	const expected = new Map([...manifest.entries()].filter(([rel]) => rel.startsWith(prefix)));
 	const drifted: string[] = [];
 	const liveSkill = join(skillsDir, skill);
 	// lstat, not existsSync: a broken link is still a link and must
@@ -872,7 +892,10 @@ function publishSkill(
 		// The swap succeeded: cleanup is not a publication failure. The
 		// next boot cleans reviewer staging; keep the saved skill recorded.
 		log.warn("reviewer replaced-skill trash cleanup failed", {
-			skill, review_id: reviewId, trash, error: String(err),
+			skill,
+			review_id: reviewId,
+			trash,
+			error: String(err),
 		});
 	}
 	return { published: true };
@@ -890,7 +913,11 @@ async function runReview(entry: QueueEntry, signal: AbortSignal): Promise<void> 
 	}
 }
 
-async function runStagedReview(entry: QueueEntry, signal: AbortSignal, reviewDir: string): Promise<void> {
+async function runStagedReview(
+	entry: QueueEntry,
+	signal: AbortSignal,
+	reviewDir: string,
+): Promise<void> {
 	const { deps, turn, prior, trigger, reviewId } = entry;
 	const conv = turn.conversationId;
 	const stagingArea = stagingRoot(deps.workspaceDir);
@@ -1053,7 +1080,14 @@ async function runStagedReview(entry: QueueEntry, signal: AbortSignal, reviewDir
 		let publishError: unknown = null;
 		try {
 			for (const skill of skills) {
-				const outcome = publishSkill(deps.skillsDir, stagedSkills, stagingArea, manifest, skill, reviewId);
+				const outcome = publishSkill(
+					deps.skillsDir,
+					stagedSkills,
+					stagingArea,
+					manifest,
+					skill,
+					reviewId,
+				);
 				if (outcome.published) published.push(skill);
 				else skipped.push({ skill, drifted: outcome.drifted });
 			}
@@ -1082,15 +1116,20 @@ async function runStagedReview(entry: QueueEntry, signal: AbortSignal, reviewDir
 		// It publishes, then tells: history first (the durable record),
 		// the topic note second. An undo request next turn deletes these dirs.
 		const names = published.join(", ");
-		deps.store.append(conv, [{
-			id: randomUUID(),
-			role: "system",
-			parts: [{
-				type: "text",
-				text: `saved skill: ${names} — announced in this topic with an undo invite; ` +
-					`an undo request means deleting ${published.map((s) => `skills/${s}/`).join(", ")}`,
-			}],
-		}]);
+		deps.store.append(conv, [
+			{
+				id: randomUUID(),
+				role: "system",
+				parts: [
+					{
+						type: "text",
+						text:
+							`saved skill: ${names} — announced in this topic with an undo invite; ` +
+							`an undo request means deleting ${published.map((s) => `skills/${s}/`).join(", ")}`,
+					},
+				],
+			},
+		]);
 		try {
 			await deps.notify(conv, published);
 		} catch (err) {
@@ -1100,15 +1139,18 @@ async function runStagedReview(entry: QueueEntry, signal: AbortSignal, reviewDir
 				skills: published,
 			});
 		}
-		log.info(publishError === null ? "reviewer review done" : "reviewer review partially published", {
-			review_id: reviewId,
-			conversation: conv,
-			changed: true,
-			skills: published,
-			skipped,
-			validated: validated.map((v) => ({ skill: v.skill, ok: v.ok })),
-			written: [...written].sort(),
-		});
+		log.info(
+			publishError === null ? "reviewer review done" : "reviewer review partially published",
+			{
+				review_id: reviewId,
+				conversation: conv,
+				changed: true,
+				skills: published,
+				skipped,
+				validated: validated.map((v) => ({ skill: v.skill, ok: v.ok })),
+				written: [...written].sort(),
+			},
+		);
 		// A later skill's failed swap does not undo earlier publications.
 		// Record and announce those durable changes before surfacing the
 		// failure to the review runner.

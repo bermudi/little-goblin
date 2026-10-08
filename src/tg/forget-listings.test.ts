@@ -90,7 +90,9 @@ describe("ForgetListings", () => {
 		const db = memdb();
 		const listings = new ForgetListings(db);
 		listings.save("c1", items(2));
-		db.run('UPDATE forget_listings SET items = \'[{"documentId": 7,"preview":"x"}]\' WHERE conversation_id = \'c1\'');
+		db.run(
+			'UPDATE forget_listings SET items = \'[{"documentId": 7,"preview":"x"}]\' WHERE conversation_id = \'c1\'',
+		);
 		expect(listings.resolve("c1", "1", Date.now())).toBeNull();
 	});
 

@@ -81,18 +81,42 @@ describe("tts", () => {
 
 	test("synthesizes every internal chunk as ogg/opus", async () => {
 		const calls: Array<{ text: string; outputFormat: string; voice: string; lang: string }> = [];
-		const synth = async (text: string, options: { voice: string; lang: string; outputFormat: string }) => {
-			calls.push({ text, outputFormat: options.outputFormat, voice: options.voice, lang: options.lang });
+		const synth = async (
+			text: string,
+			options: { voice: string; lang: string; outputFormat: string },
+		) => {
+			calls.push({
+				text,
+				outputFormat: options.outputFormat,
+				voice: options.voice,
+				lang: options.lang,
+			});
 			return new Uint8Array([26, 69, 223, 163]);
 		};
-		const audio = await synthesizeSpeech("One sentence. Two sentence.", {
-			kind: "edge",
-			voice: "en-US-AriaNeural",
-			rate: "+10%",
-		}, synth, 15, async () => new Uint8Array([79, 103, 103, 83]));
+		const audio = await synthesizeSpeech(
+			"One sentence. Two sentence.",
+			{
+				kind: "edge",
+				voice: "en-US-AriaNeural",
+				rate: "+10%",
+			},
+			synth,
+			15,
+			async () => new Uint8Array([79, 103, 103, 83]),
+		);
 		expect(calls).toEqual([
-			{ text: "One sentence.", outputFormat: "webm-24khz-16bit-mono-opus", voice: "en-US-AriaNeural", lang: "en-US" },
-			{ text: "Two sentence.", outputFormat: "webm-24khz-16bit-mono-opus", voice: "en-US-AriaNeural", lang: "en-US" },
+			{
+				text: "One sentence.",
+				outputFormat: "webm-24khz-16bit-mono-opus",
+				voice: "en-US-AriaNeural",
+				lang: "en-US",
+			},
+			{
+				text: "Two sentence.",
+				outputFormat: "webm-24khz-16bit-mono-opus",
+				voice: "en-US-AriaNeural",
+				lang: "en-US",
+			},
 		]);
 		expect(audio).toHaveLength(2);
 		expect(new TextDecoder().decode(audio[0]!.slice(0, 4))).toBe("OggS");
@@ -102,20 +126,31 @@ describe("tts", () => {
 		// The speak tool swaps the whole config voice exactly like index.ts
 		// does — the invariant this pins: a Spanish voice name must yield a
 		// Spanish SSML lang.
-		const config = { kind: "edge" as const, voice: "en-US-AriaNeural", voices: ["es-ES-ElviraNeural"] };
+		const config = {
+			kind: "edge" as const,
+			voice: "en-US-AriaNeural",
+			voices: ["es-ES-ElviraNeural"],
+		};
 		const calls: Array<{ voice: string; lang: string }> = [];
-		await synthesizeSpeech("Hola.", { ...config, voice: "es-ES-ElviraNeural" }, async (_text, options) => {
-			calls.push({ voice: options.voice, lang: options.lang });
-			return new Uint8Array([1]);
-		}, 10_000, async () => new Uint8Array([79, 103, 103, 83]));
+		await synthesizeSpeech(
+			"Hola.",
+			{ ...config, voice: "es-ES-ElviraNeural" },
+			async (_text, options) => {
+				calls.push({ voice: options.voice, lang: options.lang });
+				return new Uint8Array([1]);
+			},
+			10_000,
+			async () => new Uint8Array([79, 103, 103, 83]),
+		);
 		expect(calls).toEqual([{ voice: "es-ES-ElviraNeural", lang: "es-ES" }]);
 	});
 });
 
 describe("voice cast", () => {
 	test("the reply's language casts its voice; the default speaks english", () => {
-		expect(pickVoice("¿Listo para mañana? Sí, claro.", "en-US-AndrewNeural", ["es-MX-JorgeNeural"]))
-			.toBe("es-MX-JorgeNeural");
+		expect(
+			pickVoice("¿Listo para mañana? Sí, claro.", "en-US-AndrewNeural", ["es-MX-JorgeNeural"]),
+		).toBe("es-MX-JorgeNeural");
 		expect(
 			pickVoice("Sure — done and working. Let me know if you need more.", "en-US-AndrewNeural", [
 				"es-MX-JorgeNeural",

@@ -3,11 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	OUTAGE_NOTICE_AFTER_MS,
-	OUTAGE_STALE_AFTER_MS,
-	OutageTracker,
-} from "./memory-outage.ts";
+import { OUTAGE_NOTICE_AFTER_MS, OUTAGE_STALE_AFTER_MS, OutageTracker } from "./memory-outage.ts";
 
 const dirs: string[] = [];
 // A tracker over a fresh database with a mutable clock.
@@ -60,7 +56,7 @@ describe("outage tracker", () => {
 		const notice = elapse(t, tick, "topic:1:2", 2_000); // over
 		expect(notice).not.toBeNull();
 		expect(notice?.conversation).toBe("topic:1:2");
-		expect((notice?.sinceMs ?? 0)).toBeGreaterThanOrEqual(OUTAGE_NOTICE_AFTER_MS);
+		expect(notice?.sinceMs ?? 0).toBeGreaterThanOrEqual(OUTAGE_NOTICE_AFTER_MS);
 		t.markNotified(notice?.episode ?? -1);
 		tick(60_000);
 		expect(t.recordFailure("topic:1:2")).toBeNull(); // sent — stays quiet
@@ -93,7 +89,7 @@ describe("outage tracker", () => {
 		expect(t.recordFailure("dm:7")).toBeNull(); // episode reset, not instant notice
 		expect(elapse(t, tick, "dm:7", OUTAGE_NOTICE_AFTER_MS - 1_000)).toBeNull(); // fresh threshold applies
 		const notice = elapse(t, tick, "dm:7", 2_000);
-		expect((notice?.sinceMs ?? 0)).toBeGreaterThanOrEqual(OUTAGE_NOTICE_AFTER_MS);
+		expect(notice?.sinceMs ?? 0).toBeGreaterThanOrEqual(OUTAGE_NOTICE_AFTER_MS);
 	});
 
 	test("a mark is scoped to its episode — a late mark cannot mute a successor", () => {

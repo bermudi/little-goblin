@@ -85,10 +85,7 @@ describe("models.dev catalog", () => {
 		}) as unknown as typeof fetch;
 		try {
 			// buildStep shape: both lookups start in the same tick.
-			const both = Promise.all([
-				inputModalities("testprov", "m1"),
-				contextLimit("testprov", "m1"),
-			]);
+			const both = Promise.all([inputModalities("testprov", "m1"), contextLimit("testprov", "m1")]);
 			resolveFetch(
 				new Response(
 					JSON.stringify({

@@ -190,7 +190,11 @@ export function Markdown({ text }: { text: string }) {
 			flushPara();
 			const level = Math.min(heading[1]!.length + 1, 6);
 			const Tag = `h${level}` as "h2" | "h3" | "h4" | "h5" | "h6";
-			blocks.push(<Tag key={key++} className="md-h">{inline(heading[2]!)}</Tag>);
+			blocks.push(
+				<Tag key={key++} className="md-h">
+					{inline(heading[2]!)}
+				</Tag>,
+			);
 			i++;
 			continue;
 		}

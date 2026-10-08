@@ -17,7 +17,13 @@ import {
 } from "./hindsight.ts";
 import { log } from "./log.ts";
 import { OutageTracker } from "./memory-outage.ts";
-import { MemoryQueueWorker, type BlockedRetention, type MemoryQueue, type MemoryQueueCounts, type WorkerOutcome } from "./memory-queue.ts";
+import {
+	MemoryQueueWorker,
+	type BlockedRetention,
+	type MemoryQueue,
+	type MemoryQueueCounts,
+	type WorkerOutcome,
+} from "./memory-queue.ts";
 
 // ---------- client ----------
 
@@ -99,7 +105,7 @@ export function formatRecallBlock(
 	if (outcome === "unavailable") {
 		return (
 			"[Long-term memory — unavailable (service outage). " +
-			"Proceed without it; do not treat this as \"no memories\".]"
+			'Proceed without it; do not treat this as "no memories".]'
 		);
 	}
 	if (outcome === "empty" || facts === null || facts.length === 0) {
@@ -121,7 +127,11 @@ const MAX_RETAIN_CHARS = 2000;
 // Stable, unique per completed exchange. Retries replay identical content
 // (the queue rejects same-ID/different-content), so this must be a pure
 // function of the exchange.
-export function documentIdFor(conversationId: string, anchorSeq: number, assistantId: string): string {
+export function documentIdFor(
+	conversationId: string,
+	anchorSeq: number,
+	assistantId: string,
+): string {
 	return `exchange/${conversationId}/${anchorSeq}/${assistantId}`;
 }
 
@@ -184,7 +194,9 @@ export class MemoryContexts {
 			created_at TEXT NOT NULL,
 			UNIQUE(conversation_id, anchor_seq)
 		)`);
-		db.run("CREATE INDEX IF NOT EXISTS memory_contexts_conv ON memory_contexts(conversation_id, anchor_seq)");
+		db.run(
+			"CREATE INDEX IF NOT EXISTS memory_contexts_conv ON memory_contexts(conversation_id, anchor_seq)",
+		);
 		db.run(`CREATE TABLE IF NOT EXISTS memory_suppressions (
 			document_id TEXT PRIMARY KEY,
 			created_at TEXT NOT NULL
@@ -206,9 +218,11 @@ export class MemoryContexts {
 	}
 
 	load(conversationId: string): RecallContext[] {
-		const rows = this.db.query(
-			"SELECT conversation_id, anchor_seq, content, source_ids, created_at FROM memory_contexts WHERE conversation_id = ? ORDER BY anchor_seq",
-		).all(conversationId) as unknown[];
+		const rows = this.db
+			.query(
+				"SELECT conversation_id, anchor_seq, content, source_ids, created_at FROM memory_contexts WHERE conversation_id = ? ORDER BY anchor_seq",
+			)
+			.all(conversationId) as unknown[];
 		const out: RecallContext[] = [];
 		for (const raw of rows) {
 			const row = contextRowSchema.parse(raw);
@@ -219,7 +233,8 @@ export class MemoryContexts {
 				throw new Error(`Invalid memory context sources for anchor ${row.anchor_seq}`);
 			}
 			const parsed = z.array(z.string()).safeParse(ids);
-			if (!parsed.success) throw new Error(`Invalid memory context sources for anchor ${row.anchor_seq}`);
+			if (!parsed.success)
+				throw new Error(`Invalid memory context sources for anchor ${row.anchor_seq}`);
 			out.push({ anchorSeq: row.anchor_seq, content: row.content, sourceIds: parsed.data });
 		}
 		return out;
@@ -233,25 +248,40 @@ export class MemoryContexts {
 		let removed = 0;
 		for (const ctx of this.loadAll()) {
 			if (ctx.corrupt || ctx.sourceIds.includes(documentId)) {
-				this.db.run(
-					"DELETE FROM memory_contexts WHERE conversation_id = ? AND anchor_seq = ?",
-					[ctx.conversationId, ctx.anchorSeq],
-				);
+				this.db.run("DELETE FROM memory_contexts WHERE conversation_id = ? AND anchor_seq = ?", [
+					ctx.conversationId,
+					ctx.anchorSeq,
+				]);
 				removed++;
 			}
 		}
 		return removed;
 	}
 
-	private loadAll(): { conversationId: string; anchorSeq: number; sourceIds: string[]; corrupt: boolean }[] {
-		const rows = this.db.query(
-			"SELECT conversation_id, anchor_seq, source_ids FROM memory_contexts",
-		).all() as { conversation_id: string; anchor_seq: number; source_ids: string }[];
-		const out: { conversationId: string; anchorSeq: number; sourceIds: string[]; corrupt: boolean }[] = [];
+	private loadAll(): {
+		conversationId: string;
+		anchorSeq: number;
+		sourceIds: string[];
+		corrupt: boolean;
+	}[] {
+		const rows = this.db
+			.query("SELECT conversation_id, anchor_seq, source_ids FROM memory_contexts")
+			.all() as { conversation_id: string; anchor_seq: number; source_ids: string }[];
+		const out: {
+			conversationId: string;
+			anchorSeq: number;
+			sourceIds: string[];
+			corrupt: boolean;
+		}[] = [];
 		for (const r of rows) {
 			try {
 				const ids = z.array(z.string()).parse(JSON.parse(r.source_ids));
-				out.push({ conversationId: r.conversation_id, anchorSeq: r.anchor_seq, sourceIds: ids, corrupt: false });
+				out.push({
+					conversationId: r.conversation_id,
+					anchorSeq: r.anchor_seq,
+					sourceIds: ids,
+					corrupt: false,
+				});
 			} catch {
 				// Never log the content — it may hold the very information
 				// being forgotten. Anchor + conversation locate it.
@@ -259,7 +289,12 @@ export class MemoryContexts {
 					conversation: r.conversation_id,
 					anchor: r.anchor_seq,
 				});
-				out.push({ conversationId: r.conversation_id, anchorSeq: r.anchor_seq, sourceIds: [], corrupt: true });
+				out.push({
+					conversationId: r.conversation_id,
+					anchorSeq: r.anchor_seq,
+					sourceIds: [],
+					corrupt: true,
+				});
 			}
 		}
 		return out;
@@ -273,9 +308,9 @@ export class MemoryContexts {
 	}
 
 	isSuppressed(documentId: string): boolean {
-		const row = this.db.query("SELECT document_id FROM memory_suppressions WHERE document_id = ?").get(
-			documentId,
-		);
+		const row = this.db
+			.query("SELECT document_id FROM memory_suppressions WHERE document_id = ?")
+			.get(documentId);
 		return row !== null;
 	}
 }
@@ -369,7 +404,13 @@ export function memoryStatus(options: {
 		};
 	}
 	if (pending > 0) {
-		return { state: "pending", pending, blocked: 0, detail: `${pending} retention${pending === 1 ? "" : "s"} draining`, blockedDetail: [] };
+		return {
+			state: "pending",
+			pending,
+			blocked: 0,
+			detail: `${pending} retention${pending === 1 ? "" : "s"} draining`,
+			blockedDetail: [],
+		};
 	}
 	return {
 		state: "healthy",
@@ -453,56 +494,63 @@ export function startMemoryWorker(
 	// re-fires — the pathological duplicate is a send that succeeded but
 	// whose mark didn't commit before a crash: one message, once.
 	let noticeInFlight: number | null = null;
-	const observe = outage || blocked
-		? (outcome: WorkerOutcome) => {
-				if (outcome.ok) {
-					outage?.tracker.recordSuccess();
-					return;
-				}
-				if (!outcome.transport) {
-					// Blocked: not an outage (the service answered) — the outage
-					// amendment covers transport failures only. The operator
-					// hears about it exactly once per document: noteBlocked
-					// commits BEFORE the send fires (synchronous SQLite, no
-					// await window), so a second blocked transition of the same
-					// document can never re-notify, and a failed delivery does
-					// not re-notify either — /memory status stays the durable
-					// surface for everything after the first notice.
-					if (blocked && queue.noteBlocked(outcome.documentId)) {
-						void blocked.notify(outcome.conversationId, outcome.error, outcome.attempts).catch((err) => {
-							// No retry by design — the latch above already committed,
-							// so retries would spam a dead Telegram. Error, not warn:
-							// the log is this failure's only voice.
-							log.error("memory blocked notice failed — /memory status remains the surface", err, {
-								conversation: outcome.conversationId,
-								document: outcome.documentId,
-							});
-						});
+	const observe =
+		outage || blocked
+			? (outcome: WorkerOutcome) => {
+					if (outcome.ok) {
+						outage?.tracker.recordSuccess();
+						return;
 					}
-					return;
-				}
-				if (!outage) return;
-				const notice = outage.tracker.recordFailure(outcome.conversationId);
-				if (!notice || noticeInFlight === notice.episode) return;
-				noticeInFlight = notice.episode;
-				const counts = queue.counts(client.target);
-				void outage
+					if (!outcome.transport) {
+						// Blocked: not an outage (the service answered) — the outage
+						// amendment covers transport failures only. The operator
+						// hears about it exactly once per document: noteBlocked
+						// commits BEFORE the send fires (synchronous SQLite, no
+						// await window), so a second blocked transition of the same
+						// document can never re-notify, and a failed delivery does
+						// not re-notify either — /memory status stays the durable
+						// surface for everything after the first notice.
+						if (blocked && queue.noteBlocked(outcome.documentId)) {
+							void blocked
+								.notify(outcome.conversationId, outcome.error, outcome.attempts)
+								.catch((err) => {
+									// No retry by design — the latch above already committed,
+									// so retries would spam a dead Telegram. Error, not warn:
+									// the log is this failure's only voice.
+									log.error(
+										"memory blocked notice failed — /memory status remains the surface",
+										err,
+										{
+											conversation: outcome.conversationId,
+											document: outcome.documentId,
+										},
+									);
+								});
+						}
+						return;
+					}
+					if (!outage) return;
+					const notice = outage.tracker.recordFailure(outcome.conversationId);
+					if (!notice || noticeInFlight === notice.episode) return;
+					noticeInFlight = notice.episode;
+					const counts = queue.counts(client.target);
+					void outage
 						.notify(notice.conversation, notice.sinceMs, counts.pending + counts.submitted)
-					.then(() => outage.tracker.markNotified(notice.episode))
-					.catch((err) => {
-						// Delivery failure retries on the next worker failure (latch
-						// released in finally). Error, not warn: a notice that cannot
-						// go out is operator silence — the log is the only voice it
-						// has (an unparseable conversation id would loop here).
-						log.error("memory outage notice failed — retries on next failure", err, {
-							conversation: notice.conversation,
+						.then(() => outage.tracker.markNotified(notice.episode))
+						.catch((err) => {
+							// Delivery failure retries on the next worker failure (latch
+							// released in finally). Error, not warn: a notice that cannot
+							// go out is operator silence — the log is the only voice it
+							// has (an unparseable conversation id would loop here).
+							log.error("memory outage notice failed — retries on next failure", err, {
+								conversation: notice.conversation,
+							});
+						})
+						.finally(() => {
+							if (noticeInFlight === notice.episode) noticeInFlight = null;
 						});
-					})
-					.finally(() => {
-						if (noticeInFlight === notice.episode) noticeInFlight = null;
-					});
-			}
-		: undefined;
+				}
+			: undefined;
 	const worker = new MemoryQueueWorker(queue, client, Date.now, observe);
 	const tick = opts.tickFn ?? ((signal) => worker.tick(signal));
 	async function drain(): Promise<void> {

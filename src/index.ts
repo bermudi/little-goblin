@@ -1,7 +1,12 @@
 // Composition root: config → auth → conversations → bot → http.
 
 import { loadAuth } from "./auth.ts";
-import { contextLimit, ensureOpenRouterCatalog, inputModalities, inputModalitiesCached } from "./agent/models-dev.ts";
+import {
+	contextLimit,
+	ensureOpenRouterCatalog,
+	inputModalities,
+	inputModalitiesCached,
+} from "./agent/models-dev.ts";
 import { systemPromptFor } from "./agent/prompt.ts";
 import { observedModel, carriesMedia, resolveModel, thinkingOptions } from "./agent/providers.ts";
 import type { MediaPosition } from "./agent/attachments.ts";
@@ -24,7 +29,13 @@ import {
 	type ThinkingLevel,
 	type TtsConfig,
 } from "./config.ts";
-import { captureConversationSettings, channelOf, openStore, prepareAppSettingsForConfig, type Conversation } from "./conversation.ts";
+import {
+	captureConversationSettings,
+	channelOf,
+	openStore,
+	prepareAppSettingsForConfig,
+	type Conversation,
+} from "./conversation.ts";
 import { openDelegations } from "./delegations.ts";
 import {
 	startDelegationLifecycle,
@@ -54,7 +65,11 @@ import { applyMenuButton, AUTH_TELEGRAM_TOKEN, startBot } from "./tg/mod.ts";
 import { makeBellSink } from "./tg/bell.ts";
 import { sendMailNotice, startMailApproval } from "./tg/mail-approval.ts";
 import { filterGuestTools } from "./tg/guest.ts";
-import { sendMemoryBlockedNotice, sendMemoryOutageNotice, sendSkillSavedNotice } from "./tg/notify.ts";
+import {
+	sendMemoryBlockedNotice,
+	sendMemoryOutageNotice,
+	sendSkillSavedNotice,
+} from "./tg/notify.ts";
 import { openPings } from "./tg/pings.ts";
 
 // The file sink attaches before anything that can fail — a malformed
@@ -154,7 +169,9 @@ async function boot() {
 			delegationTargets.set(label, {
 				...(t.machine !== undefined ? { machine: t.machine } : { session: t.session! }),
 				...(t.root !== undefined ? { root: t.root } : {}),
-				herdr: makeHerdr(t.machine !== undefined ? { machine: t.machine } : { session: t.session! }),
+				herdr: makeHerdr(
+					t.machine !== undefined ? { machine: t.machine } : { session: t.session! },
+				),
 			});
 		}
 	}
@@ -168,7 +185,12 @@ async function boot() {
 	// it), so a null read there is a wiring bug, not a runtime state.
 	let delegationLifecycle: DelegationLifecycle | null = null;
 	const delegateDeps = (conv: Conversation) => {
-		if (delegationBoot === undefined || configRef.current.delegation === undefined || delegations === null || herdr === null) {
+		if (
+			delegationBoot === undefined ||
+			configRef.current.delegation === undefined ||
+			delegations === null ||
+			herdr === null
+		) {
 			return undefined;
 		}
 		if (delegationLifecycle === null) throw new Error("delegation lifecycle not wired");
@@ -178,7 +200,7 @@ async function boot() {
 			// are boot-built, and a live definition here could send a
 			// launch's paths/harness choice from a NEW definition into
 			// the OLD adapter's session. Config saves warn "restart to
-		// apply"; until then the snapshot is the truth.
+			// apply"; until then the snapshot is the truth.
 			config: delegationBoot,
 			workspaceDir: paths.workspace(),
 			// Where a launch pins its notices — decided by the source
@@ -217,7 +239,8 @@ async function boot() {
 						address: { chatId: 0, threadId: null },
 						appConversation: spun.conv.id,
 						movedToApp: { title: name, link: spun.link },
-						discard: (reason) => discardSpinOff(store, spun.conv.id, seqAtFork, reason ?? "unspecified"),
+						discard: (reason) =>
+							discardSpinOff(store, spun.conv.id, seqAtFork, reason ?? "unspecified"),
 					};
 				}
 				// Group topics and legacy bare DMs pin their Telegram
@@ -360,7 +383,11 @@ async function boot() {
 					purpose: "compaction",
 				});
 				const providerOptions = thinkingOptions(cfg, modelRef, conv.thinking as ThinkingLevel);
-				const { text } = await generateText({ model, instructions: system, prompt, abortSignal: signal,
+				const { text } = await generateText({
+					model,
+					instructions: system,
+					prompt,
+					abortSignal: signal,
 					...(providerOptions ? { providerOptions } : {}),
 				});
 				return text;
@@ -391,9 +418,7 @@ async function boot() {
 							...(recording ? { recording } : {}),
 							// The allowlist always carries the default: picking it
 							// explicitly is a no-op.
-							...(tts.voices?.length
-								? { voices: [...new Set([tts.voice, ...tts.voices])] }
-								: {}),
+							...(tts.voices?.length ? { voices: [...new Set([tts.voice, ...tts.voices])] } : {}),
 						}
 					: undefined,
 				// The program tool pins new programs to the conversation it runs
@@ -435,9 +460,7 @@ async function boot() {
 				{ configRef, auth, ...(accepts ? { accepts } : {}) },
 				// The transcribe tool joins/leaves the set with the
 				// transcription block — same live-read rule as search.
-				configRef.current.transcription !== undefined
-					? { transcribe: transcribeFile }
-					: undefined,
+				configRef.current.transcription !== undefined ? { transcribe: transcribeFile } : undefined,
 				// The delegate tool rides the live config like search —
 				// but the store/adapter are boot fixtures, so removing
 				// the block hides the tool next turn while the lifecycle
@@ -479,8 +502,8 @@ async function boot() {
 						client: memoryClient,
 						config: memoryBootConfig,
 						contexts: store.memoryContexts,
-					noteRecall,
-				},
+						noteRecall,
+					},
 				}
 			: {}),
 	});
@@ -607,7 +630,12 @@ async function boot() {
 			correction: block.thresholds?.correction ?? block.threshold,
 			procedure: block.thresholds?.procedure ?? block.threshold,
 		};
-		log.info("reviewer enabled", { thresholds, queueCap: block.queueCap, evidence: block.evidence, system1: configRef.current.system1 !== undefined });
+		log.info("reviewer enabled", {
+			thresholds,
+			queueCap: block.queueCap,
+			evidence: block.evidence,
+			system1: configRef.current.system1 !== undefined,
+		});
 		// Staging from a killed run can only be garbage — clear it before
 		// any review can publish alongside it.
 		cleanupStaging(paths.workspace());
@@ -761,7 +789,9 @@ async function boot() {
 		}
 		// Memory is a boot-time snapshot (queue rows bind to the
 		// endpoint+bank hash) — a changed block needs a restart.
-		if (JSON.stringify(configRef.current.memory ?? null) !== JSON.stringify(memoryBootConfig ?? null)) {
+		if (
+			JSON.stringify(configRef.current.memory ?? null) !== JSON.stringify(memoryBootConfig ?? null)
+		) {
 			log.warn("memory config changed — restart to apply");
 		}
 		// The app channel's auth mode is boot-pinned like memory —
@@ -798,9 +828,14 @@ async function boot() {
 		...(memoryClient
 			? {
 					memory: {
-						...(memoryBootConfig ? { target: {
-							baseUrl: memoryBootConfig.baseUrl, bankId: memoryBootConfig.bankId,
-						} } : {}),
+						...(memoryBootConfig
+							? {
+									target: {
+										baseUrl: memoryBootConfig.baseUrl,
+										bankId: memoryBootConfig.bankId,
+									},
+								}
+							: {}),
 						counts: () => store.memoryQueue.counts(memoryClient.target),
 						blockedDetail: () => store.memoryQueue.blockedDetail(memoryClient.target),
 						lastRecallOk: () => memoryState.lastRecallOk,
@@ -866,12 +901,26 @@ async function boot() {
 	const mailWatcher = startMailWatcher({
 		programs,
 		reader: mailPoller,
-		fire: (program, hits, checkpoint, now) =>
-			fireMail(firingDeps, program, hits, checkpoint, now),
+		fire: (program, hits, checkpoint, now) => fireMail(firingDeps, program, hits, checkpoint, now),
 		notify: (address, text) => sendMailNotice(tg.bot.api, address, text),
 	});
 
-	return { configRef, auth, store, programs, outbox, delegations, runtime, tg, http, scheduler, delegationLifecycle, mailWatcher, mailApproval, memoryWorker };
+	return {
+		configRef,
+		auth,
+		store,
+		programs,
+		outbox,
+		delegations,
+		runtime,
+		tg,
+		http,
+		scheduler,
+		delegationLifecycle,
+		mailWatcher,
+		mailApproval,
+		memoryWorker,
+	};
 }
 
 let booted: Awaited<ReturnType<typeof boot>>;
@@ -881,7 +930,20 @@ try {
 	log.error("boot failed", err);
 	process.exit(1);
 }
-const { store, programs, outbox, delegations, runtime, tg, http, scheduler, delegationLifecycle, mailWatcher, mailApproval, memoryWorker } = booted;
+const {
+	store,
+	programs,
+	outbox,
+	delegations,
+	runtime,
+	tg,
+	http,
+	scheduler,
+	delegationLifecycle,
+	mailWatcher,
+	mailApproval,
+	memoryWorker,
+} = booted;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // Long enough for the sinks' final flushes and polling's offset

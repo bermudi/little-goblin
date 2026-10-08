@@ -134,9 +134,7 @@ export function ToolRun({ part }: { part: ToolUIPart | DynamicToolUIPart }) {
 							{face.summary}
 						</span>
 					)}
-					{stateLabel !== null && (
-						<span className={`tool-state ${stateLabel}`}>{stateLabel}</span>
-					)}
+					{stateLabel !== null && <span className={`tool-state ${stateLabel}`}>{stateLabel}</span>}
 				</summary>
 				{face.detail}
 			</details>

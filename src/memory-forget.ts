@@ -14,7 +14,12 @@
 // command already tolerates — same tolerance here, re-runnable
 // (suppression persists; deleteByDocument can run again).
 
-import { HindsightError, identifier, type HindsightClient, type MemoryOperation } from "./hindsight.ts";
+import {
+	HindsightError,
+	identifier,
+	type HindsightClient,
+	type MemoryOperation,
+} from "./hindsight.ts";
 import { log } from "./log.ts";
 import type { MemoryContexts } from "./memory.ts";
 import type { MemoryQueue } from "./memory-queue.ts";
@@ -42,7 +47,8 @@ async function settleInflightRetention(
 		for (const operationId of [...outstanding]) {
 			try {
 				const operation = await client.operation(operationId);
-				if (operation === null || SETTLE_TERMINAL.has(operation.status)) outstanding.delete(operationId);
+				if (operation === null || SETTLE_TERMINAL.has(operation.status))
+					outstanding.delete(operationId);
 			} catch (err) {
 				if (!(err instanceof HindsightError)) throw err;
 			}

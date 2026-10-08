@@ -1,10 +1,6 @@
-// Conversation store — SQLite (bun:sqlite, WAL). A conversation is keyed by
-// its channel address: a Telegram DM or forum topic, or a client-minted app
-// id (DESIGN.md, App channel — two disjoint pools, one store). Owns meta
-// (model/thinking overrides, epoch) and the durable event history as
-// UIMessage-format JSON rows.
-//
-// Durability = WAL + transactions, not tmp/fsync/rename.
+// Conversation store — SQLite (bun:sqlite, WAL): meta (model/thinking
+// overrides, epoch) and the event history as UIMessage JSON rows, keyed by
+// channel address. Durability = WAL + transactions, not tmp/fsync/rename.
 
 import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
@@ -17,54 +13,37 @@ import { MemoryQueue } from "./memory-queue.ts";
 import { compactionSummaryId, corruptRowId } from "./tags.ts";
 import type { MemoryDocument } from "./hindsight.ts";
 
-// ---------- identity ----------
-
-// The channel address IS the conversation identity (DESIGN.md, App
-// channel): a Telegram DM or forum topic, or an app conversation keyed by
-// a client-minted id. Routing picks the door on this kind alone. The app
-// member's Telegram coordinates are literal-0 fillers — an app address
-// has none; the typed zeros keep existing coordinate reads on the union
-// honest (always a number, never a real chat) instead of forcing every
-// telegram-side reader to re-narrow.
+// The channel address IS the conversation identity: routing picks the
+// door on this kind alone. The app member's zeros are fillers, not real
+// coordinates — typed so the union's numeric reads stay honest.
 export type ConversationAddress =
 	| { kind: "dm"; chatId: number }
 	| { kind: "topic"; chatId: number; threadId: number }
-	// Guest mode (design/telegram.md → Guest mode): one conversation per
-	// (chat, summoner) — third-party sandboxed turns and the operator's
-	// own guest summons. chatId is the summoned chat (negative for
-	// groups), userId the summoner (positive).
+	// Guest mode: one conversation per (chat, summoner). chatId is the
+	// summoned chat (negative for groups), userId the summoner (positive).
 	| { kind: "guest"; chatId: number; userId: number }
 	| { kind: "app"; appId: string; chatId: 0; threadId: 0 };
 
 export const APP_ID_PREFIX = "app/";
 
-// App ids are client-minted but not arbitrary: the id rides the "app/"
-// conversation id and an HTTP path segment, so it stays url-safe and
-// slash-free (a uuid or nanoid fits). Validated at the codec —
-// formatAddress and parseAddress are the only writers and readers of
-// the format — so a malformed id can never reach the store.
+// App ids are client-minted but ride the "app/" conversation id and
+// an HTTP path segment, so they must stay url-safe and slash-free.
 export const appIdSchema = z
 	.string()
 	.regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/, "app ids are [A-Za-z0-9_-], 1-64 chars");
 
-// A rolling conversation id's parts (design/telegram.md → Rolling DM):
-// dm:<chat>:<n>, where n is the creation ordinal — a high-water that
-// only grows. Not a ConversationAddress member: resolve() must never
-// mint one (rollDm owns creation), but the codec parses and formats it
-// like every other id shape.
+// dm:<chat>:<n> — n is a creation ordinal that only grows. Not a
+// ConversationAddress member: resolve() must never mint one.
 export interface RollingDmAddress {
 	kind: "rolling";
 	chatId: number;
 	ordinal: number;
 }
 
-// Every shape a conversation id (or intake lane key) can take — the
-// resolve() inputs plus the rolling conversations. parseAddress
-// returns it; formatAddress accepts it.
 export type ParsedAddress = ConversationAddress | RollingDmAddress;
 
-// The single builder for conversation ids and lane keys. One schema,
-// so a malformed address fails here — not silently, downstream.
+// The single builder for ids and lane keys — malformed addresses fail
+// here, not silently downstream.
 export function formatAddress(addr: ParsedAddress): string {
 	if (addr.kind === "dm") return `dm:${addr.chatId}`;
 	if (addr.kind === "rolling") return `dm:${addr.chatId}:${addr.ordinal}`;
@@ -78,8 +57,8 @@ const rollingDmIdRe = /^dm:(-?\d+):([1-9]\d*)$/;
 const topicIdRe = /^topic:(-?\d+):(-?\d+)$/;
 const guestIdRe = /^guest:(-?\d+):(-?\d+)$/;
 
-// Safe integer coordinates out of a regex match — null when any
-// captured number exceeds what a Number can hold exactly.
+// Safe integer coordinates out of a regex match — null when a capture
+// exceeds what a Number can hold exactly.
 function coordsOf(match: RegExpExecArray | null): number[] | null {
 	if (match === null) return null;
 	const nums = match.slice(1).map(Number);
@@ -87,10 +66,10 @@ function coordsOf(match: RegExpExecArray | null): number[] | null {
 }
 
 // The single parser — parseAddress ∘ formatAddress is the identity on
-// every id the store, the inbox, and the lanes hold. Null on anything
-// else: callers route on the null (skip, throw, or tombstone), never
-// guess. Rolling ordinals decode as [1-9]\d* — rollDm mints them and
-// never rewrites them, so a zero or leading-zero ordinal is not an id.
+// every id in the system. Null on anything else: callers route on the
+// null, never guess. Rolling ordinals decode as [1-9]\d* — rollDm mints
+// them and never rewrites them, so a zero or leading-zero ordinal is not
+// an id.
 export function parseAddress(id: string): ParsedAddress | null {
 	if (id.startsWith(APP_ID_PREFIX)) {
 		const appId = appIdSchema.safeParse(id.slice(APP_ID_PREFIX.length));
@@ -107,54 +86,37 @@ export function parseAddress(id: string): ParsedAddress | null {
 	return null;
 }
 
-// The client-minted id an app/ conversation id carries — the codec's
-// projection for the surfaces that need the bare id (the deep link).
-// Null on every other channel or a malformed id.
 export function appIdOf(conversationId: string): string | null {
 	const parsed = parseAddress(conversationId);
 	return parsed !== null && parsed.kind === "app" ? parsed.appId : null;
 }
 
-// The one well-formed way to build an app address — validated here and
-// again in formatAddress so a client-minted id can never smuggle a path
-// segment or a slash into the conversation id.
 export function appAddress(appId: string): ConversationAddress {
 	return { kind: "app", appId: appIdSchema.parse(appId), chatId: 0, threadId: 0 };
 }
 
-// The channel a conversation id belongs to — the address is the id, so
-// the prefix is the whole discriminant. chat_id/thread_id are only the
-// decoded Telegram coordinates; nothing app-side may read them.
+// The channel an id belongs to — the prefix is the whole discriminant.
 // "guest" is its own channel, not a telegram flavor: tool assembly and
-// delivery branch on it (no program/mail/delegate/memory/history tools,
-// no pinned programs) even though settings still follow Telegram's
-// shared selection.
+// delivery branch on it.
 export function channelOf(conversationId: string): "telegram" | "app" | "guest" {
 	if (conversationId.startsWith(APP_ID_PREFIX)) return "app";
 	if (conversationId.startsWith("guest:")) return "guest";
 	return "telegram";
 }
 
-// The one well-formed way to build a guest address — same validated-
-// constructor rule as appAddress.
 export function guestAddress(chatId: number, userId: number): ConversationAddress {
 	return { kind: "guest", chatId, userId };
 }
 
-// ---------- types ----------
-
 export interface Conversation {
 	id: string;
-	// The Telegram coordinates decoded from the id — real only on
-	// dm:/topic: conversations. App rows store 0/NULL (the columns are
-	// legacy NOT NULL): an app conversation has no Telegram door, and
-	// channelOf(id) is the routing check, never these fields.
+	// Real only on dm:/topic:. App rows store 0/NULL (the columns are
+	// legacy NOT NULL) — channelOf(id) is the routing check, never these.
 	chatId: number;
 	threadId: number | null;
 	title: string | null;
-	// Telegram handed this topic a placeholder name (forum_topic_created
-	// is_name_implicit) — the bot owes it a real one. Cleared by any
-	// explicit rename or a successful auto-title.
+	// Telegram handed this topic a placeholder name — the bot owes it a
+	// real one. Cleared by any explicit rename or a successful auto-title.
 	titleImplicit: boolean;
 	// App conversations own durable model/thinking snapshots. Telegram
 	// ignores these columns and uses its one shared config selection.
@@ -190,8 +152,8 @@ export function captureConversationSettings(
 	return { ...conv, ...settings };
 }
 
-// Config provider edits must not strand persisted app selections. Check
-// every row before initializing anything; a refusal leaves disk untouched.
+// Provider edits must not strand persisted app selections; a refusal
+// leaves disk untouched.
 export function prepareAppSettingsForConfig(
 	store: ConversationStore,
 	previous: Config,
@@ -230,13 +192,10 @@ export interface ConversationMetaPatch {
 	persona?: "personal" | "guest";
 }
 
-// A compaction pointer (DESIGN.md, Compaction). Rows append forever —
-// audit trail; the latest per conversation is the active boundary.
-// summaryEligible (design/memory.md → exclusions): whether the folded
-// span contained only memory-eligible events — the summary is derived
-// text, so it may reach memory-bound builders only when every event it
-// was distilled from was eligible. Stamped by the store at write time
-// (it owns the event stamps); never a caller input.
+// A compaction pointer; rows append forever, the latest per
+// conversation is the active boundary. summaryEligible: derived text
+// may reach memory-bound builders only when every event it was
+// distilled from was eligible — store-stamped, never caller input (#85).
 export interface Compaction {
 	boundarySeq: number;
 	summary: string;
@@ -246,64 +205,44 @@ export interface Compaction {
 	createdAt: string;
 }
 
-// What a caller writes — summaryEligible is store-computed (the store
-// owns the event stamps the derivation reads), so it never appears on
-// input.
+// What a caller writes — summaryEligible is store-computed, never input.
 export type CompactionWrite = Omit<Compaction, "summaryEligible">;
 
 export interface ConversationStore {
-	// The shared handle — memory-queue, memory-contexts, memory-destinations,
-	// and the outage tracker each own one table in the same database file.
+	// Shared handle — the memory/outage modules each own tables in this file.
 	readonly db: Database;
 	readonly memoryQueue: MemoryQueue;
 	readonly memoryContexts: MemoryContexts;
-	// Destination history: boot records the live endpoint+bank so forget
-	// can reconstruct a previous bank's client (#87).
+	// Boot records the live endpoint+bank so forget can reconstruct a
+	// previous bank's client (#87).
 	readonly memoryDestinations: MemoryDestinations;
-	// The active compaction pointer (latest row) — null = uncompacted.
-	// The compactions table itself is append-only audit; only the newest
-	// row per conversation steers the model view.
 	getCompaction(id: string): Compaction | null;
 	setCompaction(id: string, compaction: CompactionWrite): void;
-	// Get-or-create by channel address. New conversations start at epoch 0.
-	// The cwd column still exists in the table (NOT NULL, no default —
-	// existing DBs need it stamped) but cwd is no longer per-conversation
-	// state: tools always run in the deployment workspace. Private DMs
-	// route through rolling.ts, never here — the legacy dm:<chat>
-	// conversation this resolves to is history, never current.
+	// Get-or-create by address. The cwd column is legacy NOT NULL —
+	// stamped, ignored. Private DMs route through rolling.ts: a legacy
+	// dm:<chat> row here is history, never current.
 	resolve(addr: ConversationAddress, defaultCwd: string, defaults?: ModelSettings): Conversation;
 	get(id: string): Conversation | null;
-	// Rolling DM (design/telegram.md → Rolling DM): the bot DM is a
-	// rolling address — dm:<chat>:<n> conversations with one current per
-	// chat, the boundary drawn by a quiet gap. currentDm returns the
-	// current conversation (null = never rolled); rollDm creates
-	// dm:<chat>:<n+1> linked to the selected source, then selects it
-	// atomically. n is a creation high-water, never rewound by /back.
+	// Rolling DM: one current dm:<chat>:<n> per private chat; rollDm
+	// creates dm:<chat>:<n+1> linked to the selected source and selects
+	// it atomically. n is a creation high-water, never rewound by /back.
 	currentDm(chatId: number): Conversation | null;
 	rollDm(chatId: number, defaultCwd: string): Conversation;
-	// Read-only predecessor candidate, restricted to rolling private
-	// DMs in this chat. Legacy DM/topic/app conversations never qualify.
+	// Read-only predecessor — rolling private DMs in this chat only.
 	previousDm(chatId: number): Conversation | null;
-	// Atomically select that predecessor and reset the quiet-gap clock.
-	// Null means no predecessor and no state change. Caller owns logs,
-	// cancellation, and pending-input assignment; no history is replayed.
+	// Atomically select the predecessor and reset the quiet-gap clock;
+	// null = no state change. No history replayed; the caller owns logs
+	// and pending input.
 	backDm(chatId: number): Conversation | null;
-	// Latest event/creation timestamp, plus the selection timestamp only
-	// when this is the current DM — the quiet-gap clock the roller reads.
+	// Latest event/creation time, plus selected_at when current — the quiet-gap clock.
 	lastActivityAt(id: string): string;
-	// Highest event seq written so far — null when the conversation
-	// holds none. The spin-off discard compares it against the seq at
-	// fork time: a change means operator input arrived and the fork
-	// must not be deleted (design/app.md → Spin-off).
+	// Highest event seq. The spin-off discard compares it against
+	// fork-time seq: a change means operator input arrived.
 	lastSeq(id: string): number | null;
-	// Spin-off (design/app.md → Spin-off): copy a conversation's model
-	// state into a fresh app conversation, in one transaction — every
-	// event (seq/role/data/anchor/created_at verbatim), the latest
-	// compaction pointer only, and every memory_contexts row. A copy,
-	// never a move: the source is untouched. The memory queue is NOT
-	// replayed — copied exchanges are already retained, and re-enqueue
-	// would re-process them against a bank that already has them.
-	// Nothing logs here — the caller owns the `spin-off` line.
+	// Spin-off: copy model state into a fresh app conversation, one
+	// transaction — every event verbatim, the latest compaction pointer,
+	// every memory_contexts row. The memory queue is NOT replayed (copies
+	// are already retained); the caller owns the `spin-off` log line.
 	forkToApp(
 		fromId: string,
 		appId: string,
@@ -311,29 +250,27 @@ export interface ConversationStore {
 		title: string,
 		defaults?: ModelSettings,
 	): Conversation;
-	// Initialize missing app settings once, without resetting existing
-	// snapshots or fencing a running turn. Missing/non-app ids throw.
+	// Initialize missing app settings once, no reset, no epoch fence;
+	// missing/non-app ids throw.
 	initializeAppSettings(id: string, defaults: ModelSettings): ModelSettings;
 	setMeta(id: string, patch: ConversationMetaPatch): void;
-	// All guest conversations in a chat — closing the chat's guest
-	// access fences their running turns (epoch bumps, Guest mode).
+	// All guest conversations in a chat — closing guest access fences
+	// their running turns.
 	listGuestConversationIds(chatId: number): string[];
 	// Settings changes and cancellation bump the epoch; in-flight turns
-	// fence themselves against it.
+	// fence on it.
 	bumpEpoch(id: string): number;
-	// Frozen system-prompt snapshot (DESIGN.md → Cache stability).
-	// Null = none yet (first turn, or cleared by compaction to refresh).
+	// Frozen system-prompt snapshot; null = none yet (first turn, or cleared by compaction).
 	promptSnapshot(id: string): { text: string; sources: string[] } | null;
 	savePromptSnapshot(id: string, text: string, sources: string[]): void;
 	// Compaction rewrites history — the prefix busts anyway, so the
 	// snapshot rebuilds from current files on the next turn.
 	clearPromptSnapshot(id: string): void;
-	// Settings patch + epoch bump in one transaction — a settings write
-	// that fences in-flight turns must never land half-applied.
+	// Settings patch + epoch bump in one transaction — never half-applied.
 	applySettings(id: string, patch: ConversationMetaPatch): number;
 	// Append UIMessages in one transaction; seq is assigned here.
 	// anchorSeq marks a response with the seq of the user event that
-	// triggered its turn — history() uses it for causal ordering.
+	// triggered its turn.
 	append(
 		id: string,
 		messages: UIMessage[],
@@ -342,56 +279,42 @@ export interface ConversationStore {
 			memory?: { target: string; document: MemoryDocument };
 		},
 	): void;
-	// The model-facing view: causal order, not arrival order. Anchored
-	// assistant events sort immediately after their triggering user
-	// event; everything else falls back to seq.
+	// The causal view (anchored responses sort right after their user
+	// event) as messages; historyEntries adds seqs (recall blocks need
+	// positions); historyDetail adds anchors (compaction's cut rule).
 	history(id: string): UIMessage[];
-	// Same causal view with event seqs — memory recall blocks anchor to
-	// the triggering user message's seq, so interleaving needs positions.
 	historyEntries(id: string): { seq: number; message: UIMessage }[];
-	// The causal view with anchors — compaction's cut rule needs to know
-	// which responses belong to which user events (exchange completeness).
 	historyDetail(id: string): { seq: number; anchorSeq: number | null; message: UIMessage }[];
-	// What a turn actually sees (DESIGN.md, Compaction): the causal view
-	// cut at the active boundary, with the summary message prepended.
-	// The cut is on causal position — (anchorSeq ?? seq) > boundarySeq —
-	// so a late answer to a folded question rides into the summary with
-	// it instead of stranding, orphaned, in the tail. historyEntries
-	// above stays the full, unbounded record.
+	// What a turn sees: the causal view cut at the active boundary, the
+	// summary prepended. The cut is on causal position — (anchorSeq ??
+	// seq) > boundarySeq — so a late answer to a folded question rides
+	// into the summary instead of stranding in the tail.
 	modelEntries(id: string): { seq: number; message: UIMessage }[];
 	// Seq of the newest user event — a turn's response anchors to it.
 	lastUserSeq(id: string): number | null;
-	// Memory eligibility (design/memory.md → exclusions): every event's
-	// append-time stamp plus the active compaction summary's derived
-	// eligibility — the filter input for memory-bound builders. Re-enabling
-	// memory reads this, never the live flag, so excluded-era messages stay
-	// out of recall queries and retention documents retroactively (#85).
+	// Every event's append-time stamp plus the summary's derived
+	// eligibility (#85) — the filter input for memory-bound builders.
+	// Re-enabling memory reads this, never the live flag: excluded-era
+	// messages stay out of recall and retention retroactively.
 	memoryEligibility(id: string): MemoryEligibility;
-	// Full-text search over user/assistant event text (DESIGN.md, Chat
-	// search). Memory-excluded conversations are filtered at query time
-	// against the live flag — retroactive. Empty when the query has no
-	// searchable terms. Rank-best-first, bounded by limit. channelPrefix
-	// (a LIKE pattern like "app/%") scopes the pool — the app surface
-	// searches only its own channel (DESIGN.md, disjoint pools).
+	// Full-text search over user/assistant event text. Excluded
+	// conversations filter at query time against the live flag —
+	// retroactive, unlike the event stamps. channelPrefix (a LIKE pattern
+	// like "app/%") scopes the pool.
 	searchHistory(query: string, limit: number, channelPrefix?: string): HistoryHit[];
-	// Arrival-ordered window around one event — paging context around a
-	// search hit. No exclusion check here: the tool checks the live flag
-	// before calling, the way search filters it in SQL.
+	// Arrival-ordered window around one event. No exclusion check here —
+	// the tool checks the live flag before calling.
 	eventContext(id: string, seq: number, window: number): HistoryContextRow[];
-	// The app channel's own pool, most recently active first — the two
-	// pools never mix, so the list is filtered on the id prefix, not a
-	// flag (DESIGN.md, App channel).
+	// The app channel's own pool, most recently active first — filtered
+	// on the id prefix.
 	listAppConversations(): AppConversationSummary[];
-	// Drop a conversation and everything it owns: events (the FTS delete
-	// trigger keeps the index honest), the compaction audit, recall
-	// blocks, and queued retention for its documents. A live turn must be
-	// fenced first (runtime.stop) — this only touches the store.
+	// Drop a conversation and everything it owns (events fire the FTS
+	// delete trigger). A live turn must be fenced first (runtime.stop) —
+	// this only touches the store.
 	deleteConversation(id: string): void;
 	close(): void;
 }
 
-// A chat-search hit: the addressing a context page needs, plus the text
-// the tool shapes into a snippet.
 export interface HistoryHit {
 	conversationId: string;
 	title: string | null;
@@ -408,18 +331,15 @@ export interface HistoryContextRow {
 	createdAt: string;
 }
 
-// One row of the app conversation list. id is the full address
-// ("app/<appId>") — the prefix is the channel marker; the client's minted
-// id is the part after it.
+// One row of the app conversation list; id is the full "app/<appId>" address.
 export interface AppConversationSummary {
 	id: string;
 	title: string | null;
 	createdAt: string;
-	// Newest event's timestamp, or createdAt for a conversation nobody
-	// has spoken in yet — the list's ordering.
+	// Newest event's timestamp, or createdAt if nobody spoke — the list's
+	// ordering.
 	updatedAt: string;
-	// The newest event's text, capped for the list row. "" when the
-	// latest event carries no text parts (an attachment-only message).
+	// Newest event's text, capped; "" when no text parts.
 	preview: string;
 }
 
@@ -436,9 +356,8 @@ interface Row {
 	thinking: string | null;
 	voice: number;
 	memory_excluded: number;
-	// Prompt class (Guest mode): "personal" (normal persona, SOUL et al.)
-	// or "guest" (sandbox persona — no private files in, nothing about
-	// the operator out). Frozen at creation; drives the tool filter too.
+	// Prompt class: "guest" is the sandbox persona — no private files
+	// in, nothing about the operator out. Frozen at creation.
 	persona: string;
 	epoch: number;
 	created_at: string;
@@ -463,11 +382,10 @@ function rollingDmOrdinal(
 		: null;
 }
 
-// Disk state is a boundary: history rows are validated on read, not
-// trusted. Parts stay loosely typed — the runtime's converters own the
-// per-part semantics — and a row that isn't a message envelope at all
-// degrades to a placeholder text part, never a throw: one malformed row
-// must not kill every future turn in its conversation.
+// Disk state is a boundary: rows are validated on read, loosely (the
+// runtime's converters own per-part semantics). A row that isn't an
+// envelope degrades to a placeholder, never a throw — one malformed row
+// must not kill every future turn.
 const uiMessageSchema = z.looseObject({
 	id: z.string(),
 	role: z.enum(["system", "user", "assistant"]),
@@ -476,9 +394,8 @@ const uiMessageSchema = z.looseObject({
 
 const roleSchema = z.enum(["system", "user", "assistant"]);
 
-// One corrupt row degrades to a readable placeholder in its original
-// position (seq/anchor preserved) — the turn sees a note where a message
-// was, not a parse error that fails every future turn identically.
+// The placeholder keeps the row's position (seq/anchor preserved) — a
+// note where a message was, not a parse error.
 function corruptPlaceholder(seq: number, role: string): UIMessage {
 	const parsed = roleSchema.safeParse(role);
 	return {
@@ -493,12 +410,9 @@ function corruptPlaceholder(seq: number, role: string): UIMessage {
 	};
 }
 
-// Rows are versioned envelopes {"v":1,"message":…} — the SDK owns the
-// part shapes, so every row stamps the format that wrote it (DESIGN.md,
-// History). The read is envelope-only (the W2.2 purge killed the
-// bare-row fallback): openStore still wraps any straggler bare rows
-// once at open, and anything else — corrupt or bare — fails the schema
-// below and degrades to a placeholder.
+// Rows are versioned envelopes {"v":1,"message":…} — every row stamps
+// the format that wrote it (the SDK owns part shapes). Reads are
+// envelope-only; straggler bare rows wrap once at open, below.
 function envelopeOf(raw: unknown): unknown {
 	if (
 		typeof raw === "object" &&
@@ -512,9 +426,9 @@ function envelopeOf(raw: unknown): unknown {
 	return null;
 }
 
-// The compacted view's synthetic first message (DESIGN.md, Compaction):
-// user role, explicit framing — the model reads carried context, not a
-// forged transcript. seq = the boundary, so causal sorting keeps it first.
+// The compacted view's synthetic first message: user role, explicit
+// framing — carried context, not a forged transcript. seq = the
+// boundary, so causal sorting keeps it first.
 export function summaryMessage(compaction: Compaction): UIMessage {
 	return {
 		id: compactionSummaryId(compaction.boundarySeq),
@@ -545,11 +459,9 @@ function toConversation(r: Row): Conversation {
 	};
 }
 
-// The FTS-indexed text of one event row: concatenated text parts only.
-// Written against a row qualifier (new/old/events) so triggers and the
-// backfill SELECT share it. Total over any stored bytes — a corrupt
-// row indexes as empty, never fails its INSERT (corruption still warns
-// at read time, where the placeholder degrades it).
+// The FTS text of one row: concatenated text parts only, written
+// against a row qualifier so triggers and backfill share it. Total over
+// any stored bytes — a corrupt row indexes empty, never fails its INSERT.
 function ftsTextOf(qual: string): string {
 	return (
 		`(CASE WHEN json_valid(${qual}.data) THEN ` +
@@ -559,10 +471,8 @@ function ftsTextOf(qual: string): string {
 	);
 }
 
-// Plain terms in, quoted FTS5 AND out — no query syntax reaches MATCH:
-// each whitespace-separated term becomes a double-quoted phrase, so
-// operators and punctuation are literal text. Null = no searchable
-// terms (the search answers empty, it doesn't throw).
+// Plain terms in, quoted FTS5 AND out — each term a double-quoted
+// phrase, so no query syntax reaches MATCH. Null = no searchable terms.
 export function toFtsQuery(query: string): string | null {
 	const terms = query
 		.split(/\s+/)
@@ -572,12 +482,9 @@ export function toFtsQuery(query: string): string | null {
 	return terms.map((t) => `"${t}"`).join(" ");
 }
 
-// One flat display line out of message text — the app list's title and
-// preview rows are single-line labels, so markdown furniture comes off:
-// fences and their language tag, inline-code backticks, link syntax
-// (text survives), paired emphasis, and line-lead markers. Without it a
-// reply that opens on a code block titles the row "```typescript const
-// slug = (s:…".
+// One flat display line — list titles and previews are single-line
+// labels, so markdown furniture comes off, or a reply that opens on a
+// code block titles the row "```typescript const slug = …".
 function flatLine(text: string): string {
 	return text
 		.replace(/```+[ \t]*[^\s`\n]*/g, " ")
@@ -590,9 +497,8 @@ function flatLine(text: string): string {
 		.trim();
 }
 
-// Parse one event row's envelope — null when the row is unreadable.
-// The caller decides: history degrades to a placeholder in position,
-// search and context skip the row. Warns either way — a silent skip
+// Parse one envelope — null when unreadable; history degrades to a
+// placeholder, search and context skip. Warns either way: a silent skip
 // would hide corruption.
 function parseEvent(
 	conversation: string,
@@ -624,9 +530,9 @@ function parseEvent(
 export function openStore(dbPath: string): ConversationStore {
 	const db = new Database(dbPath);
 	db.run("PRAGMA journal_mode = WAL");
-	// Telegram acknowledges an update after its inbox insert. WAL/NORMAL
-	// survives a process crash, but a host power loss can discard an
-	// acknowledged commit; FULL syncs each commit before we return.
+	// Telegram acks after the inbox insert; WAL/NORMAL survives a crash,
+	// but host power loss could discard an acked commit — FULL syncs
+	// before we return.
 	db.run("PRAGMA synchronous = FULL");
 	db.run("PRAGMA foreign_keys = ON");
 	db.run(`
@@ -643,7 +549,6 @@ export function openStore(dbPath: string): ConversationStore {
 			epoch INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL
 		)`);
-	// Existing DBs predate title_implicit — additive column, no rebuild.
 	const convCols = new Set(
 		db
 			.query<{ name: string }, []>("PRAGMA table_info(conversations)")
@@ -674,7 +579,6 @@ export function openStore(dbPath: string): ConversationStore {
 			memory_eligible INTEGER NOT NULL DEFAULT 0,
 			UNIQUE(conversation_id, seq)
 		)`);
-	// Existing DBs predate anchor_seq — additive column, no rebuild.
 	const eventCols = new Set(
 		db
 			.query<{ name: string }, []>("PRAGMA table_info(events)")
@@ -684,12 +588,10 @@ export function openStore(dbPath: string): ConversationStore {
 	if (!eventCols.has("anchor_seq")) {
 		db.run("ALTER TABLE events ADD COLUMN anchor_seq INTEGER");
 	}
-	// Memory eligibility is stamped per event at append time — the durable
-	// answer to "may this text ever reach the memory service?" (#85,
-	// design/memory.md → exclusions). DEFAULT 0 makes every pre-stamp row
-	// ineligible: their append-time flag is unreconstructable, and enabling
-	// memory must not silently backfill historical messages. New rows are
-	// always stamped explicitly by append(); forkToApp copies source stamps.
+	// Stamped per event at append time (#85): the durable answer to "may
+	// this text ever reach the memory service?" DEFAULT 0 keeps every
+	// pre-stamp row ineligible — the append-time flag is unreconstructable,
+	// and enabling memory must not silently backfill.
 	if (!eventCols.has("memory_eligible")) {
 		db.run("ALTER TABLE events ADD COLUMN memory_eligible INTEGER NOT NULL DEFAULT 0");
 		const stamped = db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM events").get()?.n;
@@ -697,15 +599,10 @@ export function openStore(dbPath: string): ConversationStore {
 			events: stamped ?? 0,
 		});
 	}
-	// Chat search (DESIGN.md): a contentless FTS5 index over user and
-	// assistant event text, kept by triggers. Contentless, not
-	// external-content — events stores JSON envelopes, so there is no
-	// plain-text content column to point at; the indexed value is the
-	// extracted projection below. System events never enter (the WHEN
-	// clauses) and neither do tool payloads (the text-parts-only
-	// projection). Deletes stay honest through the delete trigger.
-	// Created before the envelope migration further down so the update
-	// trigger re-indexes migrated rows.
+	// Contentless FTS5, not external-content — events stores JSON
+	// envelopes, so there is no plain-text column to point at; the indexed
+	// value is the extracted projection. Created before the envelope
+	// migration below so the update trigger re-indexes migrated rows.
 	const ftsFresh =
 		db
 			.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'events_fts'")
@@ -723,8 +620,7 @@ export function openStore(dbPath: string): ConversationStore {
 		WHEN NEW.role IN ('user','assistant')
 		BEGIN INSERT INTO events_fts(events_fts, rowid, text) VALUES('delete', old.id, ${ftsTextOf("old")});
 		INSERT INTO events_fts(rowid, text) VALUES (new.id, ${ftsTextOf("new")}); END`);
-	// Upgrading DBs predate the index — backfill once, from the same
-	// projection the triggers use. In a fresh DB this selects nothing.
+	// Backfill once for upgrading DBs, from the trigger's projection.
 	if (ftsFresh) {
 		db.run(`INSERT INTO events_fts(rowid, text)
 			SELECT id, ${ftsTextOf("events")} FROM events WHERE role IN ('user','assistant')`);
@@ -733,12 +629,9 @@ export function openStore(dbPath: string): ConversationStore {
 	const memoryQueue = new MemoryQueue(db);
 	const memoryContexts = new MemoryContexts(db);
 	const memoryDestinations = new MemoryDestinations(db);
-	// Compaction pointers — append-only audit; the newest row per
-	// conversation is the active boundary (DESIGN.md, Compaction).
-	// summary_eligible carries the folded span's memory eligibility: a
-	// summary is distilled text, so it may feed memory-bound builders only
-	// when every event it replaced was eligible. DEFAULT 0 fails legacy
-	// rows closed the same way the event stamp does.
+	// Compaction pointers, append-only; the newest row per conversation
+	// is the active boundary. summary_eligible DEFAULT 0 fails legacy
+	// rows closed, the same way the event stamp does (#85).
 	db.run(`
 		CREATE TABLE IF NOT EXISTS compactions (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -760,10 +653,9 @@ export function openStore(dbPath: string): ConversationStore {
 		db.run("ALTER TABLE compactions ADD COLUMN summary_eligible INTEGER NOT NULL DEFAULT 0");
 	}
 	// Frozen system prompts (DESIGN.md → Cache stability): the bytes a
-	// conversation started with, served verbatim every turn — file edits
-	// load at conversation boundaries (roll, compaction), never
-	// mid-run, so a live conversation's prefix cache is never rewritten
-	// underneath it.
+	// conversation started with, served verbatim — file edits load at
+	// conversation boundaries, never mid-run, so a live prefix cache is
+	// never rewritten.
 	db.run(`
 		CREATE TABLE IF NOT EXISTS prompt_snapshots (
 			conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
@@ -771,8 +663,7 @@ export function openStore(dbPath: string): ConversationStore {
 			sources TEXT NOT NULL,
 			built_at TEXT NOT NULL
 		)`);
-	// Rolling DM (design/telegram.md → Rolling DM): one current
-	// dm:<chat>:<n> conversation per private chat; n only grows, so a
+	// One current rolling DM per private chat; n only grows, so a
 	// reverted db still mints fresh ids.
 	db.run(`
 		CREATE TABLE IF NOT EXISTS dm_rolls (
@@ -826,11 +717,9 @@ export function openStore(dbPath: string): ConversationStore {
 			db.run("ALTER TABLE dm_rolls ADD COLUMN selected_at TEXT");
 		}
 	})();
-	// Legacy rows predate the versioned envelope — wrap them once, in
-	// place, before anything reads them this boot (reads are strict;
-	// without this a bare row would placeholder-degrade). Only
-	// well-formed bare UIMessage objects match (top-level string `id`);
-	// corrupt rows are left alone and degrade to placeholders on read.
+	// Legacy rows predate the envelope — wrap once, in place, before
+	// any read this boot (reads are strict). Only well-formed bare
+	// UIMessages match (top-level string `id`); corrupt rows degrade.
 	const bare =
 		db
 			.query<{ n: number }, []>(
@@ -896,8 +785,8 @@ export function openStore(dbPath: string): ConversationStore {
 	const qNextSeq = db.query<{ n: number | null }, [string]>(
 		"SELECT MAX(seq) AS n FROM events WHERE conversation_id = ?",
 	);
-	// Memory-bound filter inputs (#85): the eligible seqs, and the folded
-	// span's ineligible count a new compaction pointer must consult.
+	// Memory-bound filter inputs (#85): eligible seqs + folded-span
+	// ineligible count.
 	const qEligibleSeqs = db.query<{ seq: number }, [string]>(
 		"SELECT seq FROM events WHERE conversation_id = ? AND memory_eligible = 1",
 	);
@@ -911,9 +800,8 @@ export function openStore(dbPath: string): ConversationStore {
 	const qInsertEvent = db.query(
 		"INSERT INTO events (conversation_id, seq, role, data, anchor_seq, created_at, memory_eligible) VALUES (?, ?, ?, ?, ?, ?, ?)",
 	);
-	// forkToApp's copy sources — events verbatim (created_at included,
-	// unlike the history view, and the eligibility stamp with it: a copied
-	// exchange's admission-time eligibility is part of the exchange), and
+	// forkToApp's copy sources — events verbatim (created_at and the
+	// eligibility stamp included, unlike the history view), and
 	// memory_contexts with only the conversation_id swapped.
 	const qAllEvents = db.query<
 		{
@@ -940,9 +828,8 @@ export function openStore(dbPath: string): ConversationStore {
 	const qEpoch = db.query<{ epoch: number }, [string]>(
 		"SELECT epoch FROM conversations WHERE id = ?",
 	);
-	// Chat search: FTS rowids join back to events for the addressable
-	// hit, conversations for the title and the live exclusion flag.
-	// Rank-best-first — FTS5's default rank orders best match first.
+	// FTS rowids join back to events for the hit, conversations for the
+	// title and live exclusion flag; FTS5's default rank is best-first.
 	const qSearch = db.query<
 		{
 			cid: string;
@@ -970,15 +857,12 @@ export function openStore(dbPath: string): ConversationStore {
 		`SELECT seq, role, data, created_at FROM events
 		WHERE conversation_id = ? AND seq BETWEEN ? AND ? ORDER BY seq`,
 	);
-	// The app channel's own pool — the id prefix is the channel marker.
 	const qListApp = db.query<{ id: string; title: string | null; created_at: string }, []>(
 		`SELECT id, title, created_at FROM conversations
 		WHERE id LIKE 'app/%' ORDER BY created_at, rowid`,
 	);
-	// A list row's freshness + subtitle: the newest event's timestamp and
-	// its text projection (empty when it carries no text parts). The
-	// rowid rides along as the activity order — created_at ties within a
-	// millisecond can't order two writes.
+	// Freshness and preview source; the rowid rides along as activity
+	// order — created_at ties within a millisecond can't order two writes.
 	const qLastAppEvent = db.query<
 		{ id: number; seq: number; role: string; data: string; created_at: string },
 		[string]
@@ -986,9 +870,8 @@ export function openStore(dbPath: string): ConversationStore {
 		`SELECT id, seq, role, data, created_at FROM events
 		WHERE conversation_id = ? ORDER BY seq DESC LIMIT 1`,
 	);
-	// deleteConversation's sweep — children before the row, the FK on
-	// events/compactions demands it. The events delete fires the FTS
-	// delete trigger per row, so the index stays honest for free.
+	// deleteConversation's sweep — children before the row (the FK
+	// demands it); the events delete fires the FTS trigger per row.
 	const qDeleteEvents = db.query("DELETE FROM events WHERE conversation_id = ?");
 	const qDeleteCompactions = db.query("DELETE FROM compactions WHERE conversation_id = ?");
 	const qDeleteContexts = db.query("DELETE FROM memory_contexts WHERE conversation_id = ?");
@@ -1088,11 +971,10 @@ export function openStore(dbPath: string): ConversationStore {
 		},
 
 		setCompaction(id, compaction) {
-			// The summary is derived text: it may feed memory-bound builders
-			// only when every event the pointer folds (causal position ≤
-			// boundary — the same key modelEntries cuts on) was eligible. A
-			// prior summary's span sits below the new boundary too, so one
-			// count covers inherited ineligibility across repeated
+			// Derived text feeds memory-bound builders only when every event
+			// the pointer folds (causal position ≤ boundary — the key
+			// modelEntries cuts on) was eligible; a prior summary's span sits
+			// below the new boundary, so one count covers repeated
 			// compactions (#85).
 			const foldedIneligible = qIneligibleFolded.get(id, compaction.boundarySeq)?.n ?? 0;
 			qInsertCompaction.run(
@@ -1114,8 +996,7 @@ export function openStore(dbPath: string): ConversationStore {
 					if (addr.kind === "app" && defaults) initializeSettings(id, defaults);
 					return toConversation(qGet.get(id)!);
 				}
-				// Telegram coordinates are fillers on app rows; channelOf
-				// routes on the id prefix, never these legacy columns.
+				// Fillers — channelOf routes on the prefix, never these columns.
 				qInsertConv.run(
 					id,
 					addr.chatId,
@@ -1206,9 +1087,8 @@ export function openStore(dbPath: string): ConversationStore {
 			return db.transaction(() => {
 				const id = formatAddress(appAddress(appId));
 				qInsertConv.run(id, 0, null, defaultCwd, new Date().toISOString());
-				// The memory opt-out is part of the copied state — an
-				// excluded DM's text must stay unsearchable and
-				// unretained in the app fork too.
+				// The memory opt-out is copied state — an excluded DM's text
+				// stays unsearchable and unretained in the fork too.
 				applyPatch(id, {
 					title,
 					titleImplicit: true,
@@ -1228,9 +1108,8 @@ export function openStore(dbPath: string): ConversationStore {
 						e.memory_eligible,
 					);
 				}
-				// Compaction rows are append-only audit — only the latest
-				// pointer steers the model view, so only it copies. The
-				// summary's eligibility copies with it: the fork's memory-bound
+				// Only the latest pointer copies — it alone steers the model
+				// view — and its eligibility with it: the fork's memory-bound
 				// view must match the source's.
 				const compaction = qCompaction.get(fromId);
 				if (compaction !== null) {
@@ -1400,9 +1279,8 @@ export function openStore(dbPath: string): ConversationStore {
 				const message = last === null ? null : parseEvent(r.id, last.seq, last.role, last.data);
 				out.push({
 					id: r.id,
-					// Display projection: titles are single-line labels too —
-					// a markdown-decked title flattens or, reduced to nothing,
-					// falls through to the preview.
+					// Titles flatten too; reduced to nothing, they fall through
+					// to the preview.
 					title: r.title === null ? null : flatLine(r.title) || null,
 					createdAt: r.created_at,
 					updatedAt: last?.created_at ?? r.created_at,
@@ -1447,11 +1325,9 @@ export function openStore(dbPath: string): ConversationStore {
 				anchorSeq: r.anchor_seq,
 				message: parseEvent(id, r.seq, r.role, r.data) ?? corruptPlaceholder(r.seq, r.role),
 			}));
-			// Arrival order stays on disk; this view sorts each anchored
-			// response right after the user event that triggered its turn.
-			// Key = anchor ?? seq, tiebreak = seq — an anchored response's
-			// anchor always precedes its own seq, so it lands just after
-			// its user event and before anything that arrived later.
+			// Arrival order stays on disk; this sorts each anchored response
+			// right after its user event. Key = anchor ?? seq, tiebreak = seq
+			// — an anchor always precedes its own seq.
 			rows.sort((a, b) => {
 				const ka = a.anchorSeq ?? a.seq;
 				const kb = b.anchorSeq ?? b.seq;
@@ -1462,10 +1338,9 @@ export function openStore(dbPath: string): ConversationStore {
 
 		modelEntries(id) {
 			const compaction = this.getCompaction(id);
-			// Filter on the same key the causal sort uses: an anchored
-			// response to a compacted user event has a high seq but an
-			// early causal position — it belongs to the summarized span,
-			// not the tail (DESIGN.md, Compaction).
+			// Filter on the causal key: an anchored response to a compacted
+			// user event has a high seq but an early causal position — it
+			// belongs to the summarized span, not the tail.
 			const entries = this.historyDetail(id)
 				.filter((e) => compaction === null || (e.anchorSeq ?? e.seq) > compaction.boundarySeq)
 				.map((e) => ({ seq: e.seq, message: e.message }));

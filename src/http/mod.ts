@@ -598,8 +598,13 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 		}
 		// The app channel's built client (Vite output in app/dist).
 		// Public like the mini app's page — the API carries the auth.
+		// The shell itself, never a redirect: url.origin is the Host the
+		// backend saw, and any door that rewrites Host to the loopback
+		// target (nginx default, some tailscale serve configs) would
+		// turn {publicUrl}/app into a bounce to a dead 127.0.0.1 URL
+		// (#105) — the deep-link routes below serve it directly too.
 		if (url.pathname === "/app") {
-			return Response.redirect(`${url.origin}/app/`, 302);
+			return serveAppDist("");
 		}
 		// The spin-off deep link (design/app.md → Spin-off → Links):
 		// /app/c/<appId> opens one conversation — serve the same

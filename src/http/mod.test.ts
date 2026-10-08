@@ -1015,6 +1015,33 @@ describe("app deep link (Spin-off)", () => {
 	// `bun run app:build`, which is exactly the loud-500 path.
 	const distExists = existsSync(join(import.meta.dir, "..", "..", "app", "dist"));
 
+	// #105: /app is the shell itself, never a redirect — `url.origin`
+	// is the Host the backend saw, and any door that rewrites Host to
+	// the loopback target (nginx default, some tailscale serve configs)
+	// turned {publicUrl}/app into a bounce to a dead
+	// http://127.0.0.1:PORT/.
+	test("the /app convenience route serves the client shell directly, no redirect", async () => {
+		const { http } = setup();
+		try {
+			// redirect: manual — a followed 302 would mask the bounce the
+			// test exists to catch.
+			const res = await fetch(`http://127.0.0.1:${http.port}/app`, { redirect: "manual" });
+			// What the deep-link routes do: the shell or the loud 500 —
+			// never a 30x that re-derives the origin.
+			expect([200, 500]).toContain(res.status);
+			expect(res.headers.get("location")).toBeNull();
+			if (res.status === 200) {
+				expect(res.headers.get("content-type")).toContain("text/html");
+				expect(res.headers.get("cache-control")).toBe("no-store");
+				expect(await res.text()).toContain("<html");
+			} else {
+				expect(((await res.json()) as { error: string }).error).toContain("app client not built");
+			}
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("a valid id serves the client shell", async () => {
 		const { http, get } = setup();
 		try {

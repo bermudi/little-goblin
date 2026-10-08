@@ -204,6 +204,59 @@ describe("runCompaction", () => {
 		expect(writes).toHaveLength(0);
 	});
 
+	test("a settings fence mid-summary cannot publish a pointer", async () => {
+		// The abort signal never fires — only the epoch moves, exactly like
+		// /memory while a summary call is in flight.
+		const { store, writes } = fakeStore(sample());
+		let revoked = false;
+		await expect(
+			runCompaction(
+				"dm:1",
+				store,
+				"m",
+				async () => {
+					revoked = true; // the epoch bumps while the call is in flight
+					return "late summary";
+				},
+				{
+					tailTokenBudget: 1,
+					inputTokenBudget: 32_000,
+					assertAuthority: () => {
+						if (revoked) throw new Error("turn fenced");
+					},
+				},
+				signal(),
+			),
+		).rejects.toThrow("turn fenced");
+		expect(writes).toHaveLength(0);
+	});
+
+	test("a fence that landed before the compaction starts spends nothing", async () => {
+		const { store, writes } = fakeStore(sample());
+		let calls = 0;
+		await expect(
+			runCompaction(
+				"dm:1",
+				store,
+				"m",
+				async () => {
+					calls++;
+					return "must not run";
+				},
+				{
+					tailTokenBudget: 1,
+					inputTokenBudget: 32_000,
+					assertAuthority: () => {
+						throw new Error("turn fenced");
+					},
+				},
+				signal(),
+			),
+		).rejects.toThrow("turn fenced");
+		expect(calls).toBe(0);
+		expect(writes).toHaveLength(0);
+	});
+
 	test("an empty summary is a failure, not a silent wipe", async () => {
 		const { store, writes } = fakeStore(sample());
 		await expect(

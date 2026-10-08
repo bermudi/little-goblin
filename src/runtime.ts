@@ -630,7 +630,11 @@ export class Runtime {
 	// moves the pointer; the event stream is never touched. Throws
 	// propagate — the auto path warns, the command path replies. The
 	// summary call rides a dedicated abort controller: /stop and shutdown
-	// cancel it rather than waiting out a stalled provider.
+	// cancel it rather than waiting out a stalled provider. Epoch changes
+	// fence the commit the same way (the authority rule): the compaction
+	// captures its epoch at entry and re-checks before spending or
+	// committing, so a settings change mid-summary leaves the pointer and
+	// the frozen snapshot untouched — the next crossing retries.
 	private async doCompact(
 		conv: Conversation,
 		reason: "threshold" | "manual" | "overflow",
@@ -641,6 +645,11 @@ export class Runtime {
 		}
 		const compaction = this.deps.compaction;
 		if (!compaction) return { kind: "noop", reason: "compaction not configured" };
+		// The authority this compaction runs under: the turn's admission
+		// epoch (threshold/overflow share the admitted selection) or the
+		// freshly resolved channel state (manual). checkAuthority throws
+		// FencedError the moment the store's epoch moves past it.
+		const epoch = conv.epoch;
 		// The controller registers BEFORE the first await: a /stop arriving
 		// while buildStep is pending must abort this compaction, not a null
 		// controller — otherwise the summary runs and the pointer lands
@@ -670,7 +679,12 @@ export class Runtime {
 				this.deps.store,
 				compaction.modelRef(conv),
 				(system, prompt, signal) => compaction.summarize(conv, system, prompt, signal),
-				{ tailTokenBudget: tail, inputTokenBudget, reason },
+				{
+					tailTokenBudget: tail,
+					inputTokenBudget,
+					reason,
+					assertAuthority: () => this.checkAuthority(conv.id, epoch),
+				},
 				controller.signal,
 			);
 			if (outcome.kind === "compacted") {
@@ -2045,13 +2059,22 @@ export class Runtime {
 				try {
 					await this.doCompact(conv, "threshold");
 				} catch (err) {
-					log.warn(
-						"compaction failed — view unchanged, will retry on next threshold crossing",
-						err,
-						{
+					if (err instanceof FencedError) {
+						// A settings change fenced the summary — the same quiet shape
+						// as a fenced turn: no pointer, the crossing retries.
+						log.info("threshold compaction fenced — view unchanged", {
 							conversation: convId,
-						},
-					);
+							epoch,
+						});
+					} else {
+						log.warn(
+							"compaction failed — view unchanged, will retry on next threshold crossing",
+							err,
+							{
+								conversation: convId,
+							},
+						);
+					}
 				}
 			}
 		} catch (err) {

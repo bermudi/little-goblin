@@ -201,6 +201,12 @@ export async function runCompaction(
 		inputTokenBudget: number;
 		callTimeoutMs?: number;
 		reason?: "threshold" | "manual" | "overflow";
+		// The authority fence (DESIGN.md → The authority rule, wired from
+		// runtime.ts checkAuthority): throws when the conversation's epoch
+		// advanced since the compaction captured it. Checked before each
+		// summary chunk and immediately before the pointer commits — a
+		// settings fence must land exactly like the abort signal does.
+		assertAuthority?: () => void;
 	},
 	signal: AbortSignal,
 ): Promise<CompactionOutcome> {
@@ -245,6 +251,9 @@ export async function runCompaction(
 	let summary: string | null = null;
 	let chunks = 0;
 	for (let i = 0; i < span.length; ) {
+		// Authority before spend: a fenced compaction must not keep paying
+		// the summarizer for a pointer it may no longer write.
+		opts.assertAuthority?.();
 		chunks++;
 		// The allowance shrinks as the running summary grows; the floor
 		// keeps a degenerate budget from zeroing the chunk — better an
@@ -312,6 +321,9 @@ export async function runCompaction(
 		// pointer must never commit a summary minted under revoked
 		// authority.
 		signal.throwIfAborted();
+		// The same guarantee for settings fences: the epoch must still be
+		// the one this compaction captured, or the pointer stays unwritten.
+		opts.assertAuthority?.();
 		const out = raw.trim();
 		if (out === "") throw new Error(`summarizer returned an empty summary (chunk ${chunks})`);
 		log.info("compaction chunk summarized", {

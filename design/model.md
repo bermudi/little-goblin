@@ -110,7 +110,12 @@ agent loop.
   as `history compacted` with the numbers. Failure is loud and lossless: a
   failed summary call writes no boundary and warns; the next threshold
   crossing retries. `/stop` and shutdown abort an in-flight summary —
-  no pointer is written, the crossing retries. Auto-compaction runs inside the conversation's serial
+  no pointer is written, the crossing retries. An epoch-bumping settings
+  change (the authority rule) fences the same commit: the compaction
+  captures its epoch at entry and re-checks before each summary chunk and
+  before the pointer lands, so a fence mid-summary spends no further
+  calls, writes no boundary, clears no frozen prompt snapshot — the next
+  crossing retries under the new settings. Auto-compaction runs inside the conversation's serial
   lane after the turn's sinks are notified — the reply lands first, a
   queued successor waits out the summary call. `/compact` is the same
   compaction serialized through the conversation's lane — a running turn

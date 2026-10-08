@@ -2184,9 +2184,173 @@ describe("cache stability", () => {
 		const { stopped } = runtime.stop(conv.id);
 		expect(stopped).toBe(true);
 		releaseBuild();
-		await expect(compacted).rejects.toThrow("summarize aborted");
+		// /stop carries two fences — the epoch bump and the abort — and the
+		// authority check lands first now: the compaction rejects as fenced
+		// before the (pre-aborted) summary call could even start.
+		await expect(compacted).rejects.toThrow("turn fenced");
 		// No history pointer was written despite the summary path being
 		// reachable — the crossing retries on the next threshold.
+		expect(store.getCompaction(conv.id)).toBeNull();
+		store.close();
+	});
+
+	test("a settings epoch change fences an in-flight compaction — no pointer, snapshot kept", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const big = "x".repeat(600);
+		for (let i = 0; i < 3; i++) {
+			store.append(conv.id, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
+			store.append(
+				conv.id,
+				[{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
+				{ anchorSeq: store.lastUserSeq(conv.id) },
+			);
+		}
+		// The frozen prompt snapshot the completed turn holds — the fenced
+		// compaction must not clear it: that refresh belongs to the
+		// compaction that actually lands.
+		store.savePromptSnapshot(conv.id, "frozen system prompt", ["seed"]);
+		// Gate the summary call so the settings change lands mid-compaction.
+		// /memory bumps the epoch without touching the abort signal — unlike
+		// /stop there is no abort to carry the fence, only the commit check.
+		let summarizeStarted!: () => void;
+		const started = new Promise<void>((r) => {
+			summarizeStarted = r;
+		});
+		let releaseSummary!: (summary: string) => void;
+		const gate = new Promise<string>((r) => {
+			releaseSummary = r;
+		});
+		let summarizeCalls = 0;
+		const model = (inputTokens: number) =>
+			({
+				specificationVersion: "v4",
+				provider: "fake",
+				modelId: "fake-1",
+				supportedUrls: {},
+				doGenerate() {
+					throw new Error("unimplemented");
+				},
+				doStream() {
+					const stream = new ReadableStream<LanguageModelV4StreamPart>({
+						start(controller) {
+							controller.enqueue({ type: "stream-start", warnings: [] });
+							controller.enqueue({ type: "text-start", id: "t1" });
+							controller.enqueue({ type: "text-delta", id: "t1", delta: "ok" });
+							controller.enqueue({ type: "text-end", id: "t1" });
+							controller.enqueue({
+								type: "finish",
+								finishReason: { unified: "stop", raw: undefined },
+								usage: {
+									inputTokens: {
+										total: inputTokens,
+										noCache: undefined,
+										cacheRead: undefined,
+										cacheWrite: undefined,
+									},
+									outputTokens: {
+										total: 1,
+										text: undefined,
+										reasoning: undefined,
+									},
+								},
+							});
+							controller.close();
+						},
+					});
+					return { stream };
+				},
+			}) as unknown as LanguageModel;
+		// Turn one crosses the threshold (75%); the barrier turn below stays
+		// far under it so it triggers no second compaction.
+		let builds = 0;
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({
+				model: model(builds++ === 0 ? 750 : 50),
+				system: "test",
+				contextWindow: 1000,
+			}),
+			makeTools: () => ({}),
+			compaction: {
+				modelRef: () => "m",
+				summarize: (_conv, _system, _prompt, signal) => {
+					if (signal.aborted) return Promise.reject(new Error("summarize aborted"));
+					summarizeCalls++;
+					summarizeStarted();
+					return gate;
+				},
+			},
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "live question" }]), sink);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		await started; // the threshold compaction's summary is now in flight
+		// A queued successor settles only after the in-lane compaction —
+		// its done is the barrier proving the fenced commit attempt ran.
+		const barrier = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "follow-up" }]), barrier);
+		// The epoch-changing mutation /memory uses — no /stop, no abort.
+		store.applySettings(conv.id, { memoryExcluded: true });
+		expect(store.get(conv.id)?.epoch).toBe(1);
+		releaseSummary("the folded era");
+		expect(await barrier.done).toEqual({ kind: "completed" });
+		// Settle the lane before closing the store — the barrier turn's
+		// post-done work must finish first.
+		await runtime.shutdown();
+		// The summary resolved, but the pointer never landed and the frozen
+		// snapshot survived — the next threshold crossing retries under the
+		// new settings.
+		expect(summarizeCalls).toBe(1);
+		expect(store.getCompaction(conv.id)).toBeNull();
+		expect(store.promptSnapshot(conv.id)).toEqual({
+			text: "frozen system prompt",
+			sources: ["seed"],
+		});
+		store.close();
+	});
+
+	test("a settings epoch change fences a manual /compact mid-summary — it rejects, no pointer", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const big = "x".repeat(600);
+		for (let i = 0; i < 3; i++) {
+			store.append(conv.id, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
+			store.append(
+				conv.id,
+				[{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
+				{ anchorSeq: store.lastUserSeq(conv.id) },
+			);
+		}
+		let summarizeStarted!: () => void;
+		const started = new Promise<void>((r) => {
+			summarizeStarted = r;
+		});
+		let releaseSummary!: (summary: string) => void;
+		const gate = new Promise<string>((r) => {
+			releaseSummary = r;
+		});
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model: fakeModel(["reply"], 1), system: "test", contextWindow: 1000 }),
+			makeTools: () => ({}),
+			compaction: {
+				modelRef: () => "m",
+				summarize: (_conv, _system, _prompt, signal) => {
+					if (signal.aborted) return Promise.reject(new Error("summarize aborted"));
+					summarizeStarted();
+					return gate;
+				},
+			},
+		});
+		const compacted = runtime.compact(conv);
+		await started; // the manual job's summary is now in flight
+		store.applySettings(conv.id, { memoryExcluded: true }); // epoch bump, no abort
+		releaseSummary("the folded era");
+		// The job rejects with the fence — the /compact reply reports it and
+		// nothing was written.
+		await expect(compacted).rejects.toThrow("turn fenced");
+		await runtime.shutdown();
 		expect(store.getCompaction(conv.id)).toBeNull();
 		store.close();
 	});

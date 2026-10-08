@@ -54,26 +54,17 @@ import { filterErrorStream } from "./agent/filter-stream.ts";
 import type { CompletedTurn, PriorTurnContext, ReviewerDeps, ToolCallDigest } from "./reviewer.ts";
 import type { JevClient } from "./jev.ts";
 import { cancelAllReviews, cancelReviews, considerTurn, summarize, toolOk } from "./reviewer.ts";
-import { LoopDetector, type LoopDetectorState } from "./loop-detect.ts";
-import { LOOP_CHARS, LOOP_QUESTIONS, LOOP_WINDOW, loopState } from "./loop-watchdog.ts";
+import { TurnState, type ForcedKind, type LoopTurnState } from "./turn/state.ts";
 
 // Loop landings (design/model.md → "No step budget — loops are caught,
-// not capped"): a turn has no step budget. What bounds it, in order of
-// who fires first — the repeat detector (deterministic hash), the loop
-// watchdog (system1, every 16 completed calls), the context landing
-// (85% of the catalog window), and the operator's /stop. Whichever cut
-// fires first owns the landing: one final tools-off step, then the
-// loop ends — a turn always ends in an answer.
+// not capped"): a turn has no step budget; whichever cut fires first —
+// detector, watchdog, context, or the operator's /stop — owns a final
+// tools-off step, and the turn ends in an answer. The machinery that
+// decides and escalates lives in turn/state.ts; what remains here is
+// the forced step's instruction text.
 
-// A warning rides the next request as a user-role, request-only
-// message — never durable history; the SDK carries the prepareStep
-// messages override forward so it lands exactly once per step.
-const REPEAT_WARN =
-	"Loop check: you have made the same tool call and gotten the same result 10 times this turn. Repeating it will not change the outcome. Change approach, or stop and tell the operator what is blocking you. If you are deliberately waiting on something, wait longer between checks.";
-const WATCHDOG_WARN =
-	"Progress check: your recent tool calls look stuck — they are not producing new information. Change approach, or if this cannot be done this way, stop and tell the operator what is blocking you.";
 // The forced step's instruction, per landing kind. User-role like the
-// warnings: request-only, accepted by every provider.
+// machinery's warnings: request-only, accepted by every provider.
 const REPEAT_CUT =
 	"Loop check: the same tool call kept returning the same result. Tools are disabled for this final step. Write your answer to the operator now from what you have, and say plainly what is unverified and what was blocking you.";
 const WATCHDOG_CUT =
@@ -96,14 +87,8 @@ const DEFIANCE_NOTE: Record<ForcedKind, string> = {
 	context:
 		'My context window filled up before I wrote my answer — the work above is what I checked. Say "continue" and I\'ll pick up from those findings.',
 };
-// Watchdog verdicts: at/over this score is "stuck". First consecutive
-// hit warns, the second cuts, a sub-threshold check resets (design —
-// calibrated against stored turns by scripts/loop-calibrate.ts).
-const LOOP_STUCK_SCORE = 0.7;
+// The watchdog's cadence — one check every N completed calls.
 const LOOP_CHECK_EVERY = 16;
-// The context landing's fill line: a step whose reported input reached
-// this fraction of the catalog window makes the next step the landing.
-const CONTEXT_LANDING_PCT = 0.85;
 // Auto-compaction trigger (DESIGN.md, Compaction): a completed turn at
 // or past this fraction of the catalog context window compacts in-lane.
 // The ≥80% utilization warn stays as the alarm that it didn't keep up.
@@ -162,11 +147,9 @@ function systemEventAsUser(m: UIMessage): UIMessage {
 
 // ---------- sink: what the turn streams into (tg implements) ----------
 
-// Which landing forced the answer — the repeat detector, the loop
-// watchdog, or the context landing (design/model.md → "No step
-// budget"). Stamped on the finish metadata and TurnDone so every
-// delivery surface marks the reply as forced, never as natural.
-export type ForcedKind = "repeat" | "watchdog" | "context";
+// Which landing forced the answer — the loop machinery names its kinds
+// (turn/state.ts); re-exported so TurnDone and the sinks share it.
+export type { ForcedKind } from "./turn/state.ts";
 
 export type TurnDone =
 	| { kind: "completed"; forced?: ForcedKind }
@@ -289,25 +272,6 @@ export class FencedError extends Error {
 		super(`turn fenced: conversation ${convId} epoch advanced`);
 		this.name = "FencedError";
 	}
-}
-
-// The loop machinery's per-turn state (design/model.md → "No step
-// budget"). One logical turn keeps one loop history across an overflow
-// resume: the detector's records, the watchdog's ring and escalation,
-// the warnings already queued (re-appended once in the resumed
-// attempt), and a landing already decided — a cut the failed attempt
-// issued still cuts the resume.
-interface LoopTurnState {
-	detector: LoopDetectorState;
-	watchdogRing: ToolCallDigest[];
-	// Consecutive stuck verdicts so far: 0 clean, 1 warned (a second
-	// ≥0.7 check cuts).
-	watchdogStrikes: number;
-	// Completed tool calls this turn — the watchdog's cadence counter.
-	completedCalls: number;
-	warnings: string[];
-	cutKind: ForcedKind | null;
-	forcedKind: ForcedKind | null;
 }
 
 // Everything the resume attempt inherits from the failed one: the
@@ -1002,35 +966,18 @@ export class Runtime {
 	): Promise<void> {
 		const { store } = this.deps;
 		let filterRetryUsed = recovery?.filterRetryUsed ?? false;
-		// The loop machinery (design/model.md → "No step budget"): the
-		// repeat detector's records, the watchdog's ring/escalation, the
-		// warning queue, and a landing already decided — all restored from
-		// the failed attempt on an overflow resume (one logical turn, one
-		// loop history).
-		const detector = LoopDetector.restore(recovery?.loop.detector);
-		const watchdogRing: ToolCallDigest[] = recovery ? [...recovery.loop.watchdogRing] : [];
-		let watchdogStrikes = recovery?.loop.watchdogStrikes ?? 0;
-		let watchdogInFlight = false;
-		let completedCalls = recovery?.loop.completedCalls ?? 0;
-		// Warnings ride the NEXT request as user-role tail messages. The
-		// SDK carries a prepareStep messages override forward, so each
-		// warning is appended once per attempt — warnCursor tracks how
-		// many of `warnings` this attempt already sent.
-		const warnings: string[] = recovery ? [...recovery.loop.warnings] : [];
-		let warnCursor = 0;
-		// First landing to fire owns the cut kind; a restore inherits the
-		// failed attempt's — its landing re-issues in this attempt.
-		let cutKind: ForcedKind | null = recovery?.loop.cutKind ?? null;
-		// Set in prepareStep when it returns the forced step — stopWhen
-		// reads it to end the loop after exactly that one step.
-		let landingIssued = false;
-		// Which landing fired, if any — rides the finish chunk's metadata
-		// so the operator's UI can stamp forced answers (design/model.md).
-		let forcedKind: ForcedKind | null = recovery?.loop.forcedKind ?? null;
-		// The watchdog reads its own ring of the last LOOP_WINDOW calls
-		// (args + results at LOOP_CHARS each) — independent of the
-		// reviewer's evidence ring, whose prod cap is too shallow.
-		const watchdog = this.loopWatchdog;
+		// The loop machinery (design/model.md → "No step budget"): one
+		// logical turn keeps one loop history. TurnState restores the
+		// whitelisted fields from the failed attempt on an overflow resume;
+		// the attempt-scoped cursor/issued/in-flight reset with the attempt.
+		const state = new TurnState(
+			{
+				convId,
+				watchdog: this.loopWatchdog,
+				request: messageText(turns[0]!.message),
+			},
+			recovery?.loop,
+		);
 		// The first queued sink is the turn's delivery head (delta hooks,
 		// voice, files); every streaming member receives the chunks (the
 		// reply belongs to the conversation, not to the connection that
@@ -1301,31 +1248,23 @@ export class Runtime {
 				// and the override carries forward to later steps.
 				prepareStep: async ({ messages: stepMessages, steps, stepNumber }) => {
 					// The context landing (design/model.md): the previous step's
-					// reported input at ≥85% of the catalog window makes THIS
-					// step the tools-off landing — the physical bound on a turn,
-					// since an overflow resume can't compact the in-flight reply.
+					// reported input at the fill line makes THIS step the tools-off
+					// landing — the physical bound on a turn, since an overflow
+					// resume can't compact the in-flight reply.
 					const prevInput = steps.at(-1)?.usage.inputTokens;
-					if (
-						cutKind === null &&
-						step.contextWindow !== undefined &&
-						prevInput !== undefined &&
-						prevInput >= step.contextWindow * CONTEXT_LANDING_PCT
-					) {
-						cutKind = "context";
-					}
+					state.noteContextLanding(prevInput, step.contextWindow);
 					// A cut is the tools-off landing: lock toolChoice to none,
-					// append the kind's nudge, and let stopWhen end the loop
-					// after exactly this one step (landingIssued). The cut logs
-					// once, where the landing fires.
-					if (cutKind !== null && !landingIssued) {
-						forcedKind = cutKind;
-						landingIssued = true;
-						if (cutKind === "repeat") {
+					// append the kind's nudge, and let stopWhen end the loop after
+					// exactly this one step. The cut logs once, where the landing
+					// fires.
+					const issued = state.issueLanding();
+					if (issued !== null) {
+						if (issued === "repeat") {
 							log.warn("loop detector cut — forcing tools-off completion", {
 								conversation: convId,
 								step: stepNumber,
 							});
-						} else if (cutKind === "watchdog") {
+						} else if (issued === "watchdog") {
 							log.warn("loop watchdog cut — forcing tools-off completion", {
 								conversation: convId,
 								step: stepNumber,
@@ -1338,17 +1277,16 @@ export class Runtime {
 							});
 						}
 					}
-					const forced = cutKind !== null;
-					// Warnings issued since the last boundary append once —
-					// the override carries forward, so the cursor marks what
-					// this attempt already sent (a restored warning re-sends
-					// once in the resume attempt).
-					const warnMsgs: ModelMessage[] = warnings
-						.slice(warnCursor)
+					const cut = state.decidedCut();
+					const forced = cut !== null;
+					// Warnings issued since the last boundary append once — the
+					// override carries forward, so a warning rides exactly one
+					// request per attempt.
+					const warnMsgs: ModelMessage[] = state
+						.drainWarnings()
 						.map((content): ModelMessage => ({ role: "user", content }));
-					warnCursor = warnings.length;
 					const nudge: ModelMessage[] =
-						cutKind !== null ? [{ role: "user", content: CUT_NUDGE[cutKind] }] : [];
+						cut !== null ? [{ role: "user", content: CUT_NUDGE[cut] }] : [];
 					const lane = this.lane(convId);
 					// Steering folds pending submits into the live request —
 					// but a headless head (no onStreamChunk) must not absorb
@@ -1477,7 +1415,7 @@ export class Runtime {
 				// tools (isLoopFinished never trips) or a landing was issued —
 				// the forced tools-off step is exactly one step even if a
 				// provider defies toolChoice none.
-				stopWhen: [isLoopFinished(), () => landingIssued],
+				stopWhen: [isLoopFinished(), () => state.isLandingIssued()],
 				abortSignal: controller.signal,
 				// Opt into callback-directed step retries, not blanket retries.
 				// The SDK buffers tool parts until the attempt ends cleanly;
@@ -1611,25 +1549,24 @@ export class Runtime {
 				// Finish metadata lands on the wire finish chunk AND the
 				// stored response message — the app client reads live
 				// stats and history reloads carry the same numbers.
-				messageMetadata: ({ part }) =>
-					part.type === "finish"
-						? {
-								model:
-									step.label ?? (typeof step.model === "string" ? step.model : step.model.modelId),
-								finishReason: part.finishReason,
-								durationMs: Date.now() - turnStartMs,
-								// Forced landings stamp themselves — the operator's UI must
-								// never present a forced answer as natural
-								// (design/model.md, 2026-10-07).
-								...(forcedKind !== null ? { forcedCompletion: forcedKind } : {}),
-								usage: {
-									input: part.totalUsage.inputTokens ?? null,
-									output: part.totalUsage.outputTokens ?? null,
-									cacheRead: part.totalUsage.inputTokenDetails?.cacheReadTokens ?? null,
-									cacheWrite: part.totalUsage.inputTokenDetails?.cacheWriteTokens ?? null,
-								},
-							}
-						: undefined,
+				messageMetadata: ({ part }) => {
+					if (part.type !== "finish") return undefined;
+					// Forced landings stamp themselves — the operator's UI must
+					// never present a forced answer as natural (design/model.md).
+					const forcedKind = state.forcedCompletion();
+					return {
+						model: step.label ?? (typeof step.model === "string" ? step.model : step.model.modelId),
+						finishReason: part.finishReason,
+						durationMs: Date.now() - turnStartMs,
+						...(forcedKind !== null ? { forcedCompletion: forcedKind } : {}),
+						usage: {
+							input: part.totalUsage.inputTokens ?? null,
+							output: part.totalUsage.outputTokens ?? null,
+							cacheRead: part.totalUsage.inputTokenDetails?.cacheReadTokens ?? null,
+							cacheWrite: part.totalUsage.inputTokenDetails?.cacheWriteTokens ?? null,
+						},
+					};
+				},
 				// The default serializer emits "An error occurred." — meant
 				// for public HTTP clients. This stream feeds the operator's
 				// own chat; the real message is what they need.
@@ -1662,78 +1599,13 @@ export class Runtime {
 			// id — the failure line needs the name, and the repeat detector
 			// and watchdog ring need the input back.
 			const callById = new Map<string, { tool: string; input: unknown }>();
-			// One completed tool call: feed the repeat detector, grow the
-			// watchdog's own ring, and run the watchdog cadence — every N
-			// completed calls, one check in flight at a time, async and
-			// fail-open: the verdict lands between steps and prepareStep
-			// folds it into the next request.
+			// One completed tool call feeds the loop machinery. The id→call
+			// lookup (name + input for the detector and the ring) stays here
+			// with callById; verdicts, ring growth, and the watchdog cadence
+			// are TurnState's.
 			const noteCompletedCall = (toolCallId: string, result: unknown, failed: boolean): void => {
 				const call = callById.get(toolCallId);
-				const toolName = call?.tool ?? toolCallId;
-				completedCalls++;
-				const verdict = detector.record(toolName, call?.input, result);
-				if (verdict.action === "warn") {
-					warnings.push(REPEAT_WARN);
-				} else if (verdict.action === "cut") {
-					cutKind ??= "repeat";
-				}
-				if (verdict.action !== "none") {
-					log.warn("loop detector", {
-						conversation: convId,
-						tool: toolName,
-						count: verdict.count,
-						action: verdict.action,
-					});
-				}
-				if (watchdog === null) return;
-				watchdogRing.push({
-					tool: toolName,
-					args: summarize(call?.input, LOOP_CHARS),
-					result: failed
-						? summarize(result, LOOP_CHARS)
-						: summarize(result ?? "(no result)", LOOP_CHARS),
-					ok: !failed && toolOk(result),
-				});
-				if (watchdogRing.length > LOOP_WINDOW) watchdogRing.shift();
-				if (completedCalls % watchdog.every !== 0 || watchdogInFlight) return;
-				watchdogInFlight = true;
-				void watchdog
-					.decide(
-						loopState(messageText(turns[0]!.message), completedCalls, watchdogRing),
-						LOOP_QUESTIONS,
-					)
-					.then((decision) => {
-						const score = decision.answers["stuck"] ?? 0;
-						let action: "none" | "warn" | "cut" = "none";
-						if (score >= LOOP_STUCK_SCORE) {
-							// Escalation: the first consecutive stuck verdict
-							// warns, the second cuts, a pass resets to clean.
-							if (watchdogStrikes >= 1) {
-								action = "cut";
-								cutKind ??= "watchdog";
-							} else {
-								action = "warn";
-								watchdogStrikes = 1;
-								warnings.push(WATCHDOG_WARN);
-							}
-						} else {
-							watchdogStrikes = 0;
-						}
-						log.info("loop watchdog", {
-							conversation: convId,
-							toolCalls: completedCalls,
-							stuck: score,
-							action,
-						});
-					})
-					.catch((err: unknown) => {
-						log.warn("loop watchdog unavailable — fail-open", err, {
-							conversation: convId,
-						});
-					})
-					.finally(() => {
-						watchdogInFlight = false;
-					});
+				state.noteCompletedCall(call?.tool ?? toolCallId, call?.input, result, failed);
 			};
 			for await (const chunk of uiStream) {
 				this.checkAuthority(convId, epoch);
@@ -1886,15 +1758,13 @@ export class Runtime {
 			this.checkAuthority(convId, epoch);
 			if (streamError !== null) {
 				if (holdForRecovery) {
-					throw new ContextOverflowError(partialResponse, seenText, toolCalls, digestRing, {
-						detector: detector.snapshot(),
-						watchdogRing,
-						watchdogStrikes,
-						completedCalls,
-						warnings,
-						cutKind,
-						forcedKind,
-					});
+					throw new ContextOverflowError(
+						partialResponse,
+						seenText,
+						toolCalls,
+						digestRing,
+						state.snapshot(),
+					);
 				}
 				throw new Error(streamError, { cause: rawError });
 			}
@@ -1943,17 +1813,18 @@ export class Runtime {
 			const finalSource = retentionSourceFrom(
 				memoryBoundEntries(finalEntries, store.memoryEligibility(convId)),
 			);
-			// The defiance guard (review 2026-10-07, m3): a forced landing
-			// whose step STILL ended in tool calls (a provider ignoring
-			// toolChoice:none) or produced no prose would deliver a stamped
-			// nothing — the exact incident shape. The invariant gets the last
-			// word: append plain-language prose, to the stored message AND the
-			// live delta path (telegram delivers text only through deltas).
+			// The defiance guard: a forced landing whose step STILL ended in
+			// tool calls (a provider ignoring toolChoice:none) or produced no
+			// prose would deliver a stamped nothing. The invariant gets the
+			// last word: append plain-language prose, to the stored message
+			// AND the live delta path (telegram delivers text only through
+			// deltas).
 			// (const alias — responseMessage is only assigned inside the
 			// stream's onFinish callback, which flow analysis can't see, so here
 			// it still narrows as never-assigned null; the cast restores the
 			// declared union.)
 			const landed = responseMessage as UIMessage | null;
+			const forcedKind = state.forcedCompletion();
 			if (
 				forcedKind !== null &&
 				landed !== null &&

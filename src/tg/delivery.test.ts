@@ -6,6 +6,7 @@ import type { Api } from "grammy";
 import type { Conversation } from "../conversation.ts";
 import { setLogFile, setLogWriter } from "../log.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
+import { DeliveryUncertainError } from "../agent/tools/send.ts";
 import {
 	isNotModifiedError,
 	makeDeliverySink,
@@ -830,6 +831,44 @@ describe("delivery files", () => {
 				"sendDocument wedged",
 			);
 			expect(photos).toHaveLength(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a file-send timeout marks the sink uncertain, notices, and fences the rest", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
+		try {
+			const f = join(dir, "report.pdf");
+			writeFileSync(f, "pdf-bytes");
+			const { api } = fileApi();
+			const sent: string[] = [];
+			const reactions: number[] = [];
+			const originalSend = api.sendMessage.bind(api);
+			api.sendMessage = async (...args) => {
+				sent.push(args[1]!);
+				return originalSend(...args);
+			};
+			api.setMessageReaction = async (_chat: number, id: number) => {
+				reactions.push(id);
+				return true;
+			};
+			// The upload request was abandoned by its timeout — it may still land.
+			api.sendDocument = async () => {
+				throw new TelegramTimeoutError("sendDocument", 30_000);
+			};
+			const sink = makeDeliverySink(api, conv, undefined, 0);
+			// The tool must see the ambiguity made explicit, not a bare timeout
+			// it could read as "didn't arrive — resend it".
+			await expect(sink.onFile!({ path: f, filename: "report.pdf" })).rejects.toBeInstanceOf(
+				DeliveryUncertainError,
+			);
+			// Uncertainty fences the turn's remaining output: no text after it,
+			// no completion reaction — just the distinct notice.
+			sink.onTextDelta("tail that must not go out");
+			await sink.onDone({ kind: "completed" });
+			expect(sent).toEqual(["⚠ Delivery uncertain—check Telegram before retrying."]);
+			expect(reactions).toEqual([]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

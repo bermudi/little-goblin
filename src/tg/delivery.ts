@@ -7,7 +7,7 @@ import { stat } from "node:fs/promises";
 import { channelOf, type Conversation } from "../conversation.ts";
 import type { TurnDone, TurnSink } from "../runtime.ts";
 import { sniffImage } from "../agent/tools/read.ts";
-import type { OutgoingFile } from "../agent/tools/send.ts";
+import { DeliveryUncertainError, type OutgoingFile } from "../agent/tools/send.ts";
 import { speechContent, STATUS_TAIL_MARK } from "../agent/tts.ts";
 import { log } from "../log.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
@@ -331,6 +331,14 @@ export function makeDeliverySink(
 					...(conv.threadId !== null ? { thread: conv.threadId } : {}),
 				});
 			} catch (err) {
+				if (err instanceof TelegramTimeoutError) {
+					// A file-send timeout is as ambiguous as a text one — the
+					// upload may have landed. Mark the sink so the remaining
+					// text/reaction stop and the notice goes out, and fail the
+					// tool as uncertain rather than "didn't arrive".
+					markUncertain(err, photo ? "sendPhoto" : "sendDocument");
+					err = new DeliveryUncertainError(err);
+				}
 				failure = { err };
 				throw err;
 			}

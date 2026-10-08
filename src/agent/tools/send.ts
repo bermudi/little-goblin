@@ -19,6 +19,20 @@ export interface OutgoingFile {
 	asFile?: boolean;
 }
 
+// Raised by the delivery sink when Telegram abandons a send at its
+// timeout: the request wasn't cancelled, so it may still land and the
+// outcome is unknown (design/telegram.md → Delivery). Lives next to
+// OutgoingFile because it is part of the deliver() contract — the sink
+// (tg/) throws it with the raw timeout as `cause`, the tool words its
+// result from it. Never an invitation to resend.
+export class DeliveryUncertainError extends Error {
+	constructor(original: unknown) {
+		super("delivery uncertain — the file may have arrived; check Telegram before retrying");
+		this.name = "DeliveryUncertainError";
+		this.cause = original;
+	}
+}
+
 export const sendFileInputSchema = z.object({
 	path: z.string().describe("File path, relative to the working directory or absolute"),
 	caption: z
@@ -74,6 +88,15 @@ export function sendFileTool(cwd: string, deliver: (file: OutgoingFile) => Promi
 			try {
 				await deliver(file);
 			} catch (err) {
+				if (err instanceof DeliveryUncertainError) {
+					// Ambiguous, not failed — the upload may have landed. Word it
+					// so the model checks instead of resending.
+					log.warn("send_file delivery uncertain", err);
+					return {
+						error:
+							"delivery uncertain — the file may have arrived on Telegram; check it there before retrying, never resend it",
+					};
+				}
 				log.warn("send_file delivery failed", err);
 				return { error: `send failed: ${String(err)}` };
 			}

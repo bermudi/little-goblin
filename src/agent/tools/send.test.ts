@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeTools } from "./mod.ts";
-import { sendFileInputSchema, sendFileTool } from "./send.ts";
+import { sendFileInputSchema, sendFileTool, DeliveryUncertainError } from "./send.ts";
 import type { OutgoingFile } from "./send.ts";
 
 const dirs: string[] = [];
@@ -57,6 +57,19 @@ describe("send_file", () => {
 		const t = sendFileTool(workdir(), async () => {});
 		const out = (await t.execute!({ path: "nope.txt" }, opts)) as { error?: string };
 		expect(out.error).toContain("file not found");
+	});
+
+	test("a timed-out send reads as delivery uncertain, never as a plain failure", async () => {
+		const dir = workdir();
+		writeFileSync(join(dir, "report.pdf"), "pdf-bytes");
+		const t = sendFileTool(dir, async () => {
+			// What the delivery sink raises when Telegram abandons the send.
+			throw new DeliveryUncertainError(new Error("sendDocument timed out after 30000ms"));
+		});
+		const out = (await t.execute!({ path: "report.pdf" }, opts)) as { error?: string };
+		// "send failed" invites a resend of content that may have arrived.
+		expect(out.error).toContain("delivery uncertain");
+		expect(out.error).not.toContain("send failed");
 	});
 
 	test("directories and empty files are refused", async () => {

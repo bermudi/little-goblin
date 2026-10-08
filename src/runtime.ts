@@ -254,6 +254,16 @@ function claimPending(lane: Lane, headStreams: boolean): QueuedTurn[] {
 	return lane.pending.splice(0, claimableCount(lane.pending, headStreams));
 }
 
+// The attempt loop's decision vocabulary (design/runtime-turn.md →
+// recursion→loop): a terminal outcome — every settle path (admission
+// failure, fenced, error, completed) already ran — or a resume carrying
+// the next attempt's TurnRecovery and the grown membership. TurnRecovery
+// stays the only attempt-to-attempt wire; the membership rides the
+// decision, never a closure.
+type AttemptOutcome =
+	| { kind: "done" }
+	| { kind: "resume"; recovery: TurnRecovery; turns: QueuedTurn[] };
+
 export class Runtime {
 	private lanes = new Map<string, Lane>();
 	// Set by shutdown(): submits still land in history but never run.
@@ -767,11 +777,36 @@ export class Runtime {
 		}
 	}
 
-	private async runTurn(
+	// The logical turn: drive attempts until one is terminal. A resume
+	// re-enters with the packaged TurnRecovery (admission re-runs on the
+	// resume path); the loop itself is unbounded so the one-recovery budget
+	// lives in exactly one place, the overflow classifier. The wire log is
+	// logical-turn scoped — opened once here, handed to every attempt: the
+	// resume continues the same wire, and stack depth no longer stands in
+	// for control flow.
+	private async runTurn(convId: string, turns: QueuedTurn[]): Promise<void> {
+		const live = openLive();
+		let recovery: TurnRecovery | undefined;
+		let members = turns;
+		for (;;) {
+			const outcome = await this.runAttempt(convId, members, recovery, live);
+			if (outcome.kind === "done") return;
+			recovery = outcome.recovery;
+			members = outcome.turns;
+		}
+	}
+
+	// One pass of the model loop. Returns "done" for every terminal path
+	// (the sinks are already settled) and a resume decision for a held
+	// overflow — the loop above consumes it. `live` is the logical turn's
+	// wire log, opened by runTurn: everything the wire has seen this turn,
+	// plus any HTTP subscribers attached mid-flight (GET .../stream).
+	private async runAttempt(
 		convId: string,
 		turns: QueuedTurn[],
-		recovery?: TurnRecovery,
-	): Promise<void> {
+		recovery: TurnRecovery | undefined,
+		live: LiveChunks,
+	): Promise<AttemptOutcome> {
 		const { store } = this.deps;
 		let filterRetryUsed = recovery?.filterRetryUsed ?? false;
 		// The loop machinery (design/model.md → "No step budget"): one
@@ -792,11 +827,6 @@ export class Runtime {
 		// submitted first — design/app.md → Streaming members) and every
 		// member gets exactly one onDone.
 		const sink = turns[0]!.sink;
-		// The wire log: everything the wire has seen this turn, plus any
-		// HTTP subscribers attached mid-flight (GET .../stream). Carried
-		// across overflow recovery by TurnRecovery — the resume continues
-		// the same wire.
-		const live: LiveChunks = recovery?.live ?? openLive();
 		const notifyAll = async (done: TurnDone) => {
 			endLive(live, done);
 			for (const t of turns) await this.notifyDone(t, done);
@@ -825,7 +855,7 @@ export class Runtime {
 				kind: "error",
 				message: admitted.kind === "missing" ? "conversation missing" : admitted.message,
 			});
-			return;
+			return { kind: "done" };
 		}
 		const { snapshot } = admitted;
 		const { conv, epoch, entries, anchorSeq, turnStartMs } = snapshot;
@@ -1171,7 +1201,9 @@ export class Runtime {
 					signal: controller.signal,
 				});
 				if (outcome.kind === "resume") {
-					return this.runTurn(convId, outcome.members, outcome.recovery);
+					// The decision, not a self-call: the attempt loop above
+					// re-enters with the packaged recovery.
+					return { kind: "resume", recovery: outcome.recovery, turns: outcome.members };
 				}
 				await notifyAll(
 					outcome.kind === "fenced"
@@ -1191,6 +1223,8 @@ export class Runtime {
 				});
 			}
 		}
+		// Every path reaching here already settled the sinks.
+		return { kind: "done" };
 	}
 }
 

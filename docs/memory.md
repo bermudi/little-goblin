@@ -394,3 +394,31 @@ require a supported dump/restore or `pg_upgrade` procedure, never just changing
 the image against old PGDATA. Embedding model/dimension changes need an explicit
 re-indexing plan, not an environment edit. Never delete the old volume until the
 operator has verified recovery and chosen its retention policy.
+
+## Benchmarking
+
+`deploy/memory/bench.py` measures the stack's two tuning surfaces without
+mutating anything. Both subcommands read the live service and hindsight.env;
+keys stay in process memory and are never printed.
+
+- `uv run deploy/memory/bench.py llm` — renders the bank's exact retain
+  prompts and response schema via `prompts/preview`, then replays them
+  against the configured LLM under a matrix of the sampling knobs
+  (temperature, `reasoning_effort`, output-language pin — the pin is
+  simulated by applying upstream's own prompt transformation). Paid calls;
+  prints the plan first and requires `--yes`. Raw records go to `--out`
+  JSONL. `--full` adds the remaining cross-product cells.
+- `uv run deploy/memory/bench.py recall` — embedding-model latency race
+  (deployed OpenRouter model vs the local Ollama candidate) plus a
+  retrieval-quality A/B (hit@k / MRR over `bench_fixtures/gold_queries.json`
+  against the live bank). Re-run the A/B before any embedding swap, and
+  again if the bank grows an order of magnitude — ranking deltas between
+  models grow with corpus size.
+
+Known reading notes: `lang=es?` detection is a crude marker heuristic and
+can false-positive on English text quoting Spanish entities; check the raw
+records before calling a language drift. The Ollama candidate's first call
+after idle eviction pays the model reload (~2-3 s) — that is the
+`OLLAMA_KEEP_ALIVE` caveat surfacing in the data, not model slowness.
+
+Unit tests: `uv run -m unittest discover -s deploy/memory -p 'test_bench.py'`.

@@ -1,0 +1,10 @@
+{
+	"en": {
+		"context": "Telegram exchange. Operator and Goblin speakers are labelled. Assistant suggestions are not operator decisions.",
+		"text": "Operator: the podcast rss fetch keeps timing out on sundays, anything we can do\nGoblin: it's the host rate-limiting us — sitemap says they batch-publish sunday 6am and the feed regenerates slowly. I can move the check to sunday 14:00 with a 3-stagger retry.\nOperator: do that. also note that I hate when the summary email arrives before the episodes are even processed\nGoblin: noted: summaries only after ingest completes. Moving the cron to 14:00 America/Mexico_City with backoff."
+	},
+	"es": {
+		"context": "Telegram exchange. Operator and Goblin speakers are labelled. Assistant suggestions are not operator decisions.",
+		"text": "Operator: no olvides que la reunión con lalicencias es el jueves, prepárame el resumen del contrato\nGoblin: listo, el contrato vence en marzo y la cláusula de renovación automática aplica salvo aviso con 60 días de anticipación.\nOperator: perfecto. y guárdame que prefiero recibir estos resúmenes en la mañana, no en la noche\nGoblin: anotado: resúmenes contractuales por la mañana."
+	}
+}

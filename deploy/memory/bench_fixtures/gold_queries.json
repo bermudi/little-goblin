@@ -1,0 +1,114 @@
+[
+	{
+		"q": "when is my September tax declaration due?",
+		"gold": ["a9b6d700", "255cab61", "a2ad557b", "e85bb994"]
+	},
+	{
+		"q": "who is my accountant and since when?",
+		"gold": ["14badc40", "47739c37", "cfca6cc4"]
+	},
+	{
+		"q": "how many tax returns do I have pending?",
+		"gold": ["fa423bc1", "53f7b731", "67dc5f0c", "9aa8f0e4"]
+	},
+	{
+		"q": "what was that Vexi debt collection thing about?",
+		"gold": ["db933673", "87b327e6", "c0b72840", "90f286c5", "8a0b0e4b", "22749113"]
+	},
+	{
+		"q": "¿cuándo vence la declaración mensual de septiembre?",
+		"gold": ["a9b6d700", "255cab61"]
+	},
+	{
+		"q": "qué pasa con las declaraciones atrasadas y la condonación",
+		"gold": ["9aa8f0e4", "67dc5f0c", "fa423bc1"]
+	},
+	{
+		"q": "how does bait and rock throwing work in the Safari Zone again?",
+		"gold": ["8a98dc67", "79e4fc52"]
+	},
+	{
+		"q": "where do I find Chansey in this hack?",
+		"gold": ["2471bd3b", "da3f790a"]
+	},
+	{
+		"q": "what is the deal with the Safari Zone steps and balls?",
+		"gold": ["8dd99447", "e55bca89", "1e69d57e", "c6e2faf6"]
+	},
+	{
+		"q": "which coding agent should I use instead of Claude?",
+		"gold": ["94517db7", "2cc32e95"]
+	},
+	{
+		"q": "why did the delegation test fail in September?",
+		"gold": ["a6661ea8", "da3c3100", "3a8f91f9", "0c58b756"]
+	},
+	{
+		"q": "did the AfD win any state elections?",
+		"gold": ["56b66321", "1c26aa04"]
+	},
+	{
+		"q": "what are AfD poll numbers?",
+		"gold": ["57dafd3e", "93e22150"]
+	},
+	{
+		"q": "what is the Senate seat math if someone switches parties?",
+		"gold": ["974390c2", "5ea95212", "c5854034"]
+	},
+	{
+		"q": "where do I live? need it for weather",
+		"gold": ["ba686777", "2a3dac4f", "a6afaeab"]
+	},
+	{
+		"q": "что мне не нравится в слишком бодром начале разговора ассистента?",
+		"gold": ["11677f83", "6d22027e", "95c5d3bf"]
+	},
+	{
+		"q": "did Bun join Anthropic?",
+		"gold": ["ca9318ba", "b17c3404"]
+	},
+	{
+		"q": "what is Pi Durable exactly?",
+		"gold": ["9600d4bd", "b71cec5b", "78630870", "a88d24b0"]
+	},
+	{
+		"q": "what was proposed in that MCP pull request for pi?",
+		"gold": ["93c162f1", "18a538ac", "a0dbfaac", "a84c8f0e", "1c9d899d", "f7166933"]
+	},
+	{
+		"q": "what is the strongest magnetic field ever made on Earth?",
+		"gold": ["a132e188", "30351487"]
+	},
+	{
+		"q": "what was Eddie Murphy latest movie?",
+		"gold": ["4ce126d6", "abe804b7", "ef8a653f", "b1e0fe15"]
+	},
+	{
+		"q": "what happened during the memory service outage?",
+		"gold": ["7396af40", "eb227bb8"]
+	},
+	{
+		"q": "what is the calibration word for marker 7bb0b87a193a?",
+		"gold": ["df8c3118", "9c4ee5ee", "2f70102d", "67f9484c", "c1983a43"]
+	},
+	{
+		"q": "why could not you read my inbox that one time?",
+		"gold": ["72ba391f", "8f3e52a9", "e2bea689"]
+	},
+	{
+		"q": "do I owe anything on the Posada Real invoice?",
+		"gold": ["4dc57b8e", "255cab61"]
+	},
+	{
+		"q": "what did that dog-bear encounter study find?",
+		"gold": ["30983523", "3ac95b3c", "84aa2446", "797b9c68", "035c745c"]
+	},
+	{
+		"q": "what did I say about speaking before doing tool work?",
+		"gold": ["9c071d38", "68f53475", "653cdac7"]
+	},
+	{
+		"q": "what did we decide about the memory recall query length?",
+		"gold": ["aa40e41e", "078adb83", "19dd4557", "966c1aa4"]
+	}
+]

@@ -153,6 +153,12 @@ failing message by message.
   storage — Telegram still owns the files; periodic clean is safe (worst
   case = re-fetch via `file_id`). Deploy: static binary + systemd unit (no
   docker); build off-box, TDLib compile would crush lithium.
+  **Status: designed, not deployed.** No `telegram-bot-api` runs on
+  lithium — goblin polls the cloud Bot API and the 20 MB cap is in
+  effect. The `telegram.apiRoot` knob and intake path exist and work;
+  the remaining work is the server, its unit, and fresh `api_id`/
+  `api_hash` (the v1 `e2e/.env` copy died with v1's tree — mint at
+  my.telegram.org).
 
 
 ## Rolling DM (ruling 2026-10-03)

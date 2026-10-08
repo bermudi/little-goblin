@@ -5,9 +5,11 @@ running on your own machine. Talk to it in a chat; it answers, runs shell
 commands, reads and writes files, handles photos and voice notes, and can
 speak replies back as voice notes.
 
-This is a rewrite of `little-goblin` on the Vercel AI SDK (see `DESIGN.md`
-for why). The old bot still runs on lithium until cutover; nothing is
-shared between them (no code, no state, no specs).
+This is a rewrite of the original `little-goblin` on the Vercel AI SDK
+(see `DESIGN.md` for why). v1 was retired at the cutover — nothing was
+shared between the versions (no code, no state, no specs). This codebase
+runs in two places: g7 (dev, this tree) and lithium (prod, updated with
+`scripts/deploy.sh` — see [`docs/operations.md`](docs/operations.md)).
 
 ## How it works, in one paragraph
 

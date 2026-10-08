@@ -77,6 +77,22 @@ and templates before designing; cite what you took in the design docs.
 
 - `goblin.service` runs from this working tree — code changes go live
   only on `systemctl --user restart goblin`, which needs bermudi's OK.
+- **Prod is lithium** (`~/build/little-goblin`, a GitHub clone; same
+  `goblin.service` + the memory stack; Debian trixie, podman 5.4.2).
+  This g7 tree is dev. The only sanctioned prod update is
+  `scripts/deploy.sh` from here: gate (typecheck + tests) → push →
+  ff-only pull → conditional `bun install`/`app:build` → restart →
+  verify. Never hand-edit the lithium checkout. Deploying pushes main
+  and restarts prod — bermudi's OK each time, which running the script
+  IS. The memory stack is never auto-deployed; `deploy/memory/`
+  changes print the manual runbook (see docs/operations.md →
+  Deploying).
+- Quadlet `HealthCmd` one-liners (`python -c "…"`) break on podman
+  5.4: the trailing escaped quote is dropped in CMD-SHELL re-quoting,
+  every probe dies `Unterminated quoted string`, and the watch
+  restart-loops a healthy API (lithium, 2026-10-08; podman 6.1.3 on
+  g7 masks it). Healthcheck commands are mounted scripts with zero
+  shell metacharacters — keep them that way.
 - **Exception: app assets are live per request.** `app/dist` and
   `src/http/app.js` are read from disk by the running service. Do not
   build into `app/dist` to verify a backend-dependent client change:

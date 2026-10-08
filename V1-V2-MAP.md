@@ -1,7 +1,8 @@
 # v1 ↔ v2 feature map
 
-v1 = `~/build/little-goblin` (pi-coding-agent core; still running on
-lithium until cutover). v2 = this repo (Vercel AI SDK core). Same product,
+v1 (pi-coding-agent core) ran on lithium until the cutover; its tree is
+retired. v2 = this repo (Vercel AI SDK core), now serving from lithium.
+Same product,
 ruthless scope: v2 rebuilds what earned its place and drops the machinery
 that didn't. Nothing migrates — no code, no state, no specs. Rows below
 describe what each repo actually does (v2 at current HEAD).
@@ -53,7 +54,7 @@ Legend: ✅ both, roughly same shape · 🔀 both, new mechanism in v2 ·
 |---|---|---|
 | 🔀 Intake media | photos inline as images; documents/voice/audio saved to disk and announced | images, documents, audio all reach the model natively (per-model modality from the catalogs); each attachment's representation is a pure function of the stored ref + conversation model |
 | 🔀 Voice in | Groq Whisper transcription when configured | same, plus: transcript stored inside the history part (durable), video notes are speech too, files >25 MiB get ffmpeg audio-track extraction + 15-min segmentation |
-| 🔀 File size cap | 20 MB cloud Bot API — larger dropped with a warning | 2 GB via self-hosted `telegram-bot-api` on lithium (`--local`, long-poll only, no inbound ports) |
+| 🔀 File size cap | 20 MB cloud Bot API — larger dropped with a warning | 2 GB via self-hosted `telegram-bot-api` on lithium (`--local`, long-poll only, no inbound ports) — **designed, not deployed**; the cloud 20 MB cap is in effect until it lands |
 | ➕ PDFs / rich docs | impossible through pi-ai (content union closed); `pdftotext` workaround | native document parts |
 | 🔀 Sends | `send_photo` / `send_document` tools | `send_file` tool hands a path to the delivery sink — "Telegram send is delivery, not a tool"; magic-byte sniffing (photo preview vs byte-exact document, `as_file`, GIFs always documents) |
 
@@ -127,8 +128,8 @@ designed into `DESIGN.md` first.
 
 ## Operator habit changes at cutover
 
-Not yet done — v1 still runs on lithium. The list below is what changes
-when you cut over.
+Done — v2 serves from lithium. The list below is what changed at
+cutover.
 
 - **New conversation** — `/new` is gone. Create a topic.
 - **Resume** — `/resume` is gone. Post in the old topic.

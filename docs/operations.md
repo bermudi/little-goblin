@@ -35,6 +35,38 @@ the same shape minus the flush — your message is in history, so the next
 turn just answers it. The bot never auto-retries after a crash: replaying
 half-run tool calls would be worse than asking again.
 
+## Deploying to lithium
+
+Prod is lithium — a clone of GitHub `bermudi/little-goblin` at
+`~/build/little-goblin`, running the same `goblin.service` plus the
+memory stack. g7 is the dev tree; the two talk only through GitHub.
+Updating prod is one command from g7:
+
+```sh
+scripts/deploy.sh
+```
+
+It refuses a dirty tree, runs the gate (`bun run typecheck && bun test`)
+on g7, pushes the branch to GitHub, then on lithium: `git pull
+--ff-only`, `bun install --frozen-lockfile` when `bun.lock`/
+`package.json` moved, `bun run app:build` when `app/` moved (the client
+is served from disk — client and backend restart as one rollout), and
+`systemctl --user restart goblin`. It verifies the unit came back,
+scans the fresh journal for error lines, and prints the old→new hashes
+plus a one-line rollback (`git reset --hard <old-hash>` + restart, on
+the box). A gate or push failure stops everything before lithium is
+touched.
+
+The memory stack is **not** auto-deployed: a `deploy/memory/` change
+prints a note instead. Its assets are installed per-box — `python3
+deploy/memory/install.py` re-runs the asset refresh (`start.py` /
+`healthcheck.py` re-copied; installed quadlets never overwritten —
+they're operator-editable). Quadlet changes apply by hand: edit the
+installed file in `~/.config/containers/systemd/`, then
+`systemctl --user daemon-reload`, `podman rm -f goblin-memory-api`,
+`systemctl --user restart goblin-memory-api` — the `podman rm` is what
+recreates the container under the new spec.
+
 ## Logs
 
 Every line is JSON, on stdout (→ the journal) and appended to
@@ -69,7 +101,7 @@ Everything worth keeping is under `~/goblin/`:
 | Secrets | `auth.jsonl` | guard this copy like the original |
 | Identity, notes, skills, attachments | `workspace/` | plain files |
 
-The checkout itself (`goblin-v2/`) holds no state — re-cloneable any time.
+The checkout itself (`little-goblin/`) holds no state — re-cloneable any time.
 
 Peeking at history directly is fine (read-only!): the `conversations` table
 holds one row per topic/chat, `events` holds the messages as JSON. But

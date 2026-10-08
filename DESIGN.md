@@ -1,7 +1,7 @@
 # goblin v2 — design
 
-Rewrite of little-goblin. Same product, ruthless scope. The old codebase is at
-`~/build/little-goblin`; it keeps running on lithium until cutover. Nothing is imported —
+Rewrite of little-goblin. Same product, ruthless scope. v1 ran on lithium
+until the cutover and is retired (its tree is gone); nothing was imported —
 no code, no state, no specs. This document is the only thing that carries over,
 plus the lessons it encodes.
 
@@ -24,7 +24,12 @@ earns its place.
   refuses to enable a half-configured service (config/auth missing) rather
   than crash-loop it. That script plus first-boot scaffolding (home layout,
   SOUL.md/AGENTS.md stubs, fail-loud config pointer) is the entire setup
-  story — no onboarding wizard, ever.
+  story — no onboarding wizard, ever. Deployment reality: g7 is the dev
+tree; prod is lithium — a clone at `~/build/little-goblin` (GitHub
+`bermudi/little-goblin`) running the same unit plus the memory stack.
+`scripts/deploy.sh` is the update path: gate (typecheck + tests), push,
+ff-only pull, rebuild the app client when it moved, restart, verify
+(docs/operations.md → Deploying).
 - Telegram is one of two channels: long polling, topics, reactions, files,
   voice — **and Mini Apps, designed in from the start** (the process serves
   them over HTTP; see Telegram intake & delivery). The second channel is

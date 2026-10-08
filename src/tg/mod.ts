@@ -1,6 +1,4 @@
-// Telegram composition: grammy long polling, allowed-user gate first
-// thing, commands → settings/navigation, everything else → buffer → turn.
-// Only this directory knows grammy.
+// Telegram composition — only this directory knows grammy.
 
 import { Bot, type Api } from "grammy";
 import { z } from "zod";
@@ -60,16 +58,11 @@ import { maybeRenameTopic, titleMetaFromService } from "./titles.ts";
 import { navigateDm } from "./navigation.ts";
 
 export const AUTH_TELEGRAM_TOKEN = "telegram";
-// 500ms of quiet seals a burst — measured, not vibes (2026-09-25): a
-// 7-chunk pasted message arrived with a 167ms worst gap, which is not
-// client send pacing but one long-poll round-trip to the Telegram API
-// (~185ms from this box) — a chunk straddling a poll boundary waits out
-// an RTT. 200ms is falsified by that one paste; 500ms is 3× the
-// observed worst and survives an RTT doubling. The window is also a
-// flat latency tax on every single-message turn (no typing indicator
-// until flush), so shorter-is-better within that margin. 200–300ms
-// becomes safe only when polling goes LAN-side (self-hosted bot-api);
-// until then RTT-sized gaps are structural, no client speed fixes them.
+// 500ms of quiet seals a burst: a chunk straddling a long-poll
+// boundary waits out a full Telegram API round-trip (~185ms from this
+// box), so shorter windows split pastes. But the window is a flat
+// latency tax on every turn — smaller only becomes safe with a
+// self-hosted bot-api beside the poller.
 const QUIET_WINDOW_MS = 500;
 // A source dribbling messages faster than the quiet window must not
 // postpone its turn forever — the ceiling flushes mid-dribble instead.
@@ -78,12 +71,10 @@ const COALESCE_MAX_WAIT_MS = 10_000;
 // or a download error becomes the conversation's name.
 const ATTACHMENT_FAILED_PREFIX = "[attachment failed to download:";
 
-// Conversation identity IS the Telegram address: a forum-supergroup
-// topic or the bare chat. `message_thread_id` also rides on comment
-// threads in non-forum groups, where `is_topic_message` stays unset and
-// bots can't post; those stay bare-chat. Private chats always address
-// the rolling DM lane — DM topics are retired (design/telegram.md →
-// Rolling DM).
+// Conversation identity IS the Telegram address. `message_thread_id`
+// also rides on non-forum comment threads (is_topic_message stays
+// unset, bots can't post) — those stay bare-chat. Private chats always
+// address the rolling DM lane (design/telegram.md → Rolling DM).
 export function conversationAddress(msg: {
 	chat: { id: number; type: string };
 	message_thread_id?: number;
@@ -101,15 +92,13 @@ export function conversationAddress(msg: {
 
 interface BufferedItem {
 	updateId: number;
-	// The chat the message arrived in — an app lane needs it to ack
-	// the ping reply ("sent to <title>") since the conversation's own
-	// chat_id is the 0 filler (Spin-off).
+	// The chat the message arrived in — an app lane needs it to ack the
+	// ping reply, the conversation's own chat_id being the 0 filler.
 	chatId: number;
 	parts: UIMessage["parts"];
 	replyTo: number | undefined;
-	// Set when the message quoted another (msg.reply_to_message): the
-	// quoted id + its text (head-cut). Presence alone counts the item
-	// as a reply for rolling-DM routing — an empty quote still joins.
+	// Set when the message quoted another. Presence alone counts as a
+	// reply for rolling-DM routing — an empty quote still joins.
 	quoted?: { messageId: number; text: string };
 }
 
@@ -129,41 +118,30 @@ export interface BotDeps {
 	// Topic titler — one small model call per implicitly-named topic.
 	// null = no usable title this attempt.
 	titleFor(text: string): Promise<string | null>;
-	// Speech → text for transcribable media (voice and video notes —
-	// attached audio files are data, the transcribe tool handles those
-	// on demand). null = unconfigured, over the provider cap, or no
-	// speech found.
+	// Speech → text for voice and video notes; attached audio files are
+	// data, left to the transcribe tool. null = off, capped, or no speech.
 	transcribe(file: SpeechFile): Promise<string | null>;
 	synthesize(text: string, config: TtsConfig): Promise<Uint8Array[]>;
 	// Long-term memory wiring for /memory + /forget — absent = disabled.
 	memory?: CommandMemoryDeps;
-	// The mail approval gate — taps resolve it per-tap through this
-	// getter (it's constructed right after the bot: it needs bot.api).
-	// Absent = mail never wired this run — a stale button still gets
-	// an answer, never a hang.
+	// Resolved per tap (built right after the bot — it needs bot.api).
+	// Absent = mail never wired: a stale button gets an answer, never a hang.
 	mail?: () => MailApproval;
-	// The follow-up check for Rolling DM — the reviewer's JevClient,
-	// resolved per call because it is constructed after the bot in the
-	// composition root. Absent = no check available: a past-gap burst
-	// joins the current conversation.
+	// The Rolling DM follow-up check, resolved per call (the reviewer is
+	// built after the bot). Absent = no check: a past-gap burst joins current.
 	followUpGate?: () => Pick<JevClient, "decide"> | undefined;
 }
 
 export interface RunningBot {
 	bot: Bot;
-	// Drain in-flight intake: wait out media-resolution chains, then
-	// flush the coalescing buffer so buffered input submits. Shutdown
-	// calls this after closing the runtime — submits then land in
-	// history without starting turns. Bounded by the caller.
+	// Wait out media chains, then flush the buffer so buffered input submits.
 	drainIntake(): Promise<void>;
 	replayInbox(): Promise<void>;
 	startPolling(): void;
 }
 
-// The access-control boundary: allowedUsers gates every update first
-// thing, read per-message so mini-app saves apply without a restart.
-// Extracted from createBot so the boundary itself is testable without
-// a live bot.
+// The access-control boundary: gates every update first thing, read
+// per-message so mini-app saves apply without a restart.
 export function allowedUserGate(configRef: { current: Config }) {
 	return async (
 		ctx: { from?: { id: number } | undefined },
@@ -184,15 +162,9 @@ export function allowedUserGate(configRef: { current: Config }) {
 
 // ---------- intake router ----------
 //
-// The message router and the coalescing flush, lifted out of createBot
-// (they used to be anonymous closures) so every rule they carry is
-// testable without a live bot: command-vs-media precedence, the failed
-// attachment sentinel, one-attempt topic titling, the topic-meta patch
-// logging, and the submit-failure sink release. createBot only wires
+// The message router and the coalescing flush; createBot only wires
 // grammy to these.
 
-// Everything the lifted functions need, made explicit — the deps they
-// used to close over.
 export interface IntakeEnv {
 	deps: BotDeps;
 	api: Api;
@@ -203,16 +175,13 @@ export interface IntakeEnv {
 	buffer: CoalescingBuffer<BufferedItem>;
 	intake: Map<string, Promise<void>>;
 	inbox: ReturnType<typeof openTelegramInbox>;
-	// The ping→conversation map (Spin-off): a swipe-reply to a
-	// delegation ping routes into the app conversation that rang.
+	// The ping→conversation map: a swipe-reply routes into the app conversation that rang.
 	pings: PingStore;
-	// The headless sink app-lane turns submit with — the ping reply's
-	// turn rings Telegram when it lands (Spin-off → Background turns).
+	// The headless sink app-lane turns submit with; the bell rings when the turn lands.
 	bell(conv: Conversation): TurnSink;
-	// Guest mode: is this chat open to third-party summonses? Injected
-	// per burst so the model knows its audience — the system prompt is
-	// frozen per conversation (cache stability) while openness changes
-	// with /open and /off.
+	// Guest mode: open to third-party summonses? Read per burst — the
+	// system prompt is frozen per conversation (cache stability) while
+	// openness changes with /open and /off.
 	isChatOpen: (chatId: number) => boolean;
 }
 
@@ -221,9 +190,8 @@ export type FlushEnv = Pick<
 	"deps" | "api" | "titleAttempts" | "inbox" | "bell" | "isChatOpen"
 >;
 
-// The RollDeps the intake paths share — assembled per call so a
-// mini-app save (dmGapMinutes) and the late-built reviewer's gate both
-// read live instead of whatever was wired at boot.
+// Assembled per call so a mini-app save (dmGapMinutes) and the
+// late-built reviewer's gate read live config, not boot-time wiring.
 function rollDepsOf(deps: BotDeps): RollDeps {
 	return {
 		store: deps.store,
@@ -276,19 +244,17 @@ function replyNavigation(env: IntakeEnv, msg: Message, text: string): void {
 
 export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): void {
 	const { deps } = env;
-	// Redelivery is identity, not routing (#77). An update already
-	// admitted keeps its durable row's original destination whatever
-	// state-dependent routing would recompute now — a ping's app
-	// conversation can be deleted between delivery and redelivery, and
-	// the recomputed fallback must not turn an ordinary duplicate into
-	// corruption. The row is never rewritten; its flush owns the
-	// deleted-target landing (dropAppBatch).
+	// Redelivery is identity, not routing (#77): an admitted update
+	// keeps its durable row's destination whatever routing would
+	// recompute now — a ping's app conversation can be deleted between
+	// delivery and redelivery, and the recomputed fallback must not
+	// corrupt an ordinary duplicate. The row is never rewritten; its
+	// flush owns the deleted-target landing (dropAppBatch).
 	let admitted: string | null;
 	try {
 		admitted = env.inbox.admittedDestination(updateId, msg.chat.id, msg.message_id);
 	} catch (err) {
-		// The journal itself is unreadable — same fatal class as a failed
-		// record: the update must not be acknowledged past it.
+		// The journal itself is unreadable — same fatal class as a failed record.
 		throw new InboxRecordError(updateId, err);
 	}
 	if (admitted !== null) {
@@ -301,10 +267,9 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 	}
 	const text = msg.text ?? msg.caption ?? "";
 	const addr = conversationAddress(msg);
-	// A private chat's lane is the rolling address — the payload carries
-	// the lane key and the concrete dm:<chat>:<n> conversation is routed
-	// at flush (Rolling DM). Every other lane IS its conversation id, so
-	// those still resolve eagerly here.
+	// A private chat's lane is the rolling address — the concrete
+	// dm:<chat>:<n> conversation is routed at flush. Every other lane
+	// IS its conversation id, resolved eagerly here.
 	const rolling = msg.chat.type === "private" && addr.kind === "dm" && isRollingChat(addr.chatId);
 	const lane = formatAddress(addr);
 	log.debug("intake", {
@@ -313,9 +278,8 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 		message: msg.message_id,
 		...(addr.kind === "topic" ? { thread: addr.threadId } : {}),
 	});
-	// Media wins over slash-looking captions. Parse command ownership
-	// before any conversation creation or routing, including other-bot
-	// commands that are not in our advertised menu.
+	// Media wins over slash-looking captions, and command ownership
+	// parses before any conversation creation or routing.
 	let media: ReturnType<typeof mediaFromMessage> = null;
 	let mediaError: unknown = null;
 	try {
@@ -376,9 +340,8 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 		return;
 	}
 	const conv = rolling ? null : deps.store.resolve(addr, paths.workspace());
-	// conv is read before this patch — titleImplicit transitions both
-	// ways get a line, so "why is it still New Chat" never needs a REPL.
-	// Topic service meta only exists on non-private lanes.
+	// conv is read before the patch so both titleImplicit transitions
+	// log; topic service meta exists only on non-private lanes.
 	const topicMeta = conv !== null ? titleMetaFromService(msg) : null;
 	if (topicMeta && conv !== null) {
 		deps.store.setMeta(conv.id, topicMeta);
@@ -441,31 +404,26 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 	}
 
 	if (text === "" && !media && mediaError === null) {
-		// Service messages, join/leave, and media kinds intake doesn't
-		// cover — routine, but worth a debug line when it isn't.
+		// Service messages, join/leave, uncovered media kinds — routine drop.
 		log.debug("dropped message with no text or media", { conversation: lane });
 		return;
 	}
 
 	const replyTo = msg.reply_to_message;
-	// Telegram reports the topic's root service message as
-	// reply_to_message on every ordinary message inside a forum topic
-	// (and in a private chat while its threaded mode is on) — either
-	// flagged forum_topic_created or, for the flagless variant, the
-	// reply target IS the thread's root message. That is thread
-	// plumbing, not an operator reply: counting it would route every
-	// burst as "reply" and the follow-up check would never run.
+	// Telegram reports the topic's root service message as reply_to_message
+	// on every ordinary message inside a forum topic (and a threaded-mode
+	// private chat) — flagged forum_topic_created, or flagless where the
+	// target IS the thread root. Thread plumbing, not an operator reply:
+	// counting it routes every burst as "reply" and skips the follow-up check.
 	const quotedReply =
 		replyTo === undefined ||
 		replyTo.forum_topic_created !== undefined ||
 		(msg.message_thread_id !== undefined && replyTo.message_id === msg.message_thread_id)
 			? undefined
 			: replyTo;
-	// A swipe-reply to a delegation ping routes into the app
-	// conversation that rang (Spin-off): the lane IS that conversation
-	// id and the payload carries no quoted part — the app conversation
-	// doesn't need the ping text. A deleted target degrades to an
-	// ordinary reply, routed like any other.
+	// A swipe-reply to a delegation ping routes into the app conversation
+	// that rang; the payload carries no quoted part — the app conversation
+	// doesn't need the ping text. A deleted target degrades to ordinary.
 	const pingedConv =
 		quotedReply === undefined
 			? null
@@ -514,9 +472,7 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 	const { deps } = env;
 	return enqueueIntake(env.intake, convId, async () => {
 		const parts: UIMessage["parts"] = [];
-		// The quoted context leads the message (Rolling DM): it reads as
-		// the operator's own "about this" prefix, and presence counts the
-		// item as a reply for routing even when the quote carried no text.
+		// The quote leads — it reads as the operator's own "about this" prefix.
 		if (quoted !== undefined && quoted.text !== "") {
 			parts.push({ type: "text", text: `[replying to: "${quoted.text.slice(0, 2_000)}"]` });
 		}
@@ -551,9 +507,8 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 						});
 					}
 				}
-				// The saved-path reference (plus any transcript) — whether
-				// the bytes go inline is decided at turn time against the
-				// model that actually runs.
+				// Path reference plus transcript — inline-or-not is decided
+				// at turn time against the model that actually runs.
 				parts.push(...mediaParts(media, saved, transcript));
 			} catch (err) {
 				log.error("media intake failed", err, { conversation: convId });
@@ -574,22 +529,11 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 	});
 }
 
-// The coalescing-buffer flush: one batch of buffered items → one turn
-// submit (plus at most one topic-titling attempt). The sink is built
-// only after the batch commits — it starts typing on construction, so
-// a failed commit would otherwise send a "⚠" bubble per buffer retry
-// while the store is down. And the sink-release on submit failure is
-// load-bearing: a constructed sink ghosts "typing…" forever if the
-// submit throws past it, but the committed batch cannot be retried
-// (the rows are already consumed), so the failure is logged, answered
-// once through the sink's error path, and never rethrown.
-//
-// Rolling-DM lanes (dm:<positive chat>) route asynchronously first —
-// a quoted reply joins without a check, a plain burst past the gap asks
-// the follow-up check — so the flush returns a promise the buffer
-// serializes on. A retry after a failed commit simply re-routes: a roll
-// that already happened left the new conversation current with fresh
-// activity, so the retry joins it — no double roll.
+// One batch → one turn submit (plus at most one titling attempt). The
+// sink is built only after the batch commits — it starts typing on
+// construction. Rolling lanes route async first, so the flush returns
+// a promise the buffer serializes on; a retry after a failed commit
+// re-routes — the roll already left the new conversation current.
 export function flushConversation(
 	env: FlushEnv,
 	convId: string,
@@ -600,13 +544,10 @@ export function flushConversation(
 	const { deps } = env;
 	const conv = deps.store.get(convId);
 	if (!conv) {
-		// Only the app channel deletes its conversations (the operator's
-		// DELETE) — a missing Telegram row is a store anomaly and keeps
-		// the throw+retry. A deleted app conversation is a dead end, not
-		// a transient failure: per the Spin-off ruling (design/app.md —
-		// a deleted conversation drops with a warning), tombstone the
-		// batch — a retry would hit the same missing row every 5 minutes
-		// forever, and the pending inbox rows replay at every boot.
+		// Only the app channel deletes its conversations — a missing
+		// Telegram row is a store anomaly and keeps the throw+retry. A
+		// deleted app conversation is a dead end, not transient: tombstone
+		// the batch, or the retry hits the same missing row forever.
 		if (channelOf(convId) === "app") {
 			dropAppBatch(env, convId, items);
 			return;
@@ -615,9 +556,8 @@ export function flushConversation(
 	}
 	const parts = items.flatMap((i) => i.parts);
 	log.debug("coalesced turn input", { conversation: convId, items: items.length });
-	// A ping reply's lane IS the app conversation — the turn runs
-	// headless (the bell rings when it lands), the DM gets a "sent
-	// to" ack, and no topic titling exists to attempt (Spin-off).
+	// A ping reply's lane IS the app conversation: the turn runs
+	// headless, the DM gets a "sent to" ack, no titling to attempt.
 	if (channelOf(conv.id) === "app") {
 		admitAppBatch(env, conv, convId, items, parts);
 		return;
@@ -646,10 +586,9 @@ export function flushConversation(
 	admitBatch(env, conv, convId, items, parts);
 }
 
-// The rolling lane's async half: route, mark the boundary if one
-// happened (the marker must land before the turn — the operator reads
-// it as "this is a fresh conversation"), then commit + submit into the
-// routed conversation exactly like a topic flush.
+// The rolling lane's async half: route, land the roll marker if one
+// happened (before the turn — the operator reads it as "this is a
+// fresh conversation"), then commit + submit like a topic flush.
 async function flushRolling(
 	env: FlushEnv,
 	chatId: number,
@@ -701,9 +640,8 @@ async function flushRolling(
 	}
 }
 
-// Manual navigation preserves input still in intake, but cancels its
-// work. Consult durable dispositions, not only an in-memory generation:
-// held attachments, retained batches and boot recovery all use this path.
+// Manual navigation preserves input still in intake but cancels its
+// work; consult durable dispositions, not an in-memory generation.
 function archiveNavigatedInput(
 	env: FlushEnv,
 	laneKey: string,
@@ -748,10 +686,9 @@ function archiveNavigatedInput(
 	return normal;
 }
 
-// The audience note a shared chat's turns carry (Guest mode): one
-// text part at the head of the burst, never in the frozen system
-// prompt. Guest conversations don't need it — their persona already
-// knows the shape.
+// The audience note a shared chat's turns carry: one text part at the
+// head of the burst, never in the frozen system prompt (cache
+// stability). Guest personas already know the shape.
 export const SHARED_CHAT_NOTE =
 	"[note: this is a shared chat — everyone in it can read your replies. " +
 	"Be deliberate before surfacing private material (workspace files, notes, past conversations).]";
@@ -778,8 +715,7 @@ function admitBatch(
 ): void {
 	const { deps } = env;
 	const tts = deps.configRef.current.tts;
-	// Audience first (Guest mode): the note leads the burst so the
-	// model reads it before the content it qualifies.
+	// Audience first — the note qualifies the content that follows.
 	const audience = sharedChatPart(conv.id, conv.chatId, env.isChatOpen);
 	const message = userMessage(audience === null ? parts : [audience, ...parts]);
 	env.inbox.commitBatch(
@@ -812,15 +748,10 @@ function admitBatch(
 	}
 }
 
-// The app lane's tail (Spin-off → Telegram rings): the ping reply
-// commits like any batch, the DM gets a delivery-only "sent to"
-// ack (never history — the ping already shows what it answers), and
-// the turn submits headless — the bell rings back when it lands.
-// A ping reply whose app conversation was deleted: consume the inbox
-// rows without appending — a tombstone, so the buffer stops retrying
-// and the rows stop replaying at every boot — and tell each replying
-// chat it never landed. The operator swiped-reply expecting an "sent
-// to" ack; silence would be a lie by omission.
+// The deleted-app-conversation landing: consume the inbox rows without
+// appending (a tombstone — the buffer stops retrying, the rows stop
+// replaying at boot) and tell each replying chat it never landed: the
+// operator is expecting a "sent to" ack, silence would lie.
 function dropAppBatch(env: FlushEnv, convId: string, items: BufferedItem[]): void {
 	env.inbox.commitBatch(
 		items.map((i) => i.updateId),
@@ -875,9 +806,8 @@ function admitAppBatch(
 			conversation: conv.id,
 		});
 	}
-	// One ack per chat that replied — coalescing can merge replies
-	// from several operators into the same app batch. Delivery only,
-	// never history.
+	// One ack per chat that replied — coalescing can merge several
+	// operators' replies into one app batch. Delivery only, never history.
 	for (const chat of new Set(items.map((i) => i.chatId))) {
 		void withTimeout(
 			env.api.sendMessage(chat, `sent to ${conv.title ?? "app conversation"}`),
@@ -912,11 +842,10 @@ function admitAppBatch(
 	}
 }
 
-// Per-conversation intake chain. Media resolution (getFile, download,
-// models.dev) is slow, so it runs off the update hot path — grammy's
-// runner processes updates sequentially and a 60s download would stall
-// every later update, /stop included. Chaining per conversation keeps
-// buffer.push order matching arrival order; commands bypass the chain.
+// Per-conversation intake chain: media resolution is slow and grammy's
+// runner is sequential, so it runs off the update hot path — a 60s
+// download would stall every later update, /stop included. Chaining
+// per conversation keeps buffer.push order matching arrival.
 function enqueueIntake(
 	intake: Map<string, Promise<void>>,
 	convId: string,
@@ -942,8 +871,7 @@ function enqueueIntake(
 export async function replayInbox(env: IntakeEnv): Promise<void> {
 	const entries = env.inbox.pending();
 	// Queue every recovered entry before polling resumes, but never wait
-	// here for a wedged local file copy. New updates join the same
-	// per-conversation chain behind their recovered predecessors.
+	// here for a wedged copy — new updates join behind them.
 	for (const entry of entries) {
 		void enqueuePersisted(env, entry).catch(() => {
 			// Logged by the chain; the row remains on disk for next boot.
@@ -957,9 +885,8 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	// apiRoot is structural — applies at process start, not hot-reloaded.
 	const apiRoot = deps.configRef.current.telegram.apiRoot;
 	const bot = new Bot(token, apiRoot ? { client: { apiRoot } } : {});
-	// Populates bot.botInfo — needed to route /cmd@botname correctly.
-	// Bounded like the other api calls: a wedged connection should fail
-	// boot loudly, not hang before the "online" log line.
+	// Populates bot.botInfo, needed to route /cmd@botname. Bounded: a
+	// wedged connection must fail boot loudly, not hang.
 	await withTimeout(bot.init(), "getMe");
 	const base = {
 		deps,
@@ -968,15 +895,13 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 		token,
 		botUsername: bot.botInfo.username,
 		// One auto-title attempt per topic per process — a failing
-		// provider must not retry on every burst. The flag survives for
-		// the next boot.
+		// provider must not retry on every burst.
 		titleAttempts: new Set<string>(),
 	};
 	const intake = new Map<string, Promise<void>>();
 	const inbox = openTelegramInbox(deps.store.db);
-	// The ping→conversation map shares the store's handle like the
-	// inbox (Spin-off), and the bell builds per-turn so allowedUsers
-	// and publicUrl read live config.
+	// The ping map shares the store's handle like the inbox; the bell
+	// builds per-turn so allowedUsers and publicUrl read live config.
 	const pings = openPings(deps.store.db);
 	const bell = (conv: Conversation): TurnSink =>
 		makeBellSink(
@@ -999,12 +924,9 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	);
 	const env: IntakeEnv = { ...base, buffer, intake, inbox, pings, bell, isChatOpen };
 
-	// Guest mode (design/telegram.md → Guest mode): both surfaces
-	// register BEFORE the access gate — the gate stays pure and guest
-	// traffic (which includes strangers once the BotFather usage
-	// restriction is off) never reaches it. Handlers no-op per update
-	// when the config block is absent, so removing it disables guest
-	// intake without a restart.
+	// Guest mode: both surfaces register BEFORE the access gate — the
+	// gate stays pure and guest traffic never reaches it. Handlers no-op
+	// without the config block, so removing it disables intake, no restart.
 	const guestEnv: GuestEnv = {
 		api: bot.api,
 		store: deps.store,
@@ -1018,8 +940,7 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 		if (ctx.guestMessage === undefined) return;
 		void handleGuestUpdate(guestEnv, ctx.guestMessage, ctx.update.update_id).catch(
 			(err: unknown) => {
-				// Handler failures are log-and-continue: a guest summons is a
-				// one-shot, never worth the poller's life.
+				// Log-and-continue: a guest summons is a one-shot, never worth the poller's life.
 				log.error("guest handler failed", err, { update: ctx.update.update_id });
 			},
 		);
@@ -1033,10 +954,8 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 
 	bot.on("message", (ctx) => handleMessageDurably(env, ctx.message, ctx.update.update_id));
 
-	// Edits carry no new content for the model — the original is already
-	// history — but the operator's edit must not vanish without a trace:
-	// a screenshot of "nothing happened" plus the log has to explain it
-	// (audit #18). Acked, logged, never re-entered.
+	// Edits never re-enter history — the original already is it — but
+	// must leave a trace: acked and logged.
 	bot.on("edited_message", (ctx) => {
 		log.info("edited message acked — edits do not re-enter history", {
 			chat: ctx.editedMessage.chat.id,
@@ -1047,9 +966,8 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	bot.callbackQuery(SPEAK_CALLBACK, (ctx) => {
 		void handleSpeakButton(ctx.callbackQuery, {
 			api: bot.api,
-			// Read per tap — a mini-app save applies without restart. The
-			// boot ffmpeg gate counts as off here; the toast rounds, the
-			// log and /voice carry the reason.
+			// Read per tap — a mini-app save applies without restart; the boot
+			// ffmpeg gate counts as off here, /voice carries the reason.
 			tts: deps.configRef.ttsDown ? undefined : deps.configRef.current.tts || undefined,
 			synthesize: deps.synthesize,
 		});
@@ -1085,10 +1003,9 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 		},
 		async drainIntake() {
 			// Drain before AND after the chains: a hung media resolution
-			// must not take already-buffered input down with it, and
-			// whatever the settled chains pushed goes out in the second
-			// pass. Anything later still submits via its own timer —
-			// the closed runtime records it history-only.
+			// must not take already-buffered input down with it; what the
+			// settled chains pushed goes out in the second pass. Later input
+			// rides its own timer — the closed runtime records it history-only.
 			try {
 				await buffer.drain();
 			} catch (err) {
@@ -1102,9 +1019,8 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	};
 }
 
-// The mini-app door is the chat menu button — no /settings command needed.
-// Called at boot and again on config writes, so a publicUrl change (or
-// clearing it) takes effect without a restart.
+// The mini-app door is the chat menu button. Called at boot and on
+// config writes, so a publicUrl change (or clearing it) applies live.
 export function applyMenuButton(api: Api, publicUrl: string | undefined): void {
 	const menu_button: MenuButton = publicUrl
 		? { type: "web_app", text: "Settings", web_app: { url: publicUrl } }
@@ -1114,9 +1030,8 @@ export function applyMenuButton(api: Api, publicUrl: string | undefined): void {
 		.catch((err: unknown) => log.warn("menu button failed", err));
 }
 
-// setMyCommands persists server-side on the bot token — v1's command
-// list will sit there forever unless we overwrite it. Cosmetic, so a
-// failure is a warn, not a boot error.
+// setMyCommands persists server-side on the bot token, so the list
+// must be overwritten to ever change. Cosmetic: a failure warns.
 export function applyCommands(api: Api): void {
 	api.setMyCommands([...COMMANDS]).catch((err: unknown) => log.warn("setMyCommands failed", err));
 	api
@@ -1129,8 +1044,8 @@ export async function startBot(deps: BotDeps): Promise<RunningBot> {
 	const { bot } = running;
 	log.info("telegram bot ready — polling after inbox replay", { bot: bot.botInfo.username });
 
-	// Unconditional: an unset publicUrl must reset the button to default,
-	// not leave a stale web_app link from a previous config.
+	// Unconditional: an unset publicUrl must reset the button to
+	// default, not leave a stale web_app link.
 	applyMenuButton(bot.api, deps.configRef.current.publicUrl);
 	applyCommands(bot.api);
 

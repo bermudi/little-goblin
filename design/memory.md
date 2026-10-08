@@ -172,7 +172,17 @@ startup (`Notify=healthy`) but are write-only after it —
 `Restart=on-failure` only sees process death — so a systemd user timer
 (`goblin-memory-watch`, 5 min) turns an `unhealthy` container report
 into a unit restart; a stopped or absent stack is a deliberate operator
-choice and stays stopped.
+choice and stays stopped. The probe itself is a mounted script
+(`healthcheck.py` → `/opt/goblin-memory-healthcheck.py`), never a
+`python -c` one-liner: quadlet `HealthCmd` passes through systemd's
+unit lexer and podman's CMD-SHELL re-quoting, and podman 5.4 (Debian
+trixie, lithium) drops the one-liner's trailing escaped quote — every
+probe died with `sh: Unterminated quoted string` and the watch
+restart-looped a perfectly healthy API while g7's podman 6.1.3
+happened to re-quote it correctly (found 2026-10-08). Ruling:
+healthcheck commands carry no shell metacharacters — a bare
+`python /opt/goblin-memory-healthcheck.py` survives every
+podman/systemd pair.
 
 Goblin accepts a configured Hindsight base URL and bank identity; it can
 use the supplied local stack or an existing service. Remote services require

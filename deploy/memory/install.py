@@ -316,6 +316,13 @@ def install_assets(memory_dir: Path, systemd_dir: Path, cfg_dir: Path,
     shutil.copyfile(memory_dir / "start.py", start_dst)
     start_dst.chmod(0o644)
     installed.append(start_dst)
+    # Always copied like start.py (quadlets above are the only
+    # operator-editable assets): the container healthcheck must track
+    # the shipped probe, never drift on an installed box.
+    health_dst = cfg_dir / "healthcheck.py"
+    shutil.copyfile(memory_dir / "healthcheck.py", health_dst)
+    health_dst.chmod(0o644)
+    installed.append(health_dst)
     return installed
 
 

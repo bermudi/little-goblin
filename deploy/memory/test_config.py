@@ -93,7 +93,9 @@ class MemoryAssetsTest(unittest.TestCase):
 
     def test_quadlet_boundaries(self) -> None:
         for role in ["api", "db"]:
-            unit = configparser.ConfigParser(interpolation=None)
+            # strict=False: quadlet legitimately repeats directives (Volume=
+            # per mount), which strict configparser rejects as duplicates.
+            unit = configparser.ConfigParser(interpolation=None, strict=False)
             unit.read(ROOT / f"goblin-memory-{role}.container")
             container = unit["Container"]
             self.assertRegex(container["Image"], r"@sha256:[a-f0-9]{64}$")
@@ -103,6 +105,16 @@ class MemoryAssetsTest(unittest.TestCase):
             self.assertEqual(unit["Service"]["Restart"], "on-failure")
             if role == "api":
                 self.assertEqual(container["PublishPort"], "127.0.0.1:8888:8888")
+                # The probe is a mounted script with no shell metacharacters
+                # — a `python -c` one-liner dies in podman 5.4's CMD-SHELL
+                # re-quoting (2026-10-08 lithium restart loop).
+                self.assertEqual(
+                    container["HealthCmd"],
+                    "/app/api/.venv/bin/python /opt/goblin-memory-healthcheck.py")
+                api_text = (ROOT / "goblin-memory-api.container").read_text()
+                self.assertIn(
+                    "%h/.config/goblin-memory/healthcheck.py"
+                    ":/opt/goblin-memory-healthcheck.py:ro,Z", api_text)
                 # Boot-enabled like goblin itself — the confirmed first start
                 # belongs to the installer, not to every reboot. The db rides
                 # along via Requires/After; only the API unit needs the hook.

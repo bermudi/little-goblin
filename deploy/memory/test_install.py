@@ -155,12 +155,14 @@ class InstallAssetsTest(unittest.TestCase):
             (memory_dir / "goblin-memory-api.container").write_text("[Container]\n")
             (memory_dir / "goblin-memory.network").write_text("[Network]\n")
             (memory_dir / "start.py").write_text("x = 1\n")
+            (memory_dir / "healthcheck.py").write_text("x = 1\n")
             for name in install.WATCH_UNITS:
                 (memory_dir / name).write_text("[Unit]\n")
             installed = install_assets(memory_dir, systemd_dir, cfg_dir, user_unit_dir)
             names = {p.name for p in installed}
             self.assertEqual(names, {"goblin-memory-api.container",
                                      "goblin-memory.network", "start.py",
+                                     "healthcheck.py",
                                      *install.WATCH_UNITS})
             for path in installed:
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
@@ -184,6 +186,7 @@ class InstallAssetsTest(unittest.TestCase):
             (memory_dir / "goblin-memory-api.container").write_text("[Container]\n")
             (memory_dir / "goblin-memory.network").write_text("[Network]\n")
             (memory_dir / "start.py").write_text("x = 1\n")
+            (memory_dir / "healthcheck.py").write_text("x = 1\n")
             for name in install.WATCH_UNITS:
                 (memory_dir / name).write_text("[Unit]\n")
             systemd_dir.mkdir()
@@ -198,6 +201,7 @@ class InstallAssetsTest(unittest.TestCase):
             self.assertIn("not overwritten", out.getvalue())
             names = {p.name for p in installed}
             self.assertEqual(names, {"goblin-memory.network", "start.py",
+                                     "healthcheck.py",
                                      *install.WATCH_UNITS})
             # Fresh-install overwrite semantics stay: without the skip
             # flag the shipped file wins, so deleting a Quadlet before a

@@ -415,10 +415,17 @@ keys stay in process memory and are never printed.
   again if the bank grows an order of magnitude — ranking deltas between
   models grow with corpus size.
 
-Known reading notes: `lang=es?` detection is a crude marker heuristic and
-can false-positive on English text quoting Spanish entities; check the raw
-records before calling a language drift. The Ollama candidate's first call
-after idle eviction pays the model reload (~2-3 s) — that is the
-`OLLAMA_KEEP_ALIVE` caveat surfacing in the data, not model slowness.
+Known reading notes: language grading is a two-layer verdict — the configured
+LLM acts as a structured judge (ISO 639-1 + confidence, over the fact texts,
+not keys or entity names), and deterministic script detection cross-checks it
+for cross-script drift (a judge "en" on Cyrillic text is a hard fail). Judge
+failures are counted as *ungraded*, never as passes; `--no-judge` skips
+dgrading for latency-only runs. Extraction coverage is graded against curated
+gold assertions in `bench_fixtures/docs.json` (strict: a near-miss is false
+coverage), and each fixture declares its expected baseline language, so pinned
+cells are graded against "en" on every doc and baseline cells against
+source-preservation. The Ollama candidate's first call after idle eviction
+pays the model reload (~2-3 s) — that is the `OLLAMA_KEEP_ALIVE` caveat
+surfacing in the data, not model slowness.
 
 Unit tests: `uv run -m unittest discover -s deploy/memory -p 'test_bench.py'`.

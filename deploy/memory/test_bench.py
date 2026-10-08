@@ -69,15 +69,33 @@ class OutputParsing(unittest.TestCase):
 		self.assertEqual(n, 0)
 
 
-class LanguageDetection(unittest.TestCase):
-	def test_cyrillic(self) -> None:
-		self.assertEqual(bench.detect_language("Пользователю не нравится"), "ru")
+class ScriptAndJudge(unittest.TestCase):
+	def test_script_of_cyrillic_and_latin(self) -> None:
+		self.assertEqual(bench.script_of("Пользователю не нравится"), "cyrillic")
+		self.assertEqual(bench.script_of("plain english text"), None)
 
-	def test_spanish_markers(self) -> None:
-		self.assertEqual(bench.detect_language("¿Cuándo vence la declaración?"), "es?")
+	def test_parse_judge_response(self) -> None:
+		grade = bench.parse_judge_response('{"language": "EN", "confidence": 0.9, "coverage": [true, false]}')
+		self.assertEqual(grade["language"], "en")
+		self.assertEqual(grade["coverage"], [True, False])
 
-	def test_english_default(self) -> None:
-		self.assertEqual(bench.detect_language("The deploy finished on time"), "en?")
+	def test_lang_verdict_ok_and_mismatch_and_conflict(self) -> None:
+		ok = bench.lang_verdict({"language": "en", "confidence": 1.0}, "en", "some latin text")
+		self.assertTrue(ok["ok"])
+		mismatch = bench.lang_verdict({"language": "ru", "confidence": 1.0}, "en", "some latin text")
+		self.assertFalse(mismatch["ok"])
+		conflict = bench.lang_verdict({"language": "en", "confidence": 1.0}, "en", "Пользователю не нравится")
+		self.assertFalse(conflict["ok"])
+		self.assertIn("script-conflict", conflict["note"])
+		ungraded = bench.lang_verdict(None, "en", "whatever")
+		self.assertIsNone(ungraded["ok"])
+
+	def test_expected_language_pin_overrides_baseline(self) -> None:
+		doc = {"expect_language_baseline": "es"}
+		pinned = bench.Cell("langpin", 0.1, None, "English")
+		baseline = bench.Cell("baseline", 0.1, None, None)
+		self.assertEqual(bench.expected_language(pinned, doc), "en")
+		self.assertEqual(bench.expected_language(baseline, doc), "es")
 
 
 class Cells(unittest.TestCase):
@@ -101,13 +119,19 @@ class Fixtures(unittest.TestCase):
 			self.assertIsInstance(q["gold"], list)
 			self.assertTrue(q["gold"])
 
-	def test_docs_shape(self) -> None:
+	def test_docs_curated_for_grading(self) -> None:
 		docs = json.loads((bench.FIXTURES / "docs.json").read_text())
 		self.assertIn("en", docs)
 		self.assertIn("es", docs)
 		for doc in docs.values():
 			self.assertTrue(doc["text"].strip())
 			self.assertIn("context", doc)
+			expected = doc["expect_language_baseline"]
+			self.assertIn(expected, {"en", "es"})
+			assertions = doc["gold_assertions"]
+			self.assertGreaterEqual(len(assertions), 3)
+		for assertion in assertions:
+			self.assertGreater(len(assertion), 20)
 
 
 if __name__ == "__main__":

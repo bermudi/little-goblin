@@ -119,6 +119,60 @@ def apply_output_language(system: str, language: str) -> str:
 _CONTENT_TAIL = re.compile(r"Content:\s*\n.*\Z", re.DOTALL)
 
 
+# ---------------------------------------------------------------------------
+# Grading: curated expectations + LLM judge, cross-checked by script.
+# Script detection is exact for cross-script drift (Cyrillic cannot hide in
+# Latin text) and is used ONLY as an agreement check on the judge — never as
+# the grader. The judge is the configured LLM under a strict schema.
+# ---------------------------------------------------------------------------
+
+JUDGE_SYSTEM = (
+	"You are a strict grader for a fact-extraction benchmark. You will receive "
+	"a JSON extraction output and a list of gold assertions. Respond with JSON: "
+	"{\"language\": <ISO 639-1 code of the DOMINANT language of the fact texts — "
+	"judge the fact text values, not keys, entity names, or quoted foreign terms>, "
+	"\"confidence\": <0.0-1.0>, \"coverage\": [<boolean per gold assertion: true only "
+	"if some extracted fact conveys that assertion>]}. Be strict: a near-miss is "
+	"false coverage."
+)
+
+
+def script_of(text: str) -> str | None:
+	"""Exact script classification; None when Latin (uninformative for grading)."""
+	if re.search(r"[\u0400-\u04FF]", text):
+		return "cyrillic"
+	if re.search(r"[\u4E00-\u9FFF\u3040-\u30FF]", text):
+		return "cjk"
+	return None
+
+
+def parse_judge_response(text: str) -> dict:
+	parsed = json.loads(text)
+	language = str(parsed["language"]).lower().strip()[:2]
+	confidence = float(parsed.get("confidence", 0.0))
+	coverage = [bool(c) for c in parsed.get("coverage", [])]
+	return {"language": language, "confidence": confidence, "coverage": coverage}
+
+
+def expected_language(cell: Cell, doc: dict) -> str:
+	"""Curated expectation: the pin forces English; baseline preserves source."""
+	if cell.output_language is not None:
+		return cell.output_language[:2].lower()
+	return str(doc["expect_language_baseline"]).lower()
+
+
+def lang_verdict(judge: dict | None, expected: str, output_text: str) -> dict:
+	"""Combine judge + script cross-check into the graded language verdict."""
+	if judge is None:
+		return {"lang": None, "ok": None, "note": "ungraded"}
+	script = script_of(output_text)
+	conflict = (script == "cyrillic" and judge["language"] not in {"ru", "uk", "bg", "be", "sr", "mk"}) or \
+		(script == "cjk" and judge["language"] not in {"zh", "ja"})
+	ok = judge["language"] == expected and not conflict
+	note = "ok" if ok else (f"judge={judge['language']} expected={expected}" if not conflict else f"script-conflict judge={judge['language']}")
+	return {"lang": judge["language"], "ok": ok, "note": note}
+
+
 def substitute_document(user: str, document: str, context: str) -> str:
 	"""Replace the preview's fixed placeholder document with bench content."""
 	user = _CONTENT_TAIL.sub(f"Content:\n{document}", user)
@@ -126,15 +180,34 @@ def substitute_document(user: str, document: str, context: str) -> str:
 	return user
 
 
-def detect_language(text: str) -> str:
-	"""Coarse script/marker detection — enough to catch drift, not a linguist."""
-	if re.search(r"[\u0400-\u04FF]", text):
-		return "ru"
-	if re.search(r"[\u4E00-\u9FFF\u3040-\u30FF]", text):
-		return "zh/ja"
-	if re.search(r"[¿¡]|\b(el|la|los|las|de|que|para) \b", text):
-		return "es?"
-	return "en?"
+def judge_call(base_url: str, api_key: str, model: str, extraction_text: str, gold_assertions: list[str]) -> dict | None:
+	"""Grade one extraction output. Returns None on any failure — the record is
+	counted as ungraded, never as passed."""
+	schema = {
+		"type": "object",
+		"properties": {
+			"language": {"type": "string"},
+			"confidence": {"type": "number"},
+			"coverage": {"type": "array", "items": {"type": "boolean"}, "minItems": len(gold_assertions), "maxItems": len(gold_assertions)},
+		},
+		"required": ["language", "confidence", "coverage"],
+	}
+	payload = {
+		"model": model,
+		"messages": [
+			{"role": "system", "content": JUDGE_SYSTEM},
+			{"role": "user", "content": json.dumps({"output": extraction_text[:20000], "gold_assertions": gold_assertions})},
+		],
+		"response_format": {"type": "json_schema", "json_schema": {"name": "grade", "schema": schema, "strict": False}},
+	}
+	try:
+		body = post_json(f"{base_url.rstrip('/')}/chat/completions", payload, headers={"authorization": f"Bearer {api_key}"})
+		text = (body.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+		text = re.sub(r"^```(json)?\s*|\s*```$", "", text.strip())
+		return parse_judge_response(text)
+	except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+		print(f"  !! judge call failed ({type(error).__name__}: {str(error)[:120]}) — marking ungraded", file=sys.stderr)
+		return None
 
 
 # ---------------------------------------------------------------------------
@@ -239,8 +312,8 @@ def cmd_llm(args: argparse.Namespace) -> None:
 	cells = FULL_CELLS if args.full else DEFAULT_CELLS
 
 	calls = len(cells) * len(docs) * args.reps
-	print(f"plan: {len(cells)} cells x {len(docs)} docs x {args.reps} reps = {calls} LLM calls")
-	print(f"model: {model} @ {base_url}")
+	print(f"plan: {len(cells)} cells x {len(docs)} docs x {args.reps} reps = {calls} LLM calls + {calls} judge calls")
+	print(f"model: {model} @ {base_url} (judge: same model, structured grade)")
 	for cell in cells:
 		print(f"  - {cell.describe()}")
 	print(f"prompt size: system={len(prompts_base.system)} chars, schema={len(json.dumps(prompts_base.response_schema))} chars")
@@ -265,18 +338,29 @@ def cmd_llm(args: argparse.Namespace) -> None:
 				prompt_tokens, completion_tokens = extract_usage(out["body"])
 				total_tokens += prompt_tokens + completion_tokens
 				ok, facts = count_facts(text)
+				judge = None if args.no_judge else judge_call(base_url, api_key, model, text, doc["gold_assertions"])
+				verdict = lang_verdict(judge, expected_language(cell, doc), text)
+				if judge is not None and len(judge["coverage"]) == len(doc["gold_assertions"]):
+					coverage_frac = sum(judge["coverage"]) / len(doc["gold_assertions"])
+				else:
+					coverage_frac = None
 				record = {
 					"cell": cell.name, "doc": doc_name, "rep": rep,
 					"wall_ms": round(out["wall_ms"]), "mode": out["mode"],
 					"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
-					"parse_ok": ok, "facts": facts, "language": detect_language(text),
+					"parse_ok": ok, "facts": facts,
+					"expected_language": expected_language(cell, doc),
+					"judge_language": verdict["lang"], "lang_ok": verdict["ok"], "lang_note": verdict["note"],
+					"judge_confidence": judge["confidence"] if judge else None,
+					"coverage_frac": coverage_frac,
 					"output": text[:4000],
 				}
 				records.append(record)
+				cov = f"{coverage_frac:.0%}" if coverage_frac is not None else "n/a"
 				print(
 					f"  [{rep + 1}/{args.reps}] {cell.name:<24} {doc_name}: "
 					f"{record['wall_ms']}ms {prompt_tokens}/{completion_tokens} tok "
-					f"facts={facts} parse={'ok' if ok else 'FAIL'} lang={record['language']} mode={out['mode']}"
+					f"facts={facts} parse={'ok' if ok else 'FAIL'} lang={verdict['note']} cov={cov}"
 				)
 
 	print(f"\ntotal tokens: {total_tokens}")
@@ -287,17 +371,21 @@ def cmd_llm(args: argparse.Namespace) -> None:
 
 
 def summarize(records: list[dict]) -> None:
-	print("\ncell                          n   wall p50   wall max  tok avg  parse  langs            facts avg")
+	print("\ncell                          n   wall p50   wall max  tok avg  parse  lang ok      cov avg")
 	for name in dict.fromkeys(r["cell"] for r in records):
 		rows = [r for r in records if r["cell"] == name]
 		walls = sorted(r["wall_ms"] for r in rows)
 		tok = statistics.mean(r["prompt_tokens"] + r["completion_tokens"] for r in rows)
 		parse_rate = sum(1 for r in rows if r["parse_ok"]) / len(rows)
-		langs = ",".join(sorted({r["language"] for r in rows}))
-		facts_avg = statistics.mean(r["facts"] for r in rows)
+		graded = [r for r in rows if r["lang_ok"] is not None]
+		lang_ok = sum(1 for r in graded if r["lang_ok"]) / len(graded) if graded else None
+		covs = [r["coverage_frac"] for r in rows if r["coverage_frac"] is not None]
+		cov_avg = statistics.mean(covs) if covs else None
 		p50 = walls[len(walls) // 2]
+		lang_cell = f"{lang_ok:.0%} ({len(graded)}/{len(rows)})" if lang_ok is not None else f"ungraded"
+		cov_cell = f"{cov_avg:.0%} ({len(covs)}/{len(rows)})" if cov_avg is not None else "n/a"
 		print(
-			f"{name:<28} {len(rows):<3} {p50:<10} {walls[-1]:<9} {tok:<8.0f} {parse_rate:<6.1f} {langs:<16} {facts_avg:.1f}"
+			f"{name:<28} {len(rows):<3} {p50:<10} {walls[-1]:<9} {tok:<8.0f} {parse_rate:<6.1f} {lang_cell:<12} {cov_cell}"
 		)
 
 
@@ -409,7 +497,8 @@ def main() -> None:
 	llm.add_argument("--env", default=str(Path.home() / ".config/goblin-memory/hindsight.env"))
 	llm.add_argument("--reps", type=int, default=5)
 	llm.add_argument("--full", action="store_true", help="add the remaining cross-product cells")
-	llm.add_argument("--yes", action="store_true", help="actually spend (paid LLM calls)")
+	llm.add_argument("--yes", action="store_true", help="actually spend (paid LLM calls, incl. judge)")
+	llm.add_argument("--no-judge", action="store_true", help="skip LLM grading (latency/tokens only)")
 	llm.add_argument("--out", default=None, help="JSONL path for raw records")
 	llm.set_defaults(func=cmd_llm)
 

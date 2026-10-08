@@ -11,7 +11,7 @@ deviations come back here first.
 
 Code anchors are `src/runtime.ts` at `ca886a7`: `runTurn` spans
 **998–2177** (~1,180 lines), recursive (self-call at 2146).
-`runtime.test.ts` is 3,987 lines / 196 tests. Line numbers drift; the
+`runtime.test.ts` is 3,987 lines / 87 tests. Line numbers drift; the
 named shapes are the anchor.
 
 ## Why a ruling, before code moves
@@ -54,7 +54,11 @@ Seams each phase already has, or lacks:
 - **1 admission** — has: the ownership filter (`queuedIds`, 1102–1103)
   and anchor derivation are already a coherent block with the ruling in
   comments (#82). Lacks: it is interleaved with lane/controller pinning
-  (1116–1118), which is runtime-owned, not admission's.
+  (1116–1118), which is runtime-owned, not admission's. Ruling for the
+  cut: admission's resume claim (1072–1077) must invoke the stream
+  driver's membership seam — claim + `live.chunks` replay — through the
+  same runtime-injected queue function used by the steer path, with
+  `live` passed in. Never splice `lane.pending` directly.
 - **2 recall** — has: `recallMemory` is a self-contained method over
   injected memory deps, fail-open by construction. Lacks: it lives on
   Runtime though everything it touches is memory's surface.
@@ -134,7 +138,7 @@ or derived value, not state.
 | `sink` | 1039 | — | derived: `turns[0].sink`, fixed at enqueue |
 | `live` | 1044 | RC | the wire log — subscribers must see the resume continue the same wire |
 | `notifyAll` | 1049 | — | behavior: `TurnState.finish(done)` + runtime's `notifyDone` loop |
-| `conv` | 1054 | — | admission snapshot (settings captured once per logical turn, 1060) |
+| `conv` | 1054 | RC | `TurnRecovery.conversation` (a resume keeps the same conversation object); the admission-snapshot VALUE read off it (settings captured once per logical turn, 1060) is immutable |
 | `epoch` | 1068 | — | the authority token, frozen at admission |
 | `turnStartMs` | 1082 | RC | `startedAt`; a resume continues the failed attempt's clock |
 | `queuedIds` | 1102 | — | admission input (the #82 ownership filter) |
@@ -216,7 +220,7 @@ behavior-preserving refactor can still break, so they are named here
 and the W3 review checkpoints audit them specifically.
 
 - **The authority rule** (DESIGN.md). `checkAuthority` around every
-  await — 17 sites inside `runTurn` today (1126…2140) plus the
+  await — 16 sites inside `runTurn` today (1126…2140) plus the
   epoch-compare guards in `prepareStep` (1349) and the steer error path
   (1404); `fenceTools` (748) around every tool execute;
   `sink.setAuthorityCheck` (1083); delivery-time checks in the queued

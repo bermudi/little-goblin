@@ -9,7 +9,6 @@
 // quietly and log it.
 
 import {
-	convertToModelMessages,
 	isLoopFinished,
 	streamText,
 	toUIMessageStream,
@@ -22,12 +21,7 @@ import {
 } from "ai";
 import type { ProviderOptions, ToolExecutionOptions } from "@ai-sdk/provider-utils";
 import { randomUUID } from "node:crypto";
-import {
-	INLINE_ITEM_MAX_BYTES,
-	materializeAttachments,
-	type AcceptsMedia,
-	type MediaPosition,
-} from "./agent/attachments.ts";
+import type { AcceptsMedia, MediaPosition } from "./agent/attachments.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import type { MemoryDocument } from "./hindsight.ts";
@@ -37,7 +31,6 @@ import {
 	messageText,
 	recallMemory,
 	retentionSourceFrom,
-	withMemoryBlocks,
 	type MemoryTurnDeps,
 	type RecallContext,
 	type RetentionSource,
@@ -55,6 +48,7 @@ import type { JevClient } from "./jev.ts";
 import { cancelAllReviews, cancelReviews, considerTurn, summarize, toolOk } from "./reviewer.ts";
 import { admitTurn, type LiveWire } from "./turn/admission.ts";
 import { TurnState, type ForcedKind, type LoopTurnState } from "./turn/state.ts";
+import { buildModelView, convertSteeredMessage, type ViewContext } from "./turn/view.ts";
 
 // Loop landings (design/model.md → "No step budget — loops are caught,
 // not capped"): a turn has no step budget; whichever cut fires first —
@@ -108,41 +102,6 @@ function describeWarning(w: CallWarning): string {
 		case "other":
 			return `other:${w.message}`;
 	}
-}
-
-// A message that cannot convert to the wire format degrades to a
-// readable placeholder in position — role and id preserved — instead of
-// failing every future turn identically. The corrupt-row precedent lives
-// at the store boundary (conversation.ts, corruptPlaceholder); this is
-// the same degradation one step later, at the conversion boundary. The
-// original message stays in history: arrival-order storage is the truth.
-function unconvertiblePlaceholder(m: UIMessage): UIMessage {
-	return {
-		id: m.id,
-		role: m.role,
-		parts: [
-			{
-				type: "text",
-				text: `[this message could not be prepared for the model (${m.role} role) — it is kept in history; any attachment it carried may still be readable with read_file or bash tools]`,
-			},
-		],
-	};
-}
-
-// A history system event (the reviewer's save note — design/skills.md)
-// cannot reach the model as a system message: streamText rejects system
-// roles in `messages`, and `instructions` is the frozen per-conversation
-// prefix — per-event text can't join it without breaking the prompt
-// cache. Rendered instead as a bracketed user-role note in position,
-// the same way memory recall blocks ride the wire (memory.ts,
-// withMemoryBlocks). Deterministic: identical history bytes turn to
-// turn. The stored role stays "system" — this mapping is render-only.
-function systemEventAsUser(m: UIMessage): UIMessage {
-	return {
-		id: m.id,
-		role: "user",
-		parts: [{ type: "text", text: `[system event: ${messageText(m)}]` }],
-	};
 }
 
 // ---------- sink: what the turn streams into (tg implements) ----------
@@ -1050,76 +1009,25 @@ export class Runtime {
 				carries: step.carries ?? (() => true),
 			};
 			this.checkAuthority(convId, epoch);
-			// Materialize attachment refs against THIS turn's model — a
-			// media part the provider can't consume degrades to its path
-			// reference instead of failing the request on every turn.
-			// Memory recall blocks interleave before their anchored user
-			// message (persisted, never regenerated); without memory the
-			// sequence is byte-identical to history.
-			const view = withMemoryBlocks(entries, memory.prior, memory.current);
-			// A resume's partial reply goes last: it is this turn's
-			// in-progress assistant message, and its tool results get the
-			// same media treatment as any history event.
-			if (recovery?.partial) view.push(recovery.partial);
-			const prepared = await materializeAttachments(
-				view,
-				step.inputModalities,
-				INLINE_ITEM_MAX_BYTES,
-				accepts.current.carries,
-			);
-			this.checkAuthority(convId, epoch);
-			// Convert per message: one malformed message must not fail the
-			// turn. History is durable — a whole-array conversion failure
-			// would repeat identically on every future turn and brick the
-			// conversation (a failed steer leaves exactly such a message
-			// behind). Degrade the offending message to a readable
-			// placeholder in position — the corrupt-row precedent at the
-			// store boundary (conversation.ts); the original stays on disk.
-			// Per-message conversion is output-identical: the converter is a
-			// pure per-message mapper (its only cross-message step, the
-			// incomplete-tool-call filter, is itself per-message).
-			const messages: ModelMessage[] = [];
-			for (const m of prepared) {
-				// System events render as user-role notes — the SDK rejects
-				// system roles in `messages` (see systemEventAsUser). The
-				// placeholder fallback sees the mapped message, so a doubly
-				// broken event degrades to a user-role note too.
-				const rendered = m.role === "system" ? systemEventAsUser(m) : m;
-				try {
-					messages.push(
-						...(await convertToModelMessages([rendered], {
-							tools,
-							ignoreIncompleteToolCalls: true,
-						})),
-					);
-				} catch (err) {
-					log.warn("message unconvertible — degrading to placeholder", err, {
-						conversation: convId,
-						message: m.id,
-						role: m.role,
-					});
-					messages.push(
-						...(await convertToModelMessages([unconvertiblePlaceholder(rendered)], {
-							tools,
-							ignoreIncompleteToolCalls: true,
-						})),
-					);
-				}
-			}
-
-			// Merge after conversion: one malformed message must degrade
-			// ALONE — a UIMessage-level merge would fuse it with its
-			// burst-mates and the placeholder would swallow their text.
-			const merged = mergeConsecutiveUserModels(messages);
-
-			// Cache observability (DESIGN.md, Cache stability): the per-call
-			// request hashes — head (system + tools) and full request — are
-			// logged by the model wrapper at EVERY call: tool-loop
-			// continuations, retries, titling. See observedModel in
-			// agent/providers.ts; this line only anchors the turn.
-			log.info("model request", {
-				conversation: convId,
-				messages: merged.length,
+			// The model view (design/runtime-turn.md → phase 3): the pure
+			// builder owns recall-block interleaving, attachment
+			// materialization, per-message conversion, and the burst merge —
+			// the cache-stability surface in one unit. The context is fixed
+			// for the attempt; the steer fold below converts through the same
+			// gates so a steered message materializes exactly as it would
+			// have in the next turn's view.
+			const viewCtx: ViewContext = {
+				convId,
+				tools,
+				modalities: step.inputModalities,
+				carries: accepts.current.carries,
+			};
+			const merged = await buildModelView(viewCtx, {
+				entries,
+				prior: memory.prior,
+				current: memory.current,
+				partial: recovery?.partial ?? null,
+				assertAuthority: () => this.checkAuthority(convId, epoch),
 			});
 
 			// The last step's input is the fullest prompt this turn sent —
@@ -1216,18 +1124,7 @@ export class Runtime {
 							// Same treatment as the admission snapshot: media
 							// materializes against this turn's model or degrades
 							// to a path reference.
-							const materialized = await materializeAttachments(
-								[t.message],
-								step.inputModalities,
-								INLINE_ITEM_MAX_BYTES,
-								accepts.current.carries,
-							);
-							injected.push(
-								...(await convertToModelMessages(materialized, {
-									tools,
-									ignoreIncompleteToolCalls: true,
-								})),
-							);
+							injected.push(...(await convertSteeredMessage(viewCtx, t.message)));
 							turns.push(t);
 							replayWire(convId, t, live.chunks);
 							claimedIds.add(t.message.id);
@@ -1961,32 +1858,6 @@ function endLive(live: LiveChunks, done: TurnDone): void {
 		}
 	}
 	live.subscribers.clear();
-}
-
-// A burst of user input with no answer between the messages is one
-// conversational beat — merge adjacent user messages so the model reads
-// them as a single message, not N. Runs on the CONVERTED messages: the
-// conversion must stay per-message (one malformed message degrades
-// alone — a merge before conversion would let its placeholder swallow
-// burst-mates' text), and the wire bytes are identical either way for
-// valid input.
-function mergeConsecutiveUserModels(messages: ModelMessage[]): ModelMessage[] {
-	const out: ModelMessage[] = [];
-	for (const m of messages) {
-		const prev = out[out.length - 1];
-		if (m.role === "user" && prev?.role === "user") {
-			const prevContent =
-				typeof prev.content === "string"
-					? [{ type: "text" as const, text: prev.content }]
-					: prev.content;
-			const content =
-				typeof m.content === "string" ? [{ type: "text" as const, text: m.content }] : m.content;
-			prev.content = [...prevContent, ...content];
-		} else {
-			out.push(m);
-		}
-	}
-	return out;
 }
 
 // A failed attempt's partial is worth continuing only if it streamed

@@ -141,6 +141,15 @@ Tests guard boundaries and invariants, not implementations. Fake the model
 provider and the Telegram API at the edge; don't mock module internals. The
 suite stays smaller than `src/`.
 
+## Comment policy (W6 ruling, 2026-10-08)
+
+Comments carry the **local why**: invariants, non-obvious trade-offs,
+sharp edges. They do not retell the design docs (at most one pointer
+where a coupling is genuinely subtle), carry incident dates (git and
+the hunt docs own history), or narrate what adjacent code obviously
+does. `scripts/comment-audit.ts` reports per-file comment ratio — a
+reported signal, not a gate; run it when you touch a file.
+
 ## Process
 
 The polish backlog (gaps vs openclaw/hermes, audited 2026-10-02) lives in

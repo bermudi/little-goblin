@@ -1,7 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { Window } from "happy-dom";
 import type { UIMessage } from "ai";
-import { appendQuote, MessageParts } from "./ChatView.tsx";
+import { appendQuote, ChatView, mergeTranscript, MessageParts } from "./ChatView.tsx";
 
 // Static markup only — these guard the transcript's render contract
 // (links become anchors, tool runs fold), not React behavior.
@@ -117,6 +120,179 @@ describe("MessageParts", () => {
 		expect(html).toContain("worked-fail");
 		expect(html).toContain("— 1 failed");
 		expect(html).toContain("a.dev");
+	});
+});
+
+// The reload window (#79): history is fetched once on mount, then the
+// SDK's resume reconnects to a live turn. A reply that completes between
+// those two operations makes the reconnect answer 204 — and the SDK
+// leaves the stale snapshot standing, hiding a reply that is durably
+// stored. Mounted with happy-dom like Composer.test.tsx; the network
+// edge (api.ts + the transport) is faked at globalThis.fetch, with the
+// reconnect's 204 held back so the test owns the ordering that is the
+// bug: history snapshot → turn completes → idle reconnect.
+describe("ChatView reload window (issue #79)", () => {
+	let win: Window;
+	let container: HTMLElement;
+	let root: Root | null = null;
+	let installed: string[] = [];
+	const realFetch = globalThis.fetch;
+
+	const installGlobal = (name: string, value: unknown) => {
+		Reflect.set(globalThis, name, value);
+		installed.push(name);
+	};
+
+	const jsonResponse = (body: unknown, status = 200): Response =>
+		new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+	const userMsg = (id: string, text: string): UIMessage => ({
+		id,
+		role: "user",
+		parts: [{ type: "text", text }],
+	});
+	const assistantMsg = (id: string, text: string): UIMessage => ({
+		id,
+		role: "assistant",
+		parts: [{ type: "text", text }],
+		metadata: { model: "prov/model", durationMs: 10 },
+	});
+
+	beforeEach(() => {
+		win = new Window();
+		const div = win.document.createElement("div");
+		win.document.body.appendChild(div);
+		container = div as unknown as HTMLElement;
+		installed = [];
+		installGlobal("window", win);
+		installGlobal("document", win.document);
+		installGlobal("navigator", win.navigator);
+		installGlobal("localStorage", win.localStorage);
+		installGlobal("Event", win.Event);
+		installGlobal("CustomEvent", win.CustomEvent);
+		installGlobal("getComputedStyle", win.getComputedStyle);
+		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+	});
+
+	afterEach(async () => {
+		if (root !== null) {
+			await act(async () => {
+				root?.unmount();
+			});
+			root = null;
+		}
+		await win.happyDOM.close();
+		globalThis.fetch = realFetch;
+		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+		for (const name of installed) Reflect.deleteProperty(globalThis, name);
+		installed = [];
+	});
+
+	test("a reply that completes between history fetch and reconnect becomes visible", async () => {
+		// The durable store: one user message at snapshot time; the answer
+		// lands before the reconnect is answered.
+		let stored: UIMessage[] = [userMsg("u1", "run the thing")];
+		let historyFetches = 0;
+		let reconnects = 0;
+		let answerIdle!: () => void;
+		const idle = new Promise<Response>((res) => {
+			answerIdle = () => res(new Response(null, { status: 204 }));
+		});
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url === "/api/app/conversations/chat-01/messages") {
+				historyFetches++;
+				return Promise.resolve(jsonResponse({ messages: stored }));
+			}
+			if (url === "/api/app/conversations/chat-01/stream") {
+				reconnects++;
+				return idle;
+			}
+			// The Composer's conversation-config load and anything else.
+			return Promise.resolve(
+				jsonResponse({
+					model: "prov/model",
+					thinking: "off",
+					favorites: [],
+					thinkingLevels: ["off"],
+				}),
+			);
+		}) as typeof fetch;
+
+		root = createRoot(container);
+		act(() => {
+			root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-01"
+					title={null}
+					seed={null}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			);
+		});
+		// Initial history lands, Chat mounts, the resume fires the reconnect
+		// (its answer is held back by the test).
+		await act(async () => {});
+		expect(historyFetches).toBe(1);
+		expect(reconnects).toBe(1);
+
+		// The window: the turn completes now — durably stored, nothing left
+		// to attach to — and only then does the reconnect learn it (204).
+		stored = [stored[0]!, assistantMsg("a1", "COMPLETED ANSWER")];
+		await act(async () => {
+			answerIdle();
+			await idle;
+		});
+		// Reconciliation fetch + merge flush.
+		await act(async () => {});
+		await act(async () => {});
+
+		expect(container.textContent).toContain("COMPLETED ANSWER");
+		// The mechanism, pinned: one snapshot, one reconnect, one reconcile.
+		expect(historyFetches).toBe(2);
+		expect(reconnects).toBe(1);
+	});
+});
+
+// The reconcile merge behind #79's fix — union by id, nothing dropped:
+// store arrivals land, a live local tail survives.
+describe("mergeTranscript", () => {
+	const msg = (id: string, role: "user" | "assistant"): UIMessage => ({
+		id,
+		role,
+		parts: [{ type: "text", text: id }],
+	});
+
+	test("a reply that arrived durably extends the view in store order", () => {
+		const current = [msg("u1", "user")];
+		const history = [msg("u1", "user"), msg("a1", "assistant")];
+		expect(mergeTranscript(current, history)).toEqual(history);
+	});
+
+	test("an unchanged or shrunk history leaves the view untouched (same reference)", () => {
+		const current = [msg("u1", "user"), msg("a1", "assistant")];
+		expect(mergeTranscript(current, [msg("u1", "user")])).toBe(current);
+		expect(mergeTranscript(current, [...current])).toBe(current);
+	});
+
+	test("a just-sent message the store hasn't seen keeps its place at the tail", () => {
+		const current = [msg("u1", "user"), msg("u2", "user")];
+		const history = [msg("u1", "user"), msg("a1", "assistant")];
+		expect(mergeTranscript(current, history).map((m) => m.id)).toEqual(["u1", "a1", "u2"]);
+	});
+
+	test("a persisted racing send takes the store's order", () => {
+		const current = [msg("u1", "user"), msg("u2", "user")];
+		const history = [msg("u1", "user"), msg("a1", "assistant"), msg("u2", "user")];
+		expect(mergeTranscript(current, history).map((m) => m.id)).toEqual(["u1", "a1", "u2"]);
+	});
+
+	test("a streaming assistant stays last — the arrival slots in ahead of it", () => {
+		const current = [msg("u1", "user"), msg("u2", "user"), msg("ax", "assistant")];
+		const history = [msg("u1", "user"), msg("a1", "assistant"), msg("u2", "user")];
+		expect(mergeTranscript(current, history).map((m) => m.id)).toEqual(["u1", "u2", "a1", "ax"]);
 	});
 });
 

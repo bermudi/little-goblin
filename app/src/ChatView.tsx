@@ -11,6 +11,7 @@ import { useChat } from "@ai-sdk/react";
 import {
 	DefaultChatTransport,
 	isToolUIPart,
+	type ChatTransport,
 	type DynamicToolUIPart,
 	type ToolUIPart,
 	type UIMessage,
@@ -992,6 +993,28 @@ function askNotifyPermission() {
 	void Notification.requestPermission().catch(() => {});
 }
 
+// Union of the view and durable history by message id — the reconcile
+// merge for an idle reconnect (#79). History is the truth for finished
+// messages; the view may additionally hold a live tail the store has
+// not seen yet (a just-sent user message, the assistant mid-stream),
+// and that tail must survive: store arrivals slot in before it, and
+// nothing local is ever dropped.
+export function mergeTranscript(current: UIMessage[], history: UIMessage[]): UIMessage[] {
+	const currentIds = new Set(current.map((m) => m.id));
+	const arrivals = history.filter((m) => !currentIds.has(m.id));
+	// Nothing new durably — the view stands (a history that shrank or
+	// reordered is an anomaly; the live view wins).
+	if (arrivals.length === 0) return current;
+	const historyIds = new Set(history.map((m) => m.id));
+	// No live tail: the store's order is the whole truth.
+	if (current.every((m) => historyIds.has(m.id))) return history;
+	// Splice the arrivals in ahead of the first message the store lacks
+	// — the live tail keeps its place at the end.
+	const cut = current.findIndex((m) => !historyIds.has(m.id));
+	const kept = new Set(current.slice(0, cut).map((m) => m.id));
+	return [...history.filter((m) => kept.has(m.id)), ...arrivals, ...current.slice(cut)];
+}
+
 export function ChatView({
 	token,
 	conversationId,
@@ -1059,36 +1082,54 @@ function Chat({
 	// A regenerate rides the same endpoint as `retry` — no append, the
 	// stored user event anchors the new answer.
 	// token null = trust mode — the server wants no credential.
-	const transport = useMemo(
-		() =>
-			new DefaultChatTransport({
-				api: "/api/app/chat",
-				headers: token === null ? {} : { authorization: `Bearer ${token}` },
-				// Resumable streams (design/app.md → Streaming members): on
-				// mount, useChat(resume) asks the transport to reconnect to a
-				// live turn — the GET returns the wire's replay + tail, or 204
-				// when nothing is running and history stands. The URL is
-				// ours, not the SDK's default append, so the conversation id
-				// keeps the app channel's shape.
-				prepareReconnectToStreamRequest: ({ id }) => ({
-					api: `/api/app/conversations/${encodeURIComponent(id.slice(4))}/stream`,
-				}),
-				prepareSendMessagesRequest: ({ trigger, messageId, messages }) => ({
-					body:
-						trigger === "regenerate-message"
-							? { conversationId, retry: true }
-							: {
-									conversationId,
-									message:
-										trigger === "submit-message"
-											? (messages.find((m) => m.id === messageId) ?? messages[messages.length - 1])
-											: messages[messages.length - 1],
-								},
-				}),
+	//
+	// It is a wrapper, not a bare DefaultChatTransport: the SDK exposes
+	// no callback for "the resume found no live turn" (on 204 the status
+	// never moves and the messages stand), so the transport is the one
+	// seam that can see the idle answer. The ref is wired by the effect
+	// below useChat — the reconnect's answer resolves after a network
+	// round-trip, so it can never beat that effect's assignment.
+	const idleReconnect = useRef<() => void>(() => {});
+	const transport = useMemo<ChatTransport<UIMessage>>(() => {
+		const base = new DefaultChatTransport({
+			api: "/api/app/chat",
+			headers: token === null ? {} : { authorization: `Bearer ${token}` },
+			// Resumable streams (design/app.md → Streaming members): on
+			// mount, useChat(resume) asks the transport to reconnect to a
+			// live turn — the GET returns the wire's replay + tail, or 204
+			// when nothing is running and history stands. The URL is
+			// ours, not the SDK's default append, so the conversation id
+			// keeps the app channel's shape.
+			prepareReconnectToStreamRequest: ({ id }) => ({
+				api: `/api/app/conversations/${encodeURIComponent(id.slice(4))}/stream`,
 			}),
-		[token, conversationId],
-	);
-	const { messages, sendMessage, regenerate, status, error, stop } = useChat({
+			prepareSendMessagesRequest: ({ trigger, messageId, messages }) => ({
+				body:
+					trigger === "regenerate-message"
+						? { conversationId, retry: true }
+						: {
+								conversationId,
+								message:
+									trigger === "submit-message"
+										? (messages.find((m) => m.id === messageId) ?? messages[messages.length - 1])
+										: messages[messages.length - 1],
+							},
+			}),
+		});
+		return {
+			sendMessages: (options) => base.sendMessages(options),
+			reconnectToStream: async (options) => {
+				const stream = await base.reconnectToStream(options);
+				// null is the server's 204 — nothing is live, and the runtime
+				// persists each reply before it retires the wire, so durable
+				// history is already final. The mount-time snapshot may be
+				// older than that (#79); the view reconciles.
+				if (stream === null) idleReconnect.current();
+				return stream;
+			},
+		};
+	}, [token, conversationId]);
+	const { messages, sendMessage, regenerate, status, error, stop, setMessages } = useChat({
 		id: conversationId,
 		messages: initial,
 		transport,
@@ -1101,6 +1142,25 @@ function Chat({
 			onTurnDone();
 		},
 	});
+
+	// Reload-window reconciliation (#79): a turn that completed between
+	// the history snapshot and the idle reconnect is durably stored but
+	// missing from the snapshot — re-read history once and merge. A new
+	// turn that started meanwhile is accounted for by the merge (its
+	// persisted user message arrives; a live local tail is never
+	// dropped). A failed re-read leaves the snapshot standing: the next
+	// reload recovers, exactly the pre-fix behavior.
+	useEffect(() => {
+		idleReconnect.current = () => {
+			void getMessages(token, conversationId).then(
+				(r) => setMessages((current) => mergeTranscript(current, r.messages)),
+				() => {},
+			);
+		};
+		return () => {
+			idleReconnect.current = () => {};
+		};
+	}, [token, conversationId, setMessages]);
 
 	const scrollRef = useRef<HTMLDivElement>(null);
 	// Select-to-quote: each QuoteFab click bumps `n`; the Composer appends

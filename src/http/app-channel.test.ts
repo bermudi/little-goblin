@@ -891,6 +891,60 @@ describe("app channel http", () => {
 		}
 	});
 
+	// #79's server half: the client re-reads history when a reconnect
+	// comes back idle, which is only sound because the 204 promises
+	// durability — the runtime persists a turn's reply before it retires
+	// the wire, so the moment the endpoint first says "nothing is live"
+	// (after the turn was seen live), the completed answer is already in
+	// the store. Pins that ordering at the HTTP boundary; a reorder
+	// (append after the wire retires) opens a 204-without-reply window
+	// this poll catches.
+	test("the idle 204 never precedes durability — history holds the reply the moment the stream endpoint says nothing is live (#79)", async () => {
+		const { http, call, store } = setup({
+			token: APP_TOKEN_NAME,
+			deltas: ["a", "b", "c", "d", "e"],
+			delayMs: 25,
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			const chatP = call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-01",
+					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
+				}),
+			});
+			let seenLive = false;
+			let wentIdle = false;
+			for (let i = 0; i < 500 && !wentIdle; i++) {
+				const probe = await call("/api/app/conversations/chat-01/stream");
+				if (probe.status === 200) {
+					seenLive = true;
+					await probe.body?.cancel(); // detach; keep polling
+				} else if (probe.status === 204 && seenLive) {
+					wentIdle = true;
+				}
+				if (!wentIdle) await Bun.sleep(5);
+			}
+			expect(seenLive).toBe(true);
+			expect(wentIdle).toBe(true);
+			const history = store.history("app/chat-01");
+			expect(
+				history.some(
+					(m) => m.role === "assistant" && m.parts.some((p) => p.type === "text" && p.text !== ""),
+				),
+			).toBe(true);
+			await chatP;
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("rename writes an explicit title; empty or unknown ids refuse", async () => {
 		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
 		try {

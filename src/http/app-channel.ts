@@ -647,8 +647,10 @@ export async function handleAppApi(
 	// turn, replayed from the first chunk, then a live tail until the
 	// turn's outcome. A reload mid-turn, a tunnel blip, a second screen
 	// — the caller re-watches the in-flight reply instead of staring at
-	// a finished-looking chat. No live turn → 204, and the client falls
-	// back to history (the SDK's contract).
+	// a finished-looking chat. No live turn → 204 (the SDK's contract) —
+	// and because the runtime persists each reply before it retires the
+	// wire, that 204 also promises durable history is final; the client
+	// re-reads and merges it (#79, pinned by test below).
 	const streamMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/stream$/);
 	if (streamMatch) {
 		if (req.method !== "GET") {

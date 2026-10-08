@@ -143,6 +143,18 @@ finished-looking chat whose next send steered a ghost turn (#43).
   mid-turn re-watches the in-flight reply (#43 closed by the same
   mechanism). The log is in-memory, live turns only: after a crash
   there is history and no stream, exactly as before.
+- **Idle reconnect reconciles (#79).** The 204 is more than "no
+  stream": the runtime persists a turn's reply before it retires the
+  wire, so an idle answer also promises durable history is final for
+  every reply that could have been live when the client snapshotted
+  it. A reply completing inside the reload window [history fetch →
+  reconnect] used to stay hidden until the next reopen — the SDK
+  leaves the stale snapshot standing. The client therefore re-reads
+  history once when its resume comes back idle (the transport is the
+  only seam that can see the SDK's null) and merges by message id:
+  store arrivals slot in, a live local tail — a racing send, the
+  streaming assistant — is never dropped. The server-side ordering
+  (204 never precedes durability) is pinned by test.
 - **Parked, with a trigger.** A *passive* screen (no submit, no
   reload) still doesn't live-update — `resumeStream()` on focus would
   ride the same endpoint as client policy alone. Promote when

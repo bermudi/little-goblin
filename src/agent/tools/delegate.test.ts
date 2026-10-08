@@ -427,7 +427,7 @@ describe("delegate tool", () => {
 		// owed task itself and flips the row running.
 		const d = h.store.get(out.id)!;
 		h.herdr.get = (name) =>
-			Promise.resolve({ ...agent(name), state_change_seq: d.baselineSeq + 1 });
+			Promise.resolve({ ...agent(name), state_change_seq: d.baselineSeq! + 1 });
 		await h.lifecycle.tick();
 		expect(h.prompts).toHaveLength(1);
 		expect(h.prompts[0]).toContain("do it");

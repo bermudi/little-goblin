@@ -16,6 +16,15 @@
 // generic defense against startup dialogs (codex's trust prompt
 // reports as idle).
 //
+// The baseline is only ever the seq observed AFTER a prompt: a failed
+// post-prompt read records the pending posture (null) — never a
+// pre-prompt value, which sits below the agent's current seq and fires
+// a spurious done on the next idle glance (#95). A pending row gets no
+// verdict: the scan captures the seq it can see (CAS) and the next
+// scan judges against it; the one exception is a parked row whose
+// agent is no longer blocked, whose owed prompt is delivered right
+// then — the advance it keys on already happened.
+//
 // A notice must land before the transition records it: wake first,
 // transition (and re-baseline) only on a landed submit, so a lost
 // notice is retried next tick instead of silently skipped. Every
@@ -640,18 +649,19 @@ async function launch(deps: DelegationLifecycleDeps, input: LaunchInput): Promis
 		if (err instanceof HerdrError && err.code === "agent_not_ready") {
 			// Baseline the park at the agent's current seq: the watcher
 			// delivers the owed prompt on an advance *past* it, and a
-			// fresh row's 0 would fire on the first poll — the blocked
+			// fresh row's 0 would fire on the first poll — every started
 			// agent's seq is already past that — burning a
-			// guaranteed-rejected prompt (the rejection re-baselines,
-			// but only after the wasted attempt).
-			let parkedSeq = d.baselineSeq;
+			// guaranteed-rejected prompt. A failed read records the
+			// pending posture instead: the next scan captures while the
+			// agent is still blocked and delivers only on a real advance
+			// (#95).
+			let parkedSeq: number | null = null;
 			try {
-				parkedSeq = (await herdr.get(agentName))?.state_change_seq ?? parkedSeq;
+				parkedSeq = (await herdr.get(agentName))?.state_change_seq ?? null;
 			} catch (err2) {
-				// Same rule as the launch baseline read below: a failed
-				// get must not fail the park — the watcher's next poll
-				// reconciles.
-				log.warn("delegation park baseline read failed", err2, {
+				// A failed get must not fail the park, and never falls back
+				// to a pre-prompt value — the watcher's next poll captures.
+				log.warn("delegation park baseline read failed — watcher will capture", err2, {
 					delegation: d.id,
 				});
 			}
@@ -690,13 +700,18 @@ async function launch(deps: DelegationLifecycleDeps, input: LaunchInput): Promis
 	} catch (err) {
 		return fail(err instanceof Error ? err.message : String(err));
 	}
-	let baseline = 0;
+	// 0 is never a safe fallback: the startup transition alone puts a
+	// brand-new agent at seq 1, so a failed read records the pending
+	// posture — the watcher's next scan captures the current seq
+	// before applying any verdict to the row (#95).
+	let baseline: number | null = null;
 	try {
-		baseline = (await herdr.get(agentName))?.state_change_seq ?? 0;
+		baseline = (await herdr.get(agentName))?.state_change_seq ?? null;
 	} catch (err) {
 		// A get failure right after prompt must not fail the
-		// delegation — the watcher's next poll reconciles.
-		log.warn("delegation baseline read failed", err, {
+		// delegation — and must not stand a stale value in for the
+		// baseline: the next poll reconciles from its own capture.
+		log.warn("delegation baseline read failed — watcher will capture", err, {
 			delegation: d.id,
 		});
 	}
@@ -856,12 +871,17 @@ async function send(deps: DelegationLifecycleDeps, id: number, text: string): Pr
 		}
 		return { kind: "prompt failed", error };
 	}
-	let seq = d.baselineSeq;
+	// Never the previous run's baseline: the old value sits below the
+	// agent's current seq, and the next poll's idle-before-working
+	// glance would fire a spurious done and unwatch the agent mid-run
+	// (#95). A failed read records the pending posture — the watcher
+	// captures on its next scan.
+	let seq: number | null = null;
 	try {
-		seq = (await herdrFor(deps, d.target).get(d.agentName))?.state_change_seq ?? seq;
+		seq = (await herdrFor(deps, d.target).get(d.agentName))?.state_change_seq ?? null;
 	} catch (err) {
-		// baseline stays — a failed get doesn't break the send
-		log.warn("delegation post-send baseline read failed", err, {
+		// baseline stays pending — a failed get doesn't break the send
+		log.warn("delegation post-send baseline read failed — watcher will capture", err, {
 			delegation: d.id,
 		});
 	}
@@ -1135,6 +1155,52 @@ async function recoverStart(deps: DelegationLifecycleDeps, d: Delegation): Promi
 	}
 }
 
+// The parked row's owed task prompt, delivered once the dialog cleared
+// — either the park rule's seq advance or the unblocked agent a
+// baseline-pending scan sees (the advance it keys on already happened
+// while the baseline was missing). A rejected prompt re-baselines so
+// the next advance retries instead of spamming every tick; a failed
+// post-prompt baseline read leaves the pending posture for the next
+// scan to capture (#95).
+async function deliverPendingPrompt(
+	deps: DelegationLifecycleDeps,
+	d: Delegation,
+	info: AgentInfo,
+): Promise<void> {
+	const promptedAt = new Date();
+	try {
+		await herdrFor(deps, d.target).prompt(d.agentName, d.task + reportNote(deps, d));
+	} catch (err) {
+		log.warn("delegation pending prompt rejected", err, {
+			delegation: d.id,
+			name: d.name,
+		});
+		transition(deps, d, "needs_input", info.state_change_seq);
+		return;
+	}
+	// Never the pre-prompt seq as the baseline (#95): a failed read
+	// records the pending posture and the next scan captures.
+	let seq: number | null = null;
+	try {
+		seq = (await herdrFor(deps, d.target).get(d.agentName))?.state_change_seq ?? null;
+	} catch (err) {
+		log.warn("delegation post-prompt baseline read failed — watcher will capture", err, {
+			delegation: d.id,
+		});
+	}
+	if (deps.delegations.markRunning(d.id, seq, promptedAt) === null) {
+		log.info("delegation stopped while delivering pending prompt", {
+			delegation: d.id,
+			name: d.name,
+		});
+		return;
+	}
+	log.info("delegation task delivered after dialog", {
+		delegation: d.id,
+		name: d.name,
+	});
+}
+
 async function check(deps: DelegationLifecycleDeps, d: Delegation): Promise<void> {
 	let info: AgentInfo | null;
 	try {
@@ -1163,6 +1229,46 @@ async function check(deps: DelegationLifecycleDeps, d: Delegation): Promise<void
 		return;
 	}
 
+	if (d.baselineSeq === null) {
+		// Baseline pending (#95): the post-prompt (or park-time) read
+		// failed, and no pre-prompt value may stand in for the
+		// comparison — a fresh row's 0 sits below every started agent's
+		// seq and a previous run's baseline sits below the current one,
+		// so the next idle glance would fire a spurious done and unwatch
+		// the agent mid-run. This scan's only act is capturing the seq
+		// it can finally see, under the same compare-and-set every
+		// watcher write uses; the next scan judges against reality. One
+		// exception: a parked row owes its task prompt on an advance
+		// past the park baseline, and an agent no longer blocked proves
+		// that advance already happened while the baseline was missing —
+		// comparing against the just-captured "now" would never fire,
+		// so the owed prompt is delivered in this same scan.
+		if (
+			deps.delegations.captureBaseline(
+				d.id,
+				{ status: d.status, promptedAt: d.promptedAt },
+				info.state_change_seq,
+			)
+		) {
+			d.baselineSeq = info.state_change_seq;
+			log.info("delegation baseline captured", {
+				delegation: d.id,
+				name: d.name,
+				seq: info.state_change_seq,
+			});
+		} else {
+			log.info("delegation baseline capture superseded", {
+				delegation: d.id,
+				name: d.name,
+			});
+			return;
+		}
+		if (d.status === "needs_input" && d.promptPending && info.agent_status !== "blocked") {
+			await deliverPendingPrompt(deps, d, info);
+		}
+		return;
+	}
+
 	if (d.status === "needs_input") {
 		// Parked rows get one question: did anything happen since the
 		// park? An operator answering through `herdr session attach`
@@ -1175,36 +1281,7 @@ async function check(deps: DelegationLifecycleDeps, d: Delegation): Promise<void
 		// keypress was navigation, not an answer) re-baselines so the
 		// next advance retries instead of spamming every tick.
 		if (d.promptPending) {
-			const promptedAt = new Date();
-			try {
-				await herdrFor(deps, d.target).prompt(d.agentName, d.task + reportNote(deps, d));
-			} catch (err) {
-				log.warn("delegation pending prompt rejected", err, {
-					delegation: d.id,
-					name: d.name,
-				});
-				transition(deps, d, "needs_input", info.state_change_seq);
-				return;
-			}
-			let seq = info.state_change_seq;
-			try {
-				seq = (await herdrFor(deps, d.target).get(d.agentName))?.state_change_seq ?? seq;
-			} catch (err) {
-				log.warn("delegation post-prompt baseline read failed", err, {
-					delegation: d.id,
-				});
-			}
-			if (deps.delegations.markRunning(d.id, seq, promptedAt) === null) {
-				log.info("delegation stopped while delivering pending prompt", {
-					delegation: d.id,
-					name: d.name,
-				});
-				return;
-			}
-			log.info("delegation task delivered after dialog", {
-				delegation: d.id,
-				name: d.name,
-			});
+			await deliverPendingPrompt(deps, d, info);
 			return;
 		}
 		// Fall through — the running rules apply in the same tick (a

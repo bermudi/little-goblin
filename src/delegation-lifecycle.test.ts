@@ -28,7 +28,7 @@ import {
 	type DelegationsStore,
 } from "./delegations.ts";
 import { startDelegationLifecycle, type DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
-import type { AgentInfo, Herdr } from "./herdr.ts";
+import { HerdrError, type AgentInfo, type Herdr } from "./herdr.ts";
 import type { DelegationTargetDeps } from "./delegation-lifecycle.ts";
 
 let dirs: string[] = [];
@@ -200,6 +200,242 @@ describe("delegation watcher", () => {
 		expect(h.store.get(d.id)!.status).toBe("done");
 		expect(h.wakes).toHaveLength(1);
 		expect(h.wakes[0]).toContain(`[delegation: #${d.id} fix it · done]`);
+	});
+
+	// #95: a herdr hiccup on the post-prompt `get` used to fall back to
+	// a pre-prompt seq as the baseline. The next poll that caught the
+	// agent idle-before-working then read `seq > baseline` and fired a
+	// spurious done — the row left active() with the real result never
+	// notified. The fallback must instead leave the baseline pending
+	// (null) and the next scan must capture the current seq before
+	// applying any verdict to the row.
+	describe("baseline pending (#95)", () => {
+		test("a failed post-send baseline read never reuses the previous run's baseline", async () => {
+			const h = harness();
+			const d = runningRow(h, "hiccup", 5);
+			h.agents.set(d.agentName, agent(d.agentName, "idle", 6));
+			const owner = startDelegationLifecycle(h.deps);
+			await owner.tick(); // the first run finishes
+			expect(h.store.get(d.id)!.status).toBe("done");
+			expect(h.wakes).toHaveLength(1);
+
+			// The follow-up's post-send get hiccups — the old code fell
+			// back to baseline 5 here.
+			let getFails = true;
+			h.deps.herdr = {
+				...h.deps.herdr,
+				get: (name) =>
+					getFails
+						? Promise.reject(new Error("herdr get hiccup"))
+						: Promise.resolve(h.agents.get(name) ?? null),
+			};
+			expect((await owner.send(d.id, "follow up")).kind).toBe("sent");
+			expect(h.store.get(d.id)!.baselineSeq).toBeNull();
+
+			// The agent idles before picking up the prompt — the exact
+			// glance the stale baseline read as done.
+			getFails = false;
+			await owner.tick();
+			expect(h.store.get(d.id)!.status).toBe("running");
+			expect(h.wakes).toHaveLength(1); // no spurious done
+			expect(h.store.get(d.id)!.baselineSeq).toBe(6); // captured before any verdict
+
+			// The real work still reports exactly once.
+			h.agents.set(d.agentName, agent(d.agentName, "done", 9));
+			await owner.tick();
+			owner.stopTicker();
+			expect(h.store.get(d.id)!.status).toBe("done");
+			expect(h.wakes).toHaveLength(2);
+			expect(h.wakes[1]).toContain(`[delegation: #${d.id} hiccup · done]`);
+		});
+
+		test("a failed post-launch baseline read never falls back to 0", async () => {
+			const h = harness();
+			h.deps.herdr = {
+				...h.deps.herdr,
+				createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1", cwd: "/w" }),
+				startAgent: (name) => Promise.resolve(agent(name, "idle", 1)),
+				get: () => Promise.reject(new Error("herdr get hiccup")),
+			};
+			const owner = startDelegationLifecycle(h.deps);
+			const out = await owner.launch({
+				harness: { name: "codex", kind: "codex", args: [] },
+				task: "do it",
+				cwd: "/w",
+				name: "x",
+				address: { chatId: 1, threadId: null },
+			});
+			owner.stopTicker();
+			expect(out.kind).toBe("started");
+			const agentName = agentNameFor(1, "x");
+			expect(h.store.get(1)!.status).toBe("running");
+			expect(h.store.get(1)!.baselineSeq).toBeNull();
+
+			// A brand-new agent already sits at seq 1 (the startup
+			// transition counts), idle before working — with the old 0
+			// fallback this glance fired done.
+			h.deps.herdr = {
+				...h.deps.herdr,
+				get: (name) => Promise.resolve(h.agents.get(name) ?? null),
+			};
+			h.agents.set(agentName, agent(agentName, "idle", 1));
+			await owner.tick();
+			expect(h.store.get(1)!.status).toBe("running");
+			expect(h.wakes).toEqual([]);
+			expect(h.store.get(1)!.baselineSeq).toBe(1);
+
+			h.agents.set(agentName, agent(agentName, "done", 4));
+			await owner.tick();
+			owner.stopTicker();
+			expect(h.store.get(1)!.status).toBe("done");
+			expect(h.wakes).toHaveLength(1);
+		});
+
+		test("a failed park baseline read captures while blocked — no wasted prompt attempt", async () => {
+			const h = harness();
+			const prompts: string[] = [];
+			h.deps.herdr = {
+				...h.deps.herdr,
+				createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1", cwd: "/w" }),
+				startAgent: () =>
+					Promise.reject(
+						new HerdrError("agent start", "agent_not_ready", "blocked during startup"),
+					),
+				get: () => Promise.reject(new Error("herdr get hiccup")),
+				prompt: (_name, text) => {
+					prompts.push(text);
+					return Promise.resolve();
+				},
+			};
+			const owner = startDelegationLifecycle(h.deps);
+			const out = await owner.launch({
+				harness: { name: "codex", kind: "codex", args: [] },
+				task: "do it",
+				cwd: "/w",
+				name: "x",
+				address: { chatId: 1, threadId: null },
+			});
+			owner.stopTicker();
+			expect(out.kind).toBe("parked");
+			expect(h.store.get(1)!.status).toBe("needs_input");
+			expect(h.store.get(1)!.promptPending).toBe(true);
+			expect(h.store.get(1)!.baselineSeq).toBeNull();
+			const agentName = agentNameFor(1, "x");
+
+			// Still blocked at seq 7 — the scan captures the park
+			// baseline and burns no prompt attempt on it.
+			h.deps.herdr = {
+				...h.deps.herdr,
+				get: (name) => Promise.resolve(agent(name, "blocked", 7)),
+			};
+			await owner.tick();
+			expect(h.store.get(1)!.baselineSeq).toBe(7);
+			expect(prompts).toEqual([]);
+
+			// The dialog clears — the advance past the captured park
+			// delivers the owed task.
+			h.deps.herdr = {
+				...h.deps.herdr,
+				get: (name) => Promise.resolve(agent(name, "idle", 8)),
+			};
+			await owner.tick();
+			owner.stopTicker();
+			expect(prompts).toHaveLength(1);
+			expect(prompts[0]).toContain("do it");
+			expect(h.store.get(1)!.status).toBe("running");
+			expect(h.store.get(1)!.baselineSeq).toBe(8);
+		});
+
+		test("a failed post-delivery baseline read must not fire done when pre-task work finishes", async () => {
+			const h = harness();
+			// A launch-parked row: the dialog cleared and the agent started
+			// something on its own before the watcher delivered the owed
+			// task.
+			const row = h.store.create({
+				name: "owed",
+				harness: "codex",
+				cwd: "/w",
+				task: "the owed task",
+				address: { chatId: 1, threadId: null },
+			});
+			h.store.bindLaunch(row.id, {
+				agentName: agentNameFor(row.id, "owed"),
+				workspaceId: "w1",
+				paneId: "w1:p1",
+			});
+			h.store.markParked(row.id, 2);
+			const agentName = agentNameFor(row.id, "owed");
+			// The scan's own get must succeed (it drives the park gate);
+			// only the post-prompt read hiccups.
+			let getCalls = 0;
+			h.deps.herdr = {
+				...h.deps.herdr,
+				get: (name) => {
+					if (++getCalls === 2) return Promise.reject(new Error("herdr get hiccup"));
+					return Promise.resolve(h.agents.get(name) ?? null);
+				},
+			};
+			// The seq advance past the park delivers the owed prompt;
+			// the post-prompt get hiccups — the old code fell back to the
+			// pre-prompt seq 3 here.
+			h.agents.set(agentName, agent(agentName, "working", 3));
+			const owner = startDelegationLifecycle(h.deps);
+			await owner.tick();
+			expect(h.store.get(row.id)!.status).toBe("running");
+			expect(h.store.get(row.id)!.baselineSeq).toBeNull();
+
+			// The pre-task work finishes; the agent idles before starting
+			// the owed task — the stale baseline closed the row here.
+			h.agents.set(agentName, agent(agentName, "idle", 4));
+			await owner.tick();
+			expect(h.store.get(row.id)!.status).toBe("running");
+			expect(h.wakes).toEqual([]);
+			expect(h.store.get(row.id)!.baselineSeq).toBe(4);
+
+			// The owed task's own completion reports exactly once.
+			h.agents.set(agentName, agent(agentName, "done", 6));
+			await owner.tick();
+			owner.stopTicker();
+			expect(h.store.get(row.id)!.status).toBe("done");
+			expect(h.wakes).toHaveLength(1);
+		});
+
+		test("a send that lands mid-capture keeps its own baseline — the capture is a CAS", async () => {
+			const h = harness();
+			const d = runningRow(h, "race capture", 1);
+			// Force the pending posture, then suspend the scan inside its
+			// get — a turn running `send` meanwhile rewrites the row with
+			// its own baseline.
+			h.store.markRunning(d.id, null, new Date());
+			let reading = false;
+			let release!: () => void;
+			const gate = new Promise<void>((r) => {
+				release = r;
+			});
+			h.deps.herdr = {
+				...h.deps.herdr,
+				get: async (name) => {
+					reading = true;
+					await gate;
+					return agent(name, "idle", 12);
+				},
+			};
+			const w = startDelegationLifecycle(h.deps);
+			const tick = w.tick();
+			for (let i = 0; i < 200 && !reading; i++) {
+				await new Promise((r) => setTimeout(r, 1));
+			}
+			// The tool-side write: unconditional, wins by definition.
+			h.store.markRunning(d.id, 10, new Date());
+			release();
+			await tick;
+			w.stopTicker();
+			// The capture CAS refused to clobber the send's row.
+			const row = h.store.get(d.id)!;
+			expect(row.status).toBe("running");
+			expect(row.baselineSeq).toBe(10);
+			expect(h.wakes).toEqual([]);
+		});
 	});
 
 	test("blocked notifies needs_input exactly once across ticks", async () => {
@@ -1058,7 +1294,13 @@ describe("delegation watcher", () => {
 				herdr: {
 					...h.deps.herdr,
 					createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1", cwd: "/w" }),
-					startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
+					startAgent: (name) => {
+						// Register the agent the way a real server would:
+						// the launch's post-prompt get must see it (seq 1),
+						// not the #95 pending posture.
+						h.agents.set(name, agent(name, "working", 1));
+						return Promise.resolve(agent(name, "working", 1));
+					},
 					prompt: (_name, text) => {
 						prompts.push(text);
 						return Promise.resolve();

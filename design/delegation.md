@@ -136,8 +136,10 @@ Rulings:
   (`src/delegations.ts`): name, harness, cwd, task, pinned address,
   herdr agent name + pane/workspace ids, status
   (`starting|running|needs_input|done|failed|stopped`), the herdr
-  `state_change_seq` observed after prompting, the prompt time
-  (captured *before* the prompt is sent), created/finished
+  `state_change_seq` observed after prompting (**null while
+  baseline-pending** — a failed post-prompt read never stands a
+  pre-prompt value in; the next scan captures, 2026-10-08, #95), the
+  prompt time (captured *before* the prompt is sent), created/finished
   timestamps. Survives goblin restarts; the herdr unit keeps the
   panes alive meanwhile. `starting` is invisible to the watcher and
   flips to `running` in one write once the prompt landed; a
@@ -187,7 +189,17 @@ Rulings:
   the recorded one (a fresh prompt is idle before it's working) or a
   report file newer than the last prompt (catches an agent that
   finished before the baseline read; freshness keeps an old report
-  from closing a follow-up). Blocked → `needs_input`, notify once.
+  from closing a follow-up). A baseline-pending row (null — the
+  post-prompt `get` failed) gets **no verdict**: the scan captures
+  the seq it can see under the same CAS every watcher write uses and
+  returns; the next scan judges against it. The one exception is a
+  parked row whose agent is no longer blocked — the advance its
+  owed-prompt delivery keys on already happened while the baseline
+  was missing, so the prompt is delivered in that same capture scan
+  (comparing against just-captured "now" would never fire). An agent
+  that finished before the capture parks at `needs_input` like the
+  finished-before-baseline corner below (#95, 2026-10-08). Blocked →
+  `needs_input`, notify once.
   Idle with no seq advance 90 s after prompting → `needs_input`
   ("likely stuck on a startup dialog"). Parking re-baselines the seq;
   a parked row resumes on *any* seq advance, not a `working` glimpse
@@ -219,8 +231,9 @@ Rulings:
   conversation like `program`. `read` peeks the screen tail; `send`
   prompts the agent (an answer, or a follow-up to a finished
   delegation — any status but `stopped`; it re-appends the
-  report-file instruction on every prompt, resets the seq baseline,
-  and flips the row back to `running`); `answer` presses one
+  report-file instruction on every prompt, resets the seq baseline
+  (a failed post-prompt read records the pending posture — never the
+  previous run's value, #95), and flips the row back to `running`); `answer` presses one
   whitelisted key on a *blocked* agent's dialog via `send-keys` —
   the only input a blocked agent accepts — strictly relaying the
   operator's stated choice; `stop` interrupts and closes the

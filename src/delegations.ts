@@ -39,8 +39,10 @@ export interface Delegation {
 	 *  names are scoped per server, so every herdr call resolves its
 	 *  adapter through this. */
 	target: string | null;
-	/** state_change_seq observed right after the last prompt. */
-	baselineSeq: number;
+	/** state_change_seq observed right after the last prompt — null
+	 *  while pending (the post-prompt read failed; the watcher captures
+	 *  the current seq before applying any verdict, #95). */
+	baselineSeq: number | null;
 	promptedAt: string;
 	/** The task text was never delivered — the launch parked on a
 	 *  startup dialog before `agent prompt` could run. The watcher
@@ -74,14 +76,29 @@ export interface DelegationsStore {
 	): Delegation | null;
 	/** Launch completed: baseline + prompt timestamp + status running
 	 *  in one UPDATE — also clears a pending task prompt (the deliverer
-	 *  writes prompted_at exactly once). Returns the row, or null when
+	 *  writes prompted_at exactly once). A null baseline records the
+	 *  pending posture (#95): the post-prompt read failed and the
+	 *  watcher captures on its next scan. Returns the row, or null when
 	 *  a `stop` won the race while herdr was launching. */
-	markRunning(id: number, baselineSeq: number, promptedAt: Date): Delegation | null;
+	markRunning(id: number, baselineSeq: number | null, promptedAt: Date): Delegation | null;
 	/** The launch parked on a startup dialog before the task could be
 	 *  prompted: needs_input + prompt_pending + the park-time seq
 	 *  baseline, atomically — the watcher owes the prompt only on an
-	 *  advance past that point. */
-	markParked(id: number, baselineSeq: number): void;
+	 *  advance past that point. Null = the park-time read failed; the
+	 *  next scan captures before delivering anything (#95). */
+	markParked(id: number, baselineSeq: number | null): void;
+	/** Baseline-pending capture (#95): record the seq the scan finally
+	 *  observes, under the same compare-and-set as every watcher write
+	 *  — a send/stop that landed mid-get wins and its own baseline
+	 *  stands (the UPDATE also refuses any row that already carries a
+	 *  baseline, so even a same-millisecond prompted_at collision
+	 *  cannot clobber a send). False means superseded: the row is no
+	 *  longer what the scan read, and this scan owes it nothing. */
+	captureBaseline(
+		id: number,
+		expect: { status: DelegationStatus; promptedAt: string },
+		seq: number,
+	): boolean;
 	/** Watcher-side compare-and-set: apply the transition only if the
 	 *  row is still exactly what the scan read (same status and
 	 *  prompted_at) — a tool-side send/stop that landed while the
@@ -129,7 +146,7 @@ const delegationSchema = z.object({
 	pane_id: z.string(),
 	status: z.enum(["starting", "running", "needs_input", "done", "failed", "stopped"]),
 	target: z.string().nullable(),
-	baseline_seq: z.number(),
+	baseline_seq: z.number().nullable(),
 	prompted_at: z.string(),
 	prompt_pending: z.number(),
 	created_at: z.string(),
@@ -171,10 +188,9 @@ export function agentNameFor(id: number, name: string): string {
 	return `g${id}-${slug || "delegation"}`.slice(0, 32);
 }
 
-export function openDelegations(dbPath: string): DelegationsStore {
-	const db = new Database(dbPath);
-	db.exec("PRAGMA journal_mode = WAL");
-	db.exec(`CREATE TABLE IF NOT EXISTS delegations (
+// One column list for the fresh-table CREATE and the NOT NULL → nullable
+// rebuild below (#95): NULL baseline_seq is the baseline-pending posture.
+const DELEGATIONS_COLUMNS = `
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT NOT NULL,
 		harness TEXT NOT NULL,
@@ -187,12 +203,17 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		pane_id TEXT NOT NULL,
 		status TEXT NOT NULL,
 		target TEXT,
-		baseline_seq INTEGER NOT NULL DEFAULT 0,
+		baseline_seq INTEGER,
 		prompted_at TEXT NOT NULL,
 		created_at TEXT NOT NULL,
 		finished_at TEXT,
-		app_conversation TEXT
-	)`);
+		app_conversation TEXT,
+		prompt_pending INTEGER NOT NULL DEFAULT 0`;
+
+export function openDelegations(dbPath: string): DelegationsStore {
+	const db = new Database(dbPath);
+	db.exec("PRAGMA journal_mode = WAL");
+	db.exec(`CREATE TABLE IF NOT EXISTS delegations (${DELEGATIONS_COLUMNS})`);
 	// Existing DBs predate the spin-off pin — additive column, no rebuild
 	// (design/app.md → Spin-off). NULL = Telegram-pinned like always.
 	const cols = new Set(
@@ -214,6 +235,32 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	if (!cols.has("target")) {
 		db.exec("ALTER TABLE delegations ADD COLUMN target TEXT");
 	}
+	// Predates the baseline-pending posture (#95): baseline_seq was NOT
+	// NULL, so a failed post-prompt read had to record some pre-prompt
+	// number — a stale comparison the next poll could turn into a
+	// spurious done. NULL now means pending; ALTER TABLE cannot drop a
+	// NOT NULL, so this is the one rebuild migration (small personal
+	// table, single transaction, all columns carried).
+	const baselineCol = db
+		.query<{ name: string; notnull: number }, []>("PRAGMA table_info(delegations)")
+		.all()
+		.find((c) => c.name === "baseline_seq");
+	if (baselineCol !== undefined && baselineCol.notnull === 1) {
+		db.exec("BEGIN IMMEDIATE");
+		try {
+			db.exec(`CREATE TABLE delegations_migrated (${DELEGATIONS_COLUMNS})`);
+			db.exec(`INSERT INTO delegations_migrated
+				(id, name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, target, baseline_seq, prompted_at, created_at, finished_at, app_conversation, prompt_pending)
+				SELECT id, name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, target, baseline_seq, prompted_at, created_at, finished_at, app_conversation, prompt_pending
+				FROM delegations`);
+			db.exec("DROP TABLE delegations");
+			db.exec("ALTER TABLE delegations_migrated RENAME TO delegations");
+			db.exec("COMMIT");
+		} catch (err) {
+			db.exec("ROLLBACK");
+			throw err;
+		}
+	}
 
 	const qGet = db.query("SELECT * FROM delegations WHERE id = ?");
 	const qList = db.query("SELECT * FROM delegations ORDER BY id");
@@ -232,6 +279,13 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	);
 	const qParked = db.query(
 		"UPDATE delegations SET status = 'needs_input', prompt_pending = 1, baseline_seq = ? WHERE id = ? AND status != 'stopped'",
+	);
+	// The #95 capture: same CAS shape as qTransition, baseline only —
+	// plus the pending guard (baseline_seq IS NULL), so a send that
+	// landed mid-get in the same millisecond (prompted_at collision)
+	// still keeps its own baseline.
+	const qCaptureBaseline = db.query(
+		"UPDATE delegations SET baseline_seq = ? WHERE id = ? AND status = ? AND prompted_at = ? AND baseline_seq IS NULL",
 	);
 	const qTransition = db.query(
 		`UPDATE delegations SET status = ?, finished_at = ?,
@@ -271,6 +325,10 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		},
 		markParked(id, baselineSeq) {
 			qParked.run(baselineSeq, id);
+		},
+		captureBaseline(id, expect, seq) {
+			const res = qCaptureBaseline.run(seq, id, expect.status, expect.promptedAt);
+			return res.changes > 0;
 		},
 		transitionIf(id, expect, to, baseline, now = new Date()) {
 			const res = qTransition.run(

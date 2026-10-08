@@ -3,7 +3,11 @@
 // (resolveAppAuth, wired by index.ts): config.appToken names an
 // auth.jsonl record → bearer required per request; unset → trust mode —
 // the tailnet is the only lock and requests pass unauthenticated
-// (device-level trust, the collie precedent).
+// (device-level trust, the collie precedent). Trust mode adds one
+// line on top of reachability (#75): a mutation speaking a *browser*
+// origin must speak ours — a page riding the operator's device is not
+// the operator. Non-browser clients carry no browser headers and pass
+// untouched; see browserMutationRefusal below.
 //
 // Chat rides the shared runtime unchanged: a submitted message lands in
 // the same serial lane, the same steering and /stop fencing apply, and
@@ -112,17 +116,100 @@ function bearerMatches(presented: string, expected: string): boolean {
 	return a.equals(b);
 }
 
+// Trust mode's CSRF line (#75): reachability proves the device, not
+// the page — any site the operator's browser visits can fire a no-cors
+// POST (text/plain body, no preflight, response never read) at these
+// routes and spend operator authority on attacker-chosen input.
+// Browsers stamp every mutation with Origin (always) and
+// Sec-Fetch-Site, so the gate refuses mutations that arrive speaking
+// any origin but ours. Non-browser clients send neither header and
+// pass untouched — reachability stays their whole check, exactly as
+// design/app.md documents. Bearer mode never runs this gate: the token
+// is the check there, and a token-holding client (a future APK's
+// webview) must not depend on browser headers.
+const OWN_FETCH_SITES = new Set(["same-origin", "none"]);
+
+// The origins a browser may legitimately speak for: the Host this
+// request arrived on (either scheme — TLS terminates at the front, and
+// a proxy may preserve or rewrite Host) and the configured publicUrl's
+// origin (tailscale serve rewrites Host to the local upstream, so the
+// public origin is the match that survives the proxy — the rewrite is
+// observed in docs/security.md).
+function allowedBrowserOrigins(req: Request, deps: AppChannelDeps): Set<string> {
+	const origins = new Set<string>();
+	const host = req.headers.get("host");
+	if (host !== null && host !== "") {
+		origins.add(`http://${host}`);
+		origins.add(`https://${host}`);
+	}
+	const publicUrl = deps.configRef.current.publicUrl;
+	if (publicUrl !== undefined && URL.canParse(publicUrl)) {
+		origins.add(new URL(publicUrl).origin);
+	}
+	return origins;
+}
+
+function browserMutationRefusal(
+	req: Request,
+	pathname: string,
+	deps: AppChannelDeps,
+): Response | null {
+	const method = req.method.toUpperCase();
+	// Reads are never gated: no mutation to spend, and CORS already
+	// keeps a page from reading the response.
+	if (method === "GET" || method === "HEAD" || method === "OPTIONS") return null;
+	// same-site is refused too, not just cross-site: tailscale fronts
+	// share the ts.net suffix, so a sibling tailnet's page is site-same
+	// but still not ours.
+	const site = req.headers.get("sec-fetch-site");
+	if (site !== null && !OWN_FETCH_SITES.has(site)) {
+		log.warn("app mutation refused — cross-site browser request", {
+			path: pathname,
+			site,
+		});
+		return Response.json(
+			{ error: "cross-origin browser requests are refused" },
+			{ status: 403, headers: NO_STORE },
+		);
+	}
+	const origin = req.headers.get("origin");
+	// No Origin and no fetch-metadata: not a browser — reachability is
+	// the lock trust mode already is.
+	if (origin === null) return null;
+	if (!allowedBrowserOrigins(req, deps).has(origin)) {
+		log.warn("app mutation refused — foreign browser origin", { path: pathname, origin });
+		return Response.json(
+			{ error: "cross-origin browser requests are refused" },
+			{ status: 403, headers: NO_STORE },
+		);
+	}
+	return null;
+}
+
+// JSON-body mutations must say what they are (#75): application/json
+// is beyond a no-cors form or fetch (those carry text/plain,
+// urlencoded, or multipart), so the claim itself is a CSRF backstop
+// behind the origin gate. Applies in both auth modes — wire contract,
+// not trust. Multipart uploads and bodyless routes (stop, delete)
+// never read JSON and never see this check.
+function jsonBodyRefusal(req: Request): Response | null {
+	const mediaType = (req.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
+	if (mediaType === "application/json") return null;
+	return Response.json({ error: "expected application/json" }, { status: 415, headers: NO_STORE });
+}
+
 // Every /api/app/* request passes here first. Returns null when the
 // request may proceed; the Response is the refusal. Trust mode (the
-// boot-resolved undefined) passes unconditionally — the tailnet is the
-// lock, and the mode was logged once at boot, not per request.
+// boot-resolved undefined) runs the browser-origin gate for mutations
+// — the tailnet stays the lock for everything that is not a page
+// riding the operator's browser.
 async function appAuth(
 	req: Request,
 	pathname: string,
 	deps: AppChannelDeps,
 	appToken: string | undefined,
 ): Promise<Response | null> {
-	if (appToken === undefined) return null;
+	if (appToken === undefined) return browserMutationRefusal(req, pathname, deps);
 	let expected: string;
 	try {
 		expected = await deps.auth.resolve(appToken);
@@ -423,6 +510,8 @@ export async function handleAppApi(
 			return Response.json(body, { headers: NO_STORE });
 		}
 		if (req.method === "POST") {
+			const refusedJson = jsonBodyRefusal(req);
+			if (refusedJson !== null) return refusedJson;
 			let json: unknown;
 			try {
 				json = await req.json();
@@ -474,6 +563,8 @@ export async function handleAppApi(
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		}
 		if (req.method === "PATCH") {
+			const refusedJson = jsonBodyRefusal(req);
+			if (refusedJson !== null) return refusedJson;
 			let json: unknown;
 			try {
 				json = await req.json();
@@ -608,6 +699,8 @@ export async function handleAppApi(
 			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 		}
 		if (req.method === "PATCH") {
+			const refusedJson = jsonBodyRefusal(req);
+			if (refusedJson !== null) return refusedJson;
 			let json: unknown;
 			try {
 				json = await req.json();
@@ -662,6 +755,8 @@ export async function handleAppApi(
 			return Response.json(configView(deps.configRef.current), { headers: NO_STORE });
 		}
 		if (req.method === "PATCH" || req.method === "POST") {
+			const refusedJson = jsonBodyRefusal(req);
+			if (refusedJson !== null) return refusedJson;
 			let json: unknown;
 			try {
 				json = await req.json();
@@ -712,6 +807,8 @@ export async function handleAppApi(
 				{ status: 503, headers: NO_STORE },
 			);
 		}
+		const refusedJson = jsonBodyRefusal(req);
+		if (refusedJson !== null) return refusedJson;
 		let json: unknown;
 		try {
 			json = await req.json();
@@ -752,6 +849,8 @@ export async function handleAppApi(
 		if (req.method !== "POST") {
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		}
+		const refusedJson = jsonBodyRefusal(req);
+		if (refusedJson !== null) return refusedJson;
 		let json: unknown;
 		try {
 			json = await req.json();

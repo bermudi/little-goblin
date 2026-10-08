@@ -232,6 +232,19 @@ Telegram. The mode resolves once at boot (`src/http/app-channel.ts`
   `appToken` is mandatory.** The consequence is total: `/api/app/*` exposes
   chat history, config writes, file upload, and turns that run tools — trust
   mode + funnel is remote code execution as the operator, for anyone.
+- **Trust mode's browser-origin line (#75, 2026-10-08)** — reachability
+  proves the device, not the page: a site the operator's browser visits
+  could fire no-cors POSTs (`text/plain` bodies, no preflight, response
+  never read) at `/api/app/*` and spend operator authority. Mutations that
+  carry a browser origin are refused (403) unless it is the request's own
+  Host (either scheme) or the configured `publicUrl` origin — `tailscale
+  serve` rewrites Host to the local upstream, so the publicUrl match is
+  what survives the proxy. A `Sec-Fetch-Site` other than `same-origin`/
+  `none` refuses too. Non-browser clients send neither header and pass —
+  reachability stays their whole check, the model unchanged. Bearer mode
+  skips the gate (the token is the check); JSON-body routes require
+  `content-type: application/json` in both modes. Ruling in
+  `design/app.md` → App channel → Auth.
 
 ## 5. Failure policy — fail open vs fail closed
 
@@ -243,6 +256,8 @@ boundary.
 | `allowedUsers` gate | **closed** — reject the update | Auth must never fail open |
 | `initData` validation | **closed** — 401 | Same |
 | `appToken` bearer (when set) | **closed** — 401; 503 if the record can't resolve | Same. When unset the check doesn't exist by design — trust mode is "no check," not fail-open |
+| Browser-origin gate (trust mode, mutations) | **closed** — 403 | A page riding the device is not the operator (#75); non-browser clients keep reachability as the whole check |
+| JSON content-type on `/api/app/*` mutations | **closed** — 415 | `application/json` is a claim a cross-origin page cannot make without a preflight |
 | `/api/check-injection` host check | **closed** — 403 | Only reachable on-loopback anyway |
 | Webhook token | **closed** — 404/405/503 | Unknown == disabled, no oracle |
 | Injection scoring (Jev) | **open** — "unavailable", read proceeds | A checker outage must not block mail; the hard limit is read-only Gmail scopes |

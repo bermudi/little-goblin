@@ -57,6 +57,26 @@ ever points at a funnel address (public HTTPS), a token becomes
 MANDATORY; the warn line exists to catch it. The mini app keeps its
 initData validation untouched.
 
+**Trust mode's browser-origin line (ruling 2026-10-08, #75).**
+Reachability proves the device, not the page: any site the operator's
+browser visits could fire no-cors POSTs — `text/plain` bodies, no CORS
+preflight, response never read — straight at `/api/app/*`, creating
+conversations and submitting agent turns. Trust mode therefore refuses
+*mutations* that speak a browser origin other than ours: `Origin` must
+match the request's own Host (either scheme — TLS ends at the front,
+and a proxy may preserve or rewrite it) or the configured `publicUrl`'s
+origin — `tailscale serve` rewrites Host to the local upstream, so the
+public origin is the match that survives the proxy. `Sec-Fetch-Site`
+rides alongside (`same-site` refuses too — tailscale fronts share the
+ts.net suffix). Browsers always stamp mutations with these headers;
+non-browser clients send neither and pass untouched — reachability
+stays their whole check, the model above unchanged. Bearer mode never
+runs the gate: the token is the check, and a token-holding non-browser
+client (a future APK's webview) must not depend on browser headers.
+JSON-body routes additionally require `content-type: application/json`
+in both modes — a claim a cross-origin page cannot make without a
+preflight this server never grants.
+
 **Client.** React + `@ai-sdk/react` (`useChat`) in `app/` — Vite, strict
 TS, its own tsconfig program wired into `bun run typecheck`. This is the
 recorded amendment to the no-build rule: `src/http/app.js` (the settings

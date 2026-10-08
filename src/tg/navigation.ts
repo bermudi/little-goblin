@@ -1,7 +1,12 @@
 // Manual DM selection. All durable effects share the store transaction;
 // Telegram delivery and slow intake deliberately live outside this module.
 import { z } from "zod";
-import type { Conversation, ConversationStore } from "../conversation.ts";
+import {
+	formatAddress,
+	parseAddress,
+	type Conversation,
+	type ConversationStore,
+} from "../conversation.ts";
 import { log } from "../log.ts";
 import type { Runtime } from "../runtime.ts";
 import type { openTelegramInbox } from "./inbox.ts";
@@ -13,7 +18,10 @@ const inputSchema = z.strictObject({
 	messageId: positiveId,
 	command: z.enum(["new", "back"]),
 });
-const conversationIdSchema = z.string().regex(/^dm:[1-9]\d*:[1-9]\d*$/);
+const conversationIdSchema = z.string().refine((id) => {
+	const parsed = parseAddress(id);
+	return parsed !== null && parsed.kind === "rolling" && parsed.chatId > 0;
+}, "rolling dm conversation id");
 const receiptSchema = z.strictObject({
 	fromId: conversationIdSchema.nullable(),
 	toId: conversationIdSchema.nullable(),
@@ -42,8 +50,8 @@ const storedSchema = z.object({
 function assertScope(id: string | null, chatId: number): void {
 	if (id === null) return;
 	conversationIdSchema.parse(id);
-	const [, chat, ordinal] = id.split(":");
-	if (positiveId.parse(Number(chat)) !== chatId || !positiveId.safeParse(Number(ordinal)).success) {
+	const parsed = parseAddress(id);
+	if (parsed === null || parsed.kind !== "rolling" || parsed.chatId !== chatId) {
 		throw new Error("DM navigation receipt has a mismatched conversation");
 	}
 }
@@ -121,7 +129,7 @@ export function navigateDm(
 			}
 
 			phase = "current_lookup";
-			const laneKey = `dm:${valid.chatId}`;
+			const laneKey = formatAddress({ kind: "dm", chatId: valid.chatId });
 			const current = store.currentDm(valid.chatId);
 			let outgoing = current;
 			let selected: Conversation | null = null;

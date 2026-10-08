@@ -17,6 +17,7 @@ import {
 } from "./hindsight.ts";
 import { log } from "./log.ts";
 import { OutageTracker } from "./memory-outage.ts";
+import { isCompactionSummaryId, memoryBlockId } from "./tags.ts";
 import {
 	MemoryQueueWorker,
 	type BlockedRetention,
@@ -340,11 +341,11 @@ export function withMemoryBlocks(
 	for (const e of entries) {
 		// The compaction summary takes the boundary event's seq — a recall
 		// block anchored there belongs to a message the summary replaced.
-		if (e.message.role === "user" && !e.message.id.startsWith("compact-")) {
+		if (e.message.role === "user" && !isCompactionSummaryId(e.message.id)) {
 			const block = byAnchor.get(e.seq);
 			if (block) {
 				out.push({
-					id: `memory-${block.anchorSeq}`,
+					id: memoryBlockId(block.anchorSeq),
 					role: "user",
 					parts: [{ type: "text", text: block.content }],
 				});

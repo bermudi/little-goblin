@@ -33,6 +33,7 @@ import {
 	captureConversationSettings,
 	channelOf,
 	openStore,
+	parseAddress,
 	prepareAppSettingsForConfig,
 	type Conversation,
 } from "./conversation.ts";
@@ -220,7 +221,8 @@ async function boot() {
 				// conversation — a copy, never a move; the DM stays the
 				// quick lane. discard undoes the fork when the launch
 				// doesn't start (cap reached, failed).
-				if (/^dm:\d+:\d+$/.test(conv.id) && isRollingChat(conv.chatId)) {
+				const pinSource = parseAddress(conv.id);
+				if (pinSource !== null && pinSource.kind === "rolling" && isRollingChat(conv.chatId)) {
 					const spun = spinOff(
 						{
 							store,

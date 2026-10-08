@@ -11,7 +11,12 @@
 
 import type { UIMessage } from "ai";
 import { paths } from "./config.ts";
-import type { Conversation, ConversationStore } from "./conversation.ts";
+import {
+	formatAddress,
+	parseAddress,
+	type Conversation,
+	type ConversationStore,
+} from "./conversation.ts";
 import { JevError, type JevClient, type JevDecision, type JevQuestion } from "./jev.ts";
 import { log } from "./log.ts";
 import type { Runtime } from "./runtime.ts";
@@ -26,13 +31,14 @@ export function isRollingChat(chatId: number): boolean {
 
 // The intake lane key for a private chat is the rolling address
 // "dm:<chat>" — deliberately the same string the legacy conversation id
-// uses, so inbox rows recorded before the ruling stay valid. Returns
-// the chat id for a rolling lane, null for topics and group bare-chats.
+// uses, so inbox rows recorded before the ruling stay valid (the codec
+// formats it as a plain dm address). Returns the chat id for a rolling
+// lane, null for topics and group bare-chats.
 export function rollingChatId(laneKey: string): number | null {
-	const m = /^dm:(-?\d+)$/.exec(laneKey);
-	if (!m) return null;
-	const chatId = Number(m[1]);
-	return isRollingChat(chatId) ? chatId : null;
+	const parsed = parseAddress(laneKey);
+	return parsed !== null && parsed.kind === "dm" && isRollingChat(parsed.chatId)
+		? parsed.chatId
+		: null;
 }
 
 export type RollDecidedBy =
@@ -109,7 +115,7 @@ function roll(
 ): RollResult {
 	const conv = deps.store.rollDm(chatId, paths.workspace());
 	log.info("dm rolled", {
-		address: `dm:${chatId}`,
+		address: formatAddress({ kind: "dm", chatId }),
 		from: from?.id ?? null,
 		to: conv.id,
 		gapMinutes,

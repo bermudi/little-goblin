@@ -32,6 +32,7 @@ import type { OutgoingFile } from "./agent/tools/send.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import type { MemoryConfig } from "./config.ts";
 import { HindsightClient, HindsightError, type MemoryDocument } from "./hindsight.ts";
+import { isCompactionSummaryId, isMachineryText } from "./tags.ts";
 import {
 	buildRecallQuery,
 	buildRetentionDocument,
@@ -2162,7 +2163,7 @@ function retentionSourceFrom(entries: { seq: number; message: UIMessage }[]): Re
 	let lastAsstIndex = -1;
 	for (let i = 0; i < entries.length; i++) {
 		const m = entries[i]!.message;
-		if (m.role === "assistant" && !m.id.startsWith("compact-")) lastAsstIndex = i;
+		if (m.role === "assistant" && !isCompactionSummaryId(m.id)) lastAsstIndex = i;
 	}
 	const userTexts: string[] = [];
 	const userIds: string[] = [];
@@ -2175,7 +2176,7 @@ function retentionSourceFrom(entries: { seq: number; message: UIMessage }[]): Re
 		// no assistant reply yet (a failed turn, a just-run /compact) it
 		// would otherwise retain the whole summary blob as something the
 		// operator said.
-		if (e.message.id.startsWith("compact-")) continue;
+		if (isCompactionSummaryId(e.message.id)) continue;
 		if (e.message.role !== "user" && e.message.role !== "assistant") continue;
 		const t = messageText(e.message);
 		if (t === "") continue;
@@ -2183,14 +2184,9 @@ function retentionSourceFrom(entries: { seq: number; message: UIMessage }[]): Re
 			// Program fires and delegation notices are housekeeping, not
 			// operator memory — but an operator message in the same burst
 			// is, so housekeeping drops out of the retained set rather
-			// than fencing the whole burst. The legacy "[scheduled: "
-			// prefix still matches: a fire queued before the
-			// jobs→programs cutover can land unanswered.
-			if (
-				t.startsWith("[program: ") ||
-				t.startsWith("[delegation: ") ||
-				t.startsWith("[scheduled: ")
-			) {
+			// than fencing the whole burst (the tag codec's predicate
+			// also covers the legacy `[scheduled: ` bursts).
+			if (isMachineryText(t)) {
 				sawProgram = true;
 				continue;
 			}

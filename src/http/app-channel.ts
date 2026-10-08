@@ -19,6 +19,7 @@ import { z } from "zod";
 import { readBodyBytesCapped } from "./check.ts";
 import {
 	appAddress,
+	appIdOf,
 	appIdSchema,
 	prepareAppSettingsForConfig,
 	type ConversationStore,
@@ -149,10 +150,11 @@ const createBody = z.object({
 });
 
 // The conversation id arrives as the full address — "app/<id>" — so a
-// telegram id can never be submitted through this surface.
+// telegram id can never be submitted through this surface. The shape
+// itself is the codec's (appIdOf parses and validates it).
 const conversationIdSchema = z
 	.string()
-	.regex(/^app\/[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/, "expected an app/<id> conversation id");
+	.refine((id): boolean => appIdOf(id) !== null, "expected an app/<id> conversation id");
 
 const chatBody = z
 	.object({

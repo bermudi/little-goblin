@@ -17,7 +17,7 @@
 
 import { randomUUID } from "node:crypto";
 import { appLink } from "../app-link.ts";
-import { APP_ID_PREFIX, type Conversation, type ConversationStore } from "../conversation.ts";
+import { appIdOf, type Conversation, type ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
 import { messageText } from "../memory.ts";
 import type { TurnSink } from "../runtime.ts";
@@ -55,7 +55,7 @@ export function makeBellSink(
 	conv: Conversation,
 	trigger = "background turn",
 ): TurnSink {
-	const appId = conv.id.slice(APP_ID_PREFIX.length);
+	const appId = appIdOf(conv.id);
 	return {
 		onTextDelta(): void {},
 		onReasoningDelta(): void {},
@@ -111,7 +111,7 @@ export function makeBellSink(
 						deps.api.sendMessage(
 							chat,
 							ping,
-							publicUrl === undefined
+							publicUrl === undefined || appId === null
 								? {}
 								: {
 										reply_markup: {

@@ -5,19 +5,22 @@
 // grammy-aware module by design: domain code hands over ids, never
 // context objects.
 import type { Api } from "grammy";
-import { channelOf } from "../conversation.ts";
+import { channelOf, parseAddress } from "../conversation.ts";
 import { log } from "../log.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 
 export function parseConversationAddress(
 	id: string,
 ): { chatId: number; threadId: number | null } | null {
-	// dm:<chat>:<n> decodes to the bare chat — a rolling conversation's
-	// door is the private chat itself, never a thread (Rolling DM).
-	const dm = /^dm:(-?\d+)(?::\d+)?$/.exec(id);
-	if (dm) return { chatId: Number(dm[1]), threadId: null };
-	const topic = /^topic:(-?\d+):(\d+)$/.exec(id);
-	if (topic) return { chatId: Number(topic[1]), threadId: Number(topic[2]) };
+	// dm:<chat> and dm:<chat>:<n> decode to the bare chat — a rolling
+	// conversation's door is the private chat itself, never a thread
+	// (Rolling DM). Guest and app ids are not telegram doors.
+	const parsed = parseAddress(id);
+	if (parsed === null) return null;
+	if (parsed.kind === "dm" || parsed.kind === "rolling") {
+		return { chatId: parsed.chatId, threadId: null };
+	}
+	if (parsed.kind === "topic") return { chatId: parsed.chatId, threadId: parsed.threadId };
 	return null;
 }
 

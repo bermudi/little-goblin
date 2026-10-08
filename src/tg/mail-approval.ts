@@ -9,6 +9,7 @@
 // private closure state.
 
 import type { Api } from "grammy";
+import { formatAddress } from "../conversation.ts";
 import type { MailPoller, MailSender } from "../mail.ts";
 import { domainOf } from "../mail.ts";
 import type { OutboxEntry, OutboxStore } from "../mail-outbox.ts";
@@ -345,10 +346,11 @@ async function postMailDraft(
 	}
 	log.info("mail draft posted", {
 		outbox: outboxId,
-		conversation:
+		conversation: formatAddress(
 			address.threadId === null
-				? `dm:${address.chatId}`
-				: `topic:${address.chatId}:${address.threadId}`,
+				? { kind: "dm", chatId: address.chatId }
+				: { kind: "topic", chatId: address.chatId, threadId: address.threadId },
+		),
 		message: messageId,
 		chunks: chunks.length,
 	});

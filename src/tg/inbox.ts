@@ -2,6 +2,7 @@
 // so a history append and its inbox acknowledgement commit together.
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
+import { parseAddress } from "../conversation.ts";
 import { log } from "../log.ts";
 import type { IncomingMedia } from "./media.ts";
 
@@ -82,24 +83,34 @@ function decode(row: unknown): InboxEntry {
 }
 
 const updateIdSchema = idSchema.nonnegative();
-const dmLaneSchema = z.string().regex(/^dm:[1-9]\d*$/);
-const rollingTargetSchema = z.string().regex(/^dm:[1-9]\d*:[1-9]\d*$/);
+
+// Lane keys and archive targets are codec shapes — the id spelling
+// lives in conversation.ts; these schemas only add the DM-lane rule
+// (a private chat's key) and stay the throwing zod boundary for disk
+// rows and boot recovery.
+const isDmLaneKey = (key: string): boolean => {
+	const parsed = parseAddress(key);
+	return parsed !== null && parsed.kind === "dm" && parsed.chatId > 0;
+};
+const isRollingDmId = (id: string): boolean => {
+	const parsed = parseAddress(id);
+	return parsed !== null && parsed.kind === "rolling" && parsed.chatId > 0;
+};
+const dmLaneSchema = z.string().refine(isDmLaneKey, "dm lane key");
+const rollingTargetSchema = z.string().refine(isRollingDmId, "rolling dm conversation id");
 
 function archiveScope(laneKey: string, targetId?: string): number {
-	dmLaneSchema.parse(laneKey);
-	const chatId = idSchema.positive().parse(Number(laneKey.slice(3)));
+	const lane = parseAddress(laneKey);
+	if (lane === null || lane.kind !== "dm" || lane.chatId <= 0) {
+		throw new Error(`Telegram inbox lane is not a DM lane: ${laneKey}`);
+	}
 	if (targetId !== undefined) {
-		rollingTargetSchema.parse(targetId);
-		const [kind, chat, ordinal] = targetId.split(":");
-		if (
-			kind !== "dm" ||
-			idSchema.positive().parse(Number(chat)) !== chatId ||
-			!idSchema.positive().safeParse(Number(ordinal)).success
-		) {
+		const target = parseAddress(targetId);
+		if (target === null || target.kind !== "rolling" || target.chatId !== lane.chatId) {
 			throw new Error("Telegram inbox archive target is outside its DM lane");
 		}
 	}
-	return chatId;
+	return lane.chatId;
 }
 
 const assignmentSchema = z.object({ target_id: rollingTargetSchema });

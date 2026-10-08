@@ -13,6 +13,7 @@ import { log } from "./log.ts";
 import { splitModelRef, thinkingLevels, type Config, type ThinkingLevel } from "./config.ts";
 import { MemoryContexts, messageText } from "./memory.ts";
 import { MemoryQueue } from "./memory-queue.ts";
+import { compactionSummaryId, corruptRowId } from "./tags.ts";
 import type { MemoryDocument } from "./hindsight.ts";
 
 // ---------- identity ----------
@@ -431,14 +432,13 @@ function rollingDmOrdinal(
 	row: Pick<Row, "id" | "chat_id" | "thread_id">,
 	chatId: number,
 ): number | null {
-	const prefix = `dm:${chatId}:`;
-	const n = row.id.slice(prefix.length);
-	return row.chat_id === chatId &&
-		row.thread_id === null &&
-		row.id.startsWith(prefix) &&
-		/^[1-9]\d*$/.test(n) &&
-		Number.isSafeInteger(Number(n))
-		? Number(n)
+	const parsed = parseAddress(row.id);
+	return parsed !== null &&
+		parsed.kind === "rolling" &&
+		parsed.chatId === chatId &&
+		row.chat_id === chatId &&
+		row.thread_id === null
+		? parsed.ordinal
 		: null;
 }
 
@@ -461,7 +461,7 @@ const roleSchema = z.enum(["system", "user", "assistant"]);
 function corruptPlaceholder(seq: number, role: string): UIMessage {
 	const parsed = roleSchema.safeParse(role);
 	return {
-		id: `corrupt-${seq}`,
+		id: corruptRowId(seq),
 		role: parsed.success ? parsed.data : "user",
 		parts: [
 			{
@@ -494,7 +494,7 @@ function envelopeOf(raw: unknown): unknown {
 // forged transcript. seq = the boundary, so causal sorting keeps it first.
 export function summaryMessage(compaction: Compaction): UIMessage {
 	return {
-		id: `compact-${compaction.boundarySeq}`,
+		id: compactionSummaryId(compaction.boundarySeq),
 		role: "user",
 		parts: [
 			{
@@ -1072,7 +1072,7 @@ export function openStore(dbPath: string): ConversationStore {
 			return db.transaction(() => {
 				const roll = qDmRoll.get(chatId);
 				const n = (roll?.n ?? 0) + 1;
-				const id = `dm:${chatId}:${n}`;
+				const id = formatAddress({ kind: "rolling", chatId, ordinal: n });
 				const now = new Date().toISOString();
 				const source = roll ? qGet.get(roll.current_id) : null;
 				qInsertConv.run(id, chatId, null, defaultCwd, now);

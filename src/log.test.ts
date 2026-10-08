@@ -130,3 +130,89 @@ describe("file sink", () => {
 		expect(lines(target).map((l) => l.msg)).toEqual(["second", "third"]);
 	});
 });
+
+describe("error parity", () => {
+	test("warn with fields only keeps its two-arg shape", () => {
+		const dir = tmpHome();
+		const target = join(dir, "goblin.log");
+		setLogFile(target);
+		log.warn("shape pin", { conversation: "c-1", attempt: 2 });
+		const [first] = lines(target);
+		expect(first).toMatchObject({
+			level: "warn",
+			msg: "shape pin",
+			conversation: "c-1",
+			attempt: 2,
+		});
+		expect(first).not.toHaveProperty("error");
+	});
+
+	test("warn with an error emits message, stack, and the cause chain", () => {
+		const dir = tmpHome();
+		const target = join(dir, "goblin.log");
+		setLogFile(target);
+		const root = new Error("root failure");
+		const middle = new Error("middle failure", { cause: root });
+		const top = new Error("top failure", { cause: middle });
+		log.warn("request failed", top, { conversation: "c-2" });
+		const [first] = lines(target);
+		expect(first).toMatchObject({
+			level: "warn",
+			msg: "request failed",
+			error: "top failure",
+			conversation: "c-2",
+			cause: [
+				{ message: "middle failure", stack: middle.stack },
+				{ message: "root failure", stack: root.stack },
+			],
+		});
+		expect(typeof first!.stack).toBe("string");
+	});
+
+	test("a cyclic cause chain terminates", () => {
+		const dir = tmpHome();
+		const target = join(dir, "goblin.log");
+		setLogFile(target);
+		const a = new Error("cycle a");
+		const b = new Error("cycle b", { cause: a });
+		a.cause = b;
+		// Must terminate and still emit a parseable line carrying the error.
+		log.warn("cyclic", a);
+		const [first] = lines(target);
+		expect(first).toMatchObject({ level: "warn", msg: "cyclic", error: "cycle a" });
+		// b recorded once as a cause; the revisit of a is dropped by the seen-set.
+		expect(first!.cause).toEqual([{ message: "cycle b", stack: b.stack }]);
+	});
+
+	test("the cause walk is depth-bounded", () => {
+		const dir = tmpHome();
+		const target = join(dir, "goblin.log");
+		setLogFile(target);
+		const e4 = new Error("e4");
+		const e3 = new Error("e3", { cause: e4 });
+		const e2 = new Error("e2", { cause: e3 });
+		const e1 = new Error("e1", { cause: e2 });
+		const top = new Error("e0", { cause: e1 });
+		log.warn("deep", top);
+		const [first] = lines(target);
+		const messages = (first!.cause as { message: unknown }[]).map((c) => c.message);
+		expect(messages).toEqual(["e1", "e2", "e3"]);
+	});
+
+	test("error carries the cause chain too", () => {
+		const dir = tmpHome();
+		const target = join(dir, "goblin.log");
+		setLogFile(target);
+		const root = new Error("root failure");
+		const wrapped = new Error("wrapped failure", { cause: root });
+		log.error("delivery failed", wrapped, { chat: 42 });
+		const [first] = lines(target);
+		expect(first).toMatchObject({
+			level: "error",
+			msg: "delivery failed",
+			error: "wrapped failure",
+			chat: 42,
+			cause: [{ message: "root failure", stack: root.stack }],
+		});
+	});
+});

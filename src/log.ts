@@ -83,17 +83,13 @@ function writeFile(line: string): void {
 			// already reached stdout; the warn is throttled.
 			if (!fileSinkDegraded || Date.now() - lastDegradedWarn >= DEGRADED_WARN_INTERVAL_MS) {
 				lastDegradedWarn = Date.now();
-				warnStdout("goblin.log sink degraded — retrying on later writes", {
-					error: String(err),
-				});
+				warnStdout("goblin.log sink degraded — retrying on later writes", errFields(err));
 			}
 			fileSinkDegraded = true;
 			return;
 		}
 		fileSinkDead = true;
-		warnStdout("goblin.log sink failed — stdout only for this run", {
-			error: String(err),
-		});
+		warnStdout("goblin.log sink failed — stdout only for this run", errFields(err));
 		return;
 	}
 	if (fileSinkDegraded) {
@@ -117,17 +113,72 @@ function emit(level: LogLevel, msg: string, fields?: Fields): void {
 	writeFile(line);
 }
 
-function errFields(err: unknown): Fields {
-	if (err instanceof Error) {
-		return { error: err.message, stack: err.stack };
+// Cause-chain capture. Errors are thrown wrapped with {cause} at
+// several boundaries (tg/inbox, tg/mod, provider-errors), and the
+// wrapper's message alone rarely explains the failure. The walk is
+// bounded and cycle-safe: a cause chain is untrusted structure, never
+// a reason to lose the log line.
+const MAX_CAUSES = 3;
+
+// One cause as a JSON-safe {message, stack} entry. A raw Error must
+// never leak into the line — it serializes to {} (own enumerable
+// properties only) and swallows the only field that mattered.
+function causeFields(value: unknown): Fields {
+	if (value instanceof Error) return { message: value.message, stack: value.stack };
+	// Error-shaped causes from other realms carry a string message worth
+	// keeping; everything else degrades to String(). Never JSON.stringify
+	// here — a cyclic cause object would throw inside the logger itself.
+	if (typeof value === "object" && value !== null && "message" in value) {
+		const message = (value as { message: unknown }).message;
+		if (typeof message === "string") return { message };
 	}
-	return { error: String(err) };
+	return { message: String(value) };
+}
+
+function errFields(err: unknown): Fields {
+	if (!(err instanceof Error)) return { error: String(err) };
+	const fields: Fields = { error: err.message, stack: err.stack };
+	const causes: Fields[] = [];
+	const seen = new Set<object>([err]);
+	let current: unknown = err.cause;
+	while (current !== null && current !== undefined && causes.length < MAX_CAUSES) {
+		if (typeof current !== "object") {
+			// A primitive cause ({cause: "why"} is legal JS) still carries
+			// its text — and primitives can't extend the chain further.
+			causes.push({ message: String(current) });
+			break;
+		}
+		if (seen.has(current)) break;
+		seen.add(current);
+		causes.push(causeFields(current));
+		current = (current as { cause?: unknown }).cause;
+	}
+	if (causes.length > 0) fields.cause = causes;
+	return fields;
+}
+
+// warn gets error-level treatment when handed one: message, stack, and
+// the cause chain join the line. The overloads keep every existing
+// two-arg site — warn(msg, fields) — untouched: a plain object still
+// means fields, while an Error (not assignable to Fields) routes to
+// the err overload.
+function warn(msg: string, fields?: Fields): void;
+function warn(msg: string, err: unknown, fields?: Fields): void;
+function warn(msg: string, a?: unknown, b?: Fields): void {
+	// Runtime dispatch mirrors overload resolution: plain object →
+	// fields; Error, primitive, or null → err; absent → fields-only.
+	const isErr = a !== undefined && (typeof a !== "object" || a === null || a instanceof Error);
+	if (isErr) {
+		emit("warn", msg, { ...errFields(a), ...b });
+	} else {
+		emit("warn", msg, { ...(a as Fields | undefined), ...b });
+	}
 }
 
 export const log = {
 	debug: (msg: string, fields?: Fields) => emit("debug", msg, fields),
 	info: (msg: string, fields?: Fields) => emit("info", msg, fields),
-	warn: (msg: string, fields?: Fields) => emit("warn", msg, fields),
+	warn,
 	error: (msg: string, err?: unknown, fields?: Fields) =>
 		emit("error", msg, { ...(err !== undefined ? errFields(err) : {}), ...fields }),
 };

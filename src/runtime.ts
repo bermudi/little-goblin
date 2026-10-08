@@ -27,12 +27,19 @@ import {
 } from "./memory.ts";
 import { log } from "./log.ts";
 import { runCompaction, type CompactionOutcome } from "./agent/compaction.ts";
-import { isContextOverflow } from "./agent/provider-errors.ts";
-import type { CompletedTurn, PriorTurnContext, ReviewerDeps, ToolCallDigest } from "./reviewer.ts";
+import type { CompletedTurn, PriorTurnContext, ReviewerDeps } from "./reviewer.ts";
 import type { JevClient } from "./jev.ts";
 import { cancelAllReviews, cancelReviews, considerTurn } from "./reviewer.ts";
 import { admitTurn, type LiveWire } from "./turn/admission.ts";
-import { TurnState, type ForcedKind, type LoopTurnState } from "./turn/state.ts";
+import {
+	ContextOverflowError,
+	failureFromStream,
+	overflowHoldable,
+	recoverFromOverflow,
+	terminalFailureMessage,
+	type TurnRecovery,
+} from "./turn/overflow.ts";
+import { TurnState, type ForcedKind } from "./turn/state.ts";
 import { buildModelView, type ViewContext } from "./turn/view.ts";
 import { claimMembers, driveStream, endLive, openLive, type LiveChunks } from "./turn/stream.ts";
 
@@ -178,44 +185,10 @@ export class FencedError extends Error {
 	}
 }
 
-// Everything the resume attempt inherits from the failed one: the
-// partial reply (continued as the same message, so tools never re-run),
-// the recall result (recall does not re-run on a snapshot that already
-// moved), and the turn-scoped evidence so block separation, the
-// reviewer's gate, and durationMs cover the whole turn.
-interface TurnRecovery {
-	conversation: Conversation;
-	partial: UIMessage | null;
-	memory: { prior: RecallContext[]; current: RecallContext | null };
-	seenText: boolean;
-	toolCalls: string[];
-	digest: { id: string; entry: ToolCallDigest }[];
-	loop: LoopTurnState;
-	startedAt: number;
-	// The live wire log carries across an overflow recovery: the resume
-	// continues the same wire (holdForRecovery kept the failure off it),
-	// so attached subscribers and the log must survive the recursion.
-	live: LiveChunks;
-	filterRetryUsed: boolean;
-}
-
-// The provider rejected the request for context size mid-turn. Not an
-// ordinary failure: thrown after the stream loop with the failed
-// attempt's accumulated reply so the catch can compact and resume —
-// the pi mechanism (pi-mono agent-session _checkCompaction drops only
-// the failed attempt, compacts, then continues).
-class ContextOverflowError extends Error {
-	constructor(
-		readonly partial: UIMessage | null,
-		readonly seenText: boolean,
-		readonly toolCalls: string[],
-		readonly digest: { id: string; entry: ToolCallDigest }[],
-		readonly loop: LoopTurnState,
-	) {
-		super("context window overflow");
-		this.name = "ContextOverflowError";
-	}
-}
+// Overflow recovery (turn/overflow.ts) owns the decision half: the
+// failure vocabulary, the one-recovery budget, the partial gate, and
+// the TurnRecovery package. This file keeps the invocation half —
+// doCompact — and the attempt rails that consume the decision.
 
 // ---------- runtime ----------
 
@@ -980,7 +953,7 @@ export class Runtime {
 				toolCalls: recovery ? [...recovery.toolCalls] : [],
 				digest: recovery ? [...recovery.digest] : [],
 				filterRetryUsed,
-				overflowRecoverable: recovery === undefined && this.deps.compaction !== undefined,
+				overflowRecoverable: overflowHoldable(recovery, this.deps.compaction !== undefined),
 				evidence: this.reviewer?.evidence,
 				turnStartMs,
 				signal: controller.signal,
@@ -989,16 +962,7 @@ export class Runtime {
 				// The filter retry budget is recovery-carried — hand the
 				// resume what this attempt spent.
 				filterRetryUsed = outcome.filterRetryUsed;
-				if (outcome.holdForRecovery) {
-					throw new ContextOverflowError(
-						outcome.partial,
-						outcome.seenText,
-						outcome.toolCalls,
-						outcome.digestRing,
-						outcome.loop,
-					);
-				}
-				throw new Error(outcome.errorText, { cause: outcome.rawError });
+				throw failureFromStream(outcome);
 			}
 			// Steering folded mid-turn submits into this exchange, so the
 			// retention source and anchor read history as the exchange ENDED —
@@ -1186,72 +1150,34 @@ export class Runtime {
 				log.info("turn fenced", { conversation: convId, epoch, error: String(err) });
 				await notifyAll({ kind: "fenced" });
 			} else if (err instanceof ContextOverflowError) {
-				// Overflow recovery (pi's _checkCompaction, adapted): drop
-				// only the failed attempt, compact, resume — the partial
-				// carries the tool results, so tools never re-run. One
-				// recovery per turn: the resume gets recovery !== undefined
-				// and falls to the generic branch on a second overflow.
-				log.warn("context overflow — compacting and resuming turn", {
-					conversation: convId,
+				// Overflow recovery (turn/overflow.ts decides, runtime invokes):
+				// drop only the failed attempt, compact, resume — the partial
+				// carries the tool results, so tools never re-run. One recovery
+				// per turn: the resume gets recovery !== undefined and falls to
+				// the generic branch on a second overflow.
+				const outcome = await recoverFromOverflow({
+					convId,
 					epoch,
-					toolCalls: err.toolCalls.length,
-					partialParts: err.partial?.parts.length ?? 0,
-				});
-				let outcome: CompactionOutcome;
-				try {
-					outcome = await this.doCompact(conv, "overflow");
-				} catch (compactErr) {
-					if (store.get(convId)?.epoch !== epoch || controller.signal.aborted) {
-						log.info("turn fenced", {
-							conversation: convId,
-							epoch,
-							error: String(compactErr),
-						});
-						await notifyAll({ kind: "fenced" });
-					} else {
-						log.warn("overflow compaction failed — turn ends", compactErr, {
-							conversation: convId,
-						});
-						const msg = compactErr instanceof Error ? compactErr.message : String(compactErr);
-						await notifyAll({
-							kind: "error",
-							message: `context window full and compacting failed: ${msg.slice(0, 120)}`,
-						});
-					}
-					return;
-				}
-				if (outcome.kind === "noop") {
-					log.warn("context overflow — nothing left to compact", {
-						conversation: convId,
-						epoch,
-						reason: outcome.reason,
-					});
-					await notifyAll({
-						kind: "error",
-						message:
-							"context window full and there's nothing left to compact — the latest message or tool output may be too big for this model",
-					});
-					return;
-				}
-				try {
-					this.checkAuthority(convId, epoch);
-				} catch {
-					log.info("turn fenced", { conversation: convId, epoch });
-					await notifyAll({ kind: "fenced" });
-					return;
-				}
-				return this.runTurn(convId, turns, {
+					failure: err,
 					conversation: conv,
-					partial: hasContent(err.partial) ? err.partial : null,
 					memory,
-					seenText: err.seenText,
-					toolCalls: err.toolCalls,
-					digest: err.digest,
-					loop: err.loop,
 					startedAt: turnStartMs,
 					live,
 					filterRetryUsed,
+					members: turns,
+					compact: () => this.doCompact(conv, "overflow"),
+					assertAuthority: () => this.checkAuthority(convId, epoch),
+					holdsAuthority: () => this.deps.store.get(convId)?.epoch === epoch,
+					signal: controller.signal,
 				});
+				if (outcome.kind === "resume") {
+					return this.runTurn(convId, outcome.members, outcome.recovery);
+				}
+				await notifyAll(
+					outcome.kind === "fenced"
+						? { kind: "fenced" }
+						: { kind: "error", message: outcome.message },
+				);
 			} else {
 				// Same bill as the fenced branch: any other exception escaping
 				// mid-stream (a throwing sink hook, a tool-path bug) must kill
@@ -1261,24 +1187,11 @@ export class Runtime {
 				log.error("turn failed", err, { conversation: convId });
 				await notifyAll({
 					kind: "error",
-					message:
-						recovery !== undefined && isContextOverflow(err)
-							? "context window still full after compacting — the latest message or tool output is too big for this model"
-							: err instanceof Error
-								? err.message
-								: String(err),
+					message: terminalFailureMessage(err, recovery !== undefined),
 				});
 			}
 		}
 	}
-}
-
-// A failed attempt's partial is worth continuing only if it streamed
-// real content — step-start markers alone mean the reply never began,
-// and continuing an empty message would seed the model with a blank
-// assistant turn.
-function hasContent(m: UIMessage | null): m is UIMessage {
-	return m !== null && m.parts.some((p) => p.type !== "step-start");
 }
 
 export function userMessage(parts: UIMessage["parts"]): UIMessage {

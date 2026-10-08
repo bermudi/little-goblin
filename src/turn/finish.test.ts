@@ -14,6 +14,7 @@ import type { Conversation } from "../conversation.ts";
 import { setLogFile } from "../log.ts";
 import type { MemoryEligibility, MemoryTurnDeps, RetentionSource } from "../memory.ts";
 import type { PriorTurnContext, ReviewerDeps } from "../reviewer.ts";
+import { Reviewer } from "../reviewer.ts";
 import { type LandDeps, landAttempt, retentionOpt, submitTurnReview } from "./finish.ts";
 
 let dirs: string[] = [];
@@ -279,7 +280,7 @@ describe("retentionOpt", () => {
 
 const digest = { tool: "bash", args: "{}", result: "listed", ok: true };
 
-function reviewerStub(decide?: ReviewerDeps["gate"]["decide"]): ReviewerDeps {
+function reviewerDeps(decide?: ReviewerDeps["gate"]["decide"]): ReviewerDeps {
 	return {
 		gate: { decide: decide ?? (async () => ({ answers: {}, inputTokens: null, cost: null })) },
 		thresholds: { correction: 0.8, procedure: 0.8 },
@@ -295,11 +296,15 @@ function reviewerStub(decide?: ReviewerDeps["gate"]["decide"]): ReviewerDeps {
 	};
 }
 
+function reviewerStub(decide?: ReviewerDeps["gate"]["decide"]): Reviewer {
+	return new Reviewer(reviewerDeps(decide));
+}
+
 interface ReviewHarness {
 	// The reviewer rides each submit — undefined is itself the case
 	// under test (the feature off), so it cannot default through ??.
-	submit(reviewer?: ReviewerDeps): void;
-	submitWithReviewer(reviewer: ReviewerDeps | undefined): void;
+	submit(reviewer?: Reviewer): void;
+	submitWithReviewer(reviewer: Reviewer | undefined): void;
 	state: {
 		excluded: boolean;
 		seq: number;
@@ -309,7 +314,7 @@ interface ReviewHarness {
 	};
 }
 
-function reviewHarness(over: { reviewer?: ReviewerDeps } = {}): ReviewHarness {
+function reviewHarness(over: { reviewer?: Reviewer } = {}): ReviewHarness {
 	const state: ReviewHarness["state"] = {
 		excluded: false,
 		seq: 0,
@@ -317,7 +322,7 @@ function reviewHarness(over: { reviewer?: ReviewerDeps } = {}): ReviewHarness {
 		forgotten: 0,
 		remembered: [],
 	};
-	const submitWithReviewer = (reviewer: ReviewerDeps | undefined) => {
+	const submitWithReviewer = (reviewer: Reviewer | undefined) => {
 		submitTurnReview({
 			convId: "dm:1",
 			reviewer,
@@ -338,7 +343,7 @@ function reviewHarness(over: { reviewer?: ReviewerDeps } = {}): ReviewHarness {
 			digestRing: [{ id: "c1", entry: digest }],
 		});
 	};
-	const submit = (reviewer?: ReviewerDeps) =>
+	const submit = (reviewer?: Reviewer) =>
 		submitWithReviewer(reviewer ?? over.reviewer ?? reviewerStub());
 	return { submit, submitWithReviewer, state };
 }
@@ -485,8 +490,8 @@ describe("submitTurnReview", () => {
 	test("the turn's tool digest reaches the review payload", async () => {
 		const cap = reviewCaptureHarness();
 		const h = reviewHarness({
-			reviewer: {
-				...reviewerStub(),
+			reviewer: new Reviewer({
+				...reviewerDeps(),
 				gate: {
 					decide: async () => ({
 						answers: { correction: 0, procedure: 0.99 },
@@ -499,7 +504,7 @@ describe("submitTurnReview", () => {
 				skillsDir: cap.skills,
 				workspaceDir: cap.workspace,
 				skillsRefBin: join(cap.root, "nonexistent-skills-ref"),
-			},
+			}),
 		});
 		h.submit();
 		await awaitPrompt(cap.prompts);
@@ -516,15 +521,15 @@ describe("submitTurnReview", () => {
 			inputTokens: null,
 			cost: null,
 		});
-		const reviewer: ReviewerDeps = {
-			...reviewerStub(),
+		const reviewer = new Reviewer({
+			...reviewerDeps(),
 			gate: { decide: (state, questions) => decide(state, questions) },
 			reviewModel: async () => ({ ref: "fake/review", model: cap.reviewModel }),
 			store: { append() {} },
 			skillsDir: cap.skills,
 			workspaceDir: cap.workspace,
 			skillsRefBin: join(cap.root, "nonexistent-skills-ref"),
-		};
+		});
 		const h = reviewHarness({ reviewer });
 		// Turn 1: quiet answer, remembered as the chain's head.
 		h.submit();

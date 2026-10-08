@@ -24,8 +24,8 @@ import {
 	type RecallContext,
 	recallMemory,
 } from "./memory.ts";
-import type { PriorTurnContext, ReviewerDeps } from "./reviewer.ts";
-import { cancelAllReviews, cancelReviews } from "./reviewer.ts";
+import type { PriorTurnContext } from "./reviewer.ts";
+import { Reviewer } from "./reviewer.ts";
 import { admitTurn, type LiveWire } from "./turn/admission.ts";
 import { landAttempt, submitTurnReview } from "./turn/finish.ts";
 import {
@@ -258,8 +258,9 @@ export class Runtime {
 	// Set by shutdown(): submits still land in history but never run.
 	private closed = false;
 	// The skill reviewer — attached after the bot exists (its save note
-	// delivers through bot.api). Absent = the feature is off.
-	private reviewer: ReviewerDeps | undefined;
+	// delivers through bot.api). Absent = the feature is off. It owns its
+	// queue/gate state; the runtime never touches it directly.
+	private reviewer: Reviewer | undefined;
 	// The loop watchdog — setReviewer's twin: index.ts wires the
 	// reviewer's JevClient here (one instance, shared auth closure).
 	// Absent = watchdog off; the repeat detector and the context landing
@@ -275,7 +276,7 @@ export class Runtime {
 
 	constructor(private deps: RuntimeDeps) {}
 
-	setReviewer(reviewer: ReviewerDeps): void {
+	setReviewer(reviewer: Reviewer): void {
 		this.reviewer = reviewer;
 	}
 
@@ -366,7 +367,7 @@ export class Runtime {
 		// Drained lanes no longer exist, but their gates/reviews can still be
 		// pending. Fence them before the caller closes the store.
 		if (this.reviewer) {
-			const reviewsCancelled = cancelAllReviews();
+			const reviewsCancelled = this.reviewer.cancelAllReviews();
 			log.info("reviewer shutdown fenced", { reviewsCancelled });
 		}
 		const drains: Promise<void>[] = [];
@@ -436,7 +437,7 @@ export class Runtime {
 				c.resolve({ kind: "noop", reason: "stopped" });
 			}
 		}
-		const reviewsCancelled = this.reviewer ? cancelReviews(convId) : 0;
+		const reviewsCancelled = this.reviewer ? this.reviewer.cancelReviews(convId) : 0;
 		if (stopped) {
 			log.info("turn stopped", { conversation: convId, epoch, reviewsCancelled });
 		} else {

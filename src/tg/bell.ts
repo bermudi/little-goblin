@@ -41,7 +41,9 @@ const ERROR_HEAD_LIMIT = 120;
 
 // One ping per response, however many bells merged into its turn — a
 // steered/coalesced bell sees the same newest assistant message as the
-// head's, and ringing every operator twice per reply is noise. Bounded:
+// head's, and ringing every operator twice per reply is noise. Module-
+// level by necessity: the bells that merge are separate makeBellSink
+// closures, so only shared state can dedup them. Bounded:
 // a Set iterates in insertion order, so the front is the oldest entry.
 const pingedResponses = new Set<string>();
 const PINGED_CAP = 500;

@@ -24,7 +24,8 @@ export interface SpeakQuery {
 }
 
 // One in-flight rendering per message: a double-tap used to synthesize
-// and deliver the reply twice.
+// and deliver the reply twice. Cross-tap singleton by design — each tap
+// is a fresh handler invocation, so only shared state can guard it.
 const inFlight = new Set<string>();
 
 export interface SpeakButtonDeps {

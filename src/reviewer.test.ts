@@ -19,11 +19,8 @@ import { JevError } from "./jev.ts";
 import { setLogFile } from "./log.ts";
 import {
 	buildGateState,
-	cancelAllReviews,
-	cancelReviews,
 	confineTools,
-	considerTurn,
-	resetReviewerState,
+	Reviewer,
 	reviewTools,
 	stagingRoot,
 	summarize,
@@ -45,7 +42,6 @@ afterEach(() => {
 	setLogFile(null);
 	for (const d of dirs) rmSync(d, { recursive: true, force: true });
 	dirs = [];
-	resetReviewerState();
 });
 
 // Fake skills-ref: records its argv + cwd, exits the planted code.
@@ -249,7 +245,7 @@ describe("reviewer gate", () => {
 		deps.reviewModel = async () => {
 			throw new Error("must not resolve a model when the gate says no");
 		};
-		await considerTurn(deps, turn());
+		await new Reviewer(deps).considerTurn(turn());
 		expect(h.notified).toEqual([]);
 		expect(h.store.history(h.convId)).toHaveLength(0);
 		h.store.close();
@@ -268,7 +264,7 @@ describe("reviewer gate", () => {
 				resolved = true;
 				return inner(conv);
 			};
-			await considerTurn(deps, turn());
+			await new Reviewer(deps).considerTurn(turn());
 			expect(resolved).toBe(true);
 			h.store.close();
 		}
@@ -283,7 +279,7 @@ describe("reviewer gate", () => {
 		deps.reviewModel = async () => {
 			throw new Error("correction below its own threshold — must not review");
 		};
-		await considerTurn(deps, turn());
+		await new Reviewer(deps).considerTurn(turn());
 		const h2 = harness();
 		const deps2 = h2.depsFor({
 			nouls: { correction: 0.0, procedure: 0.6 },
@@ -296,7 +292,7 @@ describe("reviewer gate", () => {
 			resolved = true;
 			return inner(conv);
 		};
-		await considerTurn(deps2, turn());
+		await new Reviewer(deps2).considerTurn(turn());
 		expect(resolved).toBe(true);
 		h.store.close();
 		h2.store.close();
@@ -304,10 +300,9 @@ describe("reviewer gate", () => {
 
 	test("gate failure falls back to the tool-count rule", async () => {
 		const quiet = harness();
-		await considerTurn(
+		await new Reviewer(
 			quiet.depsFor({ nouls: new JevError("timeout"), script: [{ text: "x" }] }),
-			turn({ toolNames: ["bash"] }),
-		);
+		).considerTurn(turn({ toolNames: ["bash"] }));
 		expect(quiet.notified).toEqual([]);
 		quiet.store.close();
 		const busy = harness();
@@ -318,16 +313,16 @@ describe("reviewer gate", () => {
 			resolved = true;
 			return inner(conv);
 		};
-		await considerTurn(deps, turn({ toolNames: new Array(8).fill("bash") }));
+		await new Reviewer(deps).considerTurn(turn({ toolNames: new Array(8).fill("bash") }));
 		expect(resolved).toBe(true);
 		busy.store.close();
 	});
 
 	test("a non-gate error propagates — bugs stay loud, never fall back", async () => {
 		const h = harness();
-		await expect(considerTurn(h.depsFor({ nouls: new Error("boom") }), turn())).rejects.toThrow(
-			"boom",
-		);
+		await expect(
+			new Reviewer(h.depsFor({ nouls: new Error("boom") })).considerTurn(turn()),
+		).rejects.toThrow("boom");
 		h.store.close();
 	});
 
@@ -335,11 +330,18 @@ describe("reviewer gate", () => {
 		const h = harness();
 		const logFile = join(h.workspace, "goblin.log");
 		setLogFile(logFile);
-		const fallback = h.depsFor({ nouls: new JevError("timeout"), script: [{ text: "x" }] });
-		await considerTurn(fallback, turn({ toolNames: ["bash", "read_file", "bash"] }));
-		await considerTurn(fallback, turn({ toolNames: ["bash"] }));
-		const ok = h.depsFor({ nouls: { correction: 0.1, procedure: 0.1 } });
-		await considerTurn(ok, turn({ toolNames: ["bash", "send"] }));
+		const deps = h.depsFor({ nouls: new JevError("timeout"), script: [{ text: "x" }] });
+		const reviewer = new Reviewer(deps);
+		await reviewer.considerTurn(turn({ toolNames: ["bash", "read_file", "bash"] }));
+		await reviewer.considerTurn(turn({ toolNames: ["bash"] }));
+		deps.gate = {
+			decide: async () => ({
+				answers: { correction: 0.1, procedure: 0.1 },
+				inputTokens: 100,
+				cost: 0,
+			}),
+		};
+		await reviewer.considerTurn(turn({ toolNames: ["bash", "send"] }));
 		const gates = readFileSync(logFile, "utf8")
 			.trim()
 			.split("\n")
@@ -375,7 +377,7 @@ describe("review run — staging and publication", () => {
 				{ text: "saved" },
 			],
 		});
-		await considerTurn(deps, turn());
+		await new Reviewer(deps).considerTurn(turn());
 		expect(readFileSync(join(h.skills, "pdf-tables", "SKILL.md"), "utf8")).toContain(
 			"name: pdf-tables",
 		);
@@ -402,7 +404,7 @@ describe("review run — staging and publication", () => {
 		const helper = join(h.skills, "existing", "helper.sh");
 		writeFileSync(helper, "#!/bin/sh\nexit 0\n");
 		chmodSync(helper, 0o755);
-		await considerTurn(
+		await new Reviewer(
 			h.depsFor({
 				nouls: { correction: 0.9, procedure: 0 },
 				script: [
@@ -420,8 +422,7 @@ describe("review run — staging and publication", () => {
 					{ text: "saved" },
 				],
 			}),
-			turn(),
-		);
+		).considerTurn(turn());
 		expect(lstatSync(helper).mode & 0o777).toBe(0o755);
 		h.store.close();
 	});
@@ -450,7 +451,7 @@ describe("review run — staging and publication", () => {
 			'#!/bin/sh\nif [ "$2" = "./skills/b" ]; then mv "$PWD/skills/b" "$PWD/skills/moved"; fi\n',
 		);
 		chmodSync(bin, 0o755);
-		await expect(considerTurn(deps, turn())).rejects.toThrow();
+		await expect(new Reviewer(deps).considerTurn(turn())).rejects.toThrow();
 		expect(readFileSync(join(h.skills, "a", "SKILL.md"), "utf8")).toContain("name: a");
 		expect(existsSync(join(h.skills, "b"))).toBe(false);
 		expect(h.store.history(h.convId)).toHaveLength(1);
@@ -486,7 +487,7 @@ describe("review run — staging and publication", () => {
 				},
 			),
 		});
-		const p = considerTurn(deps, turn());
+		const p = new Reviewer(deps).considerTurn(turn());
 		let stagedFile: string | null = null;
 		for (let i = 0; i < 500 && stagedFile === null; i++) {
 			await Bun.sleep(1);
@@ -508,13 +509,12 @@ describe("review run — staging and publication", () => {
 
 	test("no tool calls means no save, no note, no history", async () => {
 		const h = harness();
-		await considerTurn(
+		await new Reviewer(
 			h.depsFor({
 				nouls: { correction: 0.0, procedure: 0.99 },
 				script: [{ text: "nothing worth saving" }],
 			}),
-			turn(),
-		);
+		).considerTurn(turn());
 		expect(h.notified).toEqual([]);
 		expect(h.store.history(h.convId)).toHaveLength(0);
 		h.store.close();
@@ -540,7 +540,7 @@ describe("review run — staging and publication", () => {
 				{ text: "saved" },
 			],
 		});
-		await considerTurn(deps, turn());
+		await new Reviewer(deps).considerTurn(turn());
 		expect(() => readFileSync(join(h.skills, "fresh", "SKILL.md"))).toThrow();
 		expect(readFileSync(join(h.skills, "existing", "SKILL.md"), "utf8")).toBe(
 			SKILL_MD("existing", "original"),
@@ -569,7 +569,7 @@ describe("review run — staging and publication", () => {
 				{ error: "provider exploded mid-review" },
 			],
 		});
-		await considerTurn(deps, turn());
+		await new Reviewer(deps).considerTurn(turn());
 		expect(() => readFileSync(join(h.skills, "partial", "SKILL.md"))).toThrow();
 		expect(readdirSync(h.staging)).toEqual([]);
 		expect(h.notified).toEqual([]);
@@ -595,7 +595,7 @@ describe("review run — staging and publication", () => {
 		// must not escape to the runtime backstop's uncorrelatable
 		// {conversation}-only line — it answers to its review id like
 		// every other review line (#107).
-		await considerTurn(deps, turn());
+		await new Reviewer(deps).considerTurn(turn());
 		expect(readdirSync(h.staging)).toEqual([]);
 		expect(h.notified).toEqual([]);
 		expect(h.store.history(h.convId)).toHaveLength(0);
@@ -625,7 +625,7 @@ describe("review run — staging and publication", () => {
 				{ text: "saved" },
 			],
 		});
-		await considerTurn(deps, turn());
+		await new Reviewer(deps).considerTurn(turn());
 		expect(() => readFileSync(join(h.skills, "big", "SKILL.md"))).toThrow();
 		expect(readdirSync(h.staging)).toEqual([]);
 		const binDir = join(deps.workspaceDir, "..", "bin");
@@ -648,7 +648,7 @@ describe("review run — staging and publication", () => {
 				{ text: "saved" },
 			],
 		});
-		await considerTurn(deps, turn());
+		await new Reviewer(deps).considerTurn(turn());
 		const binDir = join(deps.workspaceDir, "..", "bin");
 		expect(skillsRefCalls(binDir)).toEqual([]);
 		expect(h.notified).toEqual([]);
@@ -676,7 +676,7 @@ describe("review run — staging and publication", () => {
 				{ text: "saved" },
 			],
 		});
-		await considerTurn(deps, turn());
+		await new Reviewer(deps).considerTurn(turn());
 		expect(readFileSync(join(h.skills, "editme", "SKILL.md"), "utf8")).toContain("new body");
 		expect(readFileSync(join(h.skills, "editme", "helper.md"), "utf8")).toBe("new helper");
 		expect(h.notified).toEqual([{ conversationId: h.convId, skills: ["editme"] }]);
@@ -717,7 +717,7 @@ describe("review run — staging and publication", () => {
 				},
 			),
 		});
-		await considerTurn(deps, turn());
+		await new Reviewer(deps).considerTurn(turn());
 		expect(readFileSync(join(h.skills, "clash", "SKILL.md"), "utf8")).toContain("operator's edit");
 		expect(h.notified).toEqual([]);
 		expect(h.store.history(h.convId)).toHaveLength(0);
@@ -755,7 +755,7 @@ describe("review run — staging and publication", () => {
 				{ text: "saved" },
 			],
 		});
-		await considerTurn(deps, turn());
+		await new Reviewer(deps).considerTurn(turn());
 		// Still a link, still the operator's bytes — nothing forked.
 		expect(lstatSync(join(h.skills, "linked")).isSymbolicLink()).toBe(true);
 		expect(readFileSync(join(h.skills, "linked", "SKILL.md"), "utf8")).toContain("source of truth");
@@ -793,7 +793,7 @@ describe("review run — staging and publication", () => {
 				{ text: "saved" },
 			],
 		});
-		await considerTurn(deps, turn());
+		await new Reviewer(deps).considerTurn(turn());
 		// The whole-dir swap is refused: original bytes, link intact.
 		expect(readFileSync(join(h.skills, "partly", "SKILL.md"), "utf8")).toContain("original");
 		expect(lstatSync(join(h.skills, "partly", "notes.md")).isSymbolicLink()).toBe(true);
@@ -813,7 +813,7 @@ describe("review run — staging and publication", () => {
 				writeFileSync(join(h.skills, "unrelated", "SKILL.md"), SKILL_MD("unrelated"));
 			}),
 		});
-		await considerTurn(deps, turn());
+		await new Reviewer(deps).considerTurn(turn());
 		expect(readFileSync(join(h.skills, "unrelated", "SKILL.md"), "utf8")).toContain(
 			"name: unrelated",
 		);
@@ -833,7 +833,7 @@ describe("review run — staging and publication", () => {
 			nouls: { correction: 0.9, procedure: 0 },
 			script: [{ text: "nothing worth saving" }],
 		});
-		await considerTurn(deps, turn());
+		await new Reviewer(deps).considerTurn(turn());
 		// The review still ran; the dead link is still live — one
 		// unresolvable entry doesn't veto the whole review.
 		expect(lstatSync(join(h.skills, "broken")).isSymbolicLink()).toBe(true);
@@ -868,7 +868,7 @@ describe("review run — staging and publication", () => {
 			expect(readFileSync(join(staged, "internal.md"), "utf8")).toBe("in-root data");
 			return original(conv);
 		};
-		await considerTurn(deps, turn());
+		await new Reviewer(deps).considerTurn(turn());
 		const skipped = readFileSync(logFile, "utf8")
 			.trim()
 			.split("\n")
@@ -887,7 +887,7 @@ describe("review run — staging and publication", () => {
 		// being unreadable — a policy stop, not a copy failure.
 		for (let i = 0; i <= 512; i++) writeFileSync(join(h.skills, `f${i}.txt`), "x");
 		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 } });
-		await considerTurn(deps, turn());
+		await new Reviewer(deps).considerTurn(turn());
 		expect(readdirSync(h.staging)).toEqual([]);
 		const binDir = join(deps.workspaceDir, "..", "bin");
 		expect(skillsRefCalls(binDir)).toEqual([]);
@@ -911,19 +911,17 @@ describe("review queue", () => {
 		const held = new Promise<void>((r) => {
 			release = r;
 		});
-		const first = considerTurn(
-			{
-				...deps,
-				gate: {
-					decide: async () => {
-						await held;
-						return { answers: { correction: 0.9 }, inputTokens: 1, cost: 0 };
-					},
-				},
+		const reviewer = new Reviewer(deps);
+		const instantGate = deps.gate;
+		deps.gate = {
+			decide: async () => {
+				await held;
+				return { answers: { correction: 0.9 }, inputTokens: 1, cost: 0 };
 			},
-			turn({ turnSeq: 1, operatorTexts: ["FIRST"] }),
-		);
-		const second = considerTurn(deps, turn({ turnSeq: 2, operatorTexts: ["SECOND"] }));
+		};
+		const first = reviewer.considerTurn(turn({ turnSeq: 1, operatorTexts: ["FIRST"] }));
+		deps.gate = instantGate;
+		const second = reviewer.considerTurn(turn({ turnSeq: 2, operatorTexts: ["SECOND"] }));
 		await Bun.sleep(20);
 		expect(prompts).toEqual([]);
 		release();
@@ -963,8 +961,9 @@ describe("review queue", () => {
 			events.push(`review ${resolves} started`);
 			return resolves === 1 ? { ref: "fake/hang", model: hanging } : inner(conv);
 		};
-		const p1 = considerTurn(deps, turn());
-		const p2 = considerTurn(deps, turn({ turnSeq: 2 }));
+		const reviewer = new Reviewer(deps);
+		const p1 = reviewer.considerTurn(turn());
+		const p2 = reviewer.considerTurn(turn({ turnSeq: 2 }));
 		for (let i = 0; i < 500 && !parked; i++) await Bun.sleep(1);
 		expect(parked).toBe(true);
 		await Bun.sleep(20);
@@ -1010,11 +1009,12 @@ describe("review queue", () => {
 			});
 		};
 		// Four firing turns against cap 2: one runs, two queue, one drops.
+		const reviewer = new Reviewer(deps);
 		const ps = [
-			considerTurn(deps, turn({ turnSeq: 1 })),
-			considerTurn(deps, turn({ turnSeq: 2 })),
-			considerTurn(deps, turn({ turnSeq: 3 })),
-			considerTurn(deps, turn({ turnSeq: 4 })),
+			reviewer.considerTurn(turn({ turnSeq: 1 })),
+			reviewer.considerTurn(turn({ turnSeq: 2 })),
+			reviewer.considerTurn(turn({ turnSeq: 3 })),
+			reviewer.considerTurn(turn({ turnSeq: 4 })),
 		];
 		for (let i = 0; i < 500 && !parked; i++) await Bun.sleep(1);
 		const dropped = readFileSync(logFile, "utf8")
@@ -1047,10 +1047,11 @@ describe("review queue", () => {
 			ref: "fake/park",
 			model: fakeReviewModel([{ text: "done" }], () => parked, prompts),
 		});
-		const p1 = considerTurn(deps, turn({ turnSeq: 1, operatorTexts: ["ONE"] }));
+		const reviewer = new Reviewer(deps);
+		const p1 = reviewer.considerTurn(turn({ turnSeq: 1, operatorTexts: ["ONE"] }));
 		await Bun.sleep(30); // review 1 in-flight at its model call
 		// seq 5's gate is instant — it enqueues FIRST.
-		const p5 = considerTurn(deps, turn({ turnSeq: 5, operatorTexts: ["FIVE"] }));
+		const p5 = reviewer.considerTurn(turn({ turnSeq: 5, operatorTexts: ["FIVE"] }));
 		await Bun.sleep(30);
 		// seq 3's gate is held, then released — it enqueues SECOND,
 		// after 5, despite completing earlier.
@@ -1058,18 +1059,13 @@ describe("review queue", () => {
 		const gateHold = new Promise<void>((r) => {
 			releaseGate = r;
 		});
-		const p3 = considerTurn(
-			{
-				...deps,
-				gate: {
-					decide: async () => {
-						await gateHold;
-						return { answers: { correction: 0.9, procedure: 0 }, inputTokens: 1, cost: 0 };
-					},
-				},
+		deps.gate = {
+			decide: async () => {
+				await gateHold;
+				return { answers: { correction: 0.9, procedure: 0 }, inputTokens: 1, cost: 0 };
 			},
-			turn({ turnSeq: 3, operatorTexts: ["THREE"] }),
-		);
+		};
+		const p3 = reviewer.considerTurn(turn({ turnSeq: 3, operatorTexts: ["THREE"] }));
 		await Bun.sleep(20);
 		releaseGate();
 		await Bun.sleep(30); // 3 is queued behind 5 by arrival
@@ -1097,9 +1093,10 @@ describe("review queue", () => {
 		};
 		// The rejection is contained now (#107) — it must not escape to
 		// the caller, and the settled review must not hold the queue.
-		await considerTurn(deps, turn());
+		const reviewer = new Reviewer(deps);
+		await reviewer.considerTurn(turn());
 		expect(readdirSync(h.staging)).toEqual([]);
-		await considerTurn(deps, turn({ turnSeq: 2 }));
+		await reviewer.considerTurn(turn({ turnSeq: 2 }));
 		expect(resolves).toBe(2);
 		h.store.close();
 	});
@@ -1118,7 +1115,7 @@ describe("review queue", () => {
 			writeFileSync(join(h.skills, "secret.md"), "unreadable");
 			chmodSync(join(h.skills, "secret.md"), 0o000);
 			const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 } });
-			await considerTurn(deps, turn());
+			await new Reviewer(deps).considerTurn(turn());
 			expect(readdirSync(h.staging)).toEqual([]);
 			const binDir = join(deps.workspaceDir, "..", "bin");
 			expect(skillsRefCalls(binDir)).toEqual([]);
@@ -1151,8 +1148,9 @@ describe("/stop cancellation", () => {
 		deps.reviewModel = async () => {
 			throw new Error("cancelled gate started a review");
 		};
-		const pending = considerTurn(deps, turn());
-		expect(cancelReviews(h.convId)).toBe(1);
+		const reviewer = new Reviewer(deps);
+		const pending = reviewer.considerTurn(turn());
+		expect(reviewer.cancelReviews(h.convId)).toBe(1);
 		release();
 		await pending;
 		expect(h.notified).toEqual([]);
@@ -1172,22 +1170,20 @@ describe("/stop cancellation", () => {
 			started++;
 			throw new Error("shutdown started a review");
 		};
-		const first = considerTurn(
-			{
-				...deps,
-				gate: {
-					decide: async () => {
-						await held;
-						return { answers: { correction: 0.9 }, inputTokens: 1, cost: 0 };
-					},
-				},
+		const reviewer = new Reviewer(deps);
+		const instantGate = deps.gate;
+		deps.gate = {
+			decide: async () => {
+				await held;
+				return { answers: { correction: 0.9 }, inputTokens: 1, cost: 0 };
 			},
-			turn({ turnSeq: 1 }),
-		);
-		const second = considerTurn(deps, turn({ conversationId: "dm:2", turnSeq: 2 }));
-		const third = considerTurn(deps, turn({ conversationId: "dm:3", turnSeq: 3 }));
+		};
+		const first = reviewer.considerTurn(turn({ turnSeq: 1 }));
+		deps.gate = instantGate;
+		const second = reviewer.considerTurn(turn({ conversationId: "dm:2", turnSeq: 2 }));
+		const third = reviewer.considerTurn(turn({ conversationId: "dm:3", turnSeq: 3 }));
 		await Bun.sleep(10);
-		expect(cancelAllReviews()).toBe(3);
+		expect(reviewer.cancelAllReviews()).toBe(3);
 		release();
 		await Promise.all([first, second, third]);
 		expect(started).toBe(0);
@@ -1227,9 +1223,10 @@ describe("/stop cancellation", () => {
 			await parked;
 			return result;
 		};
-		const pending = considerTurn(deps, turn());
+		const reviewer = new Reviewer(deps);
+		const pending = reviewer.considerTurn(turn());
 		await atModel;
-		expect(cancelAllReviews()).toBe(1);
+		expect(reviewer.cancelAllReviews()).toBe(1);
 		release();
 		await pending;
 		expect(readdirSync(h.skills)).not.toContain("shutdown");
@@ -1263,12 +1260,13 @@ describe("/stop cancellation", () => {
 			],
 		});
 		deps.skillsRefBin = bin;
-		const pending = considerTurn(deps, turn());
+		const reviewer = new Reviewer(deps);
+		const pending = reviewer.considerTurn(turn());
 		try {
 			for (let i = 0; i < 2000 && !existsSync(started); i++) await Bun.sleep(1);
 			// Await the marker rather than a timer: the validator has started.
 			expect(existsSync(started)).toBe(true);
-			expect(cancelReviews(h.convId)).toBe(1);
+			expect(reviewer.cancelReviews(h.convId)).toBe(1);
 		} finally {
 			writeFileSync(release, "go");
 			await pending;
@@ -1294,10 +1292,11 @@ describe("/stop cancellation", () => {
 			await parked;
 			return inner(conv);
 		};
-		const pending = considerTurn(deps, turn());
+		const reviewer = new Reviewer(deps);
+		const pending = reviewer.considerTurn(turn());
 		for (let i = 0; i < 500 && !resolving; i++) await Bun.sleep(1);
 		expect(resolving).toBe(true);
-		expect(cancelReviews(h.convId)).toBe(1);
+		expect(reviewer.cancelReviews(h.convId)).toBe(1);
 		release();
 		await pending;
 		expect(readdirSync(h.staging)).toEqual([]);
@@ -1345,12 +1344,13 @@ describe("/stop cancellation", () => {
 			}
 			return inner(conv);
 		};
-		const p1 = considerTurn(deps, turn({ turnSeq: 1 }));
+		const reviewer = new Reviewer(deps);
+		const p1 = reviewer.considerTurn(turn({ turnSeq: 1 }));
 		for (let i = 0; i < 500 && resolves < 1; i++) await Bun.sleep(1);
 		await Bun.sleep(20); // review 1 in-flight at its write step
-		const p2 = considerTurn(deps, turn({ turnSeq: 2 }));
+		const p2 = reviewer.considerTurn(turn({ turnSeq: 2 }));
 		await Bun.sleep(20); // review 2 queued behind the parked one
-		expect(cancelReviews("dm:1")).toBe(2);
+		expect(reviewer.cancelReviews("dm:1")).toBe(2);
 		release();
 		await p1; // cancelled — resolves, not rejects
 		await p2;
@@ -1383,9 +1383,10 @@ describe("/stop cancellation", () => {
 			ref: "fake/hang",
 			model: fakeReviewModel([{ text: "idle" }], () => park),
 		});
-		const p1 = considerTurn(deps, turn({ conversationId: "dm:1", turnSeq: 1 }));
+		const reviewer = new Reviewer(deps);
+		const p1 = reviewer.considerTurn(turn({ conversationId: "dm:1", turnSeq: 1 }));
 		await Bun.sleep(50); // review in-flight, parked
-		expect(cancelReviews("dm:99")).toBe(0);
+		expect(reviewer.cancelReviews("dm:99")).toBe(0);
 		release();
 		await p1;
 		h.store.close();
@@ -1401,8 +1402,7 @@ describe("reviewer evidence payload", () => {
 			prompts,
 			script: [{ text: "nothing worth saving" }],
 		});
-		await considerTurn(
-			deps,
+		await new Reviewer(deps).considerTurn(
 			turn({
 				toolDigest: [
 					digestEntry(),
@@ -1440,7 +1440,7 @@ describe("reviewer evidence payload", () => {
 			prompts,
 			script: [{ text: "nothing worth saving" }],
 		});
-		await considerTurn(correctionDeps, turn(), prior());
+		await new Reviewer(correctionDeps).considerTurn(turn(), prior());
 		expect(prompts).toHaveLength(1);
 		const correctionPrompt = promptText(prompts[0]!);
 		expect(correctionPrompt).toContain("The turn this correction refers back to:");
@@ -1454,7 +1454,7 @@ describe("reviewer evidence payload", () => {
 			prompts: procedurePrompts,
 			script: [{ text: "nothing worth saving" }],
 		});
-		await considerTurn(procedureDeps, turn(), prior());
+		await new Reviewer(procedureDeps).considerTurn(turn(), prior());
 		expect(promptText(procedurePrompts[0]!)).not.toContain("refers back to");
 		h.store.close();
 	});
@@ -1467,8 +1467,7 @@ describe("reviewer evidence payload", () => {
 			prompts,
 			script: [{ text: "nothing worth saving" }],
 		});
-		await considerTurn(
-			deps,
+		await new Reviewer(deps).considerTurn(
 			turn({
 				operatorTexts: [`OLDHEAD ${"old noise ".repeat(2000)}TAILMARKER`, "the actual correction"],
 				replyText: `HEAD${"x".repeat(20_000)}`,
@@ -1554,7 +1553,7 @@ describe("reviewer confinement", () => {
 	test("an escaping review writes nothing and publishes nothing", async () => {
 		const h = harness();
 		const outside = join(h.workspace, "..", "escaped.txt");
-		await considerTurn(
+		await new Reviewer(
 			h.depsFor({
 				nouls: { correction: 0.9, procedure: 0.1 },
 				script: [
@@ -1562,8 +1561,7 @@ describe("reviewer confinement", () => {
 					{ text: "done" },
 				],
 			}),
-			turn(),
-		);
+		).considerTurn(turn());
 		expect(() => readFileSync(outside)).toThrow();
 		expect(h.notified).toEqual([]);
 		expect(h.store.history(h.convId)).toHaveLength(0);

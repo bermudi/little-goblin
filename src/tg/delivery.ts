@@ -23,6 +23,11 @@ const RECENT_REPLY_LIMIT = 256;
 const UNCERTAIN_NOTICE = "⚠ Delivery uncertain—check Telegram before retrying.";
 export const SPEAK_CALLBACK = "speak_reply";
 
+// Genuine cross-instance singleton: written by whichever delivery sink
+// rendered a reply, read later by the 🔊 speak button — a different
+// handler with no link to that (long-gone) sink, keyed by Telegram-global
+// message ids. No per-sink home exists; per-sink state would strand every
+// reply the moment its sink closed.
 const recentReplies = new Map<string, string>();
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 

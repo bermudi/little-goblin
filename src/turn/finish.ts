@@ -24,9 +24,8 @@ import {
 } from "../memory.ts";
 import {
 	type CompletedTurn,
-	considerTurn,
 	type PriorTurnContext,
-	type ReviewerDeps,
+	Reviewer,
 	type ToolCallDigest,
 } from "../reviewer.ts";
 import type { ForcedKind } from "./state.ts";
@@ -264,7 +263,7 @@ export interface ReviewDeps {
 	convId: string;
 	// Absent = the reviewer feature is off: no gate, and the
 	// prior-turn chain stays untouched.
-	reviewer: ReviewerDeps | undefined;
+	reviewer: Reviewer | undefined;
 	// Off-the-record read at completion — a fresh store read with the
 	// admission copy as fallback, so a settings flip during delivery
 	// suppresses the review (exclusion is decided when the turn lands,
@@ -309,7 +308,7 @@ export function submitTurnReview(deps: ReviewDeps): void {
 		toolNames: deps.toolCalls,
 		toolDigest: deps.digestRing.map((p) => p.entry),
 	};
-	void considerTurn(reviewer, snapshot, deps.priorTurn()).catch((err: unknown) => {
+	void reviewer.considerTurn(snapshot, deps.priorTurn()).catch((err: unknown) => {
 		log.error("reviewer failed", err, { conversation: deps.convId });
 	});
 	deps.rememberTurn({

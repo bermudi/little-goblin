@@ -54,7 +54,7 @@ import {
 	type MemoryWorker,
 } from "./memory.ts";
 import { JevClient } from "./jev.ts";
-import { cleanupStaging } from "./reviewer.ts";
+import { cleanupStaging, Reviewer } from "./reviewer.ts";
 import { OutageTracker } from "./memory-outage.ts";
 import { fireMail, fireWebhook, startScheduler, type SchedulerDeps } from "./scheduler.ts";
 import { startHttp } from "./http/mod.ts";
@@ -521,29 +521,32 @@ async function boot() {
 		});
 		// Staging from a killed run is garbage — clear before any review publishes.
 		cleanupStaging(paths.workspace());
-		runtime.setReviewer({
-			gate: jevGate,
-			thresholds,
-			queueCap: block.queueCap,
-			evidence: block.evidence,
-			reviewModel: async (conversationId) => {
-				const cfg = configRef.current;
-				const conv = store.get(conversationId);
-				if (!conv) throw new Error(`conversation ${conversationId} not found`);
-				const ref = cfg.reviewer?.model ?? captureConversationSettings(store, conv, cfg).model;
-				return {
-					ref,
-					model: observedModel(await resolveModel(cfg, auth, ref), {
-						conversation: conversationId,
-						purpose: "review",
-					}),
-				};
-			},
-			store,
-			skillsDir: paths.skills(),
-			workspaceDir: paths.workspace(),
-			notify: (conversationId, skills) => sendSkillSavedNotice(tg.bot.api, conversationId, skills),
-		});
+		runtime.setReviewer(
+			new Reviewer({
+				gate: jevGate,
+				thresholds,
+				queueCap: block.queueCap,
+				evidence: block.evidence,
+				reviewModel: async (conversationId) => {
+					const cfg = configRef.current;
+					const conv = store.get(conversationId);
+					if (!conv) throw new Error(`conversation ${conversationId} not found`);
+					const ref = cfg.reviewer?.model ?? captureConversationSettings(store, conv, cfg).model;
+					return {
+						ref,
+						model: observedModel(await resolveModel(cfg, auth, ref), {
+							conversation: conversationId,
+							purpose: "review",
+						}),
+					};
+				},
+				store,
+				skillsDir: paths.skills(),
+				workspaceDir: paths.workspace(),
+				notify: (conversationId, skills) =>
+					sendSkillSavedNotice(tg.bot.api, conversationId, skills),
+			}),
+		);
 		// The loop watchdog rides the same JevClient (design/model.md → "No step
 		// budget"): every 16 completed calls system1 scores the digest ring — warn
 		// once, cut on the second stuck verdict.

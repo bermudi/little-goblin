@@ -33,6 +33,10 @@
 // awaits a review, and shutdown doesn't wait for one either — a missed
 // save on a racing shutdown is benign (the next similar turn re-gates)
 // and logged.
+//
+// One instance owns the queue, the in-flight slot, the pending gates,
+// and the fallback streak: index.ts constructs exactly one and injects
+// it into the runtime — no module-level reviewer state exists.
 
 import {
 	chmodSync,
@@ -206,110 +210,15 @@ export function buildGateState(turn: CompletedTurn): string {
 	].join("\n");
 }
 
-// Calibration counter: how many gates in a row fell back. Reset by any
-// successful gate. Module state is process-wide by design — an outage
-// is an outage regardless of which conversation noticed.
-let fallbackStreak = 0;
-
-export async function considerTurn(
-	deps: ReviewerDeps,
-	turn: CompletedTurn,
-	priorTurn?: PriorTurnContext,
-): Promise<void> {
-	// Register before the first await: /stop and shutdown must see a gate
-	// even when no queue entry exists yet.
-	const pending = { conversationId: turn.conversationId, seq: turn.turnSeq, cancelled: false };
-	pendingGates.add(pending);
-	const started = Date.now();
-	const state = buildGateState(turn);
-	// Unique tool names, bounded — the gate line must explain what kind
-	// of turn scored what without a second lookup.
-	const toolNames = [...new Set(turn.toolNames)].slice(0, 16);
-	try {
-		const decision = await deps.gate.decide(state, GATE_QUESTIONS);
-		fallbackStreak = 0;
-		const correction = decision.answers["correction"] ?? 0;
-		const procedure = decision.answers["procedure"] ?? 0;
-		const corrHit = correction >= deps.thresholds.correction;
-		const procHit = procedure >= deps.thresholds.procedure;
-		const review = corrHit || procHit;
-		// A correction carries the prior turn as evidence; when both
-		// questions fire, correction wins the trigger.
-		const trigger: Trigger = corrHit ? "correction" : "procedure";
-		const reviewId = review ? randomUUID() : null;
-		// The experiment line: every gate answers cost, hit rate, and
-		// outage drift from the log alone.
-		log.info("reviewer gate", {
-			conversation: turn.conversationId,
-			correction,
-			procedure,
-			thresholds: { correction: deps.thresholds.correction, procedure: deps.thresholds.procedure },
-			review,
-			trigger: review ? trigger : null,
-			review_id: reviewId,
-			fallback: false,
-			fallbackStreak,
-			tools: toolNames,
-			toolCalls: turn.toolNames.length,
-			inputTokens: decision.inputTokens,
-			cost: decision.cost,
-			ms: Date.now() - started,
-		});
-		if (review && !pending.cancelled)
-			return enqueueReview(
-				deps,
-				turn,
-				trigger === "correction" ? priorTurn : undefined,
-				trigger,
-				reviewId!,
-			);
-	} catch (err) {
-		// Only the gate's own failures fall back — anything else is a
-		// bug and propagates to the runtime's backstop, loud.
-		if (!(err instanceof JevError)) throw err;
-		fallbackStreak += 1;
-		const review = turn.toolNames.length >= FALLBACK_TOOL_CALLS;
-		const trigger: Trigger = "procedure";
-		const reviewId = review ? randomUUID() : null;
-		log.info("reviewer gate", {
-			conversation: turn.conversationId,
-			correction: null,
-			procedure: null,
-			thresholds: { correction: deps.thresholds.correction, procedure: deps.thresholds.procedure },
-			review,
-			trigger: review ? trigger : null,
-			review_id: reviewId,
-			fallback: true,
-			fallbackStreak,
-			reason: err.message,
-			tools: toolNames,
-			toolCalls: turn.toolNames.length,
-			inputTokens: null,
-			cost: null,
-			ms: Date.now() - started,
-		});
-		if (review && !pending.cancelled)
-			return enqueueReview(deps, turn, undefined, trigger, reviewId!);
-	} finally {
-		pendingGates.delete(pending);
-		if (pending.cancelled)
-			log.info("reviewer gate cancelled — no review enqueued", {
-				conversation: turn.conversationId,
-				seq: turn.turnSeq,
-			});
-		drainQueue();
-	}
-}
-
 // ---------- review queue ----------
 //
 // Reviews serialize one at a time, in turn-completion order (turnSeq),
 // queued-not-running capped at queueCap. Pending gate decisions hold
 // later reviews back; overlapping runs would publish over each other's
-// announced writes. A full queue drops the
-// incoming review (the newest turn is the most re-gateable — the next
-// similar turn re-fires) and logs the drop. /stop cancels a
-// conversation's queued reviews and aborts its in-flight one.
+// announced writes. A full queue drops the incoming review (the newest
+// turn is the most re-gateable — the next similar turn re-fires) and
+// logs the drop. /stop cancels a conversation's queued reviews and
+// aborts its in-flight one.
 
 interface Deferred<T> {
 	promise: Promise<T>;
@@ -339,146 +248,250 @@ interface QueueEntry {
 	done: Deferred<void>;
 }
 
-let reviewQueue: QueueEntry[] = [];
-let inFlight: { entry: QueueEntry; controller: AbortController } | null = null;
-const pendingGates = new Set<{ conversationId: string; seq: number; cancelled: boolean }>();
-let cancellingAll = false;
-
-/** /stop: cancel a conversation's pending gates and reviews.
- * Queued entries are removed and resolved; the in-flight one (if the
- * conversation's) is aborted — its staging is discarded by the normal
- * failure path. Returns how many were cancelled. */
-export function cancelReviews(conversationId: string): number {
-	let n = 0;
-	for (const gate of pendingGates) {
-		if (gate.conversationId !== conversationId || gate.cancelled) continue;
-		gate.cancelled = true;
-		pendingGates.delete(gate);
-		log.info("reviewer gate cancelled — pending decision", {
-			conversation: conversationId,
-			seq: gate.seq,
-		});
-		n += 1;
-	}
-	for (const entry of [...reviewQueue]) {
-		if (entry.conversationId !== conversationId || entry.cancelled) continue;
-		entry.cancelled = true;
-		reviewQueue.splice(reviewQueue.indexOf(entry), 1);
-		entry.done.resolve();
-		log.info("reviewer review cancelled — dropped from queue", {
-			review_id: entry.reviewId,
-			conversation: conversationId,
-			seq: entry.seq,
-		});
-		n += 1;
-	}
-	if (
-		inFlight !== null &&
-		inFlight.entry.conversationId === conversationId &&
-		!inFlight.entry.cancelled
-	) {
-		inFlight.entry.cancelled = true;
-		inFlight.controller.abort();
-		log.info("reviewer review cancelled — aborting in-flight", {
-			review_id: inFlight.entry.reviewId,
-			conversation: conversationId,
-			seq: inFlight.entry.seq,
-		});
-		n += 1;
-	}
-	drainQueue();
-	return n;
+interface PendingGate {
+	conversationId: string;
+	seq: number;
+	cancelled: boolean;
 }
 
-/** Shutdown fences reviewer work even when the originating lane has drained. */
-export function cancelAllReviews(): number {
-	const conversations = new Set([
-		...[...pendingGates].map((g) => g.conversationId),
-		...reviewQueue.map((e) => e.conversationId),
-		...(inFlight ? [inFlight.entry.conversationId] : []),
-	]);
-	let cancelled = 0;
-	cancellingAll = true;
-	try {
-		for (const convId of conversations) cancelled += cancelReviews(convId);
-	} finally {
-		cancellingAll = false;
+// ---------- the reviewer instance ----------
+//
+// Owns every piece of mutable state the gate and queue need (the
+// fields below); the free functions further down (staging, publish,
+// the review run) are pure mechanics parameterized by deps/entry.
+
+export class Reviewer {
+	// Calibration counter: how many gates in a row fell back. Reset by
+	// any successful gate. Shared across every conversation this instance
+	// gates — an outage is an outage regardless of which conversation
+	// noticed (one instance per process).
+	private fallbackStreak = 0;
+	private readonly reviewQueue: QueueEntry[] = [];
+	private inFlight: { entry: QueueEntry; controller: AbortController } | null = null;
+	private readonly pendingGates = new Set<PendingGate>();
+	private cancellingAll = false;
+
+	constructor(private readonly deps: ReviewerDeps) {}
+
+	// The runtime's digest-capture budget — read at turn setup.
+	get evidence(): EvidenceLimits {
+		return this.deps.evidence;
 	}
-	return cancelled;
-}
 
-/** Test door — isolate queue + streak state between tests. */
-export function resetReviewerState(): void {
-	reviewQueue = [];
-	for (const gate of pendingGates) gate.cancelled = true;
-	pendingGates.clear();
-	if (inFlight !== null) inFlight.controller.abort();
-	inFlight = null;
-	cancellingAll = false;
-	fallbackStreak = 0;
-}
-
-function enqueueReview(
-	deps: ReviewerDeps,
-	turn: CompletedTurn,
-	prior: PriorTurnContext | undefined,
-	trigger: Trigger,
-	reviewId: string,
-): Promise<void> {
-	if (reviewQueue.length >= deps.queueCap) {
-		log.warn("reviewer queue full — review dropped", {
-			review_id: reviewId,
-			conversation: turn.conversationId,
-			seq: turn.turnSeq,
-			queued: reviewQueue.length,
-			cap: deps.queueCap,
-		});
-		return Promise.resolve();
+	async considerTurn(turn: CompletedTurn, priorTurn?: PriorTurnContext): Promise<void> {
+		// Register before the first await: /stop and shutdown must see a gate
+		// even when no queue entry exists yet.
+		const pending = { conversationId: turn.conversationId, seq: turn.turnSeq, cancelled: false };
+		this.pendingGates.add(pending);
+		const started = Date.now();
+		const state = buildGateState(turn);
+		// Unique tool names, bounded — the gate line must explain what kind
+		// of turn scored what without a second lookup.
+		const toolNames = [...new Set(turn.toolNames)].slice(0, 16);
+		try {
+			const decision = await this.deps.gate.decide(state, GATE_QUESTIONS);
+			this.fallbackStreak = 0;
+			const correction = decision.answers["correction"] ?? 0;
+			const procedure = decision.answers["procedure"] ?? 0;
+			const corrHit = correction >= this.deps.thresholds.correction;
+			const procHit = procedure >= this.deps.thresholds.procedure;
+			const review = corrHit || procHit;
+			// A correction carries the prior turn as evidence; when both
+			// questions fire, correction wins the trigger.
+			const trigger: Trigger = corrHit ? "correction" : "procedure";
+			const reviewId = review ? randomUUID() : null;
+			// The experiment line: every gate answers cost, hit rate, and
+			// outage drift from the log alone.
+			log.info("reviewer gate", {
+				conversation: turn.conversationId,
+				correction,
+				procedure,
+				thresholds: {
+					correction: this.deps.thresholds.correction,
+					procedure: this.deps.thresholds.procedure,
+				},
+				review,
+				trigger: review ? trigger : null,
+				review_id: reviewId,
+				fallback: false,
+				fallbackStreak: this.fallbackStreak,
+				tools: toolNames,
+				toolCalls: turn.toolNames.length,
+				inputTokens: decision.inputTokens,
+				cost: decision.cost,
+				ms: Date.now() - started,
+			});
+			if (review && !pending.cancelled)
+				return this.enqueueReview(
+					turn,
+					trigger === "correction" ? priorTurn : undefined,
+					trigger,
+					reviewId!,
+				);
+		} catch (err) {
+			// Only the gate's own failures fall back — anything else is a
+			// bug and propagates to the runtime's backstop, loud.
+			if (!(err instanceof JevError)) throw err;
+			this.fallbackStreak += 1;
+			const review = turn.toolNames.length >= FALLBACK_TOOL_CALLS;
+			const trigger: Trigger = "procedure";
+			const reviewId = review ? randomUUID() : null;
+			log.info("reviewer gate", {
+				conversation: turn.conversationId,
+				correction: null,
+				procedure: null,
+				thresholds: {
+					correction: this.deps.thresholds.correction,
+					procedure: this.deps.thresholds.procedure,
+				},
+				review,
+				trigger: review ? trigger : null,
+				review_id: reviewId,
+				fallback: true,
+				fallbackStreak: this.fallbackStreak,
+				reason: err.message,
+				tools: toolNames,
+				toolCalls: turn.toolNames.length,
+				inputTokens: null,
+				cost: null,
+				ms: Date.now() - started,
+			});
+			if (review && !pending.cancelled)
+				return this.enqueueReview(turn, undefined, trigger, reviewId!);
+		} finally {
+			this.pendingGates.delete(pending);
+			if (pending.cancelled)
+				log.info("reviewer gate cancelled — no review enqueued", {
+					conversation: turn.conversationId,
+					seq: turn.turnSeq,
+				});
+			this.drainQueue();
+		}
 	}
-	const entry: QueueEntry = {
-		seq: turn.turnSeq,
-		reviewId,
-		conversationId: turn.conversationId,
-		deps,
-		turn,
-		prior,
-		trigger,
-		cancelled: false,
-		done: deferred<void>(),
-	};
-	// Insert in completion order — gates resolve out of order whenever
-	// two conversations complete close together.
-	const idx = reviewQueue.findIndex((e) => e.seq > entry.seq);
-	reviewQueue.splice(idx === -1 ? reviewQueue.length : idx, 0, entry);
-	drainQueue();
-	// The caller resolves only when ITS OWN review settles (or is
-	// dropped/cancelled — policy outcomes, not errors).
-	return entry.done.promise;
-}
 
-function drainQueue(): void {
-	if (cancellingAll || inFlight !== null || reviewQueue.length === 0) return;
-	const entry = reviewQueue[0]!;
-	// A later gate cannot overtake an earlier completion, including a
-	// no-review decision that has not arrived yet.
-	if ([...pendingGates].some((g) => g.seq < entry.seq)) return;
-	reviewQueue.shift();
-	const controller = new AbortController();
-	inFlight = { entry, controller };
-	void runReview(entry, controller.signal)
-		.catch((err: unknown) => {
-			// A thrown review is a bug (staging setup, publish mechanics)
-			// — it propagates to the runtime's backstop, loud, without
-			// poisoning the next queued review.
-			entry.done.reject(err);
-		})
-		.finally(() => {
-			inFlight = null;
+	/** /stop: cancel a conversation's pending gates and reviews.
+	 * Queued entries are removed and resolved; the in-flight one (if the
+	 * conversation's) is aborted — its staging is discarded by the normal
+	 * failure path. Returns how many were cancelled. */
+	cancelReviews(conversationId: string): number {
+		let n = 0;
+		for (const gate of this.pendingGates) {
+			if (gate.conversationId !== conversationId || gate.cancelled) continue;
+			gate.cancelled = true;
+			this.pendingGates.delete(gate);
+			log.info("reviewer gate cancelled — pending decision", {
+				conversation: conversationId,
+				seq: gate.seq,
+			});
+			n += 1;
+		}
+		for (const entry of [...this.reviewQueue]) {
+			if (entry.conversationId !== conversationId || entry.cancelled) continue;
+			entry.cancelled = true;
+			this.reviewQueue.splice(this.reviewQueue.indexOf(entry), 1);
 			entry.done.resolve();
-			drainQueue();
-		});
-}
+			log.info("reviewer review cancelled — dropped from queue", {
+				review_id: entry.reviewId,
+				conversation: conversationId,
+				seq: entry.seq,
+			});
+			n += 1;
+		}
+		if (
+			this.inFlight !== null &&
+			this.inFlight.entry.conversationId === conversationId &&
+			!this.inFlight.entry.cancelled
+		) {
+			this.inFlight.entry.cancelled = true;
+			this.inFlight.controller.abort();
+			log.info("reviewer review cancelled — aborting in-flight", {
+				review_id: this.inFlight.entry.reviewId,
+				conversation: conversationId,
+				seq: this.inFlight.entry.seq,
+			});
+			n += 1;
+		}
+		this.drainQueue();
+		return n;
+	}
 
+	/** Shutdown fences reviewer work even when the originating lane has drained. */
+	cancelAllReviews(): number {
+		const conversations = new Set([
+			...[...this.pendingGates].map((g) => g.conversationId),
+			...this.reviewQueue.map((e) => e.conversationId),
+			...(this.inFlight ? [this.inFlight.entry.conversationId] : []),
+		]);
+		let cancelled = 0;
+		this.cancellingAll = true;
+		try {
+			for (const convId of conversations) cancelled += this.cancelReviews(convId);
+		} finally {
+			this.cancellingAll = false;
+		}
+		return cancelled;
+	}
+
+	private enqueueReview(
+		turn: CompletedTurn,
+		prior: PriorTurnContext | undefined,
+		trigger: Trigger,
+		reviewId: string,
+	): Promise<void> {
+		if (this.reviewQueue.length >= this.deps.queueCap) {
+			log.warn("reviewer queue full — review dropped", {
+				review_id: reviewId,
+				conversation: turn.conversationId,
+				seq: turn.turnSeq,
+				queued: this.reviewQueue.length,
+				cap: this.deps.queueCap,
+			});
+			return Promise.resolve();
+		}
+		const entry: QueueEntry = {
+			seq: turn.turnSeq,
+			reviewId,
+			conversationId: turn.conversationId,
+			deps: this.deps,
+			turn,
+			prior,
+			trigger,
+			cancelled: false,
+			done: deferred<void>(),
+		};
+		// Insert in completion order — gates resolve out of order whenever
+		// two conversations complete close together.
+		const idx = this.reviewQueue.findIndex((e) => e.seq > entry.seq);
+		this.reviewQueue.splice(idx === -1 ? this.reviewQueue.length : idx, 0, entry);
+		this.drainQueue();
+		// The caller resolves only when ITS OWN review settles (or is
+		// dropped/cancelled — policy outcomes, not errors).
+		return entry.done.promise;
+	}
+
+	private drainQueue(): void {
+		if (this.cancellingAll || this.inFlight !== null || this.reviewQueue.length === 0) return;
+		const entry = this.reviewQueue[0]!;
+		// A later gate cannot overtake an earlier completion, including a
+		// no-review decision that has not arrived yet.
+		if ([...this.pendingGates].some((g) => g.seq < entry.seq)) return;
+		this.reviewQueue.shift();
+		const controller = new AbortController();
+		this.inFlight = { entry, controller };
+		void runReview(entry, controller.signal)
+			.catch((err: unknown) => {
+				// A thrown review is a bug (staging setup, publish mechanics)
+				// — it propagates to the runtime's backstop, loud, without
+				// poisoning the next queued review.
+				entry.done.reject(err);
+			})
+			.finally(() => {
+				this.inFlight = null;
+				entry.done.resolve();
+				this.drainQueue();
+			});
+	}
+}
 // ---------- review ----------
 
 // A review is a bounded background call, not a turn: ten steps against

@@ -17,6 +17,7 @@ import { parseConfig } from "./config.ts";
 import { appAddress, captureConversationSettings, openStore } from "./conversation.ts";
 import type { JevClient } from "./jev.ts";
 import { setLogFile } from "./log.ts";
+import { Reviewer } from "./reviewer.ts";
 import { Runtime, type TurnDone, type TurnSink, userMessage } from "./runtime.ts";
 
 let dirs: string[] = [];
@@ -2479,25 +2480,27 @@ describe("skill reviewer hook", () => {
 		const atGate = new Promise<void>((r) => {
 			entered = r;
 		});
-		runtime.setReviewer({
-			gate: {
-				decide: async () => {
-					entered();
-					await held;
-					return { answers: { correction: 1 }, inputTokens: 1, cost: 0 };
+		runtime.setReviewer(
+			new Reviewer({
+				gate: {
+					decide: async () => {
+						entered();
+						await held;
+						return { answers: { correction: 1 }, inputTokens: 1, cost: 0 };
+					},
 				},
-			},
-			thresholds: { correction: 0.8, procedure: 0.8 },
-			queueCap: 3,
-			evidence: { calls: 8, argChars: 300, outChars: 300 },
-			reviewModel: async () => {
-				throw new Error("shutdown let a review start");
-			},
-			store,
-			skillsDir: "/none",
-			workspaceDir: "/none",
-			notify: async () => {},
-		});
+				thresholds: { correction: 0.8, procedure: 0.8 },
+				queueCap: 3,
+				evidence: { calls: 8, argChars: 300, outChars: 300 },
+				reviewModel: async () => {
+					throw new Error("shutdown let a review start");
+				},
+				store,
+				skillsDir: "/none",
+				workspaceDir: "/none",
+				notify: async () => {},
+			}),
+		);
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "save this" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
@@ -2517,24 +2520,26 @@ describe("skill reviewer hook", () => {
 	test("a fenced turn never gates", async () => {
 		const { store, conv, runtime } = setup(["a", "b", "c", "d", "e"], 20);
 		let gated = false;
-		runtime.setReviewer({
-			gate: {
-				decide: async () => {
-					gated = true;
-					return { answers: {}, inputTokens: null, cost: null };
+		runtime.setReviewer(
+			new Reviewer({
+				gate: {
+					decide: async () => {
+						gated = true;
+						return { answers: {}, inputTokens: null, cost: null };
+					},
 				},
-			},
-			thresholds: { correction: 0.8, procedure: 0.8 },
-			queueCap: 3,
-			evidence: { calls: 8, argChars: 300, outChars: 300 },
-			reviewModel: async () => {
-				throw new Error("must not resolve");
-			},
-			store,
-			skillsDir: "/none",
-			workspaceDir: "/none",
-			notify: async () => {},
-		});
+				thresholds: { correction: 0.8, procedure: 0.8 },
+				queueCap: 3,
+				evidence: { calls: 8, argChars: 300, outChars: 300 },
+				reviewModel: async () => {
+					throw new Error("must not resolve");
+				},
+				store,
+				skillsDir: "/none",
+				workspaceDir: "/none",
+				notify: async () => {},
+			}),
+		);
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
 		await sink.firstDelta;

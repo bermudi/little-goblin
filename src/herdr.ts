@@ -32,6 +32,26 @@ const HERDR_TIMEOUT_MS = 45_000;
 // larger budget before we call it dead.
 const HERDR_REMOTE_TIMEOUT_MS = 90_000;
 const HERDR_MAX_OUTPUT = 1 << 20;
+// Raw CLI text that misses the JSON error envelope is quoted, never
+// relayed — an excerpt this size explains a usage error to a human
+// without flooding the log or the model's error prose (#98).
+const FALLBACK_EXCERPT = 200;
+// The read verbs put raw screen text on stdout — data, never an
+// error message (design/delegation.md: failure screens travel
+// fenced). A cap-killed read exits with empty stderr and up to 1 MiB
+// of screen on stdout; the fallback must not quote it.
+const READ_VERBS = new Set(["agent read", "pane read"]);
+
+// The non-envelope fallback message: stderr when there is any, else
+// stdout for the verbs whose stdout isn't screen text, capped to an
+// excerpt.
+function cliFallbackMessage(verb: string, r: HerdrRunResult): string {
+	const raw = READ_VERBS.has(verb) ? r.stderr : r.stderr || r.stdout;
+	const text = raw.trim();
+	if (text === "") return `exit ${r.code}`;
+	const cut = text.slice(0, FALLBACK_EXCERPT);
+	return cut.length < text.length ? `${cut}…` : cut;
+}
 
 const defaultRunner: HerdrRunner = makeRunner(HERDR_TIMEOUT_MS);
 
@@ -45,8 +65,15 @@ function makeRunner(timeoutMs: number): HerdrRunner {
 		return {
 			code: r.exitCode ?? -1,
 			stdout: r.stdout,
-			// A killed run's real story is the timeout, not partial stderr.
-			stderr: r.timedOut ? `herdr timed out after ${timeoutMs}ms` : r.stderr,
+			// A killed run's real story is the kill, not partial stderr:
+			// the deadline names the timeout, the output cap names itself
+			// (a real stderr envelope survives — only an empty one is
+			// replaced, so the JSON error path keeps its code+message).
+			stderr: r.timedOut
+				? `herdr timed out after ${timeoutMs}ms`
+				: r.truncated && r.stderr === ""
+					? `herdr output exceeded the ${HERDR_MAX_OUTPUT}-byte cap and was killed`
+					: r.stderr,
 		};
 	};
 }
@@ -191,13 +218,13 @@ export function makeHerdr(
 		const ms = Date.now() - t0;
 		if (r.code !== 0) {
 			let code = `exit_${r.code}`;
-			let message = (r.stderr || r.stdout).trim() || `exit ${r.code}`;
+			let message = cliFallbackMessage(verb, r);
 			try {
 				const parsed = cliErrorSchema.parse(JSON.parse(r.stderr));
 				code = parsed.error.code;
 				message = parsed.error.message;
 			} catch {
-				// stderr wasn't the JSON envelope — keep the raw text.
+				// stderr wasn't the JSON envelope — keep the capped raw text.
 			}
 			log.info("herdr call", { verb, target, ms, outcome: `error:${code}` });
 			throw new HerdrError(verb, code, message);

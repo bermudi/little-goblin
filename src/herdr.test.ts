@@ -167,6 +167,55 @@ describe("herdr adapter", () => {
 		]);
 	});
 
+	// #98: a cap-killed read (output > 1 MiB → SIGKILL → empty stderr)
+	// used to fall back to stdout — up to 1 MiB of raw agent screen
+	// text poured into the error string, goblin.log, and the model as
+	// unfenced prose. Screen text is data, never an error message.
+	test("a killed agent read never quotes stdout in the error", async () => {
+		const screen = `agent screen flood\n${"x".repeat(200_000)}`;
+		const f = fakeRunner([{ code: -1, stdout: screen, stderr: "" }]);
+		const h = makeHerdr({ session: "goblin" }, f.run);
+		try {
+			await h.readAgent("g1-x", 40);
+			expect.unreachable();
+		} catch (err) {
+			expect(err).toBeInstanceOf(HerdrError);
+			const message = (err as Error).message;
+			expect(message).not.toContain("agent screen flood");
+			expect(message).not.toContain("xxxx");
+			expect(message.length).toBeLessThan(200);
+		}
+	});
+
+	test("a killed pane read never quotes stdout in the error either", async () => {
+		const f = fakeRunner([{ code: -1, stdout: "y".repeat(500_000), stderr: "" }]);
+		const h = makeHerdr({ session: "goblin" }, f.run);
+		try {
+			await h.readPane("w1:p1", 80);
+			expect.unreachable();
+		} catch (err) {
+			const message = (err as Error).message;
+			expect(message).not.toContain("yyyy");
+			expect(message.length).toBeLessThan(200);
+		}
+	});
+
+	// Non-read verbs may quote non-envelope CLI text, but bounded: a
+	// usage flood on stderr is an excerpt for a human, not a relay.
+	test("a non-envelope fallback message is capped", async () => {
+		const flood = `usage: herdr agent get <target>\n${"e".repeat(100_000)}`;
+		const f = fakeRunner([{ code: 2, stdout: "", stderr: flood }]);
+		const h = makeHerdr({ session: "goblin" }, f.run);
+		try {
+			await h.get("x");
+			expect.unreachable();
+		} catch (err) {
+			const message = (err as Error).message;
+			expect(message).toContain("usage: herdr agent get <target>");
+			expect(message.length).toBeLessThan(300);
+		}
+	});
+
 	test("garbage stdout throws with the verb attached", async () => {
 		const f = fakeRunner([{ code: 0, stdout: "not json", stderr: "" }]);
 		const h = makeHerdr({ session: "goblin" }, f.run);

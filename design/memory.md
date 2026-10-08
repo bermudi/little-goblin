@@ -238,6 +238,20 @@ housekeeping is not automatically a source of new personal memories.
 Extraction instructions emphasize preferences, decisions, commitments,
 people, and ongoing work; they guide quality, not privacy enforcement.
 
+**Retention text is operator speech, and a stored transcript is speech, not
+attachment ingestion (#111, ruled 2026-10-08).** The exclusion above governs
+media bytes and bare file references — content a text exchange never had.
+It never meant dropping the operator's words: a voice or video note whose
+transcript is stored in history is the completed text exchange itself, paid
+for at intake and durable on disk, the same class of loss compaction's #84
+fix addressed on the model-context side. Memory's text projection (the one
+`messageText` in `memory.ts`, shared by the recall query, the retained user
+burst, prior context, and the assistant text) therefore embeds stored
+transcripts with a path reference, compaction's format
+(`[attachment: path — transcript: …]`). Transcript-less attachments stay
+dropped — no text, no speech — so an untranscribed voice note retains
+nothing rather than a filename.
+
 Commit the completed assistant event and a pending-retention record in one
 SQLite transaction, under the turn's existing authority check. This is an
 additive schema change and must preserve existing installations. A failed

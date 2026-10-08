@@ -504,4 +504,34 @@ describe("memory turn integration", () => {
 		);
 		h.store.close();
 	});
+
+	test("a voice-note transcript is operator speech in recall and retention (#111)", async () => {
+		const h = harness();
+		const sink = new RecordingSink();
+		h.runtime.submit(
+			h.store.get(h.conversation)!,
+			userMessage([
+				{
+					type: "data-attachment",
+					data: {
+						path: "/workspace/attachments/ogg-u1.oga",
+						mediaType: "audio/ogg",
+						filename: "voice.oga",
+						size: 1024,
+						speech: true,
+						transcript: "water the fern before friday",
+					},
+				},
+			]),
+			sink,
+		);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		// The spoken words reach the retained document…
+		const item = h.store.memoryQueue.next(h.client.target, Date.now());
+		expect(item).not.toBeNull();
+		expect(item?.document.content).toContain("water the fern before friday");
+		// …and the recall query that left the process carried them too.
+		expect(h.recallQueries()[0]).toContain("water the fern before friday");
+		h.store.close();
+	});
 });

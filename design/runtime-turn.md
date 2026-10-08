@@ -326,16 +326,16 @@ smaller than `src/` overall (DESIGN.md → Test posture).
 ## The two text projections (#84 / #111)
 
 Known tension, ruled here so W6's dedup sweep cannot unify it blindly:
-compaction's serialization (`agent/compaction.ts` `messageText`,
-118–165) embeds stored voice/video-note transcripts — durable operator
-speech, #84 — while memory's retention projection (`memory.ts`
-`messageText`, 69–78) drops them (#111 open). The two jobs differ:
-compaction folds **model-context continuity** (losing a spoken
-instruction there degrades every future turn); retention builds
-**operator memory**, where `design/memory.md` → Retain says "completed
-text exchanges only … no attachment ingestion" — whether a stored
-transcript counts as text or attachment is exactly what #111 must
-decide against that ruling.
+compaction's serialization (`agent/compaction.ts` `messageText`)
+embeds stored voice/video-note transcripts — durable operator speech,
+#84 — and since #111 memory's retention projection (`memory.ts`
+`messageText`) embeds them too: `design/memory.md` → Retain rules a
+stored transcript is the text of the exchange, not attachment
+ingestion. The two jobs still differ in what else rides: compaction
+folds **model-context continuity** (losing a spoken instruction there
+degrades every future turn), so bare attachment path references and
+bounded tool evidence stay; retention builds **operator memory**, so
+transcript-less attachments and raw tool output stay out.
 
 Where the divergence lives in the cut: **two files, two design docs,
 one seam each.** Compaction's projection stays in `agent/compaction.ts`
@@ -345,9 +345,10 @@ one seam each.** Compaction's projection stays in `agent/compaction.ts`
 `design/memory.md` → Retain). `retentionSourceFrom` therefore moves to
 `memory.ts`, not into `turn/view.ts` or `turn/finish.ts`: co-locating
 it with the model-view builder is how the projections would silently
-fuse. W6 may share mechanics between the two only after #111 is ruled
-in `design/memory.md`; until then both carry a pointer to this section,
-and "which projection am I in" is answerable by file alone.
+fuse. #111 is now ruled, so W6 may share the transcript mechanics
+between the two — the content divergence above stays decided per
+file, and "which projection am I in" remains answerable by file
+alone.
 
 ## Acceptance
 

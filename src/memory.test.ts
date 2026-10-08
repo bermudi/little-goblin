@@ -12,11 +12,13 @@ import {
 	formatRecallBlock,
 	memoryBoundEntries,
 	memoryStatus,
+	messageText,
 	MemoryContexts,
 	startMemoryWorker,
 	withMemoryBlocks,
 	type MemoryState,
 } from "./memory.ts";
+import { attachmentPart } from "./agent/attachments.ts";
 import { HindsightClient } from "./hindsight.ts";
 import { log } from "./log.ts";
 import { MemoryQueue, type MemoryQueueCounts } from "./memory-queue.ts";
@@ -145,6 +147,60 @@ describe("retention documents", () => {
 		expect(doc?.content).toContain("Goblin: noted");
 		expect(doc?.content).toContain("Context");
 		expect(doc?.sourceIds).toContain("a2");
+	});
+});
+
+describe("attachment transcripts in retention text", () => {
+	const voiceNote: UIMessage = {
+		id: "u9",
+		role: "user",
+		parts: [
+			attachmentPart({
+				path: "/workspace/attachments/ogg-u9.oga",
+				filename: "voice.oga",
+				mediaType: "audio/ogg",
+				size: 1024,
+				speech: true,
+				transcript: "water the fern before friday",
+			}),
+		],
+	};
+
+	test("a stored transcript is operator speech in the recall query", () => {
+		expect(buildRecallQuery([voiceNote])).toContain("water the fern before friday");
+	});
+
+	test("a stored transcript rides into the retained exchange", () => {
+		const doc = buildRetentionDocument({
+			conversationId: "dm:1",
+			anchorSeq: 9,
+			// runtime.ts extracts the burst with this same projection
+			// (retentionSourceFrom) before buildRetentionDocument embeds it.
+			userTexts: [messageText(voiceNote)],
+			userIds: ["u9"],
+			assistant: asst("a9", "noted"),
+			priorContext: "",
+			timestamp: "2026-09-22T10:00:00Z",
+		});
+		expect(doc?.content).toContain("Operator:");
+		expect(doc?.content).toContain("water the fern before friday");
+	});
+
+	test("transcript-less attachments stay out — no text, no speech", () => {
+		const photo: UIMessage = {
+			id: "u10",
+			role: "user",
+			parts: [
+				attachmentPart({
+					path: "/workspace/attachments/img-u10.png",
+					filename: "img.png",
+					mediaType: "image/png",
+					size: 42,
+				}),
+			],
+		};
+		expect(messageText(photo)).toBe("");
+		expect(buildRecallQuery([photo])).toBe("");
 	});
 });
 

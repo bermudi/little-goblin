@@ -64,14 +64,35 @@ export function buildDestinationClient(
 
 // ---------- text extraction ----------
 
-// Only fresh text evidence: no attachments, no tool output, no reasoning,
-// no recall blocks (history never contains them — it stays pure).
+// Fresh speech only: text parts plus stored attachment transcripts
+// (design/memory.md → Retain, the transcript ruling). A stored
+// transcript is the text of the exchange — paid for at intake, durable
+// in history — so it reaches the recall query and the retained burst
+// like any typed words. Transcript-less attachments carry no text and
+// stay dropped, as do tool output and reasoning (history stays pure
+// of recall blocks).
 export function messageText(message: UIMessage): string {
 	const out: string[] = [];
 	for (const part of message.parts) {
 		if (typeof part !== "object" || part === null) continue;
-		const p = part as { type?: unknown; text?: unknown };
-		if (p.type === "text" && typeof p.text === "string") out.push(p.text);
+		const p = part as { type?: unknown; text?: unknown; data?: unknown };
+		if (p.type === "text" && typeof p.text === "string") {
+			out.push(p.text);
+		} else if (p.type === "data-attachment") {
+			const ref =
+				typeof p.data === "object" && p.data !== null
+					? (p.data as { path?: unknown; filename?: unknown; transcript?: unknown })
+					: null;
+			if (typeof ref?.transcript === "string") {
+				const path =
+					typeof ref.path === "string"
+						? ref.path
+						: typeof ref.filename === "string"
+							? ref.filename
+							: "unnamed";
+				out.push(`[attachment: ${path} — transcript: ${JSON.stringify(ref.transcript)}]`);
+			}
+		}
 	}
 	return out.join("\n").trim();
 }

@@ -5,11 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UIMessage } from "ai";
 import {
-	addressId,
 	appAddress,
+	appIdOf,
 	channelOf,
+	formatAddress,
 	openStore,
+	parseAddress,
 	type ConversationStore,
+	type ParsedAddress,
 } from "./conversation.ts";
 
 let dirs: string[] = [];
@@ -51,7 +54,7 @@ describe("conversation store", () => {
 	test("resolve creates then returns the same conversation", () => {
 		const store = openStore(tmpdb());
 		const a = store.resolve({ kind: "topic", chatId: -100, threadId: 7 }, "/w");
-		expect(a.id).toBe(addressId({ kind: "topic", chatId: -100, threadId: 7 }));
+		expect(a.id).toBe(formatAddress({ kind: "topic", chatId: -100, threadId: 7 }));
 		expect(a.epoch).toBe(0);
 		const b = store.resolve({ kind: "topic", chatId: -100, threadId: 7 }, "/other");
 		expect(b.id).toBe(a.id);
@@ -585,10 +588,10 @@ describe("chat search", () => {
 });
 
 describe("app channel addresses", () => {
-	test("addressId serializes an app address to its app/ id", () => {
-		expect(addressId(appAddress("chat-01"))).toBe("app/chat-01");
-		expect(addressId({ kind: "dm", chatId: 5 })).toBe("dm:5");
-		expect(addressId({ kind: "topic", chatId: -100, threadId: 7 })).toBe("topic:-100:7");
+	test("formatAddress serializes an app address to its app/ id", () => {
+		expect(formatAddress(appAddress("chat-01"))).toBe("app/chat-01");
+		expect(formatAddress({ kind: "dm", chatId: 5 })).toBe("dm:5");
+		expect(formatAddress({ kind: "topic", chatId: -100, threadId: 7 })).toBe("topic:-100:7");
 	});
 
 	test("channelOf routes on the id prefix — the whole discriminant", () => {
@@ -604,8 +607,66 @@ describe("app channel addresses", () => {
 		for (const bad of ["", "a b", "a/b", "../x", "-lead", "_lead", "x".repeat(65), "é"]) {
 			expect(() => appAddress(bad)).toThrow();
 		}
-		// The literal path is guarded too — addressId revalidates.
-		expect(() => addressId({ kind: "app", appId: "a/b", chatId: 0, threadId: 0 })).toThrow();
+		// The literal path is guarded too — formatAddress revalidates.
+		expect(() => formatAddress({ kind: "app", appId: "a/b", chatId: 0, threadId: 0 })).toThrow();
+	});
+});
+
+describe("address codec", () => {
+	test("parseAddress ∘ formatAddress is the identity on every id shape", () => {
+		const addresses: ParsedAddress[] = [
+			{ kind: "dm", chatId: 1 },
+			{ kind: "dm", chatId: -100200300 },
+			{ kind: "rolling", chatId: 42, ordinal: 1 },
+			{ kind: "rolling", chatId: 42, ordinal: 991234 },
+			{ kind: "topic", chatId: -100200300, threadId: 546216 },
+			{ kind: "guest", chatId: -100, userId: 777 },
+			{ kind: "app", appId: "chat-01", chatId: 0, threadId: 0 },
+		];
+		for (const addr of addresses) {
+			expect(parseAddress(formatAddress(addr))).toEqual(addr);
+		}
+	});
+
+	test("ids the store and lanes hold parse to their coordinates", () => {
+		expect(parseAddress("dm:42:7")).toEqual({ kind: "rolling", chatId: 42, ordinal: 7 });
+		expect(parseAddress("guest:-100:777")).toEqual({ kind: "guest", chatId: -100, userId: 777 });
+		expect(parseAddress("app/chat-01")).toEqual({
+			kind: "app",
+			appId: "chat-01",
+			chatId: 0,
+			threadId: 0,
+		});
+	});
+
+	test("malformed ids are rejected, not guessed", () => {
+		for (const id of [
+			"",
+			"dm",
+			"dm:",
+			"dm:42:",
+			"dm:42:0", // rolling ordinals are [1-9]\d* — never zero
+			"dm:42:01",
+			"dm:+42",
+			"topic:1", // missing thread
+			"topic:-100:",
+			"guest:1",
+			"group:1",
+			"app/", // empty app id
+			"app/bad id", // space — not a valid app id
+			"dm:9999999999999999999", // beyond MAX_SAFE_INTEGER
+			"dm:42:99999999999999999999",
+			"topic:-100:9999999999999999999",
+		]) {
+			expect(parseAddress(id)).toBeNull();
+		}
+	});
+
+	test("appIdOf extracts the client-minted id from app/ ids only", () => {
+		expect(appIdOf("app/chat-01")).toBe("chat-01");
+		expect(appIdOf("dm:42")).toBeNull();
+		expect(appIdOf("topic:-100:7")).toBeNull();
+		expect(appIdOf("app/bad id")).toBeNull();
 	});
 });
 

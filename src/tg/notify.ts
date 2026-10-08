@@ -1,7 +1,7 @@
 // Outage notices — the one sanctioned proactive message from background
 // machinery to the operator (DESIGN.md, Slice 2 ruling 5 amendment).
 // Parses a conversation id back into its Telegram address (the inverse
-// of conversation.ts's addressId) and sends plain text there. This is a
+// of conversation.ts's formatAddress) and sends plain text there. This is a
 // grammy-aware module by design: domain code hands over ids, never
 // context objects.
 import type { Api } from "grammy";

@@ -38,21 +38,83 @@ export const APP_ID_PREFIX = "app/";
 
 // App ids are client-minted but not arbitrary: the id rides the "app/"
 // conversation id and an HTTP path segment, so it stays url-safe and
-// slash-free (a uuid or nanoid fits). Validated at addressId — the single
-// writer of the format — so a malformed id can never reach the store.
+// slash-free (a uuid or nanoid fits). Validated at the codec —
+// formatAddress and parseAddress are the only writers and readers of
+// the format — so a malformed id can never reach the store.
 export const appIdSchema = z
 	.string()
 	.regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/, "app ids are [A-Za-z0-9_-], 1-64 chars");
 
-export function addressId(addr: ConversationAddress): string {
+// A rolling conversation id's parts (design/telegram.md → Rolling DM):
+// dm:<chat>:<n>, where n is the creation ordinal — a high-water that
+// only grows. Not a ConversationAddress member: resolve() must never
+// mint one (rollDm owns creation), but the codec parses and formats it
+// like every other id shape.
+export interface RollingDmAddress {
+	kind: "rolling";
+	chatId: number;
+	ordinal: number;
+}
+
+// Every shape a conversation id (or intake lane key) can take — the
+// resolve() inputs plus the rolling conversations. parseAddress
+// returns it; formatAddress accepts it.
+export type ParsedAddress = ConversationAddress | RollingDmAddress;
+
+// The single builder for conversation ids and lane keys. One schema,
+// so a malformed address fails here — not silently, downstream.
+export function formatAddress(addr: ParsedAddress): string {
 	if (addr.kind === "dm") return `dm:${addr.chatId}`;
+	if (addr.kind === "rolling") return `dm:${addr.chatId}:${addr.ordinal}`;
 	if (addr.kind === "topic") return `topic:${addr.chatId}:${addr.threadId}`;
 	if (addr.kind === "guest") return `guest:${addr.chatId}:${addr.userId}`;
 	return `${APP_ID_PREFIX}${appIdSchema.parse(addr.appId)}`;
 }
 
+const dmIdRe = /^dm:(-?\d+)$/;
+const rollingDmIdRe = /^dm:(-?\d+):([1-9]\d*)$/;
+const topicIdRe = /^topic:(-?\d+):(-?\d+)$/;
+const guestIdRe = /^guest:(-?\d+):(-?\d+)$/;
+
+// Safe integer coordinates out of a regex match — null when any
+// captured number exceeds what a Number can hold exactly.
+function coordsOf(match: RegExpExecArray | null): number[] | null {
+	if (match === null) return null;
+	const nums = match.slice(1).map(Number);
+	return nums.every(Number.isSafeInteger) ? nums : null;
+}
+
+// The single parser — parseAddress ∘ formatAddress is the identity on
+// every id the store, the inbox, and the lanes hold. Null on anything
+// else: callers route on the null (skip, throw, or tombstone), never
+// guess. Rolling ordinals decode as [1-9]\d* — rollDm mints them and
+// never rewrites them, so a zero or leading-zero ordinal is not an id.
+export function parseAddress(id: string): ParsedAddress | null {
+	if (id.startsWith(APP_ID_PREFIX)) {
+		const appId = appIdSchema.safeParse(id.slice(APP_ID_PREFIX.length));
+		return appId.success ? { kind: "app", appId: appId.data, chatId: 0, threadId: 0 } : null;
+	}
+	const rolling = coordsOf(rollingDmIdRe.exec(id));
+	if (rolling !== null) return { kind: "rolling", chatId: rolling[0]!, ordinal: rolling[1]! };
+	const dm = coordsOf(dmIdRe.exec(id));
+	if (dm !== null) return { kind: "dm", chatId: dm[0]! };
+	const topic = coordsOf(topicIdRe.exec(id));
+	if (topic !== null) return { kind: "topic", chatId: topic[0]!, threadId: topic[1]! };
+	const guest = coordsOf(guestIdRe.exec(id));
+	if (guest !== null) return { kind: "guest", chatId: guest[0]!, userId: guest[1]! };
+	return null;
+}
+
+// The client-minted id an app/ conversation id carries — the codec's
+// projection for the surfaces that need the bare id (the deep link).
+// Null on every other channel or a malformed id.
+export function appIdOf(conversationId: string): string | null {
+	const parsed = parseAddress(conversationId);
+	return parsed !== null && parsed.kind === "app" ? parsed.appId : null;
+}
+
 // The one well-formed way to build an app address — validated here and
-// again in addressId so a client-minted id can never smuggle a path
+// again in formatAddress so a client-minted id can never smuggle a path
 // segment or a slash into the conversation id.
 export function appAddress(appId: string): ConversationAddress {
 	return { kind: "app", appId: appIdSchema.parse(appId), chatId: 0, threadId: 0 };
@@ -962,7 +1024,7 @@ export function openStore(dbPath: string): ConversationStore {
 
 		resolve(addr, defaultCwd, defaults) {
 			return db.transaction(() => {
-				const id = addressId(addr);
+				const id = formatAddress(addr);
 				const existing = qGet.get(id);
 				if (existing) {
 					if (addr.kind === "app" && defaults) initializeSettings(id, defaults);
@@ -1058,7 +1120,7 @@ export function openStore(dbPath: string): ConversationStore {
 
 		forkToApp(fromId, appId, defaultCwd, title, defaults) {
 			return db.transaction(() => {
-				const id = addressId(appAddress(appId));
+				const id = formatAddress(appAddress(appId));
 				qInsertConv.run(id, 0, null, defaultCwd, new Date().toISOString());
 				// The memory opt-out is part of the copied state — an
 				// excluded DM's text must stay unsearchable and

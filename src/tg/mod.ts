@@ -9,7 +9,7 @@ import type { UIMessage } from "ai";
 import type { AuthStore } from "../auth.ts";
 import { paths, type Config, type ConfigRef, type TtsConfig } from "../config.ts";
 import {
-	addressId,
+	formatAddress,
 	channelOf,
 	type Conversation,
 	type ConversationAddress,
@@ -283,7 +283,7 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 	// at flush (Rolling DM). Every other lane IS its conversation id, so
 	// those still resolve eagerly here.
 	const rolling = msg.chat.type === "private" && addr.kind === "dm" && isRollingChat(addr.chatId);
-	const lane = addressId(addr);
+	const lane = formatAddress(addr);
 	log.debug("intake", {
 		updateId,
 		conversation: lane,

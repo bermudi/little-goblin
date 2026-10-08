@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Api } from "grammy";
-import { addressId, type ConversationAddress } from "../conversation.ts";
+import { formatAddress, type ConversationAddress } from "../conversation.ts";
 import {
 	parseConversationAddress,
 	sendMemoryBlockedNotice,
@@ -8,7 +8,7 @@ import {
 	sendSkillSavedNotice,
 } from "./notify.ts";
 
-// addressId ∘ parseConversationAddress must be the identity on every
+// formatAddress ∘ parseConversationAddress must be the identity on every
 // address goblin stores — the outage notice depends on the round trip.
 // Colocated here because the invariant spans both modules (review
 // finding: held by convention only, untested).
@@ -19,8 +19,8 @@ describe("conversation address round trip", () => {
 		{ kind: "topic", chatId: -100200300, threadId: 546216 },
 	];
 	for (const addr of addresses) {
-		test(`${addressId(addr)} parses back`, () => {
-			expect(parseConversationAddress(addressId(addr))).toEqual(
+		test(`${formatAddress(addr)} parses back`, () => {
+			expect(parseConversationAddress(formatAddress(addr))).toEqual(
 				addr.kind === "dm"
 					? { chatId: addr.chatId, threadId: null }
 					: { chatId: addr.chatId, threadId: (addr as { threadId: number }).threadId },

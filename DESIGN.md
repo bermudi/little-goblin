@@ -211,6 +211,7 @@ or the non-goals goes here.
 
 - this file — Why, Product boundary, Domain model, Conversation, Turn, The authority rule, Cache stability, Design areas, State layout, Config, Module map, Non-goals (v1 — return only on demand), Test posture — the real change
 - [`design/model.md`](design/model.md) — Model layer, Provider registry, Thinking, History, Causal view, arrival-order storage, Compaction, Capabilities, Content, Transcription
+- [`design/runtime-turn.md`](design/runtime-turn.md) — The turn (W3.0 decomposition ruling): phase list, state ownership by lifetime, recursion → driven loop, what must not change, module cut, test migration, the two text projections (#84/#111)
 - [`design/tools.md`](design/tools.md) — Tools (v1), Vision (image Q&A), Chat search, SQLite FTS5, Scope: every conversation except memory-excluded ones
 - [`design/web.md`](design/web.md) — Web access (search, fetch, browser), `search` is one tool with a provider behind it, Config, Fallback chains are explicit config, never implicit, Wire formats, Input, Output is deterministic text, Search results and fetched page text ride fenced, `fetch` is always in the set, PDFs ride as documents, not text, Overflow goes to disk, recovery named, No SSRF policy — recorded as a ruling, Auth never enters tool env, Logging, The browser is a skill, not a tool, MCP returns as a skill over goblin's own mcporter, Goblin owns its mcporter; it never rides the host's, Imports stay off by gate, not by convention, No daemon, by mechanism, The `goblin-mcp-dev` profile starts empty and stays warm, Known limits, accepted
 - [`design/skills.md`](design/skills.md) — Skills, Skill reviewer, Gate: Jev on every completed turn, Evidence: a bounded tool digest, captured per turn, Reviewer: staging, validation, then atomic publish, /stop cancels the conversation's reviews, Off the record means no distillation, It publishes, then tells, Instrumentation
@@ -325,7 +326,24 @@ src/
                     clean/suspicious/malicious/unavailable verdicts, fail-open
   jev.ts            the Jev/OpenRouter Decisions boundary (the reviewer's
                     gate and the checker's shared client)
-  runtime.ts        per-conversation queue, turn loop, checkAuthority
+  runtime.ts        per-conversation queue, lane drain, checkAuthority,
+                    stop/shutdown, the attempt loop — the turn's phases
+                    move to turn/ (W3 target; design/runtime-turn.md)
+  turn/             the turn's phases (planned — W3 target, not yet
+                    extracted; rulings in design/runtime-turn.md)
+    state.ts        TurnState: attempt-scoped state + the TurnRecovery
+                    whitelist projection
+    loop.ts         loop machinery: repeat detector, watchdog cadence,
+                    warn/cut landings (no step budget)
+    admission.ts    the admission snapshot: epoch, ownership filter
+                    (#82), anchor, steer-mark seed
+    view.ts         pure model-view assembly — byte-stable
+                    (cache stability)
+    stream.ts       the stream driver: SDK callbacks, steering fold,
+                    chunk fan-out, wire log, join replay
+    overflow.ts     overflow classify + compact-and-resume packaging
+    finish.ts       persist, retention hand-off, reviewer snapshot,
+                    forced-landing stamps
   agent/
     providers.ts    registry: name → AI SDK provider
     catalog-fetch.ts  the cached-catalog skeleton: single-flight fetch,

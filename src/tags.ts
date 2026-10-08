@@ -25,16 +25,9 @@ export function delegationNoticeTag(
 }
 
 // Whether a user-role text is machinery speech, not operator memory:
-// program fires, delegation notices, and the legacy `[scheduled: `
-// bursts queued before the jobs→programs cutover, which can still sit
-// unanswered in tails (their reader dies with the W2.2 purge — until
-// then it stays recognized here).
+// program fires and delegation notices.
 export function isMachineryText(text: string): boolean {
-	return (
-		text.startsWith("[program: ") ||
-		text.startsWith("[delegation: ") ||
-		text.startsWith("[scheduled: ")
-	);
+	return text.startsWith("[program: ") || text.startsWith("[delegation: ");
 }
 
 // The compaction summary rides the model view as a user-role message

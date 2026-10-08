@@ -31,8 +31,8 @@ describe("message tags", () => {
 		expect(isMachineryText(delegationNoticeTag(7, "fix it", "done"))).toBe(true);
 	});
 
-	test("the legacy scheduled prefix still reads as machinery", () => {
-		expect(isMachineryText("[scheduled: old job]\ndo it")).toBe(true);
+	test("the pre-cutover scheduled prefix is operator speech again (W2.2 purge)", () => {
+		expect(isMachineryText("[scheduled: old job]\ndo it")).toBe(false);
 	});
 
 	test("operator speech and near-misses are not machinery", () => {

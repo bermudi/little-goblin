@@ -2204,8 +2204,7 @@ function retentionSourceFrom(entries: { seq: number; message: UIMessage }[]): Re
 			// Program fires and delegation notices are housekeeping, not
 			// operator memory — but an operator message in the same burst
 			// is, so housekeeping drops out of the retained set rather
-			// than fencing the whole burst (the tag codec's predicate
-			// also covers the legacy `[scheduled: ` bursts).
+			// than fencing the whole burst.
 			if (isMachineryText(t)) {
 				sawProgram = true;
 				continue;

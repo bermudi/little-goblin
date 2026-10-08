@@ -10,6 +10,7 @@ import {
 	buildRetentionDocument,
 	documentIdFor,
 	formatRecallBlock,
+	memoryBoundEntries,
 	memoryStatus,
 	MemoryContexts,
 	startMemoryWorker,
@@ -216,6 +217,43 @@ describe("cache-stable materialization", () => {
 		];
 		const stale = { anchorSeq: 2, content: "stale evidence", sourceIds: ["e1"] };
 		expect(withMemoryBlocks(view, [stale], null).map((m) => m.id)).toEqual(["compact-2", "u3"]);
+	});
+});
+
+describe("memory-bound projection", () => {
+	const entries = (msgs: UIMessage[]) => msgs.map((m, i) => ({ seq: i + 1, message: m }));
+
+	test("drops ineligible events, keeps eligible ones (#85)", () => {
+		const view = entries([
+			user("u1", "old included"),
+			user("u2", "excluded era"),
+			user("u3", "fresh"),
+		]);
+		const filtered = memoryBoundEntries(view, {
+			eligibleSeqs: new Set([1, 3]),
+			summaryEligible: false,
+		});
+		expect(filtered.map((e) => e.message.id)).toEqual(["u1", "u3"]);
+	});
+
+	test("an ineligible summary drops even when its boundary event is eligible", () => {
+		// The synthetic summary rides at the boundary event's seq — its
+		// eligibility is the folded span's, never the boundary row's.
+		const view = [
+			{ seq: 2, message: user("compact-2", "[history compacted] distilled from excluded text") },
+			{ seq: 3, message: user("u3", "fresh") },
+		];
+		const elig = { eligibleSeqs: new Set([2, 3]), summaryEligible: false };
+		expect(memoryBoundEntries(view, elig).map((e) => e.message.id)).toEqual(["u3"]);
+		elig.summaryEligible = true;
+		expect(memoryBoundEntries(view, elig).map((e) => e.message.id)).toEqual(["compact-2", "u3"]);
+	});
+
+	test("empty eligibility yields the empty projection — fail closed", () => {
+		const view = entries([user("u1", "anything")]);
+		expect(memoryBoundEntries(view, { eligibleSeqs: new Set(), summaryEligible: true })).toEqual(
+			[],
+		);
 	});
 });
 

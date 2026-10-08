@@ -37,6 +37,7 @@ import {
 	buildRecallQuery,
 	buildRetentionDocument,
 	formatRecallBlock,
+	memoryBoundEntries,
 	messageText,
 	withMemoryBlocks,
 	type MemoryContexts,
@@ -1099,9 +1100,20 @@ export class Runtime {
 		let memory: TurnRecovery["memory"] = { prior: [], current: null };
 		try {
 			this.checkAuthority(convId, epoch);
+			// The recall query is memory-bound: it may carry only eligible
+			// history (the admission-time stamps, #85) — a re-enabled topic
+			// must not query with text written while it was excluded. The
+			// MODEL view below still sees everything: exclusion governs what
+			// leaves for the memory service, not the conversation itself.
 			memory =
 				recovery?.memory ??
-				(await this.recallMemory(conv, anchorSeq, history, controller.signal, epoch));
+				(await this.recallMemory(
+					conv,
+					anchorSeq,
+					memoryBoundEntries(entries, store.memoryEligibility(convId)).map((e) => e.message),
+					controller.signal,
+					epoch,
+				));
 			this.checkAuthority(convId, epoch);
 			const deliverVoice = sink.onVoiceNote
 				? async (audio: Uint8Array) => {
@@ -1878,7 +1890,15 @@ export class Runtime {
 					finalAnchor = e.seq;
 				}
 			}
-			const finalSource = retentionSourceFrom(finalEntries);
+			// Retention is memory-bound: the burst and prior context read the
+			// eligible projection of the exchange as it ended (#85) — messages
+			// and replies written while the topic was excluded never enter a
+			// document, not even as labelled context. Eligibility re-reads
+			// here (with finalEntries) so steered-in messages carry their own
+			// append-time stamps.
+			const finalSource = retentionSourceFrom(
+				memoryBoundEntries(finalEntries, store.memoryEligibility(convId)),
+			);
 			// The defiance guard (review 2026-10-07, m3): a forced landing
 			// whose step STILL ended in tool calls (a provider ignoring
 			// toolChoice:none) or produced no prose would deliver a stamped

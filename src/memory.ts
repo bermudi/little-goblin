@@ -61,6 +61,35 @@ export function messageText(message: UIMessage): string {
 
 const MAX_QUERY_CHARS = 2000;
 
+// The memory-bound filter input (design/memory.md → exclusions, #85):
+// which events may ever reach the memory service, stamped at append
+// time by the store. The live exclusion flag stays a hard gate while
+// set; this is what protects history written while it WAS set once it
+// is lifted — "enabling memory does not silently backfill excluded or
+// historical messages".
+export interface MemoryEligibility {
+	// Event seqs admitted while the conversation was not excluded.
+	eligibleSeqs: Set<number>;
+	// Whether the active compaction summary was distilled purely from
+	// eligible events — derived text inherits the span's eligibility.
+	summaryEligible: boolean;
+}
+
+// The memory-bound projection of a model view: every ineligible event
+// drops out, and the compaction summary (a derived, user-role rider in
+// the model view) drops unless its folded span was fully eligible.
+// Normal local/model history is NOT filtered through this — exclusion
+// governs what leaves for the memory service, never what the
+// conversation itself sees.
+export function memoryBoundEntries(
+	entries: { seq: number; message: UIMessage }[],
+	elig: MemoryEligibility,
+): { seq: number; message: UIMessage }[] {
+	return entries.filter((e) =>
+		isCompactionSummaryId(e.message.id) ? elig.summaryEligible : elig.eligibleSeqs.has(e.seq),
+	);
+}
+
 // Bounded query from the admitted snapshot — no model call. Most recent
 // user text leads; bounded prior text resolves references.
 export function buildRecallQuery(history: UIMessage[]): string {

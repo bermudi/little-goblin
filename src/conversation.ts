@@ -11,7 +11,7 @@ import type { UIMessage } from "ai";
 import { z } from "zod";
 import { log } from "./log.ts";
 import { splitModelRef, thinkingLevels, type Config, type ThinkingLevel } from "./config.ts";
-import { MemoryContexts, messageText } from "./memory.ts";
+import { MemoryContexts, type MemoryEligibility, messageText } from "./memory.ts";
 import { MemoryQueue } from "./memory-queue.ts";
 import { compactionSummaryId, corruptRowId } from "./tags.ts";
 import type { MemoryDocument } from "./hindsight.ts";
@@ -231,13 +231,24 @@ export interface ConversationMetaPatch {
 
 // A compaction pointer (DESIGN.md, Compaction). Rows append forever —
 // audit trail; the latest per conversation is the active boundary.
+// summaryEligible (design/memory.md → exclusions): whether the folded
+// span contained only memory-eligible events — the summary is derived
+// text, so it may reach memory-bound builders only when every event it
+// was distilled from was eligible. Stamped by the store at write time
+// (it owns the event stamps); never a caller input.
 export interface Compaction {
 	boundarySeq: number;
 	summary: string;
+	summaryEligible: boolean;
 	tokensBefore: number;
 	model: string;
 	createdAt: string;
 }
+
+// What a caller writes — summaryEligible is store-computed (the store
+// owns the event stamps the derivation reads), so it never appears on
+// input.
+export type CompactionWrite = Omit<Compaction, "summaryEligible">;
 
 export interface ConversationStore {
 	// The shared handle — memory-queue, memory-contexts, and the outage
@@ -249,7 +260,7 @@ export interface ConversationStore {
 	// The compactions table itself is append-only audit; only the newest
 	// row per conversation steers the model view.
 	getCompaction(id: string): Compaction | null;
-	setCompaction(id: string, compaction: Compaction): void;
+	setCompaction(id: string, compaction: CompactionWrite): void;
 	// Get-or-create by channel address. New conversations start at epoch 0.
 	// The cwd column still exists in the table (NOT NULL, no default —
 	// existing DBs need it stamped) but cwd is no longer per-conversation
@@ -346,6 +357,12 @@ export interface ConversationStore {
 	modelEntries(id: string): { seq: number; message: UIMessage }[];
 	// Seq of the newest user event — a turn's response anchors to it.
 	lastUserSeq(id: string): number | null;
+	// Memory eligibility (design/memory.md → exclusions): every event's
+	// append-time stamp plus the active compaction summary's derived
+	// eligibility — the filter input for memory-bound builders. Re-enabling
+	// memory reads this, never the live flag, so excluded-era messages stay
+	// out of recall queries and retention documents retroactively (#85).
+	memoryEligibility(id: string): MemoryEligibility;
 	// Full-text search over user/assistant event text (DESIGN.md, Chat
 	// search). Memory-excluded conversations are filtered at query time
 	// against the live flag — retroactive. Empty when the query has no
@@ -648,6 +665,7 @@ export function openStore(dbPath: string): ConversationStore {
 			data TEXT NOT NULL,
 			anchor_seq INTEGER,
 			created_at TEXT NOT NULL,
+			memory_eligible INTEGER NOT NULL DEFAULT 0,
 			UNIQUE(conversation_id, seq)
 		)`);
 	// Existing DBs predate anchor_seq — additive column, no rebuild.
@@ -659,6 +677,19 @@ export function openStore(dbPath: string): ConversationStore {
 	);
 	if (!eventCols.has("anchor_seq")) {
 		db.run("ALTER TABLE events ADD COLUMN anchor_seq INTEGER");
+	}
+	// Memory eligibility is stamped per event at append time — the durable
+	// answer to "may this text ever reach the memory service?" (#85,
+	// design/memory.md → exclusions). DEFAULT 0 makes every pre-stamp row
+	// ineligible: their append-time flag is unreconstructable, and enabling
+	// memory must not silently backfill historical messages. New rows are
+	// always stamped explicitly by append(); forkToApp copies source stamps.
+	if (!eventCols.has("memory_eligible")) {
+		db.run("ALTER TABLE events ADD COLUMN memory_eligible INTEGER NOT NULL DEFAULT 0");
+		const stamped = db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM events").get()?.n;
+		log.info("event memory eligibility stamped — prior rows historical", {
+			events: stamped ?? 0,
+		});
 	}
 	// Chat search (DESIGN.md): a contentless FTS5 index over user and
 	// assistant event text, kept by triggers. Contentless, not
@@ -697,16 +728,30 @@ export function openStore(dbPath: string): ConversationStore {
 	const memoryContexts = new MemoryContexts(db);
 	// Compaction pointers — append-only audit; the newest row per
 	// conversation is the active boundary (DESIGN.md, Compaction).
+	// summary_eligible carries the folded span's memory eligibility: a
+	// summary is distilled text, so it may feed memory-bound builders only
+	// when every event it replaced was eligible. DEFAULT 0 fails legacy
+	// rows closed the same way the event stamp does.
 	db.run(`
 		CREATE TABLE IF NOT EXISTS compactions (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			conversation_id TEXT NOT NULL REFERENCES conversations(id),
 			boundary_seq INTEGER NOT NULL,
 			summary TEXT NOT NULL,
+			summary_eligible INTEGER NOT NULL DEFAULT 0,
 			tokens_before INTEGER NOT NULL,
 			model TEXT NOT NULL,
 			created_at TEXT NOT NULL
 		)`);
+	const compactCols = new Set(
+		db
+			.query<{ name: string }, []>("PRAGMA table_info(compactions)")
+			.all()
+			.map((c) => c.name),
+	);
+	if (!compactCols.has("summary_eligible")) {
+		db.run("ALTER TABLE compactions ADD COLUMN summary_eligible INTEGER NOT NULL DEFAULT 0");
+	}
 	// Frozen system prompts (DESIGN.md → Cache stability): the bytes a
 	// conversation started with, served verbatim every turn — file edits
 	// load at conversation boundaries (roll, compaction), never
@@ -802,16 +847,17 @@ export function openStore(dbPath: string): ConversationStore {
 		{
 			boundary_seq: number;
 			summary: string;
+			summary_eligible: number;
 			tokens_before: number;
 			model: string;
 			created_at: string;
 		},
 		[string]
 	>(
-		"SELECT boundary_seq, summary, tokens_before, model, created_at FROM compactions WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
+		"SELECT boundary_seq, summary, summary_eligible, tokens_before, model, created_at FROM compactions WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
 	);
 	const qInsertCompaction = db.query(
-		"INSERT INTO compactions (conversation_id, boundary_seq, summary, tokens_before, model, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+		"INSERT INTO compactions (conversation_id, boundary_seq, summary, summary_eligible, tokens_before, model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 	);
 	const qGet = db.query<Row, [string]>("SELECT * FROM conversations WHERE id = ?");
 	const qInsertConv = db.query(
@@ -842,17 +888,37 @@ export function openStore(dbPath: string): ConversationStore {
 	const qNextSeq = db.query<{ n: number | null }, [string]>(
 		"SELECT MAX(seq) AS n FROM events WHERE conversation_id = ?",
 	);
+	// Memory-bound filter inputs (#85): the eligible seqs, and the folded
+	// span's ineligible count a new compaction pointer must consult.
+	const qEligibleSeqs = db.query<{ seq: number }, [string]>(
+		"SELECT seq FROM events WHERE conversation_id = ? AND memory_eligible = 1",
+	);
+	const qIneligibleFolded = db.query<{ n: number }, [string, number]>(
+		`SELECT COUNT(*) AS n FROM events
+		WHERE conversation_id = ?1
+		  AND memory_eligible = 0
+		  AND ((anchor_seq IS NOT NULL AND anchor_seq <= ?2)
+		    OR (anchor_seq IS NULL AND seq <= ?2))`,
+	);
 	const qInsertEvent = db.query(
-		"INSERT INTO events (conversation_id, seq, role, data, anchor_seq, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+		"INSERT INTO events (conversation_id, seq, role, data, anchor_seq, created_at, memory_eligible) VALUES (?, ?, ?, ?, ?, ?, ?)",
 	);
 	// forkToApp's copy sources — events verbatim (created_at included,
-	// unlike the history view), and memory_contexts with only the
-	// conversation_id swapped.
+	// unlike the history view, and the eligibility stamp with it: a copied
+	// exchange's admission-time eligibility is part of the exchange), and
+	// memory_contexts with only the conversation_id swapped.
 	const qAllEvents = db.query<
-		{ seq: number; role: string; data: string; anchor_seq: number | null; created_at: string },
+		{
+			seq: number;
+			role: string;
+			data: string;
+			anchor_seq: number | null;
+			created_at: string;
+			memory_eligible: number;
+		},
 		[string]
 	>(
-		"SELECT seq, role, data, anchor_seq, created_at FROM events WHERE conversation_id = ? ORDER BY seq",
+		"SELECT seq, role, data, anchor_seq, created_at, memory_eligible FROM events WHERE conversation_id = ? ORDER BY seq",
 	);
 	const qContextsFor = db.query<
 		{ anchor_seq: number; content: string; source_ids: string; created_at: string },
@@ -1004,6 +1070,7 @@ export function openStore(dbPath: string): ConversationStore {
 				? {
 						boundarySeq: row.boundary_seq,
 						summary: row.summary,
+						summaryEligible: row.summary_eligible !== 0,
 						tokensBefore: row.tokens_before,
 						model: row.model,
 						createdAt: row.created_at,
@@ -1012,10 +1079,18 @@ export function openStore(dbPath: string): ConversationStore {
 		},
 
 		setCompaction(id, compaction) {
+			// The summary is derived text: it may feed memory-bound builders
+			// only when every event the pointer folds (causal position ≤
+			// boundary — the same key modelEntries cuts on) was eligible. A
+			// prior summary's span sits below the new boundary too, so one
+			// count covers inherited ineligibility across repeated
+			// compactions (#85).
+			const foldedIneligible = qIneligibleFolded.get(id, compaction.boundarySeq)?.n ?? 0;
 			qInsertCompaction.run(
 				id,
 				compaction.boundarySeq,
 				compaction.summary,
+				foldedIneligible === 0 ? 1 : 0,
 				compaction.tokensBefore,
 				compaction.model,
 				compaction.createdAt,
@@ -1134,16 +1209,27 @@ export function openStore(dbPath: string): ConversationStore {
 				// The FTS triggers fire on these inserts — correct: the app
 				// pool's search should see the copied exchange.
 				for (const e of qAllEvents.all(fromId)) {
-					qInsertEvent.run(id, e.seq, e.role, e.data, e.anchor_seq, e.created_at);
+					qInsertEvent.run(
+						id,
+						e.seq,
+						e.role,
+						e.data,
+						e.anchor_seq,
+						e.created_at,
+						e.memory_eligible,
+					);
 				}
 				// Compaction rows are append-only audit — only the latest
-				// pointer steers the model view, so only it copies.
+				// pointer steers the model view, so only it copies. The
+				// summary's eligibility copies with it: the fork's memory-bound
+				// view must match the source's.
 				const compaction = qCompaction.get(fromId);
 				if (compaction !== null) {
 					qInsertCompaction.run(
 						id,
 						compaction.boundary_seq,
 						compaction.summary,
+						compaction.summary_eligible,
 						compaction.tokens_before,
 						compaction.model,
 						compaction.created_at,
@@ -1208,6 +1294,13 @@ export function openStore(dbPath: string): ConversationStore {
 			db.transaction(() => {
 				const start = qNextSeq.get(id)?.n ?? 0;
 				const now = new Date().toISOString();
+				// Eligibility is stamped at admission, from the live exclusion
+				// flag — the one moment the answer is knowable (#85). Everything
+				// later (including a /memory on) reads this stamp, never the
+				// flag: history is not rewritten and exclusion is not retroactive.
+				const conv = qGet.get(id);
+				if (!conv) throw new Error(`conversation ${id} not found`);
+				const eligible = conv.memory_excluded === 0 ? 1 : 0;
 				for (const [i, m] of messages.entries()) {
 					qInsertEvent.run(
 						id,
@@ -1216,6 +1309,7 @@ export function openStore(dbPath: string): ConversationStore {
 						JSON.stringify({ v: 1, message: m }),
 						opts?.anchorSeq ?? null,
 						now,
+						eligible,
 					);
 				}
 				if (opts?.memory) {
@@ -1242,6 +1336,15 @@ export function openStore(dbPath: string): ConversationStore {
 
 		lastUserSeq(id) {
 			return qLastUserSeq.get(id)?.seq ?? null;
+		},
+
+		memoryEligibility(id) {
+			return {
+				eligibleSeqs: new Set(qEligibleSeqs.all(id).map((r) => r.seq)),
+				// No compaction = no summary in any view; false keeps the
+				// default fail-closed anyway.
+				summaryEligible: this.getCompaction(id)?.summaryEligible ?? false,
+			};
 		},
 
 		searchHistory(query, limit, channelPrefix) {

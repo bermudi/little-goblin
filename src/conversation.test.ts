@@ -369,6 +369,85 @@ describe("compaction pointers", () => {
 // view — events verbatim, only the latest compaction pointer, memory
 // contexts — into a fresh app conversation; the source never changes
 // and the memory queue never re-enqueues what was already retained.
+describe("memory eligibility", () => {
+	test("eligibility is stamped at append time and survives re-enabling", () => {
+		const path = tmpdb();
+		const store = openStore(path);
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("while included")]); // seq 1
+		store.setMeta(c.id, { memoryExcluded: true });
+		store.append(c.id, [msg("while excluded")]); // seq 2
+		store.setMeta(c.id, { memoryExcluded: false });
+		store.append(c.id, [msg("after re-enabling")]); // seq 3
+		let elig = store.memoryEligibility(c.id);
+		expect([...elig.eligibleSeqs].sort()).toEqual([1, 3]);
+		store.close();
+		// The stamp is durable, not derived from any live flag.
+		const reopened = openStore(path);
+		elig = reopened.memoryEligibility(c.id);
+		expect([...elig.eligibleSeqs].sort()).toEqual([1, 3]);
+		reopened.close();
+	});
+
+	test("a summary is eligible only when its folded span is", () => {
+		const store = openStore(tmpdb());
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("one")]); // seq 1
+		store.setCompaction(c.id, {
+			boundarySeq: 1,
+			summary: "all-eligible fold",
+			tokensBefore: 10,
+			model: "m",
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+		expect(store.getCompaction(c.id)?.summaryEligible).toBe(true);
+		// An excluded-era event above the boundary does not poison the
+		// summary — the summary never distilled it.
+		store.setMeta(c.id, { memoryExcluded: true });
+		store.append(c.id, [msg("excluded tail")]); // seq 2
+		store.setMeta(c.id, { memoryExcluded: false });
+		store.setCompaction(c.id, {
+			boundarySeq: 1,
+			summary: "still all-eligible fold",
+			tokensBefore: 10,
+			model: "m",
+			createdAt: "2026-01-02T00:00:00Z",
+		});
+		expect(store.getCompaction(c.id)?.summaryEligible).toBe(true);
+		// Folding the excluded event — by causal position, the same key
+		// modelEntries cuts on — makes the derived text ineligible.
+		store.setCompaction(c.id, {
+			boundarySeq: 2,
+			summary: "folded the excluded era",
+			tokensBefore: 10,
+			model: "m",
+			createdAt: "2026-01-03T00:00:00Z",
+		});
+		expect(store.getCompaction(c.id)?.summaryEligible).toBe(false);
+		store.close();
+	});
+
+	test("forkToApp copies eligibility stamps verbatim", () => {
+		const store = openStore(tmpdb());
+		const src = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(src.id, [msg("included")]); // seq 1
+		store.setMeta(src.id, { memoryExcluded: true });
+		store.append(src.id, [msg("excluded")]); // seq 2
+		store.setCompaction(src.id, {
+			boundarySeq: 1,
+			summary: "eligible fold",
+			tokensBefore: 10,
+			model: "m",
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+		const app = store.forkToApp(src.id, "spin-el", "/w", "the work");
+		const forked = store.memoryEligibility(app.id);
+		expect([...forked.eligibleSeqs].sort()).toEqual([1]);
+		expect(forked.summaryEligible).toBe(true);
+		store.close();
+	});
+});
+
 describe("forkToApp (Spin-off)", () => {
 	const asst = (text: string): UIMessage => ({
 		id: `a-${text}`,

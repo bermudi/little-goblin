@@ -115,6 +115,10 @@ const memConfig: MemoryConfig = {
 
 interface Harness {
 	recallCount(): number;
+	// The recall query text of every /memories/recall request — the
+	// exclusion boundary's regression assertions read exactly what left
+	// the process (#85).
+	recallQueries(): string[];
 	retains: unknown[];
 	conversation: string;
 	runtime: Runtime;
@@ -124,7 +128,7 @@ interface Harness {
 }
 
 function harness(opts: { recallStatus?: number; factText?: string } = {}): Harness {
-	const recalls: { path: string }[] = [];
+	const recalls: string[] = [];
 	const retains: unknown[] = [];
 	const server = Bun.serve({
 		hostname: "127.0.0.1",
@@ -132,7 +136,8 @@ function harness(opts: { recallStatus?: number; factText?: string } = {}): Harne
 		fetch: async (request) => {
 			const url = new URL(request.url);
 			if (request.method === "POST" && url.pathname.endsWith("/memories/recall")) {
-				recalls.push({ path: url.pathname });
+				const body = (await request.json()) as { query?: unknown };
+				recalls.push(typeof body.query === "string" ? body.query : "");
 				if ((opts.recallStatus ?? 200) !== 200) {
 					return new Response("down", { status: opts.recallStatus ?? 503 });
 				}
@@ -190,6 +195,7 @@ function harness(opts: { recallStatus?: number; factText?: string } = {}): Harne
 	});
 	return {
 		recallCount: () => recalls.length,
+		recallQueries: () => recalls,
 		retains,
 		conversation: conv.id,
 		runtime,
@@ -251,6 +257,41 @@ describe("memory turn integration", () => {
 		expect(await sink.done).toEqual({ kind: "completed" });
 		expect(h.store.memoryContexts.load(h.conversation)).toEqual([]);
 		expect(h.recallCount()).toBe(0);
+		h.store.close();
+	});
+
+	test("re-enabling memory never ships excluded-era messages (#85)", async () => {
+		const h = harness({ factText: "an unrelated stored fact" });
+		// The excluded era: a completed exchange carrying a private
+		// canary. No memory requests may occur.
+		h.store.applySettings(h.conversation, { memoryExcluded: true });
+		const excluded = new RecordingSink();
+		h.runtime.submit(
+			h.store.get(h.conversation)!,
+			userMessage([{ type: "text", text: "secret canary ALPHA" }]),
+			excluded,
+		);
+		expect(await excluded.done).toEqual({ kind: "completed" });
+		expect(h.recallCount()).toBe(0);
+		// Re-enable and run an unrelated fresh turn.
+		h.store.applySettings(h.conversation, { memoryExcluded: false });
+		const fresh = new RecordingSink();
+		h.runtime.submit(
+			h.store.get(h.conversation)!,
+			userMessage([{ type: "text", text: "hello again" }]),
+			fresh,
+		);
+		expect(await fresh.done).toEqual({ kind: "completed" });
+		// Eligibility is stamped at append time — the excluded era is
+		// historical for memory even after re-enabling, so neither the
+		// recall query nor the new retention document may carry it.
+		expect(h.recallCount()).toBe(1);
+		expect(h.recallQueries().join("\n")).not.toContain("secret canary ALPHA");
+		const item = h.store.memoryQueue.next(h.client.target, Date.now());
+		expect(item).not.toBeNull();
+		expect(item?.document.content).not.toContain("secret canary ALPHA");
+		// The fresh turn itself is eligible and does ship.
+		expect(item?.document.content).toContain("hello again");
 		h.store.close();
 	});
 

@@ -308,6 +308,27 @@ instructions. Topic exclusion governs both sending that topic's content
 and whether shared memories may be recalled there. Enabling memory does
 not silently backfill excluded or historical messages.
 
+**Exclusion is per-event and stamped at append time (amendment 2026-10-08,
+issue #85).** The live topic flag is a hard gate while set; eligibility for
+the future is decided once, at the moment an event is admitted — every
+event row carries whether its conversation was excluded then. Memory-bound
+builders (the recall query, the retention document's burst and prior
+context, its source ids) read that stamp through a separate projection of
+history, never the live flag, so lifting the gate cannot retroactively ship
+what was written under it. Ordinary history, the model view, and chat
+search are untouched: exclusion governs what leaves for the memory
+service, not what the conversation itself holds. Rulings on the edges:
+steered-in messages carry their own append-time stamps (a steer submitted
+after a mid-turn `/memory off` is stamped excluded, and the epoch bump
+fences the running turn before it could retain anything); fenced and
+failed turns commit no memory regardless of stamps; a compaction summary
+is derived text and inherits its folded span's eligibility — eligible only
+when every event below the boundary (causal position, the same key the
+model view cuts on) was eligible, a property recomputed per pointer so
+repeated compactions stay consistent; spin-off forks copy stamps verbatim.
+Events that predate the stamp are historical by the main rule: they are
+ineligible, and new eligibility accrues only from new exchanges.
+
 New dated corrections can be retained while preserving historical facts;
 verify that recall distinguishes past from current state. Explicit
 forgetting must first resolve and show the affected sources, then require

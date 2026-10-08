@@ -2,7 +2,8 @@
 // invalid expression never becomes a row), a program always has a
 // trigger, next_run is always the next future occurrence, due() is the
 // boot-catch-up query, rows survive a reopen, and the legacy `jobs`
-// table copies across exactly once — and is never touched.
+// table purges at open — surviving rows copy in, the table drops,
+// re-opens are no-ops.
 
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
@@ -405,7 +406,7 @@ function createLegacyJobs(path: string, rows: number): void {
 }
 
 describe("mail revision upgrade", () => {
-	test("adds a default revision to existing rows without re-copying deleted jobs", () => {
+	test("adds a default revision to existing rows; surviving jobs rows copy in defensively", () => {
 		const path = tmpdb();
 		createLegacyJobs(path, 1);
 		const db = new Database(path);
@@ -421,7 +422,9 @@ describe("mail revision upgrade", () => {
 		db.close();
 
 		const a = openPrograms(path);
-		expect(a.list().map((p) => p.id)).toEqual([2]); // no legacy resurrection
+		// The purge copies rows still sitting in jobs — even beside an
+		// existing programs table — then drops the table.
+		expect(a.list().map((p) => p.id)).toEqual([1, 2]);
 		const initial = a.get(2)!;
 		expect(initial.mailRevision).toBe(0);
 		expect(initial.mailHistoryId).toBe("100");
@@ -433,13 +436,13 @@ describe("mail revision upgrade", () => {
 		a.close();
 		const reopened = openPrograms(path);
 		expect(reopened.get(2)).toMatchObject({ mailRevision: 1, mailHistoryId: null });
-		expect(reopened.list()).toHaveLength(1);
+		expect(reopened.list()).toHaveLength(2);
 		reopened.close();
 	});
 });
 
-describe("legacy jobs copy", () => {
-	test("failed copy rolls back table creation so the next boot can retry", () => {
+describe("legacy jobs purge", () => {
+	test("failed copy rolls back the purge so the next boot can retry", () => {
 		const path = tmpdb();
 		createLegacyJobs(path, 2);
 		const fixture = new Database(path);
@@ -447,7 +450,7 @@ describe("legacy jobs copy", () => {
 		fixture.close();
 
 		// The copy statement fails after CREATE TABLE. Neither the table
-		// nor a partial migration may survive the failed open.
+		// nor a partial purge may survive the failed open.
 		expect(() => openPrograms(path)).toThrow("no such column: prompt");
 		const db = new Database(path);
 		expect(
@@ -465,7 +468,7 @@ describe("legacy jobs copy", () => {
 		retried.close();
 	});
 
-	test("jobs rows copy into programs once, keeping ids; jobs is untouched", () => {
+	test("jobs rows copy in keeping ids, then the table drops; re-opens are no-ops", () => {
 		const path = tmpdb();
 		createLegacyJobs(path, 2);
 
@@ -487,9 +490,14 @@ describe("legacy jobs copy", () => {
 		expect(list[1]).toMatchObject({ id: 2, enabled: true });
 		a.close();
 
-		// The copy ran at table creation — reopening never re-copies, so
-		// deletes don't resurrect legacy rows — even deleting them all:
-		// the gate is "programs table is new", not "programs is empty".
+		// `jobs` is gone — nothing left to copy or resurrect from.
+		const db = new Database(path);
+		expect(
+			db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'").get(),
+		).toBeNull();
+		db.close();
+
+		// Deletes survive re-opens: the table is gone, the copy can't re-run.
 		const b = openPrograms(path);
 		expect(b.remove(2)).toBe(true);
 		expect(b.remove(1)).toBe(true);
@@ -497,24 +505,46 @@ describe("legacy jobs copy", () => {
 		const c = openPrograms(path);
 		expect(c.list()).toEqual([]);
 		c.close();
-
-		// `jobs` itself is never modified or dropped.
-		const db = new Database(path);
-		const jobs = db.query("SELECT * FROM jobs ORDER BY id").all() as {
-			id: number;
-			prompt: string;
-		}[];
-		expect(jobs).toHaveLength(2);
-		expect(jobs[0]!.prompt).toBe("prompt 1");
-		db.close();
 	});
 
-	test("an empty legacy table copies nothing and stays quiet", () => {
+	test("a jobs row whose id already sits in programs is ignored, not duplicated", () => {
+		const path = tmpdb();
+		createLegacyJobs(path, 1);
+		const db = new Database(path);
+		db.exec(`CREATE TABLE programs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, charter TEXT NOT NULL,
+			cron TEXT, hook_hash TEXT, mail_filter TEXT, mail_history_id TEXT,
+			chat_id INTEGER NOT NULL, thread_id INTEGER, enabled INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL, last_run TEXT, next_run TEXT
+		)`);
+		db.query(`INSERT INTO programs (id, name, charter, cron, chat_id, enabled, created_at)
+			VALUES (1, 'kept', 'current charter', '0 9 * * *', -100, 1, '2026-09-25')`).run();
+		db.close();
+
+		const s = openPrograms(path);
+		// The programs row is the truth; the stale jobs row must not
+		// clobber it — and must not fail the open either.
+		expect(s.list()).toHaveLength(1);
+		expect(s.get(1)).toMatchObject({ name: "kept", charter: "current charter" });
+		s.close();
+		const check = new Database(path);
+		expect(
+			check.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'").get(),
+		).toBeNull();
+		check.close();
+	});
+
+	test("an empty legacy table drops with nothing copied", () => {
 		const path = tmpdb();
 		createLegacyJobs(path, 0);
 		const s = openPrograms(path);
 		expect(s.list()).toEqual([]);
 		s.close();
+		const db = new Database(path);
+		expect(
+			db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'").get(),
+		).toBeNull();
+		db.close();
 	});
 
 	test("no legacy table is the common path — plain open", () => {

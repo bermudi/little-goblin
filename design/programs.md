@@ -28,9 +28,11 @@ program's state, never a workspace file.** Rulings:
   pinned Telegram address, enabled, last_run, next_run (null without
   a cron). A program needs at least one trigger. Creating one changes
   nothing in the workspace and nothing in any prompt — cache stable
-  by construction. On first open, rows from the legacy `jobs` table
-  (if any) copy in once — prompt becomes charter — and the old table
-  is left untouched; no general migration framework.
+  by construction. The legacy `jobs` table is purged at open (W2.2):
+  rows still in it copy in once — prompt becomes charter, an id already
+  in `programs` means it was copied before and is ignored — then the
+  table drops, all in one transaction; a re-run is a no-op. No general
+  migration framework.
 - **Firing is one path for every trigger.** Cron tick, webhook hit,
   or anything later: `runtime.submit` of a user message
   `[program: <name> · trigger: <schedule|webhook|mail>]` + the charter

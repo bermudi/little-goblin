@@ -9,8 +9,9 @@
 // never becomes a row — and a program always has at least one
 // trigger.
 //
-// Legacy: on open, rows in the superseded `jobs` table copy in once
-// (prompt → charter); `jobs` itself is never modified or dropped.
+// Legacy purge (W2.2): on open, any rows still in the superseded
+// `jobs` table copy in (prompt → charter) and the table drops — one
+// transaction, a re-run a no-op.
 
 import { Database } from "bun:sqlite";
 import { CronExpressionParser } from "cron-parser";
@@ -180,14 +181,13 @@ function rowToProgram(row: unknown): Program {
 export function openPrograms(dbPath: string): ProgramsStore {
 	const db = new Database(dbPath);
 	db.exec("PRAGMA journal_mode = WAL");
-	// Check, create, and copy in one transaction: a failed copy (or a
-	// crash) must not leave an empty programs table that prevents retry.
-	// An existing table, even if empty, never re-copies deleted jobs.
-	const copied = db.transaction((): number => {
-		const isNewTable =
-			db
-				.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'programs'")
-				.get() === null;
+	// Check, create, and purge in one transaction: a failed copy (or a
+	// crash) must not leave a half-purged database that prevents retry.
+	// The purge: rows still in `jobs` copy in defensively (expected zero
+	// — the jobs→programs cutover copied them long ago), then the table
+	// drops. With `jobs` gone the whole block is a no-op, so re-runs are
+	// safe. Returns null when there was nothing to purge.
+	const purged = db.transaction((): number | null => {
 		db.exec(`CREATE TABLE IF NOT EXISTS programs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
@@ -204,9 +204,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			last_run TEXT,
 			next_run TEXT
 		)`);
-		const count = isNewTable ? copyLegacyJobs(db) : 0;
 		// Existing DBs predate the mail trigger/revision — additive only.
-		// Keep the legacy copy gated on table creation, never row count.
 		const progCols = new Set(
 			db
 				.query<{ name: string }, []>("PRAGMA table_info(programs)")
@@ -219,10 +217,16 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		if (!progCols.has("mail_revision")) {
 			db.exec("ALTER TABLE programs ADD COLUMN mail_revision INTEGER NOT NULL DEFAULT 0");
 		}
-		return count;
+		const jobsTable = db
+			.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'")
+			.get();
+		if (jobsTable === null) return null;
+		const copied = copyLegacyJobs(db);
+		db.exec("DROP TABLE jobs");
+		return copied;
 	})();
-	if (copied > 0) {
-		log.info("legacy jobs copied into programs", { count: copied });
+	if (purged !== null) {
+		log.info("legacy jobs table purged", { copied: purged });
 	}
 
 	const qGet = db.query("SELECT * FROM programs WHERE id = ?");
@@ -416,12 +420,13 @@ export function openPrograms(dbPath: string): ProgramsStore {
 	};
 }
 
-// One-shot upgrade path: the `jobs` table predates programs (DESIGN.md).
-// Called inside the table-creation transaction only when `programs` is
-// new. Copies same ids (prompt → charter) and leaves `jobs` untouched.
-// A cron that no longer parses is skipped loudly rather than copied
-// verbatim: a bad schedule on the row would refire (and re-fail) every
-// tick once markRan advances past it (audit #21's reachable half).
+// The purge's copy half, called only when the `jobs` table exists.
+// Copies same ids (prompt → charter); INSERT OR IGNORE keeps it
+// defensive — an id already in programs was copied in an earlier era,
+// and the programs row is the truth. A cron that no longer parses is
+// skipped loudly rather than copied verbatim: a bad schedule on the
+// row would refire (and re-fail) every tick once markRan advances past
+// it (audit #21's reachable half).
 function copyLegacyJobs(db: Database): number {
 	const jobsTable = db
 		.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'")
@@ -458,8 +463,8 @@ function copyLegacyJobs(db: Database): number {
 			});
 			continue;
 		}
-		db.run(
-			`INSERT INTO programs
+		copied += db.run(
+			`INSERT OR IGNORE INTO programs
 			(id, name, charter, cron, hook_hash, chat_id, thread_id, enabled, created_at, last_run, next_run)
 			VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
 			[
@@ -474,8 +479,7 @@ function copyLegacyJobs(db: Database): number {
 				r.last_run,
 				r.next_run,
 			],
-		);
-		copied++;
+		).changes;
 	}
 	return copied;
 }

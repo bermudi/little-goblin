@@ -37,6 +37,31 @@ describe("mail tool", () => {
 		expect(mailInputSchema.safeParse({ action: "read", id: "m1" }).success).toBe(false);
 	});
 
+	// Header injection is closed at the schema, not by encodeSubject's
+	// accident (CR/LF happens to force the encoded-word branch) — the
+	// raw text must never reach the approval draft or the wire (#103).
+	test("a subject containing CR/LF fails validation at the boundary", () => {
+		for (const subject of ["hi\r\nBcc: x@evil.com", "hi\rBcc: x@evil.com", "hi\nBcc: x@evil.com"]) {
+			expect(
+				mailInputSchema.safeParse({ action: "send", to: ["a@x.com"], body: "hello", subject })
+					.success,
+			).toBe(false);
+		}
+		// The remaining legal inputs still pass: plain and non-ASCII text.
+		expect(
+			mailInputSchema.safeParse({ action: "send", to: ["a@x.com"], body: "hello", subject: "hi" })
+				.success,
+		).toBe(true);
+		expect(
+			mailInputSchema.safeParse({
+				action: "send",
+				to: ["a@x.com"],
+				body: "hello",
+				subject: "Hellóz ☕",
+			}).success,
+		).toBe(true);
+	});
+
 	test("the description routes reads to the goblin-mail wrapper", () => {
 		const t = toolFor();
 		const desc = (t as unknown as { description: string }).description;

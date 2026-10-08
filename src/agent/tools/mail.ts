@@ -17,6 +17,16 @@ import { z } from "zod";
 
 const addressSchema = z.email().max(320);
 
+// CR/LF in a subject is header injection waiting for a refactor — it is
+// closed here, at the boundary, not by encodeSubject's accident (CR/LF
+// happens to force the RFC 2047 branch, so the raw text never reached
+// the wire — but it did reach the Telegram approval draft, and an
+// "only encode non-ASCII" refactor would open the real hole).
+const subjectSchema = z
+	.string()
+	.max(500)
+	.refine((s) => !/[\r\n]/.test(s), { message: "subject must not contain line breaks" });
+
 /** What a send asks the gate for — the draft content. The address is
  *  pre-bound per conversation at the composition root. */
 export interface MailDraftInput {
@@ -42,7 +52,7 @@ const sendSchema = z.object({
 	action: z.literal("send"),
 	to: z.array(addressSchema).min(1).max(10),
 	cc: z.array(addressSchema).max(10).optional(),
-	subject: z.string().max(500).optional(),
+	subject: subjectSchema.optional(),
 	body: z.string().min(1).max(200_000),
 	replyToId: z.string().min(1).max(256).optional(),
 });

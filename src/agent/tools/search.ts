@@ -368,11 +368,10 @@ export async function runSearchChain(
 			const raw = (err as Error).message;
 			const error = raw.startsWith(`${entry.kind}:`) ? raw : `${entry.kind}: ${raw}`;
 			failures.push({ provider: entry.kind, error });
-			log.warn("web search failed", {
+			log.warn("web search failed", err, {
 				provider: entry.kind,
 				query: opts.query,
 				count: opts.count,
-				error,
 				ms: Date.now() - started,
 			});
 		}

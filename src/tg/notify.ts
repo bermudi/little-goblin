@@ -45,10 +45,9 @@ export async function sendRollMarker(
 			});
 			return;
 		}
-		log.warn("dm roll marker send failed", {
+		log.warn("dm roll marker send failed", err, {
 			chat: chatId,
 			conversation: toConversation,
-			error: String(err),
 		});
 	}
 }

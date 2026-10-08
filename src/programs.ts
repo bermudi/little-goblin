@@ -451,11 +451,10 @@ function copyLegacyJobs(db: Database): number {
 		try {
 			if (r.cron !== null) nextFire(r.cron, new Date(r.last_run ?? r.created_at));
 		} catch (err) {
-			log.warn("legacy job skipped — unparsable cron", {
+			log.warn("legacy job skipped — unparsable cron", err, {
 				job: r.id,
 				name: r.name,
 				cron: r.cron,
-				error: err instanceof Error ? err.message : String(err),
 			});
 			continue;
 		}

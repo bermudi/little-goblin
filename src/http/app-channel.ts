@@ -266,9 +266,8 @@ function appSseWriter(
 			// a whole turn's reply unnoticed (2026-10-07).
 			closed = true;
 			stopBeat();
-			log.warn("app stream wire died mid-turn — writes dropped, turn continues", {
+			log.warn("app stream wire died mid-turn — writes dropped, turn continues", err, {
 				conversation: convId,
-				err: String(err),
 			});
 		}
 	};
@@ -841,10 +840,9 @@ export async function handleAppApi(
 						});
 					}
 				} catch (err) {
-					log.warn("app speech transcription failed — attachment kept", {
+					log.warn("app speech transcription failed — attachment kept", err, {
 						conversation: convId,
 						filename: ref.data.filename,
-						error: String(err),
 					});
 				}
 			}
@@ -872,9 +870,8 @@ export async function handleAppApi(
 						}
 					})
 					.catch((err: unknown) => {
-						log.warn("app conversation titling failed", {
+						log.warn("app conversation titling failed", err, {
 							conversation: convId,
-							error: String(err),
 						});
 					});
 			}

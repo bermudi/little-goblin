@@ -74,7 +74,7 @@ export function sendFileTool(cwd: string, deliver: (file: OutgoingFile) => Promi
 			try {
 				await deliver(file);
 			} catch (err) {
-				log.warn("send_file delivery failed", { error: String(err) });
+				log.warn("send_file delivery failed", err);
 				return { error: `send failed: ${String(err)}` };
 			}
 			return { sent: file.filename, bytes: st.size };

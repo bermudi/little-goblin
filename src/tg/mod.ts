@@ -409,7 +409,7 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 					target == null || target.threadId === null ? {} : { message_thread_id: target.threadId },
 				)
 				.catch((e: unknown) => {
-					log.warn("command failure reply failed", { error: String(e) });
+					log.warn("command failure reply failed", e);
 				});
 			return;
 		}
@@ -521,10 +521,9 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 					} catch (err) {
 						// Transcription is enrichment, not intake — a whisper
 						// outage leaves the attachment path-referenced, not eaten.
-						log.warn("transcription failed — attachment kept", {
+						log.warn("transcription failed — attachment kept", err, {
 							conversation: convId,
 							file: media.fileName,
-							error: String(err),
 						});
 					}
 				}
@@ -821,10 +820,9 @@ function dropAppBatch(env: FlushEnv, convId: string, items: BufferedItem[]): voi
 				});
 				return;
 			}
-			log.warn("ping reply drop ack failed", {
+			log.warn("ping reply drop ack failed", err, {
 				chat,
 				conversation: convId,
-				error: String(err),
 			});
 		});
 	}
@@ -870,10 +868,9 @@ function admitAppBatch(
 				});
 				return;
 			}
-			log.warn("ping reply ack failed", {
+			log.warn("ping reply ack failed", err, {
 				chat,
 				conversation: conv.id,
-				error: String(err),
 			});
 		});
 	}
@@ -1073,9 +1070,7 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 			} catch (err) {
 				// Keep draining media; the failed batch remains in memory
 				// and gets another attempt after those chains settle.
-				log.warn("intake first drain failed — retrying after media chains", {
-					error: String(err),
-				});
+				log.warn("intake first drain failed — retrying after media chains", err);
 			}
 			await Promise.allSettled([...intake.values()]);
 			await buffer.drain();
@@ -1092,21 +1087,17 @@ export function applyMenuButton(api: Api, publicUrl: string | undefined): void {
 		: { type: "default" };
 	api
 		.setChatMenuButton({ menu_button })
-		.catch((err: unknown) => log.warn("menu button failed", { error: String(err) }));
+		.catch((err: unknown) => log.warn("menu button failed", err));
 }
 
 // setMyCommands persists server-side on the bot token — v1's command
 // list will sit there forever unless we overwrite it. Cosmetic, so a
 // failure is a warn, not a boot error.
 export function applyCommands(api: Api): void {
-	api
-		.setMyCommands([...COMMANDS])
-		.catch((err: unknown) => log.warn("setMyCommands failed", { error: String(err) }));
+	api.setMyCommands([...COMMANDS]).catch((err: unknown) => log.warn("setMyCommands failed", err));
 	api
 		.setMyCommands([...DM_COMMANDS], { scope: { type: "all_private_chats" } })
-		.catch((err: unknown) =>
-			log.warn("setMyCommands private scope failed", { error: String(err) }),
-		);
+		.catch((err: unknown) => log.warn("setMyCommands private scope failed", err));
 }
 
 export async function startBot(deps: BotDeps): Promise<RunningBot> {

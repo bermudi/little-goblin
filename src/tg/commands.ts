@@ -77,7 +77,7 @@ function clockHM(iso: string): string {
 
 function reply(deps: CommandDeps, conv: Conversation, text: string): void {
 	deps.api.sendMessage(conv.chatId, text, target(conv)).catch((err: unknown) => {
-		log.warn("command reply failed", { error: String(err) });
+		log.warn("command reply failed", err);
 	});
 }
 

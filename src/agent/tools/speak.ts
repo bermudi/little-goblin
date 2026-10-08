@@ -61,7 +61,7 @@ export function speakTool(
 				for (const audio of chunks) await deliver(audio);
 				return { sent: chunks.length };
 			} catch (err) {
-				log.warn("speak synthesis failed", { error: String(err) });
+				log.warn("speak synthesis failed", err);
 				return { error: `speech synthesis failed: ${String(err)}` };
 			} finally {
 				stopRecording?.();

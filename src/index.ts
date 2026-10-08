@@ -978,7 +978,7 @@ async function shutdown(signal: string): Promise<void> {
 	// bot.stop confirms the polling offset so handled updates don't
 	// redeliver on the next boot.
 	const stopping = tg.bot.stop().catch((err: unknown) => {
-		log.warn("bot stop failed", { error: String(err) });
+		log.warn("bot stop failed", err);
 	});
 	// Close the runtime first — intake that lands during the drain still
 	// reaches history but never starts a turn. Fencing each lane makes
@@ -998,7 +998,7 @@ async function shutdown(signal: string): Promise<void> {
 	} else {
 		for (const r of await settled) {
 			if (r.status === "rejected") {
-				log.warn("shutdown step failed", { error: String(r.reason) });
+				log.warn("shutdown step failed", r.reason);
 			}
 		}
 	}

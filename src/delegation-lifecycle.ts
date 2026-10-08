@@ -366,9 +366,8 @@ async function closeWorkspaceQuietly(
 	try {
 		await herdrFor(deps, target).closeWorkspace(workspaceId);
 	} catch (err) {
-		log.warn("delegation workspace close failed", {
+		log.warn("delegation workspace close failed", err, {
 			delegation: id,
-			error: err instanceof Error ? err.message : String(err),
 		});
 	}
 }
@@ -391,9 +390,8 @@ async function readScreenTail(
 			return await herdr.readAgent(d.agentName, lines);
 		} catch (err) {
 			firstError = err;
-			log.warn("delegation agent read failed — falling back to pane", {
+			log.warn("delegation agent read failed — falling back to pane", err, {
 				delegation: d.id,
-				error: err instanceof Error ? err.message : String(err),
 			});
 		}
 	}
@@ -403,9 +401,8 @@ async function readScreenTail(
 		// Both channels failed — the first error is the one callers
 		// render, but the pane failure must still land in the log.
 		firstError ??= err;
-		log.warn("delegation pane read failed", {
+		log.warn("delegation pane read failed", err, {
 			delegation: d.id,
-			error: err instanceof Error ? err.message : String(err),
 		});
 		throw firstError instanceof Error ? firstError : new Error(String(firstError));
 	}
@@ -457,10 +454,9 @@ async function seedRemoteTrust(
 	try {
 		await herdr.paneWaitOutput(paneId, marker, 15_000);
 	} catch (err) {
-		log.warn("delegation remote trust seed unconfirmed", {
+		log.warn("delegation remote trust seed unconfirmed", err, {
 			delegation: id,
 			kind,
-			error: err instanceof Error ? err.message : String(err),
 		});
 		return;
 	}
@@ -629,9 +625,8 @@ async function launch(deps: DelegationLifecycleDeps, input: LaunchInput): Promis
 		try {
 			screen = await herdr.readPane(ws.paneId, 40);
 		} catch (err2) {
-			log.warn("delegation start-failure screen unreadable", {
+			log.warn("delegation start-failure screen unreadable", err2, {
 				delegation: d.id,
-				error: err2 instanceof Error ? err2.message : String(err2),
 			});
 		}
 		// `agent_not_ready` is the one recoverable failure: the agent
@@ -655,9 +650,8 @@ async function launch(deps: DelegationLifecycleDeps, input: LaunchInput): Promis
 				// Same rule as the launch baseline read below: a failed
 				// get must not fail the park — the watcher's next poll
 				// reconciles.
-				log.warn("delegation park baseline read failed", {
+				log.warn("delegation park baseline read failed", err2, {
 					delegation: d.id,
-					error: err2 instanceof Error ? err2.message : String(err2),
 				});
 			}
 			deps.delegations.markParked(d.id, parkedSeq);
@@ -701,9 +695,8 @@ async function launch(deps: DelegationLifecycleDeps, input: LaunchInput): Promis
 	} catch (err) {
 		// A get failure right after prompt must not fail the
 		// delegation — the watcher's next poll reconciles.
-		log.warn("delegation baseline read failed", {
+		log.warn("delegation baseline read failed", err, {
 			delegation: d.id,
-			error: String(err),
 		});
 	}
 	const applied = deps.delegations.markRunning(d.id, baseline, promptedAt);
@@ -773,10 +766,9 @@ async function send(deps: DelegationLifecycleDeps, id: number, text: string): Pr
 					unlinkSync(snapshot);
 				} catch (cleanupErr) {
 					if ((cleanupErr as NodeJS.ErrnoException).code !== "ENOENT") {
-						log.warn("delegation snapshot temp cleanup failed", {
+						log.warn("delegation snapshot temp cleanup failed", cleanupErr, {
 							delegation: d.id,
 							snapshot,
-							error: String(cleanupErr),
 						});
 					}
 				}
@@ -853,10 +845,9 @@ async function send(deps: DelegationLifecycleDeps, id: number, text: string): Pr
 					unlinkSync(restoreTemp);
 				} catch (cleanupErr) {
 					if ((cleanupErr as NodeJS.ErrnoException).code !== "ENOENT") {
-						log.warn("delegation restore temp cleanup failed", {
+						log.warn("delegation restore temp cleanup failed", cleanupErr, {
 							delegation: d.id,
 							restoreTemp,
-							error: String(cleanupErr),
 						});
 					}
 				}
@@ -869,9 +860,8 @@ async function send(deps: DelegationLifecycleDeps, id: number, text: string): Pr
 		seq = (await herdrFor(deps, d.target).get(d.agentName))?.state_change_seq ?? seq;
 	} catch (err) {
 		// baseline stays — a failed get doesn't break the send
-		log.warn("delegation post-send baseline read failed", {
+		log.warn("delegation post-send baseline read failed", err, {
 			delegation: d.id,
-			error: err instanceof Error ? err.message : String(err),
 		});
 	}
 	// Back to running with a fresh baseline: the stall/done comparisons
@@ -1188,10 +1178,9 @@ async function check(deps: DelegationLifecycleDeps, d: Delegation): Promise<void
 			try {
 				await herdrFor(deps, d.target).prompt(d.agentName, d.task + reportNote(deps, d));
 			} catch (err) {
-				log.warn("delegation pending prompt rejected", {
+				log.warn("delegation pending prompt rejected", err, {
 					delegation: d.id,
 					name: d.name,
-					error: err instanceof Error ? err.message : String(err),
 				});
 				transition(deps, d, "needs_input", info.state_change_seq);
 				return;
@@ -1200,9 +1189,8 @@ async function check(deps: DelegationLifecycleDeps, d: Delegation): Promise<void
 			try {
 				seq = (await herdrFor(deps, d.target).get(d.agentName))?.state_change_seq ?? seq;
 			} catch (err) {
-				log.warn("delegation post-prompt baseline read failed", {
+				log.warn("delegation post-prompt baseline read failed", err, {
 					delegation: d.id,
-					error: err instanceof Error ? err.message : String(err),
 				});
 			}
 			if (deps.delegations.markRunning(d.id, seq, promptedAt) === null) {

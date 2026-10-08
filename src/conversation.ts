@@ -519,19 +519,17 @@ function parseEvent(
 	try {
 		raw = JSON.parse(data);
 	} catch (err) {
-		log.warn("corrupt history row — degrading to placeholder", {
+		log.warn("corrupt history row — degrading to placeholder", err, {
 			conversation,
 			seq,
-			error: (err as Error).message,
 		});
 		return null;
 	}
 	const parsed = uiMessageSchema.safeParse(envelopeOf(raw));
 	if (!parsed.success) {
-		log.warn("corrupt history row — degrading to placeholder", {
+		log.warn("corrupt history row — degrading to placeholder", parsed.error, {
 			conversation,
 			seq,
-			error: parsed.error.message,
 		});
 		return null;
 	}
@@ -1249,9 +1247,8 @@ export function openStore(dbPath: string): ConversationStore {
 			try {
 				memoryQueue.cancelConversation(id);
 			} catch (err) {
-				log.warn("retention purge failed during conversation delete", {
+				log.warn("retention purge failed during conversation delete", err, {
 					conversation: id,
-					error: String(err),
 				});
 			}
 			db.transaction(() => {

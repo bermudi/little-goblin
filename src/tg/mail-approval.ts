@@ -330,14 +330,13 @@ async function postMailDraft(
 			messageId = sent.message_id;
 		} catch (err) {
 			if (err instanceof TelegramTimeoutError) {
-				log.warn("mail draft posting timed out — delivery uncertain", {
+				log.warn("mail draft posting timed out — delivery uncertain", err, {
 					outbox: outboxId,
 					chat: address.chatId,
 					thread: address.threadId,
 					chunk: i + 1,
 					chunks: chunks.length,
 					buttons: last,
-					error: String(err),
 				});
 				throw new MailDraftTimeoutError(err, last);
 			}
@@ -480,7 +479,7 @@ async function stampDecision(
 		messageId,
 		text,
 	).catch((err: unknown) => {
-		log.warn("mail draft stamp failed", { outbox: row.id, error: String(err) });
+		log.warn("mail draft stamp failed", err, { outbox: row.id });
 	});
 }
 
@@ -526,7 +525,7 @@ async function stripButtons(
 async function notice(deps: MailApprovalDeps, row: OutboxEntry, text: string): Promise<void> {
 	await sendMailNotice(deps.api, { chatId: row.chatId, threadId: row.threadId }, text).catch(
 		(err: unknown) => {
-			log.warn("mail notice failed", { outbox: row.id, error: String(err) });
+			log.warn("mail notice failed", err, { outbox: row.id });
 		},
 	);
 }
@@ -576,7 +575,7 @@ async function sweepExpired(
 					row.draftMessageId!,
 					`⌛ Draft #${row.id} expired — never sent.`,
 				).catch((err: unknown) => {
-					log.warn("expired draft stamp failed", { outbox: row.id, error: String(err) });
+					log.warn("expired draft stamp failed", err, { outbox: row.id });
 				}),
 			),
 	);

@@ -57,7 +57,7 @@ export function transcribeTool(
 					? { error: "no transcript produced — the audio may contain no speech" }
 					: { transcript: text };
 			} catch (err) {
-				log.warn("transcribe tool failed", { path: target, error: String(err) });
+				log.warn("transcribe tool failed", err, { path: target });
 				return { error: `transcription failed: ${String(err)}` };
 			}
 		},

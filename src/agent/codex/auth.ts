@@ -161,9 +161,8 @@ async function refreshAuth(path: string, fetchImpl: FetchLike): Promise<CodexAut
 			break;
 		} catch (err) {
 			if (attempt === 2) {
-				log.warn("codex auth re-read failed — writing tokens without sibling fields", {
+				log.warn("codex auth re-read failed — writing tokens without sibling fields", err, {
 					authFile: path,
-					error: String(err),
 				});
 			} else {
 				await Bun.sleep(50);

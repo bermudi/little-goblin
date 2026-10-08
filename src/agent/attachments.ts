@@ -323,9 +323,8 @@ export async function materializeAttachments(
 					url: `data:${ref.mediaType};base64,${bytes.toString("base64")}`,
 				};
 			} catch (err) {
-				log.warn("attachment unreadable — degrading to fallback reference", {
+				log.warn("attachment unreadable — degrading to fallback reference", err, {
 					path: ref.path,
-					error: String(err),
 				});
 				parts ??= [...m.parts];
 				parts[pi] = fallbackFor(ref);

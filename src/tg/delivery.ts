@@ -163,14 +163,13 @@ export function makeDeliverySink(
 
 	function markUncertain(error: TelegramTimeoutError, kind: string, chunk?: number): void {
 		uncertain = true;
-		log.warn("telegram delivery uncertain — not retrying", {
+		log.warn("telegram delivery uncertain — not retrying", error, {
 			conversation: conv.id,
 			chat: conv.chatId,
 			thread: conv.threadId,
 			kind,
 			...(chunk !== undefined ? { chunk } : {}),
 			timeoutMs: error.ms,
-			error: String(error),
 		});
 	}
 
@@ -197,11 +196,10 @@ export function makeDeliverySink(
 				message: notice.message_id,
 			});
 		} catch (error) {
-			log.warn("delivery uncertainty notice failed — not retrying", {
+			log.warn("delivery uncertainty notice failed — not retrying", error, {
 				conversation: conv.id,
 				chat: conv.chatId,
 				thread: conv.threadId,
-				error: String(error),
 			});
 		}
 	}
@@ -219,7 +217,7 @@ export function makeDeliverySink(
 	function enqueue(fn: () => Promise<void>): void {
 		chain = chain.then(() =>
 			fn().catch((err: unknown) => {
-				log.warn("telegram delivery failed", { conversation: conv.id, error: String(err) });
+				log.warn("telegram delivery failed", err, { conversation: conv.id });
 			}),
 		);
 	}
@@ -621,9 +619,8 @@ export function makeDeliverySink(
 						await notifyUncertain();
 						return;
 					}
-					log.warn("voice reply delivery failed — falling back to text", {
+					log.warn("voice reply delivery failed — falling back to text", err, {
 						conversation: conv.id,
-						error: String(err),
 					});
 					const fallback = text || "speech synthesis failed";
 					let at = 0;

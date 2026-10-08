@@ -131,10 +131,9 @@ export function visionTool(cwd: string, deps: VisionToolDeps) {
 					},
 				};
 			} catch (err) {
-				log.warn("vision tool failed", {
+				log.warn("vision tool failed", err, {
 					conversation: deps.conversation,
 					path: target,
-					error: String(err),
 				});
 				return { error: `vision call failed: ${String(err)}` };
 			}

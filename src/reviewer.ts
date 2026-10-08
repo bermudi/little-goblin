@@ -711,9 +711,8 @@ function copySkillsTree(skillsDir: string, stagedDir: string): Map<string, strin
 				real = realpathSync(source);
 				stats = statSync(source);
 			} catch (err) {
-				log.warn("reviewer staging skipped unresolved skills-tree entry", {
+				log.warn("reviewer staging skipped unresolved skills-tree entry", err, {
 					path: rel,
-					error: (err as Error).message,
 				});
 				continue;
 			}
@@ -891,11 +890,10 @@ function publishSkill(
 	} catch (err) {
 		// The swap succeeded: cleanup is not a publication failure. The
 		// next boot cleans reviewer staging; keep the saved skill recorded.
-		log.warn("reviewer replaced-skill trash cleanup failed", {
+		log.warn("reviewer replaced-skill trash cleanup failed", err, {
 			skill,
 			review_id: reviewId,
 			trash,
-			error: String(err),
 		});
 	}
 	return { published: true };
@@ -929,10 +927,9 @@ async function runStagedReview(
 		// Policy (the budget) and mechanical failure (permissions, disk)
 		// carry different labels — one message would lie about the other.
 		if (err instanceof StagingBudgetError) {
-			log.warn("reviewer review skipped — skills tree over staging budget", {
+			log.warn("reviewer review skipped — skills tree over staging budget", err, {
 				review_id: reviewId,
 				conversation: conv,
-				error: err.message,
 			});
 		} else {
 			log.error("reviewer review skipped — skills tree copy failed", err, {

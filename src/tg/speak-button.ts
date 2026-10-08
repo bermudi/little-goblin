@@ -120,10 +120,9 @@ async function speak(query: SpeakQuery, deps: SpeakButtonDeps): Promise<void> {
 			});
 		} catch (err) {
 			clearInterval(recording);
-			log.warn("voice button failed", {
+			log.warn("voice button failed", err, {
 				chat: message.chat.id,
 				message: message.message_id,
-				error: String(err),
 			});
 			// The tap was already answered — no toast can carry this. The
 			// failure lands in the chat, where the operator is watching
@@ -132,9 +131,7 @@ async function speak(query: SpeakQuery, deps: SpeakButtonDeps): Promise<void> {
 			await withTimeout(
 				deps.api.sendMessage(message.chat.id, "⚠ speech failed — check the log", { ...thread }),
 				"sendMessage",
-			).catch((err2: unknown) =>
-				log.warn("voice button failure notice failed", { error: String(err2) }),
-			);
+			).catch((err2: unknown) => log.warn("voice button failure notice failed", err2));
 		}
 	} finally {
 		inFlight.delete(key);

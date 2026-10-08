@@ -65,7 +65,7 @@ export function createCachedCatalog<T>(spec: CatalogSpec<T>): CachedCatalog<T> {
 			raw = readFileSync(spec.cachePath(), "utf8");
 		} catch (err) {
 			if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-				log.warn(`${spec.name} cache unreadable — ignoring`, { error: String(err) });
+				log.warn(`${spec.name} cache unreadable — ignoring`, err);
 			}
 			return null;
 		}
@@ -74,7 +74,7 @@ export function createCachedCatalog<T>(spec: CatalogSpec<T>): CachedCatalog<T> {
 		} catch (err) {
 			// Wrong shape degrades with a line — the log bar: a symptom
 			// here must not need a REPL to explain.
-			log.warn(`${spec.name} cache invalid — ignoring`, { error: String(err) });
+			log.warn(`${spec.name} cache invalid — ignoring`, err);
 			return null;
 		}
 	}
@@ -92,11 +92,11 @@ export function createCachedCatalog<T>(spec: CatalogSpec<T>): CachedCatalog<T> {
 			try {
 				durableWriteFile(spec.cachePath(), JSON.stringify(spec.toDisk(parsed)));
 			} catch (err) {
-				log.warn(`${spec.name} cache write failed`, { error: String(err) });
+				log.warn(`${spec.name} cache write failed`, err);
 			}
 			return value;
 		} catch (err) {
-			log.warn(`${spec.name} fetch failed — ${spec.staleNote}`, { error: String(err) });
+			log.warn(`${spec.name} fetch failed — ${spec.staleNote}`, err);
 			// In-memory value first; the disk cache covers a cold start.
 			if (value) return value;
 			value = readDisk();

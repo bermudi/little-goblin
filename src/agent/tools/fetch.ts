@@ -313,9 +313,8 @@ function extractReadable(
 		// behavior, but the refusal alone can't tell a linkedom/readability
 		// crash from a JavaScript-shell page — the parser error rides the
 		// log with the URL so the symptom reconstructs from goblin.log.
-		log.warn("readability parse failed", {
+		log.warn("readability parse failed", err, {
 			url,
-			error: err instanceof Error ? err.message : String(err),
 		});
 		article = null;
 	}
@@ -430,10 +429,9 @@ export async function runFetchChain(
 			const raw = (err as Error).message;
 			const error = raw.startsWith(`${kind}:`) ? raw : `${kind}: ${raw}`;
 			failures.push({ kind, error });
-			log.warn("web fetch failed", {
+			log.warn("web fetch failed", err, {
 				url,
 				kind,
-				error,
 				ms: Date.now() - started,
 			});
 		}
@@ -527,9 +525,8 @@ export const fetchTool = (deps: WebToolDeps) =>
 				// Disk failure is the one degrade path for a planned-inline
 				// item (attachments' rule): the model still sees what was
 				// fetched, and the anomaly lands in the log.
-				log.warn("fetched pdf unreadable — degrading to reference", {
+				log.warn("fetched pdf unreadable — degrading to reference", err, {
 					path: ref.path,
-					error: String(err),
 				});
 				return reference(
 					"The saved copy is unreadable — refetch the URL, or extract via bash if you saved a copy elsewhere.",

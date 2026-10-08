@@ -714,7 +714,7 @@ export class Runtime {
 		try {
 			await turn.sink.onDone(done);
 		} catch (err) {
-			log.warn("sink onDone failed", { error: String(err) });
+			log.warn("sink onDone failed", err);
 		}
 	}
 
@@ -760,9 +760,8 @@ export class Runtime {
 		try {
 			prior = mem.contexts.load(conv.id);
 		} catch (err) {
-			log.warn("memory contexts unreadable — continuing without prior blocks", {
+			log.warn("memory contexts unreadable — continuing without prior blocks", err, {
 				conversation: conv.id,
-				error: String(err),
 			});
 			prior = [];
 		}
@@ -788,9 +787,8 @@ export class Runtime {
 			try {
 				mem.contexts.save(conv.id, anchorSeq, block, sources);
 			} catch (err) {
-				log.warn("memory recall not persisted — continuing without it", {
+				log.warn("memory recall not persisted — continuing without it", err, {
 					conversation: conv.id,
-					error: String(err),
 				});
 				return { prior, current: null };
 			}
@@ -821,17 +819,15 @@ export class Runtime {
 				try {
 					mem.contexts.save(conv.id, anchorSeq, block, []);
 				} catch (saveErr) {
-					log.warn("memory outage marker not persisted — continuing without it", {
+					log.warn("memory outage marker not persisted — continuing without it", saveErr, {
 						conversation: conv.id,
-						error: String(saveErr),
 					});
 					return { prior, current: null };
 				}
 				return { prior, current };
 			}
-			log.warn("memory recall failed without a service error — continuing without it", {
+			log.warn("memory recall failed without a service error — continuing without it", err, {
 				conversation: conv.id,
-				error: String(err),
 			});
 			return { prior, current: null };
 		}
@@ -885,9 +881,8 @@ export class Runtime {
 		try {
 			suppressed = mem.contexts.isSuppressed(doc.id);
 		} catch (err) {
-			log.warn("memory suppression unreadable — skipping retention", {
+			log.warn("memory suppression unreadable — skipping retention", err, {
 				conversation: conv.id,
-				error: String(err),
 			});
 			return null;
 		}
@@ -1195,11 +1190,10 @@ export class Runtime {
 						})),
 					);
 				} catch (err) {
-					log.warn("message unconvertible — degrading to placeholder", {
+					log.warn("message unconvertible — degrading to placeholder", err, {
 						conversation: convId,
 						message: m.id,
 						role: m.role,
-						error: err instanceof Error ? err.message : String(err),
 					});
 					messages.push(
 						...(await convertToModelMessages([unconvertiblePlaceholder(rendered)], {
@@ -1355,9 +1349,8 @@ export class Runtime {
 										t.sink.onStreamChunk(c);
 									} catch (err) {
 										t.streamFailed = true;
-										log.warn("sink onStreamChunk failed during replay — stream detached", {
+										log.warn("sink onStreamChunk failed during replay — stream detached", err, {
 											conversation: convId,
-											error: String(err),
 										});
 										break;
 									}
@@ -1384,11 +1377,8 @@ export class Runtime {
 							// conversion), so the conversation stays answerable.
 							log.warn(
 								"steer conversion failed — submit errored, message degrades in later views",
-								{
-									conversation: convId,
-									message: t.message.id,
-									error: err instanceof Error ? err.message : String(err),
-								},
+								err,
+								{ conversation: convId, message: t.message.id },
 							);
 							void this.notifyDone(t, {
 								kind: "error",
@@ -1442,21 +1432,19 @@ export class Runtime {
 						if (!filterRetryUsed) {
 							filterRetryUsed = true;
 							filterRetryPending = true;
-							log.warn("provider content filter — retrying unchanged model call once", {
+							log.warn("provider content filter — retrying unchanged model call once", error, {
 								conversation: convId,
 								epoch,
 								model:
 									step.label ?? (typeof step.model === "string" ? step.model : step.model.modelId),
-								error: String(error),
 								blockedUsage:
 									error instanceof ProviderContentFilterError ? (error.usage ?? null) : null,
 							});
 							return { retry: true };
 						}
-						log.warn("provider content filter — retry budget exhausted", {
+						log.warn("provider content filter — retry budget exhausted", error, {
 							conversation: convId,
 							epoch,
-							error: String(error),
 							blockedUsage:
 								error instanceof ProviderContentFilterError ? (error.usage ?? null) : null,
 						});
@@ -1682,9 +1670,8 @@ export class Runtime {
 						});
 					})
 					.catch((err: unknown) => {
-						log.warn("loop watchdog unavailable — fail-open", {
+						log.warn("loop watchdog unavailable — fail-open", err, {
 							conversation: convId,
-							error: String(err),
 						});
 					})
 					.finally(() => {
@@ -1721,9 +1708,8 @@ export class Runtime {
 							t.sink.onStreamChunk?.(chunk);
 						} catch (err) {
 							t.streamFailed = true;
-							log.warn("sink onStreamChunk failed — stream detached", {
+							log.warn("sink onStreamChunk failed — stream detached", err, {
 								conversation: convId,
-								error: String(err),
 							});
 						}
 					}
@@ -1858,9 +1844,8 @@ export class Runtime {
 			const usage = await Promise.resolve(result.usage).catch((err) => {
 				// Totals are observability, not control — but a dropped usage
 				// promise must be visible, not a silent null on the log line.
-				log.warn("turn usage unavailable — totals skipped", {
+				log.warn("turn usage unavailable — totals skipped", err, {
 					conversation: convId,
-					error: String(err),
 				});
 				return null;
 			});
@@ -1868,9 +1853,8 @@ export class Runtime {
 			// reply was cut off mid-flight, "content-filter" that the
 			// provider withheld it. Joins usage in the fenced seam below.
 			const finishReason = await Promise.resolve(result.finishReason).catch((err) => {
-				log.warn("turn finish reason unavailable", {
+				log.warn("turn finish reason unavailable", err, {
 					conversation: convId,
-					error: String(err),
 				});
 				return null;
 			});
@@ -2030,10 +2014,13 @@ export class Runtime {
 				try {
 					await this.doCompact(conv, "threshold");
 				} catch (err) {
-					log.warn("compaction failed — view unchanged, will retry on next threshold crossing", {
-						conversation: convId,
-						error: String(err),
-					});
+					log.warn(
+						"compaction failed — view unchanged, will retry on next threshold crossing",
+						err,
+						{
+							conversation: convId,
+						},
+					);
 				}
 			}
 		} catch (err) {
@@ -2071,9 +2058,8 @@ export class Runtime {
 						});
 						await notifyAll({ kind: "fenced" });
 					} else {
-						log.warn("overflow compaction failed — turn ends", {
+						log.warn("overflow compaction failed — turn ends", compactErr, {
 							conversation: convId,
-							error: String(compactErr),
 						});
 						const msg = compactErr instanceof Error ? compactErr.message : String(compactErr);
 						await notifyAll({

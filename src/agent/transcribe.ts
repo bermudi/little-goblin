@@ -70,7 +70,7 @@ export async function probeFfmpeg(feature = "transcription"): Promise<boolean> {
 		}
 		return true;
 	} catch (err) {
-		log.warn("ffmpeg unavailable", { feature, error: String(err) });
+		log.warn("ffmpeg unavailable", err, { feature });
 		return false;
 	}
 }
@@ -115,10 +115,9 @@ export async function transcribeAudio(
 			} catch (err) {
 				// Keep what transcribed — a partial transcript beats a bare
 				// path, and the segment boundary tells the model where it ends.
-				log.warn("transcription segment failed — result is partial", {
+				log.warn("transcription segment failed — result is partial", err, {
 					file: file.filename,
 					segment: seg,
-					error: String(err),
 				});
 				break;
 			}
@@ -126,7 +125,7 @@ export async function transcribeAudio(
 		return texts.length === 0 ? null : texts.join(" ");
 	} finally {
 		await rm(dir, { recursive: true, force: true }).catch((err: unknown) => {
-			log.warn("transcription scratch cleanup failed", { dir, error: String(err) });
+			log.warn("transcription scratch cleanup failed", err, { dir });
 		});
 	}
 }

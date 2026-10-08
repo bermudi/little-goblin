@@ -81,7 +81,7 @@ export async function checkInjection(
 		// and propagates, loud.
 		if (!(err instanceof JevError)) throw err;
 		const ms = Date.now() - started;
-		log.warn("injection check unavailable", { reason: err.message, ms });
+		log.warn("injection check unavailable", err, { ms });
 		return { status: "unavailable", injection: null, severity: null, ms };
 	}
 }

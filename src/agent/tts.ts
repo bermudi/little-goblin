@@ -628,11 +628,10 @@ export async function synthesizeSpeech(
 			audio.push(await remux(webm));
 		}
 	} catch (err) {
-		log.warn("speech synthesis failed", {
+		log.warn("speech synthesis failed", err, {
 			provider: config.kind,
 			voice,
 			completedChunks: audio.length,
-			error: String(err),
 		});
 		throw err;
 	}

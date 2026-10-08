@@ -266,7 +266,7 @@ export class GuestSink implements TurnSink {
 				return;
 			}
 			// Fail loud but never kill the turn over one edit.
-			log.warn("guest edit failed", { error: msg, edits: this.edits });
+			log.warn("guest edit failed", err, { edits: this.edits });
 		}
 	}
 
@@ -348,7 +348,7 @@ async function answerGuestArticle(
 	} catch (err) {
 		// A timeout here is ambiguous (the answer may have landed) but
 		// without the returned id there is nothing to edit — drop, loud.
-		log.warn("guest answerGuestQuery failed — summons dropped", { error: String(err) });
+		log.warn("guest answerGuestQuery failed — summons dropped", err);
 		return null;
 	}
 }
@@ -622,7 +622,7 @@ function sendMemberLine(env: GuestEnv, chatId: number, text: string): Promise<vo
 	return withTimeout(env.api.sendMessage(chatId, text), "sendMessage")
 		.then(() => undefined)
 		.catch((err: unknown) => {
-			log.warn("guest member line failed", { error: String(err) });
+			log.warn("guest member line failed", err);
 		});
 }
 

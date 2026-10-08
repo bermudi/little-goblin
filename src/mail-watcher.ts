@@ -197,10 +197,9 @@ async function failed(
 		return;
 	}
 	failing.set(program.id, message);
-	log.warn("mail check failing", {
+	log.warn("mail check failing", err, {
 		program: program.id,
 		name: program.name,
-		error: message,
 	});
 	try {
 		await deps.notify(
@@ -210,9 +209,8 @@ async function failed(
 	} catch (notifyErr) {
 		// Delivery failed — unmark so the next tick retries the notice.
 		if (failing.get(program.id) === message) failing.delete(program.id);
-		log.warn("mail outage notice failed — retrying next tick", {
+		log.warn("mail outage notice failed — retrying next tick", notifyErr, {
 			program: program.id,
-			error: String(notifyErr),
 		});
 	}
 }

@@ -81,9 +81,8 @@ async function retitle(deps: SpinOffDeps, conversationId: string): Promise<void>
 		deps.store.setMeta(conversationId, { title, titleImplicit: true });
 		log.info("app conversation titled", { conversation: conversationId, title });
 	} catch (err) {
-		log.warn("app conversation titling failed", {
+		log.warn("app conversation titling failed", err, {
 			conversation: conversationId,
-			error: err instanceof Error ? err.message : String(err),
 		});
 	}
 }

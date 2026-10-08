@@ -66,9 +66,8 @@ export function makePrivateSender(
 				delivered++;
 				log.info("private delivery", { user: id });
 			} catch (err) {
-				log.warn("private delivery failed", {
+				log.warn("private delivery failed", err, {
 					user: id,
-					error: err instanceof Error ? err.message : String(err),
 				});
 			}
 		}

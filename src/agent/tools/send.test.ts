@@ -22,7 +22,7 @@ function workdir(): string {
 
 describe("send_file", () => {
 	test("is absent without file delivery wired", () => {
-		expect(makeTools("/tmp").send_file).toBeUndefined();
+		expect(makeTools({ cwd: "/tmp" }).send_file).toBeUndefined();
 	});
 
 	test("sends a real file and reports its name and size", async () => {

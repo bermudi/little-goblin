@@ -15,7 +15,7 @@ afterEach(() => {
 
 describe("speak", () => {
 	test("is absent when tts is not configured", () => {
-		expect(makeTools("/tmp").speak).toBeUndefined();
+		expect(makeTools({ cwd: "/tmp" }).speak).toBeUndefined();
 	});
 
 	test("synthesizes a text file directly and delivers every chunk", async () => {

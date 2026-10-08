@@ -64,19 +64,25 @@ export function toolNames(tools: ToolSet): string[] {
 	return Object.keys(tools);
 }
 
-export function makeTools(
-	cwd: string,
-	voice?: VoiceToolDeps,
-	program?: ProgramToolDeps,
-	file?: FileToolDeps,
-	memory?: MemoryToolDeps,
-	web?: WebToolDeps,
-	transcribe?: TranscribeToolDeps,
-	delegate?: DelegateToolDeps,
-	mail?: MailToolDeps,
-	history?: HistorySearchDeps,
-	vision?: VisionToolDeps,
-): ToolSet {
+// An absent field mounts none of its tools — presence is the caller's
+// per-turn read of live config, never a default in here.
+export interface MakeToolsOptions {
+	cwd: string;
+	voice?: VoiceToolDeps | undefined;
+	program?: ProgramToolDeps | undefined;
+	file?: FileToolDeps | undefined;
+	memory?: MemoryToolDeps | undefined;
+	web?: WebToolDeps | undefined;
+	transcribe?: TranscribeToolDeps | undefined;
+	delegate?: DelegateToolDeps | undefined;
+	mail?: MailToolDeps | undefined;
+	history?: HistorySearchDeps | undefined;
+	vision?: VisionToolDeps | undefined;
+}
+
+export function makeTools(options: MakeToolsOptions): ToolSet {
+	const { cwd, voice, program, file, memory, web, transcribe, delegate, mail, history, vision } =
+		options;
 	return {
 		read_file: readFileTool(cwd, vision !== undefined),
 		write_file: writeFileTool(cwd),

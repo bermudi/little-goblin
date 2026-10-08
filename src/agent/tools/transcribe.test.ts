@@ -22,7 +22,7 @@ function workdir(): string {
 
 describe("transcribe", () => {
 	test("is absent without transcription deps wired", () => {
-		expect(makeTools("/tmp").transcribe).toBeUndefined();
+		expect(makeTools({ cwd: "/tmp" }).transcribe).toBeUndefined();
 	});
 
 	test("hands the resolved file to the provider seam and returns the transcript", async () => {

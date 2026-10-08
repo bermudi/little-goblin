@@ -403,31 +403,32 @@ async function boot() {
 			// everywhere since the spin-off: an app turn's launches pin
 			// the conversation itself (design/app.md → Spin-off).
 			const telegram = channelOf(conv.id) === "telegram";
-			const tools = makeTools(
-				paths.workspace(),
-				tts && !configRef.ttsDown && deliverVoice
-					? {
-							// A per-call voice replaces the whole config voice — Edge
-							// derives the language from the voice name, so an
-							// alternate voice is an alternate language. An explicit
-							// pick wins outright: with no alternates to sniff
-							// against, pickVoice can't override it.
-							synthesize: (text, voice) =>
-								synthesizeSpeech(text, voice ? { ...tts, voice, voices: [] } : tts),
-							deliver: deliverVoice,
-							...(recording ? { recording } : {}),
-							// The allowlist always carries the default: picking it
-							// explicitly is a no-op.
-							...(tts.voices?.length ? { voices: [...new Set([tts.voice, ...tts.voices])] } : {}),
-						}
-					: undefined,
+			const tools = makeTools({
+				cwd: paths.workspace(),
+				voice:
+					tts && !configRef.ttsDown && deliverVoice
+						? {
+								// A per-call voice replaces the whole config voice — Edge
+								// derives the language from the voice name, so an
+								// alternate voice is an alternate language. An explicit
+								// pick wins outright: with no alternates to sniff
+								// against, pickVoice can't override it.
+								synthesize: (text, voice) =>
+									synthesizeSpeech(text, voice ? { ...tts, voice, voices: [] } : tts),
+								deliver: deliverVoice,
+								...(recording ? { recording } : {}),
+								// The allowlist always carries the default: picking it
+								// explicitly is a no-op.
+								...(tts.voices?.length ? { voices: [...new Set([tts.voice, ...tts.voices])] } : {}),
+							}
+						: undefined,
 				// The program tool pins new programs to the conversation it runs
 				// in. Hook URLs go through sendPrivate — a DM to each operator
 				// (a group topic's readers aren't implicitly authorized), and a
 				// bare api.sendMessage never lands in history, so the token
 				// stays out of model context. publicUrl reads live: the mini app
 				// can change it between turns.
-				telegram
+				program: telegram
 					? {
 							programs,
 							chatId: conv.chatId,
@@ -441,55 +442,60 @@ async function boot() {
 					: undefined,
 				// The send_file tool hands workspace paths to the turn's
 				// delivery sink, which owns the Telegram send.
-				deliverFile ? { deliver: deliverFile } : undefined,
+				file: deliverFile ? { deliver: deliverFile } : undefined,
 				// Memory search recalls the shared bank; excluded topics
 				// recall nothing by any path.
-				memoryClient && memoryBootConfig
-					? {
-							client: memoryClient,
-							maxTokens: memoryBootConfig.maxTokens,
-							budget: memoryBootConfig.budget,
-							isExcluded: () => conv.memoryExcluded,
-							noteRecall,
-						}
-					: undefined,
+				memory:
+					memoryClient && memoryBootConfig
+						? {
+								client: memoryClient,
+								maxTokens: memoryBootConfig.maxTokens,
+								budget: memoryBootConfig.budget,
+								isExcluded: () => conv.memoryExcluded,
+								noteRecall,
+							}
+						: undefined,
 				// Web tools: fetch always (local needs no config), search
 				// behind its config block — both read configRef live. The
 				// accepts ref rides along for the fetch tool's per-turn PDF
 				// rendering.
-				{ configRef, auth, ...(accepts ? { accepts } : {}) },
+				web: { configRef, auth, ...(accepts ? { accepts } : {}) },
 				// The transcribe tool joins/leaves the set with the
 				// transcription block — same live-read rule as search.
-				configRef.current.transcription !== undefined ? { transcribe: transcribeFile } : undefined,
+				transcribe:
+					configRef.current.transcription !== undefined
+						? { transcribe: transcribeFile }
+						: undefined,
 				// The delegate tool rides the live config like search —
 				// but the store/adapter are boot fixtures, so removing
 				// the block hides the tool next turn while the lifecycle
 				// keeps tracking rows it already owns.
-				delegateDeps(conv),
+				delegate: delegateDeps(conv),
 				// The mail tool rides the same live gate — and holds only
 				// the approval gate's request closure: the send
 				// credential is nowhere in this dep tree (the approval
 				// taps hold it instead), and the draft's address is
 				// pinned here, per conversation. Reads left for the
 				// goblin-mail wrapper (bash + gws skill).
-				telegram && configRef.current.mail !== undefined
-					? {
-							requestDraft: (input) =>
-								mailApproval.requestDraft(input, {
-									chatId: conv.chatId,
-									threadId: conv.threadId,
-								}),
-						}
-					: undefined,
+				mail:
+					telegram && configRef.current.mail !== undefined
+						? {
+								requestDraft: (input) =>
+									mailApproval.requestDraft(input, {
+										chatId: conv.chatId,
+										threadId: conv.threadId,
+									}),
+							}
+						: undefined,
 				// Past-chat search rides the store — always present, local
 				// state, no config block. Excluded topics recall nothing.
-				{ store, isExcluded: () => conv.memoryExcluded },
+				history: { store, isExcluded: () => conv.memoryExcluded },
 				// Image Q&A joins the set per the vision block's mode —
 				// same live-read rule as transcribe/search. Threads are
 				// process-global; a model change inside the block drops
 				// them on the next call (src/agent/vision.ts).
-				visionDepsFor(conv),
-			);
+				vision: visionDepsFor(conv),
+			});
 			// Guest mode (design/telegram.md → Guest mode): hard toolset
 			// exclusion after assembly — sandbox personas keep search/fetch,
 			// personal guest turns lose everything that pins or reaches

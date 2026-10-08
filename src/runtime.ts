@@ -1076,7 +1076,17 @@ export class Runtime {
 		// the exchange as it ended. Reading here, before the awaits, is
 		// what keeps the boundary. The anchor rides along: recall blocks
 		// and the causal view key off the triggering user message's seq.
-		const entries = store.modelEntries(convId);
+		//
+		// The snapshot is bounded by OWNERSHIP, not durability (#82):
+		// every submit appends to history before admission, so a submit
+		// drain's claim left queued — a streaming submit behind this
+		// non-streaming head (claimableCount), waiting to lead its own
+		// turn — is durable but not this turn's input. Read it here and
+		// this turn would answer the client's message, anchor its reply
+		// to it, and the client's successor turn would answer it again.
+		// Same rule as the steer mark below: claimed by id, or unseen.
+		const queuedIds = new Set(this.lane(convId).pending.map((t) => t.message.id));
+		const entries = store.modelEntries(convId).filter((e) => !queuedIds.has(e.message.id));
 		const history = entries.map((e) => e.message);
 		let anchorSeq: number | null = null;
 		for (const e of entries) {

@@ -156,6 +156,27 @@ class HeadlessSink implements TurnSink {
 	}
 }
 
+// The delivery-completion park: the turn finished and its onDone
+// is held on a gate, so the drain loop is still "running" while new
+// submits only queue (#82's repro shape — a slow Telegram send or
+// bell delivery holding the lane open).
+class ParkedDoneSink implements TurnSink {
+	done: Promise<TurnDone>;
+	private resolveDone: (d: TurnDone) => void = () => {};
+	constructor(private gate: Promise<void>) {
+		this.done = new Promise<TurnDone>((res) => {
+			this.resolveDone = res;
+		});
+	}
+	onTextDelta() {}
+	onReasoningDelta() {}
+	onToolCall() {}
+	async onDone(d: TurnDone) {
+		this.resolveDone(d);
+		await this.gate;
+	}
+}
+
 function setup(deltas: string[], delayMs = 15) {
 	const store = openStore(tmpdb());
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -3122,6 +3143,64 @@ describe("streaming lane boundary", () => {
 		expect(await second.done).toEqual({ kind: "completed" });
 		expect(prompts).toHaveLength(2);
 		expect(prompts[1]).toContain("two");
+		store.close();
+	});
+
+	// #82: the lane boundary must hold at ADMISSION too. Drain's splice
+	// leaves a streaming submit queued behind a headless head; its
+	// message is durable history (every submit appends before admission),
+	// so the headless turn's admission snapshot would otherwise read it,
+	// anchor its reply to it — and the client's own successor turn would
+	// answer the same message a second time. Multiple pending submits at
+	// admission, not arrivals during the model loop.
+	test("admission never reads a queued streaming submit — the client keeps its own turn", async () => {
+		const { model, prompts } = recordingModel(["answer"], 5);
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({}),
+		});
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		const parked = new ParkedDoneSink(gate);
+		const background = new HeadlessSink();
+		const client = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "first turn" }]), parked);
+		// The drain loop is parked in the first turn's delivery completion —
+		// the two submits below only queue (lane still running).
+		await parked.done;
+		runtime.submit(conv, userMessage([{ type: "text", text: "background beat" }]), background);
+		runtime.submit(conv, userMessage([{ type: "text", text: "client owns me" }]), client);
+		release();
+		expect(await background.done).toEqual({ kind: "completed" });
+		expect(await client.done).toEqual({ kind: "completed" });
+		// Three turns ran: parked, background, the client's own. The
+		// background turn's model request never contained the client's
+		// message — ownership, not durability, bounds the view.
+		expect(prompts).toHaveLength(3);
+		expect(prompts[1]).not.toContain("client owns me");
+		expect(prompts[2]).toContain("background beat");
+		expect(prompts[2]).toContain("client owns me");
+		expect(client.text).toBe("answer");
+		// Causal view: the background reply sorts after its own burst and
+		// BEFORE the client's input — it never anchors to a message this
+		// turn didn't read. The client's reply anchors to the client's
+		// message it actually answered.
+		const detail = store.historyDetail(conv.id);
+		expect(detail.map((d) => d.message.role)).toEqual([
+			"user",
+			"assistant", // first turn
+			"user",
+			"assistant", // background beat answered before the client's input
+			"user",
+			"assistant", // the client's own turn
+		]);
+		expect(detail[3]!.anchorSeq).toBe(detail[2]!.seq);
+		expect(detail[5]!.anchorSeq).toBe(detail[4]!.seq);
 		store.close();
 	});
 });

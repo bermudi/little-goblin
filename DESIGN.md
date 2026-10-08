@@ -82,8 +82,13 @@ Conversation ─────── (channel address) → durable event history
   mark advances only over entries the turn actually injected (claimed by
   message id), so input the turn never read — a mid-conversion arrival
   still sitting in the queue, a steer it couldn't carry — never anchors
-  its reply. Input arriving after the final model call has no boundary
-  left to steer into — it queues into an immediate successor turn. One
+  its reply. The admission-time model view is bounded the same way
+  (2026-10-08, #82): durability is not ownership — a submit still queued
+  when the turn starts (the streaming client a non-streaming head must
+  leave behind) stays out of that turn's view and anchor; the turn that
+  claims it reads it. Input arriving after the final model call has no
+  boundary left to steer into — it queues into an immediate successor
+  turn. One
   exception (2026-10-03, Spin-off): a turn led by a sink that doesn't
   stream (the background-turn bell) never absorbs a submit from a
   streaming sink (the app client). That submit waits and leads its

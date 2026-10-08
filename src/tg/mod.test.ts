@@ -508,6 +508,70 @@ describe("ping replies (Spin-off)", () => {
 		expect((h.pushed[0]!.parts[0] as { text: string }).text).toBe('[replying to: "old ping"]');
 		h.store.close();
 	});
+
+	// #77: a redelivered update is the same message it was last time —
+	// identity is immutable, routing is not. The ping target aged out
+	// of the store between delivery and redelivery; recomputing the
+	// destination must not turn the duplicate into corruption. The
+	// durable row keeps its original admission (the app conversation),
+	// and the flush owns the deleted-target landing per Spin-off.
+	test("a redelivered ping reply after target deletion keeps its admission — pending row", async () => {
+		const h = routerHarness();
+		const src = h.store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const app = h.store.forkToApp(src.id, "spun-1", "/w", "the work");
+		h.pings.record(1, 99, app.id);
+		const reply = tgMsg({
+			message_id: 51,
+			chat: { id: 1, type: "private" },
+			text: "looks good",
+			reply_to_message: { message_id: 99, text: "the work: deployed" },
+		});
+		handleMessage(h.env, reply, 100);
+		await h.env.intake.get(app.id);
+		expect(h.env.inbox.pending()[0]!.payload.conversationId).toBe(app.id);
+		h.store.deleteConversation(app.id);
+		expect(() => handleMessageDurably(h.env, reply, 100)).not.toThrow();
+		// Redelivery re-enqueues nothing; the pending row still names the
+		// app conversation it was admitted under.
+		expect(h.pushed).toHaveLength(1);
+		expect(h.env.inbox.pending().map((e) => e.updateId)).toEqual([100]);
+		expect(h.env.inbox.pending()[0]!.payload.conversationId).toBe(app.id);
+		await flushConversation(h.env, app.id, [
+			{ updateId: 100, chatId: 1, parts: [{ type: "text", text: "looks good" }], replyTo: 51 },
+		]);
+		expect(h.env.inbox.pending()).toHaveLength(0);
+		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
+			"not sent — that app conversation was deleted",
+		]);
+		h.store.close();
+	});
+
+	// Same defect against a committed tombstone: the first flush already
+	// consumed the row (drop ack sent), and Telegram redelivers anyway.
+	test("a redelivered ping reply after its row was tombstoned is consumed, not corruption", async () => {
+		const h = routerHarness();
+		const src = h.store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const app = h.store.forkToApp(src.id, "spun-1", "/w", "the work");
+		h.pings.record(1, 99, app.id);
+		const reply = tgMsg({
+			message_id: 51,
+			chat: { id: 1, type: "private" },
+			text: "looks good",
+			reply_to_message: { message_id: 99, text: "the work: deployed" },
+		});
+		handleMessage(h.env, reply, 100);
+		await h.env.intake.get(app.id);
+		h.store.deleteConversation(app.id);
+		void flushConversation(h.env, app.id, [
+			{ updateId: 100, chatId: 1, parts: [{ type: "text", text: "looks good" }], replyTo: 51 },
+		]);
+		expect(h.env.inbox.pending()).toHaveLength(0);
+		h.apiCalls.length = 0;
+		expect(() => handleMessageDurably(h.env, reply, 100)).not.toThrow();
+		expect(h.apiCalls).toEqual([]);
+		expect(h.pushed).toHaveLength(1);
+		h.store.close();
+	});
 });
 
 describe("flushConversation", () => {

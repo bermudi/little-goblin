@@ -276,6 +276,29 @@ function replyNavigation(env: IntakeEnv, msg: Message, text: string): void {
 
 export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): void {
 	const { deps } = env;
+	// Redelivery is identity, not routing (#77). An update already
+	// admitted keeps its durable row's original destination whatever
+	// state-dependent routing would recompute now — a ping's app
+	// conversation can be deleted between delivery and redelivery, and
+	// the recomputed fallback must not turn an ordinary duplicate into
+	// corruption. The row is never rewritten; its flush owns the
+	// deleted-target landing (dropAppBatch).
+	let admitted: string | null;
+	try {
+		admitted = env.inbox.admittedDestination(updateId, msg.chat.id, msg.message_id);
+	} catch (err) {
+		// The journal itself is unreadable — same fatal class as a failed
+		// record: the update must not be acknowledged past it.
+		throw new InboxRecordError(updateId, err);
+	}
+	if (admitted !== null) {
+		log.info("telegram intake redelivery — original admission stands", {
+			updateId,
+			conversation: admitted,
+			message: msg.message_id,
+		});
+		return;
+	}
 	const text = msg.text ?? msg.caption ?? "";
 	const addr = conversationAddress(msg);
 	// A private chat's lane is the rolling address — the payload carries

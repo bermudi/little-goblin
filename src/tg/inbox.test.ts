@@ -117,6 +117,28 @@ test("coalesced append and all acknowledgements commit atomically; failure rolls
 	store.close();
 });
 
+test("admittedDestination pins redelivery by immutable identity, never recomputed routing", () => {
+	const store = openStore(path());
+	const inbox = openTelegramInbox(store.db);
+	expect(inbox.record(100, payload(11, "app/gone"))).toBe(true);
+	// A pending row's admitted destination survives whatever routing
+	// would recompute now — the ping target may already be deleted.
+	expect(inbox.admittedDestination(100, 42, 11)).toBe("app/gone");
+	inbox.commitBatch([100], "app/gone", () => {});
+	// So does a committed tombstone's.
+	expect(inbox.admittedDestination(100, 42, 11)).toBe("app/gone");
+	// The chat-scoped message id identifies the same message under a
+	// redelivered update id too.
+	expect(inbox.admittedDestination(101, 42, 11)).toBe("app/gone");
+	// Partial matches are not this update's row: they fall through to
+	// record(), which owns the genuinely-conflicting-identity check.
+	expect(inbox.admittedDestination(100, 42, 12)).toBeNull();
+	expect(inbox.admittedDestination(100, 43, 11)).toBeNull();
+	expect(inbox.admittedDestination(999, 42, 50)).toBeNull();
+	expect(() => inbox.record(100, payload(12))).toThrow("conflicting identity");
+	store.close();
+});
+
 test("malformed persisted payload fails loudly, including a mismatched address", () => {
 	const db = new Database(":memory:");
 	const inbox = openTelegramInbox(db);

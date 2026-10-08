@@ -117,6 +117,13 @@ const assignmentSchema = z.object({ target_id: rollingTargetSchema });
 
 export function openTelegramInbox(db: Database): {
 	record(updateId: number, payload: InboxPayload): boolean;
+	// The pre-routing redelivery probe (#77): an update already admitted
+	// (pending or committed) keeps its row's original destination —
+	// redelivery is recognized by immutable Telegram identity, never by
+	// recomputing state-dependent routing. Returns null when no row
+	// claims the identity; genuinely conflicting identities stay with
+	// record()'s checks.
+	admittedDestination(updateId: number, chatId: number, messageId: number): string | null;
 	pending(): InboxEntry[];
 	pendingIds(updateIds: readonly number[], laneKey: string): number[];
 	archivePendingBefore(laneKey: string, beforeUpdateId: number, targetId: string): number;
@@ -178,6 +185,23 @@ export function openTelegramInbox(db: Database): {
 		WHERE update_id = ? AND committed_at IS NULL`);
 
 	return {
+		admittedDestination(updateId, chatId, messageId) {
+			idSchema.parse(updateId);
+			idSchema.parse(chatId);
+			idSchema.parse(messageId);
+			const byUpdate = selectOne.get(updateId);
+			// The update id's row must claim the full identity; a partial
+			// match is not this update's row and falls through to record()'s
+			// conflict checks.
+			if (byUpdate !== null) {
+				const row = rowSchema.parse(byUpdate);
+				return row.chat_id === chatId && row.message_id === messageId ? row.conversation_id : null;
+			}
+			// No row for the update id: the chat-scoped message id may still
+			// identify the message (a redelivery under a new update id).
+			const byMessage = selectMessage.get(chatId, messageId);
+			return byMessage === null ? null : rowSchema.parse(byMessage).conversation_id;
+		},
 		record(updateId, payload) {
 			const fields = {
 				updateId,

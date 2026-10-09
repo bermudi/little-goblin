@@ -58,8 +58,15 @@ for error lines, and prints the old→new hashes plus a one-line rollback
 (`git reset --hard <old-hash>`, then `bun install` and
 `bun run app:build` — dist and node_modules are gitignored, so the old
 revision needs its own deps and client — then restart, on the box).
+The previous revision is printed before the remote update begins; any
+subsequent remote failure also prints the complete rollback command.
 A gate or push failure stops everything before lithium is
 touched.
+
+The final memory probe distinguishes missing Podman or an absent container
+from a failed probe. An installed API must report `healthy`; SSH, Podman,
+inspection, and unhealthy-status failures retain diagnostics and fail the
+deployment command rather than reporting success.
 
 The memory stack is **not** auto-deployed: a `deploy/memory/` change
 prints a note instead. Its assets are installed per-box — `python3

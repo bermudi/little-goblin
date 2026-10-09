@@ -20,12 +20,12 @@ import { join } from "node:path";
 
 const deploySh = join(import.meta.dir, "deploy.sh");
 
-function remoteScript(): string {
+function remoteScript(marker: string): string {
 	const lines = readFileSync(deploySh, "utf8").split("\n");
-	const start = lines.findIndex((l) => l.endsWith("<<'REMOTE'"));
-	const end = lines.indexOf("REMOTE");
+	const start = lines.findIndex((l) => l.endsWith(`<<'${marker}'`));
+	const end = lines.indexOf(marker);
 	if (start < 0 || end < start)
-		throw new Error("deploy.sh: REMOTE heredoc not found — layout changed?");
+		throw new Error(`deploy.sh: ${marker} heredoc not found — layout changed?`);
 	return `${lines.slice(start + 1, end).join("\n")}\n`;
 }
 
@@ -37,7 +37,7 @@ type RemoteRun = {
 	systemctl: string[];
 };
 
-function runRemote(changed: string[]): RemoteRun {
+function runRemote(changed: string[], mode = "healthy", marker = "REMOTE"): RemoteRun {
 	const oldRev = `o${"0".repeat(39)}`;
 	const newRev = `n${"1".repeat(39)}`;
 	const dir = mkdtempSync(join(tmpdir(), "goblin-deploy-test-"));
@@ -76,20 +76,43 @@ function runRemote(changed: string[]): RemoteRun {
 				"esac",
 			].join("\n"),
 		);
-		stub("bun", 'echo "bun $*" >> "$BUN_CALLS"');
+		stub(
+			"bun",
+			`echo "bun $*" >> "$BUN_CALLS"
+if [ "$1" = install ] && [ "$MODE" = install ]; then echo 'install failed' >&2; exit 31; fi
+if [ "$1" = run ] && [ "$MODE" = build ]; then echo 'build failed' >&2; exit 32; fi`,
+		);
 		stub(
 			"systemctl",
 			[
 				'echo "systemctl $*" >> "$SYSTEMCTL_CALLS"',
+				'if [ "$2" = restart ] && [ "$MODE" = restart ]; then echo "restart failed" >&2; exit 33; fi',
 				'if [ "$1 $2" = "--user is-active" ]; then echo active; fi',
+				'if [ "$2" = show ]; then if [ "$MODE" = absent ]; then echo not-found; else echo loaded; fi; fi',
 			].join("\n"),
 		);
-		stub("journalctl", "exit 0");
+		stub("journalctl", `if [ "$MODE" = journal ]; then echo 'journal failed' >&2; exit 34; fi`);
+		stub(
+			"podman",
+			`if [ "$1" = container ]; then
+case "$MODE" in
+absent|installed-missing) exit 1 ;;
+storage) echo 'storage unavailable' >&2; exit 125 ;;
+esac
+else
+case "$MODE" in
+inspect) echo 'inspection failed' >&2; exit 125 ;;
+unhealthy) echo unhealthy ;;
+*) echo healthy ;;
+esac
+fi`,
+		);
 		stub("sleep", "exit 0");
 
 		const env: Record<string, string> = {
 			HOME: home,
-			PATH: `${bin}:/usr/bin:/bin`,
+			MODE: mode,
+			PATH: mode === "no-podman" ? home : `${bin}:/usr/bin:/bin`,
 			GIT_CALLS: join(dir, "git.calls"),
 			BUN_CALLS: log.bun,
 			SYSTEMCTL_CALLS: log.systemctl,
@@ -97,8 +120,8 @@ function runRemote(changed: string[]): RemoteRun {
 			FAKE_NEW_REV: newRev,
 			FAKE_DIFF: fakeDiff,
 		};
-		const res = spawnSync("bash", ["-s", "--", newRev], {
-			input: remoteScript(),
+		const res = spawnSync("/bin/bash", ["-s", "--", newRev], {
+			input: remoteScript(marker),
 			env,
 			encoding: "utf8",
 		});
@@ -162,5 +185,54 @@ describe("deploy.sh remote step", () => {
 		expect(install).toBeGreaterThan(reset);
 		expect(build).toBeGreaterThan(install);
 		expect(restart).toBeGreaterThan(build);
+	});
+});
+
+describe("deployment remote boundaries", () => {
+	for (const mode of ["install", "build", "restart", "journal"]) {
+		test(`${mode} failure retains previous revision and complete rollback`, () => {
+			const result = runRemote(["package.json"], mode);
+			expect(result.status).not.toBe(0);
+			expect(result.stdout).toContain(
+				"previous revision: o000000000000000000000000000000000000000",
+			);
+			expect(result.stderr).toContain(`${mode} failed`);
+			expect(result.stderr).toContain(
+				"git reset --hard o000000000000000000000000000000000000000 && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin",
+			);
+		});
+	}
+
+	test("successful update still prints rollback", () => {
+		const result = runRemote(["package.json"]);
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("rollback:");
+	});
+
+	test("absent memory container is informational", () => {
+		const result = runRemote([], "absent", "MEMORY");
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("not installed");
+	});
+
+	test("missing Podman is informational", () => {
+		const result = runRemote([], "no-podman", "MEMORY");
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("podman unavailable");
+	});
+
+	for (const mode of ["storage", "inspect", "unhealthy", "installed-missing"]) {
+		test(`memory ${mode} fails visibly`, () => {
+			const result = runRemote([], mode, "MEMORY");
+			expect(result.status).not.toBe(0);
+			expect(result.stderr.length).toBeGreaterThan(0);
+			expect(result.stdout).not.toContain("not installed");
+		});
+	}
+
+	test("healthy memory container passes", () => {
+		const result = runRemote([], "healthy", "MEMORY");
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("goblin-memory-api: healthy");
 	});
 });

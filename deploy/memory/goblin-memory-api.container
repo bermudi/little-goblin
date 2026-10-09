@@ -13,9 +13,9 @@ EnvironmentFile=%h/.config/goblin-memory/hindsight.env
 Volume=%h/.config/goblin-memory/start.py:/opt/goblin-memory-start.py:ro,Z
 # The healthcheck is a mounted script, not a `python -c` one-liner:
 # podman 5.4 (Debian trixie) drops the trailing escaped quote when
-# re-quoting HealthCmd into CMD-SHELL, so every probe died with
-# `sh: Unterminated quoted string` and the watch restart-looped a
-# healthy API (2026-10-08, lithium). A bare command with no shell
+# re-quoting HealthCmd into CMD-SHELL, causing
+# `sh: Unterminated quoted string` instead of a readiness result.
+# A bare command with no shell
 # metacharacters survives every podman/systemd pair.
 Volume=%h/.config/goblin-memory/healthcheck.py:/opt/goblin-memory-healthcheck.py:ro,Z
 Exec=/app/api/.venv/bin/python /opt/goblin-memory-start.py

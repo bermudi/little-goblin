@@ -20,7 +20,7 @@
 # installed from that directory and never auto-applied (see
 # docs/operations.md, Deploying).
 #
-# Rollback is manual and printed at the end: on the box, reset to the
+# Rollback is manual and printed on success or failure: on the box, reset to the
 # old hash, reinstall, rebuild, restart — app/dist and node_modules are
 # gitignored, so a bare reset would leave the new client/deps running
 # beside the old backend.
@@ -64,6 +64,20 @@ cd "$HOME/build/little-goblin"
 	fail "remote tree dirty — hand-edited prod checkout; resolve by hand"
 command -v bun >/dev/null || fail "bun not found in PATH on $(hostname)"
 old_rev="$(git rev-parse HEAD)"
+echo "deploy: previous revision: $old_rev"
+rollback() {
+	# Ignored client assets and dependencies survive a reset.
+	echo "deploy: rollback: cd ~/build/little-goblin && git reset --hard $old_rev && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin"
+}
+on_exit() {
+	status=$?
+	if [ "$status" -ne 0 ]; then
+		echo "deploy: remote update failed (exit $status); previous revision: $old_rev" >&2
+		rollback >&2
+	fi
+	exit "$status"
+}
+trap on_exit EXIT
 git fetch --quiet origin
 git pull --ff-only --quiet
 [ "$(git rev-parse HEAD)" = "$1" ] ||
@@ -93,27 +107,48 @@ for _ in $(seq 1 20); do
 	[ "$(systemctl --user is-active goblin)" = active ] && break
 done
 if [ "$(systemctl --user is-active goblin)" != active ]; then
-	journalctl --user -u goblin -n 40 --no-pager >&2 || true
+	journalctl --user -u goblin -n 40 --no-pager >&2
 	fail "goblin not active after restart"
 fi
 sleep 3
-errors="$(journalctl --user -u goblin --since "@$restart_epoch" --no-pager \
-	| grep '"level":"error"' || true)"
+journal="$(journalctl --user -u goblin --since "@$restart_epoch" --no-pager)"
+# grep's 1 means no error lines, not a failed journal read.
+errors="$(printf '%s\n' "$journal" | grep '"level":"error"' || [ "$?" -eq 1 ])"
 if [ -n "$errors" ]; then
 	echo "deploy: WARNING — error lines in the fresh journal:" >&2
 	printf '%s\n' "$errors" | tail -5 >&2
 fi
 echo "deploy: lithium now $(git log -1 --format='%h %s')"
 echo "deploy: was $old_rev"
-# Ignored app/dist and node_modules survive a reset — reinstall and
-# rebuild the rolled-back revision or the old backend runs beside the
-# new client/deps.
-echo "deploy: rollback: cd ~/build/little-goblin && git reset --hard $old_rev && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin"
+rollback
 REMOTE
 
 step "memory stack on $remote_host (if installed):"
-ssh -o BatchMode=yes "$remote_host" \
-	'podman inspect goblin-memory-api --format "  goblin-memory-api: {{.State.Health.Status}} (streak {{.State.Health.FailingStreak}})"' \
-	2>/dev/null || echo "  not installed / podman unavailable"
+ssh -o BatchMode=yes "$remote_host" bash -s <<'MEMORY'
+set -euo pipefail
+if ! command -v podman >/dev/null; then
+	echo "  podman unavailable; memory stack not probed"
+	exit 0
+fi
+if podman container exists goblin-memory-api; then
+	health="$(podman inspect goblin-memory-api --format '{{.State.Health.Status}}')"
+	echo "  goblin-memory-api: $health"
+	[ "$health" = healthy ] || {
+		echo "deploy: memory API is not healthy ($health)" >&2
+		exit 1
+	}
+else
+	status=$?
+	# Podman's exists contract: 1 means absent; other codes are failures.
+	[ "$status" -eq 1 ] || exit "$status"
+	load_state="$(systemctl --user show --property=LoadState --value goblin-memory-api.service)"
+	if [ "$load_state" = not-found ]; then
+		echo "  memory stack not installed"
+	else
+		echo "deploy: memory API unit is $load_state but its container is absent; inspect systemctl --user status goblin-memory-api" >&2
+		exit 1
+	fi
+fi
+MEMORY
 
 step "done: $remote_host @ $(git log -1 --format='%h' "$new_rev")"

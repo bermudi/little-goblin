@@ -8,11 +8,8 @@ Run by podman inside the container — `HealthCmd` in
 A standalone file, deliberately not a `python -c` one-liner: a quadlet
 `HealthCmd` string passes through two lexers — systemd's unit parser,
 then podman's CMD-SHELL re-quoting — and podman 5.4 (Debian trixie,
-lithium) drops the trailing escaped quote of the one-liner form. Every
-probe then died with `sh: Unterminated quoted string`, the container
-read permanently `unhealthy`, and the 5-minute watch restart-looped a
-perfectly healthy API (found 2026-10-08; g7's podman 6.1.3 happens to
-re-quote it correctly, which is why the same file worked there).
+lithium) drops the trailing escaped quote of the one-liner form,
+causing `sh: Unterminated quoted string` instead of a readiness result.
 `python /opt/goblin-memory-healthcheck.py` carries no shell
 metacharacters for any podman/systemd pair to lose.
 """

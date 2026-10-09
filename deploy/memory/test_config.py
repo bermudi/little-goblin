@@ -107,7 +107,7 @@ class MemoryAssetsTest(unittest.TestCase):
                 self.assertEqual(container["PublishPort"], "127.0.0.1:8888:8888")
                 # The probe is a mounted script with no shell metacharacters
                 # — a `python -c` one-liner dies in podman 5.4's CMD-SHELL
-                # re-quoting (2026-10-08 lithium restart loop).
+                # re-quoting.
                 self.assertEqual(
                     container["HealthCmd"],
                     "/app/api/.venv/bin/python /opt/goblin-memory-healthcheck.py")

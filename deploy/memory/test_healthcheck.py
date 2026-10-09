@@ -48,18 +48,22 @@ class HealthcheckTest(unittest.TestCase):
             self.assertEqual(healthcheck.main(url), expected)
 
     def test_2xx_is_healthy(self) -> None:
-        server, _thread = serve(200)
+        server, thread = serve(200)
         try:
             self.assert_probe(0, f"http://127.0.0.1:{server.server_address[1]}/x")
         finally:
             server.shutdown()
+            thread.join()
+            server.server_close()
 
     def test_error_status_is_unhealthy(self) -> None:
-        server, _thread = serve(503)
+        server, thread = serve(503)
         try:
             self.assert_probe(1, f"http://127.0.0.1:{server.server_address[1]}/x")
         finally:
             server.shutdown()
+            thread.join()
+            server.server_close()
 
     def test_connection_refused_is_unhealthy(self) -> None:
         self.assert_probe(1, f"http://127.0.0.1:{dead_port()}/x")

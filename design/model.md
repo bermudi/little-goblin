@@ -197,24 +197,28 @@ agent loop.
   meant for `ffmpeg` shouldn't pay whisper for lyrics, so it is never
   transcribed eagerly and never inlines (the `speech` marker above).
   On-demand transcription of attached audio is the `transcribe` tool's
-  job — same provider, same segmentation, called deliberately.
-  When `transcription` is configured (`kind: groq`, whisper `model`, `auth`
-  ref — other kinds slot in as the SDK grows transcription providers),
-  intake transcribes the saved recording once and stores the text inside
-  the `data-attachment` part. Eager, not per-turn: the transcript is
-  durable history, and materialization prefers it over the path
-  reference whenever the file can't go inline — wrong modality or spent
-  budget — while audio-capable models still get the file part. The call rides the
-  per-conversation intake chain (off the update hot path), bounded at 60s
-  per call. Files over the provider's 25 MiB upload cap are segmented, not
-  skipped: ffmpeg extracts the audio track to mono opus — a video note's
-  payload is mostly pixels — and splits it into 15-minute chunks,
-  transcribed sequentially and joined; a partial result is kept and
-  warn-logged rather than discarded. ffmpeg presence is probed at boot
-  when transcription is configured, and install.sh warns when the config
-  names it but PATH lacks it. A failed transcription — whisper down,
-  ffmpeg missing, corrupt media — leaves the attachment path-referenced
-  and warn-logged: it must never eat a voice message.
+  job — same engine, same segmentation, called deliberately.
+  When `transcription` is configured, intake transcribes the saved
+  recording once and stores the text inside the `data-attachment` part
+  (the engine layer — whistle local default plus seven cloud kinds
+  behind one `SpeechEngine` interface — is designed in
+  [`asr.md`](asr.md)).
+  Eager, not per-turn: the transcript is durable history, and
+  materialization prefers it over the path reference whenever the file
+  can't go inline — wrong modality or spent budget — while
+  audio-capable models still get the file part. The call rides the
+  per-conversation intake chain (off the update hot path), bounded per
+  call by each engine's own timeout (60 s multipart, 120 s chat/local).
+  Files over the provider's upload cap are segmented, not skipped:
+  ffmpeg extracts the audio track to mono opus — a video note's payload
+  is mostly pixels — and splits it into fixed chunks, transcribed
+  sequentially and joined; the local whistle engine instead converts
+  everything to 16 kHz mono wav at its 30 s ceiling. A partial result is
+  kept and warn-logged rather than discarded. ffmpeg presence is probed
+  at boot when transcription is configured, and install.sh warns when
+  the config names it but PATH lacks it. A failed transcription —
+  provider down, ffmpeg missing, corrupt media — leaves the attachment
+  path-referenced and warn-logged: it must never eat a voice message.
 
 ## No step budget — loops are caught, not capped
 

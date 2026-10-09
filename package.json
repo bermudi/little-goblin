@@ -15,7 +15,6 @@
 		"app:build": "vite build app"
 	},
 	"dependencies": {
-		"@ai-sdk/groq": "4.0.50",
 		"@ai-sdk/openai": "4.0.78",
 		"@ai-sdk/openai-compatible": "^3.0.0",
 		"@ai-sdk/provider-utils": "5",

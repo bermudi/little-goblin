@@ -15,6 +15,8 @@ import {
 	fetchKinds,
 	providerKinds,
 	searchKinds,
+	transcriptionDefaults,
+	transcriptionKinds,
 	writeConfig,
 	type Config,
 	type ProviderConfig,
@@ -75,6 +77,11 @@ export interface HttpDeps {
 		/** Boot-bound queue/client destination; edits apply after restart. */
 		target?: { baseUrl: string; bankId: string };
 		counts(): MemoryQueueCounts;
+		// Outstanding forget work across all destinations — parked rows
+		// bind to the bank that owns them, so this stays visible after a
+		// destination change while counts() reads zero. Wired from
+		// queue.deletingCount() in index.ts.
+		deletingAll(): number;
 		blockedDetail(): BlockedRetention[];
 		lastRecallOk(): boolean | null;
 		lastRecallAt(): string | null;
@@ -141,6 +148,8 @@ export interface ConfigResponse {
 	providerKinds: typeof providerKinds;
 	searchKinds: typeof searchKinds;
 	fetchKinds: typeof fetchKinds;
+	transcriptionKinds: typeof transcriptionKinds;
+	transcriptionDefaults: typeof transcriptionDefaults;
 }
 
 // What the page POSTs: the config with optional blocks sent as "" to
@@ -155,7 +164,20 @@ export interface ConfigPostBody {
 	favorites: string[];
 	thinking: ThinkingLevel;
 	tts: "" | { kind: "edge"; voice: string; rate: string | undefined; voices: string[] | undefined };
-	transcription: "" | { kind: "groq"; model: string; auth: string };
+	// Absent/blank fields mean "the kind's default" (model, auth) or
+	// "detect" (language); keywords/engine/weights are whistle-only and
+	// round-tripped untouched so a page save never drops hand edits.
+	transcription:
+		| ""
+		| {
+				kind: (typeof transcriptionKinds)[number];
+				model?: string;
+				auth?: string;
+				language?: string;
+				keywords?: string[];
+				engine?: string;
+				weights?: string;
+		  };
 	// The vision tool's image-Q&A model — "" clears, like titleModel.
 	// mode is a hand-edit escape hatch the page round-trips untouched.
 	vision: "" | { model: string; maxTokens: number; mode?: "auto" | "always" };
@@ -382,6 +404,7 @@ function memoryStatusResponse(deps: HttpDeps): MemoryStatusResponse {
 	const status = memoryStatus({
 		enabled: true,
 		counts,
+		deletingAll: mem.deletingAll(),
 		lastRecallOk,
 		lastRecallAt,
 		blockedDetail: mem.blockedDetail(),
@@ -842,6 +865,8 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 						providerKinds,
 						searchKinds,
 						fetchKinds,
+						transcriptionKinds,
+						transcriptionDefaults,
 					} satisfies ConfigResponse,
 					{ headers: { ...NO_STORE, etag: configTag(config) } },
 				);

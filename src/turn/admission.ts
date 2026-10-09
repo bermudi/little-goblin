@@ -57,7 +57,7 @@ export interface AdmissionRecovery {
 // Immutable input to recall, view assembly, and finish — everything
 // derived from it per attempt is a value computed fresh, never stored
 // back.
-export interface AdmissionSnapshot<M extends AdmittedMember = AdmittedMember> {
+export interface AdmissionSnapshot {
 	conv: Conversation;
 	epoch: number;
 	// The entries this attempt OWNS, oldest first. Bounded by ownership,
@@ -74,22 +74,17 @@ export interface AdmissionSnapshot<M extends AdmittedMember = AdmittedMember> {
 	steerMarkSeed: number;
 	// Admission to done. A resume keeps the failed attempt's start.
 	turnStartMs: number;
-	// Claimed by the resume claim — the claim seam registered them
-	// into the caller's membership at the splice, so ownership is never
-	// pending on this function returning; the snapshot carries the
-	// record of what was taken.
-	claimed: M[];
 }
 
-export type AdmissionOutcome<M extends AdmittedMember = AdmittedMember> =
-	| { kind: "admitted"; snapshot: AdmissionSnapshot<M> }
+export type AdmissionOutcome =
+	| { kind: "admitted"; snapshot: AdmissionSnapshot }
 	| { kind: "missing" }
 	| { kind: "settings-failed"; message: string };
 
 export function admitTurn<M extends AdmittedMember = AdmittedMember>(
 	deps: AdmissionDeps<M>,
 	recovery?: AdmissionRecovery,
-): AdmissionOutcome<M> {
+): AdmissionOutcome {
 	let conv = deps.getConversation();
 	if (conv === null) {
 		// The sink contract still holds: the caller answers with exactly
@@ -109,8 +104,11 @@ export function admitTurn<M extends AdmittedMember = AdmittedMember>(
 	const epoch = conv.epoch;
 	// A resume owns whatever queued while the overflow compaction ran:
 	// those messages are already inside the fresh snapshot below, so
-	// leaving them pending would steer them in a second time.
-	const claimed = recovery === undefined ? [] : deps.claimQueued(deps.live);
+	// leaving them pending would steer them in a second time. The claim
+	// seam registers them into the caller's membership at the splice —
+	// admission returns nothing about them; the fresh snapshot's
+	// ownership read below is what makes them this attempt's input.
+	if (recovery !== undefined) deps.claimQueued(deps.live);
 	// Taken before any await: a /compact landing mid-turn cannot rewrite
 	// what this attempt already sees — newer input steers in later, but
 	// recall and the reply anchor read THIS snapshot.
@@ -132,7 +130,6 @@ export function admitTurn<M extends AdmittedMember = AdmittedMember>(
 			anchorSeq,
 			steerMarkSeed,
 			turnStartMs: recovery?.startedAt ?? deps.now(),
-			claimed,
 		},
 	};
 }

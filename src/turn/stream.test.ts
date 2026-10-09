@@ -17,6 +17,7 @@ import { z } from "zod";
 import { APICallError, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { ATTACHMENT_PART } from "../agent/attachments.ts";
 import { log } from "../log.ts";
+import { LOOP_DETECT_WARN } from "../loop-detect.ts";
 import { TurnState } from "./state.ts";
 import {
 	claimMembers,
@@ -601,6 +602,58 @@ describe("driveStream", () => {
 		holds = false;
 		release();
 		await expect(driving).rejects.toThrow("epoch advanced");
+	});
+
+	test("a rejected tool call still feeds the repeat detector — warning at threshold", async () => {
+		// A provider emitting invalid input gets tool-input-error, then the
+		// SDK's tool-error carrying only the id (mapped to tool-output-error).
+		// Without the callById record the detector hashes each rejection under
+		// a random id and never trips; with it, ten identical rejections warn.
+		const input = JSON.stringify({ q: "same" });
+		const oneRejection = (n: number): LanguageModelV4StreamPart[] => [
+			{ type: "stream-start", warnings: [] },
+			{
+				type: "tool-call",
+				toolCallId: `rej-${n}`,
+				toolName: "probe",
+				input,
+				invalid: true,
+				error: new Error("invalid input"),
+				dynamic: false,
+			} as unknown as LanguageModelV4StreamPart,
+			{
+				type: "finish",
+				finishReason: { unified: "tool-calls", raw: undefined },
+				usage: {
+					inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+					outputTokens: { total: 1, text: undefined, reasoning: undefined },
+				},
+			},
+		];
+		const scripts = [
+			...Array.from({ length: LOOP_DETECT_WARN }, (_, i) => oneRejection(i)),
+			textReply("gave up asking"),
+		];
+		const badProbe = tool({
+			inputSchema: z.object({ want: z.string() }),
+			execute: async () => "unreachable — schema rejects first",
+		});
+		const warnSpy = spyOn(log, "warn").mockImplementation(() => {});
+		try {
+			const r = rig(scripts);
+			r.deps.tools = { probe: badProbe };
+			const outcome = await driveStream(r.deps);
+			expect(outcome.kind).toBe("ok");
+			// Ten identical rejected calls hit the detector's warn threshold;
+			// the detector's warn line fires (plus the ten rejection lines).
+			const detectorWarns = warnSpy.mock.calls.filter((c) => c[0] === "loop detector");
+			expect(detectorWarns).toHaveLength(1);
+			expect(detectorWarns[0]![1]).toMatchObject({ tool: "probe", count: LOOP_DETECT_WARN });
+			// The warning rides the next request as a Loop check tail.
+			expect(r.prompts.at(-1)).toContain("Loop check:");
+		} finally {
+			warnSpy.mockRestore();
+		}
 	});
 
 	test("the digest ring captures bounded evidence while the stream lives", async () => {

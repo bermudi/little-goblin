@@ -3,38 +3,71 @@
 Voice works in both directions: the bot listens (transcription) and speaks
 (text-to-speech). Transcription is opt-in; speech is on by default, but can
 be turned off independently with `tts: ""`. Speech needs `ffmpeg` in the
-bot's `PATH`; transcription needs it for files over the provider upload cap.
+bot's `PATH`; transcription needs it for the whistle engine (always — it is
+the decoder) and for cloud files over the provider upload cap.
 
 ## Hearing you: transcription
 
+The default engine is **whistle** — a small speech model that runs on the
+same machine as the bot. No key, no account, and the audio never leaves
+the box: the engine binary has no network code at all.
+
 ```json5
 transcription: {
-  kind: "groq",
-  model: "whisper-large-v3-turbo",
-  auth: "groq",
+  kind: "whistle",
+  keywords: ["goblin", "bermudi"], // optional — names it keeps misspelling
 },
 ```
 
-With this set, every voice note and video note is transcribed once, when
-it arrives — before the model ever sees it. The transcript is stored with
-the message, permanently. Models that can hear audio get the audio;
-models that can't read the transcript instead of staring at a bare file
-path. Either way your words are never lost.
+Its ~18 MB engine and weights download automatically the first time a
+voice note arrives, once, into `~/goblin/cache/whistle` (digest-pinned —
+upstream tampering fails loud instead of running different weights).
+It understands English, German, French, Spanish, Italian, Dutch, and
+Polish and auto-detects which; add `language: "es"` to pin one.
+
+Whistle is small and local — fast and private, but its accuracy is a notch
+below the big cloud models and its language list is short. Every cloud
+speech API is one config flip away, with audio sent to that provider:
+
+```json5
+transcription: { kind: "groq" },        // whisper-large-v3-turbo (default)
+transcription: { kind: "openai" },     // gpt-4o-mini-transcribe
+transcription: { kind: "mistral" },    // voxtral
+transcription: { kind: "elevenlabs" }, // scribe_v2
+transcription: { kind: "gemini" },     // gemini-flash-latest
+transcription: { kind: "mimo" },       // xiaomi/mimo-v2.6-flash, via openrouter
+transcription: { kind: "openrouter", model: "elevenlabs/scribe-v2" }, // the STT catalog
+```
+
+Each kind defaults its `model` and its `auth` (the `auth.jsonl` record
+name — usually the kind's own name; mimo reuses `openrouter`). Override
+either explicitly, and add `language: "es"` to skip detection. Long
+files are segmented automatically whatever the kind; openrouter warns
+of ~60 s upstream processing per request, so prefer whistle or groq
+for hour-long recordings.
+
+With transcription set, every voice note and video note is transcribed
+once, when it arrives — before the model ever sees it. The transcript is
+stored with the message, permanently. Models that can hear audio get the
+audio; models that can't read the transcript instead of staring at a bare
+file path. Either way your words are never lost.
 
 Attached audio is different: an mp3 or flac you *send* is a file, not a
 recording — maybe a song to convert, maybe a podcast to transcribe, and
 only you know which. So attached audio is never transcribed eagerly and
 its bytes never go to the model; it lands in the workspace like any
 other file. Ask the bot to transcribe it and the `transcribe` tool does
-that, on the same provider.
+that, on the same engine.
 
 Practical notes:
 
 - Transcription happens in the background per topic, so a slow voice note
   never blocks other topics (or `/stop`).
-- Files over the provider's 25 MB upload cap are split into 15-minute audio
-  chunks, transcribed piece by piece, and joined — video notes shrink a lot
-  here, since the audio track alone is a fraction of the file.
+- Files over the provider's upload cap (25 MB for the cloud kinds; the
+  chat-based kinds cap lower) are split into chunks, transcribed piece by
+  piece, and joined — video notes shrink a lot here, since the audio
+  track alone is a fraction of the file. Whistle always converts to its
+  native format and splits at its 30 s ceiling.
 - If transcription fails (provider down, `ffmpeg` missing, corrupt file),
   the attachment stays as a file reference and the log says why. A failed
   transcript never eats your message.

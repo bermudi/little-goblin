@@ -13,7 +13,7 @@
 // only through methods here, never by rebinding a local.
 
 import type { JevClient } from "../jev.ts";
-import { LoopDetector, type LoopDetectorState } from "../loop-detect.ts";
+import { LoopDetector, LOOP_DETECT_WARN, type LoopDetectorState } from "../loop-detect.ts";
 import { LOOP_CHARS, LOOP_QUESTIONS, LOOP_WINDOW, loopState } from "../loop-watchdog.ts";
 import { log } from "../log.ts";
 import { summarize, toolOk, type ToolCallDigest } from "../reviewer.ts";
@@ -56,7 +56,7 @@ export interface LoopTurnState {
 // messages override forward, so it lands exactly once per step. The
 // warn cursor is what keeps it once per attempt.
 const REPEAT_WARN =
-	"Loop check: you have made the same tool call and gotten the same result 10 times this turn. Repeating it will not change the outcome. Change approach, or stop and tell the operator what is blocking you. If you are deliberately waiting on something, wait longer between checks.";
+	`Loop check: you have made the same tool call and gotten the same result ${LOOP_DETECT_WARN} times this turn. Repeating it will not change the outcome. Change approach, or stop and tell the operator what is blocking you. If you are deliberately waiting on something, wait longer between checks.`;
 const WATCHDOG_WARN =
 	"Progress check: your recent tool calls look stuck — they are not producing new information. Change approach, or if this cannot be done this way, stop and tell the operator what is blocking you.";
 

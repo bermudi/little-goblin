@@ -1,10 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { TranscriptionModelV2 } from "@ai-sdk/provider";
-import type { AuthStore } from "../auth.ts";
-import { transcribeAudio, transcriptionModel } from "./transcribe.ts";
+import { transcribeAudio, type EngineTranscript, type SpeechEngine } from "./transcribe.ts";
 
 let dirs: string[] = [];
 function tmpdir_(): string {
@@ -17,22 +15,24 @@ afterEach(() => {
 	dirs = [];
 });
 
-const fakeModel = (text: string, calls?: { n: number }): TranscriptionModelV2 => ({
-	specificationVersion: "v2",
-	provider: "test",
-	modelId: "fake-whisper",
-	doGenerate: async () => {
-		if (calls) calls.n += 1;
-		return {
-			text,
-			segments: [],
-			language: "en",
-			durationInSeconds: 1.5,
-			warnings: [],
-			response: { timestamp: new Date(), modelId: "fake-whisper" },
-		};
+// Fake engine: returns canned transcripts and records what it was fed.
+const fakeEngine = (
+	text: string,
+	log?: { calls: { path: string; bytes: Uint8Array }[] },
+	prep: SpeechEngine["prep"] = { container: "keep" },
+	limits: SpeechEngine["limits"] = { maxBytes: 25 * 1024 * 1024, maxSeconds: 15 * 60 },
+): SpeechEngine => ({
+	id: "test/fake-whisper",
+	limits,
+	prep,
+	transcribe: async (file) => {
+		log?.calls.push({ path: file.path, bytes: readFileSync(file.path) });
+		return { text, language: "en" };
 	},
 });
+
+const keepEngine = (text: string, log?: { calls: { path: string; bytes: Uint8Array }[] }) =>
+	fakeEngine(text, log);
 
 const file = (path: string): { path: string; mediaType: string; filename: string } => ({
 	path,
@@ -40,11 +40,29 @@ const file = (path: string): { path: string; mediaType: string; filename: string
 	filename: "v.ogg",
 });
 
+function genAudio(dest: string, seconds: number): void {
+	const gen = Bun.spawnSync([
+		"ffmpeg",
+		"-hide_banner",
+		"-loglevel",
+		"error",
+		"-f",
+		"lavfi",
+		"-i",
+		`sine=frequency=440:duration=${seconds}`,
+		"-ac",
+		"1",
+		"-b:a",
+		"48k",
+		dest,
+	]);
+	if (gen.exitCode !== 0) throw new Error(`test audio gen: ${gen.stderr.toString()}`);
+}
+
 // Codec name from the start of an Ogg stream: opus pages open with
 // "OpusHead", vorbis with "\u0001vorbis", FLAC-in-Ogg with "\u007fFLAC".
-function oggCodec(audio: Uint8Array | string): string {
-	const bytes = typeof audio === "string" ? Buffer.from(audio, "base64") : audio;
-	const head = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+function oggCodec(audio: Uint8Array): string {
+	const head = Buffer.from(audio.buffer, audio.byteOffset, audio.byteLength)
 		.toString("latin1")
 		.slice(0, 128);
 	if (head.includes("OpusHead")) return "opus";
@@ -53,19 +71,26 @@ function oggCodec(audio: Uint8Array | string): string {
 	return "unknown";
 }
 
+// RIFF fmt chunk: channels at byte offset 22, sample rate at 24 — the
+// wav profile's 16 kHz mono contract, read where ffmpeg wrote it.
+function wavShape(audio: Uint8Array): { channels: number; sampleRate: number } {
+	const view = new DataView(audio.buffer, audio.byteOffset, audio.byteLength);
+	return { channels: view.getUint16(22, true), sampleRate: view.getUint32(24, true) };
+}
+
 describe("transcribeAudio", () => {
 	test("returns the trimmed transcript", async () => {
 		const dir = tmpdir_();
 		const f = join(dir, "v.ogg");
 		writeFileSync(f, "oggdata");
-		expect(await transcribeAudio(fakeModel("  call me back  "), file(f))).toBe("call me back");
+		expect(await transcribeAudio(keepEngine("  call me back  "), file(f))).toBe("call me back");
 	});
 
 	test("silence (empty transcript) → null", async () => {
 		const dir = tmpdir_();
 		const f = join(dir, "v.ogg");
 		writeFileSync(f, "oggdata");
-		expect(await transcribeAudio(fakeModel("   "), file(f))).toBeNull();
+		expect(await transcribeAudio(keepEngine("   "), file(f))).toBeNull();
 	});
 
 	test("over-cap media is segmented to mono opus and joined", async () => {
@@ -74,84 +99,77 @@ describe("transcribeAudio", () => {
 		const src = join(dir, "long.ogg");
 		// 25s of audio → 3 segments at a shrunken 10s split. A 1-byte cap
 		// forces the segment path without a real 25MiB fixture.
-		const gen = Bun.spawnSync([
-			"ffmpeg",
-			"-hide_banner",
-			"-loglevel",
-			"error",
-			"-f",
-			"lavfi",
-			"-i",
-			"sine=frequency=440:duration=25",
-			"-ac",
-			"1",
-			"-b:a",
-			"48k",
-			src,
-		]);
-		if (gen.exitCode !== 0) throw new Error(`test audio gen: ${gen.stderr.toString()}`);
+		genAudio(src, 25);
+		const seen: { path: string; bytes: Uint8Array }[] = [];
 		let n = 0;
-		const codecs: string[] = [];
-		const model: TranscriptionModelV2 = {
-			specificationVersion: "v2",
-			provider: "test",
-			modelId: "fake-whisper",
+		const engine: SpeechEngine = {
+			id: "test/fake-whisper",
+			limits: { maxBytes: 25 * 1024 * 1024, maxSeconds: 15 * 60 },
+			prep: { container: "keep" },
 			// DESIGN.md mandates mono opus: without -c:a the Ogg segment
 			// muxer picks the build's default encoder — libvorbis where
 			// present, else FLAC, which ignores -b:a and can re-exceed the
-			// 25 MiB upload cap. Sniffing what the provider would upload pins
+			// 25 MiB upload cap. Sniffing what the engine would upload pins
 			// that at the boundary.
-			doGenerate: async ({ audio }) => {
+			transcribe: async (seg) => {
 				n += 1;
-				codecs.push(oggCodec(audio));
-				return {
-					text: `chunk-${n}`,
-					segments: [],
-					language: "en",
-					durationInSeconds: 1,
-					warnings: [],
-					response: { timestamp: new Date(), modelId: "fake-whisper" },
-				};
+				const bytes = readFileSync(seg.path);
+				seen.push({ path: seg.path, bytes });
+				return { text: `chunk-${n}` };
 			},
 		};
-		expect(await transcribeAudio(model, file(src), { maxBytes: 1, segmentSeconds: 10 })).toBe(
+		expect(await transcribeAudio(engine, file(src), { maxBytes: 1, segmentSeconds: 10 })).toBe(
 			"chunk-1 chunk-2 chunk-3",
 		);
 		expect(n).toBe(3);
-		expect(codecs).toEqual(["opus", "opus", "opus"]);
+		expect(seen.map(({ bytes }) => oggCodec(bytes))).toEqual(["opus", "opus", "opus"]);
+	});
+
+	test("the wav profile always segments to 16 kHz mono pcm and joins", async () => {
+		if (Bun.which("ffmpeg") === null) return; // environment dep
+		const dir = tmpdir_();
+		const src = join(dir, "note.ogg");
+		genAudio(src, 25);
+		const seen: { path: string; bytes: Uint8Array }[] = [];
+		let n = 0;
+		const engine: SpeechEngine = {
+			id: "whistle",
+			limits: { maxSeconds: 28 },
+			prep: { container: "wav", sampleRateHz: 16_000, mono: true },
+			transcribe: async (seg) => {
+				n += 1;
+				const bytes = readFileSync(seg.path);
+				seen.push({ path: seg.path, bytes });
+				return { text: `seg-${n}`, language: "en" };
+			},
+		};
+		// No maxBytes to trip — the wav profile transcodes regardless.
+		expect(await transcribeAudio(engine, file(src), { segmentSeconds: 10 })).toBe(
+			"seg-1 seg-2 seg-3",
+		);
+		expect(n).toBe(3);
+		for (const { path: p, bytes } of seen) {
+			expect(p.endsWith(".wav")).toBe(true);
+			expect(wavShape(bytes)).toEqual({ channels: 1, sampleRate: 16_000 });
+		}
 	});
 
 	test("an over-cap outage with nothing transcribed fails loud, never reads as no-speech", async () => {
 		if (Bun.which("ffmpeg") === null) return; // environment dep
 		const dir = tmpdir_();
 		const src = join(dir, "long.ogg");
-		const gen = Bun.spawnSync([
-			"ffmpeg",
-			"-hide_banner",
-			"-loglevel",
-			"error",
-			"-f",
-			"lavfi",
-			"-i",
-			"sine=frequency=440:duration=5",
-			"-ac",
-			"1",
-			"-b:a",
-			"48k",
-			src,
-		]);
-		if (gen.exitCode !== 0) throw new Error(`test audio gen: ${gen.stderr.toString()}`);
-		const model: TranscriptionModelV2 = {
-			specificationVersion: "v2",
-			provider: "test",
-			modelId: "fake-whisper",
-			doGenerate: async () => {
+		genAudio(src, 5);
+		const engine: SpeechEngine = {
+			id: "test/fake-whisper",
+			limits: { maxBytes: 25 * 1024 * 1024, maxSeconds: 15 * 60 },
+			prep: { container: "keep" },
+			transcribe: async () => {
 				throw new Error("whisper is down");
 			},
 		};
 		// A null here would ride the tool's fixed "may contain no
 		// speech" string — the provider error must reach the caller.
-		await expect(transcribeAudio(model, file(src), { maxBytes: 1 })).rejects.toThrow(
+		await expect(transcribeAudio(engine, file(src), { maxBytes: 1 })).rejects.toThrow(
 			"whisper is down",
 		);
 	});
@@ -160,43 +178,53 @@ describe("transcribeAudio", () => {
 		if (Bun.which("ffmpeg") === null) return; // environment dep
 		const dir = tmpdir_();
 		const src = join(dir, "long.ogg");
-		const gen = Bun.spawnSync([
-			"ffmpeg",
-			"-hide_banner",
-			"-loglevel",
-			"error",
-			"-f",
-			"lavfi",
-			"-i",
-			"sine=frequency=440:duration=25",
-			"-ac",
-			"1",
-			"-b:a",
-			"48k",
-			src,
-		]);
-		if (gen.exitCode !== 0) throw new Error(`test audio gen: ${gen.stderr.toString()}`);
+		genAudio(src, 25);
 		let n = 0;
-		const model: TranscriptionModelV2 = {
-			specificationVersion: "v2",
-			provider: "test",
-			modelId: "fake-whisper",
-			doGenerate: async () => {
+		const engine: SpeechEngine = {
+			id: "test/fake-whisper",
+			limits: { maxBytes: 25 * 1024 * 1024, maxSeconds: 15 * 60 },
+			prep: { container: "keep" },
+			transcribe: async () => {
 				n += 1;
 				if (n === 2) throw new Error("whisper dropped mid-stream");
-				return {
-					text: `chunk-${n}`,
-					segments: [],
-					language: "en",
-					durationInSeconds: 1,
-					warnings: [],
-					response: { timestamp: new Date(), modelId: "fake-whisper" },
-				};
+				return { text: `chunk-${n}` };
 			},
 		};
 		// Partial beats nothing — the boundary is logged and the prefix kept.
-		expect(await transcribeAudio(model, file(src), { maxBytes: 1, segmentSeconds: 10 })).toBe(
+		expect(await transcribeAudio(engine, file(src), { maxBytes: 1, segmentSeconds: 10 })).toBe(
 			"chunk-1",
+		);
+	});
+
+	test("every segment silent → null", async () => {
+		if (Bun.which("ffmpeg") === null) return; // environment dep
+		const dir = tmpdir_();
+		const src = join(dir, "long.ogg");
+		genAudio(src, 5);
+		const engine: SpeechEngine = {
+			id: "whistle",
+			limits: { maxSeconds: 28 },
+			prep: { container: "wav", sampleRateHz: 16_000, mono: true },
+			transcribe: async () => ({ text: "", language: "" }),
+		};
+		expect(await transcribeAudio(engine, file(src), { segmentSeconds: 10 })).toBeNull();
+	});
+
+	test("past the segment ceiling the transcription fails loud, not slow", async () => {
+		if (Bun.which("ffmpeg") === null) return; // environment dep
+		const dir = tmpdir_();
+		const src = join(dir, "long.ogg");
+		genAudio(src, 11);
+		const engine: SpeechEngine = {
+			id: "whistle",
+			limits: { maxSeconds: 28 },
+			prep: { container: "wav", sampleRateHz: 16_000, mono: true },
+			transcribe: async () => ({ text: "x" }),
+		};
+		// 11 s at 40 ms segments → 275 segments > 240: the guard fires
+		// before any engine call grinds through them.
+		await expect(transcribeAudio(engine, file(src), { segmentSeconds: 0.04 })).rejects.toThrow(
+			"275 segments (max 240)",
 		);
 	});
 
@@ -204,37 +232,14 @@ describe("transcribeAudio", () => {
 		if (Bun.which("ffmpeg") === null) return;
 		const f = join(tmpdir_(), "junk.ogg");
 		writeFileSync(f, "definitely not audio");
-		await expect(transcribeAudio(fakeModel("x"), file(f), { maxBytes: 1 })).rejects.toThrow(
+		await expect(transcribeAudio(keepEngine("x"), file(f), { maxBytes: 1 })).rejects.toThrow(
 			"ffmpeg",
 		);
 	});
 
 	test("a missing file fails loud", async () => {
 		await expect(
-			transcribeAudio(fakeModel("x"), file(join(tmpdir_(), "gone.ogg"))),
+			transcribeAudio(keepEngine("x"), file(join(tmpdir_(), "gone.ogg"))),
 		).rejects.toThrow();
-	});
-});
-
-describe("transcriptionModel", () => {
-	test("groq resolves its auth ref and builds the named model", async () => {
-		const resolved: string[] = [];
-		const auth: AuthStore = {
-			resolve: async (name) => {
-				resolved.push(name);
-				return "key";
-			},
-			has: () => true,
-			names: () => [],
-		};
-		const model = await transcriptionModel(
-			{ kind: "groq", model: "whisper-large-v3", auth: "groq" },
-			auth,
-		);
-		expect(resolved).toEqual(["groq"]);
-		// TranscriptionModel is a version union (string | V2 | V3 | V4) —
-		// groq returns a V4 instance; assert through a narrowing cast
-		// rather than widening the production type.
-		expect((model as { modelId: string }).modelId).toBe("whisper-large-v3");
 	});
 });

@@ -447,9 +447,22 @@ def cmd_recall(args: argparse.Namespace) -> None:
 			print(f"  {name:<24} size={size:<5} p50={walls[len(walls) // 2]:.0f}ms max={walls[-1]:.0f}ms")
 
 	# --- quality A/B ---
-	bank_facts = post_json(f"{args.api}/v1/default/banks/{args.bank}/memories/list?limit=200&offset=0", None)
-	fact_items = [f for f in bank_facts["items"] if f.get("text")]
+	fact_items: list[dict] = []
+	offset = 0
+	while True:
+		page = post_json(f"{args.api}/v1/default/banks/{args.bank}/memories/list?limit=200&offset={offset}", None)
+		items = page["items"]
+		fact_items.extend(f for f in items if f.get("text"))
+		if len(items) < 200:
+			break
+		offset += 200
 	queries = json.loads((FIXTURES / "gold_queries.json").read_text())
+	# Fail loud before any embedding spend: a gold id missing from the
+	# corpus would otherwise silently score 0 for that query.
+	corpus_ids = {f["id"][:8] for f in fact_items}
+	missing = sorted({g[:8] for q in queries for g in q["gold"]} - corpus_ids)
+	if missing:
+		fail(f"gold ids missing from the bank corpus: {', '.join(missing)}")
 	print(f"\nquality A/B: {len(queries)} gold queries x {len(fact_items)} facts (corpus embedded with both models)")
 	corpus_texts = [f["text"] for f in fact_items]
 	scores: dict[str, dict[str, float]] = {}

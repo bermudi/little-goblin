@@ -398,6 +398,7 @@ describe("mini-app memory status", () => {
 				dismissed: 0,
 				deleting: 0,
 			}),
+			deletingAll: () => 0,
 			blockedDetail: () => [],
 			lastRecallOk: () => true,
 			lastRecallAt: () => null,
@@ -460,6 +461,7 @@ describe("mini-app memory status", () => {
 				dismissed: 0,
 				deleting: 0,
 			}),
+			deletingAll: () => 0,
 			blockedDetail: () => [],
 			lastRecallOk: () => true,
 			lastRecallAt: () => "2026-09-25T12:00:00.000Z",
@@ -488,6 +490,7 @@ describe("mini-app memory status", () => {
 				dismissed: 0,
 				deleting: 2,
 			}),
+			deletingAll: () => 2,
 			blockedDetail: () => [],
 			lastRecallOk: () => true,
 			lastRecallAt: () => null,
@@ -532,6 +535,7 @@ describe("mini-app memory status", () => {
 				dismissed: 1,
 				deleting: 0,
 			}),
+			deletingAll: () => 0,
 			blockedDetail: () => [{ document: "msg-1234", error: "hindsight 500", attempts: 3 }],
 			lastRecallOk: () => false,
 			lastRecallAt: () => "2026-09-25T12:00:00.000Z",
@@ -560,6 +564,24 @@ describe("mini-app memory status", () => {
 // config.ts); the served script must also parse — a typo in a
 // 900-line client otherwise only surfaces on a phone.
 describe("mini-app page serving", () => {
+	test("the transcription card carries every id the client looks up", () => {
+		// app.js asserts ids loudly at runtime ($ throws on a miss), but a
+		// rename in app.ts that keeps the JS waiting would only surface on
+		// a real settings visit — pin the contract statically.
+		const dom = parseHTML(APP_HTML);
+		for (const id of [
+			"trFields",
+			"trKind",
+			"trModelRow",
+			"trModel",
+			"trAuthRow",
+			"trAuth",
+			"trLang",
+		]) {
+			expect(dom.document.getElementById(id), id).not.toBeNull();
+		}
+	});
+
 	test("GET / serves the page, which loads the client from /app.js", async () => {
 		useHome();
 		const http = startHttp({
@@ -886,6 +908,7 @@ describe("mini-app memories browser", () => {
 				dismissed: 0,
 				deleting: 0,
 			}),
+			deletingAll: () => 0,
 			blockedDetail: () => [],
 			lastRecallOk: () => null,
 			lastRecallAt: () => null,
@@ -931,6 +954,7 @@ describe("mini-app memories browser", () => {
 				dismissed: 0,
 				deleting: 0,
 			}),
+			deletingAll: () => 0,
 			blockedDetail: () => [],
 			lastRecallOk: () => null,
 			lastRecallAt: () => null,
@@ -990,6 +1014,7 @@ describe("mini-app memories browser", () => {
 				dismissed: 0,
 				deleting: 0,
 			}),
+			deletingAll: () => 0,
 			blockedDetail: () => [],
 			lastRecallOk: () => null,
 			lastRecallAt: () => null,
@@ -1054,6 +1079,7 @@ describe("mini-app memories browser", () => {
 				dismissed: 0,
 				deleting: 0,
 			}),
+			deletingAll: () => 0,
 			blockedDetail: () => [],
 			lastRecallOk: () => null,
 			lastRecallAt: () => null,
@@ -1096,6 +1122,7 @@ describe("mini-app memories browser", () => {
 					dismissed: 0,
 					deleting: 0,
 				}),
+				deletingAll: () => 0,
 				blockedDetail: () => [],
 				lastRecallOk: () => null,
 				lastRecallAt: () => null,
@@ -1235,4 +1262,60 @@ test("provider removal refuses to strand app selections, lists affected ids, and
 		http.stop();
 		store.close();
 	}
+});
+
+describe("mini-app transcription config", () => {
+	test("the kind lists ride the GET; a whistle save keeps hand-edited keywords", async () => {
+		const { configRef, http, post, get } = setup();
+		try {
+			const loaded = await get("/api/config");
+			const body = (await loaded.json()) as {
+				transcriptionKinds: string[];
+				transcriptionDefaults: Record<string, { model: string; auth: string }>;
+			};
+			expect(body.transcriptionKinds[0]).toBe("whistle");
+			expect(body.transcriptionDefaults.mimo).toEqual({
+				model: "xiaomi/mimo-v2.6-flash",
+				auth: "openrouter",
+			});
+
+			// The page saves the block it loaded, whistle arm: keywords and
+			// engine/weights ride along untouched (hand edits survive).
+			configRef.current.transcription = {
+				kind: "whistle",
+				keywords: ["goblin", "bermudi"],
+				engine: "/opt/whistle/needle",
+			};
+			const saved = await post({
+				transcription: {
+					kind: "whistle",
+					language: "es",
+					keywords: ["goblin", "bermudi"],
+					engine: "/opt/whistle/needle",
+				},
+			});
+			expect(saved.ok).toBe(true);
+			const after = loadConfig()?.transcription;
+			expect(after).toEqual({
+				kind: "whistle",
+				keywords: ["goblin", "bermudi"],
+				engine: "/opt/whistle/needle",
+				language: "es",
+			});
+
+			// A bare cloud arm saves with defaults; "" clears the block.
+			const savedCloud = await post({ transcription: { kind: "groq" } });
+			expect(savedCloud.ok).toBe(true);
+			expect(loadConfig()?.transcription).toEqual({
+				kind: "groq",
+				model: "whisper-large-v3-turbo",
+				auth: "groq",
+			});
+			const cleared = await post({ transcription: "" });
+			expect(cleared.ok).toBe(true);
+			expect(loadConfig()?.transcription).toBeUndefined();
+		} finally {
+			http.stop();
+		}
+	});
 });

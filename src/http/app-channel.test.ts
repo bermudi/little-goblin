@@ -322,6 +322,58 @@ describe("app channel browser-origin gate (trust mode, #75)", () => {
 		}
 	});
 
+	test("a spoofed Host minting its own Origin match is refused (DNS rebinding)", async () => {
+		const { http, call } = setup({ token: undefined });
+		try {
+			// Attacker DNS points evil.example at our endpoint; both
+			// Host and Origin name it — the old Host-echo made that
+			// look same-origin. Only loopback Hosts may mint a match.
+			const rebound = await call(
+				"/api/app/conversations",
+				{
+					method: "POST",
+					headers: {
+						host: "evil.example:9999",
+						origin: "http://evil.example:9999",
+						"content-type": "application/json",
+					},
+					body: JSON.stringify({ id: "rebind-01" }),
+				},
+				null,
+			);
+			expect(rebound.status).toBe(403);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("an unrecognized Host-derived origin is refused once publicUrl is set", async () => {
+		const { http, call, configRef } = setup({ token: undefined });
+		try {
+			configRef.current = {
+				...configRef.current,
+				publicUrl: "https://goblin.example.ts.net",
+			} as Config;
+			// The tailnet/local Host no longer mints its own match —
+			// the pinned publicUrl is the only browser origin.
+			const direct = await call(
+				"/api/app/conversations",
+				{
+					method: "POST",
+					headers: {
+						origin: `http://127.0.0.1:${http.port}`,
+						"content-type": "application/json",
+					},
+					body: JSON.stringify({ id: "pinned-01" }),
+				},
+				null,
+			);
+			expect(direct.status).toBe(403);
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("an opaque origin (null) and Sec-Fetch-Site: cross-site are refused", async () => {
 		const { http, call } = setup({ token: undefined });
 		try {

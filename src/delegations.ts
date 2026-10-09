@@ -119,10 +119,6 @@ export interface DelegationsStore {
 	/** Rows stuck mid-launch — only meaningful to a fresh watcher:
 	 *  a `starting` row across a restart means goblin died mid-start. */
 	starting(): Delegation[];
-	/** Live rows still carrying NULL target — they predate the target
-	 *  column and run on the own local session (the pre-machines
-	 *  meaning); boot warns rather than guessing silently. */
-	liveRowsWithNullTarget(): number;
 	close(): void;
 }
 
@@ -350,14 +346,6 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		},
 		starting() {
 			return qStarting.all().map(rowToDelegation);
-		},
-		liveRowsWithNullTarget() {
-			const row = db
-				.query(
-					"SELECT COUNT(*) AS n FROM delegations WHERE target IS NULL AND status IN ('starting','running','needs_input')",
-				)
-				.get() as { n: number } | null;
-			return row?.n ?? 0;
 		},
 		close() {
 			db.close();

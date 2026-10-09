@@ -1556,6 +1556,120 @@ describe("delegation watcher", () => {
 			expect(paneRuns[0]).toContain('[projects."/remote/go\\"bin\\\\x"]');
 		});
 
+		test("a machine seed leaves an existing symlink alone — dangling or not", async () => {
+			const h = harness();
+			const paneRuns: string[] = [];
+			(h.deps.targets as Map<string, DelegationTargetDeps>).set("g7", {
+				machine: "g7",
+				herdr: {
+					...h.deps.herdr,
+					createWorkspace: async (cwd) => ({ workspaceId: "w5", paneId: "w5:p1", cwd }),
+					startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
+					paneRun: (_pane, command) => {
+						paneRuns.push(command);
+						return Promise.resolve();
+					},
+				},
+			});
+			const owner = startDelegationLifecycle(h.deps);
+			const out = await owner.launch({
+				harness: { name: "codex", kind: "codex", args: [] },
+				task: "quoted",
+				cwd: "/remote/task",
+				name: "quoted",
+				target: "g7",
+				address: { chatId: 1, threadId: null },
+			});
+			owner.stopTicker();
+			expect(out.kind).toBe("started");
+			// The absent test distinguishes a truly missing file from an
+			// existing path of any kind: `-e` alone follows a
+			// dangling symlink to false, so `-L` must also refuse —
+			// writing then would create the link's target (repairing a
+			// link the local seeder refuses to replace) or clobber a
+			// directory/pipe the operator owns on that host.
+			expect(paneRuns[0]).toContain(
+				"[ -e ~/.codex/config.toml ] || [ -L ~/.codex/config.toml ] || printf",
+			);
+			expect(paneRuns[0]).not.toContain("[ -f ");
+		});
+
+		test("a remote trust wait timeout proceeds — a missed gate parks, never fails", async () => {
+			const h = harness();
+			const closed: string[] = [];
+			(h.deps.targets as Map<string, DelegationTargetDeps>).set("g7", {
+				machine: "g7",
+				herdr: {
+					...h.deps.herdr,
+					createWorkspace: async (cwd) => ({ workspaceId: "w5", paneId: "w5:p1", cwd }),
+					startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
+					paneWaitOutput: () =>
+						Promise.reject(new HerdrError("pane wait-output", "timeout", "timed out")),
+					closeWorkspace: (id) => {
+						closed.push(id);
+						return Promise.resolve();
+					},
+				},
+			});
+			const owner = startDelegationLifecycle(h.deps);
+			const out = await owner.launch({
+				harness: { name: "codex", kind: "codex", args: [] },
+				task: "remote",
+				cwd: "/remote/task",
+				name: "remote",
+				target: "g7",
+				address: { chatId: 1, threadId: null },
+			});
+			owner.stopTicker();
+			// The documented timeout is the one tolerated failure: the
+			// seed may have landed without the marker surfacing, so the
+			// launch proceeds and a missed gate parks the row later.
+			expect(out.kind).toBe("started");
+			expect(closed).toEqual([]);
+		});
+
+		test("a remote trust non-timeout failure fails the launch — never a silent start", async () => {
+			const closed: string[] = [];
+			const failures: { failure: unknown; pane: "run" | "wait" }[] = [
+				{
+					failure: new HerdrError("pane wait-output", "pane_not_found", "pane gone"),
+					pane: "wait",
+				},
+				{ failure: new HerdrError("pane run", "exit_1", "transport down"), pane: "run" },
+				{ failure: new Error("runner blew up"), pane: "run" },
+			];
+			for (const { failure, pane } of failures) {
+				const hh = harness();
+				(hh.deps.targets as Map<string, DelegationTargetDeps>).set("g7", {
+					machine: "g7",
+					herdr: {
+						...hh.deps.herdr,
+						createWorkspace: async (cwd) => ({ workspaceId: "w5", paneId: "w5:p1", cwd }),
+						...(pane === "wait"
+							? { paneWaitOutput: () => Promise.reject(failure) }
+							: { paneRun: () => Promise.reject(failure) }),
+						closeWorkspace: (id) => {
+							closed.push(id);
+							return Promise.resolve();
+						},
+					},
+				});
+				const owner = startDelegationLifecycle(hh.deps);
+				const out = await owner.launch({
+					harness: { name: "codex", kind: "codex", args: [] },
+					task: "remote",
+					cwd: "/remote/task",
+					name: "remote",
+					target: "g7",
+					address: { chatId: 1, threadId: null },
+				});
+				owner.stopTicker();
+				expect(out.kind).toBe("failed");
+				if (out.kind === "failed") expect(out.why).toContain("remote trust seed failed");
+			}
+			expect(closed).toEqual(["w5", "w5", "w5"]);
+		});
+
 		test("a vanished machine report path is unavailable, never a local substitute", async () => {
 			const h = harness();
 			const targets = h.deps.targets as Map<string, DelegationTargetDeps>;

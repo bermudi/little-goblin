@@ -764,6 +764,34 @@ describe("handleGuestUpdate", () => {
 		expect(store.modelEntries("guest:-100:9")).toHaveLength(1);
 	});
 
+	test("a promotion to personal keeps prior sandbox history", async () => {
+		const { env, guestStore, store, submitted } = makeEnv();
+		guestStore.open(-100, 7);
+		await handleGuestUpdate(env, guestMsg({ guest_query_id: "sand" }), 60);
+		expect(submitted[0]?.conv.persona).toBe("guest");
+		// The fake runtime records submits without appending (the real
+		// Runtime.submit appends first) — persist the sandbox exchange
+		// the way the real submit would.
+		store.append("guest:-100:9", [
+			submitted[0]!.message,
+			{ id: "a1", role: "assistant", parts: [{ type: "text", text: "sandbox answer" }] },
+		]);
+		expect(store.history("guest:-100:9")).toHaveLength(2);
+		// Promoted: user 9 joins allowedUsers → same address, personal turn.
+		env.configRef.current = {
+			...env.configRef.current,
+			allowedUsers: [7, 9],
+		} as typeof env.configRef.current;
+		submitted.length = 0;
+		await handleGuestUpdate(env, guestMsg({ guest_query_id: "prom" }), 61);
+		expect(submitted).toHaveLength(1);
+		expect(submitted[0]?.conv.persona).toBe("personal");
+		// Same conversation row, not a reset — sandbox exchanges are
+		// safe for the operator to see, so the history survives.
+		expect(store.history("guest:-100:9")).toHaveLength(2);
+		expect(store.modelEntries("guest:-100:9")).toHaveLength(2);
+	});
+
 	// Issue #116: the placeholder await is a suspension point between the
 	// eligibility checks and the submit — every state it read can change.
 	// A submit that lands after /off's epoch bump reads the NEW epoch as

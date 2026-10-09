@@ -953,7 +953,17 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 		);
 	});
 	bot.on("message", async (ctx, next) => {
-		if (await routeMemberGuestMessage(guestEnv, ctx.message, ctx.update.update_id)) return;
+		// Labeled catch like handleGuestUpdate's above: the router runs
+		// before the access gate, so without this a throw (possibly
+		// after the budget was charged — admission already ran) lands
+		// only in the generic bot.catch, unattributed to the guest
+		// surface. Fall through to the gate on failure so normal intake
+		// still gets the final say on the message.
+		try {
+			if (await routeMemberGuestMessage(guestEnv, ctx.message, ctx.update.update_id)) return;
+		} catch (err) {
+			log.error("member guest handler failed", err, { update: ctx.update.update_id });
+		}
 		await next();
 	});
 

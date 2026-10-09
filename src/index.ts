@@ -13,7 +13,8 @@ import type { MediaPosition } from "./agent/attachments.ts";
 import { generateTopicTitle } from "./agent/title.ts";
 import { generateText } from "ai";
 import { homedir } from "node:os";
-import { probeFfmpeg, transcribeAudio, transcriptionModel } from "./agent/transcribe.ts";
+import { probeFfmpeg, speechEngine, transcribeAudio } from "./agent/transcribe.ts";
+import { whistleArtifactPresence } from "./agent/transcribe-whistle.ts";
 import { synthesizeSpeech } from "./agent/tts.ts";
 import { makeTools, toolNames, type VisionToolDeps } from "./agent/tools/mod.ts";
 import { makePrivateSender } from "./agent/tools/program.ts";
@@ -126,14 +127,6 @@ async function boot() {
 	// ours.
 	const delegationBoot = config.delegation;
 	const delegations = delegationBoot ? openDelegations(paths.db()) : null;
-	// NULL-target live rows predate the machines era (the own local
-	// session) — warn, never guess.
-	if (delegations !== null) {
-		const nullLive = delegations.liveRowsWithNullTarget();
-		if (nullLive > 0) {
-			log.warn("live delegation rows predate targets and are assumed local", { count: nullLive });
-		}
-	}
 	// "goblin" is the local unit's --session — the default target, never a config knob.
 	const herdr = delegationBoot ? makeHerdr({ session: "goblin" }) : null;
 	const delegationTargets = new Map<string, DelegationTargetDeps>();
@@ -208,15 +201,28 @@ async function boot() {
 
 	// Probe ffmpeg at boot: TTS is default-on with ffmpeg as its only
 	// dependency — a missing binary takes TTS down for the run instead of
-	// failing per message; transcription needs it only over the upload cap.
+	// failing per message; transcription needs it only over the upload cap
+	// (for whistle, always — it is the ogg→wav decoder).
 	if (config.transcription || config.tts) {
-		const ok = await probeFfmpeg(config.tts ? "tts" : "transcription");
+		const feature = config.tts
+			? "tts"
+			: config.transcription?.kind === "whistle"
+				? "transcription (whistle)"
+				: "transcription";
+		const ok = await probeFfmpeg(feature);
 		if (!ok && config.tts) {
 			configRef.ttsDown = true;
 			log.warn(
 				"tts disabled — ffmpeg not found on PATH; install ffmpeg and restart to enable voice replies",
 			);
 		}
+	}
+	if (config.transcription) {
+		const tr = config.transcription;
+		log.info("transcription enabled", {
+			kind: tr.kind,
+			...(tr.kind === "whistle" ? whistleArtifactPresence(tr) : { model: tr.model, auth: tr.auth }),
+		});
 	}
 
 	// Warm the openrouter catalog so thinking options and the mini app
@@ -247,7 +253,7 @@ async function boot() {
 	const transcribeFile = async (file: Parameters<typeof transcribeAudio>[1]) => {
 		const cfg = configRef.current.transcription;
 		if (!cfg) return null;
-		return transcribeAudio(await transcriptionModel(cfg, auth), file);
+		return transcribeAudio(speechEngine(cfg, auth), file);
 	};
 
 	// The vision tool's per-turn gate (design/tools.md → Vision): "auto"
@@ -668,6 +674,7 @@ async function boot() {
 								}
 							: {}),
 						counts: () => store.memoryQueue.counts(memorySurfaces.client.target),
+						deletingAll: () => store.memoryQueue.deletingCount(),
 						blockedDetail: () => store.memoryQueue.blockedDetail(memorySurfaces.client.target),
 					},
 				}

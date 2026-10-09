@@ -20,7 +20,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { basename, join } from "node:path";
 import { UI_MESSAGE_STREAM_HEADERS, type UIMessage, type UIMessageChunk } from "ai";
 import { z } from "zod";
-import { readBodyBytesCapped } from "./check.ts";
+import { isLoopbackHost, readBodyBytesCapped } from "./check.ts";
 import {
 	appAddress,
 	appIdOf,
@@ -129,22 +129,26 @@ function bearerMatches(presented: string, expected: string): boolean {
 // webview) must not depend on browser headers.
 const OWN_FETCH_SITES = new Set(["same-origin", "none"]);
 
-// The origins a browser may legitimately speak for: the Host this
-// request arrived on (either scheme — TLS terminates at the front, and
-// a proxy may preserve or rewrite Host) and the configured publicUrl's
-// origin (tailscale serve rewrites Host to the local upstream, so the
-// public origin is the match that survives the proxy — the rewrite is
-// observed in docs/security.md).
+// The origins a browser may legitimately speak for. The Host header is
+// attacker-controlled — a rebound DNS name can point it at our endpoint
+// while Origin names the same attacker host — so Host never mints its own
+// match except for literal loopback (check.ts's spelling, one source):
+// same-machine direct access, where there is no front to name. A
+// configured publicUrl is the only browser origin (tailscale serve
+// rewrites Host to the local upstream, so the public origin is the match
+// that survives the proxy — the rewrite is observed in docs/security.md).
+// Without publicUrl, tailnet-name browser origins refuse: set publicUrl.
 function allowedBrowserOrigins(req: Request, deps: AppChannelDeps): Set<string> {
 	const origins = new Set<string>();
-	const host = req.headers.get("host");
-	if (host !== null && host !== "") {
-		origins.add(`http://${host}`);
-		origins.add(`https://${host}`);
-	}
 	const publicUrl = deps.configRef.current.publicUrl;
 	if (publicUrl !== undefined && URL.canParse(publicUrl)) {
 		origins.add(new URL(publicUrl).origin);
+		return origins;
+	}
+	if (isLoopbackHost(req)) {
+		const host = req.headers.get("host") ?? "";
+		origins.add(`http://${host}`);
+		origins.add(`https://${host}`);
 	}
 	return origins;
 }

@@ -47,6 +47,9 @@ export const paths = {
 	modelsDevCache: () => join(goblinHome(), "state", "models.dev.json"),
 	openrouterModelsCache: () => join(goblinHome(), "state", "openrouter-models.json"),
 	webcache: () => join(goblinHome(), "state", "webcache"),
+	// Local speech-engine artifacts (digest-pinned auto-fetch —
+	// design/asr.md → Whistle). Cache, not state: deletable at will.
+	whistleCache: () => join(goblinHome(), "cache", "whistle"),
 };
 
 export function ensureHomeLayout(): void {
@@ -230,7 +233,6 @@ function refreshGoblinMailShim(): void {
 // literals below in both directions — schema-only kind → the settings UI
 // can't offer it; array-only kind → the UI offers what the config rejects.
 export const providerKinds = ["openai-compatible", "responses", "openrouter", "codex"] as const;
-
 export const providerSchema = z.discriminatedUnion("kind", [
 	z.object({
 		kind: z.literal("openai-compatible"),
@@ -311,16 +313,20 @@ const sessionNameSchema = z
 		"session name must start alphanumeric and contain only [A-Za-z0-9._-]",
 	);
 
-// root must be absolute or `~`-rooted (server-expanded) — rejected here,
-// not at launch. machine labels are not checked against herdr's registry
-// at parse time: a wrong label fails loud at the first herdr call.
+// root must be `~`, `~/...`, or absolute (server-expanded) — rejected here,
+// not at launch. `~user` is shell user-expansion we do NOT perform
+// (delegate.ts isHomePath): treating it as home-relative would
+// stat/resolve it under the operator's home while the literal path
+// reaches herdr, so it fails loud at this boundary. machine labels
+// are not checked against herdr's registry at parse time: a wrong
+// label fails loud at the first herdr call.
 export const delegationTargetSchema = z
 	.object({
 		machine: harnessNameSchema.optional(),
 		session: sessionNameSchema.optional(),
 		root: z
 			.string()
-			.regex(/^(?:\/|~)/, "delegation target root must be absolute or start with ~")
+			.regex(/^(?:\/|~(?:\/|$))/, "delegation target root must be absolute, ~, or ~/... (bare ~user is not expanded)")
 			.optional(),
 		harnesses: harnessMapSchema.optional(),
 	})
@@ -405,6 +411,67 @@ export const ttsConfigSchema = z.object({
 });
 export type TtsConfig = z.infer<typeof ttsConfigSchema>;
 
+// Speech kinds — whistle (local) first, then the cloud menu
+// (design/asr.md). config.test.ts pins this array against the union
+// below in both directions, like providerKinds.
+export const transcriptionKinds = [
+	"whistle",
+	"groq",
+	"openai",
+	"openrouter",
+	"mistral",
+	"elevenlabs",
+	"gemini",
+	"mimo",
+] as const;
+
+// Cloud-kind defaults — model is the UI's placeholder, auth defaults to
+// the kind's own auth.jsonl record name. mimo rides openrouter because
+// Xiaomi serves MiMo through OpenRouter; there is no first-party API.
+export const transcriptionDefaults = {
+	groq: { model: "whisper-large-v3-turbo", auth: "groq" },
+	openai: { model: "gpt-4o-mini-transcribe", auth: "openai" },
+	openrouter: { model: "openai/whisper-large-v3", auth: "openrouter" },
+	mistral: { model: "mistralai/voxtral-mini-3b-2507", auth: "mistral" },
+	elevenlabs: { model: "scribe_v2", auth: "elevenlabs" },
+	gemini: { model: "gemini-flash-latest", auth: "gemini" },
+	mimo: { model: "xiaomi/mimo-v2.6-flash", auth: "openrouter" },
+} as const;
+
+const transcriptionLanguage = z
+	.string()
+	.regex(/^[a-z]{2}$/, 'language must be an ISO-639-1 code like "es"');
+
+const cloudTranscriptionSchema = (
+	kind: "groq" | "openai" | "openrouter" | "mistral" | "elevenlabs" | "gemini" | "mimo",
+) =>
+	z.object({
+		kind: z.literal(kind),
+		model: z.string().min(1).default(transcriptionDefaults[kind].model),
+		auth: z.string().min(1).default(transcriptionDefaults[kind].auth),
+		language: transcriptionLanguage.optional(),
+	});
+
+export const transcriptionSchema = z.union([
+	// Local engine — no model, no auth. engine/weights bypass the
+	// digest-pinned auto-fetch for managed installs; keywords bias the
+	// decoder toward names (the personal-assistant failure mode).
+	z.object({
+		kind: z.literal("whistle"),
+		engine: z.string().min(1).optional(),
+		weights: z.string().min(1).optional(),
+		keywords: z.array(z.string().min(1)).max(100).optional(),
+		language: z.enum(["en", "de", "fr", "es", "it", "nl", "pl"]).optional(),
+	}),
+	cloudTranscriptionSchema("groq"),
+	cloudTranscriptionSchema("openai"),
+	cloudTranscriptionSchema("openrouter"),
+	cloudTranscriptionSchema("mistral"),
+	cloudTranscriptionSchema("elevenlabs"),
+	cloudTranscriptionSchema("gemini"),
+	cloudTranscriptionSchema("mimo"),
+]);
+
 // Chain-entry kinds for search/fetch builders — config.test.ts pins
 // both arrays against the unions below, like providerKinds.
 export const searchKinds = [
@@ -462,16 +529,11 @@ const configSchema = z
 						? false
 						: v,
 			),
-		// Speech → text: voice/video notes at intake, other audio via the transcribe tool.
+		// Speech → text: voice/video notes at intake, other audio via the
+		// transcribe tool. The kinds and their defaults live above
+		// (design/asr.md).
 		transcription: z
-			.union([
-				z.object({
-					kind: z.literal("groq"),
-					model: z.string().min(1).default("whisper-large-v3-turbo"),
-					auth: z.string().min(1),
-				}),
-				z.literal(""),
-			])
+			.union([transcriptionSchema, z.literal("")])
 			.transform((v) => (v === "" ? undefined : v))
 			.optional(),
 		// Live-read per turn — changes apply without a restart.

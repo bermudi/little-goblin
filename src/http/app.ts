@@ -580,13 +580,24 @@ export const APP_HTML = `<!doctype html>
         </div>
         <div id="trFields" class="hidden">
           <div class="frow">
+            <label for="trKind">Kind</label>
+            <select id="trKind" aria-label="transcription kind"></select>
+            <div class="cap">Whistle runs on this machine — no key, audio never leaves it. Cloud kinds send audio to the provider.</div>
+          </div>
+          <div class="frow" id="trModelRow">
             <label for="trModel">Model</label>
             <input id="trModel" placeholder="whisper-large-v3-turbo" autocomplete="off" spellcheck="false" autocapitalize="off">
-            <div class="cap">Blank uses the default.</div>
+            <div class="cap">Blank uses the kind's default.</div>
           </div>
-          <div class="frow">
+          <div class="frow" id="trAuthRow">
             <label for="trAuth">Secret name</label>
             <input id="trAuth" placeholder="in auth.jsonl — not the secret itself" autocomplete="off" spellcheck="false" autocapitalize="off">
+            <div class="cap">Blank uses the kind's default name.</div>
+          </div>
+          <div class="frow">
+            <label for="trLang">Language</label>
+            <input id="trLang" placeholder="auto-detect" autocomplete="off" spellcheck="false" autocapitalize="off">
+            <div class="cap">ISO code like es. Whistle: en de fr es it nl pl — other kinds detect or translate anything.</div>
           </div>
         </div>
       </div>

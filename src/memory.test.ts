@@ -326,6 +326,7 @@ describe("status", () => {
 	const input = (over: Partial<Parameters<typeof memoryStatus>[0]> = {}) => ({
 		enabled: true,
 		counts: counts(),
+		deletingAll: 0,
 		lastRecallOk: true,
 		lastRecallAt: null,
 		blockedDetail: [],
@@ -346,16 +347,30 @@ describe("status", () => {
 
 	test("parked forget rows need operator retry, even alongside other failures", () => {
 		for (const over of [{}, { blocked: 2 }, { submitted: 3 }]) {
-			const status = memoryStatus(input({ counts: counts({ ...over, deleting: 1 }) }));
+			const status = memoryStatus(input({ counts: counts(over), deletingAll: 1 }));
 			expect(status.state).toBe("degraded");
 			expect(status.deleting).toBe(1);
 			expect(status.detail).toContain("1 outbox row awaiting forget confirmation");
 			expect(status.detail).toContain("retry /forget delete <documentId>");
 			expect(status.detail).toContain("not /memory retry");
 		}
-		const disabled = memoryStatus(input({ enabled: false, counts: counts({ deleting: 2 }) }));
+		const disabled = memoryStatus(input({ enabled: false, deletingAll: 2 }));
 		expect(disabled.deleting).toBe(2);
 		expect(disabled.detail).toContain("2 outbox rows");
+	});
+
+	test("old-bank parked rows stay visible when the current bank's counts read zero", () => {
+		// After a destination change the boot target's counts() carry no
+		// deleting rows — the parked work against the previous bank must
+		// still degrade status, or the failed delete vanishes silently.
+		const status = memoryStatus(
+			input({ counts: counts({ pending: 0, deleting: 0 }), deletingAll: 3 }),
+		);
+		expect(status.state).toBe("degraded");
+		expect(status.deleting).toBe(3);
+		expect(status.detail).toContain("3 outbox rows awaiting forget confirmation");
+		// And the reverse: current-bank rows alone never inflate the count.
+		expect(memoryStatus(input({ counts: counts({ deleting: 2 }), deletingAll: 2 })).deleting).toBe(2);
 	});
 
 	test("detail says something the state word alone does not", () => {

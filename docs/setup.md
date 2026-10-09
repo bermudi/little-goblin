@@ -67,7 +67,8 @@ The script is idempotent — re-run it any time. It:
    direct `pass-cli` secret commands before installing the service.
 2. Installs dependencies (`bun install`).
 3. Speech needs `ffmpeg`: if missing, the bot disables TTS at boot and logs
-   a warning (transcription over the provider upload cap needs it too).
+   a warning (the local whistle transcription engine needs it always; cloud
+   kinds need it over the provider upload cap).
 4. Writes the systemd user unit (with your paths substituted in), enables
    linger so it runs without you being logged in, and starts the bot.
 

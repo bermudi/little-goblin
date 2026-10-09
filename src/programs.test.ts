@@ -2,8 +2,9 @@
 // invalid expression never becomes a row), a program always has a
 // trigger, next_run is always the next future occurrence, due() is the
 // boot-catch-up query, rows survive a reopen, and the legacy `jobs`
-// table purges at open — surviving rows copy in, the table drops,
-// re-opens are no-ops.
+// table purges at open — its rows copy in only when the programs table
+// itself is being created, otherwise they archive to recovery without
+// activating, and the table drops either way.
 
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
@@ -406,7 +407,7 @@ function createLegacyJobs(path: string, rows: number): void {
 }
 
 describe("mail revision upgrade", () => {
-	test("adds a default revision to existing rows; surviving jobs rows copy in defensively", () => {
+	test("adds a default revision to existing rows; legacy rows beside them archive, never activate", () => {
 		const path = tmpdb();
 		createLegacyJobs(path, 1);
 		const db = new Database(path);
@@ -422,9 +423,10 @@ describe("mail revision upgrade", () => {
 		db.close();
 
 		const a = openPrograms(path);
-		// The purge copies rows still sitting in jobs — even beside an
-		// existing programs table — then drops the table.
-		expect(a.list().map((p) => p.id)).toEqual([1, 2]);
+		// The programs table already exists — it is the operator's truth,
+		// so the leftover jobs row archives to recovery instead of
+		// becoming a live program, and the jobs table still drops.
+		expect(a.list().map((p) => p.id)).toEqual([2]);
 		const initial = a.get(2)!;
 		expect(initial.mailRevision).toBe(0);
 		expect(initial.mailHistoryId).toBe("100");
@@ -436,8 +438,14 @@ describe("mail revision upgrade", () => {
 		a.close();
 		const reopened = openPrograms(path);
 		expect(reopened.get(2)).toMatchObject({ mailRevision: 1, mailHistoryId: null });
-		expect(reopened.list()).toHaveLength(2);
+		expect(reopened.list()).toHaveLength(1);
 		reopened.close();
+		const check = new Database(path);
+		expect(check.query("SELECT COUNT(*) AS n FROM legacy_jobs_recovery").get()).toEqual({ n: 1 });
+		expect(
+			check.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'").get(),
+		).toBeNull();
+		check.close();
 	});
 });
 
@@ -568,7 +576,8 @@ describe("legacy jobs purge", () => {
 
 		const s = openPrograms(path);
 		// The programs row is the truth; the stale jobs row must not
-		// clobber it — and must not fail the open either.
+		// clobber it — it archives to recovery instead — and must not
+		// fail the open either.
 		expect(s.list()).toHaveLength(1);
 		expect(s.get(1)).toMatchObject({ name: "kept", charter: "current charter" });
 		s.close();
@@ -576,6 +585,7 @@ describe("legacy jobs purge", () => {
 		expect(
 			check.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'").get(),
 		).toBeNull();
+		expect(check.query("SELECT COUNT(*) AS n FROM legacy_jobs_recovery").get()).toEqual({ n: 1 });
 		check.close();
 	});
 
@@ -590,6 +600,41 @@ describe("legacy jobs purge", () => {
 			db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'").get(),
 		).toBeNull();
 		db.close();
+	});
+
+	test("legacy rows beside an existing programs table never resurrect deleted programs", () => {
+		// The pre-purge shape: `jobs` was never dropped, `programs` already
+		// reflects the operator's deletions (job 2's program is gone). The
+		// open must archive the leftovers, not re-activate them — a revived
+		// row with a past next_run would fire on the next scheduler tick.
+		const path = tmpdb();
+		createLegacyJobs(path, 2);
+		const db = new Database(path);
+		db.exec(`CREATE TABLE programs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, charter TEXT NOT NULL,
+			cron TEXT, hook_hash TEXT, mail_filter TEXT, mail_history_id TEXT,
+			chat_id INTEGER NOT NULL, thread_id INTEGER, enabled INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL, last_run TEXT, next_run TEXT
+		)`);
+		db.query(`INSERT INTO programs
+			(id, name, charter, cron, chat_id, thread_id, enabled, created_at, last_run, next_run)
+			VALUES (1, 'job 1', 'prompt 1', '30 8 * * *', -100, 7, 0,
+			'2026-09-20T09:00:00.000Z', '2026-09-20T09:30:00.000Z', '2026-09-21T08:30:00.000Z')`).run();
+		db.close();
+
+		const s = openPrograms(path);
+		expect(s.list().map((p) => p.id)).toEqual([1]);
+		expect(s.get(2)).toBeNull(); // the deleted job stays deleted
+		// And nothing unmatched is due that wasn't due before the open.
+		expect(s.due(new Date("2026-09-22T10:00:00")).map((p) => p.id)).not.toContain(2);
+		s.close();
+		const check = new Database(path);
+		// Both leftovers archive with complete rows; the table still drops.
+		expect(check.query("SELECT COUNT(*) AS n FROM legacy_jobs_recovery").get()).toEqual({ n: 2 });
+		expect(
+			check.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'").get(),
+		).toBeNull();
+		check.close();
 	});
 
 	test("no legacy table is the common path — plain open", () => {

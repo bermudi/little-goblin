@@ -97,7 +97,6 @@ describe("admitTurn", () => {
 		expect(out.snapshot.anchorSeq).toBe(3); // newest user message, not the first
 		expect(out.snapshot.steerMarkSeed).toBe(3);
 		expect(out.snapshot.turnStartMs).toBe(1234);
-		expect(out.snapshot.claimed).toEqual([]);
 		expect(h.order).toEqual(["pendingIds"]); // a fresh turn claims nothing
 	});
 
@@ -126,8 +125,7 @@ describe("admitTurn", () => {
 			h.captured.push(c);
 			return conv(99);
 		};
-		const member: AdmittedMember = { message: msg("q1"), sink: {} };
-		h.claimed.push(member);
+		h.claimed.push({ message: msg("q1"), sink: {} });
 		const recovered = conv(42);
 		const out = admitTurn(h.deps, { conversation: recovered, startedAt: 777 });
 		expect(out.kind).toBe("admitted");
@@ -138,9 +136,11 @@ describe("admitTurn", () => {
 		expect(out.snapshot.conv).toBe(recovered);
 		expect(out.snapshot.epoch).toBe(42);
 		expect(out.snapshot.turnStartMs).toBe(777);
-		expect(out.snapshot.claimed).toEqual([member]);
-		// The claim runs before the ownership read, so claimed submits are
-		// owned input, not queued leftovers.
+		// The claim's return already sits in the caller's membership
+		// (the seam registers at the splice) — the snapshot carries no
+		// record of it. The order below is the contract that matters:
+		// the claim runs before the ownership read, so claimed submits
+		// are owned input, not queued leftovers.
 		expect(h.order).toEqual(["claim", "pendingIds"]);
 	});
 

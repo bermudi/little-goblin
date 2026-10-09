@@ -28,6 +28,7 @@ import {
 	parseConfig,
 	type Config,
 } from "./config.ts";
+import { setLogFile } from "./log.ts";
 
 test("mini-app clearing an absent public URL does not throw or retain an empty URL", () => {
 	expect(
@@ -107,17 +108,36 @@ describe("goblin.json5", () => {
 		expect(c.tts).toEqual({ kind: "edge", voice: "en-US-AriaNeural" });
 	});
 
-	test("retired delegation keys (machine, session, maxRunning) strip silently — the block stands", () => {
+	test("disk loads warn about retired delegation keys without activating them", () => {
 		const dir = useHome();
+		const logPath = join(dir, "config.log");
 		writeFileSync(
 			join(dir, "goblin.json5"),
 			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7],delegation:{machine:{label:"g7",cwd:"/home/daniel/goblin/delegated"},session:"other",maxRunning:3,harnesses:{pi:{kind:"pi"}}}}`,
 		);
-		const c = loadConfig()!;
-		// The W2.2 purge: no translation, no warning — zod strips the
-		// dead keys and the rest of the delegation block stands.
-		expect(c.delegation?.machines).toBeUndefined();
-		expect(c.delegation?.harnesses["pi"]?.kind).toBe("pi");
+		setLogFile(logPath);
+		try {
+			const c = loadConfig()!;
+			expect(c.delegation).toEqual({ harnesses: { pi: { kind: "pi" } } });
+			const warnings = readFileSync(logPath, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line) as { level: string; key: string; replacement: string });
+			expect(warnings.map((w) => w.key)).toEqual([
+				"delegation.machine",
+				"delegation.session",
+				"delegation.maxRunning",
+			]);
+			expect(warnings.every((w) => w.level === "warn")).toBe(true);
+			expect(warnings[0]?.replacement).toContain("delegation.machines.<label>.machine");
+			expect(warnings[1]?.replacement).toContain("delegation.machines.<label>.session");
+			expect(warnings[2]?.replacement).toContain("no replacement");
+			writeConfig(c);
+			loadConfig();
+			expect(readFileSync(logPath, "utf8").trim().split("\n")).toHaveLength(3);
+		} finally {
+			setLogFile(null);
+		}
 	});
 
 	test("delegation.machines parses saved-machine and local-session targets; bad roots and both-kind targets are rejected", () => {

@@ -604,12 +604,28 @@ export function loadConfig(): Config | null {
 	if (!result.success) {
 		throw new Error(`${paths.config()}: ${z.prettifyError(result.error)}`);
 	}
+	const retired = z
+		.object({ delegation: z.record(z.string(), z.unknown()).optional() })
+		.parse(parsed);
+	for (const [key, replacement] of Object.entries({
+		machine: "delegation.machines.<label>.machine (and root for remote paths)",
+		session: "delegation.machines.<label>.session; the own local session is fixed by the service",
+		maxRunning: "no replacement — delegation concurrency is not capped by config",
+	})) {
+		if (retired.delegation !== undefined && Object.hasOwn(retired.delegation, key)) {
+			log.warn("retired delegation config key ignored", {
+				path: paths.config(),
+				key: `delegation.${key}`,
+				replacement,
+			});
+		}
+	}
 	return result.data;
 }
 
 // The mini app parses before writing to inspect the result (e.g. refuse
-// a self-lockout). Retired delegation keys (machine, session, maxRunning)
-// strip silently under zod — the W2.2 purge removed their translations.
+// a self-lockout). Retired delegation keys strip under zod; only disk
+// loads warn, never translate them into active settings.
 export function parseConfig(raw: unknown): Config {
 	return configSchema.parse(raw);
 }

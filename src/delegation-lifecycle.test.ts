@@ -4,6 +4,7 @@
 // file beats the screen (capped at 16 KiB), and a fresh watcher over
 // the same DB resumes where the dead one left off.
 
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
 	closeSync,
@@ -28,8 +29,9 @@ import {
 	type DelegationsStore,
 } from "./delegations.ts";
 import { startDelegationLifecycle, type DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
-import { HerdrError, type AgentInfo, type Herdr } from "./herdr.ts";
+import { HerdrError, makeHerdr, type AgentInfo, type Herdr } from "./herdr.ts";
 import type { DelegationTargetDeps } from "./delegation-lifecycle.ts";
+import { setLogFile } from "./log.ts";
 
 let dirs: string[] = [];
 function tmpdirPath(): string {
@@ -1183,6 +1185,146 @@ describe("delegation watcher", () => {
 			owner.stopTicker();
 		});
 
+		test.each([false, true])(
+			"a bind write failure closes the unbound workspace and rejects (cleanup fails=%s)",
+			async (cleanupFails) => {
+				const h = harness();
+				const db = new Database(h.dbPath);
+				db.exec(`
+					CREATE TRIGGER reject_launch_bind BEFORE UPDATE OF workspace_id ON delegations
+					BEGIN SELECT RAISE(ABORT, 'bind write failed'); END;
+				`);
+				const calls: string[] = [];
+				h.deps.herdr = {
+					...h.deps.herdr,
+					createWorkspace: async () => {
+						calls.push("create");
+						return { workspaceId: "w9", paneId: "w9:p1", cwd: "/w" };
+					},
+					closeWorkspace: async (id) => {
+						calls.push(`close:${id}`);
+						if (cleanupFails) throw new Error("cleanup close failed");
+					},
+					startAgent: async (name) => {
+						calls.push("start");
+						return agent(name, "working", 1);
+					},
+					prompt: async () => {
+						calls.push("prompt");
+					},
+				};
+				const logPath = join(tmpdirPath(), "goblin.log");
+				setLogFile(logPath);
+				const owner = startDelegationLifecycle(h.deps);
+				try {
+					await expect(
+						owner.launch({
+							harness: { name: "codex", kind: "codex", args: [] },
+							task: "do it",
+							cwd: "/w",
+							name: "bind failure",
+							address: { chatId: 1, threadId: null },
+						}),
+					).rejects.toThrow("bind write failed");
+					expect(calls).toEqual(["create", "close:w9"]);
+					expect(h.store.get(1)).toMatchObject({
+						status: "starting",
+						agentName: "",
+						workspaceId: "",
+						paneId: "",
+					});
+					expect(h.wakes).toEqual([]);
+					expect(h.appWakes).toEqual([]);
+					expect(existsSync(join(h.homeDir, ".codex"))).toBe(false);
+					const logs = readFileSync(logPath, "utf8")
+						.trim()
+						.split("\n")
+						.map((line) => JSON.parse(line) as Record<string, unknown>);
+					expect(logs).toContainEqual(
+						expect.objectContaining({
+							level: "error",
+							msg: "delegation workspace bind failed",
+							error: "bind write failed",
+							delegation: 1,
+							workspaceId: "w9",
+							target: null,
+						}),
+					);
+					const cleanupLogs = logs.filter(
+						(line) => line.msg === "delegation workspace close failed",
+					);
+					if (cleanupFails) {
+						expect(cleanupLogs).toEqual([
+							expect.objectContaining({
+								level: "warn",
+								error: "cleanup close failed",
+								delegation: 1,
+							}),
+						]);
+					} else {
+						expect(cleanupLogs).toEqual([]);
+					}
+				} finally {
+					await owner.stopTicker();
+					setLogFile(null);
+					db.close();
+					h.store.close();
+				}
+			},
+		);
+
+		test.each([
+			[{ pane_id: "w9:p1" }, false],
+			[{ pane_id: "w9:p1", cwd: 42 }, false],
+			[{ cwd: "/w" }, false],
+			[{ pane_id: "w9:p1" }, true],
+		] as const)(
+			"unusable workspace pane %j closes before binding (stop=%s)",
+			async (rootPane, stop) => {
+				const h = harness();
+				const calls: string[][] = [];
+				h.deps.herdr = makeHerdr({ session: "probe" }, async (args) => {
+					calls.push(args);
+					if (args[2] === "workspace" && args[3] === "create") {
+						if (stop) expect((await owner.stop(1)).kind).toBe("stopped");
+						return {
+							code: 0,
+							stderr: "",
+							stdout: JSON.stringify({
+								result: { workspace: { workspace_id: "w9" }, root_pane: rootPane },
+							}),
+						};
+					}
+					if (args[2] === "workspace" && args[3] === "close") {
+						return { code: 0, stderr: "", stdout: JSON.stringify({ result: { type: "ok" } }) };
+					}
+					throw new Error(`unexpected CLI call: ${args.join(" ")}`);
+				});
+				const owner = startDelegationLifecycle(h.deps);
+				try {
+					const out = await owner.launch({
+						harness: { name: "codex", kind: "codex", args: [] },
+						task: "do it",
+						cwd: "/requested",
+						name: "bad pane",
+						address: { chatId: 1, threadId: null },
+					});
+					expect(out.kind).toBe(stop ? "stopped" : "failed");
+					if (out.kind === "failed") expect(out.why).toContain("root pane");
+					expect(h.store.get(1)?.workspaceId).toBe("");
+					expect(h.store.get(1)?.status).toBe(stop ? "stopped" : "failed");
+					expect(calls.map((args) => args.slice(2, 4))).toEqual([
+						["workspace", "create"],
+						["workspace", "close"],
+					]);
+					expect(calls[1]?.[4]).toBe("w9");
+					expect(existsSync(join(h.homeDir, ".codex"))).toBe(false);
+				} finally {
+					await owner.stopTicker();
+				}
+			},
+		);
+
 		test("a report directory failure marks the row failed instead of stranding starting", async () => {
 			const h = harness();
 			mkdirSync(h.delegationsDir, { recursive: true });
@@ -1414,6 +1556,55 @@ describe("delegation watcher", () => {
 			expect(paneRuns[0]).toContain('[projects."/remote/go\\"bin\\\\x"]');
 		});
 
+		test("a vanished machine report path is unavailable, never a local substitute", async () => {
+			const h = harness();
+			const targets = h.deps.targets as Map<string, DelegationTargetDeps>;
+			targets.set("remote", { machine: "remote", root: "~/work", herdr: h.deps.herdr });
+			const d = runningRow(h, "remote work", 1, 0, "remote");
+			h.agents.set(d.agentName, agent(d.agentName, "working", 1));
+			const owner = startDelegationLifecycle(h.deps);
+			try {
+				expect(owner.reportPath(d.id)).toBe(`~/work/delegations/${d.id}/report.md`);
+				await owner.tick();
+				targets.delete("remote");
+				const path = owner.reportPath(d.id);
+				expect(path).toContain("unavailable");
+				expect(path).toContain('target "remote"');
+				expect(path).not.toContain(h.delegationsDir);
+				await owner.tick();
+				expect(h.store.get(d.id)?.status).toBe("running");
+				expect(h.wakes).toEqual([]);
+			} finally {
+				await owner.stopTicker();
+			}
+		});
+
+		test("boot recovery of a vanished target does not read a coinciding local report", async () => {
+			const h = harness();
+			const d = h.store.create({
+				name: "remote start",
+				harness: "codex",
+				cwd: "/remote",
+				task: "t",
+				address: { chatId: 1, threadId: null },
+				target: "gone",
+			});
+			const dir = join(h.delegationsDir, String(d.id));
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(join(dir, "report.md"), "UNRELATED LOCAL REPORT");
+			const owner = startDelegationLifecycle(h.deps);
+			try {
+				await owner.tick();
+				expect(h.store.get(d.id)?.status).toBe("failed");
+				expect(h.wakes).toHaveLength(1);
+				expect(h.wakes[0]).toContain('Report: (unavailable — target "gone"');
+				expect(h.wakes[0]).not.toContain(h.delegationsDir);
+				expect(h.wakes[0]).not.toContain("UNRELATED LOCAL REPORT");
+			} finally {
+				await owner.stopTicker();
+			}
+		});
+
 		test("stopping a row whose target left config retires it — the stop is a verdict, not an observation", async () => {
 			const h = harness();
 			const d = h.store.create({
@@ -1455,6 +1646,7 @@ describe("delegation watcher", () => {
 			}
 			const row = h.store.get(1);
 			expect(row?.status).toBe("failed"); // never a stranded `starting`
+			expect(existsSync(join(h.delegationsDir, "1"))).toBe(false);
 		});
 
 		test("a machine row finishes on seq advance with no local report file — the notice carries the deep agent read", async () => {

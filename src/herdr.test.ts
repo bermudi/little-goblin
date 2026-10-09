@@ -3,7 +3,7 @@
 // the stderr JSON, and agent_not_found on `get` alone maps to null.
 
 import { describe, expect, test } from "bun:test";
-import { HerdrError, makeHerdr, type HerdrRunResult } from "./herdr.ts";
+import { HerdrError, WorkspaceCreateError, makeHerdr, type HerdrRunResult } from "./herdr.ts";
 import { setLogFile, setLogWriter } from "./log.ts";
 
 function fakeRunner(results: HerdrRunResult[]) {
@@ -88,6 +88,32 @@ describe("herdr adapter", () => {
 			"--no-focus",
 		]);
 	});
+
+	test.each([
+		[{ pane_id: "w9:p1" }, "root pane cwd unavailable"],
+		[{ pane_id: "w9:p1", cwd: 42 }, "invalid root pane response"],
+		[{ cwd: "/w" }, "invalid root pane response"],
+	] as const)(
+		"unusable created pane %j retains its workspace identity",
+		async (rootPane, reason) => {
+			const f = fakeRunner([
+				ok({
+					result: { workspace: { workspace_id: "w9" }, root_pane: rootPane },
+				}),
+			]);
+			const h = makeHerdr({ session: "probe" }, f.run);
+			try {
+				await h.createWorkspace("~/requested", "task");
+				expect.unreachable();
+			} catch (err) {
+				expect(err).toBeInstanceOf(WorkspaceCreateError);
+				if (!(err instanceof WorkspaceCreateError)) throw err;
+				expect(err.workspaceId).toBe("w9");
+				expect(err.message).toContain(reason);
+				expect(err.message).not.toContain("~/requested");
+			}
+		},
+	);
 
 	test("startAgent appends native args after -- and returns the record", async () => {
 		const f = fakeRunner([ok({ result: { agent: AGENT, type: "agent_started" } })]);

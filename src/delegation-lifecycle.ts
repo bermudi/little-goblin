@@ -61,7 +61,13 @@ import {
 	type DelegationStatus,
 	type DelegationsStore,
 } from "./delegations.ts";
-import { attachHintFor, HerdrError, type AgentInfo, type Herdr } from "./herdr.ts";
+import {
+	attachHintFor,
+	HerdrError,
+	WorkspaceCreateError,
+	type AgentInfo,
+	type Herdr,
+} from "./herdr.ts";
 import { claudeFreshTrustJson, codexTrustSection, seedHarnessTrust } from "./harness-trust.ts";
 import { delegationNoticeTag } from "./tags.ts";
 import { wake, wakeApp, type WakeDeps } from "./wake.ts";
@@ -188,7 +194,7 @@ export interface DelegationLifecycle {
 	/** Peek the screen tail (agent, else pane) — raw text; the tool
 	 *  fences it as untrusted data. */
 	read(id: number, lines: number): Promise<ReadOutcome>;
-	/** The delegation's report file — the result destination. */
+	/** Report destination for display, or an unavailable-target diagnostic. */
 	reportPath(id: number): string;
 	/** Every row, arrival order — the tool's list render slices live
 	 *  plus a recent tail. */
@@ -356,11 +362,16 @@ function attachHintForRow(deps: DelegationLifecycleDeps, target: string | null):
 function machineRootFor(deps: DelegationLifecycleDeps, target: string | null): string | null {
 	if (target === null) return null;
 	const t = deps.targets.get(target);
-	if (t === undefined || t.machine === undefined) return null;
+	if (t === undefined) throw new TargetGoneError(target);
+	if (t.machine === undefined) return null;
 	return (t.root ?? "~").replace(/\/+$/, "") || "/";
 }
 
 function reportPathFor(deps: DelegationLifecycleDeps, d: Delegation): string {
+	// A vanished label could be remote: no trustworthy path remains.
+	if (d.target !== null && !deps.targets.has(d.target)) {
+		return `(unavailable — target "${d.target}" is no longer in config; restore its machines entry)`;
+	}
 	// Machine rows record the REMOTE report path — the agent writes it
 	// on its own host; nobody stats or archives it here.
 	const machineRoot = machineRootFor(deps, d.target);
@@ -528,17 +539,6 @@ async function launch(deps: DelegationLifecycleDeps, input: LaunchInput): Promis
 			? { kind: "failed", delegation: bound ?? d, why }
 			: { kind: "failed", delegation: bound ?? d, why, screen };
 	};
-	try {
-		// Machine rows keep no local report dir — the report lives on the
-		// remote host; the note tells the agent to create it there.
-		if (machineRootFor(deps, d.target) === null)
-			mkdirSync(reportDirFor(deps, d.id), { recursive: true });
-	} catch (err) {
-		return fail(
-			`report directory unavailable: ${err instanceof Error ? err.message : String(err)}`,
-		);
-	}
-
 	// The tool validates `on` against its LIVE config; the targets map
 	// is boot-fixed — a machine added since boot lands here. Fail the
 	// row (never strand a `starting` row with no watcher) with the
@@ -553,6 +553,16 @@ async function launch(deps: DelegationLifecycleDeps, input: LaunchInput): Promis
 				: err instanceof Error
 					? err.message
 					: String(err),
+		);
+	}
+	try {
+		// Resolve the target before touching local report state: an
+		// unknown label may belong to another host.
+		if (machineRootFor(deps, d.target) === null)
+			mkdirSync(reportDirFor(deps, d.id), { recursive: true });
+	} catch (err) {
+		return fail(
+			`report directory unavailable: ${err instanceof Error ? err.message : String(err)}`,
 		);
 	}
 	// A machine launch first proves the link: one forwarded get for a
@@ -576,6 +586,11 @@ async function launch(deps: DelegationLifecycleDeps, input: LaunchInput): Promis
 	try {
 		ws = await herdr.createWorkspace(input.cwd, input.name);
 	} catch (err) {
+		// The CLI may have created a workspace before pane validation
+		// failed. No row owns it yet, even if stop raced this call.
+		if (err instanceof WorkspaceCreateError) {
+			await closeWorkspaceQuietly(deps, d.id, err.workspaceId, d.target);
+		}
 		return fail(err instanceof Error ? err.message : String(err));
 	}
 	// Crash window (accepted, documented): a hard kill between
@@ -587,11 +602,23 @@ async function launch(deps: DelegationLifecycleDeps, input: LaunchInput): Promis
 	// herdr a create-or-adopt verb, which is not worth it for a crash
 	// this narrow (audit #20, documented-not-fixed).
 	const agentName = agentNameFor(d.id, input.name);
-	deps.delegations.bindLaunch(d.id, {
-		agentName,
-		workspaceId: ws.workspaceId,
-		paneId: ws.paneId,
-	});
+	try {
+		deps.delegations.bindLaunch(d.id, {
+			agentName,
+			workspaceId: ws.workspaceId,
+			paneId: ws.paneId,
+		});
+	} catch (err) {
+		// The row may still have empty ids: cleanup must use the create
+		// result, and a cleanup failure must not replace the store error.
+		log.error("delegation workspace bind failed", err, {
+			delegation: d.id,
+			workspaceId: ws.workspaceId,
+			target: d.target,
+		});
+		await closeWorkspaceQuietly(deps, d.id, ws.workspaceId, d.target);
+		throw err;
+	}
 	// bindLaunch does not resurrect a stopped row: a `stop` that ran
 	// while createWorkspace was pending saw nothing to close (empty
 	// workspaceId) and marked the row stopped. Re-read now — the
@@ -1031,7 +1058,8 @@ async function reportBody(
 	agentGone = false,
 	deep = false,
 ): Promise<string> {
-	const report = readReport(reportPathFor(deps, d), d.id);
+	const targetGone = d.target !== null && !deps.targets.has(d.target);
+	const report = targetGone ? null : readReport(reportPathFor(deps, d), d.id);
 	if (report !== null) return report;
 	// No report — the screen is the fallback channel, and a done
 	// verdict reads DEEP (agent read pages alternate-screen transcript

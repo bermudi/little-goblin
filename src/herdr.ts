@@ -112,15 +112,28 @@ const cliErrorSchema = z.object({
 	error: z.object({ code: z.string(), message: z.string() }),
 });
 
+const workspaceIdentitySchema = z.object({
+	result: z.object({ workspace: z.object({ workspace_id: z.string() }) }),
+});
 const workspaceCreatedSchema = z.object({
 	result: z.object({
-		workspace: z.object({ workspace_id: z.string() }),
-		// The pane's real cwd: the CLI expanded any `~` (locally or, for
-		// machine-forwarded creates, on the target) — trust markers must
-		// key THIS path, not the `~`-form we sent.
-		root_pane: z.object({ pane_id: z.string(), cwd: z.string() }),
+		// PaneInfo may omit cwd. Trust seeding needs the expanded path,
+		// never the requested cwd, so its absence is a named refusal.
+		root_pane: z.object({ pane_id: z.string(), cwd: z.string().optional() }),
 	}),
 });
+
+/** A create succeeded, but its pane cannot be used. Preserve the id so
+ *  the lifecycle can close the workspace even before bindLaunch. */
+export class WorkspaceCreateError extends Error {
+	constructor(
+		readonly workspaceId: string,
+		reason: string,
+	) {
+		super(`herdr workspace create: ${reason} (workspace ${workspaceId})`);
+		this.name = "WorkspaceCreateError";
+	}
+}
 
 const agentResultSchema = z.object({
 	result: z.object({ agent: agentSchema }),
@@ -246,13 +259,24 @@ export function makeHerdr(
 				"workspace create",
 				label,
 				["workspace", "create", "--cwd", cwd, "--label", label, "--no-focus"],
-				(stdout) => workspaceCreatedSchema.parse(parseJson("workspace create", stdout)),
+				(stdout) => {
+					const wire = parseJson("workspace create", stdout);
+					const workspaceId = workspaceIdentitySchema.parse(wire).result.workspace.workspace_id;
+					const pane = workspaceCreatedSchema.safeParse(wire);
+					if (!pane.success) {
+						throw new WorkspaceCreateError(workspaceId, "invalid root pane response");
+					}
+					const { pane_id: paneId, cwd } = pane.data.result.root_pane;
+					if (cwd === undefined) {
+						throw new WorkspaceCreateError(
+							workspaceId,
+							"root pane cwd unavailable; cannot seed trust safely",
+						);
+					}
+					return { workspaceId, paneId, cwd };
+				},
 			);
-			return {
-				workspaceId: parsed.result.workspace.workspace_id,
-				paneId: parsed.result.root_pane.pane_id,
-				cwd: parsed.result.root_pane.cwd,
-			};
+			return parsed;
 		},
 
 		async startAgent(name, kind, paneId, args) {

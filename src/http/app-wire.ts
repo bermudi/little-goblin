@@ -42,9 +42,13 @@ export interface AppStopResponse {
 	stopped: boolean;
 }
 
-/** PATCH /api/app/conversations/<id> — an explicit rename always wins. */
-export interface AppConversationRename {
-	title: string;
+/** PATCH /api/app/conversations/<id> — applied fields echoed back. An
+ * explicit title always wins over auto-titling; archived moves the row
+ * between the rail and the archived section (activity clears it
+ * server-side). */
+export interface AppConversationPatch {
+	title?: string;
+	archived?: boolean;
 }
 
 /** GET /api/app/search — one FTS hit inside the app pool. */

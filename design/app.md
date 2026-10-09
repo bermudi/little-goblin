@@ -336,3 +336,24 @@ fail-loud rule broken at exactly the moment it mattered.
   durable history plus the resumable attach stream mean a reload
   re-watches the in-flight turn. Only the wire is lost, and now it
   says so.
+
+## Archiving (ruling 2026-10-09)
+
+Archive replaces delete as the rail's declutter action. An archived
+conversation keeps everything — history, FTS hits, settings, pings,
+`/app/c/<id>` deep links; `archived_at` on the row is a list-visibility
+stamp, nothing more. PATCH on the conversation carries
+`{title?, archived?}` (at least one required); the list payload hands
+back `archivedAt` per summary and the client splits the pools — active
+rail on top, a collapsed "Archived (n)" section below, ordered by
+shelf time. Delete keeps its confirm and its endpoint but only exists
+on archived rows: the rail offers archive, the archive offers delete.
+
+Two consequences follow from the flag being visibility-only. Archiving
+never fences a live turn (unlike DELETE's `runtime.stop`) — the turn
+finishes into history either way. And **any appended event
+auto-unarchives**: `store.append` clears `archived_at` when set, so a
+delegation notice landing in a shelved spin-off or a message sent into
+one via its ping link brings the row back to the rail instead of
+accumulating replies unseen. Unarchiving through the client writes the
+same NULL directly.

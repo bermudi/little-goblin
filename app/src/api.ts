@@ -7,7 +7,7 @@ import type {
 	AppConfigView,
 	AppConversationCreate,
 	AppConversationList,
-	AppConversationRename,
+	AppConversationPatch,
 	AppMessageList,
 	AppSearchResponse,
 	AppStopResponse,
@@ -108,15 +108,15 @@ export async function uploadAttachment(
 // carry the bare id only.
 const seg = (id: string) => encodeURIComponent(id.slice("app/".length));
 
-export function renameConversation(
+export function patchConversation(
 	token: string | null,
 	id: string,
-	title: string,
-): Promise<AppConversationRename> {
+	patch: AppConversationPatch,
+): Promise<AppConversationPatch> {
 	return request(token, `/api/app/conversations/${seg(id)}`, {
 		method: "PATCH",
 		headers: { "content-type": "application/json" },
-		body: JSON.stringify({ title }),
+		body: JSON.stringify(patch),
 	});
 }
 

@@ -7,7 +7,7 @@ import {
 	deleteConversation,
 	listConversations,
 	loadToken,
-	renameConversation,
+	patchConversation,
 	saveToken,
 	searchConversations,
 } from "./api.ts";
@@ -120,12 +120,15 @@ function TokenGate({ hint, onToken }: { hint: string | null; onToken: (token: st
 }
 
 // One rail row: the conversation button plus hover affordances —
-// rename turns the title into an input, delete asks then removes.
+// rename turns the title into an input; archive shelves the row (no
+// confirm — it's reversible) and unarchive/delete live on archived
+// rows, delete keeping the confirm as the one destructive action.
 function ConversationRow({
 	conv,
 	current,
 	onOpen,
 	onRenamed,
+	onToggleArchived,
 	onDeleted,
 	token,
 }: {
@@ -133,11 +136,13 @@ function ConversationRow({
 	current: string | null;
 	onOpen: (id: string) => void;
 	onRenamed: () => void;
+	onToggleArchived: (id: string, archived: boolean) => void;
 	onDeleted: (id: string) => void;
 	token: string | null;
 }) {
 	const title = flatTitle(conv.title);
 	const preview = flatLine(conv.preview);
+	const archived = conv.archivedAt !== null;
 	const [editing, setEditing] = useState(false);
 	const [draft, setDraft] = useState("");
 	const editRef = useRef<HTMLInputElement>(null);
@@ -158,7 +163,13 @@ function ConversationRow({
 		const t = draft.trim();
 		setEditing(false);
 		if (t === "" || t === title) return;
-		void renameConversation(token, conv.id, t).then(onRenamed, () => {});
+		void patchConversation(token, conv.id, { title: t }).then(onRenamed, () => {});
+	};
+	const toggleArchived = () => {
+		void patchConversation(token, conv.id, { archived: !archived }).then(
+			() => onToggleArchived(conv.id, !archived),
+			() => {},
+		);
 	};
 	const remove = () => {
 		if (!window.confirm(`Delete "${title ?? preview ?? "this conversation"}"?`)) return;
@@ -207,9 +218,20 @@ function ConversationRow({
 				>
 					✎
 				</button>
-				<button type="button" aria-label="Delete" title="Delete" onClick={remove}>
-					×
-				</button>
+				{archived ? (
+					<>
+						<button type="button" aria-label="Unarchive" title="Unarchive" onClick={toggleArchived}>
+							↑
+						</button>
+						<button type="button" aria-label="Delete" title="Delete" onClick={remove}>
+							×
+						</button>
+					</>
+				) : (
+					<button type="button" aria-label="Archive" title="Archive" onClick={toggleArchived}>
+						↓
+					</button>
+				)}
 			</span>
 		</div>
 	);
@@ -251,6 +273,9 @@ export function App() {
 	const [composerFocus, setComposerFocus] = useState(0);
 	const [starting, setStarting] = useState(false);
 	const [startFailed, setStartFailed] = useState(false);
+	// The rail's second pool: archived rows sit in a collapsed section
+	// under the active list (design/app.md → Archiving).
+	const [archivedOpen, setArchivedOpen] = useState(false);
 	const listSeq = useRef(0);
 	// The deep link applies once — after the first list load — so an
 	// operator's own navigation is never overridden later.
@@ -411,6 +436,35 @@ export function App() {
 
 	const currentTitle = conversations?.find((c) => c.id === current)?.title ?? null;
 
+	// One payload, two pools: the rail shows active rows; archived ones
+	// (ordered by when they were shelved) wait behind the section toggle.
+	const active = (conversations ?? []).filter((c) => c.archivedAt === null);
+	const archived = (conversations ?? [])
+		.filter((c) => c.archivedAt !== null)
+		.sort((a, b) => Date.parse(b.archivedAt!) - Date.parse(a.archivedAt!));
+
+	const renderRow = (c: AppConversationList["conversations"][number]) => (
+		<li key={c.id}>
+			<ConversationRow
+				conv={c}
+				current={current}
+				token={token}
+				onOpen={openConversation}
+				onRenamed={() => void refresh()}
+				onToggleArchived={(id, isArchived) => {
+					// Archiving the open conversation puts it away — the view
+					// follows the row off the rail.
+					if (isArchived && id === current) select(null);
+					void refresh();
+				}}
+				onDeleted={(id) => {
+					if (id === current) select(null);
+					void refresh();
+				}}
+			/>
+		</li>
+	);
+
 	return (
 		<div className="shell">
 			<nav className={navOpen ? "rail open" : "rail"}>
@@ -454,23 +508,22 @@ export function App() {
 						{hits.length === 0 && <p className="empty">No matches.</p>}
 					</>
 				) : (
-					<ul>
-						{(conversations ?? []).map((c) => (
-							<li key={c.id}>
-								<ConversationRow
-									conv={c}
-									current={current}
-									token={token}
-									onOpen={openConversation}
-									onRenamed={() => void refresh()}
-									onDeleted={(id) => {
-										if (id === current) select(null);
-										void refresh();
-									}}
-								/>
-							</li>
-						))}
-					</ul>
+					<>
+						<ul>{active.map(renderRow)}</ul>
+						{archived.length > 0 && (
+							<>
+								<button
+									type="button"
+									className="rail-archived"
+									aria-expanded={archivedOpen}
+									onClick={() => setArchivedOpen((v) => !v)}
+								>
+									Archived ({archived.length})
+								</button>
+								{archivedOpen && <ul>{archived.map(renderRow)}</ul>}
+							</>
+						)}
+					</>
 				)}
 				{hits === null && conversations !== null && conversations.length === 0 && (
 					<p className="empty">Nothing here yet — start a conversation.</p>

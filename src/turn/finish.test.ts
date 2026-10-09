@@ -44,6 +44,7 @@ const conv = (epoch = 1, id = "dm:1"): Conversation => ({
 	voice: false,
 	memoryExcluded: false,
 	persona: "personal",
+	archivedAt: null,
 	epoch,
 	createdAt: "2026-01-01T00:00:00Z",
 });

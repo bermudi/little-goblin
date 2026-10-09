@@ -982,6 +982,59 @@ describe("app channel http", () => {
 		}
 	});
 
+	test("archive toggles the flag, keeps history, and a new turn resurrects the row", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		const patch = (body: unknown) =>
+			call("/api/app/conversations/chat-01", {
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(body),
+			});
+		try {
+			await createAndChat(call, "archivable-marker text");
+			const res = await patch({ archived: true });
+			expect(res.status).toBe(200);
+			expect((await res.json()) as { archived: boolean }).toEqual({ archived: true });
+			expect(store.get("app/chat-01")?.archivedAt).not.toBeNull();
+			const listed = store.listAppConversations().find((c) => c.id === "app/chat-01");
+			expect(listed?.archivedAt).not.toBeNull();
+
+			// Nothing destructive: history and search survive the shelf.
+			expect(store.history("app/chat-01").length).toBeGreaterThan(0);
+			const hits = (await (await call("/api/app/search?q=archivable")).json()) as {
+				hits: { conversationId: string }[];
+			};
+			expect(hits.hits.map((h) => h.conversationId)).toContain("app/chat-01");
+
+			expect((await patch({})).status).toBe(422);
+			expect(
+				(
+					await call("/api/app/conversations/ghost", {
+						method: "PATCH",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ archived: true }),
+					})
+				).status,
+			).toBe(404);
+
+			// Auto-unarchive: a submitted turn appends its user event and
+			// the row comes back to the rail.
+			const chat = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-01",
+					message: { id: "m2", role: "user", parts: [{ type: "text", text: "back again" }] },
+				}),
+			});
+			expect(chat.status).toBe(200);
+			await chat.text();
+			expect(store.get("app/chat-01")?.archivedAt).toBeNull();
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("delete removes the row, its events, and the FTS index", async () => {
 		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
 		try {

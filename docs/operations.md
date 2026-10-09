@@ -57,7 +57,8 @@ restart goblin`. It verifies the unit came back, scans the fresh journal
 for error lines, and prints the old→new hashes plus a one-line rollback
 (`git reset --hard <old-hash>`, then `bun install` and
 `bun run app:build` — dist and node_modules are gitignored, so the old
-revision needs its own deps and client — then restart, on the box). A gate or push failure stops everything before lithium is
+revision needs its own deps and client — then restart, on the box).
+A gate or push failure stops everything before lithium is
 touched.
 
 The memory stack is **not** auto-deployed: a `deploy/memory/` change

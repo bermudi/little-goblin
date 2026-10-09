@@ -349,15 +349,20 @@ test("dismissed rows stay for audit: never due, counted apart, forgotten with th
 		completed: 0,
 		blocked: 0,
 		dismissed: 1,
+		deleting: 0,
 	});
 	// Dismissed is a terminal operator verdict — next() never offers it again.
 	expect(store.memoryQueue.next(client.target, Date.now())?.document.id).toBe("exchange-2");
-	// /forget delete must not leave dismissed rows behind either.
-	expect(store.memoryQueue.cancelDocument(doc.id)).toBe(1);
+	// /forget parks the dismissed row, then releases it once its bank
+	// confirms — no dismissed row lingers after a completed forget.
+	expect(store.memoryQueue.markDocumentDeleting(doc.id)).toBe(1);
+	expect(store.memoryQueue.counts(client.target).deleting).toBe(1);
+	expect(store.memoryQueue.confirmDeleted(doc.id, client.target)).toBe(1);
 	expect(store.memoryQueue.counts(client.target).dismissed).toBe(0);
+	expect(store.memoryQueue.counts(client.target).deleting).toBe(0);
 });
 
-test("cancelDocument removes blocked rows — a forgotten document is not 'needs review'", () => {
+test("parking a blocked document ends review surfaces but keeps the retry map", () => {
 	const client = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
 	const store = storeAt(database());
 	const id = store.memoryQueue.enqueue(client.target, doc);
@@ -369,9 +374,19 @@ test("cancelDocument removes blocked rows — a forgotten document is not 'needs
 		0,
 		"operation missing; operator reconciliation required",
 	);
-	expect(store.memoryQueue.cancelDocument(doc.id)).toBe(1);
-	expect(store.memoryQueue.get(id)).toBeNull();
+	expect(store.memoryQueue.markDocumentDeleting(doc.id)).toBe(1);
+	expect(store.memoryQueue.get(id)?.state).toBe("deleting");
+	// Parked: never due, never re-offered as review or retry.
 	expect(store.memoryQueue.next(client.target, Date.now())).toBeNull();
+	expect(store.memoryQueue.blockedDetail(client.target)).toEqual([]);
+	expect(store.memoryQueue.retryBlocked(client.target)).toBe(0);
+	// Still the destination map a forget retry needs (#113).
+	expect(store.memoryQueue.documentDestinations(doc.id)).toEqual([
+		{ target: client.target, inflight: [] },
+	]);
+	expect(store.memoryQueue.confirmDeleted(doc.id, client.target)).toBe(1);
+	expect(store.memoryQueue.get(id)).toBeNull();
+	expect(store.memoryQueue.documentDestinations(doc.id)).toEqual([]);
 });
 
 test("noteBlocked latches once per document", () => {

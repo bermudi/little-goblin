@@ -343,3 +343,131 @@ describe("forget after a memory destination change", () => {
 		expect(store.memoryContexts.isSuppressed(documentId)).toBe(false);
 	});
 });
+
+// #113: the outbox rows ARE the document→destination map. Cancelling
+// them before the remote deletes meant a failed old-bank delete (or a
+// crash in that window) left retry with no way to know the old bank
+// holds the document — it deleted only from the current bank and
+// reported forgotten while the old copy survived. Deletion work must
+// persist per document/destination until that destination confirms;
+// suppression alone stops ingestion.
+describe("forget keeps its retry map when a remote delete fails", () => {
+	const newTarget = "b".repeat(64);
+	// A foreign bank whose first DELETE fails; the row is enqueued
+	// directly (never submitted), so settle sees an absent operation
+	// and passes without remote help.
+	function flakyOldBank(): {
+		instance: HindsightInstance;
+		deletes: () => number;
+		stillHolds: () => boolean;
+	} {
+		const state = { deletes: 0, holds: true };
+		const instance: HindsightInstance = {
+			target,
+			async operation() {
+				return null;
+			},
+			async deleteDocument() {
+				state.deletes++;
+				if (state.deletes === 1) throw new Error("synthetic transient DELETE failure");
+				state.holds = false;
+			},
+		};
+		return { instance, deletes: () => state.deletes, stillHolds: () => state.holds };
+	}
+
+	test("a failed old-bank delete keeps the destination tracked; retry retries the old bank", async () => {
+		const store = storeAt();
+		const old = flakyOldBank();
+		const operationId = store.memoryQueue.enqueue(target, doc);
+		const current: HindsightInstance = {
+			target: newTarget,
+			async operation() {
+				return null;
+			},
+			async deleteDocument() {},
+		};
+		const source: ForgetSource = {
+			...sourceOf(current, store),
+			clientForTarget: () => old.instance,
+		};
+		let firstFailed = false;
+		try {
+			await forgetDocument(source, documentId, { channel: "telegram", conversation: "dm:1" });
+		} catch {
+			firstFailed = true;
+		}
+		expect(firstFailed).toBe(true); // fail loud: the delete error escapes
+		// Suppression committed on the first attempt — nothing can re-enqueue.
+		expect(store.memoryContexts.isSuppressed(documentId)).toBe(true);
+		// THE regression: the old bank's row survives as the retry map,
+		// parked where the worker can never submit it again.
+		expect(store.memoryQueue.documentDestinations(documentId)).toEqual([{ target, inflight: [] }]);
+		expect(store.memoryQueue.get(operationId)?.state).toBe("deleting");
+		expect(store.memoryQueue.next(target, Date.now())).toBeNull();
+
+		const retry = await forgetDocument(source, documentId, {
+			channel: "telegram",
+			conversation: "dm:1",
+		});
+		expect(retry.outcome).toBe("forgotten");
+		expect(old.deletes()).toBe(2); // the retry went back to the old bank
+		expect(old.stillHolds()).toBe(false);
+		expect(store.memoryQueue.get(operationId)).toBeNull();
+	});
+
+	test("each destination's rows drop only after its own delete confirms", async () => {
+		const store = storeAt();
+		const secondTarget = "c".repeat(64);
+		const deletedFirst: string[] = [];
+		const first: HindsightInstance = {
+			target,
+			async operation() {
+				return null;
+			},
+			async deleteDocument(id) {
+				deletedFirst.push(id);
+			},
+		};
+		const second: HindsightInstance = {
+			target: secondTarget,
+			async operation() {
+				return null;
+			},
+			async deleteDocument() {
+				throw new Error("synthetic old-bank outage");
+			},
+		};
+		const current: HindsightInstance = {
+			target: newTarget,
+			async operation() {
+				return null;
+			},
+			async deleteDocument() {},
+		};
+		const firstOp = store.memoryQueue.enqueue(target, doc);
+		const secondOp = store.memoryQueue.enqueue(secondTarget, doc);
+		let failed = false;
+		try {
+			await forgetDocument(
+				{
+					...sourceOf(current, store),
+					clientForTarget: (t) => (t === target ? first : second),
+				},
+				documentId,
+				{ channel: "mini-app" },
+			);
+		} catch {
+			failed = true;
+		}
+		expect(failed).toBe(true);
+		expect(deletedFirst).toEqual([documentId]); // confirmed before the crash
+		// The confirmed destination's rows are gone; the failing one's
+		// stay — exactly the map a retry needs.
+		expect(store.memoryQueue.get(firstOp)).toBeNull();
+		expect(store.memoryQueue.get(secondOp)?.state).toBe("deleting");
+		expect(store.memoryQueue.documentDestinations(documentId)).toEqual([
+			{ target: secondTarget, inflight: [] },
+		]);
+	});
+});

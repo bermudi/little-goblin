@@ -388,7 +388,14 @@ describe("mini-app memory status", () => {
 	test("a changed memory destination never displays the boot target's status", async () => {
 		const mem: NonNullable<HttpDeps["memory"]> = {
 			target: { baseUrl: "http://127.0.0.1:8888", bankId: "goblin" },
-			counts: () => ({ pending: 2, submitted: 0, completed: 1, blocked: 0, dismissed: 0 }),
+			counts: () => ({
+				pending: 2,
+				submitted: 0,
+				completed: 1,
+				blocked: 0,
+				dismissed: 0,
+				deleting: 0,
+			}),
 			blockedDetail: () => [],
 			lastRecallOk: () => true,
 			lastRecallAt: () => null,
@@ -442,7 +449,14 @@ describe("mini-app memory status", () => {
 
 	test("drained counts render healthy with queue and recall fields", async () => {
 		const { http, get } = setup({
-			counts: () => ({ pending: 0, submitted: 0, completed: 5, blocked: 0, dismissed: 0 }),
+			counts: () => ({
+				pending: 0,
+				submitted: 0,
+				completed: 5,
+				blocked: 0,
+				dismissed: 0,
+				deleting: 0,
+			}),
 			blockedDetail: () => [],
 			lastRecallOk: () => true,
 			lastRecallAt: () => "2026-09-25T12:00:00.000Z",
@@ -463,7 +477,14 @@ describe("mini-app memory status", () => {
 
 	test("blocked retention drives the degraded state, counts and list", async () => {
 		const { http, get } = setup({
-			counts: () => ({ pending: 0, submitted: 2, completed: 1, blocked: 1, dismissed: 1 }),
+			counts: () => ({
+				pending: 0,
+				submitted: 2,
+				completed: 1,
+				blocked: 1,
+				dismissed: 1,
+				deleting: 0,
+			}),
 			blockedDetail: () => [{ document: "msg-1234", error: "hindsight 500", attempts: 3 }],
 			lastRecallOk: () => false,
 			lastRecallAt: () => "2026-09-25T12:00:00.000Z",
@@ -810,7 +831,14 @@ describe("mini-app memories browser", () => {
 		};
 		const mem: NonNullable<HttpDeps["memory"]> = {
 			target: { baseUrl: "http://127.0.0.1:8888", bankId: "goblin" },
-			counts: () => ({ pending: 0, submitted: 0, completed: 0, blocked: 0, dismissed: 0 }),
+			counts: () => ({
+				pending: 0,
+				submitted: 0,
+				completed: 0,
+				blocked: 0,
+				dismissed: 0,
+				deleting: 0,
+			}),
 			blockedDetail: () => [],
 			lastRecallOk: () => null,
 			lastRecallAt: () => null,
@@ -848,7 +876,14 @@ describe("mini-app memories browser", () => {
 	test("bad page params are a 422, and upstream failures map to the chat command's line", async () => {
 		const client = stubClient();
 		const { http, get } = setup({
-			counts: () => ({ pending: 0, submitted: 0, completed: 0, blocked: 0, dismissed: 0 }),
+			counts: () => ({
+				pending: 0,
+				submitted: 0,
+				completed: 0,
+				blocked: 0,
+				dismissed: 0,
+				deleting: 0,
+			}),
 			blockedDetail: () => [],
 			lastRecallOk: () => null,
 			lastRecallAt: () => null,
@@ -900,7 +935,14 @@ describe("mini-app memories browser", () => {
 		client.getDocument = (id) => Promise.resolve(id === doc.id ? doc : null);
 		client.listMemories = () => Promise.resolve(facts);
 		const { http, get } = setup({
-			counts: () => ({ pending: 0, submitted: 0, completed: 0, blocked: 0, dismissed: 0 }),
+			counts: () => ({
+				pending: 0,
+				submitted: 0,
+				completed: 0,
+				blocked: 0,
+				dismissed: 0,
+				deleting: 0,
+			}),
 			blockedDetail: () => [],
 			lastRecallOk: () => null,
 			lastRecallAt: () => null,
@@ -946,14 +988,25 @@ describe("mini-app memories browser", () => {
 		} as unknown as MemoryContexts;
 		const queue = {
 			documentDestinations: () => [],
-			cancelDocument: (id: string) => {
-				cancelled.push(`cancel:${id}`);
+			markDocumentDeleting: (id: string) => {
+				cancelled.push(`park:${id}`);
+				return 0;
+			},
+			confirmDeleted: (id: string) => {
+				cancelled.push(`confirm:${id}`);
 				return 1;
 			},
 		} as unknown as MemoryQueue;
 		const paused: boolean[] = [];
 		const mem: NonNullable<HttpDeps["memory"]> = {
-			counts: () => ({ pending: 0, submitted: 0, completed: 0, blocked: 0, dismissed: 0 }),
+			counts: () => ({
+				pending: 0,
+				submitted: 0,
+				completed: 0,
+				blocked: 0,
+				dismissed: 0,
+				deleting: 0,
+			}),
 			blockedDetail: () => [],
 			lastRecallOk: () => null,
 			lastRecallAt: () => null,
@@ -988,7 +1041,14 @@ describe("mini-app memories browser", () => {
 			expect(paused).toEqual([true]);
 			// Status-only wiring (no forget seams) refuses loudly, not 500.
 			const { http: http2, get: get2 } = setup({
-				counts: () => ({ pending: 0, submitted: 0, completed: 0, blocked: 0, dismissed: 0 }),
+				counts: () => ({
+					pending: 0,
+					submitted: 0,
+					completed: 0,
+					blocked: 0,
+					dismissed: 0,
+					deleting: 0,
+				}),
 				blockedDetail: () => [],
 				lastRecallOk: () => null,
 				lastRecallAt: () => null,

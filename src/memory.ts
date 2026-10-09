@@ -700,9 +700,9 @@ export interface MemoryWorker {
 	// Serialize an async section against the worker: no new drain starts,
 	// the in-flight drain settles first, then fn runs, then the timer
 	// resumes — also on throw. /forget delete runs its whole
-	// reconcile→suppress→cancel→delete→redact block inside this: the worker
+	// reconcile→suppress→park→delete→redact block inside this: the worker
 	// flips a row to "submitted" only after submit() returns, so a delete
-	// racing the HTTP call cancels a row that still reads "pending" while
+	// racing the HTTP call parks a row that still reads "pending" while
 	// its document lands remotely — the forgotten source resurrects with
 	// no local row left to settle (DESIGN.md: serialize against in-flight
 	// writes before deleting). The pause settles local HTTP work only —

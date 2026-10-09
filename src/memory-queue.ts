@@ -21,6 +21,9 @@ export interface MemoryQueueCounts {
 	completed: number;
 	blocked: number;
 	dismissed: number;
+	// Rows parked mid-forget: their destination's remote delete has not
+	// confirmed yet (#113). Not worker work — never due in next().
+	deleting: number;
 }
 // Operator-facing projection of a blocked row. `document` is the last
 // path segment of the document id when it contains one (the assistant
@@ -39,7 +42,11 @@ const rowSchema = z.object({
 	// `dismissed`: the operator reviewed a blocked row and chose to drop
 	// it. The row stays in the DB for audit — failed/missing remote
 	// operations remain visible, never silently discarded.
-	state: z.enum(["pending", "submitted", "completed", "blocked", "dismissed"]),
+	// `deleting`: forget parked the row. It is invisible to the worker
+	// (never submitted or polled again) but survives as the
+	// document→destination retry map until that destination's delete
+	// confirms (#113).
+	state: z.enum(["pending", "submitted", "completed", "blocked", "dismissed", "deleting"]),
 	attempts: z.number().int().nonnegative(),
 	next_attempt: z.number().int().nonnegative(),
 	error: z.string().nullable(),
@@ -171,11 +178,13 @@ export class MemoryQueue {
 	// submit can be accepted remotely while its acknowledgement degrades
 	// (a retryable failure leaves the row pending), and a crash between
 	// acceptance and the submitted-state write does the same — callers
-	// reconcile both states through to terminal. Terminal rows
-	// (completed/blocked/dismissed) keep their target listed with an empty
-	// inflight list: all three mean the destination may hold the document,
-	// so forget must delete there too — through the owning destination,
-	// never a foreign one (#87). First-seen rowid order for determinism.
+	// reconcile both states through to terminal. Rows in every other
+	// state — completed/blocked/dismissed, and `deleting` rows parked by
+	// an earlier failed forget — keep their target listed with an empty
+	// inflight list: all of them mean the destination may hold the
+	// document, so forget must delete there too — through the owning
+	// destination, never a foreign one (#87). First-seen rowid order for
+	// determinism.
 	documentDestinations(documentId: string): {
 		target: string;
 		inflight: { operationId: string; state: "pending" | "submitted" }[];
@@ -207,16 +216,35 @@ export class MemoryQueue {
 		return [...byTarget.values()];
 	}
 
-	// Forgetting cancels pending ingestion across all targets — a config
-	// change must not resurrect a suppressed document from another
-	// target. Blocked and dismissed rows die too: a forgotten document
-	// must not linger as "needs review" in the outbox (live finding
-	// 2026-09-25: /forget delete used to leave blocked rows behind).
-	cancelDocument(documentId: string): number {
-		const change = this.db.run(
-			`DELETE FROM memory_outbox WHERE document_id = ? AND state IN ('pending', 'submitted', 'blocked', 'dismissed')`,
-			[documentId],
+	// Forgetting parks every row for the document in `deleting` instead
+	// of deleting it outright: the worker never selects that state, so
+	// ingestion stops (suppression already blocks new enqueues), blocked
+	// review surfaces stop offering the document, and the rows survive as
+	// the only durable document→destination map. Releasing them before
+	// the remote deletes confirmed would let a failed delete — or a crash
+	// mid-protocol — strand retry with no way to know which banks still
+	// hold the document (#113).
+	markDocumentDeleting(documentId: string): number {
+		const rows = Number(
+			this.db.run(
+				`UPDATE memory_outbox SET state = 'deleting' WHERE document_id = ? AND state != 'deleting'`,
+				[documentId],
+			).changes,
 		);
+		if (rows > 0) log.info("memory retention parked for deletion", { document: documentId, rows });
+		return rows;
+	}
+
+	// A destination's rows are released only after that destination's own
+	// delete confirmed — until then they are the retry map. Safe to repeat
+	// after a crash between delete and release: the re-delete reads as
+	// success (a bank-scoped 404 included).
+	confirmDeleted(documentId: string, target: string): number {
+		targetSchema.parse(target);
+		const change = this.db.run("DELETE FROM memory_outbox WHERE document_id = ? AND target = ?", [
+			documentId,
+			target,
+		]);
 		return Number(change.changes);
 	}
 
@@ -266,6 +294,7 @@ export class MemoryQueue {
 			completed: 0,
 			blocked: 0,
 			dismissed: 0,
+			deleting: 0,
 		};
 		for (const r of rows) {
 			if (r.state === "pending") out.pending = r.n;
@@ -273,6 +302,7 @@ export class MemoryQueue {
 			else if (r.state === "completed") out.completed = r.n;
 			else if (r.state === "blocked") out.blocked = r.n;
 			else if (r.state === "dismissed") out.dismissed = r.n;
+			else if (r.state === "deleting") out.deleting = r.n;
 		}
 		return out;
 	}

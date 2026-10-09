@@ -320,6 +320,7 @@ describe("status", () => {
 		completed: 0,
 		blocked: 0,
 		dismissed: 0,
+		deleting: 0,
 		...over,
 	});
 	const input = (over: Partial<Parameters<typeof memoryStatus>[0]> = {}) => ({

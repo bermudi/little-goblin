@@ -344,7 +344,7 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 				// Resolve-then-confirm already happened: the operator ran
 				// /forget <query>, saw this id, and typed delete. The protocol
 				// itself (quiesce the retention worker, settle in-flight
-				// retention, suppress, cancel, delete, redact) lives in
+				// retention, suppress, park outbox rows, delete, redact) lives in
 				// memory-forget.ts — shared with the mini app's forget button.
 				// Refusing the delete beats racing it (fail-loud, DESIGN.md).
 				void (async () => {

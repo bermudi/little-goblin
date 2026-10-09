@@ -65,11 +65,13 @@ not auto-deleted.
   10 minutes.
 - `/forget delete <n>` (a number from the latest listing) or the full
   `<documentId>` — after reviewing the listing: suppress the source
-  (survives restarts/backfill), cancel its queued retention, delete the
-  remote document, and redact recalled snapshots citing it. A number
-  from a missing, expired, or other-topic listing refuses (fail-closed).
-  Original chat history, backups, and provider retention are untouched —
-  forgetting is not erasure.
+  (survives restarts/backfill), stop its queued retention, delete the
+  remote document through every bank that holds it, and redact recalled
+  snapshots citing it. If a delete fails, re-run the same command:
+  unfinished deletions are kept and retried, never assumed done. A
+  number from a missing, expired, or other-topic listing refuses
+  (fail-closed). Original chat history, backups, and provider retention
+  are untouched — forgetting is not erasure.
 - `memory` block edits in the mini app apply on **restart**: queued rows
   are bound to their endpoint+bank, so a live switch could never redirect
   pending personal content. The process logs a warning when a save

@@ -109,10 +109,10 @@ No MCP, replacement turn loop, or generic multi-backend framework.
 7. **Forgetting: two commands, suppression survives everything.**
    `/forget <query>` resolves and shows affected sources;
    `/forget delete <documentId>` requires that go-ahead, then suppresses,
-   cancels pending outbox rows, deletes the remote document, and redacts
-   affected recall snapshots (global prefix reset, logged). Suppression
-   lives in SQLite and is checked before every enqueue, so restarts and
-   future backfills cannot resurrect forgotten sources.
+   parks the document's outbox rows, deletes the remote document, and
+   redacts affected recall snapshots (global prefix reset, logged).
+   Suppression lives in SQLite and is checked before every enqueue, so
+   restarts and future backfills cannot resurrect forgotten sources.
    Amendment (2026-10-08, #87): forgetting is destination-aware. The
    outbox binds rows to the endpoint+bank target hash, and that hash is
    one-way — after a destination change, the bank that owns a row could
@@ -130,6 +130,21 @@ No MCP, replacement turn loop, or generic multi-backend framework.
    a new-bank delete. Suppression stays bank-agnostic. Pending rows
    against a previous bank still never drain through the current worker
    (the binding rule above); forgetting is their reconciliation path.
+   Amendment (2026-10-08, #113): the cancel step must not destroy the
+   retry map — the outbox rows ARE the document→destination mapping.
+   Deleting them before the remote deletes meant a failed old-bank
+   delete (or a crash in the window) left a re-run of `/forget delete`
+   unable to know the old bank held the document: it deleted only from
+   the current bank and reported forgotten while the old copy survived.
+   Forgetting now parks every row for the document in a `deleting`
+   state — invisible to the worker, so ingestion and blocked-review
+   surfaces stop (suppression already blocks re-enqueue) — and releases
+   each destination's rows only after that destination's own delete
+   confirms. A failure leaves the unconfirmed destinations parked, so
+   the retry settles and deletes through every bank that still holds
+   the document. This is the retain path's durable-operation rule
+   applied to deletion: persist the work record before the remote
+   action, drop it only after confirmation — never before.
 8. **Memories browser: the mini app grows a Memories tab (operator ask,
    2026-09-30).** The settings page restructures to two tabs — Settings
    (the six config sections one level deep behind an index; settings
@@ -143,9 +158,9 @@ No MCP, replacement turn loop, or generic multi-backend framework.
    box) plus a document's facts and original text; invalidated facts
    render dimmed so corrections are visible. Forgetting is the one
    mutation: the route runs the same protocol as `/forget delete` —
-   quiesce, settle in-flight retention, suppress, cancel, delete,
-   redact — extracted into one owner (`src/memory-forget.ts`) that
-   both surfaces call, with a confirm dialog as the go-ahead. The
+   quiesce, settle in-flight retention, suppress, park outbox rows,
+   delete, redact — extracted into one owner (`src/memory-forget.ts`)
+   that both surfaces call, with a confirm dialog as the go-ahead. The
    command's issuing-conversation fence stays in the command; the
    cross-conversation recall-in-flight window it already tolerates is
    the browser's window too (suppression persists, so re-running

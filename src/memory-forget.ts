@@ -1,9 +1,13 @@
 // The forgetting protocol's one owner (the /forget command and the mini
 // app's button both land here): settle in-flight retention, then
-// suppress → cancel → remote delete → redact. The order is load-bearing:
-// a replace-mode retain accepted remotely and finishing after the delete
-// would resurrect the document, and suppression must exist before
-// anything else could re-enqueue.
+// suppress → park outbox rows → remote delete per destination → redact.
+// The order is load-bearing: a replace-mode retain accepted remotely and
+// finishing after the delete would resurrect the document, suppression
+// must exist before anything else could re-enqueue, and the outbox rows
+// must outlive every remote delete — they are the document→destination
+// map a retry depends on. Parking (not cancelling) makes the rows
+// invisible to the worker while each destination's rows stay until its
+// own delete confirms (#113).
 //
 // A queue row reading `pending` is not proof its retention was never
 // sent — a submit can be accepted remotely while its acknowledgement is
@@ -22,7 +26,8 @@
 // No conversation fencing here (the command's own courtesy lives in
 // commands.ts); cross-conversation recall-in-flight is a window already
 // tolerated, and the protocol is re-runnable — suppression persists,
-// deleteByDocument can run again.
+// deleteByDocument can run again, and a failed delete leaves every
+// unconfirmed destination's rows parked for the retry.
 
 import { HindsightError, identifier, type MemoryOperation } from "./hindsight.ts";
 import { log } from "./log.ts";
@@ -160,14 +165,20 @@ export async function forgetDocument(
 			});
 		}
 		source.contexts.suppress(id);
-		const cancelled = source.queue.cancelDocument(id);
+		source.queue.markDocumentDeleting(id);
+		let cancelled = 0;
 		// Every outbox destination may hold the document, plus the current
-		// one for the browsing surface — a 404 delete reads as success.
+		// one for the browsing surface — a 404 delete reads as success. Each
+		// destination's rows are released the moment its own delete
+		// confirms; a throw before that leaves them parked, so the retry
+		// still knows the bank holds the document.
 		for (const destination of destinations) {
 			if (destination.target === source.client.target) continue;
 			await clients.get(destination.target)!.deleteDocument(id);
+			cancelled += source.queue.confirmDeleted(id, destination.target);
 		}
 		await source.client.deleteDocument(id);
+		cancelled += source.queue.confirmDeleted(id, source.client.target);
 		const redacted = source.contexts.deleteByDocument(id);
 		log.info("memory forgotten", {
 			...fields,

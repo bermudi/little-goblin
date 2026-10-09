@@ -121,7 +121,7 @@ Rulings:
   replace the link). Remote targets get the same markers through
   the delegation's own root pane (`pane run` of a write-if-absent
   shell snippet, before `agent start` — a fresh host starts with no
-  harness state, so `[ -f ] || write` is the whole job; the pane is
+  harness state, so an absent-path write is the whole job; the pane is
   a shell goblin just created, so no new transport is owed).
   Panes
   run the operator's interactive shell, so shell aliases apply: args

@@ -451,9 +451,15 @@ async function readScreenTail(
 // The same write-if-absent markers harness-trust.ts seeds locally,
 // applied through the delegation's own root pane: one `pane run`
 // before `agent start`. A fresh host has no harness state, so
-// `[ -f ] || printf` is the whole job; an existing file is never
+// "absent or write" is the whole job; an existing path is never
 // touched — an entry it lacks parks the row once and relays, and a
 // file the operator owns on that host is never rewritten from here.
+// The absent test is `[ -e ] || [ -L ]`, never `[ -f ]`: `-f` follows
+// symlinks, so a dangling link reads as absent and the redirect then
+// repairs it by creating its target — the exact replace-the-link
+// local seeding refuses (harness-trust.ts managedPath). `-e` is true
+// for any existing path (regular, directory, fifo) and `-L` catches
+// the dangling link, so only a truly absent path gets the write.
 function remoteSeedCommand(kind: string, cwd: string): string | null {
 	// Single-quote for the shell; printf %s carries the bytes verbatim.
 	const sh = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -461,22 +467,23 @@ function remoteSeedCommand(kind: string, cwd: string): string | null {
 		case "codex":
 			return [
 				"mkdir -p ~/.codex",
-				`{ [ -f ~/.codex/config.toml ] || printf %s ${sh(codexTrustSection(cwd))} > ~/.codex/config.toml; }`,
+				`{ [ -e ~/.codex/config.toml ] || [ -L ~/.codex/config.toml ] || printf %s ${sh(codexTrustSection(cwd))} > ~/.codex/config.toml; }`,
 			].join(" && ");
 		case "claude":
-			return `mkdir -p ~ && { [ -f ~/.claude.json ] || printf %s ${sh(claudeFreshTrustJson(cwd))} > ~/.claude.json; }`;
+			return `mkdir -p ~ && { [ -e ~/.claude.json ] || [ -L ~/.claude.json ] || printf %s ${sh(claudeFreshTrustJson(cwd))} > ~/.claude.json; }`;
 		default:
 			return null; // no known first-run gates for this kind
 	}
 }
 
 // Best-effort by contract: the marker echo proves the seed landed;
-// a timeout logs and proceeds (a missed gate parks the row and
-// relays — the launch must not block on a guess). Only a herdr
-// error (transport) fails the launch, from the caller. The echoed
-// marker is split (`gob''lin-seed…`) so the terminal's echo of the
-// typed command never satisfies the wait — only the executed
-// output can.
+// a documented `timeout` from the wait logs and proceeds (a missed
+// gate parks the row and relays — the launch must not block on a
+// guess). Any other failure — paneRun transport/auth errors, or a
+// non-timeout wait error — throws to the caller, which fails the
+// launch loud. The echoed marker is split (`gob''lin-seed…`) so the
+// terminal's echo of the typed command never satisfies the wait —
+// only the executed output can.
 async function seedRemoteTrust(
 	herdr: Herdr,
 	paneId: string,
@@ -492,6 +499,14 @@ async function seedRemoteTrust(
 	try {
 		await herdr.paneWaitOutput(paneId, marker, 15_000);
 	} catch (err) {
+		// Only the documented wait timeout is tolerated: the seed may
+		// have landed without the marker surfacing, and a missed gate
+		// parks the row and relays. Every other failure — a paneRun
+		// transport/auth error above, or a non-timeout wait error
+		// (validation, auth, pane gone) — throws to the launch caller,
+		// which fails the row loud instead of starting an agent past
+		// an unseeded gate.
+		if (!(err instanceof HerdrError && err.code === "timeout")) throw err;
 		log.warn("delegation remote trust seed unconfirmed", err, {
 			delegation: id,
 			kind,

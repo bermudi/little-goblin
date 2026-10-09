@@ -11,13 +11,16 @@
 // contracts; openrouter-ogg and mimo verified live during
 // implementation). Resolved keys never enter logs.
 
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
 import type { AuthStore } from "../auth.ts";
 import type { TranscriptionConfig } from "../config.ts";
 import { log } from "../log.ts";
+import { boundedRun, spawnProc } from "../proc.ts";
 import { readTextCapped } from "./tools/web.ts";
-import type { EngineDeps, EngineTranscript, SpeechEngine } from "./transcribe.ts";
+import type { EngineDeps, EngineTranscript, SpeechEngine, SpeechFile } from "./transcribe.ts";
 
 // Every cloud arm of the transcription union — one shape (kind, model,
 // auth, language?), seven kinds.
@@ -205,7 +208,9 @@ export function elevenlabsEngine(
 // ---------- openrouter (JSON STT + chat) ----------
 
 // OpenRouter's input_audio takes these formats (wav + ogg probed live,
-// mp3 documented); anything else fails loud instead of guessing.
+// mp3 documented). Anything else — video notes arrive as .mp4 — is
+// ffmpeg-extracted to opus-in-ogg below instead of failing on the
+// container: the audio track is what the provider needs.
 const AUDIO_FORMATS: Record<string, string> = {
 	".wav": "wav",
 	".mp3": "mp3",
@@ -213,16 +218,77 @@ const AUDIO_FORMATS: Record<string, string> = {
 	".oga": "ogg",
 };
 
-function inputAudioFormat(kind: string, filename: string): string {
+function supportedFormat(filename: string): string | undefined {
 	const dot = filename.lastIndexOf(".");
 	const ext = dot === -1 ? "" : filename.slice(dot).toLowerCase();
-	const format = AUDIO_FORMATS[ext];
-	if (format === undefined) {
+	return AUDIO_FORMATS[ext];
+}
+
+// Single-file extraction budget — even a 15-minute note transcodes in seconds.
+const AUDIO_EXTRACT_TIMEOUT_MS = 60_000;
+
+interface PreparedAudio {
+	path: string;
+	format: string;
+	cleanup: () => Promise<void>;
+}
+
+// The bytes ready for input_audio: the original file when its extension
+// maps, else an ffmpeg audio-track extraction to mono 48k opus (the keep
+// profile's segment codec in transcribe.ts). Transcode failures throw
+// with the provider's name — callers run cleanup in a finally.
+async function preparedInputAudio(kind: string, file: SpeechFile): Promise<PreparedAudio> {
+	const direct = supportedFormat(file.filename);
+	if (direct !== undefined) return { path: file.path, format: direct, cleanup: async () => {} };
+	const dir = await mkdtemp(join(tmpdir(), "goblin-au-"));
+	const out = join(dir, "audio.ogg");
+	const cleanup = async (): Promise<void> => {
+		await rm(dir, { recursive: true, force: true }).catch((err: unknown) => {
+			log.warn("transcription audio extract cleanup failed", err, { dir });
+		});
+	};
+	let proc: ReturnType<typeof spawnProc>;
+	try {
+		proc = spawnProc([
+			"ffmpeg",
+			"-hide_banner",
+			"-loglevel",
+			"error",
+			"-i",
+			file.path,
+			"-vn",
+			"-ac",
+			"1",
+			"-b:a",
+			"48k",
+			"-c:a",
+			"libopus",
+			out,
+		]);
+	} catch (err) {
+		await cleanup();
 		throw new Error(
-			`${kind}: no input_audio format for "${ext || filename}" — supported: ${Object.keys(AUDIO_FORMATS).join(", ")}`,
+			`${kind}: audio extraction failed for "${file.filename}" — ffmpeg failed to spawn: ${(err as Error).message}`,
 		);
 	}
-	return format;
+	const r = await boundedRun(proc, {
+		timeoutMs: AUDIO_EXTRACT_TIMEOUT_MS,
+		maxOutput: 64 * 1024,
+	});
+	if (r.timedOut) {
+		await cleanup();
+		throw new Error(
+			`${kind}: audio extraction timed out after ${AUDIO_EXTRACT_TIMEOUT_MS}ms for "${file.filename}"`,
+		);
+	}
+	if (r.exitCode !== 0) {
+		await cleanup();
+		throw new Error(
+			`${kind}: audio extraction failed for "${file.filename}" — ffmpeg exited ${r.exitCode ?? "unreaped"}: ${r.stderr.trim().slice(0, 300)}`,
+		);
+	}
+	log.info("transcription audio extracted", { engine: kind, file: file.filename });
+	return { path: out, format: "ogg", cleanup };
 }
 
 async function base64Audio(path: string): Promise<string> {
@@ -252,31 +318,38 @@ export function openrouterEngine(
 		prep: { container: "keep" },
 		transcribe: async (file): Promise<EngineTranscript> => {
 			const key = await auth.resolve(cfg.auth);
-			const res = await httpPost(
-				"openrouter",
-				"https://openrouter.ai/api/v1/audio/transcriptions",
-				{
-					headers: {
-						authorization: `Bearer ${key}`,
-						"content-type": "application/json",
-					},
-					body: JSON.stringify({
-						model: cfg.model,
-						input_audio: {
-							data: await base64Audio(file.path),
-							format: inputAudioFormat("openrouter", file.filename),
+			// Resolve the extension first so a transcode failure is a
+			// context-carrying error, not cleanup noise.
+			const prepared = await preparedInputAudio("openrouter", file);
+			try {
+				const res = await httpPost(
+					"openrouter",
+					"https://openrouter.ai/api/v1/audio/transcriptions",
+					{
+						headers: {
+							authorization: `Bearer ${key}`,
+							"content-type": "application/json",
 						},
-					}),
-					deps,
-					timeoutMs: OPENROUTER_TIMEOUT_MS,
-				},
-			);
-			const { tooLarge, text } = await readTextCapped(res, RESPONSE_CAP);
-			if (tooLarge) throw new Error(`openrouter: response over ${RESPONSE_CAP} bytes`);
-			if (!res.ok) throw renderError("openrouter", res.status, text);
-			const parsed = parseBody("openrouter", text, openrouterResponse);
-			logUsage(`openrouter/${cfg.model}`, parsed.usage);
-			return { text: parsed.text };
+						body: JSON.stringify({
+							model: cfg.model,
+							input_audio: {
+								data: await base64Audio(prepared.path),
+								format: prepared.format,
+							},
+						}),
+						deps,
+						timeoutMs: OPENROUTER_TIMEOUT_MS,
+					},
+				);
+				const { tooLarge, text } = await readTextCapped(res, RESPONSE_CAP);
+				if (tooLarge) throw new Error(`openrouter: response over ${RESPONSE_CAP} bytes`);
+				if (!res.ok) throw renderError("openrouter", res.status, text);
+				const parsed = parseBody("openrouter", text, openrouterResponse);
+				logUsage(`openrouter/${cfg.model}`, parsed.usage);
+				return { text: parsed.text };
+			} finally {
+				await prepared.cleanup();
+			}
 		},
 	};
 }
@@ -350,48 +423,54 @@ export function mimoEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDeps = {}
 		prep: { container: "keep" },
 		transcribe: async (file): Promise<EngineTranscript> => {
 			const key = await auth.resolve(cfg.auth);
-			const res = await httpPost("mimo", "https://openrouter.ai/api/v1/chat/completions", {
-				headers: {
-					authorization: `Bearer ${key}`,
-					"content-type": "application/json",
-				},
-				body: JSON.stringify({
-					model: cfg.model,
-					temperature: 0,
-					max_tokens: CHAT_OUTPUT_TOKEN_CAP,
-					messages: [
-						{
-							role: "user",
-							content: [
-								{
-									type: "input_audio",
-									input_audio: {
-										data: await base64Audio(file.path),
-										format: inputAudioFormat("mimo", file.filename),
+			const prepared = await preparedInputAudio("mimo", file);
+			try {
+				const res = await httpPost("mimo", "https://openrouter.ai/api/v1/chat/completions", {
+					headers: {
+						authorization: `Bearer ${key}`,
+						"content-type": "application/json",
+					},
+					body: JSON.stringify({
+						model: cfg.model,
+						temperature: 0,
+						max_tokens: CHAT_OUTPUT_TOKEN_CAP,
+						messages: [
+							{
+								role: "user",
+								content: [
+									{
+										type: "input_audio",
+										input_audio: {
+											data: await base64Audio(prepared.path),
+											format: prepared.format,
+										},
 									},
-								},
-								{ type: "text", text: TRANSCRIBE_PROMPT },
-							],
-						},
-					],
-				}),
-				deps,
-				timeoutMs: CHAT_TIMEOUT_MS,
-			});
-			const { tooLarge, text } = await readTextCapped(res, RESPONSE_CAP);
-			if (tooLarge) throw new Error(`mimo: response over ${RESPONSE_CAP} bytes`);
-			if (!res.ok) throw renderError("mimo", res.status, text);
-			const parsed = parseBody("mimo", text, chatResponse);
-			const choice = parsed.choices[0];
-			if (choice === undefined) throw new Error("mimo: unexpected response shape — no choices");
-			if (choice.finish_reason === "length") {
-				log.warn("transcription hit the chat output cap — transcript is truncated", {
-					engine: `mimo/${cfg.model}`,
-					file: file.filename,
+									{ type: "text", text: TRANSCRIBE_PROMPT },
+								],
+							},
+						],
+					}),
+					deps,
+					timeoutMs: CHAT_TIMEOUT_MS,
 				});
+				const { tooLarge, text } = await readTextCapped(res, RESPONSE_CAP);
+				if (tooLarge) throw new Error(`mimo: response over ${RESPONSE_CAP} bytes`);
+				if (!res.ok) throw renderError("mimo", res.status, text);
+				const parsed = parseBody("mimo", text, chatResponse);
+				const choice = parsed.choices[0];
+				if (choice === undefined)
+					throw new Error("mimo: unexpected response shape — no choices");
+				if (choice.finish_reason === "length") {
+					log.warn("transcription hit the chat output cap — transcript is truncated", {
+						engine: `mimo/${cfg.model}`,
+						file: file.filename,
+					});
+				}
+				logUsage(`mimo/${cfg.model}`, parsed.usage);
+				return { text: choice.message.content.trim() };
+			} finally {
+				await prepared.cleanup();
 			}
-			logUsage(`mimo/${cfg.model}`, parsed.usage);
-			return { text: choice.message.content.trim() };
 		},
 	};
 }

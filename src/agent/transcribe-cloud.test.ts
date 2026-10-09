@@ -280,7 +280,8 @@ describe("openrouterEngine", () => {
 		expect(body.input_audio.data).toBe(Buffer.from("ogg-bytes").toString("base64"));
 	});
 
-	test(".oga maps to ogg, .wav to wav; an unmapped extension fails loud", async () => {
+	test(".oga maps to ogg, .wav to wav; .mp4 extracts to ogg", async () => {
+		if (Bun.which("ffmpeg") === null) return; // environment dep
 		const { fn, last } = fakeFetch(200, JSON.stringify({ text: "x" }));
 		const engine = openrouterEngine(
 			{ kind: "openrouter", model: "openai/whisper-large-v3", auth: "openrouter" },
@@ -299,11 +300,61 @@ describe("openrouterEngine", () => {
 			const body = JSON.parse(String(last().body)) as { input_audio: { format: string } };
 			expect(body.input_audio.format).toBe(format);
 		}
-		const f = join(tmpdir_(), "n.flac");
-		writeFileSync(f, "x");
+		// A video note's .mp4: ffmpeg extracts the audio track and the
+		// extracted bytes ride input_audio as ogg.
+		const dir = tmpdir_();
+		const mp4 = join(dir, "video-note-u1.mp4");
+		const gen = Bun.spawnSync([
+			"ffmpeg",
+			"-hide_banner",
+			"-loglevel",
+			"error",
+			"-f",
+			"lavfi",
+			"-i",
+			"sine=frequency=440:duration=1",
+			"-f",
+			"lavfi",
+			"-i",
+			"testsrc=duration=1:size=64x64:rate=10",
+			"-c:v",
+			"libx264",
+			"-pix_fmt",
+			"yuv420p",
+			"-c:a",
+			"aac",
+			"-shortest",
+			mp4,
+		]);
+		if (gen.exitCode !== 0) throw new Error(`test mp4 gen: ${gen.stderr.toString()}`);
+		await engine.transcribe({ path: mp4, mediaType: "video/mp4", filename: "video-note-u1.mp4" });
+		const body = JSON.parse(String(last().body)) as {
+			input_audio: { data: string; format: string };
+		};
+		expect(body.input_audio.format).toBe("ogg");
+		// OggS magic — the upload is container audio, not the mp4.
+		expect(Buffer.from(body.input_audio.data, "base64").subarray(0, 4).toString()).toBe(
+			"OggS",
+		);
+	});
+
+	test("an unextractable file fails loud with the provider named", async () => {
+		if (Bun.which("ffmpeg") === null) return; // environment dep
+		const { fn, seen } = fakeFetch(200, JSON.stringify({ text: "x" }));
+		const engine = openrouterEngine(
+			{ kind: "openrouter", model: "openai/whisper-large-v3", auth: "openrouter" },
+			auth,
+			{
+				fetchFn: fn,
+			},
+		);
+		const f = join(tmpdir_(), "junk.mp4");
+		writeFileSync(f, "definitely not media");
 		await expect(
-			engine.transcribe({ path: f, mediaType: "audio/flac", filename: "n.flac" }),
-		).rejects.toThrow('no input_audio format for ".flac"');
+			engine.transcribe({ path: f, mediaType: "video/mp4", filename: "junk.mp4" }),
+		).rejects.toThrow('openrouter: audio extraction failed for "junk.mp4"');
+		// No request went out — the failure is before the wire.
+		expect(seen.length).toBe(0);
 	});
 });
 
@@ -480,5 +531,64 @@ describe("mimoEngine", () => {
 			},
 		);
 		expect(await engine.transcribe(voiceFile())).toEqual({ text: "" });
+	});
+
+	test("a video note's .mp4 extracts before the chat call", async () => {
+		if (Bun.which("ffmpeg") === null) return; // environment dep
+		const { fn, last } = fakeFetch(
+			200,
+			JSON.stringify({
+				choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hola" } }],
+			}),
+		);
+		const engine = mimoEngine(
+			{ kind: "mimo", model: "xiaomi/mimo-v2.6-flash", auth: "openrouter" },
+			auth,
+			{
+				fetchFn: fn,
+			},
+		);
+		const dir = tmpdir_();
+		const mp4 = join(dir, "video-note-u1.mp4");
+		const gen = Bun.spawnSync([
+			"ffmpeg",
+			"-hide_banner",
+			"-loglevel",
+			"error",
+			"-f",
+			"lavfi",
+			"-i",
+			"sine=frequency=440:duration=1",
+			"-f",
+			"lavfi",
+			"-i",
+			"testsrc=duration=1:size=64x64:rate=10",
+			"-c:v",
+			"libx264",
+			"-pix_fmt",
+			"yuv420p",
+			"-c:a",
+			"aac",
+			"-shortest",
+			mp4,
+		]);
+		if (gen.exitCode !== 0) throw new Error(`test mp4 gen: ${gen.stderr.toString()}`);
+		expect(
+			(await engine.transcribe({ path: mp4, mediaType: "video/mp4", filename: "video-note-u1.mp4" }))
+				.text,
+		).toBe("hola");
+		const req = last();
+		expect(req.url).toBe("https://openrouter.ai/api/v1/chat/completions");
+		const body = JSON.parse(String(req.body)) as {
+			messages: Array<{
+				content: Array<{ type: string; input_audio?: { data: string; format: string } }>;
+			}>;
+		};
+		const [audioPart] = body.messages[0]?.content ?? [];
+		expect(audioPart?.type).toBe("input_audio");
+		expect(audioPart?.input_audio?.format).toBe("ogg");
+		expect(Buffer.from(audioPart?.input_audio?.data ?? "", "base64").subarray(0, 4).toString()).toBe(
+			"OggS",
+		);
 	});
 });

@@ -317,3 +317,86 @@ describe("appendQuote", () => {
 		expect(appendQuote("", "line one\n\nline two")).toBe("> line one\n>\n> line two\n\n");
 	});
 });
+
+// A failed attachment download is a boundary-safe error response — the
+// fetch rejects on HTTP (!ok) or network failure, and the chip shows
+// the message (a missing file or expired credential otherwise reads
+// as a dead button). Mounted with happy-dom like Composer.test.tsx;
+// the attachment GET is faked at globalThis.fetch.
+describe("AttachmentChip download failure", () => {
+	let win: Window;
+	let container: HTMLElement;
+	let root: Root | null = null;
+	let installed: string[] = [];
+	const realFetch = globalThis.fetch;
+
+	const installGlobal = (name: string, value: unknown) => {
+		Reflect.set(globalThis, name, value);
+		installed.push(name);
+	};
+
+	beforeEach(() => {
+		win = new Window();
+		const div = win.document.createElement("div");
+		win.document.body.appendChild(div);
+		container = div as unknown as HTMLElement;
+		installed = [];
+		installGlobal("window", win);
+		installGlobal("document", win.document);
+		installGlobal("navigator", win.navigator);
+		installGlobal("localStorage", win.localStorage);
+		installGlobal("Event", win.Event);
+		installGlobal("CustomEvent", win.CustomEvent);
+		installGlobal("getComputedStyle", win.getComputedStyle);
+		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+		globalThis.fetch = ((_input: RequestInfo | URL) =>
+				Promise.resolve(new Response("gone", { status: 404 })) as unknown) as typeof fetch;
+	});
+
+	afterEach(async () => {
+		if (root !== null) {
+			await act(async () => {
+				root?.unmount();
+			});
+			root = null;
+		}
+		await win.happyDOM.close();
+		globalThis.fetch = realFetch;
+		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+		for (const name of installed) Reflect.deleteProperty(globalThis, name);
+		installed = [];
+	});
+
+	test("a failed click shows the error instead of doing nothing", async () => {
+		root = createRoot(container);
+		act(() => {
+			root?.render(
+				<MessageParts
+					parts={[
+						{
+							type: "data-attachment",
+							data: {
+								path: "attachments/missing",
+								mediaType: "application/pdf",
+								filename: "notes.pdf",
+								size: 10,
+							},
+						},
+					]}
+					token={null}
+				/>,
+			);
+		});
+		await act(async () => {});
+		const button = container.querySelector("button.attachment-name");
+		expect(button).not.toBeNull();
+		expect(container.querySelector(".msg-err")).toBeNull();
+		await act(async () => {
+			button?.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+		await act(async () => {});
+		const err = container.querySelector(".msg-err");
+		expect(err).not.toBeNull();
+		expect(err?.textContent).toContain("http 404");
+	});
+});

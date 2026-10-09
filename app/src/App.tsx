@@ -11,7 +11,7 @@ import {
 	saveToken,
 	searchConversations,
 } from "./api.ts";
-import { ChatView, Composer } from "./ChatView.tsx";
+import { ChatView, Composer, type StagedUpload } from "./ChatView.tsx";
 import type { AppConversationList, AppSearchHit } from "../../src/http/app-wire.ts";
 
 // Sidebar timestamps are relative: "now", minutes, hours, days, then a
@@ -240,6 +240,12 @@ export function App() {
 	// The empty state has the composer too — its send creates the
 	// conversation, then ChatView delivers the parked message as `seed`.
 	const [seed, setSeed] = useState<{ id: string; parts: UIMessage["parts"] } | null>(null);
+	// Staged uploads are owned here, above any composer: the first send
+	// swaps the empty state's composer for the new conversation's, and
+	// uploads still in flight (or failed chips) must carry across that
+	// unmount — their resolution writes this state, whichever composer
+	// is mounted (#118).
+	const [staged, setStaged] = useState<StagedUpload[]>([]);
 	// Bump on "New conversation" — the composer focuses itself, mounted
 	// or not (a remount sees the non-zero signal on first effect).
 	const [composerFocus, setComposerFocus] = useState(0);
@@ -513,6 +519,8 @@ export function App() {
 						<Composer
 							token={token}
 							busy={starting}
+							staged={staged}
+							setStaged={setStaged}
 							focusSignal={composerFocus}
 							onSend={(parts) => void startConversation(parts)}
 						/>
@@ -524,6 +532,8 @@ export function App() {
 						conversationId={current}
 						title={flatTitle(currentTitle)}
 						seed={seed !== null && seed.id === current ? seed.parts : null}
+						staged={staged}
+						setStaged={setStaged}
 						onSeeded={() => setSeed(null)}
 						onTurnDone={() => void refresh()}
 					/>

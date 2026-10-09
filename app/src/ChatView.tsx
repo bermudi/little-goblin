@@ -4,8 +4,10 @@ import {
 	useMemo,
 	useRef,
 	useState,
+	type Dispatch,
 	type ReactNode,
 	type RefObject,
+	type SetStateAction,
 } from "react";
 import { useChat } from "@ai-sdk/react";
 import {
@@ -480,13 +482,39 @@ function QuoteFab({
 	);
 }
 
-// Always present — on an empty conversation too. Draft + staged
-// attachments are local; onSend hands the assembled parts up, where the
-// caller either streams them into the open conversation or creates one.
+// One staged attachment — an entry in the composer's chip row. The
+// list is owned above the composer (App), not inside it: the empty
+// state's composer unmounts when its first send creates the
+// conversation, and entries still uploading — or failed chips the
+// operator can see — must carry across; an upload resolving after
+// that unmount writes into the lifted list, not the discarded
+// component (#118).
+//
+// Entries carry a client key — pasted images all arrive named
+// "image.png", so filename can't pick which staging row an upload
+// resolves. `speech` marks a voice note staged while a turn was
+// running — send() re-applies the flag so intake still transcribes.
+export interface StagedUpload {
+	key: string;
+	ref: AttachmentRef;
+	uploading?: boolean;
+	failed?: boolean;
+	speech?: boolean;
+	// Object URL for a local image preview — created at stage time,
+	// revoked when the entry leaves the staged list.
+	thumb?: string;
+}
+
+// Always present — on an empty conversation too. The draft is local;
+// staged attachments arrive from above so they outlive this instance
+// (#118). onSend hands the assembled parts up, where the caller either
+// streams them into the open conversation or creates one.
 export function Composer({
 	token,
 	conversationId,
 	busy,
+	staged,
+	setStaged,
 	onSend,
 	onStop,
 	quote,
@@ -495,6 +523,8 @@ export function Composer({
 	token: string | null;
 	conversationId?: string;
 	busy: boolean;
+	staged: StagedUpload[];
+	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
 	onSend: (parts: UIMessage["parts"]) => void;
 	// Present only where a live turn exists to interrupt (ChatView).
 	onStop?: () => void;
@@ -522,36 +552,12 @@ export function Composer({
 			requestAnimationFrame(() => ta.setSelectionRange(ta.value.length, ta.value.length));
 		}
 	}, [quote]);
-	// Entries carry a client key — pasted images all arrive named
-	// "image.png", so filename can't pick which staging row an upload
-	// resolves. `speech` marks a voice note staged while a turn was
-	// running — send() re-applies the flag so intake still transcribes.
-	const [pending, setPending] = useState<
-		{
-			key: string;
-			ref: AttachmentRef;
-			uploading?: boolean;
-			failed?: boolean;
-			speech?: boolean;
-			// Object URL for a local image preview — created at stage time,
-			// revoked when the entry leaves the composer.
-			thumb?: string;
-		}[]
-	>([]);
-	// Every object URL this composer minted — revoked on unmount so a
-	// conversation switch can't leak them.
-	const thumbUrls = useRef<Set<string>>(new Set());
-	useEffect(
-		() => () => {
-			for (const u of thumbUrls.current) URL.revokeObjectURL(u);
-		},
-		[],
-	);
-	const dropEntry = (e: (typeof pending)[number]) => {
-		if (e.thumb !== undefined) {
-			URL.revokeObjectURL(e.thumb);
-			thumbUrls.current.delete(e.thumb);
-		}
+	// An entry leaves the staged list (sent or removed) — its preview
+	// URL goes with it. A composer unmount revokes nothing: staged
+	// entries outlive any one composer (#118), and an undropped thumb
+	// dies with the document itself.
+	const dropEntry = (e: StagedUpload) => {
+		if (e.thumb !== undefined) URL.revokeObjectURL(e.thumb);
 	};
 	const fileInput = useRef<HTMLInputElement>(null);
 
@@ -640,12 +646,12 @@ export function Composer({
 						// prevent. Stage the ref instead: the chip shows it, the
 						// next send carries it with speech intact.
 						if (busyRef.current) {
-							setPending((p) => [...p, { key: crypto.randomUUID(), ref, speech: true }]);
+							setStaged((p) => [...p, { key: crypto.randomUUID(), ref, speech: true }]);
 						} else {
 							onSend([{ type: "data-attachment", data: { ...ref, speech: true } }]);
 						}
 					} catch {
-						setPending((p) => [
+						setStaged((p) => [
 							...p,
 							{
 								key: crypto.randomUUID(),
@@ -675,8 +681,7 @@ export function Composer({
 		async (file: File) => {
 			const key = crypto.randomUUID();
 			const thumb = file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined;
-			if (thumb !== undefined) thumbUrls.current.add(thumb);
-			setPending((p) => [
+			setStaged((p) => [
 				...p,
 				{
 					key,
@@ -687,18 +692,18 @@ export function Composer({
 			]);
 			try {
 				const { ref } = await uploadAttachment(token, file);
-				setPending((p) =>
+				setStaged((p) =>
 					p.map((e) =>
 						e.key === key ? { key, ref, ...(e.thumb === undefined ? {} : { thumb: e.thumb }) } : e,
 					),
 				);
 			} catch {
-				setPending((p) =>
+				setStaged((p) =>
 					p.map((e) => (e.key === key ? { ...e, uploading: false, failed: true } : e)),
 				);
 			}
 		},
-		[token],
+		[token, setStaged],
 	);
 
 	// Drop target: the whole window. Unhandled file drops trigger the
@@ -730,7 +735,7 @@ export function Composer({
 		// (or a second conversation from the empty state).
 		if (busy || configSaving) return;
 		const text = draft.trim();
-		const ready = pending.filter((e) => e.uploading !== true && e.failed !== true);
+		const ready = staged.filter((e) => e.uploading !== true && e.failed !== true);
 		if (text === "" && ready.length === 0) return;
 		const parts: UIMessage["parts"] = [];
 		if (text !== "") parts.push({ type: "text", text });
@@ -744,7 +749,7 @@ export function Composer({
 		// chips — stay staged. Clearing them would drop files the
 		// operator still sees in the composer.
 		for (const e of ready) dropEntry(e);
-		setPending((p) => p.filter((e) => !ready.includes(e)));
+		setStaged((p) => p.filter((e) => !ready.includes(e)));
 		onSend(parts);
 	};
 
@@ -785,9 +790,9 @@ export function Composer({
 					Model settings failed: {configError}
 				</div>
 			)}
-			{pending.length > 0 && (
+			{staged.length > 0 && (
 				<div className="composer-attachments">
-					{pending.map((e, i) => (
+					{staged.map((e, i) => (
 						<span key={e.key} className={e.failed === true ? "attachment failed" : "attachment"}>
 							{e.thumb !== undefined ? (
 								<img className="attachment-thumb" src={e.thumb} alt="" />
@@ -804,7 +809,7 @@ export function Composer({
 								aria-label="Remove"
 								onClick={() => {
 									dropEntry(e);
-									setPending((p) => p.filter((_, j) => j !== i));
+									setStaged((p) => p.filter((_, j) => j !== i));
 								}}
 							>
 								×
@@ -956,7 +961,7 @@ export function Composer({
 							configSaving ||
 							recording ||
 							(draft.trim() === "" &&
-								pending.every((e) => e.failed === true || e.uploading === true))
+								staged.every((e) => e.failed === true || e.uploading === true))
 						}
 					>
 						<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
@@ -997,8 +1002,8 @@ function askNotifyPermission() {
 // merge for an idle reconnect (#79). History is the truth for finished
 // messages; the view may additionally hold a live tail the store has
 // not seen yet (a just-sent user message, the assistant mid-stream),
-// and that tail must survive: store arrivals slot in before it, and
-// nothing local is ever dropped.
+// and that tail must survive: the store's interleaving stands whole
+// and the tail appends after it — nothing local is ever dropped.
 export function mergeTranscript(current: UIMessage[], history: UIMessage[]): UIMessage[] {
 	const currentIds = new Set(current.map((m) => m.id));
 	const arrivals = history.filter((m) => !currentIds.has(m.id));
@@ -1008,11 +1013,11 @@ export function mergeTranscript(current: UIMessage[], history: UIMessage[]): UIM
 	const historyIds = new Set(history.map((m) => m.id));
 	// No live tail: the store's order is the whole truth.
 	if (current.every((m) => historyIds.has(m.id))) return history;
-	// Splice the arrivals in ahead of the first message the store lacks
-	// — the live tail keeps its place at the end.
-	const cut = current.findIndex((m) => !historyIds.has(m.id));
-	const kept = new Set(current.slice(0, cut).map((m) => m.id));
-	return [...history.filter((m) => kept.has(m.id)), ...arrivals, ...current.slice(cut)];
+	// The store owns the interleaving of every message it holds — an
+	// answer belongs between its question and the next one, not below
+	// both (#117). The view's contribution is only the messages the
+	// store hasn't seen, appended after it as the tail.
+	return [...history, ...current.filter((m) => !historyIds.has(m.id))];
 }
 
 export function ChatView({
@@ -1020,6 +1025,8 @@ export function ChatView({
 	conversationId,
 	title,
 	seed,
+	staged,
+	setStaged,
 	onSeeded,
 	onTurnDone,
 }: {
@@ -1029,6 +1036,10 @@ export function ChatView({
 	// The message an empty-state send parked while its conversation was
 	// being created — delivered once, on mount.
 	seed: UIMessage["parts"] | null;
+	// The staged-upload list App owns — carried in so the conversation's
+	// composer renders the same entries the empty state's did (#118).
+	staged: StagedUpload[];
+	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
 	onSeeded: () => void;
 	onTurnDone: () => void;
 }) {
@@ -1054,6 +1065,8 @@ export function ChatView({
 			token={token}
 			initial={initial}
 			seed={seed}
+			staged={staged}
+			setStaged={setStaged}
 			onSeeded={onSeeded}
 			onTurnDone={onTurnDone}
 		/>
@@ -1066,6 +1079,8 @@ function Chat({
 	title,
 	initial,
 	seed,
+	staged,
+	setStaged,
 	onSeeded,
 	onTurnDone,
 }: {
@@ -1074,6 +1089,8 @@ function Chat({
 	title: string | null;
 	initial: UIMessage[];
 	seed: UIMessage["parts"] | null;
+	staged: StagedUpload[];
+	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
 	onSeeded: () => void;
 	onTurnDone: () => void;
 }) {
@@ -1237,6 +1254,8 @@ function Chat({
 				token={token}
 				conversationId={conversationId}
 				busy={busy}
+				staged={staged}
+				setStaged={setStaged}
 				quote={quote}
 				onSend={(parts) => {
 					pinned.current = true;

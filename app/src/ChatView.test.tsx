@@ -227,6 +227,8 @@ describe("ChatView reload window (issue #79)", () => {
 					conversationId="app/chat-01"
 					title={null}
 					seed={null}
+					staged={[]}
+					setStaged={() => {}}
 					onSeeded={() => {}}
 					onTurnDone={() => {}}
 				/>,
@@ -289,10 +291,14 @@ describe("mergeTranscript", () => {
 		expect(mergeTranscript(current, history).map((m) => m.id)).toEqual(["u1", "a1", "u2"]);
 	});
 
-	test("a streaming assistant stays last — the arrival slots in ahead of it", () => {
+	// #117: the durable history owns the interleaving of every message
+	// it holds — the previous answer sits between its question and the
+	// next one — and only the genuinely local tail (here the streaming
+	// answer the store hasn't seen) appends, after it.
+	test("a streaming tail appends after the durable interleaving (#117)", () => {
 		const current = [msg("u1", "user"), msg("u2", "user"), msg("ax", "assistant")];
 		const history = [msg("u1", "user"), msg("a1", "assistant"), msg("u2", "user")];
-		expect(mergeTranscript(current, history).map((m) => m.id)).toEqual(["u1", "u2", "a1", "ax"]);
+		expect(mergeTranscript(current, history).map((m) => m.id)).toEqual(["u1", "a1", "u2", "ax"]);
 	});
 });
 

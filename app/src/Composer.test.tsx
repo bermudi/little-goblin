@@ -8,11 +8,11 @@
 // later one lands nowhere.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import type { UIMessage } from "ai";
-import { Composer } from "./ChatView.tsx";
+import { Composer, type StagedUpload } from "./ChatView.tsx";
 
 // The server's side of the contract: each upload lands on its own
 // UUID-stemmed path (persistAttachment), so distinct uploads NEVER share
@@ -123,10 +123,19 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		installed = [];
 	});
 
+	// The staged list is owned above the composer (#118); for direct
+	// mounts this harness is that owner.
+	function ComposerHarness({ onSend }: { onSend: (parts: UIMessage["parts"]) => void }) {
+		const [staged, setStaged] = useState<StagedUpload[]>([]);
+		return (
+			<Composer token={null} busy={false} staged={staged} setStaged={setStaged} onSend={onSend} />
+		);
+	}
+
 	const mount = () => {
 		root = createRoot(container);
 		act(() => {
-			root?.render(<Composer token={null} busy={false} onSend={(parts) => sent.push(parts)} />);
+			root?.render(<ComposerHarness onSend={(parts) => sent.push(parts)} />);
 		});
 	};
 

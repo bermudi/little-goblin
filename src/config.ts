@@ -47,6 +47,9 @@ export const paths = {
 	modelsDevCache: () => join(goblinHome(), "state", "models.dev.json"),
 	openrouterModelsCache: () => join(goblinHome(), "state", "openrouter-models.json"),
 	webcache: () => join(goblinHome(), "state", "webcache"),
+	// Local speech-engine artifacts (digest-pinned auto-fetch —
+	// design/asr.md → Whistle). Cache, not state: deletable at will.
+	whistleCache: () => join(goblinHome(), "cache", "whistle"),
 };
 
 export function ensureHomeLayout(): void {

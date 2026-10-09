@@ -419,3 +419,21 @@ test("blockedDetail abbreviates documents and caps errors for chat surfaces", ()
 	expect(detail[0]?.error?.length).toBe(120);
 	expect(detail[0]?.attempts).toBe(1);
 });
+
+test("deletingCount spans every destination, separately from the current bank", () => {
+	const current = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
+	const old = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "previous" });
+	const store = storeAt(database());
+	store.memoryQueue.enqueue(current.target, { ...doc, id: "exchange-1" });
+	store.memoryQueue.enqueue(old.target, { ...doc, id: "exchange-2" });
+	expect(store.memoryQueue.deletingCount()).toBe(0);
+	// A failed old-bank delete leaves its rows parked while the current
+	// bank holds nothing parked — the per-target counts read zero.
+	store.memoryQueue.markDocumentDeleting("exchange-2");
+	expect(store.memoryQueue.counts(current.target).deleting).toBe(0);
+	expect(store.memoryQueue.deletingCount()).toBe(1);
+	store.memoryQueue.markDocumentDeleting("exchange-1");
+	expect(store.memoryQueue.deletingCount()).toBe(2);
+	store.memoryQueue.confirmDeleted("exchange-2", old.target);
+	expect(store.memoryQueue.deletingCount()).toBe(1);
+});

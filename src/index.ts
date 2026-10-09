@@ -682,6 +682,7 @@ async function boot() {
 								}
 							: {}),
 						counts: () => store.memoryQueue.counts(memorySurfaces.client.target),
+						deletingAll: () => store.memoryQueue.deletingCount(),
 						blockedDetail: () => store.memoryQueue.blockedDetail(memorySurfaces.client.target),
 					},
 				}

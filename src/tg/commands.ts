@@ -27,6 +27,10 @@ export interface CommandMemoryDeps {
 	clientForTarget?: (target: string) => HindsightClient | null;
 	contexts: MemoryContexts;
 	queue: MemoryQueue;
+	// The /memory status reads queue.deletingCount() — outstanding forget
+	// work across all destinations — never the boot target's counts: parked
+	// rows bind to the bank that owns them, so a failed old-bank delete
+	// would vanish from status after a destination change.
 	// Quiesce the retention worker around /forget delete (see
 	// MemoryWorker.withWorkerPaused) — wired from the boot worker in
 	// index.ts; tests inject a passthrough when no worker runs.
@@ -256,6 +260,7 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 			const status = memoryStatus({
 				enabled: true,
 				counts,
+				deletingAll: mem.queue.deletingCount(),
 				lastRecallOk: mem.lastRecallOk(),
 				lastRecallAt,
 				blockedDetail: mem.queue.blockedDetail(mem.client.target),

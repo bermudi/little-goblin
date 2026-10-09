@@ -626,6 +626,12 @@ export interface MemoryStatus {
 export function memoryStatus(options: {
 	enabled: boolean;
 	counts: MemoryQueueCounts;
+	// Outstanding forget work across all destinations — parked `deleting`
+	// rows bind to the bank that owns them, so the current bank's counts
+	// read zero after a destination change while an old bank still holds
+	// the document. Callers read queue.deletingCount(), never
+	// counts.deleting, so a failed old-bank delete stays visible.
+	deletingAll: number;
 	lastRecallOk: boolean | null;
 	// ISO timestamp of the latest recall outcome — set alongside
 	// lastRecallOk by the noteRecall seam. Null = no recall yet.
@@ -633,7 +639,7 @@ export function memoryStatus(options: {
 	blockedDetail: BlockedRetention[];
 }): MemoryStatus {
 	const pending = options.counts.pending + options.counts.submitted;
-	const deleting = options.counts.deleting;
+	const deleting = options.deletingAll;
 	const forgetNote =
 		deleting > 0
 			? `${deleting} outbox row${deleting === 1 ? "" : "s"} awaiting forget confirmation — retry /forget delete <documentId> (not /memory retry)`

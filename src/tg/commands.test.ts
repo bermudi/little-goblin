@@ -327,6 +327,28 @@ describe("memory commands", () => {
 		store.close();
 	});
 
+	test("/memory still degrades on old-bank parked rows after a destination change", () => {
+		// A failed delete against the previous bank parks rows its own
+		// target names; the current bank's counts read zero, but status
+		// must still degrade — otherwise the surviving copy vanishes.
+		const { store, conv, sent, deps } = setupMemory();
+		const old = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "previous" });
+		store.memoryQueue.enqueue(old.target, {
+			id: "exchange/dm:1/1/a",
+			content: "Operator: hi\nGoblin: hello",
+			timestamp: new Date().toISOString(),
+			conversationId: "dm:1",
+			sourceIds: ["u1", "a1"],
+		});
+		store.memoryQueue.markDocumentDeleting("exchange/dm:1/1/a");
+		expect(store.memoryQueue.counts(deps.memory!.client.target).deleting).toBe(0);
+		expect(handleCommand(deps, conv, "/memory status")).toBe(true);
+		expect(sent[0]).toContain("memory: degraded");
+		expect(sent[0]).toContain("1 awaiting forget confirmation");
+		expect(sent[0]).toContain("retry /forget delete <documentId>");
+		store.close();
+	});
+
 	test("/memory pending rendering counts queued work; recall time and outcome", () => {
 		const { store, conv, sent, deps } = setupMemory();
 		const client = deps.memory!.client;

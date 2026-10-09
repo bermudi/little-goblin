@@ -77,6 +77,11 @@ export interface HttpDeps {
 		/** Boot-bound queue/client destination; edits apply after restart. */
 		target?: { baseUrl: string; bankId: string };
 		counts(): MemoryQueueCounts;
+		// Outstanding forget work across all destinations — parked rows
+		// bind to the bank that owns them, so this stays visible after a
+		// destination change while counts() reads zero. Wired from
+		// queue.deletingCount() in index.ts.
+		deletingAll(): number;
 		blockedDetail(): BlockedRetention[];
 		lastRecallOk(): boolean | null;
 		lastRecallAt(): string | null;
@@ -399,6 +404,7 @@ function memoryStatusResponse(deps: HttpDeps): MemoryStatusResponse {
 	const status = memoryStatus({
 		enabled: true,
 		counts,
+		deletingAll: mem.deletingAll(),
 		lastRecallOk,
 		lastRecallAt,
 		blockedDetail: mem.blockedDetail(),

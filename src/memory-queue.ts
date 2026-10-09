@@ -307,6 +307,18 @@ export class MemoryQueue {
 		return out;
 	}
 
+	// Outstanding forget work across ALL destinations: parked `deleting`
+	// rows are bound to the bank that owns them, so after a destination
+	// change the current bank's counts() reads zero while an old bank
+	// still holds the document. Status reads this seam, never the
+	// per-target counts, so a failed old-bank delete stays visible.
+	deletingCount(): number {
+		const row = this.db.query("SELECT COUNT(*) AS n FROM memory_outbox WHERE state = 'deleting'").get() as {
+			n: number;
+		};
+		return row.n;
+	}
+
 	// Hand-requeue after an operator reviews a blocked retention. CRITICAL:
 	// a fresh randomUUID() is minted, not the old operation_id reused —
 	// Hindsight treats the original op as terminally failed server-side,

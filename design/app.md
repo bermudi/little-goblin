@@ -77,6 +77,29 @@ JSON-body routes additionally require `content-type: application/json`
 in both modes — a claim a cross-origin page cannot make without a
 preflight this server never grants.
 
+**Intentional origin trade-off.** The Host-derived allowance is proxy
+compatibility, not an independent proof that a browser origin is trusted.
+Accepting both schemes and the request's Host lets direct/local access and
+proxies that preserve or rewrite Host coexist with TLS termination; the
+configured `publicUrl` origin also works when the proxy replaces Host with
+the upstream address. Pinning browser origins solely to `publicUrl` would
+be a different access policy, not a tightening with no operational cost.
+
+This leaves a **DNS rebinding risk** in trust mode: an attacker-controlled
+hostname can resolve to a reachable Goblin endpoint while both `Origin`
+and Host still name the attacker hostname. That request can look
+same-origin, so neither this gate nor JSON preflight blocks it. Tailnet
+reachability is the intended outer boundary, but an operator's browser
+inside that boundary can be the bridge. Browser private-network protections
+vary by browser/version and address classification; Safari in particular
+must not be assumed to enforce Chromium-style Private Network Access
+preflights, and private-network permission prompts or restrictions are not
+a portable defense against rebinding. This gate blocks ordinary cross-site
+mutations, not all hostile browser access. Trust mode intentionally accepts
+that residual risk for proxy/direct-access compatibility; operators needing
+an authentication boundary use bearer mode. A pinned-origin/Host policy
+would need a separate ruling here.
+
 **Client.** React + `@ai-sdk/react` (`useChat`) in `app/` — Vite, strict
 TS, its own tsconfig program wired into `bun run typecheck`. This is the
 recorded amendment to the no-build rule: `src/http/app.js` (the settings

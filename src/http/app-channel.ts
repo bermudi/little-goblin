@@ -317,10 +317,9 @@ const UPLOAD_CAP = 32 * 1024 * 1024;
 // stream (GET .../stream: chunks from a live-turn subscription).
 //
 // Bun.serve closes connections that send no bytes for its idleTimeout
-// — 10s by default (verified 2026-10-07 on 1.4.2: a silent SSE response
-// died at exactly +10.0s; 5s comment pings survived). Tool calls
-// silence the UIMessage stream for tens of seconds, so the wire needs a
-// heartbeat: SSE comment lines, which spec parsers and eventsource-
+// — 10s by default. Tool calls silence the UIMessage stream for tens
+// of seconds, so the wire needs a heartbeat: SSE comment lines, which
+// spec parsers and eventsource-
 // parser (the AI SDK client's) skip without emitting. Ruling recorded in
 // design/app.md.
 const SSE_HEARTBEAT_MS = 5_000;
@@ -351,8 +350,7 @@ function appSseWriter(
 		} catch (err) {
 			// Bun closes the controller when the wire dies (idle kill or
 			// client vanish). The turn keeps writing durable history — but
-			// the boundary owes the log a line: this exact silence once ate
-			// a whole turn's reply unnoticed (2026-10-07).
+			// the boundary owes the log a line so a lost reply is observable.
 			closed = true;
 			stopBeat();
 			log.warn("app stream wire died mid-turn — writes dropped, turn continues", err, {
@@ -366,7 +364,7 @@ function appSseWriter(
 			// Beats only while the wire is silent — real chunks reset the clock.
 			// The tick samples 4x per heartbeat window: a tick period equal to
 			// the threshold phase-locks with real chunks landing just before
-			// each tick and never fires (caught by the ping test, 2026-10-07).
+			// each tick and never fires.
 			if (heartbeatMs > 0) {
 				beat = setInterval(
 					() => {
@@ -379,7 +377,7 @@ function appSseWriter(
 			}
 		},
 		// Client disconnected mid-turn — the turn keeps writing durable
-		// history; only the wire closes. Loudly: same 2026-10-07 lesson.
+		// history; only the wire closes, and the loss must be observable.
 		cancel() {
 			closed = true;
 			stopBeat();
@@ -416,8 +414,8 @@ function appSseWriter(
 		// Orphan paths (204 attach, submit-threw 500s): the writer was
 		// constructed — the heartbeat is armed — but no wire will ever
 		// consume the body. Stop the beat and close quietly: no frames, no
-		// finish line (review 2026-10-07, M1 — a leaked beat enqueues into
-		// a stream nobody reads, forever).
+		// finish line: a leaked beat would enqueue into an unread stream
+		// forever.
 		dispose() {
 			stopBeat();
 			closed = true;

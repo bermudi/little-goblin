@@ -154,6 +154,40 @@ function replayWire(convId: string, turn: WireMember, live: LiveWire): void {
 	}
 }
 
+// Model chunks and synthetic completion text share the same wire: a dead
+// streaming client detaches without changing the turn's outcome.
+export function emitChunk(
+	convId: string,
+	members: WireMember[],
+	live: LiveChunks,
+	chunk: UIMessageChunk,
+): void {
+	for (const m of members) {
+		if (m.streamFailed === true) continue;
+		try {
+			m.sink.onStreamChunk?.(chunk);
+		} catch (err) {
+			m.streamFailed = true;
+			log.warn("sink onStreamChunk failed — stream detached", err, {
+				conversation: convId,
+			});
+		}
+	}
+	live.chunks.push(chunk);
+	for (const sub of live.subscribers) {
+		try {
+			sub.onChunk(chunk);
+		} catch (err) {
+			// The SSE writer self-guards; a throwing subscriber is
+			// dead weight until the turn ends.
+			live.subscribers.delete(sub);
+			log.warn("subscriber onChunk failed — stream detached", err, {
+				conversation: convId,
+			});
+		}
+	}
+}
+
 // The claim shape — the overflow resume claim. Claiming a streaming
 // member and replaying the wire to it is one operation with one home
 // here, so a join window can never forget the replay (#96: a client
@@ -695,27 +729,7 @@ export async function driveStream<M extends WireMember>(
 		// held failure takes its error chunk — and everything after —
 		// with it.
 		if (!holdForRecovery) {
-			for (const m of members) {
-				if (m.streamFailed === true) continue;
-				try {
-					m.sink.onStreamChunk?.(chunk);
-				} catch (err) {
-					m.streamFailed = true;
-					log.warn("sink onStreamChunk failed — stream detached", err, {
-						conversation: convId,
-					});
-				}
-			}
-			live.chunks.push(chunk);
-			for (const sub of live.subscribers) {
-				try {
-					sub.onChunk(chunk);
-				} catch {
-					// The SSE writer self-guards; a throwing subscriber is
-					// dead weight until the turn ends.
-					live.subscribers.delete(sub);
-				}
-			}
+			emitChunk(convId, members, live, chunk);
 		}
 		switch (chunk.type) {
 			case "start-step":

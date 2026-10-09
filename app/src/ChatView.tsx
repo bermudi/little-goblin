@@ -269,7 +269,7 @@ function MetaLine({ meta }: { meta: TurnMetadata }) {
 	const bits: string[] = [meta.model];
 	if (meta.finishReason !== "" && meta.finishReason !== "stop") bits.push(meta.finishReason);
 	// A forced answer is degraded goods — stamped, never passed off as
-	// natural (design/model.md, 2026-10-07). Repeat: the deterministic
+	// natural (design/model.md). Repeat: the deterministic
 	// detector; watchdog: system1 judged the loop stuck twice; context:
 	// the window filled mid-turn.
 	if (meta.forcedCompletion === "repeat") bits.push("loop detector — answer forced");

@@ -9,13 +9,14 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { LanguageModel, UIMessage } from "ai";
+import { type LanguageModel, readUIMessageStream, type UIMessage, type UIMessageChunk } from "ai";
 import type { Conversation } from "../conversation.ts";
 import { setLogFile } from "../log.ts";
 import type { MemoryEligibility, MemoryTurnDeps, RetentionSource } from "../memory.ts";
 import type { PriorTurnContext, ReviewerDeps } from "../reviewer.ts";
 import { Reviewer } from "../reviewer.ts";
 import { type LandDeps, landAttempt, retentionOpt, submitTurnReview } from "./finish.ts";
+import { endLive, type LiveChunks, openLive, type WireEnd, type WireMember } from "./stream.ts";
 
 let dirs: string[] = [];
 function tmpdirPath(): string {
@@ -74,11 +75,15 @@ interface LandHarness {
 	landed: ReturnType<typeof landAttempt>;
 	appended: { messages: UIMessage[]; opts: Parameters<LandDeps["append"]>[1] }[];
 	deltas: string[];
+	wire: UIMessageChunk[];
+	live: LiveChunks;
 }
 
 function land(over: Partial<LandDeps> = {}): LandHarness {
 	const appended: LandHarness["appended"] = [];
 	const deltas: string[] = [];
+	const wire: UIMessageChunk[] = [];
+	const live = over.live ?? openLive();
 	const deps: LandDeps = {
 		convId: "dm:1",
 		epoch: 2,
@@ -100,6 +105,8 @@ function land(over: Partial<LandDeps> = {}): LandHarness {
 		lastStepInputTokens: null,
 		contextWindow: undefined,
 		forcedKind: null,
+		live,
+		members: [{ message: msg("u2", "user"), sink: { onStreamChunk: (c) => wire.push(c) } }],
 		sink: {
 			onTextDelta: (d) => {
 				deltas.push(d);
@@ -109,7 +116,7 @@ function land(over: Partial<LandDeps> = {}): LandHarness {
 		},
 		...over,
 	};
-	return { landed: landAttempt(deps), appended, deltas };
+	return { landed: landAttempt(deps), appended, deltas, wire, live };
 }
 
 describe("landAttempt", () => {
@@ -193,6 +200,108 @@ describe("landAttempt", () => {
 			expect(h.deltas).toHaveLength(1);
 			expect(h.deltas[0]).toContain("My context window filled up");
 			expect(h.landed.done).toEqual({ kind: "completed", forced: "context" });
+		});
+
+		test("synthetic text reaches members, live replay and attach subscribers before completion", async () => {
+			const live = openLive();
+			// Landing runs after the provider's finish chunk; the SDK must
+			// still read the synthetic part before the wire's terminal close.
+			live.chunks.push({ type: "start", messageId: "a2" }, { type: "finish" });
+			const attached: UIMessageChunk[] = [];
+			const ends: WireEnd[] = [];
+			live.subscribers.add({
+				onChunk: (c) => attached.push(c),
+				onEnd: (done) => ends.push(done),
+			});
+			const h = land({
+				live,
+				forcedKind: "watchdog",
+				responseMessage: msg("a2", "assistant"),
+			});
+			const note = h.landed.reply!.parts[0];
+			if (note?.type !== "text") throw new Error("synthetic note missing");
+			expect(h.wire.map((c) => c.type)).toEqual(["text-start", "text-delta", "text-end"]);
+			expect(h.wire[1]).toMatchObject({
+				type: "text-delta",
+				delta: note.text,
+			});
+			expect(attached).toEqual(h.wire);
+			expect(live.chunks.slice(2)).toEqual(h.wire);
+			expect(ends).toEqual([]);
+			endLive(live, h.landed.done);
+			endLive(live, h.landed.done);
+			expect(ends).toEqual([h.landed.done]);
+			const stream = new ReadableStream<UIMessageChunk>({
+				start(controller) {
+					for (const chunk of live.chunks) controller.enqueue(chunk);
+					controller.close();
+				},
+			});
+			let replay: UIMessage | undefined;
+			for await (const message of readUIMessageStream({ stream, terminateOnError: true })) {
+				replay = message;
+			}
+			expect(replay?.parts).toEqual([{ ...note, state: "done" }]);
+		});
+
+		test("a throwing streaming sink detaches without losing synthetic text or completed landing", () => {
+			const live = openLive();
+			let calls = 0;
+			const dead: WireMember = {
+				message: msg("u2", "user"),
+				sink: {
+					onStreamChunk() {
+						calls++;
+						throw new Error("disconnected");
+					},
+				},
+			};
+			const healthy: UIMessageChunk[] = [];
+			const attached: UIMessageChunk[] = [];
+			const ends: WireEnd[] = [];
+			live.subscribers.add({
+				onChunk() {
+					throw new Error("disconnected");
+				},
+				onEnd() {},
+			});
+			live.subscribers.add({ onChunk: (c) => attached.push(c), onEnd: (d) => ends.push(d) });
+			const h = land({
+				live,
+				members: [
+					dead,
+					{ message: msg("u3", "user"), sink: { onStreamChunk: (c) => healthy.push(c) } },
+				],
+				forcedKind: "context",
+				responseMessage: msg("a2", "assistant"),
+			});
+			expect(calls).toBe(1);
+			expect(dead.streamFailed).toBe(true);
+			expect(healthy).toEqual(live.chunks);
+			expect(attached).toEqual(live.chunks);
+			expect(h.appended).toHaveLength(1);
+			expect(h.landed.done).toEqual({ kind: "completed", forced: "context" });
+			endLive(live, h.landed.done);
+			expect(ends).toEqual([h.landed.done]);
+		});
+
+		test("a throwing display hook still fails fast rather than reporting a completed landing", () => {
+			const appended: UIMessage[] = [];
+			expect(() =>
+				land({
+					forcedKind: "context",
+					responseMessage: msg("a2", "assistant"),
+					append: (messages) => appended.push(...messages),
+					sink: {
+						onTextDelta() {
+							throw new Error("display failed");
+						},
+						onReasoningDelta() {},
+						onToolCall() {},
+					},
+				}),
+			).toThrow("display failed");
+			expect(appended).toEqual([]);
 		});
 
 		test("a forced step with no prose gets the note too — worded for its landing", () => {

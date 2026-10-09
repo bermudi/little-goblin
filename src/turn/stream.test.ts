@@ -6,7 +6,7 @@
 // sink contract (exactly one onDone) and ownership-mark semantics stay
 // e2e in runtime.test.ts.
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
@@ -16,10 +16,12 @@ import { tool, type LanguageModel, type UIMessage, type UIMessageChunk } from "a
 import { z } from "zod";
 import { APICallError, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { ATTACHMENT_PART } from "../agent/attachments.ts";
+import { log } from "../log.ts";
 import { TurnState } from "./state.ts";
 import {
 	claimMembers,
 	driveStream,
+	emitChunk,
 	endLive,
 	joinMember,
 	openLive,
@@ -34,6 +36,32 @@ const fifoDirs: string[] = [];
 afterEach(() => {
 	for (const d of fifoDirs) rmSync(d, { recursive: true, force: true });
 	fifoDirs.length = 0;
+});
+
+test("a failed attach subscriber is logged and detached without losing the shared wire", () => {
+	const warning = spyOn(log, "warn").mockImplementation(() => {});
+	try {
+		const live = openLive();
+		const failure = new Error("subscriber disconnected");
+		live.subscribers.add({
+			onChunk() {
+				throw failure;
+			},
+			onEnd() {},
+		});
+		const received: UIMessageChunk[] = [];
+		live.subscribers.add({ onChunk: (chunk) => received.push(chunk), onEnd() {} });
+		const chunk: UIMessageChunk = { type: "text-start", id: "synthetic" };
+		emitChunk("app/test", [], live, chunk);
+		expect(live.subscribers.size).toBe(1);
+		expect(live.chunks).toEqual([chunk]);
+		expect(received).toEqual([chunk]);
+		expect(warning).toHaveBeenCalledWith("subscriber onChunk failed — stream detached", failure, {
+			conversation: "app/test",
+		});
+	} finally {
+		warning.mockRestore();
+	}
 });
 
 // Fake the model at the provider edge (the suite's one fake): a script

@@ -949,6 +949,8 @@ export class Runtime {
 				contextWindow: step.contextWindow,
 				forcedKind: state.forcedCompletion(),
 				sink,
+				members: turns,
+				live,
 				append: (messages, opts) => store.append(convId, messages, opts),
 				memory: this.deps.memory,
 			});

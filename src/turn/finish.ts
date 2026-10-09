@@ -9,6 +9,7 @@
 // runtime's: exactly-one onDone per submit is the sink contract, and
 // the post-delivery check owns the stop-during-flush window.
 
+import { randomUUID } from "node:crypto";
 import type { FinishReason, LanguageModelUsage, UIMessage } from "ai";
 import type { Conversation } from "../conversation.ts";
 import type { MemoryDocument } from "../hindsight.ts";
@@ -29,7 +30,7 @@ import {
 	type ToolCallDigest,
 } from "../reviewer.ts";
 import type { ForcedKind } from "./state.ts";
-import type { DisplaySink } from "./stream.ts";
+import { emitChunk, type DisplaySink, type LiveChunks, type WireMember } from "./stream.ts";
 
 // A provider that defies toolChoice "none" on the forced step — still
 // emitting tool calls or no prose — gets this plain-language answer
@@ -81,10 +82,11 @@ export interface LandDeps {
 	contextWindow: number | undefined;
 	// Which landing forced the answer, if any — TurnState's stamp.
 	forcedKind: ForcedKind | null;
-	// The delta path the defiance note rides: telegram delivers text
-	// only through deltas. Runtime's TurnSink satisfies this
-	// structurally.
+	// Synthetic prose rides both delivery projections: the head's display
+	// deltas and the shared wire for streaming members and attach clients.
 	sink: DisplaySink;
+	members: WireMember[];
+	live: LiveChunks;
 }
 
 export interface LandedAttempt {
@@ -124,8 +126,8 @@ export function landAttempt(deps: LandDeps): LandedAttempt {
 	// The defiance guard: a forced landing whose step STILL ended in
 	// tool calls (a provider ignoring toolChoice:none) or produced no
 	// prose would deliver a stamped nothing. The invariant gets the
-	// last word: append plain-language prose, to the stored message
-	// AND the live delta path (telegram delivers text only through
+	// last word: append plain-language prose to history, the app wire,
+	// and the display delta path (Telegram delivers text only through
 	// deltas).
 	let reply = deps.responseMessage;
 	const forcedKind = deps.forcedKind;
@@ -145,6 +147,10 @@ export function landAttempt(deps: LandDeps): LandedAttempt {
 			...reply,
 			parts: [...reply.parts, { type: "text", text: note }],
 		};
+		const id = randomUUID();
+		emitChunk(convId, deps.members, deps.live, { type: "text-start", id });
+		emitChunk(convId, deps.members, deps.live, { type: "text-delta", id, delta: note });
+		emitChunk(convId, deps.members, deps.live, { type: "text-end", id });
 		deps.sink.onTextDelta(`\n\n${note}`);
 	}
 	if (reply !== null) {

@@ -788,6 +788,11 @@ export async function driveStream<M extends WireMember>(
 				// only trace of a provider that cannot fill a schema is
 				// the model's own complaints. Mail went dark for two
 				// days exactly like that (Sep 28).
+				// Its output still arrives as tool-output-error carrying
+				// only the id — record name+input here or the detector
+				// hashes each rejection under its random call id and
+				// never trips.
+				callById.set(chunk.toolCallId, { tool: chunk.toolName, input: chunk.input });
 				log.warn("tool call rejected", {
 					conversation: convId,
 					tool: chunk.toolName,

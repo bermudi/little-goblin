@@ -223,6 +223,8 @@ Probed live 2026-10-09; the test fixtures copy these bodies exactly.
 # {model, input_audio:{data:<b64>, format:"wav"}} → 200:
 {"text":" Hey Goblin, please turn off the kitchen lights and set a timer for 10 minutes.",
  "usage":{"seconds":5.603,"cost":0.0000420225}}
+# format:"ogg" verified live too (2026-10-10, implementation day):
+{"text":" *phone rings*","usage":{"seconds":3,"cost":0.0000225}}
 
 # mistral POST v1/audio/transcriptions (multipart) 401 → {"detail":"Invalid API Key"}
 # openai POST v1/audio/transcriptions (multipart) 401 → {"error":{"message":"Incorrect API key provided: …","type":"invalid_request_error","param":null,"code":"invalid_api_key"}}
@@ -236,13 +238,18 @@ Probed live 2026-10-09; the test fixtures copy these bodies exactly.
 
 Gemini (`generativelanguage.googleapis.com/v1beta/models/<model>:generateContent`,
 header `x-goog-api-key`, `contents[].parts[].inlineData {mimeType, data}`)
-and mimo (OpenRouter `chat/completions`, user content `[{type:"input_audio",
-input_audio:{data,format:"ogg"}}, {type:"text",…}]`) are pinned from
-their docs at implementation time with a live first call — no local
-keys to verify against today; until then their fixtures carry an
-UNVERIFIED marker.
+rides the docs' shape; its fixtures stay doc-pinned until the first live
+call at operator setup (no local key). mimo (OpenRouter `chat/completions`,
+user content `[{type:"input_audio", input_audio:{data,format:"ogg"}},
+{type:"text",…}]`) was verified live during implementation — 200,
+`choices[0].message.content`, finish_reason stop — its fixture is the
+verbatim response.
 
 ## Plan (implementation order)
+
+Landed 2026-10-10 as six commits on `feature/whistle` (orchestrator →
+cloud kinds → whistle engine → config/wire/UI → docs → operator flip).
+Kept for the record:
 
 On branch `feature/whistle`; small commits, gate = `bun test` +
 `bun run typecheck` (all three programs) before each merge step.

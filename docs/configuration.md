@@ -95,7 +95,7 @@ only offers the levels the current model supports.
 
 ```json5
 // tts: { kind: "edge", voice: "en-US-AriaNeural", rate: "+0%" },
-// transcription: { kind: "groq", model: "whisper-large-v3-turbo", auth: "groq" },
+// transcription: { kind: "whistle", keywords: ["goblin", "bermudi"] },
 ```
 
 TTS is on by default with Edge's `en-US-AriaNeural` voice; configure `tts`
@@ -103,9 +103,12 @@ to change the voice or rate, or set `tts: ""` to turn it off. It powers
 spoken replies (`/voice`, the 🔊 button, the `speak` tool). Transcription
 is off when unset; configuring it transcribes incoming voice and video
 notes so text-only models can read them, and gives the bot a `transcribe`
-tool for other audio files on request. TTS needs
-`ffmpeg` in `PATH`; transcription needs it for files over the provider's
-upload cap. Details in [Voice](voice.md).
+tool for other audio files on request. `kind: "whistle"` runs locally
+(keyless, private — artifacts auto-download once); groq, openai,
+openrouter, mistral, elevenlabs, gemini, and mimo are the cloud kinds,
+each defaulting its model and auth record. TTS needs `ffmpeg` in `PATH`;
+whisper transcription needs it always (it is the decoder), cloud kinds
+only over the upload cap. Details in [Voice](voice.md).
 
 ### Vision
 

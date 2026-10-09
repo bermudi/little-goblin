@@ -32,7 +32,7 @@ function tmpdirPath(): string {
 // The app-pinned pin (design/app.md → Spin-off): app_conversation
 // round-trips, and rows written before the column existed read null.
 describe("delegations store", () => {
-	test("pre-machines rows keep NULL target — live ones counted, terminal ones not", () => {
+	test("pre-machines rows keep NULL target — the own-local-session meaning", () => {
 		const path = join(tmpdirPath(), "goblin.sqlite");
 		const db = new Database(path);
 		db.exec(`CREATE TABLE delegations (
@@ -55,8 +55,8 @@ describe("delegations store", () => {
 		)`);
 		// Three pre-machines rows: two live (running, starting), one
 		// terminal. NULL target is the own-local-session meaning —
-		// live rows carrying it are counted so boot can warn; terminal
-		// rows are inert history.
+		// local launches still write it today, so no boot warning
+		// may mislabel live local rows as pre-machines relics.
 		const ins = db.prepare(`INSERT INTO delegations
 			(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, prompted_at, created_at)
 			VALUES (?, 'codex', '/w', 't', 1, NULL, 'g1', 'w1', 'w1:p1', ?, '1970-01-01', '1970-01-01')`);
@@ -67,7 +67,6 @@ describe("delegations store", () => {
 		// Opens through the migration (target column added).
 		const store = openDelegations(path);
 		try {
-			expect(store.liveRowsWithNullTarget()).toBe(2);
 			expect(store.get(1)?.target).toBeNull();
 			expect(store.get(3)?.target).toBeNull();
 		} finally {

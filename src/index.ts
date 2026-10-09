@@ -127,14 +127,6 @@ async function boot() {
 	// ours.
 	const delegationBoot = config.delegation;
 	const delegations = delegationBoot ? openDelegations(paths.db()) : null;
-	// NULL-target live rows predate the machines era (the own local
-	// session) — warn, never guess.
-	if (delegations !== null) {
-		const nullLive = delegations.liveRowsWithNullTarget();
-		if (nullLive > 0) {
-			log.warn("live delegation rows predate targets and are assumed local", { count: nullLive });
-		}
-	}
 	// "goblin" is the local unit's --session — the default target, never a config knob.
 	const herdr = delegationBoot ? makeHerdr({ session: "goblin" }) : null;
 	const delegationTargets = new Map<string, DelegationTargetDeps>();

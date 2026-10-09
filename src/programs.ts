@@ -9,9 +9,11 @@
 // never becomes a row — and a program always has at least one
 // trigger.
 //
-// Legacy purge (W2.2): on open, any rows still in the superseded
-// `jobs` table copy in (prompt → charter) and the table drops — one
-// transaction, a re-run a no-op.
+// Legacy purge (W2.2): on open, a leftover `jobs` table is archived and
+// dropped — one transaction, a re-run a no-op. Rows copy into programs
+// (prompt → charter) only when the programs table itself is being
+// created: an existing programs table is the operator's truth, deletions
+// included, so legacy rows beside it must never reactivate.
 
 import { Database } from "bun:sqlite";
 import { CronExpressionParser } from "cron-parser";
@@ -183,11 +185,16 @@ export function openPrograms(dbPath: string): ProgramsStore {
 	db.exec("PRAGMA journal_mode = WAL");
 	// Check, create, and purge in one transaction: a failed copy (or a
 	// crash) must not leave a half-purged database that prevents retry.
-	// The purge: rows still in `jobs` copy in defensively (expected zero
-	// — the jobs→programs cutover copied them long ago), then the table
-	// drops. With `jobs` gone the whole block is a no-op, so re-runs are
-	// safe. Returns null when there was nothing to purge.
-	const purged = db.transaction((): number | null => {
+	// The copy runs only when the programs table is being created — an
+	// existing table is the operator's truth, deletions included, so
+	// legacy rows beside it archive (never reactivate) and the table
+	// drops either way. With `jobs` gone the whole block is a no-op, so
+	// re-runs are safe. Returns null when there was nothing to purge.
+	const purged = db.transaction((): { copied: number; archived: number } | null => {
+		const creating =
+			db
+				.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'programs'")
+				.get() === null;
 		db.exec(`CREATE TABLE IF NOT EXISTS programs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
@@ -221,12 +228,18 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'")
 			.get();
 		if (jobsTable === null) return null;
-		const copied = copyLegacyJobs(db);
+		// Creating: this open owns the cutover, so legacy rows become
+		// programs (same ids, prompt → charter). Existing: the programs
+		// rows already reflect operator deletions — copying would resurrect
+		// deleted jobs as live, due schedules, so every legacy row archives
+		// to recovery instead and nothing activates.
+		const copied = creating ? copyLegacyJobs(db) : 0;
+		const archived = creating ? 0 : archiveLegacyJobs(db);
 		db.exec("DROP TABLE jobs");
-		return copied;
+		return { copied, archived };
 	})();
 	if (purged !== null) {
-		log.info("legacy jobs table purged", { copied: purged });
+		log.info("legacy jobs table purged", { copied: purged.copied, archived: purged.archived });
 	}
 
 	const qGet = db.query("SELECT * FROM programs WHERE id = ?");
@@ -420,9 +433,13 @@ export function openPrograms(dbPath: string): ProgramsStore {
 	};
 }
 
-// Existing program ids are authoritative; stale jobs must not clobber them.
-// Unparsable schedules stay in recovery rather than becoming live programs
-// that would fail and refire every tick.
+// The purge's copy half, called only when the programs table is being
+// created. Copies same ids (prompt → charter); INSERT OR IGNORE keeps it
+// defensive — an id already in programs was copied in an earlier era,
+// and the programs row is the truth. A cron that no longer parses is
+// skipped loudly rather than copied verbatim: a bad schedule on the
+// row would refire (and re-fail) every tick once markRan advances past
+// it (audit #21's reachable half).
 function copyLegacyJobs(db: Database): number {
 	const jobsTable = db
 		.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'")
@@ -484,4 +501,30 @@ function copyLegacyJobs(db: Database): number {
 		).changes;
 	}
 	return copied;
+}
+
+// The existing-table half: programs already reflects the operator's
+// deletions, so nothing may activate. Every legacy row archives with its
+// complete original columns (including unknown fields and blobs — the
+// same preservation the unparsable-cron path uses) and the caller drops
+// the table. A failed archive write aborts the purge, never discards.
+function archiveLegacyJobs(db: Database): number {
+	const jobs = db
+		.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'legacy_jobs_recovery'")
+		.get();
+	const before =
+		jobs === null
+			? 0
+			: (db.query("SELECT COUNT(*) AS n FROM legacy_jobs_recovery").get() as { n: number }).n;
+	db.exec("CREATE TABLE IF NOT EXISTS legacy_jobs_recovery AS SELECT * FROM jobs WHERE 0");
+	db.exec("INSERT INTO legacy_jobs_recovery SELECT * FROM jobs");
+	const after = (
+		db.query("SELECT COUNT(*) AS n FROM legacy_jobs_recovery").get() as { n: number }
+	).n;
+	const archived = after - before;
+	log.info("legacy jobs archived without activating", {
+		archived,
+		recoveryTable: "legacy_jobs_recovery",
+	});
+	return archived;
 }

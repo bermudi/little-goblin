@@ -45,7 +45,9 @@ to a different bot is ignored rather than fed to the model.
   one thought.
 - While it works you see "typing…", plus status lines (`⚙ bash …`) as it
   uses tools.
-- Finished replies get a 🫡 reaction on the last message — the end marker.
+- Finished replies get a 🫡 reaction on the last message — the end marker —
+  plus 👍/👎 buttons. Tapping one records the rating; nothing reads them
+  back yet, it's just collecting.
 - If something goes wrong you get a short `⚠ …` message; the full detail is
   in the log, never in your chat.
 - `/stop` a reply mid-flight and the chat shows `⏹ superseded` on what was

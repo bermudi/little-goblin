@@ -774,6 +774,11 @@ export async function routeMemberGuestMessage(
 		env.api,
 		{ ...conv, threadId: msg.message_thread_id ?? null },
 		msg.message_id,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		env.store,
 	);
 	const admitted = env.runtime.submit(conv, summonMessage(msg), {
 		...sink,

@@ -98,6 +98,9 @@ export function wake(
 		tts && !deps.configRef.ttsDown
 			? { voiceMode: conv.voice, synthesize: (t) => deps.synthesize(t, tts) }
 			: undefined,
+		undefined,
+		undefined,
+		deps.store,
 	);
 	try {
 		const admitted = deps.runtime.submit(conv, userMessage([{ type: "text", text }]), sink);

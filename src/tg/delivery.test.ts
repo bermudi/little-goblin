@@ -538,6 +538,89 @@ describe("delivery", () => {
 		expect(recentReplyText(1, 1)).toBe("whole reply");
 	});
 
+	test("a completed reply stamps the rating row — payload carries conv + anchor", async () => {
+		const { api, markups } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, {
+			lastReplyAnchor: () => 7,
+		});
+		sink.onTextDelta("answer");
+		await sink.onDone({ kind: "completed" });
+		expect(markups).toEqual([
+			{
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{ text: "👍", callback_data: "rate:up|dm:1|7" },
+							{ text: "👎", callback_data: "rate:down|dm:1|7" },
+						],
+					],
+				},
+			},
+		]);
+	});
+
+	test("rating row and 🔊 ride one keyboard edit — neither erases the other", async () => {
+		const { api, markups } = fakeApi({});
+		const sink = makeDeliverySink(
+			api,
+			conv,
+			undefined,
+			0,
+			{ voiceMode: false, synthesize: async () => [] },
+			undefined,
+			undefined,
+			{ lastReplyAnchor: () => 7 },
+		);
+		sink.onTextDelta("answer");
+		await sink.onDone({ kind: "completed" });
+		expect(markups).toEqual([
+			{
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{ text: "👍", callback_data: "rate:up|dm:1|7" },
+							{ text: "👎", callback_data: "rate:down|dm:1|7" },
+						],
+						[{ text: "🔊", callback_data: SPEAK_CALLBACK }],
+					],
+				},
+			},
+		]);
+	});
+
+	test("a landed reply with no user anchor still gets the row — x payload", async () => {
+		const { api, markups } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, {
+			lastReplyAnchor: () => null,
+		});
+		sink.onTextDelta("answer");
+		await sink.onDone({ kind: "completed" });
+		expect(markups).toEqual([
+			{
+				reply_markup: {
+					inline_keyboard: [
+						[
+							{ text: "👍", callback_data: "rate:up|dm:1|x" },
+							{ text: "👎", callback_data: "rate:down|dm:1|x" },
+						],
+					],
+				},
+			},
+		]);
+	});
+
+	test("error and fenced turns stamp no rating row", async () => {
+		const { api, markups } = fakeApi({});
+		const rating = { lastReplyAnchor: () => 7 };
+		const first = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, rating);
+		first.onTextDelta("partial");
+		await first.onDone({ kind: "error", message: "boom" });
+		const second = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, rating);
+		second.onTextDelta("partial");
+		await second.onDone({ kind: "fenced" });
+		expect(markups).toEqual([]);
+	});
+
 	test("voice mode skips streamed text and sends synthesized ogg chunks", async () => {
 		const { api, msgs, voices } = fakeApi({});
 		const spoken: string[] = [];

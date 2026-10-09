@@ -44,6 +44,8 @@ import {
 } from "./guest.ts";
 import { MAIL_CALLBACK_RE, type MailApproval } from "./mail-approval.ts";
 import { sendRollMarker } from "./notify.ts";
+import { registerRateButton } from "./rate-button.ts";
+import { openRatings } from "./ratings.ts";
 import { handleSpeakButton } from "./speak-button.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
 import { mediaFromMessage, mediaParts, saveAttachment } from "./media.ts";
@@ -733,6 +735,9 @@ function admitBatch(
 		tts && !deps.configRef.ttsDown
 			? { voiceMode: conv.voice, synthesize: (text) => deps.synthesize(text, tts) }
 			: undefined,
+		undefined,
+		undefined,
+		deps.store,
 	);
 	try {
 		deps.runtime.submitPersisted(conv, message, sink);
@@ -903,6 +908,8 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	// The ping map shares the store's handle like the inbox; the bell
 	// builds per-turn so allowedUsers and publicUrl read live config.
 	const pings = openPings(deps.store.db);
+	// The 👍/👎 tap record — same shared handle.
+	const ratings = openRatings(deps.store.db);
 	const bell = (conv: Conversation): TurnSink =>
 		makeBellSink(
 			{
@@ -972,6 +979,8 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 			synthesize: deps.synthesize,
 		});
 	});
+
+	registerRateButton(bot, { api: bot.api, ratings });
 
 	bot.callbackQuery(MAIL_CALLBACK_RE, (ctx) => {
 		const approval = deps.mail?.();

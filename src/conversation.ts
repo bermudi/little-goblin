@@ -296,6 +296,10 @@ export interface ConversationStore {
 	modelEntries(id: string): { seq: number; message: UIMessage }[];
 	// Seq of the newest user event — a turn's response anchors to it.
 	lastUserSeq(id: string): number | null;
+	// Anchor of the newest assistant event — the durable reply identity
+	// the rating buttons' callback payload carries (design/telegram.md).
+	// Null when no reply has landed yet.
+	lastReplyAnchor(id: string): number | null;
 	// Every event's append-time stamp plus the summary's derived
 	// eligibility (#85) — the filter input for memory-bound builders.
 	// Re-enabling memory reads this, never the live flag: excluded-era
@@ -676,6 +680,24 @@ export function openStore(dbPath: string): ConversationStore {
 			sources TEXT NOT NULL,
 			built_at TEXT NOT NULL
 		)`);
+	// The 👍/👎 tap record (design/telegram.md): reply metadata, never an
+	// event — nothing here feeds the model view, FTS, or memory.
+	// Append-only; a vote change is a new row, reads are latest-wins. No
+	// conversation FK: a deleted conversation's rows stay — the
+	// chat/message ids keep the record traceable on their own.
+	db.run(`
+		CREATE TABLE IF NOT EXISTS reply_ratings (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_id TEXT NOT NULL,
+			anchor_seq INTEGER,
+			chat_id INTEGER NOT NULL,
+			message_id INTEGER NOT NULL,
+			rating TEXT NOT NULL CHECK (rating IN ('up', 'down')),
+			created_at TEXT NOT NULL
+		)`);
+	db.run(
+		"CREATE INDEX IF NOT EXISTS reply_ratings_msg ON reply_ratings(chat_id, message_id)",
+	);
 	// One current rolling DM per private chat; n only grows, so a
 	// reverted db still mints fresh ids.
 	db.run(`
@@ -794,6 +816,9 @@ export function openStore(dbPath: string): ConversationStore {
 	>("SELECT seq, anchor_seq, role, data FROM events WHERE conversation_id = ? ORDER BY seq");
 	const qLastUserSeq = db.query<{ seq: number }, [string]>(
 		"SELECT seq FROM events WHERE conversation_id = ? AND role = 'user' ORDER BY seq DESC LIMIT 1",
+	);
+	const qLastReplyAnchor = db.query<{ anchor_seq: number | null }, [string]>(
+		"SELECT anchor_seq FROM events WHERE conversation_id = ? AND role = 'assistant' ORDER BY seq DESC LIMIT 1",
 	);
 	const qNextSeq = db.query<{ n: number | null }, [string]>(
 		"SELECT MAX(seq) AS n FROM events WHERE conversation_id = ?",
@@ -1257,6 +1282,10 @@ export function openStore(dbPath: string): ConversationStore {
 
 		lastUserSeq(id) {
 			return qLastUserSeq.get(id)?.seq ?? null;
+		},
+
+		lastReplyAnchor(id) {
+			return qLastReplyAnchor.get(id)?.anchor_seq ?? null;
 		},
 
 		memoryEligibility(id) {

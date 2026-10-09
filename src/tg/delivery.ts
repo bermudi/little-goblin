@@ -11,6 +11,7 @@ import { DeliveryUncertainError, type OutgoingFile } from "../agent/tools/send.t
 import { speechContent, STATUS_TAIL_MARK } from "../agent/tts.ts";
 import { log } from "../log.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
+import { rateCallbackData } from "./rate-button.ts";
 
 const EDIT_INTERVAL_MS = 1_000;
 const TYPING_INTERVAL_MS = 4_000;
@@ -55,6 +56,14 @@ export function isNotModifiedError(err: unknown): boolean {
 export interface DeliveryVoiceDeps {
 	synthesize(text: string): Promise<Uint8Array[]>;
 	voiceMode: boolean;
+}
+
+// The 👍/👎 row rides every completed reply this dep is wired into. It
+// resolves the landed reply's anchor at stamp time — after the turn's
+// append — so the buttons' payload carries the reply's durable identity.
+// The conversation store satisfies it.
+export interface DeliveryRatingDeps {
+	lastReplyAnchor(conversationId: string): number | null;
 }
 
 function replyKey(chatId: number, messageId: number): string {
@@ -140,6 +149,7 @@ export function makeDeliverySink(
 	voice?: DeliveryVoiceDeps,
 	typingIntervalMs = TYPING_INTERVAL_MS,
 	maxDrainIterations = MAX_DRAIN_ITERATIONS,
+	rating?: DeliveryRatingDeps,
 ): TurnSink {
 	// Routing bug alarm (DESIGN.md, App channel): app conversations have
 	// no Telegram door — their sink is the HTTP stream. A silent send
@@ -772,20 +782,41 @@ export function makeDeliverySink(
 							"setMessageReaction",
 						);
 					});
-					if (voice) {
+					// One keyboard, one edit — editMessageReplyMarkup
+					// replaces the whole markup, so the rating row and 🔊
+					// stamp together or the second call erases the first.
+					if (rating !== undefined || voice !== undefined) {
+						const anchor = rating?.lastReplyAnchor(conv.id) ?? null;
+						const keyboard = [
+							...(rating === undefined
+								? []
+								: [
+										[
+											{
+												text: "👍",
+												callback_data: rateCallbackData("up", conv.id, anchor),
+											},
+											{
+												text: "👎",
+												callback_data: rateCallbackData("down", conv.id, anchor),
+											},
+										],
+									]),
+							...(voice === undefined
+								? []
+								: [[{ text: "🔊", callback_data: SPEAK_CALLBACK }]]),
+						];
 						enqueue(async () => {
 							if (!mayDeliver()) return;
 							try {
 								await withTimeout(
 									api.editMessageReplyMarkup(conv.chatId, mid, {
-										reply_markup: {
-											inline_keyboard: [[{ text: "🔊", callback_data: SPEAK_CALLBACK }]],
-										},
+										reply_markup: { inline_keyboard: keyboard },
 									}),
 									"editMessageReplyMarkup",
 								);
 							} catch (err) {
-								// Button already stamped — benign, not a failure.
+								// Buttons already stamped — benign, not a failure.
 								if (isNotModifiedError(err)) return;
 								throw err;
 							}

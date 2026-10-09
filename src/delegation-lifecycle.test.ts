@@ -438,6 +438,154 @@ describe("delegation watcher", () => {
 		});
 	});
 
+	// #119: the first successful capture after a failed post-prompt read
+	// may land on an agent that already finished. That completion is
+	// folded into the seq being captured — it can never advance past
+	// itself — and machine rows have no local report to rescue them
+	// while the stall rule only fires on idle, so without explicit
+	// handling the row ran forever.
+	describe("already finished at baseline capture (#119)", () => {
+		// A row in the #95 pending posture: the prompt landed, the
+		// post-prompt read failed, no verdict may fire yet.
+		function pendingRow(
+			h: Harness,
+			name: string,
+			promptedAgoMs: number,
+			target: string | null = null,
+		): Delegation {
+			const d = runningRow(h, name, 1, promptedAgoMs, target);
+			return h.store.markRunning(d.id, null, new Date(Date.now() - promptedAgoMs)) ?? d;
+		}
+
+		test("a machine row already done at capture settles instead of running forever", async () => {
+			const h = harness();
+			(h.deps.targets as Map<string, DelegationTargetDeps>).set("g7", {
+				machine: "g7",
+				root: "/remote/goblin",
+				herdr: h.deps.herdr,
+			});
+			const d = pendingRow(h, "quick remote", 120_000, "g7");
+			h.agents.set(d.agentName, { ...agent(d.agentName, "done", 9), completion_seq: 9 });
+			const owner = startDelegationLifecycle(h.deps, 3_600_000);
+			await owner.tick();
+			await owner.tick();
+			await owner.tick();
+			owner.stopTicker();
+			const row = h.store.get(d.id)!;
+			expect(row.status).not.toBe("running");
+			expect(row.baselineSeq).toBe(9);
+			expect(h.wakes).toHaveLength(1);
+			expect(h.wakes[0]).toContain(`[delegation: #${d.id} quick remote · needs input]`);
+			expect(h.wakes[0]).toContain("can't be attributed");
+		});
+
+		test("a fresh report at capture attributes the completion — done in the same scan", async () => {
+			const h = harness();
+			const d = pendingRow(h, "fast finisher", 120_000);
+			mkdirSync(join(h.delegationsDir, String(d.id)), { recursive: true });
+			writeFileSync(join(h.delegationsDir, String(d.id), "report.md"), "# finished fast");
+			h.agents.set(d.agentName, { ...agent(d.agentName, "idle", 9), completion_seq: 9 });
+			const owner = startDelegationLifecycle(h.deps, 3_600_000);
+			await owner.tick();
+			owner.stopTicker();
+			expect(h.store.get(d.id)!.status).toBe("done");
+			expect(h.wakes).toHaveLength(1);
+			expect(h.wakes[0]).toContain(`[delegation: #${d.id} fast finisher · done]`);
+			expect(h.wakes[0]).toContain("# finished fast");
+		});
+
+		test("a local done agent with no report parks too — done alone never advances", async () => {
+			const h = harness();
+			const d = pendingRow(h, "screen only", 120_000);
+			// An older server without completion_seq still reports done —
+			// the seq-advance approximation can never fire on it either.
+			h.agents.set(d.agentName, agent(d.agentName, "done", 9));
+			const owner = startDelegationLifecycle(h.deps, 3_600_000);
+			await owner.tick();
+			owner.stopTicker();
+			expect(h.store.get(d.id)!.status).toBe("needs_input");
+			expect(h.wakes).toHaveLength(1);
+		});
+
+		test("a capture-time park that fails to land retries on the next scan", async () => {
+			const h = harness();
+			const d = pendingRow(h, "flaky park", 120_000);
+			h.agents.set(d.agentName, { ...agent(d.agentName, "done", 9), completion_seq: 9 });
+			let lands = false;
+			h.deps.wake = (_a, text) => {
+				if (lands) h.wakes.push(text);
+				return lands;
+			};
+			const owner = startDelegationLifecycle(h.deps, 3_600_000);
+			await owner.tick();
+			// The notice never landed — the pending posture stands, so the
+			// verdict is owed again next tick, not stranded behind a
+			// captured baseline.
+			expect(h.store.get(d.id)!.status).toBe("running");
+			expect(h.store.get(d.id)!.baselineSeq).toBeNull();
+
+			lands = true;
+			await owner.tick();
+			owner.stopTicker();
+			expect(h.store.get(d.id)!.status).toBe("needs_input");
+			expect(h.wakes).toHaveLength(1);
+		});
+
+		test("an idle glance without a completion marker is still just the fresh-prompt glance", async () => {
+			const h = harness();
+			const d = pendingRow(h, "just prompted", 1_000);
+			h.agents.set(d.agentName, agent(d.agentName, "idle", 9));
+			const owner = startDelegationLifecycle(h.deps, 3_600_000);
+			await owner.tick();
+			owner.stopTicker();
+			// No verdict from a bare idle — that is the #95 glance the
+			// pending posture exists for; the stall rule owns it after 90 s.
+			expect(h.store.get(d.id)!.status).toBe("running");
+			expect(h.store.get(d.id)!.baselineSeq).toBe(9);
+			expect(h.wakes).toEqual([]);
+		});
+
+		test("a parked row done at capture still gets its owed task — the prompt outranks the park", async () => {
+			const h = harness();
+			const row = h.store.create({
+				name: "owed",
+				harness: "codex",
+				cwd: "/w",
+				task: "the owed task",
+				address: { chatId: 1, threadId: null },
+			});
+			h.store.bindLaunch(row.id, {
+				agentName: agentNameFor(row.id, "owed"),
+				workspaceId: "w1",
+				paneId: "w1:p1",
+			});
+			h.store.markParked(row.id, null); // the park-time read failed too
+			const agentName = agentNameFor(row.id, "owed");
+			const prompts: string[] = [];
+			h.deps.herdr = {
+				...h.deps.herdr,
+				prompt: (_name, text) => {
+					prompts.push(text);
+					return Promise.resolve();
+				},
+			};
+			h.agents.set(agentName, { ...agent(agentName, "done", 9), completion_seq: 9 });
+			const owner = startDelegationLifecycle(h.deps, 3_600_000);
+			await owner.tick();
+			owner.stopTicker();
+			// The task never reached the agent, so the done glance is not
+			// this run's completion — delivering the owed prompt is the
+			// verdict, and the fresh prompt restarts the seq clock honestly.
+			expect(prompts).toHaveLength(1);
+			expect(prompts[0]).toContain("the owed task");
+			const after = h.store.get(row.id)!;
+			expect(after.status).toBe("running");
+			expect(after.promptPending).toBe(false);
+			expect(after.baselineSeq).toBe(9);
+			expect(h.wakes).toEqual([]);
+		});
+	});
+
 	test("blocked notifies needs_input exactly once across ticks", async () => {
 		const h = harness();
 		const d = runningRow(h, "stuck", 1);

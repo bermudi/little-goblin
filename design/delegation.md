@@ -194,8 +194,15 @@ Rulings:
   owed-prompt delivery keys on already happened while the baseline
   was missing, so the prompt is delivered in that same capture scan
   (comparing against just-captured "now" would never fire). An agent
-  that finished before the capture parks at `needs_input` like the
-  finished-before-baseline corner below (#95, 2026-10-08). Blocked →
+  that already finished when the capture lands settles in that same
+  scan (#119, 2026-10-08): the completion is folded into the captured
+  seq and can never advance past it, so waiting is a strand — a
+  report newer than the prompt attributes the completion to this run
+  and reads done; without one the attribution is unknowable from
+  outside and the row parks at `needs_input` (the screen tail shows
+  the operator the truth, the row stays follow-up-able, and a notice
+  that fails to land leaves the pending posture so the next scan
+  retries). Blocked →
   `needs_input`, notify once.
   Idle with no seq advance 90 s after prompting → `needs_input`
   ("likely stuck on a startup dialog"). Parking re-baselines the seq;

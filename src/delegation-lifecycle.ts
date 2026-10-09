@@ -21,9 +21,13 @@
 // pre-prompt value, which sits below the agent's current seq and fires
 // a spurious done on the next idle glance (#95). A pending row gets no
 // verdict: the scan captures the seq it can see (CAS) and the next
-// scan judges against it; the one exception is a parked row whose
-// agent is no longer blocked, whose owed prompt is delivered right
-// then — the advance it keys on already happened.
+// scan judges against it; the exceptions are a parked row whose agent
+// is no longer blocked (its owed prompt is delivered right then — the
+// advance it keys on already happened) and a glance that already
+// finished, whose completion is folded into the captured seq and can
+// never beat it — that one settles in the capture scan itself: done on
+// a fresh report, parked at needs_input when the attribution is
+// unknowable (#119).
 //
 // A notice must land before the transition records it: wake first,
 // transition (and re-baseline) only on a landed submit, so a lost
@@ -1235,6 +1239,25 @@ async function deliverPendingPrompt(
 	});
 }
 
+// The report freshness rule, shared by the capture-time verdict and
+// the seq-compare verdict: a report at the live path newer than the
+// prompt is this run's result — `send` archives the previous report
+// before prompting and a launch starts with an empty dir, so anything
+// fresh was written by the current task. Machine rows have no local
+// report at all.
+function freshReportFor(deps: DelegationLifecycleDeps, d: Delegation): boolean {
+	if (machineRootFor(deps, d.target) !== null) return false;
+	try {
+		// The prompt clock starts before the send and the report can
+		// land in the same millisecond — >=, with headroom for the fs
+		// clock lagging Date.now() (REPORT_SKEW_MS).
+		return statSync(reportPathFor(deps, d)).mtimeMs >= Date.parse(d.promptedAt) - REPORT_SKEW_MS;
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+		return false;
+	}
+}
+
 async function check(deps: DelegationLifecycleDeps, d: Delegation): Promise<void> {
 	let info: AgentInfo | null;
 	try {
@@ -1271,35 +1294,72 @@ async function check(deps: DelegationLifecycleDeps, d: Delegation): Promise<void
 		// so the next idle glance would fire a spurious done and unwatch
 		// the agent mid-run. This scan's only act is capturing the seq
 		// it can finally see, under the same compare-and-set every
-		// watcher write uses; the next scan judges against reality. One
-		// exception: a parked row owes its task prompt on an advance
+		// watcher write uses; the next scan judges against reality. Two
+		// exceptions: a parked row owes its task prompt on an advance
 		// past the park baseline, and an agent no longer blocked proves
 		// that advance already happened while the baseline was missing —
 		// comparing against the just-captured "now" would never fire,
-		// so the owed prompt is delivered in this same scan.
-		if (
-			deps.delegations.captureBaseline(
-				d.id,
-				{ status: d.status, promptedAt: d.promptedAt },
-				info.state_change_seq,
-			)
-		) {
-			d.baselineSeq = info.state_change_seq;
-			log.info("delegation baseline captured", {
-				delegation: d.id,
-				name: d.name,
-				seq: info.state_change_seq,
-			});
-		} else {
+		// so the owed prompt is delivered in this same scan. And a glance
+		// that already finished settles now (#119): its completion is
+		// folded into the seq being captured, so the seq rule can never
+		// fire on it again.
+		const capture = (): boolean => {
+			if (
+				deps.delegations.captureBaseline(
+					d.id,
+					{ status: d.status, promptedAt: d.promptedAt },
+					info.state_change_seq,
+				)
+			) {
+				d.baselineSeq = info.state_change_seq;
+				log.info("delegation baseline captured", {
+					delegation: d.id,
+					name: d.name,
+					seq: info.state_change_seq,
+				});
+				return true;
+			}
 			log.info("delegation baseline capture superseded", {
 				delegation: d.id,
 				name: d.name,
 			});
+			return false;
+		};
+		if (d.status === "needs_input" && d.promptPending && info.agent_status !== "blocked") {
+			// The capture is the gate: a stop that landed mid-get owns the
+			// row and must not be prompted past.
+			if (capture()) await deliverPendingPrompt(deps, d, info);
 			return;
 		}
-		if (d.status === "needs_input" && d.promptPending && info.agent_status !== "blocked") {
-			await deliverPendingPrompt(deps, d, info);
+		// #119: an agent that already finished (a `done` status, or a
+		// completion marked on the captured idle) can never settle by the
+		// seq rule — completion_seq rides the very transition it marks,
+		// so it can never exceed the baseline it was folded into — and
+		// the stall rule only fires on idle. A fresh report attributes
+		// the completion to this run; without one the attribution is
+		// unknowable from outside, so the row parks at needs_input — the
+		// screen tail shows the operator the truth and the row stays
+		// follow-up-able. The notice rides before the capture: one that
+		// fails to land leaves the pending posture, so the next scan
+		// retries the verdict instead of stranding a finished agent
+		// behind a captured baseline.
+		const finished =
+			info.agent_status === "done" ||
+			(info.agent_status === "idle" && info.completion_seq !== undefined);
+		if (finished) {
+			if (freshReportFor(deps, d)) {
+				const landed = await notify(deps, d, "done");
+				if (landed && capture()) transition(deps, d, "done");
+			} else {
+				const landed = await notify(deps, d, "needs input", {
+					extra:
+						"(finished before the baseline was captured — this completion can't be attributed to the prompted run; check the result, then follow up or stop)",
+				});
+				if (landed && capture()) transition(deps, d, "needs_input", info.state_change_seq);
+			}
+			return;
 		}
+		capture();
 		return;
 	}
 
@@ -1340,21 +1400,9 @@ async function check(deps: DelegationLifecycleDeps, d: Delegation): Promise<void
 		// it stuck. The freshness check is what lets `send` reuse a
 		// finished delegation: the old report predates the new prompt.
 		// Machine rows have no local report file at all: they finish on
-		// seq advance alone, and the rare finished-before-baseline corner
-		// parks at needs_input — the screen tail shows the operator the
-		// truth (design/delegation.md, "Remote delegation").
-		let freshReport = false;
-		if (machineRootFor(deps, d.target) === null) {
-			try {
-				// The prompt clock starts before the send and the report can
-				// land in the same millisecond — >=, with headroom for the
-				// fs clock lagging Date.now() (REPORT_SKEW_MS).
-				freshReport =
-					statSync(reportPathFor(deps, d)).mtimeMs >= Date.parse(d.promptedAt) - REPORT_SKEW_MS;
-			} catch (err) {
-				if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-			}
-		}
+		// seq advance alone (the already-finished-at-capture corner is
+		// the capture branch's to settle, above).
+		const freshReport = freshReportFor(deps, d);
 		// completion_seq marks an idle transition as completed work —
 		// startup and session changes never set it, so it is exactly the
 		// signal the seq-advance rule approximates (and it catches a

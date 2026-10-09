@@ -1,12 +1,6 @@
-// Runtime — per-conversation serial queue, turn loop, authority fencing.
-//
-// A Turn is a unit of work enqueued on a conversation: one agent loop. One
-// active turn per conversation; the queue drains serially.
-//
-// The authority rule: before any side effect (Telegram send, state write,
-// tool call), the turn re-checks that it still holds authority — its
-// conversation epoch hasn't advanced since admission. Fenced turns abort
-// quietly and log it.
+// Runtime — per-conversation serial queues and authority fencing.
+// Epoch checks gate turn effects and channel delivery; fenced turns still run
+// terminal callbacks so every sink is settled.
 
 import { randomUUID } from "node:crypto";
 import type { ProviderOptions, ToolExecutionOptions } from "@ai-sdk/provider-utils";
@@ -40,28 +34,11 @@ import { type ForcedKind, TurnState } from "./turn/state.ts";
 import { claimMembers, driveStream, endLive, type LiveChunks, openLive } from "./turn/stream.ts";
 import { buildModelView, type ViewContext } from "./turn/view.ts";
 
-// Loop landings (design/model.md → "No step budget — loops are caught,
-// not capped"): a turn has no step budget; whichever cut fires first —
-// detector, watchdog, context, or the operator's /stop — owns a final
-// tools-off step, and the turn ends in an answer. The machinery that
-// decides and escalates lives in turn/state.ts; the forced step's
-// instruction text and its fold into the request live in the stream
-// driver (turn/stream.ts).
-
-// A provider that defies toolChoice "none" on the forced landing gets
-// plain-language prose appended — the defiance guard and its note
-// live in turn/finish.ts, where the attempt lands.
-// The watchdog's cadence — one check every N completed calls.
 const LOOP_CHECK_EVERY = 16;
-// Auto-compaction trigger (DESIGN.md, Compaction): a completed turn at
-// or past this fraction of the catalog context window compacts in-lane.
-// The ≥80% utilization warn stays as the alarm that it didn't keep up.
+// Completed turns at or above this threshold compact in-lane. The lane stays
+// occupied until the summary finishes so the next turn sees one whole view.
 const COMPACT_AT_PCT = 75;
 
-// ---------- sink: what the turn streams into (tg implements) ----------
-
-// Which landing forced the answer — the loop machinery names its kinds
-// (turn/state.ts); re-exported so TurnDone and the sinks share it.
 export type { ForcedKind } from "./turn/state.ts";
 
 export type TurnDone =
@@ -69,91 +46,71 @@ export type TurnDone =
 	| { kind: "fenced" }
 	| { kind: "error"; message: string };
 
-// Every submitted sink receives exactly one onDone — completed, fenced, or
-// error — so it can release resources (typing intervals, etc.) no matter
-// how the turn ends, including being dropped from the queue by /stop.
+// Every submitted sink receives exactly one terminal notification, including
+// work dropped from the queue. This lets channel sinks release typing and
+// stream resources on completed, fenced, and failed turns alike.
 export interface TurnSink {
 	onTextDelta(delta: string): void;
 	onReasoningDelta(delta: string): void;
 	onToolCall(toolName: string, input: unknown): void;
-	// Raw UIMessage-stream pass-through — the app channel's HTTP surface
-	// forwards every chunk to the client verbatim, where the delta
-	// methods above are telegram delivery (DESIGN.md, App channel).
-	// Called on the head sink only, after the authority check, for every
-	// chunk the runtime consumes — including finish/error/abort.
+	// The head receives emitted UIMessage chunks after authority checks. Overflow
+	// recovery withholds its error chunk and successors, not prior partial output;
+	// terminal status reaches sinks through onDone.
 	onStreamChunk?(chunk: UIMessageChunk): void;
 	onVoiceNote?(audio: Uint8Array): Promise<void>;
-	// The send_file tool's door, matching speak's: the tool hands a
-	// workspace path to the sink, which owns the Telegram send — so
-	// "Telegram send is delivery, not a tool" stays true and file sends
-	// ride the same serialized chain and authority fencing as text.
-	// asFile forces the byte-exact document path (sendPhoto compresses).
+	// The sink owns file delivery, so it remains on the serialized,
+	// authority-fenced delivery path. Both sides of its await re-check
+	// authority; `asFile` preserves exact document bytes.
 	onFile?(file: OutgoingFile): Promise<void>;
-	// The speak tool's synthesis is a visible wait: start a record_voice
-	// chat action and return its stopper. Optional like onVoiceNote —
-	// the runtime only wires the door when the sink provides it.
+	// Voice synthesis exposes a visible wait and returns its stopper. Starting
+	// that indicator is a side effect and is fenced by the running turn.
 	onVoiceSynthesisStart?(): () => void;
 	setAuthorityCheck?(check: () => boolean): void;
 	onDone(done: TurnDone): void | Promise<void>;
 }
 
-// ---------- deps injected by the composition root ----------
-
 export interface ModelStep {
 	model: LanguageModel;
 	system: string;
 	providerOptions?: ProviderOptions;
-	// The config ref this step resolved ("zai/glm-5.3") — observability
-	// only; it rides the finish metadata so a stored reply remembers
-	// which model wrote it after a later switch.
+	// Stored reply metadata uses this resolved config reference.
 	label?: string;
-	// The model's input modalities (models.dev) — decides which stored
-	// attachment parts materialize as file parts this turn. Absent =
-	// text-only, everything degrades to path references.
+	// Controls which stored attachments materialize as file parts; absent means
+	// attachments degrade to path references. This keeps unsupported media out
+	// of the model request rather than failing the whole turn.
 	inputModalities?: Set<string>;
-	// What the provider pipe can carry (carriesMedia, providers.ts) —
-	// the second gate on inlining, position-aware (user message vs tool
-	// result). Absent = anything in user messages (legacy behavior).
+	// Second, position-aware gate for inlining media through the provider pipe;
+	// a model capability alone is not enough when the provider cannot carry it.
 	carries?: (mediaType: string, position: MediaPosition) => boolean;
-	// The model's context window (models.dev), when known — the
-	// denominator for window-utilization logging.
+	// Context-window denominator for utilization logging, when known.
 	contextWindow?: number;
 }
 
 export interface RuntimeDeps {
 	store: ConversationStore;
-	// Resolve the conversation's effective model + system prompt + provider
-	// options (thinking level) fresh at each turn. May be async (auth
-	// `!command` resolution shells out).
+	// Resolve model settings fresh per turn; auth resolution may be async.
 	buildStep(conv: Conversation, tools: ToolSet): ModelStep | Promise<ModelStep>;
-	// Capture channel settings once at admission; compaction and overflow
-	// recovery share this copy so edits affect only the next turn.
+	// Capture channel settings at admission so recovery and compaction share a
+	// stable snapshot. A later settings change fences the current attempt.
 	captureConversation?(conv: Conversation): Conversation;
-	// Build the tool set — bound to the deployment workspace by the
-	// composition root. deliverVoice/recording wire the speak tool into
-	// the running turn's sink (voice delivery + chat-action indicator).
-	// The conversation is passed so conversation-pinned tools (program)
-	// know where they run without the model handling chat ids.
+	// Build tools for the deployment workspace and conversation; delivery hooks
+	// connect speak and file tools to the running sink.
 	makeTools(
 		conv: Conversation,
 		deliverVoice?: (audio: Uint8Array) => Promise<void>,
 		recording?: () => () => void,
 		deliverFile?: (file: OutgoingFile) => Promise<void>,
-		// Filled from this turn's ModelStep once buildStep resolves it;
-		// the fetch tool reads it at request time when rendering stored
-		// PDF references (see attachments.ts, AcceptsMedia).
+		// Filled after buildStep so fetch can render stored PDF references with
+		// this turn's media capabilities.
 		accepts?: { current: AcceptsMedia },
 	): ToolSet;
-	// Long-term memory — absent = exact current behavior. When present,
-	// admitted turns recall bounded evidence pre-turn (fail-open,
-	// cache-stable) and completed text exchanges enqueue retention under
-	// the turn's authority check.
+	// Optional memory recall is bounded, fail-open, and cache-stable; retention
+	// is enqueued only while the turn retains authority. Memory input is kept
+	// separate from the model's complete conversation view.
 	memory?: MemoryTurnDeps;
-	// Compaction wiring — absent = compaction never runs (tests, degraded
-	// boots). summarize resolves the conversation's own model and returns
-	// the summary text; modelRef labels the compactions row. The signal is
-	// the compaction's own abort handle — /stop and shutdown cancel an
-	// in-flight summary rather than waiting it out.
+	// Optional compaction uses the conversation's model; its dedicated signal
+	// lets /stop and shutdown cancel an in-flight summary. A failed summary
+	// leaves the event stream and compaction pointer untouched.
 	compaction?: {
 		modelRef(conv: Conversation): string;
 		summarize(
@@ -165,8 +122,6 @@ export interface RuntimeDeps {
 	};
 }
 
-// ---------- fencing ----------
-
 export class FencedError extends Error {
 	constructor(convId: string) {
 		super(`turn fenced: conversation ${convId} epoch advanced`);
@@ -174,29 +129,21 @@ export class FencedError extends Error {
 	}
 }
 
-// Overflow recovery (turn/overflow.ts) owns the decision half: the
-// failure vocabulary, the one-recovery budget, the partial gate, and
-// the TurnRecovery package. This file keeps the invocation half —
-// doCompact — and the attempt rails that consume the decision.
-
-// ---------- runtime ----------
-
 interface QueuedTurn {
-	// The user message this submit appended to history. Steering input:
-	// a live predecessor folds it into its next model call (DESIGN.md,
-	// Turn).
+	// The message appended to history; a live predecessor may fold it into its
+	// next model call.
 	message: UIMessage;
 	sink: TurnSink;
-	// Guards the exactly-once onDone contract: a sink whose onDone throws
-	// must not be re-notified by the drain guard below.
+	// Prevents a throwing sink from receiving a second terminal notification.
+	// Drain's last-ditch handler can therefore safely settle the whole lane.
 	doneSent: boolean;
-	// A streaming sink whose onStreamChunk threw is detached from the
-	// fan-out — one dead client must not kill the turn for the others.
+	// A throwing stream sink is detached without killing the turn; remaining
+	// sinks receive future chunks.
 	streamFailed?: boolean;
 }
 
-// A /compact waiting for the lane — run between turns so a running
-// turn's exchange is whole in history before the cut is chosen.
+// Compaction jobs run between turns so the preceding exchange is whole.
+// A submit arriving during the job waits for the next drain pass.
 interface QueuedCompact {
 	conv: Conversation;
 	resolve: (outcome: CompactionOutcome) => void;
@@ -208,70 +155,48 @@ interface Lane {
 	compacts: QueuedCompact[];
 	running: boolean;
 	controller: AbortController | null;
-	// The abort handle for an in-flight compaction summary call — aborted
-	// by stop()/shutdown() so a stalled provider can't stall the process.
+	// Dedicated cancellation for an in-flight compaction summary. It is
+	// registered before the first await so /stop cannot miss a pending build.
 	compactController: AbortController | null;
-	// The drain loop's promise — shutdown awaits it so a fenced sink's
-	// final flush finishes before the process exits.
+	// Shutdown awaits the drain so terminal sink flushes finish.
 	draining: Promise<void> | null;
-	// The running turn's wire log — see LiveChunks. Null between turns.
 	live: LiveChunks | null;
 }
 
-// A queued submit "streams" iff its sink defines onStreamChunk — the
-// app channel's raw chunk pass-through (DESIGN.md, App channel) is the
-// only sink that does. A turn headed by a NON-streaming sink (the
-// spin-off's headless bell — design/app.md → Spin-off — or a Telegram
-// delivery sink) must never absorb a streaming submit: merged into its
-// turn, that sink would get only onDone and the client watching the
-// stream would see no reply at all. How many leading pending items a
-// turn may claim: the whole queue when the head streams; otherwise
-// only the leading run of non-streaming items, leaving the first
-// streaming one to head its own turn.
+// Keep a streaming submit queued behind a headless turn so it can lead its own
+// attempt. A streaming head may claim all pending work; a headless head claims
+// only the leading non-streaming run.
 function claimableCount(pending: QueuedTurn[], headStreams: boolean): number {
 	if (headStreams) return pending.length;
 	const first = pending.findIndex((t) => t.sink.onStreamChunk !== undefined);
 	return first === -1 ? pending.length : first;
 }
 
-// Claim the leading pending items a turn may absorb — the splice half
-// of the membership seam (design/runtime-turn.md → admission; the
-// replay half and its one home live in turn/stream.ts). The
-// head-streaming rule is claimableCount's; every claim site (drain,
-// steering, the resume claim) goes through here.
 function claimPending(lane: Lane, headStreams: boolean): QueuedTurn[] {
 	return lane.pending.splice(0, claimableCount(lane.pending, headStreams));
 }
 
-// The attempt loop's decision vocabulary (design/runtime-turn.md →
-// recursion→loop): a terminal outcome — every settle path (admission
-// failure, fenced, error, completed) already ran — or a resume carrying
-// the next attempt's TurnRecovery and the grown membership. TurnRecovery
-// stays the only attempt-to-attempt wire; the membership rides the
-// decision, never a closure.
+// Terminal outcomes have settled their sinks; resumes carry recovery and
+// membership into the next attempt. Membership is data on the decision,
+// not a closure over a queue that may have changed.
 type AttemptOutcome =
 	| { kind: "done" }
 	| { kind: "resume"; recovery: TurnRecovery; turns: QueuedTurn[] };
 
 export class Runtime {
 	private lanes = new Map<string, Lane>();
-	// Set by shutdown(): submits still land in history but never run.
+	// Closed runtimes record submits but never run them.
 	private closed = false;
-	// The skill reviewer — attached after the bot exists (its save note
-	// delivers through bot.api). Absent = the feature is off. It owns its
-	// queue/gate state; the runtime never touches it directly.
+	// Reviewer state is owned by Reviewer; the runtime only submits snapshots.
+	// The runtime supplies ordering and the prior-turn chain, not gate logic.
 	private reviewer: Reviewer | undefined;
-	// The loop watchdog — setReviewer's twin: index.ts wires the
-	// reviewer's JevClient here (one instance, shared auth closure).
-	// Absent = watchdog off; the repeat detector and the context landing
-	// still bound the turn.
+	// Optional watchdog; repeat detection and context limits still apply when
+	// it is absent.
 	private loopWatchdog: { decide: JevClient["decide"]; every: number } | null = null;
-	// Turn-completion counter — the reviewer queue's serialization
-	// order (gate latency must not reorder reviews).
+	// Reviewer sequence number; gate latency must not reorder reviews.
 	private turnCounter = 0;
-	// The previous completed turn per conversation — a correction's
-	// review needs the turn it corrects as evidence. Off-the-record
-	// turns are never stored (and break the chain).
+	// Previous reviewable turn per conversation, used as correction evidence.
+	// Off-the-record turns deliberately break this chain.
 	private lastTurns = new Map<string, PriorTurnContext>();
 
 	constructor(private deps: RuntimeDeps) {}
@@ -287,29 +212,23 @@ export class Runtime {
 				: { decide: watchdog.decide, every: watchdog.every ?? LOOP_CHECK_EVERY };
 	}
 
-	// Is a turn queued or running on this conversation? Guest summons
-	// consults this before submitting: steering would fold a second
-	// summons into a running turn and deliver its reply into another
-	// summons' message (design/telegram.md → Guest mode).
+	// Guest mode checks this before submitting so a second summon cannot steer
+	// an existing turn.
 	hasActiveTurn(conversationId: string): boolean {
 		const lane = this.lanes.get(conversationId);
 		return lane !== undefined && (lane.running || lane.pending.length > 0);
 	}
 
-	// Enqueue a user message + a sink. The message lands in history
-	// immediately — it's real regardless of when the turn runs, or
-	// whether it runs at all (post-shutdown submits record only).
-	// True means admitted to a lane; false means history-only after close.
+	// Persist immediately; the return value distinguishes lane admission from
+	// history-only recording after shutdown. The message is durable even when
+	// no turn can be admitted.
 	submit(conv: Conversation, message: UIMessage, sink: TurnSink): boolean {
 		this.deps.store.append(conv.id, [message]);
 		return this.admit(conv, message, sink);
 	}
 
-	// Telegram's durable inbox commits its user event and consumes the
-	// inbox batch in one SQLite transaction before reaching this method.
-	// Never append again here: that would duplicate a recovered turn.
-	// The just-appended message rides along: steering input for a live
-	// turn.
+	// The inbox has already persisted this message; appending again would
+	// duplicate a recovered turn.
 	submitPersisted(conv: Conversation, message: UIMessage, sink: TurnSink): boolean {
 		return this.admit(conv, message, sink);
 	}
@@ -325,29 +244,21 @@ export class Runtime {
 		return true;
 	}
 
-	// False after shutdown(): a closed runtime still appends submits to
-	// history and fences them, so a caller offering future work (a webhook
-	// hit) must gate on this rather than trusting submit's return.
+	// Callers offering future work must gate on this after shutdown; submit still
+	// records and fences the message.
 	accepting(): boolean {
 		return !this.closed;
 	}
 
-	// True while the lane holds live or queued work — the app's retry
-	// route gates on it so "run again" can't land mid-turn as steering
-	// input.
+	// Used by app retries to avoid turning a retry into steering input.
 	busy(convId: string): boolean {
 		const lane = this.lanes.get(convId);
 		return lane !== undefined && (lane.pending.length > 0 || lane.controller !== null);
 	}
 
-	// Attach to a live turn's chunk stream — the resumable-stream half of
-	// the app channel (a reload mid-turn, a second screen, the SDK's
-	// reconnectToStream). Returns everything the wire has seen so far,
-	// and the callbacks receive what follows; onEnd fires exactly once
-	// with the turn's final outcome (the same TurnDone member sinks
-	// receive). Null = no live turn: the caller answers 204 and the
-	// client falls back to history. Snapshot + subscribe happen in one
-	// synchronous step, so replay ∪ live is gapless.
+	// Replay the existing wire and subscribe atomically; the replay/live union is
+	// gapless. `onEnd` is delivered once with the same terminal outcome as the
+	// member sink. Null means the caller should fall back to history.
 	subscribeLiveChunks(
 		convId: string,
 		onChunk: (chunk: UIMessageChunk) => void,
@@ -359,51 +270,34 @@ export class Runtime {
 		return [...live.chunks];
 	}
 
-	// Graceful stop: close intake, then fence every live lane — running
-	// turns abort, queued ones drop. Resolves when the drains settle,
-	// which includes each sink's final flush (the "⏹ superseded" stamp).
+	// Close intake, fence live lanes, and await their terminal sink flushes.
 	async shutdown(): Promise<void> {
 		this.closed = true;
-		// Drained lanes no longer exist, but their gates/reviews can still be
-		// pending. Fence them before the caller closes the store.
+		// Drained lanes may still have pending gates or reviews; fence them too.
 		if (this.reviewer) {
 			const reviewsCancelled = this.reviewer.cancelAllReviews();
 			log.info("reviewer shutdown fenced", { reviewsCancelled });
 		}
 		const drains: Promise<void>[] = [];
 		for (const [convId, lane] of this.lanes) {
-			// stop().settled resolves once the dropped turns' onDone calls
-			// settle — a sink's final flush must finish before the process
-			// exits.
+			// Await dropped sinks so shutdown does not cut off their final flush.
 			drains.push(this.stop(convId).settled);
 			if (lane.draining) drains.push(lane.draining);
 		}
 		await Promise.all(drains);
 	}
 
-	// /stop — advance the epoch (fences the in-flight turn) and abort its
-	// stream. Queued turns are dropped: stop means stop. Dropped sinks still
-	// get their onDone so nothing leaks. An in-flight compaction summary
-	// aborts too — no pointer written, the next threshold crossing retries —
-	// and queued /compact jobs drop with the turns, resolving as a noop so
-	// the command still gets its reply.
-	// The return value tells the caller
-	// — synchronously — whether anything was actually live, so /stop can
-	// say "stopped" vs "nothing was running"; `settled` resolves once the
-	// dropped sinks' onDone calls settle — shutdown awaits it. Reviews the
-	// reviewer queued or is running for this conversation are cancelled
-	// too: /stop is the operator's panic lever, and a background
-	// skill-write from a fenced topic must not outlive it (DESIGN.md,
-	// "Skill reviewer").
+	// /stop advances the epoch, aborts live work, drops queued work, cancels
+	// compaction and reviews, and still settles every dropped sink. `stopped`
+	// is synchronous; `settled` waits for terminal delivery. A queued compact
+	// resolves as a noop so the command waiting on it still completes.
 	stop(convId: string): { stopped: boolean; settled: Promise<void>; reviewsCancelled: number } {
 		const epoch = this.deps.store.bumpEpoch(convId);
 		return this.cancelFenced(convId, epoch);
 	}
 
-	// Navigation commits the epoch together with the pin and its receipt,
-	// then calls this synchronously. Abort/drop/cancel are runtime effects:
-	// doing them inside SQLite's transaction would make rollback dishonest.
-	// No await or new submission may intervene between fencing and cancellation.
+	// The caller commits the epoch transaction first. Fence and cancellation stay
+	// outside that transaction with no await or intervening submission.
 	cancelFenced(
 		convId: string,
 		epoch: number,
@@ -446,10 +340,7 @@ export class Runtime {
 		return { stopped, settled: Promise.all(notifies).then(() => undefined), reviewsCancelled };
 	}
 
-	// Compact a conversation — the manual lever (/compact). Serialized
-	// through the lane behind any running turn: the cut must be chosen
-	// only after that turn's response is appended, or it could orphan the
-	// exchange. Resolves (or rejects) when the job actually runs.
+	// Queue compaction behind the running turn so its response is not orphaned.
 	compact(conv: Conversation): Promise<CompactionOutcome> {
 		const lane = this.lane(conv.id);
 		return new Promise<CompactionOutcome>((resolve, reject) => {
@@ -458,17 +349,10 @@ export class Runtime {
 		});
 	}
 
-	// The in-lane body, shared by the auto trigger (a completed turn at
-	// ≥75% of the context window — already inside the lane) and the queued
-	// manual job. Runs the conversation's own model over the delta and
-	// moves the pointer; the event stream is never touched. Throws
-	// propagate — the auto path warns, the command path replies. The
-	// summary call rides a dedicated abort controller: /stop and shutdown
-	// cancel it rather than waiting out a stalled provider. Epoch changes
-	// fence the commit the same way (the authority rule): the compaction
-	// captures its epoch at entry and re-checks before spending or
-	// committing, so a settings change mid-summary leaves the pointer and
-	// the frozen snapshot untouched — the next crossing retries.
+	// Compaction summarizes the event delta without rewriting the event stream.
+	// Its dedicated controller handles stop/shutdown; authority checks leave the
+	// pointer and prompt snapshot unchanged on cancellation or fencing. The
+	// caller decides whether a failure is reported or retried.
 	private async doCompact(
 		conv: Conversation,
 		reason: "threshold" | "manual" | "overflow",
@@ -479,33 +363,21 @@ export class Runtime {
 		}
 		const compaction = this.deps.compaction;
 		if (!compaction) return { kind: "noop", reason: "compaction not configured" };
-		// The authority this compaction runs under: the turn's admission
-		// epoch (threshold/overflow share the admitted selection) or the
-		// freshly resolved channel state (manual). checkAuthority throws
-		// FencedError the moment the store's epoch moves past it.
+		// Threshold/overflow use the admitted epoch; manual jobs resolve a fresh
+		// conversation before taking authority.
 		const epoch = conv.epoch;
-		// The controller registers BEFORE the first await: a /stop arriving
-		// while buildStep is pending must abort this compaction, not a null
-		// controller — otherwise the summary runs and the pointer lands
-		// despite the stop. The pre-aborted signal makes the summarize call
-		// fail fast, so no boundary is written.
+		// Register before the first await so /stop can cancel a pending buildStep.
 		const lane = this.lane(conv.id);
 		const controller = new AbortController();
 		lane.compactController = controller;
 		try {
-			// buildStep resolves the effective model (+ its context window from
-			// the catalog) with all the usual auth/provider plumbing. Empty tools:
-			// the summary call is a plain generate, no tool surface needed.
 			const step = await this.deps.buildStep(conv, {});
 			const tailTokenBudget =
 				step.contextWindow !== undefined ? Math.round(step.contextWindow * 0.25) : 20_000;
-			// An overflow proves our estimate was optimistic for this
-			// conversation — keep a smaller tail so the resumed prompt
-			// lands well under the line the provider just drew.
+			// Overflow recovery uses a smaller tail to stay below the provider's
+			// observed limit.
 			const tail = reason === "overflow" ? Math.floor(tailTokenBudget / 2) : tailTokenBudget;
-			// The ceiling each summarizer call must fit inside (compaction.ts):
-			// half the window leaves room for the system prompt, the carried
-			// summary, and the model's answer in the same request.
+			// Keep summarizer input below half the window to leave answer headroom.
 			const inputTokenBudget =
 				step.contextWindow !== undefined ? Math.floor(step.contextWindow * 0.5) : 32_000;
 			const outcome = await runCompaction(
@@ -522,10 +394,7 @@ export class Runtime {
 				controller.signal,
 			);
 			if (outcome.kind === "compacted") {
-				// Compaction rewrote history — the prefix busts anyway, so this
-				// is the free moment to refresh the frozen prompt snapshot
-				// from current files (DESIGN.md → Cache stability). The next
-				// turn (or the summarizer below) rebuilds and re-freezes.
+				// Rebuild the frozen prompt after compaction changed history.
 				this.deps.store.clearPromptSnapshot(conv.id);
 				log.info("prompt snapshot cleared for rebuild", {
 					conversation: conv.id,
@@ -555,9 +424,8 @@ export class Runtime {
 		return l;
 	}
 
-	// Deliver the terminal signal exactly once and never let a throwing
-	// sink escape — drain treats an escaped error as a crashed turn and
-	// would notify the sink a second time.
+	// Keep terminal delivery exactly once, even when a sink throws. Mark before
+	// invoking the hook so re-entrant error handling cannot notify it twice.
 	private async notifyDone(turn: QueuedTurn, done: TurnDone): Promise<void> {
 		if (turn.doneSent) return;
 		turn.doneSent = true;
@@ -568,17 +436,16 @@ export class Runtime {
 		}
 	}
 
-	// Re-check authority around every await: the captured epoch must still
-	// be the conversation's epoch.
+	// Awaiting work must not outlive the captured conversation epoch. Settings
+	// mutations advance the epoch even when they do not abort the controller.
 	private checkAuthority(convId: string, epoch: number): void {
 		const current = this.deps.store.get(convId)?.epoch;
 		if (current !== epoch) throw new FencedError(convId);
 	}
 
-	// Tool calls are side effects too — wrap every execute so it re-checks
-	// authority before running. The SDK executes tools inside the stream,
-	// where the chunk loop's check can't reach. Tools are built fresh per
-	// turn, so wrapping in place is safe.
+	// Tools execute inside the SDK stream, so each tool needs its own authority
+	// check; tools are fresh per turn. A tool cannot rely on the outer chunk
+	// loop's check to fence its side effects.
 	private fenceTools(tools: ToolSet, convId: string, epoch: number): ToolSet {
 		for (const t of Object.values(tools)) {
 			const execute = t.execute?.bind(t);
@@ -591,11 +458,6 @@ export class Runtime {
 		return tools;
 	}
 
-	// The membership seam's runtime half: claim what queued for a
-	// resuming turn and replay the wire to streaming joiners (#96) —
-	// the seam itself lives in turn/stream.ts, so the replay cannot be
-	// forgotten. Injected into admission as claimQueued; the steer path
-	// claims through the same splice. Queue policy never leaves here.
 	private claimQueuedMembers(
 		convId: string,
 		sink: TurnSink,
@@ -610,9 +472,6 @@ export class Runtime {
 		);
 	}
 
-	// Bounded recall before the turn's model calls — the body lives in
-	// memory.ts (recall contexts are memory's surface); the epoch
-	// re-check around the awaits is injected per the authority rule.
 	private async recallMemory(
 		conv: Conversation,
 		anchorSeq: number | null,
@@ -630,19 +489,15 @@ export class Runtime {
 		});
 	}
 
-	// The logical turn: drive attempts until one is terminal.
 	private async drain(convId: string): Promise<void> {
 		const lane = this.lane(convId);
 		if (lane.running) return;
 		lane.running = true;
 		try {
 			for (;;) {
-				// Drain everything queued into ONE turn — messages that
-				// piled up behind a running turn are one conversational
-				// beat, and a single model call answers them all. A
-				// non-streaming head claims only non-streaming followers
-				// (claimableCount); a left-behind streaming item heads
-				// the next pass.
+				// Coalesce the claimable queue into one conversational beat; a
+				// left-behind streaming item starts the next pass. The head sink's
+				// delivery mode determines the claim boundary.
 				const turns = claimPending(lane, lane.pending[0]?.sink.onStreamChunk !== undefined);
 				if (turns.length > 0) {
 					if (turns.length > 1) {
@@ -654,31 +509,24 @@ export class Runtime {
 					try {
 						await this.runTurn(convId, turns);
 					} catch (err) {
-						// runTurn handles expected failures; this is a last-ditch guard
-						// so one bad turn can't stall the lane or leak its sinks.
+						// Last-ditch guard: one bad turn must not stall the lane or leak sinks.
+						// Expected failures have already notified their members.
 						log.error("turn crashed", err, { conversation: convId });
 						const done: TurnDone = {
 							kind: "error",
 							message: err instanceof Error ? err.message : String(err),
 						};
-						// End the live log HERE, not only in the finally below: a
-						// successor turn in this same drain pass re-pins lane.live,
-						// which would orphan the crashed turn's subscribers — their
-						// attach streams would hang without a terminal event.
-						// endLive is idempotent, so a live already ended by the
-						// turn's own notifyAll is untouched.
+						// End before a successor can replace lane.live, or attached
+						// subscribers would hang without a terminal event.
 						const crashed = this.lanes.get(convId)?.live;
 						if (crashed != null) endLive(crashed, done);
 						for (const t of turns) await this.notifyDone(t, done);
 					}
-					// Between turns the lane holds no live controller — /stop's
-					// stopped flag must not false-positive on a finished turn.
+					// A finished turn must not make /stop report live work.
 					this.lane(convId).controller = null;
 					continue;
 				}
-				// /compact jobs run between turns — any running turn's exchange
-				// is whole in history by the time the cut is chosen, and a submit
-				// arriving mid-job simply starts the next drain pass.
+				// Run queued compaction only between whole turns.
 				const job = lane.compacts.shift();
 				if (job !== undefined) {
 					try {
@@ -694,10 +542,8 @@ export class Runtime {
 			lane.running = false;
 			lane.controller = null;
 			lane.draining = null;
-			// A wire log no exit path ended is a bug — the notifyAll wrap and
-			// this guard are the two ends of the contract. Close the attached
-			// streams loudly instead of hanging them on a turn that will never
-			// emit again.
+			// Fail closed if a path leaves attached streams without an outcome.
+			// Hanging an attach request is worse than sending an explicit error.
 			if (lane.live !== null && !lane.live.ended) {
 				log.error("live chunk log never ended — closing attach streams", undefined, {
 					conversation: convId,
@@ -705,19 +551,14 @@ export class Runtime {
 				endLive(lane.live, { kind: "error", message: "turn ended without an outcome" });
 			}
 			lane.live = null;
-			// A drained lane is cheap to recreate on the next submit —
-			// don't pin one per conversation for the life of the process.
+			// Do not retain idle lanes for the process lifetime.
 			if (lane.pending.length === 0 && lane.compacts.length === 0) this.lanes.delete(convId);
 		}
 	}
 
-	// The logical turn: drive attempts until one is terminal. A resume
-	// re-enters with the packaged TurnRecovery (admission re-runs on the
-	// resume path); the loop itself is unbounded so the one-recovery budget
-	// lives in exactly one place, the overflow classifier. The wire log is
-	// logical-turn scoped — opened once here, handed to every attempt: the
-	// resume continues the same wire, and stack depth no longer stands in
-	// for control flow.
+	// Keep one wire log and membership across attempts; recovery controls the
+	// next attempt without recursion. The live log therefore survives overflow
+	// while late subscribers retain one continuous stream.
 	private async runTurn(convId: string, turns: QueuedTurn[]): Promise<void> {
 		const live = openLive();
 		let recovery: TurnRecovery | undefined;
@@ -730,11 +571,9 @@ export class Runtime {
 		}
 	}
 
-	// One pass of the model loop. Returns "done" for every terminal path
-	// (the sinks are already settled) and a resume decision for a held
-	// overflow — the loop above consumes it. `live` is the logical turn's
-	// wire log, opened by runTurn: everything the wire has seen this turn,
-	// plus any HTTP subscribers attached mid-flight (GET .../stream).
+	// A terminal attempt has settled its sinks; an overflow may return a
+	// recovery decision. `live` spans all attempts and late subscribers, so an
+	// attach cannot mistake a resumed attempt for a new turn.
 	private async runAttempt(
 		convId: string,
 		turns: QueuedTurn[],
@@ -743,10 +582,8 @@ export class Runtime {
 	): Promise<AttemptOutcome> {
 		const { store } = this.deps;
 		let filterRetryUsed = recovery?.filterRetryUsed ?? false;
-		// The loop machinery (design/model.md → "No step budget"): one
-		// logical turn keeps one loop history. TurnState restores the
-		// whitelisted fields from the failed attempt on an overflow resume;
-		// the attempt-scoped cursor/issued/in-flight reset with the attempt.
+		// Preserve loop history across overflow, while attempt-scoped state resets.
+		// Completed tool calls stay in the recovery package rather than replaying.
 		const state = new TurnState(
 			{
 				convId,
@@ -755,19 +592,15 @@ export class Runtime {
 			},
 			recovery?.loop,
 		);
-		// The first queued sink is the turn's delivery head (delta hooks,
-		// voice, files); every streaming member receives the chunks (the
-		// reply belongs to the conversation, not to the connection that
-		// submitted first — design/app.md → Streaming members) and every
-		// member gets exactly one onDone.
+		// The first sink owns delivery hooks; streaming members receive chunks and
+		// every member receives one terminal notification. Replies belong to the
+		// conversation, not to the connection that submitted first.
 		const sink = turns[0]!.sink;
 		const notifyAll = async (done: TurnDone) => {
 			endLive(live, done);
 			for (const t of turns) await this.notifyDone(t, done);
 		};
-		// Admission (design/runtime-turn.md → admission): the snapshot
-		// fixes what this attempt owns, sees, and answers — immutable
-		// input to every phase below.
+		// Admission fixes this attempt's ownership and model input.
 		const admitted = admitTurn(
 			{
 				convId,
@@ -784,7 +617,6 @@ export class Runtime {
 				: { conversation: recovery.conversation, startedAt: recovery.startedAt },
 		);
 		if (admitted.kind !== "admitted") {
-			// The sink contract still holds: exactly one onDone per submit.
 			await notifyAll({
 				kind: "error",
 				message: admitted.kind === "missing" ? "conversation missing" : admitted.message,
@@ -793,26 +625,20 @@ export class Runtime {
 		}
 		const { snapshot } = admitted;
 		const { conv, epoch, entries, anchorSeq, turnStartMs } = snapshot;
-		// Claimed resume members are already registered: the claim seam
-		// spliced them into `turns` at the claim itself, so every failure
-		// path after it — including one inside admission — settles them.
+		// Resume members join `turns` before admission so all paths settle them.
+		// An admission failure must not strand a member claimed during recovery.
 		sink.setAuthorityCheck?.(() => this.deps.store.get(convId)?.epoch === epoch);
 		const controller = new AbortController();
 		this.lane(convId).controller = controller;
 		this.lanes.get(convId)!.live = live;
 
-		// Hoisted so the catch can hand a resume attempt the same recall
-		// result — recall must not re-run: the query was issued against a
-		// pre-compaction snapshot and a second call would spend the quota
-		// again for an answer the turn already has.
+		// Reuse recall on overflow resume; it belongs to the pre-compaction view.
+		// Reissuing it would spend memory quota twice for one logical turn.
 		let memory: TurnRecovery["memory"] = { prior: [], current: null };
 		try {
 			this.checkAuthority(convId, epoch);
-			// The recall query is memory-bound: it may carry only eligible
-			// history (the admission-time stamps, #85) — a re-enabled topic
-			// must not query with text written while it was excluded. The
-			// MODEL view below still sees everything: exclusion governs what
-			// leaves for the memory service, not the conversation itself.
+			// Recall uses admission-time eligibility; the model view still sees the
+			// full conversation.
 			memory =
 				recovery?.memory ??
 				(await this.recallMemory(
@@ -830,8 +656,7 @@ export class Runtime {
 						this.checkAuthority(convId, epoch);
 					}
 				: undefined;
-			// Same fencing as voice: a /stop'd turn can't emit a file after
-			// losing authority.
+			// File delivery is fenced before and after its await.
 			const deliverFile = sink.onFile
 				? async (file: OutgoingFile) => {
 						this.checkAuthority(convId, epoch);
@@ -839,20 +664,16 @@ export class Runtime {
 						this.checkAuthority(convId, epoch);
 					}
 				: undefined;
-			// The speak tool's synthesis shows record_voice instead of
-			// typing while it runs. Starting it sends a Telegram chat
-			// action — a side effect, so fence the start; the returned
-			// stopper only clears an interval.
+			// Fence the chat action that starts synthesis; the sink's stopper can
+			// resume its delivery UI after synthesis.
 			const recording = sink.onVoiceSynthesisStart
 				? () => {
 						this.checkAuthority(convId, epoch);
 						return sink.onVoiceSynthesisStart!();
 					}
 				: undefined;
-			// The accept-nothing placeholder is what tools see if they ask
-			// before buildStep lands (nothing does — first read is at request
-			// build, after the assignment below). Conservative is the safety
-			// property: an unfilled ref must never inline anything.
+			// Until buildStep resolves, media capability must conservatively reject
+			// inlining.
 			const accepts: { current: AcceptsMedia } = {
 				current: { modalities: new Set(["text"]), carries: () => false },
 			};
@@ -868,13 +689,9 @@ export class Runtime {
 				carries: step.carries ?? (() => true),
 			};
 			this.checkAuthority(convId, epoch);
-			// The model view (design/runtime-turn.md → phase 3): the pure
-			// builder owns recall-block interleaving, attachment
-			// materialization, per-message conversion, and the burst merge —
-			// the cache-stability surface in one unit. The context is fixed
-			// for the attempt; the steer fold below converts through the same
-			// gates so a steered message materializes exactly as it would
-			// have in the next turn's view.
+			// Steered messages use the same fixed capability gates as the initial
+			// view, preserving the stable prompt prefix. Only the appended tail
+			// changes when a steer is folded in.
 			const viewCtx: ViewContext = {
 				convId,
 				tools,
@@ -889,11 +706,6 @@ export class Runtime {
 				assertAuthority: () => this.checkAuthority(convId, epoch),
 			});
 
-			// The stream driver (design/runtime-turn.md → phases 4–5):
-			// callbacks, fan-out, wire log, and the steer fold run there,
-			// over the state and membership pinned above. The outcome is
-			// this attempt's output, translated below into the throws the
-			// rails already know.
 			const outcome = await driveStream({
 				convId,
 				epoch,
@@ -923,18 +735,13 @@ export class Runtime {
 				signal: controller.signal,
 			});
 			if (outcome.kind === "failed") {
-				// The filter retry budget is recovery-carried — hand the
-				// resume what this attempt spent.
+				// Carry the filter retry budget into a possible resume.
 				filterRetryUsed = outcome.filterRetryUsed;
 				throw failureFromStream(outcome);
 			}
-			// Finish (design/runtime-turn.md → phase 6): the attempt's
-			// durable landing — ownership-bounded anchor + retention
-			// source, defiance guard, persist + retention enqueue, window
-			// signal, the completion line. Delivery and the authority
-			// checks bracketing the finish path stay here: exactly-one
-			// onDone is the sink contract, and the post-delivery check
-			// owns the stop-during-flush window.
+			// Land the durable reply, then keep the post-delivery authority check:
+			// a stop during sink flushing must fence follow-up work. Persistence and
+			// delivery are both on the same authority-checked finish path.
 			const landed = landAttempt({
 				convId,
 				epoch,
@@ -955,23 +762,15 @@ export class Runtime {
 				memory: this.deps.memory,
 			});
 			await notifyAll(landed.done);
-			// onDone may itself await a slow delivery. A stop during that
-			// await revokes this turn before it can start fresh background
-			// work (in particular auto-compaction with a new controller).
+			// A stop during terminal delivery must prevent follow-up work.
 			this.checkAuthority(convId, epoch);
-			// The reply has landed — nothing generating remains. Drop the
-			// lane's controller BEFORE the post-reply work (retention,
-			// reviewer, threshold compaction) so a /stop in that window
-			// reports "nothing was running" instead of "stopped" for a
-			// turn that already answered. Compaction keeps its own
-			// compactController, which the stopped flag still counts.
+			// Clear the turn controller before retention/review/compaction so /stop
+			// reports no generating turn; compaction has its own controller.
 			{
 				const lane = this.lanes.get(convId);
 				if (lane !== undefined && lane.controller === controller) lane.controller = null;
 			}
-			// The exchange as it ended rides the reviewer's snapshot —
-			// fire-and-forget off the lane, with the runtime's counter and
-			// prior-turn chain injected (turn/finish.ts).
+			// Review receives the completed exchange and prior-turn chain off-lane.
 			submitTurnReview({
 				convId,
 				reviewer: this.reviewer,
@@ -985,19 +784,13 @@ export class Runtime {
 				toolCalls: outcome.toolCalls,
 				digestRing: outcome.digestRing,
 			});
-			// Auto-compaction (DESIGN.md, Compaction): the reply has landed and
-			// the sinks are released; the lane stays busy through the summary
-			// call so a queued successor reads the compacted view, not a
-			// mid-flight one. Failure is loud but lossless — no boundary
-			// written, the next threshold crossing retries. Deliberately NOT
-			// thrown to the outer handler: onDone already fired.
+			// Keep the lane busy through auto-compaction so successors see a whole
+			// compacted view; failure writes no boundary and retries later.
 			if (landed.window && landed.window.pct >= COMPACT_AT_PCT) {
 				try {
 					await this.doCompact(conv, "threshold");
 				} catch (err) {
 					if (err instanceof FencedError) {
-						// A settings change fenced the summary — the same quiet shape
-						// as a fenced turn: no pointer, the crossing retries.
 						log.info("threshold compaction fenced — view unchanged", {
 							conversation: convId,
 							epoch,
@@ -1015,21 +808,15 @@ export class Runtime {
 			}
 		} catch (err) {
 			if (err instanceof FencedError || controller.signal.aborted) {
-				// Fenced turns abort quietly and log it. The abort is
-				// load-bearing: a settings fence (/voice, /memory) bumps the
-				// epoch without touching the controller, so without it the
-				// provider keeps generating into a stream nobody reads —
-				// billed tokens on a held connection. Aborting an already
-				// aborted controller (/stop's path) is a no-op.
+				// Abort even an epoch-fenced provider call; otherwise it may keep
+				// generating into an abandoned stream and consume provider capacity.
 				controller.abort();
 				log.info("turn fenced", { conversation: convId, epoch, error: String(err) });
 				await notifyAll({ kind: "fenced" });
 			} else if (err instanceof ContextOverflowError) {
-				// Overflow recovery (turn/overflow.ts decides, runtime invokes):
-				// drop only the failed attempt, compact, resume — the partial
-				// carries the tool results, so tools never re-run. One recovery
-				// per turn: the resume gets recovery !== undefined and falls to
-				// the generic branch on a second overflow.
+				// Recover once: compact the failed attempt and resume with its partial
+				// so completed tools are not repeated. A second overflow follows the
+				// terminal error path.
 				const outcome = await recoverFromOverflow({
 					convId,
 					epoch,
@@ -1046,8 +833,6 @@ export class Runtime {
 					signal: controller.signal,
 				});
 				if (outcome.kind === "resume") {
-					// The decision, not a self-call: the attempt loop above
-					// re-enters with the packaged recovery.
 					return { kind: "resume", recovery: outcome.recovery, turns: outcome.members };
 				}
 				await notifyAll(
@@ -1056,10 +841,8 @@ export class Runtime {
 						: { kind: "error", message: outcome.message },
 				);
 			} else {
-				// Same bill as the fenced branch: any other exception escaping
-				// mid-stream (a throwing sink hook, a tool-path bug) must kill
-				// the provider call too — exiting the chunk loop alone leaves
-				// it generating into a stream nobody reads.
+				// Abort provider work on any escaping error, not only on fencing; the
+				// stream may still be producing after the chunk loop unwinds.
 				controller.abort();
 				log.error("turn failed", err, { conversation: convId });
 				await notifyAll({
@@ -1068,7 +851,6 @@ export class Runtime {
 				});
 			}
 		}
-		// Every path reaching here already settled the sinks.
 		return { kind: "done" };
 	}
 }

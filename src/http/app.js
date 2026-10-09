@@ -542,11 +542,7 @@ function closeSheet() {
 }
 function initSheet() {
 	$("modelBtn").onclick = () => openSheet("model");
-	// The script is served from disk, while HTML is boot-pinned. Keep
-	// the previous settings page usable until the coordinated restart.
-	if (document.getElementById("telegramModelBtn")) {
-		$("telegramModelBtn").onclick = () => openSheet("telegram");
-	}
+	$("telegramModelBtn").onclick = () => openSheet("telegram");
 	$("titleBtn").onclick = () => openSheet("title");
 	$("visionBtn").onclick = () => openSheet("vision");
 	$("sheetClose").onclick = closeSheet;

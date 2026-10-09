@@ -93,8 +93,9 @@ and templates before designing; cite what you took in the design docs.
   restart-loops a healthy API (lithium, 2026-10-08; podman 6.1.3 on
   g7 masks it). Healthcheck commands are mounted scripts with zero
   shell metacharacters — keep them that way.
-- **Exception: app assets are live per request.** `app/dist` and
-  `src/http/app.js` are read from disk by the running service. Do not
+- **Exception: the built client is live per request.** `app/dist` is
+  read from disk per request by the running service; `src/http/app.js`
+  is loaded once at module startup and stays boot-pinned. Do not
   build into `app/dist` to verify a backend-dependent client change:
   use `bun run vite build app --outDir /tmp/<unique-dir>` instead.
   Publishing the client and restarting the backend are one coordinated

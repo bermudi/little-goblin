@@ -110,6 +110,11 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 	const isImage = typeof ref.mediaType === "string" && ref.mediaType.startsWith("image/");
 	const path = typeof ref.path === "string" ? ref.path : "";
 	const [thumb, setThumb] = useState<string | null>(null);
+	// A failed download is a boundary-safe error response: the fetch
+	// rejects on HTTP (!ok) or network failure, and the chip shows the
+	// message instead of swallowing it (a missing attachment or an
+	// expired credential otherwise reads as a dead button).
+	const [dlError, setDlError] = useState<string | null>(null);
 	useEffect(() => {
 		if (!isImage || path === "") return;
 		let live = true;
@@ -150,6 +155,7 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 					type="button"
 					className="attachment-name link"
 					onClick={() => {
+						setDlError(null);
 						void fetchAttachmentUrl(token, path).then(
 							(u) => {
 								const a = document.createElement("a");
@@ -158,7 +164,9 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 								a.click();
 								URL.revokeObjectURL(u);
 							},
-							() => {},
+							(err: unknown) => {
+								setDlError(err instanceof Error ? err.message : "download failed");
+							},
 						);
 					}}
 				>
@@ -170,6 +178,7 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 			{typeof ref.size === "number" && (
 				<span className="attachment-size">{formatSize(ref.size)}</span>
 			)}
+			{dlError !== null && <span className="msg-err">Download failed: {dlError}</span>}
 			{ref.speech === true && ref.transcript !== undefined && (
 				<span className="attachment-transcript">“{ref.transcript}”</span>
 			)}

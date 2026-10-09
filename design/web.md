@@ -120,7 +120,10 @@ tool. MCP stays out, with its return conditions on record (below).
 - **No SSRF policy — recorded as a ruling.** `bash` already has full
   network access, so pretending `fetch` is a boundary is security theater;
   the boundary is the tool set, same as `bash`. Loopback/LAN fetches are
-  legal (the local bot-api server is fair game).
+  legal (the local bot-api server is fair game). The ruling covers the
+  personal toolset, whose callers have `bash`; sandbox guests get no
+  `fetch` at all (`design/telegram.md` → Guest mode) — the premise does
+  not extend to them.
 - **Auth never enters tool env** (the standing rule): the search key is
   resolved lazily in-process at the point of use, exactly like provider
   keys.

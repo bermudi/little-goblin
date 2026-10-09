@@ -375,7 +375,11 @@ config — the programs precedent) admits third-party summonses in that
 chat. The operator opens with a `@goblin /open` summons (either
 surface; confirmed by reply) and closes with `@goblin /off` — closing
 also epoch-bumps every guest conversation in that chat, fencing
-running turns. Non-operator `/open`/`/off` attempts are ignored.
+running turns, and any summons parked on Telegram's placeholder
+response when the `/off` lands is revalidated after that await
+(chat openness, enabled config, caller class) and dropped with its
+placeholder settled rather than submitted. Non-operator `/open`/`/off`
+attempts are ignored.
 Third-party summons in a chat that is not open: silence (no answer,
 nothing rendered). Group privacy mode stays ON deliberately: the bot
 receives only mentions/replies in member chats, mirroring guest
@@ -395,8 +399,21 @@ register on the guest channel (one ruling everywhere, even where the
 member surface's sink could deliver them). Everyone else
 → a *sandbox* turn: a **guest persona** prompt (no SOUL.md, no
 USER.md, no skills — nothing private in, nothing about the operator
-out) and a toolset of `search` + `fetch` only. The sandbox is a
-constructed toolset, never a prompt-level promise. A per-user daily
+out) and a toolset of `search` only. The sandbox is a
+constructed toolset, never a prompt-level promise. **No sandbox
+`fetch` (ruling 2026-10-09, rollout-hold review).** The personal
+`fetch` carries no SSRF policy (design/web.md) and cannot: that
+ruling's premise — the caller already has `bash`, so `fetch` adds no
+reach — is exactly what the sandbox removes. A guest-restricted
+fetch would have to deny loopback/private/link-local destinations
+including DNS-resolved addresses and every redirect hop, and the only
+complete form of that check pins the connection to the address it
+verified; Bun's `fetch` exposes no custom resolver, and a
+resolve-then-check without pinning is DNS-rebindable (verify a public
+address, connect to `127.0.0.1`). An incomplete sandbox is worse than
+none, so the tool is out entirely — it returns only as a designed
+feature when a real need exists, never by re-extending the personal
+one. A per-user daily
 turn budget (`guest.perUserDailyTurns`, default 25, operator exempt,
 denied with a one-line refusal) bounds model spend; a busy guest
 conversation refuses new summons with one line rather than steering

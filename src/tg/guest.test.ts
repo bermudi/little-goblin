@@ -18,6 +18,8 @@ import type { Config, ConfigRef } from "../config.ts";
 import type { Runtime, TurnSink } from "../runtime.ts";
 import type { UIMessage } from "ai";
 import type { Message, User } from "grammy/types";
+import type { AuthStore } from "../auth.ts";
+import { fetchTool } from "../agent/tools/fetch.ts";
 import {
 	type GuestEnv,
 	classifySummon,
@@ -165,8 +167,8 @@ describe("filterGuestTools — the sandbox invariant", () => {
 			createdAt: "",
 		}) as unknown as Conversation;
 
-	test("sandbox personas keep search and fetch only", () => {
-		expect(Object.keys(filterGuestTools(conv("guest"), tools)).sort()).toEqual(["fetch", "search"]);
+	test("sandbox personas keep search only — no fetch (the sandbox ruling)", () => {
+		expect(Object.keys(filterGuestTools(conv("guest"), tools)).sort()).toEqual(["search"]);
 	});
 	test("personal guest turns lose tools that pin or reach beyond the chat", () => {
 		const kept = Object.keys(filterGuestTools(conv("personal"), tools)).sort();
@@ -187,6 +189,47 @@ describe("filterGuestTools — the sandbox invariant", () => {
 	test("non-guest conversations are untouched", () => {
 		const dm = { ...conv("guest"), id: "dm:5" } as unknown as Conversation;
 		expect(filterGuestTools(dm, tools)).toEqual(tools);
+	});
+
+	// The rollout-hold review's ssrf-chain probe, checked in: the REAL
+	// fetch tool against a loopback server holding a synthetic private
+	// marker — the exact chain a sandboxed guest used to read the
+	// operator's app histories through. Whatever fetch the sandbox gets,
+	// it must not be able to return the marker; the ruling today is no
+	// guest fetch at all (design/telegram.md → Guest mode).
+	test("the sandbox fetch cannot reach the operator's loopback", async () => {
+		const marker = "SYNTHETIC_PRIVATE_HISTORY_MARKER";
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: () =>
+				Response.json({
+					messages: [{ role: "user", text: `${marker} ${"benign fixture prose. ".repeat(40)}` }],
+				}),
+		});
+		const auth: AuthStore = {
+			resolve: async () => {
+				throw new Error("auth unexpectedly requested");
+			},
+			has: () => false,
+			names: () => [],
+		};
+		try {
+			const personal: Record<string, unknown> = {
+				fetch: fetchTool({ configRef: { current: baseConfig() }, auth }),
+			};
+			const sandbox = filterGuestTools(conv("guest"), personal);
+			const guestFetch: unknown = sandbox.fetch;
+			if (typeof guestFetch === "object" && guestFetch !== null && "execute" in guestFetch) {
+				const out = await (guestFetch as { execute: (input: unknown) => Promise<unknown> }).execute(
+					{ url: `http://127.0.0.1:${server.port}/api/app/conversations/x/messages` },
+				);
+				expect(JSON.stringify(out)).not.toContain(marker);
+			}
+			expect(guestFetch).toBeUndefined();
+		} finally {
+			server.stop(true);
+		}
 	});
 });
 
@@ -325,6 +368,39 @@ const guestMsg = (
 		...over,
 	}) as Message & { guest_query_id?: string };
 
+// Park answerGuestQuery for one query id, mirroring the review's probe:
+// the handler is suspended at the placeholder await while the test
+// mutates the world (/off, config edits, a competing turn), then the
+// release lets the handler continue to its submit decision.
+function holdPlaceholder(
+	api: ReturnType<typeof fakeApi>,
+	queryId: string,
+): { started: Promise<void>; release: () => void } {
+	let release!: () => void;
+	const held = new Promise<void>((r) => {
+		release = r;
+	});
+	let signal!: () => void;
+	const started = new Promise<void>((r) => {
+		signal = r;
+	});
+	(api as { answerGuestQuery: unknown }).answerGuestQuery = (async (id: string) => {
+		if (id === queryId) {
+			signal();
+			await held;
+		}
+		return { inline_message_id: "im-held" };
+	}) as never;
+	return { started, release };
+}
+
+const day = (): string => new Date().toLocaleDateString("sv-SE");
+
+const operatorMsg = (
+	over: Partial<Message> & { guest_query_id?: string },
+): Message & { guest_query_id?: string } =>
+	guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, ...over });
+
 describe("handleGuestUpdate", () => {
 	test("operator summons anywhere: personal turn, memory off, placeholder first", async () => {
 		const { env, api, submitted } = makeEnv();
@@ -458,6 +534,82 @@ describe("handleGuestUpdate", () => {
 		const conv = store.get("guest:-100:9");
 		expect(conv?.persona).toBe("personal");
 		expect(store.promptSnapshot("guest:-100:9")).toBeNull();
+	});
+
+	// Issue #116: the placeholder await is a suspension point between the
+	// eligibility checks and the submit — every state it read can change.
+	// A submit that lands after /off's epoch bump reads the NEW epoch as
+	// its own and starts an authorized turn on a closed chat, so the
+	// checks must be re-run after the await, before anything is charged.
+	test("/off during the placeholder await drops the summons — no turn on a closed chat", async () => {
+		const { env, guestStore, submitted, api } = makeEnv();
+		guestStore.open(-100, 7);
+		const hold = holdPlaceholder(api, "summon");
+		const pending = handleGuestUpdate(env, guestMsg({ guest_query_id: "summon" }), 40);
+		await hold.started;
+		await handleGuestUpdate(
+			env,
+			operatorMsg({ text: "@goblin_bot /off", guest_query_id: "close" }),
+			41,
+		);
+		hold.release();
+		await pending;
+		expect(submitted.length).toBe(0);
+		expect(guestStore.isOpen(-100)).toBe(false);
+		// The dropped summons burns no budget (nothing ran).
+		expect(guestStore.tryChargeBudget(9, day(), 1)).toBe(true);
+		// And the placeholder is settled, not left hanging on "on it…".
+		expect(api.edits[api.edits.length - 1]).toContain("cancelled");
+	});
+
+	test("guest config removed during the placeholder await drops the summons", async () => {
+		const { env, guestStore, submitted, api } = makeEnv();
+		guestStore.open(-100, 7);
+		const hold = holdPlaceholder(api, "summon");
+		const pending = handleGuestUpdate(env, guestMsg({ guest_query_id: "summon" }), 42);
+		await hold.started;
+		env.configRef.current = {
+			...env.configRef.current,
+			guest: undefined,
+		} as typeof env.configRef.current;
+		hold.release();
+		await pending;
+		expect(submitted.length).toBe(0);
+		expect(api.edits[api.edits.length - 1]).toContain("cancelled");
+	});
+
+	test("caller demoted from allowedUsers during the placeholder await drops the personal turn", async () => {
+		const { env, submitted, api } = makeEnv();
+		const hold = holdPlaceholder(api, "summon");
+		const pending = handleGuestUpdate(env, operatorMsg({ guest_query_id: "summon" }), 43);
+		await hold.started;
+		env.configRef.current = {
+			...env.configRef.current,
+			allowedUsers: [],
+		} as typeof env.configRef.current;
+		hold.release();
+		await pending;
+		// A demoted caller must not run the personal-persona turn that was
+		// resolved before the demotion.
+		expect(submitted.length).toBe(0);
+		expect(api.edits[api.edits.length - 1]).toContain("cancelled");
+	});
+
+	test("a turn started during the placeholder await refuses instead of steering", async () => {
+		const { env, guestStore, submitted, api } = makeEnv();
+		guestStore.open(-100, 7);
+		let busy = false;
+		(env.runtime as { hasActiveTurn: (id: string) => boolean }).hasActiveTurn = () => busy;
+		const hold = holdPlaceholder(api, "summon");
+		const pending = handleGuestUpdate(env, guestMsg({ guest_query_id: "summon" }), 44);
+		await hold.started;
+		// The member surface bypasses the guest lane: a same-conversation
+		// summons submits while this one is parked at its placeholder.
+		busy = true;
+		hold.release();
+		await pending;
+		expect(submitted.length).toBe(0);
+		expect(api.edits[api.edits.length - 1]).toContain("still answering");
 	});
 });
 

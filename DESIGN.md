@@ -433,7 +433,8 @@ in-process embeddings (delegated to Hindsight for memory) · app client
 (returned on demand 2026-09-30 — `App channel`; a third channel stays
 out) · multi-user (bounded slice returned on demand 2026-10-06 —
 third-party guest summonses in opened chats, sandboxed to a guest
-persona + `search`/`fetch`; full multi-user stays out —
+persona + `search` (no sandbox `fetch` — `design/telegram.md` →
+Guest mode); full multi-user stays out —
 `design/telegram.md` → Guest mode)
 
 ## Test posture — the real change

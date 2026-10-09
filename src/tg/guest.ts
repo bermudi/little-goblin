@@ -8,7 +8,7 @@
 // opens/closes with `/open` and `/off`. Two caller classes: the
 // operator gets personal-persona turns (minus tools that pin or reach
 // beyond the chat), everyone else gets a sandbox — a guest persona
-// and a constructed toolset of search+fetch (enforced in index.ts's
+// and a constructed toolset of search (enforced in index.ts's
 // makeTools on conv.persona, never a prompt-level promise).
 //
 // Guest handlers register BEFORE allowedUserGate (mod.ts): the gate
@@ -353,6 +353,23 @@ async function answerGuestArticle(
 	}
 }
 
+// Settle a placeholder whose summons was dropped after it: the
+// inline message is the only reply this summons will ever get, and it
+// must not hang on "on it…" forever. Best-effort — the drop is
+// already decided; a vanished inline message is GuestSink's routine
+// case.
+async function editGuestPlaceholder(
+	api: Api,
+	inlineMessageId: string,
+	text: string,
+): Promise<void> {
+	try {
+		await withTimeout(api.editMessageTextInline(inlineMessageId, text), "editMessageText");
+	} catch (err) {
+		log.warn("guest placeholder edit failed", err, { inline: inlineMessageId });
+	}
+}
+
 // ---------- env + handlers ----------
 
 export interface GuestEnv {
@@ -474,31 +491,12 @@ export async function handleGuestUpdate(
 	// Serialized per conversation: the busy check must still hold when
 	// submit runs, across the placeholder's await.
 	await serializeGuestTurn(conv.id, async () => {
+		const busyLine = "⏳ still answering an earlier summons here — try again in a moment";
 		if (env.runtime.hasActiveTurn(conv.id)) {
 			// Never steer a guest turn: the reply would land in another
 			// summons' message.
-			await answerGuestArticle(
-				env.api,
-				guestQueryId,
-				"goblin",
-				"⏳ still answering an earlier summons here — try again in a moment",
-			);
+			await answerGuestArticle(env.api, guestQueryId, "goblin", busyLine);
 			return;
-		}
-
-		// Charged only past the busy check — a refusal must never burn budget.
-		if (sandbox) {
-			const limit = cfg.perUserDailyTurns;
-			if (!env.guestStore.tryChargeBudget(from.id, localDay(), limit)) {
-				log.warn("guest budget exhausted", { chat: chatId, from: from.id, limit });
-				await answerGuestArticle(
-					env.api,
-					guestQueryId,
-					"goblin",
-					`⏳ daily guest limit reached (${limit} answers) — try again tomorrow`,
-				);
-				return;
-			}
 		}
 
 		const inlineMessageId = await answerGuestArticle(
@@ -509,10 +507,66 @@ export async function handleGuestUpdate(
 		);
 		if (inlineMessageId === null) return;
 
+		// The placeholder await is a suspension point: /off, a guest-config
+		// removal, an allowedUsers edit, or a same-conversation member
+		// summons (which bypasses this lane) can all land in it. /off's
+		// epoch bump fences only turns that already started — a submit
+		// here would read the bumped epoch as its own and be authorized —
+		// so eligibility is revalidated before anything is charged or
+		// submitted.
+		const freshCfg = env.configRef.current.guest;
+		const freshVerdict =
+			freshCfg === undefined
+				? null
+				: classifySummon(
+						from.id,
+						chatId,
+						env.configRef.current.allowedUsers,
+						env.guestStore.isOpen(chatId),
+					);
+		const busyAgain = env.runtime.hasActiveTurn(conv.id);
+		if (
+			freshCfg === undefined ||
+			freshVerdict === null ||
+			freshVerdict.kind !== verdict.kind ||
+			busyAgain
+		) {
+			log.info("guest summons dropped — eligibility changed during placeholder", {
+				chat: chatId,
+				from: from.id,
+				update: updateId,
+				verdict: verdict.kind,
+				fresh: freshVerdict === null ? "config-off" : freshVerdict.kind,
+				busy: busyAgain,
+			});
+			await editGuestPlaceholder(
+				env.api,
+				inlineMessageId,
+				busyAgain ? busyLine : "⏹ cancelled — guest access here changed",
+			);
+			return;
+		}
+
+		// Charged only once the summons is committed: past the busy check,
+		// the placeholder, and revalidation — nothing below awaits, so a
+		// dropped or refused summons never burns budget.
+		if (sandbox) {
+			const limit = freshCfg.perUserDailyTurns;
+			if (!env.guestStore.tryChargeBudget(from.id, localDay(), limit)) {
+				log.warn("guest budget exhausted", { chat: chatId, from: from.id, limit });
+				await editGuestPlaceholder(
+					env.api,
+					inlineMessageId,
+					`⏳ daily guest limit reached (${limit} answers) — try again tomorrow`,
+				);
+				return;
+			}
+		}
+
 		const admitted = env.runtime.submit(
 			conv,
 			summonMessage(msg),
-			new GuestSink(env.api, inlineMessageId, cfg.outputChars),
+			new GuestSink(env.api, inlineMessageId, freshCfg.outputChars),
 		);
 		log.info("guest summons", {
 			chat: chatId,
@@ -629,8 +683,13 @@ function sendMemberLine(env: GuestEnv, chatId: number, text: string): Promise<vo
 // The sandbox toolset — the hard exclusion list guest personas run
 // with. Applied in index.ts's makeTools on conv.persona === "guest";
 // kept here so the ruling and its enforcement live together. search
-// and fetch only: read-only, no workspace, no operator data.
-export const SANDBOX_TOOLS: ReadonlySet<string> = new Set(["search", "fetch"]);
+// only: read-only, no workspace, no operator data. No fetch — the
+// personal fetch's no-SSRF stance (design/web.md) rests on the caller
+// already having bash, which a sandbox caller does not, and a
+// restricted fetch that cannot pin the connection to the checked
+// address is DNS-rebindable onto the loopback. The ruling and its
+// history live in design/telegram.md → Guest mode.
+export const SANDBOX_TOOLS: ReadonlySet<string> = new Set(["search"]);
 
 // The guest channel's personal-turn exclusions (the operator's own
 // guest summons keep the personal persona but never get tools that

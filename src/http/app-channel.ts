@@ -56,7 +56,7 @@ import type {
 	AppConfigView,
 	AppConversationCreate,
 	AppConversationList,
-	AppConversationRename,
+	AppConversationPatch,
 	AppMessageList,
 	AppSearchResponse,
 	AppStopResponse,
@@ -288,7 +288,17 @@ const chatBody = z
 		}
 	});
 
-const renameBody = z.object({ title: z.string().min(1).max(200) });
+// The row's two mutable fields: title (rename) and archived (rail ↔
+// archived section). A patch with neither is a client bug — same
+// "nothing to write" refusal as configPatchBody.
+const convPatchBody = z
+	.object({
+		title: z.string().min(1).max(200).optional(),
+		archived: z.boolean().optional(),
+	})
+	.refine((p) => p.title !== undefined || p.archived !== undefined, {
+		message: "nothing to write",
+	});
 
 // The composer's two knobs. A patch with neither is a client bug —
 // refuse rather than write a no-op through the file.
@@ -686,8 +696,11 @@ export async function handleAppApi(
 		});
 	}
 
-	// PATCH /api/app/conversations/<id> — rename; an explicit operator
-	// title wins over the implicit auto-title rule.
+	// PATCH /api/app/conversations/<id> — rename and/or archive toggle.
+	// An explicit operator title wins over the implicit auto-title rule.
+	// Archiving is list visibility only: no fence, the row keeps taking
+	// turns — and the next appended event clears the flag (auto-unarchive
+	// in store.append).
 	// DELETE /api/app/conversations/<id> — remove the row and everything
 	// it owns; a live turn is fenced first so the lane is quiet when the
 	// delete lands.
@@ -707,16 +720,32 @@ export async function handleAppApi(
 			} catch {
 				return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
 			}
-			const parsed = renameBody.safeParse(json);
+			const parsed = convPatchBody.safeParse(json);
 			if (!parsed.success) {
 				return Response.json(
 					{ error: z.prettifyError(parsed.error) },
 					{ status: 422, headers: NO_STORE },
 				);
 			}
-			store.setMeta(convId.id, { title: parsed.data.title, titleImplicit: false });
-			log.info("app conversation renamed", { conversation: convId.id });
-			const body: AppConversationRename = { title: parsed.data.title };
+			store.setMeta(convId.id, {
+				...(parsed.data.title !== undefined
+					? { title: parsed.data.title, titleImplicit: false }
+					: {}),
+				...(parsed.data.archived !== undefined ? { archived: parsed.data.archived } : {}),
+			});
+			if (parsed.data.title !== undefined) {
+				log.info("app conversation renamed", { conversation: convId.id });
+			}
+			if (parsed.data.archived !== undefined) {
+				log.info(
+					parsed.data.archived ? "app conversation archived" : "app conversation unarchived",
+					{ conversation: convId.id },
+				);
+			}
+			const body: AppConversationPatch = {
+				...(parsed.data.title !== undefined ? { title: parsed.data.title } : {}),
+				...(parsed.data.archived !== undefined ? { archived: parsed.data.archived } : {}),
+			};
 			return Response.json(body, { headers: NO_STORE });
 		}
 		if (req.method === "DELETE") {

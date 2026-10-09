@@ -126,6 +126,7 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 										title: null,
 										preview: "fixture",
 										updatedAt: new Date().toISOString(),
+										archivedAt: null,
 									},
 								]
 							: [],
@@ -228,5 +229,135 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 			});
 		});
 		expect(container.textContent).toContain("pending.jpg");
+	});
+});
+
+// The rail's two pools: archive shelves a row under the collapsed
+// section, delete lives only on archived rows (design/app.md →
+// Archiving). Same happy-dom mount as above; the fetch fake keeps a
+// mutable archivedAt so the list reflects the PATCH.
+describe("rail archive section", () => {
+	let win: Window;
+	let container: HTMLElement;
+	let root: Root | null = null;
+	let installed: string[] = [];
+	let archivedAt: string | null;
+	let patches: unknown[];
+	const realFetch = globalThis.fetch;
+
+	const installGlobal = (name: string, value: unknown) => {
+		Reflect.set(globalThis, name, value);
+		installed.push(name);
+	};
+
+	beforeEach(() => {
+		win = new Window();
+		const div = win.document.createElement("div");
+		win.document.body.appendChild(div);
+		container = div as unknown as HTMLElement;
+		installed = [];
+		archivedAt = null;
+		patches = [];
+		installGlobal("window", win);
+		installGlobal("document", win.document);
+		installGlobal("navigator", win.navigator);
+		installGlobal("localStorage", win.localStorage);
+		installGlobal("Event", win.Event);
+		installGlobal("CustomEvent", win.CustomEvent);
+		installGlobal("getComputedStyle", win.getComputedStyle);
+		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+			if (url === "/api/app/conversations" && method === "GET") {
+				return Promise.resolve(
+					jsonResponse({
+						conversations: [
+							{
+								id: "app/fixture",
+								title: "fixture chat",
+								preview: "fixture",
+								createdAt: "2026-10-09T00:00:00.000Z",
+								updatedAt: "2026-10-09T00:00:00.000Z",
+								archivedAt,
+							},
+						],
+					}),
+				);
+			}
+			if (url === "/api/app/conversations/fixture" && method === "PATCH") {
+				const body = JSON.parse(String(init?.body)) as { archived?: boolean };
+				patches.push(body);
+				if (body.archived === true) archivedAt = "2026-10-09T01:00:00.000Z";
+				if (body.archived === false) archivedAt = null;
+				return Promise.resolve(jsonResponse(body));
+			}
+			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: [] }));
+			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
+			return Promise.resolve(
+				jsonResponse({
+					model: "fixture/model",
+					thinking: "off",
+					favorites: [],
+					thinkingLevels: ["off"],
+				}),
+			);
+		}) as typeof fetch;
+	});
+
+	afterEach(async () => {
+		if (root !== null) {
+			await act(async () => {
+				root?.unmount();
+			});
+			root = null;
+		}
+		await win.happyDOM.close();
+		globalThis.fetch = realFetch;
+		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+		for (const name of installed) Reflect.deleteProperty(globalThis, name);
+		installed = [];
+	});
+
+	const click = async (el: Element | null | undefined) => {
+		await act(async () => {
+			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+		});
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 20));
+		});
+	};
+
+	test("archive shelves the row; unarchive and delete live in the section", async () => {
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 30));
+		});
+
+		// Active row: Archive affordance, no Delete — delete requires the
+		// archived section first.
+		expect(container.querySelector('button[aria-label="Archive"]')).not.toBeNull();
+		expect(container.querySelector('button[aria-label="Delete"]')).toBeNull();
+		expect(container.querySelector('button[aria-label="Unarchive"]')).toBeNull();
+
+		await click(container.querySelector('button[aria-label="Archive"]'));
+		expect(patches).toEqual([{ archived: true }]);
+
+		// The row moved off the rail behind the collapsed section.
+		expect(container.querySelector(".conv")).toBeNull();
+		const toggle = container.querySelector(".rail-archived");
+		expect(toggle?.textContent).toBe("Archived (1)");
+		expect(container.querySelector('button[aria-label="Unarchive"]')).toBeNull();
+
+		await click(toggle);
+		expect(container.querySelector('button[aria-label="Unarchive"]')).not.toBeNull();
+		expect(container.querySelector('button[aria-label="Delete"]')).not.toBeNull();
+
+		await click(container.querySelector('button[aria-label="Unarchive"]'));
+		expect(patches).toEqual([{ archived: true }, { archived: false }]);
+		expect(container.querySelector('button[aria-label="Archive"]')).not.toBeNull();
 	});
 });

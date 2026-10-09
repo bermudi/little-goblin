@@ -28,6 +28,7 @@ const conv: Conversation = {
 	voice: false,
 	memoryExcluded: false,
 	persona: "personal",
+	archivedAt: null,
 	epoch: 0,
 	createdAt: "",
 };

@@ -125,6 +125,9 @@ export interface Conversation {
 	voice: boolean;
 	memoryExcluded: boolean; // operator opt-out: this topic sends/recalls no memory
 	persona: "personal" | "guest"; // prompt class + sandbox tool filter (Guest mode)
+	// App-channel declutter: hidden from the rail, still answerable.
+	// Any appended event clears it (design/app.md → Archiving).
+	archivedAt: string | null;
 	epoch: number;
 	createdAt: string;
 }
@@ -190,6 +193,7 @@ export interface ConversationMetaPatch {
 	voice?: boolean;
 	memoryExcluded?: boolean;
 	persona?: "personal" | "guest";
+	archived?: boolean;
 }
 
 // A compaction pointer; rows append forever, the latest per
@@ -341,6 +345,10 @@ export interface AppConversationSummary {
 	updatedAt: string;
 	// Newest event's text, capped; "" when no text parts.
 	preview: string;
+	// Non-null = archived: off the main rail, into the client's archived
+	// section. The stamp, not a bool, so that section can sort by when
+	// the row was shelved.
+	archivedAt: string | null;
 }
 
 // ---------- store ----------
@@ -362,6 +370,7 @@ interface Row {
 	epoch: number;
 	created_at: string;
 	previous_dm_id: string | null; // internal navigation link, never on the wire
+	archived_at: string | null;
 }
 
 const privateChatIdSchema = z.number().int().positive();
@@ -454,6 +463,7 @@ function toConversation(r: Row): Conversation {
 		voice: r.voice !== 0,
 		memoryExcluded: r.memory_excluded !== 0,
 		persona: r.persona === "guest" ? "guest" : "personal",
+		archivedAt: r.archived_at,
 		epoch: r.epoch,
 		createdAt: r.created_at,
 	};
@@ -566,6 +576,9 @@ export function openStore(dbPath: string): ConversationStore {
 	}
 	if (!convCols.has("persona")) {
 		db.run("ALTER TABLE conversations ADD COLUMN persona TEXT NOT NULL DEFAULT 'personal'");
+	}
+	if (!convCols.has("archived_at")) {
+		db.run("ALTER TABLE conversations ADD COLUMN archived_at TEXT");
 	}
 	db.run(`
 		CREATE TABLE IF NOT EXISTS events (
@@ -857,8 +870,11 @@ export function openStore(dbPath: string): ConversationStore {
 		`SELECT seq, role, data, created_at FROM events
 		WHERE conversation_id = ? AND seq BETWEEN ? AND ? ORDER BY seq`,
 	);
-	const qListApp = db.query<{ id: string; title: string | null; created_at: string }, []>(
-		`SELECT id, title, created_at FROM conversations
+	const qListApp = db.query<
+		{ id: string; title: string | null; created_at: string; archived_at: string | null },
+		[]
+	>(
+		`SELECT id, title, created_at, archived_at FROM conversations
 		WHERE id LIKE 'app/%' ORDER BY created_at, rowid`,
 	);
 	// Freshness and preview source; the rowid rides along as activity
@@ -923,6 +939,10 @@ export function openStore(dbPath: string): ConversationStore {
 		if (patch.persona !== undefined) {
 			sets.push("persona = ?");
 			vals.push(patch.persona);
+		}
+		if (patch.archived !== undefined) {
+			sets.push("archived_at = ?");
+			vals.push(patch.archived ? new Date().toISOString() : null);
 		}
 		if (sets.length === 0) return;
 		vals.push(id);
@@ -1179,6 +1199,7 @@ export function openStore(dbPath: string): ConversationStore {
 
 		append(id, messages, opts) {
 			let operation: string | undefined;
+			let unarchived = false;
 			db.transaction(() => {
 				const start = qNextSeq.get(id)?.n ?? 0;
 				const now = new Date().toISOString();
@@ -1189,6 +1210,15 @@ export function openStore(dbPath: string): ConversationStore {
 				const conv = qGet.get(id);
 				if (!conv) throw new Error(`conversation ${id} not found`);
 				const eligible = conv.memory_excluded === 0 ? 1 : 0;
+				// Activity resurrects: an archived app conversation that
+				// receives an event (delegation notice, operator send) comes
+				// back to the rail rather than accumulating replies unseen.
+				if (
+					conv.archived_at !== null &&
+					db.run("UPDATE conversations SET archived_at = NULL WHERE id = ?", [id]).changes > 0
+				) {
+					unarchived = true;
+				}
 				for (const [i, m] of messages.entries()) {
 					qInsertEvent.run(
 						id,
@@ -1220,6 +1250,9 @@ export function openStore(dbPath: string): ConversationStore {
 					operation,
 					document: opts?.memory?.document.id,
 				});
+			if (unarchived) {
+				log.info("conversation unarchived on activity", { conversation: id });
+			}
 		},
 
 		lastUserSeq(id) {
@@ -1285,6 +1318,7 @@ export function openStore(dbPath: string): ConversationStore {
 					createdAt: r.created_at,
 					updatedAt: last?.created_at ?? r.created_at,
 					preview: message === null ? "" : flatLine(messageText(message)).slice(0, 200),
+					archivedAt: r.archived_at,
 					activity: last?.id ?? 0,
 				});
 			}

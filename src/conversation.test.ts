@@ -814,6 +814,28 @@ describe("app channel store", () => {
 		expect(row.title).toBe("the slug helper — docs");
 		store.close();
 	});
+
+	test("archive: setMeta toggles the stamp, the list carries it, any event resurrects", () => {
+		const store = openStore(tmpdb());
+		const c = store.resolve(appAddress("chat-01"), "/w");
+		expect(c.archivedAt).toBeNull();
+
+		store.setMeta(c.id, { archived: true });
+		expect(store.get(c.id)?.archivedAt).not.toBeNull();
+		const row = store.listAppConversations().find((r) => r.id === c.id);
+		expect(row?.archivedAt).toBe(store.get(c.id)?.archivedAt);
+
+		// Archiving is visibility only — history still appends, and the
+		// append itself clears the flag.
+		store.append(c.id, [msg("still here")]);
+		expect(store.get(c.id)?.archivedAt).toBeNull();
+		expect(store.listAppConversations()[0]!.archivedAt).toBeNull();
+
+		store.setMeta(c.id, { archived: true });
+		store.setMeta(c.id, { archived: false });
+		expect(store.get(c.id)?.archivedAt).toBeNull();
+		store.close();
+	});
 });
 
 describe("rolling dm", () => {

@@ -442,6 +442,22 @@ p code,
 	font-size: 12px;
 	padding: 0 0.4rem;
 }
+.rail-archived {
+	width: 100%;
+	text-align: left;
+	border-radius: 8px;
+	padding: 0.45rem 0.6rem;
+	font-size: 11px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--app-fg-subtle);
+	transition: background-color 75ms;
+}
+.rail-archived:hover {
+	background: var(--app-hover);
+	color: var(--app-fg-muted);
+}
 
 .scrim {
 	position: fixed;

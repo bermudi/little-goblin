@@ -1,11 +1,5 @@
-// Spin-off (design/app.md → Spin-off ruling 2026-10-03): a delegation
-// launched from a rolling DM gets a durable, named app conversation —
-// a copy of the DM's model state, never a move. The DM stays the
-// quick lane; the app conversation owns the delegation's notices and
-// background turns. Called per launch by the delegate tool's pin —
-// the fork happens before the launch is known to start, and the
-// pin's discard undoes it when it doesn't (a failed launch must not
-// leave an orphaned conversation).
+// Fork before launch settles so the app gets a stable destination; an
+// unstarted launch is rolled back by its pin.
 
 import { randomUUID } from "node:crypto";
 import { appLink } from "./app-link.ts";
@@ -23,18 +17,17 @@ import { isRollingChat, projectRollText } from "./rolling.ts";
 
 export interface SpinOffDeps {
 	store: ConversationStore;
-	/** The shared titleModel titler — same closure topic titling and
-	 *  the app channel's first-turn naming use. null = no title. */
+	/** Shared title model; null means no title should be set. */
 	titleFor(text: string): Promise<string | null>;
-	/** The deep-link host — live read; unset = no link to render. */
+	/** Deep-link host, read at launch; unset means no link. */
 	publicUrl(): string | undefined;
-	/** New app home snapshots app defaults, never the source DM's model. */
+	/** App settings snapshot, not the source conversation's settings. */
 	appDefaults?(): ModelSettings;
 }
 
 export interface SpinOffResult {
 	conv: Conversation;
-	/** {publicUrl}/app/c/<appId>, or null when publicUrl is unset. */
+	/** App deep link, or null when no public URL is configured. */
 	link: string | null;
 }
 
@@ -42,30 +35,21 @@ export function spinOff(deps: SpinOffDeps, from: Conversation, name: string): Sp
 	const appId = randomUUID();
 	const conv = deps.store.forkToApp(from.id, appId, paths.workspace(), name, deps.appDefaults?.());
 	log.info("spin-off", { from: from.id, to: conv.id, title: name });
-	// The delegation's name titles the fork immediately; the model
-	// retitle lands whenever it resolves — fire-and-forget like the
-	// topic titler, and still titleImplicit so an operator rename in
-	// the app always wins.
+	// Keep launch synchronous; a late model title may replace only the
+	// implicit title.
 	void retitle(deps, conv.id);
 	const publicUrl = deps.publicUrl();
 	return { conv, link: publicUrl === undefined ? null : appLink(publicUrl, appId) };
 }
 
-// Undo a spin-off whose launch never started — but only while the
-// fork still holds exactly what it copied. The fork is visible in the
-// app before the async launch settles: input the operator wrote into
-// it meanwhile is theirs, so a touched fork stays instead of being
-// deleted out from under them. seqAtFork is the fork's lastSeq
-// captured right after forkToApp — the pin owns the capture, this
-// owns the compare.
+// Undo a fork only if no operator input landed after it was copied; a
+// touched app conversation must survive a failed launch.
 export function discardSpinOff(
 	store: ConversationStore,
 	conversationId: string,
 	seqAtFork: number | null,
 	reason: string,
 ): void {
-	// An already-deleted fork and an untouched one are the same
-	// outcome: nothing of the operator's rides it anymore.
 	if (store.get(conversationId) === null || store.lastSeq(conversationId) === seqAtFork) {
 		store.deleteConversation(conversationId);
 		log.info("spin-off discarded", { conversation: conversationId, reason });
@@ -74,11 +58,8 @@ export function discardSpinOff(
 	log.info("spin-off kept — operator wrote in it", { conversation: conversationId, reason });
 }
 
-// Where a delegation launch pins its notices — the Spin-off trigger
-// map (design/app.md → Spin-off): an app conversation is already the
-// durable home and pins to itself, a rolling DM gets the fork, and
-// group topics / legacy DMs keep their Telegram address. Only the
-// rolling fork spins off: nothing else triggers it.
+// App conversations pin to themselves; only rolling private DMs fork.
+// Other addresses remain Telegram-routed.
 export function launchPin(deps: SpinOffDeps, conv: Conversation, name: string): DelegationPin {
 	if (channelOf(conv.id) === "app") {
 		return { address: { chatId: 0, threadId: null }, appConversation: conv.id };
@@ -86,9 +67,7 @@ export function launchPin(deps: SpinOffDeps, conv: Conversation, name: string): 
 	const source = parseAddress(conv.id);
 	if (source !== null && source.kind === "rolling" && isRollingChat(conv.chatId)) {
 		const spun = spinOff(deps, conv, name);
-		// The fork's high-water mark at copy time: discard deletes only
-		// while nothing newer landed, so operator input written into the
-		// visible fork survives a failed launch.
+		// Capture the fork watermark for conditional rollback.
 		const seqAtFork = deps.store.lastSeq(spun.conv.id);
 		return {
 			address: { chatId: 0, threadId: null },
@@ -108,8 +87,7 @@ async function retitle(deps: SpinOffDeps, conversationId: string): Promise<void>
 		if (text === "") return;
 		const title = await deps.titleFor(text);
 		if (title === null || title === "") return;
-		// Only an implicit title is still owed — a concurrent explicit
-		// rename (or a racing retitle that already landed) stands.
+		// An explicit rename made while title generation was in flight wins.
 		const row = deps.store.get(conversationId);
 		if (row === null || !row.titleImplicit) return;
 		deps.store.setMeta(conversationId, { title, titleImplicit: true });

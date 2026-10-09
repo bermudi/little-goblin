@@ -1,16 +1,5 @@
-// Wake — submit a system-generated user message into a pinned
-// conversation address through the ordinary turn path: resolve the
-// conversation, build a normal delivery sink, runtime.submit. This is
-// the shared door program fires and delegation notices take
-// (DESIGN.md, "Programs" / "Delegation") — no special execution
-// path. A live turn steers the message in at its next step boundary;
-// otherwise the lane queue orders it into a fresh turn. Epoch
-// fencing applies either way.
-//
-// Returns true only when the submit was admitted to a turn (not merely
-// appended to history by a closed runtime). On a throw the constructed sink
-// is released with the error — same contract as the intake flush: a
-// constructed sink is already "typing" and would ghost forever.
+// Wakes use ordinary turn submission so queued and live turns share ordering
+// and epoch fencing. A constructed sink must be released if submission throws.
 
 import type { Conversation, ConversationAddress, ConversationStore } from "./conversation.ts";
 import { paths, type ConfigRef, type TtsConfig } from "./config.ts";
@@ -29,12 +18,9 @@ export interface WakeDeps {
 	api: DeliveryApi;
 	configRef: ConfigRef;
 	synthesize(text: string, tts: TtsConfig): Promise<Uint8Array[]>;
-	// Rolling DM wiring — a fire into a private chat routes through the
-	// roller like a message would (design/telegram.md → Rolling DM).
+	// Wakes use synchronous routeDm: it honors the live gap but skips intake's follow-up check.
 	roll: RollDeps;
-	// The headless sink app-channel background turns ring through —
-	// a Telegram delivery sink can't exist on an app conversation
-	// (design/app.md → Spin-off → Background turns).
+	// App turns need a headless sink; they have no Telegram delivery address.
 	bell(conv: Conversation): TurnSink;
 }
 
@@ -43,28 +29,20 @@ export interface WakeAddress {
 	threadId: number | null;
 }
 
-/** The fixtures makeWakeDeps derives the routing rules over — the
- *  composition root supplies these; this module decides how a fire
- *  routes. */
+/** Composition supplies these dependencies; this module owns fire routing. */
 export interface WakeBase {
 	store: ConversationStore;
 	runtime: Runtime;
 	api: DeliveryApi;
 	configRef: ConfigRef;
 	synthesize(text: string, tts: TtsConfig): Promise<Uint8Array[]>;
-	// The Rolling DM follow-up gate — the reviewer's JevClient; absent
-	// means a past-gap burst joins current unscored.
+	// wake() uses routeDm, which does not consult this intake-only gate.
 	followUpGate(): Pick<JevClient, "decide"> | undefined;
-	// Shared with intake's reply routing so a swipe-reply to a spin-off
-	// ping reaches the app conversation that rang (design/app.md →
-	// Spin-off → Telegram rings).
+	// Lets swipe replies to delegation rings reach the app conversation.
 	pings: PingStore;
 }
 
-// The wake path's routing rules, assembled once at boot: a fire into
-// a private chat routes through the roller exactly like intake (the
-// gap reads config live), and an app conversation's background turn
-// rings Telegram through the bell — the headless sink it submits with.
+// Resolve live gap settings for rolling DMs and provide a bell sink for app turns.
 export function makeWakeDeps(base: WakeBase): WakeDeps {
 	const bell: BellDeps = {
 		api: base.api,
@@ -89,6 +67,7 @@ export function makeWakeDeps(base: WakeBase): WakeDeps {
 	};
 }
 
+// A rejected or failed submit returns false so delegation notices can retry.
 export function wake(
 	deps: WakeDeps,
 	address: WakeAddress,
@@ -97,14 +76,9 @@ export function wake(
 ): boolean {
 	let conv: Conversation;
 	if (address.threadId === null && isRollingChat(address.chatId)) {
-		// Rolling DM: the fire rolls or joins by the same rules intake
-		// uses — past the gap it rolls, inside it it joins. dmTrigger
-		// "current" pins the join: delegation notices carry an
-		// assistant-generated event into the live conversation, not a
-		// fresh subject, so they never roll. The marker is issued
-		// before the submit but not awaited: wake stays synchronous
-		// and a send failure warns inside sendRollMarker, never blocks
-		// the turn.
+		// "current" joins the live DM; "fire" applies normal gap rolling.
+		// Mark before submit without awaiting: wake stays synchronous, and
+		// sendRollMarker logs delivery failures without blocking the turn.
 		const routed = routeDm(deps.roll, address.chatId, opts?.dmTrigger ?? "fire");
 		if (routed.rolled) void sendRollMarker(deps.api, address.chatId, routed.conv.id);
 		conv = routed.conv;
@@ -142,14 +116,8 @@ export function wake(
 	return true;
 }
 
-// The app-pinned twin (design/app.md → Spin-off → Background turns):
-// a delegation notice becomes a user message in the pinned app
-// conversation's background turn, run through the ordinary lane queue
-// with the headless bell sink — the ring reaches Telegram when the
-// turn lands, not when it's submitted. Same admitted/throw contract
-// as wake — true only on a live submit, so a failed wake retries.
-// A deleted conversation is the one drop: retrying would pin a dead
-// row in the scan forever, so it warns and reports landed.
+// The bell fires when the queued turn lands, not at submission. A rejected
+// or failed submit stays retryable; a deleted row is the intentional drop.
 export function wakeApp(deps: WakeDeps, conversationId: string, text: string): boolean {
 	const conv = deps.store.get(conversationId);
 	if (conv === null) {

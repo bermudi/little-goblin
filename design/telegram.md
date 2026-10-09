@@ -59,15 +59,17 @@ model/thinking (history still copies, as specified in design/app.md).
   👍/👎 row, stamped in the same `editMessageReplyMarkup` as the 🔊 row
   (markup is whole-keyboard replacement — they must ride one call).
   Same gate as the 🫡: errors, fenced turns, and voice-mode replies get
-  none. A tap appends a row to the store's `reply_ratings` table —
-  conversation id, the reply's anchor seq, the Telegram chat/message
-  ids, the vote, the timestamp. Vote changes append; reads are
-  latest-wins. The callback payload self-describes its target
-  (`rate:<vote>|<conversation>|<anchor>`), so a tap on a pre-restart
-  reply still records. **Record-only by ruling**: nothing consumes the
-  rows — not the model view, history, FTS, memory, or the reviewer. They
-  accumulate as raw signal; wiring them into any consumer needs a design
-  ruling first.
+  none. Guest replies get none either — same reason they get no 🔊:
+  a guest's tap can't answer past the allowed-user gate, so a rendered
+  button would spin forever. A tap appends a row to the store's
+  `reply_ratings` table — conversation id, the reply's anchor seq, the
+  Telegram chat/message ids, the vote, the timestamp. Vote changes
+  append; reads are latest-wins. The callback payload self-describes
+  its target (`rate:<vote>|<conversation>|<anchor>`), so a tap on a
+  pre-restart reply still records. **Record-only by ruling**: nothing
+  consumes the rows — not the model view, history, FTS, memory, or the
+  reviewer. They accumulate as raw signal; wiring them into any consumer
+  needs a design ruling first.
 - **TTS**: default-on — absent config means
   `tts: {kind: "edge", voice: "en-US-AriaNeural"}`; `tts: ""` is the
   explicit off (it parses to `false` so the mini app's whole-file

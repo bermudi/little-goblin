@@ -49,12 +49,15 @@ scripts/deploy.sh
 It refuses a dirty tree, runs the gate (`bun run typecheck && bun test`)
 on g7, pushes the branch to GitHub, then on lithium: `git pull
 --ff-only`, `bun install --frozen-lockfile` when `bun.lock`/
-`package.json` moved, `bun run app:build` when `app/` moved (the client
-is served from disk — client and backend restart as one rollout), and
-`systemctl --user restart goblin`. It verifies the unit came back,
-scans the fresh journal for error lines, and prints the old→new hashes
-plus a one-line rollback (`git reset --hard <old-hash>` + restart, on
-the box). A gate or push failure stops everything before lithium is
+`package.json` moved, `bun run app:build` when `app/` or the dependency
+manifests moved — the bundle inlines dependency code, so a React or
+AI-SDK bump alone must rebuild it (the client is served from disk —
+client and backend restart as one rollout), and `systemctl --user
+restart goblin`. It verifies the unit came back, scans the fresh journal
+for error lines, and prints the old→new hashes plus a one-line rollback
+(`git reset --hard <old-hash>`, then `bun install` and
+`bun run app:build` — dist and node_modules are gitignored, so the old
+revision needs its own deps and client — then restart, on the box). A gate or push failure stops everything before lithium is
 touched.
 
 The memory stack is **not** auto-deployed: a `deploy/memory/` change

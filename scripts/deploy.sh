@@ -9,10 +9,10 @@
 #   1. refuse a dirty tree or a detached HEAD — deploys are commits
 #   2. gate on THIS box: bun run typecheck && bun test
 #   3. git push origin HEAD   (GitHub is the transport to the box)
-#   4. on the box: git pull --ff-only, bun install when the lockfile
-#      moved, bun run app:build when app/ moved (the client is served
-#      from disk, so client and backend restart as one rollout),
-#      systemctl --user restart goblin
+#   4. on the box: git pull --ff-only, bun install when the dependency
+#      manifests moved, bun run app:build when app/ or the manifests
+#      moved (the client is served from disk, so client and backend
+#      restart as one rollout), systemctl --user restart goblin
 #   5. verify the unit is active and scan the post-restart journal for
 #      error lines; print old→new hashes and a one-line rollback
 #
@@ -20,9 +20,10 @@
 # installed from that directory and never auto-applied (see
 # docs/operations.md, Deploying).
 #
-# Rollback is manual and printed at the end: on the box,
-#   git -C ~/build/little-goblin reset --hard <old-hash> &&
-#   systemctl --user restart goblin
+# Rollback is manual and printed at the end: on the box, reset to the
+# old hash, reinstall, rebuild, restart — app/dist and node_modules are
+# gitignored, so a bare reset would leave the new client/deps running
+# beside the old backend.
 set -euo pipefail
 
 remote_host="${1:-lithium}"
@@ -71,7 +72,10 @@ changed="$(git diff --name-only "$old_rev" "$1")"
 if printf '%s\n' "$changed" | grep -qE '^(bun\.lock|package\.json)$'; then
 	bun install --frozen-lockfile
 fi
-if printf '%s\n' "$changed" | grep -qE '^app/'; then
+if printf '%s\n' "$changed" | grep -qE '^(app/|package\.json$|bun\.lock$)'; then
+	# The bundle inlines dependency code — a react/ai/vite bump lands in
+	# package.json/bun.lock with no app/ path touched and must rebuild too
+	# (the vite config itself lives under app/).
 	bun run app:build
 fi
 if printf '%s\n' "$changed" | grep -qE '^deploy/memory/'; then
@@ -101,7 +105,10 @@ if [ -n "$errors" ]; then
 fi
 echo "deploy: lithium now $(git log -1 --format='%h %s')"
 echo "deploy: was $old_rev"
-echo "deploy: rollback: git -C ~/build/little-goblin reset --hard $old_rev && systemctl --user restart goblin"
+# Ignored app/dist and node_modules survive a reset — reinstall and
+# rebuild the rolled-back revision or the old backend runs beside the
+# new client/deps.
+echo "deploy: rollback: cd ~/build/little-goblin && git reset --hard $old_rev && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin"
 REMOTE
 
 step "memory stack on $remote_host (if installed):"

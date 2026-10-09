@@ -1,5 +1,6 @@
 // Composition root — it wires, it never rules (DESIGN.md → Module map).
 
+import pkg from "../package.json";
 import { loadAuth } from "./auth.ts";
 import {
 	contextLimit,
@@ -23,6 +24,7 @@ import {
 	loadConfig,
 	paths,
 	splitModelRef,
+	type Config,
 	type ConfigRef,
 	type ThinkingLevel,
 	type TtsConfig,
@@ -86,6 +88,8 @@ process.on("uncaughtException", (err: unknown) => {
 
 async function boot() {
 	ensureHomeLayout();
+	// /api/*/status reports from this — uptime and the boot timestamp.
+	const startedAt = new Date().toISOString();
 
 	const config = loadConfig();
 	if (!config) {
@@ -643,17 +647,27 @@ async function boot() {
 			log.warn("delegation config changed — restart to apply");
 		}
 	};
-	const http = startHttp({
-		configRef,
-		beforeConfigWritten: (previous, next) => prepareAppSettingsForConfig(store, previous, next),
-		botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN),
-		// POST /hook/<token> — the token is the credential; the webhook
-		// entry point owns the fire's accounting (last_run only when landed).
-		hooks: {
-			programs,
-			accepting: () => runtime.accepting(),
-			fire: (program, event, now) => fireWebhook(firingDeps, program, event, now),
-		},
+	// The same boot-pin comparisons onConfigWritten logs — the operator
+	// surface's status card answers with them instead of waiting for the
+	// operator to notice a warn line.
+	const restartHints = (): string[] => {
+		const cur = configRef.current;
+		const hints: string[] = [];
+		if (JSON.stringify(cur.memory ?? null) !== JSON.stringify(memoryBootConfig ?? null)) {
+			hints.push("memory");
+		}
+		if (cur.appToken !== appTokenName) hints.push("appToken");
+		if (JSON.stringify(cur.delegation ?? null) !== JSON.stringify(delegationBoot ?? null)) {
+			hints.push("delegation");
+		}
+		return hints;
+	};
+	// The operator surface (settings, memory, programs, delegations,
+	// status) is one bundle mounted at both doors — the mini app's
+	// /api/* (initData) and the app channel's /api/app/* (bearer/trust).
+	const operatorSeams = {
+		beforeConfigWritten: (previous: Config, next: Config) =>
+			prepareAppSettingsForConfig(store, previous, next),
 		// Same memory surfaces the /memory command reads, bound to the boot-time target.
 		...(memorySurfaces
 			? {
@@ -672,6 +686,21 @@ async function boot() {
 					},
 				}
 			: {}),
+		programs,
+		delegations,
+		service: { version: pkg.version, startedAt, restartHints },
+	};
+	const http = startHttp({
+		configRef,
+		...operatorSeams,
+		botToken: await auth.resolve(AUTH_TELEGRAM_TOKEN),
+		// POST /hook/<token> — the token is the credential; the webhook
+		// entry point owns the fire's accounting (last_run only when landed).
+		hooks: {
+			programs,
+			accepting: () => runtime.accepting(),
+			fire: (program, event, now) => fireWebhook(firingDeps, program, event, now),
+		},
 		// The Jev gate doubles as the loopback injection checker — absent = 503.
 		...(jevGate ? { checkInjection: { gate: jevGate } } : {}),
 		// The app handler stays opaque here: app-channel.ts imports the
@@ -684,6 +713,9 @@ async function boot() {
 				auth,
 				configRef,
 				onConfigWritten,
+				// Same seams the mini-app door reads — app-channel mounts
+				// them under /api/app/* with the bearer/trust gate.
+				operator: operatorSeams,
 				// Same intake seam as the tg lane — speech uploads transcribe before submit.
 				transcribe: transcribeFile,
 				// Null = unconfigured or ffmpeg-down — the endpoint answers 503

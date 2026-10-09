@@ -1,39 +1,28 @@
-// The forgetting protocol's one owner: reconcile in-flight retention,
-// then suppress → cancel → remote delete → redact. Both surfaces — the
-// /forget delete command and the mini app's forget button — call this;
-// neither re-implements the order. The order is load-bearing: a
-// replace-mode retain accepted remotely finishing after the delete would
-// resurrect the document (unpaused delete), and suppression must exist
-// before anything else could re-enqueue. Fail-loud: Hindsight and store
-// errors propagate; the settle-budget refusal and the unaddressable-
-// destination refusal are the expected outcomes (the caller tells the
-// operator to retry or reconcile).
+// The forgetting protocol's one owner (the /forget command and the mini
+// app's button both land here): settle in-flight retention, then
+// suppress → cancel → remote delete → redact. The order is load-bearing:
+// a replace-mode retain accepted remotely and finishing after the delete
+// would resurrect the document, and suppression must exist before
+// anything else could re-enqueue.
 //
 // A queue row reading `pending` is not proof its retention was never
-// sent: the worker's submit can be accepted remotely while its
-// acknowledgement degrades (a retryable timeout/5xx leaves the row
-// pending), and a crash between acceptance and the submitted-state
-// write does the same — attempts=0 is no proof either. Every in-flight
-// UUID is therefore reconciled through to terminal state, pending rows
-// included, before any tracking is dropped or success reported; the
-// durable operation UUID (persisted at enqueue, before any submit) is
-// what makes the reconciliation always possible (#86, #99).
+// sent — a submit can be accepted remotely while its acknowledgement is
+// lost (timeout/5xx, or a crash before the submitted-state write). Every
+// in-flight UUID is reconciled to terminal state, pending rows included,
+// before any tracking is dropped or success reported; the durable
+// operation UUID (persisted at enqueue, before any submit) is what makes
+// that always possible (#86, #99).
 //
-// The reconciliation is per-destination (#87): rows bind to the
-// endpoint+bank target hash, and that hash is one-way — an operation
-// accepted by a PREVIOUS bank can never be reconciled through the
-// current client (the new bank's bank-scoped 404 reads as settled).
-// Each destination named by the outbox is settled and deleted through
-// its own client — reconstructed from destination history — and the
-// current destination is always deleted. A destination nothing can
-// address refuses the whole forget with every row preserved; old-bank
-// rows are never silently cancelled on a new-bank delete.
+// Reconciliation is per-destination (#87): rows bind to a one-way
+// endpoint+bank target hash, so a previous bank's operation can only be
+// settled through that bank's own client — the current client would read
+// the new bank's bank-scoped 404 as settled. A destination nothing can
+// address refuses the whole forget with every row preserved.
 //
-// No conversation fencing here: /forget fences the conversation it was
-// typed in (its own courtesy, kept in commands.ts); the mini app has no
-// conversation. Cross-conversation recall-in-flight is a window the
-// command already tolerates — same tolerance here, re-runnable
-// (suppression persists; deleteByDocument can run again).
+// No conversation fencing here (the command's own courtesy lives in
+// commands.ts); cross-conversation recall-in-flight is a window already
+// tolerated, and the protocol is re-runnable — suppression persists,
+// deleteByDocument can run again.
 
 import { HindsightError, identifier, type MemoryOperation } from "./hindsight.ts";
 import { log } from "./log.ts";
@@ -45,12 +34,10 @@ const SETTLE_TERMINAL = new Set(["completed", "failed", "cancelled"]);
 const SETTLE_POLL_MS = 1_000;
 const SETTLE_BUDGET_MS = 30_000;
 
-// True once every operation reached a terminal state (or was pruned
-// server-side — null counts as settled) within the budget; false means
-// something is still unsettled and the caller must refuse rather than
-// race the delete. Transient Hindsight failures retry inside the same
-// budget (each poll logs its own request line); anything that is not a
-// HindsightError escapes so the forget attempt fails loud.
+// True once every operation reached a terminal state — or was pruned
+// server-side, null counts as settled — within the budget. False means
+// still unsettled: the caller must refuse rather than race the delete.
+// HindsightError retries inside the budget; anything else escapes loud.
 async function settleInflightRetention(
 	client: HindsightInstance,
 	operationIds: string[],
@@ -81,19 +68,15 @@ async function settleInflightRetention(
 export interface ForgetSource {
 	client: HindsightInstance;
 	// Reconstruct the client owning a queue target — destination history
-	// (memory-destinations.ts) makes previous banks addressable after a
-	// config change. Optional only so partial wirings compile: without it,
-	// any foreign-target row refuses the forget (never a foreign poll).
+	// (memory-destinations.ts) makes previous banks addressable. Without
+	// it, a foreign-target row refuses the forget (never a foreign poll).
 	clientForTarget?: (target: string) => HindsightInstance | null;
 	contexts: MemoryContexts;
 	queue: MemoryQueue;
-	// Quiesce the retention worker around the delete (see
-	// MemoryWorker.withWorkerPaused) — wired from the boot worker in
-	// index.ts; tests inject a passthrough when no worker runs.
+	// Quiesce the retention worker around the delete; tests inject a
+	// passthrough when no worker runs.
 	withWorkerPaused: <T>(fn: () => Promise<T>) => Promise<T>;
-	// Production omits it and gets the defaults; tests inject small
-	// values instead of sleeping the real budget (same ruling as
-	// MemoryQueueWorker's injectable clock).
+	// Tests inject small values instead of sleeping the real budget.
 	settleTiming?: { pollMs: number; budgetMs: number };
 }
 
@@ -102,9 +85,8 @@ export type ForgetOutcome =
 	| { outcome: "busy"; unsettled: number }
 	| { outcome: "foreign-bank"; target: string };
 
-// Structural view of the client — the forget protocol needs
-// operation(), deleteDocument(), and the target identity rows bind to;
-// tests can stub the rest away.
+// Structural view of the client: operation(), deleteDocument(), and the
+// target identity queue rows bind to.
 export interface HindsightInstance {
 	readonly target: string;
 	operation(operationId: string, signal?: AbortSignal): Promise<MemoryOperation | null>;
@@ -123,24 +105,16 @@ export async function forgetDocument(
 	documentId: string,
 	context: ForgetContext,
 ): Promise<ForgetOutcome> {
-	// Same vocabulary the client enforces on real ids — refuse a bad id
-	// before any local state (a suppression row) is written.
+	// Refuse a bad id before any local state (a suppression row) is written.
 	const id = identifier.parse(documentId);
 	const fields = { ...context, document: id };
 	return source.withWorkerPaused(async () => {
-		// Pending rows are reconciled like submitted ones: their submit
-		// may already be accepted remotely with the acknowledgement lost
-		// (or crashed before the submitted-state write), and only the poll
-		// can tell the difference — a pending UUID absent remotely settles
-		// on its first poll, an accepted one waits out like any submitted
-		// operation. The worker pause settled local HTTP work, not remote
-		// async processing; the settle loop covers that gap.
+		// The worker pause settled local HTTP, not Hindsight's remote async
+		// processing; the settle loop covers that gap, pending rows too.
 		const destinations = source.queue.documentDestinations(id);
-		// Resolve every destination's client BEFORE any settling: an
-		// old-bank row can only be reconciled through the old bank's own
-		// client, and a destination nothing can address must refuse the
-		// whole forget up front — settling some banks first would leave a
-		// half-finished protocol the refusal cannot roll back.
+		// Resolve every client BEFORE any settling: settling some banks
+		// first would leave a half-finished protocol the refusal cannot
+		// roll back.
 		const clients = new Map<string, HindsightInstance>();
 		for (const destination of destinations) {
 			if (destination.target === source.client.target) {
@@ -187,10 +161,8 @@ export async function forgetDocument(
 		}
 		source.contexts.suppress(id);
 		const cancelled = source.queue.cancelDocument(id);
-		// Delete through every destination the outbox names — a completed
-		// or blocked row means its bank may hold the document — plus the
-		// current one (the browsing surface's view; harmless when absent:
-		// a 404 delete reads as success).
+		// Every outbox destination may hold the document, plus the current
+		// one for the browsing surface — a 404 delete reads as success.
 		for (const destination of destinations) {
 			if (destination.target === source.client.target) continue;
 			await clients.get(destination.target)!.deleteDocument(id);

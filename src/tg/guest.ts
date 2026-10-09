@@ -459,6 +459,36 @@ function resolveGuestConversation(
 	// class and the tool filter. Idempotent — set only on a mismatch.
 	const wantPersona = sandbox ? "guest" : "personal";
 	if (conv.memoryExcluded !== true || conv.persona !== wantPersona) {
+		// Demotion (personal → guest) must not retain personal history:
+		// the same address is reused per chat+user, so prior
+		// personal-turn events would stay readable to the sandboxed
+		// caller, who could prompt their disclosure. Reset to a fresh
+		// conversation — history, compaction, and snapshot gone — after
+		// fencing any running turn (delete requires a fenced lane; the
+		// fresh row's epoch 0 fences the old turn's authority check,
+		// and stop's abort keeps its trailing reply out of the new
+		// history). Promotion keeps history: sandbox exchanges are safe
+		// for the operator to see.
+		if (conv.persona === "personal" && wantPersona === "guest") {
+			const hasHistory =
+				env.store.lastSeq(conv.id) !== null || env.store.getCompaction(conv.id) !== null;
+			if (hasHistory) {
+				// Fence first: deleteConversation only touches the store,
+				// so a live turn must be stopped before the row goes —
+				// its in-flight trailing reply would otherwise append
+				// into the fresh conversation's history.
+				if (env.runtime.hasActiveTurn(conv.id)) env.runtime.stop(conv.id);
+				env.store.deleteConversation(conv.id);
+				const fresh = env.store.resolve(guestAddress(chatId, userId), paths.workspace());
+				env.store.setMeta(fresh.id, { memoryExcluded: true, persona: "guest" });
+				log.info("guest conversation reset on demotion — personal history cleared", {
+					chat: chatId,
+					from: userId,
+					conversation: fresh.id,
+				});
+				return env.store.get(fresh.id) ?? fresh;
+			}
+		}
 		env.store.setMeta(conv.id, { memoryExcluded: true, persona: wantPersona });
 		// A persona flip rewrites the system prompt — the frozen snapshot
 		// must bust with it, or a demoted caller keeps the personal

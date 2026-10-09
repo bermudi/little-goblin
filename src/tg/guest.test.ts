@@ -727,6 +727,43 @@ describe("handleGuestUpdate", () => {
 		expect(store.promptSnapshot("guest:-100:9")).toBeNull();
 	});
 
+	test("a demotion to sandbox clears prior personal history", async () => {
+		const { env, guestStore, store, submitted } = makeEnv();
+		// User 9 starts as the operator: a personal turn with history.
+		env.configRef.current = {
+			...env.configRef.current,
+			allowedUsers: [7, 9],
+		} as typeof env.configRef.current;
+		await handleGuestUpdate(env, guestMsg({ guest_query_id: "promo" }), 50);
+		expect(submitted).toHaveLength(1);
+		// The fake runtime records submits without appending (the real
+		// Runtime.submit appends first) — persist the turn's history here.
+		store.append("guest:-100:9", [
+			submitted[0]!.message,
+			{ id: "a1", role: "assistant", parts: [{ type: "text", text: "personal answer" }] },
+		]);
+		expect(store.history("guest:-100:9")).toHaveLength(2);
+		// Demoted: removed from allowedUsers, chat open so the sandbox path runs.
+		env.configRef.current = {
+			...env.configRef.current,
+			allowedUsers: [7],
+		} as typeof env.configRef.current;
+		guestStore.open(-100, 7);
+		submitted.length = 0;
+		await handleGuestUpdate(env, guestMsg({ guest_query_id: "demo" }), 51);
+		expect(submitted).toHaveLength(1);
+		expect(submitted[0]?.conv.persona).toBe("guest");
+		// The reset wiped the personal exchange; the fake runtime
+		// records submits without appending (the real Runtime.submit
+		// appends first), so the fresh conversation is empty here.
+		expect(store.history("guest:-100:9")).toHaveLength(0);
+		// Persisting the sandbox summons the way the real submit would
+		// leaves exactly that message — no personal text survives.
+		store.append("guest:-100:9", [submitted[0]!.message]);
+		expect(store.history("guest:-100:9")).toHaveLength(1);
+		expect(store.modelEntries("guest:-100:9")).toHaveLength(1);
+	});
+
 	// Issue #116: the placeholder await is a suspension point between the
 	// eligibility checks and the submit — every state it read can change.
 	// A submit that lands after /off's epoch bump reads the NEW epoch as

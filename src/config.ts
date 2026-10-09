@@ -468,7 +468,12 @@ const configSchema = z
 				z.object({
 					kind: z.literal("groq"),
 					model: z.string().min(1).default("whisper-large-v3-turbo"),
-					auth: z.string().min(1),
+					auth: z.string().min(1).default("groq"),
+					// ISO-639-1; omitted = detect.
+					language: z
+						.string()
+						.regex(/^[a-z]{2}$/, "language must be an ISO-639-1 code like \"es\"")
+						.optional(),
 				}),
 				z.literal(""),
 			])

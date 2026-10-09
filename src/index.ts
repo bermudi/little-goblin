@@ -13,7 +13,7 @@ import type { MediaPosition } from "./agent/attachments.ts";
 import { generateTopicTitle } from "./agent/title.ts";
 import { generateText } from "ai";
 import { homedir } from "node:os";
-import { probeFfmpeg, transcribeAudio, transcriptionModel } from "./agent/transcribe.ts";
+import { probeFfmpeg, speechEngine, transcribeAudio } from "./agent/transcribe.ts";
 import { synthesizeSpeech } from "./agent/tts.ts";
 import { makeTools, toolNames, type VisionToolDeps } from "./agent/tools/mod.ts";
 import { makePrivateSender } from "./agent/tools/program.ts";
@@ -247,7 +247,7 @@ async function boot() {
 	const transcribeFile = async (file: Parameters<typeof transcribeAudio>[1]) => {
 		const cfg = configRef.current.transcription;
 		if (!cfg) return null;
-		return transcribeAudio(await transcriptionModel(cfg, auth), file);
+		return transcribeAudio(speechEngine(cfg, auth), file);
 	};
 
 	// The vision tool's per-turn gate (design/tools.md → Vision): "auto"

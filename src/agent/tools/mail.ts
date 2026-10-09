@@ -1,34 +1,20 @@
-// The mail tool — the operator-gated send (DESIGN.md, "Email"). Send
-// never sends: it hands the draft to the approval gate, which queues
-// the outbox row and posts it with Send/Cancel buttons, returning
-// "awaiting operator approval". The tool holds only the gate's request
-// closure: no auth store, no send credential, no config, no Telegram —
-// the composition root owns those, so no tool path can mint a send
-// token however the model phrases it.
-//
-// Reads left this tool for the goblin-mail wrapper + gws skill (the
-// sanctioned read path: gws reads, fenced and injection-checked): the
-// model's "read me that mail" runs `$GOBLIN_HOME/goblin-mail` through
-// bash, never this tool. Attachments ride the same door (`gws` fetch
-// to a workspace file).
+// The send-only tool hands drafts to the approval gate; it holds no sender
+// credential or Telegram context. Reads use goblin-mail + gws instead, so
+// this boundary cannot be used to bypass the checked read path.
 
 import { tool } from "ai";
 import { z } from "zod";
 
 const addressSchema = z.email().max(320);
 
-// CR/LF in a subject is header injection waiting for a refactor — it is
-// closed here, at the boundary, not by encodeSubject's accident (CR/LF
-// happens to force the RFC 2047 branch, so the raw text never reached
-// the wire — but it did reach the Telegram approval draft, and an
-// "only encode non-ASCII" refactor would open the real hole).
+// Reject line breaks before approval text is rendered or headers are encoded;
+// keeping this boundary explicit prevents an encoder refactor from reopening
+// header injection.
 const subjectSchema = z
 	.string()
 	.max(500)
 	.refine((s) => !/[\r\n]/.test(s), { message: "subject must not contain line breaks" });
 
-/** What a send asks the gate for — the draft content. The address is
- *  pre-bound per conversation at the composition root. */
 export interface MailDraftInput {
 	to: string[];
 	cc?: string[];
@@ -38,11 +24,8 @@ export interface MailDraftInput {
 }
 
 export interface MailToolDeps {
-	/** Hand a send to the approval gate: it queues the outbox row,
-	 *  posts the draft with Send/Cancel into this conversation
-	 *  (pre-bound at the composition root — the model never sees chat
-	 *  ids), binds the buttons' message id, and resolves the
-	 *  model-facing verdict. */
+	/** Queue and present a draft in the pre-bound conversation, then return the
+	 * model-facing verdict. */
 	requestDraft(
 		input: MailDraftInput,
 	): Promise<{ queued: number; status: string } | { error: string }>;
@@ -57,9 +40,8 @@ const sendSchema = z.object({
 	replyToId: z.string().min(1).max(256).optional(),
 });
 
-// Tool providers expect an object at the root; the single-action tool
-// keeps the flat wire shape the old search/read/send union had (action
-// first) so the provider's argument generation never moves.
+// Keep the action at the root: some providers fail to generate arguments for
+// a nested discriminated union.
 export const mailInputSchema = z
 	.object({
 		action: z.literal("send"),
@@ -84,9 +66,6 @@ export const mailTool = (deps: MailToolDeps) =>
 		inputSchema: mailInputSchema,
 		execute: async (raw) => {
 			const input = sendSchema.parse(raw);
-			// The gate does the rest — queue, post the draft with its
-			// buttons, bind, and cancel-on-post-failure. The tool
-			// never touches Telegram.
 			return deps.requestDraft({
 				to: input.to,
 				...(input.cc !== undefined ? { cc: input.cc } : {}),

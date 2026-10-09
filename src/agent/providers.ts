@@ -1,7 +1,3 @@
-// Provider registry: config name → AI SDK provider factory + auth
-// reference. Thinking maps to per-provider providerOptions — honest about
-// which providers support which levels.
-
 import { createHash } from "node:crypto";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
@@ -34,11 +30,9 @@ export async function resolveModel(
 				apiKey: await auth.resolve(p.auth),
 			}).chatModel(modelId);
 		case "responses":
-			// `name` pins the providerOptions key to the config name — the
-			// SDK resolves options under provider.split(".")[0], same rule
-			// glmThinking applies. api.z.ai streams the spec's raw-CoT arm
-			// (reasoning_text events) which the SDK doesn't model — the
-			// fetch shim rewrites them to reasoning_summary events.
+			// z.ai emits raw reasoning_text events; the shim maps them to the
+			// reasoning_summary shape expected by the SDK. `name` keeps options
+			// keyed to this config provider.
 			return createOpenAI({
 				name: provider,
 				baseURL: p.baseUrl,
@@ -47,9 +41,8 @@ export async function resolveModel(
 			}).responses(modelId);
 		case "openrouter": {
 			const apiKey = await auth.resolve(p.auth);
-			// The provider package's response-metadata types use nullable
-			// fields that predate exactOptionalPropertyTypes — structurally
-			// it's the same spec-v4 LanguageModel.
+			// Provider metadata types lag exactOptionalPropertyTypes; the runtime
+			// value still has the LanguageModel shape.
 			return createOpenRouter({ apiKey }).chat(modelId) as unknown as LanguageModel;
 		}
 		case "codex":
@@ -57,25 +50,9 @@ export async function resolveModel(
 	}
 }
 
-// What each provider kind's pipe can carry on the wire, per position.
-// Catalog modalities (models.dev) say what the MODEL accepts; this says
-// what goblin's SDK converters can actually deliver to it — and the
-// answer differs by where the part rides: user-message content and
-// tool-result content are different converter paths, and two kinds
-// express file parts in one while silently mangling them in the other.
-// openai-compatible stringifies tool-result content (an 8 MiB PDF would
-// ride as ~11 MB of base64 JSON text in every later request — no throw,
-// just silent payload garbage), and codex's toolResultText filters to
-// text (the framing survives, the payload drops). Attachment
-// materialization and the fetch tool intersect catalog truth with this
-// before inlining anything; anything the pipe can't carry degrades to
-// its path reference, never a thrown turn and never silent garbage.
-//
-// Probe-verified against z.ai 2026-09-27 (see DESIGN.md, Web access):
-//   responses (/api/v1): PDF input_file parses in user messages AND in
-//   function_call_output; video/mp4 is rejected server-side.
-//   openai-compatible (chat): file parts accepted server-side in both
-//   positions, but the SDK only expresses user-message parts.
+// Catalog modalities describe what a model accepts; this predicate describes
+// what the SDK converter can carry at each position. Unsupported media falls
+// back to its saved path rather than becoming silently corrupted content.
 export function carriesMedia(
 	kind: string,
 	mediaType: string,
@@ -83,18 +60,13 @@ export function carriesMedia(
 ): boolean {
 	switch (kind) {
 		case "responses":
-			// @ai-sdk/openai's Responses converter maps file parts in both
-			// positions (input_file in user content and in
-			// function_call_output content arrays).
+			// Responses maps file parts in user and function_call_output content.
 			return mediaType.startsWith("image/") || mediaType === "application/pdf";
 		case "openai-compatible":
-			// Tool results are stringified by the converter — nothing
-			// carries there, whatever the server would accept.
+			// Tool-result content is stringified, so no media survives this position.
 			if (position === "tool-result") return false;
-			// User position: SDK v3 emits image_url / video_url / input_audio
-			// / file parts. getAudioFormat expresses wav and mp3/mpeg only —
-			// any other audio (Telegram voice notes are audio/ogg) throws at
-			// request build, so those don't carry either.
+			// The SDK audio formatter accepts wav/mp3/mpeg only; Telegram ogg
+			// therefore falls back instead of failing request construction.
 			return (
 				mediaType.startsWith("image/") ||
 				mediaType.startsWith("video/") ||
@@ -104,40 +76,28 @@ export function carriesMedia(
 				mediaType === "application/pdf"
 			);
 		case "openrouter":
-			// Normalizes everything, in both positions: user content gets
-			// image_url / input_audio / a generic file part, tool-result
-			// content gets real mapped parts (mapToolResultContentParts).
+			// OpenRouter maps media in both user and tool-result content.
 			return true;
 		case "codex":
-			// goblin's own converter (codex.ts): user messages take images
-			// and PDFs; tool results keep text only.
+			// Codex accepts images/PDFs in user messages, text only in results.
 			return (
 				position === "user" && (mediaType.startsWith("image/") || mediaType === "application/pdf")
 			);
 		default:
-			// Unknown kinds carry the universal minimum, user messages only.
 			return position === "user" && mediaType.startsWith("image/");
 	}
 }
-// Per-model-call observability (DESIGN.md, Cache stability: "every
-// model call logs … the request prefix hash"). The model boundary is
-// the only seam that sees each call's actual params — a tool-using turn
-// makes several calls the turn loop can't observe, and SDK retries land
-// here too. headHash covers system + tools (the request head — must
-// never move on its own); requestHash covers the whole prompt and moves
-// by appends only. Same message count with a different hash, or a
-// shrinking count, is the visible signature of a history rewrite.
+// Hash at the model boundary, the only seam that sees every call. `headHash`
+// isolates system/tools; with that head unchanged, `requestHash` should evolve
+// by prompt append rather than history rewrite.
 export function observedModel(
 	model: LanguageModel,
 	context: { conversation?: string; purpose?: string },
 ): LanguageModel {
-	// LanguageModel is also a provider-registry id string — nothing to
-	// observe there. resolveModel only ever returns instances.
 	if (typeof model === "string") return model;
 	const middleware: LanguageModelMiddleware = {
 		transformParams: async ({ type, params }) => {
-			// The system prompt rides inside the prompt as leading system
-			// messages — the head is those plus the tool definitions.
+			// Hash the leading system messages and tools as the request head.
 			const system = params.prompt.filter((m) => m.role === "system");
 			const headHash = createHash("sha256")
 				.update(JSON.stringify({ system, tools: params.tools ?? null }))
@@ -161,10 +121,7 @@ export function observedModel(
 	return wrapLanguageModel({ model, middleware });
 }
 
-// Thinking level → providerOptions. The levels are an operator
-// vocabulary, not a provider contract — each family maps them to the
-// nearest honest equivalent, and collapses are written down here, never
-// silently invented.
+// Map thinking levels to provider-specific controls and clamp known ladders.
 export function thinkingOptions(
 	config: Config,
 	modelRef: string,
@@ -173,21 +130,15 @@ export function thinkingOptions(
 	const { provider, modelId } = splitModelRef(modelRef);
 	const p = config.providers[provider];
 	if (!p) return undefined;
-	// Family detection keys on the bare id — relays may nest a vendor
-	// prefix ("relay/z-ai/glm-5.2"), same rule thinkingLevelsFor applies.
 	const bare = modelId.split("/").pop() ?? modelId;
 	switch (p.kind) {
 		case "openrouter": {
-			// "off" is just enabled:false — pairing it with an effort is a
-			// contradiction providers may reject outright.
+			// "off" disables reasoning; pairing it with effort may be rejected.
 			if (level === "off") {
 				return { openrouter: { reasoning: { enabled: false, exclude: true } } };
 			}
-			// OpenRouter's per-route supported_parameters decide: models that
-			// take reasoning_effort get the verbatim level (OpenRouter folds
-			// what the upstream can't express); toggle-only models get a plain
-			// enable; non-reasoners get nothing at all. A cold catalog passes
-			// the level through — the API rejects loudly if it can't take it.
+			// For non-off levels, omit settings on known non-reasoning routes;
+			// unknown catalog entries pass through for endpoint validation.
 			const params = openrouterSupportedParams(modelId);
 			if (params && !params.has("reasoning") && !params.has("reasoning_effort")) {
 				return undefined;
@@ -200,10 +151,7 @@ export function thinkingOptions(
 		case "openai-compatible":
 			return openaiCompatibleThinking(provider, bare, level, p.baseUrl);
 		case "responses": {
-			// /api/v1 serves the forced-thinking GLM generation; the OpenAI
-			// effort knob is real there (probe 2026-09-27: effort low → 7
-			// reasoning tokens, high → 37) and the ladder collapses like
-			// glmThinking's forced-5.3 arm — "off" can only mean the floor.
+			// Responses GLM uses a forced-thinking effort ladder; "off" is the floor.
 			const key = provider.split(".")[0]!.trim();
 			if (bare.startsWith("glm-")) {
 				const effort = {
@@ -219,30 +167,22 @@ export function thinkingOptions(
 			return { [key]: { reasoningEffort: level === "off" ? "low" : level } };
 		}
 		case "codex":
-			// reasoning_effort verbatim inside the model's ladder; "off"
-			// isn't a codex rung, so it and any out-of-ladder stored value
-			// clamp to the nearest rung at-or-above (then the top).
+			// Codex has no "off" rung, so clamp to its available effort ladder.
 			return {
 				codex: { reasoningEffort: clampToLadder(gptLevels(bare), level) },
 			};
 	}
 }
 
-// OpenAI-compatible endpoints: the honest knob depends on the model
-// family, which is knowable from the model id, not the provider name —
-// with one endpoint caveat: z.ai's coding plan only serves glm-5.3-gen
-// models and silently routes older glm-* ids to them (docs.z.ai/devpack),
-// so on that endpoint every glm is the forced-thinking generation.
+// The model family determines the honest knob. z.ai coding endpoints alias
+// every GLM id to the forced-thinking generation.
 function openaiCompatibleThinking(
 	provider: string,
 	modelId: string,
 	level: ThinkingLevel,
 	baseUrl?: string,
 ): ProviderOptions {
-	// The SDK resolves provider options under the first dot-separated
-	// segment of the provider name (config.provider.split(".")[0]) — a
-	// provider named "z.ai" must key under "z" or the options are
-	// silently dropped.
+	// Options use the first dot-separated provider segment ("z.ai" → "z").
 	const key = provider.split(".")[0]!.trim();
 	if (modelId.startsWith("glm-")) {
 		return glmThinking(key, modelId, level, zaiCodingEndpoint(baseUrl));
@@ -252,23 +192,17 @@ function openaiCompatibleThinking(
 			[key]: { reasoningEffort: clampToLadder(gptLevels(modelId), level) },
 		};
 	}
-	// Generic surface: reasoning_effort is the only knob the SDK exposes;
-	// "off" degrades to the lowest effort rather than an invented disable.
+	// Generic providers expose effort only; "off" falls to the lowest effort.
 	return { [key]: { reasoningEffort: level === "off" ? "low" : level } };
 }
 
-// api.z.ai coding-plan endpoints: the /api/coding/paas/* chat door and
-// the /api/v1 Responses door (devpack endpoint table lists both as
-// coding-plan quota). The general paas endpoint (no "coding" in the
-// path) serves real per-generation GLMs, so the sniff stays scoped.
+// Match z.ai's coding chat and Responses doors, but not the general paas path.
 function zaiCodingEndpoint(baseUrl?: string): boolean {
 	if (!baseUrl) return false;
 	try {
 		const u = new URL(baseUrl);
 		if (u.hostname !== "api.z.ai") return false;
-		// Trailing slashes are a base-URL spelling choice, not a different
-		// door — compare the non-empty path segments so /api/v1 and /api/v1/
-		// both match (the coding sniff is already segment-based).
+		// Compare non-empty segments so a trailing slash does not matter.
 		const segments = u.pathname.split("/").filter(Boolean);
 		return segments.includes("coding") || segments.join("/") === "api/v1";
 	} catch {
@@ -276,21 +210,15 @@ function zaiCodingEndpoint(baseUrl?: string): boolean {
 	}
 }
 
-// The levels a model can actually express — what the mini app
-// offer. Stored values outside the set aren't rejected: config defaults
-// span models with different ladders, so thinkingOptions clamps them.
-// Unknown kinds/models get the full vocabulary — the passthrough fails
-// loud if the endpoint can't take it.
+// Return the active model's honest ladder; unknown models retain the full
+// vocabulary so unsupported values fail at the endpoint rather than here.
 export function thinkingLevelsFor(
 	kind: string,
 	modelId: string,
 	baseUrl?: string,
 ): readonly ThinkingLevel[] {
-	// Family ladders follow the bare model id under every kind — a glm-5.3
-	// is forced-thinking whether z.ai serves it directly or via a relay
-	// (openrouter nests a vendor prefix, e.g. "z-ai/glm-5.3"). And on z.ai's
-	// coding-plan endpoint every glm-* is 5.3-gen regardless of the id —
-	// the endpoint aliases older ids to the two models it actually serves.
+	// Detect from the bare id, including relayed names; z.ai coding aliases all
+	// GLM ids to its forced-thinking ladder.
 	const bare = modelId.split("/").pop() ?? modelId;
 	if (bare.startsWith("glm-")) {
 		if ((kind === "openai-compatible" || kind === "responses") && zaiCodingEndpoint(baseUrl)) {
@@ -310,26 +238,22 @@ export function thinkingLevelsFor(
 	return thinkingLevels;
 }
 
-// GPT effort ladders (platform.openai.com reasoning_effort): gpt-6 adds
-// max on top of the 5.x-era low|medium|high|xhigh set. "off" is not
-// offered — the floor is the lowest rung; stored "off" clamps to it.
+// GPT-6 adds `max`; older GPT ladders stop at `xhigh`. "off" is clamped
+// to the lowest available effort.
 function gptLevels(modelId: string): readonly ThinkingLevel[] {
 	const major = Number(/^gpt-(\d+)/.exec(modelId)?.[1] ?? 0);
 	if (major >= 6) return ["low", "medium", "high", "xhigh", "max"];
 	return ["low", "medium", "high", "xhigh"];
 }
 
-// Clamp an arbitrary level onto a ladder: nearest rung at-or-above in
-// vocabulary order, else the top rung. "off" lands on the lowest rung —
-// "the least thinking available", never an invented disable.
+// Clamp to the nearest rung at or above the requested vocabulary level.
 function clampToLadder(ladder: readonly ThinkingLevel[], level: ThinkingLevel): ThinkingLevel {
 	const idx = thinkingLevels.indexOf(level);
 	return ladder.find((l) => thinkingLevels.indexOf(l) >= idx) ?? ladder[ladder.length - 1]!;
 }
 
-// OpenRouter per-route capability from its public /models catalog
-// (supported_parameters). Cold/unknown catalog → full vocabulary: the
-// passthrough fails loud rather than pretending knowledge we don't have.
+// OpenRouter's catalog distinguishes effort, toggle-only, and non-reasoning
+// routes; a cold catalog preserves the request so the provider can reject it.
 function openrouterLevels(params: Set<string> | null): readonly ThinkingLevel[] {
 	if (!params) return thinkingLevels;
 	if (!params.has("reasoning") && !params.has("reasoning_effort")) {
@@ -339,15 +263,9 @@ function openrouterLevels(params: Set<string> | null): readonly ThinkingLevel[] 
 	return thinkingLevels;
 }
 
-// GLM generations express thinking differently (docs.z.ai/guides):
-//   glm-5.3+ — forced thinking; reasoning_effort is low|high|max and any
-//              other value silently becomes max. "off" can only mean the
-//              floor: low.
-//   glm-5.2  — thinking.type toggle + effort high|max (others → max).
-//   older    — thinking.type enabled|disabled only; effort doesn't exist.
-// Unknown future majors (glm-6+) get the 5.3 treatment — forced thinking
-// is the trajectory, and an effort param is likelier accepted than a
-// "disabled" toggle that forced-thinking models reject outright.
+// GLM 5.3+ uses forced thinking with low/high/max effort; 5.2 combines a
+// toggle with high/max, while older generations expose only a toggle.
+// Future major versions follow the forced-thinking mapping.
 function glmThinking(
 	key: string,
 	modelId: string,

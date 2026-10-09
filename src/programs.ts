@@ -420,13 +420,9 @@ export function openPrograms(dbPath: string): ProgramsStore {
 	};
 }
 
-// The purge's copy half, called only when the `jobs` table exists.
-// Copies same ids (prompt → charter); INSERT OR IGNORE keeps it
-// defensive — an id already in programs was copied in an earlier era,
-// and the programs row is the truth. A cron that no longer parses is
-// skipped loudly rather than copied verbatim: a bad schedule on the
-// row would refire (and re-fail) every tick once markRan advances past
-// it (audit #21's reachable half).
+// Existing program ids are authoritative; stale jobs must not clobber them.
+// Unparsable schedules stay in recovery rather than becoming live programs
+// that would fail and refire every tick.
 function copyLegacyJobs(db: Database): number {
 	const jobsTable = db
 		.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'")
@@ -456,10 +452,16 @@ function copyLegacyJobs(db: Database): number {
 		try {
 			if (r.cron !== null) nextFire(r.cron, new Date(r.last_run ?? r.created_at));
 		} catch (err) {
+			// SQL copies every column (including unknown legacy fields) without
+			// lossy JSON conversion. Preservation and DROP share the transaction;
+			// a failed recovery write aborts the purge, never discards the job.
+			db.exec("CREATE TABLE IF NOT EXISTS legacy_jobs_recovery AS SELECT * FROM jobs WHERE 0");
+			db.run("INSERT INTO legacy_jobs_recovery SELECT * FROM jobs WHERE id = ?", [r.id]);
 			log.warn("legacy job skipped — unparsable cron", err, {
 				job: r.id,
 				name: r.name,
 				cron: r.cron,
+				recoveryTable: "legacy_jobs_recovery",
 			});
 			continue;
 		}

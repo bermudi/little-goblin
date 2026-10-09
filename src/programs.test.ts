@@ -442,6 +442,51 @@ describe("mail revision upgrade", () => {
 });
 
 describe("legacy jobs purge", () => {
+	test("unparsable jobs preserve complete recovery data before the legacy table drops", () => {
+		const path = tmpdb();
+		createLegacyJobs(path, 2);
+		const fixture = new Database(path);
+		fixture.exec("ALTER TABLE jobs ADD COLUMN recovery_blob BLOB");
+		fixture.run("UPDATE jobs SET cron = ?, prompt = ?, recovery_blob = ? WHERE id = 1", [
+			"not a cron",
+			"Do not lose this standing instruction\nwith its full context",
+			new Uint8Array([0, 255, 1]),
+		]);
+		const original = fixture.query("SELECT * FROM jobs WHERE id = 1").get();
+		fixture.close();
+
+		const programs = openPrograms(path);
+		expect(programs.list().map((p) => p.id)).toEqual([2]);
+		programs.close();
+		const reopened = openPrograms(path);
+		reopened.close();
+		const check = new Database(path);
+		expect(check.query("SELECT * FROM legacy_jobs_recovery").all()).toEqual([original]);
+		expect(check.query("SELECT name FROM sqlite_master WHERE name = 'jobs'").get()).toBeNull();
+		check.close();
+	});
+
+	test("failed preservation aborts the purge and retains every original job", () => {
+		const path = tmpdb();
+		createLegacyJobs(path, 2);
+		const fixture = new Database(path);
+		fixture.exec(`UPDATE jobs SET cron = 'bad cron' WHERE id = 2;
+			CREATE TABLE legacy_jobs_recovery AS SELECT * FROM jobs WHERE 0;
+			CREATE TRIGGER refuse_recovery BEFORE INSERT ON legacy_jobs_recovery
+			BEGIN SELECT RAISE(ABORT, 'recovery write failed'); END;`);
+		const original = fixture.query("SELECT * FROM jobs ORDER BY id").all();
+		fixture.close();
+		expect(() => openPrograms(path)).toThrow("recovery write failed");
+		const check = new Database(path);
+		expect(check.query("SELECT * FROM jobs ORDER BY id").all()).toEqual(original);
+		expect(check.query("SELECT name FROM sqlite_master WHERE name = 'programs'").get()).toBeNull();
+		check.exec("DROP TRIGGER refuse_recovery");
+		check.close();
+		const retried = openPrograms(path);
+		expect(retried.list().map((p) => p.id)).toEqual([1]);
+		retried.close();
+	});
+
 	test("failed copy rolls back the purge so the next boot can retry", () => {
 		const path = tmpdb();
 		createLegacyJobs(path, 2);

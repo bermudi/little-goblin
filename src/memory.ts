@@ -611,6 +611,7 @@ export type MemoryState = "disabled" | "healthy" | "degraded" | "pending";
 
 export interface MemoryStatus {
 	state: MemoryState;
+	deleting: number;
 	// pending+submitted — everything the worker still owes Hindsight.
 	pending: number;
 	blocked: number;
@@ -632,30 +633,43 @@ export function memoryStatus(options: {
 	blockedDetail: BlockedRetention[];
 }): MemoryStatus {
 	const pending = options.counts.pending + options.counts.submitted;
+	const deleting = options.counts.deleting;
+	const forgetNote =
+		deleting > 0
+			? `${deleting} outbox row${deleting === 1 ? "" : "s"} awaiting forget confirmation — retry /forget delete <documentId> (not /memory retry)`
+			: "";
 	if (!options.enabled) {
 		return {
 			state: "disabled",
+			deleting,
 			pending: 0,
 			blocked: 0,
-			detail: "memory is not configured",
+			detail: ["memory is not configured", forgetNote].filter(Boolean).join("; "),
 			blockedDetail: [],
 		};
 	}
-	if (options.counts.blocked > 0 || options.lastRecallOk === false) {
+	if (options.counts.blocked > 0 || options.lastRecallOk === false || deleting > 0) {
 		return {
 			state: "degraded",
+			deleting,
 			pending,
 			blocked: options.counts.blocked,
-			detail:
+			detail: [
 				options.counts.blocked > 0
 					? `${options.counts.blocked} blocked retention${options.counts.blocked === 1 ? "" : "s"} need${options.counts.blocked === 1 ? "s" : ""} operator review`
-					: "last recall failed — turns continue without memory",
+					: "",
+				options.lastRecallOk === false ? "last recall failed — turns continue without memory" : "",
+				forgetNote,
+			]
+				.filter(Boolean)
+				.join("; "),
 			blockedDetail: options.blockedDetail,
 		};
 	}
 	if (pending > 0) {
 		return {
 			state: "pending",
+			deleting,
 			pending,
 			blocked: 0,
 			detail: `${pending} retention${pending === 1 ? "" : "s"} draining`,
@@ -664,6 +678,7 @@ export function memoryStatus(options: {
 	}
 	return {
 		state: "healthy",
+		deleting,
 		pending: 0,
 		blocked: 0,
 		detail: "no queued or blocked retention",

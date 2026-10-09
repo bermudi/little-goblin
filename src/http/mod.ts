@@ -190,6 +190,7 @@ export interface ConfigPostBody {
 // shape tells the same story the command does.
 export interface MemoryStatusResponse {
 	state: MemoryState;
+	deleting: number;
 	detail: string;
 	completed: number;
 	blocked: number;
@@ -363,6 +364,7 @@ function memoryStatusResponse(deps: HttpDeps): MemoryStatusResponse {
 		return {
 			state: "disabled",
 			detail: gate,
+			deleting: 0,
 			completed: 0,
 			blocked: 0,
 			dismissed: 0,
@@ -387,6 +389,7 @@ function memoryStatusResponse(deps: HttpDeps): MemoryStatusResponse {
 	return {
 		state: status.state,
 		detail: status.detail,
+		deleting: status.deleting,
 		completed: counts.completed,
 		blocked: counts.blocked,
 		dismissed: counts.dismissed,
@@ -553,8 +556,8 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 		port: deps.configRef.current.http.port,
 		// 255 (the max): Bun's 10s default kills long-quiet SSE — tool
 		// calls silence the app stream wire for tens of seconds, and a
-		// killed wire reads client-side as a dead fetch body (verified
-		// 2026-10-07). The appSseWriter heartbeat is the actual guarantee;
+		// killed wire reads client-side as a dead fetch body.
+		// The appSseWriter heartbeat is the actual guarantee;
 		// this is the ceiling behind it. Ruling in design/app.md.
 		idleTimeout: 255,
 		// The HTTP boundary's error trap. Bun.serve has an onError

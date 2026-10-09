@@ -314,6 +314,19 @@ describe("memory commands", () => {
 		store.close();
 	});
 
+	test("/memory shows parked forget rows and deletion-specific retry guidance", () => {
+		const { store, conv, sent, deps } = setupMemory();
+		blockOne(store, deps.memory!.client, "exchange/dm:1/1/a");
+		store.memoryQueue.markDocumentDeleting("exchange/dm:1/1/a");
+		expect(handleCommand(deps, conv, "/memory status")).toBe(true);
+		expect(sent[0]).toContain("memory: degraded");
+		expect(sent[0]).toContain("1 awaiting forget confirmation");
+		expect(sent[0]).toContain("retry /forget delete <documentId>");
+		expect(sent[0]).toContain("not /memory retry");
+		expect(sent[0]).toContain("queue: 0 queued");
+		store.close();
+	});
+
 	test("/memory pending rendering counts queued work; recall time and outcome", () => {
 		const { store, conv, sent, deps } = setupMemory();
 		const client = deps.memory!.client;

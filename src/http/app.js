@@ -1084,13 +1084,15 @@ function checkMemoryStatus(s) {
 	const int = (v) => typeof v === "number" && Number.isInteger(v) && v >= 0;
 	const completed = o.completed,
 		blocked = o.blocked,
+		deleting = o.deleting,
 		dismissed = o.dismissed,
 		queued = o.queued;
 	if (typeof o.state !== "string") return null;
 	const state = /** @type {MemoryStatusResponse["state"]} */ (o.state);
 	if (!["disabled", "healthy", "pending", "degraded"].includes(state)) return null;
 	if (typeof o.detail !== "string") return null;
-	if (!int(completed) || !int(blocked) || !int(dismissed) || !int(queued)) return null;
+	if (!int(completed) || !int(blocked) || !int(dismissed) || !int(queued) || !int(deleting))
+		return null;
 	if (!(o.lastRecallAt === null || typeof o.lastRecallAt === "string")) return null;
 	if (!(o.lastRecallOk === null || typeof o.lastRecallOk === "boolean")) return null;
 	if (!Array.isArray(o.blockedDetail)) return null;
@@ -1109,6 +1111,7 @@ function checkMemoryStatus(s) {
 		detail: o.detail,
 		completed: completed,
 		blocked: blocked,
+		deleting: deleting,
 		dismissed: dismissed,
 		queued: queued,
 		lastRecallAt: o.lastRecallAt,
@@ -1160,7 +1163,8 @@ function renderMemoryStatus(s) {
 				" queued · " +
 				s.completed +
 				" retained" +
-				(s.dismissed > 0 ? " · " + s.dismissed + " dismissed (kept for audit)" : ""),
+				(s.dismissed > 0 ? " · " + s.dismissed + " dismissed (kept for audit)" : "") +
+				(s.deleting > 0 ? " · " + s.deleting + " awaiting forget confirmation" : ""),
 		),
 		el(
 			"div",

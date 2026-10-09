@@ -282,7 +282,8 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 			}
 			lines.push(
 				`queue: ${queued} queued · ${counts.completed} retained` +
-					(counts.dismissed > 0 ? ` · ${counts.dismissed} dismissed (kept for audit)` : ""),
+					(counts.dismissed > 0 ? ` · ${counts.dismissed} dismissed (kept for audit)` : "") +
+					(status.deleting > 0 ? ` · ${status.deleting} awaiting forget confirmation` : ""),
 				lastRecallAt === null
 					? "last recall: never"
 					: `last recall: ${clockHM(lastRecallAt)} (${mem.lastRecallOk() === false ? "failed" : "ok"})`,

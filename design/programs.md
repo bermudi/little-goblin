@@ -31,7 +31,11 @@ program's state, never a workspace file.** Rulings:
   by construction. The legacy `jobs` table is purged at open (W2.2):
   rows still in it copy in once — prompt becomes charter, an id already
   in `programs` means it was copied before and is ignored — then the
-  table drops, all in one transaction; a re-run is a no-op. No general
+  table drops, all in one transaction; a re-run is a no-op. Rows with
+  unparsable schedules are not activated: their complete original columns
+  (including the prompt) are kept in `legacy_jobs_recovery` in the same
+  database for operator recovery. A failed preservation write aborts the
+  purge and leaves `jobs` intact. No general
   migration framework.
 - **Firing is one path for every trigger.** Cron tick, webhook hit,
   or anything later: `runtime.submit` of a user message

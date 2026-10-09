@@ -344,6 +344,20 @@ describe("status", () => {
 		expect(memoryStatus(input({ lastRecallOk: false })).state).toBe("degraded");
 	});
 
+	test("parked forget rows need operator retry, even alongside other failures", () => {
+		for (const over of [{}, { blocked: 2 }, { submitted: 3 }]) {
+			const status = memoryStatus(input({ counts: counts({ ...over, deleting: 1 }) }));
+			expect(status.state).toBe("degraded");
+			expect(status.deleting).toBe(1);
+			expect(status.detail).toContain("1 outbox row awaiting forget confirmation");
+			expect(status.detail).toContain("retry /forget delete <documentId>");
+			expect(status.detail).toContain("not /memory retry");
+		}
+		const disabled = memoryStatus(input({ enabled: false, counts: counts({ deleting: 2 }) }));
+		expect(disabled.deleting).toBe(2);
+		expect(disabled.detail).toContain("2 outbox rows");
+	});
+
 	test("detail says something the state word alone does not", () => {
 		const states: MemoryState[] = ["disabled", "healthy", "degraded", "pending"];
 		const samples = [

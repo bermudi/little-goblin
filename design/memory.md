@@ -144,7 +144,10 @@ No MCP, replacement turn loop, or generic multi-backend framework.
    the retry settles and deletes through every bank that still holds
    the document. This is the retain path's durable-operation rule
    applied to deletion: persist the work record before the remote
-   action, drop it only after confirmation — never before.
+   action, drop it only after confirmation — never before. `/memory status`
+   and the mini-app status card expose the parked outbox-row count as
+   degraded, with `/forget delete <documentId>` retry guidance. These rows
+   do not drain automatically and `/memory retry` does not retry deletions.
 8. **Memories browser: the mini app grows a Memories tab (operator ask,
    2026-09-30).** The settings page restructures to two tabs — Settings
    (the six config sections one level deep behind an index; settings

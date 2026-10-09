@@ -6,7 +6,9 @@ import { join } from "node:path";
 import type { Config, MemoryConfig } from "../config.ts";
 import { loadConfig, memoryConfigSchema } from "../config.ts";
 import { setLogFile } from "../log.ts";
-import { startHttp, type HttpDeps } from "./mod.ts";
+import { startHttp, type HttpDeps, type MemoryStatusResponse } from "./mod.ts";
+import { parseHTML } from "linkedom";
+import { APP_HTML } from "./app.ts";
 import { hookTokenHash } from "../agent/tools/program.ts";
 import { openPrograms, type ProgramsStore } from "../programs.ts";
 import { appAddress, openStore, prepareAppSettingsForConfig } from "../conversation.ts";
@@ -433,6 +435,7 @@ describe("mini-app memory status", () => {
 			expect(await res.json()).toEqual({
 				state: "disabled",
 				detail: "memory is not configured",
+				deleting: 0,
 				completed: 0,
 				blocked: 0,
 				dismissed: 0,
@@ -470,6 +473,50 @@ describe("mini-app memory status", () => {
 			expect(j.lastRecallAt).toBe("2026-09-25T12:00:00.000Z");
 			expect(j.lastRecallOk).toBe(true);
 			expect(j.blockedDetail).toEqual([]);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("parked forget rows reach the wire and the checked mini-app display", async () => {
+		const { http, get } = setup({
+			counts: () => ({
+				pending: 0,
+				submitted: 0,
+				completed: 0,
+				blocked: 0,
+				dismissed: 0,
+				deleting: 2,
+			}),
+			blockedDetail: () => [],
+			lastRecallOk: () => true,
+			lastRecallAt: () => null,
+		});
+		try {
+			const status: unknown = await (await get("/api/memory-status")).json();
+			const { window, document } = parseHTML(APP_HTML);
+			const js = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+			const client = new Function(
+				"window",
+				"document",
+				js + "\nreturn { checkMemoryStatus, renderMemoryStatus };",
+			)(window, document) as {
+				checkMemoryStatus(value: unknown): MemoryStatusResponse | null;
+				renderMemoryStatus(value: MemoryStatusResponse): void;
+			};
+			const checked = client.checkMemoryStatus(status);
+			expect(checked).not.toBeNull();
+			if (checked === null) throw new Error("mini-app rejected memory status");
+			expect(checked.state).toBe("degraded");
+			expect(checked.deleting).toBe(2);
+			expect(checked.queued).toBe(0);
+			client.renderMemoryStatus(checked);
+			const text = document.getElementById("memStatusCard")!.textContent;
+			expect(text).toContain("2 awaiting forget confirmation");
+			expect(text).toContain("retry /forget delete <documentId>");
+			for (const deleting of [undefined, -1, 0.5, "2"]) {
+				expect(client.checkMemoryStatus({ ...checked, deleting })).toBeNull();
+			}
 		} finally {
 			http.stop();
 		}

@@ -230,6 +230,12 @@ and the W3 review checkpoints audit them specifically.
   between two checks (pure/derived work) or receives the check as an
   injected `assertAuthority` (the shape `doCompact` already uses, 686).
   No extracted await may exist outside one of these two arrangements.
+  Corollary (#115, found by the rollout-hold review): an await is
+  fenced on BOTH sides, success path included — a steer whose
+  conversion succeeds must still re-compare the epoch before joining,
+  replaying, or folding its content into the next request. Preserving
+  the check *sites* through an extraction is not the same as proving
+  the rule; every new await re-earns its post-await check.
 - **Cache stability** (DESIGN.md). Prompt assembly stays byte-stable:
   the view is a pure function of (snapshot, recall, partial, step);
   steering appends tails only — prefix bytes untouched; the merge runs
@@ -261,7 +267,13 @@ and the W3 review checkpoints audit them specifically.
   (`prepareStep` steering and the overflow resume claim). The fix
   itself lands first (W1, red → green on the current shape); the
   extraction carries the regression test, and the extraction is what
-  makes the second call site unable to forget the replay.
+  makes the second call site unable to forget the replay. **Ruling
+  (#114, a W3 extraction regression): registration rides the same
+  seam** — a claimed member enters the attempt's membership list at
+  the splice, never when admission returns. The gap between claim and
+  return is where a store read failure orphaned a joiner (claimed,
+  untracked, stream hanging forever); with registration at the splice,
+  every exception path — including drain's crash guard — settles it.
 
 ## Module cut (W3 target)
 

@@ -1617,6 +1617,70 @@ describe("context overflow recovery", () => {
 		expect(store.getCompaction(conv.id)).toBeNull();
 		store.close();
 	});
+
+	test("a store read failure after the resume claim settles the claimed joiner too (#114)", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		seedExchanges(store, conv.id);
+		const { model } = scriptedModel([overflowError(), textReply("not reached")]);
+		let summarizeStarted!: () => void;
+		const started = new Promise<void>((r) => {
+			summarizeStarted = r;
+		});
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		// The store boundary breaks exactly at the resumed admission's
+		// history read — after the resume claim already took the joiner.
+		let failRead = false;
+		const wrappedStore = new Proxy(store, {
+			get(target, key) {
+				if (key === "modelEntries")
+					return (id: string) => {
+						if (failRead) throw new Error("Synthetic SQLite read failure");
+						return target.modelEntries(id);
+					};
+				return Reflect.get(target, key);
+			},
+		});
+		const runtime = new Runtime({
+			store: wrappedStore,
+			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
+			makeTools: () => ({}),
+			compaction: {
+				modelRef: () => "fixture",
+				summarize: async () => {
+					summarizeStarted();
+					await gate;
+					failRead = true;
+					return "folded fixture history";
+				},
+			},
+		});
+		const head = new RecordingSink();
+		const joiner = new RecordingSink();
+		let joinerSettled = false;
+		joiner.done.then(() => {
+			joinerSettled = true;
+		});
+		runtime.submit(conv, userMessage([{ type: "text", text: "first" }]), head);
+		await started;
+		// Queued while the overflow compaction holds the lane; the resumed
+		// admission claims it before reading history.
+		runtime.submit(conv, userMessage([{ type: "text", text: "joined during compact" }]), joiner);
+		release();
+		expect((await head.done).kind).toBe("error");
+		await sleep(40);
+		// The claim must have put the joiner on a settlement surface: the
+		// crash may not strand a claimed-but-untracked submit — its stream
+		// would hang forever, shutdown included.
+		expect(joinerSettled).toBe(true);
+		expect(await joiner.done).toEqual({ kind: "error", message: "Synthetic SQLite read failure" });
+		await runtime.shutdown();
+		expect(runtime.busy(conv.id)).toBe(false);
+		store.close();
+	});
 });
 
 describe("cache stability", () => {
@@ -2918,6 +2982,58 @@ describe("steering", () => {
 		expect(prompts).toHaveLength(3);
 		expect(prompts[2]).toContain("could not be prepared for the model");
 		expect(prompts[2]).toContain("still there?");
+		store.close();
+	});
+
+	test("an epoch change during a successful steer conversion fences it before join or replay (#115)", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-rt-fifo-"));
+		dirs.push(dir);
+		const fifo = join(dir, "photo.png");
+		execSync(`mkfifo '${fifo}'`);
+		let releaseTool: () => void = () => {};
+		const gate = new Promise<void>((r) => {
+			releaseTool = r;
+		});
+		const { model, prompts } = gatedToolModel("never reaches the client");
+		const { store, conv, runtime } = steeringSetup(model, gate, new Set(["text", "image"]));
+		const head = new RecordingSink();
+		const joinerChunks: UIMessageChunk[] = [];
+		class JoiningSink extends RecordingSink {
+			override onStreamChunk(c: UIMessageChunk) {
+				joinerChunks.push(c);
+			}
+		}
+		const joiner = new JoiningSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "first" }]), head);
+		await sleep(30); // parked mid-tool-call
+		// The steer's conversion parks reading the FIFO; the epoch dies
+		// while it waits, and the conversion then SUCCEEDS — the fence
+		// must still hold on the success path, before join/replay/fold.
+		runtime.submit(
+			conv,
+			{
+				id: "photo-steer",
+				role: "user",
+				parts: [
+					{
+						type: ATTACHMENT_PART,
+						data: { path: fifo, mediaType: "image/png", filename: "photo.png", size: 7 },
+					},
+				],
+			} as UIMessage,
+			joiner,
+		);
+		releaseTool();
+		await sleep(40);
+		store.bumpEpoch(conv.id);
+		await writeFile(fifo, "pngdata");
+		expect(await head.done).toEqual({ kind: "fenced" });
+		expect(await joiner.done).toEqual({ kind: "fenced" });
+		// The joiner never joined: no wire replay reached it after the
+		// fence, and no model request ever carried its content.
+		expect(joinerChunks).toHaveLength(0);
+		expect(prompts.every((p) => !p.includes("photo.png"))).toBe(true);
+		await sleep(20);
 		store.close();
 	});
 });

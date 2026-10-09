@@ -596,11 +596,17 @@ export class Runtime {
 	// the seam itself lives in turn/stream.ts, so the replay cannot be
 	// forgotten. Injected into admission as claimQueued; the steer path
 	// claims through the same splice. Queue policy never leaves here.
-	private claimQueuedMembers(convId: string, sink: TurnSink, live: LiveWire): QueuedTurn[] {
+	private claimQueuedMembers(
+		convId: string,
+		sink: TurnSink,
+		live: LiveWire,
+		members: QueuedTurn[],
+	): QueuedTurn[] {
 		return claimMembers(
 			convId,
 			() => claimPending(this.lane(convId), sink.onStreamChunk !== undefined),
 			live,
+			members,
 		);
 	}
 
@@ -768,7 +774,7 @@ export class Runtime {
 				live,
 				getConversation: () => store.get(convId),
 				captureConversation: this.deps.captureConversation,
-				claimQueued: (wire) => this.claimQueuedMembers(convId, sink, wire),
+				claimQueued: (wire) => this.claimQueuedMembers(convId, sink, wire, turns),
 				pendingIds: () => new Set(this.lane(convId).pending.map((t) => t.message.id)),
 				modelEntries: () => store.modelEntries(convId),
 				now: Date.now,
@@ -787,9 +793,9 @@ export class Runtime {
 		}
 		const { snapshot } = admitted;
 		const { conv, epoch, entries, anchorSeq, turnStartMs } = snapshot;
-		// Claimed resume members join this turn's membership here — the
-		// snapshot carries them as data; the member list is runtime's.
-		for (const t of snapshot.claimed) turns.push(t);
+		// Claimed resume members are already registered: the claim seam
+		// spliced them into `turns` at the claim itself, so every failure
+		// path after it — including one inside admission — settles them.
 		sink.setAuthorityCheck?.(() => this.deps.store.get(convId)?.epoch === epoch);
 		const controller = new AbortController();
 		this.lane(convId).controller = controller;

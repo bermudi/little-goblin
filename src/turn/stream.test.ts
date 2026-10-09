@@ -6,10 +6,16 @@
 // sink contract (exactly one onDone) and ownership-mark semantics stay
 // e2e in runtime.test.ts.
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { execSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { tool, type LanguageModel, type UIMessage, type UIMessageChunk } from "ai";
 import { z } from "zod";
 import { APICallError, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
+import { ATTACHMENT_PART } from "../agent/attachments.ts";
 import { TurnState } from "./state.ts";
 import {
 	claimMembers,
@@ -21,6 +27,14 @@ import {
 	type StreamDeps,
 	type WireMember,
 } from "./stream.ts";
+
+// FIFO fixtures for parking an attachment conversion mid-await —
+// cleaned per test so a parked read never outlives the file.
+const fifoDirs: string[] = [];
+afterEach(() => {
+	for (const d of fifoDirs) rmSync(d, { recursive: true, force: true });
+	fifoDirs.length = 0;
+});
 
 // Fake the model at the provider edge (the suite's one fake): a script
 // per doStream call — parts stream verbatim, an Error throws (a
@@ -217,8 +231,12 @@ describe("membership seam", () => {
 		];
 		live.chunks.push(...before);
 		const joiner = member("joined mid-recovery");
-		const claimed = claimMembers("c1", () => [joiner], live);
+		const members: RecMember[] = [];
+		const claimed = claimMembers("c1", () => [joiner], live, members);
 		expect(claimed).toEqual([joiner]);
+		// Registration rides the claim: the joiner is on the attempt's
+		// settlement surface from the splice, before admission reads on.
+		expect(members).toEqual([joiner]);
 		// Gapless: the joiner saw the same wire the head saw — the tool
 		// call the failed attempt emitted was REPLAYED to it, not
 		// mid-sentence (design/app.md → Join replay).
@@ -229,7 +247,9 @@ describe("membership seam", () => {
 		const live = openLive();
 		live.chunks.push({ type: "start", messageId: "m1" });
 		const plain = member("quiet", false);
-		expect(claimMembers("c1", () => [plain], live)).toEqual([plain]);
+		const members: RecMember[] = [];
+		expect(claimMembers("c1", () => [plain], live, members)).toEqual([plain]);
+		expect(members).toEqual([plain]);
 		expect(plain.chunks).toEqual([]);
 	});
 
@@ -243,7 +263,9 @@ describe("membership seam", () => {
 		boom.sink.onStreamChunk = () => {
 			throw new Error("dead client");
 		};
-		expect(() => claimMembers("c1", () => [boom], live)).not.toThrow();
+		const members: RecMember[] = [];
+		expect(() => claimMembers("c1", () => [boom], live, members)).not.toThrow();
+		expect(members).toEqual([boom]);
 		expect(boom.streamFailed).toBe(true);
 	});
 
@@ -378,6 +400,52 @@ describe("driveStream", () => {
 		expect(r.members).toEqual([]);
 		expect(poison.chunks).toEqual([]);
 		expect(r.prompts[0]).not.toContain("read this");
+	});
+
+	test("a fence landing mid-conversion settles the successful steer — no join, no fold (#115)", async () => {
+		// The steer is a photo whose conversion parks reading a FIFO — the
+		// deterministic window for the epoch to die mid-await. The
+		// conversion then SUCCEEDS; the success path must re-check before
+		// the join, the replay, and the fold.
+		const dir = mkdtempSync(join(tmpdir(), "goblin-st-fifo-"));
+		fifoDirs.push(dir);
+		const fifo = join(dir, "photo.png");
+		execSync(`mkfifo '${fifo}'`);
+		let holds = true;
+		const r = rig([textReply("answer")], {
+			holdsAuthority: () => holds,
+			view: {
+				convId: "c1",
+				tools: {},
+				modalities: new Set(["text", "image"]),
+				carries: () => true,
+			},
+		});
+		const steer = member("photo steer");
+		steer.message = {
+			id: "photo-steer",
+			role: "user",
+			parts: [
+				{
+					type: ATTACHMENT_PART,
+					data: { path: fifo, mediaType: "image/png", filename: "photo.png", size: 7 },
+				},
+			],
+		} as UIMessage;
+		r.queue.push(steer);
+		const driving = driveStream(r.deps);
+		await new Promise((res) => setTimeout(res, 20)); // conversion parked on the FIFO
+		holds = false; // the epoch dies while the conversion waits
+		await writeFile(fifo, "pngdata");
+		const outcome = await driving;
+		expect(outcome.kind).toBe("ok");
+		// Settled fenced like the failure branch — NOT requeued: the splice
+		// already took this submit out of stop()'s reach.
+		expect(r.settlements).toEqual([{ m: steer, done: { kind: "fenced" } }]);
+		expect(r.unrequeued).toEqual([]);
+		expect(r.members).toEqual([]);
+		expect(steer.chunks).toEqual([]);
+		expect(r.prompts[0]).not.toContain("photo.png");
 	});
 
 	test("an overflow on a recoverable attempt holds the failure off the wire for the resume", async () => {

@@ -74,8 +74,10 @@ export interface AdmissionSnapshot<M extends AdmittedMember = AdmittedMember> {
 	steerMarkSeed: number;
 	// Admission to done. A resume keeps the failed attempt's start.
 	turnStartMs: number;
-	// Claimed by the resume claim — the caller owns membership, so
-	// appending them to its member list is its job.
+	// Claimed by the resume claim — the claim seam registered them
+	// into the caller's membership at the splice, so ownership is never
+	// pending on this function returning; the snapshot carries the
+	// record of what was taken.
 	claimed: M[];
 }
 

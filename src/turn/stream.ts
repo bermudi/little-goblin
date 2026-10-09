@@ -158,14 +158,21 @@ function replayWire(convId: string, turn: WireMember, live: LiveWire): void {
 // member and replaying the wire to it is one operation with one home
 // here, so a join window can never forget the replay (#96: a client
 // submitting during the recovery window used to see the resumed answer
-// only from mid-sentence). The queue splice itself is injected — queue
-// policy (claimableCount) never leaves runtime.ts.
+// only from mid-sentence). Registering into `members` is part of the
+// claim too: a claimed member must sit on the attempt's settlement
+// surface (notifyAll, the drain crash guard — both walk that list)
+// from the splice itself, or an admission failure between claim and
+// snapshot — a store read throwing — orphans it with its onDone never
+// firing (#114). The queue splice itself is injected — queue policy
+// (claimableCount) never leaves runtime.ts.
 export function claimMembers<M extends WireMember>(
 	convId: string,
 	claim: () => M[],
 	live: LiveWire,
+	members: M[],
 ): M[] {
 	const claimed = claim();
+	members.push(...claimed);
 	for (const m of claimed) replayWire(convId, m, live);
 	return claimed;
 }
@@ -399,7 +406,18 @@ export async function driveStream<M extends WireMember>(
 					// Same treatment as the admission snapshot: media
 					// materializes against this turn's model or degrades
 					// to a path reference.
-					injected.push(...(await convertSteeredMessage(deps.view, t.message)));
+					const converted = await convertSteeredMessage(deps.view, t.message);
+					// The conversion awaited, so authority is re-checked before
+					// its side effects — joining, wire replay, and folding the
+					// content into a request the epoch already killed (#115).
+					// Settled fenced like the failure branch, never requeued:
+					// the splice already moved this submit out of stop()'s
+					// reach, so putting it back would resurrect dropped input.
+					if (!deps.holdsAuthority()) {
+						deps.settle(t, { kind: "fenced" });
+						continue;
+					}
+					injected.push(...converted);
 					joinMember(convId, live, members, t);
 					claimedIds.add(t.message.id);
 					admittedCount++;

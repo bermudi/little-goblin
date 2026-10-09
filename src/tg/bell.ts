@@ -70,9 +70,11 @@ export function makeBellSink(
 				outcome: done.kind,
 			});
 			// Re-read the title at completion — the async retitle can land
-			// while the turn runs. A deleted conversation (get → null) must
-			// degrade to the generic label, never the captured stale title,
-			// and its ping carries no deep link into a dead conversation.
+			// while the turn runs. A deleted conversation (get → null) degrades
+			// to the generic label on the error path, never the captured stale
+			// title, and its ping carries no deep link into a dead conversation.
+			// (A deleted conversation's completed path never gets here: the
+			// delete takes its events, so there is no stored reply to ping.)
 			const live = deps.store.get(conv.id);
 			const title =
 				live === null ? "app conversation" : (live.title ?? conv.title ?? "app conversation");

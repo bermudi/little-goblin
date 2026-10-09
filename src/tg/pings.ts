@@ -41,8 +41,10 @@ export function openPings(db: Database): PingStore {
 	return {
 		record(chatId, messageId, conversationId) {
 			qRecord.run(chatId, messageId, conversationId, new Date().toISOString());
-			// After the insert — the fresh row's conversation exists by
-			// construction, so the sweep can never take it.
+			// After the insert — the sweep runs here so rows for dead
+			// conversations (record takes any id; nothing constrains it to
+			// an existing row) clean themselves up on the next write, fresh
+			// row included. That self-cleaning is why the sweep must stay.
 			const swept = qSweep.run().changes;
 			if (swept > 0) log.info("ping map swept — conversations gone", { swept });
 		},

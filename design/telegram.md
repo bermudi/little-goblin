@@ -434,7 +434,7 @@ edit) busts the frozen prompt snapshot with the persona — a demoted
 caller must never keep the personal persona's bytes.
 
 **Intake plumbing.** Guest handlers register **before**
-`allowedUserGate` — the gate stays pure and unchanged, and guest	raffic never hits it. `guest_message` updates bypass `tg_inbox`
+`allowedUserGate` — the gate stays pure and unchanged, and guest traffic never hits it. `guest_message` updates bypass `tg_inbox`
 entirely (guest message ids share no namespace with the bot's own
 chats — a `UNIQUE(chat_id, message_id)` hit would exit the process);
 at-most-once rides a `guest_dedup(update_id)` insert-or-ignore

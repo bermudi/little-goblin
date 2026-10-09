@@ -4,7 +4,7 @@
 // placeholder-then-edit delivery shape — Telegram faked at the api
 // edge like every other tg test.
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -18,6 +18,7 @@ import type { Config, ConfigRef } from "../config.ts";
 import type { Runtime, TurnSink } from "../runtime.ts";
 import type { UIMessage } from "ai";
 import type { Message, User } from "grammy/types";
+import type { Api } from "grammy";
 import type { AuthStore } from "../auth.ts";
 import { fetchTool } from "../agent/tools/fetch.ts";
 import {
@@ -32,6 +33,7 @@ import {
 	routeMemberGuestMessage,
 } from "./guest.ts";
 import { sharedChatPart } from "./mod.ts";
+import { log } from "../log.ts";
 
 const dirs: string[] = [];
 function tmpdb(): string {
@@ -263,14 +265,28 @@ describe("openGuestStore", () => {
 
 function fakeApi() {
 	const edits: string[] = [];
+	const sends: { chatId: number; text: string; options: Parameters<Api["sendMessage"]>[2] }[] = [];
 	return {
 		edits,
+		sends,
 		answerGuestQuery: (async () => ({ inline_message_id: "im-1" })) as never,
 		editMessageTextInline: (async (_id: string, text: string) => {
 			edits.push(text);
 			return true;
 		}) as never,
-		sendMessage: (async () => ({})) as never,
+		sendMessage: (async (
+			chatId: number,
+			text: string,
+			options: Parameters<Api["sendMessage"]>[2],
+		) => {
+			sends.push({ chatId, text, options });
+			return { message_id: sends.length };
+		}) as never,
+		editMessageText: (async (_chatId: number, _messageId: number, text: string) => {
+			edits.push(text);
+			return true;
+		}) as never,
+		setMessageReaction: (async () => true) as never,
 		sendChatAction: (async () => true) as never,
 	};
 }
@@ -298,6 +314,7 @@ describe("GuestSink", () => {
 		const api = fakeApi();
 		const sink = new GuestSink(api as never, "im-1", 3500, 1);
 		sink.onTextDelta("partial");
+		await new Promise((r) => setTimeout(r, 10));
 		await sink.onDone({ kind: "fenced" });
 		expect(api.edits[api.edits.length - 1]).toContain("⏹ superseded");
 		expect(api.edits[api.edits.length - 1]).toContain("partial");
@@ -312,9 +329,115 @@ describe("GuestSink", () => {
 		ok = false;
 		sink.onTextDelta(" second");
 		await new Promise((r) => setTimeout(r, 10));
-		const seen = [...api.edits];
 		await sink.onDone({ kind: "fenced" });
-		expect(seen.every((e) => !e.includes("second"))).toBe(true);
+		expect(api.edits).toEqual(["first", "first\n\n⏹ superseded"]);
+	});
+
+	test("fencing before any publication never stamps buffered text", async () => {
+		const api = fakeApi();
+		const sink = new GuestSink(api as never, "im-1", 3500);
+		sink.onTextDelta("unsent");
+		await sink.onDone({ kind: "fenced" });
+		expect(api.edits).toEqual(["⏹ superseded"]);
+	});
+
+	test("fencing during an in-flight edit stamps its result but drops queued and late deltas", async () => {
+		const api = fakeApi();
+		const started = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		let calls = 0;
+		api.editMessageTextInline = (async (_id: string, text: string) => {
+			if (++calls === 1) {
+				started.resolve();
+				await release.promise;
+			}
+			api.edits.push(text);
+			return true;
+		}) as never;
+		let ok = true;
+		const sink = new GuestSink(api as never, "im-1", 3500, 1);
+		sink.setAuthorityCheck(() => ok);
+		sink.onTextDelta("in flight");
+		await started.promise;
+		sink.onTextDelta(" queued");
+		await new Promise((r) => setTimeout(r, 10));
+		// Even a completion already awaiting Telegram must notice the epoch change.
+		const done = sink.onDone({ kind: "completed" });
+		ok = false;
+		sink.onTextDelta(" post-fence");
+		release.resolve();
+		await done;
+		expect(api.edits).toEqual(["in flight", "in flight\n\n⏹ superseded"]);
+	});
+
+	test("a failed edit does not become the displayed cancellation body", async () => {
+		const api = fakeApi();
+		api.editMessageTextInline = (async (_id: string, text: string) => {
+			if (text.includes("unsent")) throw new Error("Telegram rejected this edit");
+			api.edits.push(text);
+			return true;
+		}) as never;
+		const sink = new GuestSink(api as never, "im-1", 3500, 1);
+		sink.onTextDelta("shown");
+		await new Promise((r) => setTimeout(r, 10));
+		sink.onTextDelta(" unsent");
+		await new Promise((r) => setTimeout(r, 10));
+		await sink.onDone({ kind: "fenced" });
+		expect(api.edits).toEqual(["shown", "shown\n\n⏹ superseded"]);
+	});
+
+	test("fencing during the final edit is stamped without a second completion notification", async () => {
+		const api = fakeApi();
+		const started = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		let calls = 0;
+		api.editMessageTextInline = (async (_id: string, text: string) => {
+			if (++calls === 1) {
+				started.resolve();
+				await release.promise;
+			}
+			api.edits.push(text);
+			return true;
+		}) as never;
+		let ok = true;
+		const sink = new GuestSink(api as never, "im-1", 3500);
+		sink.setAuthorityCheck(() => ok);
+		sink.onTextDelta("buffered final");
+		const done = sink.onDone({ kind: "completed" });
+		await started.promise;
+		ok = false;
+		sink.onTextDelta(" post-fence");
+		release.resolve();
+		await done;
+		expect(api.edits).toEqual(["buffered final", "buffered final\n\n⏹ superseded"]);
+	});
+
+	test("public errors are generic, detailed only in logs, and fit with a capped reply", async () => {
+		const errorLog = spyOn(log, "error").mockImplementation(() => {});
+		try {
+			const detail = `private provider response: ${"secret".repeat(2000)}`;
+			for (const text of ["", "🙂".repeat(3000)]) {
+				const api = fakeApi();
+				const sink = new GuestSink(api as never, "im-1", 4000, 1);
+				sink.onTextDelta(text);
+				await new Promise((r) => setTimeout(r, 10));
+				await sink.onDone({ kind: "error", message: detail });
+				const final = api.edits.at(-1) ?? "";
+				expect(final).toContain("Please try again.");
+				expect(final).not.toContain("secret");
+				for (const body of api.edits) {
+					expect(body.length).toBeLessThanOrEqual(4096);
+					expect(body).not.toMatch(
+						/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
+					);
+				}
+			}
+			expect(errorLog).toHaveBeenCalledWith("guest turn failed", new Error(detail), {
+				inline: "im-1",
+			});
+		} finally {
+			errorLog.mockRestore();
+		}
 	});
 });
 
@@ -402,6 +525,33 @@ const operatorMsg = (
 	guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, ...over });
 
 describe("handleGuestUpdate", () => {
+	test("missing senders are dropped with a structured info reason on both surfaces", async () => {
+		const { env, submitted, api } = makeEnv();
+		const info = spyOn(log, "info");
+		try {
+			const msg = guestMsg({ guest_query_id: "missing" });
+			delete msg.from;
+			await handleGuestUpdate(env, msg, 90);
+			expect(await routeMemberGuestMessage(env, msg, 91)).toBe(false);
+			for (const [update, surface] of [
+				[90, "guest"],
+				[91, "member"],
+			] as const) {
+				expect(info).toHaveBeenCalledWith("guest summons dropped", {
+					reason: "missing-sender",
+					chat: -100,
+					message: 10,
+					update,
+					surface,
+				});
+			}
+			expect(submitted).toHaveLength(0);
+			expect(api.edits).toHaveLength(0);
+			expect(api.sends).toHaveLength(0);
+		} finally {
+			info.mockRestore();
+		}
+	});
 	test("operator summons anywhere: personal turn, memory off, placeholder first", async () => {
 		const { env, api, submitted } = makeEnv();
 		await handleGuestUpdate(
@@ -642,6 +792,50 @@ describe("routeMemberGuestMessage", () => {
 		expect(turn !== undefined).toBe(true);
 		expect(turn?.conv.persona).toBe("guest");
 	});
+	test("every member reply chunk stays in the summons' topic without changing guest identity", async () => {
+		const { env, submitted, store, api } = makeEnv();
+		guestStore_open(env);
+		await routeMemberGuestMessage(env, memberMsg({ message_thread_id: 123 }), 92);
+		const turn = submitted[0];
+		if (turn === undefined) throw new Error("missing member turn");
+		turn.sink.onTextDelta("x".repeat(9000));
+		await turn.sink.onDone({ kind: "completed" });
+		expect(api.sends).toHaveLength(3);
+		for (const send of api.sends) {
+			expect(send.chatId).toBe(-100);
+			expect(send.options?.message_thread_id).toBe(123);
+		}
+		expect(api.sends.map((send) => send.text).join("")).toBe("x".repeat(9000));
+		expect(store.get("guest:-100:9")?.threadId).toBeNull();
+		expect(turn.conv.threadId).toBeNull();
+	});
+
+	test("member guest error details stay in logs, not in the shared room", async () => {
+		const { env, submitted, api } = makeEnv();
+		guestStore_open(env);
+		await routeMemberGuestMessage(env, memberMsg({ message_thread_id: 123 }), 93);
+		const turn = submitted[0];
+		if (turn === undefined) throw new Error("missing member turn");
+		const errorLog = spyOn(log, "error").mockImplementation(() => {});
+		try {
+			await turn.sink.onDone({ kind: "error", message: "private provider response" });
+			expect(api.sends).toHaveLength(1);
+			expect(api.sends[0]?.text).toContain("Please try again.");
+			expect(api.sends[0]?.text).not.toContain("private provider response");
+			expect(api.sends[0]?.options?.message_thread_id).toBe(123);
+			expect(errorLog).toHaveBeenCalledWith(
+				"guest turn failed",
+				new Error("private provider response"),
+				{
+					conversation: "guest:-100:9",
+					chat: -100,
+				},
+			);
+		} finally {
+			errorLog.mockRestore();
+		}
+	});
+
 	test("third-party mention in a closed chat is swallowed with a deny log", async () => {
 		const { env, submitted } = makeEnv();
 		expect(await routeMemberGuestMessage(env, memberMsg({}), 23)).toBe(true);
@@ -717,6 +911,33 @@ describe("routeMemberGuestMessage", () => {
 		guestStore.open(-100, 7);
 		expect(await routeMemberGuestMessage(env, memberMsg({}), 29)).toBe(true);
 		expect(submitted.length).toBe(0);
+	});
+	test("short member refusals and control acknowledgments stay in the summons' topic", async () => {
+		const busy = makeEnv({ busy: true });
+		busy.guestStore.open(-100, 7);
+		await routeMemberGuestMessage(busy.env, memberMsg({ message_thread_id: 123 }), 300);
+
+		const budget = makeEnv();
+		budget.guestStore.open(-100, 7);
+		budget.configRef.current.guest!.perUserDailyTurns = 1;
+		await routeMemberGuestMessage(budget.env, memberMsg({ message_thread_id: 123 }), 301);
+		await routeMemberGuestMessage(budget.env, memberMsg({ message_thread_id: 123 }), 302);
+
+		const control = makeEnv();
+		for (const [index, cmd] of ["open", "off"].entries()) {
+			await routeMemberGuestMessage(
+				control.env,
+				memberMsg({
+					message_thread_id: 123,
+					from: { id: 7, is_bot: false, first_name: "Op" },
+					text: `/${cmd}@goblin_bot`,
+				}),
+				303 + index,
+			);
+		}
+		const sends = [...busy.api.sends, ...budget.api.sends, ...control.api.sends];
+		expect(sends).toHaveLength(4);
+		for (const send of sends) expect(send.options?.message_thread_id).toBe(123);
 	});
 	test("redelivered member commands never re-run", async () => {
 		const { env, guestStore } = makeEnv();

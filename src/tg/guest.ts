@@ -33,7 +33,7 @@ import type { Runtime, TurnDone, TurnSink } from "../runtime.ts";
 import type { UIMessage } from "ai";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
-import { makeDeliverySink } from "./delivery.ts";
+import { isNotModifiedError, makeDeliverySink } from "./delivery.ts";
 
 // ---------- state: open chats, dedup, budget (rows, not config) ----------
 
@@ -192,6 +192,21 @@ export function summonMessage(msg: Message): UIMessage {
 // ---------- sink: the guest_message surface (one message, edited) ----------
 
 const GUEST_EDIT_INTERVAL_MS = 1_000;
+const TELEGRAM_BODY_LIMIT = 4096;
+const CAPPED_NOTICE = "\n\n… (reply capped — continue in goblin's own chat)";
+const PUBLIC_ERROR = "Sorry, I couldn't finish this reply. Please try again.";
+const SUPERSEDED = "⏹ superseded";
+
+function bodyPrefix(text: string, limit: number): string {
+	// Telegram must not receive a lone half of an emoji at the cap.
+	const end = Math.min(text.length, limit);
+	const last = text.charCodeAt(end - 1);
+	const next = text.charCodeAt(end);
+	return text.slice(
+		0,
+		last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff ? end - 1 : end,
+	);
+}
 
 // Streams a guest reply into the single message answerGuestQuery sent.
 // One message is the physics of the surface: no chunking, no files, no
@@ -200,6 +215,8 @@ const GUEST_EDIT_INTERVAL_MS = 1_000;
 // identical body), never an error.
 export class GuestSink implements TurnSink {
 	private text = "";
+	private published = "";
+	private fenced = false;
 	private lastEdit = 0;
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private edits = 0;
@@ -219,7 +236,7 @@ export class GuestSink implements TurnSink {
 	) {}
 
 	onTextDelta(delta: string): void {
-		if (this.done) return;
+		if (this.done || this.fenced || (this.authority !== null && !this.authority())) return;
 		this.text += delta;
 		if (this.timer === null) {
 			const wait = Math.max(0, this.editIntervalMs - (Date.now() - this.lastEdit));
@@ -240,23 +257,35 @@ export class GuestSink implements TurnSink {
 		this.authority = check;
 	}
 
-	private render(final: boolean): string {
-		if (this.text === "") return final ? "…" : "";
-		if (this.text.length <= this.outputChars) return this.text;
-		return `${this.text.slice(0, this.outputChars)}\n\n… (reply capped — continue in goblin's own chat)`;
+	private render(final: boolean, suffix = ""): string {
+		if (this.text === "") return suffix.trimStart() || (final ? "…" : "");
+		if (this.text.length <= Math.min(this.outputChars, TELEGRAM_BODY_LIMIT - suffix.length)) {
+			return this.text + suffix;
+		}
+		const limit = Math.min(
+			this.outputChars,
+			TELEGRAM_BODY_LIMIT - CAPPED_NOTICE.length - suffix.length,
+		);
+		return bodyPrefix(this.text, limit) + CAPPED_NOTICE + suffix;
 	}
 
-	private async edit(body: string): Promise<void> {
+	private async edit(body: string, stamp = false): Promise<void> {
 		if (this.dead) return;
+		// Queued edits check at execution, not just when flush enqueues them.
+		if (!stamp && (this.fenced || (this.authority !== null && !this.authority()))) return;
 		try {
 			await withTimeout(
 				this.api.editMessageTextInline(this.inlineMessageId, body),
 				"editMessageText",
 			);
 			this.edits++;
+			this.published = body;
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			if (msg.includes("message is not modified")) return;
+			if (isNotModifiedError(err)) {
+				this.published = body;
+				return;
+			}
 			if (msg.includes("message to edit not found") || msg.includes("message not found")) {
 				this.dead = true;
 				log.error("guest message vanished — edits stopped", undefined, {
@@ -280,28 +309,44 @@ export class GuestSink implements TurnSink {
 		await this.chain;
 	}
 
+	private async stampSuperseded(): Promise<void> {
+		this.fenced = true;
+		// Only text confirmed sent may survive a fence, including an in-flight edit.
+		const suffix = this.published === "" ? SUPERSEDED : `\n\n${SUPERSEDED}`;
+		await this.edit(bodyPrefix(this.published, TELEGRAM_BODY_LIMIT - suffix.length) + suffix, true);
+	}
+
 	async onDone(doneResult: TurnDone): Promise<void> {
 		if (this.timer !== null) {
 			clearTimeout(this.timer);
 			this.timer = null;
 		}
 		this.done = true;
-		await this.chain;
-		let body = this.render(true);
-		if (doneResult.kind === "fenced") {
-			// The one sanctioned post-fence stamp: displayed text + marker.
-			body = body === "…" ? "⏹ superseded" : `${body}\n\n⏹ superseded`;
-		} else if (doneResult.kind === "error") {
-			body = this.text === "" ? `⚠ ${doneResult.message}` : `${body}\n\n⚠ ${doneResult.message}`;
+		this.fenced = doneResult.kind === "fenced";
+		if (doneResult.kind === "error") {
+			log.error("guest turn failed", new Error(doneResult.message), {
+				inline: this.inlineMessageId,
+			});
 		}
+		await this.chain;
+		this.fenced ||= this.authority !== null && !this.authority();
 		try {
-			await this.edit(body);
+			if (this.fenced) {
+				await this.stampSuperseded();
+			} else {
+				await this.edit(
+					this.render(true, doneResult.kind === "error" ? `\n\n⚠ ${PUBLIC_ERROR}` : ""),
+				);
+				// Completion is notified once: a fence during this final await
+				// must be stamped here, not left for a second notification.
+				if (this.authority !== null && !this.authority()) await this.stampSuperseded();
+			}
 		} finally {
 			log.info("guest answered", {
 				inline: this.inlineMessageId,
 				edits: this.edits + 1,
 				chars: this.text.length,
-				outcome: doneResult.kind,
+				outcome: this.fenced ? "fenced" : doneResult.kind,
 			});
 		}
 	}
@@ -445,7 +490,17 @@ export async function handleGuestUpdate(
 ): Promise<void> {
 	const from = msg.from;
 	const guestQueryId = msg.guest_query_id;
-	if (from === undefined || guestQueryId === undefined) return;
+	if (from === undefined) {
+		log.info("guest summons dropped", {
+			reason: "missing-sender",
+			chat: msg.chat.id,
+			message: msg.message_id,
+			update: updateId,
+			surface: "guest",
+		});
+		return;
+	}
+	if (guestQueryId === undefined) return;
 	const cfg = env.configRef.current.guest;
 	if (cfg === undefined) return; // feature off: total silence, commands included
 	if (!env.guestStore.seen(updateId)) return;
@@ -587,7 +642,16 @@ export async function routeMemberGuestMessage(
 	updateId: number,
 ): Promise<boolean> {
 	const from = msg.from;
-	if (from === undefined) return false;
+	if (from === undefined) {
+		log.info("guest summons dropped", {
+			reason: "missing-sender",
+			chat: msg.chat.id,
+			message: msg.message_id,
+			update: updateId,
+			surface: "member",
+		});
+		return false;
+	}
 	// Groups only: the bot's own DM is not a guest chat — a stray "/off"
 	// there must fall through to normal intake, not flip a phantom
 	// guest chat keyed by the operator's own user id.
@@ -617,10 +681,15 @@ export async function routeMemberGuestMessage(
 		if (cmd === "open") {
 			env.guestStore.open(chatId, from.id);
 			log.info("guest chat opened", { chat: chatId, by: from.id });
-			void sendMemberLine(env, chatId, "🟢 guest access open — anyone in this chat can summon me");
+			void sendMemberLine(
+				env,
+				chatId,
+				"🟢 guest access open — anyone in this chat can summon me",
+				msg.message_thread_id,
+			);
 		} else {
 			closeGuestChat(env, chatId);
-			void sendMemberLine(env, chatId, "🔴 guest access closed");
+			void sendMemberLine(env, chatId, "🔴 guest access closed", msg.message_thread_id);
 		}
 		return true;
 	}
@@ -643,6 +712,7 @@ export async function routeMemberGuestMessage(
 			env,
 			chatId,
 			"⏳ still answering an earlier summons — try again in a moment",
+			msg.message_thread_id,
 		);
 		return true;
 	}
@@ -655,12 +725,28 @@ export async function routeMemberGuestMessage(
 			env,
 			chatId,
 			`⏳ daily guest limit reached (${limit} answers) — try again tomorrow`,
+			msg.message_thread_id,
 		);
 		return true;
 	}
 
-	const sink = makeDeliverySink(env.api, conv, msg.message_id);
-	const admitted = env.runtime.submit(conv, summonMessage(msg), sink);
+	// Guest identity is per summoner, but this reply belongs in the summons' topic.
+	const sink = makeDeliverySink(
+		env.api,
+		{ ...conv, threadId: msg.message_thread_id ?? null },
+		msg.message_id,
+	);
+	const admitted = env.runtime.submit(conv, summonMessage(msg), {
+		...sink,
+		onDone(done) {
+			if (done.kind !== "error") return sink.onDone(done);
+			log.error("guest turn failed", new Error(done.message), {
+				conversation: conv.id,
+				chat: chatId,
+			});
+			return sink.onDone({ kind: "error", message: PUBLIC_ERROR });
+		},
+	});
 	log.info("guest summons", {
 		chat: chatId,
 		from: from.id,
@@ -672,11 +758,23 @@ export async function routeMemberGuestMessage(
 	return true;
 }
 
-function sendMemberLine(env: GuestEnv, chatId: number, text: string): Promise<void> {
-	return withTimeout(env.api.sendMessage(chatId, text), "sendMessage")
+function sendMemberLine(
+	env: GuestEnv,
+	chatId: number,
+	text: string,
+	threadId: number | undefined,
+): Promise<void> {
+	return withTimeout(
+		env.api.sendMessage(
+			chatId,
+			text,
+			threadId === undefined ? {} : { message_thread_id: threadId },
+		),
+		"sendMessage",
+	)
 		.then(() => undefined)
 		.catch((err: unknown) => {
-			log.warn("guest member line failed", err);
+			log.warn("guest member line failed", err, { chat: chatId, thread: threadId });
 		});
 }
 

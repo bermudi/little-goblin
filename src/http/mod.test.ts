@@ -560,6 +560,24 @@ describe("mini-app memory status", () => {
 // config.ts); the served script must also parse — a typo in a
 // 900-line client otherwise only surfaces on a phone.
 describe("mini-app page serving", () => {
+	test("the transcription card carries every id the client looks up", () => {
+		// app.js asserts ids loudly at runtime ($ throws on a miss), but a
+		// rename in app.ts that keeps the JS waiting would only surface on
+		// a real settings visit — pin the contract statically.
+		const dom = parseHTML(APP_HTML);
+		for (const id of [
+			"trFields",
+			"trKind",
+			"trModelRow",
+			"trModel",
+			"trAuthRow",
+			"trAuth",
+			"trLang",
+		]) {
+			expect(dom.document.getElementById(id), id).not.toBeNull();
+		}
+	});
+
 	test("GET / serves the page, which loads the client from /app.js", async () => {
 		useHome();
 		const http = startHttp({

@@ -886,8 +886,9 @@ function validate() {
 	if (!cfg.model) return "Pick an app default model.";
 	if (!cfg.telegramModel) return "Pick a Telegram model.";
 	if (cfg.tts && !cfg.tts.voice.trim()) return "Text to speech is on — set a voice.";
-	if (cfg.transcription && !cfg.transcription.auth.trim())
-		return "Transcription is on — set a secret name.";
+	// No transcription secret check: whistle takes none (its auth row is
+	// hidden), and a blank cloud auth sends nothing — the server fills
+	// the kind's default record, per the row captions.
 	if (cfg.vision && !cfg.vision.model.trim()) return "Vision is on — pick a model.";
 	if (cfg.search) {
 		if (!cfg.search.length) return "Search is on — add at least one provider, or switch it off.";
@@ -1716,6 +1717,18 @@ function populate(c) {
 	trKindSelect.onchange = () => {
 		const t = /** @type {TrDraft} */ (cfg.transcription);
 		t.kind = trKindSelect.value;
+		// Provider-specific fields don't carry across kinds — a groq
+		// model + secret left visible under whistle would save into the
+		// wrong union arm (or silently nowhere). Blank is always safe:
+		// cloud blanks fall back to the kind's defaults server-side.
+		if (t.kind === "whistle") {
+			t.model = "";
+			t.auth = "";
+		} else {
+			t.keywords = [];
+			t.engine = "";
+			t.weights = "";
+		}
 		paintTranscription();
 		markDirty();
 	};

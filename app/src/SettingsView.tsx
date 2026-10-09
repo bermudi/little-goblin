@@ -1,0 +1,1340 @@
+import { useEffect, useId, useRef, useState } from "react";
+import { ApiError, getOperatorConfig, getThinkingLevels, saveOperatorConfig } from "./api.ts";
+import {
+	bodyFromDraft,
+	displayLevel,
+	draftFromConfig,
+	EMPTY_DRAFT,
+	FETCH_META,
+	SEARCH_META,
+	THINKING_ORDER,
+	validateDraft,
+	VOICE_SUGGESTIONS,
+	type ChainEntry,
+	type KindMeta,
+	type ProvDraft,
+	type SettingsDraft,
+	type TrDraft,
+	type TtsDraft,
+	type VisDraft,
+	type MemDraft,
+} from "./settingsDraft.ts";
+import type { ThinkingLevel } from "../../src/config.ts";
+
+type Section = "chat" | "voice" | "web" | "memory" | "providers" | "access";
+type SheetMode = "model" | "telegram" | "title" | "vision";
+
+// The draft serializes without the providers' render ids — they're a
+// React keying detail, not editor state.
+const serialize = (d: SettingsDraft, ps: ProvDraft[]) =>
+	JSON.stringify({ d, ps: ps.map(({ id: _id, ...rest }) => rest) });
+
+function Seg({
+	options,
+	value,
+	onChange,
+	ariaLabel,
+}: {
+	options: readonly string[];
+	value: string;
+	onChange: (v: string) => void;
+	ariaLabel: string;
+}) {
+	return (
+		<div className="seg" role="group" aria-label={ariaLabel}>
+			{options.map((o) => (
+				<button
+					key={o}
+					type="button"
+					className={o === value ? "seg-btn on" : "seg-btn"}
+					onClick={() => onChange(o)}
+				>
+					{o}
+				</button>
+			))}
+		</div>
+	);
+}
+
+function Switch({
+	on,
+	onChange,
+	ariaLabel,
+}: {
+	on: boolean;
+	onChange: (on: boolean) => void;
+	ariaLabel: string;
+}) {
+	return (
+		<button
+			type="button"
+			className={on ? "switch on" : "switch"}
+			aria-pressed={on}
+			aria-label={ariaLabel}
+			onClick={() => onChange(!on)}
+		/>
+	);
+}
+
+function Row({
+	label,
+	cap,
+	children,
+	col,
+	labelId,
+}: {
+	label: string;
+	cap?: string;
+	children?: React.ReactNode;
+	col?: boolean;
+	labelId?: string;
+}) {
+	return (
+		<div className={col ? "row col" : "row"}>
+			<div className="rstack">
+				<div className="rlabel" id={labelId}>
+					{label}
+				</div>
+				{cap !== undefined && <div className="cap">{cap}</div>}
+			</div>
+			{children}
+		</div>
+	);
+}
+
+function Field({
+	label,
+	value,
+	onChange,
+	placeholder,
+	cap,
+	numeric,
+	mono,
+}: {
+	label: string;
+	value: string;
+	onChange: (v: string) => void;
+	placeholder?: string;
+	cap?: string;
+	numeric?: boolean;
+	mono?: boolean;
+}) {
+	const id = useId();
+	return (
+		<div className="frow">
+			<label className="flabel" htmlFor={id}>
+				{label}
+			</label>
+			<input
+				id={id}
+				className={mono ? "mono" : undefined}
+				value={value}
+				onChange={(e) => onChange(e.target.value)}
+				placeholder={placeholder}
+				inputMode={numeric ? "numeric" : undefined}
+				autoComplete="off"
+				spellCheck={false}
+				autoCapitalize="off"
+			/>
+			{cap !== undefined && <div className="cap">{cap}</div>}
+		</div>
+	);
+}
+
+function ChipsEditor({
+	values,
+	onAdd,
+	onRemove,
+	placeholder,
+	ariaLabel,
+	numeric,
+	suggestions,
+	cap,
+}: {
+	values: string[];
+	onAdd: (v: string) => void;
+	onRemove: (i: number) => void;
+	placeholder: string;
+	ariaLabel: string;
+	numeric?: boolean;
+	suggestions?: readonly string[];
+	cap?: string;
+}) {
+	const [v, setV] = useState("");
+	const listId = useRef(`dl-${Math.random().toString(36).slice(2, 9)}`).current;
+	const add = () => {
+		const t = v.trim();
+		if (t === "") return;
+		onAdd(t);
+		setV("");
+	};
+	return (
+		<div className="frow">
+			<div className="chips">
+				{values.map((x, i) => (
+					<span className="chip" key={`${i}:${x}`}>
+						{x}
+						<button type="button" aria-label={`remove ${x}`} onClick={() => onRemove(i)}>
+							×
+						</button>
+					</span>
+				))}
+			</div>
+			<div className="addrow">
+				<input
+					className="mono"
+					value={v}
+					onChange={(e) => setV(e.target.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter") {
+							e.preventDefault();
+							add();
+						}
+					}}
+					placeholder={placeholder}
+					inputMode={numeric ? "numeric" : undefined}
+					autoComplete="off"
+					spellCheck={false}
+					autoCapitalize="off"
+					aria-label={ariaLabel}
+					list={suggestions !== undefined ? listId : undefined}
+				/>
+				<button className="addbtn" type="button" onClick={add}>
+					Add
+				</button>
+			</div>
+			{suggestions !== undefined && (
+				<datalist id={listId}>
+					{suggestions.map((s) => (
+						<option key={s} value={s} />
+					))}
+				</datalist>
+			)}
+			{cap !== undefined && <div className="cap">{cap}</div>}
+		</div>
+	);
+}
+
+// The model picker: favorites, the current ref, and a custom
+// provider/model-id pair — the mini app's sheet, verbatim semantics.
+function ModelSheet({
+	title,
+	current,
+	allowOff,
+	favorites,
+	provNames,
+	onPick,
+	onClose,
+}: {
+	title: string;
+	current: string;
+	allowOff: boolean;
+	favorites: string[];
+	provNames: string[];
+	onPick: (ref: string) => void;
+	onClose: () => void;
+}) {
+	const [custProv, setCustProv] = useState(provNames[0] ?? "");
+	const [custModel, setCustModel] = useState("");
+	const row = (ref: string, label: string) => (
+		<button
+			key={ref || "off"}
+			type="button"
+			className={ref === current ? "mrow sel" : "mrow"}
+			onClick={() => onPick(ref)}
+		>
+			<span className={ref === "" ? "ref off-label" : "ref"} title={ref}>
+				{label}
+			</span>
+			{ref === current && <span className="check">✓</span>}
+		</button>
+	);
+	return (
+		<div className="veil on" onClick={onClose}>
+			<div className="msheet" role="dialog" aria-label={title} onClick={(e) => e.stopPropagation()}>
+				<header className="msheet-head">
+					<h3>{title}</h3>
+					<button type="button" aria-label="Close" onClick={onClose}>
+						×
+					</button>
+				</header>
+				<div className="msheet-body">
+					{allowOff && row("", "Off")}
+					{favorites.length > 0 && (
+						<>
+							<div className="mgroup">Favorites</div>
+							{favorites.map((f) => row(f, f))}
+						</>
+					)}
+					{current !== "" && !favorites.includes(current) && (
+						<>
+							<div className="mgroup">Current</div>
+							{row(current, current)}
+						</>
+					)}
+					{provNames.length > 0 && (
+						<div className="msheet-custom">
+							<select value={custProv} onChange={(e) => setCustProv(e.target.value)}>
+								{provNames.map((n) => (
+									<option key={n} value={n}>
+										{n}
+									</option>
+								))}
+							</select>
+							<input
+								className="mono"
+								value={custModel}
+								onChange={(e) => setCustModel(e.target.value)}
+								placeholder="model id"
+								autoComplete="off"
+								spellCheck={false}
+								autoCapitalize="off"
+								onKeyDown={(e) => {
+									if (e.key === "Enter" && custModel.trim() !== "") {
+										onPick(`${custProv}/${custModel.trim()}`);
+									}
+								}}
+							/>
+							<button
+								type="button"
+								disabled={custModel.trim() === ""}
+								onClick={() => onPick(`${custProv}/${custModel.trim()}`)}
+							>
+								Use
+							</button>
+						</div>
+					)}
+				</div>
+			</div>
+		</div>
+	);
+}
+
+function ChainEditor({
+	entries,
+	kinds,
+	meta,
+	onChange,
+}: {
+	entries: ChainEntry[];
+	kinds: readonly string[];
+	meta: Record<string, KindMeta>;
+	onChange: (next: ChainEntry[]) => void;
+}) {
+	const move = (i: number, d: number) => {
+		const j = i + d;
+		if (j < 0 || j >= entries.length) return;
+		const next = entries.slice();
+		next[i] = entries[j]!;
+		next[j] = entries[i]!;
+		onChange(next);
+	};
+	return (
+		<>
+			{entries.map((e, i) => {
+				const m = meta[e.kind];
+				return (
+					<div className="chain-card" key={i}>
+						<div className="chain-head">
+							<span className="chain-num">{i + 1}</span>
+							<span className="chain-btns">
+								<button
+									type="button"
+									aria-label="move up"
+									disabled={i === 0}
+									onClick={() => move(i, -1)}
+								>
+									↑
+								</button>
+								<button
+									type="button"
+									aria-label="move down"
+									disabled={i === entries.length - 1}
+									onClick={() => move(i, 1)}
+								>
+									↓
+								</button>
+								<button
+									type="button"
+									aria-label="remove"
+									onClick={() => onChange(entries.filter((_, j) => j !== i))}
+								>
+									×
+								</button>
+							</span>
+						</div>
+						<select
+							className="mono"
+							value={e.kind}
+							aria-label={`step ${i + 1} provider`}
+							onChange={(ev) =>
+								onChange(entries.map((x, j) => (j === i ? { ...x, kind: ev.target.value } : x)))
+							}
+						>
+							{kinds.map((k) => (
+								<option key={k} value={k}>
+									{k}
+								</option>
+							))}
+						</select>
+						{m?.auth === "none" ? (
+							<div className="cap">{m.note ?? "No key needed."}</div>
+						) : (
+							<>
+								<input
+									className="mono"
+									value={e.auth}
+									onChange={(ev) =>
+										onChange(entries.map((x, j) => (j === i ? { ...x, auth: ev.target.value } : x)))
+									}
+									placeholder={
+										m?.auth === "optional" ? "secret name (optional)" : "secret name in auth.jsonl"
+									}
+									autoComplete="off"
+									spellCheck={false}
+									autoCapitalize="off"
+									aria-label={`step ${i + 1} secret name`}
+								/>
+								{m?.auth === "optional" && m.note !== undefined && (
+									<div className="cap">{m.note}</div>
+								)}
+							</>
+						)}
+					</div>
+				);
+			})}
+			<button
+				className="ghost"
+				type="button"
+				onClick={() => {
+					const first = kinds[0];
+					if (first === undefined) return;
+					onChange([...entries, { kind: first, auth: "" }]);
+				}}
+			>
+				+ Add provider
+			</button>
+		</>
+	);
+}
+
+function ProviderCard({
+	prov,
+	kinds,
+	referencedBy,
+	onPatch,
+	onRename,
+	onRemove,
+}: {
+	prov: ProvDraft;
+	kinds: readonly string[];
+	referencedBy: string[];
+	onPatch: (patch: Partial<ProvDraft>) => void;
+	onRename: (v: string) => string | null;
+	onRemove: () => void;
+}) {
+	// Name edits commit on blur — a half-typed name would break model
+	// refs while the operator is mid-word (the mini app's rule).
+	const [nameDraft, setNameDraft] = useState(prov.name);
+	const [nameErr, setNameErr] = useState<string | null>(null);
+	useEffect(() => setNameDraft(prov.name), [prov.name]);
+	const commitName = () => {
+		const v = nameDraft.trim();
+		if (v === prov.name) {
+			setNameDraft(prov.name);
+			setNameErr(null);
+			return;
+		}
+		const err = onRename(v);
+		if (err !== null) {
+			setNameDraft(prov.name);
+			setNameErr(err);
+		} else {
+			setNameErr(null);
+		}
+	};
+	const needsBase = prov.kind === "openai-compatible" || prov.kind === "responses";
+	const codex = prov.kind === "codex";
+	return (
+		<div className="prov card">
+			<div className="prov-head">
+				<input
+					className="pname mono"
+					value={nameDraft}
+					onChange={(e) => setNameDraft(e.target.value)}
+					onBlur={commitName}
+					onKeyDown={(e) => {
+						if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+					}}
+					placeholder="name"
+					autoComplete="off"
+					spellCheck={false}
+					autoCapitalize="off"
+					aria-label="provider name"
+				/>
+				<button type="button" className="rm" onClick={onRemove}>
+					Remove
+				</button>
+			</div>
+			{nameErr !== null && <div className="cap err-inline">{nameErr}</div>}
+			{referencedBy.length > 0 && <div className="cap">Used by {referencedBy.join(", ")}.</div>}
+			<div className="frow">
+				<label className="flabel">Type</label>
+				<select
+					className="mono"
+					value={prov.kind}
+					aria-label="provider type"
+					onChange={(e) => onPatch({ kind: e.target.value })}
+				>
+					{kinds.map((k) => (
+						<option key={k} value={k}>
+							{k}
+						</option>
+					))}
+				</select>
+			</div>
+			{needsBase && (
+				<div className="frow">
+					<label className="flabel">Base url</label>
+					<input
+						className="mono"
+						value={prov.baseUrl}
+						onChange={(e) => onPatch({ baseUrl: e.target.value })}
+						placeholder="https://…"
+						autoComplete="off"
+						spellCheck={false}
+						autoCapitalize="off"
+						aria-label="base url"
+					/>
+				</div>
+			)}
+			<div className="frow">
+				<label className="flabel">{codex ? "Codex auth file" : "Secret name"}</label>
+				<input
+					className="mono"
+					value={prov.auth}
+					onChange={(e) => onPatch({ auth: e.target.value })}
+					placeholder={
+						codex ? "~/.codex/auth.json — blank = default" : "in auth.jsonl — not the secret itself"
+					}
+					autoComplete="off"
+					spellCheck={false}
+					autoCapitalize="off"
+					aria-label={codex ? "codex auth file" : "secret name"}
+				/>
+			</div>
+		</div>
+	);
+}
+
+const SECTIONS: { key: Section; label: string; sub: string }[] = [
+	{ key: "chat", label: "Chat", sub: "Model, thinking, topic titles, favorites" },
+	{ key: "voice", label: "Voice", sub: "Text to speech, transcription" },
+	{ key: "web", label: "Web", sub: "Search and fetch providers" },
+	{ key: "memory", label: "Memory", sub: "Hindsight service" },
+	{ key: "providers", label: "Providers", sub: "Model vendors and secret names" },
+	{ key: "access", label: "Access", sub: "Allowed users, doors, port, log level" },
+];
+
+export function SettingsView({
+	token,
+	onDirtyChange,
+}: {
+	token: string | null;
+	onDirtyChange?: (dirty: boolean) => void;
+}) {
+	const [kinds, setKinds] = useState<{
+		provider: readonly string[];
+		search: readonly string[];
+		fetch: readonly string[];
+	} | null>(null);
+	const [etag, setEtag] = useState("");
+	const [draft, setDraft] = useState<SettingsDraft>(EMPTY_DRAFT);
+	const [provs, setProvs] = useState<ProvDraft[]>([]);
+	const [baseline, setBaseline] = useState<string | null>(null);
+	const [section, setSection] = useState<Section | null>(null);
+	const [sheet, setSheet] = useState<SheetMode | null>(null);
+	const [notice, setNotice] = useState<{ text: string; kind: "err" | "ok" } | null>(null);
+	const [saving, setSaving] = useState(false);
+	const [loadErr, setLoadErr] = useState<string | null>(null);
+	// Turned-off blocks keep their last content — toggling back on
+	// restores it (the mini app's last* locals).
+	const last = useRef<{
+		tts: TtsDraft | null;
+		transcription: TrDraft | null;
+		vision: VisDraft | null;
+		search: ChainEntry[] | null;
+		fetch: ChainEntry[] | null;
+		memory: MemDraft | null;
+	}>({ tts: null, transcription: null, vision: null, search: null, fetch: null, memory: null });
+	const [levels, setLevels] = useState<{ app: string[]; telegram: string[] }>({
+		app: [...THINKING_ORDER],
+		telegram: [...THINKING_ORDER],
+	});
+	const thinkSeq = useRef(0);
+
+	const dirty = baseline !== null && serialize(draft, provs) !== baseline;
+	useEffect(() => onDirtyChange?.(dirty), [dirty, onDirtyChange]);
+
+	useEffect(() => {
+		let live = true;
+		getOperatorConfig(token).then(
+			({ data, etag: tag }) => {
+				if (!live) return;
+				const { draft: d, providers } = draftFromConfig(data.config);
+				setDraft(d);
+				setProvs(providers);
+				setBaseline(serialize(d, providers));
+				setEtag(tag ?? "");
+				setKinds({
+					provider: data.providerKinds,
+					search: data.searchKinds,
+					fetch: data.fetchKinds,
+				});
+			},
+			(err) => {
+				if (live)
+					setLoadErr(
+						err instanceof ApiError
+							? `The settings endpoint answered ${err.status}: ${err.message}`
+							: "Couldn't reach goblin — check the tailnet.",
+					);
+			},
+		);
+		return () => {
+			live = false;
+		};
+	}, [token]);
+
+	// Thinking-level capability lookups — kind/base/model from the
+	// form's own provider state, debounced like the mini app's
+	// refreshThinkingSoon.
+	const provsSig = provs.map((p) => `${p.name.trim()}|${p.kind}|${p.baseUrl.trim()}`).join(",");
+	useEffect(() => {
+		if (kinds === null) return;
+		const seq = ++thinkSeq.current;
+		const t = setTimeout(() => {
+			const channel = async (ref: string): Promise<string[]> => {
+				const slash = ref.indexOf("/");
+				if (slash <= 0) return [...THINKING_ORDER];
+				const p = provs.find((q) => q.name.trim() === ref.slice(0, slash));
+				if (p === undefined) return [...THINKING_ORDER];
+				const base =
+					p.kind === "openai-compatible" || p.kind === "responses"
+						? p.baseUrl.trim() || undefined
+						: undefined;
+				try {
+					const r = await getThinkingLevels(token, p.kind, ref.slice(slash + 1), base);
+					return r.levels;
+				} catch {
+					return [...THINKING_ORDER];
+				}
+			};
+			void Promise.all([channel(draft.model), channel(draft.telegramModel)]).then(
+				([app, telegram]) => {
+					if (seq === thinkSeq.current) setLevels({ app, telegram });
+				},
+			);
+		}, 300);
+		return () => clearTimeout(t);
+		// provsSig is the provs projection this effect actually keys on.
+	}, [draft.model, draft.telegramModel, provsSig, token, kinds]);
+
+	const patchDraft = (patch: Partial<SettingsDraft>) => setDraft((d) => ({ ...d, ...patch }));
+	const patchProv = (id: number, patch: Partial<ProvDraft>) =>
+		setProvs((ps) => ps.map((q) => (q.id === id ? { ...q, ...patch } : q)));
+
+	const renameProvider = (id: number, v: string): string | null => {
+		if (v === "") return "Every provider needs a name.";
+		if (provs.some((q) => q.id !== id && q.name === v)) return `Duplicate provider name: ${v}`;
+		setProvs((ps) => ps.map((q) => (q.id === id ? { ...q, name: v } : q)));
+		return null;
+	};
+
+	// Which draft fields still name a provider — the mini app's
+	// providerRefs(), shown under the card and repeated on remove.
+	const providerRefs = (name: string): string[] => {
+		const refs: string[] = [];
+		const pfx = `${name}/`;
+		if (draft.model.startsWith(pfx)) refs.push("app default model");
+		if (draft.telegramModel.startsWith(pfx)) refs.push("Telegram model");
+		if (draft.titleModel.startsWith(pfx)) refs.push("topic titles");
+		if (draft.vision?.model.startsWith(pfx)) refs.push("vision");
+		if (draft.favorites.some((f) => f.startsWith(pfx))) refs.push("favorites");
+		return refs;
+	};
+
+	const removeProvider = (p: ProvDraft) => {
+		const refs = p.name !== "" ? providerRefs(p.name) : [];
+		setProvs((ps) => ps.filter((q) => q.id !== p.id));
+		if (refs.length > 0) {
+			setNotice({
+				text: `Removed — still referenced by ${refs.join(", ")}. Fix before saving.`,
+				kind: "err",
+			});
+		}
+	};
+
+	const addProvider = () =>
+		setProvs((ps) => [
+			...ps,
+			{
+				id: Math.max(0, ...ps.map((q) => q.id)) + 1,
+				name: `provider-${ps.length + 1}`,
+				kind: kinds?.provider[0] ?? "openai-compatible",
+				baseUrl: "",
+				auth: "",
+			},
+		]);
+
+	const pickModel = (ref: string) => {
+		if (sheet === "title") {
+			patchDraft({ titleModel: ref });
+		} else if (sheet === "vision") {
+			setDraft((d) => {
+				if (ref === "") {
+					last.current.vision = d.vision;
+					return { ...d, vision: null };
+				}
+				const prev = d.vision ??
+					last.current.vision ?? { model: "", maxTokens: "2000", mode: "auto" as const };
+				return { ...d, vision: { ...prev, model: ref } };
+			});
+		} else if (sheet === "telegram") {
+			patchDraft({ telegramModel: ref });
+		} else {
+			patchDraft({ model: ref });
+		}
+		setSheet(null);
+	};
+
+	const addUser = (v: string) => {
+		const n = Number(v);
+		if (!Number.isInteger(n) || n <= 0) {
+			setNotice({ text: "Telegram user ids are positive integers.", kind: "err" });
+			return;
+		}
+		if (draft.allowedUsers.includes(n)) {
+			setNotice({ text: `${n} is already allowed.`, kind: "err" });
+			return;
+		}
+		patchDraft({ allowedUsers: [...draft.allowedUsers, n] });
+	};
+
+	const save = async () => {
+		const err = validateDraft(draft, provs);
+		if (err !== null) {
+			setNotice({ text: err, kind: "err" });
+			return;
+		}
+		setSaving(true);
+		setNotice(null);
+		try {
+			const res = await saveOperatorConfig(token, bodyFromDraft(draft, provs), etag);
+			if (res.etag !== null) setEtag(res.etag);
+			setBaseline(serialize(draft, provs));
+			setNotice({ text: "Saved.", kind: "ok" });
+		} catch (e) {
+			setNotice({
+				text:
+					e instanceof ApiError && e.status === 409
+						? "The config changed since this tab loaded — reload the page to see the latest."
+						: e instanceof ApiError
+							? e.message
+							: "Save failed — check the tailnet.",
+				kind: "err",
+			});
+		} finally {
+			setSaving(false);
+		}
+	};
+
+	if (loadErr !== null) {
+		return (
+			<div className="ops">
+				<p className="error">{loadErr}</p>
+			</div>
+		);
+	}
+	if (kinds === null) {
+		return (
+			<div className="ops">
+				<p className="empty">Loading settings…</p>
+			</div>
+		);
+	}
+
+	const provNames = provs.map((p) => p.name).filter((n) => n !== "");
+	const sheetTitle =
+		sheet === "title"
+			? "Topic-title model"
+			: sheet === "vision"
+				? "Vision model"
+				: sheet === "telegram"
+					? "Telegram model"
+					: "App default model";
+	const sheetCurrent =
+		sheet === "telegram"
+			? draft.telegramModel
+			: sheet === "title"
+				? draft.titleModel
+				: sheet === "vision"
+					? (draft.vision?.model ?? "")
+					: draft.model;
+
+	const modelButton = (label: string, cap: string, mode: SheetMode, val: string, id: string) => (
+		<Row label={label} cap={cap} labelId={id}>
+			<button
+				type="button"
+				className="valuebtn"
+				aria-labelledby={id}
+				onClick={() => setSheet(mode)}
+			>
+				<span className="val">{val === "" ? "Off" : val}</span>
+				<span className="chev">›</span>
+			</button>
+		</Row>
+	);
+
+	return (
+		<div className="ops settings">
+			{section === null ? (
+				<>
+					<h2 className="ops-h2">
+						Settings {dirty && <span className="dirty-pill">unsaved</span>}
+					</h2>
+					<div className="card">
+						{SECTIONS.map((s) => (
+							<button key={s.key} type="button" className="idx" onClick={() => setSection(s.key)}>
+								<span className="ilabel">
+									{s.label}
+									<small>{s.sub}</small>
+								</span>
+								<span className="chev">›</span>
+							</button>
+						))}
+					</div>
+				</>
+			) : (
+				<>
+					<div className="ops-back">
+						<button type="button" className="ghost" onClick={() => setSection(null)}>
+							‹ Settings
+						</button>
+						{dirty && <span className="dirty-pill">unsaved</span>}
+					</div>
+
+					{section === "chat" && (
+						<>
+							<h2 className="ops-h2">Telegram</h2>
+							<div className="card">
+								{modelButton(
+									"Model",
+									"Shared by all Telegram conversations.",
+									"telegram",
+									draft.telegramModel,
+									"tgModelLabel",
+								)}
+								<Row label="Thinking" cap="Only levels this model can express are shown." col>
+									<Seg
+										options={levels.telegram}
+										value={displayLevel(draft.telegramThinking, levels.telegram)}
+										ariaLabel="Telegram thinking level"
+										onChange={(v) => patchDraft({ telegramThinking: v as ThinkingLevel })}
+									/>
+								</Row>
+							</div>
+							<h2 className="ops-h2">App defaults</h2>
+							<div className="card">
+								{modelButton(
+									"Default model",
+									"New app conversations only. Each chat remembers its own model and thinking level.",
+									"model",
+									draft.model,
+									"appModelLabel",
+								)}
+								<Row label="Thinking" cap="Only levels this model can express are shown." col>
+									<Seg
+										options={levels.app}
+										value={displayLevel(draft.thinking, levels.app)}
+										ariaLabel="App default thinking level"
+										onChange={(v) => patchDraft({ thinking: v as ThinkingLevel })}
+									/>
+								</Row>
+								{modelButton(
+									"Topic titles",
+									"Names new topics, then stops.",
+									"title",
+									draft.titleModel,
+									"titleModelLabel",
+								)}
+								{modelButton(
+									"Vision",
+									"Adds a vision tool — answers questions about image files. Needed when the chat model can't see attachments.",
+									"vision",
+									draft.vision?.model ?? "",
+									"visionLabel",
+								)}
+							</div>
+							<h2 className="ops-h2">Favorites</h2>
+							<div className="card">
+								<ChipsEditor
+									values={draft.favorites}
+									onAdd={(v) => patchDraft({ favorites: [...draft.favorites, v] })}
+									onRemove={(i) =>
+										patchDraft({ favorites: draft.favorites.filter((_, j) => j !== i) })
+									}
+									placeholder="provider/model-id"
+									ariaLabel="add favorite"
+									cap="Offered in the pickers above."
+								/>
+							</div>
+						</>
+					)}
+
+					{section === "voice" && (
+						<>
+							<h2 className="ops-h2">Voice notes</h2>
+							<div className="card">
+								<Row
+									label="Text to speech"
+									cap="On by default — Edge read-aloud, free and unofficial, needs ffmpeg on the host. Failures post a note in chat."
+								>
+									<Switch
+										on={draft.tts !== null}
+										ariaLabel="text to speech"
+										onChange={(on) =>
+											setDraft((d) => {
+												if (on) {
+													return {
+														...d,
+														tts: last.current.tts ?? { voice: "", rate: "", voices: [] },
+													};
+												}
+												last.current.tts = d.tts;
+												return { ...d, tts: null };
+											})
+										}
+									/>
+								</Row>
+								{draft.tts !== null && (
+									<>
+										<Field
+											label="Voice"
+											value={draft.tts.voice}
+											onChange={(v) =>
+												setDraft((d) => ({
+													...d,
+													tts: d.tts === null ? d.tts : { ...d.tts, voice: v },
+												}))
+											}
+											placeholder="en-US-AriaNeural"
+											mono
+											cap="Default for /voice mode, the speaker button, and the speak tool — an alternate matching the reply's language wins; this speaks when the language is unclear or none matches."
+										/>
+										<Field
+											label="Rate"
+											value={draft.tts.rate}
+											onChange={(v) =>
+												setDraft((d) => ({
+													...d,
+													tts: d.tts === null ? d.tts : { ...d.tts, rate: v },
+												}))
+											}
+											placeholder="+10%"
+											mono
+										/>
+										<ChipsEditor
+											values={draft.tts.voices}
+											onAdd={(v) =>
+												setDraft((d) => ({
+													...d,
+													tts: d.tts === null ? d.tts : { ...d.tts, voices: [...d.tts.voices, v] },
+												}))
+											}
+											onRemove={(i) =>
+												setDraft((d) => ({
+													...d,
+													tts:
+														d.tts === null
+															? d.tts
+															: { ...d.tts, voices: d.tts.voices.filter((_, j) => j !== i) },
+												}))
+											}
+											placeholder="add a voice"
+											ariaLabel="add alternate voice"
+											suggestions={VOICE_SUGGESTIONS}
+											cap="Alternate voices — picked by reply language wherever speech is synthesized; the speak tool may also name one per call. Language follows the voice name."
+										/>
+									</>
+								)}
+							</div>
+							<h2 className="ops-h2">Transcription</h2>
+							<div className="card">
+								<Row
+									label="Speech to text"
+									cap="Voice and video notes are transcribed on arrival; the bot can transcribe other audio files on request."
+								>
+									<Switch
+										on={draft.transcription !== null}
+										ariaLabel="speech to text"
+										onChange={(on) =>
+											setDraft((d) => {
+												if (on) {
+													return {
+														...d,
+														transcription: last.current.transcription ?? { model: "", auth: "" },
+													};
+												}
+												last.current.transcription = d.transcription;
+												return { ...d, transcription: null };
+											})
+										}
+									/>
+								</Row>
+								{draft.transcription !== null && (
+									<>
+										<Field
+											label="Model"
+											value={draft.transcription.model}
+											onChange={(v) =>
+												setDraft((d) => ({
+													...d,
+													transcription:
+														d.transcription === null
+															? d.transcription
+															: { ...d.transcription, model: v },
+												}))
+											}
+											placeholder="whisper-large-v3-turbo"
+											mono
+											cap="Blank uses the default."
+										/>
+										<Field
+											label="Secret name"
+											value={draft.transcription.auth}
+											onChange={(v) =>
+												setDraft((d) => ({
+													...d,
+													transcription:
+														d.transcription === null
+															? d.transcription
+															: { ...d.transcription, auth: v },
+												}))
+											}
+											placeholder="in auth.jsonl — not the secret itself"
+											mono
+										/>
+									</>
+								)}
+							</div>
+						</>
+					)}
+
+					{section === "web" && (
+						<>
+							<h2 className="ops-h2">Search</h2>
+							<div className="card">
+								<Row label="Search tool" cap="Off removes search from the agent's tools.">
+									<Switch
+										on={draft.search !== null}
+										ariaLabel="search tool"
+										onChange={(on) =>
+											setDraft((d) => {
+												if (on) return { ...d, search: last.current.search ?? [] };
+												last.current.search = d.search;
+												return { ...d, search: null };
+											})
+										}
+									/>
+								</Row>
+							</div>
+							{draft.search !== null && (
+								<>
+									<ChainEditor
+										entries={draft.search}
+										kinds={kinds.search}
+										meta={SEARCH_META}
+										onChange={(search) => patchDraft({ search })}
+									/>
+									<div className="cap ops-cap">
+										Tried top to bottom. A failure moves on to the next; an empty result is an
+										answer and stops the chain.
+									</div>
+								</>
+							)}
+							<h2 className="ops-h2">Fetch</h2>
+							<div className="card">
+								<Row
+									label="Custom extraction chain"
+									cap="Off uses built-in extraction: direct download, no key. JS-heavy sites need the browser skill either way."
+								>
+									<Switch
+										on={draft.fetch !== null}
+										ariaLabel="custom extraction chain"
+										onChange={(on) =>
+											setDraft((d) => {
+												if (on) return { ...d, fetch: last.current.fetch ?? [] };
+												last.current.fetch = d.fetch;
+												return { ...d, fetch: null };
+											})
+										}
+									/>
+								</Row>
+							</div>
+							{draft.fetch !== null && (
+								<>
+									<ChainEditor
+										entries={draft.fetch}
+										kinds={kinds.fetch}
+										meta={FETCH_META}
+										onChange={(fetch) => patchDraft({ fetch })}
+									/>
+									<div className="cap ops-cap">
+										Same rule as search — order is the fallback order.
+									</div>
+								</>
+							)}
+						</>
+					)}
+
+					{section === "memory" && (
+						<>
+							<p className="lead">
+								What goblin retains and recalls — browse it in the Memories view.
+							</p>
+							<h2 className="ops-h2">Long-term memory</h2>
+							<div className="card">
+								<Row
+									label="Memory"
+									cap="Self-hosted hindsight. Completed exchanges are retained; relevant facts are recalled into new turns."
+								>
+									<Switch
+										on={draft.memory !== null}
+										ariaLabel="long-term memory"
+										onChange={(on) =>
+											setDraft((d) => {
+												if (on) {
+													return {
+														...d,
+														memory: last.current.memory ?? {
+															baseUrl: "",
+															bankId: "",
+															auth: "",
+															budget: "low",
+															tokens: "",
+															timeout: "",
+														},
+													};
+												}
+												last.current.memory = d.memory;
+												return { ...d, memory: null };
+											})
+										}
+									/>
+								</Row>
+								{draft.memory !== null && (
+									<>
+										<Field
+											label="Hindsight url"
+											value={draft.memory.baseUrl}
+											onChange={(v) =>
+												setDraft((d) => ({
+													...d,
+													memory: d.memory === null ? d.memory : { ...d.memory, baseUrl: v },
+												}))
+											}
+											placeholder="http://127.0.0.1:8888"
+											mono
+										/>
+										<Field
+											label="Bank id"
+											value={draft.memory.bankId}
+											onChange={(v) =>
+												setDraft((d) => ({
+													...d,
+													memory: d.memory === null ? d.memory : { ...d.memory, bankId: v },
+												}))
+											}
+											placeholder="goblin"
+											mono
+										/>
+										<Field
+											label="Secret name"
+											value={draft.memory.auth}
+											onChange={(v) =>
+												setDraft((d) => ({
+													...d,
+													memory: d.memory === null ? d.memory : { ...d.memory, auth: v },
+												}))
+											}
+											placeholder="in auth.jsonl — blank for loopback"
+											mono
+										/>
+										<Row label="Recall budget" col>
+											<Seg
+												options={["low", "mid", "high"]}
+												value={draft.memory.budget || "low"}
+												ariaLabel="Recall budget"
+												onChange={(v) =>
+													setDraft((d) => ({
+														...d,
+														memory: d.memory === null ? d.memory : { ...d.memory, budget: v },
+													}))
+												}
+											/>
+										</Row>
+										<details className="tuning">
+											<summary>Recall tuning</summary>
+											<div className="inner">
+												<Field
+													label="Timeout (ms)"
+													value={draft.memory.timeout}
+													onChange={(v) =>
+														setDraft((d) => ({
+															...d,
+															memory: d.memory === null ? d.memory : { ...d.memory, timeout: v },
+														}))
+													}
+													placeholder="2000"
+													numeric
+													mono
+												/>
+												<Field
+													label="Max tokens"
+													value={draft.memory.tokens}
+													onChange={(v) =>
+														setDraft((d) => ({
+															...d,
+															memory: d.memory === null ? d.memory : { ...d.memory, tokens: v },
+														}))
+													}
+													placeholder="1024"
+													numeric
+													mono
+													cap="Tight by default — turns must not wait on memory."
+												/>
+											</div>
+										</details>
+									</>
+								)}
+							</div>
+						</>
+					)}
+
+					{section === "providers" && (
+						<>
+							<p className="lead">
+								Model vendors goblin can call. Secrets are names in auth.jsonl — the values never
+								land in config.
+							</p>
+							<h2 className="ops-h2">Providers</h2>
+							{provs.map((p) => (
+								<ProviderCard
+									key={p.id}
+									prov={p}
+									kinds={kinds.provider}
+									referencedBy={p.name !== "" ? providerRefs(p.name) : []}
+									onPatch={(patch) => patchProv(p.id, patch)}
+									onRename={(v) => renameProvider(p.id, v)}
+									onRemove={() => removeProvider(p)}
+								/>
+							))}
+							<button className="ghost" type="button" onClick={addProvider}>
+								+ Add provider
+							</button>
+						</>
+					)}
+
+					{section === "access" && (
+						<>
+							<h2 className="ops-h2">Allowed users</h2>
+							<div className="card">
+								<ChipsEditor
+									values={draft.allowedUsers.map(String)}
+									onAdd={addUser}
+									onRemove={(i) =>
+										patchDraft({ allowedUsers: draft.allowedUsers.filter((_, j) => j !== i) })
+									}
+									placeholder="telegram user id"
+									ariaLabel="add allowed user"
+									numeric
+									cap="Telegram user ids that may talk to goblin and open these settings. The list can't be emptied — that would lock everyone out."
+								/>
+							</div>
+							<h2 className="ops-h2">Doors</h2>
+							<div className="card">
+								<Field
+									label="Public url"
+									value={draft.publicUrl}
+									onChange={(v) => patchDraft({ publicUrl: v })}
+									placeholder="https://…"
+									mono
+									cap="HTTPS door for this app — tailscale serve, funnel, or a reverse proxy pointed at the port below."
+								/>
+								<Field
+									label="Bot api root"
+									value={draft.apiRoot}
+									onChange={(v) => patchDraft({ apiRoot: v })}
+									placeholder="http://127.0.0.1:8081"
+									mono
+									cap="Self-hosted telegram-bot-api in --local mode, for large files. Blank = Telegram cloud. Restart applies."
+								/>
+								<Field
+									label="New conversation after (quiet minutes)"
+									value={draft.dmGap}
+									onChange={(v) => patchDraft({ dmGap: v })}
+									placeholder="45"
+									numeric
+									mono
+									cap="Quiet minutes before a DM may roll into a new conversation. Applies immediately."
+								/>
+							</div>
+							<h2 className="ops-h2">Advanced</h2>
+							<div className="card">
+								<Field
+									label="Http port"
+									value={draft.port}
+									onChange={(v) => patchDraft({ port: v })}
+									placeholder="8787"
+									numeric
+									mono
+									cap="The port this settings app is served on. Restart applies."
+								/>
+								<Row label="Log level" col>
+									<Seg
+										options={["debug", "info", "warn", "error"]}
+										value={draft.logLevel}
+										ariaLabel="Log level"
+										onChange={(v) => patchDraft({ logLevel: v as SettingsDraft["logLevel"] })}
+									/>
+								</Row>
+							</div>
+						</>
+					)}
+				</>
+			)}
+
+			<div className="savebar">
+				<span className={notice?.kind === "err" ? "savebar-msg err" : "savebar-msg"}>
+					{notice?.text ?? ""}
+				</span>
+				<button type="button" disabled={!dirty || saving} onClick={() => void save()}>
+					{saving ? "Saving…" : "Save"}
+				</button>
+			</div>
+
+			{sheet !== null && (
+				<ModelSheet
+					title={sheetTitle}
+					current={sheetCurrent}
+					allowOff={sheet === "title" || sheet === "vision"}
+					favorites={draft.favorites}
+					provNames={provNames}
+					onPick={pickModel}
+					onClose={() => setSheet(null)}
+				/>
+			)}
+		</div>
+	);
+}

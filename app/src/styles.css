@@ -1446,6 +1446,729 @@ a.hit-title {
 	color: var(--app-danger);
 }
 
+/* ---------- operator pages ---------- */
+/* The settings/memory/delegations/programs/status views — the mini
+   app's visual language (cards, switches, segs) rendered with this
+   shell's knobs. */
+
+.rail-ops {
+	margin-top: auto;
+	border-top: 1px solid var(--app-divider);
+	padding-top: 0.4rem;
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+.rail-op {
+	text-align: left;
+	border-radius: 8px;
+	padding: 0.4rem 0.6rem;
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+	transition: background-color 75ms;
+}
+.rail-op:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.rail-op.on {
+	background: var(--app-active);
+	color: var(--app-fg);
+	font-weight: 500;
+}
+
+.ops {
+	flex: 1;
+	overflow-y: auto;
+	padding: 1.25rem 1rem 5rem;
+	display: flex;
+	flex-direction: column;
+	margin-inline: auto;
+	width: 100%;
+	max-width: 46rem;
+}
+.ops-h2 {
+	font-size: 12px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--app-fg-muted);
+	margin: 1.25rem 0.4rem 0.45rem;
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+.ops .lead {
+	color: var(--app-fg-muted);
+	font-size: 12.5px;
+	margin: 0.6rem 0.4rem 0;
+}
+.ops-cap {
+	margin: 0.5rem 0.4rem 0;
+}
+.ops-back {
+	display: flex;
+	align-items: center;
+	gap: 0.6rem;
+}
+.ops-search {
+	margin: 0 0 0.5rem;
+}
+.ops .error,
+.ops .empty {
+	padding: 0.5rem 0.4rem;
+	font-size: 12.5px;
+}
+
+.card {
+	border: 1px solid var(--app-divider);
+	border-radius: 10px;
+	background: var(--app-gray-50);
+	display: flex;
+	flex-direction: column;
+}
+.card > * {
+	padding: 0.6rem 0.75rem;
+}
+.card > * + * {
+	border-top: 1px solid var(--app-divider);
+}
+
+.idx {
+	display: flex;
+	align-items: center;
+	gap: 0.7rem;
+	width: 100%;
+	text-align: left;
+}
+.idx:hover {
+	background: var(--app-hover);
+}
+.ilabel {
+	flex: 1;
+	min-width: 0;
+	font-size: 13px;
+	font-weight: 500;
+	display: flex;
+	flex-direction: column;
+}
+.ilabel small {
+	font-weight: 400;
+	font-size: 11px;
+	color: var(--app-fg-muted);
+}
+.chev {
+	flex: none;
+	color: var(--app-fg-subtle);
+}
+
+.row {
+	display: flex;
+	align-items: center;
+	gap: 0.7rem;
+}
+.row.col {
+	flex-direction: column;
+	align-items: stretch;
+	gap: 0.45rem;
+}
+.rstack {
+	flex: 1;
+	min-width: 0;
+}
+.rlabel {
+	font-size: 13px;
+	font-weight: 500;
+}
+.cap {
+	font-size: 11.5px;
+	color: var(--app-fg-muted);
+	margin-top: 2px;
+}
+.err-inline {
+	color: var(--app-danger);
+}
+
+.frow {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+}
+.flabel {
+	font-size: 11.5px;
+	font-weight: 500;
+	color: var(--app-fg-muted);
+}
+.frow input,
+.chain-card input,
+.chain-card select,
+.prov input,
+.prov select,
+.msheet-custom input,
+.msheet-custom select {
+	font: inherit;
+	font-size: 12.5px;
+	background: var(--app-bg);
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	color: var(--app-fg);
+	padding: 0.4rem 0.6rem;
+	outline: none;
+}
+.frow input:focus,
+.chain-card input:focus,
+.msheet-custom input:focus {
+	border-color: color-mix(in oklab, var(--app-fg) 25%, transparent);
+}
+.mono {
+	font-family: var(--font-mono);
+}
+
+.valuebtn {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	padding: 0.35rem 0.6rem;
+	color: var(--app-fg);
+	max-width: 60%;
+}
+.valuebtn:hover {
+	background: var(--app-hover);
+}
+.valuebtn .val {
+	font-family: var(--font-mono);
+	font-size: 12px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.seg {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+.seg-btn {
+	border: 1px solid var(--app-border);
+	border-radius: 7px;
+	padding: 0.25rem 0.6rem;
+	font-size: 12px;
+	color: var(--app-fg-muted);
+}
+.seg-btn:hover {
+	background: var(--app-hover);
+}
+.seg-btn.on {
+	background: var(--app-active);
+	color: var(--app-fg);
+	border-color: color-mix(in oklab, var(--app-fg) 20%, transparent);
+}
+
+.switch {
+	position: relative;
+	width: 2.4rem;
+	height: 1.35rem;
+	flex: none;
+	border-radius: 999px;
+	border: 1px solid var(--app-border);
+	background: var(--app-gray-100);
+	transition: background-color 100ms;
+}
+.switch::after {
+	content: "";
+	position: absolute;
+	top: 2px;
+	left: 2px;
+	width: calc(1.35rem - 6px);
+	height: calc(1.35rem - 6px);
+	border-radius: 50%;
+	background: var(--app-fg-muted);
+	transition:
+		transform 100ms,
+		background-color 100ms;
+}
+.switch.on {
+	background: color-mix(in oklab, var(--app-fg) 22%, var(--app-bg));
+}
+.switch.on::after {
+	transform: translateX(1.05rem);
+	background: var(--app-fg);
+}
+
+.chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+.chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.3rem;
+	border: 1px solid var(--app-border);
+	border-radius: 7px;
+	padding: 0.15rem 0.4rem;
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+}
+.chip button {
+	color: var(--app-fg-muted);
+	padding: 0 0.15rem;
+}
+.chip button:hover {
+	color: var(--app-danger);
+}
+.addrow {
+	display: flex;
+	gap: 0.4rem;
+}
+.addrow input {
+	flex: 1;
+	min-width: 0;
+}
+.addbtn,
+.ghost {
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	padding: 0.35rem 0.7rem;
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+}
+.addbtn:hover,
+.ghost:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.ghost {
+	align-self: flex-start;
+	margin-top: 0.5rem;
+}
+
+.tuning {
+	border-top: 1px solid var(--app-divider);
+}
+.tuning summary {
+	cursor: pointer;
+	font-size: 12px;
+	color: var(--app-fg-muted);
+	padding: 0.1rem 0;
+}
+.tuning .inner {
+	padding-top: 0.5rem;
+}
+
+.prov {
+	margin-bottom: 0.5rem;
+}
+.prov-head {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+.prov-head .pname {
+	flex: 1;
+	min-width: 0;
+	font-weight: 500;
+}
+.rm {
+	border: 1px solid var(--app-border);
+	border-radius: 7px;
+	padding: 0.25rem 0.6rem;
+	font-size: 12px;
+	color: var(--app-fg-muted);
+	flex: none;
+}
+.rm:hover {
+	color: var(--app-danger);
+	border-color: color-mix(in oklab, var(--app-danger) 40%, transparent);
+}
+
+.chain-card {
+	border: 1px solid var(--app-divider);
+	border-radius: 10px;
+	background: var(--app-gray-50);
+	padding: 0.6rem 0.75rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.45rem;
+	margin-bottom: 0.5rem;
+}
+.chain-head {
+	display: flex;
+	align-items: center;
+}
+.chain-num {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--app-fg-muted);
+	flex: 1;
+}
+.chain-btns {
+	display: flex;
+	gap: 2px;
+}
+.chain-btns button {
+	border: 1px solid var(--app-border);
+	border-radius: 6px;
+	padding: 0.05rem 0.45rem;
+	font-size: 12px;
+	color: var(--app-fg-muted);
+}
+.chain-btns button:hover:not(:disabled) {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.chain-btns button:disabled {
+	opacity: 0.35;
+}
+
+.dirty-pill {
+	font-family: var(--font-mono);
+	font-size: 10px;
+	font-weight: 500;
+	text-transform: none;
+	letter-spacing: 0;
+	color: var(--app-danger);
+	border: 1px solid color-mix(in oklab, var(--app-danger) 40%, transparent);
+	border-radius: 999px;
+	padding: 0.1rem 0.5rem;
+}
+
+.savebar {
+	position: sticky;
+	bottom: 0;
+	margin: 1rem -1rem -5rem;
+	padding: 0.6rem 1rem calc(0.6rem + env(safe-area-inset-bottom, 0));
+	border-top: 1px solid var(--app-divider);
+	background: color-mix(in oklab, var(--app-bg) 92%, transparent);
+	backdrop-filter: blur(8px);
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+}
+.savebar-msg {
+	flex: 1;
+	min-width: 0;
+	font-size: 12px;
+	color: var(--app-fg-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.savebar-msg.err {
+	color: var(--app-danger);
+}
+.savebar button {
+	border-radius: 8px;
+	padding: 0.4rem 1.1rem;
+	font-size: 13px;
+	font-weight: 500;
+	background: var(--app-fg);
+	color: var(--app-bg);
+}
+.savebar button:disabled {
+	opacity: 0.35;
+}
+
+/* The model picker — a bottom sheet on narrow screens, centered box
+   on wide ones. */
+.veil {
+	position: fixed;
+	inset: 0;
+	background: rgba(0, 0, 0, 0.5);
+	z-index: 20;
+	display: flex;
+	align-items: flex-end;
+	justify-content: center;
+}
+.msheet {
+	background: var(--app-bg);
+	border: 1px solid var(--app-divider);
+	border-bottom: none;
+	border-radius: 14px 14px 0 0;
+	width: 100%;
+	max-width: 34rem;
+	max-height: 70dvh;
+	display: flex;
+	flex-direction: column;
+}
+.msheet-head {
+	display: flex;
+	align-items: center;
+	padding: 0.7rem 0.9rem;
+	border-bottom: 1px solid var(--app-divider);
+}
+.msheet-head h3 {
+	font-size: 13px;
+	font-weight: 600;
+	margin: 0;
+	flex: 1;
+}
+.msheet-head button {
+	color: var(--app-fg-muted);
+	font-size: 18px;
+	padding: 0 0.3rem;
+}
+.msheet-body {
+	overflow-y: auto;
+	padding: 0.4rem;
+	display: flex;
+	flex-direction: column;
+}
+.mrow {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	text-align: left;
+	border-radius: 8px;
+	padding: 0.5rem 0.6rem;
+}
+.mrow:hover {
+	background: var(--app-hover);
+}
+.mrow.sel {
+	background: var(--app-active);
+}
+.mrow .ref {
+	flex: 1;
+	min-width: 0;
+	font-family: var(--font-mono);
+	font-size: 12.5px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.mrow .off-label {
+	font-family: inherit;
+	color: var(--app-fg-muted);
+}
+.mrow .check {
+	color: var(--app-fg);
+	font-size: 12px;
+}
+.mgroup {
+	font-size: 10.5px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	color: var(--app-fg-subtle);
+	padding: 0.6rem 0.6rem 0.25rem;
+}
+.msheet-custom {
+	display: flex;
+	gap: 0.4rem;
+	padding: 0.6rem;
+	border-top: 1px solid var(--app-divider);
+	margin-top: 0.4rem;
+}
+.msheet-custom select {
+	max-width: 9rem;
+}
+.msheet-custom input {
+	flex: 1;
+	min-width: 0;
+}
+.msheet-custom button {
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	padding: 0.35rem 0.7rem;
+	font-size: 12.5px;
+}
+.msheet-custom button:hover:not(:disabled) {
+	background: var(--app-hover);
+}
+.msheet-custom button:disabled {
+	opacity: 0.35;
+}
+@media (min-width: 721px) {
+	.veil {
+		align-items: center;
+	}
+	.msheet {
+		border-radius: 14px;
+		border-bottom: 1px solid var(--app-divider);
+	}
+}
+
+/* ---------- memory browser ---------- */
+
+.stat-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+	gap: 0.6rem;
+}
+.stat {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+.stat-label {
+	font-size: 10.5px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--app-fg-subtle);
+}
+.stat-val {
+	font-size: 13px;
+}
+.mem-healthy {
+	color: #4ade80;
+}
+.mem-degraded,
+.mem-pending {
+	color: #facc15;
+}
+.mem-disabled {
+	color: var(--app-fg-muted);
+}
+.blocked-list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+}
+.blocked-row {
+	display: flex;
+	flex-direction: column;
+	font-size: 12px;
+}
+
+.doc-row {
+	display: flex;
+	align-items: center;
+	gap: 0.7rem;
+	width: 100%;
+	text-align: left;
+}
+.doc-row:hover {
+	background: var(--app-hover);
+}
+.doc-id {
+	font-size: 12px;
+}
+.doc-sub {
+	flex: 1;
+	min-width: 0;
+	font-size: 11px;
+	color: var(--app-fg-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.doc-meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.4rem 1rem;
+	font-size: 11.5px;
+	color: var(--app-fg-muted);
+}
+.doc-text {
+	font-family: inherit;
+	font-size: 12.5px;
+	line-height: 1.5;
+	white-space: pre-wrap;
+	word-break: break-word;
+	margin: 0;
+	max-height: 20rem;
+	overflow-y: auto;
+}
+.danger {
+	align-self: flex-start;
+	border: 1px solid color-mix(in oklab, var(--app-danger) 40%, transparent);
+	border-radius: 8px;
+	padding: 0.4rem 0.8rem;
+	font-size: 12.5px;
+	color: var(--app-danger);
+}
+.danger:hover:not(:disabled) {
+	background: color-mix(in oklab, var(--app-danger) 12%, transparent);
+}
+.danger:disabled {
+	opacity: 0.4;
+}
+
+.fact {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+.fact.stale .fact-text {
+	color: var(--app-fg-muted);
+	text-decoration: line-through;
+}
+.fact-text {
+	font-size: 12.5px;
+	line-height: 1.45;
+}
+
+/* ---------- read-only operator lists ---------- */
+
+.kv {
+	display: flex;
+	align-items: baseline;
+	gap: 0.75rem;
+	font-size: 12.5px;
+}
+.kv-k {
+	flex: none;
+	width: 8.5rem;
+	font-size: 11.5px;
+	color: var(--app-fg-muted);
+}
+.kv-v {
+	min-width: 0;
+	word-break: break-word;
+}
+.op-item-head {
+	display: flex;
+	align-items: center;
+	gap: 0.6rem;
+}
+.op-item-title {
+	flex: 1;
+	min-width: 0;
+	font-size: 13.5px;
+	font-weight: 600;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.op-item-body {
+	font-size: 12.5px;
+	line-height: 1.45;
+	color: var(--app-fg);
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+.ops .card + .card,
+.ops .card + .ghost {
+	margin-top: 0.5rem;
+}
+.pill {
+	flex: none;
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	border: 1px solid var(--app-border);
+	border-radius: 999px;
+	padding: 0.1rem 0.55rem;
+	color: var(--app-fg-muted);
+}
+.pill.on,
+.pill.st-running {
+	color: #4ade80;
+	border-color: color-mix(in oklab, #4ade80 40%, transparent);
+}
+.pill.st-starting,
+.pill.st-needs_input {
+	color: #facc15;
+	border-color: color-mix(in oklab, #facc15 40%, transparent);
+}
+.pill.st-failed,
+.pill.st-stopped {
+	color: var(--app-danger);
+	border-color: color-mix(in oklab, var(--app-danger) 40%, transparent);
+}
+
 /* ---------- narrow screens: rail slides over ---------- */
 
 @media (max-width: 720px) {

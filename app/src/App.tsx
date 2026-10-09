@@ -12,7 +12,27 @@ import {
 	searchConversations,
 } from "./api.ts";
 import { ChatView, Composer, type StagedUpload } from "./ChatView.tsx";
+import { SettingsView } from "./SettingsView.tsx";
+import { MemoryView } from "./MemoryView.tsx";
+import { DelegationsView, ProgramsView, StatusView } from "./OperatorViews.tsx";
 import type { AppConversationList, AppSearchHit } from "../../src/http/app-wire.ts";
+
+// The operator pages ride the same shell as chat — deep links like
+// /app/settings are served the app bundle and land here.
+type Page = "chat" | "settings" | "memory" | "delegations" | "programs" | "status";
+
+const PAGES: { key: Exclude<Page, "chat">; label: string }[] = [
+	{ key: "settings", label: "Settings" },
+	{ key: "memory", label: "Memories" },
+	{ key: "delegations", label: "Delegations" },
+	{ key: "programs", label: "Programs" },
+	{ key: "status", label: "Status" },
+];
+
+function pageFromPath(pathname: string): Page | null {
+	const m = /^\/app\/(settings|memory|delegations|programs|status)\/?$/.exec(pathname);
+	return m === null ? null : (m[1] as Page);
+}
 
 // Sidebar timestamps are relative: "now", minutes, hours, days, then a
 // short date — the format Open WebUI's chat list uses.
@@ -255,6 +275,10 @@ export function App() {
 	// The deep link applies once — after the first list load — so an
 	// operator's own navigation is never overridden later.
 	const deepApplied = useRef(false);
+	const [page, setPage] = useState<Page>(() => pageFromPath(window.location.pathname) ?? "chat");
+	// The settings editor reports its dirty bit here so navigating away
+	// can ask before discarding unsaved edits.
+	const settingsDirty = useRef(false);
 
 	useEffect(() => {
 		if (gate !== "probing") return;
@@ -308,6 +332,22 @@ export function App() {
 			window.history.replaceState(null, "", "/app/");
 		}
 	}, [conversations]);
+
+	// Back/forward between operator pages and conversations.
+	useEffect(() => {
+		const onPop = () => {
+			const p = pageFromPath(window.location.pathname);
+			if (p !== null) {
+				setPage(p);
+				return;
+			}
+			const id = deepLinkConv(window.location.pathname);
+			setPage("chat");
+			if (id !== null) setCurrent(id);
+		};
+		window.addEventListener("popstate", onPop);
+		return () => window.removeEventListener("popstate", onPop);
+	}, []);
 
 	// Debounced app-pool search — an empty box clears back to the list.
 	useEffect(() => {
@@ -369,15 +409,30 @@ export function App() {
 		);
 	}
 
+	// An unsaved settings editor asks before the page swaps.
+	const leaveDirtySettings = () =>
+		page !== "settings" ||
+		!settingsDirty.current ||
+		window.confirm("Discard unsaved settings changes?");
+
 	// Selection owns the URL — /app/c/<id> for a conversation, /app/
 	// for the list/empty state, matching the deep link the pings carry.
 	const select = (id: string | null) => {
+		if (!leaveDirtySettings()) return;
+		setPage("chat");
 		setCurrent(id);
-		window.history.replaceState(
-			null,
-			"",
-			id === null ? "/app/" : `/app/c/${id.slice("app/".length)}`,
-		);
+		window.history.pushState(null, "", id === null ? "/app/" : `/app/c/${id.slice("app/".length)}`);
+	};
+
+	const openPage = (p: Exclude<Page, "chat">) => {
+		if (page === p) {
+			setNavOpen(false);
+			return;
+		}
+		if (!leaveDirtySettings()) return;
+		setPage(p);
+		setNavOpen(false);
+		window.history.pushState(null, "", `/app/${p}`);
 	};
 
 	// "New conversation" opens the empty state; the conversation itself is
@@ -476,6 +531,18 @@ export function App() {
 					<p className="empty">Nothing here yet — start a conversation.</p>
 				)}
 				{listError !== null && <p className="error">Couldn't refresh the list.</p>}
+				<div className="rail-ops">
+					{PAGES.map((p) => (
+						<button
+							key={p.key}
+							type="button"
+							className={page === p.key ? "rail-op on" : "rail-op"}
+							onClick={() => openPage(p.key)}
+						>
+							{p.label}
+						</button>
+					))}
+				</div>
 			</nav>
 			<div className={navOpen ? "scrim open" : "scrim"} onClick={() => setNavOpen(false)} />
 			<main>
@@ -500,44 +567,62 @@ export function App() {
 						</svg>
 					</button>
 					<h1>goblin</h1>
-					{current !== null && <span className="header-title">{flatTitle(currentTitle)}</span>}
+					{page === "chat" && current !== null && (
+						<span className="header-title">{flatTitle(currentTitle)}</span>
+					)}
+					{page !== "chat" && (
+						<span className="header-title">{PAGES.find((p) => p.key === page)?.label}</span>
+					)}
 				</header>
-				{current === null ? (
-					<div className="chat">
-						<div className="transcript">
-							<div className="transcript-inner">
-								<p className="empty">
-									Pick a conversation, or say something — a new one starts here.
-								</p>
-								{startFailed && (
-									<p className="error">
-										Couldn't start a conversation — check the tailnet, then resend.
-									</p>
-								)}
-							</div>
-						</div>
-						<Composer
-							token={token}
-							busy={starting}
-							staged={staged}
-							setStaged={setStaged}
-							focusSignal={composerFocus}
-							onSend={(parts) => void startConversation(parts)}
-						/>
-					</div>
-				) : (
-					<ChatView
-						key={current}
+				{page === "settings" && (
+					<SettingsView
 						token={token}
-						conversationId={current}
-						title={flatTitle(currentTitle)}
-						seed={seed !== null && seed.id === current ? seed.parts : null}
-						staged={staged}
-						setStaged={setStaged}
-						onSeeded={() => setSeed(null)}
-						onTurnDone={() => void refresh()}
+						onDirtyChange={(d) => {
+							settingsDirty.current = d;
+						}}
 					/>
 				)}
+				{page === "memory" && <MemoryView token={token} />}
+				{page === "delegations" && <DelegationsView token={token} />}
+				{page === "programs" && <ProgramsView token={token} />}
+				{page === "status" && <StatusView token={token} />}
+				{page === "chat" &&
+					(current === null ? (
+						<div className="chat">
+							<div className="transcript">
+								<div className="transcript-inner">
+									<p className="empty">
+										Pick a conversation, or say something — a new one starts here.
+									</p>
+									{startFailed && (
+										<p className="error">
+											Couldn't start a conversation — check the tailnet, then resend.
+										</p>
+									)}
+								</div>
+							</div>
+							<Composer
+								token={token}
+								busy={starting}
+								staged={staged}
+								setStaged={setStaged}
+								focusSignal={composerFocus}
+								onSend={(parts) => void startConversation(parts)}
+							/>
+						</div>
+					) : (
+						<ChatView
+							key={current}
+							token={token}
+							conversationId={current}
+							title={flatTitle(currentTitle)}
+							seed={seed !== null && seed.id === current ? seed.parts : null}
+							staged={staged}
+							setStaged={setStaged}
+							onSeeded={() => setSeed(null)}
+							onTurnDone={() => void refresh()}
+						/>
+					))}
 			</main>
 		</div>
 	);

@@ -13,6 +13,18 @@ import type {
 	AppStopResponse,
 	AppTtsResponse,
 } from "../../src/http/app-wire.ts";
+import type {
+	ConfigPostBody,
+	ConfigResponse,
+	MemoryDocDetailResponse,
+	MemoryForgetResponse,
+	MemoriesListResponse,
+	MemoryStatusResponse,
+	OperatorDelegationsResponse,
+	OperatorProgramsResponse,
+	OperatorStatusResponse,
+	ThinkingLevelsResponse,
+} from "../../src/http/operator-wire.ts";
 
 const TOKEN_KEY = "goblin.appToken";
 
@@ -40,7 +52,11 @@ export class ApiError extends Error {
 // token null = trust mode: the server has no appToken, the tailnet is
 // the only lock, and requests go bare. A stored token is always sent
 // when present — trust mode ignores it either way.
-async function request<T>(token: string | null, path: string, init?: RequestInit): Promise<T> {
+async function requestMeta<T>(
+	token: string | null,
+	path: string,
+	init?: RequestInit,
+): Promise<{ data: T; etag: string | null }> {
 	const res = await fetch(path, {
 		...init,
 		headers: {
@@ -58,7 +74,11 @@ async function request<T>(token: string | null, path: string, init?: RequestInit
 		}
 		throw new ApiError(res.status, detail);
 	}
-	return (await res.json()) as T;
+	return { data: (await res.json()) as T, etag: res.headers.get("etag") };
+}
+
+async function request<T>(token: string | null, path: string, init?: RequestInit): Promise<T> {
+	return (await requestMeta<T>(token, path, init)).data;
 }
 
 export function listConversations(token: string | null): Promise<AppConversationList> {
@@ -164,4 +184,86 @@ export function synthesize(token: string | null, text: string): Promise<AppTtsRe
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({ text }),
 	});
+}
+
+// ---------- operator surface ----------
+// The settings editor + memories browser + read-only lists — the mini
+// app's /api/* console under this door's auth. `/api/app/config` is the
+// composer's app-defaults route; the full editor rides /api/app/settings.
+
+/** GET /api/app/settings — the config, the kind lists, and its etag. */
+export function getOperatorConfig(
+	token: string | null,
+): Promise<{ data: ConfigResponse; etag: string | null }> {
+	return requestMeta(token, "/api/app/settings");
+}
+
+/** POST /api/app/settings — the full form body, guarded by If-Match. */
+export function saveOperatorConfig(
+	token: string | null,
+	body: ConfigPostBody,
+	ifMatch: string,
+): Promise<{ data: { ok: true }; etag: string | null }> {
+	return requestMeta(token, "/api/app/settings", {
+		method: "POST",
+		headers: { "content-type": "application/json", "if-match": ifMatch },
+		body: JSON.stringify(body),
+	});
+}
+
+/** The rungs a model can express — kind + base from the form's own state. */
+export function getThinkingLevels(
+	token: string | null,
+	kind: string,
+	model: string,
+	base?: string,
+): Promise<ThinkingLevelsResponse> {
+	const q =
+		`kind=${encodeURIComponent(kind)}&model=${encodeURIComponent(model)}` +
+		(base !== undefined && base !== "" ? `&base=${encodeURIComponent(base)}` : "");
+	return request(token, `/api/app/thinking-levels?${q}`);
+}
+
+export function getMemoryStatus(token: string | null): Promise<MemoryStatusResponse> {
+	return request(token, "/api/app/memory/status");
+}
+
+export function listMemoryDocuments(
+	token: string | null,
+	opts: { q?: string; limit?: number; offset?: number } = {},
+): Promise<MemoriesListResponse> {
+	const params = new URLSearchParams();
+	if (opts.q !== undefined && opts.q !== "") params.set("q", opts.q);
+	if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+	if (opts.offset !== undefined) params.set("offset", String(opts.offset));
+	const q = params.toString();
+	return request(token, `/api/app/memory/documents${q === "" ? "" : `?${q}`}`);
+}
+
+export function getMemoryDocument(
+	token: string | null,
+	id: string,
+): Promise<MemoryDocDetailResponse> {
+	return request(token, `/api/app/memory/documents/${encodeURIComponent(id)}`);
+}
+
+export function forgetMemoryDocument(
+	token: string | null,
+	id: string,
+): Promise<MemoryForgetResponse> {
+	return request(token, `/api/app/memory/documents/${encodeURIComponent(id)}`, {
+		method: "DELETE",
+	});
+}
+
+export function listPrograms(token: string | null): Promise<OperatorProgramsResponse> {
+	return request(token, "/api/app/programs");
+}
+
+export function listDelegations(token: string | null): Promise<OperatorDelegationsResponse> {
+	return request(token, "/api/app/delegations");
+}
+
+export function getServiceStatus(token: string | null): Promise<OperatorStatusResponse> {
+	return request(token, "/api/app/status");
 }

@@ -271,7 +271,7 @@ loop, and `checkAuthority`. Flat files, one job each, tests colocated.
 | Module | One job | Absorbs (current lines) |
 |---|---|---|
 | `turn/state.ts` | `TurnState`: owns the attempt — AT-class state with narrow methods; `snapshot(): TurnRecovery` | the AT column above; `TurnRecovery`/`LoopTurnState` types (300–337) |
-| `turn/loop.ts` | catch loops, not cap them: detector verdicts, watchdog ring/cadence/strikes, warn + cut text, context-landing decision | `noteCompletedCall` (1650–1716), `CUT_NUDGE`/warning consts (58–105), landing logic in `prepareStep` (1287–1320) |
+| `turn/state.ts` | `TurnState`: owns the attempt — the loop machinery (detector verdicts, watchdog ring/cadence/strikes, warn + cut text, context-landing decision) plus AT-class state with narrow methods; `snapshot(): LoopTurnState`. The planned `turn/loop.ts` merged here at seam 1 | the AT column above; `TurnRecovery`/`LoopTurnState` types, `noteCompletedCall`, `CUT_NUDGE`/warning consts, landing logic in `prepareStep` |
 | `turn/admission.ts` | fix what this attempt owns, sees, and answers: settings capture, epoch, resume claim, ownership filter, anchor, mark seed, clock | 1054–1118 (minus lane pinning), 1072–1077 |
 | `turn/view.ts` | pure model-view assembly: snapshot + recall + partial + step → byte-stable `ModelMessage[]`; single-message variant for steers | 1193–1259; `systemEventAsUser`, `unconvertiblePlaceholder`, `mergeConsecutiveUserModels` (134–165, 2269–2290) |
 | `turn/stream.ts` | drive one attempt's wire: streamText/toUIMessageStream wiring, `prepareStep` (steer fold + warnings + nudge), `onError`/`onStepEnd`, the chunk loop, fan-out, wire-log append, join replay, display deltas | 1261–1864; `LiveChunks`/`endLive` (378–386, 2183–2199) |
@@ -317,7 +317,7 @@ blocks → destination:
 | live chunk subscription (2942) | `turn/stream.test.ts` (wire log, replay, end semantics); the `subscribeLiveChunks` HTTP contract stays e2e |
 | app channel (3179) | **stays** — channel boundary |
 | streaming lane boundary (3247) | **stays** — queue policy (`claimableCount`) |
-| loop landings (3372), loop watchdog (3542) | `turn/loop.test.ts` + `turn/state.test.ts` (restore/inherit) |
+| loop landings (3372), loop watchdog (3542) | `turn/state.test.ts` (restore/inherit; the planned `turn/loop.test.ts` merged into state at seam 1) |
 | forced-landing defiance guard (3738) | `turn/finish.test.ts` (+ stamping in state) |
 
 The stays-list is the permanent e2e net: authority, cross-turn cache

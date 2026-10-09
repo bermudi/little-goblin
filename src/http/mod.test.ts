@@ -1236,3 +1236,59 @@ test("provider removal refuses to strand app selections, lists affected ids, and
 		store.close();
 	}
 });
+
+describe("mini-app transcription config", () => {
+	test("the kind lists ride the GET; a whistle save keeps hand-edited keywords", async () => {
+		const { configRef, http, post, get } = setup();
+		try {
+			const loaded = await get("/api/config");
+			const body = (await loaded.json()) as {
+				transcriptionKinds: string[];
+				transcriptionDefaults: Record<string, { model: string; auth: string }>;
+			};
+			expect(body.transcriptionKinds[0]).toBe("whistle");
+			expect(body.transcriptionDefaults.mimo).toEqual({
+				model: "xiaomi/mimo-v2.6-flash",
+				auth: "openrouter",
+			});
+
+			// The page saves the block it loaded, whistle arm: keywords and
+			// engine/weights ride along untouched (hand edits survive).
+			configRef.current.transcription = {
+				kind: "whistle",
+				keywords: ["goblin", "bermudi"],
+				engine: "/opt/whistle/needle",
+			};
+			const saved = await post({
+				transcription: {
+					kind: "whistle",
+					language: "es",
+					keywords: ["goblin", "bermudi"],
+					engine: "/opt/whistle/needle",
+				},
+			});
+			expect(saved.ok).toBe(true);
+			const after = loadConfig()?.transcription;
+			expect(after).toEqual({
+				kind: "whistle",
+				keywords: ["goblin", "bermudi"],
+				engine: "/opt/whistle/needle",
+				language: "es",
+			});
+
+			// A bare cloud arm saves with defaults; "" clears the block.
+			const savedCloud = await post({ transcription: { kind: "groq" } });
+			expect(savedCloud.ok).toBe(true);
+			expect(loadConfig()?.transcription).toEqual({
+				kind: "groq",
+				model: "whisper-large-v3-turbo",
+				auth: "groq",
+			});
+			const cleared = await post({ transcription: "" });
+			expect(cleared.ok).toBe(true);
+			expect(loadConfig()?.transcription).toBeUndefined();
+		} finally {
+			http.stop();
+		}
+	});
+});

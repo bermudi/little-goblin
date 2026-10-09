@@ -19,6 +19,13 @@ import { log } from "../log.ts";
 import { readTextCapped } from "./tools/web.ts";
 import type { EngineDeps, EngineTranscript, SpeechEngine } from "./transcribe.ts";
 
+// Every cloud arm of the transcription union — one shape (kind, model,
+// auth, language?), seven kinds.
+export type CloudCfg = Extract<
+	TranscriptionConfig,
+	{ kind: "groq" | "openai" | "openrouter" | "mistral" | "elevenlabs" | "gemini" | "mimo" }
+>;
+
 // Groq's multipart cap is 25 MiB — over that, segment instead of
 // guessing at a request that 413s anyway.
 const MULTIPART_MAX_BYTES = 25 * 1024 * 1024;
@@ -44,13 +51,6 @@ const CHAT_OUTPUT_TOKEN_CAP = 8192;
 const TRANSCRIBE_PROMPT =
 	"Transcribe the audio verbatim. Output only the transcript, no commentary. If there is no speech, output nothing.";
 
-// Every cloud config arm reduces to this (whistle is local, no auth).
-interface CloudCfg {
-	model: string;
-	auth: string;
-	language?: string | undefined;
-}
-
 // {"text": …} — the minimal shape every OpenAI-compatible endpoint
 // returns without response_format=verbose_json. Language/duration only
 // exist in verbose responses (groq's is full words, not codes) —
@@ -67,18 +67,14 @@ const elevenlabsResponse = z.object({
 
 const openrouterResponse = z.object({
 	text: z.string(),
-	usage: z
-		.object({ seconds: z.number().optional(), cost: z.number().optional() })
-		.optional(),
+	usage: z.object({ seconds: z.number().optional(), cost: z.number().optional() }).optional(),
 });
 
 const geminiResponse = z.object({
 	candidates: z
 		.array(
 			z.object({
-				content: z
-					.object({ parts: z.array(z.object({ text: z.string().optional() })) })
-					.optional(),
+				content: z.object({ parts: z.array(z.object({ text: z.string().optional() })) }).optional(),
 				finishReason: z.string().optional(),
 			}),
 		)
@@ -99,20 +95,34 @@ const chatResponse = z.object({
 
 // ---------- OpenAI-compatible multipart ----------
 
-export function groqEngine(
-	cfg: Extract<TranscriptionConfig, { kind: "groq" }> | CloudCfg,
-	auth: AuthStore,
-	deps: EngineDeps = {},
-): SpeechEngine {
-	return openAiCompatible("groq", cfg, auth, "https://api.groq.com/openai/v1/audio/transcriptions", deps);
+export function groqEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDeps = {}): SpeechEngine {
+	return openAiCompatible(
+		"groq",
+		cfg,
+		auth,
+		"https://api.groq.com/openai/v1/audio/transcriptions",
+		deps,
+	);
 }
 
 export function openaiEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDeps = {}): SpeechEngine {
-	return openAiCompatible("openai", cfg, auth, "https://api.openai.com/v1/audio/transcriptions", deps);
+	return openAiCompatible(
+		"openai",
+		cfg,
+		auth,
+		"https://api.openai.com/v1/audio/transcriptions",
+		deps,
+	);
 }
 
 export function mistralEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDeps = {}): SpeechEngine {
-	return openAiCompatible("mistral", cfg, auth, "https://api.mistral.ai/v1/audio/transcriptions", deps);
+	return openAiCompatible(
+		"mistral",
+		cfg,
+		auth,
+		"https://api.mistral.ai/v1/audio/transcriptions",
+		deps,
+	);
 }
 
 // groq/openai/mistral share one wire: multipart file+model(+language),
@@ -155,7 +165,11 @@ function openAiCompatible(
 
 // ---------- elevenlabs ----------
 
-export function elevenlabsEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDeps = {}): SpeechEngine {
+export function elevenlabsEngine(
+	cfg: CloudCfg,
+	auth: AuthStore,
+	deps: EngineDeps = {},
+): SpeechEngine {
 	return {
 		id: `elevenlabs/${cfg.model}`,
 		limits: { maxBytes: MULTIPART_MAX_BYTES, maxSeconds: MULTIPART_SEGMENT_SECONDS },
@@ -182,9 +196,7 @@ export function elevenlabsEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDep
 			const parsed = parseBody("elevenlabs", text, elevenlabsResponse);
 			return {
 				text: parsed.text,
-				...(parsed.language_code !== undefined
-					? { language: parsed.language_code }
-					: {}),
+				...(parsed.language_code !== undefined ? { language: parsed.language_code } : {}),
 			};
 		},
 	};
@@ -229,28 +241,36 @@ function logUsage(
 	});
 }
 
-export function openrouterEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDeps = {}): SpeechEngine {
+export function openrouterEngine(
+	cfg: CloudCfg,
+	auth: AuthStore,
+	deps: EngineDeps = {},
+): SpeechEngine {
 	return {
 		id: `openrouter/${cfg.model}`,
 		limits: { maxBytes: MULTIPART_MAX_BYTES, maxSeconds: MULTIPART_SEGMENT_SECONDS },
 		prep: { container: "keep" },
 		transcribe: async (file): Promise<EngineTranscript> => {
 			const key = await auth.resolve(cfg.auth);
-			const res = await httpPost("openrouter", "https://openrouter.ai/api/v1/audio/transcriptions", {
-				headers: {
-					authorization: `Bearer ${key}`,
-					"content-type": "application/json",
-				},
-				body: JSON.stringify({
-					model: cfg.model,
-					input_audio: {
-						data: await base64Audio(file.path),
-						format: inputAudioFormat("openrouter", file.filename),
+			const res = await httpPost(
+				"openrouter",
+				"https://openrouter.ai/api/v1/audio/transcriptions",
+				{
+					headers: {
+						authorization: `Bearer ${key}`,
+						"content-type": "application/json",
 					},
-				}),
-				deps,
-				timeoutMs: OPENROUTER_TIMEOUT_MS,
-			});
+					body: JSON.stringify({
+						model: cfg.model,
+						input_audio: {
+							data: await base64Audio(file.path),
+							format: inputAudioFormat("openrouter", file.filename),
+						},
+					}),
+					deps,
+					timeoutMs: OPENROUTER_TIMEOUT_MS,
+				},
+			);
 			const { tooLarge, text } = await readTextCapped(res, RESPONSE_CAP);
 			if (tooLarge) throw new Error(`openrouter: response over ${RESPONSE_CAP} bytes`);
 			if (!res.ok) throw renderError("openrouter", res.status, text);
@@ -384,7 +404,12 @@ export function mimoEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDeps = {}
 async function httpPost(
 	kind: string,
 	url: string,
-	init: { headers: Record<string, string>; body: FormData | string; deps: EngineDeps; timeoutMs: number },
+	init: {
+		headers: Record<string, string>;
+		body: FormData | string;
+		deps: EngineDeps;
+		timeoutMs: number;
+	},
 ): Promise<Response> {
 	const fetchFn = init.deps.fetchFn ?? fetch;
 	try {

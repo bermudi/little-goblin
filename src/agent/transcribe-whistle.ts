@@ -64,8 +64,7 @@ function artifactUrls(arch: string, platform: string): { engine: string; weights
 		);
 	}
 	return {
-		engine:
-			"https://huggingface.co/Cactus-Compute/needle3/resolve/main/linux-x86_64/needle",
+		engine: "https://huggingface.co/Cactus-Compute/needle3/resolve/main/linux-x86_64/needle",
 		weights: "https://huggingface.co/Cactus-Compute/whistle/resolve/main/whistle.cact",
 	};
 }
@@ -86,7 +85,14 @@ function ensureArtifacts(
 		const urls = artifactUrls(deps.arch ?? process.arch, deps.platform ?? process.platform);
 		const digests = deps.digests ?? PINNED_DIGESTS;
 		return {
-			engine: await artifact(cfg.engine, join(cacheDir, "needle"), urls.engine, digests.engine, 0o755, deps),
+			engine: await artifact(
+				cfg.engine,
+				join(cacheDir, "needle"),
+				urls.engine,
+				digests.engine,
+				0o755,
+				deps,
+			),
 			weights: await artifact(
 				cfg.weights,
 				join(cacheDir, "whistle.cact"),
@@ -113,7 +119,8 @@ async function artifact(
 ): Promise<string> {
 	// Managed installs: the operator's own binary/build, taken as-is.
 	if (override !== undefined) {
-		if (!existsSync(override)) throw new Error(`whistle: configured artifact not found: ${override}`);
+		if (!existsSync(override))
+			throw new Error(`whistle: configured artifact not found: ${override}`);
 		return override;
 	}
 	if (existsSync(dest)) return dest;
@@ -212,15 +219,11 @@ export function whistleEngine(cfg: WhistleCfg, deps: WhistleDeps = {}): SpeechEn
 				try {
 					json = JSON.parse(r.stdout.trim());
 				} catch {
-					throw new Error(
-						`whistle: engine stdout is not JSON — ${r.stdout.trim().slice(0, 300)}`,
-					);
+					throw new Error(`whistle: engine stdout is not JSON — ${r.stdout.trim().slice(0, 300)}`);
 				}
 				const parsed = engineOutput.safeParse(json);
 				if (!parsed.success) {
-					throw new Error(
-						`whistle: unexpected engine output — ${r.stdout.trim().slice(0, 300)}`,
-					);
+					throw new Error(`whistle: unexpected engine output — ${r.stdout.trim().slice(0, 300)}`);
 				}
 				if (parsed.data.decode_tps !== undefined || parsed.data.ttft_ms !== undefined) {
 					log.debug("whistle engine pass", {
@@ -249,7 +252,8 @@ export function whistleArtifactPresence(cfg: WhistleCfg): {
 } {
 	const cacheDir = paths.whistleCache();
 	return {
-		engine: (cfg.engine !== undefined && existsSync(cfg.engine)) || existsSync(join(cacheDir, "needle")),
+		engine:
+			(cfg.engine !== undefined && existsSync(cfg.engine)) || existsSync(join(cacheDir, "needle")),
 		weights:
 			(cfg.weights !== undefined && existsSync(cfg.weights)) ||
 			existsSync(join(cacheDir, "whistle.cact")),

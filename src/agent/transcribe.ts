@@ -20,7 +20,16 @@ import type { AuthStore } from "../auth.ts";
 import type { TranscriptionConfig } from "../config.ts";
 import { log } from "../log.ts";
 import { boundedRun, spawnProc } from "../proc.ts";
-import { groqEngine } from "./transcribe-cloud.ts";
+import {
+	elevenlabsEngine,
+	geminiEngine,
+	groqEngine,
+	mimoEngine,
+	mistralEngine,
+	openaiEngine,
+	openrouterEngine,
+} from "./transcribe-cloud.ts";
+import { whistleEngine } from "./transcribe-whistle.ts";
 
 const FFMPEG_TIMEOUT_MS = 180_000;
 
@@ -70,8 +79,22 @@ export function speechEngine(
 	deps: EngineDeps = {},
 ): SpeechEngine {
 	switch (cfg.kind) {
+		case "whistle":
+			return whistleEngine(cfg, deps);
 		case "groq":
 			return groqEngine(cfg, auth, deps);
+		case "openai":
+			return openaiEngine(cfg, auth, deps);
+		case "openrouter":
+			return openrouterEngine(cfg, auth, deps);
+		case "mistral":
+			return mistralEngine(cfg, auth, deps);
+		case "elevenlabs":
+			return elevenlabsEngine(cfg, auth, deps);
+		case "gemini":
+			return geminiEngine(cfg, auth, deps);
+		case "mimo":
+			return mimoEngine(cfg, auth, deps);
 	}
 }
 
@@ -218,7 +241,14 @@ async function segmentAudio(
 	// mono 48k opus, small enough that a 15-minute segment stays under
 	// every cloud upload cap.
 	const audio = wav
-		? ["-ar", String(prep.sampleRateHz ?? 16_000), "-ac", prep.mono === false ? "2" : "1", "-c:a", "pcm_s16le"]
+		? [
+				"-ar",
+				String(prep.sampleRateHz ?? 16_000),
+				"-ac",
+				prep.mono === false ? "2" : "1",
+				"-c:a",
+				"pcm_s16le",
+			]
 		: ["-ac", "1", "-b:a", "48k", "-c:a", "libopus"];
 	const proc = spawnProc([
 		"ffmpeg",

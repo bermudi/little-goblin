@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { whistleEngine, type WhistleDeps } from "./transcribe-whistle.ts";
@@ -32,13 +40,13 @@ const kwFile = flag("--audio-keywords");
 const lang = flag("--audio-language");
 const kw = kwFile === null ? "" : readFileSync(kwFile, "utf8").trim().replaceAll("\\n", "+");
 ${
-		mode === "ok"
-			? `process.stdout.write(JSON.stringify({ text: "hola goblin" + (kw ? " kw:" + kw : "") + (lang ? " lang:" + lang : ""), language: "es", ttft_ms: 120, decode_tps: 81.4 }));`
-			: mode === "silence"
-				? `process.stdout.write(JSON.stringify({ text: "", language: "" }));`
-				: mode === "fail"
-					? `console.error("audio limit is 30 s"); process.exit(1);`
-					: `process.stdout.write("definitely not json");`
+	mode === "ok"
+		? `process.stdout.write(JSON.stringify({ text: "hola goblin" + (kw ? " kw:" + kw : "") + (lang ? " lang:" + lang : ""), language: "es", ttft_ms: 120, decode_tps: 81.4 }));`
+		: mode === "silence"
+			? `process.stdout.write(JSON.stringify({ text: "", language: "" }));`
+			: mode === "fail"
+				? `console.error("audio limit is 30 s"); process.exit(1);`
+				: `process.stdout.write("definitely not json");`
 }
 `;
 	writeFileSync(path, script);
@@ -148,7 +156,9 @@ describe("whistleEngine", () => {
 			{ engine: join(dir, "no-such-needle"), weights: weightsStub(dir) },
 			offlineDeps("", ""),
 		);
-		await expect(engine.transcribe(audioFile(dir))).rejects.toThrow("configured artifact not found");
+		await expect(engine.transcribe(audioFile(dir))).rejects.toThrow(
+			"configured artifact not found",
+		);
 	});
 });
 

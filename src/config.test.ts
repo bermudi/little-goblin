@@ -23,6 +23,9 @@ import {
 	fetchEntrySchema,
 	searchKinds,
 	searchEntrySchema,
+	transcriptionDefaults,
+	transcriptionKinds,
+	transcriptionSchema,
 	splitModelRef,
 	writeConfig,
 	parseConfig,
@@ -375,7 +378,7 @@ describe("goblin.json5", () => {
 		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
 		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
 		expect(loadConfig()!.transcription).toBeUndefined();
-		writeFileSync(join(dir, "goblin.json5"), `${base},transcription:{kind:"groq",auth:"groq"}}`);
+		writeFileSync(join(dir, "goblin.json5"), `${base},transcription:{kind:"groq"}}`);
 		expect(loadConfig()!.transcription).toEqual({
 			kind: "groq",
 			model: "whisper-large-v3-turbo",
@@ -383,7 +386,35 @@ describe("goblin.json5", () => {
 		});
 		writeFileSync(join(dir, "goblin.json5"), `${base},transcription:""}`);
 		expect(loadConfig()!.transcription).toBeUndefined();
-		writeFileSync(join(dir, "goblin.json5"), `${base},transcription:{kind:"elevenlabs",auth:"x"}}`);
+		// Back-compat: the pre-union groq block, fields explicit.
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},transcription:{kind:"groq",model:"whisper-large-v3",auth:"groq"}}`,
+		);
+		expect(loadConfig()!.transcription).toEqual({
+			kind: "groq",
+			model: "whisper-large-v3",
+			auth: "groq",
+		});
+	});
+
+	test("whistle parses with keywords and its language set", () => {
+		const dir = useHome();
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},transcription:{kind:"whistle",keywords:["goblin","bermudi"],language:"es"}}`,
+		);
+		expect(loadConfig()!.transcription).toEqual({
+			kind: "whistle",
+			keywords: ["goblin", "bermudi"],
+			language: "es",
+		});
+		// Its language is an enum, not any 2-letter code.
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},transcription:{kind:"whistle",language:"ja"}}`,
+		);
 		expect(() => loadConfig()).toThrow("goblin.json5");
 	});
 
@@ -700,4 +731,42 @@ test("legacy Telegram selection pins independently from app-default patches and 
 		"provider>/<model-id>",
 	);
 	expect(() => parseConfig({ ...changed, telegram: { thinking: "invalid" } })).toThrow();
+});
+
+describe("transcriptionKinds", () => {
+	// Same two-direction contract as providerKinds, for the mini app's
+	// Voice card: schema-only kind → the selector can't offer it;
+	// array-only kind → the form offers what the config rejects.
+	test("every kind parses bare; an unknown kind is rejected", () => {
+		for (const kind of transcriptionKinds) {
+			const parsed = transcriptionSchema.safeParse({ kind });
+			expect(parsed.success).toBe(true);
+			if (parsed.success && parsed.data.kind !== "whistle") {
+				expect(parsed.data.model).toBe(transcriptionDefaults[parsed.data.kind].model);
+				expect(parsed.data.auth).toBe(transcriptionDefaults[parsed.data.kind].auth);
+			}
+		}
+		expect(transcriptionSchema.safeParse({ kind: "whispercpp" }).success).toBe(false);
+	});
+
+	test("every schema literal is offered — array and union agree both ways", () => {
+		const schemaKinds = transcriptionSchema.options.map((o) => o.shape.kind.value);
+		expect(new Set(schemaKinds)).toEqual(new Set(transcriptionKinds));
+	});
+
+	test("cloud language passthrough validates as ISO-639-1", () => {
+		expect(transcriptionSchema.safeParse({ kind: "groq", language: "es" }).success).toBe(true);
+		expect(transcriptionSchema.safeParse({ kind: "groq", language: "esp" }).success).toBe(false);
+		expect(transcriptionSchema.safeParse({ kind: "groq", language: "ES" }).success).toBe(false);
+	});
+
+	test("whistle keywords cap at 100 non-empty entries", () => {
+		expect(
+			transcriptionSchema.safeParse({ kind: "whistle", keywords: Array(101).fill("x") }).success,
+		).toBe(false);
+		expect(transcriptionSchema.safeParse({ kind: "whistle", keywords: [""] }).success).toBe(false);
+		expect(
+			transcriptionSchema.safeParse({ kind: "whistle", keywords: Array(100).fill("x") }).success,
+		).toBe(true);
+	});
 });

@@ -47,9 +47,7 @@ const fakeFetch = (status: number, body: string) => {
 	const fn = (async (url: string | URL | Request, init?: RequestInit) => {
 		seen.push({
 			url: String(url),
-			headers: Object.fromEntries(
-			Object.entries((init?.headers as Record<string, string>) ?? {}),
-			),
+			headers: Object.fromEntries(Object.entries((init?.headers as Record<string, string>) ?? {})),
 			body: init?.body as FormData,
 		});
 		return new Response(body, { status });
@@ -76,9 +74,13 @@ describe("groqEngine", () => {
 			// minimal OpenAI-compatible shape.
 			JSON.stringify({ text: " Hey Goblin, please turn off the kitchen lights." }),
 		);
-		const engine = groqEngine({ kind: "groq", model: "whisper-large-v3-turbo", auth: "groq" }, auth, {
-			fetchFn: fn,
-		});
+		const engine = groqEngine(
+			{ kind: "groq", model: "whisper-large-v3-turbo", auth: "groq" },
+			auth,
+			{
+				fetchFn: fn,
+			},
+		);
 		const result = await engine.transcribe(voiceFile());
 		expect(result.text).toBe(" Hey Goblin, please turn off the kitchen lights.");
 		const req = last();
@@ -113,9 +115,13 @@ describe("groqEngine", () => {
 				},
 			}),
 		);
-		const engine = groqEngine({ kind: "groq", model: "whisper-large-v3-turbo", auth: "groq" }, auth, {
-			fetchFn: fn,
-		});
+		const engine = groqEngine(
+			{ kind: "groq", model: "whisper-large-v3-turbo", auth: "groq" },
+			auth,
+			{
+				fetchFn: fn,
+			},
+		);
 		await expect(engine.transcribe(voiceFile())).rejects.toThrow(
 			"groq: HTTP 401 — Invalid API Key",
 		);
@@ -125,9 +131,13 @@ describe("groqEngine", () => {
 		const fn = (async () => {
 			throw new Error("ECONNRESET");
 		}) as unknown as typeof fetch;
-		const engine = groqEngine({ kind: "groq", model: "whisper-large-v3-turbo", auth: "groq" }, auth, {
-			fetchFn: fn,
-		});
+		const engine = groqEngine(
+			{ kind: "groq", model: "whisper-large-v3-turbo", auth: "groq" },
+			auth,
+			{
+				fetchFn: fn,
+			},
+		);
 		await expect(engine.transcribe(voiceFile())).rejects.toThrow(
 			"groq: request failed (https://api.groq.com/openai/v1/audio/transcriptions) — ECONNRESET",
 		);
@@ -135,25 +145,37 @@ describe("groqEngine", () => {
 
 	test("a non-JSON success body fails loud", async () => {
 		const { fn } = fakeFetch(200, "<html>gateway oops</html>");
-		const engine = groqEngine({ kind: "groq", model: "whisper-large-v3-turbo", auth: "groq" }, auth, {
-			fetchFn: fn,
-		});
+		const engine = groqEngine(
+			{ kind: "groq", model: "whisper-large-v3-turbo", auth: "groq" },
+			auth,
+			{
+				fetchFn: fn,
+			},
+		);
 		await expect(engine.transcribe(voiceFile())).rejects.toThrow("response is not JSON");
 	});
 
 	test("a JSON body without text fails loud with the head", async () => {
 		const { fn } = fakeFetch(200, JSON.stringify({ task: "transcribe", segments: [] }));
-		const engine = groqEngine({ kind: "groq", model: "whisper-large-v3-turbo", auth: "groq" }, auth, {
-			fetchFn: fn,
-		});
+		const engine = groqEngine(
+			{ kind: "groq", model: "whisper-large-v3-turbo", auth: "groq" },
+			auth,
+			{
+				fetchFn: fn,
+			},
+		);
 		await expect(engine.transcribe(voiceFile())).rejects.toThrow("unexpected response shape");
 	});
 
 	test("a missing auth record propagates before any request", async () => {
 		const { fn, seen } = fakeFetch(200, JSON.stringify({ text: "x" }));
-		const engine = groqEngine({ kind: "groq", model: "whisper-large-v3-turbo", auth: "gone" }, auth, {
-			fetchFn: fn,
-		});
+		const engine = groqEngine(
+			{ kind: "groq", model: "whisper-large-v3-turbo", auth: "gone" },
+			auth,
+			{
+				fetchFn: fn,
+			},
+		);
 		await expect(engine.transcribe(voiceFile())).rejects.toThrow("no such secret: gone");
 		expect(seen.length).toBe(0);
 	});
@@ -164,9 +186,13 @@ describe("groqEngine", () => {
 describe("openaiEngine", () => {
 	test("success returns the text; 401 renders the pinned shape", async () => {
 		const ok = fakeFetch(200, JSON.stringify({ text: "call me back" }));
-		const engine = openaiEngine({ model: "gpt-4o-mini-transcribe", auth: "openai" }, auth, {
-			fetchFn: ok.fn,
-		});
+		const engine = openaiEngine(
+			{ kind: "openai", model: "gpt-4o-mini-transcribe", auth: "openai" },
+			auth,
+			{
+				fetchFn: ok.fn,
+			},
+		);
 		expect((await engine.transcribe(voiceFile())).text).toBe("call me back");
 		expect(ok.last().url).toBe("https://api.openai.com/v1/audio/transcriptions");
 		expect(ok.last().body.get("model")).toBe("gpt-4o-mini-transcribe");
@@ -182,9 +208,13 @@ describe("openaiEngine", () => {
 				},
 			}),
 		);
-		const failing = openaiEngine({ model: "gpt-4o-mini-transcribe", auth: "openai" }, auth, {
-			fetchFn: bad.fn,
-		});
+		const failing = openaiEngine(
+			{ kind: "openai", model: "gpt-4o-mini-transcribe", auth: "openai" },
+			auth,
+			{
+				fetchFn: bad.fn,
+			},
+		);
 		await expect(failing.transcribe(voiceFile())).rejects.toThrow(
 			"openai: HTTP 401 — Incorrect API key provided: sk-…",
 		);
@@ -194,16 +224,24 @@ describe("openaiEngine", () => {
 describe("mistralEngine", () => {
 	test("success returns the text; the FastAPI detail error renders", async () => {
 		const ok = fakeFetch(200, JSON.stringify({ text: "rappelle-moi" }));
-		const engine = mistralEngine({ model: "mistralai/voxtral-mini-3b-2507", auth: "mistral" }, auth, {
-			fetchFn: ok.fn,
-		});
+		const engine = mistralEngine(
+			{ kind: "mistral", model: "mistralai/voxtral-mini-3b-2507", auth: "mistral" },
+			auth,
+			{
+				fetchFn: ok.fn,
+			},
+		);
 		expect((await engine.transcribe(voiceFile())).text).toBe("rappelle-moi");
 		expect(ok.last().url).toBe("https://api.mistral.ai/v1/audio/transcriptions");
 
 		const bad = fakeFetch(401, JSON.stringify({ detail: "Invalid API Key" }));
-		const failing = mistralEngine({ model: "mistralai/voxtral-mini-3b-2507", auth: "mistral" }, auth, {
-			fetchFn: bad.fn,
-		});
+		const failing = mistralEngine(
+			{ kind: "mistral", model: "mistralai/voxtral-mini-3b-2507", auth: "mistral" },
+			auth,
+			{
+				fetchFn: bad.fn,
+			},
+		);
 		await expect(failing.transcribe(voiceFile())).rejects.toThrow(
 			"mistral: HTTP 401 — Invalid API Key",
 		);
@@ -220,9 +258,13 @@ describe("openrouterEngine", () => {
 				usage: { seconds: 5.603, cost: 0.0000420225 },
 			}),
 		);
-		const engine = openrouterEngine({ model: "openai/whisper-large-v3", auth: "openrouter" }, auth, {
-			fetchFn: fn,
-		});
+		const engine = openrouterEngine(
+			{ kind: "openrouter", model: "openai/whisper-large-v3", auth: "openrouter" },
+			auth,
+			{
+				fetchFn: fn,
+			},
+		);
 		const result = await engine.transcribe(voiceFile());
 		expect(result.text).toBe(
 			" Hey Goblin, please turn off the kitchen lights and set a timer for 10 minutes.",
@@ -240,9 +282,13 @@ describe("openrouterEngine", () => {
 
 	test(".oga maps to ogg, .wav to wav; an unmapped extension fails loud", async () => {
 		const { fn, last } = fakeFetch(200, JSON.stringify({ text: "x" }));
-		const engine = openrouterEngine({ model: "openai/whisper-large-v3", auth: "openrouter" }, auth, {
-			fetchFn: fn,
-		});
+		const engine = openrouterEngine(
+			{ kind: "openrouter", model: "openai/whisper-large-v3", auth: "openrouter" },
+			auth,
+			{
+				fetchFn: fn,
+			},
+		);
 		for (const [name, format] of [
 			["n.oga", "ogg"],
 			["n.wav", "wav"],
@@ -273,9 +319,13 @@ describe("elevenlabsEngine", () => {
 				words: [{ text: "call", start: 0.1, end: 0.4, type: "word" }],
 			}),
 		);
-		const engine = elevenlabsEngine({ model: "scribe_v2", auth: "elevenlabs" }, auth, {
-			fetchFn: fn,
-		});
+		const engine = elevenlabsEngine(
+			{ kind: "elevenlabs", model: "scribe_v2", auth: "elevenlabs" },
+			auth,
+			{
+				fetchFn: fn,
+			},
+		);
 		const result = await engine.transcribe(voiceFile());
 		expect(result).toEqual({ text: "call me back please", language: "en" });
 		const req = last();
@@ -302,9 +352,13 @@ describe("geminiEngine", () => {
 
 	test("joins parts into the transcript with the prompt as a text part", async () => {
 		const { fn, last } = fakeFetch(200, candidates([{ text: "hello " }, { text: "goblin" }]));
-		const engine = geminiEngine({ model: "gemini-flash-latest", auth: "gemini" }, auth, {
-			fetchFn: fn,
-		});
+		const engine = geminiEngine(
+			{ kind: "gemini", model: "gemini-flash-latest", auth: "gemini" },
+			auth,
+			{
+				fetchFn: fn,
+			},
+		);
 		expect((await engine.transcribe(file())).text).toBe("hello goblin");
 		const req = last();
 		expect(req.url).toBe(
@@ -320,17 +374,21 @@ describe("geminiEngine", () => {
 			mimeType: "audio/ogg",
 			data: Buffer.from("ogg-bytes").toString("base64"),
 		});
-		expect((body.contents[0]?.parts[1]?.text as string).startsWith("Transcribe the audio verbatim.")).toBe(
-			true,
-		);
+		expect(
+			(body.contents[0]?.parts[1]?.text as string).startsWith("Transcribe the audio verbatim."),
+		).toBe(true);
 		expect(body.generationConfig.temperature).toBe(0);
 	});
 
 	test("a safety block with no text fails loud, never reads as silence", async () => {
 		const { fn } = fakeFetch(200, candidates([], "PROHIBITED_CONTENT"));
-		const engine = geminiEngine({ model: "gemini-flash-latest", auth: "gemini" }, auth, {
-			fetchFn: fn,
-		});
+		const engine = geminiEngine(
+			{ kind: "gemini", model: "gemini-flash-latest", auth: "gemini" },
+			auth,
+			{
+				fetchFn: fn,
+			},
+		);
 		await expect(engine.transcribe(file())).rejects.toThrow(
 			"gemini: no transcript — finishReason PROHIBITED_CONTENT",
 		);
@@ -339,11 +397,17 @@ describe("geminiEngine", () => {
 	test("an api error renders its message", async () => {
 		const { fn } = fakeFetch(
 			400,
-			JSON.stringify({ error: { code: 400, message: "Invalid JSON payload.", status: "INVALID_ARGUMENT" } }),
+			JSON.stringify({
+				error: { code: 400, message: "Invalid JSON payload.", status: "INVALID_ARGUMENT" },
+			}),
 		);
-		const engine = geminiEngine({ model: "gemini-flash-latest", auth: "gemini" }, auth, {
-			fetchFn: fn,
-		});
+		const engine = geminiEngine(
+			{ kind: "gemini", model: "gemini-flash-latest", auth: "gemini" },
+			auth,
+			{
+				fetchFn: fn,
+			},
+		);
 		await expect(engine.transcribe(file())).rejects.toThrow(
 			"gemini: HTTP 400 — Invalid JSON payload.",
 		);
@@ -370,9 +434,13 @@ describe("mimoEngine", () => {
 				usage: { prompt_tokens: 54, completion_tokens: 2, total_tokens: 56, cost: 0.00000758 },
 			}),
 		);
-		const engine = mimoEngine({ model: "xiaomi/mimo-v2.6-flash", auth: "openrouter" }, auth, {
-			fetchFn: fn,
-		});
+		const engine = mimoEngine(
+			{ kind: "mimo", model: "xiaomi/mimo-v2.6-flash", auth: "openrouter" },
+			auth,
+			{
+				fetchFn: fn,
+			},
+		);
 		expect((await engine.transcribe(voiceFile())).text).toBe("call me back");
 		const req = last();
 		expect(req.url).toBe("https://openrouter.ai/api/v1/chat/completions");
@@ -381,7 +449,11 @@ describe("mimoEngine", () => {
 			temperature: number;
 			messages: Array<{
 				role: string;
-				content: Array<{ type: string; input_audio?: { data: string; format: string }; text?: string }>;
+				content: Array<{
+					type: string;
+					input_audio?: { data: string; format: string };
+					text?: string;
+				}>;
 			}>;
 		};
 		expect(body.model).toBe("xiaomi/mimo-v2.6-flash");
@@ -400,9 +472,13 @@ describe("mimoEngine", () => {
 				choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "" } }],
 			}),
 		);
-		const engine = mimoEngine({ model: "xiaomi/mimo-v2.6-flash", auth: "openrouter" }, auth, {
-			fetchFn: fn,
-		});
+		const engine = mimoEngine(
+			{ kind: "mimo", model: "xiaomi/mimo-v2.6-flash", auth: "openrouter" },
+			auth,
+			{
+				fetchFn: fn,
+			},
+		);
 		expect(await engine.transcribe(voiceFile())).toEqual({ text: "" });
 	});
 });

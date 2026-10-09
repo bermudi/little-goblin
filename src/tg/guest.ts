@@ -173,9 +173,7 @@ function summonParts(msg: Message): { type: "text"; text: string }[] {
 		// A quote authored by a different member is that person's content,
 		// not the summoner's instructions — same fence as fetched page text.
 		const foreign =
-			quoted?.from !== undefined &&
-			msg.from !== undefined &&
-			quoted.from.id !== msg.from.id;
+			quoted?.from !== undefined && msg.from !== undefined && quoted.from.id !== msg.from.id;
 		parts.push({
 			type: "text",
 			text: foreign

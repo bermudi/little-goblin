@@ -45,7 +45,10 @@
  */
 /** TTS block while editing — numeric-ish fields stay strings. */
 /** @typedef {{ voice: string, rate: string, voices: string[] }} TtsDraft */
-/** @typedef {{ model: string, auth: string }} TrDraft */
+/** Transcription block while editing — keywords/engine/weights are
+ * whistle-only and round-trip untouched (hand-edited config survives a
+ * page save). */
+/** @typedef {{ kind: string, model: string, auth: string, language: string, keywords: string[], engine: string, weights: string }} TrDraft */
 /** @typedef {{ model: string, maxTokens: number, mode: "auto" | "always" }} VisDraft */
 /** @typedef {{ baseUrl: string, bankId: string, auth: string, budget: string, tokens: string, timeout: string }} MemDraft */
 /**
@@ -105,6 +108,10 @@ let KINDS = [];
 let SEARCH_KINDS = [];
 /** @type {readonly string[]} */
 let FETCH_KINDS = [];
+/** @type {readonly string[]} */
+let TR_KINDS = [];
+/** @type {Record<string, { model: string, auth: string }>} */
+let TR_DEFAULTS = {};
 
 // The full operator vocabulary — the fallback when the model is unknown,
 // and the ordering for nearest-rung clamping (mirrors the server).
@@ -966,11 +973,28 @@ function buildBody() {
 		transcription:
 			cfg.transcription === null
 				? ""
-				: {
-						kind: "groq",
-						model: cfg.transcription.model.trim() || "whisper-large-v3-turbo",
-						auth: cfg.transcription.auth.trim(),
-					},
+				: cfg.transcription.kind === "whistle"
+					? {
+							kind: "whistle",
+							...(cfg.transcription.language.trim()
+								? { language: cfg.transcription.language.trim() }
+								: {}),
+							...(cfg.transcription.keywords.length
+								? { keywords: cfg.transcription.keywords.slice() }
+								: {}),
+							...(cfg.transcription.engine ? { engine: cfg.transcription.engine } : {}),
+							...(cfg.transcription.weights ? { weights: cfg.transcription.weights } : {}),
+						}
+					: {
+							kind: /** @type {Extract<ConfigPostBody["transcription"], { kind: string }>["kind"]} */ (
+								cfg.transcription.kind
+							),
+							...(cfg.transcription.model.trim() ? { model: cfg.transcription.model.trim() } : {}),
+							...(cfg.transcription.auth.trim() ? { auth: cfg.transcription.auth.trim() } : {}),
+							...(cfg.transcription.language.trim()
+								? { language: cfg.transcription.language.trim() }
+								: {}),
+						},
 		vision:
 			cfg.vision === null
 				? ""
@@ -1526,7 +1550,17 @@ function populate(c) {
 			? { voice: c.tts.voice || "", rate: c.tts.rate || "", voices: (c.tts.voices || []).slice() }
 			: null,
 		transcription: c.transcription
-			? { model: c.transcription.model || "", auth: c.transcription.auth || "" }
+			? {
+					// Union arms differ (whistle has no model/auth; cloud has no
+					// keywords) — widen once; absent fields read as "".
+					kind: /** @type {{ kind: string }} */ (c.transcription).kind,
+					model: /** @type {{ model?: string }} */ (c.transcription).model || "",
+					auth: /** @type {{ auth?: string }} */ (c.transcription).auth || "",
+					language: /** @type {{ language?: string }} */ (c.transcription).language || "",
+					keywords: /** @type {{ keywords?: string[] }} */ (c.transcription).keywords || [],
+					engine: /** @type {{ engine?: string }} */ (c.transcription).engine || "",
+					weights: /** @type {{ weights?: string }} */ (c.transcription).weights || "",
+				}
 			: null,
 		vision: c.vision
 			? {
@@ -1634,16 +1668,43 @@ function populate(c) {
 		/** @type {TtsDraft} */ (cfg.tts).rate = v;
 	});
 
+	const emptyTr = () =>
+		/** @type {TrDraft} */ ({
+			kind: "whistle",
+			model: "",
+			auth: "",
+			language: "",
+			keywords: [],
+			engine: "",
+			weights: "",
+		});
+	const trKindSelect = selectEl("trKind");
+	let trOptionsBuilt = false;
 	function paintTranscription() {
-		$("trFields").classList.toggle("hidden", cfg.transcription === null);
-		inputEl("trModel").value = cfg.transcription ? cfg.transcription.model : "";
-		inputEl("trAuth").value = cfg.transcription ? cfg.transcription.auth : "";
+		const t = cfg.transcription;
+		$("trFields").classList.toggle("hidden", t === null);
+		if (!trOptionsBuilt) {
+			for (const k of TR_KINDS) trKindSelect.append(new Option(k, k));
+			trOptionsBuilt = true;
+		}
+		if (t) trKindSelect.value = t.kind;
+		const local = t !== null && t.kind === "whistle";
+		$("trModelRow").classList.toggle("hidden", local);
+		$("trAuthRow").classList.toggle("hidden", local);
+		if (t && !local) {
+			const d = TR_DEFAULTS[t.kind] || { model: "", auth: "" };
+			inputEl("trModel").placeholder = d.model;
+			inputEl("trAuth").placeholder = d.auth + " — in auth.jsonl";
+		}
+		inputEl("trModel").value = t ? t.model : "";
+		inputEl("trAuth").value = t ? t.auth : "";
+		inputEl("trLang").value = t ? t.language : "";
 	}
 	bindSwitch(
 		"trOn",
 		() => cfg.transcription !== null,
 		(v) => {
-			if (v) cfg.transcription = lastTranscription || { model: "", auth: "" };
+			if (v) cfg.transcription = lastTranscription || emptyTr();
 			else {
 				lastTranscription = cfg.transcription;
 				cfg.transcription = null;
@@ -1652,11 +1713,20 @@ function populate(c) {
 		paintTranscription,
 	);
 	paintTranscription();
+	trKindSelect.onchange = () => {
+		const t = /** @type {TrDraft} */ (cfg.transcription);
+		t.kind = trKindSelect.value;
+		paintTranscription();
+		markDirty();
+	};
 	bindText("trModel", (v) => {
 		/** @type {TrDraft} */ (cfg.transcription).model = v;
 	});
 	bindText("trAuth", (v) => {
 		/** @type {TrDraft} */ (cfg.transcription).auth = v;
+	});
+	bindText("trLang", (v) => {
+		/** @type {TrDraft} */ (cfg.transcription).language = v;
 	});
 
 	// Web
@@ -1831,6 +1901,8 @@ async function load() {
 		const r = /** @type {ConfigResponse} */ (await res.json());
 		KINDS = r.providerKinds;
 		SEARCH_KINDS = r.searchKinds;
+		TR_KINDS = r.transcriptionKinds;
+		TR_DEFAULTS = r.transcriptionDefaults || {};
 		FETCH_KINDS = r.fetchKinds;
 		populate(r.config);
 		loading = false;

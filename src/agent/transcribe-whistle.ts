@@ -11,7 +11,7 @@
 
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
@@ -82,13 +82,21 @@ function ensureArtifacts(
 	const memoized = artifactMemo.get(key);
 	if (memoized !== undefined) return memoized;
 	const p = (async () => {
-		const urls = artifactUrls(deps.arch ?? process.arch, deps.platform ?? process.platform);
+		// URLs resolve only for artifacts with no override — a
+		// fully-overridden install never reaches the platform gate, so
+		// managed installs run on any arch.
+		const urls =
+			cfg.engine !== undefined && cfg.weights !== undefined
+				? undefined
+				: artifactUrls(deps.arch ?? process.arch, deps.platform ?? process.platform);
 		const digests = deps.digests ?? PINNED_DIGESTS;
 		return {
+			// The empty URL is never fetched: artifact() returns an
+			// override before touching it.
 			engine: await artifact(
 				cfg.engine,
 				join(cacheDir, "needle"),
-				urls.engine,
+				urls?.engine ?? "",
 				digests.engine,
 				0o755,
 				deps,
@@ -96,7 +104,7 @@ function ensureArtifacts(
 			weights: await artifact(
 				cfg.weights,
 				join(cacheDir, "whistle.cact"),
-				urls.weights,
+				urls?.weights ?? "",
 				digests.weights,
 				0o644,
 				deps,
@@ -193,16 +201,18 @@ export function whistleEngine(cfg: WhistleCfg, deps: WhistleDeps = {}): SpeechEn
 			// Keywords bias toward names — one per line (--help: "words
 			// and phrases to favour"). Per-call temp file; small, and the
 			// engine config can change between calls.
-			let kwDir: string | undefined;
 			const argv = [engine, "--model", weights, "--audio", file.path];
 			if (cfg.language !== undefined) argv.push("--audio-language", cfg.language);
-			if (cfg.keywords !== undefined && cfg.keywords.length > 0) {
-				kwDir = mkdtempSync(join(tmpdir(), "goblin-kw-"));
-				const kwFile = join(kwDir, "keywords.txt");
-				await writeFile(kwFile, `${cfg.keywords.join("\n")}\n`);
-				argv.push("--audio-keywords", kwFile);
-			}
+			let kwDir: string | undefined;
 			try {
+				if (cfg.keywords !== undefined && cfg.keywords.length > 0) {
+					// Inside the try: a failed write must still remove the
+					// dir the mkdtemp just made.
+					kwDir = mkdtempSync(join(tmpdir(), "goblin-kw-"));
+					const kwFile = join(kwDir, "keywords.txt");
+					await writeFile(kwFile, `${cfg.keywords.join("\n")}\n`);
+					argv.push("--audio-keywords", kwFile);
+				}
 				const r = await boundedRun(spawnProc(argv), {
 					timeoutMs: WHISTLE_TIMEOUT_MS,
 					maxOutput: 1024 * 1024,

@@ -234,4 +234,41 @@ describe("whistle artifact auto-fetch", () => {
 			"no verified prebuilt engine for darwin-arm64",
 		);
 	});
+
+	test("overrides bypass the platform gate on an unmapped platform", async () => {
+		const dir = tmpdir_();
+		// Both artifacts overridden: the fetcher must never resolve
+		// URLs (which throw off linux-x64), let alone call fetch.
+		const engine = whistleEngine(
+			{ engine: stubEngine(dir, "ok"), weights: weightsStub(dir) },
+			{
+				arch: "arm64",
+				platform: "darwin",
+				cacheDir: join(dir, "cache"),
+				fetchFn: (async () => {
+					throw new Error("must not fetch");
+				}) as unknown as typeof fetch,
+			},
+		);
+		expect((await engine.transcribe(audioFile(dir))).text).toBe("hola goblin");
+	});
+
+	test("a single override still gates the platform for the other artifact", async () => {
+		const dir = tmpdir_();
+		const engine = whistleEngine(
+			{ engine: stubEngine(dir, "ok") },
+			{
+				arch: "arm64",
+				platform: "darwin",
+				cacheDir: join(dir, "cache"),
+				fetchFn: (async () => {
+					throw new Error("must not fetch");
+				}) as unknown as typeof fetch,
+			},
+		);
+		// The weights half has no override — its URL resolution throws.
+		await expect(engine.transcribe(audioFile(dir))).rejects.toThrow(
+			"no verified prebuilt engine for darwin-arm64",
+		);
+	});
 });

@@ -422,12 +422,121 @@ LLM acts as a structured judge (ISO 639-1 + confidence, over the fact texts,
 not keys or entity names), and deterministic script detection cross-checks it
 for cross-script drift (a judge "en" on Cyrillic text is a hard fail). Judge
 failures are counted as *ungraded*, never as passes; `--no-judge` skips
-dgrading for latency-only runs. Extraction coverage is graded against curated
+grading for latency-only runs. Extraction coverage is graded against curated
 gold assertions in `bench_fixtures/docs.json` (strict: a near-miss is false
 coverage), and each fixture declares its expected baseline language, so pinned
 cells are graded against "en" on every doc and baseline cells against
 source-preservation. The Ollama candidate's first call after idle eviction
 pays the model reload (~2-3 s) — that is the `OLLAMA_KEEP_ALIVE` caveat
 surfacing in the data, not model slowness.
+
+## Performance baseline (measured 2026-10-07/08)
+
+From live traffic (`~/goblin/state/goblin.log`) and a same-seat replay
+against the local API. The numbers below are the reference for any latency
+work on the memory stack.
+
+- Response gap (intake → first model call), 46 turns: p50 1837 ms, p90 3454,
+  p95 4356, max 7103.
+- Hindsight recall (goblin-side `memory request completed` durationMs), 51
+  recalls over ~3 weeks: p50 863 ms, p90 1633, p95 2459, max 2646. Recall is
+  ~half the median gap and nearly all of its tail.
+- Recall anatomy (hindsight's own phase log): `generate_query_embedding`
+  297–358 ms of a 314–382 ms total — **the query embedding call is ~95% of
+  recall latency**; retrieval + RRF + token filtering are ~15 ms combined;
+  the cross-encoder reranker is skipped (`reranker=rrf`, 0 ms).
+- The embedding hop is `voyageai/voyage-4-lite` @ OpenRouter. Warm RTT from
+  this host: 230–270 ms; hindsight's Python client observes 300–950 ms
+  (connection setup after idle + provider variance explain the p50 863 →
+  warm ~414 spread).
+
+## Latency candidate: local embeddings (UNAPPLIED — decision pending)
+
+`google/embeddinggemma-300m` is **not on OpenRouter** (HTTP 400; it is an
+Ollama/HF model). Both candidate models are already pulled locally:
+`ollama pull embeddinggemma` (681 MB, 768 dims, 2048-token context,
+100% GPU on the GTX 1060) and `nomic-embed-text-v2-moe` (768 dims).
+
+Measured (12 interleaved reps, sizes 150/600/2000 chars, warm):
+
+| model | p50 warm | notes |
+|---|---|---|
+| voyage-4-lite @ OpenRouter | 257–272 ms | network tail: p95 recall 2.5 s |
+| embeddinggemma @ Ollama | 199–268 ms | no tail; cold load 1.8 s after idle eviction |
+| nomic-v2-moe @ Ollama | 285–366 ms | slower; not preferred |
+
+Quality A/B on the real bank (28 curated gold queries × 199 facts, cosine
+top-k): voyage hit@1 0.96 / hit@5 1.00 / MRR 0.982; embeddinggemma 0.89 /
+1.00 / 0.940; mean top-10 overlap 0.69; all ES and RU queries rank-1 in both
+models. Since recall delivers 7–17 facts per turn and bm25/graph legs are
+unchanged by a swap, the ordering delta is expected to be invisible
+downstream. Re-run the A/B (`bench.py recall`) if the bank grows an order of
+magnitude.
+
+Applying the swap needs ALL of: `hindsight.env` → `EMBEDDINGS_PROVIDER=openai`,
+`EMBEDDINGS_OPENAI_MODEL=embeddinggemma`,
+`EMBEDDINGS_OPENAI_BASE_URL=http://host.containers.internal:11434/v1` (API
+container is bridge-net; slirp reaches host loopback), a dummy API key; a
+systemd override `OLLAMA_KEEP_ALIVE=-1` (else every idle-evicted recall pays
+1.8 s cold load — worse than today); a **new bank + re-retain** (vector spaces
+are incompatible, 768 vs 1024 dims — "an explicit re-indexing plan, not an
+environment edit"); then flip `bankId` in `goblin.json5` and restart
+`goblin-memory-api` + `goblin`. Each restart is live infra — bermudi's OK.
+Projected: recall ≈ 250 ms steady → gap p50 ~1.2 s, p95 ~2.1 s.
+
+## Extraction LLM: effective knobs (all UNPINNED today)
+
+`hindsight.env` sets no sampling knobs, so gpt-6-luna runs on hindsight's
+built-in defaults. Hindsight never sends `top_p`/`top_k`/`seed` at all (no
+code path; `HINDSIGHT_API_LLM_EXTRA_BODY` is the only injection hatch).
+Per-pipeline temperature defaults (config.py): retain 0.1, consolidation 0.0,
+reflect 0.9, verification 0.0 — per-operation overrides
+`HINDSIGHT_API_LLM_TEMPERATURE_{RETAIN,REFLECT,CONSOLIDATION,VERIFICATION}`,
+with `none/off` sentinels to omit the parameter entirely. `reasoning_effort`
+is unset → omitted (luna's own default); `HINDSIGHT_API_LLM_REASONING_EFFORT`
+and per-operation variants exist. Structured output uses json_schema
+(response_format) — luna accepts strict schema mode on OpenRouter.
+
+Bench smoke (n=2, directional; verify with `bench.py llm --reps 5 --yes`,
+~40+40 calls ≈ 130k tokens): retain wall 8.8–12.4 s at defaults → **3.0–6.1 s
+with effort=low**, completion tokens −60%, with one coverage miss (75% vs
+100%) — the speed/completeness trade the full run must quantify.
+
+## Extraction language drift incident (2026-09-25; fix UNAPPLIED)
+
+Four facts in the bank are Russian (EN 157 / ES 38 / RU 4). All four trace to
+one English exchange in topic 546583, retained 2026-09-25 23:45 UTC. The
+extraction prompt demands source-language preservation (`_DEFAULT_LANGUAGE_RULE`
+in `retain/fact_extraction.py`, surfaced as a prompt block with
+`field=llm_output_language`); luna violated it on one call; consolidation then
+faithfully "preserved the source language" of the RU facts and derived two
+more (the `doc=null` pair). This is upstream-acknowledged: hindsight's
+`prompt_utils.py` cites issue #181 — a multilingual model drifts "to an
+unrelated language" unless `HINDSIGHT_API_LLM_OUTPUT_LANGUAGE` is set.
+
+Remediation, all pending bermudi's OK (live mutations): add
+`HINDSIGHT_API_LLM_OUTPUT_LANGUAGE=English` to `hindsight.env` (+ API restart;
+trade: Spanish exchanges extract as English facts going forward); reprocess
+the two source documents (`POST /documents/{id}/reprocess` — ids in
+`bench` git history / facts `966c1aa4`, `11677f83`); then forget the two
+consolidation-derived RU facts (`19dd4557`, `6d22027e`, `doc=null`) after
+verifying reprocess does not clean them itself. For next time: enable
+`HINDSIGHT_API_LLM_TRACE_ENABLED` and/or bank `audit_log_enabled` so the
+drifting call is recorded.
+
+## Environment facts (verified this session)
+
+- hindsight-api: `127.0.0.1:8888`, no auth on loopback, bank `goblin`, 199
+  facts; DB timestamps are UTC, journal displays local (UTC-6).
+- `audit_log_enabled: false`; bank mission: "Remember the operator's
+  preferences, decisions, commitments, people, and ongoing work. Assistant
+  suggestions are not operator decisions. Date every fact."
+- Container→host networking: bridge net `goblin-memory`;
+  `host.containers.internal` reaches host loopback listeners.
+- Ollama daemon active on `127.0.0.1:11434`; embeddinggemma + nomic pulled;
+  default keep_alive evicts after 5 min idle.
+- Bench commits: `b3f6e0a` (tool), `8bff773` (judge grading). Docs section:
+  Benchmarking, above. Not deployed — `scripts/deploy.sh` is the only
+  sanctioned push and was not run.
 
 Unit tests: `uv run -m unittest discover -s deploy/memory -p 'test_bench.py'`.

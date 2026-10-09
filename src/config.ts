@@ -313,16 +313,20 @@ const sessionNameSchema = z
 		"session name must start alphanumeric and contain only [A-Za-z0-9._-]",
 	);
 
-// root must be absolute or `~`-rooted (server-expanded) — rejected here,
-// not at launch. machine labels are not checked against herdr's registry
-// at parse time: a wrong label fails loud at the first herdr call.
+// root must be `~`, `~/...`, or absolute (server-expanded) — rejected here,
+// not at launch. `~user` is shell user-expansion we do NOT perform
+// (delegate.ts isHomePath): treating it as home-relative would
+// stat/resolve it under the operator's home while the literal path
+// reaches herdr, so it fails loud at this boundary. machine labels
+// are not checked against herdr's registry at parse time: a wrong
+// label fails loud at the first herdr call.
 export const delegationTargetSchema = z
 	.object({
 		machine: harnessNameSchema.optional(),
 		session: sessionNameSchema.optional(),
 		root: z
 			.string()
-			.regex(/^(?:\/|~)/, "delegation target root must be absolute or start with ~")
+			.regex(/^(?:\/|~(?:\/|$))/, "delegation target root must be absolute, ~, or ~/... (bare ~user is not expanded)")
 			.optional(),
 		harnesses: harnessMapSchema.optional(),
 	})

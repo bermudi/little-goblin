@@ -162,6 +162,14 @@ describe("goblin.json5", () => {
 			`${base}${cfg({ g7: { machine: "g7", root: "relative/path" } })}}`,
 		);
 		expect(() => loadConfig()).toThrow(/root must be absolute/);
+		// `~user` is shell user-expansion the tool does NOT perform —
+		// accepting it would stat it under the operator's home while the
+		// literal path reaches herdr. Fail loud at this boundary.
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base}${cfg({ g7: { machine: "g7", root: "~other/build" } })}}`,
+		);
+		expect(() => loadConfig()).toThrow(/root must be absolute/);
 		// machine + session on one target is a contradiction — herdr's
 		// CLI treats --machine and --session as mutually exclusive.
 		writeFileSync(

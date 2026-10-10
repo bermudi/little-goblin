@@ -111,6 +111,16 @@ DEFAULT_MISSION = (
     "conversation language; keep proper nouns, product names, and quoted "
     "terms verbatim."
 )
+# Consolidation's own mission — it sits in observations_mission, another
+# knob the generic PUT mission never reaches. Same English pin: facts
+# entering consolidation are English, facts leaving it must stay so.
+DEFAULT_OBSERVATIONS_MISSION = (
+    "Consolidate the operator's preferences, decisions, commitments, "
+    "people, and ongoing work. Assistant suggestions are not operator "
+    "decisions. Preserve corrections as dated evolution. Write "
+    "consolidated facts in English; keep proper nouns, product names, "
+    "and quoted terms verbatim."
+)
 
 
 @dataclass(frozen=True)
@@ -602,6 +612,27 @@ def create_bank(bank_id: str, mission: str) -> None:
         fail(f"bank creation failed (HTTP {error.code}): {detail}")
     except OSError as error:
         fail(f"bank creation failed: {error}")
+    # Goblin never calls reflect(), so the generic mission only reaches
+    # reflect_mission; extraction reads retain_mission and consolidation
+    # reads observations_mission (docs/memory.md). Point both at the
+    # canonical texts — without this the mission is dead config.
+    patch = json.dumps({
+        "updates": {
+            "retain_mission": mission,
+            "observations_mission": DEFAULT_OBSERVATIONS_MISSION,
+        }
+    }).encode()
+    patch_req = urlrequest.Request(
+        f"{url}/config", data=patch, method="PATCH",
+        headers={"content-type": "application/json"})
+    try:
+        with urlrequest.urlopen(patch_req, timeout=30) as response:
+            info(f"bank '{bank_id}' retain_mission set (HTTP {response.status})")
+    except urlerror.HTTPError as error:
+        detail = error.read().decode(errors="replace")[:500]
+        fail(f"retain_mission patch failed (HTTP {error.code}): {detail}")
+    except OSError as error:
+        fail(f"retain_mission patch failed: {error}")
 
 
 def goblin_stable(seconds: float) -> bool:
@@ -1017,6 +1048,13 @@ def main(argv: list[str] | None = None) -> None:
             suffix = "and verified the API is healthy again" if recovered else \
                 f"but the API did NOT recover — journalctl --user -u {API_UNIT}"
             fail(f"{reason}; restored the previous hindsight.env {suffix}")
+
+        # The new env may use keys an older installed guard rejects. Land
+        # the compatible guard before changing config; keep it on rollback
+        # because it also accepts the previous env's launch profile.
+        start_dst = CFG_DIR / "start.py"
+        write_file_atomic(start_dst, (MEMORY_DIR / "start.py").read_text(), 0o644)
+        info(f"installed {start_dst}")
 
         # A reconfigure that adopts local embeddings needs the relay live
         # BEFORE the API restarts on the new env — it test-embeds during

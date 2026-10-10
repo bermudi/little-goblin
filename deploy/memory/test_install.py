@@ -1,12 +1,18 @@
 """Offline installer checks: synthetic values only; no network, no containers."""
 import contextlib
+from email.message import Message
 import io
+import json
 from pathlib import Path
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+import urllib.error
 from urllib.parse import urlsplit
+import urllib.request as urlrequest
 
 import install
 from install import (
@@ -365,6 +371,60 @@ class InstallAssetsTest(unittest.TestCase):
         self.assertIn(install.WATCH_TIMER, commands[2])
 
 
+class CreateBankTest(unittest.TestCase):
+    """Bank creation must seed retain_mission, not just the generic
+    mission — extraction reads retain_mission and Goblin never calls
+    reflect(). urlopen is faked at the module edge; no network."""
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self) -> "CreateBankTest._Resp":
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            pass
+
+    def setUp(self) -> None:
+        self.calls: list[tuple[str, str, object]] = []
+        urlopen_patch = patch.object(urlrequest, "urlopen", self.fake)
+        urlopen_patch.start()
+        self.addCleanup(urlopen_patch.stop)
+
+    def fake(self, request: urlrequest.Request, timeout: int = 0) -> "CreateBankTest._Resp":
+        assert isinstance(request.data, bytes)
+        self.calls.append((request.get_method(), request.full_url,
+                           json.loads(request.data)))
+        return self._Resp()
+
+    def test_creates_and_patches_retain_mission(self) -> None:
+        install.create_bank("goblin", "synthetic mission")
+        self.assertEqual(
+            self.calls,
+            [
+                ("PUT", f"{install.MEMORY_API_URL}/v1/default/banks/goblin",
+                 {"mission": "synthetic mission"}),
+                ("PATCH", f"{install.MEMORY_API_URL}/v1/default/banks/goblin/config",
+                 {"updates": {
+                     "retain_mission": "synthetic mission",
+                     "observations_mission": install.DEFAULT_OBSERVATIONS_MISSION,
+                 }}),
+            ],
+        )
+
+    def test_existing_bank_never_patched(self) -> None:
+        def fake_409(request: urlrequest.Request, timeout: int = 0) -> "CreateBankTest._Resp":
+            self.calls.append((request.get_method(), request.full_url, None))
+            raise urllib.error.HTTPError(request.full_url, 409, "conflict", Message(), None)
+
+        with patch.object(urlrequest, "urlopen", fake_409):
+            install.create_bank("goblin", "synthetic mission")
+        self.assertEqual(
+            self.calls,
+            [("PUT", f"{install.MEMORY_API_URL}/v1/default/banks/goblin", None)],
+        )
+
+
 class GoblinSnippetTest(unittest.TestCase):
     def test_snippet_shape(self) -> None:
         snippet = build_goblin_memory_snippet("goblin")
@@ -633,6 +693,92 @@ class MainFlowTest(unittest.TestCase):
                                 ["systemctl", "--user", "enable", "--now",
                                  install.WATCH_TIMER]])
         self.assertTrue((install.USER_UNIT_DIR / install.WATCH_TIMER).is_file())
+
+    def check_installed_guard(self, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        # Load the on-disk guard, not install.validate: the container sees
+        # the installed file, which may lag behind the installer's source.
+        return subprocess.run(
+            [sys.executable, "-c",
+             "import json, runpy, sys; "
+             "runpy.run_path(sys.argv[1])['validate'](json.load(sys.stdin))",
+             str(install.CFG_DIR / "start.py")],
+            input=json.dumps(env), text=True, capture_output=True, check=False,
+        )
+
+    def run_baseline_upgrade(self, failure: str | None = None) -> None:
+        self.fake_prompts()
+        answers = synthetic_answers(
+            emb_provider="openai", emb_base_url="http://100.64.0.1:11435/v1",
+            emb_model="embeddinggemma")
+        install.prompt_answers = lambda goblin_home: answers
+        install.CFG_DIR.mkdir(parents=True)
+        install.POSTGRES_ENV.write_text("POSTGRES_PASSWORD=existing\n")
+        previous_env = build_hindsight_env(synthetic_answers(), "existing")
+        previous_text = render_env_file(previous_env)
+        write_file_atomic(install.HINDSIGHT_ENV, previous_text, 0o640)
+        guard_path = install.CFG_DIR / "start.py"
+        shipped_guard = (install.MEMORY_DIR / "start.py").read_text()
+        # The baseline profile had the same required keys, but no optional
+        # prefix allowance. Reproduce that installed-file contract offline.
+        self.assertIn(" | OPTIONAL", shipped_guard)
+        guard_path.write_text(shipped_guard.replace(" | OPTIONAL", ""))
+        new_env = build_hindsight_env(answers, "existing")
+        self.assertEqual(self.check_installed_guard(previous_env).returncode, 0)
+        rejected = self.check_installed_guard(new_env)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("unsupported override", rejected.stderr)
+        restarted_envs: list[dict[str, str]] = []
+        runs: list[list[str]] = []
+
+        def fake_probe(command: list[str]) -> subprocess.CompletedProcess[str]:
+            self.assertEqual(command, ["systemctl", "--user", "restart", install.API_UNIT])
+            env = dict(line.split("=", 1)
+                       for line in install.HINDSIGHT_ENV.read_text().splitlines())
+            restarted_envs.append(env)
+            checked = self.check_installed_guard(env)
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+            if failure == "restart" and len(restarted_envs) == 1:
+                return subprocess.CompletedProcess(command, 1, "", "synthetic restart failure")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        def fake_run(command: list[str], timeout: float = 600) -> subprocess.CompletedProcess[str]:
+            runs.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        install.probe = fake_probe
+        install.run = fake_run
+        install.http_ok = lambda url: (failure != "health" or
+                                      install.HINDSIGHT_ENV.read_text() == previous_text)
+        setattr(install, "time", FakeClock())
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
+            if failure is None:
+                install.main(["--reconfigure"])
+            else:
+                with self.assertRaises(SystemExit):
+                    install.main(["--reconfigure"])
+        self.assertEqual(guard_path.read_text(), shipped_guard)
+        self.assertEqual(stat.S_IMODE(guard_path.stat().st_mode), 0o644)
+        self.assertEqual(install.POSTGRES_ENV.read_text(), "POSTGRES_PASSWORD=existing\n")
+        if failure is None:
+            self.assertEqual(restarted_envs, [new_env])
+            self.assertEqual(install.HINDSIGHT_ENV.read_text(), render_env_file(new_env))
+            self.assertIn(["systemctl", "--user", "enable", "--now", install.WATCH_TIMER], runs)
+        else:
+            self.assertEqual(restarted_envs, [new_env, previous_env])
+            self.assertEqual(install.HINDSIGHT_ENV.read_text(), previous_text)
+            self.assertEqual(stat.S_IMODE(install.HINDSIGHT_ENV.stat().st_mode), 0o640)
+            self.assertIn("verified the API is healthy again", errors.getvalue())
+            self.assertEqual(runs, [], "failed upgrade must not enable the watcher")
+
+    def test_baseline_upgrade_installs_guard_before_restart(self) -> None:
+        self.run_baseline_upgrade()
+
+    def test_baseline_upgrade_restores_env_after_restart_failure(self) -> None:
+        self.run_baseline_upgrade("restart")
+
+    def test_baseline_upgrade_restores_env_after_health_failure(self) -> None:
+        self.run_baseline_upgrade("health")
 
     def test_reconfigure_restores_previous_env_when_restart_fails(self) -> None:
         # A restart command failure must not leave the new (untested) env

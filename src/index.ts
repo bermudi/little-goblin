@@ -410,6 +410,9 @@ async function boot() {
 				history: { store, isExcluded: () => conv.memoryExcluded },
 				// Threads are process-global; a model change drops them on the next call.
 				vision: visionDepsFor(conv),
+				// The interface tool mounts on app turns only — Telegram
+				// and guests render plain text (design/app.md → Intelligent UI).
+				ui: channelOf(conv.id) === "app",
 			});
 			// Guest mode: hard toolset exclusion after assembly (design/telegram.md → Guest mode).
 			return filterGuestTools(conv, tools);

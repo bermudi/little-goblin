@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
 	chmodSync,
+	copyFileSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -11,426 +12,446 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-
-// deploy.sh run for real in a scratch tree — the shipped text is what's
-// exercised — with its external boundaries (git, bun, systemctl,
-// journalctl, podman, sleep) stubbed on PATH and the coreutils it needs
-// (dirname, cat, grep) symlinked from the host. PATH is the stub dir
-// alone: `command -v podman` is answered by the stub's presence, never
-// the host's, and no real git/systemctl can leak into a run.
+import { dirname, join, resolve } from "node:path";
 
 const deploySh = join(import.meta.dir, "deploy.sh");
+function commandPath(name: string): string {
+	const path = Bun.which(name);
+	if (!path) throw new Error(`fixture command missing: ${name}`);
+	return path;
+}
+const realGit = commandPath("git");
 
-const OLD_REV = `o${"0".repeat(39)}`;
-const NEW_REV = `n${"1".repeat(39)}`;
-
-type DeployRun = {
-	status: number | null;
-	stdout: string;
-	stderr: string;
-	git: string[];
-	bun: string[];
-	systemctl: string[];
-	journalctl: string[];
-	marker: string | null;
+type Options = {
+	mode?: string;
+	linked?: boolean;
+	marker?:
+		| "missing"
+		| "empty"
+		| "invalid"
+		| "unknown"
+		| "corrupt"
+		| "blob"
+		| "unreadable"
+		| "unwritable"
+		| "directory"
+		| "dangling";
 };
 
-function runDeploy(opts: {
-	changed?: string[];
-	mode?: string;
-	// "set" (default) seeds the marker with the old revision; "none"
-	// removes it (first run); "dead" writes one no git can resolve
-	// (history rewrite).
-	marker?: "set" | "none" | "dead";
-	podman?: boolean;
-}): DeployRun {
-	const { changed = [], mode = "", marker = "set", podman = true } = opts;
+// Run the whole shipped script in a real scratch Git checkout. PATH contains
+// only approved utilities and fakes: no production service, publication, build or SSH
+// can escape the fixture, including on the missing-Podman path.
+function runDeploy(changed: string[] = [], options: Options = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-deploy-test-"));
+	const mode = options.mode ?? "healthy";
+	const home = join(dir, "home");
+	mkdirSync(home);
+	const env = {
+		HOME: home,
+		GIT_CONFIG_NOSYSTEM: "1",
+		GIT_CONFIG_GLOBAL: "/dev/null",
+	};
+	const git = (cwd: string, ...args: string[]): string => {
+		const result = spawnSync(realGit, args, { cwd, env, encoding: "utf8" });
+		if (result.status !== 0) throw new Error(`fixture git ${args.join(" ")}: ${result.stderr}`);
+		return result.stdout.trim();
+	};
+	let markerDir: string | undefined;
+	let marker: string | undefined;
 	try {
-		// The script deploys the tree containing it (dirname $0/..), so
-		// the scratch tree is a .git dir (the marker's home) plus the
-		// verbatim script under scripts/.
-		const tree = join(dir, "tree");
-		mkdirSync(join(tree, ".git"), { recursive: true });
-		mkdirSync(join(tree, "scripts"), { recursive: true });
-		writeFileSync(join(tree, "scripts", "deploy.sh"), readFileSync(deploySh));
-		if (marker !== "none") {
-			writeFileSync(
-				join(tree, ".git", "GOBLIN_DEPLOYED_REV"),
-				`${marker === "dead" ? `d${"e".repeat(39)}` : OLD_REV}\n`,
-			);
+		const main = join(dir, "main");
+		mkdirSync(main);
+		git(main, "init", "-q", "-b", "fixture");
+		git(main, "config", "user.name", "Deploy fixture");
+		git(main, "config", "user.email", "fixture@example.invalid");
+		git(main, "config", "core.hooksPath", "/dev/null");
+		mkdirSync(join(main, "scripts"));
+		copyFileSync(deploySh, join(main, "scripts", "deploy.sh"));
+		git(main, "add", ".");
+		git(main, "commit", "-qm", "previous deployment");
+		const oldRev = git(main, "rev-parse", "HEAD");
+		for (const path of changed) {
+			mkdirSync(dirname(join(main, path)), { recursive: true });
+			writeFileSync(join(main, path), "fixture change\n");
 		}
-
+		git(main, "add", ".");
+		git(main, "commit", "--allow-empty", "-qm", "new deployment");
+		const newRev = git(main, "rev-parse", "HEAD");
+		let repo = main;
+		if (options.linked) {
+			repo = join(dir, "linked checkout");
+			git(main, "worktree", "add", "-qb", "linked", repo);
+		}
+		marker = resolve(repo, git(repo, "rev-parse", "--git-path", "GOBLIN_DEPLOYED_REV"));
+		markerDir = dirname(marker);
+		// Keep the damaged object outside HEAD's ancestry: ordinary status/log
+		// checks must still succeed, leaving the marker check to detect it.
+		const corruptRev =
+			options.marker === "corrupt"
+				? git(repo, "commit-tree", "HEAD^{tree}", "-m", "unrelated deployment")
+				: undefined;
+		if (options.marker !== "missing") {
+			const value =
+				options.marker === "empty"
+					? ""
+					: options.marker === "invalid"
+						? "garbage"
+						: options.marker === "unknown"
+							? "0".repeat(40)
+							: options.marker === "blob"
+								? git(repo, "rev-parse", "HEAD:scripts/deploy.sh")
+								: (corruptRev ?? oldRev);
+			if (options.marker === "directory") mkdirSync(marker);
+			else if (options.marker === "dangling") symlinkSync(join(dir, "missing"), marker);
+			else writeFileSync(marker, `${value}\n`);
+			if (options.marker === "unreadable") chmodSync(marker, 0o000);
+			if (options.marker === "unwritable") chmodSync(marker, 0o444);
+		}
+		if (corruptRev) {
+			const object = resolve(
+				repo,
+				git(repo, "rev-parse", "--git-path", `objects/${corruptRev.slice(0, 2)}/${corruptRev.slice(2)}`),
+			);
+			chmodSync(object, 0o644);
+			writeFileSync(object, "not a compressed Git object\n");
+		}
+		if (mode === "marker-dir") chmodSync(markerDir, 0o555);
+		if (mode === "dirty") writeFileSync(join(repo, "untracked"), "dirty\n");
+		if (mode === "detached") git(repo, "checkout", "--detach", "-q");
+		const alias = join(dir, "checkout-alias");
+		symlinkSync(repo, alias);
+		const serviceRoot =
+			mode === "mismatch"
+				? home
+				: mode === "blank"
+					? ""
+					: mode === "missing-root"
+						? join(dir, "missing")
+						: mode === "alias"
+							? alias
+							: repo;
 		const bin = join(dir, "bin");
 		mkdirSync(bin);
-		const link = (name: string): void => {
-			const real = ["/usr/bin", "/bin"].map((p) => join(p, name)).find((p) => existsSync(p));
-			if (real === undefined) throw new Error(`deploy.test: no host ${name} to symlink`);
-			symlinkSync(real, join(bin, name));
-		};
-		link("dirname");
-		link("cat");
-		link("grep");
-		link("tail"); // the journal-warning path caps the printed errors
-
-		const log = {
-			git: join(dir, "git.calls"),
-			bun: join(dir, "bun.calls"),
-			systemctl: join(dir, "systemctl.calls"),
-			journalctl: join(dir, "journalctl.calls"),
-		};
-
+		for (const name of ["dirname", "cat", "grep", "date", "seq", "tail"]) {
+			symlinkSync(commandPath(name), join(bin, name));
+		}
+		const callsFile = join(dir, "calls");
 		const stub = (name: string, body: string): void => {
 			const path = join(bin, name);
-			// Absolute interpreter: PATH is the stub dir alone, so an
-			// env-style shebang couldn't resolve bash.
-			writeFileSync(path, `#!/bin/bash\n${body}`);
+			writeFileSync(path, `#!/bin/bash\nprintf '%s\\n' '${name} '"$*" >> "$CALLS"\n${body}\n`);
 			chmodSync(path, 0o755);
 		};
-		// sleep is stubbed so the restart wait costs nothing; date/seq
-		// only feed the journal scan and the wait loop.
-		stub("date", "echo 1700000000");
-		stub("seq", "echo 1");
-		stub("sleep", "exit 0");
 		stub(
 			"git",
-			[
-				'echo "git $*" >> "$GIT_CALLS"',
-				'case "$*" in',
-				'	"status --porcelain") if [ "$MODE" = dirty ]; then printf "M src/x.ts\\n"; fi ;;',
-				'	"symbolic-ref -q --short HEAD") if [ "$MODE" = detached ]; then exit 1; fi; echo main ;;',
-				'	"rev-parse HEAD") cat "$FAKE_NEW_REV" ;;',
-				'	"rev-parse -q --verify"*) if [ "$MODE" = dead ]; then exit 1; fi ;;',
-				'	"log -1"*) echo "abc1234 subject" ;;',
-				'	"push origin HEAD") if [ "$MODE" = push ]; then echo "push failed" >&2; exit 21; fi ;;',
-				'	"diff --name-only"*) cat "$FAKE_DIFF" ;;',
-				'	*) echo "git stub: unhandled: $*" >&2; exit 64 ;;',
-				"esac",
-				"exit 0",
-			].join("\n"),
+			`case "$1" in
+push|fetch|pull) echo 'deployment must not publish or update refs' >&2; exit 90 ;;
+status|symbolic-ref|rev-parse|cat-file|log|diff)
+  if [ "$MODE" = "$1" ]; then echo "$1 failed" >&2; exit 31; fi
+  exec "$REAL_GIT" "$@" ;;
+*) echo "unexpected git boundary: $*" >&2; exit 90 ;;
+esac`,
 		);
 		stub(
 			"bun",
-			[
-				'echo "bun $*" >> "$BUN_CALLS"',
-				'case "$1 $2" in',
-				'	"run typecheck") if [ "$MODE" = typecheck ]; then echo "typecheck failed" >&2; exit 22; fi ;;',
-				'	"run app:build") if [ "$MODE" = build ]; then echo "build failed" >&2; exit 25; fi ;;',
-				"esac",
-				'case "$1" in',
-				'	test) if [ "$MODE" = test ]; then echo "test failed" >&2; exit 23; fi ;;',
-				'	install) if [ "$MODE" = install ]; then echo "install failed" >&2; exit 24; fi ;;',
-				"esac",
-				"exit 0",
-			].join("\n"),
+			`case "$*" in
+'run typecheck') failure=typecheck ;;
+test) failure=test ;;
+'install --frozen-lockfile') failure=install ;;
+'run app:build') failure=build ;;
+*) echo "unexpected bun boundary: $*" >&2; exit 90 ;;
+esac
+if [ "$MODE" = "$failure" ]; then echo "$failure failed" >&2; exit 32; fi`,
 		);
 		stub(
 			"systemctl",
-			[
-				'echo "systemctl $*" >> "$SYSTEMCTL_CALLS"',
-				'case "$1 $2" in',
-				'	"--user restart") if [ "$MODE" = restart ]; then echo "restart failed" >&2; exit 33; fi ;;',
-				'	"--user is-active") if [ "$MODE" = notactive ]; then echo activating; else echo active; fi ;;',
-				'	"--user show") if [ "$MODE" = absent ]; then echo not-found; else echo loaded; fi ;;',
-				"esac",
-				"exit 0",
-			].join("\n"),
+			`case "$*" in
+'--user show --property=WorkingDirectory --value goblin.service')
+  if [ "$MODE" = unit ]; then echo 'unit query failed' >&2; exit 33; fi
+  printf '%s\\n' "$SERVICE_ROOT" ;;
+'--user restart goblin')
+  if [ "$MODE" = restart ]; then echo 'restart failed' >&2; exit 34; fi ;;
+'--user is-active goblin')
+  if [ "$MODE" = inactive ]; then echo failed; exit 3; fi
+  echo active ;;
+'--user show --property=LoadState --value goblin-memory-api.service')
+  if [ "$MODE" = load-state ]; then echo 'load-state failed' >&2; exit 35; fi
+  if [ "$MODE" = absent ]; then echo not-found; else echo loaded; fi ;;
+*) echo "unexpected systemctl boundary: $*" >&2; exit 90 ;;
+esac`,
 		);
 		stub(
 			"journalctl",
-			[
-				'echo "journalctl $*" >> "$JOURNALCTL_CALLS"',
-				'case "$*" in',
-				'	*--since*) if [ "$MODE" = errorlines ]; then echo \'{"level":"error","msg":"boom"}\'; fi ;;',
-				'	*) if [ "$MODE" = notactive ]; then echo "journal dump" >&2; fi ;;',
-				"esac",
-				'if [ "$MODE" = journal ]; then echo "journal failed" >&2; exit 34; fi',
-				"exit 0",
-			].join("\n"),
+			`if [ "$MODE" = journal ]; then echo 'journal failed' >&2; exit 36; fi
+if [ "$MODE" = journal-errors ]; then echo '{"level":"error","msg":"fixture error"}'; fi`,
 		);
-		if (podman) {
+		if (mode !== "no-podman")
 			stub(
 				"podman",
-				[
-					'if [ "$1" = container ]; then',
-					'case "$MODE" in',
-					"absent|installed-missing) exit 1 ;;",
-					"storage) echo 'storage unavailable' >&2; exit 125 ;;",
-					"*) exit 0 ;;",
-					"esac",
-					"else",
-					'case "$MODE" in',
-					"inspect) echo 'inspection failed' >&2; exit 125 ;;",
-					"unhealthy) echo unhealthy ;;",
-					"*) echo healthy ;;",
-					"esac",
-					"fi",
-					"exit 0",
-				].join("\n"),
+				`case "$*" in
+'container exists goblin-memory-api')
+  case "$MODE" in
+  absent|installed-missing|load-state) exit 1 ;;
+  storage) echo 'storage unavailable' >&2; exit 125 ;;
+  esac ;;
+"inspect goblin-memory-api --format {{.State.Health.Status}}")
+  case "$MODE" in
+  inspect) echo 'inspection failed' >&2; exit 125 ;;
+  unhealthy) echo unhealthy ;;
+  *) echo healthy ;;
+  esac ;;
+*) echo "unexpected podman boundary: $*" >&2; exit 90 ;;
+esac`,
 			);
-		}
-
-		writeFileSync(join(dir, "diff"), changed.length > 0 ? `${changed.join("\n")}\n` : "");
-		// rev-parse HEAD cats this file — its content is the revision.
-		const newRevFile = join(dir, "newrev");
-		writeFileSync(newRevFile, `${NEW_REV}\n`);
-		const env: Record<string, string> = {
-			MODE: mode,
-			PATH: bin,
-			GIT_CALLS: log.git,
-			BUN_CALLS: log.bun,
-			SYSTEMCTL_CALLS: log.systemctl,
-			JOURNALCTL_CALLS: log.journalctl,
-			FAKE_NEW_REV: newRevFile,
-			FAKE_DIFF: join(dir, "diff"),
-		};
-		const res = spawnSync("/bin/bash", [join(tree, "scripts", "deploy.sh")], {
-			env,
+		stub("sleep", "exit 0");
+		stub("ssh", "echo 'deployment must be local' >&2; exit 90");
+		const result = spawnSync("/bin/bash", [join(repo, "scripts", "deploy.sh")], {
+			cwd: home,
+			env: {
+				...env,
+				PATH: bin,
+				MODE: mode,
+				CALLS: callsFile,
+				REAL_GIT: realGit,
+				SERVICE_ROOT: serviceRoot,
+			},
 			encoding: "utf8",
+			timeout: 10_000,
 		});
-		const calls = (path: string): string[] =>
-			existsSync(path)
-				? readFileSync(path, "utf8")
-						.split("\n")
-						.filter((l) => l !== "")
-				: [];
-		const markerPath = join(tree, ".git", "GOBLIN_DEPLOYED_REV");
+		if (result.error) throw result.error;
+		if (options.marker === "unreadable") chmodSync(marker, 0o600);
+		const calls = existsSync(callsFile) ? readFileSync(callsFile, "utf8").trim().split("\n") : [];
 		return {
-			status: res.status,
-			stdout: res.stdout,
-			stderr: res.stderr,
-			git: calls(log.git),
-			bun: calls(log.bun),
-			systemctl: calls(log.systemctl),
-			journalctl: calls(log.journalctl),
-			marker: existsSync(markerPath) ? readFileSync(markerPath, "utf8").trim() : null,
+			status: result.status,
+			stdout: result.stdout,
+			stderr: result.stderr,
+			calls,
+			oldRev,
+			newRev,
+			marker,
+			markerValue:
+				existsSync(marker) && options.marker !== "directory"
+					? readFileSync(marker, "utf8").trim()
+					: null,
 		};
 	} finally {
+		if (markerDir) chmodSync(markerDir, 0o755);
+		if (marker && existsSync(marker)) chmodSync(marker, 0o755);
 		rmSync(dir, { recursive: true, force: true });
 	}
 }
 
-// The gate runs through the same bun stub as the refresh steps — only
-// what survives it counts as a refresh decision.
-const refresh = (run: DeployRun): string[] =>
-	run.bun.filter((c) => c !== "bun run typecheck" && c !== "bun test");
+function expectPreflightFailure(result: ReturnType<typeof runDeploy>, diagnostic: string) {
+	expect(result.status).not.toBe(0);
+	expect(result.stderr).toContain(diagnostic);
+	expect(
+		result.calls.some(
+			(call) =>
+				call.startsWith("bun ") || /^git (push|fetch|pull)\b/.test(call) || call.includes(" restart "),
+		),
+	).toBe(false);
+}
 
-describe("deploy.sh refresh selection", () => {
-	test("dependency-only change rebuilds the client (#121)", () => {
-		// react/ai/vite bumps land in package.json/bun.lock with no app/
-		// path touched — the bundle inlines that code, so it must rebuild.
-		for (const manifest of ["bun.lock", "package.json"]) {
-			const run = runDeploy({ changed: [manifest] });
-			expect(run.status).toBe(0);
-			expect(refresh(run)).toContain("bun install --frozen-lockfile");
-			expect(refresh(run)).toContain("bun run app:build");
-		}
+describe("local deployment preflight", () => {
+	for (const [mode, diagnostic] of [
+		["mismatch", "does not match checkout"],
+		["blank", "no absolute WorkingDirectory"],
+		["missing-root", "cannot resolve goblin.service WorkingDirectory"],
+		["unit", "cannot read goblin.service WorkingDirectory"],
+		["dirty", "working tree dirty"],
+		["detached", "detached HEAD"],
+		["diff", "cannot compare deployment revisions"],
+		["status", "cannot read working tree status"],
+		["log", "cannot read deployment commit"],
+		["marker-dir", "marker directory is not writable"],
+		["rev-parse", "cannot resolve deployment marker"],
+		["cat-file", "cannot inspect deployment marker commit"],
+	] as const) {
+		test(`${mode} stops before any deployment side effects`, () => {
+			expectPreflightFailure(runDeploy([], { mode }), diagnostic);
+		});
+	}
+
+	for (const marker of [
+		"empty",
+		"invalid",
+		"blob",
+		"unreadable",
+		"unwritable",
+		"directory",
+		"dangling",
+	] as const) {
+		test(`${marker} marker fails loudly instead of becoming a first deployment`, () => {
+			expectPreflightFailure(runDeploy([], { marker }), "deployment marker");
+		});
+	}
+
+	test("canonical service path accepts a symlink to this checkout", () => {
+		expect(runDeploy([], { mode: "alias" }).status).toBe(0);
 	});
 
-	test("app-only change builds the client but installs nothing", () => {
-		const run = runDeploy({ changed: ["app/src/App.tsx", "app/vite.config.ts"] });
-		expect(run.status).toBe(0);
-		expect(refresh(run)).toEqual(["bun run app:build"]);
+	test("corrupt marker history fails before deployment even when Git reports missing with exit zero", () => {
+		const result = runDeploy([], { marker: "corrupt" });
+		expectPreflightFailure(result, "deployment marker");
+		expect(result.stderr).toContain("unable to unpack");
+		expect(result.stdout).not.toContain("history is missing; refreshing everything");
+		expect(result.markerValue).not.toBe(result.newRev);
 	});
 
-	test("backend-only change installs and builds nothing", () => {
-		const run = runDeploy({ changed: ["src/index.ts", "src/http/app-channel.ts"] });
-		expect(run.status).toBe(0);
-		expect(refresh(run)).toEqual([]);
-		expect(run.systemctl).toContain("systemctl --user restart goblin");
+	test("missing marker is a first deployment and refreshes everything", () => {
+		const result = runDeploy([], { marker: "missing" });
+		expect(result.status).toBe(0);
+		expect(result.calls).toContain("bun install --frozen-lockfile");
+		expect(result.calls).toContain("bun run app:build");
+		expect(result.markerValue).toBe(result.newRev);
+		expect(result.stdout).not.toContain("rollback:");
+		expect(result.stdout).toContain("deploy/memory/ changed");
 	});
 
-	test("deploy/memory-only change prints the install note, refreshes nothing", () => {
-		const run = runDeploy({ changed: ["deploy/memory/install.py"] });
-		expect(run.status).toBe(0);
-		expect(refresh(run)).toEqual([]);
-		expect(run.stdout).toContain("deploy/memory/ changed");
+	test("stale marker with missing history refreshes everything, including the memory note", () => {
+		const result = runDeploy([], { marker: "unknown" });
+		expect(result.status).toBe(0);
+		expect(result.calls).toContain("bun install --frozen-lockfile");
+		expect(result.calls).toContain("bun run app:build");
+		expect(result.stdout).toContain("deploy/memory/ changed");
+		expect(result.stdout).toContain("history is missing; refreshing everything");
+		expect(result.markerValue).toBe(result.newRev);
 	});
 
-	test("first run (no marker) refreshes everything, including the memory note", () => {
-		// An empty diff proves nothing on the first deploy — deps, client,
-		// and the memory note must all fire, not silently skip.
-		const run = runDeploy({ marker: "none" });
-		expect(run.status).toBe(0);
-		expect(refresh(run)).toContain("bun install --frozen-lockfile");
-		expect(refresh(run)).toContain("bun run app:build");
-		expect(run.stdout).toContain("deploy/memory/ changed");
-	});
-
-	test("dead marker (history rewrite) refreshes everything (sentinel)", () => {
-		// A marker git can no longer resolve must not fall through to
-		// "diff failed → nothing changed": the refresh can't prove any
-		// path fresh, so deps, client, and the memory note all fire.
-		const run = runDeploy({ marker: "dead", mode: "dead" });
-		expect(run.status).toBe(0);
-		expect(refresh(run)).toContain("bun install --frozen-lockfile");
-		expect(refresh(run)).toContain("bun run app:build");
-		expect(run.stdout).toContain("deploy/memory/ changed");
-	});
-
-	test("printed rollback reinstalls and rebuilds before restart (#120)", () => {
-		// app/dist and node_modules are gitignored: a bare reset leaves
-		// the new client/deps beside the old backend. The printed line
-		// must order reset → install → build → restart to be copy-paste
-		// safe.
-		const run = runDeploy({ changed: ["src/index.ts"] });
-		expect(run.status).toBe(0);
-		const line = run.stdout.split("\n").find((l) => l.startsWith("deploy: rollback:"));
-		expect(line).toBeDefined();
-		const at = (frag: string): number => (line ?? "").indexOf(frag);
-		const reset = at("reset --hard");
-		const install = at("bun install --frozen-lockfile");
-		const build = at("bun run app:build");
-		const restart = at("systemctl --user restart goblin");
-		expect(reset).toBeGreaterThanOrEqual(0);
-		expect(install).toBeGreaterThan(reset);
-		expect(build).toBeGreaterThan(install);
-		expect(restart).toBeGreaterThan(build);
-	});
-});
-
-describe("deploy.sh gates and boundaries", () => {
-	test("a dirty tree refuses before anything runs", () => {
-		const run = runDeploy({ mode: "dirty" });
-		expect(run.status).not.toBe(0);
-		expect(run.stderr).toContain("dirty");
-		expect(run.git).not.toContain("git push origin HEAD");
-		expect(run.systemctl).toEqual([]);
-	});
-
-	test("a detached HEAD refuses", () => {
-		const run = runDeploy({ mode: "detached" });
-		expect(run.status).not.toBe(0);
-		expect(run.stderr).toContain("detached");
-		expect(run.git).not.toContain("git push origin HEAD");
-	});
-
-	test("gate typecheck failure stops before refresh and restart", () => {
-		const run = runDeploy({ mode: "typecheck" });
-		expect(run.status).not.toBe(0);
-		expect(run.stderr).toContain("typecheck failed");
-		expect(run.git).not.toContain("git push origin HEAD");
-		expect(run.systemctl).toEqual([]);
-	});
-
-	test("gate test failure stops before refresh and restart", () => {
-		const run = runDeploy({ mode: "test" });
-		expect(run.status).not.toBe(0);
-		expect(run.stderr).toContain("test failed");
-		expect(run.git).not.toContain("git push origin HEAD");
-		expect(run.systemctl).toEqual([]);
-	});
-
-	test("a local deploy succeeds even when pushing would fail", () => {
-		const run = runDeploy({ mode: "push", changed: ["package.json"] });
-		expect(run.status).toBe(0);
-		expect(run.git).not.toContain("git push origin HEAD");
-		expect(refresh(run)).toEqual(["bun install --frozen-lockfile", "bun run app:build"]);
-		expect(run.systemctl).toContain("systemctl --user restart goblin");
-		expect(run.marker).toBe(NEW_REV);
-	});
-
-	test("deployment leaves Git publication and the remote review base alone", () => {
-		const run = runDeploy({ changed: ["src/index.ts"] });
-		expect(run.status).toBe(0);
-		expect(run.git.some((call) => /\b(push|fetch|pull)\b/.test(call))).toBe(false);
-		expect(run.stdout).not.toContain("pushing");
-		expect(run.marker).toBe(NEW_REV);
-	});
-
-	test("install failure stops before restart", () => {
-		const run = runDeploy({ mode: "install", changed: ["package.json"] });
-		expect(run.status).not.toBe(0);
-		expect(run.stderr).toContain("install failed");
-		expect(run.systemctl).toEqual([]);
-	});
-
-	test("build failure stops before restart", () => {
-		const run = runDeploy({ mode: "build", changed: ["app/src/App.tsx"] });
-		expect(run.status).not.toBe(0);
-		expect(run.stderr).toContain("build failed");
-		expect(run.systemctl).toEqual([]);
-	});
-
-	test("restart failure retains the previous revision", () => {
-		const run = runDeploy({ mode: "restart", changed: ["src/index.ts"] });
-		expect(run.status).not.toBe(0);
-		expect(run.stderr).toContain("restart failed");
-		expect(run.marker).toBe(OLD_REV);
-	});
-
-	test("unit not active after restart dumps the journal and retains the revision", () => {
-		const run = runDeploy({ mode: "notactive", changed: ["src/index.ts"] });
-		expect(run.status).not.toBe(0);
-		expect(run.stderr).toContain("goblin not active after restart");
-		expect(run.journalctl.length).toBeGreaterThan(0);
-		expect(run.marker).toBe(OLD_REV);
-	});
-
-	test("journal read failure stops before the marker write", () => {
-		const run = runDeploy({ mode: "journal", changed: ["src/index.ts"] });
-		expect(run.status).not.toBe(0);
-		expect(run.stderr).toContain("journal failed");
-		expect(run.marker).toBe(OLD_REV);
-	});
-
-	test("error lines in the fresh journal warn but still ship", () => {
-		const run = runDeploy({ mode: "errorlines", changed: ["src/index.ts"] });
-		expect(run.status).toBe(0);
-		expect(run.stderr).toContain("WARNING");
-		expect(run.marker).toBe(NEW_REV);
-	});
-
-	test("success writes the marker and prints the rollback line", () => {
-		const run = runDeploy({ changed: ["src/index.ts"] });
-		expect(run.status).toBe(0);
-		expect(run.marker).toBe(NEW_REV);
-		expect(run.stdout).toContain("done: g7");
-		expect(run.stdout).toContain("rollback:");
+	test("linked worktree marker uses Git's path, not .git as a directory", () => {
+		const result = runDeploy(["app/src/App.tsx"], { linked: true });
+		expect(result.status).toBe(0);
+		expect(result.marker).toContain("/.git/worktrees/");
+		expect(result.markerValue).toBe(result.newRev);
+		expect(result.stdout).toContain("rollback:");
 	});
 });
 
-describe("deploy.sh memory probe", () => {
-	test("missing podman is informational", () => {
-		const run = runDeploy({ podman: false });
-		expect(run.status).toBe(0);
-		expect(run.stdout).not.toContain("goblin-memory-api:");
+describe("local deployment refresh and rollback", () => {
+	for (const path of [
+		"bun.lock",
+		"package.json",
+		"app/src/App.tsx",
+		"app/vite.config.ts",
+		"src/agent/tools/ui-schema.ts",
+	]) {
+		test(`${path} rebuilds the inlined client`, () => {
+			const result = runDeploy([path]);
+			expect(result.status).toBe(0);
+			expect(result.calls).toContain("bun run app:build");
+			expect(result.calls.includes("bun install --frozen-lockfile")).toBe(
+				["bun.lock", "package.json"].includes(path),
+			);
+		});
+	}
+
+	test("backend-only deployment gates locally without rebuilding or updating remote refs", () => {
+		const result = runDeploy(["src/index.ts", "src/http/app-channel.ts"]);
+		expect(result.status).toBe(0);
+		expect(result.calls.filter((call) => call.startsWith("bun "))).toEqual([
+			"bun run typecheck",
+			"bun test",
+		]);
+		const boundaries = [
+			"bun run typecheck",
+			"bun test",
+			"systemctl --user restart goblin",
+		];
+		const indexes = boundaries.map((call) => result.calls.indexOf(call));
+		expect(
+			indexes.every((index, i) => index >= 0 && (i === 0 || index > (indexes[i - 1] ?? -1))),
+		).toBe(true);
+		expect(result.calls.some((call) => /^(ssh |git (push|fetch|pull))/.test(call))).toBe(false);
+		expect(result.markerValue).toBe(result.newRev);
+		expect(result.stdout).toContain("done: g7");
 	});
 
-	test("absent container with no unit means the stack is not installed", () => {
-		const run = runDeploy({ mode: "absent" });
-		expect(run.status).toBe(0);
-		expect(run.stdout).toContain("memory stack not installed");
+	test("a local deploy succeeds even when publication would fail", () => {
+		const result = runDeploy(["package.json"], { mode: "push" });
+		expect(result.status).toBe(0);
+		expect(result.calls.some((call) => /^git (push|fetch|pull)\b/.test(call))).toBe(false);
+		expect(result.stdout).not.toContain("pushing");
+		expect(result.calls).toContain("bun install --frozen-lockfile");
+		expect(result.calls).toContain("bun run app:build");
+		expect(result.calls).toContain("systemctl --user restart goblin");
+		expect(result.markerValue).toBe(result.newRev);
 	});
 
-	test("absent container with a loaded unit fails visibly", () => {
-		const run = runDeploy({ mode: "installed-missing" });
-		expect(run.status).not.toBe(0);
-		expect(run.stderr.length).toBeGreaterThan(0);
+	test("rollback restores revision, ignored dependencies/client and marker in order", () => {
+		const result = runDeploy(["src/index.ts"]);
+		expect(result.status).toBe(0);
+		const line = result.stdout.split("\n").find((value) => value.startsWith("deploy: rollback:"));
+		expect(line).toBe(
+			`deploy: rollback: git reset --hard ${result.oldRev} && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin && echo ${result.oldRev} > .git/GOBLIN_DEPLOYED_REV`,
+		);
 	});
 
-	test("healthy memory container passes", () => {
-		const run = runDeploy({ mode: "healthy" });
-		expect(run.status).toBe(0);
-		expect(run.stdout).toContain("goblin-memory-api: healthy");
+	test("memory asset changes print a manual runbook without applying it", () => {
+		const result = runDeploy(["deploy/memory/healthcheck.py"]);
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain("never auto-applied");
+		expect(result.calls.filter((call) => call.startsWith("bun "))).toEqual([
+			"bun run typecheck",
+			"bun test",
+		]);
+		expect(result.calls.filter((call) => call.includes(" restart "))).toEqual([
+			"systemctl --user restart goblin",
+		]);
 	});
+});
 
-	test("unhealthy memory container fails visibly", () => {
-		const run = runDeploy({ mode: "unhealthy" });
-		expect(run.status).not.toBe(0);
-		expect(run.stderr.length).toBeGreaterThan(0);
-	});
+describe("local deployment failures and memory probe", () => {
+	for (const mode of [
+		"typecheck",
+		"test",
+		"install",
+		"build",
+		"restart",
+		"inactive",
+		"journal",
+		"storage",
+		"inspect",
+		"unhealthy",
+		"installed-missing",
+		"load-state",
+	]) {
+		test(`${mode} failure keeps the previous deployment marker`, () => {
+			const result = runDeploy(["package.json"], { mode });
+			expect(result.status).not.toBe(0);
+			expect(result.stderr.length).toBeGreaterThan(0);
+			expect(result.markerValue).toBe(result.oldRev);
+			expect(result.stdout).not.toContain("deploy: done:");
+			if (["typecheck", "test", "install", "build", "restart", "journal"].includes(mode))
+				expect(result.stderr).toContain(`${mode} failed`);
+			if (["typecheck", "test"].includes(mode)) {
+				expect(result.calls).not.toContain("bun install --frozen-lockfile");
+				expect(result.calls).not.toContain("bun run app:build");
+			}
+			if (["typecheck", "test", "install", "build"].includes(mode))
+				expect(result.calls).not.toContain("systemctl --user restart goblin");
+			if (mode === "inactive") {
+				expect(result.stderr).toContain("goblin not active after restart");
+				expect(result.calls).toContain("journalctl --user -u goblin -n 40 --no-pager");
+			}
+		});
+	}
 
-	test("inspection failure fails visibly", () => {
-		const run = runDeploy({ mode: "inspect" });
-		expect(run.status).not.toBe(0);
-		expect(run.stderr).toContain("inspection failed");
-	});
+	for (const [mode, output] of [
+		["absent", "not installed"],
+		["no-podman", "podman unavailable"],
+		["healthy", "goblin-memory-api: healthy"],
+	] as const) {
+		test(`memory ${mode} is successful`, () => {
+			const result = runDeploy([], { mode });
+			expect(result.status).toBe(0);
+			expect(result.stdout).toContain(output);
+			expect(result.markerValue).toBe(result.newRev);
+		});
+	}
 
-	test("podman container exists failing hard fails visibly", () => {
-		const run = runDeploy({ mode: "storage" });
-		expect(run.status).not.toBe(0);
-		expect(run.stderr).toContain("storage unavailable");
+	test("fresh journal errors are visible warnings, not hidden or a read failure", () => {
+		const result = runDeploy([], { mode: "journal-errors" });
+		expect(result.status).toBe(0);
+		expect(result.stderr).toContain("WARNING — error lines in the fresh journal");
+		expect(result.stderr).toContain("fixture error");
 	});
 });

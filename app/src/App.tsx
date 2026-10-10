@@ -853,11 +853,11 @@ export function App() {
 					<p className="empty">Nothing here yet — start a conversation.</p>
 				)}
 				{listError !== null && <p className="error">Couldn't refresh the list.</p>}
-			{rowError !== null && (
-				<p className="error" role="alert">
-					{rowError}
-				</p>
-			)}
+				{rowError !== null && (
+					<p className="error" role="alert">
+						{rowError}
+					</p>
+				)}
 				<div className="rail-ops">
 					{PAGES.map((p) => (
 						<button

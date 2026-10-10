@@ -600,6 +600,7 @@ def create_bank(bank_id: str, mission: str) -> None:
     except urlerror.HTTPError as error:
         if error.code == 409:
             info(f"bank '{bank_id}' already exists — kept as-is")
+            warn_bank_drift(url, bank_id, mission)
             return
         detail = error.read().decode(errors="replace")[:500]
         fail(f"bank creation failed (HTTP {error.code}): {detail}")
@@ -626,6 +627,53 @@ def create_bank(bank_id: str, mission: str) -> None:
         fail(f"retain_mission patch failed (HTTP {error.code}): {detail}")
     except OSError as error:
         fail(f"retain_mission patch failed: {error}")
+
+
+def warn_bank_drift(url: str, bank_id: str, mission: str) -> None:
+    """The 409 path: an existing bank is NEVER patched, but silent drift
+    between its live missions and the canonical texts is how a bank
+    quietly stops extracting the way docs/memory.md promises — compare
+    and warn with the repair line (the same PATCH the creation path and
+    docs send). A read failure warns too; neither ever fails the install."""
+    get_req = urlrequest.Request(f"{url}/config", method="GET")
+    try:
+        with urlrequest.urlopen(get_req, timeout=30) as response:
+            payload = json.loads(response.read().decode())
+    except urlerror.HTTPError as error:
+        print(f"install: WARNING: could not read bank '{bank_id}' config "
+              f"(HTTP {error.code}) — cannot check mission drift",
+              file=sys.stderr)
+        return
+    except (OSError, ValueError) as error:
+        print(f"install: WARNING: could not read bank '{bank_id}' config "
+              f"({error}) — cannot check mission drift",
+              file=sys.stderr)
+        return
+    config = payload.get("config") if isinstance(payload, dict) else None
+    if not isinstance(config, dict):
+        print(f"install: WARNING: bank '{bank_id}' config response has an "
+              "unexpected shape — cannot check mission drift",
+              file=sys.stderr)
+        return
+    repair = json.dumps({
+        "updates": {
+            "retain_mission": mission,
+            "observations_mission": DEFAULT_OBSERVATIONS_MISSION,
+        }
+    })
+    for field, canonical in (
+        ("retain_mission", mission),
+        ("observations_mission", DEFAULT_OBSERVATIONS_MISSION),
+    ):
+        if config.get(field) == canonical:
+            continue
+        print(f"install: WARNING: bank '{bank_id}' {field} differs from the "
+              "canonical text — not patched (existing banks are kept as-is); "
+              "to repair run:\n"
+              f"  curl -s -X PATCH {url}/config "
+              "-H 'content-type: application/json' "
+              f"-d '{repair}'",
+              file=sys.stderr)
 
 
 def goblin_stable(seconds: float) -> bool:

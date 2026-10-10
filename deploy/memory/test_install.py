@@ -464,11 +464,17 @@ class CreateBankTest(unittest.TestCase):
     class _Resp:
         status = 200
 
+        def __init__(self, body: bytes = b"") -> None:
+            self._body = body
+
         def __enter__(self) -> "CreateBankTest._Resp":
             return self
 
         def __exit__(self, *exc: object) -> None:
             pass
+
+        def read(self) -> bytes:
+            return self._body
 
     def setUp(self) -> None:
         self.calls: list[tuple[str, str, object]] = []
@@ -497,17 +503,56 @@ class CreateBankTest(unittest.TestCase):
             ],
         )
 
-    def test_existing_bank_never_patched(self) -> None:
-        def fake_409(request: urlrequest.Request, timeout: int = 0) -> "CreateBankTest._Resp":
-            self.calls.append((request.get_method(), request.full_url, None))
-            raise urllib.error.HTTPError(request.full_url, 409, "conflict", Message(), None)
+    def fake_409(
+        self, config: dict[str, object],
+    ) -> contextlib.AbstractContextManager[object]:
+        body = json.dumps(
+            {"bank_id": "goblin", "config": config, "overrides": {}}).encode()
 
-        with patch.object(urlrequest, "urlopen", fake_409):
+        def fake(request: urlrequest.Request, timeout: int = 0) -> "CreateBankTest._Resp":
+            self.calls.append((request.get_method(), request.full_url, None))
+            if request.get_method() == "PUT":
+                raise urllib.error.HTTPError(
+                    request.full_url, 409, "conflict", Message(), None)
+            return self._Resp(body)
+
+        return patch.object(urlrequest, "urlopen", fake)
+
+    def test_existing_bank_never_patched(self) -> None:
+        # PUT 409 → a GET to check drift, and nothing else — never a PATCH.
+        with self.fake_409({
+            "retain_mission": "synthetic mission",
+            "observations_mission": install.DEFAULT_OBSERVATIONS_MISSION,
+        }):
             install.create_bank("goblin", "synthetic mission")
         self.assertEqual(
             self.calls,
-            [("PUT", f"{install.MEMORY_API_URL}/v1/default/banks/goblin", None)],
+            [
+                ("PUT", f"{install.MEMORY_API_URL}/v1/default/banks/goblin", None),
+                ("GET", f"{install.MEMORY_API_URL}/v1/default/banks/goblin/config", None),
+            ],
         )
+
+    def test_drifted_existing_bank_warns_with_field_and_repair_line(self) -> None:
+        stderr = io.StringIO()
+        with self.fake_409({
+            "retain_mission": "a drifted mission",
+            "observations_mission": install.DEFAULT_OBSERVATIONS_MISSION,
+        }), contextlib.redirect_stderr(stderr):
+            install.create_bank("goblin", "synthetic mission")
+        out = stderr.getvalue()
+        self.assertIn("WARNING", out)
+        self.assertIn("retain_mission", out)
+        self.assertIn("PATCH", out)
+
+    def test_matching_existing_bank_warns_nothing(self) -> None:
+        stderr = io.StringIO()
+        with self.fake_409({
+            "retain_mission": "synthetic mission",
+            "observations_mission": install.DEFAULT_OBSERVATIONS_MISSION,
+        }), contextlib.redirect_stderr(stderr):
+            install.create_bank("goblin", "synthetic mission")
+        self.assertNotIn("WARNING", stderr.getvalue())
 
 
 class GoblinSnippetTest(unittest.TestCase):

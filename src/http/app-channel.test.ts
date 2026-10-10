@@ -1087,6 +1087,33 @@ describe("app channel http", () => {
 		}
 	});
 
+	test("pin PATCH floats the row; archiving clears the pin server-side", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		const patch = (body: unknown) =>
+			call("/api/app/conversations/chat-01", {
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(body),
+			});
+		try {
+			await createAndChat(call, "pinnable-marker text");
+			const res = await patch({ pinned: true });
+			expect(res.status).toBe(200);
+			expect((await res.json()) as { pinned: boolean }).toEqual({ pinned: true });
+			expect(store.get("app/chat-01")?.pinnedAt).not.toBeNull();
+			expect(store.listAppConversations()[0]?.id).toBe("app/chat-01");
+
+			// Shelving supersedes pinning, and unarchive must not
+			// resurrect a stale pin.
+			await patch({ archived: true });
+			expect(store.get("app/chat-01")?.pinnedAt).toBeNull();
+			await patch({ archived: false });
+			expect(store.get("app/chat-01")?.pinnedAt).toBeNull();
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("delete removes the row, its events, and the FTS index", async () => {
 		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
 		try {

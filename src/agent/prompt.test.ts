@@ -35,6 +35,7 @@ const conv: Conversation = {
 	memoryExcluded: false,
 	persona: "personal",
 	archivedAt: null,
+	pinnedAt: null,
 	epoch: 0,
 	createdAt: new Date().toISOString(),
 };

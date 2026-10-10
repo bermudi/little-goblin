@@ -343,7 +343,7 @@ Archive replaces delete as the rail's declutter action. An archived
 conversation keeps everything — history, FTS hits, settings, pings,
 `/app/c/<id>` deep links; `archived_at` on the row is a list-visibility
 stamp, nothing more. PATCH on the conversation carries
-`{title?, archived?}` (at least one required); the list payload hands
+`{title?, archived?, pinned?}` (at least one required); the list payload hands
 back `archivedAt` per summary and the client splits the pools — active
 rail on top, a collapsed "Archived (n)" section below, ordered by
 shelf time. Delete keeps its confirm and its endpoint but only exists
@@ -357,3 +357,27 @@ delegation notice landing in a shelved spin-off or a message sent into
 one via its ping link brings the row back to the rail instead of
 accumulating replies unseen. Unarchiving through the client writes the
 same NULL directly.
+
+## Pinning (ruling 2026-10-10)
+
+Pin is the rail's anchor action, the complement to archive's
+declutter: `pinned_at` on the row floats a conversation above the
+activity stream, so a slow thread the operator always wants reachable
+stops sinking. The PATCH carries `pinned?` and the list payload hands
+back `pinnedAt` per summary; `listAppConversations` sorts pinned rows
+first and the client partitions the active rail the same way — pinned
+group on top, activity order preserved within each group, so pinning
+changes which group a row is in, never its position inside it.
+
+The flag's two rules mirror archive's, inverted. **Pins survive
+activity** — an appended event never clears one, the anchor being the
+point (the exact opposite of archive's auto-unarchive). And
+**archiving clears the pin** (store-side, in `setMeta`): a row hidden
+from the rail can't be anchored above it, and unarchive must not
+resurrect a stale pin.
+
+The row affordances are three labeled buttons, not glyphs — pin ·
+rename · archive on active rows, rename · unarchive · delete on
+archived ones — with a persistent pushpin marker on pinned rows so
+the top slot explains itself. Pinning never fences a turn and never
+touches selection: it is list order, nothing more.

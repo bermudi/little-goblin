@@ -9,7 +9,8 @@ import type { UIMessage } from "ai";
 import type { AppConversationSummary } from "../conversation.ts";
 import type { AttachmentRef } from "../agent/attachments.ts";
 
-/** GET /api/app/conversations — the app pool, newest activity first. */
+/** GET /api/app/conversations — the app pool, pinned rows first, then
+ * newest activity. */
 export interface AppConversationList {
 	conversations: AppConversationSummary[];
 }
@@ -45,10 +46,12 @@ export interface AppStopResponse {
 /** PATCH /api/app/conversations/<id> — applied fields echoed back. An
  * explicit title always wins over auto-titling; archived moves the row
  * between the rail and the archived section (activity clears it
- * server-side). */
+ * server-side); pinned floats the row above the rail's activity order
+ * (archiving clears it server-side). */
 export interface AppConversationPatch {
 	title?: string;
 	archived?: boolean;
+	pinned?: boolean;
 }
 
 /** GET /api/app/search — one FTS hit inside the app pool. */

@@ -11,6 +11,13 @@ interface BashResult {
 }
 
 describe("bash", () => {
+	test("advertises the read-only doctor without changing descriptions by workspace", () => {
+		const tool = bashTool("/tmp");
+		expect(tool.description).toContain("../doctor --json");
+		expect(tool.description).toContain("does not authorize repairs or restarts");
+		expect(tool.description).toBe(bashTool("/another-workspace").description);
+	});
+
 	test("returns output and exit code", async () => {
 		const t = bashTool("/tmp");
 		const out = (await t.execute!({ command: "echo hello" }, opts)) as BashResult;

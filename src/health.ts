@@ -53,7 +53,7 @@ function errno(error: unknown): string {
 }
 const manualHints: Readonly<Record<string, string>> = {
 	"auth.coverage":
-		"Verify upstream credentials, OAuth and boot-cached values through ordinary authorized use; doctor does not resolve them or expose values.",
+		"Verify upstream credentials, OAuth and boot-cached values through ordinary authorized use without printing values; doctor does not resolve them.",
 	config:
 		"Inspect local config syntax and references; do not print credentials or make provider calls.",
 	auth: "Inspect local auth permissions and the reported record line without printing values; credential edits are operator-owned.",

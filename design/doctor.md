@@ -27,7 +27,8 @@ successful diagnosis grants no repair or deployment authority.
 
 - Operator: text or machine-readable JSON.
 - Resident: existing bash tool through `$GOBLIN_HOME/doctor`, reached as
-  `../doctor` from its workspace. Bootstrap refreshes this symlink with
+  `../doctor` from its workspace. Its static tool description advertises
+  the command and diagnosis-only authority. Bootstrap refreshes this symlink with
   the same collision policy as the MCP/mail launchers; doctor never
   creates it.
 - Installer: explicit preflight/installed phases and shared asset checks.
@@ -145,7 +146,9 @@ are bounded/cancelled. The CLI has a 45-second outer watchdog; embedding
 gets at most 15 seconds. Its worker and nested probes share a process group
 owned by the outer collector. The collector cleans that group on timeout,
 cancellation and normal completion, even after leader exit; cleanup does
-not depend on a stalled worker's signal handler. Other process-helper and
+not depend on a stalled worker's signal handler. Cancellation immediately
+kills the worker group before an enclosing bash caller's kill grace expires.
+Other process-helper and
 direct library callers retain their original detached probe groups.
 
 ## Verification and deferred work

@@ -18,6 +18,7 @@ import {
 	reportExitCode,
 } from "./doctor.ts";
 import type { HealthReport } from "./health.ts";
+import { bashTool } from "./agent/tools/bash.ts";
 
 const report: HealthReport = {
 	version: 1,
@@ -70,6 +71,66 @@ describe("doctor report contract", () => {
 });
 
 describe("doctor process boundary", () => {
+	test("bash cancellation cannot kill the controller before it reclaims a blocked worker", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "doctor-bash-cancel-"));
+		const pids = join(directory, "pids");
+		const controllerFile = join(directory, "controller.ts");
+		const worker = `
+			import { writeFileSync } from "node:fs";
+			writeFileSync(${JSON.stringify(pids)}, JSON.stringify([process.pid]));
+			process.on("SIGTERM", () => {});
+			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+		`;
+		writeFileSync(
+			controllerFile,
+			`
+			import { collectDoctorReport } from ${JSON.stringify(join(import.meta.dir, "doctor.ts"))};
+			const abort = new AbortController();
+			process.on("SIGTERM", () => abort.abort());
+			try {
+				await collectDoctorReport({phase:"installed", signal:abort.signal,
+					workerCommand:[process.execPath, "-e", ${JSON.stringify(worker)}]});
+			} catch { process.exitCode = 2; }
+		`,
+		);
+		let ids: number[] = [];
+		try {
+			const abort = new AbortController();
+			const pending = bashTool(directory).execute!(
+				{ command: `exec "${process.execPath}" "${controllerFile}"`, timeout_ms: 8000 },
+				{ toolCallId: "cancel-doctor", messages: [], context: {}, abortSignal: abort.signal },
+			);
+			for (let i = 0; i < 200 && !existsSync(pids); i++) await Bun.sleep(5);
+			expect(existsSync(pids)).toBe(true);
+			ids = JSON.parse(readFileSync(pids, "utf8")) as number[];
+			abort.abort();
+			await pending;
+			for (let i = 0; i < 100; i++) {
+				if (
+					ids.every(
+						(pid) =>
+							!existsSync(`/proc/${pid}/stat`) ||
+							readFileSync(`/proc/${pid}/stat`, "utf8").split(" ")[2] === "Z",
+					)
+				)
+					break;
+				await Bun.sleep(5);
+			}
+			for (const pid of ids) {
+				if (existsSync(`/proc/${pid}/stat`))
+					expect(readFileSync(`/proc/${pid}/stat`, "utf8").split(" ")[2]).toBe("Z");
+			}
+		} finally {
+			for (const pid of ids) {
+				try {
+					process.kill(pid, "SIGKILL");
+				} catch {
+					/* Already gone. */
+				}
+			}
+			rmSync(directory, { recursive: true, force: true });
+		}
+	}, 10000);
 	test("validates the actual worker's JSON boundary", async () => {
 		const returned = await collectDoctorReport({
 			phase: "installed",

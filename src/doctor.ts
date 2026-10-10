@@ -78,6 +78,10 @@ export async function collectDoctorReport(options: {
 			options.phase,
 		],
 	);
+	// Outer shell callers can have a shorter kill grace than this collector.
+	const abort = (): void => killProc(proc, "SIGKILL");
+	options.signal?.addEventListener("abort", abort, { once: true });
+	if (options.signal?.aborted) abort();
 	let result;
 	try {
 		result = await boundedRun(proc, {
@@ -86,6 +90,7 @@ export async function collectDoctorReport(options: {
 			...(options.signal ? { abortSignal: options.signal } : {}),
 		});
 	} finally {
+		options.signal?.removeEventListener("abort", abort);
 		// The group remains ours after leader exit; stalled workers cannot clean it.
 		killProc(proc, "SIGKILL");
 	}

@@ -155,7 +155,6 @@ esac`,
 			"bun",
 			`case "$*" in
 'run typecheck') failure=typecheck ;;
-test) failure=test ;;
 'install --frozen-lockfile') failure=install ;;
 'run app:build') failure=build ;;
 *) echo "unexpected bun boundary: $*" >&2; exit 90 ;;
@@ -349,11 +348,9 @@ describe("local deployment refresh and rollback", () => {
 		expect(result.status).toBe(0);
 		expect(result.calls.filter((call) => call.startsWith("bun "))).toEqual([
 			"bun run typecheck",
-			"bun test",
 		]);
 		const boundaries = [
 			"bun run typecheck",
-			"bun test",
 			"systemctl --user restart goblin",
 		];
 		const indexes = boundaries.map((call) => result.calls.indexOf(call));
@@ -391,7 +388,6 @@ describe("local deployment refresh and rollback", () => {
 		expect(result.stdout).toContain("never auto-applied");
 		expect(result.calls.filter((call) => call.startsWith("bun "))).toEqual([
 			"bun run typecheck",
-			"bun test",
 		]);
 		expect(result.calls.filter((call) => call.includes(" restart "))).toEqual([
 			"systemctl --user restart goblin",
@@ -402,7 +398,6 @@ describe("local deployment refresh and rollback", () => {
 describe("local deployment failures and memory probe", () => {
 	for (const mode of [
 		"typecheck",
-		"test",
 		"install",
 		"build",
 		"restart",
@@ -420,13 +415,13 @@ describe("local deployment failures and memory probe", () => {
 			expect(result.stderr.length).toBeGreaterThan(0);
 			expect(result.markerValue).toBe(result.oldRev);
 			expect(result.stdout).not.toContain("deploy: done:");
-			if (["typecheck", "test", "install", "build", "restart", "journal"].includes(mode))
+			if (["typecheck", "install", "build", "restart", "journal"].includes(mode))
 				expect(result.stderr).toContain(`${mode} failed`);
-			if (["typecheck", "test"].includes(mode)) {
+			if (mode === "typecheck") {
 				expect(result.calls).not.toContain("bun install --frozen-lockfile");
 				expect(result.calls).not.toContain("bun run app:build");
 			}
-			if (["typecheck", "test", "install", "build"].includes(mode))
+			if (["typecheck", "install", "build"].includes(mode))
 				expect(result.calls).not.toContain("systemctl --user restart goblin");
 			if (mode === "inactive") {
 				expect(result.stderr).toContain("goblin not active after restart");

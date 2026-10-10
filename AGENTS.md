@@ -83,7 +83,7 @@ and templates before designing; cite what you took in the design docs.
   goblin stack is torn down, its conversations were merged into this
   box's state, and the archives (snapshots, DB bundle, memory dump)
   live in `~/goblin-migration-20261008/`. The only sanctioned prod
-  update is `scripts/deploy.sh`: gate (typecheck + tests) →
+  update is `scripts/deploy.sh`: gate (typecheck) →
   conditional `bun install`/`app:build` (marker
   `.git/GOBLIN_DEPLOYED_REV`) → restart → verify. Deployment never
   pushes, fetches, or pulls: `origin/main` stays the baseline for

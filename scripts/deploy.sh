@@ -69,9 +69,10 @@ revision_summary="$(git log -1 --format='%h %s' "$new_rev")" || fail "cannot rea
 step "deploying $branch @ $revision_summary${old_rev:+ (was ${old_rev:0:7})}"
 
 # --- 2. Gate ---------------------------------------------------------------
-step "gate: bun run typecheck && bun test"
+# Tests gate merges, not deploys: re-running the suite here re-executed work
+# every merge already proved, adding ~90s before each restart.
+step "gate: bun run typecheck"
 bun run typecheck
-bun test
 
 # --- 3. Refresh deps and the served bundle ---------------------------------
 if grep -qE '^(bun\.lock|package\.json)$' <<< "$changed_paths"; then

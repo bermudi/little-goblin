@@ -16,7 +16,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-WorkingDirectory=/home/daniel/build/goblin-v2
+WorkingDirectory=/home/daniel/build/little-goblin
 Environment=GOBLIN_HOME=/home/daniel/goblin
 # Auth commands (auth.jsonl "!cmd" records) resolve under THIS process's
 # PATH — not the login shell's. The systemd user manager's default PATH is

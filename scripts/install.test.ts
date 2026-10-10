@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import {
 	chmodSync,
 	copyFileSync,
+	cpSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -13,6 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { healthReportSchema } from "../src/health.ts";
 
 const realBun = process.execPath;
 const root = join(import.meta.dir, "..");
@@ -20,7 +22,14 @@ const root = join(import.meta.dir, "..");
 function fixture(
 	mode = "healthy",
 	edit?: (home: string, repo: string) => void,
-): { status: number | null; stderr: string; calls: string; units: string } {
+): {
+	status: number | null;
+	stderr: string;
+	calls: string;
+	units: string;
+	descendantAlive: boolean;
+	checkoutVerified: boolean;
+} {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-install-test-"));
 	const home = join(dir, "home");
 	const repo = join(dir, "repo");
@@ -50,6 +59,17 @@ function fixture(
 			join(repo, "scripts", "startup-categories.ts"),
 		);
 		copyFileSync(join(root, "src", "proc.ts"), join(repo, "src", "proc.ts"));
+		if (mode.startsWith("real-")) cpSync(join(root, "src"), join(repo, "src"), { recursive: true });
+		if (mode === "startup-descendant") {
+			copyFileSync(
+				join(root, "scripts", "check-startup.ts"),
+				join(repo, "scripts", "check-startup.ts"),
+			);
+			writeFileSync(
+				join(repo, "scripts", "startup-runner.ts"),
+				"import {acceptStartup} from './check-startup.ts';\ntry { await acceptStartup(8787,200); } catch { process.stderr.write('install: startup inspection failed\\n');process.exitCode=1; }",
+			);
+		}
 		for (const name of [
 			"goblin.service",
 			"goblin-herdr.service",
@@ -65,9 +85,14 @@ function fixture(
 		);
 		writeFileSync(
 			join(home, "goblin", "auth.jsonl"),
-			mode === "real-preflight"
-				? '{"name":"telegram","value":"nonsecret-fixture"}\n{"name":"fixture","value":"nonsecret-fixture"}\n'
-				: "",
+			mode === "real-cancel"
+				? '{"name":"telegram","value":"!pass-keys get goblin-dev FIXTURE"}\\n{"name":"fixture","value":"!pass-keys get goblin-dev FIXTURE"}\\n'.replaceAll(
+						"\\n",
+						"\n",
+					)
+				: mode === "real-preflight"
+					? '{"name":"telegram","value":"nonsecret-fixture"}\n{"name":"fixture","value":"nonsecret-fixture"}\n'
+					: "",
 			{ mode: 0o600 },
 		);
 		// These routes specify the proposed CLI contract, not proof of shared Doctor behavior.
@@ -75,12 +100,12 @@ function fixture(
 			"bun",
 			`case "$*" in
 '--no-install ${repo}/scripts/install.ts '*) exec '${realBun}' "$@" ;;
-'install --frozen-lockfile') ${mode === "dependency" ? "echo FIXTURE_SECRET >&2; exit 8" : `ln -s '${join(root, "node_modules")}' node_modules`} ;;
-'--no-install run src/doctor.ts --phase preflight --json') ${mode.startsWith("real-") ? `exec '${realBun}' --no-install run '${join(root, "src", "doctor.ts")}' --phase preflight --json` : mode === "preflight" ? "echo FIXTURE_SECRET >&2; exit 1" : "printf '{\"ok\":true}'"} ;;
+'install --frozen-lockfile') ${mode.startsWith("cancel-") ? `sleep 120 >/dev/null 2>&1 & child=$!; printf '%s' "$child" > '${join(dir, "child-pid")}'; sleep 0.05; kill -${mode.slice(7)} "$PPID"; wait "$child"` : mode === "dependency" ? "echo FIXTURE_SECRET >&2; exit 8" : `ln -s '${join(root, "node_modules")}' node_modules`} ;;
+'--no-install run src/doctor.ts --phase preflight --json') ${mode.startsWith("real-") ? `printf '%s' "$PPID" > '${join(dir, "installer-pid")}'; exec '${realBun}' --no-install run '${join(repo, "src", "doctor.ts")}' --phase preflight --json > '${join(dir, "doctor-report.json")}'` : mode === "preflight" ? "echo FIXTURE_SECRET >&2; exit 1" : "printf '{\"ok\":true}'"} ;;
 '--no-install run scripts/install-options.ts') printf '${mode === "badoptions" ? "invalid FIXTURE_SECRET" : JSON.stringify({ delegation: mode === "optional", keys: mode === "optional", port: mode === "port-zero" ? 0 : 8787 })}' ;;
 'run app:build') ${mode === "build" ? "exit 1" : "mkdir -p app/dist; printf fixture > app/dist/index.html"} ;;
 '--no-install run scripts/check-app-assets.ts '*) ${mode === "assets" ? "exit 1" : ":"} ;;
-'--no-install run scripts/check-startup.ts '*) ${mode === "startup" ? "echo 'install: startup ready port mismatch' >&2; echo FIXTURE_SECRET >&2; exit 1" : "systemctl --user enable --now goblin.service"} ;;
+'--no-install run scripts/check-startup.ts '*) ${mode === "startup-descendant" ? `exec '${realBun}' --no-install run '${join(repo, "scripts", "startup-runner.ts")}'` : mode === "startup" ? "echo 'install: startup ready port mismatch' >&2; echo FIXTURE_SECRET >&2; exit 1" : "systemctl --user enable --now goblin.service"} ;;
 '--no-install run src/doctor.ts --phase installed --json') ${mode === "installed" ? "exit 1" : ":"} ;;
 *) echo 'unexpected Bun boundary' >&2; exit 99 ;;
 esac`,
@@ -89,6 +114,7 @@ esac`,
 			"systemctl",
 			`case "$*" in
 '--user show goblin.service --property=LoadState --value') ${mode === "manager" ? "echo FIXTURE_SECRET >&2; exit 1" : `printf '${mode === "existing" ? "loaded" : "not-found"}\\n'`} ;;
+'--user show goblin.service --property=InvocationID '*) sleep 120 >/dev/null 2>&1 & child=$!; printf '%s' \"$child\" > '${join(dir, "child-pid")}'; wait \"$child\" ;;
 '--user daemon-reload'|'--user enable --now goblin.service'|'--user enable --now goblin-herdr.service'|'--user enable goblin-keys.service'|'--user enable --now goblin-keys.timer') : ;;
 *) echo 'unexpected systemctl boundary' >&2; exit 99 ;;
 esac`,
@@ -99,6 +125,11 @@ esac`,
 			script("herdr", ":");
 			script("pass-keys", "echo 'must not execute credential tool' >&2; exit 99");
 		}
+		if (mode === "real-cancel")
+			script(
+				"pass-keys",
+				`sleep 120 >/dev/null 2>&1 & child=$!; printf '%s' "$child" > '${join(dir, "child-pid")}'; kill -TERM "$(cat '${join(dir, "installer-pid")}')"; wait "$child"`,
+			);
 		edit?.(home, repo);
 		const result = spawnSync("/bin/bash", [join(repo, "scripts", "install.sh")], {
 			env: {
@@ -111,11 +142,34 @@ esac`,
 			timeout: 20_000,
 		});
 		const installedUnit = join(home, ".config", "systemd", "user", "goblin.service");
+		let descendantAlive = false;
+		const childFile = join(dir, "child-pid");
+		if (existsSync(childFile)) {
+			const pid = Number(readFileSync(childFile, "utf8"));
+			try {
+				const state = readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]?.split(" ")[0];
+				descendantAlive = state !== "Z" && state !== "X";
+				if (descendantAlive) process.kill(pid, "SIGKILL");
+			} catch (error) {
+				if (
+					(error as NodeJS.ErrnoException).code !== "ENOENT" &&
+					(error as NodeJS.ErrnoException).code !== "ESRCH"
+				)
+					throw error;
+			}
+		}
+		const reportPath = join(dir, "doctor-report.json");
+		const report =
+			existsSync(reportPath) && readFileSync(reportPath, "utf8").trim()
+				? healthReportSchema.parse(JSON.parse(readFileSync(reportPath, "utf8")) as unknown)
+				: undefined;
 		return {
 			status: result.status,
 			stderr: result.stderr,
 			calls: existsSync(calls) ? readFileSync(calls, "utf8") : "",
 			units: existsSync(installedUnit) ? readFileSync(installedUnit, "utf8") : "",
+			descendantAlive,
+			checkoutVerified: report?.target.checkout === repo,
 		};
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
@@ -123,10 +177,35 @@ esac`,
 }
 
 describe("fresh installer", () => {
+	test("cancellation lets real Doctor reclaim its independently owned worker/probe group", () => {
+		const result = fixture("real-cancel");
+		expect(result.status).not.toBe(0);
+		expect(result.descendantAlive).toBe(false);
+		expect(result.calls).toContain("pass-keys status goblin-dev");
+		expect(result.calls).not.toContain("run app:build");
+		expect(result.stderr).toContain("setup cancelled (SIGTERM)");
+	});
+	for (const name of ["SIGINT", "SIGTERM"] as const)
+		test(`${name} cancels the owned command group and prevents later phases`, () => {
+			const result = fixture(`cancel-${name}`);
+			expect(result.status).not.toBe(0);
+			expect(result.descendantAlive).toBe(false);
+			expect(result.calls).not.toContain("--phase preflight");
+			expect(result.calls).not.toContain("run app:build");
+			expect(result.units).toBe("");
+			expect(result.stderr).toContain(`setup cancelled (${name}); no later phases`);
+		});
+	test("inner startup failure cleans descendants before the outer timeout", () => {
+		const result = fixture("startup-descendant");
+		expect(result.status).not.toBe(0);
+		expect(result.descendantAlive).toBe(false);
+		expect(result.stderr).toContain("startup inspection failed");
+	});
 	test("real shared Doctor preflight gates an isolated fresh target without resolving credentials", () => {
 		const result = fixture("real-preflight");
 		expect(result.status, result.stderr).toBe(0);
 		expect(result.calls).toContain("run app:build");
+		expect(result.checkoutVerified).toBe(true);
 	});
 	test("real Doctor missing-reference failure prevents build/units and prints scoped read-only remedy", () => {
 		const result = fixture("real-missing-auth");
@@ -134,6 +213,7 @@ describe("fresh installer", () => {
 		expect(result.calls).not.toContain("run app:build");
 		expect(result.units).toBe("");
 		expect(result.stderr).toContain("--no-install run src/doctor.ts --phase preflight --json");
+		expect(result.checkoutVerified).toBe(true);
 	});
 	test("configured port zero reaches startup acceptance unchanged", () => {
 		const result = fixture("port-zero");

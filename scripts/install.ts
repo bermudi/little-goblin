@@ -21,6 +21,8 @@ const repo = resolve(import.meta.dir, "..");
 const home = process.env.HOME;
 const target = process.env.GOBLIN_HOME ?? (home ? join(home, "goblin") : "");
 const bun = process.argv[2];
+const cancellation = new AbortController();
+let cancelledBy: NodeJS.Signals | undefined;
 const signal = (message: string): void => {
 	process.stderr.write(`install: ${message}\n`);
 };
@@ -43,13 +45,57 @@ function safePath(path: string): void {
 		fail("unsupported-path: use absolute paths without spaces or shell/systemd metacharacters");
 }
 async function command(argv: string[], label: string, timeoutMs = 30_000): Promise<string> {
+	await Bun.sleep(0);
+	if (cancellation.signal.aborted) fail(`setup cancelled (${cancelledBy}); no later phases`);
 	signal(label);
-	let result;
+	let result: Awaited<ReturnType<typeof boundedRun>>;
+	let proc: Bun.ReadableSubprocess | undefined;
+	const commandAbort = new AbortController();
+	let escalation: ReturnType<typeof setTimeout> | undefined;
+	let cancellationSignalFailed = false;
+	const stop = (): void => {
+		// Doctor's controller releases its separate worker group on SIGTERM.
+		if (proc) {
+			try {
+				process.kill(-proc.pid, "SIGTERM");
+			} catch (error) {
+				cancellationSignalFailed = !(
+					error instanceof Error &&
+					"code" in error &&
+					error.code === "ESRCH"
+				);
+				commandAbort.abort();
+				return;
+			}
+			escalation = setTimeout(() => commandAbort.abort(), 2000);
+		} else commandAbort.abort();
+	};
 	try {
-		result = await boundedRun(spawnProc(argv, repo), { timeoutMs, maxOutput: 4 * 1024 * 1024 });
+		proc = spawnProc(argv, repo);
+		cancellation.signal.addEventListener("abort", stop, { once: true });
+		if (cancellation.signal.aborted) stop();
+		result = await boundedRun(proc, {
+			timeoutMs,
+			maxOutput: 4 * 1024 * 1024,
+			abortSignal: commandAbort.signal,
+		});
 	} catch {
 		return fail(`${label}: spawn-failed`);
+	} finally {
+		cancellation.signal.removeEventListener("abort", stop);
+		if (escalation) clearTimeout(escalation);
+		// Reclaim descendants even when a leader exits before its deadline with pipes already closed.
+		if (proc) {
+			try {
+				process.kill(-proc.pid, "SIGKILL");
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ESRCH")
+					fail(`${label}: process-group-cleanup-failed`);
+			}
+		}
 	}
+	if (cancellationSignalFailed) fail(`${label}: cancellation-signal-failed`);
+	if (cancellation.signal.aborted) fail(`setup cancelled (${cancelledBy}); no later phases`);
 	if (result.timedOut || result.truncated || result.exitCode !== 0) {
 		if (label === "start and accept current invocation") {
 			for (const line of result.stderr.split("\n")) {
@@ -313,6 +359,14 @@ async function install(): Promise<void> {
 }
 
 if (import.meta.main) {
+	for (const name of ["SIGINT", "SIGTERM"] as const) {
+		process.on(name, () => {
+			if (cancelledBy) return;
+			cancelledBy = name;
+			signal(`cancellation requested (${name})`);
+			cancellation.abort();
+		});
+	}
 	try {
 		await install();
 	} catch (error) {

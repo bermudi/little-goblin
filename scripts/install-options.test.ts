@@ -52,6 +52,11 @@ for (const [name, settings, auth] of [
 		`${config}}`,
 		'{"name":"fixture","value":"!pass-keys get other FIXTURE_SECRET"}',
 	],
+	[
+		"multi-directory absolute Pass path with unsupported profile",
+		`${config}}`,
+		'{"name":"fixture","value":"!/usr/bin/pass-keys get other FIXTURE_SECRET"}',
+	],
 ] as const)
 	test(`${name} fails safely before unit/action choice`, () => {
 		const result = inspect(settings, auth);
@@ -84,4 +89,17 @@ test("general credential command inspection never executes the boundary probe", 
 	expect(result.invoked).toBe(false);
 	expect(result.stdout).not.toContain("FIXTURE_SECRET");
 	expect(result.stderr).toBe("");
+});
+test("multi-directory direct Pass path recognizes the supported profile without execution", () => {
+	const result = inspect(
+		`${config}}`,
+		'{"name":"fixture","value":"!/usr/local/bin/pass-keys get goblin-dev FIXTURE"}',
+	);
+	expect(result.status).toBe(0);
+	expect(JSON.parse(result.stdout) as unknown).toEqual({
+		delegation: false,
+		keys: true,
+		port: 8787,
+	});
+	expect(result.invoked).toBe(false);
 });

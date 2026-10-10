@@ -331,38 +331,55 @@ p code,
 	text-align: left;
 	padding: 0.4rem 0.6rem;
 }
-/* Hover actions take over the preview line: the preview is hidden (but
-   keeps its space) while the actions show, so no text runs under the
-   icons. The title keeps its full width. Untitled rows (.bare) have no
-   preview line; their head line is hidden instead. Touch screens never
-   hover, so there the current row keeps its actions showing. */
+/* Hover actions fade in over the preview line while the preview fades
+   to a ghost — it keeps its space and stays faintly legible, so the row
+   never yanks and the icons read against dimmed text, not full-contrast
+   words. Untitled rows (.bare) dim their head line instead: it's the
+   only line they have. Touch screens never hover, so there the current
+   row keeps its actions showing. */
 .conv-actions {
 	position: absolute;
 	right: 0.3rem;
 	bottom: 0.25rem;
-	display: none;
+	display: inline-flex;
 	align-items: center;
 	gap: 0.1rem;
-	padding: 0 0.3rem;
+	padding: 0 0.3rem 0 0.75rem;
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 160ms ease;
 }
+.conv:hover .conv-actions,
+.conv-actions:focus-within {
+	opacity: 1;
+	pointer-events: auto;
+}
+/* Soft scrim in the row's own background so the ghost text dissolves
+   under the icons instead of striking through them — a gradient edge,
+   not the hard strip the first overlay had. */
 .conv:hover .conv-actions {
-	display: inline-flex;
+	background: linear-gradient(to right, transparent, var(--app-hover) 0.75rem);
+	border-radius: 0 8px 8px 0;
+}
+.conv.current .conv-actions {
+	background: linear-gradient(to right, transparent, var(--app-active) 0.75rem);
 }
 .conv:hover .conv-preview {
-	visibility: hidden;
+	opacity: 0.35;
 }
 .conv.bare:hover .conv-head {
-	visibility: hidden;
+	opacity: 0.35;
 }
 @media (hover: none) {
 	.conv.current .conv-actions {
-		display: inline-flex;
+		opacity: 1;
+		pointer-events: auto;
 	}
 	.conv.current .conv-preview {
-		visibility: hidden;
+		opacity: 0.35;
 	}
 	.conv.bare.current .conv-head {
-		visibility: hidden;
+		opacity: 0.35;
 	}
 }
 .conv-actions button {
@@ -445,6 +462,7 @@ p code,
 	display: flex;
 	align-items: baseline;
 	gap: 0.5rem;
+	transition: opacity 160ms ease;
 }
 .conv-title {
 	flex: 1;
@@ -468,6 +486,7 @@ p code,
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+	transition: opacity 160ms ease;
 }
 .rail .empty {
 	color: var(--app-fg-muted);

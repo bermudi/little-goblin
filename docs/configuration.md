@@ -157,6 +157,39 @@ appear in the chain). Search and fetch are chosen independently, so a
 search-only key like Brave's free tier pairs with a full-extraction
 provider.
 
+### Sandbox
+
+```json5
+// sandbox: {
+//   image: "docker.io/library/alpine:latest",
+//   idleHours: 24,
+//   memory: "2g",
+//   cpus: 2,
+//   pids: 512,
+// },
+```
+
+Off when unset (`""` clears it, same as `search`). With a `sandbox`
+block, the bot gets a `sandbox` tool: one disposable rootless-podman
+container per conversation — a place to install things, run fetched
+code, and try the destructive path without touching your machine. You
+are root inside; nothing is shared with the host (no mounts, no env);
+files cross only through the tool's `import`/`export` actions.
+Network is off until the `network` action enables it — and when it's
+on, the container can reach the internet **and** your LAN/tailnet, so
+the safe pattern for untrusted code is enable → download → disable →
+run. See [Sandbox](../design/sandbox.md) for the measured wall.
+
+The block is hand-edited (the Settings app round-trips it untouched);
+a save mounts or unmounts the tool on the next turn. `image` must
+already be pulled — the bot never pulls (`--pull=never`); a missing
+image errors with the exact `podman pull` line to run. Containers are
+kept until `reset` or the idle reap: every sandbox call sweeps
+sandboxes idle longer than `idleHours` (0 = never reap). A goblin or
+host restart never reaps — files inside survive until the next call
+restarts the container. `memory`/`cpus`/`pids` are the container's
+resource caps; disk is not capped (reaping bounds it).
+
 ### Telegram
 
 ```json5

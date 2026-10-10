@@ -275,6 +275,34 @@ Telegram. The mode resolves once at boot (`src/http/app-channel.ts`
   `content-type: application/json` in both modes. Ruling in
   `design/app.md` → App channel → Auth.
 
+### The sandbox tool's egress
+
+When the `sandbox` block is configured, the model can run code inside a
+rootless-podman container (`design/sandbox.md`). The wall that matters
+here is egress, not filesystem (nothing is mounted — files cross only
+through `import`/`export`, both realpath-contained to `workspace/`):
+
+- **Disconnected (default)** it reaches nothing — the container sits on
+  an `isolate=strict` bridge and is disconnected before first use.
+- **Connected** it reaches what daniel's sockets reach minus host
+  loopback: the internet, the LAN gateway, host sshd via
+  `host.containers.internal:22`, and every tailnet-IP listener —
+  measured on g7 2026-10-10 and spelled out in `design/sandbox.md` →
+  What the wall is. That includes the unauthenticated ollama embed
+  relay on the tailnet IP. Pasta offers no destination filter, so
+  LAN/tailnet blocking is a known accepted limit: the standing pattern
+  for untrusted code is connect → download → disconnect → run.
+- The isolated bridge cannot reach the memory network
+  (10.89.0.2:5432 measured shut), and goblin never pulls images —
+  `--pull=never`, with the image-ref charset validated so a ref can't
+  become a podman flag.
+
+Container root maps to a dedicated subuid range (40000+8192), outside
+daniel and outside the memory stack's subuids; capabilities are dropped
+to the `apk add` minimum with `no-new-privileges`. Rootless containers
+share the host kernel — this is a wall against dumb mistakes and
+ordinary untrusted code, not a VM boundary.
+
 ## 5. Failure policy — fail open vs fail closed
 
 This is the part a change is most likely to break, so it is stated per
@@ -295,6 +323,7 @@ boundary.
 | Pass-keys local snapshot/key or wallet unavailable | **closed** — loud failure, no Pass/owner fallback | Foreground consumption is local-only |
 | Pass-keys background sync failure | surfaced; retain last-good snapshot | Offline availability is deliberate; age is visible, not an expiry gate |
 | Model provider error | surfaced, not swallowed | A failed call must look failed |
+| Sandbox network-off verification | **closed** — container removed, row deleted | A sandbox whose off state can't be confirmed by inspect is never used (`src/sandboxes.ts` `applyNetwork`) |
 | Log file sink | degraded, retried (transient); dead after one warn (permanent) | A full disk is exactly when the durable log matters |
 
 The injection checker is the interesting one: it fails **open** on purpose. Its

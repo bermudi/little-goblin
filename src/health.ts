@@ -302,6 +302,10 @@ function authReferences(config: Config): Set<string> {
 	])
 		if (feature && "auth" in feature && feature.auth) refs.add(feature.auth);
 	if (config.appToken) refs.add(config.appToken);
+	if (config.mail) {
+		refs.add(config.mail.clientSecretAuth);
+		refs.add(config.mail.sendAuth);
+	}
 	return refs;
 }
 function authCheck(

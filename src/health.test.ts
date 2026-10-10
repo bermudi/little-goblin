@@ -287,6 +287,33 @@ describe("assets and installed checkout", () => {
 	});
 });
 
+test("configured mail validates both send credentials locally without resolving them", async () => {
+	const f = fixture();
+	writeFileSync(
+		join(f.home, "goblin.json5"),
+		JSON.stringify({
+			...f.config,
+			mail: {
+				clientId: "public-fixture-id",
+				clientSecretAuth: "mail-client",
+				sendAuth: "mail-send",
+			},
+		}),
+	);
+	for (const names of [[], ["mail-client"], ["mail-client", "mail-send"]]) {
+		writeFileSync(
+			join(f.home, "auth.jsonl"),
+			[
+				JSON.stringify({ name: "telegram", value: secret }),
+				...names.map((name) => JSON.stringify({ name, value: `!printf ${secret}` })),
+			].join("\n"),
+		);
+		const report = await runHealth(f.options);
+		expect(finding(report, "auth.metadata").status).toBe(names.length === 2 ? "pass" : "fail");
+		expect(JSON.stringify(report)).not.toContain(secret);
+	}
+});
+
 describe("pass-keys status source contract (fixtures, not a live wallet)", () => {
 	for (const [state, output, code, expected] of [
 		["ready", "fixture: READY  age=12h0m0s  keys=1  names=BOT_TOKEN", 0, "pass"],

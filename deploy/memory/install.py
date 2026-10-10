@@ -111,6 +111,16 @@ DEFAULT_MISSION = (
     "conversation language; keep proper nouns, product names, and quoted "
     "terms verbatim."
 )
+# Consolidation's own mission — it sits in observations_mission, another
+# knob the generic PUT mission never reaches. Same English pin: facts
+# entering consolidation are English, facts leaving it must stay so.
+DEFAULT_OBSERVATIONS_MISSION = (
+    "Consolidate the operator's preferences, decisions, commitments, "
+    "people, and ongoing work. Assistant suggestions are not operator "
+    "decisions. Preserve corrections as dated evolution. Write "
+    "consolidated facts in English; keep proper nouns, product names, "
+    "and quoted terms verbatim."
+)
 
 
 @dataclass(frozen=True)
@@ -603,10 +613,15 @@ def create_bank(bank_id: str, mission: str) -> None:
     except OSError as error:
         fail(f"bank creation failed: {error}")
     # Goblin never calls reflect(), so the generic mission only reaches
-    # reflect_mission; extraction reads retain_mission (docs/memory.md).
-    # Point it at the same text — without this the canonical mission is
-    # dead config.
-    patch = json.dumps({"updates": {"retain_mission": mission}}).encode()
+    # reflect_mission; extraction reads retain_mission and consolidation
+    # reads observations_mission (docs/memory.md). Point both at the
+    # canonical texts — without this the mission is dead config.
+    patch = json.dumps({
+        "updates": {
+            "retain_mission": mission,
+            "observations_mission": DEFAULT_OBSERVATIONS_MISSION,
+        }
+    }).encode()
     patch_req = urlrequest.Request(
         f"{url}/config", data=patch, method="PATCH",
         headers={"content-type": "application/json"})

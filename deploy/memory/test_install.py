@@ -405,7 +405,10 @@ class CreateBankTest(unittest.TestCase):
                 ("PUT", f"{install.MEMORY_API_URL}/v1/default/banks/goblin",
                  {"mission": "synthetic mission"}),
                 ("PATCH", f"{install.MEMORY_API_URL}/v1/default/banks/goblin/config",
-                 {"updates": {"retain_mission": "synthetic mission"}}),
+                 {"updates": {
+                     "retain_mission": "synthetic mission",
+                     "observations_mission": install.DEFAULT_OBSERVATIONS_MISSION,
+                 }}),
             ],
         )
 

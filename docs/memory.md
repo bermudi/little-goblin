@@ -96,7 +96,7 @@ curl -s -X PATCH http://127.0.0.1:8888/v1/default/banks/goblin/config \
   -H 'content-type: application/json' \
   -d '{"updates": {
     "retain_mission": "Remember the operator'"'"'s preferences, decisions, commitments, people, and ongoing work. Assistant suggestions are not operator decisions. Date every fact. Extract every fact in English regardless of the conversation language; keep proper nouns, product names, and quoted terms verbatim.",
-    "observations_mission": "Consolidate the operator'"'"'s preferences, decisions, commitments, people, and ongoing work. Assistant suggestions are not operator decisions. Preserve corrections as dated evolution."
+    "observations_mission": "Consolidate the operator'"'"'s preferences, decisions, commitments, people, and ongoing work. Assistant suggestions are not operator decisions. Preserve corrections as dated evolution. Write consolidated facts in English; keep proper nouns, product names, and quoted terms verbatim."
   }}'
 ```
 
@@ -563,9 +563,11 @@ drifting call is recorded.
 - hindsight-api: `127.0.0.1:8888`, no auth on loopback, bank `goblin`
   (wiped and recreated 2026-10-09 — 0 facts at swap time); DB timestamps
   are UTC, journal displays local (UTC-6).
-- `audit_log_enabled: false`; bank mission: "Remember the operator's
-  preferences, decisions, commitments, people, and ongoing work. Assistant
-  suggestions are not operator decisions. Date every fact."
+- `audit_log_enabled: false`; bank missions sat at the pre-pin text
+  ("…Date every fact.") until 2026-10-10, when `retain_mission` and
+  `observations_mission` were set to the canonical English-pinned texts
+  via the `/config` PATCH above (the generic `mission` field was left —
+  it only feeds reflect(), which Goblin never calls).
 - Container→host networking: bridge net `goblin-memory`;
   `host.containers.internal` does NOT reach host loopback listeners
   (refused) — the `goblin-embed-relay` socat unit on the tailscale /32

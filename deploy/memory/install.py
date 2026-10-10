@@ -602,6 +602,22 @@ def create_bank(bank_id: str, mission: str) -> None:
         fail(f"bank creation failed (HTTP {error.code}): {detail}")
     except OSError as error:
         fail(f"bank creation failed: {error}")
+    # Goblin never calls reflect(), so the generic mission only reaches
+    # reflect_mission; extraction reads retain_mission (docs/memory.md).
+    # Point it at the same text — without this the canonical mission is
+    # dead config.
+    patch = json.dumps({"updates": {"retain_mission": mission}}).encode()
+    patch_req = urlrequest.Request(
+        f"{url}/config", data=patch, method="PATCH",
+        headers={"content-type": "application/json"})
+    try:
+        with urlrequest.urlopen(patch_req, timeout=30) as response:
+            info(f"bank '{bank_id}' retain_mission set (HTTP {response.status})")
+    except urlerror.HTTPError as error:
+        detail = error.read().decode(errors="replace")[:500]
+        fail(f"retain_mission patch failed (HTTP {error.code}): {detail}")
+    except OSError as error:
+        fail(f"retain_mission patch failed: {error}")
 
 
 def goblin_stable(seconds: float) -> bool:

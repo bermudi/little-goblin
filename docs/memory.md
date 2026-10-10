@@ -87,9 +87,10 @@ curl -s -X PUT http://127.0.0.1:8888/v1/default/banks/goblin \
   -H 'content-type: application/json' \
   -d '{"mission": "Remember the operator'"'"'s preferences, decisions, commitments, people, and ongoing work. Assistant suggestions are not operator decisions. Date every fact. Extract every fact in English regardless of the conversation language; keep proper nouns, product names, and quoted terms verbatim."}'
 
-# Then steer the knobs Goblin actually exercises. The generic `mission`
-# above lands on reflect_mission (Hindsight 0.10), which only affects
-# reflect() — an endpoint Goblin never calls. Extraction follows
+# Then steer the knobs Goblin actually exercises — the installer sends
+# both of these itself at creation; the curl is for repair. The generic
+# `mission` above lands on reflect_mission (Hindsight 0.10), which only
+# affects reflect() — an endpoint Goblin never calls. Extraction follows
 # retain_mission; consolidation follows observations_mission:
 curl -s -X PATCH http://127.0.0.1:8888/v1/default/banks/goblin/config \
   -H 'content-type: application/json' \

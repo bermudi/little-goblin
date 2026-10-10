@@ -1,11 +1,13 @@
 """Offline installer checks: synthetic values only; no network, no containers."""
 import contextlib
 import io
+import json
 from pathlib import Path
 import stat
 import subprocess
 import tempfile
 import unittest
+import urllib.error
 from urllib.parse import urlsplit
 
 import install
@@ -363,6 +365,56 @@ class InstallAssetsTest(unittest.TestCase):
         self.assertIn("ln -s", commands[1])
         self.assertIn("daemon-reload", commands[2])
         self.assertIn(install.WATCH_TIMER, commands[2])
+
+
+class CreateBankTest(unittest.TestCase):
+    """Bank creation must seed retain_mission, not just the generic
+    mission — extraction reads retain_mission and Goblin never calls
+    reflect(). urlopen is faked at the module edge; no network."""
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self) -> "CreateBankTest._Resp":
+            return self
+
+        def __exit__(self, *exc: object) -> bool:
+            return False
+
+    def setUp(self) -> None:
+        self.calls: list[tuple[str, str, object]] = []
+        self.real_urlopen = install.urlrequest.urlopen
+        install.urlrequest.urlopen = self.fake
+        self.addCleanup(setattr, install.urlrequest, "urlopen", self.real_urlopen)
+
+    def fake(self, request, timeout: int = 0) -> "CreateBankTest._Resp":
+        self.calls.append((request.get_method(), request.full_url,
+                           json.loads(request.data)))
+        return self._Resp()
+
+    def test_creates_and_patches_retain_mission(self) -> None:
+        install.create_bank("goblin", "synthetic mission")
+        self.assertEqual(
+            self.calls,
+            [
+                ("PUT", f"{install.MEMORY_API_URL}/v1/default/banks/goblin",
+                 {"mission": "synthetic mission"}),
+                ("PATCH", f"{install.MEMORY_API_URL}/v1/default/banks/goblin/config",
+                 {"updates": {"retain_mission": "synthetic mission"}}),
+            ],
+        )
+
+    def test_existing_bank_never_patched(self) -> None:
+        def fake_409(request, timeout: int = 0) -> "CreateBankTest._Resp":
+            self.calls.append((request.get_method(), request.full_url, None))
+            raise urllib.error.HTTPError(request.full_url, 409, "conflict", None, None)
+
+        install.urlrequest.urlopen = fake_409
+        install.create_bank("goblin", "synthetic mission")
+        self.assertEqual(
+            self.calls,
+            [("PUT", f"{install.MEMORY_API_URL}/v1/default/banks/goblin", None)],
+        )
 
 
 class GoblinSnippetTest(unittest.TestCase):

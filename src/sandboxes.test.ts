@@ -34,8 +34,8 @@ function tmpdb(): string {
 
 // A fake podman engine: runner routes on argv shape, holding container
 // state the assertions read back. breakDisconnect simulates a
-// disconnect that reports success but never detaches — the fail-closed
-// path's trigger.
+// disconnect that reports success but never detaches, failDisconnect
+// one that exits nonzero — the two fail-closed triggers.
 function fakeEngine(opts?: {
 	containers?: Array<{
 		name: string;
@@ -45,6 +45,7 @@ function fakeEngine(opts?: {
 		labels?: Record<string, string>;
 	}>;
 	breakDisconnect?: boolean;
+	failDisconnect?: boolean;
 }) {
 	const containers = new Map<string, FakeContainer>();
 	for (const c of opts?.containers ?? []) {
@@ -61,7 +62,10 @@ function fakeEngine(opts?: {
 	const execCalls: string[][] = [];
 	// Mutable at call time — a test arms it after the container exists,
 	// since the create path's own disconnect would trip it too.
-	const flags = { breakDisconnect: opts?.breakDisconnect ?? false };
+	const flags = {
+		breakDisconnect: opts?.breakDisconnect ?? false,
+		failDisconnect: opts?.failDisconnect ?? false,
+	};
 
 	const runner = async (args: string[]) => {
 		calls.push([...args]);
@@ -100,6 +104,9 @@ function fakeEngine(opts?: {
 			return { code: 0, stdout: "", stderr: "" };
 		}
 		if (cmd === "network" && sub === "disconnect") {
+			if (flags.failDisconnect) {
+				return { code: 1, stdout: "", stderr: "Error: disconnect refused" };
+			}
 			if (!flags.breakDisconnect) {
 				containers.get(args[3]!)?.networks.delete(args[2]!);
 			}
@@ -337,6 +344,19 @@ describe("sandboxes lifecycle", () => {
 		await sandboxes.setNetwork(conv, true);
 		engine.flags.breakDisconnect = true;
 		await expect(sandboxes.setNetwork(conv, false)).rejects.toThrow(/network off/);
+		expect(engine.containers.has(name)).toBe(false);
+		expect(store.get(conv)).toBeNull();
+	});
+
+	test("network off is fail-closed: a failed disconnect removes the container", async () => {
+		const engine = fakeEngine();
+		const { sandboxes, store } = rig(engine);
+		const conv = "dm:11";
+		await sandboxes.exec(conv, "true", execOpts);
+		const name = containerNameFor(conv, PREFIX);
+		await sandboxes.setNetwork(conv, true);
+		engine.flags.failDisconnect = true;
+		await expect(sandboxes.setNetwork(conv, false)).rejects.toThrow(/network disconnect failed/);
 		expect(engine.containers.has(name)).toBe(false);
 		expect(store.get(conv)).toBeNull();
 	});

@@ -189,8 +189,8 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 	}
 
 	// Reconcile actual network state with intent. Off is fail-closed:
-	// if inspect can't confirm the disconnect, the container is removed
-	// rather than used in an unknown state.
+	// if the disconnect fails or inspect can't confirm it, the
+	// container is removed rather than used in an unknown state.
 	async function applyNetwork(
 		name: string,
 		want: boolean,
@@ -207,7 +207,16 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			}
 			return;
 		}
-		await podman.networkDisconnect(networkName, name, conv);
+		try {
+			await podman.networkDisconnect(networkName, name, conv);
+		} catch (err) {
+			// Same unconfirmed-off state as a lying disconnect.
+			await podman.rm(name, conv);
+			store.delete(conv);
+			throw new SandboxError(
+				`sandbox ${name} network disconnect failed (${err instanceof Error ? err.message : String(err)}) — the container was removed`,
+			);
+		}
 		const after = await podman.inspect(name, conv);
 		if (after.networks.includes(networkName)) {
 			await podman.rm(name, conv);

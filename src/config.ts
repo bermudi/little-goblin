@@ -343,6 +343,27 @@ export const delegationConfigSchema = z.object({
 });
 export type DelegationConfig = z.infer<typeof delegationConfigSchema>;
 
+// A container image ref: no leading '-' and a conservative charset —
+// the tool's podman argv boundary means a ref can never become a flag.
+export const imageRefSchema = z
+	.string()
+	.min(1)
+	.max(255)
+	.regex(/^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/, "invalid image ref");
+
+// Sandboxed execution (design/sandbox.md) — absent or "" = no sandbox
+// tool. Goblin never pulls: `image` must already be in the local store.
+export const sandboxConfigSchema = z.object({
+	image: imageRefSchema.default("docker.io/library/alpine:latest"),
+	// Hours of idleness before a sandbox is reaped on the next sandbox
+	// call; 0 = never reap.
+	idleHours: z.number().int().min(0).default(24),
+	memory: z.string().min(1).default("2g"),
+	cpus: z.number().positive().default(2),
+	pids: z.number().int().min(16).default(512),
+});
+export type SandboxConfig = z.infer<typeof sandboxConfigSchema>;
+
 // Gmail — absent = no mail tool or watcher. clientId is a public
 // identifier, not a secret; the client secret and SEND token live in
 // auth.jsonl; reads ride gws's auth — the send credential never reaches the model.
@@ -596,6 +617,12 @@ const configSchema = z
 		delegation: delegationConfigSchema.optional(),
 		// Hand-edited only, like delegation.
 		mail: mailConfigSchema.optional(),
+		// Sandboxed execution — hand-edited only; live-read per turn so a
+		// save mounts/unmounts the tool on the next turn.
+		sandbox: z
+			.union([sandboxConfigSchema, z.literal("")])
+			.transform((v) => (v === "" ? undefined : v))
+			.optional(),
 		guest: guestConfigSchema.optional(),
 		reviewer: reviewerConfigSchema.optional(),
 		system1: system1ConfigSchema.optional(),

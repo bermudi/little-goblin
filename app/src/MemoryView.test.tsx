@@ -119,6 +119,24 @@ describe("MemoryView", () => {
 			(el as HTMLElement).click();
 		});
 	};
+	const search = async (value: string) => {
+		await act(async () => {
+			const input = container.querySelector("input")!;
+			// Combined runs can load React before the DOM. Focus + keyup
+			// also drives its text-input fallback in that environment.
+			input.focus();
+			Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(
+				input,
+				value,
+			);
+			input.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+			input.dispatchEvent(
+				new win.KeyboardEvent("keyup", { bubbles: true, key: "w" }) as unknown as Event,
+			);
+		});
+	};
+	const more = () =>
+		[...container.querySelectorAll("button")].find((b) => b.textContent === "Load more")!;
 
 	test("status, list, detail, then forget round-trips through the API", async () => {
 		const seen: { method: string; path: string }[] = [];
@@ -185,5 +203,152 @@ describe("MemoryView", () => {
 		await act(async () => {});
 		await click(container.querySelector(".danger"));
 		expect(seen).toEqual([]);
+	});
+
+	test("pagination waits for replacement results and uses their filter and offset", async () => {
+		const requests: URL[] = [];
+		let replace!: (response: Response) => void;
+		const replacement = new Promise<Response>((resolve) => {
+			replace = resolve;
+		});
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			const url = new URL(String(input), "http://localhost");
+			if (url.pathname.endsWith("/status")) return Promise.resolve(json(STATUS));
+			requests.push(url);
+			if (url.searchParams.get("q") === "new" && url.searchParams.get("offset") === "0")
+				return replacement;
+			const id = url.searchParams.has("q") ? "new-page-2" : "old-query";
+			return Promise.resolve(json({ items: [{ ...DOC, id }], total: 3, limit: 20, offset: 0 }));
+		}) as typeof fetch;
+		mount();
+		await flush();
+		expect(more().disabled).toBe(false);
+		await search("new");
+		expect(more().disabled).toBe(true);
+		await click(more());
+		expect(requests).toHaveLength(1);
+		await flush();
+		expect(requests).toHaveLength(2);
+		expect(requests[1]!.searchParams.get("offset")).toBe("0");
+		expect(more().disabled).toBe(true);
+		await click(more());
+		expect(requests).toHaveLength(2);
+
+		await act(async () => {
+			replace(json({ items: [{ ...DOC, id: "new-query" }], total: 3, limit: 20, offset: 0 }));
+		});
+		expect(container.textContent).not.toContain("old-query");
+		expect(container.textContent).toContain("new-query");
+		expect(more().disabled).toBe(false);
+		await click(more());
+		expect(requests[2]!.searchParams.get("q")).toBe("new");
+		expect(requests[2]!.searchParams.get("offset")).toBe("1");
+		expect(container.textContent).toContain("new-page-2");
+		expect(container.textContent).not.toContain("old-query");
+	});
+
+	test("an old page arriving during the new search's debounce is ignored", async () => {
+		let resolveOldPage!: (response: Response) => void;
+		const oldPage = new Promise<Response>((resolve) => {
+			resolveOldPage = resolve;
+		});
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			const url = new URL(String(input), "http://localhost");
+			if (url.pathname.endsWith("/status")) return Promise.resolve(json(STATUS));
+			if (url.searchParams.get("offset") === "1") return oldPage;
+			const id = url.searchParams.has("q") ? "new-query" : "old-query";
+			return Promise.resolve(json({ items: [{ ...DOC, id }], total: 3, limit: 20, offset: 0 }));
+		}) as typeof fetch;
+		mount();
+		await flush();
+		await click(more());
+		await search("new");
+		await act(async () => {
+			resolveOldPage(json({ items: [{ ...DOC, id: "stale-page" }], total: 3 }));
+		});
+		expect(container.textContent).not.toContain("stale-page");
+		expect(more().disabled).toBe(true);
+		await flush();
+		expect(container.textContent).toContain("new-query");
+		expect(container.textContent).not.toContain("old-query");
+	});
+
+	test("a failed replacement does not enable pagination on the old rows with a new filter", async () => {
+		const requests: URL[] = [];
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			const url = new URL(String(input), "http://localhost");
+			if (url.pathname.endsWith("/status")) return Promise.resolve(json(STATUS));
+			requests.push(url);
+			return Promise.resolve(
+				url.searchParams.has("q")
+					? json({ error: "replacement failed" }, 503)
+					: json({ items: [DOC], total: 3, limit: 20, offset: 0 }),
+			);
+		}) as typeof fetch;
+		mount();
+		await flush();
+		await search("new");
+		await flush();
+		expect(container.textContent).toContain("replacement failed");
+		expect(more().disabled).toBe(true);
+		await click(more());
+		expect(requests).toHaveLength(2);
+	});
+
+	test("Forget supersedes a pending search debounce without leaving pagination stuck", async () => {
+		let lists = 0;
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = new URL(String(input), "http://localhost");
+			if (url.pathname.endsWith("/status")) return Promise.resolve(json(STATUS));
+			if (url.pathname.endsWith("/doc-1"))
+				return Promise.resolve(
+					init?.method === "DELETE" ? json({ ok: true, cancelled: 1, redacted: 1 }) : json(DETAIL),
+				);
+			++lists;
+			return Promise.resolve(json({ items: [DOC], total: 3, limit: 20, offset: 0 }));
+		}) as typeof fetch;
+		Reflect.set(win, "confirm", () => true);
+		mount();
+		await flush();
+		await search("new");
+		await click(container.querySelector(".doc-row"));
+		await click(container.querySelector(".danger"));
+		await flush();
+		expect(lists).toBe(2);
+		expect(more().disabled).toBe(false);
+	});
+
+	test("a delayed Forget completion refreshes the current filter, not the filter it started with", async () => {
+		let finishDelete!: (response: Response) => void;
+		const deleted = new Promise<Response>((resolve) => {
+			finishDelete = resolve;
+		});
+		const requests: URL[] = [];
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = new URL(String(input), "http://localhost");
+			if (url.pathname.endsWith("/status")) return Promise.resolve(json(STATUS));
+			if (url.pathname.endsWith("/old-query")) return Promise.resolve(json(DETAIL));
+			if (url.pathname.endsWith("/doc-1"))
+				return init?.method === "DELETE" ? deleted : Promise.resolve(json(DETAIL));
+			requests.push(url);
+			const id = url.searchParams.has("q") ? "new-query" : "old-query";
+			return Promise.resolve(json({ items: [{ ...DOC, id }], total: 3, limit: 20, offset: 0 }));
+		}) as typeof fetch;
+		Reflect.set(win, "confirm", () => true);
+		mount();
+		await flush();
+		await click(container.querySelector(".doc-row"));
+		await click(container.querySelector(".danger"));
+		await click(container.querySelector(".ops-back button"));
+		await search("new");
+		await flush();
+		expect(container.textContent).toContain("new-query");
+		await act(async () => {
+			finishDelete(json({ ok: true, cancelled: 1, redacted: 1 }));
+		});
+		expect(requests.at(-1)!.searchParams.get("q")).toBe("new");
+		expect(container.textContent).toContain("new-query");
+		expect(container.textContent).not.toContain("old-query");
+		expect(more().disabled).toBe(false);
 	});
 });

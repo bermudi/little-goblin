@@ -13,6 +13,7 @@ import type {
 } from "../../src/http/operator-wire.ts";
 
 const PAGE = 20;
+type MemoryFilter = { query: string; token: string | null };
 
 function relTime(iso: string | null): string {
 	if (iso === null) return "—";
@@ -94,11 +95,14 @@ export function MemoryView({ token }: { token: string | null }) {
 	const [q, setQ] = useState("");
 	const [items, setItems] = useState<MemoryDocListItem[]>([]);
 	const [total, setTotal] = useState(0);
+	const [loadedFilter, setLoadedFilter] = useState<MemoryFilter | null>(null);
+	const [listLoading, setListLoading] = useState(false);
 	const [listErr, setListErr] = useState<string | null>(null);
 	const [detail, setDetail] = useState<MemoryDocDetailResponse | null>(null);
 	const [detailErr, setDetailErr] = useState<string | null>(null);
 	const [forgetting, setForgetting] = useState(false);
 	const listSeq = useRef(0);
+	const latestFilter = useRef<MemoryFilter>({ query: "", token });
 
 	// Live view of the memory queue — polled while the tab is open,
 	// same as the mini app's Memories panel.
@@ -119,8 +123,15 @@ export function MemoryView({ token }: { token: string | null }) {
 	}, [token]);
 
 	// Debounced search; each result page appends under "Load more".
-	const loadDocs = (offset: number, query: string, append: boolean) => {
-		const seq = ++listSeq.current;
+	const loadDocs = (
+		offset: number,
+		filter: MemoryFilter,
+		append: boolean,
+		seq = ++listSeq.current,
+	) => {
+		if (seq !== listSeq.current) return;
+		setListLoading(true);
+		const { query, token } = filter;
 		void listMemoryDocuments(
 			token,
 			query === "" ? { limit: PAGE, offset } : { q: query, limit: PAGE, offset },
@@ -129,18 +140,32 @@ export function MemoryView({ token }: { token: string | null }) {
 				if (seq !== listSeq.current) return;
 				setItems((prev) => (append ? [...prev, ...r.items] : r.items));
 				setTotal(r.total);
+				if (!append) setLoadedFilter(filter);
+				setListLoading(false);
 				setListErr(null);
 			},
 			(err) => {
-				if (seq === listSeq.current) setListErr(describe(err));
+				if (seq !== listSeq.current) return;
+				setListLoading(false);
+				setListErr(describe(err));
 			},
 		);
 	};
 	useEffect(() => {
-		const t = setTimeout(() => loadDocs(0, q.trim(), false), 250);
-		return () => clearTimeout(t);
-		// loadDocs is stable — its sequencing rides the ref, not state.
+		// Invalidate old pages before the debounce: a page arriving during
+		// that window must not be appended to a different search.
+		const seq = ++listSeq.current;
+		const filter = { query: q.trim(), token };
+		latestFilter.current = filter;
+		setListLoading(true);
+		const t = setTimeout(() => loadDocs(0, filter, false, seq), 250);
+		return () => {
+			clearTimeout(t);
+			++listSeq.current;
+		};
 	}, [q, token]);
+	const canAppend =
+		!listLoading && loadedFilter?.query === q.trim() && loadedFilter.token === token;
 
 	const openDoc = (id: string) => {
 		setDetail(null);
@@ -164,8 +189,14 @@ export function MemoryView({ token }: { token: string | null }) {
 			() => {
 				setForgetting(false);
 				setDetail(null);
-				loadDocs(0, q.trim(), false);
-				void getMemoryStatus(token).then(setStatus, () => {});
+				loadDocs(0, latestFilter.current, false);
+				void getMemoryStatus(latestFilter.current.token).then(
+					(s) => {
+						setStatus(s);
+						setStatusErr(null);
+					},
+					(err) => setStatusErr(describe(err)),
+				);
 			},
 			(err) => {
 				setForgetting(false);
@@ -259,7 +290,10 @@ export function MemoryView({ token }: { token: string | null }) {
 						<button
 							type="button"
 							className="ghost"
-							onClick={() => loadDocs(items.length, q.trim(), true)}
+							disabled={!canAppend}
+							onClick={() => {
+								if (canAppend && loadedFilter !== null) loadDocs(items.length, loadedFilter, true);
+							}}
 						>
 							Load more
 						</button>

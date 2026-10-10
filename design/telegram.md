@@ -155,7 +155,7 @@ failing message by message.
   `/start`: clients fire it automatically on first open, so it gets a canned
   greeting (consumed before intake, never a model turn) and stays hidden
   from the advertised command menu.
-- **Large files**: self-hosted `telegram-bot-api` on lithium, `--local` mode,
+- **Large files**: self-hosted `telegram-bot-api` on the prod box, `--local` mode,
   grammy `apiRoot` → `http://127.0.0.1:8081`. Needs `api_id`/`api_hash` from a
   my.telegram.org app registration (operator's account, stored as secrets —
   "Little Goblin" app, api_id 955258, already minted for the v1 e2e harness,
@@ -167,9 +167,9 @@ failing message by message.
   `file://` URIs for sends. The server's working dir is a staging cache, not
   storage — Telegram still owns the files; periodic clean is safe (worst
   case = re-fetch via `file_id`). Deploy: static binary + systemd unit (no
-  docker); build off-box, TDLib compile would crush lithium.
-  **Status: designed, not deployed.** No `telegram-bot-api` runs on
-  lithium — goblin polls the cloud Bot API and the 20 MB cap is in
+  docker); build off-box — the TDLib compile is heavy.
+  **Status: designed, not deployed.** No `telegram-bot-api` runs
+  anywhere — goblin polls the cloud Bot API and the 20 MB cap is in
   effect. The `telegram.apiRoot` knob and intake path exist and work;
   the remaining work is the server, its unit, and fresh `api_id`/
   `api_hash` (the v1 `e2e/.env` copy died with v1's tree — mint at

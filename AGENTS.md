@@ -77,12 +77,15 @@ and templates before designing; cite what you took in the design docs.
 
 - `goblin.service` runs from this working tree — code changes go live
   only on `systemctl --user restart goblin`, which needs bermudi's OK.
-- **Prod is lithium** (`~/build/little-goblin`, a GitHub clone; same
-  `goblin.service` + the memory stack; Debian trixie, podman 5.4.2).
-  This g7 tree is dev. The only sanctioned prod update is
-  `scripts/deploy.sh` from here: gate (typecheck + tests) → push →
-  ff-only pull → conditional `bun install`/`app:build` → restart →
-  verify. Never hand-edit the lithium checkout. Deploying pushes main
+- **Prod is g7 — this tree.** `goblin.service` runs from this working
+  copy; code changes go live only on `systemctl --user restart goblin`,
+  which needs bermudi's OK. lithium ran prod until 2026-10-09 — its
+  goblin stack is torn down, its conversations were merged into this
+  box's state, and the archives (snapshots, DB bundle, memory dump)
+  live in `~/goblin-migration-20261008/`. The only sanctioned prod
+  update is `scripts/deploy.sh`: gate (typecheck + tests) → push →
+  conditional `bun install`/`app:build` (marker
+  `.git/GOBLIN_DEPLOYED_REV`) → restart → verify. Deploying pushes main
   and restarts prod — bermudi's OK each time, which running the script
   IS. The memory stack is never auto-deployed; `deploy/memory/`
   changes print the manual runbook (see docs/operations.md →
@@ -113,9 +116,10 @@ and templates before designing; cite what you took in the design docs.
   `passkeys` store), authenticating as the **`goblin-dev`** agent token
   (`~/goblin/pass-cli.env`), each key item-granted from the Keys vault
   and ID-addressed. `goblin-keys.timer` keeps the tmpfs cache warm.
-  Profiles are environment-scoped (`goblin-dev`, `goblin-mcp-dev`) because
-  the config syncs via dots — a future prod box gets `goblin-prod`, never
-  these refs.
+  Profiles are environment-scoped (`goblin-dev`, `goblin-mcp-dev`)
+  because the config syncs via dots — the profile keeps its `goblin-dev`
+  name now that this box is prod too: prod/dev here split by bot token
+  and state home, not by profile.
 - Adding a key: `pass-keys add goblin-dev NAME Keys/<Item>` (or no item
   spec to paste a new key; rerun to rotate; `pass-keys drop goblin-dev
   NAME` to retire) — grants, refs, and warm in one step — then add the
@@ -123,18 +127,11 @@ and templates before designing; cite what you took in the design docs.
   status goblin-dev` and `journalctl --user -u goblin-keys` first.
 - `pass-keys run`'s stdout is the child's (fixed 2026-09-26 — operational
   lines used to corrupt resolved keys).
-- lithium is headless with `Linger=yes`: every reboot starts the user
-  manager without a PAM login, gnome-keyring's login keyring stays
-  LOCKED, and pass-cli's DBus keyring backend can't fetch its local DB
-  key — `goblin-keys` crash-loops from boot and every `auth.jsonl`
-  `!record` exits 1 (2026-10-07, first linger boot since setup). Fix in
-  place: lithium's `~/bin/pass-cli` is a LOCAL FORK of the dots wrapper
-  exporting `PROTON_PASS_KEY_PROVIDER=fs` (pre-fs backup beside it;
-  g7's symlink to dots is untouched). pass-keys strips every caller
-  `PROTON_PASS_*` env var, so the wrapper is the ONLY injection point —
-  a unit `Environment=` line cannot set it. lithium also had no NTP at
-  all (60s skew post-reboot); chrony installed 2026-10-07. g7 shares
-  the reboot landmine but the desktop login unlocks its keyring.
+- Reboot landmine: gnome-keyring's login keyring unlocks at desktop
+  login — if goblin keys fail at request time right after a reboot with
+  no login, that keyring is why (lithium's headless-linger variant of
+  this, plus its `pass-cli` fs-provider fork, died with its goblin
+  stack; box-level lore lives in the fleet repo's docs).
 
 ## Tests
 

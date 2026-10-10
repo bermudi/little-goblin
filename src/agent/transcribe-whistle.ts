@@ -54,9 +54,9 @@ const PINNED_DIGESTS = {
 	weights: "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",
 } as const;
 
-// x86_64 linux is the only prebuilt platform verified here (g7 +
-// lithium). Everything else gets the manual-path instruction instead of
-// an untested binary.
+// x86_64 linux is the only prebuilt platform verified here (g7; and
+// lithium before its 2026-10-09 retirement). Everything else gets the
+// manual-path instruction instead of an untested binary.
 function artifactUrls(arch: string, platform: string): { engine: string; weights: string } {
 	if (platform !== "linux" || arch !== "x64") {
 		throw new Error(

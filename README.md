@@ -8,8 +8,9 @@ speak replies back as voice notes.
 This is a rewrite of the original `little-goblin` on the Vercel AI SDK
 (see `DESIGN.md` for why). v1 was retired at the cutover — nothing was
 shared between the versions (no code, no state, no specs). This codebase
-runs in two places: g7 (dev, this tree) and lithium (prod, updated with
-`scripts/deploy.sh` — see [`docs/operations.md`](docs/operations.md)).
+runs in one place: g7, this tree — prod since 2026-10-09 (lithium ran
+prod until then). `scripts/deploy.sh` gates, pushes, and restarts
+(see [`docs/operations.md`](docs/operations.md)).
 
 ## How it works, in one paragraph
 

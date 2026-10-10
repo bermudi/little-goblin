@@ -1,7 +1,8 @@
 # v1 ↔ v2 feature map
 
 v1 (pi-coding-agent core) ran on lithium until the cutover; its tree is
-retired. v2 = this repo (Vercel AI SDK core), now serving from lithium.
+retired. v2 = this repo (Vercel AI SDK core), serving from g7
+(lithium until 2026-10-09).
 Same product,
 ruthless scope: v2 rebuilds what earned its place and drops the machinery
 that didn't. Nothing migrates — no code, no state, no specs. Rows below
@@ -128,7 +129,8 @@ designed into `DESIGN.md` first.
 
 ## Operator habit changes at cutover
 
-Done — v2 serves from lithium. The list below is what changed at
+Done — v2 serves (from lithium at the cutover; g7 since 2026-10-09).
+The list below is what changed at
 cutover.
 
 - **New conversation** — `/new` is gone. Create a topic.

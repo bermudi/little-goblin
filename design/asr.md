@@ -280,14 +280,14 @@ On branch `feature/whistle`; small commits, gate = `bun test` +
    <openai|mistral|elevenlabs|gemini> Keys/<Item>` + auth.jsonl records
    (openrouter/mimo reuse `openrouter`); switch `goblin.json5` to
    `transcription: {kind:"whistle", keywords:[…]}`; deploy via
-   `scripts/deploy.sh` (lithium auto-fetches artifacts on the first
+   `scripts/deploy.sh` (the prod box auto-fetches artifacts on the first
    voice note — 18 MB, once); verify with one short voice note per
    channel and check the `transcribed` log lines.
 
 Risk register: HF artifact drift (digest gate fails loud → manual
 override); whistle quality on real speech unmeasured beyond synthetic
 probes (cloud kinds are one config flip away; the log's chars/language
-per note makes nonsense visible); lithium arch assumed x86_64 (fetcher
+per note makes nonsense visible); prod arch assumed x86_64 (fetcher
 errors loudly with manual instructions otherwise); OpenRouter warns
 ~60 s upstream processing per request (long files: prefer whistle/groq
 — documented); gemini/mistral defaults unverified until first live call.

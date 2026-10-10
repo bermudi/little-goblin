@@ -35,36 +35,37 @@ the same shape minus the flush — your message is in history, so the next
 turn just answers it. The bot never auto-retries after a crash: replaying
 half-run tool calls would be worse than asking again.
 
-## Deploying to lithium
+## Deploying
 
-Prod is lithium — a clone of GitHub `bermudi/little-goblin` at
-`~/build/little-goblin`, running the same `goblin.service` plus the
-memory stack. g7 is the dev tree; the two talk only through GitHub.
-Updating prod is one command from g7:
+Prod is this tree on g7 — `goblin.service` runs from the working copy,
+plus the local memory stack (Podman). One command:
 
 ```sh
 scripts/deploy.sh
 ```
 
-It refuses a dirty tree, runs the gate (`bun run typecheck && bun test`)
-on g7, pushes the branch to GitHub, then on lithium: `git pull
---ff-only`, `bun install --frozen-lockfile` when `bun.lock`/
-`package.json` moved, `bun run app:build` when `app/` or the dependency
-manifests moved — the bundle inlines dependency code, so a React or
-AI-SDK bump alone must rebuild it (the client is served from disk —
-client and backend restart as one rollout), and `systemctl --user
-restart goblin`. It verifies the unit came back, scans the fresh journal
-for error lines, and prints the old→new hashes plus a one-line rollback
-(`git reset --hard <old-hash>`, then `bun install` and
-`bun run app:build` — dist and node_modules are gitignored, so the old
-revision needs its own deps and client — then restart, on the box).
-The previous revision is printed before the remote update begins; any
-subsequent remote failure also prints the complete rollback command.
-A gate or push failure stops everything before lithium is
-touched.
+It refuses a dirty tree, runs the gate (`bun run typecheck && bun test`),
+pushes the branch to GitHub (backup + transport for other clones), then
+refreshes what the gate can't cover: `bun install --frozen-lockfile`
+when the dependency manifests moved and `bun run app:build` when `app/`
+or the manifests moved — the bundle inlines dependency code, so a React
+or AI-SDK bump alone must rebuild it, and the client is served from
+disk, so client and backend restart as one rollout. A marker in
+`.git/GOBLIN_DEPLOYED_REV` tracks the last deployed revision (first run
+refreshes unconditionally). It then restarts the unit, verifies it came
+back, scans the fresh journal for error lines, and prints the old→new
+hashes plus a one-line rollback (`git reset --hard <old>`, then
+`bun install` and `bun run app:build` — dist and node_modules are
+gitignored, so the old revision needs its own deps and client — then
+restart, and reset the marker). A gate or push failure stops everything
+before the service is touched.
+
+lithium ran prod until 2026-10-09; its goblin stack is torn down and its
+state was merged here. Archives: `~/goblin-migration-20261008/`
+(snapshots, DB bundle, memory dump).
 
 The final memory probe distinguishes missing Podman or an absent container
-from a failed probe. An installed API must report `healthy`; SSH, Podman,
+from a failed probe. An installed API must report `healthy`; Podman,
 inspection, and unhealthy-status failures retain diagnostics and fail the
 deployment command rather than reporting success.
 

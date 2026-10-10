@@ -419,11 +419,19 @@ point (the exact opposite of archive's auto-unarchive). And
 from the rail can't be anchored above it, and unarchive must not
 resurrect a stale pin.
 
-The row affordances are three labeled buttons, not glyphs — pin ·
-rename · archive on active rows, rename · unarchive · delete on
-archived ones — with a persistent pushpin marker on pinned rows so
-the top slot explains itself. Pinning never fences a turn and never
-touches selection: it is list order, nothing more.
+The row affordances are three icon actions — pin · rename · archive
+on active rows, rename · unarchive · delete on archived ones
+(amended 2026-10-10: the labeled buttons this ruling first specified
+could not fit the 15.5rem rail; the glyphs carry aria-label and title
+so the accessible contract is unchanged). The icons share the row's
+preview line, and the line resolves the collision spatially: on hover
+the text itself fades out just before the icons' stretch — a mask on
+the text, never a backdrop behind the icons — while the rest of the
+line stays full-contrast. Untitled rows fade their head line the same
+way. Touch screens never hover, so the current row keeps its actions
+showing over the faded line. A persistent pushpin marker on pinned
+rows still keeps the top slot explaining itself. Pinning never fences
+a turn and never touches selection: it is list order, nothing more.
 
 ## Intelligent UI (ruling 2026-10-09)
 

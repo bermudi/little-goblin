@@ -235,13 +235,14 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 	});
 });
 
-// The rail rows: three labeled actions per row — pin · rename · archive
-// on active rows, rename · unarchive · delete on archived ones — and a
-// pinned row floating above the activity order (design/app.md →
-// Pinning). Same happy-dom mount as above; the fetch fake keeps mutable
-// pin/archive stamps so the list reflects each PATCH. The payload
-// arrives in activity order (fresh first) so the client's own
-// pinned-first partition is what puts the pinned row on top.
+// The rail rows: three icon actions per row (aria-labeled glyphs) — pin
+// · rename · archive on active rows, rename · unarchive · delete on
+// archived ones — and a pinned row floating above the activity order
+// (design/app.md → Pinning). Same happy-dom mount as above; the fetch
+// fake keeps mutable pin/archive stamps so the list reflects each
+// PATCH. The payload arrives in activity order (fresh first) so the
+// client's own pinned-first partition is what puts the pinned row on
+// top.
 describe("rail row actions and the pinned pool", () => {
 	let win: Window;
 	let container: HTMLElement;

@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { serveAppDist } from "./http/app-dist.ts";
 import { openStore } from "./conversation.ts";
 import {
 	checkAppAssets,
@@ -74,7 +75,7 @@ function assets(checkout: string) {
 	mkdirSync(join(checkout, "app/dist/assets"), { recursive: true });
 	writeFileSync(
 		join(checkout, "app/dist/index.html"),
-		'<!doctype html><html><script src="/app/assets/main.js"></script><link href="./assets/main.css"></html>',
+		'<!doctype html><html><script src="/app/assets/main.js"></script><link rel="stylesheet" href="./assets/main.css"></html>',
 	);
 	writeFileSync(join(checkout, "app/dist/assets/main.js"), "export {};");
 	writeFileSync(join(checkout, "app/dist/assets/main.css"), "body {}");
@@ -194,6 +195,22 @@ describe("diagnostic boundary and phases", () => {
 	});
 });
 
+describe("safe manual next steps", () => {
+	test("failures and warnings have static hints, while passes and skips do not", async () => {
+		const f = fixture();
+		f.script("systemctl", "exit 1");
+		const report = await runHealth({ ...f.options, phase: "installed" });
+		for (const item of report.results) {
+			if (item.status === "fail" || item.status === "warn") expect(item.next).toBeString();
+			else expect(item.next).toBeUndefined();
+		}
+		expect(finding(report, "service.goblin").next).toContain("do not restart");
+		expect(finding(report, "sqlite").next).toContain("do not checkpoint");
+		expect(finding(report, "auth.coverage").next).toContain("without printing values");
+		expect(JSON.stringify(report)).not.toContain(secret);
+	});
+});
+
 describe("assets and installed checkout", () => {
 	test("post-build helper verifies references, encoded escape and symlink escape; I/O differs from absence", () => {
 		const f = fixture();
@@ -213,6 +230,44 @@ describe("assets and installed checkout", () => {
 		rmSync(join(f.checkout, "app/dist"), { recursive: true });
 		writeFileSync(join(f.checkout, "app/dist"), "wrong type");
 		expect(checkAppAssets(f.checkout).detail).toContain("ENOTDIR");
+	});
+	test("asset checks agree with serving encoded and Unicode browser paths, ignoring navigation links", async () => {
+		const f = fixture();
+		assets(f.checkout);
+		const dist = join(f.checkout, "app/dist");
+		writeFileSync(join(dist, "main.js"), "fixture");
+		writeFileSync(join(dist, "café.js"), "fixture");
+		for (const [ref, expected] of [
+			["/app/main%2Ejs", "fail"],
+			["/app/café.js", "fail"],
+			["/app/main.js?version=1&amp;x=2", "pass"],
+			["/app/assets/%2e%2e/main.js", "pass"],
+			["/app/%2e%2e/outside.js", "fail"],
+			["/app/%2e%2e%2foutside.js", "fail"],
+		] as const) {
+			writeFileSync(
+				join(dist, "index.html"),
+				`<html><script src="${ref}"></script><a href="/app/settings">Settings</a><a href="/elsewhere">Elsewhere</a></html>`,
+			);
+			expect(checkAppAssets(f.checkout).status).toBe(expected);
+			const path = new URL(ref, "https://fixture.invalid/app/").pathname;
+			const response = path.startsWith("/app/")
+				? await serveAppDist(path.slice(5), dist)
+				: new Response(null, { status: 404 });
+			expect(response.status).toBe(expected === "pass" ? 200 : 404);
+		}
+		for (const [ref, filename] of [
+			["/app/main%2Ejs", "main%2Ejs"],
+			["/app/café.js", "caf%C3%A9.js"],
+		]) {
+			writeFileSync(join(dist, filename!), "fixture");
+			writeFileSync(join(dist, "index.html"), `<html><script src="${ref}"></script></html>`);
+			expect(checkAppAssets(f.checkout).status).toBe("pass");
+			expect(
+				(await serveAppDist(new URL(ref!, "https://fixture.invalid").pathname.slice(5), dist))
+					.status,
+			).toBe(200);
+		}
 	});
 	test("different WorkingDirectory warns and inspects installed assets without redirecting caller home", async () => {
 		const f = fixture(),
@@ -235,6 +290,19 @@ describe("assets and installed checkout", () => {
 describe("pass-keys status source contract (fixtures, not a live wallet)", () => {
 	for (const [state, output, code, expected] of [
 		["ready", "fixture: READY  age=12h0m0s  keys=1  names=BOT_TOKEN", 0, "pass"],
+		[
+			"digit-leading vault key",
+			"fixture: READY  age=0s  keys=2  names=1PASSWORD BOT_TOKEN",
+			0,
+			"pass",
+		],
+		[
+			"underscore and digit keys",
+			"fixture: READY  age=0s  keys=4  names=1 BOT_TOKEN _ _2",
+			0,
+			"pass",
+		],
+		["clock skew", "fixture: READY  age=-1h2m3s  keys=1  names=BOT_TOKEN", 0, "warn"],
 		["stale", "fixture: READY  age=25h0m0s  keys=1  names=BOT_TOKEN", 0, "warn"],
 		["missing key", "fixture: READY  age=2s  keys=1  names=OTHER", 0, "fail"],
 		["locked", `fixture: LOCKED  age=none  keys=0\n  ! ${secret}`, 1, "fail"],
@@ -255,9 +323,36 @@ describe("pass-keys status source contract (fixtures, not a live wallet)", () =>
 			);
 			const report = await runHealth(f.options);
 			expect(finding(report, "keys.snapshot.1").status).toBe(expected);
+			if (state !== "wrong contract")
+				expect(finding(report, "keys.snapshot.1").scope).toContain("profile:fixture");
+			if (expected !== "pass")
+				expect(finding(report, "keys.snapshot.1").next).toContain("operator-owned");
+			if (state === "clock skew")
+				expect(finding(report, "keys.snapshot.1").detail).toContain("clock skew");
 			expect(readFileSync(calls, "utf8")).toBe("status fixture\n");
 			expect(JSON.stringify(report)).not.toContain(secret);
 		});
+	test("a required digit-leading vault key is inspected, not treated as an arbitrary command", async () => {
+		const f = fixture();
+		writeFileSync(
+			join(f.home, "auth.jsonl"),
+			JSON.stringify({ name: "telegram", value: "!pass-keys get fixture 1PASSWORD" }),
+		);
+		f.script("pass-keys", "printf 'fixture: READY  age=1s  keys=1  names=1PASSWORD\\n'");
+		expect(finding(await runHealth(f.options), "keys.snapshot.1").status).toBe("pass");
+	});
+	test("unverified command selectors are not echoed from auth values", async () => {
+		const f = fixture();
+		const marker = "synthetic_secret_selector";
+		writeFileSync(
+			join(f.home, "auth.jsonl"),
+			JSON.stringify({ name: "telegram", value: `!pass-keys get ${marker} BOT_TOKEN` }),
+		);
+		f.script("pass-keys", `printf '${marker}\\n' >&2; exit 1`);
+		const report = await runHealth(f.options);
+		expect(finding(report, "keys.snapshot.1").status).toBe("fail");
+		expect(JSON.stringify(report)).not.toContain(marker);
+	});
 });
 
 describe("read-only WAL-aware SQL worker", () => {
@@ -449,7 +544,14 @@ describe("capacity thresholds and local embedding identity (synthetic metadata o
 		fake.files = 0n;
 		expect(finding(await runHealth(f.options), "storage.home").detail).toContain("unreported");
 	});
-	for (const mode of ["matched", "wrong-model", "malformed-vector"] as const)
+	for (const mode of [
+		"matched",
+		"wrong-model",
+		"malformed-vector",
+		"low-space-mount-exit",
+		"low-inodes-mount-malformed",
+		"low-space-mount-timeout",
+	] as const)
 		test(mode, async () => {
 			const f = fixture(),
 				cfg = join(f.root, ".config/goblin-memory");
@@ -480,9 +582,29 @@ describe("capacity thresholds and local embedding identity (synthetic metadata o
 				ports: { "8888/tcp": [{ HostIp: "127.0.0.1", HostPort: "8888" }] },
 				mounts: [{ Source: join(cfg, "start.py"), Destination: "/opt/goblin-memory-start.py" }],
 			});
+			const lowCapacity = mode.startsWith("low-");
+			if (lowCapacity) {
+				const statfs = spyOn(fs, "statfsSync").mockReturnValue({
+					type: 1n,
+					bsize: 1n,
+					blocks: 100n,
+					bfree: 0n,
+					bavail: mode.startsWith("low-space") ? 1n : 8n * 1024n ** 3n,
+					files: 1000n,
+					ffree: mode.startsWith("low-inodes") ? 0n : 500n,
+				});
+				restorers.push(() => statfs.mockRestore());
+			}
+			const mountFailure = mode.endsWith("timeout")
+				? "/bin/sleep 60"
+				: mode.endsWith("malformed")
+					? `printf '${secret}'`
+					: `printf '${secret}' >&2; exit 1`;
 			f.script(
 				"podman",
-				`if [ "$4" = goblin-memory-api ]; then printf '%s' '${metadata}'; else printf '${secret}' >&2; exit 1; fi`,
+				`if [ "$4" = goblin-memory-api ]; then printf '%s' '${metadata}';
+				elif [ "$1" = volume ] && [ '${lowCapacity}' = true ]; then printf '%s' '${JSON.stringify(join(f.root, secret))}';
+				else ${mountFailure}; fi`,
 			);
 			const calls: { url: string; body: unknown }[] = [];
 			const fakeFetch: typeof globalThis.fetch = Object.assign(
@@ -518,9 +640,16 @@ describe("capacity thresholds and local embedding identity (synthetic metadata o
 					body: { model: "fixture-model", input: "Goblin diagnostic embedding probe." },
 				});
 				expect(finding(report, "memory.embedding").status).toBe(
-					mode === "matched" ? "pass" : "fail",
+					mode === "malformed-vector" ? "fail" : "pass",
 				);
-				expect(finding(report, "storage.memory-volume").status).toBe("warn");
+				expect(finding(report, "storage.memory-volume").status).toBe(lowCapacity ? "fail" : "warn");
+				if (lowCapacity) {
+					expect(finding(report, "storage.memory-volume").next).toContain("manual cleanup");
+					expect(finding(report, "storage.memory-volume").detail).toContain("Available");
+					expect(finding(report, "storage.memory-volume").detail).toContain(
+						"mount identity unverified",
+					);
+				}
 			}
 		});
 });

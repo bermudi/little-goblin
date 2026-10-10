@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { z } from "zod";
 import { goblinHome } from "./config.ts";
 import { healthReportSchema, runHealth, type HealthReport } from "./health.ts";
-import { boundedRun, spawnProc } from "./proc.ts";
+import { boundedRun, killProc, spawnProc } from "./proc.ts";
 
 const optionsSchema = z.object({
 	json: z.boolean().default(false),
@@ -78,11 +78,17 @@ export async function collectDoctorReport(options: {
 			options.phase,
 		],
 	);
-	const result = await boundedRun(proc, {
-		timeoutMs: options.timeoutMs ?? 45_000,
-		maxOutput: 1_048_576,
-		...(options.signal ? { abortSignal: options.signal } : {}),
-	});
+	let result;
+	try {
+		result = await boundedRun(proc, {
+			timeoutMs: options.timeoutMs ?? 45_000,
+			maxOutput: 1_048_576,
+			...(options.signal ? { abortSignal: options.signal } : {}),
+		});
+	} finally {
+		// The group remains ours after leader exit; stalled workers cannot clean it.
+		killProc(proc, "SIGKILL");
+	}
 	if (options.signal?.aborted) throw new Error("diagnostics cancelled");
 	if (result.timedOut) throw new Error("diagnostic deadline exceeded");
 	if (result.truncated) throw new Error("diagnostic output exceeded its limit");
@@ -123,6 +129,7 @@ async function main(): Promise<number> {
 			checkout: resolve(import.meta.dir, ".."),
 			phase: options.phase,
 			signal: signal.signal,
+			probe: { processGroup: "inherit" },
 		});
 		process.stdout.write(`${JSON.stringify(report)}\n`);
 		return 0;

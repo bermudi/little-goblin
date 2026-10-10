@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	chmodSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -111,6 +112,77 @@ describe("doctor process boundary", () => {
 		).rejects.toThrow("diagnostic deadline exceeded");
 		expect(performance.now() - start).toBeLessThan(2500);
 	});
+	for (const outcome of ["timeout", "cancel", "complete"] as const)
+		test(`${outcome} cleans inherited descendants even without a responsive worker`, async () => {
+			const directory = mkdtempSync(join(tmpdir(), "doctor-group-"));
+			const pids = join(directory, "pids");
+			const descendants = join(directory, "descendants");
+			const signal = new AbortController();
+			const worker = `
+				import { spawnProc } from ${JSON.stringify(join(import.meta.dir, "proc.ts"))};
+				import { writeFileSync, readFileSync, existsSync } from "node:fs";
+				const helper = spawnProc(["/bin/sh", "-c", ${JSON.stringify(`trap '' TERM; /bin/sleep 60 & printf '%s %s' "$$" "$!" > '${descendants}'; wait`)}], undefined, undefined, "inherit");
+				while (!existsSync(${JSON.stringify(descendants)})) await Bun.sleep(1);
+				writeFileSync(${JSON.stringify(pids)}, JSON.stringify([process.pid, ...readFileSync(${JSON.stringify(descendants)}, "utf8").split(" ").map(Number)]));
+				${
+					outcome === "complete"
+						? `process.stdout.write(${JSON.stringify(JSON.stringify(report))}); process.exit(0);`
+						: 'process.on("SIGTERM", () => {}); while (true) {}'
+				}
+			`;
+			let ids: number[] = [];
+			try {
+				const pending = collectDoctorReport({
+					phase: "installed",
+					timeoutMs: 400,
+					signal: signal.signal,
+					workerCommand: [process.execPath, "-e", worker],
+				});
+				// Attach rejection before polling so the deadline cannot be unhandled.
+				const settled = pending.then(
+					(value) => ({ value, error: "" }),
+					(error: unknown) => ({
+						value: null,
+						error: error instanceof Error ? error.message : "unknown",
+					}),
+				);
+				for (let i = 0; i < 100 && !existsSync(pids); i++) await Bun.sleep(5);
+				expect(existsSync(pids)).toBe(true);
+				ids = JSON.parse(readFileSync(pids, "utf8")) as number[];
+				if (outcome === "cancel") signal.abort();
+				const returned = await settled;
+				if (outcome === "complete") expect(returned.value).toEqual(report);
+				else
+					expect(returned.error).toBe(
+						outcome === "cancel" ? "diagnostics cancelled" : "diagnostic deadline exceeded",
+					);
+				for (let i = 0; i < 100; i++) {
+					const alive = ids.filter((pid) => {
+						try {
+							return readFileSync(`/proc/${pid}/stat`, "utf8").split(" ")[2] !== "Z";
+						} catch (error) {
+							if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+							throw error;
+						}
+					});
+					if (!alive.length) break;
+					await Bun.sleep(5);
+				}
+				for (const pid of ids) {
+					if (existsSync(`/proc/${pid}/stat`))
+						expect(readFileSync(`/proc/${pid}/stat`, "utf8").split(" ")[2]).toBe("Z");
+				}
+			} finally {
+				for (const pid of ids) {
+					try {
+						process.kill(pid, "SIGKILL");
+					} catch {
+						/* Already gone. */
+					}
+				}
+				rmSync(directory, { recursive: true, force: true });
+			}
+		}, 5000);
 	test("the shipped command returns one JSON report without bootstrapping or executing auth refs", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "goblin-doctor-cli-"));
 		const home = join(directory, "goblin");

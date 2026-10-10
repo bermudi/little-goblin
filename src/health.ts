@@ -10,11 +10,12 @@ import {
 } from "node:fs";
 import { homedir, networkInterfaces } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { parseHTML } from "linkedom";
 import JSON5 from "json5";
 import { z } from "zod";
 import { invokesPassCliDirectly, parseAuthFile, type AuthRecord } from "./auth.ts";
 import { parseConfig, type Config } from "./config.ts";
-import { boundedRun, spawnProc } from "./proc.ts";
+import { boundedRun, killProc, spawnProc, type ProcessGroupMode } from "./proc.ts";
 import { sqliteProbeSchema } from "./health-sqlite.ts";
 
 export const healthResultSchema = z.object({
@@ -35,6 +36,8 @@ export const healthReportSchema = z.object({
 });
 export type HealthReport = z.infer<typeof healthReportSchema>;
 
+export type ProbeContext = { signal?: AbortSignal; processGroup?: ProcessGroupMode };
+
 class ProbeError extends Error {
 	constructor(readonly category: string) {
 		super(category);
@@ -48,6 +51,28 @@ function errno(error: unknown): string {
 			? parsed.data.code
 			: "inspection-error";
 }
+const manualHints: Readonly<Record<string, string>> = {
+	config:
+		"Inspect local config syntax and references; do not print credentials or make provider calls.",
+	auth: "Inspect local auth permissions and the reported record line without printing values; credential edits are operator-owned.",
+	keys: "Inspect pass-keys status and refresh diagnostics without values; wallet unlock and key provisioning are operator-owned.",
+	workspace:
+		"Inspect the caller-home layout and permissions locally; provision missing files manually under the approved setup runbook.",
+	storage:
+		"Inspect free space and inodes on the reported filesystem; review backups before manual cleanup.",
+	sqlite:
+		"Check the matching revision and backups before manual database inspection; do not checkpoint or migrate during diagnosis.",
+	service:
+		"Inspect user-unit status and checkout identity; do not restart without operator approval.",
+	installation:
+		"Compare diagnostic and installed revisions and launcher targets manually; no automatic restart or deployment.",
+	app: "Build and publish the client only as a coordinated, approved backend rollout; do not overwrite live assets to test.",
+	"memory.embedding":
+		"Inspect relay and Ollama readiness and model identity; do not change a populated bank's embedding model.",
+	memory:
+		"Inspect memory readiness and local installation metadata under the approved runbook; do not print credentials or alter bank data.",
+};
+
 function result(
 	id: string,
 	scope: string,
@@ -56,13 +81,18 @@ function result(
 	start = performance.now(),
 	next?: string,
 ): HealthResult {
+	const hint =
+		next ??
+		(status === "fail" || status === "warn"
+			? (manualHints[id] ?? manualHints[id.split(".")[0] ?? ""])
+			: undefined);
 	return {
 		id,
 		scope,
 		status,
 		detail,
 		durationMs: Math.max(0, Math.round(performance.now() - start)),
-		...(next ? { next } : {}),
+		...(hint ? { next: hint } : {}),
 	};
 }
 function failure(
@@ -111,22 +141,35 @@ export function checkAppAssets(checkout: string): HealthResult {
 		const index = join(root, "index.html");
 		if (!contained(realRoot, realpathSync(index))) throw new ProbeError("path-escape");
 		const html = readBounded(index).text;
-		const refs = [...html.matchAll(/(?:src|href)\s*=\s*["']([^"']+)["']/gi)];
+		const { document } = parseHTML(html);
+		const refs = [
+			...document.querySelectorAll(
+				"script[src],img[src],source[src],video[src],audio[src],link[href]",
+			),
+		]
+			.filter(
+				(tag) =>
+					tag.localName !== "link" ||
+					/(?:^|\s)(?:stylesheet|modulepreload|preload|icon|manifest)(?:\s|$)/i.test(
+						tag.getAttribute("rel") ?? "",
+					),
+			)
+			.map((tag) => tag.getAttribute(tag.localName === "link" ? "href" : "src"));
 		if (refs.length > 128) throw new ProbeError("too-many-asset-references");
 		let files = 0;
-		for (const ref of refs) {
-			const value = ref[1];
+		for (const value of refs) {
 			if (!value || value.startsWith("#") || /^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(value)) continue;
-			let name: string;
+			// URL.pathname stays percent-encoded in the HTTP server, just as in the browser.
+			if (value.includes("\0") || value.includes("\\"))
+				throw new ProbeError("invalid-asset-reference");
+			let path: string;
 			try {
-				name = decodeURIComponent(value.split(/[?#]/)[0] ?? "");
+				path = new URL(value, "https://doctor.invalid/app/").pathname;
 			} catch {
 				throw new ProbeError("invalid-asset-reference");
 			}
-			if (name.includes("\0") || name.includes("\\"))
-				throw new ProbeError("invalid-asset-reference");
-			if (name.startsWith("/app/")) name = name.slice(5);
-			else if (name.startsWith("/")) throw new ProbeError("path-escape");
+			if (!path.startsWith("/app/")) throw new ProbeError("path-escape");
+			const name = path.slice(5);
 			const asset = resolve(root, name);
 			if (!contained(root, asset) || !contained(realRoot, realpathSync(asset)))
 				throw new ProbeError("path-escape");
@@ -157,29 +200,19 @@ export function checkAppAssets(checkout: string): HealthResult {
 async function command(
 	argv: string[],
 	timeoutMs: number,
-	signal?: AbortSignal,
+	probe: ProbeContext = {},
 	statusMetadata = false,
 ): Promise<string> {
+	const { signal, processGroup = "new" } = probe;
 	if (signal?.aborted) throw new ProbeError("cancelled");
 	let proc: Bun.ReadableSubprocess;
 	try {
-		proc = spawnProc(argv);
+		proc = spawnProc(argv, undefined, undefined, processGroup);
 	} catch (error) {
 		throw new ProbeError(`spawn:${errno(error)}`);
 	}
-	// The outer worker may itself be killed immediately after abort. Its children
-	// must be killed NOW, not after boundedRun's ordinary TERM grace period.
-	const kill = () => {
-		try {
-			process.kill(-proc.pid, "SIGKILL");
-		} catch {
-			try {
-				proc.kill("SIGKILL");
-			} catch {
-				/* Already reaped. */
-			}
-		}
-	};
+	// Inherited probes never signal the caller group; the outer collector owns it.
+	const kill = () => killProc(proc, "SIGKILL", processGroup);
 	const controller = new AbortController();
 	let timedOut = false;
 	const abort = () => {
@@ -197,6 +230,7 @@ async function command(
 			timeoutMs: timeoutMs + 500,
 			maxOutput: 64 * 1024,
 			abortSignal: controller.signal,
+			processGroup,
 		});
 		if (signal?.aborted) throw new ProbeError("cancelled");
 		if (timedOut || out.timedOut) throw new ProbeError("deadline");
@@ -307,7 +341,7 @@ function authCheck(
 				literals++;
 				continue;
 			}
-			const match = /^!pass-keys get ([a-z][a-z0-9_-]{0,63}) ([A-Za-z_][A-Za-z0-9_]{0,127})$/.exec(
+			const match = /^!pass-keys get ([a-z][a-z0-9_-]{0,63}) ([A-Z0-9_]{1,128})$/.exec(
 				record.value,
 			);
 			if (!match?.[1] || !match[2]) {
@@ -420,7 +454,7 @@ function capacity(path: string, id: string, scope: string): HealthResult {
 async function sqlite(
 	home: string,
 	phase: HealthReport["phase"],
-	signal?: AbortSignal,
+	probe: ProbeContext = {},
 ): Promise<HealthResult> {
 	const start = performance.now(),
 		scope = `caller-home:${home};diagnostic-revision`,
@@ -439,7 +473,7 @@ async function sqlite(
 		const raw = await command(
 			[process.execPath, "--no-install", join(import.meta.dir, "health-sqlite.ts"), path],
 			5000,
-			signal,
+			probe,
 		);
 		let parsed: unknown;
 		try {
@@ -466,7 +500,7 @@ async function sqlite(
 async function installation(
 	checkout: string,
 	phase: HealthReport["phase"],
-	signal?: AbortSignal,
+	probe: ProbeContext = {},
 ): Promise<HealthResult[]> {
 	const start = performance.now(),
 		scope = `diagnostic-revision:${checkout}`;
@@ -493,7 +527,7 @@ async function installation(
 				"--property=LoadState,ActiveState,SubState,WorkingDirectory",
 			],
 			2000,
-			signal,
+			probe,
 		);
 		const properties: Record<string, string> = {};
 		for (const line of raw.trim().split("\n")) {
@@ -556,7 +590,7 @@ function snapshotLine(
 ): { state: string; ageSeconds: number | null; names: Set<string> } {
 	const first = raw.split("\n")[0] ?? "";
 	const match =
-		/^([a-z][a-z0-9_-]{0,63}): (READY|MISSING|LOCKED|BROKEN)  age=([^ ]+)  keys=(\d+)(?:  names=([A-Za-z_][A-Za-z0-9_]*(?: [A-Za-z_][A-Za-z0-9_]*)*))?$/.exec(
+		/^([a-z][a-z0-9_-]{0,63}): (READY|MISSING|LOCKED|BROKEN)  age=([^ ]+)  keys=(\d+)(?:  names=([A-Z0-9_]+(?: [A-Z0-9_]+)*))?$/.exec(
 			first,
 		);
 	if (!match || match[1] !== profile) throw new ProbeError("unverified-status-contract");
@@ -565,12 +599,13 @@ function snapshotLine(
 	let ageSeconds: number | null = null;
 	if (match[2] === "READY") {
 		const duration = match[3] ?? "";
-		if (!/^(?:\d+h)?(?:\d+m)?(?:\d+(?:\.\d+)?s)?$/.test(duration) || !duration)
+		if (!/^-?(?:\d+h)?(?:\d+m)?(?:\d+(?:\.\d+)?s)?$/.test(duration) || !/\d/.test(duration))
 			throw new ProbeError("unverified-status-age");
 		ageSeconds = [...duration.matchAll(/(\d+(?:\.\d+)?)(h|m|s)/g)].reduce(
 			(sum, m) => sum + Number(m[1]) * (m[2] === "h" ? 3600 : m[2] === "m" ? 60 : 1),
 			0,
 		);
+		if (duration.startsWith("-")) ageSeconds = -ageSeconds;
 	} else if (match[3] !== "none" || names.size !== 0)
 		throw new ProbeError("invalid-unavailable-status");
 	return { state: match[2] ?? "BROKEN", ageSeconds, names };
@@ -578,7 +613,7 @@ function snapshotLine(
 async function snapshots(
 	profiles: Map<string, Set<string>>,
 	phase: HealthReport["phase"],
-	signal?: AbortSignal,
+	probe: ProbeContext = {},
 ): Promise<HealthResult[]> {
 	if (!profiles.size)
 		return [
@@ -594,21 +629,22 @@ async function snapshots(
 			.sort(([a], [b]) => a.localeCompare(b))
 			.map(async ([profile, needed], index) => {
 				const start = performance.now(),
-					id = `keys.snapshot.${index + 1}`,
-					scope = "caller-home;operator-wallet";
+					id = `keys.snapshot.${index + 1}`;
+				let scope = "caller-home;operator-wallet";
 				try {
-					const raw = await command(["pass-keys", "status", profile], 3000, signal, true);
+					const raw = await command(["pass-keys", "status", profile], 3000, probe, true);
 					const status = snapshotLine(raw, profile);
+					scope += `;profile:${profile}`;
 					const missing = [...needed].filter((name) => !status.names.has(name)).length;
 					return result(
 						id,
 						scope,
 						status.state !== "READY" || missing
 							? "fail"
-							: (status.ageSeconds ?? 0) > 86400
+							: (status.ageSeconds ?? 0) < 0 || (status.ageSeconds ?? 0) > 86400
 								? "warn"
 								: "pass",
-						`${status.state}; ${needed.size} needed key names checked, ${missing} missing; snapshot age ${status.ageSeconds ?? "unavailable"} seconds; values never read; status interface pinned from source, wallet implementation not independently verified`,
+						`${status.state}; ${needed.size} needed key names checked, ${missing} missing; snapshot age ${status.ageSeconds ?? "unavailable"} seconds${(status.ageSeconds ?? 0) < 0 ? "; clock skew: snapshot timestamp is in the future" : ""}; key values never returned to doctor/output; status interface pinned from source, wallet implementation not independently verified`,
 						start,
 					);
 				} catch (error) {
@@ -641,7 +677,7 @@ async function snapshots(
 				const raw = await command(
 					["systemctl", "--user", "show", unit, "--property=LoadState,ActiveState"],
 					2000,
-					signal,
+					probe,
 				);
 				const lines = raw.trim().split("\n");
 				if (
@@ -760,7 +796,7 @@ function narrowEnv(path: string, allowed: readonly string[]): Map<string, string
 	return out;
 }
 
-async function localMemory(config: Config, signal?: AbortSignal): Promise<HealthResult[]> {
+async function localMemory(config: Config, probe: ProbeContext = {}): Promise<HealthResult[]> {
 	const start = performance.now(),
 		scope = "caller-home;local-memory-installation",
 		id = "memory.local-association";
@@ -803,7 +839,7 @@ async function localMemory(config: Config, signal?: AbortSignal): Promise<Health
 				"goblin-memory-api",
 			],
 			2000,
-			signal,
+			probe,
 		);
 		let parsed: unknown;
 		try {
@@ -848,7 +884,7 @@ async function localMemory(config: Config, signal?: AbortSignal): Promise<Health
 					"Local API container/port/mount associated; installed nonlocal embedding provider not probed; runtime-loaded env unverified",
 					start,
 				),
-				await memoryVolume(signal),
+				await memoryVolume(probe),
 				result(
 					"memory.embedding",
 					scope,
@@ -905,14 +941,14 @@ async function localMemory(config: Config, signal?: AbortSignal): Promise<Health
 			"Running local API binding/mount and installed provider/baseURL/model match host-local relay; runtime-loaded embedding settings remain unverified",
 			start,
 		),
-		await memoryVolume(signal),
+		await memoryVolume(probe),
 	];
 	const embedStart = performance.now();
 	try {
 		const response = await http(
 			`http://${embedding.address}:11435/api/embed`,
 			15000,
-			signal,
+			probe.signal,
 			JSON.stringify({ model: embedding.model, input: "Goblin diagnostic embedding probe." }),
 		);
 		if (response.status < 200 || response.status >= 300)
@@ -943,14 +979,15 @@ async function localMemory(config: Config, signal?: AbortSignal): Promise<Health
 	}
 	return findings;
 }
-async function memoryVolume(signal?: AbortSignal): Promise<HealthResult> {
+async function memoryVolume(probe: ProbeContext = {}): Promise<HealthResult> {
 	const start = performance.now(),
 		scope = "caller-home;local-memory-volume";
+	let checked: HealthResult | undefined;
 	try {
 		const raw = await command(
 			["podman", "volume", "inspect", "--format", "{{json .Mountpoint}}", "goblin-memory-db"],
 			2000,
-			signal,
+			probe,
 		);
 		let parsed: unknown;
 		try {
@@ -960,14 +997,14 @@ async function memoryVolume(signal?: AbortSignal): Promise<HealthResult> {
 		}
 		const point = z.string().max(4096).refine(isAbsolute).safeParse(parsed);
 		if (!point.success) throw new ProbeError("invalid-volume-mountpoint");
-		const checked = capacity(point.data, "storage.memory-volume", scope);
+		checked = capacity(point.data, "storage.memory-volume", scope);
 		// Do not emit external metadata paths, even through filesystem failures.
 		if (checked.status === "fail")
 			checked.detail = `Memory volume statfs/capacity failed; ${checked.detail.startsWith("Available") ? checked.detail : "filesystem inspection unavailable"}`;
 		const mountRaw = await command(
 			["podman", "inspect", "--format", "{{json .Mounts}}", "goblin-memory-db"],
 			2000,
-			signal,
+			probe,
 		);
 		let mountParsed: unknown;
 		try {
@@ -988,8 +1025,13 @@ async function memoryVolume(signal?: AbortSignal): Promise<HealthResult> {
 			checked.detail += "; named volume only, PostgreSQL mount identity unverified";
 			if (checked.status === "pass") checked.status = "warn";
 		} else checked.detail += "; PostgreSQL data mount matched narrow volume metadata";
-		return checked;
+		return result(checked.id, checked.scope, checked.status, checked.detail, start);
 	} catch (error) {
+		if (checked) {
+			checked.detail += `; PostgreSQL mount identity unverified: ${errno(error)}`;
+			if (checked.status === "pass") checked.status = "warn";
+			return result(checked.id, checked.scope, checked.status, checked.detail, start);
+		}
 		return result(
 			"storage.memory-volume",
 			scope,
@@ -999,7 +1041,10 @@ async function memoryVolume(signal?: AbortSignal): Promise<HealthResult> {
 		);
 	}
 }
-async function memory(config: Config | undefined, signal?: AbortSignal): Promise<HealthResult[]> {
+async function memory(
+	config: Config | undefined,
+	probe: ProbeContext = {},
+): Promise<HealthResult[]> {
 	const scope = "caller-home;configured-memory-endpoint";
 	if (!config?.memory)
 		return [
@@ -1019,7 +1064,7 @@ async function memory(config: Config | undefined, signal?: AbortSignal): Promise
 		const response = await http(
 			`${config.memory.baseUrl.replace(/\/$/, "")}/health/ready`,
 			5000,
-			signal,
+			probe.signal,
 		);
 		if (response.status < 200 || response.status >= 300)
 			throw new ProbeError(`HTTP:${response.status}`);
@@ -1041,7 +1086,7 @@ async function memory(config: Config | undefined, signal?: AbortSignal): Promise
 			"warn",
 			"Application credentials, bank existence/access and running Goblin memory queues unverified; no auth resolution or memory writes",
 		),
-		...(await localMemory(config, signal)),
+		...(await localMemory(config, probe)),
 	];
 }
 
@@ -1050,6 +1095,7 @@ export async function runHealth(options: {
 	checkout: string;
 	phase: "preflight" | "installed";
 	signal?: AbortSignal;
+	probe?: Pick<ProbeContext, "processGroup">;
 }): Promise<HealthReport> {
 	const home = resolve(options.home),
 		checkout = resolve(options.checkout);
@@ -1062,11 +1108,15 @@ export async function runHealth(options: {
 		...workspace(home, options.phase),
 		capacity(home, "storage.home", `caller-home:${home}`),
 	];
+	const probe: ProbeContext = {
+		...options.probe,
+		...(options.signal ? { signal: options.signal } : {}),
+	};
 	const [db, install, keys, mem] = await Promise.all([
-		sqlite(home, options.phase, options.signal),
-		installation(checkout, options.phase, options.signal),
-		snapshots(auth.profiles, options.phase, options.signal),
-		memory(config.config, options.signal),
+		sqlite(home, options.phase, probe),
+		installation(checkout, options.phase, probe),
+		snapshots(auth.profiles, options.phase, probe),
+		memory(config.config, probe),
 	]);
 	return healthReportSchema.parse({
 		version: 1,

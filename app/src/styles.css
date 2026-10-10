@@ -342,18 +342,23 @@ p code,
 	display: inline-flex;
 }
 .conv-actions button {
-	width: 1.4rem;
 	height: 1.4rem;
+	padding: 0 0.35rem;
 	border-radius: 6px;
-	font-size: 11px;
+	font-size: 10.5px;
 	color: var(--app-fg-muted);
+	white-space: nowrap;
 	display: inline-flex;
 	align-items: center;
-	justify-content: center;
 }
 .conv-actions button:hover {
 	background: var(--app-active);
 	color: var(--app-fg);
+}
+.conv-pin {
+	flex: none;
+	align-self: center;
+	color: var(--app-fg-subtle);
 }
 .conv.editing {
 	padding: 0.3rem;

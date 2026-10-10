@@ -232,17 +232,22 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 	});
 });
 
-// The rail's two pools: archive shelves a row under the collapsed
-// section, delete lives only on archived rows (design/app.md →
-// Archiving). Same happy-dom mount as above; the fetch fake keeps a
-// mutable archivedAt so the list reflects the PATCH.
-describe("rail archive section", () => {
+// The rail rows: three labeled actions per row — pin · rename · archive
+// on active rows, rename · unarchive · delete on archived ones — and a
+// pinned row floating above the activity order (design/app.md →
+// Pinning). Same happy-dom mount as above; the fetch fake keeps mutable
+// pin/archive stamps so the list reflects each PATCH. The payload
+// arrives in activity order (fresh first) so the client's own
+// pinned-first partition is what puts the pinned row on top.
+describe("rail row actions and the pinned pool", () => {
 	let win: Window;
 	let container: HTMLElement;
 	let root: Root | null = null;
 	let installed: string[] = [];
-	let archivedAt: string | null;
-	let patches: unknown[];
+	let pinnedStamp: string | null;
+	let freshStamp: string | null;
+	let archived: Record<"pinned" | "fresh", string | null>;
+	let patches: { id: string; body: unknown }[];
 	const realFetch = globalThis.fetch;
 
 	const installGlobal = (name: string, value: unknown) => {
@@ -250,13 +255,25 @@ describe("rail archive section", () => {
 		installed.push(name);
 	};
 
+	const row = (title: string) => ({
+		id: `app/${title.split(" ")[0]}`,
+		title,
+		preview: `${title} preview`,
+		createdAt: "2026-10-08T00:00:00.000Z",
+		updatedAt: "2026-10-09T00:00:00.000Z",
+		archivedAt: null,
+		pinnedAt: null,
+	});
+
 	beforeEach(() => {
 		win = new Window();
 		const div = win.document.createElement("div");
 		win.document.body.appendChild(div);
 		container = div as unknown as HTMLElement;
 		installed = [];
-		archivedAt = null;
+		pinnedStamp = "2026-10-08T12:00:00.000Z";
+		freshStamp = null;
+		archived = { pinned: null, fresh: null };
 		patches = [];
 		installGlobal("window", win);
 		installGlobal("document", win.document);
@@ -273,23 +290,24 @@ describe("rail archive section", () => {
 				return Promise.resolve(
 					jsonResponse({
 						conversations: [
-							{
-								id: "app/fixture",
-								title: "fixture chat",
-								preview: "fixture",
-								createdAt: "2026-10-09T00:00:00.000Z",
-								updatedAt: "2026-10-09T00:00:00.000Z",
-								archivedAt,
-							},
+							{ ...row("fresh chat"), pinnedAt: freshStamp, archivedAt: archived.fresh },
+							{ ...row("pinned chat"), pinnedAt: pinnedStamp, archivedAt: archived.pinned },
 						],
 					}),
 				);
 			}
-			if (url === "/api/app/conversations/fixture" && method === "PATCH") {
-				const body = JSON.parse(String(init?.body)) as { archived?: boolean };
-				patches.push(body);
-				if (body.archived === true) archivedAt = "2026-10-09T01:00:00.000Z";
-				if (body.archived === false) archivedAt = null;
+			const patchMatch = /^\/api\/app\/conversations\/(pinned|fresh)$/.exec(url);
+			if (patchMatch !== null && method === "PATCH") {
+				const id = patchMatch[1] as "pinned" | "fresh";
+				const body = JSON.parse(String(init?.body)) as { pinned?: boolean; archived?: boolean };
+				patches.push({ id, body });
+				if (body.pinned !== undefined) {
+					if (id === "pinned") pinnedStamp = body.pinned ? "2026-10-09T12:00:00.000Z" : null;
+					else freshStamp = body.pinned ? "2026-10-09T12:00:00.000Z" : null;
+				}
+				if (body.archived !== undefined) {
+					archived[id] = body.archived ? "2026-10-09T13:00:00.000Z" : null;
+				}
 				return Promise.resolve(jsonResponse(body));
 			}
 			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: [] }));
@@ -319,45 +337,107 @@ describe("rail archive section", () => {
 		installed = [];
 	});
 
+	const settle = async () => {
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 30));
+		});
+	};
+
 	const click = async (el: Element | null | undefined) => {
 		await act(async () => {
 			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
 		});
-		await act(async () => {
-			await new Promise((r) => setTimeout(r, 20));
-		});
+		await settle();
 	};
 
-	test("archive shelves the row; unarchive and delete live in the section", async () => {
+	const domOrder = (): (string | null)[] =>
+		[...container.querySelectorAll(".conv-title")].map((t) => t.textContent);
+
+	const rowActions = (title: string): string[] => {
+		const found = [...container.querySelectorAll(".conv")].find(
+			(r) => r.querySelector(".conv-title")?.textContent === title,
+		);
+		if (found === undefined) return [];
+		return [...found.querySelectorAll(".conv-actions button")].map((b) => b.textContent ?? "");
+	};
+
+	test("a pinned row floats above the activity order, marked and unpin-able", async () => {
 		root = createRoot(container);
 		await act(async () => {
 			root?.render(<App />);
 		});
+		await settle();
+
+		// fresh is newer by activity, the pinned row is older — the pin
+		// wins the top slot.
+		expect(domOrder()).toEqual(["pinned chat", "fresh chat"]);
+		expect(container.querySelector(".conv-pin")).not.toBeNull();
+
+		// Three labeled buttons per row, label reflecting the state.
+		expect(rowActions("pinned chat")).toEqual(["Unpin", "Rename", "Archive"]);
+		expect(rowActions("fresh chat")).toEqual(["Pin", "Rename", "Archive"]);
+
+		// Pinning the fresh row PATCHes and pulls it into the pinned
+		// group, keeping its activity lead inside the group.
+		await click(
+			[...container.querySelectorAll(".conv")]
+				.find((r) => r.querySelector(".conv-title")?.textContent === "fresh chat")
+				?.querySelector(".conv-actions button"),
+		);
+		expect(patches).toEqual([{ id: "fresh", body: { pinned: true } }]);
+		expect(domOrder()).toEqual(["fresh chat", "pinned chat"]);
+		expect(rowActions("fresh chat")).toEqual(["Unpin", "Rename", "Archive"]);
+
+		// Unpin drops it back below the remaining pin.
+		await click(
+			[...container.querySelectorAll(".conv")]
+				.find((r) => r.querySelector(".conv-title")?.textContent === "fresh chat")
+				?.querySelector(".conv-actions button"),
+		);
+		expect(patches).toEqual([
+			{ id: "fresh", body: { pinned: true } },
+			{ id: "fresh", body: { pinned: false } },
+		]);
+		expect(domOrder()).toEqual(["pinned chat", "fresh chat"]);
+		expect(rowActions("fresh chat")).toEqual(["Pin", "Rename", "Archive"]);
+	});
+
+	test("archive shelves the row; the archived row swaps pin/archive for unarchive and delete", async () => {
+		root = createRoot(container);
 		await act(async () => {
-			await new Promise((r) => setTimeout(r, 30));
+			root?.render(<App />);
 		});
+		await settle();
 
-		// Active row: Archive affordance, no Delete — delete requires the
-		// archived section first.
-		expect(container.querySelector('button[aria-label="Archive"]')).not.toBeNull();
-		expect(container.querySelector('button[aria-label="Delete"]')).toBeNull();
-		expect(container.querySelector('button[aria-label="Unarchive"]')).toBeNull();
+		// Delete is unreachable from the rail — the archived section first.
+		expect(
+			[...container.querySelectorAll(".conv-actions button")].some((b) => b.textContent === "Delete"),
+		).toBe(false);
 
-		await click(container.querySelector('button[aria-label="Archive"]'));
-		expect(patches).toEqual([{ archived: true }]);
-
-		// The row moved off the rail behind the collapsed section.
-		expect(container.querySelector(".conv")).toBeNull();
+		await click(
+			[...container.querySelectorAll(".conv")]
+				.find((r) => r.querySelector(".conv-title")?.textContent === "fresh chat")
+				?.querySelectorAll(".conv-actions button")[2],
+		);
+		expect(patches).toEqual([{ id: "fresh", body: { archived: true } }]);
+		// Only the fresh row shelves — the pinned row stays on the rail.
+		expect(rowActions("fresh chat")).toEqual([]);
+		expect(rowActions("pinned chat")).toEqual(["Unpin", "Rename", "Archive"]);
 		const toggle = container.querySelector(".rail-archived");
 		expect(toggle?.textContent).toBe("Archived (1)");
-		expect(container.querySelector('button[aria-label="Unarchive"]')).toBeNull();
 
 		await click(toggle);
-		expect(container.querySelector('button[aria-label="Unarchive"]')).not.toBeNull();
-		expect(container.querySelector('button[aria-label="Delete"]')).not.toBeNull();
+		expect(rowActions("fresh chat")).toEqual(["Rename", "Unarchive", "Delete"]);
 
-		await click(container.querySelector('button[aria-label="Unarchive"]'));
-		expect(patches).toEqual([{ archived: true }, { archived: false }]);
-		expect(container.querySelector('button[aria-label="Archive"]')).not.toBeNull();
+		await click(
+			[...container.querySelectorAll(".conv")]
+				.find((r) => r.querySelector(".conv-title")?.textContent === "fresh chat")
+				?.querySelectorAll(".conv-actions button")[1],
+		);
+		expect(patches).toEqual([
+			{ id: "fresh", body: { archived: true } },
+			{ id: "fresh", body: { archived: false } },
+		]);
+		expect(rowActions("fresh chat")).toEqual(["Pin", "Rename", "Archive"]);
 	});
 });

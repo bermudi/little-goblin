@@ -836,6 +836,54 @@ describe("app channel store", () => {
 		expect(store.get(c.id)?.archivedAt).toBeNull();
 		store.close();
 	});
+
+	test("pin: the stamp floats the row above activity, survives activity, dies with archive", () => {
+		const store = openStore(tmpdb());
+		const a = store.resolve(appAddress("chat-01"), "/w");
+		const b = store.resolve(appAddress("chat-02"), "/w");
+		expect(a.pinnedAt).toBeNull();
+
+		// b has the newer activity; pinning a floats it back above.
+		store.append(b.id, [msg("newer activity")]);
+		store.setMeta(a.id, { pinned: true });
+		expect(store.get(a.id)?.pinnedAt).not.toBeNull();
+		expect(store.listAppConversations().map((r) => r.id)).toEqual([a.id, b.id]);
+
+		// Activity resurrects archive, never unpins — the anchor is the point.
+		store.append(a.id, [msg("still pinned")]);
+		expect(store.get(a.id)?.pinnedAt).not.toBeNull();
+		expect(store.listAppConversations().map((r) => r.id)).toEqual([a.id, b.id]);
+
+		// Unpin drops the row back into the activity stream: with a's pin
+		// gone, a fresh append to b takes the top back.
+		store.setMeta(a.id, { pinned: false });
+		expect(store.get(a.id)?.pinnedAt).toBeNull();
+		store.append(b.id, [msg("even newer")]);
+		expect(store.listAppConversations().map((r) => r.id)).toEqual([b.id, a.id]);
+
+		// Shelving supersedes pinning: archive clears the stamp, and
+		// unarchive must not resurrect a stale pin.
+		store.setMeta(b.id, { pinned: true });
+		store.setMeta(b.id, { archived: true });
+		expect(store.get(b.id)?.pinnedAt).toBeNull();
+		store.setMeta(b.id, { archived: false });
+		expect(store.get(b.id)?.pinnedAt).toBeNull();
+
+		// Pin-while-archived is refused, not written — a pin that dies
+		// with the next archive must not survive unarchive either.
+		store.setMeta(a.id, { archived: true });
+		expect(() => store.setMeta(a.id, { pinned: true })).toThrow(/archived/);
+		// The combination is refused even from an active row — archiving
+		// and pinning one patch is a contradiction.
+		store.setMeta(a.id, { archived: false });
+		expect(() => store.setMeta(a.id, { pinned: true, archived: true })).toThrow(/archived/);
+		expect(store.get(a.id)?.archivedAt).toBeNull();
+		// Unarchive+pin in one patch is the coherent escape hatch.
+		store.setMeta(a.id, { pinned: true, archived: false });
+		expect(store.get(a.id)?.archivedAt).toBeNull();
+		expect(store.get(a.id)?.pinnedAt).not.toBeNull();
+		store.close();
+	});
 });
 
 describe("rolling dm", () => {

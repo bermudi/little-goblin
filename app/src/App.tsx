@@ -119,16 +119,40 @@ function TokenGate({ hint, onToken }: { hint: string | null; onToken: (token: st
 	);
 }
 
-// One rail row: the conversation button plus hover affordances —
-// rename turns the title into an input; archive shelves the row (no
-// confirm — it's reversible) and unarchive/delete live on archived
-// rows, delete keeping the confirm as the one destructive action.
+// A small pushpin, shown persistently on pinned rows — the marker
+// explaining why the row floats above the activity stream.
+function PinGlyph() {
+	return (
+		<svg
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth="2"
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			width="10"
+			height="10"
+			className="conv-pin"
+			aria-hidden="true"
+		>
+			<path d="M9 3h6l2 8H7l2-8z" />
+			<line x1="12" y1="11" x2="12" y2="21" />
+		</svg>
+	);
+}
+
+// One rail row: the conversation button plus its three labeled actions —
+// pin floats the row above the rail's activity order, rename turns the
+// title into an input, archive shelves the row (no confirm — it's
+// reversible). Archived rows swap pin/archive for unarchive and delete,
+// delete keeping the confirm as the one destructive action.
 function ConversationRow({
 	conv,
 	current,
 	onOpen,
 	onRenamed,
 	onToggleArchived,
+	onTogglePinned,
 	onDeleted,
 	token,
 }: {
@@ -137,12 +161,14 @@ function ConversationRow({
 	onOpen: (id: string) => void;
 	onRenamed: () => void;
 	onToggleArchived: (id: string, archived: boolean) => void;
+	onTogglePinned: (id: string, pinned: boolean) => void;
 	onDeleted: (id: string) => void;
 	token: string | null;
 }) {
 	const title = flatTitle(conv.title);
 	const preview = flatLine(conv.preview);
 	const archived = conv.archivedAt !== null;
+	const pinned = conv.pinnedAt !== null;
 	const [editing, setEditing] = useState(false);
 	const [draft, setDraft] = useState("");
 	const editRef = useRef<HTMLInputElement>(null);
@@ -170,6 +196,16 @@ function ConversationRow({
 			() => onToggleArchived(conv.id, !archived),
 			() => {},
 		);
+	};
+	const togglePinned = () => {
+		void patchConversation(token, conv.id, { pinned: !pinned }).then(
+			() => onTogglePinned(conv.id, !pinned),
+			() => {},
+		);
+	};
+	const startRename = () => {
+		setDraft(title ?? "");
+		setEditing(true);
 	};
 	const remove = () => {
 		if (!window.confirm(`Delete "${title ?? preview ?? "this conversation"}"?`)) return;
@@ -199,6 +235,7 @@ function ConversationRow({
 		<div className={conv.id === current ? "conv current" : "conv"}>
 			<button type="button" className="conv-main" onClick={() => onOpen(conv.id)}>
 				<span className="conv-head">
+					{pinned && <PinGlyph />}
 					<span className="conv-title">
 						{title ?? (preview === "" ? "new conversation" : preview)}
 					</span>
@@ -207,30 +244,30 @@ function ConversationRow({
 				{title !== null && preview !== "" && <span className="conv-preview">{preview}</span>}
 			</button>
 			<span className="conv-actions">
-				<button
-					type="button"
-					aria-label="Rename"
-					title="Rename"
-					onClick={() => {
-						setDraft(title ?? "");
-						setEditing(true);
-					}}
-				>
-					✎
-				</button>
 				{archived ? (
 					<>
-						<button type="button" aria-label="Unarchive" title="Unarchive" onClick={toggleArchived}>
-							↑
+						<button type="button" onClick={startRename}>
+							Rename
 						</button>
-						<button type="button" aria-label="Delete" title="Delete" onClick={remove}>
-							×
+						<button type="button" onClick={toggleArchived}>
+							Unarchive
+						</button>
+						<button type="button" onClick={remove}>
+							Delete
 						</button>
 					</>
 				) : (
-					<button type="button" aria-label="Archive" title="Archive" onClick={toggleArchived}>
-						↓
-					</button>
+					<>
+						<button type="button" onClick={togglePinned}>
+							{pinned ? "Unpin" : "Pin"}
+						</button>
+						<button type="button" onClick={startRename}>
+							Rename
+						</button>
+						<button type="button" onClick={toggleArchived}>
+							Archive
+						</button>
+					</>
 				)}
 			</span>
 		</div>
@@ -436,10 +473,17 @@ export function App() {
 
 	const currentTitle = conversations?.find((c) => c.id === current)?.title ?? null;
 
-	// One payload, two pools: the rail shows active rows; archived ones
-	// (ordered by when they were shelved) wait behind the section toggle.
-	const active = (conversations ?? []).filter((c) => c.archivedAt === null);
-	const archived = (conversations ?? [])
+	// One payload, three pools: pinned rows float above the rail's
+	// activity order (the server sorts within each group, the client
+	// only partitions), archived ones wait behind the section toggle
+	// (design/app.md → Archiving, Pinning).
+	const all = conversations ?? [];
+	const active = all.filter((c) => c.archivedAt === null);
+	const rail = [
+		...active.filter((c) => c.pinnedAt !== null),
+		...active.filter((c) => c.pinnedAt === null),
+	];
+	const archived = all
 		.filter((c) => c.archivedAt !== null)
 		.sort((a, b) => Date.parse(b.archivedAt!) - Date.parse(a.archivedAt!));
 
@@ -457,6 +501,7 @@ export function App() {
 					if (isArchived && id === current) select(null);
 					void refresh();
 				}}
+				onTogglePinned={() => void refresh()}
 				onDeleted={(id) => {
 					if (id === current) select(null);
 					void refresh();
@@ -509,7 +554,7 @@ export function App() {
 					</>
 				) : (
 					<>
-						<ul>{active.map(renderRow)}</ul>
+						<ul>{rail.map(renderRow)}</ul>
 						{archived.length > 0 && (
 							<>
 								<button

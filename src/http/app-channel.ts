@@ -292,17 +292,22 @@ const chatBody = z
 		}
 	});
 
-// The row's two mutable fields: title (rename) and archived (rail ↔
-// archived section). A patch with neither is a client bug — same
-// "nothing to write" refusal as configPatchBody.
+// The row's three mutable fields: title (rename), archived (rail ↔
+// archived section), pinned (rail anchor above the activity order). A
+// patch with none is a client bug — same "nothing to write" refusal as
+// configPatchBody.
 const convPatchBody = z
 	.object({
 		title: z.string().min(1).max(200).optional(),
 		archived: z.boolean().optional(),
+		pinned: z.boolean().optional(),
 	})
-	.refine((p) => p.title !== undefined || p.archived !== undefined, {
-		message: "nothing to write",
-	});
+	.refine(
+		(p) => p.title !== undefined || p.archived !== undefined || p.pinned !== undefined,
+		{
+			message: "nothing to write",
+		},
+	);
 
 // The composer's two knobs. A patch with neither is a client bug —
 // refuse rather than write a no-op through the file.
@@ -704,7 +709,8 @@ export async function handleAppApi(
 	// An explicit operator title wins over the implicit auto-title rule.
 	// Archiving is list visibility only: no fence, the row keeps taking
 	// turns — and the next appended event clears the flag (auto-unarchive
-	// in store.append).
+	// in store.append). Pinning is refused on archived rows (409): a row
+	// hidden from the rail can't be anchored above it.
 	// DELETE /api/app/conversations/<id> — remove the row and everything
 	// it owns; a live turn is fenced first so the lane is quiet when the
 	// delete lands.
@@ -731,11 +737,28 @@ export async function handleAppApi(
 					{ status: 422, headers: NO_STORE },
 				);
 			}
+			if (parsed.data.pinned === true) {
+				// Mirror of the store's pin invariant (409, not a 500 from
+				// the store's throw): the patch must leave the row
+				// unarchived, so {archived: true, pinned: true} conflicts
+				// here too.
+				const row = store.get(convId.id);
+				const stays =
+					parsed.data.archived === false ||
+					(parsed.data.archived === undefined && row?.archivedAt === null);
+				if (!stays) {
+					return Response.json(
+						{ error: "cannot pin an archived conversation — unarchive it first" },
+						{ status: 409, headers: NO_STORE },
+					);
+				}
+			}
 			store.setMeta(convId.id, {
 				...(parsed.data.title !== undefined
 					? { title: parsed.data.title, titleImplicit: false }
 					: {}),
 				...(parsed.data.archived !== undefined ? { archived: parsed.data.archived } : {}),
+				...(parsed.data.pinned !== undefined ? { pinned: parsed.data.pinned } : {}),
 			});
 			if (parsed.data.title !== undefined) {
 				log.info("app conversation renamed", { conversation: convId.id });
@@ -746,9 +769,15 @@ export async function handleAppApi(
 					{ conversation: convId.id },
 				);
 			}
+			if (parsed.data.pinned !== undefined) {
+				log.info(parsed.data.pinned ? "app conversation pinned" : "app conversation unpinned", {
+					conversation: convId.id,
+				});
+			}
 			const body: AppConversationPatch = {
 				...(parsed.data.title !== undefined ? { title: parsed.data.title } : {}),
 				...(parsed.data.archived !== undefined ? { archived: parsed.data.archived } : {}),
+				...(parsed.data.pinned !== undefined ? { pinned: parsed.data.pinned } : {}),
 			};
 			return Response.json(body, { headers: NO_STORE });
 		}

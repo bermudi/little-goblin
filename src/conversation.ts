@@ -128,6 +128,9 @@ export interface Conversation {
 	// App-channel declutter: hidden from the rail, still answerable.
 	// Any appended event clears it (design/app.md → Archiving).
 	archivedAt: string | null;
+	// App rail anchor: pinned rows float above the activity stream.
+	// Survives activity; archiving clears it (design/app.md → Pinning).
+	pinnedAt: string | null;
 	epoch: number;
 	createdAt: string;
 }
@@ -194,6 +197,7 @@ export interface ConversationMetaPatch {
 	memoryExcluded?: boolean;
 	persona?: "personal" | "guest";
 	archived?: boolean;
+	pinned?: boolean;
 }
 
 // A compaction pointer; rows append forever, the latest per
@@ -353,6 +357,8 @@ export interface AppConversationSummary {
 	// section. The stamp, not a bool, so that section can sort by when
 	// the row was shelved.
 	archivedAt: string | null;
+	// Non-null = pinned: the row floats above the rail's activity order.
+	pinnedAt: string | null;
 }
 
 // ---------- store ----------
@@ -375,6 +381,7 @@ interface Row {
 	created_at: string;
 	previous_dm_id: string | null; // internal navigation link, never on the wire
 	archived_at: string | null;
+	pinned_at: string | null;
 }
 
 const privateChatIdSchema = z.number().int().positive();
@@ -468,6 +475,7 @@ function toConversation(r: Row): Conversation {
 		memoryExcluded: r.memory_excluded !== 0,
 		persona: r.persona === "guest" ? "guest" : "personal",
 		archivedAt: r.archived_at,
+		pinnedAt: r.pinned_at,
 		epoch: r.epoch,
 		createdAt: r.created_at,
 	};
@@ -583,6 +591,9 @@ export function openStore(dbPath: string): ConversationStore {
 	}
 	if (!convCols.has("archived_at")) {
 		db.run("ALTER TABLE conversations ADD COLUMN archived_at TEXT");
+	}
+	if (!convCols.has("pinned_at")) {
+		db.run("ALTER TABLE conversations ADD COLUMN pinned_at TEXT");
 	}
 	db.run(`
 		CREATE TABLE IF NOT EXISTS events (
@@ -896,10 +907,16 @@ export function openStore(dbPath: string): ConversationStore {
 		WHERE conversation_id = ? AND seq BETWEEN ? AND ? ORDER BY seq`,
 	);
 	const qListApp = db.query<
-		{ id: string; title: string | null; created_at: string; archived_at: string | null },
+		{
+			id: string;
+			title: string | null;
+			created_at: string;
+			archived_at: string | null;
+			pinned_at: string | null;
+		},
 		[]
 	>(
-		`SELECT id, title, created_at, archived_at FROM conversations
+		`SELECT id, title, created_at, archived_at, pinned_at FROM conversations
 		WHERE id LIKE 'app/%' ORDER BY created_at, rowid`,
 	);
 	// Freshness and preview source; the rowid rides along as activity
@@ -935,6 +952,19 @@ export function openStore(dbPath: string): ConversationStore {
 	}
 
 	function applyPatch(id: string, patch: ConversationMetaPatch): void {
+		// Structural invariant (design/app.md → Pinning): an archived row
+		// never carries a pin. A pin write must leave the row on the
+		// active rail — unarchive+pin in one patch is coherent; pinning
+		// a row that is or becomes archived (this patch or earlier) is a
+		// caller bug and dies here rather than writing a contradiction
+		// the unarchive would resurrect.
+		if (patch.pinned === true) {
+			const row = qGet.get(id);
+			if (row === null) throw new Error(`conversation ${id} not found`);
+			const stays =
+				patch.archived === false || (patch.archived === undefined && row.archived_at === null);
+			if (!stays) throw new Error(`cannot pin archived conversation ${id}`);
+		}
 		const sets: string[] = [];
 		const vals: (string | number | null)[] = [];
 		if (patch.title !== undefined) {
@@ -968,6 +998,14 @@ export function openStore(dbPath: string): ConversationStore {
 		if (patch.archived !== undefined) {
 			sets.push("archived_at = ?");
 			vals.push(patch.archived ? new Date().toISOString() : null);
+			// Shelving supersedes pinning: a row hidden from the rail can't
+			// be anchored above it, and unarchive must not resurrect a stale
+			// pin (design/app.md → Pinning).
+			if (patch.archived) sets.push("pinned_at = NULL");
+		}
+		if (patch.pinned !== undefined) {
+			sets.push("pinned_at = ?");
+			vals.push(patch.pinned ? new Date().toISOString() : null);
 		}
 		if (sets.length === 0) return;
 		vals.push(id);
@@ -1348,11 +1386,18 @@ export function openStore(dbPath: string): ConversationStore {
 					updatedAt: last?.created_at ?? r.created_at,
 					preview: message === null ? "" : flatLine(messageText(message)).slice(0, 200),
 					archivedAt: r.archived_at,
+					pinnedAt: r.pinned_at,
 					activity: last?.id ?? 0,
 				});
 			}
 			out.sort((a, b) => b.activity - a.activity);
-			return out.map(({ activity: _activity, ...summary }) => summary);
+			// Pins float above the activity stream; within each group the
+			// activity order stands. applyPatch clears the pin on archive,
+			// so a pinned row is always on the active rail.
+			const pinned = out.filter((r) => r.pinnedAt !== null);
+			return [...pinned, ...out.filter((r) => r.pinnedAt === null)].map(
+				({ activity: _activity, ...summary }) => summary,
+			);
 		},
 
 		deleteConversation(id) {

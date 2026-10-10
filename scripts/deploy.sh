@@ -54,15 +54,21 @@ step "pushing $new_rev to origin"
 git push origin HEAD
 
 # --- 4. Refresh deps and the served bundle ---------------------------------
-# First run (no marker): refresh everything. A marker that no longer
-# resolves (history rewrite) diff-fails; changed() then yields the
-# manifest paths so every trigger below matches — same as everything
-# having moved.
-changed() { git diff --name-only "${old_rev:-$new_rev}" "$new_rev" 2>/dev/null || printf '%s\n' bun.lock package.json app/ deploy/memory/; }
-if [ -z "$old_rev" ] || changed | grep -qE '^(bun\.lock|package\.json)$'; then
+# What the refresh steps judge. No marker (first run) or a marker that no
+# longer resolves (history rewrite) means "everything": the diff can't
+# prove any path is fresh, so none may be skipped. The sentinel names hit
+# every grep below — deps, client, and the memory note.
+changed() {
+	if [ -z "$old_rev" ] || ! git rev-parse -q --verify "$old_rev" >/dev/null; then
+		printf 'bun.lock\npackage.json\napp/src/x.ts\ndeploy/memory/env\n'
+	else
+		git diff --name-only "$old_rev" "$new_rev"
+	fi
+}
+if changed | grep -qE '^(bun\.lock|package\.json)$'; then
 	bun install --frozen-lockfile
 fi
-if [ -z "$old_rev" ] || changed | grep -qE '^(app/|package\.json$|bun\.lock$)'; then
+if changed | grep -qE '^(app/|package\.json$|bun\.lock$)'; then
 	# The bundle inlines dependency code — a react/ai/vite bump lands in
 	# package.json/bun.lock with no app/ path touched and must rebuild too
 	# (the vite config itself lives under app/).

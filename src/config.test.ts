@@ -797,3 +797,35 @@ describe("transcriptionKinds", () => {
 		).toBe(true);
 	});
 });
+
+describe("sandbox block", () => {
+	const base = {
+		providers: { test: { kind: "codex" } },
+		model: "test/m",
+		allowedUsers: [7],
+	};
+	test("absent and '' mean no sandbox tool", () => {
+		expect(parseConfig(base).sandbox).toBeUndefined();
+		expect(parseConfig({ ...base, sandbox: "" }).sandbox).toBeUndefined();
+	});
+	test("an empty block fills the defaults", () => {
+		expect(parseConfig({ ...base, sandbox: {} }).sandbox).toEqual({
+			image: "docker.io/library/alpine:latest",
+			idleHours: 24,
+			memory: "2g",
+			cpus: 2,
+			pids: 512,
+		});
+	});
+	test("explicit values parse; bad image refs and small pids fail loud", () => {
+		const cfg = parseConfig({
+			...base,
+			sandbox: { image: "docker.io/library/debian:stable-slim", idleHours: 0, pids: 64 },
+		}).sandbox;
+		expect(cfg?.image).toBe("docker.io/library/debian:stable-slim");
+		expect(cfg?.idleHours).toBe(0);
+		expect(() => parseConfig({ ...base, sandbox: { image: "--privileged" } })).toThrow();
+		expect(() => parseConfig({ ...base, sandbox: { pids: 4 } })).toThrow();
+		expect(() => parseConfig({ ...base, sandbox: { idleHours: -1 } })).toThrow();
+	});
+});

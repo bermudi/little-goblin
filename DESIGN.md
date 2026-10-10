@@ -224,6 +224,7 @@ or the non-goals goes here.
 - [`design/auth.md`](design/auth.md) — Auth, Proton Pass (2026-09-26), Goblin's own agent token, Never the owner session, by mechanism, Goblin's own keys resolve through pass-keys, Warmer, Secrets during tasks: the `pass-cli` skill, Honest boundary
 - [`design/telegram.md`](design/telegram.md) — Telegram intake & delivery, Coalescing buffer, Delivery, TTS, Files, Voice mode, Mini Apps, Commands, Large files, Rolling DM (ruling 2026-10-03)
 - [`design/app.md`](design/app.md) — App channel (PWA → APK), Spin-off (ruling 2026-10-03)
+- [`design/sandbox.md`](design/sandbox.md) — Sandbox (ruling 2026-10-10): a disposable rootless-podman container per conversation behind the `sandbox` tool — the wall, the lifetime, network off by default, images pulled only with operator permission
 
 ## State layout
 
@@ -290,6 +291,8 @@ absent; the herdr session name is not config, it belongs to
 `guest` block (absent = guest intake off; `perUserDailyTurns`
 default 25, `outputChars` default 3500 — third-party summonses in
 opened chats, `design/telegram.md` → Guest mode), optional
+`sandbox` block (absent or `""` = no sandbox tool; `image`,
+`idleHours`, `memory`, `cpus`, `pids` — `design/sandbox.md`), optional
 `reviewer` + `system1` blocks (the skill-review gate and the shared
 System One gate behind it — Email + Skill reviewer). No secrets —
 those live in `auth.jsonl`.
@@ -336,6 +339,14 @@ src/
   spinoff.ts        the spin-off fork and where a delegation launch
                     pins its notices (launchPin — the Spin-off trigger
                     map, design/app.md → Spin-off)
+  podman.ts         the podman CLI adapter (the only podman-aware
+                    module); argv seams for tests, every call logged —
+                    create/inspect/lifecycle/exec/cp/network ops only,
+                    no prune (design/sandbox.md)
+  sandboxes.ts      the sandboxes table + lifecycle owner: one
+                    container per conversation, row-vs-engine
+                    reconcile, fail-closed network, call-time idle
+                    reap — never boot/shutdown
   mail-gws.ts       the watcher's poll surface over the gws CLI (raw
                     Discovery calls, JSON out) — the only gws-aware
                     module; runner injectable, gws owns its auth
@@ -387,11 +398,11 @@ src/
                     conversation (prompt_snapshots): edits load at
                     boundaries (roll/compaction), never mid-run
     skills.ts       catalog scan + frontmatter validation → ## skills section
-    tools/          the sixteen tools (read, write, edit, bash, speak,
+    tools/          the seventeen tools (read, write, edit, bash, speak,
                     transcribe, vision, program, delegate, mail
                     (send-only; reads ride the goblin-mail wrapper via
                     bash), send_file, memory_search, search, fetch,
-                    history_search, ui)
+                    history_search, sandbox, ui)
   http/             mini-app serving + POST /hook/<token> +
                     loopback POST /api/check-injection (the wrapper's gate;
                     value imports live in check.ts, never mod.ts — the
@@ -441,7 +452,9 @@ project environments · onboarding wizard · state
 migrations (general framework; additive memory schema changes are in scope) ·
 in-process embeddings (delegated to Hindsight for memory) · app client
 (returned on demand 2026-09-30 — `App channel`; a third channel stays
-out) · multi-user (bounded slice returned on demand 2026-10-06 —
+out) · sandboxed execution (returned on demand 2026-10-10 — `Sandbox`;
+one podman backend, no backend registry) · multi-user (bounded slice
+returned on demand 2026-10-06 —
 third-party guest summonses in opened chats, sandboxed to a guest
 persona + `search` (no sandbox `fetch` — `design/telegram.md` →
 Guest mode); full multi-user stays out —

@@ -50,7 +50,9 @@ import { makeSender, type MailPoller, type MailSender } from "./mail.ts";
 import { makeGwsReader } from "./mail-gws.ts";
 import { openOutbox } from "./mail-outbox.ts";
 import { startMailWatcher } from "./mail-watcher.ts";
+import { makePodman } from "./podman.ts";
 import { openPrograms } from "./programs.ts";
+import { makeSandboxes, openSandboxes } from "./sandboxes.ts";
 import {
 	buildDestinationClient,
 	buildMemoryClient,
@@ -114,6 +116,15 @@ async function boot() {
 	// The outbox opens unconditionally — drafts stay readable and
 	// cancellable without the mail block; only the clients gate on it.
 	const outbox = openOutbox(paths.db());
+	// The sandbox lifecycle owner exists whether or not the block is
+	// configured — the tool gate is the per-turn config read, and the
+	// store is an additive table. Config is read live: resource limits
+	// and idleHours apply to the next sandbox call, not the boot set.
+	const sandboxes = makeSandboxes({
+		podman: makePodman(),
+		store: openSandboxes(paths.db()),
+		config: () => configRef.current.sandbox,
+	});
 	// Split mail authority: gws polling serves the watcher, the send client
 	// only approval taps — gws owns its own auth, no OAuth secret here.
 	const mailPoller = (): MailPoller | null => {
@@ -411,6 +422,16 @@ async function boot() {
 				history: { store, isExcluded: () => conv.memoryExcluded },
 				// Threads are process-global; a model change drops them on the next call.
 				vision: visionDepsFor(conv),
+				// Live-read like vision/search: the sandbox block mounts the
+				// tool for any channel (guest personas are filtered out below).
+				sandbox:
+					configRef.current.sandbox !== undefined
+						? {
+								conversation: conv.id,
+								workspace: paths.workspace(),
+								sandboxes,
+							}
+						: undefined,
 				// The interface tool mounts on app turns only — Telegram
 				// and guests render plain text (design/app.md → Intelligent UI).
 				ui: channelOf(conv.id) === "app",

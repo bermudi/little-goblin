@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	ensureHomeLayout,
+	paths,
 	loadConfig,
 	providerKinds,
 	providerSchema,
@@ -635,6 +636,13 @@ describe("ensureHomeLayout", () => {
 		const mailShim = join(dir, "goblin-mail");
 		expect(lstatSync(mailShim).isSymbolicLink()).toBe(true);
 		expect(readlinkSync(mailShim)).toBe(join(import.meta.dir, "..", "scripts", "goblin-mail"));
+		const doctorShim = paths.doctorShim();
+		expect(lstatSync(doctorShim).isSymbolicLink()).toBe(true);
+		expect(readlinkSync(doctorShim)).toBe(join(import.meta.dir, "..", "scripts", "doctor"));
+		rmSync(doctorShim);
+		symlinkSync(join("somewhere-else", "doctor"), doctorShim);
+		ensureHomeLayout();
+		expect(readlinkSync(doctorShim)).toBe(join(import.meta.dir, "..", "scripts", "doctor"));
 		rmSync(mailShim);
 		symlinkSync(join("somewhere-else", "goblin-mail"), mailShim);
 		ensureHomeLayout();
@@ -645,11 +653,14 @@ describe("ensureHomeLayout", () => {
 		const dir = useHome();
 		writeFileSync(join(dir, "mcp"), "operator's own");
 		writeFileSync(join(dir, "goblin-mail"), "operator's own mail");
+		writeFileSync(join(dir, "doctor"), "operator's own doctor");
 		ensureHomeLayout();
 		expect(lstatSync(join(dir, "mcp")).isSymbolicLink()).toBe(false);
 		expect(readFileSync(join(dir, "mcp"), "utf8")).toBe("operator's own");
 		expect(lstatSync(join(dir, "goblin-mail")).isSymbolicLink()).toBe(false);
 		expect(readFileSync(join(dir, "goblin-mail"), "utf8")).toBe("operator's own mail");
+		expect(lstatSync(paths.doctorShim()).isSymbolicLink()).toBe(false);
+		expect(readFileSync(paths.doctorShim(), "utf8")).toBe("operator's own doctor");
 	});
 });
 

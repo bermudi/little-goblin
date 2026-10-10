@@ -54,13 +54,13 @@ half-run tool calls would be worse than asking again.
 
 ## Diagnostics and first-start acceptance
 
-**Source integration:** shared Doctor checks/CLI, safe CONFIG/AUTH parser fixes
-and threshold-independent lifecycle logging are on the feature branch.
-Coordinator-owned launcher bootstrap and final combined verification remain.
+**Source integration:** shared Doctor checks/CLI, safe CONFIG/AUTH parser fixes,
+threshold-independent lifecycle logging and launcher bootstrap are integrated
+on the feature branch.
 None of this installs/restarts production; older running code/logs may still
 contain parser fragments. Keep raw logs private and use safe Doctor reports.
 
-Once integrated, run Doctor from the intended checkout with the explicit target
+Run Doctor from the intended checkout with the explicit target
 `GOBLIN_HOME` and the **service's PATH**, not an assumed login-shell PATH:
 
 ```sh
@@ -71,9 +71,10 @@ GOBLIN_HOME="$HOME/goblin" bun --no-install run src/doctor.ts --phase installed
 
 Do not dump a service environment to discover the home or credentials. Confirm
 checkout/home identity explicitly: a feature checkout without dependencies or
-assets is not proof prod is broken. The planned home `doctor` symlink
-points to checkout `scripts/doctor`, delegating to Doctor with default phase
-installed; its bootstrap wiring is integrated separately by the coordinator.
+assets is not proof prod is broken. Bootstrap creates the home `doctor`
+symlink pointing to checkout `scripts/doctor`, delegating to Doctor with default phase
+installed. Existing installations receive that bootstrap change only on an
+approved backend rollout, not by running diagnosis.
 
 Doctor is detection, not repair: safe metadata, findings and manual remedies.
 It does not resolve arbitrary credential commands, provision, warm/unlock,

@@ -34,6 +34,7 @@ export const paths = {
 	mcporter: () => join(goblinHome(), "mcporter.json"),
 	mcpShim: () => join(goblinHome(), "mcp"),
 	goblinMailShim: () => join(goblinHome(), "goblin-mail"),
+	doctorShim: () => join(goblinHome(), "doctor"),
 	workspace: () => join(goblinHome(), "workspace"),
 	soul: () => join(goblinHome(), "workspace", "SOUL.md"),
 	agents: () => join(goblinHome(), "workspace", "AGENTS.md"),
@@ -146,6 +147,7 @@ export function ensureHomeLayout(): void {
 	);
 	refreshMcpShim();
 	refreshGoblinMailShim();
+	refreshDoctorShim();
 	seedFile(
 		paths.user(),
 		[
@@ -217,6 +219,31 @@ function refreshGoblinMailShim(): void {
 	}
 	if (!isLink) {
 		log.error("not clobbering the goblin-mail shim: a real file is in the way", undefined, {
+			path: shim,
+		});
+		return;
+	}
+	if (readlinkSync(shim) !== target) {
+		unlinkSync(shim);
+		symlinkSync(target, shim);
+	}
+}
+
+function refreshDoctorShim(): void {
+	const shim = paths.doctorShim();
+	const target = join(import.meta.dir, "..", "scripts", "doctor");
+	let isLink: boolean | null = null;
+	try {
+		isLink = lstatSync(shim).isSymbolicLink();
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+	}
+	if (isLink === null) {
+		symlinkSync(target, shim);
+		return;
+	}
+	if (!isLink) {
+		log.error("not clobbering the doctor shim: a real file is in the way", undefined, {
 			path: shim,
 		});
 		return;

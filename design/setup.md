@@ -1,6 +1,6 @@
 # Setup — approved first delivery
 
-**First source delivery approved by bermudi; integration in progress.**
+**First source delivery approved by bermudi and integrated on the feature branch.**
 Implementation on feature branches is authorized. Credential provisioning,
 production unit installation, client publication, restart, and deployment
 remain separately approval-gated. The existing no-wizard boundary remains.
@@ -17,15 +17,15 @@ consumes the shared synchronous `checkAppAssets(checkout)` API.
 acceptance; configured port 0 derives a positive port only from the same
 invocation's ready event. A fixed configured port must match the event when
 present. `scripts/doctor` is the home-symlink target, callable as `../doctor`
-from the workspace; coordinator owns bootstrap wiring.
+from the workspace; shared bootstrap wiring is integrated.
 
 Shared safety/readiness commits were cherry-picked with explicit authority:
 `2521229` → local `ab1841b`, safe HTTP validation follow-up `e4282f3` →
 `42c9cc7`, and bound-port evidence `efc2e4e` → `748dd8f`.
 Shared Health/Doctor commit `7d90fc3` is integrated as local `d00330d`.
 Reviewed shared corrections `3be5386` → local `abac7f6` and `119720b` →
-`d9a4820` are integrated. Coordinator-owned launcher bootstrap and combined
-checkout verification remain separate integration steps.
+`d9a4820` are integrated. Launcher bootstrap is integrated with the shared
+checks; source gates remain distinct from real-install acceptance.
 No production install, client build/publication, or credential execution has
 been performed.
 

@@ -52,6 +52,8 @@ function errno(error: unknown): string {
 			: "inspection-error";
 }
 const manualHints: Readonly<Record<string, string>> = {
+	"auth.coverage":
+		"Verify upstream credentials, OAuth and boot-cached values through ordinary authorized use; doctor does not resolve them or expose values.",
 	config:
 		"Inspect local config syntax and references; do not print credentials or make provider calls.",
 	auth: "Inspect local auth permissions and the reported record line without printing values; credential edits are operator-owned.",
@@ -648,7 +650,7 @@ async function snapshots(
 							: (status.ageSeconds ?? 0) < 0 || (status.ageSeconds ?? 0) > 86400
 								? "warn"
 								: "pass",
-						`${status.state}; ${needed.size} needed key names checked, ${missing} missing; snapshot age ${status.ageSeconds ?? "unavailable"} seconds${(status.ageSeconds ?? 0) < 0 ? "; clock skew: snapshot timestamp is in the future" : ""}; key values never returned to doctor/output; status interface pinned from source, wallet implementation not independently verified`,
+						`${status.state}; ${needed.size} needed key names checked, ${missing} missing; snapshot age ${status.ageSeconds ?? "unavailable"} seconds${(status.ageSeconds ?? 0) < 0 ? "; clock skew: snapshot timestamp is in the future" : ""}; status metadata only, no credential values in report; status interface pinned from source, wallet implementation not independently verified`,
 						start,
 					);
 				} catch (error) {

@@ -262,7 +262,7 @@ as a workaround. New diagnostics must
 report only safe metadata (location/category/reference presence), never values,
 commands or original parser messages. They do not resolve arbitrary auth
 commands, provision credentials, warm snapshots or unlock wallets. See
-[Setup](setup.md#install) for the pending integration and phase order.
+[Setup](setup.md#install) for the installation phase order.
 
 ## Per-topic settings
 

@@ -20,9 +20,10 @@ earns its place.
 - One human operator (bermudi), one Bun process, homelab. It runs as a
   systemd user unit (`deploy/goblin.service`, linger enabled): restart on
   failure, starts on boot, SIGTERM rides the graceful shutdown path.
-  `scripts/install.sh` installs it — idempotent, path-substituting, and it
-  refuses to enable a half-configured service (config/auth missing) rather
-  than crash-loop it. That script plus first-boot scaffolding (home layout,
+  `scripts/install.sh` is fresh-only and path-substituting: it refuses an
+  existing installation, validates provisioned config/auth before enabling
+  units, builds client assets, and checks the current boot rather than
+  accepting an active restart loop. That script plus first-boot scaffolding (home layout,
   SOUL.md/AGENTS.md stubs, fail-loud config pointer) is the entire setup
   story — no onboarding wizard, ever. Deployment reality: prod is g7 —
 this tree runs `goblin.service` plus the memory stack directly
@@ -47,6 +48,28 @@ pushes or updates the remote review baseline (docs/operations.md → Deploying).
   Long-term memory). This does not migrate Goblin's conversation store.
 - No third channel — two exist now (Telegram and the app, `App channel`,
   ruling 2026-09-30; another needs a ruling here) — no plugin SDK, no k8s.
+
+## Setup and diagnosis
+
+Setup remains two operator-edited inputs plus a non-interactive installer,
+not a wizard. Shared read-only checks distinguish start-ready preflight
+from an installed system; onboarding owns actions and current-invocation
+startup acceptance. Fresh setup must not quietly update an existing
+installation. Production updates remain the separately approved deploy
+path. See [Setup](design/setup.md).
+
+Doctor is one bounded diagnostic pass, not a watchdog or repair service.
+`bun run doctor` reports configured failures, skipped/unknown coverage and
+manual next steps without initializing application state, resolving
+arbitrary auth commands or changing services. Its consumers are the
+operator, installer and Goblin's existing bash tool. JSON stdout is a
+single report; diagnostic operational messages use stderr, deliberately
+separate from the runtime's JSONL log stream. Only the two safe startup
+lifecycle signals bypass normal log filtering so acceptance can observe
+them. See [Doctor](design/doctor.md).
+
+A scheduled invocation requires explicit standing authority; no timer or
+resident self-waking behavior is introduced by this capability.
 
 ## Domain model
 
@@ -225,6 +248,9 @@ or the non-goals goes here.
 - [`design/telegram.md`](design/telegram.md) — Telegram intake & delivery, Coalescing buffer, Delivery, TTS, Files, Voice mode, Mini Apps, Commands, Large files, Rolling DM (ruling 2026-10-03)
 - [`design/app.md`](design/app.md) — App channel (PWA → APK), Spin-off (ruling 2026-10-03)
 
+- [`design/doctor.md`](design/doctor.md) — Shared read-only checks, output/exit contract, phases and diagnostic coverage
+- [`design/setup.md`](design/setup.md) — Fresh installation, prerequisites, current-invocation startup acceptance
+
 ## State layout
 
 ```text
@@ -234,6 +260,7 @@ $GOBLIN_HOME/
 ├── mcporter.json           # goblin's own MCP servers, seeded empty
 │                           # (placeholders only; imports [] — gated)
 ├── mcp                     # symlink → repo scripts/mcp (refreshed boot)
+├── doctor                  # symlink → repo scripts/doctor (refreshed boot)
 ├── workspace/              # the agent's home; every tool runs here
 │   ├── SOUL.md             # required, template-created on first boot
 │   ├── AGENTS.md           # stub-created on first boot, then agent-owned
@@ -310,6 +337,8 @@ src/
   auth.ts           auth.jsonl reader + "!" command resolution +
                     pass-cli-direct poisoning (resolve rejects, never spawns)
   log.ts            structured log; no console.log anywhere else
+  health.ts         shared read-only diagnostic checks; no bootstrap
+  doctor.ts         bounded text/JSON CLI; preflight or installed policy
   tg/               grammy: intake, buffer, delivery, commands, guest
                     mode (only grammy-aware dir)
   conversation.ts   store: SQLite-backed resolve/load/append events, meta, epoch
@@ -422,6 +451,9 @@ The list below is a record, not a law. The law, applied to any capability:
 
 If a capability can't be classified in one sentence, the classification is
    the design conversation — have it before building.
+
+Read-only diagnosis returned on demand as Doctor; it does not return
+proactive monitoring or authorize repair.
 
 memory store (returned on demand — approved in `Long-term memory`) ·
 scheduler (returned on demand — generalized into `Programs`;

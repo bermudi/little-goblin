@@ -6,10 +6,8 @@ installer. Provisioning credentials and optional services is your responsibility
 
 **Integration status:** this is the approved first-delivery onboarding contract,
 not a claim that production has been updated. Shared diagnostics, safe parser
-errors and threshold-independent startup logging are integrated on the feature
-branch; coordinator-owned launcher bootstrap wiring and final combined review
-still need integration. Local source gates pass; use the sequence only after
-the coordinator completes combined integration/gates. Source-work approval
+errors, threshold-independent startup logging and launcher bootstrap are
+integrated on the feature branch. Source-work approval
 is not approval to install units, publish a live client, restart, or deploy.
 
 ## What you need
@@ -212,7 +210,7 @@ $GOBLIN_HOME/
 ├── mcporter.json           # empty MCP seed, imports: []
 ├── mcp                     # symlink to checkout scripts/mcp
 ├── goblin-mail             # symlink to checkout scripts/goblin-mail
-├── doctor                  # pending home symlink to checkout scripts/doctor
+├── doctor                  # symlink to checkout scripts/doctor
 ├── workspace/              # every agent tool runs here
 │   ├── SOUL.md             # identity template
 │   ├── AGENTS.md           # operating-notes stub
@@ -225,8 +223,8 @@ $GOBLIN_HOME/
 ```
 
 From the workspace, `../doctor` targets `scripts/doctor`, which delegates to
-Doctor with default phase **installed**. Launcher/bootstrap wiring is part
-of the coordinating session's pending integration, not a new native tool.
+Doctor with default phase **installed**. The launcher is bootstrap wiring,
+not a new native tool.
 Home shims are refreshed as symlinks on boot; real-file collisions are
 reported, not overwritten. Optional caches/wrapper state appear when used.
 Hindsight holds optional long-term memory separately from this SQLite DB.

@@ -165,3 +165,12 @@ release's client serving against the new API. A missing build fails loud —
 
 History, settings overrides, and workspace files all live in `~/goblin`,
 not in the checkout, so updating never touches them.
+
+## App client development
+
+`bun run app:dev` runs the Vite dev server (HMR on save) at
+`http://localhost:5173/app/`, proxying `/api` to the local goblin listener
+(config `http.port`; `GOBLIN_HTTP` overrides). The proxy strips browser
+origin headers so trust-mode mutations pass — the app talks to the live
+backend, so edits there are real. It never writes `app/dist`; publishing
+the client still goes through `bun run app:build` + the approved rollout.

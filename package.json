@@ -12,7 +12,8 @@
 		"typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.client.json && tsc --noEmit -p app/tsconfig.json",
 		"format": "biome format --write .",
 		"format:check": "biome format .",
-		"app:build": "vite build app"
+		"app:build": "vite build app",
+		"app:dev": "vite app"
 	},
 	"dependencies": {
 		"@ai-sdk/openai": "4.0.78",

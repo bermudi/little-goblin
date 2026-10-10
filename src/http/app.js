@@ -1446,6 +1446,23 @@ async function openDoc(id, conversationId) {
 		);
 		return;
 	}
+	// res.ok is not a shape guarantee: a proxy or truncated body can answer
+	// 200 with junk that then throws on j.document.createdAt below.
+	const shape = /** @type {{ document?: unknown, facts?: unknown, factsTotal?: unknown }} */ (j);
+	if (
+		shape.document === null ||
+		typeof shape.document !== "object" ||
+		typeof /** @type {{ createdAt?: unknown }} */ (shape.document).createdAt !== "string" ||
+		!Array.isArray(shape.facts) ||
+		typeof shape.factsTotal !== "number"
+	) {
+		if (openDocId === id)
+			$("docFacts").replaceChildren(
+				el("div", "cap",
+					"unexpected response from goblin — the sheet can't show this exchange"),
+			);
+		return;
+	}
 	$("docSheetTitle").textContent =
 		fmtDateTime(j.document.createdAt) + (conversationId ? " · " + conversationId : "");
 	const factsBox = $("docFacts");

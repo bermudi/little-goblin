@@ -625,6 +625,10 @@ export function SettingsView({
 		return out;
 	})();
 
+	// A dirty draft that fails validation can't write — it stays dirty
+	// and the savebar says why instead of listing fields.
+	const invalidReason = dirty ? validateDraft(draft, provs) : null;
+
 	useEffect(() => {
 		let live = true;
 		getOperatorConfig(token).then(
@@ -798,6 +802,15 @@ export function SettingsView({
 			setSaving(false);
 		}
 	};
+
+	// Save on change: a valid edit writes itself after a short debounce —
+	// rapid edits coalesce into one write, and an edit mid-write schedules
+	// another. The Save button stays as the explicit retry.
+	useEffect(() => {
+		if (!dirty || invalidReason !== null || saving) return;
+		const t = setTimeout(() => void save(), 800);
+		return () => clearTimeout(t);
+	}, [dirty, invalidReason, saving, draft, provs]);
 
 	if (loadErr !== null) {
 		return (
@@ -1414,7 +1427,12 @@ export function SettingsView({
 
 			<div className="savebar">
 				<span className={notice?.kind === "err" ? "savebar-msg err" : "savebar-msg"}>
-					{notice?.text ?? (dirty ? `Unsaved: ${dirtyFields.join(", ")}` : "")}
+					{(() => {
+						if (notice?.kind === "err") return notice.text;
+						if (invalidReason !== null) return invalidReason;
+						if (dirty) return `Unsaved: ${dirtyFields.join(", ")}`;
+						return notice?.text ?? "";
+					})()}
 				</span>
 				<button type="button" disabled={!dirty || saving} onClick={() => void save()}>
 					{saving ? "Saving…" : "Save"}

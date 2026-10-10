@@ -252,11 +252,15 @@ def parse_embed_relay_env(text: str) -> dict[str, str]:
         if not result.get(required):
             raise ValueError(f"embed-relay.env: {required} missing")
     try:
-        ipaddress.IPv4Address(result["GOBLIN_EMBED_RELAY_ADDR"])
+        address = ipaddress.IPv4Address(result["GOBLIN_EMBED_RELAY_ADDR"])
     except ValueError:
         raise ValueError(
             "embed-relay.env: GOBLIN_EMBED_RELAY_ADDR is not an IPv4 address"
         ) from None
+    if address.is_unspecified:
+        raise ValueError(
+            "embed-relay.env: GOBLIN_EMBED_RELAY_ADDR must not be unspecified"
+        )
     if any(char.isspace() for char in result["GOBLIN_EMBED_MODEL"]):
         raise ValueError(
             "embed-relay.env: GOBLIN_EMBED_MODEL must not contain whitespace")

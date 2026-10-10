@@ -608,7 +608,14 @@ export function App() {
 		if (!leaveDirtySettings()) return;
 		setPage("chat");
 		setCurrent(id);
-		pushRoute(id === null ? "/app/" : `/app/c/${id.slice("app/".length)}`);
+		const path = id === null ? "/app/" : `/app/c/${id.slice("app/".length)}`;
+		if (path !== window.location.pathname) pushRoute(path);
+	};
+
+	const rowRemoved = (id: string) => {
+		if (id !== current) return;
+		if (page === "chat") select(null);
+		else setCurrent(null);
 	};
 
 	const openPage = (p: Exclude<Page, "chat">) => {
@@ -676,14 +683,12 @@ export function App() {
 				onOpen={openConversation}
 				onRenamed={() => void refresh()}
 				onToggleArchived={(id, isArchived) => {
-					// Archiving the open conversation puts it away — the view
-					// follows the row off the rail.
-					if (isArchived && id === current) select(null);
+					if (isArchived) rowRemoved(id);
 					void refresh();
 				}}
 				onTogglePinned={() => void refresh()}
 				onDeleted={(id) => {
-					if (id === current) select(null);
+					rowRemoved(id);
 					void refresh();
 				}}
 			/>

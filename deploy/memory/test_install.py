@@ -180,8 +180,26 @@ class EmbedRelayEnvTest(unittest.TestCase):
             install.parse_embed_relay_env(
                 "GOBLIN_EMBED_RELAY_ADDR=not-an-address\n"
                 "GOBLIN_EMBED_MODEL=m\n")
-        self.assertIn("GOBLIN_EMBED_RELAY_ADDR", str(raised.exception))
+        self.assertEqual(
+            str(raised.exception),
+            "embed-relay.env: GOBLIN_EMBED_RELAY_ADDR is not an IPv4 address",
+        )
         self.assertNotIn("not-an-address", str(raised.exception))
+
+    def test_unspecified_ipv4_rejected_without_echoing_value(self) -> None:
+        with self.assertRaises(ValueError) as raised:
+            install.parse_embed_relay_env(
+                "GOBLIN_EMBED_RELAY_ADDR=0.0.0.0\n"
+                "GOBLIN_EMBED_MODEL=m\n")
+        self.assertIn("GOBLIN_EMBED_RELAY_ADDR", str(raised.exception))
+        self.assertNotIn("0.0.0.0", str(raised.exception))
+
+    def test_specific_addresses_do_not_require_cgnat_range(self) -> None:
+        for address in ("127.0.0.1", "192.168.1.2", "10.0.0.2"):
+            with self.subTest(address=address):
+                parsed = install.parse_embed_relay_env(
+                    f"GOBLIN_EMBED_RELAY_ADDR={address}\nGOBLIN_EMBED_MODEL=m\n")
+                self.assertEqual(parsed["GOBLIN_EMBED_RELAY_ADDR"], address)
 
     def test_missing_keys_rejected(self) -> None:
         with self.assertRaises(ValueError):
@@ -266,6 +284,7 @@ class InstallAssetsTest(unittest.TestCase):
     def test_invalid_switch_fails_before_copying_embed_units(self) -> None:
         bad_files = (
             "GOBLIN_EMBED_RELAY_ADDR=not-an-ip\nGOBLIN_EMBED_MODEL=m\n",
+            "GOBLIN_EMBED_RELAY_ADDR=0.0.0.0\nGOBLIN_EMBED_MODEL=m\n",
             "GOBLIN_EMBED_RELAY_ADDR=100.64.0.1\n",
             "GOBLIN_EMBED_RELAY_ADDR=100.64.0.1\n"
             "GOBLIN_EMBED_RELAY_ADDR=100.64.0.2\nGOBLIN_EMBED_MODEL=m\n",

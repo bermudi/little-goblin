@@ -3,6 +3,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import { parseConfig, transcriptionDefaults, transcriptionKinds } from "../../src/config.ts";
+import type { AppConversationList } from "../../src/http/app-wire.ts";
+import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
 import { App, deepLinkConv, flatLine } from "./App.tsx";
 
 // Stored titles predate store-side flattening — the sidebar row must
@@ -456,6 +458,10 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	let installed: string[] = [];
 	let confirmAnswer = false;
 	let confirmCalls = 0;
+	let confirmMessages: string[] = [];
+	let conversations: AppConversationList["conversations"] = [];
+	let settings: typeof SETTINGS;
+	let savedBodies: ConfigPostBody[] = [];
 	const realFetch = globalThis.fetch;
 
 	const installGlobal = (name: string, value: unknown) => {
@@ -480,6 +486,10 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		installed = [];
 		confirmAnswer = false;
 		confirmCalls = 0;
+		confirmMessages = [];
+		conversations = [];
+		settings = SETTINGS;
+		savedBodies = [];
 		installGlobal("window", win);
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
@@ -488,22 +498,34 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
-		Reflect.set(win, "confirm", () => {
+		Reflect.set(win, "confirm", (message: string) => {
 			confirmCalls += 1;
-			return confirmAnswer;
+			confirmMessages.push(message);
+			return message.startsWith("Delete ") || confirmAnswer;
 		});
-		globalThis.fetch = ((input: RequestInfo | URL) => {
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-			if (url === "/api/app/conversations")
-				return Promise.resolve(jsonResponse({ conversations: [] }));
+			if (url === "/api/app/conversations") return Promise.resolve(jsonResponse({ conversations }));
+			if (url === "/api/app/conversations/fixture") {
+				if (init?.method === "DELETE") conversations = [];
+				if (init?.method === "PATCH")
+					conversations = conversations.map((c) => ({ ...c, archivedAt: "2026-10-10T00:00:00Z" }));
+				return Promise.resolve(jsonResponse({ ok: true }));
+			}
+			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: [] }));
+			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
+			if (url === "/api/app/settings" && init?.method === "POST") {
+				savedBodies.push(JSON.parse(String(init.body)) as ConfigPostBody);
+				return Promise.resolve(jsonResponse({ ok: true }));
+			}
 			if (url === "/api/app/settings")
 				return Promise.resolve(
 					new Response(
 						JSON.stringify({
-							config: SETTINGS,
+							config: settings,
 							providerKinds: ["openai-compatible"],
-							searchKinds: ["ddg"],
-							fetchKinds: ["local"],
+							searchKinds: ["ddg", "brave", "jina"],
+							fetchKinds: ["local", "firecrawl", "jina"],
 							transcriptionKinds,
 							transcriptionDefaults,
 						}),
@@ -530,6 +552,20 @@ describe("browser back/forward and the unsaved settings editor", () => {
 				);
 			if (url.startsWith("/api/app/memory/documents"))
 				return Promise.resolve(jsonResponse({ items: [], total: 0, limit: 20, offset: 0 }));
+			if (url === "/api/app/programs") return Promise.resolve(jsonResponse({ programs: [] }));
+			if (url === "/api/app/delegations") return Promise.resolve(jsonResponse({ delegations: [] }));
+			if (url === "/api/app/status")
+				return Promise.resolve(
+					jsonResponse({
+						version: "test",
+						startedAt: "2026-10-10T00:00:00Z",
+						uptimeSec: 1,
+						restartHints: [],
+						memory: { state: "disabled", detail: "" },
+						programs: null,
+						delegations: null,
+					}),
+				);
 			return Promise.resolve(
 				jsonResponse({
 					model: "main/test",
@@ -610,6 +646,157 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		});
 		await settle();
 	};
+
+	const seedConversation = (archived = false) => {
+		conversations = [
+			{
+				id: "app/fixture",
+				title: "fixture chat",
+				preview: "fixture",
+				createdAt: "2026-10-10T00:00:00Z",
+				updatedAt: "2026-10-10T00:00:00Z",
+				archivedAt: archived ? "2026-10-10T00:00:00Z" : null,
+				pinnedAt: null,
+			},
+		];
+	};
+	const selectFixture = async (archived = false) => {
+		if (archived) await click(container.querySelector(".rail-archived"));
+		await click(container.querySelector(".conv-main"));
+		expect(win.location.pathname).toBe("/app/c/fixture");
+	};
+	const removeFixture = async (action: "Archive" | "Delete") =>
+		click(
+			[...container.querySelectorAll(".conv-actions button")].find(
+				(b) => (b.getAttribute("aria-label") ?? b.textContent) === action,
+			),
+		);
+
+	test("repeated conversation and empty-chat selection do not add history entries", async () => {
+		seedConversation();
+		await mount();
+		await selectFixture();
+		const selectedState = win.history.state;
+		const selectedLength = win.history.length;
+		await selectFixture();
+		expect(win.history.state).toEqual(selectedState);
+		expect(win.history.length).toBe(selectedLength);
+
+		// The remembered id is not a reason to skip leaving an operator page.
+		await openPage("Memories");
+		await selectFixture();
+		expect(container.querySelector(".chat")).not.toBeNull();
+		await click(container.querySelector(".new"));
+		const emptyState = win.history.state;
+		const emptyLength = win.history.length;
+		await click(container.querySelector(".new"));
+		expect(win.location.pathname).toBe("/app/");
+		expect(win.history.state).toEqual(emptyState);
+		expect(win.history.length).toBe(emptyLength);
+	});
+
+	for (const action of ["Archive", "Delete"] as const) {
+		for (const label of [
+			"Settings",
+			"Memories",
+			"Delegations",
+			"Programs",
+			"Status",
+			"dirty Settings",
+		]) {
+			test(`${action} of the remembered conversation preserves ${label} without a discard prompt`, async () => {
+				const archived = action === "Delete";
+				seedConversation(archived);
+				await mount();
+				await selectFixture(archived);
+				await openPage(label === "dirty Settings" ? "Settings" : label);
+				if (label === "dirty Settings") await dirtyTheForm();
+				const page = container.querySelector("main > header .header-title")?.textContent;
+				const path = win.location.pathname;
+				const state = win.history.state;
+				const length = win.history.length;
+				const editor = container.querySelector(".settings");
+
+				await removeFixture(action);
+
+				expect(win.location.pathname).toBe(path);
+				expect(win.history.state).toEqual(state);
+				expect(win.history.length).toBe(length);
+				expect(container.querySelector("main > header .header-title")?.textContent).toBe(page);
+				expect(container.querySelector(".settings")).toBe(editor);
+				expect(confirmMessages).toEqual(archived ? ['Delete "fixture chat"?'] : []);
+				if (label === "dirty Settings") {
+					expect(container.textContent).toContain("unsaved");
+					expect(container.querySelector('[aria-label="Log level"] button.on')?.textContent).toBe(
+						"debug",
+					);
+				}
+				if (archived) expect(conversations).toEqual([]);
+				else {
+					expect(conversations[0]?.archivedAt).not.toBeNull();
+					await click(container.querySelector(".rail-archived"));
+					expect(container.querySelector(".conv")).not.toBeNull();
+					expect(container.querySelector(".conv.current")).toBeNull();
+				}
+			});
+		}
+		test(`${action} of the open conversation still goes to empty chat`, async () => {
+			seedConversation(action === "Delete");
+			await mount();
+			await selectFixture(action === "Delete");
+			await removeFixture(action);
+			expect(win.location.pathname).toBe("/app/");
+			expect(container.querySelector(".chat")?.textContent).toContain("Pick a conversation");
+			expect(container.querySelector("header .header-title")).toBeNull();
+		});
+	}
+
+	test("search and fetch kind changes clear only the changed provider's credential before save", async () => {
+		settings = parseConfig({
+			...SETTINGS,
+			search: [
+				{ kind: "brave", auth: "search-key" },
+				{ kind: "jina", auth: "search-fallback" },
+			],
+			fetch: [
+				{ kind: "firecrawl", auth: "fetch-key" },
+				{ kind: "jina", auth: "fetch-fallback" },
+			],
+		});
+		await mount();
+		await click(
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Web")),
+		);
+		const providers = [...container.querySelectorAll<HTMLSelectElement>(".chain-card select")];
+		const credentials = () =>
+			[...container.querySelectorAll<HTMLInputElement>(".chain-card input")].map((e) => e.value);
+		const change = async (index: number, kind: string) => {
+			await act(async () => {
+				const select = providers[index]!;
+				select.value = kind;
+				select.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+			});
+			await settle();
+		};
+		expect(credentials()).toEqual(["search-key", "search-fallback", "fetch-key", "fetch-fallback"]);
+		await change(0, "brave");
+		await change(2, "firecrawl");
+		expect(credentials()).toEqual(["search-key", "search-fallback", "fetch-key", "fetch-fallback"]);
+		await change(0, "jina");
+		expect(credentials()).toEqual(["", "search-fallback", "fetch-key", "fetch-fallback"]);
+		await change(2, "jina");
+		expect(credentials()).toEqual(["", "search-fallback", "", "fetch-fallback"]);
+		await click([...container.querySelectorAll("button")].find((b) => b.textContent === "Save"));
+		expect(savedBodies).toHaveLength(1);
+		expect(savedBodies[0]?.search).toEqual([
+			{ kind: "jina" },
+			{ kind: "jina", auth: "search-fallback" },
+		]);
+		expect(savedBodies[0]?.fetch).toEqual([
+			{ kind: "jina" },
+			{ kind: "jina", auth: "fetch-fallback" },
+		]);
+	});
 
 	for (const direction of ["back", "forward"] as const) {
 		test(`declining real browser ${direction} preserves the history stack and draft`, async () => {

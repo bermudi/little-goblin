@@ -370,9 +370,14 @@ function ChainEditor({
 							className="mono"
 							value={e.kind}
 							aria-label={`step ${i + 1} provider`}
-							onChange={(ev) =>
-								onChange(entries.map((x, j) => (j === i ? { ...x, kind: ev.target.value } : x)))
-							}
+							onChange={(ev) => {
+								const kind = ev.target.value;
+								onChange(
+									entries.map((x, j) =>
+										j === i && kind !== x.kind ? { ...x, kind, auth: "" } : x,
+									),
+								);
+							}}
 						>
 							{kinds.map((k) => (
 								<option key={k} value={k}>

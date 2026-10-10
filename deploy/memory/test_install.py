@@ -3,6 +3,7 @@ import contextlib
 from email.message import Message
 import io
 import json
+import shlex
 import os
 from pathlib import Path
 import stat
@@ -464,11 +465,17 @@ class CreateBankTest(unittest.TestCase):
     class _Resp:
         status = 200
 
+        def __init__(self, body: bytes = b"") -> None:
+            self._body = body
+
         def __enter__(self) -> "CreateBankTest._Resp":
             return self
 
         def __exit__(self, *exc: object) -> None:
             pass
+
+        def read(self) -> bytes:
+            return self._body
 
     def setUp(self) -> None:
         self.calls: list[tuple[str, str, object]] = []
@@ -497,17 +504,62 @@ class CreateBankTest(unittest.TestCase):
             ],
         )
 
-    def test_existing_bank_never_patched(self) -> None:
-        def fake_409(request: urlrequest.Request, timeout: int = 0) -> "CreateBankTest._Resp":
-            self.calls.append((request.get_method(), request.full_url, None))
-            raise urllib.error.HTTPError(request.full_url, 409, "conflict", Message(), None)
+    def fake_409(
+        self, config: dict[str, object],
+    ) -> contextlib.AbstractContextManager[object]:
+        body = json.dumps(
+            {"bank_id": "goblin", "config": config, "overrides": {}}).encode()
 
-        with patch.object(urlrequest, "urlopen", fake_409):
+        def fake(request: urlrequest.Request, timeout: int = 0) -> "CreateBankTest._Resp":
+            self.calls.append((request.get_method(), request.full_url, None))
+            if request.get_method() == "PUT":
+                raise urllib.error.HTTPError(
+                    request.full_url, 409, "conflict", Message(), None)
+            return self._Resp(body)
+
+        return patch.object(urlrequest, "urlopen", fake)
+
+    def test_existing_bank_never_patched(self) -> None:
+        # PUT 409 → a GET to check drift, and nothing else — never a PATCH.
+        with self.fake_409({
+            "retain_mission": "synthetic mission",
+            "observations_mission": install.DEFAULT_OBSERVATIONS_MISSION,
+        }):
             install.create_bank("goblin", "synthetic mission")
         self.assertEqual(
             self.calls,
-            [("PUT", f"{install.MEMORY_API_URL}/v1/default/banks/goblin", None)],
+            [
+                ("PUT", f"{install.MEMORY_API_URL}/v1/default/banks/goblin", None),
+                ("GET", f"{install.MEMORY_API_URL}/v1/default/banks/goblin/config", None),
+            ],
         )
+
+    def test_drifted_existing_bank_warns_with_field_and_repair_line(self) -> None:
+        stderr = io.StringIO()
+        with self.fake_409({
+            "retain_mission": "a drifted mission",
+            "observations_mission": install.DEFAULT_OBSERVATIONS_MISSION,
+        }), contextlib.redirect_stderr(stderr):
+            install.create_bank("goblin", "the operator's mission")
+        out = stderr.getvalue()
+        self.assertIn("WARNING", out)
+        self.assertIn("retain_mission", out)
+        # The repair line must survive a paste into a shell even though
+        # the canonical missions carry apostrophes.
+        curl = next(line for line in out.splitlines() if "curl" in line)
+        argv = shlex.split(curl)
+        self.assertEqual(argv[argv.index("-X") + 1], "PATCH")
+        body = json.loads(argv[argv.index("-d") + 1])
+        self.assertEqual(body["updates"]["retain_mission"], "the operator's mission")
+
+    def test_matching_existing_bank_warns_nothing(self) -> None:
+        stderr = io.StringIO()
+        with self.fake_409({
+            "retain_mission": "synthetic mission",
+            "observations_mission": install.DEFAULT_OBSERVATIONS_MISSION,
+        }), contextlib.redirect_stderr(stderr):
+            install.create_bank("goblin", "synthetic mission")
+        self.assertNotIn("WARNING", stderr.getvalue())
 
 
 class GoblinSnippetTest(unittest.TestCase):
@@ -601,6 +653,68 @@ class InsertJson5Test(unittest.TestCase):
         updated = insert_json5_property(live, snippet, "memory")
         self.assertIn("logLevel: 'debug',\n  memory: {\n", updated)
         self.assertIn("bankId: 'goblin',\n  }\n}\n", updated)
+
+
+class PreflightTest(unittest.TestCase):
+    """The 8888 bind check: a re-run finds its own API container holding
+    the port — an info line, not the 'already in use' WARNING. The socket
+    module is faked as a refused bind; the rest of preflight's checks are
+    stubbed green so the bind branch is what runs."""
+
+    class _RefusedSocket:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> "PreflightTest._RefusedSocket":
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            pass
+
+        def bind(self, addr: object) -> None:
+            raise OSError("address already in use")
+
+    class _SocketModule:
+        AF_INET = 2
+        SOCK_STREAM = 1
+
+        @staticmethod
+        def socket(*args: object) -> "PreflightTest._RefusedSocket":
+            return PreflightTest._RefusedSocket()
+
+    def run_preflight(self, probe_stdout: str) -> str:
+        install.probe = lambda command: subprocess.CompletedProcess(
+            command, 0, probe_stdout, "")
+        stderr = io.StringIO()
+        patchers = [
+            patch.object(install.os, "geteuid", lambda: 1000),
+            patch.object(install.shutil, "which", lambda cmd: "/usr/bin/podman"),
+            patch.object(install, "run",
+                         lambda command: subprocess.CompletedProcess(command, 0, "", "")),
+            patch.object(install.getpass, "getuser", lambda: "tester"),
+            patch.object(Path, "read_text",
+                         lambda self, *a, **k: "tester:100000:65536\n"),
+            patch.object(install, "socket", self._SocketModule),
+            contextlib.redirect_stderr(stderr),
+        ]
+        with contextlib.ExitStack() as stack:
+            for patcher in patchers:
+                stack.enter_context(patcher)
+            install.preflight()
+        return stderr.getvalue()
+
+    def setUp(self) -> None:
+        self.real_probe = install.probe
+        self.addCleanup(setattr, install, "probe", self.real_probe)
+
+    def test_port_held_by_own_api_container_is_info_not_warning(self) -> None:
+        stderr = self.run_preflight("true\n")
+        self.assertNotIn("WARNING", stderr)
+
+    def test_port_held_by_something_else_still_warns(self) -> None:
+        stderr = self.run_preflight("false\n")
+        self.assertIn("WARNING", stderr)
+        self.assertIn("8888", stderr)
 
 
 FAKED = ("preflight", "prompt_answers", "prompt_bank", "ask_yes", "run",

@@ -160,6 +160,34 @@ describe("mini-app http", () => {
 		}
 	});
 
+	test("a hand-edited block key in the body is refused before the save runs", async () => {
+		const { configRef, http, post } = setup();
+		try {
+			const res = await post({ sandbox: {}, logLevel: "debug" });
+			expect(res.status).toBe(400);
+			const j = (await res.json()) as { error?: string };
+			expect(j.error).toContain("unknown config keys: sandbox");
+			// Nothing was written — not even the valid keys in the body.
+			expect(configRef.current.logLevel).toBe("info");
+			expect(loadConfig()).toBeNull();
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("an unknown key inside the telegram object is refused as telegram.<key>", async () => {
+		const { configRef, http, post } = setup();
+		try {
+			const res = await post({ telegram: { foo: 1 } });
+			expect(res.status).toBe(400);
+			const j = (await res.json()) as { error?: string };
+			expect(j.error).toContain("unknown config keys: telegram.foo");
+			expect(loadConfig()).toBeNull();
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("a valid save is written and hot-applied", async () => {
 		const { configRef, http, post } = setup();
 		try {

@@ -257,6 +257,7 @@ describe("rail row actions and the pinned pool", () => {
 	let freshStamp: string | null;
 	let archived: Record<"pinned" | "fresh", string | null>;
 	let patches: { id: string; body: unknown }[];
+	let failPatch: boolean;
 	const realFetch = globalThis.fetch;
 
 	const installGlobal = (name: string, value: unknown) => {
@@ -284,6 +285,7 @@ describe("rail row actions and the pinned pool", () => {
 		freshStamp = null;
 		archived = { pinned: null, fresh: null };
 		patches = [];
+		failPatch = false;
 		installGlobal("window", win);
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
@@ -307,6 +309,8 @@ describe("rail row actions and the pinned pool", () => {
 			}
 			const patchMatch = /^\/api\/app\/conversations\/(pinned|fresh)$/.exec(url);
 			if (patchMatch !== null && method === "PATCH") {
+				if (failPatch)
+					return Promise.resolve(jsonResponse({ error: "db is locked" }, 500));
 				const id = patchMatch[1] as "pinned" | "fresh";
 				const body = JSON.parse(String(init?.body)) as { pinned?: boolean; archived?: boolean };
 				patches.push({ id, body });
@@ -453,6 +457,26 @@ describe("rail row actions and the pinned pool", () => {
 			{ id: "fresh", body: { archived: false } },
 		]);
 		expect(rowActions("fresh chat")).toEqual(["Pin", "Rename", "Archive"]);
+	});
+
+	test("a failed row mutation surfaces an alert naming the action and the row", async () => {
+		failPatch = true;
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await settle();
+
+		await click(
+			[...container.querySelectorAll(".conv")]
+				.find((r) => r.querySelector(".conv-title")?.textContent === "fresh chat")
+				?.querySelector(".conv-actions button"),
+		);
+		const alert = container.querySelector('p.error[role="alert"]');
+		expect(alert?.textContent).toContain('Couldn\'t pin "fresh chat"');
+		expect(alert?.textContent).toContain("db is locked");
+		// The row didn't move — the list reflects the unchanged server.
+		expect(domOrder()).toEqual(["pinned chat", "fresh chat"]);
 	});
 });
 

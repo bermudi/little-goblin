@@ -102,6 +102,9 @@ export function MemoryView({ token }: { token: string | null }) {
 	const [detailErr, setDetailErr] = useState<string | null>(null);
 	const [forgetting, setForgetting] = useState(false);
 	const listSeq = useRef(0);
+	// Same supersede discipline as listSeq — a slow document fetch must
+	// not reopen a sheet the operator already left for a newer open.
+	const detailSeq = useRef(0);
 	const latestFilter = useRef<MemoryFilter>({ query: "", token });
 
 	// Live view of the memory queue — polled while the tab is open,
@@ -168,12 +171,24 @@ export function MemoryView({ token }: { token: string | null }) {
 		!listLoading && loadedFilter?.query === q.trim() && loadedFilter.token === token;
 
 	const openDoc = (id: string) => {
+		const seq = ++detailSeq.current;
 		setDetail(null);
 		setDetailErr(null);
 		void getMemoryDocument(token, id).then(
-			(d) => setDetail(d),
-			(err) => setDetailErr(describe(err)),
+			(d) => {
+				if (seq !== detailSeq.current) return;
+				setDetail(d);
+			},
+			(err) => {
+				if (seq !== detailSeq.current) return;
+				setDetailErr(describe(err));
+			},
 		);
+	};
+
+	const closeDetail = () => {
+		++detailSeq.current;
+		setDetail(null);
 	};
 
 	// The forget protocol lives on the server (suppress → park →
@@ -188,6 +203,7 @@ export function MemoryView({ token }: { token: string | null }) {
 		void forgetMemoryDocument(token, id).then(
 			() => {
 				setForgetting(false);
+				++detailSeq.current;
 				setDetail(null);
 				loadDocs(0, latestFilter.current, false);
 				void getMemoryStatus(latestFilter.current.token).then(
@@ -214,7 +230,7 @@ export function MemoryView({ token }: { token: string | null }) {
 			{detail !== null ? (
 				<>
 					<div className="ops-back">
-						<button type="button" className="ghost" onClick={() => setDetail(null)}>
+						<button type="button" className="ghost" onClick={closeDetail}>
 							‹ Retained exchanges
 						</button>
 					</div>

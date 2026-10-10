@@ -45,6 +45,7 @@ describe("MemoryView", () => {
 		factCount: 2,
 		conversationId: "tg/1",
 	};
+	const DOC2 = { ...DOC, id: "doc-2" };
 	const DETAIL = {
 		document: DOC,
 		originalText: "the exchange text",
@@ -350,5 +351,47 @@ describe("MemoryView", () => {
 		expect(container.textContent).toContain("new-query");
 		expect(container.textContent).not.toContain("old-query");
 		expect(more().disabled).toBe(false);
+	});
+
+	test("a slower open loses to a newer open, and Forget targets the doc on screen", async () => {
+		const resolves = new Map<string, (r: Response) => void>();
+		const deleted: string[] = [];
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = new URL(String(input), "http://localhost");
+			if (url.pathname.endsWith("/status")) return Promise.resolve(json(STATUS));
+			if (url.pathname.endsWith("/documents"))
+				return Promise.resolve(
+					json({ items: [DOC, DOC2], total: 2, limit: 20, offset: 0 }),
+				);
+			if (init?.method === "DELETE") {
+				deleted.push(url.pathname);
+				return Promise.resolve(json({ ok: true, cancelled: 1, redacted: 1 }));
+			}
+			if (url.pathname.endsWith("/doc-1") || url.pathname.endsWith("/doc-2"))
+				return new Promise<Response>((resolve) =>
+					resolves.set(url.pathname.split("/").pop()!, resolve),
+				);
+			return Promise.resolve(json({ error: "unmapped" }, 404));
+		}) as typeof fetch;
+		Reflect.set(win, "confirm", () => true);
+		mount();
+		await flush();
+		const rows = [...container.querySelectorAll(".doc-row")];
+		expect(rows).toHaveLength(2);
+		// Open doc-1, then doc-2 before doc-1 answers — doc-2 wins.
+		await click(rows[0]);
+		await click(rows[1]);
+		await act(async () => {
+			resolves.get("doc-2")!(json({ ...DETAIL, document: DOC2, originalText: "second text" }));
+		});
+		expect(container.textContent).toContain("second text");
+		await act(async () => {
+			resolves.get("doc-1")!(json(DETAIL));
+		});
+		expect(container.textContent).toContain("second text");
+		expect(container.textContent).not.toContain("the exchange text");
+		await click(container.querySelector(".danger"));
+		await act(async () => {});
+		expect(deleted).toEqual(["/api/app/memory/documents/doc-2"]);
 	});
 });

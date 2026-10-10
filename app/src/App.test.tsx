@@ -361,7 +361,10 @@ describe("rail row actions and the pinned pool", () => {
 			(r) => r.querySelector(".conv-title")?.textContent === title,
 		);
 		if (found === undefined) return [];
-		return [...found.querySelectorAll(".conv-actions button")].map((b) => b.textContent ?? "");
+		// Icon-only buttons — the accessible name is the contract.
+		return [...found.querySelectorAll(".conv-actions button")].map(
+			(b) => b.getAttribute("aria-label") ?? "",
+		);
 	};
 
 	test("a pinned row floats above the activity order, marked and unpin-able", async () => {
@@ -415,7 +418,7 @@ describe("rail row actions and the pinned pool", () => {
 		// Delete is unreachable from the rail — the archived section first.
 		expect(
 			[...container.querySelectorAll(".conv-actions button")].some(
-				(b) => b.textContent === "Delete",
+				(b) => b.getAttribute("aria-label") === "Delete",
 			),
 		).toBe(false);
 

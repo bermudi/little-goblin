@@ -312,6 +312,7 @@ p code,
 	gap: 1px;
 }
 .rail .conv {
+	position: relative; /* anchors the action overlay onto the preview line */
 	display: flex;
 	align-items: flex-start;
 	width: 100%;
@@ -330,30 +331,40 @@ p code,
 	text-align: left;
 	padding: 0.4rem 0.6rem;
 }
+/* Hover actions sit on top of the preview line (the title keeps its full
+   width), masking it with an inherited row background — hover bg while
+   hovering, active bg on the current row. */
 .conv-actions {
+	position: absolute;
+	right: 0.3rem;
+	bottom: 0.25rem;
 	display: none;
-	flex: none;
 	align-items: center;
 	gap: 0.1rem;
-	padding: 0.3rem 0.3rem 0 0;
+	padding: 0 0.3rem 0 0.75rem;
+	background: inherit;
+	border-radius: 0 8px 8px 0;
 }
 .conv:hover .conv-actions,
 .conv.current .conv-actions {
 	display: inline-flex;
 }
 .conv-actions button {
+	width: 1.4rem;
 	height: 1.4rem;
-	padding: 0 0.35rem;
+	padding: 0;
+	justify-content: center;
 	border-radius: 6px;
-	font-size: 10.5px;
 	color: var(--app-fg-muted);
-	white-space: nowrap;
 	display: inline-flex;
 	align-items: center;
 }
 .conv-actions button:hover {
 	background: var(--app-active);
 	color: var(--app-fg);
+}
+.conv-actions svg {
+	display: block;
 }
 .conv-pin {
 	flex: none;

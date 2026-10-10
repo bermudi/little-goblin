@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import type { UIMessage } from "ai";
 import {
 	ApiError,
@@ -201,11 +202,74 @@ function PinGlyph() {
 	);
 }
 
-// One rail row: the conversation button plus its three labeled actions —
+// Stroke icons for the row's hover actions — the same 24-grid, 2px-stroke
+// style as PinGlyph. Icon-only buttons must carry aria-label + title; the
+// tests assert on the accessible name, not on visible text.
+function ActionGlyph({ children }: { children: ReactNode }) {
+	return (
+		<svg
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth="2"
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			width="12"
+			height="12"
+			aria-hidden="true"
+		>
+			{children}
+		</svg>
+	);
+}
+const PinActionGlyph = () => (
+	<ActionGlyph>
+		<path d="M9 3h6l2 8H7l2-8z" />
+		<line x1="12" y1="11" x2="12" y2="21" />
+	</ActionGlyph>
+);
+const UnpinGlyph = () => (
+	<ActionGlyph>
+		<path d="M9 3h6l2 8H7l2-8z" />
+		<line x1="12" y1="11" x2="12" y2="21" />
+		<line x1="5" y1="5" x2="19" y2="19" />
+	</ActionGlyph>
+);
+const PencilGlyph = () => (
+	<ActionGlyph>
+		<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+	</ActionGlyph>
+);
+const ArchiveGlyph = () => (
+	<ActionGlyph>
+		<rect x="2" y="3" width="20" height="5" rx="1" />
+		<path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+		<path d="M10 12h4" />
+	</ActionGlyph>
+);
+const UnarchiveGlyph = () => (
+	<ActionGlyph>
+		<rect x="2" y="3" width="20" height="5" rx="1" />
+		<path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+		<path d="m9 15 3-3 3 3" />
+		<path d="M12 12v7" />
+	</ActionGlyph>
+);
+const TrashGlyph = () => (
+	<ActionGlyph>
+		<path d="M3 6h18" />
+		<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+		<path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+	</ActionGlyph>
+);
+
+// One rail row: the conversation button plus its three icon actions —
 // pin floats the row above the rail's activity order, rename turns the
 // title into an input, archive shelves the row (no confirm — it's
-// reversible). Archived rows swap pin/archive for unarchive and delete,
-// delete keeping the confirm as the one destructive action.
+// reversible). The actions overlay the preview line on hover so the
+// title never trades width for them. Archived rows swap pin/archive for
+// unarchive and delete, delete keeping the confirm as the one
+// destructive action.
 function ConversationRow({
 	conv,
 	current,
@@ -306,26 +370,41 @@ function ConversationRow({
 			<span className="conv-actions">
 				{archived ? (
 					<>
-						<button type="button" onClick={startRename}>
-							Rename
+						<button type="button" onClick={startRename} title="Rename" aria-label="Rename">
+							<PencilGlyph />
 						</button>
-						<button type="button" onClick={toggleArchived}>
-							Unarchive
+						<button
+							type="button"
+							onClick={toggleArchived}
+							title="Unarchive"
+							aria-label="Unarchive"
+						>
+							<UnarchiveGlyph />
 						</button>
-						<button type="button" onClick={remove}>
-							Delete
+						<button type="button" onClick={remove} title="Delete" aria-label="Delete">
+							<TrashGlyph />
 						</button>
 					</>
 				) : (
 					<>
-						<button type="button" onClick={togglePinned}>
-							{pinned ? "Unpin" : "Pin"}
+						<button
+							type="button"
+							onClick={togglePinned}
+							title={pinned ? "Unpin" : "Pin"}
+							aria-label={pinned ? "Unpin" : "Pin"}
+						>
+							{pinned ? <UnpinGlyph /> : <PinActionGlyph />}
 						</button>
-						<button type="button" onClick={startRename}>
-							Rename
+						<button type="button" onClick={startRename} title="Rename" aria-label="Rename">
+							<PencilGlyph />
 						</button>
-						<button type="button" onClick={toggleArchived}>
-							Archive
+						<button
+							type="button"
+							onClick={toggleArchived}
+							title="Archive"
+							aria-label="Archive"
+						>
+							<ArchiveGlyph />
 						</button>
 					</>
 				)}

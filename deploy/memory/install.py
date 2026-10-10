@@ -18,7 +18,12 @@ one key serves both Hindsight roles.
   default
 - the assembled config is validated by the launch guard (start.validate)
   BEFORE anything is written — an invalid answer cannot produce a config
-  the container would reject
+  the container would reject; embedding models in providers.EMBEDDING_PREFIXES
+  get their task prefixes written automatically (any provider)
+- local embeddings (optional): the operator-written
+  ~/.config/goblin-memory/embed-relay.env switches on the goblin-embed-*
+  units — installed with the other assets, and the relay is enabled
+  BEFORE the API starts (it test-embeds during init)
 - starting the stack requires an explicit confirmation: first start can
   call the embedding provider (dimension detection) and costs money
 
@@ -35,6 +40,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import getpass
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -54,6 +60,7 @@ from providers import (
     DEFAULT_OPENAI_BASE_URL,
     PROVIDERS,
     catalog_url_for,
+    embedding_prefixes,
     example_for,
     fetch_model_catalog,
     filter_catalog,
@@ -76,6 +83,14 @@ API_UNIT = "goblin-memory-api.service"
 DB_UNIT = "goblin-memory-db.service"
 WATCH_UNITS = ("goblin-memory-watch.service", "goblin-memory-watch.timer")
 WATCH_TIMER = "goblin-memory-watch.timer"
+# Opt-in local-embeddings relay: the operator writes embed-relay.env from
+# the shipped example (the installer never creates it); its presence
+# switches the goblin-embed-* units on during install/refresh.
+EMBED_RELAY_ENV = CFG_DIR / "embed-relay.env"
+EMBED_UNITS = ("goblin-embed-relay.service", "goblin-embed-pin.service",
+               "goblin-embed-pin.timer")
+RELAY_UNIT = "goblin-embed-relay.service"
+PIN_TIMER = "goblin-embed-pin.timer"
 GOBLIN_UNIT = "goblin.service"
 # Digest-pinned, matching the Quadlet assets. Pre-pulled so systemd's
 # TimeoutStartSec budget is spent on migrations, not downloads.
@@ -147,6 +162,10 @@ def build_hindsight_env(answers: Answers, db_password: str) -> dict[str, str]:
     }
     if answers.emb_provider == "openai":
         env[f"{prefix}_BASE_URL"] = answers.emb_base_url or ""
+    prefixes = embedding_prefixes(answers.emb_model)
+    if prefixes is not None:
+        env["HINDSIGHT_API_EMBEDDINGS_QUERY_PREFIX"] = prefixes[0]
+        env["HINDSIGHT_API_EMBEDDINGS_PASSAGE_PREFIX"] = prefixes[1]
     for key, value in env.items():
         if "\n" in value or "\r" in value:
             raise ValueError(f"{key}: line breaks are not representable in env files")
@@ -169,6 +188,8 @@ def render_env_file(env: dict[str, str]) -> str:
         "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL",
         "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY",
         "HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL",
+        "HINDSIGHT_API_EMBEDDINGS_QUERY_PREFIX",
+        "HINDSIGHT_API_EMBEDDINGS_PASSAGE_PREFIX",
         "HINDSIGHT_API_RERANKER_PROVIDER",
     ]
     lines = [f"{key}={env[key]}" for key in order if key in env]
@@ -196,6 +217,39 @@ def parse_postgres_env(text: str) -> dict[str, str]:
         result[key] = value
     if "POSTGRES_PASSWORD" not in result:
         raise ValueError("postgres.env: POSTGRES_PASSWORD missing")
+    return result
+
+
+def parse_embed_relay_env(text: str) -> dict[str, str]:
+    """The embed-relay opt-in switch: both keys or the file is rejected.
+
+    The relay binds socat to the address verbatim, so it must be a real
+    IPv4 literal — not a hostname that could resolve to a LAN address.
+    Error messages name keys only, never the rejected values.
+    """
+    result: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        key, sep, value = line.partition("=")
+        if not sep:
+            raise ValueError("embed-relay.env: line without '='")
+        key = key.strip()
+        if key in result:
+            raise ValueError(f"embed-relay.env: duplicate key {key}")
+        result[key] = value
+    for required in ("GOBLIN_EMBED_RELAY_ADDR", "GOBLIN_EMBED_MODEL"):
+        if not result.get(required):
+            raise ValueError(f"embed-relay.env: {required} missing")
+    try:
+        ipaddress.IPv4Address(result["GOBLIN_EMBED_RELAY_ADDR"])
+    except ValueError:
+        raise ValueError(
+            "embed-relay.env: GOBLIN_EMBED_RELAY_ADDR is not an IPv4 address"
+        ) from None
+    if any(char.isspace() for char in result["GOBLIN_EMBED_MODEL"]):
+        raise ValueError(
+            "embed-relay.env: GOBLIN_EMBED_MODEL must not contain whitespace")
     return result
 
 
@@ -314,6 +368,7 @@ def install_assets(memory_dir: Path, systemd_dir: Path, cfg_dir: Path,
         shutil.copyfile(src, dst)
         dst.chmod(0o644)
         installed.append(dst)
+    installed.extend(install_embed_units(memory_dir, cfg_dir, user_unit_dir))
     start_dst = cfg_dir / "start.py"
     shutil.copyfile(memory_dir / "start.py", start_dst)
     start_dst.chmod(0o644)
@@ -326,6 +381,48 @@ def install_assets(memory_dir: Path, systemd_dir: Path, cfg_dir: Path,
     health_dst.chmod(0o644)
     installed.append(health_dst)
     return installed
+
+
+def install_embed_units(memory_dir: Path, cfg_dir: Path,
+                        user_unit_dir: Path) -> list[Path]:
+    """Copy the goblin-embed-* units when the operator opted in.
+
+    The opt-in is the operator-written embed-relay.env; absent file = the
+    units stay uninstalled (an existing install is never torn down). A
+    present-but-invalid switch fails BEFORE any unit lands, so the relay
+    can't come up half-configured."""
+    switch = cfg_dir / EMBED_RELAY_ENV.name
+    if not switch.is_file():
+        return []
+    try:
+        parse_embed_relay_env(switch.read_text())
+    except (OSError, ValueError) as error:
+        fail(f"{switch}: {error}")
+    user_unit_dir.mkdir(parents=True, exist_ok=True)
+    installed: list[Path] = []
+    for name in EMBED_UNITS:
+        src = memory_dir / name
+        if not src.is_file():
+            fail(f"missing deploy asset: {src}")
+        dst = user_unit_dir / name
+        shutil.copyfile(src, dst)
+        dst.chmod(0o644)
+        installed.append(dst)
+    return installed
+
+
+def enable_embed_relay(cfg_dir: Path) -> None:
+    """Start+enable the relay and pin timer when the operator opted in.
+
+    No-op without the switch file — remote-only installs never see these
+    units. Callers order this BEFORE the API starts: the API test-embeds
+    during init and refuses to boot when its endpoint is dead."""
+    if not (cfg_dir / EMBED_RELAY_ENV.name).is_file():
+        return
+    run(["systemctl", "--user", "daemon-reload"])
+    run(["systemctl", "--user", "enable", "--now", RELAY_UNIT, PIN_TIMER])
+    info("embed relay enabled — an already-running relay keeps its old "
+         "definition until 'systemctl --user restart goblin-embed-relay'")
 
 
 # --------------------------------------------------------------------------
@@ -401,6 +498,9 @@ def start_stack() -> None:
         fail(f"{DB_UNIT} not healthy after 180s — "
              f"journalctl --user -u {DB_UNIT}")
     info("database healthy; starting API")
+    # Local-embeddings opt-in: the API test-embeds during init, so the
+    # relay must be live before it starts.
+    enable_embed_relay(CFG_DIR)
     run(["systemctl", "--user", "start", API_UNIT])
     deadline = time.monotonic() + 480
     while time.monotonic() < deadline:
@@ -460,6 +560,7 @@ def refresh_assets(enable_watch: bool) -> None:
         info(f"installed {path}")
     run(["systemctl", "--user", "daemon-reload"])
     if enable_watch:
+        enable_embed_relay(CFG_DIR)
         run(["systemctl", "--user", "enable", "--now", WATCH_TIMER])
         info(f"{WATCH_TIMER} enabled — health checked every 5 minutes")
 
@@ -754,6 +855,9 @@ def prompt_answers(goblin_home: Path) -> Answers:
     print("\n— Embeddings model —")
     catalog = load_catalog("emb", emb_provider, emb_base_url, emb_api_key)
     emb_model = ask_model_search("model", catalog, example_for(emb_provider, "emb"))
+    if embedding_prefixes(emb_model) is not None:
+        info(f"{emb_model} is an asymmetric embedder — its task prefixes "
+             "will be written into the env")
 
     # Not a question: this launch profile supports exactly one reranker.
     print("\n— Reranker: rrf (model-free; the only option this profile "
@@ -787,11 +891,15 @@ def prompt_bank() -> tuple[str, str]:
 
 def print_summary(answers: Answers, bank_id: str) -> None:
     embeddings_endpoint = f" @ {answers.emb_base_url}" if answers.emb_base_url else ""
+    prefix_line = ""
+    if embedding_prefixes(answers.emb_model) is not None:
+        prefix_line = ("  Prefixes:   model task prefixes "
+                       f"({answers.emb_model.split(':', 1)[0]})\n")
     print(f"""
 — Summary (secrets never shown) —
   LLM:        {answers.llm_provider} / {answers.llm_model} @ {answers.llm_base_url}
   Embeddings: {answers.emb_provider} / {answers.emb_model}{embeddings_endpoint}
-  Reranker:   rrf (model-free)
+{prefix_line}  Reranker:   rrf (model-free)
   Bank:       {bank_id}
   Files:      {POSTGRES_ENV} (generated password)
               {HINDSIGHT_ENV} (0600, contains your API keys)
@@ -910,6 +1018,12 @@ def main(argv: list[str] | None = None) -> None:
                 f"but the API did NOT recover — journalctl --user -u {API_UNIT}"
             fail(f"{reason}; restored the previous hindsight.env {suffix}")
 
+        # A reconfigure that adopts local embeddings needs the relay live
+        # BEFORE the API restarts on the new env — it test-embeds during
+        # init and refuses to boot on a dead endpoint. refresh_assets
+        # below runs after the restart, too late; land the units here.
+        install_embed_units(MEMORY_DIR, CFG_DIR, USER_UNIT_DIR)
+        enable_embed_relay(CFG_DIR)
         write_file_atomic(HINDSIGHT_ENV, render_env_file(env), 0o600)
         info(f"rewrote {HINDSIGHT_ENV}; restarting API")
         restart = probe(["systemctl", "--user", "restart", API_UNIT])

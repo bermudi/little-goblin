@@ -12,6 +12,7 @@ import providers
 from providers import (
     Provider,
     catalog_url_for,
+    embedding_prefixes,
     example_for,
     fetch_model_catalog,
     filter_catalog,
@@ -51,6 +52,19 @@ class ProviderTableTest(unittest.TestCase):
         self.assertEqual(example_for("zai", "llm"), "glm-5.3-flash")
         self.assertEqual(example_for("openrouter", "emb"), "voyageai/voyage-4-lite")
         self.assertEqual(example_for("openai", "emb"), "any embedding model")
+
+
+class EmbeddingPrefixesTest(unittest.TestCase):
+    def test_embeddinggemma_bare_and_tagged(self) -> None:
+        expected = ("task: search result | query: ", "title: none | text: ")
+        self.assertEqual(embedding_prefixes("embeddinggemma"), expected)
+        self.assertEqual(embedding_prefixes("embeddinggemma:latest"), expected)
+
+    def test_other_models_get_no_prefixes(self) -> None:
+        for model in ("nomic-embed-text-v2-moe:latest",
+                      "google/embeddinggemma-300m",
+                      "voyageai/voyage-4-lite"):
+            self.assertIsNone(embedding_prefixes(model))
 
 
 class ReadGoblinProvidersTest(unittest.TestCase):

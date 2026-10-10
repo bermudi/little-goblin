@@ -103,6 +103,12 @@ and templates before designing; cite what you took in the design docs.
   use `bun run vite build app --outDir /tmp/<unique-dir>` instead.
   Publishing the client and restarting the backend are one coordinated
   rollout, requiring bermudi's OK.
+- Memory embeddings are local: ollama `embeddinggemma` on the system
+  `ollama.service`, reached from the API container through
+  `goblin-embed-relay` (socat on the tailscale IP — see docs/memory.md →
+  Local embeddings). Tailscale down or ollama down = the memory API
+  can't embed or boot. Changing the embedding model with a non-empty
+  bank is a re-index, not an env edit.
 - `goblin-herdr.service` owns the `goblin` herdr session where delegated
   harnesses run. Probe herdr only in a throwaway named session
   (`herdr --session goblin-probe server`), never `default` or `goblin`.

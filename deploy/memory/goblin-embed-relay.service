@@ -1,0 +1,20 @@
+[Unit]
+Description=Relay loopback ollama into the goblin-memory podman bridge
+# Listens on the configured host-local /32 (the tailscale address: stable,
+# LAN-invisible); pasta NAT makes container traffic arrive from that very
+# address — range= admits only that source, so nothing off-host or
+# off-tailnet can reach ollama through this relay. Restart covers the
+# tailscale/wlan boot race: tailscale down = no relay = the memory API
+# cannot boot (it test-embeds during init).
+Before=goblin-memory-api.service
+
+[Service]
+EnvironmentFile=%h/.config/goblin-memory/embed-relay.env
+ExecStart=/usr/bin/socat TCP-LISTEN:11435,bind=${GOBLIN_EMBED_RELAY_ADDR},fork,reuseaddr,range=${GOBLIN_EMBED_RELAY_ADDR}/32 TCP:127.0.0.1:11434
+Restart=on-failure
+RestartSec=5
+
+# WantedBy the API unit makes the dependency explicit: starting or
+# boot-enabling the API pulls the relay in first.
+[Install]
+WantedBy=default.target goblin-memory-api.service

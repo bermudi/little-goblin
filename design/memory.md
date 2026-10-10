@@ -52,7 +52,8 @@ No MCP, replacement turn loop, or generic multi-backend framework.
    (Timeout raised 2026-10-02: measured cold recall is ~2.3–2.7s — the
    remote embedding leg re-colds within ~8s of idle, so every chat turn
    pays it; 2s silently disabled recall on every cold turn rather than
-   bounding the wait.)
+   bounding the wait. The cold remote leg is gone with local embeddings,
+   2026-10-09; the 5000ms stays as a bound.)
 2. **Exclusions: per-topic setting, command-first.** `memoryExcluded`
    boolean on the conversation (settings-command pattern: `/memory
    on|off|status`, epoch-bumped like `/voice`; mini-app toggle follows).
@@ -213,7 +214,10 @@ to the containers rather than exporting them into Goblin.
 
 Model selection belongs to the operator, not to an SDK's implicit defaults.
 The requested initial setup is `glm-5.3-flash` for extraction/consolidation
-and `voyageai/voyage-4-lite` for embeddings. These are requested identifiers,
+and `voyageai/voyage-4-lite` for embeddings. Ruling (2026-10-09):
+embeddings moved to local `embeddinggemma` via the host Ollama (through
+the `goblin-embed-relay` socat unit) for latency; the extraction LLM is
+unchanged. These are requested identifiers,
 not claims about Hindsight's accepted wire configuration: verify provider
 support, endpoint, and exact model IDs before implementation or live calls.
 Other installations select their own providers/models and credentials.
@@ -222,7 +226,9 @@ supported no-reranker mode; do not silently download or invoke a default
 model. Choosing a different embedding model for an existing bank requires
 an explicit compatibility/re-indexing procedure, not a hot config edit.
 Self-hosted storage does not imply local processing: document which text
-each configured external model service receives.
+each configured external model service receives. With local embeddings,
+embedding inputs (fact text, recall queries) stay on the box; the
+extraction LLM provider still receives conversation text.
 
 Setup is installer-driven (`deploy/memory/install.py`), overruling the
 earlier "operator setup, not automatic" stance. An installer that *asks*

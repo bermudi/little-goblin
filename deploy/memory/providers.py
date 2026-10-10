@@ -61,6 +61,26 @@ PROVIDERS: dict[str, Provider] = {
 }
 
 
+# (query, passage) task prefixes for asymmetric embedders, keyed by the
+# model's base id — the part before any ":tag". Values are written into
+# the env verbatim: trailing whitespace is significant to the embedder.
+EMBEDDING_PREFIXES: dict[str, tuple[str, str]] = {
+    "embeddinggemma": ("task: search result | query: ",
+                       "title: none | text: "),
+}
+
+
+def embedding_prefixes(model: str) -> tuple[str, str] | None:
+    """Task prefixes for models that need them, else None.
+
+    Matches the base id exactly: ollama ids arrive tagged
+    ("embeddinggemma:latest"), while namespaced ids like
+    "google/embeddinggemma-300m" deliberately miss — prefixes are
+    per-deployment wiring, not a model-family guess.
+    """
+    return EMBEDDING_PREFIXES.get(model.split(":", 1)[0])
+
+
 def providers_for(role: str) -> tuple[Provider, ...]:
     """Providers that can fill a Hindsight role ("llm" or "emb")."""
     if role == "llm":

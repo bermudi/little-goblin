@@ -450,39 +450,72 @@ work on the memory stack.
   (connection setup after idle + provider variance explain the p50 863 →
   warm ~414 spread).
 
-## Latency candidate: local embeddings (UNAPPLIED — decision pending)
+The embedding hop is local since 2026-10-09 (ollama `embeddinggemma` via
+the embed relay — see "Local embeddings"); the remote figures above are
+the pre-swap baseline.
 
-`google/embeddinggemma-300m` is **not on OpenRouter** (HTTP 400; it is an
-Ollama/HF model). Both candidate models are already pulled locally:
-`ollama pull embeddinggemma` (681 MB, 768 dims, 2048-token context,
-100% GPU on the GTX 1060) and `nomic-embed-text-v2-moe` (768 dims).
+## Local embeddings (applied 2026-10-09)
 
-Measured (12 interleaved reps, sizes 150/600/2000 chars, warm):
+Recall's embedding hop is local: the bank embeds with ollama's
+`embeddinggemma` (768-dim, GPU) on the system `ollama.service`
+(`127.0.0.1:11434`), reached as an `openai`-provider endpoint in
+`hindsight.env`. The API container cannot reach that listener directly —
+the rootless bridge net `goblin-memory` has no path to host loopback,
+`host.containers.internal` does NOT work for it (refused), and ollama
+403s requests whose `Host` header is non-local — so a socat relay
+(`goblin-embed-relay.service`, user unit) listens on the tailscale /32
+`100.90.205.106:11435` and forwards to `127.0.0.1:11434`. The tailscale
+address is host-local, stable, and never LAN-routed; the relay's
+`range=<addr>/32` admits only sources presenting that address, and pasta
+NAT makes container traffic arrive from exactly that — nothing off-box
+or off-tailnet can reach ollama through the relay. Dependency to note:
+tailscale down = no relay = the memory API cannot boot (it test-embeds
+during init), which is why the relay unit is `WantedBy`/`Before` the API.
 
-| model | p50 warm | notes |
-|---|---|---|
-| voyage-4-lite @ OpenRouter | 257–272 ms | network tail: p95 recall 2.5 s |
-| embeddinggemma @ Ollama | 199–268 ms | no tail; cold load 1.8 s after idle eviction |
-| nomic-v2-moe @ Ollama | 285–366 ms | slower; not preferred |
+`goblin-embed-pin.timer` fires `goblin-embed-pin.service` on boot +3min
+and every 10min: an `/api/embed` call with `keep_alive=-1` THROUGH the
+relay keeps the model resident (default keep_alive evicts after 5min
+idle) and doubles as the embed-path health signal — a failure leaves a
+failed unit, and `systemctl --user status goblin-embed-pin` is the check.
+An optional sudo drop-in
+`/etc/systemd/system/ollama.service.d/keepalive.conf` containing
+`[Service]` + `Environment=OLLAMA_KEEP_ALIVE=-1` makes the pin redundant
+(a drop-in survives the upstream installer rewriting `ollama.service`);
+the timer's health signal stays useful either way.
 
-Quality A/B on the real bank (28 curated gold queries × 199 facts, cosine
-top-k): voyage hit@1 0.96 / hit@5 1.00 / MRR 0.982; embeddinggemma 0.89 /
-1.00 / 0.940; mean top-10 overlap 0.69; all ES and RU queries rank-1 in both
-models. Since recall delivers 7–17 facts per turn and bm25/graph legs are
-unchanged by a swap, the ordering delta is expected to be invisible
-downstream. Re-run the A/B (`bench.py recall`) if the bank grows an order of
-magnitude.
+Setup (or re-add on another box): write
+`~/.config/goblin-memory/embed-relay.env` from
+`deploy/memory/embed-relay.env.example` (`GOBLIN_EMBED_RELAY_ADDR`,
+`GOBLIN_EMBED_MODEL`), run `uv run python deploy/memory/install.py` so
+the units land, then `--reconfigure` choosing provider `openai`, model
+`embeddinggemma`, the relay base URL (`http://<addr>:11435/v1`), and any
+non-empty dummy key — ollama ignores it. embeddinggemma's task prefixes
+(`HINDSIGHT_API_EMBEDDINGS_QUERY_PREFIX` / `_PASSAGE_PREFIX`) are written
+automatically from `EMBEDDING_PREFIXES` in `deploy/memory/providers.py`.
 
-Applying the swap needs ALL of: `hindsight.env` → `EMBEDDINGS_PROVIDER=openai`,
-`EMBEDDINGS_OPENAI_MODEL=embeddinggemma`,
-`EMBEDDINGS_OPENAI_BASE_URL=http://host.containers.internal:11434/v1` (API
-container is bridge-net; slirp reaches host loopback), a dummy API key; a
-systemd override `OLLAMA_KEEP_ALIVE=-1` (else every idle-evicted recall pays
-1.8 s cold load — worse than today); a **new bank + re-retain** (vector spaces
-are incompatible, 768 vs 1024 dims — "an explicit re-indexing plan, not an
-environment edit"); then flip `bankId` in `goblin.json5` and restart
-`goblin-memory-api` + `goblin`. Each restart is live infra — bermudi's OK.
-Projected: recall ≈ 250 ms steady → gap p50 ~1.2 s, p95 ~2.1 s.
+Measured on the live bank: recall 250–283 ms flat (vs ~550 ms remote
+warm and 2.3–2.7 s cold — the per-turn remote re-cold leg is gone).
+Quality is honestly mixed and treated as comparable: the earlier
+fact-level A/B (28 queries × 199 facts, without prefixes) had voyage
+ahead (hit@1 0.96 vs 0.89, MRR 0.982 vs 0.940); a second eval on raw
+conversation text (~30 hand-labeled queries, labels revised between
+rounds) had instructed gemma ahead (hit@1 0.71, hit@5 1.00, MRR 0.834,
+vs voyage 0.63 / 0.97 / 0.785). bm25 and graph legs are unchanged by
+the swap.
+
+### Switching embedding models / rollback
+
+Use `uv run python deploy/memory/install.py --reconfigure` — it rewrites
+the whole `hindsight.env`, so no stale `EMBEDDINGS_OPENAI_*` or prefix
+keys survive; hand-flipping `HINDSIGHT_API_EMBEDDINGS_PROVIDER` fails the
+launch guard (leftover keys read as "unsupported override").
+
+A dimension change (768 ↔ voyage's 1024) auto-applies only while
+`memory_units`/`mental_models` hold no embeddings
+(`hindsight_api/migrations.py`). With data the API refuses to boot — the
+vector column is global, not per bank — so switching models on a
+populated bank is a re-index: back up first (the Backup section). The
+re-embed procedure itself is NOT verified; treat it as unproven.
 
 ## Extraction LLM: effective knobs (all UNPINNED today)
 
@@ -526,15 +559,19 @@ drifting call is recorded.
 
 ## Environment facts (verified this session)
 
-- hindsight-api: `127.0.0.1:8888`, no auth on loopback, bank `goblin`, 199
-  facts; DB timestamps are UTC, journal displays local (UTC-6).
+- hindsight-api: `127.0.0.1:8888`, no auth on loopback, bank `goblin`
+  (wiped and recreated 2026-10-09 — 0 facts at swap time); DB timestamps
+  are UTC, journal displays local (UTC-6).
 - `audit_log_enabled: false`; bank mission: "Remember the operator's
   preferences, decisions, commitments, people, and ongoing work. Assistant
   suggestions are not operator decisions. Date every fact."
 - Container→host networking: bridge net `goblin-memory`;
-  `host.containers.internal` reaches host loopback listeners.
-- Ollama daemon active on `127.0.0.1:11434`; embeddinggemma + nomic pulled;
-  default keep_alive evicts after 5 min idle.
+  `host.containers.internal` does NOT reach host loopback listeners
+  (refused) — the `goblin-embed-relay` socat unit on the tailscale /32
+  is the container's path to host ollama.
+- Ollama daemon active on `127.0.0.1:11434`; embeddinggemma + nomic
+  pulled; embeddinggemma kept resident by `goblin-embed-pin.timer`
+  (`keep_alive=-1`; default eviction is 5 min idle).
 - Bench commits: `b3f6e0a` (tool), `8bff773` (judge grading). Docs section:
   Benchmarking, above. Not deployed — `scripts/deploy.sh` is the only
   sanctioned push and was not run.

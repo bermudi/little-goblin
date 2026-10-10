@@ -1,0 +1,21 @@
+[Unit]
+Description=Pin the embedding model resident in ollama (keep_alive=-1)
+# The model evicts after 5min idle by default; an embed call with
+# keep_alive=-1 keeps it resident until ollama restarts, and the timer
+# re-pins so an ollama restart self-heals. Pinning goes THROUGH the relay,
+# so every run doubles as the embed-path health signal — a failure leaves
+# a failed unit in the journal. An ollama drop-in OLLAMA_KEEP_ALIVE=-1
+# would make the pinning redundant; the check stays useful.
+Wants=goblin-embed-relay.service
+After=goblin-embed-relay.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/goblin-memory/embed-relay.env
+# The -d payload is space-free so systemd keeps it one word, and the inner
+# quotes are backslash-escaped because systemd's lexer strips a bare '"'
+# mid-word (a bare-quoted JSON arrives mangled as {model:...}). ${} still
+# expands inside the word; %% escapes a systemd specifier. -o /dev/null
+# keeps the returned vector out of the journal — the -w line is the
+# health signal.
+ExecStart=/usr/bin/curl -fsS -m 15 -o /dev/null -w "pinned HTTP %%{http_code} in %%{time_total}s\n" http://${GOBLIN_EMBED_RELAY_ADDR}:11435/api/embed -d {\"model\":\"${GOBLIN_EMBED_MODEL}\",\"input\":\"keep-alive\",\"keep_alive\":-1}

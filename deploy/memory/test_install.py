@@ -30,6 +30,7 @@ def synthetic_answers(
     llm_base_url: str = "https://example.invalid/v1",
     emb_provider: str = "openrouter",
     emb_base_url: str | None = None,
+    emb_model: str = "operator-embedding",
 ) -> Answers:
     return Answers(
         llm_provider="zai",
@@ -37,7 +38,7 @@ def synthetic_answers(
         llm_base_url=llm_base_url,
         llm_api_key=SYNTHETIC_KEY,
         emb_provider=emb_provider,
-        emb_model="operator-embedding",
+        emb_model=emb_model,
         emb_api_key=SYNTHETIC_KEY,
         emb_base_url=emb_base_url,
         bank_id="goblin",
@@ -64,6 +65,24 @@ class BuildEnvTest(unittest.TestCase):
                 synthetic_answers(emb_provider="openai", emb_base_url=None),
                 "synthetic-password",
             )
+
+    def test_task_prefixes_written_for_prefix_models(self) -> None:
+        answers = synthetic_answers(
+            emb_provider="openai",
+            emb_base_url="http://100.64.0.1:11435/v1",
+            emb_model="embeddinggemma:latest")
+        env = build_hindsight_env(answers, "synthetic-password")
+        # Trailing spaces are significant to the embedder — assert them.
+        self.assertEqual(env["HINDSIGHT_API_EMBEDDINGS_QUERY_PREFIX"],
+                         "task: search result | query: ")
+        self.assertEqual(env["HINDSIGHT_API_EMBEDDINGS_PASSAGE_PREFIX"],
+                         "title: none | text: ")
+        validate(env)
+
+    def test_no_prefix_keys_for_unlisted_models(self) -> None:
+        env = build_hindsight_env(synthetic_answers(), "synthetic-password")
+        self.assertNotIn("HINDSIGHT_API_EMBEDDINGS_QUERY_PREFIX", env)
+        self.assertNotIn("HINDSIGHT_API_EMBEDDINGS_PASSAGE_PREFIX", env)
 
     def test_newline_in_value_rejected_before_guard(self) -> None:
         with self.assertRaises(ValueError):
@@ -105,6 +124,20 @@ class RenderEnvTest(unittest.TestCase):
             key, sep, _ = line.partition("=")
             self.assertTrue(sep, "literal KEY=value, no export/quotes")
 
+    def test_prefix_line_keeps_significant_trailing_space(self) -> None:
+        env = build_hindsight_env(
+            synthetic_answers(emb_provider="openai",
+                              emb_base_url="http://100.64.0.1:11435/v1",
+                              emb_model="embeddinggemma"),
+            "synthetic-password")
+        lines = render_env_file(env).splitlines()
+        self.assertIn(
+            "HINDSIGHT_API_EMBEDDINGS_QUERY_PREFIX=task: search result | query: ",
+            lines)
+        self.assertIn(
+            "HINDSIGHT_API_EMBEDDINGS_PASSAGE_PREFIX=title: none | text: ",
+            lines)
+
     def test_unexpected_key_rejected(self) -> None:
         with self.assertRaises(ValueError):
             render_env_file({"HINDSIGHT_API_BOGUS": "x"})
@@ -123,6 +156,41 @@ class RenderEnvTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_postgres_env(
                 "POSTGRES_PASSWORD=a\nPOSTGRES_PASSWORD=b\n")
+
+
+class EmbedRelayEnvTest(unittest.TestCase):
+    VALID = ("GOBLIN_EMBED_RELAY_ADDR=100.64.0.1\n"
+             "GOBLIN_EMBED_MODEL=embeddinggemma\n")
+
+    def test_valid_roundtrip_skips_comments(self) -> None:
+        parsed = install.parse_embed_relay_env("# opt-in\n\n" + self.VALID)
+        self.assertEqual(parsed["GOBLIN_EMBED_RELAY_ADDR"], "100.64.0.1")
+        self.assertEqual(parsed["GOBLIN_EMBED_MODEL"], "embeddinggemma")
+
+    def test_bad_ipv4_rejected_without_echoing_value(self) -> None:
+        with self.assertRaises(ValueError) as raised:
+            install.parse_embed_relay_env(
+                "GOBLIN_EMBED_RELAY_ADDR=not-an-address\n"
+                "GOBLIN_EMBED_MODEL=m\n")
+        self.assertIn("GOBLIN_EMBED_RELAY_ADDR", str(raised.exception))
+        self.assertNotIn("not-an-address", str(raised.exception))
+
+    def test_missing_keys_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            install.parse_embed_relay_env("GOBLIN_EMBED_RELAY_ADDR=100.64.0.1\n")
+        with self.assertRaises(ValueError):
+            install.parse_embed_relay_env("GOBLIN_EMBED_MODEL=m\n")
+
+    def test_duplicate_and_whitespace_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            install.parse_embed_relay_env(
+                "GOBLIN_EMBED_RELAY_ADDR=100.64.0.1\n"
+                "GOBLIN_EMBED_RELAY_ADDR=100.64.0.2\n"
+                "GOBLIN_EMBED_MODEL=m\n")
+        with self.assertRaises(ValueError):
+            install.parse_embed_relay_env(
+                "GOBLIN_EMBED_RELAY_ADDR=100.64.0.1\n"
+                "GOBLIN_EMBED_MODEL=bad model\n")
 
 
 class SecretFileTest(unittest.TestCase):
@@ -145,6 +213,69 @@ class SecretFileTest(unittest.TestCase):
 
 
 class InstallAssetsTest(unittest.TestCase):
+    def seed_memory_dir(self, root: Path, with_embed: bool = True) -> Path:
+        memory_dir = root / "src"
+        memory_dir.mkdir()
+        (memory_dir / "goblin-memory-api.container").write_text("[Container]\n")
+        (memory_dir / "goblin-memory.network").write_text("[Network]\n")
+        (memory_dir / "start.py").write_text("x = 1\n")
+        (memory_dir / "healthcheck.py").write_text("x = 1\n")
+        units = list(install.WATCH_UNITS)
+        if with_embed:
+            units += install.EMBED_UNITS
+        for name in units:
+            (memory_dir / name).write_text("[Unit]\n")
+        return memory_dir
+
+    def test_embed_units_absent_without_switch_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            memory_dir = self.seed_memory_dir(root)
+            user_unit_dir = root / "user-units"
+            installed = install_assets(memory_dir, root / "systemd",
+                                       root / "cfg", user_unit_dir)
+            for name in install.EMBED_UNITS:
+                self.assertFalse((user_unit_dir / name).exists())
+            self.assertFalse(
+                any(path.name in install.EMBED_UNITS for path in installed))
+
+    def test_embed_units_installed_with_valid_switch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            memory_dir = self.seed_memory_dir(root)
+            cfg_dir = root / "cfg"
+            cfg_dir.mkdir()
+            (cfg_dir / "embed-relay.env").write_text(EmbedRelayEnvTest.VALID)
+            user_unit_dir = root / "user-units"
+            installed = install_assets(memory_dir, root / "systemd",
+                                       cfg_dir, user_unit_dir)
+            for name in install.EMBED_UNITS:
+                dst = user_unit_dir / name
+                self.assertTrue(dst.is_file(), name)
+                self.assertEqual(stat.S_IMODE(dst.stat().st_mode), 0o644)
+                self.assertIn(dst, installed)
+
+    def test_invalid_switch_fails_before_copying_embed_units(self) -> None:
+        bad_files = (
+            "GOBLIN_EMBED_RELAY_ADDR=not-an-ip\nGOBLIN_EMBED_MODEL=m\n",
+            "GOBLIN_EMBED_RELAY_ADDR=100.64.0.1\n",
+            "GOBLIN_EMBED_RELAY_ADDR=100.64.0.1\n"
+            "GOBLIN_EMBED_RELAY_ADDR=100.64.0.2\nGOBLIN_EMBED_MODEL=m\n",
+        )
+        for bad in bad_files:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                memory_dir = self.seed_memory_dir(root)
+                cfg_dir = root / "cfg"
+                cfg_dir.mkdir()
+                (cfg_dir / "embed-relay.env").write_text(bad)
+                user_unit_dir = root / "user-units"
+                with self.assertRaises(SystemExit):
+                    install_assets(memory_dir, root / "systemd",
+                                   cfg_dir, user_unit_dir)
+                for name in install.EMBED_UNITS:
+                    self.assertFalse((user_unit_dir / name).exists(), name)
+
     def test_copies_quadlet_guard_and_watch_with_modes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             memory_dir = Path(tmp) / "src"
@@ -328,7 +459,8 @@ class InsertJson5Test(unittest.TestCase):
 
 
 FAKED = ("preflight", "prompt_answers", "prompt_bank", "ask_yes", "run",
-         "http_ok", "probe", "goblin_stable", "time", "CFG_DIR", "SYSTEMD_DIR",
+         "http_ok", "probe", "goblin_stable", "create_bank", "wire_goblin",
+         "time", "CFG_DIR", "SYSTEMD_DIR",
          "POSTGRES_ENV", "HINDSIGHT_ENV", "main")
 
 
@@ -481,7 +613,7 @@ class MainFlowTest(unittest.TestCase):
             restarts.append(command)
             return subprocess.CompletedProcess(command, 0, "", "")
 
-        def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        def fake_run(command: list[str], timeout: float = 600) -> subprocess.CompletedProcess[str]:
             runs.append(command)
             return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -594,7 +726,7 @@ class MainFlowTest(unittest.TestCase):
             command, 0, f"{api_state}\n", "")
         install.http_ok = lambda url: True
 
-        def fake_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        def fake_run(command: list[str], timeout: float = 600) -> subprocess.CompletedProcess[str]:
             runs.append(command)
             return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -642,6 +774,105 @@ class MainFlowTest(unittest.TestCase):
         self.existing_stack()
         runs = self.run_existing("active", ["--no-start"])
         self.assertEqual(runs, [["systemctl", "--user", "daemon-reload"]])
+
+    def write_relay_switch(self) -> None:
+        install.CFG_DIR.mkdir(parents=True, exist_ok=True)
+        (install.CFG_DIR / "embed-relay.env").write_text(EmbedRelayEnvTest.VALID)
+
+    def test_existing_install_enables_embed_relay_when_switched(self) -> None:
+        self.existing_stack()
+        self.write_relay_switch()
+        runs = self.run_existing("active", [])
+        self.assertEqual(runs, [
+            ["systemctl", "--user", "daemon-reload"],
+            ["systemctl", "--user", "daemon-reload"],
+            ["systemctl", "--user", "enable", "--now",
+             install.RELAY_UNIT, install.PIN_TIMER],
+            ["systemctl", "--user", "enable", "--now", install.WATCH_TIMER]])
+        for name in install.EMBED_UNITS:
+            self.assertTrue((install.USER_UNIT_DIR / name).is_file(), name)
+
+    def test_reconfigure_enables_relay_before_api_restart(self) -> None:
+        # The API test-embeds during init: a switch to local embeddings on
+        # reconfigure must have the relay live first.
+        self.fake_prompts()
+        install.POSTGRES_ENV.parent.mkdir(parents=True)
+        install.POSTGRES_ENV.write_text("POSTGRES_PASSWORD=existing\n")
+        install.HINDSIGHT_ENV.write_text("HINDSIGHT_API_LLM_MODEL=old\n")
+        self.write_relay_switch()
+        commands: list[list[str]] = []
+
+        def record(command: list[str], timeout: float = 600) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        install.run = record
+        install.probe = record
+        install.http_ok = lambda url: True
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.main(["--reconfigure"])
+        enable_cmd = ["systemctl", "--user", "enable", "--now",
+                      install.RELAY_UNIT, install.PIN_TIMER]
+        restart_cmd = ["systemctl", "--user", "restart", install.API_UNIT]
+        self.assertIn(enable_cmd, commands)
+        self.assertIn(restart_cmd, commands)
+        self.assertLess(commands.index(enable_cmd),
+                        commands.index(restart_cmd))
+        for name in install.EMBED_UNITS:
+            self.assertTrue((install.USER_UNIT_DIR / name).is_file(), name)
+
+    def test_fresh_start_enables_relay_before_api_start(self) -> None:
+        self.fake_prompts()
+        self.fake_yes()
+        self.write_relay_switch()
+        commands: list[list[str]] = []
+
+        def record(command: list[str], timeout: float = 600) -> subprocess.CompletedProcess[str]:
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        install.run = record
+
+        def fake_probe(command: list[str]) -> subprocess.CompletedProcess[str]:
+            if "is-active" in command:
+                return subprocess.CompletedProcess(command, 0, "active\n", "")
+            if "inspect" in command:
+                return subprocess.CompletedProcess(command, 0, "healthy\n", "")
+            if "show" in command:
+                return subprocess.CompletedProcess(
+                    command, 0, f"Wants={install.API_UNIT}\n", "")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        install.probe = fake_probe
+        install.http_ok = lambda url: True
+        install.create_bank = lambda bank_id, mission: None
+        install.wire_goblin = lambda goblin_home, bank_id: True
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.main(["--goblin-home", str(self.goblin_home)])
+        enable_cmd = ["systemctl", "--user", "enable", "--now",
+                      install.RELAY_UNIT, install.PIN_TIMER]
+        api_start = ["systemctl", "--user", "start", install.API_UNIT]
+        self.assertIn(enable_cmd, commands)
+        self.assertIn(api_start, commands)
+        self.assertLess(commands.index(enable_cmd),
+                        commands.index(api_start))
+
+    def test_no_start_installs_embed_assets_without_enabling(self) -> None:
+        self.fake_prompts()
+        self.fake_yes()
+        self.write_relay_switch()
+        runs: list[list[str]] = []
+
+        def fake_run(command: list[str], timeout: float = 600) -> subprocess.CompletedProcess[str]:
+            runs.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        install.run = fake_run
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.main(["--no-start", "--goblin-home", str(self.goblin_home)])
+        self.assertEqual(runs, [])
+        for name in install.EMBED_UNITS:
+            self.assertTrue((install.USER_UNIT_DIR / name).is_file(), name)
 
     def test_main_no_start_never_leaks_secrets_to_output(self) -> None:
         self.fake_prompts()

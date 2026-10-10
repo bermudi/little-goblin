@@ -172,7 +172,9 @@ http: { port: 8787 },
 - `telegram.apiRoot` — leave unset for Telegram's cloud API. Point it at a
   self-hosted `telegram-bot-api` in `--local` mode for large files (uploads
   up to 2 GB, files read straight off disk). Needs an `api_id`/`api_hash`
-  app registration on the server side.
+  app registration on the server side. The Telegram client reads this at
+  startup: a change saved from Settings is written at once but applies on
+  the next restart (the status card lists it under "Restart applies").
 - `publicUrl` — the external HTTPS address of the web surfaces (the mini
   app and the app channel both hang off it — e.g. via `tailscale serve`,
   `tailscale funnel`, or any reverse proxy pointing at

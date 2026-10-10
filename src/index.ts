@@ -102,6 +102,9 @@ async function boot() {
 	// Shared ref: the mini app swaps this in place on save; everything
 	// reads .current at point of use.
 	const configRef: ConfigRef = { current: config, ttsDown: false };
+	// The Telegram client reads apiRoot once, at process start (tg/mod.ts).
+	// A later save writes the file but not the live client, so it is hinted.
+	const apiRootBoot = config.telegram.apiRoot;
 	const auth = loadAuth();
 	const store = openStore(paths.db());
 	for (const conv of store.listAppConversations()) store.initializeAppSettings(conv.id, config);
@@ -644,6 +647,9 @@ async function boot() {
 		if (configRef.current.appToken !== appTokenName) {
 			log.warn("appToken changed — restart to apply");
 		}
+		if (configRef.current.telegram.apiRoot !== apiRootBoot) {
+			log.warn("telegram.apiRoot changed — restart to apply");
+		}
 		// The delegation block is boot-frozen (adapters + definitions are
 		// one snapshot) — changes need a restart.
 		if (
@@ -663,6 +669,7 @@ async function boot() {
 			hints.push("memory");
 		}
 		if (cur.appToken !== appTokenName) hints.push("appToken");
+		if (cur.telegram.apiRoot !== apiRootBoot) hints.push("telegram.apiRoot");
 		if (JSON.stringify(cur.delegation ?? null) !== JSON.stringify(delegationBoot ?? null)) {
 			hints.push("delegation");
 		}

@@ -249,11 +249,15 @@ async function install(): Promise<void> {
 		writeFileSync(
 			join(staging, "goblin.service"),
 			render("goblin.service", [
-				["/home/daniel/build/goblin-v2", repo],
 				["/home/daniel/goblin", target],
 				["/usr/bin/bun", bun],
 				...common,
-			]).replace(/^Environment=PATH=.*$/m, `Environment=PATH=${path}`),
+			])
+				// WorkingDirectory is line-rewritten, not literal-replaced: the
+				// template's value is this box's truth and must not stay coupled
+				// to a substitution literal that silently no-ops on rename.
+				.replace(/^WorkingDirectory=.*$/m, `WorkingDirectory=${repo}`)
+				.replace(/^Environment=PATH=.*$/m, `Environment=PATH=${path}`),
 			{ mode: 0o644 },
 		);
 		if (herdr) {

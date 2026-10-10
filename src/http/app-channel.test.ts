@@ -1573,6 +1573,12 @@ test("conversation settings are isolated, durable, validated, and only future ch
 		expect(store.get("app/settings-b")).toMatchObject({ model: "zai/m", thinking: "medium" });
 		expect((await patch(a, { model: "missing/x" })).status).toBe(422);
 		expect((await patch(a, { model: "bare" })).status).toBe(422);
+		const sentinel = "CONFIG_FAKE_SECRET_SENTINEL";
+		for (const path of [a, "/api/app/config"]) {
+			const refused = await patch(path, { model: sentinel });
+			expect(refused.status).toBe(422);
+			expect(await refused.text()).not.toContain(sentinel);
+		}
 		expect((await patch(a, { thinking: "invalid" })).status).toBe(422);
 		expect((await patch(a, {})).status).toBe(422);
 		expect(
@@ -1752,6 +1758,10 @@ describe("app operator surface", () => {
 			// The app door has no requester id — the schema's min(1) is the
 			// lockout guard (a save that empties allowedUsers is refused).
 			expect((await post(etag, { allowedUsers: [] })).status).toBe(422);
+			const sentinel = "SETTINGS_FAKE_SECRET_SENTINEL";
+			const refused = await post(etag, { model: sentinel });
+			expect(refused.status).toBe(422);
+			expect(await refused.text()).not.toContain(sentinel);
 			expect(configRef.current.allowedUsers).toEqual([42]);
 			// A JSON mutation must claim application/json (#75).
 			expect(

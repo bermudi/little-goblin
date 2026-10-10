@@ -43,6 +43,7 @@ import {
 import {
 	loadConfig,
 	parseConfig,
+	ConfigValidationError,
 	paths,
 	splitModelRef,
 	thinkingLevels,
@@ -653,6 +654,9 @@ export async function handleAppApi(
 				// before initialization so a bad patch writes nothing.
 				parseConfig({ ...cfg, ...parsed.data });
 			} catch (err) {
+				if (err instanceof ConfigValidationError) {
+					return Response.json({ error: err.message }, { status: 422, headers: NO_STORE });
+				}
 				if (!(err instanceof z.ZodError)) throw err;
 				return Response.json({ error: z.prettifyError(err) }, { status: 422, headers: NO_STORE });
 			}
@@ -894,6 +898,9 @@ export async function handleAppApi(
 				});
 				return Response.json(configView(fresh ?? merged), { headers: NO_STORE });
 			} catch (err) {
+				if (err instanceof ConfigValidationError) {
+					return Response.json({ error: err.message }, { status: 422, headers: NO_STORE });
+				}
 				if (err instanceof z.ZodError) {
 					return Response.json({ error: z.prettifyError(err) }, { status: 422, headers: NO_STORE });
 				}

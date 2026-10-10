@@ -19,6 +19,7 @@ import { thinkingLevelsFor } from "../agent/providers.ts";
 import {
 	loadConfig,
 	parseConfig,
+	ConfigValidationError,
 	fetchKinds,
 	providerKinds,
 	searchKinds,
@@ -181,6 +182,9 @@ async function saveConfig(
 			},
 		);
 	} catch (err) {
+		if (err instanceof ConfigValidationError) {
+			return Response.json({ error: err.message }, { status: 422, headers: NO_STORE });
+		}
 		if (!(err instanceof z.ZodError)) {
 			log.error(`${actor.via} config save failed`, err, { ...who, wrote });
 			return Response.json(

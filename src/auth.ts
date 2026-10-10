@@ -40,12 +40,17 @@ export function parseAuthFile(raw: string): AuthRecord[] {
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(trimmed);
-		} catch (err) {
-			throw new Error(`${paths.auth()}:${i + 1}: invalid JSON — ${(err as Error).message}`);
+		} catch {
+			// Native parser messages can quote credentials; never keep them as a cause.
+			throw new Error(`${paths.auth()}:${i + 1}: invalid JSON`);
 		}
 		const rec = recordSchema.safeParse(parsed);
 		if (!rec.success) {
-			throw new Error(`${paths.auth()}:${i + 1}: ${z.prettifyError(rec.error)}`);
+			const details = rec.error.issues.map((issue) => {
+				const field = issue.path[0];
+				return `${field === "name" || field === "value" ? field : "record"}: ${issue.code}`;
+			});
+			throw new Error(`${paths.auth()}:${i + 1}: invalid record — ${details.join("; ")}`);
 		}
 		records.push({ name: rec.data.name, value: rec.data.value, line: i + 1 });
 	}

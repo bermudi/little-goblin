@@ -18,11 +18,21 @@ journalctl --user -u goblin -f    # live logs
 On prod, restarting/deploying Goblin, installing/reloading units, or
 publishing `app/dist` requires bermudi's OK. The commands here are an
 operator runbook, not permission to run them during source verification.
+`app/dist` is read from disk on every request: building there publishes live
+assets even without a restart. For verification use
+`bun run vite build app --outDir /tmp/<unique-dir>`, never live `app/dist`.
+Client publication and backend restart are one coordinated approved rollout;
+the plain Settings client is instead loaded once at backend startup.
 
-After changing `goblin.json5` **by hand**, restart. (Saves from the Telegram
-Settings mini app apply immediately — no restart.) Re-running
-`scripts/install.sh` after a `git pull` refreshes the unit file with your
-current paths.
+After changing `goblin.json5` **by hand**, use an approved restart. Settings
+mini-app saves apply live where supported; boot-pinned settings (such as
+`telegram.apiRoot` and `appToken`) still need a restart.
+
+`scripts/install.sh` is **fresh-only**, not an update or repair command. It
+must refuse any existing installed Goblin target, even a stopped one, before
+dependency sync or other mutations. Existing-target reinstall/repair and unit
+refresh are separate, explicitly authorized operator actions. Source changes
+do not refresh installed units. Prod updates use [Deploying](#deploying).
 
 If the optional memory stack is installed, it takes care of itself: it
 starts on boot with goblin, and a 5-minute timer (`goblin-memory-watch.timer`)
@@ -41,6 +51,65 @@ still recorded in history, then the process exits. A crash mid-reply leaves
 the same shape minus the flush — your message is in history, so the next
 turn just answers it. The bot never auto-retries after a crash: replaying
 half-run tool calls would be worse than asking again.
+
+## Diagnostics and first-start acceptance
+
+**Source integration:** shared Doctor checks/CLI, safe CONFIG/AUTH parser fixes,
+threshold-independent lifecycle logging and launcher bootstrap are integrated
+on the feature branch.
+None of this installs/restarts production; older running code/logs may still
+contain parser fragments. Keep raw logs private and use safe Doctor reports.
+
+Run Doctor from the intended checkout with the explicit target
+`GOBLIN_HOME` and the **service's PATH**, not an assumed login-shell PATH:
+
+```sh
+# From the chosen checkout; set PATH to the target service PATH first.
+GOBLIN_HOME="$HOME/goblin" bun --no-install run src/doctor.ts --phase installed
+# Add --json for a structured report; installed is the default phase.
+```
+
+Do not dump a service environment to discover the home or credentials. Confirm
+checkout/home identity explicitly: a feature checkout without dependencies or
+assets is not proof prod is broken. Bootstrap creates the home `doctor`
+symlink pointing to checkout `scripts/doctor`, delegating to Doctor with default phase
+installed. Existing installations receive that bootstrap change only on an
+approved backend rollout, not by running diagnosis.
+
+Doctor is detection, not repair: safe metadata, findings and manual remedies.
+It does not resolve arbitrary credential commands, provision, warm/unlock,
+build assets, download ASR artifacts, start units, launch agents, or make a
+paid generation test. Local reference presence does not prove provider access.
+Read-only DB inspection must not migrate/checkpoint or change main/WAL data;
+SQLite may still create an incidental SHM coordination file.
+Configured synthetic embedding probes can load/cache the configured model
+and affect ordinary runtime counters; they retain no facts in a memory bank.
+
+Fresh install follows this order, not an update sequence:
+
+1. Cheap prerequisites/input checks and existing-target refusal.
+2. Frozen dependencies, then confirm explicit provisioning is already complete.
+3. `bun --no-install run src/doctor.ts --phase preflight [--json]` from the checkout with
+   target home/service PATH. Preflight skips boot-created paths/DB, units and
+   not-yet-built assets; it does not call an untouched checkout healthy.
+4. App build, then dedicated `scripts/check-app-assets.ts`, invoking shared
+   `checkAppAssets(checkout)`, before unit validation/install/enable.
+5. After the approved start, bounded `scripts/check-startup.ts` acceptance:
+   current-invocation boot-complete (`goblin up`) **and** `long polling started`
+   evidence, plus actual loopback `/app/` HTML and referenced local assets.
+   An old ready line, active status, timeout, restart or missing evidence
+   cannot pass. Only safe event metadata/failure categories are reported,
+   never raw journal bodies. The coordinator's two lifecycle events must
+   remain observable even at warn/error; ordinary logs retain their threshold.
+6. Installed Doctor checks, then the operator's explicit Telegram reply and
+   app-conversation handshake. Public HTTPS and configured optional features
+   need their own acceptance; local startup checks do not prove them.
+
+See [Setup](setup.md) for provisioning, capability dependencies and the full
+fresh-install runbook. No failure grants permission to auto-repair/restart or
+to re-run the installer over an existing target.
+SIGINT/SIGTERM stop installer-owned subprocess groups and later phases, not
+already accepted systemd jobs/services. No automatic rollback is authorized.
 
 ## Key snapshots
 
@@ -144,6 +213,12 @@ recreates the container under the new spec.
 
 ## Logs
 
+Keep raw logs private. Prefer safe Doctor findings when sharing diagnostics;
+do not paste arbitrary incident excerpts into agent context. Shared CONFIG/AUTH
+source fixes construct safe parser errors, but do not sanitize old logs or
+arbitrary external errors. Startup acceptance consumes only allowlisted
+event metadata, not a raw log dump.
+
 Every line is JSON, on stdout (→ the journal) and appended to
 `~/goblin/state/goblin.log` (the durable copy — same content, survives
 journal rotation). The log level comes from config (`debug` | `info` |
@@ -183,7 +258,13 @@ export plaintext secrets into workspace files or logs. Offline recovery
 needs an available, unlocked snapshot; remote re-sync also needs the
 scoped agent/bootstrap to remain valid.
 
-The checkout itself (`little-goblin/`) holds no state — re-cloneable any time.
+Optional long-term memory lives in Hindsight/PostgreSQL, separately from
+Goblin's SQLite conversation state; include the separate
+[memory backup/recovery plan](memory.md) when enabled.
+
+The checkout itself (`little-goblin/`) holds no conversation state — it is
+re-cloneable, but installed units and home shims still refer to its path, and
+`app/dist` must be rebuilt through an approved rollout.
 
 Peeking at history directly is fine (read-only!): the `conversations` table
 holds one row per topic/chat, `events` holds the messages as JSON. But
@@ -194,9 +275,9 @@ it only while the bot is stopped, if ever.
 
 | Symptom | Check |
 |---|---|
-| Service crash-loops or won't start | `journalctl --user -u goblin` — startup errors name the file and the problem (missing config/auth, JSON5 typo, unknown provider, bad `auth.jsonl` line) |
+| Service crash-loops or won't start | Run installed Doctor with the intended checkout/home/service PATH; inspect journal privately if needed. Older deployed code/logs can still contain parser fragments — do not share raw errors |
 | `insecure permissions … chmod 600` | `chmod 600 ~/goblin/auth.jsonl` — group/world-readable secrets are refused, not warned about |
-| `no secret named "…"` | `auth.jsonl` needs a record matching every provider `auth` name (and `transcription.auth`) plus `telegram` |
+| `no secret named "…"` | `auth.jsonl` needs `telegram`, every configured provider `auth` name (Codex uses its own OAuth file), and configured optional auth refs; create/edit privately with mode 0600 |
 | Secret command fails | For `pass-keys`, check `status goblin-dev` and `journalctl --user -u goblin-keys`; check wallet unlock/availability and snapshot/key presence first. Fix bootstrap/profile/item grants and explicitly `pass-keys warm goblin-dev` as needed. `get` never fetches remotely on a miss. Don't print values. Auth edits/rotated resolved keys need an approved Goblin restart; service `PATH` covers `~/bin` and `~/.local/bin` |
 | Key sync fails but the bot still works | Last-good snapshots remain usable; `pass-keys status` reports age/availability. Repair the background sync without deleting snapshots or bypassing the scoped agent |
 | Keys unavailable after reboot | Persistent snapshots need an available, unlocked wallet. Linger is not wallet unlock; PAM auto-unlock is unverified. Foreground reads fail loud rather than waiting for Pass |
@@ -206,13 +287,14 @@ it only while the bot is stopped, if ever.
 | `config would remove your own telegram user id` | the save you're attempting drops your id from `allowedUsers` — fix the field, save again |
 | Voice notes the model "can't hear" | `transcription` unset, or its provider was down — the log says which; the file itself is still in `attachments/` |
 | `/memory` says degraded — blocked retention(s) | a retention failed permanently (e.g. provider credit ran out). `/memory` lists the short doc id + error; `/memory retry` resends with a fresh operation id (replays of the old one are dead server-side), `/memory dismiss` drops it (kept for audit). The mini-app memory tab shows the same status. The affected topic got one notice when it first blocked |
-| `/app/` answers 500 / "app client not built" | run `bun run app:build` in the checkout — the client is a build artifact (`app/dist`), absent on a fresh clone and stale after `git pull` |
+| `/app/` answers 500 / "app client not built" | The client is a build artifact, absent on a fresh clone and potentially stale after source updates. Build/check assets before first start; on an existing/prod target use the approved coordinated rollout, never an unapproved live `app/dist` build |
 | `/app/` asks for a token you didn't expect | the server is in bearer mode — `appToken` is set in `goblin.json5`; paste the value of the `auth.jsonl` record it names. Never had a token? `appToken` was probably just added — it's boot-pinned, so a running process ignores the change until restart |
 | `/app/` shows "The stored token stopped working" | the `auth.jsonl` record's value rotated (rotation needs a goblin restart to take) — the app's own "Paste a new token" door clears it |
 | All speech synthesis suddenly fails | the Edge endpoint is unofficial and drifts — check the log, then update the bot |
 | `ffmpeg` warnings at boot | install `ffmpeg` — voice features and large-file transcription need it |
 | Thinking levels look wrong for a model | capability catalogs (models.dev, OpenRouter) refresh daily and are cached in `state/` — a failed fetch warns and falls back safely; it heals itself |
 
-Can't pin it down? Grab the last few hundred lines of `~/goblin/state/goblin.log`
-around the incident — that's the whole story by design — and paste the
-relevant bit to the bot in chat.
+Can't pin it down? Share safe Doctor findings once integrated. If an incident
+needs logs, inspect the relevant `state/goblin.log` excerpt privately and review
+it for credentials before sharing; never paste auth/config values, parser
+fragments or an unreviewed raw log dump.

@@ -1,12 +1,14 @@
+export type ProcessGroupMode = "new" | "inherit";
+
 // Bounded subprocess execution. spawnProc only fixes the stdio layout and
 // can throw (caller labels the failure); boundedRun never hangs — the
 // promise always settles:
 //
 //   timeout/abort/cap-overflow → SIGTERM → grace → SIGKILL → give up
 //
-// Kills target the whole process group (the child is spawned detached, so
-// it leads its own group): a timed-out `bash -c` takes its backgrounded
-// grandchildren with it instead of leaving them running on the box.
+// By default kills target the child's new process group: a timed-out
+// `bash -c` takes its backgrounded grandchildren with it. Explicit inherited
+// probes kill only their leader; their outer supervisor owns group cleanup.
 //
 // and pipe EOF gets a short grace after process exit, then the readers are
 // cut: a backgrounded or orphaned child inheriting the write end must not
@@ -51,12 +53,13 @@ export interface BoundedProcBytes {
 
 // Fixed stdio for callers: both pipes captured, the daemon's environment
 // (no secrets live there by design — auth.jsonl keeps them out). Detached
-// so the child leads its own process group — group kills below reach
-// grandchildren. Throws if the process can't be spawned.
+// by default so group kills reach grandchildren. Inherited mode is only
+// for callers with an outer group owner. Throws if spawning fails.
 export function spawnProc(
 	argv: string[],
 	cwd?: string,
 	stdin?: Bun.SpawnOptions.Writable,
+	processGroup: ProcessGroupMode = "new",
 ): Bun.ReadableSubprocess {
 	return Bun.spawn(argv, {
 		...(cwd !== undefined ? { cwd } : {}),
@@ -64,18 +67,24 @@ export function spawnProc(
 		stdin: stdin ?? "ignore",
 		stdout: "pipe",
 		stderr: "pipe",
-		detached: true,
+		detached: processGroup === "new",
 	});
 }
 
-// Signal the whole process group; fall back to the leader-only kill when
-// the group is already gone (ESRCH) or the platform refuses it.
-function killGroup(proc: Bun.ReadableSubprocess, signal: NodeJS.Signals): void {
-	try {
-		process.kill(-proc.pid, signal);
-		return;
-	} catch {
-		// Group gone or unaddressable — try the leader itself.
+// Never signal an inherited group: it includes the caller. New-group owners
+// can signal their group even after leader exit, then fall back to the leader.
+export function killProc(
+	proc: Bun.ReadableSubprocess,
+	signal: NodeJS.Signals,
+	processGroup: ProcessGroupMode = "new",
+): void {
+	if (processGroup === "new") {
+		try {
+			process.kill(-proc.pid, signal);
+			return;
+		} catch {
+			// Group gone or unaddressable — try the leader itself.
+		}
 	}
 	try {
 		proc.kill(signal);
@@ -141,7 +150,12 @@ type Collector<S> = (
 // collector; stderr is always text — it's only ever an error message.
 async function runBounded<S>(
 	proc: Bun.ReadableSubprocess,
-	opts: { timeoutMs: number; maxOutput: number; abortSignal?: AbortSignal },
+	opts: {
+		timeoutMs: number;
+		maxOutput: number;
+		abortSignal?: AbortSignal;
+		processGroup?: ProcessGroupMode;
+	},
 	collectStdout: Collector<S>,
 ): Promise<{
 	stdout: S;
@@ -156,10 +170,10 @@ async function runBounded<S>(
 	let drainCut = false;
 
 	const killAndReap = async (): Promise<number | null> => {
-		killGroup(proc, "SIGTERM");
+		killProc(proc, "SIGTERM", opts.processGroup);
 		let code = await Promise.race([proc.exited, sleep(KILL_GRACE_MS)]);
 		if (code === undefined) {
-			killGroup(proc, "SIGKILL");
+			killProc(proc, "SIGKILL", opts.processGroup);
 			code = await Promise.race([proc.exited, sleep(KILL_GRACE_MS)]);
 		}
 		return code ?? null;
@@ -219,7 +233,12 @@ async function runBounded<S>(
 // Run an already-spawned process to a settled result — text stdout.
 export async function boundedRun(
 	proc: Bun.ReadableSubprocess,
-	opts: { timeoutMs: number; maxOutput: number; abortSignal?: AbortSignal },
+	opts: {
+		timeoutMs: number;
+		maxOutput: number;
+		abortSignal?: AbortSignal;
+		processGroup?: ProcessGroupMode;
+	},
 ): Promise<BoundedProc> {
 	return runBounded(proc, opts, collect);
 }
@@ -229,7 +248,12 @@ export async function boundedRun(
 // bounded-settles guarantee — one runner, different collector.
 export async function boundedRunBinary(
 	proc: Bun.ReadableSubprocess,
-	opts: { timeoutMs: number; maxOutput: number; abortSignal?: AbortSignal },
+	opts: {
+		timeoutMs: number;
+		maxOutput: number;
+		abortSignal?: AbortSignal;
+		processGroup?: ProcessGroupMode;
+	},
 ): Promise<BoundedProcBytes> {
 	return runBounded(proc, opts, collectBytes);
 }

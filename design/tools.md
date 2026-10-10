@@ -15,6 +15,11 @@ All tools run in the deployment workspace — conversations have no cwd and
 there is no `/cd`. Working elsewhere is the agent's own business (`cd x &&
 …` inside `bash`), not conversation state.
 
+The static bash description advertises `../doctor --json` for dependency
+diagnosis, not repairs or restarts. This is an existing tool's discoverable
+workspace utility, not a new native tool or per-turn prompt injection;
+see [Doctor](doctor.md).
+
 Tool input schemas are flat objects at the root; the per-action contract
 is a discriminated union enforced inside `execute`. A root
 `discriminatedUnion` serializes to root-level oneOf, which some providers
@@ -271,4 +276,3 @@ history — "what did we decide about X last month?".
   rule as `memory_search`.
 - Output: bounded list of topic title · date · role · snippet, plus
   the address/event id to page context around a hit.
-

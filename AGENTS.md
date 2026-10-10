@@ -170,7 +170,14 @@ reported signal, not a gate; run it when you touch a file.
 
 The polish backlog (gaps vs openclaw/hermes, audited 2026-10-02) lives in
 GitHub issues labeled `polish`, ranked `P1`–`P3`, with `area:*` labels;
-#52 records the ideas declined as non-goals — check it before re-proposing.
+#52 is the implemented v1 doctor, not a declined-ideas ledger. Current
+scope lives in DESIGN.md and design/, not historical issue labels.
+
+`bun run doctor` is read-only diagnosis, not permission to repair or
+restart. It emits one text/JSON report on stdout; diagnostic operational
+messages belong on stderr, never mixed into JSON. Shared checks must not
+bootstrap state or resolve arbitrary auth refs. Safe config-validation
+errors retain their typed HTTP 422 contract; I/O errors remain 500.
 
 No Litespec, no specs tree, no decision records. Small commits, often, on
 main or short-lived branches. If a design tension is real enough to argue

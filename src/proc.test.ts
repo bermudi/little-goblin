@@ -13,6 +13,19 @@ describe("bounded subprocess", () => {
 		expect(p.truncated).toBe(false);
 	});
 
+	test("inherited mode terminates only the probe, never the caller group", async () => {
+		const controller = new AbortController();
+		const proc = spawnProc(["/bin/sh", "-c", "exec sleep 60"], undefined, undefined, "inherit");
+		const pending = boundedRun(proc, {
+			...OPTS,
+			processGroup: "inherit",
+			abortSignal: controller.signal,
+		});
+		controller.abort();
+		expect((await pending).exitCode).not.toBe(0);
+		expect(process.pid).toBeGreaterThan(0);
+	});
+
 	test("a flooded stream is killed and flagged truncated", async () => {
 		const p = await boundedRun(spawnProc(["/bin/sh", "-c", "seq 1 500000"]), {
 			...OPTS,

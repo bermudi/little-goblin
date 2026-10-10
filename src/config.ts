@@ -34,6 +34,7 @@ export const paths = {
 	mcporter: () => join(goblinHome(), "mcporter.json"),
 	mcpShim: () => join(goblinHome(), "mcp"),
 	goblinMailShim: () => join(goblinHome(), "goblin-mail"),
+	doctorShim: () => join(goblinHome(), "doctor"),
 	workspace: () => join(goblinHome(), "workspace"),
 	soul: () => join(goblinHome(), "workspace", "SOUL.md"),
 	agents: () => join(goblinHome(), "workspace", "AGENTS.md"),
@@ -147,6 +148,7 @@ export function ensureHomeLayout(): void {
 	);
 	refreshMcpShim();
 	refreshGoblinMailShim();
+	refreshDoctorShim();
 	seedFile(
 		paths.user(),
 		[
@@ -218,6 +220,31 @@ function refreshGoblinMailShim(): void {
 	}
 	if (!isLink) {
 		log.error("not clobbering the goblin-mail shim: a real file is in the way", undefined, {
+			path: shim,
+		});
+		return;
+	}
+	if (readlinkSync(shim) !== target) {
+		unlinkSync(shim);
+		symlinkSync(target, shim);
+	}
+}
+
+function refreshDoctorShim(): void {
+	const shim = paths.doctorShim();
+	const target = join(import.meta.dir, "..", "scripts", "doctor");
+	let isLink: boolean | null = null;
+	try {
+		isLink = lstatSync(shim).isSymbolicLink();
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+	}
+	if (isLink === null) {
+		symlinkSync(target, shim);
+		return;
+	}
+	if (!isLink) {
+		log.error("not clobbering the doctor shim: a real file is in the way", undefined, {
 			path: shim,
 		});
 		return;
@@ -335,7 +362,10 @@ export const delegationTargetSchema = z
 		session: sessionNameSchema.optional(),
 		root: z
 			.string()
-			.regex(/^(?:\/|~(?:\/|$))/, "delegation target root must be absolute, ~, or ~/... (bare ~user is not expanded)")
+			.regex(
+				/^(?:\/|~(?:\/|$))/,
+				"delegation target root must be absolute, ~, or ~/... (bare ~user is not expanded)",
+			)
 			.optional(),
 		harnesses: harnessMapSchema.optional(),
 	})
@@ -665,15 +695,19 @@ const configSchema = z
 			let provider: string;
 			try {
 				provider = splitModelRef(ref).provider;
-			} catch (err) {
-				ctx.addIssue({ code: "custom", path: [path], message: (err as Error).message });
+			} catch {
+				ctx.addIssue({
+					code: "custom",
+					path: path.split("."),
+					message: 'model ref must be "<provider>/<model-id>"',
+				});
 				continue;
 			}
 			if (!(provider in cfg.providers)) {
 				ctx.addIssue({
 					code: "custom",
-					path: [path],
-					message: `model "${ref}" names provider "${provider}", which is not in providers`,
+					path: path.split("."),
+					message: "model names a provider which is not in providers",
 				});
 			}
 		}
@@ -707,11 +741,19 @@ export function loadConfig(): Config | null {
 	try {
 		parsed = JSON5.parse(raw);
 	} catch (err) {
-		throw new Error(`${paths.config()}: invalid JSON5 — ${(err as Error).message}`);
+		// JSON5 messages quote input. Only its numeric location is safe to retain.
+		const line =
+			typeof err === "object" && err !== null && "lineNumber" in err ? err.lineNumber : undefined;
+		const location =
+			typeof line === "number" && Number.isSafeInteger(line) && line > 0 ? `:${line}` : "";
+		throw new Error(`${paths.config()}${location}: invalid JSON5`);
 	}
-	const result = configSchema.safeParse(parsed);
-	if (!result.success) {
-		throw new Error(`${paths.config()}: ${z.prettifyError(result.error)}`);
+	let config: Config;
+	try {
+		config = parseConfig(parsed);
+	} catch (error) {
+		if (error instanceof ConfigValidationError) throw new Error(error.message);
+		throw error;
 	}
 	const retired = z
 		.object({ delegation: z.record(z.string(), z.unknown()).optional() })
@@ -729,14 +771,33 @@ export function loadConfig(): Config | null {
 			});
 		}
 	}
-	return result.data;
+	return config;
 }
 
-// The mini app parses before writing to inspect the result (e.g. refuse
-// a self-lockout). Retired delegation keys strip under zod; only disk
-// loads warn, never translate them into active settings.
+// HTTP callers must distinguish invalid edits (422) from I/O failures (500)
+// without retaining Zod's input-bearing payload.
+export class ConfigValidationError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "ConfigValidationError";
+	}
+}
+
+// Retired delegation keys strip here; only disk loads warn.
 export function parseConfig(raw: unknown): Config {
-	return configSchema.parse(raw);
+	const result = configSchema.safeParse(raw);
+	if (!result.success) {
+		// Nested record keys and issue messages may contain input. Report only
+		// schema-owned top-level fields and categories, not the ZodError itself.
+		const details = result.error.issues.map((issue) => {
+			const field = issue.path[0];
+			const safeField =
+				typeof field === "string" && Object.hasOwn(configSchema.in.shape, field) ? field : "config";
+			return `${safeField}: ${issue.code}`;
+		});
+		throw new ConfigValidationError(`${paths.config()}: invalid config — ${details.join("; ")}`);
+	}
+	return result.data;
 }
 
 // A hardened mode on the existing file survives this whole-file rewrite.
@@ -749,7 +810,7 @@ export function writeConfig(config: Config): void {
 export function splitModelRef(ref: string): { provider: string; modelId: string } {
 	const idx = ref.indexOf("/");
 	if (idx <= 0 || idx === ref.length - 1) {
-		throw new Error(`model ref must be "<provider>/<model-id>", got "${ref}"`);
+		throw new Error('model ref must be "<provider>/<model-id>"');
 	}
 	return { provider: ref.slice(0, idx), modelId: ref.slice(idx + 1) };
 }

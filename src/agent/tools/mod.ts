@@ -18,6 +18,7 @@ import { type OutgoingFile, sendFileTool } from "./send.ts";
 import { speakTool } from "./speak.ts";
 import { searchTool } from "./search.ts";
 import { transcribeTool } from "./transcribe.ts";
+import { uiTool } from "./ui.ts";
 import { visionTool, type VisionToolDeps } from "./vision.ts";
 import { writeFileTool } from "./write.ts";
 import type { MailToolDeps } from "./mail.ts";
@@ -78,11 +79,26 @@ export interface MakeToolsOptions {
 	mail?: MailToolDeps | undefined;
 	history?: HistorySearchDeps | undefined;
 	vision?: VisionToolDeps | undefined;
+	// App-channel gate: true mounts the interface tool (design/app.md →
+	// Intelligent UI). Boolean, not a dep bag — ui needs nothing.
+	ui?: boolean | undefined;
 }
 
 export function makeTools(options: MakeToolsOptions): ToolSet {
-	const { cwd, voice, program, file, memory, web, transcribe, delegate, mail, history, vision } =
-		options;
+	const {
+		cwd,
+		voice,
+		program,
+		file,
+		memory,
+		web,
+		transcribe,
+		delegate,
+		mail,
+		history,
+		vision,
+		ui,
+	} = options;
 	return {
 		read_file: readFileTool(cwd, vision !== undefined),
 		write_file: writeFileTool(cwd),
@@ -120,5 +136,7 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		// Past-chat search is local state, not a config block — always in
 		// the set (the store dep is unconditional at the composition root).
 		...(history ? { history_search: historySearchTool(history) } : {}),
+		// Last in the set so the Tools: line's shared prefix stays stable.
+		...(ui === true ? { ui: uiTool() } : {}),
 	};
 }

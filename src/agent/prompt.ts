@@ -278,6 +278,14 @@ export function buildSystemPrompt(
 					`  operator statements take precedence.`,
 				]
 			: []),
+		...(tools.includes("ui")
+			? [
+					`- ui renders an interface in the app (columns, steps, charts,`,
+					`  choices, a sandboxed html calculator…) — reach for it only`,
+					`  when layout carries meaning; text stays the default. Operator`,
+					`  taps come back as [ui] messages.`,
+				]
+			: []),
 		`- ${onApp ? "The goblin app" : "Telegram"} is the UI: messages are plain text/Markdown, media arrives as`,
 		`  file paths or inline parts. Keep replies chat-sized; write files for`,
 		`  anything long.`,

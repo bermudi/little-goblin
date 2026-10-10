@@ -137,7 +137,8 @@ its `app/` rejection line in place, `src/tg/notify.test.ts`).
 crossing, and it is a copy plus a bell, not mirroring), app-side push
 (Telegram stays the bell for its own conversations and, since Spin-off,
 for app background turns; app-native push waits until demanded),
-widgets, in-app voice mode, iOS.
+home-screen widgets, in-app voice mode, iOS. (In-transcript interface
+blocks are a different thing — Intelligent UI below.)
 
 ## Streaming members & resumable streams (ruling 2026-10-04)
 
@@ -357,3 +358,97 @@ delegation notice landing in a shelved spin-off or a message sent into
 one via its ping link brings the row back to the rail instead of
 accumulating replies unseen. Unarchiving through the client writes the
 same NULL directly.
+
+## Intelligent UI (ruling 2026-10-09)
+
+Operator ask, after OpenAI's GPT-6 "Intelligent UI" launch (2026-10-07):
+answers that are interfaces — a comparison side by side, a timeline, a
+chart, a tappable choice, a small calculator — rendered in the
+transcript instead of described in prose. Classified **chat-native for
+the app channel**: it is how an answer renders, not a second system.
+It stays chat-native only while it is stateless — no saved or
+re-openable "apps", no artifact store, no state that outlives the
+message. That line is machinery and needs its own ruling.
+
+**Mechanism: a component tree, not HTML.** One tool, `ui`, mounted on
+app conversations only (Telegram never sees it; guests never see it).
+The model's tool *input is the interface*: `{title?, blocks[]}`,
+zod-validated, from a fixed library of native components rendered by
+the app with its own design tokens. `execute` validates and returns a
+one-line ack — nothing runs. Store format = wire format holds: the
+tool part already persists in UIMessage history, so reload, resume,
+spin-off copies and history all carry the UI for free, and the model
+sees its own past interface as its own past tool call.
+
+- **Library (v1):** leaves — `text` (markdown), `callout`, `stats`,
+  `table`, `steps`, `chart` (bar/line, hand-drawn SVG), `choices`,
+  `form`, `html`; containers — `tabs`, `columns`, whose children are
+  leaves only. **Two levels, no recursion**: a recursive zod schema
+  emits `$ref`/`$defs` in the tool's JSON Schema, which
+  OpenAI-compatible providers handle unevenly, and a schema a
+  provider rejects breaks every app turn. A test pins "no `$ref`".
+- **Progressive render.** The AI SDK surfaces partially parsed tool
+  input in the `input-streaming` state; the client renders every
+  block that already validates and a skeleton for the one still
+  arriving — the "compiler" from OpenAI's post, for free. This needs
+  the provider to stream tool-input deltas; without them the UI
+  lands whole when the call completes, which is a degraded mode, not
+  a failure.
+- **Placement.** `ui` parts render inline in the message flow, never
+  inside the Worked fold; a validation failure renders as the normal
+  tool error row.
+- **Type repair, both sides.** Probed live, `zai/glm-5.3-flash` broke
+  9 of 22 comparison-style answers, mostly by dropping a block's `type`
+  discriminator (typically the last `choices`, sometimes followed by a
+  stray bare `{type}` fragment); after repair 3 of 22 still failed.
+  `normalizeUiInput` (shared, in `ui-schema.ts`) re-types a typeless
+  object by exact key-set match — every key declared by the
+  candidate, and the candidate parsing — with "fewest declared keys"
+  as the tiebreak and a tie meaning no repair; bare `{type}`
+  fragments drop. The server validates the repaired value (the wire
+  JSON Schema stays the SDK's verbatim zod conversion), and the client
+  renders through the same function, so history renders exactly as
+  the server accepted it. Invented key names (`callout_md`) are not
+  repaired — they fail validation, the model sees the tool error and
+  may retry. Repairs log `ui input repaired`, failures `ui input
+  invalid`.
+- **Judgment lives in the description.** Goblin's models are prompted,
+  not trained for this: the tool description says text is the
+  default and names when layout carries meaning. One environment line
+  in the system prompt points at it when the tool is in the set.
+
+**Interaction, two tiers.** Local state (tabs, form inputs) stays in
+React and never reaches the server. Actions — a `choices` button, a
+`form` submit — post an ordinary, *visible* user message
+(`[ui] <label>` / `[ui] <submit>: field=value, …`) through the same
+`sendMessage` the composer uses, so the transcript never lies about
+what was chosen and the reply rides the normal turn. Actions are
+disabled while a turn is running. No client-side tools: turns run
+server-side and outlive the client, and a turn parked on a browser
+round-trip would hang with the tab closed.
+
+**Escape hatch: `html`.** For answers that need computation — a bill
+splitter, a savings calculator, a small game — the `html` leaf
+renders model-written HTML in `<iframe sandbox="allow-scripts"
+srcdoc>`, never `allow-same-origin`, with an injected CSP meta
+(`default-src 'none'; script-src 'unsafe-inline'; style-src
+'unsafe-inline'; img-src data:`) and a minimal base stylesheet from
+the app's tokens. The opaque origin cannot read the app's token,
+storage or DOM; its mutations reach `/api/app/*` as `Origin: null` /
+cross-site and the trust-mode gate refuses them; reads lack CORS.
+Height is reported by an injected resize script via `postMessage`,
+accepted only from that iframe's own window and clamped. Rendered
+only once the input is complete — HTML does not stream usefully.
+**Accepted residual:** a script may navigate its own frame to an
+external URL, an exfiltration path. It adds no capability the agent
+lacks — `fetch` already reaches any URL — so prompt injection
+reaching the model is the threat either way, not this frame.
+
+**Cache.** The tool joins app conversations' tool sets at deploy:
+one cold prefix per live app conversation, same as any new tool.
+Their frozen prompt snapshots keep the old "Tools:" line until the
+next boundary (roll, compaction); the tool's own description carries
+the guidance meanwhile.
+
+**Logging.** The tool call line carries block count and kinds; an
+`html` block logs its byte size.

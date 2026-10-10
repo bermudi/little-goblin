@@ -1462,6 +1462,374 @@ a.hit-title {
 	color: var(--app-danger);
 }
 
+/* ---------- intelligent ui ---------- */
+
+/* The ui tool's rendered input — one column of blocks in the message
+   flow. Same language as the transcript: hairline borders, tokens
+   mixed off the two knobs, mono for small labels. */
+.ui {
+	display: flex;
+	flex-direction: column;
+	gap: 0.6rem;
+	margin: 0.55em 0;
+	font-size: 13.5px;
+	line-height: 1.5;
+}
+.ui-title {
+	font-size: 15px;
+	font-weight: 600;
+	letter-spacing: -0.01em;
+}
+.ui > .tool-body {
+	/* a streaming skeleton sits in the same rhythm as a block */
+	padding-left: 0;
+	margin: 0;
+}
+
+.ui-callout {
+	border-left: 2px solid var(--app-accent);
+	background: var(--app-hover);
+	border-radius: 0 6px 6px 0;
+	padding: 0.4rem 0.75rem;
+	font-size: 13.5px;
+}
+.ui-callout p:first-child {
+	margin-top: 0;
+}
+.ui-callout p:last-child {
+	margin-bottom: 0;
+}
+.ui-callout-title {
+	font-weight: 600;
+	margin-bottom: 0.1rem;
+}
+.ui-callout-warn {
+	border-left-color: color-mix(in oklab, #d29922 62%, var(--app-fg));
+}
+.ui-callout-success {
+	border-left-color: color-mix(in oklab, #3fb950 55%, var(--app-fg));
+}
+.ui-callout-danger {
+	border-left-color: var(--app-danger);
+}
+
+/* Stats — one hairline grid, cells separated by 1px dividers like the
+   table below (background shows through the gaps). */
+.ui-stats {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+	gap: 1px;
+	background: var(--app-divider);
+	border: 1px solid var(--app-divider);
+	border-radius: 8px;
+	overflow: hidden;
+}
+.ui-stat {
+	background: var(--app-bg);
+	padding: 0.45rem 0.7rem;
+}
+.ui-stat-value {
+	font-size: 18px;
+	font-weight: 600;
+	font-variant-numeric: tabular-nums;
+	letter-spacing: -0.01em;
+}
+.ui-stat-label {
+	color: var(--app-fg-muted);
+	font-size: 11.5px;
+}
+.ui-stat-note {
+	color: var(--app-fg-subtle);
+	font-size: 10.5px;
+	margin-top: 1px;
+}
+
+.ui-table {
+	overflow-x: auto;
+}
+.ui-table .md-table {
+	margin: 0;
+	font-size: 12.5px;
+}
+
+.ui-steps {
+	list-style: none;
+	/* the counter circles hang half a badge left of the timeline —
+	   the margin keeps that overhang inside the block's own box,
+	   plus a few px cushion against edge-clipping */
+	margin: 0 0 0 0.8rem;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	counter-reset: ui-step;
+}
+.ui-steps li {
+	position: relative;
+	padding: 0.3rem 0 0.3rem 1.8rem;
+	border-left: 1px solid var(--app-divider);
+	counter-increment: ui-step;
+}
+.ui-steps li::before {
+	content: counter(ui-step);
+	position: absolute;
+	left: -0.55rem;
+	top: 0.35rem;
+	width: 1.1rem;
+	height: 1.1rem;
+	border-radius: 999px;
+	background: var(--app-bg);
+	border: 1px solid var(--app-divider);
+	color: var(--app-fg-muted);
+	font-family: var(--font-mono);
+	font-size: 10px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+.ui-step-title {
+	font-weight: 600;
+	font-size: 13.5px;
+}
+.ui-step-md {
+	color: var(--app-fg-muted);
+	font-size: 12.5px;
+}
+.ui-step-md p {
+	margin: 0.2em 0;
+}
+
+.ui-choices-prompt {
+	color: var(--app-fg-muted);
+	margin-bottom: 0.35rem;
+}
+.ui-choice-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.4rem;
+}
+.ui-choice {
+	border: 1px solid color-mix(in oklab, var(--app-fg) 26%, transparent);
+	background: color-mix(in oklab, var(--app-fg) 5%, var(--app-bg));
+	color: var(--app-fg);
+	border-radius: 999px;
+	padding: 0.3rem 0.9rem;
+	font-size: 13px;
+	transition:
+		background-color 75ms,
+		border-color 75ms;
+}
+.ui-choice:hover:not(:disabled) {
+	background: color-mix(in oklab, var(--app-fg) 10%, var(--app-bg));
+	border-color: color-mix(in oklab, var(--app-fg) 40%, transparent);
+}
+.ui-choice:active:not(:disabled) {
+	background: color-mix(in oklab, var(--app-fg) 15%, var(--app-bg));
+}
+.ui-choice:focus-visible {
+	outline: 2px solid var(--app-accent);
+	outline-offset: 1px;
+}
+.ui-choice:disabled,
+.ui-submit:disabled {
+	opacity: 0.45;
+	border-style: dashed;
+	cursor: default;
+}
+
+.ui-form {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	border: 1px solid var(--app-divider);
+	border-radius: 8px;
+	padding: 0.7rem 0.8rem;
+	max-width: 24rem;
+}
+.ui-field {
+	display: flex;
+	flex-direction: column;
+	gap: 0.2rem;
+}
+.ui-field-label {
+	font-size: 11.5px;
+	color: var(--app-fg-muted);
+}
+.ui-input {
+	font: inherit;
+	font-size: 13px;
+	background: color-mix(in oklab, var(--app-fg) 4%, var(--app-bg));
+	border: 1px solid color-mix(in oklab, var(--app-fg) 26%, transparent);
+	border-radius: 6px;
+	color: var(--app-fg);
+	padding: 0.35rem 0.55rem;
+	outline: none;
+}
+.ui-input:focus {
+	border-color: var(--app-accent);
+}
+select.ui-input option {
+	background: var(--app-bg);
+	color: var(--app-fg);
+}
+.ui-submit {
+	align-self: flex-start;
+	background: var(--app-fg);
+	color: var(--app-bg);
+	border-radius: 8px;
+	padding: 0.35rem 0.9rem;
+	font-size: 13px;
+	font-weight: 500;
+}
+.ui-submit:hover:not(:disabled) {
+	opacity: 0.9;
+}
+
+.ui-tabs {
+	border: 1px solid var(--app-divider);
+	border-radius: 8px;
+	overflow: hidden;
+}
+.ui-tab-bar {
+	display: flex;
+	gap: 0;
+	border-bottom: 1px solid var(--app-divider);
+	background: var(--app-hover);
+	overflow-x: auto;
+}
+.ui-tab {
+	padding: 0.4rem 0.8rem;
+	font-size: 12px;
+	color: var(--app-fg-muted);
+	border-bottom: 2px solid transparent;
+	white-space: nowrap;
+}
+.ui-tab:hover {
+	color: var(--app-fg);
+}
+.ui-tab.active {
+	color: var(--app-fg);
+	border-bottom-color: var(--app-accent);
+	font-weight: 500;
+}
+.ui-tab-panel {
+	padding: 0.6rem 0.8rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+
+.ui-columns {
+	display: grid;
+	grid-template-columns: repeat(var(--ui-cols), minmax(0, 1fr));
+	gap: 0.8rem;
+}
+.ui-column {
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	border: 1px solid var(--app-divider);
+	border-radius: 8px;
+	padding: 0.6rem 0.7rem;
+}
+.ui-column-title {
+	font-weight: 600;
+	font-size: 13px;
+}
+
+.ui-chart-head {
+	display: flex;
+	align-items: baseline;
+	gap: 0.7rem;
+	flex-wrap: wrap;
+}
+.ui-chart-unit {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--app-fg-muted);
+}
+.ui-chart-legend {
+	display: inline-flex;
+	gap: 0.8rem;
+	flex-wrap: wrap;
+	font-size: 11.5px;
+	color: var(--app-fg-muted);
+}
+.ui-chart-key {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.3rem;
+}
+.ui-chart-swatch {
+	width: 0.6rem;
+	height: 0.6rem;
+	border-radius: 2px;
+	flex: none;
+}
+.ui-chart-svg {
+	display: block;
+	width: 100%;
+	height: auto;
+}
+.ui-chart-grid {
+	stroke: var(--app-divider);
+	stroke-width: 1;
+}
+.ui-chart-axis {
+	stroke: color-mix(in oklab, var(--app-fg) 30%, transparent);
+	stroke-width: 1;
+}
+.ui-chart-tick {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	fill: var(--app-fg-subtle);
+}
+/* Series hues — accent first, then the hljs ramp so chart colors and
+   code coloring feel like one palette. */
+.ui-chart-s0 {
+	--ui-c: var(--app-accent);
+}
+.ui-chart-s1 {
+	--ui-c: color-mix(in oklab, #3fb950 55%, var(--app-fg));
+}
+.ui-chart-s2 {
+	--ui-c: color-mix(in oklab, #58a6ff 60%, var(--app-fg));
+}
+.ui-chart-s3 {
+	--ui-c: color-mix(in oklab, #d29922 62%, var(--app-fg));
+}
+.ui-chart-s4 {
+	--ui-c: color-mix(in oklab, #f87171 62%, var(--app-fg));
+}
+.ui-chart-bar {
+	fill: var(--ui-c);
+}
+.ui-chart-line {
+	stroke: var(--ui-c);
+	stroke-width: 2;
+	fill: none;
+}
+.ui-chart-dot {
+	fill: var(--ui-c);
+}
+.ui-chart-swatch {
+	background: var(--ui-c);
+}
+
+.ui-html-frame {
+	display: block;
+	width: 100%;
+	border: 1px solid var(--app-divider);
+	border-radius: 8px;
+	background: transparent;
+}
+
+@media (max-width: 560px) {
+	.ui-columns {
+		grid-template-columns: 1fr;
+	}
+}
+
 /* ---------- narrow screens: rail slides over ---------- */
 
 @media (max-width: 720px) {

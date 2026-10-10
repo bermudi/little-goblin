@@ -1,0 +1,122 @@
+{
+	"title": "Every block",
+	"blocks": [
+		{ "type": "text", "md": "Some **markdown** prose inside the interface." },
+		{
+			"type": "callout",
+			"tone": "warn",
+			"title": "Heads up",
+			"md": "Watch the third row — it moved."
+		},
+		{
+			"type": "stats",
+			"items": [
+				{ "label": "Commute time", "value": "34 min", "note": "door to door" },
+				{ "label": "Monthly cost", "value": "$41" },
+				{ "label": "Flat tires", "value": "2", "note": "last year" }
+			]
+		},
+		{
+			"type": "table",
+			"columns": ["Bike", "Speed", "Comfort"],
+			"rows": [
+				["Road", "fast", "low"],
+				["Gravel", "medium", "high"],
+				["Hybrid", "medium", "high"]
+			]
+		},
+		{
+			"type": "steps",
+			"items": [
+				{ "title": "Check tire pressure", "md": "Sidewall PSI, cold." },
+				{ "title": "Lube the chain" },
+				{ "title": "Test both brakes" }
+			]
+		},
+		{
+			"type": "chart",
+			"kind": "bar",
+			"x": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+			"series": [
+				{ "name": "km ridden", "values": [12, 18, 9, 22, 15] },
+				{ "name": "km walked", "values": [4, 2, 6, 1, 5] }
+			],
+			"unit": "km"
+		},
+		{
+			"type": "chart",
+			"kind": "line",
+			"x": ["6am", "9am", "12pm", "3pm", "6pm"],
+			"series": [{ "name": "temp", "values": [8, 14, 19, 21, 17] }],
+			"unit": "°C"
+		},
+		{
+			"type": "choices",
+			"prompt": "Which ride this weekend?",
+			"options": [
+				{ "label": "Road loop" },
+				{ "label": "Gravel trail" },
+				{ "label": "Stay home" }
+			]
+		},
+		{
+			"type": "form",
+			"fields": [
+				{ "name": "distance", "label": "Distance (km)", "kind": "number" },
+				{ "name": "terrain", "label": "Terrain", "kind": "select", "options": ["flat", "hilly", "mixed"] },
+				{ "name": "notes", "label": "Notes", "kind": "text" }
+			],
+			"submit": "Plan ride"
+		},
+		{
+			"type": "tabs",
+			"tabs": [
+				{
+					"label": "Pros",
+					"blocks": [{ "type": "text", "md": "Light, fast, efficient." }]
+				},
+				{
+					"label": "Cons",
+					"blocks": [
+						{ "type": "text", "md": "Harsh on rough roads." },
+						{
+							"type": "callout",
+							"tone": "info",
+							"md": "Skinny tires puncture more."
+						}
+					]
+				}
+			]
+		},
+		{
+			"type": "columns",
+			"columns": [
+				{
+					"title": "Road",
+					"blocks": [
+						{ "type": "text", "md": "Best on smooth tarmac." },
+						{
+							"type": "stats",
+							"items": [{ "label": "Weight", "value": "8.2 kg" }]
+						}
+					]
+				},
+				{
+					"title": "Gravel",
+					"blocks": [
+						{ "type": "text", "md": "Goes anywhere." },
+						{
+							"type": "stats",
+							"items": [{ "label": "Weight", "value": "10.1 kg" }]
+						}
+					]
+				}
+			]
+		},
+		{
+			"type": "html",
+			"title": "Tip calculator",
+			"html": "<h3>Tip calculator</h3><label>Bill <input id=\"b\" type=\"number\" value=\"50\"></label> <label>Tip % <input id=\"p\" type=\"number\" value=\"15\"></label> <p>Tip: <b id=\"t\">$7.50</b> — total <b id=\"o\">$57.50</b></p><script>function c(){var b=parseFloat(document.getElementById('b').value)||0;var p=parseFloat(document.getElementById('p').value)||0;var t=b*p/100;document.getElementById('t').textContent='$'+t.toFixed(2);document.getElementById('o').textContent='$'+(b+t).toFixed(2)}document.getElementById('b').oninput=c;document.getElementById('p').oninput=c;c()</script>"
+		}
+	]
+}

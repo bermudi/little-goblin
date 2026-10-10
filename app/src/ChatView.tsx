@@ -12,6 +12,7 @@ import {
 import { useChat } from "@ai-sdk/react";
 import {
 	DefaultChatTransport,
+	getToolName,
 	isToolUIPart,
 	type ChatTransport,
 	type DynamicToolUIPart,
@@ -31,6 +32,7 @@ import {
 import { Markdown } from "./markdown.tsx";
 import { useCopy } from "./useCopy.ts";
 import { ToolRun, partFailed, partRunning, partSummaryLine } from "./tools/mod.tsx";
+import { UiPart } from "./ui/UiPart.tsx";
 import type { AttachmentRef } from "../../src/agent/attachments.ts";
 import type { AppConfigView, TurnMetadata } from "../../src/http/app-wire.ts";
 
@@ -189,19 +191,40 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 export function MessageParts({
 	parts,
 	token,
+	onAction,
+	busy,
 }: {
 	parts: UIMessage["parts"];
 	token?: string | null;
+	// ui block actions (choices, form submits) post through the
+	// caller's sendMessage; busy disables them while a turn runs.
+	onAction?: ((text: string) => void) | undefined;
+	busy?: boolean | undefined;
 }) {
 	const out: ReactNode[] = [];
 	for (let i = 0; i < parts.length; i++) {
 		const p = parts[i]!;
 		if (isToolUIPart(p)) {
+			// ui parts render inline as the interface itself — they never
+			// join a Worked run (design/app.md → Intelligent UI).
+			if (getToolName(p) === "ui") {
+				out.push(
+					<UiPart
+						key={p.toolCallId === "" ? i : p.toolCallId}
+						part={p}
+						onAction={onAction}
+						busy={busy}
+					/>,
+				);
+				continue;
+			}
 			// Collapse a run of consecutive tool parts into one Worked row.
 			const run: (ToolUIPart | DynamicToolUIPart)[] = [];
 			let j = i;
-			while (j < parts.length && isToolUIPart(parts[j]!)) {
-				run.push(parts[j] as ToolUIPart | DynamicToolUIPart);
+			while (j < parts.length) {
+				const q = parts[j]!;
+				if (!isToolUIPart(q) || getToolName(q) === "ui") break;
+				run.push(q);
 				j++;
 			}
 			out.push(<Worked key={`w${i}`} parts={run} />);
@@ -1243,7 +1266,15 @@ function Chat({
 						const meta = turnMeta(m);
 						return (
 							<div key={m.id} className="msg assistant">
-								<MessageParts parts={m.parts} token={token} />
+								<MessageParts
+									parts={m.parts}
+									token={token}
+									busy={busy}
+									onAction={(text) => {
+										pinned.current = true;
+										void sendMessage({ text });
+									}}
+								/>
 								<ActionBar
 									message={m}
 									isLastAssistant={m.id === lastAssistantId}

@@ -107,6 +107,80 @@ function configTag(config: Config): string {
 // serialize against each other, not just within their own door.
 let configSaveQueue: Promise<unknown> = Promise.resolve();
 
+// The POST body's key allowlist, tied to the wire type so a
+// ConfigPostBody change breaks typecheck. The body merges over the
+// saved config, so a key the page doesn't own (hand-edited-only
+// blocks like sandbox, delegation, mail, guest, reviewer, system1,
+// appToken — or anything new) would be silently accepted by
+// parseConfig; the boundary check below refuses it before the save
+// is enqueued.
+const CONFIG_POST_KEYS = {
+	providers: true,
+	model: true,
+	titleModel: true,
+	favorites: true,
+	thinking: true,
+	tts: true,
+	transcription: true,
+	vision: true,
+	search: true,
+	fetch: true,
+	allowedUsers: true,
+	telegram: true,
+	publicUrl: true,
+	http: true,
+	memory: true,
+	logLevel: true,
+} as const satisfies Record<keyof ConfigPostBody, true>;
+
+const CONFIG_POST_TELEGRAM_KEYS = {
+	apiRoot: true,
+	dmGapMinutes: true,
+	model: true,
+	thinking: true,
+} as const satisfies Record<keyof ConfigPostBody["telegram"], true>;
+
+// Key shape only — every field is unknown+optional; values stay
+// validated by parseConfig in saveConfig. .strict() turns a key not
+// in the allowlist into an unrecognized_keys issue.
+const configPostBodySchema = z
+	.object(
+		Object.fromEntries(
+			(Object.keys(CONFIG_POST_KEYS) as (keyof ConfigPostBody)[]).map((k) => [
+				k,
+				k === "telegram"
+					? z
+							.object(
+								Object.fromEntries(
+									(
+										Object.keys(CONFIG_POST_TELEGRAM_KEYS) as (
+											keyof ConfigPostBody["telegram"]
+										)[]
+									).map((tk) => [tk, z.unknown().optional()]),
+								),
+							)
+							.strict()
+							.optional()
+					: z.unknown().optional(),
+			]),
+		),
+	)
+	.strict();
+
+// Unknown top-level or telegram.* keys in the body — empty when the
+// body is key-clean (value errors are never reported here).
+function unknownConfigKeys(body: object): string[] {
+	const parsed = configPostBodySchema.safeParse(body);
+	if (parsed.success) return [];
+	const unknown: string[] = [];
+	for (const issue of parsed.error.issues) {
+		if (issue.code !== "unrecognized_keys" || !("keys" in issue)) continue;
+		const prefix = issue.path.length > 0 ? `${issue.path.join(".")}.` : "";
+		for (const k of issue.keys) unknown.push(`${prefix}${k}`);
+	}
+	return unknown;
+}
+
 async function saveConfig(
 	deps: OperatorDeps,
 	actor: OperatorActor,
@@ -437,6 +511,17 @@ export async function handleOperatorRoute(
 			if (typeof body !== "object" || body === null || Array.isArray(body)) {
 				return Response.json(
 					{ error: "expected a json object" },
+					{ status: 400, headers: NO_STORE },
+				);
+			}
+			const unknownKeys = unknownConfigKeys(body);
+			if (unknownKeys.length > 0) {
+				log.warn(`${actor.via} config save refused — unknown keys`, {
+					...who,
+					keys: unknownKeys,
+				});
+				return Response.json(
+					{ error: `unknown config keys: ${unknownKeys.join(", ")}` },
 					{ status: 400, headers: NO_STORE },
 				);
 			}

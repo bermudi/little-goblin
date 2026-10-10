@@ -193,6 +193,7 @@ describe("filterGuestTools — the sandbox invariant", () => {
 		search: 1,
 		fetch: 1,
 		history_search: 1,
+		sandbox: 1,
 	};
 	const conv = (persona: "personal" | "guest"): Conversation =>
 		({
@@ -210,8 +211,13 @@ describe("filterGuestTools — the sandbox invariant", () => {
 			createdAt: "",
 		}) as unknown as Conversation;
 
-	test("sandbox personas keep search only — no fetch (the sandbox ruling)", () => {
-		expect(Object.keys(filterGuestTools(conv("guest"), tools)).sort()).toEqual(["search"]);
+	test("sandbox personas keep search only — no fetch, no sandbox tool (the sandbox ruling)", () => {
+		const kept = Object.keys(filterGuestTools(conv("guest"), tools));
+		expect(kept.sort()).toEqual(["search"]);
+		// The container tool is name-adjacent to the guest "sandbox"
+		// persona but reaches a podman store — the allowlist must never
+		// grow to include it.
+		expect(kept).not.toContain("sandbox");
 	});
 	test("personal guest turns lose tools that pin or reach beyond the chat", () => {
 		const kept = Object.keys(filterGuestTools(conv("personal"), tools)).sort();

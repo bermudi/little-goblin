@@ -14,6 +14,7 @@ import { historySearchTool, type HistorySearchDeps } from "./history.ts";
 import { mailTool } from "./mail.ts";
 import { memorySearchTool } from "./memory.ts";
 import { readFileTool } from "./read.ts";
+import { sandboxTool, type SandboxToolDeps } from "./sandbox.ts";
 import { type OutgoingFile, sendFileTool } from "./send.ts";
 import { speakTool } from "./speak.ts";
 import { searchTool } from "./search.ts";
@@ -58,6 +59,7 @@ export type { VisionToolDeps };
 export type { DelegateToolDeps };
 export type { HistorySearchDeps };
 export type { MailToolDeps };
+export type { SandboxToolDeps };
 
 // Use the registered set as the availability source, rather than
 // duplicating its dependency gates in the prompt.
@@ -79,6 +81,7 @@ export interface MakeToolsOptions {
 	mail?: MailToolDeps | undefined;
 	history?: HistorySearchDeps | undefined;
 	vision?: VisionToolDeps | undefined;
+	sandbox?: SandboxToolDeps | undefined;
 	// App-channel gate: true mounts the interface tool (design/app.md →
 	// Intelligent UI). Boolean, not a dep bag — ui needs nothing.
 	ui?: boolean | undefined;
@@ -97,6 +100,7 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		mail,
 		history,
 		vision,
+		sandbox,
 		ui,
 	} = options;
 	return {
@@ -136,6 +140,9 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		// Past-chat search is local state, not a config block — always in
 		// the set (the store dep is unconditional at the composition root).
 		...(history ? { history_search: historySearchTool(history) } : {}),
+		// Same per-turn gate as vision: deps arrive only while the
+		// sandbox block exists in the live config.
+		...(sandbox ? { sandbox: sandboxTool(sandbox) } : {}),
 		// Last in the set so the Tools: line's shared prefix stays stable.
 		...(ui === true ? { ui: uiTool() } : {}),
 	};

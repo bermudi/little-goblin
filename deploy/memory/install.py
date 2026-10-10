@@ -1034,6 +1034,13 @@ def main(argv: list[str] | None = None) -> None:
                 f"but the API did NOT recover — journalctl --user -u {API_UNIT}"
             fail(f"{reason}; restored the previous hindsight.env {suffix}")
 
+        # The new env may use keys an older installed guard rejects. Land
+        # the compatible guard before changing config; keep it on rollback
+        # because it also accepts the previous env's launch profile.
+        start_dst = CFG_DIR / "start.py"
+        write_file_atomic(start_dst, (MEMORY_DIR / "start.py").read_text(), 0o644)
+        info(f"installed {start_dst}")
+
         # A reconfigure that adopts local embeddings needs the relay live
         # BEFORE the API restarts on the new env — it test-embeds during
         # init and refuses to boot on a dead endpoint. refresh_assets

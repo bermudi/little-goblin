@@ -1,22 +1,19 @@
 #!/usr/bin/env bash
-# Deploy this tree. Prod is THIS box (g7) since 2026-10-09: goblin.service
-# runs from the working copy, so a deploy is gate → push → refresh →
-# restart → verify. The push keeps GitHub the backup and other clones
-# honest — a deploy pushes exactly what it ships.
+# Deploy this tree locally on g7: gate → refresh → restart → verify.
+# Git publication is separate so origin/main remains a review baseline.
 #
 #   scripts/deploy.sh
 #
 # Steps, in order:
 #   1. refuse a dirty tree or a detached HEAD — deploys are commits
 #   2. gate: bun run typecheck && bun test
-#   3. git push origin HEAD
-#   4. refresh what the gate can't cover, judged against the last
+#   3. refresh what the gate can't cover, judged against the last
 #      deployed revision (marker in .git/GOBLIN_DEPLOYED_REV; first
 #      run refreshes unconditionally): bun install --frozen-lockfile
 #      when dependency manifests moved, bun run app:build when app/
 #      or the manifests moved — dist is served from disk, so the gate
 #      tests the tree while the service serves the bundle
-#   5. systemctl --user restart goblin; verify the unit came back and
+#   4. systemctl --user restart goblin; verify the unit came back and
 #      scan the fresh journal for error lines; probe the memory API
 #
 # If deploy/memory/ changed, a note is printed — the podman stack is
@@ -49,11 +46,7 @@ step "gate: bun run typecheck && bun test"
 bun run typecheck
 bun test
 
-# --- 3. Push (backup + transport for other clones) -------------------------
-step "pushing $new_rev to origin"
-git push origin HEAD
-
-# --- 4. Refresh deps and the served bundle ---------------------------------
+# --- 3. Refresh deps and the served bundle ---------------------------------
 # What the refresh steps judge. No marker (first run) or a marker that no
 # longer resolves (history rewrite) means "everything": the diff can't
 # prove any path is fresh, so none may be skipped. The sentinel names hit
@@ -83,7 +76,7 @@ if changed | grep -qE '^deploy/memory/'; then
 	echo "deploy: docs/operations.md, Deploying."
 fi
 
-# --- 5. Restart, verify -----------------------------------------------------
+# --- 4. Restart, verify -----------------------------------------------------
 restart_epoch="$(date +%s)"
 systemctl --user restart goblin
 for _ in $(seq 1 20); do

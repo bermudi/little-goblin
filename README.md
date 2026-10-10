@@ -9,7 +9,8 @@ This is a rewrite of the original `little-goblin` on the Vercel AI SDK
 (see `DESIGN.md` for why). v1 was retired at the cutover — nothing was
 shared between the versions (no code, no state, no specs). This codebase
 runs in one place: g7, this tree — prod since 2026-10-09 (lithium ran
-prod until then). `scripts/deploy.sh` gates, pushes, and restarts
+prod until then). `scripts/deploy.sh` gates, refreshes, and restarts locally;
+publishing to GitHub is separate
 (see [`docs/operations.md`](docs/operations.md)).
 
 ## How it works, in one paragraph

@@ -100,9 +100,16 @@ plus the local memory stack (Podman). With bermudi's OK, one command:
 scripts/deploy.sh
 ```
 
+Deployment is local: it never pushes, fetches, or pulls Git refs.
+Publishing to GitHub is a separate, explicitly approved action. This keeps
+`origin/main` as a review baseline for local changes:
+
+```sh
+coderabbit review --base origin/main
+```
+
 It refuses a dirty tree, runs the gate (`bun run typecheck && bun test`),
-pushes the branch to GitHub (backup + transport for other clones), then
-refreshes what the gate can't cover: `bun install --frozen-lockfile`
+then refreshes what the gate can't cover: `bun install --frozen-lockfile`
 when the dependency manifests moved and `bun run app:build` when `app/`
 or the manifests moved — the bundle inlines dependency code, so a React
 or AI-SDK bump alone must rebuild it, and the client is served from
@@ -113,7 +120,7 @@ back, scans the fresh journal for error lines, and prints the old→new
 hashes plus a one-line rollback (`git reset --hard <old>`, then
 `bun install` and `bun run app:build` — dist and node_modules are
 gitignored, so the old revision needs its own deps and client — then
-restart, and reset the marker). A gate or push failure stops everything
+restart, and reset the marker). A gate failure stops everything
 before the service is touched.
 
 lithium ran prod until 2026-10-09; its goblin stack is torn down and its

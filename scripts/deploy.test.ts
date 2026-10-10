@@ -65,9 +65,7 @@ function runDeploy(opts: {
 		const bin = join(dir, "bin");
 		mkdirSync(bin);
 		const link = (name: string): void => {
-			const real = ["/usr/bin", "/bin"]
-				.map((p) => join(p, name))
-				.find((p) => existsSync(p));
+			const real = ["/usr/bin", "/bin"].map((p) => join(p, name)).find((p) => existsSync(p));
 			if (real === undefined) throw new Error(`deploy.test: no host ${name} to symlink`);
 			symlinkSync(real, join(bin, name));
 		};
@@ -308,7 +306,7 @@ describe("deploy.sh gates and boundaries", () => {
 		expect(run.git).not.toContain("git push origin HEAD");
 	});
 
-	test("gate typecheck failure stops before push and restart", () => {
+	test("gate typecheck failure stops before refresh and restart", () => {
 		const run = runDeploy({ mode: "typecheck" });
 		expect(run.status).not.toBe(0);
 		expect(run.stderr).toContain("typecheck failed");
@@ -316,7 +314,7 @@ describe("deploy.sh gates and boundaries", () => {
 		expect(run.systemctl).toEqual([]);
 	});
 
-	test("gate test failure stops before push and restart", () => {
+	test("gate test failure stops before refresh and restart", () => {
 		const run = runDeploy({ mode: "test" });
 		expect(run.status).not.toBe(0);
 		expect(run.stderr).toContain("test failed");
@@ -324,12 +322,21 @@ describe("deploy.sh gates and boundaries", () => {
 		expect(run.systemctl).toEqual([]);
 	});
 
-	test("push failure stops before the refresh", () => {
+	test("a local deploy succeeds even when pushing would fail", () => {
 		const run = runDeploy({ mode: "push", changed: ["package.json"] });
-		expect(run.status).not.toBe(0);
-		expect(run.stderr).toContain("push failed");
-		expect(refresh(run)).toEqual([]);
-		expect(run.systemctl).toEqual([]);
+		expect(run.status).toBe(0);
+		expect(run.git).not.toContain("git push origin HEAD");
+		expect(refresh(run)).toEqual(["bun install --frozen-lockfile", "bun run app:build"]);
+		expect(run.systemctl).toContain("systemctl --user restart goblin");
+		expect(run.marker).toBe(NEW_REV);
+	});
+
+	test("deployment leaves Git publication and the remote review base alone", () => {
+		const run = runDeploy({ changed: ["src/index.ts"] });
+		expect(run.status).toBe(0);
+		expect(run.git.some((call) => /\b(push|fetch|pull)\b/.test(call))).toBe(false);
+		expect(run.stdout).not.toContain("pushing");
+		expect(run.marker).toBe(NEW_REV);
 	});
 
 	test("install failure stops before restart", () => {

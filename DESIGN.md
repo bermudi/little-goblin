@@ -28,8 +28,9 @@ earns its place.
 this tree runs `goblin.service` plus the memory stack directly
 (lithium ran prod until 2026-10-09, then retired; its state was
 merged here). `scripts/deploy.sh` is the update path: gate
-(typecheck + tests), push, rebuild the app client when it moved,
-restart, verify (docs/operations.md → Deploying).
+(typecheck + tests), rebuild the app client when it moved,
+restart, verify. Git publication is separate: local deployment never
+pushes or updates the remote review baseline (docs/operations.md → Deploying).
 - Telegram is one of two channels: long polling, topics, reactions, files,
   voice — **and Mini Apps, designed in from the start** (the process serves
   them over HTTP; see Telegram intake & delivery). The second channel is

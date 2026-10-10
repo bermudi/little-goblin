@@ -83,11 +83,14 @@ and templates before designing; cite what you took in the design docs.
   goblin stack is torn down, its conversations were merged into this
   box's state, and the archives (snapshots, DB bundle, memory dump)
   live in `~/goblin-migration-20261008/`. The only sanctioned prod
-  update is `scripts/deploy.sh`: gate (typecheck + tests) → push →
+  update is `scripts/deploy.sh`: gate (typecheck + tests) →
   conditional `bun install`/`app:build` (marker
-  `.git/GOBLIN_DEPLOYED_REV`) → restart → verify. Deploying pushes main
-  and restarts prod — bermudi's OK each time, which running the script
-  IS. The memory stack is never auto-deployed; `deploy/memory/`
+  `.git/GOBLIN_DEPLOYED_REV`) → restart → verify. Deployment never
+  pushes, fetches, or pulls: `origin/main` stays the baseline for
+  `coderabbit review --base origin/main`. Publishing main is separate
+  and needs bermudi's OK. Deployment restarts prod and also needs
+  bermudi's OK each time, which running the script IS.
+  The memory stack is never auto-deployed; `deploy/memory/`
   changes print the manual runbook (see docs/operations.md →
   Deploying).
 - Quadlet `HealthCmd` one-liners (`python -c "…"`) break on podman

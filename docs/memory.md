@@ -239,16 +239,14 @@ install -m 644 deploy/memory/goblin-memory-watch.service \
   deploy/memory/goblin-memory-watch.timer "$HOME/.config/systemd/user/"
 ```
 
-Then enable the boot and health hooks (the installer does this after the
-confirmed first start):
+The shipped API Quadlet has `[Install]` / `WantedBy=default.target`.
+Reloading makes Quadlet generate the boot dependency; do not enable the
+generated service or hand-write a wants symlink. Enable the health timer
+after the confirmed first start:
 
 ```sh
 systemctl --user daemon-reload
-# Quadlet units are generator-produced; systemd refuses `enable` on them,
-# so write the wants symlink by hand (name-relative — resolves at boot):
-install -d -m 755 "$HOME/.config/systemd/user/default.target.wants"
-ln -sfn goblin-memory-api.service \
-  "$HOME/.config/systemd/user/default.target.wants/goblin-memory-api.service"
+systemctl --user show -p Wants default.target  # must include goblin-memory-api.service
 systemctl --user enable --now goblin-memory-watch.timer  # 5-min health watch
 ```
 
@@ -304,9 +302,10 @@ health becoming unhealthy after startup is visible but deliberately does not
 restart the process just because the database is unreachable. Fix the cause,
 then restart if needed. Initial pulls/migrations may exceed the 300-second
 systemd startup budget: inspect logs and increase `TimeoutStartSec` deliberately.
-The services have no boot activation by default. To opt into boot startup, add
-`[Install]` / `WantedBy=default.target` to the API Quadlet and reload. Generated
-services are not enabled with `systemctl enable`. User lingering, if desired,
+The API Quadlet ships `[Install]` / `WantedBy=default.target`; the generator
+creates its boot dependency and the database starts through `Requires`/`After`.
+Older installed Quadlets missing this section need an operator edit and reload.
+Generated services are not enabled with `systemctl enable`. User lingering, if desired,
 is an explicit operator/admin decision (`loginctl enable-linger`).
 
 ```sh

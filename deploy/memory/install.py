@@ -525,18 +525,8 @@ def start_stack() -> None:
     # A healthy stack is not enough: it must also survive the next boot.
     # Enabling is a runtime claim, not a config write — deliberately after
     # the health gate, so a broken stack never hooks itself into boot.
-    # systemd refuses `enable`/`add-wants` on generator-produced units
-    # ("transient or generated"), so write the wants symlink directly —
-    # the unit NAME as a relative target resolves through the generator
-    # at boot, which is all `enable` would have written anyway.
-    wants_dir = USER_UNIT_DIR / "default.target.wants"
-    wants_dir.mkdir(parents=True, exist_ok=True)
-    wants_link = wants_dir / API_UNIT
-    if wants_link.exists() and not wants_link.is_symlink():
-        fail(f"{wants_link} exists and is not a symlink — remove or inspect "
-             "it by hand, then re-run")
-    if not wants_link.is_symlink():
-        os.symlink(API_UNIT, wants_link)
+    # Quadlet's [Install] creates the boot dependency in its generator
+    # directory. A same-name relative link in user units points to itself.
     # The watch units landed after the earlier daemon-reload; load them,
     # then start the timer now. It turns an unhealthy-but-alive container
     # into a unit restart (Restart=on-failure only sees process death).
@@ -544,12 +534,11 @@ def start_stack() -> None:
     # Fail loud if the manager did not accept the boot hook: a silently
     # dead wants-link is exactly the day-long-outage failure mode the
     # hook exists to close.
-    wants = probe(["systemctl", "--user", "show", "-p", "Wants",
-                   "default.target"])
-    if wants is None or API_UNIT not in (wants.stdout or ""):
+    if not api_boot_hook_present():
         fail(f"{API_UNIT} not in default.target Wants after daemon-reload — "
-             f"check 'systemctl --user show -p Wants default.target'")
-    info(f"{API_UNIT} wants-linked into default.target — starts on boot "
+             "ensure the installed API Quadlet has [Install] / "
+             "WantedBy=default.target")
+    info(f"{API_UNIT} generated dependency of default.target — starts on boot "
          "(linger keeps the user manager alive)")
     run(["systemctl", "--user", "enable", "--now", WATCH_TIMER])
     info(f"{WATCH_TIMER} enabled — health checked every 5 minutes")
@@ -937,19 +926,24 @@ def print_summary(answers: Answers, bank_id: str) -> None:
               {SYSTEMD_DIR}/goblin-memory-*""")
 
 
+def api_boot_hook_present() -> bool:
+    wants = run(["systemctl", "--user", "show", "-p", "Wants",
+                 "--value", "default.target"])
+    return API_UNIT in wants.stdout.split()
+
+
 def manual_recovery_commands() -> list[str]:
     """The by-hand equivalent of install_assets + start_stack's enablement.
 
-    A missing boot hook stays manual: re-running the installer on an
-    existing install now installs the assets and (stack up) enables the
-    watch timer, but the API unit's wants symlink is written only by the
-    fresh-install start path — the status output has to carry that fix.
+    Existing Quadlets are operator-owned. Repair their [Install] section,
+    then reload so the generator creates the dependency; never hand-link
+    a generated unit.
     """
     return [
         f"install -m 644 {MEMORY_DIR}/{WATCH_UNITS[0]} {MEMORY_DIR}/{WATCH_UNITS[1]} "
         f"{USER_UNIT_DIR}/",
-        f"mkdir -p {USER_UNIT_DIR}/default.target.wants && "
-        f"ln -s {API_UNIT} {USER_UNIT_DIR}/default.target.wants/{API_UNIT}",
+        f"${{EDITOR:-vi}} {SYSTEMD_DIR}/goblin-memory-api.container "
+        "# ensure [Install] / WantedBy=default.target",
         f"systemctl --user daemon-reload && "
         f"systemctl --user enable --now {WATCH_TIMER}",
     ]
@@ -968,10 +962,9 @@ def existing_install_status() -> str:
         if unit == API_UNIT:
             api_state = state
         print(f"  {unit}: {state}")
-    # Quadlet units report 'generated', never 'enabled' — the wants
-    # symlink is the real boot evidence.
-    boot_hook = (USER_UNIT_DIR / "default.target.wants" / API_UNIT).is_symlink()
-    print(f"  boot hook (default.target.wants/{API_UNIT}): "
+    # A dangling or self-referential symlink is not boot activation.
+    boot_hook = api_boot_hook_present()
+    print(f"  boot hook (default.target Wants={API_UNIT}): "
           f"{'✓ present' if boot_hook else '✗ MISSING — stack will not survive a reboot'}")
     if not boot_hook:
         print("  manual recovery:")

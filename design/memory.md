@@ -11,10 +11,12 @@ retention end-to-end (queued exchanges drained through submit → async
 operation → completed), recall answering with real extracted facts,
 installer start, and the watch timer firing on schedule. The 2026-09-25
 reboot closed the boot-path gate in production: db and api units
-auto-started within a minute of boot — the wants-symlink → generator
-path survived contact with a real restart (`systemctl --user is-enabled
-goblin-memory-api` reads `generated`; the symlink is the evidence, not
-that command). On 2026-09-27, four synthetic exchanges across three named
+auto-started within a minute of boot. Quadlet's `[Install]` creates the
+dependency in the generator directory (`systemctl --user is-enabled
+goblin-memory-api` reads `generated`; `default.target`'s loaded Wants is
+the activation check). A hand-written same-name relative symlink in
+the user wants directory points to itself and is not a boot hook.
+On 2026-09-27, four synthetic exchanges across three named
 private Telegram topics exercised cross-topic recall and a dated correction
 with the operator-selected `glm-5.3-flash`: the fresh topics' persisted
 recall blocks cited the source topic, the recall reply gave the prior
@@ -460,4 +462,3 @@ portable container assets and operations guidance → memory client, durable
 queue, controls, and turn integration → boundary tests → explicitly
 configured live verification. Reranker selection and exact provider
 configuration must be resolved before the live-verification step.
-

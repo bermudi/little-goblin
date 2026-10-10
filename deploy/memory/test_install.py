@@ -3,6 +3,7 @@ import contextlib
 from email.message import Message
 import io
 import json
+import os
 from pathlib import Path
 import stat
 import subprocess
@@ -29,6 +30,7 @@ from install import (
 from start import validate
 
 SYNTHETIC_KEY = "synthetic-secret"
+BOOT_QUERY = ["systemctl", "--user", "show", "-p", "Wants", "--value", "default.target"]
 
 
 def synthetic_answers(
@@ -356,19 +358,83 @@ class InstallAssetsTest(unittest.TestCase):
                                Path(tmp) / "cfg", Path(tmp) / "user-units")
 
     def test_manual_recovery_commands_are_actionable(self) -> None:
-        # The missing-boot-hook status must carry its own fix: watch
-        # units into the user unit dir, the wants symlink (relative
-        # target, like start_stack writes it), and the enabled timer.
         commands = install.manual_recovery_commands()
         self.assertEqual(len(commands), 3)
         for name in install.WATCH_UNITS:
             self.assertIn(name, commands[0])
         self.assertIn(str(install.USER_UNIT_DIR), commands[0])
-        self.assertIn("default.target.wants", commands[1])
-        self.assertEqual(commands[1].count(install.API_UNIT), 2)
-        self.assertIn("ln -s", commands[1])
+        self.assertIn("goblin-memory-api.container", commands[1])
+        self.assertIn("[Install]", commands[1])
+        self.assertIn("WantedBy=default.target", commands[1])
+        self.assertNotIn("ln -s", "\n".join(commands))
         self.assertIn("daemon-reload", commands[2])
         self.assertIn(install.WATCH_TIMER, commands[2])
+
+
+class BootActivationTest(unittest.TestCase):
+    def test_loaded_wants_requires_exact_unit_name(self) -> None:
+        for output, expected in (
+            (f"other.service {install.API_UNIT}\n", True),
+            (f"{install.API_UNIT}.extra\n", False),
+            ("", False),
+        ):
+            with self.subTest(output=output):
+                result = subprocess.CompletedProcess(["systemctl"], 0, output, "")
+                with patch("install.subprocess.run", return_value=result):
+                    self.assertEqual(install.api_boot_hook_present(), expected)
+
+    def test_unreadable_wants_fails_loudly(self) -> None:
+        result = subprocess.CompletedProcess(["systemctl"], 1, "", "synthetic failure")
+        with patch("install.subprocess.run", return_value=result):
+            with self.assertRaises(SystemExit):
+                install.api_boot_hook_present()
+
+    def test_self_referential_link_is_not_reported_as_boot_activation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            user_units = Path(tmp) / "user-units"
+            wants = user_units / "default.target.wants"
+            wants.mkdir(parents=True)
+            (wants / install.API_UNIT).symlink_to(install.API_UNIT)
+            result = subprocess.CompletedProcess(["systemctl"], 0, "", "")
+            with (
+                patch.object(install, "USER_UNIT_DIR", user_units),
+                patch("install.subprocess.run", return_value=result),
+                patch("install.urlrequest.urlopen", side_effect=urllib.error.URLError("offline")),
+                contextlib.redirect_stdout(io.StringIO()) as output,
+            ):
+                install.existing_install_status()
+            self.assertIn("MISSING", output.getvalue())
+            self.assertNotIn("✓ present", output.getvalue())
+
+    def test_real_quadlet_generator_creates_resolvable_boot_link(self) -> None:
+        candidates = (
+            Path("/usr/lib/systemd/system-generators/podman-system-generator"),
+            Path("/usr/libexec/podman/quadlet"),
+        )
+        generator = next((path for path in candidates if path.is_file()), None)
+        if generator is None:
+            self.skipTest("Quadlet generator not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            generated = root / "generated"
+            source.mkdir()
+            generated.mkdir()
+            # Exercise the shipped activation declaration with no containers
+            # or credentials: the real generator only writes unit files.
+            (source / "goblin-memory-api.container").write_text(
+                (install.MEMORY_DIR / "goblin-memory-api.container").read_text())
+            (source / "goblin-memory.network").write_text(
+                (install.MEMORY_DIR / "goblin-memory.network").read_text())
+            result = subprocess.run(
+                [str(generator), "--user", str(generated)],
+                env={**os.environ, "QUADLET_UNIT_DIRS": str(source)},
+                text=True, capture_output=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            link = generated / "default.target.wants" / install.API_UNIT
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.resolve(strict=True), generated / install.API_UNIT)
 
 
 class CreateBankTest(unittest.TestCase):
@@ -874,7 +940,8 @@ class MainFlowTest(unittest.TestCase):
 
         def fake_run(command: list[str], timeout: float = 600) -> subprocess.CompletedProcess[str]:
             runs.append(command)
-            return subprocess.CompletedProcess(command, 0, "", "")
+            output = f"{install.API_UNIT}\n" if command == BOOT_QUERY else ""
+            return subprocess.CompletedProcess(command, 0, output, "")
 
         install.run = fake_run
         with contextlib.redirect_stdout(io.StringIO()):
@@ -887,7 +954,8 @@ class MainFlowTest(unittest.TestCase):
         # forever. Stack up → copy + reload + timer live.
         self.existing_stack()
         runs = self.run_existing("active", [])
-        self.assertEqual(runs, [["systemctl", "--user", "daemon-reload"],
+        self.assertEqual(runs, [BOOT_QUERY,
+                               ["systemctl", "--user", "daemon-reload"],
                                 ["systemctl", "--user", "enable", "--now",
                                  install.WATCH_TIMER]])
         for name in install.WATCH_UNITS:
@@ -914,12 +982,12 @@ class MainFlowTest(unittest.TestCase):
         # reload only, no enable.
         self.existing_stack()
         runs = self.run_existing("inactive", [])
-        self.assertEqual(runs, [["systemctl", "--user", "daemon-reload"]])
+        self.assertEqual(runs, [BOOT_QUERY, ["systemctl", "--user", "daemon-reload"]])
 
     def test_existing_install_respects_no_start(self) -> None:
         self.existing_stack()
         runs = self.run_existing("active", ["--no-start"])
-        self.assertEqual(runs, [["systemctl", "--user", "daemon-reload"]])
+        self.assertEqual(runs, [BOOT_QUERY, ["systemctl", "--user", "daemon-reload"]])
 
     def write_relay_switch(self) -> None:
         install.CFG_DIR.mkdir(parents=True, exist_ok=True)
@@ -930,6 +998,7 @@ class MainFlowTest(unittest.TestCase):
         self.write_relay_switch()
         runs = self.run_existing("active", [])
         self.assertEqual(runs, [
+            BOOT_QUERY,
             ["systemctl", "--user", "daemon-reload"],
             ["systemctl", "--user", "daemon-reload"],
             ["systemctl", "--user", "enable", "--now",
@@ -975,7 +1044,8 @@ class MainFlowTest(unittest.TestCase):
 
         def record(command: list[str], timeout: float = 600) -> subprocess.CompletedProcess[str]:
             commands.append(command)
-            return subprocess.CompletedProcess(command, 0, "", "")
+            output = f"{install.API_UNIT}\n" if command == BOOT_QUERY else ""
+            return subprocess.CompletedProcess(command, 0, output, "")
 
         install.run = record
 
@@ -1002,6 +1072,10 @@ class MainFlowTest(unittest.TestCase):
         self.assertIn(api_start, commands)
         self.assertLess(commands.index(enable_cmd),
                         commands.index(api_start))
+        self.assertFalse(
+            (install.USER_UNIT_DIR / "default.target.wants" / install.API_UNIT).is_symlink(),
+            "Quadlet, not the installer, owns the generated boot link",
+        )
 
     def test_no_start_installs_embed_assets_without_enabling(self) -> None:
         self.fake_prompts()

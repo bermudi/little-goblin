@@ -3,6 +3,7 @@ import contextlib
 from email.message import Message
 import io
 import json
+import shlex
 import os
 from pathlib import Path
 import stat
@@ -539,11 +540,17 @@ class CreateBankTest(unittest.TestCase):
             "retain_mission": "a drifted mission",
             "observations_mission": install.DEFAULT_OBSERVATIONS_MISSION,
         }), contextlib.redirect_stderr(stderr):
-            install.create_bank("goblin", "synthetic mission")
+            install.create_bank("goblin", "the operator's mission")
         out = stderr.getvalue()
         self.assertIn("WARNING", out)
         self.assertIn("retain_mission", out)
-        self.assertIn("PATCH", out)
+        # The repair line must survive a paste into a shell even though
+        # the canonical missions carry apostrophes.
+        curl = next(line for line in out.splitlines() if "curl" in line)
+        argv = shlex.split(curl)
+        self.assertEqual(argv[argv.index("-X") + 1], "PATCH")
+        body = json.loads(argv[argv.index("-d") + 1])
+        self.assertEqual(body["updates"]["retain_mission"], "the operator's mission")
 
     def test_matching_existing_bank_warns_nothing(self) -> None:
         stderr = io.StringIO()

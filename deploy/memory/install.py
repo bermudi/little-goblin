@@ -50,6 +50,7 @@ import socket
 import subprocess
 import sys
 import secrets
+import shlex
 import time
 from typing import Callable, NoReturn
 from urllib import error as urlerror
@@ -682,7 +683,7 @@ def warn_bank_drift(url: str, bank_id: str, mission: str) -> None:
               "to repair run:\n"
               f"  curl -s -X PATCH {url}/config "
               "-H 'content-type: application/json' "
-              f"-d '{repair}'",
+              f"-d {shlex.quote(repair)}",
               file=sys.stderr)
 
 

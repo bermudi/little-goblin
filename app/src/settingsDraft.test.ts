@@ -149,9 +149,6 @@ describe("validateDraft", () => {
 		expect(validateDraft(draft({ tts: { voice: "", rate: "", voices: [] } }), [prov()])).toMatch(
 			/voice/,
 		);
-		expect(validateDraft(draft({ transcription: emptyTranscription("groq") }), [prov()])).toMatch(
-			/secret name/,
-		);
 		expect(
 			validateDraft(draft({ vision: { model: "", maxTokens: "2000", mode: "auto" } }), [prov()]),
 		).toMatch(/Vision/);
@@ -297,10 +294,19 @@ describe("transcription block", () => {
 		expect(validateDraft(draft({ transcription: emptyTranscription() }), [prov()])).toBeNull();
 	});
 
-	test("a cloud block still needs a secret name", () => {
-		expect(validateDraft(draft({ transcription: emptyTranscription("groq") }), [prov()])).toMatch(
-			/secret name/,
-		);
+	// Blank cloud model and secret are the server's job: config.ts fills the
+	// kind's defaults, and the mini app already saves blanks the same way.
+	// Rejecting blanks here blocked a valid Whistle -> Groq switch.
+	test("a blank cloud block validates, and the server fills the kind's defaults", () => {
+		const c = baseConfig();
+		const { draft: d, providers } = draftFromConfig(c);
+		const groq = { ...d, transcription: switchTranscriptionKind(emptyTranscription(), "groq") };
+		expect(validateDraft(groq, providers)).toBeNull();
+		expect(parseConfig({ ...c, ...bodyFromDraft(groq, providers) }).transcription).toEqual({
+			kind: "groq",
+			model: "whisper-large-v3-turbo",
+			auth: "groq",
+		});
 	});
 
 	test("a save keeps whistle's hand-edited keywords, engine and weights", () => {

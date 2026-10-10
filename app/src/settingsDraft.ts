@@ -309,12 +309,8 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 	if (!draft.model) return "Pick an app default model.";
 	if (!draft.telegramModel) return "Pick a Telegram model.";
 	if (draft.tts && !draft.tts.voice.trim()) return "Text to speech is on — set a voice.";
-	if (
-		draft.transcription &&
-		draft.transcription.kind !== "whistle" &&
-		!draft.transcription.auth.trim()
-	)
-		return "Transcription is on — set a secret name.";
+	// No transcription secret check: whistle takes none, and a blank cloud
+	// secret means the kind's default record — the server fills it.
 	if (draft.vision && !draft.vision.model.trim()) return "Vision is on — pick a model.";
 	if (draft.search) {
 		if (!draft.search.length) return "Search is on — add at least one provider, or switch it off.";

@@ -184,7 +184,9 @@ speech anywhere, throw = failure. The size-cap decision generalizes:
   a model input with per-kind placeholder default, and an auth input
   disabled for whistle. Wire types stay hand-mirrored in app.js —
   schema changes break typecheck, not the page (App channel rule).
-  The React app doesn't touch transcription.
+  The React settings editor (app/src/settingsDraft.ts) mirrors the same
+  rules: a kind switch clears model and secret, and a blank cloud model
+  or secret is valid because the server fills the kind's defaults.
 - Boot log: one line naming engine, model, and (whistle) artifact
   presence. Every transcription logs provider, model, duration, chars,
   language — the existing `transcribed` line, generalized.

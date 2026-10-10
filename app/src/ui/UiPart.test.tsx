@@ -91,6 +91,28 @@ describe("UiPart (static markup)", () => {
 		expect(html).toContain("skel");
 	});
 
+	test("duplicate form names never render, including during streaming", () => {
+		const input = {
+			blocks: [
+				{
+					type: "form",
+					fields: [
+						{ name: "amount", label: "Amount", kind: "number" },
+						{ name: "amount", label: "Note", kind: "text" },
+					],
+					submit: "Send",
+				},
+			],
+		};
+		for (const state of ["input-streaming", "output-available"]) {
+			const html = renderToStaticMarkup(
+				<UiPart part={uiPart({ state, input, output: "shown" })} />,
+			);
+			expect(html).not.toContain("<form");
+			expect(html).toContain(state === "input-streaming" ? "skel" : "tool-run");
+		}
+	});
+
 	test("a schema-failing input falls back to the generic tool row", () => {
 		const html = renderToStaticMarkup(
 			<UiPart
@@ -243,16 +265,13 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 			/>,
 		);
 		const distance = container.querySelector<HTMLInputElement>('.ui-field input[type="number"]')!;
-		// Fields are uncontrolled — the values live on the DOM nodes and
-		// are read as FormData at submit (React's change polyfill can't
-		// observe typing under happy-dom anyway).
-		distance.value = "30";
-		const form = container.querySelector("form.ui-form")!;
+		expect(distance.step).toBe("any");
+		distance.value = "30.5";
+		const form = container.querySelector<HTMLFormElement>("form.ui-form")!;
+		expect(form.checkValidity()).toBe(true);
 		await act(async () => {
-			form.dispatchEvent(
-				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
-			);
+			container.querySelector<HTMLButtonElement>(".ui-submit")!.click();
 		});
-		expect(actions).toEqual(["[ui] Plan ride: distance=30, terrain=flat, notes="]);
+		expect(actions).toEqual(["[ui] Plan ride: distance=30.5, terrain=flat, notes="]);
 	});
 });

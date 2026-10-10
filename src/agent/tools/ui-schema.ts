@@ -99,7 +99,7 @@ const formLeaf = z
 		fields: z
 			.array(
 				z.object({
-					name: z.string().describe("Field key sent back on submit"),
+					name: z.string().describe("Unique field key sent back on submit"),
 					label: z.string().describe("Visible field label"),
 					kind: z.enum(["text", "number", "select"]).describe("Input kind"),
 					options: z.array(z.string()).optional().describe("Required for kind=select"),
@@ -112,6 +112,10 @@ const formLeaf = z
 	})
 	.refine((f) => f.fields.every((x) => x.kind !== "select" || (x.options?.length ?? 0) > 0), {
 		message: "kind=select fields need a non-empty options list",
+	})
+	.refine((f) => new Set(f.fields.map((field) => field.name)).size === f.fields.length, {
+		message: "form field names must be unique",
+		path: ["fields"],
 	});
 
 const htmlLeaf = z.object({

@@ -166,7 +166,12 @@ function Form({
 							))}
 						</select>
 					) : (
-						<input className="ui-input" name={f.name} type={f.kind} />
+						<input
+							className="ui-input"
+							name={f.name}
+							type={f.kind}
+							step={f.kind === "number" ? "any" : undefined}
+						/>
 					)}
 				</label>
 			))}

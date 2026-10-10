@@ -80,6 +80,37 @@ describe("uiInputSchema", () => {
 		).toBe(true);
 	});
 
+	test("rejects duplicate field names in standalone and nested forms", () => {
+		const form = {
+			type: "form",
+			fields: [
+				{ name: "amount", label: "Amount", kind: "number" },
+				{ name: "amount", label: "Note", kind: "text" },
+			],
+			submit: "Send",
+		};
+		const parsed = uiBlockSchema.safeParse(form);
+		expect(parsed.success).toBe(false);
+		if (!parsed.success) {
+			expect(parsed.error.issues).toContainEqual(
+				expect.objectContaining({ message: "form field names must be unique", path: ["fields"] }),
+			);
+		}
+		expect(uiInputSchema.safeParse({ blocks: [form] }).success).toBe(false);
+		expect(
+			uiBlockSchema.safeParse({
+				type: "columns",
+				columns: [{ blocks: [form] }, { blocks: [{ type: "text", md: "ok" }] }],
+			}).success,
+		).toBe(false);
+		expect(
+			uiBlockSchema.safeParse({
+				...form,
+				fields: [form.fields[0], { ...form.fields[1], name: "note" }],
+			}).success,
+		).toBe(true);
+	});
+
 	test("the wire JSON Schema carries no $ref/$defs", () => {
 		// asSchema is the SDK's own zod→JSON-Schema path — what streamText
 		// actually sends the provider (ai v7 re-exports it from

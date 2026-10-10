@@ -15,13 +15,13 @@ const FALLBACK_W = 560;
 const PAD = { l: 46, r: 10, t: 12, b: 30 };
 const TICKS = 4;
 
-// Compact tick labels — "12k", "3.5", "-0.4".
-function fmt(n: number): string {
-	if (n !== 0 && Math.abs(n) >= 10_000) {
-		const k = n / 1000;
-		return `${Number.isInteger(k) ? k : k.toFixed(1)}k`;
-	}
-	return Number.isInteger(n) ? `${n}` : n.toFixed(1);
+// Keep enough significant digits to distinguish ticks at this spacing,
+// including after scaling to thousands. Number removes trailing zeroes.
+function fmt(n: number, spacing: number): string {
+	if (n === 0) return "0";
+	const scale = Math.abs(n) >= 10_000 ? 1000 : 1;
+	const precision = Math.min(100, Math.max(1, Math.ceil(Math.log10(Math.abs(n) / spacing)) + 3));
+	return `${Number((n / scale).toPrecision(precision))}${scale === 1000 ? "k" : ""}`;
 }
 
 export function Chart({ leaf }: { leaf: Extract<UiLeaf, { type: "chart" }> }) {
@@ -97,7 +97,7 @@ export function Chart({ leaf }: { leaf: Extract<UiLeaf, { type: "chart" }> }) {
 					<g key={i}>
 						<line className="ui-chart-grid" x1={PAD.l} x2={W - PAD.r} y1={py(t)} y2={py(t)} />
 						<text className="ui-chart-tick" x={PAD.l - 6} y={py(t) + 4} textAnchor="end">
-							{fmt(t)}
+							{fmt(t, span / TICKS)}
 						</text>
 					</g>
 				))}

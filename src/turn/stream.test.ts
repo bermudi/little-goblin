@@ -625,7 +625,12 @@ describe("driveStream", () => {
 				type: "finish",
 				finishReason: { unified: "tool-calls", raw: undefined },
 				usage: {
-					inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+					inputTokens: {
+						total: 1,
+						noCache: undefined,
+						cacheRead: undefined,
+						cacheWrite: undefined,
+					},
 					outputTokens: { total: 1, text: undefined, reasoning: undefined },
 				},
 			},
@@ -670,5 +675,53 @@ describe("driveStream", () => {
 		expect(outcome.digestRing[0]!.entry.tool).toBe("probe");
 		expect(outcome.digestRing[0]!.entry.result).toContain("probe-result-7f3a");
 		expect(outcome.digestRing[0]!.entry.ok).toBe(true);
+	});
+
+	test("a script output's call record expands into script.<tool> digest entries and tool calls", async () => {
+		const script = tool({
+			inputSchema: z.object({ code: z.string() }),
+			execute: async () => ({
+				text: "Script completed in 0.1s · 2 tool calls\ndigest",
+				calls: [
+					{ tool: "bash", args: '{"command":"ls"}', ok: true, result: "file1" },
+					{ tool: "fetch", args: '{"url":"https://x"}', ok: false, result: "dead" },
+				],
+			}),
+		});
+		const scriptStep: LanguageModelV4StreamPart[] = [
+			{ type: "stream-start", warnings: [] },
+			{ type: "tool-call", toolCallId: "c1", toolName: "script", input: '{"code":"x"}' },
+			{
+				type: "finish",
+				finishReason: { unified: "tool-calls", raw: undefined },
+				usage: {
+					inputTokens: {
+						total: 1,
+						noCache: undefined,
+						cacheRead: undefined,
+						cacheWrite: undefined,
+					},
+					outputTokens: { total: 1, text: undefined, reasoning: undefined },
+				},
+			},
+		];
+		const r = rig([scriptStep, textReply("done")], {
+			evidence: { calls: 8, argChars: 40, outChars: 60 },
+		});
+		r.deps.tools = { script };
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("ok");
+		if (outcome.kind !== "ok") return;
+		// The script itself is one call to the loop machinery; its nested
+		// calls surface only in the reviewer's view.
+		expect(outcome.toolCalls).toEqual(["script", "script.bash", "script.fetch"]);
+		const tools = outcome.digestRing.map((d) => d.entry.tool);
+		expect(tools).toEqual(["script", "script.bash", "script.fetch"]);
+		const bash = outcome.digestRing[1]!.entry;
+		expect(bash.ok).toBe(true);
+		expect(bash.args).toContain("command");
+		const fetch = outcome.digestRing[2]!.entry;
+		expect(fetch.ok).toBe(false);
+		expect(fetch.result).toContain("dead");
 	});
 });

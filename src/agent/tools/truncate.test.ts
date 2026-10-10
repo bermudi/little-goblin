@@ -1,5 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import { truncateTail } from "./truncate.ts";
+import { truncateTail, windowText } from "./truncate.ts";
+
+describe("windowText", () => {
+	test("under budget passes through untruncated", () => {
+		expect(windowText("short", 100)).toEqual({ window: "short", truncated: false });
+	});
+
+	test("cuts on line boundaries with a visible elision", () => {
+		const text = Array.from({ length: 100 }, (_, i) => `line-${i}`).join("\n");
+		const { window, truncated } = windowText(text, 400);
+		expect(truncated).toBe(true);
+		expect(window).toContain("line-0");
+		expect(window).toContain("line-99");
+		expect(window).toContain("[…]");
+		expect(window).not.toContain("line-50\n");
+	});
+});
 
 describe("truncateTail", () => {
 	test("under-cap input passes through unchanged", () => {

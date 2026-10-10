@@ -28,6 +28,7 @@ import {
 	type UIMessageChunk,
 } from "ai";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
+import { z } from "zod";
 import { filterErrorStream } from "../agent/filter-stream.ts";
 import {
 	isContentFilter,
@@ -54,6 +55,21 @@ const CUT_NUDGE: Record<ForcedKind, string> = {
 	watchdog: WATCHDOG_CUT,
 	context: CONTEXT_CUT,
 };
+
+// The script tool's stored output (design/tools.md → Scripting): the
+// nested-call record rides `calls`, each entry already summarized by
+// the tool. The stream expands them into the digest as script.<tool>
+// so the reviewer's evidence sees what actually ran.
+const scriptOutputSchema = z.object({
+	calls: z.array(
+		z.object({
+			tool: z.string(),
+			args: z.string(),
+			ok: z.boolean(),
+			result: z.string(),
+		}),
+	),
+});
 
 // Provider capability warnings are observability, not control — logged
 // compact, never fatal. Kept as strings so a warning object carrying a
@@ -800,7 +816,7 @@ export async function driveStream<M extends WireMember>(
 					error: chunk.errorText.slice(0, 300),
 				});
 				break;
-			case "tool-output-available":
+			case "tool-output-available": {
 				// Reviewer evidence: what the call actually returned.
 				if (evidence !== undefined) {
 					for (let i = digestRing.length - 1; i >= 0; i--) {
@@ -810,8 +826,38 @@ export async function driveStream<M extends WireMember>(
 						break;
 					}
 				}
+				// A script's nested calls expand into the digest and the
+				// tool-call list as script.<tool> — the reviewer sees what
+				// ran inside. They do NOT feed the loop detector: the script
+				// stays one call to it.
+				if (callById.get(chunk.toolCallId)?.tool === "script") {
+					const parsed = scriptOutputSchema.safeParse(chunk.output);
+					if (parsed.success) {
+						for (const [i, call] of parsed.data.calls.entries()) {
+							toolCalls.push(`script.${call.tool}`);
+							if (evidence !== undefined) {
+								digestRing.push({
+									id: `${chunk.toolCallId}/${i + 1}`,
+									entry: {
+										tool: `script.${call.tool}`,
+										args: summarize(call.args, evidence.argChars),
+										result: summarize(call.result, evidence.outChars),
+										ok: call.ok,
+									},
+								});
+								if (digestRing.length > evidence.calls) digestRing.shift();
+							}
+						}
+					} else {
+						log.warn("script call record unreadable — nested calls not expanded", {
+							conversation: convId,
+							toolCallId: chunk.toolCallId,
+						});
+					}
+				}
 				noteCompletedCall(chunk.toolCallId, chunk.output, false);
 				break;
+			}
 			case "tool-output-error":
 				// A throw out of execute surfaces to the model as a
 				// retryable error and to nobody else — without this line

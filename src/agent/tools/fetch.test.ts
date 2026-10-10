@@ -12,7 +12,7 @@ import { join } from "node:path";
 import type { AuthStore } from "../../auth.ts";
 import type { Config } from "../../config.ts";
 import { setLogFile } from "../../log.ts";
-import { extractors, fetchTool, windowText } from "./fetch.ts";
+import { extractors, fetchTool } from "./fetch.ts";
 
 const fakeAuth: AuthStore = {
 	resolve: async (name) => `key-for-${name}`,
@@ -284,22 +284,6 @@ describe("fetch tool — providers", () => {
 		expect(out).toContain("# The Title");
 		expect(out).toContain("(extracted via local — parallel");
 		expect(out).toContain("auth command failed");
-	});
-});
-
-describe("windowText", () => {
-	test("under budget passes through untruncated", () => {
-		expect(windowText("short", 100)).toEqual({ window: "short", truncated: false });
-	});
-
-	test("cuts on line boundaries with a visible elision", () => {
-		const text = Array.from({ length: 100 }, (_, i) => `line-${i}`).join("\n");
-		const { window, truncated } = windowText(text, 400);
-		expect(truncated).toBe(true);
-		expect(window).toContain("line-0");
-		expect(window).toContain("line-99");
-		expect(window).toContain("[…]");
-		expect(window).not.toContain("line-50\n");
 	});
 });
 

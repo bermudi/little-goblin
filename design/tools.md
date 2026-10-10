@@ -84,7 +84,99 @@ those.
 External agents arrived as `delegate` (see `Delegation`); MCP arrived
 as a skill over goblin's own mcporter (see `Web access`). Subagent
 tools do not exist — they arrive with the feature that needs them,
-designed then, not spec'd now.
+designed then, not spec'd now. `script` composes the other tools inside
+one call and is not a subagent — see `Scripting`.
+
+## Scripting
+
+On demand (ruling 2026-10-10). A `script` tool: the model writes one
+JavaScript program that calls goblin's own tools in a loop and returns
+only the digest. A 30-fetch research sweep otherwise costs 30 tool
+results in context; the only escape was `delegate`, a whole second
+harness. This is the cheap middle rung — context compression, not
+autonomy: still goblin, still one turn. Mechanism from hermes'
+`execute_code` (programmatic tool calling: allowlist ∩ enabled set,
+call cap, bounded stdout with spill) and pi's codemode
+(`@earendil-works/pi-codemode`: a QuickJS VM whose only capability is
+the injected tools). Not taken: hermes' persistent kernel and remote
+backends; pi's `store`/`load`, `models`, `searchTools`/deferred
+exposure, `mode: only`, and Cloudflare sandboxes.
+
+- **Scripts compose tools; they never reason.** A script is a
+  deterministic composition of tool calls inside one tool call:
+  in-process, no model calls, no state across calls, no endpoint. The
+  moment any of those stops holding it is a subagent and the non-goals
+  apply. The trade-off is stated, not hidden: no judgment between steps
+  — scripts are for mechanical fan-out (fetch N URLs, run a command per
+  file, filter a big result), not research where step 5 depends on
+  reading step 3.
+- **In-process VM, never a loopback RPC.** Hermes' shape (a child
+  process calling back over a socket) was rejected: a bash-spawned
+  process can background itself past `/stop` and the epoch fence, and a
+  loopback port is ambient authority for every same-uid process —
+  delegated harnesses included — an MCP broker in all but name. The
+  QuickJS VM runs in a worker thread per call (~20 ms); it has no
+  filesystem, network, timers or process, so its reach is exactly the
+  injected tools. Its heap is capped at 256 MiB (`memoryLimitBytes`;
+  the library default is wasm32's 4 GiB — a 2 GB accumulate loop
+  completed unbounded in review): scripts are glue over already-bounded
+  tool results, and g7 shares RAM with ollama and the memory stack.
+  Over-allocation fails inside the script as `out of memory`. Measured
+  on g7 (Bun 1.4.2): 30 parallel nested calls in 148 ms; a spinning
+  `while (true) {}` stopped 203 ms after abort.
+  This also keeps scripts orthogonal to the container sandbox
+  (`design/sandbox.md`): no port punches through it.
+- **Callable set = allowlist ∩ the turn's assembled set**, built after
+  guest filtering, so every per-turn gate carries over (no search block,
+  no `tools.search`; a personal guest turn's script can't reach
+  `memory_search`). Allowed: `read_file` `write_file` `edit_file`
+  `bash` `fetch` `search` `memory_search` `history_search` `transcribe`
+  `sandbox`. Excluded: `speak` `send_file` `ui` (delivery rides the
+  sink), `mail` (per-send human approval), `delegate` `program` (spawn
+  agents / standing work), `vision` (a model call). Excluding writes
+  would be theater — `bash` writes.
+- **Nested calls are real calls.** Each one is zod-validated against
+  the tool's own input schema (the SDK validates direct calls; nothing
+  validates inside the VM), runs the tool's live `execute` — looked up
+  at call time, so the runtime's authority fence wraps nested calls too
+  — under the turn's abort signal, with call id `<parent>/<n>`. A call
+  rejects inside the script when it throws, returns `{ error }`, or
+  fails validation; `bash` resolves on non-zero exits. Capped per script
+  (`maxCalls`, default 50) and in flight (8 concurrent). Calls that
+  completed before a failure are not undone. Raw results, never
+  `toModelOutput` — a fetched PDF is its `{ pdf: { url, path, size } }`
+  ref.
+- **Output is bounded, and tainted output rides fenced.** The result is
+  a goblin-authored status line (completed/failed, error kind, wall
+  time, call count) plus the script's `text()`/`console` items and
+  return value, in fetch's head+tail window (15k chars) with the full
+  text spilled to `state/scriptcache/<sha>.txt` and the footer naming
+  the `read_file` call. When any nested `fetch` or `search` completed,
+  the body rides in `fenceUntrusted("web", …)` — slicing a fenced
+  result strips its fence, and the script's output may quote the page
+  verbatim. Untainted output stays bare: fencing local data too would
+  teach the model to ignore the fence. `bash` and `sandbox` output stay
+  unfenced, as they are directly.
+- **The description lists names, not declarations.** The callable tools
+  are already declared directly; their arguments are identical inside
+  the script, so the description names them and states the result
+  shapes that differ from text (`bash`, `fetch`, `{ error }`
+  rejection). It is a pure function of the assembled set, so it moves
+  only when the tool list does. `script` sits before `ui` so the
+  `Tools:` line's shared prefix holds.
+- **Evidence and logging.** The stored output carries a bounded call
+  record (tool, args ≤200 chars, ok, result ≤300 chars); the model sees
+  only the text (`toModelOutput`). The stream expands that record into
+  the reviewer's digest and tool-call list as `script.<tool>` entries,
+  so the skill reviewer sees what ran. Loop detection treats the script
+  as one call. Every nested call logs `tool call` / `tool execute
+  failed` with `parent`; every script logs one `script done` line (ok,
+  error kind, calls, ms, output bytes, truncated, fenced).
+- **Config.** `scripting: { maxCalls?: 50 }` — absent means no tool,
+  the same live per-turn gate as `vision`/`search`. Input: `code`, and
+  `timeout_ms` (default 120 s, capped at bash's 10 min). The dependency
+  is pinned exactly (`@earendil-works/pi-codemode` 1.0.4 — 1.0.1 and
+  1.0.4 fix two ways a script crashed the host process).
 
 ## Vision
 

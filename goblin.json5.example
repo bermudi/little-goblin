@@ -109,6 +109,17 @@
   //   mode: "auto",
   // },
 
+  // --- Scripting (in-process tool composition) ---
+  // Unset = no script tool. With it, the model can write a JavaScript
+  // program that calls its own tools inside a QuickJS sandbox and
+  // returns only the digest — mechanical fan-out (fetch many URLs, run
+  // a command per file) without filling the context with intermediate
+  // results (design/tools.md → Scripting). Hand-edit only; applies to
+  // the next turn.
+  // scripting: {
+  //   maxCalls: 50, // nested tool calls per script, 1–500 (default 50)
+  // },
+
   // --- Web access ---
   // Search provider(s) behind the `search` tool. Unset = no search tool.
   // One entry or an ordered list — the list is a fallback chain:

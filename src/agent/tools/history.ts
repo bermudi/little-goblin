@@ -10,7 +10,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { ConversationStore } from "../../conversation.ts";
 import { log } from "../../log.ts";
-import { windowText } from "./fetch.ts";
+import { windowText } from "./truncate.ts";
 
 export interface HistorySearchDeps {
 	store: Pick<ConversationStore, "searchHistory" | "eventContext" | "get">;

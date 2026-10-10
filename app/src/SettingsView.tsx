@@ -32,6 +32,29 @@ type SheetMode = "model" | "telegram" | "title" | "vision";
 const serialize = (d: SettingsDraft, ps: ProvDraft[]) =>
 	JSON.stringify({ d, ps: ps.map(({ id: _id, ...rest }) => rest) });
 
+// Display names for the dirty-diff in the savebar — "unsaved" alone
+// can't say what changed.
+const FIELD_LABELS: Record<keyof SettingsDraft, string> = {
+	model: "app model",
+	titleModel: "topic-title model",
+	favorites: "favorites",
+	thinking: "app thinking",
+	telegramModel: "telegram model",
+	telegramThinking: "telegram thinking",
+	tts: "text to speech",
+	transcription: "speech to text",
+	vision: "vision",
+	search: "search chain",
+	fetch: "fetch chain",
+	allowedUsers: "allowed users",
+	publicUrl: "public url",
+	apiRoot: "telegram api root",
+	dmGap: "dm gap",
+	port: "http port",
+	logLevel: "log level",
+	memory: "memory",
+};
+
 function Seg({
 	options,
 	value,
@@ -588,6 +611,19 @@ export function SettingsView({
 
 	const dirty = baseline !== null && serialize(draft, provs) !== baseline;
 	useEffect(() => onDirtyChange?.(dirty), [dirty, onDirtyChange]);
+
+	// Which top-level fields differ — serialized both sides so the
+	// comparison sees exactly what dirty sees (provs minus ids).
+	const dirtyFields = (() => {
+		if (!dirty || baseline === null) return [];
+		const cur = JSON.parse(serialize(draft, provs)) as { d: SettingsDraft; ps: unknown[] };
+		const base = JSON.parse(baseline) as { d: SettingsDraft; ps: unknown[] };
+		const out = (Object.keys(FIELD_LABELS) as (keyof SettingsDraft)[])
+			.filter((k) => JSON.stringify(cur.d[k]) !== JSON.stringify(base.d[k]))
+			.map((k) => FIELD_LABELS[k]);
+		if (JSON.stringify(cur.ps) !== JSON.stringify(base.ps)) out.push("providers");
+		return out;
+	})();
 
 	useEffect(() => {
 		let live = true;
@@ -1378,7 +1414,7 @@ export function SettingsView({
 
 			<div className="savebar">
 				<span className={notice?.kind === "err" ? "savebar-msg err" : "savebar-msg"}>
-					{notice?.text ?? ""}
+					{notice?.text ?? (dirty ? `Unsaved: ${dirtyFields.join(", ")}` : "")}
 				</span>
 				<button type="button" disabled={!dirty || saving} onClick={() => void save()}>
 					{saving ? "Saving…" : "Save"}

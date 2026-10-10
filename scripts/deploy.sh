@@ -1,48 +1,52 @@
 #!/usr/bin/env bash
-# Deploy this tree. Prod is THIS box (g7) since 2026-10-09: goblin.service
-# runs from the working copy, so a deploy is gate → push → refresh →
-# restart → verify. The push keeps GitHub the backup and other clones
-# honest — a deploy pushes exactly what it ships.
-#
-#   scripts/deploy.sh
-#
-# Steps, in order:
-#   1. refuse a dirty tree or a detached HEAD — deploys are commits
-#   2. gate: bun run typecheck && bun test
-#   3. git push origin HEAD
-#   4. refresh what the gate can't cover, judged against the last
-#      deployed revision (marker in .git/GOBLIN_DEPLOYED_REV; first
-#      run refreshes unconditionally): bun install --frozen-lockfile
-#      when dependency manifests moved, bun run app:build when app/
-#      or the manifests moved — dist is served from disk, so the gate
-#      tests the tree while the service serves the bundle
-#   5. systemctl --user restart goblin; verify the unit came back and
-#      scan the fresh journal for error lines; probe the memory API
-#
-# If deploy/memory/ changed, a note is printed — the podman stack is
-# installed from that directory and never auto-applied (see
-# docs/operations.md, Deploying).
-#
-# Rollback is manual and printed on success: reset to the old hash,
-# reinstall, rebuild, restart — dist and node_modules are gitignored,
-# so the old revision needs its own deps and client.
+# Local deployment: gate → push → refresh deps/client → restart → verify.
+# The client is served from disk, so building it and restarting the backend
+# are one approved rollout. Memory assets are never auto-applied.
+# Rollback must restore ignored deps/client as well as the tracked revision.
 set -euo pipefail
 
 fail() { echo "deploy: $*" >&2; exit 1; }
 step() { echo "deploy: $*"; }
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
 cd "$repo_root"
-marker="$repo_root/.git/GOBLIN_DEPLOYED_REV"
+# A branch clone or linked worktree must not restart a different checkout.
+service_root="$(systemctl --user show --property=WorkingDirectory --value goblin.service)" ||
+	fail "cannot read goblin.service WorkingDirectory"
+[[ "$service_root" = /* ]] || fail "goblin.service has no absolute WorkingDirectory"
+service_root="$(cd "$service_root" && pwd -P)" ||
+	fail "cannot resolve goblin.service WorkingDirectory"
+[ "$service_root" = "$repo_root" ] ||
+	fail "goblin.service WorkingDirectory ($service_root) does not match checkout ($repo_root)"
+
+# Git owns this location: .git is a file in a linked worktree.
+marker="$(git rev-parse --git-path GOBLIN_DEPLOYED_REV)" || fail "cannot resolve deployment marker"
+marker_dir="$(dirname "$marker")"
+[ -d "$marker_dir" ] && [ -w "$marker_dir" ] && [ -x "$marker_dir" ] ||
+	fail "deployment marker directory is not writable: $marker_dir"
+old_rev=""
+if [ -e "$marker" ] || [ -L "$marker" ]; then
+	[ -f "$marker" ] || fail "deployment marker is not a regular file: $marker"
+	old_rev="$(cat "$marker")" || fail "cannot read deployment marker: $marker"
+	[ -w "$marker" ] || fail "deployment marker is not writable: $marker"
+	[[ "$old_rev" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] ||
+		fail "invalid commit in deployment marker: $marker"
+	old_rev="$(git rev-parse --verify "$old_rev^{commit}")" ||
+		fail "deployment marker commit does not resolve: $marker"
+fi
 
 # --- 1. What gets deployed is a commit, on a branch ----------------------
-[ -z "$(git status --porcelain)" ] ||
+tree_status="$(git status --porcelain)" || fail "cannot read working tree status"
+[ -z "$tree_status" ] ||
 	fail "working tree dirty — commit or stash first; deploys are commits"
 branch="$(git symbolic-ref -q --short HEAD)" ||
 	fail "detached HEAD — check out the branch to deploy"
 new_rev="$(git rev-parse HEAD)"
-old_rev="$(cat "$marker" 2>/dev/null || true)"
-step "deploying $branch @ $(git log -1 --format='%h %s' "$new_rev")${old_rev:+ (was ${old_rev:0:7})}"
+# Resolve the diff before push/build/restart; corrupt history is not a first run.
+changed_paths="$(git diff --name-only "${old_rev:-$new_rev}" "$new_rev")" ||
+	fail "cannot compare deployment revisions"
+revision_summary="$(git log -1 --format='%h %s' "$new_rev")" || fail "cannot read deployment commit"
+step "deploying $branch @ $revision_summary${old_rev:+ (was ${old_rev:0:7})}"
 
 # --- 2. Gate ---------------------------------------------------------------
 step "gate: bun run typecheck && bun test"
@@ -54,19 +58,15 @@ step "pushing $new_rev to origin"
 git push origin HEAD
 
 # --- 4. Refresh deps and the served bundle ---------------------------------
-# First run (no marker): refresh everything. A marker that no longer
-# resolves (history rewrite) diff-fails and falls back to everything.
-changed() { git diff --name-only "${old_rev:-$new_rev}" "$new_rev" 2>/dev/null || echo all; }
-if [ -z "$old_rev" ] || changed | grep -qE '^(bun\.lock|package\.json)$'; then
+# Only an absent marker is a first deployment; all other failures stop above.
+if [ -z "$old_rev" ] || grep -qE '^(bun\.lock|package\.json)$' <<< "$changed_paths"; then
 	bun install --frozen-lockfile
 fi
-if [ -z "$old_rev" ] || changed | grep -qE '^(app/|package\.json$|bun\.lock$)'; then
-	# The bundle inlines dependency code — a react/ai/vite bump lands in
-	# package.json/bun.lock with no app/ path touched and must rebuild too
-	# (the vite config itself lives under app/).
+if [ -z "$old_rev" ] || grep -qE '^(app/|package\.json$|bun\.lock$|src/agent/tools/ui-schema\.ts$)' <<< "$changed_paths"; then
+	# The bundle inlines dependencies and the shared UI schema, not just app/.
 	bun run app:build
 fi
-if changed | grep -qE '^deploy/memory/'; then
+if grep -qE '^deploy/memory/' <<< "$changed_paths"; then
 	echo "deploy: NOTE — deploy/memory/ changed; the podman stack is installed"
 	echo "deploy: from that dir and never auto-applied. If quadlets or env flow"
 	echo "deploy: changed: python3 deploy/memory/install.py (asset refresh),"
@@ -112,10 +112,13 @@ if command -v podman >/dev/null; then
 			fail "memory API unit is $load_state but its container is absent; inspect systemctl --user status goblin-memory-api"
 		fi
 	fi
+else
+	echo "  memory probe skipped: podman unavailable"
 fi
 
 echo "$new_rev" > "$marker"
 step "done: g7 @ ${new_rev:0:7}"
 if [ -n "$old_rev" ]; then
-	step "rollback: git reset --hard $old_rev && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin && echo $old_rev > $marker"
+	printf -v rollback_marker '%q' "$marker"
+	step "rollback: git reset --hard $old_rev && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin && echo $old_rev > $rollback_marker"
 fi

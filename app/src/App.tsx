@@ -278,6 +278,7 @@ function ConversationRow({
 	onToggleArchived,
 	onTogglePinned,
 	onDeleted,
+	onError,
 	token,
 }: {
 	conv: AppConversationList["conversations"][number];
@@ -287,6 +288,7 @@ function ConversationRow({
 	onToggleArchived: (id: string, archived: boolean) => void;
 	onTogglePinned: (id: string, pinned: boolean) => void;
 	onDeleted: (id: string) => void;
+	onError: (message: string) => void;
 	token: string | null;
 }) {
 	const title = flatTitle(conv.title);
@@ -307,24 +309,31 @@ function ConversationRow({
 		}
 	}, [editing]);
 
+	// A dropped rejection leaves the operator staring at a row that did
+	// nothing — every mutation failure surfaces in the rail.
+	const failed = (verb: string) => (err: unknown) =>
+		onError(
+			`Couldn't ${verb} "${title ?? (preview === "" ? "this conversation" : preview)}": ` +
+				(err instanceof Error ? err.message : String(err)),
+		);
 	const commitRename = () => {
 		if (committed.current) return;
 		committed.current = true;
 		const t = draft.trim();
 		setEditing(false);
 		if (t === "" || t === title) return;
-		void patchConversation(token, conv.id, { title: t }).then(onRenamed, () => {});
+		void patchConversation(token, conv.id, { title: t }).then(onRenamed, failed("rename"));
 	};
 	const toggleArchived = () => {
 		void patchConversation(token, conv.id, { archived: !archived }).then(
 			() => onToggleArchived(conv.id, !archived),
-			() => {},
+			failed(archived ? "unarchive" : "archive"),
 		);
 	};
 	const togglePinned = () => {
 		void patchConversation(token, conv.id, { pinned: !pinned }).then(
 			() => onTogglePinned(conv.id, !pinned),
-			() => {},
+			failed(pinned ? "unpin" : "pin"),
 		);
 	};
 	const startRename = () => {
@@ -333,10 +342,7 @@ function ConversationRow({
 	};
 	const remove = () => {
 		if (!window.confirm(`Delete "${title ?? preview ?? "this conversation"}"?`)) return;
-		void deleteConversation(token, conv.id).then(
-			() => onDeleted(conv.id),
-			() => {},
-		);
+		void deleteConversation(token, conv.id).then(() => onDeleted(conv.id), failed("delete"));
 	};
 
 	if (editing) {
@@ -425,6 +431,9 @@ export function App() {
 	);
 	const [current, setCurrent] = useState<string | null>(null);
 	const [listError, setListError] = useState<string | null>(null);
+	// Row-action failures — cleared by the next successful action or
+	// refresh, like listError but per-action and named.
+	const [rowError, setRowError] = useState<string | null>(null);
 	const [navOpen, setNavOpen] = useState(false);
 	// Rail search: debounced against the app-pool FTS endpoint. A non-
 	// empty query swaps the conversation list for the hit list.
@@ -531,6 +540,7 @@ export function App() {
 			if (seq !== listSeq.current) return;
 			setConversations(list.conversations);
 			setListError(null);
+			setRowError(null);
 		} catch (err) {
 			setListError(err instanceof ApiError && err.status === 401 ? "unauthorized" : "list failed");
 		}
@@ -756,16 +766,25 @@ export function App() {
 				current={current}
 				token={token}
 				onOpen={openConversation}
-				onRenamed={() => void refresh()}
+				onRenamed={() => {
+					setRowError(null);
+					void refresh();
+				}}
 				onToggleArchived={(id, isArchived) => {
+					setRowError(null);
 					if (isArchived) rowRemoved(id);
 					void refresh();
 				}}
-				onTogglePinned={() => void refresh()}
+				onTogglePinned={() => {
+					setRowError(null);
+					void refresh();
+				}}
 				onDeleted={(id) => {
+					setRowError(null);
 					rowRemoved(id);
 					void refresh();
 				}}
+				onError={setRowError}
 			/>
 		</li>
 	);
@@ -834,6 +853,11 @@ export function App() {
 					<p className="empty">Nothing here yet — start a conversation.</p>
 				)}
 				{listError !== null && <p className="error">Couldn't refresh the list.</p>}
+			{rowError !== null && (
+				<p className="error" role="alert">
+					{rowError}
+				</p>
+			)}
 				<div className="rail-ops">
 					{PAGES.map((p) => (
 						<button

@@ -868,6 +868,20 @@ describe("app channel store", () => {
 		expect(store.get(b.id)?.pinnedAt).toBeNull();
 		store.setMeta(b.id, { archived: false });
 		expect(store.get(b.id)?.pinnedAt).toBeNull();
+
+		// Pin-while-archived is refused, not written — a pin that dies
+		// with the next archive must not survive unarchive either.
+		store.setMeta(a.id, { archived: true });
+		expect(() => store.setMeta(a.id, { pinned: true })).toThrow(/archived/);
+		// The combination is refused even from an active row — archiving
+		// and pinning one patch is a contradiction.
+		store.setMeta(a.id, { archived: false });
+		expect(() => store.setMeta(a.id, { pinned: true, archived: true })).toThrow(/archived/);
+		expect(store.get(a.id)?.archivedAt).toBeNull();
+		// Unarchive+pin in one patch is the coherent escape hatch.
+		store.setMeta(a.id, { pinned: true, archived: false });
+		expect(store.get(a.id)?.archivedAt).toBeNull();
+		expect(store.get(a.id)?.pinnedAt).not.toBeNull();
 		store.close();
 	});
 });

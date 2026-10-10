@@ -1103,12 +1103,27 @@ describe("app channel http", () => {
 			expect(store.get("app/chat-01")?.pinnedAt).not.toBeNull();
 			expect(store.listAppConversations()[0]?.id).toBe("app/chat-01");
 
-			// Shelving supersedes pinning, and unarchive must not
-			// resurrect a stale pin.
+			// Shelving supersedes pinning: archiving clears the stamp.
 			await patch({ archived: true });
 			expect(store.get("app/chat-01")?.pinnedAt).toBeNull();
+
+			// Pin-while-archived is a 409, not a written contradiction —
+			// including the combined patch that archives and pins at once.
+			const conflict = await patch({ pinned: true });
+			expect(conflict.status).toBe(409);
+			const combo = await patch({ archived: true, pinned: true });
+			expect(combo.status).toBe(409);
+			expect(store.get("app/chat-01")?.archivedAt).not.toBeNull();
+			expect(store.get("app/chat-01")?.pinnedAt).toBeNull();
+
+			// Unarchive+pin in one patch is the coherent form; unarchiving
+			// alone never resurrects the cleared pin.
 			await patch({ archived: false });
 			expect(store.get("app/chat-01")?.pinnedAt).toBeNull();
+			const unarchivePin = await patch({ archived: false, pinned: true });
+			expect(unarchivePin.status).toBe(200);
+			expect(store.get("app/chat-01")?.archivedAt).toBeNull();
+			expect(store.get("app/chat-01")?.pinnedAt).not.toBeNull();
 		} finally {
 			http.stop();
 		}

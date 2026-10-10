@@ -952,6 +952,19 @@ export function openStore(dbPath: string): ConversationStore {
 	}
 
 	function applyPatch(id: string, patch: ConversationMetaPatch): void {
+		// Structural invariant (design/app.md → Pinning): an archived row
+		// never carries a pin. A pin write must leave the row on the
+		// active rail — unarchive+pin in one patch is coherent; pinning
+		// a row that is or becomes archived (this patch or earlier) is a
+		// caller bug and dies here rather than writing a contradiction
+		// the unarchive would resurrect.
+		if (patch.pinned === true) {
+			const row = qGet.get(id);
+			if (row === null) throw new Error(`conversation ${id} not found`);
+			const stays =
+				patch.archived === false || (patch.archived === undefined && row.archived_at === null);
+			if (!stays) throw new Error(`cannot pin archived conversation ${id}`);
+		}
 		const sets: string[] = [];
 		const vals: (string | number | null)[] = [];
 		if (patch.title !== undefined) {

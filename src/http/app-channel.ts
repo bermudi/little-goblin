@@ -709,7 +709,8 @@ export async function handleAppApi(
 	// An explicit operator title wins over the implicit auto-title rule.
 	// Archiving is list visibility only: no fence, the row keeps taking
 	// turns — and the next appended event clears the flag (auto-unarchive
-	// in store.append).
+	// in store.append). Pinning is refused on archived rows (409): a row
+	// hidden from the rail can't be anchored above it.
 	// DELETE /api/app/conversations/<id> — remove the row and everything
 	// it owns; a live turn is fenced first so the lane is quiet when the
 	// delete lands.
@@ -735,6 +736,22 @@ export async function handleAppApi(
 					{ error: z.prettifyError(parsed.error) },
 					{ status: 422, headers: NO_STORE },
 				);
+			}
+			if (parsed.data.pinned === true) {
+				// Mirror of the store's pin invariant (409, not a 500 from
+				// the store's throw): the patch must leave the row
+				// unarchived, so {archived: true, pinned: true} conflicts
+				// here too.
+				const row = store.get(convId.id);
+				const stays =
+					parsed.data.archived === false ||
+					(parsed.data.archived === undefined && row?.archivedAt === null);
+				if (!stays) {
+					return Response.json(
+						{ error: "cannot pin an archived conversation — unarchive it first" },
+						{ status: 409, headers: NO_STORE },
+					);
+				}
 			}
 			store.setMeta(convId.id, {
 				...(parsed.data.title !== undefined

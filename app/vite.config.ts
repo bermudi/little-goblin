@@ -20,7 +20,19 @@ export default defineConfig({
 				// non-browser client, whose whole check is reachability.
 				// Dev-only; bearer mode never reads these headers.
 				configure: (proxy) => {
-					proxy.on("proxyReq", (proxyReq) => {
+					proxy.on("proxyReq", (proxyReq, req) => {
+						// Only the dev page's own requests get laundered —
+						// its Origin names this dev server (host === the
+						// request's Host). A cross-origin or `Origin: null`
+						// request keeps its headers so the backend gate still
+						// refuses it; stripping unconditionally would reopen
+						// the no-cors CSRF hole the gate exists to close.
+						const origin = req.headers.origin;
+						const own =
+							typeof origin === "string" &&
+							URL.canParse(origin) &&
+							new URL(origin).host === req.headers.host;
+						if (origin !== undefined && !own) return;
 						for (const header of [
 							"origin",
 							"sec-fetch-site",

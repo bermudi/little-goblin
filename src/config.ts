@@ -47,6 +47,7 @@ export const paths = {
 	modelsDevCache: () => join(goblinHome(), "state", "models.dev.json"),
 	openrouterModelsCache: () => join(goblinHome(), "state", "openrouter-models.json"),
 	webcache: () => join(goblinHome(), "state", "webcache"),
+	scriptcache: () => join(goblinHome(), "state", "scriptcache"),
 	// Local speech-engine artifacts (digest-pinned auto-fetch —
 	// design/asr.md → Whistle). Cache, not state: deletable at will.
 	whistleCache: () => join(goblinHome(), "cache", "whistle"),
@@ -282,6 +283,14 @@ export const visionConfigSchema = z.object({
 	mode: z.enum(["auto", "always"]).default("auto"),
 });
 export type VisionConfig = z.infer<typeof visionConfigSchema>;
+
+// In-process tool composition behind the script tool — absent = off
+// (design/tools.md → Scripting). maxCalls bounds nested tool calls per
+// script; absent falls back to the default at the wiring site.
+export const scriptingConfigSchema = z.object({
+	maxCalls: z.number().int().min(1).max(500).optional(),
+});
+export type ScriptingConfig = z.infer<typeof scriptingConfigSchema>;
 
 // Edge read-aloud: no auth, unofficial, can break — ffmpeg is the only dependency.
 export const DEFAULT_TTS_VOICE = "en-US-AriaNeural";
@@ -599,6 +608,12 @@ const configSchema = z
 		guest: guestConfigSchema.optional(),
 		reviewer: reviewerConfigSchema.optional(),
 		system1: system1ConfigSchema.optional(),
+		// Live-read per turn like vision; "" clears (hand-edited only — the
+		// mini app round-trips it through the merge untouched).
+		scripting: z
+			.union([scriptingConfigSchema, z.literal("")])
+			.transform((v) => (v === "" ? undefined : v))
+			.optional(),
 		// auth.jsonl record NAME — the token value never sits in this
 		// file. Absent = trust mode: /api/app/* unauthenticated, the
 		// tailnet is the only lock. Boot-pinned; a flip needs a restart.

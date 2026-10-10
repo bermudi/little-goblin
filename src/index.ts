@@ -18,6 +18,7 @@ import { probeFfmpeg, speechEngine, transcribeAudio } from "./agent/transcribe.t
 import { whistleArtifactPresence } from "./agent/transcribe-whistle.ts";
 import { synthesizeSpeech } from "./agent/tts.ts";
 import { makeTools, toolNames, type VisionToolDeps } from "./agent/tools/mod.ts";
+import { withScript } from "./agent/tools/script.ts";
 import { makePrivateSender } from "./agent/tools/program.ts";
 import {
 	ensureHomeLayout,
@@ -415,7 +416,18 @@ async function boot() {
 				ui: channelOf(conv.id) === "app",
 			});
 			// Guest mode: hard toolset exclusion after assembly (design/telegram.md → Guest mode).
-			return filterGuestTools(conv, tools);
+			const filtered = filterGuestTools(conv, tools);
+			// script composes the filtered set; refiltering keeps it out of the guest persona's allowlist.
+			const scripting = configRef.current.scripting;
+			return scripting
+				? filterGuestTools(
+						conv,
+						withScript(filtered, {
+							conversation: conv.id,
+							maxCalls: scripting.maxCalls ?? 50,
+						}),
+					)
+				: filtered;
 		},
 		...(memoryClient && memoryBootConfig
 			? {

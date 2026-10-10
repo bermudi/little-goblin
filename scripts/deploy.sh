@@ -55,8 +55,10 @@ git push origin HEAD
 
 # --- 4. Refresh deps and the served bundle ---------------------------------
 # First run (no marker): refresh everything. A marker that no longer
-# resolves (history rewrite) diff-fails and falls back to everything.
-changed() { git diff --name-only "${old_rev:-$new_rev}" "$new_rev" 2>/dev/null || echo all; }
+# resolves (history rewrite) diff-fails; changed() then yields the
+# manifest paths so every trigger below matches — same as everything
+# having moved.
+changed() { git diff --name-only "${old_rev:-$new_rev}" "$new_rev" 2>/dev/null || printf '%s\n' bun.lock package.json app/ deploy/memory/; }
 if [ -z "$old_rev" ] || changed | grep -qE '^(bun\.lock|package\.json)$'; then
 	bun install --frozen-lockfile
 fi

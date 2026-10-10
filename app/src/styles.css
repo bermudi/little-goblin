@@ -2006,17 +2006,6 @@ a.hit-title {
 .savebar-msg.err {
 	color: var(--app-danger);
 }
-.savebar button {
-	border-radius: 8px;
-	padding: 0.4rem 1.1rem;
-	font-size: 13px;
-	font-weight: 500;
-	background: var(--app-fg);
-	color: var(--app-bg);
-}
-.savebar button:disabled {
-	opacity: 0.35;
-}
 
 /* The model picker — a bottom sheet on narrow screens, centered box
    on wide ones. */

@@ -787,10 +787,9 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(credentials()).toEqual(["", "search-fallback", "fetch-key", "fetch-fallback"]);
 		await change(2, "jina");
 		expect(credentials()).toEqual(["", "search-fallback", "", "fetch-fallback"]);
-		await click([...container.querySelectorAll("button")].find((b) => b.textContent === "Save"));
-		// The autosave may have already posted the same final state — the
-		// last write is the one that must carry it.
-		expect(savedBodies.length).toBeGreaterThanOrEqual(1);
+		// Edits write themselves — the last posted body must carry the
+		// final state.
+		await waitFor(() => savedBodies.length > 0, "the edits to write themselves");
 		expect(savedBodies.at(-1)?.search).toEqual([
 			{ kind: "jina" },
 			{ kind: "jina", auth: "search-fallback" },

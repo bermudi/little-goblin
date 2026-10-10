@@ -804,11 +804,17 @@ export function SettingsView({
 	};
 
 	// Save on change: a valid edit writes itself after a short debounce —
-	// rapid edits coalesce into one write, and an edit mid-write schedules
-	// another. The Save button stays as the explicit retry.
+	// rapid edits coalesce, an edit mid-write schedules another. A failed
+	// write isn't retried on the identical state — the next edit re-arms.
+	const attempted = useRef<string | null>(null);
 	useEffect(() => {
 		if (!dirty || invalidReason !== null || saving) return;
-		const t = setTimeout(() => void save(), 800);
+		const sig = serialize(draft, provs);
+		if (sig === attempted.current) return;
+		const t = setTimeout(() => {
+			attempted.current = sig;
+			void save();
+		}, 800);
 		return () => clearTimeout(t);
 	}, [dirty, invalidReason, saving, draft, provs]);
 
@@ -1428,15 +1434,13 @@ export function SettingsView({
 			<div className="savebar">
 				<span className={notice?.kind === "err" ? "savebar-msg err" : "savebar-msg"}>
 					{(() => {
+						if (saving) return "Saving…";
 						if (notice?.kind === "err") return notice.text;
 						if (invalidReason !== null) return invalidReason;
 						if (dirty) return `Unsaved: ${dirtyFields.join(", ")}`;
 						return notice?.text ?? "";
 					})()}
 				</span>
-				<button type="button" disabled={!dirty || saving} onClick={() => void save()}>
-					{saving ? "Saving…" : "Save"}
-				</button>
 			</div>
 
 			{sheet !== null && (

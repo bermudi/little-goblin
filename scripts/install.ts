@@ -326,7 +326,12 @@ async function install(): Promise<void> {
 	}
 	await command(["systemctl", "--user", "daemon-reload"], "reload user units");
 	await command(
-		["loginctl", "enable-linger", process.env.USER ?? fail("USER required for linger")],
+		[
+			"loginctl",
+			"--no-ask-password",
+			"enable-linger",
+			process.env.USER ?? fail("USER required for linger"),
+		],
 		"enable linger",
 	);
 	if (herdr)

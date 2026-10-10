@@ -230,6 +230,7 @@ describe("fresh installer", () => {
 			"scripts/check-app-assets.ts",
 			"systemd-analyze --user verify",
 			"systemctl --user daemon-reload",
+			"loginctl --no-ask-password enable-linger fixture",
 			"scripts/check-startup.ts",
 			"--phase installed --json",
 		];
@@ -240,6 +241,7 @@ describe("fresh installer", () => {
 			last = next;
 		}
 		expect(result.units).toContain("WorkingDirectory=/tmp/goblin-install-test-");
+		expect(result.calls.split("\n")).toContain("loginctl --no-ask-password enable-linger fixture");
 		expect(result.units).toContain("Environment=PATH=/tmp/goblin-install-test-");
 		expect(result.stderr).toContain("end-to-end acceptance");
 	});

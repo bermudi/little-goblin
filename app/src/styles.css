@@ -331,12 +331,19 @@ p code,
 	text-align: left;
 	padding: 0.4rem 0.6rem;
 }
-/* Hover actions fade in over the preview line while the preview fades
-   to a ghost — it keeps its space and stays faintly legible, so the row
-   never yanks and the icons read against dimmed text, not full-contrast
-   words. Untitled rows (.bare) dim their head line instead: it's the
-   only line they have. Touch screens never hover, so there the current
-   row keeps its actions showing. */
+/* The hover icons share the preview line, so the text itself fades out
+   just before their zone — a mask on the text, not a backdrop on the
+   icons — and the rest of the line stays full-contrast. Untitled rows
+   (.bare) fade their head line the same way; it's the only line they
+   have. Touch screens never hover, so there the current row keeps its
+   actions showing over the faded line. */
+.conv {
+	--conv-fade: linear-gradient(
+		to right,
+		black calc(100% - 5.6rem),
+		transparent calc(100% - 4.6rem)
+	);
+}
 .conv-actions {
 	position: absolute;
 	right: 0.3rem;
@@ -344,7 +351,7 @@ p code,
 	display: inline-flex;
 	align-items: center;
 	gap: 0.1rem;
-	padding: 0 0.3rem 0 0.75rem;
+	padding: 0 0.3rem;
 	opacity: 0;
 	pointer-events: none;
 	transition: opacity 160ms ease;
@@ -354,21 +361,13 @@ p code,
 	opacity: 1;
 	pointer-events: auto;
 }
-/* Soft scrim in the row's own background so the ghost text dissolves
-   under the icons instead of striking through them — a gradient edge,
-   not the hard strip the first overlay had. */
-.conv:hover .conv-actions {
-	background: linear-gradient(to right, transparent, var(--app-hover) 0.75rem);
-	border-radius: 0 8px 8px 0;
-}
-.conv.current .conv-actions {
-	background: linear-gradient(to right, transparent, var(--app-active) 0.75rem);
-}
 .conv:hover .conv-preview {
-	opacity: 0.35;
+	-webkit-mask-image: var(--conv-fade);
+	mask-image: var(--conv-fade);
 }
 .conv.bare:hover .conv-head {
-	opacity: 0.35;
+	-webkit-mask-image: var(--conv-fade);
+	mask-image: var(--conv-fade);
 }
 @media (hover: none) {
 	.conv.current .conv-actions {
@@ -376,10 +375,12 @@ p code,
 		pointer-events: auto;
 	}
 	.conv.current .conv-preview {
-		opacity: 0.35;
+		-webkit-mask-image: var(--conv-fade);
+		mask-image: var(--conv-fade);
 	}
 	.conv.bare.current .conv-head {
-		opacity: 0.35;
+		-webkit-mask-image: var(--conv-fade);
+		mask-image: var(--conv-fade);
 	}
 }
 .conv-actions button {
@@ -462,7 +463,6 @@ p code,
 	display: flex;
 	align-items: baseline;
 	gap: 0.5rem;
-	transition: opacity 160ms ease;
 }
 .conv-title {
 	flex: 1;
@@ -486,7 +486,6 @@ p code,
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-	transition: opacity 160ms ease;
 }
 .rail .empty {
 	color: var(--app-fg-muted);

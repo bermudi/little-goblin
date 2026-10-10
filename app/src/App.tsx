@@ -34,6 +34,46 @@ function pageFromPath(pathname: string): Page | null {
 	return m === null ? null : (m[1] as Page);
 }
 
+function historyPosition(state: unknown): { index: number; segment: string } | null {
+	if (
+		typeof state !== "object" ||
+		state === null ||
+		!("goblinIndex" in state) ||
+		typeof state.goblinIndex !== "number" ||
+		!Number.isSafeInteger(state.goblinIndex) ||
+		!("goblinSegment" in state) ||
+		typeof state.goblinSegment !== "string"
+	)
+		return null;
+	return { index: state.goblinIndex, segment: state.goblinSegment };
+}
+
+const newHistorySegment = () => crypto.getRandomValues(new Uint32Array(2)).join("-");
+
+interface BrowserNavigation {
+	readonly currentEntry: { readonly key: string };
+	traverseTo(key: string): { committed: Promise<unknown>; finished: Promise<unknown> };
+}
+
+// Native keys also identify entries created before we started tagging history.
+// The DOM typings don't yet expose Window.navigation.
+function browserNavigation(): BrowserNavigation | null {
+	const value: unknown = Reflect.get(window, "navigation");
+	if (
+		typeof value !== "object" ||
+		value === null ||
+		!("traverseTo" in value) ||
+		typeof value.traverseTo !== "function" ||
+		!("currentEntry" in value) ||
+		typeof value.currentEntry !== "object" ||
+		value.currentEntry === null ||
+		!("key" in value.currentEntry) ||
+		typeof value.currentEntry.key !== "string"
+	)
+		return null;
+	return value as BrowserNavigation;
+}
+
 // Sidebar timestamps are relative: "now", minutes, hours, days, then a
 // short date — the format Open WebUI's chat list uses.
 function relTime(iso: string): string {
@@ -341,6 +381,51 @@ export function App() {
 	// The settings editor reports its dirty bit here so navigating away
 	// can ask before discarding unsaved edits.
 	const settingsDirty = useRef(false);
+	const [navigationError, setNavigationError] = useState<string | null>(null);
+	const navigation = browserNavigation();
+	const position = historyPosition(window.history.state);
+	const route = useRef({
+		index: position?.index ?? 0,
+		segment: position?.segment ?? newHistorySegment(),
+		key: navigation?.currentEntry.key ?? null,
+	});
+	const leaveDirtySettings = () =>
+		page !== "settings" ||
+		!settingsDirty.current ||
+		window.confirm("Discard unsaved settings changes?");
+	const pushRoute = (path: string) => {
+		const actual = historyPosition(window.history.state);
+		// A declined legacy traversal can leave the browser at a different
+		// entry while the editor stays open. Never extend its saved indices.
+		const base =
+			actual?.segment === route.current.segment && actual.index === route.current.index
+				? actual
+				: { index: 0, segment: newHistorySegment() };
+		window.history.pushState(
+			{ goblinIndex: base.index + 1, goblinSegment: base.segment },
+			"",
+			path,
+		);
+		route.current = {
+			index: base.index + 1,
+			segment: base.segment,
+			key: navigation?.currentEntry.key ?? null,
+		};
+		setNavigationError(null);
+	};
+
+	useEffect(() => {
+		if (navigation !== null) return;
+		const state: unknown = window.history.state;
+		window.history.replaceState(
+			{
+				...(typeof state === "object" && state !== null ? state : {}),
+				goblinIndex: route.current.index,
+				goblinSegment: route.current.segment,
+			},
+			"",
+		);
+	}, []);
 
 	useEffect(() => {
 		if (gate !== "probing") return;
@@ -391,7 +476,7 @@ export function App() {
 			setCurrent(id);
 		} else {
 			// A dead link must not masquerade — normalize to the root.
-			window.history.replaceState(null, "", "/app/");
+			window.history.replaceState(window.history.state, "", "/app/");
 		}
 	}, [conversations]);
 
@@ -399,17 +484,63 @@ export function App() {
 	useEffect(() => {
 		const onPop = () => {
 			const p = pageFromPath(window.location.pathname);
+			const nextPosition = historyPosition(window.history.state);
+			if (p !== "settings" && !leaveDirtySettings()) {
+				// popstate arrives after traversal. Undo it rather than push a
+				// replacement entry, which would erase the forward history.
+				if (navigation !== null && route.current.key !== null) {
+					const failed = (err: unknown) =>
+						setNavigationError(
+							`Couldn't restore settings history: ${err instanceof Error ? err.message : String(err)}`,
+						);
+					try {
+						const { committed, finished } = navigation.traverseTo(route.current.key);
+						void Promise.all([committed, finished]).catch(failed);
+					} catch (err) {
+						failed(err);
+					}
+				} else if (
+					nextPosition !== null &&
+					nextPosition.segment === route.current.segment &&
+					nextPosition.index !== route.current.index
+				) {
+					window.history.go(route.current.index - nextPosition.index);
+				} else {
+					setNavigationError(
+						"Your unsaved settings are still here. This browser cannot restore an older history entry; save or discard your changes before navigating again.",
+					);
+				}
+				return;
+			}
+			route.current = {
+				// A legacy gap breaks index continuity. New entries get a new
+				// segment so we never compute a distance across that gap.
+				index: nextPosition?.index ?? 0,
+				segment: nextPosition?.segment ?? newHistorySegment(),
+				key: navigation?.currentEntry.key ?? null,
+			};
+			setNavigationError(null);
 			if (p !== null) {
 				setPage(p);
 				return;
 			}
 			const id = deepLinkConv(window.location.pathname);
 			setPage("chat");
-			if (id !== null) setCurrent(id);
+			setCurrent(id);
 		};
 		window.addEventListener("popstate", onPop);
 		return () => window.removeEventListener("popstate", onPop);
-	}, []);
+	}, [page]);
+
+	useEffect(() => {
+		const onUnload = (event: BeforeUnloadEvent) => {
+			if (page !== "settings" || !settingsDirty.current) return;
+			event.preventDefault();
+			event.returnValue = "Unsaved settings";
+		};
+		window.addEventListener("beforeunload", onUnload);
+		return () => window.removeEventListener("beforeunload", onUnload);
+	}, [page]);
 
 	// Debounced app-pool search — an empty box clears back to the list.
 	useEffect(() => {
@@ -471,19 +602,13 @@ export function App() {
 		);
 	}
 
-	// An unsaved settings editor asks before the page swaps.
-	const leaveDirtySettings = () =>
-		page !== "settings" ||
-		!settingsDirty.current ||
-		window.confirm("Discard unsaved settings changes?");
-
 	// Selection owns the URL — /app/c/<id> for a conversation, /app/
 	// for the list/empty state, matching the deep link the pings carry.
 	const select = (id: string | null) => {
 		if (!leaveDirtySettings()) return;
 		setPage("chat");
 		setCurrent(id);
-		window.history.pushState(null, "", id === null ? "/app/" : `/app/c/${id.slice("app/".length)}`);
+		pushRoute(id === null ? "/app/" : `/app/c/${id.slice("app/".length)}`);
 	};
 
 	const openPage = (p: Exclude<Page, "chat">) => {
@@ -494,7 +619,7 @@ export function App() {
 		if (!leaveDirtySettings()) return;
 		setPage(p);
 		setNavOpen(false);
-		window.history.pushState(null, "", `/app/${p}`);
+		pushRoute(`/app/${p}`);
 	};
 
 	// "New conversation" opens the empty state; the conversation itself is
@@ -672,6 +797,11 @@ export function App() {
 						<span className="header-title">{PAGES.find((p) => p.key === page)?.label}</span>
 					)}
 				</header>
+				{navigationError !== null && (
+					<p className="error" role="alert">
+						{navigationError}
+					</p>
+				)}
 				{page === "settings" && (
 					<SettingsView
 						token={token}

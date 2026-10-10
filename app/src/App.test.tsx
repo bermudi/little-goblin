@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
+import { parseConfig, transcriptionDefaults, transcriptionKinds } from "../../src/config.ts";
 import { App, deepLinkConv, flatLine } from "./App.tsx";
 
 // Stored titles predate store-side flattening — the sidebar row must
@@ -411,7 +412,9 @@ describe("rail row actions and the pinned pool", () => {
 
 		// Delete is unreachable from the rail — the archived section first.
 		expect(
-			[...container.querySelectorAll(".conv-actions button")].some((b) => b.textContent === "Delete"),
+			[...container.querySelectorAll(".conv-actions button")].some(
+				(b) => b.textContent === "Delete",
+			),
 		).toBe(false);
 
 		await click(
@@ -439,5 +442,333 @@ describe("rail row actions and the pinned pool", () => {
 			{ id: "fresh", body: { archived: false } },
 		]);
 		expect(rowActions("fresh chat")).toEqual(["Pin", "Rename", "Archive"]);
+	});
+});
+
+// Back/forward is a navigation like any other. An unsaved settings editor
+// gets the same question the in-app links ask. Indexed history can undo a
+// declined traversal. Without native keys, legacy entries expose no direction:
+// retain the draft and warn, rather than overwrite the destination entry.
+describe("browser back/forward and the unsaved settings editor", () => {
+	let win: Window;
+	let container: HTMLElement;
+	let root: Root | null = null;
+	let installed: string[] = [];
+	let confirmAnswer = false;
+	let confirmCalls = 0;
+	const realFetch = globalThis.fetch;
+
+	const installGlobal = (name: string, value: unknown) => {
+		Reflect.set(globalThis, name, value);
+		installed.push(name);
+	};
+
+	const SETTINGS = parseConfig({
+		providers: {
+			main: { kind: "openai-compatible", baseUrl: "https://api.example.test", auth: "fixture" },
+		},
+		model: "main/test",
+		allowedUsers: [111],
+		telegram: { model: "main/test", thinking: "medium" },
+	});
+
+	beforeEach(() => {
+		win = new Window({ url: "http://localhost/app/settings" });
+		const div = win.document.createElement("div");
+		win.document.body.appendChild(div);
+		container = div as unknown as HTMLElement;
+		installed = [];
+		confirmAnswer = false;
+		confirmCalls = 0;
+		installGlobal("window", win);
+		installGlobal("document", win.document);
+		installGlobal("navigator", win.navigator);
+		installGlobal("localStorage", win.localStorage);
+		installGlobal("Event", win.Event);
+		installGlobal("CustomEvent", win.CustomEvent);
+		installGlobal("getComputedStyle", win.getComputedStyle);
+		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+		Reflect.set(win, "confirm", () => {
+			confirmCalls += 1;
+			return confirmAnswer;
+		});
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url === "/api/app/conversations")
+				return Promise.resolve(jsonResponse({ conversations: [] }));
+			if (url === "/api/app/settings")
+				return Promise.resolve(
+					new Response(
+						JSON.stringify({
+							config: SETTINGS,
+							providerKinds: ["openai-compatible"],
+							searchKinds: ["ddg"],
+							fetchKinds: ["local"],
+							transcriptionKinds,
+							transcriptionDefaults,
+						}),
+						{ headers: { "content-type": "application/json", etag: '"v1"' } },
+					),
+				);
+			if (url.includes("thinking-levels"))
+				return Promise.resolve(jsonResponse({ levels: ["off", "low", "medium", "high"] }));
+			if (url === "/api/app/memory/status")
+				return Promise.resolve(
+					jsonResponse({
+						state: "healthy",
+						detail: "",
+						deleting: 0,
+						completed: 0,
+						blocked: 0,
+						dismissed: 0,
+						queued: 0,
+						lastRecallAt: null,
+						lastRecallOk: null,
+						topicNote: null,
+						blockedDetail: [],
+					}),
+				);
+			if (url.startsWith("/api/app/memory/documents"))
+				return Promise.resolve(jsonResponse({ items: [], total: 0, limit: 20, offset: 0 }));
+			return Promise.resolve(
+				jsonResponse({
+					model: "main/test",
+					thinking: "medium",
+					favorites: [],
+					thinkingLevels: ["off"],
+				}),
+			);
+		}) as typeof fetch;
+	});
+
+	afterEach(async () => {
+		if (root !== null) {
+			await act(async () => {
+				root?.unmount();
+			});
+			root = null;
+		}
+		await win.happyDOM.close();
+		globalThis.fetch = realFetch;
+		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+		for (const name of installed) Reflect.deleteProperty(globalThis, name);
+		installed = [];
+	});
+
+	const settle = async () => {
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 30));
+		});
+	};
+	const waitFor = async (pred: () => boolean, label: string) => {
+		for (let i = 0; i < 100; i++) {
+			if (pred()) return;
+			await settle();
+		}
+		throw new Error(`timed out waiting for ${label}`);
+	};
+	const mount = async () => {
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await waitFor(() => container.querySelector(".settings") !== null, "settings page");
+	};
+	const click = async (el: Element | null | undefined) => {
+		expect(el).toBeTruthy();
+		await act(async () => {
+			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+		});
+		await settle();
+	};
+	const dirtyTheForm = async () => {
+		await click(
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Access")),
+		);
+		await click(
+			[...container.querySelectorAll('[aria-label="Log level"] button')].find(
+				(b) => b.textContent === "debug",
+			),
+		);
+		expect(container.textContent).toContain("unsaved");
+	};
+	// The browser has already moved to `path`; popstate is what it delivers.
+	const browserGoesTo = async (path: string) => {
+		await act(async () => {
+			win.history.replaceState(null, "", path);
+			win.dispatchEvent(new win.PopStateEvent("popstate"));
+		});
+		await settle();
+	};
+
+	const openPage = async (label: string) =>
+		click([...container.querySelectorAll(".rail-ops button")].find((b) => b.textContent === label));
+	const traverse = async (direction: "back" | "forward") => {
+		await act(async () => {
+			win.history[direction]();
+			await new Promise((r) => setTimeout(r, 30));
+		});
+		await settle();
+	};
+
+	for (const direction of ["back", "forward"] as const) {
+		test(`declining real browser ${direction} preserves the history stack and draft`, async () => {
+			await mount();
+			await openPage("Memories");
+			if (direction === "back") {
+				await openPage("Settings");
+			} else {
+				await traverse("back");
+			}
+			await dirtyTheForm();
+			const entries = win.history.length;
+
+			await traverse(direction);
+			expect(confirmCalls).toBe(1);
+			expect(win.location.pathname).toBe("/app/settings");
+			expect(win.history.length).toBe(entries);
+			expect(container.textContent).toContain("unsaved");
+			expect(container.querySelector('[aria-label="Log level"] button.on')?.textContent).toBe(
+				"debug",
+			);
+
+			confirmAnswer = true;
+			await traverse(direction);
+			expect(confirmCalls).toBe(2);
+			expect(win.location.pathname).toBe("/app/memory");
+			expect(container.querySelector(".settings")).toBeNull();
+			await traverse(direction === "back" ? "forward" : "back");
+			expect(win.location.pathname).toBe("/app/settings");
+			expect(container.querySelector(".settings")).not.toBeNull();
+		});
+	}
+
+	for (const direction of ["back", "forward"] as const) {
+		test(`without native navigation, legacy ${direction} preserves the draft and destination and warns`, async () => {
+			if (direction === "back") {
+				win.history.replaceState({ legacy: "memory" }, "", "/app/memory");
+				win.history.pushState({ legacy: "settings" }, "", "/app/settings");
+				await mount();
+			} else {
+				// happy-dom's replaceState truncates forward history. Seed
+				// the unmarked destination after the initial mount instead.
+				await mount();
+				win.history.pushState({ legacy: "memory" }, "", "/app/memory");
+				await traverse("back");
+			}
+			await dirtyTheForm();
+
+			await traverse(direction);
+			expect(confirmCalls).toBe(1);
+			expect(container.querySelector(".settings")).not.toBeNull();
+			expect(container.textContent).toContain("unsaved");
+			expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+				"cannot restore an older history entry",
+			);
+			expect(win.location.pathname).toBe("/app/memory");
+			expect(win.history.state).toEqual({ legacy: "memory" });
+
+			await traverse(direction === "back" ? "forward" : "back");
+			confirmAnswer = true;
+			await traverse(direction);
+			expect(confirmCalls).toBe(2);
+			expect(container.querySelector(".settings")).toBeNull();
+			expect(win.location.pathname).toBe("/app/memory");
+		});
+	}
+
+	test("leaving the document warns only when the settings editor is dirty", async () => {
+		await mount();
+		const clean = new win.Event("beforeunload", { cancelable: true });
+		win.dispatchEvent(clean);
+		expect(clean.defaultPrevented).toBe(false);
+		await dirtyTheForm();
+		const dirty = new win.Event("beforeunload", { cancelable: true });
+		win.dispatchEvent(dirty);
+		expect(dirty.defaultPrevented).toBe(true);
+		confirmAnswer = true;
+		await openPage("Memories");
+		const afterLeaving = new win.Event("beforeunload", { cancelable: true });
+		win.dispatchEvent(afterLeaving);
+		expect(afterLeaving.defaultPrevented).toBe(false);
+	});
+
+	test("an accepted legacy gap breaks index continuity instead of guessing a restoration distance", async () => {
+		await mount();
+		await openPage("Memories");
+		const memoryState = win.history.state;
+		win.history.pushState({ legacy: true }, "", "/app/memory");
+		await traverse("back");
+		await traverse("forward");
+		await openPage("Settings");
+		await dirtyTheForm();
+		await act(async () => {
+			win.history.go(-2);
+			await new Promise((r) => setTimeout(r, 30));
+		});
+		await settle();
+		expect(confirmCalls).toBe(1);
+		expect(container.textContent).toContain("unsaved");
+		expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+			"cannot restore an older history entry",
+		);
+		expect(win.history.state).toEqual(memoryState);
+		await act(async () => {
+			win.history.go(2);
+			await new Promise((r) => setTimeout(r, 30));
+		});
+		expect(win.location.pathname).toBe("/app/settings");
+		expect(container.querySelector('[aria-label="Log level"] button.on')?.textContent).toBe(
+			"debug",
+		);
+	});
+
+	test("Back into the conversation list also asks while the editor is dirty", async () => {
+		await mount();
+		await dirtyTheForm();
+		await browserGoesTo("/app/");
+		expect(confirmCalls).toBe(1);
+		expect(container.querySelector(".settings")).not.toBeNull();
+	});
+
+	test("pushing after a declined legacy traversal starts a new segment at the browser's actual position", async () => {
+		await mount();
+		win.history.pushState({ legacy: "memory" }, "", "/app/memory");
+		await traverse("back");
+		await dirtyTheForm();
+		await traverse("forward");
+		confirmAnswer = true;
+		await openPage("Memories");
+		const memoryState = win.history.state;
+		await openPage("Settings");
+		await dirtyTheForm();
+		await act(async () => {
+			win.history.go(-3);
+			await new Promise((r) => setTimeout(r, 30));
+		});
+		await settle();
+		expect(win.location.pathname).toBe("/app/settings");
+		const calls = confirmCalls;
+		confirmAnswer = false;
+		await act(async () => {
+			win.history.go(2);
+			await new Promise((r) => setTimeout(r, 30));
+		});
+		await settle();
+		expect(confirmCalls - calls).toBe(1);
+		expect(win.history.state).toEqual(memoryState);
+		expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+			"cannot restore an older history entry",
+		);
+		expect(container.querySelector('[aria-label="Log level"] button.on')?.textContent).toBe(
+			"debug",
+		);
+	});
+
+	test("Back from a clean editor needs no question", async () => {
+		await mount();
+		await browserGoesTo("/app/memory");
+		expect(confirmCalls).toBe(0);
+		expect(container.querySelector(".settings")).toBeNull();
 	});
 });

@@ -168,6 +168,15 @@ of the mini app's form, not a redesign — `app/src/settingsDraft.ts`
 carries populate/validate/buildBody verbatim so the wire body is
 identical, and `app/src/SettingsView.tsx` keeps the section drill-in,
 chain ordering, provider rename-on-blur, and toggle-off preservation.
+Leaving dirty settings asks before discarding, including browser
+Back/Forward; declining restores the history position without adding
+an entry, using native Navigation API keys or our indexed history.
+For legacy unindexed entries or gaps in a browser without Navigation
+API, direction/distance cannot be recovered: retain the draft and show a warning,
+never overwrite history or guess a traversal direction. A dirty-only
+`beforeunload` guard covers cross-document departures.
+Memory pagination belongs to the loaded filter, not the
+search box's pending text, and waits for replacement loads to finish.
 The memory view is the Memories tab's browser plus status polling;
 forget asks `window.confirm` then rides the server's centralized
 forget protocol (`channel: "app"`).

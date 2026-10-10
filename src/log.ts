@@ -176,7 +176,9 @@ function warn(msg: string, a?: unknown, b?: Fields): void {
 }
 
 // Only these startup signals bypass the threshold; arbitrary info still obeys it.
-type StartupEvent = [msg: "goblin up", fields: { home: string }] | [msg: "long polling started"];
+type StartupEvent =
+	| [msg: "goblin up", fields: { home: string; port?: number }]
+	| [msg: "long polling started"];
 
 export const log = {
 	startup: (...[msg, fields]: StartupEvent) => emit("info", msg, fields, true),

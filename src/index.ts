@@ -869,4 +869,4 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
 	});
 }
 
-log.startup("goblin up", { home: goblinHome() });
+log.startup("goblin up", { home: goblinHome(), port: http.port });

@@ -236,7 +236,7 @@ describe("startup lifecycle evidence", () => {
 				// Matching text alone must not turn ordinary info into a bypass.
 				log.info("goblin up", { home: "/synthetic" });
 				log.info("long polling started");
-				log.startup("goblin up", { home: "/synthetic" });
+				log.startup("goblin up", { home: "/synthetic", port: 43210 });
 				log.startup("long polling started");
 				log.warn("ordinary warn");
 				log.error("ordinary error");
@@ -262,6 +262,7 @@ describe("startup lifecycle evidence", () => {
 				level: "info",
 				msg: "goblin up",
 				home: "/synthetic",
+				port: 43210,
 			});
 			expect(records[ordinary.length + 1]).toMatchObject({
 				level: "info",

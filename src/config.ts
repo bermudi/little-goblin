@@ -326,7 +326,10 @@ export const delegationTargetSchema = z
 		session: sessionNameSchema.optional(),
 		root: z
 			.string()
-			.regex(/^(?:\/|~(?:\/|$))/, "delegation target root must be absolute, ~, or ~/... (bare ~user is not expanded)")
+			.regex(
+				/^(?:\/|~(?:\/|$))/,
+				"delegation target root must be absolute, ~, or ~/... (bare ~user is not expanded)",
+			)
 			.optional(),
 		harnesses: harnessMapSchema.optional(),
 	})
@@ -676,7 +679,13 @@ export function loadConfig(): Config | null {
 			typeof line === "number" && Number.isSafeInteger(line) && line > 0 ? `:${line}` : "";
 		throw new Error(`${paths.config()}${location}: invalid JSON5`);
 	}
-	const config = parseConfig(parsed);
+	let config: Config;
+	try {
+		config = parseConfig(parsed);
+	} catch (error) {
+		if (error instanceof ConfigValidationError) throw new Error(error.message);
+		throw error;
+	}
 	const retired = z
 		.object({ delegation: z.record(z.string(), z.unknown()).optional() })
 		.parse(parsed);
@@ -696,9 +705,16 @@ export function loadConfig(): Config | null {
 	return config;
 }
 
-// The mini app parses before writing to inspect the result (e.g. refuse
-// a self-lockout). Retired delegation keys strip under zod; only disk
-// loads warn, never translate them into active settings.
+// HTTP callers must distinguish invalid edits (422) from I/O failures (500)
+// without retaining Zod's input-bearing payload.
+export class ConfigValidationError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "ConfigValidationError";
+	}
+}
+
+// Retired delegation keys strip here; only disk loads warn.
 export function parseConfig(raw: unknown): Config {
 	const result = configSchema.safeParse(raw);
 	if (!result.success) {
@@ -707,12 +723,10 @@ export function parseConfig(raw: unknown): Config {
 		const details = result.error.issues.map((issue) => {
 			const field = issue.path[0];
 			const safeField =
-				typeof field === "string" && Object.hasOwn(configSchema.in.shape, field)
-					? field
-					: "config";
+				typeof field === "string" && Object.hasOwn(configSchema.in.shape, field) ? field : "config";
 			return `${safeField}: ${issue.code}`;
 		});
-		throw new Error(`${paths.config()}: invalid config — ${details.join("; ")}`);
+		throw new ConfigValidationError(`${paths.config()}: invalid config — ${details.join("; ")}`);
 	}
 	return result.data;
 }

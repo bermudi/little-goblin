@@ -81,6 +81,7 @@ MEMORY_API_URL = "http://127.0.0.1:8888"
 HEALTH_URL = MEMORY_API_URL + "/health/ready"
 API_UNIT = "goblin-memory-api.service"
 DB_UNIT = "goblin-memory-db.service"
+API_CONTAINER = API_UNIT.removesuffix(".service")
 WATCH_UNITS = ("goblin-memory-watch.service", "goblin-memory-watch.timer")
 WATCH_TIMER = "goblin-memory-watch.timer"
 # Opt-in local-embeddings relay: the operator writes embed-relay.env from
@@ -483,8 +484,17 @@ def preflight() -> None:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind(("127.0.0.1", 8888))
     except OSError:
-        print("install: WARNING: 127.0.0.1:8888 already in use; "
-              "the API container cannot publish there", file=sys.stderr)
+        # A re-run hits its own stack first: the API container is the
+        # one legitimate holder of the port. Anything else still warns.
+        running = probe(["podman", "container", "inspect", "--format",
+                         "{{.State.Running}}", API_CONTAINER])
+        if (running is not None and running.returncode == 0
+                and (running.stdout or "").strip() == "true"):
+            info(f"127.0.0.1:8888 is held by the running {API_CONTAINER} "
+                 "container — a re-run, not a conflict")
+        else:
+            print("install: WARNING: 127.0.0.1:8888 already in use; "
+                  "the API container cannot publish there", file=sys.stderr)
 
 
 def pre_pull_images() -> None:

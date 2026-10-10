@@ -648,6 +648,68 @@ class InsertJson5Test(unittest.TestCase):
         self.assertIn("bankId: 'goblin',\n  }\n}\n", updated)
 
 
+class PreflightTest(unittest.TestCase):
+    """The 8888 bind check: a re-run finds its own API container holding
+    the port — an info line, not the 'already in use' WARNING. The socket
+    module is faked as a refused bind; the rest of preflight's checks are
+    stubbed green so the bind branch is what runs."""
+
+    class _RefusedSocket:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> "PreflightTest._RefusedSocket":
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            pass
+
+        def bind(self, addr: object) -> None:
+            raise OSError("address already in use")
+
+    class _SocketModule:
+        AF_INET = 2
+        SOCK_STREAM = 1
+
+        @staticmethod
+        def socket(*args: object) -> "PreflightTest._RefusedSocket":
+            return PreflightTest._RefusedSocket()
+
+    def run_preflight(self, probe_stdout: str) -> str:
+        install.probe = lambda command: subprocess.CompletedProcess(
+            command, 0, probe_stdout, "")
+        stderr = io.StringIO()
+        patchers = [
+            patch.object(install.os, "geteuid", lambda: 1000),
+            patch.object(install.shutil, "which", lambda cmd: "/usr/bin/podman"),
+            patch.object(install, "run",
+                         lambda command: subprocess.CompletedProcess(command, 0, "", "")),
+            patch.object(install.getpass, "getuser", lambda: "tester"),
+            patch.object(Path, "read_text",
+                         lambda self, *a, **k: "tester:100000:65536\n"),
+            patch.object(install, "socket", self._SocketModule),
+            contextlib.redirect_stderr(stderr),
+        ]
+        with contextlib.ExitStack() as stack:
+            for patcher in patchers:
+                stack.enter_context(patcher)
+            install.preflight()
+        return stderr.getvalue()
+
+    def setUp(self) -> None:
+        self.real_probe = install.probe
+        self.addCleanup(setattr, install, "probe", self.real_probe)
+
+    def test_port_held_by_own_api_container_is_info_not_warning(self) -> None:
+        stderr = self.run_preflight("true\n")
+        self.assertNotIn("WARNING", stderr)
+
+    def test_port_held_by_something_else_still_warns(self) -> None:
+        stderr = self.run_preflight("false\n")
+        self.assertIn("WARNING", stderr)
+        self.assertIn("8888", stderr)
+
+
 FAKED = ("preflight", "prompt_answers", "prompt_bank", "ask_yes", "run",
          "http_ok", "probe", "goblin_stable", "create_bank", "wire_goblin",
          "time", "CFG_DIR", "SYSTEMD_DIR",

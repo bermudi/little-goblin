@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseConfig, type Config } from "../../src/config.ts";
+import { authDefaults, parseConfig, type Config } from "../../src/config.ts";
 import {
 	bodyFromDraft,
 	displayLevel,
@@ -138,9 +138,11 @@ describe("validateDraft", () => {
 		).toMatch(/Duplicate/);
 	});
 
-	test("openai-compatible providers need a base url and a secret name", () => {
+	test("openai-compatible providers need a base url; blank auth means their own name", () => {
 		expect(validateDraft(draft(), [prov({ baseUrl: "" })])).toMatch(/base url/);
-		expect(validateDraft(draft(), [prov({ auth: " " })])).toMatch(/secret name/);
+		// Blank auth is no longer a validation error — bodyFromDraft
+		// materializes the provider's name (openrouter: its default record).
+		expect(validateDraft(draft(), [prov({ auth: " " })])).toBeNull();
 		// codex needs neither — the CLI's own auth file is the default.
 		expect(validateDraft(draft(), [prov({ kind: "codex", baseUrl: "", auth: "" })])).toBeNull();
 	});
@@ -162,11 +164,10 @@ describe("validateDraft", () => {
 		).toMatch(/hindsight url/);
 	});
 
-	test("chains need at least one step and required secret names", () => {
+	test("chains need at least one step; blank step auth rides the kind default", () => {
 		expect(validateDraft(draft({ search: [] }), [prov()])).toMatch(/add at least one/);
-		expect(validateDraft(draft({ search: [{ kind: "brave", auth: "" }] }), [prov()])).toMatch(
-			/step 1/,
-		);
+		// Keyed kinds default their record server-side — blank is valid.
+		expect(validateDraft(draft({ search: [{ kind: "brave", auth: "" }] }), [prov()])).toBeNull();
 		// ddg needs no key.
 		expect(validateDraft(draft({ search: [{ kind: "ddg", auth: "" }] }), [prov()])).toBeNull();
 	});
@@ -186,7 +187,7 @@ describe("validateDraft", () => {
 
 describe("bodyFromDraft", () => {
 	test("null blocks serialize as the clearing convention", () => {
-		const body = bodyFromDraft(draft(), [prov()]);
+		const body = bodyFromDraft(draft(), [prov()], authDefaults);
 		expect(body.tts).toBe("");
 		expect(body.transcription).toBe("");
 		expect(body.vision).toBe("");
@@ -196,11 +197,15 @@ describe("bodyFromDraft", () => {
 	});
 
 	test("providers map by kind — codex writes authFile, not a secret", () => {
-		const body = bodyFromDraft(draft(), [
-			prov({ name: "main" }),
-			prov({ id: 2, name: "dex", kind: "codex", baseUrl: "", auth: "/home/me/.codex/auth.json" }),
-			prov({ id: 3, name: "dex2", kind: "codex", baseUrl: "", auth: "" }),
-		]);
+		const body = bodyFromDraft(
+			draft(),
+			[
+				prov({ name: "main" }),
+				prov({ id: 2, name: "dex", kind: "codex", baseUrl: "", auth: "/home/me/.codex/auth.json" }),
+				prov({ id: 3, name: "dex2", kind: "codex", baseUrl: "", auth: "" }),
+			],
+			authDefaults,
+		);
 		expect(body.providers["main"]).toEqual({
 			kind: "openai-compatible",
 			baseUrl: "https://api.example.test",
@@ -210,28 +215,47 @@ describe("bodyFromDraft", () => {
 		expect(body.providers["dex2"]).toEqual({ kind: "codex" });
 	});
 
-	test("keyless chain steps drop their auth field", () => {
+	test("blank provider auth materializes — the provider's name, or the kind default", () => {
+		const body = bodyFromDraft(
+			draft(),
+			[
+				prov({ name: "zai", auth: "" }),
+				prov({ id: 2, name: "route", kind: "openrouter", baseUrl: "", auth: " " }),
+			],
+			authDefaults,
+		);
+		// The config stays self-describing: saves write an explicit name,
+		// so a later rename never re-points a credential.
+		expect(body.providers["zai"]).toMatchObject({ auth: "zai" });
+		expect(body.providers["route"]).toMatchObject({ auth: "openrouter" });
+	});
+
+	test("keyless and defaulted chain steps drop their auth field", () => {
 		const body = bodyFromDraft(
 			draft({
 				search: [
 					{ kind: "brave", auth: "BRAVE_KEY" },
 					{ kind: "ddg", auth: "ignored" },
 					{ kind: "jina", auth: "" },
+					{ kind: "tavily", auth: "" },
 				],
 			}),
 			[prov()],
+			authDefaults,
 		);
 		expect(body.search).toEqual([
 			{ kind: "brave", auth: "BRAVE_KEY" },
 			{ kind: "ddg" },
 			{ kind: "jina" },
+			// Blank keyed auth rides the schema default server-side.
+			{ kind: "tavily" },
 		]);
 	});
 
 	// JSON drops `undefined`, so a blank that must clear has to be "" on the
 	// wire — pinned through a real JSON round trip, not the in-memory object.
 	test("a blank bot API root goes over the wire as an explicit clear", () => {
-		const body = bodyFromDraft(draft({ apiRoot: "  " }), [prov()]);
+		const body = bodyFromDraft(draft({ apiRoot: "  " }), [prov()], authDefaults);
 		expect(body.telegram.apiRoot).toBe("");
 		expect(JSON.parse(JSON.stringify(body)).telegram).toMatchObject({ apiRoot: "" });
 	});
@@ -252,6 +276,7 @@ describe("bodyFromDraft", () => {
 				},
 			}),
 			[prov()],
+			authDefaults,
 		);
 		expect(body.http.port).toBe(9999);
 		expect(body.telegram.dmGapMinutes).toBe(30);
@@ -272,7 +297,7 @@ describe("bodyFromDraft", () => {
 		c.vision = { model: "main/vl", maxTokens: 3000, mode: "always" };
 		const { draft: d, providers } = draftFromConfig(c);
 		expect(validateDraft(d, providers)).toBeNull();
-		const body = bodyFromDraft(d, providers);
+		const body = bodyFromDraft(d, providers, authDefaults);
 		expect(body.model).toBe("main/gpt-5");
 		expect(body.telegram.model).toBe("route/auto");
 		expect(body.vision).toEqual({ model: "main/vl", maxTokens: 3000, mode: "always" });
@@ -309,7 +334,9 @@ describe("transcription block", () => {
 		const { draft: d, providers } = draftFromConfig(c);
 		const groq = { ...d, transcription: switchTranscriptionKind(emptyTranscription(), "groq") };
 		expect(validateDraft(groq, providers)).toBeNull();
-		expect(parseConfig({ ...c, ...bodyFromDraft(groq, providers) }).transcription).toEqual({
+		expect(
+			parseConfig({ ...c, ...bodyFromDraft(groq, providers, authDefaults) }).transcription,
+		).toEqual({
 			kind: "groq",
 			model: "whisper-large-v3-turbo",
 			auth: "groq",
@@ -327,7 +354,7 @@ describe("transcription block", () => {
 		};
 		const { draft: d, providers } = draftFromConfig(c);
 		expect(validateDraft(d, providers)).toBeNull();
-		expect(bodyFromDraft(d, providers).transcription).toEqual({
+		expect(bodyFromDraft(d, providers, authDefaults).transcription).toEqual({
 			kind: "whistle",
 			keywords: ["goblin", "bermudi"],
 			engine: "/opt/whistle/needle",
@@ -341,6 +368,7 @@ describe("transcription block", () => {
 		const body = bodyFromDraft(
 			{ ...d, transcription: { ...emptyTranscription("openai"), auth: "OPENAI_KEY" } },
 			providers,
+			authDefaults,
 		);
 		expect(body.transcription).toEqual({ kind: "openai", auth: "OPENAI_KEY" });
 	});
@@ -376,7 +404,7 @@ describe("transcription block", () => {
 		const { draft: d, providers } = draftFromConfig(c);
 		const saved = parseConfig({
 			...c,
-			...bodyFromDraft({ ...d, transcription: switched }, providers),
+			...bodyFromDraft({ ...d, transcription: switched }, providers, authDefaults),
 		});
 		// Blank falls back to openai's own defaults, never groq's record.
 		expect(saved.transcription).toEqual({

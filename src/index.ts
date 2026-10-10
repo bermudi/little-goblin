@@ -739,6 +739,7 @@ async function boot() {
 		programs,
 		delegations,
 		service: { version: pkg.version, startedAt, restartHints },
+		authNames: () => auth.names(),
 	};
 	const http = startHttp({
 		configRef,

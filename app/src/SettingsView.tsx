@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import type { ConfigResponse } from "../../src/http/operator-wire.ts";
 import { ApiError, getOperatorConfig, getThinkingLevels, saveOperatorConfig } from "./api.ts";
 import {
 	bodyFromDraft,
@@ -31,6 +32,29 @@ type SheetMode = "model" | "telegram" | "title" | "vision";
 // React keying detail, not editor state.
 const serialize = (d: SettingsDraft, ps: ProvDraft[]) =>
 	JSON.stringify({ d, ps: ps.map(({ id: _id, ...rest }) => rest) });
+
+// Display names for the dirty-diff in the savebar — "unsaved" alone
+// can't say what changed.
+const FIELD_LABELS: Record<keyof SettingsDraft, string> = {
+	model: "app model",
+	titleModel: "topic-title model",
+	favorites: "favorites",
+	thinking: "app thinking",
+	telegramModel: "telegram model",
+	telegramThinking: "telegram thinking",
+	tts: "text to speech",
+	transcription: "speech to text",
+	vision: "vision",
+	search: "search chain",
+	fetch: "fetch chain",
+	allowedUsers: "allowed users",
+	publicUrl: "public url",
+	apiRoot: "telegram api root",
+	dmGap: "dm gap",
+	port: "http port",
+	logLevel: "log level",
+	memory: "memory",
+};
 
 function Seg({
 	options,
@@ -79,6 +103,21 @@ function Switch({
 	);
 }
 
+// Every secret-name input shares one datalist — auth.jsonl's record
+// names as loaded at boot — and one warning shape. A name that isn't in
+// the list never blocks a save (config-before-key is legitimate order);
+// it only flags typos against what the running process can resolve.
+// openrouter is required because providers materialize blank auth from
+// it; the rest are read by kind lookup.
+export type AuthDefaults = Record<string, string> & { openrouter: string };
+const AUTH_DL = "goblin-auth-names";
+const authWarn = (name: string, known: readonly string[]): string | undefined => {
+	const t = name.trim();
+	return known.length > 0 && t !== "" && !known.includes(t)
+		? `"${t}" is not in auth.jsonl (as loaded at boot)`
+		: undefined;
+};
+
 function Row({
 	label,
 	cap,
@@ -113,14 +152,16 @@ function Field({
 	cap,
 	numeric,
 	mono,
+	list,
 }: {
 	label: string;
 	value: string;
 	onChange: (v: string) => void;
 	placeholder?: string;
-	cap?: string;
+	cap?: string | undefined;
 	numeric?: boolean;
 	mono?: boolean;
+	list?: string | undefined;
 }) {
 	const id = useId();
 	return (
@@ -138,6 +179,7 @@ function Field({
 				autoComplete="off"
 				spellCheck={false}
 				autoCapitalize="off"
+				list={list}
 			/>
 			{cap !== undefined && <div className="cap">{cap}</div>}
 		</div>
@@ -317,11 +359,17 @@ function ChainEditor({
 	entries,
 	kinds,
 	meta,
+	defaults,
+	authNames,
 	onChange,
 }: {
 	entries: ChainEntry[];
 	kinds: readonly string[];
 	meta: Record<string, KindMeta>;
+	/** Blank-auth defaults per kind — authDefaults off the config GET,
+	 *  one source with the server schema. */
+	defaults: AuthDefaults;
+	authNames: string[];
 	onChange: (next: ChainEntry[]) => void;
 }) {
 	const move = (i: number, d: number) => {
@@ -336,6 +384,15 @@ function ChainEditor({
 		<>
 			{entries.map((e, i) => {
 				const m = meta[e.kind];
+				const def = defaults[e.kind] ?? "";
+				const effective = e.auth.trim() || def;
+				// Warn on any effective name the process can't resolve —
+				// including a typed name on keyless-capable kinds; hint
+				// "Blank uses X" only while the field is blank (mini-app
+				// parity).
+				const hint =
+					authWarn(effective, authNames) ??
+					(e.auth.trim() === "" && def !== "" ? `Blank uses ${def}.` : undefined);
 				return (
 					<div className="chain-card" key={i}>
 						<div className="chain-head">
@@ -396,16 +453,22 @@ function ChainEditor({
 										onChange(entries.map((x, j) => (j === i ? { ...x, auth: ev.target.value } : x)))
 									}
 									placeholder={
-										m?.auth === "optional" ? "secret name (optional)" : "secret name in auth.jsonl"
+										m?.auth === "optional"
+											? "secret name (optional)"
+											: def !== ""
+												? `${def} — in auth.jsonl`
+												: "secret name in auth.jsonl"
 									}
 									autoComplete="off"
 									spellCheck={false}
 									autoCapitalize="off"
 									aria-label={`step ${i + 1} secret name`}
+									list={AUTH_DL}
 								/>
 								{m?.auth === "optional" && m.note !== undefined && (
 									<div className="cap">{m.note}</div>
 								)}
+								{hint !== undefined && <div className="cap">{hint}</div>}
 							</>
 						)}
 					</div>
@@ -430,6 +493,8 @@ function ProviderCard({
 	prov,
 	kinds,
 	referencedBy,
+	authDefaults,
+	authNames,
 	onPatch,
 	onRename,
 	onRemove,
@@ -437,6 +502,8 @@ function ProviderCard({
 	prov: ProvDraft;
 	kinds: readonly string[];
 	referencedBy: string[];
+	authDefaults: AuthDefaults;
+	authNames: string[];
 	onPatch: (patch: Partial<ProvDraft>) => void;
 	onRename: (v: string) => string | null;
 	onRemove: () => void;
@@ -463,6 +530,11 @@ function ProviderCard({
 	};
 	const needsBase = prov.kind === "openai-compatible" || prov.kind === "responses";
 	const codex = prov.kind === "codex";
+	// Blank auth materializes at save: the provider's own name, or the
+	// kind's default record for openrouter — the placeholder states
+	// which, tracking the name live so the convention stays visible.
+	const authFallback = prov.kind === "openrouter" ? authDefaults.openrouter : prov.name.trim();
+	const authMissing = !codex && authWarn(prov.auth.trim() || authFallback, authNames);
 	return (
 		<div className="prov card">
 			<div className="prov-head">
@@ -523,14 +595,18 @@ function ProviderCard({
 					value={prov.auth}
 					onChange={(e) => onPatch({ auth: e.target.value })}
 					placeholder={
-						codex ? "~/.codex/auth.json — blank = default" : "in auth.jsonl — not the secret itself"
+						codex
+							? "~/.codex/auth.json — blank = default"
+							: `${authFallback || "provider name"} — in auth.jsonl`
 					}
 					autoComplete="off"
 					spellCheck={false}
 					autoCapitalize="off"
 					aria-label={codex ? "codex auth file" : "secret name"}
+					list={codex ? undefined : AUTH_DL}
 				/>
 			</div>
+			{authMissing !== undefined && <div className="cap">{authMissing}</div>}
 		</div>
 	);
 }
@@ -556,7 +632,10 @@ export function SettingsView({
 		search: readonly string[];
 		fetch: readonly string[];
 		transcription: readonly TranscriptionKind[];
+		authDefaults: ConfigResponse["authDefaults"];
+		trDefaults: ConfigResponse["transcriptionDefaults"];
 	} | null>(null);
+	const [authNames, setAuthNames] = useState<string[]>([]);
 	const [etag, setEtag] = useState("");
 	const [draft, setDraft] = useState<SettingsDraft>(EMPTY_DRAFT);
 	const [provs, setProvs] = useState<ProvDraft[]>([]);
@@ -589,11 +668,35 @@ export function SettingsView({
 	const dirty = baseline !== null && serialize(draft, provs) !== baseline;
 	useEffect(() => onDirtyChange?.(dirty), [dirty, onDirtyChange]);
 
+	// Which top-level fields differ — serialized both sides so the
+	// comparison sees exactly what dirty sees (provs minus ids).
+	const dirtyFields = (() => {
+		if (!dirty || baseline === null) return [];
+		const cur = JSON.parse(serialize(draft, provs)) as { d: SettingsDraft; ps: unknown[] };
+		const base = JSON.parse(baseline) as { d: SettingsDraft; ps: unknown[] };
+		const out = (Object.keys(FIELD_LABELS) as (keyof SettingsDraft)[])
+			.filter((k) => JSON.stringify(cur.d[k]) !== JSON.stringify(base.d[k]))
+			.map((k) => FIELD_LABELS[k]);
+		if (JSON.stringify(cur.ps) !== JSON.stringify(base.ps)) out.push("providers");
+		return out;
+	})();
+
+	// A dirty draft that fails validation can't write — it stays dirty
+	// and the savebar says why instead of listing fields.
+	const invalidReason = dirty ? validateDraft(draft, provs) : null;
+
 	useEffect(() => {
 		let live = true;
 		getOperatorConfig(token).then(
 			({ data, etag: tag }) => {
 				if (!live) return;
+				// A freshly built client against a not-yet-restarted server
+				// (the forbidden rollout window) must fail loud here, not
+				// crash later when a save materializes from authDefaults.
+				if (!("authDefaults" in data)) {
+					setLoadErr("The settings endpoint predates this client — restart goblin, then reload.");
+					return;
+				}
 				const { draft: d, providers } = draftFromConfig(data.config);
 				setDraft(d);
 				setProvs(providers);
@@ -604,7 +707,10 @@ export function SettingsView({
 					search: data.searchKinds,
 					fetch: data.fetchKinds,
 					transcription: data.transcriptionKinds,
+					authDefaults: data.authDefaults,
+					trDefaults: data.transcriptionDefaults,
 				});
+				setAuthNames(data.authNames);
 			},
 			(err) => {
 				if (live)
@@ -741,10 +847,20 @@ export function SettingsView({
 			setNotice({ text: err, kind: "err" });
 			return;
 		}
+		// Saves only run once a baseline exists, and the baseline lands in
+		// the same load that fills kinds — unreachable, but never silent.
+		if (kinds === null) {
+			setNotice({ text: "Settings are still loading.", kind: "err" });
+			return;
+		}
 		setSaving(true);
 		setNotice(null);
 		try {
-			const res = await saveOperatorConfig(token, bodyFromDraft(draft, provs), etag);
+			const res = await saveOperatorConfig(
+				token,
+				bodyFromDraft(draft, provs, kinds.authDefaults),
+				etag,
+			);
 			if (res.etag !== null) setEtag(res.etag);
 			setBaseline(serialize(draft, provs));
 			setNotice({ text: "Saved.", kind: "ok" });
@@ -763,16 +879,31 @@ export function SettingsView({
 		}
 	};
 
+	// Save on change: a valid edit writes itself after a short debounce —
+	// rapid edits coalesce, an edit mid-write schedules another. A failed
+	// write isn't retried on the identical state — the next edit re-arms.
+	const attempted = useRef<string | null>(null);
+	useEffect(() => {
+		if (!dirty || invalidReason !== null || saving) return;
+		const sig = serialize(draft, provs);
+		if (sig === attempted.current) return;
+		const t = setTimeout(() => {
+			attempted.current = sig;
+			void save();
+		}, 800);
+		return () => clearTimeout(t);
+	}, [dirty, invalidReason, saving, draft, provs]);
+
 	if (loadErr !== null) {
 		return (
-			<div className="ops">
+			<div className="ops settings">
 				<p className="error">{loadErr}</p>
 			</div>
 		);
 	}
 	if (kinds === null) {
 		return (
-			<div className="ops">
+			<div className="ops settings">
 				<p className="empty">Loading settings…</p>
 			</div>
 		);
@@ -810,10 +941,40 @@ export function SettingsView({
 		</Row>
 	);
 
+	// eff is the shown section — null means the narrow-screen index, and
+	// on wide viewports the at-index rules swap that index for the chat
+	// section so the two-pane never opens on a dead column.
+	const eff: Section = section ?? "chat";
+
 	return (
-		<div className="ops settings">
-			{section === null ? (
-				<>
+		<div className={`ops settings${section === null ? " at-index" : ""}`}>
+			{/* One shared picker for every secret-name input — auth.jsonl
+		    record names as loaded at boot, values never. */}
+			<datalist id={AUTH_DL}>
+				{authNames.map((n) => (
+					<option key={n} value={n} />
+				))}
+			</datalist>
+			<nav className="settings-nav" aria-label="Settings sections">
+				<h2 className="ops-h2 settings-h2">
+					Settings {dirty && <span className="dirty-pill">unsaved</span>}
+				</h2>
+				{SECTIONS.map((s) => (
+					<button
+						key={s.key}
+						type="button"
+						className={eff === s.key ? "snav on" : "snav"}
+						onClick={() => setSection(s.key)}
+					>
+						<span className="ilabel">
+							{s.label}
+							<small>{s.sub}</small>
+						</span>
+					</button>
+				))}
+			</nav>
+			{section === null && (
+				<div className="settings-index">
 					<h2 className="ops-h2">
 						Settings {dirty && <span className="dirty-pill">unsaved</span>}
 					</h2>
@@ -828,543 +989,560 @@ export function SettingsView({
 							</button>
 						))}
 					</div>
-				</>
-			) : (
+				</div>
+			)}
+			{section !== null && (
+				<div className="ops-back">
+					<button type="button" className="ghost" onClick={() => setSection(null)}>
+						‹ Settings
+					</button>
+					{dirty && <span className="dirty-pill">unsaved</span>}
+				</div>
+			)}
+
+			{eff === "chat" && (
 				<>
-					<div className="ops-back">
-						<button type="button" className="ghost" onClick={() => setSection(null)}>
-							‹ Settings
-						</button>
-						{dirty && <span className="dirty-pill">unsaved</span>}
+					<h2 className="ops-h2">Telegram</h2>
+					<div className="card">
+						{modelButton(
+							"Model",
+							"Shared by all Telegram conversations.",
+							"telegram",
+							draft.telegramModel,
+							"tgModelLabel",
+						)}
+						<Row label="Thinking" cap="Only levels this model can express are shown." col>
+							<Seg
+								options={levels.telegram}
+								value={displayLevel(draft.telegramThinking, levels.telegram)}
+								ariaLabel="Telegram thinking level"
+								onChange={(v) => patchDraft({ telegramThinking: v as ThinkingLevel })}
+							/>
+						</Row>
 					</div>
+					<h2 className="ops-h2">App defaults</h2>
+					<div className="card">
+						{modelButton(
+							"Default model",
+							"New app conversations only. Each chat remembers its own model and thinking level.",
+							"model",
+							draft.model,
+							"appModelLabel",
+						)}
+						<Row label="Thinking" cap="Only levels this model can express are shown." col>
+							<Seg
+								options={levels.app}
+								value={displayLevel(draft.thinking, levels.app)}
+								ariaLabel="App default thinking level"
+								onChange={(v) => patchDraft({ thinking: v as ThinkingLevel })}
+							/>
+						</Row>
+						{modelButton(
+							"Topic titles",
+							"Names new topics, then stops.",
+							"title",
+							draft.titleModel,
+							"titleModelLabel",
+						)}
+						{modelButton(
+							"Vision",
+							"Adds a vision tool — answers questions about image files. Needed when the chat model can't see attachments.",
+							"vision",
+							draft.vision?.model ?? "",
+							"visionLabel",
+						)}
+					</div>
+					<h2 className="ops-h2">Favorites</h2>
+					<div className="card">
+						<ChipsEditor
+							values={draft.favorites}
+							onAdd={(v) => patchDraft({ favorites: [...draft.favorites, v] })}
+							onRemove={(i) => patchDraft({ favorites: draft.favorites.filter((_, j) => j !== i) })}
+							placeholder="provider/model-id"
+							ariaLabel="add favorite"
+							cap="Offered in the pickers above."
+						/>
+					</div>
+				</>
+			)}
 
-					{section === "chat" && (
-						<>
-							<h2 className="ops-h2">Telegram</h2>
-							<div className="card">
-								{modelButton(
-									"Model",
-									"Shared by all Telegram conversations.",
-									"telegram",
-									draft.telegramModel,
-									"tgModelLabel",
-								)}
-								<Row label="Thinking" cap="Only levels this model can express are shown." col>
-									<Seg
-										options={levels.telegram}
-										value={displayLevel(draft.telegramThinking, levels.telegram)}
-										ariaLabel="Telegram thinking level"
-										onChange={(v) => patchDraft({ telegramThinking: v as ThinkingLevel })}
-									/>
-								</Row>
-							</div>
-							<h2 className="ops-h2">App defaults</h2>
-							<div className="card">
-								{modelButton(
-									"Default model",
-									"New app conversations only. Each chat remembers its own model and thinking level.",
-									"model",
-									draft.model,
-									"appModelLabel",
-								)}
-								<Row label="Thinking" cap="Only levels this model can express are shown." col>
-									<Seg
-										options={levels.app}
-										value={displayLevel(draft.thinking, levels.app)}
-										ariaLabel="App default thinking level"
-										onChange={(v) => patchDraft({ thinking: v as ThinkingLevel })}
-									/>
-								</Row>
-								{modelButton(
-									"Topic titles",
-									"Names new topics, then stops.",
-									"title",
-									draft.titleModel,
-									"titleModelLabel",
-								)}
-								{modelButton(
-									"Vision",
-									"Adds a vision tool — answers questions about image files. Needed when the chat model can't see attachments.",
-									"vision",
-									draft.vision?.model ?? "",
-									"visionLabel",
-								)}
-							</div>
-							<h2 className="ops-h2">Favorites</h2>
-							<div className="card">
-								<ChipsEditor
-									values={draft.favorites}
-									onAdd={(v) => patchDraft({ favorites: [...draft.favorites, v] })}
-									onRemove={(i) =>
-										patchDraft({ favorites: draft.favorites.filter((_, j) => j !== i) })
+			{eff === "voice" && (
+				<>
+					<h2 className="ops-h2">Voice notes</h2>
+					<div className="card">
+						<Row
+							label="Text to speech"
+							cap="On by default — Edge read-aloud, free and unofficial, needs ffmpeg on the host. Failures post a note in chat."
+						>
+							<Switch
+								on={draft.tts !== null}
+								ariaLabel="text to speech"
+								onChange={(on) =>
+									setDraft((d) => {
+										if (on) {
+											return {
+												...d,
+												tts: last.current.tts ?? { voice: "", rate: "", voices: [] },
+											};
+										}
+										last.current.tts = d.tts;
+										return { ...d, tts: null };
+									})
+								}
+							/>
+						</Row>
+						{draft.tts !== null && (
+							<>
+								<Field
+									label="Voice"
+									value={draft.tts.voice}
+									onChange={(v) =>
+										setDraft((d) => ({
+											...d,
+											tts: d.tts === null ? d.tts : { ...d.tts, voice: v },
+										}))
 									}
-									placeholder="provider/model-id"
-									ariaLabel="add favorite"
-									cap="Offered in the pickers above."
+									placeholder="en-US-AriaNeural"
+									mono
+									cap="Default for /voice mode, the speaker button, and the speak tool — an alternate matching the reply's language wins; this speaks when the language is unclear or none matches."
 								/>
-							</div>
-						</>
-					)}
-
-					{section === "voice" && (
-						<>
-							<h2 className="ops-h2">Voice notes</h2>
-							<div className="card">
-								<Row
-									label="Text to speech"
-									cap="On by default — Edge read-aloud, free and unofficial, needs ffmpeg on the host. Failures post a note in chat."
-								>
-									<Switch
-										on={draft.tts !== null}
-										ariaLabel="text to speech"
-										onChange={(on) =>
-											setDraft((d) => {
-												if (on) {
-													return {
-														...d,
-														tts: last.current.tts ?? { voice: "", rate: "", voices: [] },
-													};
-												}
-												last.current.tts = d.tts;
-												return { ...d, tts: null };
-											})
+								<Field
+									label="Rate"
+									value={draft.tts.rate}
+									onChange={(v) =>
+										setDraft((d) => ({
+											...d,
+											tts: d.tts === null ? d.tts : { ...d.tts, rate: v },
+										}))
+									}
+									placeholder="+10%"
+									mono
+								/>
+								<ChipsEditor
+									values={draft.tts.voices}
+									onAdd={(v) =>
+										setDraft((d) => ({
+											...d,
+											tts: d.tts === null ? d.tts : { ...d.tts, voices: [...d.tts.voices, v] },
+										}))
+									}
+									onRemove={(i) =>
+										setDraft((d) => ({
+											...d,
+											tts:
+												d.tts === null
+													? d.tts
+													: { ...d.tts, voices: d.tts.voices.filter((_, j) => j !== i) },
+										}))
+									}
+									placeholder="add a voice"
+									ariaLabel="add alternate voice"
+									suggestions={VOICE_SUGGESTIONS}
+									cap="Alternate voices — picked by reply language wherever speech is synthesized; the speak tool may also name one per call. Language follows the voice name."
+								/>
+							</>
+						)}
+					</div>
+					<h2 className="ops-h2">Transcription</h2>
+					<div className="card">
+						<Row
+							label="Speech to text"
+							cap="Voice and video notes are transcribed on arrival; the bot can transcribe other audio files on request."
+						>
+							<Switch
+								on={draft.transcription !== null}
+								ariaLabel="speech to text"
+								onChange={(on) =>
+									setDraft((d) => {
+										if (on) {
+											return {
+												...d,
+												transcription: last.current.transcription ?? emptyTranscription(),
+											};
 										}
-									/>
-								</Row>
-								{draft.tts !== null && (
-									<>
-										<Field
-											label="Voice"
-											value={draft.tts.voice}
-											onChange={(v) =>
-												setDraft((d) => ({
-													...d,
-													tts: d.tts === null ? d.tts : { ...d.tts, voice: v },
-												}))
-											}
-											placeholder="en-US-AriaNeural"
-											mono
-											cap="Default for /voice mode, the speaker button, and the speak tool — an alternate matching the reply's language wins; this speaks when the language is unclear or none matches."
-										/>
-										<Field
-											label="Rate"
-											value={draft.tts.rate}
-											onChange={(v) =>
-												setDraft((d) => ({
-													...d,
-													tts: d.tts === null ? d.tts : { ...d.tts, rate: v },
-												}))
-											}
-											placeholder="+10%"
-											mono
-										/>
-										<ChipsEditor
-											values={draft.tts.voices}
-											onAdd={(v) =>
-												setDraft((d) => ({
-													...d,
-													tts: d.tts === null ? d.tts : { ...d.tts, voices: [...d.tts.voices, v] },
-												}))
-											}
-											onRemove={(i) =>
-												setDraft((d) => ({
-													...d,
-													tts:
-														d.tts === null
-															? d.tts
-															: { ...d.tts, voices: d.tts.voices.filter((_, j) => j !== i) },
-												}))
-											}
-											placeholder="add a voice"
-											ariaLabel="add alternate voice"
-											suggestions={VOICE_SUGGESTIONS}
-											cap="Alternate voices — picked by reply language wherever speech is synthesized; the speak tool may also name one per call. Language follows the voice name."
-										/>
-									</>
-								)}
-							</div>
-							<h2 className="ops-h2">Transcription</h2>
-							<div className="card">
+										last.current.transcription = d.transcription;
+										return { ...d, transcription: null };
+									})
+								}
+							/>
+						</Row>
+						{draft.transcription !== null && (
+							<>
 								<Row
-									label="Speech to text"
-									cap="Voice and video notes are transcribed on arrival; the bot can transcribe other audio files on request."
+									label="Engine"
+									cap="Whistle runs on this machine with no model or secret; the rest are cloud services."
 								>
-									<Switch
-										on={draft.transcription !== null}
-										ariaLabel="speech to text"
-										onChange={(on) =>
-											setDraft((d) => {
-												if (on) {
-													return {
-														...d,
-														transcription: last.current.transcription ?? emptyTranscription(),
-													};
-												}
-												last.current.transcription = d.transcription;
-												return { ...d, transcription: null };
-											})
-										}
-									/>
-								</Row>
-								{draft.transcription !== null && (
-									<>
-										<Row
-											label="Engine"
-											cap="Whistle runs on this machine with no model or secret; the rest are cloud services."
-										>
-											<select
-												className="mono"
-												aria-label="transcription kind"
-												value={draft.transcription.kind}
-												onChange={(e) => {
-													const next = kinds?.transcription.find((k) => k === e.target.value);
-													if (next === undefined) return;
-													setDraft((d) =>
-														d.transcription === null
-															? d
-															: {
-																	...d,
-																	transcription: switchTranscriptionKind(d.transcription, next),
-																},
-													);
-												}}
-											>
-												{(kinds?.transcription ?? []).map((k) => (
-													<option key={k} value={k}>
-														{k}
-													</option>
-												))}
-											</select>
-										</Row>
-										{draft.transcription.kind === "whistle" ? (
-											<div className="cap ops-cap">
-												Whistle's keyword list and engine path can't be edited here yet — saving
-												keeps them exactly as they are.
-											</div>
-										) : (
-											<>
-												<Field
-													label="Model"
-													value={draft.transcription.model}
-													onChange={(v) => patchTranscription({ model: v })}
-													placeholder="kind default"
-													mono
-													cap="Blank uses the kind's default."
-												/>
-												<Field
-													label="Secret name"
-													value={draft.transcription.auth}
-													onChange={(v) => patchTranscription({ auth: v })}
-													placeholder="in auth.jsonl — not the secret itself"
-													mono
-												/>
-											</>
-										)}
-										<Field
-											label="Language"
-											value={draft.transcription.language}
-											onChange={(v) => patchTranscription({ language: v })}
-											placeholder="detect"
-											mono
-											cap="An ISO code like es. Blank lets the engine detect it."
-										/>
-									</>
-								)}
-							</div>
-						</>
-					)}
-
-					{section === "web" && (
-						<>
-							<h2 className="ops-h2">Search</h2>
-							<div className="card">
-								<Row label="Search tool" cap="Off removes search from the agent's tools.">
-									<Switch
-										on={draft.search !== null}
-										ariaLabel="search tool"
-										onChange={(on) =>
-											setDraft((d) => {
-												if (on) return { ...d, search: last.current.search ?? [] };
-												last.current.search = d.search;
-												return { ...d, search: null };
-											})
-										}
-									/>
-								</Row>
-							</div>
-							{draft.search !== null && (
-								<>
-									<ChainEditor
-										entries={draft.search}
-										kinds={kinds.search}
-										meta={SEARCH_META}
-										onChange={(search) => patchDraft({ search })}
-									/>
-									<div className="cap ops-cap">
-										Tried top to bottom. A failure moves on to the next; an empty result is an
-										answer and stops the chain.
-									</div>
-								</>
-							)}
-							<h2 className="ops-h2">Fetch</h2>
-							<div className="card">
-								<Row
-									label="Custom extraction chain"
-									cap="Off uses built-in extraction: direct download, no key. JS-heavy sites need the browser skill either way."
-								>
-									<Switch
-										on={draft.fetch !== null}
-										ariaLabel="custom extraction chain"
-										onChange={(on) =>
-											setDraft((d) => {
-												if (on) return { ...d, fetch: last.current.fetch ?? [] };
-												last.current.fetch = d.fetch;
-												return { ...d, fetch: null };
-											})
-										}
-									/>
-								</Row>
-							</div>
-							{draft.fetch !== null && (
-								<>
-									<ChainEditor
-										entries={draft.fetch}
-										kinds={kinds.fetch}
-										meta={FETCH_META}
-										onChange={(fetch) => patchDraft({ fetch })}
-									/>
-									<div className="cap ops-cap">
-										Same rule as search — order is the fallback order.
-									</div>
-								</>
-							)}
-						</>
-					)}
-
-					{section === "memory" && (
-						<>
-							<p className="lead">
-								What goblin retains and recalls — browse it in the Memories view.
-							</p>
-							<h2 className="ops-h2">Long-term memory</h2>
-							<div className="card">
-								<Row
-									label="Memory"
-									cap="Self-hosted hindsight. Completed exchanges are retained; relevant facts are recalled into new turns."
-								>
-									<Switch
-										on={draft.memory !== null}
-										ariaLabel="long-term memory"
-										onChange={(on) =>
-											setDraft((d) => {
-												if (on) {
-													return {
-														...d,
-														memory: last.current.memory ?? {
-															baseUrl: "",
-															bankId: "",
-															auth: "",
-															budget: "low",
-															tokens: "",
-															timeout: "",
+									<select
+										className="mono"
+										aria-label="transcription kind"
+										value={draft.transcription.kind}
+										onChange={(e) => {
+											const next = kinds?.transcription.find((k) => k === e.target.value);
+											if (next === undefined) return;
+											setDraft((d) =>
+												d.transcription === null
+													? d
+													: {
+															...d,
+															transcription: switchTranscriptionKind(d.transcription, next),
 														},
-													};
-												}
-												last.current.memory = d.memory;
-												return { ...d, memory: null };
-											})
-										}
-									/>
+											);
+										}}
+									>
+										{(kinds?.transcription ?? []).map((k) => (
+											<option key={k} value={k}>
+												{k}
+											</option>
+										))}
+									</select>
 								</Row>
-								{draft.memory !== null && (
+								{draft.transcription.kind === "whistle" ? (
+									<div className="cap ops-cap">
+										Whistle's keyword list and engine path can't be edited here yet — saving keeps
+										them exactly as they are.
+									</div>
+								) : (
 									<>
 										<Field
-											label="Hindsight url"
-											value={draft.memory.baseUrl}
-											onChange={(v) =>
-												setDraft((d) => ({
-													...d,
-													memory: d.memory === null ? d.memory : { ...d.memory, baseUrl: v },
-												}))
-											}
-											placeholder="http://127.0.0.1:8888"
+											label="Model"
+											value={draft.transcription.model}
+											onChange={(v) => patchTranscription({ model: v })}
+											placeholder="kind default"
 											mono
-										/>
-										<Field
-											label="Bank id"
-											value={draft.memory.bankId}
-											onChange={(v) =>
-												setDraft((d) => ({
-													...d,
-													memory: d.memory === null ? d.memory : { ...d.memory, bankId: v },
-												}))
-											}
-											placeholder="goblin"
-											mono
+											cap="Blank uses the kind's default."
 										/>
 										<Field
 											label="Secret name"
-											value={draft.memory.auth}
-											onChange={(v) =>
-												setDraft((d) => ({
-													...d,
-													memory: d.memory === null ? d.memory : { ...d.memory, auth: v },
-												}))
+											value={draft.transcription.auth}
+											onChange={(v) => patchTranscription({ auth: v })}
+											placeholder={`${kinds.trDefaults[draft.transcription.kind].auth} — in auth.jsonl`}
+											cap={
+												authWarn(
+													draft.transcription.auth.trim() ||
+														kinds.trDefaults[draft.transcription.kind].auth,
+													authNames,
+												) ??
+												(draft.transcription.auth.trim() === ""
+													? `Blank uses ${kinds.trDefaults[draft.transcription.kind].auth}.`
+													: undefined)
 											}
-											placeholder="in auth.jsonl — blank for loopback"
 											mono
+											list={AUTH_DL}
 										/>
-										<Row label="Recall budget" col>
-											<Seg
-												options={["low", "mid", "high"]}
-												value={draft.memory.budget || "low"}
-												ariaLabel="Recall budget"
-												onChange={(v) =>
-													setDraft((d) => ({
-														...d,
-														memory: d.memory === null ? d.memory : { ...d.memory, budget: v },
-													}))
-												}
-											/>
-										</Row>
-										<details className="tuning">
-											<summary>Recall tuning</summary>
-											<div className="inner">
-												<Field
-													label="Timeout (ms)"
-													value={draft.memory.timeout}
-													onChange={(v) =>
-														setDraft((d) => ({
-															...d,
-															memory: d.memory === null ? d.memory : { ...d.memory, timeout: v },
-														}))
-													}
-													placeholder="2000"
-													numeric
-													mono
-												/>
-												<Field
-													label="Max tokens"
-													value={draft.memory.tokens}
-													onChange={(v) =>
-														setDraft((d) => ({
-															...d,
-															memory: d.memory === null ? d.memory : { ...d.memory, tokens: v },
-														}))
-													}
-													placeholder="1024"
-													numeric
-													mono
-													cap="Tight by default — turns must not wait on memory."
-												/>
-											</div>
-										</details>
 									</>
 								)}
+								<Field
+									label="Language"
+									value={draft.transcription.language}
+									onChange={(v) => patchTranscription({ language: v })}
+									placeholder="detect"
+									mono
+									cap="An ISO code like es. Blank lets the engine detect it."
+								/>
+							</>
+						)}
+					</div>
+				</>
+			)}
+
+			{eff === "web" && (
+				<>
+					<h2 className="ops-h2">Search</h2>
+					<div className="card">
+						<Row label="Search tool" cap="Off removes search from the agent's tools.">
+							<Switch
+								on={draft.search !== null}
+								ariaLabel="search tool"
+								onChange={(on) =>
+									setDraft((d) => {
+										if (on) return { ...d, search: last.current.search ?? [] };
+										last.current.search = d.search;
+										return { ...d, search: null };
+									})
+								}
+							/>
+						</Row>
+					</div>
+					{draft.search !== null && (
+						<>
+							<ChainEditor
+								entries={draft.search}
+								kinds={kinds.search}
+								meta={SEARCH_META}
+								defaults={kinds.authDefaults}
+								authNames={authNames}
+								onChange={(search) => patchDraft({ search })}
+							/>
+							<div className="cap ops-cap">
+								Tried top to bottom. A failure moves on to the next; an empty result is an answer
+								and stops the chain.
 							</div>
 						</>
 					)}
-
-					{section === "providers" && (
+					<h2 className="ops-h2">Fetch</h2>
+					<div className="card">
+						<Row
+							label="Custom extraction chain"
+							cap="Off uses built-in extraction: direct download, no key. JS-heavy sites need the browser skill either way."
+						>
+							<Switch
+								on={draft.fetch !== null}
+								ariaLabel="custom extraction chain"
+								onChange={(on) =>
+									setDraft((d) => {
+										if (on) return { ...d, fetch: last.current.fetch ?? [] };
+										last.current.fetch = d.fetch;
+										return { ...d, fetch: null };
+									})
+								}
+							/>
+						</Row>
+					</div>
+					{draft.fetch !== null && (
 						<>
-							<p className="lead">
-								Model vendors goblin can call. Secrets are names in auth.jsonl — the values never
-								land in config.
-							</p>
-							<h2 className="ops-h2">Providers</h2>
-							{provs.map((p) => (
-								<ProviderCard
-									key={p.id}
-									prov={p}
-									kinds={kinds.provider}
-									referencedBy={p.name !== "" ? providerRefs(p.name) : []}
-									onPatch={(patch) => patchProv(p.id, patch)}
-									onRename={(v) => renameProvider(p.id, v)}
-									onRemove={() => removeProvider(p)}
-								/>
-							))}
-							<button className="ghost" type="button" onClick={addProvider}>
-								+ Add provider
-							</button>
-						</>
-					)}
-
-					{section === "access" && (
-						<>
-							<h2 className="ops-h2">Allowed users</h2>
-							<div className="card">
-								<ChipsEditor
-									values={draft.allowedUsers.map(String)}
-									onAdd={addUser}
-									onRemove={(i) =>
-										patchDraft({ allowedUsers: draft.allowedUsers.filter((_, j) => j !== i) })
-									}
-									placeholder="telegram user id"
-									ariaLabel="add allowed user"
-									numeric
-									cap="Telegram user ids that may talk to goblin and open these settings. The list can't be emptied — that would lock everyone out."
-								/>
-							</div>
-							<h2 className="ops-h2">Doors</h2>
-							<div className="card">
-								<Field
-									label="Public url"
-									value={draft.publicUrl}
-									onChange={(v) => patchDraft({ publicUrl: v })}
-									placeholder="https://…"
-									mono
-									cap="HTTPS door for this app — tailscale serve, funnel, or a reverse proxy pointed at the port below."
-								/>
-								<Field
-									label="Bot api root"
-									value={draft.apiRoot}
-									onChange={(v) => patchDraft({ apiRoot: v })}
-									placeholder="http://127.0.0.1:8081"
-									mono
-									cap="Self-hosted telegram-bot-api in --local mode, for large files. Blank = Telegram cloud. Restart applies."
-								/>
-								<Field
-									label="New conversation after (quiet minutes)"
-									value={draft.dmGap}
-									onChange={(v) => patchDraft({ dmGap: v })}
-									placeholder="45"
-									numeric
-									mono
-									cap="Quiet minutes before a DM may roll into a new conversation. Applies immediately."
-								/>
-							</div>
-							<h2 className="ops-h2">Advanced</h2>
-							<div className="card">
-								<Field
-									label="Http port"
-									value={draft.port}
-									onChange={(v) => patchDraft({ port: v })}
-									placeholder="8787"
-									numeric
-									mono
-									cap="The port this settings app is served on. Restart applies."
-								/>
-								<Row label="Log level" col>
-									<Seg
-										options={["debug", "info", "warn", "error"]}
-										value={draft.logLevel}
-										ariaLabel="Log level"
-										onChange={(v) => patchDraft({ logLevel: v as SettingsDraft["logLevel"] })}
-									/>
-								</Row>
-							</div>
+							<ChainEditor
+								entries={draft.fetch}
+								kinds={kinds.fetch}
+								meta={FETCH_META}
+								defaults={kinds.authDefaults}
+								authNames={authNames}
+								onChange={(fetch) => patchDraft({ fetch })}
+							/>
+							<div className="cap ops-cap">Same rule as search — order is the fallback order.</div>
 						</>
 					)}
 				</>
 			)}
 
+			{eff === "memory" && (
+				<>
+					<p className="lead">What goblin retains and recalls — browse it in the Memories view.</p>
+					<h2 className="ops-h2">Long-term memory</h2>
+					<div className="card">
+						<Row
+							label="Memory"
+							cap="Self-hosted hindsight. Completed exchanges are retained; relevant facts are recalled into new turns."
+						>
+							<Switch
+								on={draft.memory !== null}
+								ariaLabel="long-term memory"
+								onChange={(on) =>
+									setDraft((d) => {
+										if (on) {
+											return {
+												...d,
+												memory: last.current.memory ?? {
+													baseUrl: "",
+													bankId: "",
+													auth: "",
+													budget: "low",
+													tokens: "",
+													timeout: "",
+												},
+											};
+										}
+										last.current.memory = d.memory;
+										return { ...d, memory: null };
+									})
+								}
+							/>
+						</Row>
+						{draft.memory !== null && (
+							<>
+								<Field
+									label="Hindsight url"
+									value={draft.memory.baseUrl}
+									onChange={(v) =>
+										setDraft((d) => ({
+											...d,
+											memory: d.memory === null ? d.memory : { ...d.memory, baseUrl: v },
+										}))
+									}
+									placeholder="http://127.0.0.1:8888"
+									mono
+								/>
+								<Field
+									label="Bank id"
+									value={draft.memory.bankId}
+									onChange={(v) =>
+										setDraft((d) => ({
+											...d,
+											memory: d.memory === null ? d.memory : { ...d.memory, bankId: v },
+										}))
+									}
+									placeholder="goblin"
+									mono
+								/>
+								<Field
+									label="Secret name"
+									value={draft.memory.auth}
+									onChange={(v) =>
+										setDraft((d) => ({
+											...d,
+											memory: d.memory === null ? d.memory : { ...d.memory, auth: v },
+										}))
+									}
+									placeholder="in auth.jsonl — blank for loopback"
+									cap={authWarn(draft.memory.auth, authNames)}
+									mono
+									list={AUTH_DL}
+								/>
+								<Row label="Recall budget" col>
+									<Seg
+										options={["low", "mid", "high"]}
+										value={draft.memory.budget || "low"}
+										ariaLabel="Recall budget"
+										onChange={(v) =>
+											setDraft((d) => ({
+												...d,
+												memory: d.memory === null ? d.memory : { ...d.memory, budget: v },
+											}))
+										}
+									/>
+								</Row>
+								<details className="tuning">
+									<summary>Recall tuning</summary>
+									<div className="inner">
+										<Field
+											label="Timeout (ms)"
+											value={draft.memory.timeout}
+											onChange={(v) =>
+												setDraft((d) => ({
+													...d,
+													memory: d.memory === null ? d.memory : { ...d.memory, timeout: v },
+												}))
+											}
+											placeholder="2000"
+											numeric
+											mono
+										/>
+										<Field
+											label="Max tokens"
+											value={draft.memory.tokens}
+											onChange={(v) =>
+												setDraft((d) => ({
+													...d,
+													memory: d.memory === null ? d.memory : { ...d.memory, tokens: v },
+												}))
+											}
+											placeholder="1024"
+											numeric
+											mono
+											cap="Tight by default — turns must not wait on memory."
+										/>
+									</div>
+								</details>
+							</>
+						)}
+					</div>
+				</>
+			)}
+
+			{eff === "providers" && (
+				<>
+					<p className="lead">
+						Model vendors goblin can call. Secrets are names in auth.jsonl — the values never land
+						in config.
+					</p>
+					<h2 className="ops-h2">Providers</h2>
+					<div className="prov-grid">
+						{provs.map((p) => (
+							<ProviderCard
+								key={p.id}
+								prov={p}
+								kinds={kinds.provider}
+								referencedBy={p.name !== "" ? providerRefs(p.name) : []}
+								authDefaults={kinds.authDefaults}
+								authNames={authNames}
+								onPatch={(patch) => patchProv(p.id, patch)}
+								onRename={(v) => renameProvider(p.id, v)}
+								onRemove={() => removeProvider(p)}
+							/>
+						))}
+					</div>
+					<button className="ghost" type="button" onClick={addProvider}>
+						+ Add provider
+					</button>
+				</>
+			)}
+
+			{eff === "access" && (
+				<>
+					<h2 className="ops-h2">Allowed users</h2>
+					<div className="card">
+						<ChipsEditor
+							values={draft.allowedUsers.map(String)}
+							onAdd={addUser}
+							onRemove={(i) =>
+								patchDraft({ allowedUsers: draft.allowedUsers.filter((_, j) => j !== i) })
+							}
+							placeholder="telegram user id"
+							ariaLabel="add allowed user"
+							numeric
+							cap="Telegram user ids that may talk to goblin and open these settings. The list can't be emptied — that would lock everyone out."
+						/>
+					</div>
+					<h2 className="ops-h2">Doors</h2>
+					<div className="card">
+						<Field
+							label="Public url"
+							value={draft.publicUrl}
+							onChange={(v) => patchDraft({ publicUrl: v })}
+							placeholder="https://…"
+							mono
+							cap="HTTPS door for this app — tailscale serve, funnel, or a reverse proxy pointed at the port below."
+						/>
+						<Field
+							label="Bot api root"
+							value={draft.apiRoot}
+							onChange={(v) => patchDraft({ apiRoot: v })}
+							placeholder="http://127.0.0.1:8081"
+							mono
+							cap="Self-hosted telegram-bot-api in --local mode, for large files. Blank = Telegram cloud. Restart applies."
+						/>
+						<Field
+							label="New conversation after (quiet minutes)"
+							value={draft.dmGap}
+							onChange={(v) => patchDraft({ dmGap: v })}
+							placeholder="45"
+							numeric
+							mono
+							cap="Quiet minutes before a DM may roll into a new conversation. Applies immediately."
+						/>
+					</div>
+					<h2 className="ops-h2">Advanced</h2>
+					<div className="card">
+						<Field
+							label="Http port"
+							value={draft.port}
+							onChange={(v) => patchDraft({ port: v })}
+							placeholder="8787"
+							numeric
+							mono
+							cap="The port this settings app is served on. Restart applies."
+						/>
+						<Row label="Log level" col>
+							<Seg
+								options={["debug", "info", "warn", "error"]}
+								value={draft.logLevel}
+								ariaLabel="Log level"
+								onChange={(v) => patchDraft({ logLevel: v as SettingsDraft["logLevel"] })}
+							/>
+						</Row>
+					</div>
+				</>
+			)}
+
 			<div className="savebar">
 				<span className={notice?.kind === "err" ? "savebar-msg err" : "savebar-msg"}>
-					{notice?.text ?? ""}
+					{(() => {
+						if (saving) return "Saving…";
+						if (notice?.kind === "err") return notice.text;
+						if (invalidReason !== null) return invalidReason;
+						if (dirty) return `Unsaved: ${dirtyFields.join(", ")}`;
+						return notice?.text ?? "";
+					})()}
 				</span>
-				<button type="button" disabled={!dirty || saving} onClick={() => void save()}>
-					{saving ? "Saving…" : "Save"}
-				</button>
 			</div>
 
 			{sheet !== null && (

@@ -1,8 +1,9 @@
-// The settings editor's draft state — a port of the mini app's
-// DraftState/populate()/buildBody()/validate() (src/http/app.js). The
-// wire body is identical (ConfigPostBody); the server still validates
-// through the config schema, this module only catches what the form
-// can express badly before a round trip.
+// The settings editor's draft state — seeded as a port of the mini
+// app's DraftState/populate()/buildBody()/validate() (src/http/app.js),
+// now an independent client (design/app.md, Operator console): the
+// contract is ConfigPostBody, and the server's config-schema validation
+// is the gate. This module only catches what the form can express
+// badly before a round trip.
 
 import type {
 	Config,
@@ -10,7 +11,7 @@ import type {
 	ThinkingLevel,
 	transcriptionKinds,
 } from "../../src/config.ts";
-import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
+import type { ConfigPostBody, ConfigResponse } from "../../src/http/operator-wire.ts";
 
 // The full operator vocabulary — the fallback when the model is
 // unknown, and the ordering for nearest-rung clamping (mirrors the
@@ -25,25 +26,20 @@ export const THINKING_ORDER: readonly ThinkingLevel[] = [
 ];
 
 export interface KindMeta {
-	auth: "required" | "optional" | "none";
+	// Keyed kinds carry no marker: blank auth means the kind's own
+	// auth.jsonl record (authDefaults, served with the config), so the
+	// editor never needs to require one.
+	auth: "optional" | "none";
 	note?: string;
 }
 
 export const SEARCH_META: Record<string, KindMeta> = {
-	brave: { auth: "required" },
-	exa: { auth: "required" },
 	jina: { auth: "optional", note: "Works keyless, rate-limited." },
-	tavily: { auth: "required" },
-	firecrawl: { auth: "required" },
-	parallel: { auth: "required" },
 	ddg: { auth: "none", note: "Keyless — unofficial endpoint, may rate-limit or break." },
 };
 export const FETCH_META: Record<string, KindMeta> = {
 	local: { auth: "none", note: "Direct download + readability — no key." },
 	jina: { auth: "optional", note: "Works keyless, rate-limited." },
-	tavily: { auth: "required" },
-	firecrawl: { auth: "required" },
-	parallel: { auth: "required" },
 };
 
 export const VOICE_SUGGESTIONS = [
@@ -301,36 +297,23 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 	for (const p of provs) {
 		if (p.kind === "openai-compatible" || p.kind === "responses") {
 			if (!p.baseUrl.trim()) return `Provider "${p.name}" needs a base url.`;
-			if (!p.auth.trim()) return `Provider "${p.name}" needs a secret name.`;
-		} else if (p.kind === "openrouter" && !p.auth.trim()) {
-			return `Provider "${p.name}" needs a secret name.`;
 		}
 	}
+	// No secret-name checks anywhere: a blank provider auth means the
+	// provider's own name (openrouter: its default record), a blank step
+	// or cloud-transcription auth means the kind's — materialized below
+	// and defaulted server-side. The picker's "not in auth.jsonl" hint
+	// covers the typo case without blocking config-before-key.
 	if (!draft.model) return "Pick an app default model.";
 	if (!draft.telegramModel) return "Pick a Telegram model.";
 	if (draft.tts && !draft.tts.voice.trim()) return "Text to speech is on — set a voice.";
 	// No transcription secret check: whistle takes none, and a blank cloud
 	// secret means the kind's default record — the server fills it.
 	if (draft.vision && !draft.vision.model.trim()) return "Vision is on — pick a model.";
-	if (draft.search) {
-		if (!draft.search.length) return "Search is on — add at least one provider, or switch it off.";
-		for (const [i, e] of draft.search.entries()) {
-			const m = SEARCH_META[e.kind];
-			if (m?.auth === "required" && !e.auth.trim()) {
-				return `Search step ${i + 1} (${e.kind}) needs a secret name.`;
-			}
-		}
-	}
-	if (draft.fetch) {
-		if (!draft.fetch.length)
-			return "The fetch chain is on — add at least one provider, or switch it off.";
-		for (const [i, e] of draft.fetch.entries()) {
-			const m = FETCH_META[e.kind];
-			if (m?.auth === "required" && !e.auth.trim()) {
-				return `Fetch step ${i + 1} (${e.kind}) needs a secret name.`;
-			}
-		}
-	}
+	if (draft.search && !draft.search.length)
+		return "Search is on — add at least one provider, or switch it off.";
+	if (draft.fetch && !draft.fetch.length)
+		return "The fetch chain is on — add at least one provider, or switch it off.";
 	if (draft.memory) {
 		if (!draft.memory.baseUrl.trim()) return "Memory is on — set the hindsight url.";
 		if (!draft.memory.bankId.trim()) return "Memory is on — set a bank id.";
@@ -345,13 +328,21 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 	return null;
 }
 
-// buildBody(): the POST body — identical contract to the mini app's.
-export function bodyFromDraft(draft: SettingsDraft, provs: ProvDraft[]): ConfigPostBody {
+// buildBody(): the POST body — the contract is ConfigPostBody. Blank
+// provider auths materialize here (the provider's own name; openrouter:
+// its default record) so the saved file always carries an explicit
+// name — the config stays self-describing and a later rename never
+// re-points a credential.
+export function bodyFromDraft(
+	draft: SettingsDraft,
+	provs: ProvDraft[],
+	authDefaults: ConfigResponse["authDefaults"],
+): ConfigPostBody {
 	const providers: Record<string, ProviderConfig> = {};
 	for (const p of provs) {
 		const name = p.name.trim();
 		if (p.kind === "openai-compatible" || p.kind === "responses") {
-			providers[name] = { kind: p.kind, baseUrl: p.baseUrl.trim(), auth: p.auth.trim() };
+			providers[name] = { kind: p.kind, baseUrl: p.baseUrl.trim(), auth: p.auth.trim() || name };
 		} else if (p.kind === "codex") {
 			providers[name] = p.auth.trim()
 				? { kind: p.kind, authFile: p.auth.trim() }
@@ -359,7 +350,7 @@ export function bodyFromDraft(draft: SettingsDraft, provs: ProvDraft[]): ConfigP
 		} else {
 			providers[name] = {
 				kind: p.kind as "openrouter",
-				auth: p.auth.trim(),
+				auth: p.auth.trim() || authDefaults.openrouter,
 			};
 		}
 	}

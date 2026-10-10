@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
-import { parseConfig, transcriptionDefaults, transcriptionKinds } from "../../src/config.ts";
+import {
+	authDefaults,
+	parseConfig,
+	transcriptionDefaults,
+	transcriptionKinds,
+} from "../../src/config.ts";
 import type { AppConversationList } from "../../src/http/app-wire.ts";
 import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
 import { App, deepLinkConv, flatLine } from "./App.tsx";
@@ -532,6 +537,8 @@ describe("browser back/forward and the unsaved settings editor", () => {
 							fetchKinds: ["local", "firecrawl", "jina"],
 							transcriptionKinds,
 							transcriptionDefaults,
+							authDefaults,
+							authNames: ["main", "groq"],
 						}),
 						{ headers: { "content-type": "application/json", etag: '"v1"' } },
 					),
@@ -625,11 +632,10 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await click(
 			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Access")),
 		);
-		await click(
-			[...container.querySelectorAll('[aria-label="Log level"] button')].find(
-				(b) => b.textContent === "debug",
-			),
-		);
+		// An invalid edit: dropping the last allowed user can never
+		// validate, so the autosave can't write it and the editor stays
+		// dirty — that's the state the nav guard must still question.
+		await click(container.querySelector(".chip button"));
 		expect(container.textContent).toContain("unsaved");
 	};
 	// The browser has already moved to `path`; popstate is what it delivers.
@@ -731,9 +737,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 				expect(confirmMessages).toEqual(archived ? ['Delete "fixture chat"?'] : []);
 				if (label === "dirty Settings") {
 					expect(container.textContent).toContain("unsaved");
-					expect(container.querySelector('[aria-label="Log level"] button.on')?.textContent).toBe(
-						"debug",
-					);
+					expect(container.querySelectorAll(".chips .chip")).toHaveLength(0);
 				}
 				if (archived) expect(conversations).toEqual([]);
 				else {
@@ -790,16 +794,41 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(credentials()).toEqual(["", "search-fallback", "fetch-key", "fetch-fallback"]);
 		await change(2, "jina");
 		expect(credentials()).toEqual(["", "search-fallback", "", "fetch-fallback"]);
-		await click([...container.querySelectorAll("button")].find((b) => b.textContent === "Save"));
-		expect(savedBodies).toHaveLength(1);
-		expect(savedBodies[0]?.search).toEqual([
+		// Edits write themselves — the last posted body must carry the
+		// final state.
+		await waitFor(() => savedBodies.length > 0, "the edits to write themselves");
+		expect(savedBodies.at(-1)?.search).toEqual([
 			{ kind: "jina" },
 			{ kind: "jina", auth: "search-fallback" },
 		]);
-		expect(savedBodies[0]?.fetch).toEqual([
+		expect(savedBodies.at(-1)?.fetch).toEqual([
 			{ kind: "jina" },
 			{ kind: "jina", auth: "fetch-fallback" },
 		]);
+	});
+
+	test("a valid edit writes itself — no Save click needed", async () => {
+		await mount();
+		await click(
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Access")),
+		);
+		await click(
+			[...container.querySelectorAll('[aria-label="Log level"] button')].find(
+				(b) => b.textContent === "debug",
+			),
+		);
+		await waitFor(() => savedBodies.length > 0, "settings to write themselves");
+		expect(savedBodies.at(-1)?.logLevel).toBe("debug");
+		expect(container.textContent).not.toContain("unsaved");
+	});
+
+	test("an invalid edit cannot write itself — it stays unsaved with the reason", async () => {
+		await mount();
+		await dirtyTheForm();
+		for (let i = 0; i < 40; i++) await settle();
+		expect(savedBodies).toHaveLength(0);
+		expect(container.textContent).toContain("unsaved");
+		expect(container.textContent).toContain("Allowed users must keep at least one Telegram id.");
 	});
 
 	for (const direction of ["back", "forward"] as const) {
@@ -819,9 +848,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 			expect(win.location.pathname).toBe("/app/settings");
 			expect(win.history.length).toBe(entries);
 			expect(container.textContent).toContain("unsaved");
-			expect(container.querySelector('[aria-label="Log level"] button.on')?.textContent).toBe(
-				"debug",
-			);
+			expect(container.querySelectorAll(".chips .chip")).toHaveLength(0);
 
 			confirmAnswer = true;
 			await traverse(direction);
@@ -909,9 +936,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 			await new Promise((r) => setTimeout(r, 30));
 		});
 		expect(win.location.pathname).toBe("/app/settings");
-		expect(container.querySelector('[aria-label="Log level"] button.on')?.textContent).toBe(
-			"debug",
-		);
+		expect(container.querySelectorAll(".chips .chip")).toHaveLength(0);
 	});
 
 	test("Back into the conversation list also asks while the editor is dirty", async () => {
@@ -951,9 +976,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(container.querySelector('[role="alert"]')?.textContent).toContain(
 			"cannot restore an older history entry",
 		);
-		expect(container.querySelector('[aria-label="Log level"] button.on')?.textContent).toBe(
-			"debug",
-		);
+		expect(container.querySelectorAll(".chips .chip")).toHaveLength(0);
 	});
 
 	test("Back from a clean editor needs no question", async () => {

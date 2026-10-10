@@ -112,29 +112,42 @@ let FETCH_KINDS = [];
 let TR_KINDS = [];
 /** @type {Record<string, { model: string, auth: string }>} */
 let TR_DEFAULTS = {};
+// auth.jsonl record names as loaded at boot — the secret-name pickers'
+// suggestions (names only, values never; auth edits apply at restart).
+/** @type {readonly string[]} */
+let AUTH_NAMES = [];
+// Blank-auth defaults per kind — the same map the server schema
+// defaults from, off the config GET.
+/** @type {Record<string, string>} */
+let AUTH_DEFAULTS = {};
+// The one datalist every secret-name input points at.
+const AUTH_DL = "authDl";
+// A name the running process can't resolve is a hint, not a blocker —
+// config-before-key is a legitimate order.
+/** @param {string} name @returns {string | null} */
+function authWarnText(name) {
+	const t = name.trim();
+	return AUTH_NAMES.length && t && AUTH_NAMES.indexOf(t) === -1
+		? '"' + t + '" is not in auth.jsonl (as loaded at boot)'
+		: null;
+}
 
 // The full operator vocabulary — the fallback when the model is unknown,
 // and the ordering for nearest-rung clamping (mirrors the server).
 const ORDER = ["off", "low", "medium", "high", "xhigh", "max"];
 
-// Auth requirements per chain kind: "required" | "optional" | "none".
+// Auth shape per chain kind: "optional" (works keyless) or "none" (no
+// key at all). Keyed kinds carry no marker — blank auth means the kind's
+// own auth.jsonl record (AUTH_DEFAULTS), never a required field.
 /** @type {Record<string, KindMeta>} */
 const SEARCH_META = {
-	brave: { auth: "required" },
-	exa: { auth: "required" },
 	jina: { auth: "optional", note: "Works keyless, rate-limited." },
-	tavily: { auth: "required" },
-	firecrawl: { auth: "required" },
-	parallel: { auth: "required" },
 	ddg: { auth: "none", note: "Keyless — unofficial endpoint, may rate-limit or break." },
 };
 /** @type {Record<string, KindMeta>} */
 const FETCH_META = {
 	local: { auth: "none", note: "Direct download + readability — no key." },
 	jina: { auth: "optional", note: "Works keyless, rate-limited." },
-	tavily: { auth: "required" },
-	firecrawl: { auth: "required" },
-	parallel: { auth: "required" },
 };
 
 const VOICE_SUGGESTIONS = [
@@ -674,7 +687,7 @@ function initChain(prefix, kinds, meta, getArr, setArr) {
 	}
 	/** @param {ChainEntry} entry @param {number} i @param {number} len */
 	function row(entry, i, len) {
-		const m = meta[entry.kind] || { auth: "optional" };
+		const m = /** @type {KindMeta} */ (meta[entry.kind] || {});
 		const card = el("div", "cstep");
 		const head = el("div", "chead");
 		head.append(el("span", "cnum" + (i === 0 ? " primary" : ""), String(i + 1)));
@@ -706,19 +719,39 @@ function initChain(prefix, kinds, meta, getArr, setArr) {
 			card.append(el("div", "cap", m.note || "No key needed."));
 		} else {
 			const inp = /** @type {HTMLInputElement} */ (el("input", "mono"));
+			const def = AUTH_DEFAULTS[entry.kind] || "";
 			inp.placeholder =
-				m.auth === "optional" ? "secret name (optional)" : "secret name in auth.jsonl";
+				m.auth === "optional"
+					? "secret name (optional)"
+					: def
+						? def + " — in auth.jsonl"
+						: "secret name in auth.jsonl";
 			inp.value = entry.auth || "";
 			inp.autocomplete = "off";
 			inp.spellcheck = false;
 			inp.autocapitalize = "off";
 			inp.setAttribute("aria-label", "step " + (i + 1) + " secret name");
+			inp.setAttribute("list", AUTH_DL);
+			const warn = el("div", "cap");
+			warn.hidden = true;
+			// Parity with the React client: warn on any effective name the
+			// process can't resolve; hint "Blank uses X" only while blank.
+			const paintWarn = () => {
+				const v = inp.value.trim();
+				const text = authWarnText(inp.value || def);
+				const hint = text ?? (v || !def ? null : "Blank uses " + def + ".");
+				warn.textContent = hint || "";
+				warn.hidden = hint === null;
+			};
 			inp.oninput = () => {
 				entry.auth = inp.value;
+				paintWarn();
 				markDirty();
 			};
+			paintWarn();
 			card.append(inp);
 			if (m.auth === "optional" && m.note) card.append(el("div", "cap", m.note));
+			card.append(warn);
 		}
 		return card;
 	}
@@ -789,6 +822,7 @@ function provCard(p) {
 			return;
 		}
 		p.name = v;
+		syncAuthHint();
 		markDirty();
 	};
 	const rm = /** @type {HTMLButtonElement} */ (el("button", "rm", "Remove"));
@@ -828,20 +862,41 @@ function provCard(p) {
 	auth.spellcheck = false;
 	auth.autocapitalize = "off";
 	auth.setAttribute("aria-label", "secret name");
+	const authWarn = el("div", "cap");
+	authWarn.hidden = true;
 	auth.oninput = () => {
 		p.auth = auth.value;
+		syncAuthHint();
 		markDirty();
 	};
+	// Blank auth materializes at save — the provider's own name, or the
+	// kind's default record for openrouter — and the placeholder states
+	// which, tracking the name live. The cap flags names the running
+	// process can't resolve.
+	function syncAuthHint() {
+		// codex auth is the CLI's OAuth file, not an auth.jsonl secret name.
+		const codex = kind.value === "codex";
+		const fallback = codex
+			? ""
+			: kind.value === "openrouter"
+				? AUTH_DEFAULTS.openrouter || "openrouter"
+				: name.value.trim();
+		if (codex) auth.removeAttribute("list");
+		else auth.setAttribute("list", AUTH_DL);
+		auth.placeholder = codex
+			? "~/.codex/auth.json — blank = default"
+			: (fallback || "provider name") + " — in auth.jsonl";
+		const text = codex ? null : authWarnText(auth.value || fallback);
+		authWarn.textContent = text || "";
+		authWarn.hidden = text === null;
+	}
 	function sync() {
 		const needsBase = kind.value === "openai-compatible" || kind.value === "responses";
 		baseLabel.classList.toggle("hidden", !needsBase);
 		base.classList.toggle("hidden", !needsBase);
-		// codex auth is the CLI's OAuth file, not an auth.jsonl secret name.
 		const codex = kind.value === "codex";
 		authLabel.textContent = codex ? "Codex auth file" : "Secret name";
-		auth.placeholder = codex
-			? "~/.codex/auth.json — blank = default"
-			: "in auth.jsonl — not the secret itself";
+		syncAuthHint();
 	}
 	// Options come from KINDS — providerKinds off the config GET, pinned
 	// to the schema in both directions by config.test.ts — so the string
@@ -858,7 +913,7 @@ function provCard(p) {
 	const bWrap = el("div", "frow");
 	bWrap.append(baseLabel, base);
 	const aWrap = el("div", "frow");
-	aWrap.append(authLabel, auth);
+	aWrap.append(authLabel, auth, authWarn);
 	card.append(head, kWrap, bWrap, aWrap);
 	sync();
 	return card;
@@ -878,11 +933,14 @@ function validate() {
 	for (const p of provDraft) {
 		if (p.kind === "openai-compatible" || p.kind === "responses") {
 			if (!p.baseUrl.trim()) return 'Provider "' + p.name + '" needs a base url.';
-			if (!p.auth.trim()) return 'Provider "' + p.name + '" needs a secret name.';
-		} else if (p.kind === "openrouter" && !p.auth.trim()) {
-			return 'Provider "' + p.name + '" needs a secret name.';
 		}
 	}
+	// No secret-name checks anywhere: a blank provider auth means the
+	// provider's own name (openrouter: its default record), a blank step
+	// or cloud-transcription auth means the kind's — materialized in
+	// buildBody and defaulted server-side. The pickers' "not in
+	// auth.jsonl" hints cover the typo case without blocking
+	// config-before-key.
 	if (!cfg.model) return "Pick an app default model.";
 	if (!cfg.telegramModel) return "Pick a Telegram model.";
 	if (cfg.tts && !cfg.tts.voice.trim()) return "Text to speech is on — set a voice.";
@@ -890,25 +948,10 @@ function validate() {
 	// hidden), and a blank cloud auth sends nothing — the server fills
 	// the kind's default record, per the row captions.
 	if (cfg.vision && !cfg.vision.model.trim()) return "Vision is on — pick a model.";
-	if (cfg.search) {
-		if (!cfg.search.length) return "Search is on — add at least one provider, or switch it off.";
-		for (const [i, e] of cfg.search.entries()) {
-			const m = SEARCH_META[e.kind];
-			if (m && m.auth === "required" && !e.auth.trim()) {
-				return "Search step " + (i + 1) + " (" + e.kind + ") needs a secret name.";
-			}
-		}
-	}
-	if (cfg.fetch) {
-		if (!cfg.fetch.length)
-			return "The fetch chain is on — add at least one provider, or switch it off.";
-		for (const [i, e] of cfg.fetch.entries()) {
-			const m = FETCH_META[e.kind];
-			if (m && m.auth === "required" && !e.auth.trim()) {
-				return "Fetch step " + (i + 1) + " (" + e.kind + ") needs a secret name.";
-			}
-		}
-	}
+	if (cfg.search && !cfg.search.length)
+		return "Search is on — add at least one provider, or switch it off.";
+	if (cfg.fetch && !cfg.fetch.length)
+		return "The fetch chain is on — add at least one provider, or switch it off.";
 	if (cfg.memory) {
 		if (!cfg.memory.baseUrl.trim()) return "Memory is on — set the hindsight url.";
 		if (!cfg.memory.bankId.trim()) return "Memory is on — set a bank id.";
@@ -929,15 +972,25 @@ function validate() {
 function buildBody() {
 	/** @type {Record<string, ProviderConfig>} */
 	const providers = {};
+	// Blank provider auth materializes here — the provider's own name,
+	// openrouter's default record — so the saved config always carries
+	// an explicit name; a later rename never re-points a credential.
 	for (const p of provDraft) {
 		if (p.kind === "openai-compatible" || p.kind === "responses") {
-			providers[p.name] = { kind: p.kind, baseUrl: p.baseUrl.trim(), auth: p.auth.trim() };
+			providers[p.name] = {
+				kind: p.kind,
+				baseUrl: p.baseUrl.trim(),
+				auth: p.auth.trim() || p.name,
+			};
 		} else if (p.kind === "codex") {
 			providers[p.name] = p.auth.trim()
 				? { kind: p.kind, authFile: p.auth.trim() }
 				: { kind: p.kind };
 		} else {
-			providers[p.name] = { kind: p.kind, auth: p.auth.trim() };
+			providers[p.name] = {
+				kind: p.kind,
+				auth: p.auth.trim() || /** @type {string} */ (AUTH_DEFAULTS.openrouter),
+			};
 		}
 	}
 	/**
@@ -1701,6 +1754,24 @@ function populate(c) {
 		inputEl("trModel").value = t ? t.model : "";
 		inputEl("trAuth").value = t ? t.auth : "";
 		inputEl("trLang").value = t ? t.language : "";
+		paintTrAuthWarn();
+	}
+	// The effective transcription record — typed name or the kind's
+	// default — against what the running process can resolve; the hint
+	// mirrors the React client ("Blank uses X" only while blank).
+	function paintTrAuthWarn() {
+		const cap = $("trAuthWarn");
+		const t = cfg.transcription;
+		if (!t || t.kind === "whistle") {
+			cap.textContent = "";
+			cap.hidden = true;
+			return;
+		}
+		const d = (TR_DEFAULTS[t.kind] || { auth: "" }).auth;
+		const warn = authWarnText(t.auth || d);
+		const hint = warn ?? (t.auth.trim() || !d ? null : "Blank uses " + d + ".");
+		cap.textContent = hint || "";
+		cap.hidden = hint === null;
 	}
 	bindSwitch(
 		"trOn",
@@ -1738,6 +1809,7 @@ function populate(c) {
 	});
 	bindText("trAuth", (v) => {
 		/** @type {TrDraft} */ (cfg.transcription).auth = v;
+		paintTrAuthWarn();
 	});
 	bindText("trLang", (v) => {
 		/** @type {TrDraft} */ (cfg.transcription).language = v;
@@ -1794,6 +1866,12 @@ function populate(c) {
 	paintFetch();
 
 	// Memory
+	function paintMemAuthWarn() {
+		const w = cfg.memory ? authWarnText(cfg.memory.auth) : null;
+		const cap = $("memAuthWarn");
+		cap.textContent = w || "";
+		cap.hidden = w === null;
+	}
 	function paintMemory() {
 		$("memFields").classList.toggle("hidden", cfg.memory === null);
 		inputEl("memBase").value = cfg.memory ? cfg.memory.baseUrl : "";
@@ -1801,6 +1879,7 @@ function populate(c) {
 		inputEl("memAuth").value = cfg.memory ? cfg.memory.auth : "";
 		inputEl("memTokens").value = cfg.memory ? cfg.memory.tokens : "";
 		inputEl("memTimeout").value = cfg.memory ? cfg.memory.timeout : "";
+		paintMemAuthWarn();
 		if (cfg.memory)
 			segmented(
 				"memBudget",
@@ -1840,6 +1919,7 @@ function populate(c) {
 	});
 	bindText("memAuth", (v) => {
 		/** @type {MemDraft} */ (cfg.memory).auth = v;
+		paintMemAuthWarn();
 	});
 	bindText("memTokens", (v) => {
 		/** @type {MemDraft} */ (cfg.memory).tokens = v;
@@ -1917,6 +1997,11 @@ async function load() {
 		SEARCH_KINDS = r.searchKinds;
 		TR_KINDS = r.transcriptionKinds;
 		TR_DEFAULTS = r.transcriptionDefaults || {};
+		AUTH_NAMES = r.authNames || [];
+		AUTH_DEFAULTS = r.authDefaults || {};
+		const dl = $("authDl");
+		dl.replaceChildren();
+		for (const n of AUTH_NAMES) dl.append(new Option(n, n));
 		FETCH_KINDS = r.fetchKinds;
 		populate(r.config);
 		loading = false;

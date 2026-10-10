@@ -264,3 +264,12 @@ build step and its client is loaded at backend startup.
 Conversation state, settings and workspace files live in `GOBLIN_HOME`, not
 in the checkout. Updates must preserve them and never silently migrate keys
 or deploy the separate memory stack.
+
+## App client development
+
+`bun run app:dev` runs the Vite dev server (HMR on save) at
+`http://localhost:5173/app/`, proxying `/api` to the local goblin listener
+(config `http.port`; `GOBLIN_HTTP` overrides). The proxy strips browser
+origin headers so trust-mode mutations pass — the app talks to the live
+backend, so edits there are real. It never writes `app/dist`; publishing
+the client still goes through `bun run app:build` + the approved rollout.

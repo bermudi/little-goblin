@@ -59,7 +59,11 @@ const baseConfig: Config = {
 
 // Provider present ⇔ the boot config carried a memory block — the same
 // pairing src/index.ts builds (client from boot config, deps from client).
-function setup(memory?: HttpDeps["memory"], beforeConfigWritten?: HttpDeps["beforeConfigWritten"]) {
+function setup(
+	memory?: HttpDeps["memory"],
+	beforeConfigWritten?: HttpDeps["beforeConfigWritten"],
+	authNames?: () => string[],
+) {
 	useHome();
 	const memoryBlock: MemoryConfig | undefined = memory
 		? memoryConfigSchema.parse({ baseUrl: "http://127.0.0.1:8888", bankId: "goblin" })
@@ -73,6 +77,7 @@ function setup(memory?: HttpDeps["memory"], beforeConfigWritten?: HttpDeps["befo
 		onConfigWritten: () => {},
 		...(memory ? { memory } : {}),
 		...(beforeConfigWritten ? { beforeConfigWritten } : {}),
+		...(authNames ? { authNames } : {}),
 	});
 	const initData = makeInitData({
 		auth_date: String(Math.floor(Date.now() / 1000)),
@@ -576,10 +581,16 @@ describe("mini-app page serving", () => {
 			"trModel",
 			"trAuthRow",
 			"trAuth",
+			"trAuthWarn",
 			"trLang",
 		]) {
 			expect(dom.document.getElementById(id), id).not.toBeNull();
 		}
+		// The shared auth-name picker's datalist and the memory warning
+		// ride the same contract — app.js populates authDl on load and
+		// paints memAuthWarn on every memory edit.
+		expect(dom.document.getElementById("authDl"), "authDl").not.toBeNull();
+		expect(dom.document.getElementById("memAuthWarn"), "memAuthWarn").not.toBeNull();
 	});
 
 	test("GET / serves the page, which loads the client from /app.js", async () => {
@@ -1272,12 +1283,18 @@ describe("mini-app transcription config", () => {
 			const body = (await loaded.json()) as {
 				transcriptionKinds: string[];
 				transcriptionDefaults: Record<string, { model: string; auth: string }>;
+				authDefaults: Record<string, string>;
+				authNames: string[];
 			};
 			expect(body.transcriptionKinds[0]).toBe("whistle");
 			expect(body.transcriptionDefaults.mimo).toEqual({
 				model: "xiaomi/mimo-v2.6-flash",
 				auth: "openrouter",
 			});
+			// The blank-auth defaults ride the same GET — one source with
+			// the schema — and names arrive bare and sorted, never values.
+			expect(body.authDefaults.brave).toBe("brave");
+			expect(body.authNames).toEqual([]);
 
 			// The page saves the block it loaded, whistle arm: keywords and
 			// engine/weights ride along untouched (hand edits survive).
@@ -1314,6 +1331,17 @@ describe("mini-app transcription config", () => {
 			const cleared = await post({ transcription: "" });
 			expect(cleared.ok).toBe(true);
 			expect(loadConfig()?.transcription).toBeUndefined();
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("auth names ride the GET bare and sorted when the seam is wired", async () => {
+		const { http, get } = setup(undefined, undefined, () => ["zeta", "alpha", "zai"]);
+		try {
+			const loaded = await get("/api/config");
+			const body = (await loaded.json()) as { authNames: string[] };
+			expect(body.authNames).toEqual(["alpha", "zai", "zeta"]);
 		} finally {
 			http.stop();
 		}

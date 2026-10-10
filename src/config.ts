@@ -257,6 +257,21 @@ function refreshDoctorShim(): void {
 
 // ---------- schema ----------
 
+// The auth.jsonl record a keyed kind uses when the config omits auth —
+// the kind's own record name, materialized into the file on the next
+// save (writeConfig re-parses through the schema). Blank therefore means
+// "the kind's record", never "no key": jina is deliberately absent
+// because it works keyless, so its blank must stay keyless. Served to
+// both settings clients so placeholders and saves derive from one source.
+export const authDefaults = {
+	brave: "brave",
+	exa: "exa",
+	tavily: "tavily",
+	firecrawl: "firecrawl",
+	parallel: "parallel",
+	openrouter: "openrouter",
+} as const;
+
 // Single source: config.test.ts pins this array against the schema
 // literals below in both directions — schema-only kind → the settings UI
 // can't offer it; array-only kind → the UI offers what the config rejects.
@@ -276,7 +291,7 @@ export const providerSchema = z.discriminatedUnion("kind", [
 	}),
 	z.object({
 		kind: z.literal("openrouter"),
-		auth: z.string().min(1),
+		auth: z.string().min(1).default(authDefaults.openrouter),
 	}),
 	z.object({
 		kind: z.literal("codex"),
@@ -545,12 +560,18 @@ export const searchKinds = [
 ] as const;
 
 export const searchEntrySchema = z.discriminatedUnion("kind", [
-	z.object({ kind: z.literal("brave"), auth: z.string().min(1) }),
-	z.object({ kind: z.literal("exa"), auth: z.string().min(1) }),
+	z.object({ kind: z.literal("brave"), auth: z.string().min(1).default(authDefaults.brave) }),
+	z.object({ kind: z.literal("exa"), auth: z.string().min(1).default(authDefaults.exa) }),
 	z.object({ kind: z.literal("jina"), auth: z.string().min(1).optional() }),
-	z.object({ kind: z.literal("tavily"), auth: z.string().min(1) }),
-	z.object({ kind: z.literal("firecrawl"), auth: z.string().min(1) }),
-	z.object({ kind: z.literal("parallel"), auth: z.string().min(1) }),
+	z.object({ kind: z.literal("tavily"), auth: z.string().min(1).default(authDefaults.tavily) }),
+	z.object({
+		kind: z.literal("firecrawl"),
+		auth: z.string().min(1).default(authDefaults.firecrawl),
+	}),
+	z.object({
+		kind: z.literal("parallel"),
+		auth: z.string().min(1).default(authDefaults.parallel),
+	}),
 	z.object({ kind: z.literal("ddg") }),
 ]);
 export const fetchKinds = ["local", "jina", "tavily", "firecrawl", "parallel"] as const;
@@ -558,9 +579,15 @@ export const fetchKinds = ["local", "jina", "tavily", "firecrawl", "parallel"] a
 export const fetchEntrySchema = z.discriminatedUnion("kind", [
 	z.object({ kind: z.literal("local") }),
 	z.object({ kind: z.literal("jina"), auth: z.string().min(1).optional() }),
-	z.object({ kind: z.literal("tavily"), auth: z.string().min(1) }),
-	z.object({ kind: z.literal("firecrawl"), auth: z.string().min(1) }),
-	z.object({ kind: z.literal("parallel"), auth: z.string().min(1) }),
+	z.object({ kind: z.literal("tavily"), auth: z.string().min(1).default(authDefaults.tavily) }),
+	z.object({
+		kind: z.literal("firecrawl"),
+		auth: z.string().min(1).default(authDefaults.firecrawl),
+	}),
+	z.object({
+		kind: z.literal("parallel"),
+		auth: z.string().min(1).default(authDefaults.parallel),
+	}),
 ]);
 
 const configSchema = z

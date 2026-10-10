@@ -267,7 +267,7 @@ product names, and quoted terms stay verbatim.** The raw document layer
 keeps the source language untouched — fidelity and provenance live there;
 facts are derived. One fact language keeps cross-language dedup,
 consolidation, and correction-invalidation reliable (the operator mixes
-languages freely); multilingual embeddings (voyage-4-lite) absorb the
+languages freely); multilingual embeddings (embeddinggemma) absorb the
 query-side cost. The canonical mission is code — `DEFAULT_MISSION` in
 `deploy/memory/install.py` — applied at bank creation; bank state is never
 the source of truth for it.

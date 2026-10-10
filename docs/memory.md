@@ -85,7 +85,7 @@ Goblin never creates banks. With the stack running:
 # Create the bank (replace goblin with your bank id):
 curl -s -X PUT http://127.0.0.1:8888/v1/default/banks/goblin \
   -H 'content-type: application/json' \
-  -d '{"mission": "Remember the operator'"'"'s preferences, decisions, commitments, people, and ongoing work. Assistant suggestions are not operator decisions. Date every fact."}'
+  -d '{"mission": "Remember the operator'"'"'s preferences, decisions, commitments, people, and ongoing work. Assistant suggestions are not operator decisions. Date every fact. Extract every fact in English regardless of the conversation language; keep proper nouns, product names, and quoted terms verbatim."}'
 
 # Then steer the knobs Goblin actually exercises. The generic `mission`
 # above lands on reflect_mission (Hindsight 0.10), which only affects
@@ -94,7 +94,7 @@ curl -s -X PUT http://127.0.0.1:8888/v1/default/banks/goblin \
 curl -s -X PATCH http://127.0.0.1:8888/v1/default/banks/goblin/config \
   -H 'content-type: application/json' \
   -d '{"updates": {
-    "retain_mission": "Remember the operator'"'"'s preferences, decisions, commitments, people, and ongoing work. Assistant suggestions are not operator decisions. Date every fact.",
+    "retain_mission": "Remember the operator'"'"'s preferences, decisions, commitments, people, and ongoing work. Assistant suggestions are not operator decisions. Date every fact. Extract every fact in English regardless of the conversation language; keep proper nouns, product names, and quoted terms verbatim.",
     "observations_mission": "Consolidate the operator'"'"'s preferences, decisions, commitments, people, and ongoing work. Assistant suggestions are not operator decisions. Preserve corrections as dated evolution."
   }}'
 ```

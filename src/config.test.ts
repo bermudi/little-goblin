@@ -180,7 +180,7 @@ describe("goblin.json5", () => {
 			join(dir, "goblin.json5"),
 			`${base}${cfg({ g7: { machine: "g7", root: "relative/path" } })}}`,
 		);
-		expect(() => loadConfig()).toThrow(/root must be absolute/);
+		expect(() => loadConfig()).toThrow("delegation: invalid_format");
 		// `~user` is shell user-expansion the tool does NOT perform —
 		// accepting it would stat it under the operator's home while the
 		// literal path reaches herdr. Fail loud at this boundary.
@@ -188,14 +188,14 @@ describe("goblin.json5", () => {
 			join(dir, "goblin.json5"),
 			`${base}${cfg({ g7: { machine: "g7", root: "~other/build" } })}}`,
 		);
-		expect(() => loadConfig()).toThrow(/root must be absolute/);
+		expect(() => loadConfig()).toThrow("delegation: invalid_format");
 		// machine + session on one target is a contradiction — herdr's
 		// CLI treats --machine and --session as mutually exclusive.
 		writeFileSync(
 			join(dir, "goblin.json5"),
 			`${base}${cfg({ both: { machine: "g7", session: "goblin" } })}}`,
 		);
-		expect(() => loadConfig()).toThrow(/exactly one of machine/);
+		expect(() => loadConfig()).toThrow("delegation: custom");
 		// Session names ride herdr's session contract, not the harness
 		// charset: dots and case are real (goblin.dev, side-session).
 		writeFileSync(join(dir, "goblin.json5"), `${base}${cfg({ dev: { session: "goblin.dev" } })}}`);
@@ -223,7 +223,7 @@ describe("goblin.json5", () => {
 			join(dir, "goblin.json5"),
 			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"other/glm-4.6",allowedUsers:[7]}`,
 		);
-		expect(() => loadConfig()).toThrow('provider "other"');
+		expect(() => loadConfig()).toThrow("model: custom");
 	});
 
 	test("a malformed model ref is rejected", () => {
@@ -232,7 +232,7 @@ describe("goblin.json5", () => {
 			join(dir, "goblin.json5"),
 			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"glm-4.6",allowedUsers:[7]}`,
 		);
-		expect(() => loadConfig()).toThrow("provider>/<model-id>");
+		expect(() => loadConfig()).toThrow("model: custom");
 	});
 
 	test('titleModel is provider-validated like model; "" clears to unset', () => {
@@ -243,7 +243,7 @@ describe("goblin.json5", () => {
 		writeFileSync(join(dir, "goblin.json5"), `${base},titleModel:""}`);
 		expect(loadConfig()!.titleModel).toBeUndefined();
 		writeFileSync(join(dir, "goblin.json5"), `${base},titleModel:"other/x"}`);
-		expect(() => loadConfig()).toThrow('provider "other"');
+		expect(() => loadConfig()).toThrow("titleModel: custom");
 	});
 
 	test('vision: absent by default, defaults + mode, "" clears, model provider-validated', () => {
@@ -268,7 +268,7 @@ describe("goblin.json5", () => {
 		writeFileSync(join(dir, "goblin.json5"), `${base},vision:""}`);
 		expect(loadConfig()!.vision).toBeUndefined();
 		writeFileSync(join(dir, "goblin.json5"), `${base},vision:{model:"other/x"}}`);
-		expect(() => loadConfig()).toThrow('provider "other"');
+		expect(() => loadConfig()).toThrow("vision: custom");
 		writeFileSync(join(dir, "goblin.json5"), `${base},vision:{model:"zai/glm-4.6",maxTokens:0}}`);
 		expect(() => loadConfig()).toThrow();
 		writeFileSync(
@@ -307,7 +307,7 @@ describe("goblin.json5", () => {
 			join(dir, "goblin.json5"),
 			`${base},reviewer:{auth:"openrouter",model:"other/x"}}`,
 		);
-		expect(() => loadConfig()).toThrow('provider "other"');
+		expect(() => loadConfig()).toThrow("reviewer: custom");
 		writeFileSync(join(dir, "goblin.json5"), `${base},reviewer:{threshold:0.5}}`);
 		expect(() => loadConfig()).toThrow();
 	});
@@ -752,10 +752,10 @@ test("legacy Telegram selection pins independently from app-default patches and 
 	expect(loadConfig()!.telegram).toMatchObject({ model: "test/old", thinking: "high" });
 	expect(loadConfig()!.model).toBe("test/new");
 	expect(() => parseConfig({ ...changed, telegram: { model: "missing/x" } })).toThrow(
-		"which is not in providers",
+		"telegram: custom",
 	);
 	expect(() => parseConfig({ ...changed, telegram: { model: "bare" } })).toThrow(
-		"provider>/<model-id>",
+		"telegram: custom",
 	);
 	expect(() => parseConfig({ ...changed, telegram: { thinking: "invalid" } })).toThrow();
 });
@@ -795,5 +795,84 @@ describe("transcriptionKinds", () => {
 		expect(
 			transcriptionSchema.safeParse({ kind: "whistle", keywords: Array(100).fill("x") }).success,
 		).toBe(true);
+	});
+});
+
+const sentinel = "SYNTHETIC_CONFIG_INPUT_DO_NOT_ECHO";
+const invalidInputs: unknown[] = [
+	{ ...valid, model: sentinel },
+	{ ...valid, model: `${sentinel}/model` },
+	{ ...valid, providers: { [sentinel]: { kind: sentinel, auth: sentinel } } },
+	{ ...valid, thinking: sentinel },
+	{ ...valid, publicUrl: `http://${sentinel}:credential@example.org` },
+	{ ...valid, delegation: { machines: { [sentinel]: { root: sentinel } } } },
+	{ ...valid, telegram: { model: sentinel } },
+	[sentinel],
+];
+
+function safeFailure(fn: () => unknown): Error {
+	let failure: unknown;
+	try {
+		fn();
+	} catch (err) {
+		failure = err;
+	}
+	expect(failure).toBeInstanceOf(Error);
+	const err = failure as Error;
+	expect(err.message).not.toContain(sentinel);
+	expect(err.stack).not.toContain(sentinel);
+	expect(err).not.toHaveProperty("cause");
+	expect(err).not.toHaveProperty("issues");
+	expect(JSON.stringify(err)).not.toContain(sentinel);
+	return err;
+}
+
+describe("config parser safety", () => {
+	test.each(invalidInputs)("schema input never survives in the thrown error (%#)", (raw) => {
+		expect(safeFailure(() => parseConfig(raw)).message).toContain("invalid config");
+	});
+
+	test("malformed model references do not survive in standalone split errors", () => {
+		safeFailure(() => splitModelRef(sentinel));
+	});
+
+	const invalidFiles = [
+		`{\nmodel: ${sentinel}\n}`,
+		`{\n"model": "${sentinel}",\n`,
+		...invalidInputs.map((raw) => JSON.stringify(raw)),
+	];
+	test.each(invalidFiles)(
+		"disk parser and helper CLI stderr omit synthetic input (%#)",
+		async (raw) => {
+			const dir = useHome();
+			writeFileSync(join(dir, "goblin.json5"), raw);
+			safeFailure(() => loadConfig());
+			// An inert helper exercises Bun's uncaught-error renderer without boot.
+			const child = Bun.spawn(
+				[
+					process.execPath,
+					"-e",
+					`import { loadConfig } from ${JSON.stringify(join(import.meta.dir, "config.ts"))}; loadConfig();`,
+				],
+				{ env: { ...process.env, GOBLIN_HOME: dir }, stdout: "pipe", stderr: "pipe" },
+			);
+			const [stdout, stderr, code] = await Promise.all([
+				new Response(child.stdout).text(),
+				new Response(child.stderr).text(),
+				child.exited,
+			]);
+			expect(code).not.toBe(0);
+			expect(stdout).toBe("");
+			expect(stderr).toContain("goblin.json5");
+			expect(stderr).not.toContain(sentinel);
+		},
+	);
+
+	test("JSON5 syntax errors retain only a safe numeric line", () => {
+		const dir = useHome();
+		writeFileSync(join(dir, "goblin.json5"), `{\nmodel: ${sentinel}\n}`);
+		expect(safeFailure(() => loadConfig()).message).toBe(
+			`${join(dir, "goblin.json5")}:2: invalid JSON5`,
+		);
 	});
 });

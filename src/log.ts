@@ -100,8 +100,8 @@ function writeFile(line: string): void {
 
 type Fields = Record<string, unknown>;
 
-function emit(level: LogLevel, msg: string, fields?: Fields): void {
-	if (LEVELS[level] < threshold) return;
+function emit(level: LogLevel, msg: string, fields?: Fields, startup = false): void {
+	if (!startup && LEVELS[level] < threshold) return;
 	const line =
 		JSON.stringify({
 			ts: new Date().toISOString(),
@@ -175,7 +175,11 @@ function warn(msg: string, a?: unknown, b?: Fields): void {
 	}
 }
 
+// Only these startup signals bypass the threshold; arbitrary info still obeys it.
+type StartupEvent = [msg: "goblin up", fields: { home: string }] | [msg: "long polling started"];
+
 export const log = {
+	startup: (...[msg, fields]: StartupEvent) => emit("info", msg, fields, true),
 	debug: (msg: string, fields?: Fields) => emit("debug", msg, fields),
 	info: (msg: string, fields?: Fields) => emit("info", msg, fields),
 	warn,

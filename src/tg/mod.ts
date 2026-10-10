@@ -1015,7 +1015,7 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 		bot,
 		replayInbox: () => replayInbox(env),
 		startPolling() {
-			void bot.start({ onStart: () => log.info("long polling started") }).catch((err: unknown) => {
+			void bot.start({ onStart: () => log.startup("long polling started") }).catch((err: unknown) => {
 				log.error("long polling failed", err);
 				process.exit(1);
 			});

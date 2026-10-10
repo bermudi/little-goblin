@@ -4,7 +4,7 @@
 // needs a fake writer — the real filesystem can't be asked to fail that
 // way portably — via setLogWriter, same pattern as codex/auth.ts's fetchImpl.
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import {
 	appendFileSync,
 	existsSync,
@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { log, setLogFile, setLogWriter } from "./log.ts";
+import { log, setLogFile, setLogLevel, setLogWriter, type LogLevel } from "./log.ts";
 
 let dirs: string[] = [];
 function tmpHome(): string {
@@ -26,6 +26,7 @@ function tmpHome(): string {
 afterEach(() => {
 	setLogFile(null);
 	setLogWriter(null);
+	setLogLevel("info");
 	for (const d of dirs) rmSync(d, { recursive: true, force: true });
 	dirs = [];
 });
@@ -215,4 +216,57 @@ describe("error parity", () => {
 			cause: [{ message: "root failure", stack: root.stack }],
 		});
 	});
+});
+
+describe("startup lifecycle evidence", () => {
+	test.each<LogLevel>(["debug", "info", "warn", "error"])(
+		"known startup events reach stdout and the same file sink at %s",
+		(level) => {
+			const target = join(tmpHome(), "goblin.log");
+			setLogFile(target);
+			setLogLevel(level);
+			const stdout: string[] = [];
+			const writer = spyOn(process.stdout, "write").mockImplementation((chunk) => {
+				stdout.push(String(chunk));
+				return true;
+			});
+			try {
+				log.debug("ordinary debug");
+				log.info("ordinary info");
+				// Matching text alone must not turn ordinary info into a bypass.
+				log.info("goblin up", { home: "/synthetic" });
+				log.info("long polling started");
+				log.startup("goblin up", { home: "/synthetic" });
+				log.startup("long polling started");
+				log.warn("ordinary warn");
+				log.error("ordinary error");
+			} finally {
+				writer.mockRestore();
+			}
+			expect(readFileSync(target, "utf8")).toBe(stdout.join(""));
+			const records = lines(target);
+			const ordinary =
+				level === "debug"
+					? ["ordinary debug", "ordinary info", "goblin up", "long polling started"]
+					: level === "info"
+						? ["ordinary info", "goblin up", "long polling started"]
+						: [];
+			expect(records.map((record) => record.msg)).toEqual([
+				...ordinary,
+				"goblin up",
+				"long polling started",
+				...(level === "error" ? [] : ["ordinary warn"]),
+				"ordinary error",
+			]);
+			expect(records[ordinary.length]).toMatchObject({
+				level: "info",
+				msg: "goblin up",
+				home: "/synthetic",
+			});
+			expect(records[ordinary.length + 1]).toMatchObject({
+				level: "info",
+				msg: "long polling started",
+			});
+		},
+	);
 });

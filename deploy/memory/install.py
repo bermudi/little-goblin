@@ -92,7 +92,9 @@ DEFAULT_BANK_ID = "goblin"
 DEFAULT_MISSION = (
     "Remember the operator's preferences, decisions, commitments, people, "
     "and ongoing work. Assistant suggestions are not operator decisions. "
-    "Date every fact."
+    "Date every fact. Extract every fact in English regardless of the "
+    "conversation language; keep proper nouns, product names, and quoted "
+    "terms verbatim."
 )
 
 

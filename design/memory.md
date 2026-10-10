@@ -255,6 +255,16 @@ labelled as context rather than fresh independent evidence. Scheduled
 housekeeping is not automatically a source of new personal memories.
 Extraction instructions emphasize preferences, decisions, commitments,
 people, and ongoing work; they guide quality, not privacy enforcement.
+**Fact language is pinned to English (ruled 2026-10-08): every fact is
+extracted in English regardless of conversation language; proper nouns,
+product names, and quoted terms stay verbatim.** The raw document layer
+keeps the source language untouched — fidelity and provenance live there;
+facts are derived. One fact language keeps cross-language dedup,
+consolidation, and correction-invalidation reliable (the operator mixes
+languages freely); multilingual embeddings (voyage-4-lite) absorb the
+query-side cost. The canonical mission is code — `DEFAULT_MISSION` in
+`deploy/memory/install.py` — applied at bank creation; bank state is never
+the source of truth for it.
 
 **Retention text is operator speech, and a stored transcript is speech, not
 attachment ingestion (#111, ruled 2026-10-08).** The exclusion above governs

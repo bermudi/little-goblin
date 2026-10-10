@@ -139,6 +139,39 @@ crossing, and it is a copy plus a bell, not mirroring), app-side push
 for app background turns; app-native push waits until demanded),
 widgets, in-app voice mode, iOS.
 
+## Operator console in the PWA (ruling 2026-10-09)
+
+Operator ask: the PWA becomes the operations surface — full settings,
+the memory browser, and read-only delegations/programs/service status —
+because Telegram is the wrong client for long reads and state edits.
+
+**One operator surface, two doors.** `src/http/operator.ts` owns the
+handlers; the mini app mounts them under `/api/*` behind initData and
+the app channel mounts the same tails under `/api/app/*` behind
+bearer/trust. Both end at the same validation and persistence — zod
+parsing, the If-Match etag, the serialized save queue, the
+fresh-from-disk merge — so the two settings editors cannot drift. The
+one behavioral difference is the self-lockout guard: the mini app
+refuses to remove the *requesting* Telegram id from `allowedUsers`;
+the app door has no requester, so it refuses an empty list. Wire types
+live in `src/http/operator-wire.ts`, a leaf module both clients
+typecheck against (the mini app re-imports them through `mod.ts`; the
+React client imports them directly).
+
+**Routes.** `/app/settings`, `/app/memory`, `/app/delegations`,
+`/app/programs`, `/app/status` are deep links — `mod.ts` serves them
+the app shell, the client routes internally (same mechanism as
+`/app/c/<id>`). API tails: `settings` (GET/POST), `thinking-levels`,
+`memory/status`, `memory/documents[/id]` (GET/DELETE), `programs`,
+`delegations`, `status`. The client's settings editor is a React port
+of the mini app's form, not a redesign — `app/src/settingsDraft.ts`
+carries populate/validate/buildBody verbatim so the wire body is
+identical, and `app/src/SettingsView.tsx` keeps the section drill-in,
+chain ordering, provider rename-on-blur, and toggle-off preservation.
+The memory view is the Memories tab's browser plus status polling;
+forget asks `window.confirm` then rides the server's centralized
+forget protocol (`channel: "app"`).
+
 ## Streaming members & resumable streams (ruling 2026-10-04)
 
 The reply belongs to the conversation, not to the connection that

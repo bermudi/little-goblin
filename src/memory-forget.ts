@@ -101,7 +101,7 @@ export interface HindsightInstance {
 // Channel and, when known, the conversation the request came from —
 // merged into every log line so goblin.log reconstructs who forgot what.
 export interface ForgetContext {
-	channel: "telegram" | "mini-app";
+	channel: "telegram" | "mini-app" | "app";
 	conversation?: string;
 }
 

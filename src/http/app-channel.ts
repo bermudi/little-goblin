@@ -62,8 +62,21 @@ import type {
 	AppStopResponse,
 	AppTtsResponse,
 } from "./app-wire.ts";
+import { handleOperatorRoute, type OperatorDeps } from "./operator.ts";
 
 const NO_STORE = { "cache-control": "no-store" };
+
+// App-side mount points for the operator surface (operator.ts owns the
+// handlers; /api/app/memory/* maps by prefix because document ids ride
+// the path). `/api/app/config` is the composer's app-defaults route —
+// the full editor answers at /api/app/settings.
+const APP_OPERATOR_TAILS: Record<string, string> = {
+	"/api/app/settings": "config",
+	"/api/app/thinking-levels": "thinking-levels",
+	"/api/app/programs": "programs",
+	"/api/app/delegations": "delegations",
+	"/api/app/status": "status",
+};
 
 export interface AppChannelDeps {
 	store: ConversationStore;
@@ -85,6 +98,11 @@ export interface AppChannelDeps {
 	// First-turn naming via titleModel — the same closure the tg lane
 	// uses for implicit topics. Absent = no auto-titling.
 	titleFor?: (text: string) => Promise<string | null>;
+	// The operator surface (operator.ts) — shared verbatim with the mini
+	// app's /api/* routes; configRef/onConfigWritten already live on this
+	// deps object so the bundle carries only the extra seams. Absent =
+	// the operator routes refuse 503.
+	operator?: Omit<OperatorDeps, "configRef" | "onConfigWritten">;
 }
 
 // ---------- auth ----------
@@ -302,12 +320,9 @@ const convPatchBody = z
 		archived: z.boolean().optional(),
 		pinned: z.boolean().optional(),
 	})
-	.refine(
-		(p) => p.title !== undefined || p.archived !== undefined || p.pinned !== undefined,
-		{
-			message: "nothing to write",
-		},
-	);
+	.refine((p) => p.title !== undefined || p.archived !== undefined || p.pinned !== undefined, {
+		message: "nothing to write",
+	});
 
 // The composer's two knobs. A patch with neither is a client bug —
 // refuse rather than write a no-op through the file.
@@ -518,6 +533,39 @@ export async function handleAppApi(
 	const path = url.pathname;
 	const refused = await appAuth(req, path, deps, configuredToken);
 	if (refused !== null) return refused;
+
+	// The operator surface — the mini app's /api/* console routes under
+	// this door's auth. `/api/app/config` is already the composer's
+	// app-defaults route, so the full editor mounts at /settings.
+	const opTail =
+		APP_OPERATOR_TAILS[path] ??
+		(path.startsWith("/api/app/memory/")
+			? `memory/${path.slice("/api/app/memory/".length)}`
+			: null);
+	if (opTail !== null) {
+		if (deps.operator === undefined) {
+			log.warn("app operator route refused — not wired", { path });
+			return Response.json(
+				{ error: "operator surface is not wired" },
+				{ status: 503, headers: NO_STORE },
+			);
+		}
+		// JSON-body mutations carry the same CSRF backstop as every other
+		// app mutation (wire contract, not trust).
+		if (opTail === "config" && req.method === "POST") {
+			const refusedJson = jsonBodyRefusal(req);
+			if (refusedJson !== null) return refusedJson;
+		}
+		const res = await handleOperatorRoute(
+			{ ...deps.operator, configRef: deps.configRef, onConfigWritten: deps.onConfigWritten },
+			{ via: "app" },
+			req,
+			opTail,
+			url,
+		);
+		return res ?? Response.json({ error: "not found" }, { status: 404, headers: NO_STORE });
+	}
+
 	const { store, runtime } = deps;
 
 	if (path === "/api/app/conversations") {

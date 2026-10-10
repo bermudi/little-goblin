@@ -98,6 +98,7 @@ function setup(
 		transcribe?: AppChannelDeps["transcribe"];
 		speak?: AppChannelDeps["speak"];
 		titleFor?: AppChannelDeps["titleFor"];
+		operator?: AppChannelDeps["operator"];
 	} = {},
 ) {
 	const home = useHome();
@@ -148,6 +149,7 @@ function setup(
 		...(opts.transcribe !== undefined ? { transcribe: opts.transcribe } : {}),
 		...(opts.speak !== undefined ? { speak: opts.speak } : {}),
 		...(opts.titleFor !== undefined ? { titleFor: opts.titleFor } : {}),
+		...(opts.operator !== undefined ? { operator: opts.operator } : {}),
 	};
 	const http = startHttp({
 		configRef,
@@ -1672,4 +1674,262 @@ test("conversation PATCH rechecks the live registry and row after awaiting its r
 		http.stop();
 		store.close();
 	}
+});
+
+// ---------- the operator surface ----------
+// The mini app's console routes under this door's auth — operator.ts
+// owns the handler logic (mod.test.ts pins it verbatim through the
+// initData door); these tests pin the mount points, the bearer/trust
+// boundary, and the app-actor differences (no requester id → the
+// schema's min(1) on allowedUsers is the lockout guard).
+import { memoryConfigSchema } from "../config.ts";
+import { openDelegations } from "../delegations.ts";
+import { openPrograms } from "../programs.ts";
+import type { HindsightClient } from "../hindsight.ts";
+import type { OperatorDeps } from "./operator.ts";
+
+function stubMemory(extra: Partial<NonNullable<OperatorDeps["memory"]>> = {}) {
+	return {
+		target: { baseUrl: "http://127.0.0.1:8888", bankId: "goblin" },
+		counts: () => ({
+			pending: 0,
+			submitted: 0,
+			completed: 3,
+			blocked: 0,
+			dismissed: 0,
+			deleting: 0,
+		}),
+		deletingAll: () => 0,
+		blockedDetail: () => [],
+		lastRecallOk: () => true,
+		lastRecallAt: () => "2026-10-09T00:00:00.000Z",
+		...extra,
+	};
+}
+
+describe("app operator surface", () => {
+	test("operator routes are bearer-gated before the wire check, then 503 unwired", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			// Auth precedes routing — a wrong token is 401 even with the
+			// surface absent, so an unwired deploy is no oracle.
+			expect((await call("/api/app/settings", {}, "wrong")).status).toBe(401);
+			expect((await call("/api/app/settings")).status).toBe(503);
+			expect((await call("/api/app/memory/status")).status).toBe(503);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("settings GET carries config + kind lists + etag; POST honors If-Match end to end", async () => {
+		const { http, call, configRef, configWrites } = setup({
+			token: APP_TOKEN_NAME,
+			operator: { beforeConfigWritten: () => {} },
+		});
+		try {
+			const loaded = await call("/api/app/settings");
+			expect(loaded.status).toBe(200);
+			const etag = loaded.headers.get("etag")!;
+			expect(etag).toBeTruthy();
+			const body = (await loaded.json()) as {
+				config: { model: string };
+				providerKinds: string[];
+			};
+			expect(body.config.model).toBe("zai/m");
+			expect(body.providerKinds).toContain("codex");
+
+			const post = (ifMatch: string | null, payload: unknown) =>
+				call("/api/app/settings", {
+					method: "POST",
+					headers: {
+						"content-type": "application/json",
+						...(ifMatch !== null ? { "if-match": ifMatch } : {}),
+					},
+					body: JSON.stringify(payload),
+				});
+			expect((await post(null, { logLevel: "debug" })).status).toBe(428);
+			expect((await post('"bogus"', { logLevel: "debug" })).status).toBe(409);
+			// The app door has no requester id — the schema's min(1) is the
+			// lockout guard (a save that empties allowedUsers is refused).
+			expect((await post(etag, { allowedUsers: [] })).status).toBe(422);
+			expect(configRef.current.allowedUsers).toEqual([42]);
+			// A JSON mutation must claim application/json (#75).
+			expect(
+				(
+					await call("/api/app/settings", {
+						method: "POST",
+						headers: { "if-match": etag },
+						body: "{}",
+					})
+				).status,
+			).toBe(415);
+
+			const ok = await post(etag, { allowedUsers: [42, 7], logLevel: "debug" });
+			expect(ok.status).toBe(200);
+			expect(configRef.current.allowedUsers).toEqual([42, 7]);
+			expect(configRef.current.logLevel).toBe("debug");
+			expect(configWrites.count).toBe(1);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("memory status + documents ride the shared gates under app auth", async () => {
+		const docs = {
+			items: [
+				{
+					id: "exchange/dm:1/2/abc",
+					created_at: "2026-10-01T00:00:00Z",
+					updated_at: "2026-10-01T00:00:00Z",
+					text_length: 120,
+					memory_unit_count: 2,
+					document_metadata: { conversation_id: "dm:1" },
+				},
+			],
+			total: 1,
+			limit: 25,
+			offset: 0,
+		};
+		const client = {
+			listDocuments: () => Promise.resolve(docs),
+			getDocument: () =>
+				Promise.resolve({
+					id: "exchange/dm:1/2/abc",
+					bank_id: "goblin",
+					original_text: "hi",
+					created_at: "2026-10-01T00:00:00Z",
+					updated_at: null,
+					memory_unit_count: 2,
+				}),
+			listMemories: () => Promise.resolve({ items: [], total: 0, limit: 200, offset: 0 }),
+			operation: () => Promise.reject(new Error("unused")),
+			deleteDocument: () => Promise.resolve(),
+		} as unknown as HindsightClient;
+		const { http, call, configRef } = setup({
+			token: APP_TOKEN_NAME,
+			operator: { memory: stubMemory({ client }) },
+		});
+		try {
+			// Config carries no memory block — the gate reads "not configured".
+			const disabled = await call("/api/app/memory/status");
+			expect(disabled.status).toBe(200);
+			expect(((await disabled.json()) as { state: string }).state).toBe("disabled");
+			expect((await call("/api/app/memory/documents")).status).toBe(503);
+
+			configRef.current = {
+				...configRef.current,
+				memory: memoryConfigSchema.parse({
+					baseUrl: "http://127.0.0.1:8888",
+					bankId: "goblin",
+				}),
+			};
+			const status = (await (await call("/api/app/memory/status")).json()) as {
+				state: string;
+				completed: number;
+			};
+			expect(status.state).toBe("healthy");
+			expect(status.completed).toBe(3);
+			const list = (await (await call("/api/app/memory/documents")).json()) as {
+				items: Array<{ id: string; conversationId: string | null }>;
+				total: number;
+			};
+			expect(list.total).toBe(1);
+			expect(list.items[0]?.id).toBe("exchange/dm:1/2/abc");
+			expect(list.items[0]?.conversationId).toBe("dm:1");
+			const detail = (await (
+				await call("/api/app/memory/documents/exchange%2Fdm%3A1%2F2%2Fabc")
+			).json()) as { document: { id: string }; originalText: string };
+			expect(detail.document.id).toBe("exchange/dm:1/2/abc");
+			expect(detail.originalText).toBe("hi");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("programs, delegations and status answer the read-only lists", async () => {
+		const { http, call, home } = setup({ token: APP_TOKEN_NAME, operator: {} });
+		const db = join(home, "goblin.sqlite");
+		const programs = openPrograms(db);
+		programs.create({
+			name: "ci",
+			charter: "check the build",
+			cron: "0 9 * * *",
+			address: { chatId: -100, threadId: 7 },
+		});
+		const delegations = openDelegations(db);
+		delegations.create({
+			name: "port-widget",
+			harness: "codex",
+			cwd: "/work",
+			task: "port the widget",
+			address: { chatId: 1, threadId: null },
+			appConversation: "app/spun1",
+		});
+		const wired = setup({
+			token: APP_TOKEN_NAME,
+			operator: {
+				programs,
+				delegations,
+				service: {
+					version: "9.9.9-test",
+					startedAt: new Date(Date.now() - 60_000).toISOString(),
+					restartHints: () => ["memory"],
+				},
+			},
+		});
+		try {
+			const progs = (await (await wired.call("/api/app/programs")).json()) as {
+				programs: Array<{ name: string; cron: string | null; hasHook: boolean }>;
+			};
+			expect(progs.programs[0]).toMatchObject({ name: "ci", cron: "0 9 * * *", hasHook: false });
+
+			const dels = (await (await wired.call("/api/app/delegations")).json()) as {
+				delegations: Array<{ name: string; status: string; appConversation: string | null }>;
+			};
+			expect(dels.delegations[0]).toMatchObject({
+				name: "port-widget",
+				status: "starting",
+				appConversation: "app/spun1",
+			});
+			// The unwired surface still refuses loudly.
+			expect((await call("/api/app/delegations")).status).toBe(503);
+
+			const status = (await (await wired.call("/api/app/status")).json()) as {
+				version: string;
+				uptimeSec: number;
+				restartHints: string[];
+				memory: { state: string };
+				programs: { total: number; enabled: number };
+				delegations: { total: number; active: number };
+			};
+			expect(status.version).toBe("9.9.9-test");
+			expect(status.uptimeSec).toBeGreaterThanOrEqual(59);
+			expect(status.restartHints).toEqual(["memory"]);
+			expect(status.memory.state).toBe("disabled");
+			expect(status.programs).toEqual({ total: 1, enabled: 1 });
+			expect(status.delegations).toEqual({ total: 1, active: 0 });
+		} finally {
+			wired.http.stop();
+			http.stop();
+		}
+	});
+
+	test("trust mode still refuses foreign-origin mutations on the operator routes", async () => {
+		const { http } = setup({
+			operator: { beforeConfigWritten: () => {} },
+		});
+		try {
+			const res = await fetch(`http://127.0.0.1:${http.port}/api/app/settings`, {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					origin: "https://evil.example",
+				},
+				body: JSON.stringify({ logLevel: "debug" }),
+			});
+			expect(res.status).toBe(403);
+		} finally {
+			http.stop();
+		}
+	});
 });

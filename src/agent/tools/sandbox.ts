@@ -7,7 +7,7 @@
 // a host path the container could aim).
 
 import { tool } from "ai";
-import { mkdirSync, realpathSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { z } from "zod";
 import { imageRefSchema } from "../../config.ts";
@@ -154,6 +154,27 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 						// anywhere — the parent realpath and the write-through
 						// target must both stay inside the workspace.
 						const parent = dirname(dest);
+						// Recursive mkdir follows an intermediate symlink, so
+						// before creating anything the containment check runs on
+						// the deepest ancestor that EXISTS — otherwise
+						// `link -> /outside` plus a missing `a/b` tail would seed
+						// empty dirs outside the workspace before refusing.
+						let anchor = parent;
+						while (anchor !== wsReal && anchor.startsWith(wsReal + sep)) {
+							try {
+								lstatSync(anchor);
+								break;
+							} catch (err) {
+								if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+								anchor = dirname(anchor);
+							}
+						}
+						const realAnchor = realpathSync(anchor);
+						if (realAnchor !== wsReal && !realAnchor.startsWith(wsReal + sep)) {
+							return {
+								error: `export refused: ${anchor} resolves to ${realAnchor}, outside the workspace`,
+							};
+						}
 						mkdirSync(parent, { recursive: true });
 						const realParent = realpathSync(parent);
 						if (realParent !== wsReal && !realParent.startsWith(wsReal + sep)) {

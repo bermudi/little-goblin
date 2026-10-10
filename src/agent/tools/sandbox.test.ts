@@ -5,7 +5,14 @@
 // bytes land inside the workspace.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Sandboxes } from "../../sandboxes.ts";
@@ -162,6 +169,22 @@ describe("sandbox tool — export containment", () => {
 			opts,
 		)) as Record<string, unknown>;
 		expect(String(out.error)).toContain("outside the workspace");
+		expect(recorded.catFile).toHaveLength(0);
+	});
+
+	test("a symlinked missing-path ancestor refuses before mkdir seeds dirs outside", async () => {
+		const ws = workspace();
+		const outsideDir = mkdtempSync(join(tmpdir(), "goblin-sbx-ext-"));
+		dirs.push(outsideDir);
+		symlinkSync(outsideDir, join(ws, "link"));
+		const recorded = { cpIn: [] as string[][], catFile: [] as string[] };
+		const t = rig(ws, recorded);
+		const out = (await t.execute!(
+			{ action: "export", from: "/work/x", to: "link/a/b/f" },
+			opts,
+		)) as Record<string, unknown>;
+		expect(String(out.error)).toContain("outside the workspace");
+		expect(existsSync(join(outsideDir, "a"))).toBe(false);
 		expect(recorded.catFile).toHaveLength(0);
 	});
 });

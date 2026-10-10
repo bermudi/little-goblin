@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Config } from "../../src/config.ts";
+import { parseConfig, type Config } from "../../src/config.ts";
 import {
 	bodyFromDraft,
 	displayLevel,
@@ -345,5 +345,36 @@ describe("transcription block", () => {
 			model: "",
 			auth: "",
 		});
+	});
+
+	// A model and secret name belong to one vendor. Carrying them across a
+	// cloud-to-cloud switch saved groq's secret name under openai, and the
+	// adapter then sent that credential to openai.
+	test("switching between cloud vendors clears the old model and secret name", () => {
+		const groq = {
+			...emptyTranscription("groq"),
+			model: "whisper-large-v3-turbo",
+			auth: "groq-record",
+		};
+		const switched = switchTranscriptionKind(groq, "openai");
+		expect(switched).toMatchObject({ kind: "openai", model: "", auth: "" });
+
+		const c = baseConfig();
+		const { draft: d, providers } = draftFromConfig(c);
+		const saved = parseConfig({
+			...c,
+			...bodyFromDraft({ ...d, transcription: switched }, providers),
+		});
+		// Blank falls back to openai's own defaults, never groq's record.
+		expect(saved.transcription).toEqual({
+			kind: "openai",
+			model: "gpt-4o-mini-transcribe",
+			auth: "openai",
+		});
+	});
+
+	test("re-selecting the current kind keeps what the operator typed", () => {
+		const groq = { ...emptyTranscription("groq"), model: "my-model", auth: "MY_KEY" };
+		expect(switchTranscriptionKind(groq, "groq")).toEqual(groq);
 	});
 });

@@ -1718,13 +1718,13 @@ function populate(c) {
 		const t = /** @type {TrDraft} */ (cfg.transcription);
 		t.kind = trKindSelect.value;
 		// Provider-specific fields don't carry across kinds — a groq
-		// model + secret left visible under whistle would save into the
-		// wrong union arm (or silently nowhere). Blank is always safe:
-		// cloud blanks fall back to the kind's defaults server-side.
-		if (t.kind === "whistle") {
-			t.model = "";
-			t.auth = "";
-		} else {
+		// model + secret left under openai would send groq's credential
+		// to openai, and one left under whistle would save into the wrong
+		// union arm. Blank is always safe: cloud blanks fall back to the
+		// kind's defaults server-side. (onchange fires only on a real change.)
+		t.model = "";
+		t.auth = "";
+		if (t.kind !== "whistle") {
 			t.keywords = [];
 			t.engine = "";
 			t.weights = "";

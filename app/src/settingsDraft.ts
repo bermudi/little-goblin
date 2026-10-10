@@ -108,11 +108,14 @@ export function emptyTranscription(kind: TranscriptionKind = "whistle"): TrDraft
 }
 
 // Provider-specific fields don't carry across kinds: a groq model + secret
-// left under whistle would save into the wrong union arm. Blank is always
+// left under openai would send groq's credential to openai, and one left
+// under whistle would save into the wrong union arm. Blank is always
 // safe — cloud blanks fall back to the kind's defaults server-side.
 export function switchTranscriptionKind(t: TrDraft, kind: TranscriptionKind): TrDraft {
-	if (kind === "whistle") return { ...t, kind, model: "", auth: "" };
-	return { ...t, kind, keywords: [], engine: "", weights: "" };
+	if (kind === t.kind) return t;
+	const cleared = { ...t, kind, model: "", auth: "" };
+	if (kind === "whistle") return cleared;
+	return { ...cleared, keywords: [], engine: "", weights: "" };
 }
 
 function transcriptionDraft(t: NonNullable<Config["transcription"]>): TrDraft {

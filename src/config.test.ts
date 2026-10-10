@@ -44,6 +44,25 @@ test("mini-app clearing an absent public URL does not throw or retain an empty U
 	).toBeUndefined();
 });
 
+// The same convention as publicUrl: "" is the form's explicit clear. The
+// JSON body can't carry `undefined`, so an absent key would mean "keep".
+test("the bot API root: '' clears to unset, and a non-URL still fails loud", () => {
+	const config = {
+		providers: { test: { kind: "codex" } },
+		model: "test/m",
+		allowedUsers: [7],
+	};
+	const withRoot = (apiRoot: string) => ({
+		...config,
+		telegram: { dmGapMinutes: 45, apiRoot },
+	});
+	expect(parseConfig(withRoot("http://127.0.0.1:8081")).telegram.apiRoot).toBe(
+		"http://127.0.0.1:8081",
+	);
+	expect(parseConfig(withRoot("")).telegram.apiRoot).toBeUndefined();
+	expect(() => parseConfig(withRoot("127.0.0.1:8081"))).toThrow();
+});
+
 test("the mini-app public URL must be HTTPS, unlike the local bot API URL", () => {
 	const config = {
 		providers: {

@@ -402,7 +402,8 @@ export function bodyFromDraft(draft: SettingsDraft, provs: ProvDraft[]): ConfigP
 		telegram: {
 			model: draft.telegramModel,
 			thinking: draft.telegramThinking,
-			apiRoot: draft.apiRoot.trim() || undefined,
+			// "" clears — the server treats an absent key as "keep".
+			apiRoot: draft.apiRoot.trim(),
 			// raw like http.port — the server validates.
 			dmGapMinutes: Number(draft.dmGap),
 		},

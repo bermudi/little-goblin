@@ -52,7 +52,8 @@ export interface ConfigPostBody {
 	fetch: "" | Array<{ kind: string; auth?: string }>;
 	allowedUsers: number[];
 	telegram: {
-		apiRoot: string | undefined;
+		// "" clears; an absent key would keep the saved root (JSON drops undefined).
+		apiRoot: string;
 		dmGapMinutes: number;
 		model?: string;
 		thinking?: ThinkingLevel;

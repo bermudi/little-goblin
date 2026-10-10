@@ -561,7 +561,12 @@ const configSchema = z
 				// Absent here → pinned to the top-level model/thinking below.
 				model: z.string().min(1).optional(),
 				thinking: z.enum(thinkingLevels).optional(),
-				apiRoot: z.url().optional(),
+				// "" = the form's explicit clear (publicUrl's convention). A body
+				// key that is absent keeps the saved root, so only "" can clear.
+				apiRoot: z
+					.union([z.url(), z.literal("")])
+					.transform((v) => v || undefined)
+					.optional(),
 				dmGapMinutes: z.number().int().min(1).default(45),
 			})
 			.default({ dmGapMinutes: 45 }),

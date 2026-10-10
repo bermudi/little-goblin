@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModel } from "ai";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
-import type { Config, ConfigRef } from "../config.ts";
+import { loadConfig, type Config, type ConfigRef } from "../config.ts";
 import { appAddress, openStore, type ConversationStore } from "../conversation.ts";
 import { Runtime } from "../runtime.ts";
 import type { AuthStore } from "../auth.ts";
@@ -1769,6 +1769,37 @@ describe("app operator surface", () => {
 			expect(configRef.current.allowedUsers).toEqual([42, 7]);
 			expect(configRef.current.logLevel).toBe("debug");
 			expect(configWrites.count).toBe(1);
+		} finally {
+			http.stop();
+		}
+	});
+
+	// Telegram's transport settings ride the same save. An absent apiRoot
+	// is a channel patch that keeps it; "" is the explicit clear. Before
+	// the clear had a wire form, JSON dropped `apiRoot: undefined` and the
+	// merge kept the old root while the save reported success.
+	test("a settings save clears the bot API root with '' and keeps it when the key is absent", async () => {
+		const { http, call, configRef } = setup({
+			token: APP_TOKEN_NAME,
+			operator: { beforeConfigWritten: () => {} },
+		});
+		try {
+			configRef.current.telegram.apiRoot = "http://127.0.0.1:8081";
+			const post = (etag: string, telegram: object) =>
+				call("/api/app/settings", {
+					method: "POST",
+					headers: { "content-type": "application/json", "if-match": etag },
+					body: JSON.stringify({ telegram }),
+				});
+			const etag1 = (await call("/api/app/settings")).headers.get("etag")!;
+			expect((await post(etag1, { dmGapMinutes: 30 })).status).toBe(200);
+			expect(loadConfig()!.telegram.apiRoot).toBe("http://127.0.0.1:8081");
+
+			const etag2 = (await call("/api/app/settings")).headers.get("etag")!;
+			expect((await post(etag2, { apiRoot: "", dmGapMinutes: 30 })).status).toBe(200);
+			expect(loadConfig()!.telegram.apiRoot).toBeUndefined();
+			expect(configRef.current.telegram.apiRoot).toBeUndefined();
+			expect(loadConfig()!.telegram.dmGapMinutes).toBe(30);
 		} finally {
 			http.stop();
 		}

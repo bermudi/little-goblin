@@ -228,6 +228,14 @@ describe("bodyFromDraft", () => {
 		]);
 	});
 
+	// JSON drops `undefined`, so a blank that must clear has to be "" on the
+	// wire — pinned through a real JSON round trip, not the in-memory object.
+	test("a blank bot API root goes over the wire as an explicit clear", () => {
+		const body = bodyFromDraft(draft({ apiRoot: "  " }), [prov()]);
+		expect(body.telegram.apiRoot).toBe("");
+		expect(JSON.parse(JSON.stringify(body)).telegram).toMatchObject({ apiRoot: "" });
+	});
+
 	test("numeric fields coerce; blanks mean undefined", () => {
 		const body = bodyFromDraft(
 			draft({
@@ -247,7 +255,6 @@ describe("bodyFromDraft", () => {
 		);
 		expect(body.http.port).toBe(9999);
 		expect(body.telegram.dmGapMinutes).toBe(30);
-		expect(body.telegram.apiRoot).toBeUndefined();
 		expect(body.memory).toEqual({
 			baseUrl: "http://127.0.0.1:8888",
 			bankId: "goblin",

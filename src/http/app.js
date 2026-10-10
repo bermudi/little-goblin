@@ -1010,7 +1010,8 @@ function buildBody() {
 		telegram: {
 			model: cfg.telegramModel,
 			thinking: /** @type {ConfigPostBody["thinking"]} */ (cfg.telegramThinking),
-			apiRoot: cfg.apiRoot.trim() || undefined,
+			// "" clears — the server treats an absent key as "keep".
+			apiRoot: cfg.apiRoot.trim(),
 			dmGapMinutes: Number(cfg.dmGap), // raw like http.port — the server validates
 		},
 		publicUrl: cfg.publicUrl.trim(), // "" clears — server normalizes

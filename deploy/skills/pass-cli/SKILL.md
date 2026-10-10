@@ -50,21 +50,27 @@ Exports don't persist between bash calls — the guard rides in the same
 shell as the command:
 
 ```bash
+set +x
+for name in "${!PROTON_PASS_@}"; do unset "$name" || exit 1; done
+export PATH="$HOME/bin:$PATH"
 GOBLIN_HOME="${GOBLIN_HOME:-$HOME/goblin}"
 export PROTON_PASS_SESSION_DIR="$GOBLIN_HOME/state/pass-cli-task"
-# Tripwire: never the owner's session directory.
-[ "$PROTON_PASS_SESSION_DIR" != "$HOME/.local/share/proton-pass-cli" ] || {
+# Tripwire: a symlink alias is still the owner's session directory.
+[ "$(realpath -m "$PROTON_PASS_SESSION_DIR")" != "$(realpath -m "$HOME/.local/share/proton-pass-cli")" ] || {
   echo "refusing the owner session directory" >&2; exit 1; }
 (umask 077; mkdir -p "$PROTON_PASS_SESSION_DIR")
-if ! pass-cli info 2>/dev/null | grep -q 'Personal Access Token'; then
+info=$(pass-cli info 2>/dev/null) || info=
+if ! printf '%s' "$info" | grep -Fq 'Personal Access Token' ||
+   ! printf '%s' "$info" | grep -Fq '[Agent]'; then
   echo "goblin's agent task session is missing or expired — ask the operator to refresh it from the OS-store goblin-dev bootstrap" >&2
   exit 1
 fi
+unset info
 # Every call names its task in the audit trail: ≤300 chars, no secrets.
 export PROTON_PASS_AGENT_REASON="task: <what you're doing>"
 ```
 
-`info` reporting "Personal Access Token" is the authentication check —
+`info` must report both "Personal Access Token" and "[Agent]" —
 agent sessions expire (~2h), so operator-assisted refresh is routine.
 An `invalid, expired or has been deleted` failure means the bootstrap
 token may be dead: ask the operator to renew the OS-store `goblin-dev`

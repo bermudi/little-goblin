@@ -151,7 +151,8 @@ handlers; the mini app mounts them under `/api/*` behind initData and
 the app channel mounts the same tails under `/api/app/*` behind
 bearer/trust. Both end at the same validation and persistence — zod
 parsing, the If-Match etag, the serialized save queue, the
-fresh-from-disk merge — so the two settings editors cannot drift. The
+fresh-from-disk merge — so a write through either door lands
+identically. The
 one behavioral difference is the self-lockout guard: the mini app
 refuses to remove the *requesting* Telegram id from `allowedUsers`;
 the app door has no requester, so it refuses an empty list. Wire types
@@ -164,12 +165,16 @@ React client imports them directly).
 the app shell, the client routes internally (same mechanism as
 `/app/c/<id>`). API tails: `settings` (GET/POST), `thinking-levels`,
 `memory/status`, `memory/documents[/id]` (GET/DELETE), `programs`,
-`delegations`, `status`. The client's settings editor is a React port
-of the mini app's form, not a redesign — `app/src/settingsDraft.ts`
-carries populate/validate/buildBody verbatim so the wire body is
-identical, and `app/src/SettingsView.tsx` keeps the section drill-in,
-chain ordering, provider rename-on-blur, and toggle-off preservation.
-Leaving dirty settings asks before discarding, including browser
+`delegations`, `status`. The client's settings editor was seeded as a
+React port of the mini app's form — `app/src/settingsDraft.ts` carried
+populate/validate/buildBody and `app/src/SettingsView.tsx` kept the
+section drill-in, chain ordering, provider rename-on-blur, and
+toggle-off preservation. Amended 2026-10-10, operator ruling: that
+lineage is provenance, not parity — the clients are independent and
+each may change on its own. The contract is `ConfigPostBody`
+(`operator-wire.ts`) plus the server's zod validation; the shared
+`operator.ts` handlers keep the doors from drifting, not client-side
+mirroring. Leaving dirty settings asks before discarding, including browser
 Back/Forward; declining restores the history position without adding
 an entry, using native Navigation API keys or our indexed history.
 For legacy unindexed entries or gaps in a browser without Navigation

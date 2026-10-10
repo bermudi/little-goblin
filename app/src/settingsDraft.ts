@@ -1,8 +1,9 @@
-// The settings editor's draft state — a port of the mini app's
-// DraftState/populate()/buildBody()/validate() (src/http/app.js). The
-// wire body is identical (ConfigPostBody); the server still validates
-// through the config schema, this module only catches what the form
-// can express badly before a round trip.
+// The settings editor's draft state — seeded as a port of the mini
+// app's DraftState/populate()/buildBody()/validate() (src/http/app.js),
+// now an independent client (design/app.md, Operator console): the
+// contract is ConfigPostBody, and the server's config-schema validation
+// is the gate. This module only catches what the form can express
+// badly before a round trip.
 
 import type {
 	Config,
@@ -345,7 +346,7 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 	return null;
 }
 
-// buildBody(): the POST body — identical contract to the mini app's.
+// buildBody(): the POST body — the contract is ConfigPostBody.
 export function bodyFromDraft(draft: SettingsDraft, provs: ProvDraft[]): ConfigPostBody {
 	const providers: Record<string, ProviderConfig> = {};
 	for (const p of provs) {

@@ -5,11 +5,11 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 ## Tools (v1)
 
-Hand-rolled, zod-validated, sixteen:
+Hand-rolled, zod-validated, eighteen:
 
 `read_file` `write_file` `edit_file` `bash` (timeout) `speak` `transcribe`
 `vision` `program` `delegate` `mail` `send_file` `memory_search` `search`
-`fetch` `history_search` `sandbox`
+`fetch` `history_search` `sandbox` `script` `ui`
 
 All tools run in the deployment workspace — conversations have no cwd and
 there is no `/cd`. Working elsewhere is the agent's own business (`cd x &&

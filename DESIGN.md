@@ -427,11 +427,11 @@ src/
                     conversation (prompt_snapshots): edits load at
                     boundaries (roll/compaction), never mid-run
     skills.ts       catalog scan + frontmatter validation → ## skills section
-    tools/          the seventeen tools (read, write, edit, bash, speak,
+    tools/          the eighteen tools (read, write, edit, bash, speak,
                     transcribe, vision, program, delegate, mail
                     (send-only; reads ride the goblin-mail wrapper via
                     bash), send_file, memory_search, search, fetch,
-                    history_search, sandbox, ui)
+                    history_search, sandbox, script, ui)
   http/             mini-app serving + POST /hook/<token> +
                     loopback POST /api/check-injection (the wrapper's gate;
                     value imports live in check.ts, never mod.ts — the

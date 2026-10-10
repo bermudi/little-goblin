@@ -28,6 +28,14 @@ class MemoryAssetsTest(unittest.TestCase):
     def test_explicit_model_free_selection(self) -> None:
         validate(self.env)
 
+    def test_embedding_prefixes_allowed_verbatim(self) -> None:
+        # Asymmetric embedders (e.g. embeddinggemma) take a task prefix;
+        # it is passed through untouched, whitespace included.
+        validate(dict(self.env, **{
+            "HINDSIGHT_API_EMBEDDINGS_QUERY_PREFIX": "task: search result | query: ",
+            "HINDSIGHT_API_EMBEDDINGS_PASSAGE_PREFIX": "title: none | text: ",
+        }))
+
     def test_missing_required_values_fail(self) -> None:
         for key in self.env.keys() - FIXED.keys():
             with self.subTest(key=key):

@@ -26,6 +26,13 @@ FIXED = {
     "HINDSIGHT_API_TEXT_SEARCH_EXTENSION": "native",
     "HINDSIGHT_API_ENABLE_BANK_LLM_HEALTH": "false",
 }
+# Optional, value used verbatim: asymmetric embedders need a task prefix
+# (e.g. embeddinggemma's "task: search result | query: ") — whitespace
+# inside is significant, so nothing is validated or stripped here.
+OPTIONAL = {
+    "HINDSIGHT_API_EMBEDDINGS_QUERY_PREFIX",
+    "HINDSIGHT_API_EMBEDDINGS_PASSAGE_PREFIX",
+}
 
 
 def validate_endpoint(key: str, value: str) -> None:
@@ -60,7 +67,7 @@ def validate(env: Mapping[str, str]) -> None:
     if env["HINDSIGHT_API_RERANKER_PROVIDER"] != "rrf":
         raise ValueError("HINDSIGHT_API_RERANKER_PROVIDER: explicitly select model-free rrf")
     for key in env:
-        if key.startswith("HINDSIGHT_") and key not in required | FIXED.keys():
+        if key.startswith("HINDSIGHT_") and key not in required | FIXED.keys() | OPTIONAL:
             raise ValueError(f"{key}: unsupported override in this launch profile")
     for key in endpoints:
         validate_endpoint(key, env[key])

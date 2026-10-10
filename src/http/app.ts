@@ -564,6 +564,10 @@ export const APP_HTML = `<!doctype html>
               <button class="addbtn" id="voiceAdd" type="button">Add</button>
             </div>
             <datalist id="voiceDl"></datalist>
+            <!-- One shared picker for every secret-name input — auth.jsonl's
+                 record names as loaded at boot, populated by app.js on load.
+                 Values never ride the page. -->
+            <datalist id="authDl"></datalist>
             <div class="cap">Picked by reply language wherever speech is synthesized — the speak tool may also name one per call. Language follows the voice name.</div>
           </div>
         </div>
@@ -591,8 +595,8 @@ export const APP_HTML = `<!doctype html>
           </div>
           <div class="frow" id="trAuthRow">
             <label for="trAuth">Secret name</label>
-            <input id="trAuth" placeholder="in auth.jsonl — not the secret itself" autocomplete="off" spellcheck="false" autocapitalize="off">
-            <div class="cap">Blank uses the kind's default name.</div>
+            <input id="trAuth" list="authDl" placeholder="in auth.jsonl — not the secret itself" autocomplete="off" spellcheck="false" autocapitalize="off">
+            <div class="cap" id="trAuthWarn" hidden></div>
           </div>
           <div class="frow">
             <label for="trLang">Language</label>
@@ -661,7 +665,8 @@ export const APP_HTML = `<!doctype html>
           </div>
           <div class="frow">
             <label for="memAuth">Secret name</label>
-            <input id="memAuth" placeholder="in auth.jsonl — blank for loopback" autocomplete="off" spellcheck="false" autocapitalize="off">
+            <input id="memAuth" list="authDl" placeholder="in auth.jsonl — blank for loopback" autocomplete="off" spellcheck="false" autocapitalize="off">
+            <div class="cap" id="memAuthWarn" hidden></div>
           </div>
           <div class="row col">
             <div class="rlabel">Recall budget</div>

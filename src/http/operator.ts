@@ -17,6 +17,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { thinkingLevelsFor } from "../agent/providers.ts";
 import {
+	authDefaults,
 	loadConfig,
 	parseConfig,
 	fetchKinds,
@@ -82,6 +83,11 @@ export interface OperatorDeps {
 	};
 	programs?: Pick<ProgramsStore, "list">;
 	delegations?: Pick<DelegationsStore, "list" | "active"> | null;
+	// auth.jsonl record names for the settings pickers — names only,
+	// never values, and only as the boot-time store sees them (auth
+	// edits need the approved restart). Absent = the pickers offer
+	// nothing; a name typed against an empty list still saves.
+	authNames?: () => string[];
 	// Service identity for /status — the composition root owns boot
 	// time and knows which fields are boot-pinned.
 	service?: {
@@ -422,6 +428,8 @@ export async function handleOperatorRoute(
 				fetchKinds,
 				transcriptionKinds,
 				transcriptionDefaults,
+				authDefaults,
+				authNames: [...(deps.authNames?.() ?? [])].sort(),
 			};
 			return Response.json(body, {
 				headers: { ...NO_STORE, etag: configTag(config) },

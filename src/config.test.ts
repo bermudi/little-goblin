@@ -368,6 +368,14 @@ describe("goblin.json5", () => {
 		]);
 		writeFileSync(join(dir, "goblin.json5"), `${base},fetch:{kind:"local"}}`);
 		expect(loadConfig()!.fetch).toEqual([{ kind: "local" }]);
+		// An omitted step auth defaults at parse, and writeConfig
+		// materializes it into the file — the saved config stays
+		// self-describing (jina stays keyless-blank: no default).
+		writeFileSync(join(dir, "goblin.json5"), `${base},search:[{kind:"brave"},{kind:"jina"}]}`);
+		const defaulted = loadConfig()!;
+		expect(defaulted.search).toEqual([{ kind: "brave", auth: "brave" }, { kind: "jina" }]);
+		writeConfig(defaulted);
+		expect(readFileSync(join(dir, "goblin.json5"), "utf8")).toContain("auth: 'brave'");
 	});
 
 	test('tts defaults to edge; "" is an explicit off that round-trips', () => {
@@ -669,6 +677,16 @@ describe("providerKinds", () => {
 			expect(providerSchema.safeParse({ kind, ...fields[kind] }).success).toBe(true);
 		}
 		expect(providerSchema.safeParse({ kind: "anthropic" }).success).toBe(false);
+		// openrouter defaults its own record name when auth is omitted;
+		// the openai-compatible/responses arms stay required — their kind
+		// is a protocol, not a vendor, so no record name can be derived.
+		expect(providerSchema.parse({ kind: "openrouter" })).toEqual({
+			kind: "openrouter",
+			auth: "openrouter",
+		});
+		expect(
+			providerSchema.safeParse({ kind: "openai-compatible", baseUrl: "https://a.test" }).success,
+		).toBe(false);
 	});
 
 	// The other direction: a literal the schema accepts but the array
@@ -699,10 +717,16 @@ describe("searchKinds", () => {
 			expect(searchEntrySchema.safeParse({ kind, ...fields[kind] }).success).toBe(true);
 		}
 		expect(searchEntrySchema.safeParse({ kind: "bing" }).success).toBe(false);
-		// Required-auth kinds really do require it.
+		// Keyed kinds default their own record name when auth is omitted;
+		// the config materializes it on the next save.
 		for (const kind of ["brave", "exa", "tavily", "firecrawl", "parallel"] as const) {
-			expect(searchEntrySchema.safeParse({ kind }).success).toBe(false);
+			expect(searchEntrySchema.parse({ kind })).toEqual({ kind, auth: kind });
 		}
+		// jina is the exception: it works keyless, so blank must stay
+		// keyless — no default may turn "no key" into a "jina" record.
+		expect(searchEntrySchema.parse({ kind: "jina" })).toEqual({ kind: "jina" });
+		// An explicitly empty name is still a typo, not a default.
+		expect(searchEntrySchema.safeParse({ kind: "brave", auth: "" }).success).toBe(false);
 	});
 });
 
@@ -719,9 +743,12 @@ describe("fetchKinds", () => {
 			expect(fetchEntrySchema.safeParse({ kind, ...fields[kind] }).success).toBe(true);
 		}
 		expect(fetchEntrySchema.safeParse({ kind: "diffbot" }).success).toBe(false);
+		// Keyed kinds default their own record name when auth is omitted;
+		// jina stays keyless-blank (see searchKinds above).
 		for (const kind of ["tavily", "firecrawl", "parallel"] as const) {
-			expect(fetchEntrySchema.safeParse({ kind }).success).toBe(false);
+			expect(fetchEntrySchema.parse({ kind })).toEqual({ kind, auth: kind });
 		}
+		expect(fetchEntrySchema.parse({ kind: "jina" })).toEqual({ kind: "jina" });
 	});
 });
 

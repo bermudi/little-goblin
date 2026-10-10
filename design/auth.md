@@ -22,6 +22,38 @@ A value is either a literal credential or `!<command>` — resolved by executing
 the command and reading stdout, lazily at the point of use, in-process.
 Resolved values never enter the tool environment, the model context, or logs.
 
+### Naming discipline (2026-10-10)
+
+Config blocks reference secrets by record *name* — a join key between
+`goblin.json5` (UI-written, shareable) and `auth.jsonl` (0600, the only
+place values live). Names cannot be deleted from the config: two
+providers of one kind with different keys, and one record serving many
+features (transcription `mimo` rides `openrouter`), need the indirection.
+But a typed, required name in every settings field restates what the
+config already knows, so blank means "derive":
+
+- **Search/fetch steps and `openrouter` providers default to the kind's
+  own record name** (`authDefaults` in `src/config.ts`, one source with
+  the schema; served to both clients on the config GET). `jina` is
+  deliberately outside the map — it works keyless, so blank must mean
+  "no key", never a record named `jina`.
+- **`openai-compatible`/`responses` providers have no derivable name** —
+  the kind is a protocol, not a vendor — so both clients materialize a
+  blank as the *provider's own name* (the convention the operator
+  already followed by hand) at save time.
+- **Defaults materialize, they don't linger**: `writeConfig` re-parses
+  through the schema, so every save writes an explicit name into the
+  file. The config stays self-describing, `check-auth`/operations docs
+  need no derivation rules, and renaming a provider never re-points its
+  credential.
+- **The settings UI picks from real names**: the config GET carries
+  `authNames` — the boot-loaded store's record names, bare and sorted,
+  values never. Names are not secret material (`check-auth` already
+  printed them), but they are boot-pinned like resolution itself: a
+  record added to `auth.jsonl` mid-run appears after the approved
+  restart. A name missing from the list warns inline and never blocks a
+  save — config-before-key is legitimate order.
+
 ### Proton Pass (2026-09-26)
 
 Proton Pass is the operator's credential backbone. Remote access uses a

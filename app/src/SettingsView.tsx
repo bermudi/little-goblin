@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import type { ConfigResponse } from "../../src/http/operator-wire.ts";
 import { ApiError, getOperatorConfig, getThinkingLevels, saveOperatorConfig } from "./api.ts";
 import {
 	bodyFromDraft,
@@ -102,6 +103,21 @@ function Switch({
 	);
 }
 
+// Every secret-name input shares one datalist — auth.jsonl's record
+// names as loaded at boot — and one warning shape. A name that isn't in
+// the list never blocks a save (config-before-key is legitimate order);
+// it only flags typos against what the running process can resolve.
+// openrouter is required because providers materialize blank auth from
+// it; the rest are read by kind lookup.
+export type AuthDefaults = Record<string, string> & { openrouter: string };
+const AUTH_DL = "goblin-auth-names";
+const authWarn = (name: string, known: readonly string[]): string | undefined => {
+	const t = name.trim();
+	return known.length > 0 && t !== "" && !known.includes(t)
+		? `"${t}" is not in auth.jsonl (as loaded at boot)`
+		: undefined;
+};
+
 function Row({
 	label,
 	cap,
@@ -136,14 +152,16 @@ function Field({
 	cap,
 	numeric,
 	mono,
+	list,
 }: {
 	label: string;
 	value: string;
 	onChange: (v: string) => void;
 	placeholder?: string;
-	cap?: string;
+	cap?: string | undefined;
 	numeric?: boolean;
 	mono?: boolean;
+	list?: string | undefined;
 }) {
 	const id = useId();
 	return (
@@ -161,6 +179,7 @@ function Field({
 				autoComplete="off"
 				spellCheck={false}
 				autoCapitalize="off"
+				list={list}
 			/>
 			{cap !== undefined && <div className="cap">{cap}</div>}
 		</div>
@@ -340,11 +359,17 @@ function ChainEditor({
 	entries,
 	kinds,
 	meta,
+	defaults,
+	authNames,
 	onChange,
 }: {
 	entries: ChainEntry[];
 	kinds: readonly string[];
 	meta: Record<string, KindMeta>;
+	/** Blank-auth defaults per kind — authDefaults off the config GET,
+	 *  one source with the server schema. */
+	defaults: AuthDefaults;
+	authNames: string[];
 	onChange: (next: ChainEntry[]) => void;
 }) {
 	const move = (i: number, d: number) => {
@@ -359,6 +384,15 @@ function ChainEditor({
 		<>
 			{entries.map((e, i) => {
 				const m = meta[e.kind];
+				const def = defaults[e.kind] ?? "";
+				const effective = e.auth.trim() || def;
+				// Warn on any effective name the process can't resolve —
+				// including a typed name on keyless-capable kinds; hint
+				// "Blank uses X" only while the field is blank (mini-app
+				// parity).
+				const hint =
+					authWarn(effective, authNames) ??
+					(e.auth.trim() === "" && def !== "" ? `Blank uses ${def}.` : undefined);
 				return (
 					<div className="chain-card" key={i}>
 						<div className="chain-head">
@@ -419,16 +453,22 @@ function ChainEditor({
 										onChange(entries.map((x, j) => (j === i ? { ...x, auth: ev.target.value } : x)))
 									}
 									placeholder={
-										m?.auth === "optional" ? "secret name (optional)" : "secret name in auth.jsonl"
+										m?.auth === "optional"
+											? "secret name (optional)"
+											: def !== ""
+												? `${def} — in auth.jsonl`
+												: "secret name in auth.jsonl"
 									}
 									autoComplete="off"
 									spellCheck={false}
 									autoCapitalize="off"
 									aria-label={`step ${i + 1} secret name`}
+									list={AUTH_DL}
 								/>
 								{m?.auth === "optional" && m.note !== undefined && (
 									<div className="cap">{m.note}</div>
 								)}
+								{hint !== undefined && <div className="cap">{hint}</div>}
 							</>
 						)}
 					</div>
@@ -453,6 +493,8 @@ function ProviderCard({
 	prov,
 	kinds,
 	referencedBy,
+	authDefaults,
+	authNames,
 	onPatch,
 	onRename,
 	onRemove,
@@ -460,6 +502,8 @@ function ProviderCard({
 	prov: ProvDraft;
 	kinds: readonly string[];
 	referencedBy: string[];
+	authDefaults: AuthDefaults;
+	authNames: string[];
 	onPatch: (patch: Partial<ProvDraft>) => void;
 	onRename: (v: string) => string | null;
 	onRemove: () => void;
@@ -486,6 +530,11 @@ function ProviderCard({
 	};
 	const needsBase = prov.kind === "openai-compatible" || prov.kind === "responses";
 	const codex = prov.kind === "codex";
+	// Blank auth materializes at save: the provider's own name, or the
+	// kind's default record for openrouter — the placeholder states
+	// which, tracking the name live so the convention stays visible.
+	const authFallback = prov.kind === "openrouter" ? authDefaults.openrouter : prov.name.trim();
+	const authMissing = !codex && authWarn(prov.auth.trim() || authFallback, authNames);
 	return (
 		<div className="prov card">
 			<div className="prov-head">
@@ -546,14 +595,18 @@ function ProviderCard({
 					value={prov.auth}
 					onChange={(e) => onPatch({ auth: e.target.value })}
 					placeholder={
-						codex ? "~/.codex/auth.json — blank = default" : "in auth.jsonl — not the secret itself"
+						codex
+							? "~/.codex/auth.json — blank = default"
+							: `${authFallback || "provider name"} — in auth.jsonl`
 					}
 					autoComplete="off"
 					spellCheck={false}
 					autoCapitalize="off"
 					aria-label={codex ? "codex auth file" : "secret name"}
+					list={codex ? undefined : AUTH_DL}
 				/>
 			</div>
+			{authMissing !== undefined && <div className="cap">{authMissing}</div>}
 		</div>
 	);
 }
@@ -579,7 +632,10 @@ export function SettingsView({
 		search: readonly string[];
 		fetch: readonly string[];
 		transcription: readonly TranscriptionKind[];
+		authDefaults: ConfigResponse["authDefaults"];
+		trDefaults: ConfigResponse["transcriptionDefaults"];
 	} | null>(null);
+	const [authNames, setAuthNames] = useState<string[]>([]);
 	const [etag, setEtag] = useState("");
 	const [draft, setDraft] = useState<SettingsDraft>(EMPTY_DRAFT);
 	const [provs, setProvs] = useState<ProvDraft[]>([]);
@@ -634,6 +690,13 @@ export function SettingsView({
 		getOperatorConfig(token).then(
 			({ data, etag: tag }) => {
 				if (!live) return;
+				// A freshly built client against a not-yet-restarted server
+				// (the forbidden rollout window) must fail loud here, not
+				// crash later when a save materializes from authDefaults.
+				if (!("authDefaults" in data)) {
+					setLoadErr("The settings endpoint predates this client — restart goblin, then reload.");
+					return;
+				}
 				const { draft: d, providers } = draftFromConfig(data.config);
 				setDraft(d);
 				setProvs(providers);
@@ -644,7 +707,10 @@ export function SettingsView({
 					search: data.searchKinds,
 					fetch: data.fetchKinds,
 					transcription: data.transcriptionKinds,
+					authDefaults: data.authDefaults,
+					trDefaults: data.transcriptionDefaults,
 				});
+				setAuthNames(data.authNames);
 			},
 			(err) => {
 				if (live)
@@ -781,10 +847,20 @@ export function SettingsView({
 			setNotice({ text: err, kind: "err" });
 			return;
 		}
+		// Saves only run once a baseline exists, and the baseline lands in
+		// the same load that fills kinds — unreachable, but never silent.
+		if (kinds === null) {
+			setNotice({ text: "Settings are still loading.", kind: "err" });
+			return;
+		}
 		setSaving(true);
 		setNotice(null);
 		try {
-			const res = await saveOperatorConfig(token, bodyFromDraft(draft, provs), etag);
+			const res = await saveOperatorConfig(
+				token,
+				bodyFromDraft(draft, provs, kinds.authDefaults),
+				etag,
+			);
 			if (res.etag !== null) setEtag(res.etag);
 			setBaseline(serialize(draft, provs));
 			setNotice({ text: "Saved.", kind: "ok" });
@@ -872,6 +948,13 @@ export function SettingsView({
 
 	return (
 		<div className={`ops settings${section === null ? " at-index" : ""}`}>
+			{/* One shared picker for every secret-name input — auth.jsonl
+		    record names as loaded at boot, values never. */}
+			<datalist id={AUTH_DL}>
+				{authNames.map((n) => (
+					<option key={n} value={n} />
+				))}
+			</datalist>
 			<nav className="settings-nav" aria-label="Settings sections">
 				<h2 className="ops-h2 settings-h2">
 					Settings {dirty && <span className="dirty-pill">unsaved</span>}
@@ -1132,8 +1215,19 @@ export function SettingsView({
 											label="Secret name"
 											value={draft.transcription.auth}
 											onChange={(v) => patchTranscription({ auth: v })}
-											placeholder="in auth.jsonl — not the secret itself"
+											placeholder={`${kinds.trDefaults[draft.transcription.kind].auth} — in auth.jsonl`}
+											cap={
+												authWarn(
+													draft.transcription.auth.trim() ||
+														kinds.trDefaults[draft.transcription.kind].auth,
+													authNames,
+												) ??
+												(draft.transcription.auth.trim() === ""
+													? `Blank uses ${kinds.trDefaults[draft.transcription.kind].auth}.`
+													: undefined)
+											}
 											mono
+											list={AUTH_DL}
 										/>
 									</>
 								)}
@@ -1175,6 +1269,8 @@ export function SettingsView({
 								entries={draft.search}
 								kinds={kinds.search}
 								meta={SEARCH_META}
+								defaults={kinds.authDefaults}
+								authNames={authNames}
 								onChange={(search) => patchDraft({ search })}
 							/>
 							<div className="cap ops-cap">
@@ -1208,6 +1304,8 @@ export function SettingsView({
 								entries={draft.fetch}
 								kinds={kinds.fetch}
 								meta={FETCH_META}
+								defaults={kinds.authDefaults}
+								authNames={authNames}
 								onChange={(fetch) => patchDraft({ fetch })}
 							/>
 							<div className="cap ops-cap">Same rule as search — order is the fallback order.</div>
@@ -1285,7 +1383,9 @@ export function SettingsView({
 										}))
 									}
 									placeholder="in auth.jsonl — blank for loopback"
+									cap={authWarn(draft.memory.auth, authNames)}
 									mono
+									list={AUTH_DL}
 								/>
 								<Row label="Recall budget" col>
 									<Seg
@@ -1352,6 +1452,8 @@ export function SettingsView({
 								prov={p}
 								kinds={kinds.provider}
 								referencedBy={p.name !== "" ? providerRefs(p.name) : []}
+								authDefaults={kinds.authDefaults}
+								authNames={authNames}
 								onPatch={(patch) => patchProv(p.id, patch)}
 								onRename={(v) => renameProvider(p.id, v)}
 								onRemove={() => removeProvider(p)}

@@ -196,7 +196,7 @@ it only while the bot is stopped, if ever.
 |---|---|
 | Service crash-loops or won't start | `journalctl --user -u goblin` — startup errors name the file and the problem (missing config/auth, JSON5 typo, unknown provider, bad `auth.jsonl` line) |
 | `insecure permissions … chmod 600` | `chmod 600 ~/goblin/auth.jsonl` — group/world-readable secrets are refused, not warned about |
-| `no secret named "…"` | `auth.jsonl` needs a record matching every provider `auth` name (and `transcription.auth`) plus `telegram` |
+| `no secret named "…"` | `auth.jsonl` needs a record matching every provider `auth` name (and `transcription.auth`), plus every search/fetch step's name (blank = the kind's own record — see `authDefaults` in `src/config.ts`) and `telegram` |
 | Secret command fails | For `pass-keys`, check `status goblin-dev` and `journalctl --user -u goblin-keys`; check wallet unlock/availability and snapshot/key presence first. Fix bootstrap/profile/item grants and explicitly `pass-keys warm goblin-dev` as needed. `get` never fetches remotely on a miss. Don't print values. Auth edits/rotated resolved keys need an approved Goblin restart; service `PATH` covers `~/bin` and `~/.local/bin` |
 | Key sync fails but the bot still works | Last-good snapshots remain usable; `pass-keys status` reports age/availability. Repair the background sync without deleting snapshots or bypassing the scoped agent |
 | Keys unavailable after reboot | Persistent snapshots need an available, unlocked wallet. Linger is not wallet unlock; PAM auto-unlock is unverified. Foreground reads fail loud rather than waiting for Pass |

@@ -6,6 +6,7 @@
 // program — both clients compile against these shapes.
 
 import type {
+	authDefaults,
 	Config,
 	ProviderConfig,
 	ThinkingLevel,
@@ -21,6 +22,10 @@ export interface ConfigResponse {
 	fetchKinds: readonly string[];
 	transcriptionKinds: typeof transcriptionKinds;
 	transcriptionDefaults: typeof transcriptionDefaults;
+	/** Blank-auth defaults per kind — one source with the schema. */
+	authDefaults: typeof authDefaults;
+	/** auth.jsonl record names as loaded at boot (sorted, values never). */
+	authNames: string[];
 }
 
 /** POST config — the form's body; "" clears an optional block. */

@@ -117,8 +117,13 @@ exposure, `mode: only`, and Cloudflare sandboxes.
   delegated harnesses included — an MCP broker in all but name. The
   QuickJS VM runs in a worker thread per call (~20 ms); it has no
   filesystem, network, timers or process, so its reach is exactly the
-  injected tools. Measured on g7 (Bun 1.4.2): 30 parallel nested calls
-  in 148 ms; a spinning `while (true) {}` stopped 203 ms after abort.
+  injected tools. Its heap is capped at 256 MiB (`memoryLimitBytes`;
+  the library default is wasm32's 4 GiB — a 2 GB accumulate loop
+  completed unbounded in review): scripts are glue over already-bounded
+  tool results, and g7 shares RAM with ollama and the memory stack.
+  Over-allocation fails inside the script as `out of memory`. Measured
+  on g7 (Bun 1.4.2): 30 parallel nested calls in 148 ms; a spinning
+  `while (true) {}` stopped 203 ms after abort.
   This also keeps scripts orthogonal to the container sandbox
   (`design/sandbox.md`): no port punches through it.
 - **Callable set = allowlist ∩ the turn's assembled set**, built after

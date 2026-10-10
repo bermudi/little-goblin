@@ -255,6 +255,44 @@ return "detached";`,
 	expect(aborted).toBe(true);
 });
 
+test("calls queued behind the in-flight cap never start once the VM is done", async () => {
+	let ran = 0;
+	const tools = composed({
+		bash: tool({
+			inputSchema: z.object({}).loose(),
+			execute: (_args, { abortSignal }) => {
+				ran += 1;
+				if (abortSignal === undefined) throw new Error("no abortSignal reached the tool");
+				return new Promise((resolve) =>
+					abortSignal.addEventListener("abort", () => resolve("aborted")),
+				);
+			},
+		}),
+	});
+	const out = await exec(scriptToolOf(tools), {
+		code: `for (let i = 0; i < 12; i++) tools.bash({});
+return "detached";`,
+	});
+	expect(out.text).toContain("detached");
+	// 8 in flight when the script returned; the 4 queued were cancelled
+	// with the VM, not started afterwards — and they never ran, so the
+	// record carries only the 8 that did.
+	await new Promise((r) => setTimeout(r, 200));
+	expect(ran).toBe(8);
+	expect(out.calls).toHaveLength(8);
+});
+
+test("a script that blows the heap cap fails inside the script as out of memory", async () => {
+	const tools = composed({ bash: counter(() => "ok") });
+	const out = await exec(scriptToolOf(tools), {
+		code: `const keep = [];
+for (let i = 0; i < 400; i++) keep.push("x".repeat(1000000));
+return keep.length;`,
+	});
+	expect(out.error).toBe("script");
+	expect(out.text).toContain("out of memory");
+});
+
 test("nested calls look up execute at call time — a fence swapped in later still wraps them", async () => {
 	const tools: ToolSet = { bash: bashTool(home) };
 	const wrapped = composed(tools);

@@ -115,29 +115,38 @@ and templates before designing; cite what you took in the design docs.
   Panes run bermudi's interactive zsh: aliases (codex, devin) already
   add no-approval flags, and repeating them in harness args is fatal.
 
-## Keys (live since 2026-09-26)
+## Keys
 
-- Every `auth.jsonl` record is `!pass-keys run goblin-dev -- printenv NAME`
-  — the `goblin-dev` profile in `~/.config/pass-keys/config.json` (dots
-  `passkeys` store), authenticating as the **`goblin-dev`** agent token
-  (`~/goblin/pass-cli.env`), each key item-granted from the Keys vault
-  and ID-addressed. `goblin-keys.timer` keeps the tmpfs cache warm.
-  Profiles are environment-scoped (`goblin-dev`, `goblin-mcp-dev`)
-  because the config syncs via dots — the profile keeps its `goblin-dev`
-  name now that this box is prod too: prod/dev here split by bot token
-  and state home, not by profile.
-- Adding a key: `pass-keys add goblin-dev NAME Keys/<Item>` (or no item
-  spec to paste a new key; rerun to rotate; `pass-keys drop goblin-dev
-  NAME` to retire) — grants, refs, and warm in one step — then add the
-  `auth.jsonl` record. Symptom decoder: a key error at request time → `pass-keys
-  status goblin-dev` and `journalctl --user -u goblin-keys` first.
-- `pass-keys run`'s stdout is the child's (fixed 2026-09-26 — operational
-  lines used to corrupt resolved keys).
-- Reboot landmine: gnome-keyring's login keyring unlocks at desktop
-  login — if goblin keys fail at request time right after a reboot with
-  no login, that keyring is why (lithium's headless-linger variant of
-  this, plus its `pass-cli` fs-provider fork, died with its goblin
-  stack; box-level lore lives in the fleet repo's docs).
+- `auth.jsonl` command records use `!pass-keys get goblin-dev NAME`.
+  `get` reads only the local encrypted profile snapshot in Secret
+  Service/KWallet; it never contacts Pass or warms on a miss. Missing
+  snapshots/keys or an unavailable, locked wallet fail loud. The
+  `goblin-dev` profile in `~/.config/pass-keys/config.json` (dots
+  `passkeys` store) uses the dedicated **`goblin-dev`** agent, with
+  item-level viewer grants from the Keys vault and ID-addressed refs.
+  Its bootstrap PAT lives in the OS store under `goblin-dev`, not
+  `~/goblin/pass-cli.env`; `goblin-mcp-dev` shares that agent lane and
+  bootstrap identity, but has its own snapshot. Profiles retain their
+  names on prod: prod/dev split by bot token and state home, not profile.
+- `goblin-keys.service`/`.timer` perform explicit background sync with
+  `pass-keys warm` (always refresh, twice daily plus boot/retries).
+  Foreground reads never wait for remote warming. A failed sync keeps
+  the last-good snapshot usable; snapshot age is reported by `status`,
+  not an expiry gate. A persistent wallet preserves snapshots across
+  reboot, but must be unlocked — PAM auto-unlock is not established.
+- Adding/rotating/retiring a key is operator-owned: `pass-keys add
+  goblin-dev NAME Keys/<Item>` or `pass-keys drop goblin-dev NAME`, then
+  update the auth record as needed. Check `pass-keys status goblin-dev`
+  and `journalctl --user -u goblin-keys` before debugging; never print
+  values. Grant narrowly: OS-store encryption is not same-user isolation.
+- `scripts/mcp` keeps `pass-keys run goblin-mcp-dev -- …`: local snapshot
+  keys enter only the child environment, then direct exec; no Pass
+  fallback. Stdout is the child's, diagnostics go to stderr.
+- Migrating the bootstrap PAT, profiles, snapshots and live `auth.jsonl`
+  is an operator action, separate from these source docs/units. Goblin
+  loads auth at boot and memoizes successful resolutions: auth edits or
+  key rotation need its approved restart. Unit installation/reload and
+  production deployment also require bermudi's OK; see docs/operations.md.
 
 ## Tests
 

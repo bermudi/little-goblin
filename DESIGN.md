@@ -214,7 +214,7 @@ or the non-goals goes here.
 - [`design/asr.md`](design/asr.md) — Speech recognition engines: whistle (local) default, eight kinds behind one interface, artifact auto-fetch, verbatim provider contracts
 - [`design/runtime-turn.md`](design/runtime-turn.md) — The turn (W3.0 decomposition ruling): phase list, state ownership by lifetime, recursion → driven loop, what must not change, module cut, test migration, the two text projections (#84/#111)
 - [`design/tools.md`](design/tools.md) — Tools (v1), Vision (image Q&A), Chat search, SQLite FTS5, Scope: every conversation except memory-excluded ones
-- [`design/web.md`](design/web.md) — Web access (search, fetch, browser), `search` is one tool with a provider behind it, Config, Fallback chains are explicit config, never implicit, Wire formats, Input, Output is deterministic text, Search results and fetched page text ride fenced, `fetch` is always in the set, PDFs ride as documents, not text, Overflow goes to disk, recovery named, No SSRF policy — recorded as a ruling, Auth never enters tool env, Logging, The browser is a skill, not a tool, MCP returns as a skill over goblin's own mcporter, Goblin owns its mcporter; it never rides the host's, Imports stay off by gate, not by convention, No daemon, by mechanism, The `goblin-mcp-dev` profile starts empty and stays warm, Known limits, accepted
+- [`design/web.md`](design/web.md) — Web access (search, fetch, browser), `search` is one tool with a provider behind it, Config, Fallback chains are explicit config, never implicit, Wire formats, Input, Output is deterministic text, Search results and fetched page text ride fenced, `fetch` is always in the set, PDFs ride as documents, not text, Overflow goes to disk, recovery named, No SSRF policy — recorded as a ruling, Auth never enters tool env, Logging, The browser is a skill, not a tool, MCP returns as a skill over goblin's own mcporter, Goblin owns its mcporter; it never rides the host's, Imports stay off by gate, not by convention, No daemon, by mechanism, The `goblin-mcp-dev` profile starts empty with its own snapshot, Known limits, accepted
 - [`design/skills.md`](design/skills.md) — Skills, Skill reviewer, Gate: Jev on every completed turn, Evidence: a bounded tool digest, captured per turn, Reviewer: staging, validation, then atomic publish, /stop cancels the conversation's reviews, Off the record means no distillation, It publishes, then tells, Instrumentation
 - [`design/programs.md`](design/programs.md) — Programs (standing orders), State is rows, not files, Firing is one path for every trigger, Post-submit accounting is trigger-owned, Authority is granted, never self-issued, Webhooks: one secret address per program, Recurrence is cron, evaluated in the server's local timezone, A program belongs to the conversation where it was created, Management is the `program` tool, The scheduler is an in-process ticker
 - [`design/delegation.md`](design/delegation.md) — Delegation (other harnesses, via herdr), The herdr session is its own systemd user unit, Targets: the own local session plus configured machines, One protocol, target-agnostic, Only `src/herdr.ts` knows herdr, One lifecycle owner, Harnesses are config, never guessed, Agents run full-auto; goblin never answers approvals, State is rows, Watcher writes are compare-and-set; the notice lands first, Start, The watcher is an in-process ticker, Management is the `delegate` tool, Goblin may delegate on its own judgment
@@ -230,8 +230,6 @@ or the non-goals goes here.
 $GOBLIN_HOME/
 ├── goblin.json5            # providers, models, defaults
 ├── auth.jsonl              # secrets, mode 0600
-├── pass-cli.env            # goblin's agent-token PAT, mode 0600
-│                           # (owner-written; never read into context)
 ├── mcporter.json           # goblin's own MCP servers, seeded empty
 │                           # (placeholders only; imports [] — gated)
 ├── mcp                     # symlink → repo scripts/mcp (refreshed boot)
@@ -252,14 +250,24 @@ $GOBLIN_HOME/
     │                       # history (UIMessage JSON rows), bindings,
     │                       # memory outbox/contexts/suppressions,
     │                       # programs, delegations
-    ├── pass-cli/           # pass-cli session dir for the pass-keys
-    │                       # lane (auth.jsonl `!pass-keys` resolves)
-    ├── pass-cli-task/      # pass-cli session dir for the skill —
-    │                       # separate, never concurrent with the lane
+    ├── pass-cli/           # pass-cli session dir for background sync;
+    │                       # shared agent lane, not foreground resolution
+    ├── pass-cli-task/      # separate pass-cli session dir for the skill;
+    │                       # never interleave calls within one session
     ├── mcporter/            # mcporter data/cache/daemon dirs (0700) —
     │                       # OAuth tokens + schema caches, off ~/.mcporter
     └── delegations/<id>/report.md   # a harness's final report
 ```
+
+Pass-keys state is outside this tree: encrypted per-profile snapshots in
+Secret Service/KWallet, plus the dedicated agent's bootstrap PAT in the OS
+store under `goblin-dev` (shared by `goblin-dev` and `goblin-mcp-dev`). No
+PAT env file is part of the target layout. `auth.jsonl` uses
+`!pass-keys get goblin-dev NAME`; MCP uses local snapshot env injection via
+`pass-keys run goblin-mcp-dev -- …`. Only explicit background `warm` syncs
+reach Pass. Failed syncs preserve last-good snapshots; persistent wallets
+survive reboot if unlocked. Neither auto-unlock nor same-user isolation is
+assumed. See [Auth](design/auth.md#proton-pass-2026-09-26).
 
 SQLite durability = WAL + transactions (`synchronous=NORMAL` minimum), not
 tmp/fsync/rename — that ritual is for whole-file state only. Inspectability

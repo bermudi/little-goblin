@@ -22,7 +22,8 @@ In rough order of blast radius.
 
 | Asset | Where | Why it matters |
 |---|---|---|
-| Provider keys (`zai`, `openrouter`) | `auth.jsonl` → resolved via `pass-keys` | Metered spend; a leaked key is someone else's bill |
+| Provider keys (`zai`, `openrouter`) | `auth.jsonl` → `pass-keys get` → encrypted OS-store snapshot | Metered spend; a leaked key is someone else's bill |
+| Goblin bootstrap PAT | OS store under `goblin-dev` | Dedicated agent's item grants; shared by provider/MCP sync profiles |
 | `telegram` bot token | `auth.jsonl` | Full control of the bot — send as it, read its updates |
 | `gmail-send` refresh token | `auth.jsonl` | Sends mail **as bermudi** |
 | `gmail-read` / gws read auth | `auth.jsonl` + gws's own auth | Reads the entire mailbox |
@@ -38,7 +39,8 @@ and services, not the agent: a same-uid reader ignores them. `DESIGN.md` says
 this outright ("Honest boundary: same uid, full bash — the token's grants are
 the real limit"). The real limits are the three below, in this order:
 
-1. **Which secrets exist at all** — a key that isn't in `auth.jsonl` can't leak.
+1. **Which secrets are accessible** — auth records, granted items and unlocked
+   OS-store snapshots all count; absence from `auth.jsonl` is not isolation.
 2. **What scopes those secrets carry** — a read-only Gmail token can't send.
 3. **What egress is reachable** — see §5.
 
@@ -157,11 +159,38 @@ brave  gmail-client-secret  gmail-read  gmail-send  openrouter
 parallel  tavily  telegram  zai
 ```
 
-Goblin reaches Proton Pass only through its own audited agent token
-(`pass-cli.env`, 0600), with a `goblin-dev` profile granting keys item by
-item. The token can read its grants; anything Goblin sees still goes to its
-model provider. **Grant narrowly** — that is the whole control
-(`DESIGN.md` → Auth → Proton Pass).
+Remote Pass access uses the dedicated, audited `goblin-dev` agent with
+item-level viewer grants and ID-addressed refs. Its bootstrap PAT is in
+the OS store under `goblin-dev`, not a `pass-cli.env` file.
+`goblin-dev` and `goblin-mcp-dev` share that agent/bootstrap and serialized
+sync lane, but keep separate encrypted snapshots in Secret
+Service/KWallet. The token can read its grants; anything Goblin sees still
+goes to its model provider. **Grant narrowly** — that is the whole control
+([Auth → Proton Pass](../design/auth.md#proton-pass-2026-09-26)).
+
+Foreground `pass-keys get PROFILE NAME` reads only the named local
+snapshot key; `run PROFILE -- …` injects that profile's local keys into
+the child environment and directly execs. Neither contacts Pass, logs in,
+or warms on a miss; `run` is not a masking/output proxy. Provider auth
+uses `get`, while `scripts/mcp` keeps generic `run goblin-mcp-dev`.
+Only explicit `warm` background sync reaches Pass, always refreshing.
+Sync failure leaves last-good local keys usable; age is reported by
+`status`, not an expiry gate. This is deliberate offline availability,
+not an owner-session or remote fallback. A stale snapshot can still hold
+an old key until successful sync; upstream rotation/revocation controls
+whether that key is accepted. Pass audit events cover sync and task
+accesses, not each local `get`/`run`.
+
+Missing/invalid snapshots or keys and locked/unavailable wallets fail
+loud. Persistent wallets retain snapshots across reboot if unlocked;
+linger does not unlock them, and PAM auto-unlock has not been verified.
+OS-store encryption protects secrets at rest, **not against arbitrary
+same-user code accessing an unlocked wallet**. Bootstrap handling must
+remain process-only: no printed values, argv secrets or model context.
+Task retrieval still uses a separately guarded agent session, never the
+owner; the operator provisions/refreshes it from the OS-store bootstrap.
+Auth command edits and successfully rotated keys require an approved
+Goblin restart: auth is loaded at boot and successful values are memoized.
 
 One sharp rule from that section, repeated because it is load-bearing: a
 `!`-command that invokes `pass-cli` directly is *poisoned at load* and refuses
@@ -263,6 +292,8 @@ boundary.
 | Injection scoring (Jev) | **open** — "unavailable", read proceeds | A checker outage must not block mail; the hard limit is read-only Gmail scopes |
 | Reviewer gate (skill review) | **open** → fall back to "≥8 tool calls" | Review is an experiment; a gate outage must not drop reviews silently — it logs the fallback and the streak |
 | Memory recall | **open** — continue without prior context | Turns must not wait on memory |
+| Pass-keys local snapshot/key or wallet unavailable | **closed** — loud failure, no Pass/owner fallback | Foreground consumption is local-only |
+| Pass-keys background sync failure | surfaced; retain last-good snapshot | Offline availability is deliberate; age is visible, not an expiry gate |
 | Model provider error | surfaced, not swallowed | A failed call must look failed |
 | Log file sink | degraded, retried (transient); dead after one warn (permanent) | A full disk is exactly when the durable log matters |
 

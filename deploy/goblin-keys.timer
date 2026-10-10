@@ -1,8 +1,7 @@
 [Unit]
-Description=Goblin keys refresh — twice-daily warm of the goblin pass-keys cache
-# Same cadence as pass-keys@pi.timer: the tmpfs cache dies with the box
-# and stamps age out after 24h, so 06:30/18:30 keeps resolves off the
-# login path. Persistent covers a box that was off at the scheduled time.
+Description=Goblin keys refresh — twice-daily sync of encrypted pass-keys snapshots
+# Refresh is explicit background work, not snapshot expiry. Persistent
+# catches missed runs; offline reads still require an unlocked wallet.
 
 [Timer]
 OnCalendar=*-*-* 06:30:00

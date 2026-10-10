@@ -194,14 +194,21 @@ tool. MCP stays out, with its return conditions on record (below).
   keep OAuth tokens and schema caches out of `~/.mcporter`, where
   same-named host servers would collide. The skill forbids
   `daemon`/`serve` outright.
-- **The `goblin-mcp-dev` profile starts empty and stays warm.**
-  Refs-mode, goblin's token, session shared with the `goblin-dev` profile
-  (one agent-lane lock serializes both), own tmpfs cache — empty until
-  the first MCP server needs a key, grown with `pass-keys add
-  goblin-mcp-dev` (owner action, like every grant). pass-keys warms an
-  explicitly empty refs profile vacuously and `run` execs with no
-  added env (2026-09-26); the key warmer covers both profiles, so the
-  first MCP call after boot is a tmpfs read like every other resolve.
+- **The `goblin-mcp-dev` profile starts empty with its own snapshot.**
+  Refs-mode, the dedicated `goblin-dev` agent and OS-store bootstrap
+  identity, sync session shared with the `goblin-dev` profile (one
+  agent-lane lock serializes both). Its encrypted Secret Service/KWallet
+  snapshot is separate — empty until the first MCP server needs a key,
+  grown with `pass-keys add goblin-mcp-dev` (owner action, like every
+  grant). Explicit `warm` sync publishes even an empty refs snapshot;
+  `run` then directly execs with no added env. `scripts/mcp` keeps
+  generic `pass-keys run goblin-mcp-dev -- …`, a pure local snapshot
+  read with no Pass/network fallback or output proxy. The background
+  warmer covers both profiles without holding up Goblin startup;
+  failed sync leaves each last-good snapshot usable. Missing snapshots
+  (even for an empty profile) or locked/unavailable wallets fail loud.
+  Persistent wallet snapshots survive reboot if unlocked; no
+  auto-unlock assumption. See [Auth](auth.md#proton-pass-2026-09-26).
 - **Known limits, accepted**: MCP 2.0 elicitation (a server pausing a
   call to ask) is declined from a non-TTY; sampling and server
   notifications aren't bridged; stdio servers pay a spawn per call

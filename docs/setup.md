@@ -13,6 +13,11 @@ setup wizard: two files plus one script.
   replies with the number.
 - At least one model provider: an API key (or a `codex login` — see
   [Configuration](configuration.md#providers)).
+- For Proton Pass command refs: `pass-keys` in the service `PATH`, and
+  an available, unlocked Secret Service/KWallet with persistent storage.
+  The operator provisions the dedicated `goblin-dev` agent and narrow
+  item grants; its bootstrap PAT is stored in the OS store as
+  `goblin-dev`, not in `~/goblin/pass-cli.env`.
 - `ffmpeg` in `PATH` for speech, which is on by default. Without it the bot
   starts but disables speech with a warning; set `tts: ""` to turn speech
   off intentionally (see [Voice](voice.md)).
@@ -47,13 +52,42 @@ Then edit it. The minimum to fill in:
 - `"telegram"` is required — that's the bot token.
 - You need one record per provider `auth` name in your config.
 - A value starting with `!` is run to resolve a secret when needed. If you
-  use Proton Pass, configure a scoped `pass-keys` profile and item grant
-  first, then use `!pass-keys run goblin-dev -- printenv ZAI_API_KEY` for the
-  `zai` record. Direct `pass-cli` commands are refused by the installer:
-  they would use the owner's unscoped session. See
-  [Proton Pass](../DESIGN.md#proton-pass-2026-09-26).
+  use Proton Pass, configure the scoped, ID-addressed `goblin-dev`
+  profile and item grants first, then use `!pass-keys get goblin-dev
+  ZAI_API_KEY` for the `zai` record. `get` reads only the encrypted local
+  snapshot — no Pass/network fallback. Direct `pass-cli` commands are
+  refused by the installer: they would use the owner's unscoped session.
+  See [Proton Pass](../design/auth.md#proton-pass-2026-09-26).
 - Set the file mode so only you can read it: `chmod 600 ~/goblin/auth.jsonl`.
   The bot refuses to start if anyone else can read it.
+
+### Initialize Pass snapshots (operator action)
+
+Before first startup with Pass command refs, run an explicit sync after
+provisioning the OS-store bootstrap and profiles:
+
+```sh
+pass-keys warm goblin-dev
+pass-keys warm goblin-mcp-dev
+pass-keys status goblin-dev
+pass-keys status goblin-mcp-dev
+```
+
+The MCP profile shares the dedicated `goblin-dev` agent/bootstrap but has
+its own snapshot; initialize it even when its refs map is empty.
+`warm` always refreshes from Pass. `status` reports age and availability,
+not values. Routine sync is background-only: the installed
+`goblin-keys.service`/`.timer` run at boot and twice daily, without making
+Goblin wait for remote warm. A failed sync leaves the last-good snapshot
+usable. Missing snapshots/keys or a locked/unavailable wallet fail loud.
+Persistent snapshots survive reboot only if the wallet is available and
+unlocked; linger is not wallet unlock, and PAM auto-unlock is unverified.
+
+For an existing installation, bootstrap/profile/auth migration is a
+separate operator action; these source docs do not migrate credentials or
+install units. Auth edits or successful key rotation need an approved
+Goblin restart because it loads auth at boot and caches successful values.
+See [Operations](operations.md#key-snapshots).
 
 ## Install
 
@@ -107,7 +141,15 @@ take effect on the next message. No restart needed.
 
 ## Updating
 
-Pull the repo, re-run `scripts/install.sh`, rebuild the app client, restart:
+**On prod (g7), use the approved `scripts/deploy.sh` rollout described in
+[Operations](operations.md#deploying), not the manual sequence below.**
+Deploying/restarting Goblin, installing/reloading units, and publishing
+`app/dist` require bermudi's OK. Refreshing these unit sources does not
+refresh installed units by itself; coordinate that separately. Never
+build into the live `app/dist` merely to verify a change.
+
+For a separate, non-production installation, pull the repo, re-run
+`scripts/install.sh`, rebuild the app client, restart:
 
 ```sh
 git pull

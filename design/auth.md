@@ -6,7 +6,7 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 ## Auth
 
 The trust model — assets, trust classes, entry points, failure policy, and
-what is deliberately out of scope — lives in [`docs/security.md`](docs/security.md).
+what is deliberately out of scope — lives in [`docs/security.md`](../docs/security.md).
 This section owns *why* the secret discipline looks the way it does; that doc
 owns *who is trusted with what*. A change that widens trust belongs in both.
 
@@ -15,7 +15,7 @@ and env vars leak. Instead: `$GOBLIN_HOME/auth.jsonl`, mode `0600`, one record
 per line:
 
 ```json
-{"name": "openrouter", "value": "!pass show api/openrouter"}
+{"name": "openrouter", "value": "!pass-keys get goblin-dev OPENROUTER_API_KEY"}
 ```
 
 A value is either a literal credential or `!<command>` — resolved by executing
@@ -24,57 +24,80 @@ Resolved values never enter the tool environment, the model context, or logs.
 
 ### Proton Pass (2026-09-26)
 
-Proton Pass is the operator's credential backbone; goblin reaches it
-only through a scoped, audited **agent token of its own**. Found at
-design time: five of six `auth.jsonl` records ran `pass-cli item view`
-with no session dir, which resolves to the owner's default session
-(`~/.local/share/proton-pass-cli`, present on this box) — full
-account, no audit trail. Rulings:
+Proton Pass is the operator's credential backbone. Remote access uses a
+scoped, audited **agent token of Goblin's own**; foreground provider/MCP
+consumption reads encrypted local snapshots, not Pass. Rulings:
 
-- **Goblin's own agent token** (`pass-cli agent create goblin`, an
-  owner action — goblin never creates, renews, grants, or revokes
-  agents). Grants are item by item, viewer; its audit trail
-  (`agent monitor goblin`) is its own; revoking it touches nothing
-  else. The PAT lives in `$GOBLIN_HOME/pass-cli.env`
-  (`PROTON_PASS_PAT=…`, 0600, owner-written, never read into model
-  context).
+- **Goblin's own agent token** (`goblin-dev`, provisioned by the owner —
+  Goblin never creates, renews, grants, or revokes agents). Grants are
+  item by item, viewer; the audit trail (`agent monitor goblin-dev`) is
+  its own. The bootstrap PAT lives in the OS store under `goblin-dev`,
+  not `$GOBLIN_HOME/pass-cli.env`. Both `goblin-dev` and
+  `goblin-mcp-dev` profiles share this dedicated agent, bootstrap
+  identity and serialized sync session, but each has its own snapshot.
+  Bootstrap handling is process-only: never print it, pass it in argv,
+  or put it in model context. Profile names stay environment-scoped
+  even on prod; prod/dev split by bot token and state home.
 - **Never the owner session, by mechanism.** A `!` command that
-  invokes `pass-cli` directly (records go through pass-keys, below) is
-  poisoned at load: `log.error` names the record, and every `resolve`
-  of it rejects with the same reason — the command never runs. Not a
-  boot refusal: the unit restarts forever and a phone-only operator
-  can't fix a crash loop, so the feature needing that key fails loud
-  instead. install.sh refuses such records before enabling the unit.
-- **Goblin's own keys resolve through pass-keys** — the one
-  implementation of the Pass → agent lane → tmpfs cache discipline
-  (retries, negative cache, herd collapse; `~/build/pass-keys`). A
-  `goblin-dev` profile in refs mode, ID-addressed; pass-keys gains optional
-  per-profile `sessionDir` and `patFile` so goblin's profile logs in
-  with goblin's token (defaults unchanged for pi/mcporter). A record
-  reads `{"name": "openrouter", "value": "!pass-keys run goblin-dev --
-  printenv OPENROUTER_API_KEY"}` — pass-keys writes only to stderr,
-  stdout is the child's.
-- **Warmer**: a cold pass-keys login can take ~100 s (3 × 30 s +
-  backoff), past auth's 15 s resolve bound. Goblin ships its own
-  `deploy/goblin-keys.service` (oneshot `pass-keys warm goblin-dev` +
-  `pass-keys warm goblin-mcp-dev`, restart-on-failure every 60 s, never
-  gives up) + `.timer`
-  (06:30/18:30), installed by install.sh; `goblin.service`
-  `Wants=`/`After=` it, so boot resolves are tmpfs reads. A cold miss
-  still fails loud, and the evicted rejection retries on next use.
+  invokes `pass-cli` directly is poisoned at load: `log.error` names
+  the record, and every `resolve` rejects without running it. Not a
+  boot refusal: a phone-only operator cannot fix a crash loop, so the
+  feature needing that key fails loud instead. install.sh refuses
+  such records before enabling the unit. Sync uses only the scoped
+  agent lane, with no owner-session fallback.
+- **Goblin's own keys resolve through pass-keys** (`~/build/pass-keys`).
+  The refs-mode `goblin-dev` profile is ID-addressed. A record reads
+  `{"name": "openrouter", "value": "!pass-keys get goblin-dev OPENROUTER_API_KEY"}`.
+  `get PROFILE NAME` is a pure local snapshot read: only the requested
+  value reaches stdout; diagnostics go to stderr. It never logs in,
+  warms, or falls back to Pass/network. `src/auth.ts` already supports
+  these command refs and needs no change: its 15 s bound remains,
+  successful resolutions are memoized for the process lifetime, and
+  rejected resolutions retry on next use. Auth edits and rotated keys
+  therefore require an approved Goblin restart.
+- **Encrypted local snapshots** live per profile in Secret
+  Service/KWallet, with the key set and last successful sync time.
+  A complete, successful sync replaces that profile's snapshot;
+  failure leaves the last-good snapshot intact and usable offline.
+  Age is information (`pass-keys status PROFILE` reports age and local
+  availability), not an expiry gate. Missing, invalid or inaccessible
+  snapshots, missing keys, or a locked/unavailable wallet fail loud;
+  no blank value and no remote fallback. A persistent wallet preserves
+  snapshots across reboot if unlocked. PAM auto-unlock is not assumed
+  or proven; linger alone does not unlock a wallet.
+- **Warmer** means explicit background sync, not a foreground cache
+  check: `pass-keys warm PROFILE` always refreshes from Pass even when
+  a snapshot is present. `deploy/goblin-keys.service` runs `warm
+  goblin-dev` then `warm goblin-mcp-dev` sequentially, with
+  restart-on-failure every 60 s; `.timer` runs at 06:30/18:30 and catches
+  missed runs. `goblin.service` retains `Wants=` but has no
+  `After=goblin-keys.service`: foreground resolution must not wait for
+  remote warm. Initial snapshots must be provisioned before relying on
+  offline startup. Installation and live credential migration are
+  separate operator actions, not effects of editing these sources.
+- **MCP keeps generic `run`**: `scripts/mcp` calls `pass-keys run
+  goblin-mcp-dev -- …`. `run` reads only its local snapshot, puts keys
+  in the child environment and directly execs the command. It does not
+  warm, contact Pass, or proxy the child's output. Stdout belongs to
+  the child; provider auth uses `get` so it need not create a
+  `printenv` child or export the profile's keys.
 - **Secrets during tasks: the `pass-cli` skill**, shipped like the
   browser's (`deploy/skills/pass-cli/SKILL.md`, seeded write-if-absent).
-  Powers: `pass-cli run` with `pass://` refs (masked output — the
-  program gets the secret, goblin doesn't), `inject` to an explicit
-  path, `item totp` with a reason naming the task. Never `item view`,
-  never `--no-masking`, never item/vault/agent writes. Its guard uses
-  goblin's PAT with a separate session dir
-  (`$GOBLIN_HOME/state/pass-cli-task/`) from the pass-keys lane
-  (`$GOBLIN_HOME/state/pass-cli/`): pass-cli calls sharing a session
-  must never run concurrently, and a long `run` must not hold
-  pass-keys' lock. Open before build: confirm one PAT can hold two
-  live sessions; if not, the skill takes pass-keys' flock instead.
+  Powers remain `pass-cli run` with `pass://` refs (masked output),
+  `inject` to an explicit path, and `item totp` with a task reason.
+  Never `item view`, `--no-masking`, or item/vault/agent writes. Tasks
+  use the separate `$GOBLIN_HOME/state/pass-cli-task/` agent session;
+  calls within one session never interleave with each other. The
+  operator provisions/refreshes this session from the OS-store
+  bootstrap through a process-only helper. Missing or expired task
+  auth fails loud: no PAT-file sourcing or owner fallback, and no
+  exposing the bootstrap PAT via snapshot keys.
 - **Honest boundary**: same uid, full bash — the token's grants are
-  the real limit, and anything goblin sees goes to its model
-  provider. Grant narrowly.
+  the real limit, and anything Goblin sees goes to its model provider.
+  OS-store encryption protects stored secrets, not against arbitrary
+  same-user code accessing an unlocked wallet. Local reads add no
+  remote audit event; the Pass audit records sync/task accesses. A
+  failed sync can keep old keys available until a successful refresh;
+  upstream revocation/rotation is the real authority change. Grant
+  narrowly.
 

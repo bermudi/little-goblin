@@ -15,6 +15,10 @@ systemctl --user restart goblin   # restart (e.g. after hand-editing config)
 journalctl --user -u goblin -f    # live logs
 ```
 
+On prod, restarting/deploying Goblin, installing/reloading units, or
+publishing `app/dist` requires bermudi's OK. The commands here are an
+operator runbook, not permission to run them during source verification.
+
 After changing `goblin.json5` **by hand**, restart. (Saves from the Telegram
 Settings mini app apply immediately — no restart.) Re-running
 `scripts/install.sh` after a `git pull` refreshes the unit file with your
@@ -38,10 +42,59 @@ the same shape minus the flush — your message is in history, so the next
 turn just answers it. The bot never auto-retries after a crash: replaying
 half-run tool calls would be worse than asking again.
 
+## Key snapshots
+
+Provider auth command records use `!pass-keys get goblin-dev NAME`.
+`get` is a pure local read from an encrypted Secret Service/KWallet
+snapshot: no Pass/network fallback, login or foreground warm. MCP keeps
+`scripts/mcp` → `pass-keys run goblin-mcp-dev -- …`, injecting its separate
+local snapshot into the child environment and directly execing (no output
+proxy). Both profiles share the dedicated `goblin-dev` agent, narrow
+item-level viewer grants and OS-store bootstrap PAT named `goblin-dev`;
+no `~/goblin/pass-cli.env` is needed in the target setup.
+
+```sh
+pass-keys status goblin-dev       # local age/availability; no values
+pass-keys status goblin-mcp-dev
+journalctl --user -u goblin-keys
+```
+
+`goblin-keys.service` runs explicit `pass-keys warm` sync sequentially
+for both profiles at boot, retrying failures every 60 s; its persistent
+timer runs at 06:30 and 18:30 and catches missed runs. `warm` always
+refreshes from Pass, even with an existing snapshot. Goblin retains
+`Wants=goblin-keys.service` but does not order startup after it, so remote
+sync is not on the foreground path. Initial snapshots (including an empty
+MCP profile) must be provisioned before relying on offline startup.
+
+A failed sync keeps the last-good snapshot usable. Age is information,
+not expiry: use `status` and the journal to notice stale data. Missing or
+invalid snapshots/keys or a locked/unavailable wallet fail loud instead
+of fetching remotely. Persistent wallet snapshots survive reboot if
+unlocked; a user service's linger setting does not unlock the wallet.
+**PAM auto-unlock is unverified**, so do not promise unattended cold-boot
+access until the wallet's actual unlock path has been checked.
+
+An operator may run `pass-keys warm goblin-dev` (and `goblin-mcp-dev` as
+needed) after fixing bootstrap/profile/grant issues. Never print a value
+to debug, fall back to the owner session, or remove a last-good snapshot
+just because sync failed. A rotation can leave old local keys until a
+successful sync; upstream rotation/revocation is what invalidates access.
+
+Migration of the bootstrap PAT, live profiles and `auth.jsonl` is a
+separate process-only operator action, not performed by source edits or
+Goblin deployment. Existing Goblin loads auth at boot and memoizes
+successful values: changing command refs or rotating a resolved key
+requires its approved restart, even after sync succeeds. The changed
+unit sources must also be installed/reloaded separately with approval;
+editing `deploy/` alone does not alter installed units. The pass-cli task
+skill is seeded write-if-absent, so an existing workspace copy needs a
+separately reviewed operator update; it is not overwritten by deployment.
+
 ## Deploying
 
 Prod is this tree on g7 — `goblin.service` runs from the working copy,
-plus the local memory stack (Podman). One command:
+plus the local memory stack (Podman). With bermudi's OK, one command:
 
 ```sh
 scripts/deploy.sh
@@ -107,7 +160,7 @@ grep '"level":"error"' ~/goblin/state/goblin.log
 
 ## Backups
 
-Everything worth keeping is under `~/goblin/`:
+Goblin's own state is under `~/goblin/`:
 
 | What | Where | Notes |
 |---|---|---|
@@ -115,6 +168,13 @@ Everything worth keeping is under `~/goblin/`:
 | Settings | `goblin.json5` | plain text |
 | Secrets | `auth.jsonl` | guard this copy like the original |
 | Identity, notes, skills, attachments | `workspace/` | plain files |
+
+Pass-keys bootstrap credentials and encrypted profile snapshots live in
+the persistent OS wallet, outside `~/goblin/`. Include the wallet's
+supported encrypted backup/recovery path in the operator plan; do not
+export plaintext secrets into workspace files or logs. Offline recovery
+needs an available, unlocked snapshot; remote re-sync also needs the
+scoped agent/bootstrap to remain valid.
 
 The checkout itself (`little-goblin/`) holds no state — re-cloneable any time.
 
@@ -130,7 +190,9 @@ it only while the bot is stopped, if ever.
 | Service crash-loops or won't start | `journalctl --user -u goblin` — startup errors name the file and the problem (missing config/auth, JSON5 typo, unknown provider, bad `auth.jsonl` line) |
 | `insecure permissions … chmod 600` | `chmod 600 ~/goblin/auth.jsonl` — group/world-readable secrets are refused, not warned about |
 | `no secret named "…"` | `auth.jsonl` needs a record matching every provider `auth` name (and `transcription.auth`) plus `telegram` |
-| Secret command fails | If it uses `pass-keys`, check `pass-keys status goblin-dev` and `journalctl --user -u goblin-keys`; fix the profile or item grant, then run `pass-keys warm goblin-dev`. Don't print the secret while debugging. The service `PATH` covers `~/bin` and `~/.local/bin` |
+| Secret command fails | For `pass-keys`, check `status goblin-dev` and `journalctl --user -u goblin-keys`; check wallet unlock/availability and snapshot/key presence first. Fix bootstrap/profile/item grants and explicitly `pass-keys warm goblin-dev` as needed. `get` never fetches remotely on a miss. Don't print values. Auth edits/rotated resolved keys need an approved Goblin restart; service `PATH` covers `~/bin` and `~/.local/bin` |
+| Key sync fails but the bot still works | Last-good snapshots remain usable; `pass-keys status` reports age/availability. Repair the background sync without deleting snapshots or bypassing the scoped agent |
+| Keys unavailable after reboot | Persistent snapshots need an available, unlocked wallet. Linger is not wallet unlock; PAM auto-unlock is unverified. Foreground reads fail loud rather than waiting for Pass |
 | Bot runs but never answers | your user id in `allowedUsers`? The log shows `rejected user` with the id. DM `@userinfobot` to confirm yours |
 | Settings button missing/stale | `publicUrl` in config; mini-app saves apply it without restart, hand-edits need one |
 | Mini app won't load / `load failed: 401` | open it from the Telegram menu button (not a bare browser tab); logins older than a day expire — close and reopen |

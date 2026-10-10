@@ -196,21 +196,38 @@ refuses to load it otherwise):
 ```json
 {"name": "telegram", "value": "123456:ABC-your-bot-token"}
 {"name": "zai", "value": "literal-key-works-too"}
-{"name": "openrouter", "value": "!pass-keys run goblin-dev -- printenv OPENROUTER_API_KEY"}
+{"name": "openrouter", "value": "!pass-keys get goblin-dev OPENROUTER_API_KEY"}
 ```
 
 - `telegram` (the bot token) is always required, plus one record per
   provider `auth` name (and `transcription.auth` if configured).
-- The `pass-keys` example requires a configured `goblin-dev` profile with
-  that key item granted. Direct `pass-cli` commands are refused at install:
+- The `pass-keys` example requires a configured, ID-addressed `goblin-dev`
+  profile, a viewer grant to its dedicated `goblin-dev` agent, and an
+  encrypted local snapshot in Secret Service/KWallet. The bootstrap PAT
+  is stored in the OS store under `goblin-dev`, not `pass-cli.env`.
+  `get PROFILE NAME` reads only that snapshot: no login, sync, or
+  Pass/network fallback. Missing snapshots/keys and locked/unavailable
+  wallets fail loud. Direct `pass-cli` commands are refused at install:
   they would run as the owner, not the scoped agent. See
-  [Proton Pass](../DESIGN.md#proton-pass-2026-09-26).
+  [Proton Pass](../design/auth.md#proton-pass-2026-09-26).
+- `pass-keys warm PROFILE` is explicit background sync and always
+  refreshes from Pass; `goblin-keys.service`/`.timer` maintain snapshots
+  without holding up foreground startup. Failed sync keeps the last-good
+  snapshot usable. `pass-keys status PROFILE` reports age and local
+  availability without printing values; age does not expire a snapshot.
+  A persistent wallet preserves it across reboot if unlocked — wallet
+  auto-unlock is not assumed. `scripts/mcp` keeps `pass-keys run
+  goblin-mcp-dev -- …`, locally injecting its separate snapshot into the
+  child environment and directly execing, without a network fallback.
 - A value starting with `!` is executed as a shell command when the secret
   is needed, and its output (trimmed) is the secret. Resolution is lazy —
   the command runs on first use, not at boot — with a 15-second timeout.
   A successful value is cached for the process lifetime; a failure is
   retried on the next use and surfaces as a configuration error, never a
-  silent blank.
+  silent blank. The auth file itself is loaded at boot: editing command
+  refs or rotating a resolved key requires an approved Goblin restart,
+  even after a successful snapshot sync. See
+  [Operations](operations.md#key-snapshots).
 - Resolved secrets never end up in the shell environment (the bot's `bash`
   tool would expose them), in the model context, or in logs. If a
   credential command's error output could contain a secret, it is deliberately

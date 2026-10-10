@@ -18,6 +18,9 @@ Annotated example ships as `goblin.json5.example`. Every knob, in one place:
 ### Independent channel settings
 
 Root `model` and `thinking` are **app defaults for future conversations**.
+The copied example also sets `telegram.model` explicitly: changing only root
+`model` does not change Telegram's answering model. Configure both selections
+when setting up a provider; onboarding does not choose either for you.
 Each app conversation keeps its own durable selection; changing defaults
 never changes existing chats. The app chat's model/thinking controls edit
 that conversation only.
@@ -47,16 +50,19 @@ providers: {
     baseUrl: "https://api.z.ai/api/coding/paas/v4",
     auth: "zai",          // name of the secret in auth.jsonl
   },
+  // Alternative protocol for an endpoint that supports Responses:
+  // zai: { kind: "responses", baseUrl: "https://api.z.ai/api/v1", auth: "zai" },
   openrouter: { kind: "openrouter", auth: "openrouter" },
   // codex: { kind: "codex" },   // ChatGPT subscription via `codex login`
 }
 ```
 
-Three kinds exist:
+Four kinds exist (the shipped example uses `responses` for Z.AI):
 
 | Kind | What it is | `auth` points at |
 |---|---|---|
-| `openai-compatible` | Any OpenAI-style endpoint (Z.AI, Ollama-style relays, …) | a secret in `auth.jsonl` |
+| `openai-compatible` | OpenAI-style Chat Completions endpoints | a secret in `auth.jsonl` |
+| `responses` | OpenAI Responses endpoints; requires the appropriate `baseUrl`, not a Chat Completions URL | a secret in `auth.jsonl` |
 | `openrouter` | OpenRouter | a secret in `auth.jsonl` |
 | `codex` | ChatGPT-subscription models via the Codex CLI's own login | nothing — it reads `~/.codex/auth.json` (override with `authFile`) |
 
@@ -66,7 +72,8 @@ itself and writes the rotated tokens back, so the CLI login keeps working.
 ### Model selection
 
 ```json5
-model: "zai/glm-5.3-flash",
+model: "zai/glm-5.3-flash", // app default for new conversations
+telegram: { model: "zai/glm-5.3-flash", thinking: "high" }, // independent
 favorites: ["zai/glm-5.3", "openrouter/anthropic/claude-sonnet-4.5"],
 ```
 
@@ -107,7 +114,7 @@ tool for other audio files on request. `kind: "whistle"` runs locally
 (keyless, private — artifacts auto-download once); groq, openai,
 openrouter, mistral, elevenlabs, gemini, and mimo are the cloud kinds,
 each defaulting its model and auth record. TTS needs `ffmpeg` in `PATH`;
-whisper transcription needs it always (it is the decoder), cloud kinds
+whistle transcription needs it always (it is the decoder), cloud kinds
 only over the upload cap. Details in [Voice](voice.md).
 
 ### Vision
@@ -192,8 +199,17 @@ http: { port: 8787 },
 
 ## `auth.jsonl`
 
-One JSON object per line, file readable only by you (`chmod 600` — the bot
-refuses to load it otherwise):
+One JSON object per line, with no group/world permissions. For a new home,
+create the file restrictively **before adding credentials**:
+
+```sh
+(umask 077; touch ~/goblin/auth.jsonl)
+chmod 600 ~/goblin/auth.jsonl
+```
+
+Use your chosen `GOBLIN_HOME` path if different. Edit privately; never put
+credentials in environment variables, shell arguments or `goblin.json5`.
+The following values are placeholders:
 
 ```json
 {"name": "telegram", "value": "123456:ABC-your-bot-token"}
@@ -202,7 +218,10 @@ refuses to load it otherwise):
 ```
 
 - `telegram` (the bot token) is always required, plus one record per
-  provider `auth` name (and `transcription.auth` if configured).
+  configured provider `auth` name. Codex uses its own OAuth file instead.
+  Include configured optional auth references too: transcription, search/fetch,
+  memory, mail, reviewer/System One and `appToken`, as applicable. A reference's
+  presence does not prove the credential or remote model works.
 - The `pass-keys` example requires a configured, ID-addressed `goblin-dev`
   profile, a viewer grant to its dedicated `goblin-dev` agent, and an
   encrypted local snapshot in Secret Service/KWallet. The bootstrap PAT
@@ -230,10 +249,20 @@ refuses to load it otherwise):
   refs or rotating a resolved key requires an approved Goblin restart,
   even after a successful snapshot sync. See
   [Operations](operations.md#key-snapshots).
-- Resolved secrets never end up in the shell environment (the bot's `bash`
-  tool would expose them), in the model context, or in logs. If a
-  credential command's error output could contain a secret, it is deliberately
-  kept out of the error message.
+- Resolved auth values are not injected into Goblin's shell environment or
+  model context. MCP's explicit scoped wrapper is a separate boundary: keys
+  enter only its child environment. Credential-command error output is kept
+  out of error messages.
+
+**Parser safety:** shared source fixes for malformed CONFIG/AUTH input now emit
+safe locations/categories without original input fragments. This does not
+update a running older installation or sanitize old logs. Do not share raw
+parser exceptions/logs or use an older-code auth checker with real secrets
+as a workaround. New diagnostics must
+report only safe metadata (location/category/reference presence), never values,
+commands or original parser messages. They do not resolve arbitrary auth
+commands, provision credentials, warm snapshots or unlock wallets. See
+[Setup](setup.md#install) for the pending integration and phase order.
 
 ## Per-topic settings
 

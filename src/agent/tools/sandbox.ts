@@ -144,7 +144,7 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 							return { error: `export destination must be a workspace-relative path, got absolute: ${rel}` };
 						}
 						const wsReal = realpathSync(deps.workspace);
-						const dest = resolvePath(deps.workspace, rel);
+						const dest = resolvePath(wsReal, rel);
 						if (!dest.startsWith(wsReal + sep)) {
 							return {
 								error: `export refused: ${rel} resolves to ${dest}, outside the workspace`,

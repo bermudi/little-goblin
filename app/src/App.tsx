@@ -355,8 +355,14 @@ function ConversationRow({
 			</div>
 		);
 	}
+	// Without a preview line the row is one line tall, so the hover icons
+	// need the head line's text out of their way (see styles.css).
+	const hasPreviewLine = title !== null && preview !== "";
+	const rowClass = ["conv", conv.id === current ? "current" : null, hasPreviewLine ? null : "bare"]
+		.filter((c): c is string => c !== null)
+		.join(" ");
 	return (
-		<div className={conv.id === current ? "conv current" : "conv"}>
+		<div className={rowClass}>
 			<button type="button" className="conv-main" onClick={() => onOpen(conv.id)}>
 				<span className="conv-head">
 					{pinned && <PinGlyph />}
@@ -365,7 +371,7 @@ function ConversationRow({
 					</span>
 					<span className="conv-time">{relTime(conv.updatedAt)}</span>
 				</span>
-				{title !== null && preview !== "" && <span className="conv-preview">{preview}</span>}
+				{hasPreviewLine && <span className="conv-preview">{preview}</span>}
 			</button>
 			<span className="conv-actions">
 				{archived ? (
@@ -373,12 +379,7 @@ function ConversationRow({
 						<button type="button" onClick={startRename} title="Rename" aria-label="Rename">
 							<PencilGlyph />
 						</button>
-						<button
-							type="button"
-							onClick={toggleArchived}
-							title="Unarchive"
-							aria-label="Unarchive"
-						>
+						<button type="button" onClick={toggleArchived} title="Unarchive" aria-label="Unarchive">
 							<UnarchiveGlyph />
 						</button>
 						<button type="button" onClick={remove} title="Delete" aria-label="Delete">
@@ -398,12 +399,7 @@ function ConversationRow({
 						<button type="button" onClick={startRename} title="Rename" aria-label="Rename">
 							<PencilGlyph />
 						</button>
-						<button
-							type="button"
-							onClick={toggleArchived}
-							title="Archive"
-							aria-label="Archive"
-						>
+						<button type="button" onClick={toggleArchived} title="Archive" aria-label="Archive">
 							<ArchiveGlyph />
 						</button>
 					</>

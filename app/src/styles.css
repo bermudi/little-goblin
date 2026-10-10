@@ -331,9 +331,11 @@ p code,
 	text-align: left;
 	padding: 0.4rem 0.6rem;
 }
-/* Hover actions sit on top of the preview line (the title keeps its full
-   width), masking it with an inherited row background — hover bg while
-   hovering, active bg on the current row. */
+/* Hover actions take over the preview line: the preview is hidden (but
+   keeps its space) while the actions show, so no text runs under the
+   icons. The title keeps its full width. Untitled rows (.bare) have no
+   preview line; their head line is hidden instead. Touch screens never
+   hover, so there the current row keeps its actions showing. */
 .conv-actions {
 	position: absolute;
 	right: 0.3rem;
@@ -341,13 +343,27 @@ p code,
 	display: none;
 	align-items: center;
 	gap: 0.1rem;
-	padding: 0 0.3rem 0 0.75rem;
-	background: inherit;
-	border-radius: 0 8px 8px 0;
+	padding: 0 0.3rem;
 }
-.conv:hover .conv-actions,
-.conv.current .conv-actions {
+.conv:hover .conv-actions {
 	display: inline-flex;
+}
+.conv:hover .conv-preview {
+	visibility: hidden;
+}
+.conv.bare:hover .conv-head {
+	visibility: hidden;
+}
+@media (hover: none) {
+	.conv.current .conv-actions {
+		display: inline-flex;
+	}
+	.conv.current .conv-preview {
+		visibility: hidden;
+	}
+	.conv.bare.current .conv-head {
+		visibility: hidden;
+	}
 }
 .conv-actions button {
 	width: 1.4rem;

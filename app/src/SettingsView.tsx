@@ -765,14 +765,14 @@ export function SettingsView({
 
 	if (loadErr !== null) {
 		return (
-			<div className="ops">
+			<div className="ops settings">
 				<p className="error">{loadErr}</p>
 			</div>
 		);
 	}
 	if (kinds === null) {
 		return (
-			<div className="ops">
+			<div className="ops settings">
 				<p className="empty">Loading settings…</p>
 			</div>
 		);
@@ -810,10 +810,33 @@ export function SettingsView({
 		</Row>
 	);
 
+	// eff is the shown section — null means the narrow-screen index, and
+	// on wide viewports the at-index rules swap that index for the chat
+	// section so the two-pane never opens on a dead column.
+	const eff: Section = section ?? "chat";
+
 	return (
-		<div className="ops settings">
-			{section === null ? (
-				<>
+		<div className={`ops settings${section === null ? " at-index" : ""}`}>
+			<nav className="settings-nav" aria-label="Settings sections">
+				<h2 className="ops-h2 settings-h2">
+					Settings {dirty && <span className="dirty-pill">unsaved</span>}
+				</h2>
+				{SECTIONS.map((s) => (
+					<button
+						key={s.key}
+						type="button"
+						className={eff === s.key ? "snav on" : "snav"}
+						onClick={() => setSection(s.key)}
+					>
+						<span className="ilabel">
+							{s.label}
+							<small>{s.sub}</small>
+						</span>
+					</button>
+				))}
+			</nav>
+			{section === null && (
+				<div className="settings-index">
 					<h2 className="ops-h2">
 						Settings {dirty && <span className="dirty-pill">unsaved</span>}
 					</h2>
@@ -828,533 +851,528 @@ export function SettingsView({
 							</button>
 						))}
 					</div>
-				</>
-			) : (
+				</div>
+			)}
+			{section !== null && (
+				<div className="ops-back">
+					<button type="button" className="ghost" onClick={() => setSection(null)}>
+						‹ Settings
+					</button>
+					{dirty && <span className="dirty-pill">unsaved</span>}
+				</div>
+			)}
+
+			{eff === "chat" && (
 				<>
-					<div className="ops-back">
-						<button type="button" className="ghost" onClick={() => setSection(null)}>
-							‹ Settings
-						</button>
-						{dirty && <span className="dirty-pill">unsaved</span>}
+					<h2 className="ops-h2">Telegram</h2>
+					<div className="card">
+						{modelButton(
+							"Model",
+							"Shared by all Telegram conversations.",
+							"telegram",
+							draft.telegramModel,
+							"tgModelLabel",
+						)}
+						<Row label="Thinking" cap="Only levels this model can express are shown." col>
+							<Seg
+								options={levels.telegram}
+								value={displayLevel(draft.telegramThinking, levels.telegram)}
+								ariaLabel="Telegram thinking level"
+								onChange={(v) => patchDraft({ telegramThinking: v as ThinkingLevel })}
+							/>
+						</Row>
 					</div>
+					<h2 className="ops-h2">App defaults</h2>
+					<div className="card">
+						{modelButton(
+							"Default model",
+							"New app conversations only. Each chat remembers its own model and thinking level.",
+							"model",
+							draft.model,
+							"appModelLabel",
+						)}
+						<Row label="Thinking" cap="Only levels this model can express are shown." col>
+							<Seg
+								options={levels.app}
+								value={displayLevel(draft.thinking, levels.app)}
+								ariaLabel="App default thinking level"
+								onChange={(v) => patchDraft({ thinking: v as ThinkingLevel })}
+							/>
+						</Row>
+						{modelButton(
+							"Topic titles",
+							"Names new topics, then stops.",
+							"title",
+							draft.titleModel,
+							"titleModelLabel",
+						)}
+						{modelButton(
+							"Vision",
+							"Adds a vision tool — answers questions about image files. Needed when the chat model can't see attachments.",
+							"vision",
+							draft.vision?.model ?? "",
+							"visionLabel",
+						)}
+					</div>
+					<h2 className="ops-h2">Favorites</h2>
+					<div className="card">
+						<ChipsEditor
+							values={draft.favorites}
+							onAdd={(v) => patchDraft({ favorites: [...draft.favorites, v] })}
+							onRemove={(i) => patchDraft({ favorites: draft.favorites.filter((_, j) => j !== i) })}
+							placeholder="provider/model-id"
+							ariaLabel="add favorite"
+							cap="Offered in the pickers above."
+						/>
+					</div>
+				</>
+			)}
 
-					{section === "chat" && (
-						<>
-							<h2 className="ops-h2">Telegram</h2>
-							<div className="card">
-								{modelButton(
-									"Model",
-									"Shared by all Telegram conversations.",
-									"telegram",
-									draft.telegramModel,
-									"tgModelLabel",
-								)}
-								<Row label="Thinking" cap="Only levels this model can express are shown." col>
-									<Seg
-										options={levels.telegram}
-										value={displayLevel(draft.telegramThinking, levels.telegram)}
-										ariaLabel="Telegram thinking level"
-										onChange={(v) => patchDraft({ telegramThinking: v as ThinkingLevel })}
-									/>
-								</Row>
-							</div>
-							<h2 className="ops-h2">App defaults</h2>
-							<div className="card">
-								{modelButton(
-									"Default model",
-									"New app conversations only. Each chat remembers its own model and thinking level.",
-									"model",
-									draft.model,
-									"appModelLabel",
-								)}
-								<Row label="Thinking" cap="Only levels this model can express are shown." col>
-									<Seg
-										options={levels.app}
-										value={displayLevel(draft.thinking, levels.app)}
-										ariaLabel="App default thinking level"
-										onChange={(v) => patchDraft({ thinking: v as ThinkingLevel })}
-									/>
-								</Row>
-								{modelButton(
-									"Topic titles",
-									"Names new topics, then stops.",
-									"title",
-									draft.titleModel,
-									"titleModelLabel",
-								)}
-								{modelButton(
-									"Vision",
-									"Adds a vision tool — answers questions about image files. Needed when the chat model can't see attachments.",
-									"vision",
-									draft.vision?.model ?? "",
-									"visionLabel",
-								)}
-							</div>
-							<h2 className="ops-h2">Favorites</h2>
-							<div className="card">
-								<ChipsEditor
-									values={draft.favorites}
-									onAdd={(v) => patchDraft({ favorites: [...draft.favorites, v] })}
-									onRemove={(i) =>
-										patchDraft({ favorites: draft.favorites.filter((_, j) => j !== i) })
+			{eff === "voice" && (
+				<>
+					<h2 className="ops-h2">Voice notes</h2>
+					<div className="card">
+						<Row
+							label="Text to speech"
+							cap="On by default — Edge read-aloud, free and unofficial, needs ffmpeg on the host. Failures post a note in chat."
+						>
+							<Switch
+								on={draft.tts !== null}
+								ariaLabel="text to speech"
+								onChange={(on) =>
+									setDraft((d) => {
+										if (on) {
+											return {
+												...d,
+												tts: last.current.tts ?? { voice: "", rate: "", voices: [] },
+											};
+										}
+										last.current.tts = d.tts;
+										return { ...d, tts: null };
+									})
+								}
+							/>
+						</Row>
+						{draft.tts !== null && (
+							<>
+								<Field
+									label="Voice"
+									value={draft.tts.voice}
+									onChange={(v) =>
+										setDraft((d) => ({
+											...d,
+											tts: d.tts === null ? d.tts : { ...d.tts, voice: v },
+										}))
 									}
-									placeholder="provider/model-id"
-									ariaLabel="add favorite"
-									cap="Offered in the pickers above."
+									placeholder="en-US-AriaNeural"
+									mono
+									cap="Default for /voice mode, the speaker button, and the speak tool — an alternate matching the reply's language wins; this speaks when the language is unclear or none matches."
 								/>
-							</div>
-						</>
-					)}
-
-					{section === "voice" && (
-						<>
-							<h2 className="ops-h2">Voice notes</h2>
-							<div className="card">
-								<Row
-									label="Text to speech"
-									cap="On by default — Edge read-aloud, free and unofficial, needs ffmpeg on the host. Failures post a note in chat."
-								>
-									<Switch
-										on={draft.tts !== null}
-										ariaLabel="text to speech"
-										onChange={(on) =>
-											setDraft((d) => {
-												if (on) {
-													return {
-														...d,
-														tts: last.current.tts ?? { voice: "", rate: "", voices: [] },
-													};
-												}
-												last.current.tts = d.tts;
-												return { ...d, tts: null };
-											})
+								<Field
+									label="Rate"
+									value={draft.tts.rate}
+									onChange={(v) =>
+										setDraft((d) => ({
+											...d,
+											tts: d.tts === null ? d.tts : { ...d.tts, rate: v },
+										}))
+									}
+									placeholder="+10%"
+									mono
+								/>
+								<ChipsEditor
+									values={draft.tts.voices}
+									onAdd={(v) =>
+										setDraft((d) => ({
+											...d,
+											tts: d.tts === null ? d.tts : { ...d.tts, voices: [...d.tts.voices, v] },
+										}))
+									}
+									onRemove={(i) =>
+										setDraft((d) => ({
+											...d,
+											tts:
+												d.tts === null
+													? d.tts
+													: { ...d.tts, voices: d.tts.voices.filter((_, j) => j !== i) },
+										}))
+									}
+									placeholder="add a voice"
+									ariaLabel="add alternate voice"
+									suggestions={VOICE_SUGGESTIONS}
+									cap="Alternate voices — picked by reply language wherever speech is synthesized; the speak tool may also name one per call. Language follows the voice name."
+								/>
+							</>
+						)}
+					</div>
+					<h2 className="ops-h2">Transcription</h2>
+					<div className="card">
+						<Row
+							label="Speech to text"
+							cap="Voice and video notes are transcribed on arrival; the bot can transcribe other audio files on request."
+						>
+							<Switch
+								on={draft.transcription !== null}
+								ariaLabel="speech to text"
+								onChange={(on) =>
+									setDraft((d) => {
+										if (on) {
+											return {
+												...d,
+												transcription: last.current.transcription ?? emptyTranscription(),
+											};
 										}
-									/>
-								</Row>
-								{draft.tts !== null && (
-									<>
-										<Field
-											label="Voice"
-											value={draft.tts.voice}
-											onChange={(v) =>
-												setDraft((d) => ({
-													...d,
-													tts: d.tts === null ? d.tts : { ...d.tts, voice: v },
-												}))
-											}
-											placeholder="en-US-AriaNeural"
-											mono
-											cap="Default for /voice mode, the speaker button, and the speak tool — an alternate matching the reply's language wins; this speaks when the language is unclear or none matches."
-										/>
-										<Field
-											label="Rate"
-											value={draft.tts.rate}
-											onChange={(v) =>
-												setDraft((d) => ({
-													...d,
-													tts: d.tts === null ? d.tts : { ...d.tts, rate: v },
-												}))
-											}
-											placeholder="+10%"
-											mono
-										/>
-										<ChipsEditor
-											values={draft.tts.voices}
-											onAdd={(v) =>
-												setDraft((d) => ({
-													...d,
-													tts: d.tts === null ? d.tts : { ...d.tts, voices: [...d.tts.voices, v] },
-												}))
-											}
-											onRemove={(i) =>
-												setDraft((d) => ({
-													...d,
-													tts:
-														d.tts === null
-															? d.tts
-															: { ...d.tts, voices: d.tts.voices.filter((_, j) => j !== i) },
-												}))
-											}
-											placeholder="add a voice"
-											ariaLabel="add alternate voice"
-											suggestions={VOICE_SUGGESTIONS}
-											cap="Alternate voices — picked by reply language wherever speech is synthesized; the speak tool may also name one per call. Language follows the voice name."
-										/>
-									</>
-								)}
-							</div>
-							<h2 className="ops-h2">Transcription</h2>
-							<div className="card">
+										last.current.transcription = d.transcription;
+										return { ...d, transcription: null };
+									})
+								}
+							/>
+						</Row>
+						{draft.transcription !== null && (
+							<>
 								<Row
-									label="Speech to text"
-									cap="Voice and video notes are transcribed on arrival; the bot can transcribe other audio files on request."
+									label="Engine"
+									cap="Whistle runs on this machine with no model or secret; the rest are cloud services."
 								>
-									<Switch
-										on={draft.transcription !== null}
-										ariaLabel="speech to text"
-										onChange={(on) =>
-											setDraft((d) => {
-												if (on) {
-													return {
-														...d,
-														transcription: last.current.transcription ?? emptyTranscription(),
-													};
-												}
-												last.current.transcription = d.transcription;
-												return { ...d, transcription: null };
-											})
-										}
-									/>
-								</Row>
-								{draft.transcription !== null && (
-									<>
-										<Row
-											label="Engine"
-											cap="Whistle runs on this machine with no model or secret; the rest are cloud services."
-										>
-											<select
-												className="mono"
-												aria-label="transcription kind"
-												value={draft.transcription.kind}
-												onChange={(e) => {
-													const next = kinds?.transcription.find((k) => k === e.target.value);
-													if (next === undefined) return;
-													setDraft((d) =>
-														d.transcription === null
-															? d
-															: {
-																	...d,
-																	transcription: switchTranscriptionKind(d.transcription, next),
-																},
-													);
-												}}
-											>
-												{(kinds?.transcription ?? []).map((k) => (
-													<option key={k} value={k}>
-														{k}
-													</option>
-												))}
-											</select>
-										</Row>
-										{draft.transcription.kind === "whistle" ? (
-											<div className="cap ops-cap">
-												Whistle's keyword list and engine path can't be edited here yet — saving
-												keeps them exactly as they are.
-											</div>
-										) : (
-											<>
-												<Field
-													label="Model"
-													value={draft.transcription.model}
-													onChange={(v) => patchTranscription({ model: v })}
-													placeholder="kind default"
-													mono
-													cap="Blank uses the kind's default."
-												/>
-												<Field
-													label="Secret name"
-													value={draft.transcription.auth}
-													onChange={(v) => patchTranscription({ auth: v })}
-													placeholder="in auth.jsonl — not the secret itself"
-													mono
-												/>
-											</>
-										)}
-										<Field
-											label="Language"
-											value={draft.transcription.language}
-											onChange={(v) => patchTranscription({ language: v })}
-											placeholder="detect"
-											mono
-											cap="An ISO code like es. Blank lets the engine detect it."
-										/>
-									</>
-								)}
-							</div>
-						</>
-					)}
-
-					{section === "web" && (
-						<>
-							<h2 className="ops-h2">Search</h2>
-							<div className="card">
-								<Row label="Search tool" cap="Off removes search from the agent's tools.">
-									<Switch
-										on={draft.search !== null}
-										ariaLabel="search tool"
-										onChange={(on) =>
-											setDraft((d) => {
-												if (on) return { ...d, search: last.current.search ?? [] };
-												last.current.search = d.search;
-												return { ...d, search: null };
-											})
-										}
-									/>
-								</Row>
-							</div>
-							{draft.search !== null && (
-								<>
-									<ChainEditor
-										entries={draft.search}
-										kinds={kinds.search}
-										meta={SEARCH_META}
-										onChange={(search) => patchDraft({ search })}
-									/>
-									<div className="cap ops-cap">
-										Tried top to bottom. A failure moves on to the next; an empty result is an
-										answer and stops the chain.
-									</div>
-								</>
-							)}
-							<h2 className="ops-h2">Fetch</h2>
-							<div className="card">
-								<Row
-									label="Custom extraction chain"
-									cap="Off uses built-in extraction: direct download, no key. JS-heavy sites need the browser skill either way."
-								>
-									<Switch
-										on={draft.fetch !== null}
-										ariaLabel="custom extraction chain"
-										onChange={(on) =>
-											setDraft((d) => {
-												if (on) return { ...d, fetch: last.current.fetch ?? [] };
-												last.current.fetch = d.fetch;
-												return { ...d, fetch: null };
-											})
-										}
-									/>
-								</Row>
-							</div>
-							{draft.fetch !== null && (
-								<>
-									<ChainEditor
-										entries={draft.fetch}
-										kinds={kinds.fetch}
-										meta={FETCH_META}
-										onChange={(fetch) => patchDraft({ fetch })}
-									/>
-									<div className="cap ops-cap">
-										Same rule as search — order is the fallback order.
-									</div>
-								</>
-							)}
-						</>
-					)}
-
-					{section === "memory" && (
-						<>
-							<p className="lead">
-								What goblin retains and recalls — browse it in the Memories view.
-							</p>
-							<h2 className="ops-h2">Long-term memory</h2>
-							<div className="card">
-								<Row
-									label="Memory"
-									cap="Self-hosted hindsight. Completed exchanges are retained; relevant facts are recalled into new turns."
-								>
-									<Switch
-										on={draft.memory !== null}
-										ariaLabel="long-term memory"
-										onChange={(on) =>
-											setDraft((d) => {
-												if (on) {
-													return {
-														...d,
-														memory: last.current.memory ?? {
-															baseUrl: "",
-															bankId: "",
-															auth: "",
-															budget: "low",
-															tokens: "",
-															timeout: "",
+									<select
+										className="mono"
+										aria-label="transcription kind"
+										value={draft.transcription.kind}
+										onChange={(e) => {
+											const next = kinds?.transcription.find((k) => k === e.target.value);
+											if (next === undefined) return;
+											setDraft((d) =>
+												d.transcription === null
+													? d
+													: {
+															...d,
+															transcription: switchTranscriptionKind(d.transcription, next),
 														},
-													};
-												}
-												last.current.memory = d.memory;
-												return { ...d, memory: null };
-											})
-										}
-									/>
+											);
+										}}
+									>
+										{(kinds?.transcription ?? []).map((k) => (
+											<option key={k} value={k}>
+												{k}
+											</option>
+										))}
+									</select>
 								</Row>
-								{draft.memory !== null && (
+								{draft.transcription.kind === "whistle" ? (
+									<div className="cap ops-cap">
+										Whistle's keyword list and engine path can't be edited here yet — saving keeps
+										them exactly as they are.
+									</div>
+								) : (
 									<>
 										<Field
-											label="Hindsight url"
-											value={draft.memory.baseUrl}
-											onChange={(v) =>
-												setDraft((d) => ({
-													...d,
-													memory: d.memory === null ? d.memory : { ...d.memory, baseUrl: v },
-												}))
-											}
-											placeholder="http://127.0.0.1:8888"
+											label="Model"
+											value={draft.transcription.model}
+											onChange={(v) => patchTranscription({ model: v })}
+											placeholder="kind default"
 											mono
-										/>
-										<Field
-											label="Bank id"
-											value={draft.memory.bankId}
-											onChange={(v) =>
-												setDraft((d) => ({
-													...d,
-													memory: d.memory === null ? d.memory : { ...d.memory, bankId: v },
-												}))
-											}
-											placeholder="goblin"
-											mono
+											cap="Blank uses the kind's default."
 										/>
 										<Field
 											label="Secret name"
-											value={draft.memory.auth}
+											value={draft.transcription.auth}
+											onChange={(v) => patchTranscription({ auth: v })}
+											placeholder="in auth.jsonl — not the secret itself"
+											mono
+										/>
+									</>
+								)}
+								<Field
+									label="Language"
+									value={draft.transcription.language}
+									onChange={(v) => patchTranscription({ language: v })}
+									placeholder="detect"
+									mono
+									cap="An ISO code like es. Blank lets the engine detect it."
+								/>
+							</>
+						)}
+					</div>
+				</>
+			)}
+
+			{eff === "web" && (
+				<>
+					<h2 className="ops-h2">Search</h2>
+					<div className="card">
+						<Row label="Search tool" cap="Off removes search from the agent's tools.">
+							<Switch
+								on={draft.search !== null}
+								ariaLabel="search tool"
+								onChange={(on) =>
+									setDraft((d) => {
+										if (on) return { ...d, search: last.current.search ?? [] };
+										last.current.search = d.search;
+										return { ...d, search: null };
+									})
+								}
+							/>
+						</Row>
+					</div>
+					{draft.search !== null && (
+						<>
+							<ChainEditor
+								entries={draft.search}
+								kinds={kinds.search}
+								meta={SEARCH_META}
+								onChange={(search) => patchDraft({ search })}
+							/>
+							<div className="cap ops-cap">
+								Tried top to bottom. A failure moves on to the next; an empty result is an answer
+								and stops the chain.
+							</div>
+						</>
+					)}
+					<h2 className="ops-h2">Fetch</h2>
+					<div className="card">
+						<Row
+							label="Custom extraction chain"
+							cap="Off uses built-in extraction: direct download, no key. JS-heavy sites need the browser skill either way."
+						>
+							<Switch
+								on={draft.fetch !== null}
+								ariaLabel="custom extraction chain"
+								onChange={(on) =>
+									setDraft((d) => {
+										if (on) return { ...d, fetch: last.current.fetch ?? [] };
+										last.current.fetch = d.fetch;
+										return { ...d, fetch: null };
+									})
+								}
+							/>
+						</Row>
+					</div>
+					{draft.fetch !== null && (
+						<>
+							<ChainEditor
+								entries={draft.fetch}
+								kinds={kinds.fetch}
+								meta={FETCH_META}
+								onChange={(fetch) => patchDraft({ fetch })}
+							/>
+							<div className="cap ops-cap">Same rule as search — order is the fallback order.</div>
+						</>
+					)}
+				</>
+			)}
+
+			{eff === "memory" && (
+				<>
+					<p className="lead">What goblin retains and recalls — browse it in the Memories view.</p>
+					<h2 className="ops-h2">Long-term memory</h2>
+					<div className="card">
+						<Row
+							label="Memory"
+							cap="Self-hosted hindsight. Completed exchanges are retained; relevant facts are recalled into new turns."
+						>
+							<Switch
+								on={draft.memory !== null}
+								ariaLabel="long-term memory"
+								onChange={(on) =>
+									setDraft((d) => {
+										if (on) {
+											return {
+												...d,
+												memory: last.current.memory ?? {
+													baseUrl: "",
+													bankId: "",
+													auth: "",
+													budget: "low",
+													tokens: "",
+													timeout: "",
+												},
+											};
+										}
+										last.current.memory = d.memory;
+										return { ...d, memory: null };
+									})
+								}
+							/>
+						</Row>
+						{draft.memory !== null && (
+							<>
+								<Field
+									label="Hindsight url"
+									value={draft.memory.baseUrl}
+									onChange={(v) =>
+										setDraft((d) => ({
+											...d,
+											memory: d.memory === null ? d.memory : { ...d.memory, baseUrl: v },
+										}))
+									}
+									placeholder="http://127.0.0.1:8888"
+									mono
+								/>
+								<Field
+									label="Bank id"
+									value={draft.memory.bankId}
+									onChange={(v) =>
+										setDraft((d) => ({
+											...d,
+											memory: d.memory === null ? d.memory : { ...d.memory, bankId: v },
+										}))
+									}
+									placeholder="goblin"
+									mono
+								/>
+								<Field
+									label="Secret name"
+									value={draft.memory.auth}
+									onChange={(v) =>
+										setDraft((d) => ({
+											...d,
+											memory: d.memory === null ? d.memory : { ...d.memory, auth: v },
+										}))
+									}
+									placeholder="in auth.jsonl — blank for loopback"
+									mono
+								/>
+								<Row label="Recall budget" col>
+									<Seg
+										options={["low", "mid", "high"]}
+										value={draft.memory.budget || "low"}
+										ariaLabel="Recall budget"
+										onChange={(v) =>
+											setDraft((d) => ({
+												...d,
+												memory: d.memory === null ? d.memory : { ...d.memory, budget: v },
+											}))
+										}
+									/>
+								</Row>
+								<details className="tuning">
+									<summary>Recall tuning</summary>
+									<div className="inner">
+										<Field
+											label="Timeout (ms)"
+											value={draft.memory.timeout}
 											onChange={(v) =>
 												setDraft((d) => ({
 													...d,
-													memory: d.memory === null ? d.memory : { ...d.memory, auth: v },
+													memory: d.memory === null ? d.memory : { ...d.memory, timeout: v },
 												}))
 											}
-											placeholder="in auth.jsonl — blank for loopback"
+											placeholder="2000"
+											numeric
 											mono
 										/>
-										<Row label="Recall budget" col>
-											<Seg
-												options={["low", "mid", "high"]}
-												value={draft.memory.budget || "low"}
-												ariaLabel="Recall budget"
-												onChange={(v) =>
-													setDraft((d) => ({
-														...d,
-														memory: d.memory === null ? d.memory : { ...d.memory, budget: v },
-													}))
-												}
-											/>
-										</Row>
-										<details className="tuning">
-											<summary>Recall tuning</summary>
-											<div className="inner">
-												<Field
-													label="Timeout (ms)"
-													value={draft.memory.timeout}
-													onChange={(v) =>
-														setDraft((d) => ({
-															...d,
-															memory: d.memory === null ? d.memory : { ...d.memory, timeout: v },
-														}))
-													}
-													placeholder="2000"
-													numeric
-													mono
-												/>
-												<Field
-													label="Max tokens"
-													value={draft.memory.tokens}
-													onChange={(v) =>
-														setDraft((d) => ({
-															...d,
-															memory: d.memory === null ? d.memory : { ...d.memory, tokens: v },
-														}))
-													}
-													placeholder="1024"
-													numeric
-													mono
-													cap="Tight by default — turns must not wait on memory."
-												/>
-											</div>
-										</details>
-									</>
-								)}
-							</div>
-						</>
-					)}
+										<Field
+											label="Max tokens"
+											value={draft.memory.tokens}
+											onChange={(v) =>
+												setDraft((d) => ({
+													...d,
+													memory: d.memory === null ? d.memory : { ...d.memory, tokens: v },
+												}))
+											}
+											placeholder="1024"
+											numeric
+											mono
+											cap="Tight by default — turns must not wait on memory."
+										/>
+									</div>
+								</details>
+							</>
+						)}
+					</div>
+				</>
+			)}
 
-					{section === "providers" && (
-						<>
-							<p className="lead">
-								Model vendors goblin can call. Secrets are names in auth.jsonl — the values never
-								land in config.
-							</p>
-							<h2 className="ops-h2">Providers</h2>
-							{provs.map((p) => (
-								<ProviderCard
-									key={p.id}
-									prov={p}
-									kinds={kinds.provider}
-									referencedBy={p.name !== "" ? providerRefs(p.name) : []}
-									onPatch={(patch) => patchProv(p.id, patch)}
-									onRename={(v) => renameProvider(p.id, v)}
-									onRemove={() => removeProvider(p)}
-								/>
-							))}
-							<button className="ghost" type="button" onClick={addProvider}>
-								+ Add provider
-							</button>
-						</>
-					)}
+			{eff === "providers" && (
+				<>
+					<p className="lead">
+						Model vendors goblin can call. Secrets are names in auth.jsonl — the values never land
+						in config.
+					</p>
+					<h2 className="ops-h2">Providers</h2>
+					<div className="prov-grid">
+						{provs.map((p) => (
+							<ProviderCard
+								key={p.id}
+								prov={p}
+								kinds={kinds.provider}
+								referencedBy={p.name !== "" ? providerRefs(p.name) : []}
+								onPatch={(patch) => patchProv(p.id, patch)}
+								onRename={(v) => renameProvider(p.id, v)}
+								onRemove={() => removeProvider(p)}
+							/>
+						))}
+					</div>
+					<button className="ghost" type="button" onClick={addProvider}>
+						+ Add provider
+					</button>
+				</>
+			)}
 
-					{section === "access" && (
-						<>
-							<h2 className="ops-h2">Allowed users</h2>
-							<div className="card">
-								<ChipsEditor
-									values={draft.allowedUsers.map(String)}
-									onAdd={addUser}
-									onRemove={(i) =>
-										patchDraft({ allowedUsers: draft.allowedUsers.filter((_, j) => j !== i) })
-									}
-									placeholder="telegram user id"
-									ariaLabel="add allowed user"
-									numeric
-									cap="Telegram user ids that may talk to goblin and open these settings. The list can't be emptied — that would lock everyone out."
-								/>
-							</div>
-							<h2 className="ops-h2">Doors</h2>
-							<div className="card">
-								<Field
-									label="Public url"
-									value={draft.publicUrl}
-									onChange={(v) => patchDraft({ publicUrl: v })}
-									placeholder="https://…"
-									mono
-									cap="HTTPS door for this app — tailscale serve, funnel, or a reverse proxy pointed at the port below."
-								/>
-								<Field
-									label="Bot api root"
-									value={draft.apiRoot}
-									onChange={(v) => patchDraft({ apiRoot: v })}
-									placeholder="http://127.0.0.1:8081"
-									mono
-									cap="Self-hosted telegram-bot-api in --local mode, for large files. Blank = Telegram cloud. Restart applies."
-								/>
-								<Field
-									label="New conversation after (quiet minutes)"
-									value={draft.dmGap}
-									onChange={(v) => patchDraft({ dmGap: v })}
-									placeholder="45"
-									numeric
-									mono
-									cap="Quiet minutes before a DM may roll into a new conversation. Applies immediately."
-								/>
-							</div>
-							<h2 className="ops-h2">Advanced</h2>
-							<div className="card">
-								<Field
-									label="Http port"
-									value={draft.port}
-									onChange={(v) => patchDraft({ port: v })}
-									placeholder="8787"
-									numeric
-									mono
-									cap="The port this settings app is served on. Restart applies."
-								/>
-								<Row label="Log level" col>
-									<Seg
-										options={["debug", "info", "warn", "error"]}
-										value={draft.logLevel}
-										ariaLabel="Log level"
-										onChange={(v) => patchDraft({ logLevel: v as SettingsDraft["logLevel"] })}
-									/>
-								</Row>
-							</div>
-						</>
-					)}
+			{eff === "access" && (
+				<>
+					<h2 className="ops-h2">Allowed users</h2>
+					<div className="card">
+						<ChipsEditor
+							values={draft.allowedUsers.map(String)}
+							onAdd={addUser}
+							onRemove={(i) =>
+								patchDraft({ allowedUsers: draft.allowedUsers.filter((_, j) => j !== i) })
+							}
+							placeholder="telegram user id"
+							ariaLabel="add allowed user"
+							numeric
+							cap="Telegram user ids that may talk to goblin and open these settings. The list can't be emptied — that would lock everyone out."
+						/>
+					</div>
+					<h2 className="ops-h2">Doors</h2>
+					<div className="card">
+						<Field
+							label="Public url"
+							value={draft.publicUrl}
+							onChange={(v) => patchDraft({ publicUrl: v })}
+							placeholder="https://…"
+							mono
+							cap="HTTPS door for this app — tailscale serve, funnel, or a reverse proxy pointed at the port below."
+						/>
+						<Field
+							label="Bot api root"
+							value={draft.apiRoot}
+							onChange={(v) => patchDraft({ apiRoot: v })}
+							placeholder="http://127.0.0.1:8081"
+							mono
+							cap="Self-hosted telegram-bot-api in --local mode, for large files. Blank = Telegram cloud. Restart applies."
+						/>
+						<Field
+							label="New conversation after (quiet minutes)"
+							value={draft.dmGap}
+							onChange={(v) => patchDraft({ dmGap: v })}
+							placeholder="45"
+							numeric
+							mono
+							cap="Quiet minutes before a DM may roll into a new conversation. Applies immediately."
+						/>
+					</div>
+					<h2 className="ops-h2">Advanced</h2>
+					<div className="card">
+						<Field
+							label="Http port"
+							value={draft.port}
+							onChange={(v) => patchDraft({ port: v })}
+							placeholder="8787"
+							numeric
+							mono
+							cap="The port this settings app is served on. Restart applies."
+						/>
+						<Row label="Log level" col>
+							<Seg
+								options={["debug", "info", "warn", "error"]}
+								value={draft.logLevel}
+								ariaLabel="Log level"
+								onChange={(v) => patchDraft({ logLevel: v as SettingsDraft["logLevel"] })}
+							/>
+						</Row>
+					</div>
 				</>
 			)}
 

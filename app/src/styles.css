@@ -1889,6 +1889,87 @@ a.hit-title {
 	opacity: 0.35;
 }
 
+/* Two-pane settings on wide viewports: a persistent section nav in a
+   left column replaces the drill-in index (the index stays the
+   narrow-screen path). Every sibling after the nav lands in column
+   two; the nav spans all rows so the grid never reserves space under
+   it — the span count only needs to exceed the section's row count. */
+.settings-h2 {
+	margin-top: 0;
+}
+.snav {
+	display: flex;
+	width: 100%;
+	text-align: left;
+	border-radius: 8px;
+	padding: 0.45rem 0.6rem;
+	color: var(--app-fg-muted);
+}
+.snav:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.snav.on {
+	background: var(--app-active);
+	color: var(--app-fg);
+}
+.prov-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
+	gap: 0.6rem;
+}
+.prov-grid .prov {
+	margin-bottom: 0;
+}
+.settings-nav {
+	display: none;
+}
+/* The settings page drops the shared 5rem bottom padding: the sticky
+   savebar pins to the scrollport bottom while scrolling and lands
+   flush at scroll end, instead of floating over dead padding. */
+.ops.settings {
+	padding-bottom: 0;
+}
+/* At the index, the narrow screen sees only the index and the save
+   bar — the eff-fallback section stays mounted but out of view so a
+   wide viewport can show it in place of the index. */
+@media (max-width: 959px) {
+	.settings.at-index > :not(.settings-index):not(.savebar):not(.veil) {
+		display: none;
+	}
+}
+@media (min-width: 960px) {
+	.ops.settings {
+		display: grid;
+		grid-template-columns: 12.5rem minmax(0, 1fr);
+		column-gap: 2.25rem;
+		max-width: 68rem;
+	}
+	.ops.settings > * {
+		grid-column: 2;
+	}
+	.ops.settings > .settings-nav {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		grid-column: 1;
+		grid-row: 1 / span 999;
+		align-self: start;
+		position: sticky;
+		top: 0;
+	}
+	/* Wide viewports have the nav — the index card and the back row
+	   are narrow-screen chrome. At the index the eff section shows in
+	   the content column so the pane is never dead space. */
+	.settings-index,
+	.settings .ops-back {
+		display: none;
+	}
+	.ops.settings > .savebar {
+		grid-column: 1 / -1;
+	}
+}
+
 .dirty-pill {
 	font-family: var(--font-mono);
 	font-size: 10px;
@@ -1904,7 +1985,7 @@ a.hit-title {
 .savebar {
 	position: sticky;
 	bottom: 0;
-	margin: 1rem -1rem -5rem;
+	margin: 1rem -1rem 0;
 	padding: 0.6rem 1rem calc(0.6rem + env(safe-area-inset-bottom, 0));
 	border-top: 1px solid var(--app-divider);
 	background: color-mix(in oklab, var(--app-bg) 92%, transparent);

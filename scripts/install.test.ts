@@ -103,7 +103,7 @@ function fixture(
 '--no-install ${repo}/scripts/install.ts '*) exec '${realBun}' "$@" ;;
 'install --frozen-lockfile') ${mode.startsWith("cancel-") ? `sleep 120 >/dev/null 2>&1 & child=$!; printf '%s' "$child" > '${join(dir, "child-pid")}'; sleep 0.05; kill -${mode.slice(7)} "$PPID"; wait "$child"` : mode === "dependency" ? "echo FIXTURE_SECRET >&2; exit 8" : `ln -s '${join(root, "node_modules")}' node_modules`} ;;
 '--no-install run src/doctor.ts --phase preflight --json') ${mode.startsWith("real-") ? `printf '%s' "$PPID" > '${join(dir, "installer-pid")}'; exec '${realBun}' --no-install run '${join(repo, "src", "doctor.ts")}' --phase preflight --json > '${join(dir, "doctor-report.json")}'` : mode === "preflight" ? "echo FIXTURE_SECRET >&2; exit 1" : "printf '{\"ok\":true}'"} ;;
-'--no-install run scripts/install-options.ts') printf '${mode === "badoptions" ? "invalid FIXTURE_SECRET" : JSON.stringify({ delegation: mode === "optional", keys: mode === "optional", port: mode === "port-zero" ? 0 : 8787, profiles: mode === "optional" ? ["goblin-main"] : [] })}' ;;
+'--no-install run scripts/install-options.ts') printf '${mode === "badoptions" ? "invalid FIXTURE_SECRET" : JSON.stringify({ delegation: mode === "optional", keys: mode === "optional", port: mode === "port-zero" ? 0 : 8787, profiles: mode === "optional" ? ["goblin-main", "alpha-one"] : [] })}' ;;
 'run app:build') ${mode === "build" ? "exit 1" : "mkdir -p app/dist; printf fixture > app/dist/index.html"} ;;
 '--no-install run scripts/check-app-assets.ts '*) ${mode === "assets" ? "exit 1" : ":"} ;;
 '--no-install run scripts/check-startup.ts '*) ${mode === "startup-descendant" ? `exec '${realBun}' --no-install run '${join(repo, "scripts", "startup-runner.ts")}'` : mode === "startup" ? "echo 'install: startup ready port mismatch' >&2; echo FIXTURE_SECRET >&2; exit 1" : "systemctl --user enable --now goblin.service"} ;;
@@ -306,9 +306,13 @@ describe("fresh installer", () => {
 		expect(result.calls).toContain("enable --now goblin-herdr.service");
 		expect(result.calls).toContain("enable --now goblin-keys.timer");
 		expect(result.calls).not.toContain("pass-keys ");
-		// Warm targets render from the reported profiles; only the MCP
-		// lane's line stays pinned by the template.
+		// Warm targets render from the reported profiles — one line per
+		// profile, sorted — next to the template's pinned MCP-lane line.
 		expect(result.keysUnit).toContain("warm goblin-main");
+		expect(result.keysUnit).toContain("warm alpha-one");
+		expect(result.keysUnit.indexOf("warm alpha-one")).toBeLessThan(
+			result.keysUnit.indexOf("warm goblin-main"),
+		);
 		expect(result.keysUnit).toContain("warm goblin-mcp-dev");
 		expect(result.keysUnit).not.toContain("@WARM_AUTH_PROFILES@");
 	});

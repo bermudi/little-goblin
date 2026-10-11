@@ -14,7 +14,7 @@ import { parseHTML } from "linkedom";
 import JSON5 from "json5";
 import { z } from "zod";
 import { invokesPassCliDirectly, parseAuthFile, type AuthRecord } from "./auth.ts";
-import { parseConfig, type Config } from "./config.ts";
+import { authReferences, parseConfig, type Config } from "./config.ts";
 import { boundedRun, killProc, spawnProc, type ProcessGroupMode } from "./proc.ts";
 import { sqliteProbeSchema } from "./health-sqlite.ts";
 
@@ -289,26 +289,6 @@ function configCheck(home: string): { finding: HealthResult; config?: Config } {
 	} catch (error) {
 		return { finding: failure("config", scope, error, start, "Read/validate goblin.json5") };
 	}
-}
-function authReferences(config: Config): Set<string> {
-	const refs = new Set<string>(["telegram"]);
-	for (const provider of Object.values(config.providers))
-		if ("auth" in provider) refs.add(provider.auth);
-	for (const feature of [
-		config.memory,
-		config.transcription,
-		config.reviewer,
-		config.system1,
-		...(config.search ?? []),
-		...(config.fetch ?? []),
-	])
-		if (feature && "auth" in feature && feature.auth) refs.add(feature.auth);
-	if (config.appToken) refs.add(config.appToken);
-	if (config.mail) {
-		refs.add(config.mail.clientSecretAuth);
-		refs.add(config.mail.sendAuth);
-	}
-	return refs;
 }
 function authCheck(
 	home: string,

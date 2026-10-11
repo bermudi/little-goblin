@@ -59,6 +59,25 @@ test("a non-default Pass profile is accepted and reported as a warm target", () 
 	});
 	expect(result.stderr).toBe("");
 });
+test("warm targets are config-referenced records only: deduped, sorted, stale excluded", () => {
+	const result = inspect(
+		'{providers:{fixture:{kind:"openai-compatible",baseUrl:"https://fixture.invalid",auth:"fixture"},second:{kind:"openai-compatible",baseUrl:"https://fixture.invalid",auth:"second"}},model:"fixture/model",allowedUsers:[1],tts:""}',
+		[
+			'{"name":"telegram","value":"!pass-keys get beta FIXTURE_SECRET"}',
+			'{"name":"fixture","value":"!pass-keys get beta FIXTURE_SECRET"}',
+			'{"name":"second","value":"!pass-keys get alpha FIXTURE_SECRET"}',
+			'{"name":"stale","value":"!pass-keys get gamma FIXTURE_SECRET"}',
+		].join("\n"),
+	);
+	expect(result.status).toBe(0);
+	expect(JSON.parse(result.stdout) as unknown).toEqual({
+		delegation: false,
+		keys: true,
+		port: 8787,
+		profiles: ["alpha", "beta"],
+	});
+	expect(result.stderr).toBe("");
+});
 for (const [name, settings, auth] of [
 	["malformed config", "{value:FIXTURE_SECRET", ""],
 	["malformed auth", `${config}}`, '{"name":"fixture","value":FIXTURE_SECRET}'],

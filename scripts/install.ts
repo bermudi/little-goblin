@@ -296,8 +296,9 @@ async function install(): Promise<void> {
 		if (passKeys) {
 			names.push("goblin-keys.service", "goblin-keys.timer");
 			// Warm targets are data, not installer constants: one line per
-			// auth-record profile, next to the template's pinned MCP-lane
-			// line (scripts/mcp pins the same profile).
+			// config-referenced auth record (the set preflight gates), next
+			// to the template's pinned MCP-lane line (scripts/mcp pins the
+			// same profile).
 			writeFileSync(
 				join(staging, "goblin-keys.service"),
 				render("goblin-keys.service", [

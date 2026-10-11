@@ -28,6 +28,7 @@ import {
 	transcriptionKinds,
 	transcriptionSchema,
 	splitModelRef,
+	authReferences,
 	writeConfig,
 	parseConfig,
 	type Config,
@@ -772,6 +773,22 @@ describe("splitModelRef", () => {
 	});
 	test("rejects refs without a provider", () => {
 		expect(() => splitModelRef("glm-4.6")).toThrow();
+	});
+});
+
+describe("authReferences", () => {
+	test("telegram is implicit; provider/feature auth names join; credential-free features do not", () => {
+		const c = parseConfig({
+			providers: {
+				zai: { kind: "openai-compatible", baseUrl: "https://fixture.invalid", auth: "zai" },
+				codex: { kind: "codex" },
+			},
+			model: "zai/glm-4.6",
+			allowedUsers: [7],
+			search: [{ kind: "brave", auth: "brave-key" }],
+			appToken: "app-token-record",
+		});
+		expect([...authReferences(c)].sort()).toEqual(["app-token-record", "brave-key", "telegram", "zai"]);
 	});
 });
 

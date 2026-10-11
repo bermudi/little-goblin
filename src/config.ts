@@ -841,3 +841,27 @@ export function splitModelRef(ref: string): { provider: string; modelId: string 
 	}
 	return { provider: ref.slice(0, idx), modelId: ref.slice(idx + 1) };
 }
+
+// Auth record names goblin resolves at boot ("telegram" is implicit).
+// Single source for the doctor's preflight gate and the installer's
+// warm-target rendering — deriving the set twice is how they drift.
+export function authReferences(config: Config): Set<string> {
+	const refs = new Set<string>(["telegram"]);
+	for (const provider of Object.values(config.providers))
+		if ("auth" in provider) refs.add(provider.auth);
+	for (const feature of [
+		config.memory,
+		config.transcription,
+		config.reviewer,
+		config.system1,
+		...(config.search ?? []),
+		...(config.fetch ?? []),
+	])
+		if (feature && "auth" in feature && feature.auth) refs.add(feature.auth);
+	if (config.appToken) refs.add(config.appToken);
+	if (config.mail) {
+		refs.add(config.mail.clientSecretAuth);
+		refs.add(config.mail.sendAuth);
+	}
+	return refs;
+}

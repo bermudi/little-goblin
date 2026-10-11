@@ -154,8 +154,9 @@ parsing, the If-Match etag, the serialized save queue, the
 fresh-from-disk merge — so a write through either door lands
 identically. The
 one behavioral difference is the self-lockout guard: the mini app
-refuses to remove the *requesting* Telegram id from `allowedUsers`;
-the app door has no requester, so it refuses an empty list. Wire types
+refuses to remove the *requesting* Telegram id from `operators`;
+the app door has no requester, so it refuses an empty `operators`
+list. Wire types
 live in `src/http/operator-wire.ts`, a leaf module both clients
 typecheck against (the mini app re-imports them through `mod.ts`; the
 React client imports them directly).
@@ -372,8 +373,8 @@ outcome); `spin-off ping` (app conversation, ping message id);
 
 
 **Landing rulings (stage 2, 2026-10-03).** Settled while building:
-- *Who gets rung:* every `allowedUsers` id, as a private chat, the way
-  webhook URLs travel (`sendPrivate`). One operator today, so one ping.
+- *Who gets rung:* every `operators` id, as a private chat, the way
+  webhook URLs travel (`sendPrivate`) — one ping per operator account.
 - *App-pinned delegation rows* store `chat_id = 0, thread_id = NULL`
   plus `app_conversation`. Notices for them go through `wakeApp`. If
   the operator deleted the conversation, the notice is dropped with a

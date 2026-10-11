@@ -51,7 +51,7 @@ function fixture() {
 	process.env.HOME = root;
 	const userHome = spyOn(os, "homedir").mockReturnValue(root);
 	restorers.push(() => userHome.mockRestore());
-	const config = { providers: { fake: { kind: "codex" } }, model: "fake/model", allowedUsers: [1] };
+	const config = { providers: { fake: { kind: "codex" } }, model: "fake/model", operators: [1] };
 	writeFileSync(join(home, "goblin.json5"), JSON.stringify(config));
 	writeFileSync(join(home, "auth.jsonl"), JSON.stringify({ name: "telegram", value: secret }), {
 		mode: 0o600,

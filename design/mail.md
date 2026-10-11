@@ -102,7 +102,7 @@ token plumbing in-process was a pita, and gws owns it instead — one
   (boot catch-up included). The tool only requests; the mail watcher
   only polls filters and holds no outbox seam; the gate returns
   "awaiting operator approval". Only the callback from an
-  `allowedUsers` id sends — with the send token, which no tool path
+  `operators` id sends — with the send token, which no tool path
   and no skill ever touches. Threading resolves at send time from the
   stored reply target — the lookup is a read, so it rides the read
   credential (the send credential still never leaves the approval

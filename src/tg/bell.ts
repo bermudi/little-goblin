@@ -30,7 +30,7 @@ export interface BellDeps {
 	store: ConversationStore;
 	pings: PingStore;
 	/** Live reads — the mini app can change either between turns. */
-	allowedUsers(): number[];
+	operators(): number[];
 	publicUrl(): string | undefined;
 	/** Per-send ceiling — tests inject a short one. */
 	timeoutMs?: number;
@@ -110,7 +110,7 @@ export function makeBellSink(
 			}
 			const publicUrl = deps.publicUrl();
 			let delivered = false;
-			for (const chat of deps.allowedUsers()) {
+			for (const chat of deps.operators()) {
 				// Each chat independently — one failing operator must not
 				// silence the rest, and nothing escapes onDone.
 				try {

@@ -18,7 +18,7 @@ export interface InitDataUser {
 export function validateInitData(
 	initData: string,
 	botToken: string,
-	allowedUsers: Set<number>,
+	operators: Set<number>,
 ): InitDataUser | null {
 	const params = new URLSearchParams(initData);
 	const hash = params.get("hash");
@@ -53,6 +53,6 @@ export function validateInitData(
 	} catch {
 		return null;
 	}
-	if (!allowedUsers.has(id)) return null;
+	if (!operators.has(id)) return null;
 	return { id };
 }

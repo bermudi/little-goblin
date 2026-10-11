@@ -43,6 +43,7 @@ const config: Config = {
 	tts: false,
 	favorites: [],
 	thinking: "medium",
+	operators: [1],
 	allowedUsers: [1],
 	telegram: { dmGapMinutes: 45 },
 	http: { port: 8787 },

@@ -208,16 +208,25 @@ export function buildSystemPrompt(
 	// operator out. Built before any file read so a sandbox build
 	// touches nothing on disk.
 	if (conv.persona === "guest") {
+		// Standing lane (Roles and permissions, 2026-10-11): an allowed
+		// user's own DM is a multi-turn sandbox; on the guest surface the
+		// one-reply-per-summons physics still applies.
+		const standing = channelOf(conv.id) !== "guest";
 		const text = [
-			"You are goblin, a helpful assistant answering a message in a",
-			"third-party chat. You help whoever summoned you — answer briefly,",
-			"plainly, and self-containedly.",
+			"You are goblin, a helpful assistant.",
+			standing
+				? "You are chatting with someone the operator has approved. This is their own chat with you — reply normally, over multiple turns."
+				: "You are answering a message in a third-party chat. You help whoever summoned you — answer briefly, plainly, and self-containedly.",
 			"",
 			"## environment",
 			"",
 			`- Tools: ${tools.join(", ")}.`,
-			"- You are a guest here: one reply per summons. Keep it short —",
-			"  a few paragraphs at most.",
+			...(standing
+				? []
+				: [
+						"- You are a guest here: one reply per summons. Keep it short —",
+						"  a few paragraphs at most.",
+					]),
 			"- You have no memory of this person or this chat and you keep no",
 			"  record. Do not discuss the bot's operator or anything private",
 			"  about them; politely decline and answer the question asked.",

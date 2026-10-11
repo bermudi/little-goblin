@@ -184,6 +184,7 @@ export interface SettingsDraft {
 	vision: VisDraft | null;
 	search: ChainEntry[] | null;
 	fetch: ChainEntry[] | null;
+	operators: number[];
 	allowedUsers: number[];
 	publicUrl: string;
 	apiRoot: string;
@@ -205,6 +206,7 @@ export const EMPTY_DRAFT: SettingsDraft = {
 	vision: null,
 	search: null,
 	fetch: null,
+	operators: [],
 	allowedUsers: [],
 	publicUrl: "",
 	apiRoot: "",
@@ -244,6 +246,7 @@ export function draftFromConfig(c: Config): { draft: SettingsDraft; providers: P
 			: null,
 		search: Array.isArray(c.search) ? c.search.map(widen) : null,
 		fetch: Array.isArray(c.fetch) ? c.fetch.map(widen) : null,
+		operators: [...c.operators],
 		allowedUsers: [...c.allowedUsers],
 		publicUrl: c.publicUrl || "",
 		apiRoot: c.telegram.apiRoot || "",
@@ -290,7 +293,7 @@ export function displayLevel(configured: ThinkingLevel, levels: readonly string[
 
 // validate(): catches what the form can express badly; the server's
 // schema is still the gate. The mini app's own-id check has no
-// requester here — the schema's min(1) on allowedUsers covers lockout.
+// requester here — the schema's min(1) on operators covers lockout.
 export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string | null {
 	const names = provs.map((p) => p.name.trim());
 	if (names.some((n) => !n)) return "Every provider needs a name.";
@@ -330,7 +333,7 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 	if (draft.publicUrl.trim() && !draft.publicUrl.trim().startsWith("https://")) {
 		return "Public URL must use HTTPS for Telegram Web Apps.";
 	}
-	if (!draft.allowedUsers.length) return "Allowed users must keep at least one Telegram id.";
+	if (!draft.operators.length) return "Operators must keep at least one Telegram id.";
 	return null;
 }
 
@@ -395,6 +398,7 @@ export function bodyFromDraft(
 					},
 		search: draft.search === null ? "" : chainOut(draft.search, SEARCH_META),
 		fetch: draft.fetch === null ? "" : chainOut(draft.fetch, FETCH_META),
+		operators: [...draft.operators],
 		allowedUsers: [...draft.allowedUsers],
 		telegram: {
 			model: draft.telegramModel,

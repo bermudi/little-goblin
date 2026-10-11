@@ -50,6 +50,7 @@ const baseConfig: Config = {
 	tts: false,
 	favorites: [],
 	thinking: "medium",
+	operators: [42],
 	allowedUsers: [42],
 	telegram: { dmGapMinutes: 45 },
 	http: { port: 0 }, // ephemeral
@@ -157,11 +158,11 @@ describe("http door", () => {
 	test("a save that would lock out the requester is refused before writing", async () => {
 		const { configRef, http, post } = setup();
 		try {
-			const res = await post({ allowedUsers: [99] });
+			const res = await post({ operators: [99] });
 			expect(res.status).toBe(422);
 			const j = (await res.json()) as { error?: string };
 			expect(j.error).toContain("42");
-			expect(configRef.current.allowedUsers).toEqual([42]);
+			expect(configRef.current.operators).toEqual([42]);
 		} finally {
 			http.stop();
 		}

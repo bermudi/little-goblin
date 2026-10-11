@@ -72,7 +72,7 @@ function harness(opts: {
 			api,
 			store,
 			pings,
-			allowedUsers: () => opts.allowedUsers,
+			operators: () => opts.allowedUsers,
 			publicUrl: () => opts.publicUrl,
 			...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
 		},

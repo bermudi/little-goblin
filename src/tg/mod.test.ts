@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
 import type { Api } from "grammy";
 import type { Config } from "../config.ts";
-import { allowedUserGate, applyCommands, applyMenuButton, conversationAddress } from "./mod.ts";
+import {
+	accessGate,
+	applyCommands,
+	applyMenuButton,
+	conversationAddress,
+	SHARED_CHAT_NOTE,
+} from "./mod.ts";
+import { GUEST_REFUSAL } from "./guest.ts";
 import { COMMANDS, DM_COMMANDS } from "./commands.ts";
 
 const baseConfig: Config = {
@@ -12,31 +19,52 @@ const baseConfig: Config = {
 	tts: false,
 	favorites: [],
 	thinking: "medium",
-	allowedUsers: [1],
+	operators: [1],
+	allowedUsers: [2],
 	telegram: { dmGapMinutes: 45 },
 	http: { port: 8787 },
 	logLevel: "info",
 };
 
-describe("allowedUserGate", () => {
+describe("accessGate", () => {
+	const api = {
+		sendMessage: (async () => ({ message_id: 1 })) as unknown as Api["sendMessage"],
+	} as unknown as Api;
 	// The access-control boundary — everything else hangs off it.
-	test("allowed ids pass; anyone else is dropped before the bot sees it", async () => {
+	test("operators pass everywhere; friends pass in the DM; strangers get the refusal line", async () => {
 		const configRef = { current: baseConfig };
-		const gate = allowedUserGate(configRef);
+		const gate = accessGate(configRef);
 		let reached = 0;
 		const next = async (): Promise<void> => {
 			reached++;
 		};
-		await gate({ from: { id: 1 } }, next);
+		const dm = (id: number) => ({ from: { id }, chat: { id, type: "private" }, api });
+		const group = (id: number) => ({ from: { id }, chat: { id: -50, type: "group" }, api });
+		await gate(dm(1), next);
 		expect(reached).toBe(1);
-		await gate({ from: { id: 2 } }, next); // not on the list
-		expect(reached).toBe(1);
-		await gate({}, next); // service update, no sender
-		expect(reached).toBe(1);
-		// Read per message: a mini-app save applies without a restart.
-		configRef.current = { ...baseConfig, allowedUsers: [1, 2] };
-		await gate({ from: { id: 2 } }, next);
+		// A friend's DM is the standing sandbox lane.
+		await gate(dm(2), next);
 		expect(reached).toBe(2);
+		// A friend's plain group message drops — ambient chatter, not a summons.
+		const warn = spyOn(console, "error").mockImplementation(() => {});
+		try {
+			await gate(group(2), next);
+			expect(reached).toBe(2);
+			// A stranger's DM gets the fixed refusal line and nothing else.
+			const send = spyOn(api, "sendMessage");
+			await gate(dm(9), next);
+			expect(reached).toBe(2);
+			expect(send).toHaveBeenCalledWith(9, GUEST_REFUSAL);
+			// Service update, no sender.
+			await gate({ api } as never, next);
+			expect(reached).toBe(2);
+			// Read per message: a mini-app save applies without a restart.
+			configRef.current = { ...baseConfig, operators: [1, 2], allowedUsers: [] };
+			await gate(dm(2), next);
+			expect(reached).toBe(3);
+		} finally {
+			warn.mockRestore();
+		}
 	});
 });
 
@@ -221,12 +249,12 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 		},
 	} as unknown as IntakeEnv["buffer"];
 	const env: IntakeEnv = {
-		isChatOpen: () => false,
 		deps: {
 			configRef: { current: config, ttsDown: false },
 			auth: {} as unknown as AuthStore,
 			store,
 			runtime: {
+				hasActiveTurn: () => false,
 				submitPersisted: () => {},
 				busy: () => false,
 				stop: (id: string) => {
@@ -659,7 +687,10 @@ describe("flushConversation", () => {
 		// The sentinel never became the topic's name.
 		expect(titleCalls).toEqual(["what did the photo say?"]);
 		expect(submitted).toHaveLength(1);
+		// The audience note rides every group-addressed burst (ruling
+		// 2026-10-11) ahead of the batch's own parts.
 		expect(submitted[0]!.parts).toEqual([
+			{ type: "text", text: SHARED_CHAT_NOTE },
 			{ type: "text", text: "[attachment failed to download: boom]" },
 			{ type: "text", text: "what did the photo say?" },
 		]);

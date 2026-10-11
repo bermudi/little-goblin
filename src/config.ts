@@ -442,8 +442,6 @@ export type MailConfig = z.infer<typeof mailConfigSchema>;
 
 // Guest answering in third-party chats — absent = intake off entirely; hand-edited only.
 export const guestConfigSchema = z.object({
-	// Summons budget per user per local day; the operator is exempt.
-	perUserDailyTurns: z.number().int().min(1).max(1000).default(25),
 	// One message per reply: the final edit truncates past this, pointing at the bot DM.
 	outputChars: z.number().int().min(500).max(4000).default(3500),
 });
@@ -652,7 +650,12 @@ const configSchema = z
 			.union([fetchEntrySchema, z.array(fetchEntrySchema).min(1), z.literal("")])
 			.transform((v) => (v === "" ? undefined : Array.isArray(v) ? v : [v]))
 			.optional(),
-		allowedUsers: z.array(z.number().int().positive()).min(1),
+		// Two-list trust (design/telegram.md → Roles and permissions):
+		// operators get the personal agent on every surface; allowedUsers
+		// get the sandbox class. Anyone on neither list is a stranger —
+		// one refusal line per summons, nothing else.
+		operators: z.array(z.number().int().positive()).min(1),
+		allowedUsers: z.array(z.number().int().positive()).default([]),
 		// apiRoot: self-hosted telegram-bot-api in --local mode. dmGapMinutes:
 		// the Rolling DM quiet gap — read live, applies immediately.
 		telegram: z

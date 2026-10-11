@@ -261,6 +261,7 @@ describe("doctor process boundary", () => {
 						},
 					},
 					model: "fixture/test",
+					operators: [1],
 					allowedUsers: [1],
 					tts: "",
 				}),

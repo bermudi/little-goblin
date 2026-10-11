@@ -3605,6 +3605,7 @@ test("model/thinking changes do not interrupt admitted turns; next turn and manu
 		providers: { test: { kind: "codex" } },
 		model: "test/app",
 		thinking: "high",
+		operators: [7],
 		allowedUsers: [7],
 		telegram: { model: "test/telegram", thinking: "low" },
 	});
@@ -3685,6 +3686,7 @@ test("overflow compaction and resumed model call keep the admitted selection acr
 		providers: { test: { kind: "codex" } },
 		model: "test/original",
 		thinking: "high",
+		operators: [7],
 		allowedUsers: [7],
 	});
 	const { model } = scriptedModel([overflowError(), textReply("recovered"), textReply("next")]);
@@ -3732,6 +3734,7 @@ test("invalid durable app settings report admission error exactly once without s
 	const cfg = parseConfig({
 		providers: { test: { kind: "codex" } },
 		model: "test/chat",
+		operators: [7],
 		allowedUsers: [7],
 	});
 	let modelCalls = 0;

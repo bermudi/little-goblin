@@ -130,6 +130,7 @@ describe("operator surface", () => {
 			vision: "",
 			search: "",
 			fetch: "",
+			operators: [1],
 			allowedUsers: [1],
 			telegram: { apiRoot: "", dmGapMinutes: 45 },
 			publicUrl: "",

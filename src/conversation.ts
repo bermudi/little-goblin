@@ -1452,6 +1452,15 @@ export function openStore(dbPath: string): ConversationStore {
 				});
 			}
 			db.transaction(() => {
+				// Sever the rolling navigation chain first — successors'
+				// previous_dm_id would FK-fail the row delete (a demoted
+				// lane's persona reset is the one caller that deletes a
+				// rolled conversation; /back must not reach it anyway).
+				db.run("UPDATE conversations SET previous_dm_id = NULL WHERE previous_dm_id = ?", [id]);
+				// The lane pointer is NOT NULL — dropping the deleted row's
+				// dm_rolls entry is the sever; the next rollDm re-mints the
+				// lane (the reset flow calls it immediately).
+				db.run("DELETE FROM dm_rolls WHERE current_id = ?", [id]);
 				qDeleteEvents.run(id);
 				qDeleteCompactions.run(id);
 				qDeleteContexts.run(id);

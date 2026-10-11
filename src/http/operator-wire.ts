@@ -55,6 +55,7 @@ export interface ConfigPostBody {
 	vision: "" | { model: string; maxTokens: number; mode?: "auto" | "always" };
 	search: "" | Array<{ kind: string; auth?: string }>;
 	fetch: "" | Array<{ kind: string; auth?: string }>;
+	operators: number[];
 	allowedUsers: number[];
 	telegram: {
 		// "" clears; an absent key would keep the saved root (JSON drops undefined).

@@ -148,6 +148,7 @@ function setup(
 			tts: false,
 			favorites: [],
 			thinking: "medium",
+			operators: [42],
 			allowedUsers: [42],
 			telegram: { dmGapMinutes: 45 },
 			http: { port: 0 },
@@ -1712,7 +1713,7 @@ test("conversation PATCH rechecks the live registry and row after awaiting its r
 // owns the handler logic (mod.test.ts pins it verbatim through the
 // initData door); these tests pin the mount points, the bearer/trust
 // boundary, and the app-actor differences (no requester id → the
-// schema's min(1) on allowedUsers is the lockout guard).
+// schema's min(1) on operators is the lockout guard).
 import { memoryConfigSchema } from "../config.ts";
 import { openDelegations } from "../delegations.ts";
 import { openPrograms } from "../programs.ts";
@@ -1897,13 +1898,13 @@ describe("app operator surface", () => {
 			expect((await post(null, { logLevel: "debug" })).status).toBe(428);
 			expect((await post('"bogus"', { logLevel: "debug" })).status).toBe(409);
 			// The app door has no requester id — the schema's min(1) is the
-			// lockout guard (a save that empties allowedUsers is refused).
-			expect((await post(etag, { allowedUsers: [] })).status).toBe(422);
+			// lockout guard (a save that empties operators is refused).
+			expect((await post(etag, { operators: [] })).status).toBe(422);
 			const sentinel = "SETTINGS_FAKE_SECRET_SENTINEL";
 			const refused = await post(etag, { model: sentinel });
 			expect(refused.status).toBe(422);
 			expect(await refused.text()).not.toContain(sentinel);
-			expect(configRef.current.allowedUsers).toEqual([42]);
+			expect(configRef.current.operators).toEqual([42]);
 			// A JSON mutation must claim application/json (#75).
 			expect(
 				(

@@ -5,7 +5,7 @@
 // /api/app/* routes (bearer/trust auth, no user id). Both doors call
 // handleOperatorRoute after their own auth ran; the actor only
 // changes audit fields and the save lockout guard (the app's schema
-// min(1) on allowedUsers is the guard there — there is no requester
+// min(1) on operators is the guard there — there is no requester
 // id to preserve).
 //
 // Same import discipline as mod.ts: this module is pulled into the
@@ -160,6 +160,7 @@ const CONFIG_POST_KEYS = {
 	vision: true,
 	search: true,
 	fetch: true,
+	operators: true,
 	allowedUsers: true,
 	telegram: true,
 	publicUrl: true,
@@ -260,9 +261,9 @@ async function saveConfig(
 		// The mini app is an operator's only door that doesn't need a
 		// shell — a save that drops the requester's own id locks them
 		// out of it and the bot gate. Refuse before writing. The app
-		// door has no requester id; the schema's min(1) on allowedUsers
+		// door has no requester id; the schema's min(1) on operators
 		// is the lockout guard there.
-		if (actor.via === "mini-app" && !merged.allowedUsers.includes(actor.userId)) {
+		if (actor.via === "mini-app" && !merged.operators.includes(actor.userId)) {
 			return Response.json(
 				{ error: `config would remove your own telegram user id (${actor.userId})` },
 				{ status: 422, headers: NO_STORE },

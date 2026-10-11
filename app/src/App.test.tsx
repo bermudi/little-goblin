@@ -520,6 +520,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 			main: { kind: "openai-compatible", baseUrl: "https://api.example.test", auth: "fixture" },
 		},
 		model: "main/test",
+		operators: [111],
 		allowedUsers: [111],
 		telegram: { model: "main/test", thinking: "medium" },
 	});
@@ -666,6 +667,12 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		});
 		await settle();
 	};
+	// The invalid edit removes the operator chip — scope chip counts to
+	// that editor (the allowed-users editor keeps its fixture chip).
+	const operatorChips = (): number =>
+		container.querySelector('[aria-label="add operator"]')?.closest(".frow")?.querySelectorAll(".chip")
+			.length ?? -1;
+
 	const dirtyTheForm = async () => {
 		await click(
 			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Access")),
@@ -776,7 +783,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 				expect(confirmMessages).toEqual(archived ? ['Delete "fixture chat"?'] : []);
 				if (label === "dirty Settings") {
 					expect(container.textContent).toContain("unsaved");
-					expect(container.querySelectorAll(".chips .chip")).toHaveLength(0);
+					expect(operatorChips()).toBe(0);
 				}
 				if (archived) expect(conversations).toEqual([]);
 				else {
@@ -867,7 +874,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		for (let i = 0; i < 40; i++) await settle();
 		expect(savedBodies).toHaveLength(0);
 		expect(container.textContent).toContain("unsaved");
-		expect(container.textContent).toContain("Allowed users must keep at least one Telegram id.");
+		expect(container.textContent).toContain("Operators must keep at least one Telegram id.");
 	});
 
 	for (const direction of ["back", "forward"] as const) {
@@ -887,7 +894,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 			expect(win.location.pathname).toBe("/app/settings");
 			expect(win.history.length).toBe(entries);
 			expect(container.textContent).toContain("unsaved");
-			expect(container.querySelectorAll(".chips .chip")).toHaveLength(0);
+			expect(operatorChips()).toBe(0);
 
 			confirmAnswer = true;
 			await traverse(direction);
@@ -975,7 +982,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 			await new Promise((r) => setTimeout(r, 30));
 		});
 		expect(win.location.pathname).toBe("/app/settings");
-		expect(container.querySelectorAll(".chips .chip")).toHaveLength(0);
+		expect(operatorChips()).toBe(0);
 	});
 
 	test("Back into the conversation list also asks while the editor is dirty", async () => {
@@ -1015,7 +1022,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(container.querySelector('[role="alert"]')?.textContent).toContain(
 			"cannot restore an older history entry",
 		);
-		expect(container.querySelectorAll(".chips .chip")).toHaveLength(0);
+		expect(operatorChips()).toBe(0);
 	});
 
 	test("Back from a clean editor needs no question", async () => {
@@ -1047,6 +1054,7 @@ describe("App telegram door", () => {
 			main: { kind: "openai-compatible", baseUrl: "https://api.example.test", auth: "fixture" },
 		},
 		model: "main/test",
+		operators: [111],
 		allowedUsers: [111],
 		telegram: { model: "main/test", thinking: "medium" },
 	});

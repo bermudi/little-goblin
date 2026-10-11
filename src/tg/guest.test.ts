@@ -1,8 +1,8 @@
-// Guest mode tests (design/telegram.md → Guest mode). Boundaries and
-// invariants only: classification ordering, the sandbox's hard tool
-// exclusion, open/close lifecycle + fencing, dedup, budget, and the
-// placeholder-then-edit delivery shape — Telegram faked at the api
-// edge like every other tg test.
+// Guest mode tests (design/telegram.md → Guest mode; Roles and
+// permissions). Boundaries and invariants only: classification by the
+// two lists, the stranger refusal, the sandbox's hard tool exclusion
+// (persona-driven), dedup, and the placeholder-then-edit delivery
+// shape — Telegram faked at the api edge like every other tg test.
 
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -26,7 +26,7 @@ import {
 	classifySummon,
 	filterGuestTools,
 	GuestSink,
-	guestCommand,
+	GUEST_REFUSAL,
 	handleGuestUpdate,
 	mentionsBot,
 	openGuestStore,
@@ -52,23 +52,25 @@ const baseConfig = (over: Partial<Config> = {}): Config =>
 		model: "t/m",
 		thinking: "medium",
 		favorites: [],
-		allowedUsers: [7],
+		operators: [7],
+		allowedUsers: [8],
 		telegram: { dmGapMinutes: 45, apiRoot: undefined },
 		http: { port: 8787 },
-		guest: { perUserDailyTurns: 2, outputChars: 3500 },
+		guest: { outputChars: 3500 },
 		...over,
 	}) as Config;
 
 // ---------- pure pieces ----------
 
 describe("classifySummon", () => {
-	test("the operator is personal anywhere, open or not", () => {
-		expect(classifySummon(7, -100, [7], false)).toEqual({ kind: "personal" });
-		expect(classifySummon(7, -100, [7], true)).toEqual({ kind: "personal" });
+	test("the operator is personal anywhere", () => {
+		expect(classifySummon(7, [7], [8])).toEqual({ kind: "personal" });
 	});
-	test("third parties are sandbox in an open chat, denied elsewhere", () => {
-		expect(classifySummon(9, -100, [7], true)).toEqual({ kind: "sandbox" });
-		expect(classifySummon(9, -100, [7], false)).toEqual({ kind: "deny", reason: "chat-closed" });
+	test("an allowed user is sandbox", () => {
+		expect(classifySummon(8, [7], [8])).toEqual({ kind: "sandbox" });
+	});
+	test("a stranger is refused — the refusal line, never a turn", () => {
+		expect(classifySummon(9, [7], [8])).toEqual({ kind: "refused" });
 	});
 });
 
@@ -163,19 +165,6 @@ describe("mentionsBot", () => {
 	});
 });
 
-describe("guestCommand", () => {
-	test("open/off with mention, suffix, or case variants", () => {
-		expect(guestCommand("@goblin_bot /open")).toBe("open");
-		expect(guestCommand("/off")).toBe("off");
-		expect(guestCommand("/OPEN@Goblin_Bot")).toBe("open");
-	});
-	test("anything else is not a command", () => {
-		expect(guestCommand("/opening statement")).toBeNull();
-		expect(guestCommand("@goblin_bot what is 2+2")).toBeNull();
-		expect(guestCommand("")).toBeNull();
-	});
-});
-
 describe("filterGuestTools — the sandbox invariant", () => {
 	const tools = {
 		read_file: 1,
@@ -235,9 +224,11 @@ describe("filterGuestTools — the sandbox invariant", () => {
 		expect(kept).toContain("bash");
 		expect(kept).toContain("search");
 	});
-	test("non-guest conversations are untouched", () => {
-		const dm = { ...conv("guest"), id: "dm:5" } as unknown as Conversation;
-		expect(filterGuestTools(dm, tools)).toEqual(tools);
+	test("the persona column decides, not the channel — a standing sandbox DM filters too", () => {
+		const dm = (persona: "personal" | "guest") =>
+			({ ...conv(persona), id: "dm:5:1" }) as unknown as Conversation;
+		expect(Object.keys(filterGuestTools(dm("guest"), tools)).sort()).toEqual(["search"]);
+		expect(filterGuestTools(dm("personal"), tools)).toEqual(tools);
 	});
 
 	// The rollout-hold review's ssrf-chain probe, checked in: the REAL
@@ -285,26 +276,11 @@ describe("filterGuestTools — the sandbox invariant", () => {
 // ---------- store ----------
 
 describe("openGuestStore", () => {
-	test("open/isOpen/close lifecycle", () => {
-		const store = openGuestStore(openStore(tmpdb()).db);
-		expect(store.isOpen(-100)).toBe(false);
-		store.open(-100, 7);
-		expect(store.isOpen(-100)).toBe(true);
-		store.close(-100);
-		expect(store.isOpen(-100)).toBe(false);
-	});
 	test("seen is true once per update id", () => {
 		const store = openGuestStore(openStore(tmpdb()).db);
 		expect(store.seen(500)).toBe(true);
 		expect(store.seen(500)).toBe(false);
 		expect(store.seen(501)).toBe(true);
-	});
-	test("budget charges to the limit, then refuses; days are separate", () => {
-		const store = openGuestStore(openStore(tmpdb()).db);
-		expect(store.tryChargeBudget(9, "2026-10-06", 2)).toBe(true);
-		expect(store.tryChargeBudget(9, "2026-10-06", 2)).toBe(true);
-		expect(store.tryChargeBudget(9, "2026-10-06", 2)).toBe(false);
-		expect(store.tryChargeBudget(9, "2026-10-07", 2)).toBe(true);
 	});
 });
 
@@ -313,10 +289,18 @@ describe("openGuestStore", () => {
 function fakeApi() {
 	const edits: string[] = [];
 	const sends: { chatId: number; text: string; options: Parameters<Api["sendMessage"]>[2] }[] = [];
+	const answers: string[] = [];
 	return {
 		edits,
 		sends,
-		answerGuestQuery: (async () => ({ inline_message_id: "im-1" })) as never,
+		answers,
+		answerGuestQuery: (async (
+			_id: string,
+			spec: { input_message_content?: { message_text?: string } },
+		) => {
+			answers.push(spec.input_message_content?.message_text ?? "");
+			return { inline_message_id: "im-1" };
+		}) as never,
 		editMessageTextInline: (async (_id: string, text: string) => {
 			edits.push(text);
 			return true;
@@ -564,12 +548,16 @@ function holdPlaceholder(
 	return { started, release };
 }
 
-const day = (): string => new Date().toLocaleDateString("sv-SE");
+const op = { id: 7, is_bot: false, first_name: "Op" } as const;
+const pal = { id: 8, is_bot: false, first_name: "Pal" } as const;
 
 const operatorMsg = (
 	over: Partial<Message> & { guest_query_id?: string },
-): Message & { guest_query_id?: string } =>
-	guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, ...over });
+): Message & { guest_query_id?: string } => guestMsg({ from: op, ...over });
+
+const friendMsg = (
+	over: Partial<Message> & { guest_query_id?: string },
+): Message & { guest_query_id?: string } => guestMsg({ from: pal, ...over });
 
 describe("handleGuestUpdate", () => {
 	test("missing senders are dropped with a structured info reason on both surfaces", async () => {
@@ -601,11 +589,7 @@ describe("handleGuestUpdate", () => {
 	});
 	test("operator summons anywhere: personal turn, memory off, placeholder first", async () => {
 		const { env, api, submitted } = makeEnv();
-		await handleGuestUpdate(
-			env,
-			guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, guest_query_id: "q1" }),
-			1,
-		);
+		await handleGuestUpdate(env, operatorMsg({ guest_query_id: "q1" }), 1);
 		expect(submitted.length).toBe(1);
 		const turn = submitted[0];
 		expect(turn !== undefined).toBe(true);
@@ -617,218 +601,151 @@ describe("handleGuestUpdate", () => {
 		// edits ride the same api record).
 		expect(api.edits.length).toBe(0);
 	});
-	test("third party in a closed chat: silence, no spend", async () => {
-		const { env, submitted } = makeEnv();
+	test("a stranger's summons is answered with the refusal line and never submits", async () => {
+		const { env, submitted, api } = makeEnv();
 		await handleGuestUpdate(env, guestMsg({ guest_query_id: "q2" }), 2);
 		expect(submitted.length).toBe(0);
+		expect(api.answers).toEqual([GUEST_REFUSAL]);
 	});
-	test("third party in an open chat: sandbox turn, budget charged", async () => {
-		const { env, guestStore, submitted } = makeEnv();
-		guestStore.open(-100, 7);
-		await handleGuestUpdate(env, guestMsg({ guest_query_id: "q3" }), 3);
+	test("an allowed user's summons is a sandbox turn — no open state, no budget", async () => {
+		const { env, submitted } = makeEnv();
+		await handleGuestUpdate(env, friendMsg({ guest_query_id: "q3" }), 3);
 		expect(submitted.length).toBe(1);
 		const turn = submitted[0];
 		expect(turn !== undefined).toBe(true);
-		expect(turn?.conv.id).toBe("guest:-100:9");
+		expect(turn?.conv.id).toBe("guest:-100:8");
 		expect(turn?.conv.persona).toBe("guest");
-		expect(guestStore.tryChargeBudget(9, new Date().toLocaleDateString("sv-SE"), 0)).toBe(false);
-	});
-	test("budget exhaustion answers a refusal, never submits", async () => {
-		const { env, guestStore, submitted } = makeEnv();
-		guestStore.open(-100, 7);
-		const day = new Date().toLocaleDateString("sv-SE");
-		expect(guestStore.tryChargeBudget(9, day, 2)).toBe(true);
-		expect(guestStore.tryChargeBudget(9, day, 2)).toBe(true);
-		await handleGuestUpdate(env, guestMsg({ guest_query_id: "q4" }), 4);
-		expect(submitted.length).toBe(0);
+		expect(turn?.conv.memoryExcluded).toBe(true);
 	});
 	test("a busy conversation refuses instead of steering", async () => {
-		const { env, guestStore, submitted } = makeEnv({ busy: true });
-		guestStore.open(-100, 7);
-		await handleGuestUpdate(env, guestMsg({ guest_query_id: "q5" }), 5);
+		const { env, submitted } = makeEnv({ busy: true });
+		await handleGuestUpdate(env, friendMsg({ guest_query_id: "q5" }), 5);
 		expect(submitted.length).toBe(0);
 	});
 	test("duplicate update ids are swallowed", async () => {
 		const { env, submitted } = makeEnv();
-		await handleGuestUpdate(
-			env,
-			guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, guest_query_id: "q6" }),
-			6,
-		);
-		await handleGuestUpdate(
-			env,
-			guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, guest_query_id: "q6" }),
-			6,
-		);
+		await handleGuestUpdate(env, operatorMsg({ guest_query_id: "q6" }), 6);
+		await handleGuestUpdate(env, operatorMsg({ guest_query_id: "q6" }), 6);
 		expect(submitted.length).toBe(1);
 	});
-	test("operator /open opens the chat and confirms; /off closes and fences", async () => {
-		const { env, guestStore, store } = makeEnv();
-		guestStore.open(-100, 7);
-		store.resolve(guestAddress(-100, 9), "/w");
-		await handleGuestUpdate(env, guestMsg({ guest_query_id: "q7" }), 7); // sandbox conversation exists
-		await handleGuestUpdate(
-			env,
-			guestMsg({
-				from: { id: 7, is_bot: false, first_name: "Op" },
-				text: "@goblin_bot /off",
-				guest_query_id: "q8",
-			}),
-			8,
-		);
-		expect(guestStore.isOpen(-100)).toBe(false);
-		const conv = store.get("guest:-100:9");
-		expect(conv !== null && conv.epoch > 0).toBe(true);
-	});
-	test("third-party /off attempts change nothing", async () => {
-		const { env, guestStore } = makeEnv();
-		guestStore.open(-100, 7);
-		await handleGuestUpdate(env, guestMsg({ text: "@goblin_bot /off", guest_query_id: "q9" }), 9);
-		expect(guestStore.isOpen(-100)).toBe(true);
-	});
 	test("feature off (no guest block): summons are silent", async () => {
-		const { env, submitted } = makeEnv({ guest: false });
-		await handleGuestUpdate(
-			env,
-			guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, guest_query_id: "q10" }),
-			10,
-		);
+		const { env, submitted, api } = makeEnv({ guest: false });
+		await handleGuestUpdate(env, operatorMsg({ guest_query_id: "q10" }), 10);
 		expect(submitted.length).toBe(0);
+		expect(api.answers).toHaveLength(0);
 	});
 	test("a failed answerGuestQuery never runs the turn blind", async () => {
 		const { env, submitted } = makeEnv();
 		(env.api as { answerGuestQuery: unknown }).answerGuestQuery = (async () => ({})) as never;
-		await handleGuestUpdate(
-			env,
-			guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, guest_query_id: "q11" }),
-			11,
-		);
+		await handleGuestUpdate(env, operatorMsg({ guest_query_id: "q11" }), 11);
 		expect(submitted.length).toBe(0);
 	});
-	test("the operator is exempt from the budget", async () => {
-		const { env, guestStore, submitted } = makeEnv();
-		const day = new Date().toLocaleDateString("sv-SE");
-		// Exhaust the limit for user 7 — the operator's summons still runs.
-		expect(guestStore.tryChargeBudget(7, day, 2)).toBe(true);
-		expect(guestStore.tryChargeBudget(7, day, 2)).toBe(true);
-		await handleGuestUpdate(
-			env,
-			guestMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, guest_query_id: "q12" }),
-			12,
-		);
-		expect(submitted.length).toBe(1);
-	});
 	test("a persona flip busts the frozen prompt snapshot", async () => {
-		const { env, guestStore, store } = makeEnv();
-		guestStore.open(-100, 7);
-		await handleGuestUpdate(env, guestMsg({ guest_query_id: "q13" }), 13); // sandbox conv
-		// Flip: user 9 joins allowedUsers → same conversation, personal turn.
+		const { env, store, submitted } = makeEnv();
+		await handleGuestUpdate(env, friendMsg({ guest_query_id: "q13" }), 13); // sandbox conv
+		// Flip: user 8 joins operators → same conversation, personal turn.
 		env.configRef.current = {
 			...env.configRef.current,
-			allowedUsers: [7, 9],
+			operators: [7, 8],
+			allowedUsers: [],
 		} as typeof env.configRef.current;
-		await handleGuestUpdate(env, guestMsg({ guest_query_id: "q14" }), 14);
-		const conv = store.get("guest:-100:9");
+		await handleGuestUpdate(env, friendMsg({ guest_query_id: "q14" }), 14);
+		const conv = store.get("guest:-100:8");
 		expect(conv?.persona).toBe("personal");
-		expect(store.promptSnapshot("guest:-100:9")).toBeNull();
+		expect(store.promptSnapshot("guest:-100:8")).toBeNull();
+		expect(submitted.map((t) => t.conv.persona)).toEqual(["guest", "personal"]);
 	});
 
 	test("a demotion to sandbox clears prior personal history", async () => {
-		const { env, guestStore, store, submitted } = makeEnv();
-		// User 9 starts as the operator: a personal turn with history.
+		const { env, store, submitted } = makeEnv();
+		// User 8 starts as an operator: a personal turn with history.
 		env.configRef.current = {
 			...env.configRef.current,
-			allowedUsers: [7, 9],
+			operators: [7, 8],
+			allowedUsers: [],
 		} as typeof env.configRef.current;
-		await handleGuestUpdate(env, guestMsg({ guest_query_id: "promo" }), 50);
+		await handleGuestUpdate(env, friendMsg({ guest_query_id: "promo" }), 50);
 		expect(submitted).toHaveLength(1);
 		// The fake runtime records submits without appending (the real
 		// Runtime.submit appends first) — persist the turn's history here.
-		store.append("guest:-100:9", [
+		store.append("guest:-100:8", [
 			submitted[0]!.message,
 			{ id: "a1", role: "assistant", parts: [{ type: "text", text: "personal answer" }] },
 		]);
-		expect(store.history("guest:-100:9")).toHaveLength(2);
-		// Demoted: removed from allowedUsers, chat open so the sandbox path runs.
+		expect(store.history("guest:-100:8")).toHaveLength(2);
+		// Demoted: 8 moves to allowedUsers → the sandbox path runs.
 		env.configRef.current = {
 			...env.configRef.current,
-			allowedUsers: [7],
+			operators: [7],
+			allowedUsers: [8],
 		} as typeof env.configRef.current;
-		guestStore.open(-100, 7);
 		submitted.length = 0;
-		await handleGuestUpdate(env, guestMsg({ guest_query_id: "demo" }), 51);
+		await handleGuestUpdate(env, friendMsg({ guest_query_id: "demo" }), 51);
 		expect(submitted).toHaveLength(1);
 		expect(submitted[0]?.conv.persona).toBe("guest");
 		// The reset wiped the personal exchange; the fake runtime
 		// records submits without appending (the real Runtime.submit
 		// appends first), so the fresh conversation is empty here.
-		expect(store.history("guest:-100:9")).toHaveLength(0);
+		expect(store.history("guest:-100:8")).toHaveLength(0);
 		// Persisting the sandbox summons the way the real submit would
 		// leaves exactly that message — no personal text survives.
-		store.append("guest:-100:9", [submitted[0]!.message]);
-		expect(store.history("guest:-100:9")).toHaveLength(1);
-		expect(store.modelEntries("guest:-100:9")).toHaveLength(1);
+		store.append("guest:-100:8", [submitted[0]!.message]);
+		expect(store.history("guest:-100:8")).toHaveLength(1);
+		expect(store.modelEntries("guest:-100:8")).toHaveLength(1);
 	});
 
 	test("a promotion to personal keeps prior sandbox history", async () => {
-		const { env, guestStore, store, submitted } = makeEnv();
-		guestStore.open(-100, 7);
-		await handleGuestUpdate(env, guestMsg({ guest_query_id: "sand" }), 60);
+		const { env, store, submitted } = makeEnv();
+		await handleGuestUpdate(env, friendMsg({ guest_query_id: "sand" }), 60);
 		expect(submitted[0]?.conv.persona).toBe("guest");
 		// The fake runtime records submits without appending (the real
 		// Runtime.submit appends first) — persist the sandbox exchange
 		// the way the real submit would.
-		store.append("guest:-100:9", [
+		store.append("guest:-100:8", [
 			submitted[0]!.message,
 			{ id: "a1", role: "assistant", parts: [{ type: "text", text: "sandbox answer" }] },
 		]);
-		expect(store.history("guest:-100:9")).toHaveLength(2);
-		// Promoted: user 9 joins allowedUsers → same address, personal turn.
+		expect(store.history("guest:-100:8")).toHaveLength(2);
+		// Promoted: user 8 joins operators → same address, personal turn.
 		env.configRef.current = {
 			...env.configRef.current,
-			allowedUsers: [7, 9],
+			operators: [7, 8],
+			allowedUsers: [],
 		} as typeof env.configRef.current;
 		submitted.length = 0;
-		await handleGuestUpdate(env, guestMsg({ guest_query_id: "prom" }), 61);
+		await handleGuestUpdate(env, friendMsg({ guest_query_id: "prom" }), 61);
 		expect(submitted).toHaveLength(1);
 		expect(submitted[0]?.conv.persona).toBe("personal");
 		// Same conversation row, not a reset — sandbox exchanges are
 		// safe for the operator to see, so the history survives.
-		expect(store.history("guest:-100:9")).toHaveLength(2);
-		expect(store.modelEntries("guest:-100:9")).toHaveLength(2);
+		expect(store.history("guest:-100:8")).toHaveLength(2);
+		expect(store.modelEntries("guest:-100:8")).toHaveLength(2);
 	});
 
-	// Issue #116: the placeholder await is a suspension point between the
-	// eligibility checks and the submit — every state it read can change.
-	// A submit that lands after /off's epoch bump reads the NEW epoch as
-	// its own and starts an authorized turn on a closed chat, so the
-	// checks must be re-run after the await, before anything is charged.
-	test("/off during the placeholder await drops the summons — no turn on a closed chat", async () => {
-		const { env, guestStore, submitted, api } = makeEnv();
-		guestStore.open(-100, 7);
+	// The placeholder await is a suspension point between the
+	// eligibility checks and the submit — every state it read can
+	// change, and a submit must never run on eligibility that changed
+	// under us.
+	test("a class flip during the placeholder await drops the summons", async () => {
+		const { env, submitted, api } = makeEnv();
 		const hold = holdPlaceholder(api, "summon");
-		const pending = handleGuestUpdate(env, guestMsg({ guest_query_id: "summon" }), 40);
+		const pending = handleGuestUpdate(env, friendMsg({ guest_query_id: "summon" }), 40);
 		await hold.started;
-		await handleGuestUpdate(
-			env,
-			operatorMsg({ text: "@goblin_bot /off", guest_query_id: "close" }),
-			41,
-		);
+		env.configRef.current = {
+			...env.configRef.current,
+			allowedUsers: [],
+		} as typeof env.configRef.current;
 		hold.release();
 		await pending;
 		expect(submitted.length).toBe(0);
-		expect(guestStore.isOpen(-100)).toBe(false);
-		// The dropped summons burns no budget (nothing ran).
-		expect(guestStore.tryChargeBudget(9, day(), 1)).toBe(true);
-		// And the placeholder is settled, not left hanging on "on it…".
+		// The placeholder is settled, not left hanging on "on it…".
 		expect(api.edits[api.edits.length - 1]).toContain("cancelled");
 	});
 
 	test("guest config removed during the placeholder await drops the summons", async () => {
-		const { env, guestStore, submitted, api } = makeEnv();
-		guestStore.open(-100, 7);
+		const { env, submitted, api } = makeEnv();
 		const hold = holdPlaceholder(api, "summon");
-		const pending = handleGuestUpdate(env, guestMsg({ guest_query_id: "summon" }), 42);
+		const pending = handleGuestUpdate(env, friendMsg({ guest_query_id: "summon" }), 42);
 		await hold.started;
 		env.configRef.current = {
 			...env.configRef.current,
@@ -840,30 +757,30 @@ describe("handleGuestUpdate", () => {
 		expect(api.edits[api.edits.length - 1]).toContain("cancelled");
 	});
 
-	test("caller demoted from allowedUsers during the placeholder await drops the personal turn", async () => {
+	test("an operator demoted during the placeholder await drops the personal turn", async () => {
 		const { env, submitted, api } = makeEnv();
 		const hold = holdPlaceholder(api, "summon");
 		const pending = handleGuestUpdate(env, operatorMsg({ guest_query_id: "summon" }), 43);
 		await hold.started;
 		env.configRef.current = {
 			...env.configRef.current,
+			operators: [8],
 			allowedUsers: [],
 		} as typeof env.configRef.current;
 		hold.release();
 		await pending;
-		// A demoted caller must not run the personal-persona turn that was
-		// resolved before the demotion.
+		// A demoted caller must not run the personal-persona turn that
+		// was resolved before the demotion.
 		expect(submitted.length).toBe(0);
 		expect(api.edits[api.edits.length - 1]).toContain("cancelled");
 	});
 
 	test("a turn started during the placeholder await refuses instead of steering", async () => {
-		const { env, guestStore, submitted, api } = makeEnv();
-		guestStore.open(-100, 7);
+		const { env, submitted, api } = makeEnv();
 		let busy = false;
 		(env.runtime as { hasActiveTurn: (id: string) => boolean }).hasActiveTurn = () => busy;
 		const hold = holdPlaceholder(api, "summon");
-		const pending = handleGuestUpdate(env, guestMsg({ guest_query_id: "summon" }), 44);
+		const pending = handleGuestUpdate(env, friendMsg({ guest_query_id: "summon" }), 44);
 		await hold.started;
 		// The member surface bypasses the guest lane: a same-conversation
 		// summons submits while this one is parked at its placeholder.
@@ -883,22 +800,20 @@ describe("routeMemberGuestMessage", () => {
 		expect(
 			await routeMemberGuestMessage(
 				env,
-				memberMsg({ from: { id: 7, is_bot: false, first_name: "Op" }, text: "@goblin_bot hi" }),
+				memberMsg({ from: op, text: "@goblin_bot hi" }),
 				20,
 			),
 		).toBe(false);
 	});
-	test("non-mention chatter falls through (the gate drops it as today)", async () => {
+	test("non-mention chatter falls through (the gate drops it as ambient)", async () => {
 		const { env } = makeEnv();
-		guestStore_open(env);
 		expect(
 			await routeMemberGuestMessage(env, memberMsg({ text: "just talking", entities: [] }), 21),
 		).toBe(false);
 	});
-	test("third-party mention in an open chat submits a sandbox turn with normal delivery", async () => {
+	test("an allowed user's mention submits a sandbox turn with normal delivery", async () => {
 		const { env, submitted } = makeEnv();
-		guestStore_open(env);
-		expect(await routeMemberGuestMessage(env, memberMsg({}), 22)).toBe(true);
+		expect(await routeMemberGuestMessage(env, memberMsg({ from: pal }), 22)).toBe(true);
 		expect(submitted.length).toBe(1);
 		const turn = submitted[0];
 		expect(turn !== undefined).toBe(true);
@@ -906,8 +821,7 @@ describe("routeMemberGuestMessage", () => {
 	});
 	test("every member reply chunk stays in the summons' topic without changing guest identity", async () => {
 		const { env, submitted, store, api } = makeEnv();
-		guestStore_open(env);
-		await routeMemberGuestMessage(env, memberMsg({ message_thread_id: 123 }), 92);
+		await routeMemberGuestMessage(env, memberMsg({ from: pal, message_thread_id: 123 }), 92);
 		const turn = submitted[0];
 		if (turn === undefined) throw new Error("missing member turn");
 		turn.sink.onTextDelta("x".repeat(9000));
@@ -918,14 +832,13 @@ describe("routeMemberGuestMessage", () => {
 			expect(send.options?.message_thread_id).toBe(123);
 		}
 		expect(api.sends.map((send) => send.text).join("")).toBe("x".repeat(9000));
-		expect(store.get("guest:-100:9")?.threadId).toBeNull();
+		expect(store.get("guest:-100:8")?.threadId).toBeNull();
 		expect(turn.conv.threadId).toBeNull();
 	});
 
 	test("member guest error details stay in logs, not in the shared room", async () => {
 		const { env, submitted, api } = makeEnv();
-		guestStore_open(env);
-		await routeMemberGuestMessage(env, memberMsg({ message_thread_id: 123 }), 93);
+		await routeMemberGuestMessage(env, memberMsg({ from: pal, message_thread_id: 123 }), 93);
 		const turn = submitted[0];
 		if (turn === undefined) throw new Error("missing member turn");
 		const errorLog = spyOn(log, "error").mockImplementation(() => {});
@@ -939,7 +852,7 @@ describe("routeMemberGuestMessage", () => {
 				"guest turn failed",
 				new Error("private provider response"),
 				{
-					conversation: "guest:-100:9",
+					conversation: "guest:-100:8",
 					chat: -100,
 				},
 			);
@@ -948,30 +861,21 @@ describe("routeMemberGuestMessage", () => {
 		}
 	});
 
-	test("third-party mention in a closed chat is swallowed with a deny log", async () => {
-		const { env, submitted } = makeEnv();
+	test("a stranger's mention gets the refusal line and never submits", async () => {
+		const { env, submitted, api } = makeEnv();
+		// memberMsg's default sender is 9 — on neither list.
 		expect(await routeMemberGuestMessage(env, memberMsg({}), 23)).toBe(true);
 		expect(submitted.length).toBe(0);
+		expect(api.sends).toHaveLength(1);
+		expect(api.sends[0]?.text).toBe(GUEST_REFUSAL);
 	});
-	test("addressed /open from the operator opens; bare /open falls through", async () => {
-		const { env, guestStore } = makeEnv();
+	test("a bare operator command is ordinary intake, not guest machinery", async () => {
+		const { env } = makeEnv();
 		expect(
 			await routeMemberGuestMessage(
 				env,
 				memberMsg({
-					from: { id: 7, is_bot: false, first_name: "Op" },
-					text: "/open@goblin_bot",
-					entities: [{ type: "bot_command", offset: 0, length: 17 }],
-				}),
-				24,
-			),
-		).toBe(true);
-		expect(guestStore.isOpen(-100)).toBe(true);
-		expect(
-			await routeMemberGuestMessage(
-				env,
-				memberMsg({
-					from: { id: 7, is_bot: false, first_name: "Op" },
+					from: op,
 					text: "/open",
 					entities: [{ type: "bot_command", offset: 0, length: 5 }],
 				}),
@@ -979,91 +883,31 @@ describe("routeMemberGuestMessage", () => {
 			),
 		).toBe(false);
 	});
-	test("a command suffix naming someone else does not open the chat", async () => {
-		const { env, guestStore } = makeEnv();
-		expect(
-			await routeMemberGuestMessage(
-				env,
-				memberMsg({
-					from: { id: 7, is_bot: false, first_name: "Op" },
-					text: "/open @somehuman",
-					entities: [{ type: "bot_command", offset: 0, length: 5 }],
-				}),
-				26,
-			),
-		).toBe(false);
-		expect(guestStore.isOpen(-100)).toBe(false);
-	});
 	test("private chats fall through — the DM is not a guest chat", async () => {
-		const { env, guestStore } = makeEnv();
+		const { env } = makeEnv();
 		expect(
 			await routeMemberGuestMessage(
 				env,
 				memberMsg({
-					from: { id: 7, is_bot: false, first_name: "Op" },
+					from: op,
 					chat: { id: 7, type: "private" } as never,
-					text: "/off@goblin_bot",
-					entities: [{ type: "bot_command", offset: 0, length: 16 }],
+					text: "anything",
 				}),
 				27,
 			),
 		).toBe(false);
-		expect(guestStore.isOpen(-100)).toBe(false);
-	});
-	test("non-operator member /off is swallowed", async () => {
-		const { env, guestStore } = makeEnv();
-		guestStore.open(-100, 7);
-		expect(await routeMemberGuestMessage(env, memberMsg({ text: "@goblin_bot /off" }), 28)).toBe(
-			true,
-		);
-		expect(guestStore.isOpen(-100)).toBe(true);
 	});
 	test("a busy member conversation refuses instead of steering", async () => {
-		const { env, guestStore, submitted } = makeEnv({ busy: true });
-		guestStore.open(-100, 7);
-		expect(await routeMemberGuestMessage(env, memberMsg({}), 29)).toBe(true);
+		const { env, submitted } = makeEnv({ busy: true });
+		expect(await routeMemberGuestMessage(env, memberMsg({ from: pal }), 29)).toBe(true);
 		expect(submitted.length).toBe(0);
 	});
-	test("short member refusals and control acknowledgments stay in the summons' topic", async () => {
-		const busy = makeEnv({ busy: true });
-		busy.guestStore.open(-100, 7);
-		await routeMemberGuestMessage(busy.env, memberMsg({ message_thread_id: 123 }), 300);
-
-		const budget = makeEnv();
-		budget.guestStore.open(-100, 7);
-		budget.configRef.current.guest!.perUserDailyTurns = 1;
-		await routeMemberGuestMessage(budget.env, memberMsg({ message_thread_id: 123 }), 301);
-		await routeMemberGuestMessage(budget.env, memberMsg({ message_thread_id: 123 }), 302);
-
-		const control = makeEnv();
-		for (const [index, cmd] of ["open", "off"].entries()) {
-			await routeMemberGuestMessage(
-				control.env,
-				memberMsg({
-					message_thread_id: 123,
-					from: { id: 7, is_bot: false, first_name: "Op" },
-					text: `/${cmd}@goblin_bot`,
-				}),
-				303 + index,
-			);
-		}
-		const sends = [...busy.api.sends, ...budget.api.sends, ...control.api.sends];
-		expect(sends).toHaveLength(4);
-		for (const send of sends) expect(send.options?.message_thread_id).toBe(123);
-	});
-	test("redelivered member commands never re-run", async () => {
-		const { env, guestStore } = makeEnv();
-		guestStore.open(-100, 7);
-		const off = memberMsg({
-			from: { id: 7, is_bot: false, first_name: "Op" },
-			text: "@goblin_bot /off",
-		});
-		expect(await routeMemberGuestMessage(env, off, 30)).toBe(true);
-		expect(guestStore.isOpen(-100)).toBe(false);
-		// Re-open, then the SAME update id arrives again: nothing re-closes.
-		guestStore.open(-100, 7);
-		expect(await routeMemberGuestMessage(env, off, 30)).toBe(true);
-		expect(guestStore.isOpen(-100)).toBe(true);
+	test("the stranger refusal stays in the summons' topic", async () => {
+		const { env, api } = makeEnv();
+		await routeMemberGuestMessage(env, memberMsg({ message_thread_id: 123 }), 303);
+		expect(api.sends).toHaveLength(1);
+		expect(api.sends[0]?.options?.message_thread_id).toBe(123);
+		expect(api.sends[0]?.text).toBe(GUEST_REFUSAL);
 	});
 });
 
@@ -1072,14 +916,12 @@ function guestStore_open(env: { guestStore: { open(id: number, by: number): void
 }
 
 describe("sharedChatPart — the audience note", () => {
-	test("an open group chat's bursts carry the note; closed and private chats don't", () => {
-		const open = (_id: number): boolean => true;
-		const closed = (_id: number): boolean => false;
-		expect(sharedChatPart("topic:-100:5", -100, open)?.text).toContain("shared chat");
-		expect(sharedChatPart("topic:-100:5", -100, closed)).toBeNull();
-		// Private chats: a bot member chat IS the DM — never a shared room.
-		expect(sharedChatPart("dm:7", 7, open)).toBeNull();
+	test("every member group's bursts carry the note; private chats, the app lane, and guests don't", () => {
+		expect(sharedChatPart("topic:-100:5", -100)?.text).toContain("shared chat");
+		// Private chats and the app lane: never a shared room.
+		expect(sharedChatPart("dm:7:1", 7)).toBeNull();
+		expect(sharedChatPart("app/x", 0)).toBeNull();
 		// Guest conversations know their audience from the persona.
-		expect(sharedChatPart("guest:-100:9", -100, open)).toBeNull();
+		expect(sharedChatPart("guest:-100:9", -100)).toBeNull();
 	});
 });

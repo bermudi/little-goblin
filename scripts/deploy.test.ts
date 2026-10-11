@@ -350,6 +350,13 @@ describe("local deployment refresh and rollback", () => {
 			expect(result.calls.includes("bun install --frozen-lockfile")).toBe(
 				["bun.lock", "package.json"].includes(path),
 			);
+			// Deps sync precedes the gate: the typecheck must run against
+			// new_rev's dependency tree, never the deployed one.
+			if (result.calls.includes("bun install --frozen-lockfile")) {
+				expect(result.calls.indexOf("bun install --frozen-lockfile")).toBeLessThan(
+					result.calls.indexOf("bun run typecheck"),
+				);
+			}
 		});
 	}
 
@@ -421,7 +428,9 @@ describe("local deployment failures and memory probe", () => {
 			if (["typecheck", "install", "build", "restart", "journal"].includes(mode))
 				expect(result.stderr).toContain(`${mode} failed`);
 			if (mode === "typecheck") {
-				expect(result.calls).not.toContain("bun install --frozen-lockfile");
+				// Deps sync precedes the gate (it must read new_rev's tree),
+				// so a failed gate may have already installed — but it never
+				// builds or restarts.
 				expect(result.calls).not.toContain("bun run app:build");
 			}
 			if (["typecheck", "install", "build"].includes(mode))

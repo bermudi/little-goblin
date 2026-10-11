@@ -64,12 +64,15 @@ deployment fact, not code — it lives in `workspace/AGENTS.md`, the bot's
 operating notes, so the bot knows where to look when you say "install X".
 Tell the bot your sources once and it remembers.
 
-## Automatic saving
+## Automatic proposals
 
 After a turn where you corrected it or it worked through a repeatable
-procedure, the bot may save what it learned as a skill on its own — it
-says so in the topic (*"saved skill: X — reply to undo"*). A bad save is
-one reply away from gone: say undo and it deletes the folder.
+procedure, the bot may draft what it learned as a skill on its own.
+Drafts never install themselves: they park in `workspace/skills-proposed/`
+and the bot says so in the topic (*"proposed skill: X — approve to
+install"*). Approve and it moves the draft into the catalog; say discard
+and it deletes it. The bot sees pending proposals in its skills list, so
+you can approve from any chat, not just the one where the draft landed.
 
 ## Limits worth knowing
 
@@ -77,7 +80,9 @@ one reply away from gone: say undo and it deletes the folder.
   don't slow down unrelated chats.
 - The catalog caps at 128 skills. If you somehow get there, that's a bug
   worth mentioning to the bot.
-- There is deliberately no skills UI, no versioning, no approval flow. A
-  skill is files in a folder; installing it is writing those files. Don't
-  install skills from sources you don't trust — their instructions run with
-  the bot's shell.
+- There is deliberately no skills UI, no versioning. A skill is files
+  in a folder; installing it is writing those files — you asking in
+  chat is the approval. The one exception runs the other way: drafts
+  the bot saves on its own always wait for your yes before they join
+  the catalog. Don't install skills from sources you don't trust —
+  their instructions run with the bot's shell.

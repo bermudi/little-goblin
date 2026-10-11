@@ -1,10 +1,10 @@
 // Reviewer calibration report (DESIGN.md, "Skill reviewer" →
 // instrumentation): reads goblin.log JSONL and answers, from the log
 // alone, the questions the gate experiment needs — how often the gate
-// fires and on what, what reviews cost, and what became of each save
-// (validated, published, skipped, rejected, cancelled, dropped, and
-// whether the published skill dir is still on disk — the closest thing
-// to an undo label that exists).
+// fires and on what, what reviews cost, and what became of each
+// proposal (validated, proposed, skipped, rejected, cancelled,
+// dropped, and where the skill sits now: still proposed (undecided),
+// installed (the operator approved — it reached skills/), or gone).
 //
 //   bun scripts/reviewer-stats.ts [logfile]
 //
@@ -57,7 +57,7 @@ interface ReviewRecord {
 	validated: { skill: string; ok: boolean }[];
 	rejected: string | null;
 	discarded: string | null;
-	published: string[];
+	proposed: string[];
 	skipped: unknown[];
 	cancelled: string | null;
 	dropped: boolean;
@@ -82,7 +82,7 @@ function review(reviewId: string): ReviewRecord {
 			validated: [],
 			rejected: null,
 			discarded: null,
-			published: [],
+			proposed: [],
 			skipped: [],
 			cancelled: null,
 			dropped: false,
@@ -163,7 +163,7 @@ for (const line of readFileSync(file, "utf8").split("\n")) {
 		case "reviewer review skipped — skills tree over staging budget":
 			r.discarded = "staging-budget";
 			break;
-		case "reviewer publish skipped — live skills changed mid-review":
+		case "reviewer proposal skipped — live skills changed mid-review":
 			r.skipped = arr(rec.skipped);
 			break;
 		case "reviewer review cancelled — dropped from queue":
@@ -175,7 +175,7 @@ for (const line of readFileSync(file, "utf8").split("\n")) {
 			r.done = true;
 			for (const s of arr(rec.skills)) {
 				const name = str(s);
-				if (name !== null) r.published.push(name);
+				if (name !== null) r.proposed.push(name);
 			}
 			break;
 		default:
@@ -230,31 +230,44 @@ bucket("dropped (queue full)", (r) => r.dropped);
 bucket("cancelled (/stop)", (r) => r.cancelled !== null);
 bucket("discarded (model/budget)", (r) => r.discarded !== null);
 bucket("rejected (validation)", (r) => r.rejected !== null);
-const published = rs.filter((r) => r.published.length > 0);
-bucket("published", (r) => r.published.length > 0);
+bucket("proposed", (r) => r.proposed.length > 0);
+const proposedReviews = rs.filter((r) => r.proposed.length > 0);
 
 p("");
-p("published skills (still-on-disk = not undone):");
-if (published.length === 0) {
+p("proposed skills — outcome by disk:");
+// The reviewer parks drafts in workspace/skills-proposed/; only the
+// operator's approval moves one into skills/. Disk tells which
+// happened: still under skills-proposed/ = undecided, under skills/ =
+// approved (or hand-made), neither = discarded or replaced by a newer
+// proposal of the same name.
+if (proposedReviews.length === 0) {
 	p("  (none)");
 } else {
-	const seen = new Map<string, { onDisk: number; gone: number }>();
-	for (const r of published) {
-		for (const s of r.published) {
-			const e = seen.get(s) ?? { onDisk: 0, gone: 0 };
+	const seen = new Map<string, { pending: number; installed: number; gone: number }>();
+	for (const r of proposedReviews) {
+		for (const s of r.proposed) {
+			const e = seen.get(s) ?? { pending: 0, installed: 0, gone: 0 };
 			if (workspaceSeen !== null) {
 				try {
-					statSync(join(workspaceSeen, "skills", s));
-					e.onDisk += 1;
+					statSync(join(workspaceSeen, "skills-proposed", s));
+					e.pending += 1;
 				} catch {
-					e.gone += 1;
+					try {
+						statSync(join(workspaceSeen, "skills", s));
+						e.installed += 1;
+					} catch {
+						e.gone += 1;
+					}
 				}
 			}
 			seen.set(s, e);
 		}
 	}
 	for (const [skill, e] of [...seen.entries()].sort()) {
-		const disk = workspaceSeen === null ? "?" : `${e.onDisk} on disk, ${e.gone} gone`;
+		const disk =
+			workspaceSeen === null
+				? "?"
+				: `${e.pending} still proposed, ${e.installed} installed, ${e.gone} gone`;
 		p(`  ${skill} — ${disk}`);
 	}
 	if (workspaceSeen === null) p("  (workspace unknown — no started line carried a staged path)");
@@ -271,8 +284,8 @@ for (const r of rs.slice(-15).reverse()) {
 				? `discarded(${r.discarded})`
 				: r.rejected !== null
 					? "rejected(validation)"
-					: r.published.length > 0
-						? `published: ${r.published.join(", ")}`
+					: r.proposed.length > 0
+						? `proposed: ${r.proposed.join(", ")}`
 						: r.started
 							? "ran, saved nothing"
 							: "queued";

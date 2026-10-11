@@ -208,8 +208,9 @@ export function buildSystemPrompt(
 	// Scanned at snapshot build (conversation start / compaction refresh)
 	// — a skill written mid-conversation appears when the next
 	// conversation starts; its SKILL.md is read fresh on use regardless.
+	// Proposals ride the same section and the same boundary.
 	const catalog = loadCatalog(paths.skills());
-	const skillsSection = formatSkillsSection(catalog);
+	const skillsSection = formatSkillsSection(catalog, loadCatalog(paths.skillsProposed()));
 	noteSource("SOUL.md", soul);
 	noteSource("AGENTS.md", agents);
 	noteSource("USER.md", user);

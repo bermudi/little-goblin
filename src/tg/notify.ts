@@ -138,19 +138,20 @@ export async function sendMemoryBlockedNotice(
 	log.info("memory blocked notice sent", { conversation: conversationId, attempts });
 }
 
-// The skill reviewer's write notice (DESIGN.md, "Skill reviewer") — the
-// second sanctioned proactive message: a saved skill announces itself
-// in the topic it was learned in. Throws on delivery failure like the
-// notices above — the reviewer logs it, and the history event it already
-// wrote stays the durable record.
-export async function sendSkillSavedNotice(
+// The skill reviewer's proposal notice (DESIGN.md, "Skill reviewer") —
+// the second sanctioned proactive message: a proposed skill announces
+// itself in the topic it was learned in, as a draft awaiting the
+// operator's yes — nothing installs until then. Throws on delivery
+// failure like the notices above — the reviewer logs it, and the
+// history event it already wrote stays the durable record.
+export async function sendSkillProposedNotice(
 	api: Api,
 	conversationId: string,
 	skills: string[],
 ): Promise<void> {
 	const addr = noticeDoor(conversationId);
 	if (addr === "app" || addr === "guest") {
-		log.info("skill saved notice skipped — app conversation rings nothing", {
+		log.info("skill proposal notice skipped — app conversation rings nothing", {
 			conversation: conversationId,
 			skills,
 		});
@@ -161,10 +162,10 @@ export async function sendSkillSavedNotice(
 	await withTimeout(
 		api.sendMessage(
 			addr.chatId,
-			`saved ${names} — reply to undo`,
+			`proposed ${names} — approve to install`,
 			addr.threadId !== null ? { message_thread_id: addr.threadId } : {},
 		),
-		"sendMessage (skill saved notice)",
+		"sendMessage (skill proposal notice)",
 	);
-	log.info("skill saved notice sent", { conversation: conversationId, skills });
+	log.info("skill proposal notice sent", { conversation: conversationId, skills });
 }

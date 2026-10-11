@@ -401,6 +401,7 @@ function workspace(home: string, phase: HealthReport["phase"]): HealthResult[] {
 		["workspace", "directory", true],
 		["state", "directory", true],
 		["workspace/skills", "directory", true],
+		["workspace/skills-proposed", "directory", true],
 		["workspace/attachments", "directory", true],
 		["workspace/SOUL.md", "file", true],
 		["workspace/AGENTS.md", "file", true],

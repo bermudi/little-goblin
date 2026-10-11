@@ -75,7 +75,7 @@ import { filterGuestTools } from "./tg/guest.ts";
 import {
 	sendMemoryBlockedNotice,
 	sendMemoryOutageNotice,
-	sendSkillSavedNotice,
+	sendSkillProposedNotice,
 } from "./tg/notify.ts";
 import { openPings } from "./tg/pings.ts";
 
@@ -591,9 +591,10 @@ async function boot() {
 				},
 				store,
 				skillsDir: paths.skills(),
+				proposedDir: paths.skillsProposed(),
 				workspaceDir: paths.workspace(),
 				notify: (conversationId, skills) =>
-					sendSkillSavedNotice(tg.bot.api, conversationId, skills),
+					sendSkillProposedNotice(tg.bot.api, conversationId, skills),
 			}),
 		);
 		// The loop watchdog rides the same JevClient (design/model.md → "No step

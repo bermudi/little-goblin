@@ -81,7 +81,7 @@ function assets(checkout: string) {
 	writeFileSync(join(checkout, "app/dist/assets/main.css"), "body {}");
 }
 function installLayout(home: string) {
-	for (const dir of ["state", "workspace/skills", "workspace/attachments"])
+	for (const dir of ["state", "workspace/skills", "workspace/skills-proposed", "workspace/attachments"])
 		mkdirSync(join(home, dir), { recursive: true });
 	for (const name of ["SOUL.md", "AGENTS.md"])
 		writeFileSync(join(home, "workspace", name), "fixture");

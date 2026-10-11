@@ -3,12 +3,8 @@
 Telegram-native personal AI agent for one operator. Rewrite of
 the original v1 (long gone) on the Vercel AI SDK; **this tree is the
 one true tree** — `goblin.service` runs from it, and every session
-works here. `~/build/goblin-v2` is an archived stale clone
-(GitHub `bermudi/goblin-v2`, archived 2026-10-07): never edit, push,
-or follow paths into it — a session that did on 2026-10-07 nearly
-shipped its work into a void. Read `DESIGN.md` (the
-core: domain model, authority rule, cache stability, non-goals) plus the
-`design/` file for the area you're touching before any structural work.
+works here. Read `DESIGN.md` plus the `design/` file for the area 
+you're touching before any structural work.
 `docs/` is operator documentation, not spec.
 
 ## Guardrails
@@ -65,13 +61,12 @@ scheduled work: two mature agents live locally and already paid for these
 lessons — `~/build/testing/openclaw/` (TypeScript, multi-channel) and
 `~/build/testing/hermes-agent/` (Python, Nous Research). Borrow their
 *mechanisms*, never their scope: both carry 10x goblin's feature list, most
-of it on our non-goals list. Worth stealing outright: openclaw's bootstrap
-file protocol (trigger→file memory rules, supersede-in-place directives) and
-its HEARTBEAT.md post-mortem (a scheduled job's instructions are the job's
-state in the DB, never a shared workspace file); hermes' cache discipline
-("per-conversation prompt caching is sacred" — both projects converged on
-this independently, treat it as settled). Consult their AGENTS.md, docs/
-and templates before designing; cite what you took in the design docs.
+of it on our non-goals list. Consult their AGENTS.md, docs/ and templates 
+before designing; cite what you took in the design docs.
+
+For agent harness inspiration there's nothing better than `~/build/pi-mono/`.
+It is an open source harness cloned by Cloudflare, OpenRouter and others and
+it can be gold-mine of prover patterns. Compaction, tool calling, etc.
 
 ## Live services
 

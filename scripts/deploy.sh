@@ -68,16 +68,23 @@ fi
 revision_summary="$(git log -1 --format='%h %s' "$new_rev")" || fail "cannot read deployment commit"
 step "deploying $branch @ $revision_summary${old_rev:+ (was ${old_rev:0:7})}"
 
-# --- 2. Gate ---------------------------------------------------------------
+# --- 2. Refresh deps --------------------------------------------------------
+# Before the gate: the typecheck must read new_rev's dependency tree, not
+# whatever the previous deployment left in node_modules — a merge that adds
+# or upgrades a dependency would otherwise gate on missing/stale modules.
+# The rollback line restores ignored dependencies, so syncing them here adds
+# no new recovery requirement.
+if grep -qE '^(bun\.lock|package\.json)$' <<< "$changed_paths"; then
+	bun install --frozen-lockfile
+fi
+
+# --- 3. Gate ----------------------------------------------------------------
 # Tests gate merges, not deploys: re-running the suite here re-executed work
 # every merge already proved, adding ~90s before each restart.
 step "gate: bun run typecheck"
 bun run typecheck
 
-# --- 3. Refresh deps and the served bundle ---------------------------------
-if grep -qE '^(bun\.lock|package\.json)$' <<< "$changed_paths"; then
-	bun install --frozen-lockfile
-fi
+# --- 4. Refresh the served bundle -------------------------------------------
 if grep -qE '^(app/|package\.json$|bun\.lock$|src/agent/tools/ui-schema\.ts$)' <<< "$changed_paths"; then
 	# The bundle inlines dependencies and the shared UI schema, not just app/.
 	bun run app:build
@@ -91,7 +98,7 @@ if grep -qE '^deploy/memory/' <<< "$changed_paths"; then
 	echo "deploy: docs/operations.md, Deploying."
 fi
 
-# --- 4. Restart, verify -----------------------------------------------------
+# --- 5. Restart, verify -----------------------------------------------------
 restart_epoch="$(date +%s)"
 systemctl --user restart goblin
 for _ in $(seq 1 20); do

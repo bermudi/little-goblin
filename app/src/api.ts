@@ -1,5 +1,12 @@
 // The /api/app/* client. Wire types come from the server source
 // (src/http/app-wire.ts) — never redeclared here.
+//
+// One client, two doors (design/telegram.md → Mini Apps): served under
+// /t/ it is the Telegram mini app and operator requests ride the
+// initData-authed /api/* tails; everywhere else it is the PWA on the
+// app channel's /api/app/* (bearer/trust). The chat routes exist only
+// on the app door — a bug that mounts them in telegram mode fails
+// loudly with 404, never silently.
 
 import type {
 	AppAttachmentResponse,
@@ -51,16 +58,31 @@ export class ApiError extends Error {
 
 // token null = trust mode: the server has no appToken, the tailnet is
 // the only lock, and requests go bare. A stored token is always sent
-// when present — trust mode ignores it either way.
+// when present — trust mode ignores it either way. On the telegram
+// door no credential is stored: initData rides x-init-data instead,
+// and the paths swap their /api/app prefix for /api (the tails are
+// named identically on both doors).
+export function telegramDoor(): boolean {
+	// Browser: window.location. DOM-less test envs (bun's default) have no
+	// window and are never on /t/ — the door is a browser-URL property.
+	const pathname = typeof window === "undefined" ? "/" : window.location.pathname;
+	return /^\/t(\/|$)/.test(pathname);
+}
+
 async function requestMeta<T>(
 	token: string | null,
 	path: string,
 	init?: RequestInit,
 ): Promise<{ data: T; etag: string | null }> {
-	const res = await fetch(path, {
+	const telegram = telegramDoor();
+	const res = await fetch(telegram ? `/api${path.slice("/api/app".length)}` : path, {
 		...init,
 		headers: {
-			...(token === null ? {} : { authorization: `Bearer ${token}` }),
+			...(telegram
+				? { "x-init-data": window.Telegram?.WebApp.initData ?? "" }
+				: token === null
+					? {}
+					: { authorization: `Bearer ${token}` }),
 			...(init?.headers ?? {}),
 		},
 	});

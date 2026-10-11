@@ -5,5 +5,5 @@
 		"allowJs": true,
 		"checkJs": true
 	},
-	"include": ["src/http/app.js", "src/http/telegram-webapp.d.ts"]
+	"include": ["src/http/app.js", "app/src/telegram-webapp.d.ts"]
 }

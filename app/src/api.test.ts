@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { Window } from "happy-dom";
 import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
 import {
 	ApiError,
 	forgetMemoryDocument,
 	getConfig,
 	getConversationConfig,
+	getMessages,
 	getOperatorConfig,
 	listMemoryDocuments,
 	patchConfig,
@@ -155,5 +157,75 @@ describe("operator surface", () => {
 		expect(res.ok).toBe(true);
 		expect(forgets[0]!.method).toBe("DELETE");
 		expect(new URL(forgets[0]!.url).pathname).toBe("/api/app/memory/documents/doc-1");
+	});
+});
+
+// The Telegram door (design/telegram.md → Mini Apps): served under /t/,
+// operator requests rewrite /api/app/* to the identically-named /api/*
+// tails and ride x-init-data instead of a bearer token.
+describe("telegram door", () => {
+	const originalWindow = globalThis.window;
+	const originalFetch = globalThis.fetch;
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+		if (originalWindow !== undefined) globalThis.window = originalWindow;
+		else Reflect.deleteProperty(globalThis, "window");
+	});
+
+	// happy-dom window installed as the global — the door reads
+	// window.location.pathname per request, and Telegram's injected
+	// payload is stubbed on the same window.
+	function mountAt(path: string): Window {
+		const win = new Window({ url: `http://localhost${path}` });
+		Reflect.set(win, "Telegram", {
+			WebApp: { initData: "user=%7B%22id%22%3A111%7D&hash=abc" },
+		});
+		Reflect.set(globalThis, "window", win);
+		return win;
+	}
+
+	const SETTINGS_OK = () =>
+		new Response(JSON.stringify({ config: {}, providerKinds: [], searchKinds: [], fetchKinds: [] }), {
+			status: 200,
+			headers: { "content-type": "application/json", etag: '"v1"' },
+		});
+
+	test("operator calls rewrite to /api/* and carry x-init-data instead of a bearer token", async () => {
+		mountAt("/t/settings");
+		const requests: Request[] = [];
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			requests.push(new Request(new URL(String(input), "http://localhost"), init));
+			return SETTINGS_OK();
+		}) as typeof fetch;
+		await getOperatorConfig(null);
+		expect(new URL(requests[0]!.url).pathname).toBe("/api/settings");
+		expect(requests[0]!.headers.get("x-init-data")).toBe("user=%7B%22id%22%3A111%7D&hash=abc");
+		expect(requests[0]!.headers.get("authorization")).toBeNull();
+	});
+
+	test("the app door keeps its paths and never sprouts the header", async () => {
+		const win = mountAt("/app/settings");
+		Reflect.deleteProperty(win, "Telegram");
+		const requests: Request[] = [];
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			requests.push(new Request(new URL(String(input), "http://localhost"), init));
+			return SETTINGS_OK();
+		}) as typeof fetch;
+		await getOperatorConfig("tok");
+		expect(new URL(requests[0]!.url).pathname).toBe("/api/app/settings");
+		expect(requests[0]!.headers.get("authorization")).toBe("Bearer tok");
+		expect(requests[0]!.headers.get("x-init-data")).toBeNull();
+	});
+
+	test("chat routes rewrite too — they exist only on the app door, so a telegram-door mount fails loudly (404), not silently", async () => {
+		mountAt("/t/settings");
+		const requests: Request[] = [];
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			requests.push(new Request(new URL(String(input), "http://localhost"), init));
+			return Response.json({ messages: [] });
+		}) as typeof fetch;
+		await getMessages(null, "app/chat-1");
+		expect(new URL(requests[0]!.url).pathname).toBe("/api/conversations/chat-1/messages");
 	});
 });

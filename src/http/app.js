@@ -9,7 +9,7 @@
 // machine values are monospace, inputs render at 16px, save lives in the
 // fixed bottom bar, and nothing structured is a raw text field.
 
-/// <reference path="./telegram-webapp.d.ts" />
+/// <reference path="../../app/src/telegram-webapp.d.ts" />
 
 /** The config as the server validates it. */
 /** @typedef {import("../config.ts").Config} Config */

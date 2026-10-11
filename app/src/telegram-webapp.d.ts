@@ -1,9 +1,9 @@
-// Minimal ambient types for telegram-web-app.js — the script telegram.org
-// serves to the mini app's webview (the built client's index.html
-// includes it directly). Only the surface the client uses; widen here
-// when the door grows rather than casting at call sites. Methods are
-// optional because the SDK version varies by client — callers
-// feature-detect every call.
+// Minimal ambient types for telegram-web-app.js — main.tsx fetches the
+// telegram.org copy on the mini-app door only (and Telegram's own
+// webviews inject the object before page scripts run). Only the surface
+// the client uses; widen here when the door grows rather than casting
+// at call sites. Methods are optional because the SDK version varies by
+// client — callers feature-detect every call.
 //
 // APP PROGRAM ONLY (it lives under app/src, which the server's
 // tsconfig never includes): declaring `Window` here would give

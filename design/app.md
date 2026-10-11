@@ -165,7 +165,25 @@ React client imports them directly).
 the app shell, the client routes internally (same mechanism as
 `/app/c/<id>`). API tails: `settings` (GET/POST), `thinking-levels`,
 `memory/status`, `memory/documents[/id]` (GET/DELETE), `programs`,
-`delegations`, `status`. The client's settings editor was seeded as a
+`delegations`, `status`.
+
+**State viewer (ruling 2026-10-11, operator ask).** The console gains a
+read-only view over the rest of `$GOBLIN_HOME` — the human-meaningful
+set: skills (installed and proposed), workspace files (SOUL/USER/AGENTS),
+attachments, and the log. Deliberately out, forever: `auth.jsonl` (no
+route may ever render it, structure included) and any editing surface
+beyond what the console already has — the viewer reads state; writes
+stay where they are. The wall is two layers that each hold alone: the
+router zod-validates every name/path/param, and `src/stateview.ts`
+re-verifies containment (a resolved path must stay under the directory
+it was addressed against) before every read. The log is a bounded
+server-side tail — 512 KiB window from the end, ≤1000 lines, level and
+substring filters applied server-side — so the client never pulls the
+whole file and a raw-log dump cannot ride a wide-open query. Attachment
+bytes ride their own route with a conservative content-type map. Tails:
+`skills`, `skills/file`, `attachments`, `attachments/file`, `identity`,
+`log`; pages `/app/skills`, `/app/files`, `/app/log`. The mini app does
+not get these pages — `TELEGRAM_PAGES` stays settings/memory. The client's settings editor was seeded as a
 React port of the mini app's form — `app/src/settingsDraft.ts` carried
 populate/validate/buildBody and `app/src/SettingsView.tsx` kept the
 section drill-in, chain ordering, provider rename-on-blur, and

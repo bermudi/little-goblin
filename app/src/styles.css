@@ -3268,3 +3268,129 @@ button.link:hover {
 .note-save-status.error {
 	color: var(--app-danger);
 }
+
+/* State viewer (ruling 2026-10-11): skills, files, log. */
+
+.skill-files {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.35rem;
+}
+.skill-file {
+	font-family: var(--font-mono);
+	font-size: 12px;
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	background: transparent;
+	color: var(--app-fg-muted);
+	padding: 0.15rem 0.6rem;
+	cursor: pointer;
+}
+.skill-file:hover {
+	background: var(--app-hover);
+}
+.skill-file.on {
+	color: var(--app-fg);
+	border-color: var(--app-divider);
+	background: var(--app-active);
+}
+.skill-source {
+	max-height: 24rem;
+	overflow: auto;
+}
+
+.attach-preview {
+	max-width: 100%;
+	border-radius: 8px;
+	border: 1px solid var(--app-divider);
+}
+.attach-download {
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+}
+.attach-download:hover {
+	color: var(--app-fg);
+}
+
+.log-controls {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.4rem;
+	margin-bottom: 0.6rem;
+}
+.log-controls select,
+.log-controls input {
+	background: var(--app-gray-50);
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	color: var(--app-fg);
+	font-size: 12.5px;
+	padding: 0.3rem 0.5rem;
+}
+.log-controls input {
+	flex: 1;
+	min-width: 10rem;
+	font-family: var(--font-mono);
+}
+.log-controls button {
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	background: transparent;
+	color: var(--app-fg-muted);
+	font-size: 12.5px;
+	padding: 0.3rem 0.7rem;
+	cursor: pointer;
+}
+.log-controls button:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+
+.logview {
+	border: 1px solid var(--app-divider);
+	border-radius: 10px;
+	background: var(--app-gray-50);
+	padding: 0.4rem 0.6rem;
+	max-height: 32rem;
+	overflow: auto;
+}
+.logline {
+	display: flex;
+	gap: 0.6rem;
+	align-items: baseline;
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	line-height: 1.5;
+	padding: 0.1rem 0;
+	border-bottom: 1px solid var(--app-border);
+}
+.logline:last-child {
+	border-bottom: none;
+}
+.log-ts {
+	flex: none;
+	color: var(--app-fg-subtle);
+}
+.log-level {
+	flex: none;
+	width: 4.2rem;
+	color: var(--app-fg-muted);
+}
+.log-msg {
+	min-width: 0;
+	overflow-wrap: anywhere;
+	white-space: pre-wrap;
+	color: var(--app-fg);
+}
+.logline.lv-warn .log-level {
+	color: #facc15;
+}
+.logline.lv-error .log-level {
+	color: var(--app-danger);
+}
+.logline.lv-error .log-msg {
+	color: color-mix(in oklab, var(--app-danger) 80%, var(--app-fg));
+}
+.logline.lv-debug .log-msg {
+	color: var(--app-fg-muted);
+}

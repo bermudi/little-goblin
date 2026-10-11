@@ -18,6 +18,8 @@ import { ChatView, Composer, type StagedNote, type StagedUpload } from "./ChatVi
 import { SettingsView } from "./SettingsView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
 import { DelegationsView, ProgramsView, StatusView } from "./OperatorViews.tsx";
+import { FilesView, SkillsView } from "./StateViews.tsx";
+import { LogView } from "./LogView.tsx";
 import { NewProjectDialog, ProjectsIndex, ProjectView } from "./ProjectView.tsx";
 import { NotesIndex, NoteView } from "./NoteView.tsx";
 import type {
@@ -37,6 +39,9 @@ type Page =
 	| "delegations"
 	| "programs"
 	| "status"
+	| "skills"
+	| "files"
+	| "log"
 	| "projects"
 	| "project"
 	| "notes"
@@ -48,15 +53,19 @@ const PAGES: { key: Exclude<Page, "chat" | "notes" | "note">; label: string }[] 
 	{ key: "delegations", label: "Delegations" },
 	{ key: "programs", label: "Programs" },
 	{ key: "status", label: "Status" },
+	{ key: "skills", label: "Skills" },
+	{ key: "files", label: "Files" },
+	{ key: "log", label: "Log" },
 ];
 
 function pageFromPath(pathname: string): Page | null {
 	// /app/ is the PWA door, /t/ the Telegram mini app's — both serve this
 	// bundle and both parse the same page vocabulary; each door clamps the
 	// result to its own page scope.
-	const m = /^\/(?:app|t)\/(settings|memory|delegations|programs|status|projects|notes)\/?$/.exec(
-		pathname,
-	);
+	const m =
+		/^\/(?:app|t)\/(settings|memory|delegations|programs|status|skills|files|log|projects|notes)\/?$/.exec(
+			pathname,
+		);
 	return m === null ? null : (m[1] as Page);
 }
 
@@ -624,9 +633,7 @@ function AppShell() {
 		projectFromPath(window.location.pathname),
 	);
 	// /app/n/<id> — same deal for a note page.
-	const [noteId, setNoteId] = useState<string | null>(() =>
-		noteFromPath(window.location.pathname),
-	);
+	const [noteId, setNoteId] = useState<string | null>(() => noteFromPath(window.location.pathname));
 	const [createProjectOpen, setCreateProjectOpen] = useState(false);
 	// The settings editor reports its dirty bit here so navigating away
 	// can ask before discarding unsaved edits.
@@ -702,10 +709,7 @@ function AppShell() {
 	const refresh = useCallback(async () => {
 		const seq = ++listSeq.current;
 		try {
-			const [list, plist] = await Promise.all([
-				listConversations(token),
-				listProjects(token),
-			]);
+			const [list, plist] = await Promise.all([listConversations(token), listProjects(token)]);
 			if (seq !== listSeq.current) return;
 			setConversations(list.conversations);
 			setProjects(plist.projects);
@@ -1122,7 +1126,9 @@ function AppShell() {
 								</button>
 								<button
 									type="button"
-									className={page === "notes" || page === "note" ? "rail-section on" : "rail-section"}
+									className={
+										page === "notes" || page === "note" ? "rail-section on" : "rail-section"
+									}
 									onClick={openNotesIndex}
 								>
 									Notes
@@ -1221,6 +1227,9 @@ function AppShell() {
 				{page === "delegations" && <DelegationsView token={token} />}
 				{page === "programs" && <ProgramsView token={token} />}
 				{page === "status" && <StatusView token={token} />}
+				{page === "skills" && <SkillsView token={token} />}
+				{page === "files" && <FilesView token={token} />}
+				{page === "log" && <LogView token={token} />}
 				{page === "projects" && (
 					<ProjectsIndex
 						projects={projectList}
@@ -1228,9 +1237,7 @@ function AppShell() {
 						onNew={() => setCreateProjectOpen(true)}
 					/>
 				)}
-				{page === "notes" && (
-					<NotesIndex token={token} projects={projectList} onOpen={openNote} />
-				)}
+				{page === "notes" && <NotesIndex token={token} projects={projectList} onOpen={openNote} />}
 				{page === "note" && (
 					<div className="chat">
 						{noteId === null ? (

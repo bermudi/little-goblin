@@ -1,61 +1,11 @@
 import { useEffect, useState } from "react";
 import { ApiError, getServiceStatus, listDelegations, listPrograms } from "./api.ts";
+import { describe, KV, ts, uptime, useLoad } from "./opsShared.tsx";
 import type {
 	OperatorDelegationItem,
 	OperatorProgramItem,
 	OperatorStatusResponse,
 } from "../../src/http/operator-wire.ts";
-
-function describe(err: unknown): string {
-	return err instanceof ApiError ? err.message : "Couldn't reach goblin — check the tailnet.";
-}
-
-function ts(iso: string | null): string {
-	if (iso === null) return "—";
-	const t = Date.parse(iso);
-	return Number.isNaN(t)
-		? iso
-		: new Date(t).toLocaleString(undefined, {
-				month: "short",
-				day: "numeric",
-				hour: "2-digit",
-				minute: "2-digit",
-			});
-}
-
-function uptime(sec: number): string {
-	if (sec < 60) return `${sec}s`;
-	if (sec < 3600) return `${Math.floor(sec / 60)}m`;
-	if (sec < 86400) return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`;
-	return `${Math.floor(sec / 86400)}d ${Math.floor((sec % 86400) / 3600)}h`;
-}
-
-function KV({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
-	return (
-		<div className="kv">
-			<span className="kv-k">{k}</span>
-			<span className={mono ? "kv-v mono" : "kv-v"}>{v}</span>
-		</div>
-	);
-}
-
-function useLoad<T>(load: () => Promise<T>) {
-	const [data, setData] = useState<T | null>(null);
-	const [err, setErr] = useState<string | null>(null);
-	useEffect(() => {
-		let live = true;
-		load().then(
-			(d) => live && setData(d),
-			(e) => live && setErr(describe(e)),
-		);
-		return () => {
-			live = false;
-		};
-		// Runs once per mount — token changes remount the view via App's
-		// page switch, so an empty dep list is correct here.
-	}, []);
-	return { data, err };
-}
 
 export function ProgramsView({ token }: { token: string | null }) {
 	const { data, err } = useLoad(() => listPrograms(token));

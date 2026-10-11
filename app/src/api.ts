@@ -29,8 +29,11 @@ import type {
 	AppTtsResponse,
 } from "../../src/http/app-wire.ts";
 import type {
+	AttachmentsResponse,
 	ConfigPostBody,
 	ConfigResponse,
+	IdentityResponse,
+	LogTailResponse,
 	MemoryDocDetailResponse,
 	MemoryForgetResponse,
 	MemoriesListResponse,
@@ -38,6 +41,8 @@ import type {
 	OperatorDelegationsResponse,
 	OperatorProgramsResponse,
 	OperatorStatusResponse,
+	SkillFileResponse,
+	SkillsResponse,
 	ThinkingLevelsResponse,
 } from "../../src/http/operator-wire.ts";
 
@@ -464,4 +469,54 @@ export function listDelegations(token: string | null): Promise<OperatorDelegatio
 
 export function getServiceStatus(token: string | null): Promise<OperatorStatusResponse> {
 	return request(token, "/api/app/status");
+}
+
+export function listSkills(token: string | null): Promise<SkillsResponse> {
+	return request(token, "/api/app/skills");
+}
+
+export function getSkillFile(
+	token: string | null,
+	origin: "skills" | "proposed",
+	name: string,
+	path: string,
+): Promise<SkillFileResponse> {
+	const q = new URLSearchParams({ origin, name, path });
+	return request(token, `/api/app/skills/file?${q.toString()}`);
+}
+
+export function listAttachments(token: string | null): Promise<AttachmentsResponse> {
+	return request(token, "/api/app/attachments");
+}
+
+export function getIdentity(token: string | null): Promise<IdentityResponse> {
+	return request(token, "/api/app/identity");
+}
+
+export function tailLog(
+	token: string | null,
+	opts: { limit: number; level: string | null; q: string | null },
+): Promise<LogTailResponse> {
+	const q = new URLSearchParams({ limit: String(opts.limit) });
+	if (opts.level !== null) q.set("level", opts.level);
+	if (opts.q !== null) q.set("q", opts.q);
+	return request(token, `/api/app/log?${q.toString()}`);
+}
+
+// Attachments are bytes, not JSON — same door rewrite and auth headers
+// as requestMeta, but a blob body. Only the PWA's Files view calls it.
+export async function fetchAttachment(token: string | null, name: string): Promise<Blob> {
+	const telegram = telegramDoor();
+	const tail = telegram
+		? `/api/attachments/file?name=${encodeURIComponent(name)}`
+		: `/api/app/attachments/file?name=${encodeURIComponent(name)}`;
+	const res = await fetch(tail, {
+		headers: telegram
+			? { "x-init-data": window.Telegram?.WebApp.initData ?? "" }
+			: token === null
+				? {}
+				: { authorization: `Bearer ${token}` },
+	});
+	if (!res.ok) throw new ApiError(res.status, `http ${res.status}`);
+	return res.blob();
 }

@@ -481,3 +481,87 @@ describe("runCompaction", () => {
 		expect(writes).toHaveLength(0);
 	});
 });
+
+// Tool-call atomicity across the cut: a call and its result are parts
+// of one assistant event, and the boundary is always an event edge —
+// the two facts together are why compaction cannot orphan a tool
+// result. The history helper mirrors the persisted shape stream.ts
+// writes: text plus any number of completed tool parts per event.
+function toolEvent(
+	seq: number,
+	anchorSeq: number,
+	text: string,
+	calls: { id: string; input: Record<string, string>; output: string }[],
+): CompactionEvent {
+	const event = ev(seq, "assistant", text, anchorSeq);
+	for (const c of calls) {
+		event.message.parts.push({
+			type: "tool-bash",
+			toolCallId: c.id,
+			state: "output-available",
+			input: c.input,
+			output: c.output,
+		} as UIMessage["parts"][number]);
+	}
+	return event;
+}
+
+function toolHistory(): CompactionEvent[] {
+	return [
+		ev(1, "user", "run the deploy check".repeat(100)),
+		toolEvent(2, 1, "checking", [
+			{ id: "t1", input: { command: "bun run typecheck" }, output: "ok" },
+			{ id: "t2", input: { command: "systemctl --user status goblin" }, output: "active" },
+		]),
+		ev(3, "user", "and the app?".repeat(100)),
+		toolEvent(4, 3, "checking app", [
+			{ id: "t3", input: { command: "bun run app:build" }, output: "built" },
+		]),
+		ev(5, "user", "pending question".repeat(100)),
+	];
+}
+
+describe("tool-call atomicity across the cut", () => {
+	test("every cut is an event edge — a tool-bearing message is never bisected", () => {
+		const detail = toolHistory();
+		const seqs = new Set(detail.map((e) => e.seq));
+		for (const budget of [1, 5, 20, 100, 1_000, 100_000]) {
+			const boundary = chooseBoundary(detail, {
+				tailTokenBudget: budget,
+				previousBoundary: null,
+			});
+			if (boundary === null) continue;
+			expect(seqs.has(boundary), `budget ${budget}`).toBe(true);
+		}
+	});
+
+	test("the summarized span keeps every tool call next to its result", async () => {
+		// Budget 1 cuts at the last exchange-complete event (seq 4), so
+		// both tool events fold into the span. Each call's input AND
+		// output must reach the summarizer prompt together — a call
+		// stripped of its result would let the summary invent an outcome.
+		const { store } = fakeStore(toolHistory());
+		const prompts: string[] = [];
+		const outcome = await runCompaction(
+			"dm:1",
+			store,
+			"m",
+			async (_system, prompt) => {
+				prompts.push(prompt);
+				return "folded";
+			},
+			{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
+			signal(),
+		);
+		expect(outcome.kind).toBe("compacted");
+		const span = prompts.join("\n");
+		for (const [command, result] of [
+			["bun run typecheck", "ok"],
+			["systemctl --user status goblin", "active"],
+			["bun run app:build", "built"],
+		] as const) {
+			expect(span).toContain(command);
+			expect(span).toContain(result);
+		}
+	});
+});

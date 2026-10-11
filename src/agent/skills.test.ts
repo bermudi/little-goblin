@@ -206,6 +206,33 @@ describe("formatSkillsSection", () => {
 		expect(many).toContain("(3 entries skipped as malformed");
 	});
 
+	test("pending proposals render when present — and only then", () => {
+		const none = formatSkillsSection({ entries: [], skipped: 0 }, { entries: [], skipped: 0 }).join(
+			"\n",
+		);
+		expect(none).not.toContain("Pending proposals");
+		const absent = formatSkillsSection({ entries: [], skipped: 0 }).join("\n");
+		expect(absent).not.toContain("Pending proposals");
+		const withProposal = formatSkillsSection(
+			{ entries: [], skipped: 0 },
+			{
+				entries: [
+					{
+						name: "pdf-tables",
+						description: "Extract tables from PDFs",
+						path: "skills-proposed/pdf-tables/SKILL.md",
+					},
+				],
+				skipped: 0,
+			},
+		).join("\n");
+		expect(withProposal).toContain("Pending proposals");
+		expect(withProposal).toContain("NOT installed");
+		expect(withProposal).toContain(
+			"- pdf-tables — Extract tables from PDFs (skills-proposed/pdf-tables/SKILL.md)",
+		);
+	});
+
 	test("frontmatter that doesn't close inside the 16 KiB head is malformed", () => {
 		const root = useRoot();
 		const dir = join(root, "huge");

@@ -40,6 +40,10 @@ export const paths = {
 	agents: () => join(goblinHome(), "workspace", "AGENTS.md"),
 	user: () => join(goblinHome(), "workspace", "USER.md"),
 	skills: () => join(goblinHome(), "workspace", "skills"),
+	// The skill reviewer's parking area: validated auto-saves wait here
+	// for the operator's yes — never in the catalog itself
+	// (design/skills.md, "It proposes, then tells").
+	skillsProposed: () => join(goblinHome(), "workspace", "skills-proposed"),
 	attachments: () => join(goblinHome(), "workspace", "attachments"),
 	state: () => join(goblinHome(), "state"),
 	db: () => join(goblinHome(), "state", "goblin.sqlite"),
@@ -59,6 +63,7 @@ export function ensureHomeLayout(): void {
 		goblinHome(),
 		paths.workspace(),
 		paths.skills(),
+		paths.skillsProposed(),
 		paths.attachments(),
 		paths.state(),
 	]) {

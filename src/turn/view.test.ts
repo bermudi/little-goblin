@@ -121,7 +121,7 @@ describe("the model view", () => {
 	});
 
 	test("a history system event renders as a bracketed user note in position", async () => {
-		const event = "saved skill: talk-first — announced in this topic";
+		const event = "proposed skill: talk-first — announced in this topic";
 		const history = entries([
 			asst("a0", "earlier answer"),
 			{ id: "sys1", role: "system", parts: [{ type: "text", text: event }] },

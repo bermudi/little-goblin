@@ -402,6 +402,7 @@ function reviewerDeps(decide?: ReviewerDeps["gate"]["decide"]): ReviewerDeps {
 		},
 		store: { append() {} },
 		skillsDir: "/none",
+		proposedDir: "/none",
 		workspaceDir: "/none",
 		notify: async () => {},
 	};
@@ -613,6 +614,7 @@ describe("submitTurnReview", () => {
 				reviewModel: async () => ({ ref: "fake/review", model: cap.reviewModel }),
 				store: { append() {} },
 				skillsDir: cap.skills,
+				proposedDir: join(cap.workspace, "skills-proposed"),
 				workspaceDir: cap.workspace,
 				skillsRefBin: join(cap.root, "nonexistent-skills-ref"),
 			}),
@@ -638,6 +640,7 @@ describe("submitTurnReview", () => {
 			reviewModel: async () => ({ ref: "fake/review", model: cap.reviewModel }),
 			store: { append() {} },
 			skillsDir: cap.skills,
+			proposedDir: join(cap.workspace, "skills-proposed"),
 			workspaceDir: cap.workspace,
 			skillsRefBin: join(cap.root, "nonexistent-skills-ref"),
 		});

@@ -51,7 +51,7 @@ function unconvertiblePlaceholder(m: UIMessage): UIMessage {
 	};
 }
 
-// A history system event (the reviewer's save note — design/skills.md)
+// A history system event (the reviewer's proposal note — design/skills.md)
 // cannot reach the model as a system message: streamText rejects system
 // roles in `messages`, and `instructions` is the frozen per-conversation
 // prefix — per-event text can't join it without breaking the prompt

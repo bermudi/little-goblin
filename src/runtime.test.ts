@@ -972,8 +972,8 @@ describe("turn authority", () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const event =
-			"saved skill: talk-first — announced in this topic with an undo invite; " +
-			"an undo request means deleting skills/talk-first/";
+			"proposed skill: talk-first — parked in skills-proposed/talk-first/, not installed; " +
+			"an operator approval means moving it into skills/, a discard means deleting the proposal";
 		store.append(conv.id, [
 			{ id: "u1", role: "user", parts: [{ type: "text", text: "earlier question" }] },
 			{ id: "a1", role: "assistant", parts: [{ type: "text", text: "earlier answer" }] },
@@ -2561,6 +2561,7 @@ describe("skill reviewer hook", () => {
 				},
 				store,
 				skillsDir: "/none",
+				proposedDir: "/none",
 				workspaceDir: "/none",
 				notify: async () => {},
 			}),
@@ -2600,6 +2601,7 @@ describe("skill reviewer hook", () => {
 				},
 				store,
 				skillsDir: "/none",
+				proposedDir: "/none",
 				workspaceDir: "/none",
 				notify: async () => {},
 			}),

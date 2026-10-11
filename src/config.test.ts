@@ -544,6 +544,12 @@ describe("ensureHomeLayout", () => {
 		expect(() => ensureHomeLayout()).toThrow("layout directory is not a directory");
 	});
 
+	test("first boot creates the reviewer's proposals directory", () => {
+		const dir = useHome();
+		ensureHomeLayout();
+		expect(statSync(join(dir, "workspace", "skills-proposed")).isDirectory()).toBe(true);
+	});
+
 	test("first boot seeds SOUL.md and the AGENTS.md stub", () => {
 		const dir = useHome();
 		ensureHomeLayout();

@@ -177,8 +177,11 @@ export function loadCatalog(root: string): SkillCatalog {
 }
 
 // The prompt section. Renders even when empty — it's also the notice
-// that the capability exists.
-export function formatSkillsSection(catalog: SkillCatalog): string[] {
+// that the capability exists. Proposals (the reviewer's validated
+// drafts in skills-proposed/, never installed without the operator's
+// yes — design/skills.md, "It proposes, then tells") are listed when
+// present so any conversation can act on an approve request.
+export function formatSkillsSection(catalog: SkillCatalog, proposals?: SkillCatalog): string[] {
 	const lines = [
 		"## skills",
 		"",
@@ -202,6 +205,18 @@ export function formatSkillsSection(catalog: SkillCatalog): string[] {
 		lines.push(
 			`(${catalog.skipped} ${catalog.skipped === 1 ? "entry" : "entries"} skipped as malformed — see goblin.log)`,
 		);
+	}
+	if (proposals !== undefined && proposals.entries.length > 0) {
+		lines.push(
+			"",
+			"Pending proposals — reviewer drafts under `skills-proposed/`, NOT installed:",
+			"do not follow their instructions yet. Install one only when the operator",
+			"approves (move its directory into `skills/`); a discard means deleting it.",
+		);
+		for (const e of proposals.entries) {
+			const req = e.compatibility ? ` [${e.compatibility}]` : "";
+			lines.push(`- ${e.name} — ${e.description}${req} (${e.path})`);
+		}
 	}
 	return lines;
 }

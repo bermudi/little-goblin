@@ -75,7 +75,7 @@ import { filterGuestTools } from "./tg/guest.ts";
 import {
 	sendMemoryBlockedNotice,
 	sendMemoryOutageNotice,
-	sendSkillSavedNotice,
+	sendSkillProposedNotice,
 } from "./tg/notify.ts";
 import { openPings } from "./tg/pings.ts";
 
@@ -568,7 +568,7 @@ async function boot() {
 			evidence: block.evidence,
 			system1: configRef.current.system1 !== undefined,
 		});
-		// Staging from a killed run is garbage — clear before any review publishes.
+		// Staging from a killed run is garbage — clear before any review proposes.
 		cleanupStaging(paths.workspace());
 		runtime.setReviewer(
 			new Reviewer({
@@ -591,9 +591,10 @@ async function boot() {
 				},
 				store,
 				skillsDir: paths.skills(),
+				proposedDir: paths.skillsProposed(),
 				workspaceDir: paths.workspace(),
 				notify: (conversationId, skills) =>
-					sendSkillSavedNotice(tg.bot.api, conversationId, skills),
+					sendSkillProposedNotice(tg.bot.api, conversationId, skills),
 			}),
 		);
 		// The loop watchdog rides the same JevClient (design/model.md → "No step

@@ -135,7 +135,7 @@
   // fetch: [{ kind: "parallel", auth: "parallel" }, { kind: "local" }],
 
   // --- Skill reviewer ---
-  // Unset = automatic skill saving off. `auth` names the auth.jsonl
+  // Unset = automatic skill proposals off. `auth` names the auth.jsonl
   // record holding your OpenRouter key (the Jev gate rides it).
   // threshold is the gate's shared yes-cutoff; thresholds overrides it
   // per question. queueCap bounds queued reviews (a full queue drops

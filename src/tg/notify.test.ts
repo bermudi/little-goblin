@@ -5,7 +5,7 @@ import {
 	parseConversationAddress,
 	sendMemoryBlockedNotice,
 	sendMemoryOutageNotice,
-	sendSkillSavedNotice,
+	sendSkillProposedNotice,
 } from "./notify.ts";
 
 // formatAddress ∘ parseConversationAddress must be the identity on every
@@ -120,8 +120,8 @@ describe("blocked notice send", () => {
 	});
 });
 
-describe("skill saved notice send", () => {
-	test("names the skill with an undo invite, into the topic's thread", async () => {
+describe("skill proposal notice send", () => {
+	test("names the skill with an approve invite, into the topic's thread", async () => {
 		type Send = { chatId: number; text: string; threadId?: number };
 		const sends: Send[] = [];
 		const api = {
@@ -133,12 +133,12 @@ describe("skill saved notice send", () => {
 				});
 			},
 		} as unknown as Api;
-		await sendSkillSavedNotice(api, "topic:-100200300:546216", ["pdf-tables"]);
-		await sendSkillSavedNotice(api, "dm:42", ["a", "b"]);
+		await sendSkillProposedNotice(api, "topic:-100200300:546216", ["pdf-tables"]);
+		await sendSkillProposedNotice(api, "dm:42", ["a", "b"]);
 		expect(sends).toHaveLength(2);
 		expect(sends[0]).toMatchObject({ chatId: -100200300, threadId: 546216 });
-		expect(sends[0]?.text).toBe("saved skill: pdf-tables — reply to undo");
-		expect(sends[1]?.text).toBe("saved skills: a, b — reply to undo");
+		expect(sends[0]?.text).toBe("proposed skill: pdf-tables — approve to install");
+		expect(sends[1]?.text).toBe("proposed skills: a, b — approve to install");
 	});
 });
 
@@ -156,7 +156,7 @@ describe("app conversation notices", () => {
 		} as unknown as Api;
 		await sendMemoryOutageNotice(api, "app/chat-01", 3_600_000, 2);
 		await sendMemoryBlockedNotice(api, "app/chat-01", "err", 1);
-		await sendSkillSavedNotice(api, "app/chat-01", ["x"]);
+		await sendSkillProposedNotice(api, "app/chat-01", ["x"]);
 		expect(calls).toBe(0);
 	});
 });

@@ -133,6 +133,7 @@ interface Harness {
 	convId: string;
 	workspace: string;
 	skills: string;
+	proposed: string;
 	staging: string;
 	notified: { conversationId: string; skills: string[] }[];
 	depsFor(o: {
@@ -150,6 +151,7 @@ function harness(): Harness {
 	const root = tmpdir_();
 	const workspace = join(root, "ws");
 	const skills = join(workspace, "skills");
+	const proposed = join(workspace, "skills-proposed");
 	mkdirSync(skills, { recursive: true });
 	const store = openStore(join(root, "goblin.sqlite"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -161,6 +163,7 @@ function harness(): Harness {
 		convId: conv.id,
 		workspace,
 		skills,
+		proposed,
 		staging: stagingRoot(workspace),
 		notified,
 		depsFor(o) {
@@ -182,6 +185,7 @@ function harness(): Harness {
 				}),
 				store,
 				skillsDir: skills,
+				proposedDir: proposed,
 				workspaceDir: workspace,
 				notify: async (conversationId, skills) => {
 					notified.push({ conversationId, skills });
@@ -361,7 +365,7 @@ describe("reviewer gate", () => {
 });
 
 describe("review run — staging and publication", () => {
-	test("a saved skill validates against staging, publishes, lands in history, and notifies", async () => {
+	test("a validated skill is proposed — parked in skills-proposed/, never installed, landed in history, and notified", async () => {
 		const h = harness();
 		const deps = h.depsFor({
 			nouls: { correction: 0.9, procedure: 0.1 },
@@ -378,26 +382,158 @@ describe("review run — staging and publication", () => {
 			],
 		});
 		await new Reviewer(deps).considerTurn(turn());
-		expect(readFileSync(join(h.skills, "pdf-tables", "SKILL.md"), "utf8")).toContain(
+		// Proposed, not installed: the draft parks in skills-proposed/ — the
+		// live catalog never sees it (ruling 2026-10-10).
+		expect(readFileSync(join(h.proposed, "pdf-tables", "SKILL.md"), "utf8")).toContain(
 			"name: pdf-tables",
 		);
+		expect(existsSync(join(h.skills, "pdf-tables"))).toBe(false);
 		// Validated from the review's staging copy, one skill, then told.
 		const binDir = join(deps.workspaceDir, "..", "bin");
 		const calls = skillsRefCalls(binDir);
 		expect(calls).toHaveLength(1);
 		expect(calls[0]).toMatch(/validate \.\/skills\/pdf-tables$/);
 		expect(calls[0]).toContain(".reviewer-staging");
-		// Staging is single-use — cleaned after publish.
+		// Staging is single-use — cleaned after the proposal.
 		expect(readdirSync(h.staging)).toEqual([]);
 		const history = h.store.history(h.convId);
 		expect(history).toHaveLength(1);
 		expect(history[0]!.role).toBe("system");
-		expect((history[0]!.parts[0] as { text: string }).text).toContain("pdf-tables");
+		expect((history[0]!.parts[0] as { text: string }).text).toContain("proposed skill: pdf-tables");
+		expect((history[0]!.parts[0] as { text: string }).text).toContain(
+			"skills-proposed/pdf-tables/",
+		);
 		expect(h.notified).toEqual([{ conversationId: h.convId, skills: ["pdf-tables"] }]);
 		h.store.close();
 	});
 
-	test("publishing an edited skill preserves the executable mode of copied helpers", async () => {
+	test("a newer review replaces an undecided proposal of the same skill, and logs it", async () => {
+		const h = harness();
+		const logFile = join(h.workspace, "goblin.log");
+		setLogFile(logFile);
+		await new Reviewer(
+			h.depsFor({
+				nouls: { correction: 0.9, procedure: 0 },
+				script: [
+					{
+						calls: [
+							{
+								name: "write_file",
+								input: { path: "tide/SKILL.md", content: SKILL_MD("tide", "first take") },
+							},
+						],
+					},
+					{ text: "saved" },
+				],
+			}),
+		).considerTurn(turn());
+		expect(readFileSync(join(h.proposed, "tide", "SKILL.md"), "utf8")).toContain("first take");
+		// A second review of the same procedure supersedes the undecided
+		// proposal — latest distillation wins, and the live catalog stays
+		// untouched throughout.
+		await new Reviewer(
+			h.depsFor({
+				nouls: { correction: 0.9, procedure: 0 },
+				script: [
+					{
+						calls: [
+							{
+								name: "write_file",
+								input: { path: "tide/SKILL.md", content: SKILL_MD("tide", "second take") },
+							},
+						],
+					},
+					{ text: "saved" },
+				],
+			}),
+		).considerTurn(turn({ turnSeq: 2 }));
+		expect(readFileSync(join(h.proposed, "tide", "SKILL.md"), "utf8")).toContain("second take");
+		expect(existsSync(join(h.skills, "tide"))).toBe(false);
+		expect(readFileSync(logFile, "utf8")).toContain(
+			"reviewer proposal replaced an earlier undecided proposal",
+		);
+		h.store.close();
+	});
+
+	test("a failed swap restores the earlier proposal it was replacing", async () => {
+		const h = harness();
+		// First review lands a proposal for `dup`.
+		await new Reviewer(
+			h.depsFor({
+				nouls: { correction: 0.9, procedure: 0 },
+				script: [
+					{
+						calls: [
+							{
+								name: "write_file",
+								input: { path: "dup/SKILL.md", content: SKILL_MD("dup", "first take") },
+							},
+						],
+					},
+					{ text: "saved" },
+				],
+			}),
+		).considerTurn(turn());
+		// Second review: the staged source vanishes between validation and
+		// the swap — after the target moved to trash, the swap throws and
+		// the rollback must bring the FIRST proposal back.
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0 },
+			script: [
+				{
+					calls: [
+						{
+							name: "write_file",
+							input: { path: "dup/SKILL.md", content: SKILL_MD("dup", "second take") },
+						},
+					],
+				},
+				{ text: "saved" },
+			],
+		});
+		const bin = deps.skillsRefBin!;
+		writeFileSync(
+			bin,
+			'#!/bin/sh\nif [ "$2" = "./skills/dup" ]; then mv "$PWD/skills/dup" "$PWD/skills/moved"; fi\n',
+		);
+		chmodSync(bin, 0o755);
+		await expect(new Reviewer(deps).considerTurn(turn({ turnSeq: 2 }))).rejects.toThrow();
+		expect(readFileSync(join(h.proposed, "dup", "SKILL.md"), "utf8")).toContain("first take");
+		expect(readdirSync(h.staging)).toEqual([]);
+		h.store.close();
+	});
+
+	test("a symlink parked on a proposal target is operator state — skipped, never trashed", async () => {
+		const h = harness();
+		const truth = join(h.workspace, "..", "truth");
+		mkdirSync(truth, { recursive: true });
+		writeFileSync(join(truth, "SKILL.md"), SKILL_MD("linked", "operator's draft"));
+		mkdirSync(h.proposed, { recursive: true });
+		symlinkSync(truth, join(h.proposed, "linked"));
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0 },
+			script: [
+				{
+					calls: [
+						{
+							name: "write_file",
+							input: { path: "linked/SKILL.md", content: SKILL_MD("linked", "review's take") },
+						},
+					],
+				},
+				{ text: "saved" },
+			],
+		});
+		await new Reviewer(deps).considerTurn(turn());
+		expect(lstatSync(join(h.proposed, "linked")).isSymbolicLink()).toBe(true);
+		expect(readFileSync(join(h.proposed, "linked", "SKILL.md"), "utf8")).toContain(
+			"operator's draft",
+		);
+		expect(h.notified).toEqual([]);
+		h.store.close();
+	});
+
+	test("proposing an edited skill preserves the executable mode of copied helpers", async () => {
 		const h = harness();
 		mkdirSync(join(h.skills, "existing"));
 		writeFileSync(join(h.skills, "existing", "SKILL.md"), SKILL_MD("existing", "before"));
@@ -423,11 +559,15 @@ describe("review run — staging and publication", () => {
 				],
 			}),
 		).considerTurn(turn());
-		expect(lstatSync(helper).mode & 0o777).toBe(0o755);
+		// The proposal is a full copy of the staged skill: the executable
+		// helper keeps its mode, while the live tree keeps its original.
+		expect(readFileSync(join(h.proposed, "existing", "SKILL.md"), "utf8")).toContain("after");
+		expect(lstatSync(join(h.proposed, "existing", "helper.sh")).mode & 0o777).toBe(0o755);
+		expect(readFileSync(join(h.skills, "existing", "SKILL.md"), "utf8")).toContain("before");
 		h.store.close();
 	});
 
-	test("an earlier published skill is recorded when a later swap fails", async () => {
+	test("an earlier proposed skill is recorded when a later swap fails", async () => {
 		const h = harness();
 		const logFile = join(h.workspace, "goblin.log");
 		setLogFile(logFile);
@@ -444,7 +584,7 @@ describe("review run — staging and publication", () => {
 			],
 		});
 		// Simulate a mechanical failure between validation and the swap:
-		// a validates and publishes, but b's staged source goes missing.
+		// a validates and is proposed, but b's staged source goes missing.
 		const bin = deps.skillsRefBin!;
 		writeFileSync(
 			bin,
@@ -452,14 +592,15 @@ describe("review run — staging and publication", () => {
 		);
 		chmodSync(bin, 0o755);
 		await expect(new Reviewer(deps).considerTurn(turn())).rejects.toThrow();
-		expect(readFileSync(join(h.skills, "a", "SKILL.md"), "utf8")).toContain("name: a");
-		expect(existsSync(join(h.skills, "b"))).toBe(false);
+		expect(readFileSync(join(h.proposed, "a", "SKILL.md"), "utf8")).toContain("name: a");
+		expect(existsSync(join(h.proposed, "b"))).toBe(false);
+		expect(existsSync(join(h.skills, "a"))).toBe(false);
 		expect(h.store.history(h.convId)).toHaveLength(1);
 		expect((h.store.history(h.convId)[0]!.parts[0] as { text: string }).text).toContain(
-			"saved skill: a",
+			"proposed skill: a",
 		);
 		expect(h.notified).toEqual([{ conversationId: h.convId, skills: ["a"] }]);
-		expect(readFileSync(logFile, "utf8")).toContain("reviewer publish failed");
+		expect(readFileSync(logFile, "utf8")).toContain("reviewer proposal failed");
 		h.store.close();
 	});
 
@@ -502,8 +643,10 @@ describe("review run — staging and publication", () => {
 		expect(() => readFileSync(join(h.skills, "fresh", "SKILL.md"))).toThrow();
 		release();
 		await p;
-		// Published only after the (parked) review completed.
-		expect(readFileSync(join(h.skills, "fresh", "SKILL.md"), "utf8")).toContain("name: fresh");
+		// Proposed only after the (parked) review completed — and the live
+		// catalog still never sees it.
+		expect(readFileSync(join(h.proposed, "fresh", "SKILL.md"), "utf8")).toContain("name: fresh");
+		expect(existsSync(join(h.skills, "fresh"))).toBe(false);
 		h.store.close();
 	});
 
@@ -656,7 +799,7 @@ describe("review run — staging and publication", () => {
 		h.store.close();
 	});
 
-	test("publishing an edited skill swaps whole directories — no mixed-content window", async () => {
+	test("proposing an edited skill swaps whole directories — no mixed-content window", async () => {
 		const h = harness();
 		mkdirSync(join(h.skills, "editme"), { recursive: true });
 		writeFileSync(join(h.skills, "editme", "SKILL.md"), SKILL_MD("editme", "old body"));
@@ -677,13 +820,17 @@ describe("review run — staging and publication", () => {
 			],
 		});
 		await new Reviewer(deps).considerTurn(turn());
-		expect(readFileSync(join(h.skills, "editme", "SKILL.md"), "utf8")).toContain("new body");
-		expect(readFileSync(join(h.skills, "editme", "helper.md"), "utf8")).toBe("new helper");
+		expect(readFileSync(join(h.proposed, "editme", "SKILL.md"), "utf8")).toContain("new body");
+		expect(readFileSync(join(h.proposed, "editme", "helper.md"), "utf8")).toBe("new helper");
+		// Never installed without the operator's yes: the live tree keeps
+		// its old bytes.
+		expect(readFileSync(join(h.skills, "editme", "SKILL.md"), "utf8")).toContain("old body");
+		expect(readFileSync(join(h.skills, "editme", "helper.md"), "utf8")).toBe("old helper");
 		expect(h.notified).toEqual([{ conversationId: h.convId, skills: ["editme"] }]);
 		h.store.close();
 	});
 
-	test("an operator edit to the same skill mid-review skips the publish, never clobbers", async () => {
+	test("an operator edit to the same skill mid-review skips the proposal, never clobbers", async () => {
 		const h = harness();
 		mkdirSync(join(h.skills, "clash"), { recursive: true });
 		writeFileSync(join(h.skills, "clash", "SKILL.md"), SKILL_MD("clash", "original"));
@@ -706,7 +853,7 @@ describe("review run — staging and publication", () => {
 					{ text: "saved" },
 				],
 				async () => {
-					// Between the staged write and the publish — exactly when a
+					// Between the staged write and the proposal — exactly when a
 					// hand edit can land in the live tree.
 					if (++step === 2) {
 						writeFileSync(
@@ -719,24 +866,25 @@ describe("review run — staging and publication", () => {
 		});
 		await new Reviewer(deps).considerTurn(turn());
 		expect(readFileSync(join(h.skills, "clash", "SKILL.md"), "utf8")).toContain("operator's edit");
+		expect(existsSync(join(h.proposed, "clash"))).toBe(false);
 		expect(h.notified).toEqual([]);
 		expect(h.store.history(h.convId)).toHaveLength(0);
 		const skipped = readFileSync(logFile, "utf8")
 			.trim()
 			.split("\n")
 			.map((l) => JSON.parse(l) as Record<string, unknown>)
-			.find((e) => e.msg === "reviewer publish skipped — live skills changed mid-review");
+			.find((e) => e.msg === "reviewer proposal skipped — live state conflicts");
 		expect(skipped).toMatchObject({ conversation: "dm:1" });
 		h.store.close();
 	});
 
-	test("a symlinked live skill conflicts at publish — the link and its target survive", async () => {
+	test("a symlinked live skill conflicts at propose — the link and its target survive", async () => {
 		const h = harness();
 		const logFile = join(h.workspace, "goblin.log");
 		setLogFile(logFile);
 		// The operator links a skill in from elsewhere (a dots repo, say).
 		// The drift check must not resolve it: even matching content
-		// through the link would publish over it and fork the source.
+		// through the link would, once approved, replace it and fork the source.
 		const truth = join(h.workspace, "..", "truth");
 		mkdirSync(truth, { recursive: true });
 		writeFileSync(join(truth, "SKILL.md"), SKILL_MD("linked", "source of truth"));
@@ -767,12 +915,12 @@ describe("review run — staging and publication", () => {
 			.map(
 				(l) => JSON.parse(l) as { msg: string; skipped?: { skill: string; drifted: string[] }[] },
 			)
-			.find((e) => e.msg === "reviewer publish skipped — live skills changed mid-review");
+			.find((e) => e.msg === "reviewer proposal skipped — live state conflicts");
 		expect(skipped?.skipped).toEqual([{ skill: "linked", drifted: ["linked"] }]);
 		h.store.close();
 	});
 
-	test("a symlinked file inside a live skill conflicts at publish, never swaps the dir", async () => {
+	test("a symlinked file inside a live skill conflicts at propose, never swaps the dir", async () => {
 		const h = harness();
 		const notes = join(h.workspace, "..", "notes.md");
 		writeFileSync(notes, "operator's notes");
@@ -972,7 +1120,8 @@ describe("review queue", () => {
 		await p1;
 		await p2;
 		expect(events).toEqual(["review 1 started", "review 2 started"]);
-		expect(readFileSync(join(h.skills, "a", "SKILL.md"), "utf8")).toContain("name: a");
+		expect(readFileSync(join(h.proposed, "a", "SKILL.md"), "utf8")).toContain("name: a");
+		expect(existsSync(join(h.skills, "a"))).toBe(false);
 		expect(h.notified).toEqual([{ conversationId: h.convId, skills: ["a"] }]);
 		h.store.close();
 	});
@@ -1234,7 +1383,7 @@ describe("/stop cancellation", () => {
 		h.store.close();
 	});
 
-	test("stop while skills-ref validates discards staging instead of publishing", async () => {
+	test("stop while skills-ref validates discards staging instead of proposing", async () => {
 		const h = harness();
 		const binDir = tmpdir_();
 		const started = join(binDir, "started");
@@ -1550,7 +1699,7 @@ describe("reviewer confinement", () => {
 		h.store.close();
 	});
 
-	test("an escaping review writes nothing and publishes nothing", async () => {
+	test("an escaping review writes nothing and proposes nothing", async () => {
 		const h = harness();
 		const outside = join(h.workspace, "..", "escaped.txt");
 		await new Reviewer(

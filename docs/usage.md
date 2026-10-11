@@ -131,6 +131,8 @@ URL — see [Security](security.md#the-app-channels-auth).
   contradiction. Same deal: edits apply next turn.
 - `workspace/skills/` — repeatable tasks the bot has learned; see
   [Skills](skills.md).
+- `workspace/skills-proposed/` — skill drafts the bot saved on its own,
+  waiting for your approval; see [Skills](skills.md).
 
 ## Programs
 

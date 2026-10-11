@@ -28,7 +28,10 @@ capabilities — a rebuilt box must regain them without operator prompting
 or agent memory.
 Sharing in a host skill is a symlink —
 made by goblin on request, or by hand; there is no second root, no source
-policy, no selection UI.
+policy, no selection UI. One sibling directory exists:
+`workspace/skills-proposed/` holds the skill reviewer's validated
+drafts — same shape, not part of the catalog, listed separately in the
+prompt section only while pending (below).
 
 The lifecycle is the filesystem, and the agent is the operator's hands:
 **install** = "install the mq skill" in chat → goblin links or copies it
@@ -45,7 +48,8 @@ authoring-time checks — goblin runs it via `bash` after writing a skill,
 and a skipped entry plus the warn log is the failure signal when it
 doesn't.
 
-Discovery is per turn, in `buildSystemPrompt`: scan `skills/*/SKILL.md`
+Discovery is per conversation snapshot, in `buildSystemPrompt`: scan
+`skills/*/SKILL.md`
 (symlinks resolved), parse a bounded head of each file for frontmatter —
 the body is never injected — and render a `## skills` section listing
 name + description (+ compatibility when set) + path. The section
@@ -153,7 +157,7 @@ don't duplicate it).
   current operator message (tail-first), the current answer
   (head-first), the prior wrong turn — anything older is dropped
   first. An off-the-record turn is never stored as prior context.
-- **Reviewer: staging, validation, then atomic publish.** A background
+- **Reviewer: staging, validation, then an atomic proposal.** A background
   model call, off the conversation lane — fire-and-forget, never
   delays the next turn, and shutdown doesn't await it either (a missed
   save on a racing shutdown is benign — the next similar turn
@@ -176,19 +180,29 @@ don't duplicate it).
   and every path resolves through realpath — a symlink inside the
   root pointing out is refused for read and write (supersedes the
   lexical-only ruling; the operator's tree had no symlinks to break).
-  Publishing one skill is a directory swap on the same filesystem:
-  live → staging-area trash, staged → live, trash deleted, with
-  rollback to the original if the swap itself fails — never a
-  half-updated skill. A later skill's failed swap cannot undo earlier
-  publications: those earlier saves are written to history and announced
-  before the failure surfaces. Failed trash cleanup is logged, not
-  treated as a failed publication.
+  Proposing one skill is a directory swap on the same filesystem:
+  earlier undecided proposal → staging-area trash, staged →
+  `skills-proposed/<name>/`, trash deleted, with rollback to the
+  earlier proposal if the swap itself fails — never a half-updated
+  proposal. A newer review's proposal replaces an undecided earlier
+  proposal of the same name (latest distillation wins, logged). A
+  pending draft is reviewer-owned: the replacement is wholesale — hand
+  edits inside `skills-proposed/<name>/` are not merged or preserved
+  (tweak after approving, or discard first). A
+  later skill's failed swap cannot undo earlier proposals: those are
+  written to history and announced before the failure surfaces.
+  Failed trash cleanup is logged, not treated as a failed proposal.
   A skill whose live copy changed mid-review (operator hand edit,
-  undo) is **skipped, never clobbered** — hashed against the copy
-  manifest at publish time. Reviews serialize one at a time, in turn
+  undo, approval) is **skipped, never proposed from a stale base** —
+  hashed against the copy manifest at propose time: approving a
+  stale-base proposal would clobber those bytes sight-unseen. Reviews
+  serialize one at a time, in turn
   completion order (a monotonic seq; gate latency must not reorder
-  them): overlapping runs would publish over each other's announced
-  writes. The queue holds at most `reviewer.queueCap` (default 3)
+  them): overlapping runs would propose over each other's announced
+  writes. Approval and discard run out-of-band as ordinary agent
+  shell work: an approve racing a newer review's replacement installs
+  whatever bytes sit on disk at move time — accepted, not locked (a
+  lock file is the fix if it ever bites). The queue holds at most `reviewer.queueCap` (default 3)
   queued reviews — a full queue drops the incoming review and logs
   the drop (the newest turn is the most re-gateable).
 - **/stop cancels the conversation's reviews.** Ruling 2026-09-28:
@@ -202,20 +216,30 @@ don't duplicate it).
   retain nothing from here, and a durable skill IS retention. The
   skip is unconditional (no config flag) and logged; an excluded turn
   is also never stored as the next turn's correction context.
-- **It publishes, then tells.** A publish posts a short note to the
-  topic ("saved skill: X — reply to undo") and lands in history as a
-  system event, so the next turn knows. "Reply to undo" is
-  conversational, not mechanical: the history event tells the next
-  turn that undo means deleting the skill dir. Skills are already
-  goblin's to write; this adds no new authority.
+- **It proposes, then tells (ruling 2026-10-10: auto-created skills are
+  proposed, not installed).** The reviewer never writes the live
+catalog: a validated skill parks in `skills-proposed/<name>/` and
+  installs only when the operator approves. A proposal posts a short
+  note to the topic ("proposed skill: X — approve to install") and
+  lands in history as a system event, so the next turn knows. Like
+  the old "reply to undo", approve and discard are conversational,
+  not mechanical: the history event tells the next turn that approve
+  means moving the dir into `skills/` (replacing any live copy) and
+  discard means deleting it — goblin is already the operator's hands
+  for installs. The `## skills` section lists pending proposals (same
+  scan, same conversation-boundary load) so an approve request works
+  in any conversation. Manual installs are unchanged: the operator
+  asking in chat IS the approval — the ruling covers only the
+  unattended path.
 - **Instrumentation.** Every line carries the review id: gate
   (scores, thresholds, trigger, tool names, fallback streak), review
   started (seq, trigger, model, staged path), model call (usage),
-  validation (per skill, ok + output), publish skipped (drifted
-  paths), review done (published skills, validated results). Undo is
-  conversational, so the closest outcome signal is the skill dir's
-  later absence — `scripts/reviewer-stats.ts` correlates the log by
-  review id and checks published skills against disk: saves, drops,
+  validation (per skill, ok + output), proposal skipped (drifted
+  paths), review done (proposed skills, validated results). Approval
+  and discard are conversational, so the closest outcome signal is
+  where the skill dir sits — `scripts/reviewer-stats.ts` correlates
+  the log by review id and checks proposed skills against disk
+  (still proposed / installed / gone): saves, drops,
   cancels, rejects, gate scores vs outcomes. No UI; logs and a
   script. Good/bad turn labels don't exist yet — the field ships
   empty until they do.

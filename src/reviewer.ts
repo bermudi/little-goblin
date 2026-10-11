@@ -14,14 +14,18 @@
 // The review runs off the conversation lane in a private staging copy of
 // the skills tree (workspace/.reviewer-staging/<review_id>/skills):
 // read/write/edit confined there by lexical AND realpath checks, no
-// shell. It creates or edits one skill, or does nothing. Nothing live is
-// touched until the staged writes pass `skills-ref validate`; then each
-// changed skill is published into skills/ by an atomic directory swap,
-// skipped if the live copy changed mid-review (operator edits are never
-// clobbered), and rolled back if its own swap fails. Model, budget, and
-// validation failures leave the live catalog byte-identical; if a later
-// swap fails, earlier published skills are recorded and announced before
-// the failure propagates.
+// shell. It creates or edits one skill, or does nothing. Nothing reaches
+// the operator until the staged writes pass `skills-ref validate`; then
+// each changed skill is PROPOSED — swapped atomically into
+// workspace/skills-proposed/<name>/ — never installed: the live catalog
+// changes only when the operator approves (ruling 2026-10-10; the
+// approve/discard moves are conversational, the undo precedent). A
+// skill whose live copy changed mid-review is skipped, never proposed
+// from a stale base (operator edits are never clobbered), and a swap
+// that fails is rolled back. A later skill's failed swap cannot undo
+// earlier proposals: those are recorded and announced before the
+// failure surfaces. Model, budget, and validation failures leave both
+// trees byte-identical.
 //
 // Reviews queue in turn-completion order (a monotonic seq from the
 // runtime), capped (default 3; a full queue drops the incoming review
@@ -124,10 +128,13 @@ export interface ReviewerDeps {
 	reviewModel(conversationId: string): Promise<{ ref: string; model: LanguageModel }>;
 	store: Pick<ConversationStore, "append">;
 	skillsDir: string;
+	// Where validated proposals park (workspace/skills-proposed) — the
+	// live catalog in skillsDir is read-only to the reviewer.
+	proposedDir: string;
 	workspaceDir: string;
-	// Posts the saved-skill note to the topic. History is already
+	// Posts the proposal note to the topic. History is already
 	// written when this runs — a delivery failure logs, it doesn't
-	// unpick the save.
+	// unpick the proposal.
 	notify(conversationId: string, skills: string[]): Promise<void>;
 	/** Test door — the production path always uses `skills-ref`. */
 	skillsRefBin?: string;
@@ -214,7 +221,7 @@ export function buildGateState(turn: CompletedTurn): string {
 //
 // Reviews serialize one at a time, in turn-completion order (turnSeq),
 // queued-not-running capped at queueCap. Pending gate decisions hold
-// later reviews back; overlapping runs would publish over each other's
+// later reviews back; overlapping runs would propose over each other's
 // announced writes. A full queue drops the incoming review (the newest
 // turn is the most re-gateable — the next similar turn re-fires) and
 // logs the drop. /stop cancels a conversation's queued reviews and
@@ -257,7 +264,7 @@ interface PendingGate {
 // ---------- the reviewer instance ----------
 //
 // Owns every piece of mutable state the gate and queue need (the
-// fields below); the free functions further down (staging, publish,
+// fields below); the free functions further down (staging, propose,
 // the review run) are pure mechanics parameterized by deps/entry.
 
 export class Reviewer {
@@ -480,7 +487,7 @@ export class Reviewer {
 		this.inFlight = { entry, controller };
 		void runReview(entry, controller.signal)
 			.catch((err: unknown) => {
-				// A thrown review is a bug (staging setup, publish mechanics)
+				// A thrown review is a bug (staging setup, propose mechanics)
 				// — it propagates to the runtime's backstop, loud, without
 				// poisoning the next queued review.
 				entry.done.reject(err);
@@ -516,8 +523,9 @@ const MAX_REVIEW_BYTES = 100 * 1024;
 // skip the review (loud) rather than copy it.
 const MAX_STAGING_FILES = 512;
 const MAX_STAGING_BYTES = 2 * 1024 * 1024;
-// Staging lives beside skills/ in the workspace — same filesystem, so
-// publish is a real rename, and dot-prefixed so no catalog scan sees it.
+// Staging lives in the workspace — same filesystem as skills-proposed/,
+// so the proposal swap is a real rename — and dot-prefixed so no
+// catalog scan sees it.
 const STAGING_DIRNAME = ".reviewer-staging";
 
 export function stagingRoot(workspaceDir: string): string {
@@ -531,7 +539,7 @@ export function cleanupStaging(workspaceDir: string): void {
 
 const REVIEW_SYSTEM =
 	"You are goblin's skill reviewer. A just-completed turn looked worth distilling into a skill. " +
-	"Your working directory IS the skills catalog (a private copy — your writes publish only after they validate): " +
+	"Your working directory IS the skills catalog (a private copy — your writes reach the operator only after they validate): " +
 	"read `<name>/SKILL.md` to inspect a skill, " +
 	"write `<name>/SKILL.md` (plus any helper files the skill needs) to create or replace one. " +
 	"The turn's evidence includes each tool call's truncated arguments and result — a failed call is marked FAILED. " +
@@ -770,7 +778,7 @@ function changedPaths(
 			stats = statSync(abs);
 		} catch {
 			// Written, then gone from staging — only the review writes
-			// there, so this is a tool lie; don't publish it.
+			// there, so this is a tool lie; don't propose it.
 			continue;
 		}
 		const prev = manifest.get(rel);
@@ -809,17 +817,19 @@ async function validateSkill(
 		: { ok: false, output: output === "" ? `exit ${result.exitCode}` : output };
 }
 
-// ---------- publish ----------
+// ---------- propose ----------
 
-type PublishOutcome =
-	| { published: true }
-	| { published: false; reason: "conflict"; drifted: string[] };
+type ProposeOutcome =
+	| { proposed: true }
+	| { proposed: false; reason: "conflict"; drifted: string[] };
 
 /** Does the live skill dir still byte-match the copy the review worked
- * from? Operator edits, undos, or hand-added files mid-review are never
- * clobbered — the skill is skipped instead. Symlinks count as drift
- * too (lstat, never resolved): publishing over a link — the whole
- * skill or one file inside it — would replace it with plain bytes and
+ * from? The live tree is only read — but a proposal built on a base the
+ * operator changed mid-review (edits, undos, hand-added files) must
+ * never be offered: approving it would clobber those bytes sight-unseen,
+ * so the skill is skipped instead. Symlinks count as drift too (lstat,
+ * never resolved): a proposal over a link — the whole skill or one file
+ * inside it — would, once approved, replace it with plain bytes and
  * silently fork whatever it points to. */
 function liveDrifted(skillsDir: string, manifest: Map<string, string>, skill: string): string[] {
 	const prefix = `${skill}/`;
@@ -847,7 +857,7 @@ function liveDrifted(skillsDir: string, manifest: Map<string, string>, skill: st
 			const child = rel === "." ? dirent.name : `${rel}/${dirent.name}`;
 			const childRel = `${skill}/${child}`;
 			// lstat: a link never resolves into the byte comparison —
-			// even one whose content matches must not be published over.
+			// even one whose content matches must not be proposed over.
 			const stats = lstatSync(join(liveSkill, child));
 			if (stats.isSymbolicLink()) {
 				drifted.push(childRel);
@@ -869,47 +879,72 @@ function liveDrifted(skillsDir: string, manifest: Map<string, string>, skill: st
 	return drifted.sort();
 }
 
-/** Publish one staged skill into the live catalog with a directory
- * swap: live → trash (staging area, same filesystem), staged → live,
- * trash deleted. A failed swap restores the original — the live catalog
- * is never left without the skill and never half-updated. Failed trash
- * cleanup is logged, not mistaken for a failed swap. Throws on swap
- * failures (after rollback); drift (operator
- * edits, or any symlink under the skill — a linked-in skill is never
- * replaced) is returned, not thrown. */
-function publishSkill(
+/** Propose one staged skill: an atomic directory swap into the
+ * proposals dir — earlier undecided proposal → trash (staging area,
+ * same filesystem), staged → proposal, trash deleted. A newer review's
+ * proposal replaces an undecided older one of the same name (latest
+ * distillation wins). A failed swap restores the earlier proposal; a
+ * failed trash cleanup is logged, not mistaken for a failed swap.
+ * Throws on swap failures (after rollback); drift against the live
+ * tree (operator edits, or any symlink under the skill — a linked-in
+ * skill is never proposed over) is returned, not thrown. */
+function proposeSkill(
 	skillsDir: string,
+	proposedDir: string,
 	stagedDir: string,
 	stagingArea: string,
 	manifest: Map<string, string>,
 	skill: string,
 	reviewId: string,
-): PublishOutcome {
+): ProposeOutcome {
 	const drifted = liveDrifted(skillsDir, manifest, skill);
-	if (drifted.length > 0) return { published: false, reason: "conflict", drifted };
-	const liveSkill = join(skillsDir, skill);
-	const existed = existsSync(liveSkill);
+	if (drifted.length > 0) return { proposed: false, reason: "conflict", drifted };
+	mkdirSync(proposedDir, { recursive: true });
+	const target = join(proposedDir, skill);
+	// lstat, not existsSync: a symlink parked on the target name is
+	// operator state, not an earlier proposal — never trashed, and a
+	// broken link must conflict too, not read as "not there".
+	let targetStats: Stats | undefined;
+	try {
+		targetStats = lstatSync(target);
+	} catch {
+		// Not there at all.
+	}
+	if (targetStats?.isSymbolicLink()) {
+		log.warn("reviewer proposal skipped — proposal target is a symlink", {
+			skill,
+			review_id: reviewId,
+		});
+		return { proposed: false, reason: "conflict", drifted: [skill] };
+	}
+	const existed = targetStats !== undefined;
 	const trash = join(stagingArea, `.replaced-${reviewId}-${skill}`);
 	rmSync(trash, { recursive: true, force: true });
-	if (existed) renameSync(liveSkill, trash);
+	if (existed) {
+		renameSync(target, trash);
+		log.info("reviewer proposal replaced an earlier undecided proposal", {
+			skill,
+			review_id: reviewId,
+		});
+	}
 	try {
-		renameSync(join(stagedDir, skill), liveSkill);
+		renameSync(join(stagedDir, skill), target);
 	} catch (err) {
-		if (existed) renameSync(trash, liveSkill);
+		if (existed) renameSync(trash, target);
 		throw err;
 	}
 	try {
 		rmSync(trash, { recursive: true, force: true });
 	} catch (err) {
-		// The swap succeeded: cleanup is not a publication failure. The
-		// next boot cleans reviewer staging; keep the saved skill recorded.
-		log.warn("reviewer replaced-skill trash cleanup failed", err, {
+		// The swap succeeded: cleanup is not a proposal failure. The
+		// next boot cleans reviewer staging; keep the proposal recorded.
+		log.warn("reviewer replaced-proposal trash cleanup failed", err, {
 			skill,
 			review_id: reviewId,
 			trash,
 		});
 	}
-	return { published: true };
+	return { proposed: true };
 }
 
 // ---------- review run ----------
@@ -989,7 +1024,7 @@ async function runStagedReview(
 	if (signal.aborted || timeoutController.signal.aborted) controller.abort();
 	// The review's attribution set: every staging-relative path its
 	// write tools actually wrote. Only these paths are candidates to
-	// publish — concurrent edits in the LIVE tree are not its business.
+	// propose — concurrent edits in the LIVE tree are not its business.
 	const written = new Set<string>();
 	try {
 		let result: Awaited<ReturnType<typeof generateText>>;
@@ -1033,8 +1068,8 @@ async function runStagedReview(
 			steps: result.steps.length,
 		});
 		const { changed, bytes } = changedPaths(stagedSkills, manifest, written);
-		// A /stop can land while validation or publishing would run —
-		// nothing publishes from a cancelled review.
+		// A /stop can land while validation or proposing would run —
+		// nothing is proposed from a cancelled review.
 		if (entry.cancelled) {
 			log.info("reviewer review cancelled — staging discarded", {
 				review_id: reviewId,
@@ -1069,7 +1104,7 @@ async function runStagedReview(
 		for (const skill of skills) {
 			const outcome = await validateSkill(deps, reviewDir, skill);
 			// Validation is asynchronous: /stop can arrive while the
-			// validator runs. Never start another validator or publish then.
+			// validator runs. Never start another validator or propose then.
 			if (entry.cancelled) {
 				log.info("reviewer review cancelled — staging discarded", {
 					review_id: reviewId,
@@ -1098,49 +1133,56 @@ async function runStagedReview(
 			});
 			return;
 		}
-		// Validation passed: publish per skill, atomically, skipping any
-		// skill the operator touched mid-review.
-		const published: string[] = [];
+		// Validation passed: propose per skill, atomically, skipping any
+		// skill the operator touched mid-review. Nothing installs — the
+		// live catalog changes only when the operator approves.
+		const proposedNames: string[] = [];
 		const skipped: { skill: string; drifted: string[] }[] = [];
-		let publishError: unknown = null;
+		let proposeError: unknown = null;
 		try {
 			for (const skill of skills) {
-				const outcome = publishSkill(
+				const outcome = proposeSkill(
 					deps.skillsDir,
+					deps.proposedDir,
 					stagedSkills,
 					stagingArea,
 					manifest,
 					skill,
 					reviewId,
 				);
-				if (outcome.published) published.push(skill);
+				if (outcome.proposed) proposedNames.push(skill);
 				else skipped.push({ skill, drifted: outcome.drifted });
 			}
 		} catch (err) {
-			log.error("reviewer publish failed — live catalog rolled back for the failing skill", err, {
-				review_id: reviewId,
-				conversation: conv,
-				published,
-				skipped,
-				staged: stagedSkills,
-			});
-			publishError = err;
+			log.error(
+				"reviewer proposal failed — failing proposal rolled back, earlier proposals stand",
+				err,
+				{
+					review_id: reviewId,
+					conversation: conv,
+					proposed: proposedNames,
+					skipped,
+					staged: stagedSkills,
+				},
+			);
+			proposeError = err;
 		}
 		if (skipped.length > 0) {
-			log.warn("reviewer publish skipped — live skills changed mid-review", {
+			log.warn("reviewer proposal skipped — live state conflicts", {
 				review_id: reviewId,
 				conversation: conv,
 				skipped,
-				published,
+				proposed: proposedNames,
 			});
 		}
-		if (published.length === 0) {
-			if (publishError !== null) throw publishError;
+		if (proposedNames.length === 0) {
+			if (proposeError !== null) throw proposeError;
 			return;
 		}
-		// It publishes, then tells: history first (the durable record),
-		// the topic note second. An undo request next turn deletes these dirs.
-		const names = published.join(", ");
+		// It proposes, then tells: history first (the durable record),
+		// the topic note second. An approval next turn moves these dirs
+		// into skills/; a discard deletes them.
+		const names = proposedNames.join(", ");
 		deps.store.append(conv, [
 			{
 				id: randomUUID(),
@@ -1149,37 +1191,38 @@ async function runStagedReview(
 					{
 						type: "text",
 						text:
-							`saved skill: ${names} — announced in this topic with an undo invite; ` +
-							`an undo request means deleting ${published.map((s) => `skills/${s}/`).join(", ")}`,
+							`proposed skill: ${names} — parked in ${proposedNames.map((s) => `skills-proposed/${s}/`).join(", ")}, not installed; ` +
+							`an operator approval means moving it into skills/ (replacing any live copy), ` +
+							`a discard means deleting the proposal`,
 					},
 				],
 			},
 		]);
 		try {
-			await deps.notify(conv, published);
+			await deps.notify(conv, proposedNames);
 		} catch (err) {
-			log.error("skill saved notice failed — history event already written", err, {
+			log.error("skill proposal notice failed — history event already written", err, {
 				review_id: reviewId,
 				conversation: conv,
-				skills: published,
+				skills: proposedNames,
 			});
 		}
 		log.info(
-			publishError === null ? "reviewer review done" : "reviewer review partially published",
+			proposeError === null ? "reviewer review done" : "reviewer review partially proposed",
 			{
 				review_id: reviewId,
 				conversation: conv,
 				changed: true,
-				skills: published,
+				skills: proposedNames,
 				skipped,
 				validated: validated.map((v) => ({ skill: v.skill, ok: v.ok })),
 				written: [...written].sort(),
 			},
 		);
-		// A later skill's failed swap does not undo earlier publications.
+		// A later skill's failed swap does not undo earlier proposals.
 		// Record and announce those durable changes before surfacing the
 		// failure to the review runner.
-		if (publishError !== null) throw publishError;
+		if (proposeError !== null) throw proposeError;
 	} finally {
 		signal.removeEventListener("abort", onAbort);
 		timeoutController.signal.removeEventListener("abort", onAbort);

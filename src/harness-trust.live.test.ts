@@ -81,46 +81,38 @@ function claudeBinary(): string {
 }
 
 describe.skipIf(!LIVE)("harness-trust live drift (GOBLIN_HARNESS_TRUST_LIVE=1)", () => {
-	test(
-		"codex: the seed still writes trust_level and the installed binary still knows it",
-		async () => {
-			const home = freshHome();
-			const seeded = seedHarnessTrust("codex", home, home);
-			expect(seeded.length).toBe(1);
-			const config = readFileSync(join(home, ".codex", "config.toml"), "utf8");
-			if (!config.includes('trust_level = "trusted"')) {
-				fail("seeded config.toml carries no trust_level — the module's write moved");
-			}
-			const bin = codexBinary();
-			if (!(await binaryContains("trust_level", bin))) {
-				fail(`codex binary ${bin} no longer mentions trust_level — re-pin harness-trust`);
-			}
-		},
-		30_000,
-	);
+	test("codex: the seed still writes trust_level and the installed binary still knows it", async () => {
+		const home = freshHome();
+		const seeded = seedHarnessTrust("codex", home, home);
+		expect(seeded.length).toBe(1);
+		const config = readFileSync(join(home, ".codex", "config.toml"), "utf8");
+		if (!config.includes('trust_level = "trusted"')) {
+			fail("seeded config.toml carries no trust_level — the module's write moved");
+		}
+		const bin = codexBinary();
+		if (!(await binaryContains("trust_level", bin))) {
+			fail(`codex binary ${bin} no longer mentions trust_level — re-pin harness-trust`);
+		}
+	}, 30_000);
 
-	test(
-		"claude: the seed still writes the four gates and the installed bundle still knows them",
-		async () => {
-			const home = freshHome();
-			seedHarnessTrust("claude", home, home);
-			const doc = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")) as {
-				projects?: Record<string, Record<string, unknown>>;
-			} & Record<string, unknown>;
-			expect(doc.bypassPermissionsModeAccepted).toBe(true);
-			expect(doc.hasCompletedOnboarding).toBe(true);
-			const project = doc.projects?.[home];
-			expect(project?.hasTrustDialogAccepted).toBe(true);
-			expect(project?.hasCompletedProjectOnboarding).toBe(true);
-			const bin = claudeBinary();
-			for (const key of CLAUDE_KEYS) {
-				if (!(await binaryContains(key, bin))) {
-					fail(`claude bundle ${bin} no longer mentions ${key} — re-pin harness-trust`);
-				}
+	test("claude: the seed still writes the four gates and the installed bundle still knows them", async () => {
+		const home = freshHome();
+		seedHarnessTrust("claude", home, home);
+		const doc = JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")) as {
+			projects?: Record<string, Record<string, unknown>>;
+		} & Record<string, unknown>;
+		expect(doc.bypassPermissionsModeAccepted).toBe(true);
+		expect(doc.hasCompletedOnboarding).toBe(true);
+		const project = doc.projects?.[home];
+		expect(project?.hasTrustDialogAccepted).toBe(true);
+		expect(project?.hasCompletedProjectOnboarding).toBe(true);
+		const bin = claudeBinary();
+		for (const key of CLAUDE_KEYS) {
+			if (!(await binaryContains(key, bin))) {
+				fail(`claude bundle ${bin} no longer mentions ${key} — re-pin harness-trust`);
 			}
-		},
-		30_000,
-	);
+		}
+	}, 30_000);
 
 	afterAll(() => {
 		const failures: string[] = [];

@@ -52,10 +52,10 @@ async function execOut(argv: string[]): Promise<string> {
 }
 
 async function rawInspect(template: string): Promise<string> {
-	const r = await boundedRun(
-		spawnProc(["podman", "inspect", "--format", template, CONTAINER]),
-		{ timeoutMs: 30_000, maxOutput: 1 << 20 },
-	);
+	const r = await boundedRun(spawnProc(["podman", "inspect", "--format", template, CONTAINER]), {
+		timeoutMs: 30_000,
+		maxOutput: 1 << 20,
+	});
 	if (r.exitCode !== 0) {
 		throw new Error(`inspect ${template} exit ${r.exitCode}: ${r.stderr.slice(0, 200)}`);
 	}

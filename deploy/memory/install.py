@@ -385,15 +385,21 @@ def install_assets(memory_dir: Path, systemd_dir: Path, cfg_dir: Path,
         dst.chmod(0o644)
         installed.append(dst)
     installed.extend(install_embed_units(memory_dir, cfg_dir, user_unit_dir))
+    start_src = memory_dir / "start.py"
+    if not start_src.is_file():
+        fail(f"missing deploy asset: {start_src}")
     start_dst = cfg_dir / "start.py"
-    shutil.copyfile(memory_dir / "start.py", start_dst)
+    shutil.copyfile(start_src, start_dst)
     start_dst.chmod(0o644)
     installed.append(start_dst)
     # Always copied like start.py (quadlets above are the only
     # operator-editable assets): the container healthcheck must track
     # the shipped probe, never drift on an installed box.
+    health_src = memory_dir / "healthcheck.py"
+    if not health_src.is_file():
+        fail(f"missing deploy asset: {health_src}")
     health_dst = cfg_dir / "healthcheck.py"
-    shutil.copyfile(memory_dir / "healthcheck.py", health_dst)
+    shutil.copyfile(health_src, health_dst)
     health_dst.chmod(0o644)
     installed.append(health_dst)
     return installed
@@ -707,31 +713,35 @@ def goblin_stable(seconds: float) -> bool:
     return True
 
 
-def wire_goblin(goblin_home: Path, bank_id: str) -> bool:
-    """Patch goblin.json5 and restart goblin. Returns True only when the
-    memory block is live. Any failure rolls the config back and verifies
-    the rollback — never leave the operator's bot dead or patched-but-down.
+def wire_goblin(goblin_home: Path, bank_id: str) -> str:
+    """Patch goblin.json5 and restart goblin. Returns one of:
+    "live"    — memory block patched AND goblin confirmed stable on it
+    "patched" — config written, restart declined: it is already in
+                place, only the restart is outstanding
+    "manual"  — nothing written; the block to add was printed above
+    Any failure rolls the config back and verifies the rollback —
+    never leave the operator's bot dead or patched-but-down.
     """
     config = goblin_home / "goblin.json5"
     snippet = build_goblin_memory_snippet(bank_id)
     if not config.is_file():
         info(f"{config} not found — add this block yourself:")
         print(snippet)
-        return False
+        return "manual"
     text = config.read_text()
     try:
         updated = insert_json5_property(text, snippet, "memory")
     except ValueError as error:
         info(f"goblin.json5 not patched: {error} — add this block yourself:")
         print(snippet)
-        return False
+        return "manual"
     mode = config.stat().st_mode & 0o777
     backup = config.with_name(config.name + ".pre-memory")
     write_file_atomic(backup, text, mode)
     write_file_atomic(config, updated, mode)
     info(f"memory block added to {config} (backup: {backup.name})")
     if not ask_yes("restart goblin now so memory goes live?", default=True):
-        return False
+        return "patched"
 
     def rollback(reason: str) -> None:
         write_file_atomic(config, text, mode)
@@ -750,7 +760,7 @@ def wire_goblin(goblin_home: Path, bank_id: str) -> bool:
         rollback("goblin did not stay up with the memory block "
                  "(config rejected or crash-looping)")
     info("goblin restarted, stable — send /memory in Telegram to check status")
-    return True
+    return "live"
 
 
 # --------------------------------------------------------------------------
@@ -851,12 +861,28 @@ def load_catalog(role: str, provider: str, base_url: str | None,
     return catalog
 
 
+# A value that renders losslessly as an unquoted KEY=value line in
+# hindsight.env (systemd EnvironmentFile parses it): quote characters,
+# whitespace and backslashes change how the line parses, so the stored
+# credential would silently differ from the pasted one. API keys are
+# opaque tokens — letters, digits and a handful of separators cover
+# every provider in the registry.
+UNQUOTED_ENV_VALUE = re.compile(r"[A-Za-z0-9._~+/:=-]+")
+
+
 def ask_secret(prompt: str) -> str:
     while True:
         value = getpass.getpass(f"{prompt} (hidden): ").strip()
-        if value:
-            return value
-        print("  ✗ empty value; try again")
+        if not value:
+            print("  ✗ empty value; try again")
+            continue
+        # Never echo the value — the message names the character classes,
+        # not the offending characters.
+        if not UNQUOTED_ENV_VALUE.fullmatch(value):
+            print("  ✗ value has characters an env file can't carry verbatim "
+                  "(quotes, spaces, backslashes, non-ASCII…) — re-paste the key")
+            continue
+        return value
 
 
 def ask_yes(prompt: str, default: bool) -> bool:
@@ -1186,8 +1212,14 @@ def main(argv: list[str] | None = None) -> None:
     start_stack()
     create_bank(bank_id, mission)
     wired = wire_goblin(args.goblin_home, bank_id)
-    if wired:
+    if wired == "live":
         print("\nDone. Memory is live. In Telegram: /memory")
+    elif wired == "patched":
+        # The block is already in goblin.json5 — printing it again would
+        # invite a double-add the next installer run rejects.
+        print("\nStack and bank are live, and goblin.json5 is already patched — "
+              "restart goblin when ready:\n"
+              "  systemctl --user restart goblin.service")
     else:
         print("\nStack and bank are live, but goblin was not wired — "
               "add the memory block printed above, then: "

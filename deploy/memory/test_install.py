@@ -167,6 +167,22 @@ class RenderEnvTest(unittest.TestCase):
                 "POSTGRES_PASSWORD=a\nPOSTGRES_PASSWORD=b\n")
 
 
+class AskSecretCharsetTest(unittest.TestCase):
+    def test_real_key_shapes_render_verbatim(self) -> None:
+        for value in ("sk-ant-api03-abc123DEF", "gsk_9x8y7z",
+                      "AIzaSyD-123_456", "eyJhbGciOi.eyJzdWIi.s==",
+                      "abc+def/ghi~jkl:mno=pqr"):
+            self.assertTrue(install.UNQUOTED_ENV_VALUE.fullmatch(value), value)
+
+    def test_env_breaking_values_are_rejected(self) -> None:
+        # Quotes, whitespace, backslashes and friends change how the
+        # KEY= line parses under systemd — ask_secret rejects them at
+        # input instead of storing a silently different credential.
+        for value in ('"sk-123', "sk 123", "sk\\123", "sk#123", "sk'123",
+                      "sk;rm", "sk,123", "sk$123"):
+            self.assertIsNone(install.UNQUOTED_ENV_VALUE.fullmatch(value), value)
+
+
 class EmbedRelayEnvTest(unittest.TestCase):
     VALID = ("GOBLIN_EMBED_RELAY_ADDR=100.64.0.1\n"
              "GOBLIN_EMBED_MODEL=embeddinggemma\n")
@@ -376,6 +392,31 @@ class InstallAssetsTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 install_assets(memory_dir, Path(tmp) / "systemd",
                                Path(tmp) / "cfg", Path(tmp) / "user-units")
+
+    def test_missing_start_or_healthcheck_asset_fails_loud(self) -> None:
+        # A broken checkout must fail with the named asset, not a raw
+        # FileNotFoundError traceback — same contract as the watch units.
+        with tempfile.TemporaryDirectory() as tmp:
+            memory_dir = Path(tmp) / "src"
+            systemd_dir = Path(tmp) / "systemd"
+            cfg_dir = Path(tmp) / "cfg"
+            user_unit_dir = Path(tmp) / "user-units"
+            memory_dir.mkdir()
+            (memory_dir / "goblin-memory-api.container").write_text("[Container]\n")
+            (memory_dir / "goblin-memory.network").write_text("[Network]\n")
+            for name in install.WATCH_UNITS:
+                (memory_dir / name).write_text("[Unit]\n")
+            # start.py missing: nothing may land in cfg.
+            (memory_dir / "healthcheck.py").write_text("x = 1\n")
+            with self.assertRaises(SystemExit):
+                install_assets(memory_dir, systemd_dir, cfg_dir, user_unit_dir)
+            self.assertFalse((cfg_dir / "healthcheck.py").exists())
+            # healthcheck.py missing: start.py copies first and stays.
+            (memory_dir / "start.py").write_text("x = 1\n")
+            (memory_dir / "healthcheck.py").unlink()
+            with self.assertRaises(SystemExit):
+                install_assets(memory_dir, systemd_dir, cfg_dir, user_unit_dir)
+            self.assertTrue((cfg_dir / "start.py").is_file())
 
     def test_manual_recovery_commands_are_actionable(self) -> None:
         commands = install.manual_recovery_commands()
@@ -1277,11 +1318,11 @@ class WireGoblinRollbackTest(unittest.TestCase):
         for name, value in self.saved.items():
             setattr(install, name, value)
 
-    def run_wire(self, restart_result: subprocess.CompletedProcess[str], stable: bool) -> None:
+    def run_wire(self, restart_result: subprocess.CompletedProcess[str], stable: bool) -> str:
         install.ask_yes = lambda prompt, default: True
         install.probe = lambda command: restart_result
         install.goblin_stable = lambda seconds: stable
-        install.wire_goblin(self.home, "goblin")
+        return install.wire_goblin(self.home, "goblin")
 
     def test_rollback_when_restart_command_fails(self) -> None:
         failed = subprocess.CompletedProcess([], 1, "", "unit not found")
@@ -1300,12 +1341,12 @@ class WireGoblinRollbackTest(unittest.TestCase):
 
     def test_success_patches_and_reports_wired(self) -> None:
         ok = subprocess.CompletedProcess([], 0, "", "")
-        self.run_wire(ok, stable=True)
+        self.assertEqual(self.run_wire(ok, stable=True), "live")
         self.assertIn("memory: {", self.config.read_text())
 
     def test_declined_restart_leaves_patch_with_backup(self) -> None:
         install.ask_yes = lambda prompt, default: False
-        install.wire_goblin(self.home, "goblin")
+        self.assertEqual(install.wire_goblin(self.home, "goblin"), "patched")
         text = self.config.read_text()
         self.assertIn("memory: {", text)
         self.assertTrue((self.home / "goblin.json5.pre-memory").is_file())

@@ -113,7 +113,8 @@ for attach and pin. An agent editing files with the generic
   `body_md`, `rev`, `pinned_at`, `archived_at`, `created_at`,
   `updated_at`.
 - `note_versions`: `note_id`, `rev`, `body_md`, `source`
-  (`app|agent|rewrite|append`), `conversation` (nullable), `at`. Full
+  (`app|agent|rewrite|append|restore` — the write that superseded this
+  state), `conversation` (nullable), `at`. Full
   copies, as Open WebUI keeps them; capped at the newest 100 per note,
   oldest pruned in the same transaction.
 - `notes_fts`: FTS5 over title + body, the `events_fts` pattern.
@@ -127,12 +128,29 @@ Embedded uploads (images/files inside a note) are out of v1.
 
 **Scope** (operator ruling): a note belongs to a project or is loose. A
 top-level Notes view lists loose and project notes; the project page
-lists its own. Any note attaches to any app chat.
+lists its own. Any note attaches to any app chat. Unlike a
+conversation, a note may move between projects (or out to loose): it
+carries no prompt cache, and frozen notes indexes simply show it until
+their next boundary.
 
-**Every mutation is one path.** `rev` increments per write. Before a
-write whose `body_md` differs from the latest version, the current body
-is recorded as a version — so every agent edit, rewrite, and append is
-one restore away. App saves carry `If-Match: <rev>` (the operator
+**Editor: Milkdown** (`@milkdown/kit`, commonmark + gfm presets),
+mounted directly — no React wrapper package. Chosen over Tiptap because
+it is markdown-native (remark parse/serialize), so `body_md` stays the
+only format. remark normalizes on serialize (bullet markers, emphasis
+style); the gate is that serialization is idempotent and
+content-preserving over a GFM fixture set. The editor saves only when
+its serialization differs from the serialization it produced right
+after load — opening an agent-written note never rewrites it.
+
+**Every mutation is one path.** `rev` increments per content write
+(title or body; pin/archive/project moves are flags and bump nothing).
+Before a content write the pre-write state is recorded as a version —
+always for `agent`, `rewrite`, `append`, and `restore` writes, so every
+non-operator edit is one restore away. Operator `app` writes are the
+editor's debounced autosave, so they coalesce: an `app` write records a
+version only when the note's previous write was not `app` or the newest
+version is older than 10 minutes — a typing session is one version, not
+hundreds. App saves carry `If-Match: <rev>` (the operator
 console's etag pattern); a stale rev is a 409 with the current note,
 never a silent overwrite. The single real conflict — the operator typing
 while the agent edits — surfaces as that 409, and the editor offers
@@ -156,18 +174,23 @@ from a third party.
 - **Project conversations** get a notes index in the frozen
   `## project` section: id + title, pinned first then most recent,
   capped at 50 entries. Current text is a `note read` away.
-- **Attach.** The composer's attach picker adds notes; each attached
-  note rides the user message as a fenced data part carrying id, title,
-  rev, and the body as of send. Appended content — the cache invariant
+- **Attach.** The composer's attach picker adds notes. The client sends
+  only a reference (`data-note` with the id); intake resolves it and
+  stores the expanded part — id, title, rev, and the body as of send —
+  so history holds what the server read, never a client-supplied body.
+  The model view renders it fenced. Appended content — the cache invariant
   holds — and an honest snapshot: a later edit is visible through `note
   read`, never by rewriting the old message.
 - "Chat with a note" is a new conversation with that note attached to
   its first message. No separate mechanism.
 
-**Live refresh rides the chat stream.** When the client sees a `note`
-tool result for a note it has open, it refetches that note. Edits from
-background turns or another device appear on editor focus. No socket,
-no new push channel (Streaming members' "parked" ruling stands).
+**Refresh without push.** The editor fetches on mount and on window
+focus; a newer server rev under a clean editor reloads silently, under
+a dirty one it raises the conflict choice. In v1 a note and a chat
+never share a screen, so there is no open editor for a streamed `note`
+tool result to refresh; when they do share one, that tool result is the
+refetch trigger. No socket, no new push channel (Streaming members'
+"parked" ruling stands).
 
 **Fenced reply → append** (operator ask). In app conversations the
 model may wrap note-ready content in a `note` fence — four backticks so

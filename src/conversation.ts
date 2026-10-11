@@ -10,6 +10,8 @@ import { splitModelRef, thinkingLevels, type Config, type ThinkingLevel } from "
 import { MemoryContexts, type MemoryEligibility, messageText } from "./memory.ts";
 import { MemoryDestinations } from "./memory-destinations.ts";
 import { MemoryQueue } from "./memory-queue.ts";
+import { ensureProjectsSchema } from "./projects.ts";
+import { ensureNotesSchema } from "./notes.ts";
 import { compactionSummaryId, corruptRowId } from "./tags.ts";
 import type { MemoryDocument } from "./hindsight.ts";
 
@@ -131,6 +133,9 @@ export interface Conversation {
 	// App rail anchor: pinned rows float above the activity stream.
 	// Survives activity; archiving clears it (design/app.md → Pinning).
 	pinnedAt: string | null;
+	// Bound once at creation (design/projects.md) — app conversations
+	// opened under a project only; every other row stays null forever.
+	projectId: string | null;
 	epoch: number;
 	createdAt: string;
 }
@@ -320,6 +325,11 @@ export interface ConversationStore {
 	// The app channel's own pool, most recently active first — filtered
 	// on the id prefix.
 	listAppConversations(): AppConversationSummary[];
+	// The one write to project_id — creation only. A row already bound
+	// to a different project refuses; rebinding the same id is a no-op.
+	bindProject(id: string, projectId: string): void;
+	// Ids bound to one project — the memory-off propagation walks them.
+	listProjectConversationIds(projectId: string): string[];
 	// Drop a conversation and everything it owns (events fire the FTS
 	// delete trigger). A live turn must be fenced first (runtime.stop) —
 	// this only touches the store.
@@ -359,6 +369,9 @@ export interface AppConversationSummary {
 	archivedAt: string | null;
 	// Non-null = pinned: the row floats above the rail's activity order.
 	pinnedAt: string | null;
+	// Null = an unscoped chat, listed on the main rail; set = the row
+	// lives under its project's page (design/projects.md).
+	projectId: string | null;
 }
 
 // ---------- store ----------
@@ -382,6 +395,7 @@ interface Row {
 	previous_dm_id: string | null; // internal navigation link, never on the wire
 	archived_at: string | null;
 	pinned_at: string | null;
+	project_id: string | null;
 }
 
 const privateChatIdSchema = z.number().int().positive();
@@ -476,6 +490,7 @@ function toConversation(r: Row): Conversation {
 		persona: r.persona === "guest" ? "guest" : "personal",
 		archivedAt: r.archived_at,
 		pinnedAt: r.pinned_at,
+		projectId: r.project_id,
 		epoch: r.epoch,
 		createdAt: r.created_at,
 	};
@@ -507,7 +522,7 @@ export function toFtsQuery(query: string): string | null {
 // One flat display line — list titles and previews are single-line
 // labels, so markdown furniture comes off, or a reply that opens on a
 // code block titles the row "```typescript const slug = …".
-function flatLine(text: string): string {
+export function flatLine(text: string): string {
 	return text
 		.replace(/```+[ \t]*[^\s`\n]*/g, " ")
 		.replace(/`([^`]*)`/g, "$1")
@@ -571,6 +586,10 @@ export function openStore(dbPath: string): ConversationStore {
 			epoch INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL
 		)`);
+	// Before the column migrations: project_id below REFERENCES this
+	// table, so it has to exist first.
+	ensureProjectsSchema(db);
+	ensureNotesSchema(db);
 	const convCols = new Set(
 		db
 			.query<{ name: string }, []>("PRAGMA table_info(conversations)")
@@ -594,6 +613,11 @@ export function openStore(dbPath: string): ConversationStore {
 	}
 	if (!convCols.has("pinned_at")) {
 		db.run("ALTER TABLE conversations ADD COLUMN pinned_at TEXT");
+	}
+	// Immutable binding to a project — written once by bindProject,
+	// deliberately not on ConversationMetaPatch (design/projects.md).
+	if (!convCols.has("project_id")) {
+		db.run("ALTER TABLE conversations ADD COLUMN project_id TEXT REFERENCES projects(id)");
 	}
 	db.run(`
 		CREATE TABLE IF NOT EXISTS events (
@@ -913,11 +937,15 @@ export function openStore(dbPath: string): ConversationStore {
 			created_at: string;
 			archived_at: string | null;
 			pinned_at: string | null;
+			project_id: string | null;
 		},
 		[]
 	>(
-		`SELECT id, title, created_at, archived_at, pinned_at FROM conversations
+		`SELECT id, title, created_at, archived_at, pinned_at, project_id FROM conversations
 		WHERE id LIKE 'app/%' ORDER BY created_at, rowid`,
+	);
+	const qProjectConvs = db.query<{ id: string }, [string]>(
+		"SELECT id FROM conversations WHERE project_id = ? ORDER BY created_at, rowid",
 	);
 	// Freshness and preview source; the rowid rides along as activity
 	// order — created_at ties within a millisecond can't order two writes.
@@ -1387,6 +1415,7 @@ export function openStore(dbPath: string): ConversationStore {
 					preview: message === null ? "" : flatLine(messageText(message)).slice(0, 200),
 					archivedAt: r.archived_at,
 					pinnedAt: r.pinned_at,
+					projectId: r.project_id,
 					activity: last?.id ?? 0,
 				});
 			}
@@ -1398,6 +1427,19 @@ export function openStore(dbPath: string): ConversationStore {
 			return [...pinned, ...out.filter((r) => r.pinnedAt === null)].map(
 				({ activity: _activity, ...summary }) => summary,
 			);
+		},
+
+		bindProject(id, projectId) {
+			const row = qGet.get(id);
+			if (row === null) throw new Error(`conversation ${id} not found`);
+			if (row.project_id !== null && row.project_id !== projectId) {
+				throw new Error(`conversation ${id} is already bound to project ${row.project_id}`);
+			}
+			db.run("UPDATE conversations SET project_id = ? WHERE id = ?", [projectId, id]);
+		},
+
+		listProjectConversationIds(projectId) {
+			return qProjectConvs.all(projectId).map((r) => r.id);
 		},
 
 		deleteConversation(id) {

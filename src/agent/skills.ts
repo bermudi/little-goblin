@@ -177,19 +177,32 @@ export function loadCatalog(root: string): SkillCatalog {
 }
 
 // The prompt section. Renders even when empty — it's also the notice
+// The prompt section. Renders even when empty — it's also the notice
 // that the capability exists. Proposals (the reviewer's validated
 // drafts in skills-proposed/, never installed without the operator's
 // yes — design/skills.md, "It proposes, then tells") are listed when
-// present so any conversation can act on an approve request.
-export function formatSkillsSection(catalog: SkillCatalog, proposals?: SkillCatalog): string[] {
+// present so any conversation can act on an approve request. linkBase
+// resolves each entry's workspace-relative path to absolute — project
+// conversations cwd outside the workspace, where `skills/…` would
+// resolve inside the project (design/projects.md).
+export function formatSkillsSection(
+	catalog: SkillCatalog,
+	proposals?: SkillCatalog,
+	linkBase?: string,
+): string[] {
+	const skillsRoot = linkBase === undefined ? "skills" : join(linkBase, "skills");
+	const validatePath =
+		linkBase === undefined
+			? "./skills/<name>"
+			: `'${join(skillsRoot, "<name>").replace(/'/g, "'\\''")}'`;
 	const lines = [
 		"## skills",
 		"",
-		"Skills are directories under `skills/` — each a SKILL.md (frontmatter:",
+		`Skills are directories under \`${skillsRoot}/\` — each a SKILL.md (frontmatter:`,
 		"name, description) with instructions plus any scripts/files it needs.",
 		"When a request matches one, read_file its SKILL.md and follow it. This",
-		"catalog is yours: write skills/<name>/SKILL.md when you learn a",
-		"repeatable task, then `skills-ref validate ./skills/<name>` via bash.",
+		`catalog is yours: write ${skillsRoot}/<name>/SKILL.md when you learn a`,
+		`repeatable task, then \`skills-ref validate ${validatePath}\` via bash.`,
 		"Edits load when the next conversation starts.",
 		"",
 	];
@@ -198,7 +211,8 @@ export function formatSkillsSection(catalog: SkillCatalog, proposals?: SkillCata
 	} else {
 		for (const e of catalog.entries) {
 			const req = e.compatibility ? ` [${e.compatibility}]` : "";
-			lines.push(`- ${e.name} — ${e.description}${req} (${e.path})`);
+			const path = linkBase === undefined ? e.path : join(linkBase, e.path);
+			lines.push(`- ${e.name} — ${e.description}${req} (${path})`);
 		}
 	}
 	if (catalog.skipped > 0) {
@@ -215,7 +229,8 @@ export function formatSkillsSection(catalog: SkillCatalog, proposals?: SkillCata
 		);
 		for (const e of proposals.entries) {
 			const req = e.compatibility ? ` [${e.compatibility}]` : "";
-			lines.push(`- ${e.name} — ${e.description}${req} (${e.path})`);
+			const path = linkBase === undefined ? e.path : join(linkBase, e.path);
+			lines.push(`- ${e.name} — ${e.description}${req} (${path})`);
 		}
 	}
 	return lines;

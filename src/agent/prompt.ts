@@ -14,10 +14,12 @@
 
 import { createHash } from "node:crypto";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { paths } from "../config.ts";
 import { log } from "../log.ts";
 import { channelOf, type Conversation, type ConversationStore } from "../conversation.ts";
+import type { Project } from "../projects.ts";
 import { formatSkillsSection, loadCatalog } from "./skills.ts";
 
 // Last-seen content hash per prompt source, process-wide. An operator
@@ -168,9 +170,37 @@ function readCapped(source: string, path: string, cap: number): string | null {
 	return `${head}\n\n… (${source} truncated at ${cap} chars — kept the first ${headLen} and last ${tailLen}, dropped ${dropped} from the middle — read the file for the rest) …\n${tail}`;
 }
 
+// Project instructions are operator text like the injected files — the
+// same ceiling and in-prompt notice apply; only the source is a DB
+// field, so the notice points at the project page, not a path.
+function capPromptText(source: string, text: string, cap: number): string {
+	if (text.length <= cap) return text;
+	const headLen = Math.floor(cap * 0.7);
+	const tailLen = Math.min(text.length - headLen, Math.floor(cap * 0.2));
+	const dropped = text.length - headLen - tailLen;
+	log.warn("prompt file truncated", {
+		file: source,
+		bytes: Buffer.byteLength(text),
+		cap,
+		dropped,
+	});
+	const tail = tailLen > 0 ? text.slice(-tailLen) : "";
+	return `${text.slice(0, headLen)}\n\n… (${source} truncated at ${cap} chars — kept the first ${headLen} and last ${tailLen}, dropped ${dropped} from the middle — the project page holds the rest) …\n${tail}`;
+}
+
+// A bound conversation gets its project's own prompt: the working-
+// directory line names project.dir, the identity files point at the
+// workspace absolutely (a relative edit from the project cwd would
+// land in the project), the skill catalog renders absolute paths for
+// the same reason, and a `## project` section carries the instructions
+// plus a linked dir's own AGENTS.md. `project === undefined` (or null)
+// produces byte-identical output to the pre-projects builder — frozen
+// snapshots of unbound conversations must not churn.
 export function buildSystemPrompt(
 	conv: Conversation,
 	tools: readonly string[],
+	project?: Project | null,
+	notesIndex?: { id: string; title: string }[] | undefined,
 ): { text: string; sources: string[] } {
 	// Guest persona (design/telegram.md → Guest mode): a third-party
 	// summons never reads the operator's files — no SOUL.md, no
@@ -211,11 +241,58 @@ export function buildSystemPrompt(
 	// Proposals ride the same section and the same boundary.
 	const catalog = loadCatalog(paths.skills());
 	const proposals = loadCatalog(paths.skillsProposed());
-	const skillsSection = formatSkillsSection(catalog, proposals);
+	// Project prompts render catalog links absolute: from a project cwd
+	// the relative `skills/…` path resolves inside the project.
+	const skillsSection = formatSkillsSection(
+		catalog,
+		proposals,
+		project === null || project === undefined ? undefined : paths.workspace(),
+	);
+	// A linked dir's own AGENTS.md is prompt source like the workspace's,
+	// read fresh at each snapshot build. Managed homes never carry one —
+	// goblin's own AGENTS.md section above is the managed project's too.
+	const projectAgents =
+		project !== null && project !== undefined && !project.managed
+			? readCapped("project AGENTS.md", join(project.dir, "AGENTS.md"), MAX_PROMPT_FILE_CHARS)
+			: null;
+	const projectInstructions = capPromptText(
+		`project:${project?.id ?? ""}`,
+		(project?.instructions ?? "").trim(),
+		MAX_PROMPT_FILE_CHARS,
+	);
 	noteSource("SOUL.md", soul);
 	noteSource("AGENTS.md", agents);
 	noteSource("USER.md", user);
 	noteSource("skills", skillsSection.join("\n"));
+	// Keyed per project — the map is process-wide, so an unkeyed entry
+	// would log "changed" every time two projects alternate.
+	if (project !== null && project !== undefined) {
+		noteSource(`project:${project.id}`, project.instructions);
+		if (!project.managed) {
+			noteSource(`project-AGENTS.md:${project.id}`, projectAgents);
+		}
+		noteSource(`notes-index:${project.id}`, (notesIndex ?? []).map((n) => n.title).join("\n"));
+	}
+
+	// The project's scope statement, ahead of goblin's own operating
+	// notes: name, its instructions, the notes index (current text is a
+	// `note read` away — the index stays a pointer, never the body),
+	// and a linked dir's AGENTS.md.
+	const projectSection: string[] = [];
+	if (project !== null && project !== undefined) {
+		projectSection.push("", `## project — ${project.name}`);
+		const parts: string[] = [];
+		if (projectInstructions !== "") parts.push(projectInstructions);
+		if (notesIndex !== undefined && notesIndex.length > 0) {
+			parts.push(
+				`### notes\n\n${notesIndex.map((n) => `- ${n.title} (id ${n.id})`).join("\n")}`,
+			);
+		}
+		if (projectAgents !== null) {
+			parts.push(`### AGENTS.md in ${project.dir}\n\n${projectAgents.trim()}`);
+		}
+		if (parts.length > 0) projectSection.push("", parts.join("\n\n"));
+	}
 
 	// The channel's name is the only prompt line the address flips —
 	// everything else is shared machinery (DESIGN.md, App channel).
@@ -231,7 +308,11 @@ export function buildSystemPrompt(
 		"## environment",
 		"",
 		`- You are talking to your operator via ${channel} (${conv.id}).`,
-		`- Working directory: ${paths.workspace()} — fixed, same for every chat.`,
+		...(project === null || project === undefined
+			? [`- Working directory: ${paths.workspace()} — fixed, same for every chat.`]
+			: [
+					`- Working directory: ${project.dir} — this project's directory, the same for every chat in it.`,
+				]),
 		`- No clock: the current date/time is not in this prompt — run \`date\` via`,
 		`  bash whenever it matters.`,
 		`- Tools: ${tools.join(", ")}. Paths are relative to the working`,
@@ -288,6 +369,13 @@ export function buildSystemPrompt(
 					`  taps come back as [ui] messages.`,
 				]
 			: []),
+		...(tools.includes("note") && onApp
+			? [
+					`- Note-ready content can ride a four-backtick fence with info`,
+					`  string \`note title="…"\` — the app shows an append-to-note`,
+					`  button on it, and only the fence body lands in the note.`,
+				]
+			: []),
 		`- ${onApp ? "The goblin app" : "Telegram"} is the UI: messages are plain text/Markdown, media arrives as`,
 		`  file paths or inline parts. Keep replies chat-sized; write files for`,
 		`  anything long.`,
@@ -302,8 +390,17 @@ export function buildSystemPrompt(
 					`  files, your notes, past conversations).`,
 				]
 			: []),
-		`- SOUL.md in the workspace root is your identity; AGENTS.md is your own`,
-		`  operating notes; USER.md is your model of the operator. You own all`,
+		...(project === null || project === undefined
+			? [
+					`- SOUL.md in the workspace root is your identity; AGENTS.md is your own`,
+					`  operating notes; USER.md is your model of the operator. You own all`,
+				]
+			: [
+					// Absolute — a relative edit from the project cwd would land
+					// in the project, not the workspace (design/projects.md).
+					`- SOUL.md, AGENTS.md and USER.md in ${paths.workspace()} are your`,
+					`  identity, your operating notes and your model of the operator. You own all`,
+				]),
 		...(tools.includes("memory_search")
 			? [
 					`  three — they are your deliberate notes; shared long-term memory`,
@@ -322,6 +419,7 @@ export function buildSystemPrompt(
 		`  anything leaves it or can't be undone.`,
 		`- Irreversible or destructive actions (deleting data, force-anything)`,
 		`  need an explicit go-ahead first.`,
+		...projectSection,
 		...(agents ? ["", "## AGENTS.md — your operating notes", "", agents.trim()] : []),
 		...(user ? ["", "## USER.md — your model of the operator", "", user.trim()] : []),
 		"",
@@ -329,6 +427,11 @@ export function buildSystemPrompt(
 	].join("\n");
 
 	const sources = ["SOUL.md"];
+	if (project !== null && project !== undefined) {
+		sources.push("project");
+		if (projectAgents !== null) sources.push("project-AGENTS.md");
+		if (notesIndex !== undefined && notesIndex.length > 0) sources.push("notes-index");
+	}
 	if (agents) sources.push("AGENTS.md");
 	if (user) sources.push("USER.md");
 	if (catalog.entries.length > 0 || catalog.skipped > 0 || proposals.entries.length > 0)
@@ -348,10 +451,12 @@ export function systemPromptFor(
 	store: Pick<ConversationStore, "promptSnapshot" | "savePromptSnapshot">,
 	conv: Conversation,
 	tools: readonly string[],
+	project?: Project | null,
+	notesIndex?: { id: string; title: string }[] | undefined,
 ): { text: string; sources: string[] } {
 	const frozen = store.promptSnapshot(conv.id);
 	if (frozen !== null) return frozen;
-	const built = buildSystemPrompt(conv, tools);
+	const built = buildSystemPrompt(conv, tools, project, notesIndex);
 	store.savePromptSnapshot(conv.id, built.text, built.sources);
 	// The boundary line: the snapshot's birth is a cache write, and
 	// noteSource diffs above explain any source change since the last

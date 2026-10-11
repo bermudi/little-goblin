@@ -16,6 +16,14 @@ import type {
 	AppConversationList,
 	AppConversationPatch,
 	AppMessageList,
+	AppNote,
+	AppNoteList,
+	AppNoteRewriteRequest,
+	AppNoteRewriteResponse,
+	AppNoteVersion,
+	AppNoteVersionList,
+	AppProject,
+	AppProjectList,
 	AppSearchResponse,
 	AppStopResponse,
 	AppTtsResponse,
@@ -109,12 +117,180 @@ export function listConversations(token: string | null): Promise<AppConversation
 
 export function createConversation(
 	token: string | null,
-	title?: string,
+	opts?: { title?: string; projectId?: string },
 ): Promise<AppConversationCreate> {
 	return request(token, "/api/app/conversations", {
 		method: "POST",
 		headers: { "content-type": "application/json" },
-		body: JSON.stringify(title === undefined ? {} : { title }),
+		body: JSON.stringify(opts ?? {}),
+	});
+}
+
+export function listProjects(token: string | null): Promise<AppProjectList> {
+	return request(token, "/api/app/projects");
+}
+
+export function createProject(
+	token: string | null,
+	body: { name: string; instructions?: string; memory?: "shared" | "off"; dir?: string },
+): Promise<AppProject> {
+	return request(token, "/api/app/projects", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(body),
+	});
+}
+
+export function getProject(token: string | null, id: string): Promise<AppProject> {
+	return request(token, `/api/app/projects/${encodeURIComponent(id)}`);
+}
+
+export function patchProject(
+	token: string | null,
+	id: string,
+	patch: {
+		name?: string;
+		instructions?: string;
+		memory?: "shared" | "off";
+		archived?: boolean;
+	},
+): Promise<AppProject> {
+	return request(token, `/api/app/projects/${encodeURIComponent(id)}`, {
+		method: "PATCH",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(patch),
+	});
+}
+
+// ---------- notes ----------
+// The editor's etag is the rev — If-Match guards content writes;
+// flag writes (pin/archive/move) go bare. A 409 carries the live note
+// so "load theirs" never needs a refetch.
+export class NoteConflictError extends ApiError {
+	constructor(readonly note: AppNote) {
+		super(409, `note is at rev ${note.rev}`);
+	}
+}
+
+export function listNotes(
+	token: string | null,
+	filter: { project?: string; q?: string; archived?: boolean } = {},
+): Promise<AppNoteList> {
+	const params = new URLSearchParams();
+	if (filter.project !== undefined && filter.project !== "") params.set("project", filter.project);
+	if (filter.q !== undefined && filter.q !== "") params.set("q", filter.q);
+	if (filter.archived === true) params.set("archived", "1");
+	const q = params.toString();
+	return request(token, `/api/app/notes${q === "" ? "" : `?${q}`}`);
+}
+
+export function createNote(
+	token: string | null,
+	body: { title: string; body?: string; projectId?: string | null },
+): Promise<AppNote> {
+	return request(token, "/api/app/notes", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(body),
+	});
+}
+
+export function getNote(
+	token: string | null,
+	id: string,
+): Promise<{ data: AppNote; etag: string | null }> {
+	return requestMeta(token, `/api/app/notes/${encodeURIComponent(id)}`);
+}
+
+export async function patchNote(
+	token: string | null,
+	id: string,
+	patch: {
+		title?: string;
+		body?: string;
+		projectId?: string | null;
+		pinned?: boolean;
+		archived?: boolean;
+		// 'rewrite' marks the accepted proposal so the version names it.
+		source?: "app" | "rewrite";
+	},
+	// keepalive: the pagehide flush — the request must outlive the page.
+	opts: { ifMatch?: number; keepalive?: boolean } = {},
+): Promise<{ data: AppNote; etag: string | null }> {
+	const res = await fetch(`/api/app/notes/${encodeURIComponent(id)}`, {
+		method: "PATCH",
+		headers: {
+			...(token === null ? {} : { authorization: `Bearer ${token}` }),
+			"content-type": "application/json",
+			...(opts.ifMatch !== undefined ? { "if-match": `"${opts.ifMatch}"` } : {}),
+		},
+		body: JSON.stringify(patch),
+		...(opts.keepalive === true ? { keepalive: true } : {}),
+	});
+	if (res.status === 409) {
+		const body = (await res.json()) as { note: AppNote };
+		throw new NoteConflictError(body.note);
+	}
+	if (!res.ok) {
+		let detail = `http ${res.status}`;
+		try {
+			const body = (await res.json()) as { error?: string };
+			if (body.error !== undefined) detail = body.error;
+		} catch {
+			/* not json */
+		}
+		throw new ApiError(res.status, detail);
+	}
+	return { data: (await res.json()) as AppNote, etag: res.headers.get("etag") };
+}
+
+export function appendNote(token: string | null, id: string, text: string): Promise<AppNote> {
+	return request(token, `/api/app/notes/${encodeURIComponent(id)}/append`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ text }),
+	});
+}
+
+// The rewrite POST generates only — the proposal returns through the
+// guarded PATCH with source 'rewrite' (design/projects.md → AI rewrite).
+export function rewriteNote(
+	token: string | null,
+	id: string,
+	input: AppNoteRewriteRequest,
+	opts: { signal?: AbortSignal } = {},
+): Promise<AppNoteRewriteResponse> {
+	return request(token, `/api/app/notes/${encodeURIComponent(id)}/rewrite`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(input),
+		...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+	});
+}
+
+export function deleteNote(token: string | null, id: string): Promise<{ ok: true }> {
+	return request(token, `/api/app/notes/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export function listNoteVersions(token: string | null, id: string): Promise<AppNoteVersionList> {
+	return request(token, `/api/app/notes/${encodeURIComponent(id)}/versions`);
+}
+
+export function getNoteVersion(
+	token: string | null,
+	id: string,
+	rev: number,
+): Promise<AppNoteVersion> {
+	return request(token, `/api/app/notes/${encodeURIComponent(id)}/versions/${rev}`);
+}
+
+export function restoreNoteVersion(
+	token: string | null,
+	id: string,
+	rev: number,
+): Promise<AppNote> {
+	return request(token, `/api/app/notes/${encodeURIComponent(id)}/versions/${rev}/restore`, {
+		method: "POST",
 	});
 }
 

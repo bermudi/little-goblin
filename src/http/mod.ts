@@ -212,7 +212,26 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 		}
 		// The operator-console client routes (settings, memory, …) —
 		// same reasoning as /app/c/<id>: the shell resolves them.
-		if (/^\/app\/(?:settings|memory|delegations|programs|status)\/?$/.test(url.pathname)) {
+		if (/^\/app\/(?:settings|memory|delegations|programs|status|projects|notes)\/?$/.test(url.pathname)) {
+			return serveAppDist("");
+		}
+		// Project pages (design/projects.md): /app/p/<projectId> — same
+		// shell dispatch as /app/c/<id>. Project ids are randomUUIDs,
+		// inside the same url-safe shape.
+		if (url.pathname.startsWith("/app/p/")) {
+			const projectId = url.pathname.slice("/app/p/".length);
+			if (!APP_ID_RE.test(projectId)) {
+				return Response.json({ error: "not found" }, { status: 404 });
+			}
+			return serveAppDist("");
+		}
+		// Note pages (design/projects.md → Notes): /app/n/<noteId> —
+		// the same shell dispatch; note ids are randomUUIDs too.
+		if (url.pathname.startsWith("/app/n/")) {
+			const noteId = url.pathname.slice("/app/n/".length);
+			if (!APP_ID_RE.test(noteId)) {
+				return Response.json({ error: "not found" }, { status: 404 });
+			}
 			return serveAppDist("");
 		}
 		if (url.pathname.startsWith("/app/")) {

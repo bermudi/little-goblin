@@ -2,13 +2,21 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
+import type { UIMessage } from "ai";
 import {
 	authDefaults,
 	parseConfig,
 	transcriptionDefaults,
 	transcriptionKinds,
 } from "../../src/config.ts";
-import type { AppConversationList } from "../../src/http/app-wire.ts";
+import type {
+	AppConversationList,
+	AppNote,
+	AppNoteSummary,
+	AppNoteVersion,
+	AppNoteVersionMeta,
+	AppProject,
+} from "../../src/http/app-wire.ts";
 import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
 import { App, deepLinkConv, flatLine } from "./App.tsx";
 
@@ -119,6 +127,9 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 				const d = deferredUpload();
 				uploads.push(d);
 				return d.promise;
+			}
+			if (url === "/api/app/projects") {
+				return Promise.resolve(jsonResponse({ projects: [] }));
 			}
 			if (url === "/api/app/conversations") {
 				if (method === "POST") {
@@ -297,6 +308,9 @@ describe("rail row actions and the pinned pool", () => {
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+			if (url === "/api/app/projects") {
+				return Promise.resolve(jsonResponse({ projects: [] }));
+			}
 			if (url === "/api/app/conversations" && method === "GET") {
 				return Promise.resolve(
 					jsonResponse({
@@ -538,6 +552,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			if (url === "/api/app/conversations") return Promise.resolve(jsonResponse({ conversations }));
+			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
 			if (url === "/api/app/conversations/fixture") {
 				if (init?.method === "DELETE") conversations = [];
 				if (init?.method === "PATCH")
@@ -690,6 +705,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 				updatedAt: "2026-10-10T00:00:00Z",
 				archivedAt: archived ? "2026-10-10T00:00:00Z" : null,
 				pinnedAt: null,
+				projectId: null,
 			},
 		];
 	};
@@ -1158,4 +1174,788 @@ describe("App telegram door", () => {
 		expect(container.textContent).toContain("Memories");
 		expect(appDoorHits).toEqual([]);
 	});
+});
+
+// Projects (design/projects.md): the rail's Projects section above the
+// chat list, bound chats living only on their project's page, the
+// create dialog's wire shape, and the project composer's creation-time
+// binding. Same happy-dom mount + fetch-at-the-edge fake as above.
+describe("app projects surface", () => {
+	let win: Window;
+	let container: HTMLElement;
+	let root: Root | null = null;
+	let installed: string[] = [];
+	let convs: AppConversationList["conversations"];
+	let projs: AppProject[];
+	let notes: AppNoteSummary[];
+	let stored: UIMessage[];
+	let conflictPatch: boolean;
+	// Conversation creation control: POST /api/app/conversations 500s.
+	let failCreate: boolean;
+	// Focus-refresh controls: the note GET fails, or answers with a
+	// remote version newer than the fixture row.
+	let noteGetFail: boolean;
+	let noteGetOverride: AppNote | null;
+	// PATCH attempts — a blur during conflict must not even try.
+	let patchCalls: number;
+	let versionRows: AppNoteVersionMeta[];
+	let versionPreview: AppNoteVersion | null;
+	let posts: { url: string; body: unknown }[];
+	const realFetch = globalThis.fetch;
+
+	const installGlobal = (name: string, value: unknown) => {
+		Reflect.set(globalThis, name, value);
+		installed.push(name);
+	};
+
+	const convRow = (
+		title: string,
+		over: Partial<AppConversationList["conversations"][number]> = {},
+	) => ({
+		id: `app/${title.split(" ")[0]}`,
+		title,
+		preview: `${title} preview`,
+		createdAt: "2026-10-08T00:00:00.000Z",
+		updatedAt: "2026-10-09T00:00:00.000Z",
+		archivedAt: null,
+		pinnedAt: null,
+		projectId: null,
+		...over,
+	});
+
+	const projRow = (name: string, over: Partial<AppProject> = {}): AppProject => ({
+		id: `p-${name.split(" ")[0]!.toLowerCase()}`,
+		name,
+		slug: name.toLowerCase().replaceAll(" ", "-"),
+		dir: `/tmp/${name}`,
+		managed: true,
+		instructions: "",
+		memory: "shared",
+		createdAt: "2026-10-08T00:00:00.000Z",
+		archivedAt: null,
+		...over,
+	});
+
+	const noteRow = (title: string, over: Partial<AppNoteSummary> = {}): AppNoteSummary => ({
+		id: `n-${title.split(" ")[0]!.toLowerCase()}`,
+		projectId: null,
+		title,
+		rev: 1,
+		pinnedAt: null,
+		archivedAt: null,
+		updatedAt: "2026-10-10T00:00:00.000Z",
+		preview: "",
+		...over,
+	});
+	const noteFull = (s: AppNoteSummary, body = "") => ({
+		...s,
+		body,
+		lastSource: "app" as const,
+		createdAt: "2026-10-08T00:00:00.000Z",
+	});
+
+	beforeEach(() => {
+		// A real URL — history.pushState can't leave about:blank.
+		win = new Window({ url: "http://localhost/app/" });
+		const div = win.document.createElement("div");
+		win.document.body.appendChild(div);
+		container = div as unknown as HTMLElement;
+		installed = [];
+		convs = [];
+		projs = [];
+		notes = [];
+		stored = [];
+		conflictPatch = false;
+		failCreate = false;
+		noteGetFail = false;
+		noteGetOverride = null;
+		patchCalls = 0;
+		versionRows = [];
+		versionPreview = null;
+		posts = [];
+		installGlobal("window", win);
+		installGlobal("document", win.document);
+		installGlobal("navigator", win.navigator);
+		installGlobal("localStorage", win.localStorage);
+		installGlobal("Event", win.Event);
+		installGlobal("CustomEvent", win.CustomEvent);
+		installGlobal("getComputedStyle", win.getComputedStyle);
+		// The note page lazy-mounts Milkdown — its ctx signals readiness
+		// with bare dispatchEvent/addEventListener, which must ride the
+		// happy-dom realm, not Bun's (noteMarkdown.test.ts's ruling).
+		installGlobal("dispatchEvent", win.dispatchEvent.bind(win));
+		installGlobal("addEventListener", win.addEventListener.bind(win));
+		installGlobal("removeEventListener", win.removeEventListener.bind(win));
+		for (const name of [
+			"MutationObserver",
+			"Range",
+			"Node",
+			"HTMLElement",
+			"HTMLUnknownElement",
+			"requestAnimationFrame",
+			"cancelAnimationFrame",
+		] as const) {
+			const value = Reflect.get(win as unknown as Record<string, unknown>, name);
+			if (value !== undefined) installGlobal(name, value);
+		}
+		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+			const body = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined;
+			if (url === "/api/app/conversations") {
+				if (method === "POST") {
+					posts.push({ url, body });
+					if (failCreate)
+						return Promise.resolve(jsonResponse({ error: "mint down" }, 500));
+					return Promise.resolve(
+						jsonResponse({ id: "app/minted", title: null, createdAt: "2026-10-10T00:00:00Z" }, 201),
+					);
+				}
+				return Promise.resolve(jsonResponse({ conversations: convs }));
+			}
+			if (url === "/api/app/projects") {
+				if (method === "POST") {
+					posts.push({ url, body });
+					const req = body as { name: string };
+					const project = projRow(req.name, { id: "p-new" });
+					projs.push(project);
+					return Promise.resolve(jsonResponse(project, 201));
+				}
+				return Promise.resolve(jsonResponse({ projects: projs }));
+			}
+			if (url.startsWith("/api/app/notes/")) {
+				const id = decodeURIComponent(url.slice("/api/app/notes/".length).split("/")[0]!);
+				if (url.endsWith("/rewrite") && method === "POST") {
+					posts.push({ url, body });
+					return Promise.resolve(jsonResponse({ replacement: "a tighter take" }));
+				}
+				if (url.endsWith("/append")) {
+					posts.push({ url, body });
+					const n = notes.find((x) => x.id === id);
+					return Promise.resolve(
+						n === undefined ? jsonResponse({ error: "not found" }, 404) : jsonResponse(noteFull(n)),
+					);
+				}
+				if (url.endsWith("/versions"))
+					return Promise.resolve(jsonResponse({ versions: versionRows }));
+				if (/\/versions\/\d+$/.test(url))
+					return Promise.resolve(
+						versionPreview === null
+							? jsonResponse({ error: "not found" }, 404)
+							: jsonResponse(versionPreview),
+					);
+				if (method === "PATCH") patchCalls++;
+				if (method === "PATCH" && conflictPatch) {
+					const n = notes.find((x) => x.id === id);
+					return Promise.resolve(
+						jsonResponse({ error: "conflict", note: { ...noteFull(n!), rev: 5 } }, 409),
+					);
+				}
+				if (method === "GET") {
+					if (noteGetFail)
+						return Promise.resolve(jsonResponse({ error: "list down" }, 500));
+					if (noteGetOverride !== null) return Promise.resolve(jsonResponse(noteGetOverride));
+				}
+				const n = notes.find((x) => x.id === id);
+				return Promise.resolve(
+					n === undefined ? jsonResponse({ error: "not found" }, 404) : jsonResponse(noteFull(n)),
+				);
+			}
+			if (url === "/api/app/notes" || url.startsWith("/api/app/notes?")) {
+				if (method === "POST") {
+					posts.push({ url, body });
+					const req = body as { title: string; projectId?: string };
+					const n = noteRow(req.title, { id: "n-new", projectId: req.projectId ?? null });
+					notes.push(n);
+					return Promise.resolve(jsonResponse(noteFull(n), 201));
+				}
+				const u = new URL(url, "http://localhost");
+				const archivedOnly = u.searchParams.get("archived") === "1";
+				const scope = u.searchParams.get("project");
+				return Promise.resolve(
+					jsonResponse({
+						notes: notes.filter(
+							(n) =>
+								(n.archivedAt !== null) === archivedOnly &&
+								(scope === null || scope === "all"
+									? true
+									: scope === "loose"
+										? n.projectId === null
+										: n.projectId === scope),
+						),
+					}),
+				);
+			}
+			if (url.endsWith("/messages"))
+				return Promise.resolve(jsonResponse({ messages: stored }));
+			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
+			if (url.endsWith("/chat")) {
+				posts.push({ url, body });
+				return Promise.resolve(
+					new Response("data: [DONE]\n\n", {
+						status: 200,
+						headers: {
+							"content-type": "text/event-stream",
+							"x-vercel-ai-ui-message-stream": "v1",
+						},
+					}),
+				);
+			}
+			// The composers' config loads and anything else.
+			return Promise.resolve(
+				jsonResponse({
+					model: "fixture/model",
+					thinking: "off",
+					favorites: [],
+					thinkingLevels: ["off"],
+				}),
+			);
+		}) as typeof fetch;
+	});
+
+	afterEach(async () => {
+		if (root !== null) {
+			await act(async () => {
+				root?.unmount();
+			});
+			root = null;
+		}
+		await win.happyDOM.close();
+		globalThis.fetch = realFetch;
+		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+		for (const name of installed) Reflect.deleteProperty(globalThis, name);
+		installed = [];
+	});
+
+	const settle = async () => {
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 30));
+		});
+	};
+
+	const mount = async () => {
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await settle();
+	};
+
+	const click = async (el: Element | null | undefined) => {
+		expect(el).toBeTruthy();
+		await act(async () => {
+			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+		});
+		await settle();
+	};
+
+	const typeInto = async (el: Element, value: string, proto: object) => {
+		await act(async () => {
+			// Focus + keyup too — React's text-input fallback needs it in
+			// this environment (MemoryView.test's ruling).
+			(el as HTMLElement).focus();
+			Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
+			el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+			el.dispatchEvent(
+				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			);
+		});
+		await settle();
+	};
+
+	test("the rail's Projects section lists active projects; bound chats leave the main list", async () => {
+		projs = [
+			projRow("Goblin Work"),
+			projRow("Old Stuff", { archivedAt: "2026-10-09T00:00:00.000Z" }),
+		];
+		convs = [convRow("loose chat"), convRow("inside chat", { projectId: "p-goblin" })];
+		await mount();
+
+		const section = container.querySelector(".rail-projects");
+		expect(section).not.toBeNull();
+		expect(section!.textContent).toContain("Goblin Work");
+		expect(section!.textContent).toContain("New project");
+		// Archived projects stay off the rail — they wait on the index.
+		expect(section!.textContent).not.toContain("Old Stuff");
+
+		const railTitles = [...container.querySelectorAll(".rail .conv-title")].map(
+			(t) => t.textContent,
+		);
+		expect(railTitles).toContain("loose chat");
+		expect(railTitles).not.toContain("inside chat");
+
+		// The project page is where bound chats live.
+		await click(
+			[...section!.querySelectorAll(".proj")].find((b) => b.textContent === "Goblin Work"),
+		);
+		expect(win.location.pathname).toBe("/app/p/p-goblin");
+		expect(container.querySelector("main")!.textContent).toContain("Goblin Work");
+		expect([...container.querySelectorAll("main .conv-title")].map((t) => t.textContent)).toEqual([
+			"inside chat",
+		]);
+
+		// The index page holds the archived shelf — collapsed by
+		// default, like the rail's archived chats.
+		await click(container.querySelector(".rail-section"));
+		expect(win.location.pathname).toBe("/app/projects");
+		const details = container.querySelector("main .tuning");
+		expect(details).not.toBeNull();
+		expect(details!.textContent).toContain("Archived projects (1)");
+		expect((details as HTMLDetailsElement).open).toBe(false);
+		expect(details!.textContent).toContain("Old Stuff");
+	});
+
+	test("the create dialog posts its fields and lands on the new project's page", async () => {
+		await mount();
+		await click(
+			[...container.querySelectorAll(".rail-projects button")].find(
+				(b) => b.textContent === "New project",
+			),
+		);
+		const sheet = container.querySelector(".msheet form");
+		expect(sheet).not.toBeNull();
+		const nameInput = sheet!.querySelector("input")!;
+		await typeInto(nameInput, "Side Hustle", win.HTMLInputElement.prototype);
+		expect((nameInput as HTMLInputElement).value).toBe("Side Hustle");
+		await typeInto(
+			sheet!.querySelector("textarea")!,
+			"Ship the thing.",
+			win.HTMLTextAreaElement.prototype,
+		);
+		await act(async () => {
+			sheet!.dispatchEvent(
+				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+			);
+		});
+		await settle();
+		expect(posts).toHaveLength(1);
+		// Managed home and shared memory are the defaults — they ride
+		// only when the operator asks for something else.
+		expect(posts[0]).toEqual({
+			url: "/api/app/projects",
+			body: { name: "Side Hustle", instructions: "Ship the thing." },
+		});
+		expect(win.location.pathname).toBe("/app/p/p-new");
+		expect(container.querySelector("main")!.textContent).toContain("Side Hustle");
+	});
+
+	test("the project page composer binds the new conversation at creation", async () => {
+		projs = [projRow("Goblin Work")];
+		win.history.replaceState(null, "", "/app/p/p-goblin");
+		await mount();
+		expect(win.location.pathname).toBe("/app/p/p-goblin");
+
+		const composer = container.querySelector("form.composer");
+		expect(composer).not.toBeNull();
+		await typeInto(
+			composer!.querySelector("textarea")!,
+			"hello project",
+			win.HTMLTextAreaElement.prototype,
+		);
+		await act(async () => {
+			composer!.dispatchEvent(
+				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+			);
+		});
+		await settle();
+		const created = posts.find((p) => p.url === "/api/app/conversations");
+		expect(created?.body).toEqual({ projectId: "p-goblin" });
+	});
+
+	test("an archived project shows a note instead of the composer", async () => {
+		projs = [projRow("Goblin Work", { archivedAt: "2026-10-10T00:00:00.000Z" })];
+		win.history.replaceState(null, "", "/app/p/p-goblin");
+		await mount();
+
+		expect(container.querySelector("form.composer")).toBeNull();
+		expect(container.querySelector("main")!.textContent).toContain(
+			"This project is archived — unarchive it to start new chats here.",
+		);
+	});
+
+	test("the rail's Notes entry opens the index", async () => {
+		notes = [noteRow("Shopping"), noteRow("Trip plans", { pinnedAt: "2026-10-09T00:00:00Z" })];
+		await mount();
+
+		await click(
+			[...container.querySelectorAll(".rail-projects .rail-section")].find(
+				(b) => b.textContent === "Notes",
+			),
+		);
+		await settleSlow();
+		expect(win.location.pathname).toBe("/app/notes");
+		const main = container.querySelector("main")!;
+		expect(main.textContent).toContain("Shopping");
+		expect(main.textContent).toContain("Trip plans");
+	});
+
+	// The picker's debounce outlasts settle() — give it its own wait.
+	const settleSlow = async () => {
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 300));
+		});
+	};
+
+	test("the composer's note picker stages a chip that sends as data-note", async () => {
+		notes = [noteRow("Shopping")];
+		await mount();
+
+		await click(container.querySelector('button[aria-label="Attach a note"]'));
+		await settleSlow();
+		const pick = container.querySelector(".composer-pick");
+		expect(pick).not.toBeNull();
+		await click([...pick!.querySelectorAll("li button")].find((b) => b.textContent === "Shopping"));
+		expect(container.querySelector(".note-chip")!.textContent).toContain("Shopping");
+
+		const form = container.querySelector("form.composer")!;
+		await act(async () => {
+			form.dispatchEvent(
+				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+			);
+		});
+		await settle();
+		const chat = posts.find((p) => p.url === "/api/app/chat");
+		expect(chat).toBeTruthy();
+		const msg = (chat!.body as { message: { parts: { type: string; data?: unknown }[] } })
+			.message;
+		expect(msg.parts).toContainEqual({ type: "data-note", data: { id: "n-shopping" } });
+	});
+
+	test("a stored data-note part renders as a chip that opens the note", async () => {
+		notes = [noteRow("Shopping", { rev: 3 })];
+		convs = [convRow("note chat")];
+		stored = [
+			{
+				id: "m1",
+				role: "user",
+				parts: [
+					{ type: "text", text: "take a look" },
+					{
+						type: "data-note",
+						data: { id: "n-shopping", title: "Shopping", rev: 3, body: "milk", projectId: null },
+					} as never,
+				],
+			},
+		];
+		await mount();
+		await click([...container.querySelectorAll(".conv-title")].find((t) => t.textContent === "note chat"));
+		const chip = container.querySelector(".note-chip");
+		expect(chip).not.toBeNull();
+		expect(chip!.textContent).toContain("Note · Shopping · rev 3");
+		await click(chip!.querySelector("button.attachment-name"));
+		expect(win.location.pathname).toBe("/app/n/n-shopping");
+	});
+
+	test("a fenced note block offers an append card that POSTs the body", async () => {
+		notes = [noteRow("Shopping")];
+		convs = [convRow("fence chat")];
+		stored = [
+			{
+				id: "m1",
+				role: "assistant",
+				parts: [
+					{
+						type: "text",
+						text: 'here:\n\n````note title="List ideas"\nbread\n- milk\n\n```ts\ninner();\n```\n````',
+					},
+				],
+			},
+		];
+		await mount();
+		await click(
+			[...container.querySelectorAll(".conv-title")].find((t) => t.textContent === "fence chat"),
+		);
+		const card = container.querySelector(".note-card");
+		expect(card).not.toBeNull();
+		// The inner triple fence survives inside the card's body.
+		expect(card!.textContent).toContain("inner()");
+		await click([...card!.querySelectorAll("button")].find((b) => b.textContent === "Append to note…"));
+		await settleSlow();
+		await click(
+			[...card!.querySelectorAll(".note-pick li button")].find(
+				(b) => b.textContent === "Shopping",
+			),
+		);
+		await settle();
+		const append = posts.find((p) => p.url === "/api/app/notes/n-shopping/append");
+		expect(append).toBeTruthy();
+		expect((append!.body as { text: string }).text).toBe("bread\n- milk\n\n```ts\ninner();\n```");
+		expect(card!.querySelector(".note-card-status")!.textContent).toContain("Appended to");
+	});
+
+	test("the append card's New note binds to the conversation's project", async () => {
+		projs = [projRow("goblin")];
+		notes = [noteRow("Shopping")];
+		convs = [convRow("inside chat", { projectId: "p-goblin" })];
+		stored = [
+			{
+				id: "m1",
+				role: "assistant",
+				parts: [{ type: "text", text: '````note title="Ideas"\nbread\n````' }],
+			},
+		];
+		// Bound chats live on their project page, not the rail — deep-link.
+		win.history.replaceState(null, "", "/app/c/inside");
+		await mount();
+		const card = container.querySelector(".note-card");
+		expect(card).not.toBeNull();
+		await click(
+			[...card!.querySelectorAll("button")].find((b) => b.textContent === "Append to note…"),
+		);
+		await settleSlow();
+		await click(
+			[...card!.querySelectorAll(".note-pick li button")].find(
+				(b) => b.textContent === "New note “Ideas”",
+			),
+		);
+		await settle();
+		const created = posts.find((p) => p.url === "/api/app/notes");
+		expect((created!.body as { projectId?: string }).projectId).toBe("p-goblin");
+	});
+
+	test("the note page shows the conflict bar when a title save hits a newer rev", async () => {
+		notes = [noteRow("Shopping")];
+		conflictPatch = true;
+		win.history.replaceState(null, "", "/app/n/n-shopping");
+		await mount();
+		expect(win.location.pathname).toBe("/app/n/n-shopping");
+
+		const title = container.querySelector("input.note-title")!;
+		await typeInto(title, "Shopping 2", win.HTMLInputElement.prototype);
+		await act(async () => {
+			title.dispatchEvent(
+				new win.KeyboardEvent("keydown", { bubbles: true, key: "Enter" }) as unknown as Event,
+			);
+		});
+		await settle();
+		const bar = container.querySelector(".note-conflict");
+		expect(bar).not.toBeNull();
+		expect(bar!.textContent).toContain("rev 5");
+		expect(bar!.textContent).toContain("Load theirs");
+		expect(bar!.textContent).toContain("Keep mine");
+	});
+
+	test("a clean focus refresh updates the title and flags", async () => {
+		notes = [noteRow("Shopping")];
+		win.history.replaceState(null, "", "/app/n/n-shopping");
+		await mount();
+		// The remote moved forward while we were away — clean page,
+		// so the new title lands and flags follow.
+		noteGetOverride = {
+			...noteFull(notes[0]!),
+			title: "Groceries",
+			rev: 2,
+			pinnedAt: "2026-10-11T00:00:00.000Z",
+			updatedAt: "2026-10-11T00:00:00.000Z",
+		};
+		await act(async () => {
+			win.dispatchEvent(new win.Event("focus"));
+		});
+		await settle();
+		expect((container.querySelector("input.note-title") as HTMLInputElement).value).toBe(
+			"Groceries",
+		);
+		expect(container.querySelector("main .pill")!.textContent).toBe("pinned");
+	});
+
+	test("a focus refresh meeting a dirty title raises the conflict bar", async () => {
+		notes = [noteRow("Shopping")];
+		win.history.replaceState(null, "", "/app/n/n-shopping");
+		await mount();
+		const title = container.querySelector("input.note-title")!;
+		await typeInto(title, "Shopping 2", win.HTMLInputElement.prototype);
+		noteGetOverride = { ...noteFull(notes[0]!), rev: 2, title: "Remote", updatedAt: "z" };
+		await act(async () => {
+			win.dispatchEvent(new win.Event("focus"));
+		});
+		await settle();
+		const bar = container.querySelector(".note-conflict");
+		expect(bar).not.toBeNull();
+		// The local draft is untouched.
+		expect((title as HTMLInputElement).value).toBe("Shopping 2");
+	});
+
+	test("a failed focus refresh shows an inline error and keeps the editor", async () => {
+		notes = [noteRow("Shopping")];
+		win.history.replaceState(null, "", "/app/n/n-shopping");
+		await mount();
+		noteGetFail = true;
+		await act(async () => {
+			win.dispatchEvent(new win.Event("focus"));
+		});
+		await settle();
+		expect(container.querySelector(".error")!.textContent).toContain("Couldn't refresh");
+		// The editor must still be mounted — a fatal return would have
+		// dropped the buffer.
+		expect(container.querySelector(".note-editor")).not.toBeNull();
+	});
+
+	test("a title blur while conflicted sends nothing — and restore stays locked", async () => {
+		notes = [noteRow("Shopping")];
+		conflictPatch = true;
+		versionRows = [{ rev: 1, source: "app", conversation: null, at: "x", bytes: 4 }];
+		versionPreview = {
+			rev: 1,
+			source: "app",
+			conversation: null,
+			at: "x",
+			bytes: 4,
+			title: "Shopping",
+			body: "milk",
+		};
+		win.history.replaceState(null, "", "/app/n/n-shopping");
+		await mount();
+		const title = container.querySelector("input.note-title")!;
+		await typeInto(title, "Shopping 2", win.HTMLInputElement.prototype);
+		await act(async () => {
+			title.dispatchEvent(
+				new win.KeyboardEvent("keydown", { bubbles: true, key: "Enter" }) as unknown as Event,
+			);
+		});
+		await settle();
+		expect(container.querySelector(".note-conflict")).not.toBeNull();
+		expect(patchCalls).toBe(1);
+		// A blur while the bar is up must not send the draft.
+		await typeInto(title, "Shopping 3", win.HTMLInputElement.prototype);
+		await act(async () => {
+			title.dispatchEvent(new win.FocusEvent("focusout", { bubbles: true }) as unknown as Event);
+		});
+		await settle();
+		expect(patchCalls).toBe(1);
+		// Restore is locked while the conflict stands — it swaps the doc.
+		await click(
+			[...container.querySelectorAll("button")].find((b) => b.textContent === "Versions"),
+		);
+		await click(container.querySelector(".note-versions button.link"));
+		const restore = [
+			...container.querySelectorAll(".note-version-preview button"),
+		].find((b) => b.textContent === "Restore") as HTMLButtonElement;
+		expect(restore.disabled).toBe(true);
+		expect(container.querySelector(".note-version-preview")!.textContent).toContain(
+			"Save or resolve edits before restoring",
+		);
+	});
+
+	test("a rewrite flow locks the page controls until it closes", async () => {
+		notes = [noteRow("Shopping")];
+		noteGetOverride = {
+			...noteFull(notes[0]!, "alpha beta gamma"),
+			rev: 1,
+		};
+		win.history.replaceState(null, "", "/app/n/n-shopping");
+		await mount();
+		// The lazy editor mounts async — wait for its DOM.
+		let pm: Element | null = null;
+		for (let i = 0; i < 20 && pm === null; i++) {
+			pm = container.querySelector(".ProseMirror");
+			if (pm === null) await settle();
+		}
+		expect(pm).not.toBeNull();
+		const title = container.querySelector("input.note-title")! as HTMLInputElement;
+		const flagsSelect = container.querySelector(".note-flags select")! as HTMLSelectElement;
+		const flagButton = (label: string) =>
+			[...container.querySelectorAll(".note-flags button")].find(
+				(b) => b.textContent === label,
+			) as HTMLButtonElement;
+		const chat = flagButton("Chat with this note");
+		expect(title.disabled).toBe(false);
+		expect(flagsSelect.disabled).toBe(false);
+		expect(chat.disabled).toBe(false);
+
+		// A real DOM selection inside the doc — ProseMirror maps it to a
+		// state selection, which is what the toolbar button watches.
+		const text = pm!.querySelector("p")!.firstChild!;
+		await act(async () => {
+			(pm as HTMLElement).focus();
+			win.getSelection()!.setBaseAndExtent(
+				text as unknown as import("happy-dom").Node,
+				6,
+				text as unknown as import("happy-dom").Node,
+				10,
+			);
+			document.dispatchEvent(new win.Event("selectionchange") as unknown as Event);
+		});
+		await settle();
+		const rewriteBtn = [...container.querySelectorAll("button")].find(
+			(b) => b.textContent === "Rewrite selection",
+		) as HTMLButtonElement;
+		expect(rewriteBtn.disabled).toBe(false);
+		await click(rewriteBtn);
+		await settle();
+		expect(container.querySelector(".note-rewrite")).not.toBeNull();
+		expect(title.disabled).toBe(true);
+		expect(flagsSelect.disabled).toBe(true);
+		expect(flagButton("Pin").disabled).toBe(true);
+		expect(flagButton("Archive").disabled).toBe(true);
+		expect(chat.disabled).toBe(true);
+
+		await typeInto(
+			container.querySelector(".note-rewrite-field textarea")!,
+			"tighten it",
+			win.HTMLTextAreaElement.prototype,
+		);
+		await click(
+			[...container.querySelectorAll("button")].find(
+				(b) => b.textContent === "Generate rewrite",
+			),
+		);
+		await settle();
+		expect(container.querySelector(".note-rewrite-preview")!.textContent).toContain(
+			"a tighter take",
+		);
+		expect(title.disabled).toBe(true);
+
+		await click(
+			[...container.querySelectorAll("button")].find((b) => b.textContent === "Discard"),
+		);
+		await settle();
+		expect(container.querySelector(".note-rewrite")).toBeNull();
+		expect(title.disabled).toBe(false);
+		expect(chat.disabled).toBe(false);
+	});
+
+	for (const [variant, projectId] of [
+		["loose", null],
+		["project", "p-goblin"],
+	] as const) {
+		test(`a failed chat mint on a ${variant} note page stays put and shows the alert`, async () => {
+			if (projectId !== null) projs = [projRow("Goblin")];
+			notes = [noteRow("Shopping", { projectId })];
+			failCreate = true;
+			win.history.replaceState(null, "", "/app/n/n-shopping");
+			await mount();
+			// The lazy editor mounts async — the page must survive the
+			// failure, so wait for its DOM first.
+			let pm: Element | null = null;
+			for (let i = 0; i < 20 && pm === null; i++) {
+				pm = container.querySelector(".ProseMirror");
+				if (pm === null) await settle();
+			}
+			expect(pm).not.toBeNull();
+
+			await click(
+				[...container.querySelectorAll("button")].find(
+					(b) => b.textContent === "Chat with this note",
+				),
+			);
+			expect(win.location.pathname).toBe("/app/n/n-shopping");
+			expect(container.querySelector(".note-editor")).not.toBeNull();
+			const alert = container.querySelector('p.error[role="alert"]');
+			expect(alert).not.toBeNull();
+			expect(alert!.textContent).toBe(
+				"Couldn't start a conversation — check the tailnet, then resend.",
+			);
+
+			// A retry after the mint recovers navigates and clears the alert.
+			failCreate = false;
+			await click(
+				[...container.querySelectorAll("button")].find(
+					(b) => b.textContent === "Chat with this note",
+				),
+			);
+			expect(win.location.pathname).toBe("/app/c/minted");
+			expect(container.querySelector('p.error[role="alert"]')).toBeNull();
+		});
+	}
 });

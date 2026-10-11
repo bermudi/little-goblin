@@ -16,6 +16,7 @@ import {
 } from "../agent/attachments.ts";
 import { log } from "../log.ts";
 import { messageText, withMemoryBlocks, type RecallContext } from "../memory.ts";
+import { NOTE_PART, noteFence, notePartDataSchema } from "../notes.ts";
 
 // The conversion context, fixed for the attempt: this turn's fenced
 // ToolSet plus the ModelStep's capability gates. Built once by the
@@ -64,6 +65,38 @@ function systemEventAsUser(m: UIMessage): UIMessage {
 		id: m.id,
 		role: "user",
 		parts: [{ type: "text", text: `[system event: ${messageText(m)}]` }],
+	};
+}
+
+// A stored data-note part — expanded at intake, frozen in history —
+// reaches the model as text: convertToModelMessages drops unknown
+// data parts silently, so the mapping happens here, byte-stable from
+// the stored data (design/projects.md → Attach). Malformed data
+// degrades to a placeholder in position, like a corrupt attachment.
+function notePartsAsText(ctx: ViewContext, m: UIMessage): UIMessage {
+	if (!m.parts.some((p) => p.type === NOTE_PART)) return m;
+	return {
+		...m,
+		parts: m.parts.map((p) => {
+			if (p.type !== NOTE_PART) return p;
+			const parsed = notePartDataSchema.safeParse((p as { data?: unknown }).data);
+			if (!parsed.success) {
+				log.warn("malformed note part — degrading to placeholder", {
+					conversation: ctx.convId,
+					message: m.id,
+				});
+				return {
+					type: "text" as const,
+					text: "[an attached note could not be rendered — its stored data was malformed]",
+				};
+			}
+			const d = parsed.data;
+			const title = d.title.replace(/"/g, "'");
+			return {
+				type: "text" as const,
+				text: `Attached note "${title}" (id ${d.id}, rev ${d.rev} as of this message):\n${noteFence(d)}`,
+			};
+		}),
 	};
 }
 
@@ -117,7 +150,10 @@ export async function buildModelView(
 		// system roles in `messages` (see systemEventAsUser). The
 		// placeholder fallback sees the mapped message, so a doubly
 		// broken event degrades to a user-role note too.
-		const rendered = m.role === "system" ? systemEventAsUser(m) : m;
+		const rendered = notePartsAsText(
+			ctx,
+			m.role === "system" ? systemEventAsUser(m) : m,
+		);
 		try {
 			messages.push(
 				...(await convertToModelMessages([rendered], {
@@ -172,7 +208,7 @@ export async function convertSteeredMessage(
 		INLINE_ITEM_MAX_BYTES,
 		ctx.carries,
 	);
-	return convertToModelMessages(materialized, {
+	return convertToModelMessages(materialized.map((m) => notePartsAsText(ctx, m)), {
 		tools: ctx.tools,
 		ignoreIncompleteToolCalls: true,
 	});

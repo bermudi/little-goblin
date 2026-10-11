@@ -1,6 +1,7 @@
-// The tools. Hand-rolled, zod-validated, bound to the deployment
-// workspace. Telegram send is delivery, not a tool. Nothing else exists
-// until a feature needs it.
+// The tools. Hand-rolled, zod-validated, bound to the caller's cwd —
+// the deployment workspace, or a project conversation's dir. Telegram
+// send is delivery, not a tool. Nothing else exists until a feature
+// needs it.
 
 import type { ToolSet } from "ai";
 import type { HindsightClient } from "../../hindsight.ts";
@@ -13,6 +14,7 @@ import { fetchTool } from "./fetch.ts";
 import { historySearchTool, type HistorySearchDeps } from "./history.ts";
 import { mailTool } from "./mail.ts";
 import { memorySearchTool } from "./memory.ts";
+import { noteTool, type NoteToolDeps } from "./note.ts";
 import { readFileTool } from "./read.ts";
 import { sandboxTool, type SandboxToolDeps } from "./sandbox.ts";
 import { type OutgoingFile, sendFileTool } from "./send.ts";
@@ -59,6 +61,7 @@ export type { VisionToolDeps };
 export type { DelegateToolDeps };
 export type { HistorySearchDeps };
 export type { MailToolDeps };
+export type { NoteToolDeps };
 export type { SandboxToolDeps };
 
 // Use the registered set as the availability source, rather than
@@ -80,6 +83,7 @@ export interface MakeToolsOptions {
 	delegate?: DelegateToolDeps | undefined;
 	mail?: MailToolDeps | undefined;
 	history?: HistorySearchDeps | undefined;
+	note?: NoteToolDeps | undefined;
 	vision?: VisionToolDeps | undefined;
 	sandbox?: SandboxToolDeps | undefined;
 	// App-channel gate: true mounts the interface tool (design/app.md →
@@ -99,6 +103,7 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		delegate,
 		mail,
 		history,
+		note,
 		vision,
 		sandbox,
 		ui,
@@ -140,6 +145,9 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		// Past-chat search is local state, not a config block — always in
 		// the set (the store dep is unconditional at the composition root).
 		...(history ? { history_search: historySearchTool(history) } : {}),
+		// Notes are rows like history — no config gate; every operator
+		// conversation edits them (guests are filtered by the caller).
+		...(note ? { note: noteTool(note) } : {}),
 		// Same per-turn gate as vision: deps arrive only while the
 		// sandbox block exists in the live config.
 		...(sandbox ? { sandbox: sandboxTool(sandbox) } : {}),

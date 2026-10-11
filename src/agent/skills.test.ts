@@ -184,6 +184,73 @@ describe("formatSkillsSection", () => {
 		expect(text).toContain("(none yet)");
 	});
 
+	test("the default header is byte-for-byte the shipped text", () => {
+		expect(formatSkillsSection({ entries: [], skipped: 0 })).toEqual([
+			"## skills",
+			"",
+			"Skills are directories under `skills/` — each a SKILL.md (frontmatter:",
+			"name, description) with instructions plus any scripts/files it needs.",
+			"When a request matches one, read_file its SKILL.md and follow it. This",
+			"catalog is yours: write skills/<name>/SKILL.md when you learn a",
+			"repeatable task, then `skills-ref validate ./skills/<name>` via bash.",
+			"Edits load when the next conversation starts.",
+			"",
+			"(none yet)",
+		]);
+	});
+
+	test("a link base renders every path absolute", () => {
+		expect(
+			formatSkillsSection(
+				{
+					entries: [
+						{ name: "mq", description: "jq for Markdown", path: "skills/mq/SKILL.md" },
+					],
+					skipped: 0,
+				},
+				undefined,
+				"/global/workspace",
+			),
+		).toEqual([
+			"## skills",
+			"",
+			"Skills are directories under `/global/workspace/skills/` — each a SKILL.md (frontmatter:",
+			"name, description) with instructions plus any scripts/files it needs.",
+			"When a request matches one, read_file its SKILL.md and follow it. This",
+			"catalog is yours: write /global/workspace/skills/<name>/SKILL.md when you learn a",
+			"repeatable task, then `skills-ref validate '/global/workspace/skills/<name>'` via bash.",
+			"Edits load when the next conversation starts.",
+			"",
+			"- mq — jq for Markdown (/global/workspace/skills/mq/SKILL.md)",
+		]);
+	});
+
+	test("a link base with a space and apostrophe still shell-quotes the validate path", () => {
+		expect(
+			formatSkillsSection(
+				{
+					entries: [
+						{ name: "mq", description: "jq for Markdown", path: "skills/mq/SKILL.md" },
+					],
+					skipped: 0,
+				},
+				undefined,
+				"/tmp/operator's workspace",
+			),
+		).toEqual([
+			"## skills",
+			"",
+			"Skills are directories under `/tmp/operator's workspace/skills/` — each a SKILL.md (frontmatter:",
+			"name, description) with instructions plus any scripts/files it needs.",
+			"When a request matches one, read_file its SKILL.md and follow it. This",
+			"catalog is yours: write /tmp/operator's workspace/skills/<name>/SKILL.md when you learn a",
+			"repeatable task, then `skills-ref validate '/tmp/operator'\\''s workspace/skills/<name>'` via bash.",
+			"Edits load when the next conversation starts.",
+			"",
+			"- mq — jq for Markdown (/tmp/operator's workspace/skills/mq/SKILL.md)",
+		]);
+	});
+
 	test("entries list name, description, compatibility, and path", () => {
 		const text = formatSkillsSection({
 			entries: [

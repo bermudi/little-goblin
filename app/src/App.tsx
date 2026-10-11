@@ -7,23 +7,42 @@ import {
 	createConversation,
 	deleteConversation,
 	listConversations,
+	listProjects,
 	loadToken,
 	patchConversation,
 	saveToken,
 	searchConversations,
 	telegramDoor,
 } from "./api.ts";
-import { ChatView, Composer, type StagedUpload } from "./ChatView.tsx";
+import { ChatView, Composer, type StagedNote, type StagedUpload } from "./ChatView.tsx";
 import { SettingsView } from "./SettingsView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
 import { DelegationsView, ProgramsView, StatusView } from "./OperatorViews.tsx";
-import type { AppConversationList, AppSearchHit } from "../../src/http/app-wire.ts";
+import { NewProjectDialog, ProjectsIndex, ProjectView } from "./ProjectView.tsx";
+import { NotesIndex, NoteView } from "./NoteView.tsx";
+import type {
+	AppConversationList,
+	AppNote,
+	AppProject,
+	AppSearchHit,
+} from "../../src/http/app-wire.ts";
 
 // The operator pages ride the same shell as chat — deep links like
-// /app/settings are served the app bundle and land here.
-type Page = "chat" | "settings" | "memory" | "delegations" | "programs" | "status";
+// /app/settings are served the app bundle and land here. `project` is
+// /app/p/<id> and `note` /app/n/<id> — their ids live outside the union.
+type Page =
+	| "chat"
+	| "settings"
+	| "memory"
+	| "delegations"
+	| "programs"
+	| "status"
+	| "projects"
+	| "project"
+	| "notes"
+	| "note";
 
-const PAGES: { key: Exclude<Page, "chat">; label: string }[] = [
+const PAGES: { key: Exclude<Page, "chat" | "notes" | "note">; label: string }[] = [
 	{ key: "settings", label: "Settings" },
 	{ key: "memory", label: "Memories" },
 	{ key: "delegations", label: "Delegations" },
@@ -35,8 +54,23 @@ function pageFromPath(pathname: string): Page | null {
 	// /app/ is the PWA door, /t/ the Telegram mini app's — both serve this
 	// bundle and both parse the same page vocabulary; each door clamps the
 	// result to its own page scope.
-	const m = /^\/(?:app|t)\/(settings|memory|delegations|programs|status)\/?$/.exec(pathname);
+	const m = /^\/(?:app|t)\/(settings|memory|delegations|programs|status|projects|notes)\/?$/.exec(
+		pathname,
+	);
 	return m === null ? null : (m[1] as Page);
+}
+
+// /app/p/<projectId> — project ids are server-minted randomUUIDs, the
+// same url-safe shape the /app/c/ link checks (design/projects.md).
+export function projectFromPath(pathname: string): string | null {
+	const m = /^\/app\/p\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/?$/.exec(pathname);
+	return m === null ? null : m[1]!;
+}
+
+// /app/n/<noteId> — same id shape as projects.
+function noteFromPath(pathname: string): string | null {
+	const m = /^\/app\/n\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/?$/.exec(pathname);
+	return m === null ? null : m[1]!;
 }
 
 function historyPosition(state: unknown): { index: number; segment: string } | null {
@@ -536,6 +570,9 @@ function AppShell() {
 	const [conversations, setConversations] = useState<AppConversationList["conversations"] | null>(
 		null,
 	);
+	// The rail's second pool (design/projects.md) — every project,
+	// archived included; the rail shows only the active ones.
+	const [projects, setProjects] = useState<AppProject[] | null>(null);
 	const [current, setCurrent] = useState<string | null>(null);
 	const [listError, setListError] = useState<string | null>(null);
 	// Row-action failures — cleared by the next successful action or
@@ -558,6 +595,9 @@ function AppShell() {
 	// unmount — their resolution writes this state, whichever composer
 	// is mounted (#118).
 	const [staged, setStaged] = useState<StagedUpload[]>([]);
+	// Note chips ride beside the upload chips for the same reason —
+	// they must survive the empty-state → conversation composer swap.
+	const [stagedNotes, setStagedNotes] = useState<StagedNote[]>([]);
 	// Bump on "New conversation" — the composer focuses itself, mounted
 	// or not (a remount sees the non-zero signal on first effect).
 	const [composerFocus, setComposerFocus] = useState(0);
@@ -570,7 +610,24 @@ function AppShell() {
 	// The deep link applies once — after the first list load — so an
 	// operator's own navigation is never overridden later.
 	const deepApplied = useRef(false);
-	const [page, setPage] = useState<Page>(() => pageFromPath(window.location.pathname) ?? "chat");
+	const [page, setPage] = useState<Page>(
+		() =>
+			pageFromPath(window.location.pathname) ??
+			(projectFromPath(window.location.pathname) !== null
+				? "project"
+				: noteFromPath(window.location.pathname) !== null
+					? "note"
+					: "chat"),
+	);
+	// /app/p/<id> — set whenever the path names a project page.
+	const [projectId, setProjectId] = useState<string | null>(() =>
+		projectFromPath(window.location.pathname),
+	);
+	// /app/n/<id> — same deal for a note page.
+	const [noteId, setNoteId] = useState<string | null>(() =>
+		noteFromPath(window.location.pathname),
+	);
+	const [createProjectOpen, setCreateProjectOpen] = useState(false);
 	// The settings editor reports its dirty bit here so navigating away
 	// can ask before discarding unsaved edits.
 	const settingsDirty = useRef(false);
@@ -645,9 +702,13 @@ function AppShell() {
 	const refresh = useCallback(async () => {
 		const seq = ++listSeq.current;
 		try {
-			const list = await listConversations(token);
+			const [list, plist] = await Promise.all([
+				listConversations(token),
+				listProjects(token),
+			]);
 			if (seq !== listSeq.current) return;
 			setConversations(list.conversations);
+			setProjects(plist.projects);
 			setListError(null);
 			setRowError(null);
 		} catch (err) {
@@ -716,10 +777,28 @@ function AppShell() {
 			setNavigationError(null);
 			if (p !== null) {
 				setPage(p);
+				setProjectId(null);
+				setNoteId(null);
+				return;
+			}
+			const pid = projectFromPath(window.location.pathname);
+			if (pid !== null) {
+				setPage("project");
+				setProjectId(pid);
+				setNoteId(null);
+				return;
+			}
+			const nid = noteFromPath(window.location.pathname);
+			if (nid !== null) {
+				setPage("note");
+				setProjectId(null);
+				setNoteId(nid);
 				return;
 			}
 			const id = deepLinkConv(window.location.pathname);
 			setPage("chat");
+			setProjectId(null);
+			setNoteId(null);
 			setCurrent(id);
 		};
 		window.addEventListener("popstate", onPop);
@@ -808,9 +887,47 @@ function AppShell() {
 	const select = (id: string | null) => {
 		if (!leaveDirtySettings()) return;
 		setPage("chat");
+		setProjectId(null);
+		setNoteId(null);
 		setCurrent(id);
 		const path = id === null ? "/app/" : `/app/c/${id.slice("app/".length)}`;
 		if (path !== window.location.pathname) pushRoute(path);
+	};
+
+	const openProject = (id: string) => {
+		if (!leaveDirtySettings()) return;
+		setPage("project");
+		setProjectId(id);
+		setNoteId(null);
+		setNavOpen(false);
+		pushRoute(`/app/p/${id}`);
+	};
+
+	const openProjectsIndex = () => {
+		if (!leaveDirtySettings()) return;
+		setPage("projects");
+		setProjectId(null);
+		setNoteId(null);
+		setNavOpen(false);
+		pushRoute("/app/projects");
+	};
+
+	const openNotesIndex = () => {
+		if (!leaveDirtySettings()) return;
+		setPage("notes");
+		setProjectId(null);
+		setNoteId(null);
+		setNavOpen(false);
+		pushRoute("/app/notes");
+	};
+
+	const openNote = (id: string) => {
+		if (!leaveDirtySettings()) return;
+		setPage("note");
+		setProjectId(null);
+		setNoteId(id);
+		setNavOpen(false);
+		pushRoute(`/app/n/${id}`);
 	};
 
 	const rowRemoved = (id: string) => {
@@ -819,7 +936,7 @@ function AppShell() {
 		else setCurrent(null);
 	};
 
-	const openPage = (p: Exclude<Page, "chat">) => {
+	const openPage = (p: Exclude<Page, "chat" | "notes" | "note">) => {
 		if (page === p) {
 			setNavOpen(false);
 			return;
@@ -844,11 +961,17 @@ function AppShell() {
 		setNavOpen(false);
 	};
 
-	const startConversation = async (parts: UIMessage["parts"]) => {
+	// One start path for every composer — the empty state passes null,
+	// a project page its id, and both ride the same create → seed →
+	// select flow (design/projects.md: binding is fixed at creation).
+	const startChat = async (projectId: string | null, parts: UIMessage["parts"]) => {
 		setStarting(true);
 		setStartFailed(false);
 		try {
-			const created = await createConversation(token);
+			const created = await createConversation(
+				token,
+				projectId === null ? undefined : { projectId },
+			);
 			setSeed({ id: created.id, parts });
 			select(created.id);
 			await refresh();
@@ -859,21 +982,41 @@ function AppShell() {
 		}
 	};
 
+	const startConversation = (parts: UIMessage["parts"]) => startChat(null, parts);
+
 	const currentTitle = conversations?.find((c) => c.id === current)?.title ?? null;
 
 	// One payload, three pools: pinned rows float above the rail's
 	// activity order (the server sorts within each group, the client
 	// only partitions), archived ones wait behind the section toggle
-	// (design/app.md → Archiving, Pinning).
+	// (design/app.md → Archiving, Pinning). Project-bound chats leave
+	// the main rail entirely — they live on their project's page
+	// (design/projects.md); `?? null` keeps pre-projects fixtures
+	// (field absent) on the rail.
 	const all = conversations ?? [];
-	const active = all.filter((c) => c.archivedAt === null);
+	const unbound = all.filter((c) => (c.projectId ?? null) === null);
+	const active = unbound.filter((c) => c.archivedAt === null);
 	const rail = [
 		...active.filter((c) => c.pinnedAt !== null),
 		...active.filter((c) => c.pinnedAt === null),
 	];
-	const archived = all
+	const archived = unbound
 		.filter((c) => c.archivedAt !== null)
 		.sort((a, b) => Date.parse(b.archivedAt!) - Date.parse(a.archivedAt!));
+
+	const projectList = projects ?? [];
+	const activeProjects = projectList
+		.filter((p) => p.archivedAt === null)
+		.sort((a, b) => a.name.localeCompare(b.name));
+	const currentProject =
+		projectId === null ? undefined : projectList.find((p) => p.id === projectId);
+	// The breadcrumb above a selected project chat — the name rides the
+	// same pool the rail lists.
+	const currentConv = all.find((c) => c.id === current);
+	const currentConvProject =
+		currentConv?.projectId != null
+			? projectList.find((p) => p.id === currentConv.projectId)
+			: undefined;
 
 	const renderRow = (c: AppConversationList["conversations"][number]) => (
 		<li key={c.id}>
@@ -954,6 +1097,38 @@ function AppShell() {
 					</>
 				) : (
 					<>
+						{/* The Projects section sits above the chat list — header
+							links to the /app/projects index. */}
+						{projects !== null && (
+							<div className="rail-projects">
+								<button type="button" className="rail-section" onClick={openProjectsIndex}>
+									Projects
+								</button>
+								<ul>
+									{activeProjects.map((p) => (
+										<li key={p.id}>
+											<button
+												type="button"
+												className={page === "project" && projectId === p.id ? "proj on" : "proj"}
+												onClick={() => openProject(p.id)}
+											>
+												{p.name}
+											</button>
+										</li>
+									))}
+								</ul>
+								<button type="button" className="new" onClick={() => setCreateProjectOpen(true)}>
+									New project
+								</button>
+								<button
+									type="button"
+									className={page === "notes" || page === "note" ? "rail-section on" : "rail-section"}
+									onClick={openNotesIndex}
+								>
+									Notes
+								</button>
+							</div>
+						)}
 						<ul>{rail.map(renderRow)}</ul>
 						{archived.length > 0 && (
 							<>
@@ -970,9 +1145,12 @@ function AppShell() {
 						)}
 					</>
 				)}
-				{hits === null && conversations !== null && conversations.length === 0 && (
-					<p className="empty">Nothing here yet — start a conversation.</p>
-				)}
+				{hits === null &&
+					conversations !== null &&
+					unbound.length === 0 &&
+					activeProjects.length === 0 && (
+						<p className="empty">Nothing here yet — start a conversation.</p>
+					)}
 				{listError !== null && <p className="error">Couldn't refresh the list.</p>}
 				{rowError !== null && (
 					<p className="error" role="alert">
@@ -1018,7 +1196,11 @@ function AppShell() {
 					{page === "chat" && current !== null && (
 						<span className="header-title">{flatTitle(currentTitle)}</span>
 					)}
-					{page !== "chat" && (
+					{page === "projects" && <span className="header-title">Projects</span>}
+					{page === "project" && <span className="header-title">{currentProject?.name}</span>}
+					{page === "notes" && <span className="header-title">Notes</span>}
+					{page === "note" && <span className="header-title">Note</span>}
+					{PAGES.some((p) => p.key === page) && (
 						<span className="header-title">{PAGES.find((p) => p.key === page)?.label}</span>
 					)}
 				</header>
@@ -1039,6 +1221,82 @@ function AppShell() {
 				{page === "delegations" && <DelegationsView token={token} />}
 				{page === "programs" && <ProgramsView token={token} />}
 				{page === "status" && <StatusView token={token} />}
+				{page === "projects" && (
+					<ProjectsIndex
+						projects={projectList}
+						onOpen={openProject}
+						onNew={() => setCreateProjectOpen(true)}
+					/>
+				)}
+				{page === "notes" && (
+					<NotesIndex token={token} projects={projectList} onOpen={openNote} />
+				)}
+				{page === "note" && (
+					<div className="chat">
+						{noteId === null ? (
+							<p className="empty">No such note.</p>
+						) : (
+							<>
+								<NoteView
+									key={noteId}
+									token={token}
+									noteId={noteId}
+									projects={projectList}
+									onChat={(note: AppNote) =>
+										void startChat(note.projectId, [
+											{ type: "data-note", data: { id: note.id } } as UIMessage["parts"][number],
+										])
+									}
+									onDeleted={openNotesIndex}
+								/>
+								{startFailed && (
+									<p className="error" role="alert">
+										Couldn't start a conversation — check the tailnet, then resend.
+									</p>
+								)}
+							</>
+						)}
+					</div>
+				)}
+				{page === "project" && (
+					<div className="chat">
+						{currentProject === undefined ? (
+							<p className="empty">{projects === null ? "Loading…" : "No such project."}</p>
+						) : (
+							<>
+								<ProjectView
+									key={currentProject.id}
+									token={token}
+									project={currentProject}
+									conversations={all}
+									renderRow={renderRow}
+									onChanged={() => void refresh()}
+									onOpenNote={openNote}
+								/>
+								{startFailed && (
+									<p className="error">
+										Couldn't start a conversation — check the tailnet, then resend.
+									</p>
+								)}
+								{currentProject.archivedAt === null ? (
+									<Composer
+										token={token}
+										busy={starting}
+										staged={staged}
+										setStaged={setStaged}
+										stagedNotes={stagedNotes}
+										setStagedNotes={setStagedNotes}
+										onSend={(parts) => void startChat(currentProject.id, parts)}
+									/>
+								) : (
+									<p className="empty">
+										This project is archived — unarchive it to start new chats here.
+									</p>
+								)}
+							</>
+						)}
+					</div>
+				)}
 				{page === "chat" &&
 					(current === null ? (
 						<div className="chat">
@@ -1059,24 +1317,54 @@ function AppShell() {
 								busy={starting}
 								staged={staged}
 								setStaged={setStaged}
+								stagedNotes={stagedNotes}
+								setStagedNotes={setStagedNotes}
 								focusSignal={composerFocus}
 								onSend={(parts) => void startConversation(parts)}
 							/>
 						</div>
 					) : (
-						<ChatView
-							key={current}
-							token={token}
-							conversationId={current}
-							title={flatTitle(currentTitle)}
-							seed={seed !== null && seed.id === current ? seed.parts : null}
-							staged={staged}
-							setStaged={setStaged}
-							onSeeded={() => setSeed(null)}
-							onTurnDone={() => void refresh()}
-						/>
+						<>
+							{/* A bound chat names its project — the link lands on the
+								project page (design/projects.md). */}
+							{currentConvProject !== undefined && (
+								<button
+									type="button"
+									className="crumb"
+									onClick={() => openProject(currentConvProject.id)}
+								>
+									{currentConvProject.name}
+								</button>
+							)}
+							<ChatView
+								key={current}
+								token={token}
+								conversationId={current}
+								title={flatTitle(currentTitle)}
+								seed={seed !== null && seed.id === current ? seed.parts : null}
+								staged={staged}
+								setStaged={setStaged}
+								stagedNotes={stagedNotes}
+								setStagedNotes={setStagedNotes}
+								noteProjectId={currentConv?.projectId ?? null}
+								onSeeded={() => setSeed(null)}
+								onTurnDone={() => void refresh()}
+								onOpenNote={openNote}
+							/>
+						</>
 					))}
 			</main>
+			{createProjectOpen && (
+				<NewProjectDialog
+					token={token}
+					onClose={() => setCreateProjectOpen(false)}
+					onCreated={(p) => {
+						setCreateProjectOpen(false);
+						void refresh();
+						openProject(p.id);
+					}}
+				/>
+			)}
 		</div>
 	);
 }

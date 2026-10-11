@@ -7,6 +7,8 @@ import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { loadConfig, type Config, type ConfigRef } from "../config.ts";
 import { appAddress, openStore, type ConversationStore } from "../conversation.ts";
 import { Runtime } from "../runtime.ts";
+import { openNotes } from "../notes.ts";
+import { openProjects, projectWorkdir } from "../projects.ts";
 import type { AuthStore } from "../auth.ts";
 import { startHttp } from "./mod.ts";
 import { handleAppApi, resolveAppAuth, type AppChannelDeps } from "./app-channel.ts";
@@ -97,19 +99,30 @@ function setup(
 		delayMs?: number;
 		transcribe?: AppChannelDeps["transcribe"];
 		speak?: AppChannelDeps["speak"];
+		// Records each turn's resolved working directory — the same
+		// workdirFor value index.ts feeds makeTools/sandbox/delegate.
+		workdirs?: string[];
 		titleFor?: AppChannelDeps["titleFor"];
 		operator?: AppChannelDeps["operator"];
+		rewriteNote?: AppChannelDeps["rewriteNote"];
 	} = {},
 ) {
 	const home = useHome();
 	const store = openStore(join(home, "goblin.sqlite"));
+	const projects = openProjects(store);
+	const notes = openNotes(store, { projects });
 	const runtime = new Runtime({
 		store,
 		buildStep: () => ({
 			model: fakeModel(opts.deltas ?? ["hello", " app"], opts.delayMs),
 			system: "test",
 		}),
-		makeTools: () => ({}),
+		// projectWorkdir mirrors index.ts's workdirFor — a vanished
+		// project dir throws here, inside the turn's admission.
+		makeTools: (conv) => {
+			opts.workdirs?.push(projectWorkdir(projects, conv));
+			return {};
+		},
 	});
 	const auth: Pick<AuthStore, "resolve"> = {
 		resolve: (name) =>
@@ -141,6 +154,8 @@ function setup(
 	const appDeps: AppChannelDeps = {
 		store,
 		runtime,
+		projects,
+		notes,
 		auth,
 		configRef,
 		onConfigWritten: () => {
@@ -150,6 +165,7 @@ function setup(
 		...(opts.speak !== undefined ? { speak: opts.speak } : {}),
 		...(opts.titleFor !== undefined ? { titleFor: opts.titleFor } : {}),
 		...(opts.operator !== undefined ? { operator: opts.operator } : {}),
+		...(opts.rewriteNote !== undefined ? { rewriteNote: opts.rewriteNote } : {}),
 	};
 	const http = startHttp({
 		configRef,
@@ -169,7 +185,7 @@ function setup(
 				...(bearer !== null ? { authorization: `Bearer ${bearer}` } : {}),
 			},
 		});
-	return { http, store, runtime, configRef, configWrites, call, home, appDeps };
+	return { http, store, runtime, projects, notes, configRef, configWrites, call, home, appDeps };
 }
 
 // The minted conversation + one chat turn, drained — the shape every
@@ -1969,6 +1985,763 @@ describe("app operator surface", () => {
 				body: JSON.stringify({ logLevel: "debug" }),
 			});
 			expect(res.status).toBe(403);
+		} finally {
+			http.stop();
+		}
+	});
+});
+
+// The project routes (design/projects.md): CRUD plus the immutable
+// conversation binding — creation-time only, reposts must repeat the
+// stored value.
+describe("app projects", () => {
+	const postJson = (call: ReturnType<typeof setup>["call"], path: string, body: unknown) =>
+		call(path, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		});
+	const patchJson = (call: ReturnType<typeof setup>["call"], path: string, body: unknown) =>
+		call(path, {
+			method: "PATCH",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		});
+
+	test("create, get, list, patch — and the wire carries no home", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const created = await postJson(call, "/api/app/projects", {
+				name: "Side Project",
+				instructions: "be terse",
+			});
+			expect(created.status).toBe(201);
+			const project = (await created.json()) as Record<string, unknown>;
+			expect(project).toMatchObject({
+				name: "Side Project",
+				slug: "side-project",
+				managed: true,
+				instructions: "be terse",
+				memory: "shared",
+				archivedAt: null,
+			});
+			// Goblin-owned scratch never leaves the server.
+			expect("home" in project).toBe(false);
+
+			const id = project.id as string;
+			expect((await call(`/api/app/projects/${id}`)).status).toBe(200);
+			const list = (await (await call("/api/app/projects")).json()) as {
+				projects: { id: string }[];
+			};
+			expect(list.projects.map((p) => p.id)).toEqual([id]);
+
+			const patched = await patchJson(call, `/api/app/projects/${id}`, {
+				name: "Renamed",
+				archived: true,
+			});
+			expect(patched.status).toBe(200);
+			const after = (await patched.json()) as {
+				name: string;
+				slug: string;
+				archivedAt: string | null;
+			};
+			expect(after.name).toBe("Renamed");
+			// The slug is frozen — a rename never moves the home.
+			expect(after.slug).toBe("side-project");
+			expect(after.archivedAt).not.toBeNull();
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("unknown projects 404; validation and linked-dir refusals 422; dir is immutable", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			expect((await call("/api/app/projects/ghost")).status).toBe(404);
+			expect((await patchJson(call, "/api/app/projects/ghost", { name: "x" })).status).toBe(404);
+
+			expect((await postJson(call, "/api/app/projects", { name: "  " })).status).toBe(422);
+			expect(
+				(await postJson(call, "/api/app/projects", { name: "x", dir: "relative/dir" })).status,
+			).toBe(422);
+			expect((await patchJson(call, "/api/app/projects/ghost", {})).status).toBe(404);
+
+			const created = await postJson(call, "/api/app/projects", { name: "p" });
+			const { id } = (await created.json()) as { id: string };
+			const immutable = await patchJson(call, `/api/app/projects/${id}`, {
+				dir: "/elsewhere",
+			});
+			expect(immutable.status).toBe(422);
+			expect(((await immutable.json()) as { error: string }).error).toContain("immutable");
+			expect((await patchJson(call, `/api/app/projects/${id}`, {})).status).toBe(422);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a conversation created with projectId binds; summaries carry it; reposts conflict", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const project = (await (await postJson(call, "/api/app/projects", { name: "p" })).json()) as {
+				id: string;
+			};
+
+			const created = await postJson(call, "/api/app/conversations", {
+				id: "bound-01",
+				projectId: project.id,
+			});
+			expect(created.status).toBe(201);
+			expect(store.get("app/bound-01")?.projectId).toBe(project.id);
+
+			const list = (await (await call("/api/app/conversations")).json()) as {
+				conversations: { id: string; projectId: string | null }[];
+			};
+			expect(list.conversations.find((c) => c.id === "app/bound-01")?.projectId).toBe(project.id);
+
+			// Reposting the same id + project is idempotent; a different
+			// project — or no project — conflicts.
+			expect(
+				(
+					await postJson(call, "/api/app/conversations", {
+						id: "bound-01",
+						projectId: project.id,
+					})
+				).status,
+			).toBe(201);
+			const other = (await (
+				await postJson(call, "/api/app/projects", { name: "other" })
+			).json()) as { id: string };
+			const mismatch = await postJson(call, "/api/app/conversations", {
+				id: "bound-01",
+				projectId: other.id,
+			});
+			expect(mismatch.status).toBe(409);
+			expect(((await mismatch.json()) as { error: string }).error).toContain(
+				"binding is fixed at creation",
+			);
+			expect((await postJson(call, "/api/app/conversations", { id: "bound-01" })).status).toBe(409);
+
+			// An existing unbound row can't be bound after the fact either.
+			await postJson(call, "/api/app/conversations", { id: "loose-01" });
+			expect(
+				(
+					await postJson(call, "/api/app/conversations", {
+						id: "loose-01",
+						projectId: project.id,
+					})
+				).status,
+			).toBe(409);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("unknown and archived projects refuse new chats — 404 and 422", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			expect(
+				(
+					await postJson(call, "/api/app/conversations", {
+						id: "x-1",
+						projectId: "no-such-project",
+					})
+				).status,
+			).toBe(404);
+
+			const project = (await (await postJson(call, "/api/app/projects", { name: "p" })).json()) as {
+				id: string;
+			};
+			await patchJson(call, `/api/app/projects/${project.id}`, { archived: true });
+			const res = await postJson(call, "/api/app/conversations", {
+				id: "x-2",
+				projectId: project.id,
+			});
+			expect(res.status).toBe(422);
+			expect(((await res.json()) as { error: string }).error).toContain("archived");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a memory-off project stamps new conversations excluded", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const project = (await (
+				await postJson(call, "/api/app/projects", { name: "vault", memory: "off" })
+			).json()) as { id: string };
+			await postJson(call, "/api/app/conversations", { id: "v-1", projectId: project.id });
+			expect(store.get("app/v-1")?.memoryExcluded).toBe(true);
+			// A plain chat stays eligible.
+			await postJson(call, "/api/app/conversations", { id: "v-2" });
+			expect(store.get("app/v-2")?.memoryExcluded).toBe(false);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a project conversation's tools resolve the project dir; a vanished dir fails the turn", async () => {
+		const workdirs: string[] = [];
+		const { http, call } = setup({ token: APP_TOKEN_NAME, workdirs });
+		try {
+			const project = (await (await postJson(call, "/api/app/projects", { name: "p" })).json()) as {
+				id: string;
+				dir: string;
+			};
+			await postJson(call, "/api/app/conversations", { id: "w-1", projectId: project.id });
+			await postJson(call, "/api/app/conversations", { id: "w-2" });
+
+			const chat = (id: string) =>
+				call("/api/app/chat", {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						conversationId: `app/${id}`,
+						message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
+					}),
+				});
+
+			const bound = await chat("w-1");
+			expect(bound.status).toBe(200);
+			await bound.text();
+			expect(workdirs.at(-1)).toBe(project.dir);
+			const loose = await chat("w-2");
+			expect(loose.status).toBe(200);
+			await loose.text();
+			expect(workdirs.at(-1)).toBe(join(process.env.GOBLIN_HOME!, "workspace"));
+
+			// The dir vanishes — the turn fails at admission, and the
+			// error chunk names the missing path.
+			rmSync(project.dir, { recursive: true, force: true });
+			const gone = await chat("w-1");
+			expect(gone.status).toBe(200);
+			const body = await gone.text();
+			expect(body).toContain('"type":"error"');
+			expect(body).toContain(project.dir.replaceAll("\\", "\\\\"));
+		} finally {
+			http.stop();
+		}
+	});
+});
+
+describe("app notes", () => {
+	const postJson = (call: ReturnType<typeof setup>["call"], path: string, body: unknown) =>
+		call(path, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		});
+	const patchJson = (
+		call: ReturnType<typeof setup>["call"],
+		path: string,
+		body: unknown,
+		headers: Record<string, string> = {},
+	) =>
+		call(path, {
+			method: "PATCH",
+			headers: { "content-type": "application/json", ...headers },
+			body: JSON.stringify(body),
+		});
+	const create = (call: ReturnType<typeof setup>["call"], body: unknown) =>
+		postJson(call, "/api/app/notes", body);
+
+	test("create, get with etag, list with project/q/archived filters", async () => {
+		const { http, call, projects } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const proj = projects.create({ name: "p" });
+			const inProject = await create(call, {
+				title: "project note",
+				body: "pancakes",
+				projectId: proj.id,
+			});
+			expect(inProject.status).toBe(201);
+			const loose = await create(call, { title: "loose note", body: "waffles" });
+			expect(loose.status).toBe(201);
+			const looseNote = (await loose.json()) as { id: string; rev: number; body: string };
+			expect(looseNote.rev).toBe(1);
+			expect(loose.headers.get("etag")).toBe('"1"');
+
+			const got = await call(`/api/app/notes/${looseNote.id}`);
+			expect(got.status).toBe(200);
+			expect(got.headers.get("etag")).toBe('"1"');
+			expect(((await got.json()) as { body: string }).body).toBe("waffles");
+			expect((await call("/api/app/notes/ghost")).status).toBe(404);
+
+			const all = (await (await call("/api/app/notes")).json()) as {
+				notes: { title: string }[];
+			};
+			expect(all.notes).toHaveLength(2);
+			const looseOnly = (await (
+				await call("/api/app/notes?project=loose")
+			).json()) as { notes: { title: string; projectId: string | null }[] };
+			expect(looseOnly.notes.map((n) => n.title)).toEqual(["loose note"]);
+			const projOnly = (await (
+				await call(`/api/app/notes?project=${proj.id}`)
+			).json()) as { notes: { title: string }[] };
+			expect(projOnly.notes.map((n) => n.title)).toEqual(["project note"]);
+			// FTS over title+body.
+			const found = (await (await call("/api/app/notes?q=pancake")).json()) as {
+				notes: { title: string }[];
+			};
+			expect(found.notes.map((n) => n.title)).toEqual(["project note"]);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("content writes are If-Match guarded — 428 missing, 409 stale; flags are not", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const created = await create(call, { title: "t", body: "v1" });
+			const note = (await created.json()) as { id: string; rev: number };
+
+			// Content keys without the header refuse.
+			const noMatch = await patchJson(call, `/api/app/notes/${note.id}`, { body: "v2" });
+			expect(noMatch.status).toBe(428);
+			// A stale rev conflicts and hands the live note back.
+			const stale = await patchJson(
+				call,
+				`/api/app/notes/${note.id}`,
+				{ body: "v2" },
+				{ "if-match": '"99"' },
+			);
+			expect(stale.status).toBe(409);
+			const conflict = (await stale.json()) as { note: { rev: number; body: string } };
+			expect(conflict.note.rev).toBe(1);
+			expect(conflict.note.body).toBe("v1");
+			// The right rev writes — and the etag advances.
+			const ok = await patchJson(
+				call,
+				`/api/app/notes/${note.id}`,
+				{ body: "v2" },
+				{ "if-match": '"1"' },
+			);
+			expect(ok.status).toBe(200);
+			expect(ok.headers.get("etag")).toBe('"2"');
+			// Flags never need If-Match.
+			const flagged = await patchJson(call, `/api/app/notes/${note.id}`, {
+				pinned: true,
+				archived: true,
+			});
+			expect(flagged.status).toBe(200);
+			const after = (await flagged.json()) as {
+				pinnedAt: string | null;
+				archivedAt: string | null;
+				rev: number;
+			};
+			expect(after.pinnedAt).not.toBeNull();
+			expect(after.archivedAt).not.toBeNull();
+			// Flags bump nothing.
+			expect(after.rev).toBe(2);
+			// Strictness: unknown keys refuse.
+			expect(
+				(await patchJson(call, `/api/app/notes/${note.id}`, { frobnicate: true })).status,
+			).toBe(422);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a stale combined patch refuses before any flag mutation", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const created = await create(call, { title: "t", body: "v1" });
+			const note = (await created.json()) as { id: string; rev: number };
+			// A body write riding a stale etag must not apply the flag
+			// that came with it.
+			const combo = await patchJson(
+				call,
+				`/api/app/notes/${note.id}`,
+				{ body: "v2", pinned: true, archived: true },
+				{ "if-match": '"99"' },
+			);
+			expect(combo.status).toBe(409);
+			const after = (await (await call(`/api/app/notes/${note.id}`)).json()) as {
+				body: string;
+				pinnedAt: string | null;
+				archivedAt: string | null;
+				rev: number;
+			};
+			expect(after.body).toBe("v1");
+			expect(after.pinnedAt).toBeNull();
+			expect(after.archivedAt).toBeNull();
+			expect(after.rev).toBe(1);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("append is unguarded; versions list/read/restore ride it", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const created = await create(call, { title: "t", body: "one" });
+			const note = (await created.json()) as { id: string };
+			const appended = await postJson(call, `/api/app/notes/${note.id}/append`, {
+				text: "two",
+			});
+			expect(appended.status).toBe(200);
+			const after = (await appended.json()) as { rev: number; body: string };
+			expect(after.rev).toBe(2);
+			expect(after.body).toBe("one\n\ntwo");
+
+			const versions = (await (
+				await call(`/api/app/notes/${note.id}/versions`)
+			).json()) as { versions: { rev: number; source: string }[] };
+			expect(versions.versions).toHaveLength(1);
+			expect(versions.versions[0]).toMatchObject({ rev: 1, source: "append" });
+			const v1 = (await (
+				await call(`/api/app/notes/${note.id}/versions/1`)
+			).json()) as { title: string; body: string };
+			expect(v1.body).toBe("one");
+			expect((await call(`/api/app/notes/${note.id}/versions/9`)).status).toBe(404);
+
+			const restored = await postJson(call, `/api/app/notes/${note.id}/versions/1/restore`, {});
+			expect(restored.status).toBe(200);
+			const back = (await restored.json()) as { rev: number; body: string };
+			expect(back.rev).toBe(3);
+			expect(back.body).toBe("one");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("delete is archived-only and removes versions; move re-scopes", async () => {
+		const { http, call, projects } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const proj = projects.create({ name: "p" });
+			const created = await create(call, { title: "t" });
+			const note = (await created.json()) as { id: string };
+			await postJson(call, `/api/app/notes/${note.id}/append`, { text: "x" });
+			// Active notes refuse.
+			expect(
+				(await call(`/api/app/notes/${note.id}`, { method: "DELETE" })).status,
+			).toBe(422);
+			// A move — flag write, no If-Match.
+			const moved = await patchJson(call, `/api/app/notes/${note.id}`, {
+				projectId: proj.id,
+			});
+			expect(moved.status).toBe(200);
+			expect(((await moved.json()) as { projectId: string | null }).projectId).toBe(proj.id);
+			// And back to loose with explicit null.
+			const unbound = await patchJson(call, `/api/app/notes/${note.id}`, {
+				projectId: null,
+			});
+			expect(((await unbound.json()) as { projectId: string | null }).projectId).toBeNull();
+
+			await patchJson(call, `/api/app/notes/${note.id}`, { archived: true });
+			expect(
+				(await call(`/api/app/notes/${note.id}`, { method: "DELETE" })).status,
+			).toBe(200);
+			expect((await call(`/api/app/notes/${note.id}`)).status).toBe(404);
+			expect((await call(`/api/app/notes/${note.id}/versions`)).status).toBe(422);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a data-note part is expanded server-side; unknown notes refuse before history", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const created = await create(call, { title: "ref", body: "the real body" });
+			const note = (await created.json()) as { id: string; rev: number };
+			await postJson(call, "/api/app/conversations", { id: "n-attach" });
+
+			// A client-supplied body can't ride the part — the stored
+			// expansion is the server's own read.
+			const res = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/n-attach",
+					message: {
+						id: "m1",
+						role: "user",
+						parts: [
+							{ type: "text", text: "see attached" },
+							{ type: "data-note", data: { id: note.id, title: "forged", body: "forged" } },
+						],
+					},
+				}),
+			});
+			expect(res.status).toBe(200);
+			await res.text();
+			const history = store.history("app/n-attach");
+			const part = history[0]?.parts.find((p) => p.type === "data-note") as
+				| { data?: { body?: string; title?: string; rev?: number } }
+				| undefined;
+			expect(part?.data?.body).toBe("the real body");
+			expect(part?.data?.title).toBe("ref");
+			expect(part?.data?.rev).toBe(note.rev);
+
+			// An unknown note refuses before submit — nothing is appended.
+			const bad = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/n-attach",
+					message: {
+						id: "m2",
+						role: "user",
+						parts: [{ type: "data-note", data: { id: "ghost" } }],
+					},
+				}),
+			});
+			expect(bad.status).toBe(422);
+			expect(store.history("app/n-attach").find((m) => m.id === "m2")).toBeUndefined();
+		} finally {
+			http.stop();
+		}
+	});
+});
+
+describe("app note rewrite", () => {
+	const postRewrite = (
+		call: ReturnType<typeof setup>["call"],
+		id: string,
+		body: unknown,
+		init: RequestInit = {},
+	) =>
+		call(`/api/app/notes/${id}/rewrite`, {
+			method: "POST",
+			headers: { "content-type": "application/json", ...(init.headers ?? {}) },
+			body: JSON.stringify(body),
+			...init,
+		});
+	const create = (
+		call: ReturnType<typeof setup>["call"],
+		body: unknown,
+	) =>
+		call("/api/app/notes", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		});
+	const goodBody = { selection: "some *text*", instruction: "fix it" };
+
+	test("the route rides the shared gates — auth, origin, JSON, method", async () => {
+		// Bearer mode: no token, no route.
+		const a = setup({
+			token: APP_TOKEN_NAME,
+			rewriteNote: () => Promise.resolve("x"),
+		});
+		try {
+			const denied = await a.call(
+				"/api/app/notes/n/rewrite",
+				{
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify(goodBody),
+				},
+				null,
+			);
+			expect(denied.status).toBe(401);
+		} finally {
+			a.http.stop();
+		}
+		// Trust mode: a foreign-origin browser mutation refuses before
+		// the route; the JSON gate precedes the body parse; GET 405s.
+		const b = setup({ rewriteNote: () => Promise.resolve("x") });
+		try {
+			const foreign = await b.call(
+				"/api/app/notes/n/rewrite",
+				{
+					method: "POST",
+					headers: { origin: "http://attacker.local:1234", "content-type": "application/json" },
+					body: JSON.stringify(goodBody),
+				},
+				null,
+			);
+			expect(foreign.status).toBe(403);
+			const plain = await b.call(
+				"/api/app/notes/n/rewrite",
+				{
+					method: "POST",
+					headers: { "content-type": "text/plain" },
+					body: "x",
+				},
+				null,
+			);
+			expect(plain.status).toBe(415);
+			expect(
+				(await b.call("/api/app/notes/n/rewrite", {}, null)).status,
+			).toBe(405);
+		} finally {
+			b.http.stop();
+		}
+	});
+
+	test("an unwired seam is 503 — no generation at all", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const created = await create(call, { title: "t", body: "v1" });
+			const note = (await created.json()) as { id: string };
+			const res = await postRewrite(call, note.id, goodBody);
+			expect(res.status).toBe(503);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("missing and archived notes refuse before the model is asked", async () => {
+		const calls: string[] = [];
+		const { http, call, notes } = setup({
+			token: APP_TOKEN_NAME,
+			rewriteNote: (id) => {
+				calls.push(id);
+				return Promise.resolve("x");
+			},
+		});
+		try {
+			expect((await postRewrite(call, "ghost", goodBody)).status).toBe(404);
+			const created = await create(call, { title: "t", body: "v1" });
+			const note = (await created.json()) as { id: string };
+			notes.setArchived(note.id, true);
+			expect((await postRewrite(call, note.id, goodBody)).status).toBe(422);
+			expect(calls).toHaveLength(0);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("strict input: empty, whitespace, oversized and unknown keys refuse", async () => {
+		const { http, call } = setup({
+			token: APP_TOKEN_NAME,
+			rewriteNote: () => Promise.resolve("x"),
+		});
+		try {
+			const created = await create(call, { title: "t", body: "v1" });
+			const note = (await created.json()) as { id: string };
+			const cases: unknown[] = [
+				{ selection: "", instruction: "x" },
+				{ selection: "   \n ", instruction: "x" },
+				{ selection: "x".repeat(50_001), instruction: "x" },
+				{ selection: "x", instruction: "" },
+				{ selection: "x", instruction: "   " },
+				{ selection: "x", instruction: "y".repeat(2_001) },
+				{ ...goodBody, frobnicate: true },
+			];
+			for (const body of cases) {
+				expect((await postRewrite(call, note.id, body)).status).toBe(422);
+			}
+			// Bad JSON follows the shared convention.
+			const badJson = await call(`/api/app/notes/${note.id}/rewrite`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: "{nope",
+			});
+			expect(badJson.status).toBe(400);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("generation writes nothing — body, rev and versions unchanged", async () => {
+		const { http, call } = setup({
+			token: APP_TOKEN_NAME,
+			rewriteNote: (_id, input) => {
+				// The request reaches the seam validated and intact.
+				expect(input).toEqual(goodBody);
+				return Promise.resolve("a **better** take");
+			},
+		});
+		try {
+			const created = await create(call, { title: "t", body: "v1" });
+			const note = (await created.json()) as { id: string; rev: number };
+			const res = await postRewrite(call, note.id, goodBody);
+			expect(res.status).toBe(200);
+			expect(((await res.json()) as { replacement: string }).replacement).toBe(
+				"a **better** take",
+			);
+			const after = (await (await call(`/api/app/notes/${note.id}`)).json()) as {
+				body: string;
+				rev: number;
+			};
+			expect(after.body).toBe("v1");
+			expect(after.rev).toBe(note.rev);
+			const versions = (await (
+				await call(`/api/app/notes/${note.id}/versions`)
+			).json()) as { versions: unknown[] };
+			expect(versions.versions).toHaveLength(0);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a seam failure reaches the logged 500; the note is untouched", async () => {
+		const { http, call } = setup({
+			token: APP_TOKEN_NAME,
+			rewriteNote: () => Promise.reject(new Error("model blew up")),
+		});
+		try {
+			const created = await create(call, { title: "t", body: "v1" });
+			const note = (await created.json()) as { id: string; rev: number };
+			expect((await postRewrite(call, note.id, goodBody)).status).toBe(500);
+			const after = (await (await call(`/api/app/notes/${note.id}`)).json()) as {
+				body: string;
+				rev: number;
+			};
+			expect(after.body).toBe("v1");
+			expect(after.rev).toBe(note.rev);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("PATCH source 'rewrite' records the pre-state; 'agent' refuses", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const created = await create(call, { title: "t", body: "one" });
+			const note = (await created.json()) as { id: string };
+			const accepted = await call(`/api/app/notes/${note.id}`, {
+				method: "PATCH",
+				headers: { "content-type": "application/json", "if-match": '"1"' },
+				body: JSON.stringify({ body: "one — rewritten", source: "rewrite" }),
+			});
+			expect(accepted.status).toBe(200);
+			const versions = (await (
+				await call(`/api/app/notes/${note.id}/versions`)
+			).json()) as { versions: { rev: number; source: string }[] };
+			expect(versions.versions).toHaveLength(1);
+			expect(versions.versions[0]).toMatchObject({ rev: 1, source: "rewrite" });
+			// The internal agent source is not client-selectable.
+			const forged = await call(`/api/app/notes/${note.id}`, {
+				method: "PATCH",
+				headers: { "content-type": "application/json", "if-match": '"2"' },
+				body: JSON.stringify({ body: "forged", source: "agent" }),
+			});
+			expect(forged.status).toBe(422);
+			// Source alone is not a content write.
+			const bare = await call(`/api/app/notes/${note.id}`, {
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ source: "rewrite" }),
+			});
+			expect(bare.status).toBe(422);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a stale rewrite acceptance conflicts and leaves the note alone", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const created = await create(call, { title: "t", body: "one" });
+			const note = (await created.json()) as { id: string };
+			const stale = await call(`/api/app/notes/${note.id}`, {
+				method: "PATCH",
+				headers: { "content-type": "application/json", "if-match": '"99"' },
+				body: JSON.stringify({ body: "stale apply", source: "rewrite" }),
+			});
+			expect(stale.status).toBe(409);
+			const after = (await (await call(`/api/app/notes/${note.id}`)).json()) as {
+				body: string;
+				rev: number;
+			};
+			expect(after.body).toBe("one");
+			expect(after.rev).toBe(1);
+			const versions = (await (
+				await call(`/api/app/notes/${note.id}/versions`)
+			).json()) as { versions: unknown[] };
+			expect(versions.versions).toHaveLength(0);
 		} finally {
 			http.stop();
 		}

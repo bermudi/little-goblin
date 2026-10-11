@@ -229,6 +229,8 @@ describe("ChatView reload window (issue #79)", () => {
 					seed={null}
 					staged={[]}
 					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
 					onSeeded={() => {}}
 					onTurnDone={() => {}}
 				/>,

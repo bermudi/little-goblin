@@ -98,8 +98,8 @@ and templates before designing; cite what you took in the design docs.
   g7 masks it). Healthcheck commands are mounted scripts with zero
   shell metacharacters — keep them that way.
 - **Exception: the built client is live per request.** `app/dist` is
-  read from disk per request by the running service; `src/http/app.js`
-  is loaded once at module startup and stays boot-pinned. Do not
+  read from disk per request by the running service, and serves both
+  doors — `/app/` (the PWA) and `/t/` (the Telegram mini app). Do not
   build into `app/dist` to verify a backend-dependent client change:
   use `bun run vite build app --outDir /tmp/<unique-dir>` instead.
   Publishing the client and restarting the backend are one coordinated

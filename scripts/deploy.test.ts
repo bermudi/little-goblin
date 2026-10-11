@@ -132,7 +132,7 @@ function runDeploy(changed: string[] = [], options: Options = {}) {
 							: repo;
 		const bin = join(dir, "bin");
 		mkdirSync(bin);
-		for (const name of ["dirname", "cat", "grep", "date", "seq", "tail"]) {
+		for (const name of ["dirname", "cat", "grep", "date", "seq", "tail", "mktemp", "mv"]) {
 			symlinkSync(commandPath(name), join(bin, name));
 		}
 		const callsFile = join(dir, "calls");

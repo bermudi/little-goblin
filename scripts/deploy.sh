@@ -132,7 +132,12 @@ else
 	echo "  memory probe skipped: podman unavailable"
 fi
 
-echo "$new_rev" > "$marker"
+# Durable like every other state write: tmp + rename, so a torn
+# write can never leave a short line the next deploy rejects as an
+# invalid commit. Same directory, so mv is an atomic rename(2).
+marker_tmp="$(mktemp "$marker_dir/.GOBLIN_DEPLOYED_REV.XXXXXX")" || fail "cannot create deployment marker temp file"
+printf '%s\n' "$new_rev" >"$marker_tmp" || { rm -f "$marker_tmp"; fail "cannot write deployment marker"; }
+mv -f "$marker_tmp" "$marker" || { rm -f "$marker_tmp"; fail "cannot update deployment marker: $marker"; }
 step "done: g7 @ ${new_rev:0:7}"
 if [ -n "$old_rev" ]; then
 	printf -v rollback_marker '%q' "$marker"

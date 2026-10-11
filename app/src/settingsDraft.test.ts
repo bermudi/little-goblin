@@ -383,12 +383,32 @@ describe("transcription block", () => {
 		expect(body.transcription).toEqual({ kind: "openai", auth: "OPENAI_KEY" });
 	});
 
-	test("switching kinds clears the other kind's fields so they cannot leak into a save", () => {
-		const whistle = { ...emptyTranscription(), keywords: ["goblin"], engine: "/opt/needle" };
-		expect(switchTranscriptionKind(whistle, "groq")).toMatchObject({
+	test("switching kinds clears the identity fields but keeps hand-edit-only whistle config", () => {
+		const whistle = {
+			...emptyTranscription(),
+			keywords: ["goblin"],
+			engine: "/opt/needle",
+			weights: "base",
+		};
+		const groq = switchTranscriptionKind(whistle, "groq");
+		expect(groq).toMatchObject({
 			kind: "groq",
-			keywords: [],
-			engine: "",
+			model: "",
+			auth: "",
+			// Hand-edit-only: the form cannot restore these, and the body
+			// builder never emits them on a cloud arm, so riding along is
+			// safe — a whistle → groq → whistle round trip preserves them.
+			keywords: ["goblin"],
+			engine: "/opt/needle",
+			weights: "base",
+		});
+		const { draft: full, providers } = draftFromConfig(baseConfig());
+		expect(
+			bodyFromDraft({ ...full, transcription: groq }, providers, authDefaults).transcription,
+		).toEqual({ kind: "groq" });
+		expect(switchTranscriptionKind(groq, "whistle")).toMatchObject({
+			keywords: ["goblin"],
+			engine: "/opt/needle",
 		});
 		const cloud = { ...emptyTranscription("groq"), model: "m", auth: "KEY" };
 		expect(switchTranscriptionKind(cloud, "whistle")).toMatchObject({

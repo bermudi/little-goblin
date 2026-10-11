@@ -203,8 +203,16 @@ export function MemoryView({ token }: { token: string | null }) {
 		void forgetMemoryDocument(token, id).then(
 			() => {
 				setForgetting(false);
-				++detailSeq.current;
-				setDetail(null);
+				// A forget that resolves late must not dump a document the
+				// operator opened in the meantime — only the forgotten one's
+				// detail closes, and only then is the in-flight detail fetch
+				// invalidated. The updater reads the live value: the closure's
+				// capture predates the forget.
+				setDetail((cur) => {
+					if (cur === null || cur.document.id !== id) return cur;
+					++detailSeq.current;
+					return null;
+				});
 				loadDocs(0, latestFilter.current, false);
 				void getMemoryStatus(latestFilter.current.token).then(
 					(s) => {

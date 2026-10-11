@@ -25,7 +25,20 @@ const RESIZE = `<script>addEventListener("DOMContentLoaded",function(){new Resiz
 // the leaf's contract ("no network, no external assets") and is a
 // navigation-escape vector, so it never leaves the frame. Capture phase
 // — the document's own handlers must not get to run the default first.
-const NAVIGATION_GUARD = `<script>document.addEventListener("click",function(e){var t=e.target;if(!(t instanceof Element))return;var a=t.closest("a[href]");if(a&&(a.getAttribute("href")||"").charAt(0)!=="#")e.preventDefault()},true)</script>`;
+// Declarative navigations are neutralized at the source: the static meta
+// refresh is stripped in srcdoc(), and — because browsers honor metas
+// inserted after load — the guard also watches the live document and
+// removes any refresh meta that script inserts (or retrofits onto an
+// existing tag). Anchors: non-# clicks and drags are dead. What remains
+// is the documented residual: a direct `location` assignment from
+// script, un-interceptable from inside the document (design/app.md →
+// Intelligent UI → Escape hatch: html).
+const NAVIGATION_GUARD = `<script>
+document.addEventListener("click",function(e){var t=e.target;if(!(t instanceof Element))return;var a=t.closest("a[href]");if(a&&(a.getAttribute("href")||"").charAt(0)!=="#")e.preventDefault()},true);
+document.addEventListener("dragstart",function(e){var t=e.target;if(t instanceof Element&&t.closest("a[href]"))e.preventDefault()},true);
+function isRefresh(m){return m.tagName==="META"&&(m.getAttribute("http-equiv")||"").toLowerCase()==="refresh"}
+new MutationObserver(function(ms){for(var i=0;i<ms.length;i++){var m=ms[i];if(m.type==="attributes"){if(isRefresh(m.target))m.target.remove();continue}for(var j=0;j<m.addedNodes.length;j++){var n=m.addedNodes[j];if(n.nodeType!==1)continue;if(isRefresh(n)){n.remove();continue}var q=n.querySelectorAll("meta");for(var k=0;k<q.length;k++)if(isRefresh(q[k]))q[k].remove()}}}).observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:["http-equiv"]});
+</script>`;
 
 // App tokens are CSS custom properties — the sandboxed document can't
 // see them, so they're baked in as literals at render time. Text color
@@ -52,10 +65,7 @@ export function srcdoc(html: string): string {
 	// Meta refresh is declarative navigation — CSP can't gate it — so it
 	// is stripped before the document ever exists (quoted or bare
 	// http-equiv values, attributes in any order).
-	const body = html.replace(
-		/<meta\b[^>]*http-equiv\s*=\s*(["'])?\s*refresh\s*\1[^>]*>/gi,
-		"",
-	);
+	const body = html.replace(/<meta\b[^>]*http-equiv\s*=\s*(["'])?\s*refresh\s*\1[^>]*>/gi, "");
 	return `<!doctype html>${CSP}${baseStyle()}${RESIZE}${NAVIGATION_GUARD}${body}`;
 }
 

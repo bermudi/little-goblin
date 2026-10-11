@@ -543,9 +543,11 @@ function AppShell() {
 	const [rowError, setRowError] = useState<string | null>(null);
 	const [navOpen, setNavOpen] = useState(false);
 	// Rail search: debounced against the app-pool FTS endpoint. A non-
-	// empty query swaps the conversation list for the hit list.
+	// empty query swaps the conversation list for the hit list. A failed
+	// search says so — it must not read as "no matches".
 	const [query, setQuery] = useState("");
 	const [hits, setHits] = useState<AppSearchHit[] | null>(null);
+	const [searchError, setSearchError] = useState<string | null>(null);
 	const searchSeq = useRef(0);
 	// The empty state has the composer too — its send creates the
 	// conversation, then ChatView delivers the parked message as `seed`.
@@ -744,8 +746,15 @@ function AppShell() {
 		const seq = ++searchSeq.current;
 		const t = setTimeout(() => {
 			void searchConversations(token, q).then(
-				(r) => seq === searchSeq.current && setHits(r.hits),
-				() => {},
+				(r) => {
+					if (seq !== searchSeq.current) return;
+					setHits(r.hits);
+					setSearchError(null);
+				},
+				(err) => {
+					if (seq !== searchSeq.current) return;
+					setSearchError(err instanceof Error ? err.message : "search failed");
+				},
 			);
 		}, 250);
 		return () => clearTimeout(t);
@@ -936,7 +945,12 @@ function AppShell() {
 								</li>
 							))}
 						</ul>
-						{hits.length === 0 && <p className="empty">No matches.</p>}
+						{searchError !== null && (
+							<p className="error" role="alert">
+								Search failed: {searchError}
+							</p>
+						)}
+						{searchError === null && hits.length === 0 && <p className="empty">No matches.</p>}
 					</>
 				) : (
 					<>

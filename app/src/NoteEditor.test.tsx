@@ -271,9 +271,7 @@ async function select(
 	await act(async () => {
 		ref.current?.editor()?.action((ctx) => {
 			const view = ctx.get(editorViewCtx);
-			view.dispatch(
-				view.state.tr.setSelection(TextSelection.create(view.state.doc, from, to)),
-			);
+			view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, from, to)));
 		});
 	});
 	await tick(0);
@@ -281,8 +279,7 @@ async function select(
 
 const toolbarBtn = (): HTMLButtonElement | null =>
 	container.querySelector<HTMLButtonElement>(".note-editor-bar button");
-const panelText = (sel: string): string | null =>
-	container.querySelector(sel)?.textContent ?? null;
+const panelText = (sel: string): string | null => container.querySelector(sel)?.textContent ?? null;
 const clickBtn = async (text: string): Promise<void> => {
 	const btn = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
 		(b) => b.textContent === text,
@@ -807,8 +804,7 @@ describe("NoteEditor selection rewrite", () => {
 		// survived, and it reached the instruction phase.
 		expect(panelText(".note-rewrite-sel")).toBe("gamma\n");
 		expect(
-			container.querySelector<HTMLTextAreaElement>(".note-rewrite-field textarea")!
-				.disabled,
+			container.querySelector<HTMLTextAreaElement>(".note-rewrite-field textarea")!.disabled,
 		).toBe(false);
 		expect(busies).toEqual([true, false, true]);
 		expect(patches).toHaveLength(1); // the landed preflush — no extra writes
@@ -882,9 +878,7 @@ describe("NoteEditor selection rewrite", () => {
 		await edit(ref, "operator typed over");
 		releasePatch();
 		await settle();
-		expect(ref.current?.editor()?.action(getMarkdown())).toContain(
-			"operator typed over",
-		);
+		expect(ref.current?.editor()?.action(getMarkdown())).toContain("operator typed over");
 		expect(conflicts).toHaveLength(1);
 		expect(conflicts[0]!.body).toContain("delta"); // the landed write is the truth
 		expect(savedNotes).toHaveLength(1);

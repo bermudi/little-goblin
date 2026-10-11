@@ -518,9 +518,8 @@ function archiveLegacyJobs(db: Database): number {
 			: (db.query("SELECT COUNT(*) AS n FROM legacy_jobs_recovery").get() as { n: number }).n;
 	db.exec("CREATE TABLE IF NOT EXISTS legacy_jobs_recovery AS SELECT * FROM jobs WHERE 0");
 	db.exec("INSERT INTO legacy_jobs_recovery SELECT * FROM jobs");
-	const after = (
-		db.query("SELECT COUNT(*) AS n FROM legacy_jobs_recovery").get() as { n: number }
-	).n;
+	const after = (db.query("SELECT COUNT(*) AS n FROM legacy_jobs_recovery").get() as { n: number })
+		.n;
 	const archived = after - before;
 	log.info("legacy jobs archived without activating", {
 		archived,

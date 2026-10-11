@@ -262,11 +262,7 @@ function NoteAppendCard({
 					<ul>
 						{(notes ?? []).map((n) => (
 							<li key={n.id}>
-								<button
-									type="button"
-									disabled={status === "busy"}
-									onClick={() => append(n.id)}
-								>
+								<button type="button" disabled={status === "busy"} onClick={() => append(n.id)}>
 									{n.title}
 								</button>
 							</li>

@@ -197,10 +197,10 @@ describe("normalizeUiInput", () => {
 		const parsed = uiInputSchema.safeParse(r.value);
 		expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
 		expect(r.inferred).toEqual([
-				{ path: "blocks.0.tabs.0.blocks.0", type: "text" },
-				{ path: "blocks.0.tabs.1.blocks.0", type: "text" },
-				{ path: "blocks.0.tabs.1.blocks.1", type: "stats" },
-				{ path: "blocks.0", type: "tabs" },
+			{ path: "blocks.0.tabs.0.blocks.0", type: "text" },
+			{ path: "blocks.0.tabs.1.blocks.0", type: "text" },
+			{ path: "blocks.0.tabs.1.blocks.1", type: "stats" },
+			{ path: "blocks.0", type: "tabs" },
 		]);
 	});
 

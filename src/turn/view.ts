@@ -150,10 +150,7 @@ export async function buildModelView(
 		// system roles in `messages` (see systemEventAsUser). The
 		// placeholder fallback sees the mapped message, so a doubly
 		// broken event degrades to a user-role note too.
-		const rendered = notePartsAsText(
-			ctx,
-			m.role === "system" ? systemEventAsUser(m) : m,
-		);
+		const rendered = notePartsAsText(ctx, m.role === "system" ? systemEventAsUser(m) : m);
 		try {
 			messages.push(
 				...(await convertToModelMessages([rendered], {
@@ -208,10 +205,13 @@ export async function convertSteeredMessage(
 		INLINE_ITEM_MAX_BYTES,
 		ctx.carries,
 	);
-	return convertToModelMessages(materialized.map((m) => notePartsAsText(ctx, m)), {
-		tools: ctx.tools,
-		ignoreIncompleteToolCalls: true,
-	});
+	return convertToModelMessages(
+		materialized.map((m) => notePartsAsText(ctx, m)),
+		{
+			tools: ctx.tools,
+			ignoreIncompleteToolCalls: true,
+		},
+	);
 }
 
 // A burst of user input with no answer between the messages is one

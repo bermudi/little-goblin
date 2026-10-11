@@ -51,7 +51,10 @@ type Responder = (
 	opts: LanguageModelV4CallOptions,
 ) => LanguageModelV4GenerateResult | Promise<LanguageModelV4GenerateResult>;
 
-const answer = (text: string, finishReason: "stop" | "length" = "stop"): LanguageModelV4GenerateResult => ({
+const answer = (
+	text: string,
+	finishReason: "stop" | "length" = "stop",
+): LanguageModelV4GenerateResult => ({
 	content: [{ type: "text", text }],
 	finishReason: { unified: finishReason, raw: undefined },
 	warnings: [],
@@ -113,7 +116,10 @@ describe("generateNoteRewrite", () => {
 		const user = call.prompt.filter((m) => m.role === "user");
 		expect(user).toHaveLength(1);
 		expect((user[0] as { content: unknown[] }).content).toEqual([
-			{ type: "text", text: JSON.stringify({ selection: QUERY.selection, instruction: QUERY.instruction }) },
+			{
+				type: "text",
+				text: JSON.stringify({ selection: QUERY.selection, instruction: QUERY.instruction }),
+			},
 		]);
 		// thinking=medium on a GLM route produces provider options; no tools.
 		expect(call.providerOptions).toBeTruthy();
@@ -163,9 +169,7 @@ describe("generateNoteRewrite", () => {
 				...setup(() => answer("x")).deps,
 				resolve: () => Promise.reject(new Error("auth ref missing")),
 			};
-			await expect(
-				generateNoteRewrite(deps, QUERY),
-			).rejects.toThrow("auth ref missing");
+			await expect(generateNoteRewrite(deps, QUERY)).rejects.toThrow("auth ref missing");
 		} finally {
 			setLogWriter(null);
 			setLogFile(null);

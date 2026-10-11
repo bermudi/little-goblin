@@ -95,17 +95,15 @@ describe.skipIf(!RUN)("sandbox against real podman", () => {
 
 		const on = await call({ action: "network", enabled: true });
 		expect(on.enabled).toBe(true);
-		expect((await call({ action: "exec", command: "nc -z -w 3 1.1.1.1 443" })).exit_code).toBe(
-			0,
-		);
+		expect((await call({ action: "exec", command: "nc -z -w 3 1.1.1.1 443" })).exit_code).toBe(0);
 
 		expect((await call({ action: "network", enabled: false })).enabled).toBe(false);
-		expect(
-			(await call({ action: "exec", command: "nc -z -w 2 1.1.1.1 443" })).exit_code,
-		).not.toBe(0);
-		expect(
-			(await call({ action: "exec", command: "cat /work/marker" })).output,
-		).toContain("survives");
+		expect((await call({ action: "exec", command: "nc -z -w 2 1.1.1.1 443" })).exit_code).not.toBe(
+			0,
+		);
+		expect((await call({ action: "exec", command: "cat /work/marker" })).output).toContain(
+			"survives",
+		);
 	});
 
 	test("export reads the container's file content through a container symlink", async () => {

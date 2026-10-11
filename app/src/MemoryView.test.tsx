@@ -360,9 +360,7 @@ describe("MemoryView", () => {
 			const url = new URL(String(input), "http://localhost");
 			if (url.pathname.endsWith("/status")) return Promise.resolve(json(STATUS));
 			if (url.pathname.endsWith("/documents"))
-				return Promise.resolve(
-					json({ items: [DOC, DOC2], total: 2, limit: 20, offset: 0 }),
-				);
+				return Promise.resolve(json({ items: [DOC, DOC2], total: 2, limit: 20, offset: 0 }));
 			if (init?.method === "DELETE") {
 				deleted.push(url.pathname);
 				return Promise.resolve(json({ ok: true, cancelled: 1, redacted: 1 }));

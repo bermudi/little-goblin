@@ -19,11 +19,7 @@
 		{
 			"type": "table",
 			"columns": ["Bike", "Speed", "Comfort"],
-			"rows": [
-				["Road", "fast", "low"],
-				["Gravel", "medium", "high"],
-				["Hybrid", "medium", "high"]
-			]
+			"rows": [["Road", "fast", "low"], ["Gravel", "medium", "high"], ["Hybrid", "medium", "high"]]
 		},
 		{
 			"type": "steps",
@@ -53,17 +49,18 @@
 		{
 			"type": "choices",
 			"prompt": "Which ride this weekend?",
-			"options": [
-				{ "label": "Road loop" },
-				{ "label": "Gravel trail" },
-				{ "label": "Stay home" }
-			]
+			"options": [{ "label": "Road loop" }, { "label": "Gravel trail" }, { "label": "Stay home" }]
 		},
 		{
 			"type": "form",
 			"fields": [
 				{ "name": "distance", "label": "Distance (km)", "kind": "number" },
-				{ "name": "terrain", "label": "Terrain", "kind": "select", "options": ["flat", "hilly", "mixed"] },
+				{
+					"name": "terrain",
+					"label": "Terrain",
+					"kind": "select",
+					"options": ["flat", "hilly", "mixed"]
+				},
 				{ "name": "notes", "label": "Notes", "kind": "text" }
 			],
 			"submit": "Plan ride"

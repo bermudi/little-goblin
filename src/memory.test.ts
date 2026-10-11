@@ -370,7 +370,9 @@ describe("status", () => {
 		expect(status.deleting).toBe(3);
 		expect(status.detail).toContain("3 outbox rows awaiting forget confirmation");
 		// And the reverse: current-bank rows alone never inflate the count.
-		expect(memoryStatus(input({ counts: counts({ deleting: 2 }), deletingAll: 2 })).deleting).toBe(2);
+		expect(memoryStatus(input({ counts: counts({ deleting: 2 }), deletingAll: 2 })).deleting).toBe(
+			2,
+		);
 	});
 
 	test("detail says something the state word alone does not", () => {

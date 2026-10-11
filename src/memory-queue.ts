@@ -313,7 +313,9 @@ export class MemoryQueue {
 	// still holds the document. Status reads this seam, never the
 	// per-target counts, so a failed old-bank delete stays visible.
 	deletingCount(): number {
-		const row = this.db.query("SELECT COUNT(*) AS n FROM memory_outbox WHERE state = 'deleting'").get() as {
+		const row = this.db
+			.query("SELECT COUNT(*) AS n FROM memory_outbox WHERE state = 'deleting'")
+			.get() as {
 			n: number;
 		};
 		return row.n;

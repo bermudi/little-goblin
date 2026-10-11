@@ -614,10 +614,28 @@ describe("delivery", () => {
 	test("error and fenced turns stamp no rating row", async () => {
 		const { api, markups } = fakeApi({});
 		const rating = { lastReplyAnchor: () => 7 };
-		const first = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, rating);
+		const first = makeDeliverySink(
+			api,
+			conv,
+			undefined,
+			0,
+			undefined,
+			undefined,
+			undefined,
+			rating,
+		);
 		first.onTextDelta("partial");
 		await first.onDone({ kind: "error", message: "boom" });
-		const second = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, rating);
+		const second = makeDeliverySink(
+			api,
+			conv,
+			undefined,
+			0,
+			undefined,
+			undefined,
+			undefined,
+			rating,
+		);
 		second.onTextDelta("partial");
 		await second.onDone({ kind: "fenced" });
 		expect(markups).toEqual([]);

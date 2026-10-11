@@ -141,7 +141,9 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 					case "export": {
 						const rel = input.to ?? join("sandbox-out", basename(input.from));
 						if (isAbsolute(rel)) {
-							return { error: `export destination must be a workspace-relative path, got absolute: ${rel}` };
+							return {
+								error: `export destination must be a workspace-relative path, got absolute: ${rel}`,
+							};
 						}
 						const wsReal = realpathSync(deps.workspace);
 						const dest = resolvePath(wsReal, rel);

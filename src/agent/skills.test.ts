@@ -203,9 +203,7 @@ describe("formatSkillsSection", () => {
 		expect(
 			formatSkillsSection(
 				{
-					entries: [
-						{ name: "mq", description: "jq for Markdown", path: "skills/mq/SKILL.md" },
-					],
+					entries: [{ name: "mq", description: "jq for Markdown", path: "skills/mq/SKILL.md" }],
 					skipped: 0,
 				},
 				undefined,
@@ -229,9 +227,7 @@ describe("formatSkillsSection", () => {
 		expect(
 			formatSkillsSection(
 				{
-					entries: [
-						{ name: "mq", description: "jq for Markdown", path: "skills/mq/SKILL.md" },
-					],
+					entries: [{ name: "mq", description: "jq for Markdown", path: "skills/mq/SKILL.md" }],
 					skipped: 0,
 				},
 				undefined,

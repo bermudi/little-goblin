@@ -13,13 +13,7 @@
 // accepted body — built from a DETACHED transaction, never dispatched
 // — lands through the same guarded PATCH with source "rewrite".
 
-import {
-	Editor,
-	defaultValueCtx,
-	editorViewCtx,
-	rootCtx,
-	serializerCtx,
-} from "@milkdown/kit/core";
+import { Editor, defaultValueCtx, editorViewCtx, rootCtx, serializerCtx } from "@milkdown/kit/core";
 import type { Node as PMNode } from "@milkdown/kit/prose/model";
 import { listener, listenerCtx } from "@milkdown/kit/plugin/listener";
 import { history } from "@milkdown/kit/plugin/history";
@@ -203,17 +197,9 @@ const NoteEditor = forwardRef<
 	}
 
 	function schedule(): void {
-		if (
-			unmountedRef.current ||
-			conflictRef.current !== null ||
-			rewriteActiveRef.current
-		)
-			return;
+		if (unmountedRef.current || conflictRef.current !== null || rewriteActiveRef.current) return;
 		clearTimer();
-		timerRef.current = setTimeout(
-			() => void save(revRef.current),
-			saveDelayMs ?? DEBOUNCE_MS,
-		);
+		timerRef.current = setTimeout(() => void save(revRef.current), saveDelayMs ?? DEBOUNCE_MS);
 	}
 
 	async function save(
@@ -290,10 +276,7 @@ const NoteEditor = forwardRef<
 					// A detached write that can't land — the drain must not
 					// retry it forever.
 					drainDeadRef.current = true;
-				} else if (
-					e instanceof TypeError ||
-					(e instanceof ApiError && e.status >= 500)
-				) {
+				} else if (e instanceof TypeError || (e instanceof ApiError && e.status >= 500)) {
 					// Transient (network/5xx) — the dirty buffer stays;
 					// settle reschedules.
 					markStatus("offline");
@@ -314,9 +297,7 @@ const NoteEditor = forwardRef<
 				// live doc to the (possibly just-updated) baseline rather
 				// than a dirty flag set before the PATCH resolved.
 				const live = editorRef.current;
-				const dirtyNow =
-					live !== null &&
-					live.action(getMarkdown()) !== baselineRef.current;
+				const dirtyNow = live !== null && live.action(getMarkdown()) !== baselineRef.current;
 				markDirty(dirtyNow);
 				const pending = pendingRef.current;
 				pendingRef.current = null;
@@ -337,12 +318,7 @@ const NoteEditor = forwardRef<
 	function flush(keepalive = false): void {
 		clearTimer();
 		const ed = editorRef.current;
-		if (
-			ed === null ||
-			conflictRef.current !== null ||
-			rewriteActiveRef.current
-		)
-			return;
+		if (ed === null || conflictRef.current !== null || rewriteActiveRef.current) return;
 		// Synchronous check — the listener lags edits ~200ms, so a
 		// typed-then-left window is still dirty even though dirtyRef
 		// hasn't caught up.
@@ -402,10 +378,7 @@ const NoteEditor = forwardRef<
 		// a retry — rearm now that automatic writes are allowed again.
 		if (unmountedRef.current) return;
 		const ed = editorRef.current;
-		if (
-			ed !== null &&
-			ed.action(getMarkdown()) !== baselineRef.current
-		) {
+		if (ed !== null && ed.action(getMarkdown()) !== baselineRef.current) {
 			markDirty(true);
 			schedule();
 		}
@@ -448,15 +421,11 @@ const NoteEditor = forwardRef<
 	// close a newer flow's panel.
 	async function preflush(flowId: number): Promise<void> {
 		const alive = (): boolean =>
-			!unmountedRef.current &&
-			flowId === rewriteReqRef.current &&
-			rewriteActiveRef.current;
+			!unmountedRef.current && flowId === rewriteReqRef.current && rewriteActiveRef.current;
 		const block = (msg: string): void => {
 			if (!alive()) return;
 			setRewrite((cur) =>
-				cur !== null && cur.phase === "saving"
-					? { ...cur, phase: "blocked", error: msg }
-					: cur,
+				cur !== null && cur.phase === "saving" ? { ...cur, phase: "blocked", error: msg } : cur,
 			);
 		};
 		try {
@@ -490,14 +459,10 @@ const NoteEditor = forwardRef<
 				return;
 			}
 			setRewrite((cur) =>
-				cur !== null && cur.phase === "saving"
-					? { ...cur, phase: "input" }
-					: cur,
+				cur !== null && cur.phase === "saving" ? { ...cur, phase: "input" } : cur,
 			);
 		} catch (e) {
-			block(
-				`Couldn't save pending edits: ${e instanceof Error ? e.message : String(e)}`,
-			);
+			block(`Couldn't save pending edits: ${e instanceof Error ? e.message : String(e)}`);
 		}
 	}
 
@@ -515,24 +480,14 @@ const NoteEditor = forwardRef<
 				{ selection: r.selection, instruction: r.instruction },
 				{ signal: abort.signal },
 			);
-			if (
-				unmountedRef.current ||
-				reqId !== rewriteReqRef.current ||
-				abort.signal.aborted
-			)
-				return;
+			if (unmountedRef.current || reqId !== rewriteReqRef.current || abort.signal.aborted) return;
 			setRewrite((cur) =>
 				cur !== null && cur.phase === "generating"
 					? { ...cur, phase: "preview", replacement: res.replacement }
 					: cur,
 			);
 		} catch (e) {
-			if (
-				unmountedRef.current ||
-				reqId !== rewriteReqRef.current ||
-				abort.signal.aborted
-			)
-				return;
+			if (unmountedRef.current || reqId !== rewriteReqRef.current || abort.signal.aborted) return;
 			setRewrite((cur) =>
 				cur !== null && cur.phase === "generating"
 					? {
@@ -565,11 +520,7 @@ const NoteEditor = forwardRef<
 				if (!view.state.doc.eq(r.doc)) return null;
 				const replacement = r.replacement;
 				if (replacement === null) return null;
-				const tr = view.state.tr.replaceRange(
-					r.from,
-					r.to,
-					markdownToSlice(replacement)(ctx),
-				);
+				const tr = view.state.tr.replaceRange(r.from, r.to, markdownToSlice(replacement)(ctx));
 				return ctx.get(serializerCtx)(tr.doc);
 			});
 		} catch (e) {
@@ -618,8 +569,7 @@ const NoteEditor = forwardRef<
 			// conflict bar instead of reloading over it.
 			const edNow = editorRef.current;
 			const docMoved =
-				edNow !== null &&
-				!edNow.action((ctx) => ctx.get(editorViewCtx).state.doc.eq(r.doc));
+				edNow !== null && !edNow.action((ctx) => ctx.get(editorViewCtx).state.doc.eq(r.doc));
 			if (docMoved) {
 				onSavedRef.current(data);
 				if (c === null) {
@@ -771,11 +721,7 @@ const NoteEditor = forwardRef<
 			// loop sends the latest body at the new rev), then tear
 			// down. A blocked or dead write stops the drain.
 			void (async () => {
-				while (
-					e !== null &&
-					conflictRef.current === null &&
-					!drainDeadRef.current
-				) {
+				while (e !== null && conflictRef.current === null && !drainDeadRef.current) {
 					const flight = inFlightRef.current;
 					if (flight !== null) {
 						await flight;
@@ -800,9 +746,7 @@ const NoteEditor = forwardRef<
 				// apply PATCH doesn't ride savingRef.
 				if (savingRef.current || rewriteActiveRef.current) return true;
 				const ed = editorRef.current;
-				return (
-					ed !== null && ed.action(getMarkdown()) !== baselineRef.current
-				);
+				return ed !== null && ed.action(getMarkdown()) !== baselineRef.current;
 			},
 			editor: () => editorRef.current,
 			flush: () => flush(),
@@ -815,7 +759,11 @@ const NoteEditor = forwardRef<
 					// The server body moved under us — a clean editor takes
 					// it; a dirty or in-flight one raises the bar instead of
 					// rev-matching a write over somebody else's text.
-					if (savingRef.current || (editorRef.current?.action(getMarkdown()) ?? baselineRef.current) !== baselineRef.current) {
+					if (
+						savingRef.current ||
+						(editorRef.current?.action(getMarkdown()) ?? baselineRef.current) !==
+							baselineRef.current
+					) {
 						conflictRef.current = note;
 						markStatus("conflict");
 						onConflictRef.current(note);
@@ -874,12 +822,7 @@ const NoteEditor = forwardRef<
 				<button
 					type="button"
 					className="ghost-inline"
-					disabled={
-						!ready ||
-						selEmpty ||
-						status === "conflict" ||
-						rewrite !== null
-					}
+					disabled={!ready || selEmpty || status === "conflict" || rewrite !== null}
 					onClick={openRewrite}
 				>
 					Rewrite selection
@@ -894,9 +837,7 @@ const NoteEditor = forwardRef<
 							rows={2}
 							value={rewrite.instruction}
 							disabled={rewrite.phase !== "input"}
-							onChange={(e) =>
-								setRewrite({ ...rewrite, instruction: e.target.value })
-							}
+							onChange={(e) => setRewrite({ ...rewrite, instruction: e.target.value })}
 						/>
 					</label>
 					{rewrite.replacement !== null &&
@@ -909,15 +850,9 @@ const NoteEditor = forwardRef<
 						</div>
 					)}
 					<div className="row note-rewrite-actions">
-						{rewrite.phase === "saving" && (
-							<span className="hint">Saving edits…</span>
-						)}
-						{rewrite.phase === "generating" && (
-							<span className="hint">Generating…</span>
-						)}
-						{rewrite.phase === "applying" && (
-							<span className="hint">Applying…</span>
-						)}
+						{rewrite.phase === "saving" && <span className="hint">Saving edits…</span>}
+						{rewrite.phase === "generating" && <span className="hint">Generating…</span>}
+						{rewrite.phase === "applying" && <span className="hint">Applying…</span>}
 						{rewrite.phase === "input" && (
 							<button
 								type="button"
@@ -929,11 +864,7 @@ const NoteEditor = forwardRef<
 							</button>
 						)}
 						{rewrite.phase === "preview" && (
-							<button
-								type="button"
-								className="ghost"
-								onClick={() => void acceptRewrite()}
-							>
+							<button type="button" className="ghost" onClick={() => void acceptRewrite()}>
 								Apply rewrite
 							</button>
 						)}
@@ -943,9 +874,7 @@ const NoteEditor = forwardRef<
 							disabled={rewrite.phase === "applying"}
 							onClick={closeRewrite}
 						>
-							{rewrite.phase === "preview" || rewrite.phase === "blocked"
-								? "Discard"
-								: "Cancel"}
+							{rewrite.phase === "preview" || rewrite.phase === "blocked" ? "Discard" : "Cancel"}
 						</button>
 					</div>
 				</div>

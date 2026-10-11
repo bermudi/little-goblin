@@ -32,7 +32,5 @@ test("the /api proxy falls back to the default goblin http port", () => {
 });
 
 test("GOBLIN_HTTP overrides the /api proxy target exactly", () => {
-	expect(proxyTarget({ GOBLIN_HTTP: "http://127.0.0.1:9123" })).toBe(
-		"http://127.0.0.1:9123",
-	);
+	expect(proxyTarget({ GOBLIN_HTTP: "http://127.0.0.1:9123" })).toBe("http://127.0.0.1:9123");
 });

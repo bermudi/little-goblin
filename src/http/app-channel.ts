@@ -363,10 +363,11 @@ const noteAppendBody = z.object({ text: z.string().min(1) });
 // rewrite, and a blank instruction is a client bug.
 const noteRewriteBody = z
 	.object({
-		selection: z.string().min(1).max(50_000).refine(
-			(s) => s.trim() !== "",
-			{ message: "selection is empty" },
-		),
+		selection: z
+			.string()
+			.min(1)
+			.max(50_000)
+			.refine((s) => s.trim() !== "", { message: "selection is empty" }),
 		instruction: z.string().trim().min(1).max(2_000),
 	})
 	.strict();
@@ -1044,11 +1045,7 @@ export async function handleAppApi(
 		// Generation only — the accepted proposal returns through PATCH.
 		// Model failures propagate to the logged 500 like every other
 		// unexpected error; the client surfaces them inline.
-		const replacement = await deps.rewriteNote(
-			note.id,
-			parsed.data,
-			req.signal,
-		);
+		const replacement = await deps.rewriteNote(note.id, parsed.data, req.signal);
 		return Response.json({ replacement } satisfies AppNoteRewriteResponse, {
 			headers: NO_STORE,
 		});
@@ -1060,7 +1057,10 @@ export async function handleAppApi(
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		}
 		try {
-			const note = deps.notes.restore(noteRestoreMatch[1]!, Number.parseInt(noteRestoreMatch[2]!, 10));
+			const note = deps.notes.restore(
+				noteRestoreMatch[1]!,
+				Number.parseInt(noteRestoreMatch[2]!, 10),
+			);
 			return noteResponse(note);
 		} catch (err) {
 			const res = noteError(err);

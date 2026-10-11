@@ -730,9 +730,7 @@ export function openStore(dbPath: string): ConversationStore {
 			rating TEXT NOT NULL CHECK (rating IN ('up', 'down')),
 			created_at TEXT NOT NULL
 		)`);
-	db.run(
-		"CREATE INDEX IF NOT EXISTS reply_ratings_msg ON reply_ratings(chat_id, message_id)",
-	);
+	db.run("CREATE INDEX IF NOT EXISTS reply_ratings_msg ON reply_ratings(chat_id, message_id)");
 	// One current rolling DM per private chat; n only grows, so a
 	// reverted db still mints fresh ids.
 	db.run(`

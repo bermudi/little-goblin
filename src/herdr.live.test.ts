@@ -108,38 +108,26 @@ describe.skipIf(!LIVE)("herdr live drift (GOBLIN_HERDR_LIVE=1)", () => {
 		setLogFile(join(cwd, "drift.log"));
 	}, 30_000);
 
-	test(
-		"workspace create: the real envelope yields ids and the expanded cwd",
-		async () => {
-			const ws = await h!.createWorkspace(cwd, "drift-test");
-			workspaceId = ws.workspaceId;
-			paneId = ws.paneId;
-			expect(workspaceId).toMatch(/^w\d+$/);
-			expect(paneId).toMatch(new RegExp(`^${workspaceId}:p\\d+$`));
-			expect(ws.cwd).toBe(cwd);
-		},
-		30_000,
-	);
+	test("workspace create: the real envelope yields ids and the expanded cwd", async () => {
+		const ws = await h!.createWorkspace(cwd, "drift-test");
+		workspaceId = ws.workspaceId;
+		paneId = ws.paneId;
+		expect(workspaceId).toMatch(/^w\d+$/);
+		expect(paneId).toMatch(new RegExp(`^${workspaceId}:p\\d+$`));
+		expect(ws.cwd).toBe(cwd);
+	}, 30_000);
 
-	test(
-		"pane run: real success is silent — resolves with no envelope",
-		async () => {
-			// The regression pin: the CLI prints nothing on success and
-			// the adapter must not demand JSON here.
-			await h!.paneRun(paneId, `printf '${MARKER}\\n'`);
-		},
-		30_000,
-	);
+	test("pane run: real success is silent — resolves with no envelope", async () => {
+		// The regression pin: the CLI prints nothing on success and
+		// the adapter must not demand JSON here.
+		await h!.paneRun(paneId, `printf '${MARKER}\\n'`);
+	}, 30_000);
 
-	test(
-		"pane wait-output and read: match envelope, then raw screen text",
-		async () => {
-			await h!.paneWaitOutput(paneId, MARKER, 5_000);
-			const text = await h!.readPane(paneId, 40);
-			expect(text).toContain(MARKER);
-		},
-		30_000
-	);
+	test("pane wait-output and read: match envelope, then raw screen text", async () => {
+		await h!.paneWaitOutput(paneId, MARKER, 5_000);
+		const text = await h!.readPane(paneId, 40);
+		expect(text).toContain(MARKER);
+	}, 30_000);
 
 	test("agent get on a missing agent maps to null", async () => {
 		expect(await h!.get("drift-nope")).toBeNull();
@@ -157,15 +145,11 @@ describe.skipIf(!LIVE)("herdr live drift (GOBLIN_HERDR_LIVE=1)", () => {
 		await expectHerdrError(h!.readAgent("drift-nope", 5), "agent_not_found");
 	}, 30_000);
 
-	test(
-		"agent start on a missing pane throws agent_pane_not_found",
-		async () => {
-			// The missing pane fails before any harness launches — kind
-			// `pi` is named but never started.
-			await expectHerdrError(h!.startAgent("drift-x", "pi", "w99:p99", []), "agent_pane_not_found");
-		},
-		30_000
-	);
+	test("agent start on a missing pane throws agent_pane_not_found", async () => {
+		// The missing pane fails before any harness launches — kind
+		// `pi` is named but never started.
+		await expectHerdrError(h!.startAgent("drift-x", "pi", "w99:p99", []), "agent_pane_not_found");
+	}, 30_000);
 
 	test("usage errors exit 2 with non-JSON stderr (the fallback contract)", async () => {
 		const r = await cli(["agent", "get"]);

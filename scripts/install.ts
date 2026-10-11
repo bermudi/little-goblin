@@ -270,11 +270,7 @@ async function install(): Promise<void> {
 		const names = ["goblin.service"];
 		writeFileSync(
 			join(staging, "goblin.service"),
-			render("goblin.service", [
-				["/home/daniel/goblin", target],
-				["/usr/bin/bun", bun],
-				...common,
-			])
+			render("goblin.service", [["/home/daniel/goblin", target], ["/usr/bin/bun", bun], ...common])
 				// WorkingDirectory is line-rewritten, not literal-replaced: the
 				// template's value is this box's truth and must not stay coupled
 				// to a substitution literal that silently no-ops on rename.
@@ -306,9 +302,7 @@ async function install(): Promise<void> {
 					...common,
 					[
 						"@WARM_AUTH_PROFILES@",
-						selected.profiles
-							.map((profile) => `ExecStart=${passKeys} warm ${profile}`)
-							.join("\n"),
+						selected.profiles.map((profile) => `ExecStart=${passKeys} warm ${profile}`).join("\n"),
 					],
 				]).replace(/^Environment=PATH=.*$/m, `Environment=PATH=${path}`),
 				{ mode: 0o644 },

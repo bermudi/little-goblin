@@ -352,7 +352,7 @@ describe("AttachmentChip download failure", () => {
 		installGlobal("getComputedStyle", win.getComputedStyle);
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((_input: RequestInfo | URL) =>
-				Promise.resolve(new Response("gone", { status: 404 })) as unknown) as typeof fetch;
+			Promise.resolve(new Response("gone", { status: 404 })) as unknown) as typeof fetch;
 	});
 
 	afterEach(async () => {

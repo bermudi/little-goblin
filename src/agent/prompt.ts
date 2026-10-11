@@ -284,9 +284,7 @@ export function buildSystemPrompt(
 		const parts: string[] = [];
 		if (projectInstructions !== "") parts.push(projectInstructions);
 		if (notesIndex !== undefined && notesIndex.length > 0) {
-			parts.push(
-				`### notes\n\n${notesIndex.map((n) => `- ${n.title} (id ${n.id})`).join("\n")}`,
-			);
+			parts.push(`### notes\n\n${notesIndex.map((n) => `- ${n.title} (id ${n.id})`).join("\n")}`);
 		}
 		if (projectAgents !== null) {
 			parts.push(`### AGENTS.md in ${project.dir}\n\n${projectAgents.trim()}`);

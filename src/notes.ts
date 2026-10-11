@@ -98,7 +98,8 @@ export function noteFence(d: { id: string; title: string; rev: number; body: str
 	// id/title ride XML attributes — escape the full entity set, not
 	// just quotes, or a crafted title can break out of the attribute.
 	const attr = (s: string) =>
-		s.replace(/&/g, "&amp;")
+		s
+			.replace(/&/g, "&amp;")
 			.replace(/</g, "&lt;")
 			.replace(/>/g, "&gt;")
 			.replace(/"/g, "&quot;")
@@ -114,7 +115,11 @@ const APP_VERSION_GAP_MS = 10 * 60 * 1000;
 const VERSION_CAP = 100;
 
 export interface NoteStore {
-	create(input: { title: string; body?: string | undefined; projectId?: string | null | undefined }): Note;
+	create(input: {
+		title: string;
+		body?: string | undefined;
+		projectId?: string | null | undefined;
+	}): Note;
 	get(id: string): Note | null;
 	// project: a project id, "loose" (project_id IS NULL), or "all"
 	// (default). archived: true lists the archived shelf only; default
@@ -332,8 +337,7 @@ export function openNotes(
 				versioned = true;
 			} else {
 				const newest = qNewestVersion.get(id);
-				versioned =
-					newest === null || now().getTime() - Date.parse(newest.at) > APP_VERSION_GAP_MS;
+				versioned = newest === null || now().getTime() - Date.parse(newest.at) > APP_VERSION_GAP_MS;
 			}
 			if (versioned) {
 				db.run(
@@ -415,7 +419,9 @@ export function openNotes(
 					params.push(filter.project);
 				}
 			}
-			clauses.push(filter.archived === true ? "n.archived_at IS NOT NULL" : "n.archived_at IS NULL");
+			clauses.push(
+				filter.archived === true ? "n.archived_at IS NOT NULL" : "n.archived_at IS NULL",
+			);
 			let limit = "";
 			if (filter.limit !== undefined) {
 				limit = " LIMIT ?";
@@ -454,7 +460,9 @@ export function openNotes(
 			};
 			for (const [i, e] of sorted.entries()) {
 				if (e.start < 0 || e.end < e.start || e.end > current.body.length) {
-					refuse(`edit ${i}: range ${e.start}..${e.end} out of bounds (body is ${current.body.length} chars)`);
+					refuse(
+						`edit ${i}: range ${e.start}..${e.end} out of bounds (body is ${current.body.length} chars)`,
+					);
 				}
 				if (i > 0 && sorted[i - 1]!.end > e.start) refuse(`edit ${i}: ranges overlap`);
 				if (current.body.slice(e.start, e.end) !== e.expected) {
@@ -507,9 +515,7 @@ export function openNotes(
 		getVersion(id, rev) {
 			mustGet(id);
 			const row = qVersion.get(id, rev);
-			return row === null
-				? null
-				: { ...toVersionMeta(row), title: row.title, body: row.body_md };
+			return row === null ? null : { ...toVersionMeta(row), title: row.title, body: row.body_md };
 		},
 		delete(id) {
 			const note = mustGet(id);

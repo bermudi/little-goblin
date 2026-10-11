@@ -5,14 +5,7 @@
 // bytes land inside the workspace.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import {
-	existsSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	symlinkSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Sandboxes } from "../../sandboxes.ts";
@@ -136,15 +129,13 @@ describe("sandbox tool — export containment", () => {
 		const ws = workspace();
 		const recorded = { cpIn: [] as string[][], catFile: [] as string[] };
 		const t = rig(ws, recorded);
-		const out = (await t.execute!(
-			{ action: "export", from: "/work/result.bin" },
-			opts,
-		)) as Record<string, unknown>;
+		const out = (await t.execute!({ action: "export", from: "/work/result.bin" }, opts)) as Record<
+			string,
+			unknown
+		>;
 		expect(out.error).toBeUndefined();
 		expect(out.exported).toBe(join("sandbox-out", "result.bin"));
-		expect(readFileSync(join(ws, "sandbox-out", "result.bin"), "utf8")).toBe(
-			"sandbox-file-bytes",
-		);
+		expect(readFileSync(join(ws, "sandbox-out", "result.bin"), "utf8")).toBe("sandbox-file-bytes");
 		expect(recorded.catFile).toEqual(["/work/result.bin"]);
 	});
 

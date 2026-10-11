@@ -333,9 +333,7 @@ describe("openrouterEngine", () => {
 		};
 		expect(body.input_audio.format).toBe("ogg");
 		// OggS magic — the upload is container audio, not the mp4.
-		expect(Buffer.from(body.input_audio.data, "base64").subarray(0, 4).toString()).toBe(
-			"OggS",
-		);
+		expect(Buffer.from(body.input_audio.data, "base64").subarray(0, 4).toString()).toBe("OggS");
 	});
 
 	test("an unextractable file fails loud with the provider named", async () => {
@@ -538,7 +536,9 @@ describe("mimoEngine", () => {
 		const { fn, last } = fakeFetch(
 			200,
 			JSON.stringify({
-				choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hola" } }],
+				choices: [
+					{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hola" } },
+				],
 			}),
 		);
 		const engine = mimoEngine(
@@ -574,8 +574,13 @@ describe("mimoEngine", () => {
 		]);
 		if (gen.exitCode !== 0) throw new Error(`test mp4 gen: ${gen.stderr.toString()}`);
 		expect(
-			(await engine.transcribe({ path: mp4, mediaType: "video/mp4", filename: "video-note-u1.mp4" }))
-				.text,
+			(
+				await engine.transcribe({
+					path: mp4,
+					mediaType: "video/mp4",
+					filename: "video-note-u1.mp4",
+				})
+			).text,
 		).toBe("hola");
 		const req = last();
 		expect(req.url).toBe("https://openrouter.ai/api/v1/chat/completions");
@@ -587,8 +592,10 @@ describe("mimoEngine", () => {
 		const [audioPart] = body.messages[0]?.content ?? [];
 		expect(audioPart?.type).toBe("input_audio");
 		expect(audioPart?.input_audio?.format).toBe("ogg");
-		expect(Buffer.from(audioPart?.input_audio?.data ?? "", "base64").subarray(0, 4).toString()).toBe(
-			"OggS",
-		);
+		expect(
+			Buffer.from(audioPart?.input_audio?.data ?? "", "base64")
+				.subarray(0, 4)
+				.toString(),
+		).toBe("OggS");
 	});
 });

@@ -184,14 +184,7 @@ describe("herdr adapter", () => {
 		const h = makeHerdr({ session: "goblin" }, f.run);
 		await h.paneRun("w1:p1", "printf seed");
 		await h.paneRun("w1:p1", "printf seed");
-		expect(f.calls[0]).toEqual([
-			"--session",
-			"goblin",
-			"pane",
-			"run",
-			"w1:p1",
-			"printf seed",
-		]);
+		expect(f.calls[0]).toEqual(["--session", "goblin", "pane", "run", "w1:p1", "printf seed"]);
 	});
 
 	test("paneWaitOutput sends the match/timeout argv and takes any envelope", async () => {

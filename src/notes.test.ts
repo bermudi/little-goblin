@@ -184,9 +184,7 @@ describe("replaceRanges", () => {
 		const { notes } = setup();
 		// "😀" is one visible char, two UTF-16 units.
 		const n = notes.create({ title: "t", body: "😀 tail" });
-		const out = notes.replaceRanges(n.id, [
-			{ start: 2, end: 7, expected: " tail", text: " HEAD" },
-		]);
+		const out = notes.replaceRanges(n.id, [{ start: 2, end: 7, expected: " tail", text: " HEAD" }]);
 		expect(out.body).toBe("😀 HEAD");
 	});
 });

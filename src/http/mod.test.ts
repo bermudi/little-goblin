@@ -1238,9 +1238,7 @@ describe("app deep links (Notes)", () => {
 			expect(await res.text()).toContain("<html");
 		} else {
 			expect(res.status).toBe(500);
-			expect(((await res.json()) as { error: string }).error).toContain(
-				"app client not built",
-			);
+			expect(((await res.json()) as { error: string }).error).toContain("app client not built");
 		}
 	};
 

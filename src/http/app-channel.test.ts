@@ -2270,13 +2270,13 @@ describe("app notes", () => {
 				notes: { title: string }[];
 			};
 			expect(all.notes).toHaveLength(2);
-			const looseOnly = (await (
-				await call("/api/app/notes?project=loose")
-			).json()) as { notes: { title: string; projectId: string | null }[] };
+			const looseOnly = (await (await call("/api/app/notes?project=loose")).json()) as {
+				notes: { title: string; projectId: string | null }[];
+			};
 			expect(looseOnly.notes.map((n) => n.title)).toEqual(["loose note"]);
-			const projOnly = (await (
-				await call(`/api/app/notes?project=${proj.id}`)
-			).json()) as { notes: { title: string }[] };
+			const projOnly = (await (await call(`/api/app/notes?project=${proj.id}`)).json()) as {
+				notes: { title: string }[];
+			};
 			expect(projOnly.notes.map((n) => n.title)).toEqual(["project note"]);
 			// FTS over title+body.
 			const found = (await (await call("/api/app/notes?q=pancake")).json()) as {
@@ -2383,14 +2383,15 @@ describe("app notes", () => {
 			expect(after.rev).toBe(2);
 			expect(after.body).toBe("one\n\ntwo");
 
-			const versions = (await (
-				await call(`/api/app/notes/${note.id}/versions`)
-			).json()) as { versions: { rev: number; source: string }[] };
+			const versions = (await (await call(`/api/app/notes/${note.id}/versions`)).json()) as {
+				versions: { rev: number; source: string }[];
+			};
 			expect(versions.versions).toHaveLength(1);
 			expect(versions.versions[0]).toMatchObject({ rev: 1, source: "append" });
-			const v1 = (await (
-				await call(`/api/app/notes/${note.id}/versions/1`)
-			).json()) as { title: string; body: string };
+			const v1 = (await (await call(`/api/app/notes/${note.id}/versions/1`)).json()) as {
+				title: string;
+				body: string;
+			};
 			expect(v1.body).toBe("one");
 			expect((await call(`/api/app/notes/${note.id}/versions/9`)).status).toBe(404);
 
@@ -2412,9 +2413,7 @@ describe("app notes", () => {
 			const note = (await created.json()) as { id: string };
 			await postJson(call, `/api/app/notes/${note.id}/append`, { text: "x" });
 			// Active notes refuse.
-			expect(
-				(await call(`/api/app/notes/${note.id}`, { method: "DELETE" })).status,
-			).toBe(422);
+			expect((await call(`/api/app/notes/${note.id}`, { method: "DELETE" })).status).toBe(422);
 			// A move — flag write, no If-Match.
 			const moved = await patchJson(call, `/api/app/notes/${note.id}`, {
 				projectId: proj.id,
@@ -2428,9 +2427,7 @@ describe("app notes", () => {
 			expect(((await unbound.json()) as { projectId: string | null }).projectId).toBeNull();
 
 			await patchJson(call, `/api/app/notes/${note.id}`, { archived: true });
-			expect(
-				(await call(`/api/app/notes/${note.id}`, { method: "DELETE" })).status,
-			).toBe(200);
+			expect((await call(`/api/app/notes/${note.id}`, { method: "DELETE" })).status).toBe(200);
 			expect((await call(`/api/app/notes/${note.id}`)).status).toBe(404);
 			expect((await call(`/api/app/notes/${note.id}/versions`)).status).toBe(422);
 		} finally {
@@ -2506,10 +2503,7 @@ describe("app note rewrite", () => {
 			body: JSON.stringify(body),
 			...init,
 		});
-	const create = (
-		call: ReturnType<typeof setup>["call"],
-		body: unknown,
-	) =>
+	const create = (call: ReturnType<typeof setup>["call"], body: unknown) =>
 		call("/api/app/notes", {
 			method: "POST",
 			headers: { "content-type": "application/json" },
@@ -2561,9 +2555,7 @@ describe("app note rewrite", () => {
 				null,
 			);
 			expect(plain.status).toBe(415);
-			expect(
-				(await b.call("/api/app/notes/n/rewrite", {}, null)).status,
-			).toBe(405);
+			expect((await b.call("/api/app/notes/n/rewrite", {}, null)).status).toBe(405);
 		} finally {
 			b.http.stop();
 		}
@@ -2648,18 +2640,16 @@ describe("app note rewrite", () => {
 			const note = (await created.json()) as { id: string; rev: number };
 			const res = await postRewrite(call, note.id, goodBody);
 			expect(res.status).toBe(200);
-			expect(((await res.json()) as { replacement: string }).replacement).toBe(
-				"a **better** take",
-			);
+			expect(((await res.json()) as { replacement: string }).replacement).toBe("a **better** take");
 			const after = (await (await call(`/api/app/notes/${note.id}`)).json()) as {
 				body: string;
 				rev: number;
 			};
 			expect(after.body).toBe("v1");
 			expect(after.rev).toBe(note.rev);
-			const versions = (await (
-				await call(`/api/app/notes/${note.id}/versions`)
-			).json()) as { versions: unknown[] };
+			const versions = (await (await call(`/api/app/notes/${note.id}/versions`)).json()) as {
+				versions: unknown[];
+			};
 			expect(versions.versions).toHaveLength(0);
 		} finally {
 			http.stop();
@@ -2697,9 +2687,9 @@ describe("app note rewrite", () => {
 				body: JSON.stringify({ body: "one — rewritten", source: "rewrite" }),
 			});
 			expect(accepted.status).toBe(200);
-			const versions = (await (
-				await call(`/api/app/notes/${note.id}/versions`)
-			).json()) as { versions: { rev: number; source: string }[] };
+			const versions = (await (await call(`/api/app/notes/${note.id}/versions`)).json()) as {
+				versions: { rev: number; source: string }[];
+			};
 			expect(versions.versions).toHaveLength(1);
 			expect(versions.versions[0]).toMatchObject({ rev: 1, source: "rewrite" });
 			// The internal agent source is not client-selectable.
@@ -2738,9 +2728,9 @@ describe("app note rewrite", () => {
 			};
 			expect(after.body).toBe("one");
 			expect(after.rev).toBe(1);
-			const versions = (await (
-				await call(`/api/app/notes/${note.id}/versions`)
-			).json()) as { versions: unknown[] };
+			const versions = (await (await call(`/api/app/notes/${note.id}/versions`)).json()) as {
+				versions: unknown[];
+			};
 			expect(versions.versions).toHaveLength(0);
 		} finally {
 			http.stop();

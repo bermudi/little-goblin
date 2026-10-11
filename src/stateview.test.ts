@@ -90,9 +90,7 @@ describe("readStateFile containment", () => {
 
 	test("an over-cap file throws instead of truncating", () => {
 		writeRel("skills/weather/huge.md", "x".repeat(3 * 1024 * 1024));
-		expect(() => readStateFile(join(home, "skills/weather"), "huge.md")).toThrow(
-			/file too large/,
-		);
+		expect(() => readStateFile(join(home, "skills/weather"), "huge.md")).toThrow(/file too large/);
 	});
 });
 
@@ -100,22 +98,44 @@ describe("readSkillFile", () => {
 	test("defaults to SKILL.md and resolves the origin dir", () => {
 		writeRel("skills/a/SKILL.md", "installed");
 		writeRel("skills-proposed/b/SKILL.md", "draft");
-		expect(readSkillFile(join(home, "skills"), join(home, "skills-proposed"), "skills", "a", "SKILL.md")?.content).toBe("installed");
 		expect(
-			readSkillFile(join(home, "skills"), join(home, "skills-proposed"), "proposed", "b", "SKILL.md")?.content,
+			readSkillFile(join(home, "skills"), join(home, "skills-proposed"), "skills", "a", "SKILL.md")
+				?.content,
+		).toBe("installed");
+		expect(
+			readSkillFile(
+				join(home, "skills"),
+				join(home, "skills-proposed"),
+				"proposed",
+				"b",
+				"SKILL.md",
+			)?.content,
 		).toBe("draft");
-		expect(readSkillFile(join(home, "skills"), join(home, "skills-proposed"), "skills", "a", "SKILL.md")?.path).toBe(
-			"a/SKILL.md",
-		);
+		expect(
+			readSkillFile(join(home, "skills"), join(home, "skills-proposed"), "skills", "a", "SKILL.md")
+				?.path,
+		).toBe("a/SKILL.md");
 	});
 
 	test("a name that is not one segment is refused", () => {
 		writeRel("skills/a/SKILL.md", "x");
 		expect(
-			readSkillFile(join(home, "skills"), join(home, "skills-proposed"), "skills", "../a", "SKILL.md"),
+			readSkillFile(
+				join(home, "skills"),
+				join(home, "skills-proposed"),
+				"skills",
+				"../a",
+				"SKILL.md",
+			),
 		).toBeNull();
 		expect(
-			readSkillFile(join(home, "skills"), join(home, "skills-proposed"), "skills", "a/../../x", "SKILL.md"),
+			readSkillFile(
+				join(home, "skills"),
+				join(home, "skills-proposed"),
+				"skills",
+				"a/../../x",
+				"SKILL.md",
+			),
 		).toBeNull();
 	});
 });
@@ -133,7 +153,9 @@ describe("attachments", () => {
 
 	test("attachmentPath holds the wall", () => {
 		writeRel("attachments/ok.png", "a");
-		expect(attachmentPath(join(home, "attachments"), "ok.png")).toBe(join(home, "attachments/ok.png"));
+		expect(attachmentPath(join(home, "attachments"), "ok.png")).toBe(
+			join(home, "attachments/ok.png"),
+		);
 		expect(attachmentPath(join(home, "attachments"), "sub/ok.png")).toBeNull();
 		expect(attachmentPath(join(home, "attachments"), "../secret.txt")).toBeNull();
 		expect(attachmentPath(join(home, "attachments"), "missing.png")).toBeNull();
@@ -175,7 +197,7 @@ describe("tailLog", () => {
 		expect(res.lines.length).toBe(2);
 		expect(res.lines[1]!.level).toBe("error");
 		expect(res.lines[1]!.msg).toBe("boom");
-		expect(res.lines[1]!.line).toContain("\"chat\":7");
+		expect(res.lines[1]!.line).toContain('"chat":7');
 	});
 
 	test("level and substring filters apply to the raw line", () => {
@@ -213,10 +235,7 @@ describe("tailLog", () => {
 	});
 
 	test("malformed lines are skipped, not fatal", () => {
-		const f = writeLog([
-			"{torn write",
-			JSON.stringify({ ts: "t1", level: "info", msg: "ok" }),
-		]);
+		const f = writeLog(["{torn write", JSON.stringify({ ts: "t1", level: "info", msg: "ok" })]);
 		const res = tailLog(f, { limit: 10 });
 		expect(res.lines.map((l) => l.msg)).toEqual(["ok"]);
 	});

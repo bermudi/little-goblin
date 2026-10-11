@@ -12,7 +12,12 @@
 				["Rack + fender mounts", "Rare (often none)", "Usually yes", "Almost always yes"],
 				["Weight (typical)", "7–9 kg", "9–11 kg", "11–14 kg"],
 				["Typical price", "$1,000–$4,000+", "$900–$3,500", "$400–$1,200"],
-				["Double duty (weekends)", "Fast group rides", "Gravel, touring, dirt", "Errands, light trails"]
+				[
+					"Double duty (weekends)",
+					"Fast group rides",
+					"Gravel, touring, dirt",
+					"Errands, light trails"
+				]
 			],
 			"type": "table"
 		},
@@ -24,7 +29,13 @@
 				{ "name": "Hybrid", "values": [6, 7, 9, 7, 9] }
 			],
 			"unit": "/10",
-			"x": ["Pavement speed", "Pothole comfort", "Commuter practicality", "Versatility", "Value for money"]
+			"x": [
+				"Pavement speed",
+				"Pothole comfort",
+				"Commuter practicality",
+				"Versatility",
+				"Value for money"
+			]
 		},
 		{
 			"md": "**Gravel** is the commuter sweet spot — 90% of the road bike's speed with far more comfort, grip, and mounting points. Pick a **hybrid** if the budget is tight and roads are tame. Pick **road** only for long, smooth commutes where speed rules.",

@@ -52,10 +52,9 @@ export async function generateNoteRewrite(
 	try {
 		// Resolution (auth refs included) is inside the try so a
 		// provider/auth failure lands in the same failure line.
-		const model = observedModel(
-			await (deps.resolve ?? resolveModel)(cfg, deps.auth, cfg.model),
-			{ purpose: "note-rewrite" },
-		);
+		const model = observedModel(await (deps.resolve ?? resolveModel)(cfg, deps.auth, cfg.model), {
+			purpose: "note-rewrite",
+		});
 		const providerOptions = thinkingOptions(cfg, cfg.model, cfg.thinking);
 		const result = await generateText({
 			model,

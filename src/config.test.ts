@@ -794,7 +794,12 @@ describe("authReferences", () => {
 			search: [{ kind: "brave", auth: "brave-key" }],
 			appToken: "app-token-record",
 		});
-		expect([...authReferences(c)].sort()).toEqual(["app-token-record", "brave-key", "telegram", "zai"]);
+		expect([...authReferences(c)].sort()).toEqual([
+			"app-token-record",
+			"brave-key",
+			"telegram",
+			"zai",
+		]);
 	});
 });
 

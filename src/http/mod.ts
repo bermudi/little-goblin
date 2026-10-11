@@ -212,7 +212,11 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 		}
 		// The operator-console client routes (settings, memory, …) —
 		// same reasoning as /app/c/<id>: the shell resolves them.
-		if (/^\/app\/(?:settings|memory|delegations|programs|status|projects|notes)\/?$/.test(url.pathname)) {
+		if (
+			/^\/app\/(?:settings|memory|delegations|programs|status|projects|notes)\/?$/.test(
+				url.pathname,
+			)
+		) {
 			return serveAppDist("");
 		}
 		// Project pages (design/projects.md): /app/p/<projectId> — same

@@ -158,11 +158,7 @@ export interface Sandboxes {
 		command: string,
 		opts: { timeoutMs: number; maxOutput: number; abortSignal?: AbortSignal },
 	): Promise<SandboxExecOutcome>;
-	cpIn(
-		conversationId: string,
-		hostPath: string,
-		containerPath: string,
-	): Promise<{ note?: string }>;
+	cpIn(conversationId: string, hostPath: string, containerPath: string): Promise<{ note?: string }>;
 	/** The file's bytes, or SandboxError (not a regular file, over the
 	 *  cap, unreadable). Nothing is written anywhere — the caller owns
 	 *  the destination. */
@@ -191,11 +187,7 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 	// Reconcile actual network state with intent. Off is fail-closed:
 	// if the disconnect fails or inspect can't confirm it, the
 	// container is removed rather than used in an unknown state.
-	async function applyNetwork(
-		name: string,
-		want: boolean,
-		conv: string,
-	): Promise<void> {
+	async function applyNetwork(name: string, want: boolean, conv: string): Promise<void> {
 		const before = await podman.inspect(name, conv);
 		const has = before.networks.includes(networkName);
 		if (has === want) return;

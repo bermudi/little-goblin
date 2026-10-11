@@ -802,9 +802,7 @@ export function makeDeliverySink(
 											},
 										],
 									]),
-							...(voice === undefined
-								? []
-								: [[{ text: "🔊", callback_data: SPEAK_CALLBACK }]]),
+							...(voice === undefined ? [] : [[{ text: "🔊", callback_data: SPEAK_CALLBACK }]]),
 						];
 						enqueue(async () => {
 							if (!mayDeliver()) return;

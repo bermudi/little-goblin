@@ -20,10 +20,10 @@ interface ApiCall {
 
 function fakeApi(calls: ApiCall[]): Api {
 	return {
-		answerCallbackQuery: ((id: string, opts?: unknown) => {
+		answerCallbackQuery: (id: string, opts?: unknown) => {
 			calls.push({ method: "answerCallbackQuery", args: [id, opts] });
 			return Promise.resolve(true);
-		}),
+		},
 	} as unknown as Api;
 }
 

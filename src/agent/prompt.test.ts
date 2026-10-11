@@ -453,9 +453,7 @@ describe("project prompts", () => {
 			// The write/validation paths go absolute too — a relative
 			// `skills/…` resolves inside the project cwd, not the
 			// workspace.
-			expect(text).toContain(
-				`write ${join(paths.workspace(), "skills", "<name>", "SKILL.md")}`,
-			);
+			expect(text).toContain(`write ${join(paths.workspace(), "skills", "<name>", "SKILL.md")}`);
 			expect(text).toContain(
 				`skills-ref validate '${join(paths.workspace(), "skills", "<name>")}'`,
 			);

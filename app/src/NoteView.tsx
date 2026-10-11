@@ -75,7 +75,12 @@ export function NotesIndex({
 	useEffect(() => {
 		const run = () => {
 			const n = ++seq.current;
-			const scope = filter === "all" ? { project: "all" } : filter === "loose" ? { project: "loose" } : { project: filter };
+			const scope =
+				filter === "all"
+					? { project: "all" }
+					: filter === "loose"
+						? { project: "loose" }
+						: { project: filter };
 			void Promise.all([
 				listNotes(token, { ...scope, q: query }),
 				listNotes(token, { ...scope, q: query, archived: true }),
@@ -148,13 +153,16 @@ export function NotesIndex({
 			{notes === null ? (
 				<p className="loading">…</p>
 			) : notes.length === 0 ? (
-				<p className="empty">
-					{query === "" ? "No notes yet." : "No matches."}
-				</p>
+				<p className="empty">{query === "" ? "No notes yet." : "No matches."}</p>
 			) : (
 				<div className="card">
 					{notes.map((n) => (
-						<NoteIndexRow key={n.id} note={n} projectName={projectName(n.projectId)} onOpen={onOpen} />
+						<NoteIndexRow
+							key={n.id}
+							note={n}
+							projectName={projectName(n.projectId)}
+							onOpen={onOpen}
+						/>
 					))}
 				</div>
 			)}
@@ -163,7 +171,12 @@ export function NotesIndex({
 					<summary>Archived notes ({archived.length})</summary>
 					<div className="inner card">
 						{archived.map((n) => (
-							<NoteIndexRow key={n.id} note={n} projectName={projectName(n.projectId)} onOpen={onOpen} />
+							<NoteIndexRow
+								key={n.id}
+								note={n}
+								projectName={projectName(n.projectId)}
+								onOpen={onOpen}
+							/>
 						))}
 					</div>
 				</details>
@@ -210,8 +223,7 @@ function VersionsPanel({
 				setPreview(null);
 				onRestored(n);
 			},
-			(err) =>
-				setError(`Couldn't restore: ${err instanceof Error ? err.message : String(err)}`),
+			(err) => setError(`Couldn't restore: ${err instanceof Error ? err.message : String(err)}`),
 		);
 	};
 	return (
@@ -254,9 +266,7 @@ function VersionsPanel({
 						>
 							Restore
 						</button>
-						{!canRestore && (
-							<small className="hint">Save or resolve edits before restoring</small>
-						)}
+						{!canRestore && <small className="hint">Save or resolve edits before restoring</small>}
 						<button type="button" className="ghost-inline" onClick={() => setPreview(null)}>
 							Close
 						</button>
@@ -358,8 +368,7 @@ export function NoteView({
 					if (!live) return;
 					const cur = noteRef.current;
 					if (cur === null || data.rev < cur.rev) return;
-					const titleDirty =
-						titleDraftRef.current !== "" && titleDraftRef.current !== cur.title;
+					const titleDirty = titleDraftRef.current !== "" && titleDraftRef.current !== cur.title;
 					const bodyDirty = dirtyRef.current || (editorRef.current?.dirty() ?? false);
 					if (data.rev > cur.rev) {
 						if (bodyDirty || titleDirty) {
@@ -394,7 +403,10 @@ export function NoteView({
 	if (loadError !== null) return <div className="error">{loadError}</div>;
 	if (note === null) return <div className="loading">…</div>;
 
-	const flag = (patch: { projectId?: string | null; pinned?: boolean; archived?: boolean }, verb: string) => {
+	const flag = (
+		patch: { projectId?: string | null; pinned?: boolean; archived?: boolean },
+		verb: string,
+	) => {
 		setBusy(true);
 		void patchNote(token, note.id, patch).then(
 			({ data }) => {
@@ -440,8 +452,7 @@ export function NoteView({
 			return;
 		void deleteNote(token, note.id).then(
 			() => onDeleted(),
-			(err) =>
-				setOpError(`Couldn't delete: ${err instanceof Error ? err.message : String(err)}`),
+			(err) => setOpError(`Couldn't delete: ${err instanceof Error ? err.message : String(err)}`),
 		);
 	};
 
@@ -455,9 +466,7 @@ export function NoteView({
 			)}
 			{conflict !== null && (
 				<div className="note-conflict" role="alert">
-					<span>
-						This note changed elsewhere (rev {conflict.rev}) — your edits are unsaved.
-					</span>
+					<span>This note changed elsewhere (rev {conflict.rev}) — your edits are unsaved.</span>
 					<button
 						type="button"
 						className="ghost-inline"
@@ -477,11 +486,7 @@ export function NoteView({
 						disabled={rewriteApplying}
 						onClick={() => {
 							const t = titleDraft.trim();
-							editorRef.current?.resolve(
-								"mine",
-								conflict,
-								t === "" ? conflict.title : t,
-							);
+							editorRef.current?.resolve("mine", conflict, t === "" ? conflict.title : t);
 						}}
 					>
 						Keep mine
@@ -543,19 +548,10 @@ export function NoteView({
 						Delete
 					</button>
 				)}
-				<button
-					type="button"
-					className="ghost-inline"
-					onClick={() => setVersionsOpen((v) => !v)}
-				>
+				<button type="button" className="ghost-inline" onClick={() => setVersionsOpen((v) => !v)}>
 					Versions
 				</button>
-				<button
-					type="button"
-					className="ghost"
-					disabled={rewriteBusy}
-					onClick={() => onChat(note)}
-				>
+				<button type="button" className="ghost" disabled={rewriteBusy} onClick={() => onChat(note)}>
 					Chat with this note
 				</button>
 			</div>
@@ -574,9 +570,7 @@ export function NoteView({
 							// A landed write clears the bar unless a newer
 							// remote was observed after this PATCH left — the
 							// delayed response doesn't resolve that.
-							setConflict((cur) =>
-								cur !== null && cur.rev > n.rev ? cur : null,
-							);
+							setConflict((cur) => (cur !== null && cur.rev > n.rev ? cur : null));
 						}}
 						onConflict={(theirs) => setConflict(theirs)}
 						onDirty={(d) => {

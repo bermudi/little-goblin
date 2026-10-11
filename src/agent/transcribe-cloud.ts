@@ -458,8 +458,7 @@ export function mimoEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDeps = {}
 				if (!res.ok) throw renderError("mimo", res.status, text);
 				const parsed = parseBody("mimo", text, chatResponse);
 				const choice = parsed.choices[0];
-				if (choice === undefined)
-					throw new Error("mimo: unexpected response shape — no choices");
+				if (choice === undefined) throw new Error("mimo: unexpected response shape — no choices");
 				if (choice.finish_reason === "length") {
 					log.warn("transcription hit the chat output cap — transcript is truncated", {
 						engine: `mimo/${cfg.model}`,

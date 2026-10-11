@@ -4,11 +4,7 @@
 // own new-chat composer.
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import type {
-	AppConversationList,
-	AppNoteSummary,
-	AppProject,
-} from "../../src/http/app-wire.ts";
+import type { AppConversationList, AppNoteSummary, AppProject } from "../../src/http/app-wire.ts";
 import { ApiError, createNote, createProject, listNotes, patchProject } from "./api.ts";
 
 type Summary = AppConversationList["conversations"][number];

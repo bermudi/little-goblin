@@ -1306,8 +1306,7 @@ describe("app projects surface", () => {
 			if (url === "/api/app/conversations") {
 				if (method === "POST") {
 					posts.push({ url, body });
-					if (failCreate)
-						return Promise.resolve(jsonResponse({ error: "mint down" }, 500));
+					if (failCreate) return Promise.resolve(jsonResponse({ error: "mint down" }, 500));
 					return Promise.resolve(
 						jsonResponse({ id: "app/minted", title: null, createdAt: "2026-10-10T00:00:00Z" }, 201),
 					);
@@ -1353,8 +1352,7 @@ describe("app projects surface", () => {
 					);
 				}
 				if (method === "GET") {
-					if (noteGetFail)
-						return Promise.resolve(jsonResponse({ error: "list down" }, 500));
+					if (noteGetFail) return Promise.resolve(jsonResponse({ error: "list down" }, 500));
 					if (noteGetOverride !== null) return Promise.resolve(jsonResponse(noteGetOverride));
 				}
 				const n = notes.find((x) => x.id === id);
@@ -1387,8 +1385,7 @@ describe("app projects surface", () => {
 					}),
 				);
 			}
-			if (url.endsWith("/messages"))
-				return Promise.resolve(jsonResponse({ messages: stored }));
+			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: stored }));
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
 			if (url.endsWith("/chat")) {
 				posts.push({ url, body });
@@ -1617,8 +1614,7 @@ describe("app projects surface", () => {
 		await settle();
 		const chat = posts.find((p) => p.url === "/api/app/chat");
 		expect(chat).toBeTruthy();
-		const msg = (chat!.body as { message: { parts: { type: string; data?: unknown }[] } })
-			.message;
+		const msg = (chat!.body as { message: { parts: { type: string; data?: unknown }[] } }).message;
 		expect(msg.parts).toContainEqual({ type: "data-note", data: { id: "n-shopping" } });
 	});
 
@@ -1639,7 +1635,9 @@ describe("app projects surface", () => {
 			},
 		];
 		await mount();
-		await click([...container.querySelectorAll(".conv-title")].find((t) => t.textContent === "note chat"));
+		await click(
+			[...container.querySelectorAll(".conv-title")].find((t) => t.textContent === "note chat"),
+		);
 		const chip = container.querySelector(".note-chip");
 		expect(chip).not.toBeNull();
 		expect(chip!.textContent).toContain("Note · Shopping · rev 3");
@@ -1670,12 +1668,12 @@ describe("app projects surface", () => {
 		expect(card).not.toBeNull();
 		// The inner triple fence survives inside the card's body.
 		expect(card!.textContent).toContain("inner()");
-		await click([...card!.querySelectorAll("button")].find((b) => b.textContent === "Append to note…"));
+		await click(
+			[...card!.querySelectorAll("button")].find((b) => b.textContent === "Append to note…"),
+		);
 		await settleSlow();
 		await click(
-			[...card!.querySelectorAll(".note-pick li button")].find(
-				(b) => b.textContent === "Shopping",
-			),
+			[...card!.querySelectorAll(".note-pick li button")].find((b) => b.textContent === "Shopping"),
 		);
 		await settle();
 		const append = posts.find((p) => p.url === "/api/app/notes/n-shopping/append");
@@ -1828,9 +1826,9 @@ describe("app projects surface", () => {
 			[...container.querySelectorAll("button")].find((b) => b.textContent === "Versions"),
 		);
 		await click(container.querySelector(".note-versions button.link"));
-		const restore = [
-			...container.querySelectorAll(".note-version-preview button"),
-		].find((b) => b.textContent === "Restore") as HTMLButtonElement;
+		const restore = [...container.querySelectorAll(".note-version-preview button")].find(
+			(b) => b.textContent === "Restore",
+		) as HTMLButtonElement;
 		expect(restore.disabled).toBe(true);
 		expect(container.querySelector(".note-version-preview")!.textContent).toContain(
 			"Save or resolve edits before restoring",
@@ -1868,12 +1866,14 @@ describe("app projects surface", () => {
 		const text = pm!.querySelector("p")!.firstChild!;
 		await act(async () => {
 			(pm as HTMLElement).focus();
-			win.getSelection()!.setBaseAndExtent(
-				text as unknown as import("happy-dom").Node,
-				6,
-				text as unknown as import("happy-dom").Node,
-				10,
-			);
+			win
+				.getSelection()!
+				.setBaseAndExtent(
+					text as unknown as import("happy-dom").Node,
+					6,
+					text as unknown as import("happy-dom").Node,
+					10,
+				);
 			document.dispatchEvent(new win.Event("selectionchange") as unknown as Event);
 		});
 		await settle();
@@ -1896,9 +1896,7 @@ describe("app projects surface", () => {
 			win.HTMLTextAreaElement.prototype,
 		);
 		await click(
-			[...container.querySelectorAll("button")].find(
-				(b) => b.textContent === "Generate rewrite",
-			),
+			[...container.querySelectorAll("button")].find((b) => b.textContent === "Generate rewrite"),
 		);
 		await settle();
 		expect(container.querySelector(".note-rewrite-preview")!.textContent).toContain(
@@ -1906,9 +1904,7 @@ describe("app projects surface", () => {
 		);
 		expect(title.disabled).toBe(true);
 
-		await click(
-			[...container.querySelectorAll("button")].find((b) => b.textContent === "Discard"),
-		);
+		await click([...container.querySelectorAll("button")].find((b) => b.textContent === "Discard"));
 		await settle();
 		expect(container.querySelector(".note-rewrite")).toBeNull();
 		expect(title.disabled).toBe(false);

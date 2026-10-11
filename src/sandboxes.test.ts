@@ -153,18 +153,13 @@ function fakeEngine(opts?: {
 			const labelIdx = args.indexOf("--filter");
 			const label = labelIdx === -1 ? "" : args[labelIdx + 1]!.replace(/^label=/, "");
 			const [k, v] = label.split("=", 2);
-			const names = [...containers.entries()]
-				.filter(([, c]) => c.labels[k!] === v)
-				.map(([n]) => n);
+			const names = [...containers.entries()].filter(([, c]) => c.labels[k!] === v).map(([n]) => n);
 			return { code: 0, stdout: names.join("\n"), stderr: "" };
 		}
 		throw new Error(`fake podman: unhandled argv ${JSON.stringify(args)}`);
 	};
 
-	const execRunner = async (
-		args: string[],
-		_opts: PodmanExecOpts,
-	): Promise<BoundedProc> => {
+	const execRunner = async (args: string[], _opts: PodmanExecOpts): Promise<BoundedProc> => {
 		execCalls.push([...args]);
 		return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
 	};
@@ -189,10 +184,7 @@ function fakeEngine(opts?: {
 	};
 }
 
-function rig(
-	engine: ReturnType<typeof fakeEngine>,
-	config?: Partial<SandboxConfig>,
-) {
+function rig(engine: ReturnType<typeof fakeEngine>, config?: Partial<SandboxConfig>) {
 	const store = openSandboxes(tmpdb());
 	const sandboxes = makeSandboxes({
 		podman: engine.podman,
@@ -221,9 +213,7 @@ describe("sandboxes lifecycle", () => {
 		expect(c.labels["goblin.conversation"]).toBe(conv);
 		// Created ON the network, then disconnected before first use.
 		expect(c.networks.size).toBe(0);
-		const disconnects = engine.calls.filter(
-			(a) => a[0] === "network" && a[1] === "disconnect",
-		);
+		const disconnects = engine.calls.filter((a) => a[0] === "network" && a[1] === "disconnect");
 		expect(disconnects).toHaveLength(1);
 		const createArgv = engine.calls.find((a) => a[0] === "run")!;
 		for (const flag of [
@@ -263,18 +253,14 @@ describe("sandboxes lifecycle", () => {
 		expect(engine.containers.get(name)!.running).toBe(true);
 		// Intent wins: the row says off, the stale attachment is removed.
 		expect(engine.containers.get(name)!.networks.size).toBe(0);
-		expect(
-			engine.calls.some((a) => a[0] === "network" && a[1] === "disconnect"),
-		).toBe(true);
+		expect(engine.calls.some((a) => a[0] === "network" && a[1] === "disconnect")).toBe(true);
 	});
 
 	test("a labelled container with no row is adopted from inspect", async () => {
 		const conv = "dm:42";
 		const name = containerNameFor(conv, PREFIX);
 		const engine = fakeEngine({
-			containers: [
-				{ name, image: "docker.io/library/debian:stable-slim", networks: [NETWORK] },
-			],
+			containers: [{ name, image: "docker.io/library/debian:stable-slim", networks: [NETWORK] }],
 		});
 		const { sandboxes, store } = rig(engine);
 		const out = await sandboxes.exec(conv, "true", execOpts);
@@ -313,9 +299,7 @@ describe("sandboxes lifecycle", () => {
 			containers: [{ name, labels: {} }],
 		});
 		const { sandboxes } = rig(engine);
-		await expect(sandboxes.exec(conv, "true", execOpts)).rejects.toThrow(
-			/goblin\.sandbox label/,
-		);
+		await expect(sandboxes.exec(conv, "true", execOpts)).rejects.toThrow(/goblin\.sandbox label/);
 		expect(engine.containers.has(name)).toBe(true);
 	});
 

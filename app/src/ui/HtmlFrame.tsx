@@ -3,6 +3,12 @@
 // hatch). No allow-same-origin ever: the opaque origin cannot read the
 // app's storage, DOM, or token. Height comes from an injected
 // ResizeObserver via postMessage — this frame's window only, clamped.
+// CSP governs fetches, never navigations: a frame navigated away sheds
+// the injected CSP but keeps allow-scripts, handing a remote page
+// network egress and rendering inside trusted chrome. Declarative and
+// click-driven navigations are neutralized at the source (meta refresh
+// stripped in srcdoc(), anchor clicks intercepted); a direct location
+// assignment from script remains the accepted residual.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { UiLeaf } from "../../../src/agent/tools/ui-schema.ts";
@@ -14,6 +20,12 @@ const CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'no
 // (html,body are height:auto below). <body> may not exist when this
 // runs; observe after DOMContentLoaded.
 const RESIZE = `<script>addEventListener("DOMContentLoaded",function(){new ResizeObserver(function(){parent.postMessage({goblinUiHeight:Math.ceil(document.body.getBoundingClientRect().height)},"*")}).observe(document.body)})</script>`;
+
+// In-page anchors (#fragments) still work; every other href is out of
+// the leaf's contract ("no network, no external assets") and is a
+// navigation-escape vector, so it never leaves the frame. Capture phase
+// — the document's own handlers must not get to run the default first.
+const NAVIGATION_GUARD = `<script>document.addEventListener("click",function(e){var t=e.target;if(!(t instanceof Element))return;var a=t.closest("a[href]");if(a&&(a.getAttribute("href")||"").charAt(0)!=="#")e.preventDefault()},true)</script>`;
 
 // App tokens are CSS custom properties — the sandboxed document can't
 // see them, so they're baked in as literals at render time. Text color
@@ -35,9 +47,16 @@ function baseStyle(): string {
 	return `<style>:root{color-scheme:light dark}*{box-sizing:border-box}html,body{margin:0;padding:0;height:auto;background:transparent;color:CanvasText;font-family:${vars.font};font-size:13px;line-height:1.45}body{display:flow-root}a{color:${vars.accent}}button,input,select,textarea{font:inherit;color:inherit}</style>`;
 }
 
-function srcdoc(html: string): string {
+export function srcdoc(html: string): string {
 	// The CSP meta leads — anything before it would execute ungated.
-	return `<!doctype html>${CSP}${baseStyle()}${RESIZE}${html}`;
+	// Meta refresh is declarative navigation — CSP can't gate it — so it
+	// is stripped before the document ever exists (quoted or bare
+	// http-equiv values, attributes in any order).
+	const body = html.replace(
+		/<meta\b[^>]*http-equiv\s*=\s*(["'])?\s*refresh\s*\1[^>]*>/gi,
+		"",
+	);
+	return `<!doctype html>${CSP}${baseStyle()}${RESIZE}${NAVIGATION_GUARD}${body}`;
 }
 
 export function HtmlFrame({ leaf }: { leaf: Extract<UiLeaf, { type: "html" }> }) {

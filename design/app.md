@@ -518,10 +518,18 @@ cross-site and the trust-mode gate refuses them; reads lack CORS.
 Height is reported by an injected resize script via `postMessage`,
 accepted only from that iframe's own window and clamped. Rendered
 only once the input is complete — HTML does not stream usefully.
-**Accepted residual:** a script may navigate its own frame to an
-external URL, an exfiltration path. It adds no capability the agent
-lacks — `fetch` already reaches any URL — so prompt injection
-reaching the model is the threat either way, not this frame.
+Navigations out of the frame are neutralized at the source (ruling
+2026-10-10): CSP governs fetches, never navigations, and a navigated
+frame sheds the injected CSP while keeping `allow-scripts` — network
+egress plus rendering inside the app's trusted chrome. Meta refresh
+is stripped in `srcdoc()` and an injected capture-phase click guard
+prevents every non-`#` anchor navigation; popups and forms are
+already dead under the sandbox flags. **Accepted residual:** a
+direct `location` assignment from script can still navigate the
+frame — un-interceptable from inside the document — so the `html`
+leaf stays a prompt-injection surface; the operator treats any frame
+that suddenly renders a foreign page as a signal the model was
+injected, same as any odd message text.
 
 **Cache.** The tool joins app conversations' tool sets at deploy:
 one cold prefix per live app conversation, same as any new tool.

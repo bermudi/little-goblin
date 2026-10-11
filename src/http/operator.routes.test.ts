@@ -30,7 +30,8 @@ function deps(): OperatorDeps {
 			current: parseConfig({
 				providers: { test: { kind: "codex" } },
 				model: "test/m",
-				allowedUsers: [7],
+				operators: [7],
+				allowedUsers: [],
 			}),
 		},
 		onConfigWritten: () => {},

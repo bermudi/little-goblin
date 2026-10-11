@@ -20,7 +20,9 @@ model/thinking (history still copies, as specified in design/app.md).
 
 ## Telegram intake & delivery
 
-- grammy long polling; the `allowedUsers` config key gates access first thing.
+- grammy long polling; access is gated first thing by the two-list
+  model — `operators` and `allowedUsers` (Roles and permissions,
+  below).
 - **Coalescing buffer**: rapid-fire messages in one conversation merge into
   one turn. Real product value in v1 — but its 1.5s quiet window was
   inherited, never measured, and it is a flat latency tax on every
@@ -151,7 +153,7 @@ failing message by message.
   Auth is unchanged: initData per request via `x-init-data`, the same
   `validateInitData`, the same `via: "mini-app"` actor — so the
   self-lockout guard (the door refuses to drop the *requesting* Telegram
-  id from `allowedUsers`) keeps working where the app door's empty-list
+  id from `operators`) keeps working where the app door's empty-list
   guard cannot. The operator tails are named identically on both doors —
   `/api/settings` mirrors `/api/app/settings`, `/api/memory/status`
   mirrors `/api/app/memory/status`, and so on; only the prefix and the
@@ -207,7 +209,11 @@ questions, web lookups, small chats — and reads like messaging a
 person: one long chat, no topics. But one forever-conversation drags
 a stale, expensive context into every unrelated question, so the DM is
 a **rolling address**: a sequence of conversations, one current, with
-boundaries drawn by quiet gaps.
+boundaries drawn by quiet gaps. The DM rolls for every admitted class
+(2026-10-11): operators get personal conversations, `allowedUsers`
+get standing sandbox ones (`persona: guest`, memory-excluded,
+`search` only — Roles and permissions). The gap check is routing
+machinery, not persona — it runs the same for both.
 
 **Why gaps, and why not just a timer.** The cache argument is moot:
 measured from goblin.log on 2026-10-03, z.ai's prefix cache holds for
@@ -385,6 +391,61 @@ outcome — never message text); `dm cutover re-pin` per program.
   messages in a topic as replies to the topic's root message, so that
   `reply_to_message` is ignored, or every burst would skip the check.
 
+## Roles and permissions (ruling 2026-10-11)
+
+The unit of trust is the person, not the chat. Two config lists:
+`operators` (min 1 — the operator's own accounts) and `allowedUsers`
+(may be empty — people the operator names). Everyone else is a
+stranger, and a stranger is never served: **every summons gets one
+short refusal line and nothing else** — no turn, no conversation, no
+state, no meter. The line is fixed ("🚫 I only talk to my operator
+and approved users.") and fires on every surface that carries a
+summons — the bot DM, a member-chat @mention or reply-to-goblin, and
+the guest surface (settled into the placeholder). Ambient group
+chatter from a non-operator is not a summons: dropped with one log
+line (`group message dropped — not operator`), no reply.
+
+| who | bot DM | member group | guest surface | app doors |
+|---|---|---|---|---|
+| `operators` | personal, rolling | any message → the room's standing personal lane | personal guest turn | yes |
+| `allowedUsers` | standing sandbox: rolling, `persona: guest`, memory-excluded, `search` only | @mention/reply → sandbox guest turn in their own `guest:` conversation; plain message dropped | sandbox guest turn | no |
+| stranger | refusal line | @mention/reply → refusal line; plain message dropped | refusal line | no |
+
+**Only operators reach normal intake.** Non-operators reach the bot
+through guest-turn summons or not at all — an allowed user's plain
+group message must never fall through into the room's standing
+conversation, which is the operator's personal lane. This ruling
+deletes the 2026-10-06 chat-trust machinery: `/open` and `/off`, the
+`guest_open_chats` row, epoch fencing, and the per-user daily turn
+budget (`perUserDailyTurns`) — strangers are never served, so room
+trust has nothing to admit and a meter has nothing to count. Two
+lists plus a refusal line is the whole model. The `guest` block
+stays the feature switch for the sandbox class (absent →
+operator-only; non-operator summons get the refusal wherever intake
+still runs).
+
+**Sandbox class invariants.** Persona follows class at conversation
+creation, and the sandbox tool filter is **persona-driven**: any
+conversation pinned `persona: guest` gets `SANDBOX_TOOLS` (`search`
+only) whatever channel it lives on. The old filter guarded on
+channel, which would have handed a persona-pinned DM the full
+toolset — the guard is the persona column, not the address shape.
+Sandbox conversations are memory-excluded by construction, capped
+per reply by `guest.outputChars` on the guest surface, **uncapped in
+turn count** (ruling 2026-10-11 — the named list is small and
+vouched for), and reactive only: no bell, no pings, no program
+hooks, no mail authority. The PWA door is tailnet/token by
+construction; the mini app door validates initData against
+`operators`; config saves carry the self-lockout guard on
+`operators` (design/app.md → Operator console).
+
+**Config.** `operators: number[]` (min 1) + `allowedUsers: number[]`
+(default `[]`), both editable from the app's config editor. The
+legacy single `allowedUsers` key meant operator class; the live file
+migrates at deploy (`allowedUsers: [x]` → `operators: [x]`,
+`allowedUsers: []`), and boot fails loud naming the key when
+`operators` is missing.
+
 ## Guest mode (ruling 2026-10-06)
 
 Goblin answers in third-party chats, summoned by mention. The operator
@@ -408,25 +469,21 @@ asked for both surfaces Telegram offers:
   intake — a standing conversation in that chat, full agent, no guest
   machinery at all.
 
-**The unit of trust is the chat.** An `open_chats` row (state, not
-config — the programs precedent) admits third-party summonses in that
-chat. The operator opens with a `@goblin /open` summons (either
-surface; confirmed by reply) and closes with `@goblin /off` — closing
-also epoch-bumps every guest conversation in that chat, fencing
-running turns, and any summons parked on Telegram's placeholder
-response when the `/off` lands is revalidated after that await
-(chat openness, enabled config, caller class) and dropped with its
-placeholder settled rather than submitted. Non-operator `/open`/`/off`
-attempts are ignored.
-Third-party summons in a chat that is not open: silence (no answer,
-nothing rendered). Group privacy mode stays ON deliberately: the bot
+**The unit of trust is the person (Roles and permissions, 2026-10-11).**
+The 2026-10-06 chat-trust machinery is deleted with it: `/open` and
+`/off`, the `guest_open_chats` row, the epoch-bump fencing on close,
+and the post-placeholder revalidation of openness (the busy check
+stays — a busy conversation still refuses new summons with one
+line). Summonses classify by the two lists alone; a stranger's
+summons gets the refusal line, settled into the placeholder where
+there is one. Group privacy mode stays ON deliberately: the bot
 receives only mentions/replies in member chats, mirroring guest
 mode's no-history property.
 
-**Two caller classes, decided per summons, enforced by hard exclusion.**
-`from.id ∈ allowedUsers` (read live at summons — the platform-side
-BotFather restriction is OFF, so goblin owns every gate) → a
-*personal* guest turn: the normal prompt persona (SOUL et al.),
+**Three classes, decided per summons, enforced by hard exclusion**
+(Roles and permissions, above). `from.id ∈ operators` (read live at
+summons — the platform-side BotFather restriction is OFF, so goblin
+owns every gate) → a *personal* guest turn: the normal prompt persona (SOUL et al.),
 explicitly told **other people can read the chat** — guest replies
 are public to the room, and the model must be deliberate before
 surfacing private material — with the personal toolset minus
@@ -434,7 +491,7 @@ everything that pins, reaches beyond the chat, or speaks in another
 medium — `program`, `mail`, `delegate`,
 `memory_search`, `history_search`, `speak`, `send_file` never
 register on the guest channel (one ruling everywhere, even where the
-member surface's sink could deliver them). Everyone else
+member surface's sink could deliver them). `from.id ∈ allowedUsers`
 → a *sandbox* turn: a **guest persona** prompt (no SOUL.md, no
 USER.md, no skills — nothing private in, nothing about the operator
 out) and a toolset of `search` only. The sandbox is a
@@ -451,11 +508,10 @@ resolve-then-check without pinning is DNS-rebindable (verify a public
 address, connect to `127.0.0.1`). An incomplete sandbox is worse than
 none, so the tool is out entirely — it returns only as a designed
 feature when a real need exists, never by re-extending the personal
-one. A per-user daily
-turn budget (`guest.perUserDailyTurns`, default 25, operator exempt,
-denied with a one-line refusal) bounds model spend; a busy guest
-conversation refuses new summons with one line rather than steering
-— a steered reply would land in another summoner's message.
+one. Everyone else is a stranger: the refusal line, nothing else
+(Roles and permissions). A busy guest conversation refuses new
+summons with one line rather than steering — a steered reply would
+land in another summoner's message.
 
 **Identity and record.** Guest conversations are keyed
 `guest:<chatId>:<Id>` — per chat per summoner, so reply chains and
@@ -466,13 +522,19 @@ rolling — each is one turn; reply context arrives as a quoted part
 `memory_excluded` by construction: no recall, no distillation, no
 skill review (the reviewer kill-switch coupling is deliberate), and
 out of FTS — guest exchanges are off the record entirely. A `persona`
-column (`personal` | `guest`) freezes the prompt class at creation
-and drives the sandbox tool filter; a later flip (an allowedUsers
-edit) busts the frozen prompt snapshot with the persona — a demoted
-caller must never keep the personal persona's bytes.
+column (`personal` | `guest`) freezes the prompt class at creation — guest
+conversations and allowed users' standing DMs alike — and drives the
+persona-driven sandbox tool filter; a later class flip (an
+`operators`/`allowedUsers` edit) busts the frozen prompt snapshot
+with the persona, both directions — a demoted caller must never keep
+the personal persona's bytes.
 
-**Intake plumbing.** Guest handlers register **before**
-`allowedUserGate` — the gate stays pure and unchanged, and guest traffic never hits it. `guest_message` updates bypass `tg_inbox`
+**Intake plumbing.** Guest handlers register **before** the access
+gate, and summons traffic never hits it. The gate is the Roles
+router's member-surface edge: operators pass to normal intake,
+allowed users pass in the bot DM to their sandbox lane, a stranger
+DM gets the refusal line, non-operator group chatter drops with one
+log line. `guest_message` updates bypass `tg_inbox`
 entirely (guest message ids share no namespace with the bot's own
 chats — a `UNIQUE(chat_id, message_id)` hit would exit the process);
 at-most-once rides a `guest_dedup(update_id)` insert-or-ignore
@@ -484,24 +546,22 @@ toggles are the operator's: Guest Mode on, Restrict bot usage **off**
 stray summonses from strangers arrive, are classified deny, and cost
 one log line and nothing else).
 
-**Audience awareness rides the burst, not the snapshot.** Openness
-changes with `/open` and `/off`, but the system prompt is frozen per
-conversation (cache stability) — so the audience note is a text part
-injected at the head of every burst admitted in an open chat
-(`[note: this is a shared chat — everyone in it can read your
-replies…]`, the swipe-reply quoted-part precedent): always current,
-append-only, prefix-stable. It applies to the operator's ordinary
-conversations in that chat (topics and the standing group
-conversation) — guest conversations need no note, their persona
-already knows. Private chats never get one: a chat where the bot is
-a member and the id is positive *is* the bot DM, which cannot be
-opened.
+**Audience awareness rides the burst, not the snapshot.** The
+system prompt is frozen per conversation (cache stability) — so the
+audience note is a text part injected at the head of every burst in
+a group-addressed conversation (`[note: this is a shared chat —
+everyone in it can read your replies…]`, the swipe-reply quoted-part
+precedent): always current, append-only, prefix-stable. With the
+chat-trust machinery gone this covers every member group — the
+operator's standing conversation and topics included; guest
+conversations need no note, their persona already knows. Private
+chats never get one: a chat where the bot is
+a member and the id is positive *is* the bot DM.
 
 **Logging.** `guest summons` (chat, from, update id, verdict
-`personal|sandbox|deny|busy|budget`, open-chat state),
-`guest answered` (inline message id, edit count, chars),
-`guest chat opened/closed` (chat, by which summons), budget denies,
-and every drop with its reason.
+`personal|sandbox|refused|busy`),
+`guest answered` (inline message id, edit count, chars), stranger
+refusals, non-operator group drops, and every drop with its reason.
 
 **Probes (unverified, resolve at enablement).** Whether `guest_message`
 arrives in Telegram's default update set (else pass explicit

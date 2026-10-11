@@ -67,7 +67,7 @@ program's state, never a workspace file.** Rulings:
   for GitHub/CI). The token is 32 random bytes, base64url; only its
   sha256 is stored. **The token never enters model context**: the
   tool that enables or rotates a hook DMs the full URL to each
-  `allowedUsers` id — never the program's topic, whose group readers
+  `operators` id — never the program's topic, whose group readers
   aren't implicitly authorized — outside conversation history, and
   returns only "hook enabled, URL sent privately" to the model. No DM
   delivered = tool error (hook stays set; rotate resends). The route

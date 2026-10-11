@@ -321,9 +321,10 @@ absent; the herdr session name is not config, it belongs to
 `deploy/goblin-herdr.service`), optional `mail` block (`clientId`,
 `clientSecretAuth`, `sendAuth` — the send credential only; reads ride
 `gws auth login`, absent = no mail tool, no mail watcher), optional
-`guest` block (absent = guest intake off; `perUserDailyTurns`
-default 25, `outputChars` default 3500 — third-party summonses in
-opened chats, `design/telegram.md` → Guest mode), optional
+`guest` block (absent = no service for non-operators;
+`outputChars` default 3500 — sandboxed turns and standing sandbox
+DMs for `allowedUsers`, `design/telegram.md` → Roles and
+permissions), optional
 `sandbox` block (absent or `""` = no sandbox tool; `image`,
 `idleHours`, `memory`, `cpus`, `pids` — `design/sandbox.md`), optional
 `reviewer` + `system1` blocks (the skill-review gate and the shared
@@ -456,7 +457,9 @@ The list below is a record, not a law. The law, applied to any capability:
    durability, delivery). Always in; defects here jump the queue.
 2. **Chat-native** — a natural property of one operator talking to one agent
    in Telegram: text/voice/media intake, topics, settings commands, the
-   soul. In scope by default; a missing piece here is a gap *against this
+   soul. The operator is one person (possibly several accounts); anyone
+   else appears only as a fenced sandbox lane (`design/telegram.md` →
+   Roles and permissions). In scope by default; a missing piece here is a gap *against this
    doc*, not a deferral. (Voice notes are chat-native — the rewrite exists
    because pi couldn't do audio; if transcription is missing, that's a bug
    in the roadmap, not a choice.)
@@ -492,11 +495,12 @@ in-process embeddings (delegated to Hindsight for memory) · app client
 (returned on demand 2026-09-30 — `App channel`; a third channel stays
 out) · sandboxed execution (returned on demand 2026-10-10 — `Sandbox`;
 one podman backend, no backend registry) · multi-user (bounded slice
-returned on demand 2026-10-06 —
-third-party guest summonses in opened chats, sandboxed to a guest
-persona + `search` (no sandbox `fetch` — `design/telegram.md` →
-Guest mode); full multi-user stays out —
-`design/telegram.md` → Guest mode)
+returned on demand 2026-10-06, widened 2026-10-11 —
+named `allowedUsers` get sandboxed turns and standing sandbox DMs:
+guest persona + `search` only, memory-excluded, no app doors
+(`design/telegram.md` → Roles and permissions; no sandbox `fetch` —
+Guest mode there); strangers get one refusal line and nothing else;
+full multi-user stays out)
 
 ## Test posture — the real change
 

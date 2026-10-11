@@ -5,11 +5,20 @@
 // prefix property. Cross-turn cache behavior (steering append-only,
 // the failed-boundary burst merge) stays pinned e2e in runtime.test.ts.
 
-import { describe, expect, test } from "bun:test";
-import type { ModelMessage, UIMessage } from "ai";
+import { afterEach, describe, expect, test } from "bun:test";
+import { convertToModelMessages, type ModelMessage, type UIMessage } from "ai";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { attachmentPart } from "../agent/attachments.ts";
+import { setLogFile } from "../log.ts";
 import type { RecallContext } from "../memory.ts";
-import { buildModelView, convertSteeredMessage, type ViewContext } from "./view.ts";
+import {
+	buildModelView,
+	convertSteeredMessage,
+	incompleteToolCallIds,
+	type ViewContext,
+} from "./view.ts";
 
 const user = (id: string, text: string): UIMessage => ({
 	id,
@@ -248,5 +257,166 @@ describe("the steer variant", () => {
 			],
 		} as unknown as UIMessage;
 		await expect(convertSteeredMessage(ctx, poison)).rejects.toThrow("Invalid URL");
+	});
+});
+
+describe("unfinished tool calls", () => {
+	// Durable history pairs every tool call with its result (abort paths
+	// never persist partials), so the model view's incomplete-call drop
+	// is an alarm when it fires on history and expected only on the
+	// resume partial. These tests pin the drop AND its log line — a
+	// silent drop violates the logging bar.
+	let logDir: string | null = null;
+	afterEach(() => {
+		setLogFile(null);
+		if (logDir !== null) rmSync(logDir, { recursive: true, force: true });
+		logDir = null;
+	});
+	const capture = (): string => {
+		logDir = mkdtempSync(join(tmpdir(), "goblin-viewlog-"));
+		const target = join(logDir, "goblin.log");
+		setLogFile(target);
+		return target;
+	};
+	const lines = (target: string): Record<string, unknown>[] =>
+		readFileSync(target, "utf8")
+			.split("\n")
+			.filter((l) => l !== "")
+			.map((l) => JSON.parse(l) as Record<string, unknown>);
+	const historyDropMsg = "unfinished tool call in durable history — dropped from the model view";
+	const partialDropMsg = "resume partial ends on an unfinished tool call — dropped from the model view";
+
+	test("a durable history call without its result is dropped and logged as a warning", async () => {
+		const target = capture();
+		const view = await build(
+			entries([
+				user("u1", "run pwd"),
+				{
+					id: "a1",
+					role: "assistant",
+					parts: [
+						{ type: "text", text: "checking" },
+						{
+							type: "tool-bash",
+							toolCallId: "t1",
+							state: "input-available",
+							input: { command: "pwd" },
+						},
+					],
+				} as unknown as UIMessage,
+				user("u2", "hello?"),
+			]),
+		);
+		// The dangling call never reaches the wire; the message's text does.
+		expect(JSON.stringify(view)).not.toContain("tool-bash");
+		expect(texts(view)).toContain("checking");
+		const entry = lines(target).find((l) => l.msg === historyDropMsg);
+		expect(entry).toMatchObject({ level: "warn", message: "a1", toolCalls: ["t1"] });
+	});
+
+	test("the resume partial's dangling call drops at info — a crash mid-call is legitimate", async () => {
+		const target = capture();
+		const partial = {
+			id: "p",
+			role: "assistant",
+			parts: [
+				{ type: "text", text: "half an answ" },
+				{
+					type: "tool-bash",
+					toolCallId: "t9",
+					state: "input-streaming",
+					input: { command: "pwd" },
+				},
+			],
+		} as unknown as UIMessage;
+		const view = await build(entries([user("u1", "q"), asst("a1", "old answer")]), [], null, partial);
+		expect(JSON.stringify(view)).not.toContain("tool-bash");
+		expect(texts(view)).toContain("half an answ");
+		const entry = lines(target).find((l) => l.msg === partialDropMsg);
+		expect(entry).toMatchObject({ level: "info", message: "p", toolCalls: ["t9"] });
+		expect(lines(target).some((l) => l.level === "warn")).toBe(false);
+	});
+
+	test("a completed call+result pair converts whole and logs nothing", async () => {
+		const target = capture();
+		const view = await build(
+			entries([
+				user("u1", "run pwd"),
+				{
+					id: "a1",
+					role: "assistant",
+					parts: [
+						{ type: "text", text: "checking" },
+						{
+							type: "tool-bash",
+							toolCallId: "t1",
+							state: "output-available",
+							input: { command: "pwd" },
+							output: "/workspace",
+						},
+					],
+				} as unknown as UIMessage,
+			]),
+		);
+		// Call and result both reach the wire — nothing dropped, nothing logged.
+		const wire = JSON.stringify(view);
+		expect(wire).toContain("tool-call");
+		expect(wire).toContain("tool-result");
+		expect(wire).toContain("/workspace");
+		const dropLines = lines(target).filter((l) => l.msg === historyDropMsg || l.msg === partialDropMsg);
+		expect(dropLines).toHaveLength(0);
+	});
+
+	test("the drop predicate matches the SDK filter — states it drops", async () => {
+		const dropped: { state: string; preliminary?: boolean }[] = [
+			{ state: "input-streaming" },
+			{ state: "input-available" },
+			{ state: "output-available", preliminary: true },
+		];
+		for (const s of dropped) {
+			const m = {
+				id: "a1",
+				role: "assistant",
+				parts: [
+					{
+						type: "tool-bash",
+						toolCallId: "t1",
+						state: s.state,
+						preliminary: s.preliminary,
+						input: { command: "pwd" },
+						output: "/workspace",
+					},
+				],
+			} as unknown as UIMessage;
+			expect(incompleteToolCallIds(m), s.state).toEqual(["t1"]);
+			const wire = JSON.stringify(
+				await convertToModelMessages([m], { tools: {}, ignoreIncompleteToolCalls: true }),
+			);
+			expect(wire.includes('"tool-call"'), s.state).toBe(false);
+		}
+	});
+
+	test("the drop predicate matches the SDK filter — states it keeps", async () => {
+		const kept: { state: string }[] = [{ state: "output-available" }, { state: "output-error" }];
+		for (const s of kept) {
+			const m = {
+				id: "a1",
+				role: "assistant",
+				parts: [
+					{
+						type: "tool-bash",
+						toolCallId: "t1",
+						state: s.state,
+						input: { command: "pwd" },
+						output: "/workspace",
+					},
+				],
+			} as unknown as UIMessage;
+			expect(incompleteToolCallIds(m), s.state).toEqual([]);
+			const wire = JSON.stringify(
+				await convertToModelMessages([m], { tools: {}, ignoreIncompleteToolCalls: true }),
+			);
+			expect(wire.includes('"tool-call"'), s.state).toBe(true);
+		}
 	});
 });

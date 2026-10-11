@@ -100,6 +100,25 @@ function notePartsAsText(ctx: ViewContext, m: UIMessage): UIMessage {
 	};
 }
 
+// Which tool parts the conversion's ignoreIncompleteToolCalls filter
+// will drop: any tool part outside the SDK's keep-set. Mirrors the
+// filter inside convertToModelMessages — if the SDK's set changes,
+// this must follow or the log drifts from the actual drop.
+export function incompleteToolCallIds(m: UIMessage): string[] {
+	const ids: string[] = [];
+	for (const p of m.parts) {
+		if (!p.type.startsWith("tool-")) continue;
+		const tool = p as { toolCallId?: unknown; state?: unknown; preliminary?: unknown };
+		const kept =
+			tool.state === "approval-responded" ||
+			tool.state === "output-denied" ||
+			tool.state === "output-error" ||
+			(tool.state === "output-available" && tool.preliminary !== true);
+		if (!kept) ids.push(typeof tool.toolCallId === "string" ? tool.toolCallId : p.type);
+	}
+	return ids;
+}
+
 // The full view: interleave recall blocks before their anchored user
 // messages, append a resume's partial reply, materialize attachment refs
 // against this turn's model, convert per message (degrading the
@@ -145,12 +164,33 @@ export async function buildModelView(
 	// converter is a pure per-message mapper (its only cross-message
 	// step, the incomplete-tool-call filter, is itself per-message).
 	const messages: ModelMessage[] = [];
+	const partialId = options.partial?.id ?? null;
 	for (const m of prepared) {
 		// System events render as user-role notes — the SDK rejects
 		// system roles in `messages` (see systemEventAsUser). The
 		// placeholder fallback sees the mapped message, so a doubly
 		// broken event degrades to a user-role note too.
 		const rendered = notePartsAsText(ctx, m.role === "system" ? systemEventAsUser(m) : m);
+		// The conversion below drops unfinished tool calls silently
+		// (ignoreIncompleteToolCalls). Durable history pairs every call
+		// with its result — abort paths never persist partials — so a
+		// drop firing there means an upstream invariant broke. The
+		// resume partial is the one legitimate carrier (a crash
+		// mid-call), so it rates info, not warn.
+		const unfinished = incompleteToolCallIds(rendered);
+		if (unfinished.length > 0 && m.id === partialId) {
+			log.info("resume partial ends on an unfinished tool call — dropped from the model view", {
+				conversation: ctx.convId,
+				message: m.id,
+				toolCalls: unfinished,
+			});
+		} else if (unfinished.length > 0) {
+			log.warn("unfinished tool call in durable history — dropped from the model view", {
+				conversation: ctx.convId,
+				message: m.id,
+				toolCalls: unfinished,
+			});
+		}
 		try {
 			messages.push(
 				...(await convertToModelMessages([rendered], {

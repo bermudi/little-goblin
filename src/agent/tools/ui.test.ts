@@ -181,6 +181,29 @@ describe("normalizeUiInput", () => {
 		expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
 	});
 
+	test("a typeless container with typeless children is fully repaired", () => {
+		// The container's candidate test parses its children, so children
+		// must be re-typed before the container can qualify.
+		const r = normalizeUiInput({
+			blocks: [
+				{
+					tabs: [
+						{ label: "a", blocks: [{ md: "one" }] },
+						{ label: "b", blocks: [{ md: "two" }, { items: [{ label: "n", value: "1" }] }] },
+					],
+				},
+			],
+		});
+		const parsed = uiInputSchema.safeParse(r.value);
+		expect(parsed.success, parsed.success ? "" : JSON.stringify(parsed.error.issues)).toBe(true);
+		expect(r.inferred).toEqual([
+				{ path: "blocks.0.tabs.0.blocks.0", type: "text" },
+				{ path: "blocks.0.tabs.1.blocks.0", type: "text" },
+				{ path: "blocks.0.tabs.1.blocks.1", type: "stats" },
+				{ path: "blocks.0", type: "tabs" },
+		]);
+	});
+
 	test("never mutates the input", () => {
 		const raw = { blocks: [{ md: "hi" }] };
 		normalizeUiInput(raw);

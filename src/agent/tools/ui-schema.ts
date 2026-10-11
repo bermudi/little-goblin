@@ -304,9 +304,15 @@ export function normalizeUiInput(raw: unknown): {
 	const blocks: unknown[] = [];
 	raw.blocks.forEach((b, i) => {
 		const path = `blocks.${i}`;
-		const fixed = repairBlock(b, blockCandidates, path, ctx);
+		// Children repair runs first: a typeless container qualifies for a
+		// candidate only if it parses, and that parse validates its leaves —
+		// which must already carry their own types. Doing it after left a
+		// typeless container with typeless children unrepaired and the whole
+		// tool call rejected.
+		const withChildren = repairChildren(b, path, ctx);
+		const fixed = repairBlock(withChildren, blockCandidates, path, ctx);
 		if (fixed === DROP) return;
-		blocks.push(repairChildren(fixed, path, ctx));
+		blocks.push(fixed);
 	});
 	return { value: { ...raw, blocks }, ...ctx };
 }

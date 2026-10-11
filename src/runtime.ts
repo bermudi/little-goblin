@@ -519,7 +519,7 @@ export class Runtime {
 						// End before a successor can replace lane.live, or attached
 						// subscribers would hang without a terminal event.
 						const crashed = this.lanes.get(convId)?.live;
-						if (crashed != null) endLive(crashed, done);
+						if (crashed != null) endLive(crashed, done, convId);
 						for (const t of turns) await this.notifyDone(t, done);
 					}
 					// A finished turn must not make /stop report live work.
@@ -548,7 +548,7 @@ export class Runtime {
 				log.error("live chunk log never ended — closing attach streams", undefined, {
 					conversation: convId,
 				});
-				endLive(lane.live, { kind: "error", message: "turn ended without an outcome" });
+				endLive(lane.live, { kind: "error", message: "turn ended without an outcome" }, convId);
 			}
 			lane.live = null;
 			// Do not retain idle lanes for the process lifetime.
@@ -597,7 +597,7 @@ export class Runtime {
 		// conversation, not to the connection that submitted first.
 		const sink = turns[0]!.sink;
 		const notifyAll = async (done: TurnDone) => {
-			endLive(live, done);
+			endLive(live, done, convId);
 			for (const t of turns) await this.notifyDone(t, done);
 		};
 		// Admission fixes this attempt's ownership and model input.

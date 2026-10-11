@@ -12,22 +12,20 @@ you're touching before any structural work.
 - **Bun + strict TypeScript.** No `any` — `unknown` and narrow. Validate
   external input with zod at boundaries (config, Telegram updates, tool args,
   disk state).
-- **The mini app client is plain, checked JS.** `src/http/app.js` ships as
-  served — no bundler, no framework, no build step (design rule, scoped to
-  the mini app by DESIGN.md → App channel, 2026-09-30). It is type-checked
-  (`bun run typecheck` runs the tsc programs) with wire types imported from
-  `mod.ts`/`config.ts`, so config schema changes break typecheck, not the
-  page. Don't add `.js` files without the same treatment, and don't let the
-  server program see `telegram-webapp.d.ts` — its `Window` declaration
-  changes how linkedom's `parseHTML` resolves in `agent/tools/fetch.ts`
-  (that's why tsconfig.json excludes it).
-- **The app client is the one built client.** `app/` is Vite + React +
-  strict TS — `@ai-sdk/react` `useChat` over the UIMessage stream endpoints
-  (DESIGN.md → App channel). It gets a build step because React is the
-  price of the SDK's chat pieces; nothing else gets one. Same discipline
-  otherwise: no `any`, wire types imported from server sources, its tsconfig
-  program joins `bun run typecheck`, and `src/http` serves `app/dist` under
-  `/app/` with a fail-loud 500 + log line when the build is missing.
+- **The app client is the one client, two doors.** `app/` is Vite + React
+  + strict TS — `@ai-sdk/react` `useChat` over the UIMessage stream
+  endpoints (DESIGN.md → App channel), type-checked (its tsconfig
+  program joins `bun run typecheck`) with wire types imported from
+  server sources, so config schema changes break typecheck, not the
+  page. It gets the tree's only build step; `src/http` serves `app/dist`
+  under `/app/` (the PWA) and `/t/` (the Telegram mini app's
+  settings/memories mode — design/telegram.md → Mini Apps, ruling
+  2026-10-10, which retired the former plain-JS `src/http/app.js` and
+  `tsconfig.client.json`), fail-loud 500 + log line when the build is
+  missing. Don't add a second client or unchecked client `.js`, and
+  keep `telegram-webapp.d.ts` out of the server program — its `Window`
+  declaration changes how linkedom's `parseHTML` resolves in
+  `agent/tools/fetch.ts`.
 - **Fail loud.** `ENOENT` means null. Everything else propagates with context.
   Never swallow an exception.
 - **Durable writes.** Whole-file state: tmp + `fsync` + `renameSync`,
@@ -95,8 +93,8 @@ it can be gold-mine of prover patterns. Compaction, tool calling, etc.
   g7 masks it). Healthcheck commands are mounted scripts with zero
   shell metacharacters — keep them that way.
 - **Exception: the built client is live per request.** `app/dist` is
-  read from disk per request by the running service; `src/http/app.js`
-  is loaded once at module startup and stays boot-pinned. Do not
+  read from disk per request by the running service, and serves both
+  doors — `/app/` (the PWA) and `/t/` (the Telegram mini app). Do not
   build into `app/dist` to verify a backend-dependent client change:
   use `bun run vite build app --outDir /tmp/<unique-dir>` instead.
   Publishing the client and restarting the backend are one coordinated

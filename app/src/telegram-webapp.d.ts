@@ -1,14 +1,15 @@
-// Minimal ambient types for telegram-web-app.js — the script telegram.org
-// serves to the settings page's webview. Only the surface app.js uses;
-// widen here when the page grows rather than casting at call sites.
-// Methods are optional because the SDK version varies by client — app.js
-// feature-detects every call.
+// Minimal ambient types for telegram-web-app.js — main.tsx fetches the
+// telegram.org copy on the mini-app door only (and Telegram's own
+// webviews inject the object before page scripts run). Only the surface
+// the client uses; widen here when the door grows rather than casting
+// at call sites. Methods are optional because the SDK version varies by
+// client — callers feature-detect every call.
 //
-// CLIENT PROGRAM ONLY (tsconfig.client.json includes it by path;
-// tsconfig.json excludes it): declaring `Window` here would give
+// APP PROGRAM ONLY (it lives under app/src, which the server's
+// tsconfig never includes): declaring `Window` here would give
 // linkedom's `parseHTML(): Window & typeof globalThis` a real meaning in
 // the server program, where no DOM lib exists and the property `document`
-// would stop resolving.
+// would stop resolving. Keep it out of src/.
 
 interface TelegramWebApp {
 	initData: string;

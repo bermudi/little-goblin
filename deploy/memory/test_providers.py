@@ -120,7 +120,10 @@ class ResolveAuthKeyTest(unittest.TestCase):
         self.store.write_text(
             json.dumps({"name": "zai", "value": "synthetic-literal"}) + "\n"
             + json.dumps({"name": "or", "value": "!echo synthetic-from-cmd"}) + "\n"
-            + json.dumps({"name": "bad", "value": "!false"}) + "\n")
+            + json.dumps({"name": "bad", "value": "!false"}) + "\n"
+            + json.dumps({"name": "poison", "value": "!pass-cli get goblin-dev synth-value"}) + "\n"
+            + json.dumps({"name": "laned", "value": "!/usr/local/bin/pass-cli get x synth-value"}) + "\n"
+            + json.dumps({"name": "keys", "value": "!echo pass-keys"}) + "\n")
 
     def test_literal_value(self) -> None:
         self.assertEqual(resolve_auth_key(self.home, "zai"), "synthetic-literal")
@@ -140,6 +143,21 @@ class ResolveAuthKeyTest(unittest.TestCase):
     def test_missing_store_raises(self) -> None:
         with self.assertRaises(ValueError):
             resolve_auth_key(Path("/nonexistent"), "zai")
+
+    def test_pass_cli_records_are_refused_unexecuted(self) -> None:
+        # The loader's poison lint (src/auth.ts): a `!` command invoking
+        # pass-cli would run as the owner session — the installer must not
+        # become the bypass. Path-prefixed trips too; pass-keys does not.
+        for name in ("poison", "laned"):
+            with self.assertRaises(ValueError) as raised:
+                resolve_auth_key(self.home, name)
+            # The refusal names the record, never the value.
+            self.assertIn(name, str(raised.exception))
+            self.assertNotIn("synth-value", str(raised.exception))
+
+    def test_pass_keys_records_still_resolve(self) -> None:
+        # The lint is narrow: pass-keys is the sanctioned lane, not a trip.
+        self.assertEqual(resolve_auth_key(self.home, "keys"), "pass-keys")
 
 
 class FetchCatalogTest(unittest.TestCase):

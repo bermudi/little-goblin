@@ -1,5 +1,5 @@
-// The settings editor's draft state — seeded as a port of the mini
-// app's DraftState/populate()/buildBody()/validate() (src/http/app.js),
+// The settings editor's draft state — seeded as a port of the retired
+// plain-JS mini app's DraftState/populate()/buildBody()/validate(),
 // now an independent client (design/app.md, Operator console): the
 // contract is ConfigPostBody, and the server's config-schema validation
 // is the gate. This module only catches what the form can express
@@ -103,15 +103,16 @@ export function emptyTranscription(kind: TranscriptionKind = "whistle"): TrDraft
 	return { kind, model: "", auth: "", language: "", keywords: [], engine: "", weights: "" };
 }
 
-// Provider-specific fields don't carry across kinds: a groq model + secret
-// left under openai would send groq's credential to openai, and one left
-// under whistle would save into the wrong union arm. Blank is always
-// safe — cloud blanks fall back to the kind's defaults server-side.
+// The identity fields — model + auth — don't carry across kinds: a groq
+// model + secret left under openai would send groq's credential to
+// openai. Blank is always safe — cloud blanks fall back to the kind's
+// defaults server-side. Whistle-only fields (keywords/engine/weights)
+// DO ride along: they are hand-edit-only, so clearing them would
+// destroy config the form cannot restore, and transcriptionBody emits
+// them on the whistle arm only — they cannot leak into a cloud save.
 export function switchTranscriptionKind(t: TrDraft, kind: TranscriptionKind): TrDraft {
 	if (kind === t.kind) return t;
-	const cleared = { ...t, kind, model: "", auth: "" };
-	if (kind === "whistle") return cleared;
-	return { ...cleared, keywords: [], engine: "", weights: "" };
+	return { ...t, kind, model: "", auth: "" };
 }
 
 function transcriptionDraft(t: NonNullable<Config["transcription"]>): TrDraft {

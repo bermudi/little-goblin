@@ -432,14 +432,12 @@ src/
                     (send-only; reads ride the goblin-mail wrapper via
                     bash), send_file, memory_search, search, fetch,
                     history_search, sandbox, script, ui)
-  http/             mini-app serving + POST /hook/<token> +
-                    loopback POST /api/check-injection (the wrapper's gate;
-                    value imports live in check.ts, never mod.ts — the
-                    client tsconfig would drag the server graph into DOM-land)
-    app.ts          page markup+css (served as-is, no build step)
-    app.js          page client — plain JS, tsc-checked (checkJs via
-                    tsconfig.client.json); wire types imported from
-                    mod.ts/config.ts so schema drift fails typecheck
+  http/             the HTTP doors: /t/ and /app/ serve the built
+                    client (app/dist) — the Telegram mini app and the
+                    PWA are one client with two entries — plus the
+                    initData operator tails (/api/*), POST /hook/<token>,
+                    and loopback POST /api/check-injection (the wrapper's
+                    gate; value imports live in check.ts, never mod.ts)
 ```
 
 Flat modules, one job each, tests colocated.

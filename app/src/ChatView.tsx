@@ -592,6 +592,9 @@ export function Composer({
 		if (e.thumb !== undefined) URL.revokeObjectURL(e.thumb);
 	};
 	const fileInput = useRef<HTMLInputElement>(null);
+	// The mic's failure mode is silent by browser default (a denied
+	// permission throws) — surface it like every other composer failure.
+	const [micError, setMicError] = useState<"denied" | "unavailable" | null>(null);
 
 	// Existing chats own their settings. The empty start screen edits only
 	// the app's new-chat defaults; neither path changes Telegram.
@@ -652,6 +655,7 @@ export function Composer({
 		typeof MediaRecorder !== "undefined";
 	const startRecording = async () => {
 		if (recording || !micSupported) return;
+		setMicError(null);
 		try {
 			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 			const mime = ["audio/ogg;codecs=opus", "audio/webm;codecs=opus", "audio/mp4"].find((m) =>
@@ -700,8 +704,13 @@ export function Composer({
 			r.start(250);
 			recorder.current = r;
 			setRecording(true);
-		} catch {
-			/* permission denied or no device — the button just does nothing */
+		} catch (err) {
+			// Permission denied or no device — say so; every other composer
+			// failure surfaces, and a button that silently does nothing
+			// reads as broken.
+			setMicError(
+				err instanceof Error && err.name === "NotAllowedError" ? "denied" : "unavailable",
+			);
 		}
 	};
 	const stopRecording = (cancel: boolean) => {
@@ -820,6 +829,11 @@ export function Composer({
 			{configError !== null && (
 				<div className="error" role="alert">
 					Model settings failed: {configError}
+				</div>
+			)}
+			{micError !== null && (
+				<div className="error" role="alert">
+					Microphone {micError} — check the browser's permission for this page.
 				</div>
 			)}
 			{staged.length > 0 && (
@@ -1191,6 +1205,10 @@ function Chat({
 			onTurnDone();
 		},
 	});
+	// A failed /stop means the client dropped its stream but the turn
+	// keeps running server-side and will write the reply the operator
+	// asked to stop — that has to be visible, not swallowed.
+	const [stopError, setStopError] = useState<string | null>(null);
 
 	// Reload-window reconciliation (#79): a turn that completed between
 	// the history snapshot and the idle reconnect is durably stored but
@@ -1290,6 +1308,11 @@ function Chat({
 					{error !== undefined && <div className="error">The turn failed: {error.message}</div>}
 				</div>
 			</div>
+			{stopError !== null && (
+				<div className="error" role="alert">
+					Stop request failed — the turn keeps running server-side: {stopError}
+				</div>
+			)}
 			<Composer
 				token={token}
 				conversationId={conversationId}
@@ -1303,7 +1326,10 @@ function Chat({
 					void sendMessage({ parts });
 				}}
 				onStop={() => {
-					void stopConversation(token, conversationId).catch(() => {});
+					setStopError(null);
+					void stopConversation(token, conversationId).catch((err: unknown) =>
+						setStopError(err instanceof Error ? err.message : "request failed"),
+					);
 					void stop();
 				}}
 			/>

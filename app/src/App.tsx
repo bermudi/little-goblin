@@ -11,6 +11,7 @@ import {
 	patchConversation,
 	saveToken,
 	searchConversations,
+	telegramDoor,
 } from "./api.ts";
 import { ChatView, Composer, type StagedUpload } from "./ChatView.tsx";
 import { SettingsView } from "./SettingsView.tsx";
@@ -31,7 +32,10 @@ const PAGES: { key: Exclude<Page, "chat">; label: string }[] = [
 ];
 
 function pageFromPath(pathname: string): Page | null {
-	const m = /^\/app\/(settings|memory|delegations|programs|status)\/?$/.exec(pathname);
+	// /app/ is the PWA door, /t/ the Telegram mini app's — both serve this
+	// bundle and both parse the same page vocabulary; each door clamps the
+	// result to its own page scope.
+	const m = /^\/(?:app|t)\/(settings|memory|delegations|programs|status)\/?$/.exec(pathname);
 	return m === null ? null : (m[1] as Page);
 }
 
@@ -415,7 +419,110 @@ function ConversationRow({
 	);
 }
 
+// The Telegram mini app door (design/telegram.md → Mini Apps, ruling
+// 2026-10-10): the deep-linked page renders settings or memories over
+// initData — the app channel's gate, rail, and conversations never
+// mount here. In-door switching is component state with no history
+// entries, so the webview's back gesture closes the mini app natively.
+const TELEGRAM_PAGES = PAGES.filter((p) => p.key === "settings" || p.key === "memory");
+
+function TelegramDoor() {
+	const [page, setPage] = useState<Page>(() => {
+		const p = pageFromPath(window.location.pathname);
+		return p !== null && TELEGRAM_PAGES.some((t) => t.key === p) ? p : "settings";
+	});
+	const [navOpen, setNavOpen] = useState(false);
+	const settingsDirty = useRef(false);
+	// initData empty means the page was not opened by Telegram — every
+	// request would 401. Say so instead of rendering a form that cannot
+	// save; the webview injects telegram-web-app.js before page scripts,
+	// so the check is settled by first render.
+	const [authed] = useState(() => (window.Telegram?.WebApp.initData ?? "") !== "");
+	useEffect(() => {
+		window.Telegram?.WebApp.ready?.();
+		window.Telegram?.WebApp.expand?.();
+	}, []);
+	const openPage = (p: Exclude<Page, "chat">) => {
+		if (p === page) return;
+		if (
+			page === "settings" &&
+			settingsDirty.current &&
+			!window.confirm("Discard unsaved settings changes?")
+		)
+			return;
+		setPage(p);
+	};
+	return (
+		<div className="shell">
+			<nav className={navOpen ? "rail open" : "rail"}>
+				<div className="rail-ops">
+					{TELEGRAM_PAGES.map((p) => (
+						<button
+							key={p.key}
+							type="button"
+							className={page === p.key ? "rail-op on" : "rail-op"}
+							onClick={() => {
+								openPage(p.key);
+								setNavOpen(false);
+							}}
+						>
+							{p.label}
+						</button>
+					))}
+				</div>
+			</nav>
+			<div className={navOpen ? "scrim open" : "scrim"} onClick={() => setNavOpen(false)} />
+			<main>
+				<header>
+					<button
+						type="button"
+						className="nav-toggle"
+						aria-label="Pages"
+						onClick={() => setNavOpen((v) => !v)}
+					>
+						<svg
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							strokeWidth="1.75"
+							strokeLinecap="round"
+							width="18"
+							height="18"
+						>
+							<rect x="3" y="4" width="18" height="16" rx="3" />
+							<line x1="9.5" y1="4" x2="9.5" y2="20" />
+						</svg>
+					</button>
+					<h1>goblin</h1>
+					<span className="header-title">{PAGES.find((p) => p.key === page)?.label}</span>
+				</header>
+				{!authed && (
+					<p className="error" role="alert">
+						Open this page from Telegram — the settings door authenticates with Telegram's signed
+						payload, and a plain browser has none.
+					</p>
+				)}
+				{authed && page === "settings" && (
+					<SettingsView
+						token={null}
+						onDirtyChange={(d) => {
+							settingsDirty.current = d;
+						}}
+					/>
+				)}
+				{authed && page === "memory" && <MemoryView token={null} />}
+			</main>
+		</div>
+	);
+}
+
+// One bundle, two doors: /t/ is the Telegram mini app, everything else
+// the PWA's app channel.
 export function App() {
+	return telegramDoor() ? <TelegramDoor /> : <AppShell />;
+}
+
+function AppShell() {
 	const [token, setToken] = useState<string | null>(loadToken);
 	// The gate is conditional: the server may be in trust mode (appToken
 	// unset — the tailnet is the only lock), where a bare request just
@@ -436,9 +543,11 @@ export function App() {
 	const [rowError, setRowError] = useState<string | null>(null);
 	const [navOpen, setNavOpen] = useState(false);
 	// Rail search: debounced against the app-pool FTS endpoint. A non-
-	// empty query swaps the conversation list for the hit list.
+	// empty query swaps the conversation list for the hit list. A failed
+	// search says so — it must not read as "no matches".
 	const [query, setQuery] = useState("");
 	const [hits, setHits] = useState<AppSearchHit[] | null>(null);
+	const [searchError, setSearchError] = useState<string | null>(null);
 	const searchSeq = useRef(0);
 	// The empty state has the composer too — its send creates the
 	// conversation, then ChatView delivers the parked message as `seed`.
@@ -637,8 +746,15 @@ export function App() {
 		const seq = ++searchSeq.current;
 		const t = setTimeout(() => {
 			void searchConversations(token, q).then(
-				(r) => seq === searchSeq.current && setHits(r.hits),
-				() => {},
+				(r) => {
+					if (seq !== searchSeq.current) return;
+					setHits(r.hits);
+					setSearchError(null);
+				},
+				(err) => {
+					if (seq !== searchSeq.current) return;
+					setSearchError(err instanceof Error ? err.message : "search failed");
+				},
 			);
 		}, 250);
 		return () => clearTimeout(t);
@@ -829,7 +945,12 @@ export function App() {
 								</li>
 							))}
 						</ul>
-						{hits.length === 0 && <p className="empty">No matches.</p>}
+						{searchError !== null && (
+							<p className="error" role="alert">
+								Search failed: {searchError}
+							</p>
+						)}
+						{searchError === null && hits.length === 0 && <p className="empty">No matches.</p>}
 					</>
 				) : (
 					<>

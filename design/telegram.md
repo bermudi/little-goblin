@@ -138,15 +138,38 @@ failing message by message.
   operator devices are on the tailnet, the v1-on-lithium pattern), `tailscale
   funnel` (public HTTPS relayed through Tailscale's edge, for off-tailnet
   clients), or any reverse proxy with a cert. NAT-first by construction.
-  The settings page ships as two static files the process serves verbatim —
-  markup+css in `http/app.ts`, client script in `http/app.js`, no build step.
-  tsc checks the client (`tsconfig.client.json`: checkJs, DOM lib scoped to
-  that program only) against the server's own wire types, so schema drift is
-  a typecheck failure, not a phone-only bug. A settings GET returns an
-  ETag for the current on-disk config; POST requires that version via
-  If-Match and refuses a stale full-form save (409) rather than overwriting
-  another tab's save or an operator hand edit. Reopen the page to resolve
-  the conflict.
+  **One client, two doors (ruling 2026-10-10).** The settings page began
+  as two static files served verbatim — markup+css in `http/app.ts`,
+  client script in `http/app.js`, no build step, tsc-checked against the
+  server's wire types. It retires here: `app.js` had grown into a second
+  settings UI maintained beside the app channel's editor (the operator
+  console landed in the PWA, design/app.md, 2026-10-09, and the mini app
+  kept duplicating a subset of it). The Telegram door now serves the
+  built app client — the same `app/dist` bundle the PWA runs — at
+  `/t/settings` and `/t/memory`, in a constrained **telegram mode**:
+  operator surface only, no conversation rail, no chat, no composer.
+  Auth is unchanged: initData per request via `x-init-data`, the same
+  `validateInitData`, the same `via: "mini-app"` actor — so the
+  self-lockout guard (the door refuses to drop the *requesting* Telegram
+  id from `allowedUsers`) keeps working where the app door's empty-list
+  guard cannot. The operator tails are named identically on both doors —
+  `/api/settings` mirrors `/api/app/settings`, `/api/memory/status`
+  mirrors `/api/app/memory/status`, and so on; only the prefix and the
+  auth header differ (the legacy `/api/config` and `/api/memory-status`
+  names died with the old page). Settings writes keep the ETag/If-Match
+  stale-save refusal (design/app.md → Operator console). The menu button
+  points at `{publicUrl}/t/settings`; `/` redirects to `/app/` with a
+  *relative* Location — the #105 rule: never bounce off a Host the
+  backend guessed. Telegram mode never touches the app door — no token
+  probe, no conversation calls — and opened outside Telegram (empty
+  initData) it shows a notice instead of a form that cannot save.
+  In-door navigation is component state with no history entries; the
+  webview's back gesture closes the mini app natively. A missing build
+  fail-louds a 500 + log line exactly like `/app/*` —
+  settings-from-Telegram now depends on the app build (deploy.sh gates
+  it, rollback rebuilds it; accepted by ruling). Widening the door's
+  page set later (status, delegations) is one server route line plus the
+  client's page filter — deliberately not claimed now.
 - **Commands** are few on purpose: `/voice` `/memory` `/forget` `/stop`
   `/compact`. `/model` and `/think` are retired — the mini app owns
   model and thinking settings (config lives where config lives), which

@@ -1,49 +1,20 @@
-// Mini-app serving. The process serves an HTTP endpoint on localhost; the
-// bot links the page via the chat menu button. Telegram requires HTTPS and
-// the page is fetched by the client device, so the public door is a config
-// knob (publicUrl → tailscale serve/funnel/any reverse proxy). Nothing
-// here assumes a public IP.
+// HTTP serving. The process serves an HTTP endpoint on localhost; the
+// Telegram mini app links the built client via the chat menu button.
+// Telegram requires HTTPS and the page is fetched by the client device,
+// so the public door is a config knob (publicUrl → tailscale
+// serve/funnel/any reverse proxy). Nothing here assumes a public IP.
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-// Type-only imports must stay shallow here: app.js's JSDoc wire types
-// pull this module into the client tsconfig (DOM lib) — a type import
-// of scheduler.ts would drag wake → tg/delivery → agent/tts.ts in with
-// it and DOM's stricter BlobPart would fail the client typecheck.
-// checkInjection's value import lives in check.ts for the same reason:
-// injection.ts → jev.ts is shallow today, but this edge must never
-// harden into a value pull of the server graph.
 import type { Program, ProgramsStore } from "../programs.ts";
 import type { JevClient } from "../jev.ts";
 import type { DelegationsStore } from "../delegations.ts";
 import { log } from "../log.ts";
 import { readBodyCapped, serveInjectionCheck } from "./check.ts";
-import { APP_HTML } from "./app.ts";
 import { serveAppDist } from "./app-dist.ts";
 import { validateInitData, type InitDataUser } from "./auth.ts";
 import { handleOperatorRoute, type OperatorDeps } from "./operator.ts";
 
-// The operator surface's wire types live in operator-wire.ts (the app
-// channel's client imports them too) — re-exported here so app.js's
-// import("./mod.ts") JSDoc keeps resolving unchanged.
-export type {
-	ConfigPostBody,
-	ConfigResponse,
-	MemoryDocDetailResponse,
-	MemoryDocListItem,
-	MemoryFactItem,
-	MemoryForgetResponse,
-	MemoriesListResponse,
-	MemoryStatusResponse,
-} from "./operator-wire.ts";
-
-// The mini app's client script, read once at boot and served verbatim at
-// /app.js — no build step. A missing file fails here, loudly, before the
-// process serves anything.
-const APP_JS = readFileSync(join(import.meta.dir, "app.js"), "utf8");
-
 // HttpDeps is OperatorDeps (the shared operator surface — settings,
-// memory, programs, delegations, status) plus the mini-app door's own
+// memory, programs, delegations, status) plus the initData door's own
 // seams: initData auth (botToken), program webhooks, injection check,
 // and the app-channel handler.
 export interface HttpDeps extends OperatorDeps {
@@ -77,30 +48,28 @@ export interface HttpDeps extends OperatorDeps {
 	// token or trust mode — is baked into the closure at boot by the
 	// composition root (index.ts): no per-request config read, so a
 	// mid-run appToken flip applies only after restart. The handler is
-	// injected opaque so the app channel's import graph — runtime, the
-	// AI SDK, undici form types — stays out of this module entirely; a
-	// type or value edge here would drag them into the client tsconfig's
-	// DOM program via app.js's wire types. Absent = every /api/app/*
-	// refuses 503 with a log line.
+	// injected opaque so this serving layer stays out of the app
+	// channel's import graph (runtime, the AI SDK, undici form types).
+	// Absent = every /api/app/* refuses 503 with a log line.
 	appApi?: (req: Request, url: URL) => Promise<Response>;
 }
 
 const NO_STORE = { "cache-control": "no-store" };
-const HTML = { "content-type": "text/html; charset=utf-8", ...NO_STORE };
 
 // The deep link's path segment — mirrors conversation.ts's
-// appIdSchema, kept local because a value import of that module would
-// drag the server graph (sqlite, memory) into this file's DOM-lib
-// typecheck program (the import comment above explains the boundary).
+// appIdSchema, kept local to keep this module a thin serving layer.
 const APP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const JS = { "content-type": "text/javascript; charset=utf-8", ...NO_STORE };
 
-// Mini-app path → operator tail. The memories document detail rides a
-// regex in dispatch (path segment), everything else is an exact match.
+// Operator tails, named identically on both doors: this initData door
+// mounts them at /api/*, the app channel at /api/app/* (ruling
+// 2026-10-10 in design/telegram.md — the legacy /api/config and
+// /api/memory-status names died with the plain-JS page). The memories
+// document detail rides a regex in dispatch (path segment), everything
+// else is an exact match.
 const OPERATOR_TAILS: Record<string, string> = {
-	"/api/config": "config",
+	"/api/settings": "config",
 	"/api/thinking-levels": "thinking-levels",
-	"/api/memory-status": "memory/status",
+	"/api/memory/status": "memory/status",
 	"/api/memory/documents": "memory/documents",
 	"/api/programs": "programs",
 	"/api/delegations": "delegations",
@@ -249,15 +218,24 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 		if (url.pathname.startsWith("/app/")) {
 			return serveAppDist(url.pathname.slice("/app/".length));
 		}
-		if (url.pathname === "/" || url.pathname === "/index.html") {
-			// no-store: a webview must never pair stale page code with a
-			// fresh /api/config after an update.
-			return new Response(APP_HTML, { headers: HTML });
+		// The Telegram mini app door (design/telegram.md → Mini Apps):
+		// the same built client as /app, at the deep links the menu
+		// button and history carry. The page is public like /app's —
+		// telegram mode (client-side: the /t/ prefix) authenticates with
+		// initData against /api/*. The page scope is deliberate
+		// (settings + memories); everything else under /t/ is a 404.
+		if (
+			url.pathname === "/t" ||
+			url.pathname === "/t/" ||
+			/^\/t\/(?:settings|memory)\/?$/.test(url.pathname)
+		) {
+			return serveAppDist("");
 		}
-		if (url.pathname === "/app.js") {
-			// Static client code, no secrets — same no-store reasoning as the
-			// page: never run last version's script against this API.
-			return new Response(APP_JS, { headers: JS });
+		if (url.pathname === "/" || url.pathname === "/index.html") {
+			// The plain-JS mini app lived here; the menu button now points
+			// at /t/settings. Relative Location — #105: never bounce off a
+			// Host the backend guessed.
+			return new Response(null, { status: 302, headers: { location: "/app/", ...NO_STORE } });
 		}
 		// The operator surface — settings, memory browse/forget, programs,
 		// delegations, service status — is owned by operator.ts and shared
@@ -287,6 +265,6 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 	}
 
 	const port = server.port ?? deps.configRef.current.http.port;
-	log.info("mini-app http listening", { port });
+	log.info("http listening", { port });
 	return { port, stop: () => server.stop() };
 }

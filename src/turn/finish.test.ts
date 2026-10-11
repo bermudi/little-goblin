@@ -230,8 +230,8 @@ describe("landAttempt", () => {
 			expect(attached).toEqual(h.wire);
 			expect(live.chunks.slice(2)).toEqual(h.wire);
 			expect(ends).toEqual([]);
-			endLive(live, h.landed.done);
-			endLive(live, h.landed.done);
+			endLive(live, h.landed.done, "app/t");
+			endLive(live, h.landed.done, "app/t");
 			expect(ends).toEqual([h.landed.done]);
 			const stream = new ReadableStream<UIMessageChunk>({
 				start(controller) {
@@ -283,7 +283,7 @@ describe("landAttempt", () => {
 			expect(attached).toEqual(live.chunks);
 			expect(h.appended).toHaveLength(1);
 			expect(h.landed.done).toEqual({ kind: "completed", forced: "context" });
-			endLive(live, h.landed.done);
+			endLive(live, h.landed.done, "app/t");
 			expect(ends).toEqual([h.landed.done]);
 		});
 

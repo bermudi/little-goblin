@@ -309,8 +309,7 @@ describe("rail row actions and the pinned pool", () => {
 			}
 			const patchMatch = /^\/api\/app\/conversations\/(pinned|fresh)$/.exec(url);
 			if (patchMatch !== null && method === "PATCH") {
-				if (failPatch)
-					return Promise.resolve(jsonResponse({ error: "db is locked" }, 500));
+				if (failPatch) return Promise.resolve(jsonResponse({ error: "db is locked" }, 500));
 				const id = patchMatch[1] as "pinned" | "fresh";
 				const body = JSON.parse(String(init?.body)) as { pinned?: boolean; archived?: boolean };
 				patches.push({ id, body });
@@ -1008,5 +1007,155 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await browserGoesTo("/app/memory");
 		expect(confirmCalls).toBe(0);
 		expect(container.querySelector(".settings")).toBeNull();
+	});
+});
+
+// The Telegram mini app door (design/telegram.md → Mini Apps): /t/
+// renders the operator surface only, over initData, and never touches
+// the app channel — no token gate, no rail, no conversations.
+describe("App telegram door", () => {
+	let win: Window;
+	let container: HTMLElement;
+	let root: Root | null = null;
+	let installed: string[] = [];
+	let appDoorHits: string[] = [];
+	const realFetch = globalThis.fetch;
+
+	const installGlobal = (name: string, value: unknown) => {
+		Reflect.set(globalThis, name, value);
+		installed.push(name);
+	};
+
+	const SETTINGS = parseConfig({
+		providers: {
+			main: { kind: "openai-compatible", baseUrl: "https://api.example.test", auth: "fixture" },
+		},
+		model: "main/test",
+		allowedUsers: [111],
+		telegram: { model: "main/test", thinking: "medium" },
+	});
+
+	beforeEach(() => {
+		win = new Window({ url: "http://localhost/t/settings" });
+		Reflect.set(win, "Telegram", {
+			WebApp: { initData: "user=%7B%22id%22%3A111%7D&hash=abc" },
+		});
+		const div = win.document.createElement("div");
+		win.document.body.appendChild(div);
+		container = div as unknown as HTMLElement;
+		installed = [];
+		appDoorHits = [];
+		installGlobal("window", win);
+		installGlobal("document", win.document);
+		installGlobal("navigator", win.navigator);
+		installGlobal("localStorage", win.localStorage);
+		installGlobal("Event", win.Event);
+		installGlobal("CustomEvent", win.CustomEvent);
+		installGlobal("getComputedStyle", win.getComputedStyle);
+		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url.startsWith("/api/app/")) {
+				appDoorHits.push(url);
+				return Promise.resolve(new Response(null, { status: 404 }));
+			}
+			if (url === "/api/settings")
+				return Promise.resolve(
+					new Response(
+						JSON.stringify({
+							config: SETTINGS,
+							providerKinds: ["openai-compatible"],
+							searchKinds: ["ddg"],
+							fetchKinds: ["local"],
+							transcriptionKinds,
+							transcriptionDefaults,
+							authDefaults,
+							authNames: ["main"],
+						}),
+						{ headers: { "content-type": "application/json", etag: '"v1"' } },
+					),
+				);
+			if (url === "/api/memory/status")
+				return Promise.resolve(
+					jsonResponse({
+						state: "healthy",
+						detail: "",
+						deleting: 0,
+						completed: 0,
+						blocked: 0,
+						dismissed: 0,
+						queued: 0,
+						lastRecallAt: null,
+						lastRecallOk: null,
+						topicNote: null,
+						blockedDetail: [],
+					}),
+				);
+			if (url.startsWith("/api/memory/documents"))
+				return Promise.resolve(jsonResponse({ items: [], total: 0, limit: 20, offset: 0 }));
+			if (url.includes("thinking-levels"))
+				return Promise.resolve(jsonResponse({ levels: ["off", "low", "medium", "high"] }));
+			return Promise.resolve(jsonResponse({}));
+		}) as typeof fetch;
+	});
+
+	afterEach(async () => {
+		if (root !== null) {
+			await act(async () => {
+				root?.unmount();
+			});
+			root = null;
+		}
+		await win.happyDOM.close();
+		globalThis.fetch = realFetch;
+		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+		for (const name of installed) Reflect.deleteProperty(globalThis, name);
+		installed = [];
+	});
+
+	const renderDoor = async () => {
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 20));
+		});
+	};
+
+	test("settings render over initData; the app door is never touched", async () => {
+		await renderDoor();
+		expect(container.querySelector('input[type="password"]')).toBeNull(); // no token gate
+		expect(container.textContent).not.toContain("New conversation"); // no rail
+		expect(container.textContent).not.toContain("Pick a conversation"); // no chat
+		expect(appDoorHits).toEqual([]);
+	});
+
+	test("initData rides every request as x-init-data", async () => {
+		const seen: string[] = [];
+		const real = globalThis.fetch;
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			seen.push(String(init?.headers ? new Headers(init.headers).get("x-init-data") : null));
+			return real(input, init);
+		}) as typeof fetch;
+		await renderDoor();
+		expect(seen.filter((v) => v === "user=%7B%22id%22%3A111%7D&hash=abc").length).toBeGreaterThan(
+			0,
+		);
+		expect(seen.includes("null")).toBe(false);
+	});
+
+	test("a plain browser has no initData — a notice, not a form that cannot save", async () => {
+		Reflect.deleteProperty(win, "Telegram");
+		await renderDoor();
+		expect(container.textContent).toContain("Open this page from Telegram");
+		expect(appDoorHits).toEqual([]);
+	});
+
+	test("the door's page scope is settings and memories — /t/memory renders memories", async () => {
+		win.history.replaceState({}, "", "/t/memory");
+		await renderDoor();
+		expect(container.textContent).toContain("Memories");
+		expect(appDoorHits).toEqual([]);
 	});
 });

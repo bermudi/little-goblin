@@ -236,11 +236,13 @@ boot. These classifications describe today's code, not desired policy.
 
 ### App assets and optional actions
 
-The old settings mini app (`src/http/app.js`) needs no build. The React app
-does. `http/app-dist.ts:47–83` reports missing dist with 500/log, but a
-present directory lacking index/assets yields 404; its broad stat catch
-also hides non-ENOENT inspection errors as 404. That last behavior is a
-separate existing error-reporting defect; shared checks must not copy it.
+The settings mini app is the React app — the same built client as the PWA
+(ruling 2026-10-10, design/telegram.md → Mini Apps), so both need
+`bun run app:build`. `http/app-dist.ts:47–83` reports missing dist with
+500/log, but a present directory lacking index/assets yields 404; its
+broad stat catch also hides non-ENOENT inspection errors as 404. That
+last behavior is a separate existing error-reporting defect; shared
+checks must not copy it.
 
 Onboarding should give a short opt-in dependency table, not silently install
 every capability:

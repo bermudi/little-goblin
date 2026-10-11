@@ -321,6 +321,11 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 	const port = Number(draft.port);
 	if (!Number.isInteger(port) || port < 0 || port > 65535)
 		return "Http port must be a number between 0 and 65535.";
+	// Number("") is 0 and junk is NaN — catch both here, not as a raw
+	// 422 from the server (its schema: int, min 1).
+	const dmGap = Number(draft.dmGap);
+	if (!Number.isInteger(dmGap) || dmGap < 1)
+		return "New-conversation gap must be a whole number of minutes, 1 or more.";
 	if (draft.publicUrl.trim() && !draft.publicUrl.trim().startsWith("https://")) {
 		return "Public URL must use HTTPS for Telegram Web Apps.";
 	}

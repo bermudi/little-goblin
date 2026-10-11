@@ -179,6 +179,16 @@ describe("validateDraft", () => {
 		expect(validateDraft(draft({ allowedUsers: [] }), [prov()])).toMatch(/Allowed users/);
 	});
 
+	test("dm gap must be a whole number of minutes, 1 or more", () => {
+		// Number("") is 0, junk is NaN — both must fail client-side
+		// instead of surfacing the server's 422 in the savebar.
+		expect(validateDraft(draft({ dmGap: "" }), [prov()])).toMatch(/New-conversation gap/);
+		expect(validateDraft(draft({ dmGap: "soon" }), [prov()])).toMatch(/New-conversation gap/);
+		expect(validateDraft(draft({ dmGap: "0" }), [prov()])).toMatch(/New-conversation gap/);
+		expect(validateDraft(draft({ dmGap: "4.5" }), [prov()])).toMatch(/New-conversation gap/);
+		expect(validateDraft(draft({ dmGap: "90" }), [prov()])).toBeNull();
+	});
+
 	test("both models are required", () => {
 		expect(validateDraft(draft({ model: "" }), [prov()])).toMatch(/app default/);
 		expect(validateDraft(draft({ telegramModel: "" }), [prov()])).toMatch(/Telegram/);

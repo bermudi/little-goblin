@@ -20,9 +20,10 @@ model/thinking (history still copies, as specified in design/app.md).
 
 ## Telegram intake & delivery
 
-- grammy long polling; access is gated first thing by the two-list
-  model — `operators` and `allowedUsers` (Roles and permissions,
-  below).
+- grammy long polling; access is gated by the two-list model —
+  `operators` and `allowedUsers` (Roles and permissions, below) — with
+  the guest surfaces registering ahead of the gate so summons traffic
+  never hits it (Guest mode, below).
 - **Coalescing buffer**: rapid-fire messages in one conversation merge into
   one turn. Real product value in v1 — but its 1.5s quiet window was
   inherited, never measured, and it is a flat latency tax on every

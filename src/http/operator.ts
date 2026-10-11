@@ -14,6 +14,7 @@
 // runtime/tg/agent graphs.
 
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { thinkingLevelsFor } from "../agent/providers.ts";
 import {
@@ -27,6 +28,7 @@ import {
 	transcriptionDefaults,
 	transcriptionKinds,
 	writeConfig,
+	paths,
 	type Config,
 } from "../config.ts";
 import { log } from "../log.ts";
@@ -40,6 +42,15 @@ import {
 	type MemoryFact,
 } from "../hindsight.ts";
 import { forgetDocument, type ForgetSource } from "../memory-forget.ts";
+import {
+	attachmentContentType,
+	attachmentPath,
+	identityFiles,
+	listAttachments,
+	listSkills,
+	readSkillFile,
+	tailLog,
+} from "../stateview.ts";
 import type { Delegation, DelegationsStore } from "../delegations.ts";
 import type { Program, ProgramsStore } from "../programs.ts";
 import type {
@@ -59,6 +70,20 @@ import type {
 } from "./operator-wire.ts";
 
 const NO_STORE = { "cache-control": "no-store" };
+
+// State viewer name rules (ruling 2026-10-11): a skill/attachment name
+// is one path segment; a file path inside a skill may carry slashes but
+// never "..". Both gates sit in front of stateview.ts's containment
+// check — validation here is input hygiene, containment is the wall.
+const SEGMENT_SCHEMA = z
+	.string()
+	.max(200)
+	.regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
+const REL_PATH_SCHEMA = z
+	.string()
+	.max(400)
+	.regex(/^[A-Za-z0-9][A-Za-z0-9._/-]*$/)
+	.refine((v) => !v.includes(".."), "no traversal");
 
 export interface OperatorDeps {
 	configRef: { current: Config };
@@ -160,9 +185,7 @@ const configPostBodySchema = z
 							.object(
 								Object.fromEntries(
 									(
-										Object.keys(CONFIG_POST_TELEGRAM_KEYS) as (
-											keyof ConfigPostBody["telegram"]
-										)[]
+										Object.keys(CONFIG_POST_TELEGRAM_KEYS) as (keyof ConfigPostBody["telegram"])[]
 									).map((tk) => [tk, z.unknown().optional()]),
 								),
 							)
@@ -474,7 +497,9 @@ function delegationItem(row: Delegation): OperatorDelegationItem {
 
 // tail is the operator route relative to the door's mount point:
 // "config", "thinking-levels", "memory/status", "memory/documents",
-// "memory/documents/<raw id>", "programs", "delegations", "status".
+// "memory/documents/<raw id>", "programs", "delegations", "status",
+// and the state viewer (ruling 2026-10-11): "skills", "skills/file",
+// "attachments", "attachments/file", "identity", "log".
 // Returns null when the tail matches nothing — the caller 404s.
 export async function handleOperatorRoute(
 	deps: OperatorDeps,
@@ -767,6 +792,97 @@ export async function handleOperatorRoute(
 					? { total: delegations.length, active: active.length }
 					: null,
 		};
+		return Response.json(body, { headers: NO_STORE });
+	}
+
+	// ---------- state viewer (ruling 2026-10-11, read-only) ----------
+
+	if (tail === "skills") {
+		if (req.method !== "GET")
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		const body = listSkills(paths.skills(), paths.skillsProposed());
+		return Response.json(body, { headers: NO_STORE });
+	}
+
+	if (tail === "skills/file") {
+		if (req.method !== "GET")
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		const origin = z
+			.union([z.literal("skills"), z.literal("proposed")])
+			.safeParse(url.searchParams.get("origin") ?? "skills");
+		if (!origin.success)
+			return Response.json({ error: "bad origin" }, { status: 400, headers: NO_STORE });
+		const name = SEGMENT_SCHEMA.safeParse(url.searchParams.get("name") ?? "");
+		if (!name.success)
+			return Response.json({ error: "bad name" }, { status: 400, headers: NO_STORE });
+		const rel = REL_PATH_SCHEMA.safeParse(url.searchParams.get("path") ?? "SKILL.md");
+		if (!rel.success)
+			return Response.json({ error: "bad path" }, { status: 400, headers: NO_STORE });
+		// Throws on an over-cap file — loud 500, never a silent truncation.
+		const file = readSkillFile(
+			paths.skills(),
+			paths.skillsProposed(),
+			origin.data,
+			name.data,
+			rel.data,
+		);
+		if (file === null)
+			return Response.json({ error: "not found" }, { status: 404, headers: NO_STORE });
+		return Response.json(file, { headers: NO_STORE });
+	}
+
+	if (tail === "attachments") {
+		if (req.method !== "GET")
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		const body = listAttachments(paths.attachments());
+		return Response.json(body, { headers: NO_STORE });
+	}
+
+	if (tail === "attachments/file") {
+		if (req.method !== "GET")
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		const name = SEGMENT_SCHEMA.safeParse(url.searchParams.get("name") ?? "");
+		if (!name.success)
+			return Response.json({ error: "bad name" }, { status: 400, headers: NO_STORE });
+		const full = attachmentPath(paths.attachments(), name.data);
+		if (full === null)
+			return Response.json({ error: "not found" }, { status: 404, headers: NO_STORE });
+		const bytes = await readFile(full);
+		return new Response(bytes, {
+			headers: { ...NO_STORE, "content-type": attachmentContentType(name.data) },
+		});
+	}
+
+	if (tail === "identity") {
+		if (req.method !== "GET")
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		const body = identityFiles(paths.workspace());
+		return Response.json(body, { headers: NO_STORE });
+	}
+
+	if (tail === "log") {
+		if (req.method !== "GET")
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		const limitRaw = url.searchParams.get("limit");
+		const limit =
+			limitRaw === null
+				? { success: true as const, data: 200 }
+				: z.coerce.number().int().min(1).max(1000).safeParse(limitRaw);
+		if (!limit.success)
+			return Response.json({ error: "bad limit" }, { status: 400, headers: NO_STORE });
+		const levelRaw = url.searchParams.get("level");
+		const level =
+			levelRaw === null || levelRaw === ""
+				? { success: true as const, data: null }
+				: z.enum(["debug", "info", "warn", "error"]).safeParse(levelRaw);
+		if (!level.success)
+			return Response.json({ error: "bad level" }, { status: 400, headers: NO_STORE });
+		const qRaw = url.searchParams.get("q");
+		const body = tailLog(paths.logFile(), {
+			limit: limit.data,
+			level: level.data,
+			q: qRaw === null || qRaw === "" ? null : qRaw.slice(0, 300),
+		});
 		return Response.json(body, { headers: NO_STORE });
 	}
 

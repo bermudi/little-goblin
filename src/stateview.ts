@@ -1,0 +1,356 @@
+// Read-only views over $GOBLIN_HOME state for the operator surface
+// (design/app.md → Operator console): skills, attachments, identity
+// files, and the log tail. The viewer's wall is two layers — the router
+// zod-validates every name it accepts, and the containment check here
+// re-verifies that a resolved path stays under the directory it was
+// addressed against, so neither layer alone is trusted. Nothing here
+// writes; ENOENT degrades to null/[] so a missing directory renders as
+// empty instead of failing the whole view, while every other error
+// propagates.
+
+import {
+	closeSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	readSync,
+	statSync,
+	type Dirent,
+} from "node:fs";
+import { join, resolve, sep } from "node:path";
+
+// ---------- skills ----------
+
+/** One installed (or proposed) skill: its files, ready to be read. */
+export interface OperatorSkillItem {
+	name: string;
+	/** Files relative to the skill dir, sorted — SKILL.md first. */
+	files: string[];
+	sizeBytes: number;
+	/** SKILL.md's mtime when present, else the dir's own. */
+	updatedAt: string | null;
+}
+
+export interface SkillsResponse {
+	skills: OperatorSkillItem[];
+	proposed: OperatorSkillItem[];
+}
+
+export interface SkillFileResponse {
+	path: string;
+	content: string;
+}
+
+// Skills are small by nature; a file above this is a mistake worth
+// surfacing, not content to stream.
+const TEXT_VIEW_CAP = 2 * 1024 * 1024;
+
+// Skill dirs hold a handful of files; the bounds keep a pathological
+// tree from turning one catalog read into a walk.
+const MAX_SKILL_FILES = 200;
+const MAX_SKILL_DEPTH = 3;
+
+function listFilesUnder(dir: string, rel: string, depth: number, out: string[]): void {
+	if (out.length >= MAX_SKILL_FILES || depth > MAX_SKILL_DEPTH) return;
+	let entries: Dirent[];
+	try {
+		entries = readdirSync(join(dir, rel), { withFileTypes: true });
+	} catch (e) {
+		if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
+		throw e;
+	}
+	for (const entry of entries) {
+		if (out.length >= MAX_SKILL_FILES) return;
+		const relPath = rel === "" ? entry.name : `${rel}/${entry.name}`;
+		if (entry.isDirectory()) listFilesUnder(dir, relPath, depth + 1, out);
+		else if (entry.isFile()) out.push(relPath);
+	}
+}
+
+export function listSkillDir(dir: string): OperatorSkillItem[] {
+	let entries: Dirent[];
+	try {
+		entries = readdirSync(dir, { withFileTypes: true });
+	} catch (e) {
+		if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw e;
+	}
+	const items: OperatorSkillItem[] = [];
+	for (const entry of entries) {
+		if (!entry.isDirectory()) continue;
+		const files: string[] = [];
+		listFilesUnder(dir, entry.name, 1, files);
+		// SKILL.md leads so a viewer can default to it.
+		files.sort((a, b) => {
+			const skillMd = `${entry.name}/SKILL.md`;
+			if (a === skillMd) return -1;
+			if (b === skillMd) return 1;
+			return a.localeCompare(b);
+		});
+		let sizeBytes = 0;
+		for (const f of files) {
+			try {
+				sizeBytes += statSync(join(dir, f)).size;
+			} catch {
+				// Raced a delete mid-walk — count what's still there.
+			}
+		}
+		let updatedAt: string | null = null;
+		try {
+			updatedAt = statSync(join(dir, entry.name, "SKILL.md")).mtime.toISOString();
+		} catch {
+			try {
+				updatedAt = statSync(join(dir, entry.name)).mtime.toISOString();
+			} catch {
+				// Dir vanished mid-walk — skip it.
+			}
+		}
+		items.push({ name: entry.name, files, sizeBytes, updatedAt });
+	}
+	items.sort((a, b) => a.name.localeCompare(b.name));
+	return items;
+}
+
+export function listSkills(skillsDir: string, proposedDir: string): SkillsResponse {
+	return { skills: listSkillDir(skillsDir), proposed: listSkillDir(proposedDir) };
+}
+
+// The containment check every read funnels through: the resolved path
+// must land inside the resolved base. Zod's regex at the router is the
+// first gate; this is the one that actually holds.
+function contained(base: string, rel: string): string | null {
+	const baseRes = resolve(base);
+	const full = resolve(join(base, rel));
+	if (full !== baseRes && !full.startsWith(baseRes + sep)) return null;
+	return full;
+}
+
+/**
+ * Read one file under `base`, addressing it with a `/`-relative path.
+ * Returns null when the file or the base directory is missing; throws
+ * when the file exceeds the view cap, so an oversized target surfaces
+ * instead of silently truncating.
+ */
+export function readStateFile(base: string, rel: string): string | null {
+	const full = contained(base, rel);
+	if (full === null) return null;
+	let st;
+	try {
+		st = statSync(full);
+	} catch (e) {
+		if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw e;
+	}
+	if (!st.isFile()) return null;
+	if (st.size > TEXT_VIEW_CAP) {
+		throw new Error(`file too large to view (${st.size} bytes): ${rel}`);
+	}
+	try {
+		return readFileSync(full, "utf8");
+	} catch (e) {
+		if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw e;
+	}
+}
+
+export function readSkillFile(
+	skillsDir: string,
+	proposedDir: string,
+	origin: "skills" | "proposed",
+	name: string,
+	rel: string,
+): SkillFileResponse | null {
+	const base = origin === "skills" ? skillsDir : proposedDir;
+	// `name` is a single path segment addressed under the origin dir —
+	// containment is checked against the skill dir, not the catalog root,
+	// so a name with separators can never climb out via the join.
+	if (name.includes("/") || name.includes("\\") || name.includes("..")) return null;
+	const content = readStateFile(join(base, name), rel);
+	if (content === null) return null;
+	return { path: `${name}/${rel}`, content };
+}
+
+// ---------- attachments ----------
+
+export interface OperatorAttachmentItem {
+	name: string;
+	sizeBytes: number;
+	updatedAt: string;
+}
+
+export interface AttachmentsResponse {
+	files: OperatorAttachmentItem[];
+}
+
+export function listAttachments(dir: string): AttachmentsResponse {
+	let entries: Dirent[];
+	try {
+		entries = readdirSync(dir, { withFileTypes: true });
+	} catch (e) {
+		if ((e as NodeJS.ErrnoException).code === "ENOENT") return { files: [] };
+		throw e;
+	}
+	const files: OperatorAttachmentItem[] = [];
+	for (const entry of entries) {
+		if (!entry.isFile()) continue;
+		const st = statSync(join(dir, entry.name));
+		files.push({ name: entry.name, sizeBytes: st.size, updatedAt: st.mtime.toISOString() });
+	}
+	files.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+	return { files };
+}
+
+/**
+ * Resolve an attachment name to a servable path, or null when the name
+ * is not a plain file directly inside `dir`.
+ */
+export function attachmentPath(dir: string, name: string): string | null {
+	if (name.includes("/") || name.includes("\\") || name.includes("..")) return null;
+	const full = contained(dir, name);
+	if (full === null) return null;
+	try {
+		if (!statSync(full).isFile()) return null;
+	} catch (e) {
+		if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw e;
+	}
+	return full;
+}
+
+/** Content-type for serving an attachment — conservative, extension-based. */
+export function attachmentContentType(name: string): string {
+	const ext = name.slice(name.lastIndexOf(".") + 1).toLowerCase();
+	const map: Record<string, string> = {
+		png: "image/png",
+		jpg: "image/jpeg",
+		jpeg: "image/jpeg",
+		gif: "image/gif",
+		webp: "image/webp",
+		svg: "image/svg+xml",
+		ogg: "audio/ogg",
+		oga: "audio/ogg",
+		opus: "audio/ogg",
+		mp3: "audio/mpeg",
+		wav: "audio/wav",
+		mp4: "video/mp4",
+		webm: "video/webm",
+		pdf: "application/pdf",
+		zip: "application/zip",
+		txt: "text/plain; charset=utf-8",
+		md: "text/plain; charset=utf-8",
+		json: "application/json",
+	};
+	return map[ext] ?? "application/octet-stream";
+}
+
+// ---------- identity files ----------
+
+export interface IdentityFile {
+	name: string;
+	content: string | null;
+}
+
+export interface IdentityResponse {
+	files: IdentityFile[];
+}
+
+export function identityFiles(workspaceDir: string): IdentityResponse {
+	const names = ["SOUL.md", "USER.md", "AGENTS.md"];
+	return {
+		files: names.map((name) => ({ name, content: readStateFile(workspaceDir, name) })),
+	};
+}
+
+// ---------- log tail ----------
+
+export interface LogTailItem {
+	ts: string | null;
+	level: string;
+	msg: string;
+	/** The raw JSONL line, for anything the parsed view leaves out. */
+	line: string;
+}
+
+export interface LogTailResponse {
+	lines: LogTailItem[];
+	/** True when content existed beyond the scan window or the limit. */
+	truncated: boolean;
+	scannedBytes: number;
+}
+
+export interface LogTailOptions {
+	limit: number;
+	/** Exact level match; null/undefined keeps every level. */
+	level?: string | null;
+	/** Substring match against the raw line. */
+	q?: string | null;
+	/** Scan window from the end of the file; default 512 KiB. */
+	windowBytes?: number;
+}
+
+const DEFAULT_LOG_WINDOW = 512 * 1024;
+
+/**
+ * The last `limit` matching lines of the JSONL log, oldest first. The
+ * scan reads at most `windowBytes` from the end; a first line with no
+ * leading newline boundary inside the window is dropped as partial and
+ * reported via `truncated`, never guessed at.
+ */
+export function tailLog(logFile: string, opts: LogTailOptions): LogTailResponse {
+	const windowBytes = opts.windowBytes ?? DEFAULT_LOG_WINDOW;
+	let size: number;
+	try {
+		size = statSync(logFile).size;
+	} catch (e) {
+		if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+			return { lines: [], truncated: false, scannedBytes: 0 };
+		}
+		throw e;
+	}
+	const start = Math.max(0, size - windowBytes);
+	const len = size - start;
+	const buf = Buffer.alloc(len);
+	const fd = openSync(logFile, "r");
+	try {
+		readSync(fd, buf, 0, len, start);
+	} finally {
+		closeSync(fd);
+	}
+	const windowCut = start > 0;
+	const rawLines = buf.toString("utf8").split("\n");
+	// The window's first slice is mid-line unless the window starts at
+	// byte 0 or happened to cut exactly on the newline.
+	if (windowCut && rawLines.length > 0) rawLines.shift();
+
+	const q = opts.q ?? null;
+	const level = opts.level ?? null;
+	const matching: LogTailItem[] = [];
+	for (const line of rawLines) {
+		if (line === "") continue;
+		if (q !== null && !line.includes(q)) continue;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(line);
+		} catch {
+			// A torn write can leave a half line; skip it, it counts as
+			// truncation so the view never silently hides content.
+			continue;
+		}
+		if (typeof parsed !== "object" || parsed === null) continue;
+		const rec = parsed as Record<string, unknown>;
+		if (level !== null && rec["level"] !== level) continue;
+		matching.push({
+			ts: typeof rec["ts"] === "string" ? rec["ts"] : null,
+			level: typeof rec["level"] === "string" ? rec["level"] : "?",
+			msg: typeof rec["msg"] === "string" ? rec["msg"] : "",
+			line,
+		});
+	}
+	const limit = Math.max(1, opts.limit);
+	const lines = matching.slice(-limit);
+	return {
+		lines,
+		truncated: windowCut || matching.length > limit,
+		scannedBytes: len,
+	};
+}

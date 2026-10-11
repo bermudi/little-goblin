@@ -207,3 +207,19 @@ export interface OperatorStatusResponse {
 	programs: { total: number; enabled: number } | null;
 	delegations: { total: number; active: number } | null;
 }
+
+// State viewer (ruling 2026-10-11): read-only views over $GOBLIN_HOME —
+// skills, attachments, identity files, log tail. The shapes are owned
+// and validated in stateview.ts next to the containment wall they
+// describe; re-exported here so the client keeps one contract module.
+export type {
+	OperatorSkillItem,
+	SkillsResponse,
+	SkillFileResponse,
+	OperatorAttachmentItem,
+	AttachmentsResponse,
+	IdentityFile,
+	IdentityResponse,
+	LogTailItem,
+	LogTailResponse,
+} from "../stateview.ts";

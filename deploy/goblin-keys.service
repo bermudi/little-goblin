@@ -1,5 +1,5 @@
 [Unit]
-Description=Goblin keys — sync encrypted pass-keys snapshots (goblin-dev + goblin-mcp-dev)
+Description=Goblin keys — sync encrypted pass-keys profile snapshots
 # Remote sync must not hold up foreground local reads. Retry until
 # recovery; failed sync keeps last-good snapshots usable.
 StartLimitIntervalSec=0
@@ -9,10 +9,12 @@ Type=oneshot
 # Same PATH as goblin.service — pass-keys and pass-cli resolve under
 # THIS unit's env, not a login shell's.
 Environment=PATH=/home/daniel/bin:/home/daniel/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/bin
-# warm always refreshes from Pass. Both profiles share the dedicated
-# goblin-dev agent/bootstrap and session, so sync them sequentially;
-# snapshots stay separate. Locked/unavailable wallets fail loud.
-ExecStart=/home/daniel/.local/bin/pass-keys warm goblin-dev
+# warm always refreshes from Pass. The installer renders one line per
+# auth-record profile at @WARM_AUTH_PROFILES@; the MCP lane's profile
+# is pinned here and by scripts/mcp. Profiles share agent/bootstrap
+# and session, so sync stays sequential; snapshots stay separate.
+# Locked/unavailable wallets fail loud.
+@WARM_AUTH_PROFILES@
 ExecStart=/home/daniel/.local/bin/pass-keys warm goblin-mcp-dev
 Restart=on-failure
 RestartSec=60

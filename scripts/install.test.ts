@@ -27,6 +27,7 @@ function fixture(
 	stderr: string;
 	calls: string;
 	units: string;
+	keysUnit: string;
 	descendantAlive: boolean;
 	checkoutVerified: boolean;
 } {
@@ -86,7 +87,7 @@ function fixture(
 		writeFileSync(
 			join(home, "goblin", "auth.jsonl"),
 			mode === "real-cancel"
-				? '{"name":"telegram","value":"!pass-keys get goblin-dev FIXTURE"}\\n{"name":"fixture","value":"!pass-keys get goblin-dev FIXTURE"}\\n'.replaceAll(
+				? '{"name":"telegram","value":"!pass-keys get goblin-main FIXTURE"}\\n{"name":"fixture","value":"!pass-keys get goblin-main FIXTURE"}\\n'.replaceAll(
 						"\\n",
 						"\n",
 					)
@@ -102,7 +103,7 @@ function fixture(
 '--no-install ${repo}/scripts/install.ts '*) exec '${realBun}' "$@" ;;
 'install --frozen-lockfile') ${mode.startsWith("cancel-") ? `sleep 120 >/dev/null 2>&1 & child=$!; printf '%s' "$child" > '${join(dir, "child-pid")}'; sleep 0.05; kill -${mode.slice(7)} "$PPID"; wait "$child"` : mode === "dependency" ? "echo FIXTURE_SECRET >&2; exit 8" : `ln -s '${join(root, "node_modules")}' node_modules`} ;;
 '--no-install run src/doctor.ts --phase preflight --json') ${mode.startsWith("real-") ? `printf '%s' "$PPID" > '${join(dir, "installer-pid")}'; exec '${realBun}' --no-install run '${join(repo, "src", "doctor.ts")}' --phase preflight --json > '${join(dir, "doctor-report.json")}'` : mode === "preflight" ? "echo FIXTURE_SECRET >&2; exit 1" : "printf '{\"ok\":true}'"} ;;
-'--no-install run scripts/install-options.ts') printf '${mode === "badoptions" ? "invalid FIXTURE_SECRET" : JSON.stringify({ delegation: mode === "optional", keys: mode === "optional", port: mode === "port-zero" ? 0 : 8787 })}' ;;
+'--no-install run scripts/install-options.ts') printf '${mode === "badoptions" ? "invalid FIXTURE_SECRET" : JSON.stringify({ delegation: mode === "optional", keys: mode === "optional", port: mode === "port-zero" ? 0 : 8787, profiles: mode === "optional" ? ["goblin-main"] : [] })}' ;;
 'run app:build') ${mode === "build" ? "exit 1" : "mkdir -p app/dist; printf fixture > app/dist/index.html"} ;;
 '--no-install run scripts/check-app-assets.ts '*) ${mode === "assets" ? "exit 1" : ":"} ;;
 '--no-install run scripts/check-startup.ts '*) ${mode === "startup-descendant" ? `exec '${realBun}' --no-install run '${join(repo, "scripts", "startup-runner.ts")}'` : mode === "startup" ? "echo 'install: startup ready port mismatch' >&2; echo FIXTURE_SECRET >&2; exit 1" : "systemctl --user enable --now goblin.service"} ;;
@@ -142,6 +143,7 @@ esac`,
 			timeout: 20_000,
 		});
 		const installedUnit = join(home, ".config", "systemd", "user", "goblin.service");
+		const installedKeysUnit = join(home, ".config", "systemd", "user", "goblin-keys.service");
 		let descendantAlive = false;
 		const childFile = join(dir, "child-pid");
 		if (existsSync(childFile)) {
@@ -168,6 +170,7 @@ esac`,
 			stderr: result.stderr,
 			calls: existsSync(calls) ? readFileSync(calls, "utf8") : "",
 			units: existsSync(installedUnit) ? readFileSync(installedUnit, "utf8") : "",
+			keysUnit: existsSync(installedKeysUnit) ? readFileSync(installedKeysUnit, "utf8") : "",
 			descendantAlive,
 			checkoutVerified: report?.target.checkout === repo,
 		};
@@ -181,7 +184,7 @@ describe("fresh installer", () => {
 		const result = fixture("real-cancel");
 		expect(result.status).not.toBe(0);
 		expect(result.descendantAlive).toBe(false);
-		expect(result.calls).toContain("pass-keys status goblin-dev");
+		expect(result.calls).toContain("pass-keys status goblin-main");
 		expect(result.calls).not.toContain("run app:build");
 		expect(result.stderr).toContain("setup cancelled (SIGTERM)");
 	});
@@ -303,5 +306,10 @@ describe("fresh installer", () => {
 		expect(result.calls).toContain("enable --now goblin-herdr.service");
 		expect(result.calls).toContain("enable --now goblin-keys.timer");
 		expect(result.calls).not.toContain("pass-keys ");
+		// Warm targets render from the reported profiles; only the MCP
+		// lane's line stays pinned by the template.
+		expect(result.keysUnit).toContain("warm goblin-main");
+		expect(result.keysUnit).toContain("warm goblin-mcp-dev");
+		expect(result.keysUnit).not.toContain("@WARM_AUTH_PROFILES@");
 	});
 });

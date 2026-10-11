@@ -134,7 +134,9 @@ pass-keys status goblin-mcp-dev
 The MCP profile shares the agent/bootstrap but has its own snapshot;
 initialize it even when its refs map is empty if using the shipped warmer/MCP
 path. `warm` always refreshes from Pass. `status` shows metadata, not values.
-The installed `goblin-keys.service`/`.timer` maintain snapshots at boot and
+The installed warmer warms the profiles your auth records reference (the
+installer renders one warm line per profile) plus the MCP lane's profile;
+`goblin-keys.service`/`.timer` maintain snapshots at boot and
 twice daily; Goblin does not wait for remote warm. A failed sync preserves
 last-good snapshots; age is information, not expiry.
 

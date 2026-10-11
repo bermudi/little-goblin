@@ -41,6 +41,21 @@ test("setup options inspect config and auth shapes without executing credentials
 		delegation: true,
 		keys: true,
 		port: 8787,
+		profiles: ["goblin-dev"],
+	});
+	expect(result.stderr).toBe("");
+});
+test("a non-default Pass profile is accepted and reported as a warm target", () => {
+	const result = inspect(
+		`${config}}`,
+		'{"name":"fixture","value":"!pass-keys get other FIXTURE_SECRET"}',
+	);
+	expect(result.status).toBe(0);
+	expect(JSON.parse(result.stdout) as unknown).toEqual({
+		delegation: false,
+		keys: true,
+		port: 8787,
+		profiles: ["other"],
 	});
 	expect(result.stderr).toBe("");
 });
@@ -48,14 +63,14 @@ for (const [name, settings, auth] of [
 	["malformed config", "{value:FIXTURE_SECRET", ""],
 	["malformed auth", `${config}}`, '{"name":"fixture","value":FIXTURE_SECRET}'],
 	[
-		"different Pass profile",
+		"pass-keys run record (the warmer serves get snapshots only)",
 		`${config}}`,
-		'{"name":"fixture","value":"!pass-keys get other FIXTURE_SECRET"}',
+		'{"name":"fixture","value":"!pass-keys run goblin-dev -- printenv FIXTURE_SECRET"}',
 	],
 	[
-		"multi-directory absolute Pass path with unsupported profile",
+		"uppercase profile outside the warm-target class",
 		`${config}}`,
-		'{"name":"fixture","value":"!/usr/bin/pass-keys get other FIXTURE_SECRET"}',
+		'{"name":"fixture","value":"!pass-keys get Other FIXTURE_SECRET"}',
 	],
 ] as const)
 	test(`${name} fails safely before unit/action choice`, () => {
@@ -68,7 +83,12 @@ for (const [name, settings, auth] of [
 test("configured port zero is preserved for invocation-specific bound port discovery", () => {
 	const result = inspect(`${config},http:{port:0}}`);
 	expect(result.status).toBe(0);
-	expect(JSON.parse(result.stdout) as unknown).toEqual({ delegation: false, keys: false, port: 0 });
+	expect(JSON.parse(result.stdout) as unknown).toEqual({
+		delegation: false,
+		keys: false,
+		port: 0,
+		profiles: [],
+	});
 });
 test("an unrelated pass-keys substring stays unverified and never executes a credential command", () => {
 	const result = inspect(
@@ -80,6 +100,7 @@ test("an unrelated pass-keys substring stays unverified and never executes a cre
 		delegation: false,
 		keys: false,
 		port: 8787,
+		profiles: [],
 	});
 	expect(result.stdout).not.toContain("not-pass-keys-token");
 });
@@ -90,16 +111,17 @@ test("general credential command inspection never executes the boundary probe", 
 	expect(result.stdout).not.toContain("FIXTURE_SECRET");
 	expect(result.stderr).toBe("");
 });
-test("multi-directory direct Pass path recognizes the supported profile without execution", () => {
+test("multi-directory direct Pass path recognizes any provisioned profile without execution", () => {
 	const result = inspect(
 		`${config}}`,
-		'{"name":"fixture","value":"!/usr/local/bin/pass-keys get goblin-dev FIXTURE"}',
+		'{"name":"fixture","value":"!/usr/local/bin/pass-keys get goblin-main FIXTURE"}',
 	);
 	expect(result.status).toBe(0);
 	expect(JSON.parse(result.stdout) as unknown).toEqual({
 		delegation: false,
 		keys: true,
 		port: 8787,
+		profiles: ["goblin-main"],
 	});
 	expect(result.invoked).toBe(false);
 });

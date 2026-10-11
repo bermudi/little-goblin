@@ -128,7 +128,12 @@ function render(template: string, replacements: ReadonlyArray<readonly [string, 
 	for (const [from, to] of replacements) text = text.replaceAll(from, to);
 	return text;
 }
-function options(raw: string): { delegation: boolean; keys: boolean; port: number } {
+function options(raw: string): {
+	delegation: boolean;
+	keys: boolean;
+	port: number;
+	profiles: string[];
+} {
 	let value: unknown;
 	try {
 		value = JSON.parse(raw);
@@ -136,21 +141,38 @@ function options(raw: string): { delegation: boolean; keys: boolean; port: numbe
 		return fail("setup-options: invalid-response");
 	}
 	// The helper owns Zod config/auth validation; bootstrap remains stdlib-only.
+	const shape = value as {
+		delegation?: unknown;
+		keys?: unknown;
+		port?: unknown;
+		profiles?: unknown;
+	};
 	if (
 		typeof value !== "object" ||
 		value === null ||
-		!("delegation" in value) ||
-		typeof value.delegation !== "boolean" ||
-		!("keys" in value) ||
-		typeof value.keys !== "boolean" ||
-		!("port" in value) ||
-		typeof value.port !== "number" ||
-		!Number.isInteger(value.port) ||
-		value.port < 0 ||
-		value.port > 65535
+		typeof shape.delegation !== "boolean" ||
+		typeof shape.keys !== "boolean" ||
+		typeof shape.port !== "number" ||
+		!Number.isInteger(shape.port) ||
+		shape.port < 0 ||
+		shape.port > 65535 ||
+		!Array.isArray(shape.profiles)
 	)
 		fail("setup-options: invalid-response");
-	return { delegation: value.delegation, keys: value.keys, port: value.port };
+	// Profiles ride inside a systemd unit, so the class is the doctor's
+	// auth-probe class: lowercase, length-capped, no metacharacters.
+	const profiles: string[] = [];
+	for (const entry of shape.profiles as readonly unknown[]) {
+		if (typeof entry !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(entry))
+			fail("setup-options: invalid-response");
+		profiles.push(entry);
+	}
+	return {
+		delegation: shape.delegation,
+		keys: shape.keys,
+		port: shape.port,
+		profiles: [...new Set(profiles)].sort(),
+	};
 }
 
 async function install(): Promise<void> {
@@ -273,11 +295,20 @@ async function install(): Promise<void> {
 		}
 		if (passKeys) {
 			names.push("goblin-keys.service", "goblin-keys.timer");
+			// Warm targets are data, not installer constants: one line per
+			// auth-record profile, next to the template's pinned MCP-lane
+			// line (scripts/mcp pins the same profile).
 			writeFileSync(
 				join(staging, "goblin-keys.service"),
 				render("goblin-keys.service", [
 					["/home/daniel/.local/bin/pass-keys", passKeys],
 					...common,
+					[
+						"@WARM_AUTH_PROFILES@",
+						selected.profiles
+							.map((profile) => `ExecStart=${passKeys} warm ${profile}`)
+							.join("\n"),
+					],
 				]).replace(/^Environment=PATH=.*$/m, `Environment=PATH=${path}`),
 				{ mode: 0o644 },
 			);

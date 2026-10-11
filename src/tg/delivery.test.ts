@@ -27,6 +27,7 @@ const conv: Conversation = {
 	thinking: null,
 	voice: false,
 	memoryExcluded: false,
+	projectId: null,
 	persona: "personal",
 	archivedAt: null,
 	pinnedAt: null,

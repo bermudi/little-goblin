@@ -8,7 +8,7 @@ import {
 	transcriptionDefaults,
 	transcriptionKinds,
 } from "../../src/config.ts";
-import type { AppConversationList } from "../../src/http/app-wire.ts";
+import type { AppConversationList, AppProject } from "../../src/http/app-wire.ts";
 import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
 import { App, deepLinkConv, flatLine } from "./App.tsx";
 
@@ -119,6 +119,9 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 				const d = deferredUpload();
 				uploads.push(d);
 				return d.promise;
+			}
+			if (url === "/api/app/projects") {
+				return Promise.resolve(jsonResponse({ projects: [] }));
 			}
 			if (url === "/api/app/conversations") {
 				if (method === "POST") {
@@ -297,6 +300,9 @@ describe("rail row actions and the pinned pool", () => {
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+			if (url === "/api/app/projects") {
+				return Promise.resolve(jsonResponse({ projects: [] }));
+			}
 			if (url === "/api/app/conversations" && method === "GET") {
 				return Promise.resolve(
 					jsonResponse({
@@ -539,6 +545,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			if (url === "/api/app/conversations") return Promise.resolve(jsonResponse({ conversations }));
+			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
 			if (url === "/api/app/conversations/fixture") {
 				if (init?.method === "DELETE") conversations = [];
 				if (init?.method === "PATCH")
@@ -691,6 +698,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 				updatedAt: "2026-10-10T00:00:00Z",
 				archivedAt: archived ? "2026-10-10T00:00:00Z" : null,
 				pinnedAt: null,
+				projectId: null,
 			},
 		];
 	};
@@ -1008,5 +1016,278 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await browserGoesTo("/app/memory");
 		expect(confirmCalls).toBe(0);
 		expect(container.querySelector(".settings")).toBeNull();
+	});
+});
+
+// Projects (design/projects.md): the rail's Projects section above the
+// chat list, bound chats living only on their project's page, the
+// create dialog's wire shape, and the project composer's creation-time
+// binding. Same happy-dom mount + fetch-at-the-edge fake as above.
+describe("app projects surface", () => {
+	let win: Window;
+	let container: HTMLElement;
+	let root: Root | null = null;
+	let installed: string[] = [];
+	let convs: AppConversationList["conversations"];
+	let projs: AppProject[];
+	let posts: { url: string; body: unknown }[];
+	const realFetch = globalThis.fetch;
+
+	const installGlobal = (name: string, value: unknown) => {
+		Reflect.set(globalThis, name, value);
+		installed.push(name);
+	};
+
+	const convRow = (
+		title: string,
+		over: Partial<AppConversationList["conversations"][number]> = {},
+	) => ({
+		id: `app/${title.split(" ")[0]}`,
+		title,
+		preview: `${title} preview`,
+		createdAt: "2026-10-08T00:00:00.000Z",
+		updatedAt: "2026-10-09T00:00:00.000Z",
+		archivedAt: null,
+		pinnedAt: null,
+		projectId: null,
+		...over,
+	});
+
+	const projRow = (name: string, over: Partial<AppProject> = {}): AppProject => ({
+		id: `p-${name.split(" ")[0]!.toLowerCase()}`,
+		name,
+		slug: name.toLowerCase().replaceAll(" ", "-"),
+		dir: `/tmp/${name}`,
+		managed: true,
+		instructions: "",
+		memory: "shared",
+		createdAt: "2026-10-08T00:00:00.000Z",
+		archivedAt: null,
+		...over,
+	});
+
+	beforeEach(() => {
+		// A real URL — history.pushState can't leave about:blank.
+		win = new Window({ url: "http://localhost/app/" });
+		const div = win.document.createElement("div");
+		win.document.body.appendChild(div);
+		container = div as unknown as HTMLElement;
+		installed = [];
+		convs = [];
+		projs = [];
+		posts = [];
+		installGlobal("window", win);
+		installGlobal("document", win.document);
+		installGlobal("navigator", win.navigator);
+		installGlobal("localStorage", win.localStorage);
+		installGlobal("Event", win.Event);
+		installGlobal("CustomEvent", win.CustomEvent);
+		installGlobal("getComputedStyle", win.getComputedStyle);
+		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+			const body = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined;
+			if (url === "/api/app/conversations") {
+				if (method === "POST") {
+					posts.push({ url, body });
+					return Promise.resolve(
+						jsonResponse({ id: "app/minted", title: null, createdAt: "2026-10-10T00:00:00Z" }, 201),
+					);
+				}
+				return Promise.resolve(jsonResponse({ conversations: convs }));
+			}
+			if (url === "/api/app/projects") {
+				if (method === "POST") {
+					posts.push({ url, body });
+					const req = body as { name: string };
+					const project = projRow(req.name, { id: "p-new" });
+					projs.push(project);
+					return Promise.resolve(jsonResponse(project, 201));
+				}
+				return Promise.resolve(jsonResponse({ projects: projs }));
+			}
+			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: [] }));
+			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
+			if (url.endsWith("/chat"))
+				return Promise.resolve(
+					new Response("data: [DONE]\n\n", {
+						status: 200,
+						headers: {
+							"content-type": "text/event-stream",
+							"x-vercel-ai-ui-message-stream": "v1",
+						},
+					}),
+				);
+			// The composers' config loads and anything else.
+			return Promise.resolve(
+				jsonResponse({
+					model: "fixture/model",
+					thinking: "off",
+					favorites: [],
+					thinkingLevels: ["off"],
+				}),
+			);
+		}) as typeof fetch;
+	});
+
+	afterEach(async () => {
+		if (root !== null) {
+			await act(async () => {
+				root?.unmount();
+			});
+			root = null;
+		}
+		await win.happyDOM.close();
+		globalThis.fetch = realFetch;
+		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+		for (const name of installed) Reflect.deleteProperty(globalThis, name);
+		installed = [];
+	});
+
+	const settle = async () => {
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 30));
+		});
+	};
+
+	const mount = async () => {
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await settle();
+	};
+
+	const click = async (el: Element | null | undefined) => {
+		expect(el).toBeTruthy();
+		await act(async () => {
+			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+		});
+		await settle();
+	};
+
+	const typeInto = async (el: Element, value: string, proto: object) => {
+		await act(async () => {
+			// Focus + keyup too — React's text-input fallback needs it in
+			// this environment (MemoryView.test's ruling).
+			(el as HTMLElement).focus();
+			Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
+			el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+			el.dispatchEvent(
+				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			);
+		});
+		await settle();
+	};
+
+	test("the rail's Projects section lists active projects; bound chats leave the main list", async () => {
+		projs = [
+			projRow("Goblin Work"),
+			projRow("Old Stuff", { archivedAt: "2026-10-09T00:00:00.000Z" }),
+		];
+		convs = [convRow("loose chat"), convRow("inside chat", { projectId: "p-goblin" })];
+		await mount();
+
+		const section = container.querySelector(".rail-projects");
+		expect(section).not.toBeNull();
+		expect(section!.textContent).toContain("Goblin Work");
+		expect(section!.textContent).toContain("New project");
+		// Archived projects stay off the rail — they wait on the index.
+		expect(section!.textContent).not.toContain("Old Stuff");
+
+		const railTitles = [...container.querySelectorAll(".rail .conv-title")].map(
+			(t) => t.textContent,
+		);
+		expect(railTitles).toContain("loose chat");
+		expect(railTitles).not.toContain("inside chat");
+
+		// The project page is where bound chats live.
+		await click(
+			[...section!.querySelectorAll(".proj")].find((b) => b.textContent === "Goblin Work"),
+		);
+		expect(win.location.pathname).toBe("/app/p/p-goblin");
+		expect(container.querySelector("main")!.textContent).toContain("Goblin Work");
+		expect([...container.querySelectorAll("main .conv-title")].map((t) => t.textContent)).toEqual([
+			"inside chat",
+		]);
+
+		// The index page holds the archived shelf — collapsed by
+		// default, like the rail's archived chats.
+		await click(container.querySelector(".rail-section"));
+		expect(win.location.pathname).toBe("/app/projects");
+		const details = container.querySelector("main .tuning");
+		expect(details).not.toBeNull();
+		expect(details!.textContent).toContain("Archived projects (1)");
+		expect((details as HTMLDetailsElement).open).toBe(false);
+		expect(details!.textContent).toContain("Old Stuff");
+	});
+
+	test("the create dialog posts its fields and lands on the new project's page", async () => {
+		await mount();
+		await click(
+			[...container.querySelectorAll(".rail-projects button")].find(
+				(b) => b.textContent === "New project",
+			),
+		);
+		const sheet = container.querySelector(".msheet form");
+		expect(sheet).not.toBeNull();
+		const nameInput = sheet!.querySelector("input")!;
+		await typeInto(nameInput, "Side Hustle", win.HTMLInputElement.prototype);
+		expect((nameInput as HTMLInputElement).value).toBe("Side Hustle");
+		await typeInto(
+			sheet!.querySelector("textarea")!,
+			"Ship the thing.",
+			win.HTMLTextAreaElement.prototype,
+		);
+		await act(async () => {
+			sheet!.dispatchEvent(
+				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+			);
+		});
+		await settle();
+		expect(posts).toHaveLength(1);
+		// Managed home and shared memory are the defaults — they ride
+		// only when the operator asks for something else.
+		expect(posts[0]).toEqual({
+			url: "/api/app/projects",
+			body: { name: "Side Hustle", instructions: "Ship the thing." },
+		});
+		expect(win.location.pathname).toBe("/app/p/p-new");
+		expect(container.querySelector("main")!.textContent).toContain("Side Hustle");
+	});
+
+	test("the project page composer binds the new conversation at creation", async () => {
+		projs = [projRow("Goblin Work")];
+		win.history.replaceState(null, "", "/app/p/p-goblin");
+		await mount();
+		expect(win.location.pathname).toBe("/app/p/p-goblin");
+
+		const composer = container.querySelector("form.composer");
+		expect(composer).not.toBeNull();
+		await typeInto(
+			composer!.querySelector("textarea")!,
+			"hello project",
+			win.HTMLTextAreaElement.prototype,
+		);
+		await act(async () => {
+			composer!.dispatchEvent(
+				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+			);
+		});
+		await settle();
+		const created = posts.find((p) => p.url === "/api/app/conversations");
+		expect(created?.body).toEqual({ projectId: "p-goblin" });
+	});
+
+	test("an archived project shows a note instead of the composer", async () => {
+		projs = [projRow("Goblin Work", { archivedAt: "2026-10-10T00:00:00.000Z" })];
+		win.history.replaceState(null, "", "/app/p/p-goblin");
+		await mount();
+
+		expect(container.querySelector("form.composer")).toBeNull();
+		expect(container.querySelector("main")!.textContent).toContain(
+			"This project is archived — unarchive it to start new chats here.",
+		);
 	});
 });

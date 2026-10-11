@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { paths } from "../../config.ts";
 import { bashTool } from "./bash.ts";
 
 const opts = { toolCallId: "t1", messages: [], context: {} };
@@ -11,11 +12,21 @@ interface BashResult {
 }
 
 describe("bash", () => {
-	test("advertises the read-only doctor without changing descriptions by workspace", () => {
+	test("advertises the read-only doctor — the workspace form keeps ../doctor, other cwds get the shim absolute", () => {
+		// The workspace form: ../doctor resolves from the deployment
+		// workspace only.
+		const ws = bashTool(paths.workspace());
+		expect(ws.description).toContain("../doctor --json");
+		expect(ws.description).toContain("does not authorize repairs or restarts");
+
+		// Any other cwd is a project dir — the shim must be absolute, and
+		// nothing embeds the cwd itself: two project dirs render the same
+		// bytes.
 		const tool = bashTool("/tmp");
-		expect(tool.description).toContain("../doctor --json");
+		expect(tool.description).toContain(`${paths.doctorShim()} --json`);
 		expect(tool.description).toContain("does not authorize repairs or restarts");
 		expect(tool.description).toBe(bashTool("/another-workspace").description);
+		expect(tool.description).not.toBe(ws.description);
 	});
 
 	test("returns output and exit code", async () => {

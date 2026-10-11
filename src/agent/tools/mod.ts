@@ -1,6 +1,7 @@
-// The tools. Hand-rolled, zod-validated, bound to the deployment
-// workspace. Telegram send is delivery, not a tool. Nothing else exists
-// until a feature needs it.
+// The tools. Hand-rolled, zod-validated, bound to the caller's cwd —
+// the deployment workspace, or a project conversation's dir. Telegram
+// send is delivery, not a tool. Nothing else exists until a feature
+// needs it.
 
 import type { ToolSet } from "ai";
 import type { HindsightClient } from "../../hindsight.ts";

@@ -243,7 +243,17 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 		}
 		// The operator-console client routes (settings, memory, …) —
 		// same reasoning as /app/c/<id>: the shell resolves them.
-		if (/^\/app\/(?:settings|memory|delegations|programs|status)\/?$/.test(url.pathname)) {
+		if (/^\/app\/(?:settings|memory|delegations|programs|status|projects)\/?$/.test(url.pathname)) {
+			return serveAppDist("");
+		}
+		// Project pages (design/projects.md): /app/p/<projectId> — same
+		// shell dispatch as /app/c/<id>. Project ids are randomUUIDs,
+		// inside the same url-safe shape.
+		if (url.pathname.startsWith("/app/p/")) {
+			const projectId = url.pathname.slice("/app/p/".length);
+			if (!APP_ID_RE.test(projectId)) {
+				return Response.json({ error: "not found" }, { status: 404 });
+			}
 			return serveAppDist("");
 		}
 		if (url.pathname.startsWith("/app/")) {

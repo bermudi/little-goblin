@@ -49,10 +49,40 @@ export const paths = {
 	openrouterModelsCache: () => join(goblinHome(), "state", "openrouter-models.json"),
 	webcache: () => join(goblinHome(), "state", "webcache"),
 	scriptcache: () => join(goblinHome(), "state", "scriptcache"),
+	// Project homes (design/projects.md) — lazy: created on the first
+	// project create, not by ensureHomeLayout.
+	projects: () => join(goblinHome(), "projects"),
 	// Local speech-engine artifacts (digest-pinned auto-fetch —
 	// design/asr.md → Whistle). Cache, not state: deletable at will.
 	whistleCache: () => join(goblinHome(), "cache", "whistle"),
 };
+
+// One layout directory, durably: missing ancestors are created
+// oldest-first, each parent fsynced — a WAL commit can't protect a
+// file inside a directory that vanishes on first-boot power loss.
+export function ensureDir(dir: string): void {
+	const missing: string[] = [];
+	for (let next = dir; ; next = dirname(next)) {
+		try {
+			if (!statSync(next).isDirectory())
+				throw new Error(`layout directory is not a directory: ${next}`);
+			break;
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+			missing.unshift(next);
+			if (dirname(next) === next) throw new Error(`no existing parent for ${dir}`);
+		}
+	}
+	for (const next of missing) {
+		mkdirSync(next);
+		const parent = openSync(dirname(next), constants.O_RDONLY);
+		try {
+			fsyncSync(parent);
+		} finally {
+			closeSync(parent);
+		}
+	}
+}
 
 export function ensureHomeLayout(): void {
 	for (const dir of [
@@ -62,30 +92,7 @@ export function ensureHomeLayout(): void {
 		paths.attachments(),
 		paths.state(),
 	]) {
-		// Missing ancestors are created oldest-first, each parent fsynced:
-		// a WAL commit can't protect a file inside a directory that
-		// vanishes on first-boot power loss.
-		const missing: string[] = [];
-		for (let next = dir; ; next = dirname(next)) {
-			try {
-				if (!statSync(next).isDirectory())
-					throw new Error(`layout directory is not a directory: ${next}`);
-				break;
-			} catch (err) {
-				if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-				missing.unshift(next);
-				if (dirname(next) === next) throw new Error(`no existing parent for ${dir}`);
-			}
-		}
-		for (const next of missing) {
-			mkdirSync(next);
-			const parent = openSync(dirname(next), constants.O_RDONLY);
-			try {
-				fsyncSync(parent);
-			} finally {
-				closeSync(parent);
-			}
-		}
+		ensureDir(dir);
 	}
 	seedFile(
 		paths.soul(),

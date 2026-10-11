@@ -22,6 +22,26 @@ export interface AppConversationCreate {
 	createdAt: string;
 }
 
+/** One project as the app sees it — the domain Project minus `home`
+ * (goblin-owned scratch the client never addresses). GET/POST
+ * /api/app/projects, GET/PATCH /api/app/projects/<id>. */
+export interface AppProject {
+	id: string;
+	name: string;
+	slug: string;
+	dir: string;
+	managed: boolean;
+	instructions: string;
+	memory: "shared" | "off";
+	createdAt: string;
+	archivedAt: string | null;
+}
+
+/** GET /api/app/projects — every project, archived included, newest first. */
+export interface AppProjectList {
+	projects: AppProject[];
+}
+
 /** GET /api/app/conversations/<id>/messages — stored UIMessages verbatim. */
 export interface AppMessageList {
 	messages: UIMessage[];

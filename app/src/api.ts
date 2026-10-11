@@ -9,6 +9,8 @@ import type {
 	AppConversationList,
 	AppConversationPatch,
 	AppMessageList,
+	AppProject,
+	AppProjectList,
 	AppSearchResponse,
 	AppStopResponse,
 	AppTtsResponse,
@@ -87,12 +89,48 @@ export function listConversations(token: string | null): Promise<AppConversation
 
 export function createConversation(
 	token: string | null,
-	title?: string,
+	opts?: { title?: string; projectId?: string },
 ): Promise<AppConversationCreate> {
 	return request(token, "/api/app/conversations", {
 		method: "POST",
 		headers: { "content-type": "application/json" },
-		body: JSON.stringify(title === undefined ? {} : { title }),
+		body: JSON.stringify(opts ?? {}),
+	});
+}
+
+export function listProjects(token: string | null): Promise<AppProjectList> {
+	return request(token, "/api/app/projects");
+}
+
+export function createProject(
+	token: string | null,
+	body: { name: string; instructions?: string; memory?: "shared" | "off"; dir?: string },
+): Promise<AppProject> {
+	return request(token, "/api/app/projects", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(body),
+	});
+}
+
+export function getProject(token: string | null, id: string): Promise<AppProject> {
+	return request(token, `/api/app/projects/${encodeURIComponent(id)}`);
+}
+
+export function patchProject(
+	token: string | null,
+	id: string,
+	patch: {
+		name?: string;
+		instructions?: string;
+		memory?: "shared" | "off";
+		archived?: boolean;
+	},
+): Promise<AppProject> {
+	return request(token, `/api/app/projects/${encodeURIComponent(id)}`, {
+		method: "PATCH",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(patch),
 	});
 }
 

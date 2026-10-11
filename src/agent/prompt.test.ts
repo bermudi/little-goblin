@@ -33,6 +33,7 @@ const conv: Conversation = {
 	thinking: null,
 	voice: false,
 	memoryExcluded: false,
+	projectId: null,
 	persona: "personal",
 	archivedAt: null,
 	pinnedAt: null,
@@ -368,6 +369,121 @@ describe("workspace file injection", () => {
 			const { text } = buildSystemPrompt(guestChannel, tools);
 			expect(text).toContain("guest in a third-party chat");
 			expect(text).toContain("Other people can read this chat");
+		} finally {
+			delete process.env.GOBLIN_HOME;
+		}
+	});
+});
+
+// Project prompts (design/projects.md): a bound conversation gets its
+// project's own environment — dir, instructions, absolute identity and
+// skill paths, and a linked dir's AGENTS.md. The unbound build is
+// untouched above.
+describe("project prompts", () => {
+	const project = (dir: string, over: Partial<import("../projects.ts").Project> = {}) => ({
+		id: "proj-1",
+		name: "Side Project",
+		slug: "side-project",
+		home: dir,
+		dir,
+		managed: true,
+		instructions: "",
+		memory: "shared" as const,
+		createdAt: "2026-01-01T00:00:00Z",
+		archivedAt: null,
+		...over,
+	});
+
+	test("a managed project names its dir, carries instructions, and goes absolute", () => {
+		const home = useHome();
+		process.env.GOBLIN_HOME = home;
+		try {
+			mkdirSync(paths.workspace(), { recursive: true });
+			// A real catalog entry — the relative path must not survive a
+			// project cwd.
+			const skillDir = join(paths.skills(), "mq");
+			mkdirSync(skillDir, { recursive: true });
+			writeFileSync(
+				join(skillDir, "SKILL.md"),
+				"---\nname: mq\ndescription: jq for Markdown\n---\nbody\n",
+			);
+			const dir = join(home, "projects", "side-project");
+			const p = project(dir, { instructions: "Keep answers in metric." });
+			const { text, sources } = buildSystemPrompt(
+				{ ...conv, id: "app/chat-9", chatId: 0, projectId: p.id },
+				tools,
+				p,
+			);
+			expect(text).toContain(`Working directory: ${dir}`);
+			expect(text).toContain("this project's directory");
+			expect(text).toContain(`## project — Side Project`);
+			expect(text).toContain("Keep answers in metric.");
+			// Identity files anchor at the workspace absolutely — a
+			// relative edit from the project cwd would land in the project.
+			expect(text).toContain(`in ${paths.workspace()} are your`);
+			// The catalog renders absolute paths.
+			expect(text).toContain(`(${join(paths.workspace(), "skills", "mq", "SKILL.md")})`);
+			expect(text).not.toContain("(skills/mq/SKILL.md)");
+			// Managed homes never carry an AGENTS.md subsection.
+			expect(text).not.toContain("### AGENTS.md in");
+			expect(sources).toContain("project");
+			expect(sources).not.toContain("project-AGENTS.md");
+		} finally {
+			delete process.env.GOBLIN_HOME;
+		}
+	});
+
+	test("a linked dir contributes its own AGENTS.md", () => {
+		const home = useHome();
+		process.env.GOBLIN_HOME = home;
+		try {
+			mkdirSync(paths.workspace(), { recursive: true });
+			const dir = join(home, "elsewhere", "repo");
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(join(dir, "AGENTS.md"), "run bun test, not npm");
+			const p = project(dir, { managed: false });
+			const { text, sources } = buildSystemPrompt(
+				{ ...conv, id: "app/chat-9", chatId: 0, projectId: p.id },
+				tools,
+				p,
+			);
+			expect(text).toContain(`### AGENTS.md in ${dir}`);
+			expect(text).toContain("run bun test, not npm");
+			expect(sources).toContain("project");
+			expect(sources).toContain("project-AGENTS.md");
+
+			// No file, no subsection, no source.
+			const bare = project(join(home, "elsewhere", "empty"), { managed: false });
+			mkdirSync(bare.dir, { recursive: true });
+			const second = buildSystemPrompt(
+				{ ...conv, id: "app/chat-9", chatId: 0, projectId: bare.id },
+				tools,
+				bare,
+			);
+			expect(second.text).not.toContain("### AGENTS.md in");
+			expect(second.sources).not.toContain("project-AGENTS.md");
+		} finally {
+			delete process.env.GOBLIN_HOME;
+		}
+	});
+
+	test("an empty-instructions project still names itself; no project is byte-identical", () => {
+		const home = useHome();
+		process.env.GOBLIN_HOME = home;
+		try {
+			mkdirSync(paths.workspace(), { recursive: true });
+			const p = project(join(home, "projects", "side-project"));
+			const { text } = buildSystemPrompt(
+				{ ...conv, id: "app/chat-9", chatId: 0, projectId: p.id },
+				tools,
+				p,
+			);
+			expect(text).toContain("## project — Side Project");
+			// The unbound build at the same address: identical bytes to a
+			// build that never heard of projects.
+			const unbound = buildSystemPrompt({ ...conv, id: "app/chat-9", chatId: 0 }, tools);
+			const plain = buildSystemPrompt({ ...conv, id: "app/chat-9", chatId: 0 }, tools, null);
+			expect(unbound.text).toBe(plain.text);
 		} finally {
 			delete process.env.GOBLIN_HOME;
 		}

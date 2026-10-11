@@ -177,8 +177,11 @@ export function loadCatalog(root: string): SkillCatalog {
 }
 
 // The prompt section. Renders even when empty — it's also the notice
-// that the capability exists.
-export function formatSkillsSection(catalog: SkillCatalog): string[] {
+// that the capability exists. linkBase resolves each entry's
+// workspace-relative path to absolute — project conversations cwd
+// outside the workspace, where `skills/…` would resolve inside the
+// project (design/projects.md).
+export function formatSkillsSection(catalog: SkillCatalog, linkBase?: string): string[] {
 	const lines = [
 		"## skills",
 		"",
@@ -195,7 +198,8 @@ export function formatSkillsSection(catalog: SkillCatalog): string[] {
 	} else {
 		for (const e of catalog.entries) {
 			const req = e.compatibility ? ` [${e.compatibility}]` : "";
-			lines.push(`- ${e.name} — ${e.description}${req} (${e.path})`);
+			const path = linkBase === undefined ? e.path : join(linkBase, e.path);
+			lines.push(`- ${e.name} — ${e.description}${req} (${path})`);
 		}
 	}
 	if (catalog.skipped > 0) {

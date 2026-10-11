@@ -2709,3 +2709,166 @@ select.ui-input option {
 		animation: none !important;
 	}
 }
+
+/* ---------- projects (design/projects.md) ---------- */
+
+/* The rail section above the chat list: an uppercase section head (the
+   /app/projects link), single-line project rows, then New project. */
+.rail-projects {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+.rail-projects ul {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+.rail-section {
+	width: 100%;
+	text-align: left;
+	border-radius: 8px;
+	padding: 0.45rem 0.6rem;
+	font-size: 11px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--app-fg-subtle);
+	transition: background-color 75ms;
+}
+.rail-section:hover {
+	background: var(--app-hover);
+	color: var(--app-fg-muted);
+}
+.rail .proj {
+	width: 100%;
+	text-align: left;
+	border-radius: 8px;
+	padding: 0.4rem 0.6rem;
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	transition: background-color 75ms;
+}
+.rail .proj:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.rail .proj.on {
+	background: var(--app-active);
+	color: var(--app-fg);
+}
+
+/* Chat rows outside the rail (a project page's chat list) — the rail
+   rules are scoped, so the shared .conv skin needs the same anchors. */
+.convlist {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+.convlist .conv {
+	position: relative;
+	display: flex;
+	align-items: flex-start;
+	width: 100%;
+	border-radius: 8px;
+	transition: background-color 75ms;
+}
+.convlist .conv:hover {
+	background: var(--app-hover);
+}
+.convlist .conv.current {
+	background: var(--app-active);
+}
+
+/* The create dialog's form — the msheet body is bare rows, so fields
+   get their own padding/gap here. */
+.projform {
+	padding: 0.75rem;
+	gap: 0.8rem;
+}
+.projform textarea,
+.projform select,
+.projfields textarea,
+.projfields select {
+	font: inherit;
+	font-size: 12.5px;
+	background: var(--app-bg);
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	color: var(--app-fg);
+	padding: 0.4rem 0.6rem;
+	outline: none;
+	resize: vertical;
+}
+.projform textarea:focus,
+.projform input:focus,
+.projfields textarea:focus,
+.projfields select:focus {
+	border-color: color-mix(in oklab, var(--app-fg) 25%, transparent);
+}
+.projform .radio {
+	display: flex;
+	align-items: flex-start;
+	gap: 0.5rem;
+	font-size: 12.5px;
+}
+.projform .radio .cap {
+	display: block;
+}
+
+/* The project page header: name + a quiet text rename action. */
+.proj-head {
+	gap: 0.6rem;
+}
+.proj-name {
+	font-size: 15px;
+	font-weight: 600;
+	margin: 0;
+}
+.ghost-inline {
+	font-size: 11.5px;
+	color: var(--app-fg-subtle);
+	border-radius: 6px;
+	padding: 0.15rem 0.4rem;
+}
+.ghost-inline:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.proj-rename {
+	max-width: 24rem;
+}
+.proj-rename input {
+	font: inherit;
+	font-size: 13px;
+	background: var(--app-bg);
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	color: var(--app-fg);
+	padding: 0.4rem 0.6rem;
+	outline: none;
+	width: 100%;
+}
+
+/* The breadcrumb above a project-bound chat. */
+.crumb {
+	align-self: flex-start;
+	margin: 0.4rem 0.9rem 0;
+	font-size: 11.5px;
+	color: var(--app-fg-muted);
+	border-radius: 6px;
+	padding: 0.15rem 0.45rem;
+}
+.crumb:hover {
+	background: var(--app-hover);
+	color: var(--app-accent);
+}

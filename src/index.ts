@@ -52,6 +52,7 @@ import { openOutbox } from "./mail-outbox.ts";
 import { startMailWatcher } from "./mail-watcher.ts";
 import { makePodman } from "./podman.ts";
 import { openPrograms } from "./programs.ts";
+import { openProjects, projectWorkdir } from "./projects.ts";
 import { makeSandboxes, openSandboxes } from "./sandboxes.ts";
 import {
 	buildDestinationClient,
@@ -201,7 +202,7 @@ async function boot() {
 	// next turn while the lifecycle keeps tracking owned rows; config stays
 	// the boot snapshot — a live definition could send a new launch's paths
 	// into the old adapter's session (spinoff.ts owns the pin).
-	const delegateDeps = (conv: Conversation) => {
+	const delegateDeps = (conv: Conversation, workdir: string) => {
 		if (
 			delegationBoot === undefined ||
 			configRef.current.delegation === undefined ||
@@ -213,7 +214,9 @@ async function boot() {
 		return {
 			lifecycle: late().delegationLifecycle(),
 			config: delegationBoot,
-			workspaceDir: paths.workspace(),
+			// Relative cwd in delegation harness args anchors at the turn's
+			// working directory — under a project that's the project's dir.
+			workspaceDir: workdir,
 			pin: (name: string) => launchPin(launchPinDeps, conv, name),
 		};
 	};
@@ -268,6 +271,18 @@ async function boot() {
 		});
 	}
 
+	// The project domain — the memory queue rides along only when memory
+	// is configured, matching /memory off's purge (design/projects.md).
+	const projects = openProjects(
+		store,
+		memoryClient && memoryBootConfig ? { memoryQueue: store.memoryQueue } : undefined,
+	);
+
+	// A bound conversation's working directory is its project's dir —
+	// the throw inside is a failed turn at admission, never a silent
+	// fall-back to the workspace (design/projects.md).
+	const workdirFor = (conv: Conversation): string => projectWorkdir(projects, conv);
+
 	// Read per call — a mini-app save applies to the next voice note.
 	const transcribeFile = async (file: Parameters<typeof transcribeAudio>[1]) => {
 		const cfg = configRef.current.transcription;
@@ -314,7 +329,12 @@ async function boot() {
 				carriesMedia(kind ?? "", mediaType, position);
 			const level = conv.thinking as ThinkingLevel;
 			const providerOptions = thinkingOptions(cfg, modelRef, level);
-			const prompt = systemPromptFor(store, conv, toolNames(tools));
+			const prompt = systemPromptFor(
+				store,
+				conv,
+				toolNames(tools),
+				conv.projectId === null ? null : projects.get(conv.projectId),
+			);
 			log.info("model step", {
 				conversation: conv.id,
 				model: modelRef,
@@ -359,8 +379,13 @@ async function boot() {
 			// pools (DESIGN.md → App channel); delegate is the exception
 			// since the spin-off.
 			const telegram = channelOf(conv.id) === "telegram";
+			// One resolution feeds bash/fetch/read_file's cwd, the sandbox's
+			// relative-path anchor, and delegation's workspaceDir — a
+			// project conversation works in its dir end to end; a vanished
+			// dir throws here and the turn fails at admission.
+			const workdir = workdirFor(conv);
 			const tools = makeTools({
-				cwd: paths.workspace(),
+				cwd: workdir,
 				voice:
 					tts && !configRef.ttsDown && deliverVoice
 						? {
@@ -407,7 +432,7 @@ async function boot() {
 						? { transcribe: transcribeFile }
 						: undefined,
 				// Boot fixtures under a live gate (see delegateDeps above).
-				delegate: delegateDeps(conv),
+				delegate: delegateDeps(conv, workdir),
 				// Only the approval gate's request closure — the send credential lives behind the taps.
 				mail:
 					telegram && configRef.current.mail !== undefined
@@ -428,7 +453,7 @@ async function boot() {
 					configRef.current.sandbox !== undefined
 						? {
 								conversation: conv.id,
-								workspace: paths.workspace(),
+								workspace: workdir,
 								sandboxes,
 							}
 						: undefined,
@@ -761,6 +786,7 @@ async function boot() {
 			handleAppApi(req, url, appTokenName, {
 				store,
 				runtime,
+				projects,
 				auth,
 				configRef,
 				onConfigWritten,

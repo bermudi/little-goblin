@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { boundedRun, spawnProc, type BoundedProc } from "../../proc.ts";
+import { paths } from "../../config.ts";
 import { truncateTail } from "./truncate.ts";
 
 const MAX_OUTPUT = 100 * 1024;
@@ -9,8 +10,14 @@ const MAX_TIMEOUT_MS = 10 * 60_000;
 
 export const bashTool = (cwd: string) =>
 	tool({
+		// Two forms, keyed on the workspace — never the cwd embedded: the
+		// description is a frozen prompt input, and the doctor shim is
+		// `../doctor` only from the workspace; a project cwd needs it
+		// absolute (design/projects.md).
 		description:
-			"Run a shell command in the deployment workspace — the fixed working directory shared by every conversation. Use `cd` inside the command to work elsewhere. Returns combined stdout/stderr and the exit code. For dependency health checks, run `../doctor --json`; diagnosis does not authorize repairs or restarts.",
+			cwd === paths.workspace()
+				? "Run a shell command in the deployment workspace — the fixed working directory shared by every conversation. Use `cd` inside the command to work elsewhere. Returns combined stdout/stderr and the exit code. For dependency health checks, run `../doctor --json`; diagnosis does not authorize repairs or restarts."
+				: `Run a shell command in this conversation's working directory — the project directory the environment line names. Use \`cd\` inside the command to work elsewhere. Returns combined stdout/stderr and the exit code. For dependency health checks, run \`${paths.doctorShim()} --json\`; diagnosis does not authorize repairs or restarts.`,
 		inputSchema: z.object({
 			command: z.string(),
 			timeout_ms: z.number().int().positive().optional(),

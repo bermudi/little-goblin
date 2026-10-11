@@ -837,6 +837,7 @@ export const GUEST_CHANNEL_EXCLUDED: ReadonlySet<string> = new Set([
 	"delegate",
 	"memory_search",
 	"history_search",
+	"note",
 	"speak",
 	"send_file",
 ]);

@@ -5,8 +5,10 @@
 // URLs. This is comfortable reading, not CommonMark conformance —
 // anything unrecognized stays literal text.
 
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useCopy } from "./useCopy.ts";
+import { appendNote, createNote, listNotes } from "./api.ts";
+import type { AppNoteSummary } from "../../src/http/app-wire.ts";
 // core + the languages a chat model actually fences — the /common bundle
 // is ~40 grammars of COBOL the bundle doesn't need.
 import hljs from "highlight.js/lib/core";
@@ -151,7 +153,160 @@ interface ListItem {
 	text: string;
 }
 
-export function Markdown({ text }: { text: string }) {
+// A `note` info-string fence — the convention the system prompt names
+// (design/projects.md → Notes): its body is note-ready content, and
+// the card offers to append it somewhere real. `title="…"` prenames a
+// new note; appending to an existing one keeps its title.
+function NoteAppendCard({
+	title,
+	body,
+	token,
+	noteProjectId,
+	onOpenNote,
+}: {
+	title: string | null;
+	body: string;
+	token: string | null;
+	// A project-bound conversation files new notes in its project.
+	noteProjectId?: string | null | undefined;
+	onOpenNote?: ((id: string) => void) | undefined;
+}) {
+	const [open, setOpen] = useState(false);
+	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
+	const [listFailed, setListFailed] = useState(false);
+	const [query, setQuery] = useState("");
+	const [status, setStatus] = useState<"idle" | "busy" | "done" | "error">("idle");
+	const [done, setDone] = useState<{ id: string; title: string } | null>(null);
+	const [error, setError] = useState<string | null>(null);
+	const searchSeq = useRef(0);
+
+	useEffect(() => {
+		if (!open) return;
+		const seq = ++searchSeq.current;
+		const t = setTimeout(() => {
+			void listNotes(token, { project: "all", q: query }).then(
+				(r) => {
+					if (seq !== searchSeq.current) return;
+					setNotes(r.notes);
+					setListFailed(false);
+				},
+				() => {
+					if (seq !== searchSeq.current) return;
+					setNotes([]);
+					setListFailed(true);
+				},
+			);
+		}, 200);
+		return () => clearTimeout(t);
+	}, [open, query, token]);
+
+	const append = (id: string) => {
+		setStatus("busy");
+		setError(null);
+		void appendNote(token, id, body).then(
+			(n) => {
+				setStatus("done");
+				setDone({ id: n.id, title: n.title });
+			},
+			(err: unknown) => {
+				setStatus("error");
+				setError(err instanceof Error ? err.message : "append failed");
+			},
+		);
+	};
+	const create = () => {
+		setStatus("busy");
+		setError(null);
+		void createNote(token, {
+			title: title ?? "untitled",
+			body,
+			...(noteProjectId != null ? { projectId: noteProjectId } : {}),
+		}).then(
+			(n) => {
+				setStatus("done");
+				setDone({ id: n.id, title: n.title });
+			},
+			(err: unknown) => {
+				setStatus("error");
+				setError(err instanceof Error ? err.message : "create failed");
+			},
+		);
+	};
+
+	return (
+		<div className="note-card">
+			<div className="note-card-head">
+				<span className="note-card-tag">note{title !== null ? ` — ${title}` : ""}</span>
+			</div>
+			<div className="note-card-body">
+				<Markdown text={body} token={token} noteProjectId={noteProjectId} onOpenNote={onOpenNote} />
+			</div>
+			{status === "done" ? (
+				<p className="note-card-status">
+					Appended to{" "}
+					<button type="button" className="link" onClick={() => onOpenNote?.(done!.id)}>
+						{done!.title}
+					</button>
+					.
+				</p>
+			) : open ? (
+				<div className="note-pick">
+					<input
+						type="search"
+						placeholder="Search notes"
+						value={query}
+						autoFocus
+						onChange={(e) => setQuery(e.target.value)}
+					/>
+					{listFailed && <p className="error">Couldn't list notes.</p>}
+					<ul>
+						{(notes ?? []).map((n) => (
+							<li key={n.id}>
+								<button
+									type="button"
+									disabled={status === "busy"}
+									onClick={() => append(n.id)}
+								>
+									{n.title}
+								</button>
+							</li>
+						))}
+						<li>
+							<button type="button" disabled={status === "busy"} onClick={create}>
+								{title === null ? "New note" : `New note “${title}”`}
+							</button>
+						</li>
+					</ul>
+				</div>
+			) : (
+				<button
+					type="button"
+					className="note-card-append"
+					onClick={() => {
+						setOpen(true);
+						setError(null);
+					}}
+				>
+					Append to note…
+				</button>
+			)}
+			{status === "error" && <p className="error">Couldn't write the note: {error}</p>}
+		</div>
+	);
+}
+
+export function Markdown({
+	text,
+	token,
+	noteProjectId,
+	onOpenNote,
+}: {
+	text: string;
+	token?: string | null | undefined;
+	// The conversation's project — a card-created note binds to it.
+	noteProjectId?: string | null | undefined;
+	onOpenNote?: ((id: string) => void) | undefined;
+}) {
 	const blocks: ReactNode[] = [];
 	const lines = text.split("\n");
 	let i = 0;
@@ -168,19 +323,43 @@ export function Markdown({ text }: { text: string }) {
 	while (i < lines.length) {
 		const line = lines[i]!;
 
-		// Fenced code — ```lang … ``` (an unclosed fence runs to EOF).
-		const fence = line.match(/^```([^\n`]*)$/);
+		// Fenced code — a run of 3+ backticks whose closer is at least
+		// as long (so a ```note card can hold ``` blocks intact). An
+		// unclosed fence runs to EOF.
+		const fence = line.match(/^(`{3,})([^\n`]*)$/);
 		if (fence) {
 			flushPara();
-			const lang = (fence[1] ?? "").trim();
+			const ticks = fence[1]!.length;
+			const info = (fence[2] ?? "").trim();
 			const codeLines: string[] = [];
+			const closing = new RegExp(`^\\\`{${ticks},}\\s*$`);
 			i++;
-			while (i < lines.length && !/^```\s*$/.test(lines[i]!)) {
+			while (i < lines.length && !closing.test(lines[i]!)) {
 				codeLines.push(lines[i]!);
 				i++;
 			}
 			if (i < lines.length) i++; // consume the closing fence
-			blocks.push(<CodeBlock key={key++} lang={lang} code={codeLines.join("\n")} />);
+			const body = codeLines.join("\n");
+			// A `note` fence (the prompt's append convention) renders as a
+			// card — content plus the append affordance, never code.
+			if (info === "note" || info.startsWith("note ")) {
+				const titled = /^note\s+title="([^"]*)"\s*$/.exec(info);
+				const bare = info === "note";
+				if (bare || titled !== null) {
+					blocks.push(
+						<NoteAppendCard
+							key={key++}
+							title={titled?.[1] ?? null}
+							body={body}
+							token={token ?? null}
+							noteProjectId={noteProjectId}
+							onOpenNote={onOpenNote}
+						/>,
+					);
+					continue;
+				}
+			}
+			blocks.push(<CodeBlock key={key++} lang={info} code={body} />);
 			continue;
 		}
 
@@ -218,7 +397,12 @@ export function Markdown({ text }: { text: string }) {
 			}
 			blocks.push(
 				<blockquote key={key++} className="md-quote">
-					<Markdown text={quote.join("\n")} />
+					<Markdown
+						text={quote.join("\n")}
+						token={token}
+						noteProjectId={noteProjectId}
+						onOpenNote={onOpenNote}
+					/>
 				</blockquote>,
 			);
 			continue;

@@ -42,6 +42,57 @@ export interface AppProjectList {
 	projects: AppProject[];
 }
 
+/** One note as the app sees it. GET /api/app/notes/<id>; POST
+ * /api/app/notes, PATCH /api/app/notes/<id>. `rev` doubles as the
+ * etag — the editor's If-Match guard rides it. */
+export interface AppNote {
+	id: string;
+	projectId: string | null;
+	title: string;
+	body: string;
+	rev: number;
+	lastSource: "app" | "agent" | "rewrite" | "append" | "restore";
+	pinnedAt: string | null;
+	archivedAt: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+/** The rail/index row — AppNote minus the body. GET /api/app/notes. */
+export interface AppNoteSummary {
+	id: string;
+	projectId: string | null;
+	title: string;
+	rev: number;
+	pinnedAt: string | null;
+	archivedAt: string | null;
+	updatedAt: string;
+	preview: string;
+}
+export interface AppNoteList {
+	notes: AppNoteSummary[];
+}
+
+/** GET /api/app/notes/<id>/versions — metadata only; the body is a
+ * per-rev fetch because the panel previews on demand. */
+export interface AppNoteVersionMeta {
+	rev: number;
+	source: "app" | "agent" | "rewrite" | "append" | "restore";
+	conversation: string | null;
+	at: string;
+	bytes: number;
+}
+export interface AppNoteVersionList {
+	versions: AppNoteVersionMeta[];
+}
+
+/** GET /api/app/notes/<id>/versions/<rev> — the version's own
+ * title+body (what restore would write back). */
+export interface AppNoteVersion extends AppNoteVersionMeta {
+	title: string;
+	body: string;
+}
+
 /** GET /api/app/conversations/<id>/messages — stored UIMessages verbatim. */
 export interface AppMessageList {
 	messages: UIMessage[];

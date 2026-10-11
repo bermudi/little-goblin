@@ -11,6 +11,7 @@ import { MemoryContexts, type MemoryEligibility, messageText } from "./memory.ts
 import { MemoryDestinations } from "./memory-destinations.ts";
 import { MemoryQueue } from "./memory-queue.ts";
 import { ensureProjectsSchema } from "./projects.ts";
+import { ensureNotesSchema } from "./notes.ts";
 import { compactionSummaryId, corruptRowId } from "./tags.ts";
 import type { MemoryDocument } from "./hindsight.ts";
 
@@ -521,7 +522,7 @@ export function toFtsQuery(query: string): string | null {
 // One flat display line — list titles and previews are single-line
 // labels, so markdown furniture comes off, or a reply that opens on a
 // code block titles the row "```typescript const slug = …".
-function flatLine(text: string): string {
+export function flatLine(text: string): string {
 	return text
 		.replace(/```+[ \t]*[^\s`\n]*/g, " ")
 		.replace(/`([^`]*)`/g, "$1")
@@ -588,6 +589,7 @@ export function openStore(dbPath: string): ConversationStore {
 	// Before the column migrations: project_id below REFERENCES this
 	// table, so it has to exist first.
 	ensureProjectsSchema(db);
+	ensureNotesSchema(db);
 	const convCols = new Set(
 		db
 			.query<{ name: string }, []>("PRAGMA table_info(conversations)")

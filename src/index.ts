@@ -52,6 +52,7 @@ import { openOutbox } from "./mail-outbox.ts";
 import { startMailWatcher } from "./mail-watcher.ts";
 import { makePodman } from "./podman.ts";
 import { openPrograms } from "./programs.ts";
+import { openNotes } from "./notes.ts";
 import { openProjects, projectWorkdir } from "./projects.ts";
 import { makeSandboxes, openSandboxes } from "./sandboxes.ts";
 import {
@@ -283,6 +284,10 @@ async function boot() {
 	// fall-back to the workspace (design/projects.md).
 	const workdirFor = (conv: Conversation): string => projectWorkdir(projects, conv);
 
+	// The notes surface (design/projects.md → Notes) — one store for
+	// the tool, the app routes, and the project prompt's index.
+	const notes = openNotes(store, { projects });
+
 	// Read per call — a mini-app save applies to the next voice note.
 	const transcribeFile = async (file: Parameters<typeof transcribeAudio>[1]) => {
 		const cfg = configRef.current.transcription;
@@ -329,11 +334,13 @@ async function boot() {
 				carriesMedia(kind ?? "", mediaType, position);
 			const level = conv.thinking as ThinkingLevel;
 			const providerOptions = thinkingOptions(cfg, modelRef, level);
+			const project = conv.projectId === null ? null : projects.get(conv.projectId);
 			const prompt = systemPromptFor(
 				store,
 				conv,
 				toolNames(tools),
-				conv.projectId === null ? null : projects.get(conv.projectId),
+				project,
+				project === null ? undefined : notes.index(project.id),
 			);
 			log.info("model step", {
 				conversation: conv.id,
@@ -445,6 +452,9 @@ async function boot() {
 							}
 						: undefined,
 				history: { store, isExcluded: () => conv.memoryExcluded },
+				// Notes mount for every operator conversation — guests are
+				// excluded by the filter below, never by dep absence.
+				note: { notes, projects, conversation: conv.id, projectId: conv.projectId },
 				// Threads are process-global; a model change drops them on the next call.
 				vision: visionDepsFor(conv),
 				// Live-read like vision/search: the sandbox block mounts the
@@ -787,6 +797,7 @@ async function boot() {
 				store,
 				runtime,
 				projects,
+				notes,
 				auth,
 				configRef,
 				onConfigWritten,

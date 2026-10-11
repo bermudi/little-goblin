@@ -488,4 +488,50 @@ describe("project prompts", () => {
 			delete process.env.GOBLIN_HOME;
 		}
 	});
+
+	test("the notes index renders under the project section — pointers, not bodies", () => {
+		const home = useHome();
+		process.env.GOBLIN_HOME = home;
+		try {
+			mkdirSync(paths.workspace(), { recursive: true });
+			const p = project(join(home, "projects", "side-project"));
+			const c = { ...conv, id: "app/chat-9", chatId: 0, projectId: p.id };
+			const { text, sources } = buildSystemPrompt(c, tools, p, [
+				{ id: "n-1", title: "reading list" },
+				{ id: "n-2", title: "ideas" },
+			]);
+			expect(text).toContain("### notes");
+			expect(text).toContain("- reading list (id n-1)");
+			expect(text).toContain("- ideas (id n-2)");
+			expect(sources).toContain("notes-index");
+			// An empty index omits the subsection and the source.
+			const empty = buildSystemPrompt(c, tools, p, []);
+			expect(empty.text).not.toContain("### notes");
+			expect(empty.sources).not.toContain("notes-index");
+		} finally {
+			delete process.env.GOBLIN_HOME;
+		}
+	});
+});
+
+describe("the app fence convention", () => {
+	test("the bullet rides the note tool on app — nowhere else", () => {
+		const home = useHome();
+		process.env.GOBLIN_HOME = home;
+		try {
+			mkdirSync(paths.workspace(), { recursive: true });
+			const appConv = { ...conv, id: "app/chat-9", chatId: 0 };
+			const withNote = buildSystemPrompt(appConv, [...tools, "note"]);
+			expect(withNote.text).toContain('note title="…"');
+			expect(withNote.text).toContain("append-to-note");
+			// No tool, no bullet — Telegram carries it nowhere either
+			// (the fenced card is an app-UI affordance only).
+			const noTool = buildSystemPrompt(appConv, tools);
+			expect(noTool.text).not.toContain("append-to-note");
+			const tg = buildSystemPrompt(conv, [...tools, "note"]);
+			expect(tg.text).not.toContain("append-to-note");
+		} finally {
+			delete process.env.GOBLIN_HOME;
+		}
+	});
 });

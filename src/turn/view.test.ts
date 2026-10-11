@@ -153,6 +153,36 @@ describe("the model view", () => {
 		expect(joined).toContain("still there?");
 	});
 
+	test("a stored data-note part reaches the model as the fenced text — malformed degrades in place", async () => {
+		// convertToModelMessages drops unknown data parts silently;
+		// the view maps them to text first (design/projects.md → Attach).
+		const attached = {
+			id: "n1",
+			role: "user",
+			parts: [
+				{ type: "text", text: "use this" },
+				{
+					type: "data-note",
+					data: { id: "note-1", title: "ref", rev: 3, body: "the note body", projectId: null },
+				},
+			],
+		} as unknown as UIMessage;
+		const view = await build(entries([attached]));
+		const joined = texts(view).join("\n");
+		expect(joined).toContain("use this");
+		expect(joined).toContain('Attached note "ref" (id note-1, rev 3 as of this message):');
+		expect(joined).toContain('<note id="note-1" rev="3" title="ref">');
+		expect(joined).toContain("the note body");
+
+		const malformed = {
+			id: "n2",
+			role: "user",
+			parts: [{ type: "data-note", data: { wrong: true } }],
+		} as unknown as UIMessage;
+		const degraded = await build(entries([malformed]));
+		expect(texts(degraded).join("\n")).toContain("attached note could not be rendered");
+	});
+
 	test("the injected authority re-check runs once and its fence propagates", async () => {
 		const sentinel = new Error("fenced");
 		let calls = 0;
@@ -189,6 +219,23 @@ describe("the steer variant", () => {
 			"[attachment: /w/attachments/a.png — image/png, 9 bytes. Read it with read_file or bash tools.]",
 			"what is this",
 		]);
+	});
+
+	test("a steered data-note maps through the same text fence", async () => {
+		const message = {
+			id: "s1",
+			role: "user",
+			parts: [
+				{
+					type: "data-note",
+					data: { id: "note-9", title: "t", rev: 1, body: "steered note", projectId: "p1" },
+				},
+			],
+		} as unknown as UIMessage;
+		const view = await convertSteeredMessage(ctx, message);
+		const joined = texts(view).join("\n");
+		expect(joined).toContain('Attached note "t" (id note-9, rev 1');
+		expect(joined).toContain("steered note");
 	});
 
 	test("an unconvertible submit throws — the poison-pill verdict is the caller's", async () => {

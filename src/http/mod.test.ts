@@ -1252,6 +1252,56 @@ describe("app deep link (Spin-off)", () => {
 	});
 });
 
+// /app/notes and /app/n/<noteId> take the same shell dispatch as the
+// project routes — note ids are randomUUIDs, gated by the same
+// APP_ID_RE shape. Regression cover for the routes themselves.
+describe("app deep links (Notes)", () => {
+	const distExists = existsSync(join(import.meta.dir, "..", "..", "app", "dist"));
+
+	const shellOrLoud500 = async (res: Response) => {
+		if (distExists) {
+			expect(res.status).toBe(200);
+			expect(res.headers.get("content-type")).toContain("text/html");
+			expect(res.headers.get("cache-control")).toBe("no-store");
+			expect(await res.text()).toContain("<html");
+		} else {
+			expect(res.status).toBe(500);
+			expect(((await res.json()) as { error: string }).error).toContain(
+				"app client not built",
+			);
+		}
+	};
+
+	test("/app/notes serves the client shell", async () => {
+		const { http, get } = setup();
+		try {
+			await shellOrLoud500(await get("/app/notes"));
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("/app/n/<uuid> serves the client shell", async () => {
+		const { http, get } = setup();
+		try {
+			await shellOrLoud500(await get(`/app/n/${crypto.randomUUID()}`));
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("malformed note ids are 404 — the schema shape is the whole gate", async () => {
+		const { http, get } = setup();
+		try {
+			expect((await get("/app/n/-bad")).status).toBe(404);
+			expect((await get("/app/n/")).status).toBe(404);
+			expect((await get("/app/n/valid/extra")).status).toBe(404);
+		} finally {
+			http.stop();
+		}
+	});
+});
+
 test("mini-app default saves freeze untouched legacy app settings before updating defaults", async () => {
 	const store = openStore(":memory:");
 	const legacy = store.resolve(appAddress("untouched"), "/work");

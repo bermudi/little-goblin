@@ -2872,3 +2872,348 @@ select.ui-input option {
 	background: var(--app-hover);
 	color: var(--app-accent);
 }
+
+/* ---------- notes ---------- */
+
+/* The transcript chip — an attachment pill that opens a note page. */
+.note-chip .attachment-name {
+	font-size: inherit;
+}
+
+/* A picker panel — the composer's note picker and the fenced card's
+   "Append to note…" share it. */
+.note-pick {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+	border: 1px solid var(--app-border);
+	border-radius: 10px;
+	background: var(--app-gray-950);
+	padding: 0.5rem;
+}
+.note-pick input[type="search"] {
+	font: inherit;
+	font-size: 12px;
+	background: var(--app-bg);
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	color: var(--app-fg);
+	padding: 0.35rem 0.55rem;
+	outline: none;
+}
+.note-pick ul {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	max-height: 12rem;
+	overflow-y: auto;
+}
+.note-pick li button {
+	display: block;
+	width: 100%;
+	text-align: left;
+	font-size: 12px;
+	padding: 0.3rem 0.45rem;
+	border-radius: 6px;
+}
+.note-pick li button:hover {
+	background: var(--app-hover);
+}
+.note-pick li.empty,
+.note-pick .empty {
+	font-size: 12px;
+	color: var(--app-fg-muted);
+	padding: 0.3rem 0.45rem;
+}
+.note-pick .note-proj {
+	color: var(--app-fg-subtle);
+	font-size: 11px;
+}
+/* The composer's picker floats above the bar. */
+.composer-pick {
+	position: absolute;
+	bottom: calc(100% + 6px);
+	left: 0.5rem;
+	width: min(22rem, 90%);
+	z-index: 10;
+	box-shadow: 0 8px 28px rgb(0 0 0 / 0.45);
+}
+form.composer {
+	position: relative;
+}
+.note-pick .note-new {
+	font-size: 12px;
+	background: var(--app-bg);
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	color: var(--app-fg);
+	padding: 0.35rem 0.55rem;
+	outline: none;
+}
+
+/* The fenced `note` card — an assistant block the operator can append
+   to a note. */
+.note-card {
+	border: 1px solid var(--app-border);
+	border-radius: 10px;
+	background: var(--app-gray-950);
+	margin: 0.4rem 0;
+}
+.note-card-head {
+	padding: 0.3rem 0.6rem 0;
+}
+.note-card-tag {
+	font-size: 10px;
+	font-family: var(--font-mono);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--app-fg-subtle);
+}
+.note-card-body {
+	padding: 0.25rem 0.75rem 0.5rem;
+}
+button.note-card-append {
+	font-size: 11.5px;
+	color: var(--app-accent);
+	border-top: 1px solid var(--app-border);
+	width: 100%;
+	text-align: left;
+	padding: 0.4rem 0.6rem;
+}
+button.note-card-append:hover {
+	background: var(--app-hover);
+}
+.note-card-status {
+	font-size: 11.5px;
+	color: var(--app-fg-subtle);
+	border-top: 1px solid var(--app-border);
+	padding: 0.4rem 0.6rem;
+	margin: 0;
+}
+.note-card .note-pick {
+	border-top: 1px solid var(--app-border);
+	border-left: none;
+	border-right: none;
+	border-bottom: none;
+	border-radius: 0 0 10px 10px;
+}
+
+/* /app/notes */
+.note-filters {
+	gap: 0.5rem;
+	margin-bottom: 0.6rem;
+}
+.note-filters input[type="search"] {
+	flex: 1;
+	font: inherit;
+	font-size: 12.5px;
+	background: var(--app-bg);
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	color: var(--app-fg);
+	padding: 0.4rem 0.6rem;
+	outline: none;
+}
+
+/* /app/n/<id> */
+.notepage {
+	overflow-y: auto;
+	height: 100%;
+}
+.note-head {
+	align-items: center;
+	gap: 0.5rem;
+}
+.note-title {
+	flex: 1;
+	font: inherit;
+	font-size: 16px;
+	font-weight: 600;
+	background: transparent;
+	border: none;
+	border-bottom: 1px solid transparent;
+	color: var(--app-fg);
+	padding: 0.2rem 0;
+	outline: none;
+}
+.note-title:focus {
+	border-bottom-color: var(--app-divider);
+}
+.note-flags {
+	gap: 0.4rem;
+	align-items: center;
+	margin: 0.35rem 0 0.6rem;
+	flex-wrap: wrap;
+}
+.note-conflict {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	font-size: 12px;
+	border: 1px solid var(--app-danger);
+	border-radius: 8px;
+	color: var(--app-danger);
+	padding: 0.4rem 0.6rem;
+	margin-bottom: 0.5rem;
+}
+.note-conflict button {
+	font-size: 11.5px;
+}
+.note-readonly {
+	font-family: var(--font-mono);
+	font-size: 12px;
+	white-space: pre-wrap;
+	word-break: break-word;
+	border: 1px solid var(--app-border);
+	border-radius: 10px;
+	padding: 0.75rem;
+	margin: 0;
+}
+.note-versions {
+	border-top: 1px solid var(--app-border);
+	margin-top: 0.75rem;
+	padding-top: 0.5rem;
+	font-size: 12px;
+}
+.note-versions ul {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+.note-versions li {
+	display: flex;
+	align-items: baseline;
+	gap: 0.5rem;
+	padding: 0.15rem 0;
+}
+.note-versions li small {
+	color: var(--app-fg-subtle);
+}
+button.link {
+	font-size: inherit;
+	color: var(--app-accent);
+	padding: 0;
+}
+button.link:hover {
+	text-decoration: underline;
+}
+.note-version-preview {
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	padding: 0.5rem 0.6rem;
+	margin-top: 0.4rem;
+}
+.note-version-preview .row {
+	align-items: center;
+	gap: 0.5rem;
+}
+.note-version-preview .hint {
+	color: var(--app-fg-muted);
+}
+.note-version-preview pre {
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	white-space: pre-wrap;
+	word-break: break-word;
+	max-height: 18rem;
+	overflow-y: auto;
+	margin: 0.4rem 0 0;
+}
+
+/* The Milkdown editor, styled with app tokens (no theme package). */
+.note-editor {
+	display: flex;
+	flex-direction: column;
+	border: 1px solid var(--app-border);
+	border-radius: 10px;
+	min-height: 16rem;
+}
+.note-editor-body {
+	flex: 1;
+	padding: 0.75rem 0.9rem;
+}
+.note-editor .milkdown {
+	outline: none;
+}
+.note-editor .ProseMirror {
+	outline: none;
+	font-size: 13px;
+	line-height: 1.55;
+	min-height: 12rem;
+}
+.note-editor .ProseMirror p {
+	margin: 0.35rem 0;
+}
+.note-editor .ProseMirror h1,
+.note-editor .ProseMirror h2,
+.note-editor .ProseMirror h3 {
+	margin: 0.7rem 0 0.3rem;
+	line-height: 1.3;
+}
+.note-editor .ProseMirror ul,
+.note-editor .ProseMirror ol {
+	padding-left: 1.4rem;
+	margin: 0.35rem 0;
+}
+.note-editor .ProseMirror blockquote {
+	border-left: 3px solid var(--app-divider);
+	margin: 0.4rem 0;
+	padding: 0.1rem 0.8rem;
+	color: var(--app-fg-muted);
+}
+.note-editor .ProseMirror code {
+	font-family: var(--font-mono);
+	font-size: 0.92em;
+	background: var(--app-gray-900);
+	border-radius: 4px;
+	padding: 0.05em 0.3em;
+}
+.note-editor .ProseMirror pre {
+	font-family: var(--font-mono);
+	font-size: 12px;
+	background: var(--app-gray-950);
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	padding: 0.6rem 0.75rem;
+	overflow-x: auto;
+}
+.note-editor .ProseMirror pre code {
+	background: none;
+	padding: 0;
+}
+.note-editor .ProseMirror table {
+	border-collapse: collapse;
+	margin: 0.4rem 0;
+}
+.note-editor .ProseMirror th,
+.note-editor .ProseMirror td {
+	border: 1px solid var(--app-divider);
+	padding: 0.25rem 0.6rem;
+}
+.note-editor .ProseMirror a {
+	color: var(--app-accent);
+}
+.note-editor .ProseMirror hr {
+	border: none;
+	border-top: 1px solid var(--app-divider);
+	margin: 0.8rem 0;
+}
+.note-editor .ProseMirror li[data-checked="true"] {
+	text-decoration: line-through;
+	color: var(--app-fg-muted);
+}
+.note-save-status {
+	font-size: 11px;
+	color: var(--app-fg-subtle);
+	border-top: 1px solid var(--app-border);
+	padding: 0.25rem 0.75rem;
+}
+.note-save-status.offline {
+	color: var(--app-danger);
+}
+.note-save-status.conflict {
+	color: var(--app-danger);
+}
+.note-save-status.error {
+	color: var(--app-danger);
+}

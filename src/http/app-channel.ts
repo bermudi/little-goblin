@@ -52,6 +52,14 @@ import {
 	type ConfigRef,
 } from "../config.ts";
 import { log } from "../log.ts";
+import {
+	NOTE_PART,
+	type Note,
+	NoteConflictError,
+	NoteInputError,
+	NoteRangeError,
+	type NoteStore,
+} from "../notes.ts";
 import { type Project, ProjectInputError, type ProjectStore } from "../projects.ts";
 import type {
 	AppAttachmentResponse,
@@ -60,6 +68,11 @@ import type {
 	AppConversationList,
 	AppConversationPatch,
 	AppMessageList,
+	AppNote,
+	AppNoteList,
+	AppNoteSummary,
+	AppNoteVersion,
+	AppNoteVersionList,
 	AppProject,
 	AppProjectList,
 	AppSearchResponse,
@@ -88,6 +101,10 @@ export interface AppChannelDeps {
 	// The project domain (design/projects.md) — list/create/get/patch
 	// and the conversation-binding checks in POST /conversations.
 	projects: ProjectStore;
+	// The notes surface — the /api/app/notes routes and the data-note
+	// intake expansion on chat POST (the server reads the note; the
+	// client only names it).
+	notes: NoteStore;
 	// auth.jsonl resolution — the record config.appToken names.
 	auth: Pick<AuthStore, "resolve">;
 	// Live config + shared post-write hook for app defaults. Conversation
@@ -298,6 +315,35 @@ const projectPatchBody = z
 		{ message: "nothing to write" },
 	);
 
+// Notes (design/projects.md → Notes). projectId: explicit null moves
+// a note back to loose — the flag-write half of a PATCH.
+const noteCreateBody = z.object({
+	title: z.string().trim().min(1).max(200),
+	body: z.string().optional(),
+	projectId: z.string().min(1).nullish(),
+});
+
+const notePatchBody = z
+	.object({
+		title: z.string().trim().min(1).max(200).optional(),
+		body: z.string().optional(),
+		projectId: z.string().min(1).nullable().optional(),
+		pinned: z.boolean().optional(),
+		archived: z.boolean().optional(),
+	})
+	.strict()
+	.refine(
+		(p) =>
+			p.title !== undefined ||
+			p.body !== undefined ||
+			p.projectId !== undefined ||
+			p.pinned !== undefined ||
+			p.archived !== undefined,
+		{ message: "nothing to write" },
+	);
+
+const noteAppendBody = z.object({ text: z.string().min(1) });
+
 // The conversation id arrives as the full address — "app/<id>" — so a
 // telegram id can never be submitted through this surface. The shape
 // itself is the codec's (appIdOf parses and validates it).
@@ -327,6 +373,22 @@ const chatBody = z
 					// semantics.
 					.superRefine((parts, ctx) => {
 						for (const [i, p] of parts.entries()) {
+							if (p.type === NOTE_PART) {
+								// The client names the note only — intake expands it;
+								// a body in the part would be self-attested text.
+								const id =
+									typeof p.data === "object" && p.data !== null
+										? (p.data as { id?: unknown }).id
+										: undefined;
+								if (typeof id !== "string" || id === "") {
+									ctx.addIssue({
+										code: "custom",
+										path: [i, "data", "id"],
+										message: "a note attachment carries only the note id",
+									});
+								}
+								continue;
+							}
 							if (p.type !== ATTACHMENT_PART) continue;
 							const ref = attachmentRefSchema.safeParse(p.data);
 							if (!ref.success || !isStoredAttachmentPath(ref.data.path)) {
@@ -562,6 +624,70 @@ function appProject(p: Project): AppProject {
 		createdAt: p.createdAt,
 		archivedAt: p.archivedAt,
 	};
+}
+
+// Note wire shapes — `rev` doubles as the etag, so the note GET/PATCH
+// responses carry it in the header too (the editor's If-Match rides
+// the same number back).
+function appNote(n: Note): AppNote {
+	return {
+		id: n.id,
+		projectId: n.projectId,
+		title: n.title,
+		body: n.body,
+		rev: n.rev,
+		lastSource: n.lastSource,
+		pinnedAt: n.pinnedAt,
+		archivedAt: n.archivedAt,
+		createdAt: n.createdAt,
+		updatedAt: n.updatedAt,
+	};
+}
+
+function appNoteSummary(s: ReturnType<NoteStore["list"]>[number]): AppNoteSummary {
+	return {
+		id: s.id,
+		projectId: s.projectId,
+		title: s.title,
+		rev: s.rev,
+		pinnedAt: s.pinnedAt,
+		archivedAt: s.archivedAt,
+		updatedAt: s.updatedAt,
+		preview: s.preview,
+	};
+}
+
+function noteResponse(n: Note, status = 200): Response {
+	return Response.json(appNote(n), {
+		status,
+		headers: { ...NO_STORE, etag: `"${n.rev}"` },
+	});
+}
+
+// The domain's typed refusals → statuses. A conflict hands the live
+// note back so the editor's "load theirs" path has the body already.
+function noteError(err: unknown): Response | null {
+	if (err instanceof NoteConflictError) {
+		return Response.json(
+			{ error: err.message, note: appNote(err.note) },
+			{ status: 409, headers: { ...NO_STORE, etag: `"${err.note.rev}"` } },
+		);
+	}
+	if (err instanceof NoteInputError || err instanceof NoteRangeError) {
+		return Response.json({ error: err.message }, { status: 422, headers: NO_STORE });
+	}
+	return null;
+}
+
+// If-Match: "<rev>" — required on content writes, ignored for flags.
+// Parses the weak/strong forms to the int; anything else is a 428.
+function ifMatchRev(req: Request): number | null {
+	const header = req.headers.get("if-match");
+	if (header === null) return null;
+	const m = header.trim().match(/^(?:W\/)?"(\d+)"$/);
+	if (m === null) return null;
+	const rev = Number.parseInt(m[1]!, 10);
+	return Number.isSafeInteger(rev) ? rev : null;
 }
 
 // Conversation id path segment: the minted id alone (the "app/" prefix
@@ -800,6 +926,230 @@ export async function handleAppApi(
 			if (err instanceof ProjectInputError) {
 				return Response.json({ error: err.message }, { status: 422, headers: NO_STORE });
 			}
+			throw err;
+		}
+	}
+
+	// Notes (design/projects.md → Notes): the index (search + project
+	// filter), the editor's read/write/append, and the versions panel.
+	// Content writes are If-Match guarded (etag = rev); flag writes —
+	// pin, archive, move — never are.
+	if (path === "/api/app/notes") {
+		if (req.method === "GET") {
+			const projectParam = url.searchParams.get("project");
+			const project =
+				projectParam === null || projectParam === "all"
+					? "all"
+					: projectParam === "loose"
+						? "loose"
+						: projectParam;
+			const q = url.searchParams.get("q");
+			const body: AppNoteList = {
+				notes: deps.notes
+					.list({
+						project,
+						...(q !== null && q !== "" ? { q } : {}),
+						...(url.searchParams.get("archived") === "1" ? { archived: true } : {}),
+					})
+					.map(appNoteSummary),
+			};
+			return Response.json(body, { headers: NO_STORE });
+		}
+		if (req.method === "POST") {
+			const refusedJson = jsonBodyRefusal(req);
+			if (refusedJson !== null) return refusedJson;
+			let json: unknown;
+			try {
+				json = await req.json();
+			} catch {
+				return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+			}
+			const parsed = noteCreateBody.safeParse(json);
+			if (!parsed.success) {
+				return Response.json(
+					{ error: z.prettifyError(parsed.error) },
+					{ status: 422, headers: NO_STORE },
+				);
+			}
+			try {
+				const note = deps.notes.create(parsed.data);
+				return noteResponse(note, 201);
+			} catch (err) {
+				const res = noteError(err);
+				if (res !== null) return res;
+				throw err;
+			}
+		}
+		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+	}
+
+	const noteRestoreMatch = path.match(/^\/api\/app\/notes\/([^/]+)\/versions\/(\d+)\/restore$/);
+	if (noteRestoreMatch) {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		try {
+			const note = deps.notes.restore(noteRestoreMatch[1]!, Number.parseInt(noteRestoreMatch[2]!, 10));
+			return noteResponse(note);
+		} catch (err) {
+			const res = noteError(err);
+			if (res !== null) return res;
+			throw err;
+		}
+	}
+
+	const noteVersionMatch = path.match(/^\/api\/app\/notes\/([^/]+)\/versions\/(\d+)$/);
+	if (noteVersionMatch) {
+		if (req.method !== "GET") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		try {
+			const version = deps.notes.getVersion(
+				noteVersionMatch[1]!,
+				Number.parseInt(noteVersionMatch[2]!, 10),
+			);
+			if (version === null) {
+				return Response.json({ error: "no such version" }, { status: 404, headers: NO_STORE });
+			}
+			const body: AppNoteVersion = version;
+			return Response.json(body, { headers: NO_STORE });
+		} catch (err) {
+			const res = noteError(err);
+			if (res !== null) return res;
+			throw err;
+		}
+	}
+
+	const noteVersionsMatch = path.match(/^\/api\/app\/notes\/([^/]+)\/versions$/);
+	if (noteVersionsMatch) {
+		if (req.method !== "GET") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		try {
+			const body: AppNoteVersionList = {
+				versions: deps.notes.listVersions(noteVersionsMatch[1]!),
+			};
+			return Response.json(body, { headers: NO_STORE });
+		} catch (err) {
+			const res = noteError(err);
+			if (res !== null) return res;
+			throw err;
+		}
+	}
+
+	const noteAppendMatch = path.match(/^\/api\/app\/notes\/([^/]+)\/append$/);
+	if (noteAppendMatch) {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const refusedJson = jsonBodyRefusal(req);
+		if (refusedJson !== null) return refusedJson;
+		let json: unknown;
+		try {
+			json = await req.json();
+		} catch {
+			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+		}
+		const parsed = noteAppendBody.safeParse(json);
+		if (!parsed.success) {
+			return Response.json(
+				{ error: z.prettifyError(parsed.error) },
+				{ status: 422, headers: NO_STORE },
+			);
+		}
+		try {
+			// The card's path — source "append" so versions name the
+			// operator's button, never the editor's autosave.
+			const note = deps.notes.append(noteAppendMatch[1]!, parsed.data.text, "append");
+			return noteResponse(note);
+		} catch (err) {
+			const res = noteError(err);
+			if (res !== null) return res;
+			throw err;
+		}
+	}
+
+	const noteMatch = path.match(/^\/api\/app\/notes\/([^/]+)$/);
+	if (noteMatch) {
+		const noteId = noteMatch[1]!;
+		if (req.method === "GET") {
+			const note = deps.notes.get(noteId);
+			if (note === null) {
+				return Response.json({ error: "no such note" }, { status: 404, headers: NO_STORE });
+			}
+			return noteResponse(note);
+		}
+		if (req.method === "DELETE") {
+			try {
+				deps.notes.delete(noteId);
+				return Response.json({ ok: true }, { headers: NO_STORE });
+			} catch (err) {
+				const res = noteError(err);
+				if (res !== null) return res;
+				throw err;
+			}
+		}
+		if (req.method !== "PATCH") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const refusedJson = jsonBodyRefusal(req);
+		if (refusedJson !== null) return refusedJson;
+		let json: unknown;
+		try {
+			json = await req.json();
+		} catch {
+			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+		}
+		const parsed = notePatchBody.safeParse(json);
+		if (!parsed.success) {
+			return Response.json(
+				{ error: z.prettifyError(parsed.error) },
+				{ status: 422, headers: NO_STORE },
+			);
+		}
+		const note = deps.notes.get(noteId);
+		if (note === null) {
+			return Response.json({ error: "no such note" }, { status: 404, headers: NO_STORE });
+		}
+		const patch = parsed.data;
+		const wantsContent = patch.title !== undefined || patch.body !== undefined;
+		let expectedRev: number | undefined;
+		if (wantsContent) {
+			// Content writes are optimistic-concurrency guarded — the
+			// etag the editor read is the rev it writes against.
+			const rev = ifMatchRev(req);
+			if (rev === null) {
+				return Response.json(
+					{ error: "If-Match required for content writes" },
+					{ status: 428, headers: NO_STORE },
+				);
+			}
+			// Refuse a stale etag before any flag mutation — otherwise a
+			// combined {body, pinned} 409s on content yet still pins.
+			if (rev !== note.rev) {
+				return noteError(new NoteConflictError(note))!;
+			}
+			expectedRev = rev;
+		}
+		try {
+			if (patch.projectId !== undefined) deps.notes.move(noteId, patch.projectId);
+			if (patch.pinned !== undefined) deps.notes.setPinned(noteId, patch.pinned);
+			if (patch.archived !== undefined) deps.notes.setArchived(noteId, patch.archived);
+			const updated = wantsContent
+				? deps.notes.write(
+						noteId,
+						{
+							...(patch.title !== undefined ? { title: patch.title } : {}),
+							...(patch.body !== undefined ? { body: patch.body } : {}),
+						},
+						"app",
+						{ expectedRev },
+					)
+				: deps.notes.get(noteId)!;
+			return noteResponse(updated);
+		} catch (err) {
+			const res = noteError(err);
+			if (res !== null) return res;
 			throw err;
 		}
 	}
@@ -1252,6 +1602,39 @@ export async function handleAppApi(
 					});
 				}
 			}
+		}
+
+		// Note attachments resolve HERE, server-side (design/projects.md
+		// → Attach): the client sends only {id}; what history stores and
+		// the model reads is the server's copy of the note at this
+		// instant — rev included, so a stale attach is legible later.
+		// Unknown/archived notes refuse before submit: no half-history.
+		for (const part of message.parts) {
+			if (part.type !== NOTE_PART) continue;
+			const id = (part.data as { id: string }).id;
+			const note = deps.notes.get(id);
+			if (note === null) {
+				return Response.json({ error: `no such note: ${id}` }, { status: 422, headers: NO_STORE });
+			}
+			if (note.archivedAt !== null) {
+				return Response.json(
+					{ error: `note is archived: ${note.title}` },
+					{ status: 422, headers: NO_STORE },
+				);
+			}
+			part.data = {
+				id: note.id,
+				title: note.title,
+				rev: note.rev,
+				body: note.body,
+				projectId: note.projectId,
+			};
+			log.info("note attached", {
+				conversation: convId,
+				note: note.id,
+				rev: note.rev,
+				bytes: Buffer.byteLength(note.body),
+			});
 		}
 
 		// First-burst titling — the tg lane's implicit-topic rule applied

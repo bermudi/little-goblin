@@ -37,6 +37,7 @@
 		"@ai-sdk/provider": "4.0.18",
 		"@ai-sdk/react": "4.0.116",
 		"@biomejs/biome": "^2.5.15",
+		"@milkdown/kit": "7.22.2",
 		"@types/bun": "latest",
 		"@types/json5": "^2.2.0",
 		"@types/react": "19.3.0",

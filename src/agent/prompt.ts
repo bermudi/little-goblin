@@ -200,6 +200,7 @@ export function buildSystemPrompt(
 	conv: Conversation,
 	tools: readonly string[],
 	project?: Project | null,
+	notesIndex?: { id: string; title: string }[] | undefined,
 ): { text: string; sources: string[] } {
 	// Guest persona (design/telegram.md → Guest mode): a third-party
 	// summons never reads the operator's files — no SOUL.md, no
@@ -267,15 +268,23 @@ export function buildSystemPrompt(
 		if (!project.managed) {
 			noteSource(`project-AGENTS.md:${project.id}`, projectAgents);
 		}
+		noteSource(`notes-index:${project.id}`, (notesIndex ?? []).map((n) => n.title).join("\n"));
 	}
 
 	// The project's scope statement, ahead of goblin's own operating
-	// notes: name, its instructions, and a linked dir's AGENTS.md.
+	// notes: name, its instructions, the notes index (current text is a
+	// `note read` away — the index stays a pointer, never the body),
+	// and a linked dir's AGENTS.md.
 	const projectSection: string[] = [];
 	if (project !== null && project !== undefined) {
 		projectSection.push("", `## project — ${project.name}`);
 		const parts: string[] = [];
 		if (projectInstructions !== "") parts.push(projectInstructions);
+		if (notesIndex !== undefined && notesIndex.length > 0) {
+			parts.push(
+				`### notes\n\n${notesIndex.map((n) => `- ${n.title} (id ${n.id})`).join("\n")}`,
+			);
+		}
 		if (projectAgents !== null) {
 			parts.push(`### AGENTS.md in ${project.dir}\n\n${projectAgents.trim()}`);
 		}
@@ -357,6 +366,13 @@ export function buildSystemPrompt(
 					`  taps come back as [ui] messages.`,
 				]
 			: []),
+		...(tools.includes("note") && onApp
+			? [
+					`- Note-ready content can ride a four-backtick fence with info`,
+					`  string \`note title="…"\` — the app shows an append-to-note`,
+					`  button on it, and only the fence body lands in the note.`,
+				]
+			: []),
 		`- ${onApp ? "The goblin app" : "Telegram"} is the UI: messages are plain text/Markdown, media arrives as`,
 		`  file paths or inline parts. Keep replies chat-sized; write files for`,
 		`  anything long.`,
@@ -411,6 +427,7 @@ export function buildSystemPrompt(
 	if (project !== null && project !== undefined) {
 		sources.push("project");
 		if (projectAgents !== null) sources.push("project-AGENTS.md");
+		if (notesIndex !== undefined && notesIndex.length > 0) sources.push("notes-index");
 	}
 	if (agents) sources.push("AGENTS.md");
 	if (user) sources.push("USER.md");
@@ -431,10 +448,11 @@ export function systemPromptFor(
 	conv: Conversation,
 	tools: readonly string[],
 	project?: Project | null,
+	notesIndex?: { id: string; title: string }[] | undefined,
 ): { text: string; sources: string[] } {
 	const frozen = store.promptSnapshot(conv.id);
 	if (frozen !== null) return frozen;
-	const built = buildSystemPrompt(conv, tools, project);
+	const built = buildSystemPrompt(conv, tools, project, notesIndex);
 	store.savePromptSnapshot(conv.id, built.text, built.sources);
 	// The boundary line: the snapshot's birth is a cache write, and
 	// noteSource diffs above explain any source change since the last

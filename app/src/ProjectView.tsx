@@ -4,8 +4,12 @@
 // own new-chat composer.
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import type { AppConversationList, AppProject } from "../../src/http/app-wire.ts";
-import { ApiError, createProject, patchProject } from "./api.ts";
+import type {
+	AppConversationList,
+	AppNoteSummary,
+	AppProject,
+} from "../../src/http/app-wire.ts";
+import { ApiError, createNote, createProject, listNotes, patchProject } from "./api.ts";
 
 type Summary = AppConversationList["conversations"][number];
 
@@ -213,6 +217,84 @@ export function ProjectsIndex({
 	);
 }
 
+// The project's notes — fetched per page visit; "New note" is bound
+// here from birth (design/projects.md → Notes).
+function ProjectNotes({
+	token,
+	project,
+	onOpenNote,
+}: {
+	token: string | null;
+	project: AppProject;
+	onOpenNote: (id: string) => void;
+}) {
+	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
+	const [error, setError] = useState<string | null>(null);
+	useEffect(() => {
+		let live = true;
+		const run = () => {
+			void listNotes(token, { project: project.id }).then(
+				(r) => {
+					if (!live) return;
+					setNotes(r.notes);
+					setError(null);
+				},
+				(err) =>
+					live &&
+					setError(`Couldn't list notes: ${err instanceof Error ? err.message : String(err)}`),
+			);
+		};
+		run();
+		// Refresh without push — same as the notes index (design →
+		// Refresh).
+		window.addEventListener("focus", run);
+		return () => {
+			live = false;
+			window.removeEventListener("focus", run);
+		};
+	}, [token, project.id]);
+	const newNote = () => {
+		void createNote(token, { title: "Untitled note", projectId: project.id }).then(
+			(n) => onOpenNote(n.id),
+			(err) =>
+				setError(`Couldn't create the note: ${err instanceof Error ? err.message : String(err)}`),
+		);
+	};
+	return (
+		<>
+			<div className="row">
+				<h2 className="ops-h2">Notes</h2>
+				<button type="button" className="ghost" onClick={newNote}>
+					New note
+				</button>
+			</div>
+			{error !== null && (
+				<p className="error" role="alert">
+					{error}
+				</p>
+			)}
+			{notes === null ? (
+				<p className="loading">…</p>
+			) : notes.length === 0 ? (
+				<p className="empty">No notes here yet.</p>
+			) : (
+				<div className="card">
+					{notes.map((n) => (
+						<button key={n.id} type="button" className="idx" onClick={() => onOpenNote(n.id)}>
+							<span className="ilabel">
+								{n.title}
+								<small>{n.preview !== "" ? n.preview : `rev ${n.rev}`}</small>
+							</span>
+							{n.pinnedAt !== null && <span className="pill">pinned</span>}
+							<span className="chev">›</span>
+						</button>
+					))}
+				</div>
+			)}
+		</>
+	);
+}
+
 // /app/p/<id> — the project's own page: settings up top, then its chats
 // (archived collapsed), then a composer that starts a bound
 // conversation through the same createConversation → seed → select
@@ -223,12 +305,14 @@ export function ProjectView({
 	conversations,
 	renderRow,
 	onChanged,
+	onOpenNote,
 }: {
 	token: string | null;
 	project: AppProject;
 	conversations: Summary[];
 	renderRow: (conv: Summary) => ReactNode;
 	onChanged: () => void;
+	onOpenNote: (id: string) => void;
 }) {
 	const [renaming, setRenaming] = useState(false);
 	const [nameDraft, setNameDraft] = useState("");
@@ -389,6 +473,8 @@ export function ProjectView({
 					{error}
 				</p>
 			)}
+
+			<ProjectNotes token={token} project={project} onOpenNote={onOpenNote} />
 
 			<h2 className="ops-h2">Chats</h2>
 			{activeChats.length === 0 ? (

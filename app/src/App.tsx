@@ -13,16 +13,22 @@ import {
 	saveToken,
 	searchConversations,
 } from "./api.ts";
-import { ChatView, Composer, type StagedUpload } from "./ChatView.tsx";
+import { ChatView, Composer, type StagedNote, type StagedUpload } from "./ChatView.tsx";
 import { SettingsView } from "./SettingsView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
 import { DelegationsView, ProgramsView, StatusView } from "./OperatorViews.tsx";
 import { NewProjectDialog, ProjectsIndex, ProjectView } from "./ProjectView.tsx";
-import type { AppConversationList, AppProject, AppSearchHit } from "../../src/http/app-wire.ts";
+import { NotesIndex, NoteView } from "./NoteView.tsx";
+import type {
+	AppConversationList,
+	AppNote,
+	AppProject,
+	AppSearchHit,
+} from "../../src/http/app-wire.ts";
 
 // The operator pages ride the same shell as chat — deep links like
 // /app/settings are served the app bundle and land here. `project` is
-// /app/p/<id> — its id lives in projectId, not the union.
+// /app/p/<id> and `note` /app/n/<id> — their ids live outside the union.
 type Page =
 	| "chat"
 	| "settings"
@@ -31,9 +37,11 @@ type Page =
 	| "programs"
 	| "status"
 	| "projects"
-	| "project";
+	| "project"
+	| "notes"
+	| "note";
 
-const PAGES: { key: Exclude<Page, "chat">; label: string }[] = [
+const PAGES: { key: Exclude<Page, "chat" | "notes" | "note">; label: string }[] = [
 	{ key: "settings", label: "Settings" },
 	{ key: "memory", label: "Memories" },
 	{ key: "delegations", label: "Delegations" },
@@ -42,7 +50,9 @@ const PAGES: { key: Exclude<Page, "chat">; label: string }[] = [
 ];
 
 function pageFromPath(pathname: string): Page | null {
-	const m = /^\/app\/(settings|memory|delegations|programs|status|projects)\/?$/.exec(pathname);
+	const m = /^\/app\/(settings|memory|delegations|programs|status|projects|notes)\/?$/.exec(
+		pathname,
+	);
 	return m === null ? null : (m[1] as Page);
 }
 
@@ -50,6 +60,12 @@ function pageFromPath(pathname: string): Page | null {
 // same url-safe shape the /app/c/ link checks (design/projects.md).
 export function projectFromPath(pathname: string): string | null {
 	const m = /^\/app\/p\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/?$/.exec(pathname);
+	return m === null ? null : m[1]!;
+}
+
+// /app/n/<noteId> — same id shape as projects.
+function noteFromPath(pathname: string): string | null {
+	const m = /^\/app\/n\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/?$/.exec(pathname);
 	return m === null ? null : m[1]!;
 }
 
@@ -470,6 +486,9 @@ export function App() {
 	// unmount — their resolution writes this state, whichever composer
 	// is mounted (#118).
 	const [staged, setStaged] = useState<StagedUpload[]>([]);
+	// Note chips ride beside the upload chips for the same reason —
+	// they must survive the empty-state → conversation composer swap.
+	const [stagedNotes, setStagedNotes] = useState<StagedNote[]>([]);
 	// Bump on "New conversation" — the composer focuses itself, mounted
 	// or not (a remount sees the non-zero signal on first effect).
 	const [composerFocus, setComposerFocus] = useState(0);
@@ -485,11 +504,19 @@ export function App() {
 	const [page, setPage] = useState<Page>(
 		() =>
 			pageFromPath(window.location.pathname) ??
-			(projectFromPath(window.location.pathname) !== null ? "project" : "chat"),
+			(projectFromPath(window.location.pathname) !== null
+				? "project"
+				: noteFromPath(window.location.pathname) !== null
+					? "note"
+					: "chat"),
 	);
 	// /app/p/<id> — set whenever the path names a project page.
 	const [projectId, setProjectId] = useState<string | null>(() =>
 		projectFromPath(window.location.pathname),
+	);
+	// /app/n/<id> — same deal for a note page.
+	const [noteId, setNoteId] = useState<string | null>(() =>
+		noteFromPath(window.location.pathname),
 	);
 	const [createProjectOpen, setCreateProjectOpen] = useState(false);
 	// The settings editor reports its dirty bit here so navigating away
@@ -642,17 +669,27 @@ export function App() {
 			if (p !== null) {
 				setPage(p);
 				setProjectId(null);
+				setNoteId(null);
 				return;
 			}
 			const pid = projectFromPath(window.location.pathname);
 			if (pid !== null) {
 				setPage("project");
 				setProjectId(pid);
+				setNoteId(null);
+				return;
+			}
+			const nid = noteFromPath(window.location.pathname);
+			if (nid !== null) {
+				setPage("note");
+				setProjectId(null);
+				setNoteId(nid);
 				return;
 			}
 			const id = deepLinkConv(window.location.pathname);
 			setPage("chat");
 			setProjectId(null);
+			setNoteId(null);
 			setCurrent(id);
 		};
 		window.addEventListener("popstate", onPop);
@@ -735,6 +772,7 @@ export function App() {
 		if (!leaveDirtySettings()) return;
 		setPage("chat");
 		setProjectId(null);
+		setNoteId(null);
 		setCurrent(id);
 		const path = id === null ? "/app/" : `/app/c/${id.slice("app/".length)}`;
 		if (path !== window.location.pathname) pushRoute(path);
@@ -744,6 +782,7 @@ export function App() {
 		if (!leaveDirtySettings()) return;
 		setPage("project");
 		setProjectId(id);
+		setNoteId(null);
 		setNavOpen(false);
 		pushRoute(`/app/p/${id}`);
 	};
@@ -752,8 +791,27 @@ export function App() {
 		if (!leaveDirtySettings()) return;
 		setPage("projects");
 		setProjectId(null);
+		setNoteId(null);
 		setNavOpen(false);
 		pushRoute("/app/projects");
+	};
+
+	const openNotesIndex = () => {
+		if (!leaveDirtySettings()) return;
+		setPage("notes");
+		setProjectId(null);
+		setNoteId(null);
+		setNavOpen(false);
+		pushRoute("/app/notes");
+	};
+
+	const openNote = (id: string) => {
+		if (!leaveDirtySettings()) return;
+		setPage("note");
+		setProjectId(null);
+		setNoteId(id);
+		setNavOpen(false);
+		pushRoute(`/app/n/${id}`);
 	};
 
 	const rowRemoved = (id: string) => {
@@ -762,7 +820,7 @@ export function App() {
 		else setCurrent(null);
 	};
 
-	const openPage = (p: Exclude<Page, "chat">) => {
+	const openPage = (p: Exclude<Page, "chat" | "notes" | "note">) => {
 		if (page === p) {
 			setNavOpen(false);
 			return;
@@ -941,6 +999,13 @@ export function App() {
 								<button type="button" className="new" onClick={() => setCreateProjectOpen(true)}>
 									New project
 								</button>
+								<button
+									type="button"
+									className={page === "notes" || page === "note" ? "rail-section on" : "rail-section"}
+									onClick={openNotesIndex}
+								>
+									Notes
+								</button>
 							</div>
 						)}
 						<ul>{rail.map(renderRow)}</ul>
@@ -1012,7 +1077,9 @@ export function App() {
 					)}
 					{page === "projects" && <span className="header-title">Projects</span>}
 					{page === "project" && <span className="header-title">{currentProject?.name}</span>}
-					{page !== "chat" && page !== "projects" && page !== "project" && (
+					{page === "notes" && <span className="header-title">Notes</span>}
+					{page === "note" && <span className="header-title">Note</span>}
+					{PAGES.some((p) => p.key === page) && (
 						<span className="header-title">{PAGES.find((p) => p.key === page)?.label}</span>
 					)}
 				</header>
@@ -1040,6 +1107,29 @@ export function App() {
 						onNew={() => setCreateProjectOpen(true)}
 					/>
 				)}
+				{page === "notes" && (
+					<NotesIndex token={token} projects={projectList} onOpen={openNote} />
+				)}
+				{page === "note" && (
+					<div className="chat">
+						{noteId === null ? (
+							<p className="empty">No such note.</p>
+						) : (
+							<NoteView
+								key={noteId}
+								token={token}
+								noteId={noteId}
+								projects={projectList}
+								onChat={(note: AppNote) =>
+									void startChat(note.projectId, [
+										{ type: "data-note", data: { id: note.id } } as UIMessage["parts"][number],
+									])
+								}
+								onDeleted={openNotesIndex}
+							/>
+						)}
+					</div>
+				)}
 				{page === "project" && (
 					<div className="chat">
 						{currentProject === undefined ? (
@@ -1053,6 +1143,7 @@ export function App() {
 									conversations={all}
 									renderRow={renderRow}
 									onChanged={() => void refresh()}
+									onOpenNote={openNote}
 								/>
 								{startFailed && (
 									<p className="error">
@@ -1065,6 +1156,8 @@ export function App() {
 										busy={starting}
 										staged={staged}
 										setStaged={setStaged}
+										stagedNotes={stagedNotes}
+										setStagedNotes={setStagedNotes}
 										onSend={(parts) => void startChat(currentProject.id, parts)}
 									/>
 								) : (
@@ -1096,6 +1189,8 @@ export function App() {
 								busy={starting}
 								staged={staged}
 								setStaged={setStaged}
+								stagedNotes={stagedNotes}
+								setStagedNotes={setStagedNotes}
 								focusSignal={composerFocus}
 								onSend={(parts) => void startConversation(parts)}
 							/>
@@ -1121,8 +1216,12 @@ export function App() {
 								seed={seed !== null && seed.id === current ? seed.parts : null}
 								staged={staged}
 								setStaged={setStaged}
+								stagedNotes={stagedNotes}
+								setStagedNotes={setStagedNotes}
+								noteProjectId={currentConv?.projectId ?? null}
 								onSeeded={() => setSeed(null)}
 								onTurnDone={() => void refresh()}
+								onOpenNote={openNote}
 							/>
 						</>
 					))}

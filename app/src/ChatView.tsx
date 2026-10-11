@@ -23,6 +23,7 @@ import {
 	getConfig,
 	getConversationConfig,
 	getMessages,
+	listNotes,
 	patchConfig,
 	patchConversationConfig,
 	stopConversation,
@@ -34,7 +35,7 @@ import { useCopy } from "./useCopy.ts";
 import { ToolRun, partFailed, partRunning, partSummaryLine } from "./tools/mod.tsx";
 import { UiPart } from "./ui/UiPart.tsx";
 import type { AttachmentRef } from "../../src/agent/attachments.ts";
-import type { AppConfigView, TurnMetadata } from "../../src/http/app-wire.ts";
+import type { AppConfigView, AppNoteSummary, TurnMetadata } from "../../src/http/app-wire.ts";
 
 // ---------- transcript rendering ----------
 
@@ -188,17 +189,58 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 	);
 }
 
+// A stored note attachment — the server expanded it at intake, so the
+// chip carries title+rev as of that message (design/projects.md →
+// Attach). Clicking lands on the note's page.
+function NoteChip({
+	data,
+	onOpenNote,
+}: {
+	data: unknown;
+	onOpenNote?: ((id: string) => void) | undefined;
+}) {
+	const d = (typeof data === "object" && data !== null ? data : {}) as {
+		id?: string;
+		title?: string;
+		rev?: number;
+	};
+	if (typeof d.id !== "string" || typeof d.title !== "string") return null;
+	const label = `Note · ${d.title}${typeof d.rev === "number" ? ` · rev ${d.rev}` : ""}`;
+	if (onOpenNote === undefined) {
+		return (
+			<a className="attachment note-chip" href={`/app/n/${encodeURIComponent(d.id)}`}>
+				<FileIcon />
+				<span className="attachment-name">{label}</span>
+			</a>
+		);
+	}
+	return (
+		<span className="attachment note-chip">
+			<FileIcon />
+			<button type="button" className="attachment-name link" onClick={() => onOpenNote(d.id!)}>
+				{label}
+			</button>
+		</span>
+	);
+}
+
 export function MessageParts({
 	parts,
 	token,
+	noteProjectId,
 	onAction,
+	onOpenNote,
 	busy,
 }: {
 	parts: UIMessage["parts"];
 	token?: string | null;
+	// The conversation's project — a note-card "New note" binds to it.
+	noteProjectId?: string | null | undefined;
 	// ui block actions (choices, form submits) post through the
 	// caller's sendMessage; busy disables them while a turn runs.
 	onAction?: ((text: string) => void) | undefined;
+	// Note chips and the fenced note card navigate in-app when wired.
+	onOpenNote?: ((id: string) => void) | undefined;
 	busy?: boolean | undefined;
 }) {
 	const out: ReactNode[] = [];
@@ -231,7 +273,16 @@ export function MessageParts({
 			i = j - 1;
 			continue;
 		}
-		if (p.type === "text") out.push(<Markdown key={i} text={p.text} />);
+		if (p.type === "text")
+			out.push(
+				<Markdown
+					key={i}
+					text={p.text}
+					token={token}
+					noteProjectId={noteProjectId}
+					onOpenNote={onOpenNote}
+				/>,
+			);
 		// Empty reasoning parts exist in history — providers that seal
 		// chain-of-thought (encrypted, or an unmapped dialect) still emit the
 		// part. A fold with nothing inside reads as a bug; skip it.
@@ -244,6 +295,8 @@ export function MessageParts({
 			);
 		else if (p.type === "data-attachment")
 			out.push(<AttachmentChip key={i} data={p.data} token={token ?? null} />);
+		else if (p.type === "data-note")
+			out.push(<NoteChip key={i} data={p.data} onOpenNote={onOpenNote} />);
 		else if (p.type === "file")
 			out.push(
 				<span key={i} className="attachment">
@@ -537,6 +590,83 @@ export interface StagedUpload {
 	thumb?: string;
 }
 
+// A note picked for the next send — id only; the server expands it at
+// intake (design/projects.md → Attach). Lifted beside `staged` for the
+// same #118 reason: chips must outlive the empty-state composer.
+export interface StagedNote {
+	key: string;
+	id: string;
+	title: string;
+}
+
+// The composer's note picker — a search over the whole notes pool
+// (project "all"), debounced like the rail's.
+function NotePicker({
+	token,
+	onPick,
+	onClose,
+}: {
+	token: string | null;
+	onPick: (n: AppNoteSummary) => void;
+	onClose: () => void;
+}) {
+	const [query, setQuery] = useState("");
+	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
+	const [failed, setFailed] = useState(false);
+	const seq = useRef(0);
+	useEffect(() => {
+		const n = ++seq.current;
+		const t = setTimeout(() => {
+			void listNotes(token, { project: "all", q: query }).then(
+				(r) => {
+					if (n === seq.current) {
+						setNotes(r.notes);
+						setFailed(false);
+					}
+				},
+				() => {
+					if (n === seq.current) setFailed(true);
+				},
+			);
+		}, 200);
+		return () => clearTimeout(t);
+	}, [query, token]);
+	return (
+		<div className="note-pick composer-pick">
+			<input
+				type="search"
+				placeholder="Search notes"
+				value={query}
+				autoFocus
+				onChange={(e) => setQuery(e.target.value)}
+				onKeyDown={(e) => {
+					if (e.key === "Escape") onClose();
+				}}
+			/>
+			{failed && <p className="error">Couldn't list notes.</p>}
+			<ul>
+				{(notes ?? []).map((n) => (
+					<li key={n.id}>
+						<button
+							type="button"
+							onClick={() => {
+								onPick(n);
+								onClose();
+							}}
+						>
+							{n.title}
+							{n.projectId !== null && <span className="note-proj"> · project</span>}
+						</button>
+					</li>
+				))}
+				{notes !== null && notes.length === 0 && (
+					<li className="empty">{query === "" ? "No notes yet." : "No matches."}</li>
+				)}
+			</ul>
+		</div>
+	);
+}
+
 // Always present — on an empty conversation too. The draft is local;
 // staged attachments arrive from above so they outlive this instance
 // (#118). onSend hands the assembled parts up, where the caller either
@@ -547,6 +677,8 @@ export function Composer({
 	busy,
 	staged,
 	setStaged,
+	stagedNotes,
+	setStagedNotes,
 	onSend,
 	onStop,
 	quote,
@@ -557,6 +689,8 @@ export function Composer({
 	busy: boolean;
 	staged: StagedUpload[];
 	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
+	stagedNotes: StagedNote[];
+	setStagedNotes: Dispatch<SetStateAction<StagedNote[]>>;
 	onSend: (parts: UIMessage["parts"]) => void;
 	// Present only where a live turn exists to interrupt (ChatView).
 	onStop?: () => void;
@@ -569,6 +703,7 @@ export function Composer({
 	focusSignal?: number;
 }) {
 	const [draft, setDraft] = useState("");
+	const [notePickerOpen, setNotePickerOpen] = useState(false);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	useEffect(() => {
 		if ((focusSignal ?? 0) > 0) textareaRef.current?.focus();
@@ -768,7 +903,7 @@ export function Composer({
 		if (busy || configSaving) return;
 		const text = draft.trim();
 		const ready = staged.filter((e) => e.uploading !== true && e.failed !== true);
-		if (text === "" && ready.length === 0) return;
+		if (text === "" && ready.length === 0 && stagedNotes.length === 0) return;
 		const parts: UIMessage["parts"] = [];
 		if (text !== "") parts.push({ type: "text", text });
 		for (const e of ready)
@@ -776,12 +911,16 @@ export function Composer({
 				type: "data-attachment",
 				data: e.speech === true ? { ...e.ref, speech: true } : e.ref,
 			} as UIMessage["parts"][number]);
+		// The client names the note only — intake expands it server-side.
+		for (const n of stagedNotes)
+			parts.push({ type: "data-note", data: { id: n.id } } as UIMessage["parts"][number]);
 		setDraft("");
 		// Entries that weren't sent — uploads still in flight, failed
 		// chips — stay staged. Clearing them would drop files the
 		// operator still sees in the composer.
 		for (const e of ready) dropEntry(e);
 		setStaged((p) => p.filter((e) => !ready.includes(e)));
+		setStagedNotes([]);
 		onSend(parts);
 	};
 
@@ -822,7 +961,7 @@ export function Composer({
 					Model settings failed: {configError}
 				</div>
 			)}
-			{staged.length > 0 && (
+			{(staged.length > 0 || stagedNotes.length > 0) && (
 				<div className="composer-attachments">
 					{staged.map((e, i) => (
 						<span key={e.key} className={e.failed === true ? "attachment failed" : "attachment"}>
@@ -843,6 +982,19 @@ export function Composer({
 									dropEntry(e);
 									setStaged((p) => p.filter((_, j) => j !== i));
 								}}
+							>
+								×
+							</button>
+						</span>
+					))}
+					{stagedNotes.map((n) => (
+						<span key={n.key} className="attachment note-chip">
+							<FileIcon />
+							<span className="attachment-name">Note · {n.title}</span>
+							<button
+								type="button"
+								aria-label="Remove"
+								onClick={() => setStagedNotes((p) => p.filter((e) => e.key !== n.key))}
 							>
 								×
 							</button>
@@ -896,6 +1048,29 @@ export function Composer({
 					>
 						<line x1="12" y1="5" x2="12" y2="19" />
 						<line x1="5" y1="12" x2="19" y2="12" />
+					</svg>
+				</button>
+				<button
+					type="button"
+					className="icon-btn"
+					aria-label="Attach a note"
+					title="Attach a note"
+					onClick={() => setNotePickerOpen((v) => !v)}
+				>
+					<svg
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						strokeWidth="1.75"
+						strokeLinecap="round"
+						strokeLinejoin="round"
+						width="16"
+						height="16"
+					>
+						<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+						<polyline points="14 2 14 8 20 8" />
+						<line x1="9" y1="13" x2="15" y2="13" />
+						<line x1="9" y1="17" x2="13" y2="17" />
 					</svg>
 				</button>
 				{micSupported && (
@@ -993,7 +1168,8 @@ export function Composer({
 							configSaving ||
 							recording ||
 							(draft.trim() === "" &&
-								staged.every((e) => e.failed === true || e.uploading === true))
+								staged.every((e) => e.failed === true || e.uploading === true) &&
+								stagedNotes.length === 0)
 						}
 					>
 						<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
@@ -1006,6 +1182,19 @@ export function Composer({
 					</button>
 				)}
 			</div>
+			{notePickerOpen && (
+				<NotePicker
+					token={token}
+					onPick={(n) =>
+						setStagedNotes((p) =>
+							p.some((e) => e.id === n.id)
+								? p
+								: [...p, { key: crypto.randomUUID(), id: n.id, title: n.title }],
+						)
+					}
+					onClose={() => setNotePickerOpen(false)}
+				/>
+			)}
 		</form>
 	);
 }
@@ -1059,8 +1248,12 @@ export function ChatView({
 	seed,
 	staged,
 	setStaged,
+	stagedNotes,
+	setStagedNotes,
+	noteProjectId,
 	onSeeded,
 	onTurnDone,
+	onOpenNote,
 }: {
 	token: string | null;
 	conversationId: string;
@@ -1072,8 +1265,16 @@ export function ChatView({
 	// composer renders the same entries the empty state's did (#118).
 	staged: StagedUpload[];
 	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
+	// Same lift as staged — note chips picked before the first send
+	// carry into the new conversation's composer.
+	stagedNotes: StagedNote[];
+	setStagedNotes: Dispatch<SetStateAction<StagedNote[]>>;
+	// The conversation's project — a note-card "New note" binds to it.
+	noteProjectId?: string | null | undefined;
 	onSeeded: () => void;
 	onTurnDone: () => void;
+	// Note chips + fenced note cards navigate to the note page in-app.
+	onOpenNote?: ((id: string) => void) | undefined;
 }) {
 	const [initial, setInitial] = useState<UIMessage[] | null>(null);
 	const [loadError, setLoadError] = useState<string | null>(null);
@@ -1099,8 +1300,12 @@ export function ChatView({
 			seed={seed}
 			staged={staged}
 			setStaged={setStaged}
+			stagedNotes={stagedNotes}
+			setStagedNotes={setStagedNotes}
+			noteProjectId={noteProjectId}
 			onSeeded={onSeeded}
 			onTurnDone={onTurnDone}
+			onOpenNote={onOpenNote}
 		/>
 	);
 }
@@ -1113,8 +1318,12 @@ function Chat({
 	seed,
 	staged,
 	setStaged,
+	stagedNotes,
+	setStagedNotes,
+	noteProjectId,
 	onSeeded,
 	onTurnDone,
+	onOpenNote,
 }: {
 	token: string | null;
 	conversationId: string;
@@ -1123,8 +1332,12 @@ function Chat({
 	seed: UIMessage["parts"] | null;
 	staged: StagedUpload[];
 	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
+	stagedNotes: StagedNote[];
+	setStagedNotes: Dispatch<SetStateAction<StagedNote[]>>;
+	noteProjectId?: string | null | undefined;
 	onSeeded: () => void;
 	onTurnDone: () => void;
+	onOpenNote?: ((id: string) => void) | undefined;
 }) {
 	// The transport speaks this channel's contract: one user message per
 	// POST, keyed by the app conversation id (DESIGN.md, App channel).
@@ -1260,7 +1473,12 @@ function Chat({
 						if (m.role === "user")
 							return (
 								<div key={m.id} className="msg user">
-									<MessageParts parts={m.parts} token={token} />
+									<MessageParts
+										parts={m.parts}
+										token={token}
+										noteProjectId={noteProjectId}
+										onOpenNote={onOpenNote}
+									/>
 								</div>
 							);
 						const meta = turnMeta(m);
@@ -1269,7 +1487,9 @@ function Chat({
 								<MessageParts
 									parts={m.parts}
 									token={token}
+									noteProjectId={noteProjectId}
 									busy={busy}
+									onOpenNote={onOpenNote}
 									onAction={(text) => {
 										pinned.current = true;
 										void sendMessage({ text });
@@ -1296,6 +1516,8 @@ function Chat({
 				busy={busy}
 				staged={staged}
 				setStaged={setStaged}
+				stagedNotes={stagedNotes}
+				setStagedNotes={setStagedNotes}
 				quote={quote}
 				onSend={(parts) => {
 					pinned.current = true;

@@ -155,6 +155,13 @@ Tests guard boundaries and invariants, not implementations. Fake the model
 provider and the Telegram API at the edge; don't mock module internals. The
 suite stays smaller than `src/`.
 
+Live drift checks for unowned boundaries (herdr, gws, harness-trust,
+podman) are env-gated — `GOBLIN_<NAME>_LIVE=1 bun test
+src/<module>.live.test.ts` — and run after any upstream upgrade; red
+means the interface moved: re-pin with one probe, fix the adapter.
+Each check's store/probe safety rules live in its header and its
+design-doc ruling (delegation.md, mail.md, sandbox.md).
+
 ## Comment policy (W6 ruling, 2026-10-08)
 
 Comments carry the **local why**: invariants, non-obvious trade-offs,

@@ -141,6 +141,19 @@ Rulings:
   that duplicate an alias's flags make the harness refuse to start.
   Start relies on herdr's ready gate plus the watcher's stall rule,
   not on screen-scraping.
+- **The seeded trust keys are pinned against the installed
+  harnesses, not just fakes (2026-10-11).** Drift here is silent by
+  nature: upstream renaming a key means the seed still succeeds and
+  the launch shows the consent dialog anyway.
+  `src/harness-trust.live.test.ts` (`GOBLIN_HARNESS_TRUST_LIVE=1`)
+  seeds a temp HOME through the real entry, asserts the module still
+  writes the pinned key names, then greps the installed
+  codex/claude binaries for those exact literals — the keys are
+  property/string literals in both bundles, so a rename is visible
+  without launching anything (no harness is ever started: no cost,
+  no auth, no panes; nothing real is touched). Run after harness
+  upgrades; red means re-pin — probe the new bundle for the renamed
+  key, fix `harness-trust.ts`, never discover it in a live launch.
 - **State is rows.** `delegations` table in `goblin.sqlite`
   (`src/delegations.ts`): name, harness, cwd, task, pinned address,
   herdr agent name + pane/workspace ids, status

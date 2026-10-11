@@ -67,6 +67,21 @@ delegated):
   connect → download → disconnect → run.
 - **Resources.** `--memory`, `--cpus`, `--pids-limit` from config. Disk is
   not capped (rootless overlay has no quota); idle reaping bounds it.
+- **The wall is verified live, from inside the container (2026-10-11).**
+  The argv seam's fakes pin what goblin *asks* podman for; only a real
+  container proves what it *gets*, and a podman upgrade that changed how a
+  wall property lands would otherwise surface at the worst moment.
+  `src/podman.live.test.ts` (`GOBLIN_PODMAN_LIVE=1`) creates one
+  `goblin-drift-wall` container through the adapter and reads the wall
+  back from the kernel: `/proc/self/{uid,gid}_map` = `0 40000 8192`,
+  `CapEff`/`CapBnd` = exactly the five added caps (`0xcb`),
+  `NoNewPrivs` = 1, `inspect` mounts = `[]`, and a real disconnect to the
+  network-off default. In-container `/proc` is the strong form — inspect
+  maps would just restate the argv. Store safety carries over: own name
+  and network, a `goblin.drift` label (never `goblin.sandbox=1`, which the
+  running service adopts), exact-name removal only, no prune. Run after
+  any podman upgrade; red means the wall moved — re-probe, re-pin, never
+  discover it in a live sandbox.
 
 ### Lifetime: one per conversation, kept until idle
 

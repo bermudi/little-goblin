@@ -27,6 +27,19 @@ token plumbing in-process was a pita, and gws owns it instead — one
   second system to keep honest — while the 5-minute history-list
   poller reproduces the exact checkpoint contract below with no new
   infrastructure.
+- **The adapter's wire contract is pinned against the real CLI, not
+  just fakes (2026-10-11).** `mail-gws.test.ts` fakes the runner —
+  hermetic, but blind to upstream drift: a gws upgrade changing an
+  output shape or moving the error envelope would surface in
+  production at runtime, not in the suite.
+  `src/mail-gws.live.test.ts` is the gated drift check —
+  `GOBLIN_GWS_LIVE=1 bun test src/mail-gws.live.test.ts` drives the
+  adapter's verbs against the real CLI (read-only: no auth, no sends,
+  ids and cursor strings only, never bodies) and asserts the shapes
+  the zod schemas pin, including the stdout error envelope and the
+  absent-message 404→null mapping the poller's re-baseline rides on.
+  Run it after any gws upgrade; red means the CLI moved: re-pin with
+  one read-only probe, fix the adapter, never discover it live.
 - **Scopes: readonly is the wall.** `gmail.readonly` (triage + read
   need `q` search; the metadata scope rejects it), `drive.readonly`
   (files list/get without write — Drive deletes are unrecoverable),

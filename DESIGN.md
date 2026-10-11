@@ -250,6 +250,7 @@ or the non-goals goes here.
 - [`design/telegram.md`](design/telegram.md) — Telegram intake & delivery, Coalescing buffer, Delivery, TTS, Files, Voice mode, Mini Apps, Commands, Large files, Rolling DM (ruling 2026-10-03)
 - [`design/app.md`](design/app.md) — App channel (PWA → APK), Spin-off (ruling 2026-10-03)
 - [`design/sandbox.md`](design/sandbox.md) — Sandbox (ruling 2026-10-10): a disposable rootless-podman container per conversation behind the `sandbox` tool — the wall, the lifetime, network off by default, images pulled only with operator permission
+- [`design/subagents.md`](design/subagents.md) — Subagents & computer use (ruling 2026-10-11): purpose-typed Pi Durable subagents in-process (no recursion, durable resume, fenced results via wake), the desktop pool (allocate/claim/share/reserve, one controller), runc wall now and krun parked on its exec blocker, cua-driver in the guest, the `computer` tool
 - [`design/projects.md`](design/projects.md) — Projects & Notes (ruling 2026-10-10): projects scope app conversations (cwd, instructions, memory choice, fixed binding); notes are server-mediated SQLite rows (markdown only, versions, the `note` tool, attach, fenced append, AI rewrite); Pi Durable rejected as a second harness
 
 - [`design/doctor.md`](design/doctor.md) — Shared read-only checks, output/exit contract, phases and diagnostic coverage
@@ -291,6 +292,9 @@ $GOBLIN_HOME/
     │                       # never interleave calls within one session
     ├── mcporter/            # mcporter data/cache/daemon dirs (0700) —
     │                       # OAuth tokens + schema caches, off ~/.mcporter
+    ├── subagents.sqlite    # Pi Durable storage: subagent transcripts
+    │                       # (routing rows stay in goblin.sqlite)
+    ├── desktops/<name>/shots/      # every computer-use frame (audit)
     └── delegations/<id>/report.md   # a harness's final report
 ```
 
@@ -327,6 +331,9 @@ DMs for `allowedUsers`, `design/telegram.md` → Roles and
 permissions), optional
 `sandbox` block (absent or `""` = no sandbox tool; `image`,
 `idleHours`, `memory`, `cpus`, `pids` — `design/sandbox.md`), optional
+`computer` block (absent = no `computer` tool, no subagent harness;
+`model`, `image`, `maxDesktops`, `idleHours`, `memory`, `cpus`, `pids`
+— boot-frozen, `design/subagents.md`), optional
 `reviewer` + `system1` blocks (the skill-review gate and the shared
 System One gate behind it — Email + Skill reviewer). No secrets —
 those live in `auth.jsonl`.
@@ -383,6 +390,12 @@ src/
                     container per conversation, row-vs-engine
                     reconcile, fail-closed network, call-time idle
                     reap — never boot/shutdown
+  desktops.ts       the desktop pool: rows + lifecycle owner (allocate,
+                    claim/renew/release leases, reserve, call-time
+                    reap), over podman.ts (design/subagents.md)
+  subagents.ts      the Pi Durable harness owner (the only
+                    pi-durable-aware module): open, boot resume, start/
+                    steer/stop runs, settle → wake; subagent_runs rows
   mail-gws.ts       the watcher's poll surface over the gws CLI (raw
                     Discovery calls, JSON out) — the only gws-aware
                     module; runner injectable, gws owns its auth
@@ -486,7 +499,9 @@ drive.readonly + calendar rw + sheets rw, reached through the gws CLI
 and the goblin-mail wrapper, never raw in-process OAuth) · inner life (partly returned on
 demand — `Chat search`, `Skill reviewer`; self-waking, memory nudges,
 and self-grading skill machinery stay out) · conversation-lifecycle
-commands · subagents · ACP ·
+commands · subagents (returned on demand 2026-10-11 — `Subagents &
+computer use`; purpose-typed Pi Durable conversations, computer use
+first; generic agents, recursion and timeout-revive stay out) · ACP ·
 project environments (returned on demand 2026-10-10 — `Projects &
 Notes`; app-channel projects with a cwd + instructions, notes as
 server-mediated rows; a second harness stays out) · onboarding wizard · state

@@ -65,7 +65,7 @@ Legend: ✅ both, roughly same shape · 🔀 both, new mechanism in v2 ·
 |---|---|---|
 | 🔀 Toolset | 10 α (`read bash edit write grep memory_search memory_write spawn_subagent revive_subagent text_to_speech`) + 4 per-surface β (`send_voice send_photo send_document rename_topic`) | 14: `read_file write_file edit_file bash speak transcribe program delegate mail send_file memory_search fetch search history_search` (speak/transcribe/search/delegate/mail join per config) |
 | ❌ `grep` tool | yes | no — `bash` covers it |
-| 🔀 Tool results | — | text-only by ruling (wire formats can't carry media); `read_file` on an image returns a structured note instead of bytes |
+| 🔀 Tool results | — | text-only by tool-side ruling — the `responses` and `openrouter` pipes do carry tool-result media (design/tools.md); the daily driver `glm-5.3` is text-only anyway; `read_file` on an image returns a structured note instead of bytes |
 | 🔀 Output bounds | — | bounded, self-describing output: line window + byte ceiling + per-line clamp, every truncation names its own recovery |
 | 🔀 TTS | `text_to_speech` → MP3 path, then `send_voice` | `speak` → real ogg/opus voice note via the delivery sink; text **or** file path input ("read me this document" never re-types it) |
 | 🔀 Voice mode | `/voice` converts the *last reply* to audio | `/voice` toggles a sticky per-conversation mode: full audio replies, text still stored in history; 🔊 button on completed replies (voices the whole reply, in-memory cache with tap-fallback); code blocks/URLs sent as text alongside |

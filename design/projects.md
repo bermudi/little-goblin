@@ -19,7 +19,9 @@ demand, designed here before any code.
 weighed as the engine for project work and declined on mechanism: it is
 built on pi-ai, the model layer this rewrite exists to leave (DESIGN.md →
 Why), and its crash recovery — re-send the cut-off model request, rerun
-replay-safe tools — contradicts the authority rule's notify-don't-retry.
+replay-safe tools — contradicts the authority rule's notify-don't-retry. (That rejection
+binds goblin's turn loop only; Pi Durable returned as the subagent
+runtime — design/subagents.md.)
 Projects need no new engine: a project is a scope over the existing turn
 loop, and long work inside a project directory already has a path —
 delegation through herdr, cwd = the project's `dir`. The idea worth

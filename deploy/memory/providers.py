@@ -15,11 +15,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import re
 import subprocess
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+
+# `pass-cli` as a shell word at command position — start or after
+# whitespace/`;&|()"'\`` — optionally path-prefixed, followed by a
+# separator or end. Deliberately conservative: `echo pass-cli` trips it
+# too. Mirrors src/auth.ts's invokesPassCliDirectly.
+_INVOKES_PASS_CLI_DIRECTLY = re.compile(
+    r"(?:^|[\s;&|()\"'`])(?:[^\s;&|()\"'`/]*\/)*pass-cli(?:[\s;&|)\"'`]|$)"
+)
 
 _BUN_JSON5 = (
     "const {parse} = require('json5'); const fs = require('fs');"
@@ -185,6 +194,16 @@ def resolve_auth_key(goblin_home: Path, auth_name: str) -> str:
         raise ValueError(f"no auth record named '{auth_name}'")
     value = records[auth_name]
     if value.startswith("!"):
+        # The same poison lint goblin's own loader enforces (src/auth.ts):
+        # a `!` command invoking pass-cli would run as the OWNER session —
+        # full account, no audit trail. The loader refuses such records;
+        # the installer must not become the bypass. Name the record, never
+        # the value.
+        if _INVOKES_PASS_CLI_DIRECTLY.search(value[1:]):
+            raise ValueError(
+                f"auth record '{auth_name}' invokes pass-cli directly — it "
+                "would run as the owner session; route it through pass-keys"
+            )
         try:
             proc = subprocess.run(value[1:], shell=True, capture_output=True,
                                   text=True, timeout=30)

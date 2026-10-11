@@ -121,7 +121,9 @@ tool already makes. Flat schema, per-action contract enforced inside
   out through `podman exec cat --` — file content only, never metadata, so
   a container symlink resolves inside the container and can't point a
   host write anywhere. Written tmp + fsync + rename; capped (100 MiB);
-  directories are tarred inside the sandbox first.
+  non-regular files (directories, symlinks, devices) are refused outright
+  rather than tarred — the safe subset ships, the tar path was never
+  built.
 - `network` — `enabled: boolean`; connect/disconnect, row updated, state
   verified by inspect. Fail closed: a sandbox whose network state can't be
   confirmed off when off is intended is removed, not used.

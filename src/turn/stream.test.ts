@@ -316,10 +316,28 @@ describe("membership seam", () => {
 			onChunk: () => {},
 			onEnd: (d) => ends.push(d.kind),
 		});
-		endLive(live, { kind: "completed" });
-		endLive(live, { kind: "error", message: "late" });
+		endLive(live, { kind: "completed" }, "app/t");
+		endLive(live, { kind: "error", message: "late" }, "app/t");
 		expect(ends).toEqual(["completed"]);
 		expect(live.ended).toBe(true);
+	});
+
+	test("a throwing onEnd is detached loudly, and later subscribers still get the terminal event", () => {
+		const live = openLive();
+		const ends: string[] = [];
+		live.subscribers.add({
+			onChunk: () => {},
+			onEnd: () => {
+				throw new Error("wire gone");
+			},
+		});
+		live.subscribers.add({
+			onChunk: () => {},
+			onEnd: (d) => ends.push(d.kind),
+		});
+		endLive(live, { kind: "completed" }, "app/t");
+		expect(ends).toEqual(["completed"]);
+		expect(live.subscribers.size).toBe(0);
 	});
 });
 

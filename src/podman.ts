@@ -34,10 +34,7 @@ export interface PodmanExecOpts {
 	maxOutput: number;
 	abortSignal?: AbortSignal;
 }
-export type PodmanExecRunner = (
-	args: string[],
-	opts: PodmanExecOpts,
-) => Promise<BoundedProc>;
+export type PodmanExecRunner = (args: string[], opts: PodmanExecOpts) => Promise<BoundedProc>;
 export type PodmanExecBytesRunner = (
 	args: string[],
 	opts: PodmanExecOpts,
@@ -83,11 +80,7 @@ export class PodmanError extends Error {
 // the image (measured — `workdir "/work" does not exist`), so the init
 // command creates it and exec pins `-w`. `sleep infinity` is busybox-
 // and coreutils-safe (verified on alpine).
-export const SANDBOX_INIT_COMMAND = [
-	"/bin/sh",
-	"-c",
-	"mkdir -p /work && exec sleep infinity",
-];
+export const SANDBOX_INIT_COMMAND = ["/bin/sh", "-c", "mkdir -p /work && exec sleep infinity"];
 export const SANDBOX_WORKDIR = "/work";
 
 export interface CreateSpec {
@@ -131,9 +124,7 @@ const inspectSchema = z.array(
 // network inspect: an array; options.isolate is the opt we create with
 // and the property the existing-network check enforces.
 const networkInspectSchema = z.array(
-	z
-		.object({ options: z.record(z.string(), z.string()).optional() })
-		.passthrough(),
+	z.object({ options: z.record(z.string(), z.string()).optional() }).passthrough(),
 );
 
 export interface Podman {
@@ -147,12 +138,7 @@ export interface Podman {
 	restart(name: string, conv?: string): Promise<void>;
 	/** -f -t 0 — idempotent (missing containers exit 0). */
 	rm(name: string, conv?: string): Promise<void>;
-	exec(
-		name: string,
-		argv: string[],
-		opts: PodmanExecOpts,
-		conv?: string,
-	): Promise<BoundedProc>;
+	exec(name: string, argv: string[], opts: PodmanExecOpts, conv?: string): Promise<BoundedProc>;
 	execBytes(
 		name: string,
 		argv: string[],
@@ -277,9 +263,15 @@ export function makePodman(deps?: {
 				labels: {},
 			};
 			// Missing is an empty array on stdout (podman 6 answers "no such
-			// object" + 125); any other non-zero is a real failure.
+			// object" + 125). Portability: some builds exit non-zero with
+			// EMPTY stdout for a missing object, naming it on stderr — a
+			// bare throw there would wedge every reconcile before create.
+			// Any other non-zero is a real failure.
 			if (r.code !== 0) {
 				if (r.stdout.trim() === "[]") return missing;
+				if (r.stdout.trim() === "" && /no such (object|container)/i.test(r.stderr)) {
+					return missing;
+				}
 				throw fail("inspect", r);
 			}
 			let parsed: z.infer<typeof inspectSchema>;
@@ -324,10 +316,7 @@ export function makePodman(deps?: {
 
 		async exec(name, argv, opts, conv) {
 			const t0 = Date.now();
-			const r = await execRunner(
-				["exec", "-w", SANDBOX_WORKDIR, name, ...argv],
-				opts,
-			);
+			const r = await execRunner(["exec", "-w", SANDBOX_WORKDIR, name, ...argv], opts);
 			log.info("podman call", {
 				op: "exec",
 				container: name,
@@ -341,10 +330,7 @@ export function makePodman(deps?: {
 
 		async execBytes(name, argv, opts, conv) {
 			const t0 = Date.now();
-			const r = await execBytesRunner(
-				["exec", "-w", SANDBOX_WORKDIR, name, ...argv],
-				opts,
-			);
+			const r = await execBytesRunner(["exec", "-w", SANDBOX_WORKDIR, name, ...argv], opts);
 			log.info("podman call", {
 				op: "execBytes",
 				container: name,
@@ -373,11 +359,10 @@ export function makePodman(deps?: {
 		},
 
 		async networkDisconnect(network, name, conv) {
-			const r = await call(
-				"network disconnect",
-				["network", "disconnect", network, name],
-				{ container: name, conversation: conv },
-			);
+			const r = await call("network disconnect", ["network", "disconnect", network, name], {
+				container: name,
+				conversation: conv,
+			});
 			if (r.code !== 0) throw fail("network disconnect", r);
 		},
 

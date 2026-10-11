@@ -121,15 +121,20 @@ export function openLive(): LiveChunks {
 // Fire each subscriber's onEnd exactly once and retire the log. The
 // turn's outcome rides along — an attach stream needs the same terminal
 // semantics a member sink gets (an error event on a non-completed
-// outcome, then [DONE]).
-export function endLive(live: LiveChunks, done: WireEnd): void {
+// outcome, then [DONE]). A throwing subscriber is detached with a warn,
+// same treatment emitChunk gives the identical failure class — a
+// vanished done-event must be reconstructible from the log.
+export function endLive(live: LiveChunks, done: WireEnd, convId: string): void {
 	if (live.ended) return;
 	live.ended = true;
 	for (const sub of live.subscribers) {
 		try {
 			sub.onEnd(done);
-		} catch {
-			// The SSE writer self-guards; nothing to do.
+		} catch (err) {
+			live.subscribers.delete(sub);
+			log.warn("subscriber onEnd failed — stream detached", err, {
+				conversation: convId,
+			});
 		}
 	}
 	live.subscribers.clear();

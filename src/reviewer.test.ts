@@ -455,6 +455,84 @@ describe("review run — staging and publication", () => {
 		h.store.close();
 	});
 
+	test("a failed swap restores the earlier proposal it was replacing", async () => {
+		const h = harness();
+		// First review lands a proposal for `dup`.
+		await new Reviewer(
+			h.depsFor({
+				nouls: { correction: 0.9, procedure: 0 },
+				script: [
+					{
+						calls: [
+							{
+								name: "write_file",
+								input: { path: "dup/SKILL.md", content: SKILL_MD("dup", "first take") },
+							},
+						],
+					},
+					{ text: "saved" },
+				],
+			}),
+		).considerTurn(turn());
+		// Second review: the staged source vanishes between validation and
+		// the swap — after the target moved to trash, the swap throws and
+		// the rollback must bring the FIRST proposal back.
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0 },
+			script: [
+				{
+					calls: [
+							{
+								name: "write_file",
+								input: { path: "dup/SKILL.md", content: SKILL_MD("dup", "second take") },
+							},
+						],
+					},
+					{ text: "saved" },
+				],
+		});
+		const bin = deps.skillsRefBin!;
+		writeFileSync(
+			bin,
+			'#!/bin/sh\nif [ "$2" = "./skills/dup" ]; then mv "$PWD/skills/dup" "$PWD/skills/moved"; fi\n',
+		);
+		chmodSync(bin, 0o755);
+		await expect(new Reviewer(deps).considerTurn(turn({ turnSeq: 2 }))).rejects.toThrow();
+		expect(readFileSync(join(h.proposed, "dup", "SKILL.md"), "utf8")).toContain("first take");
+		expect(readdirSync(h.staging)).toEqual([]);
+		h.store.close();
+	});
+
+	test("a symlink parked on a proposal target is operator state — skipped, never trashed", async () => {
+		const h = harness();
+		const truth = join(h.workspace, "..", "truth");
+		mkdirSync(truth, { recursive: true });
+		writeFileSync(join(truth, "SKILL.md"), SKILL_MD("linked", "operator's draft"));
+		mkdirSync(h.proposed, { recursive: true });
+		symlinkSync(truth, join(h.proposed, "linked"));
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0 },
+				script: [
+					{
+						calls: [
+							{
+								name: "write_file",
+								input: { path: "linked/SKILL.md", content: SKILL_MD("linked", "review's take") },
+							},
+						],
+					},
+					{ text: "saved" },
+				],
+		});
+		await new Reviewer(deps).considerTurn(turn());
+		expect(lstatSync(join(h.proposed, "linked")).isSymbolicLink()).toBe(true);
+		expect(readFileSync(join(h.proposed, "linked", "SKILL.md"), "utf8")).toContain(
+			"operator's draft",
+		);
+		expect(h.notified).toEqual([]);
+		h.store.close();
+	});
+
 	test("proposing an edited skill preserves the executable mode of copied helpers", async () => {
 		const h = harness();
 		mkdirSync(join(h.skills, "existing"));
@@ -797,7 +875,7 @@ describe("review run — staging and publication", () => {
 			.trim()
 			.split("\n")
 			.map((l) => JSON.parse(l) as Record<string, unknown>)
-			.find((e) => e.msg === "reviewer proposal skipped — live skills changed mid-review");
+			.find((e) => e.msg === "reviewer proposal skipped — live state conflicts");
 		expect(skipped).toMatchObject({ conversation: "dm:1" });
 		h.store.close();
 	});
@@ -839,7 +917,7 @@ describe("review run — staging and publication", () => {
 			.map(
 				(l) => JSON.parse(l) as { msg: string; skipped?: { skill: string; drifted: string[] }[] },
 			)
-			.find((e) => e.msg === "reviewer proposal skipped — live skills changed mid-review");
+			.find((e) => e.msg === "reviewer proposal skipped — live state conflicts");
 		expect(skipped?.skipped).toEqual([{ skill: "linked", drifted: ["linked"] }]);
 		h.store.close();
 	});

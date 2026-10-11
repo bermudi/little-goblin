@@ -210,7 +210,8 @@ export function buildSystemPrompt(
 	// conversation starts; its SKILL.md is read fresh on use regardless.
 	// Proposals ride the same section and the same boundary.
 	const catalog = loadCatalog(paths.skills());
-	const skillsSection = formatSkillsSection(catalog, loadCatalog(paths.skillsProposed()));
+	const proposals = loadCatalog(paths.skillsProposed());
+	const skillsSection = formatSkillsSection(catalog, proposals);
 	noteSource("SOUL.md", soul);
 	noteSource("AGENTS.md", agents);
 	noteSource("USER.md", user);
@@ -330,7 +331,8 @@ export function buildSystemPrompt(
 	const sources = ["SOUL.md"];
 	if (agents) sources.push("AGENTS.md");
 	if (user) sources.push("USER.md");
-	if (catalog.entries.length > 0 || catalog.skipped > 0) sources.push("skills");
+	if (catalog.entries.length > 0 || catalog.skipped > 0 || proposals.entries.length > 0)
+		sources.push("skills");
 
 	return { text, sources };
 }

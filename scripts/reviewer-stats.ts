@@ -163,7 +163,7 @@ for (const line of readFileSync(file, "utf8").split("\n")) {
 		case "reviewer review skipped — skills tree over staging budget":
 			r.discarded = "staging-budget";
 			break;
-		case "reviewer proposal skipped — live skills changed mid-review":
+		case "reviewer proposal skipped — live state conflicts":
 			r.skipped = arr(rec.skipped);
 			break;
 		case "reviewer review cancelled — dropped from queue":
@@ -172,6 +172,7 @@ for (const line of readFileSync(file, "utf8").split("\n")) {
 			r.cancelled = msg;
 			break;
 		case "reviewer review done":
+		case "reviewer review partially proposed":
 			r.done = true;
 			for (const s of arr(rec.skills)) {
 				const name = str(s);

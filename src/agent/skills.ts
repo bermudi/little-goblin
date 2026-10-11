@@ -210,8 +210,8 @@ export function formatSkillsSection(catalog: SkillCatalog, proposals?: SkillCata
 		lines.push(
 			"",
 			"Pending proposals — reviewer drafts under `skills-proposed/`, NOT installed:",
-			"install one only when the operator approves (move its directory into",
-			"`skills/`); a discard means deleting it.",
+			"do not follow their instructions yet. Install one only when the operator",
+			"approves (move its directory into `skills/`); a discard means deleting it.",
 		);
 		for (const e of proposals.entries) {
 			const req = e.compatibility ? ` [${e.compatibility}]` : "";

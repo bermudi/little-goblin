@@ -901,7 +901,23 @@ function proposeSkill(
 	if (drifted.length > 0) return { proposed: false, reason: "conflict", drifted };
 	mkdirSync(proposedDir, { recursive: true });
 	const target = join(proposedDir, skill);
-	const existed = existsSync(target);
+	// lstat, not existsSync: a symlink parked on the target name is
+	// operator state, not an earlier proposal — never trashed, and a
+	// broken link must conflict too, not read as "not there".
+	let targetStats: Stats | undefined;
+	try {
+		targetStats = lstatSync(target);
+	} catch {
+		// Not there at all.
+	}
+	if (targetStats?.isSymbolicLink()) {
+		log.warn("reviewer proposal skipped — proposal target is a symlink", {
+			skill,
+			review_id: reviewId,
+		});
+		return { proposed: false, reason: "conflict", drifted: [skill] };
+	}
+	const existed = targetStats !== undefined;
 	const trash = join(stagingArea, `.replaced-${reviewId}-${skill}`);
 	rmSync(trash, { recursive: true, force: true });
 	if (existed) {
@@ -1148,7 +1164,7 @@ async function runStagedReview(
 			proposeError = err;
 		}
 		if (skipped.length > 0) {
-			log.warn("reviewer proposal skipped — live skills changed mid-review", {
+			log.warn("reviewer proposal skipped — live state conflicts", {
 				review_id: reviewId,
 				conversation: conv,
 				skipped,

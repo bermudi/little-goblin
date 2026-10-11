@@ -48,7 +48,8 @@ authoring-time checks — goblin runs it via `bash` after writing a skill,
 and a skipped entry plus the warn log is the failure signal when it
 doesn't.
 
-Discovery is per turn, in `buildSystemPrompt`: scan `skills/*/SKILL.md`
+Discovery is per conversation snapshot, in `buildSystemPrompt`: scan
+`skills/*/SKILL.md`
 (symlinks resolved), parse a bounded head of each file for frontmatter —
 the body is never injected — and render a `## skills` section listing
 name + description (+ compatibility when set) + path. The section
@@ -185,6 +186,9 @@ don't duplicate it).
   earlier proposal if the swap itself fails — never a half-updated
   proposal. A newer review's proposal replaces an undecided earlier
   proposal of the same name (latest distillation wins, logged). A
+  pending draft is reviewer-owned: the replacement is wholesale — hand
+  edits inside `skills-proposed/<name>/` are not merged or preserved
+  (tweak after approving, or discard first). A
   later skill's failed swap cannot undo earlier proposals: those are
   written to history and announced before the failure surfaces.
   Failed trash cleanup is logged, not treated as a failed proposal.
@@ -195,7 +199,10 @@ don't duplicate it).
   serialize one at a time, in turn
   completion order (a monotonic seq; gate latency must not reorder
   them): overlapping runs would propose over each other's announced
-  writes. The queue holds at most `reviewer.queueCap` (default 3)
+  writes. Approval and discard run out-of-band as ordinary agent
+  shell work: an approve racing a newer review's replacement installs
+  whatever bytes sit on disk at move time — accepted, not locked (a
+  lock file is the fix if it ever bites). The queue holds at most `reviewer.queueCap` (default 3)
   queued reviews — a full queue drops the incoming review and logs
   the drop (the newest turn is the most re-gateable).
 - **/stop cancels the conversation's reviews.** Ruling 2026-09-28:

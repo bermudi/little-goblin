@@ -372,4 +372,30 @@ describe("workspace file injection", () => {
 			delete process.env.GOBLIN_HOME;
 		}
 	});
+	// Pending proposals must ride the ## skills section (ruling
+	// 2026-10-10): this pins the prompt wiring itself — without the
+	// skills-proposed scan, an approve request in a fresh conversation
+	// meets a model that has never heard of the drafts.
+	test("pending proposals ride the skills section and count as a skills source", () => {
+		const home = useHome();
+		process.env.GOBLIN_HOME = home;
+		try {
+			mkdirSync(join(home, "workspace", "skills-proposed", "pdf-tables"), {
+				recursive: true,
+			});
+			writeFileSync(
+				join(home, "workspace", "skills-proposed", "pdf-tables", "SKILL.md"),
+				"---\nname: pdf-tables\ndescription: Extract tables from PDFs\n---\nbody\n",
+			);
+			const { text, sources } = buildSystemPrompt(conv, tools);
+			expect(text).toContain("Pending proposals");
+			expect(text).toContain("do not follow their instructions yet");
+			expect(text).toContain(
+				"- pdf-tables — Extract tables from PDFs (skills-proposed/pdf-tables/SKILL.md)",
+			);
+			expect(sources).toContain("skills");
+		} finally {
+			delete process.env.GOBLIN_HOME;
+		}
+	});
 });

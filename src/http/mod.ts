@@ -74,6 +74,15 @@ const OPERATOR_TAILS: Record<string, string> = {
 	"/api/programs": "programs",
 	"/api/delegations": "delegations",
 	"/api/status": "status",
+	// State viewer (ruling 2026-10-11): the tails mount on both doors per
+	// this table's convention — the mini app's PAGES stay settings/memory,
+	// but initData-authed API access matches the rest of the console.
+	"/api/skills": "skills",
+	"/api/skills/file": "skills/file",
+	"/api/attachments": "attachments",
+	"/api/attachments/file": "attachments/file",
+	"/api/identity": "identity",
+	"/api/log": "log",
 };
 
 const HOOK_BODY_CAP = 32 * 1024;

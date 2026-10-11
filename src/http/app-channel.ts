@@ -88,13 +88,23 @@ const NO_STORE = { "cache-control": "no-store" };
 // App-side mount points for the operator surface (operator.ts owns the
 // handlers; /api/app/memory/* maps by prefix because document ids ride
 // the path). `/api/app/config` is the composer's app-defaults route —
-// the full editor answers at /api/app/settings.
+// the full editor answers at /api/app/settings. The state viewer's
+// listing deliberately stays OUT of this table: `/api/app/attachments`
+// is dual-mounted (GET → viewer, POST → the composer's upload route
+// below), so it is resolved method-aware in the dispatch, not here.
 const APP_OPERATOR_TAILS: Record<string, string> = {
 	"/api/app/settings": "config",
 	"/api/app/thinking-levels": "thinking-levels",
 	"/api/app/programs": "programs",
 	"/api/app/delegations": "delegations",
 	"/api/app/status": "status",
+	"/api/app/skills": "skills",
+	"/api/app/skills/file": "skills/file",
+	// Exact key — it must win over the legacy /api/app/attachments/<name>
+	// read-back prefix below.
+	"/api/app/attachments/file": "attachments/file",
+	"/api/app/identity": "identity",
+	"/api/app/log": "log",
 };
 
 export interface AppChannelDeps {
@@ -749,6 +759,9 @@ export async function handleAppApi(
 	// app-defaults route, so the full editor mounts at /settings.
 	const opTail =
 		APP_OPERATOR_TAILS[path] ??
+		// Dual mount: GET lists attachments for the state viewer; POST is
+		// the composer's upload, which owns the method and falls through.
+		(path === "/api/app/attachments" && req.method === "GET" ? "attachments" : null) ??
 		(path.startsWith("/api/app/memory/")
 			? `memory/${path.slice("/api/app/memory/".length)}`
 			: null);

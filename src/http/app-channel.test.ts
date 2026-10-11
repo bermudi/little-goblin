@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModel } from "ai";
@@ -1728,6 +1737,100 @@ function stubMemory(extra: Partial<NonNullable<OperatorDeps["memory"]>> = {}) {
 		...extra,
 	};
 }
+
+describe("app operator surface — state viewer mounts (ruling 2026-10-11)", () => {
+	// These pin the MOUNT TABLES, not the handlers: every test below
+	// goes through startHttp + handleAppApi, the wiring verbatim from
+	// index.ts. handleOperatorRoute-level tests (operator.routes.test.ts)
+	// pass even when a tail is mounted nowhere — this block is the one
+	// that catches that.
+
+	test("all six tails answer through the real door wiring", async () => {
+		const { http, call, home } = setup({ token: APP_TOKEN_NAME, operator: {} });
+		try {
+			mkdirSync(join(home, "workspace/skills/weather"), { recursive: true });
+			writeFileSync(join(home, "workspace/skills/weather/SKILL.md"), "weather body");
+			mkdirSync(join(home, "workspace"), { recursive: true });
+			writeFileSync(join(home, "workspace/SOUL.md"), "# soul");
+			mkdirSync(join(home, "workspace/attachments"), { recursive: true });
+			writeFileSync(join(home, "workspace/attachments/pic.png"), "PNG");
+			mkdirSync(join(home, "state"), { recursive: true });
+			writeFileSync(
+				join(home, "state/goblin.log"),
+				`${JSON.stringify({ ts: "t", level: "info", msg: "hey" })}\n`,
+			);
+
+			expect((await call("/api/app/skills")).status).toBe(200);
+			const file = await call("/api/app/skills/file?name=weather");
+			expect(file.status).toBe(200);
+			expect(((await file.json()) as { content: string }).content).toBe("weather body");
+			expect((await call("/api/app/identity")).status).toBe(200);
+			expect((await call("/api/app/attachments")).status).toBe(200);
+			const served = await call("/api/app/attachments/file?name=pic.png");
+			expect(served.status).toBe(200);
+			expect(served.headers.get("content-type")).toBe("image/png");
+			expect(await served.text()).toBe("PNG");
+			const log = await call("/api/app/log?limit=5");
+			expect(log.status).toBe(200);
+			expect(((await log.json()) as { lines: unknown[] }).lines.length).toBe(1);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("GET attachments lists for the viewer; POST still reaches the composer upload", async () => {
+		const { http, call, home } = setup({ token: APP_TOKEN_NAME, operator: {} });
+		try {
+			mkdirSync(join(home, "workspace/attachments"), { recursive: true });
+			const list = await call("/api/app/attachments");
+			expect(list.status).toBe(200);
+			expect(((await list.json()) as { files: unknown[] }).files).toEqual([]);
+			// The dual mount is method-aware: the upload route's parse
+			// failure is the proof the viewer's 405 never took the POST.
+			const post = await call("/api/app/attachments", { method: "POST" });
+			expect(post.status).toBe(400);
+			expect(((await post.json()) as { error: string }).error).toBe("expected multipart form");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("the legacy attachments read-back route still serves bytes", async () => {
+		const { http, call, home } = setup({ token: APP_TOKEN_NAME, operator: {} });
+		try {
+			mkdirSync(join(home, "workspace/attachments"), { recursive: true });
+			writeFileSync(join(home, "workspace/attachments/app-test.png"), "PNGX");
+			const legacy = await call("/api/app/attachments/app-test.png");
+			expect(legacy.status).toBe(200);
+			expect(await legacy.text()).toBe("PNGX");
+			const viewer = await call("/api/app/attachments/file?name=app-test.png");
+			expect(viewer.status).toBe(200);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("symlink indirection cannot carry a read outside the tree", async () => {
+		const { http, call, home } = setup({ token: APP_TOKEN_NAME, operator: {} });
+		try {
+			writeFileSync(join(home, "secret.txt"), "top secret");
+			mkdirSync(join(home, "workspace/attachments"), { recursive: true });
+			mkdirSync(join(home, "workspace/skills"), { recursive: true });
+			// A linked file and a linked skill dir, both resolving outside
+			// their bases — realpath containment refuses both.
+			symlinkSync(join(home, "secret.txt"), join(home, "workspace/attachments/evil.png"));
+			symlinkSync(join(home, "workspace"), join(home, "workspace/skills/evil"));
+			expect((await call("/api/app/attachments/file?name=evil.png")).status).toBe(404);
+			expect((await call("/api/app/skills/file?name=evil&path=SOUL.md")).status).toBe(404);
+			const list = (await (await call("/api/app/attachments")).json()) as {
+				files: Array<{ name: string }>;
+			};
+			expect(list.files.map((f) => f.name)).toEqual([]);
+		} finally {
+			http.stop();
+		}
+	});
+});
 
 describe("app operator surface", () => {
 	test("operator routes are bearer-gated before the wire check, then 503 unwired", async () => {

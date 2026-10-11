@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config, MemoryConfig } from "../config.ts";
@@ -104,6 +104,25 @@ function setup(
 }
 
 describe("http door", () => {
+	test("state viewer tails mount on the initData door (ruling 2026-10-11)", async () => {
+		const { http, get } = setup();
+		try {
+			const home = process.env.GOBLIN_HOME!;
+			mkdirSync(join(home, "workspace/skills/weather"), { recursive: true });
+			writeFileSync(join(home, "workspace/skills/weather/SKILL.md"), "body");
+			expect((await get("/api/skills")).status).toBe(200);
+			expect((await get("/api/skills/file?name=weather")).status).toBe(200);
+			expect((await get("/api/identity")).status).toBe(200);
+			expect((await get("/api/attachments")).status).toBe(200);
+			expect((await get("/api/attachments/file?name=nope.png")).status).toBe(404);
+			expect((await get("/api/log?limit=5")).status).toBe(200);
+			// Same bearer/trust boundary as every other console tail.
+			expect((await get("/api/skills", false)).status).toBe(401);
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("an unexpected handler throw is a logged 500, not a framework error page", async () => {
 		useHome();
 		const logFile = join(process.env.GOBLIN_HOME!, "goblin.log");

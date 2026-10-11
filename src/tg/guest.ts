@@ -1,19 +1,21 @@
-// Guest mode (design/telegram.md → Guest mode, ruling 2026-10-06).
-// goblin answers in third-party chats, summoned by mention, on two
-// surfaces: `guest_message` updates (chats the bot is NOT a member of
-// — one reply per summons via answerGuestQuery, then edits on the
-// returned inline_message_id) and member-chat mentions (normal
-// delivery sink, multi-bubble). The unit of trust is the chat: an
-// `guest_open_chats` row admits third-party summons; the operator
-// opens/closes with `/open` and `/off`. Two caller classes: the
-// operator gets personal-persona turns (minus tools that pin or reach
-// beyond the chat), everyone else gets a sandbox — a guest persona
-// and a constructed toolset of search (enforced in index.ts's
-// makeTools on conv.persona, never a prompt-level promise).
+// Guest mode (design/telegram.md → Guest mode; Roles and permissions,
+// ruling 2026-10-11). goblin answers in third-party chats, summoned by
+// mention, on two surfaces: `guest_message` updates (chats the bot is
+// NOT a member of — one reply per summons via answerGuestQuery, then
+// edits on the returned inline_message_id) and member-chat mentions
+// (normal delivery sink, multi-bubble). The unit of trust is the
+// person: operators get personal-persona turns (minus tools that pin
+// or reach beyond the chat), allowedUsers get a sandbox — a guest
+// persona and a constructed toolset of search (enforced in index.ts's
+// makeTools on conv.persona, never a prompt-level promise) — and a
+// stranger gets one refusal line, nothing else. The 2026-10-06
+// chat-trust machinery (/open, /off, guest_open_chats, the per-user
+// daily budget) is deleted: strangers never turn, so room trust has
+// nothing to admit and a meter nothing to count.
 //
-// Guest handlers register BEFORE allowedUserGate (mod.ts): the gate
-// stays pure, and guest traffic — which includes strangers once the
-// BotFather usage restriction is off — never reaches it. At-most-once
+// Guest handlers register BEFORE the access gate (mod.ts): guest
+// traffic — which includes strangers once the BotFather usage
+// restriction is off — never reaches it. At-most-once
 // rides guest_dedup(update_id), NOT tg_inbox: guest message ids share
 // no namespace with the bot's own chats, and a UNIQUE(chat_id,
 // message_id) hit there would exit the process.
@@ -26,6 +28,7 @@ import { paths, type ConfigRef } from "../config.ts";
 import {
 	channelOf,
 	guestAddress,
+	parseAddress,
 	type Conversation,
 	type ConversationStore,
 } from "../conversation.ts";
@@ -35,60 +38,30 @@ import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
 import { isNotModifiedError, makeDeliverySink } from "./delivery.ts";
 
-// ---------- state: open chats, dedup, budget (rows, not config) ----------
+// ---------- state: summons dedup (rows, not config) ----------
 
 export interface GuestStore {
-	isOpen(chatId: number): boolean;
-	open(chatId: number, byUserId: number): void;
-	close(chatId: number): void;
 	// True = first sighting of this update id (insert-or-ignore won).
 	// Duplicates are redelivered updates, not new summons.
 	seen(updateId: number): boolean;
-	// Atomically count a turn against a user's daily budget; false =
-	// limit already reached (not charged).
-	tryChargeBudget(userId: number, day: string, limit: number): boolean;
 }
 
 export function openGuestStore(db: Database): GuestStore {
-	db.run(`CREATE TABLE IF NOT EXISTS guest_open_chats (
-		chat_id INTEGER PRIMARY KEY,
-		opened_by INTEGER NOT NULL,
-		opened_at TEXT NOT NULL
-	)`);
+	// Retired 2026-10-11 with the chat-trust machinery (ruling: Roles
+	// and permissions); both verified empty in prod before the drop.
+	db.run("DROP TABLE IF EXISTS guest_open_chats");
+	db.run("DROP TABLE IF EXISTS guest_turns");
 	db.run(`CREATE TABLE IF NOT EXISTS guest_dedup (
 		update_id INTEGER PRIMARY KEY,
 		seen_at TEXT NOT NULL
 	)`);
-	db.run(`CREATE TABLE IF NOT EXISTS guest_turns (
-		user_id INTEGER NOT NULL,
-		day TEXT NOT NULL,
-		turns INTEGER NOT NULL DEFAULT 0,
-		PRIMARY KEY (user_id, day)
-	)`);
 	const q = {
-		qIsOpen: db.query<{ n: number }, [number]>(
-			"SELECT COUNT(*) AS n FROM guest_open_chats WHERE chat_id = ?",
-		),
-		qOpen: db.query(
-			"INSERT INTO guest_open_chats (chat_id, opened_by, opened_at) VALUES (?, ?, ?) ON CONFLICT(chat_id) DO NOTHING",
-		),
-		qClose: db.query("DELETE FROM guest_open_chats WHERE chat_id = ?"),
 		qSeen: db.query(
 			"INSERT INTO guest_dedup (update_id, seen_at) VALUES (?, ?) ON CONFLICT(update_id) DO NOTHING",
 		),
 		qPurge: db.query("DELETE FROM guest_dedup WHERE update_id < ?"),
-		qBudget: db.query<{ turns: number }, [number, string]>(
-			"SELECT turns FROM guest_turns WHERE user_id = ? AND day = ?",
-		),
-		qCharge: db.query(
-			`INSERT INTO guest_turns (user_id, day, turns) VALUES (?, ?, 1)
-			 ON CONFLICT(user_id, day) DO UPDATE SET turns = turns + 1`,
-		),
 	};
 	return {
-		isOpen: (chatId) => (q.qIsOpen.get(chatId)?.n ?? 0) > 0,
-		open: (chatId, byUserId) => void q.qOpen.run(chatId, byUserId, new Date().toISOString()),
-		close: (chatId) => void q.qClose.run(chatId),
 		seen(updateId) {
 			const res = q.qSeen.run(updateId, new Date().toISOString());
 			if (res.changes === 0) return false;
@@ -96,34 +69,28 @@ export function openGuestStore(db: Database): GuestStore {
 			if (updateId % 500 === 0) q.qPurge.run(updateId - 1_000);
 			return true;
 		},
-		tryChargeBudget(userId, day, limit) {
-			return db.transaction(() => {
-				const n = q.qBudget.get(userId, day)?.turns ?? 0;
-				if (n >= limit) return false;
-				q.qCharge.run(userId, day);
-				return true;
-			})();
-		},
 	};
 }
 
 // ---------- pure classification / parsing ----------
 
-// Operator anywhere → personal. Third party → sandbox in an open chat,
-// deny (silence) everywhere else.
-export type SummonVerdict =
-	| { kind: "personal" }
-	| { kind: "sandbox" }
-	| { kind: "deny"; reason: "chat-closed" };
+// The fixed stranger line (design/telegram.md → Roles and permissions):
+// every summons from someone on neither list gets exactly this and
+// nothing else — no turn, no conversation, no state.
+export const GUEST_REFUSAL = "🚫 I only talk to my operator and approved users.";
+
+// Operator anywhere → personal. allowedUser → sandbox. Stranger →
+// refused: the refusal line, never a turn.
+export type SummonVerdict = { kind: "personal" } | { kind: "sandbox" } | { kind: "refused" };
 
 export function classifySummon(
 	fromId: number,
-	chatId: number,
+	operators: readonly number[],
 	allowedUsers: readonly number[],
-	isOpen: boolean,
 ): SummonVerdict {
-	if (allowedUsers.includes(fromId)) return { kind: "personal" };
-	return isOpen ? { kind: "sandbox" } : { kind: "deny", reason: "chat-closed" };
+	if (operators.includes(fromId)) return { kind: "personal" };
+	if (allowedUsers.includes(fromId)) return { kind: "sandbox" };
+	return { kind: "refused" };
 }
 
 // Does this message address the bot? A @username (or text) mention
@@ -141,23 +108,6 @@ export function mentionsBot(msg: Message, botUsername: string, botUserId: number
 		}
 	}
 	return msg.reply_to_message?.from?.id === botUserId;
-}
-
-// "/open" or "/off", optionally suffixed @botname, nothing else. On
-// the guest surface the leading @username mention is stripped first
-// (the summons is inherently addressed to the bot).
-export function guestCommand(text: string): "open" | "off" | null {
-	const stripped = text
-		.replace(/^@\S+\s*/, "")
-		.trim()
-		.toLowerCase();
-	const m = /^\/(open|off)(@\S+)?$/.exec(stripped);
-	return m ? (m[1] as "open" | "off") : null;
-}
-
-function localDay(): string {
-	// Server-local date (the programs precedent for cron timezones).
-	return new Date().toLocaleDateString("sv-SE");
 }
 
 // ---------- summons → UIMessage ----------
@@ -436,13 +386,74 @@ export interface GuestEnv {
 	botUserId: number;
 }
 
-// Closing a chat also fences every running guest turn in it.
-function closeGuestChat(env: GuestEnv, chatId: number): number {
-	env.guestStore.close(chatId);
-	const ids = env.store.listGuestConversationIds(chatId);
-	for (const id of ids) env.store.bumpEpoch(id);
-	log.info("guest chat closed", { chat: chatId, fenced: ids.length });
-	return ids.length;
+// Persona/memory pinning shared by the guest lanes and the standing
+// sandbox DMs (design/telegram.md → Roles and permissions): persona
+// follows class, the tool filter reads the persona column, and a
+// class flip busts the frozen prompt snapshot with it.
+// memoryExcluded: true forces the off-the-record flag (guest lanes);
+// undefined leaves the operator's opt-out untouched (personal DM
+// lanes). Idempotent — work only on a mismatch.
+export function ensurePersonaClass(
+	env: { store: ConversationStore; runtime: Runtime },
+	conv: Conversation,
+	want: "personal" | "guest",
+	memoryExcluded?: boolean,
+	// How to recreate a lane whose address resolve() may not mint —
+	// rolling ids are reserved to rollDm, so a DM-lane reset rolls
+	// forward to the next ordinal.
+	resetLane?: () => Conversation,
+): Conversation {
+	const { store } = env;
+	if (
+		conv.persona === want &&
+		(memoryExcluded === undefined || conv.memoryExcluded === memoryExcluded)
+	) {
+		return conv;
+	}
+	// Demotion (personal → guest) must not retain personal history:
+	// the same address is reused per lane, so prior personal-turn
+	// events would stay readable to the sandboxed caller, who could
+	// prompt their disclosure. Reset to a fresh conversation —
+	// history, compaction, and snapshot gone — after fencing any
+	// running turn (delete requires a fenced lane; the fresh row's
+	// epoch 0 fences the old turn's authority check, and stop's abort
+	// keeps its trailing reply out of the new history). Promotion
+	// keeps history: sandbox exchanges are safe for the operator to
+	// see.
+	if (conv.persona === "personal" && want === "guest") {
+		const hasHistory =
+			store.lastSeq(conv.id) !== null || store.getCompaction(conv.id) !== null;
+		if (hasHistory) {
+			if (env.runtime.hasActiveTurn(conv.id)) env.runtime.stop(conv.id);
+			const addr = parseAddress(conv.id);
+			if (addr === null) throw new Error(`unparseable conversation id: ${conv.id}`);
+			store.deleteConversation(conv.id);
+			conv =
+				addr.kind === "rolling"
+					? resetLane?.() ?? throwReset(conv.id)
+					: store.resolve(addr, paths.workspace());
+			log.info("conversation reset on demotion — personal history cleared", {
+				conversation: conv.id,
+			});
+		}
+	}
+	store.setMeta(conv.id, {
+		persona: want,
+		...(memoryExcluded !== undefined ? { memoryExcluded } : {}),
+	});
+	// A persona flip rewrites the system prompt — the frozen snapshot
+	// must bust with it, or a demoted caller keeps the personal
+	// persona's bytes (SOUL, USER) while the tool filter already
+	// sandboxed them. Compaction's precedent: history/prefix busts,
+	// so the refresh is free.
+	store.clearPromptSnapshot(conv.id);
+	return store.get(conv.id) ?? conv;
+}
+
+// A rolling-lane reset without a resetLane is a caller bug — the
+// store contract reserves rolling ids to rollDm.
+function throwReset(id: string): never {
+	throw new Error(`cannot reset rolling lane ${id} without resetLane`);
 }
 
 function resolveGuestConversation(
@@ -451,51 +462,11 @@ function resolveGuestConversation(
 	userId: number,
 	sandbox: boolean,
 ): Conversation {
-	const conv = env.store.resolve(guestAddress(chatId, userId), paths.workspace());
 	// All guest conversations are off the record (no recall, no
 	// distillation, no review, no FTS); persona freezes the prompt
-	// class and the tool filter. Idempotent — set only on a mismatch.
-	const wantPersona = sandbox ? "guest" : "personal";
-	if (conv.memoryExcluded !== true || conv.persona !== wantPersona) {
-		// Demotion (personal → guest) must not retain personal history:
-		// the same address is reused per chat+user, so prior
-		// personal-turn events would stay readable to the sandboxed
-		// caller, who could prompt their disclosure. Reset to a fresh
-		// conversation — history, compaction, and snapshot gone — after
-		// fencing any running turn (delete requires a fenced lane; the
-		// fresh row's epoch 0 fences the old turn's authority check,
-		// and stop's abort keeps its trailing reply out of the new
-		// history). Promotion keeps history: sandbox exchanges are safe
-		// for the operator to see.
-		if (conv.persona === "personal" && wantPersona === "guest") {
-			const hasHistory =
-				env.store.lastSeq(conv.id) !== null || env.store.getCompaction(conv.id) !== null;
-			if (hasHistory) {
-				// Fence first: deleteConversation only touches the store,
-				// so a live turn must be stopped before the row goes —
-				// its in-flight trailing reply would otherwise append
-				// into the fresh conversation's history.
-				if (env.runtime.hasActiveTurn(conv.id)) env.runtime.stop(conv.id);
-				env.store.deleteConversation(conv.id);
-				const fresh = env.store.resolve(guestAddress(chatId, userId), paths.workspace());
-				env.store.setMeta(fresh.id, { memoryExcluded: true, persona: "guest" });
-				log.info("guest conversation reset on demotion — personal history cleared", {
-					chat: chatId,
-					from: userId,
-					conversation: fresh.id,
-				});
-				return env.store.get(fresh.id) ?? fresh;
-			}
-		}
-		env.store.setMeta(conv.id, { memoryExcluded: true, persona: wantPersona });
-		// A persona flip rewrites the system prompt — the frozen snapshot
-		// must bust with it, or a demoted caller keeps the personal
-		// persona's bytes (SOUL, USER) while the tool filter already
-		// sandboxed them. Compaction's precedent: history/prefix busts,
-		// so the refresh is free.
-		env.store.clearPromptSnapshot(conv.id);
-	}
-	return env.store.get(conv.id) ?? conv;
+	// class and drives the tool filter.
+	const conv = env.store.resolve(guestAddress(chatId, userId), paths.workspace());
+	return ensurePersonaClass(env, conv, sandbox ? "guest" : "personal", true);
 }
 
 // Per-conversation serialization for the guest surface's critical
@@ -521,7 +492,7 @@ function serializeGuestTurn<T>(conversationId: string, fn: () => Promise<T>): Pr
 }
 
 // The guest_message update handler — non-member chats. Registered
-// before allowedUserGate in mod.ts.
+// before the access gate in mod.ts.
 export async function handleGuestUpdate(
 	env: GuestEnv,
 	msg: Message & { guest_query_id?: string },
@@ -544,39 +515,16 @@ export async function handleGuestUpdate(
 	if (cfg === undefined) return; // feature off: total silence, commands included
 	if (!env.guestStore.seen(updateId)) return;
 	const chatId = msg.chat.id;
-	const allowed = env.configRef.current.allowedUsers;
-	const isOperator = allowed.includes(from.id);
-
-	// Operator-only chat controls, answered as the summons' one reply.
-	const cmd = guestCommand(msg.text ?? msg.caption ?? "");
-	if (cmd !== null) {
-		if (!isOperator) {
-			log.info("guest command denied — not the operator", { chat: chatId, from: from.id, cmd });
-			return;
-		}
-		if (cmd === "open") {
-			env.guestStore.open(chatId, from.id);
-			log.info("guest chat opened", { chat: chatId, by: from.id });
-			await answerGuestArticle(
-				env.api,
-				guestQueryId,
-				"goblin",
-				"🟢 guest access open — anyone in this chat can summon me",
-			);
-		} else {
-			closeGuestChat(env, chatId);
-			await answerGuestArticle(env.api, guestQueryId, "goblin", "🔴 guest access closed");
-		}
-		return;
-	}
-
-	const verdict = classifySummon(from.id, chatId, allowed, env.guestStore.isOpen(chatId));
-	if (verdict.kind === "deny") {
-		log.info("guest summons denied — chat not open", {
-			chat: chatId,
-			from: from.id,
-			update: updateId,
-		});
+	const verdict = classifySummon(
+		from.id,
+		env.configRef.current.operators,
+		env.configRef.current.allowedUsers,
+	);
+	if (verdict.kind === "refused") {
+		// The refusal IS the one reply: settle the summons window with
+		// the fixed line. answerGuestArticle logs its own failures.
+		log.info("guest summons refused", { chat: chatId, from: from.id, update: updateId });
+		await answerGuestArticle(env.api, guestQueryId, "goblin", GUEST_REFUSAL);
 		return;
 	}
 	const sandbox = verdict.kind === "sandbox";
@@ -601,22 +549,18 @@ export async function handleGuestUpdate(
 		);
 		if (inlineMessageId === null) return;
 
-		// The placeholder await is a suspension point: /off, a guest-config
-		// removal, an allowedUsers edit, or a same-conversation member
-		// summons (which bypasses this lane) can all land in it. /off's
-		// epoch bump fences only turns that already started — a submit
-		// here would read the bumped epoch as its own and be authorized —
-		// so eligibility is revalidated before anything is charged or
-		// submitted.
+		// The placeholder await is a suspension point: a config edit
+		// (feature off, a class flip) or a same-conversation member
+		// summons (which bypasses this lane) can all land in it, and a
+		// submit must never run on eligibility that changed under us.
 		const freshCfg = env.configRef.current.guest;
 		const freshVerdict =
 			freshCfg === undefined
 				? null
 				: classifySummon(
 						from.id,
-						chatId,
+						env.configRef.current.operators,
 						env.configRef.current.allowedUsers,
-						env.guestStore.isOpen(chatId),
 					);
 		const busyAgain = env.runtime.hasActiveTurn(conv.id);
 		if (
@@ -636,25 +580,9 @@ export async function handleGuestUpdate(
 			await editGuestPlaceholder(
 				env.api,
 				inlineMessageId,
-				busyAgain ? busyLine : "⏹ cancelled — guest access here changed",
+				busyAgain ? busyLine : "⏹ cancelled — access changed",
 			);
 			return;
-		}
-
-		// Charged only once the summons is committed: past the busy check,
-		// the placeholder, and revalidation — nothing below awaits, so a
-		// dropped or refused summons never burns budget.
-		if (sandbox) {
-			const limit = freshCfg.perUserDailyTurns;
-			if (!env.guestStore.tryChargeBudget(from.id, localDay(), limit)) {
-				log.warn("guest budget exhausted", { chat: chatId, from: from.id, limit });
-				await editGuestPlaceholder(
-					env.api,
-					inlineMessageId,
-					`⏳ daily guest limit reached (${limit} answers) — try again tomorrow`,
-				);
-				return;
-			}
 		}
 
 		const admitted = env.runtime.submit(
@@ -674,7 +602,7 @@ export async function handleGuestUpdate(
 
 // The member-surface pre-gate router: returns true when the guest path
 // consumed this message (chain stops), false to fall through to the
-// normal gate + intake. Registered before allowedUserGate in mod.ts.
+// normal gate + intake. Registered before the access gate in mod.ts.
 export async function routeMemberGuestMessage(
 	env: GuestEnv,
 	msg: Message,
@@ -691,79 +619,43 @@ export async function routeMemberGuestMessage(
 		});
 		return false;
 	}
-	// Groups only: the bot's own DM is not a guest chat — a stray "/off"
-	// there must fall through to normal intake, not flip a phantom
-	// guest chat keyed by the operator's own user id.
+	// Groups only: the bot's own DM is not a guest chat — its traffic
+	// belongs to the access gate and the rolling DM lane, never here.
 	if (msg.chat.type !== "group" && msg.chat.type !== "supergroup") return false;
 	const chatId = msg.chat.id;
 	const cfg = env.configRef.current.guest;
-	if (cfg === undefined) return false; // feature off: no member routing, no commands
-	const allowed = env.configRef.current.allowedUsers;
-	const isOperator = allowed.includes(from.id);
-	const text = msg.text ?? msg.caption ?? "";
+	if (cfg === undefined) return false; // feature off: no member routing
 
-	// Chat controls must address THE BOT — a /cmd@botname suffix or a
-	// mention entity — never a bare "/open" (the operator's own topic
-	// group falls through untouched) and never "/open @somehuman".
-	const cmd = guestCommand(text);
-	const addressed =
-		text.trim().toLowerCase().endsWith(`@${env.botUsername.toLowerCase()}`) ||
-		mentionsBot(msg, env.botUsername, env.botUserId);
-	if (cmd !== null && addressed) {
-		// Redelivered updates must not re-run a close (a second epoch bump
-		// could fence a turn admitted after the first /off) or re-answer.
-		if (!env.guestStore.seen(updateId)) return true;
-		if (!isOperator) {
-			log.info("guest command denied — not the operator", { chat: chatId, from: from.id, cmd });
-			return true;
-		}
-		if (cmd === "open") {
-			env.guestStore.open(chatId, from.id);
-			log.info("guest chat opened", { chat: chatId, by: from.id });
-			void sendMemberLine(
-				env,
-				chatId,
-				"🟢 guest access open — anyone in this chat can summon me",
-				msg.message_thread_id,
-			);
-		} else {
-			closeGuestChat(env, chatId);
-			void sendMemberLine(env, chatId, "🔴 guest access closed", msg.message_thread_id);
-		}
-		return true;
-	}
-
-	if (isOperator || cfg === undefined) return false;
+	// Non-operators reach the bot here only by addressing it — a
+	// @username mention (or text_mention entity) or a reply to one of
+	// the bot's own messages. The operator's own traffic falls through
+	// to ordinary intake below.
+	if (env.configRef.current.operators.includes(from.id)) return false;
 	if (!mentionsBot(msg, env.botUsername, env.botUserId)) return false;
 	if (!env.guestStore.seen(updateId)) return true; // duplicate redelivery
-	if (!env.guestStore.isOpen(chatId)) {
-		log.info("guest summons denied — chat not open", {
+
+	const verdict = classifySummon(
+		from.id,
+		env.configRef.current.operators,
+		env.configRef.current.allowedUsers,
+	);
+	if (verdict.kind === "refused") {
+		log.info("guest summons refused", {
 			chat: chatId,
 			from: from.id,
 			update: updateId,
+			surface: "member",
 		});
+		void sendMemberLine(env, chatId, GUEST_REFUSAL, msg.message_thread_id);
 		return true;
 	}
 
-	const conv = resolveGuestConversation(env, chatId, from.id, true);
+	const conv = resolveGuestConversation(env, chatId, from.id, verdict.kind === "sandbox");
 	if (env.runtime.hasActiveTurn(conv.id)) {
 		void sendMemberLine(
 			env,
 			chatId,
 			"⏳ still answering an earlier summons — try again in a moment",
-			msg.message_thread_id,
-		);
-		return true;
-	}
-
-	// Charged only past the busy check — a refusal must never burn budget.
-	const limit = cfg.perUserDailyTurns;
-	if (!env.guestStore.tryChargeBudget(from.id, localDay(), limit)) {
-		log.warn("guest budget exhausted", { chat: chatId, from: from.id, limit });
-		void sendMemberLine(
-			env,
-			chatId,
-			`⏳ daily guest limit reached (${limit} answers) — try again tomorrow`,
 			msg.message_thread_id,
 		);
 		return true;
@@ -790,7 +682,7 @@ export async function routeMemberGuestMessage(
 		chat: chatId,
 		from: from.id,
 		update: updateId,
-		verdict: "sandbox",
+		verdict: verdict.kind,
 		surface: "member",
 		admitted,
 	});
@@ -851,12 +743,17 @@ export function filterGuestTools<T extends Record<string, unknown>>(
 	conv: Conversation,
 	tools: T,
 ): T {
-	if (channelOf(conv.id) !== "guest") return tools;
+	// Persona-driven (design/telegram.md → Roles and permissions): the
+	// persona column decides, whatever channel the conversation lives
+	// on — a standing sandbox DM must filter exactly like a
+	// guest-surface sandbox turn. The old channel guard would have
+	// handed a persona-pinned DM the full toolset.
+	const guestChannel = channelOf(conv.id) === "guest";
 	const out: Record<string, unknown> = {};
 	for (const [name, tool] of Object.entries(tools)) {
 		if (conv.persona === "guest") {
 			if (SANDBOX_TOOLS.has(name)) out[name] = tool;
-		} else if (!GUEST_CHANNEL_EXCLUDED.has(name)) {
+		} else if (!guestChannel || !GUEST_CHANNEL_EXCLUDED.has(name)) {
 			out[name] = tool;
 		}
 	}

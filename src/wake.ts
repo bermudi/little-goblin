@@ -48,7 +48,7 @@ export function makeWakeDeps(base: WakeBase): WakeDeps {
 		api: base.api,
 		store: base.store,
 		pings: base.pings,
-		allowedUsers: () => base.configRef.current.allowedUsers,
+		operators: () => base.configRef.current.operators,
 		publicUrl: () => base.configRef.current.publicUrl || undefined,
 	};
 	return {

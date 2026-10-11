@@ -228,8 +228,13 @@
   // },
 
   // --- Telegram ---
-  // Your user id (DM @userinfobot to find it). Only these users can talk.
-  allowedUsers: [123456789],
+  // Two-list trust (design/telegram.md → Roles and permissions).
+  // operators: full personal agent on every surface — you, and any of
+  // your own accounts. allowedUsers: people you name, sandboxed (guest
+  // persona, search-only tools, no memory, no app). Everyone else gets
+  // one refusal line per summons and nothing else.
+  operators: [123456789],
+  allowedUsers: [],
   // Self-hosted telegram-bot-api in --local mode for large files.
   // Leave unset for the cloud API. dmGapMinutes is the quiet gap before
   // a DM may roll into a new conversation (Rolling DM) — it applies

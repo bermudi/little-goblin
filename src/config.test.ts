@@ -40,6 +40,7 @@ test("mini-app clearing an absent public URL does not throw or retain an empty U
 		parseConfig({
 			providers: { test: { kind: "codex" } },
 			model: "test/m",
+			operators: [7],
 			allowedUsers: [7],
 			publicUrl: "",
 		}).publicUrl,
@@ -52,6 +53,7 @@ test("the bot API root: '' clears to unset, and a non-URL still fails loud", () 
 	const config = {
 		providers: { test: { kind: "codex" } },
 		model: "test/m",
+		operators: [7],
 		allowedUsers: [7],
 	};
 	const withRoot = (apiRoot: string) => ({
@@ -71,6 +73,7 @@ test("the mini-app public URL must be HTTPS, unlike the local bot API URL", () =
 			test: { kind: "openai-compatible", baseUrl: "https://api.example.org", auth: "ref" },
 		},
 		model: "test/m",
+		operators: [42],
 		allowedUsers: [42],
 	};
 	expect(() => parseConfig({ ...config, publicUrl: "http://example.org" })).toThrow();
@@ -106,6 +109,7 @@ const valid: Config = {
 	tts: false,
 	favorites: [],
 	thinking: "medium",
+	operators: [1],
 	allowedUsers: [1],
 	telegram: { dmGapMinutes: 45 },
 	http: { port: 8787 },
@@ -122,12 +126,12 @@ describe("goblin.json5", () => {
 		const dir = useHome();
 		writeFileSync(
 			join(dir, "goblin.json5"),
-			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]}`,
+			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]}`,
 		);
 		const c = loadConfig()!;
 		expect(c.thinking).toBe("medium");
 		expect(c.http.port).toBe(8787);
-		expect(c.allowedUsers).toEqual([7]);
+		expect(c.operators).toEqual([7]);
 		// TTS is default-on: absent block, default voice.
 		expect(c.tts).toEqual({ kind: "edge", voice: "en-US-AriaNeural" });
 	});
@@ -137,7 +141,7 @@ describe("goblin.json5", () => {
 		const logPath = join(dir, "config.log");
 		writeFileSync(
 			join(dir, "goblin.json5"),
-			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7],delegation:{machine:{label:"g7",cwd:"/home/daniel/goblin/delegated"},session:"other",maxRunning:3,harnesses:{pi:{kind:"pi"}}}}`,
+			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7],delegation:{machine:{label:"g7",cwd:"/home/daniel/goblin/delegated"},session:"other",maxRunning:3,harnesses:{pi:{kind:"pi"}}}}`,
 		);
 		setLogFile(logPath);
 		try {
@@ -168,7 +172,7 @@ describe("goblin.json5", () => {
 		const dir = useHome();
 		const cfg = (machines: unknown) =>
 			`{machines:${JSON.stringify(machines)},harnesses:{pi:{kind:"pi"}}}`;
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7],delegation:`;
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7],delegation:`;
 		writeFileSync(
 			join(dir, "goblin.json5"),
 			`${base}${cfg({ g7: { machine: "g7", root: "~/build" }, bench: { session: "bench", harnesses: { devin: { kind: "devin" } } } })}}`,
@@ -206,7 +210,7 @@ describe("goblin.json5", () => {
 
 	test("invalid config throws with file path", () => {
 		const dir = useHome();
-		writeFileSync(join(dir, "goblin.json5"), `{providers:{},model:"x",allowedUsers:[]}`);
+		writeFileSync(join(dir, "goblin.json5"), `{providers:{},model:"x",operators:[]}`);
 		expect(() => loadConfig()).toThrow("goblin.json5");
 	});
 
@@ -214,7 +218,7 @@ describe("goblin.json5", () => {
 		const dir = useHome();
 		writeFileSync(
 			join(dir, "goblin.json5"),
-			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7],http:{port:70000}}`,
+			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7],http:{port:70000}}`,
 		);
 		expect(() => loadConfig()).toThrow("goblin.json5");
 	});
@@ -223,7 +227,7 @@ describe("goblin.json5", () => {
 		const dir = useHome();
 		writeFileSync(
 			join(dir, "goblin.json5"),
-			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"other/glm-4.6",allowedUsers:[7]}`,
+			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"other/glm-4.6",operators:[7]}`,
 		);
 		expect(() => loadConfig()).toThrow("model: custom");
 	});
@@ -232,14 +236,14 @@ describe("goblin.json5", () => {
 		const dir = useHome();
 		writeFileSync(
 			join(dir, "goblin.json5"),
-			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"glm-4.6",allowedUsers:[7]}`,
+			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"glm-4.6",operators:[7]}`,
 		);
 		expect(() => loadConfig()).toThrow("model: custom");
 	});
 
 	test('titleModel is provider-validated like model; "" clears to unset', () => {
 		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"},openrouter:{kind:"openrouter",auth:"openrouter"}},model:"zai/glm-4.6",allowedUsers:[7]`;
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"},openrouter:{kind:"openrouter",auth:"openrouter"}},model:"zai/glm-4.6",operators:[7]`;
 		writeFileSync(join(dir, "goblin.json5"), `${base},titleModel:"openrouter/openrouter/free"}`);
 		expect(loadConfig()!.titleModel).toBe("openrouter/openrouter/free");
 		writeFileSync(join(dir, "goblin.json5"), `${base},titleModel:""}`);
@@ -250,7 +254,7 @@ describe("goblin.json5", () => {
 
 	test('vision: absent by default, defaults + mode, "" clears, model provider-validated', () => {
 		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"},openrouter:{kind:"openrouter",auth:"openrouter"}},model:"zai/glm-4.6",allowedUsers:[7]`;
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"},openrouter:{kind:"openrouter",auth:"openrouter"}},model:"zai/glm-4.6",operators:[7]`;
 		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
 		expect(loadConfig()!.vision).toBeUndefined();
 		writeFileSync(
@@ -282,7 +286,7 @@ describe("goblin.json5", () => {
 
 	test("reviewer: threshold defaults, model is provider-validated, auth required", () => {
 		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
 		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
 		expect(loadConfig()!.reviewer).toBeUndefined();
 		writeFileSync(join(dir, "goblin.json5"), `${base},reviewer:{auth:"openrouter"}}`);
@@ -316,7 +320,7 @@ describe("goblin.json5", () => {
 
 	test("system1: optional block, model/baseUrl free-form, reviewer stays the switch", () => {
 		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
 		// Absent → undefined; system1 alone enables nothing (reviewer is the switch).
 		writeFileSync(join(dir, "goblin.json5"), `${base},system1:{auth:"x"}}`);
 		expect(loadConfig()!.system1).toEqual({ auth: "x" });
@@ -344,7 +348,7 @@ describe("goblin.json5", () => {
 
 	test("search/fetch: single entry, chain list, and rejection shapes", () => {
 		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
 		// Object form normalizes to a one-entry chain (back-compat).
 		writeFileSync(join(dir, "goblin.json5"), `${base},search:{kind:"brave",auth:"brave"}}`);
 		expect(loadConfig()!.search).toEqual([{ kind: "brave", auth: "brave" }]);
@@ -382,7 +386,7 @@ describe("goblin.json5", () => {
 
 	test('tts defaults to edge; "" is an explicit off that round-trips', () => {
 		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
 		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
 		expect(loadConfig()!.tts).toEqual({ kind: "edge", voice: "en-US-AriaNeural" });
 		writeFileSync(
@@ -412,7 +416,7 @@ describe("goblin.json5", () => {
 
 	test('transcription defaults its model; "" clears to unset', () => {
 		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
 		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
 		expect(loadConfig()!.transcription).toBeUndefined();
 		writeFileSync(join(dir, "goblin.json5"), `${base},transcription:{kind:"groq"}}`);
@@ -437,7 +441,7 @@ describe("goblin.json5", () => {
 
 	test("whistle parses with keywords and its language set", () => {
 		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
 		writeFileSync(
 			join(dir, "goblin.json5"),
 			`${base},transcription:{kind:"whistle",keywords:["goblin","bermudi"],language:"es"}}`,
@@ -469,7 +473,7 @@ describe("goblin.json5", () => {
 
 	test('memory is optional, validated, and "" clears to unset', () => {
 		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
 		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
 		expect(loadConfig()!.memory).toBeUndefined();
 		writeFileSync(
@@ -493,7 +497,7 @@ describe("goblin.json5", () => {
 
 	test("mail is optional; all three fields required when present", () => {
 		const dir = useHome();
-		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",allowedUsers:[7]`;
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
 		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
 		expect(loadConfig()!.mail).toBeUndefined();
 		// Reads ride gws's own auth — the block holds only the send
@@ -790,6 +794,7 @@ describe("authReferences", () => {
 				codex: { kind: "codex" },
 			},
 			model: "zai/glm-4.6",
+			operators: [7],
 			allowedUsers: [7],
 			search: [{ kind: "brave", auth: "brave-key" }],
 			appToken: "app-token-record",
@@ -804,6 +809,7 @@ test("legacy Telegram selection pins independently from app-default patches and 
 		providers: { test: { kind: "codex" } },
 		model: "test/old",
 		thinking: "high",
+		operators: [7],
 		allowedUsers: [7],
 	});
 	expect(legacy.telegram.model).toBe("test/old");
@@ -863,6 +869,7 @@ describe("sandbox block", () => {
 	const base = {
 		providers: { test: { kind: "codex" } },
 		model: "test/m",
+		operators: [7],
 		allowedUsers: [7],
 	};
 	test("absent and '' mean no sandbox tool", () => {

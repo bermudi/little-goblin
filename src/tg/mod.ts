@@ -38,6 +38,8 @@ import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import { makeDeliverySink, SPEAK_CALLBACK } from "./delivery.ts";
 import {
 	type GuestEnv,
+	ensurePersonaClass,
+	GUEST_REFUSAL,
 	handleGuestUpdate,
 	openGuestStore,
 	routeMemberGuestMessage,
@@ -142,11 +144,19 @@ export interface RunningBot {
 	startPolling(): void;
 }
 
-// The access-control boundary: gates every update first thing, read
-// per-message so mini-app saves apply without a restart.
-export function allowedUserGate(configRef: { current: Config }) {
+// The access-control boundary (design/telegram.md → Roles and
+// permissions): operators pass everywhere; an allowed user passes in
+// the bot DM only — their standing sandbox lane; a stranger's DM gets
+// the one refusal line; a non-operator's group message drops (the
+// guest router above already took the mentions). Read per-message so
+// mini-app saves apply without a restart.
+export function accessGate(configRef: { current: Config }) {
 	return async (
-		ctx: { from?: { id: number } | undefined },
+		ctx: {
+			from?: { id: number } | undefined;
+			chat?: { id: number; type: string } | undefined;
+			api: Api;
+		},
 		next: () => Promise<void>,
 	): Promise<void> => {
 		if (!ctx.from) {
@@ -154,11 +164,27 @@ export function allowedUserGate(configRef: { current: Config }) {
 			log.debug("rejected update with no sender");
 			return;
 		}
-		if (!configRef.current.allowedUsers.includes(ctx.from.id)) {
-			log.warn("rejected user", { userId: ctx.from.id });
+		const cfg = configRef.current;
+		const id = ctx.from.id;
+		if (cfg.operators.includes(id)) {
+			await next();
 			return;
 		}
-		await next();
+		if (ctx.chat?.type === "private") {
+			if (!cfg.allowedUsers.includes(id)) {
+				// A stranger DM is a summons: the fixed refusal line is its
+				// whole answer. A failed send never kills the poller.
+				log.info("stranger refused — bot dm", { userId: id });
+				await withTimeout(ctx.api.sendMessage(id, GUEST_REFUSAL), "sendMessage (refusal)")
+					.then(() => undefined)
+					.catch((err: unknown) => log.warn("stranger refusal failed", err, { userId: id }));
+				return;
+			}
+			await next();
+			return;
+		}
+		// Ambient room chatter is not a summons — dropped, no reply.
+		log.info("group message dropped — not operator", { userId: id, chat: ctx.chat?.id });
 	};
 }
 
@@ -181,15 +207,11 @@ export interface IntakeEnv {
 	pings: PingStore;
 	// The headless sink app-lane turns submit with; the bell rings when the turn lands.
 	bell(conv: Conversation): TurnSink;
-	// Guest mode: open to third-party summonses? Read per burst — the
-	// system prompt is frozen per conversation (cache stability) while
-	// openness changes with /open and /off.
-	isChatOpen: (chatId: number) => boolean;
 }
 
 export type FlushEnv = Pick<
 	IntakeEnv,
-	"deps" | "api" | "titleAttempts" | "inbox" | "bell" | "isChatOpen"
+	"deps" | "api" | "titleAttempts" | "inbox" | "bell"
 >;
 
 // Assembled per call so a mini-app save (dmGapMinutes) and the
@@ -631,9 +653,23 @@ async function flushRolling(
 				to: current.id,
 			});
 		}
+		// Persona follows class (design/telegram.md → Roles and
+		// permissions): the operator's DM lane stays personal; an allowed
+		// user's DM is the standing sandbox — persona guest, off the
+		// record, search-only tools via the persona-driven filter. The
+		// gate already admitted only these two classes; the chat id IS
+		// the user id here.
+		const cls = deps.configRef.current.operators.includes(chatId) ? "personal" : "guest";
+		const pinned = ensurePersonaClass(
+			deps,
+			current,
+			cls,
+			cls === "guest" ? true : undefined,
+			() => deps.store.rollDm(chatId, paths.workspace()),
+		);
 		admitBatch(
 			env,
-			current,
+			pinned,
 			laneKey,
 			remaining,
 			remaining.flatMap((i) => i.parts),
@@ -690,7 +726,9 @@ function archiveNavigatedInput(
 
 // The audience note a shared chat's turns carry: one text part at the
 // head of the burst, never in the frozen system prompt (cache
-// stability). Guest personas already know the shape.
+// stability). Since the chat-trust machinery died (ruling 2026-10-11)
+// every member group is shared — the operator's standing conversation
+// included. Guest personas already know the shape.
 export const SHARED_CHAT_NOTE =
 	"[note: this is a shared chat — everyone in it can read your replies. " +
 	"Be deliberate before surfacing private material (workspace files, notes, past conversations).]";
@@ -698,11 +736,10 @@ export const SHARED_CHAT_NOTE =
 export function sharedChatPart(
 	conversationId: string,
 	chatId: number,
-	isChatOpen: (chatId: number) => boolean,
 ): { type: "text"; text: string } | null {
 	if (channelOf(conversationId) === "guest") return null;
-	if (chatId > 0) return null; // private chats: a bot member chat IS the DM
-	return isChatOpen(chatId) ? { type: "text", text: SHARED_CHAT_NOTE } : null;
+	if (chatId >= 0) return null; // private chats + the app lane: a bot member chat IS the DM
+	return { type: "text", text: SHARED_CHAT_NOTE };
 }
 
 // Commit → sink → submit — the tail every lane shares after routing.
@@ -718,7 +755,7 @@ function admitBatch(
 	const { deps } = env;
 	const tts = deps.configRef.current.tts;
 	// Audience first — the note qualifies the content that follows.
-	const audience = sharedChatPart(conv.id, conv.chatId, env.isChatOpen);
+	const audience = sharedChatPart(conv.id, conv.chatId);
 	const message = userMessage(audience === null ? parts : [audience, ...parts]);
 	env.inbox.commitBatch(
 		items.map((i) => i.updateId),
@@ -906,7 +943,7 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	const intake = new Map<string, Promise<void>>();
 	const inbox = openTelegramInbox(deps.store.db);
 	// The ping map shares the store's handle like the inbox; the bell
-	// builds per-turn so allowedUsers and publicUrl read live config.
+	// builds per-turn so operators and publicUrl read live config.
 	const pings = openPings(deps.store.db);
 	// The 👍/👎 tap record — same shared handle.
 	const ratings = openRatings(deps.store.db);
@@ -916,20 +953,19 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 				api: bot.api,
 				store: deps.store,
 				pings,
-				allowedUsers: () => deps.configRef.current.allowedUsers,
+				operators: () => deps.configRef.current.operators,
 				publicUrl: () => deps.configRef.current.publicUrl || undefined,
 			},
 			conv,
 			"ping reply",
 		);
 	const guestStore = openGuestStore(deps.store.db);
-	const isChatOpen = (chatId: number): boolean => guestStore.isOpen(chatId);
 	const buffer = new CoalescingBuffer<BufferedItem>(
 		QUIET_WINDOW_MS,
-		(convId, items) => flushConversation({ ...base, inbox, bell, isChatOpen }, convId, items),
+		(convId, items) => flushConversation({ ...base, inbox, bell }, convId, items),
 		COALESCE_MAX_WAIT_MS,
 	);
-	const env: IntakeEnv = { ...base, buffer, intake, inbox, pings, bell, isChatOpen };
+	const env: IntakeEnv = { ...base, buffer, intake, inbox, pings, bell };
 
 	// Guest mode: both surfaces register BEFORE the access gate — the
 	// gate stays pure and guest traffic never reaches it. Handlers no-op
@@ -967,7 +1003,7 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 		await next();
 	});
 
-	bot.use(allowedUserGate(deps.configRef));
+	bot.use(accessGate(deps.configRef));
 
 	bot.on("message", (ctx) => handleMessageDurably(env, ctx.message, ctx.update.update_id));
 

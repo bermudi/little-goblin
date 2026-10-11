@@ -54,6 +54,7 @@ const FIELD_LABELS: Record<keyof SettingsDraft, string> = {
 	vision: "vision",
 	search: "search chain",
 	fetch: "fetch chain",
+	operators: "operators",
 	allowedUsers: "allowed users",
 	publicUrl: "public url",
 	apiRoot: "telegram api root",
@@ -843,17 +844,17 @@ export function SettingsView({
 		setSheet(null);
 	};
 
-	const addUser = (v: string) => {
+	const addId = (list: "operators" | "allowedUsers", v: string) => {
 		const n = Number(v);
 		if (!Number.isInteger(n) || n <= 0) {
 			setNotice({ text: "Telegram user ids are positive integers.", kind: "err" });
 			return;
 		}
-		if (draft.allowedUsers.includes(n)) {
-			setNotice({ text: `${n} is already allowed.`, kind: "err" });
+		if (draft[list].includes(n)) {
+			setNotice({ text: `${n} is already on that list.`, kind: "err" });
 			return;
 		}
-		patchDraft({ allowedUsers: [...draft.allowedUsers, n] });
+		patchDraft({ [list]: [...draft[list], n] });
 	};
 
 	const save = async () => {
@@ -1499,18 +1500,32 @@ export function SettingsView({
 
 			{eff === "access" && (
 				<>
+					<h2 className="ops-h2">Operators</h2>
+					<div className="card">
+						<ChipsEditor
+							values={draft.operators.map(String)}
+							onAdd={(v) => addId("operators", v)}
+							onRemove={(i) =>
+								patchDraft({ operators: draft.operators.filter((_, j) => j !== i) })
+							}
+							placeholder="telegram user id"
+							ariaLabel="add operator"
+							numeric
+							cap="Telegram user ids with the full personal agent on every surface — these settings included. The list can't be emptied — that would lock everyone out."
+						/>
+					</div>
 					<h2 className="ops-h2">Allowed users</h2>
 					<div className="card">
 						<ChipsEditor
 							values={draft.allowedUsers.map(String)}
-							onAdd={addUser}
+							onAdd={(v) => addId("allowedUsers", v)}
 							onRemove={(i) =>
 								patchDraft({ allowedUsers: draft.allowedUsers.filter((_, j) => j !== i) })
 							}
 							placeholder="telegram user id"
 							ariaLabel="add allowed user"
 							numeric
-							cap="Telegram user ids that may talk to goblin and open these settings. The list can't be emptied — that would lock everyone out."
+							cap="Telegram user ids that may talk to goblin sandboxed — a guest persona, search-only tools, no memory, no app. DM them directly or @mention in groups; everyone else gets a refusal line."
 						/>
 					</div>
 					<h2 className="ops-h2">Doors</h2>

@@ -200,15 +200,21 @@ resource caps; disk is not capped (reaping bounds it).
 ### Telegram
 
 ```json5
-allowedUsers: [123456789],
+operators: [123456789],
+allowedUsers: [],
 // telegram: { apiRoot: "http://127.0.0.1:8081" },
 // publicUrl: "https://goblin.your-tailnet.ts.net",
 http: { port: 8787 },
 ```
 
-- `allowedUsers` — your Telegram user id(s). Only these can talk to the bot.
+- `operators` — your Telegram user id(s): you, plus any of your own
+  accounts. Full personal agent on every surface, app doors included.
   DM `@userinfobot` to find yours. Checked on every message, so mini-app
   edits take effect immediately.
+- `allowedUsers` — people you name. Sandboxed: a guest persona with
+  search-only tools, no memory, no app. Their DM is a standing chat; in
+  groups they @mention you. Everyone else gets one refusal line per
+  summons and nothing else.
 - `telegram.apiRoot` — leave unset for Telegram's cloud API. Point it at a
   self-hosted `telegram-bot-api` in `--local` mode for large files (uploads
   up to 2 GB, files read straight off disk). Needs an `api_id`/`api_hash`

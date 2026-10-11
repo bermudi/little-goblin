@@ -90,7 +90,7 @@ own user id. Delegation, Gmail, and the skill reviewer still require editing
 Behind the scenes it's a page served by the bot on localhost, loaded by your
 Telegram client over HTTPS — which is why `publicUrl` (a tailnet serve,
 funnel, or reverse proxy in front of `http://127.0.0.1:<port>`) is needed.
-Only people in `allowedUsers` can load it, and logins expire after a day.
+Only `operators` can load it, and logins expire after a day.
 The mini app and the PWA are the same client — the button opens its
 settings page (the memories browser lives one tap away in the menu).
 

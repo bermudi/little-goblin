@@ -30,7 +30,7 @@ function inspect(
 	}
 }
 const config =
-	'{providers:{fixture:{kind:"openai-compatible",baseUrl:"https://fixture.invalid",auth:"fixture"}},model:"fixture/model",allowedUsers:[1],tts:""';
+	'{providers:{fixture:{kind:"openai-compatible",baseUrl:"https://fixture.invalid",auth:"fixture"}},model:"fixture/model",operators:[1],tts:""';
 test("setup options inspect config and auth shapes without executing credentials or emitting config logs", () => {
 	const result = inspect(
 		`${config},delegation:{harnesses:{fixture:{kind:"fixture"}},maxRunning:2}}`,
@@ -61,7 +61,7 @@ test("a non-default Pass profile is accepted and reported as a warm target", () 
 });
 test("warm targets are config-referenced records only: deduped, sorted, stale excluded", () => {
 	const result = inspect(
-		'{providers:{fixture:{kind:"openai-compatible",baseUrl:"https://fixture.invalid",auth:"fixture"},second:{kind:"openai-compatible",baseUrl:"https://fixture.invalid",auth:"second"}},model:"fixture/model",allowedUsers:[1],tts:""}',
+		'{providers:{fixture:{kind:"openai-compatible",baseUrl:"https://fixture.invalid",auth:"fixture"},second:{kind:"openai-compatible",baseUrl:"https://fixture.invalid",auth:"second"}},model:"fixture/model",operators:[1],tts:""}',
 		[
 			'{"name":"telegram","value":"!pass-keys get beta FIXTURE_SECRET"}',
 			'{"name":"fixture","value":"!pass-keys get beta FIXTURE_SECRET"}',

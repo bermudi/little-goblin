@@ -28,6 +28,7 @@ const baseConfig = (): Config => ({
 	vision: undefined,
 	search: undefined,
 	fetch: undefined,
+	operators: [111],
 	allowedUsers: [111, 222],
 	telegram: { model: "route/auto", thinking: "low", dmGapMinutes: 45 },
 	publicUrl: "https://goblin.example.test",
@@ -57,6 +58,7 @@ const draft = (over: Partial<SettingsDraft> = {}): SettingsDraft => ({
 	vision: null,
 	search: null,
 	fetch: null,
+	operators: [111],
 	allowedUsers: [111],
 	publicUrl: "",
 	apiRoot: "",
@@ -176,7 +178,7 @@ describe("validateDraft", () => {
 		expect(validateDraft(draft({ port: "abc" }), [prov()])).toMatch(/port/);
 		expect(validateDraft(draft({ port: "70000" }), [prov()])).toMatch(/port/);
 		expect(validateDraft(draft({ publicUrl: "http://x.test" }), [prov()])).toMatch(/HTTPS/);
-		expect(validateDraft(draft({ allowedUsers: [] }), [prov()])).toMatch(/Allowed users/);
+		expect(validateDraft(draft({ operators: [] }), [prov()])).toMatch(/Operators/);
 	});
 
 	test("dm gap must be a whole number of minutes, 1 or more", () => {

@@ -136,7 +136,10 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 	function authedUser(req: Request): InitDataUser | null {
 		const initData = req.headers.get("x-init-data") ?? "";
 		// Read per-request so config writes take effect without a restart.
-		const allowed = new Set(deps.configRef.current.allowedUsers);
+		// Mini app door: operators only (design/telegram.md → Roles and
+		// permissions) — allowedUsers are sandboxed on the Telegram lanes
+		// and have no app surface at all.
+		const allowed = new Set(deps.configRef.current.operators);
 		return validateInitData(initData, deps.botToken, allowed);
 	}
 

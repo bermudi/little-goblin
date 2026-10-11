@@ -72,7 +72,7 @@ cp goblin.json5.example ~/goblin/goblin.json5
 
 Edit the copy:
 
-- `allowedUsers`: your user id. Unauthorized users cannot operate your bot.
+- `operators`: your user id. Unauthorized users cannot operate your bot; anyone you name in `allowedUsers` gets a sandboxed guest lane, and everyone else is refused.
 - `providers`: the registry has **four** kinds, including `responses`; see
   [Configuration](configuration.md#providers).
 - Root `model`/`thinking`: app defaults for **new** conversations.

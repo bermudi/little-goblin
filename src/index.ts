@@ -417,7 +417,7 @@ async function boot() {
 							publicUrl: () => configRef.current.publicUrl,
 							sendPrivate: makePrivateSender(
 								(id, text) => tg.bot.api.sendMessage(id, text),
-								() => configRef.current.allowedUsers,
+								() => configRef.current.operators,
 							),
 						}
 					: undefined,

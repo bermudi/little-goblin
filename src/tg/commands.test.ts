@@ -31,6 +31,7 @@ const config: Config = {
 	tts: false,
 	favorites: ["zai/glm-5.3"],
 	thinking: "medium",
+	operators: [1],
 	allowedUsers: [1],
 	telegram: { dmGapMinutes: 45 },
 	http: { port: 8787 },

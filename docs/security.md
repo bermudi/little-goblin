@@ -56,18 +56,22 @@ allowed to act.
 
 | Class | Examples | May it steer? |
 |---|---|---|
-| **Operator** | Telegram messages from an `allowedUsers` id | Yes — but still "ask first" for standing authority |
+| **Operator** | Telegram messages from an `operators` id | Yes — but still "ask first" for standing authority |
 | **Goblin itself** | its own skills, `SOUL.md`, `AGENTS.md`, memory it wrote | Yes |
 | **Untrusted content** | fetched pages, search results, mail bodies, delegated reports, terminal screens | **Never** — data to evaluate |
 | **Machine/config** | `goblin.json5`, `auth.jsonl`, program rows | High-integrity, operator-owned |
 | **Third-party model** | whatever the configured provider returns | Data, but note it *does* drive tool calls |
 
 The operator's Telegram account is the root of authority. A message from an
-`allowedUsers` id is a request from the operator, no matter which topic it
+`operators` id is a request from the operator, no matter which topic it
 lands in — the gate is per-user, not per-chat
-(`src/tg/mod.ts` `allowedUserGate`). This is why topics are not a security
-boundary: a group reader who is also an allowed user has full authority, and a
-group reader who is not gets nothing.
+(`src/tg/mod.ts` `accessGate`). Only operators reach ordinary intake; an
+`allowedUsers` id gets the sandbox class (guest persona, search-only
+tools, no memory, no app), and anyone else gets one refusal line per
+summons (`design/telegram.md` → Roles and permissions). This is why
+topics are not a security boundary: a group reader who is also an
+operator has full authority, an allowed user gets only their own
+sandbox turns, and a stranger gets nothing.
 
 ### The untrusted-content fence
 
@@ -98,8 +102,8 @@ is also the thing an injection is trying to reach.
 
 These are the ways text gets into a turn. Ordered by reach.
 
-1. **Telegram messages** — a human door. `allowedUsers` gates every
-   update first thing. Media (photos, documents, voice) is materialized to
+1. **Telegram messages** — a human door. The two-list gate
+   (`operators`/`allowedUsers`) classifies every update first thing. Media (photos, documents, voice) is materialized to
    `workspace/attachments/`; Telegram's `file_unique_id` is validated against
    `^[A-Za-z0-9_-]+$` before it is used as a path component
    (`src/tg/media.ts`).
@@ -310,7 +314,7 @@ boundary.
 
 | Check | On failure | Why that direction |
 |---|---|---|
-| `allowedUsers` gate | **closed** — reject the update | Auth must never fail open |
+| `operators`/`allowedUsers` gate | **closed** — refuse or drop the update | Auth must never fail open |
 | `initData` validation | **closed** — 401 | Same |
 | `appToken` bearer (when set) | **closed** — 401; 503 if the record can't resolve | Same. When unset the check doesn't exist by design — trust mode is "no check," not fail-open |
 | Browser-origin gate (trust mode, mutations) | **closed** — 403 | A page riding the device is not the operator (#75); non-browser clients keep reachability as the whole check |

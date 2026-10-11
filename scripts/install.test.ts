@@ -81,7 +81,7 @@ function fixture(
 		writeFileSync(
 			join(home, "goblin", "goblin.json5"),
 			mode.startsWith("real-")
-				? '{providers:{fixture:{kind:"openai-compatible",baseUrl:"https://fixture.invalid",auth:"fixture"}},model:"fixture/model",allowedUsers:[1],tts:""}\n'
+				? '{providers:{fixture:{kind:"openai-compatible",baseUrl:"https://fixture.invalid",auth:"fixture"}},model:"fixture/model",operators:[1],tts:""}\n'
 				: "{}\n",
 		);
 		writeFileSync(

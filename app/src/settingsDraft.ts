@@ -1,5 +1,5 @@
-// The settings editor's draft state — seeded as a port of the mini
-// app's DraftState/populate()/buildBody()/validate() (src/http/app.js),
+// The settings editor's draft state — seeded as a port of the retired
+// plain-JS mini app's DraftState/populate()/buildBody()/validate(),
 // now an independent client (design/app.md, Operator console): the
 // contract is ConfigPostBody, and the server's config-schema validation
 // is the gate. This module only catches what the form can express

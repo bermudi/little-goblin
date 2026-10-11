@@ -115,7 +115,7 @@ describe("applyMenuButton", () => {
 				menu_button: {
 					type: "web_app",
 					text: "Settings",
-					web_app: { url: "https://goblin.example.ts.net" },
+					web_app: { url: "https://goblin.example.ts.net/t/settings" },
 				},
 			},
 			{ menu_button: { type: "default" } },

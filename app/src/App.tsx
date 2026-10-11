@@ -494,14 +494,12 @@ function TelegramDoor() {
 						</svg>
 					</button>
 					<h1>goblin</h1>
-					<span className="header-title">
-						{PAGES.find((p) => p.key === page)?.label}
-					</span>
+					<span className="header-title">{PAGES.find((p) => p.key === page)?.label}</span>
 				</header>
 				{!authed && (
 					<p className="error" role="alert">
-						Open this page from Telegram — the settings door authenticates with
-						Telegram's signed payload, and a plain browser has none.
+						Open this page from Telegram — the settings door authenticates with Telegram's signed
+						payload, and a plain browser has none.
 					</p>
 				)}
 				{authed && page === "settings" && (

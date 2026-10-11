@@ -186,10 +186,13 @@ describe("telegram door", () => {
 	}
 
 	const SETTINGS_OK = () =>
-		new Response(JSON.stringify({ config: {}, providerKinds: [], searchKinds: [], fetchKinds: [] }), {
-			status: 200,
-			headers: { "content-type": "application/json", etag: '"v1"' },
-		});
+		new Response(
+			JSON.stringify({ config: {}, providerKinds: [], searchKinds: [], fetchKinds: [] }),
+			{
+				status: 200,
+				headers: { "content-type": "application/json", etag: '"v1"' },
+			},
+		);
 
 	test("operator calls rewrite to /api/* and carry x-init-data instead of a bearer token", async () => {
 		mountAt("/t/settings");

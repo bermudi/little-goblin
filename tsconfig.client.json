@@ -1,9 +1,0 @@
-{
-	"extends": "./tsconfig.json",
-	"compilerOptions": {
-		"lib": ["ESNext", "DOM", "DOM.Iterable"],
-		"allowJs": true,
-		"checkJs": true
-	},
-	"include": ["src/http/app.js", "app/src/telegram-webapp.d.ts"]
-}

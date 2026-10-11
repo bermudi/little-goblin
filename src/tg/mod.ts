@@ -1015,10 +1015,12 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 		bot,
 		replayInbox: () => replayInbox(env),
 		startPolling() {
-			void bot.start({ onStart: () => log.startup("long polling started") }).catch((err: unknown) => {
-				log.error("long polling failed", err);
-				process.exit(1);
-			});
+			void bot
+				.start({ onStart: () => log.startup("long polling started") })
+				.catch((err: unknown) => {
+					log.error("long polling failed", err);
+					process.exit(1);
+				});
 		},
 		async drainIntake() {
 			// Drain before AND after the chains: a hung media resolution
@@ -1042,7 +1044,13 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 // config writes, so a publicUrl change (or clearing it) applies live.
 export function applyMenuButton(api: Api, publicUrl: string | undefined): void {
 	const menu_button: MenuButton = publicUrl
-		? { type: "web_app", text: "Settings", web_app: { url: publicUrl } }
+		? {
+				type: "web_app",
+				text: "Settings",
+				// The built client's telegram door — the settings deep link
+				// (design/telegram.md → Mini Apps).
+				web_app: { url: `${publicUrl.replace(/\/+$/, "")}/t/settings` },
+			}
 		: { type: "default" };
 	api
 		.setChatMenuButton({ menu_button })

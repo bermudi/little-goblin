@@ -309,8 +309,7 @@ describe("rail row actions and the pinned pool", () => {
 			}
 			const patchMatch = /^\/api\/app\/conversations\/(pinned|fresh)$/.exec(url);
 			if (patchMatch !== null && method === "PATCH") {
-				if (failPatch)
-					return Promise.resolve(jsonResponse({ error: "db is locked" }, 500));
+				if (failPatch) return Promise.resolve(jsonResponse({ error: "db is locked" }, 500));
 				const id = patchMatch[1] as "pinned" | "fresh";
 				const body = JSON.parse(String(init?.body)) as { pinned?: boolean; archived?: boolean };
 				patches.push({ id, body });
@@ -1140,7 +1139,9 @@ describe("App telegram door", () => {
 			return real(input, init);
 		}) as typeof fetch;
 		await renderDoor();
-		expect(seen.filter((v) => v === "user=%7B%22id%22%3A111%7D&hash=abc").length).toBeGreaterThan(0);
+		expect(seen.filter((v) => v === "user=%7B%22id%22%3A111%7D&hash=abc").length).toBeGreaterThan(
+			0,
+		);
 		expect(seen.includes("null")).toBe(false);
 	});
 

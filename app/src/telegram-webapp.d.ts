@@ -5,11 +5,11 @@
 // optional because the SDK version varies by client — callers
 // feature-detect every call.
 //
-// CLIENT PROGRAM ONLY (tsconfig.client.json includes it by path;
-// tsconfig.json excludes it): declaring `Window` here would give
+// APP PROGRAM ONLY (it lives under app/src, which the server's
+// tsconfig never includes): declaring `Window` here would give
 // linkedom's `parseHTML(): Window & typeof globalThis` a real meaning in
 // the server program, where no DOM lib exists and the property `document`
-// would stop resolving.
+// would stop resolving. Keep it out of src/.
 
 interface TelegramWebApp {
 	initData: string;

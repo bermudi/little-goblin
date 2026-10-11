@@ -6,9 +6,8 @@ import { join } from "node:path";
 import type { Config, MemoryConfig } from "../config.ts";
 import { loadConfig, memoryConfigSchema } from "../config.ts";
 import { setLogFile } from "../log.ts";
-import { startHttp, type HttpDeps, type MemoryStatusResponse } from "./mod.ts";
-import { parseHTML } from "linkedom";
-import { APP_HTML } from "./app.ts";
+import { startHttp, type HttpDeps } from "./mod.ts";
+import type { MemoryStatusResponse } from "./operator-wire.ts";
 import { hookTokenHash } from "../agent/tools/program.ts";
 import { openPrograms, type ProgramsStore } from "../programs.ts";
 import { appAddress, openStore, prepareAppSettingsForConfig } from "../conversation.ts";
@@ -84,10 +83,10 @@ function setup(
 		user: JSON.stringify({ id: 42 }),
 	});
 	const post = async (body: unknown) => {
-		const loaded = await fetch(`http://127.0.0.1:${http.port}/api/config`, {
+		const loaded = await fetch(`http://127.0.0.1:${http.port}/api/settings`, {
 			headers: { "x-init-data": initData },
 		});
-		return fetch(`http://127.0.0.1:${http.port}/api/config`, {
+		return fetch(`http://127.0.0.1:${http.port}/api/settings`, {
 			method: "POST",
 			headers: {
 				"content-type": "application/json",
@@ -104,7 +103,7 @@ function setup(
 	return { configRef, http, post, get };
 }
 
-describe("mini-app http", () => {
+describe("http door", () => {
 	test("an unexpected handler throw is a logged 500, not a framework error page", async () => {
 		useHome();
 		const logFile = join(process.env.GOBLIN_HOME!, "goblin.log");
@@ -234,8 +233,8 @@ describe("mini-app http", () => {
 	test("a second tab's stale snapshot cannot undo the first tab's save", async () => {
 		const { configRef, http, get } = setup();
 		try {
-			const a = await get("/api/config");
-			const b = await get("/api/config");
+			const a = await get("/api/settings");
+			const b = await get("/api/settings");
 			const headers = (version: string) => ({
 				"content-type": "application/json",
 				"x-init-data": makeInitData({
@@ -244,7 +243,7 @@ describe("mini-app http", () => {
 				}),
 				"if-match": version,
 			});
-			const url = `http://127.0.0.1:${http.port}/api/config`;
+			const url = `http://127.0.0.1:${http.port}/api/settings`;
 			const saved = await fetch(url, {
 				method: "POST",
 				headers: headers(a.headers.get("etag")!),
@@ -279,9 +278,9 @@ describe("mini-app http", () => {
 	test("saving without a loaded config version is refused", async () => {
 		const { http, get } = setup();
 		try {
-			const loaded = await get("/api/config");
+			const loaded = await get("/api/settings");
 			expect(loaded.headers.get("etag")).toBeTruthy();
-			const res = await fetch(`http://127.0.0.1:${http.port}/api/config`, {
+			const res = await fetch(`http://127.0.0.1:${http.port}/api/settings`, {
 				method: "POST",
 				headers: {
 					"content-type": "application/json",
@@ -313,7 +312,7 @@ describe("mini-app http", () => {
 			user: JSON.stringify({ id: 42 }),
 		});
 		try {
-			const url = `http://127.0.0.1:${http.port}/api/config`;
+			const url = `http://127.0.0.1:${http.port}/api/settings`;
 			const loaded = await fetch(url, { headers: { "x-init-data": auth } });
 			const saved = await fetch(url, {
 				method: "POST",
@@ -351,14 +350,14 @@ describe("mini-app http", () => {
 		try {
 			// The page's body has no delegation key — the merge over the
 			// on-disk config must carry it through untouched.
-			const res = await fetch(`http://127.0.0.1:${http.port}/api/config`, {
+			const res = await fetch(`http://127.0.0.1:${http.port}/api/settings`, {
 				method: "POST",
 				headers: {
 					"content-type": "application/json",
 					"x-init-data": initData,
 					"if-match":
 						(
-							await fetch(`http://127.0.0.1:${http.port}/api/config`, {
+							await fetch(`http://127.0.0.1:${http.port}/api/settings`, {
 								headers: { "x-init-data": initData },
 							})
 						).headers.get("etag") ?? "",
@@ -405,10 +404,10 @@ describe("mini-app http", () => {
 		}
 	});
 
-	test("GET /api/config without init data is rejected", async () => {
+	test("GET /api/settings without init data is rejected", async () => {
 		const { http } = setup();
 		try {
-			const res = await fetch(`http://127.0.0.1:${http.port}/api/config`);
+			const res = await fetch(`http://127.0.0.1:${http.port}/api/settings`);
 			expect(res.status).toBe(401);
 		} finally {
 			http.stop();
@@ -419,7 +418,7 @@ describe("mini-app http", () => {
 // The memory status card renders what /memory prints — the endpoint
 // reads the same seams the command does (queue counts, blocked detail,
 // recall telemetry) through fake deps; no real queue, no network.
-describe("mini-app memory status", () => {
+describe("memory status", () => {
 	test("a changed memory destination never displays the boot target's status", async () => {
 		const mem: NonNullable<HttpDeps["memory"]> = {
 			target: { baseUrl: "http://127.0.0.1:8888", bankId: "goblin" },
@@ -442,7 +441,7 @@ describe("mini-app memory status", () => {
 				...configRef.current,
 				memory: { ...configRef.current.memory!, bankId: "elsewhere" },
 			};
-			const status = (await (await get("/api/memory-status")).json()) as {
+			const status = (await (await get("/api/memory/status")).json()) as {
 				detail: string;
 				queued: number;
 			};
@@ -455,7 +454,7 @@ describe("mini-app memory status", () => {
 	test("without init data it is rejected like every other endpoint", async () => {
 		const { http, get } = setup();
 		try {
-			expect((await get("/api/memory-status", false)).status).toBe(401);
+			expect((await get("/api/memory/status", false)).status).toBe(401);
 		} finally {
 			http.stop();
 		}
@@ -464,7 +463,7 @@ describe("mini-app memory status", () => {
 	test("unconfigured memory serves the disabled shape, not an error", async () => {
 		const { http, get } = setup();
 		try {
-			const res = await get("/api/memory-status");
+			const res = await get("/api/memory/status");
 			expect(res.status).toBe(200);
 			expect(await res.json()).toEqual({
 				state: "disabled",
@@ -500,7 +499,7 @@ describe("mini-app memory status", () => {
 			lastRecallAt: () => "2026-09-25T12:00:00.000Z",
 		});
 		try {
-			const j = (await (await get("/api/memory-status")).json()) as Record<string, unknown>;
+			const j = (await (await get("/api/memory/status")).json()) as Record<string, unknown>;
 			expect(j.state).toBe("healthy");
 			expect(j.detail).toBe("no queued or blocked retention");
 			expect(j.queued).toBe(0);
@@ -513,7 +512,7 @@ describe("mini-app memory status", () => {
 		}
 	});
 
-	test("parked forget rows reach the wire and the checked mini-app display", async () => {
+	test("parked forget rows reach the wire", async () => {
 		const { http, get } = setup({
 			counts: () => ({
 				pending: 0,
@@ -529,30 +528,10 @@ describe("mini-app memory status", () => {
 			lastRecallAt: () => null,
 		});
 		try {
-			const status: unknown = await (await get("/api/memory-status")).json();
-			const { window, document } = parseHTML(APP_HTML);
-			const js = readFileSync(new URL("./app.js", import.meta.url), "utf8");
-			const client = new Function(
-				"window",
-				"document",
-				js + "\nreturn { checkMemoryStatus, renderMemoryStatus };",
-			)(window, document) as {
-				checkMemoryStatus(value: unknown): MemoryStatusResponse | null;
-				renderMemoryStatus(value: MemoryStatusResponse): void;
-			};
-			const checked = client.checkMemoryStatus(status);
-			expect(checked).not.toBeNull();
-			if (checked === null) throw new Error("mini-app rejected memory status");
-			expect(checked.state).toBe("degraded");
-			expect(checked.deleting).toBe(2);
-			expect(checked.queued).toBe(0);
-			client.renderMemoryStatus(checked);
-			const text = document.getElementById("memStatusCard")!.textContent;
-			expect(text).toContain("2 awaiting forget confirmation");
-			expect(text).toContain("retry /forget delete <documentId>");
-			for (const deleting of [undefined, -1, 0.5, "2"]) {
-				expect(client.checkMemoryStatus({ ...checked, deleting })).toBeNull();
-			}
+			const status = (await (await get("/api/memory/status")).json()) as MemoryStatusResponse;
+			expect(status.state).toBe("degraded");
+			expect(status.deleting).toBe(2);
+			expect(status.queued).toBe(0);
 		} finally {
 			http.stop();
 		}
@@ -574,7 +553,7 @@ describe("mini-app memory status", () => {
 			lastRecallAt: () => "2026-09-25T12:00:00.000Z",
 		});
 		try {
-			const j = (await (await get("/api/memory-status")).json()) as Record<string, unknown>;
+			const j = (await (await get("/api/memory/status")).json()) as Record<string, unknown>;
 			expect(j.state).toBe("degraded");
 			expect(j.detail).toContain("operator review");
 			expect(j.blocked).toBe(1);
@@ -591,70 +570,63 @@ describe("mini-app memory status", () => {
 	});
 });
 
-// The page is static markup (app.ts) + a served-verbatim client
-// (app.js, tsc-checked via tsconfig.client.json — no build step). The
-// provider/chain kind lists ride the authed config GET (single source:
-// config.ts); the served script must also parse — a typo in a
-// 900-line client otherwise only surfaces on a phone.
-describe("mini-app page serving", () => {
-	test("the transcription card carries every id the client looks up", () => {
-		// app.js asserts ids loudly at runtime ($ throws on a miss), but a
-		// rename in app.ts that keeps the JS waiting would only surface on
-		// a real settings visit — pin the contract statically.
-		const dom = parseHTML(APP_HTML);
-		for (const id of [
-			"trFields",
-			"trKind",
-			"trModelRow",
-			"trModel",
-			"trAuthRow",
-			"trAuth",
-			"trAuthWarn",
-			"trLang",
-		]) {
-			expect(dom.document.getElementById(id), id).not.toBeNull();
-		}
-		// The shared auth-name picker's datalist and the memory warning
-		// ride the same contract — app.js populates authDl on load and
-		// paints memAuthWarn on every memory edit.
-		expect(dom.document.getElementById("authDl"), "authDl").not.toBeNull();
-		expect(dom.document.getElementById("memAuthWarn"), "memAuthWarn").not.toBeNull();
-	});
+// The built client serves both doors: /app/* for the PWA, /t/* for the
+// Telegram mini app (design/telegram.md → Mini Apps). The dist dir is
+// build output — absent on a checkout before `bun run app:build`,
+// which is exactly the loud-500 path; the positive shell behavior is
+// app-dist.test.ts's, the routes here only prove what they reach.
+describe("client serving", () => {
+	const distExists = existsSync(join(import.meta.dir, "..", "..", "app", "dist"));
 
-	test("GET / serves the page, which loads the client from /app.js", async () => {
-		useHome();
-		const http = startHttp({
-			configRef: { current: { ...baseConfig } },
-			botToken: TOKEN,
-			onConfigWritten: () => {},
-		});
+	async function shellContract(res: Response): Promise<void> {
+		if (distExists) {
+			expect(res.status).toBe(200);
+			expect(res.headers.get("content-type")).toContain("text/html");
+			expect(res.headers.get("cache-control")).toBe("no-store");
+			expect(await res.text()).toContain("<html");
+		} else {
+			expect(res.status).toBe(500);
+			expect(((await res.json()) as { error: string }).error).toContain("app client not built");
+		}
+	}
+
+	test("the telegram door serves the shell at its deep links", async () => {
+		const { http } = setup();
 		try {
-			const res = await fetch(`http://127.0.0.1:${http.port}/`);
-			const html = await res.text();
-			expect(res.ok).toBe(true);
-			expect(html).toContain('<script src="/app.js"></script>');
-			expect(html).toContain("Shared by all Telegram conversations.");
-			expect(html).toContain("New app conversations only.");
-			expect(html).toContain('id="telegramModelBtn"');
-			expect(html).toContain('id="telegramThinkingSeg"');
+			for (const path of ["/t", "/t/", "/t/settings", "/t/memory"]) {
+				await shellContract(
+					await fetch(`http://127.0.0.1:${http.port}${path}`, { redirect: "manual" }),
+				);
+			}
 		} finally {
 			http.stop();
 		}
 	});
 
-	test("GET /app.js serves the client as javascript, and it parses", async () => {
-		useHome();
-		const http = startHttp({
-			configRef: { current: { ...baseConfig } },
-			botToken: TOKEN,
-			onConfigWritten: () => {},
-		});
+	test("the door's page scope is deliberate — other pages and conversation links are 404", async () => {
+		const { http } = setup();
 		try {
-			const res = await fetch(`http://127.0.0.1:${http.port}/app.js`);
-			expect(res.ok).toBe(true);
-			expect(res.headers.get("content-type")).toContain("text/javascript");
-			const js = await res.text();
-			expect(() => new Function(js)).not.toThrow();
+			for (const path of ["/t/programs", "/t/delegations", "/t/status", "/t/c/abc", "/t/nope"]) {
+				expect((await fetch(`http://127.0.0.1:${http.port}${path}`)).status).toBe(404);
+			}
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("the retired plain-JS page is gone — / redirects to the PWA, /app.js is 404", async () => {
+		const { http } = setup();
+		try {
+			const root = await fetch(`http://127.0.0.1:${http.port}/`, { redirect: "manual" });
+			expect(root.status).toBe(302);
+			// Relative Location — #105: never bounce off a Host the
+			// backend guessed.
+			expect(root.headers.get("location")).toBe("/app/");
+			const index = await fetch(`http://127.0.0.1:${http.port}/index.html`, {
+				redirect: "manual",
+			});
+			expect(index.headers.get("location")).toBe("/app/");
+			expect((await fetch(`http://127.0.0.1:${http.port}/app.js`)).status).toBe(404);
 		} finally {
 			http.stop();
 		}
@@ -663,7 +635,7 @@ describe("mini-app page serving", () => {
 	test("the config GET carries the schema's kind lists for the client", async () => {
 		const { http, get } = setup();
 		try {
-			const j = (await (await get("/api/config")).json()) as {
+			const j = (await (await get("/api/settings")).json()) as {
 				config: { model: string };
 				providerKinds: string[];
 				searchKinds: string[];
@@ -914,7 +886,7 @@ function stubClient(): HindsightClient {
 	} as unknown as HindsightClient;
 }
 
-describe("mini-app memories browser", () => {
+describe("memories browser", () => {
 	test("list requires init data, honors the boot-target gate, and serves pages", async () => {
 		const page: MemoryDocPage<MemoryDocSummary> = {
 			items: [
@@ -1252,7 +1224,7 @@ describe("app deep link (Spin-off)", () => {
 	});
 });
 
-test("mini-app default saves freeze untouched legacy app settings before updating defaults", async () => {
+test("settings saves freeze untouched legacy app settings before updating defaults", async () => {
 	const store = openStore(":memory:");
 	const legacy = store.resolve(appAddress("untouched"), "/work");
 	const { http, post, configRef } = setup(undefined, (previous) => {
@@ -1303,11 +1275,11 @@ test("provider removal refuses to strand app selections, lists affected ids, and
 	}
 });
 
-describe("mini-app transcription config", () => {
+describe("transcription config", () => {
 	test("the kind lists ride the GET; a whistle save keeps hand-edited keywords", async () => {
 		const { configRef, http, post, get } = setup();
 		try {
-			const loaded = await get("/api/config");
+			const loaded = await get("/api/settings");
 			const body = (await loaded.json()) as {
 				transcriptionKinds: string[];
 				transcriptionDefaults: Record<string, { model: string; auth: string }>;
@@ -1367,7 +1339,7 @@ describe("mini-app transcription config", () => {
 	test("auth names ride the GET bare and sorted when the seam is wired", async () => {
 		const { http, get } = setup(undefined, undefined, () => ["zeta", "alpha", "zai"]);
 		try {
-			const loaded = await get("/api/config");
+			const loaded = await get("/api/settings");
 			const body = (await loaded.json()) as { authNames: string[] };
 			expect(body.authNames).toEqual(["alpha", "zai", "zeta"]);
 		} finally {

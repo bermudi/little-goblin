@@ -113,10 +113,15 @@ and templates before designing; cite what you took in the design docs.
   can't embed or boot. Changing the embedding model with a non-empty
   bank is a re-index, not an env edit.
 - `goblin-herdr.service` owns the `goblin` herdr session where delegated
-  harnesses run. Probe herdr only in a throwaway named session
-  (`herdr --session goblin-probe server`), never `default` or `goblin`.
-  Panes run bermudi's interactive zsh: aliases (codex, devin) already
-  add no-approval flags, and repeating them in harness args is fatal.
+  harnesses run. Verifying the herdr wire contract is the code's job,
+  not an agent's: run the gated drift check (`GOBLIN_HERDR_LIVE=1
+  bun test src/herdr.live.test.ts`) after herdr upgrades — red means
+  re-pin fixtures in one throwaway-session probe, then fix the adapter.
+  Any manual probing is authoring-only and goes to a throwaway named
+  session (`herdr --session goblin-probe server`), never `default` or
+  `goblin`. Panes run bermudi's interactive zsh: aliases (codex, devin)
+  already add no-approval flags, and repeating them in harness args is
+  fatal.
 
 ## Keys
 

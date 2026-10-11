@@ -327,9 +327,12 @@ export function makeHerdr(
 		},
 
 		async paneRun(paneId, command) {
-			await call("pane run", paneId, ["pane", "run", paneId, command], (stdout) =>
-				envelopeSchema.parse(parseJson("pane run", stdout)),
-			);
+			await call("pane run", paneId, ["pane", "run", paneId, command], (stdout) => {
+				// The real CLI's success is silent — no envelope. Empty stdout
+				// is pane run's ok contract (pinned in herdr.live.test.ts); a
+				// JSON envelope still parses if a future build emits one.
+				if (stdout.trim() !== "") envelopeSchema.parse(parseJson("pane run", stdout));
+			});
 		},
 
 		async paneWaitOutput(paneId, match, timeoutMs) {

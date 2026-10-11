@@ -176,6 +176,43 @@ describe("herdr adapter", () => {
 		await expect(h.get("x")).rejects.toThrow(/exit_2.*usage: herdr agent get/);
 	});
 
+	test("paneRun takes the CLI's silent success and a future envelope", async () => {
+		const f = fakeRunner([
+			{ code: 0, stdout: "", stderr: "" },
+			ok({ id: "cli:pane:run", result: { type: "ok" } }),
+		]);
+		const h = makeHerdr({ session: "goblin" }, f.run);
+		await h.paneRun("w1:p1", "printf seed");
+		await h.paneRun("w1:p1", "printf seed");
+		expect(f.calls[0]).toEqual([
+			"--session",
+			"goblin",
+			"pane",
+			"run",
+			"w1:p1",
+			"printf seed",
+		]);
+	});
+
+	test("paneWaitOutput sends the match/timeout argv and takes any envelope", async () => {
+		const f = fakeRunner([
+			ok({ id: "cli:pane:wait-output", result: { type: "output_matched", matched_line: "SEED" } }),
+		]);
+		const h = makeHerdr({ session: "goblin" }, f.run);
+		await h.paneWaitOutput("w1:p1", "SEED", 5_000);
+		expect(f.calls[0]).toEqual([
+			"--session",
+			"goblin",
+			"pane",
+			"wait-output",
+			"w1:p1",
+			"--match",
+			"SEED",
+			"--timeout",
+			"5000",
+		]);
+	});
+
 	test("readAgent returns the raw screen text, not the envelope", async () => {
 		const f = fakeRunner([{ code: 0, stdout: "line1\nline2\n", stderr: "" }]);
 		const h = makeHerdr({ session: "goblin" }, f.run);

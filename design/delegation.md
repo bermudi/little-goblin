@@ -81,6 +81,19 @@ Rulings:
   (`herdr --session <name> …` / `herdr --machine <label> …`, JSON out, zod-parsed; CLI errors are
   JSON on stderr with exit 1 and propagate with context). Every call
   logs (verb, target, outcome, ms).
+- **The adapter's wire contract is pinned against the real CLI, not
+  just fakes (2026-10-11).** `herdr.test.ts` fakes the runner —
+  hermetic, but blind to upstream drift: a herdr upgrade changing an
+  envelope shape or a success contract broke in production at
+  runtime, not in the suite (found live when the check was written:
+  `pane run` succeeds with empty stdout and the adapter's JSON demand
+  threw on every successful call). `src/herdr.live.test.ts` is the
+  gated drift check — `GOBLIN_HERDR_LIVE=1 bun test
+  src/herdr.live.test.ts` boots a disposable `goblin-drift` session
+  (never `default` or `goblin`), drives the adapter's verbs end to
+  end, and tears the session down. Run it after any herdr upgrade;
+  red means the CLI moved: re-pin with one throwaway-session probe,
+  fix the adapter, never discover it live.
 - **One lifecycle owner.** `src/delegation-lifecycle.ts` owns the
   delegation protocol end to end — launch, send, stop, read, the
   watcher's verdicts, boot recovery — including every workspace close

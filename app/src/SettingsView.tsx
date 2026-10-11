@@ -28,6 +28,13 @@ import type { ThinkingLevel } from "../../src/config.ts";
 type Section = "chat" | "voice" | "web" | "memory" | "providers" | "access";
 type SheetMode = "model" | "telegram" | "title" | "vision";
 
+// One channel's thinking rungs: the offered values plus whether the
+// capability lookup behind them failed.
+interface ChannelLevels {
+	values: string[];
+	unavailable: boolean;
+}
+
 // The draft serializes without the providers' render ids — they're a
 // React keying detail, not editor state.
 const serialize = (d: SettingsDraft, ps: ProvDraft[]) =>
@@ -655,9 +662,13 @@ export function SettingsView({
 		fetch: ChainEntry[] | null;
 		memory: MemDraft | null;
 	}>({ tts: null, transcription: null, vision: null, search: null, fetch: null, memory: null });
-	const [levels, setLevels] = useState<{ app: string[]; telegram: string[] }>({
-		app: [...THINKING_ORDER],
-		telegram: [...THINKING_ORDER],
+	// values = the rungs the Seg control offers; unavailable = the
+	// capability lookup failed, so the full ladder is shown as a
+	// stand-in and the caption says so — the server clamps silently at
+	// call time otherwise.
+	const [levels, setLevels] = useState<{ app: ChannelLevels; telegram: ChannelLevels }>({
+		app: { values: [...THINKING_ORDER], unavailable: false },
+		telegram: { values: [...THINKING_ORDER], unavailable: false },
 	});
 	const thinkSeq = useRef(0);
 	const patchTranscription = (p: Partial<TrDraft>) =>
@@ -734,20 +745,24 @@ export function SettingsView({
 		if (kinds === null) return;
 		const seq = ++thinkSeq.current;
 		const t = setTimeout(() => {
-			const channel = async (ref: string): Promise<string[]> => {
+			// The full ladder is honest for the no-lookup paths (no model
+			// picked, provider unknown); only a real fetch failure is
+			// degraded, and the flag surfaces it in the row caption.
+			const full: ChannelLevels = { values: [...THINKING_ORDER], unavailable: false };
+			const channel = async (ref: string): Promise<ChannelLevels> => {
 				const slash = ref.indexOf("/");
-				if (slash <= 0) return [...THINKING_ORDER];
+				if (slash <= 0) return full;
 				const p = provs.find((q) => q.name.trim() === ref.slice(0, slash));
-				if (p === undefined) return [...THINKING_ORDER];
+				if (p === undefined) return full;
 				const base =
 					p.kind === "openai-compatible" || p.kind === "responses"
 						? p.baseUrl.trim() || undefined
 						: undefined;
 				try {
 					const r = await getThinkingLevels(token, p.kind, ref.slice(slash + 1), base);
-					return r.levels;
+					return { values: r.levels, unavailable: false };
 				} catch {
-					return [...THINKING_ORDER];
+					return { values: [...THINKING_ORDER], unavailable: true };
 				}
 			};
 			void Promise.all([channel(draft.model), channel(draft.telegramModel)]).then(
@@ -1011,10 +1026,18 @@ export function SettingsView({
 							draft.telegramModel,
 							"tgModelLabel",
 						)}
-						<Row label="Thinking" cap="Only levels this model can express are shown." col>
+						<Row
+							label="Thinking"
+							cap={
+								levels.telegram.unavailable
+									? "Couldn't check this model's levels — every rung is shown; the server clamps at send time."
+									: "Only levels this model can express are shown."
+							}
+							col
+						>
 							<Seg
-								options={levels.telegram}
-								value={displayLevel(draft.telegramThinking, levels.telegram)}
+								options={levels.telegram.values}
+								value={displayLevel(draft.telegramThinking, levels.telegram.values)}
 								ariaLabel="Telegram thinking level"
 								onChange={(v) => patchDraft({ telegramThinking: v as ThinkingLevel })}
 							/>
@@ -1029,10 +1052,18 @@ export function SettingsView({
 							draft.model,
 							"appModelLabel",
 						)}
-						<Row label="Thinking" cap="Only levels this model can express are shown." col>
+						<Row
+							label="Thinking"
+							cap={
+								levels.app.unavailable
+									? "Couldn't check this model's levels — every rung is shown; the server clamps at send time."
+									: "Only levels this model can express are shown."
+							}
+							col
+						>
 							<Seg
-								options={levels.app}
-								value={displayLevel(draft.thinking, levels.app)}
+								options={levels.app.values}
+								value={displayLevel(draft.thinking, levels.app.values)}
 								ariaLabel="App default thinking level"
 								onChange={(v) => patchDraft({ thinking: v as ThinkingLevel })}
 							/>

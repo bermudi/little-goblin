@@ -1154,13 +1154,17 @@ async function runStagedReview(
 				else skipped.push({ skill, drifted: outcome.drifted });
 			}
 		} catch (err) {
-			log.error("reviewer proposal failed — failing proposal rolled back, earlier proposals stand", err, {
-				review_id: reviewId,
-				conversation: conv,
-				proposed: proposedNames,
-				skipped,
-				staged: stagedSkills,
-			});
+			log.error(
+				"reviewer proposal failed — failing proposal rolled back, earlier proposals stand",
+				err,
+				{
+					review_id: reviewId,
+					conversation: conv,
+					proposed: proposedNames,
+					skipped,
+					staged: stagedSkills,
+				},
+			);
 			proposeError = err;
 		}
 		if (skipped.length > 0) {

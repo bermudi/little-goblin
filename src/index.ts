@@ -568,7 +568,7 @@ async function boot() {
 			evidence: block.evidence,
 			system1: configRef.current.system1 !== undefined,
 		});
-		// Staging from a killed run is garbage — clear before any review publishes.
+		// Staging from a killed run is garbage — clear before any review proposes.
 		cleanupStaging(paths.workspace());
 		runtime.setReviewer(
 			new Reviewer({

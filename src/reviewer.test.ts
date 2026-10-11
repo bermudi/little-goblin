@@ -482,14 +482,14 @@ describe("review run — staging and publication", () => {
 			script: [
 				{
 					calls: [
-							{
-								name: "write_file",
-								input: { path: "dup/SKILL.md", content: SKILL_MD("dup", "second take") },
-							},
-						],
-					},
-					{ text: "saved" },
-				],
+						{
+							name: "write_file",
+							input: { path: "dup/SKILL.md", content: SKILL_MD("dup", "second take") },
+						},
+					],
+				},
+				{ text: "saved" },
+			],
 		});
 		const bin = deps.skillsRefBin!;
 		writeFileSync(
@@ -512,17 +512,17 @@ describe("review run — staging and publication", () => {
 		symlinkSync(truth, join(h.proposed, "linked"));
 		const deps = h.depsFor({
 			nouls: { correction: 0.9, procedure: 0 },
-				script: [
-					{
-						calls: [
-							{
-								name: "write_file",
-								input: { path: "linked/SKILL.md", content: SKILL_MD("linked", "review's take") },
-							},
-						],
-					},
-					{ text: "saved" },
-				],
+			script: [
+				{
+					calls: [
+						{
+							name: "write_file",
+							input: { path: "linked/SKILL.md", content: SKILL_MD("linked", "review's take") },
+						},
+					],
+				},
+				{ text: "saved" },
+			],
 		});
 		await new Reviewer(deps).considerTurn(turn());
 		expect(lstatSync(join(h.proposed, "linked")).isSymbolicLink()).toBe(true);
@@ -561,9 +561,7 @@ describe("review run — staging and publication", () => {
 		).considerTurn(turn());
 		// The proposal is a full copy of the staged skill: the executable
 		// helper keeps its mode, while the live tree keeps its original.
-		expect(readFileSync(join(h.proposed, "existing", "SKILL.md"), "utf8")).toContain(
-			"after",
-		);
+		expect(readFileSync(join(h.proposed, "existing", "SKILL.md"), "utf8")).toContain("after");
 		expect(lstatSync(join(h.proposed, "existing", "helper.sh")).mode & 0o777).toBe(0o755);
 		expect(readFileSync(join(h.skills, "existing", "SKILL.md"), "utf8")).toContain("before");
 		h.store.close();

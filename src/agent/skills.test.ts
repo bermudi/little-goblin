@@ -218,10 +218,10 @@ describe("formatSkillsSection", () => {
 			{
 				entries: [
 					{
-					name: "pdf-tables",
-					description: "Extract tables from PDFs",
-					path: "skills-proposed/pdf-tables/SKILL.md",
-				},
+						name: "pdf-tables",
+						description: "Extract tables from PDFs",
+						path: "skills-proposed/pdf-tables/SKILL.md",
+					},
 				],
 				skipped: 0,
 			},

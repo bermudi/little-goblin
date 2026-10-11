@@ -11,6 +11,8 @@ import type {
 	AppMessageList,
 	AppNote,
 	AppNoteList,
+	AppNoteRewriteRequest,
+	AppNoteRewriteResponse,
 	AppNoteVersion,
 	AppNoteVersionList,
 	AppProject,
@@ -187,6 +189,8 @@ export async function patchNote(
 		projectId?: string | null;
 		pinned?: boolean;
 		archived?: boolean;
+		// 'rewrite' marks the accepted proposal so the version names it.
+		source?: "app" | "rewrite";
 	},
 	// keepalive: the pagehide flush — the request must outlive the page.
 	opts: { ifMatch?: number; keepalive?: boolean } = {},
@@ -223,6 +227,22 @@ export function appendNote(token: string | null, id: string, text: string): Prom
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({ text }),
+	});
+}
+
+// The rewrite POST generates only — the proposal returns through the
+// guarded PATCH with source 'rewrite' (design/projects.md → AI rewrite).
+export function rewriteNote(
+	token: string | null,
+	id: string,
+	input: AppNoteRewriteRequest,
+	opts: { signal?: AbortSignal } = {},
+): Promise<AppNoteRewriteResponse> {
+	return request(token, `/api/app/notes/${encodeURIComponent(id)}/rewrite`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(input),
+		...(opts.signal !== undefined ? { signal: opts.signal } : {}),
 	});
 }
 

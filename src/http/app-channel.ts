@@ -70,6 +70,8 @@ import type {
 	AppMessageList,
 	AppNote,
 	AppNoteList,
+	AppNoteRewriteRequest,
+	AppNoteRewriteResponse,
 	AppNoteSummary,
 	AppNoteVersion,
 	AppNoteVersionList,
@@ -122,6 +124,13 @@ export interface AppChannelDeps {
 	// First-turn naming via titleModel — the same closure the tg lane
 	// uses for implicit topics. Absent = no auto-titling.
 	titleFor?: (text: string) => Promise<string | null>;
+	// Selection rewrite — one generate call, no write (design/projects.md
+	// → AI rewrite). Absent = the route refuses 503.
+	rewriteNote?: (
+		noteId: string,
+		input: AppNoteRewriteRequest,
+		signal: AbortSignal,
+	) => Promise<string>;
 	// The operator surface (operator.ts) — shared verbatim with the mini
 	// app's /api/* routes; configRef/onConfigWritten already live on this
 	// deps object so the bundle carries only the extra seams. Absent =
@@ -330,6 +339,11 @@ const notePatchBody = z
 		projectId: z.string().min(1).nullable().optional(),
 		pinned: z.boolean().optional(),
 		archived: z.boolean().optional(),
+		// The accepted rewrite lands as an ordinary guarded write —
+		// 'rewrite' versions the pre-state so the operator can see what
+		// the model changed. Only app-facing sources; agent/append/
+		// restore keep their own doors.
+		source: z.enum(["app", "rewrite"]).optional(),
 	})
 	.strict()
 	.refine(
@@ -343,6 +357,19 @@ const notePatchBody = z
 	);
 
 const noteAppendBody = z.object({ text: z.string().min(1) });
+
+// design/projects.md → AI rewrite: the selection cap rides a whole
+// note's plausible size; whitespace-only selection can't anchor a
+// rewrite, and a blank instruction is a client bug.
+const noteRewriteBody = z
+	.object({
+		selection: z.string().min(1).max(50_000).refine(
+			(s) => s.trim() !== "",
+			{ message: "selection is empty" },
+		),
+		instruction: z.string().trim().min(1).max(2_000),
+	})
+	.strict();
 
 // The conversation id arrives as the full address — "app/<id>" — so a
 // telegram id can never be submitted through this surface. The shape
@@ -983,6 +1010,50 @@ export async function handleAppApi(
 		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 	}
 
+	const noteRewriteMatch = path.match(/^\/api\/app\/notes\/([^/]+)\/rewrite$/);
+	if (noteRewriteMatch) {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		if (deps.rewriteNote === undefined) {
+			return Response.json({ error: "rewrite unavailable" }, { status: 503, headers: NO_STORE });
+		}
+		const refusedJson = jsonBodyRefusal(req);
+		if (refusedJson !== null) return refusedJson;
+		let json: unknown;
+		try {
+			json = await req.json();
+		} catch {
+			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+		}
+		const parsed = noteRewriteBody.safeParse(json);
+		if (!parsed.success) {
+			return Response.json(
+				{ error: z.prettifyError(parsed.error) },
+				{ status: 422, headers: NO_STORE },
+			);
+		}
+		const note = deps.notes.get(noteRewriteMatch[1]!);
+		if (note === null) {
+			return Response.json({ error: "no such note" }, { status: 404, headers: NO_STORE });
+		}
+		// Archived notes are read-only — a rewrite has no place to land.
+		if (note.archivedAt !== null) {
+			return noteError(new NoteInputError("note is archived"))!;
+		}
+		// Generation only — the accepted proposal returns through PATCH.
+		// Model failures propagate to the logged 500 like every other
+		// unexpected error; the client surfaces them inline.
+		const replacement = await deps.rewriteNote(
+			note.id,
+			parsed.data,
+			req.signal,
+		);
+		return Response.json({ replacement } satisfies AppNoteRewriteResponse, {
+			headers: NO_STORE,
+		});
+	}
+
 	const noteRestoreMatch = path.match(/^\/api\/app\/notes\/([^/]+)\/versions\/(\d+)\/restore$/);
 	if (noteRestoreMatch) {
 		if (req.method !== "POST") {
@@ -1142,7 +1213,7 @@ export async function handleAppApi(
 							...(patch.title !== undefined ? { title: patch.title } : {}),
 							...(patch.body !== undefined ? { body: patch.body } : {}),
 						},
-						"app",
+						patch.source ?? "app",
 						{ expectedRev },
 					)
 				: deps.notes.get(noteId)!;

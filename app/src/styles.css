@@ -2888,7 +2888,7 @@ select.ui-input option {
 	gap: 0.35rem;
 	border: 1px solid var(--app-border);
 	border-radius: 10px;
-	background: var(--app-gray-950);
+	background: var(--app-gray-100);
 	padding: 0.5rem;
 }
 .note-pick input[type="search"] {
@@ -2956,7 +2956,7 @@ form.composer {
 .note-card {
 	border: 1px solid var(--app-border);
 	border-radius: 10px;
-	background: var(--app-gray-950);
+	background: var(--app-gray-100);
 	margin: 0.4rem 0;
 }
 .note-card-head {
@@ -3140,6 +3140,8 @@ button.link:hover {
 	font-size: 13px;
 	line-height: 1.55;
 	min-height: 12rem;
+	/* ProseMirror expects pre-wrap for correct editing behavior. */
+	white-space: pre-wrap;
 }
 .note-editor .ProseMirror p {
 	margin: 0.35rem 0;
@@ -3164,14 +3166,14 @@ button.link:hover {
 .note-editor .ProseMirror code {
 	font-family: var(--font-mono);
 	font-size: 0.92em;
-	background: var(--app-gray-900);
+	background: var(--app-gray-100);
 	border-radius: 4px;
 	padding: 0.05em 0.3em;
 }
 .note-editor .ProseMirror pre {
 	font-family: var(--font-mono);
 	font-size: 12px;
-	background: var(--app-gray-950);
+	background: var(--app-gray-100);
 	border: 1px solid var(--app-border);
 	border-radius: 8px;
 	padding: 0.6rem 0.75rem;
@@ -3201,6 +3203,55 @@ button.link:hover {
 .note-editor .ProseMirror li[data-checked="true"] {
 	text-decoration: line-through;
 	color: var(--app-fg-muted);
+}
+.note-editor-bar {
+	border-top: 1px solid var(--app-border);
+	padding: 0.25rem 0.6rem;
+}
+.note-rewrite {
+	border-top: 1px solid var(--app-border);
+	padding: 0.5rem 0.75rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.45rem;
+	font-size: 11.5px;
+}
+.note-rewrite-sel,
+.note-rewrite-preview {
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	white-space: pre-wrap;
+	word-break: break-word;
+	color: var(--app-fg);
+	background: var(--app-gray-50);
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	padding: 0.4rem 0.6rem;
+	margin: 0;
+	max-height: 10rem;
+	overflow-y: auto;
+}
+.note-rewrite-field {
+	display: flex;
+	flex-direction: column;
+	gap: 0.2rem;
+	color: var(--app-fg-muted);
+}
+.note-rewrite-field textarea {
+	font: inherit;
+	color: var(--app-fg);
+	background: var(--app-bg);
+	border: 1px solid var(--app-border);
+	border-radius: 6px;
+	padding: 0.3rem 0.5rem;
+	resize: vertical;
+}
+.note-rewrite-error {
+	color: var(--app-danger);
+}
+.note-rewrite-actions {
+	align-items: center;
+	gap: 0.5rem;
 }
 .note-save-status {
 	font-size: 11px;

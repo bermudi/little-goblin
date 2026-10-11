@@ -93,6 +93,17 @@ export interface AppNoteVersion extends AppNoteVersionMeta {
 	body: string;
 }
 
+/** POST /api/app/notes/<id>/rewrite — one plain generate call on the
+ * root app-default model; the server writes nothing. The accepted
+ * proposal comes back through the ordinary PATCH with source rewrite. */
+export interface AppNoteRewriteRequest {
+	selection: string;
+	instruction: string;
+}
+export interface AppNoteRewriteResponse {
+	replacement: string;
+}
+
 /** GET /api/app/conversations/<id>/messages — stored UIMessages verbatim. */
 export interface AppMessageList {
 	messages: UIMessage[];

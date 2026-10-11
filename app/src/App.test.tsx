@@ -1172,6 +1172,10 @@ describe("app projects surface", () => {
 			}
 			if (url.startsWith("/api/app/notes/")) {
 				const id = decodeURIComponent(url.slice("/api/app/notes/".length).split("/")[0]!);
+				if (url.endsWith("/rewrite") && method === "POST") {
+					posts.push({ url, body });
+					return Promise.resolve(jsonResponse({ replacement: "a tighter take" }));
+				}
 				if (url.endsWith("/append")) {
 					posts.push({ url, body });
 					const n = notes.find((x) => x.id === id);
@@ -1677,5 +1681,83 @@ describe("app projects surface", () => {
 		expect(container.querySelector(".note-version-preview")!.textContent).toContain(
 			"Save or resolve edits before restoring",
 		);
+	});
+
+	test("a rewrite flow locks the page controls until it closes", async () => {
+		notes = [noteRow("Shopping")];
+		noteGetOverride = {
+			...noteFull(notes[0]!, "alpha beta gamma"),
+			rev: 1,
+		};
+		win.history.replaceState(null, "", "/app/n/n-shopping");
+		await mount();
+		// The lazy editor mounts async — wait for its DOM.
+		let pm: Element | null = null;
+		for (let i = 0; i < 20 && pm === null; i++) {
+			pm = container.querySelector(".ProseMirror");
+			if (pm === null) await settle();
+		}
+		expect(pm).not.toBeNull();
+		const title = container.querySelector("input.note-title")! as HTMLInputElement;
+		const flagsSelect = container.querySelector(".note-flags select")! as HTMLSelectElement;
+		const flagButton = (label: string) =>
+			[...container.querySelectorAll(".note-flags button")].find(
+				(b) => b.textContent === label,
+			) as HTMLButtonElement;
+		const chat = flagButton("Chat with this note");
+		expect(title.disabled).toBe(false);
+		expect(flagsSelect.disabled).toBe(false);
+		expect(chat.disabled).toBe(false);
+
+		// A real DOM selection inside the doc — ProseMirror maps it to a
+		// state selection, which is what the toolbar button watches.
+		const text = pm!.querySelector("p")!.firstChild!;
+		await act(async () => {
+			(pm as HTMLElement).focus();
+			win.getSelection()!.setBaseAndExtent(
+				text as unknown as import("happy-dom").Node,
+				6,
+				text as unknown as import("happy-dom").Node,
+				10,
+			);
+			document.dispatchEvent(new win.Event("selectionchange") as unknown as Event);
+		});
+		await settle();
+		const rewriteBtn = [...container.querySelectorAll("button")].find(
+			(b) => b.textContent === "Rewrite selection",
+		) as HTMLButtonElement;
+		expect(rewriteBtn.disabled).toBe(false);
+		await click(rewriteBtn);
+		await settle();
+		expect(container.querySelector(".note-rewrite")).not.toBeNull();
+		expect(title.disabled).toBe(true);
+		expect(flagsSelect.disabled).toBe(true);
+		expect(flagButton("Pin").disabled).toBe(true);
+		expect(flagButton("Archive").disabled).toBe(true);
+		expect(chat.disabled).toBe(true);
+
+		await typeInto(
+			container.querySelector(".note-rewrite-field textarea")!,
+			"tighten it",
+			win.HTMLTextAreaElement.prototype,
+		);
+		await click(
+			[...container.querySelectorAll("button")].find(
+				(b) => b.textContent === "Generate rewrite",
+			),
+		);
+		await settle();
+		expect(container.querySelector(".note-rewrite-preview")!.textContent).toContain(
+			"a tighter take",
+		);
+		expect(title.disabled).toBe(true);
+
+		await click(
+			[...container.querySelectorAll("button")].find((b) => b.textContent === "Discard"),
+		);
+		await settle();
+		expect(container.querySelector(".note-rewrite")).toBeNull();
+		expect(title.disabled).toBe(false);
+		expect(chat.disabled).toBe(false);
 	});
 });

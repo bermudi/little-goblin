@@ -220,6 +220,22 @@ the editor previews, the operator accepts, and the accepted change is a
 normal save with `source: rewrite`. Not a conversation, not a turn —
 the `titleModel` precedent.
 
+The editor captures the ProseMirror selection before opening the rewrite
+panel, locks editing, and finishes pending autosaves before requesting a
+proposal. Thus the pre-rewrite version contains the operator's latest
+text, not the preceding autosave. Cancel/discard unlocks without applying
+the proposal. Accept computes the replacement on a detached transaction,
+then PATCHes the resulting Markdown with `source: rewrite` and `If-Match`.
+Only a successful server save replaces the live document; a changed local
+document or a newer remote revision refuses acceptance without discarding
+the operator's buffer. Title/flag controls are disabled during this flow.
+
+The one-off request has no tools or automatic retry, a 120-second timeout,
+a 50,000-character selection cap, and a 2,000-character instruction cap.
+Empty or truncated model output fails visibly rather than offering a
+partial replacement. Logs carry the configured model, note id, byte
+counts, usage, outcome, and elapsed time, never note text.
+
 ### HTTP surface
 
 All under `/api/app/*`, behind the channel's bearer/trust gate and the

@@ -12,6 +12,7 @@ import { systemPromptFor } from "./agent/prompt.ts";
 import { observedModel, carriesMedia, resolveModel, thinkingOptions } from "./agent/providers.ts";
 import type { MediaPosition } from "./agent/attachments.ts";
 import { generateTopicTitle } from "./agent/title.ts";
+import { generateNoteRewrite } from "./agent/note-rewrite.ts";
 import { generateText } from "ai";
 import { homedir } from "node:os";
 import { probeFfmpeg, speechEngine, transcribeAudio } from "./agent/transcribe.ts";
@@ -814,6 +815,13 @@ async function boot() {
 					return synthesizeSpeech(text, tts);
 				},
 				titleFor,
+				// Selection rewrite — the configured root model/thinking;
+				// generation only, the accepted proposal returns via PATCH.
+				rewriteNote: (noteId, input, signal) =>
+					generateNoteRewrite(
+						{ configRef, auth },
+						{ noteId, selection: input.selection, instruction: input.instruction, signal },
+					),
 			}),
 		onConfigWritten,
 	});

@@ -298,6 +298,12 @@ export function NoteView({
 	const [dirty, setDirty] = useState(false);
 	const [versionsOpen, setVersionsOpen] = useState(false);
 	const [busy, setBusy] = useState(false);
+	// A selection rewrite locks the editor — title, flags, restore and
+	// the chat action lock with it so nothing races the apply PATCH.
+	const [rewriteBusy, setRewriteBusy] = useState(false);
+	// The apply PATCH itself is held — Keep mine/Load theirs must not
+	// launch an ordinary save that races it.
+	const [rewriteApplying, setRewriteApplying] = useState(false);
 	const editorRef = useRef<NoteEditorHandle>(null);
 	const dirtyRef = useRef(false);
 	// Refs mirror what the focus check reads outside render: the loaded
@@ -455,6 +461,7 @@ export function NoteView({
 					<button
 						type="button"
 						className="ghost-inline"
+						disabled={rewriteApplying}
 						onClick={() => {
 							editorRef.current?.resolve("theirs", conflict);
 							setNote(conflict);
@@ -467,6 +474,7 @@ export function NoteView({
 					<button
 						type="button"
 						className="ghost-inline"
+						disabled={rewriteApplying}
 						onClick={() => {
 							const t = titleDraft.trim();
 							editorRef.current?.resolve(
@@ -489,7 +497,7 @@ export function NoteView({
 					onKeyDown={(e) => {
 						if (e.key === "Enter") saveTitle();
 					}}
-					disabled={archived}
+					disabled={archived || rewriteBusy}
 				/>
 				{note.pinnedAt !== null && <span className="pill">pinned</span>}
 				{archived && <span className="pill">archived</span>}
@@ -497,7 +505,7 @@ export function NoteView({
 			<div className="row note-flags">
 				<select
 					value={note.projectId ?? ""}
-					disabled={busy}
+					disabled={busy || rewriteBusy}
 					onChange={(e) =>
 						flag({ projectId: e.target.value === "" ? null : e.target.value }, "move the note")
 					}
@@ -512,7 +520,7 @@ export function NoteView({
 				<button
 					type="button"
 					className="ghost-inline"
-					disabled={busy}
+					disabled={busy || rewriteBusy}
 					onClick={() => flag({ pinned: note.pinnedAt === null }, "pin the note")}
 				>
 					{note.pinnedAt === null ? "Pin" : "Unpin"}
@@ -520,13 +528,18 @@ export function NoteView({
 				<button
 					type="button"
 					className="ghost-inline"
-					disabled={busy}
+					disabled={busy || rewriteBusy}
 					onClick={() => flag({ archived: !archived }, "archive the note")}
 				>
 					{archived ? "Unarchive" : "Archive"}
 				</button>
 				{archived && (
-					<button type="button" className="ghost-inline" disabled={busy} onClick={remove}>
+					<button
+						type="button"
+						className="ghost-inline"
+						disabled={busy || rewriteBusy}
+						onClick={remove}
+					>
 						Delete
 					</button>
 				)}
@@ -537,7 +550,12 @@ export function NoteView({
 				>
 					Versions
 				</button>
-				<button type="button" className="ghost" onClick={() => onChat(note)}>
+				<button
+					type="button"
+					className="ghost"
+					disabled={rewriteBusy}
+					onClick={() => onChat(note)}
+				>
 					Chat with this note
 				</button>
 			</div>
@@ -565,6 +583,8 @@ export function NoteView({
 							dirtyRef.current = d;
 							setDirty(d);
 						}}
+						onRewriteBusy={setRewriteBusy}
+						onRewriteApplying={setRewriteApplying}
 					/>
 				</Suspense>
 			)}
@@ -572,7 +592,7 @@ export function NoteView({
 				<VersionsPanel
 					token={token}
 					note={note}
-					canRestore={conflict === null && !dirty}
+					canRestore={conflict === null && !dirty && !rewriteBusy}
 					onRestored={(n) => {
 						adoptRemote(n);
 						setTitleDraft(n.title);

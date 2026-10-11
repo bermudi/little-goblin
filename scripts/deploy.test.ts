@@ -110,7 +110,12 @@ function runDeploy(changed: string[] = [], options: Options = {}) {
 		if (corruptRev) {
 			const object = resolve(
 				repo,
-				git(repo, "rev-parse", "--git-path", `objects/${corruptRev.slice(0, 2)}/${corruptRev.slice(2)}`),
+				git(
+					repo,
+					"rev-parse",
+					"--git-path",
+					`objects/${corruptRev.slice(0, 2)}/${corruptRev.slice(2)}`,
+				),
 			);
 			chmodSync(object, 0o644);
 			writeFileSync(object, "not a compressed Git object\n");
@@ -203,6 +208,9 @@ esac`,
 			);
 		stub("sleep", "exit 0");
 		stub("ssh", "echo 'deployment must be local' >&2; exit 90");
+		// The marker's fsyncs are prod-real durability; the hermetic PATH
+		// only needs the command to exist.
+		stub("sync", "exit 0");
 		const result = spawnSync("/bin/bash", [join(repo, "scripts", "deploy.sh")], {
 			cwd: home,
 			env: {
@@ -245,7 +253,9 @@ function expectPreflightFailure(result: ReturnType<typeof runDeploy>, diagnostic
 	expect(
 		result.calls.some(
 			(call) =>
-				call.startsWith("bun ") || /^git (push|fetch|pull)\b/.test(call) || call.includes(" restart "),
+				call.startsWith("bun ") ||
+				/^git (push|fetch|pull)\b/.test(call) ||
+				call.includes(" restart "),
 		),
 	).toBe(false);
 }
@@ -346,13 +356,8 @@ describe("local deployment refresh and rollback", () => {
 	test("backend-only deployment gates locally without rebuilding or updating remote refs", () => {
 		const result = runDeploy(["src/index.ts", "src/http/app-channel.ts"]);
 		expect(result.status).toBe(0);
-		expect(result.calls.filter((call) => call.startsWith("bun "))).toEqual([
-			"bun run typecheck",
-		]);
-		const boundaries = [
-			"bun run typecheck",
-			"systemctl --user restart goblin",
-		];
+		expect(result.calls.filter((call) => call.startsWith("bun "))).toEqual(["bun run typecheck"]);
+		const boundaries = ["bun run typecheck", "systemctl --user restart goblin"];
 		const indexes = boundaries.map((call) => result.calls.indexOf(call));
 		expect(
 			indexes.every((index, i) => index >= 0 && (i === 0 || index > (indexes[i - 1] ?? -1))),
@@ -386,9 +391,7 @@ describe("local deployment refresh and rollback", () => {
 		const result = runDeploy(["deploy/memory/healthcheck.py"]);
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("never auto-applied");
-		expect(result.calls.filter((call) => call.startsWith("bun "))).toEqual([
-			"bun run typecheck",
-		]);
+		expect(result.calls.filter((call) => call.startsWith("bun "))).toEqual(["bun run typecheck"]);
 		expect(result.calls.filter((call) => call.includes(" restart "))).toEqual([
 			"systemctl --user restart goblin",
 		]);

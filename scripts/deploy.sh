@@ -105,6 +105,11 @@ fi
 sleep 3
 journal="$(journalctl --user -u goblin --since "@$restart_epoch" --no-pager)"
 # grep's 1 means no error lines, not a failed journal read.
+# Deliberate tolerance: error-level lines are reported, not fatal — a
+# long-lived agent logs nonfatal subsystem errors without stopping the
+# unit. The hard gates are the is-active check above and the memory
+# probe below; this print exists so a recurring boot error ships
+# visibly with the deploy that introduced it.
 errors="$(printf '%s\n' "$journal" | grep '"level":"error"' || [ "$?" -eq 1 ])"
 if [ -n "$errors" ]; then
 	echo "deploy: WARNING — error lines in the fresh journal:" >&2
@@ -132,12 +137,15 @@ else
 	echo "  memory probe skipped: podman unavailable"
 fi
 
-# Durable like every other state write: tmp + rename, so a torn
-# write can never leave a short line the next deploy rejects as an
-# invalid commit. Same directory, so mv is an atomic rename(2).
+# Durable like every other state write: tmp + fsync + rename + directory
+# fsync — atomic *naming* alone is not durability: a crash can persist the
+# rename with unflushed data, leaving a short/empty line the next deploy
+# rejects as an invalid commit (wedging deploys until hand-repaired).
 marker_tmp="$(mktemp "$marker_dir/.GOBLIN_DEPLOYED_REV.XXXXXX")" || fail "cannot create deployment marker temp file"
 printf '%s\n' "$new_rev" >"$marker_tmp" || { rm -f "$marker_tmp"; fail "cannot write deployment marker"; }
+sync -d "$marker_tmp" || fail "cannot flush deployment marker temp file"
 mv -f "$marker_tmp" "$marker" || { rm -f "$marker_tmp"; fail "cannot update deployment marker: $marker"; }
+sync -d "$marker_dir" || true
 step "done: g7 @ ${new_rev:0:7}"
 if [ -n "$old_rev" ]; then
 	printf -v rollback_marker '%q' "$marker"

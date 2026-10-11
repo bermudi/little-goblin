@@ -12,7 +12,7 @@ export default defineConfig({
 	server: {
 		proxy: {
 			"/api": {
-				target: process.env.GOBLIN_HTTP ?? "http://127.0.0.1:8788",
+				target: process.env.GOBLIN_HTTP ?? "http://127.0.0.1:8787",
 				// Trust mode's browser-origin gate refuses mutations whose
 				// Origin isn't the configured publicUrl (design/app.md, the
 				// #75 line) — a dev page's localhost origin can never match.

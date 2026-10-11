@@ -90,16 +90,53 @@ test("general credential command inspection never executes the boundary probe", 
 	expect(result.stdout).not.toContain("FIXTURE_SECRET");
 	expect(result.stderr).toBe("");
 });
-test("multi-directory direct Pass path recognizes the supported profile without execution", () => {
+
+const record = (value: string): string =>
+	`{"name":"fixture","value":${JSON.stringify(value)}}`;
+
+// The supported grammar is literal: `!pass-keys get goblin-dev NAME`
+// with NAME matching the health-key shape [A-Z0-9_]{1,128} — digits
+// and a bare underscore are valid names.
+for (const key of ["1PASSWORD", "_", "_2", "A".repeat(128)])
+	test(`the literal supported pass-keys record reports keys (${key.slice(0, 10)}…)`, () => {
+		const result = inspect(`${config}}`, record(`!pass-keys get goblin-dev ${key}`));
+		expect(result.status).toBe(0);
+		expect(JSON.parse(result.stdout) as unknown).toEqual({
+			delegation: false,
+			keys: true,
+			port: 8787,
+		});
+		expect(result.invoked).toBe(false);
+	});
+
+for (const [name, value] of [
+	["a lowercase key", "!pass-keys get goblin-dev fixture"],
+	["a mixed-case key", "!pass-keys get goblin-dev Fixture"],
+	["a hyphenated key", "!pass-keys get goblin-dev FIX-TURE"],
+	["a missing key", "!pass-keys get goblin-dev"],
+	["an oversized key", `!pass-keys get goblin-dev ${"A".repeat(129)}`],
+	["another profile", "!pass-keys get other FIXTURE"],
+	["an absolute pass-keys path", "!/usr/local/bin/pass-keys get goblin-dev FIXTURE"],
+	["the multi-directory absolute path", "!/usr/bin/pass-keys get goblin-dev FIXTURE"],
+	["a relative pass-keys path", "!./pass-keys get goblin-dev FIXTURE"],
+	["a trailing command", "!pass-keys get goblin-dev FIXTURE;rm -rf /"],
+	["an extra argument", "!pass-keys get goblin-dev FIXTURE EXTRA"],
+] as const)
+	test(`${name} fails safely without executing anything`, () => {
+		const result = inspect(`${config}}`, record(value));
+		expect(result.status).not.toBe(0);
+		expect(result.stdout).toBe("");
+		expect(result.invoked).toBe(false);
+	});
+
+test("a pass-keys-looking refusal behind a valid record still fails", () => {
+	// passCommand must evaluate every record — a .some() that
+	// short-circuits on the valid first record would skip the check.
 	const result = inspect(
 		`${config}}`,
-		'{"name":"fixture","value":"!/usr/local/bin/pass-keys get goblin-dev FIXTURE"}',
+		`${record("!pass-keys get goblin-dev FIXTURE")}\n${record("!/usr/bin/pass-keys get goblin-dev FIXTURE")}`,
 	);
-	expect(result.status).toBe(0);
-	expect(JSON.parse(result.stdout) as unknown).toEqual({
-		delegation: false,
-		keys: true,
-		port: 8787,
-	});
+	expect(result.status).not.toBe(0);
+	expect(result.stdout).toBe("");
 	expect(result.invoked).toBe(false);
 });

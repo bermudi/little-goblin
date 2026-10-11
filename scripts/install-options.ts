@@ -10,20 +10,21 @@ try {
 	const passCommand = (value: string): string | undefined => {
 		if (!value.startsWith("!")) return undefined;
 		const executable = value.slice(1).match(/^[^\s;&|()"'`]+/)?.[0];
-		return executable && basename(executable) === "pass-keys" ? executable : undefined;
+		if (executable === undefined || basename(executable) !== "pass-keys") return undefined;
+		// Basename only identifies pass-keys-looking commands — the
+		// supported grammar is the literal shipped form, profile and
+		// key shape included.
+		if (!/^!pass-keys get goblin-dev [A-Z0-9_]{1,128}$/.test(value)) {
+			throw new Error("unsupported-pass-command");
+		}
+		return executable;
 	};
-	const keys = records.some((record) => passCommand(record.value) !== undefined);
-	if (
-		records.some((record) => {
-			const executable = passCommand(record.value);
-			return (
-				executable !== undefined &&
-				!/^ get goblin-dev [A-Za-z0-9_-]+$/.test(record.value.slice(1 + executable.length))
-			);
-		})
-	) {
-		throw new Error("unsupported-pass-profile");
-	}
+	// Evaluate every record before deriving keys — .some short-
+	// circuits, so a refusal hiding behind a valid record must not
+	// be skippable.
+	const keys = records
+		.map((record) => passCommand(record.value))
+		.some((executable) => executable !== undefined);
 	process.stdout.write(
 		JSON.stringify({ delegation: config.delegation !== undefined, keys, port: config.http.port }),
 	);

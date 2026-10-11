@@ -182,14 +182,19 @@ export function loadCatalog(root: string): SkillCatalog {
 // outside the workspace, where `skills/…` would resolve inside the
 // project (design/projects.md).
 export function formatSkillsSection(catalog: SkillCatalog, linkBase?: string): string[] {
+	const skillsRoot = linkBase === undefined ? "skills" : join(linkBase, "skills");
+	const validatePath =
+		linkBase === undefined
+			? "./skills/<name>"
+			: `'${join(skillsRoot, "<name>").replace(/'/g, "'\\''")}'`;
 	const lines = [
 		"## skills",
 		"",
-		"Skills are directories under `skills/` — each a SKILL.md (frontmatter:",
+		`Skills are directories under \`${skillsRoot}/\` — each a SKILL.md (frontmatter:`,
 		"name, description) with instructions plus any scripts/files it needs.",
 		"When a request matches one, read_file its SKILL.md and follow it. This",
-		"catalog is yours: write skills/<name>/SKILL.md when you learn a",
-		"repeatable task, then `skills-ref validate ./skills/<name>` via bash.",
+		`catalog is yours: write ${skillsRoot}/<name>/SKILL.md when you learn a`,
+		`repeatable task, then \`skills-ref validate ${validatePath}\` via bash.`,
 		"Edits load when the next conversation starts.",
 		"",
 	];

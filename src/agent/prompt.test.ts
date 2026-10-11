@@ -424,6 +424,15 @@ describe("project prompts", () => {
 			// The catalog renders absolute paths.
 			expect(text).toContain(`(${join(paths.workspace(), "skills", "mq", "SKILL.md")})`);
 			expect(text).not.toContain("(skills/mq/SKILL.md)");
+			// The write/validation paths go absolute too — a relative
+			// `skills/…` resolves inside the project cwd, not the
+			// workspace.
+			expect(text).toContain(
+				`write ${join(paths.workspace(), "skills", "<name>", "SKILL.md")}`,
+			);
+			expect(text).toContain(
+				`skills-ref validate '${join(paths.workspace(), "skills", "<name>")}'`,
+			);
 			// Managed homes never carry an AGENTS.md subsection.
 			expect(text).not.toContain("### AGENTS.md in");
 			expect(sources).toContain("project");

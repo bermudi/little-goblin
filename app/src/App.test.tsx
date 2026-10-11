@@ -1041,6 +1041,8 @@ describe("app projects surface", () => {
 	let notes: AppNoteSummary[];
 	let stored: UIMessage[];
 	let conflictPatch: boolean;
+	// Conversation creation control: POST /api/app/conversations 500s.
+	let failCreate: boolean;
 	// Focus-refresh controls: the note GET fails, or answers with a
 	// remote version newer than the fixture row.
 	let noteGetFail: boolean;
@@ -1115,6 +1117,7 @@ describe("app projects surface", () => {
 		notes = [];
 		stored = [];
 		conflictPatch = false;
+		failCreate = false;
 		noteGetFail = false;
 		noteGetOverride = null;
 		patchCalls = 0;
@@ -1154,6 +1157,8 @@ describe("app projects surface", () => {
 			if (url === "/api/app/conversations") {
 				if (method === "POST") {
 					posts.push({ url, body });
+					if (failCreate)
+						return Promise.resolve(jsonResponse({ error: "mint down" }, 500));
 					return Promise.resolve(
 						jsonResponse({ id: "app/minted", title: null, createdAt: "2026-10-10T00:00:00Z" }, 201),
 					);
@@ -1760,4 +1765,48 @@ describe("app projects surface", () => {
 		expect(title.disabled).toBe(false);
 		expect(chat.disabled).toBe(false);
 	});
+
+	for (const [variant, projectId] of [
+		["loose", null],
+		["project", "p-goblin"],
+	] as const) {
+		test(`a failed chat mint on a ${variant} note page stays put and shows the alert`, async () => {
+			if (projectId !== null) projs = [projRow("Goblin")];
+			notes = [noteRow("Shopping", { projectId })];
+			failCreate = true;
+			win.history.replaceState(null, "", "/app/n/n-shopping");
+			await mount();
+			// The lazy editor mounts async — the page must survive the
+			// failure, so wait for its DOM first.
+			let pm: Element | null = null;
+			for (let i = 0; i < 20 && pm === null; i++) {
+				pm = container.querySelector(".ProseMirror");
+				if (pm === null) await settle();
+			}
+			expect(pm).not.toBeNull();
+
+			await click(
+				[...container.querySelectorAll("button")].find(
+					(b) => b.textContent === "Chat with this note",
+				),
+			);
+			expect(win.location.pathname).toBe("/app/n/n-shopping");
+			expect(container.querySelector(".note-editor")).not.toBeNull();
+			const alert = container.querySelector('p.error[role="alert"]');
+			expect(alert).not.toBeNull();
+			expect(alert!.textContent).toBe(
+				"Couldn't start a conversation — check the tailnet, then resend.",
+			);
+
+			// A retry after the mint recovers navigates and clears the alert.
+			failCreate = false;
+			await click(
+				[...container.querySelectorAll("button")].find(
+					(b) => b.textContent === "Chat with this note",
+				),
+			);
+			expect(win.location.pathname).toBe("/app/c/minted");
+			expect(container.querySelector('p.error[role="alert"]')).toBeNull();
+		});
+	}
 });

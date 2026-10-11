@@ -1115,18 +1115,25 @@ export function App() {
 						{noteId === null ? (
 							<p className="empty">No such note.</p>
 						) : (
-							<NoteView
-								key={noteId}
-								token={token}
-								noteId={noteId}
-								projects={projectList}
-								onChat={(note: AppNote) =>
-									void startChat(note.projectId, [
-										{ type: "data-note", data: { id: note.id } } as UIMessage["parts"][number],
-									])
-								}
-								onDeleted={openNotesIndex}
-							/>
+							<>
+								<NoteView
+									key={noteId}
+									token={token}
+									noteId={noteId}
+									projects={projectList}
+									onChat={(note: AppNote) =>
+										void startChat(note.projectId, [
+											{ type: "data-note", data: { id: note.id } } as UIMessage["parts"][number],
+										])
+									}
+									onDeleted={openNotesIndex}
+								/>
+								{startFailed && (
+									<p className="error" role="alert">
+										Couldn't start a conversation — check the tailnet, then resend.
+									</p>
+								)}
+							</>
 						)}
 					</div>
 				)}

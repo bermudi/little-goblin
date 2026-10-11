@@ -76,7 +76,7 @@ function SkillCard({
 						className={file === f ? "skill-file on" : "skill-file"}
 						onClick={() => open(f)}
 					>
-						{f.slice(skill.name.length + 1)}
+						{f}
 					</button>
 				))}
 			</div>

@@ -14,6 +14,7 @@
 
 import {
 	closeSync,
+	lstatSync,
 	openSync,
 	readdirSync,
 	readFileSync,
@@ -83,19 +84,19 @@ export function listSkillDir(dir: string): OperatorSkillItem[] {
 	const items: OperatorSkillItem[] = [];
 	for (const entry of entries) {
 		if (!entry.isDirectory()) continue;
+		const skillDir = join(dir, entry.name);
 		const files: string[] = [];
-		listFilesUnder(dir, entry.name, 1, files);
+		listFilesUnder(skillDir, "", 1, files);
 		// SKILL.md leads so a viewer can default to it.
 		files.sort((a, b) => {
-			const skillMd = `${entry.name}/SKILL.md`;
-			if (a === skillMd) return -1;
-			if (b === skillMd) return 1;
+			if (a === "SKILL.md") return -1;
+			if (b === "SKILL.md") return 1;
 			return a.localeCompare(b);
 		});
 		let sizeBytes = 0;
 		for (const f of files) {
 			try {
-				sizeBytes += statSync(join(dir, f)).size;
+				sizeBytes += statSync(join(skillDir, f)).size;
 			} catch {
 				// Raced a delete mid-walk — count what's still there.
 			}
@@ -176,11 +177,18 @@ export function readSkillFile(
 	rel: string,
 ): SkillFileResponse | null {
 	const base = origin === "skills" ? skillsDir : proposedDir;
-	// `name` is a single path segment addressed under the origin dir —
-	// containment is checked against the skill dir, not the catalog root,
-	// so a name with separators can never climb out via the join.
 	if (name.includes("/") || name.includes("\\") || name.includes("..")) return null;
-	const content = readStateFile(join(base, name), rel);
+	// Match the catalog: a linked skill directory is not a viewer skill.
+	// Checking only the file would let a link redefine its trusted base.
+	try {
+		if (!lstatSync(join(base, name)).isDirectory()) return null;
+	} catch (e) {
+		if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw e;
+	}
+	const skillDir = contained(base, name);
+	if (skillDir === null) return null;
+	const content = readStateFile(skillDir, rel);
 	if (content === null) return null;
 	return { path: `${name}/${rel}`, content };
 }

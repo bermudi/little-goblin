@@ -46,7 +46,7 @@ describe("listSkills", () => {
 		const res = listSkills(join(home, "skills"), join(home, "skills-proposed"));
 		expect(res.skills.length).toBe(1);
 		expect(res.skills[0]!.name).toBe("weather");
-		expect(res.skills[0]!.files).toEqual(["weather/SKILL.md", "weather/extra.md"]);
+		expect(res.skills[0]!.files).toEqual(["SKILL.md", "extra.md"]);
 		expect(res.skills[0]!.sizeBytes).toBeGreaterThan(0);
 		expect(res.skills[0]!.updatedAt).not.toBeNull();
 		expect(res.proposed.map((s) => s.name)).toEqual(["talk-first"]);
@@ -55,7 +55,27 @@ describe("listSkills", () => {
 	test("nested files are listed within the depth/file bounds", () => {
 		writeRel("skills/deep/a/b/c.md", "nested");
 		const res = listSkills(join(home, "skills"), join(home, "skills-proposed"));
-		expect(res.skills[0]!.files).toEqual(["deep/a/b/c.md"]);
+		expect(res.skills[0]!.files).toEqual(["a/b/c.md"]);
+	});
+
+	test("every listed path can be read unchanged under its skill", () => {
+		writeRel("skills/weather/SKILL.md", "installed");
+		writeRel("skills/weather/ref/example.md", "nested");
+		writeRel("skills-proposed/draft/SKILL.md", "proposed");
+		const skills = join(home, "skills");
+		const proposed = join(home, "skills-proposed");
+		const catalog = listSkills(skills, proposed);
+		for (const origin of ["skills", "proposed"] as const) {
+			for (const skill of catalog[origin]) {
+				for (const path of skill.files) {
+					const file = readSkillFile(skills, proposed, origin, skill.name, path);
+					expect(file).not.toBeNull();
+					expect(file?.content ?? null).toBe(
+						readStateFile(join(origin === "skills" ? skills : proposed, skill.name), path),
+					);
+				}
+			}
+		}
 	});
 
 	test("missing directories render as empty, not an error", () => {
@@ -117,6 +137,42 @@ describe("readStateFile containment", () => {
 });
 
 describe("readSkillFile", () => {
+	test("a linked skill directory cannot become the trusted base", () => {
+		writeRel("outside/SKILL.md", "synthetic outside marker");
+		writeRel("skills/weather/SKILL.md", "installed");
+		mkdirSync(join(home, "skills-proposed"), { recursive: true });
+		for (const origin of ["skills", "proposed"] as const) {
+			const dir = join(home, origin === "skills" ? "skills" : "skills-proposed");
+			symlinkSync(join(home, "outside"), join(dir, "outside-link"));
+			symlinkSync(join(home, "skills/weather"), join(dir, "inside-link"));
+			symlinkSync(join(home, "missing"), join(dir, "dangling-link"));
+			for (const name of ["outside-link", "inside-link", "dangling-link"]) {
+				expect(
+					readSkillFile(
+						join(home, "skills"),
+						join(home, "skills-proposed"),
+						origin,
+						name,
+						"SKILL.md",
+					),
+				).toBeNull();
+			}
+		}
+	});
+
+	test("an in-skill file link can serve, but cross-skill links cannot", () => {
+		writeRel("skills/weather/SKILL.md", "installed");
+		writeRel("skills/other/SKILL.md", "other");
+		symlinkSync(join(home, "skills/weather/SKILL.md"), join(home, "skills/weather/local.md"));
+		symlinkSync(join(home, "skills/other/SKILL.md"), join(home, "skills/weather/other.md"));
+		const skills = join(home, "skills");
+		const proposed = join(home, "skills-proposed");
+		expect(readSkillFile(skills, proposed, "skills", "weather", "local.md")?.content).toBe(
+			"installed",
+		);
+		expect(readSkillFile(skills, proposed, "skills", "weather", "other.md")).toBeNull();
+	});
+
 	test("defaults to SKILL.md and resolves the origin dir", () => {
 		writeRel("skills/a/SKILL.md", "installed");
 		writeRel("skills-proposed/b/SKILL.md", "draft");

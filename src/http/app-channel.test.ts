@@ -1760,8 +1760,14 @@ describe("app operator surface — state viewer mounts (ruling 2026-10-11)", () 
 				`${JSON.stringify({ ts: "t", level: "info", msg: "hey" })}\n`,
 			);
 
-			expect((await call("/api/app/skills")).status).toBe(200);
-			const file = await call("/api/app/skills/file?name=weather");
+			const catalogResponse = await call("/api/app/skills");
+			expect(catalogResponse.status).toBe(200);
+			const catalog = (await catalogResponse.json()) as {
+				skills: Array<{ name: string; files: string[] }>;
+			};
+			const skill = catalog.skills[0]!;
+			const query = new URLSearchParams({ name: skill.name, path: skill.files[0]! });
+			const file = await call(`/api/app/skills/file?${query}`);
 			expect(file.status).toBe(200);
 			expect(((await file.json()) as { content: string }).content).toBe("weather body");
 			expect((await call("/api/app/identity")).status).toBe(200);
@@ -1816,6 +1822,9 @@ describe("app operator surface — state viewer mounts (ruling 2026-10-11)", () 
 			writeFileSync(join(home, "secret.txt"), "top secret");
 			mkdirSync(join(home, "workspace/attachments"), { recursive: true });
 			mkdirSync(join(home, "workspace/skills"), { recursive: true });
+			// The escaped target must exist; a missing file's 404 proves
+			// nothing about containment.
+			writeFileSync(join(home, "workspace/SOUL.md"), "synthetic outside marker");
 			// A linked file and a linked skill dir, both resolving outside
 			// their bases — realpath containment refuses both.
 			symlinkSync(join(home, "secret.txt"), join(home, "workspace/attachments/evil.png"));
@@ -1826,6 +1835,19 @@ describe("app operator surface — state viewer mounts (ruling 2026-10-11)", () 
 				files: Array<{ name: string }>;
 			};
 			expect(list.files.map((f) => f.name)).toEqual([]);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("401 is an auth check, not proof that a state viewer tail is mounted", async () => {
+		const { http, call } = setup({ token: APP_TOKEN_NAME, operator: {} });
+		try {
+			for (const path of ["/api/app/skills", "/api/app/not-a-mounted-tail"]) {
+				expect((await call(path, {}, null)).status).toBe(401);
+			}
+			expect((await call("/api/app/skills")).status).toBe(200);
+			expect((await call("/api/app/not-a-mounted-tail")).status).toBe(404);
 		} finally {
 			http.stop();
 		}

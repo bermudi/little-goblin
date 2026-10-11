@@ -193,6 +193,17 @@ gitignored, so the old revision needs its own deps and client — then
 restart, and reset the marker). A gate failure stops everything
 before the service is touched.
 
+After a state-viewer rollout, verify data access in the authenticated PWA:
+open `/app/skills`, `/app/files`, and `/app/log`; click an installed or
+proposed skill's `SKILL.md` and an extra file, and preview/download an
+attachment. Check successful responses for all six API tails (`skills`,
+`skills/file`, `attachments`, `attachments/file`, `identity`, `log`) under
+`/api/app/`. Page-shell loading alone does not prove the API works.
+An unauthenticated 401 in bearer mode proves only the auth gate:
+authentication runs before routing, so nonexistent tails return 401 too.
+Use the existing authenticated browser session; never paste bearer
+tokens or raw private state into an agent transcript.
+
 lithium ran prod until 2026-10-09; its goblin stack is torn down and its
 state was merged here. Archives: `~/goblin-migration-20261008/`
 (snapshots, DB bundle, memory dump).

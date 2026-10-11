@@ -179,11 +179,15 @@ re-verifies containment in **realpath space** (every component —
 including symlinked files and linked parent directories — resolves to
 its target before the prefix check), so neither lexical traversal nor
 symlink indirection can carry a read outside the tree. Ruling on
-symlinks: the viewer serves real files under the tree, never links —
-symlinked skill dirs don't list and can't be read (the agent catalog's
-sanctioned link-following in design/skills.md is a different consumer
-and untouched); a link resolving back inside its base serves, because
-the bytes never leave the tree. The log is a bounded server-side tail —
+symlinks: symlinked skill dirs don't list and can't be read (the agent
+catalog's sanctioned link-following in design/skills.md is a different
+consumer and untouched). The named directory must be a real directory
+contained by the catalog root before it becomes the file read's base;
+realpathing a linked skill as the base would otherwise trust its outside
+target. A file or nested-directory link resolving back inside its skill
+base serves, because the bytes never leave the tree. Listed file paths
+are skill-relative and pass unchanged to the file reader. The log is a
+bounded server-side tail —
 512 KiB window from the end, ≤1000 lines, level and substring filters
 applied server-side — so the client never pulls the whole file and a
 raw-log dump cannot ride a wide-open query. Attachment bytes ride their

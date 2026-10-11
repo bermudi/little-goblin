@@ -2,11 +2,15 @@
 // (design/app.md → Operator console): skills, attachments, identity
 // files, and the log tail. The viewer's wall is two layers — the router
 // zod-validates every name it accepts, and the containment check here
-// re-verifies that a resolved path stays under the directory it was
-// addressed against, so neither layer alone is trusted. Nothing here
-// writes; ENOENT degrades to null/[] so a missing directory renders as
-// empty instead of failing the whole view, while every other error
-// propagates.
+// re-verifies, in realpath space, that a resolved path stays under the
+// directory it was addressed against: lexical traversal and symlink
+// indirection (a linked file or a linked parent directory) both fail
+// the prefix check. The viewer serves real files under the tree, never
+// links — symlinked skill dirs don't list and can't be read; the agent
+// catalog's sanctioned link-following (design/skills.md) is untouched.
+// Nothing here writes; ENOENT degrades to null/[] so a missing
+// directory renders as empty instead of failing the whole view, while
+// every other error propagates.
 
 import {
 	closeSync,
@@ -14,10 +18,11 @@ import {
 	readdirSync,
 	readFileSync,
 	readSync,
+	realpathSync,
 	statSync,
 	type Dirent,
 } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { join, sep } from "node:path";
 
 // ---------- skills ----------
 
@@ -115,12 +120,22 @@ export function listSkills(skillsDir: string, proposedDir: string): SkillsRespon
 	return { skills: listSkillDir(skillsDir), proposed: listSkillDir(proposedDir) };
 }
 
-// The containment check every read funnels through: the resolved path
-// must land inside the resolved base. Zod's regex at the router is the
-// first gate; this is the one that actually holds.
+// The containment check every read funnels through, enforced in
+// realpath space: a symlink at any component resolves to its target,
+// and a target outside the base fails the prefix check — zod's regex
+// at the router is the first gate, this is the one that actually holds.
+// ENOENT on either side is null (a missing base renders empty); a
+// symlink loop or other filesystem error propagates.
 function contained(base: string, rel: string): string | null {
-	const baseRes = resolve(base);
-	const full = resolve(join(base, rel));
+	let baseRes: string;
+	let full: string;
+	try {
+		baseRes = realpathSync(base);
+		full = realpathSync(join(base, rel));
+	} catch (e) {
+		if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw e;
+	}
 	if (full !== baseRes && !full.startsWith(baseRes + sep)) return null;
 	return full;
 }
@@ -217,7 +232,9 @@ export function attachmentPath(dir: string, name: string): string | null {
 	return full;
 }
 
-/** Content-type for serving an attachment — conservative, extension-based. */
+/** Content-type for serving an attachment — conservative, extension-based.
+ * svg is deliberately absent: inert inside an <img>, but a top-level
+ * navigation would run SVG scripts in the app origin — it downloads. */
 export function attachmentContentType(name: string): string {
 	const ext = name.slice(name.lastIndexOf(".") + 1).toLowerCase();
 	const map: Record<string, string> = {
@@ -226,7 +243,6 @@ export function attachmentContentType(name: string): string {
 		jpeg: "image/jpeg",
 		gif: "image/gif",
 		webp: "image/webp",
-		svg: "image/svg+xml",
 		ogg: "audio/ogg",
 		oga: "audio/ogg",
 		opus: "audio/ogg",
@@ -241,6 +257,32 @@ export function attachmentContentType(name: string): string {
 		json: "application/json",
 	};
 	return map[ext] ?? "application/octet-stream";
+}
+
+/** Thrown when an attachment exceeds the serve cap — the route maps it
+ * to 413; nothing else catches it. */
+export class AttachmentTooLargeError extends Error {}
+
+export interface AttachmentBytes {
+	bytes: Buffer;
+	contentType: string;
+}
+
+/** Read one attachment for serving — through attachmentPath's wall, with
+ * a hard size cap: serving is a whole-file read, and an unbounded one
+ * would let a single request buffer arbitrary bytes into the process. */
+export function readAttachmentBytes(
+	dir: string,
+	name: string,
+	capBytes: number,
+): AttachmentBytes | null {
+	const full = attachmentPath(dir, name);
+	if (full === null) return null;
+	const st = statSync(full);
+	if (st.size > capBytes) {
+		throw new AttachmentTooLargeError(`attachment too large to serve (${st.size} bytes)`);
+	}
+	return { bytes: readFileSync(full), contentType: attachmentContentType(name) };
 }
 
 // ---------- identity files ----------
@@ -311,13 +353,16 @@ export function tailLog(logFile: string, opts: LogTailOptions): LogTailResponse 
 	const len = size - start;
 	const buf = Buffer.alloc(len);
 	const fd = openSync(logFile, "r");
+	let read: number;
 	try {
-		readSync(fd, buf, 0, len, start);
+		read = readSync(fd, buf, 0, len, start);
 	} finally {
 		closeSync(fd);
 	}
-	const windowCut = start > 0;
-	const rawLines = buf.toString("utf8").split("\n");
+	// A short read means the file shrank under stat — the slice is no
+	// longer the true tail, so report truncation rather than guess.
+	const windowCut = start > 0 || read < len;
+	const rawLines = buf.subarray(0, read).toString("utf8").split("\n");
 	// The window's first slice is mid-line unless the window starts at
 	// byte 0 or happened to cut exactly on the newline.
 	if (windowCut && rawLines.length > 0) rawLines.shift();

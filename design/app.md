@@ -175,15 +175,30 @@ route may ever render it, structure included) and any editing surface
 beyond what the console already has — the viewer reads state; writes
 stay where they are. The wall is two layers that each hold alone: the
 router zod-validates every name/path/param, and `src/stateview.ts`
-re-verifies containment (a resolved path must stay under the directory
-it was addressed against) before every read. The log is a bounded
-server-side tail — 512 KiB window from the end, ≤1000 lines, level and
-substring filters applied server-side — so the client never pulls the
-whole file and a raw-log dump cannot ride a wide-open query. Attachment
-bytes ride their own route with a conservative content-type map. Tails:
+re-verifies containment in **realpath space** (every component —
+including symlinked files and linked parent directories — resolves to
+its target before the prefix check), so neither lexical traversal nor
+symlink indirection can carry a read outside the tree. Ruling on
+symlinks: the viewer serves real files under the tree, never links —
+symlinked skill dirs don't list and can't be read (the agent catalog's
+sanctioned link-following in design/skills.md is a different consumer
+and untouched); a link resolving back inside its base serves, because
+the bytes never leave the tree. The log is a bounded server-side tail —
+512 KiB window from the end, ≤1000 lines, level and substring filters
+applied server-side — so the client never pulls the whole file and a
+raw-log dump cannot ride a wide-open query. Attachment bytes ride their
+own route with a conservative content-type map (svg deliberately
+absent — it downloads instead of rendering same-origin), a serve cap
+equal to the upload cap, and the read-back route's inert-byte headers
+(nosniff, sandbox CSP, attachment disposition for non-media). Tails:
 `skills`, `skills/file`, `attachments`, `attachments/file`, `identity`,
-`log`; pages `/app/skills`, `/app/files`, `/app/log`. The mini app does
-not get these pages — `TELEGRAM_PAGES` stays settings/memory. The client's settings editor was seeded as a
+`log`; pages `/app/skills`, `/app/files`, `/app/log`. The tails mount
+on both doors like the rest of the console — `/api/app/attachments` is
+dual-mounted method-aware (GET → viewer, POST → the composer's upload);
+the mini app does not get the pages (`TELEGRAM_PAGES` stays
+settings/memory). Mount points are pinned by door-level tests in
+`app-channel.test.ts`, because handler-level tests pass even when a
+tail is mounted nowhere. The client's settings editor was seeded as a
 React port of the mini app's form — `app/src/settingsDraft.ts` carried
 populate/validate/buildBody and `app/src/SettingsView.tsx` kept the
 section drill-in, chain ordering, provider rename-on-blur, and

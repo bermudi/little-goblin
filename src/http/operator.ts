@@ -14,7 +14,6 @@
 // runtime/tg/agent graphs.
 
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { thinkingLevelsFor } from "../agent/providers.ts";
 import {
@@ -43,11 +42,11 @@ import {
 } from "../hindsight.ts";
 import { forgetDocument, type ForgetSource } from "../memory-forget.ts";
 import {
-	attachmentContentType,
-	attachmentPath,
+	AttachmentTooLargeError,
 	identityFiles,
 	listAttachments,
 	listSkills,
+	readAttachmentBytes,
 	readSkillFile,
 	tailLog,
 } from "../stateview.ts";
@@ -84,6 +83,10 @@ const REL_PATH_SCHEMA = z
 	.max(400)
 	.regex(/^[A-Za-z0-9][A-Za-z0-9._/-]*$/)
 	.refine((v) => !v.includes(".."), "no traversal");
+
+// Serving cap for attachments/file — the upload cap's twin (32 MiB);
+// the viewer never serves what the composer cannot store.
+const ATTACHMENT_SERVE_CAP = 32 * 1024 * 1024;
 
 export interface OperatorDeps {
 	configRef: { current: Config };
@@ -844,12 +847,30 @@ export async function handleOperatorRoute(
 		const name = SEGMENT_SCHEMA.safeParse(url.searchParams.get("name") ?? "");
 		if (!name.success)
 			return Response.json({ error: "bad name" }, { status: 400, headers: NO_STORE });
-		const full = attachmentPath(paths.attachments(), name.data);
-		if (full === null)
+		// Matches the upload cap: the viewer never serves more than the
+		// composer accepts, and serving is a whole-file read.
+		let served: ReturnType<typeof readAttachmentBytes>;
+		try {
+			served = readAttachmentBytes(paths.attachments(), name.data, ATTACHMENT_SERVE_CAP);
+		} catch (e) {
+			if (e instanceof AttachmentTooLargeError) {
+				return Response.json({ error: "attachment too large" }, { status: 413, headers: NO_STORE });
+			}
+			throw e;
+		}
+		if (served === null)
 			return Response.json({ error: "not found" }, { status: 404, headers: NO_STORE });
-		const bytes = await readFile(full);
-		return new Response(bytes, {
-			headers: { ...NO_STORE, "content-type": attachmentContentType(name.data) },
+		// The inert-byte defenses the upload read-back route carries: bytes
+		// from outside are never same-origin executable content.
+		const inline = /^(image|audio|video)\//.test(served.contentType);
+		return new Response(served.bytes, {
+			headers: {
+				...NO_STORE,
+				"content-type": served.contentType,
+				"x-content-type-options": "nosniff",
+				"content-security-policy": "sandbox",
+				...(inline ? {} : { "content-disposition": "attachment" }),
+			},
 		});
 	}
 

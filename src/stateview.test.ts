@@ -3,16 +3,18 @@
 // log tail's window/filter/limit mechanics. The zod layer at the router
 // is input hygiene; these tests hold the module alone.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, utimesSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
 	attachmentContentType,
 	attachmentPath,
+	AttachmentTooLargeError,
 	identityFiles,
 	listAttachments,
 	listSkills,
+	readAttachmentBytes,
 	readSkillFile,
 	readStateFile,
 	tailLog,
@@ -92,6 +94,26 @@ describe("readStateFile containment", () => {
 		writeRel("skills/weather/huge.md", "x".repeat(3 * 1024 * 1024));
 		expect(() => readStateFile(join(home, "skills/weather"), "huge.md")).toThrow(/file too large/);
 	});
+
+	test("symlink indirection is refused — file, parent dir, and dangling", () => {
+		symlinkSync(join(home, "secret.txt"), join(home, "skills/weather/link.md"));
+		expect(readStateFile(join(home, "skills/weather"), "link.md")).toBeNull();
+		// A linked parent is the case an lstat on the final component
+		// misses: the walk goes through the link and lands outside base.
+		// (A link that resolves back INSIDE base serves — the bytes stay
+		// in the tree, which is the property realpath containment holds.)
+		symlinkSync(home, join(home, "skills/weather/up"));
+		expect(readStateFile(join(home, "skills/weather"), "up/secret.txt")).toBeNull();
+		symlinkSync(join(home, "absent-target"), join(home, "skills/weather/dangling.md"));
+		expect(readStateFile(join(home, "skills/weather"), "dangling.md")).toBeNull();
+	});
+
+	test("symlinked skill dirs don't list", () => {
+		mkdirSync(join(home, "skills-proposed"), { recursive: true });
+		symlinkSync(join(home, "skills/weather"), join(home, "skills-proposed/linked"));
+		const res = listSkills(join(home, "skills"), join(home, "skills-proposed"));
+		expect(res.proposed).toEqual([]);
+	});
 });
 
 describe("readSkillFile", () => {
@@ -149,6 +171,24 @@ describe("attachments", () => {
 		const res = listAttachments(join(home, "attachments"));
 		expect(res.files.map((f) => f.name)).toEqual(["newer.ogg", "old.png"]);
 		expect(res.files[0]!.sizeBytes).toBe(2);
+	});
+
+	test("a symlinked attachment is refused, not followed", () => {
+		writeRel("attachments/.keep", "");
+		writeRel("secret.txt", "outside");
+		symlinkSync(join(home, "secret.txt"), join(home, "attachments/evil.png"));
+		expect(attachmentPath(join(home, "attachments"), "evil.png")).toBeNull();
+		expect(readAttachmentBytes(join(home, "attachments"), "evil.png", 1024)).toBeNull();
+	});
+
+	test("readAttachmentBytes caps and reports the type", () => {
+		writeRel("attachments/big.bin", "x".repeat(16));
+		expect(() => readAttachmentBytes(join(home, "attachments"), "big.bin", 8)).toThrow(
+			AttachmentTooLargeError,
+		);
+		const ok = readAttachmentBytes(join(home, "attachments"), "big.bin", 1024);
+		expect(ok?.bytes.length).toBe(16);
+		expect(ok?.contentType).toBe("application/octet-stream");
 	});
 
 	test("attachmentPath holds the wall", () => {

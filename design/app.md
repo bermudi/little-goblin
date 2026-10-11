@@ -171,7 +171,10 @@ populate/validate/buildBody and `app/src/SettingsView.tsx` kept the
 section drill-in, chain ordering, provider rename-on-blur, and
 toggle-off preservation. Amended 2026-10-10, operator ruling: that
 lineage is provenance, not parity — the clients are independent and
-each may change on its own. The contract is `ConfigPostBody`
+each may change on its own. Superseded the same day by the mini-app
+merge (design/telegram.md → Mini Apps): the Telegram door renders this
+client's telegram mode, so `SettingsView` is the only settings UI and
+the independence question is moot. The contract is `ConfigPostBody`
 (`operator-wire.ts`) plus the server's zod validation; the shared
 `operator.ts` handlers keep the doors from drifting, not client-side
 mirroring. Leaving dirty settings asks before discarding, including browser

@@ -43,7 +43,9 @@ pushes or updates the remote review baseline (docs/operations.md → Deploying).
   from the Telegram DM spins off a named app conversation, and Telegram
   rings for it (see Spin-off).
 - Goblin's machine state lives in SQLite (`bun:sqlite`, WAL); files stay
-  where humans edit them — config, auth, workspace. Optional long-term
+  where humans edit them — config, auth, workspace. Notes are the ruled
+  exception (2026-10-10): their editing surface is the app, so they are
+  rows (design/projects.md → Notes). Optional long-term
   memory lives in a separate Hindsight service backed by PostgreSQL (see
   Long-term memory). This does not migrate Goblin's conversation store.
 - No third channel — two exist now (Telegram and the app, `App channel`,
@@ -248,6 +250,7 @@ or the non-goals goes here.
 - [`design/telegram.md`](design/telegram.md) — Telegram intake & delivery, Coalescing buffer, Delivery, TTS, Files, Voice mode, Mini Apps, Commands, Large files, Rolling DM (ruling 2026-10-03)
 - [`design/app.md`](design/app.md) — App channel (PWA → APK), Spin-off (ruling 2026-10-03)
 - [`design/sandbox.md`](design/sandbox.md) — Sandbox (ruling 2026-10-10): a disposable rootless-podman container per conversation behind the `sandbox` tool — the wall, the lifetime, network off by default, images pulled only with operator permission
+- [`design/projects.md`](design/projects.md) — Projects & Notes (ruling 2026-10-10): projects scope app conversations (cwd, instructions, memory choice, fixed binding); notes are server-mediated SQLite rows (markdown only, versions, the `note` tool, attach, fenced append, AI rewrite); Pi Durable rejected as a second harness
 
 - [`design/doctor.md`](design/doctor.md) — Shared read-only checks, output/exit contract, phases and diagnostic coverage
 - [`design/setup.md`](design/setup.md) — Fresh installation, prerequisites, current-invocation startup acceptance
@@ -274,11 +277,14 @@ $GOBLIN_HOME/
 │   │                       # prompt-shell "only memory" claim when wired.
 │   ├── skills/             # the skill catalog — agent-authored, in cwd
 │   └── attachments/
+├── projects/<slug>/        # a project's home; its default cwd (notes are
+│                           # rows, not files — design/projects.md)
 └── state/
     ├── goblin.sqlite       # Goblin state: conversation meta, event
     │                       # history (UIMessage JSON rows), bindings,
     │                       # memory outbox/contexts/suppressions,
-    │                       # programs, delegations
+    │                       # programs, delegations, projects, notes
+    │                       # (+ versions, FTS)
     ├── pass-cli/           # pass-cli session dir for background sync;
     │                       # shared agent lane, not foreground resolution
     ├── pass-cli-task/      # separate pass-cli session dir for the skill;
@@ -480,7 +486,9 @@ and the goblin-mail wrapper, never raw in-process OAuth) · inner life (partly r
 demand — `Chat search`, `Skill reviewer`; self-waking, memory nudges,
 and self-grading skill machinery stay out) · conversation-lifecycle
 commands · subagents · ACP ·
-project environments · onboarding wizard · state
+project environments (returned on demand 2026-10-10 — `Projects &
+Notes`; app-channel projects with a cwd + instructions, notes as
+server-mediated rows; a second harness stays out) · onboarding wizard · state
 migrations (general framework; additive memory schema changes are in scope) ·
 in-process embeddings (delegated to Hindsight for memory) · app client
 (returned on demand 2026-09-30 — `App channel`; a third channel stays

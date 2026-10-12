@@ -66,7 +66,7 @@ const CANDIDATE_CONTAINERS = [
 	DESK_CONTAINER,
 ];
 const CANDIDATE_NETWORKS = [SBX_NETWORK, DESK_NETWORK];
-const EVIDENCE_DIR = `/tmp/goblin-subagent-evidence-${TOKEN}`;
+const EVIDENCE_DIR = `/tmp/goblin-subdrift-${TOKEN}`;
 
 let cwd = "";
 let podman: Podman | null = null;

@@ -5,39 +5,14 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 ## Long-term memory
 
-**Implemented; live-verified 2026-09-24** on the homelab box against the
-real Podman stack (0.10.0-slim). Verified by live traffic that day:
-retention end-to-end (queued exchanges drained through submit → async
-operation → completed), recall answering with real extracted facts,
-installer start, and the watch timer firing on schedule. The 2026-09-25
-reboot closed the boot-path gate in production: db and api units
-auto-started within a minute of boot. Quadlet's `[Install]` creates the
-dependency in the generator directory (`systemctl --user is-enabled
-goblin-memory-api` reads `generated`; `default.target`'s loaded Wants is
-the activation check). A hand-written same-name relative symlink in
-the user wants directory points to itself and is not a boot hook.
-On 2026-09-27, four synthetic exchanges across three named
-private Telegram topics exercised cross-topic recall and a dated correction
-with the operator-selected `glm-5.3-flash`: the fresh topics' persisted
-recall blocks cited the source topic, the recall reply gave the prior
-value, and the correction reply distinguished current from prior and
-included the date. All four replies were visible in Telegram and all four
-retention operations completed. With the queue idle, a
-controlled API restart returned healthy with unchanged queue state; a
-watch tick against a healthy API left its service invocation unchanged.
-In a later drill that day, pausing only the API process made its running
-container genuinely `unhealthy` after four failed probes. The scheduled
-watch restarted that unit, not the database; the new container became
-healthy and readiness returned HTTP 200. A separate synthetic retention
-operation was acknowledged as `pending` remotely when the API restarted:
-Goblin submitted it once, kept the same operation ID, and later marked it
-completed with a stored document. Two attempts to catch an operation in
-`processing` finished before the probe could observe that state; active
-extraction interrupted by a restart is therefore **not verified**.
-First live finding: z.ai 429
-"insufficient balance" during extraction blocks a single document for
-operator reconciliation (the designed path, not a crash) — provider
-credit is a live dependency of retention.
+**Implemented and live-verified** — first traffic 2026-09-24 against the
+real Podman stack (0.10.0-slim), and the 2026-09-25 reboot closed the
+boot-path gate when both units auto-started. The drills are git history;
+what they left on record: **provider credit is a live dependency of
+retention** — a z.ai 429 "insufficient balance" during extraction blocks
+a single document for operator reconciliation, by design, not a crash —
+and one open edge: **Unverified:** an active extraction interrupted
+mid-`processing` by a restart (the state was never observed live).
 Slice 2 rulings (below) lock the turn-integration mechanisms.
 Memory returns on explicit
 operator demand. Hindsight is the selected memory service, not an agent
@@ -78,79 +53,70 @@ No MCP, replacement turn loop, or generic multi-backend framework.
 4. **Document ID: `exchange/{conversationId}/{anchorSeq}/{assistantId}`.**
    Stable per completed exchange, unique across retries; retries replay
    identical content (queue rejects same ID with different content).
-5. **Degraded status: log + `/memory status`, not chat spam.** Every
-   recall/worker outcome emits a structured line; `/memory status`
-   reports disabled/healthy/degraded/pending with outbox counts. Model
-   context distinguishes unavailable from empty via the persisted block;
-   no Telegram notification per retry. Amendment (2026-09-24): the ruling
-   covers per-retry spam, not silence — a retention chain that cannot
-   drain for a continuous hour earns exactly ONE notice per episode,
-   sent to the conversation whose exchange is stuck (episode state in
-   SQLite, `memory_outage`; a failed send retries on the next worker
-   failure; any successful advance clears the episode silently). The
-   amendment exists because the stack's boot-enablement gap (below) left
-   goblin retrying a dead port for a full day with no one the wiser.
-   Amendment (2026-09-25): blocked retention is not an outage — the
-   service answered — and it surfaced nowhere in chat while a 429 storm
-   left a document stuck for hours. A document's first transition into
-   `blocked` earns ONE notice per document (latch in SQLite,
-   `memory_blocked_notices`), naming `/memory retry` and `/memory
-   dismiss`; everything after the first notice is `/memory status`
-   territory. The mini app's Memories tab renders the same status as a
-   read-only card (`GET /api/memory-status`, same auth as every other
-   endpoint, polled only while the tab is open) — the status panel
-   never mutates the queue. Forgetting later grew a UI surface
-   (ruling 8); retry and dismiss stay Telegram verbs. Retry mints a FRESH operation id — Hindsight holds the old
-   op terminally failed server-side, so replaying it just re-reads the
-   dead op's status (the live hand-requeue that failed); dismiss keeps
-   the row as `dismissed` for audit, and `/forget delete` cancels
-   blocked and dismissed rows too.
+5. **Degraded status: log + `/memory status`, plus exactly two
+   notices.** Every recall/worker outcome emits a structured line;
+   `/memory status` reports disabled/healthy/degraded/pending with
+   outbox counts. Model context distinguishes unavailable from empty
+   via the persisted block. The complete notice list: **one notice per
+   outage episode** — a retention chain that cannot drain for a
+   continuous hour earns exactly one notice, sent to the conversation
+   whose exchange is stuck (2026-09-24: episode state in SQLite,
+   `memory_outage`; a failed send retries on the next worker failure;
+   any successful advance clears the episode silently — born of the
+   boot-enablement gap that left goblin retrying a dead port for a
+   day); **one notice per first blocked transition** — a document's
+   first transition into `blocked` earns one notice per document
+   (2026-09-25: latch in `memory_blocked_notices`), naming `/memory
+   retry` and `/memory dismiss`, because blocked retention is not an
+   outage — the service answered. Everything else is `/memory status`
+   territory — no Telegram notification per retry. The mini app's
+   Memories tab renders the same status as a read-only card
+   (`GET /api/memory-status`, same auth as every other endpoint,
+   polled only while the tab is open) — the status panel never mutates
+   the queue. Retry mints a fresh operation id — Hindsight holds the
+   old op terminally failed server-side, so replaying it just re-reads
+   the dead op's status; dismiss keeps the row as `dismissed` for
+   audit.
 6. **Bank/mission: operator step, no auto-creation.** Goblin never
    creates banks or sets missions; `docs/memory.md` documents the manual
    `curl` with an example mission (preferences, decisions, commitments,
    people, ongoing work). Bank-level overrides stay out of Goblin.
 7. **Forgetting: two commands, suppression survives everything.**
    `/forget <query>` resolves and shows affected sources;
-   `/forget delete <documentId>` requires that go-ahead, then suppresses,
-   parks the document's outbox rows, deletes the remote document, and
-   redacts affected recall snapshots (global prefix reset, logged).
-   Suppression lives in SQLite and is checked before every enqueue, so
-   restarts and future backfills cannot resurrect forgotten sources.
-   Amendment (2026-10-08, #87): forgetting is destination-aware. The
-   outbox binds rows to the endpoint+bank target hash, and that hash is
-   one-way — after a destination change, the bank that owns a row could
-   not be addressed again, so `/forget delete` polled old-bank UUIDs
-   against the new bank (a bank-scoped 404 reads as settled), cancelled
-   the old rows, deleted only in the new bank, and reported forgotten
-   while the old bank kept the document and its live retention. Every
-   boot now records its destination (baseUrl, bank, auth key name —
-   never a token) in `memory_destinations` keyed by the target hash;
-   the protocol settles each destination's in-flight operations and
-   deletes the document through every destination the outbox names,
-   plus the current one. A destination the history cannot reconstruct
-   (rows predating the table) refuses the forget outright with all
-   tracking preserved — old-bank rows are never silently cancelled on
-   a new-bank delete. Suppression stays bank-agnostic. Pending rows
-   against a previous bank still never drain through the current worker
-   (the binding rule above); forgetting is their reconciliation path.
-   Amendment (2026-10-08, #113): the cancel step must not destroy the
-   retry map — the outbox rows ARE the document→destination mapping.
-   Deleting them before the remote deletes meant a failed old-bank
-   delete (or a crash in the window) left a re-run of `/forget delete`
-   unable to know the old bank held the document: it deleted only from
-   the current bank and reported forgotten while the old copy survived.
-   Forgetting now parks every row for the document in a `deleting`
-   state — invisible to the worker, so ingestion and blocked-review
-   surfaces stop (suppression already blocks re-enqueue) — and releases
-   each destination's rows only after that destination's own delete
-   confirms. A failure leaves the unconfirmed destinations parked, so
-   the retry settles and deletes through every bank that still holds
-   the document. This is the retain path's durable-operation rule
+   `/forget delete <documentId>` requires that go-ahead, then runs one
+   protocol: suppress, settle every named destination's in-flight
+   operations, park the document's outbox rows, delete the remote
+   document through every destination the outbox names plus the current
+   one, and redact affected recall snapshots (global prefix reset,
+   logged). Suppression lives in SQLite, is bank-agnostic, and is
+   checked before every enqueue, so restarts and future backfills
+   cannot resurrect forgotten sources.
+
+   Destination registry (2026-10-08, #87): every boot records its
+   destination — baseUrl, bank, auth key name, never a token — in
+   `memory_destinations` keyed by the one-way target hash. A
+   destination the history cannot reconstruct (rows predating the
+   table) refuses the forget outright with all tracking preserved;
+   old-bank rows are never silently cancelled on a new-bank delete.
+   Pending rows against a previous bank never drain through the
+   current worker (the binding rule in Retain); forgetting is their
+   reconciliation path.
+
+   The park step (2026-10-08, #113): the outbox rows ARE the
+   document→destination mapping, so they are never deleted before the
+   remote delete confirms. Every row for the document parks in
+   `deleting` — invisible to the worker, so ingestion and
+   blocked-review surfaces stop while suppression already blocks
+   re-enqueue — and each destination's rows release only after that
+   destination's own delete confirms. Blocked and dismissed rows cancel
+   under the same delete. A failure leaves the unconfirmed destinations
+   parked, so the retry settles and deletes through every bank that
+   still holds the document — the retain path's durable-operation rule
    applied to deletion: persist the work record before the remote
-   action, drop it only after confirmation — never before. `/memory status`
-   and the mini-app status card expose the parked outbox-row count as
-   degraded, with `/forget delete <documentId>` retry guidance. These rows
-   do not drain automatically and `/memory retry` does not retry deletions.
+   action, drop it only after confirmation, never before. `/memory
+   status` and the mini-app status card expose parked rows as degraded
+   with `/forget delete` retry guidance; they do not drain
+   automatically and `/memory retry` does not retry deletions.
 8. **Memories browser: the mini app grows a Memories tab (operator ask,
    2026-09-30).** The settings page restructures to two tabs — Settings
    (the six config sections one level deep behind an index; settings
@@ -185,7 +151,10 @@ upgrades. Nothing assumes a particular hostname, operator home directory,
 or existing database installation. The stack is boot-enabled
 (`[Install]` + `WantedBy=default.target` on the API unit; the database
 rides along via `Requires`/`After`) like goblin itself — the installer's
-cost confirmation gates the first start, not every reboot. The original
+cost confirmation gates the first start, not every reboot. `[Install]`
+creates the dependency in the generator directory (`is-enabled` reads
+`generated`); a hand-written same-name symlink is not a boot hook.
+The original
 "operator starts it explicitly" ruling died the first nightly shutdown:
 the box went down, goblin came back with memory on, the stack did not,
 and the bot quietly retried a dead port for a day. Health probes gate

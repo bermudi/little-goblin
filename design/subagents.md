@@ -156,7 +156,10 @@ release.**
 - **Release / hand off** — e.g. run → operator for a CAPTCHA → run.
 - **Reaping** at call time like the sandbox — never at boot, never
   shutdown: unleased, unreserved desktops idle beyond `idleHours` are
-  removed, logged. `desktops.max` caps the pool (g7 has ~13 GB free; a
+  removed, logged. The sweep lists stale rows globally, then joins the
+  candidate's own lane and re-checks fresh idle/reservation/lease state
+  immediately before removal — a concurrent claim, observation, or pin
+  wins the race. `desktops.max` caps the pool (g7 has ~13 GB free; a
   desktop idles at ~281 MB with Chromium open, measured).
 
 ### The wall: runc now, krun parked

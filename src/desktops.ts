@@ -567,25 +567,37 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		const idle = cfg().idleHours;
 		if (idle === 0) return;
 		const cutoff = Date.now() - idle * 3_600_000;
-		const now = Date.now();
 		for (const row of store.staleBefore(cutoff, excludeName)) {
-			if (row.reserved || leaseLive(row, now)) continue;
 			try {
-				await podman.rm(row.container);
+				// The stale listing runs outside any lane, so the
+				// idle/reservation/lease verdict is re-read inside the
+				// victim's lane — a claim, observation, or pin landing
+				// between the listing and the rm must win the race.
+				await lane(row.name, async () => {
+					const fresh = store.get(row.name);
+					if (
+						fresh === null ||
+						fresh.lastUsedAt >= cutoff ||
+						fresh.reserved ||
+						leaseLive(fresh, Date.now())
+					) {
+						return;
+					}
+					await podman.rm(fresh.container);
+					store.delete(fresh.name);
+					log.info("desktop reaped", {
+						desktop: fresh.name,
+						container: fresh.container,
+						idleHours: idle,
+					});
+				});
 			} catch (err) {
 				// Keep the row — the next call retries the reap.
 				log.warn("desktop reap failed — row kept", err, {
 					desktop: row.name,
 					container: row.container,
 				});
-				continue;
 			}
-			store.delete(row.name);
-			log.info("desktop reaped", {
-				desktop: row.name,
-				container: row.container,
-				idleHours: idle,
-			});
 		}
 	}
 

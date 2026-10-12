@@ -18,6 +18,8 @@ import {
 	containerNameForDesktop,
 	makeDesktops,
 	openDesktops,
+	type DesktopRow,
+	type Desktops,
 	type LeaseHolder,
 } from "./desktops.ts";
 import { setLogFile, setLogWriter } from "./log.ts";
@@ -692,5 +694,123 @@ describe("desktops pool", () => {
 		expect(chown).toBeDefined();
 		expect(chown!.join(" ")).toContain("-h");
 		expect(chown!.join(" ")).not.toContain("-R");
+	});
+});
+
+// A sweep triggered by another desktop must not reap a stale row out
+// from under an in-flight operation on that same desktop. The stale
+// listing runs outside any lane; the removal verdict has to be
+// re-read inside the victim's lane, after the in-flight call has
+// landed its activity/lease — otherwise a live claim or a fresh
+// observation still loses its container.
+describe("idle sweep vs in-flight lane op", () => {
+	function deadline<T>(p: Promise<T>, what: string, ms = 2000): Promise<T> {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<never>((_resolve, reject) => {
+			timer = setTimeout(() => reject(new Error(`deadline: ${what}`)), ms);
+		});
+		return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+	}
+
+	async function staleRace<T>(
+		engine: ReturnType<typeof fakeEngine>,
+		op: (desktops: Desktops) => Promise<T>,
+		check: (outcome: {
+			engine: ReturnType<typeof fakeEngine>;
+			row: DesktopRow;
+			containerName: string;
+			containerObj: FakeContainer;
+			result: T;
+		}) => void,
+	): Promise<void> {
+		const inspectEntered = Promise.withResolvers<void>();
+		const inspectGate = Promise.withResolvers<void>();
+		const sweepListed = Promise.withResolvers<void>();
+		const { store, desktops } = rig(engine, { idleHours: 1 });
+		let inFlight: Promise<T> | undefined;
+		let sweeping: Promise<void> | undefined;
+		try {
+			await desktops.allocate("a");
+			await desktops.allocate("b");
+			const aged = store.get("a")!;
+			aged.lastUsedAt = Date.now() - 2 * 3_600_000;
+			store.put(aged);
+			const containerName = aged.container;
+			const containerObj = engine.containers.get(containerName)!;
+
+			// The in-flight op parks at its first inspect of a, inside
+			// a's lane; the sweep's stale listing of a is only
+			// observed, then removal races the parked op's resume.
+			const origInspect = engine.podman.inspect.bind(engine.podman);
+			let firstInspect = true;
+			engine.podman.inspect = async (name: string, conv?: string) => {
+				if (name === containerName && firstInspect) {
+					firstInspect = false;
+					inspectEntered.resolve();
+					await inspectGate.promise;
+				}
+				return origInspect(name, conv);
+			};
+			const origStale = store.staleBefore.bind(store);
+			store.staleBefore = (cutoffMs: number, excludeName: string) => {
+				const rows = origStale(cutoffMs, excludeName);
+				if (excludeName === "b" && rows.some((r) => r.name === "a")) {
+					sweepListed.resolve();
+				}
+				return rows;
+			};
+
+			inFlight = op(desktops);
+			await deadline(inspectEntered.promise, "in-flight op entered inspect");
+			sweeping = desktops.reserve("b", true);
+			await deadline(sweepListed.promise, "sweep listed stale a");
+			inspectGate.resolve();
+			const result = await deadline(inFlight, "in-flight op settled");
+			await deadline(sweeping, "reserve settled");
+
+			const row = store.get("a");
+			expect(row).not.toBeNull();
+			expect(
+				engine.calls.some((c) => c[0] === "rm" && c.at(-1) === containerName),
+			).toBe(false);
+			expect(engine.containers.get(containerName)).toBe(containerObj);
+			expect(row!.lastUsedAt).toBeGreaterThan(Date.now() - 3_600_000);
+			check({ engine, row: row!, containerName, containerObj, result });
+		} finally {
+			inspectEntered.resolve();
+			inspectGate.resolve();
+			sweepListed.resolve();
+			try {
+				await deadline(Promise.allSettled([inFlight, sweeping]), "race cleanup settled");
+			} finally {
+				store.close();
+			}
+		}
+	}
+
+	test("an in-flight claim wins over another desktop's reap sweep", async () => {
+		const engine = fakeEngine();
+		await staleRace(
+			engine,
+			(desktops) => desktops.claim("a", RUN_A),
+			({ row }) => {
+				expect(row.leaseKind).toBe("run");
+				expect(row.leaseId).toBe("a");
+				expect(row.leaseExpiresAt!).toBeGreaterThan(Date.now());
+			},
+		);
+	});
+
+	test("an in-flight observation refreshes a stale row before the reap verdict", async () => {
+		const engine = fakeEngine();
+		await staleRace(
+			engine,
+			(desktops) => desktops.screenshot("a"),
+			({ row, result }) => {
+				expect(row.leaseKind).toBeNull();
+				expect(result.id).toBe("a:1");
+				expect(result.bytes.length).toBeGreaterThan(0);
+			},
+		);
 	});
 });

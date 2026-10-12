@@ -396,7 +396,14 @@ src/
   subagents.ts      the Pi Durable harness owner (the only
                     pi-durable-aware module): open, boot resume, run
                     cap + queue, start/steer/stop runs, files in/out,
-                    settle → wake; subagent_runs rows
+                    settle → wake
+  subagent-runs.ts  the additive subagent_runs table in goblin.sqlite
+                    (routing rows: status, Pi conversation/submission
+                    ids, request ids, outcomes, notices)
+  box-files.ts      the shared host↔box file boundary helper: lexical
+                    + realpath workspace containment, regular-file
+                    import cap, tmp+fsync+rename export — one rule set
+                    for the sandbox tool, desktop tool and run files
   mail-gws.ts       the watcher's poll surface over the gws CLI (raw
                     Discovery calls, JSON out) — the only gws-aware
                     module; runner injectable, gws owns its auth
@@ -448,11 +455,12 @@ src/
                     conversation (prompt_snapshots): edits load at
                     boundaries (roll/compaction), never mid-run
     skills.ts       catalog scan + frontmatter validation → ## skills section
-    tools/          the eighteen tools (read, write, edit, bash, speak,
+    tools/          the twenty tools (read, write, edit, bash, speak,
                     transcribe, vision, program, delegate, mail
                     (send-only; reads ride the goblin-mail wrapper via
                     bash), send_file, memory_search, search, fetch,
-                    history_search, sandbox, script, ui)
+                    history_search, sandbox, script, subagent,
+                    desktop, ui)
   http/             the HTTP doors: /t/ and /app/ serve the built
                     client (app/dist) — the Telegram mini app and the
                     PWA are one client with two entries — plus the

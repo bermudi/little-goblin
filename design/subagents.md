@@ -117,6 +117,20 @@ resolves through goblin's `auth.ts` in-process into Pi's
 Image transport verified: a marker code read exactly from a tool-result
 image, 744 tokens for 640×400.
 
+**Explicit constructor profile (experiment seam).** `SubagentsDeps` may
+carry `modelProfiles?: Partial<Record<SubagentKind, SubagentModelProfile>>`
+— a per-kind catalog entry validated by `subagentModelProfileSchema`
+(strict: id, input modalities, reasoning, contextWindow ≥ maxTokens,
+nonnegative cost, and a compat contract fixing `max_tokens` and denying
+store/developer-role/reasoning-effort). A supplied profile must match the
+configured `model.id`, admit the kind's required input (text for worker;
+text+image for computer), and requires `model.thinking: "off"` — no
+unverifiable effort mapping. Provider/baseUrl/credential still come from
+the configured model block; the profile substitutes only the catalog
+entry. Callers that pass no profile get the pinned GLM/native config
+policy above, unchanged — this seam exists for isolated experiment
+runners, not production configuration.
+
 ### Desktops: a managed pool
 
 A desktop is a named, long-lived resource, not a property of a
@@ -147,12 +161,14 @@ release.**
 
 ### The wall: runc now, krun parked
 
-Desktops reuse the sandbox wall verbatim (design/sandbox.md → What the
-wall is): pinned uid/gid map, five caps, no-new-privileges, no mounts,
+Desktops reuse the sandbox wall (design/sandbox.md → What the
+wall is): pinned uid/gid map, no-new-privileges, no mounts,
 `--pull=never`, the isolated network created-connected then disconnected,
 **network off by default with a live toggle** (operator ruling). Files
-cross only by import/export with the sandbox's containment rules. Only the
-PID-1 command differs: the desktop session script instead of a sleep.
+cross only by import/export with the sandbox's containment rules. The
+differences: the PID-1 command is the desktop session script instead of
+a sleep, and desktops append `CAP_SYS_CHROOT` to the five-cap wall
+(sandboxes keep exactly the five) — see the resolved Known limit below.
 
 krun (podman `--runtime krun`, a KVM microVM per container) was the
 preferred boundary and was measured on g7 (crun 1.30.1 +LIBKRUN):
@@ -178,14 +194,16 @@ workload — logged-in personal accounts, hostile downloads — makes the
 kernel boundary worth that work. The backend stays one module, so the
 swap is a module, not a registry.
 
-Known limit, accepted: Chromium runs with `--no-sandbox` — under the
-wall its zygote cannot bring up the layer-1 sandbox (missing
-CAP_SYS_CHROOT; the inner child dies `SIGSEGV` after the namespace
-setup and the browser aborts with `Failed to receive hello message
-from zygote`; adding SYS_CHROOT alone recovers it, measured 2026-10-11).
-The session and browser run as the non-root `desk` user, so a renderer
-exploit lands as an unprivileged uid inside the container's own wall
-rather than container root — but Chromium's renderer sandbox is off.
+Known limit, resolved by an extra desktop cap: Chromium's zygote needs
+CAP_SYS_CHROOT to bring up its layer-1 sandbox (measured: under the
+five-cap wall the inner child dies `SIGSEGV` after the namespace setup
+and the browser aborts `Failed to receive hello message from zygote`;
+SYS_CHROOT alone recovers it). Desktops therefore create with
+`extraCaps: ["SYS_CHROOT"]` on top of the five-cap wall — operator
+ruling, desktops only; sandboxes keep exactly the five — and Chromium
+runs its real renderer sandbox as the non-root `desk` user. Verified
+live: `CapEff 0x400cb` inside the desktop and `chrome://sandbox` read
+back through the AT-SPI tree (`GOBLIN_DESKTOP_LIVE=1`).
 
 ### Eyes and hands: cua-driver in the guest
 
@@ -339,6 +357,86 @@ subagents: {
 Absent block = no tools, no harness opened; an absent type = that type
 is off. Boot-frozen like `delegation` (the harness and its registry are
 built once).
+
+### Phase 3 as built
+
+- **Queue eligibility.** `start` inserts a `queued` row and returns;
+  a background drain admits rows FIFO, skipping any queued row whose
+  box is blocked (another active run on the same origin sandbox, or a
+  desktop lease held by someone else) so unrelated runnable work never
+  waits behind one conversation's second worker. `maxRuns` counts
+  actually executing/preparing runs; a `needs_input` run frees its
+  global slot but **retains its worker sandbox lease** (the run's files
+  and processes are still the answer it waits on), while a computer
+  `needs_input` releases the desktop controller lease so the operator
+  can act. `send` requeues the same Pi conversation and re-acquires
+  before executing.
+- **Idempotent dual-store.** Two stores advance one run:
+  `subagent_runs` rows in goblin.sqlite (routing) and Pi Durable's own
+  sqlite (transcripts + the typed run-state doc). The recipe: insert
+  the row first; record the Pi conversation id **before** any model
+  submission; submit with deterministic request ids
+  (`subagent:<id>:input:<revision>`) so a crash-gap re-submit admits
+  the same submission; terminal tools write the outcome into the
+  durable doc via `api.commit` before returning, so settlement reads
+  the doc — a settled submission with no doc outcome is `failed`
+  (plain prose is not completion), and a second terminal call can
+  never replace a recorded outcome. The failure reason names what
+  actually happened: an `unanswered` settlement carries Pi's reason
+  plus its detail verbatim (`model_error — 500 …`), and a "done"
+  submission without a doc outcome is classified by the last
+  assistant's recorded `stopReason` — `length` reports the output
+  limit, another non-`stop` reason names itself, and a clean `stop`
+  (or no recorded witness) gets the plain-prose wording. Replay marks do the crash work:
+  reads/observation/`finish`/`ask_operator` are `replay:"safe"`
+  (idempotent, no external effects); every input action and every
+  sandbox mutation stays unsafe — an interrupted click is reported
+  `[error] … may have partially run`, never re-dispatched. Boot:
+  `harness.resume()` after all deps are bound, rows queued/running
+  re-monitor and re-check their desktop holder; persisted `stopped`
+  wins over any late settlement.
+- **Pinned.** `@earendil-works/pi-durable`, `pi-ai`, `chord` at
+  exactly `1.0.2`, `typebox` at `1.3.27` — exact versions in
+  package.json; the catalog metadata (context windows, thinking
+  levels) is read from the pinned package, not re-declared.
+- **Live check.** `src/subagents.live.test.ts`, gated
+  `GOBLIN_SUBAGENTS_LIVE=1` + `GOBLIN_SUBAGENTS_AUTH_FILE=<auth.jsonl
+  path>` — the credential resolves in-process through `loadAuthFile`/
+  `AuthStore` (auth ref `zai`), so the only secret-adjacent value in
+  the environment is a path, never a key: the real harness against
+  real z.ai (worker `glm-5.3` thinking high, computer `glm-5.3-flash`
+  thinking low), a real drift sandbox and a real drift desktop, using
+  `SUBAGENT_DRIFT_INPUTS` from `src/subagent-prompts.ts` verbatim.
+  Every candidate name — worker and ask sandboxes, desktops, both
+  networks — carries a per-run token; the check preflights all of
+  them before creating anything, refuses on collision, removes
+  exactly what it created, and preserves its log/screenshot evidence
+  under `/tmp/goblin-subdrift-<token>/` with a REPORT.md. Not part of
+  `bun test`.
+- **Local gates.** `src/subagents.podman.test.ts`
+  (`GOBLIN_SUBAGENTS_PODMAN_LIVE=1`) runs the real harness against a
+  localhost fake model in a real cached-alpine sandbox — read, write,
+  edit, bash, inbox import and export verified through `catFile`, no
+  external network — and SIGKILLs a spawned runner
+  (`src/subagents-kill.driver.ts`) mid-bash inside that real
+  container: reopening the same durable state reports the call
+  interrupted and never re-dispatches it (a marker file proves the
+  command ran once). `src/subagents.crash.test.ts` does the same over
+  the in-memory env; it runs unconditionally, the podman gate needs
+  only the cached image. The in-process suite also proves the
+  non-blocking contract end to end (origin + sibling turns answer
+  while a worker's model request is in flight, its settle notice
+  lands once through `wakeConversation`), Pi's compaction through our
+  `Harness.open` integration, and the four failure shapes (output
+  limit, prose stop, provider error, dead stream) landing `failed`
+  with distinct reasons. A `harnessSettings` dep exists only for
+  those tests — shrinking Pi's compaction window or disabling retry
+  backoff — production passes nothing and Pi's defaults hold.
+- **Files.** `src/subagents.ts` (owner, env adapter, tools, queue,
+  settle), `src/subagent-runs.ts` (rows), `src/box-files.ts`
+  (import/export boundary), `src/agent/tools/subagent.ts` +
+  `desktop.ts` (native tools), `wakeConversation` in `src/wake.ts`
+  (exact-origin route), wiring in `src/index.ts`.
 
 ### Logging
 

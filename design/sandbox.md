@@ -42,7 +42,10 @@ delegated):
   CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID --security-opt
   no-new-privileges`. Never `--privileged`, never `--env-host` (the
   container env is the image's, so no daemon env or secret reaches it),
-  never the podman socket.
+  never the podman socket. This is the sandbox wall — *desktops*
+  append `SYS_CHROOT` via `CreateSpec.extraCaps` so Chromium can run
+  its own sandbox (design/subagents.md); sandboxes always get exactly
+  the five.
 - **Filesystem: nothing shared.** No bind mounts, no volumes, no workspace
   exposure. Bind mounts were rejected on measurement: idmapped mounts fail
   under rootless runc, `:U` leaves host files owned by subuid 100000, and
@@ -52,7 +55,10 @@ delegated):
 - **Network: off by default, a live toggle.** Each sandbox is created on
   the dedicated `goblin-sandbox` network (`--opt isolate=strict`, created
   lazily, its isolate option verified on use) and disconnected before its
-  first command. `podman network connect/disconnect` toggles it live —
+  first command. Lazy creation converges on a racing creator: inspect →
+  create → on failure inspect again, accepting the network only if it now
+  exists with `isolate=strict` — two conversations first-ensuring in
+  parallel share the winner instead of one losing to "already exists". `podman network connect/disconnect` toggles it live —
   filesystem and processes survive the switch (measured). `--network none`
   was rejected: a container created with it can never be connected later.
   The isolated bridge cannot reach the memory network (10.89.0.2:5432

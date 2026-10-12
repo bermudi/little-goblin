@@ -176,7 +176,7 @@ function NoteAppendCard({
 	const [listFailed, setListFailed] = useState(false);
 	const [query, setQuery] = useState("");
 	const [status, setStatus] = useState<"idle" | "busy" | "done" | "error">("idle");
-	const [done, setDone] = useState<{ id: string; title: string } | null>(null);
+	const [done, setDone] = useState<{ id: string; title: string; created: boolean } | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const searchSeq = useRef(0);
 
@@ -206,7 +206,7 @@ function NoteAppendCard({
 		void appendNote(token, id, body).then(
 			(n) => {
 				setStatus("done");
-				setDone({ id: n.id, title: n.title });
+				setDone({ id: n.id, title: n.title, created: false });
 			},
 			(err: unknown) => {
 				setStatus("error");
@@ -224,7 +224,7 @@ function NoteAppendCard({
 		}).then(
 			(n) => {
 				setStatus("done");
-				setDone({ id: n.id, title: n.title });
+				setDone({ id: n.id, title: n.title, created: true });
 			},
 			(err: unknown) => {
 				setStatus("error");
@@ -243,7 +243,7 @@ function NoteAppendCard({
 			</div>
 			{status === "done" ? (
 				<p className="note-card-status">
-					Appended to{" "}
+					{done!.created ? "Created" : "Appended to"}{" "}
 					<button type="button" className="link" onClick={() => onOpenNote?.(done!.id)}>
 						{done!.title}
 					</button>

@@ -16,6 +16,7 @@ import type {
 	AppNoteVersion,
 	AppNoteVersionMeta,
 	AppProject,
+	AppSearchHit,
 } from "../../src/http/app-wire.ts";
 import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
 import { App, deepLinkConv, flatLine } from "./App.tsx";
@@ -1209,6 +1210,18 @@ describe("app projects surface", () => {
 	let versionRows: AppNoteVersionMeta[];
 	let versionPreview: AppNoteVersion | null;
 	let posts: { url: string; body: unknown }[];
+	// Scripted /api/app/search replies keyed by decoded q — a hold gate
+	// keeps the reply pending until the test releases it.
+	let searchCalls: string[];
+	let searchScript: Map<
+		string,
+		{ fail?: boolean; hold?: Promise<void>; hits?: AppSearchHit[] }
+	>;
+	// A held conversation create answers only once this gate resolves.
+	let createHold: Promise<void> | null;
+	// Test-owned gates, resolved in afterEach so a failed assertion can
+	// never strand a pending mocked fetch.
+	let pendingGates: PromiseWithResolvers<void>[];
 	const realFetch = globalThis.fetch;
 
 	const installGlobal = (name: string, value: unknown) => {
@@ -1281,6 +1294,10 @@ describe("app projects surface", () => {
 		versionRows = [];
 		versionPreview = null;
 		posts = [];
+		searchCalls = [];
+		searchScript = new Map();
+		createHold = null;
+		pendingGates = [];
 		installGlobal("window", win);
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
@@ -1314,12 +1331,28 @@ describe("app projects surface", () => {
 			if (url === "/api/app/conversations") {
 				if (method === "POST") {
 					posts.push({ url, body });
-					if (failCreate) return Promise.resolve(jsonResponse({ error: "mint down" }, 500));
-					return Promise.resolve(
-						jsonResponse({ id: "app/minted", title: null, createdAt: "2026-10-10T00:00:00Z" }, 201),
-					);
+					const reply = () =>
+						failCreate
+							? Promise.resolve(jsonResponse({ error: "mint down" }, 500))
+							: Promise.resolve(
+									jsonResponse(
+										{ id: "app/minted", title: null, createdAt: "2026-10-10T00:00:00Z" },
+										201,
+									),
+								);
+					return createHold === null ? reply() : createHold.then(reply);
 				}
 				return Promise.resolve(jsonResponse({ conversations: convs }));
+			}
+			if (url.startsWith("/api/app/search")) {
+				const q = new URL(url, "http://localhost").searchParams.get("q") ?? "";
+				searchCalls.push(q);
+				const script = searchScript.get(q);
+				const reply = () =>
+					script?.fail === true
+						? Promise.resolve(jsonResponse({ error: "search down" }, 500))
+						: Promise.resolve(jsonResponse({ hits: script?.hits ?? [] }));
+				return script?.hold !== undefined ? script.hold.then(reply) : reply();
 			}
 			if (url === "/api/app/projects") {
 				if (method === "POST") {
@@ -1420,6 +1453,9 @@ describe("app projects surface", () => {
 	});
 
 	afterEach(async () => {
+		await act(async () => {
+			for (const g of pendingGates) g.resolve();
+		});
 		if (root !== null) {
 			await act(async () => {
 				root?.unmount();
@@ -1687,7 +1723,9 @@ describe("app projects surface", () => {
 		const append = posts.find((p) => p.url === "/api/app/notes/n-shopping/append");
 		expect(append).toBeTruthy();
 		expect((append!.body as { text: string }).text).toBe("bread\n- milk\n\n```ts\ninner();\n```");
-		expect(card!.querySelector(".note-card-status")!.textContent).toContain("Appended to");
+		const status = card!.querySelector(".note-card-status")!.textContent!;
+		expect(status).toContain("Appended to");
+		expect(status).not.toContain("Created");
 	});
 
 	test("the append card's New note binds to the conversation's project", async () => {
@@ -1718,6 +1756,11 @@ describe("app projects surface", () => {
 		await settle();
 		const created = posts.find((p) => p.url === "/api/app/notes");
 		expect((created!.body as { projectId?: string }).projectId).toBe("p-goblin");
+		const status = card!.querySelector(".note-card-status")!;
+		expect(status.textContent).toContain("Created");
+		expect(status.textContent).not.toContain("Appended to");
+		await click(status.querySelector("button.link"));
+		expect(win.location.pathname).toBe("/app/n/n-new");
 	});
 
 	test("the note page shows the conflict bar when a title save hits a newer rev", async () => {
@@ -1962,4 +2005,280 @@ describe("app projects surface", () => {
 			expect(container.querySelector('p.error[role="alert"]')).toBeNull();
 		});
 	}
+
+	const railSearch = () => container.querySelector("input.rail-search")!;
+	const searchAlert = () =>
+		[...container.querySelectorAll("p.error")].find((p) =>
+			p.textContent?.includes("Search failed:"),
+		)?.textContent ?? null;
+	const startAlert = () =>
+		[...container.querySelectorAll("main p.error")].find((p) =>
+			p.textContent?.includes("Couldn't start a conversation"),
+		)?.textContent ?? null;
+	const hold = () => {
+		const g = Promise.withResolvers<void>();
+		pendingGates.push(g);
+		return g;
+	};
+	const sendComposer = async (text: string) => {
+		const form = container.querySelector("form.composer")!;
+		expect(form).not.toBeNull();
+		await typeInto(form.querySelector("textarea")!, text, win.HTMLTextAreaElement.prototype);
+		await act(async () => {
+			form.dispatchEvent(
+				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+			);
+		});
+		await settle();
+	};
+	const notePage = async (path: string) => {
+		win.history.replaceState(null, "", path);
+		await mount();
+		for (let i = 0; i < 20 && container.querySelector(".ProseMirror") === null; i++) {
+			await settle();
+		}
+		expect(container.querySelector(".ProseMirror")).not.toBeNull();
+	};
+	const searchHit = (text: string): AppSearchHit => ({
+		conversationId: "app/fixture",
+		title: "fixture chat",
+		seq: 1,
+		role: "user",
+		text,
+		createdAt: "2026-10-10T00:00:00.000Z",
+	});
+
+	test("a failed rail search reports the error instead of reading as no matches", async () => {
+		convs = [convRow("fixture chat")];
+		searchScript = new Map([["missing", { fail: true }]]);
+		await mount();
+
+		await typeInto(railSearch(), "missing", win.HTMLInputElement.prototype);
+		await settleSlow();
+		expect(searchCalls).toContain("missing");
+		expect(searchAlert()).toBe("Search failed: search down");
+		expect(container.textContent).not.toContain("No matches.");
+		// The hit branch owns the rail on failure — conversation rows must
+		// not linger there looking like an outcome.
+		expect(container.querySelectorAll(".conv-title").length).toBe(0);
+	});
+
+	test("clearing a failed search then querying again drops the stale alert immediately", async () => {
+		searchScript = new Map([["missing", { fail: true }]]);
+		await mount();
+		const box = railSearch();
+		await typeInto(box, "missing", win.HTMLInputElement.prototype);
+		await settleSlow();
+		expect(searchAlert()).toBe("Search failed: search down");
+
+		await typeInto(box, "", win.HTMLInputElement.prototype);
+		expect(searchAlert()).toBeNull();
+		const gate = hold();
+		searchScript.set("fresh", { hold: gate.promise, hits: [searchHit("needle")] });
+		await typeInto(box, "fresh", win.HTMLInputElement.prototype);
+		await settleSlow();
+		expect(searchCalls).toContain("fresh");
+		expect(searchAlert()).toBeNull();
+		gate.resolve();
+		await settle();
+		expect(container.textContent).toContain("needle");
+		expect(searchAlert()).toBeNull();
+	});
+
+	test("a fresh query typed over a displayed failure never flashes 'No matches.'", async () => {
+		searchScript = new Map([["missing", { fail: true }]]);
+		await mount();
+		const box = railSearch();
+		await typeInto(box, "missing", win.HTMLInputElement.prototype);
+		await settleSlow();
+		expect(searchAlert()).toBe("Search failed: search down");
+
+		// Straight to a new query — no clearing step. The old alert stays
+		// until the reply lands; the empty hit list must never render as
+		// "No matches." in between.
+		const gate = hold();
+		searchScript.set("fresh", { hold: gate.promise, hits: [searchHit("needle")] });
+		await typeInto(box, "fresh", win.HTMLInputElement.prototype);
+		await settleSlow();
+		expect(searchCalls).toContain("fresh");
+		expect(container.textContent).not.toContain("No matches.");
+		expect(searchAlert()).toBe("Search failed: search down");
+		gate.resolve();
+		await settle();
+		expect(container.textContent).toContain("needle");
+		expect(searchAlert()).toBeNull();
+	});
+
+	for (const outcome of ["success", "failure"] as const) {
+		test(`a held search cleared mid-flight settles ${outcome} without stale rail state`, async () => {
+			convs = [convRow("fixture chat")];
+			const gate = hold();
+			searchScript = new Map([
+				[
+					"gone",
+					{ hold: gate.promise, fail: outcome === "failure", hits: [searchHit("needle")] },
+				],
+			]);
+			await mount();
+			const box = railSearch();
+			await typeInto(box, "gone", win.HTMLInputElement.prototype);
+			await settleSlow();
+			expect(searchCalls).toContain("gone");
+			await typeInto(box, "", win.HTMLInputElement.prototype);
+			gate.resolve();
+			await settle();
+			expect(container.textContent).not.toContain("No matches.");
+			expect(container.textContent).not.toContain("Search failed:");
+			expect(container.textContent).not.toContain("needle");
+			expect(
+				[...container.querySelectorAll(".conv-title")].some(
+					(t) => t.textContent === "fixture chat",
+				),
+			).toBe(true);
+		});
+	}
+
+	test("a start failure clears when navigating from the empty state to a project", async () => {
+		projs = [projRow("Goblin")];
+		failCreate = true;
+		await mount();
+		await sendComposer("hi");
+		expect(startAlert()).toContain("Couldn't start a conversation");
+
+		await click(
+			[...container.querySelectorAll(".rail-projects .proj")].find(
+				(b) => b.textContent === "Goblin",
+			),
+		);
+		expect(win.location.pathname).toBe("/app/p/p-goblin");
+		expect(startAlert()).toBeNull();
+	});
+
+	test("a start failure on a project page clears on opening one of its notes", async () => {
+		projs = [projRow("Goblin")];
+		notes = [noteRow("Spec", { projectId: "p-goblin" })];
+		failCreate = true;
+		win.history.replaceState(null, "", "/app/p/p-goblin");
+		await mount();
+		await sendComposer("hi");
+		expect(startAlert()).toContain("Couldn't start a conversation");
+
+		await click(
+			[...container.querySelectorAll("button.idx")].find((b) =>
+				b.textContent?.startsWith("Spec"),
+			),
+		);
+		expect(win.location.pathname).toBe("/app/n/n-spec");
+		expect(startAlert()).toBeNull();
+	});
+
+	test("a start failure on a note page clears on New conversation", async () => {
+		notes = [noteRow("Shopping")];
+		failCreate = true;
+		await notePage("/app/n/n-shopping");
+		await click(
+			[...container.querySelectorAll("button")].find(
+				(b) => b.textContent === "Chat with this note",
+			),
+		);
+		expect(startAlert()).toContain("Couldn't start a conversation");
+
+		await click(
+			[...container.querySelectorAll("nav button.new")].find(
+				(b) => b.textContent === "New conversation",
+			),
+		);
+		expect(win.location.pathname).toBe("/app/");
+		expect(startAlert()).toBeNull();
+	});
+
+	test("a cleared start failure stays gone through index and operator pages, and reopening the source", async () => {
+		notes = [noteRow("Shopping")];
+		projs = [projRow("Goblin")];
+		failCreate = true;
+		await notePage("/app/n/n-shopping");
+		await click(
+			[...container.querySelectorAll("button")].find(
+				(b) => b.textContent === "Chat with this note",
+			),
+		);
+		expect(startAlert()).toContain("Couldn't start a conversation");
+
+		const railSection = (label: string) =>
+			click(
+				[...container.querySelectorAll(".rail-projects .rail-section")].find(
+					(b) => b.textContent === label,
+				),
+			);
+		await railSection("Notes");
+		expect(win.location.pathname).toBe("/app/notes");
+		expect(startAlert()).toBeNull();
+		await railSection("Projects");
+		expect(win.location.pathname).toBe("/app/projects");
+		expect(startAlert()).toBeNull();
+		await click(
+			[...container.querySelectorAll(".rail-ops button")].find(
+				(b) => b.textContent === "Settings",
+			),
+		);
+		expect(win.location.pathname).toBe("/app/settings");
+		expect(startAlert()).toBeNull();
+
+		await railSection("Notes");
+		await settleSlow();
+		await click(
+			[...container.querySelectorAll("button.idx")].find((b) =>
+				b.textContent?.startsWith("Shopping"),
+			),
+		);
+		expect(win.location.pathname).toBe("/app/n/n-shopping");
+		expect(startAlert()).toBeNull();
+	});
+
+	test("an accepted back/forward traversal clears a stale start failure", async () => {
+		notes = [noteRow("Shopping")];
+		failCreate = true;
+		await notePage("/app/n/n-shopping");
+		await click(
+			[...container.querySelectorAll("button")].find(
+				(b) => b.textContent === "Chat with this note",
+			),
+		);
+		expect(startAlert()).toContain("Couldn't start a conversation");
+
+		await act(async () => {
+			win.history.replaceState(null, "", "/app/");
+			win.dispatchEvent(new win.PopStateEvent("popstate"));
+		});
+		await settle();
+		expect(win.location.pathname).toBe("/app/");
+		expect(startAlert()).toBeNull();
+	});
+
+	test("a create that fails after navigating away can't post its alert on the destination", async () => {
+		projs = [projRow("Goblin")];
+		notes = [noteRow("Shopping")];
+		await notePage("/app/n/n-shopping");
+		const gate = hold();
+		createHold = gate.promise;
+		await click(
+			[...container.querySelectorAll("button")].find(
+				(b) => b.textContent === "Chat with this note",
+			),
+		);
+		expect(posts.some((p) => p.url === "/api/app/conversations")).toBe(true);
+		expect(startAlert()).toBeNull();
+
+		await click(
+			[...container.querySelectorAll(".rail-projects .proj")].find(
+				(b) => b.textContent === "Goblin",
+			),
+		);
+		expect(win.location.pathname).toBe("/app/p/p-goblin");
+		failCreate = true;
+		gate.resolve();
+		await settle();
+		expect(win.location.pathname).toBe("/app/p/p-goblin");
+		expect(startAlert()).toBeNull();
+	});
 });

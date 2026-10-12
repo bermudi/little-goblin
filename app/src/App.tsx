@@ -612,6 +612,13 @@ function AppShell() {
 	const [composerFocus, setComposerFocus] = useState(0);
 	const [starting, setStarting] = useState(false);
 	const [startFailed, setStartFailed] = useState(false);
+	// Navigation (or a newer start) fences off a stale failure — the
+	// alert belongs to the page that saw the failed send, nowhere else.
+	const startSeq = useRef(0);
+	const clearStartFailure = () => {
+		startSeq.current += 1;
+		setStartFailed(false);
+	};
 	// The rail's second pool: archived rows sit in a collapsed section
 	// under the active list (design/app.md → Archiving).
 	const [archivedOpen, setArchivedOpen] = useState(false);
@@ -779,6 +786,7 @@ function AppShell() {
 				key: navigation?.currentEntry.key ?? null,
 			};
 			setNavigationError(null);
+			clearStartFailure();
 			if (p !== null) {
 				setPage(p);
 				setProjectId(null);
@@ -820,13 +828,18 @@ function AppShell() {
 	}, [page]);
 
 	// Debounced app-pool search — an empty box clears back to the list.
+	// The sequence bumps on every invocation, including the clear, so a
+	// reply dispatched before the box emptied can never reappear after.
+	// A stale error clears on empty (and on the next settled reply),
+	// never on a fresh query — clearing there would flash "No matches.".
 	useEffect(() => {
+		const seq = ++searchSeq.current;
 		const q = query.trim();
 		if (q === "") {
 			setHits(null);
+			setSearchError(null);
 			return;
 		}
-		const seq = ++searchSeq.current;
 		const t = setTimeout(() => {
 			void searchConversations(token, q).then(
 				(r) => {
@@ -836,6 +849,7 @@ function AppShell() {
 				},
 				(err) => {
 					if (seq !== searchSeq.current) return;
+					setHits([]);
 					setSearchError(err instanceof Error ? err.message : "search failed");
 				},
 			);
@@ -890,6 +904,7 @@ function AppShell() {
 	// for the list/empty state, matching the deep link the pings carry.
 	const select = (id: string | null) => {
 		if (!leaveDirtySettings()) return;
+		clearStartFailure();
 		setPage("chat");
 		setProjectId(null);
 		setNoteId(null);
@@ -900,6 +915,7 @@ function AppShell() {
 
 	const openProject = (id: string) => {
 		if (!leaveDirtySettings()) return;
+		clearStartFailure();
 		setPage("project");
 		setProjectId(id);
 		setNoteId(null);
@@ -909,6 +925,7 @@ function AppShell() {
 
 	const openProjectsIndex = () => {
 		if (!leaveDirtySettings()) return;
+		clearStartFailure();
 		setPage("projects");
 		setProjectId(null);
 		setNoteId(null);
@@ -918,6 +935,7 @@ function AppShell() {
 
 	const openNotesIndex = () => {
 		if (!leaveDirtySettings()) return;
+		clearStartFailure();
 		setPage("notes");
 		setProjectId(null);
 		setNoteId(null);
@@ -927,6 +945,7 @@ function AppShell() {
 
 	const openNote = (id: string) => {
 		if (!leaveDirtySettings()) return;
+		clearStartFailure();
 		setPage("note");
 		setProjectId(null);
 		setNoteId(id);
@@ -946,6 +965,7 @@ function AppShell() {
 			return;
 		}
 		if (!leaveDirtySettings()) return;
+		clearStartFailure();
 		setPage(p);
 		setNavOpen(false);
 		pushRoute(`/app/${p}`);
@@ -969,6 +989,7 @@ function AppShell() {
 	// a project page its id, and both ride the same create → seed →
 	// select flow (design/projects.md: binding is fixed at creation).
 	const startChat = async (projectId: string | null, parts: UIMessage["parts"]) => {
+		const seq = ++startSeq.current;
 		setStarting(true);
 		setStartFailed(false);
 		try {
@@ -980,7 +1001,7 @@ function AppShell() {
 			select(created.id);
 			await refresh();
 		} catch {
-			setStartFailed(true);
+			if (seq === startSeq.current) setStartFailed(true);
 		} finally {
 			setStarting(false);
 		}

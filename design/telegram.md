@@ -141,16 +141,13 @@ failing message by message.
   operator devices are on the tailnet, the v1-on-lithium pattern), `tailscale
   funnel` (public HTTPS relayed through Tailscale's edge, for off-tailnet
   clients), or any reverse proxy with a cert. NAT-first by construction.
-  **One client, two doors (ruling 2026-10-10).** The settings page began
-  as two static files served verbatim — markup+css in `http/app.ts`,
-  client script in `http/app.js`, no build step, tsc-checked against the
-  server's wire types. It retires here: `app.js` had grown into a second
-  settings UI maintained beside the app channel's editor (the operator
-  console landed in the PWA, design/app.md, 2026-10-09, and the mini app
-  kept duplicating a subset of it). The Telegram door now serves the
-  built app client — the same `app/dist` bundle the PWA runs — at
-  `/t/settings` and `/t/memory`, in a constrained **telegram mode**:
-  operator surface only, no conversation rail, no chat, no composer.
+  **One client, two doors (ruling 2026-10-10).** The Telegram door
+  serves the built app client — the same `app/dist` bundle the PWA runs
+  — at `/t/settings` and `/t/memory`, in a constrained **telegram
+  mode**: operator surface only, no conversation rail, no chat, no
+  composer. The plain-JS page it replaced is gone; it had grown into a
+  second settings UI duplicating the app console, and git owns that
+  history.
   Auth is unchanged: initData per request via `x-init-data`, the same
   `validateInitData`, the same `via: "mini-app"` actor — so the
   self-lockout guard (the door refuses to drop the *requesting* Telegram
@@ -243,7 +240,6 @@ and the rules below exist to keep it unsurprising.
    and intake carries the replied-to message's text into the burst as
    a quoted part (head-cut, like the check's state) — a reply to a
    message from an older conversation must still say what "this" is.
-   Intake drops that text today; this ruling adds it.
    (A reply to a spin-off ping is routed to the app conversation
    instead — see App channel → Spin-off.)
 3. **Past the gap** — if the current conversation has no assistant
@@ -357,12 +353,11 @@ command, and whether a turn/review was stopped.
 store — readable, searchable by `history_search` — and are never
 routed to again. Any DM message, thread id or not, resolves to the
 rolling address and replies go to the main chat. Programs pinned to a
-DM topic are re-pinned to the DM at cutover (one-off, logged per
-program). Unverified: whether the bot's threaded mode must be switched
-off in BotFather for the DM to render as a plain chat, and whether a
-send without a thread id behaves while it is on — probe at
-implementation; cutover also waits for no delegation in flight from a
-DM topic. Group topics are untouched.
+DM topic were re-pinned to the DM at cutover (one-off, logged per
+program). Group topics are untouched. **Unverified:** whether the
+bot's threaded mode must be switched off in BotFather for the DM to
+render as a plain chat, and whether a send without a thread id behaves
+while it is on.
 
 **Logging.** `dm rolled` (address, from → to conversation, gap,
 decided by
@@ -427,9 +422,9 @@ still runs).
 **Sandbox class invariants.** Persona follows class at conversation
 creation, and the sandbox tool filter is **persona-driven**: any
 conversation pinned `persona: guest` gets `SANDBOX_TOOLS` (`search`
-only) whatever channel it lives on. The old filter guarded on
-channel, which would have handed a persona-pinned DM the full
-toolset — the guard is the persona column, not the address shape.
+only) whatever channel it lives on — the guard is the persona column,
+not the address shape (a channel check would hand a persona-pinned DM
+the full toolset).
 Sandbox conversations are memory-excluded by construction, capped
 per reply by `guest.outputChars` on the guest surface, **uncapped in
 turn count** (ruling 2026-10-11 — the named list is small and
@@ -469,16 +464,12 @@ asked for both surfaces Telegram offers:
   intake — a standing conversation in that chat, full agent, no guest
   machinery at all.
 
-**The unit of trust is the person (Roles and permissions, 2026-10-11).**
-The 2026-10-06 chat-trust machinery is deleted with it: `/open` and
-`/off`, the `guest_open_chats` row, the epoch-bump fencing on close,
-and the post-placeholder revalidation of openness (the busy check
-stays — a busy conversation still refuses new summons with one
-line). Summonses classify by the two lists alone; a stranger's
-summons gets the refusal line, settled into the placeholder where
-there is one. Group privacy mode stays ON deliberately: the bot
-receives only mentions/replies in member chats, mirroring guest
-mode's no-history property.
+**The unit of trust is the person** (Roles and permissions, 2026-10-11 —
+the earlier chat-trust machinery is deleted there). Summonses classify
+by the two lists alone; a stranger's summons gets the refusal line,
+settled into the placeholder where there is one. Group privacy mode
+stays ON deliberately: the bot receives only mentions/replies in member
+chats, mirroring guest mode's no-history property.
 
 **Three classes, decided per summons, enforced by hard exclusion**
 (Roles and permissions, above). `from.id ∈ operators` (read live at

@@ -4,7 +4,8 @@
 // container, conversation, exit code and ms, so a sandbox symptom plus
 // goblin.log reconstructs exactly what the engine was told. No prune
 // anywhere: lifecycle ops address an exact name or filter on the
-// goblin.sandbox label — the memory stack shares this container store.
+// goblin.sandbox or goblin.desktop label — the memory stack shares
+// this container store.
 //
 // Two argv seams: `runner` for lifecycle ops (fixed budget, text out),
 // and exec runners for in-container commands (per-call deadline, abort
@@ -33,6 +34,12 @@ export interface PodmanExecOpts {
 	timeoutMs: number;
 	maxOutput: number;
 	abortSignal?: AbortSignal;
+	/** exec -u: desktop containers keep a non-root session user. */
+	user?: string;
+	/** exec -e pairs: the session's DISPLAY/bus env for desk processes. */
+	env?: Record<string, string>;
+	/** exec -w: defaults to the sandbox workdir below. */
+	workdir?: string;
 }
 export type PodmanExecRunner = (args: string[], opts: PodmanExecOpts) => Promise<BoundedProc>;
 export type PodmanExecBytesRunner = (
@@ -91,6 +98,10 @@ export interface CreateSpec {
 	cpus: number;
 	pids: number;
 	labels: Record<string, string>;
+	/** PID 1 command — the sandbox's idle sleep when omitted. */
+	command?: string[];
+	hostname?: string;
+	shmSize?: string;
 }
 
 export interface ContainerInspect {
@@ -185,6 +196,21 @@ export function makePodman(deps?: {
 		return new PodmanError(op, r.code, detail === "" ? "no output" : detail);
 	}
 
+	// exec -w/-u/-e share one argv shape between exec and execBytes.
+	function execArgs(name: string, argv: string[], opts: PodmanExecOpts): string[] {
+		return [
+			"exec",
+			"-w",
+			opts.workdir ?? SANDBOX_WORKDIR,
+			...(opts.user === undefined ? [] : ["-u", opts.user]),
+			...(opts.env === undefined
+				? []
+				: Object.entries(opts.env).flatMap(([k, v]) => ["-e", `${k}=${v}`])),
+			name,
+			...argv,
+		];
+	}
+
 	return {
 		async networkEnsure(name, conv) {
 			const r = await call("network inspect", ["network", "inspect", name], {
@@ -242,10 +268,11 @@ export function makePodman(deps?: {
 				"--pids-limit",
 				String(spec.pids),
 				"--hostname",
-				"sandbox",
+				spec.hostname ?? "sandbox",
+				...(spec.shmSize === undefined ? [] : ["--shm-size", spec.shmSize]),
 				"--init",
 				spec.image,
-				...SANDBOX_INIT_COMMAND,
+				...(spec.command ?? SANDBOX_INIT_COMMAND),
 			];
 			const r = await call("create", args, { container: spec.name, conversation: conv });
 			if (r.code !== 0) throw fail("create", r);
@@ -316,7 +343,7 @@ export function makePodman(deps?: {
 
 		async exec(name, argv, opts, conv) {
 			const t0 = Date.now();
-			const r = await execRunner(["exec", "-w", SANDBOX_WORKDIR, name, ...argv], opts);
+			const r = await execRunner(execArgs(name, argv, opts), opts);
 			log.info("podman call", {
 				op: "exec",
 				container: name,
@@ -330,7 +357,7 @@ export function makePodman(deps?: {
 
 		async execBytes(name, argv, opts, conv) {
 			const t0 = Date.now();
-			const r = await execBytesRunner(["exec", "-w", SANDBOX_WORKDIR, name, ...argv], opts);
+			const r = await execBytesRunner(execArgs(name, argv, opts), opts);
 			log.info("podman call", {
 				op: "execBytes",
 				container: name,

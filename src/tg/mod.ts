@@ -36,6 +36,7 @@ import {
 } from "./commands.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import { makeDeliverySink, SPEAK_CALLBACK } from "./delivery.ts";
+import { registerGenerationStop } from "./generation-stop.ts";
 import {
 	type GuestEnv,
 	ensurePersonaClass,
@@ -1002,6 +1003,10 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 		}
 		await next();
 	});
+
+	// Before the gate: a stop update carries no sender, so the gate would
+	// drop it at debug level before this handler ever ran.
+	registerGenerationStop(bot);
 
 	bot.use(accessGate(deps.configRef));
 

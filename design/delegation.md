@@ -273,7 +273,11 @@ Rulings:
   `stop` on a finished one is the cleanup.
 - **Goblin may delegate on its own judgment** within a turn — long or
   coding-heavy work belongs in a harness, not in a lane-blocking
-  `bash` call — and says that it did. That judgment includes the
+  `bash` call — and says that it did. Which harness (2026-10-11):
+  work on the operator's projects goes to his agents through herdr;
+  standalone code-heavy work goes to goblin's own worker subagent, and
+  screen work to a computer subagent — never herdr
+  (design/subagents.md → Routing). That judgment includes the
   target: work tied to another host's repos runs there, and the
   machine list rides the tool's description. `/stop` fences goblin's turn,
   not delegations: they aren't turns. `delegate stop` ends one.

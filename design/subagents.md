@@ -8,8 +8,15 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 Operator ask: give goblin "computer use" — eyes and hands on a desktop —
 without replacing goblin and without the conversation waiting on clicks.
 Classified **machinery** (DESIGN.md → Non-goals): two systems return
-together, designed here first — a **subagent runtime** and its first
-purpose, **computer use** over a **desktop pool**.
+together, designed here first — a **subagent runtime** with two
+purposes, **computer use** over a **desktop pool** and **worker** runs in
+the conversation's sandbox.
+
+**Routing (operator ruling).** Work on the operator's projects goes
+through herdr — his agents, his repos (design/delegation.md). Long or
+code-heavy work that stands alone ("how does this GBA ROM compute XP?")
+goes to a worker subagent. Anything that needs a screen goes to a
+computer subagent. Goblin's own turn stays for chat and short work.
 
 ### Why not the obvious seams
 
@@ -64,10 +71,18 @@ agents, recursion depth 3, 10-minute timeouts with revive, a separate run
 store):
 
 - **Purpose-typed.** A subagent type is code with a ruling here: its
-  tools, its model, its terminal outcomes. Computer use is the first. No
-  generic "spawn an agent" tool.
-- **No recursion.** A subagent's tool set never contains a way to start
-  another.
+  tools, its execution environment, its model, its terminal outcomes.
+  Two types: `computer` and `worker`. No generic "spawn an agent" tool,
+  and **no type ever gets host bash** — that is delegation without the
+  operator's harness, v1's shape.
+- **No recursion, no chaining.** A subagent's tool set never contains a
+  way to start another; a worker cannot start a computer run. Goblin
+  orchestrates.
+- **At most `maxRuns` (3) running at once**, across types (operator
+  ruling). Every type shares the operator's z.ai Coding Plan quota with
+  goblin's chat, so the cap protects the bot's own responsiveness.
+  Beyond it, `start` queues the run (`queued` status) and says so; the
+  queue drains in start order as runs settle.
 - **No timeout-and-revive.** Runs are durable; they end by outcome or by
   an explicit stop.
 - **Goblin starts them and owns the outcome.** Results return to the
@@ -79,20 +94,24 @@ store):
   (`GOBLIN_SUBAGENTS_LIVE=1`) pins the verbs goblin uses.
 
 **Run state is rows.** A `subagent_runs` table in goblin.sqlite: id,
-type, origin conversation, desktop, Pi conversation id, task, status
-(`running|needs_input|done|failed|stopped`), created/finished. Pi
+type, origin conversation, box (desktop name or the sandbox), Pi
+conversation id, task, status
+(`queued|running|needs_input|done|failed|stopped`), created/finished. Pi
 Durable's storage holds transcripts; goblin's row holds routing. Settled
 runs wake the origin conversation through `wake.ts`, the delegation-notice
-path: `[subagent: #<id> computer · <done|needs input|failed>]` plus the
-fenced result and the final screenshot path (goblin may `send_file` it).
+path: `[subagent: #<id> <type> · <done|needs input|failed>]` plus the
+fenced result, the exported file paths, and (computer) the final
+screenshot path (goblin may `send_file` them).
 `/stop` fences goblin's turn, not runs — the delegation precedent; a run
-ends with `computer stop`.
+ends with `subagent stop`.
 
-**Model.** Config, never guessed: `zai` `glm-5.3-flash` on
-`https://api.z.ai/api/coding/paas/v4` (openai-completions). Measured: the
-operator's key is a Coding Plan key — `paas/v4` answers `429 code 1113
-Insufficient balance`; the coding URL works. `glm-5.3-flash` cannot
-disable thinking (`400 code 1210`) — `thinking: "low"` minimum. The key
+**Models.** Config per type, never guessed (operator ruling): computer
+= `zai` `glm-5.3-flash` (vision), worker = `zai` `glm-5.3` (text,
+code), both on `https://api.z.ai/api/coding/paas/v4`
+(openai-completions). Measured: the operator's key is a Coding Plan key
+— `paas/v4` answers `429 code 1113 Insufficient balance`; the coding URL
+works. `glm-5.3-flash` cannot disable thinking (`400 code 1210`) —
+`thinking: "low"` minimum. The key
 resolves through goblin's `auth.ts` in-process into Pi's
 `InMemoryCredentialStore` — never env, argv, disk or log (probe-verified).
 Image transport verified: a marker code read exactly from a tool-result
@@ -123,7 +142,7 @@ release.**
 - **Release / hand off** — e.g. run → operator for a CAPTCHA → run.
 - **Reaping** at call time like the sandbox — never at boot, never
   shutdown: unleased, unreserved desktops idle beyond `idleHours` are
-  removed, logged. `maxDesktops` caps the pool (g7 has ~13 GB free; a
+  removed, logged. `desktops.max` caps the pool (g7 has ~13 GB free; a
   desktop idles at ~281 MB with Chromium open, measured).
 
 ### The wall: runc now, krun parked
@@ -215,18 +234,66 @@ subagent conversation is not a goblin conversation. Pi Durable's
 compaction runs; whether old frames degrade to text stubs is decided from
 phase-4 measurements (frames per task, tokens per frame), not now.
 
-### Goblin's surface: the `computer` tool
+### The worker subagent
 
-In-process machinery is out of bash's reach, so this one is a native
-tool (the browser stayed a skill because its CLI owns its lifecycle).
-Mounted when the `computer` block exists; flat schema, per-action
-contract inside `execute`:
+Pi Durable's coding tools (read, write, edit, bash) over an execution
+environment backed by **the origin conversation's sandbox** (operator
+ruling) — never the host. Pi Durable's `ExecutionEnv` is its
+`FileSystem` (about twenty file operations) plus a `Shell`; goblin
+implements it over `sandboxes.ts` exec, so every command and file op
+inherits the sandbox's wall, reconcile, logging and network state. No
+container-backed env exists upstream: this is goblin code, verified in
+phase 3. File tools are replay-safe for reads only; `bash`, `write` and
+`edit` are not.
 
-- runs: `start` (task, desktop — claims it), `list`, `status`, `send`
-  (steer or answer a run), `stop`;
-- desktops: `new`, `list`, `shot` (observe — the path goes to
-  `send_file`), `claim`/`release`/`reserve`, `network`, `import`/`export`,
-  `destroy`.
+**One sandbox, two users.** Serious work runs through the worker; goblin
+still checks and reaches in with its own `sandbox` tool (operator
+ruling). So the sandbox carries a run lease, not an exclusive lock:
+
+- one worker run per conversation sandbox at a time — a second queues;
+- goblin's `exec`, `import`, `export` and `network` keep working while a
+  run holds it, and each result notes `run #<id> holds this sandbox`;
+- goblin's `reset` is refused while a run holds it (it would destroy the
+  run's state) — `subagent stop` first;
+- idle reaping skips a sandbox whose run is `queued`, `running` or
+  `needs_input`;
+- a recreate (container gone) or restart-after-timeout during a run is
+  reported to the run as a tool result, not hidden — its background
+  processes died.
+
+Terminal outcomes are tools, as for computer: `finish(result, files)`,
+`ask_operator(question)`.
+
+### Files in and out
+
+Through the workspace, always, with the sandbox's existing rules
+(design/sandbox.md → The tool): import only from a workspace path whose
+realpath stays inside the workspace; export only regular files, streamed
+through `cat`, written tmp + fsync + rename, 100 MiB cap. A host file
+outside the workspace is copied in first — a deliberate act. Runs carry
+the steps so nobody has to remember them:
+
+- **In:** `start` takes `files: [workspace paths]`, imported to `/inbox`
+  in the run's box before the first model call.
+- **Out:** `finish(result, files: [box paths])` — on settle the owner
+  exports each to `workspace/subagents/<run-id>/`; refusals (directory,
+  symlink, over cap) are listed, not dropped. The notice names the
+  paths; goblin reads, sends or hands them to the next run.
+- **Box to box** (sandbox ↔ desktop): export → workspace → import.
+  Nothing is shared between containers, by design.
+
+### Goblin's surface: `subagent` and `desktop`
+
+In-process machinery is out of bash's reach, so these are native tools
+(the browser stayed a skill because its CLI owns its lifecycle). Mounted
+when the `subagents` block exists (worker also needs the `sandbox`
+block); flat schemas, per-action contracts inside `execute`:
+
+- `subagent`: `start` (type, task, files; computer: the desktop — claims
+  it), `list`, `status`, `send` (steer or answer), `stop`.
+- `desktop`: `new`, `list`, `shot` (observe — the path goes to
+  `send_file`), `claim`/`release`/`reserve`, `network`,
+  `import`/`export`, `destroy`.
 
 `start` returns at once — the turn ends, the conversation (and every
 other one) keeps answering; the settle notice wakes it later.
@@ -234,25 +301,40 @@ other one) keeps answering; the settle notice wakes it later.
 ### Config
 
 ```json5
-computer: {
-  model: {
-    provider: "zai", // auth ref in auth.jsonl
-    id: "glm-5.3-flash",
-    baseUrl: "https://api.z.ai/api/coding/paas/v4",
-    api: "openai-completions",
-    thinking: "low",
+subagents: {
+  maxRuns: 3,
+  worker: {   // needs the sandbox block
+    model: {
+      auth: "zai", // auth ref in auth.jsonl
+      id: "glm-5.3",
+      baseUrl: "https://api.z.ai/api/coding/paas/v4",
+      api: "openai-completions",
+      thinking: "high",
+    },
   },
-  image: "localhost/goblin-desktop:1",
-  maxDesktops: 3,
-  idleHours: 24,   // 0 = never reap
-  memory: "3g",
-  cpus: 2,
-  pids: 1024,
+  computer: {
+    model: {
+      auth: "zai",
+      id: "glm-5.3-flash",
+      baseUrl: "https://api.z.ai/api/coding/paas/v4",
+      api: "openai-completions",
+      thinking: "low",
+    },
+  },
+  desktops: {
+    image: "localhost/goblin-desktop:1",
+    max: 3,
+    idleHours: 24, // 0 = never reap
+    memory: "3g",
+    cpus: 2,
+    pids: 1024,
+  },
 }
 ```
 
-Absent = no tool, no harness opened. Boot-frozen like `delegation` (the
-harness and its registry are built once).
+Absent block = no tools, no harness opened; an absent type = that type
+is off. Boot-frozen like `delegation` (the harness and its registry are
+built once).
 
 ### Logging
 
@@ -277,8 +359,10 @@ platform, Open Interface and LCU.
 1. This ruling.
 2. Desktop image, `desktops.ts` pool + podman create variant, the live
    wall check extended to a desktop; non-root Chromium probe.
-3. `subagents.ts` (Pi Durable owner, boot resume), the computer
-   extension, the `computer` tool, settle → wake.
+3. `subagents.ts` (Pi Durable owner, boot resume, run cap + queue), the
+   computer extension, the sandbox-backed worker env + sandbox run
+   lease, the `subagent` and `desktop` tools, files in/out, settle →
+   wake.
 4. Three real operator-chosen tasks, outcomes checked independently of
    what the subagent claims; frame/token measurements settle the context
    policy.

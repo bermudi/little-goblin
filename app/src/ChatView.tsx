@@ -231,6 +231,7 @@ export function MessageParts({
 	onAction,
 	onOpenNote,
 	busy,
+	messages,
 }: {
 	parts: UIMessage["parts"];
 	token?: string | null;
@@ -242,6 +243,9 @@ export function MessageParts({
 	// Note chips and the fenced note card navigate in-app when wired.
 	onOpenNote?: ((id: string) => void) | undefined;
 	busy?: boolean | undefined;
+	// The full transcript, when the caller has it: ui surfaces re-derive
+	// their picked choice row from persisted [ui] messages.
+	messages?: readonly UIMessage[] | undefined;
 }) {
 	const out: ReactNode[] = [];
 	for (let i = 0; i < parts.length; i++) {
@@ -256,6 +260,7 @@ export function MessageParts({
 						part={p}
 						onAction={onAction}
 						busy={busy}
+						messages={messages}
 					/>,
 				);
 				continue;
@@ -1507,6 +1512,7 @@ function Chat({
 									token={token}
 									noteProjectId={noteProjectId}
 									busy={busy}
+									messages={messages}
 									onOpenNote={onOpenNote}
 									onAction={(text) => {
 										pinned.current = true;

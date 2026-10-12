@@ -4,7 +4,7 @@
 // only once complete), complete input renders all-or-nothing — a bad
 // payload falls back to the generic tool row, never a blank.
 
-import type { DynamicToolUIPart, ToolUIPart } from "ai";
+import type { DynamicToolUIPart, ToolUIPart, UIMessage } from "ai";
 import {
 	normalizeUiInput,
 	uiBlockSchema,
@@ -57,7 +57,8 @@ export function UiPart({
 	part,
 	onAction,
 	busy,
-}: { part: ToolUIPart | DynamicToolUIPart } & UiActionProps) {
+	messages,
+}: { part: ToolUIPart | DynamicToolUIPart; messages?: readonly UIMessage[] | undefined } & UiActionProps) {
 	switch (part.state) {
 		case "input-streaming":
 			return <StreamingSurface input={part.input} />;
@@ -65,7 +66,7 @@ export function UiPart({
 		case "output-available": {
 			const parsed = uiInputSchema.safeParse(normalizeUiInput(part.input).value);
 			if (!parsed.success) return <ToolRun part={part} />;
-			return <Surface input={parsed.data} onAction={onAction} busy={busy} />;
+			return <Surface input={parsed.data} onAction={onAction} busy={busy} messages={messages} />;
 		}
 		default:
 			// output-error / output-denied / approval states — the

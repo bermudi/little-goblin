@@ -1,15 +1,18 @@
 // The ui block renderers — one component per leaf type, plus the two
 // containers (design/app.md → Intelligent UI). Every rendered root
 // carries ui-<type>. Local state (the open tab, form values — read
-// from the DOM at submit, never stored server-side) lives and dies
-// here; actions are the only way out — they post a [ui] message
-// through the composer's own sendMessage, never a hidden channel.
+// from the DOM at submit, never stored server-side, and the picked
+// choice row) lives and dies here; actions are the only way out —
+// they post a [ui] message through the composer's own sendMessage,
+// never a hidden channel.
 
-import { useState, type CSSProperties } from "react";
+import { createContext, useContext, useState, type CSSProperties } from "react";
+import type { UIMessage } from "ai";
 import type { UiBlock, UiLeaf, UiInput } from "../../../src/agent/tools/ui-schema.ts";
 import { Markdown } from "../markdown.tsx";
 import { Skeleton } from "../tools/bits.tsx";
 import { Chart } from "./Chart.tsx";
+import { choiceLabels, derivePick } from "./picks.ts";
 import { HtmlFrame } from "./HtmlFrame.tsx";
 
 export interface UiActionProps {
@@ -26,6 +29,18 @@ export interface UiActionProps {
 function actionsOff({ onAction, busy }: UiActionProps): boolean {
 	return busy === true || onAction === undefined;
 }
+
+// The picked-row highlight (design/app.md → Intelligent UI, local
+// state tier): a choices tap highlights the matching table row
+// client-side AND posts [ui] <label> as usual. Cosmetic only — on
+// reload Surface re-derives the label from the transcript, so the
+// tap remains the single source of record. Context, not props: the
+// pick crosses leaf boundaries (Choices → Table) without threading
+// every renderer.
+const PickContext = createContext<{ picked: string | null; pick: (label: string) => void }>({
+	picked: null,
+	pick: () => {},
+});
 
 function Text({ leaf }: { leaf: Extract<UiLeaf, { type: "text" }> }) {
 	return (
@@ -59,6 +74,7 @@ function Stats({ leaf }: { leaf: Extract<UiLeaf, { type: "stats" }> }) {
 }
 
 function Table({ leaf }: { leaf: Extract<UiLeaf, { type: "table" }> }) {
+	const { picked } = useContext(PickContext);
 	return (
 		<div className="ui-table">
 			<table className="md-table">
@@ -71,7 +87,7 @@ function Table({ leaf }: { leaf: Extract<UiLeaf, { type: "table" }> }) {
 				</thead>
 				<tbody>
 					{leaf.rows.map((row, ri) => (
-						<tr key={ri}>
+						<tr key={ri} className={picked !== null && row[0] === picked ? "picked" : undefined}>
 							{row.map((cell, ci) => (
 								<td key={ci}>{cell}</td>
 							))}
@@ -105,6 +121,7 @@ function Choices({
 	onAction,
 	busy,
 }: { leaf: Extract<UiLeaf, { type: "choices" }> } & UiActionProps) {
+	const { pick } = useContext(PickContext);
 	const disabled = actionsOff({ onAction, busy });
 	return (
 		<div className="ui-choices">
@@ -116,7 +133,10 @@ function Choices({
 						type="button"
 						className="ui-choice"
 						disabled={disabled}
-						onClick={() => onAction?.(`[ui] ${o.label}`)}
+						onClick={() => {
+							pick(o.label);
+							onAction?.(`[ui] ${o.label}`);
+						}}
 					>
 						{o.label}
 					</button>
@@ -284,13 +304,26 @@ export function Block({ block, onAction, busy, streaming }: { block: UiBlock } &
 
 // One complete interface — the wrapper shared by the finished render
 // and (block-by-block) the streaming one.
-export function Surface({ input, onAction, busy, streaming }: { input: UiInput } & UiActionProps) {
+export function Surface({
+	input,
+	onAction,
+	busy,
+	streaming,
+	messages,
+}: { input: UiInput; messages?: readonly UIMessage[] | undefined } & UiActionProps) {
+	// The tap sets the highlight instantly; the transcript, when wired
+	// in, re-derives the same label after a reload — the [ui] message
+	// is the only record, and it is already persisted.
+	const [tapped, setTapped] = useState<string | null>(null);
+	const picked = tapped ?? (messages !== undefined ? derivePick(messages, choiceLabels(input.blocks)) : null);
 	return (
-		<div className="ui">
-			{input.title !== undefined && <div className="ui-title">{input.title}</div>}
-			{input.blocks.map((block, i) => (
-				<Block key={i} block={block} onAction={onAction} busy={busy} streaming={streaming} />
-			))}
-		</div>
+		<PickContext.Provider value={{ picked, pick: setTapped }}>
+			<div className="ui">
+				{input.title !== undefined && <div className="ui-title">{input.title}</div>}
+				{input.blocks.map((block, i) => (
+					<Block key={i} block={block} onAction={onAction} busy={busy} streaming={streaming} />
+				))}
+			</div>
+		</PickContext.Provider>
 	);
 }

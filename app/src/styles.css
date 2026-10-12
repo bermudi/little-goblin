@@ -2394,6 +2394,12 @@ a.hit-title {
 	margin: 0;
 	font-size: 12.5px;
 }
+.ui-table .md-table tr.picked td {
+	background: color-mix(in oklab, var(--app-accent) 14%, transparent);
+}
+.ui-table .md-table tr.picked td:first-child {
+	box-shadow: inset 2px 0 0 var(--app-accent);
+}
 
 .ui-steps {
 	list-style: none;

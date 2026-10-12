@@ -829,12 +829,21 @@ describe("authReferences", () => {
 			allowedUsers: [7],
 			search: [{ kind: "brave", auth: "brave-key" }],
 			appToken: "app-token-record",
+			subagents: {
+				worker: {
+					model: { auth: "zai", id: "glm-5.3", baseUrl: "https://fixture.invalid", api: "openai-completions", thinking: "high" },
+				},
+				computer: {
+					model: { auth: "zai-flash", id: "glm-5.3-flash", baseUrl: "https://fixture.invalid", api: "openai-completions", thinking: "low" },
+				},
+			},
 		});
 		expect([...authReferences(c)].sort()).toEqual([
 			"app-token-record",
 			"brave-key",
 			"telegram",
 			"zai",
+			"zai-flash",
 		]);
 	});
 });

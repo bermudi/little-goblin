@@ -911,5 +911,8 @@ export function authReferences(config: Config): Set<string> {
 		refs.add(config.mail.clientSecretAuth);
 		refs.add(config.mail.sendAuth);
 	}
+	for (const type of [config.subagents?.worker, config.subagents?.computer]) {
+		if (type !== undefined) refs.add(type.model.auth);
+	}
 	return refs;
 }

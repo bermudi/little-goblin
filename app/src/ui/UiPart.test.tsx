@@ -274,4 +274,42 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 		});
 		expect(actions).toEqual(["[ui] Plan ride: distance=30.5, terrain=flat, notes="]);
 	});
+
+	test("a checkbox/textarea/date form submits true/false, text and raw date", async () => {
+		const actions: string[] = [];
+		await mount(
+			<UiPart
+				part={uiPart({
+					state: "output-available",
+					input: {
+						blocks: [
+							{
+								type: "form",
+								fields: [
+									{ name: "water", label: "Water (2L)", kind: "checkbox" },
+									{ name: "tent", label: "Tent", kind: "checkbox" },
+									{ name: "notes", label: "Notes", kind: "textarea" },
+									{ name: "leave", label: "Leave on", kind: "date" },
+								],
+								submit: "Done packing",
+							},
+						],
+					},
+					output: "shown",
+				})}
+				onAction={(t) => actions.push(t)}
+			/>,
+		);
+		const boxes = container.querySelectorAll<HTMLInputElement>('.ui-field input[type="checkbox"]');
+		expect(boxes.length).toBe(2);
+		boxes[0]!.checked = true;
+		container.querySelector<HTMLTextAreaElement>(".ui-field textarea")!.value = "headlamp";
+		await act(async () => {
+			container.querySelector<HTMLButtonElement>(".ui-submit")!.click();
+		});
+		// The checkbox rides the same [ui] line as everything else —
+		// .checked, not the inert "on" default value.
+		expect(actions).toEqual(["[ui] Done packing: water=true, tent=false, notes=headlamp, leave="]);
+	});
+
 });

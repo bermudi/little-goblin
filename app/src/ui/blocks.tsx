@@ -147,7 +147,16 @@ function Form({
 				const summary = leaf.fields
 					.map((f) => {
 						const el = data.namedItem(f.name);
-						const value = el !== null && "value" in el ? String(el.value) : "";
+						// Checkbox inputs carry their state in .checked — .value
+						// is the inert "on" default. No other form control has
+						// type "checkbox" (duck-typed, not instanceof: the host
+						// realm may differ from this module's globals).
+						const value =
+							el !== null && "checked" in el && "type" in el && el.type === "checkbox"
+								? String(el.checked)
+								: el !== null && "value" in el
+									? String(el.value)
+									: "";
 						return `${f.name}=${value}`;
 					})
 					.join(", ");
@@ -155,7 +164,10 @@ function Form({
 			}}
 		>
 			{leaf.fields.map((f) => (
-				<label key={f.name} className="ui-field">
+				<label
+					key={f.name}
+					className={f.kind === "checkbox" ? "ui-field ui-field-check" : "ui-field"}
+				>
 					<span className="ui-field-label">{f.label}</span>
 					{f.kind === "select" ? (
 						<select className="ui-input" name={f.name}>
@@ -165,6 +177,10 @@ function Form({
 								</option>
 							))}
 						</select>
+					) : f.kind === "textarea" ? (
+						<textarea className="ui-input" name={f.name} rows={3} />
+					) : f.kind === "checkbox" ? (
+						<input className="ui-input ui-check" name={f.name} type="checkbox" />
 					) : (
 						<input
 							className="ui-input"

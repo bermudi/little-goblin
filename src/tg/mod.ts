@@ -776,6 +776,12 @@ function admitBatch(
 		undefined,
 		undefined,
 		deps.store,
+		// Rich replies + reasoning: the sink gates DMs and voice mode;
+		// these are the config kill switches (design/telegram.md).
+		{
+			enabled: deps.configRef.current.telegram.richReplies,
+			reasoning: deps.configRef.current.telegram.showReasoning,
+		},
 	);
 	try {
 		deps.runtime.submitPersisted(conv, message, sink);

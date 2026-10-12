@@ -30,7 +30,7 @@ const baseConfig = (): Config => ({
 	fetch: undefined,
 	operators: [111],
 	allowedUsers: [111, 222],
-	telegram: { model: "route/auto", thinking: "low", dmGapMinutes: 45 },
+	telegram: { model: "route/auto", thinking: "low", dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	publicUrl: "https://goblin.example.test",
 	http: { port: 8787 },
 	logLevel: "info",
@@ -72,7 +72,7 @@ const draft = (over: Partial<SettingsDraft> = {}): SettingsDraft => ({
 describe("draftFromConfig", () => {
 	test("absent optional blocks become null; telegram falls back to the top-level picks", () => {
 		const c = baseConfig();
-		c.telegram = { dmGapMinutes: 45 };
+		c.telegram = { dmGapMinutes: 45, richReplies: true, showReasoning: false };
 		const { draft: d } = draftFromConfig(c);
 		expect(d.tts).toBeNull();
 		expect(d.transcription).toBeNull();

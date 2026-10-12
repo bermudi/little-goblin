@@ -21,7 +21,7 @@ const baseConfig: Config = {
 	thinking: "medium",
 	operators: [1],
 	allowedUsers: [2],
-	telegram: { dmGapMinutes: 45 },
+	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	http: { port: 8787 },
 	logLevel: "info",
 };
@@ -1083,7 +1083,7 @@ describe("rolling dm", () => {
 	test("a reply target that is the topic root is thread plumbing, not a reply", async () => {
 		// dmGapMinutes 0 makes every flush past the gap — the check is
 		// the only path a plain burst can take.
-		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0 } });
+		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false } });
 		const calls: unknown[] = [];
 		h.env.deps.followUpGate = () => ({
 			decide: (state: string) => {
@@ -1122,7 +1122,7 @@ describe("rolling dm", () => {
 
 	test("a reply past the gap joins without asking the gate", async () => {
 		// dmGapMinutes 0 makes every flush past the gap.
-		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0 } });
+		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false } });
 		const calls: unknown[] = [];
 		h.env.deps.followUpGate = () => ({
 			decide: (state: string) => {
@@ -1229,7 +1229,7 @@ describe("manual DM navigation", () => {
 	});
 
 	test("other-bot commands make no routing changes, including unknown commands", async () => {
-		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0 } });
+		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false } });
 		for (const [i, text] of [
 			"/new@otherbot",
 			"/back@otherbot",
@@ -1266,7 +1266,7 @@ describe("manual DM navigation", () => {
 	});
 
 	test("navigation during a follow-up check cannot reroll the pin or execute archived input", async () => {
-		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0 } });
+		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false } });
 		const old = h.store.rollDm(chat.id, "/w");
 		// An answered exchange — without one the burst never reaches the check.
 		h.store.append(old.id, [

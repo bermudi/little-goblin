@@ -670,8 +670,16 @@ const configSchema = z
 					.transform((v) => v || undefined)
 					.optional(),
 				dmGapMinutes: z.number().int().min(1).default(45),
+				// Rich replies (Bot API 10.3): draft streaming and one markdown
+				// render per DM turn. A kill switch, not a feature flag — a
+				// phone-only operator needs config off, not a redeploy
+				// (design/telegram.md, "Formatted replies & draft streaming").
+				richReplies: z.boolean().default(true),
+				// Reasoning as a collapsed block above the reply. DMs only;
+				// guests never see it regardless.
+				showReasoning: z.boolean().default(false),
 			})
-			.default({ dmGapMinutes: 45 }),
+			.default({ dmGapMinutes: 45, richReplies: true, showReasoning: false }),
 		// External HTTPS door for mini apps — nothing in-process assumes
 		// a public IP. "" = unset (the form can't express undefined).
 		publicUrl: z

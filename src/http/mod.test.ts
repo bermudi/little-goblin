@@ -52,7 +52,7 @@ const baseConfig: Config = {
 	thinking: "medium",
 	operators: [42],
 	allowedUsers: [42],
-	telegram: { dmGapMinutes: 45 },
+	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	http: { port: 0 }, // ephemeral
 	logLevel: "info",
 };

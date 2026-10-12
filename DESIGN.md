@@ -241,10 +241,11 @@ or the non-goals goes here.
 - [`design/runtime-turn.md`](design/runtime-turn.md) — The turn (W3.0 decomposition ruling): phase list, state ownership by lifetime, recursion → driven loop, what must not change, module cut, test migration, the two text projections (#84/#111)
 - [`design/tools.md`](design/tools.md) — Tools (v1), Scripting (in-process tool composition, not a subagent), Vision (image Q&A), Chat search, SQLite FTS5, Scope: every conversation except memory-excluded ones
 - [`design/web.md`](design/web.md) — Web access (search, fetch, browser), `search` is one tool with a provider behind it, Config, Fallback chains are explicit config, never implicit, Wire formats, Input, Output is deterministic text, Search results and fetched page text ride fenced, `fetch` is always in the set, PDFs ride as documents, not text, Overflow goes to disk, recovery named, No SSRF policy — recorded as a ruling, Auth never enters tool env, Logging, The browser is a skill, not a tool, MCP returns as a skill over goblin's own mcporter, Goblin owns its mcporter; it never rides the host's, Imports stay off by gate, not by convention, No daemon, by mechanism, The `goblin-mcp-dev` profile starts empty with its own snapshot, Known limits, accepted
-- [`design/skills.md`](design/skills.md) — Skills, Skill reviewer, Gate: Jev on every completed turn, Evidence: a bounded tool digest, captured per turn, Reviewer: staging, validation, then an atomic proposal, /stop cancels the conversation's reviews, Off the record means no distillation, It proposes, then tells, Instrumentation
+- [`design/skills.md`](design/skills.md) — Skills, Skill reviewer, Gate: System One on every completed turn, Evidence: a bounded tool digest, captured per turn, Reviewer: staging, validation, then an atomic proposal, /stop cancels the conversation's reviews, Off the record means no distillation, It proposes, then tells, Instrumentation
+- [`design/system1.md`](design/system1.md) — System One (typed-decision models): the shared client, retry policy, wire protocol, the four-consumer table, the loopback injection-check endpoint, config surface
 - [`design/programs.md`](design/programs.md) — Programs (standing orders), State is rows, not files, Firing is one path for every trigger, Post-submit accounting is trigger-owned, Authority is granted, never self-issued, Webhooks: one secret address per program, Recurrence is cron, evaluated in the server's local timezone, A program belongs to the conversation where it was created, Management is the `program` tool, The scheduler is an in-process ticker
 - [`design/delegation.md`](design/delegation.md) — Delegation (other harnesses, via herdr), The herdr session is its own systemd user unit, Targets: the own local session plus configured machines, One protocol, target-agnostic, Only `src/herdr.ts` knows herdr, One lifecycle owner, Harnesses are config, never guessed, Agents run full-auto; goblin never answers approvals, State is rows, Watcher writes are compare-and-set; the notice lands first, Start, The watcher is an in-process ticker, Management is the `delegate` tool, Goblin may delegate on its own judgment
-- [`design/mail.md`](design/mail.md) — Email (Gmail) + Workspace via gws, Reads ride gws; goblin holds no read credential, Scopes: readonly is the wall, The `mail` tool is send-only, Google OAuth with split authority, Mail is a program trigger, System One (`system1` block + Jev gate) feeds the shared gates, Logging
+- [`design/mail.md`](design/mail.md) — Email (Gmail) + Workspace via gws, Reads ride gws; goblin holds no read credential, Scopes: readonly is the wall, The `mail` tool is send-only, Google OAuth with split authority, Mail is a program trigger, Logging
 - [`design/memory.md`](design/memory.md) — Long-term memory, Slice 2 rulings (locked), Deployment and configuration, Retain: a durable projection of completed exchanges, Recall: evidence, not instructions, Control, correction, and forgetting, Operations and verification
 - [`design/auth.md`](design/auth.md) — Auth, Proton Pass (2026-09-26), Goblin's own agent token, Never the owner session, by mechanism, Goblin's own keys resolve through pass-keys, Warmer, Secrets during tasks: the `pass-cli` skill, Honest boundary
 - [`design/telegram.md`](design/telegram.md) — Telegram intake & delivery, Coalescing buffer, Delivery, TTS, Files, Voice mode, Mini Apps, Commands, Large files, Rolling DM (ruling 2026-10-03)
@@ -328,7 +329,7 @@ permissions), optional
 `sandbox` block (absent or `""` = no sandbox tool; `image`,
 `idleHours`, `memory`, `cpus`, `pids` — `design/sandbox.md`), optional
 `reviewer` + `system1` blocks (the skill-review gate and the shared
-System One gate behind it — Email + Skill reviewer). No secrets —
+System One gate — `design/system1.md`). No secrets —
 those live in `auth.jsonl`.
 
 **Settings are operator-facing UI, not SSH.** The mini app is the
@@ -390,7 +391,7 @@ src/
                     owner's mail entry point (never writes program state)
   mail.ts           the send client (operator-gated) + shared mail shapes
                     (MailHit, ThreadContext, HistoryExpiredError, MailPoller)
-  injection.ts      System One injection checker: shared Jev gate →
+  injection.ts      System One injection checker: shared System One gate →
                     clean/suspicious/malicious/unavailable verdicts, fail-open
   jev.ts            the Jev/OpenRouter Decisions boundary (the reviewer's
                     gate and the checker's shared client)

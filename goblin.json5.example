@@ -136,7 +136,7 @@
 
   // --- Skill reviewer ---
   // Unset = automatic skill proposals off. `auth` names the auth.jsonl
-  // record holding your OpenRouter key (the Jev gate rides it).
+  // record holding your OpenRouter key (the System One gate rides it).
   // threshold is the gate's shared yes-cutoff; thresholds overrides it
   // per question. queueCap bounds queued reviews (a full queue drops
   // the incoming). evidence bounds the tool-call digest the review
@@ -151,10 +151,11 @@
   // },
 
   // --- System One (the small gate model) ---
-  // One block feeding the reviewer's Jev gate, mail-event scoring, and
-  // the loopback injection check. Unset = those consumers fall back to
-  // reviewer.auth and built-in defaults. `model` is a Jev model id
-  // (e.g. respan/span-01-lite), NOT a <provider>/<model> chat ref.
+  // One block feeding the shared System One client behind the reviewer's
+  // gate, mail-event scoring, and the loopback injection check. Unset =
+  // those consumers fall back to reviewer.auth and built-in defaults.
+  // `model` is a bare decision-model id (e.g. typesafe/jev-1.13), NOT a
+  // <provider>/<model> chat ref.
   // system1: { auth: "openrouter" },
 
   // --- Delegation (other coding harnesses, via herdr) ---

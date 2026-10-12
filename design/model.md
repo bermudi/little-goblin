@@ -261,7 +261,8 @@ error, cycling approaches — the exact cases v1's wording excluded.
 **≥0.7 warns; a second consecutive ≥0.7 cuts; a sub-threshold check in
 between resets.** Async and fail-open (an unavailable system1 logs and
 skips; the detector still stands), one check in flight at a time,
-wired from the shared JevClient (reviewer-enabled is the switch).
+wired from the shared System One client (`design/system1.md`; its
+config coupling rules apply).
 
 Calibration (`scripts/loop-calibrate.ts`, 2026-10-07: the six longest
 stored tool turns plus six synthetic cases, three runs each —

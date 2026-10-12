@@ -114,14 +114,10 @@ learned into a skill without being asked. A better model of the
 operator is **not** this feature — that is Hindsight's job (tune it,
 don't duplicate it).
 
-- **Gate: Jev on every completed turn** — the shared System One client
-  (default and backup `typesafe/jev-1.13`, configured primary
-  `inception/mercury-decide:free`; see `design/mail.md`) via
-  OpenRouter's Decisions API, a typed-decision
-  model, not a chat model. `POST openrouter.ai/api/alpha/decisions`
-  with `{model, state, questions}`; each `noul` answer is a
-  yes-probability, `usage` carries input tokens and cost (the wire
-  shape is pinned by a boundary test on a recorded response). State:
+- **Gate: System One on every completed turn** — the shared System One
+  client (`design/system1.md` — models, retry policy, wire protocol)
+  asks typed `noul` questions: a decision
+  model, not a chat model. State:
   the operator's message(s) (tail-first), the reply (head-first),
   tool-call count and names — bounded to ~22k chars against its 32k
   context. Deliberately lean: the gate never sees tool arguments or
@@ -248,5 +244,5 @@ catalog: a validated skill parks in `skills-proposed/<name>/` and
   absent = feature off. Hand-edited-only, like delegation and mail —
   no mini-app surface, gate auth and thresholds boot-captured
   (system1's auth/model/baseUrl ride the same capture; the shared
-  JevClient's auth closure resolves live per call); the
+  System One client's auth closure resolves live per call); the
   review model resolves live per review.

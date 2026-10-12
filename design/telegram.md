@@ -260,9 +260,9 @@ A fresh conversation starts with an empty window: system prompt,
 admission-time recall, the burst. Nothing is carried over by Goblin —
 memory and `history_search` are the bridge, by design.
 
-**The follow-up check.** One System One (Jev) noul call through the
-shared `JevClient` — the reviewer's gate client, so the `reviewer`
-block is its on/off switch like every other Jev consumer. State:
+**The follow-up check.** One System One `noul` call through the
+shared client (`design/system1.md` — it exists only when a client is
+configured, per the config coupling there). State:
 `{gapMinutes, previous: {user, assistant}, next}` — the last user
 message and last assistant reply of the current conversation and the
 incoming burst, text only (attachments render as `[photo]`,
@@ -283,12 +283,11 @@ Fresh only when `p(follow_up) < 0.3` — the threshold leans toward
 continuing because a wrong continuation costs one cold read, while a
 wrong fresh start is the surprise above. The constant lives in code
 and every check logs its probability, so a retune is an evidence-based
-edit, not a guess. **Failure** (no reviewer block, `JevError`,
-timeout) → follow-up, warn-logged. The shared client first tries its
-backup model (`typesafe/jev-1.13`) on primary failure, within the same
-3s check budget — half reserved for each attempt. See
-`design/mail.md` for the common retry policy. The original deadline
-still bounds fake or unavailable gates; no abandoned 30s request
+edit, not a guess. **Failure** (no client, `System1Error`,
+timeout) → follow-up, warn-logged. The shared client retries once on
+its backup model inside the same 3 s check budget
+(`design/system1.md` → the common retry policy). The original deadline
+still bounds fake or unavailable gates; no abandoned 30 s request
 continues after the check times out.
 
 **The marker.** When a fresh conversation starts, delivery sends a
@@ -382,8 +381,8 @@ outcome — never message text); `dm cutover re-pin` per program.
   as history and is never current.
 - *A live turn always absorbs input* (it steers), whatever the gap.
 - *The check has a 3 s interactive deadline*, passed into the shared
-  Jev client instead of its usual 30 s timeout and externally raced as
-  a backstop; losing the race is a fallback. If the
+  System One client instead of its usual 30 s timeout and externally
+  raced as a backstop; losing the race is a fallback. If the
   address rolled while the check ran (a fire), the burst joins the new
   current conversation — never two rolls.
 - *Delegation notices join, never roll:* they continue work the

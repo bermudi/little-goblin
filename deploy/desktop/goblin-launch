@@ -25,11 +25,31 @@ case "${1:-}" in
 	chromium)
 		# --no-sandbox: the zygote needs CAP_SYS_CHROOT to bring up the
 		# layer-1 sandbox and the wall grants only the five sandbox caps
-		# (probed 2026-10-11 — "Failed to receive hello message from
-		# zygote"). The session still runs as desk, so the browser is an
-		# unprivileged uid inside the container's own wall.
+		# ("Failed to receive hello message from zygote"). The session
+		# still runs as desk, so the browser is an unprivileged uid
+		# inside the container's own wall.
+		#
+		# $2 is a model-controlled URL landing on Chromium's argv: only
+		# a real URL or about:blank, never a bare --flag. desktops.ts
+		# refuses earlier; this guard is the in-image backstop.
+		url="${2:-}"
+		if [ -n "${url}" ]; then
+			case "${url}" in
+				http://*|https://*|file://*|about:blank) ;;
+				*)
+					echo "goblin-launch: refused url '${url}'" >&2
+					exit 64
+					;;
+			esac
+			case "${url}" in
+				*[[:space:]]*|*[[:cntrl:]]*)
+					echo "goblin-launch: refused url '${url}'" >&2
+					exit 64
+					;;
+			esac
+		fi
 		run_detached chromium --no-sandbox --force-renderer-accessibility \
-			${2:+"$2"}
+			${url:+"${url}"}
 		;;
 	*)
 		echo "goblin-launch: unknown app '${1:-}' (whitelist: chromium)" >&2

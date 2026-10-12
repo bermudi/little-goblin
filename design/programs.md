@@ -25,10 +25,11 @@ program's state, never a workspace file.** Rulings:
 - **State is rows, not files.** A `programs` table in `goblin.sqlite`
   (own connection in `src/programs.ts`, same WAL file): name,
   charter, optional 5-field cron, optional webhook token hash, the
-  pinned Telegram address, enabled, last_run, next_run (null without
-  a cron). A program needs at least one trigger. Creating one changes
-  nothing in the workspace and nothing in any prompt — cache stable
-  by construction. The legacy `jobs` table is purged at open (W2.2):
+  pinned Telegram address, enabled, optional per-cron lateness grace,
+  last_run, next_run (null without a cron). A program needs at least
+  one trigger. Creating one changes nothing in the workspace and
+  nothing in any prompt — cache stable by construction. The legacy
+  `jobs` table is purged at open (W2.2):
   rows still in it copy in once — prompt becomes charter, an id already
   in `programs` means it was copied before and is ignored — then the
   table drops, all in one transaction; a re-run is a no-op. Rows with
@@ -110,14 +111,22 @@ program's state, never a workspace file.** Rulings:
   (reword, reschedule, toggle) need no go-ahead; new programs and
   widened authority do (above).
 - **The scheduler is an in-process ticker** (30s) in the runtime
-  process; systemd covers crashes. A fire time missed while the
-  process was down fires **once** at the next tick (boot catch-up),
-  then advances to the next future occurrence — never a replay of
-  every missed instance. Occurrences skipped while a program was
-  disabled are skipped, not owed: re-enabling recomputes `next_run`
-  from now. Submit first, then markRan: a message that landed is
-  history even if the turn never ran. A submit that throws never
-  landed — release the sink with the error, deliver it, then
+  process; systemd covers crashes. A schedule's optional
+  integer `maxLatenessMinutes` is measured against the **latest cron
+  occurrence at or before the scan time**. `null` (the default for
+  existing and new programs) means unlimited lateness and preserves
+  fire-on-wake behavior. Missed occurrences coalesce: if the latest
+  occurrence is within the program's grace, fire at most once on that
+  scan and advance to the next future occurrence — never replay each
+  missed instance. If it is beyond grace, skip every occurrence
+  through that scan, advance to the next future occurrence, and emit
+  one structured skip log line. A skip does not change `last_run`
+  because no fire was submitted. This is schedule-only; webhook and
+  mail accounting are unchanged. Occurrences skipped while a program
+  was disabled are skipped, not owed: re-enabling recomputes
+  `next_run` from now. Submit first, then markRan: a message that
+  landed is history even if the turn never ran. A submit that throws
+  never landed — release the sink with the error, deliver it, then
   markRan anyway: one attempt per occurrence, so a persistent
   failure cannot refire (and re-deliver) on every tick.
 
@@ -130,4 +139,3 @@ tables beyond last_run and the log. Mail is the one watcher that
 returned (operator ask, 2026-09-26) — as a program trigger, see
 `Email`: a mail match is an event the operator's filter asked for,
 not the agent deciding to look.
-

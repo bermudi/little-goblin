@@ -56,6 +56,22 @@ const config: Config = {
 	logLevel: "info",
 };
 
+// Cron semantics are zone-local (server time in production), so the
+// DST tests pin the process to a zone with both transition kinds and
+// restore it after. The assertion fails loud if the runtime ever
+// stops honoring mid-process TZ changes — the expectations below are
+// meaningless in the host zone.
+function inZone<T>(zone: string, fn: () => T): T {
+	const effective = Intl.DateTimeFormat().resolvedOptions().timeZone;
+	process.env.TZ = zone;
+	try {
+		expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBe(zone);
+		return fn();
+	} finally {
+		process.env.TZ = effective;
+	}
+}
+
 interface Harness {
 	deps: SchedulerDeps;
 	submitted: Array<{ conv: string; parts: UIMessage["parts"]; sink: TurnSink }>;
@@ -272,6 +288,114 @@ describe("scheduler", () => {
 		expect(h.submitted).toHaveLength(1);
 		expect(h.deps.programs.due(scanAt)).toEqual([]);
 		await closeSinks(h);
+	});
+
+	// DST regression (review 2026-10-12): the grace anchor must be the
+	// scheduler's forward occurrence sequence — the steps that persist
+	// next_run — never a backward lookup, which disagrees across
+	// transitions (see programs.ts latestFireAtOrBefore).
+	describe("schedule grace across DST (America/New_York)", () => {
+		test("spring-forward: an on-time landing-hour fire is not a day late", async () => {
+			const h = harness();
+			inZone("America/New_York", () => {
+				// Created at 03:00 EST Mar 7 → next_run is the Mar 8 landing
+				// occurrence: 02:30 doesn't exist that day, so the forward
+				// sequence schedules 03:30 EDT.
+				const program = h.deps.programs.create(
+					{
+						name: "gap cron",
+						cron: "30 2 * * *",
+						maxLatenessMinutes: 5,
+						charter: "check once",
+						address: { chatId: -100, threadId: 7 },
+					},
+					new Date("2026-03-07T08:00:00Z"),
+				);
+				expect(program.nextRun).toBe("2026-03-08T07:30:00.000Z");
+				const scan = new Date("2026-03-08T07:30:10Z"); // 10s after the landing fire
+				const captured: string[] = [];
+				setLogFile("schedule-dst-spring-test.log");
+				setLogWriter((_path, line) => captured.push(line));
+				try {
+					fireScheduled(h.deps, program, scan);
+				} finally {
+					setLogFile(null);
+					setLogWriter(null);
+				}
+				expect(h.submitted).toHaveLength(1);
+				const after = h.deps.programs.get(program.id)!;
+				expect(after.lastRun).toBe(scan.toISOString());
+				const fired = captured.map((line) => JSON.parse(line) as Record<string, unknown>);
+				expect(fired.find((line) => line.msg === "program fired")).toMatchObject({
+					scheduledFor: "2026-03-08T07:30:00.000Z",
+				});
+			});
+			await closeSinks(h);
+		});
+
+		test("fall-back: a catch-up past the repeated hour is judged against the first pass", () => {
+			const h = harness();
+			inZone("America/New_York", () => {
+				// next_run = Nov 1 01:30 EDT; the scan is 01:35 EST — 65
+				// minutes after the occurrence the forward sequence owes. The
+				// repeated 01:30 EST must not reset the clock to 5 minutes.
+				const program = h.deps.programs.create(
+					{
+						name: "ambiguous hour",
+						cron: "30 1 * * *",
+						maxLatenessMinutes: 10,
+						charter: "remind me",
+						address: { chatId: -100, threadId: 7 },
+					},
+					new Date("2026-10-31T06:00:00Z"), // 02:00 EDT Oct 31 → next: Nov 1 01:30 EDT
+				);
+				expect(program.nextRun).toBe("2026-11-01T05:30:00.000Z");
+				const scan = new Date("2026-11-01T06:35:00Z"); // 01:35 EST
+				const captured: string[] = [];
+				setLogFile("schedule-dst-fall-test.log");
+				setLogWriter((_path, line) => captured.push(line));
+				try {
+					fireScheduled(h.deps, program, scan);
+				} finally {
+					setLogFile(null);
+					setLogWriter(null);
+				}
+				expect(h.submitted).toHaveLength(0);
+				const after = h.deps.programs.get(program.id)!;
+				expect(after.lastRun).toBeNull();
+				expect(after.nextRun).toBe("2026-11-02T06:30:00.000Z"); // Nov 2 01:30 EST
+				const skipped = captured
+					.map((line) => JSON.parse(line) as Record<string, unknown>)
+					.filter((line) => line.msg === "program skipped — beyond lateness grace");
+				expect(skipped).toHaveLength(1);
+				expect(skipped[0]).toMatchObject({
+					firstMissedAt: "2026-11-01T05:30:00.000Z",
+					latestMissedAt: "2026-11-01T05:30:00.000Z",
+					lateMs: 65 * 60_000,
+					maxLatenessMinutes: 10,
+				});
+			});
+		});
+
+		test("a sparse annual cron in the spring gap is not decades late", async () => {
+			const h = harness();
+			inZone("America/New_York", () => {
+				const program = h.deps.programs.create(
+					{
+						name: "march gap",
+						cron: "30 2 * 3 0#2", // 2nd Sunday of March, 02:30 — the US gap
+						maxLatenessMinutes: 10,
+						charter: "check once",
+						address: { chatId: -100, threadId: 7 },
+					},
+					new Date("2026-01-01T00:00:00Z"),
+				);
+				expect(program.nextRun).toBe("2026-03-08T07:30:00.000Z"); // the landing occurrence
+				fireScheduled(h.deps, program, new Date("2026-03-08T07:35:00Z"));
+				expect(h.submitted).toHaveLength(1);
+			});
+			await closeSinks(h);
+		});
 	});
 
 	test("a due job fires one turn into its pinned topic conversation", async () => {

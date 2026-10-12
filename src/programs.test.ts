@@ -11,7 +11,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { latestFireAtOrBefore, nextFire, openPrograms, type ProgramsStore } from "./programs.ts";
+import {
+	latestFireAtOrBefore,
+	nextFire,
+	openPrograms,
+	ProgramRuleError,
+	type ProgramsStore,
+} from "./programs.ts";
 
 let dirs: string[] = [];
 function tmpdb(): string {
@@ -32,6 +38,22 @@ function store(): ProgramsStore {
 const NOW = new Date("2026-09-20T10:00:00");
 const ADDRESS = { chatId: -100, threadId: 7 };
 
+// Cron semantics are zone-local (server time in production), so the
+// DST tests pin the process to a zone with both transition kinds and
+// restore it after. The assertion fails loud if the runtime ever
+// stops honoring mid-process TZ changes — the expectations below are
+// meaningless in the host zone.
+function inZone<T>(zone: string, fn: () => T): T {
+	const effective = Intl.DateTimeFormat().resolvedOptions().timeZone;
+	process.env.TZ = zone;
+	try {
+		expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBe(zone);
+		return fn();
+	} finally {
+		process.env.TZ = effective;
+	}
+}
+
 describe("nextFire", () => {
 	test("computes the next occurrence after `from`", () => {
 		expect(nextFire("30 8 * * *", NOW).getHours()).toBe(8);
@@ -41,10 +63,73 @@ describe("nextFire", () => {
 	test("latestFireAtOrBefore includes an occurrence exactly at the scan time", () => {
 		const cron = "0 9 * * *";
 		const scheduled = nextFire(cron, new Date("2026-09-19T10:00:00"));
-		expect(latestFireAtOrBefore(cron, scheduled).getTime()).toBe(scheduled.getTime());
-		expect(latestFireAtOrBefore(cron, new Date(scheduled.getTime() + 20 * 60_000)).getTime()).toBe(
-			scheduled.getTime(),
-		);
+		expect(latestFireAtOrBefore(cron, scheduled, scheduled).getTime()).toBe(scheduled.getTime());
+		expect(
+			latestFireAtOrBefore(cron, scheduled, new Date(scheduled.getTime() + 20 * 60_000)).getTime(),
+		).toBe(scheduled.getTime());
+	});
+
+	test("latestFireAtOrBefore walks a catch-up to the latest missed occurrence", () => {
+		const cron = "*/30 * * * *";
+		const firstMissed = nextFire(cron, new Date("2026-09-20T07:05:00")); // 07:30
+		const scan = new Date("2026-09-20T10:05:00");
+		const latest = latestFireAtOrBefore(cron, firstMissed, scan);
+		expect(latest.getTime()).toBe(new Date("2026-09-20T10:00:00").getTime());
+	});
+
+	test("latestFireAtOrBefore rejects an anchor after the scan time", () => {
+		const cron = "0 9 * * *";
+		expect(() =>
+			latestFireAtOrBefore(
+				cron,
+				new Date("2026-09-21T00:00:00Z"),
+				new Date("2026-09-20T00:00:00Z"),
+			),
+		).toThrow("is after the scan time");
+	});
+
+	// Around DST transitions cron-parser's backward lookup walks a
+	// different occurrence sequence from the forward one that persists
+	// next_run: it skips the spring-forward landing hour and admits the
+	// fall-back repeated hour. The grace anchor must be the forward
+	// sequence — the same steps markRan takes.
+	describe("DST occurrence sequences (America/New_York)", () => {
+		test("spring-forward: the landing-hour occurrence is the latest one, not yesterday's", () => {
+			inZone("America/New_York", () => {
+				const cron = "30 2 * * *"; // 02:30 doesn't exist on 2026-03-08
+				// markRan's next_run after the Mar 7 fire — the landing hour.
+				const nextRun = nextFire(cron, new Date("2026-03-07T07:30:05Z"));
+				expect(nextRun.toISOString()).toBe("2026-03-08T07:30:00.000Z"); // 03:30 EDT
+				const scan = new Date("2026-03-08T07:30:10Z"); // 10s after the landing fire
+				expect(latestFireAtOrBefore(cron, nextRun, scan).toISOString()).toBe(
+					"2026-03-08T07:30:00.000Z",
+				); // 10s late — a backward lookup reads 24h
+			});
+		});
+
+		test("fall-back: the repeated hour is not an occurrence — lateness measures to the first pass", () => {
+			inZone("America/New_York", () => {
+				const cron = "30 1 * * *"; // 01:30 happens twice on 2026-11-01
+				const nextRun = nextFire(cron, new Date("2026-10-31T06:00:00Z"));
+				expect(nextRun.toISOString()).toBe("2026-11-01T05:30:00.000Z"); // 01:30 EDT
+				const scan = new Date("2026-11-01T06:35:00Z"); // 01:35 EST — past the repeated 01:30
+				expect(latestFireAtOrBefore(cron, nextRun, scan).toISOString()).toBe(
+					"2026-11-01T05:30:00.000Z",
+				); // 65 min — a backward lookup reads 5
+			});
+		});
+
+		test("a sparse annual cron whose only occurrence is in the spring-forward gap", () => {
+			inZone("America/New_York", () => {
+				const cron = "30 2 * 3 0#2"; // 2nd Sunday of March, 02:30 — the US gap
+				const nextRun = nextFire(cron, new Date("2026-01-01T00:00:00Z"));
+				expect(nextRun.toISOString()).toBe("2026-03-08T07:30:00.000Z"); // landing hour
+				const scan = new Date("2026-03-08T07:35:00Z");
+				expect(latestFireAtOrBefore(cron, nextRun, scan).toISOString()).toBe(
+					"2026-03-08T07:30:00.000Z",
+				); // 5 min — a backward lookup reads 20 years
+			});
+		});
 	});
 
 	test("rejects a garbage expression with cron-parser's message", () => {
@@ -126,6 +211,27 @@ describe("programs store", () => {
 		expect(() => s.update(p.id, { maxLatenessMinutes: Number.MAX_SAFE_INTEGER + 1 })).toThrow(
 			"safe integer",
 		);
+	});
+
+	// The program tool routes these to an error result by identity — a
+	// message-text match would break on any rewording, and a storage
+	// failure whose message happened to contain the phrase would be
+	// swallowed as a rule violation.
+	test("rule violations are ProgramRuleError — everything else propagates as-is", () => {
+		const s = store();
+		expect(() =>
+			s.create({ name: "hook", charter: "c", hookHash: "h", maxLatenessMinutes: 5, address: ADDRESS }),
+		).toThrow(ProgramRuleError);
+		expect(() => s.create({ name: "x", charter: "c", address: ADDRESS })).toThrow(ProgramRuleError);
+		const p = s.create(
+			{ name: "hooked", charter: "c", hookHash: "abc123", address: ADDRESS },
+			NOW,
+		);
+		expect(() => s.update(p.id, { hookHash: null })).toThrow(ProgramRuleError);
+		expect(() => s.update(p.id, { maxLatenessMinutes: -1 })).toThrow(ProgramRuleError);
+		// Cron validation is not a rule violation — it's the boundary's
+		// own readable rejection.
+		expect(() => s.update(p.id, { cron: "nope" })).not.toThrow(ProgramRuleError);
 	});
 
 	test("a program always has a trigger", () => {

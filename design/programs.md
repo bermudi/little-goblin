@@ -112,8 +112,16 @@ program's state, never a workspace file.** Rulings:
   widened authority do (above).
 - **The scheduler is an in-process ticker** (30s) in the runtime
   process; systemd covers crashes. A schedule's optional
-  integer `maxLatenessMinutes` is measured against the **latest cron
-  occurrence at or before the scan time**. `null` (the default for
+  integer `maxLatenessMinutes` is measured against the **latest
+  missed cron occurrence at or before the scan time** — "occurrence"
+  meaning the scheduler's own forward sequence: the same `nextFire`
+  steps that persist `next_run` and advance `markRan`, walked from
+  the due row's `next_run` (ruling 2026-10-12: a backward `.prev()`
+  lookup is a *different* sequence across DST transitions — it skips
+  the spring-forward landing hour, so an on-time catch-up reads a
+  day, and a sparse annual cron years, late, and it admits the
+  fall-back repeated hour, so a stale catch-up reads on-time).
+  `null` (the default for
   existing and new programs) means unlimited lateness and preserves
   fire-on-wake behavior. Missed occurrences coalesce: if the latest
   occurrence is within the program's grace, fire at most once on that

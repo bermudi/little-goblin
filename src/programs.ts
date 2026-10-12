@@ -16,7 +16,7 @@
 // included, so legacy rows beside it must never reactivate.
 
 import { Database } from "bun:sqlite";
-import { CronExpressionParser } from "cron-parser";
+import { CronExpression, CronExpressionParser } from "cron-parser";
 import { z } from "zod";
 import { log } from "./log.ts";
 
@@ -45,6 +45,17 @@ export interface Program {
 	lastRun: string | null;
 	/** ISO timestamp of the next fire, or null without a cron. */
 	nextRun: string | null;
+}
+
+/** A program rule violation the model can act on — the trigger
+ *  invariant or a lateness bound. The program tool translates it into
+ *  an error result; every other store failure stays an exception and
+ *  propagates. Identified by class, never by message text. */
+export class ProgramRuleError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "ProgramRuleError";
+	}
 }
 
 export interface ProgramAddress {
@@ -124,32 +135,53 @@ export interface ProgramsStore {
 // Validate + compute. Throws with cron-parser's own message — the tool
 // boundary surfaces it to the model, so it must be human-readable.
 export function nextFire(cron: string, from: Date): Date {
-	// cron-parser accepts 1–6 fields (a 6th being seconds); the contract
-	// here is exactly 5 (min hour dom month dow). Check before parsing —
-	// "*/5 * * * * *" would otherwise silently mean every five seconds.
-	if (cron.trim().split(/\s+/).length !== 5) {
-		throw new Error(`invalid cron "${cron}": expected exactly 5 fields (min hour dom month dow)`);
+	return parseCron(cron, from).next().toDate();
+}
+
+// The latest occurrence at or before `through`, walked forward from
+// `firstMissed` — the due row's next_run, the first occurrence the
+// scan owes. This is the occurrence whose lateness governs a
+// coalesced catch-up fire. The walk must be the same forward steps
+// that persist next_run and advance markRan: cron-parser's backward
+// .prev() is a *different* sequence across DST transitions — it skips
+// the spring-forward landing hour (an on-time catch-up reads a day,
+// and a sparse annual cron years, late) and admits the fall-back
+// repeated hour (a stale catch-up reads on-time). Each step rebuilds
+// the expression around the previous occurrence from one shared
+// fields object — the same constructor a fresh parse takes, with
+// fresh search state, at a fraction of the per-step cost (a boot
+// catch-up walks one step per missed occurrence). nextFire is
+// strict, so each step moves past `at` and the walk terminates.
+export function latestFireAtOrBefore(cron: string, firstMissed: Date, through: Date): Date {
+	if (firstMissed.getTime() > through.getTime()) {
+		throw new Error(
+			`latestFireAtOrBefore: first missed occurrence ${firstMissed.toISOString()} is after the scan time ${through.toISOString()}`,
+		);
 	}
-	try {
-		return CronExpressionParser.parse(cron, { currentDate: from }).next().toDate();
-	} catch (err) {
-		throw new Error(`invalid cron "${cron}": ${(err as Error).message}`);
+	const fields = parseCron(cron, firstMissed).fields;
+	let latest = firstMissed.getTime();
+	let at = firstMissed;
+	for (;;) {
+		const next = CronExpression.fieldsToExpression(fields, { currentDate: at }).next();
+		const nextMs = next.getTime();
+		if (nextMs > through.getTime()) return new Date(latest);
+		latest = nextMs;
+		// A plain Date, never the returned CronDate: the CronDate copy
+		// constructor carries the previous search's DST flags into the
+		// next one, and only a fresh start reproduces nextFire's steps.
+		at = next.toDate();
 	}
 }
 
-// CronExpression.prev() is strict, so advance by 1ms to include an
-// occurrence exactly at `through`. This is the occurrence whose
-// lateness governs a coalesced catch-up fire.
-export function latestFireAtOrBefore(cron: string, through: Date): Date {
+// cron-parser accepts 1–6 fields (a 6th being seconds); the contract
+// here is exactly 5 (min hour dom month dow). Check before parsing —
+// "*/5 * * * * *" would otherwise silently mean every five seconds.
+function parseCron(cron: string, currentDate: Date): CronExpression {
 	if (cron.trim().split(/\s+/).length !== 5) {
 		throw new Error(`invalid cron "${cron}": expected exactly 5 fields (min hour dom month dow)`);
 	}
 	try {
-		return CronExpressionParser.parse(cron, {
-			currentDate: new Date(through.getTime() + 1),
-		})
-			.prev()
-			.toDate();
+		return CronExpressionParser.parse(cron, { currentDate });
 	} catch (err) {
 		throw new Error(`invalid cron "${cron}": ${(err as Error).message}`);
 	}
@@ -157,10 +189,10 @@ export function latestFireAtOrBefore(cron: string, through: Date): Date {
 
 function validateLateness(cron: string | null, minutes: number | null): void {
 	if (minutes !== null && (!Number.isSafeInteger(minutes) || minutes < 0)) {
-		throw new Error("maxLatenessMinutes must be a non-negative safe integer or null");
+		throw new ProgramRuleError("maxLatenessMinutes must be a non-negative safe integer or null");
 	}
 	if (minutes !== null && cron === null) {
-		throw new Error("maxLatenessMinutes requires a cron trigger");
+		throw new ProgramRuleError("maxLatenessMinutes requires a cron trigger");
 	}
 }
 
@@ -172,7 +204,9 @@ function requireTrigger(
 	mailFilter: string | null,
 ): void {
 	if (cron === null && hookHash === null && mailFilter === null) {
-		throw new Error("a program needs at least one trigger — set a cron, a hook, or a mail filter");
+		throw new ProgramRuleError(
+			"a program needs at least one trigger — set a cron, a hook, or a mail filter",
+		);
 	}
 }
 

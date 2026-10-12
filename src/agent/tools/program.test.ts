@@ -276,6 +276,34 @@ describe("program tool", () => {
 		).rejects.toThrow();
 	});
 
+	test("a storage failure that merely sounds like a rule violation propagates", async () => {
+		// Identity routing, not message matching: the old check keyed on
+		// message prefixes, so a failure whose text happened to contain one
+		// was swallowed into a model-facing error result.
+		const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
+		dirs.push(dir);
+		const store = openPrograms(join(dir, "goblin.sqlite"));
+		const failing = {
+			...store,
+			update: (): never => {
+				throw new Error(
+					"sqlite: disk full — maxLatenessMinutes requires a cron trigger, a program needs at least one trigger",
+				);
+			},
+		};
+		const tool = programTool({
+			programs: failing,
+			chatId: -100,
+			threadId: 7,
+			publicUrl: () => undefined,
+			sendPrivate: async () => {},
+		});
+		await expect(
+			exec(tool, { action: "update", id: 1, cron: "0 9 * * *", maxLatenessMinutes: 5 }),
+		).rejects.toThrow("disk full");
+		store.close();
+	});
+
 	test("a mail filter alone is a trigger; clearing the last one is refused", async () => {
 		const { tool, programs } = toolFor();
 		const created = (await exec(tool, {

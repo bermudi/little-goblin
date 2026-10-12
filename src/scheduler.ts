@@ -61,15 +61,18 @@ export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler
 }
 
 // Cron: missed occurrences coalesce against the latest occurrence due
-// at this scan. A per-program grace can skip an overly stale catch-up;
-// advancing the cursor is still required so it cannot warn every tick.
-// Otherwise fire once and advance even when submit fails — occurrences
+// at this scan — anchored at the due row's next_run and walked with the
+// same forward steps that persist it (latestFireAtOrBefore documents
+// why a backward lookup would lie across DST transitions). A
+// per-program grace can skip an overly stale catch-up; advancing the
+// cursor is still required so it cannot warn every tick. Otherwise
+// fire once and advance even when submit fails — occurrences
 // are synthetic and infinite, so holding one would refire the error.
 export function fireScheduled(deps: SchedulerDeps, program: Program, now: Date): void {
 	if (program.cron === null || program.nextRun === null) {
 		throw new Error(`due program ${program.id} has no scheduled occurrence`);
 	}
-	const scheduledFor = latestFireAtOrBefore(program.cron, now);
+	const scheduledFor = latestFireAtOrBefore(program.cron, new Date(program.nextRun), now);
 	const lateMs = Math.max(0, now.getTime() - scheduledFor.getTime());
 	const graceMinutes = program.maxLatenessMinutes;
 	if (graceMinutes !== null && lateMs > graceMinutes * 60_000) {

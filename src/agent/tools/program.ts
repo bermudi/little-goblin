@@ -14,7 +14,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { log } from "../../log.ts";
-import { nextFire, type Program, type ProgramsStore } from "../../programs.ts";
+import { nextFire, ProgramRuleError, type Program, type ProgramsStore } from "../../programs.ts";
 
 function programView(program: Program): Record<string, unknown> {
 	return {
@@ -210,7 +210,7 @@ export const programTool = (deps: ProgramToolDeps) =>
 						return { program: programView(program) };
 					} catch (err) {
 						if (isProgramRuleError(err)) {
-							return { error: err instanceof Error ? err.message : String(err) };
+							return { error: err.message };
 						}
 						throw err;
 					}
@@ -250,7 +250,7 @@ export const programTool = (deps: ProgramToolDeps) =>
 						// The trigger invariant is model-actionable; storage
 						// failures propagate — never swallowed.
 						if (isProgramRuleError(err)) {
-							return { error: err instanceof Error ? err.message : String(err) };
+							return { error: err.message };
 						}
 						throw err;
 					}
@@ -275,7 +275,7 @@ export const programTool = (deps: ProgramToolDeps) =>
 							deps.programs.setHook(input.id, null);
 						} catch (err) {
 							if (isProgramRuleError(err)) {
-								return { error: err instanceof Error ? err.message : String(err) };
+								return { error: err.message };
 							}
 							throw err;
 						}
@@ -304,11 +304,9 @@ export const programTool = (deps: ProgramToolDeps) =>
 	});
 
 // Program invariants are model-actionable; storage failures propagate.
-function isProgramRuleError(err: unknown): boolean {
-	return (
-		err instanceof Error &&
-		(err.message.includes("at least one trigger") || err.message.startsWith("maxLatenessMinutes"))
-	);
+// Identity, not message text — wording stays free to change.
+function isProgramRuleError(err: unknown): err is ProgramRuleError {
+	return err instanceof ProgramRuleError;
 }
 
 // Token + URL + the publicUrl gate. Returns the minted pair or an

@@ -9,7 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import { desktopsConfigSchema, type DesktopsConfig } from "./config.ts";
 import { makePodman, type PodmanExecOpts } from "./podman.ts";
 import type { BoundedProc, BoundedProcBytes } from "./proc.ts";
@@ -64,6 +64,8 @@ function fakeEngine(opts?: {
 	execGate?: Promise<void>;
 	/** Guest paths that exist as directories — the cpIn pre-check. */
 	existingDirs?: Set<string>;
+	/** Guest dirs desk cannot write — the cpIn desk-governance model. */
+	rootDirs?: Set<string>;
 }) {
 	const containers = new Map<string, FakeContainer>();
 	for (const c of opts?.containers ?? []) {
@@ -155,7 +157,7 @@ function fakeEngine(opts?: {
 		throw new Error(`fake podman: unhandled argv ${JSON.stringify(args)}`);
 	};
 
-	const execRunner = async (args: string[], _opts: PodmanExecOpts): Promise<BoundedProc> => {
+	const execRunner = async (args: string[], execOpts: PodmanExecOpts): Promise<BoundedProc> => {
 		execCalls.push([...args]);
 		// The cpIn pre-check / post-check shell probes: the last
 		// positional arg before/after the marker is the guest path.
@@ -163,7 +165,25 @@ function fakeEngine(opts?: {
 		if (marker !== -1 && opts?.existingDirs?.has(args[marker + 1] ?? "")) {
 			return { stdout: "", stderr: "exists as directory", exitCode: 3, timedOut: false, truncated: false };
 		}
-		if (args.includes("mkdir") || args.includes("chown") || args.includes("stat")) {
+		if (
+			args.includes("mkdir") ||
+			args.includes("chown") ||
+			args.includes("stat") ||
+			args.includes("chmod")
+		) {
+			return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
+		}
+		// The cpIn post-verify probe (regular file, not a symlink).
+		if (args.some((a) => a.startsWith("{ [ -f"))) {
+			return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
+		}
+		// The desk-side stage→dest copy: desk cannot write under a
+		// rootDirs parent — that refusal is the import's governance.
+		if (args.includes("cp")) {
+			const dest = args.at(-1) ?? "";
+			if (execOpts.user === "desk" && opts?.rootDirs?.has(posix.dirname(dest)) === true) {
+				return { stdout: "", stderr: "Permission denied", exitCode: 1, timedOut: false, truncated: false };
+			}
 			return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
 		}
 		if (args[0] === "/bin/sh" && args[1] === "-c" && args[2]?.startsWith("if [ -e")) {
@@ -717,17 +737,63 @@ describe("desktops pool", () => {
 		);
 	});
 
-	test("import chowns exactly the copied leaf — no -R", async () => {
+	test("import lands as the desk user — root only stages the bytes", async () => {
 		const engine = fakeEngine();
 		const { desktops, name } = await fresh(engine);
 		const host = join(mkdtempSync(join(tmpdir(), "goblin-desk-seed-")), "f.bin");
 		writeFileSync(host, "x");
 		await desktops.cpIn(name, host, "/home/desk/inbox/subagents/1/f.bin");
-		expect(engine.calls.some((c) => c[0] === "cp")).toBe(true);
-		const chown = engine.execCalls.find((c) => c.join(" ").includes("chown"));
-		expect(chown).toBeDefined();
-		expect(chown!.join(" ")).toContain("-h");
-		expect(chown!.join(" ")).not.toContain("-R");
+		// podman cp targets a goblin-chosen stage path, never the dest.
+		const cp = engine.calls.find((c) => c[0] === "cp");
+		expect(cp).toBeDefined();
+		expect(cp![2]).toMatch(
+			new RegExp(`^${containerNameForDesktop(name)}:/run/goblin-import/imp-`),
+		);
+		// The stage dir is created by root (no -u) and the staged file
+		// is made desk-readable before the desk-side copy.
+		const stageMk = engine.execCalls.find(
+			(c) => c.includes("mkdir") && c.at(-1) === "/run/goblin-import",
+		);
+		expect(stageMk).toBeDefined();
+		expect(stageMk).not.toContain("-u");
+		const chmod = engine.execCalls.find((c) => c.includes("chmod"));
+		expect(chmod).toBeDefined();
+		expect(chmod).not.toContain("-u");
+		// The destination write ran as desk, stage → dest.
+		const deskCp = engine.execCalls.find((c) => c.includes("cp"));
+		expect(deskCp).toBeDefined();
+		expect(deskCp![deskCp!.indexOf("-u") + 1]).toBe("desk");
+		expect(deskCp!.at(-1)).toBe("/home/desk/inbox/subagents/1/f.bin");
+		expect(
+			engine.execCalls.indexOf(chmod!) < engine.execCalls.indexOf(deskCp!),
+		).toBe(true);
+		// No chown anywhere — desk's own cp creates the file desk-owned.
+		expect(engine.execCalls.some((c) => c.join(" ").includes("chown"))).toBe(false);
+		// The staged file is cleaned up by a root rm.
+		const rm = engine.execCalls.find(
+			(c) => c.includes("rm") && c.at(-1)?.startsWith("/run/goblin-import/imp-"),
+		);
+		expect(rm).toBeDefined();
+		expect(rm).not.toContain("-u");
+	});
+
+	test("import into a root-owned directory fails — desk cannot write it", async () => {
+		const engine = fakeEngine({ rootDirs: new Set(["/etc"]) });
+		const { desktops, name } = await fresh(engine);
+		const host = join(mkdtempSync(join(tmpdir(), "goblin-desk-seed-")), "f.bin");
+		writeFileSync(host, "x");
+		await expect(desktops.cpIn(name, host, "/etc/f.bin")).rejects.toThrow(
+			/could not import/,
+		);
+		// The desk-side copy was attempted as desk and the staged file
+		// was cleaned up after the failure.
+		const deskCp = engine.execCalls.find((c) => c.includes("cp"));
+		expect(deskCp).toBeDefined();
+		expect(deskCp![deskCp!.indexOf("-u") + 1]).toBe("desk");
+		const rm = engine.execCalls.find(
+			(c) => c.includes("rm") && c.at(-1)?.startsWith("/run/goblin-import/imp-"),
+		);
+		expect(rm).toBeDefined();
 	});
 });
 

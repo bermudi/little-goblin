@@ -20,6 +20,7 @@
 // removes the container rather than use it.
 
 import { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
 import { join, posix } from "node:path";
 import { z } from "zod";
 import {
@@ -233,7 +234,9 @@ const DEFAULT_CONFIG = desktopsConfigSchema.parse({});
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
 const LEASE_TTL_MS = 10 * 60_000;
 const DESKTOP_USER = "desk";
-const DESKTOP_UID = 1000;
+// Root-owned 0755 dir for the cpIn stage — desk can read/traverse it
+// but cannot write, rename, or plant links inside.
+const IMPORT_STAGE_DIR = "/run/goblin-import";
 const SESSION_SOCKET = "/run/desk/cua.sock";
 const SESSION_ENV = {
 	HOME: "/home/desk",
@@ -374,8 +377,9 @@ export interface Desktops {
 		obsId: string,
 		action: DesktopAction,
 	): Promise<{ result: unknown; note?: string }>;
-	/** hostPath → containerPath via podman cp — the caller owns the
-	 *  source's provenance (box-files containment); no lease needed. */
+	/** hostPath → containerPath staged through podman cp, landed by a
+	 *  desk-user copy — the caller owns the source's provenance
+	 *  (box-files containment); no lease needed. */
 	cpIn(name: string, hostPath: string, containerPath: string): Promise<{ note?: string }>;
 	/** A regular file's bytes as `desk` (symlinks/dirs refused), or
 	 *  DesktopError. The export twin of cpIn; no lease needed. */
@@ -1149,25 +1153,88 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 						`refusing to import onto non-regular path ${containerPath} on desktop ${name}`,
 					);
 				}
-				await podman.cp(ready.container, hostPath, containerPath);
-				// Recheck the leaf the copy actually produced, then hand
-				// exactly that file to desk — no -R, no tree rewrite.
-				const chown = await podman.exec(
+				// podman cp writes as container root, so it only stages the
+				// bytes at a goblin-chosen path in a dir desk can't write;
+				// desk itself performs the destination write — a root-owned
+				// target fails loudly instead of silently succeeding under
+				// a chown. The dir is made per-call: adopted or recreated
+				// containers never got a create-time hook.
+				const mkStage = await podman.exec(
 					ready.container,
-					[
-						"/bin/sh",
-						"-c",
-						'{ [ -f "$1" ] && [ ! -L "$1" ]; } || exit 3; chown -h -- "$2:$2" "$1" || exit 4',
-						"post",
-						containerPath,
-						String(DESKTOP_UID),
-					],
+					["mkdir", "-p", "--", IMPORT_STAGE_DIR],
 					{ ...EXEC_OPTS, workdir: "/run/desk" },
 				);
-				if (chown.timedOut || chown.exitCode !== 0) {
+				if (mkStage.timedOut || mkStage.exitCode !== 0) {
 					throw new DesktopError(
-						`imported ${containerPath} on desktop ${name} but could not hand it to desk: ${chown.stderr.slice(0, 200)}`,
+						`could not stage an import on desktop ${name}: ${mkStage.stderr.slice(0, 200)}`,
 					);
+				}
+				const stage = `${IMPORT_STAGE_DIR}/imp-${Date.now()}-${randomUUID().slice(0, 8)}`;
+				try {
+					await podman.cp(ready.container, hostPath, stage);
+					// podman cp preserves the host mode — a 600 file would be
+					// unreadable to the desk-side copy below.
+					const mode = await podman.exec(
+						ready.container,
+						["chmod", "0644", "--", stage],
+						{ ...EXEC_OPTS, workdir: "/run/desk" },
+					);
+					if (mode.timedOut || mode.exitCode !== 0) {
+						throw new DesktopError(
+							`could not stage an import on desktop ${name}: ${mode.stderr.slice(0, 200)}`,
+						);
+					}
+					const put = await podman.exec(
+						ready.container,
+						["cp", "--", stage, containerPath],
+						{ ...EXEC_OPTS, user: DESKTOP_USER, workdir: "/run/desk" },
+					);
+					if (put.timedOut || put.exitCode !== 0) {
+						throw new DesktopError(
+							`could not import to ${containerPath} on desktop ${name}: ${put.stderr.slice(0, 200)}`,
+						);
+					}
+					// cp follows a dest symlink — the pre-check refused one,
+					// but a swap in between still lands bytes off-target;
+					// re-verify the leaf desk produced.
+					const post = await podman.exec(
+						ready.container,
+						[
+							"/bin/sh",
+							"-c",
+							'{ [ -f "$1" ] && [ ! -L "$1" ]; } || exit 3',
+							"post",
+							containerPath,
+						],
+						{ ...EXEC_OPTS, user: DESKTOP_USER, workdir: "/run/desk" },
+					);
+					if (post.timedOut || post.exitCode !== 0) {
+						throw new DesktopError(
+							`imported ${containerPath} on desktop ${name} but the result is not a regular file`,
+						);
+					}
+				} finally {
+					// Best-effort stage cleanup — a leftover in the root-owned
+					// dir is harmless and must never mask the real error.
+					try {
+						const rm = await podman.exec(
+							ready.container,
+							["rm", "-f", "--", stage],
+							{ ...EXEC_OPTS, workdir: "/run/desk" },
+						);
+						if (rm.timedOut || rm.exitCode !== 0) {
+							log.warn("desktop import stage rm failed", {
+								desktop: name,
+								path: stage,
+								exit: rm.timedOut ? "timeout" : rm.exitCode,
+							});
+						}
+					} catch (err) {
+						log.warn("desktop import stage rm failed", err, {
+							desktop: name,
+							path: stage,
+						});
+					}
 				}
 				log.info("desktop import", { desktop: name, to: containerPath });
 				return { ...(ready.note !== undefined ? { note: ready.note } : {}) };

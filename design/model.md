@@ -222,16 +222,11 @@ agent loop.
 
 ## No step budget — loops are caught, not capped
 
-Ruling 2026-10-07 (second, supersedes the same-day "soft budget +
-watchdog" ruling and its removal). Operator intent, stated plainly: **a
-turn has no step budget.** Current models work reliably on one task for
-hours; a step count is a design constraint dressed as a safety net, and
-the scaffold-era `MAX_STEPS = 25` cliff already ate one whole reply (the
-Safari Zone turn: 25 steps of ROM diffs, `finish=tool-calls`, zero
-prose). The first ruling raised the cap to 64 *and* added the system1
-watchdog — keeping the cap is what made the watchdog look redundant, and
-the removal (`7d9e1dc`) judged the half-built thing. The watchdog was
-always meant to *replace* the cap.
+Ruling 2026-10-07 (operator): **a turn has no step budget.** Current
+models work reliably on one task for hours; a step count is a design
+constraint dressed as a safety net, and the scaffold-era `MAX_STEPS =
+25` cliff already ate one whole reply (the Safari Zone turn: 25 steps
+of ROM diffs, `finish=tool-calls`, zero prose).
 
 What bounds a turn now, in order of who fires first:
 
@@ -328,7 +323,7 @@ own notice line after the audio. The mini app is the settings surface,
 not a chat — no stamp there by design. `TurnDone` carries the same
 `forced?` kind so any future delivery surface inherits the contract.
 
-**Carried from the first ruling's review round.** Detector records and
+**Review-round rulings (2026-10-07).** Detector records and
 watchdog state ride `TurnRecovery` across an overflow resume — one
 logical turn, one loop history. A steer whose every conversion fails at
 the landing step does not eat the landing (the poison-pill return

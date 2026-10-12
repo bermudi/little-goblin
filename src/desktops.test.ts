@@ -490,7 +490,8 @@ describe("desktops pool", () => {
 		engine.containers.delete(containerNameForDesktop(name));
 		const shot = await desktops.screenshot(name);
 		expect(shot.id).toMatch(/^d1:/);
-		// Recreated: fresh observation sequence, same name row.
+		// Recreated: same name row, same audit generation — the shot
+		// sequence carries over so pre-loss obs ids stay dead.
 		const row = store.get(name)!;
 		expect(row.shotSeq).toBe(1);
 		expect(engine.containers.has(containerNameForDesktop(name))).toBe(true);
@@ -510,9 +511,42 @@ describe("desktops pool", () => {
 		const engine = fakeEngine();
 		const { desktops, name, shotsRoot } = await fresh(engine);
 		const shot = await desktops.screenshot(name);
-		expect(shot.path).toBe(join(shotsRoot, name, "shots", "1.png"));
+		const createdAt = desktops.get(name)!.createdAt;
+		expect(shot.path).toBe(join(shotsRoot, name, "shots", `${createdAt}-1.png`));
 		expect(shot.bytes).toEqual(PNG);
 		expect(await Bun.file(shot.path).exists()).toBe(true);
+	});
+
+	test("a recreated container continues the shot sequence — no audit clobber", async () => {
+		const engine = fakeEngine();
+		const { desktops, name } = await fresh(engine);
+		const first = await desktops.screenshot(name);
+		// Engine-level loss → ensureLocked recreates; the shots dir is
+		// shared across the recreate, so both frames must survive.
+		engine.containers.delete(containerNameForDesktop(name));
+		const second = await desktops.screenshot(name);
+		expect(second.id).toBe(`${name}:2`);
+		expect(second.path).not.toBe(first.path);
+		expect(await Bun.file(first.path).exists()).toBe(true);
+		expect(await Bun.file(second.path).exists()).toBe(true);
+	});
+
+	test("a destroy/re-allocate generation cannot clobber the old audit frames", async () => {
+		const engine = fakeEngine();
+		const { desktops, store, name } = await fresh(engine);
+		const first = await desktops.screenshot(name);
+		const gen1CreatedAt = store.get(name)!.createdAt;
+		await desktops.destroy(name, { kind: "operator" });
+		await desktops.allocate(name);
+		// A same-ms re-allocate would reuse createdAt — pin generation
+		// two's stamp distinct so filename uniqueness is what is tested.
+		const gen2 = store.get(name)!;
+		gen2.createdAt = gen1CreatedAt + 1;
+		store.put(gen2);
+		const second = await desktops.screenshot(name);
+		expect(second.path).not.toBe(first.path);
+		expect(await Bun.file(first.path).exists()).toBe(true);
+		expect(await Bun.file(second.path).exists()).toBe(true);
 	});
 
 	test("launch refuses flag-shaped and non-web urls before any exec", async () => {

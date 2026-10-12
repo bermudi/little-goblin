@@ -547,11 +547,13 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		if (row !== null) {
 			// Missing with a row: recreate fresh. The lease and
 			// observation state are gone with the container; the reserved
-			// pin survives.
+			// pin survives — and so does the shot sequence, which names
+			// the audit frames and obs ids minted before the loss.
 			await createContainer(name, row.image, row.network);
 			const kept = freshRow(name, { image: row.image, network: row.network });
 			kept.reserved = row.reserved;
 			kept.createdAt = row.createdAt;
+			kept.shotSeq = row.shotSeq;
 			store.put(kept);
 			log.info("desktop recreated", { desktop: name, container });
 			return {
@@ -925,10 +927,13 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				}
 				const bytes = read.stdout;
 				// The audit trail: every frame lands durably on disk
-				// (design/subagents.md → The computer subagent).
+				// (design/subagents.md → The computer subagent). The dir
+				// outlives the row — the createdAt prefix keeps a
+				// destroy/re-allocate generation from clobbering the
+				// previous one's frames.
 				const dir = join(shotsRoot, name, "shots");
 				ensureDir(dir);
-				const path = join(dir, `${ready.row.shotSeq + 1}.png`);
+				const path = join(dir, `${ready.row.createdAt}-${ready.row.shotSeq + 1}.png`);
 				durableWriteBytes(path, bytes);
 				const obsId = mintObservation(ready.row, sha256Hex(bytes));
 				return {

@@ -430,6 +430,37 @@ export const sandboxConfigSchema = z.object({
 });
 export type SandboxConfig = z.infer<typeof sandboxConfigSchema>;
 
+// Subagents & computer use (design/subagents.md) — absent block = no
+// tools, no harness opened; an absent type = that type is off. Models
+// are configured per type, never guessed; api is the one transport
+// pi-ai speaks to z.ai's Coding Plan endpoint.
+const subagentModelSchema = z.object({
+	auth: z.string().min(1),
+	id: z.string().min(1),
+	baseUrl: z.url(),
+	api: z.literal("openai-completions"),
+	thinking: z.enum(thinkingLevels),
+});
+
+// The managed desktop pool: idleHours 0 = never reap (like sandboxes).
+export const desktopsConfigSchema = z.object({
+	image: imageRefSchema.default("localhost/goblin-desktop:1"),
+	max: z.number().int().min(1).default(3),
+	idleHours: z.number().int().min(0).default(24),
+	memory: z.string().min(1).default("3g"),
+	cpus: z.number().positive().default(2),
+	pids: z.number().int().min(16).default(1024),
+});
+export type DesktopsConfig = z.infer<typeof desktopsConfigSchema>;
+
+export const subagentsConfigSchema = z.object({
+	maxRuns: z.number().int().min(1).default(3),
+	worker: z.object({ model: subagentModelSchema }).optional(),
+	computer: z.object({ model: subagentModelSchema }).optional(),
+	desktops: desktopsConfigSchema.prefault({}),
+});
+export type SubagentsConfig = z.infer<typeof subagentsConfigSchema>;
+
 // Gmail — absent = no mail tool or watcher. clientId is a public
 // identifier, not a secret; the client secret and SEND token live in
 // auth.jsonl; reads ride gws's auth — the send credential never reaches the model.
@@ -704,6 +735,8 @@ const configSchema = z
 			.union([sandboxConfigSchema, z.literal("")])
 			.transform((v) => (v === "" ? undefined : v))
 			.optional(),
+		// Subagents & computer use — hand-edited only, like delegation.
+		subagents: subagentsConfigSchema.optional(),
 		guest: guestConfigSchema.optional(),
 		reviewer: reviewerConfigSchema.optional(),
 		system1: system1ConfigSchema.optional(),

@@ -257,8 +257,8 @@ admission-time recall, the burst. Nothing is carried over by Goblin —
 memory and `history_search` are the bridge, by design.
 
 **The follow-up check.** One System One `noul` call through the
-shared client (`design/system1.md` — it exists only when a client is
-configured, per the config coupling there). State:
+shared client (`design/system1.md` — it exists when `system1` or
+`reviewer` is configured, per the switch there). State:
 `{gapMinutes, previous: {user, assistant}, next}` — the last user
 message and last assistant reply of the current conversation and the
 incoming burst, text only (attachments render as `[photo]`,

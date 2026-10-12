@@ -79,20 +79,18 @@ bugs reach the 500 — the text is never logged.
 ## Config
 
 The optional hand-edited `system1` block — `{auth, model?, baseUrl?}` —
-tunes the shared client. `auth` names the `auth.jsonl` record and
-resolves live per call, falling back to `reviewer.auth`; `model` is a
-bare decision-model id like `typesafe/jev-1.13`, never a
-`<provider>/<model>` chat ref (deliberately outside provider
-validation); `model`/`baseUrl` are boot-captured — a hand edit applies
-on restart.
+is the shared client's own switch (ruling 2026-10-12): set, the client
+exists and every consumer attaches, `reviewer` block or not; `reviewer`
+still implies the client, so existing configs behave identically.
+`auth` names the `auth.jsonl` record and resolves live per call,
+falling back to `reviewer.auth`; `model` is a bare decision-model id
+like `typesafe/jev-1.13`, never a `<provider>/<model>` chat ref
+(deliberately outside provider validation); `model`/`baseUrl` are
+boot-captured — a hand edit applies on restart.
 
-**Observed coupling, not a ruling:** today the `reviewer` block's mere
-existence is the client's on/off switch — a `system1` block alone
-constructs nothing. With no `reviewer` there is no client at all: the
-skill-review gate is off, the loopback endpoint 503s, watcher events
-fire unscored, and the follow-up check and loop watchdog sleep. Whether
-`system1` should be its own switch is an open decision; until a ruling
-lands, the coupling above is what the code does.
+With neither block there is no client: the skill-review gate is off,
+the loopback endpoint 503s, watcher events fire unscored, and the
+follow-up check and loop watchdog sleep.
 
 ## Provenance
 

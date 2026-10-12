@@ -579,21 +579,36 @@ async function boot() {
 	// bot.api); the hand-edited block boot-captures auth and threshold, the
 	// review model resolves live.
 	const reviewerBlock = configRef.current.reviewer;
-	const system1Gate = reviewerBlock
-		? new System1Client({
-				auth: () => auth.resolve(configRef.current.system1?.auth ?? reviewerBlock.auth),
-				// System One is the gate source when present; absent falls back to defaults.
-				...(configRef.current.system1?.model !== undefined
-					? { model: configRef.current.system1.model }
-					: {}),
-				...(configRef.current.system1?.baseUrl !== undefined
-					? { baseUrl: configRef.current.system1.baseUrl }
-					: {}),
-			})
-		: null;
+	// System One is its own switch (design/system1.md → Config): the shared
+	// client exists whenever a `system1` block is set, and `reviewer` still
+	// implies it — every existing config behaves identically.
+	const system1Block = configRef.current.system1;
+	const system1Gate =
+		system1Block || reviewerBlock
+			? new System1Client({
+					auth: () => {
+						// Auth resolves live per call; system1.auth wins,
+						// reviewer.auth is the fallback for reviewer-only configs.
+						const name = configRef.current.system1?.auth ?? reviewerBlock?.auth;
+						if (name === undefined) throw new Error("system1 gate without auth");
+						return auth.resolve(name);
+					},
+					...(system1Block?.model !== undefined ? { model: system1Block.model } : {}),
+					...(system1Block?.baseUrl !== undefined
+						? { baseUrl: system1Block.baseUrl }
+						: {}),
+				})
+			: null;
 	if (system1Gate !== null) {
-		const block = reviewerBlock; // narrowed: non-null exactly when the gate exists
-		if (!block) throw new Error("reviewer gate without block");
+		// The loop watchdog rides the same System1Client (design/model.md → "No step
+		// budget"): every 16 completed calls system1 scores the digest ring — warn
+		// once, cut on the second stuck verdict.
+		runtime.setLoopWatchdog({ decide: system1Gate.decide.bind(system1Gate) });
+		if (reviewerBlock === undefined) log.info("system1 enabled", {});
+	}
+	if (reviewerBlock !== undefined && system1Gate !== null) {
+		// reviewer implies the gate by construction — system1Gate is never null here.
+		const block = reviewerBlock;
 		const thresholds = {
 			correction: block.thresholds?.correction ?? block.threshold,
 			procedure: block.thresholds?.procedure ?? block.threshold,
@@ -602,7 +617,7 @@ async function boot() {
 			thresholds,
 			queueCap: block.queueCap,
 			evidence: block.evidence,
-			system1: configRef.current.system1 !== undefined,
+			system1: system1Block !== undefined,
 		});
 		// Staging from a killed run is garbage — clear before any review proposes.
 		cleanupStaging(paths.workspace());
@@ -633,10 +648,6 @@ async function boot() {
 					sendSkillProposedNotice(tg.bot.api, conversationId, skills),
 			}),
 		);
-		// The loop watchdog rides the same System1Client (design/model.md → "No step
-		// budget"): every 16 completed calls system1 scores the digest ring — warn
-		// once, cut on the second stuck verdict.
-		runtime.setLoopWatchdog({ decide: system1Gate.decide.bind(system1Gate) });
 	}
 
 	// The shared wake path — program fires and delegation notices submit

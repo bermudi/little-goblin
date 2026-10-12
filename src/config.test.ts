@@ -318,10 +318,10 @@ describe("goblin.json5", () => {
 		expect(() => loadConfig()).toThrow();
 	});
 
-	test("system1: optional block, model/baseUrl free-form, reviewer stays the switch", () => {
+	test("system1: optional block, model/baseUrl free-form, its own switch", () => {
 		const dir = useHome();
 		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
-		// Absent → undefined; system1 alone enables nothing (reviewer is the switch).
+		// Absent → undefined; the block alone enables the shared client.
 		writeFileSync(join(dir, "goblin.json5"), `${base},system1:{auth:"x"}}`);
 		expect(loadConfig()!.system1).toEqual({ auth: "x" });
 		expect(loadConfig()!.reviewer).toBeUndefined();

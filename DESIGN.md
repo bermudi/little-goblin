@@ -333,7 +333,7 @@ permissions), optional
 `sandbox` block (absent or `""` = no sandbox tool; `image`,
 `idleHours`, `memory`, `cpus`, `pids` — `design/sandbox.md`), optional
 `reviewer` + `system1` blocks (the skill-review gate and the shared
-System One gate — `design/system1.md`). No secrets —
+System One client's own switch — `design/system1.md`). No secrets —
 those live in `auth.jsonl`.
 
 **Settings are operator-facing UI, not SSH.** The mini app is the

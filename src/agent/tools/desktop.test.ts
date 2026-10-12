@@ -89,9 +89,10 @@ describe("desktopInputSchema", () => {
 			{ action: "list" },
 			{ action: "shot", name: "d1" },
 			{ action: "claim", name: "d1" },
-			{ action: "claim", name: "d1", holder: "operator" },
+			{ action: "claim", name: "d1", holder: "conversation" },
 			{ action: "release", name: "d1" },
 			{ action: "handoff", name: "d1", to_holder: "operator" },
+			{ action: "handoff", name: "d1", to_holder: "conversation" },
 			{ action: "reserve", name: "d1", reserved: true },
 			{ action: "network", name: "d1", enabled: true },
 			{ action: "import", name: "d1", from: "a.txt", to: "/home/desk/a.txt" },
@@ -108,6 +109,10 @@ describe("desktopInputSchema", () => {
 			{ action: "claim", name: "D 1" },
 			{ action: "new", name: "d1", image: "--privileged" },
 			{ action: "claim", name: "d1", holder: "run:5" }, // forged holder id
+			{ action: "claim", name: "d1", holder: "operator" }, // never act AS the operator
+			{ action: "release", name: "d1", holder: "operator" },
+			{ action: "destroy", name: "d1", holder: "operator" },
+			{ action: "handoff", name: "d1", holder: "operator", to_holder: "conversation" },
 			{ action: "handoff", name: "d1" }, // no to_holder
 			{ action: "reserve", name: "d1" },
 			{ action: "network", name: "d1" },
@@ -131,12 +136,30 @@ describe("desktop tool", () => {
 		expect(out.bytes).toBeUndefined();
 	});
 
-	test("claim defaults the holder to this conversation; operator maps", async () => {
+	test("claim always acts as this conversation — never as the operator", async () => {
 		const { tool, calls } = rig({});
 		await tool.execute!({ action: "claim", name: "d1" }, opts);
-		await tool.execute!({ action: "claim", name: "d1", holder: "operator" }, opts);
+		await tool.execute!({ action: "claim", name: "d1", holder: "conversation" }, opts);
 		const holders = calls.filter((c) => c.name === "claim").map((c) => c.args[1] as LeaseHolder);
-		expect(holders).toEqual([{ kind: "conversation", id: CONV }, { kind: "operator" }]);
+		expect(holders).toEqual([
+			{ kind: "conversation", id: CONV },
+			{ kind: "conversation", id: CONV },
+		]);
+	});
+
+	test("the operator is a handoff destination only, never the acting holder", async () => {
+		const { tool, calls } = rig({});
+		// A forged self holder fails validation in execute's re-parse —
+		// the pool is never reached.
+		for (const raw of [
+			{ action: "release", name: "d1", holder: "operator" },
+			{ action: "destroy", name: "d1", holder: "operator" },
+			{ action: "handoff", name: "d1", holder: "operator", to_holder: "conversation" },
+		]) {
+			const out = (await tool.execute!(raw as never, opts)) as Record<string, unknown>;
+			expect(String(out.error)).toContain("invalid desktop call");
+		}
+		expect(calls.length).toBe(0);
 	});
 
 	test("handoff requires both ends — from derived, to from the enum", async () => {

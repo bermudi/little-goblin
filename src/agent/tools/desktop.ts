@@ -2,9 +2,10 @@
 // facing handle on the managed pool — allocate, observe, lease,
 // network, files, destroy. Input control itself belongs to computer
 // subagents; this tool can observe any desktop and manage leases for
-// its own conversation or the operator, but holder ids are built here
-// from the bound conversation — a model can never claim as another
-// holder, and "cannot take a live lease" is enforced in desktops.ts.
+// its own conversation only — the operator exists solely as a handoff
+// destination, so a model can never claim, release, hand off or
+// destroy AS another holder, and "cannot take a live lease" is
+// enforced in desktops.ts.
 
 import { tool } from "ai";
 import { copyFile, mkdtemp, rm } from "node:fs/promises";
@@ -32,7 +33,10 @@ export interface DesktopToolDeps {
 const nameSchema = z
 	.string()
 	.regex(/^[a-z0-9][a-z0-9-]{0,30}$/, "desktop names are [a-z0-9-], 1-31 chars");
-const holderSchema = z.enum(["conversation", "operator"]);
+// The self holder admits only "conversation" — a model can never act
+// as the operator; the operator exists only as a handoff target.
+const holderSchema = z.enum(["conversation"]);
+const targetHolderSchema = z.enum(["conversation", "operator"]);
 
 const newSchema = z.object({
 	action: z.literal("new"),
@@ -55,7 +59,7 @@ const handoffSchema = z.object({
 	action: z.literal("handoff"),
 	name: nameSchema,
 	holder: holderSchema.optional(),
-	to_holder: holderSchema,
+	to_holder: targetHolderSchema,
 });
 const reserveSchema = z.object({
 	action: z.literal("reserve"),
@@ -119,7 +123,7 @@ export const desktopInputSchema = z
 		enabled: networkSchema.shape.enabled.optional(),
 		reserved: reserveSchema.shape.reserved.optional(),
 		holder: holderSchema.optional(),
-		to_holder: holderSchema.optional(),
+		to_holder: targetHolderSchema.optional(),
 		from: importSchema.shape.from.optional(),
 		to: importSchema.shape.to.optional(),
 	})
@@ -152,10 +156,13 @@ function view(row: DesktopRow) {
 }
 
 export const desktopTool = (deps: DesktopToolDeps) => {
-	// Holder identity is derived, never taken: "conversation" means THIS
-	// conversation's id, "operator" the operator — no ids cross the wire.
-	const holderOf = (h: "conversation" | "operator" | undefined): LeaseHolder =>
-		h === "operator" ? { kind: "operator" } : { kind: "conversation", id: deps.conversation };
+	// Holder identity is derived, never taken: the self is always THIS
+	// conversation — no ids cross the wire, and no schema path produces
+	// {kind:"operator"} for the acting side. Handoff targets resolve
+	// separately; "operator" is a destination, never a self.
+	const selfHolder = (): LeaseHolder => ({ kind: "conversation", id: deps.conversation });
+	const targetHolderOf = (h: "conversation" | "operator"): LeaseHolder =>
+		h === "operator" ? { kind: "operator" } : selfHolder();
 	return tool({
 		description: DESKTOP_TOOL_DESCRIPTION,
 		inputSchema: desktopInputSchema,
@@ -189,18 +196,18 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 						};
 					}
 					case "claim": {
-						const row = await deps.desktops.claim(input.name, holderOf(input.holder));
+						const row = await deps.desktops.claim(input.name, selfHolder());
 						return { desktop: view(row) };
 					}
 					case "release": {
-						await deps.desktops.release(input.name, holderOf(input.holder));
+						await deps.desktops.release(input.name, selfHolder());
 						return { released: input.name };
 					}
 					case "handoff": {
 						await deps.desktops.handoff(
 							input.name,
-							holderOf(input.holder),
-							holderOf(input.to_holder),
+							selfHolder(),
+							targetHolderOf(input.to_holder),
 						);
 						return { handed_off: input.name, to: input.to_holder };
 					}
@@ -252,7 +259,7 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 						};
 					}
 					case "destroy": {
-						await deps.desktops.destroy(input.name, holderOf(input.holder));
+						await deps.desktops.destroy(input.name, selfHolder());
 						return { destroyed: input.name };
 					}
 				}

@@ -1,0 +1,922 @@
+// Desktop pool — the desktops table plus the lifecycle owner
+// (design/subagents.md → Desktops: a managed pool). A desktop is a
+// named, long-lived `goblin-desk-*` container running the
+// goblin-desktop session (Xvfb + XFCE + cua-driver); anyone may
+// observe it, exactly one lease holder may drive it. The row is
+// intent, podman is truth, and every call reconciles the two —
+// running → use, stopped → start + network re-applied, missing →
+// recreate (prior state gone), labelled-but-rowless → adopt.
+//
+// Observation binding is the core invariant: every observation mints a
+// fresh id, and act refuses anything not bound to the newest, unused
+// observation — an input action can never target a frame the model
+// hasn't seen. Repeating an identical action against an unchanged
+// screen is refused too.
+//
+// Reaping is a sweep at the start of every call — unleased, unreserved
+// desktops idle past idleHours lose their container then their row
+// (the caller's desktop is exempt). No ticker, no boot hook. Network
+// is fail-closed: an off state that can't be confirmed by inspect
+// removes the container rather than use it.
+
+import { Database } from "bun:sqlite";
+import { join } from "node:path";
+import { z } from "zod";
+import { paths, ensureDir, desktopsConfigSchema, type DesktopsConfig } from "./config.ts";
+import { durableWriteBytes } from "./durable.ts";
+import { log } from "./log.ts";
+import type { ContainerInspect, Podman } from "./podman.ts";
+
+// Model/operator-actionable failures (held leases, stale observations,
+// missing image) — the tool maps these to {error} results.
+export class DesktopError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "DesktopError";
+	}
+}
+
+export type LeaseHolder =
+	| { kind: "run"; id: string }
+	| { kind: "conversation"; id: string }
+	| { kind: "operator" };
+
+export type CuaTool =
+	| "click"
+	| "double_click"
+	| "right_click"
+	| "press_key"
+	| "type_text"
+	| "scroll"
+	| "drag"
+	| "set_value";
+
+export type DesktopAction =
+	| { kind: "launch"; app: "chromium" }
+	| { kind: "cua"; tool: CuaTool; args: Record<string, unknown> };
+
+export interface DesktopRow {
+	name: string;
+	container: string;
+	image: string;
+	/** Intended network state — the row is intent, podman is truth. */
+	network: boolean;
+	reserved: boolean;
+	leaseKind: "run" | "conversation" | "operator" | null;
+	leaseId: string | null;
+	leaseExpiresAt: number | null;
+	/** Observation binding: the newest minted observation id and
+	 *  whether an action already consumed it. */
+	lastObsId: string | null;
+	lastObsUsed: boolean;
+	/** sha256 of the observation frame — PNG bytes for screenshots,
+	 *  the cua screenshot (or state JSON) for inspect. */
+	lastObsHash: string | null;
+	/** The last action's signature and the frame it was bound to —
+	 *  the identical-action-on-unchanged-screen refusal. */
+	lastActSig: string | null;
+	lastActFrameHash: string | null;
+	shotSeq: number;
+	createdAt: number;
+	lastUsedAt: number;
+}
+
+export interface DesktopStore {
+	get(name: string): DesktopRow | null;
+	list(): DesktopRow[];
+	put(row: DesktopRow): void;
+	delete(name: string): void;
+	/** Rows idle since before cutoffMs, excluding one desktop. */
+	staleBefore(cutoffMs: number, excludeName: string): DesktopRow[];
+	close(): void;
+}
+
+const rowSchema = z.object({
+	name: z.string(),
+	container: z.string(),
+	image: z.string(),
+	network: z.number(),
+	reserved: z.number(),
+	lease_kind: z.enum(["run", "conversation", "operator"]).nullable(),
+	lease_id: z.string().nullable(),
+	lease_expires_at: z.number().nullable(),
+	last_obs_id: z.string().nullable(),
+	last_obs_used: z.number(),
+	last_obs_hash: z.string().nullable(),
+	last_act_sig: z.string().nullable(),
+	last_act_frame_hash: z.string().nullable(),
+	shot_seq: z.number(),
+	created_at: z.number(),
+	last_used_at: z.number(),
+});
+
+function toRow(row: unknown): DesktopRow {
+	const r = rowSchema.parse(row);
+	return {
+		name: r.name,
+		container: r.container,
+		image: r.image,
+		network: r.network !== 0,
+		reserved: r.reserved !== 0,
+		leaseKind: r.lease_kind,
+		leaseId: r.lease_id,
+		leaseExpiresAt: r.lease_expires_at,
+		lastObsId: r.last_obs_id,
+		lastObsUsed: r.last_obs_used !== 0,
+		lastObsHash: r.last_obs_hash,
+		lastActSig: r.last_act_sig,
+		lastActFrameHash: r.last_act_frame_hash,
+		shotSeq: r.shot_seq,
+		createdAt: r.created_at,
+		lastUsedAt: r.last_used_at,
+	};
+}
+
+export function openDesktops(dbPath: string): DesktopStore {
+	const db = new Database(dbPath);
+	db.exec("PRAGMA journal_mode = WAL");
+	db.exec(`CREATE TABLE IF NOT EXISTS desktops (
+		name TEXT PRIMARY KEY,
+		container TEXT NOT NULL,
+		image TEXT NOT NULL,
+		network INTEGER NOT NULL,
+		reserved INTEGER NOT NULL DEFAULT 0,
+		lease_kind TEXT,
+		lease_id TEXT,
+		lease_expires_at INTEGER,
+		last_obs_id TEXT,
+		last_obs_used INTEGER NOT NULL DEFAULT 0,
+		last_obs_hash TEXT,
+		last_act_sig TEXT,
+		last_act_frame_hash TEXT,
+		shot_seq INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL,
+		last_used_at INTEGER NOT NULL
+	)`);
+	const qGet = db.query("SELECT * FROM desktops WHERE name = ?");
+	const qList = db.query("SELECT * FROM desktops ORDER BY name");
+	const qPut = db.query(
+		`INSERT INTO desktops (name, container, image, network, reserved,
+			lease_kind, lease_id, lease_expires_at,
+			last_obs_id, last_obs_used, last_obs_hash,
+			last_act_sig, last_act_frame_hash, shot_seq,
+			created_at, last_used_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(name) DO UPDATE SET
+			container = excluded.container, image = excluded.image,
+			network = excluded.network, reserved = excluded.reserved,
+			lease_kind = excluded.lease_kind, lease_id = excluded.lease_id,
+			lease_expires_at = excluded.lease_expires_at,
+			last_obs_id = excluded.last_obs_id,
+			last_obs_used = excluded.last_obs_used,
+			last_obs_hash = excluded.last_obs_hash,
+			last_act_sig = excluded.last_act_sig,
+			last_act_frame_hash = excluded.last_act_frame_hash,
+			shot_seq = excluded.shot_seq,
+			created_at = excluded.created_at,
+			last_used_at = excluded.last_used_at`,
+	);
+	const qDelete = db.query("DELETE FROM desktops WHERE name = ?");
+	const qStale = db.query(
+		"SELECT * FROM desktops WHERE last_used_at < ? AND name != ?",
+	);
+	return {
+		get: (name) => {
+			const row = qGet.get(name);
+			return row === null ? null : toRow(row);
+		},
+		list: () => qList.all().map(toRow),
+		put: (row) =>
+			void qPut.run(
+				row.name,
+				row.container,
+				row.image,
+				row.network ? 1 : 0,
+				row.reserved ? 1 : 0,
+				row.leaseKind,
+				row.leaseId,
+				row.leaseExpiresAt,
+				row.lastObsId,
+				row.lastObsUsed ? 1 : 0,
+				row.lastObsHash,
+				row.lastActSig,
+				row.lastActFrameHash,
+				row.shotSeq,
+				row.createdAt,
+				row.lastUsedAt,
+			),
+		delete: (name) => void qDelete.run(name),
+		staleBefore: (cutoffMs, exclude) => qStale.all(cutoffMs, exclude).map(toRow),
+		close: () => db.close(),
+	};
+}
+
+const DEFAULT_CONFIG = desktopsConfigSchema.parse({});
+
+const NAME_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
+const LEASE_TTL_MS = 10 * 60_000;
+const DESKTOP_USER = "desk";
+const SESSION_SOCKET = "/run/desk/cua.sock";
+const SESSION_ENV = {
+	HOME: "/home/desk",
+	DISPLAY: ":99",
+	DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/desk/bus",
+} as const;
+const EXEC_OPTS = { timeoutMs: 60_000, maxOutput: 4 * 1024 * 1024 } as const;
+
+export function containerNameForDesktop(name: string): string {
+	return `goblin-desk-${name}`;
+}
+
+function holderId(holder: LeaseHolder): string | null {
+	return holder.kind === "operator" ? null : holder.id;
+}
+
+function holderLabel(holder: LeaseHolder): string {
+	return holder.kind === "operator" ? "operator" : `${holder.kind} ${holder.id}`;
+}
+
+function rowHolderLabel(row: DesktopRow): string {
+	return row.leaseKind === "operator"
+		? "operator"
+		: `${row.leaseKind} ${row.leaseId ?? ""}`;
+}
+
+function leaseLive(row: DesktopRow, now: number): boolean {
+	return row.leaseKind !== null && row.leaseExpiresAt !== null && row.leaseExpiresAt > now;
+}
+
+function leaseHeldBy(row: DesktopRow, holder: LeaseHolder, now: number): boolean {
+	return (
+		leaseLive(row, now) &&
+		row.leaseKind === holder.kind &&
+		row.leaseId === holderId(holder)
+	);
+}
+
+// Key-order-canonical JSON — the identical-action check must not care
+// how the caller ordered its object keys.
+function stableJson(v: unknown): string {
+	if (Array.isArray(v)) return `[${v.map(stableJson).join(",")}]`;
+	if (v !== null && typeof v === "object") {
+		const o = v as Record<string, unknown>;
+		return `{${Object.keys(o)
+			.sort()
+			.map((k) => `${JSON.stringify(k)}:${stableJson(o[k])}`)
+			.join(",")}}`;
+	}
+	return JSON.stringify(v);
+}
+
+function sha256Hex(data: Uint8Array | string): string {
+	return new Bun.CryptoHasher("sha256").update(data).digest("hex");
+}
+
+export interface DesktopsDeps {
+	podman: Podman;
+	store: DesktopStore;
+	/** Live read — absent = the schema defaults. */
+	config(): DesktopsConfig | undefined;
+	/** Screenshot audit dir — $GOBLIN_HOME/state/desktops in prod. */
+	shotsRoot?: string;
+	/** Test seams — prod leaves both at their defaults. */
+	networkName?: string;
+}
+
+interface EnsureResult {
+	row: DesktopRow;
+	container: string;
+	note?: string;
+}
+
+export interface Desktops {
+	allocate(name: string, opts?: { image?: string }): Promise<{ row: DesktopRow; note?: string }>;
+	list(): DesktopRow[];
+	get(name: string): DesktopRow | null;
+	claim(name: string, holder: LeaseHolder): Promise<DesktopRow>;
+	release(name: string, holder: LeaseHolder): void;
+	handoff(name: string, from: LeaseHolder, to: LeaseHolder): void;
+	reserve(name: string, reserved: boolean): void;
+	setNetwork(name: string, enabled: boolean): Promise<void>;
+	destroy(name: string, by: LeaseHolder): Promise<void>;
+	screenshot(
+		name: string,
+	): Promise<{ id: string; path: string; bytes: Uint8Array; note?: string }>;
+	inspect(name: string): Promise<{ id: string; state: unknown; note?: string }>;
+	act(
+		name: string,
+		holder: LeaseHolder,
+		obsId: string,
+		action: DesktopAction,
+	): Promise<{ result: unknown; note?: string }>;
+}
+
+export function makeDesktops(deps: DesktopsDeps): Desktops {
+	const podman = deps.podman;
+	const store = deps.store;
+	const networkName = deps.networkName ?? "goblin-desktop";
+	const shotsRoot = deps.shotsRoot ?? join(paths.state(), "desktops");
+	const cfg = (): DesktopsConfig => deps.config() ?? DEFAULT_CONFIG;
+
+	function requireOurs(name: string, ins: ContainerInspect): void {
+		if (ins.labels["goblin.desktop"] !== "1" || ins.labels["goblin.desktop.name"] !== name) {
+			throw new DesktopError(
+				`container ${containerNameForDesktop(name)} is not a goblin desktop named ${name} — refusing to touch it`,
+			);
+		}
+	}
+
+	function freshRow(name: string, ins: { image: string; network: boolean }): DesktopRow {
+		const now = Date.now();
+		return {
+			name,
+			container: containerNameForDesktop(name),
+			image: ins.image,
+			network: ins.network,
+			reserved: false,
+			leaseKind: null,
+			leaseId: null,
+			leaseExpiresAt: null,
+			lastObsId: null,
+			lastObsUsed: false,
+			lastObsHash: null,
+			lastActSig: null,
+			lastActFrameHash: null,
+			shotSeq: 0,
+			createdAt: now,
+			lastUsedAt: now,
+		};
+	}
+
+	// Reconcile actual network state with intent. Off is fail-closed:
+	// if the disconnect fails or inspect can't confirm it, the
+	// container is removed rather than used in an unknown state.
+	async function applyNetwork(name: string, want: boolean): Promise<void> {
+		const container = containerNameForDesktop(name);
+		const before = await podman.inspect(container);
+		const has = before.networks.includes(networkName);
+		if (has === want) return;
+		if (want) {
+			await podman.networkConnect(networkName, container);
+			const after = await podman.inspect(container);
+			if (!after.networks.includes(networkName)) {
+				throw new DesktopError(`desktop ${name} would not confirm network connect`);
+			}
+			return;
+		}
+		const drop = async (why: string): Promise<never> => {
+			await podman.rm(container);
+			store.delete(name);
+			throw new DesktopError(`desktop ${name} ${why} — the container was removed`);
+		};
+		try {
+			await podman.networkDisconnect(networkName, container);
+		} catch (err) {
+			await drop(
+				`network disconnect failed (${err instanceof Error ? err.message : String(err)})`,
+			);
+		}
+		const after = await podman.inspect(container);
+		if (after.networks.includes(networkName)) {
+			await drop("would not confirm network off");
+		}
+	}
+
+	async function createContainer(name: string, image: string, wantNetwork: boolean): Promise<void> {
+		if (!(await podman.imageExists(image))) {
+			throw new DesktopError(
+				`desktop image ${image} is not in the local store; build it from the repo root: podman build -t ${image} deploy/desktop`,
+			);
+		}
+		await podman.networkEnsure(networkName);
+		const c = cfg();
+		const container = containerNameForDesktop(name);
+		await podman.create({
+			name: container,
+			image,
+			network: networkName,
+			memory: c.memory,
+			cpus: c.cpus,
+			pids: c.pids,
+			command: ["/usr/local/bin/goblin-desktop-session"],
+			hostname: "desktop",
+			shmSize: "1g",
+			labels: { "goblin.desktop": "1", "goblin.desktop.name": name },
+		});
+		// Created ON the network — a --network none container can never
+		// be connected later — then brought to the intended state.
+		await applyNetwork(name, wantNetwork);
+	}
+
+	// The reconcile, inside the desktop's lane.
+	async function ensureLocked(name: string): Promise<EnsureResult> {
+		const container = containerNameForDesktop(name);
+		const now = Date.now();
+		const row = store.get(name);
+		const ins = await podman.inspect(container);
+		if (ins.state !== "missing") {
+			requireOurs(name, ins);
+			if (row === null) {
+				// A labelled container with no row: adopt — the inspect
+				// tells us its image and actual network state.
+				const adopted = freshRow(name, {
+					image: ins.image,
+					network: ins.networks.includes(networkName),
+				});
+				store.put(adopted);
+				if (ins.state === "stopped") {
+					await podman.start(container);
+					await applyNetwork(name, adopted.network);
+					adopted.lastUsedAt = now;
+					store.put(adopted);
+					log.info("desktop adopted and started", { desktop: name, container });
+					return {
+						row: adopted,
+						container,
+						note: "adopted an existing desktop container and restarted it",
+					};
+				}
+				adopted.lastUsedAt = now;
+				store.put(adopted);
+				log.info("desktop adopted", { desktop: name, container });
+				return {
+					row: adopted,
+					container,
+					note: "adopted an existing desktop container",
+				};
+			}
+			if (ins.state === "stopped") {
+				// E.g. a host reboot — filesystem intact, network re-applied
+				// from the row (the intent), not from whatever inspect saw.
+				await podman.start(container);
+				await applyNetwork(name, row.network);
+				row.lastUsedAt = now;
+				store.put(row);
+				log.info("desktop restarted", { desktop: name, container });
+				return {
+					row,
+					container,
+					note: "desktop was stopped — restarted it; files and network state restored",
+				};
+			}
+			// Running: the row's network intent wins over a drifted actual
+			// (a crash between connect and row update fails closed).
+			await applyNetwork(name, row.network);
+			row.lastUsedAt = now;
+			store.put(row);
+			return { row, container };
+		}
+		if (row !== null) {
+			// Missing with a row: recreate fresh. The lease and
+			// observation state are gone with the container; the reserved
+			// pin survives.
+			await createContainer(name, row.image, row.network);
+			const kept = freshRow(name, { image: row.image, network: row.network });
+			kept.reserved = row.reserved;
+			kept.createdAt = row.createdAt;
+			store.put(kept);
+			log.info("desktop recreated", { desktop: name, container });
+			return {
+				row: kept,
+				container,
+				note: "desktop container was gone — recreated fresh; its previous contents and lease are gone",
+			};
+		}
+		throw new DesktopError(`no desktop named ${name} — allocate it first`);
+	}
+
+	async function sweep(excludeName: string): Promise<void> {
+		const idle = cfg().idleHours;
+		if (idle === 0) return;
+		const cutoff = Date.now() - idle * 3_600_000;
+		const now = Date.now();
+		for (const row of store.staleBefore(cutoff, excludeName)) {
+			if (row.reserved || leaseLive(row, now)) continue;
+			try {
+				await podman.rm(row.container);
+			} catch (err) {
+				// Keep the row — the next call retries the reap.
+				log.warn("desktop reap failed — row kept", err, {
+					desktop: row.name,
+					container: row.container,
+				});
+				continue;
+			}
+			store.delete(row.name);
+			log.info("desktop reaped", {
+				desktop: row.name,
+				container: row.container,
+				idleHours: idle,
+			});
+		}
+	}
+
+	// Sweeps serialize globally so parallel calls on different
+	// desktops can't double-remove the same stale row.
+	let sweepTail: Promise<void> = Promise.resolve();
+	function sweepOnce(name: string): Promise<void> {
+		const run = sweepTail.then(() => sweep(name));
+		sweepTail = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		return run;
+	}
+
+	// Lifecycle ops are single-flight per desktop; claim/obs/act
+	// read-modify-write the row inside the same lane.
+	const lanes = new Map<string, Promise<void>>();
+	function lane<T>(name: string, fn: () => Promise<T>): Promise<T> {
+		const prev = lanes.get(name) ?? Promise.resolve();
+		const run = prev.then(fn, fn);
+		const tail = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		tail.finally(() => {
+			if (lanes.get(name) === tail) lanes.delete(name);
+		});
+		lanes.set(name, tail);
+		return run;
+	}
+
+	// A cua-driver call as the session user: the socket is desk-owned
+	// and the daemon's element tokens are session-scoped — every call
+	// carries the desktop name as its session.
+	async function cuaCall(
+		container: string,
+		tool: string,
+		args: Record<string, unknown>,
+		name: string,
+	): Promise<unknown> {
+		const payload = { ...args, session: name };
+		const r = await podman.exec(
+			container,
+			["cua-driver", "call", tool, JSON.stringify(payload), "--socket", SESSION_SOCKET],
+			{ ...EXEC_OPTS, user: DESKTOP_USER, env: SESSION_ENV, workdir: "/run/desk" },
+		);
+		if (r.timedOut || r.exitCode !== 0) {
+			throw new DesktopError(
+				`cua-driver ${tool} failed on desktop ${name} (${r.timedOut ? "timeout" : `exit ${r.exitCode}`}): ${r.stderr.slice(0, 300)}`,
+			);
+		}
+		try {
+			return JSON.parse(r.stdout);
+		} catch {
+			throw new DesktopError(
+				`cua-driver ${tool} returned unparseable output on desktop ${name}: ${r.stdout.slice(0, 300)}`,
+			);
+		}
+	}
+
+	function mintObservation(row: DesktopRow, hash: string): string {
+		row.shotSeq += 1;
+		row.lastObsId = `${row.name}:${row.shotSeq}`;
+		row.lastObsUsed = false;
+		row.lastObsHash = hash;
+		row.lastUsedAt = Date.now();
+		store.put(row);
+		return row.lastObsId;
+	}
+
+	return {
+		async allocate(name, opts) {
+			await sweepOnce(name);
+			if (!NAME_RE.test(name)) {
+				throw new DesktopError(
+					`invalid desktop name ${JSON.stringify(name)} — must match ${NAME_RE.source}`,
+				);
+			}
+			return await lane(name, async () => {
+				if (store.get(name) !== null) {
+					throw new DesktopError(`desktop ${name} already exists`);
+				}
+				const existing = store.list().map((r) => r.name);
+				const max = cfg().max;
+				if (existing.length >= max) {
+					throw new DesktopError(
+						`desktop pool is full (max ${max}): ${existing.join(", ")} — destroy one first`,
+					);
+				}
+				const container = containerNameForDesktop(name);
+				const ins = await podman.inspect(container);
+				if (ins.state !== "missing") {
+					requireOurs(name, ins);
+					const adopted = freshRow(name, {
+						image: ins.image,
+						network: ins.networks.includes(networkName),
+					});
+					store.put(adopted);
+					log.info("desktop adopted on allocate", { desktop: name, container });
+					return {
+						row: adopted,
+						note: "adopted an existing desktop container under that name",
+					};
+				}
+				const image = opts?.image ?? cfg().image;
+				await createContainer(name, image, false);
+				const row = freshRow(name, { image, network: false });
+				store.put(row);
+				log.info("desktop created", { desktop: name, container, image });
+				return { row, note: "created a new desktop (network off)" };
+			});
+		},
+
+		list() {
+			return store.list();
+		},
+
+		get(name) {
+			return store.get(name);
+		},
+
+		async claim(name, holder) {
+			await sweepOnce(name);
+			return await lane(name, async () => {
+				const ready = await ensureLocked(name);
+				const row = ready.row;
+				const now = Date.now();
+				if (leaseLive(row, now) && !leaseHeldBy(row, holder, now)) {
+					throw new DesktopError(
+						`desktop ${name} is controlled by ${rowHolderLabel(row)} until ${new Date(row.leaseExpiresAt!).toISOString()} — release or wait for expiry`,
+					);
+				}
+				const transition =
+					row.leaseKind === null
+						? "claim"
+						: leaseHeldBy(row, holder, now)
+							? "renew"
+							: "expired-claim";
+				row.leaseKind = holder.kind;
+				row.leaseId = holderId(holder);
+				row.leaseExpiresAt = now + LEASE_TTL_MS;
+				row.lastUsedAt = now;
+				store.put(row);
+				log.info("desktop lease", {
+					desktop: name,
+					holder: holderLabel(holder),
+					transition,
+				});
+				return row;
+			});
+		},
+
+		release(name, holder) {
+			const row = store.get(name);
+			if (row === null) throw new DesktopError(`no desktop named ${name}`);
+			const now = Date.now();
+			if (!leaseHeldBy(row, holder, now)) {
+				const current = leaseLive(row, now)
+					? ` — it is held by ${rowHolderLabel(row)}`
+					: "";
+				throw new DesktopError(
+					`only the holder can release desktop ${name}${current}`,
+				);
+			}
+			row.leaseKind = null;
+			row.leaseId = null;
+			row.leaseExpiresAt = null;
+			row.lastUsedAt = now;
+			store.put(row);
+			log.info("desktop lease released", { desktop: name, holder: holderLabel(holder) });
+		},
+
+		handoff(name, from, to) {
+			const row = store.get(name);
+			if (row === null) throw new DesktopError(`no desktop named ${name}`);
+			const now = Date.now();
+			if (!leaseHeldBy(row, from, now)) {
+				throw new DesktopError(
+					`cannot hand off desktop ${name} — ${holderLabel(from)} does not hold it`,
+				);
+			}
+			row.leaseKind = to.kind;
+			row.leaseId = holderId(to);
+			row.leaseExpiresAt = now + LEASE_TTL_MS;
+			row.lastUsedAt = now;
+			store.put(row);
+			log.info("desktop lease handoff", {
+				desktop: name,
+				from: holderLabel(from),
+				to: holderLabel(to),
+			});
+		},
+
+		reserve(name, reserved) {
+			const row = store.get(name);
+			if (row === null) throw new DesktopError(`no desktop named ${name}`);
+			row.reserved = reserved;
+			store.put(row);
+			log.info("desktop reserve", { desktop: name, reserved });
+		},
+
+		async setNetwork(name, enabled) {
+			await sweepOnce(name);
+			await lane(name, async () => {
+				const ready = await ensureLocked(name);
+				await applyNetwork(name, enabled);
+				ready.row.network = enabled;
+				ready.row.lastUsedAt = Date.now();
+				store.put(ready.row);
+				log.info("desktop network", {
+					desktop: name,
+					container: ready.container,
+					enabled,
+				});
+			});
+		},
+
+		async destroy(name, by) {
+			await sweepOnce(name);
+			await lane(name, async () => {
+				const row = store.get(name);
+				const now = Date.now();
+				if (row !== null && leaseLive(row, now) && !leaseHeldBy(row, by, now)) {
+					throw new DesktopError(
+						`desktop ${name} is controlled by ${rowHolderLabel(row)} — it can release, or its lease expires`,
+					);
+				}
+				const container = containerNameForDesktop(name);
+				const ins = await podman.inspect(container);
+				if (ins.state !== "missing") {
+					requireOurs(name, ins);
+					await podman.rm(container);
+				}
+				store.delete(name);
+				log.info("desktop destroyed", {
+					desktop: name,
+					container,
+					by: holderLabel(by),
+				});
+			});
+		},
+
+		async screenshot(name) {
+			await sweepOnce(name);
+			return await lane(name, async () => {
+				const ready = await ensureLocked(name);
+				const inContainer = `/run/desk/.shot-${Date.now()}.png`;
+				const shot = await podman.exec(
+					ready.container,
+					["scrot", "-o", inContainer],
+					{ ...EXEC_OPTS, user: DESKTOP_USER, env: SESSION_ENV, workdir: "/run/desk" },
+				);
+				if (shot.timedOut || shot.exitCode !== 0) {
+					throw new DesktopError(
+						`scrot failed on desktop ${name} (${shot.timedOut ? "timeout" : `exit ${shot.exitCode}`}): ${shot.stderr.slice(0, 300)}`,
+					);
+				}
+				const read = await podman.execBytes(
+					ready.container,
+					["cat", "--", inContainer],
+					{ ...EXEC_OPTS, user: DESKTOP_USER, workdir: "/run/desk" },
+				);
+				void podman.exec(ready.container, ["rm", "-f", inContainer], {
+					...EXEC_OPTS,
+					user: DESKTOP_USER,
+					workdir: "/run/desk",
+				});
+				if (read.timedOut || read.exitCode !== 0 || read.stdout.byteLength === 0) {
+					throw new DesktopError(`could not read the screenshot back from desktop ${name}`);
+				}
+				const bytes = read.stdout;
+				// The audit trail: every frame lands durably on disk
+				// (design/subagents.md → The computer subagent).
+				const dir = join(shotsRoot, name, "shots");
+				ensureDir(dir);
+				const path = join(dir, `${ready.row.shotSeq + 1}.png`);
+				durableWriteBytes(path, bytes);
+				const obsId = mintObservation(ready.row, sha256Hex(bytes));
+				return {
+					id: obsId,
+					path,
+					bytes,
+					...(ready.note !== undefined ? { note: ready.note } : {}),
+				};
+			});
+		},
+
+		async inspect(name) {
+			await sweepOnce(name);
+			return await lane(name, async () => {
+				const ready = await ensureLocked(name);
+				const windows = (await cuaCall(
+					ready.container,
+					"list_windows",
+					{},
+					name,
+				)) as { windows?: Array<{ pid: number; app_name: string; z_index: number }> };
+				const list = windows.windows ?? [];
+				// The point of inspect is the app the operator is looking
+				// at — skip the desktop chrome (panel, desktop), take the
+				// topmost real window.
+				const apps = list.filter(
+					(w) => !/^(xfce4-panel|xfdesktop)$/i.test(w.app_name),
+				);
+				const win =
+					apps.length === 0
+						? list.sort((a, b) => b.z_index - a.z_index)[0]
+						: apps.sort((a, b) => b.z_index - a.z_index)[0];
+				if (win === undefined) {
+					throw new DesktopError(`desktop ${name} shows no windows to inspect`);
+				}
+				const state = await cuaCall(
+					ready.container,
+					"get_window_state",
+					{ pid: win.pid },
+					name,
+				);
+				const shot =
+					typeof state === "object" && state !== null && "screenshot" in state
+						? (state as { screenshot?: unknown }).screenshot
+						: undefined;
+				const hash =
+					typeof shot === "string" ? sha256Hex(shot) : sha256Hex(stableJson(state));
+				const obsId = mintObservation(ready.row, hash);
+				return {
+					id: obsId,
+					state,
+					...(ready.note !== undefined ? { note: ready.note } : {}),
+				};
+			});
+		},
+
+		async act(name, holder, obsId, action) {
+			await sweepOnce(name);
+			return await lane(name, async () => {
+				const t0 = Date.now();
+				const ready = await ensureLocked(name);
+				const row = ready.row;
+				const now = Date.now();
+				if (!leaseHeldBy(row, holder, now)) {
+					const held = leaseLive(row, now);
+					throw new DesktopError(
+						held
+							? `desktop ${name} is controlled by ${rowHolderLabel(row)} — ${holderLabel(holder)} cannot act on it`
+							: `desktop ${name} has no live lease — ${holderLabel(holder)} must claim it before acting`,
+					);
+				}
+				// Observation binding: act only on the newest, unconsumed
+				// observation (design/subagents.md — Eliza's mechanism).
+				if (obsId !== row.lastObsId || row.lastObsUsed) {
+					throw new DesktopError(
+						`observation ${obsId} is stale on desktop ${name} — take a fresh screenshot first`,
+					);
+				}
+				const sig = stableJson(action);
+				if (sig === row.lastActSig && row.lastObsHash === row.lastActFrameHash) {
+					throw new DesktopError(
+						`identical action against an unchanged screen on ${name} — take a fresh screenshot first`,
+					);
+				}
+				row.leaseExpiresAt = now + LEASE_TTL_MS; // every act renews
+				let result: unknown;
+				if (action.kind === "launch") {
+					const r = await podman.exec(
+						ready.container,
+						["goblin-launch", action.app],
+						{ ...EXEC_OPTS },
+					);
+					if (r.timedOut || r.exitCode !== 0) {
+						throw new DesktopError(
+							`launch ${action.app} failed on desktop ${name}: ${r.stderr.slice(0, 300)}`,
+						);
+					}
+					result = { launched: action.app };
+				} else {
+					const args: Record<string, unknown> = { ...action.args };
+					// Chromium takes keys only in foreground on X11
+					// (phase-0 measured); callers may still override.
+					if (
+						(action.tool === "press_key" || action.tool === "type_text") &&
+						args.delivery_mode === undefined
+					) {
+						args.delivery_mode = "foreground";
+					}
+					result = await cuaCall(ready.container, action.tool, args, name);
+				}
+				row.lastObsUsed = true;
+				row.lastActSig = sig;
+				row.lastActFrameHash = row.lastObsHash;
+				row.lastUsedAt = Date.now();
+				store.put(row);
+				const effect =
+					typeof result === "object" && result !== null && "effect" in result
+						? (result as { effect?: unknown }).effect
+						: undefined;
+				log.info("desktop act", {
+					desktop: name,
+					holder: holderLabel(holder),
+					obs: obsId,
+					action: action.kind === "cua" ? `cua:${action.tool}` : `launch:${action.app}`,
+					...(effect === undefined ? {} : { effect }),
+					ms: Date.now() - t0,
+				});
+				return {
+					result,
+					...(ready.note !== undefined ? { note: ready.note } : {}),
+				};
+			});
+		},
+	};
+}

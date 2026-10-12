@@ -2655,6 +2655,11 @@ select.ui-input option {
 .ui-chart-dot {
 	fill: var(--ui-c);
 }
+.ui-chart-pie {
+	fill: var(--ui-c);
+	stroke: var(--app-bg);
+	stroke-width: 1.5;
+}
 .ui-chart-swatch {
 	background: var(--ui-c);
 }

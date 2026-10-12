@@ -238,6 +238,12 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 		},
 		editForumTopic: () => Promise.resolve(true),
 		sendChatAction: () => Promise.resolve(true),
+		sendMessageDraft: () => Promise.resolve(true),
+		sendRichMessageDraft: () => Promise.resolve(true),
+		sendRichMessage: (_c: unknown, rm: { markdown: string }) => {
+			apiCalls.push({ method: "sendRichMessage", text: rm.markdown });
+			return Promise.resolve({ message_id: apiCalls.length });
+		},
 		sendVoice: () => Promise.resolve({ message_id: 1 }),
 	} as unknown as IntakeEnv["api"];
 	const buffer = {
@@ -742,10 +748,15 @@ describe("flushConversation", () => {
 		await flushTest(h.env, conv.id, [{ parts: [{ type: "text", text: "hi" }], replyTo: 1 }]);
 		expect(seen).not.toBeNull();
 		// The sink was released (not left ghosting "typing…"): its error
-		// path delivers the failure to Telegram.
+		// path delivers the failure to Telegram — either door, the intake
+		// config enables rich replies for DMs.
 		await Bun.sleep(10);
 		expect(
-			h.apiCalls.some((c) => c.method === "sendMessage" && c.text?.includes("queue closed")),
+			h.apiCalls.some(
+				(c) =>
+					(c.method === "sendMessage" || c.method === "sendRichMessage") &&
+					c.text?.includes("queue closed"),
+			),
 		).toBe(true);
 		expect(h.env.inbox.pending()).toEqual([]); // commit precedes admission
 	});

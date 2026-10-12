@@ -101,6 +101,12 @@ export function wake(
 		undefined,
 		undefined,
 		deps.store,
+		// Same rich switches as the intake path — scheduled turns land in
+		// the same DM and the ruling scopes by conversation, not origin.
+		{
+			enabled: deps.configRef.current.telegram.richReplies,
+			reasoning: deps.configRef.current.telegram.showReasoning,
+		},
 	);
 	try {
 		const admitted = deps.runtime.submit(conv, userMessage([{ type: "text", text }]), sink);

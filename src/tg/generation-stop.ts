@@ -1,5 +1,6 @@
-// A user stopping a streamed draft arrives as this update. Goblin opens no
-// drafts (nothing in src/ calls sendMessageDraft), so it should never fire.
+// A user stopping a streamed draft arrives as this update. Rich replies
+// open drafts every DM turn, but nothing passes can_stop — Telegram only
+// sends this update for a draft the user was offered a stop button on.
 // The log line is the tripwire if Telegram sends one anyway.
 
 import type { Bot } from "grammy";

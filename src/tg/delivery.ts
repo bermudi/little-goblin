@@ -256,6 +256,7 @@ export function makeDeliverySink(
 	let richMode = richOpts?.enabled === true && conv.id.startsWith("dm:") && !voice?.voiceMode;
 	let reasoningText = "";
 	let reasoningPushed = 0;
+	let reasoningSentAt = 0;
 	let lastDraftBody = "";
 	let lastDraftSentAt = 0;
 
@@ -429,9 +430,16 @@ export function makeDeliverySink(
 	// can't be edited, so the preview accumulates under one draft id and
 	// the 30 s TTL rides the typing tick above.
 	function pushDrafts(body: string): void {
-		if (richOpts?.reasoning === true && reasoningText.length !== reasoningPushed) {
+		// The reasoning bubble stops growing early and would otherwise
+		// evaporate mid-turn (30 s TTL) while the answer keeps refreshing —
+		// re-push on growth or staleness, from every flush path.
+		if (
+			richOpts?.reasoning === true &&
+			(reasoningText.length !== reasoningPushed || Date.now() - reasoningSentAt > 20_000)
+		) {
 			const snap = reasoningText;
 			reasoningPushed = snap.length;
+			reasoningSentAt = Date.now();
 			enqueue(async () => {
 				if (!mayDeliver()) return;
 				// Raw reasoning is not markdown and the plain draft caps at
@@ -450,20 +458,21 @@ export function makeDeliverySink(
 		}
 		lastDraftBody = body;
 		lastDraftSentAt = Date.now();
+		const method = body === "" ? "sendMessageDraft" : "sendRichMessageDraft";
 		enqueue(async () => {
 			if (!mayDeliver()) return;
 			try {
 				if (body === "") {
-					await withTimeout(api.sendMessageDraft(conv.chatId, answerDraftId, ""), "sendMessageDraft");
+					await withTimeout(api.sendMessageDraft(conv.chatId, answerDraftId, ""), method);
 				} else {
 					await withTimeout(
-						api.sendRichMessageDraft(conv.chatId, answerDraftId, { markdown: body } as never),
-						"sendRichMessageDraft",
+						api.sendRichMessageDraft(conv.chatId, answerDraftId, { markdown: body }),
+						method,
 					);
 				}
 			} catch (err) {
 				if (isNotModifiedError(err)) return;
-				richFailure(err, "sendRichMessageDraft");
+				richFailure(err, method);
 			}
 		});
 	}
@@ -471,13 +480,14 @@ export function makeDeliverySink(
 	// Collapsed reasoning block for the final rich message. Syntax pinned
 	// by probe 2026-10-12: <details>/<summary> renders collapsed in the
 	// rich markdown dialect; <tg-details> does not parse. Body is
-	// HTML-escaped (the dialect parses inline HTML) and tail-capped.
+	// HTML-escaped (& before <) and tail-capped.
 	function reasoningBlock(): string {
 		if (richOpts?.reasoning !== true) return "";
 		const trimmed = reasoningText.trim();
 		if (trimmed === "") return "";
 		const capped = trimmed.length > 8000 ? `…${trimmed.slice(-8000)}` : trimmed;
-		return `<details><summary>Thinking</summary>\n${capped.replace(/</g, "&lt;")}\n</details>\n\n`;
+		const escaped = capped.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+		return `<details><summary>Thinking</summary>\n${escaped}\n</details>\n\n`;
 	}
 
 	// Push the current rendered output to Telegram: fixed-position chunks
@@ -888,13 +898,13 @@ export function makeDeliverySink(
 						const sent = await withTimeout(
 							api.sendRichMessage(
 								conv.chatId,
-								{ markdown: md } as never,
+								{ markdown: md },
 								{
 									...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
 									...(replyTo !== undefined
 										? { reply_parameters: { message_id: replyTo } }
 										: {}),
-								} as never,
+								},
 							),
 							"sendRichMessage",
 						);

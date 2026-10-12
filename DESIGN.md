@@ -117,24 +117,25 @@ Conversation ─────── (channel address) → durable event history
   (2026-10-08, #82): durability is not ownership — a submit still queued
   when the turn starts (the streaming client a non-streaming head must
   leave behind) stays out of that turn's view and anchor; the turn that
-  claims it reads it. Input arriving after the final model call has no
-  boundary left to steer into — it queues into an immediate successor
-  turn. One
-  exception (2026-10-03, Spin-off): a turn led by a sink that doesn't
-  stream (the background-turn bell) never absorbs a submit from a
-  streaming sink (the app client). That submit waits and leads its
-  own turn, or the client would never see the reply. The inverse
-  holds and is deliberate (2026-10-04, app.md → Streaming members): a
-  streaming turn fans its chunks out to every streaming member, so a
-  merged or steered second client watches the whole reply. A
-  submit that cannot be prepared for the model errors its own delivery
-  and is never re-queued (requeue would fail every successor turn's
-  admission conversion identically — a poison pill); its message stays
-  in history and degrades to a readable placeholder in later model
-  views, the corrupt-row precedent one step later at the conversion
-  boundary. `/stop` fences the running turn and
-  drops queued ones; messages still in the intake buffer are user input,
-  not queued turns, and flush into a fresh turn at the new epoch.
+  claims it reads it. The inverse is deliberate too (2026-10-04, app.md →
+  Streaming members): a streaming turn fans its chunks out to every
+  streaming member, so a merged or steered second client watches the
+  whole reply. Exceptions:
+  - A turn led by a sink that doesn't stream (the background-turn bell)
+    never absorbs a submit from a streaming sink (2026-10-03, Spin-off):
+    that submit waits and leads its own turn, or the client would never
+    see the reply.
+  - Input arriving after the final model call has no boundary left to
+    steer into — it queues into an immediate successor turn.
+  - A submit that cannot be prepared for the model errors its own
+    delivery and is never re-queued (requeue would fail every successor
+    turn's admission conversion identically — a poison pill); its
+    message stays in history and degrades to a readable placeholder in
+    later model views, the corrupt-row precedent one step later at the
+    conversion boundary.
+  - `/stop` fences the running turn and drops queued ones; messages
+    still in the intake buffer are user input, not queued turns, and
+    flush into a fresh turn at the new epoch.
 
 **Topics are the UX — in the group.** In the bot DM, quiet gaps draw the
 boundaries (Rolling DM), with explicit `/new` and `/back` overrides
@@ -233,19 +234,22 @@ live in its own file under `design/`. Code comments and docs cite design
 sections by name (`DESIGN.md, "Web access"`, `DESIGN.md → Proton Pass`);
 this index resolves a name to its file. A new ruling goes in its area's
 file; a change to the domain model, the authority rule, cache stability,
-or the non-goals goes here.
+or the non-goals goes here. And a superseded ruling is rewritten in
+place, not amended in place: state the surviving rule with its
+provenance anchor; narration of retired behavior belongs in git, not
+the spec.
 
 - this file — Why, Product boundary, Domain model, Conversation, Turn, The authority rule, Cache stability, Design areas, State layout, Config, Module map, Non-goals (v1 — return only on demand), Test posture — the real change
 - [`design/model.md`](design/model.md) — Model layer, Provider registry, Thinking, History, Causal view, arrival-order storage, Compaction, Capabilities, Content, Transcription
 - [`design/asr.md`](design/asr.md) — Speech recognition engines: whistle (local) default, eight kinds behind one interface, artifact auto-fetch, verbatim provider contracts
-- [`design/runtime-turn.md`](design/runtime-turn.md) — The turn (W3.0 decomposition ruling): phase list, state ownership by lifetime, recursion → driven loop, what must not change, module cut, test migration, the two text projections (#84/#111)
+- [`design/runtime-turn.md`](design/runtime-turn.md) — The turn (architecture ruling): the phase list, state ownership by lifetime, the attempt loop, what must not change, module map, the two text projections (#84/#111)
 - [`design/tools.md`](design/tools.md) — Tools (v1), Scripting (in-process tool composition, not a subagent), Vision (image Q&A), Chat search, SQLite FTS5, Scope: every conversation except memory-excluded ones
 - [`design/web.md`](design/web.md) — Web access (search, fetch, browser), `search` is one tool with a provider behind it, Config, Fallback chains are explicit config, never implicit, Wire formats, Input, Output is deterministic text, Search results and fetched page text ride fenced, `fetch` is always in the set, PDFs ride as documents, not text, Overflow goes to disk, recovery named, No SSRF policy — recorded as a ruling, Auth never enters tool env, Logging, The browser is a skill, not a tool, MCP returns as a skill over goblin's own mcporter, Goblin owns its mcporter; it never rides the host's, Imports stay off by gate, not by convention, No daemon, by mechanism, The `goblin-mcp-dev` profile starts empty with its own snapshot, Known limits, accepted
 - [`design/skills.md`](design/skills.md) — Skills, Skill reviewer, Gate: System One on every completed turn, Evidence: a bounded tool digest, captured per turn, Reviewer: staging, validation, then an atomic proposal, /stop cancels the conversation's reviews, Off the record means no distillation, It proposes, then tells, Instrumentation
 - [`design/system1.md`](design/system1.md) — System One (typed-decision models): the shared client, retry policy, wire protocol, the four-consumer table, the loopback injection-check endpoint, config surface
 - [`design/programs.md`](design/programs.md) — Programs (standing orders), State is rows, not files, Firing is one path for every trigger, Post-submit accounting is trigger-owned, Authority is granted, never self-issued, Webhooks: one secret address per program, Recurrence is cron, evaluated in the server's local timezone, A program belongs to the conversation where it was created, Management is the `program` tool, The scheduler is an in-process ticker
 - [`design/delegation.md`](design/delegation.md) — Delegation (other harnesses, via herdr), The herdr session is its own systemd user unit, Targets: the own local session plus configured machines, One protocol, target-agnostic, Only `src/herdr.ts` knows herdr, One lifecycle owner, Harnesses are config, never guessed, Agents run full-auto; goblin never answers approvals, State is rows, Watcher writes are compare-and-set; the notice lands first, Start, The watcher is an in-process ticker, Management is the `delegate` tool, Goblin may delegate on its own judgment
-- [`design/mail.md`](design/mail.md) — Email (Gmail) + Workspace via gws, Reads ride gws; goblin holds no read credential, Scopes: readonly is the wall, The `mail` tool is send-only, Google OAuth with split authority, Mail is a program trigger, Logging
+- [`design/mail.md`](design/mail.md) — Email (Gmail) + Workspace via gws, Reads ride gws; goblin holds no read credential, Scopes: readonly is the wall, Every read injection-checked and fenced, The `mail` tool is send-only, Google OAuth with split authority, Mail is a program trigger, Reads ride the shared System One gate (design/system1.md), Logging
 - [`design/memory.md`](design/memory.md) — Long-term memory, Slice 2 rulings (locked), Deployment and configuration, Retain: a durable projection of completed exchanges, Recall: evidence, not instructions, Control, correction, and forgetting, Operations and verification
 - [`design/auth.md`](design/auth.md) — Auth, Proton Pass (2026-09-26), Goblin's own agent token, Never the owner session, by mechanism, Goblin's own keys resolve through pass-keys, Warmer, Secrets during tasks: the `pass-cli` skill, Honest boundary
 - [`design/telegram.md`](design/telegram.md) — Telegram intake & delivery, Coalescing buffer, Delivery, TTS, Files, Voice mode, Mini Apps, Commands, Large files, Rolling DM (ruling 2026-10-03)
@@ -254,7 +258,7 @@ or the non-goals goes here.
 - [`design/projects.md`](design/projects.md) — Projects & Notes (ruling 2026-10-10): projects scope app conversations (cwd, instructions, memory choice, fixed binding); notes are server-mediated SQLite rows (markdown only, versions, the `note` tool, attach, fenced append, AI rewrite); Pi Durable rejected as a second harness
 
 - [`design/doctor.md`](design/doctor.md) — Shared read-only checks, output/exit contract, phases and diagnostic coverage
-- [`design/setup.md`](design/setup.md) — Fresh installation, prerequisites, current-invocation startup acceptance
+- [`design/setup.md`](design/setup.md) — Product shape, Install order, Phases, Phase-dependent expectations, Startup acceptance, Installer rules, Opt-in dependencies, Verification boundary
 
 ## State layout
 

@@ -1207,6 +1207,13 @@ describe("app projects surface", () => {
 	let noteGetOverride: AppNote | null;
 	// PATCH attempts — a blur during conflict must not even try.
 	let patchCalls: number;
+	// Recorded PATCHes: note writes carry their If-Match rev, project
+	// writes their id — a draft stranded on the previous page must
+	// never reach the wire under the next page's identity.
+	let notePatches: { id: string; ifMatch: string | null; body: unknown }[];
+	let projectPatches: { id: string; body: unknown }[];
+	// Per-note bodies for the GET — the summary rows carry none.
+	let noteBodies: Record<string, string>;
 	let versionRows: AppNoteVersionMeta[];
 	let versionPreview: AppNoteVersion | null;
 	let posts: { url: string; body: unknown }[];
@@ -1291,6 +1298,9 @@ describe("app projects surface", () => {
 		noteGetFail = false;
 		noteGetOverride = null;
 		patchCalls = 0;
+		notePatches = [];
+		projectPatches = [];
+		noteBodies = {};
 		versionRows = [];
 		versionPreview = null;
 		posts = [];
@@ -1364,6 +1374,25 @@ describe("app projects surface", () => {
 				}
 				return Promise.resolve(jsonResponse({ projects: projs }));
 			}
+			const projPatchMatch = /^\/api\/app\/projects\/([^/]+)$/.exec(url);
+			if (projPatchMatch !== null && method === "PATCH") {
+				const id = decodeURIComponent(projPatchMatch[1]!);
+				projectPatches.push({ id, body });
+				const p = projs.find((x) => x.id === id);
+				if (p === undefined) return Promise.resolve(jsonResponse({ error: "not found" }, 404));
+				const req = body as {
+					name?: string;
+					instructions?: string;
+					memory?: "shared" | "off";
+					archived?: boolean;
+				};
+				if (req.name !== undefined) p.name = req.name;
+				if (req.instructions !== undefined) p.instructions = req.instructions;
+				if (req.memory !== undefined) p.memory = req.memory;
+				if (req.archived !== undefined)
+					p.archivedAt = req.archived ? "2026-10-11T00:00:00.000Z" : null;
+				return Promise.resolve(jsonResponse(p));
+			}
 			if (url.startsWith("/api/app/notes/")) {
 				const id = decodeURIComponent(url.slice("/api/app/notes/".length).split("/")[0]!);
 				if (url.endsWith("/rewrite") && method === "POST") {
@@ -1385,7 +1414,11 @@ describe("app projects surface", () => {
 							? jsonResponse({ error: "not found" }, 404)
 							: jsonResponse(versionPreview),
 					);
-				if (method === "PATCH") patchCalls++;
+				if (method === "PATCH") {
+					patchCalls++;
+					const headers = (init?.headers ?? {}) as Record<string, string>;
+					notePatches.push({ id, ifMatch: headers["if-match"] ?? null, body });
+				}
 				if (method === "PATCH" && conflictPatch) {
 					const n = notes.find((x) => x.id === id);
 					return Promise.resolve(
@@ -1398,7 +1431,9 @@ describe("app projects surface", () => {
 				}
 				const n = notes.find((x) => x.id === id);
 				return Promise.resolve(
-					n === undefined ? jsonResponse({ error: "not found" }, 404) : jsonResponse(noteFull(n)),
+					n === undefined
+						? jsonResponse({ error: "not found" }, 404)
+						: jsonResponse(noteFull(n, noteBodies[n.id] ?? "")),
 				);
 			}
 			if (url === "/api/app/notes" || url.startsWith("/api/app/notes?")) {
@@ -1635,6 +1670,15 @@ describe("app projects surface", () => {
 	const settleSlow = async () => {
 		await act(async () => {
 			await new Promise((r) => setTimeout(r, 300));
+		});
+	};
+
+	// The note autosave outlasts even that: PM's DOM observer →
+	// Milkdown's ~200ms listener debounce → the editor's own 1s
+	// save debounce. Real time — the debounce is the product's.
+	const settleLong = async () => {
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 1500));
 		});
 	};
 
@@ -2280,5 +2324,98 @@ describe("app projects surface", () => {
 		await settle();
 		expect(win.location.pathname).toBe("/app/p/p-goblin");
 		expect(startAlert()).toBeNull();
+	});
+
+	// The keyed remounts in App.tsx (`key={noteId}` on NoteView,
+	// `key={currentProject.id}` on ProjectView) are load-bearing:
+	// without them the previous page's component instance is reused
+	// and its dirty state lands on the next page — a draft written
+	// under the wrong id or If-Match rev. Drop a key and these fail.
+	test("navigating between projects remounts the view — A's drafts never reach B", async () => {
+		projs = [
+			projRow("Alpha", { instructions: "inst A" }),
+			projRow("Beta", { instructions: "inst B" }),
+		];
+		win.history.replaceState(null, "", "/app/p/p-alpha");
+		await mount();
+		const instr = () => container.querySelector<HTMLTextAreaElement>(".projfields textarea")!;
+		const saveBtn = () =>
+			[...container.querySelectorAll<HTMLButtonElement>(".projfields button")].find(
+				(b) => b.textContent === "Save",
+			)!;
+		expect(instr().value).toBe("inst A");
+
+		// Leave A dirty on purpose: an unsaved instructions draft and
+		// the rename box open with an uncommitted draft.
+		await typeInto(instr(), "A DRAFT", win.HTMLTextAreaElement.prototype);
+		await click(container.querySelector('button[aria-label="Rename project"]'));
+		await typeInto(
+			container.querySelector<HTMLInputElement>(".proj-rename input")!,
+			"Alpha renamed",
+			win.HTMLInputElement.prototype,
+		);
+
+		await click(
+			[...container.querySelectorAll(".rail-projects .proj")].find(
+				(b) => b.textContent === "Beta",
+			),
+		);
+		expect(win.location.pathname).toBe("/app/p/p-beta");
+		// B's own fresh state: its instructions, no rename box, a clean
+		// (disabled) Save — and nothing of A's on the wire.
+		expect(instr().value).toBe("inst B");
+		expect(container.querySelector(".proj-rename")).toBeNull();
+		expect(container.querySelector(".proj-name")!.textContent).toBe("Beta");
+		expect(saveBtn().disabled).toBe(true);
+		expect(projectPatches).toEqual([]);
+
+		// A save from B's page lands at B's id with B's draft.
+		await typeInto(instr(), "inst B v2", win.HTMLTextAreaElement.prototype);
+		await click(saveBtn());
+		expect(projectPatches).toEqual([{ id: "p-beta", body: { instructions: "inst B v2" } }]);
+	});
+
+	test("navigating between notes remounts the editor — the autosave writes B at B's rev", async () => {
+		notes = [noteRow("Alpha", { rev: 3 }), noteRow("Beta", { rev: 4 })];
+		noteBodies = { "n-alpha": "alpha body", "n-beta": "beta body" };
+		await notePage("/app/n/n-alpha");
+		expect(container.querySelector(".ProseMirror")!.textContent).toContain("alpha body");
+
+		// The only note→note transition that keeps NoteView mounted is
+		// a history traversal — every in-app link leaves through the
+		// index (unmounting the subtree regardless of the key). A
+		// traversal landing on another note page is the path the key
+		// exists for — same popstate shape as the traversal test above.
+		await act(async () => {
+			win.history.replaceState(null, "", "/app/n/n-beta");
+			win.dispatchEvent(new win.PopStateEvent("popstate"));
+		});
+		expect(win.location.pathname).toBe("/app/n/n-beta");
+
+		// A fresh editor for B — its own body and title, not A's.
+		let pm: Element | null = null;
+		for (let i = 0; i < 30; i++) {
+			const cand = container.querySelector(".ProseMirror");
+			if (cand !== null && cand.textContent?.includes("beta body") === true) {
+				pm = cand;
+				break;
+			}
+			await settle();
+		}
+		expect(pm).not.toBeNull();
+		expect((container.querySelector("input.note-title") as HTMLInputElement).value).toBe("Beta");
+
+		// A real ProseMirror edit — mutate the rendered text node. The
+		// DOM observer reads it into the doc, the listener flags dirty,
+		// and the autosave PATCHes at B's rev.
+		const textNode = pm!.querySelector("p")!.firstChild!;
+		await act(async () => {
+			textNode.nodeValue = `${textNode.nodeValue ?? ""}x`;
+		});
+		await settleLong();
+		expect(notePatches).toHaveLength(1);
+		expect(notePatches[0]!.id).toBe("n-beta");
+		expect(notePatches[0]!.ifMatch).toBe('"4"');
+		expect((notePatches[0]!.body as { body?: string }).body).toContain("beta bodyx");
 	});
 });

@@ -75,6 +75,34 @@ describe("program tool", () => {
 		expect(programInputSchema.safeParse({ action: "update", id: 1, cron: null }).success).toBe(
 			true,
 		);
+		expect(
+			programInputSchema.safeParse({
+				action: "create",
+				name: "x",
+				charter: "y",
+				cron: "0 9 * * *",
+				maxLatenessMinutes: 30,
+			}).success,
+		).toBe(true);
+		expect(
+			programInputSchema.safeParse({ action: "update", id: 1, maxLatenessMinutes: null }).success,
+		).toBe(true);
+		expect(
+			programInputSchema.safeParse({
+				action: "create",
+				name: "x",
+				charter: "y",
+				cron: "0 9 * * *",
+				maxLatenessMinutes: -1,
+			}).success,
+		).toBe(false);
+		expect(
+			programInputSchema.safeParse({
+				action: "update",
+				id: 1,
+				maxLatenessMinutes: 1.5,
+			}).success,
+		).toBe(false);
 		expect(programInputSchema.safeParse({ action: "toggle", id: 3 }).success).toBe(true);
 	});
 	test("create pins the live conversation's address onto the program", async () => {
@@ -84,12 +112,18 @@ describe("program tool", () => {
 			name: "morning brief",
 			charter: "brief me on the day",
 			cron: "30 8 * * 1-5",
-		})) as { program: { next_run: string } };
+			maxLatenessMinutes: 45,
+		})) as { program: { next_run: string; max_lateness_minutes: number } };
 		expect(out.program).not.toHaveProperty("chat_id");
 		expect(out.program).not.toHaveProperty("thread_id");
 		expect(new Date(out.program.next_run).getTime()).toBeGreaterThan(Date.now());
+		expect(out.program.max_lateness_minutes).toBe(45);
 		expect(programs.list()).toHaveLength(1);
-		expect(programs.list()[0]).toMatchObject({ chatId: -100, threadId: 7 });
+		expect(programs.list()[0]).toMatchObject({
+			chatId: -100,
+			threadId: 7,
+			maxLatenessMinutes: 45,
+		});
 	});
 
 	test("an invalid cron is a tool error — no row exists", async () => {
@@ -146,6 +180,7 @@ describe("program tool", () => {
 				"id",
 				"last_run",
 				"mail_filter",
+				"max_lateness_minutes",
 				"name",
 				"next_run",
 			]);
@@ -185,6 +220,41 @@ describe("program tool", () => {
 			}),
 		).toEqual({ error: expect.stringContaining("invalid cron") });
 		expect(programs.get(program.id)).toEqual(program);
+	});
+
+	test("lateness override can be set and cleared; hook-only programs cannot have one", async () => {
+		const { tool, programs } = toolFor(-100, 7, "https://goblin.example");
+		const created = (await exec(tool, {
+			action: "create",
+			name: "x",
+			charter: "c",
+			cron: "0 9 * * *",
+		})) as { program: { id: number; max_lateness_minutes: number | null } };
+		expect(created.program.max_lateness_minutes).toBeNull();
+
+		const limited = (await exec(tool, {
+			action: "update",
+			id: created.program.id,
+			maxLatenessMinutes: 15,
+		})) as { program: { max_lateness_minutes: number } };
+		expect(limited.program.max_lateness_minutes).toBe(15);
+
+		const reset = (await exec(tool, {
+			action: "update",
+			id: created.program.id,
+			maxLatenessMinutes: null,
+		})) as { program: { max_lateness_minutes: null } };
+		expect(reset.program.max_lateness_minutes).toBeNull();
+
+		const hookOnly = await exec(tool, {
+			action: "create",
+			name: "hook",
+			charter: "c",
+			hook: true,
+			maxLatenessMinutes: 10,
+		});
+		expect(hookOnly).toEqual({ error: "maxLatenessMinutes requires a cron trigger" });
+		expect(programs.list()).toHaveLength(1);
 	});
 
 	test("update validates before storage and propagates storage failures", async () => {

@@ -1,8 +1,8 @@
 // The programs table — standing orders (DESIGN.md, "Programs"). A
 // program is standing authority for one concern: a charter plus the
-// triggers that wake it (a 5-field cron in server-local time, a webhook
-// whose sha256 lives in hook_hash, or a Gmail filter in
-// mail_filter). State is rows in
+// triggers that wake it (a 5-field cron in server-local time, optionally
+// bounded by a per-program lateness grace; a webhook whose sha256 lives
+// in hook_hash; or a Gmail filter in mail_filter). State is rows in
 // goblin.sqlite, never files: a program's instructions are the
 // program's state. Own connection, same WAL file as the conversation
 // store. Cron validates here at the boundary — an invalid expression
@@ -26,6 +26,8 @@ export interface Program {
 	charter: string;
 	/** 5-field cron, or null for hook-only programs. */
 	cron: string | null;
+	/** Maximum schedule lateness in whole minutes; null preserves fire-on-wake behavior. */
+	maxLatenessMinutes: number | null;
 	/** sha256 of the webhook token — unused until webhook delivery lands. */
 	hookHash: string | null;
 	/** Gmail query waking the program on new matches, or null. */
@@ -54,6 +56,7 @@ export interface CreateProgram {
 	name: string;
 	charter: string;
 	cron?: string | null;
+	maxLatenessMinutes?: number | null;
 	hookHash?: string | null;
 	mailFilter?: string | null;
 	address: ProgramAddress;
@@ -65,6 +68,7 @@ export interface ProgramPatch {
 	name?: string;
 	charter?: string;
 	cron?: string | null;
+	maxLatenessMinutes?: number | null;
 	hookHash?: string | null;
 	mailFilter?: string | null;
 	enabled?: boolean;
@@ -82,6 +86,8 @@ export interface ProgramsStore {
 	due(now: Date): Program[];
 	/** Record a run; advances next_run only when a cron is set. */
 	markRan(id: number, now: Date): void;
+	/** Advance a stale schedule without recording a run that never fired. */
+	advancePastDue(id: number, now: Date): string | null;
 	/** Stamp a hook-fired run — last_run only, next_run untouched. */
 	markFired(id: number, now: Date): void;
 	/** Set or clear the webhook token hash. Clearing the last trigger
@@ -131,6 +137,33 @@ export function nextFire(cron: string, from: Date): Date {
 	}
 }
 
+// CronExpression.prev() is strict, so advance by 1ms to include an
+// occurrence exactly at `through`. This is the occurrence whose
+// lateness governs a coalesced catch-up fire.
+export function latestFireAtOrBefore(cron: string, through: Date): Date {
+	if (cron.trim().split(/\s+/).length !== 5) {
+		throw new Error(`invalid cron "${cron}": expected exactly 5 fields (min hour dom month dow)`);
+	}
+	try {
+		return CronExpressionParser.parse(cron, {
+			currentDate: new Date(through.getTime() + 1),
+		})
+			.prev()
+			.toDate();
+	} catch (err) {
+		throw new Error(`invalid cron "${cron}": ${(err as Error).message}`);
+	}
+}
+
+function validateLateness(cron: string | null, minutes: number | null): void {
+	if (minutes !== null && (!Number.isSafeInteger(minutes) || minutes < 0)) {
+		throw new Error("maxLatenessMinutes must be a non-negative safe integer or null");
+	}
+	if (minutes !== null && cron === null) {
+		throw new Error("maxLatenessMinutes requires a cron trigger");
+	}
+}
+
 // The load-bearing invariant: a program with no trigger can never
 // wake — it would be a row that does nothing.
 function requireTrigger(
@@ -148,6 +181,7 @@ const programSchema = z.object({
 	name: z.string(),
 	charter: z.string(),
 	cron: z.string().nullable(),
+	max_lateness_minutes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
 	hook_hash: z.string().nullable(),
 	mail_filter: z.string().nullable(),
 	mail_history_id: z.string().nullable(),
@@ -167,6 +201,7 @@ function rowToProgram(row: unknown): Program {
 		name: parsed.name,
 		charter: parsed.charter,
 		cron: parsed.cron,
+		maxLatenessMinutes: parsed.max_lateness_minutes,
 		hookHash: parsed.hook_hash,
 		mailFilter: parsed.mail_filter,
 		mailHistoryId: parsed.mail_history_id,
@@ -200,6 +235,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			name TEXT NOT NULL,
 			charter TEXT NOT NULL,
 			cron TEXT,
+			max_lateness_minutes INTEGER,
 			hook_hash TEXT,
 			mail_filter TEXT,
 			mail_history_id TEXT,
@@ -211,7 +247,8 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			last_run TEXT,
 			next_run TEXT
 		)`);
-		// Existing DBs predate the mail trigger/revision — additive only.
+		// Existing DBs predate the mail trigger/revision and schedule
+		// lateness grace — additive only.
 		const progCols = new Set(
 			db
 				.query<{ name: string }, []>("PRAGMA table_info(programs)")
@@ -223,6 +260,9 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			db.exec("ALTER TABLE programs ADD COLUMN mail_history_id TEXT");
 		if (!progCols.has("mail_revision")) {
 			db.exec("ALTER TABLE programs ADD COLUMN mail_revision INTEGER NOT NULL DEFAULT 0");
+		}
+		if (!progCols.has("max_lateness_minutes")) {
+			db.exec("ALTER TABLE programs ADD COLUMN max_lateness_minutes INTEGER");
 		}
 		const jobsTable = db
 			.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'")
@@ -248,12 +288,13 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		"SELECT * FROM programs WHERE enabled = 1 AND cron IS NOT NULL AND next_run <= ? ORDER BY next_run",
 	);
 	const qInsert = db.query(`INSERT INTO programs
-		(name, charter, cron, hook_hash, mail_filter, mail_history_id, chat_id, thread_id, enabled, created_at, last_run, next_run)
-		VALUES (?, ?, ?, ?, ?, NULL, ?, ?, 1, ?, NULL, ?)`);
+		(name, charter, cron, max_lateness_minutes, hook_hash, mail_filter, mail_history_id, chat_id, thread_id, enabled, created_at, last_run, next_run)
+		VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 1, ?, NULL, ?)`);
 	const qUpdate = db.query(
-		"UPDATE programs SET name = ?, charter = ?, cron = ?, hook_hash = ?, mail_filter = ?, mail_history_id = ?, mail_revision = mail_revision + ?, enabled = ?, next_run = ? WHERE id = ?",
+		"UPDATE programs SET name = ?, charter = ?, cron = ?, max_lateness_minutes = ?, hook_hash = ?, mail_filter = ?, mail_history_id = ?, mail_revision = mail_revision + ?, enabled = ?, next_run = ? WHERE id = ?",
 	);
 	const qMark = db.query("UPDATE programs SET last_run = ?, next_run = ? WHERE id = ?");
+	const qAdvance = db.query("UPDATE programs SET next_run = ? WHERE id = ?");
 	const qFired = db.query("UPDATE programs SET last_run = ? WHERE id = ?");
 	const qHook = db.query("UPDATE programs SET hook_hash = ? WHERE id = ?");
 	const qMailFilter = db.query(
@@ -280,9 +321,12 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		if (current === null) return null;
 		const before = rowToProgram(current);
 		const cron = patch.cron !== undefined ? patch.cron : before.cron;
+		const maxLatenessMinutes =
+			patch.maxLatenessMinutes !== undefined ? patch.maxLatenessMinutes : before.maxLatenessMinutes;
 		const hookHash = patch.hookHash !== undefined ? patch.hookHash : before.hookHash;
 		const mailFilter = patch.mailFilter !== undefined ? patch.mailFilter : before.mailFilter;
 		requireTrigger(cron, hookHash, mailFilter);
+		validateLateness(cron, maxLatenessMinutes);
 		const enabled = patch.enabled ?? before.enabled;
 		// Recompute from `now` whenever anything recurrence-shaped moved —
 		// a new cron, or a re-enable: occurrences skipped while disabled
@@ -305,6 +349,7 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			patch.name ?? before.name,
 			patch.charter ?? before.charter,
 			cron,
+			maxLatenessMinutes,
 			hookHash,
 			mailFilter,
 			mailHistoryId,
@@ -329,15 +374,25 @@ export function openPrograms(dbPath: string): ProgramsStore {
 
 	return {
 		create(
-			{ name, charter, cron = null, hookHash = null, mailFilter = null, address },
+			{
+				name,
+				charter,
+				cron = null,
+				maxLatenessMinutes = null,
+				hookHash = null,
+				mailFilter = null,
+				address,
+			},
 			now = new Date(),
 		) {
 			requireTrigger(cron, hookHash, mailFilter);
+			validateLateness(cron, maxLatenessMinutes);
 			const next = cron === null ? null : nextFire(cron, now).toISOString();
 			const res = qInsert.run(
 				name,
 				charter,
 				cron,
+				maxLatenessMinutes,
 				hookHash,
 				mailFilter,
 				address.chatId,
@@ -374,6 +429,15 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			const next =
 				program.cron === null ? program.nextRun : nextFire(program.cron, now).toISOString();
 			qMark.run(now.toISOString(), next, id);
+		},
+		advancePastDue(id, now) {
+			const row = qGet.get(id);
+			if (row === null) return null;
+			const program = rowToProgram(row);
+			if (program.cron === null) return null;
+			const next = nextFire(program.cron, now).toISOString();
+			qAdvance.run(next, id);
+			return next;
 		},
 		markFired(id, now) {
 			qFired.run(now.toISOString(), id);

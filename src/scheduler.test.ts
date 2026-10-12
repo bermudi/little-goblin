@@ -21,6 +21,7 @@ import { setLogFile, setLogWriter } from "./log.ts";
 import type { Config } from "./config.ts";
 import {
 	fireMail,
+	fireScheduled,
 	fireWebhook,
 	formatMailEvent,
 	scoredMailEvent,
@@ -177,6 +178,102 @@ describe("scoredMailEvent", () => {
 });
 
 describe("scheduler", () => {
+	test("missed occurrences coalesce against the latest one at the inclusive grace boundary", async () => {
+		const h = harness();
+		const createdAt = new Date("2026-09-20T07:05:00");
+		const scanAt = new Date("2026-09-20T10:05:00");
+		const program = h.deps.programs.create(
+			{
+				name: "frequent check",
+				cron: "*/30 * * * *",
+				maxLatenessMinutes: 5,
+				charter: "check once",
+				address: { chatId: -100, threadId: 7 },
+			},
+			createdAt,
+		);
+		const captured: string[] = [];
+		setLogFile("schedule-grace-fire-test.log");
+		setLogWriter((_path, line) => captured.push(line));
+		try {
+			fireScheduled(h.deps, program, scanAt);
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		expect(h.submitted).toHaveLength(1);
+		const after = h.deps.programs.get(program.id)!;
+		expect(after.lastRun).toBe(scanAt.toISOString());
+		expect(new Date(after.nextRun!).getTime()).toBeGreaterThan(scanAt.getTime());
+		const fired = captured.map((line) => JSON.parse(line) as Record<string, unknown>);
+		expect(fired.find((line) => line.msg === "program fired")).toMatchObject({
+			scheduledFor: new Date("2026-09-20T10:00:00").toISOString(),
+			lateMs: 5 * 60_000,
+		});
+		await closeSinks(h);
+	});
+
+	test("an occurrence beyond grace is skipped, logged once, and advanced without last_run", () => {
+		const h = harness();
+		const createdAt = new Date("2026-09-17T10:00:00");
+		const scanAt = new Date("2026-09-20T16:00:00");
+		const program = h.deps.programs.create(
+			{
+				name: "medicine reminder",
+				cron: "0 9 * * *",
+				maxLatenessMinutes: 120,
+				charter: "remind me",
+				address: { chatId: -100, threadId: 7 },
+			},
+			createdAt,
+		);
+		const captured: string[] = [];
+		setLogFile("schedule-grace-skip-test.log");
+		setLogWriter((_path, line) => captured.push(line));
+		try {
+			fireScheduled(h.deps, program, scanAt);
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		expect(h.submitted).toHaveLength(0);
+		const after = h.deps.programs.get(program.id)!;
+		expect(after.lastRun).toBeNull();
+		expect(new Date(after.nextRun!).getTime()).toBeGreaterThan(scanAt.getTime());
+		expect(h.deps.programs.due(scanAt)).toEqual([]);
+		const skipped = captured
+			.map((line) => JSON.parse(line) as Record<string, unknown>)
+			.filter((line) => line.msg === "program skipped — beyond lateness grace");
+		expect(skipped).toHaveLength(1);
+		expect(skipped[0]).toMatchObject({
+			firstMissedAt: program.nextRun,
+			latestMissedAt: new Date("2026-09-20T09:00:00").toISOString(),
+			lateMs: 7 * 60 * 60_000,
+			maxLatenessMinutes: 120,
+			nextRun: after.nextRun,
+		});
+	});
+
+	test("null grace preserves one fire on wake no matter how stale the schedule is", async () => {
+		const h = harness();
+		const createdAt = new Date("2026-09-17T10:00:00");
+		const scanAt = new Date("2026-09-20T16:00:00");
+		const program = h.deps.programs.create(
+			{
+				name: "daily brief",
+				cron: "0 9 * * *",
+				charter: "brief me",
+				address: { chatId: -100, threadId: 7 },
+			},
+			createdAt,
+		);
+		expect(program.maxLatenessMinutes).toBeNull();
+		fireScheduled(h.deps, program, scanAt);
+		expect(h.submitted).toHaveLength(1);
+		expect(h.deps.programs.due(scanAt)).toEqual([]);
+		await closeSinks(h);
+	});
+
 	test("a due job fires one turn into its pinned topic conversation", async () => {
 		const h = harness();
 		// Created 10 minutes "ago": every-minute cron → overdue = catch-up.
@@ -313,10 +410,12 @@ describe("scheduler", () => {
 			{
 				name: "ci",
 				cron: "0 9 * * *",
+				maxLatenessMinutes: 0,
+				hookHash: "hook",
 				charter: "check the build",
 				address: { chatId: 1, threadId: null },
 			},
-			now,
+			new Date(now.getTime() - 3 * 24 * 60 * 60_000),
 		);
 		const landed = fireWebhook(
 			h.deps,

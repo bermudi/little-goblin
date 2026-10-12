@@ -35,6 +35,12 @@ export function ProgramsView({ token }: { token: string | null }) {
 					</div>
 					{p.charter !== "" && <div className="op-item-body">{p.charter}</div>}
 					<KV k="cron" v={p.cron ?? "—"} mono />
+					{p.cron !== null && (
+						<KV
+							k="max lateness"
+							v={p.maxLatenessMinutes === null ? "unlimited" : `${p.maxLatenessMinutes} min`}
+						/>
+					)}
 					{p.hasHook && <KV k="hook" v="attached" mono />}
 					{p.mailFilter !== null && <KV k="mail filter" v={p.mailFilter} mono />}
 					<KV k="last run" v={ts(p.lastRun)} />

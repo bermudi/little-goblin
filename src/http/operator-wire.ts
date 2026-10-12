@@ -161,6 +161,7 @@ export interface OperatorProgramItem {
 	name: string;
 	charter: string;
 	cron: string | null;
+	maxLatenessMinutes: number | null;
 	hasHook: boolean;
 	mailFilter: string | null;
 	enabled: boolean;

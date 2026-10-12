@@ -7,8 +7,8 @@
 // trigger owns its post-submit accounting: what a fire costs when
 // delivery fails is trigger-specific policy, and it lives here —
 // never in a caller. The scheduler scan is the cron ticker; boot
-// catch-up falls out of the due() query — a fire missed while the
-// process was down is just "due" on the first tick.
+// catch-up falls out of the due() query, then schedule lateness policy
+// decides whether to fire once or skip stale occurrences.
 
 import { checkInjection, verdictLine } from "./injection.ts";
 import type { JevClient } from "./jev.ts";
@@ -17,7 +17,7 @@ import type { MailHit } from "./mail.ts";
 import { formatAddress } from "./conversation.ts";
 import { programFireTag } from "./tags.ts";
 import { wake, type WakeDeps } from "./wake.ts";
-import type { Program, ProgramsStore } from "./programs.ts";
+import { latestFireAtOrBefore, type Program, type ProgramsStore } from "./programs.ts";
 
 export interface SchedulerDeps extends WakeDeps {
 	programs: ProgramsStore;
@@ -60,13 +60,33 @@ export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler
 	return { tick: scan, stop: () => clearInterval(timer) };
 }
 
-// Cron: fire and advance past the occurrence even when the submit
-// fails — occurrences are synthetic and infinite, and holding one
-// would refire (and re-deliver the error) every tick. One attempt per
-// occurrence (DESIGN.md, "Post-submit accounting is trigger-owned").
+// Cron: missed occurrences coalesce against the latest occurrence due
+// at this scan. A per-program grace can skip an overly stale catch-up;
+// advancing the cursor is still required so it cannot warn every tick.
+// Otherwise fire once and advance even when submit fails — occurrences
+// are synthetic and infinite, so holding one would refire the error.
 export function fireScheduled(deps: SchedulerDeps, program: Program, now: Date): void {
+	if (program.cron === null || program.nextRun === null) {
+		throw new Error(`due program ${program.id} has no scheduled occurrence`);
+	}
+	const scheduledFor = latestFireAtOrBefore(program.cron, now);
+	const lateMs = Math.max(0, now.getTime() - scheduledFor.getTime());
+	const graceMinutes = program.maxLatenessMinutes;
+	if (graceMinutes !== null && lateMs > graceMinutes * 60_000) {
+		const nextRun = deps.programs.advancePastDue(program.id, now);
+		log.warn("program skipped — beyond lateness grace", {
+			program: program.id,
+			name: program.name,
+			firstMissedAt: program.nextRun,
+			latestMissedAt: scheduledFor.toISOString(),
+			lateMs,
+			maxLatenessMinutes: graceMinutes,
+			nextRun,
+		});
+		return;
+	}
 	try {
-		fireProgram(deps, program, "schedule", undefined, now);
+		fireProgram(deps, program, "schedule", undefined, now, scheduledFor);
 	} finally {
 		deps.programs.markRan(program.id, now);
 	}
@@ -218,8 +238,9 @@ function fireProgram(
 	trigger: ProgramTrigger,
 	event: string | undefined,
 	now: Date,
+	scheduledFor?: Date,
 ): boolean {
-	const lateMs = program.nextRun === null ? 0 : now.getTime() - new Date(program.nextRun).getTime();
+	const lateMs = scheduledFor === undefined ? 0 : now.getTime() - scheduledFor.getTime();
 	log.info("program fired", {
 		program: program.id,
 		name: program.name,
@@ -229,7 +250,12 @@ function fireProgram(
 				? { kind: "dm", chatId: program.chatId }
 				: { kind: "topic", chatId: program.chatId, threadId: program.threadId },
 		),
-		...(lateMs > TICK_MS ? { lateMs } : {}),
+		...(scheduledFor === undefined
+			? {}
+			: {
+					scheduledFor: scheduledFor.toISOString(),
+					...(lateMs > TICK_MS ? { lateMs } : {}),
+				}),
 	});
 	// An event payload is untrusted input by construction: it rides into
 	// the turn fenced, with any "</event" in it neutralized so a payload

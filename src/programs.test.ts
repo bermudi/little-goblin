@@ -11,7 +11,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { nextFire, openPrograms, type ProgramsStore } from "./programs.ts";
+import { latestFireAtOrBefore, nextFire, openPrograms, type ProgramsStore } from "./programs.ts";
 
 let dirs: string[] = [];
 function tmpdb(): string {
@@ -36,6 +36,15 @@ describe("nextFire", () => {
 	test("computes the next occurrence after `from`", () => {
 		expect(nextFire("30 8 * * *", NOW).getHours()).toBe(8);
 		expect(nextFire("30 8 * * *", NOW).getDate()).toBe(21); // 10:00 → tomorrow
+	});
+
+	test("latestFireAtOrBefore includes an occurrence exactly at the scan time", () => {
+		const cron = "0 9 * * *";
+		const scheduled = nextFire(cron, new Date("2026-09-19T10:00:00"));
+		expect(latestFireAtOrBefore(cron, scheduled).getTime()).toBe(scheduled.getTime());
+		expect(latestFireAtOrBefore(cron, new Date(scheduled.getTime() + 20 * 60_000)).getTime()).toBe(
+			scheduled.getTime(),
+		);
 	});
 
 	test("rejects a garbage expression with cron-parser's message", () => {
@@ -82,7 +91,41 @@ describe("programs store", () => {
 		expect(p.id).toBeGreaterThan(0);
 		expect(p.enabled).toBe(true);
 		expect(p.lastRun).toBeNull();
+		expect(p.maxLatenessMinutes).toBeNull();
 		expect(new Date(p.nextRun!).getTime()).toBeGreaterThan(NOW.getTime());
+	});
+
+	test("max lateness is per-program, nullable, and only applies to cron programs", () => {
+		const s = store();
+		const p = s.create(
+			{
+				name: "morning brief",
+				cron: "30 8 * * *",
+				maxLatenessMinutes: 90,
+				hookHash: "also-triggered",
+				charter: "brief me",
+				address: ADDRESS,
+			},
+			NOW,
+		);
+		expect(p.maxLatenessMinutes).toBe(90);
+		expect(s.update(p.id, { maxLatenessMinutes: null })!.maxLatenessMinutes).toBeNull();
+		expect(s.update(p.id, { maxLatenessMinutes: 15 })!.maxLatenessMinutes).toBe(15);
+		expect(() =>
+			s.create({
+				name: "hook",
+				charter: "c",
+				hookHash: "hash",
+				maxLatenessMinutes: 5,
+				address: ADDRESS,
+			}),
+		).toThrow("requires a cron trigger");
+		expect(() => s.update(p.id, { cron: null })).toThrow("requires a cron trigger");
+		expect(s.get(p.id)!.cron).toBe("30 8 * * *");
+		expect(() => s.update(p.id, { maxLatenessMinutes: -1 })).toThrow("non-negative");
+		expect(() => s.update(p.id, { maxLatenessMinutes: Number.MAX_SAFE_INTEGER + 1 })).toThrow(
+			"safe integer",
+		);
 	});
 
 	test("a program always has a trigger", () => {
@@ -129,6 +172,21 @@ describe("programs store", () => {
 		expect(after.lastRun).toBe(ranAt.toISOString());
 		expect(new Date(after.nextRun!).getHours()).toBe(12); // hourly, advanced
 		expect(s.due(ranAt).map((x) => x.id)).toEqual([]);
+	});
+
+	test("advancePastDue moves the schedule without claiming a run happened", () => {
+		const s = store();
+		const p = s.create(
+			{ name: "x", cron: "0 * * * *", charter: "c", address: ADDRESS },
+			new Date("2026-09-20T08:00:00"),
+		);
+		const scan = new Date("2026-09-20T12:30:00");
+		const next = s.advancePastDue(p.id, scan);
+		const after = s.get(p.id)!;
+		expect(next).toBe(after.nextRun);
+		expect(new Date(after.nextRun!).getHours()).toBe(13);
+		expect(after.lastRun).toBeNull();
+		expect(s.due(scan)).toEqual([]);
 	});
 
 	test("markRan without a cron stamps last_run and keeps next_run null", () => {
@@ -242,6 +300,7 @@ describe("programs store", () => {
 		expect(old.mailFilter).toBeNull();
 		expect(old.mailHistoryId).toBeNull();
 		expect(old.cron).toBe("0 9 * * *");
+		expect(old.maxLatenessMinutes).toBeNull();
 		// And the new trigger works on the migrated table.
 		s.setMailFilter(old.id, "from:bank");
 		expect(s.get(old.id)!.mailFilter).toBe("from:bank");

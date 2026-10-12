@@ -468,6 +468,7 @@ function programItem(program: Program): OperatorProgramItem {
 		name: program.name,
 		charter: program.charter,
 		cron: program.cron,
+		maxLatenessMinutes: program.maxLatenessMinutes,
 		hasHook: program.hookHash !== null,
 		mailFilter: program.mailFilter,
 		enabled: program.enabled,

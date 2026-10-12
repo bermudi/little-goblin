@@ -1,0 +1,52 @@
+#!/bin/sh
+# PID 1 of a goblin-desk-* container (started under podman --init).
+# Brings up, in order: a session bus at a fixed path, Xvfb, the XFCE
+# session, the at-spi registry, then the cua-driver daemon in the
+# foreground — its exit is the session's exit. DISPLAY and the bus
+# address land in /run/desk/env so `goblin-launch` and `podman exec`
+# callers can adopt them.
+set -eu
+
+# The whole session runs as the desktop user — the session bus must be
+# desk's own, or dbus-activated services (the at-spi bus among them)
+# spawn as root and the registry is unreachable from desk's session.
+DESK_USER="${DESK_USER:-desk}"
+DESK_HOME="/home/${DESK_USER}"
+if [ "$(id -u)" = "0" ] && [ "${DESK_USER}" != "root" ]; then
+	mkdir -p /run/desk "${DESK_HOME}/.runtime"
+	chown "${DESK_USER}:${DESK_USER}" /run/desk
+	chown -R "${DESK_USER}:${DESK_USER}" "${DESK_HOME}/.runtime"
+	chmod 700 "${DESK_HOME}/.runtime"
+	exec setpriv --reuid="${DESK_USER}" --regid="${DESK_USER}" --clear-groups \
+		--reset-env \
+		env HOME="${DESK_HOME}" XDG_RUNTIME_DIR="${DESK_HOME}/.runtime" \
+			"$0"
+fi
+
+# dbus session bus at a fixed path (not dbus-launch's random one, so
+# exec'd callers can reconstruct the address from /run/desk/env).
+dbus-daemon --session --fork \
+	--address=unix:path=/run/desk/bus --print-pid=1 > /run/desk/bus.pid
+
+printf 'DISPLAY=%s\nDBUS_SESSION_BUS_ADDRESS=%s\nDESK_USER=%s\n' \
+	':99' 'unix:path=/run/desk/bus' "${DESK_USER}" > /run/desk/env
+set -a; . /run/desk/env; set +a
+
+# Display: 1280x800x24 on :99. Wait for it before anything X-dependent.
+Xvfb :99 -screen 0 1280x800x24 -nolisten tcp &
+for _ in $(seq 1 50); do
+	xdpyinfo -display :99 >/dev/null 2>&1 && break
+	sleep 0.2
+done
+
+xfce4-session &
+# at-spi bus + registry: at-spi-bus-launcher starts its own daemon for
+# the a11y bus and publishes its address on the session bus; the
+# registryd sits on that bus.
+/usr/libexec/at-spi-bus-launcher --launch-immediately &
+sleep 1
+/usr/libexec/at-spi2-registryd &
+
+# Eyes and hands: the daemon stays in the foreground so its logs are
+# the container's logs and its death takes the container down.
+exec /usr/local/bin/cua-driver serve --socket /run/desk/cua.sock

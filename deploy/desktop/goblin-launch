@@ -1,0 +1,38 @@
+#!/bin/sh
+# goblin-launch <app> — start a whitelisted app on the desktop,
+# detached so the exec that launched it can return. The env written by
+# goblin-desktop-session carries DISPLAY, the session bus and the
+# desktop user.
+set -eu
+
+set -a; . /run/desk/env; set +a
+DESK_HOME="/home/${DESK_USER}"
+
+run_detached() {
+	if [ "$(id -un)" = "${DESK_USER}" ]; then
+		"$@" </dev/null >/dev/null 2>&1 &
+	else
+		setpriv --reuid="${DESK_USER}" --regid="${DESK_USER}" --clear-groups \
+			--reset-env \
+			env DISPLAY="${DISPLAY}" \
+				DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS}" \
+				HOME="${DESK_HOME}" XDG_RUNTIME_DIR="${DESK_HOME}/.runtime" "$@" \
+			</dev/null >/dev/null 2>&1 &
+	fi
+}
+
+case "${1:-}" in
+	chromium)
+		# --no-sandbox: the zygote needs CAP_SYS_CHROOT to bring up the
+		# layer-1 sandbox and the wall grants only the five sandbox caps
+		# (probed 2026-10-11 — "Failed to receive hello message from
+		# zygote"). The session still runs as desk, so the browser is an
+		# unprivileged uid inside the container's own wall.
+		run_detached chromium --no-sandbox --force-renderer-accessibility \
+			${2:+"$2"}
+		;;
+	*)
+		echo "goblin-launch: unknown app '${1:-}' (whitelist: chromium)" >&2
+		exit 64
+		;;
+esac

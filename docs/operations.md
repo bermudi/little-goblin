@@ -252,6 +252,20 @@ grep '"conversation":"topic:<chat>:<thread>"' ~/goblin/state/goblin.log
 grep '"level":"error"' ~/goblin/state/goblin.log
 ```
 
+## Desktop image
+
+The `desktop`/`computer`-subagent pool (design/subagents.md) runs
+`goblin-desk-*` containers from `localhost/goblin-desktop:1`. Goblin
+never builds or pulls images — a missing image errors with the build
+line. Build from the repo root:
+
+```sh
+podman build -t localhost/goblin-desktop:1 deploy/desktop
+```
+
+The image pins the cua-driver release by sha256; bump `CUA_VERSION`
+and `CUA_SHA256` in the Containerfile together.
+
 ## Backups
 
 Goblin's own state is under `~/goblin/`:

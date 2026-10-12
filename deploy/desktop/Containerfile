@@ -1,0 +1,41 @@
+# goblin desktop image — Xvfb + XFCE + Chromium + cua-driver
+# (design/subagents.md → Eyes and hands). Build is an operator act;
+# goblin never builds or pulls this image (the desktops module errors
+# with the build line instead). Build from the repo root:
+#
+#   podman build -t localhost/goblin-desktop:1 deploy/desktop
+#
+FROM docker.io/library/debian:trixie-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Minimal desktop stack (package set borrowed from E2B Desktop's
+# template, Apache-2.0): Xvfb display, an XFCE session so apps get a
+# normal environment, xdotool+scrot as the coordinate/screenshot
+# fallback, dbus + at-spi2 for the accessibility tree cua-driver reads.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+		xvfb xauth x11-utils \
+		xfce4-session xfwm4 xfce4-panel xfdesktop4 \
+		dbus-x11 at-spi2-core \
+		chromium \
+		xdotool scrot \
+		fonts-dejavu \
+		procps util-linux ca-certificates curl \
+	&& rm -rf /var/lib/apt/lists/*
+
+# cua-driver — official linux-x86_64 release binary, sha256 pinned
+# (verified against the release checksums.txt and the phase-0 probe
+# artifact; design/subagents.md).
+ARG CUA_VERSION=0.34.1
+ARG CUA_SHA256=a41fe2bdcbeea4501dc594c074f16b0975728e0cc7b08b90acea8564d48fafee
+RUN curl -fsSL -o /tmp/cua-driver.tgz \
+		"https://github.com/trycua/cua/releases/download/cua-driver-rs-v${CUA_VERSION}/cua-driver-rs-${CUA_VERSION}-linux-x86_64-binary.tar.gz" \
+	&& echo "${CUA_SHA256}  /tmp/cua-driver.tgz" | sha256sum -c - \
+	&& tar -xzf /tmp/cua-driver.tgz -C /usr/local/bin cua-driver \
+	&& rm /tmp/cua-driver.tgz
+
+# The desktop session's non-root user.
+RUN useradd -m -u 1000 desk
+
+COPY goblin-desktop-session goblin-launch /usr/local/bin/
+RUN chmod 755 /usr/local/bin/goblin-desktop-session /usr/local/bin/goblin-launch

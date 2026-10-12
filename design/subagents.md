@@ -178,10 +178,14 @@ workload — logged-in personal accounts, hostile downloads — makes the
 kernel boundary worth that work. The backend stays one module, so the
 swap is a module, not a registry.
 
-Known limit, accepted: Chromium runs as container root with
-`--no-sandbox` (it refuses root otherwise, measured). A renderer exploit
-lands as container root inside the wall. Phase 2 tries the session as a
-non-root user to recover Chromium's own sandbox and records the result.
+Known limit, accepted: Chromium runs with `--no-sandbox` — under the
+wall its zygote cannot bring up the layer-1 sandbox (missing
+CAP_SYS_CHROOT; the inner child dies `SIGSEGV` after the namespace
+setup and the browser aborts with `Failed to receive hello message
+from zygote`; adding SYS_CHROOT alone recovers it, measured 2026-10-11).
+The session and browser run as the non-root `desk` user, so a renderer
+exploit lands as an unprivileged uid inside the container's own wall
+rather than container root — but Chromium's renderer sandbox is off.
 
 ### Eyes and hands: cua-driver in the guest
 

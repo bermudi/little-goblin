@@ -59,7 +59,7 @@ import { openProjects, projectWorkdir } from "./projects.ts";
 import { makeSandboxes, openSandboxes } from "./sandboxes.ts";
 import { makeDesktops, openDesktops } from "./desktops.ts";
 import { openSubagentRuns } from "./subagent-runs.ts";
-import { openSubagents } from "./subagents.ts";
+import { openSubagents, type Subagents } from "./subagents.ts";
 import {
 	buildDestinationClient,
 	buildMemoryClient,
@@ -726,23 +726,37 @@ async function boot() {
 					config: () => subagentsBoot?.desktops,
 				})
 			: null;
-	const subagents =
-		subagentsBoot !== undefined && desktops !== null
-			? await openSubagents({
-					config: subagentsBoot,
-					runs: subagentRuns,
-					auth,
-					sandboxes,
-					desktops,
-					storagePath: join(paths.state(), "subagents.sqlite"),
-					transferRoot: join(paths.state(), "subagent-transfer"),
-					wake: (conv, text) => wakeConversation(wakeDeps, conv, text),
-				})
-			: null;
-	// Recovery is explicit and ordered: persisted stops land, desktop
-	// leases re-verify and monitors reattach BEFORE the harness resumes
-	// scheduling — and before any inbound message can reach the tools.
-	await subagents?.resume();
+	// A poisoned auth record or a resume refusal (e.g. a lowered
+	// maxRuns) must not crash-loop the service — poison the feature,
+	// never refuse boot (auth.ts). The pool stays constructed but
+	// every subagent/desktop tool is gated on the owner, so a failed
+	// open unmounts both for the run.
+	let subagents: Subagents | null = null;
+	if (subagentsBoot !== undefined && desktops !== null) {
+		try {
+			subagents = await openSubagents({
+				config: subagentsBoot,
+				runs: subagentRuns,
+				auth,
+				sandboxes,
+				desktops,
+				storagePath: join(paths.state(), "subagents.sqlite"),
+				transferRoot: join(paths.state(), "subagent-transfer"),
+				wake: (conv, text) => wakeConversation(wakeDeps, conv, text),
+			});
+			// Recovery is explicit and ordered: persisted stops land,
+			// desktop leases re-verify and monitors reattach BEFORE the
+			// harness resumes scheduling — and before any inbound
+			// message can reach the tools.
+			await subagents.resume();
+		} catch (err) {
+			subagents = null;
+			log.error(
+				"subagents disabled — owner failed to open; fix the block and restart",
+				err,
+			);
+		}
+	}
 
 	// Recover inbox rows before polling: the wirings above must exist before
 	// recovered turns run, and the offset must not advance past journaled input.

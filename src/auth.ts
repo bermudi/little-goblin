@@ -79,13 +79,20 @@ export interface AuthStore {
 }
 
 export function loadAuth(): AuthStore {
+	return loadAuthFile(paths.auth());
+}
+
+// The same loader at an explicit path — the live drift check resolves
+// through this instead of reading a secret env var; the path is the
+// only thing its environment carries.
+export function loadAuthFile(file: string): AuthStore {
 	const entries = new Map<string, string>();
 	let raw: string;
 	try {
-		raw = readFileSync(paths.auth(), "utf8");
+		raw = readFileSync(file, "utf8");
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-			log.warn("auth.jsonl not found — no secrets available", { path: paths.auth() });
+			log.warn("auth.jsonl not found — no secrets available", { path: file });
 			return makeStore(entries, new Set());
 		}
 		throw err;
@@ -93,10 +100,10 @@ export function loadAuth(): AuthStore {
 
 	// Any group/world bit means the secrets file leaks to other users —
 	// refuse to load rather than warn and proceed.
-	const mode = statSync(paths.auth()).mode & 0o777;
+	const mode = statSync(file).mode & 0o777;
 	if ((mode & 0o077) !== 0) {
 		throw new Error(
-			`${paths.auth()}: insecure permissions ${mode.toString(8).padStart(4, "0")} — clear group/world bits (chmod 600)`,
+			`${file}: insecure permissions ${mode.toString(8).padStart(4, "0")} — clear group/world bits (chmod 600)`,
 		);
 	}
 

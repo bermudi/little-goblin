@@ -1,7 +1,12 @@
 // Wakes use ordinary turn submission so queued and live turns share ordering
 // and epoch fencing. A constructed sink must be released if submission throws.
 
-import type { Conversation, ConversationAddress, ConversationStore } from "./conversation.ts";
+import {
+	channelOf,
+	type Conversation,
+	type ConversationAddress,
+	type ConversationStore,
+} from "./conversation.ts";
 import { paths, type ConfigRef, type TtsConfig } from "./config.ts";
 import type { JevClient } from "./jev.ts";
 import { userMessage, type Runtime, type TurnSink } from "./runtime.ts";
@@ -142,6 +147,55 @@ export function wakeApp(deps: WakeDeps, conversationId: string, text: string): b
 			message: err instanceof Error ? err.message : String(err),
 		});
 		log.error("app wake submit failed", err, { conversation: conv.id });
+		return false;
+	}
+	return true;
+}
+
+// Subagent notices route to the EXACT stored origin row — never a rolled
+// DM, never a new conversation. App origins ring the bell; telegram and
+// guest origins deliver to the row's recorded chat/thread. A deleted
+// origin is the intentional drop; a rejected submit returns false so the
+// owner retries on scan.
+export function wakeConversation(deps: WakeDeps, conversationId: string, text: string): boolean {
+	const conv = deps.store.get(conversationId);
+	if (conv === null) {
+		log.warn("subagent notice dropped — origin conversation deleted", {
+			conversation: conversationId,
+		});
+		return true;
+	}
+	const channel = channelOf(conv.id);
+	let sink: TurnSink;
+	if (channel === "app") {
+		sink = deps.bell(conv);
+	} else {
+		const tts = deps.configRef.current.tts;
+		sink = makeDeliverySink(
+			deps.api,
+			conv,
+			undefined,
+			undefined,
+			tts && !deps.configRef.ttsDown
+				? { voiceMode: conv.voice, synthesize: (t) => deps.synthesize(t, tts) }
+				: undefined,
+			undefined,
+			undefined,
+			deps.store,
+		);
+	}
+	try {
+		const admitted = deps.runtime.submit(conv, userMessage([{ type: "text", text }]), sink);
+		if (!admitted) {
+			log.warn("subagent wake history only — runtime closed", { conversation: conv.id });
+			return false;
+		}
+	} catch (err) {
+		void sink.onDone({
+			kind: "error",
+			message: err instanceof Error ? err.message : String(err),
+		});
+		log.error("subagent wake submit failed", err, { conversation: conv.id });
 		return false;
 	}
 	return true;

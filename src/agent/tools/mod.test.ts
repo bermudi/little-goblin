@@ -122,4 +122,33 @@ describe("toolNames ↔ makeTools", () => {
 			expect(wire.type, `${name} wire schema must be an object, got ${wire.type}`).toBe("object");
 		}
 	});
+
+	test("subagent/desktop mount only with their deps, ordered before ui", () => {
+		const without = toolNames(makeTools({ cwd: "/tmp", ui: true }));
+		expect(without).not.toContain("subagent");
+		expect(without).not.toContain("desktop");
+		expect(without).toContain("ui");
+
+		const withBoth = toolNames(
+			makeTools({
+				cwd: "/tmp",
+				subagent: {
+					conversation: "dm:1",
+					workspace: "/tmp",
+					subagents: {} as never,
+					workerEnabled: true,
+					computerEnabled: true,
+				},
+				desktop: {
+					conversation: "dm:1",
+					workspace: "/tmp",
+					desktops: {} as never,
+				},
+				ui: true,
+			}),
+		);
+		expect(withBoth.indexOf("subagent")).toBeLessThan(withBoth.indexOf("ui"));
+		expect(withBoth.indexOf("desktop")).toBeLessThan(withBoth.indexOf("ui"));
+		expect(withBoth.at(-1)).toBe("ui");
+	});
 });

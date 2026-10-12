@@ -20,7 +20,7 @@
 // removes the container rather than use it.
 
 import { Database } from "bun:sqlite";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import { z } from "zod";
 import {
 	paths,
@@ -36,8 +36,8 @@ import type { ContainerInspect, Podman } from "./podman.ts";
 // Model/operator-actionable failures (held leases, stale observations,
 // missing image) — the tool maps these to {error} results.
 export class DesktopError extends Error {
-	constructor(message: string) {
-		super(message);
+	constructor(message: string, options?: ErrorOptions) {
+		super(message, options);
 		this.name = "DesktopError";
 	}
 }
@@ -233,6 +233,7 @@ const DEFAULT_CONFIG = desktopsConfigSchema.parse({});
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
 const LEASE_TTL_MS = 10 * 60_000;
 const DESKTOP_USER = "desk";
+const DESKTOP_UID = 1000;
 const SESSION_SOCKET = "/run/desk/cua.sock";
 const SESSION_ENV = {
 	HOME: "/home/desk",
@@ -240,6 +241,8 @@ const SESSION_ENV = {
 	DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/desk/bus",
 } as const;
 const EXEC_OPTS = { timeoutMs: 60_000, maxOutput: 4 * 1024 * 1024 } as const;
+const EXPORT_MAX_BYTES = 100 * 1024 * 1024;
+const EXPORT_TIMEOUT_MS = 120_000;
 
 // Chromium refuses background-injected input whenever its renderer
 // isn't the focused surface; foreground delivery is also just the
@@ -361,13 +364,22 @@ export interface Desktops {
 	screenshot(
 		name: string,
 	): Promise<{ id: string; path: string; bytes: Uint8Array; note?: string }>;
-	inspect(name: string): Promise<{ id: string; state: unknown; note?: string }>;
+	inspect(
+		name: string,
+		opts?: { pid?: number; windowId?: number },
+	): Promise<{ id: string; state: unknown; note?: string }>;
 	act(
 		name: string,
 		holder: LeaseHolder,
 		obsId: string,
 		action: DesktopAction,
 	): Promise<{ result: unknown; note?: string }>;
+	/** hostPath → containerPath via podman cp — the caller owns the
+	 *  source's provenance (box-files containment); no lease needed. */
+	cpIn(name: string, hostPath: string, containerPath: string): Promise<{ note?: string }>;
+	/** A regular file's bytes as `desk` (symlinks/dirs refused), or
+	 *  DesktopError. The export twin of cpIn; no lease needed. */
+	catFile(name: string, path: string): Promise<{ data: Uint8Array; note?: string }>;
 }
 
 export function makeDesktops(deps: DesktopsDeps): Desktops {
@@ -464,6 +476,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			command: ["/usr/local/bin/goblin-desktop-session"],
 			hostname: "desktop",
 			shmSize: "1g",
+			// Chromium's own sandbox needs CAP_SYS_CHROOT for its zygote
+			// — desktops only, operator-approved; sandboxes keep the five.
+			extraCaps: ["SYS_CHROOT"],
 			labels: { "goblin.desktop": "1", "goblin.desktop.name": name },
 		});
 		// Created ON the network — a --network none container can never
@@ -619,8 +634,11 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			{ ...EXEC_OPTS, user: DESKTOP_USER, env: SESSION_ENV, workdir: "/run/desk" },
 		);
 		if (r.timedOut || r.exitCode !== 0) {
+			// Some driver failures report on stdout (stderr empty) — take
+			// whichever channel carries the diagnostic, capped.
+			const diag = (r.stderr.trim() || r.stdout.trim()).slice(0, 300);
 			throw new DesktopError(
-				`cua-driver ${tool} failed on desktop ${name} (${r.timedOut ? "timeout" : `exit ${r.exitCode}`}): ${r.stderr.slice(0, 300)}`,
+				`cua-driver ${tool} failed on desktop ${name} (${r.timedOut ? "timeout" : `exit ${r.exitCode}`}): ${diag}`,
 			);
 		}
 		try {
@@ -910,34 +928,38 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			});
 		},
 
-		async inspect(name) {
+		async inspect(name, opts) {
 			await sweepOnce(name);
 			return await lane(name, async () => {
 				const ready = await ensureLocked(name);
-				const windows = (await cuaCall(
-					ready.container,
-					"list_windows",
-					{},
-					name,
-				)) as { windows?: Array<{ pid: number; app_name: string; z_index: number }> };
-				const list = windows.windows ?? [];
-				// The point of inspect is the app the operator is looking
-				// at — skip the desktop chrome (panel, desktop), take the
-				// topmost real window.
-				const apps = list.filter(
-					(w) => !/^(xfce4-panel|xfdesktop)$/i.test(w.app_name),
-				);
-				const win =
-					apps.length === 0
-						? list.sort((a, b) => b.z_index - a.z_index)[0]
-						: apps.sort((a, b) => b.z_index - a.z_index)[0];
-				if (win === undefined) {
-					throw new DesktopError(`desktop ${name} shows no windows to inspect`);
+				let pid = opts?.pid;
+				if (pid === undefined) {
+					const windows = (await cuaCall(
+						ready.container,
+						"list_windows",
+						{},
+						name,
+					)) as { windows?: Array<{ pid: number; app_name: string; z_index: number }> };
+					const list = windows.windows ?? [];
+					// The point of inspect is the app the operator is looking
+					// at — skip the desktop chrome (panel, desktop), take the
+					// topmost real window.
+					const apps = list.filter(
+						(w) => !/^(xfce4-panel|xfdesktop)$/i.test(w.app_name),
+					);
+					const win =
+						apps.length === 0
+							? list.sort((a, b) => b.z_index - a.z_index)[0]
+							: apps.sort((a, b) => b.z_index - a.z_index)[0];
+					if (win === undefined) {
+						throw new DesktopError(`desktop ${name} shows no windows to inspect`);
+					}
+					pid = win.pid;
 				}
 				const state = await cuaCall(
 					ready.container,
 					"get_window_state",
-					{ pid: win.pid },
+					{ pid, ...(opts?.windowId !== undefined ? { window_id: opts.windowId } : {}) },
 					name,
 				);
 				const shot =
@@ -1035,8 +1057,19 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 						result = await cuaCall(ready.container, action.tool, args, name);
 					}
 				} catch (err) {
+					log.warn("desktop act failed", err, {
+						desktop: name,
+						holder: holderLabel(holder),
+						obs: obsId,
+						action:
+							action.kind === "cua"
+								? `cua:${action.tool}`
+								: `launch:${action.app}`,
+						ms: Date.now() - t0,
+					});
 					throw new DesktopError(
 						`${err instanceof Error ? err.message : String(err)} — the action may have partially run on ${name}; take a fresh screenshot before retrying`,
+						{ cause: err },
 					);
 				}
 				const effect =
@@ -1053,6 +1086,113 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				});
 				return {
 					result,
+					...(ready.note !== undefined ? { note: ready.note } : {}),
+				};
+			});
+		},
+
+		async cpIn(name, hostPath, containerPath) {
+			await sweepOnce(name);
+			return await lane(name, async () => {
+				const ready = await ensureLocked(name);
+				// File destinations only — `podman cp` onto an existing
+				// directory copies INTO it, and a recursive chown of that
+				// directory would rewrite unrelated desktop ownership.
+				if (!containerPath.startsWith("/") || containerPath.endsWith("/")) {
+					throw new DesktopError(
+						`desktop import needs an absolute file path, got ${JSON.stringify(containerPath)}`,
+					);
+				}
+				const parent = posix.dirname(containerPath);
+				const mk = await podman.exec(
+					ready.container,
+					["mkdir", "-p", "--", parent],
+					{ ...EXEC_OPTS, user: DESKTOP_USER, workdir: "/run/desk" },
+				);
+				if (mk.timedOut || mk.exitCode !== 0) {
+					throw new DesktopError(
+						`could not create ${parent} on desktop ${name}: ${mk.stderr.slice(0, 200)}`,
+					);
+				}
+				// An existing destination must be a regular, non-symlink
+				// file — refuse before the copy touches anything else.
+				const pre = await podman.exec(
+					ready.container,
+					[
+						"/bin/sh",
+						"-c",
+						'if [ -e "$1" ] || [ -L "$1" ]; then { [ -f "$1" ] && [ ! -L "$1" ]; } || exit 3; fi',
+						"pre",
+						containerPath,
+					],
+					{ ...EXEC_OPTS, user: DESKTOP_USER, workdir: "/run/desk" },
+				);
+				if (pre.timedOut || pre.exitCode !== 0) {
+					throw new DesktopError(
+						`refusing to import onto non-regular path ${containerPath} on desktop ${name}`,
+					);
+				}
+				await podman.cp(ready.container, hostPath, containerPath);
+				// Recheck the leaf the copy actually produced, then hand
+				// exactly that file to desk — no -R, no tree rewrite.
+				const chown = await podman.exec(
+					ready.container,
+					[
+						"/bin/sh",
+						"-c",
+						'{ [ -f "$1" ] && [ ! -L "$1" ]; } || exit 3; chown -h -- "$2:$2" "$1" || exit 4',
+						"post",
+						containerPath,
+						String(DESKTOP_UID),
+					],
+					{ ...EXEC_OPTS, workdir: "/run/desk" },
+				);
+				if (chown.timedOut || chown.exitCode !== 0) {
+					throw new DesktopError(
+						`imported ${containerPath} on desktop ${name} but could not hand it to desk: ${chown.stderr.slice(0, 200)}`,
+					);
+				}
+				log.info("desktop import", { desktop: name, to: containerPath });
+				return { ...(ready.note !== undefined ? { note: ready.note } : {}) };
+			});
+		},
+
+		async catFile(name, path) {
+			await sweepOnce(name);
+			return await lane(name, async () => {
+				const ready = await ensureLocked(name);
+				// Same export contract as sandboxes.catFile: regular
+				// files only — -f alone follows a leaf symlink.
+				const probe = await podman.exec(
+					ready.container,
+					["/bin/sh", "-c", 'test -f "$1" && ! test -L "$1"', "desk-check", path],
+					{ ...EXEC_OPTS, user: DESKTOP_USER, workdir: "/run/desk" },
+				);
+				if (probe.timedOut || probe.exitCode !== 0) {
+					throw new DesktopError(`${path} is not a regular file on desktop ${name}`);
+				}
+				const r = await podman.execBytes(
+					ready.container,
+					["cat", "--", path],
+					{
+						timeoutMs: EXPORT_TIMEOUT_MS,
+						maxOutput: EXPORT_MAX_BYTES,
+						user: DESKTOP_USER,
+						workdir: "/run/desk",
+					},
+				);
+				if (r.truncated || r.stdout.byteLength > EXPORT_MAX_BYTES) {
+					throw new DesktopError(
+						`export exceeds the ${EXPORT_MAX_BYTES / (1024 * 1024)} MiB cap — nothing was exported`,
+					);
+				}
+				if (r.timedOut || r.exitCode !== 0) {
+					throw new DesktopError(
+						`could not read ${path} from desktop ${name} (exit ${r.timedOut ? "timeout" : r.exitCode})`,
+					);
+				}
+				return {
+					data: r.stdout,
 					...(ready.note !== undefined ? { note: ready.note } : {}),
 				};
 			});

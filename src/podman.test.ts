@@ -59,6 +59,63 @@ describe("podman adapter argv", () => {
 		expect(args.at(-1)).toBe("/usr/local/bin/goblin-desktop-session");
 	});
 
+	test("extraCaps appends to the five-cap allowlist; defaults stay the five", async () => {
+		const { calls, podman } = rig();
+		await podman.create({
+			name: "goblin-desk-a",
+			image: "localhost/goblin-desktop:1",
+			network: "goblin-desktop",
+			memory: "3g",
+			cpus: 2,
+			pids: 1024,
+			command: ["/usr/local/bin/goblin-desktop-session"],
+			hostname: "desktop",
+			shmSize: "1g",
+			extraCaps: ["SYS_CHROOT"],
+			labels: { "goblin.desktop": "1", "goblin.desktop.name": "a" },
+		});
+		const args = calls[0]!;
+		expect(args).toEqual(
+			expect.arrayContaining([
+				"--cap-add",
+				"CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID,SYS_CHROOT",
+			]),
+		);
+		// The default spec keeps the exact five — nothing inferred.
+		await podman.create({
+			name: "goblin-sbx-x",
+			image: "docker.io/library/alpine:latest",
+			network: "goblin-sandbox",
+			memory: "2g",
+			cpus: 2,
+			pids: 512,
+			labels: { "goblin.sandbox": "1" },
+		});
+		expect(calls[1]).toEqual(
+			expect.arrayContaining([
+				"--cap-add",
+				"CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID",
+			]),
+		);
+	});
+
+	test("a non-cap-name in extraCaps throws before any podman call", async () => {
+		const { calls, podman } = rig();
+		await expect(
+			podman.create({
+				name: "goblin-desk-a",
+				image: "localhost/goblin-desktop:1",
+				network: "goblin-desktop",
+				memory: "3g",
+				cpus: 2,
+				pids: 1024,
+				extraCaps: ["-rf /", "sys_chroot"],
+				labels: {},
+			}),
+		).rejects.toThrow(/invalid extra capability/);
+		expect(calls.length).toBe(0);
+	});
+
 	test("a default spec still ends in the sandbox sleep and hostname", async () => {
 		const { calls, podman } = rig();
 		await podman.create({
@@ -112,5 +169,64 @@ describe("podman adapter argv", () => {
 			"c",
 			"true",
 		]);
+	});
+});
+
+describe("networkEnsure convergence", () => {
+	const STRICT = JSON.stringify([{ options: { isolate: "strict" } }]);
+
+	// inspect → create → re-inspect: a losing create is only a real
+	// failure when the re-inspect still finds nothing usable.
+	function raceRig(opts: {
+		secondInspect: { code: number; stdout: string; stderr: string };
+	}) {
+		const calls: string[][] = [];
+		let inspections = 0;
+		const podman = makePodman({
+			runner: async (args) => {
+				calls.push([...args]);
+				if (args[0] === "network" && args[1] === "inspect") {
+					inspections++;
+					return inspections === 1
+						? { code: 1, stdout: "", stderr: "not found" }
+						: opts.secondInspect;
+				}
+				if (args[0] === "network" && args[1] === "create") {
+					return { code: 1, stdout: "", stderr: "network already exists" };
+				}
+				return { code: 0, stdout: "", stderr: "" };
+			},
+		});
+		return { calls, podman, inspections: () => inspections };
+	}
+
+	test("a losing create accepts the winner's identical network", async () => {
+		const r = raceRig({
+			secondInspect: { code: 0, stdout: STRICT, stderr: "" },
+		});
+		await r.podman.networkEnsure("goblin-sandbox", "c1");
+		expect(r.inspections()).toBe(2);
+	});
+
+	test("a real create failure still throws when nothing usable appeared", async () => {
+		const r = raceRig({
+			secondInspect: { code: 1, stdout: "", stderr: "not found" },
+		});
+		await expect(r.podman.networkEnsure("goblin-sandbox", "c1")).rejects.toThrow(
+			/network create/,
+		);
+	});
+
+	test("a network that appeared without isolate=strict is refused", async () => {
+		const r = raceRig({
+			secondInspect: {
+				code: 0,
+				stdout: JSON.stringify([{ options: { isolate: "none" } }]),
+				stderr: "",
+			},
+		});
+		await expect(r.podman.networkEnsure("goblin-sandbox", "c1")).rejects.toThrow(
+			/isolate=strict/,
+		);
 	});
 });

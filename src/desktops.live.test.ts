@@ -19,7 +19,7 @@
 // No prune, anywhere, ever (src/podman.ts header).
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { desktopsConfigSchema } from "./config.ts";
@@ -42,8 +42,12 @@ const NETWORK = "goblin-drift-desk-net";
 // The config default image; goblin never builds or pulls, so a missing
 // image is a red check.
 const IMAGE = "localhost/goblin-desktop:1";
-// CHOWN(0) | DAC_OVERRIDE(1) | FOWNER(3) | SETGID(6) | SETUID(7).
-const WALL_CAPS = 0xcb;
+// CHOWN(0) | DAC_OVERRIDE(1) | FOWNER(3) | SETGID(6) | SETUID(7)
+// | SYS_CHROOT(18) — desktops carry the extra cap for Chromium's
+// own sandbox (operator-approved, desktops only).
+const WALL_CAPS = 0x400cb;
+// Evidence preserved outside the temp dir the run cleans up.
+const EVIDENCE_DIR = "/tmp/goblin-desktop-evidence";
 
 const PROBE_HTML = `<!doctype html><html><body>
 <input id="in" autofocus oninput="document.title='typed:'+this.value">
@@ -53,7 +57,26 @@ const PROBE_HTML = `<!doctype html><html><body>
 let podman: Podman | null = null;
 let desktops: Desktops | null = null;
 let cwd = "";
-let cameUp = false;
+// Only names whose create call succeeded enter these sets — cleanup
+// removes exactly them; a refused preflight touches nothing.
+const createdContainers = new Set<string>();
+const createdNetworks = new Set<string>();
+
+async function probeExists(name: string): Promise<boolean> {
+	const r = await boundedRun(spawnProc(["podman", "inspect", name]), {
+		timeoutMs: 30_000,
+		maxOutput: 1 << 20,
+	});
+	return r.exitCode === 0;
+}
+
+async function netExists(name: string): Promise<boolean> {
+	const r = await boundedRun(spawnProc(["podman", "network", "inspect", name]), {
+		timeoutMs: 30_000,
+		maxOutput: 1 << 20,
+	});
+	return r.exitCode === 0;
+}
 
 async function execOut(argv: string[], env?: Record<string, string>): Promise<string> {
 	const r = await podman!.exec(CONTAINER, argv, {
@@ -113,7 +136,25 @@ describe.skipIf(!LIVE)("desktop live drift (GOBLIN_DESKTOP_LIVE=1)", () => {
 		cwd = mkdtempSync(join(tmpdir(), "goblin-desktop-drift-"));
 		setLogFile(join(cwd, "drift.log"));
 		writeFileSync(join(cwd, "probe.html"), PROBE_HTML);
-		podman = makePodman();
+		const base = makePodman();
+		podman = {
+			...base,
+			create: async (spec, conv) => {
+				await base.create(spec, conv);
+				createdContainers.add(spec.name);
+			},
+			networkEnsure: async (name, conv) => {
+				await base.networkEnsure(name, conv);
+				createdNetworks.add(name);
+			},
+		};
+		// Preflight BEFORE creating anything: a name that exists is not
+		// ours — refuse and let afterAll remove zero shared objects.
+		if ((await probeExists(CONTAINER)) || (await netExists(NETWORK))) {
+			throw new Error(
+				`drift resource already exists (container ${CONTAINER} or network ${NETWORK}) — refusing`,
+			);
+		}
 		desktops = makeDesktops({
 			podman,
 			store: openDesktops(join(cwd, "goblin.sqlite")),
@@ -122,7 +163,6 @@ describe.skipIf(!LIVE)("desktop live drift (GOBLIN_DESKTOP_LIVE=1)", () => {
 			networkName: NETWORK,
 		});
 		const out = await desktops.allocate(DESKTOP);
-		cameUp = true;
 		expect(out.note).toContain("network off");
 	}, 120_000);
 
@@ -261,10 +301,102 @@ describe.skipIf(!LIVE)("desktop live drift (GOBLIN_DESKTOP_LIVE=1)", () => {
 		expect(typed.trim()).toContain("typed:hello goblin");
 	}, 120_000);
 
+	test("Chromium's own sandbox is up — chrome://sandbox and the process argv", async () => {
+		const op = { kind: "operator" } as const;
+		await desktops!.claim(DESKTOP, op);
+		// No --no-sandbox anywhere in the browser's argv — checked on
+		// the running processes, not the launch call.
+		const procs = await execOut(["pgrep", "-af", "chromium"], {
+			DISPLAY: ":99",
+		});
+		expect(procs).toContain("chromium");
+		expect(procs).not.toContain("--no-sandbox");
+		// Navigate to chrome://sandbox with real input: ctrl+l focuses
+		// the omnibox, type the URL, press enter — each act bound to
+		// its own fresh observation.
+		const wins = (await cua("list_windows", {})) as {
+			windows?: Array<{ pid: number; app_name: string }>;
+		};
+		const pid = (wins.windows ?? []).find((w) => /chromium/i.test(w.app_name))?.pid;
+		expect(pid).toBeDefined();
+		const o1 = await desktops!.inspect(DESKTOP);
+		await desktops!.act(DESKTOP, op, o1.id, {
+			kind: "cua",
+			tool: "hotkey",
+			args: { pid, keys: ["ctrl", "l"] },
+		});
+		const o2 = await desktops!.inspect(DESKTOP);
+		await desktops!.act(DESKTOP, op, o2.id, {
+			kind: "cua",
+			tool: "type_text",
+			args: { pid, text: "chrome://sandbox" },
+		});
+		const o3 = await desktops!.inspect(DESKTOP);
+		await desktops!.act(DESKTOP, op, o3.id, {
+			kind: "cua",
+			tool: "press_key",
+			args: { pid, key: "enter" },
+		});
+		// The sandbox page renders as AT-SPI text — read the status
+		// back from the page itself, plus a screenshot for evidence.
+		await Bun.sleep(3000);
+		const page = await desktops!.inspect(DESKTOP);
+		// Assert the page's own verdicts, not just that the labels
+		// rendered: each checked row's value cell must read "Yes".
+		const cells = (
+			(page.state as { elements?: Array<{ role?: string; label?: string }> })
+				.elements ?? []
+		).filter((e) => e.role === "table cell");
+		const verdict = (label: string) => {
+			const i = cells.findIndex((e) => e.label === label);
+			return i === -1 ? undefined : cells[i + 1]?.label;
+		};
+		for (const label of [
+			"PID namespaces",
+			"Network namespaces",
+			"Seccomp-BPF sandbox",
+			"Seccomp-BPF sandbox supports TSYNC",
+		]) {
+			expect(verdict(label)).toBe("Yes");
+		}
+		expect(JSON.stringify(page.state)).toContain("You are adequately sandboxed.");
+		const shot = await desktops!.screenshot(DESKTOP);
+		mkdirSync(EVIDENCE_DIR, { recursive: true });
+		await Bun.write(join(EVIDENCE_DIR, "chrome-sandbox.png"), shot.bytes);
+		await Bun.write(
+			join(EVIDENCE_DIR, "chrome-sandbox-state.json"),
+			JSON.stringify(page.state, null, 2),
+		);
+	}, 120_000);
+
+	test("import lands desk-owned and readable; export round-trips bytes", async () => {
+		// A real seeded host file through cpIn — the podman-cp boundary
+		// that used to leave root-owned imports desk can't read.
+		const seed = join(cwd, "seed.bin");
+		const payload = new Uint8Array([0, 1, 2, 0xff, 65, 66, 10]);
+		await Bun.write(seed, payload);
+		const dest = `/home/desk/inbox/subagents/7/${crypto.randomUUID().slice(0, 8)}-seed.bin`;
+		await desktops!.cpIn(DESKTOP, seed, dest);
+		// Desk itself reads it, and the leaf is chowned to uid 1000.
+		const stat = await podman!.exec(
+			CONTAINER,
+			["stat", "-c", "%u:%g:%s", "--", dest],
+			{ timeoutMs: 30_000, maxOutput: 1 << 20, user: "desk", workdir: "/run/desk" },
+		);
+		if (stat.exitCode !== 0) {
+			throw new Error(`desk stat exit ${stat.exitCode}: ${stat.stderr.slice(0, 200)}`);
+		}
+		expect(stat.stdout.trim()).toBe(`1000:1000:${payload.length}`);
+		const back = await desktops!.catFile(DESKTOP, dest);
+		expect([...back.data]).toEqual([...payload]);
+		// Non-regular leaves stay refused.
+		await expect(desktops!.catFile(DESKTOP, "/home/desk")).rejects.toThrow();
+	}, 60_000);
+
 	afterAll(async () => {
 		setLogFile(null);
 		const failures: string[] = [];
-		if (podman !== null && cameUp) {
+		if (podman !== null && createdContainers.has(CONTAINER)) {
 			try {
 				await podman.rm(CONTAINER);
 			} catch (err) {
@@ -272,13 +404,16 @@ describe.skipIf(!LIVE)("desktop live drift (GOBLIN_DESKTOP_LIVE=1)", () => {
 			}
 		}
 		// The adapter exposes no network rm (product networks live
-		// forever); the drift network dies through the raw CLI.
-		const r = await boundedRun(spawnProc(["podman", "network", "rm", NETWORK]), {
-			timeoutMs: 30_000,
-			maxOutput: 1 << 20,
-		});
-		if (r.exitCode !== 0 && !/does not exist|not found/i.test(r.stderr)) {
-			failures.push(`network rm exit ${r.exitCode}: ${r.stderr.trim().slice(0, 200)}`);
+		// forever); a drift network THIS run created dies through the
+		// raw CLI — anything else is left alone.
+		for (const net of createdNetworks) {
+			const r = await boundedRun(spawnProc(["podman", "network", "rm", net]), {
+				timeoutMs: 30_000,
+				maxOutput: 1 << 20,
+			});
+			if (r.exitCode !== 0 && !/does not exist|not found/i.test(r.stderr)) {
+				failures.push(`network rm ${net} exit ${r.exitCode}: ${r.stderr.trim().slice(0, 200)}`);
+			}
 		}
 		if (cwd !== "") rmSync(cwd, { recursive: true, force: true });
 		if (failures.length > 0) {

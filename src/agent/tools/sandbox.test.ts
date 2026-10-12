@@ -29,6 +29,18 @@ function fakeSandboxes(recorded: { cpIn: string[][]; catFile: string[] }): Sandb
 		exec: async () => ({
 			result: { stdout: "ok\n", stderr: "", exitCode: 0, timedOut: false, truncated: false },
 		}),
+		execArgv: async () => ({
+			result: { stdout: "ok\n", stderr: "", exitCode: 0, timedOut: false, truncated: false },
+		}),
+		execBytesArgv: async () => ({
+			result: {
+				stdout: new Uint8Array(),
+				stderr: "",
+				exitCode: 0,
+				timedOut: false,
+				truncated: false,
+			},
+		}),
 		cpIn: async (_conv, hostPath, containerPath) => {
 			recorded.cpIn.push([hostPath, containerPath]);
 			return {};

@@ -15,6 +15,7 @@ import { generateTopicTitle } from "./agent/title.ts";
 import { generateNoteRewrite } from "./agent/note-rewrite.ts";
 import { generateText } from "ai";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import { probeFfmpeg, speechEngine, transcribeAudio } from "./agent/transcribe.ts";
 import { whistleArtifactPresence } from "./agent/transcribe-whistle.ts";
 import { synthesizeSpeech } from "./agent/tts.ts";
@@ -56,6 +57,9 @@ import { openPrograms } from "./programs.ts";
 import { openNotes } from "./notes.ts";
 import { openProjects, projectWorkdir } from "./projects.ts";
 import { makeSandboxes, openSandboxes } from "./sandboxes.ts";
+import { makeDesktops, openDesktops } from "./desktops.ts";
+import { openSubagentRuns } from "./subagent-runs.ts";
+import { openSubagents } from "./subagents.ts";
 import {
 	buildDestinationClient,
 	buildMemoryClient,
@@ -69,7 +73,7 @@ import { fireMail, fireWebhook, startScheduler, type SchedulerDeps } from "./sch
 import { startHttp } from "./http/mod.ts";
 import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
 import { launchPin, type SpinOffDeps } from "./spinoff.ts";
-import { makeWakeDeps } from "./wake.ts";
+import { makeWakeDeps, wakeConversation } from "./wake.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { Runtime } from "./runtime.ts";
 import { applyMenuButton, AUTH_TELEGRAM_TOKEN, startBot } from "./tg/mod.ts";
@@ -119,14 +123,26 @@ async function boot() {
 	// The outbox opens unconditionally — drafts stay readable and
 	// cancellable without the mail block; only the clients gate on it.
 	const outbox = openOutbox(paths.db());
+	// One Podman adapter serves sandbox and desktop rows — both drivers
+	// reconcile against the same store of truth.
+	const podman = makePodman();
+	// The routing table is additive and unconditional: sandboxes read
+	// worker leases from it whether or not the subagents block exists.
+	const subagentRuns = openSubagentRuns(paths.db());
 	// The sandbox lifecycle owner exists whether or not the block is
 	// configured — the tool gate is the per-turn config read, and the
 	// store is an additive table. Config is read live: resource limits
 	// and idleHours apply to the next sandbox call, not the boot set.
 	const sandboxes = makeSandboxes({
-		podman: makePodman(),
+		podman,
 		store: openSandboxes(paths.db()),
 		config: () => configRef.current.sandbox,
+		// A live worker run pins its sandbox: the reaper skips it and
+		// reset refuses while a lease stands (design/subagents.md).
+		runLease: (conv) => subagentRuns.workerLease(conv),
+		// Destructive sandbox lifecycle (recreate/restart) reaches the
+		// worker on its next tool result — persisted until carried.
+		onLifecycle: (conv, note) => subagentRuns.noteLifecycle(conv, note),
 	});
 	// Split mail authority: gws polling serves the watcher, the send client
 	// only approval taps — gws owns its own auth, no OAuth secret here.
@@ -468,6 +484,24 @@ async function boot() {
 								sandboxes,
 							}
 						: undefined,
+				// The subagents block is boot-frozen — a live config read
+				// can only hide the tools, never swap models mid-run.
+				subagent:
+					subagents !== null && configRef.current.subagents !== undefined
+						? {
+								conversation: conv.id,
+								workspace: workdir,
+								subagents,
+								workerEnabled:
+									subagentsBoot?.worker !== undefined &&
+									configRef.current.sandbox !== undefined,
+								computerEnabled: subagentsBoot?.computer !== undefined,
+							}
+						: undefined,
+				desktop:
+					subagents !== null && desktops !== null && configRef.current.subagents !== undefined
+						? { conversation: conv.id, workspace: workdir, desktops }
+						: undefined,
 				// The interface tool mounts on app turns only — Telegram
 				// and guests render plain text (design/app.md → Intelligent UI).
 				ui: channelOf(conv.id) === "app",
@@ -675,6 +709,41 @@ async function boot() {
 			: null;
 	completeBoot(delegationLifecycle, memoryWorker);
 
+	// The subagent owner is boot-frozen like delegation: its config
+	// (models, pool limits, auth refs) is one snapshot. Construction —
+	// including crash recovery over Pi Durable's storage — runs only
+	// after the late-boot bindings land: a settle during open may wake
+	// through wakeDeps immediately. Desktops construct empty-handed:
+	// no allocation or reaping happens at boot, rows reconcile on use.
+	const subagentsBoot = config.subagents;
+	const desktops =
+		subagentsBoot !== undefined
+			? makeDesktops({
+					podman,
+					store: openDesktops(paths.db()),
+					// Boot-frozen like the owner's block — a live read would
+					// make the restart warning a lie.
+					config: () => subagentsBoot?.desktops,
+				})
+			: null;
+	const subagents =
+		subagentsBoot !== undefined && desktops !== null
+			? await openSubagents({
+					config: subagentsBoot,
+					runs: subagentRuns,
+					auth,
+					sandboxes,
+					desktops,
+					storagePath: join(paths.state(), "subagents.sqlite"),
+					transferRoot: join(paths.state(), "subagent-transfer"),
+					wake: (conv, text) => wakeConversation(wakeDeps, conv, text),
+				})
+			: null;
+	// Recovery is explicit and ordered: persisted stops land, desktop
+	// leases re-verify and monitors reattach BEFORE the harness resumes
+	// scheduling — and before any inbound message can reach the tools.
+	await subagents?.resume();
+
 	// Recover inbox rows before polling: the wirings above must exist before
 	// recovered turns run, and the offset must not advance past journaled input.
 	await tg.replayInbox();
@@ -731,6 +800,14 @@ async function boot() {
 		) {
 			log.warn("delegation config changed — restart to apply");
 		}
+		// Same boot-freeze as delegation: models, pool limits and auth
+		// refs are one snapshot the owner built at boot.
+		if (
+			JSON.stringify(configRef.current.subagents ?? null) !==
+			JSON.stringify(subagentsBoot ?? null)
+		) {
+			log.warn("subagents config changed — restart to apply");
+		}
 	};
 	// The same boot-pin comparisons onConfigWritten logs — the operator
 	// surface's status card answers with them instead of waiting for the
@@ -745,6 +822,9 @@ async function boot() {
 		if (cur.telegram.apiRoot !== apiRootBoot) hints.push("telegram.apiRoot");
 		if (JSON.stringify(cur.delegation ?? null) !== JSON.stringify(delegationBoot ?? null)) {
 			hints.push("delegation");
+		}
+		if (JSON.stringify(cur.subagents ?? null) !== JSON.stringify(subagentsBoot ?? null)) {
+			hints.push("subagents");
 		}
 		return hints;
 	};
@@ -856,6 +936,9 @@ async function boot() {
 		mailWatcher,
 		mailApproval,
 		memoryWorker,
+		subagentRuns,
+		subagents,
+		desktops,
 	};
 }
 
@@ -879,6 +962,8 @@ const {
 	mailWatcher,
 	mailApproval,
 	memoryWorker,
+	subagentRuns,
+	subagents,
 } = booted;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -916,7 +1001,21 @@ async function shutdown(signal: string): Promise<void> {
 	// reaches history but never starts a turn.
 	const drained = runtime.shutdown();
 	const flushed = tg.drainIntake();
-	const settled = Promise.allSettled([stopping, drained, flushed, delegationScan, mailSends]);
+	// Pause only: pending subagent runs persist for the next boot — the
+	// harness close seals admission, it never aborts work.
+	const subagentsClosed = subagents
+		? subagents.close().catch((err: unknown) => {
+				log.warn("subagents close failed", err);
+			})
+		: Promise.resolve();
+	const settled = Promise.allSettled([
+		stopping,
+		drained,
+		flushed,
+		delegationScan,
+		mailSends,
+		subagentsClosed,
+	]);
 	const finished = await Promise.race([
 		settled.then(() => true),
 		sleep(SHUTDOWN_DRAIN_MS).then(() => false),
@@ -933,6 +1032,13 @@ async function shutdown(signal: string): Promise<void> {
 		}
 	}
 	http.stop();
+	// Runs outlive the process: the table closes only when the owner
+	// joined inside the drain budget — a timed-out close leaves the
+	// store open rather than let a lingering settle write a closed
+	// handle (the process exits anyway).
+	if (finished) {
+		subagentRuns.close();
+	}
 	store.close();
 	programs.close();
 	outbox.close();

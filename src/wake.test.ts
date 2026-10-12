@@ -8,7 +8,7 @@ import type { Config } from "./config.ts";
 import { Runtime, type TurnSink } from "./runtime.ts";
 import type { RollDeps } from "./rolling.ts";
 import { delegationWake } from "./delegation-lifecycle.ts";
-import { wake, wakeApp, type WakeDeps } from "./wake.ts";
+import { wake, wakeApp, wakeConversation, type WakeDeps } from "./wake.ts";
 
 const nullSink: TurnSink = {
 	onTextDelta: () => {},
@@ -180,5 +180,66 @@ test("wakeApp on a deleted app conversation drops landed — no submit, no retry
 	expect(landed).toBe(true);
 	expect(submitted).toEqual([]);
 	expect(sinks).toEqual([]);
+	store.close();
+});
+
+// ---------- wakeConversation (subagent notices → exact origin) ----------
+
+test("wakeConversation hits the exact stored DM row — never rolls, never creates", () => {
+	const { deps, store, submitted, sends } = harness(0); // gap 0 — a rolling path would roll
+	store.rollDm(7, "/w"); // dm:7:1 is current
+	const landed = wakeConversation(deps, "dm:7:1", "subagent notice");
+	expect(landed).toBe(true);
+	expect(submitted).toEqual(["dm:7:1"]);
+	expect(store.currentDm(7)?.id).toBe("dm:7:1"); // no dm:7:2 was rolled
+	expect(sends).toEqual([]); // no roll marker
+	store.close();
+});
+
+test("wakeConversation to an app origin uses the bell sink", () => {
+	const { deps, store, submitted, sinks } = harness(45);
+	const app = store.forkToApp(store.resolve({ kind: "dm", chatId: 1 }, "/w").id, "x1", "/w", "job");
+	const landed = wakeConversation(deps, app.id, "subagent notice");
+	expect(landed).toBe(true);
+	expect(submitted).toEqual([app.id]);
+	expect(sinks).toHaveLength(1); // bell, not delivery
+	store.close();
+});
+
+test("wakeConversation to a guest origin delivers on the stored row", () => {
+	const { deps, store, submitted, sinks } = harness(45);
+	const conv = store.resolve({ kind: "guest", chatId: 5, userId: 9 }, "/w");
+	const landed = wakeConversation(deps, conv.id, "subagent notice");
+	expect(landed).toBe(true);
+	expect(submitted).toEqual([conv.id]);
+	expect(sinks).toEqual([]); // delivery sink, not the app bell
+	store.close();
+});
+
+test("a deleted origin is the intentional drop — true, no submit, no rolling DM", () => {
+	const { deps, store, submitted } = harness(0);
+	store.rollDm(7, "/w");
+	const landed = wakeConversation(deps, "dm:7:99", "subagent notice");
+	expect(landed).toBe(true);
+	expect(submitted).toEqual([]);
+	expect(store.currentDm(7)?.id).toBe("dm:7:1"); // untouched
+	store.close();
+});
+
+test("a refused submit returns false so the owner retries on scan", () => {
+	const { deps, store } = harness(45);
+	const conv = store.resolve({ kind: "dm", chatId: 3 }, "/w");
+	(deps.runtime as { submit: unknown }).submit = () => false;
+	expect(wakeConversation(deps, conv.id, "subagent notice")).toBe(false);
+	store.close();
+});
+
+test("a throwing submit is released and returns false", () => {
+	const { deps, store } = harness(45);
+	const conv = store.resolve({ kind: "dm", chatId: 4 }, "/w");
+	(deps.runtime as { submit: unknown }).submit = () => {
+		throw new Error("runtime gone");
+	};
+	expect(wakeConversation(deps, conv.id, "subagent notice")).toBe(false);
 	store.close();
 });

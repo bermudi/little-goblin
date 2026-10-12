@@ -102,6 +102,9 @@ export interface CreateSpec {
 	command?: string[];
 	hostname?: string;
 	shmSize?: string;
+	/** Caps appended to the five-cap wall — desktops only (SYS_CHROOT
+	 *  for Chromium's own sandbox). Never inferred from labels. */
+	extraCaps?: readonly string[];
 }
 
 export interface ContainerInspect {
@@ -213,10 +216,11 @@ export function makePodman(deps?: {
 
 	return {
 		async networkEnsure(name, conv) {
-			const r = await call("network inspect", ["network", "inspect", name], {
-				conversation: conv,
-			});
-			if (r.code === 0) {
+			const usable = async (): Promise<boolean> => {
+				const r = await call("network inspect", ["network", "inspect", name], {
+					conversation: conv,
+				});
+				if (r.code !== 0) return false;
 				let parsed: z.infer<typeof networkInspectSchema>;
 				try {
 					parsed = networkInspectSchema.parse(JSON.parse(r.stdout));
@@ -231,17 +235,31 @@ export function makePodman(deps?: {
 						`network ${name} exists without options.isolate=strict (found ${JSON.stringify(isolate ?? null)}) — refusing to use it`,
 					);
 				}
-				return;
-			}
+				return true;
+			};
+			if (await usable()) return;
 			const created = await call(
 				"network create",
 				["network", "create", "--opt", "isolate=strict", name],
 				{ conversation: conv },
 			);
-			if (created.code !== 0) throw fail("network create", created);
+			if (created.code === 0) return;
+			// Two ensures can race the create — only the re-inspect
+			// distinguishes a winner's identical network from a real
+			// failure.
+			if (await usable()) return;
+			throw fail("network create", created);
 		},
 
 		async create(spec, conv) {
+			const caps = ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID"];
+			for (const cap of spec.extraCaps ?? []) {
+				// Names only — a bad string must never reach the argv.
+				if (!/^[A-Z][A-Z0-9_]{0,31}$/.test(cap)) {
+					throw new Error(`invalid extra capability ${JSON.stringify(cap)}`);
+				}
+				if (!caps.includes(cap)) caps.push(cap);
+			}
 			const args = [
 				"run",
 				"-d",
@@ -256,7 +274,7 @@ export function makePodman(deps?: {
 				"--cap-drop",
 				"ALL",
 				"--cap-add",
-				"CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID",
+				caps.join(","),
 				"--security-opt",
 				"no-new-privileges",
 				"--network",

@@ -23,11 +23,11 @@ run_detached() {
 
 case "${1:-}" in
 	chromium)
-		# --no-sandbox: the zygote needs CAP_SYS_CHROOT to bring up the
-		# layer-1 sandbox and the wall grants only the five sandbox caps
-		# ("Failed to receive hello message from zygote"). The session
-		# still runs as desk, so the browser is an unprivileged uid
-		# inside the container's own wall.
+		# Chromium keeps its own sandbox: desktop containers carry
+		# CAP_SYS_CHROOT on top of the five wall caps, which is what the
+		# zygote needs ("Failed to receive hello message from zygote"
+		# without it). The session still runs as desk, so the browser is
+		# an unprivileged uid inside the container's own wall.
 		#
 		# $2 is a model-controlled URL landing on Chromium's argv: only
 		# a real URL or about:blank, never a bare --flag. desktops.ts
@@ -48,7 +48,7 @@ case "${1:-}" in
 					;;
 			esac
 		fi
-		run_detached chromium --no-sandbox --force-renderer-accessibility \
+		run_detached chromium --force-renderer-accessibility \
 			${url:+"${url}"}
 		;;
 	*)

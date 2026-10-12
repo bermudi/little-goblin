@@ -26,6 +26,8 @@ interface FakeContainer {
 	networks: Set<string>;
 	labels: Record<string, string>;
 	files: Map<string, Uint8Array>;
+	/** In-guest symlink paths — catFile must refuse these. */
+	links: Set<string>;
 }
 
 function tmpdb(): string {
@@ -55,6 +57,7 @@ function fakeEngine(opts?: {
 			networks: new Set(c.networks ?? []),
 			labels: c.labels ?? { "goblin.sandbox": "1" },
 			files: new Map(),
+			links: new Set(),
 		});
 	}
 	const networks = new Set<string>();
@@ -132,6 +135,7 @@ function fakeEngine(opts?: {
 				networks: new Set([network]),
 				labels,
 				files: new Map(),
+				links: new Set(),
 			});
 			return { code: 0, stdout: "abc123\n", stderr: "" };
 		}
@@ -161,18 +165,44 @@ function fakeEngine(opts?: {
 
 	const execRunner = async (args: string[], _opts: PodmanExecOpts): Promise<BoundedProc> => {
 		execCalls.push([...args]);
+		// catFile's regular-file probe: `test -f "$1" && ! test -L "$1"`.
+		// exec argv is ["exec",-flags…, name, ...argv] — the container
+		// name is the element before the inner argv's head.
+		const checkIdx = args.indexOf("sb-check");
+		if (checkIdx !== -1) {
+			const name = args[args.indexOf("/bin/sh") - 1]!;
+			const c = containers.get(name);
+			const path = args[checkIdx + 1]!;
+			const ok = c !== undefined && c.files.has(path) && !c.links.has(path);
+			return { stdout: "", stderr: "", exitCode: ok ? 0 : 1, timedOut: false, truncated: false };
+		}
 		return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
 	};
 	const execBytesRunner = async (
-		_args: string[],
+		args: string[],
 		_opts: PodmanExecOpts,
-	): Promise<BoundedProcBytes> => ({
-		stdout: new Uint8Array(),
-		stderr: "",
-		exitCode: 0,
-		timedOut: false,
-		truncated: false,
-	});
+	): Promise<BoundedProcBytes> => {
+		// catFile's read: `cat -- <path>` — name sits before "cat".
+		const catIdx = args.indexOf("cat");
+		const c = catIdx === -1 ? undefined : containers.get(args[catIdx - 1]!);
+		if (catIdx !== -1 && c !== undefined) {
+			const data = c.files.get(args.at(-1)!);
+			return {
+				stdout: data ?? new Uint8Array(),
+				stderr: "",
+				exitCode: data === undefined ? 1 : 0,
+				timedOut: false,
+				truncated: false,
+			};
+		}
+		return {
+			stdout: new Uint8Array(),
+			stderr: "",
+			exitCode: 0,
+			timedOut: false,
+			truncated: false,
+		};
+	};
 
 	return {
 		podman: makePodman({ runner, execRunner, execBytesRunner }),
@@ -184,7 +214,14 @@ function fakeEngine(opts?: {
 	};
 }
 
-function rig(engine: ReturnType<typeof fakeEngine>, config?: Partial<SandboxConfig>) {
+function rig(
+	engine: ReturnType<typeof fakeEngine>,
+	config?: Partial<SandboxConfig>,
+	extra?: {
+		runLease?: (conversationId: string) => { id: number; status: string } | null;
+		onLifecycle?: (conversationId: string, note: string) => void;
+	},
+) {
 	const store = openSandboxes(tmpdb());
 	const sandboxes = makeSandboxes({
 		podman: engine.podman,
@@ -192,6 +229,8 @@ function rig(engine: ReturnType<typeof fakeEngine>, config?: Partial<SandboxConf
 		config: () => ({ ...sandboxConfigSchema.parse({}), ...config }),
 		containerPrefix: PREFIX,
 		networkName: NETWORK,
+		...(extra?.runLease !== undefined ? { runLease: extra.runLease } : {}),
+		...(extra?.onLifecycle !== undefined ? { onLifecycle: extra.onLifecycle } : {}),
 	});
 	return { store, sandboxes };
 }
@@ -404,5 +443,150 @@ describe("sandboxes lifecycle", () => {
 			"podman pull docker.io/library/debian:stable-slim",
 		);
 		expect(engine.calls.some((a) => a[0] === "run")).toBe(false);
+	});
+});
+
+describe("catFile regular-file contract", () => {
+	async function seeded(): Promise<{
+		engine: ReturnType<typeof fakeEngine>;
+		sandboxes: ReturnType<typeof rig>["sandboxes"];
+		name: string;
+	}> {
+		const conv = CONV;
+		const name = containerNameFor(conv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name }] });
+		const { sandboxes } = rig(engine);
+		engine.containers.get(name)!.files.set("/work/ok.txt", new TextEncoder().encode("data"));
+		return { engine, sandboxes, name };
+	}
+
+	test("a regular file exports", async () => {
+		const { sandboxes } = await seeded();
+		const out = await sandboxes.catFile(CONV, "/work/ok.txt");
+		expect(new TextDecoder().decode(out.data)).toBe("data");
+	});
+
+	test("a leaf symlink is refused — test -L guards what -f follows", async () => {
+		const { engine, sandboxes, name } = await seeded();
+		engine.containers.get(name)!.files.set("/work/link.txt", new TextEncoder().encode("data"));
+		engine.containers.get(name)!.links.add("/work/link.txt");
+		await expect(sandboxes.catFile(CONV, "/work/link.txt")).rejects.toThrow(
+			/not a regular file/,
+		);
+	});
+
+	test("missing paths and dirs are refused", async () => {
+		const { sandboxes } = await seeded();
+		await expect(sandboxes.catFile(CONV, "/work/nope")).rejects.toThrow(/not a regular file/);
+	});
+});
+
+describe("run leases pin the sandbox", () => {
+	test("reset refuses while a run lease is live", async () => {
+		const conv = "dm:20";
+		const name = containerNameFor(conv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name }] });
+		const { sandboxes, store } = rig(engine, undefined, {
+			runLease: (c) => (c === conv ? { id: 4, status: "running" } : null),
+		});
+		store.put({
+			conversationId: conv,
+			container: name,
+			image: IMAGE,
+			network: false,
+			createdAt: 1,
+			lastUsedAt: 1,
+		});
+		await expect(sandboxes.reset(conv)).rejects.toThrow(/run #4/);
+		expect(engine.containers.has(name)).toBe(true);
+		// The lease is only claimed by live statuses — done frees it.
+		const { sandboxes: freed } = rig(engine, undefined, {
+			runLease: () => null,
+		});
+		await freed.reset(conv);
+	});
+
+	test("the sweep skips a leased sandbox even past idleHours", async () => {
+		const staleConv = "dm:leased";
+		const staleName = containerNameFor(staleConv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name: staleName }] });
+		const { sandboxes, store } = rig(engine, { idleHours: 1 }, {
+			runLease: (c) => (c === staleConv ? { id: 9, status: "needs_input" } : null),
+		});
+		const old = Date.now() - 2 * 3_600_000;
+		store.put({
+			conversationId: staleConv,
+			container: staleName,
+			image: IMAGE,
+			network: false,
+			createdAt: old,
+			lastUsedAt: old,
+		});
+		await sandboxes.exec("dm:caller2", "true", execOpts);
+		expect(engine.containers.has(staleName)).toBe(true);
+		expect(store.get(staleConv)).not.toBeNull();
+	});
+
+	test("a live lease announces itself on exec results", async () => {
+		const conv = "dm:21";
+		const engine = fakeEngine();
+		const { sandboxes } = rig(engine, undefined, {
+			runLease: (c) => (c === conv ? { id: 2, status: "running" } : null),
+		});
+		const out = await sandboxes.exec(conv, "true", execOpts);
+		expect(out.note).toContain("run #2 holds this sandbox");
+	});
+});
+
+describe("onLifecycle", () => {
+	test("recreate after a missing container reports the note", async () => {
+		const conv = "dm:30";
+		const name = containerNameFor(conv, PREFIX);
+		const notes: string[] = [];
+		const engine = fakeEngine();
+		const { sandboxes, store } = rig(engine, undefined, {
+			onLifecycle: (c, note) => {
+				if (c === conv) notes.push(note);
+			},
+		});
+		store.put({
+			conversationId: conv,
+			container: name,
+			image: IMAGE,
+			network: false,
+			createdAt: 1,
+			lastUsedAt: 1,
+		});
+		const out = await sandboxes.exec(conv, "true", execOpts);
+		expect(out.note).toContain("previous contents are lost");
+		expect(notes).toHaveLength(1);
+		expect(notes[0]).toContain("previous contents are lost");
+	});
+
+	test("a killed exec's restart reports the note", async () => {
+		const conv = "dm:31";
+		const name = containerNameFor(conv, PREFIX);
+		const notes: string[] = [];
+		const engine = fakeEngine({ containers: [{ name }] });
+		const { sandboxes, store } = rig(engine, undefined, {
+			onLifecycle: (c, note) => {
+				if (c === conv) notes.push(note);
+			},
+		});
+		store.put({
+			conversationId: conv,
+			container: name,
+			image: IMAGE,
+			network: false,
+			createdAt: 1,
+			lastUsedAt: 1,
+		});
+		const timedOut = await sandboxes.exec(conv, "sleep 600", {
+			timeoutMs: 5_000,
+			maxOutput: 1024,
+			abortSignal: AbortSignal.abort(),
+		});
+		expect(timedOut.note).toContain("restarted");
+		expect(notes.some((n) => n.includes("restarted"))).toBe(true);
 	});
 });

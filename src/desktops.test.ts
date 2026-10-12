@@ -7,18 +7,20 @@
 // real-engine check is gated on GOBLIN_DESKTOP_LIVE=1.
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { desktopsConfigSchema, type DesktopsConfig } from "./config.ts";
 import { makePodman, type PodmanExecOpts } from "./podman.ts";
 import type { BoundedProc, BoundedProcBytes } from "./proc.ts";
 import {
+	DesktopError,
 	containerNameForDesktop,
 	makeDesktops,
 	openDesktops,
 	type LeaseHolder,
 } from "./desktops.ts";
+import { setLogFile, setLogWriter } from "./log.ts";
 
 const NETWORK = "test-desknet";
 const IMAGE = "localhost/goblin-desktop:test";
@@ -53,8 +55,13 @@ function fakeEngine(opts?: {
 	varyFrames?: boolean;
 	/** cua act calls fail — the dispatch burn-through test. */
 	failCua?: boolean;
+	/** cua act calls fail with empty stderr and this stdout — the
+	 *  driver reports structured errors on stdout too. */
+	failCuaStdout?: string;
 	/** cua act calls hold until this resolves — lane-interleave tests. */
 	execGate?: Promise<void>;
+	/** Guest paths that exist as directories — the cpIn pre-check. */
+	existingDirs?: Set<string>;
 }) {
 	const containers = new Map<string, FakeContainer>();
 	for (const c of opts?.containers ?? []) {
@@ -140,11 +147,29 @@ function fakeEngine(opts?: {
 			containers.delete(args.at(-1)!);
 			return { code: 0, stdout: "", stderr: "" };
 		}
+		if (cmd === "cp") {
+			return { code: 0, stdout: "", stderr: "" };
+		}
 		throw new Error(`fake podman: unhandled argv ${JSON.stringify(args)}`);
 	};
 
 	const execRunner = async (args: string[], _opts: PodmanExecOpts): Promise<BoundedProc> => {
 		execCalls.push([...args]);
+		// The cpIn pre-check / post-check shell probes: the last
+		// positional arg before/after the marker is the guest path.
+		const marker = args.indexOf("pre");
+		if (marker !== -1 && opts?.existingDirs?.has(args[marker + 1] ?? "")) {
+			return { stdout: "", stderr: "exists as directory", exitCode: 3, timedOut: false, truncated: false };
+		}
+		if (args.includes("mkdir") || args.includes("chown") || args.includes("stat")) {
+			return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
+		}
+		if (args[0] === "/bin/sh" && args[1] === "-c" && args[2]?.startsWith("if [ -e")) {
+			return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
+		}
+		if (args[0] === "/bin/sh" && args[1] === "-c" && args[2]?.includes("chown")) {
+			return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
+		}
 		if (args.includes("scrot")) {
 			return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
 		}
@@ -176,8 +201,14 @@ function fakeEngine(opts?: {
 		}
 		// cua act calls: report a driver-claimed effect.
 		if (opts?.execGate !== undefined) await opts.execGate;
-		if (opts?.failCua === true) {
-			return { stdout: "", stderr: "driver exploded", exitCode: 1, timedOut: false, truncated: false };
+		if (opts?.failCua === true || opts?.failCuaStdout !== undefined) {
+			return {
+				stdout: opts.failCuaStdout ?? "",
+				stderr: opts.failCuaStdout !== undefined ? "" : "driver exploded",
+				exitCode: 1,
+				timedOut: false,
+				truncated: false,
+			};
 		}
 		return {
 			stdout: JSON.stringify({ status: "done", effect: "unverifiable" }),
@@ -256,6 +287,8 @@ describe("desktops pool", () => {
 			"0:40000:8192",
 			"--cap-drop",
 			"ALL",
+			"--cap-add",
+			"CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID,SYS_CHROOT",
 			"--security-opt",
 			"no-new-privileges",
 			"--init",
@@ -519,17 +552,86 @@ describe("desktops pool", () => {
 	});
 
 	test("a failed dispatch consumes its observation — input is never replayed", async () => {
-		const engine = fakeEngine({ failCua: true });
-		const { desktops, name } = await fresh(engine);
-		await desktops.claim(name, RUN_A);
-		const shot = await desktops.screenshot(name);
-		await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(
-			/may have partially run.*fresh screenshot/s,
-		);
-		// The obs burned with the attempt; the same id cannot retry.
-		await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(
-			/fresh screenshot/,
-		);
+		const lines: Record<string, unknown>[] = [];
+		setLogFile("capture");
+		setLogWriter((_path, line) => {
+			lines.push(JSON.parse(line) as Record<string, unknown>);
+		});
+		try {
+			const engine = fakeEngine({ failCua: true });
+			const { desktops, name } = await fresh(engine);
+			await desktops.claim(name, RUN_A);
+			const shot = await desktops.screenshot(name);
+			const err = await desktops.act(name, RUN_A, shot.id, CLICK).then(
+				() => {
+					throw new Error("unreachable");
+				},
+				(e: unknown) => e,
+			);
+			expect(err).toBeInstanceOf(DesktopError);
+			expect((err as Error).message).toMatch(/may have partially run.*fresh screenshot/s);
+			// The dispatch error rides as the cause for debugging.
+			expect((err as Error).cause).toBeInstanceOf(DesktopError);
+			// The obs burned with the attempt; the same id cannot retry.
+			await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(
+				/fresh screenshot/,
+			);
+			const logged = lines.find((l) => l.msg === "desktop act failed");
+			expect(logged).toMatchObject({
+				desktop: name,
+				holder: "run a",
+				obs: shot.id,
+				action: "cua:click",
+			});
+			expect(typeof logged?.ms).toBe("number");
+		} finally {
+			setLogWriter(null);
+			setLogFile(null);
+		}
+	});
+
+	test("a driver error reported on stdout survives into the act diagnostic", async () => {
+		const lines: Record<string, unknown>[] = [];
+		setLogFile("capture");
+		setLogWriter((_path, line) => {
+			lines.push(JSON.parse(line) as Record<string, unknown>);
+		});
+		try {
+			const diag = "target_required: pass scope desktop or a window target";
+			const engine = fakeEngine({ failCuaStdout: JSON.stringify({ error: diag }) });
+			const { desktops, name } = await fresh(engine);
+			await desktops.claim(name, RUN_A);
+			const shot = await desktops.screenshot(name);
+			const err = await desktops.act(name, RUN_A, shot.id, CLICK).then(
+				() => {
+					throw new Error("unreachable");
+				},
+				(e: unknown) => e,
+			);
+			expect(err).toBeInstanceOf(DesktopError);
+			// The driver reported on stdout with stderr empty — the cause
+			// must still carry its diagnostic.
+			expect((err as Error).cause).toBeInstanceOf(DesktopError);
+			expect((err as Error).cause).toMatchObject({ message: expect.stringContaining(diag) });
+			// The observation still burned with the attempt.
+			await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(
+				/fresh screenshot/,
+			);
+			const logged = lines.find((l) => l.msg === "desktop act failed");
+			expect(logged).toMatchObject({ desktop: name, action: "cua:click" });
+			// Plain-text stdout diagnostics survive the same way.
+			const engine2 = fakeEngine({ failCuaStdout: `${diag}\n` });
+			const { desktops: d2, name: n2 } = await fresh(engine2);
+			await d2.claim(n2, RUN_A);
+			const shot2 = await d2.screenshot(n2);
+			const err2 = await d2.act(n2, RUN_A, shot2.id, CLICK).catch((e: unknown) => e);
+			expect((err2 as Error).cause).toMatchObject({
+				message: expect.stringContaining(diag),
+			});
+		} finally {
+			setLogWriter(null);
+			setLogFile(null);
+		}
 	});
 
 	test("a release issued during an in-flight act waits for the lane and sticks", async () => {
@@ -559,5 +661,36 @@ describe("desktops pool", () => {
 			/invalid desktop image/,
 		);
 		expect(engine.calls.length).toBe(0);
+	});
+
+	test("import onto an existing directory refuses before cp or chown", async () => {
+		const engine = fakeEngine({ existingDirs: new Set(["/home/desk"]) });
+		const { desktops, name } = await fresh(engine);
+		const host = join(mkdtempSync(join(tmpdir(), "goblin-desk-seed-")), "f.bin");
+		writeFileSync(host, "x");
+		await expect(desktops.cpIn(name, host, "/home/desk")).rejects.toThrow(/non-regular/);
+		// Nothing was copied and NO recursive chown ran anywhere.
+		expect(engine.calls.some((c) => c[0] === "cp")).toBe(false);
+		expect(engine.execCalls.some((c) => c.includes("-R"))).toBe(false);
+		// Non-file destinations are refused before the guest is touched.
+		await expect(desktops.cpIn(name, host, "relative/path")).rejects.toThrow(
+			/absolute file path/,
+		);
+		await expect(desktops.cpIn(name, host, "/home/desk/")).rejects.toThrow(
+			/absolute file path/,
+		);
+	});
+
+	test("import chowns exactly the copied leaf — no -R", async () => {
+		const engine = fakeEngine();
+		const { desktops, name } = await fresh(engine);
+		const host = join(mkdtempSync(join(tmpdir(), "goblin-desk-seed-")), "f.bin");
+		writeFileSync(host, "x");
+		await desktops.cpIn(name, host, "/home/desk/inbox/subagents/1/f.bin");
+		expect(engine.calls.some((c) => c[0] === "cp")).toBe(true);
+		const chown = engine.execCalls.find((c) => c.join(" ").includes("chown"));
+		expect(chown).toBeDefined();
+		expect(chown!.join(" ")).toContain("-h");
+		expect(chown!.join(" ")).not.toContain("-R");
 	});
 });

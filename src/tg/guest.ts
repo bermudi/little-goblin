@@ -724,6 +724,10 @@ export const SANDBOX_TOOLS: ReadonlySet<string> = new Set(["search"]);
 // guest summons keep the personal persona but never get tools that
 // pin work to, or reach beyond, the chat).
 export const GUEST_CHANNEL_EXCLUDED: ReadonlySet<string> = new Set([
+	// Subagent starts and desktop control pin work to a workspace the
+	// guest channel has no business driving.
+	"subagent",
+	"desktop",
 	"program",
 	"mail",
 	"delegate",

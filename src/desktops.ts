@@ -52,7 +52,7 @@ export type CuaTool =
 	| "set_value";
 
 export type DesktopAction =
-	| { kind: "launch"; app: "chromium" }
+	| { kind: "launch"; app: "chromium"; url?: string }
 	| { kind: "cua"; tool: CuaTool; args: Record<string, unknown> };
 
 export interface DesktopRow {
@@ -874,8 +874,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				if (action.kind === "launch") {
 					const r = await podman.exec(
 						ready.container,
-						["goblin-launch", action.app],
-						{ ...EXEC_OPTS },
+						["goblin-launch", action.app, ...(action.url === undefined ? [] : [action.url])],
+						{ ...EXEC_OPTS, workdir: "/run/desk" },
 					);
 					if (r.timedOut || r.exitCode !== 0) {
 						throw new DesktopError(

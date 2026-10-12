@@ -7,9 +7,8 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 Revamped 2026-10: Whistle (Cactus Compute) is the default engine — local,
 keyless, one 16.9 MB model file on the CPU — and the cloud is a menu of
-explicit kinds behind one interface. The previous state (groq whisper as
-the only kind, through the AI SDK's `transcribe()`) is subsumed: groq
-stays, the SDK dependency for it goes.
+explicit kinds behind one interface. Groq stays a kind; the AI SDK
+transcription dependency is gone (Engine interface).
 
 Intake semantics do not change. Voice notes and video notes transcribe
 once, eagerly; the transcript rides the data-attachment part; attached
@@ -94,6 +93,9 @@ Kinds (`zod` discriminated union in `config.ts`):
   choice.
 - Optional `language` passthrough on every kind (ISO-639-1; whistle's
   enum, elevenlabs also accepts 639-3). Omitted = detect everywhere.
+- **Unverified:** `gemini`, `mimo`, and `mistral` default models are
+  unverified until a first live call. OpenRouter warns ~60 s upstream
+  processing per request — long files prefer whistle/groq.
 
 ### The two adapter families
 
@@ -162,6 +164,9 @@ no Python: stateless subprocess like every other goblin child.
 - ffmpeg becomes a hard dependency of the whistle kind (it is the
   decoder); the boot probe warns when missing exactly like today, and
   intake degrades per message to the path-referenced attachment.
+- **Unverified:** quality on real speech is unmeasured beyond synthetic
+  probes — the `transcribed` log's chars/language fields make nonsense
+  visible, and cloud kinds are one config flip away.
 
 ### Orchestrator (unchanged shape, new prep awareness)
 
@@ -180,13 +185,13 @@ speech anywhere, throw = failure. The size-cap decision generalizes:
 ### Wire, UI, docs
 
 - `ConfigPostBody.transcription` (src/http/mod.ts) widens to the union;
-  the mini app's Voice card gains a kind `<select>` (whistle first),
-  a model input with per-kind placeholder default, and an auth input
-  disabled for whistle. Wire types stay hand-mirrored in app.js —
-  schema changes break typecheck, not the page (App channel rule).
-  The React settings editor (app/src/settingsDraft.ts) mirrors the same
-  rules: a kind switch clears model and secret, and a blank cloud model
-  or secret is valid because the server fills the kind's defaults.
+  the settings editor's Voice card gains a kind `<select>` (whistle
+  first), a model input with per-kind placeholder default, and an auth
+  input disabled for whistle. The editor (`app/src/settingsDraft.ts`,
+  served on both doors) mirrors the same rules: a kind switch clears
+  model and secret, and a blank cloud model or secret is valid because
+  the server fills the kind's defaults — schema changes break
+  typecheck, not the page (App channel rule).
 - Boot log: one line naming engine, model, and (whistle) artifact
   presence. Every transcription logs provider, model, duration, chars,
   language — the existing `transcribed` line, generalized.
@@ -247,49 +252,3 @@ user content `[{type:"input_audio", input_audio:{data,format:"ogg"}},
 `choices[0].message.content`, finish_reason stop — its fixture is the
 verbatim response.
 
-## Plan (implementation order)
-
-Landed 2026-10-10 as six commits on `feature/whistle` (orchestrator →
-cloud kinds → whistle engine → config/wire/UI → docs → operator flip).
-Kept for the record:
-
-On branch `feature/whistle`; small commits, gate = `bun test` +
-`bun run typecheck` (all three programs) before each merge step.
-
-1. **Orchestrator refactor** (`transcribe.ts`): `SpeechEngine`
-   interface + `speechEngine()` factory; groq re-expressed as the
-   multipart engine (behavior-identical; `@ai-sdk/groq` dropped);
-   prep-profile segmentation (wav profile added, opus profile
-   unchanged); existing tests move from fake `TranscriptionModelV2`
-   to a fake engine — same assertions.
-2. **Cloud engines** (`transcribe-cloud.ts`): shared multipart core,
-   openai/mistral (constants), openrouter JSON, elevenlabs, gemini,
-   mimo chat; per-kind parse + error tests against the pinned bodies;
-   auth resolution tests (fake AuthStore; assert keys never logged).
-3. **Whistle engine** (`transcribe-whistle.ts`): digest-pinned
-   artifact fetch (injectable fetch), spawn via `spawnProc`/`boundedRun`
-   (120 s/segment), keywords temp file, stub-binary tests (a script
-   emitting the pinned JSON / stderr / silence), digest-mismatch test,
-   prep-profile test with real ffmpeg (env-dep, like today).
-4. **Config + wire + UI**: the union in `config.ts` (+tests: defaults,
-   auth defaulting, "" off, back-compat `{kind:"groq"}`), wire type in
-   `http/mod.ts`, mini-app form in `app.js`, example config rewrite.
-5. **Docs**: `docs/voice.md` (whistle first, provider table, local-vs-
-   cloud privacy note, language coverage caveat), `docs/configuration.md`,
-   `DESIGN.md` map line, `design/model.md` Transcription paragraph, this
-   doc already landed.
-6. **Operator actions** (outside the code): `pass-keys add goblin-dev
-   <openai|mistral|elevenlabs|gemini> Keys/<Item>` + auth.jsonl records
-   (openrouter/mimo reuse `openrouter`); switch `goblin.json5` to
-   `transcription: {kind:"whistle", keywords:[…]}`; deploy via
-   `scripts/deploy.sh` (the prod box auto-fetches artifacts on the first
-   voice note — 18 MB, once); verify with one short voice note per
-   channel and check the `transcribed` log lines.
-
-Risk register: HF artifact drift (digest gate fails loud → manual
-override); whistle quality on real speech unmeasured beyond synthetic
-probes (cloud kinds are one config flip away; the log's chars/language
-per note makes nonsense visible); prod arch assumed x86_64 (fetcher
-errors loudly with manual instructions otherwise); OpenRouter warns
-~60 s upstream processing per request (long files: prefer whistle/groq
-— documented); gemini/mistral defaults unverified until first live call.

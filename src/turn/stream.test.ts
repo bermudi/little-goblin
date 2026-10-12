@@ -1,9 +1,9 @@
-// Stream driver boundary tests (design/runtime-turn.md → test
-// migration): the membership seam — #96's regression home, moved here
-// from runtime.test.ts when the claim+replay got its one home — plus
-// the steer fold's mechanics, fan-out/wire-log semantics, and the
-// failed-outcome handoff. Landing decisions live in state.test.ts; the
-// sink contract (exactly one onDone) and ownership-mark semantics stay
+// Stream driver boundary tests (design/runtime-turn.md → Module map):
+// the membership seam — #96's regression home, now that claim+replay has
+// one home — plus the steer fold's mechanics, fan-out/wire-log
+// semantics, and the failed-outcome handoff. Landing decisions live in
+// state.test.ts; the sink contract (exactly one onDone) and
+// ownership-mark semantics stay
 // e2e in runtime.test.ts.
 
 import { afterEach, describe, expect, spyOn, test } from "bun:test";

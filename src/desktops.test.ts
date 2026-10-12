@@ -51,6 +51,10 @@ function fakeEngine(opts?: {
 		labels?: Record<string, string>;
 	}>;
 	varyFrames?: boolean;
+	/** cua act calls fail — the dispatch burn-through test. */
+	failCua?: boolean;
+	/** cua act calls hold until this resolves — lane-interleave tests. */
+	execGate?: Promise<void>;
 }) {
 	const containers = new Map<string, FakeContainer>();
 	for (const c of opts?.containers ?? []) {
@@ -171,6 +175,10 @@ function fakeEngine(opts?: {
 			};
 		}
 		// cua act calls: report a driver-claimed effect.
+		if (opts?.execGate !== undefined) await opts.execGate;
+		if (opts?.failCua === true) {
+			return { stdout: "", stderr: "driver exploded", exitCode: 1, timedOut: false, truncated: false };
+		}
 		return {
 			stdout: JSON.stringify({ status: "done", effect: "unverifiable" }),
 			stderr: "",
@@ -297,8 +305,8 @@ describe("desktops pool", () => {
 		row.leaseExpiresAt = Date.now() - 1000;
 		store.put(row);
 		await desktops.claim(name, RUN_B);
-		expect(() => desktops.release(name, RUN_A)).toThrow(/only the holder/);
-		desktops.release(name, RUN_B);
+		await expect(desktops.release(name, RUN_A)).rejects.toThrow(/only the holder/);
+		await desktops.release(name, RUN_B);
 		expect(store.get(name)!.leaseKind).toBeNull();
 	});
 
@@ -470,5 +478,86 @@ describe("desktops pool", () => {
 		expect(shot.path).toBe(join(shotsRoot, name, "shots", "1.png"));
 		expect(shot.bytes).toEqual(PNG);
 		expect(await Bun.file(shot.path).exists()).toBe(true);
+	});
+
+	test("launch refuses flag-shaped and non-web urls before any exec", async () => {
+		const engine = fakeEngine();
+		const { desktops, name } = await fresh(engine);
+		await desktops.claim(name, RUN_A);
+		const shot = await desktops.screenshot(name);
+		// A refused url is validation, not dispatch — the observation
+		// is not consumed, so the same id binds each attempt.
+		for (const url of [
+			"--remote-debugging-port=9222",
+			"--load-extension=/x",
+			"--user-data-dir=/tmp/x",
+			"--gpu-launcher=sh -c id",
+			"javascript:alert(1)",
+			"chrome://flags",
+			"https://example.com/a b",
+		]) {
+			await expect(
+				desktops.act(name, RUN_A, shot.id, {
+					kind: "launch",
+					app: "chromium",
+					url,
+				}),
+			).rejects.toThrow(/not allowed/);
+		}
+		expect(engine.execCalls.some((a) => a.includes("goblin-launch"))).toBe(false);
+		// The allowlist passes through as the single trailing arg.
+		for (const url of ["https://example.com/", "file:///tmp/probe.html", "about:blank"]) {
+			const s = await desktops.screenshot(name);
+			await desktops.act(name, RUN_A, s.id, { kind: "launch", app: "chromium", url });
+		}
+		const launches = engine.execCalls.filter((a) => a.includes("goblin-launch"));
+		expect(launches.map((a) => a.at(-1))).toEqual([
+			"https://example.com/",
+			"file:///tmp/probe.html",
+			"about:blank",
+		]);
+	});
+
+	test("a failed dispatch consumes its observation — input is never replayed", async () => {
+		const engine = fakeEngine({ failCua: true });
+		const { desktops, name } = await fresh(engine);
+		await desktops.claim(name, RUN_A);
+		const shot = await desktops.screenshot(name);
+		await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(
+			/may have partially run.*fresh screenshot/s,
+		);
+		// The obs burned with the attempt; the same id cannot retry.
+		await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(
+			/fresh screenshot/,
+		);
+	});
+
+	test("a release issued during an in-flight act waits for the lane and sticks", async () => {
+		const gate = Promise.withResolvers<void>();
+		const engine = fakeEngine({ execGate: gate.promise });
+		const { desktops, store, name } = await fresh(engine);
+		await desktops.claim(name, RUN_A);
+		const shot = await desktops.screenshot(name);
+		const acting = desktops.act(name, RUN_A, shot.id, CLICK);
+		// The release queues behind the act inside the lane instead of
+		// read-modify-writing a stale row underneath it.
+		const releasing = desktops.release(name, RUN_A);
+		gate.resolve();
+		await acting;
+		await releasing;
+		expect(store.get(name)!.leaseKind).toBeNull();
+		expect(store.get(name)!.leaseExpiresAt).toBeNull();
+	});
+
+	test("invalid image refs are refused before any podman call", async () => {
+		const engine = fakeEngine();
+		const { desktops } = rig(engine);
+		await expect(desktops.allocate("d1", { image: "-bad" })).rejects.toThrow(
+			/invalid desktop image/,
+		);
+		await expect(desktops.allocate("d1", { image: "x;rm -rf /" })).rejects.toThrow(
+			/invalid desktop image/,
+		);
+		expect(engine.calls.length).toBe(0);
 	});
 });

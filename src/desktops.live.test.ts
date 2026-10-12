@@ -99,6 +99,7 @@ interface CuaElement {
 	role: string;
 	label?: string;
 	element_token?: string;
+	in_web_content?: boolean;
 }
 interface CuaWindowState {
 	elements?: CuaElement[];
@@ -223,6 +224,41 @@ describe.skipIf(!LIVE)("desktop live drift (GOBLIN_DESKTOP_LIVE=1)", () => {
 				args: { element_token: button!.element_token },
 			}),
 		).rejects.toBeInstanceOf(DesktopError);
+
+		// Typing, the same way: click the input to focus, then
+		// type_text — each act bound to a fresh observation.
+		const focusObs = await desktops!.inspect(DESKTOP);
+		const input = ((focusObs.state as CuaWindowState).elements ?? []).find(
+			(e) => e.role === "entry" && e.in_web_content === true,
+		);
+		expect(input?.element_token).toBeDefined();
+		await desktops!.act(DESKTOP, op, focusObs.id, {
+			kind: "cua",
+			tool: "click",
+			args: { element_token: input!.element_token, pid: chromiumPid },
+		});
+		// Each inspect supersedes the previous element tokens — the
+		// type target has to come from the same observation it binds.
+		const typeObs = await desktops!.inspect(DESKTOP);
+		const input2 = ((typeObs.state as CuaWindowState).elements ?? []).find(
+			(e) => e.role === "entry" && e.in_web_content === true,
+		);
+		expect(input2?.element_token).toBeDefined();
+		await desktops!.act(DESKTOP, op, typeObs.id, {
+			kind: "cua",
+			tool: "type_text",
+			args: {
+				pid: chromiumPid,
+				element_token: input2!.element_token,
+				text: "hello goblin",
+			},
+		});
+		await Bun.sleep(1500);
+		const typed = await execOut(
+			["xdotool", "search", "--name", "typed:hello goblin", "getwindowname", "%@"],
+			{ DISPLAY: ":99" },
+		);
+		expect(typed.trim()).toContain("typed:hello goblin");
 	}, 120_000);
 
 	afterAll(async () => {

@@ -22,7 +22,13 @@
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { z } from "zod";
-import { paths, ensureDir, desktopsConfigSchema, type DesktopsConfig } from "./config.ts";
+import {
+	paths,
+	ensureDir,
+	desktopsConfigSchema,
+	imageRefSchema,
+	type DesktopsConfig,
+} from "./config.ts";
 import { durableWriteBytes } from "./durable.ts";
 import { log } from "./log.ts";
 import type { ContainerInspect, Podman } from "./podman.ts";
@@ -41,15 +47,26 @@ export type LeaseHolder =
 	| { kind: "conversation"; id: string }
 	| { kind: "operator" };
 
+// The action surface is cua-driver 0.34.1's input tools minus the
+// ones that bypass goblin's own gates: launch_app/kill_app would
+// route around the goblin-launch whitelist and refusal logging, the
+// browser_* set drives a CDP channel we don't wire, and the raw
+// mouse_* / move_cursor / parallel_mouse_drag primitives are covered
+// by click/drag. Observation tools (list_windows, get_window_state,
+// get_desktop_state, zoom, verify_state) ride inspect/screenshot.
 export type CuaTool =
 	| "click"
 	| "double_click"
 	| "right_click"
 	| "press_key"
+	| "hotkey"
 	| "type_text"
 	| "scroll"
 	| "drag"
-	| "set_value";
+	| "set_value"
+	| "bring_to_front"
+	| "invoke_menu"
+	| "set_window_frame";
 
 export type DesktopAction =
 	| { kind: "launch"; app: "chromium"; url?: string }
@@ -224,6 +241,23 @@ const SESSION_ENV = {
 } as const;
 const EXEC_OPTS = { timeoutMs: 60_000, maxOutput: 4 * 1024 * 1024 } as const;
 
+// Chromium refuses background-injected input whenever its renderer
+// isn't the focused surface; foreground delivery is also just the
+// right semantic for a model driving one visible desktop. AT-SPI
+// actions (invoke_menu, set_window_frame, bring_to_front) don't take
+// delivery_mode — set_value does, but it's AT-SPI SetValue, not
+// injected input, so it's out too.
+const FOREGROUND_TOOLS: ReadonlySet<string> = new Set([
+	"click",
+	"double_click",
+	"right_click",
+	"press_key",
+	"hotkey",
+	"type_text",
+	"scroll",
+	"drag",
+]);
+
 export function containerNameForDesktop(name: string): string {
 	return `goblin-desk-${name}`;
 }
@@ -252,6 +286,31 @@ function leaseHeldBy(row: DesktopRow, holder: LeaseHolder, now: number): boolean
 		row.leaseKind === holder.kind &&
 		row.leaseId === holderId(holder)
 	);
+}
+
+// The design wants every refusal on the log with its reason — the
+// model sees the same message back as the tool result.
+function refuse(
+	desktop: string,
+	op: string,
+	reason: string,
+	holder?: LeaseHolder,
+): DesktopError {
+	log.warn("desktop refused", {
+		desktop,
+		op,
+		reason,
+		...(holder === undefined ? {} : { holder: holderLabel(holder) }),
+	});
+	return new DesktopError(reason);
+}
+
+// Launch URLs are model-controlled strings that land on Chromium's
+// argv — a bare `--flag` would become a browser switch. Only real
+// URLs (no whitespace or control characters) or exactly about:blank.
+const LAUNCH_URL_RE = /^(?:https?|file):\/\/[^\s\x00-\x1f\x7f]+$/;
+function launchUrlOk(url: string): boolean {
+	return url === "about:blank" || LAUNCH_URL_RE.test(url);
 }
 
 // Key-order-canonical JSON — the identical-action check must not care
@@ -294,9 +353,9 @@ export interface Desktops {
 	list(): DesktopRow[];
 	get(name: string): DesktopRow | null;
 	claim(name: string, holder: LeaseHolder): Promise<DesktopRow>;
-	release(name: string, holder: LeaseHolder): void;
-	handoff(name: string, from: LeaseHolder, to: LeaseHolder): void;
-	reserve(name: string, reserved: boolean): void;
+	release(name: string, holder: LeaseHolder): Promise<void>;
+	handoff(name: string, from: LeaseHolder, to: LeaseHolder): Promise<void>;
+	reserve(name: string, reserved: boolean): Promise<void>;
 	setNetwork(name: string, enabled: boolean): Promise<void>;
 	destroy(name: string, by: LeaseHolder): Promise<void>;
 	screenshot(
@@ -320,7 +379,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 
 	function requireOurs(name: string, ins: ContainerInspect): void {
 		if (ins.labels["goblin.desktop"] !== "1" || ins.labels["goblin.desktop.name"] !== name) {
-			throw new DesktopError(
+			throw refuse(
+				name,
+				"ensure",
 				`container ${containerNameForDesktop(name)} is not a goblin desktop named ${name} — refusing to touch it`,
 			);
 		}
@@ -367,7 +428,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		const drop = async (why: string): Promise<never> => {
 			await podman.rm(container);
 			store.delete(name);
-			throw new DesktopError(`desktop ${name} ${why} — the container was removed`);
+			throw refuse(name, "network", `desktop ${name} ${why} — the container was removed`);
 		};
 		try {
 			await podman.networkDisconnect(networkName, container);
@@ -384,7 +445,9 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 
 	async function createContainer(name: string, image: string, wantNetwork: boolean): Promise<void> {
 		if (!(await podman.imageExists(image))) {
-			throw new DesktopError(
+			throw refuse(
+				name,
+				"create",
 				`desktop image ${image} is not in the local store; build it from the repo root: podman build -t ${image} deploy/desktop`,
 			);
 		}
@@ -482,7 +545,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				note: "desktop container was gone — recreated fresh; its previous contents and lease are gone",
 			};
 		}
-		throw new DesktopError(`no desktop named ${name} — allocate it first`);
+		throw refuse(name, "ensure", `no desktop named ${name} — allocate it first`);
 	}
 
 	async function sweep(excludeName: string): Promise<void> {
@@ -583,18 +646,29 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		async allocate(name, opts) {
 			await sweepOnce(name);
 			if (!NAME_RE.test(name)) {
-				throw new DesktopError(
+				throw refuse(
+					name,
+					"allocate",
 					`invalid desktop name ${JSON.stringify(name)} — must match ${NAME_RE.source}`,
+				);
+			}
+			if (opts?.image !== undefined && !imageRefSchema.safeParse(opts.image).success) {
+				throw refuse(
+					name,
+					"allocate",
+					`invalid desktop image ${JSON.stringify(opts.image)} — not a valid image ref`,
 				);
 			}
 			return await lane(name, async () => {
 				if (store.get(name) !== null) {
-					throw new DesktopError(`desktop ${name} already exists`);
+					throw refuse(name, "allocate", `desktop ${name} already exists`);
 				}
 				const existing = store.list().map((r) => r.name);
 				const max = cfg().max;
 				if (existing.length >= max) {
-					throw new DesktopError(
+					throw refuse(
+						name,
+						"allocate",
 						`desktop pool is full (max ${max}): ${existing.join(", ")} — destroy one first`,
 					);
 				}
@@ -637,8 +711,11 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				const row = ready.row;
 				const now = Date.now();
 				if (leaseLive(row, now) && !leaseHeldBy(row, holder, now)) {
-					throw new DesktopError(
+					throw refuse(
+						name,
+						"claim",
 						`desktop ${name} is controlled by ${rowHolderLabel(row)} until ${new Date(row.leaseExpiresAt!).toISOString()} — release or wait for expiry`,
+						holder,
 					);
 				}
 				const transition =
@@ -661,53 +738,78 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			});
 		},
 
-		release(name, holder) {
-			const row = store.get(name);
-			if (row === null) throw new DesktopError(`no desktop named ${name}`);
-			const now = Date.now();
-			if (!leaseHeldBy(row, holder, now)) {
-				const current = leaseLive(row, now)
-					? ` — it is held by ${rowHolderLabel(row)}`
-					: "";
-				throw new DesktopError(
-					`only the holder can release desktop ${name}${current}`,
-				);
-			}
-			row.leaseKind = null;
-			row.leaseId = null;
-			row.leaseExpiresAt = null;
-			row.lastUsedAt = now;
-			store.put(row);
-			log.info("desktop lease released", { desktop: name, holder: holderLabel(holder) });
-		},
-
-		handoff(name, from, to) {
-			const row = store.get(name);
-			if (row === null) throw new DesktopError(`no desktop named ${name}`);
-			const now = Date.now();
-			if (!leaseHeldBy(row, from, now)) {
-				throw new DesktopError(
-					`cannot hand off desktop ${name} — ${holderLabel(from)} does not hold it`,
-				);
-			}
-			row.leaseKind = to.kind;
-			row.leaseId = holderId(to);
-			row.leaseExpiresAt = now + LEASE_TTL_MS;
-			row.lastUsedAt = now;
-			store.put(row);
-			log.info("desktop lease handoff", {
-				desktop: name,
-				from: holderLabel(from),
-				to: holderLabel(to),
+		// release/handoff/reserve sweep then ride the same lane as
+		// claim/act — both halves keep call order: a row read outside
+		// the lane loses updates to an in-flight act, and skipping the
+		// sweep would let these cut in line ahead of it.
+		async release(name, holder) {
+			await sweepOnce(name);
+			await lane(name, async () => {
+				const row = store.get(name);
+				if (row === null) {
+					throw refuse(name, "release", `no desktop named ${name}`, holder);
+				}
+				const now = Date.now();
+				if (!leaseHeldBy(row, holder, now)) {
+					const current = leaseLive(row, now)
+						? ` — it is held by ${rowHolderLabel(row)}`
+						: "";
+					throw refuse(
+						name,
+						"release",
+						`only the holder can release desktop ${name}${current}`,
+						holder,
+					);
+				}
+				row.leaseKind = null;
+				row.leaseId = null;
+				row.leaseExpiresAt = null;
+				row.lastUsedAt = now;
+				store.put(row);
+				log.info("desktop lease released", { desktop: name, holder: holderLabel(holder) });
 			});
 		},
 
-		reserve(name, reserved) {
-			const row = store.get(name);
-			if (row === null) throw new DesktopError(`no desktop named ${name}`);
-			row.reserved = reserved;
-			store.put(row);
-			log.info("desktop reserve", { desktop: name, reserved });
+		async handoff(name, from, to) {
+			await sweepOnce(name);
+			await lane(name, async () => {
+				const row = store.get(name);
+				if (row === null) {
+					throw refuse(name, "handoff", `no desktop named ${name}`, from);
+				}
+				const now = Date.now();
+				if (!leaseHeldBy(row, from, now)) {
+					throw refuse(
+						name,
+						"handoff",
+						`cannot hand off desktop ${name} — ${holderLabel(from)} does not hold it`,
+						from,
+					);
+				}
+				row.leaseKind = to.kind;
+				row.leaseId = holderId(to);
+				row.leaseExpiresAt = now + LEASE_TTL_MS;
+				row.lastUsedAt = now;
+				store.put(row);
+				log.info("desktop lease handoff", {
+					desktop: name,
+					from: holderLabel(from),
+					to: holderLabel(to),
+				});
+			});
+		},
+
+		async reserve(name, reserved) {
+			await sweepOnce(name);
+			await lane(name, async () => {
+				const row = store.get(name);
+				if (row === null) {
+					throw refuse(name, "reserve", `no desktop named ${name}`);
+				}
+				row.reserved = reserved;
+				store.put(row);
+				log.info("desktop reserve", { desktop: name, reserved });
+			});
 		},
 
 		async setNetwork(name, enabled) {
@@ -732,8 +834,11 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				const row = store.get(name);
 				const now = Date.now();
 				if (row !== null && leaseLive(row, now) && !leaseHeldBy(row, by, now)) {
-					throw new DesktopError(
+					throw refuse(
+						name,
+						"destroy",
 						`desktop ${name} is controlled by ${rowHolderLabel(row)} — it can release, or its lease expires`,
+						by,
 					);
 				}
 				const container = containerNameForDesktop(name);
@@ -771,11 +876,20 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					["cat", "--", inContainer],
 					{ ...EXEC_OPTS, user: DESKTOP_USER, workdir: "/run/desk" },
 				);
-				void podman.exec(ready.container, ["rm", "-f", inContainer], {
+				// Best-effort temp cleanup — a leftover file in /run/desk
+				// is harmless, an unobserved rejection is not.
+				const rm = await podman.exec(ready.container, ["rm", "-f", inContainer], {
 					...EXEC_OPTS,
 					user: DESKTOP_USER,
 					workdir: "/run/desk",
 				});
+				if (rm.timedOut || rm.exitCode !== 0) {
+					log.warn("desktop screenshot temp rm failed", {
+						desktop: name,
+						path: inContainer,
+						exit: rm.timedOut ? "timeout" : rm.exitCode,
+					});
+				}
 				if (read.timedOut || read.exitCode !== 0 || read.stdout.byteLength === 0) {
 					throw new DesktopError(`could not read the screenshot back from desktop ${name}`);
 				}
@@ -850,56 +964,81 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				const now = Date.now();
 				if (!leaseHeldBy(row, holder, now)) {
 					const held = leaseLive(row, now);
-					throw new DesktopError(
+					throw refuse(
+						name,
+						"act",
 						held
 							? `desktop ${name} is controlled by ${rowHolderLabel(row)} — ${holderLabel(holder)} cannot act on it`
 							: `desktop ${name} has no live lease — ${holderLabel(holder)} must claim it before acting`,
+						holder,
 					);
 				}
 				// Observation binding: act only on the newest, unconsumed
 				// observation (design/subagents.md — Eliza's mechanism).
 				if (obsId !== row.lastObsId || row.lastObsUsed) {
-					throw new DesktopError(
+					throw refuse(
+						name,
+						"act",
 						`observation ${obsId} is stale on desktop ${name} — take a fresh screenshot first`,
+						holder,
 					);
 				}
 				const sig = stableJson(action);
 				if (sig === row.lastActSig && row.lastObsHash === row.lastActFrameHash) {
-					throw new DesktopError(
+					throw refuse(
+						name,
+						"act",
 						`identical action against an unchanged screen on ${name} — take a fresh screenshot first`,
+						holder,
 					);
 				}
-				row.leaseExpiresAt = now + LEASE_TTL_MS; // every act renews
-				let result: unknown;
-				if (action.kind === "launch") {
-					const r = await podman.exec(
-						ready.container,
-						["goblin-launch", action.app, ...(action.url === undefined ? [] : [action.url])],
-						{ ...EXEC_OPTS, workdir: "/run/desk" },
+				if (action.kind === "launch" && action.url !== undefined && !launchUrlOk(action.url)) {
+					throw refuse(
+						name,
+						"act",
+						`launch url ${JSON.stringify(action.url)} is not allowed on ${name} — http(s)://, file:// or about:blank only`,
+						holder,
 					);
-					if (r.timedOut || r.exitCode !== 0) {
-						throw new DesktopError(
-							`launch ${action.app} failed on desktop ${name}: ${r.stderr.slice(0, 300)}`,
-						);
-					}
-					result = { launched: action.app };
-				} else {
-					const args: Record<string, unknown> = { ...action.args };
-					// Chromium takes keys only in foreground on X11
-					// (phase-0 measured); callers may still override.
-					if (
-						(action.tool === "press_key" || action.tool === "type_text") &&
-						args.delivery_mode === undefined
-					) {
-						args.delivery_mode = "foreground";
-					}
-					result = await cuaCall(ready.container, action.tool, args, name);
 				}
+				// Consume the observation and renew the lease BEFORE
+				// dispatch: input is never replay-safe, so a failed or
+				// timed-out call still burns the frame it was bound to.
+				row.leaseExpiresAt = now + LEASE_TTL_MS;
 				row.lastObsUsed = true;
 				row.lastActSig = sig;
 				row.lastActFrameHash = row.lastObsHash;
-				row.lastUsedAt = Date.now();
+				row.lastUsedAt = now;
 				store.put(row);
+				let result: unknown;
+				try {
+					if (action.kind === "launch") {
+						const r = await podman.exec(
+							ready.container,
+							[
+								"goblin-launch",
+								action.app,
+								...(action.url === undefined ? [] : [action.url]),
+							],
+							{ ...EXEC_OPTS, workdir: "/run/desk" },
+						);
+						if (r.timedOut || r.exitCode !== 0) {
+							throw new DesktopError(
+								`launch ${action.app} failed on desktop ${name}: ${r.stderr.slice(0, 300)}`,
+							);
+						}
+						result = { launched: action.app };
+					} else {
+						const args: Record<string, unknown> = { ...action.args };
+						if (FOREGROUND_TOOLS.has(action.tool) && args.delivery_mode === undefined) {
+							args.delivery_mode = "foreground";
+						}
+						result = await cuaCall(ready.container, action.tool, args, name);
+					}
+				} catch (err) {
+					throw new DesktopError(
+						`${err instanceof Error ? err.message : String(err)} — the action may have partially run on ${name}; take a fresh screenshot before retrying`,
+					);
+				}
 				const effect =
 					typeof result === "object" && result !== null && "effect" in result
 						? (result as { effect?: unknown }).effect

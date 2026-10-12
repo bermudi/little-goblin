@@ -260,8 +260,7 @@ The built client in `app/dist` is read live on every request; building there
 can publish a new client before the backend restarts. Verification builds must
 use an isolated output directory, not live `app/dist`. Client publication and
 backend restart are one coordinated rollout requiring bermudi's OK. Source edits
-and these instructions authorize neither. The plain Settings mini app has no
-build step and its client is loaded at backend startup.
+and these instructions authorize neither.
 
 Conversation state, settings and workspace files live in `GOBLIN_HOME`, not
 in the checkout. Updates must preserve them and never silently migrate keys

@@ -4,7 +4,7 @@
 //
 // auth.jsonl sits next to this file (mode 0600), one JSON record per line:
 //   {"name": "telegram", "value": "123456:ABC-your-bot-token"}
-//   {"name": "openrouter", "value": "!pass show api/openrouter"}
+//   {"name": "openrouter", "value": "!pass-keys get goblin-dev OPENROUTER_KEY"}
 // A value starting with "!" is resolved by running it as a command at the
 // point of use. Required records: "telegram" (the bot token) plus one per
 // provider `auth` name below.

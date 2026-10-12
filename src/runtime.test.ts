@@ -15,7 +15,7 @@ import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { readFileTool } from "./agent/tools/read.ts";
 import { parseConfig } from "./config.ts";
 import { appAddress, captureConversationSettings, openStore } from "./conversation.ts";
-import type { JevClient } from "./jev.ts";
+import type { System1Client } from "./system1.ts";
 import { setLogFile } from "./log.ts";
 import { Reviewer } from "./reviewer.ts";
 import { Runtime, type TurnDone, type TurnSink, userMessage } from "./runtime.ts";
@@ -3408,7 +3408,7 @@ describe("loop landings", () => {
 		// calls the turn's own digest ring is scored "stuck". ≥0.7 warns;
 		// a second consecutive ≥0.7 cuts; a pass resets. Fail-open.
 		function decideScript(scores: (number | Error)[]): {
-			decide: JevClient["decide"];
+			decide: System1Client["decide"];
 			states: { totalToolCalls: number; recentCalls: { result: string }[] }[];
 			// A check in flight survives onDone (the verdict lands after the
 			// turn's last request) — tests that assert on calls must await it.
@@ -3417,7 +3417,7 @@ describe("loop landings", () => {
 			const states: { totalToolCalls: number; recentCalls: { result: string }[] }[] = [];
 			let i = 0;
 			let pending = 0;
-			const decide: JevClient["decide"] = async (state, questions) => {
+			const decide: System1Client["decide"] = async (state, questions) => {
 				pending++;
 				try {
 					// Settle inside the next tool's execution so the verdict is

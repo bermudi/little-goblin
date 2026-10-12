@@ -28,7 +28,7 @@ import {
 	startScheduler,
 	type SchedulerDeps,
 } from "./scheduler.ts";
-import { JevError } from "./jev.ts";
+import { System1Error } from "./system1.ts";
 
 let dirs: string[] = [];
 function tmpdirPath(): string {
@@ -188,7 +188,7 @@ describe("scoredMailEvent", () => {
 	});
 
 	test("a gate outage fails open with the unavailable line — the fire proceeds", async () => {
-		const out = await scoredMailEvent(gate(new JevError("timeout")), "from: a");
+		const out = await scoredMailEvent(gate(new System1Error("timeout")), "from: a");
 		expect(out).toBe("from: a\n[injection check unavailable]");
 	});
 });

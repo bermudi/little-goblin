@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModel, ToolSet } from "ai";
 import { openStore, type ConversationStore } from "./conversation.ts";
-import { JevError } from "./jev.ts";
+import { System1Error } from "./system1.ts";
 import { setLogFile } from "./log.ts";
 import {
 	buildGateState,
@@ -137,7 +137,7 @@ interface Harness {
 	staging: string;
 	notified: { conversationId: string; skills: string[] }[];
 	depsFor(o: {
-		nouls?: { correction: number; procedure: number } | JevError | Error;
+		nouls?: { correction: number; procedure: number } | System1Error | Error;
 		script?: { text?: string; calls?: { name: string; input: unknown }[]; error?: string }[];
 		validateCode?: number;
 		queueCap?: number;
@@ -305,12 +305,12 @@ describe("reviewer gate", () => {
 	test("gate failure falls back to the tool-count rule", async () => {
 		const quiet = harness();
 		await new Reviewer(
-			quiet.depsFor({ nouls: new JevError("timeout"), script: [{ text: "x" }] }),
+			quiet.depsFor({ nouls: new System1Error("timeout"), script: [{ text: "x" }] }),
 		).considerTurn(turn({ toolNames: ["bash"] }));
 		expect(quiet.notified).toEqual([]);
 		quiet.store.close();
 		const busy = harness();
-		const deps = busy.depsFor({ nouls: new JevError("http", 500), script: [{ text: "nothing" }] });
+		const deps = busy.depsFor({ nouls: new System1Error("http", 500), script: [{ text: "nothing" }] });
 		let resolved = false;
 		const inner = deps.reviewModel;
 		deps.reviewModel = async (conv) => {
@@ -334,7 +334,7 @@ describe("reviewer gate", () => {
 		const h = harness();
 		const logFile = join(h.workspace, "goblin.log");
 		setLogFile(logFile);
-		const deps = h.depsFor({ nouls: new JevError("timeout"), script: [{ text: "x" }] });
+		const deps = h.depsFor({ nouls: new System1Error("timeout"), script: [{ text: "x" }] });
 		const reviewer = new Reviewer(deps);
 		await reviewer.considerTurn(turn({ toolNames: ["bash", "read_file", "bash"] }));
 		await reviewer.considerTurn(turn({ toolNames: ["bash"] }));

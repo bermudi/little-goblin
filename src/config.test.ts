@@ -337,7 +337,7 @@ describe("goblin.json5", () => {
 			model: "jev-latest",
 			baseUrl: "https://example.com",
 		});
-		// system1.model is a Jev model id, NOT a <provider>/<model-id> chat
+		// system1.model is a bare decision-model id, NOT a <provider>/<model-id> chat
 		// ref — it is NOT provider-validated (unlike reviewer.model).
 		writeFileSync(join(dir, "goblin.json5"), `${base},system1:{auth:"x",model:"other/x"}}`);
 		expect(loadConfig()!.system1?.model).toBe("other/x");

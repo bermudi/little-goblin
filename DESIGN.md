@@ -393,8 +393,9 @@ src/
                     (MailHit, ThreadContext, HistoryExpiredError, MailPoller)
   injection.ts      System One injection checker: shared System One gate →
                     clean/suspicious/malicious/unavailable verdicts, fail-open
-  jev.ts            the Jev/OpenRouter Decisions boundary (the reviewer's
-                    gate and the checker's shared client)
+  system1.ts        the System One boundary — the OpenRouter Decisions
+                    client shared by all four consumers
+                    (design/system1.md)
   runtime.ts        per-conversation queue, lane drain, checkAuthority,
                     stop/shutdown, the attempt loop — the turn's phases
                     live in turn/ (design/runtime-turn.md)

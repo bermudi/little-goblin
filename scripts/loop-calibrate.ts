@@ -13,7 +13,7 @@
 import { Database } from "bun:sqlite";
 import { loadAuth } from "../src/auth.ts";
 import { loadConfig, paths } from "../src/config.ts";
-import { JevClient, JEV_MODEL } from "../src/jev.ts";
+import { System1Client, DEFAULT_MODEL } from "../src/system1.ts";
 import { LOOP_QUESTIONS, loopState } from "../src/loop-watchdog.ts";
 import { summarize, toolOk, type ToolCallDigest } from "../src/reviewer.ts";
 
@@ -144,7 +144,7 @@ const synthetic: Case[] = [
 		calls: rep(16, (i) => ({
 			tool: "bash",
 			args: JSON.stringify({ command: `sed -n 1,200p src/module${i}.ts` }),
-			result: `// module${i}: ${["config loader", "telegram intake", "delivery", "runtime lanes", "jev client", "auth", "mail", "programs"][i % 8]} … export function f${i}() { log.info(\"m${i}\") }`,
+			result: `// module${i}: ${["config loader", "telegram intake", "delivery", "runtime lanes", "system1 client", "auth", "mail", "programs"][i % 8]} … export function f${i}() { log.info(\"m${i}\") }`,
 			ok: true,
 		})),
 	},
@@ -180,7 +180,7 @@ const topIdx = args.indexOf("--top");
 const topN = topIdx === -1 ? 10 : Number.parseInt(args[topIdx + 1] ?? "", 10);
 if (!Number.isInteger(topN) || topN < 1) throw new Error("--top expects a positive integer");
 const models = topIdx === -1 ? [...args] : args.filter((_, i) => i !== topIdx && i !== topIdx + 1);
-if (models.length === 0) models.push(config.system1?.model ?? JEV_MODEL);
+if (models.length === 0) models.push(config.system1?.model ?? DEFAULT_MODEL);
 
 // Expectations for stored turns are verified by hand — label a turn's
 // event id after reading what it did, never by guessing. 105 (the MCPi
@@ -208,7 +208,7 @@ const cases = [
 db.close();
 
 for (const model of models) {
-	const client = new JevClient({
+	const client = new System1Client({
 		model,
 		auth: () => auth.resolve(authRef),
 		...(config.system1?.baseUrl ? { baseUrl: config.system1.baseUrl } : {}),

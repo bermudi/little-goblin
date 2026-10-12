@@ -11,7 +11,7 @@
 // decides whether to fire once or skip stale occurrences.
 
 import { checkInjection, verdictLine } from "./injection.ts";
-import type { JevClient } from "./jev.ts";
+import type { System1Client } from "./system1.ts";
 import { log } from "./log.ts";
 import type { MailHit } from "./mail.ts";
 import { formatAddress } from "./conversation.ts";
@@ -21,11 +21,11 @@ import { latestFireAtOrBefore, type Program, type ProgramsStore } from "./progra
 
 export interface SchedulerDeps extends WakeDeps {
 	programs: ProgramsStore;
-	/** The shared System One gate (index.ts's jevGate) — scores the
+	/** The shared System One gate (index.ts's system1Gate) — scores the
 	 *  fired event text before the turn lands. Absent = no check
 	 *  (the event fires unscored); a gate outage fails open with the
 	 *  unavailable line, never a held fire. */
-	checkMail?: Pick<JevClient, "decide">;
+	checkMail?: Pick<System1Client, "decide">;
 }
 
 export interface Scheduler {
@@ -208,7 +208,7 @@ export async function fireMail(
 // verdict line — the same contract the goblin-mail wrapper prints.
 // No gate = unscored event; any gate outage = unavailable line.
 export async function scoredMailEvent(
-	gate: Pick<JevClient, "decide"> | undefined,
+	gate: Pick<System1Client, "decide"> | undefined,
 	event: string,
 ): Promise<string> {
 	if (!gate) return event;

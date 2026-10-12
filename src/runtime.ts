@@ -9,7 +9,7 @@ import type { AcceptsMedia, MediaPosition } from "./agent/attachments.ts";
 import { type CompactionOutcome, runCompaction } from "./agent/compaction.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
-import type { JevClient } from "./jev.ts";
+import type { System1Client } from "./system1.ts";
 import { log } from "./log.ts";
 import {
 	type MemoryTurnDeps,
@@ -192,7 +192,7 @@ export class Runtime {
 	private reviewer: Reviewer | undefined;
 	// Optional watchdog; repeat detection and context limits still apply when
 	// it is absent.
-	private loopWatchdog: { decide: JevClient["decide"]; every: number } | null = null;
+	private loopWatchdog: { decide: System1Client["decide"]; every: number } | null = null;
 	// Reviewer sequence number; gate latency must not reorder reviews.
 	private turnCounter = 0;
 	// Previous reviewable turn per conversation, used as correction evidence.
@@ -205,7 +205,7 @@ export class Runtime {
 		this.reviewer = reviewer;
 	}
 
-	setLoopWatchdog(watchdog: { decide: JevClient["decide"]; every?: number } | null): void {
+	setLoopWatchdog(watchdog: { decide: System1Client["decide"]; every?: number } | null): void {
 		this.loopWatchdog =
 			watchdog === null
 				? null

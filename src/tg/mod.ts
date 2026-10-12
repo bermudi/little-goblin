@@ -13,7 +13,7 @@ import {
 	type ConversationAddress,
 	type ConversationStore,
 } from "../conversation.ts";
-import type { JevClient } from "../jev.ts";
+import type { System1Client } from "../system1.ts";
 import {
 	isRollingChat,
 	projectRollText,
@@ -133,7 +133,7 @@ export interface BotDeps {
 	mail?: () => MailApproval;
 	// The Rolling DM follow-up check, resolved per call (the reviewer is
 	// built after the bot). Absent = no check: a past-gap burst joins current.
-	followUpGate?: () => Pick<JevClient, "decide"> | undefined;
+	followUpGate?: () => Pick<System1Client, "decide"> | undefined;
 }
 
 export interface RunningBot {

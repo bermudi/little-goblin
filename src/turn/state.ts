@@ -12,7 +12,7 @@
 // with the attempt. The runtime's stream callbacks reach this state
 // only through methods here, never by rebinding a local.
 
-import type { JevClient } from "../jev.ts";
+import type { System1Client } from "../system1.ts";
 import { LoopDetector, LOOP_DETECT_WARN, type LoopDetectorState } from "../loop-detect.ts";
 import { LOOP_CHARS, LOOP_QUESTIONS, LOOP_WINDOW, loopState } from "../loop-watchdog.ts";
 import { log } from "../log.ts";
@@ -29,7 +29,7 @@ export type ForcedKind = "repeat" | "watchdog" | "context";
 // watchdog off; the detector and the context landing still bound the
 // turn.
 export interface LoopWatchdog {
-	decide: JevClient["decide"];
+	decide: System1Client["decide"];
 	every: number;
 }
 

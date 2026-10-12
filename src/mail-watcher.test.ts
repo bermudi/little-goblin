@@ -14,7 +14,7 @@ import { join } from "node:path";
 import type { DeliveryApi } from "./tg/delivery.ts";
 import type { UIMessage } from "ai";
 import { HistoryExpiredError, type MailHit, type MailPoller } from "./mail.ts";
-import { JevError } from "./jev.ts";
+import { System1Error } from "./system1.ts";
 import { setLogFile, setLogWriter } from "./log.ts";
 import { startMailWatcher, type MailWatcher } from "./mail-watcher.ts";
 import { fireMail, type SchedulerDeps } from "./scheduler.ts";
@@ -65,7 +65,7 @@ interface Harness {
 	path: string;
 	programs: ProgramsStore;
 	/** The shared gate the firing entry point scores events through —
-	 *  assigned per test the way index.ts wires jevGate into checkMail. */
+	 *  assigned per test the way index.ts wires system1Gate into checkMail. */
 	checkMail?: Pick<{ decide: (...args: unknown[]) => Promise<unknown> }, "decide">;
 	/** The handoff record: every fireMail call, before it runs. */
 	fired: Array<{ program: number; matches: string[] }>;
@@ -292,7 +292,7 @@ describe("mail watcher", () => {
 		const p = mailProgram(h);
 		h.programs.setMailHistory(p.id, "100", 0);
 		h.pollImpl = async () => ({ hits: [hit("m1")], historyId: "120" });
-		// The shared gate, wired the way index.ts wires jevGate into
+		// The shared gate, wired the way index.ts wires system1Gate into
 		// firingDeps.checkMail: a scripted clean verdict first.
 		h.checkMail = {
 			decide: async () => ({
@@ -312,7 +312,7 @@ describe("mail watcher", () => {
 		h.submitted.length = 0;
 		h.checkMail = {
 			decide: async () => {
-				throw new JevError("timeout");
+				throw new System1Error("timeout");
 			},
 		};
 		h.pollImpl = async () => ({ hits: [hit("m2")], historyId: "130" });

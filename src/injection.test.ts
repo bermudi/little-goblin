@@ -6,10 +6,10 @@ import {
 	verdictLine,
 	type InjectionThresholds,
 } from "./injection.ts";
-import { JevError, type JevClient } from "./jev.ts";
+import { System1Error, type System1Client } from "./system1.ts";
 
 // Fake the gate at the edge: scripted answers, or a thrown error.
-function fakeGate(answersOrError: Record<string, number> | Error): Pick<JevClient, "decide"> {
+function fakeGate(answersOrError: Record<string, number> | Error): Pick<System1Client, "decide"> {
 	return {
 		decide: async () => {
 			if (answersOrError instanceof Error) throw answersOrError;
@@ -43,13 +43,13 @@ describe("checkInjection", () => {
 		expect((await checkInjection(fakeGate(verdict(0.299)), "t")).status).toBe("clean");
 	});
 
-	test("unavailable on every JevError kind, with null probabilities", async () => {
+	test("unavailable on every System1Error kind, with null probabilities", async () => {
 		const kinds: Error[] = [
-			new JevError("http", 500),
-			new JevError("transport"),
-			new JevError("timeout"),
-			new JevError("protocol"),
-			new JevError("auth"),
+			new System1Error("http", 500),
+			new System1Error("transport"),
+			new System1Error("timeout"),
+			new System1Error("protocol"),
+			new System1Error("auth"),
 		];
 		for (const err of kinds) {
 			const v = await checkInjection(fakeGate(err), "t");
@@ -66,13 +66,13 @@ describe("checkInjection", () => {
 		expect(v.severity).toBe(0);
 	});
 
-	test("non-JevError propagates", async () => {
+	test("non-System1Error propagates", async () => {
 		await expect(checkInjection(fakeGate(new Error("bug")), "t")).rejects.toThrow("bug");
 	});
 
 	test("truncates to maxChars (head-cut) before calling the gate", async () => {
 		let seen = "";
-		const gate: Pick<JevClient, "decide"> = {
+		const gate: Pick<System1Client, "decide"> = {
 			decide: async (state: unknown) => {
 				seen = state as string;
 				return { answers: { injection: 0, severity: 0 }, inputTokens: null, cost: null };

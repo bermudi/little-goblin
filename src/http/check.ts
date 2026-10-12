@@ -1,14 +1,14 @@
 // Loopback-only injection-check endpoint. Value imports (injection.ts,
-// jev.ts, log.ts) live here so http/mod.ts keeps only type imports —
-// app.js's JSDoc pulls mod.ts into the client tsconfig, and a value pull
-// there risks dragging the server graph into DOM-land.
+// system1.ts, log.ts) live here so http/mod.ts keeps only type imports —
+// it typechecks in a DOM-lib program, and a value pull drags the server
+// graph into it.
 import { z } from "zod";
-import type { JevClient } from "../jev.ts";
+import type { System1Client } from "../system1.ts";
 import { checkInjection, verdictLine, type InjectionVerdict } from "../injection.ts";
 import { log } from "../log.ts";
 
 export interface InjectionCheckGate {
-	gate: Pick<JevClient, "decide">;
+	gate: Pick<System1Client, "decide">;
 }
 
 export interface InjectionCheckResponse {
@@ -83,9 +83,9 @@ const NO_STORE = { "cache-control": "no-store" };
 
 // POST /api/check-injection — loopback-only (host check IS the auth:
 // same trust class as the model calling gws on the same box). Scores
-// {text} through the shared Jev gate and returns the same verdict line
+// {text} through the shared System One gate and returns the same verdict line
 // the mail wrapper prints. Absent gate = 503; checkInjection is
-// fail-open (unavailable verdict, never throws JevError), so only
+// fail-open (unavailable verdict, never throws System1Error), so only
 // unexpected bugs reach the 500 below — never the text in any log line.
 export async function serveInjectionCheck(
 	req: Request,

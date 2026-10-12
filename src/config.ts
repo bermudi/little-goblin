@@ -448,7 +448,7 @@ export const guestConfigSchema = z.object({
 export type GuestConfig = z.infer<typeof guestConfigSchema>;
 
 // Automatic skill saving — absent = off. auth names the auth.jsonl
-// record holding the OpenRouter key behind the Jev gate.
+// record holding the OpenRouter key behind the System One gate.
 export const reviewerEvidenceSchema = z.object({
 	calls: z.number().int().min(1).max(32).default(8),
 	argChars: z.number().int().min(50).max(4000).default(300),
@@ -469,10 +469,11 @@ export const reviewerConfigSchema = z.object({
 });
 export type ReviewerConfig = z.infer<typeof reviewerConfigSchema>;
 
-// Jev decisions — one block feeding injection, skill-review, and DM
-// follow-up gates; absent pieces fall back to reviewer.auth/JEV_MODEL.
-// model is a bare Jev model id, NOT a "<provider>/<model-id>" chat ref —
-// deliberately outside superRefine's provider validation.
+// System One decisions — one block feeding the skill-review gate, the
+// mail injection checker, the loop watchdog, and the DM follow-up check;
+// absent pieces fall back to reviewer.auth/DEFAULT_MODEL.
+// model is a bare decision-model id, NOT a "<provider>/<model-id>" chat
+// ref — deliberately outside superRefine's provider validation.
 export const system1ConfigSchema = z.object({
 	auth: z.string().min(1),
 	model: z.string().min(1).optional(),

@@ -4,7 +4,7 @@
 // forced stamps) stays pinned e2e in runtime.test.ts.
 
 import { describe, expect, test } from "bun:test";
-import type { JevClient } from "../jev.ts";
+import type { System1Client } from "../system1.ts";
 import { LOOP_DETECT_CUT, LOOP_DETECT_WARN } from "../loop-detect.ts";
 import { LOOP_WINDOW } from "../loop-watchdog.ts";
 import { TurnState, type LoopTurnState } from "./state.ts";
@@ -70,7 +70,7 @@ describe("restore and snapshot", () => {
 		const gate = new Promise<number>((resolve) => {
 			release = resolve;
 		});
-		const decide: JevClient["decide"] = () => gate.then(decision);
+		const decide: System1Client["decide"] = () => gate.then(decision);
 		const state = new TurnState(
 			{ convId: "c1", watchdog: { decide, every: 1 }, request: "r" },
 			loopOf({ warnings: ["carried"] }),
@@ -142,7 +142,7 @@ describe("noteCompletedCall", () => {
 	});
 
 	test("the watchdog ring is bounded and shaped per call", () => {
-		const decide: JevClient["decide"] = async () => decision(0);
+		const decide: System1Client["decide"] = async () => decision(0);
 		const state = new TurnState({ convId: "c1", watchdog: { decide, every: 1000 }, request: "r" });
 		for (let i = 0; i < LOOP_WINDOW + 4; i++) {
 			state.noteCompletedCall("t", i, `r${i}`, false);
@@ -159,7 +159,7 @@ describe("noteCompletedCall", () => {
 describe("watchdog cadence", () => {
 	test("checks fire on the cadence, carrying the counter and the request", async () => {
 		const seen: { request: string; totalToolCalls: number }[] = [];
-		const decide: JevClient["decide"] = async (state) => {
+		const decide: System1Client["decide"] = async (state) => {
 			const s = state as { operatorRequest: string; totalToolCalls: number };
 			seen.push({ request: s.operatorRequest, totalToolCalls: s.totalToolCalls });
 			return decision(0);
@@ -182,7 +182,7 @@ describe("watchdog cadence", () => {
 
 	test("one check in flight at a time", () => {
 		let dispatched = 0;
-		const decide: JevClient["decide"] = () => {
+		const decide: System1Client["decide"] = () => {
 			dispatched++;
 			return new Promise(() => {}); // never settles
 		};
@@ -194,7 +194,7 @@ describe("watchdog cadence", () => {
 	});
 
 	test("two consecutive stuck verdicts cut — the first warns", async () => {
-		const decide: JevClient["decide"] = async () => decision(0.9);
+		const decide: System1Client["decide"] = async () => decision(0.9);
 		const state = new TurnState({ convId: "c1", watchdog: { decide, every: 1 }, request: "r" });
 		state.noteCompletedCall("t", 1, "a", false);
 		await tick();
@@ -211,7 +211,7 @@ describe("watchdog cadence", () => {
 	test("a sub-threshold check resets the escalation — no cut", async () => {
 		const scores = [0.9, 0.1, 0.9];
 		let i = 0;
-		const decide: JevClient["decide"] = async () => decision(scores[i++] ?? 0);
+		const decide: System1Client["decide"] = async () => decision(scores[i++] ?? 0);
 		const state = new TurnState({ convId: "c1", watchdog: { decide, every: 1 }, request: "r" });
 		for (let j = 0; j < 3; j++) {
 			state.noteCompletedCall("t", j, `r${j}`, false);
@@ -223,7 +223,7 @@ describe("watchdog cadence", () => {
 
 	test("an unavailable system1 fails open — the cadence continues", async () => {
 		let dispatched = 0;
-		const decide: JevClient["decide"] = async () => {
+		const decide: System1Client["decide"] = async () => {
 			dispatched++;
 			throw new Error("system1 down");
 		};

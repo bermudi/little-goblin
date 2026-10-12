@@ -3,7 +3,7 @@
 
 import type { Conversation, ConversationAddress, ConversationStore } from "./conversation.ts";
 import { paths, type ConfigRef, type TtsConfig } from "./config.ts";
-import type { JevClient } from "./jev.ts";
+import type { System1Client } from "./system1.ts";
 import { userMessage, type Runtime, type TurnSink } from "./runtime.ts";
 import { isRollingChat, routeDm, type RollDeps } from "./rolling.ts";
 import { log } from "./log.ts";
@@ -37,7 +37,7 @@ export interface WakeBase {
 	configRef: ConfigRef;
 	synthesize(text: string, tts: TtsConfig): Promise<Uint8Array[]>;
 	// wake() uses routeDm, which does not consult this intake-only gate.
-	followUpGate(): Pick<JevClient, "decide"> | undefined;
+	followUpGate(): Pick<System1Client, "decide"> | undefined;
 	// Lets swipe replies to delegation rings reach the app conversation.
 	pings: PingStore;
 }

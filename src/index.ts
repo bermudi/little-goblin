@@ -62,7 +62,7 @@ import {
 	startMemoryWorker,
 	type MemoryWorker,
 } from "./memory.ts";
-import { JevClient } from "./jev.ts";
+import { System1Client } from "./system1.ts";
 import { cleanupStaging, Reviewer } from "./reviewer.ts";
 import { OutageTracker } from "./memory-outage.ts";
 import { fireMail, fireWebhook, startScheduler, type SchedulerDeps } from "./scheduler.ts";
@@ -547,7 +547,7 @@ async function boot() {
 		transcribe: transcribeFile,
 		...(memorySurfaces ? { memory: { ...memorySurfaces } } : {}),
 		mail: () => mailApproval,
-		followUpGate: () => jevGate ?? undefined,
+		followUpGate: () => system1Gate ?? undefined,
 	});
 
 	// The mail approval gate — the draft's one owner (queue → post →
@@ -579,8 +579,8 @@ async function boot() {
 	// bot.api); the hand-edited block boot-captures auth and threshold, the
 	// review model resolves live.
 	const reviewerBlock = configRef.current.reviewer;
-	const jevGate = reviewerBlock
-		? new JevClient({
+	const system1Gate = reviewerBlock
+		? new System1Client({
 				auth: () => auth.resolve(configRef.current.system1?.auth ?? reviewerBlock.auth),
 				// System One is the gate source when present; absent falls back to defaults.
 				...(configRef.current.system1?.model !== undefined
@@ -591,7 +591,7 @@ async function boot() {
 					: {}),
 			})
 		: null;
-	if (jevGate !== null) {
+	if (system1Gate !== null) {
 		const block = reviewerBlock; // narrowed: non-null exactly when the gate exists
 		if (!block) throw new Error("reviewer gate without block");
 		const thresholds = {
@@ -608,7 +608,7 @@ async function boot() {
 		cleanupStaging(paths.workspace());
 		runtime.setReviewer(
 			new Reviewer({
-				gate: jevGate,
+				gate: system1Gate,
 				thresholds,
 				queueCap: block.queueCap,
 				evidence: block.evidence,
@@ -633,10 +633,10 @@ async function boot() {
 					sendSkillProposedNotice(tg.bot.api, conversationId, skills),
 			}),
 		);
-		// The loop watchdog rides the same JevClient (design/model.md → "No step
+		// The loop watchdog rides the same System1Client (design/model.md → "No step
 		// budget"): every 16 completed calls system1 scores the digest ring — warn
 		// once, cut on the second stuck verdict.
-		runtime.setLoopWatchdog({ decide: jevGate.decide.bind(jevGate) });
+		runtime.setLoopWatchdog({ decide: system1Gate.decide.bind(system1Gate) });
 	}
 
 	// The shared wake path — program fires and delegation notices submit
@@ -649,14 +649,14 @@ async function boot() {
 		api: tg.bot.api,
 		configRef,
 		synthesize: (text: string, tts: TtsConfig) => synthesizeSpeech(text, tts),
-		followUpGate: () => jevGate ?? undefined,
+		followUpGate: () => system1Gate ?? undefined,
 		pings,
 	});
 	const firingDeps: SchedulerDeps = {
 		...wakeDeps,
 		programs,
-		// The Jev gate doubles as the watcher-event scorer (fail-open) — unscored absent.
-		...(jevGate ? { checkMail: jevGate as Pick<typeof jevGate, "decide"> } : {}),
+		// The System One gate doubles as the watcher-event scorer (fail-open) — unscored absent.
+		...(system1Gate ? { checkMail: system1Gate as Pick<typeof system1Gate, "decide"> } : {}),
 	};
 
 	// The delegation lifecycle — after tg (notices wake through bot.api),
@@ -789,8 +789,8 @@ async function boot() {
 			accepting: () => runtime.accepting(),
 			fire: (program, event, now) => fireWebhook(firingDeps, program, event, now),
 		},
-		// The Jev gate doubles as the loopback injection checker — absent = 503.
-		...(jevGate ? { checkInjection: { gate: jevGate } } : {}),
+		// The System One gate doubles as the loopback injection checker — absent = 503.
+		...(system1Gate ? { checkInjection: { gate: system1Gate } } : {}),
 		// The app handler stays opaque here: app-channel.ts imports the
 		// runtime/AI-SDK graph, which must not enter http/mod.ts's DOM-lib
 		// typecheck program.

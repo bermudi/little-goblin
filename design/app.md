@@ -101,13 +101,12 @@ an authentication boundary use bearer mode. A pinned-origin/Host policy
 would need a separate ruling here.
 
 **Client.** React + `@ai-sdk/react` (`useChat`) in `app/` — Vite, strict
-TS, its own tsconfig program wired into `bun run typecheck`. This is the
-recorded amendment to the no-build rule: `src/http/app.js` (the settings
-mini app) keeps the ships-as-served treatment forever; the app client is
-a built artifact because React is the price of the SDK's chat pieces, and
-built artifacts are allowed exactly there and nowhere else. `src/http`
-serves `app/dist` under `/app/`; a missing build is a fail-loud 500 with
-a log line, never a silent empty page. Tool activity renders as an
+TS, its own tsconfig program wired into `bun run typecheck`. The client
+is the tree's only built artifact (React is the price of the SDK's chat
+pieces) — everything else ships as served. `src/http` serves `app/dist`
+under `/app/`, and the Telegram door mounts the same bundle under `/t/`
+(design/telegram.md → Mini Apps); a missing build is a fail-loud 500
+with a log line, never a silent empty page. Tool activity renders as an
 expandable "Worked" row (pattern lifted from openclaw's app — mechanism
 only, zero code adopted).
 
@@ -126,11 +125,6 @@ in the server knows which is talking.
 app address), auth failures, stream start/finish, attachment uploads —
 each a line with the fields to reconstruct it from `goblin.log`.
 
-**Landing note.** The channel landed in three staged commits behind the
-gate "existing telegram tests pass unmodified". The gate means no
-pre-existing assertion was modified or removed; additive assertions
-inside existing files are allowed (the address round-trip test gained
-its `app/` rejection line in place, `src/tg/notify.test.ts`).
 
 **Out, explicitly:** mirroring or cross-channel reading of any kind
 (revisit needs a ruling here — Spin-off below is the one ruled
@@ -203,16 +197,11 @@ dual-mounted method-aware (GET → viewer, POST → the composer's upload);
 the mini app does not get the pages (`TELEGRAM_PAGES` stays
 settings/memory). Mount points are pinned by door-level tests in
 `app-channel.test.ts`, because handler-level tests pass even when a
-tail is mounted nowhere. The client's settings editor was seeded as a
-React port of the mini app's form — `app/src/settingsDraft.ts` carried
-populate/validate/buildBody and `app/src/SettingsView.tsx` kept the
-section drill-in, chain ordering, provider rename-on-blur, and
-toggle-off preservation. Amended 2026-10-10, operator ruling: that
-lineage is provenance, not parity — the clients are independent and
-each may change on its own. Superseded the same day by the mini-app
-merge (design/telegram.md → Mini Apps): the Telegram door renders this
-client's telegram mode, so `SettingsView` is the only settings UI and
-the independence question is moot. The contract is `ConfigPostBody`
+tail is mounted nowhere. The settings editor lives in `app/src`
+(`settingsDraft.ts`, `SettingsView.tsx`) and is the only settings UI —
+the Telegram door renders this client's telegram mode
+(design/telegram.md → Mini Apps, ruling 2026-10-10). The contract is
+`ConfigPostBody`
 (`operator-wire.ts`) plus the server's zod validation; the shared
 `operator.ts` handlers keep the doors from drifting, not client-side
 mirroring. Leaving dirty settings asks before discarding, including browser
@@ -467,9 +456,9 @@ resurrect a stale pin.
 
 The row affordances are three icon actions — pin · rename · archive
 on active rows, rename · unarchive · delete on archived ones
-(amended 2026-10-10: the labeled buttons this ruling first specified
-could not fit the 15.5rem rail; the glyphs carry aria-label and title
-so the accessible contract is unchanged). The icons share the row's
+(icons, not labels — the 15.5rem rail cannot fit labeled buttons,
+ruling 2026-10-10; the glyphs carry aria-label and title so the
+accessible contract holds). The icons share the row's
 preview line, and the line resolves the collision spatially: on hover
 the text itself fades out just before the icons' stretch — a mask on
 the text, never a backdrop behind the icons — while the rest of the

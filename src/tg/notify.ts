@@ -8,6 +8,7 @@ import type { Api } from "grammy";
 import { channelOf, parseAddress } from "../conversation.ts";
 import { log } from "../log.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
+import { skillDiscardData, skillInstallData } from "./skill-approval.ts";
 
 export function parseConversationAddress(
 	id: string,
@@ -145,10 +146,12 @@ export async function sendMemoryBlockedNotice(
 
 // The skill reviewer's proposal notice (DESIGN.md, "Skill reviewer") —
 // the second sanctioned proactive message: a proposed skill announces
-// itself in the topic it was learned in, as a draft awaiting the
-// operator's yes — nothing installs until then. Throws on delivery
-// failure like the notices above — the reviewer logs it, and the
-// history event it already wrote stays the durable record.
+// itself in the topic it was learned in, one message per skill, each
+// carrying the ✅/🚫 row the mail draft proved — taps decide through
+// tg/skill-approval.ts. Over Telegram's 64-byte callback cap the row
+// degrades to the plain notice and approval stays conversational.
+// Throws on delivery failure like the notices above — the reviewer logs
+// it, and the history event it already wrote stays the durable record.
 export async function sendSkillProposedNotice(
 	api: Api,
 	conversationId: string,
@@ -163,14 +166,35 @@ export async function sendSkillProposedNotice(
 		return;
 	}
 	if (!addr) throw new Error(`unparseable conversation id: ${conversationId}`);
-	const names = skills.length === 1 ? `skill: ${skills[0]}` : `skills: ${skills.join(", ")}`;
-	await withTimeout(
-		api.sendMessage(
-			addr.chatId,
-			`proposed ${names} — approve to install`,
-			addr.threadId !== null ? { message_thread_id: addr.threadId } : {},
-		),
-		"sendMessage (skill proposal notice)",
-	);
+	const thread = addr.threadId !== null ? { message_thread_id: addr.threadId } : {};
+	for (const skill of skills) {
+		const installData = skillInstallData(conversationId, skill);
+		const discardData = skillDiscardData(conversationId, skill);
+		const buttonsRide = installData.length <= 64 && discardData.length <= 64;
+		if (!buttonsRide) {
+			log.info("skill proposal notice — callback data over 64 bytes; conversational only", {
+				conversation: conversationId,
+				skill,
+			});
+		}
+		await withTimeout(
+			api.sendMessage(addr.chatId, `proposed skill: ${skill} — approve to install`, {
+				...thread,
+				...(buttonsRide
+					? {
+							reply_markup: {
+								inline_keyboard: [
+									[
+										{ text: "✅ Install", callback_data: installData },
+										{ text: "🚫 Discard", callback_data: discardData },
+									],
+								],
+							},
+						}
+					: {}),
+			}),
+			"sendMessage (skill proposal notice)",
+		);
+	}
 	log.info("skill proposal notice sent", { conversation: conversationId, skills });
 }

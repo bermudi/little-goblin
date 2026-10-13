@@ -216,10 +216,16 @@ don't duplicate it).
   proposed, not installed).** The reviewer never writes the live
 catalog: a validated skill parks in `skills-proposed/<name>/` and
   installs only when the operator approves. A proposal posts a short
-  note to the topic ("proposed skill: X — approve to install") and
-  lands in history as a system event, so the next turn knows. Like
-  the old "reply to undo", approve and discard are conversational,
-  not mechanical: the history event tells the next turn that approve
+  note to the topic ("proposed skill: X — approve to install") with an
+  in-chat ✅ Install / 🚫 Discard row per skill (ruling 2026-10-13,
+  the pattern mail approval proved): the tap decides mechanically —
+  install swaps the proposal into `skills/` (replacing any live copy;
+  a symlink on either path refuses the swap), discard deletes the
+  staged dir — and appends a resolution history event. Over the 64-byte
+  callback cap the row degrades to the conversational notice below.
+  It lands in history as a system event, so the next turn knows. Like
+  the old "reply to undo", approve and discard stay conversational as
+  the fallback: the history event tells the next turn that approve
   means moving the dir into `skills/` (replacing any live copy) and
   discard means deleting it — goblin is already the operator's hands
   for installs. The `## skills` section lists pending proposals (same

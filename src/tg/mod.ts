@@ -50,6 +50,7 @@ import { MAIL_CALLBACK_RE, type MailApproval } from "./mail-approval.ts";
 import { sendRollMarker } from "./notify.ts";
 import { registerRateButton } from "./rate-button.ts";
 import { openRatings } from "./ratings.ts";
+import { SKILL_CALLBACK_RE, startSkillApproval } from "./skill-approval.ts";
 import { handleSpeakButton } from "./speak-button.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
 import { mediaFromMessage, mediaParts, saveAttachment, unhandledMediaKind } from "./media.ts";
@@ -1142,6 +1143,29 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	});
 
 	registerRateButton(bot, { api: bot.api, ratings });
+
+	const skillApproval = startSkillApproval({
+		api: bot.api,
+		store: deps.store,
+		workspaceDir: paths.workspace(),
+		skillsDir: paths.skills(),
+		proposedDir: paths.skillsProposed(),
+	});
+	bot.callbackQuery(SKILL_CALLBACK_RE, (ctx) => {
+		const q = ctx.callbackQuery;
+		void skillApproval.handleTap({
+			id: q.id,
+			data: q.data,
+			...(q.message !== undefined
+				? {
+						message: {
+							message_id: q.message.message_id,
+							chat: { id: q.message.chat.id },
+						},
+					}
+				: {}),
+		});
+	});
 
 	bot.callbackQuery(MAIL_CALLBACK_RE, (ctx) => {
 		const approval = deps.mail?.();

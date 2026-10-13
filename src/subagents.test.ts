@@ -7,11 +7,12 @@
 // never the model.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import type { LanguageModel } from "ai";
+import { Harness } from "@earendil-works/pi-durable";
 import { openStore } from "./conversation.ts";
 import { Runtime, userMessage, type TurnDone, type TurnSink } from "./runtime.ts";
 import type { Config, SubagentsConfig } from "./config.ts";
@@ -1661,6 +1662,65 @@ describe("subagents owner", () => {
 		expect(r.wakes.length).toBe(2);
 	});
 
+	test("a steer whose claim fails for a non-lease reason keeps the run owned and running", async () => {
+		const r = rig({ maxRuns: 1 });
+		const o = await open(r);
+		await r.desktops.allocate("d1");
+		const gate = Promise.withResolvers<void>();
+		r.model.push({
+			kind: "hold",
+			gate: gate.promise,
+			then: { kind: "tools", calls: [{ name: "finish", args: { result: "settled" } }] },
+		});
+		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "next" } }] });
+		const a = await o.start({
+			kind: "computer",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+			desktop: "d1",
+		});
+		await until(
+			() => r.runs.get(a.id)?.status === "running" && r.model.seen.length === 1,
+			"running on a held reply",
+		);
+		const origClaim = r.desktops.claim.bind(r.desktops);
+		let failClaim = true;
+		r.desktops.claim = async (name, holder) => {
+			if (failClaim) {
+				failClaim = false;
+				throw new Error("EIO: desktop control socket dropped");
+			}
+			return origClaim(name, holder);
+		};
+		await expect(o.send(a.id, WS, "steer-into-claim-error")).rejects.toThrow(
+			/cannot be steered.*control socket dropped/,
+		);
+		const kept = r.runs.get(a.id)!;
+		expect(kept.status).toBe("running");
+		expect(kept.inputRev).toBe(1);
+		expect(kept.inputIntent).toBe(null);
+		expect(kept.inputMode).toBe(null);
+		expect(r.desktops.held.get("d1")).toEqual({ kind: "run", id: String(a.id) });
+		const b = await o.start({
+			kind: "worker",
+			conversationId: "conv:b",
+			workspace: r.workspace,
+			task: "b",
+		});
+		await Bun.sleep(200);
+		expect(r.runs.get(b.id)?.status).toBe("queued");
+		expect(r.model.seen.length).toBe(1);
+		gate.resolve();
+		await until(() => r.runs.get(a.id)?.status === "done", "a settles on the original input");
+		expect(r.runs.get(a.id)?.result).toBe("settled");
+		await until(() => r.runs.get(b.id)?.status === "done", "queued run admits after settle");
+		expect(
+			r.model.seen.some((s) => JSON.stringify(s.messages).includes("steer-into-claim-error")),
+		).toBe(false);
+		expect(r.wakes.length).toBe(2);
+	});
+
 	test("a steer admitted after the holder leaves reaches the model and wins the outcome", async () => {
 		const r = rig();
 		const o = await open(r);
@@ -2121,6 +2181,332 @@ describe("subagents owner", () => {
 		expect(steerSeen).toBe(true);
 		void o2;
 	}, 30_000);
+
+	test("a transient boot-recovery read failure keeps the run owned; the next scan repairs it once", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-sub-reuse-"));
+		dirs.push(dir);
+		const dbPath = join(dir, "goblin.sqlite");
+		const storagePath = join(dir, "subagents.sqlite");
+		const sandboxes = fakeSandboxes();
+		const r1 = rig({ reuse: { dbPath, storagePath }, sandboxes, maxRuns: 1 });
+		const o1 = await open(r1);
+		sandboxes.fs.write("/work/a.txt", new TextEncoder().encode("A"));
+		r1.model.push({
+			kind: "tools",
+			calls: [{ name: "finish", args: { result: "exp", files: ["/work/a.txt"] } }],
+		});
+		let releaseCat: (() => void) | null = null;
+		const catGate = new Promise<void>((res) => (releaseCat = res));
+		const catCalls: string[] = [];
+		const origCat = sandboxes.catFile.bind(sandboxes);
+		sandboxes.catFile = async (conv, path) => {
+			catCalls.push(path);
+			if (catCalls.length === 1) await catGate;
+			return origCat(conv, path);
+		};
+		const a = await o1.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r1.workspace,
+			task: "t",
+		});
+		await until(() => catCalls.length === 1, "export read held — the outcome is committed");
+		const closing = o1.close();
+		releaseCat!();
+		await closing;
+		owners = owners.filter((x) => x !== o1);
+		expect(r1.runs.get(a.id)?.status).toBe("running");
+
+		const origOpen = Harness.open;
+		let faultArmed = true;
+		Harness.open = (async (...args: Parameters<typeof Harness.open>) => {
+			const h = await origOpen(...args);
+			const origSnapshot = h.snapshot;
+			h.snapshot = (async (token: unknown, ...rest: unknown[]) => {
+				const kind = (token as { definition?: { kind?: unknown } } | null)?.definition?.kind;
+				if (faultArmed && kind === "goblin.subagent-run") {
+					faultArmed = false;
+					throw new Error("injected snapshot read failure");
+				}
+				return (origSnapshot as (...sArgs: unknown[]) => Promise<unknown>).apply(h, [
+					token,
+					...rest,
+				]);
+			}) as typeof h.snapshot;
+			return h;
+		}) as typeof Harness.open;
+		try {
+			const r2 = rig({ reuse: { dbPath, storagePath }, model: r1.model, sandboxes, maxRuns: 1 });
+			const o2 = await open(r2);
+			const mid = r2.runs.get(a.id)!;
+			expect(mid.status).toBe("running");
+			expect(mid.stopRequested).toBe(false);
+			expect(r2.wakes.length).toBe(0);
+			r2.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "b-ok" } }] });
+			const b = await o2.start({
+				kind: "worker",
+				conversationId: "conv:b",
+				workspace: r2.workspace,
+				task: "b",
+			});
+			await Bun.sleep(200);
+			expect(r2.runs.get(b.id)?.status).toBe("queued");
+			await o2.scan();
+			await until(() => r2.runs.get(a.id)?.status === "done", "scan repairs the run", 10_000);
+			expect(r2.runs.get(a.id)?.result).toBe("exp");
+			expect(r2.runs.get(a.id)?.exportedFiles).toEqual([`subagents/${a.id}/01-a.txt`]);
+			expect(readFileSync(join(r1.workspace, `subagents/${a.id}/01-a.txt`), "utf8")).toBe("A");
+			await until(() => r2.runs.get(b.id)?.status === "done", "queued run progresses");
+			expect(r2.wakes.length).toBe(2);
+			await o2.scan();
+			expect(r2.wakes.length).toBe(2);
+		} finally {
+			Harness.open = origOpen;
+		}
+	});
+
+	test("a failed export ledger write retries through scan — landed bytes are never fabricated errors", async () => {
+		const r = rig();
+		const o = await open(r);
+		r.box.write("/work/a.txt", new TextEncoder().encode("A"));
+		r.box.write("/work/b.txt", new TextEncoder().encode("B"));
+		r.model.push({
+			kind: "tools",
+			calls: [
+				{
+					name: "finish",
+					args: { result: "exp", files: ["/work/a.txt", "/work/b.txt"] },
+				},
+			],
+		});
+		const origRecord = r.runs.recordExport.bind(r.runs);
+		let failOnce = true;
+		r.runs.recordExport = (id, source, outcome) => {
+			if (failOnce && source === "/work/b.txt") {
+				failOnce = false;
+				throw new Error("boom: export ledger write failed");
+			}
+			return origRecord(id, source, outcome);
+		};
+		const catCalls: string[] = [];
+		const origCat = r.sandboxes.catFile.bind(r.sandboxes);
+		r.sandboxes.catFile = async (conv, path) => {
+			catCalls.push(path);
+			return origCat(conv, path);
+		};
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+		});
+		await until(
+			() =>
+				r.runs.get(a.id)?.exportProgress["/work/a.txt"] !== undefined &&
+				existsSync(join(r.workspace, `subagents/${a.id}/02-b.txt`)),
+			"first export recorded, second artifact landed",
+		);
+		await Bun.sleep(200);
+		const mid = r.runs.get(a.id)!;
+		expect(mid.status).toBe("running");
+		expect(Object.keys(mid.exportProgress)).toEqual(["/work/a.txt"]);
+		expect(mid.exportedFiles).toEqual([]);
+		expect(mid.exportErrors).toEqual([]);
+		expect(r.wakes.length).toBe(0);
+		expect(readFileSync(join(r.workspace, `subagents/${a.id}/02-b.txt`), "utf8")).toBe("B");
+		await o.scan();
+		await until(() => r.runs.get(a.id)?.status === "done", "scan repairs the export", 10_000);
+		const row = r.runs.get(a.id)!;
+		expect(row.exportedFiles).toEqual([`subagents/${a.id}/01-a.txt`, `subagents/${a.id}/02-b.txt`]);
+		expect(row.exportErrors).toEqual([]);
+		expect(readFileSync(join(r.workspace, `subagents/${a.id}/01-a.txt`), "utf8")).toBe("A");
+		expect(readFileSync(join(r.workspace, `subagents/${a.id}/02-b.txt`), "utf8")).toBe("B");
+		expect(catCalls.filter((p) => p === "/work/a.txt")).toHaveLength(1);
+		expect(catCalls.filter((p) => p === "/work/b.txt")).toHaveLength(2);
+		expect(r.wakes.length).toBe(1);
+		await o.scan();
+		expect(r.wakes.length).toBe(1);
+	});
+
+	async function crashDuringExport(label: string): Promise<{
+		dbPath: string;
+		storagePath: string;
+		sandboxes: MemSandbox;
+		model: FakeModel;
+		runId: number;
+	}> {
+		const dir = mkdtempSync(join(tmpdir(), `goblin-sub-${label}-`));
+		dirs.push(dir);
+		const dbPath = join(dir, "goblin.sqlite");
+		const storagePath = join(dir, "subagents.sqlite");
+		const sandboxes = fakeSandboxes();
+		const r1 = rig({ reuse: { dbPath, storagePath }, sandboxes, maxRuns: 1 });
+		const o1 = await open(r1);
+		sandboxes.fs.write("/work/a.txt", new TextEncoder().encode("A"));
+		r1.model.push({
+			kind: "tools",
+			calls: [{ name: "finish", args: { result: "exp", files: ["/work/a.txt"] } }],
+		});
+		let releaseCat: (() => void) | null = null;
+		const catGate = new Promise<void>((res) => (releaseCat = res));
+		const catCalls: string[] = [];
+		const origCat = sandboxes.catFile.bind(sandboxes);
+		sandboxes.catFile = async (conv, path) => {
+			catCalls.push(path);
+			if (catCalls.length === 1) await catGate;
+			return origCat(conv, path);
+		};
+		const a = await o1.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r1.workspace,
+			task: "t",
+		});
+		await until(() => catCalls.length === 1, "export read held — the outcome is committed");
+		const closing = o1.close();
+		releaseCat!();
+		await closing;
+		owners = owners.filter((x) => x !== o1);
+		expect(r1.runs.get(a.id)?.status).toBe("running");
+		return { dbPath, storagePath, sandboxes, model: r1.model, runId: a.id };
+	}
+
+	function armSnapshotFault(): {
+		entered: Promise<void>;
+		release: () => void;
+		restore: () => void;
+	} {
+		const origOpen = Harness.open;
+		let calls = 0;
+		const hold = Promise.withResolvers<void>();
+		const entered = Promise.withResolvers<void>();
+		Harness.open = (async (...args: Parameters<typeof Harness.open>) => {
+			const h = await origOpen(...args);
+			const origSnapshot = h.snapshot;
+			h.snapshot = (async (token: unknown, ...rest: unknown[]) => {
+				const kind = (token as { definition?: { kind?: unknown } } | null)?.definition?.kind;
+				const delegate = origSnapshot as (...sArgs: unknown[]) => Promise<unknown>;
+				if (kind !== "goblin.subagent-run") return delegate.apply(h, [token, ...rest]);
+				calls += 1;
+				if (calls === 1) throw new Error("injected snapshot read failure");
+				entered.resolve();
+				await hold.promise;
+				return delegate.apply(h, [token, ...rest]);
+			}) as typeof h.snapshot;
+			return h;
+		}) as typeof Harness.open;
+		return {
+			entered: entered.promise,
+			release: () => hold.resolve(),
+			restore: () => {
+				hold.resolve();
+				Harness.open = origOpen;
+			},
+		};
+	}
+
+	test("a recovery retry parked on a storage read loses to a stop — no late mutation or notice", async () => {
+		const { dbPath, storagePath, sandboxes, model, runId } = await crashDuringExport("stop-race");
+		const fault = armSnapshotFault();
+		try {
+			const r2 = rig({ reuse: { dbPath, storagePath }, model, sandboxes, maxRuns: 1 });
+			const o2 = await open(r2);
+			expect(r2.runs.get(runId)?.status).toBe("running");
+			expect(r2.wakes.length).toBe(0);
+			const scanDone = o2.scan();
+			await fault.entered;
+			const stopping = o2.stop(runId, WS);
+			await Bun.sleep(100);
+			fault.release();
+			const stopped = await stopping;
+			await scanDone;
+			expect(stopped.status).toBe("stopped");
+			expect(r2.runs.get(runId)?.status).toBe("stopped");
+			expect(r2.model.seen.length).toBe(1);
+			expect(r2.wakes.length).toBe(1);
+			await o2.scan();
+			expect(r2.runs.get(runId)?.status).toBe("stopped");
+			expect(r2.wakes.length).toBe(1);
+			expect(r2.model.seen.length).toBe(1);
+		} finally {
+			fault.restore();
+		}
+	});
+
+	test("a failed row read on a pending retry keeps the retry — the next scan repairs", async () => {
+		const { dbPath, storagePath, sandboxes, model, runId } = await crashDuringExport("get-fault");
+		const origOpen = Harness.open;
+		let faultArmed = true;
+		Harness.open = (async (...args: Parameters<typeof Harness.open>) => {
+			const h = await origOpen(...args);
+			const origSnapshot = h.snapshot;
+			h.snapshot = (async (token: unknown, ...rest: unknown[]) => {
+				const kind = (token as { definition?: { kind?: unknown } } | null)?.definition?.kind;
+				if (faultArmed && kind === "goblin.subagent-run") {
+					faultArmed = false;
+					throw new Error("injected snapshot read failure");
+				}
+				return (origSnapshot as (...sArgs: unknown[]) => Promise<unknown>).apply(h, [
+					token,
+					...rest,
+				]);
+			}) as typeof h.snapshot;
+			return h;
+		}) as typeof Harness.open;
+		try {
+			const r2 = rig({ reuse: { dbPath, storagePath }, model, sandboxes, maxRuns: 1 });
+			const o2 = await open(r2);
+			expect(r2.runs.get(runId)?.status).toBe("running");
+			expect(r2.wakes.length).toBe(0);
+			const origGet = r2.runs.get.bind(r2.runs);
+			let getFaultArmed = true;
+			r2.runs.get = (id: number) => {
+				if (getFaultArmed && id === runId) {
+					getFaultArmed = false;
+					throw new Error("injected row read failure");
+				}
+				return origGet(id);
+			};
+			try {
+				await o2.scan();
+				expect(r2.runs.get(runId)?.status).toBe("running");
+				expect(r2.wakes.length).toBe(0);
+				await o2.scan();
+				await until(() => r2.runs.get(runId)?.status === "done", "second scan repairs", 10_000);
+				expect(r2.runs.get(runId)?.result).toBe("exp");
+				expect(r2.wakes.length).toBe(1);
+				await o2.scan();
+				expect(r2.wakes.length).toBe(1);
+			} finally {
+				r2.runs.get = origGet;
+			}
+		} finally {
+			Harness.open = origOpen;
+		}
+	});
+
+	test("a close during a held recovery retry applies no late mutations or notices", async () => {
+		const { dbPath, storagePath, sandboxes, model, runId } = await crashDuringExport("close-race");
+		const fault = armSnapshotFault();
+		try {
+			const r2 = rig({ reuse: { dbPath, storagePath }, model, sandboxes, maxRuns: 1 });
+			const o2 = await open(r2);
+			expect(r2.runs.get(runId)?.status).toBe("running");
+			const scanDone = o2.scan();
+			await fault.entered;
+			const closing = o2.close();
+			owners = owners.filter((x) => x !== o2);
+			await Bun.sleep(100);
+			fault.release();
+			await closing;
+			await scanDone;
+			expect(r2.runs.get(runId)?.status).toBe("running");
+			expect(r2.wakes.length).toBe(0);
+			expect(r2.model.seen.length).toBe(1);
+		} finally {
+			fault.restore();
+		}
+	});
 
 	test("a second identical-looking finish cannot replace a recorded outcome", async () => {
 		const r = rig();

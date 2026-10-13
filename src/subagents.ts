@@ -987,6 +987,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	// In-flight monitors and admissions — close joins them so a paused
 	// run is left durable, never mutated after close.
 	const monitorTasks = new Set<Promise<void>>();
+	const recoveryPending = new Set<number>();
 
 	// ---------- the run row behind a Pi conversation ----------
 
@@ -1635,6 +1636,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				});
 				continue;
 			}
+			let outcome: { rel: string } | { error: string };
 			try {
 				const data =
 					row.kind === "computer"
@@ -1642,16 +1644,13 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 						: (await deps.sandboxes.catFile(row.conversationId, f)).data;
 				const name = `${String(i + 1).padStart(2, "0")}-${basename(f)}`;
 				const out = exportNamedBytes(row.workspace, relDir, name, data);
-				row = runs.recordExport(
-					row.id,
-					source,
-					"error" in out ? { error: `${f}: ${out.error}` } : { rel: out.rel },
-				);
+				outcome = "error" in out ? { error: `${f}: ${out.error}` } : { rel: out.rel };
 			} catch (err) {
-				row = runs.recordExport(row.id, source, {
+				outcome = {
 					error: `${f}: ${err instanceof Error ? err.message : String(err)}`,
-				});
+				};
 			}
+			row = runs.recordExport(row.id, source, outcome);
 		}
 		const exported: string[] = [];
 		const errors: string[] = [];
@@ -1911,27 +1910,10 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				);
 			} catch (err) {
 				if (closing || harnessClosed) return;
-				log.error("subagent monitor failed", err, { run: rowId });
-				await lane(rowId, async () => {
-					const row = runs.get(rowId);
-					if (
-						row === null ||
-						row.status === "stopped" ||
-						row.status === "done" ||
-						row.status === "failed" ||
-						row.stopRequested
-					) {
-						return;
-					}
-					const failed = runs.update(rowId, {
-						status: "failed",
-						error: err instanceof Error ? err.message : String(err),
-						noticePending: true,
-						finishedAt: Date.now(),
-					});
-					releaseLeases(failed);
-					notify(failed);
+				log.error("subagent monitor failed — the run stays owned for recovery", err, {
+					run: rowId,
 				});
+				recoveryPending.add(rowId);
 			} finally {
 				scheduleDrain();
 			}
@@ -1962,7 +1944,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	// One admission path for all three input modes: initial (task),
 	// resume (needs_input answer) and steer (live input). Every step
 	// re-checks the persisted row before the next external effect.
-	async function admit(row: SubagentRun): Promise<AdmitOutcome> {
+	async function admit(row: SubagentRun, preserveRunning = false): Promise<AdmitOutcome> {
 		const t0 = Date.now();
 		try {
 			if (row.kind === "computer") {
@@ -1971,6 +1953,13 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					await deps.desktops.claim(row.desktop, holderFor(row.id));
 				} catch (err) {
 					const msg = err instanceof Error ? err.message : String(err);
+					if (preserveRunning) {
+						log.warn("subagent steer claim rejected — the live run keeps the desktop", err, {
+							run: row.id,
+							desktop: row.desktop,
+						});
+						return { kind: "blocked", reason: msg };
+					}
 					if (/is controlled by/.test(msg)) {
 						retryAfter.set(row.id, Date.now() + LEASE_RETRY_MS);
 						return { kind: "blocked", reason: msg };
@@ -2102,6 +2091,75 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			run: row.id,
 			reason: outcome.reason,
 		});
+	}
+
+	async function recoverRun(boot: SubagentRun): Promise<void> {
+		const rev = await lane(boot.id, async (): Promise<number | undefined> => {
+			const live = (): SubagentRun | null => {
+				if (closing || harnessClosed) return null;
+				const row = runs.get(boot.id);
+				return row !== null && row.status === "running" && !row.stopRequested ? row : null;
+			};
+			let row = live();
+			if (row === null) return undefined;
+			const piConv = row.piConversationId;
+			if (piConv === null) {
+				if (row.inputIntent !== null) {
+					// Admission died before the conversation id landed —
+					// re-admit from the persisted intent.
+					runs.update(row.id, { status: "queued" });
+				} else {
+					runs.update(row.id, {
+						status: "failed",
+						error: "no Pi conversation recorded",
+						noticePending: true,
+						finishedAt: Date.now(),
+					});
+				}
+				return undefined;
+			}
+			const conv = await harness.conversation(asConv(piConv), ctx);
+			row = live();
+			if (row === null) return undefined;
+			if (conv === undefined) {
+				runs.update(row.id, {
+					status: "failed",
+					error: "Pi conversation missing after restart",
+					noticePending: true,
+					finishedAt: Date.now(),
+				});
+				return undefined;
+			}
+			if (row.inputIntent !== null) {
+				// A persisted answer/steer the row never received —
+				// re-admit through the idempotent path.
+				queueBlockedReadmit(row, await admit(row));
+				return undefined;
+			}
+			const doc = await harness.snapshot(RunDoc, asConv(piConv), ctx);
+			row = live();
+			if (row === null) return undefined;
+			const outcome = doc?.outcome ?? null;
+			if (outcome !== null && outcome.rev === row.inputRev) {
+				return row.inputRev;
+			}
+			// A stale outcome belongs to an older input — the
+			// latest submission still owns settlement.
+			if (row.piSubmissionId !== null) {
+				const sub = await harness.submission(asSub(row.piSubmissionId), ctx);
+				row = live();
+				if (row === null) return undefined;
+				if (sub !== undefined) {
+					monitor(row.id, row.inputRev, sub);
+					return undefined;
+				}
+			}
+			// No reacquirable submission — idempotent re-admission
+			// finds the admitted requestId or admits once.
+			queueBlockedReadmit(row, await admit(row));
+			return undefined;
+		});
+		if (rev !== undefined) await finalize(boot.id, rev);
 	}
 
 	// ---------- queue admission ----------
@@ -2278,7 +2336,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					inputIntent: message,
 					inputMode: "steer",
 				});
-				const outcome = await admit(runs.get(id)!);
+				const outcome = await admit(runs.get(id)!, true);
 				if (outcome.kind === "halted") {
 					throw new SubagentError(`run #${id} was stopped mid-send`);
 				}
@@ -2326,6 +2384,18 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			}
 			for (const row of runs.pendingNotices()) {
 				notify(row);
+			}
+			for (const id of [...recoveryPending]) {
+				if (closing || harnessClosed) break;
+				try {
+					recoveryPending.delete(id);
+					const row = runs.get(id);
+					if (row === null || row.status !== "running" || row.stopRequested) continue;
+					await recoverRun(row);
+				} catch (err) {
+					log.error("subagent recovery retry failed — stays pending", err, { run: id });
+					recoveryPending.add(id);
+				}
 			}
 			await drain();
 		},
@@ -2417,62 +2487,13 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					continue;
 				}
 				// running
-				if (row.piConversationId === null) {
-					if (row.inputIntent !== null) {
-						// Admission died before the conversation id landed —
-						// re-admit from the persisted intent.
-						runs.update(row.id, { status: "queued" });
-						continue;
-					}
-					runs.update(row.id, {
-						status: "failed",
-						error: "no Pi conversation recorded",
-						noticePending: true,
-						finishedAt: Date.now(),
-					});
-					continue;
-				}
 				try {
-					const conv = await harness.conversation(asConv(row.piConversationId), ctx);
-					if (conv === undefined) {
-						runs.update(row.id, {
-							status: "failed",
-							error: "Pi conversation missing after restart",
-							noticePending: true,
-							finishedAt: Date.now(),
-						});
-						continue;
-					}
-					if (row.inputIntent !== null) {
-						// A persisted answer/steer the row never received —
-						// re-admit through the idempotent path.
-						void lane(row.id, async () => {
-							queueBlockedReadmit(row, await admit(row));
-						});
-						continue;
-					}
-					const doc = await harness.snapshot(RunDoc, asConv(row.piConversationId), ctx);
-					const outcome = doc?.outcome ?? null;
-					if (outcome !== null && outcome.rev === row.inputRev) {
-						await finalize(row.id, row.inputRev);
-						continue;
-					}
-					// A stale outcome belongs to an older input — the
-					// latest submission still owns settlement.
-					if (row.piSubmissionId !== null) {
-						const sub = await harness.submission(asSub(row.piSubmissionId), ctx);
-						if (sub !== undefined) {
-							monitor(row.id, row.inputRev, sub);
-							continue;
-						}
-					}
-					// No reacquirable submission — idempotent re-admission
-					// finds the admitted requestId or admits once.
-					void lane(row.id, async () => {
-						queueBlockedReadmit(row, await admit(row));
-					});
+					await recoverRun(row);
 				} catch (err) {
-					log.error("subagent recovery failed", err, { run: row.id });
+					log.error("subagent recovery failed — the row stays owned for a scan retry", err, {
+						run: row.id,
+					});
+					recoveryPending.add(row.id);
 				}
 			}
 			// 5. Only now may scheduling, wakes and drains start.

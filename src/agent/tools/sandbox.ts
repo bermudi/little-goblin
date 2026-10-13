@@ -7,14 +7,15 @@
 // a host path the container could aim).
 
 import { tool } from "ai";
-import { lstatSync, mkdirSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { realpathSync } from "node:fs";
+import { basename, join, resolve, sep } from "node:path";
 import { z } from "zod";
+import { resolveExport } from "../../box-files.ts";
 import { imageRefSchema } from "../../config.ts";
 import { durableWriteBytes } from "../../durable.ts";
 import { PodmanError } from "../../podman.ts";
 import { SandboxError, type Sandboxes } from "../../sandboxes.ts";
-import { resolvePath, writeThroughTarget } from "./paths.ts";
+import { resolvePath } from "./paths.ts";
 import { truncateTail } from "./truncate.ts";
 
 const MAX_OUTPUT = 100 * 1024;
@@ -140,64 +141,18 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 					}
 					case "export": {
 						const rel = input.to ?? join("sandbox-out", basename(input.from));
-						if (isAbsolute(rel)) {
-							return {
-								error: `export destination must be a workspace-relative path, got absolute: ${rel}`,
-							};
-						}
-						const wsReal = realpathSync(deps.workspace);
-						const dest = resolvePath(wsReal, rel);
-						if (!dest.startsWith(wsReal + sep)) {
-							return {
-								error: `export refused: ${rel} resolves to ${dest}, outside the workspace`,
-							};
-						}
-						// A symlinked directory or leaf could aim the write
-						// anywhere — the parent realpath and the write-through
-						// target must both stay inside the workspace.
-						const parent = dirname(dest);
-						// Recursive mkdir follows an intermediate symlink, so
-						// before creating anything the containment check runs on
-						// the deepest ancestor that EXISTS — otherwise
-						// `link -> /outside` plus a missing `a/b` tail would seed
-						// empty dirs outside the workspace before refusing.
-						let anchor = parent;
-						while (anchor !== wsReal && anchor.startsWith(wsReal + sep)) {
-							try {
-								lstatSync(anchor);
-								break;
-							} catch (err) {
-								if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-								anchor = dirname(anchor);
-							}
-						}
-						const realAnchor = realpathSync(anchor);
-						if (realAnchor !== wsReal && !realAnchor.startsWith(wsReal + sep)) {
-							return {
-								error: `export refused: ${anchor} resolves to ${realAnchor}, outside the workspace`,
-							};
-						}
-						mkdirSync(parent, { recursive: true });
-						const realParent = realpathSync(parent);
-						if (realParent !== wsReal && !realParent.startsWith(wsReal + sep)) {
-							return {
-								error: `export refused: ${parent} resolves to ${realParent}, outside the workspace`,
-							};
-						}
-						const through = writeThroughTarget(dest);
-						if ("error" in through) return { error: through.error };
-						if (!through.target.startsWith(wsReal + sep)) {
-							return {
-								error: `export refused: ${rel} is a symlink to ${through.target}, outside the workspace`,
-							};
-						}
+						// box-files owns the containment checks; unlike its export
+						// helpers, the sandbox writes the exact destination,
+						// overwriting in place rather than numbering.
+						const dest = resolveExport(deps.workspace, rel);
+						if ("error" in dest) return { error: dest.error };
 						const { data, note } = await deps.sandboxes.catFile(conv, input.from);
 						// The wait above is a cancellation gap: recheck before
 						// the host write so a call cancelled mid-read (or a nested
 						// export the script VM killed) never overwrites a
 						// workspace file.
 						abortSignal?.throwIfAborted();
-						durableWriteBytes(through.target, data);
+						durableWriteBytes(dest.path, data);
 						return {
 							exported: rel,
 							bytes: data.byteLength,

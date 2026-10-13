@@ -5,7 +5,15 @@
 // bytes land inside the workspace.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Sandboxes } from "../../sandboxes.ts";
@@ -189,6 +197,34 @@ describe("sandbox tool — export containment", () => {
 		expect(String(out.error)).toContain("outside the workspace");
 		expect(existsSync(join(outsideDir, "a"))).toBe(false);
 		expect(recorded.catFile).toHaveLength(0);
+	});
+
+	test("an existing destination is overwritten, not numbered", async () => {
+		const ws = workspace();
+		writeFileSync(join(ws, "exists.txt"), "old-bytes");
+		const recorded = { cpIn: [] as string[][], catFile: [] as string[] };
+		const t = rig(ws, recorded);
+		const out = (await t.execute!(
+			{ action: "export", from: "/work/x", to: "exists.txt" },
+			opts,
+		)) as Record<string, unknown>;
+		expect(out.error).toBeUndefined();
+		expect(readFileSync(join(ws, "exists.txt"), "utf8")).toBe("sandbox-file-bytes");
+	});
+
+	test("a leaf symlink inside the workspace is written through, not replaced", async () => {
+		const ws = workspace();
+		writeFileSync(join(ws, "real.txt"), "old");
+		symlinkSync("real.txt", join(ws, "link.txt"));
+		const recorded = { cpIn: [] as string[][], catFile: [] as string[] };
+		const t = rig(ws, recorded);
+		const out = (await t.execute!(
+			{ action: "export", from: "/work/x", to: "link.txt" },
+			opts,
+		)) as Record<string, unknown>;
+		expect(out.error).toBeUndefined();
+		expect(lstatSync(join(ws, "link.txt")).isSymbolicLink()).toBe(true);
+		expect(readFileSync(join(ws, "real.txt"), "utf8")).toBe("sandbox-file-bytes");
 	});
 
 	test("an export cancelled while the container read is pending never writes the host file", async () => {

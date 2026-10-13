@@ -631,7 +631,11 @@ regardless of the flag.
 **Buttons and small parts.** Rating 👍/👎 keyboards strip themselves after
 a tap (`editMessageReplyMarkup` to empty, `DisabledButton` where layout
 should persist); mail approval already does this. `force_reply` is
-declined for now — no in-scope consumer. Porting the app channel's `ui`
+declined for now — no in-scope consumer. The drafts never set
+`can_stop`/`keep_on_stop` (Bot API 10.3): the client-side stop button is
+declined (operator ruling, 2026-10-12) — stopping stays the typed `/stop`,
+and the `stopped_message_generation` handler remains a tripwire, not a
+stop path. Porting the app channel's `ui`
 tool to Telegram would reverse the chat-native ruling in design/app.md and
 needs its own conversation; explicitly out of scope here.
 

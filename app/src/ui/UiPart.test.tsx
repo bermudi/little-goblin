@@ -302,16 +302,12 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 				onAction={(t) => actions.push(t)}
 			/>,
 		);
-		const aInput = container.querySelector<HTMLInputElement>(
-			'.ui-field input[type="number"]',
-		)!;
+		const aInput = container.querySelector<HTMLInputElement>('.ui-field input[type="number"]')!;
 		aInput.value = "750";
 		// Switch tabs — the same-index form must mount fresh, not
 		// reuse A's DOM node and its typed value.
 		await clickEl([...container.querySelectorAll("[role='tab']")][1] ?? null);
-		const bInput = container.querySelector<HTMLInputElement>(
-			'.ui-field input[type="number"]',
-		)!;
+		const bInput = container.querySelector<HTMLInputElement>('.ui-field input[type="number"]')!;
 		expect(bInput).not.toBe(aInput);
 		expect(bInput.value).toBe("");
 		await act(async () => {

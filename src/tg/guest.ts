@@ -422,8 +422,7 @@ export function ensurePersonaClass(
 	// keeps history: sandbox exchanges are safe for the operator to
 	// see.
 	if (conv.persona === "personal" && want === "guest") {
-		const hasHistory =
-			store.lastSeq(conv.id) !== null || store.getCompaction(conv.id) !== null;
+		const hasHistory = store.lastSeq(conv.id) !== null || store.getCompaction(conv.id) !== null;
 		if (hasHistory) {
 			if (env.runtime.hasActiveTurn(conv.id)) env.runtime.stop(conv.id);
 			const addr = parseAddress(conv.id);
@@ -431,7 +430,7 @@ export function ensurePersonaClass(
 			store.deleteConversation(conv.id);
 			conv =
 				addr.kind === "rolling"
-					? resetLane?.() ?? throwReset(conv.id)
+					? (resetLane?.() ?? throwReset(conv.id))
 					: store.resolve(addr, paths.workspace());
 			log.info("conversation reset on demotion — personal history cleared", {
 				conversation: conv.id,

@@ -8,12 +8,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	DesktopError,
-	type DesktopRow,
-	type Desktops,
-	type LeaseHolder,
-} from "../../desktops.ts";
+import { DesktopError, type DesktopRow, type Desktops, type LeaseHolder } from "../../desktops.ts";
 import { desktopInputSchema, desktopTool, type DesktopToolDeps } from "./desktop.ts";
 
 const CONV = "dm:test";

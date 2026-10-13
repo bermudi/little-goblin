@@ -33,12 +33,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadAuthFile, type AuthStore } from "./auth.ts";
 import { desktopsConfigSchema, subagentsConfigSchema } from "./config.ts";
-import {
-	containerNameForDesktop,
-	makeDesktops,
-	openDesktops,
-	type Desktops,
-} from "./desktops.ts";
+import { containerNameForDesktop, makeDesktops, openDesktops, type Desktops } from "./desktops.ts";
 import { setLogFile } from "./log.ts";
 import { makePodman, type Podman } from "./podman.ts";
 import { boundedRun, spawnProc } from "./proc.ts";

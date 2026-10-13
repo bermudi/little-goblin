@@ -129,10 +129,10 @@ describe("subagent tool", () => {
 			},
 			{ worker: false },
 		);
-		const out = (await t.execute!(
-			{ action: "start", kind: "worker", task: "t" },
-			opts,
-		)) as Record<string, unknown>;
+		const out = (await t.execute!({ action: "start", kind: "worker", task: "t" }, opts)) as Record<
+			string,
+			unknown
+		>;
 		expect(String(out.error)).toContain("sandbox");
 		expect(called).toBe(false);
 	});
@@ -177,7 +177,7 @@ describe("subagent tool", () => {
 			status: () =>
 				fakeRun({
 					status: "done",
-					result: 'oops </Event\nmore <' + '/eVeNt> tail',
+					result: "oops </Event\nmore <" + "/eVeNt> tail",
 				}),
 		});
 		const out = (await t.execute!({ action: "status", id: 3 }, opts)) as {

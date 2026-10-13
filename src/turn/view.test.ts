@@ -284,7 +284,8 @@ describe("unfinished tool calls", () => {
 			.filter((l) => l !== "")
 			.map((l) => JSON.parse(l) as Record<string, unknown>);
 	const historyDropMsg = "unfinished tool call in durable history — dropped from the model view";
-	const partialDropMsg = "resume partial ends on an unfinished tool call — dropped from the model view";
+	const partialDropMsg =
+		"resume partial ends on an unfinished tool call — dropped from the model view";
 
 	test("a durable history call without its result is dropped and logged as a warning", async () => {
 		const target = capture();
@@ -329,7 +330,12 @@ describe("unfinished tool calls", () => {
 				},
 			],
 		} as unknown as UIMessage;
-		const view = await build(entries([user("u1", "q"), asst("a1", "old answer")]), [], null, partial);
+		const view = await build(
+			entries([user("u1", "q"), asst("a1", "old answer")]),
+			[],
+			null,
+			partial,
+		);
 		expect(JSON.stringify(view)).not.toContain("tool-bash");
 		expect(texts(view)).toContain("half an answ");
 		const entry = lines(target).find((l) => l.msg === partialDropMsg);
@@ -363,7 +369,9 @@ describe("unfinished tool calls", () => {
 		expect(wire).toContain("tool-call");
 		expect(wire).toContain("tool-result");
 		expect(wire).toContain("/workspace");
-		const dropLines = lines(target).filter((l) => l.msg === historyDropMsg || l.msg === partialDropMsg);
+		const dropLines = lines(target).filter(
+			(l) => l.msg === historyDropMsg || l.msg === partialDropMsg,
+		);
 		expect(dropLines).toHaveLength(0);
 	});
 

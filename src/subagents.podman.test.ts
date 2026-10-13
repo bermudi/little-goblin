@@ -12,14 +12,7 @@
 // model endpoint is a localhost fake.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import {
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { subagentsConfigSchema } from "./config.ts";
@@ -43,8 +36,7 @@ const EVIDENCE_DIR = `/tmp/goblin-subenv-evidence-${TOKEN}`;
 // ---------- localhost OpenAI-completions fake ----------
 
 function sse(events: object[]): Response {
-	const lines =
-		events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
+	const lines = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
 	return new Response(lines, { headers: { "content-type": "text/event-stream" } });
 }
 function toolReply(calls: { name: string; args: Record<string, unknown> }[]): Response {
@@ -87,8 +79,7 @@ const seen: { tools: string[]; messages: unknown }[] = [];
 // must not leave a listener behind on a plain `bun test`.
 let server: ReturnType<typeof Bun.serve> | undefined;
 const push = (...rs: Response[]) => replies.push(...rs);
-const tools = (...calls: { name: string; args: Record<string, unknown> }[]) =>
-	toolReply(calls);
+const tools = (...calls: { name: string; args: Record<string, unknown> }[]) => toolReply(calls);
 
 let cwd = "";
 let podman: Podman | null = null;
@@ -220,9 +211,7 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 					tools: (body.tools ?? []).map((t) => t.function?.name ?? "?"),
 					messages: body.messages,
 				});
-				return (
-					replies.shift() ?? toolReply([{ name: "finish", args: { result: "unscripted" } }])
-				);
+				return replies.shift() ?? toolReply([{ name: "finish", args: { result: "unscripted" } }]);
 			},
 		});
 		cwd = mkdtempSync(join(tmpdir(), "goblin-subenv-"));
@@ -300,10 +289,15 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 		push(
 			tools({ name: "read", args: { path: `/inbox/subagents/1/01-seed.txt` } }),
 			tools({ name: "write", args: { path: "/work/deep/nested/f.txt", content: "nested-ok" } }),
-			tools({ name: "edit", args: { path: "/work/deep/nested/f.txt", oldText: "nested", newText: "edited" } }),
+			tools({
+				name: "edit",
+				args: { path: "/work/deep/nested/f.txt", oldText: "nested", newText: "edited" },
+			}),
 			tools({
 				name: "bash",
-				args: { command: "printf '\\x00\\xffAB\\n' > /work/b.bin; cat /work/b.bin; echo exit-was-$?" },
+				args: {
+					command: "printf '\\x00\\xffAB\\n' > /work/b.bin; cat /work/b.bin; echo exit-was-$?",
+				},
 			}),
 			tools({ name: "finish", args: { result: "env-ok", files: ["/work/b.bin"] } }),
 		);
@@ -327,7 +321,9 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 		expect(JSON.stringify(seen.at(-1)!.messages)).toContain("AB");
 		// The export landed in the workspace.
 		expect(row.exportedFiles.length).toBe(1);
-		expect([...readFileSync(join(ws, row.exportedFiles[0]!)).slice(0, 4)]).toEqual([0, 255, 65, 66]);
+		expect([...readFileSync(join(ws, row.exportedFiles[0]!)).slice(0, 4)]).toEqual([
+			0, 255, 65, 66,
+		]);
 		writeFileSync(
 			join(EVIDENCE_DIR, "REPORT.md"),
 			`# podman env gate — ${new Date().toISOString()}\n\ncontainer: ${CONTAINER}\nnetwork: ${NETWORK}\nrun: #${run.id} ${row.status} result=${row.result}\nexports: ${row.exportedFiles.join(", ")}\nrequests: ${seen.length}\ntoolsets: ${JSON.stringify(seen.map((s) => s.tools[0]))}\n`,
@@ -393,7 +389,10 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 		const abortedExec = await env2.exec("echo no", undefined, abortedCtx);
 		expect(abortedExec.ok).toBe(false);
 		expect(edgeCalls).toBe(0);
-		const ex = await sandboxes!.exec(CONV, "test -e /work/must-not-exist.txt; echo $?", { timeoutMs: 30_000, maxOutput: 1024 });
+		const ex = await sandboxes!.exec(CONV, "test -e /work/must-not-exist.txt; echo $?", {
+			timeoutMs: 30_000,
+			maxOutput: 1024,
+		});
 		expect(ex.result.stdout.trim()).toBe("1");
 		// Nonzero bash reports the real exit code and streamed output.
 		let streamed = "";
@@ -547,9 +546,7 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 				maxOutput: 1 << 20,
 			});
 			if (net.exitCode !== 0 && !/does not exist|not found/i.test(net.stderr)) {
-				sweepFailures.push(
-					`network rm ${NETWORK} exit ${net.exitCode}: ${net.stderr.trim()}`,
-				);
+				sweepFailures.push(`network rm ${NETWORK} exit ${net.exitCode}: ${net.stderr.trim()}`);
 			}
 			rmSync(dir, { recursive: true, force: true });
 		}

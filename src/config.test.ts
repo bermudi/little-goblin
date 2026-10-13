@@ -520,10 +520,7 @@ describe("goblin.json5", () => {
 		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
 		expect(loadConfig()!.subagents).toBeUndefined();
 		const model = `{auth:"zai",id:"glm-5.3-flash",baseUrl:"https://api.z.ai/api/coding/paas/v4",api:"openai-completions",thinking:"low"}`;
-		writeFileSync(
-			join(dir, "goblin.json5"),
-			`${base},subagents:{computer:{model:${model}}}}`,
-		);
+		writeFileSync(join(dir, "goblin.json5"), `${base},subagents:{computer:{model:${model}}}}`);
 		const sub = loadConfig()!.subagents!;
 		expect(sub.maxRuns).toBe(3);
 		expect(sub.worker).toBeUndefined();
@@ -831,10 +828,22 @@ describe("authReferences", () => {
 			appToken: "app-token-record",
 			subagents: {
 				worker: {
-					model: { auth: "zai", id: "glm-5.3", baseUrl: "https://fixture.invalid", api: "openai-completions", thinking: "high" },
+					model: {
+						auth: "zai",
+						id: "glm-5.3",
+						baseUrl: "https://fixture.invalid",
+						api: "openai-completions",
+						thinking: "high",
+					},
 				},
 				computer: {
-					model: { auth: "zai-flash", id: "glm-5.3-flash", baseUrl: "https://fixture.invalid", api: "openai-completions", thinking: "low" },
+					model: {
+						auth: "zai-flash",
+						id: "glm-5.3-flash",
+						baseUrl: "https://fixture.invalid",
+						api: "openai-completions",
+						thinking: "low",
+					},
 				},
 			},
 		});

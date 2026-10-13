@@ -336,63 +336,63 @@ export function openNotes(
 		source: NoteSource,
 		opts: { conversation?: string | undefined; expectedRev?: number | undefined },
 	): Note {
-			const current = mustGet(id);
-			if (opts.expectedRev !== undefined && opts.expectedRev !== current.rev) {
-				log.info("note conflict", {
-					note: id,
-					expectedRev: opts.expectedRev,
-					rev: current.rev,
-				});
-				throw new NoteConflictError(current);
-			}
-			const title = next.title ?? current.title;
-			const body = next.body ?? current.body;
-			if (title === current.title && body === current.body) return current;
-			// The PRE-write state is the version — its `source` names the
-			// write superseding it. App autosaves coalesce: record only on
-			// a source change, a >10min gap, or the first version.
-			let versioned = false;
-			if (source !== "app" || current.lastSource !== "app") {
-				versioned = true;
-			} else {
-				const newest = qNewestVersion.get(id);
-				versioned = newest === null || now().getTime() - Date.parse(newest.at) > APP_VERSION_GAP_MS;
-			}
-			if (versioned) {
-				db.run(
-					`INSERT INTO note_versions (note_id, rev, title, body_md, source, conversation, at)
-					 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-					[
-						id,
-						current.rev,
-						current.title,
-						current.body,
-						source,
-						opts.conversation ?? null,
-						now().toISOString(),
-					],
-				);
-				db.run(
-					`DELETE FROM note_versions WHERE note_id = ? AND rev NOT IN
-					 (SELECT rev FROM note_versions WHERE note_id = ? ORDER BY rev DESC LIMIT ?)`,
-					[id, id, VERSION_CAP],
-				);
-			}
-			const updatedAt = now().toISOString();
-			db.run(
-				"UPDATE notes SET title = ?, body_md = ?, rev = rev + 1, last_source = ?, updated_at = ? WHERE id = ?",
-				[title, body, source, updatedAt, id],
-			);
-			const updated = mustGet(id);
-			log.info("note write", {
+		const current = mustGet(id);
+		if (opts.expectedRev !== undefined && opts.expectedRev !== current.rev) {
+			log.info("note conflict", {
 				note: id,
-				rev: updated.rev,
-				source,
-				conversation: opts.conversation ?? null,
-				bytesBefore: Buffer.byteLength(current.body),
-				bytesAfter: Buffer.byteLength(body),
-				versioned,
+				expectedRev: opts.expectedRev,
+				rev: current.rev,
 			});
+			throw new NoteConflictError(current);
+		}
+		const title = next.title ?? current.title;
+		const body = next.body ?? current.body;
+		if (title === current.title && body === current.body) return current;
+		// The PRE-write state is the version — its `source` names the
+		// write superseding it. App autosaves coalesce: record only on
+		// a source change, a >10min gap, or the first version.
+		let versioned = false;
+		if (source !== "app" || current.lastSource !== "app") {
+			versioned = true;
+		} else {
+			const newest = qNewestVersion.get(id);
+			versioned = newest === null || now().getTime() - Date.parse(newest.at) > APP_VERSION_GAP_MS;
+		}
+		if (versioned) {
+			db.run(
+				`INSERT INTO note_versions (note_id, rev, title, body_md, source, conversation, at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				[
+					id,
+					current.rev,
+					current.title,
+					current.body,
+					source,
+					opts.conversation ?? null,
+					now().toISOString(),
+				],
+			);
+			db.run(
+				`DELETE FROM note_versions WHERE note_id = ? AND rev NOT IN
+					 (SELECT rev FROM note_versions WHERE note_id = ? ORDER BY rev DESC LIMIT ?)`,
+				[id, id, VERSION_CAP],
+			);
+		}
+		const updatedAt = now().toISOString();
+		db.run(
+			"UPDATE notes SET title = ?, body_md = ?, rev = rev + 1, last_source = ?, updated_at = ? WHERE id = ?",
+			[title, body, source, updatedAt, id],
+		);
+		const updated = mustGet(id);
+		log.info("note write", {
+			note: id,
+			rev: updated.rev,
+			source,
+			conversation: opts.conversation ?? null,
+			bytesBefore: Buffer.byteLength(current.body),
+			bytesAfter: Buffer.byteLength(body),
+			versioned,
+		});
 		return updated;
 	}
 

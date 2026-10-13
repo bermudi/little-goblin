@@ -13,13 +13,7 @@ import { z } from "zod";
 import { log } from "./log.ts";
 
 export type SubagentKind = "worker" | "computer";
-export type SubagentStatus =
-	| "queued"
-	| "running"
-	| "needs_input"
-	| "done"
-	| "failed"
-	| "stopped";
+export type SubagentStatus = "queued" | "running" | "needs_input" | "done" | "failed" | "stopped";
 
 // Bounds enforced by the owner before a row is ever written.
 export const MAX_TASK_CHARS = 20_000;
@@ -209,7 +203,11 @@ export interface SubagentRuns {
 	 *  pending. Returns false when the rev moved on. */
 	ackNotice(id: number, rev: number): boolean;
 	/** Merge one export outcome into the persisted progress map. */
-	recordExport(id: number, source: string, outcome: { rel: string } | { error: string }): SubagentRun;
+	recordExport(
+		id: number,
+		source: string,
+		outcome: { rel: string } | { error: string },
+	): SubagentRun;
 	/** Persist a destructive lifecycle note onto the conversation's
 	 *  live worker run — repeat-until-replaced delivery, never a
 	 *  clear-before-send gap (design/subagents.md). */
@@ -255,9 +253,7 @@ export function openSubagentRuns(dbPath: string): SubagentRuns {
 	// The table predates columns — ALTER each missing one; CREATE only
 	// covers a fresh database.
 	const cols = new Set(
-		(db.query("PRAGMA table_info(subagent_runs)").all() as { name: string }[]).map(
-			(c) => c.name,
-		),
+		(db.query("PRAGMA table_info(subagent_runs)").all() as { name: string }[]).map((c) => c.name),
 	);
 	for (const [col, ddl] of [
 		["input_mode", "ALTER TABLE subagent_runs ADD COLUMN input_mode TEXT"],
@@ -269,10 +265,7 @@ export function openSubagentRuns(dbPath: string): SubagentRuns {
 			"export_progress",
 			"ALTER TABLE subagent_runs ADD COLUMN export_progress TEXT NOT NULL DEFAULT '{}'",
 		],
-		[
-			"notice_rev",
-			"ALTER TABLE subagent_runs ADD COLUMN notice_rev INTEGER NOT NULL DEFAULT 0",
-		],
+		["notice_rev", "ALTER TABLE subagent_runs ADD COLUMN notice_rev INTEGER NOT NULL DEFAULT 0"],
 	] as const) {
 		if (!cols.has(col)) db.exec(ddl);
 	}
@@ -282,9 +275,7 @@ export function openSubagentRuns(dbPath: string): SubagentRuns {
 			(kind, conversation_id, workspace, desktop, task, files, request_id, status, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
 	);
-	const qList = db.query(
-		"SELECT * FROM subagent_runs WHERE conversation_id = ? ORDER BY id",
-	);
+	const qList = db.query("SELECT * FROM subagent_runs WHERE conversation_id = ? ORDER BY id");
 	// The lease holder is the row furthest along, not the oldest: a
 	// parked (needs_input) or resuming (queued with a persisted input
 	// intent) run beats an ordinary queued second worker, so a queued
@@ -351,9 +342,12 @@ export function openSubagentRuns(dbPath: string): SubagentRuns {
 			if (patch.result !== undefined) put("result", patch.result);
 			if (patch.question !== undefined) put("question", patch.question);
 			if (patch.error !== undefined) put("error", patch.error);
-			if (patch.exportedFiles !== undefined) put("exported_files", JSON.stringify(patch.exportedFiles));
-			if (patch.exportErrors !== undefined) put("export_errors", JSON.stringify(patch.exportErrors));
-			if (patch.exportProgress !== undefined) put("export_progress", JSON.stringify(patch.exportProgress));
+			if (patch.exportedFiles !== undefined)
+				put("exported_files", JSON.stringify(patch.exportedFiles));
+			if (patch.exportErrors !== undefined)
+				put("export_errors", JSON.stringify(patch.exportErrors));
+			if (patch.exportProgress !== undefined)
+				put("export_progress", JSON.stringify(patch.exportProgress));
 			if (patch.finalScreenshot !== undefined) put("final_screenshot", patch.finalScreenshot);
 			if (patch.lifecycleNote !== undefined) put("lifecycle_note", patch.lifecycleNote);
 			if (patch.noticePending !== undefined) put("notice_pending", patch.noticePending ? 1 : 0);

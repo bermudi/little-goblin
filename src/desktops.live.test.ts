@@ -102,12 +102,23 @@ function statusField(status: string, field: string): string {
 async function cua(tool: string, args: Record<string, unknown>): Promise<unknown> {
 	const r = await podman!.exec(
 		CONTAINER,
-		["cua-driver", "call", tool, JSON.stringify({ ...args, session: DESKTOP }), "--socket", "/run/desk/cua.sock"],
+		[
+			"cua-driver",
+			"call",
+			tool,
+			JSON.stringify({ ...args, session: DESKTOP }),
+			"--socket",
+			"/run/desk/cua.sock",
+		],
 		{
 			timeoutMs: 30_000,
 			maxOutput: 4 * 1024 * 1024,
 			user: "desk",
-			env: { HOME: "/home/desk", DISPLAY: ":99", DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/desk/bus" },
+			env: {
+				HOME: "/home/desk",
+				DISPLAY: ":99",
+				DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/desk/bus",
+			},
 			workdir: "/run/desk",
 		},
 	);
@@ -345,8 +356,7 @@ describe.skipIf(!LIVE)("desktop live drift (GOBLIN_DESKTOP_LIVE=1)", () => {
 		// Assert the page's own verdicts, not just that the labels
 		// rendered: each checked row's value cell must read "Yes".
 		const cells = (
-			(page.state as { elements?: Array<{ role?: string; label?: string }> })
-				.elements ?? []
+			(page.state as { elements?: Array<{ role?: string; label?: string }> }).elements ?? []
 		).filter((e) => e.role === "table cell");
 		const verdict = (label: string) => {
 			const i = cells.findIndex((e) => e.label === label);
@@ -379,11 +389,12 @@ describe.skipIf(!LIVE)("desktop live drift (GOBLIN_DESKTOP_LIVE=1)", () => {
 		const dest = `/home/desk/inbox/subagents/7/${crypto.randomUUID().slice(0, 8)}-seed.bin`;
 		await desktops!.cpIn(DESKTOP, seed, dest);
 		// Desk itself reads it, and the leaf is chowned to uid 1000.
-		const stat = await podman!.exec(
-			CONTAINER,
-			["stat", "-c", "%u:%g:%s", "--", dest],
-			{ timeoutMs: 30_000, maxOutput: 1 << 20, user: "desk", workdir: "/run/desk" },
-		);
+		const stat = await podman!.exec(CONTAINER, ["stat", "-c", "%u:%g:%s", "--", dest], {
+			timeoutMs: 30_000,
+			maxOutput: 1 << 20,
+			user: "desk",
+			workdir: "/run/desk",
+		});
 		if (stat.exitCode !== 0) {
 			throw new Error(`desk stat exit ${stat.exitCode}: ${stat.stderr.slice(0, 200)}`);
 		}

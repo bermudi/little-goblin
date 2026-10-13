@@ -164,9 +164,7 @@ export const subagentTool = (deps: SubagentToolDeps) =>
 						const rows = deps.subagents.list(deps.conversation);
 						return {
 							runs: rows.map(runSummary),
-							...(rows.length > 0
-								? { notices: rows.map(fenced) }
-								: {}),
+							...(rows.length > 0 ? { notices: rows.map(fenced) } : {}),
 						};
 					}
 					case "status": {
@@ -177,11 +175,7 @@ export const subagentTool = (deps: SubagentToolDeps) =>
 						return { ...runSummary(row), notice: fenced(row) };
 					}
 					case "send": {
-						const row = await deps.subagents.send(
-							input.id,
-							deps.conversation,
-							input.message,
-						);
+						const row = await deps.subagents.send(input.id, deps.conversation, input.message);
 						return { ...runSummary(row), notice: fenced(row) };
 					}
 					case "stop": {

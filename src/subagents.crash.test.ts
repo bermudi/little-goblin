@@ -22,8 +22,7 @@ setLogFile(null);
 
 // Same localhost OpenAI-completions fake as subagents.test.ts.
 function sse(events: object[]): Response {
-	const lines =
-		events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
+	const lines = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
 	return new Response(lines, { headers: { "content-type": "text/event-stream" } });
 }
 function toolReply(calls: { name: string; args: Record<string, unknown> }[]): Response {

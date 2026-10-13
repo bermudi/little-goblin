@@ -76,10 +76,7 @@ describe("podman adapter argv", () => {
 		});
 		const args = calls[0]!;
 		expect(args).toEqual(
-			expect.arrayContaining([
-				"--cap-add",
-				"CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID,SYS_CHROOT",
-			]),
+			expect.arrayContaining(["--cap-add", "CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID,SYS_CHROOT"]),
 		);
 		// The default spec keeps the exact five — nothing inferred.
 		await podman.create({
@@ -92,10 +89,7 @@ describe("podman adapter argv", () => {
 			labels: { "goblin.sandbox": "1" },
 		});
 		expect(calls[1]).toEqual(
-			expect.arrayContaining([
-				"--cap-add",
-				"CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID",
-			]),
+			expect.arrayContaining(["--cap-add", "CHOWN,DAC_OVERRIDE,FOWNER,SETUID,SETGID"]),
 		);
 	});
 
@@ -130,9 +124,7 @@ describe("podman adapter argv", () => {
 		const args = calls[0]!;
 		for (const flag of WALL_FLAGS) expect(args).toContain(flag);
 		expect(args).not.toContain("--shm-size");
-		expect(args).toEqual(
-			expect.arrayContaining(["--hostname", "sandbox"]),
-		);
+		expect(args).toEqual(expect.arrayContaining(["--hostname", "sandbox"]));
 		expect(args.slice(-4)).toEqual([
 			"docker.io/library/alpine:latest",
 			"/bin/sh",
@@ -177,9 +169,7 @@ describe("networkEnsure convergence", () => {
 
 	// inspect → create → re-inspect: a losing create is only a real
 	// failure when the re-inspect still finds nothing usable.
-	function raceRig(opts: {
-		secondInspect: { code: number; stdout: string; stderr: string };
-	}) {
+	function raceRig(opts: { secondInspect: { code: number; stdout: string; stderr: string } }) {
 		const calls: string[][] = [];
 		let inspections = 0;
 		const podman = makePodman({
@@ -212,9 +202,7 @@ describe("networkEnsure convergence", () => {
 		const r = raceRig({
 			secondInspect: { code: 1, stdout: "", stderr: "not found" },
 		});
-		await expect(r.podman.networkEnsure("goblin-sandbox", "c1")).rejects.toThrow(
-			/network create/,
-		);
+		await expect(r.podman.networkEnsure("goblin-sandbox", "c1")).rejects.toThrow(/network create/);
 	});
 
 	test("a network that appeared without isolate=strict is refused", async () => {
@@ -225,8 +213,6 @@ describe("networkEnsure convergence", () => {
 				stderr: "",
 			},
 		});
-		await expect(r.podman.networkEnsure("goblin-sandbox", "c1")).rejects.toThrow(
-			/isolate=strict/,
-		);
+		await expect(r.podman.networkEnsure("goblin-sandbox", "c1")).rejects.toThrow(/isolate=strict/);
 	});
 });

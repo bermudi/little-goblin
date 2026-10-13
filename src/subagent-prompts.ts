@@ -35,8 +35,7 @@ export const COMPUTER_TOOL_DESCRIPTIONS = {
 		"Observe the run's desktop. Returns a PNG image, its audited path, and observation_id. Supersedes earlier observations; one subsequent act or launch may consume this observation.",
 	inspect:
 		"Inspect the run's desktop accessibility state and mint a new observation_id. Optional pid and window_id select a surface. Use the returned element tokens with the newest observation_id; earlier tokens and observations may be stale.",
-	act:
-		"Send one allowed cua-driver input operation to the run's desktop, citing the newest unused observation_id. args is the driver's JSON argument object. For a full-desktop screenshot, click uses args {scope:\"desktop\",x,y,button:\"left\"}; x/y without scope default to window-local coordinates and require a window target. For accessibility clicks, use args {pid,element_token} from the newest inspect. press_key uses {scope:\"desktop\",key} for the focused application (key names include enter, tab, escape, left, right); hotkey uses {scope:\"desktop\",keys:[\"ctrl\",\"p\"]}; type_text uses {scope:\"desktop\",text}. A dispatch failure may have partially acted and consumes the observation anyway; never blindly retry. effect is the driver's claim, not independent verification.",
+	act: 'Send one allowed cua-driver input operation to the run\'s desktop, citing the newest unused observation_id. args is the driver\'s JSON argument object. For a full-desktop screenshot, click uses args {scope:"desktop",x,y,button:"left"}; x/y without scope default to window-local coordinates and require a window target. For accessibility clicks, use args {pid,element_token} from the newest inspect. press_key uses {scope:"desktop",key} for the focused application (key names include enter, tab, escape, left, right); hotkey uses {scope:"desktop",keys:["ctrl","p"]}; type_text uses {scope:"desktop",text}. A dispatch failure may have partially acted and consumes the observation anyway; never blindly retry. effect is the driver\'s claim, not independent verification.',
 	launch:
 		"Launch Chromium on the run's desktop, consuming the newest unused observation_id. Optional url must be http://, https://, file://, or exactly about:blank. No command-line flags or other apps are accepted.",
 } as const;
@@ -77,11 +76,10 @@ export function subagentNotice(
 // Fixed drift-check inputs, not an open-ended task benchmark.
 export const SUBAGENT_DRIFT_INPUTS = {
 	worker:
-		"Read /work/input.txt. It contains DRIFT_IN. Use the sandbox coding tools to write /work/output.txt with exactly DRIFT_OUT followed by a newline, read it back, then call finish with result VERIFIED_WORKER and files [\"/work/output.txt\"]. Do not use network. Make finish the only call in its round.",
+		'Read /work/input.txt. It contains DRIFT_IN. Use the sandbox coding tools to write /work/output.txt with exactly DRIFT_OUT followed by a newline, read it back, then call finish with result VERIFIED_WORKER and files ["/work/output.txt"]. Do not use network. Make finish the only call in its round.',
 	computer:
 		"Take a screenshot of the assigned desktop. Do not click, type, launch anything, or use network. Then call finish with result VERIFIED_COMPUTER and no files. Make finish the only call in its round.",
-	ask:
-		"Call ask_operator with exactly the question DRIFT_QUESTION as your only tool call. After the operator answers DRIFT_ANSWER, call finish with result VERIFIED_ANSWER and no files as your only tool call.",
+	ask: "Call ask_operator with exactly the question DRIFT_QUESTION as your only tool call. After the operator answers DRIFT_ANSWER, call finish with result VERIFIED_ANSWER and no files as your only tool call.",
 	crashSafe:
 		"Call the drift_safe tool exactly once, then call finish with result VERIFIED_SAFE and no files as your only tool call.",
 	crashUnsafe:

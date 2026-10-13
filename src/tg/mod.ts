@@ -218,10 +218,7 @@ export interface IntakeEnv {
 	bell(conv: Conversation): TurnSink;
 }
 
-export type FlushEnv = Pick<
-	IntakeEnv,
-	"deps" | "api" | "titleAttempts" | "inbox" | "bell"
->;
+export type FlushEnv = Pick<IntakeEnv, "deps" | "api" | "titleAttempts" | "inbox" | "bell">;
 
 // Assembled per call so a mini-app save (dmGapMinutes) and the
 // late-built reviewer's gate read live config, not boot-time wiring.
@@ -694,12 +691,8 @@ async function flushRolling(
 		// gate already admitted only these two classes; the chat id IS
 		// the user id here.
 		const cls = deps.configRef.current.operators.includes(chatId) ? "personal" : "guest";
-		const pinned = ensurePersonaClass(
-			deps,
-			current,
-			cls,
-			cls === "guest" ? true : undefined,
-			() => deps.store.rollDm(chatId, paths.workspace()),
+		const pinned = ensurePersonaClass(deps, current, cls, cls === "guest" ? true : undefined, () =>
+			deps.store.rollDm(chatId, paths.workspace()),
 		);
 		admitBatch(
 			env,

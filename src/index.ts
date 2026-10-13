@@ -492,8 +492,7 @@ async function boot() {
 								workspace: workdir,
 								subagents,
 								workerEnabled:
-									subagentsBoot?.worker !== undefined &&
-									configRef.current.sandbox !== undefined,
+									subagentsBoot?.worker !== undefined && configRef.current.sandbox !== undefined,
 								computerEnabled: subagentsBoot?.computer !== undefined,
 							}
 						: undefined,
@@ -750,10 +749,7 @@ async function boot() {
 			await subagents.resume();
 		} catch (err) {
 			subagents = null;
-			log.error(
-				"subagents disabled — owner failed to open; fix the block and restart",
-				err,
-			);
+			log.error("subagents disabled — owner failed to open; fix the block and restart", err);
 		}
 	}
 
@@ -816,8 +812,7 @@ async function boot() {
 		// Same boot-freeze as delegation: models, pool limits and auth
 		// refs are one snapshot the owner built at boot.
 		if (
-			JSON.stringify(configRef.current.subagents ?? null) !==
-			JSON.stringify(subagentsBoot ?? null)
+			JSON.stringify(configRef.current.subagents ?? null) !== JSON.stringify(subagentsBoot ?? null)
 		) {
 			log.warn("subagents config changed — restart to apply");
 		}

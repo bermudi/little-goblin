@@ -14,12 +14,7 @@ import { basename, join } from "node:path";
 import { z } from "zod";
 import { exportBytes, resolveImport } from "../../box-files.ts";
 import { imageRefSchema } from "../../config.ts";
-import {
-	DesktopError,
-	type DesktopRow,
-	type Desktops,
-	type LeaseHolder,
-} from "../../desktops.ts";
+import { DesktopError, type DesktopRow, type Desktops, type LeaseHolder } from "../../desktops.ts";
 import { PodmanError } from "../../podman.ts";
 import { DESKTOP_TOOL_DESCRIPTION } from "../../subagent-prompts.ts";
 
@@ -148,9 +143,7 @@ function view(row: DesktopRow) {
 						kind: row.leaseKind,
 						id: row.leaseId ?? undefined,
 						expires_at:
-							row.leaseExpiresAt === null
-								? undefined
-								: new Date(row.leaseExpiresAt).toISOString(),
+							row.leaseExpiresAt === null ? undefined : new Date(row.leaseExpiresAt).toISOString(),
 					},
 	};
 }
@@ -204,11 +197,7 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 						return { released: input.name };
 					}
 					case "handoff": {
-						await deps.desktops.handoff(
-							input.name,
-							selfHolder(),
-							targetHolderOf(input.to_holder),
-						);
+						await deps.desktops.handoff(input.name, selfHolder(), targetHolderOf(input.to_holder));
 						return { handed_off: input.name, to: input.to_holder };
 					}
 					case "reserve": {
@@ -254,7 +243,12 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 						// the host write so a call cancelled mid-read never
 						// overwrites a workspace file.
 						abortSignal?.throwIfAborted();
-						const out = exportBytes(deps.workspace, rel.includes("/") ? rel.split("/").slice(0, -1).join("/") : "", basename(rel), data);
+						const out = exportBytes(
+							deps.workspace,
+							rel.includes("/") ? rel.split("/").slice(0, -1).join("/") : "",
+							basename(rel),
+							data,
+						);
 						if ("error" in out) return { error: `export ${out.error}` };
 						return {
 							exported: out.rel,

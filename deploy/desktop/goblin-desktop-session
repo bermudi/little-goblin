@@ -2,9 +2,10 @@
 # PID 1 of a goblin-desk-* container (started under podman --init).
 # Brings up, in order: a session bus at a fixed path, Xvfb, the XFCE
 # session, the at-spi registry, then the cua-driver daemon in the
-# foreground — its exit is the session's exit. DISPLAY and the bus
-# address land in /run/desk/env so `goblin-launch` and `podman exec`
-# callers can adopt them.
+# foreground — its exit is the session's exit. The session env is the
+# fixed set written below; exec callers (desktops.ts SESSION_ENV,
+# goblin-launch) pin the same constants rather than evaluating state a
+# session user can write.
 set -eu
 
 # The whole session runs as the desktop user — the session bus must be
@@ -24,13 +25,14 @@ if [ "$(id -u)" = "0" ] && [ "${DESK_USER}" != "root" ]; then
 fi
 
 # dbus session bus at a fixed path (not dbus-launch's random one, so
-# exec'd callers can reconstruct the address from /run/desk/env).
+# the address is a constant exec callers can pin).
 dbus-daemon --session --fork \
 	--address=unix:path=/run/desk/bus --print-pid=1 > /run/desk/bus.pid
 
-printf 'DISPLAY=%s\nDBUS_SESSION_BUS_ADDRESS=%s\nDESK_USER=%s\n' \
-	':99' 'unix:path=/run/desk/bus' "${DESK_USER}" > /run/desk/env
-set -a; . /run/desk/env; set +a
+# The session env is fixed — callers pin these same constants rather
+# than evaluating anything under /run/desk, which this user can write.
+export DISPLAY=:99
+export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/desk/bus
 
 # Display: 1280x800x24 on :99. Wait for it before anything X-dependent.
 Xvfb :99 -screen 0 1280x800x24 -nolisten tcp &

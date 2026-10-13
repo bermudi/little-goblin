@@ -368,6 +368,8 @@ export function makePodman(deps?: {
 				conversation: conv,
 				status: r.exitCode,
 				...(r.timedOut ? { timedOut: true } : {}),
+				...(r.outputCapped === true ? { outputCapped: true } : {}),
+				...(r.truncated ? { truncated: true } : {}),
 				ms: Date.now() - t0,
 			});
 			return r;
@@ -382,6 +384,8 @@ export function makePodman(deps?: {
 				conversation: conv,
 				status: r.exitCode,
 				...(r.timedOut ? { timedOut: true } : {}),
+				...(r.outputCapped === true ? { outputCapped: true } : {}),
+				...(r.truncated ? { truncated: true } : {}),
 				ms: Date.now() - t0,
 			});
 			return r;

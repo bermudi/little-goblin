@@ -127,11 +127,13 @@ tool already makes. Flat schema, per-action contract enforced inside
 - `exec` — `command`, `timeout_ms` (bash's default and cap). Runs
   `/bin/sh -c` (alpine has no bash) in `/work`. Same bounded,
   tail-truncated output shape as `bash`, plus a note when the call
-  created, started, or recreated the sandbox. On timeout or abort the
-  `podman exec` client is group-killed by `boundedRun`; if the command
-  inside outlives its client (to verify — podman exec is not known to
-  propagate kills), the container is restarted (`-t 0`): background
-  processes die, files stay, and the result says so.
+  created, started, or recreated the sandbox. On timeout, abort, or a
+  stream output-cap the `podman exec` client is group-killed by
+  `boundedRun` (the cap is a distinct `outputCapped` cause — a drain
+  cutoff after exit is only `truncated`), but the client's death does
+  not guarantee the guest command died — so the container is restarted
+  (`-t 0`): background processes die, files stay, and the result's
+  note names the real cause.
 - `import` — `from` (host path, resolved under the workspace; its realpath
   must stay inside the workspace) → `to` (container path), via `podman
   cp`. The containment is the mechanical wall against copying host secrets

@@ -5,6 +5,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -18,6 +19,7 @@ import { join } from "node:path";
 import {
 	BOX_FILE_MAX_BYTES,
 	exportBytes,
+	exportNamedBytes,
 	resolveExport,
 	resolveImport,
 } from "./box-files.ts";
@@ -121,5 +123,54 @@ describe("exportBytes", () => {
 		const { workspace } = ws();
 		const out = exportBytes(workspace, "../escape", "x.bin", new Uint8Array([1]));
 		expect("error" in out).toBe(true);
+	});
+
+	test("a placeholder-named leaf symlink can't steer the destination", () => {
+		const { workspace } = ws();
+		mkdirSync(join(workspace, "out"));
+		mkdirSync(join(workspace, "other"));
+		writeFileSync(join(workspace, "out", "report.txt"), "keep");
+		// A leftover probe-shaped symlink in the destination dir: the
+		// resolver must ignore it — numbering happens in real `out`.
+		symlinkSync(join(workspace, "other"), join(workspace, "out", "placeholder"));
+		const out = exportBytes(workspace, "out", "report.txt", new Uint8Array([7]));
+		expect("rel" in out && out.rel).toBe(join("out", "report.1.txt"));
+		expect(readFileSync(join(workspace, "out", "report.txt"), "utf8")).toBe("keep");
+		expect(readFileSync(join(workspace, "out", "report.1.txt"))[0]).toBe(7);
+		expect(existsSync(join(workspace, "other", "report.1.txt"))).toBe(false);
+	});
+
+	test("a directory symlink inside the workspace numbers against the real dir", () => {
+		const { workspace } = ws();
+		mkdirSync(join(workspace, "real"));
+		writeFileSync(join(workspace, "real", "report.txt"), "first");
+		symlinkSync(join(workspace, "real"), join(workspace, "link"));
+		const out = exportBytes(workspace, "link", "report.txt", new Uint8Array([9]));
+		expect("rel" in out && out.rel).toBe(join("link", "report.1.txt"));
+		// The collision was seen and the bytes landed in the real dir —
+		// the link is only a spelling for the workspace-relative path.
+		expect(readFileSync(join(workspace, "real", "report.1.txt"))[0]).toBe(9);
+		expect(readFileSync(join(workspace, "real", "report.txt"), "utf8")).toBe("first");
+	});
+
+	test("a directory symlink out of the workspace is refused before mkdir", () => {
+		const { dir, workspace } = ws();
+		const outside = join(dir, "outside");
+		mkdirSync(outside);
+		symlinkSync(outside, join(workspace, "link"));
+		const out = exportBytes(workspace, join("link", "new"), "x.bin", new Uint8Array([1]));
+		expect("error" in out && out.error).toContain("outside the workspace");
+		expect(existsSync(join(outside, "new"))).toBe(false);
+	});
+});
+
+describe("exportNamedBytes", () => {
+	test("the same name rewrites the same path instead of numbering", () => {
+		const { workspace } = ws();
+		const a = exportNamedBytes(workspace, "subagents/7", "result.txt", new Uint8Array([1]));
+		const b = exportNamedBytes(workspace, "subagents/7", "result.txt", new Uint8Array([2]));
+		expect("rel" in a && a.rel).toBe(join("subagents", "7", "result.txt"));
+		expect("rel" in b && b.rel).toBe(join("subagents", "7", "result.txt"));
+		expect(readFileSync(join(workspace, "subagents", "7", "result.txt"))[0]).toBe(2);
 	});
 });

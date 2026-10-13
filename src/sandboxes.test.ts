@@ -68,12 +68,24 @@ function fakeEngine(opts?: {
 	const flags = {
 		breakDisconnect: opts?.breakDisconnect ?? false,
 		failDisconnect: opts?.failDisconnect ?? false,
+		// Inspect fails once the ordinal count reaches this (relative
+		// arming: flags.failInspectFrom = flags.inspectCalls + k).
+		inspectCalls: 0,
+		failInspectFrom: undefined as number | undefined,
+		failRm: false,
+		// Canned exec results — the output-cap restart tests.
+		execResult: undefined as BoundedProc | undefined,
+		execBytesResult: undefined as BoundedProcBytes | undefined,
 	};
 
 	const runner = async (args: string[]) => {
 		calls.push([...args]);
 		const [cmd, sub] = args;
 		if (cmd === "inspect") {
+			flags.inspectCalls += 1;
+			if (flags.failInspectFrom !== undefined && flags.inspectCalls >= flags.failInspectFrom) {
+				return { code: 1, stdout: "", stderr: "Error: engine connection reset" };
+			}
 			const c = containers.get(args[1]!);
 			if (c === undefined) {
 				return { code: 125, stdout: "[]", stderr: "Error: no such object" };
@@ -147,6 +159,9 @@ function fakeEngine(opts?: {
 			return { code: 0, stdout: "", stderr: "" };
 		}
 		if (cmd === "rm") {
+			if (flags.failRm) {
+				return { code: 1, stdout: "", stderr: "Error: rm wedged on a locked layer" };
+			}
 			containers.delete(args.at(-1)!);
 			return { code: 0, stdout: "", stderr: "" };
 		}
@@ -165,6 +180,7 @@ function fakeEngine(opts?: {
 
 	const execRunner = async (args: string[], _opts: PodmanExecOpts): Promise<BoundedProc> => {
 		execCalls.push([...args]);
+		if (flags.execResult !== undefined) return flags.execResult;
 		// catFile's regular-file probe: `test -f "$1" && ! test -L "$1"`.
 		// exec argv is ["exec",-flags…, name, ...argv] — the container
 		// name is the element before the inner argv's head.
@@ -182,6 +198,7 @@ function fakeEngine(opts?: {
 		args: string[],
 		_opts: PodmanExecOpts,
 	): Promise<BoundedProcBytes> => {
+		if (flags.execBytesResult !== undefined) return flags.execBytesResult;
 		// catFile's read: `cat -- <path>` — name sits before "cat".
 		const catIdx = args.indexOf("cat");
 		const c = catIdx === -1 ? undefined : containers.get(args[catIdx - 1]!);
@@ -384,6 +401,85 @@ describe("sandboxes lifecycle", () => {
 		expect(store.get(conv)).toBeNull();
 	});
 
+	test("network off is fail-closed: a failed confirming inspect removes the container", async () => {
+		const conv = "dm:12";
+		const name = containerNameFor(conv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name, networks: [NETWORK] }] });
+		const { sandboxes, store } = rig(engine);
+		store.put({
+			conversationId: conv,
+			container: name,
+			image: IMAGE,
+			network: true,
+			createdAt: 1,
+			lastUsedAt: 1,
+		});
+		// ensureLocked inspect, the want-true reconcile inspect, the
+		// desired-off pre-inspect, then the post-disconnect
+		// confirmation — that fourth one throws.
+		engine.flags.failInspectFrom = engine.flags.inspectCalls + 4;
+		await expect(sandboxes.setNetwork(conv, false)).rejects.toThrow(
+			/could not be inspected.*container was removed/s,
+		);
+		// The disconnect ran first — the removal is the fail-closed
+		// verdict, not a skipped-off ramp.
+		const calls = engine.calls;
+		const disconnect = calls.findLastIndex((a) => a[0] === "network" && a[1] === "disconnect");
+		const rm = calls.findLastIndex((a) => a[0] === "rm");
+		expect(disconnect).toBeGreaterThanOrEqual(0);
+		expect(rm).toBeGreaterThan(disconnect);
+		expect(engine.containers.has(name)).toBe(false);
+		expect(store.get(conv)).toBeNull();
+	});
+
+	test("network off is fail-closed: a failed initial inspect removes the container", async () => {
+		const conv = "dm:13";
+		const name = containerNameFor(conv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name, networks: [NETWORK] }] });
+		const { sandboxes, store } = rig(engine);
+		// Attached container, off intent — ensureLocked inspects fine,
+		// then applyNetwork's own inspect throws before any verdict.
+		store.put({
+			conversationId: conv,
+			container: name,
+			image: IMAGE,
+			network: false,
+			createdAt: 1,
+			lastUsedAt: 1,
+		});
+		engine.flags.failInspectFrom = engine.flags.inspectCalls + 2;
+		await expect(sandboxes.exec(conv, "true", execOpts)).rejects.toThrow(
+			/could not be inspected.*container was removed/s,
+		);
+		expect(engine.containers.has(name)).toBe(false);
+		expect(store.get(conv)).toBeNull();
+	});
+
+	test("a failed fail-closed removal surfaces the rm error and keeps the row", async () => {
+		const conv = "dm:14";
+		const name = containerNameFor(conv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name, networks: [NETWORK] }] });
+		const { sandboxes, store } = rig(engine);
+		store.put({
+			conversationId: conv,
+			container: name,
+			image: IMAGE,
+			network: true,
+			createdAt: 1,
+			lastUsedAt: 1,
+		});
+		engine.flags.failInspectFrom = engine.flags.inspectCalls + 4;
+		engine.flags.failRm = true;
+		await expect(sandboxes.setNetwork(conv, false)).rejects.toThrow(
+			/could not be inspected.*could not be removed.*rm wedged/s,
+		);
+		// rm never landed — container and row both survive for the
+		// next call's retry, and the original inspect failure is the
+		// cause, not hidden behind the rm error.
+		expect(engine.containers.has(name)).toBe(true);
+		expect(store.get(conv)).not.toBeNull();
+	});
+
 	test("the sweep reaps idle rows but never the caller's", async () => {
 		const conv = "dm:caller";
 		const staleConv = "dm:stale";
@@ -470,9 +566,7 @@ describe("catFile regular-file contract", () => {
 		const { engine, sandboxes, name } = await seeded();
 		engine.containers.get(name)!.files.set("/work/link.txt", new TextEncoder().encode("data"));
 		engine.containers.get(name)!.links.add("/work/link.txt");
-		await expect(sandboxes.catFile(CONV, "/work/link.txt")).rejects.toThrow(
-			/not a regular file/,
-		);
+		await expect(sandboxes.catFile(CONV, "/work/link.txt")).rejects.toThrow(/not a regular file/);
 	});
 
 	test("missing paths and dirs are refused", async () => {
@@ -510,9 +604,13 @@ describe("run leases pin the sandbox", () => {
 		const staleConv = "dm:leased";
 		const staleName = containerNameFor(staleConv, PREFIX);
 		const engine = fakeEngine({ containers: [{ name: staleName }] });
-		const { sandboxes, store } = rig(engine, { idleHours: 1 }, {
-			runLease: (c) => (c === staleConv ? { id: 9, status: "needs_input" } : null),
-		});
+		const { sandboxes, store } = rig(
+			engine,
+			{ idleHours: 1 },
+			{
+				runLease: (c) => (c === staleConv ? { id: 9, status: "needs_input" } : null),
+			},
+		);
 		const old = Date.now() - 2 * 3_600_000;
 		store.put({
 			conversationId: staleConv,
@@ -588,5 +686,82 @@ describe("onLifecycle", () => {
 		});
 		expect(timedOut.note).toContain("restarted");
 		expect(notes.some((n) => n.includes("restarted"))).toBe(true);
+	});
+});
+
+describe("output-capped execs restart the sandbox", () => {
+	// A stream-cap kill is not a deadline: the container restarts (the
+	// in-container command may outlive its client), the note names the
+	// cap, and the filesystem survives.
+	function rigCapped(notes: string[]) {
+		const conv = "dm:60";
+		const name = containerNameFor(conv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name }] });
+		engine.containers.get(name)!.files.set("/work/keep.txt", new TextEncoder().encode("k"));
+		const { sandboxes, store } = rig(engine, undefined, {
+			onLifecycle: (c, note) => {
+				if (c === conv) notes.push(note);
+			},
+		});
+		return { engine, sandboxes, store, conv, name };
+	}
+
+	function expectRestarted(
+		engine: ReturnType<typeof fakeEngine>,
+		name: string,
+		note: string | undefined,
+		notes: string[],
+	) {
+		expect(note).toContain("output cap");
+		expect(note).not.toContain("deadline");
+		expect(engine.calls.some((a) => a[0] === "restart")).toBe(true);
+		// Files and the row survive the restart — only processes died.
+		expect(engine.containers.get(name)!.files.has("/work/keep.txt")).toBe(true);
+		expect(notes.some((n) => n.includes("output cap"))).toBe(true);
+	}
+
+	test("text exec", async () => {
+		const notes: string[] = [];
+		const { engine, sandboxes, conv, name } = rigCapped(notes);
+		engine.flags.execResult = {
+			stdout: "x".repeat(70_000),
+			stderr: "",
+			exitCode: null,
+			timedOut: false,
+			truncated: true,
+			outputCapped: true,
+		};
+		const out = await sandboxes.exec(conv, "seq 1 500000", execOpts);
+		expectRestarted(engine, name, out.note, notes);
+	});
+
+	test("argv exec", async () => {
+		const notes: string[] = [];
+		const { engine, sandboxes, conv, name } = rigCapped(notes);
+		engine.flags.execResult = {
+			stdout: "",
+			stderr: "flooded",
+			exitCode: null,
+			timedOut: false,
+			truncated: true,
+			outputCapped: true,
+		};
+		const out = await sandboxes.execArgv(conv, ["seq", "1", "500000"], execOpts);
+		expectRestarted(engine, name, out.note, notes);
+	});
+
+	test("binary argv exec", async () => {
+		const notes: string[] = [];
+		const { engine, sandboxes, conv, name } = rigCapped(notes);
+		engine.flags.execBytesResult = {
+			stdout: new Uint8Array(70_000),
+			stderr: "",
+			exitCode: null,
+			timedOut: false,
+			truncated: true,
+			outputCapped: true,
+		};
+		const out = await sandboxes.execBytesArgv(conv, ["cat", "big.bin"], execOpts);
+		expectRestarted(engine, name, out.note, notes);
 	});
 });

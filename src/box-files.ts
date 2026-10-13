@@ -69,23 +69,20 @@ export function resolveImport(workspace: string, from: string): BoxImportResult 
 	return { path: real, bytes: st.size };
 }
 
-/** Export side: a workspace-relative destination whose nearest
- *  existing ancestor is checked BEFORE parents are created (a
- *  symlinked ancestor plus a missing tail would otherwise seed empty
- *  dirs outside the workspace), and whose leaf resolves through
- *  writeThroughTarget so a leaf symlink is written through, never
- *  silently replaced. */
-export function resolveExport(workspace: string, rel: string): BoxPathResult {
-	if (isAbsolute(rel)) {
-		return { error: `destination must be workspace-relative, got absolute: ${rel}` };
+/** The real directory an export lands in. The nearest existing
+ *  ancestor is realpath'd BEFORE any mkdir — a symlinked ancestor
+ *  plus a missing tail would otherwise seed empty dirs outside the
+ *  workspace — and the final dir is realpath'd back inside. */
+function resolveExportDir(workspace: string, relDir: string): BoxPathResult {
+	if (isAbsolute(relDir)) {
+		return { error: `destination must be workspace-relative, got absolute: ${relDir}` };
 	}
 	const wsReal = realpathSync(workspace);
-	const dest = resolve(wsReal, rel);
-	if (!inside(wsReal, dest) || dest === wsReal) {
-		return { error: `refused: ${rel} resolves to ${dest}, outside the workspace` };
+	const dest = resolve(wsReal, relDir);
+	if (!inside(wsReal, dest)) {
+		return { error: `refused: ${relDir} resolves to ${dest}, outside the workspace` };
 	}
-	const parent = dirname(dest);
-	let anchor = parent;
+	let anchor = dest;
 	while (anchor !== wsReal && anchor.startsWith(wsReal + sep)) {
 		try {
 			lstatSync(anchor);
@@ -101,14 +98,28 @@ export function resolveExport(workspace: string, rel: string): BoxPathResult {
 			error: `refused: ${anchor} resolves to ${realAnchor}, outside the workspace`,
 		};
 	}
-	mkdirSync(parent, { recursive: true });
-	const realParent = realpathSync(parent);
-	if (!inside(wsReal, realParent)) {
+	mkdirSync(dest, { recursive: true });
+	const realDest = realpathSync(dest);
+	if (!inside(wsReal, realDest)) {
 		return {
-			error: `refused: ${parent} resolves to ${realParent}, outside the workspace`,
+			error: `refused: ${dest} resolves to ${realDest}, outside the workspace`,
 		};
 	}
-	const through = writeThroughTarget(dest);
+	return { path: realDest };
+}
+
+/** Export side: a workspace-relative destination whose directory
+ *  resolves inside the workspace; the leaf goes through
+ *  writeThroughTarget so a leaf symlink is written through, never
+ *  silently replaced. */
+export function resolveExport(workspace: string, rel: string): BoxPathResult {
+	if (isAbsolute(rel)) {
+		return { error: `destination must be workspace-relative, got absolute: ${rel}` };
+	}
+	const dir = resolveExportDir(workspace, dirname(rel));
+	if ("error" in dir) return dir;
+	const wsReal = realpathSync(workspace);
+	const through = writeThroughTarget(join(dir.path, basename(rel)));
 	if ("error" in through) return through;
 	if (!inside(wsReal, through.target) || through.target === wsReal) {
 		return {
@@ -131,11 +142,11 @@ export function exportBytes(
 			error: `refused: export exceeds the ${BOX_FILE_MAX_BYTES / (1024 * 1024)} MiB cap`,
 		};
 	}
-	// Resolving a sentinel inside relDir validates ancestry and creates
-	// the directory; the real leaf goes through the same gate below.
-	const probe = resolveExport(workspace, join(relDir, "placeholder"));
-	if ("error" in probe) return probe;
-	const base = numberedName(dirname(probe.path), basename(sourceBaseName));
+	// The real destination dir anchors collision numbering — a leaf
+	// symlink elsewhere in relDir must not steer the check.
+	const dir = resolveExportDir(workspace, relDir);
+	if ("error" in dir) return dir;
+	const base = numberedName(dir.path, basename(sourceBaseName));
 	const dest = resolveExport(workspace, join(relDir, base));
 	if ("error" in dest) return dest;
 	durableWriteBytes(dest.path, data);
@@ -157,8 +168,6 @@ export function exportNamedBytes(
 			error: `refused: export exceeds the ${BOX_FILE_MAX_BYTES / (1024 * 1024)} MiB cap`,
 		};
 	}
-	const probe = resolveExport(workspace, join(relDir, "placeholder"));
-	if ("error" in probe) return probe;
 	const dest = resolveExport(workspace, join(relDir, basename(name)));
 	if ("error" in dest) return dest;
 	durableWriteBytes(dest.path, data);

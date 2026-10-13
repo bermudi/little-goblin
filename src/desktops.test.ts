@@ -6,10 +6,10 @@
 // sweep, and the fail-closed network. No real podman runs here; the
 // real-engine check is gated on GOBLIN_DESKTOP_LIVE=1.
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, posix } from "node:path";
+import { basename, dirname, join, posix } from "node:path";
 import { desktopsConfigSchema, type DesktopsConfig } from "./config.ts";
 import { makePodman, type PodmanExecOpts } from "./podman.ts";
 import type { BoundedProc, BoundedProcBytes } from "./proc.ts";
@@ -80,11 +80,25 @@ function fakeEngine(opts?: {
 	const calls: string[][] = [];
 	const execCalls: string[][] = [];
 	let frame = 0;
+	// Mutable at call time — fail-closed network tests arm these after
+	// the create path's own inspects have run.
+	const flags = {
+		// Inspect fails once the ordinal count reaches this (relative
+		// arming: flags.failInspectFrom = flags.inspectCalls + k).
+		inspectCalls: 0,
+		failInspectFrom: undefined as number | undefined,
+		failRm: false,
+		failDisconnect: false,
+	};
 
 	const runner = async (args: string[]) => {
 		calls.push([...args]);
 		const [cmd, sub] = args;
 		if (cmd === "inspect") {
+			flags.inspectCalls += 1;
+			if (flags.failInspectFrom !== undefined && flags.inspectCalls >= flags.failInspectFrom) {
+				return { code: 1, stdout: "", stderr: "Error: engine connection reset" };
+			}
 			const c = containers.get(args[1]!);
 			if (c === undefined) {
 				return { code: 125, stdout: "[]", stderr: "Error: no such object" };
@@ -118,6 +132,9 @@ function fakeEngine(opts?: {
 			return { code: 0, stdout: "", stderr: "" };
 		}
 		if (cmd === "network" && sub === "disconnect") {
+			if (flags.failDisconnect) {
+				return { code: 1, stdout: "", stderr: "Error: disconnect refused" };
+			}
 			containers.get(args[3]!)?.networks.delete(args[2]!);
 			return { code: 0, stdout: "", stderr: "" };
 		}
@@ -148,6 +165,9 @@ function fakeEngine(opts?: {
 			return { code: 0, stdout: "", stderr: "" };
 		}
 		if (cmd === "rm") {
+			if (flags.failRm) {
+				return { code: 1, stdout: "", stderr: "Error: rm wedged on a locked layer" };
+			}
 			containers.delete(args.at(-1)!);
 			return { code: 0, stdout: "", stderr: "" };
 		}
@@ -163,7 +183,13 @@ function fakeEngine(opts?: {
 		// positional arg before/after the marker is the guest path.
 		const marker = args.indexOf("pre");
 		if (marker !== -1 && opts?.existingDirs?.has(args[marker + 1] ?? "")) {
-			return { stdout: "", stderr: "exists as directory", exitCode: 3, timedOut: false, truncated: false };
+			return {
+				stdout: "",
+				stderr: "exists as directory",
+				exitCode: 3,
+				timedOut: false,
+				truncated: false,
+			};
 		}
 		if (
 			args.includes("mkdir") ||
@@ -182,7 +208,13 @@ function fakeEngine(opts?: {
 		if (args.includes("cp")) {
 			const dest = args.at(-1) ?? "";
 			if (execOpts.user === "desk" && opts?.rootDirs?.has(posix.dirname(dest)) === true) {
-				return { stdout: "", stderr: "Permission denied", exitCode: 1, timedOut: false, truncated: false };
+				return {
+					stdout: "",
+					stderr: "Permission denied",
+					exitCode: 1,
+					timedOut: false,
+					truncated: false,
+				};
 			}
 			return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
 		}
@@ -247,10 +279,7 @@ function fakeEngine(opts?: {
 	): Promise<BoundedProcBytes> => {
 		frame += 1;
 		return {
-			stdout:
-				opts?.varyFrames === true
-					? new Uint8Array([...PNG, frame & 0xff])
-					: PNG,
+			stdout: opts?.varyFrames === true ? new Uint8Array([...PNG, frame & 0xff]) : PNG,
 			stderr: "",
 			exitCode: 0,
 			timedOut: false,
@@ -264,6 +293,7 @@ function fakeEngine(opts?: {
 		networks,
 		calls,
 		execCalls,
+		flags,
 	};
 }
 
@@ -290,7 +320,11 @@ async function fresh(engine: ReturnType<typeof fakeEngine>, name = "d1") {
 	return { store, desktops, name, shotsRoot };
 }
 
-const CLICK = { kind: "cua", tool: "click", args: { pid: 100, element_token: "s00000001:9" } } as const;
+const CLICK = {
+	kind: "cua",
+	tool: "click",
+	args: { pid: 100, element_token: "s00000001:9" },
+} as const;
 
 describe("desktops pool", () => {
 	test("allocate creates a disconnected session container with desktop labels", async () => {
@@ -339,6 +373,59 @@ describe("desktops pool", () => {
 		await expect(desktops.allocate("d2")).rejects.toThrow(/pool is full.*d1/s);
 	});
 
+	test("a racing allocation counts the in-flight one — parallel allocate can't exceed the pool cap", async () => {
+		const gate = Promise.withResolvers<void>();
+		const engine = fakeEngine();
+		const { desktops, store } = rig(engine, { max: 1 });
+		// Park the create so d1's reservation is held but its row is
+		// not yet visible — only the pending set can count it.
+		const origCreate = engine.podman.create.bind(engine.podman);
+		engine.podman.create = async (spec, conv) => {
+			await gate.promise;
+			return origCreate(spec, conv);
+		};
+		const first = desktops.allocate("d1");
+		const second = desktops.allocate("d2");
+		// d2 rejects while d1's create is still parked — the pending
+		// reservation is what counted it.
+		const b = await second.catch((e: unknown) => e);
+		gate.resolve();
+		const a = await first;
+		expect(a.row.name).toBe("d1");
+		expect(b).toBeInstanceOf(DesktopError);
+		expect((b as Error).message).toMatch(/pool is full/);
+		// Exactly one container, exactly one row — the reservation
+		// never let both pass.
+		expect(engine.containers.has(containerNameForDesktop("d1"))).toBe(true);
+		expect(engine.containers.has(containerNameForDesktop("d2"))).toBe(false);
+		expect(store.get("d1")).not.toBeNull();
+		expect(store.get("d2")).toBeNull();
+	});
+
+	test("a failed allocation releases the reservation; a same-name duplicate is refused while held", async () => {
+		const gate = Promise.withResolvers<void>();
+		const engine = fakeEngine();
+		const { desktops, store } = rig(engine, { max: 1 });
+		const origCreate = engine.podman.create.bind(engine.podman);
+		let failCreate = true;
+		engine.podman.create = async (spec, conv) => {
+			await gate.promise;
+			if (failCreate) throw new Error("podman exploded");
+			return origCreate(spec, conv);
+		};
+		const first = desktops.allocate("d1");
+		// The same name is refused outright while the reservation
+		// holds, and the pool still counts it against capacity.
+		await expect(desktops.allocate("d1")).rejects.toThrow(/already being allocated/);
+		await expect(desktops.allocate("d2")).rejects.toThrow(/pool is full/);
+		gate.resolve();
+		await expect(first).rejects.toThrow(/podman exploded/);
+		// Reservation released with the failure — the retry succeeds.
+		failCreate = false;
+		await desktops.allocate("d1");
+		expect(store.get("d1")).not.toBeNull();
+	});
+
 	test("a missing image fails with the build line before any create", async () => {
 		const engine = fakeEngine();
 		const { desktops } = rig(engine, { image: "localhost/goblin-desktop:nope" });
@@ -382,9 +469,7 @@ describe("desktops pool", () => {
 		const shot2 = await desktops.screenshot(name);
 		await desktops.act(name, RUN_A, shot2.id, CLICK);
 		// The holder's lease is renewed by acting; another holder is refused.
-		await expect(desktops.act(name, RUN_B, shot2.id, CLICK)).rejects.toThrow(
-			/controlled by run a/,
-		);
+		await expect(desktops.act(name, RUN_B, shot2.id, CLICK)).rejects.toThrow(/controlled by run a/);
 	});
 
 	test("an identical action against an unchanged frame is refused", async () => {
@@ -532,7 +617,11 @@ describe("desktops pool", () => {
 		const { desktops, name, shotsRoot } = await fresh(engine);
 		const shot = await desktops.screenshot(name);
 		const createdAt = desktops.get(name)!.createdAt;
-		expect(shot.path).toBe(join(shotsRoot, name, "shots", `${createdAt}-1.png`));
+		expect(dirname(shot.path)).toBe(join(shotsRoot, name, "shots"));
+		// The obs id's uuid rides the audit basename: createdAt-seq-uuid.
+		expect(basename(shot.path)).toMatch(
+			new RegExp(`^${createdAt}-1-${shot.id.split(":")[2]}\\.png$`),
+		);
 		expect(shot.bytes).toEqual(PNG);
 		expect(await Bun.file(shot.path).exists()).toBe(true);
 	});
@@ -545,28 +634,40 @@ describe("desktops pool", () => {
 		// shared across the recreate, so both frames must survive.
 		engine.containers.delete(containerNameForDesktop(name));
 		const second = await desktops.screenshot(name);
-		expect(second.id).toBe(`${name}:2`);
+		expect(second.id).toMatch(/^d1:2:[0-9a-f-]{36}$/);
 		expect(second.path).not.toBe(first.path);
 		expect(await Bun.file(first.path).exists()).toBe(true);
 		expect(await Bun.file(second.path).exists()).toBe(true);
 	});
 
-	test("a destroy/re-allocate generation cannot clobber the old audit frames", async () => {
-		const engine = fakeEngine();
-		const { desktops, store, name } = await fresh(engine);
-		const first = await desktops.screenshot(name);
-		const gen1CreatedAt = store.get(name)!.createdAt;
-		await desktops.destroy(name, { kind: "operator" });
-		await desktops.allocate(name);
-		// A same-ms re-allocate would reuse createdAt — pin generation
-		// two's stamp distinct so filename uniqueness is what is tested.
-		const gen2 = store.get(name)!;
-		gen2.createdAt = gen1CreatedAt + 1;
-		store.put(gen2);
-		const second = await desktops.screenshot(name);
-		expect(second.path).not.toBe(first.path);
-		expect(await Bun.file(first.path).exists()).toBe(true);
-		expect(await Bun.file(second.path).exists()).toBe(true);
+	test("a destroy/re-allocate generation cannot clobber frames or reuse obs ids", async () => {
+		// Pin the clock so createdAt collides exactly across the
+		// recreation — the uuid is what keeps ids and frames apart.
+		const clock = spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+		try {
+			const engine = fakeEngine();
+			const { desktops, name } = await fresh(engine);
+			await desktops.claim(name, RUN_A);
+			const first = await desktops.screenshot(name);
+			const firstId = first.id;
+			const firstCreatedAt = desktops.get(name)!.createdAt;
+			await desktops.destroy(name, RUN_A);
+			await desktops.allocate(name);
+			expect(desktops.get(name)!.createdAt).toBe(firstCreatedAt);
+			const second = await desktops.screenshot(name);
+			expect(second.id).not.toBe(firstId);
+			expect(second.id).toMatch(/^d1:1:[0-9a-f-]{36}$/);
+			expect(second.path).not.toBe(first.path);
+			expect(await Bun.file(first.path).exists()).toBe(true);
+			expect(await Bun.file(second.path).exists()).toBe(true);
+			// The previous generation's obs id can never bind to the new
+			// desktop's frame; the fresh id acts.
+			await desktops.claim(name, RUN_A);
+			await expect(desktops.act(name, RUN_A, firstId, CLICK)).rejects.toThrow(/fresh screenshot/);
+			await desktops.act(name, RUN_A, second.id, CLICK);
+		} finally {
+			clock.mockRestore();
+		}
 	});
 
 	test("launch refuses flag-shaped and non-web urls before any exec", async () => {
@@ -605,6 +706,20 @@ describe("desktops pool", () => {
 			"file:///tmp/probe.html",
 			"about:blank",
 		]);
+		// The launcher always runs as desk with the fixed session env —
+		// never as root, never inheriting container-writable state.
+		const launch = launches[0]!;
+		expect(launch[launch.indexOf("-u") + 1]).toBe("desk");
+		expect(launch[launch.indexOf("-w") + 1]).toBe("/run/desk");
+		const envPairs = launch.filter((_, i) => launch[i - 1] === "-e");
+		for (const pair of [
+			"HOME=/home/desk",
+			"DISPLAY=:99",
+			"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/desk/bus",
+			"XDG_RUNTIME_DIR=/home/desk/.runtime",
+		]) {
+			expect(envPairs).toContain(pair);
+		}
 	});
 
 	test("a failed dispatch consumes its observation — input is never replayed", async () => {
@@ -629,9 +744,7 @@ describe("desktops pool", () => {
 			// The dispatch error rides as the cause for debugging.
 			expect((err as Error).cause).toBeInstanceOf(DesktopError);
 			// The obs burned with the attempt; the same id cannot retry.
-			await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(
-				/fresh screenshot/,
-			);
+			await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(/fresh screenshot/);
 			const logged = lines.find((l) => l.msg === "desktop act failed");
 			expect(logged).toMatchObject({
 				desktop: name,
@@ -670,9 +783,7 @@ describe("desktops pool", () => {
 			expect((err as Error).cause).toBeInstanceOf(DesktopError);
 			expect((err as Error).cause).toMatchObject({ message: expect.stringContaining(diag) });
 			// The observation still burned with the attempt.
-			await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(
-				/fresh screenshot/,
-			);
+			await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(/fresh screenshot/);
 			const logged = lines.find((l) => l.msg === "desktop act failed");
 			expect(logged).toMatchObject({ desktop: name, action: "cua:click" });
 			// Plain-text stdout diagnostics survive the same way.
@@ -729,12 +840,8 @@ describe("desktops pool", () => {
 		expect(engine.calls.some((c) => c[0] === "cp")).toBe(false);
 		expect(engine.execCalls.some((c) => c.includes("-R"))).toBe(false);
 		// Non-file destinations are refused before the guest is touched.
-		await expect(desktops.cpIn(name, host, "relative/path")).rejects.toThrow(
-			/absolute file path/,
-		);
-		await expect(desktops.cpIn(name, host, "/home/desk/")).rejects.toThrow(
-			/absolute file path/,
-		);
+		await expect(desktops.cpIn(name, host, "relative/path")).rejects.toThrow(/absolute file path/);
+		await expect(desktops.cpIn(name, host, "/home/desk/")).rejects.toThrow(/absolute file path/);
 	});
 
 	test("import lands as the desk user — root only stages the bytes", async () => {
@@ -746,9 +853,7 @@ describe("desktops pool", () => {
 		// podman cp targets a goblin-chosen stage path, never the dest.
 		const cp = engine.calls.find((c) => c[0] === "cp");
 		expect(cp).toBeDefined();
-		expect(cp![2]).toMatch(
-			new RegExp(`^${containerNameForDesktop(name)}:/run/goblin-import/imp-`),
-		);
+		expect(cp![2]).toMatch(new RegExp(`^${containerNameForDesktop(name)}:/run/goblin-import/imp-`));
 		// The stage dir is created by root (no -u) and the staged file
 		// is made desk-readable before the desk-side copy.
 		const stageMk = engine.execCalls.find(
@@ -764,9 +869,7 @@ describe("desktops pool", () => {
 		expect(deskCp).toBeDefined();
 		expect(deskCp![deskCp!.indexOf("-u") + 1]).toBe("desk");
 		expect(deskCp!.at(-1)).toBe("/home/desk/inbox/subagents/1/f.bin");
-		expect(
-			engine.execCalls.indexOf(chmod!) < engine.execCalls.indexOf(deskCp!),
-		).toBe(true);
+		expect(engine.execCalls.indexOf(chmod!) < engine.execCalls.indexOf(deskCp!)).toBe(true);
 		// No chown anywhere — desk's own cp creates the file desk-owned.
 		expect(engine.execCalls.some((c) => c.join(" ").includes("chown"))).toBe(false);
 		// The staged file is cleaned up by a root rm.
@@ -782,9 +885,7 @@ describe("desktops pool", () => {
 		const { desktops, name } = await fresh(engine);
 		const host = join(mkdtempSync(join(tmpdir(), "goblin-desk-seed-")), "f.bin");
 		writeFileSync(host, "x");
-		await expect(desktops.cpIn(name, host, "/etc/f.bin")).rejects.toThrow(
-			/could not import/,
-		);
+		await expect(desktops.cpIn(name, host, "/etc/f.bin")).rejects.toThrow(/could not import/);
 		// The desk-side copy was attempted as desk and the staged file
 		// was cleaned up after the failure.
 		const deskCp = engine.execCalls.find((c) => c.includes("cp"));
@@ -870,9 +971,7 @@ describe("idle sweep vs in-flight lane op", () => {
 
 			const row = store.get("a");
 			expect(row).not.toBeNull();
-			expect(
-				engine.calls.some((c) => c[0] === "rm" && c.at(-1) === containerName),
-			).toBe(false);
+			expect(engine.calls.some((c) => c[0] === "rm" && c.at(-1) === containerName)).toBe(false);
 			expect(engine.containers.get(containerName)).toBe(containerObj);
 			expect(row!.lastUsedAt).toBeGreaterThan(Date.now() - 3_600_000);
 			check({ engine, row: row!, containerName, containerObj, result });
@@ -908,9 +1007,112 @@ describe("idle sweep vs in-flight lane op", () => {
 			(desktops) => desktops.screenshot("a"),
 			({ row, result }) => {
 				expect(row.leaseKind).toBeNull();
-				expect(result.id).toBe("a:1");
+				expect(result.id).toMatch(/^a:1:[0-9a-f-]{36}$/);
 				expect(result.bytes.length).toBeGreaterThan(0);
 			},
 		);
+	});
+});
+
+describe("fail-closed desktop network", () => {
+	// Allocate, then attach the container and mark the row's intent on
+	// so the network-off path runs its own verifies.
+	async function attached(name: string, engine: ReturnType<typeof fakeEngine>) {
+		const { store, desktops } = rig(engine);
+		await desktops.allocate(name);
+		engine.containers.get(containerNameForDesktop(name))!.networks.add(NETWORK);
+		const row = store.get(name)!;
+		row.network = true;
+		store.put(row);
+		return { store, desktops };
+	}
+
+	test("an unverifiable confirming inspect removes the container and row", async () => {
+		const name = "d1";
+		const engine = fakeEngine();
+		const { store, desktops } = await attached(name, engine);
+		// ensureLocked inspect, the want-true reconcile inspect, the
+		// desired-off pre-inspect, then the post-disconnect
+		// confirmation — that fourth one throws.
+		engine.flags.failInspectFrom = engine.flags.inspectCalls + 4;
+		await expect(desktops.setNetwork(name, false)).rejects.toThrow(
+			/could not be inspected.*container was removed/s,
+		);
+		// The disconnect ran first — the removal is the fail-closed
+		// verdict, not a skipped-off ramp.
+		const calls = engine.calls;
+		const disconnect = calls.findLastIndex((a) => a[0] === "network" && a[1] === "disconnect");
+		const rm = calls.findLastIndex((a) => a[0] === "rm");
+		expect(disconnect).toBeGreaterThanOrEqual(0);
+		expect(rm).toBeGreaterThan(disconnect);
+		expect(engine.containers.has(containerNameForDesktop(name))).toBe(false);
+		expect(store.get(name)).toBeNull();
+	});
+
+	test("an unverifiable initial inspect removes the container and row", async () => {
+		const name = "d1";
+		const engine = fakeEngine();
+		const { store, desktops } = rig(engine);
+		await desktops.allocate(name);
+		// Attached container, off intent — the applyNetwork inspect
+		// (second overall) throws before any verdict.
+		engine.containers.get(containerNameForDesktop(name))!.networks.add(NETWORK);
+		engine.flags.failInspectFrom = engine.flags.inspectCalls + 2;
+		await expect(desktops.claim(name, RUN_A)).rejects.toThrow(
+			/could not be inspected.*container was removed/s,
+		);
+		expect(engine.containers.has(containerNameForDesktop(name))).toBe(false);
+		expect(store.get(name)).toBeNull();
+	});
+
+	test("a failed disconnect removes the container and row too", async () => {
+		const name = "d1";
+		const engine = fakeEngine();
+		const { store, desktops } = await attached(name, engine);
+		engine.flags.failDisconnect = true;
+		await expect(desktops.setNetwork(name, false)).rejects.toThrow(
+			/disconnect failed.*container was removed/s,
+		);
+		expect(engine.containers.has(containerNameForDesktop(name))).toBe(false);
+		expect(store.get(name)).toBeNull();
+	});
+
+	test("a failed fail-closed removal surfaces the rm error and keeps the row", async () => {
+		const name = "d1";
+		const engine = fakeEngine();
+		const { store, desktops } = await attached(name, engine);
+		engine.flags.failInspectFrom = engine.flags.inspectCalls + 4;
+		engine.flags.failRm = true;
+		await expect(desktops.setNetwork(name, false)).rejects.toThrow(
+			/could not be inspected.*could not be removed.*rm wedged/s,
+		);
+		// rm never landed — container and row survive for the retry,
+		// the original inspect failure stays the cause.
+		expect(engine.containers.has(containerNameForDesktop(name))).toBe(true);
+		expect(store.get(name)).not.toBeNull();
+	});
+});
+
+describe("observation id persistence", () => {
+	test("lastObsId survives a store reopen — act still binds after a restart", async () => {
+		const engine = fakeEngine({ varyFrames: true });
+		const dbPath = tmpdb();
+		const root = mkdtempSync(join(tmpdir(), "goblin-desk-shots-"));
+		const mk = () =>
+			makeDesktops({
+				podman: engine.podman,
+				store: openDesktops(dbPath),
+				config: () => ({ ...desktopsConfigSchema.parse({}), image: IMAGE }),
+				shotsRoot: root,
+				networkName: NETWORK,
+			});
+		const d1 = mk();
+		await d1.allocate("a");
+		await d1.claim("a", RUN_A);
+		const shot = await d1.screenshot("a");
+		// A fresh owner on the same db — the goblin-restart shape.
+		const d2 = mk();
+		expect(d2.get("a")!.lastObsId).toBe(shot.id);
+		await d2.act("a", RUN_A, shot.id, CLICK);
 	});
 });

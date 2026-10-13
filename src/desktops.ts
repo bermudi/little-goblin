@@ -195,9 +195,7 @@ export function openDesktops(dbPath: string): DesktopStore {
 			last_used_at = excluded.last_used_at`,
 	);
 	const qDelete = db.query("DELETE FROM desktops WHERE name = ?");
-	const qStale = db.query(
-		"SELECT * FROM desktops WHERE last_used_at < ? AND name != ?",
-	);
+	const qStale = db.query("SELECT * FROM desktops WHERE last_used_at < ? AND name != ?");
 	return {
 		get: (name) => {
 			const row = qGet.get(name);
@@ -238,10 +236,13 @@ const DESKTOP_USER = "desk";
 // but cannot write, rename, or plant links inside.
 const IMPORT_STAGE_DIR = "/run/goblin-import";
 const SESSION_SOCKET = "/run/desk/cua.sock";
+// The fixed desk session env — goblin-launch pins the same set in the
+// image; nothing here may be derived from container-writable state.
 const SESSION_ENV = {
 	HOME: "/home/desk",
 	DISPLAY: ":99",
 	DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/desk/bus",
+	XDG_RUNTIME_DIR: "/home/desk/.runtime",
 } as const;
 const EXEC_OPTS = { timeoutMs: 60_000, maxOutput: 4 * 1024 * 1024 } as const;
 const EXPORT_MAX_BYTES = 100 * 1024 * 1024;
@@ -277,9 +278,7 @@ function holderLabel(holder: LeaseHolder): string {
 }
 
 function rowHolderLabel(row: DesktopRow): string {
-	return row.leaseKind === "operator"
-		? "operator"
-		: `${row.leaseKind} ${row.leaseId ?? ""}`;
+	return row.leaseKind === "operator" ? "operator" : `${row.leaseKind} ${row.leaseId ?? ""}`;
 }
 
 function leaseLive(row: DesktopRow, now: number): boolean {
@@ -287,11 +286,7 @@ function leaseLive(row: DesktopRow, now: number): boolean {
 }
 
 function leaseHeldBy(row: DesktopRow, holder: LeaseHolder, now: number): boolean {
-	return (
-		leaseLive(row, now) &&
-		row.leaseKind === holder.kind &&
-		row.leaseId === holderId(holder)
-	);
+	return leaseLive(row, now) && row.leaseKind === holder.kind && row.leaseId === holderId(holder);
 }
 
 // The design wants every refusal on the log with its reason — the
@@ -301,6 +296,7 @@ function refuse(
 	op: string,
 	reason: string,
 	holder?: LeaseHolder,
+	cause?: unknown,
 ): DesktopError {
 	log.warn("desktop refused", {
 		desktop,
@@ -308,7 +304,7 @@ function refuse(
 		reason,
 		...(holder === undefined ? {} : { holder: holderLabel(holder) }),
 	});
-	return new DesktopError(reason);
+	return new DesktopError(reason, cause === undefined ? undefined : { cause });
 }
 
 // Launch URLs are model-controlled strings that land on Chromium's
@@ -364,9 +360,7 @@ export interface Desktops {
 	reserve(name: string, reserved: boolean): Promise<void>;
 	setNetwork(name: string, enabled: boolean): Promise<void>;
 	destroy(name: string, by: LeaseHolder): Promise<void>;
-	screenshot(
-		name: string,
-	): Promise<{ id: string; path: string; bytes: Uint8Array; note?: string }>;
+	screenshot(name: string): Promise<{ id: string; path: string; bytes: Uint8Array; note?: string }>;
 	inspect(
 		name: string,
 		opts?: { pid?: number; windowId?: number },
@@ -426,12 +420,45 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 	}
 
 	// Reconcile actual network state with intent. Off is fail-closed:
-	// if the disconnect fails or inspect can't confirm it, the
-	// container is removed rather than used in an unknown state.
+	// any failure to verify it removes the container — an unknown
+	// state is not usable. Row out only after rm lands; intended-on
+	// failures never trigger this cleanup.
 	async function applyNetwork(name: string, want: boolean): Promise<void> {
 		const container = containerNameForDesktop(name);
-		const before = await podman.inspect(container);
-		const has = before.networks.includes(networkName);
+		const drop = async (why: string, cause?: unknown): Promise<never> => {
+			try {
+				await podman.rm(container);
+			} catch (rmErr) {
+				throw refuse(
+					name,
+					"network",
+					`desktop ${name} ${why} — the container could not be removed either (${rmErr instanceof Error ? rmErr.message : String(rmErr)})`,
+					undefined,
+					rmErr,
+				);
+			}
+			store.delete(name);
+			throw refuse(
+				name,
+				"network",
+				`desktop ${name} ${why} — the container was removed`,
+				undefined,
+				cause,
+			);
+		};
+		let has: boolean;
+		try {
+			const before = await podman.inspect(container);
+			has = before.networks.includes(networkName);
+		} catch (err) {
+			if (!want) {
+				await drop(
+					`network state could not be inspected (${err instanceof Error ? err.message : String(err)})`,
+					err,
+				);
+			}
+			throw err;
+		}
 		if (has === want) return;
 		if (want) {
 			await podman.networkConnect(networkName, container);
@@ -441,20 +468,27 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			}
 			return;
 		}
-		const drop = async (why: string): Promise<never> => {
-			await podman.rm(container);
-			store.delete(name);
-			throw refuse(name, "network", `desktop ${name} ${why} — the container was removed`);
-		};
 		try {
 			await podman.networkDisconnect(networkName, container);
 		} catch (err) {
 			await drop(
 				`network disconnect failed (${err instanceof Error ? err.message : String(err)})`,
+				err,
 			);
 		}
-		const after = await podman.inspect(container);
-		if (after.networks.includes(networkName)) {
+		// The confirming inspect is in its own try so a thrown drop
+		// can't be mistaken for an inspect failure and drop twice.
+		let stillOn = false;
+		try {
+			const after = await podman.inspect(container);
+			stillOn = after.networks.includes(networkName);
+		} catch (err) {
+			await drop(
+				`network state after disconnect could not be inspected (${err instanceof Error ? err.message : String(err)})`,
+				err,
+			);
+		}
+		if (stillOn) {
 			await drop("would not confirm network off");
 		}
 	}
@@ -622,6 +656,11 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 	// Lifecycle ops are single-flight per desktop; claim/obs/act
 	// read-modify-write the row inside the same lane.
 	const lanes = new Map<string, Promise<void>>();
+
+	// Capacity counts rows ∪ pending reservations — the check-and-add
+	// in allocate is synchronous, so two allocations on different
+	// lanes can't both slip past max.
+	const pendingAllocs = new Set<string>();
 	function lane<T>(name: string, fn: () => Promise<T>): Promise<T> {
 		const prev = lanes.get(name) ?? Promise.resolve();
 		const run = prev.then(fn, fn);
@@ -668,9 +707,13 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		}
 	}
 
-	function mintObservation(row: DesktopRow, hash: string): string {
+	// The uuid keeps an obs id unique across a same-ms
+	// destroy/re-allocate (createdAt and shotSeq both reset). The
+	// caller mints it — screenshot needs it for the audit basename —
+	// but the row publish happens only here.
+	function mintObservation(row: DesktopRow, hash: string, uuid: string): string {
 		row.shotSeq += 1;
-		row.lastObsId = `${row.name}:${row.shotSeq}`;
+		row.lastObsId = `${row.name}:${row.shotSeq}:${uuid}`;
 		row.lastObsUsed = false;
 		row.lastObsHash = hash;
 		row.lastUsedAt = Date.now();
@@ -695,41 +738,52 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					`invalid desktop image ${JSON.stringify(opts.image)} — not a valid image ref`,
 				);
 			}
-			return await lane(name, async () => {
-				if (store.get(name) !== null) {
-					throw refuse(name, "allocate", `desktop ${name} already exists`);
-				}
-				const existing = store.list().map((r) => r.name);
-				const max = cfg().max;
-				if (existing.length >= max) {
-					throw refuse(
-						name,
-						"allocate",
-						`desktop pool is full (max ${max}): ${existing.join(", ")} — destroy one first`,
-					);
-				}
-				const container = containerNameForDesktop(name);
-				const ins = await podman.inspect(container);
-				if (ins.state !== "missing") {
-					requireOurs(name, ins);
-					const adopted = freshRow(name, {
-						image: ins.image,
-						network: ins.networks.includes(networkName),
-					});
-					store.put(adopted);
-					log.info("desktop adopted on allocate", { desktop: name, container });
-					return {
-						row: adopted,
-						note: "adopted an existing desktop container under that name",
-					};
-				}
-				const image = opts?.image ?? cfg().image;
-				await createContainer(name, image, false);
-				const row = freshRow(name, { image, network: false });
-				store.put(row);
-				log.info("desktop created", { desktop: name, container, image });
-				return { row, note: "created a new desktop (network off)" };
-			});
+			// Check-and-add is synchronous — a second allocate can't
+			// interleave between them.
+			if (pendingAllocs.has(name)) {
+				throw refuse(name, "allocate", `desktop ${name} is already being allocated`);
+			}
+			const held = new Set(store.list().map((r) => r.name));
+			for (const pending of pendingAllocs) held.add(pending);
+			const max = cfg().max;
+			if (!held.has(name) && held.size >= max) {
+				throw refuse(
+					name,
+					"allocate",
+					`desktop pool is full (max ${max}): ${[...held].sort().join(", ")} — destroy one first`,
+				);
+			}
+			pendingAllocs.add(name);
+			try {
+				return await lane(name, async () => {
+					if (store.get(name) !== null) {
+						throw refuse(name, "allocate", `desktop ${name} already exists`);
+					}
+					const container = containerNameForDesktop(name);
+					const ins = await podman.inspect(container);
+					if (ins.state !== "missing") {
+						requireOurs(name, ins);
+						const adopted = freshRow(name, {
+							image: ins.image,
+							network: ins.networks.includes(networkName),
+						});
+						store.put(adopted);
+						log.info("desktop adopted on allocate", { desktop: name, container });
+						return {
+							row: adopted,
+							note: "adopted an existing desktop container under that name",
+						};
+					}
+					const image = opts?.image ?? cfg().image;
+					await createContainer(name, image, false);
+					const row = freshRow(name, { image, network: false });
+					store.put(row);
+					log.info("desktop created", { desktop: name, container, image });
+					return { row, note: "created a new desktop (network off)" };
+				});
+			} finally {
+				pendingAllocs.delete(name);
+			}
 		},
 
 		list() {
@@ -787,9 +841,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				}
 				const now = Date.now();
 				if (!leaseHeldBy(row, holder, now)) {
-					const current = leaseLive(row, now)
-						? ` — it is held by ${rowHolderLabel(row)}`
-						: "";
+					const current = leaseLive(row, now) ? ` — it is held by ${rowHolderLabel(row)}` : "";
 					throw refuse(
 						name,
 						"release",
@@ -897,21 +949,22 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			return await lane(name, async () => {
 				const ready = await ensureLocked(name);
 				const inContainer = `/run/desk/.shot-${Date.now()}.png`;
-				const shot = await podman.exec(
-					ready.container,
-					["scrot", "-o", inContainer],
-					{ ...EXEC_OPTS, user: DESKTOP_USER, env: SESSION_ENV, workdir: "/run/desk" },
-				);
+				const shot = await podman.exec(ready.container, ["scrot", "-o", inContainer], {
+					...EXEC_OPTS,
+					user: DESKTOP_USER,
+					env: SESSION_ENV,
+					workdir: "/run/desk",
+				});
 				if (shot.timedOut || shot.exitCode !== 0) {
 					throw new DesktopError(
 						`scrot failed on desktop ${name} (${shot.timedOut ? "timeout" : `exit ${shot.exitCode}`}): ${shot.stderr.slice(0, 300)}`,
 					);
 				}
-				const read = await podman.execBytes(
-					ready.container,
-					["cat", "--", inContainer],
-					{ ...EXEC_OPTS, user: DESKTOP_USER, workdir: "/run/desk" },
-				);
+				const read = await podman.execBytes(ready.container, ["cat", "--", inContainer], {
+					...EXEC_OPTS,
+					user: DESKTOP_USER,
+					workdir: "/run/desk",
+				});
 				// Best-effort temp cleanup — a leftover file in /run/desk
 				// is harmless, an unobserved rejection is not.
 				const rm = await podman.exec(ready.container, ["rm", "-f", inContainer], {
@@ -930,16 +983,16 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					throw new DesktopError(`could not read the screenshot back from desktop ${name}`);
 				}
 				const bytes = read.stdout;
-				// The audit trail: every frame lands durably on disk
-				// (design/subagents.md → The computer subagent). The dir
-				// outlives the row — the createdAt prefix keeps a
+				// The uuid in the basename keeps a same-ms
 				// destroy/re-allocate generation from clobbering the
-				// previous one's frames.
+				// previous one's frames. The durable write precedes the
+				// obs-id publish.
 				const dir = join(shotsRoot, name, "shots");
 				ensureDir(dir);
-				const path = join(dir, `${ready.row.createdAt}-${ready.row.shotSeq + 1}.png`);
+				const uuid = randomUUID();
+				const path = join(dir, `${ready.row.createdAt}-${ready.row.shotSeq + 1}-${uuid}.png`);
 				durableWriteBytes(path, bytes);
-				const obsId = mintObservation(ready.row, sha256Hex(bytes));
+				const obsId = mintObservation(ready.row, sha256Hex(bytes), uuid);
 				return {
 					id: obsId,
 					path,
@@ -955,19 +1008,14 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				const ready = await ensureLocked(name);
 				let pid = opts?.pid;
 				if (pid === undefined) {
-					const windows = (await cuaCall(
-						ready.container,
-						"list_windows",
-						{},
-						name,
-					)) as { windows?: Array<{ pid: number; app_name: string; z_index: number }> };
+					const windows = (await cuaCall(ready.container, "list_windows", {}, name)) as {
+						windows?: Array<{ pid: number; app_name: string; z_index: number }>;
+					};
 					const list = windows.windows ?? [];
 					// The point of inspect is the app the operator is looking
 					// at — skip the desktop chrome (panel, desktop), take the
 					// topmost real window.
-					const apps = list.filter(
-						(w) => !/^(xfce4-panel|xfdesktop)$/i.test(w.app_name),
-					);
+					const apps = list.filter((w) => !/^(xfce4-panel|xfdesktop)$/i.test(w.app_name));
 					const win =
 						apps.length === 0
 							? list.sort((a, b) => b.z_index - a.z_index)[0]
@@ -987,9 +1035,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					typeof state === "object" && state !== null && "screenshot" in state
 						? (state as { screenshot?: unknown }).screenshot
 						: undefined;
-				const hash =
-					typeof shot === "string" ? sha256Hex(shot) : sha256Hex(stableJson(state));
-				const obsId = mintObservation(ready.row, hash);
+				const hash = typeof shot === "string" ? sha256Hex(shot) : sha256Hex(stableJson(state));
+				const obsId = mintObservation(ready.row, hash, randomUUID());
 				return {
 					id: obsId,
 					state,
@@ -1055,14 +1102,13 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				let result: unknown;
 				try {
 					if (action.kind === "launch") {
+						// The launcher runs as desk with the fixed session
+						// env, exactly like cuaCall — root would only reach
+						// it through the in-image setpriv backstop.
 						const r = await podman.exec(
 							ready.container,
-							[
-								"goblin-launch",
-								action.app,
-								...(action.url === undefined ? [] : [action.url]),
-							],
-							{ ...EXEC_OPTS, workdir: "/run/desk" },
+							["goblin-launch", action.app, ...(action.url === undefined ? [] : [action.url])],
+							{ ...EXEC_OPTS, user: DESKTOP_USER, env: SESSION_ENV, workdir: "/run/desk" },
 						);
 						if (r.timedOut || r.exitCode !== 0) {
 							throw new DesktopError(
@@ -1082,10 +1128,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 						desktop: name,
 						holder: holderLabel(holder),
 						obs: obsId,
-						action:
-							action.kind === "cua"
-								? `cua:${action.tool}`
-								: `launch:${action.app}`,
+						action: action.kind === "cua" ? `cua:${action.tool}` : `launch:${action.app}`,
 						ms: Date.now() - t0,
 					});
 					throw new DesktopError(
@@ -1125,11 +1168,11 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					);
 				}
 				const parent = posix.dirname(containerPath);
-				const mk = await podman.exec(
-					ready.container,
-					["mkdir", "-p", "--", parent],
-					{ ...EXEC_OPTS, user: DESKTOP_USER, workdir: "/run/desk" },
-				);
+				const mk = await podman.exec(ready.container, ["mkdir", "-p", "--", parent], {
+					...EXEC_OPTS,
+					user: DESKTOP_USER,
+					workdir: "/run/desk",
+				});
 				if (mk.timedOut || mk.exitCode !== 0) {
 					throw new DesktopError(
 						`could not create ${parent} on desktop ${name}: ${mk.stderr.slice(0, 200)}`,
@@ -1174,21 +1217,20 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					await podman.cp(ready.container, hostPath, stage);
 					// podman cp preserves the host mode — a 600 file would be
 					// unreadable to the desk-side copy below.
-					const mode = await podman.exec(
-						ready.container,
-						["chmod", "0644", "--", stage],
-						{ ...EXEC_OPTS, workdir: "/run/desk" },
-					);
+					const mode = await podman.exec(ready.container, ["chmod", "0644", "--", stage], {
+						...EXEC_OPTS,
+						workdir: "/run/desk",
+					});
 					if (mode.timedOut || mode.exitCode !== 0) {
 						throw new DesktopError(
 							`could not stage an import on desktop ${name}: ${mode.stderr.slice(0, 200)}`,
 						);
 					}
-					const put = await podman.exec(
-						ready.container,
-						["cp", "--", stage, containerPath],
-						{ ...EXEC_OPTS, user: DESKTOP_USER, workdir: "/run/desk" },
-					);
+					const put = await podman.exec(ready.container, ["cp", "--", stage, containerPath], {
+						...EXEC_OPTS,
+						user: DESKTOP_USER,
+						workdir: "/run/desk",
+					});
 					if (put.timedOut || put.exitCode !== 0) {
 						throw new DesktopError(
 							`could not import to ${containerPath} on desktop ${name}: ${put.stderr.slice(0, 200)}`,
@@ -1199,13 +1241,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					// re-verify the leaf desk produced.
 					const post = await podman.exec(
 						ready.container,
-						[
-							"/bin/sh",
-							"-c",
-							'{ [ -f "$1" ] && [ ! -L "$1" ]; } || exit 3',
-							"post",
-							containerPath,
-						],
+						["/bin/sh", "-c", '{ [ -f "$1" ] && [ ! -L "$1" ]; } || exit 3', "post", containerPath],
 						{ ...EXEC_OPTS, user: DESKTOP_USER, workdir: "/run/desk" },
 					);
 					if (post.timedOut || post.exitCode !== 0) {
@@ -1217,11 +1253,10 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					// Best-effort stage cleanup — a leftover in the root-owned
 					// dir is harmless and must never mask the real error.
 					try {
-						const rm = await podman.exec(
-							ready.container,
-							["rm", "-f", "--", stage],
-							{ ...EXEC_OPTS, workdir: "/run/desk" },
-						);
+						const rm = await podman.exec(ready.container, ["rm", "-f", "--", stage], {
+							...EXEC_OPTS,
+							workdir: "/run/desk",
+						});
 						if (rm.timedOut || rm.exitCode !== 0) {
 							log.warn("desktop import stage rm failed", {
 								desktop: name,
@@ -1255,16 +1290,12 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				if (probe.timedOut || probe.exitCode !== 0) {
 					throw new DesktopError(`${path} is not a regular file on desktop ${name}`);
 				}
-				const r = await podman.execBytes(
-					ready.container,
-					["cat", "--", path],
-					{
-						timeoutMs: EXPORT_TIMEOUT_MS,
-						maxOutput: EXPORT_MAX_BYTES,
-						user: DESKTOP_USER,
-						workdir: "/run/desk",
-					},
-				);
+				const r = await podman.execBytes(ready.container, ["cat", "--", path], {
+					timeoutMs: EXPORT_TIMEOUT_MS,
+					maxOutput: EXPORT_MAX_BYTES,
+					user: DESKTOP_USER,
+					workdir: "/run/desk",
+				});
 				if (r.truncated || r.stdout.byteLength > EXPORT_MAX_BYTES) {
 					throw new DesktopError(
 						`export exceeds the ${EXPORT_MAX_BYTES / (1024 * 1024)} MiB cap — nothing was exported`,

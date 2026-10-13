@@ -271,6 +271,26 @@ Rulings:
   `read` result, never interpolated into error prose. Done
   delegations keep their workspace so the operator can inspect it;
   `stop` on a finished one is the cleanup.
+- **The operator's session is reachable on ask; tasking there goes
+  through herdr's agent surface (2026-10-13).** When the operator
+  points goblin at a tab in `default` ("send the P2s to Devin on
+  tab 1"), `delegate` can't express it — those panes aren't
+  goblin's delegations. Reads of `default` (snapshot, `pane read`,
+  `agent list`/`get`/`read`, `worktree`) are sanctioned when he
+  asks; what they return is his context, quoted back only as far
+  as requested. Submitting work to a recognized agent there is
+  `herdr agent prompt <pane> "<text>" --wait`: herdr validates the
+  target hosts an agent, submits text plus encoded Enter as one
+  bracketed-paste-safe act, refuses a blocked agent before any
+  input, and `--wait`'s activity gate proves the turn started.
+  Identity is pinned from `agent get` JSON (kind + cwd) at send
+  time — never assumed from a remembered pane ID. Raw
+  `pane send-text`/`send-keys` into an agent pane is banned: a P2
+  handoff went line-by-line into the π review pane (`w8B:p8`)
+  instead of devin (`w8B:p1`), was submitted with a manual Enter,
+  and only the recipient's quota error contained it. Plain shell
+  panes take `pane run`. The procedure lives in the herdr skill
+  (`deploy/skills/herdr`, seeded by `ensureHomeLayout`).
 - **Goblin may delegate on its own judgment** within a turn — long or
   coding-heavy work belongs in a harness, not in a lane-blocking
   `bash` call — and says that it did. That judgment includes the

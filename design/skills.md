@@ -21,11 +21,15 @@ One catalog, fixed: `workspace/skills/`. It sits inside the agent's cwd so
 goblin can author its own — writing `skills/<name>/SKILL.md` is the entire
 publishing flow, live at the next conversation boundary (a DM roll
 or compaction — the system prompt is frozen per conversation; the
-SKILL.md itself is read fresh on use). Three exceptions ship from the repo: the
-browser, pass-cli, and mcp skills are seeded by `ensureHomeLayout` (write-if-absent,
-from `deploy/skills/<name>/SKILL.md`) because DESIGN mandates the
-capabilities — a rebuilt box must regain them without operator prompting
-or agent memory.
+SKILL.md itself is read fresh on use). The skills the design mandates ship
+from the repo: browser, pass-cli, mcp, gws, and herdr are seeded by
+`ensureHomeLayout` (write-if-absent, from `deploy/skills/<name>/SKILL.md`)
+because a rebuilt box must regain them without operator prompting or agent
+memory. Write-if-absent also means a seed update never overwrites an
+installed copy — when the repo text changes, the live
+`workspace/skills/` copy is synced in the same change (the herdr seed
+reached v2.0 while the live copy stayed v1.0 and goblin improvised a
+pane-send that misfired, 2026-10-13).
 Sharing in a host skill is a symlink —
 made by goblin on request, or by hand; there is no second root, no source
 policy, no selection UI. One sibling directory exists:

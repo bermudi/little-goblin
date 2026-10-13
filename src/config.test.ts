@@ -588,6 +588,12 @@ describe("ensureHomeLayout", () => {
 		const passCli = readFileSync(join(dir, "workspace", "skills", "pass-cli", "SKILL.md"), "utf8");
 		expect(passCli).toContain("name: pass-cli");
 		expect(passCli).toContain("compatibility:");
+		// The herdr skill seeds the same way (delegation.md): a rebuilt
+		// box must regain the pane-targeting contract — the agent-surface
+		// rule that keeps operator-pointed prompts off raw pane sends.
+		const herdr = readFileSync(join(dir, "workspace", "skills", "herdr", "SKILL.md"), "utf8");
+		expect(herdr).toContain("name: herdr");
+		expect(herdr).toContain("herdr agent prompt");
 	});
 
 	test("existing identity files are never clobbered", () => {

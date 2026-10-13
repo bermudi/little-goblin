@@ -384,17 +384,25 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 			// command acts on the current conversation and never rolls.
 			if (target === null) {
 				const cmd = command.command;
+				// Commands never reach flushRolling's pin, and an unpinned
+				// row defaults personal+included — /memory on and /forget
+				// would run on a sandbox lane as if it were the operator's.
+				// Same class rule as the flush: chat id IS the user id —
+				// read before routing so a stranger never mints a lane.
+				// Unreachable while the gate holds, but a stranger who
+				// arrives here must get the refusal, never a guest pin.
+				const cls = dmClass(deps.configRef.current, addr.chatId);
+				if (cls === null) {
+					log.info("stranger refused — bot dm command", { userId: addr.chatId });
+					refuseStranger(env.api, addr.chatId);
+					return;
+				}
 				const routed = routeDm(
 					rollDepsOf(deps),
 					addr.chatId,
 					cmd === "/voice" || cmd === "/memory" ? "command" : "current",
 				);
 				if (routed.rolled) void sendRollMarker(env.api, addr.chatId, routed.conv.id);
-				// Commands never reach flushRolling's pin, and an unpinned
-				// row defaults personal+included — /memory on and /forget
-				// would run on a sandbox lane as if it were the operator's.
-				// Same class rule as the flush: chat id IS the user id.
-				const cls = deps.configRef.current.operators.includes(addr.chatId) ? "personal" : "guest";
 				target = ensurePersonaClass(
 					deps,
 					routed.conv,
@@ -618,6 +626,48 @@ export function flushConversation(
 	admitBatch(env, conv, convId, items, parts);
 }
 
+// The gate's class rule, re-read wherever a DM lane commits work: on
+// a private chat the chat id IS the user id. null = stranger —
+// neither list carries them any more.
+function dmClass(cfg: Config, chatId: number): "personal" | "guest" | null {
+	return cfg.operators.includes(chatId)
+		? "personal"
+		: cfg.allowedUsers.includes(chatId)
+			? "guest"
+			: null;
+}
+
+// The one refusal line, fire-and-forget — a failed send never kills
+// the lane's work.
+function refuseStranger(api: Api, chatId: number): void {
+	void withTimeout(api.sendMessage(chatId, GUEST_REFUSAL), "sendMessage (refusal)").catch(
+		(err: unknown) => log.warn("stranger refusal failed", err, { userId: chatId }),
+	);
+}
+
+// A stranger's coalesced batch never turns: the gate's admission was
+// intake-time truth, and a config edit that demoted this sender while
+// the burst sat must not produce one (the guest surface rechecks
+// eligibility the same way). Rows tombstone without appending so
+// replay doesn't retry the drop forever; the refusal is the answer.
+function refuseDroppedBatch(
+	env: FlushEnv,
+	chatId: number,
+	laneKey: string,
+	batch: BufferedItem[],
+): void {
+	env.inbox.commitBatch(
+		batch.map((i) => i.updateId),
+		laneKey,
+		() => {},
+	);
+	log.info("dm batch dropped — sender left both lists mid-flight", {
+		chat: chatId,
+		updateIds: batch.map((i) => i.updateId),
+	});
+	refuseStranger(env.api, chatId);
+}
+
 // The rolling lane's async half: route, land the roll marker if one
 // happened (before the turn — the operator reads it as "this is a
 // fresh conversation"), then commit + submit like a topic flush.
@@ -632,6 +682,19 @@ async function flushRolling(
 	let remaining = archiveNavigatedInput(env, laneKey, items);
 	while (remaining.length > 0) {
 		const batch = remaining;
+		// Persona follows class (design/telegram.md → Roles and
+		// permissions): the operator's DM lane stays personal; an allowed
+		// user's DM is the standing sandbox — persona guest, off the
+		// record, search-only tools via the persona-driven filter. The
+		// gate admitted only these two classes at intake; the chat id IS
+		// the user id here. The class read leads routing — a sender
+		// demoted while the burst coalesced never pays a roll, a marker,
+		// or the follow-up check.
+		let cls = dmClass(deps.configRef.current, chatId);
+		if (cls === null) {
+			refuseDroppedBatch(env, chatId, laneKey, batch);
+			return;
+		}
 		const stillRouteable = (): boolean =>
 			env.inbox.assertRouteable(
 				batch.map((item) => item.updateId),
@@ -661,36 +724,12 @@ async function flushRolling(
 				to: current.id,
 			});
 		}
-		// Persona follows class (design/telegram.md → Roles and
-		// permissions): the operator's DM lane stays personal; an allowed
-		// user's DM is the standing sandbox — persona guest, off the
-		// record, search-only tools via the persona-driven filter. The
-		// gate admitted only these two classes at intake; the chat id IS
-		// the user id here.
-		const cfgNow = deps.configRef.current;
-		const cls = cfgNow.operators.includes(chatId)
-			? "personal"
-			: cfgNow.allowedUsers.includes(chatId)
-				? "guest"
-				: null;
+		// Same adjudication, refreshed — the class read predates the
+		// route and marker awaits, and a config save can land inside
+		// them. The last read before admission wins.
+		cls = dmClass(deps.configRef.current, chatId);
 		if (cls === null) {
-			// The gate's admission was intake-time truth — a config edit
-			// that demoted this sender to stranger while the burst
-			// coalesced must not produce a turn (the guest surface
-			// rechecks eligibility the same way). Tombstone the rows so
-			// replay doesn't retry the drop forever.
-			env.inbox.commitBatch(
-				remaining.map((i) => i.updateId),
-				laneKey,
-				() => {},
-			);
-			log.info("dm batch dropped — sender left both lists mid-flight", {
-				chat: chatId,
-				updateIds: remaining.map((i) => i.updateId),
-			});
-			void withTimeout(env.api.sendMessage(chatId, GUEST_REFUSAL), "sendMessage (refusal)").catch(
-				(err: unknown) => log.warn("stranger refusal failed", err, { userId: chatId }),
-			);
+			refuseDroppedBatch(env, chatId, laneKey, batch);
 			return;
 		}
 		const pinned = ensurePersonaClass(deps, current, cls, cls === "guest" ? true : undefined, () =>

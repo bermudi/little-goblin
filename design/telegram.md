@@ -451,6 +451,17 @@ migrates at deploy (`allowedUsers: [x]` → `operators: [x]`,
 `allowedUsers: []`), and boot fails loud naming the key when
 `operators` is missing.
 
+**The mid-flight recheck is DM-scoped.** The gate's verdict is
+intake-time truth; a save landing while a burst coalesces is
+re-adjudicated at flush — but only where the lane names the person.
+A private chat's lane key IS the sender's id, so a demotion drops the
+batch (refusal line, tombstoned rows) before any routing happens.
+Topic/group batches carry no sender identity — the journaled payload
+records the room's chat id, not `from.id` — so a demoted operator's
+already-coalesced group input still runs its turn. Accepted residual:
+the window is the coalescing delay, and closing it means journaling
+`from.id` per inbox row.
+
 ## Guest mode (ruling 2026-10-06)
 
 Goblin answers in third-party chats, summoned by mention. The operator

@@ -127,9 +127,7 @@ describe("MessageParts", () => {
 		// expansion lands — the bubble must never render empty.
 		const html = renderToStaticMarkup(
 			<MessageParts
-				parts={[
-					{ type: "data-note", data: { id: "n1" } } as unknown as UIMessage["parts"][number],
-				]}
+				parts={[{ type: "data-note", data: { id: "n1" } } as unknown as UIMessage["parts"][number]]}
 			/>,
 		);
 		expect(html).toContain("note-chip");

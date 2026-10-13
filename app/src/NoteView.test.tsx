@@ -118,10 +118,7 @@ describe("NoteView", () => {
 		await act(async () => {
 			root?.render(el);
 		});
-		await waitFor(
-			() => container.querySelector(".note-title") !== null,
-			"the loaded note page",
-		);
+		await waitFor(() => container.querySelector(".note-title") !== null, "the loaded note page");
 	};
 
 	test("an archived note renders read-only and cannot start a chat", async () => {

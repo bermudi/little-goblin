@@ -186,9 +186,23 @@ function fakeEngine(opts?: {
 		execCalls.push([...args]);
 		if (flags.killedExec) {
 			flags.killedExec = false;
-			return { stdout: "", stderr: "", exitCode: -1, timedOut: true, truncated: false, killed: true };
+			return {
+				stdout: "",
+				stderr: "",
+				exitCode: -1,
+				timedOut: true,
+				truncated: false,
+				killed: true,
+			};
 		}
-		return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false, killed: false };
+		return {
+			stdout: "",
+			stderr: "",
+			exitCode: 0,
+			timedOut: false,
+			truncated: false,
+			killed: false,
+		};
 	};
 	const execBytesRunner = async (
 		_args: string[],

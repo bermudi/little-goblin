@@ -32,7 +32,14 @@ function fakeSandboxes(recorded: {
 }): Sandboxes {
 	return {
 		exec: async () => ({
-			result: { stdout: "ok\n", stderr: "", exitCode: 0, timedOut: false, truncated: false, killed: false },
+			result: {
+				stdout: "ok\n",
+				stderr: "",
+				exitCode: 0,
+				timedOut: false,
+				truncated: false,
+				killed: false,
+			},
 		}),
 		cpIn: async (_conv, hostPath, containerPath) => {
 			recorded.cpIn.push([hostPath, containerPath]);

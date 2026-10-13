@@ -340,8 +340,7 @@ export function NoteView({
 
 	// The leave guard's truth: a dirty body, a dirty title, or a
 	// standing conflict bar — all die silently with the component.
-	const guardedDirty =
-		note !== null && (conflict !== null || dirty || titleDraft !== note.title);
+	const guardedDirty = note !== null && (conflict !== null || dirty || titleDraft !== note.title);
 	useEffect(() => {
 		onDirtyChange?.(guardedDirty);
 	}, [onDirtyChange, guardedDirty]);

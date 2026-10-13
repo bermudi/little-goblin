@@ -98,10 +98,7 @@ async function watchInvocation(
 		// loop below owns the deadline, so the job is enqueued and the
 		// watch begins immediately.
 		await run(["systemctl", "--user", "enable", "goblin.service"], "start service");
-		await run(
-			["systemctl", "--user", "start", "--no-block", "goblin.service"],
-			"start service",
-		);
+		await run(["systemctl", "--user", "start", "--no-block", "goblin.service"], "start service");
 	} else if (baseline.ActiveState !== "active" || baseline.InvocationID === "") {
 		throw new Error("startup watch refuses missing invocation");
 	} else if (baseline.NRestarts !== 0) {

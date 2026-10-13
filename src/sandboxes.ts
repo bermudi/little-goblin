@@ -512,9 +512,7 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				{
 					timeoutMs: PROBE_TIMEOUT_MS,
 					maxOutput: PROBE_MAX_OUTPUT,
-					...(opts?.abortSignal !== undefined
-						? { abortSignal: opts.abortSignal }
-						: {}),
+					...(opts?.abortSignal !== undefined ? { abortSignal: opts.abortSignal } : {}),
 				},
 				conv,
 			);
@@ -527,9 +525,7 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				{
 					timeoutMs: EXPORT_TIMEOUT_MS,
 					maxOutput: EXPORT_MAX_BYTES,
-					...(opts?.abortSignal !== undefined
-						? { abortSignal: opts.abortSignal }
-						: {}),
+					...(opts?.abortSignal !== undefined ? { abortSignal: opts.abortSignal } : {}),
 				},
 				conv,
 			);

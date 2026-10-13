@@ -365,13 +365,9 @@ export function Block({
 }: { block: UiBlock } & UiActionProps) {
 	const md = { token, noteProjectId, onOpenNote };
 	if (block.type === "tabs")
-		return (
-			<Tabs block={block} onAction={onAction} busy={busy} streaming={streaming} {...md} />
-		);
+		return <Tabs block={block} onAction={onAction} busy={busy} streaming={streaming} {...md} />;
 	if (block.type === "columns")
-		return (
-			<Columns block={block} onAction={onAction} busy={busy} streaming={streaming} {...md} />
-		);
+		return <Columns block={block} onAction={onAction} busy={busy} streaming={streaming} {...md} />;
 	return <Leaf leaf={block} onAction={onAction} busy={busy} streaming={streaming} {...md} />;
 }
 

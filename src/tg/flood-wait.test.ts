@@ -194,11 +194,10 @@ describe("floodWaitTransformer — raw failure envelopes", () => {
 		const { prev, calls } = scriptPrev([fail, SENT]);
 		const { sleeps, sleep } = recordingSleep();
 
-		const res: ApiResponse<Message> = await floodWaitTransformer({ sleep })(
-			prev,
-			"sendMessage",
-			{ chat_id: 1, text: "hi" },
-		);
+		const res: ApiResponse<Message> = await floodWaitTransformer({ sleep })(prev, "sendMessage", {
+			chat_id: 1,
+			text: "hi",
+		});
 
 		expect(res).toEqual(SENT);
 		expect(sleeps).toEqual([5000]);
@@ -211,11 +210,10 @@ describe("floodWaitTransformer — raw failure envelopes", () => {
 		const { prev, calls } = scriptPrev([fail]);
 		const { sleeps, sleep } = recordingSleep();
 
-		const res: ApiResponse<Message> = await floodWaitTransformer({ sleep })(
-			prev,
-			"sendMessage",
-			{ chat_id: 1, text: "hi" },
-		);
+		const res: ApiResponse<Message> = await floodWaitTransformer({ sleep })(prev, "sendMessage", {
+			chat_id: 1,
+			text: "hi",
+		});
 
 		expect(res).toBe(fail);
 		expect(sleeps).toEqual([]);
@@ -227,11 +225,10 @@ describe("floodWaitTransformer — raw failure envelopes", () => {
 		const { prev, calls } = scriptPrev([raw429(1), raw429(1), last]);
 		const { sleeps, sleep } = recordingSleep();
 
-		const res: ApiResponse<Message> = await floodWaitTransformer({ sleep })(
-			prev,
-			"sendMessage",
-			{ chat_id: 1, text: "hi" },
-		);
+		const res: ApiResponse<Message> = await floodWaitTransformer({ sleep })(prev, "sendMessage", {
+			chat_id: 1,
+			text: "hi",
+		});
 
 		expect(res).toBe(last);
 		expect(sleeps).toEqual([1000, 1000]);
@@ -244,11 +241,10 @@ describe("floodWaitTransformer — raw failure envelopes", () => {
 		const { prev, calls } = scriptPrev([bad, noAfter]);
 		const { sleeps, sleep } = recordingSleep();
 
-		const first: ApiResponse<Message> = await floodWaitTransformer({ sleep })(
-			prev,
-			"sendMessage",
-			{ chat_id: 1, text: "hi" },
-		);
+		const first: ApiResponse<Message> = await floodWaitTransformer({ sleep })(prev, "sendMessage", {
+			chat_id: 1,
+			text: "hi",
+		});
 		const second: ApiResponse<Message> = await floodWaitTransformer({ sleep })(
 			prev,
 			"sendMessage",

@@ -32,11 +32,7 @@ export function floodWaitTransformer(opts: FloodWaitOpts = {}): Transformer {
 	// live here once — a real 429 resolves as {ok:false} data (the
 	// GrammyError is built after transformers run), while an upstream
 	// transformer can still throw one.
-	const honor = async (
-		method: string,
-		retryAfterS: number,
-		attempt: number,
-	): Promise<boolean> => {
+	const honor = async (method: string, retryAfterS: number, attempt: number): Promise<boolean> => {
 		const demanded = retryAfterS * 1000;
 		if (demanded > maxWaitMs) {
 			log.warn("telegram flood wait beyond cap", { method, retryAfterS });
@@ -60,8 +56,7 @@ export function floodWaitTransformer(opts: FloodWaitOpts = {}): Transformer {
 					return envelope;
 			} catch (err) {
 				const retryAfterS = floodRetryAfter(err);
-				if (retryAfterS === undefined || !(await honor(method, retryAfterS, attempt)))
-					throw err;
+				if (retryAfterS === undefined || !(await honor(method, retryAfterS, attempt))) throw err;
 			}
 		}
 	};

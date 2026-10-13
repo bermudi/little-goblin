@@ -1056,10 +1056,7 @@ describe("delivery files", () => {
 		try {
 			const { api, photos, mediaGroups } = fileApi();
 			let attempt = 0;
-			api.sendMediaGroup = (async (
-				_chat: number,
-				media: ReadonlyArray<{ caption?: string }>,
-			) => {
+			api.sendMediaGroup = (async (_chat: number, media: ReadonlyArray<{ caption?: string }>) => {
 				attempt++;
 				if (attempt === 2) throw new Error("sendMediaGroup wedged");
 				mediaGroups.push({
@@ -1135,10 +1132,7 @@ describe("delivery files", () => {
 		try {
 			const { api, photos, mediaGroups } = fileApi();
 			let revoke: (() => void) | null = null;
-			api.sendMediaGroup = (async (
-				_chat: number,
-				media: ReadonlyArray<{ caption?: string }>,
-			) => {
+			api.sendMediaGroup = (async (_chat: number, media: ReadonlyArray<{ caption?: string }>) => {
 				mediaGroups.push({
 					files: media.length,
 					captions: media.map((m) => m.caption),

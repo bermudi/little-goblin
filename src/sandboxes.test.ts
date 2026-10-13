@@ -66,15 +66,29 @@ function fakeEngine(opts?: {
 		breakDisconnect: opts?.breakDisconnect ?? false,
 		failDisconnect: opts?.failDisconnect ?? false,
 		failRm: false,
+		// Armed when an inspect should report a hard failure — the
+		// fail-closed rule treats "cannot prove off" like "not off".
+		failInspect: false,
+		// The next exec exits as a kill (timeout/abort/output cap
+		// share the flag) — the lifecycle owner must restart.
+		killedExec: false,
 		// Awaited before an rm is applied — the race tests park the
 		// sweep here to inject ordering.
 		onRm: undefined as undefined | ((name: string) => Promise<void>),
+		// Fires inside a successful disconnect — arms failures that must
+		// land after the network op, like the confirming inspect.
+		onDisconnect: undefined as undefined | (() => void),
 	};
 
 	const runner = async (args: string[]) => {
 		calls.push([...args]);
 		const [cmd, sub] = args;
 		if (cmd === "inspect") {
+			if (flags.failInspect) {
+				// A real engine error, not a miss — "[]" or a "no such
+				// object" stderr would read as state:missing.
+				return { code: 125, stdout: "", stderr: "Error: inspect wedged" };
+			}
 			const c = containers.get(args[1]!);
 			if (c === undefined) {
 				return { code: 125, stdout: "[]", stderr: "Error: no such object" };
@@ -114,6 +128,7 @@ function fakeEngine(opts?: {
 			if (!flags.breakDisconnect) {
 				containers.get(args[3]!)?.networks.delete(args[2]!);
 			}
+			flags.onDisconnect?.();
 			return { code: 0, stdout: "", stderr: "" };
 		}
 		if (cmd === "image" && sub === "exists") {
@@ -169,7 +184,11 @@ function fakeEngine(opts?: {
 
 	const execRunner = async (args: string[], _opts: PodmanExecOpts): Promise<BoundedProc> => {
 		execCalls.push([...args]);
-		return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false };
+		if (flags.killedExec) {
+			flags.killedExec = false;
+			return { stdout: "", stderr: "", exitCode: -1, timedOut: true, truncated: false, killed: true };
+		}
+		return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false, killed: false };
 	};
 	const execBytesRunner = async (
 		_args: string[],
@@ -180,6 +199,7 @@ function fakeEngine(opts?: {
 		exitCode: 0,
 		timedOut: false,
 		truncated: false,
+		killed: false,
 	});
 
 	return {
@@ -354,6 +374,62 @@ describe("sandboxes lifecycle", () => {
 		await expect(sandboxes.setNetwork(conv, false)).rejects.toThrow(/network disconnect failed/);
 		expect(engine.containers.has(name)).toBe(false);
 		expect(store.get(conv)).toBeNull();
+	});
+
+	test("an unverifiable off-state INSPECT — not just a lying one — also removes", async () => {
+		const engine = fakeEngine();
+		const { sandboxes, store } = rig(engine);
+		const conv = "dm:14";
+		await sandboxes.exec(conv, "true", execOpts);
+		const name = containerNameFor(conv, PREFIX);
+		await sandboxes.setNetwork(conv, true);
+		// The disconnect succeeds; the confirming inspect fails — the
+		// engine can no longer prove the network is off.
+		engine.flags.onDisconnect = () => {
+			engine.flags.failInspect = true;
+		};
+		await expect(sandboxes.setNetwork(conv, false)).rejects.toThrow(/verify failed/);
+		expect(engine.containers.has(name)).toBe(false);
+		expect(store.get(conv)).toBeNull();
+	});
+
+	test("a fresh container is created attached — if its bring-to-state inspect fails, it is removed", async () => {
+		const engine = fakeEngine();
+		const { sandboxes, store } = rig(engine);
+		const conv = "dm:15";
+		const name = containerNameFor(conv, PREFIX);
+		// The reconcile's own inspect reports missing (a non-missing
+		// failure can't reconcile), so arm the failure only once the
+		// container exists.
+		engine.flags.onRm = undefined;
+		let armInspect = false;
+		const origInspect = engine.podman.inspect.bind(engine.podman);
+		engine.podman.inspect = async (n, c) => {
+			if (armInspect) throw new Error("inspect wedged");
+			return origInspect(n, c);
+		};
+		// Create runs then applyNetwork's before-inspect hits the wedge.
+		const origCreate = engine.podman.create.bind(engine.podman);
+		engine.podman.create = async (a, c) => {
+			const r = await origCreate(a, c);
+			armInspect = true;
+			return r;
+		};
+		await expect(sandboxes.exec(conv, "true", execOpts)).rejects.toThrow(/inspect wedged/);
+		expect(engine.containers.has(name)).toBe(false);
+		expect(store.get(conv)).toBeNull();
+	});
+
+	test("a killed exec restarts the sandbox — the in-container command cannot outlive the tool call", async () => {
+		const engine = fakeEngine();
+		const { sandboxes } = rig(engine);
+		const conv = "dm:16";
+		engine.flags.killedExec = true;
+		const out = await sandboxes.exec(conv, "sleep 999", execOpts);
+		// restart + a network bring-to-state, and the note says so —
+		// the model must not believe the command kept running.
+		expect(engine.calls.some((a) => a[0] === "restart")).toBe(true);
+		expect(out.note).toContain("restarted");
 	});
 
 	test("the sweep reaps idle rows but never the caller's", async () => {

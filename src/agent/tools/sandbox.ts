@@ -191,7 +191,14 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 								error: `export refused: ${rel} is a symlink to ${through.target}, outside the workspace`,
 							};
 						}
-						const { data, note } = await deps.sandboxes.catFile(conv, input.from);
+						const { data, note } = await deps.sandboxes.catFile(
+							conv,
+							input.from,
+							abortSignal !== undefined ? { abortSignal } : undefined,
+						);
+						// The read may have outlived /stop — the durable
+						// write must not land for a dead turn.
+						abortSignal?.throwIfAborted();
 						durableWriteBytes(through.target, data);
 						return {
 							exported: rel,

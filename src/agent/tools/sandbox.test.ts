@@ -24,17 +24,24 @@ afterEach(() => {
 	dirs = [];
 });
 
-function fakeSandboxes(recorded: { cpIn: string[][]; catFile: string[] }): Sandboxes {
+function fakeSandboxes(recorded: {
+	cpIn: string[][];
+	catFile: string[];
+	catFileOpts?: Array<{ abortSignal?: AbortSignal } | undefined>;
+	onCatFile?: () => void;
+}): Sandboxes {
 	return {
 		exec: async () => ({
-			result: { stdout: "ok\n", stderr: "", exitCode: 0, timedOut: false, truncated: false },
+			result: { stdout: "ok\n", stderr: "", exitCode: 0, timedOut: false, truncated: false, killed: false },
 		}),
 		cpIn: async (_conv, hostPath, containerPath) => {
 			recorded.cpIn.push([hostPath, containerPath]);
 			return {};
 		},
-		catFile: async (_conv, path) => {
+		catFile: async (_conv, path, o) => {
 			recorded.catFile.push(path);
+			recorded.catFileOpts?.push(o);
+			recorded.onCatFile?.();
 			return { data: new TextEncoder().encode("sandbox-file-bytes") };
 		},
 		setNetwork: async () => ({}),
@@ -42,7 +49,15 @@ function fakeSandboxes(recorded: { cpIn: string[][]; catFile: string[] }): Sandb
 	};
 }
 
-function rig(ws: string, recorded: { cpIn: string[][]; catFile: string[] }) {
+function rig(
+	ws: string,
+	recorded: {
+		cpIn: string[][];
+		catFile: string[];
+		catFileOpts?: Array<{ abortSignal?: AbortSignal } | undefined>;
+		onCatFile?: () => void;
+	},
+) {
 	const deps: SandboxToolDeps = {
 		conversation: "dm:test",
 		workspace: ws,
@@ -177,5 +192,30 @@ describe("sandbox tool — export containment", () => {
 		expect(String(out.error)).toContain("outside the workspace");
 		expect(existsSync(join(outsideDir, "a"))).toBe(false);
 		expect(recorded.catFile).toHaveLength(0);
+	});
+
+	// /stop landing mid-read must not let the host write land for a
+	// dead turn — the read carries the signal and the write re-checks.
+	test("an export cancelled during the read never writes the host file", async () => {
+		const ws = workspace();
+		const controller = new AbortController();
+		const catFileOpts: Array<{ abortSignal?: AbortSignal } | undefined> = [];
+		const recorded = {
+			cpIn: [] as string[][],
+			catFile: [] as string[],
+			catFileOpts,
+			onCatFile: () => controller.abort(),
+		};
+		const t = rig(ws, recorded);
+		await expect(
+			t.execute!(
+				{ action: "export", from: "/work/result.bin" },
+				{ ...opts, abortSignal: controller.signal },
+			),
+		).rejects.toThrowError(/abort/i);
+		expect(existsSync(join(ws, "sandbox-out", "result.bin"))).toBe(false);
+		// The signal reached the read — the export isn't just fenced at
+		// the write, the container call itself could abandon early.
+		expect(catFileOpts[0]?.abortSignal).toBe(controller.signal);
 	});
 });

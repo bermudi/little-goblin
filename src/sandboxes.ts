@@ -161,8 +161,13 @@ export interface Sandboxes {
 	cpIn(conversationId: string, hostPath: string, containerPath: string): Promise<{ note?: string }>;
 	/** The file's bytes, or SandboxError (not a regular file, over the
 	 *  cap, unreadable). Nothing is written anywhere — the caller owns
-	 *  the destination. */
-	catFile(conversationId: string, path: string): Promise<{ data: Uint8Array; note?: string }>;
+	 *  the destination. An aborted read surfaces as AbortError, not
+	 *  SandboxError. */
+	catFile(
+		conversationId: string,
+		path: string,
+		opts?: { abortSignal?: AbortSignal },
+	): Promise<{ data: Uint8Array; note?: string }>;
 	setNetwork(conversationId: string, enabled: boolean): Promise<{ note?: string }>;
 	reset(conversationId: string, image?: string): Promise<{ note?: string }>;
 }
@@ -185,10 +190,26 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 	}
 
 	// Reconcile actual network state with intent. Off is fail-closed:
-	// if the disconnect fails or inspect can't confirm it, the
-	// container is removed rather than used in an unknown state.
+	// any step that cannot prove the off state — the inspects framing
+	// the disconnect included — removes the container rather than use
+	// it in an unknown state. A stranded connected container is worse
+	// than a lost one: un-rowed, the next call would adopt its live
+	// network as its recorded state.
 	async function applyNetwork(name: string, want: boolean, conv: string): Promise<void> {
-		const before = await podman.inspect(name, conv);
+		const remove = async (): Promise<void> => {
+			// Row outlives a failed rm on purpose: it carries the network
+			// intent, so a later reconcile re-attempts the cleanup instead
+			// of adopting a live container's actual state.
+			await podman.rm(name, conv);
+			store.delete(conv);
+		};
+		const before = await podman.inspect(name, conv).catch(async (err: unknown) => {
+			if (want) throw err;
+			await remove();
+			throw new SandboxError(
+				`sandbox ${name} network state could not be inspected (${err instanceof Error ? err.message : String(err)}) — the container was removed`,
+			);
+		});
 		const has = before.networks.includes(networkName);
 		if (has === want) return;
 		if (want) {
@@ -203,16 +224,19 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			await podman.networkDisconnect(networkName, name, conv);
 		} catch (err) {
 			// Same unconfirmed-off state as a lying disconnect.
-			await podman.rm(name, conv);
-			store.delete(conv);
+			await remove();
 			throw new SandboxError(
 				`sandbox ${name} network disconnect failed (${err instanceof Error ? err.message : String(err)}) — the container was removed`,
 			);
 		}
-		const after = await podman.inspect(name, conv);
+		const after = await podman.inspect(name, conv).catch(async (err: unknown) => {
+			await remove();
+			throw new SandboxError(
+				`sandbox ${name} network-off verify failed (${err instanceof Error ? err.message : String(err)}) — the container was removed`,
+			);
+		});
 		if (after.networks.includes(networkName)) {
-			await podman.rm(name, conv);
-			store.delete(conv);
+			await remove();
 			throw new SandboxError(
 				`sandbox ${name} would not confirm network off — the container was removed`,
 			);
@@ -251,8 +275,22 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			conv,
 		);
 		// Created ON the network — a --network none container can never
-		// be connected later — then brought to the intended state.
-		await applyNetwork(name, wantNetwork, conv);
+		// be connected later — then brought to the intended state. A
+		// bring-to-state failure must not strand the connected container:
+		// row-less, the next call's reconcile would adopt it live.
+		try {
+			await applyNetwork(name, wantNetwork, conv);
+		} catch (err) {
+			// applyNetwork's own failure paths may already have removed
+			// the container — rm only what still exists (an unanswerable
+			// inspect tries the rm anyway). The row stays: a recreate's
+			// row carries the network intent the next call retries from.
+			const ins = await podman.inspect(name, conv).catch(() => null);
+			if (ins?.state !== "missing") {
+				await podman.rm(name, conv);
+			}
+			throw err;
+		}
 	}
 
 	// The reconcile, inside the conversation's lane.
@@ -341,9 +379,10 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 
 	// The killed-exec recovery, inside the lane: podman exec does not
 	// propagate the client kill (measured 2026-10-10 — the in-container
-	// process outlives its client), so a timed-out/aborted exec leaves
-	// work running. The restart reaps it; the filesystem survives, and
-	// network intent is re-applied from the row.
+	// process outlives its client), so any killed exec — deadline,
+	// abort, or the output cap — leaves work running. The restart reaps
+	// it; the filesystem survives, and network intent is re-applied
+	// from the row.
 	async function restartAfterKillLocked(name: string, conv: string): Promise<void> {
 		await podman.restart(name, conv);
 		const row = store.get(conv);
@@ -416,9 +455,21 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		return run;
 	}
 
+	// The returning-owner refresh: the row's liveness stamp must land
+	// inside this conversation's lane BEFORE joining the global sweep —
+	// a sweep that already selected this stale row re-reads it under
+	// the same lane, so touching first makes its recheck skip us.
+	// Touching only after sweepOnce could land after the rm.
+	async function beginOp(conv: string): Promise<void> {
+		await lane(conv, async () => {
+			store.touch(conv, Date.now());
+		});
+		await sweepOnce(conv);
+	}
+
 	return {
 		async exec(conv, command, opts) {
-			await sweepOnce(conv);
+			await beginOp(conv);
 			const ready = await lane(conv, () => {
 				// Inside the lane so a foreign sweep's recheck sees the
 				// fresh row before it can remove this container.
@@ -427,10 +478,10 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			});
 			const r = await podman.exec(ready.container, ["/bin/sh", "-c", command], opts, conv);
 			let note = ready.note;
-			if (r.timedOut || opts.abortSignal?.aborted === true) {
+			if (r.killed) {
 				await lane(conv, () => restartAfterKillLocked(ready.container, conv));
 				const killed =
-					"the command outlived its deadline — the sandbox was restarted to stop anything still running; files were kept";
+					"the command was stopped before it finished — the sandbox was restarted to stop anything still running; files were kept";
 				note = note === undefined ? killed : `${note}; ${killed}`;
 			}
 			store.touch(conv, Date.now());
@@ -438,7 +489,7 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		},
 
 		async cpIn(conv, hostPath, containerPath) {
-			await sweepOnce(conv);
+			await beginOp(conv);
 			const ready = await lane(conv, () => {
 				store.touch(conv, Date.now());
 				return ensureLocked(conv);
@@ -448,8 +499,9 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			return { ...(ready.note !== undefined ? { note: ready.note } : {}) };
 		},
 
-		async catFile(conv, path) {
-			await sweepOnce(conv);
+		async catFile(conv, path, opts) {
+			opts?.abortSignal?.throwIfAborted();
+			await beginOp(conv);
 			const ready = await lane(conv, () => {
 				store.touch(conv, Date.now());
 				return ensureLocked(conv);
@@ -457,7 +509,13 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			const probe = await podman.exec(
 				ready.container,
 				["/bin/sh", "-c", 'test -f "$1"', "sb-check", path],
-				{ timeoutMs: PROBE_TIMEOUT_MS, maxOutput: PROBE_MAX_OUTPUT },
+				{
+					timeoutMs: PROBE_TIMEOUT_MS,
+					maxOutput: PROBE_MAX_OUTPUT,
+					...(opts?.abortSignal !== undefined
+						? { abortSignal: opts.abortSignal }
+						: {}),
+				},
 				conv,
 			);
 			if (probe.exitCode !== 0) {
@@ -466,9 +524,18 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			const r = await podman.execBytes(
 				ready.container,
 				["cat", "--", path],
-				{ timeoutMs: EXPORT_TIMEOUT_MS, maxOutput: EXPORT_MAX_BYTES },
+				{
+					timeoutMs: EXPORT_TIMEOUT_MS,
+					maxOutput: EXPORT_MAX_BYTES,
+					...(opts?.abortSignal !== undefined
+						? { abortSignal: opts.abortSignal }
+						: {}),
+				},
 				conv,
 			);
+			// A cancelled read is the caller's AbortError, not a read
+			// failure — and it must surface before any write decision.
+			opts?.abortSignal?.throwIfAborted();
 			if (r.truncated || r.stdout.byteLength > EXPORT_MAX_BYTES) {
 				throw new SandboxError(
 					`export exceeds the ${EXPORT_MAX_BYTES / (1024 * 1024)} MiB cap — nothing was exported`,
@@ -484,7 +551,7 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		},
 
 		async setNetwork(conv, enabled) {
-			await sweepOnce(conv);
+			await beginOp(conv);
 			const out = await lane(conv, async () => {
 				store.touch(conv, Date.now());
 				const ready = await ensureLocked(conv);
@@ -502,7 +569,7 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		},
 
 		async reset(conv, image) {
-			await sweepOnce(conv);
+			await beginOp(conv);
 			return await lane(conv, async () => {
 				store.touch(conv, Date.now());
 				const name = nameFor(conv);

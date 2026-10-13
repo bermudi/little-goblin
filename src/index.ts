@@ -289,12 +289,11 @@ async function boot() {
 		});
 	}
 
-	// The project domain — the memory queue rides along only when memory
-	// is configured, matching /memory off's purge (design/projects.md).
-	const projects = openProjects(
-		store,
-		memoryClient && memoryBootConfig ? { memoryQueue: store.memoryQueue } : undefined,
-	);
+	// The project domain — the retention outbox rides along whether or
+	// not a memory client exists: pending rows can survive a disable,
+	// and project→off must still purge them like /memory off
+	// (design/projects.md). Submission needs the client; purging does not.
+	const projects = openProjects(store, { memoryQueue: store.memoryQueue });
 
 	// A bound conversation's working directory is its project's dir —
 	// the throw inside is a failed turn at admission, never a silent

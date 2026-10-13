@@ -107,7 +107,10 @@ export function imageTool(deps: ImageToolDeps) {
 							err instanceof DeliveryUncertainError
 								? "delivery uncertain — the image may have arrived; check Telegram before resending"
 								: `delivery failed: ${String(err)}`;
-						log.warn("generate_image delivery failed", err, { path });
+						log.warn("generate_image delivery failed", err, {
+							conversation: deps.conversation,
+							path,
+						});
 					}
 				}
 				saved.push({

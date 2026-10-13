@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
 import type { Api } from "grammy";
+import { fakeApi as fakeTelegramApi } from "../testkit/fake-api.ts";
 import type { Config } from "../config.ts";
 import {
 	accessGate,
@@ -27,9 +28,8 @@ const baseConfig: Config = {
 };
 
 describe("accessGate", () => {
-	const api = {
-		sendMessage: (async () => ({ message_id: 1 })) as unknown as Api["sendMessage"],
-	} as unknown as Api;
+	const tg = fakeTelegramApi();
+	const api = tg.api;
 	// The access-control boundary — everything else hangs off it.
 	test("operators pass everywhere; friends pass in the DM; strangers get the refusal line", async () => {
 		const configRef = { current: baseConfig };
@@ -51,10 +51,10 @@ describe("accessGate", () => {
 			await gate(group(2), next);
 			expect(reached).toBe(2);
 			// A stranger's DM gets the fixed refusal line and nothing else.
-			const send = spyOn(api, "sendMessage");
+			const before = tg.calls.length;
 			await gate(dm(9), next);
 			expect(reached).toBe(2);
-			expect(send).toHaveBeenCalledWith(9, GUEST_REFUSAL);
+			expect(tg.calls.slice(before)).toEqual([{ method: "sendMessage", args: [9, GUEST_REFUSAL] }]);
 			// Service update, no sender.
 			await gate({ api } as never, next);
 			expect(reached).toBe(2);
@@ -71,12 +71,14 @@ describe("accessGate", () => {
 describe("applyCommands", () => {
 	test("registers exactly the handled command set", async () => {
 		const calls: unknown[] = [];
-		const api = {
-			setMyCommands: (cmds: unknown, options?: unknown) => {
-				calls.push({ cmds, options });
-				return Promise.resolve(true);
+		const api = fakeTelegramApi({
+			handlers: {
+				setMyCommands: (cmds: unknown, options?: unknown) => {
+					calls.push({ cmds, options });
+					return Promise.resolve(true);
+				},
 			},
-		} as unknown as Api;
+		}).api;
 
 		applyCommands(api);
 		await Promise.resolve();
@@ -127,12 +129,14 @@ describe("conversationAddress", () => {
 describe("applyMenuButton", () => {
 	test("publicUrl maps to a web_app button; unset resets to default", async () => {
 		const calls: unknown[] = [];
-		const api = {
-			setChatMenuButton: (opts: unknown) => {
-				calls.push(opts);
-				return Promise.resolve(true);
+		const api = fakeTelegramApi({
+			handlers: {
+				setChatMenuButton: (opts: unknown) => {
+					calls.push(opts);
+					return Promise.resolve(true);
+				},
 			},
-		} as unknown as Api;
+		}).api;
 
 		applyMenuButton(api, "https://goblin.example.ts.net");
 		applyMenuButton(api, undefined);
@@ -229,31 +233,29 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 	const stopped: string[] = [];
 	const pings = openPings(store.db);
 	const bellConvs: string[] = [];
-	const api = {
-		getFile: (_id: string) => Promise.reject(new Error("file api down")),
-		sendMessage: (chat: unknown, text: string, opts?: SendOpts) => {
-			apiCalls.push({
-				method: "sendMessage",
-				text,
-				chat,
-				...(opts !== undefined ? { opts } : {}),
-			});
-			return Promise.resolve({ message_id: apiCalls.length });
+	const fake = fakeTelegramApi({
+		handlers: {
+			getFile: (_id: string) => Promise.reject(new Error("file api down")),
+			sendMessage: (chat: unknown, text: string, opts?: SendOpts) => {
+				apiCalls.push({
+					method: "sendMessage",
+					text,
+					chat,
+					...(opts !== undefined ? { opts } : {}),
+				});
+				return Promise.resolve({ message_id: apiCalls.length });
+			},
+			editMessageText: (_c: unknown, _m: unknown, text: string) => {
+				apiCalls.push({ method: "editMessageText", text });
+				return Promise.resolve(true);
+			},
+			sendRichMessage: (_c: unknown, rm: { markdown: string }) => {
+				apiCalls.push({ method: "sendRichMessage", text: rm.markdown });
+				return Promise.resolve({ message_id: apiCalls.length });
+			},
 		},
-		editMessageText: (_c: unknown, _m: unknown, text: string) => {
-			apiCalls.push({ method: "editMessageText", text });
-			return Promise.resolve(true);
-		},
-		editForumTopic: () => Promise.resolve(true),
-		sendChatAction: () => Promise.resolve(true),
-		sendMessageDraft: () => Promise.resolve(true),
-		sendRichMessageDraft: () => Promise.resolve(true),
-		sendRichMessage: (_c: unknown, rm: { markdown: string }) => {
-			apiCalls.push({ method: "sendRichMessage", text: rm.markdown });
-			return Promise.resolve({ message_id: apiCalls.length });
-		},
-		sendVoice: () => Promise.resolve({ message_id: 1 }),
-	} as unknown as IntakeEnv["api"];
+	});
+	const api = fake.api as unknown as IntakeEnv["api"];
 	const buffer = {
 		push: (
 			conv: string,
@@ -934,13 +936,10 @@ describe("flushConversation", () => {
 		const h = routerHarness(baseConfig);
 		const conv = h.store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		let pings = 0;
-		h.env.api = {
-			...h.env.api,
-			sendChatAction: () => {
-				pings++;
-				return Promise.resolve(true);
-			},
-		} as unknown as Api;
+		(h.env.api as unknown as Record<string, unknown>).sendChatAction = () => {
+			pings++;
+			return Promise.resolve(true);
+		};
 		h.env.inbox.record(710, {
 			conversationId: conv.id,
 			chatId: 1,

@@ -12,6 +12,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api } from "grammy";
+import { fakeApi as fakeTelegramApi } from "../testkit/fake-api.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 import type { MailPoller, MailSender } from "../mail.ts";
 import { openOutbox, OUTBOX_TTL_MS, type OutboxStore } from "../mail-outbox.ts";
@@ -57,24 +58,26 @@ interface ApiCalls {
 }
 
 function fakeApi(calls: ApiCalls, messageId = 500): Api {
-	return {
-		answerCallbackQuery: async (id: string, opts?: { text?: string }) => {
-			calls.answers.push({ id, ...(opts?.text !== undefined ? { text: opts.text } : {}) });
-			return true;
+	return fakeTelegramApi({
+		handlers: {
+			answerCallbackQuery: async (id: string, opts?: { text?: string }) => {
+				calls.answers.push({ id, ...(opts?.text !== undefined ? { text: opts.text } : {}) });
+				return true;
+			},
+			editMessageText: async (chat: number, message: number, text: string) => {
+				calls.edits.push({ chat, message, text });
+				return { message_id: message };
+			},
+			editMessageReplyMarkup: async (chat: number, message: number) => {
+				calls.markups.push({ chat, message });
+				return { message_id: message };
+			},
+			sendMessage: async (chat: number, text: string, extra?: { reply_markup?: unknown }) => {
+				calls.sends.push({ chat, text, keyboard: extra?.reply_markup !== undefined });
+				return { message_id: messageId + calls.sends.length };
+			},
 		},
-		editMessageText: async (chat: number, message: number, text: string) => {
-			calls.edits.push({ chat, message, text });
-			return { message_id: message } as never;
-		},
-		editMessageReplyMarkup: async (chat: number, message: number) => {
-			calls.markups.push({ chat, message });
-			return { message_id: message } as never;
-		},
-		sendMessage: async (chat: number, text: string, extra?: { reply_markup?: unknown }) => {
-			calls.sends.push({ chat, text, keyboard: extra?.reply_markup !== undefined });
-			return { message_id: messageId + calls.sends.length } as never;
-		},
-	} as unknown as Api;
+	}).api;
 }
 
 function fakeSender(over: Partial<MailSender> = {}): MailSender & { sent: unknown[] } {
@@ -203,13 +206,14 @@ describe("draft requests", () => {
 		const { outbox, calls, deps, gate } = setup(sender);
 		// Telegram accepted the message (with buttons) but the response was
 		// lost. A callback can arrive even though no message id was bound.
-		deps.api = {
-			...deps.api,
-			sendMessage: async (chat: number, text: string, extra?: { reply_markup?: unknown }) => {
-				calls.sends.push({ chat, text, keyboard: extra?.reply_markup !== undefined });
-				throw new TelegramTimeoutError("sendMessage", 30_000);
-			},
-		} as unknown as Api;
+		(deps.api as unknown as Record<string, unknown>).sendMessage = async (
+			chat: number,
+			text: string,
+			extra?: { reply_markup?: unknown },
+		) => {
+			calls.sends.push({ chat, text, keyboard: extra?.reply_markup !== undefined });
+			throw new TelegramTimeoutError("sendMessage", 30_000);
+		};
 		const out = await gate.requestDraft({ to: ["a@x.com"], subject: "hi", body: "hello" }, ADDRESS);
 		if (!("queued" in out)) throw new Error("expected uncertain queued verdict");
 		expect(out.status).toContain(`draft #${out.queued}`);
@@ -237,14 +241,15 @@ describe("draft requests", () => {
 
 	test("a timeout on a later draft chunk does not cancel or post more chunks", async () => {
 		const { outbox, calls, deps, gate } = setup();
-		deps.api = {
-			...deps.api,
-			sendMessage: async (chat: number, text: string, extra?: { reply_markup?: unknown }) => {
-				calls.sends.push({ chat, text, keyboard: extra?.reply_markup !== undefined });
-				if (calls.sends.length === 2) throw new TelegramTimeoutError("sendMessage", 30_000);
-				return { message_id: 500 + calls.sends.length } as never;
-			},
-		} as unknown as Api;
+		(deps.api as unknown as Record<string, unknown>).sendMessage = async (
+			chat: number,
+			text: string,
+			extra?: { reply_markup?: unknown },
+		) => {
+			calls.sends.push({ chat, text, keyboard: extra?.reply_markup !== undefined });
+			if (calls.sends.length === 2) throw new TelegramTimeoutError("sendMessage", 30_000);
+			return { message_id: 500 + calls.sends.length };
+		};
 		const out = await gate.requestDraft(
 			{ to: ["a@x.com"], subject: "hi", body: "x".repeat(4000) },
 			ADDRESS,
@@ -272,16 +277,17 @@ describe("draft requests", () => {
 			},
 		};
 		const { calls, deps, gate } = setup(fakeSender(), fakeReader(), outbox);
-		deps.api = {
-			...deps.api,
-			sendMessage: async (chat: number, text: string, extra?: { reply_markup?: unknown }) => {
-				calls.sends.push({ chat, text, keyboard: extra?.reply_markup !== undefined });
-				// Three-chunk draft; the second (non-buttons) chunk's response
-				// is lost — posting stops before the buttons ever run.
-				if (calls.sends.length === 2) throw new TelegramTimeoutError("sendMessage", 30_000);
-				return { message_id: 500 + calls.sends.length } as never;
-			},
-		} as unknown as Api;
+		(deps.api as unknown as Record<string, unknown>).sendMessage = async (
+			chat: number,
+			text: string,
+			extra?: { reply_markup?: unknown },
+		) => {
+			calls.sends.push({ chat, text, keyboard: extra?.reply_markup !== undefined });
+			// Three-chunk draft; the second (non-buttons) chunk's response
+			// is lost — posting stops before the buttons ever run.
+			if (calls.sends.length === 2) throw new TelegramTimeoutError("sendMessage", 30_000);
+			return { message_id: 500 + calls.sends.length };
+		};
 		const out = await gate.requestDraft(
 			{ to: ["a@x.com"], subject: "hi", body: "x".repeat(8000) },
 			ADDRESS,
@@ -307,12 +313,10 @@ describe("draft requests", () => {
 			},
 		};
 		const calls: ApiCalls = { answers: [], edits: [], markups: [], sends: [] };
-		const api = {
-			...fakeApi(calls),
-			sendMessage: async () => {
-				throw new Error("telegram: HTTP 502");
-			},
-		} as unknown as Api;
+		const api = fakeApi(calls);
+		(api as unknown as Record<string, unknown>).sendMessage = async () => {
+			throw new Error("telegram: HTTP 502");
+		};
 		const gate = startMailApproval(
 			{ api, outbox, sender: () => fakeSender(), reader: () => fakeReader(), now: () => NOW },
 			60_000,

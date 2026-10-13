@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Api } from "grammy";
+import { fakeApi } from "../testkit/fake-api.ts";
 import { formatAddress, type ConversationAddress } from "../conversation.ts";
 import {
 	parseConversationAddress,
@@ -47,15 +47,23 @@ describe("outage notice send", () => {
 	test("topic ids send into their thread; dm ids without one", async () => {
 		type Send = { chatId: number; text: string; threadId?: number };
 		const sends: Send[] = [];
-		const api = {
-			sendMessage: async (chatId: number, text: string, other?: { message_thread_id?: number }) => {
-				sends.push({
-					chatId,
-					text,
-					...(other?.message_thread_id !== undefined ? { threadId: other.message_thread_id } : {}),
-				});
+		const api = fakeApi({
+			handlers: {
+				sendMessage: async (
+					chatId: number,
+					text: string,
+					other?: { message_thread_id?: number },
+				) => {
+					sends.push({
+						chatId,
+						text,
+						...(other?.message_thread_id !== undefined
+							? { threadId: other.message_thread_id }
+							: {}),
+					});
+				},
 			},
-		} as unknown as Api;
+		}).api;
 		await sendMemoryOutageNotice(api, "topic:-100200300:546216", 3_600_000, 2);
 		await sendMemoryOutageNotice(api, "dm:42", 7_200_000, 1);
 		expect(sends).toHaveLength(2);
@@ -69,11 +77,13 @@ describe("outage notice send", () => {
 	});
 
 	test("an unparseable id throws — the caller's retry/logging depends on it", async () => {
-		const api = {
-			sendMessage: async () => {
-				throw new Error("must not be called");
+		const api = fakeApi({
+			handlers: {
+				sendMessage: async () => {
+					throw new Error("must not be called");
+				},
 			},
-		} as unknown as Api;
+		}).api;
 		await expect(sendMemoryOutageNotice(api, "garbage", 3_600_000, 1)).rejects.toThrow(
 			/unparseable conversation id/,
 		);
@@ -84,15 +94,23 @@ describe("blocked notice send", () => {
 	test("one line into the stuck exchange's thread; error capped at 120 chars", async () => {
 		type Send = { chatId: number; text: string; threadId?: number };
 		const sends: Send[] = [];
-		const api = {
-			sendMessage: async (chatId: number, text: string, other?: { message_thread_id?: number }) => {
-				sends.push({
-					chatId,
-					text,
-					...(other?.message_thread_id !== undefined ? { threadId: other.message_thread_id } : {}),
-				});
+		const api = fakeApi({
+			handlers: {
+				sendMessage: async (
+					chatId: number,
+					text: string,
+					other?: { message_thread_id?: number },
+				) => {
+					sends.push({
+						chatId,
+						text,
+						...(other?.message_thread_id !== undefined
+							? { threadId: other.message_thread_id }
+							: {}),
+					});
+				},
 			},
-		} as unknown as Api;
+		}).api;
 		await sendMemoryBlockedNotice(api, "topic:-100200300:546216", "x".repeat(300), 3);
 		await sendMemoryBlockedNotice(api, "dm:42", null, 1);
 		expect(sends).toHaveLength(2);
@@ -109,11 +127,13 @@ describe("blocked notice send", () => {
 	});
 
 	test("an unparseable id throws — the caller logs it", async () => {
-		const api = {
-			sendMessage: async () => {
-				throw new Error("must not be called");
+		const api = fakeApi({
+			handlers: {
+				sendMessage: async () => {
+					throw new Error("must not be called");
+				},
 			},
-		} as unknown as Api;
+		}).api;
 		await expect(sendMemoryBlockedNotice(api, "garbage", "err", 1)).rejects.toThrow(
 			/unparseable conversation id/,
 		);
@@ -129,25 +149,31 @@ describe("skill proposal notice send", () => {
 	};
 	function noticeApi() {
 		const sends: Send[] = [];
-		const api = {
-			sendMessage: async (
-				chatId: number,
-				text: string,
-				other?: {
-					message_thread_id?: number;
-					reply_markup?: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> };
+		const api = fakeApi({
+			handlers: {
+				sendMessage: async (
+					chatId: number,
+					text: string,
+					other?: {
+						message_thread_id?: number;
+						reply_markup?: {
+							inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+						};
+					},
+				) => {
+					sends.push({
+						chatId,
+						text,
+						...(other?.message_thread_id !== undefined
+							? { threadId: other.message_thread_id }
+							: {}),
+						...(other?.reply_markup !== undefined
+							? { keyboard: other.reply_markup.inline_keyboard }
+							: {}),
+					});
 				},
-			) => {
-				sends.push({
-					chatId,
-					text,
-					...(other?.message_thread_id !== undefined ? { threadId: other.message_thread_id } : {}),
-					...(other?.reply_markup !== undefined
-						? { keyboard: other.reply_markup.inline_keyboard }
-						: {}),
-				});
 			},
-		} as unknown as Api;
+		}).api;
 		return { api, sends };
 	}
 
@@ -183,16 +209,10 @@ describe("app conversation notices", () => {
 	// every notice is a deliberate skip, not a parse failure — the api is
 	// never touched and nothing throws for the caller's retry loop.
 	test("all three notices skip app ids without sending", async () => {
-		let calls = 0;
-		const api = {
-			sendMessage: async () => {
-				calls++;
-				throw new Error("must not be called");
-			},
-		} as unknown as Api;
+		const { api, calls } = fakeApi();
 		await sendMemoryOutageNotice(api, "app/chat-01", 3_600_000, 2);
 		await sendMemoryBlockedNotice(api, "app/chat-01", "err", 1);
 		await sendSkillProposedNotice(api, "app/chat-01", ["x"]);
-		expect(calls).toBe(0);
+		expect(calls).toEqual([]);
 	});
 });

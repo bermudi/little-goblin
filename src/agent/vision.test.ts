@@ -7,6 +7,7 @@
 
 import { beforeAll, describe, expect, test } from "bun:test";
 import type { LanguageModel } from "ai";
+import { generateModel } from "../testkit/fake-model.ts";
 import type { LanguageModelV4CallOptions, LanguageModelV4GenerateResult } from "@ai-sdk/provider";
 import { setLogFile } from "../log.ts";
 import type { Config, ConfigRef } from "../config.ts";
@@ -66,32 +67,18 @@ function _testConfig(vision: { model: string; maxTokens?: number }): Config {
 }
 
 /** Everything the fake provider observed, per call. */
-interface Recorded {
-	prompt: LanguageModelV4CallOptions["prompt"];
-	maxOutputTokens: number | undefined;
-	abortSignal: AbortSignal | undefined;
-}
+type Recorded = LanguageModelV4CallOptions;
 
 type Responder = (
 	opts: LanguageModelV4CallOptions,
 ) => LanguageModelV4GenerateResult | Promise<LanguageModelV4GenerateResult>;
 
-/** The provider-edge fake (runtime.test.ts's fakeModel, generate arm). */
+// The provider edge; `calls` sees every wire option.
 function fakeModel(calls: Recorded[], respond: Responder): LanguageModel {
-	return {
-		specificationVersion: "v4",
-		provider: "fake",
-		modelId: "fake-1",
-		supportedUrls: {},
-		async doGenerate(opts: LanguageModelV4CallOptions) {
-			calls.push({
-				prompt: opts.prompt,
-				maxOutputTokens: opts.maxOutputTokens,
-				abortSignal: opts.abortSignal,
-			});
-			return respond(opts);
-		},
-	} as unknown as LanguageModel;
+	return generateModel((opts) => {
+		calls.push(opts);
+		return respond(opts);
+	}).model;
 }
 
 const answer = (text: string): LanguageModelV4GenerateResult => ({

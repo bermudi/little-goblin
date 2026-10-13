@@ -19,6 +19,7 @@ import type { Runtime, TurnSink } from "../runtime.ts";
 import type { UIMessage } from "ai";
 import type { Message, User } from "grammy/types";
 import type { Api } from "grammy";
+import { fakeApi as fakeTelegramApi } from "../testkit/fake-api.ts";
 import type { AuthStore } from "../auth.ts";
 import { fetchTool } from "../agent/tools/fetch.ts";
 import {
@@ -290,42 +291,40 @@ function fakeApi() {
 	const edits: string[] = [];
 	const sends: { chatId: number; text: string; options: Parameters<Api["sendMessage"]>[2] }[] = [];
 	const answers: string[] = [];
-	return {
-		edits,
-		sends,
-		answers,
-		answerGuestQuery: (async (
-			_id: string,
-			spec: { input_message_content?: { message_text?: string } },
-		) => {
-			answers.push(spec.input_message_content?.message_text ?? "");
-			return { inline_message_id: "im-1" };
-		}) as never,
-		editMessageTextInline: (async (_id: string, text: string) => {
-			edits.push(text);
-			return true;
-		}) as never,
-		sendMessage: (async (
-			chatId: number,
-			text: string,
-			options: Parameters<Api["sendMessage"]>[2],
-		) => {
-			sends.push({ chatId, text, options });
-			return { message_id: sends.length };
-		}) as never,
-		editMessageText: (async (_chatId: number, _messageId: number, text: string) => {
-			edits.push(text);
-			return true;
-		}) as never,
-		setMessageReaction: (async () => true) as never,
-		sendChatAction: (async () => true) as never,
-	};
+	const fake = fakeTelegramApi({
+		handlers: {
+			answerGuestQuery: async (
+				_id: string,
+				spec: { input_message_content?: { message_text?: string } },
+			) => {
+				answers.push(spec.input_message_content?.message_text ?? "");
+				return { inline_message_id: "im-1" };
+			},
+			editMessageTextInline: async (_id: string, text: string) => {
+				edits.push(text);
+				return true;
+			},
+			sendMessage: async (
+				chatId: number,
+				text: string,
+				options: Parameters<Api["sendMessage"]>[2],
+			) => {
+				sends.push({ chatId, text, options });
+				return { message_id: sends.length };
+			},
+			editMessageText: async (_chatId: number, _messageId: number, text: string) => {
+				edits.push(text);
+				return true;
+			},
+		},
+	});
+	return { api: fake.api, edits, sends, answers };
 }
 
 describe("GuestSink", () => {
 	test("deltas stream as edits, onDone flushes the final body", async () => {
 		const api = fakeApi();
-		const sink = new GuestSink(api as never, "im-1", 3500, 1);
+		const sink = new GuestSink(api.api as never, "im-1", 3500, 1);
 		sink.onTextDelta("hello ");
 		sink.onTextDelta("world");
 		await new Promise((r) => setTimeout(r, 10));
@@ -335,7 +334,7 @@ describe("GuestSink", () => {
 	});
 	test("output past the cap truncates with a pointer", async () => {
 		const api = fakeApi();
-		const sink = new GuestSink(api as never, "im-1", 10, 1);
+		const sink = new GuestSink(api.api as never, "im-1", 10, 1);
 		sink.onTextDelta("0123456789ABCDEFGHIJ");
 		await sink.onDone({ kind: "completed" });
 		expect(api.edits[api.edits.length - 1]).toContain("0123456789");
@@ -343,7 +342,7 @@ describe("GuestSink", () => {
 	});
 	test("a fenced turn stamps superseded on the displayed text", async () => {
 		const api = fakeApi();
-		const sink = new GuestSink(api as never, "im-1", 3500, 1);
+		const sink = new GuestSink(api.api as never, "im-1", 3500, 1);
 		sink.onTextDelta("partial");
 		await new Promise((r) => setTimeout(r, 10));
 		await sink.onDone({ kind: "fenced" });
@@ -353,7 +352,7 @@ describe("GuestSink", () => {
 	test("a failed authority check stops mid-stream edits", async () => {
 		const api = fakeApi();
 		let ok = true;
-		const sink = new GuestSink(api as never, "im-1", 3500, 1);
+		const sink = new GuestSink(api.api as never, "im-1", 3500, 1);
 		sink.setAuthorityCheck(() => ok);
 		sink.onTextDelta("first");
 		await new Promise((r) => setTimeout(r, 10));
@@ -366,7 +365,7 @@ describe("GuestSink", () => {
 
 	test("fencing before any publication never stamps buffered text", async () => {
 		const api = fakeApi();
-		const sink = new GuestSink(api as never, "im-1", 3500);
+		const sink = new GuestSink(api.api as never, "im-1", 3500);
 		sink.onTextDelta("unsent");
 		await sink.onDone({ kind: "fenced" });
 		expect(api.edits).toEqual(["⏹ superseded"]);
@@ -377,7 +376,7 @@ describe("GuestSink", () => {
 		const started = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
 		let calls = 0;
-		api.editMessageTextInline = (async (_id: string, text: string) => {
+		api.api.editMessageTextInline = (async (_id: string, text: string) => {
 			if (++calls === 1) {
 				started.resolve();
 				await release.promise;
@@ -386,7 +385,7 @@ describe("GuestSink", () => {
 			return true;
 		}) as never;
 		let ok = true;
-		const sink = new GuestSink(api as never, "im-1", 3500, 1);
+		const sink = new GuestSink(api.api as never, "im-1", 3500, 1);
 		sink.setAuthorityCheck(() => ok);
 		sink.onTextDelta("in flight");
 		await started.promise;
@@ -403,12 +402,12 @@ describe("GuestSink", () => {
 
 	test("a failed edit does not become the displayed cancellation body", async () => {
 		const api = fakeApi();
-		api.editMessageTextInline = (async (_id: string, text: string) => {
+		api.api.editMessageTextInline = (async (_id: string, text: string) => {
 			if (text.includes("unsent")) throw new Error("Telegram rejected this edit");
 			api.edits.push(text);
 			return true;
 		}) as never;
-		const sink = new GuestSink(api as never, "im-1", 3500, 1);
+		const sink = new GuestSink(api.api as never, "im-1", 3500, 1);
 		sink.onTextDelta("shown");
 		await new Promise((r) => setTimeout(r, 10));
 		sink.onTextDelta(" unsent");
@@ -422,7 +421,7 @@ describe("GuestSink", () => {
 		const started = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
 		let calls = 0;
-		api.editMessageTextInline = (async (_id: string, text: string) => {
+		api.api.editMessageTextInline = (async (_id: string, text: string) => {
 			if (++calls === 1) {
 				started.resolve();
 				await release.promise;
@@ -431,7 +430,7 @@ describe("GuestSink", () => {
 			return true;
 		}) as never;
 		let ok = true;
-		const sink = new GuestSink(api as never, "im-1", 3500);
+		const sink = new GuestSink(api.api as never, "im-1", 3500);
 		sink.setAuthorityCheck(() => ok);
 		sink.onTextDelta("buffered final");
 		const done = sink.onDone({ kind: "completed" });
@@ -449,7 +448,7 @@ describe("GuestSink", () => {
 			const detail = `private provider response: ${"secret".repeat(2000)}`;
 			for (const text of ["", "🙂".repeat(3000)]) {
 				const api = fakeApi();
-				const sink = new GuestSink(api as never, "im-1", 4000, 1);
+				const sink = new GuestSink(api.api as never, "im-1", 4000, 1);
 				sink.onTextDelta(text);
 				await new Promise((r) => setTimeout(r, 10));
 				await sink.onDone({ kind: "error", message: detail });
@@ -498,7 +497,7 @@ function makeEnv(over: { busy?: boolean; guest?: boolean } = {}) {
 	};
 	const api = fakeApi();
 	const env = {
-		api,
+		api: api.api,
 		store,
 		runtime,
 		configRef,
@@ -538,7 +537,7 @@ function holdPlaceholder(
 	const started = new Promise<void>((r) => {
 		signal = r;
 	});
-	(api as { answerGuestQuery: unknown }).answerGuestQuery = (async (id: string) => {
+	(api.api as { answerGuestQuery: unknown }).answerGuestQuery = (async (id: string) => {
 		if (id === queryId) {
 			signal();
 			await held;

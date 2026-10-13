@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api } from "grammy";
+import { fakeApi } from "../testkit/fake-api.ts";
 import type { Config } from "../config.ts";
 import { openStore } from "../conversation.ts";
 import { HindsightClient } from "../hindsight.ts";
@@ -44,12 +45,14 @@ function setup(overrides?: { compact?: Runtime["compact"] }) {
 	const sent: string[] = [];
 	const stopped: string[] = [];
 	const deps: CommandDeps = {
-		api: {
-			sendMessage: async (_chat: number, text: string) => {
-				sent.push(text);
-				return { message_id: sent.length };
+		api: fakeApi({
+			handlers: {
+				sendMessage: async (_chat: number, text: string) => {
+					sent.push(text);
+					return { message_id: sent.length };
+				},
 			},
-		} as unknown as Api,
+		}).api,
 		configRef: { current: config, ttsDown: false },
 		store,
 		runtime: {

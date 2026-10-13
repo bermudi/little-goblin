@@ -12,6 +12,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type ConversationStore } from "../conversation.ts";
+import { fakeApi as fakeTelegramApi } from "../testkit/fake-api.ts";
 import type { DeliveryApi } from "./delivery.ts";
 import { openPings } from "./pings.ts";
 import { makeBellSink, type BellDeps } from "./bell.ts";
@@ -51,19 +52,20 @@ function harness(opts: {
 	const store = openStore(tmpdb());
 	const sent: Sent[] = [];
 	const pings = openPings(store.db);
-	const api = {
-		sendMessage: (chat: number, text: string, options?: { reply_markup?: unknown }) => {
-			if (opts.failChats?.includes(chat)) {
-				return Promise.reject(new Error("chat deleted"));
-			}
-			if (opts.hangChats?.includes(chat)) {
-				return new Promise(() => {});
-			}
-			sent.push({ chat, text, markup: options?.reply_markup });
-			return Promise.resolve({ message_id: 1000 + sent.length });
+	const api = fakeTelegramApi({
+		handlers: {
+			sendMessage: (chat: number, text: string, options?: { reply_markup?: unknown }) => {
+				if (opts.failChats?.includes(chat)) {
+					return Promise.reject(new Error("chat deleted"));
+				}
+				if (opts.hangChats?.includes(chat)) {
+					return new Promise(() => {});
+				}
+				sent.push({ chat, text, markup: options?.reply_markup });
+				return Promise.resolve({ message_id: 1000 + sent.length });
+			},
 		},
-		sendChatAction: () => Promise.resolve(true),
-	} as unknown as DeliveryApi;
+	}).api as unknown as DeliveryApi;
 	return {
 		store,
 		sent,

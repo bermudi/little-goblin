@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Api } from "grammy";
+import { fakeApi } from "../testkit/fake-api.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,15 +16,6 @@ afterEach(() => {
 	for (const d of dirs) rmSync(d, { recursive: true, force: true });
 	dirs = [];
 });
-
-function fakeApi(calls: unknown[]): Pick<Api, "editForumTopic"> {
-	return {
-		editForumTopic: (chatId: unknown, threadId: unknown, other: unknown) => {
-			calls.push({ chatId, threadId, other });
-			return Promise.resolve(true);
-		},
-	} as Pick<Api, "editForumTopic">;
-}
 
 describe("titleMetaFromService", () => {
 	test("implicit create owes a title; explicit create and edits settle it", () => {
@@ -53,15 +44,17 @@ describe("maybeRenameTopic", () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "topic", chatId: 42, threadId: 7 }, "/w");
 		store.setMeta(conv.id, { title: "New Chat", titleImplicit: true });
-		const calls: unknown[] = [];
+		const fake = fakeApi();
 
 		await maybeRenameTopic(
-			{ api: fakeApi(calls), store, titleFor: () => Promise.resolve("Math questions") },
+			{ api: fake.api, store, titleFor: () => Promise.resolve("Math questions") },
 			conv,
 			"2+5?",
 		);
 
-		expect(calls).toEqual([{ chatId: 42, threadId: 7, other: { name: "Math questions" } }]);
+		expect(fake.calls).toEqual([
+			{ method: "editForumTopic", args: [42, 7, { name: "Math questions" }] },
+		]);
 		const after = store.get(conv.id)!;
 		expect(after.title).toBe("Math questions");
 		expect(after.titleImplicit).toBe(false);
@@ -74,16 +67,16 @@ describe("maybeRenameTopic", () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "topic", chatId: 42, threadId: 7 }, "/w");
 		store.setMeta(conv.id, { title: "New Chat", titleImplicit: true });
-		const calls: unknown[] = [];
+		const fake = fakeApi();
 		const titleFor = () => {
 			// Simulates forum_topic_edited landing during the model call.
 			store.setMeta(conv.id, { title: "mine", titleImplicit: false });
 			return Promise.resolve("Math questions");
 		};
 
-		await maybeRenameTopic({ api: fakeApi(calls), store, titleFor }, conv, "2+5?");
+		await maybeRenameTopic({ api: fake.api, store, titleFor }, conv, "2+5?");
 
-		expect(calls).toEqual([]);
+		expect(fake.calls).toEqual([]);
 		expect(store.get(conv.id)!.title).toBe("mine");
 		store.close();
 	});
@@ -93,13 +86,15 @@ describe("maybeRenameTopic", () => {
 		const conv = store.resolve({ kind: "topic", chatId: 42, threadId: 7 }, "/w");
 		store.setMeta(conv.id, { title: "New Chat", titleImplicit: true });
 		const names: string[] = [];
-		const api = {
-			editForumTopic: async (_chat: number, _thread: number, opts: { name: string }) => {
-				names.push(opts.name);
-				if (names.length === 1) store.setMeta(conv.id, { title: "mine", titleImplicit: false });
-				return true;
+		const api = fakeApi({
+			handlers: {
+				editForumTopic: async (_chat: number, _thread: number, opts: { name: string }) => {
+					names.push(opts.name);
+					if (names.length === 1) store.setMeta(conv.id, { title: "mine", titleImplicit: false });
+					return true;
+				},
 			},
-		} as Api;
+		}).api;
 		await maybeRenameTopic({ api, store, titleFor: async () => "generated" }, conv, "question");
 		expect(names).toEqual(["generated", "mine"]);
 		expect(store.get(conv.id)?.title).toBe("mine");
@@ -110,15 +105,15 @@ describe("maybeRenameTopic", () => {
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "topic", chatId: 42, threadId: 7 }, "/w");
 		store.setMeta(conv.id, { title: "New Chat", titleImplicit: true });
-		const calls: unknown[] = [];
+		const fake = fakeApi();
 
 		await maybeRenameTopic(
-			{ api: fakeApi(calls), store, titleFor: () => Promise.resolve(null) },
+			{ api: fake.api, store, titleFor: () => Promise.resolve(null) },
 			conv,
 			"2+5?",
 		);
 
-		expect(calls).toEqual([]);
+		expect(fake.calls).toEqual([]);
 		expect(store.get(conv.id)!.titleImplicit).toBe(true);
 		store.close();
 	});

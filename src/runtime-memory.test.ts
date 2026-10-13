@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { LanguageModel, UIMessage } from "ai";
-import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
+import type { UIMessage } from "ai";
+import { textModel } from "./testkit/fake-model.ts";
 import { openStore } from "./conversation.ts";
 import { HindsightClient } from "./hindsight.ts";
 import type { MemoryConfig } from "./config.ts";
@@ -21,59 +21,6 @@ afterEach(() => {
 	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 	dirs = [];
 });
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-function fakeModel(deltas: string[], delayMs = 5): LanguageModel {
-	return {
-		specificationVersion: "v4",
-		provider: "fake",
-		modelId: "fake-1",
-		supportedUrls: {},
-		doGenerate() {
-			throw new Error("unimplemented");
-		},
-		doStream() {
-			const stream = new ReadableStream<LanguageModelV4StreamPart>({
-				async start(controller) {
-					const push = (p: LanguageModelV4StreamPart) => {
-						try {
-							controller.enqueue(p);
-						} catch {
-							/* closed by abort */
-						}
-					};
-					push({ type: "stream-start", warnings: [] });
-					push({ type: "text-start", id: "t1" });
-					for (const d of deltas) {
-						await sleep(delayMs);
-						push({ type: "text-delta", id: "t1", delta: d });
-					}
-					push({ type: "text-end", id: "t1" });
-					push({
-						type: "finish",
-						finishReason: { unified: "stop", raw: undefined },
-						usage: {
-							inputTokens: {
-								total: 1,
-								noCache: undefined,
-								cacheRead: undefined,
-								cacheWrite: undefined,
-							},
-							outputTokens: { total: 1, text: undefined, reasoning: undefined },
-						},
-					});
-					try {
-						controller.close();
-					} catch {
-						/* already closed */
-					}
-				},
-			});
-			return { stream };
-		},
-	} as unknown as LanguageModel;
-}
 
 class RecordingSink implements TurnSink {
 	text = "";
@@ -182,7 +129,7 @@ function harness(opts: { recallStatus?: number; factText?: string } = {}): Harne
 	const recallOk = { current: null as boolean | null };
 	const runtime = new Runtime({
 		store,
-		buildStep: () => ({ model: fakeModel(["ok"]), system: "test" }),
+		buildStep: () => ({ model: textModel(["ok"]).model, system: "test" }),
 		makeTools: () => ({}),
 		memory: {
 			client,
@@ -316,7 +263,10 @@ describe("memory turn integration", () => {
 		const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
 		const runtime = new Runtime({
 			store,
-			buildStep: () => ({ model: fakeModel(["a", "b", "c", "d", "e"], 20), system: "test" }),
+			buildStep: () => ({
+				model: textModel(["a", "b", "c", "d", "e"], { delayMs: 20 }).model,
+				system: "test",
+			}),
 			makeTools: () => ({}),
 			memory: {
 				client,
@@ -375,7 +325,7 @@ describe("memory turn integration", () => {
 		const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
 		const runtime = new Runtime({
 			store,
-			buildStep: () => ({ model: fakeModel(["ok"]), system: "test" }),
+			buildStep: () => ({ model: textModel(["ok"]).model, system: "test" }),
 			makeTools: () => ({}),
 			memory: {
 				client,

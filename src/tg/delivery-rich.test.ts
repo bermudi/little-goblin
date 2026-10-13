@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api } from "grammy";
+import { fakeApi as fakeTelegramApi } from "../testkit/fake-api.ts";
 import { parseConfig } from "../config.ts";
 import type { Conversation } from "../conversation.ts";
 import { setLogFile, setLogWriter } from "../log.ts";
@@ -52,69 +53,66 @@ function fakeApi(
 ) {
 	const drafts: DraftCall[] = [];
 	const richSends: Array<{ markdown: string; other: Record<string, unknown> }> = [];
-	const msgs: string[] = [];
 	const edits: string[] = [];
 	const reactions: Array<{ chat: number; id: number; emoji: string }> = [];
 	const markups: unknown[] = [];
 	let sendAttempts = 0;
-	const api = {
-		sendChatAction: () => Promise.resolve(true),
-		sendMessage: async (_chat: number, text: string) => {
-			msgs.push(text);
-			return { message_id: msgs.length };
+	const fake = fakeTelegramApi({
+		handlers: {
+			// edits collect, never rewrite msgs — the suite watches them apart.
+			editMessageText: async (_chat: number, _id: number, text: string) => {
+				edits.push(text);
+				return true;
+			},
+			sendMessageDraft: async (_chat: number, id: number, text: string) => {
+				drafts.push({ kind: "plain", id, text });
+				return true;
+			},
+			sendRichMessageDraft: async (
+				_chat: number,
+				id: number,
+				rm: { markdown?: string; blocks?: Array<{ type: string; text?: unknown }> },
+			) => {
+				if (opts.timeoutNextRichDraft) {
+					opts.timeoutNextRichDraft = false;
+					throw new TelegramTimeoutError("sendRichMessageDraft", 30_000);
+				}
+				if (opts.failRichDrafts) throw new Error("sendRichMessageDraft failed");
+				drafts.push({ kind: "rich", id, markdown: rm.markdown, blocks: rm.blocks });
+				return true;
+			},
+			sendRichMessage: async (
+				_chat: number,
+				rm: { markdown: string },
+				other: Record<string, unknown>,
+			) => {
+				sendAttempts++;
+				if (opts.rejectEffect && other.message_effect_id !== undefined) {
+					throw new Error("Bad Request: PREMIUM_ACCOUNT_REQUIRED");
+				}
+				if (opts.failRichSend) throw new Error("sendRichMessage failed");
+				richSends.push({ markdown: rm.markdown, other });
+				return { message_id: 900 + richSends.length };
+			},
+			editMessageReplyMarkup: async (_chat: number, _id: number, markup: unknown) => {
+				markups.push(markup);
+				return true;
+			},
+			setMessageReaction: async (
+				chat: number,
+				id: number,
+				reaction: Array<{ type: string; emoji: string }>,
+			) => {
+				reactions.push({ chat, id, emoji: reaction[0]!.emoji });
+				return true;
+			},
 		},
-		editMessageText: async (_chat: number, _id: number, text: string) => {
-			edits.push(text);
-			return true;
-		},
-		sendMessageDraft: async (_chat: number, id: number, text: string) => {
-			drafts.push({ kind: "plain", id, text });
-			return true;
-		},
-		sendRichMessageDraft: async (
-			_chat: number,
-			id: number,
-			rm: { markdown?: string; blocks?: Array<{ type: string; text?: unknown }> },
-		) => {
-			if (opts.timeoutNextRichDraft) {
-				opts.timeoutNextRichDraft = false;
-				throw new TelegramTimeoutError("sendRichMessageDraft", 30_000);
-			}
-			if (opts.failRichDrafts) throw new Error("sendRichMessageDraft failed");
-			drafts.push({ kind: "rich", id, markdown: rm.markdown, blocks: rm.blocks });
-			return true;
-		},
-		sendRichMessage: async (
-			_chat: number,
-			rm: { markdown: string },
-			other: Record<string, unknown>,
-		) => {
-			sendAttempts++;
-			if (opts.rejectEffect && other.message_effect_id !== undefined) {
-				throw new Error("Bad Request: PREMIUM_ACCOUNT_REQUIRED");
-			}
-			if (opts.failRichSend) throw new Error("sendRichMessage failed");
-			richSends.push({ markdown: rm.markdown, other });
-			return { message_id: 900 + richSends.length };
-		},
-		editMessageReplyMarkup: async (_chat: number, _id: number, markup: unknown) => {
-			markups.push(markup);
-			return true;
-		},
-		setMessageReaction: async (
-			chat: number,
-			id: number,
-			reaction: Array<{ type: string; emoji: string }>,
-		) => {
-			reactions.push({ chat, id, emoji: reaction[0]!.emoji });
-			return true;
-		},
-	} as unknown as Api;
+	});
 	return {
-		api,
+		api: fake.api,
 		drafts,
 		richSends,
-		msgs,
+		msgs: fake.texts,
 		edits,
 		reactions,
 		markups,

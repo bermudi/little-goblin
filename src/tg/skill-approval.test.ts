@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api } from "grammy";
+import { fakeApi } from "../testkit/fake-api.ts";
 import { describe, expect, test } from "bun:test";
 import { setLogFile, setLogWriter } from "../log.ts";
 import {
@@ -52,25 +53,27 @@ function harness(initialProposals: string[], initialSkills: string[] = []): Harn
 	const strips: number[] = [];
 	const answers: Array<string | undefined> = [];
 	const appends: Harness["appends"] = [];
-	const api = {
-		answerCallbackQuery: async (_id: string, other?: { text?: string }) => {
-			answers.push(other?.text);
-			return true;
+	const api = fakeApi({
+		handlers: {
+			answerCallbackQuery: async (_id: string, other?: { text?: string }) => {
+				answers.push(other?.text);
+				return true;
+			},
+			editMessageText: async (
+				chatId: number,
+				messageId: number,
+				text: string,
+				other?: { reply_markup?: unknown },
+			) => {
+				edits.push({ chatId, messageId, text, keyboard: other?.reply_markup });
+				return true;
+			},
+			editMessageReplyMarkup: async (_chatId: number, messageId: number, _m: unknown) => {
+				strips.push(messageId);
+				return true;
+			},
 		},
-		editMessageText: async (
-			chatId: number,
-			messageId: number,
-			text: string,
-			other?: { reply_markup?: unknown },
-		) => {
-			edits.push({ chatId, messageId, text, keyboard: other?.reply_markup });
-			return true;
-		},
-		editMessageReplyMarkup: async (_chatId: number, messageId: number, _m: unknown) => {
-			strips.push(messageId);
-			return true;
-		},
-	} as unknown as Api;
+	}).api;
 	const approval = startSkillApproval({
 		api,
 		store: {

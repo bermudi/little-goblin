@@ -7,10 +7,16 @@ import { join } from "node:path";
 import {
 	APICallError,
 	type LanguageModelV4,
+	type LanguageModelV4CallOptions,
 	type LanguageModelV4StreamPart,
 } from "@ai-sdk/provider";
 import { type LanguageModel, tool, type UIMessage, type UIMessageChunk } from "ai";
 import { z } from "zod";
+import {
+	scriptedModel as scriptedEdge,
+	textModel,
+	type StreamAttempt,
+} from "./testkit/fake-model.ts";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { readFileTool } from "./agent/tools/read.ts";
 import { parseConfig } from "./config.ts";
@@ -33,60 +39,10 @@ afterEach(() => {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// Fake the model provider at the edge: a LanguageModelV2 that streams the
-// given deltas with a delay between each.
-function fakeModel(deltas: string[], delayMs = 15): LanguageModel {
-	return {
-		specificationVersion: "v4",
-		provider: "fake",
-		modelId: "fake-1",
-		supportedUrls: {},
-		doGenerate() {
-			throw new Error("unimplemented");
-		},
-		doStream(options: { abortSignal?: AbortSignal }) {
-			const signal = options.abortSignal;
-			const stream = new ReadableStream<LanguageModelV4StreamPart>({
-				async start(controller) {
-					const push = (p: LanguageModelV4StreamPart) => {
-						try {
-							controller.enqueue(p);
-						} catch {
-							/* closed by abort */
-						}
-					};
-					push({ type: "stream-start", warnings: [] });
-					push({ type: "text-start", id: "t1" });
-					for (const d of deltas) {
-						if (signal?.aborted) break;
-						await sleep(delayMs);
-						push({ type: "text-delta", id: "t1", delta: d });
-					}
-					push({ type: "text-end", id: "t1" });
-					push({
-						type: "finish",
-						finishReason: { unified: "stop", raw: undefined },
-						usage: {
-							inputTokens: {
-								total: 1,
-								noCache: undefined,
-								cacheRead: undefined,
-								cacheWrite: undefined,
-							},
-							outputTokens: { total: deltas.length, text: undefined, reasoning: undefined },
-						},
-					});
-					try {
-						controller.close();
-					} catch {
-						/* already closed */
-					}
-				},
-			});
-			return { stream };
-		},
-	} as unknown as LanguageModel;
-}
+// Fake the model provider at the edge: a scripted LanguageModelV4 that
+// streams the given deltas with a delay between each.
+const fakeModel = (deltas: string[], delayMs = 15): LanguageModel =>
+	textModel(deltas, { delayMs }).model;
 
 class RecordingSink implements TurnSink {
 	text = "";
@@ -216,48 +172,15 @@ describe("provider-filter retry", () => {
 	};
 	const blocked: LanguageModelV4StreamPart = { type: "error", error: new Error(warning) };
 
-	function scripted(
-		attempts: (
-			| LanguageModelV4StreamPart[]
-			| Error
-			| { readError: Error }
-			| { cancelError: Error }
-		)[],
-	) {
+	function scripted(attempts: StreamAttempt[]) {
 		const requests: string[] = [];
+		const edge = scriptedEdge(attempts, { modelId: "filter-test" });
+		const inner = edge.model as unknown as LanguageModelV4;
 		const model: LanguageModelV4 = {
-			specificationVersion: "v4",
-			provider: "fake",
-			modelId: "filter-test",
-			supportedUrls: {},
-			doGenerate() {
-				throw new Error("unused");
-			},
-			async doStream(options) {
-				const attempt = attempts[requests.length];
+			...inner,
+			doStream(options) {
 				requests.push(JSON.stringify(options));
-				if (attempt === undefined) throw new Error("unexpected extra model request");
-				if (attempt instanceof Error) throw attempt;
-				return {
-					stream: new ReadableStream<LanguageModelV4StreamPart>({
-						start(controller) {
-							if ("readError" in attempt) {
-								controller.error(attempt.readError);
-								return;
-							}
-							if ("cancelError" in attempt) {
-								controller.enqueue(blocked);
-								return; // Leave open so reader.cancel exercises cleanup.
-							}
-							controller.enqueue({ type: "stream-start", warnings: [] });
-							for (const part of attempt) controller.enqueue(part);
-							controller.close();
-						},
-						cancel() {
-							if ("cancelError" in attempt) throw attempt.cancelError;
-						},
-					}),
-				};
+				return inner.doStream(options);
 			},
 		};
 		return { model, requests };
@@ -457,7 +380,10 @@ describe("provider-filter retry", () => {
 		});
 
 	test("cancellation cleanup failure is logged without replacing the filter retry", async () => {
-		const { model, requests } = scripted([{ cancelError: new Error("cancel failed") }, answer()]);
+		const { model, requests } = scripted([
+			{ cancelError: new Error("cancel failed"), parts: [blocked] },
+			answer(),
+		]);
 		const store = openStore(tmpdb());
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
@@ -633,14 +559,12 @@ describe("provider-filter retry", () => {
 // requests compare bytewise across turns (cache-stability tests).
 function recordingModel(deltas: string[], delayMs = 15) {
 	const prompts: string[] = [];
-	const base = fakeModel(deltas, delayMs) as unknown as {
-		doStream(o: { prompt: unknown }): { stream: ReadableStream<LanguageModelV4StreamPart> };
-	};
+	const inner = fakeModel(deltas, delayMs) as unknown as LanguageModelV4;
 	const model = {
-		...base,
-		doStream(o: { prompt: unknown }) {
+		...inner,
+		doStream(o: LanguageModelV4CallOptions) {
 			prompts.push(JSON.stringify(o.prompt));
-			return base.doStream(o);
+			return inner.doStream(o);
 		},
 	} as unknown as LanguageModel;
 	return { model, prompts };
@@ -1341,27 +1265,13 @@ function textReply(text: string): LanguageModelV4StreamPart[] {
 // it as an `error` chunk). Every wire prompt is captured.
 function scriptedModel(scripts: Array<LanguageModelV4StreamPart[] | Error>) {
 	const prompts: string[] = [];
-	let calls = 0;
+	const edge = scriptedEdge(scripts, { extra: textReply("ok") });
+	const inner = edge.model as unknown as LanguageModelV4;
 	const model = {
-		specificationVersion: "v4",
-		provider: "fake",
-		modelId: "fake-1",
-		supportedUrls: {},
-		doGenerate() {
-			throw new Error("unimplemented");
-		},
-		doStream(o: { prompt: unknown }) {
+		...inner,
+		doStream(o: LanguageModelV4CallOptions) {
 			prompts.push(JSON.stringify(o.prompt));
-			const script = scripts[calls++] ?? textReply("ok");
-			if (script instanceof Error) throw script;
-			return {
-				stream: new ReadableStream<LanguageModelV4StreamPart>({
-					start(controller) {
-						for (const p of script) controller.enqueue(p);
-						controller.close();
-					},
-				}),
-			};
+			return inner.doStream(o);
 		},
 	} as unknown as LanguageModel;
 	return { model, prompts };

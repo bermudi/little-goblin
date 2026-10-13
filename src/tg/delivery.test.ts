@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api } from "grammy";
+import { fakeApi as fakeTelegramApi } from "../testkit/fake-api.ts";
 import type { Conversation } from "../conversation.ts";
 import { setLogFile, setLogWriter } from "../log.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
@@ -35,42 +36,37 @@ const conv: Conversation = {
 	createdAt: "",
 };
 
-// Fake the Telegram API at the edge. `gate` holds sends while set.
+// Fake the Telegram API at the edge (the shared scaffold, msgs is its
+// send/edit-aware body list). `gate` holds sends while set.
 function fakeApi(opts: { gate?: { current: Promise<void> | null }; failSends?: boolean }) {
-	const msgs: string[] = [];
 	const voices: number[] = [];
 	const reactions: Array<{ chat: number; id: number; emoji: string }> = [];
 	const markups: unknown[] = [];
-	const api = {
-		sendChatAction: () => Promise.resolve(true),
-		sendMessage: async (_chat: number, text: string) => {
-			if (opts.gate?.current) await opts.gate.current;
-			if (opts.failSends) throw new Error("sendMessage failed");
-			msgs.push(text);
-			return { message_id: msgs.length };
+	const fake = fakeTelegramApi({
+		before: async (method) => {
+			if (method === "sendMessage" && opts.gate?.current) await opts.gate.current;
 		},
-		editMessageText: async (_chat: number, id: number, text: string) => {
-			msgs[id - 1] = text;
-			return true;
+		failOn: (method) => method === "sendMessage" && opts.failSends === true,
+		handlers: {
+			sendVoice: async () => {
+				voices.push(voices.length + 1);
+				return { message_id: 100 + voices.length };
+			},
+			editMessageReplyMarkup: async (_chat: number, _id: number, markup: unknown) => {
+				markups.push(markup);
+				return true;
+			},
+			setMessageReaction: async (
+				chat: number,
+				id: number,
+				reaction: Array<{ type: string; emoji: string }>,
+			) => {
+				reactions.push({ chat, id, emoji: reaction[0]!.emoji });
+				return true;
+			},
 		},
-		sendVoice: async () => {
-			voices.push(voices.length + 1);
-			return { message_id: 100 + voices.length };
-		},
-		editMessageReplyMarkup: async (_chat: number, _id: number, markup: unknown) => {
-			markups.push(markup);
-			return true;
-		},
-		setMessageReaction: async (
-			chat: number,
-			id: number,
-			reaction: Array<{ type: string; emoji: string }>,
-		) => {
-			reactions.push({ chat, id, emoji: reaction[0]!.emoji });
-			return true;
-		},
-	} as unknown as Api;
-	return { api, msgs, voices, reactions, markups };
+	});
+	return { api: fake.api, msgs: fake.texts, voices, reactions, markups };
 }
 
 describe("delivery", () => {
@@ -116,22 +112,21 @@ describe("delivery", () => {
 
 	test("failed send at final flush is retried, not dropped", async () => {
 		let calls = 0;
-		const msgs: string[] = [];
 		const reactions: number[] = [];
-		const api = {
-			sendChatAction: () => Promise.resolve(true),
-			sendMessage: async (_chat: number, text: string) => {
-				calls++;
-				if (calls === 1) throw new Error("transient failure");
-				msgs.push(text);
-				return { message_id: msgs.length };
+		const { api, texts: msgs } = fakeTelegramApi({
+			handlers: {
+				sendMessage: async (_chat: number, text: string) => {
+					calls++;
+					if (calls === 1) throw new Error("transient failure");
+					msgs.push(text);
+					return { message_id: msgs.length };
+				},
+				setMessageReaction: async (_chat: number, id: number) => {
+					reactions.push(id);
+					return true;
+				},
 			},
-			editMessageText: () => Promise.resolve(true),
-			setMessageReaction: async (_chat: number, id: number) => {
-				reactions.push(id);
-				return true;
-			},
-		} as unknown as Api;
+		});
 		const sink = makeDeliverySink(api, conv, undefined, 0);
 		sink.onTextDelta("tail");
 		// First send fails inside onDone's flush; the drain retries it.
@@ -342,22 +337,18 @@ describe("delivery", () => {
 
 	test("a failed final edit is retried by the drain, not declared done", async () => {
 		let edits = 0;
-		const msgs: string[] = [];
-		const api = {
-			sendChatAction: () => Promise.resolve(true),
-			sendMessage: async (_chat: number, text: string) => {
-				msgs.push(text);
-				return { message_id: msgs.length };
+		const { api, texts: msgs } = fakeTelegramApi({
+			handlers: {
+				editMessageText: async (_chat: number, id: number, text: string) => {
+					edits++;
+					// Two transient failures — the drain must keep retrying a
+					// stale shown window, not exit on zero unsent sends.
+					if (edits <= 2) throw new Error("transient edit failure");
+					msgs[id - 1] = text;
+					return true;
+				},
 			},
-			editMessageText: async (_chat: number, id: number, text: string) => {
-				edits++;
-				// Two transient failures — the drain must keep retrying a
-				// stale shown window, not exit on zero unsent sends.
-				if (edits <= 2) throw new Error("transient edit failure");
-				msgs[id - 1] = text;
-				return true;
-			},
-		} as unknown as Api;
+		});
 		const sink = makeDeliverySink(api, conv, undefined, 0);
 		sink.onTextDelta("a".repeat(3791));
 		await sleep(0);
@@ -371,24 +362,20 @@ describe("delivery", () => {
 
 	test("a chunk edited to the empty-window ellipsis is not re-edited", async () => {
 		let ellipsisEdits = 0;
-		const msgs: string[] = [];
 		const reactions: number[] = [];
-		const api = {
-			sendChatAction: () => Promise.resolve(true),
-			sendMessage: async (_chat: number, text: string) => {
-				msgs.push(text);
-				return { message_id: msgs.length };
+		const { api, texts: msgs } = fakeTelegramApi({
+			handlers: {
+				editMessageText: async (_chat: number, id: number, text: string) => {
+					if (text === "…") ellipsisEdits++;
+					msgs[id - 1] = text;
+					return true;
+				},
+				setMessageReaction: async (_chat: number, id: number) => {
+					reactions.push(id);
+					return true;
+				},
 			},
-			editMessageText: async (_chat: number, id: number, text: string) => {
-				if (text === "…") ellipsisEdits++;
-				msgs[id - 1] = text;
-				return true;
-			},
-			setMessageReaction: async (_chat: number, id: number) => {
-				reactions.push(id);
-				return true;
-			},
-		} as unknown as Api;
+		});
 		const sink = makeDeliverySink(api, conv, undefined, 0);
 		// Two long status entries (the hint caps at 60 chars) push the body
 		// past the chunk limit, so a second message goes out showing the
@@ -723,26 +710,26 @@ describe("delivery", () => {
 	});
 
 	test("a benign 'message is not modified' edit counts as success — 🫡 still lands", async () => {
-		const msgs: string[] = [];
 		const reactions: Array<{ id: number; emoji: string }> = [];
-		const api = {
-			sendChatAction: () => Promise.resolve(true),
-			sendMessage: async (_chat: number, text: string) => {
-				msgs.push(text);
-				return { message_id: msgs.length };
+		const { api, texts: msgs } = fakeTelegramApi({
+			handlers: {
+				editMessageText: async () => {
+					// Telegram 400 when the edit changes nothing — must not
+					// wedge the drain or skip the end-marker reaction.
+					throw new Error(
+						"Call to 'editMessageText' failed! (400: Bad Request: message is not modified)",
+					);
+				},
+				setMessageReaction: async (
+					_chat: number,
+					id: number,
+					reaction: Array<{ emoji: string }>,
+				) => {
+					reactions.push({ id, emoji: reaction[0]!.emoji });
+					return true;
+				},
 			},
-			editMessageText: async () => {
-				// Telegram 400 when the edit changes nothing — must not
-				// wedge the drain or skip the end-marker reaction.
-				throw new Error(
-					"Call to 'editMessageText' failed! (400: Bad Request: message is not modified)",
-				);
-			},
-			setMessageReaction: async (_chat: number, id: number, reaction: Array<{ emoji: string }>) => {
-				reactions.push({ id, emoji: reaction[0]!.emoji });
-				return true;
-			},
-		} as unknown as Api;
+		});
 		const sink = makeDeliverySink(api, conv, undefined, 0);
 		sink.onTextDelta("a".repeat(3791));
 		await sleep(0);
@@ -762,12 +749,14 @@ describe("delivery", () => {
 		// done), let a stopper clear another window's interval, and resume
 		// typing while a synthesis is still live.
 		const actions: string[] = [];
-		const api = {
-			sendChatAction: async (_chat: number, action: string) => {
-				actions.push(action);
-				return true;
+		const { api } = fakeTelegramApi({
+			handlers: {
+				sendChatAction: async (_chat: number, action: string) => {
+					actions.push(action);
+					return true;
+				},
 			},
-		} as unknown as Api;
+		});
 		const sink = makeDeliverySink(api, conv, undefined, 0, undefined, 2);
 		await sleep(3);
 		expect(actions[0]).toBe("typing"); // construction's immediate ping
@@ -896,33 +885,31 @@ describe("delivery files", () => {
 		const documents: Array<{ caption?: string }> = [];
 		const mediaGroups: Array<{ files: number; captions: Array<string | undefined> }> = [];
 		let groupAttempts = 0;
-		const api = {
-			sendChatAction: () => Promise.resolve(true),
-			sendMessage: async () => ({ message_id: 1 }),
-			editMessageText: async () => true,
-			sendPhoto: async (_chat: number, _photo: unknown, other?: { caption?: string }) => {
-				if (fail?.photo) throw new Error("sendPhoto wedged");
-				photos.push({ ...(other?.caption !== undefined ? { caption: other.caption } : {}) });
-				return { message_id: 10 + photos.length };
+		const fake = fakeTelegramApi({
+			handlers: {
+				sendPhoto: async (_chat: number, _photo: unknown, other?: { caption?: string }) => {
+					if (fail?.photo) throw new Error("sendPhoto wedged");
+					photos.push({ ...(other?.caption !== undefined ? { caption: other.caption } : {}) });
+					return { message_id: 10 + photos.length };
+				},
+				sendDocument: async (_chat: number, _doc: unknown, other?: { caption?: string }) => {
+					if (fail?.document) throw new Error("sendDocument wedged");
+					documents.push({ ...(other?.caption !== undefined ? { caption: other.caption } : {}) });
+					return { message_id: 20 + documents.length };
+				},
+				sendMediaGroup: async (_chat: number, media: Array<{ caption?: string }>) => {
+					groupAttempts++;
+					if (fail?.group === true) throw new Error("sendMediaGroup wedged");
+					if (fail?.group === "timeout") throw new TelegramTimeoutError("sendMediaGroup", 30_000);
+					mediaGroups.push({
+						files: media.length,
+						captions: media.map((m) => m.caption),
+					});
+					return media.map((_, i) => ({ message_id: 30 + mediaGroups.length * 10 + i }));
+				},
 			},
-			sendDocument: async (_chat: number, _doc: unknown, other?: { caption?: string }) => {
-				if (fail?.document) throw new Error("sendDocument wedged");
-				documents.push({ ...(other?.caption !== undefined ? { caption: other.caption } : {}) });
-				return { message_id: 20 + documents.length };
-			},
-			sendMediaGroup: async (_chat: number, media: Array<{ caption?: string }>) => {
-				groupAttempts++;
-				if (fail?.group === true) throw new Error("sendMediaGroup wedged");
-				if (fail?.group === "timeout") throw new TelegramTimeoutError("sendMediaGroup", 30_000);
-				mediaGroups.push({
-					files: media.length,
-					captions: media.map((m) => m.caption),
-				});
-				return media.map((_, i) => ({ message_id: 30 + mediaGroups.length * 10 + i }));
-			},
-			setMessageReaction: async () => true,
-		} as unknown as Api;
-		return { api, photos, documents, mediaGroups, groupAttempts: () => groupAttempts };
+		});
+		return { api: fake.api, photos, documents, mediaGroups, groupAttempts: () => groupAttempts };
 	}
 
 	function pngFile(dir: string): string {
@@ -1214,20 +1201,18 @@ describe("delivery files", () => {
 			writeFileSync(f, "data");
 			let failOnce = true;
 			const sent: number[] = [];
-			const api = {
-				sendChatAction: () => Promise.resolve(true),
-				sendMessage: async () => ({ message_id: 1 }),
-				editMessageText: async () => true,
-				sendDocument: async () => {
-					if (failOnce) {
-						failOnce = false;
-						throw new Error("sendDocument wedged");
-					}
-					sent.push(1);
-					return { message_id: 21 };
+			const { api } = fakeTelegramApi({
+				handlers: {
+					sendDocument: async () => {
+						if (failOnce) {
+							failOnce = false;
+							throw new Error("sendDocument wedged");
+						}
+						sent.push(1);
+						return { message_id: 21 };
+					},
 				},
-				setMessageReaction: async () => true,
-			} as unknown as Api;
+			});
 			const sink = makeDeliverySink(api, conv, undefined, 0);
 			await expect(sink.onFile!({ path: f, filename: "a.txt" })).rejects.toThrow(
 				"sendDocument wedged",

@@ -209,10 +209,7 @@ export interface IntakeEnv {
 	bell(conv: Conversation): TurnSink;
 }
 
-export type FlushEnv = Pick<
-	IntakeEnv,
-	"deps" | "api" | "titleAttempts" | "inbox" | "bell"
->;
+export type FlushEnv = Pick<IntakeEnv, "deps" | "api" | "titleAttempts" | "inbox" | "bell">;
 
 // Assembled per call so a mini-app save (dmGapMinutes) and the
 // late-built reviewer's gate read live config, not boot-time wiring.
@@ -393,7 +390,18 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 					cmd === "/voice" || cmd === "/memory" ? "command" : "current",
 				);
 				if (routed.rolled) void sendRollMarker(env.api, addr.chatId, routed.conv.id);
-				target = routed.conv;
+				// Commands never reach flushRolling's pin, and an unpinned
+				// row defaults personal+included — /memory on and /forget
+				// would run on a sandbox lane as if it were the operator's.
+				// Same class rule as the flush: chat id IS the user id.
+				const cls = deps.configRef.current.operators.includes(addr.chatId) ? "personal" : "guest";
+				target = ensurePersonaClass(
+					deps,
+					routed.conv,
+					cls,
+					cls === "guest" ? true : undefined,
+					() => deps.store.rollDm(addr.chatId, paths.workspace()),
+				);
 			}
 			handled = handleCommand(
 				{
@@ -657,15 +665,36 @@ async function flushRolling(
 		// permissions): the operator's DM lane stays personal; an allowed
 		// user's DM is the standing sandbox — persona guest, off the
 		// record, search-only tools via the persona-driven filter. The
-		// gate already admitted only these two classes; the chat id IS
+		// gate admitted only these two classes at intake; the chat id IS
 		// the user id here.
-		const cls = deps.configRef.current.operators.includes(chatId) ? "personal" : "guest";
-		const pinned = ensurePersonaClass(
-			deps,
-			current,
-			cls,
-			cls === "guest" ? true : undefined,
-			() => deps.store.rollDm(chatId, paths.workspace()),
+		const cfgNow = deps.configRef.current;
+		const cls = cfgNow.operators.includes(chatId)
+			? "personal"
+			: cfgNow.allowedUsers.includes(chatId)
+				? "guest"
+				: null;
+		if (cls === null) {
+			// The gate's admission was intake-time truth — a config edit
+			// that demoted this sender to stranger while the burst
+			// coalesced must not produce a turn (the guest surface
+			// rechecks eligibility the same way). Tombstone the rows so
+			// replay doesn't retry the drop forever.
+			env.inbox.commitBatch(
+				remaining.map((i) => i.updateId),
+				laneKey,
+				() => {},
+			);
+			log.info("dm batch dropped — sender left both lists mid-flight", {
+				chat: chatId,
+				updateIds: remaining.map((i) => i.updateId),
+			});
+			void withTimeout(env.api.sendMessage(chatId, GUEST_REFUSAL), "sendMessage (refusal)").catch(
+				(err: unknown) => log.warn("stranger refusal failed", err, { userId: chatId }),
+			);
+			return;
+		}
+		const pinned = ensurePersonaClass(deps, current, cls, cls === "guest" ? true : undefined, () =>
+			deps.store.rollDm(chatId, paths.workspace()),
 		);
 		admitBatch(
 			env,

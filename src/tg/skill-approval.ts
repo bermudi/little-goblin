@@ -102,7 +102,10 @@ function installProposal(deps: SkillApprovalDeps, skill: string): InstallOutcome
 	}
 	const staging = stagingRoot(deps.workspaceDir);
 	mkdirSync(staging, { recursive: true });
-	const trash = join(staging, `.replaced-approve-${(deps.now?.() ?? new Date()).getTime()}-${skill}`);
+	const trash = join(
+		staging,
+		`.replaced-approve-${(deps.now?.() ?? new Date()).getTime()}-${skill}`,
+	);
 	rmSync(trash, { recursive: true, force: true });
 	renameSync(target, trash);
 	try {
@@ -208,7 +211,10 @@ export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
 			} catch (err) {
 				// The decision already happened — the stamp and the log carry
 				// it; a history append failure never un-decides a tap.
-				log.warn("skill approval history append failed", err, { conversation: conversationId, skill });
+				log.warn("skill approval history append failed", err, {
+					conversation: conversationId,
+					skill,
+				});
 			}
 		};
 
@@ -220,7 +226,11 @@ export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
 				return;
 			}
 			if (!outcome.ok) {
-				log.warn("skill proposal install conflict", { skill, conversation: conversationId, reason: outcome.reason });
+				log.warn("skill proposal install conflict", {
+					skill,
+					conversation: conversationId,
+					reason: outcome.reason,
+				});
 				await stamp(`⚠ skill ${skill} not installed — ${outcome.reason}; approve conversationally`);
 				return;
 			}
@@ -246,7 +256,11 @@ export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
 			return;
 		}
 		if (!outcome.ok) {
-			log.warn("skill proposal discard conflict", { skill, conversation: conversationId, reason: outcome.reason });
+			log.warn("skill proposal discard conflict", {
+				skill,
+				conversation: conversationId,
+				reason: outcome.reason,
+			});
 			await stamp(`⚠ skill ${skill} not discarded — ${outcome.reason}; discard conversationally`);
 			return;
 		}

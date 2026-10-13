@@ -22,7 +22,9 @@ describe("telegram fallback shim", () => {
 	}
 
 	test("initData is the decoded tgWebAppData, byte-exact for the server's HMAC check", () => {
-		mountAt("#tgWebAppData=user%3D%257B%2522id%2522%253A111%257D%26auth_date%3D1760000000%26hash%3Dabc");
+		mountAt(
+			"#tgWebAppData=user%3D%257B%2522id%2522%253A111%257D%26auth_date%3D1760000000%26hash%3Dabc",
+		);
 		installTelegramFallback();
 		expect(window.Telegram?.WebApp.initData).toBe(
 			"user=%7B%22id%22%3A111%7D&auth_date=1760000000&hash=abc",
@@ -33,7 +35,7 @@ describe("telegram fallback shim", () => {
 	test("hash params after a path prefix still parse", () => {
 		mountAt("#k?tgWebAppData=user%3D%257B%2522id%2522%253A222%257D%26hash%3Ddef");
 		installTelegramFallback();
-		expect(window.Telegram?.WebApp.initData).toBe('user=%7B%22id%22%3A222%7D&hash=def');
+		expect(window.Telegram?.WebApp.initData).toBe("user=%7B%22id%22%3A222%7D&hash=def");
 	});
 
 	test("literal `+` decodes as a space, %2B stays a plus — official urlSafeDecode", () => {
@@ -97,8 +99,6 @@ describe("telegram fallback shim", () => {
 		});
 		installTelegramFallback();
 		window.Telegram?.WebApp.ready?.();
-		expect(posted).toEqual([
-			{ data: '{"eventType":"web_app_ready","eventData":""}', target: "*" },
-		]);
+		expect(posted).toEqual([{ data: '{"eventType":"web_app_ready","eventData":""}', target: "*" }]);
 	});
 });

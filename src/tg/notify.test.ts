@@ -142,7 +142,9 @@ describe("skill proposal notice send", () => {
 					chatId,
 					text,
 					...(other?.message_thread_id !== undefined ? { threadId: other.message_thread_id } : {}),
-					...(other?.reply_markup !== undefined ? { keyboard: other.reply_markup.inline_keyboard } : {}),
+					...(other?.reply_markup !== undefined
+						? { keyboard: other.reply_markup.inline_keyboard }
+						: {}),
 				});
 			},
 		} as unknown as Api;

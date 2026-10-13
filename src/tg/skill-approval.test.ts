@@ -219,7 +219,10 @@ describe("skill approval taps", () => {
 			expect(existsSync(join(h.skillsDir, "smoke-test"))).toBe(false);
 			expect(h.edits[0]!.text).toBe("🚫 skill smoke-test discarded — proposal deleted.");
 			expect(h.appends).toEqual([
-				{ conversationId: "dm:42", text: "skill proposal resolved: smoke-test — discarded (deleted)" },
+				{
+					conversationId: "dm:42",
+					text: "skill proposal resolved: smoke-test — discarded (deleted)",
+				},
 			]);
 		} finally {
 			h.cleanup();

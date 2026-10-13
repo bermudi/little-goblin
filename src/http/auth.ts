@@ -26,9 +26,7 @@ export type InitDataRefusal =
 	| "no-user"
 	| "bad-user"
 	| "not-operator";
-export type InitDataResult =
-	| { ok: true; user: InitDataUser }
-	| { ok: false; why: InitDataRefusal };
+export type InitDataResult = { ok: true; user: InitDataUser } | { ok: false; why: InitDataRefusal };
 
 export function validateInitData(
 	initData: string,

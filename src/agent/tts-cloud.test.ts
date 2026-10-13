@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AuthStore } from "../auth.ts";
 import { synthesizeSpeech } from "./tts.ts";
-import { openrouterSpeech } from "./tts-cloud.ts";
+import { logfareSpeech, openrouterSpeech } from "./tts-cloud.ts";
 
 const auth: AuthStore = {
 	resolve: async (name) => {
@@ -112,6 +112,68 @@ describe("openrouterSpeech", () => {
 	});
 });
 
+// Logfare documents the same OpenAI speech wire
+// (https://logfare.ai/docs) — pinned from the docs, unverified live
+// until an operator provisions a logfare auth record.
+describe("logfareSpeech", () => {
+	const logfareCfg = {
+		kind: "logfare" as const,
+		model: "aura-2-en",
+		auth: "logfare",
+	};
+
+	test("posts the speech request and returns the raw audio bytes", async () => {
+		const { fn, last } = fakeFetch(200, MP3);
+		const synth = logfareSpeech(logfareCfg, auth, { fetchFn: fn });
+		const audio = await synth("Say the thing.", options);
+		expect(audio).toEqual(MP3);
+		const req = last();
+		expect(req.url).toBe("https://logfare.ai/v1/audio/speech");
+		expect(req.headers.authorization).toBe("Bearer test-key-material");
+		expect(req.headers["content-type"]).toBe("application/json");
+		expect(JSON.parse(req.body)).toEqual({
+			model: "aura-2-en",
+			input: "Say the thing.",
+			response_format: "mp3",
+		});
+	});
+
+	test("a configured voice rides the body; empty asks for the default", async () => {
+		const { fn, last } = fakeFetch(200, MP3);
+		const synth = logfareSpeech({ ...logfareCfg, voice: "aura-2-asteria-en" }, auth, {
+			fetchFn: fn,
+		});
+		await synth("hi", { ...options, voice: "aura-2-asteria-en" });
+		expect(JSON.parse(last().body)).toMatchObject({ voice: "aura-2-asteria-en" });
+		await synth("hi", options);
+		expect(JSON.parse(last().body).voice).toBeUndefined();
+	});
+
+	test("the error envelope renders as a loud, named error", async () => {
+		const { fn } = fakeFetch(
+			429,
+			JSON.stringify({ error: { code: 429, message: "Rate limit exceeded" } }),
+		);
+		const synth = logfareSpeech(logfareCfg, auth, { fetchFn: fn });
+		await expect(synth("hi", options)).rejects.toThrow(
+			"logfare: HTTP 429 — Rate limit exceeded",
+		);
+	});
+
+	test("a 200 with no bytes fails loud", async () => {
+		const { fn } = fakeFetch(200, "");
+		const synth = logfareSpeech(logfareCfg, auth, { fetchFn: fn });
+		await expect(synth("hi", options)).rejects.toThrow("logfare: empty audio response");
+	});
+
+	test("a resolve failure propagates before the wire", async () => {
+		const { fn, seen } = fakeFetch(200, MP3);
+		const synth = logfareSpeech({ ...logfareCfg, auth: "gone" }, auth, { fetchFn: fn });
+		await expect(synth("hi", options)).rejects.toThrow("no such secret: gone");
+		expect(seen.length).toBe(0);
+	});
+});
+
 describe("synthesizeSpeech openrouter dispatch", () => {
 	test("chunks flow through the cloud synth to the mp3 remux", async () => {
 		const { fn, last } = fakeFetch(200, MP3);
@@ -136,5 +198,22 @@ describe("synthesizeSpeech openrouter dispatch", () => {
 			"openrouter tts needs an auth store",
 		);
 		expect(seen.length).toBe(0);
+	});
+});
+
+describe("synthesizeSpeech logfare dispatch", () => {
+	test("the logfare arm reaches the logfare endpoint through the shared synthesizer", async () => {
+		const { fn, last } = fakeFetch(200, MP3);
+		const audio = await synthesizeSpeech(
+			"One sentence.",
+			{ kind: "logfare", model: "aura-2-en", auth: "logfare" },
+			{
+				auth,
+				fetchFn: fn,
+				remux: async (bytes) => bytes,
+			},
+		);
+		expect(audio).toEqual([MP3]);
+		expect(last().url).toBe("https://logfare.ai/v1/audio/speech");
 	});
 });

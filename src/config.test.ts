@@ -284,6 +284,29 @@ describe("goblin.json5", () => {
 		expect(() => loadConfig()).toThrow();
 	});
 
+	test('image: absent by default, provider must carry a baseUrl, "" clears', () => {
+		const dir = useHome();
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"},openrouter:{kind:"openrouter",auth:"openrouter"}},model:"zai/glm-4.6",operators:[7]`;
+		writeFileSync(join(dir, "goblin.json5"), `${base}}`);
+		expect(loadConfig()!.image).toBeUndefined();
+		writeFileSync(join(dir, "goblin.json5"), `${base},image:{model:"zai/flux-2-dev"}}`);
+		expect(loadConfig()!.image).toEqual({ model: "zai/flux-2-dev" });
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},image:{model:"zai/flux-2-dev",size:"1024x768"}}`,
+		);
+		expect(loadConfig()!.image).toEqual({ model: "zai/flux-2-dev", size: "1024x768" });
+		writeFileSync(join(dir, "goblin.json5"), `${base},image:""}`);
+		expect(loadConfig()!.image).toBeUndefined();
+		// Provider must exist AND carry a baseUrl — the images POST needs one.
+		writeFileSync(join(dir, "goblin.json5"), `${base},image:{model:"other/x"}}`);
+		expect(() => loadConfig()).toThrow("image: custom");
+		writeFileSync(join(dir, "goblin.json5"), `${base},image:{model:"openrouter/flux-2-dev"}}`);
+		expect(() => loadConfig()).toThrow("image: custom");
+		writeFileSync(join(dir, "goblin.json5"), `${base},image:{model:"zai/flux-2-dev",size:"big"}}`);
+		expect(() => loadConfig()).toThrow();
+	});
+
 	test("reviewer: threshold defaults, model is provider-validated, auth required", () => {
 		const dir = useHome();
 		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;

@@ -12,6 +12,7 @@ import type {
 	ThinkingLevel,
 	transcriptionDefaults,
 	transcriptionKinds,
+	ttsCloudDefaults,
 } from "../config.ts";
 
 /** GET config — the config plus the schema's kind lists. */
@@ -22,6 +23,10 @@ export interface ConfigResponse {
 	fetchKinds: readonly string[];
 	transcriptionKinds: typeof transcriptionKinds;
 	transcriptionDefaults: typeof transcriptionDefaults;
+	/** Cloud-TTS defaults (model + auth record) per kind, like
+	 *  transcriptionDefaults — the editor's placeholders track the
+	 *  server instead of hardcoding them. */
+	ttsDefaults: typeof ttsCloudDefaults;
 	/** Blank-auth defaults per kind — one source with the schema. */
 	authDefaults: typeof authDefaults;
 	/** auth.jsonl record names as loaded at boot (sorted, values never). */
@@ -36,12 +41,12 @@ export interface ConfigPostBody {
 	titleModel: string;
 	favorites: string[];
 	thinking: ThinkingLevel;
-	// Blank model/auth on the openrouter arm mean the kind's defaults —
+	// Blank model/auth on a cloud arm mean the kind's defaults —
 	// the schema materializes them server-side like transcription.
 	tts:
 		| ""
 		| { kind: "edge"; voice: string; rate: string | undefined; voices: string[] | undefined }
-		| { kind: "openrouter"; model?: string; auth?: string; voice?: string };
+		| { kind: "openrouter" | "logfare"; model?: string; auth?: string; voice?: string };
 	// Absent/blank fields mean "the kind's default" (model, auth) or
 	// "detect" (language); keywords/engine/weights are whistle-only and
 	// round-tripped untouched so a page save never drops hand edits.

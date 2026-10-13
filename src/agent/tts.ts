@@ -4,7 +4,7 @@ import type { AuthStore } from "../auth.ts";
 import type { TtsConfig } from "../config.ts";
 import { log } from "../log.ts";
 import { boundedRunBinary, spawnProc } from "../proc.ts";
-import { openrouterSpeech } from "./tts-cloud.ts";
+import { logfareSpeech, openrouterSpeech } from "./tts-cloud.ts";
 
 const CHUNK_LIMIT = 10_000;
 const OUTPUT_FORMAT = "webm-24khz-16bit-mono-opus";
@@ -611,17 +611,17 @@ function oggRemuxer(inputFormat: string, codecArgs: string[]): AudioRemuxer {
 	};
 }
 
-// Edge's webm/opus stream-copies; openrouter's mp3 re-encodes to opus.
+// Edge's webm/opus stream-copies; the cloud kinds' mp3 re-encodes to opus.
 const remuxWebmOgg = oggRemuxer("webm", ["-c:a", "copy"]);
 const remuxMp3Ogg = oggRemuxer("mp3", ["-ac", "1", "-b:a", "48k", "-c:a", "libopus"]);
 
 // Injectable seams — tests fake the synthesizer/remux per chunk and the
-// fetch behind the openrouter kind; production fills the defaults.
+// fetch behind the cloud kinds; production fills the defaults.
 export interface SpeechDeps {
 	synthesize?: ChunkSynthesizer;
 	remux?: AudioRemuxer;
-	// openrouter resolves its key lazily at the point of use, like every
-	// other provider — the resolved key never leaves the engine.
+	// Cloud kinds resolve their key lazily at the point of use, like
+	// every other provider — the resolved key never leaves the engine.
 	auth?: AuthStore;
 	fetchFn?: typeof fetch;
 	chunkLimit?: number;
@@ -634,6 +634,10 @@ function defaultSynthesizer(config: TtsConfig, deps: SpeechDeps): ChunkSynthesiz
 		case "openrouter": {
 			if (deps.auth === undefined) throw new Error("openrouter tts needs an auth store");
 			return openrouterSpeech(config, deps.auth, { fetchFn: deps.fetchFn });
+		}
+		case "logfare": {
+			if (deps.auth === undefined) throw new Error("logfare tts needs an auth store");
+			return logfareSpeech(config, deps.auth, { fetchFn: deps.fetchFn });
 		}
 	}
 }
@@ -649,7 +653,7 @@ export async function synthesizeSpeech(
 	const remux = deps.remux ?? (config.kind === "edge" ? remuxWebmOgg : remuxMp3Ogg);
 	// One sniff per reply, applied to every chunk — replies are
 	// monolingual in practice, and a per-chunk flip would stutter. Edge
-	// only: openrouter voice ids carry no language to cast on.
+	// only: cloud voice ids carry no language to cast on.
 	const voice =
 		config.kind === "edge" ? pickVoice(text, config.voice, config.voices) : (config.voice ?? "");
 	const options = {
@@ -661,7 +665,7 @@ export async function synthesizeSpeech(
 	const audio: Uint8Array[] = [];
 	log.info("speech synthesis started", {
 		provider: config.kind,
-		...(config.kind === "openrouter" ? { model: config.model } : {}),
+		...(config.kind !== "edge" ? { model: config.model } : {}),
 		voice,
 		...(config.kind === "edge" && voice !== config.voice ? { defaultVoice: config.voice } : {}),
 		chars: text.length,
@@ -674,7 +678,7 @@ export async function synthesizeSpeech(
 	} catch (err) {
 		log.warn("speech synthesis failed", err, {
 			provider: config.kind,
-			...(config.kind === "openrouter" ? { model: config.model } : {}),
+			...(config.kind !== "edge" ? { model: config.model } : {}),
 			voice,
 			completedChunks: audio.length,
 		});

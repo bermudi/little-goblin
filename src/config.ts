@@ -282,6 +282,7 @@ export const authDefaults = {
 	firecrawl: "firecrawl",
 	parallel: "parallel",
 	openrouter: "openrouter",
+	logfare: "logfare",
 } as const;
 
 // Single source: config.test.ts pins this array against the schema
@@ -338,6 +339,20 @@ export const visionConfigSchema = z.object({
 });
 export type VisionConfig = z.infer<typeof visionConfigSchema>;
 
+// Image generation behind the generate_image tool — absent = off.
+// model is a "<provider>/<model-id>" ref whose provider must carry a
+// baseUrl (openai-compatible/responses): the call is the OpenAI images
+// shape, POST {baseUrl}/images/generations. size is a default for the
+// tool's calls ("WxH" — logfare maps it to width/height upstream).
+export const imageConfigSchema = z.object({
+	model: z.string().min(1),
+	size: z
+		.string()
+		.regex(/^\d{2,5}x\d{2,5}$/, 'size must be "WxH" like "1024x1024"')
+		.optional(),
+});
+export type ImageConfig = z.infer<typeof imageConfigSchema>;
+
 // In-process tool composition behind the script tool — absent = off
 // (design/tools.md → Scripting). maxCalls bounds nested tool calls per
 // script; absent falls back to the default at the wiring site.
@@ -348,6 +363,14 @@ export type ScriptingConfig = z.infer<typeof scriptingConfigSchema>;
 
 // Edge read-aloud: no auth, unofficial, can break — ffmpeg is the only dependency.
 export const DEFAULT_TTS_VOICE = "en-US-AriaNeural";
+
+// Cloud TTS kinds share one request shape (OpenAI's speech POST) and
+// differ by endpoint and defaults — served to the settings UI so its
+// placeholders track the server instead of hardcoding per kind.
+export const ttsCloudDefaults = {
+	openrouter: { model: "fish-audio/s2.1-pro-free:free", auth: authDefaults.openrouter },
+	logfare: { model: "aura-2-en", auth: authDefaults.logfare },
+} as const;
 
 // Delegation to external harnesses via herdr — absent = no delegate
 // tool. Harness names double as herdr agent-name prefixes (hence the
@@ -487,6 +510,14 @@ export const system1ConfigSchema = z.object({
 });
 export type System1Config = z.infer<typeof system1ConfigSchema>;
 
+const cloudTtsSchema = (kind: keyof typeof ttsCloudDefaults) =>
+	z.object({
+		kind: z.literal(kind),
+		model: z.string().min(1).default(ttsCloudDefaults[kind].model),
+		auth: z.string().min(1).default(ttsCloudDefaults[kind].auth),
+		voice: z.string().trim().min(1).optional(),
+	});
+
 export const ttsConfigSchema = z.discriminatedUnion("kind", [
 	z.object({
 		kind: z.literal("edge"),
@@ -499,17 +530,15 @@ export const ttsConfigSchema = z.discriminatedUnion("kind", [
 		// reply's language, falling back to `voice`.
 		voices: z.array(z.string().min(1)).optional(),
 	}),
-	// OpenRouter's TTS endpoint (design/telegram.md → TTS) — one POST
-	// shape, the model field picks the upstream. voice is the upstream's
-	// voice id (Fish: a voice-library hex id); absent = the model's
-	// default voice. There is no language cast: upstream ids carry no
-	// language prefix to match on.
-	z.object({
-		kind: z.literal("openrouter"),
-		model: z.string().min(1).default("fish-audio/s2.1-pro-free:free"),
-		auth: z.string().min(1).default(authDefaults.openrouter),
-		voice: z.string().trim().min(1).optional(),
-	}),
+	// Cloud speech endpoints (design/telegram.md → TTS) — one POST shape
+	// (OpenAI's /audio/speech: model, input, voice?, response_format),
+	// the model field picks the upstream. voice is the upstream's voice
+	// id (Fish: a voice-library hex id; Aura: aura-2-<name>-en); absent =
+	// the model's default voice. There is no language cast: upstream ids
+	// carry no language prefix to match on.
+	cloudTtsSchema("openrouter"),
+	// Logfare's TTS catalog is Deepgram Aura — aura-2-en today.
+	cloudTtsSchema("logfare"),
 ]);
 export type TtsConfig = z.infer<typeof ttsConfigSchema>;
 
@@ -525,6 +554,7 @@ export const transcriptionKinds = [
 	"elevenlabs",
 	"gemini",
 	"mimo",
+	"logfare",
 ] as const;
 
 // Cloud-kind defaults — model is the UI's placeholder, auth defaults to
@@ -538,6 +568,8 @@ export const transcriptionDefaults = {
 	elevenlabs: { model: "scribe_v2", auth: "elevenlabs" },
 	gemini: { model: "gemini-flash-latest", auth: "gemini" },
 	mimo: { model: "xiaomi/mimo-v2.6-flash", auth: "openrouter" },
+	// Logfare's transcription catalog is Whisper and Deepgram Nova.
+	logfare: { model: "whisper-large-v3-turbo", auth: "logfare" },
 } as const;
 
 const transcriptionLanguage = z
@@ -545,7 +577,7 @@ const transcriptionLanguage = z
 	.regex(/^[a-z]{2}$/, 'language must be an ISO-639-1 code like "es"');
 
 const cloudTranscriptionSchema = (
-	kind: "groq" | "openai" | "openrouter" | "mistral" | "elevenlabs" | "gemini" | "mimo",
+	kind: "groq" | "openai" | "openrouter" | "mistral" | "elevenlabs" | "gemini" | "mimo" | "logfare",
 ) =>
 	z.object({
 		kind: z.literal(kind),
@@ -572,6 +604,7 @@ export const transcriptionSchema = z.union([
 	cloudTranscriptionSchema("elevenlabs"),
 	cloudTranscriptionSchema("gemini"),
 	cloudTranscriptionSchema("mimo"),
+	cloudTranscriptionSchema("logfare"),
 ]);
 
 // Chain-entry kinds for search/fetch builders — config.test.ts pins
@@ -653,6 +686,12 @@ const configSchema = z
 		// Live-read per turn — changes apply without a restart.
 		vision: z
 			.union([visionConfigSchema, z.literal("")])
+			.transform((v) => (v === "" ? undefined : v))
+			.optional(),
+		// Same live-read gate as vision (hand-edited only — the mini app
+		// round-trips it through the merge untouched).
+		image: z
+			.union([imageConfigSchema, z.literal("")])
 			.transform((v) => (v === "" ? undefined : v))
 			.optional(),
 		// One entry or an ordered fallback chain (first is primary). Only
@@ -757,6 +796,7 @@ const configSchema = z
 			["titleModel", cfg.titleModel],
 			["reviewer.model", cfg.reviewer?.model],
 			["vision.model", cfg.vision?.model],
+			["image.model", cfg.image?.model],
 		] as const) {
 			if (ref === undefined) continue;
 			let provider: string;
@@ -775,6 +815,25 @@ const configSchema = z
 					code: "custom",
 					path: path.split("."),
 					message: "model names a provider which is not in providers",
+				});
+			}
+		}
+		// The image call POSTs to {baseUrl}/images/generations — only
+		// openai-compatible/responses carry one. A malformed ref was
+		// already reported above; don't re-throw here.
+		if (cfg.image) {
+			let provider: string;
+			try {
+				provider = splitModelRef(cfg.image.model).provider;
+			} catch {
+				return;
+			}
+			const p = cfg.providers[provider];
+			if (p !== undefined && !("baseUrl" in p)) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["image", "model"],
+					message: `provider "${provider}" has no baseUrl — image calls need openai-compatible or responses`,
 				});
 			}
 		}

@@ -751,6 +751,7 @@ export const GUEST_CHANNEL_EXCLUDED: ReadonlySet<string> = new Set([
 	"note",
 	"speak",
 	"send_file",
+	"generate_image",
 ]);
 
 // Hard toolset exclusion, applied at assembly (index.ts makeTools):

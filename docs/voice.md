@@ -37,6 +37,7 @@ transcription: { kind: "elevenlabs" }, // scribe_v2
 transcription: { kind: "gemini" },     // gemini-flash-latest
 transcription: { kind: "mimo" },       // xiaomi/mimo-v2.6-flash, via openrouter
 transcription: { kind: "openrouter", model: "elevenlabs/scribe-v2" }, // the STT catalog
+transcription: { kind: "logfare" },    // whisper-large-v3-turbo; model: "nova-3" also works
 ```
 
 Each kind defaults its `model` and its `auth` (the `auth.jsonl` record
@@ -110,6 +111,15 @@ is edge-only — upstream voice ids carry no language to match on, so one
 voice speaks everything (Fish S2 is multilingual on its own). OpenRouter
 returns mp3 that must be re-encoded to ogg/opus, so the boot ffmpeg probe
 additionally requires the `libopus` encoder for this kind.
+
+`kind: "logfare"` speaks through Logfare's speech endpoint — the same
+request shape, a `logfare` key in `auth.jsonl`, and its catalog is
+Deepgram Aura (`aura-2-en` by default; voice ids look like
+`aura-2-asteria-en`).
+
+```json5
+tts: { kind: "logfare", model: "aura-2-en", voice: "aura-2-asteria-en" },
+```
 
 Three ways to hear the bot:
 

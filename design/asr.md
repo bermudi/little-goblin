@@ -17,7 +17,7 @@ layer → Transcription, design/tools.md). This doc owns the engine layer.
 
 ### Engine interface
 
-One interface, eight kinds. Every engine is a function from a prepared
+One interface, nine kinds. Every engine is a function from a prepared
 file to `{text, language?}`; the orchestrator (segmentation, silence
 semantics, logging) is shared and never sees a provider SDK:
 
@@ -72,6 +72,7 @@ Kinds (`zod` discriminated union in `config.ts`):
 | `elevenlabs` | `scribe_v2` | `elevenlabs` | multipart `POST api.elevenlabs.io/v1/speech-to-text` | 90+, detected |
 | `gemini` | `gemini-flash-latest` | `gemini` | REST `generateContent` with inline audio + verbatim-transcription prompt | per model |
 | `mimo` | `xiaomi/mimo-v2.6-flash` | `openrouter` | OpenRouter chat completions with `input_audio` + transcription prompt | per model |
+| `logfare` | `whisper-large-v3-turbo` | `logfare` | multipart `POST logfare.ai/v1/audio/transcriptions` | 99, detected |
 
 - `auth` optional on cloud kinds, defaulting to the kind name — the
   auth.jsonl record the operator is expected to add (`groq` precedent).
@@ -93,14 +94,17 @@ Kinds (`zod` discriminated union in `config.ts`):
   choice.
 - Optional `language` passthrough on every kind (ISO-639-1; whistle's
   enum, elevenlabs also accepts 639-3). Omitted = detect everywhere.
-- **Unverified:** `gemini`, `mimo`, and `mistral` default models are
-  unverified until a first live call. OpenRouter warns ~60 s upstream
-  processing per request — long files prefer whistle/groq.
+- **Unverified:** `gemini`, `mimo`, `mistral`, and `logfare` are
+  doc-pinned, not live-probed (no local key at implementation time).
+  Logfare is an OpenAI-compatible relay — its docs note requests may be
+  logged (PII-scrubbed) for eval, so it is not the kind to pick for
+  audio you want kept off third-party disks. OpenRouter warns ~60 s
+  upstream processing per request — long files prefer whistle/groq.
 
 ### The two adapter families
 
-**OpenAI-compatible multipart** (groq, openai, mistral): one fetch
-implementation, three base URLs. Fields `file`, `model`, `language?`;
+**OpenAI-compatible multipart** (groq, openai, mistral, logfare): one fetch
+implementation, four base URLs. Fields `file`, `model`, `language?`;
 `Authorization: Bearer <key>`; response `{"text": …}` (groq's
 verbose_json adds `language: "English"` — full words, not codes — and
 `duration`; pass `response_format: json` for the minimal shape).
@@ -241,6 +245,10 @@ Probed live 2026-10-09; the test fixtures copy these bodies exactly.
 
 # whistle engine: stdout = one JSON line {"text","language","ttft_ms","decode_tps"};
 # errors: exit 1, stderr one-liner ("audio limit is 30 s", "cannot read X (RIFF WAV)", "cannot load …: unreadable")
+
+# logfare (doc-pinned, unverified live — no key at implementation time)
+# POST logfare.ai/v1/audio/transcriptions, Bearer, multipart {file, model,
+# language?} → {"text": …}; catalog: whisper-large-v3-turbo, nova-3
 ```
 
 Gemini (`generativelanguage.googleapis.com/v1beta/models/<model>:generateContent`,

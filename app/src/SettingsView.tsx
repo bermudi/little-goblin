@@ -646,6 +646,7 @@ export function SettingsView({
 		transcription: readonly TranscriptionKind[];
 		authDefaults: ConfigResponse["authDefaults"];
 		trDefaults: ConfigResponse["transcriptionDefaults"];
+		ttsDefaults: ConfigResponse["ttsDefaults"];
 	} | null>(null);
 	const [authNames, setAuthNames] = useState<string[]>([]);
 	const [etag, setEtag] = useState("");
@@ -733,6 +734,7 @@ export function SettingsView({
 					transcription: data.transcriptionKinds,
 					authDefaults: data.authDefaults,
 					trDefaults: data.transcriptionDefaults,
+					ttsDefaults: data.ttsDefaults,
 				});
 				setAuthNames(data.authNames);
 			},
@@ -1171,7 +1173,7 @@ export function SettingsView({
 							<>
 								<Row
 									label="Engine"
-									cap="Edge runs free and unofficial on this machine's ffmpeg; openrouter rides your key through its speech endpoint."
+									cap="Edge runs free and unofficial on this machine's ffmpeg; openrouter and logfare ride their keys through an OpenAI-shaped speech endpoint."
 								>
 									<select
 										className="mono"
@@ -1187,26 +1189,33 @@ export function SettingsView({
 									>
 										<option value="edge">edge</option>
 										<option value="openrouter">openrouter</option>
+										<option value="logfare">logfare</option>
 									</select>
 								</Row>
-								{draft.tts.kind === "openrouter" && (
+								{draft.tts.kind !== "edge" && (
 									<>
 										<Field
 											label="Model"
 											value={draft.tts.model}
 											onChange={(v) => patchTts({ model: v })}
-											placeholder="fish-audio/s2.1-pro-free:free"
+											placeholder={kinds?.ttsDefaults[draft.tts.kind].model}
 											mono
-											cap="Blank uses fish-audio/s2.1-pro-free:free."
+											cap={`Blank uses ${kinds?.ttsDefaults[draft.tts.kind].model ?? "the kind's default"}.`}
 										/>
 										<Field
 											label="Secret name"
 											value={draft.tts.auth}
 											onChange={(v) => patchTts({ auth: v })}
-											placeholder="openrouter — in auth.jsonl"
+											placeholder={`${kinds?.ttsDefaults[draft.tts.kind].auth ?? "auth"} — in auth.jsonl`}
 											cap={
-												authWarn(draft.tts.auth.trim() || "openrouter", authNames) ??
-												(draft.tts.auth.trim() === "" ? "Blank uses openrouter." : undefined)
+												authWarn(
+													draft.tts.auth.trim() ||
+														(kinds?.ttsDefaults[draft.tts.kind].auth ?? ""),
+													authNames,
+												) ??
+												(draft.tts.auth.trim() === ""
+													? `Blank uses ${kinds?.ttsDefaults[draft.tts.kind].auth ?? "the kind's record"}.`
+													: undefined)
 											}
 											mono
 											list={AUTH_DL}
@@ -1222,7 +1231,9 @@ export function SettingsView({
 									cap={
 										draft.tts.kind === "edge"
 											? "Default for /voice mode, the speaker button, and the speak tool — an alternate matching the reply's language wins; this speaks when the language is unclear or none matches."
-											: "The upstream voice id — a Fish voice-library hex id for fish-audio models. Blank speaks the model's default voice."
+											: draft.tts.kind === "openrouter"
+												? "The upstream voice id — a Fish voice-library hex id for fish-audio models. Blank speaks the model's default voice."
+												: "The upstream voice id — an Aura voice like aura-2-asteria-en for logfare. Blank speaks the model's default voice."
 									}
 								/>
 								{draft.tts.kind === "edge" && (

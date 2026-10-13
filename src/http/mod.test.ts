@@ -1351,6 +1351,7 @@ describe("transcription config", () => {
 			const body = (await loaded.json()) as {
 				transcriptionKinds: string[];
 				transcriptionDefaults: Record<string, { model: string; auth: string }>;
+				ttsDefaults: Record<string, { model: string; auth: string }>;
 				authDefaults: Record<string, string>;
 				authNames: string[];
 			};
@@ -1359,6 +1360,13 @@ describe("transcription config", () => {
 				model: "xiaomi/mimo-v2.6-flash",
 				auth: "openrouter",
 			});
+			// Logfare rides the shared cloud defaults like every other kind.
+			expect(body.transcriptionKinds).toContain("logfare");
+			expect(body.transcriptionDefaults.logfare).toEqual({
+				model: "whisper-large-v3-turbo",
+				auth: "logfare",
+			});
+			expect(body.ttsDefaults.logfare).toEqual({ model: "aura-2-en", auth: "logfare" });
 			// The blank-auth defaults ride the same GET — one source with
 			// the schema — and names arrive bare and sorted, never values.
 			expect(body.authDefaults.brave).toBe("brave");

@@ -24,6 +24,7 @@ import {
 	elevenlabsEngine,
 	geminiEngine,
 	groqEngine,
+	logfareEngine,
 	mimoEngine,
 	mistralEngine,
 	openaiEngine,
@@ -95,6 +96,8 @@ export function speechEngine(
 			return geminiEngine(cfg, auth, deps);
 		case "mimo":
 			return mimoEngine(cfg, auth, deps);
+		case "logfare":
+			return logfareEngine(cfg, auth, deps);
 	}
 }
 

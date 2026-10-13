@@ -7,6 +7,7 @@ import {
 	elevenlabsEngine,
 	geminiEngine,
 	groqEngine,
+	logfareEngine,
 	mimoEngine,
 	mistralEngine,
 	openaiEngine,
@@ -245,6 +246,66 @@ describe("mistralEngine", () => {
 		await expect(failing.transcribe(voiceFile())).rejects.toThrow(
 			"mistral: HTTP 401 — Invalid API Key",
 		);
+	});
+});
+
+// Logfare documents the OpenAI transcriptions wire
+// (https://logfare.ai/docs) — pinned here from the docs; the fixture is
+// unverified live until an operator provisions a logfare auth record
+// (same caveat as gemini on landing).
+describe("logfareEngine", () => {
+	test("posts multipart with the resolved key and returns the text", async () => {
+		const { fn, last } = fakeFetch(200, JSON.stringify({ text: "call me back" }));
+		const engine = logfareEngine(
+			{ kind: "logfare", model: "whisper-large-v3-turbo", auth: "logfare" },
+			auth,
+			{ fetchFn: fn },
+		);
+		expect((await engine.transcribe(voiceFile())).text).toBe("call me back");
+		const req = last();
+		expect(req.url).toBe("https://logfare.ai/v1/audio/transcriptions");
+		expect(req.headers.authorization).toBe("Bearer test-key-material");
+		expect(req.body.get("model")).toBe("whisper-large-v3-turbo");
+		const uploaded = req.body.get("file");
+		expect(uploaded).toBeInstanceOf(File);
+		expect((uploaded as File).name).toBe("v.ogg");
+	});
+
+	test("language config rides the form when set", async () => {
+		const { fn, last } = fakeFetch(200, JSON.stringify({ text: "hola" }));
+		const engine = logfareEngine(
+			{ kind: "logfare", model: "nova-3", auth: "logfare", language: "es" },
+			auth,
+			{ fetchFn: fn },
+		);
+		await engine.transcribe(voiceFile());
+		expect(last().body.get("language")).toBe("es");
+	});
+
+	test("an api error renders its message with the provider named", async () => {
+		const { fn } = fakeFetch(
+			401,
+			JSON.stringify({ error: { message: "Invalid API Key", code: "invalid_api_key" } }),
+		);
+		const engine = logfareEngine(
+			{ kind: "logfare", model: "whisper-large-v3-turbo", auth: "logfare" },
+			auth,
+			{ fetchFn: fn },
+		);
+		await expect(engine.transcribe(voiceFile())).rejects.toThrow(
+			"logfare: HTTP 401 — Invalid API Key",
+		);
+	});
+
+	test("a missing auth record propagates before any request", async () => {
+		const { fn, seen } = fakeFetch(200, JSON.stringify({ text: "x" }));
+		const engine = logfareEngine(
+			{ kind: "logfare", model: "whisper-large-v3-turbo", auth: "gone" },
+			auth,
+			{ fetchFn: fn },
+		);
+		await expect(engine.transcribe(voiceFile())).rejects.toThrow("no such secret: gone");
+		expect(seen.length).toBe(0);
 	});
 });
 

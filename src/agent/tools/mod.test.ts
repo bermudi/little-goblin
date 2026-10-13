@@ -10,6 +10,7 @@ import {
 	toolNames,
 	type DelegateToolDeps,
 	type HistorySearchDeps,
+	type ImageToolDeps,
 	type MailToolDeps,
 	type VisionToolDeps,
 } from "./mod.ts";
@@ -24,47 +25,51 @@ describe("toolNames ↔ makeTools", () => {
 				for (const memory of [false, true]) {
 					for (const transcribe of [false, true]) {
 						for (const vision of [false, true]) {
-							test(`voice=${voice}, program=${program}, file=${file}, memory=${memory}, transcribe=${transcribe}, vision=${vision}`, () => {
-								const tools = makeTools({
-									cwd: "/tmp",
-									voice: voice
-										? { synthesize: async () => [], deliver: async () => {} }
-										: undefined,
-									program: program
-										? {
-												programs,
-												chatId: 1,
-												threadId: null,
-												publicUrl: () => "https://g.ts.net",
-												sendPrivate: async () => {},
-											}
-										: undefined,
-									file: file ? { deliver: async () => {} } : undefined,
-									memory: memory
-										? {
-												client: memoryClient,
-												maxTokens: 256,
-												budget: "low",
-												isExcluded: () => false,
-												noteRecall: () => {},
-											}
-										: undefined,
-									transcribe: transcribe ? { transcribe: async () => null } : undefined,
-									vision: vision ? ({} as VisionToolDeps) : undefined,
+							for (const image of [false, true]) {
+								test(`voice=${voice}, program=${program}, file=${file}, memory=${memory}, transcribe=${transcribe}, vision=${vision}, image=${image}`, () => {
+									const tools = makeTools({
+										cwd: "/tmp",
+										voice: voice
+											? { synthesize: async () => [], deliver: async () => {} }
+											: undefined,
+										program: program
+											? {
+													programs,
+													chatId: 1,
+													threadId: null,
+													publicUrl: () => "https://g.ts.net",
+													sendPrivate: async () => {},
+												}
+											: undefined,
+										file: file ? { deliver: async () => {} } : undefined,
+										memory: memory
+											? {
+													client: memoryClient,
+													maxTokens: 256,
+													budget: "low",
+													isExcluded: () => false,
+													noteRecall: () => {},
+												}
+											: undefined,
+										transcribe: transcribe ? { transcribe: async () => null } : undefined,
+										vision: vision ? ({} as VisionToolDeps) : undefined,
+										image: image ? ({} as ImageToolDeps) : undefined,
+									});
+									expect(toolNames(tools)).toEqual([
+										"read_file",
+										"write_file",
+										"edit_file",
+										"bash",
+										...(voice ? ["speak"] : []),
+										...(transcribe ? ["transcribe"] : []),
+										...(vision ? ["vision"] : []),
+										...(image ? ["generate_image"] : []),
+										...(program ? ["program"] : []),
+										...(file ? ["send_file"] : []),
+										...(memory ? ["memory_search"] : []),
+									]);
 								});
-								expect(toolNames(tools)).toEqual([
-									"read_file",
-									"write_file",
-									"edit_file",
-									"bash",
-									...(voice ? ["speak"] : []),
-									...(transcribe ? ["transcribe"] : []),
-									...(vision ? ["vision"] : []),
-									...(program ? ["program"] : []),
-									...(file ? ["send_file"] : []),
-									...(memory ? ["memory_search"] : []),
-								]);
-							});
+							}
 						}
 					}
 				}
@@ -114,6 +119,7 @@ describe("toolNames ↔ makeTools", () => {
 			history: {} as unknown as HistorySearchDeps,
 			// Mounted so the wire-schema invariant covers vision too.
 			vision: {} as unknown as VisionToolDeps,
+			image: {} as unknown as ImageToolDeps,
 		});
 		for (const [name, t] of Object.entries(tools)) {
 			const schema = (t as unknown as { inputSchema?: unknown }).inputSchema;

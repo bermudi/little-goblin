@@ -183,6 +183,7 @@ describe("filterGuestTools — the sandbox invariant", () => {
 		fetch: 1,
 		history_search: 1,
 		sandbox: 1,
+		generate_image: 1,
 	};
 	const conv = (persona: "personal" | "guest"): Conversation =>
 		({
@@ -218,6 +219,7 @@ describe("filterGuestTools — the sandbox invariant", () => {
 			"history_search",
 			"speak",
 			"send_file",
+			"generate_image",
 		]) {
 			expect(kept).not.toContain(gone);
 		}

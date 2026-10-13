@@ -233,11 +233,14 @@ async function boot() {
 			: config.transcription?.kind === "whistle"
 				? "transcription (whistle)"
 				: "transcription";
-		// Edge's remux is a stream copy; openrouter's mp3 must re-encode
-		// to opus, so a binary without libopus would die per chunk.
+		// Edge's remux is a stream copy; the cloud kinds' mp3 must
+		// re-encode to opus, so a binary without libopus would die per
+		// chunk.
 		const ok = await probeFfmpeg(
 			feature,
-			config.tts !== false && config.tts?.kind === "openrouter" ? "libopus" : undefined,
+			config.tts !== false && config.tts !== undefined && config.tts.kind !== "edge"
+				? "libopus"
+				: undefined,
 		);
 		if (!ok && config.tts) {
 			configRef.ttsDown = true;
@@ -472,6 +475,18 @@ async function boot() {
 				note: { notes, projects, conversation: conv.id, projectId: conv.projectId },
 				// Threads are process-global; a model change drops them on the next call.
 				vision: visionDepsFor(conv),
+				// Same live-read gate as vision — the image block mounts
+				// generate_image; Telegram channels deliver each image
+				// inline, other channels save + report paths.
+				image:
+					configRef.current.image !== undefined
+						? {
+								configRef,
+								auth,
+								conversation: conv.id,
+								...(deliverFile ? { deliver: deliverFile } : {}),
+							}
+						: undefined,
 				// Live-read like vision/search: the sandbox block mounts the
 				// tool for any channel (guest personas are filtered out below).
 				sandbox:

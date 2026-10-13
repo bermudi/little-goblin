@@ -14,7 +14,10 @@ agent loop.
     `responses` kind over `@ai-sdk/openai`) — the coding-plan door that
     carries documents in tool results (see Web access). Daily driver.
     The `openai-compatible` kind (chat completions) stays available for
-    any OpenAI-shaped relay.
+    any OpenAI-shaped relay — Logfare included (`logfare.ai/v1`, the same
+    `logfare` auth record that serves its speech/transcription/images
+    kinds in asr.md, telegram.md → TTS, and tools.md → generate_image;
+    its docs note requests may be PII-scrubbed and logged for eval).
   - `openrouter` — `@openrouter/ai-sdk-provider`.
   - `codex` — `ai-sdk-provider-codex-cli` exists (ChatGPT Plus/Pro auth via
     `codex` CLI login) but wraps the CLI's own agent loop — no caller tools,
@@ -200,7 +203,7 @@ agent loop.
   job — same engine, same segmentation, called deliberately.
   When `transcription` is configured, intake transcribes the saved
   recording once and stores the text inside the `data-attachment` part
-  (the engine layer — whistle local default plus seven cloud kinds
+  (the engine layer — whistle local default plus eight cloud kinds
   behind one `SpeechEngine` interface — is designed in
   [`asr.md`](asr.md)).
   Eager, not per-turn: the transcript is durable history, and

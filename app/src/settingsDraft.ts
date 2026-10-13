@@ -79,9 +79,9 @@ export interface ProvDraft {
 	baseUrl: string;
 	auth: string;
 }
-export type TtsKind = "edge" | "openrouter";
+export type TtsKind = "edge" | "openrouter" | "logfare";
 // Widened like TrDraft: edge-only fields (rate/voices) and
-// openrouter-only fields (model/auth) all ride the draft so a save
+// cloud-only fields (model/auth) all ride the draft so a save
 // never drops a hand edit; bodyFromDraft emits each kind's own arm.
 export interface TtsDraft {
 	kind: TtsKind;
@@ -260,8 +260,9 @@ export function draftFromConfig(c: Config): { draft: SettingsDraft; providers: P
 						voice: c.tts.voice || "",
 						rate: c.tts.kind === "edge" ? c.tts.rate || "" : "",
 						voices: c.tts.kind === "edge" ? [...(c.tts.voices ?? [])] : [],
-						model: c.tts.kind === "openrouter" ? c.tts.model : "",
-						auth: c.tts.kind === "openrouter" ? c.tts.auth : "",
+						// Cloud arms share {model, auth, voice} — edge is the odd one.
+						model: c.tts.kind !== "edge" ? c.tts.model : "",
+						auth: c.tts.kind !== "edge" ? c.tts.auth : "",
 					},
 		transcription: c.transcription ? transcriptionDraft(c.transcription) : null,
 		vision: c.vision
@@ -419,7 +420,7 @@ export function bodyFromDraft(
 							voices: draft.tts.voices.length ? [...draft.tts.voices] : undefined,
 						}
 					: {
-							kind: "openrouter",
+							kind: draft.tts.kind,
 							// Blanks mean the kind's defaults — materialized server-side.
 							...(draft.tts.model.trim() ? { model: draft.tts.model.trim() } : {}),
 							...(draft.tts.auth.trim() ? { auth: draft.tts.auth.trim() } : {}),

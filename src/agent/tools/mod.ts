@@ -12,6 +12,7 @@ import { bashTool } from "./bash.ts";
 import { editFileTool } from "./edit.ts";
 import { fetchTool } from "./fetch.ts";
 import { historySearchTool, type HistorySearchDeps } from "./history.ts";
+import { imageTool, type ImageToolDeps } from "./image.ts";
 import { mailTool } from "./mail.ts";
 import { memorySearchTool } from "./memory.ts";
 import { noteTool, type NoteToolDeps } from "./note.ts";
@@ -57,6 +58,7 @@ export interface TranscribeToolDeps {
 }
 
 export type { VisionToolDeps };
+export type { ImageToolDeps };
 
 export type { DelegateToolDeps };
 export type { HistorySearchDeps };
@@ -85,6 +87,7 @@ export interface MakeToolsOptions {
 	history?: HistorySearchDeps | undefined;
 	note?: NoteToolDeps | undefined;
 	vision?: VisionToolDeps | undefined;
+	image?: ImageToolDeps | undefined;
 	sandbox?: SandboxToolDeps | undefined;
 	// App-channel gate: true mounts the interface tool (design/app.md →
 	// Intelligent UI). Boolean, not a dep bag — ui needs nothing.
@@ -105,6 +108,7 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		history,
 		note,
 		vision,
+		image,
 		sandbox,
 		ui,
 	} = options;
@@ -124,6 +128,9 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		// transcribe/search. The vision model never has to be the
 		// conversation's model: read_file's image note points here.
 		...(vision ? { vision: visionTool(cwd, vision) } : {}),
+		// generate_image rides its config block — same per-turn gate as
+		// vision: deps arrive only while `image` exists in live config.
+		...(image ? { generate_image: imageTool(image) } : {}),
 		...(program ? { program: programTool(program) } : {}),
 		// Same per-turn gate as search/transcribe: the caller passes deps
 		// only when the delegation block exists in the live config.

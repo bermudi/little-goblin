@@ -5,11 +5,11 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 ## Tools (v1)
 
-Hand-rolled, zod-validated, eighteen:
+Hand-rolled, zod-validated, nineteen:
 
 `read_file` `write_file` `edit_file` `bash` (timeout) `speak` `transcribe`
-`vision` `program` `delegate` `mail` `send_file` `memory_search` `search`
-`fetch` `history_search` `sandbox` `script` `ui`
+`vision` `generate_image` `program` `delegate` `mail` `send_file`
+`memory_search` `search` `fetch` `history_search` `sandbox` `script` `ui`
 
 All tools run in the deployment workspace — conversations have no cwd and
 there is no `/cd`. Working elsewhere is the agent's own business (`cd x &&
@@ -46,6 +46,20 @@ or video file → text, present only when `transcription` is configured
 and riding the same provider seam as intake. It exists precisely because
 intake *doesn't* transcribe attached audio — "transcribe this podcast"
 is a tool call against the saved attachment path, not a re-send.
+
+`generate_image` is the outbound twin of `vision`: present only when the
+`image` config block names a `<provider>/<model>` ref whose provider is
+`openai-compatible` or `responses` (the kinds that carry `baseUrl` — the
+call is the OpenAI images shape, `POST {baseUrl}/images/generations`,
+auth riding the provider's auth.jsonl ref). Generated files land in the
+attachment store like intake media — the returned path is a real file
+`vision` can then inspect and `send_file` can resend — and the tool also
+hands each one to the turn's delivery sink (`sink.onFile`), so Telegram
+shows the photo inline while the saved path remains the durable artifact.
+"Telegram send is delivery, not a tool" stays true; a `DeliveryUncertainError`
+is reported, never retried. `size` defaults from the config block and `n`
+caps at 4 per call. Guest channels exclude it like the other
+provider-calling tools.
 
 `program` manages standing programs (list/create/update/delete/toggle/
 hook) — see `Programs`. `delegate` hands tasks to other harnesses —

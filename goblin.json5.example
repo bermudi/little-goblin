@@ -24,6 +24,15 @@
       kind: "openrouter",
       auth: "openrouter",
     },
+    // Logfare — an OpenAI-compatible relay (https://logfare.ai). One
+    // provider entry covers chat completions; the same `logfare` auth
+    // record serves the tts/transcription/image blocks below. Note its
+    // docs' caveat: requests may be logged (PII-scrubbed) for eval.
+    // logfare: {
+    //   kind: "openai-compatible",
+    //   baseUrl: "https://logfare.ai/v1",
+    //   auth: "logfare",
+    // },
     // ChatGPT-subscription Codex models — auth comes from the codex CLI's
     // own OAuth file, not auth.jsonl. Run `codex login` first; expired
     // tokens are refreshed in-process and written back. authFile defaults
@@ -76,6 +85,9 @@
   //   auth: "openrouter",
   //   voice: "b347db033a6549378b48d00acb0d06cd",
   // },
+  // Logfare's speech endpoint (same POST shape) — its catalog is
+  // Deepgram Aura; voice ids look like "aura-2-asteria-en".
+  // tts: { kind: "logfare", model: "aura-2-en", auth: "logfare" },
 
   // Speech → text for voice and video notes — transcribed once at
   // intake, and models that can't consume audio read the transcript
@@ -101,6 +113,7 @@
   // transcription: { kind: "elevenlabs" }, // scribe_v2
   // transcription: { kind: "gemini" },    // gemini-flash-latest
   // transcription: { kind: "mimo" },      // xiaomi/mimo-v2.6-flash
+  // transcription: { kind: "logfare" },   // whisper-large-v3-turbo (or nova-3)
 
   // --- Vision (image Q&A) ---
   // Unset = no vision tool. With it, the bot can ask a vision model
@@ -118,6 +131,15 @@
   //   // models too — a file on disk is invisible to either.
   //   mode: "auto",
   // },
+
+  // --- Image generation ---
+  // Unset = no generate_image tool. `model` is a "<provider>/<model-id>"
+  // ref whose provider carries a baseUrl (openai-compatible/responses) —
+  // the call is the OpenAI images shape POST {baseUrl}/images/generations,
+  // auth riding the provider's own auth.jsonl ref. Generated files save
+  // to the attachment store and deliver inline on Telegram; `size` sets
+  // the default "WxH" (the tool may override per call).
+  // image: { model: "logfare/flux-2-dev", size: "1024x1024" },
 
   // --- Scripting (in-process tool composition) ---
   // Unset = no script tool. With it, the model can write a JavaScript

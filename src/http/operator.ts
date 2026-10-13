@@ -26,6 +26,7 @@ import {
 	searchKinds,
 	transcriptionDefaults,
 	transcriptionKinds,
+	ttsCloudDefaults,
 	writeConfig,
 	paths,
 	type Config,
@@ -538,6 +539,7 @@ export async function handleOperatorRoute(
 				fetchKinds,
 				transcriptionKinds,
 				transcriptionDefaults,
+				ttsDefaults: ttsCloudDefaults,
 				authDefaults,
 				authNames: [...(deps.authNames?.() ?? [])].sort(),
 			};

@@ -509,6 +509,26 @@ describe("tts block", () => {
 		});
 	});
 
+	test("a logfare arm round-trips like openrouter, with its own defaults", () => {
+		const { draft: d, providers } = draftFromConfig(baseConfig());
+		const tts = {
+			kind: "logfare" as const,
+			voice: "",
+			rate: "",
+			voices: [],
+			model: "",
+			auth: "",
+		};
+		const body = bodyFromDraft({ ...d, tts }, providers, authDefaults);
+		expect(body.tts).toEqual({ kind: "logfare" });
+		const c = baseConfig();
+		expect(parseConfig({ ...c, ...body }).tts).toEqual({
+			kind: "logfare",
+			model: "aura-2-en",
+			auth: "logfare",
+		});
+	});
+
 	test("openrouter needs no voice; blank fields fall back to the kind's defaults", () => {
 		const { draft: d, providers } = draftFromConfig(baseConfig());
 		const tts = {

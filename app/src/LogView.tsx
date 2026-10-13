@@ -1,7 +1,7 @@
 // The log tail view: bounded, server-filtered slices of goblin.log —
 // never the whole file (ruling 2026-10-11). The server owns the window
 // and the filters; this view only picks them and renders lines.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { tailLog } from "./api.ts";
 import { describe } from "./opsShared.tsx";
 import type { LogTailResponse } from "../../src/http/operator-wire.ts";
@@ -30,11 +30,19 @@ export function LogView({ token }: { token: string | null }) {
 	const [data, setData] = useState<LogTailResponse | null>(null);
 	const [err, setErr] = useState<string | null>(null);
 
+	// Two tails can be in flight (apply + refresh); the last-issued
+	// wins, or a stale response can overwrite a newer slice.
+	const loadSeq = useRef(0);
 	const load = useCallback(() => {
 		setErr(null);
+		const seq = ++loadSeq.current;
 		tailLog(token, { limit: applied.limit, level: applied.level, q: applied.q }).then(
-			(d) => setData(d),
-			(e) => setErr(describe(e)),
+			(d) => {
+				if (seq === loadSeq.current) setData(d);
+			},
+			(e) => {
+				if (seq === loadSeq.current) setErr(describe(e));
+			},
 		);
 	}, [token, applied]);
 

@@ -5,7 +5,7 @@
 // timers or process — its only capability is the injected tools.
 
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
@@ -119,6 +119,41 @@ function errorMessage(result: unknown): string | null {
 function scriptCachePath(body: string): string {
 	const hash = createHash("sha256").update(body).digest("hex").slice(0, 24);
 	return join(paths.scriptcache(), `${hash}.txt`);
+}
+
+// Spill bodies are synthesized at will (up to the heap cap each), not
+// fetched like webcache — without a sweep the dir grows forever. The
+// newest file is always kept (the footer just named it); older spills
+// hold a count and byte budget, newest first.
+const SPILL_KEEP_FILES = 32;
+const SPILL_KEEP_BYTES = 256 * 1024 * 1024;
+
+function sweepScriptCache(): void {
+	const dir = paths.scriptcache();
+	let names: string[];
+	try {
+		names = readdirSync(dir);
+	} catch {
+		return;
+	}
+	const files: { name: string; mtime: number; size: number }[] = [];
+	for (const name of names) {
+		try {
+			const st = statSync(join(dir, name));
+			if (st.isFile()) files.push({ name, mtime: st.mtimeMs, size: st.size });
+		} catch (e) {
+			if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+		}
+	}
+	files.sort((a, b) => b.mtime - a.mtime);
+	let bytes = 0;
+	for (const [i, f] of files.entries()) {
+		if (i === 0 || (i < SPILL_KEEP_FILES && bytes + f.size <= SPILL_KEEP_BYTES)) {
+			bytes += f.size;
+			continue;
+		}
+		rmSync(join(dir, f.name));
+	}
 }
 
 const scriptTool = (tools: ToolSet, callable: string[], deps: ScriptDeps) =>
@@ -339,6 +374,13 @@ const scriptTool = (tools: ToolSet, callable: string[], deps: ScriptDeps) =>
 				const file = scriptCachePath(body);
 				mkdirSync(paths.scriptcache(), { recursive: true });
 				durableWriteFile(file, body);
+				// Housekeeping — a sweep failure must not eat a result
+				// the script already produced.
+				try {
+					sweepScriptCache();
+				} catch (e) {
+					log.warn("scriptcache sweep failed", e, { conversation: deps.conversation });
+				}
 				footer = truncatedFooter(file, body.length);
 			}
 			const seconds = ((Date.now() - started) / 1000).toFixed(1);

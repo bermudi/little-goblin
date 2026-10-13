@@ -94,8 +94,6 @@ function runSummary(row: SubagentRun) {
 		desktop: row.desktop ?? undefined,
 		files: row.files.length > 0 ? row.files : undefined,
 		inbox: row.inbox.length > 0 ? row.inbox : undefined,
-		exported_files: row.exportedFiles.length > 0 ? row.exportedFiles : undefined,
-		export_errors: row.exportErrors.length > 0 ? row.exportErrors : undefined,
 		final_screenshot: row.finalScreenshot ?? undefined,
 		created_at: new Date(row.createdAt).toISOString(),
 		finished_at: row.finishedAt === null ? undefined : new Date(row.finishedAt).toISOString(),
@@ -107,6 +105,9 @@ function runBody(row: SubagentRun): string {
 	if (row.question !== null) parts.push(`question: ${row.question}`);
 	if (row.result !== null) parts.push(`result: ${row.result}`);
 	if (row.error !== null) parts.push(`error: ${row.error}`);
+	if (row.exportedFiles.length > 0)
+		parts.push(`exported_files: ${JSON.stringify(row.exportedFiles)}`);
+	if (row.exportErrors.length > 0) parts.push(`export_errors: ${JSON.stringify(row.exportErrors)}`);
 	return parts.join("\n");
 }
 

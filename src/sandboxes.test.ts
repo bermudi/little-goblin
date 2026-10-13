@@ -73,6 +73,7 @@ function fakeEngine(opts?: {
 		inspectCalls: 0,
 		failInspectFrom: undefined as number | undefined,
 		failRm: false,
+		failNetworkCreate: false,
 		// Canned exec results — the output-cap restart tests.
 		execResult: undefined as BoundedProc | undefined,
 		execBytesResult: undefined as BoundedProcBytes | undefined,
@@ -111,6 +112,9 @@ function fakeEngine(opts?: {
 			return { code: 0, stdout: JSON.stringify([{ options: { isolate: "strict" } }]), stderr: "" };
 		}
 		if (cmd === "network" && sub === "create") {
+			if (flags.failNetworkCreate) {
+				return { code: 1, stdout: "", stderr: "Error: network backend down" };
+			}
 			networks.add(args.at(-1)!);
 			return { code: 0, stdout: args.at(-1)! + "\n", stderr: "" };
 		}
@@ -539,6 +543,62 @@ describe("sandboxes lifecycle", () => {
 			"podman pull docker.io/library/debian:stable-slim",
 		);
 		expect(engine.calls.some((a) => a[0] === "run")).toBe(false);
+	});
+});
+
+describe("reset preflight happens before destruction", () => {
+	function seededSandbox(conv: string) {
+		const name = containerNameFor(conv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name }] });
+		const rigged = rig(engine);
+		rigged.store.put({
+			conversationId: conv,
+			container: name,
+			image: IMAGE,
+			network: false,
+			createdAt: 1,
+			lastUsedAt: 1,
+		});
+		engine.containers.get(name)!.files.set("/work/keep.txt", new TextEncoder().encode("k"));
+		return { engine, ...rigged, name };
+	}
+
+	test("an unavailable replacement image refuses before rm — container, files and row survive", async () => {
+		const conv = "dm:reset-image";
+		const { engine, sandboxes, store, name } = seededSandbox(conv);
+		await expect(sandboxes.reset(conv, "docker.io/library/busybox:latest")).rejects.toThrow(
+			"podman pull docker.io/library/busybox:latest",
+		);
+		expect(engine.calls.some((a) => a[0] === "rm")).toBe(false);
+		expect(engine.calls.some((a) => a[0] === "run")).toBe(false);
+		const c = engine.containers.get(name)!;
+		expect(c.image).toBe(IMAGE);
+		expect(c.files.has("/work/keep.txt")).toBe(true);
+		expect(store.get(conv)!.container).toBe(name);
+		expect(store.get(conv)!.image).toBe(IMAGE);
+	});
+
+	test("a failed replacement network preflight leaves the existing sandbox intact", async () => {
+		const conv = "dm:reset-net";
+		const { engine, sandboxes, store, name } = seededSandbox(conv);
+		engine.flags.failNetworkCreate = true;
+		await expect(sandboxes.reset(conv)).rejects.toThrow(/network create/);
+		expect(engine.calls.some((a) => a[0] === "rm")).toBe(false);
+		expect(engine.calls.some((a) => a[0] === "run")).toBe(false);
+		expect(engine.containers.get(name)!.files.has("/work/keep.txt")).toBe(true);
+		expect(store.get(conv)!.container).toBe(name);
+	});
+
+	test("a clean preflight still destroys and recreates, network off", async () => {
+		const conv = "dm:reset-ok";
+		const { engine, sandboxes, store, name } = seededSandbox(conv);
+		const out = await sandboxes.reset(conv);
+		expect(out.note).toContain("previous contents are gone");
+		const c = engine.containers.get(name)!;
+		expect(c.networks.size).toBe(0);
+		expect(c.files.has("/work/keep.txt")).toBe(false);
+		expect(store.get(conv)!.container).toBe(name);
+		expect(engine.calls.some((a) => a[0] === "rm")).toBe(true);
 	});
 });
 

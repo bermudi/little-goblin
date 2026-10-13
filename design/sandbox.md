@@ -150,7 +150,11 @@ tool already makes. Flat schema, per-action contract enforced inside
 - `network` — `enabled: boolean`; connect/disconnect, row updated, state
   verified by inspect. Fail closed: a sandbox whose network state can't be
   confirmed off when off is intended is removed, not used.
-- `reset` — optional `image`.
+- `reset` — optional `image`. Destruction is gated on a successful
+  replacement preflight: after the run-lease and ownership checks it
+  verifies the target image is in the local store and the isolated
+  network exists BEFORE removing the incumbent — an unavailable
+  replacement never destroys the existing sandbox, its files or its row.
 
 The description says what the model needs: not the host; root inside;
 nothing here touches the operator's machine, files or services; network

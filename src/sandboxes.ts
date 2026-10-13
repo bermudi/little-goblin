@@ -277,19 +277,28 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		}
 	}
 
-	async function createContainer(
-		name: string,
-		image: string,
-		wantNetwork: boolean,
-		conv: string,
-	): Promise<void> {
+	// Everything a create needs that must be verified BEFORE reset can
+	// destroy the incumbent: the image in the local store, the isolated
+	// network, and the live config. Callers that already ran it pass the
+	// result through so post-destruction code never re-checks.
+	async function prepareContainer(image: string, conv: string): Promise<SandboxConfig> {
 		if (!(await podman.imageExists(image, conv))) {
 			throw new SandboxError(
 				`image ${image} is not in the local store; ask the operator to run: podman pull ${image}`,
 			);
 		}
 		await podman.networkEnsure(networkName, conv);
-		const c = cfg();
+		return cfg();
+	}
+
+	async function createContainer(
+		name: string,
+		image: string,
+		wantNetwork: boolean,
+		conv: string,
+		prepared?: SandboxConfig,
+	): Promise<void> {
+		const c = prepared ?? (await prepareContainer(image, conv));
 		await podman.create(
 			{
 				name,
@@ -605,11 +614,13 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				const name = nameFor(conv);
 				const target = image ?? cfg().image;
 				const ins = await podman.inspect(name, conv);
-				if (ins.state !== "missing") {
-					requireOurs(name, ins);
-					await podman.rm(name, conv);
-				}
-				await createContainer(name, target, false, conv);
+				if (ins.state !== "missing") requireOurs(name, ins);
+				// Preflight the replacement BEFORE removing the incumbent —
+				// an unavailable image or network must never destroy the
+				// existing sandbox (design/sandbox.md).
+				const prepared = await prepareContainer(target, conv);
+				if (ins.state !== "missing") await podman.rm(name, conv);
+				await createContainer(name, target, false, conv, prepared);
 				const now = Date.now();
 				store.put({
 					conversationId: conv,

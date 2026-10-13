@@ -56,6 +56,26 @@ program's state, never a workspace file.** Rulings:
   they retry next poll). The route keeps its HTTP status and throttle
   clock, the watcher keeps polling, but no caller writes program
   state.
+- **Schedule fires retry zero-call transient failures on a bounded
+  in-process ladder** (2026-10-13). The cron rule above never holds an
+  occurrence — but that made a fire whose turn died before any model
+  call (a DNS blip at fire time) silently lose the day to the next
+  cron slot, the one trigger with no retry middle ground (webhook has
+  the caller, mail has the checkpoint). When the runtime stamps a
+  terminal failure `transient` with zero completed model calls
+  (transport/availability classification in
+  `agent/provider-errors`), the scheduler re-fires the same occurrence
+  after 5, 15, and 30 minutes — at most 3 retries, never a held
+  occurrence, and the ladder never re-runs `markRan`: the cursor
+  advanced at the original fire. Any completed model call, any model
+  output seen through the fire's sink, a non-transient or unknown
+  cause, a mid-ladder disable or delete (revoked authority fences the
+  retry like the mid-gate mail ruling), an exhausted ladder, or a
+  process restart (the scheduler is a singleton; pending retries are
+  memory, and losing them matches the old no-ladder behavior) ends the
+  ladder — the ordinary error notice is all the operator sees.
+  Webhook (caller-owned retry) and mail (checkpoint hold) accounting
+  are unchanged.
 - **Authority is granted, never self-issued.** Creating or widening a
   program needs the operator's explicit ask — the agent may *propose*
   one ("want me to own this?"), never grant itself standing

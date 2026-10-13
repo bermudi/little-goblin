@@ -387,6 +387,9 @@ describe("provider-filter retry", () => {
 		expect(await sink.done).toEqual({
 			kind: "error",
 			message: "Provider blocked this request again after one retry.",
+			// One probe tool call completed before the second filter block.
+			completedCalls: 1,
+			transient: false,
 		});
 		while (runtime.busy(conv.id)) await sleep(1);
 		await runtime.shutdown();
@@ -1575,7 +1578,12 @@ describe("context overflow recovery", () => {
 		});
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
-		expect(await sink.done).toEqual({ kind: "error", message: "Authentication Failed" });
+		expect(await sink.done).toEqual({
+			kind: "error",
+			message: "Authentication Failed",
+			completedCalls: 0,
+			transient: false,
+		});
 		expect(prompts).toHaveLength(1);
 		expect(store.getCompaction(conv.id)).toBeNull();
 		store.close();
@@ -1676,6 +1684,8 @@ describe("context overflow recovery", () => {
 		// crash may not strand a claimed-but-untracked submit — its stream
 		// would hang forever, shutdown included.
 		expect(joinerSettled).toBe(true);
+		// Unstamped: the crash died in admission, before the attempt's try —
+		// drain's last-ditch settlement cannot know completedCalls/transient.
 		expect(await joiner.done).toEqual({ kind: "error", message: "Synthetic SQLite read failure" });
 		await runtime.shutdown();
 		expect(runtime.busy(conv.id)).toBe(false);

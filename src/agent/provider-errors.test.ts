@@ -4,6 +4,7 @@ import { APICallError } from "@ai-sdk/provider";
 import {
 	isContentFilter,
 	isContextOverflow,
+	isTransientTurnFailure,
 	ProviderContentFilterError,
 } from "./provider-errors.ts";
 
@@ -173,5 +174,120 @@ describe("isContentFilter", () => {
 			null,
 		])
 			expect(isContentFilter(error)).toBe(false);
+	});
+});
+
+// Like the overflow pins: one synthetic per transport family, wrapped
+// the way Node and undici actually nest them. No string was observed by
+// goblin itself — these are the node/undici error codes and fetch
+// failure surfaces a provider call can die on.
+describe("isTransientTurnFailure", () => {
+	test.each([
+		["econnrefused", new Error("connect ECONNREFUSED 127.0.0.1:443")],
+		["econnreset", new Error("request failed", { cause: new Error("read ECONNRESET") })],
+		["enotfound", new Error("getaddrinfo ENOTFOUND api.example.com")],
+		["etimedout", new Error("connect ETIMEDOUT 1.2.3.4:443")],
+		["eai_again", new Error("getaddrinfo EAI_AGAIN api.example.com")],
+		["epipe", new Error("write EPIPE")],
+		["und_err", new Error("UND_ERR_CONNECT_TIMEOUT")],
+		["socket hang up", new Error("socket hang up")],
+		["fetch failed", new Error("fetch failed")],
+		["terminated", new TypeError("terminated")],
+		["other side closed", new Error("other side closed")],
+		["premature close", new Error("premature close")],
+		[
+			"network connection lost",
+			new Error("fetch failed", {
+				cause: new Error("network connection lost through proxy"),
+			}),
+		],
+	])("a %s phrase classifies transient, even nested in a cause chain", (_family, err) => {
+		expect(isTransientTurnFailure(err)).toBe(true);
+	});
+
+	test.each([408, 425, 429, 500, 502, 503, 529])(
+		"a %i statusCode classifies transient",
+		(status) => {
+			const at = (code: number) =>
+				new APICallError({
+					message: "request failed",
+					url: "https://api.example.com/v1/chat/completions",
+					requestBodyValues: {},
+					statusCode: code,
+				});
+			expect(isTransientTurnFailure(at(status))).toBe(true);
+			expect(isTransientTurnFailure(new Error("request failed", { cause: at(status) }))).toBe(true);
+		},
+	);
+
+	test("the truth hiding under a RetryError's errors still classifies", () => {
+		const err = new RetryError({
+			message: "Failed after 3 attempts",
+			reason: "maxRetriesExceeded",
+			errors: [
+				new APICallError({
+					message: "Bad Gateway",
+					url: "https://api.example.com/v1/chat/completions",
+					requestBodyValues: {},
+					statusCode: 502,
+				}),
+			],
+		});
+		expect(isTransientTurnFailure(err)).toBe(true);
+	});
+
+	test("a content filter is a verdict, not an outage — even over a 503", () => {
+		expect(isTransientTurnFailure(new ProviderContentFilterError())).toBe(false);
+		expect(
+			isTransientTurnFailure(
+				new Error("request failed", {
+					cause: new ProviderContentFilterError(
+						new APICallError({
+							message: "Service Unavailable",
+							url: "https://api.example.com",
+							requestBodyValues: {},
+							statusCode: 503,
+						}),
+					),
+				}),
+			),
+		).toBe(false);
+		expect(
+			isTransientTurnFailure(
+				new Error(
+					"[System detected potentially unsafe or sensitive content in input or generation.]",
+				),
+			),
+		).toBe(false);
+	});
+
+	test("an overflow is a lost cause on retry — even over a 5xx", () => {
+		expect(isTransientTurnFailure(new Error("prompt is too long: 208423 tokens"))).toBe(false);
+		expect(
+			isTransientTurnFailure(
+				new APICallError({
+					message: "prompt is too long: 208423 tokens > 200000 maximum",
+					url: "https://api.anthropic.com/v1/messages",
+					requestBodyValues: {},
+					statusCode: 500,
+				}),
+			),
+		).toBe(false);
+	});
+
+	test("non-transient statuses and plain errors are not retryable", () => {
+		expect(
+			isTransientTurnFailure(
+				new APICallError({
+					message: "Authentication Failed",
+					url: "https://api.example.com",
+					requestBodyValues: {},
+					statusCode: 401,
+				}),
+			),
+		).toBe(false);
+		expect(isTransientTurnFailure(new Error("Authentication Failed"))).toBe(false);
+		expect(isTransientTurnFailure(undefined)).toBe(false);
+		expect(isTransientTurnFailure(null)).toBe(false);
 	});
 });

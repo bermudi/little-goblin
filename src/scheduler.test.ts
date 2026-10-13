@@ -13,7 +13,7 @@ import type { DeliveryApi } from "./tg/delivery.ts";
 import type { UIMessage } from "ai";
 import { openStore } from "./conversation.ts";
 import type { ConversationStore } from "./conversation.ts";
-import type { Runtime, TurnSink } from "./runtime.ts";
+import type { Runtime, TurnDone, TurnSink } from "./runtime.ts";
 import { openPrograms } from "./programs.ts";
 import type { Program } from "./programs.ts";
 import type { MailHit } from "./mail.ts";
@@ -879,5 +879,176 @@ describe("post-submit accounting (trigger-owned)", () => {
 					l.level === "warn",
 			),
 		).toBe(true);
+	});
+});
+
+// The schedule-fire retry ladder: a fire whose turn died before any
+// model call with a transient, runtime-stamped cause re-fires on an
+// injected delay ladder; anything else — spent calls, seen model
+// output, non-transient or unknown cause, disable, stop — ends it.
+// The cursor advances exactly once, at the original fire, always.
+describe("schedule fire retry ladder", () => {
+	// Tiny injected delays; each ladder step waits ~10ms of real time.
+	const DELAYS = [2, 2];
+
+	function ladderProgram(h: Harness, name = "ladder"): Program {
+		// Created 5 minutes ago on an every-minute cron: the occurrence is
+		// due, which fireScheduled requires before it will fire at all.
+		return h.deps.programs.create(
+			{ name, cron: "* * * * *", charter: "c", address: { chatId: 1, threadId: null } },
+			new Date(Date.now() - 5 * 60_000),
+		);
+	}
+
+	const transientDone: TurnDone = {
+		kind: "error",
+		message: "fetch failed",
+		completedCalls: 0,
+		transient: true,
+	};
+
+	function capture(): { captured: string[]; release(): void } {
+		const captured: string[] = [];
+		setLogFile("schedule-retry-ladder-test.log");
+		setLogWriter((_path, line) => captured.push(line));
+		return {
+			captured,
+			release(): void {
+				setLogFile(null);
+				setLogWriter(null);
+			},
+		};
+	}
+
+	function lines(captured: string[]): Record<string, unknown>[] {
+		return captured.map((l) => JSON.parse(l) as Record<string, unknown>);
+	}
+
+	test("a transient zero-call failure re-fires on the ordinary path, cursor untouched", async () => {
+		const h = harness();
+		const now = new Date("2026-10-13T08:00:00");
+		const program = ladderProgram(h);
+		const { captured, release } = capture();
+		try {
+			fireScheduled(h.deps, program, now, { retryDelaysMs: DELAYS });
+			expect(h.submitted).toHaveLength(1);
+			const lastRunAfterFire = h.deps.programs.get(program.id)!.lastRun;
+			expect(lastRunAfterFire).not.toBeNull();
+			await h.submitted[0]!.sink.onDone(transientDone);
+			await Bun.sleep(10);
+			// The retry submitted through fireProgram's ordinary path —
+			// same program tag, same wake shape.
+			expect(h.submitted).toHaveLength(2);
+			expect((h.submitted[1]!.parts[0]! as { text: string }).text).toContain(
+				"[program: ladder · trigger: schedule]",
+			);
+			// markRan ran exactly once — at the original fire.
+			expect(h.deps.programs.get(program.id)!.lastRun).toBe(lastRunAfterFire);
+			const fired = lines(captured).filter((l) => l.msg === "program fired");
+			expect(fired).toHaveLength(2);
+			expect(fired[1]).toMatchObject({ program: program.id, trigger: "schedule" });
+			expect(lines(captured).find((l) => l.msg === "schedule fire retry scheduled")).toMatchObject({
+				program: program.id,
+				name: "ladder",
+				attempt: 1,
+				delayMs: 2,
+				reason: "fetch failed",
+			});
+			// The retry's turn completes — no second retry.
+			await h.submitted[1]!.sink.onDone({ kind: "completed" });
+		} finally {
+			release();
+		}
+	});
+
+	test("the ladder exhausts after the last delay — one warn, no further submits", async () => {
+		const h = harness();
+		const program = ladderProgram(h);
+		const { captured, release } = capture();
+		try {
+			fireScheduled(h.deps, program, new Date(), { retryDelaysMs: DELAYS });
+			await h.submitted[0]!.sink.onDone(transientDone);
+			await Bun.sleep(10);
+			expect(h.submitted).toHaveLength(2);
+			await h.submitted[1]!.sink.onDone(transientDone);
+			await Bun.sleep(10);
+			expect(h.submitted).toHaveLength(3);
+			await h.submitted[2]!.sink.onDone(transientDone);
+			await Bun.sleep(10);
+			expect(h.submitted).toHaveLength(3);
+			const exhausted = lines(captured).filter((l) => l.msg === "schedule fire retries exhausted");
+			expect(exhausted).toHaveLength(1);
+			expect(exhausted[0]).toMatchObject({ program: program.id, attempts: 3 });
+		} finally {
+			release();
+		}
+	});
+
+	test.each([
+		["a completed turn", { kind: "completed" } as const],
+		[
+			"a non-transient error",
+			{ kind: "error", message: "boom", transient: false, completedCalls: 0 } as const,
+		],
+		[
+			"an error that already spent model calls",
+			{ kind: "error", message: "boom", transient: true, completedCalls: 2 } as const,
+		],
+		["an error with unknown flags", { kind: "error", message: "boom" } as const],
+	])("no ladder rung on %s", async (_label, done) => {
+		const h = harness();
+		const program = ladderProgram(h);
+		fireScheduled(h.deps, program, new Date(), { retryDelaysMs: DELAYS });
+		await h.submitted[0]!.sink.onDone(done);
+		await Bun.sleep(10);
+		expect(h.submitted).toHaveLength(1);
+	});
+
+	test("model output through the sink disqualifies the retry", async () => {
+		const h = harness();
+		const program = ladderProgram(h);
+		fireScheduled(h.deps, program, new Date(), { retryDelaysMs: DELAYS });
+		const sink = h.submitted[0]!.sink;
+		sink.onTextDelta("partial answer");
+		await sink.onDone(transientDone);
+		await Bun.sleep(10);
+		expect(h.submitted).toHaveLength(1);
+	});
+
+	test("a program disabled between attempts drops the retry", async () => {
+		const h = harness();
+		const program = ladderProgram(h);
+		const { captured, release } = capture();
+		try {
+			fireScheduled(h.deps, program, new Date(), { retryDelaysMs: DELAYS });
+			await h.submitted[0]!.sink.onDone(transientDone);
+			h.deps.programs.update(program.id, { enabled: false });
+			await Bun.sleep(10);
+			expect(h.submitted).toHaveLength(1);
+			expect(
+				lines(captured).find((l) => l.msg === "schedule fire retry dropped — program disabled"),
+			).toMatchObject({ program: program.id });
+		} finally {
+			release();
+		}
+	});
+
+	test("stop() clears a pending retry", async () => {
+		const h = harness();
+		// Start the scheduler first: its boot scan must find nothing due —
+		// the ladder below is armed by hand. The program (immediately due
+		// on its every-minute cron) is created after that scan, and the
+		// 1h tick never runs again.
+		const s = startScheduler(h.deps, 3_600_000);
+		const program = ladderProgram(h);
+		try {
+			fireScheduled(h.deps, program, new Date(), { retryDelaysMs: DELAYS });
+			await h.submitted[0]!.sink.onDone(transientDone);
+			s.stop();
+			await Bun.sleep(10);
+			expect(h.submitted).toHaveLength(1);
+		} finally {
+			s.stop();
+		}
 	});
 });

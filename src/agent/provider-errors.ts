@@ -17,6 +17,7 @@ interface Collected {
 	texts: string[];
 	rateLimited: boolean;
 	contentFiltered: boolean;
+	statuses: number[];
 }
 
 function collect(value: unknown, depth: number, seen: Set<object>, out: Collected): void {
@@ -31,6 +32,7 @@ function collect(value: unknown, depth: number, seen: Set<object>, out: Collecte
 	const o = value as Record<string, unknown>;
 	if (value instanceof ProviderContentFilterError) out.contentFiltered = true;
 	if (typeof o.message === "string") out.texts.push(o.message);
+	if (typeof o.statusCode === "number") out.statuses.push(o.statusCode);
 	if (o.statusCode === 429) out.rateLimited = true;
 	if (typeof o.responseBody === "string") out.texts.push(o.responseBody);
 	if (o.data !== undefined) {
@@ -52,6 +54,17 @@ function collect(value: unknown, depth: number, seen: Set<object>, out: Collecte
 	if (Array.isArray(o.errors)) {
 		for (const e of o.errors) collect(e, depth + 1, seen, out);
 	}
+}
+
+function collectAll(err: unknown): Collected {
+	const collected: Collected = {
+		texts: [],
+		rateLimited: false,
+		contentFiltered: false,
+		statuses: [],
+	};
+	collect(err, 0, new Set(), collected);
+	return collected;
 }
 
 // Exact provider phrasings, lowercased — the walk's text is folded
@@ -85,16 +98,10 @@ const CONTEXT_WORDED = /exceed|too long|too large|overflow|ran out of room/;
 // z.ai's body code for prompt-too-long (docs.z.ai/api-reference/api-code).
 const ZAI_1261 = /"code"\s*:\s*"?1261"?/;
 
-// True when the failure says the request outgrew the model's context
-// window — the one failure a compaction can actually fix. Explicitly
-// NOT a rate limit (TPM rejections mention "tokens" generously and a
-// 429 statusCode is decisive) and not a reasoning-mode rejection.
-export function isContextOverflow(err: unknown): boolean {
-	const collected: Collected = { texts: [], rateLimited: false, contentFiltered: false };
-	collect(err, 0, new Set(), collected);
-	const text = collected.texts.join("\n").toLowerCase();
-	if (collected.rateLimited) return false;
-	if (RATE_LIMIT_TEXT.test(text)) return false;
+// The phrase half of the overflow verdict, over the already-folded
+// text — shared verbatim with isTransientTurnFailure so the retry
+// ladder's overflow exclusion can never drift from this classifier.
+function overflowByPhrases(text: string): boolean {
 	if (REASONING_REQUIRED.test(text)) return false;
 	for (const phrase of OVERFLOW_PHRASES) {
 		if (text.includes(phrase)) return true;
@@ -106,6 +113,18 @@ export function isContextOverflow(err: unknown): boolean {
 		return true;
 	}
 	return ZAI_1261.test(text);
+}
+
+// True when the failure says the request outgrew the model's context
+// window — the one failure a compaction can actually fix. Explicitly
+// NOT a rate limit (TPM rejections mention "tokens" generously and a
+// 429 statusCode is decisive) and not a reasoning-mode rejection.
+export function isContextOverflow(err: unknown): boolean {
+	const collected = collectAll(err);
+	const text = collected.texts.join("\n").toLowerCase();
+	if (collected.rateLimited) return false;
+	if (RATE_LIMIT_TEXT.test(text)) return false;
+	return overflowByPhrases(text);
 }
 
 // Verbatim warning reported by the operator in Telegram on 2026-10-04.
@@ -126,10 +145,50 @@ export class ProviderContentFilterError extends Error {
 
 export function isContentFilter(err: unknown): boolean {
 	if (err instanceof ProviderContentFilterError) return true;
-	const collected: Collected = { texts: [], rateLimited: false, contentFiltered: false };
-	collect(err, 0, new Set(), collected);
+	const collected = collectAll(err);
 	return (
 		collected.contentFiltered ||
 		collected.texts.some((text) => text.toLowerCase().includes(FILTER_WARNING))
 	);
+}
+
+// Transport- and availability-class phrases, lowercased like the folded
+// walk text. Transient means exactly that: a retry with nothing spent
+// can succeed. Spend-bearing failures (any completed model work) are
+// excluded upstream by the caller's zero-completed-calls gate; any
+// model output at all disqualifies the retry at the sink.
+const TRANSIENT_PHRASES = [
+	"econnrefused",
+	"econnreset",
+	"enotfound",
+	"etimedout",
+	"eai_again",
+	"epipe",
+	"und_err",
+	"socket hang up",
+	"fetch failed",
+	"terminated",
+	"other side closed",
+	"premature close",
+	"network connection lost",
+];
+
+// True when the failure is availability-class: a rate limit, a timeout
+// or 5xx status, or a broken connection. Content filters and context
+// overflows are verdicts about the request, not the provider's
+// availability — retrying them unchanged cannot help, so they read
+// false even when a status code might otherwise say transient.
+export function isTransientTurnFailure(err: unknown): boolean {
+	const collected = collectAll(err);
+	if (collected.contentFiltered) return false;
+	const text = collected.texts.join("\n").toLowerCase();
+	if (overflowByPhrases(text)) return false;
+	if (collected.rateLimited) return true;
+	for (const status of collected.statuses) {
+		if (status === 408 || status === 425 || status === 429 || status >= 500) return true;
+	}
+	for (const phrase of TRANSIENT_PHRASES) {
+		if (text.includes(phrase)) return true;
+	}
+	return false;
 }

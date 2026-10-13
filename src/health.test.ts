@@ -385,6 +385,30 @@ describe("pass-keys status source contract (fixtures, not a live wallet)", () =>
 		expect(finding(report, "keys.snapshot.1").status).toBe("fail");
 		expect(JSON.stringify(report)).not.toContain(marker);
 	});
+	test("an absolute-path pass-keys get is recognized; only the canonical status probe runs", async () => {
+		const f = fixture(),
+			calls = join(f.root, "argv"),
+			executed = join(f.root, "executed"),
+			absolute = join(f.root, "sbin", "pass-keys");
+		mkdirSync(join(f.root, "sbin"));
+		// If diagnosis ever executed the record's executable this marker
+		// would appear — recognition is parse-only, probing stays
+		// `pass-keys status <profile>` on PATH.
+		writeFileSync(absolute, `#!/bin/sh\ntouch '${executed}'\n`, { mode: 0o700 });
+		writeFileSync(
+			join(f.home, "auth.jsonl"),
+			JSON.stringify({ name: "telegram", value: `!${absolute} get fixture BOT_TOKEN` }),
+		);
+		f.script(
+			"pass-keys",
+			`printf '%s\\n' "$*" > '${calls}'; printf 'fixture: MISSING  age=none  keys=0\\n'; exit 1`,
+		);
+		const report = await runHealth(f.options);
+		expect(finding(report, "keys.snapshot.1").status).toBe("fail");
+		expect(finding(report, "keys.snapshot.1").scope).toContain("profile:fixture");
+		expect(readFileSync(calls, "utf8")).toBe("status fixture\n");
+		expect(existsSync(executed)).toBe(false);
+	});
 });
 
 describe("read-only WAL-aware SQL worker", () => {

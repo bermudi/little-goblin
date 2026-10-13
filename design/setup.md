@@ -118,7 +118,12 @@ parsing may examine records, but the returned surface contains only
 validated names, line numbers, reference presence, mode, and bounded
 command categories. Construct line/path/category errors without copying
 the original JSON/parser message, command, value, or arbitrary stderr.
-General auth commands remain explicitly **unverified**, not passed.
+General auth commands remain explicitly **unverified**, not passed. The
+recognized subset is exactly one direct `!pass-keys get <profile> <KEY>` —
+`pass-keys` bare or literal path-prefixed as the first word; wrappers, env
+prefixes, quotes, shell operators and executable substitutions/globs keep
+the record a general command. `src/auth.ts` shares this grammar between the
+installer's option inspection and doctor.
 
 Check service PATH, not just interactive PATH. Snapshot metadata inspection
 must be non-interactive and must not unlock, warm, or read a key value.

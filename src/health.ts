@@ -13,7 +13,12 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parseHTML } from "linkedom";
 import JSON5 from "json5";
 import { z } from "zod";
-import { invokesPassCliDirectly, parseAuthFile, type AuthRecord } from "./auth.ts";
+import {
+	invokesPassCliDirectly,
+	parseAuthFile,
+	parsePassKeysGet,
+	type AuthRecord,
+} from "./auth.ts";
 import { authReferences, parseConfig, type Config } from "./config.ts";
 import { boundedRun, killProc, spawnProc, type ProcessGroupMode } from "./proc.ts";
 import { sqliteProbeSchema } from "./health-sqlite.ts";
@@ -327,16 +332,19 @@ function authCheck(
 				literals++;
 				continue;
 			}
-			const match = /^!pass-keys get ([a-z][a-z0-9_-]{0,63}) ([A-Z0-9_]{1,128})$/.exec(
-				record.value,
-			);
-			if (!match?.[1] || !match[2]) {
+			// Shared grammar with the installer: only a single direct
+			// `!pass-keys get` (bare or literal path-prefixed executable) is a
+			// recognized profile reference. The probe itself stays the
+			// canonical `pass-keys status <profile>` on PATH — the
+			// record's executable is never invoked.
+			const parsed = parsePassKeysGet(record.value);
+			if (parsed === null) {
 				general++;
 				continue;
 			}
-			const needed = profiles.get(match[1]) ?? new Set<string>();
-			needed.add(match[2]);
-			profiles.set(match[1], needed);
+			const needed = profiles.get(parsed.profile) ?? new Set<string>();
+			needed.add(parsed.key);
+			profiles.set(parsed.profile, needed);
 		}
 		if (profiles.size > 8) {
 			profiles.clear();

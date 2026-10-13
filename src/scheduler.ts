@@ -403,12 +403,7 @@ function considerRetry(
 ): void {
 	// Unknown flags mean the runtime could not classify the failure —
 	// unknown is not retryable.
-	if (
-		done.kind !== "error" ||
-		done.transient !== true ||
-		done.modelCalls !== 0 ||
-		sawModelOutput
-	) {
+	if (done.kind !== "error" || done.transient !== true || done.modelCalls !== 0 || sawModelOutput) {
 		return;
 	}
 	if (attempt >= delays.length) {

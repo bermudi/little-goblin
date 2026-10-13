@@ -365,7 +365,8 @@ async function journalBrief(limit: number): Promise<string[]> {
 		}
 		lines.push(`${stamp}goblin: ${event.data.msg}`);
 	}
-	if (withheld > 0) lines.push(`…and ${withheld} journal entries withheld — runtime fields stay private`);
+	if (withheld > 0)
+		lines.push(`…and ${withheld} journal entries withheld — runtime fields stay private`);
 	return lines.slice(-limit);
 }
 

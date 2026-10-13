@@ -30,7 +30,11 @@ export function floodWaitTransformer(opts: FloodWaitOpts = {}): Transformer {
 	const wait = opts.sleep ?? sleep;
 	// False when the demanded wait is out of budget — the caller then
 	// returns/throws the original failure untouched.
-	const honored = async (retryAfterS: number, attempt: number, method: string): Promise<boolean> => {
+	const honored = async (
+		retryAfterS: number,
+		attempt: number,
+		method: string,
+	): Promise<boolean> => {
 		const demanded = retryAfterS * 1000;
 		if (demanded > maxWaitMs) {
 			log.warn("telegram flood wait beyond cap", { method, retryAfterS });
@@ -58,13 +62,11 @@ export function floodWaitTransformer(opts: FloodWaitOpts = {}): Transformer {
 				res = await prev(method, payload, signal);
 			} catch (err) {
 				const retryAfterS = floodRetryAfter(err);
-				if (retryAfterS === undefined || !(await honored(retryAfterS, attempt, method)))
-					throw err;
+				if (retryAfterS === undefined || !(await honored(retryAfterS, attempt, method))) throw err;
 				continue;
 			}
 			const retryAfterS = floodRetryAfter(res);
-			if (retryAfterS === undefined || !(await honored(retryAfterS, attempt, method)))
-				return res;
+			if (retryAfterS === undefined || !(await honored(retryAfterS, attempt, method))) return res;
 		}
 	};
 }

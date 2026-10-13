@@ -20,9 +20,10 @@ export const startupCategories: readonly string[] = [
 	"service identity: invalid response",
 	"startup evidence: invalid JSON",
 	"startup evidence: invalid record",
-	...["service identity", "startup evidence", "enable service", "start service"].flatMap(
-		(name) => [`${name}: inspection failed`, `${name}: command failed/timeout/output limit`],
-	),
+	...["service identity", "startup evidence", "enable service", "start service"].flatMap((name) => [
+		`${name}: inspection failed`,
+		`${name}: command failed/timeout/output limit`,
+	]),
 ];
 export function startupCategory(value: string): string | undefined {
 	return startupCategories.includes(value) ? value : undefined;

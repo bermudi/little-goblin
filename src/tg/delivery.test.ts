@@ -910,10 +910,7 @@ describe("delivery files", () => {
 				documents.push({ ...(other?.caption !== undefined ? { caption: other.caption } : {}) });
 				return { message_id: 20 + documents.length };
 			},
-			sendMediaGroup: async (
-				_chat: number,
-				media: Array<{ caption?: string }>,
-			) => {
+			sendMediaGroup: async (_chat: number, media: Array<{ caption?: string }>) => {
 				groupAttempts++;
 				if (fail?.group === true) throw new Error("sendMediaGroup wedged");
 				if (fail?.group === "timeout") throw new TelegramTimeoutError("sendMediaGroup", 30_000);
@@ -943,7 +940,18 @@ describe("delivery files", () => {
 		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
 		try {
 			const { api, photos, documents } = fileApi();
-			const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, undefined, undefined, 50);
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				50,
+			);
 			await sink.onFile!({ path: pngFile(dir), filename: "chart.png" });
 			expect(photos).toHaveLength(1);
 			expect(documents).toHaveLength(0);
@@ -971,7 +979,18 @@ describe("delivery files", () => {
 			const { api, photos, documents, mediaGroups } = fileApi();
 			// A huge window makes the onDone flush the only one — no timer
 			// race against real fs stat latencies under parallel test load.
-			const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, undefined, undefined, 60_000);
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				60_000,
+			);
 			await settledBurst(sink, [
 				{ path: pngFile(dir), filename: "a.png" },
 				{ path: pngFile(dir), filename: "b.png", caption: "second" },
@@ -991,7 +1010,18 @@ describe("delivery files", () => {
 			const pdf = join(dir, "report.pdf");
 			writeFileSync(pdf, "pdf-bytes");
 			const { api, photos, documents, mediaGroups } = fileApi();
-			const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, undefined, undefined, 60_000);
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				60_000,
+			);
 			await settledBurst(sink, [
 				{ path: pngFile(dir), filename: "a.png" },
 				{ path: pdf, filename: "report.pdf" },
@@ -1009,7 +1039,18 @@ describe("delivery files", () => {
 		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
 		try {
 			const { api, photos, mediaGroups, groupAttempts } = fileApi({ group: true });
-			const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, undefined, undefined, 60_000);
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				60_000,
+			);
 			await settledBurst(sink, [
 				{ path: pngFile(dir), filename: "a.png" },
 				{ path: pngFile(dir), filename: "b.png" },
@@ -1026,7 +1067,18 @@ describe("delivery files", () => {
 		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
 		try {
 			const { api, photos, mediaGroups, groupAttempts } = fileApi({ group: "timeout" });
-			const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, undefined, undefined, 60_000);
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				60_000,
+			);
 			const results = await settledBurst(sink, [
 				{ path: pngFile(dir), filename: "a.png" },
 				{ path: pngFile(dir), filename: "b.png" },

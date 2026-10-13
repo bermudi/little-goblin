@@ -467,9 +467,19 @@ describe("rich delivery", () => {
 		try {
 			resetMessageEffectsGateForTests();
 			const { api, richSends } = fakeApi();
-			const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, undefined, {
-				enabled: true,
-			});
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{
+					enabled: true,
+				},
+			);
 			sink.onTextDelta("done");
 			await sink.onDone({ kind: "completed" });
 			expect(richSends[0]!.other.message_effect_id).toBe("4913930782671635058");
@@ -499,9 +509,19 @@ describe("rich delivery", () => {
 		try {
 			resetMessageEffectsGateForTests();
 			const { api, richSends, sendAttempts } = fakeApi({ rejectEffect: true });
-			const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, undefined, {
-				enabled: true,
-			});
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{
+					enabled: true,
+				},
+			);
 			sink.onTextDelta("first");
 			await sink.onDone({ kind: "completed" });
 			// First turn: attempt with effect, definite 400, safe retry without.

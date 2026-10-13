@@ -177,7 +177,6 @@ export function loadCatalog(root: string): SkillCatalog {
 }
 
 // The prompt section. Renders even when empty — it's also the notice
-// The prompt section. Renders even when empty — it's also the notice
 // that the capability exists. Proposals (the reviewer's validated
 // drafts in skills-proposed/, never installed without the operator's
 // yes — design/skills.md, "It proposes, then tells") are listed when

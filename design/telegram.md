@@ -163,6 +163,10 @@ failing message by message.
   backend guessed. Telegram mode never touches the app door — no token
   probe, no conversation calls — and opened outside Telegram (empty
   initData) it shows a notice instead of a form that cannot save.
+  `telegram-web-app.js` is never fetched: both doors are one origin, the
+  app token lives in that origin's localStorage, and Telegram's own
+  webviews inject `window.Telegram` before page scripts — a client that
+  does not inject gets the same empty-initData notice.
   In-door navigation is component state with no history entries; the
   webview's back gesture closes the mini app natively. A missing build
   fail-louds a 500 + log line exactly like `/app/*` —
@@ -440,6 +444,17 @@ legacy single `allowedUsers` key meant operator class; the live file
 migrates at deploy (`allowedUsers: [x]` → `operators: [x]`,
 `allowedUsers: []`), and boot fails loud naming the key when
 `operators` is missing.
+
+**The mid-flight recheck is DM-scoped.** The gate's verdict is
+intake-time truth; a save landing while a burst coalesces is
+re-adjudicated at flush — but only where the lane names the person.
+A private chat's lane key IS the sender's id, so a demotion drops the
+batch (refusal line, tombstoned rows) before any routing happens.
+Topic/group batches carry no sender identity — the journaled payload
+records the room's chat id, not `from.id` — so a demoted operator's
+already-coalesced group input still runs its turn. Accepted residual:
+the window is the coalescing delay, and closing it means journaling
+`from.id` per inbox row.
 
 ## Guest mode (ruling 2026-10-06)
 

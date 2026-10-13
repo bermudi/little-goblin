@@ -476,6 +476,25 @@ describe("memory commands", () => {
 		store.close();
 	});
 
+	test("a guest lane can't touch the shared bank — /memory and /forget refuse by class", () => {
+		const { store, conv, sent, deps } = setupMemory();
+		store.setMeta(conv.id, { persona: "guest", memoryExcluded: true });
+		const guest = store.get(conv.id)!;
+		// The whole surface is operator bank state: status, toggle, and
+		// the blocked-row actions all get the one class refusal.
+		for (const cmd of ["/memory", "/memory on", "/memory retry", "/memory dismiss"]) {
+			sent.length = 0;
+			expect(handleCommand(deps, guest, cmd)).toBe(true);
+			expect(sent[0]).toBe("memory is off for this lane by class — it is not a setting here");
+		}
+		sent.length = 0;
+		expect(handleCommand(deps, guest, "/forget lighthouse")).toBe(true);
+		expect(sent[0]).toBe("memory is off for this lane by class — nothing to forget here");
+		// The refusal is a no-op — the lane's own fence is intact.
+		expect(store.get(conv.id)!.memoryExcluded).toBe(true);
+		store.close();
+	});
+
 	test("/forget without args shows usage", () => {
 		const { store, conv, sent, deps } = setupMemory();
 		expect(handleCommand(deps, conv, "/forget")).toBe(true);

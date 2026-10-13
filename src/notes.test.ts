@@ -206,6 +206,22 @@ describe("search and scope", () => {
 		expect(found("toothbrush")).toEqual([]);
 	});
 
+	test("a query that strips to nothing matches nothing — never the full list", () => {
+		const { notes } = setup();
+		notes.create({ title: "packing list", body: "passport adapter" });
+		notes.create({ title: "ideas", body: "nothing to see" });
+		const found = (q: string) => notes.list({ q }).map((s) => s.id);
+		// Punctuation-only input quotes into a real (empty) FTS match;
+		// whitespace- and quote-only input strips to no terms at all.
+		// Both must read as "no hits", not degrade to the unfiltered
+		// list — searchHistory's rule.
+		expect(found("+++")).toEqual([]);
+		expect(found("   ")).toEqual([]);
+		expect(found('""')).toEqual([]);
+		// A real term still filters.
+		expect(found("packing")).toHaveLength(1);
+	});
+
 	test("project scope, loose, archived shelf, pinned-first ordering", () => {
 		const { notes, projects } = setup();
 		const p = projects.create({ name: "Trip" });

@@ -27,3 +27,41 @@ test("integer, zero and large charts keep compact readable ticks", () => {
 	expect(ticks([0, 0])).toEqual(["0", "0.25", "0.5", "0.75", "1"]);
 	expect(ticks([10_000, 50_000])).toEqual(["0", "12.5k", "25k", "37.5k", "50k"]);
 });
+
+function chart(kind: "bar" | "line" | "pie", x: string[], values: number[], unit?: string): string {
+	return renderToStaticMarkup(
+		<Chart leaf={{ type: "chart", kind, x, series: [{ name: "km", values }], unit }} />,
+	);
+}
+
+test("a pie renders one arc per slice, labelled by x with share tooltips", () => {
+	const html = chart("pie", ["a", "b", "c"], [2, 1, 1], "km");
+	expect(html.match(/<path /g)?.length).toBe(3);
+	// Slices take x labels + shares — not the series name.
+	expect(html).toContain("<title>a: 2 km (50%)</title>");
+	expect(html).toContain("<title>b: 1 km (25%)</title>");
+	expect(html).toContain("a · 50%");
+	expect(html).not.toContain("km ·"); // legend is not the series legend
+});
+
+test("a pie's displayed shares always sum to 100", () => {
+	// Thirds render 33.33… per slice — per-slice Math.round would show
+	// 99 total; largest remainder bumps the first to 34.
+	const html = chart("pie", ["a", "b", "c"], [1, 1, 1]);
+	const shares = [...html.matchAll(/· (\d+)%/g)].map((m) => Number(m[1]));
+	expect(shares).toHaveLength(3);
+	expect(shares.reduce((a, b) => a + b, 0)).toBe(100);
+	expect(html).toContain("a · 34%");
+});
+
+test("a zero-total pie degrades to 0% arcs, never NaN", () => {
+	const html = chart("pie", ["a", "b"], [0, 0]);
+	expect(html.match(/<path /g)?.length).toBe(2);
+	expect(html).not.toContain("NaN");
+	expect(html).toContain("(0%)");
+});
+
+test("bar and line marks carry native series·x tooltips", () => {
+	expect(chart("bar", ["Mon"], [12], "km")).toContain("<title>km · Mon: 12 km</title>");
+	expect(chart("line", ["Mon"], [12])).toContain("<title>km · Mon: 12</title>");
+});

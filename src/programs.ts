@@ -188,8 +188,8 @@ function parseCron(cron: string, currentDate: Date): CronExpression {
 }
 
 function validateLateness(cron: string | null, minutes: number | null): void {
-	if (minutes !== null && (!Number.isSafeInteger(minutes) || minutes < 0)) {
-		throw new ProgramRuleError("maxLatenessMinutes must be a non-negative safe integer or null");
+	if (minutes !== null && (!Number.isSafeInteger(minutes) || minutes < 1)) {
+		throw new ProgramRuleError("maxLatenessMinutes must be a positive safe integer or null");
 	}
 	if (minutes !== null && cron === null) {
 		throw new ProgramRuleError("maxLatenessMinutes requires a cron trigger");
@@ -235,7 +235,10 @@ function rowToProgram(row: unknown): Program {
 		name: parsed.name,
 		charter: parsed.charter,
 		cron: parsed.cron,
-		maxLatenessMinutes: parsed.max_lateness_minutes,
+		// Rows from before the ≥1 floor may hold 0 — a grace smaller
+		// than the 30s tick can never fire, so 0 reads as 1.
+		maxLatenessMinutes:
+			parsed.max_lateness_minutes === null ? null : Math.max(1, parsed.max_lateness_minutes),
 		hookHash: parsed.hook_hash,
 		mailFilter: parsed.mail_filter,
 		mailHistoryId: parsed.mail_history_id,

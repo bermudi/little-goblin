@@ -152,7 +152,7 @@ marker_tmp="$(mktemp "$marker_dir/.GOBLIN_DEPLOYED_REV.XXXXXX")" || fail "cannot
 printf '%s\n' "$new_rev" >"$marker_tmp" || { rm -f "$marker_tmp"; fail "cannot write deployment marker"; }
 sync -d "$marker_tmp" || fail "cannot flush deployment marker temp file"
 mv -f "$marker_tmp" "$marker" || { rm -f "$marker_tmp"; fail "cannot update deployment marker: $marker"; }
-sync -d "$marker_dir" || true
+sync -d "$marker_dir" || fail "cannot flush deployment marker directory — the rename may not survive a crash"
 step "done: g7 @ ${new_rev:0:7}"
 if [ -n "$old_rev" ]; then
 	printf -v rollback_marker '%q' "$marker"

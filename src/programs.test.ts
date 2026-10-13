@@ -207,7 +207,8 @@ describe("programs store", () => {
 		).toThrow("requires a cron trigger");
 		expect(() => s.update(p.id, { cron: null })).toThrow("requires a cron trigger");
 		expect(s.get(p.id)!.cron).toBe("30 8 * * *");
-		expect(() => s.update(p.id, { maxLatenessMinutes: -1 })).toThrow("non-negative");
+		expect(() => s.update(p.id, { maxLatenessMinutes: -1 })).toThrow("positive");
+		expect(() => s.update(p.id, { maxLatenessMinutes: 0 })).toThrow("positive");
 		expect(() => s.update(p.id, { maxLatenessMinutes: Number.MAX_SAFE_INTEGER + 1 })).toThrow(
 			"safe integer",
 		);
@@ -220,13 +221,16 @@ describe("programs store", () => {
 	test("rule violations are ProgramRuleError — everything else propagates as-is", () => {
 		const s = store();
 		expect(() =>
-			s.create({ name: "hook", charter: "c", hookHash: "h", maxLatenessMinutes: 5, address: ADDRESS }),
+			s.create({
+				name: "hook",
+				charter: "c",
+				hookHash: "h",
+				maxLatenessMinutes: 5,
+				address: ADDRESS,
+			}),
 		).toThrow(ProgramRuleError);
 		expect(() => s.create({ name: "x", charter: "c", address: ADDRESS })).toThrow(ProgramRuleError);
-		const p = s.create(
-			{ name: "hooked", charter: "c", hookHash: "abc123", address: ADDRESS },
-			NOW,
-		);
+		const p = s.create({ name: "hooked", charter: "c", hookHash: "abc123", address: ADDRESS }, NOW);
 		expect(() => s.update(p.id, { hookHash: null })).toThrow(ProgramRuleError);
 		expect(() => s.update(p.id, { maxLatenessMinutes: -1 })).toThrow(ProgramRuleError);
 		// Cron validation is not a rule violation — it's the boundary's

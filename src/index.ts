@@ -595,9 +595,7 @@ async function boot() {
 						return auth.resolve(name);
 					},
 					...(system1Block?.model !== undefined ? { model: system1Block.model } : {}),
-					...(system1Block?.baseUrl !== undefined
-						? { baseUrl: system1Block.baseUrl }
-						: {}),
+					...(system1Block?.baseUrl !== undefined ? { baseUrl: system1Block.baseUrl } : {}),
 				})
 			: null;
 	if (system1Gate !== null) {

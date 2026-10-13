@@ -650,7 +650,13 @@ export function SettingsView({
 	const [baseline, setBaseline] = useState<string | null>(null);
 	const [section, setSection] = useState<Section | null>(null);
 	const [sheet, setSheet] = useState<SheetMode | null>(null);
-	const [notice, setNotice] = useState<{ text: string; kind: "err" | "ok" } | null>(null);
+	const [notice, setNotice] = useState<{
+		text: string;
+		kind: "err" | "ok";
+		// Whether the savebar's retry button makes sense for this error —
+		// set only by the save catch; other error notices never retry.
+		retryable?: boolean;
+	} | null>(null);
 	const [saving, setSaving] = useState(false);
 	const [loadErr, setLoadErr] = useState<string | null>(null);
 	// Turned-off blocks keep their last content — toggling back on
@@ -881,6 +887,8 @@ export function SettingsView({
 			setBaseline(serialize(draft, provs));
 			setNotice({ text: "Saved.", kind: "ok" });
 		} catch (e) {
+			// A 409 is a stale etag — the same save retries it forever;
+			// only a reload fixes it, so it gets no retry button.
 			setNotice({
 				text:
 					e instanceof ApiError && e.status === 409
@@ -889,6 +897,7 @@ export function SettingsView({
 							? e.message
 							: "Save failed — check the tailnet.",
 				kind: "err",
+				retryable: !(e instanceof ApiError && e.status === 409),
 			});
 		} finally {
 			setSaving(false);
@@ -1505,9 +1514,7 @@ export function SettingsView({
 						<ChipsEditor
 							values={draft.operators.map(String)}
 							onAdd={(v) => addId("operators", v)}
-							onRemove={(i) =>
-								patchDraft({ operators: draft.operators.filter((_, j) => j !== i) })
-							}
+							onRemove={(i) => patchDraft({ operators: draft.operators.filter((_, j) => j !== i) })}
 							placeholder="telegram user id"
 							ariaLabel="add operator"
 							numeric
@@ -1589,6 +1596,20 @@ export function SettingsView({
 						return notice?.text ?? "";
 					})()}
 				</span>
+				{notice?.kind === "err" && notice.retryable === true && !saving && dirty && (
+					<button
+						type="button"
+						className="ghost-inline"
+						onClick={() => {
+							// Re-arm the attempted guard for this exact state —
+							// without it the debounce would chain retries forever.
+							attempted.current = serialize(draft, provs);
+							void save();
+						}}
+					>
+						retry
+					</button>
+				)}
 			</div>
 
 			{sheet !== null && (

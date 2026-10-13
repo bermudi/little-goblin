@@ -25,6 +25,7 @@ const required = {
 		"persona",
 		"archived_at",
 		"pinned_at",
+		"project_id",
 		"previous_dm_id",
 	],
 	events: [

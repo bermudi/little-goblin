@@ -310,7 +310,10 @@ describe("reviewer gate", () => {
 		expect(quiet.notified).toEqual([]);
 		quiet.store.close();
 		const busy = harness();
-		const deps = busy.depsFor({ nouls: new System1Error("http", 500), script: [{ text: "nothing" }] });
+		const deps = busy.depsFor({
+			nouls: new System1Error("http", 500),
+			script: [{ text: "nothing" }],
+		});
 		let resolved = false;
 		const inner = deps.reviewModel;
 		deps.reviewModel = async (conv) => {

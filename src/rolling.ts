@@ -17,7 +17,12 @@ import {
 	type Conversation,
 	type ConversationStore,
 } from "./conversation.ts";
-import { System1Error, type System1Client, type System1Decision, type System1Question } from "./system1.ts";
+import {
+	System1Error,
+	type System1Client,
+	type System1Decision,
+	type System1Question,
+} from "./system1.ts";
 import { log } from "./log.ts";
 import type { Runtime } from "./runtime.ts";
 

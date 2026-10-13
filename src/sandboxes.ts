@@ -219,17 +219,23 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		}
 	}
 
+	// The image gate belongs to the caller's timing: reset must fail
+	// before the rm, while the filesystem still stands. Callers check
+	// once, at the point that ordering matters.
+	async function requireImage(image: string, conv: string): Promise<void> {
+		if (!(await podman.imageExists(image, conv))) {
+			throw new SandboxError(
+				`image ${image} is not in the local store; ask the operator to run: podman pull ${image}`,
+			);
+		}
+	}
+
 	async function createContainer(
 		name: string,
 		image: string,
 		wantNetwork: boolean,
 		conv: string,
 	): Promise<void> {
-		if (!(await podman.imageExists(image, conv))) {
-			throw new SandboxError(
-				`image ${image} is not in the local store; ask the operator to run: podman pull ${image}`,
-			);
-		}
 		await podman.networkEnsure(networkName, conv);
 		const c = cfg();
 		await podman.create(
@@ -269,19 +275,23 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 					lastUsedAt: now,
 				};
 				store.put(adopted);
+				// The tool contract says network is OFF until enabled — an
+				// adopted container that happens to be attached must say so,
+				// or the model would run code believing it is isolated.
+				const net = adopted.network ? "; its network is ON" : "";
 				if (ins.state === "stopped") {
 					await podman.start(name, conv);
 					await applyNetwork(name, adopted.network, conv);
 					log.info("sandbox adopted and started", { conversation: conv, container: name });
 					return {
 						container: name,
-						note: "adopted an existing sandbox container and restarted it",
+						note: `adopted an existing sandbox container and restarted it${net}`,
 					};
 				}
 				log.info("sandbox adopted", { conversation: conv, container: name });
 				return {
 					container: name,
-					note: "adopted an existing sandbox container for this conversation",
+					note: `adopted an existing sandbox container for this conversation${net}`,
 				};
 			}
 			if (ins.state === "stopped") {
@@ -305,6 +315,7 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		if (row !== null) {
 			// Missing with a row: recreate from the row — image and
 			// intended network — and say the prior filesystem is gone.
+			await requireImage(row.image, conv);
 			await createContainer(name, row.image, row.network, conv);
 			store.touch(conv, now);
 			log.info("sandbox recreated", { conversation: conv, container: name });
@@ -314,6 +325,7 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			};
 		}
 		const image = cfg().image;
+		await requireImage(image, conv);
 		await createContainer(name, image, false, conv);
 		store.put({
 			conversationId: conv,
@@ -347,21 +359,30 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		if (idle === 0) return;
 		const cutoff = Date.now() - idle * 3_600_000;
 		for (const row of store.staleBefore(cutoff, conv)) {
-			try {
-				await podman.rm(row.container, conv);
-			} catch (err) {
-				// Keep the row — the next call retries the reap.
-				log.warn("sandbox reap failed — row kept", err, {
+			// The snapshot is stale the moment it is read: a call that
+			// landed meanwhile touches its row inside the row's lane, so
+			// the reap takes that lane and re-reads before removing —
+			// otherwise one conversation's sweep could destroy a
+			// sandbox whose owner just came back.
+			await lane(row.conversationId, async () => {
+				const fresh = store.get(row.conversationId);
+				if (fresh === null || fresh.lastUsedAt >= cutoff) return;
+				try {
+					await podman.rm(fresh.container, conv);
+				} catch (err) {
+					// Keep the row — the next call retries the reap.
+					log.warn("sandbox reap failed — row kept", err, {
+						conversation: row.conversationId,
+						container: fresh.container,
+					});
+					return;
+				}
+				store.delete(row.conversationId);
+				log.info("sandbox reaped", {
 					conversation: row.conversationId,
-					container: row.container,
+					container: fresh.container,
+					idleHours: idle,
 				});
-				continue;
-			}
-			store.delete(row.conversationId);
-			log.info("sandbox reaped", {
-				conversation: row.conversationId,
-				container: row.container,
-				idleHours: idle,
 			});
 		}
 	}
@@ -398,8 +419,12 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 	return {
 		async exec(conv, command, opts) {
 			await sweepOnce(conv);
-			store.touch(conv, Date.now());
-			const ready = await lane(conv, () => ensureLocked(conv));
+			const ready = await lane(conv, () => {
+				// Inside the lane so a foreign sweep's recheck sees the
+				// fresh row before it can remove this container.
+				store.touch(conv, Date.now());
+				return ensureLocked(conv);
+			});
 			const r = await podman.exec(ready.container, ["/bin/sh", "-c", command], opts, conv);
 			let note = ready.note;
 			if (r.timedOut || opts.abortSignal?.aborted === true) {
@@ -414,8 +439,10 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 
 		async cpIn(conv, hostPath, containerPath) {
 			await sweepOnce(conv);
-			store.touch(conv, Date.now());
-			const ready = await lane(conv, () => ensureLocked(conv));
+			const ready = await lane(conv, () => {
+				store.touch(conv, Date.now());
+				return ensureLocked(conv);
+			});
 			await podman.cp(ready.container, hostPath, containerPath, conv);
 			store.touch(conv, Date.now());
 			return { ...(ready.note !== undefined ? { note: ready.note } : {}) };
@@ -423,8 +450,10 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 
 		async catFile(conv, path) {
 			await sweepOnce(conv);
-			store.touch(conv, Date.now());
-			const ready = await lane(conv, () => ensureLocked(conv));
+			const ready = await lane(conv, () => {
+				store.touch(conv, Date.now());
+				return ensureLocked(conv);
+			});
 			const probe = await podman.exec(
 				ready.container,
 				["/bin/sh", "-c", 'test -f "$1"', "sb-check", path],
@@ -456,8 +485,8 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 
 		async setNetwork(conv, enabled) {
 			await sweepOnce(conv);
-			store.touch(conv, Date.now());
 			const out = await lane(conv, async () => {
+				store.touch(conv, Date.now());
 				const ready = await ensureLocked(conv);
 				await applyNetwork(ready.container, enabled, conv);
 				store.setNetwork(conv, enabled);
@@ -474,10 +503,14 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 
 		async reset(conv, image) {
 			await sweepOnce(conv);
-			store.touch(conv, Date.now());
 			return await lane(conv, async () => {
+				store.touch(conv, Date.now());
 				const name = nameFor(conv);
 				const target = image ?? cfg().image;
+				// The image gate runs before the rm: a bad ref must fail
+				// with the old container still standing, not after its
+				// filesystem is already gone.
+				await requireImage(target, conv);
 				const ins = await podman.inspect(name, conv);
 				if (ins.state !== "missing") {
 					requireOurs(name, ins);

@@ -490,8 +490,13 @@ spin-off copies and history all carry the UI for free, and the model
 sees its own past interface as its own past tool call.
 
 - **Library (v1):** leaves — `text` (markdown), `callout`, `stats`,
-  `table`, `steps`, `chart` (bar/line, hand-drawn SVG), `choices`,
-  `form`, `html`; containers — `tabs`, `columns`, whose children are
+  `table`, `steps`, `chart` (bar/line/pie, hand-drawn SVG with native
+  `<title>` tooltips; a pie's slices are the first series' values
+  labelled by `x` — extra series ignored, values non-negative),
+  `choices`, `form` (fields `text`, `number`, `select`, `checkbox`,
+  `textarea`, `date` — every value serializes into the `[ui]` submit
+  line; checkboxes submit `true`/`false`), `html`; containers — `tabs`,
+  `columns`, whose children are
   leaves only. **Two levels, no recursion**: a recursive zod schema
   emits `$ref`/`$defs` in the tool's JSON Schema, which
   OpenAI-compatible providers handle unevenly, and a schema a

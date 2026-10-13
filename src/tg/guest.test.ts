@@ -798,11 +798,7 @@ describe("routeMemberGuestMessage", () => {
 	test("operator messages fall through to normal intake", async () => {
 		const { env } = makeEnv();
 		expect(
-			await routeMemberGuestMessage(
-				env,
-				memberMsg({ from: op, text: "@goblin_bot hi" }),
-				20,
-			),
+			await routeMemberGuestMessage(env, memberMsg({ from: op, text: "@goblin_bot hi" }), 20),
 		).toBe(false);
 	});
 	test("non-mention chatter falls through (the gate drops it as ambient)", async () => {

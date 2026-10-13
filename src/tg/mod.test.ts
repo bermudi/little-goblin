@@ -165,6 +165,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type ConversationStore } from "../conversation.ts";
+import { HindsightClient } from "../hindsight.ts";
 import type { Runtime, TurnSink } from "../runtime.ts";
 import type { AuthStore } from "../auth.ts";
 import { CoalescingBuffer } from "./buffer.ts";
@@ -324,6 +325,137 @@ function flushTest(
 }
 
 describe("handleMessage", () => {
+	test("an allowed user's /memory on pins the lane guest before the command runs", () => {
+		const h = routerHarness({
+			...baseConfig,
+			memory: {
+				baseUrl: "http://127.0.0.1:1",
+				bankId: "g",
+				recallTimeoutMs: 500,
+				maxTokens: 256,
+				budget: "low" as const,
+			},
+		});
+		h.env.deps.memory = {
+			client: new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" }),
+			contexts: h.store.memoryContexts,
+			queue: h.store.memoryQueue,
+			withWorkerPaused: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+			lastRecallOk: () => null,
+			lastRecallAt: () => null,
+		};
+		// chat 2 is allowedUsers, not operators — its DM is the sandbox
+		// lane. A fresh roll lands personal+included; if the pin waited
+		// for flush the toggle would un-exclude a guest conversation.
+		handleTestMessage(
+			h.env,
+			tgMsg({ message_id: 1, chat: { id: 2, type: "private" }, text: "/memory on" }),
+		);
+		const conv = h.store.get(h.store.currentDm(2)!.id)!;
+		expect(conv.persona).toBe("guest");
+		expect(conv.memoryExcluded).toBe(true);
+		expect(
+			h.apiCalls.some(
+				(c) =>
+					c.method === "sendMessage" &&
+					c.text === "memory is off for this lane by class — it is not a setting here",
+			),
+		).toBe(true);
+	});
+
+	test("a batch buffered while the sender was demoted to stranger drops — no turn lands", async () => {
+		const h = routerHarness();
+		const submitted: string[] = [];
+		h.env.deps.runtime.submitPersisted = (conv) => {
+			submitted.push(conv.id);
+			return true;
+		};
+		// The intake gate admitted chat 2; the config save demoting it
+		// lands while the burst coalesces — flush must recheck, not
+		// trust intake-time truth (same rule as the guest surface).
+		h.env.deps.configRef.current = { ...baseConfig, allowedUsers: [] };
+		await flushTest(h.env, "dm:2", [{ parts: [{ type: "text", text: "hello" }], chatId: 2 }]);
+		expect(submitted).toEqual([]);
+		// The recheck runs before routing: a stranger never mints a
+		// conversation, never sends the boundary marker — the refusal
+		// line is the only send.
+		expect(h.store.currentDm(2)).toBeNull();
+		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
+			GUEST_REFUSAL,
+		]);
+		// Tombstoned, not pending — boot replay doesn't retry the drop.
+		expect(h.env.inbox.pending().filter((e) => e.payload.conversationId === "dm:2")).toEqual([]);
+	});
+
+	test("a demotion landing mid-follow-up-check still drops the batch at commit", async () => {
+		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0 } });
+		// chat 2 = allowedUsers. An answered exchange lets the burst
+		// reach the check instead of joining unanswered.
+		const old = h.store.rollDm(2, "/w");
+		h.store.append(old.id, [
+			{ id: "u", role: "user", parts: [{ type: "text", text: "q" }] },
+			{ id: "a", role: "assistant", parts: [{ type: "text", text: "a" }] },
+		]);
+		let entered: () => void = () => {};
+		let release: () => void = () => {};
+		const checking = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		h.env.deps.followUpGate = () => ({
+			async decide() {
+				entered();
+				await held;
+				return { answers: { follow_up: 0.01 }, inputTokens: 1, cost: 0 };
+			},
+		});
+		let submits = 0;
+		h.env.deps.runtime.submitPersisted = () => {
+			submits++;
+			return true;
+		};
+		const flushing = flushTest(h.env, "dm:2", [
+			{ parts: [{ type: "text", text: "hello" }], chatId: 2 },
+		]);
+		await checking;
+		// The save lands inside the check's await — routing already ran,
+		// but the last class read before admission must still win.
+		h.env.deps.configRef.current = {
+			...baseConfig,
+			allowedUsers: [],
+			telegram: { dmGapMinutes: 0 },
+		};
+		release();
+		await flushing;
+		expect(submits).toBe(0);
+		expect(h.apiCalls.some((c) => c.method === "sendMessage" && c.text === GUEST_REFUSAL)).toBe(
+			true,
+		);
+		expect(h.env.inbox.pending().filter((e) => e.payload.conversationId === "dm:2")).toEqual([]);
+		h.store.close();
+	});
+
+	test("a stranger's command is refused without minting a conversation", async () => {
+		const h = routerHarness();
+		// handleMessage sits behind the access gate in production —
+		// invoked directly here it must still never pin a stranger as
+		// guest: the class check precedes routing.
+		handleTestMessage(
+			h.env,
+			tgMsg({ message_id: 5, chat: { id: 9, type: "private" }, text: "/stop" }),
+		);
+		await Promise.resolve();
+		expect(h.store.currentDm(9)).toBeNull();
+		expect(h.stopped).toEqual([]);
+		expect(h.pushed).toEqual([]);
+		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
+			GUEST_REFUSAL,
+		]);
+		h.store.close();
+	});
+
 	test("a settings command without media is consumed — nothing reaches the buffer", () => {
 		// tts on (the default) so /voice actually toggles — the observable
 		// proof the command ran against meta, not just a reply.
@@ -724,7 +856,9 @@ describe("flushConversation", () => {
 	});
 
 	test("a submit failure after commit releases the sink with the error — never rethrown", async () => {
-		const h = routerHarness(baseConfig);
+		// chat 9 is a stranger in baseConfig — the flush recheck would
+		// drop its batch; list it as an operator like production DM tests.
+		const h = routerHarness({ ...baseConfig, operators: [1, 9] });
 		const conv = h.store.resolve({ kind: "dm", chatId: 9 }, "/w");
 		let seen: TurnSink | null = null;
 		h.env.deps = {
@@ -1025,7 +1159,9 @@ describe("durable intake", () => {
 
 describe("rolling dm", () => {
 	test("a private message carrying a thread id still lands in the rolling lane", async () => {
-		const h = routerHarness();
+		// chat 7 as operator — the flush's class pin no-ops on the
+		// fresh personal row, matching this test's pre-recheck intent.
+		const h = routerHarness({ ...baseConfig, operators: [1, 7] });
 		handleTestMessage(
 			h.env,
 			tgMsg({
@@ -1047,7 +1183,7 @@ describe("rolling dm", () => {
 	});
 
 	test("a rolled flush sends the boundary marker before the turn's delivery", async () => {
-		const h = routerHarness();
+		const h = routerHarness({ ...baseConfig, operators: [1, 7] });
 		// submitPersisted stands in for the turn's first Telegram write —
 		// the marker must already be on the wire when it runs.
 		h.env.deps.runtime = {
@@ -1082,8 +1218,13 @@ describe("rolling dm", () => {
 
 	test("a reply target that is the topic root is thread plumbing, not a reply", async () => {
 		// dmGapMinutes 0 makes every flush past the gap — the check is
-		// the only path a plain burst can take.
-		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0 } });
+		// the only path a plain burst can take. chat 7 must be admitted:
+		// a stranger's batch now drops before the check runs.
+		const h = routerHarness({
+			...baseConfig,
+			operators: [1, 7],
+			telegram: { dmGapMinutes: 0 },
+		});
 		const calls: unknown[] = [];
 		h.env.deps.followUpGate = () => ({
 			decide: (state: string) => {
@@ -1122,7 +1263,11 @@ describe("rolling dm", () => {
 
 	test("a reply past the gap joins without asking the gate", async () => {
 		// dmGapMinutes 0 makes every flush past the gap.
-		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0 } });
+		const h = routerHarness({
+			...baseConfig,
+			operators: [1, 7],
+			telegram: { dmGapMinutes: 0 },
+		});
 		const calls: unknown[] = [];
 		h.env.deps.followUpGate = () => ({
 			decide: (state: string) => {
@@ -1266,7 +1411,11 @@ describe("manual DM navigation", () => {
 	});
 
 	test("navigation during a follow-up check cannot reroll the pin or execute archived input", async () => {
-		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0 } });
+		const h = routerHarness({
+			...baseConfig,
+			operators: [1, chat.id],
+			telegram: { dmGapMinutes: 0 },
+		});
 		const old = h.store.rollDm(chat.id, "/w");
 		// An answered exchange — without one the burst never reaches the check.
 		h.store.append(old.id, [
@@ -1310,7 +1459,7 @@ describe("manual DM navigation", () => {
 	});
 
 	test("navigation while the automatic boundary marker is pending prevents late admission", async () => {
-		const h = routerHarness();
+		const h = routerHarness({ ...baseConfig, operators: [1, chat.id] });
 		let entered: () => void = () => {};
 		let release: () => void = () => {};
 		const sending = new Promise<void>((resolve) => {
@@ -1346,7 +1495,7 @@ describe("manual DM navigation", () => {
 	});
 
 	test("held pre-command media is archived while post-command text enters only the new conversation", async () => {
-		const h = routerHarness();
+		const h = routerHarness({ ...baseConfig, operators: [1, chat.id] });
 		const old = h.store.rollDm(chat.id, "/w");
 		let entered: () => void = () => {};
 		let release: () => void = () => {};
@@ -1444,7 +1593,7 @@ describe("manual DM navigation", () => {
 
 	for (const multipleArchives of [false, true]) {
 		test(`partial flush failure retries only pending rows${multipleArchives ? " across multiple archive targets" : ""}`, async () => {
-			const h = routerHarness();
+			const h = routerHarness({ ...baseConfig, operators: [1, chat.id] });
 			h.store.rollDm(chat.id, "/w");
 			const targets: string[] = [];
 			h.env.deps.runtime.submitPersisted = (conv, _message, sink) => {

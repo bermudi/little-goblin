@@ -44,6 +44,16 @@ test("a pie renders one arc per slice, labelled by x with share tooltips", () =>
 	expect(html).not.toContain("km ·"); // legend is not the series legend
 });
 
+test("a pie's displayed shares always sum to 100", () => {
+	// Thirds render 33.33… per slice — per-slice Math.round would show
+	// 99 total; largest remainder bumps the first to 34.
+	const html = chart("pie", ["a", "b", "c"], [1, 1, 1]);
+	const shares = [...html.matchAll(/· (\d+)%/g)].map((m) => Number(m[1]));
+	expect(shares).toHaveLength(3);
+	expect(shares.reduce((a, b) => a + b, 0)).toBe(100);
+	expect(html).toContain("a · 34%");
+});
+
 test("a zero-total pie degrades to 0% arcs, never NaN", () => {
 	const html = chart("pie", ["a", "b"], [0, 0]);
 	expect(html.match(/<path /g)?.length).toBe(2);

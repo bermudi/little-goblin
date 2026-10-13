@@ -395,19 +395,23 @@ function useSpeech(token: string | null) {
 	const [err, setErr] = useState<string | null>(null);
 	const audio = useRef<HTMLAudioElement | null>(null);
 	const cancelled = useRef(false);
-	useEffect(
-		() => () => {
-			cancelled.current = true;
-			audio.current?.pause();
-		},
-		[],
-	);
-	const stop = useCallback(() => {
+	// pause() settles no event — without this a stopped chunk's promise
+	// hangs forever, leaking the loop's frame and that chunk's object
+	// URL. stop resolves it as "played"; the cancelled flag ends the
+	// loop before the failure branch can run.
+	const releaseChunk = useRef<(() => void) | null>(null);
+	const cancel = useCallback(() => {
 		cancelled.current = true;
+		releaseChunk.current?.();
+		releaseChunk.current = null;
 		audio.current?.pause();
 		audio.current = null;
-		setState("idle");
 	}, []);
+	useEffect(() => cancel, [cancel]);
+	const stop = useCallback(() => {
+		cancel();
+		setState("idle");
+	}, [cancel]);
 	const play = useCallback(
 		async (text: string) => {
 			if (state === "playing" || state === "loading") {
@@ -431,6 +435,7 @@ function useSpeech(token: string | null) {
 					played = await new Promise<boolean>((resolve) => {
 						const a = new Audio(url);
 						audio.current = a;
+						releaseChunk.current = () => resolve(true);
 						a.onended = () => resolve(true);
 						// Decode/playback failures are per-browser, not
 						// per-chunk — one failure means the rest will too.

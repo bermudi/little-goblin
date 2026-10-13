@@ -85,8 +85,24 @@ export function Chart({ leaf }: { leaf: Extract<UiLeaf, { type: "chart" }> }) {
 
 	const pie = kind === "pie";
 	const slices = series[0]!;
-	const total = slices.values.reduce((a, b) => a + b, 0) || 1;
-	const pcts = slices.values.map((v) => Math.round((v / total) * 100));
+	const sum = slices.values.reduce((a, b) => a + b, 0);
+	const total = sum || 1; // zero-total data guards geometry — 0% arcs, never NaN
+	// Shares shown whole: largest-remainder rounding so the legend's
+	// percentages sum to exactly 100 — per-slice Math.round can land
+	// on 99 or 101 (e.g. thirds at 33.33…).
+	const pcts = (() => {
+		const raw = slices.values.map((v) => ((v / total) * 100) % 1);
+		const out = slices.values.map((v) => Math.floor((v / total) * 100));
+		if (sum <= 0) return out;
+		let left = 100 - out.reduce((a, b) => a + b, 0);
+		const order = raw.map((frac, i) => ({ frac, i })).sort((a, b) => b.frac - a.frac);
+		for (const { i } of order) {
+			if (left <= 0) break;
+			out[i]! += 1;
+			left -= 1;
+		}
+		return out;
+	})();
 	const fmtVal = (v: number) => (unit !== undefined ? `${v} ${unit}` : `${v}`);
 
 	const all = series.flatMap((s) => s.values);

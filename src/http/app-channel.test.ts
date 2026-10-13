@@ -1192,6 +1192,9 @@ describe("app channel http", () => {
 			expect(tgOnly.hits).toEqual([]);
 			// Non-token queries are a clean empty, not a 500.
 			expect((await call("/api/app/search?q=")).status).toBe(200);
+			// An overlong q refuses — the log route's ruling, not a silent
+			// truncation.
+			expect((await call(`/api/app/search?q=${"x".repeat(257)}`)).status).toBe(400);
 		} finally {
 			http.stop();
 		}

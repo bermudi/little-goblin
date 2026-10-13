@@ -1474,12 +1474,18 @@ export async function handleAppApi(
 		if (req.method !== "GET") {
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		}
-		const q = (url.searchParams.get("q") ?? "").slice(0, 256);
+		// An overlong q refuses rather than silently truncating — the
+		// operator log route's ruling.
+		const q = z
+			.string()
+			.max(256)
+			.safeParse(url.searchParams.get("q") ?? "");
+		if (!q.success) return Response.json({ error: "bad q" }, { status: 400, headers: NO_STORE });
 		const limitParam = Number(url.searchParams.get("limit") ?? "");
 		const limit =
 			Number.isFinite(limitParam) && limitParam >= 1 ? Math.min(25, Math.floor(limitParam)) : 10;
-		const hits = store.searchHistory(q, limit, "app/%");
-		log.debug("app history search", { q, hits: hits.length });
+		const hits = store.searchHistory(q.data, limit, "app/%");
+		log.debug("app history search", { q: q.data, hits: hits.length });
 		const body: AppSearchResponse = { hits };
 		return Response.json(body, { headers: NO_STORE });
 	}

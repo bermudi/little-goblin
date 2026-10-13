@@ -2990,6 +2990,48 @@ describe("app projects surface", () => {
 		});
 	});
 
+	test("chat joins an in-flight title PATCH — the flush rides the landed rev", async () => {
+		notes = [noteRow("Shopping")];
+		noteBodies = { "n-shopping": "milk" };
+		await notePage("/app/n/n-shopping");
+		const title = container.querySelector("input.note-title")!;
+		await typeInto(title, "Shopping 2", win.HTMLInputElement.prototype);
+		const gate = hold();
+		notePatchHold = gate.promise;
+		// The click's blur commits the title — the write mutates the
+		// stored rev at request time while its reply stays held. A
+		// body flush fired now would ride the stale If-Match and 409
+		// over the operator's own rename.
+		await act(async () => {
+			(title as HTMLInputElement).blur();
+		});
+		await settle();
+		expect(patchCalls).toBe(1);
+		await editBody("x");
+		await click(chatButton());
+		// Still held — the flush queued behind the title write.
+		expect(patchCalls).toBe(1);
+		expect(posts.some((p) => p.url === "/api/app/conversations")).toBe(false);
+		gate.resolve();
+		await settle();
+		await settleSlow();
+		// The body write went out after the title landed, on its rev.
+		expect(notePatches).toHaveLength(2);
+		expect((notePatches[0]!.body as { title?: string }).title).toBe("Shopping 2");
+		expect(notePatches[0]!.ifMatch).toBe('"1"');
+		expect((notePatches[1]!.body as { body?: string }).body).toContain("milkx");
+		expect(notePatches[1]!.ifMatch).toBe('"2"');
+		expect(posts.filter((p) => p.url === "/api/app/conversations")).toHaveLength(1);
+		expect(win.location.pathname).toBe("/app/c/minted");
+		const chatPost = posts.find((p) => p.url === "/api/app/chat");
+		expect(chatPost).toBeTruthy();
+		const parts = (chatPost!.body as { message: { parts: unknown[] } }).message.parts;
+		expect(parts).toContainEqual({
+			type: "data-note",
+			data: { id: "n-shopping", title: "Shopping 2" },
+		});
+	});
+
 	test("a refused flush save blocks the mint — buffer stays, error shows", async () => {
 		notes = [noteRow("Shopping")];
 		noteBodies = { "n-shopping": "milk" };

@@ -353,8 +353,12 @@ function ArchivedDraft({ noteId }: { noteId: string }) {
 					type="button"
 					className="ghost-inline"
 					onClick={() => {
-						const raw = draft === "unreadable" ? rawNoteDraft(noteId) : draft.body;
-						if (raw !== null) download(raw, draft === "unreadable" ? "txt" : "md");
+						try {
+							const raw = draft === "unreadable" ? rawNoteDraft(noteId) : draft.body;
+							if (raw !== null) download(raw, draft === "unreadable" ? "txt" : "md");
+						} catch (e) {
+							setError(`Couldn't read the draft: ${e instanceof Error ? e.message : String(e)}`);
+						}
 					}}
 				>
 					Download draft
@@ -423,6 +427,10 @@ export function NoteView({
 	// against the landed rev.
 	const titleSavingRef = useRef(false);
 	const titlePendingRef = useRef(false);
+	// The in-flight title PATCH — chat() joins it before flushing the
+	// body, or the body's stale If-Match lands behind the rename and
+	// 409s into a conflict over the operator's own edit.
+	const titleFlightRef = useRef<Promise<void> | null>(null);
 	noteRef.current = note;
 	titleDraftRef.current = titleDraft;
 	conflictRef.current = conflict;
@@ -545,7 +553,7 @@ export function NoteView({
 			return;
 		}
 		titleSavingRef.current = true;
-		void patchNote(token, cur.id, { title: t }, { ifMatch: cur.rev }).then(
+		titleFlightRef.current = patchNote(token, cur.id, { title: t }, { ifMatch: cur.rev }).then(
 			({ data }) => {
 				titleSavingRef.current = false;
 				adoptRemote(data);
@@ -608,6 +616,14 @@ export function NoteView({
 				setOpError("The editor isn't ready yet — try again in a moment.");
 				return;
 			}
+			// The click's blur may have committed a title PATCH that's
+			// still in flight — it bumps the rev, so a body flush on the
+			// stale If-Match 409s over the operator's own rename. Join it
+			// (and any pending re-run it chains) before flushing.
+			while (titleSavingRef.current && titleFlightRef.current !== null) {
+				await titleFlightRef.current;
+			}
+			if (conflictRef.current !== null) return;
 			const ok = await h.flushAndWait();
 			if (!ok) {
 				setOpError("Couldn't save pending edits — resolve or retry before starting the chat.");

@@ -6,7 +6,15 @@
 // the state, so the tests exercise real directories; the api is faked
 // at the grammy boundary like every delivery test.
 
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api } from "grammy";
@@ -193,6 +201,35 @@ describe("skill approval taps", () => {
 		} finally {
 			h.cleanup();
 			done();
+		}
+	});
+
+	test("a permission failure is not 'gone' — logged, buttons kept, proposal intact", async () => {
+		const lines: Array<Record<string, unknown>> = [];
+		const dir = mkdtempSync(join(tmpdir(), "skill-approval-logs-"));
+		setLogFile(join(dir, "test.log"));
+		setLogWriter((_path, line) => {
+			lines.push(JSON.parse(line) as Record<string, unknown>);
+		});
+		const h = harness(["smoke-test"]);
+		try {
+			// An unreadable parent makes the proposal's lstat throw EACCES —
+			// real filesystem state, not absence. Nothing decides, nothing
+			// moves, the error line carries it, and the tap answers with the
+			// failure instead of a silent dead press.
+			chmodSync(h.proposedDir, 0o000);
+			await h.handle({ data: skillInstallData("dm:42", "smoke-test") });
+			expect(h.strips).toEqual([]);
+			expect(h.edits).toEqual([]);
+			expect(h.appends).toEqual([]);
+			expect(h.answers).toEqual(["internal error — nothing applied; check goblin logs"]);
+			expect(lines.some((l) => l.msg === "skill approval handler failed")).toBe(true);
+		} finally {
+			chmodSync(h.proposedDir, 0o755);
+			expect(existsSync(join(h.proposedDir, "smoke-test", "SKILL.md"))).toBe(true);
+			h.cleanup();
+			setLogFile(null);
+			setLogWriter(null);
 		}
 	});
 

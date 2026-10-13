@@ -84,15 +84,19 @@ function installProposal(deps: SkillApprovalDeps, skill: string): InstallOutcome
 	let proposedStats;
 	try {
 		proposedStats = lstatSync(proposed);
-	} catch {
+	} catch (err) {
+		// Only absence is "gone" — permission or I/O failures are real
+		// filesystem state and must surface, not strip the buttons.
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 		return { ok: false, reason: "gone" };
 	}
 	if (proposedStats.isSymbolicLink()) return { ok: false, reason: "proposal dir is a symlink" };
 	let targetStats;
 	try {
 		targetStats = lstatSync(target);
-	} catch {
+	} catch (err) {
 		// Live copy not there at all — plain move.
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 	}
 	if (targetStats?.isSymbolicLink()) return { ok: false, reason: "live skill is a symlink" };
 	mkdirSync(deps.skillsDir, { recursive: true });
@@ -125,7 +129,8 @@ function discardProposal(deps: SkillApprovalDeps, skill: string): { ok: boolean;
 	let stats;
 	try {
 		stats = lstatSync(proposed);
-	} catch {
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 		return { ok: false, reason: "gone" };
 	}
 	if (stats.isSymbolicLink()) return { ok: false, reason: "proposal dir is a symlink" };
@@ -162,13 +167,17 @@ export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
 			await answer("unknown button");
 			return;
 		}
-		if (query.message === undefined) {
-			// The notice died — the action is still decided on disk.
-			await runDecision(parsed, null);
-			await answer();
-			return;
+		try {
+			// A missing notice only loses the stamp — the action still
+			// decides on disk with a null query.
+			await runDecision(parsed, query.message === undefined ? null : query);
+		} catch (err) {
+			// A filesystem error that isn't absence — the decision did not
+			// happen, the buttons stay, and the tap gets the failure line
+			// rather than a silently dead press.
+			await answer("internal error — nothing applied; check goblin logs");
+			throw err;
 		}
-		await runDecision(parsed, query);
 		await answer();
 	};
 

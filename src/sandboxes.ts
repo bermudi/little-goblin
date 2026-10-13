@@ -219,17 +219,23 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		}
 	}
 
+	// The image gate belongs to the caller's timing: reset must fail
+	// before the rm, while the filesystem still stands. Callers check
+	// once, at the point that ordering matters.
+	async function requireImage(image: string, conv: string): Promise<void> {
+		if (!(await podman.imageExists(image, conv))) {
+			throw new SandboxError(
+				`image ${image} is not in the local store; ask the operator to run: podman pull ${image}`,
+			);
+		}
+	}
+
 	async function createContainer(
 		name: string,
 		image: string,
 		wantNetwork: boolean,
 		conv: string,
 	): Promise<void> {
-		if (!(await podman.imageExists(image, conv))) {
-			throw new SandboxError(
-				`image ${image} is not in the local store; ask the operator to run: podman pull ${image}`,
-			);
-		}
 		await podman.networkEnsure(networkName, conv);
 		const c = cfg();
 		await podman.create(
@@ -309,6 +315,7 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		if (row !== null) {
 			// Missing with a row: recreate from the row — image and
 			// intended network — and say the prior filesystem is gone.
+			await requireImage(row.image, conv);
 			await createContainer(name, row.image, row.network, conv);
 			store.touch(conv, now);
 			log.info("sandbox recreated", { conversation: conv, container: name });
@@ -318,6 +325,7 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			};
 		}
 		const image = cfg().image;
+		await requireImage(image, conv);
 		await createContainer(name, image, false, conv);
 		store.put({
 			conversationId: conv,
@@ -502,11 +510,7 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				// The image gate runs before the rm: a bad ref must fail
 				// with the old container still standing, not after its
 				// filesystem is already gone.
-				if (!(await podman.imageExists(target, conv))) {
-					throw new SandboxError(
-						`image ${target} is not in the local store; ask the operator to run: podman pull ${target}`,
-					);
-				}
+				await requireImage(target, conv);
 				const ins = await podman.inspect(name, conv);
 				if (ins.state !== "missing") {
 					requireOurs(name, ins);

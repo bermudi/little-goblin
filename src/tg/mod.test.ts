@@ -21,7 +21,7 @@ const baseConfig: Config = {
 	thinking: "medium",
 	operators: [1],
 	allowedUsers: [2],
-	telegram: { dmGapMinutes: 45 },
+	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	http: { port: 8787 },
 	logLevel: "info",
 };
@@ -239,6 +239,12 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 		},
 		editForumTopic: () => Promise.resolve(true),
 		sendChatAction: () => Promise.resolve(true),
+		sendMessageDraft: () => Promise.resolve(true),
+		sendRichMessageDraft: () => Promise.resolve(true),
+		sendRichMessage: (_c: unknown, rm: { markdown: string }) => {
+			apiCalls.push({ method: "sendRichMessage", text: rm.markdown });
+			return Promise.resolve({ message_id: apiCalls.length });
+		},
 		sendVoice: () => Promise.resolve({ message_id: 1 }),
 	} as unknown as IntakeEnv["api"];
 	const buffer = {
@@ -388,7 +394,7 @@ describe("handleMessage", () => {
 	});
 
 	test("a demotion landing mid-follow-up-check still drops the batch at commit", async () => {
-		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0 } });
+		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false } });
 		// chat 2 = allowedUsers. An answered exchange lets the burst
 		// reach the check instead of joining unanswered.
 		const old = h.store.rollDm(2, "/w");
@@ -425,7 +431,7 @@ describe("handleMessage", () => {
 		h.env.deps.configRef.current = {
 			...baseConfig,
 			allowedUsers: [],
-			telegram: { dmGapMinutes: 0 },
+			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
 		};
 		release();
 		await flushing;
@@ -876,10 +882,15 @@ describe("flushConversation", () => {
 		await flushTest(h.env, conv.id, [{ parts: [{ type: "text", text: "hi" }], replyTo: 1 }]);
 		expect(seen).not.toBeNull();
 		// The sink was released (not left ghosting "typing…"): its error
-		// path delivers the failure to Telegram.
+		// path delivers the failure to Telegram — either door, the intake
+		// config enables rich replies for DMs.
 		await Bun.sleep(10);
 		expect(
-			h.apiCalls.some((c) => c.method === "sendMessage" && c.text?.includes("queue closed")),
+			h.apiCalls.some(
+				(c) =>
+					(c.method === "sendMessage" || c.method === "sendRichMessage") &&
+					c.text?.includes("queue closed"),
+			),
 		).toBe(true);
 		expect(h.env.inbox.pending()).toEqual([]); // commit precedes admission
 	});
@@ -1223,7 +1234,7 @@ describe("rolling dm", () => {
 		const h = routerHarness({
 			...baseConfig,
 			operators: [1, 7],
-			telegram: { dmGapMinutes: 0 },
+			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
 		});
 		const calls: unknown[] = [];
 		h.env.deps.followUpGate = () => ({
@@ -1266,7 +1277,7 @@ describe("rolling dm", () => {
 		const h = routerHarness({
 			...baseConfig,
 			operators: [1, 7],
-			telegram: { dmGapMinutes: 0 },
+			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
 		});
 		const calls: unknown[] = [];
 		h.env.deps.followUpGate = () => ({
@@ -1374,7 +1385,7 @@ describe("manual DM navigation", () => {
 	});
 
 	test("other-bot commands make no routing changes, including unknown commands", async () => {
-		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0 } });
+		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false } });
 		for (const [i, text] of [
 			"/new@otherbot",
 			"/back@otherbot",
@@ -1414,7 +1425,7 @@ describe("manual DM navigation", () => {
 		const h = routerHarness({
 			...baseConfig,
 			operators: [1, chat.id],
-			telegram: { dmGapMinutes: 0 },
+			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
 		});
 		const old = h.store.rollDm(chat.id, "/w");
 		// An answered exchange — without one the burst never reaches the check.

@@ -588,3 +588,59 @@ preferring the normal path); the `answerGuestQuery` deadline
 (placeholder-first makes it moot); the edit window on guest messages.
 Media in third-party summonses is caption text only in v1 — photo
 intake for the member surface is a follow-up, not a ruling.
+
+## Formatted replies & draft streaming (ruling 2026-10-12)
+
+Bot API 10.3 gives goblin two primitives it never had: **rich messages**
+(`sendRichMessage`, markdown/html/blocks, 32 768-char cap, no edit after
+send) and **drafts** (`sendMessageDraft`/`sendRichMessageDraft`, a 30-second
+ephemeral preview that must be followed by a real send to persist). Probed
+live 2026-10-12 in the operator DM: markdown renders, 6 KB passes,
+`expandable_blockquote` works on plain sends, both draft variants stream and
+refresh at ≤15 s cadence. Rich messages cannot be edited — ever.
+
+**Streaming = rich drafts, finalizing = one rich send.** A running turn
+streams its accumulated markdown into `sendRichMessageDraft` (same
+`draft_id` per turn, refreshed by the existing ~1 s throttle — well inside
+the TTL) and on completion sends the same content once via
+`sendRichMessage`. The preview is the message, formatting included; the
+hand-off (draft vanishes, real message lands) is accepted behavior, not a
+bug to smooth over. Drafts replace the typing indicator entirely.
+
+**DMs only in v1.** Group and topic conversations keep the current
+edit-streaming sink untouched; group rich rendering and reply-threading are
+unprobed. Guests never see either primitive.
+
+**Kill switch, not feature flag.** `telegram.richReplies` (bool, default
+true): false restores the plain-text sink verbatim. A phone-only operator
+needs a config off-switch if streaming misbehaves, not a code deploy. Any
+rich-path failure at runtime (draft or send) degrades to the plain path for
+that turn, logs `reply fallback`, and never loses the reply. Length drain:
+the 32 768-char cap replaces the 3 800-char chunking for rich sends; the
+drain remains as fallback only.
+
+**Reasoning (`telegram.showReasoning`, bool, default false, DMs only).**
+Off by default everywhere. When on, reasoning streams into its own draft
+bubble ahead of the answer and lands in the final message as a collapsed
+block (expandable) above the reply text. The exact collapsible syntax in
+the rich markdown dialect is unprobed — pin it with one probe at
+implementation; if the dialect has none, compose the final message from
+blocks with a details block instead. Reasoning never renders for guests,
+regardless of the flag.
+
+**Buttons and small parts.** Rating 👍/👎 keyboards strip themselves after
+a tap (`editMessageReplyMarkup` to empty, `DisabledButton` where layout
+should persist); mail approval already does this. `force_reply` is
+declined for now — no in-scope consumer. Porting the app channel's `ui`
+tool to Telegram would reverse the chat-native ruling in design/app.md and
+needs its own conversation; explicitly out of scope here.
+
+**Prompt.** `prompt.ts` already tells the model Telegram messages are
+Markdown; implementation updates that line to say markdown *renders*, and
+that collapsible blocks are available for long asides.
+
+**Logging.** Per-chunk draft sends stay silent (throttle territory). Per
+turn: chosen mode (`rich|plain`), fallback events with the API error, the
+final send, and whether a reasoning block was attached. Test seams at the
+grammy boundary as everywhere else; pin mode selection, DM gating, the
+fallback path, and the config schema.

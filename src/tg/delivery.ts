@@ -17,6 +17,19 @@ const EDIT_INTERVAL_MS = 1_000;
 const TYPING_INTERVAL_MS = 4_000;
 // Leave headroom under Telegram's 4096 limit for the status block.
 const CHUNK_LIMIT = 3800;
+// Rich messages cap at 32768 chars (Bot API 10.3); headroom under the
+// cap for the reasoning block's markup and the status tail.
+const RICH_LIMIT = 32_000;
+// The reasoning block's fixed markup, plus one char for the tail-cut
+// "…" marker — the budget check below sizes the escaped text into
+// what's left of the send.
+const REASONING_BLOCK_OVERHEAD =
+	"<details><summary>Thinking</summary>\n<pre></pre>\n</details>\n\n".length + 1;
+// Draft ids must be non-zero; updates under one id animate. A process
+// counter is enough — drafts are ephemeral and chat-local. Two per rich
+// sink: the answer bubble and, when showReasoning is on, the reasoning
+// bubble ahead of it.
+let nextDraftId = 1;
 // onDone drains the queue itself — enough headroom for ~95KB of backlog.
 const MAX_DRAIN_ITERATIONS = 25;
 const MAX_STAGNANT = 3;
@@ -64,6 +77,15 @@ export interface DeliveryVoiceDeps {
 // The conversation store satisfies it.
 export interface DeliveryRatingDeps {
 	lastReplyAnchor(conversationId: string): number | null;
+}
+
+// Rich replies (design/telegram.md, ruling 2026-10-12): draft streaming
+// and one markdown render per DM turn. `enabled` is the config kill
+// switch (telegram.richReplies); DM gating and voice-mode exclusion
+// happen in the sink. `reasoning` is telegram.showReasoning.
+export interface RichSinkOpts {
+	enabled?: boolean;
+	reasoning?: boolean;
 }
 
 function replyKey(chatId: number, messageId: number): string {
@@ -150,6 +172,7 @@ export function makeDeliverySink(
 	typingIntervalMs = TYPING_INTERVAL_MS,
 	maxDrainIterations = MAX_DRAIN_ITERATIONS,
 	rating?: DeliveryRatingDeps,
+	rich?: RichSinkOpts,
 ): TurnSink {
 	// Routing bug alarm (DESIGN.md, App channel): app conversations have
 	// no Telegram door — their sink is the HTTP stream. A silent send
@@ -229,6 +252,19 @@ export function makeDeliverySink(
 	// restart a typing indicator on a dead sink.
 	let sinkDone = false;
 
+	// Rich mode degrades to the plain path on any rich failure — the
+	// reply never hangs on formatting. DMs only; voice turns own their
+	// delivery; guests never get here (guest.ts passes no opts).
+	const richOpts = rich;
+	const answerDraftId = nextDraftId++;
+	const reasonDraftId = nextDraftId++;
+	let richMode = richOpts?.enabled === true && conv.id.startsWith("dm:") && !voice?.voiceMode;
+	let reasoningText = "";
+	let reasoningPushed = 0;
+	let reasoningSentAt = 0;
+	let lastDraftBody = "";
+	let lastDraftSentAt = 0;
+
 	function enqueue(fn: () => Promise<void>): void {
 		chain = chain.then(() =>
 			fn().catch((err: unknown) => {
@@ -239,6 +275,21 @@ export function makeDeliverySink(
 
 	function sendTyping(): void {
 		if (!mayDeliver()) return;
+		if (richMode) {
+			// The draft bubble is the indicator; refresh only on new content
+			// or TTL keep-alive — identical re-sends would re-animate the
+			// bubble every 4 s. The reasoning bubble's own growth/staleness
+			// counts too: a long thinking stretch with no answer text must
+			// still keep its draft alive.
+			const body = rendered();
+			const stale =
+				body !== lastDraftBody ||
+				Date.now() - lastDraftSentAt > 20_000 ||
+				reasoningText.length !== reasoningPushed ||
+				(reasoningText !== "" && Date.now() - reasoningSentAt > 20_000);
+			if (stale) pushDrafts(body);
+			return;
+		}
 		withTimeout(
 			api.sendChatAction(conv.chatId, "typing", {
 				...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
@@ -368,6 +419,111 @@ export function makeDeliverySink(
 		return text + status;
 	}
 
+	// Shared rich-failure policy for the draft sends: a draft is an
+	// ephemeral preview — nothing real can have landed, so even a
+	// timeout is a stall, never delivery uncertainty. Every draft
+	// failure degrades the turn to the plain path; the reply is never
+	// lost to a dead preview. The real sendRichMessage keeps
+	// markUncertain — its timeout means the reply may be live.
+	function richFailure(err: unknown, method: string): never {
+		log.warn("rich delivery failed — falling back to plain", err, {
+			conversation: conv.id,
+			chat: conv.chatId,
+			method,
+		});
+		richMode = false;
+		throw err;
+	}
+
+	// Serialized draft updates: the reasoning bubble (when enabled) and
+	// the answer bubble. An empty body renders as the client's "Thinking…"
+	// placeholder; a markdown body is the live preview. Rich messages
+	// can't be edited, so the preview accumulates under one draft id and
+	// the 30 s TTL rides the typing tick above.
+	function pushDrafts(body: string): void {
+		// The reasoning bubble appears with the first reasoning delta —
+		// an empty draft pushed at sink start would sit there as a
+		// second perpetual "Thinking…" bubble on turns with no
+		// reasoning at all. Once live it re-pushes on growth or
+		// staleness: it stops growing early and would otherwise
+		// evaporate mid-turn (30 s TTL) while the answer keeps
+		// refreshing. The enqueued fns re-check richMode — a mid-turn
+		// degrade must not fire queued drafts at a dead path.
+		if (
+			richOpts?.reasoning === true &&
+			reasoningText !== "" &&
+			(reasoningText.length !== reasoningPushed || Date.now() - reasoningSentAt > 20_000)
+		) {
+			const snap = reasoningText;
+			reasoningPushed = snap.length;
+			reasoningSentAt = Date.now();
+			enqueue(async () => {
+				if (!mayDeliver() || !richMode) return;
+				// Raw reasoning is not markdown and the plain draft caps at
+				// 4096 chars — show the tail.
+				const tail = snap.length > 4000 ? `…${snap.slice(-4000)}` : snap;
+				try {
+					await withTimeout(
+						api.sendMessageDraft(conv.chatId, reasonDraftId, tail),
+						"sendMessageDraft",
+					);
+				} catch (err) {
+					if (isNotModifiedError(err)) return;
+					richFailure(err, "sendMessageDraft");
+				}
+			});
+		}
+		lastDraftBody = body;
+		lastDraftSentAt = Date.now();
+		const method = body === "" ? "sendMessageDraft" : "sendRichMessageDraft";
+		enqueue(async () => {
+			if (!mayDeliver() || !richMode) return;
+			try {
+				if (body === "") {
+					await withTimeout(api.sendMessageDraft(conv.chatId, answerDraftId, ""), method);
+				} else {
+					await withTimeout(
+						api.sendRichMessageDraft(conv.chatId, answerDraftId, { markdown: body }),
+						method,
+					);
+				}
+			} catch (err) {
+				if (isNotModifiedError(err)) return;
+				richFailure(err, method);
+			}
+		});
+	}
+
+	// Collapsed reasoning block for the final rich message. Syntax pinned
+	// by probe 2026-10-12: <details>/<summary> renders collapsed in the
+	// rich markdown dialect; <tg-details> does not parse. Reasoning is
+	// raw text, not markdown — the <pre> wrapper keeps **, $$, ||
+	// spoilers and [x](y) literal instead of parsed (or 400-ing the
+	// send); HTML metachars still need escaping, & before <. The block
+	// sizes itself into the send's remaining budget so a long reply
+	// never pushes the combined markdown over the cap — drops out
+	// entirely when there's no room.
+	function reasoningBlock(budget: number): string {
+		if (richOpts?.reasoning !== true) return "";
+		const trimmed = reasoningText.trim();
+		if (trimmed === "") return "";
+		// Escape before measuring — entities expand up to 5x.
+		const escaped = trimmed.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+		const room = Math.min(8_000, budget - REASONING_BLOCK_OVERHEAD);
+		if (room <= 0) return "";
+		if (escaped.length <= room) {
+			return `<details><summary>Thinking</summary>\n<pre>${escaped}</pre>\n</details>\n\n`;
+		}
+		// A slice that opens mid-entity ("&am…") would print the fragment
+		// literally — when a ';' shows before the first '&' the cut
+		// landed inside one; drop it.
+		let tail = escaped.slice(-room);
+		const semi = tail.indexOf(";");
+		const amp = tail.indexOf("&");
+		if (semi !== -1 && (amp === -1 || semi < amp)) tail = tail.slice(semi + 1);
+		return `<details><summary>Thinking</summary>\n<pre>…${tail}</pre>\n</details>\n\n`;
+	}
+
 	// Push the current rendered output to Telegram: fixed-position chunks
 	// become messages, the trailing one is edited in place. A sent chunk
 	// whose displayed content no longer matches its window gets re-edited
@@ -376,6 +532,19 @@ export function makeDeliverySink(
 	function flush(): void {
 		if (!mayDeliver()) return;
 		const body = rendered();
+		if (richMode) {
+			if (body.length > RICH_LIMIT) {
+				log.warn("rich reply over cap — plain chunks from here", {
+					conversation: conv.id,
+					chars: body.length,
+				});
+				richMode = false;
+			} else {
+				pushDrafts(body);
+				lastEdit = Date.now();
+				return;
+			}
+		}
 		const needed = Math.ceil(body.length / CHUNK_LIMIT);
 		while (chunks.length < needed) chunks.push({ id: -1, shown: "" });
 		// Seams are recomputed each flush so both neighbours share one
@@ -500,6 +669,25 @@ export function makeDeliverySink(
 		return n;
 	}
 
+	// One keyboard, one edit — editMessageReplyMarkup replaces the whole
+	// markup, so the rating row and 🔊 stamp together or the second call
+	// erases the first. Shared by the plain and rich finalize paths; on a
+	// rich message the edit lands after the send (probed working).
+	function buildKeyboard(): Array<Array<{ text: string; callback_data: string }>> | null {
+		if (rating === undefined && voice === undefined) return null;
+		const anchor = rating?.lastReplyAnchor(conv.id) ?? null;
+		// One compact row per reply: 👍/👎 and 🔊 share it when both are on.
+		const row: Array<{ text: string; callback_data: string }> = [];
+		if (rating !== undefined) {
+			row.push(
+				{ text: "👍", callback_data: rateCallbackData("up", conv.id, anchor) },
+				{ text: "👎", callback_data: rateCallbackData("down", conv.id, anchor) },
+			);
+		}
+		if (voice !== undefined) row.push({ text: "🔊", callback_data: SPEAK_CALLBACK });
+		return [row];
+	}
+
 	return {
 		setAuthorityCheck(check) {
 			authoritative = check;
@@ -508,8 +696,13 @@ export function makeDeliverySink(
 			text += delta;
 			if (!voice?.voiceMode) maybeFlush();
 		},
-		onReasoningDelta() {
-			// Thinking stays in history, not in the chat stream.
+		onReasoningDelta(delta) {
+			// Off or plain path: thinking stays in history, not in the chat
+			// stream — unchanged. Rich + showReasoning streams it into its
+			// own draft bubble (design/telegram.md).
+			if (!richMode || richOpts?.reasoning !== true) return;
+			reasoningText += delta;
+			if (!voice?.voiceMode) maybeFlush();
 		},
 		onToolCall(toolName, input) {
 			const hint =
@@ -699,6 +892,103 @@ export function makeDeliverySink(
 			if (done.kind === "error") {
 				toolStatus.push(`⚠ ${done.message.slice(0, 200)}`);
 			}
+			// Rich finalize: one markdown send replaces the chunk drain. The
+			// drafts vanish when the send lands; 🫡 + keyboard ride the rich
+			// message (reply anchors, reactions and markup edits all work on
+			// rich messages — probed live 2026-10-12). A failure falls through
+			// to the plain drain with the same body.
+			if (richMode) {
+				await chain;
+				if (uncertain) {
+					await notifyUncertain();
+					return;
+				}
+				if (!mayDeliver()) {
+					await stampSuperseded();
+					return;
+				}
+				// Draft failures during that await degrade the turn — re-check
+				// before committing to the rich send; false falls through to
+				// the plain drain below.
+				if (richMode) {
+					const body = rendered();
+					if (body === "") {
+						log.warn("completed turn rendered empty", {
+							conversation: conv.id,
+							chat: conv.chatId,
+							...(conv.threadId !== null ? { thread: conv.threadId } : {}),
+						});
+						return;
+					}
+					// The reasoning block shares the one rich send and sizes
+					// into the body's remaining budget. A body that outgrew
+					// the cap between the last flush and onDone skips the
+					// doomed send and drains plain instead.
+					const md = reasoningBlock(RICH_LIMIT - body.length) + body;
+					if (md.length > RICH_LIMIT) {
+						log.warn("rich reply over cap — plain chunks from here", {
+							conversation: conv.id,
+							chars: md.length,
+						});
+						richMode = false;
+					} else {
+						try {
+							const sent = await withTimeout(
+								api.sendRichMessage(
+									conv.chatId,
+									{ markdown: md },
+									{
+										...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+										...(replyTo !== undefined ? { reply_parameters: { message_id: replyTo } } : {}),
+									},
+								),
+								"sendRichMessage",
+							);
+							log.info("delivered rich", {
+								conversation: conv.id,
+								message: sent.message_id,
+								...(conv.threadId !== null ? { thread: conv.threadId } : {}),
+								chars: md.length,
+								reasoning: md !== body,
+							});
+							if (done.kind === "completed") {
+								if (voice) rememberReply(conv.chatId, sent.message_id, text);
+								await withTimeout(
+									api.setMessageReaction(conv.chatId, sent.message_id, [
+										{ type: "emoji", emoji: "🫡" },
+									]),
+									"setMessageReaction",
+								).catch((err: unknown) => {
+									log.debug("rich reaction failed", { error: String(err) });
+								});
+								const keyboard = buildKeyboard();
+								if (keyboard !== null) {
+									await withTimeout(
+										api.editMessageReplyMarkup(conv.chatId, sent.message_id, {
+											reply_markup: { inline_keyboard: keyboard },
+										}),
+										"editMessageReplyMarkup",
+									).catch((err: unknown) => {
+										if (isNotModifiedError(err)) return;
+										log.debug("rich keyboard failed", { error: String(err) });
+									});
+								}
+							}
+							return;
+						} catch (err) {
+							if (err instanceof TelegramTimeoutError) {
+								markUncertain(err, "sendRichMessage");
+								await notifyUncertain();
+								return;
+							}
+							log.warn("rich finalize failed — falling back to plain", err, {
+								conversation: conv.id,
+							});
+							richMode = false;
+						}
+					}
+				}
+			}
 			// Final flush. No flush runs after this, so drain here: keep
 			// flushing while chunks remain unsent, retrying failures with a
 			// short backoff. Give up loudly rather than dropping the tail.
@@ -765,6 +1055,22 @@ export function makeDeliverySink(
 					unsent,
 				});
 			}
+			// Per-turn mode line (design/telegram.md): rich turns name
+			// their send in "delivered rich"; a plain turn — kill switch,
+			// non-DM, or a mid-turn degrade — must be identifiable too,
+			// not just per-message debug lines.
+			if (unsent === 0) {
+				const landed = chunks.filter((c) => c.id > 0).length;
+				if (landed > 0) {
+					log.info("delivered plain", {
+						conversation: conv.id,
+						chat: conv.chatId,
+						...(conv.threadId !== null ? { thread: conv.threadId } : {}),
+						messages: landed,
+						chars: rendered().length,
+					});
+				}
+			}
 			// Clean finish → 🫡 on the last bubble. The turn's end-marker:
 			// visible, silent (reactions don't notify), and it rides the
 			// exact message that finished. Errors already surface as ⚠ in
@@ -782,21 +1088,9 @@ export function makeDeliverySink(
 							"setMessageReaction",
 						);
 					});
-					// One keyboard, one row, one edit —
-					// editMessageReplyMarkup replaces the whole markup, so
-					// rating and 🔊 stamp together or the second call erases the
-					// first.
-					if (rating !== undefined || voice !== undefined) {
-						const anchor = rating?.lastReplyAnchor(conv.id) ?? null;
-						const row: Array<{ text: string; callback_data: string }> = [];
-						if (rating !== undefined) {
-							row.push(
-								{ text: "👍", callback_data: rateCallbackData("up", conv.id, anchor) },
-								{ text: "👎", callback_data: rateCallbackData("down", conv.id, anchor) },
-							);
-						}
-						if (voice !== undefined) row.push({ text: "🔊", callback_data: SPEAK_CALLBACK });
-						const keyboard = [row];
+					// One keyboard, one edit — see buildKeyboard above.
+					const keyboard = buildKeyboard();
+					if (keyboard !== null) {
 						enqueue(async () => {
 							if (!mayDeliver()) return;
 							try {

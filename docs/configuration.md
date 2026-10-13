@@ -221,6 +221,16 @@ http: { port: 8787 },
   app registration on the server side. The Telegram client reads this at
   startup: a change saved from Settings is written at once but applies on
   the next restart (the status card lists it under "Restart applies").
+- `telegram.richReplies` — default `true`. Bot API 10.3 rich replies in
+  your DM: the answer streams as a live draft bubble and lands as one
+  formatted markdown message. `false` restores plain-text delivery
+  (chunked messages edited in place). Groups, topics and guests always
+  use the plain path. Editable in Settings → Telegram; applies to new
+  turns.
+- `telegram.showReasoning` — default `false`. With rich replies on, the
+  model's thinking streams into its own draft bubble and lands as a
+  collapsed "Thinking" block above the answer. DMs only; guests never
+  see it regardless of the flag. Same edit path as `richReplies`.
 - `publicUrl` — the external HTTPS address of the web surfaces (the mini
   app and the app channel both hang off it — e.g. via `tailscale serve`,
   `tailscale funnel`, or any reverse proxy pointing at

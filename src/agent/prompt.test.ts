@@ -80,14 +80,14 @@ describe("buildSystemPrompt", () => {
 		try {
 			const tg = buildSystemPrompt(conv, tools);
 			expect(tg.text).toContain("via Telegram (dm-1)");
-			expect(tg.text).toContain("Telegram is the UI");
+			expect(tg.text).toContain("Telegram renders Markdown in DMs");
 			const app = buildSystemPrompt(
 				{ ...conv, id: "app/chat-01", chatId: 0, threadId: null },
 				tools,
 			);
 			expect(app.text).toContain("via the goblin app (app/chat-01)");
 			expect(app.text).toContain("The goblin app is the UI");
-			expect(app.text).not.toContain("Telegram is the UI");
+			expect(app.text).not.toContain("Telegram renders Markdown");
 		} finally {
 			delete process.env.GOBLIN_HOME;
 		}

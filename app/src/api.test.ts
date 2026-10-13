@@ -132,7 +132,7 @@ describe("operator surface", () => {
 			fetch: "",
 			operators: [1],
 			allowedUsers: [1],
-			telegram: { apiRoot: "", dmGapMinutes: 45 },
+			telegram: { apiRoot: "", dmGapMinutes: 45, richReplies: true, showReasoning: false },
 			publicUrl: "",
 			http: { port: 8787 },
 			memory: "",

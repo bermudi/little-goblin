@@ -284,6 +284,9 @@ function runDeploy(changed: string[] = [], options: Options = {}) {
 			newRev,
 			marker,
 			attempt,
+			// Captured before cleanup — the fixture dir is gone by the
+			// time a test could stat the returned path itself.
+			attemptExists: existsSync(attempt),
 			markerValue:
 				existsSync(marker) && options.marker !== "directory"
 					? readFileSync(marker, "utf8").trim()
@@ -299,6 +302,9 @@ function runDeploy(changed: string[] = [], options: Options = {}) {
 function expectPreflightFailure(result: ReturnType<typeof runDeploy>, diagnostic: string) {
 	expect(result.status).not.toBe(0);
 	expect(result.stderr).toContain(diagnostic);
+	// Nothing has mutated yet, so no rollback recipe is printed.
+	expect(result.stderr).not.toContain("FAILED");
+	expect(result.stderr).not.toContain("git reset --hard");
 	expect(
 		result.calls.some(
 			(call) =>
@@ -474,6 +480,13 @@ describe("local deployment failures and memory probe", () => {
 			expect(result.stderr.length).toBeGreaterThan(0);
 			expect(result.markerValue).toBe(result.oldRev);
 			expect(result.stdout).not.toContain("deploy: done:");
+			// Post-publish failures print recovery without rolling back or
+			// clearing the attempt marker.
+			expect(result.stderr).toContain("FAILED — the attempt marker stays");
+			expect(result.stderr).toContain(
+				`git reset --hard ${result.oldRev} && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin`,
+			);
+			expect(result.attemptExists).toBe(true);
 			if (["typecheck", "install", "build", "restart", "journal"].includes(mode))
 				expect(result.stderr).toContain(`${mode} failed`);
 			if (mode === "typecheck") {
@@ -504,6 +517,13 @@ describe("local deployment failures and memory probe", () => {
 		});
 	}
 
+	test("a failed first deployment reports failure state but no rollback recipe", () => {
+		const result = runDeploy([], { marker: "missing", mode: "typecheck" });
+		expect(result.status).not.toBe(0);
+		expect(result.stderr).toContain("FAILED — the attempt marker stays");
+		expect(result.stderr).not.toContain("git reset --hard");
+	});
+
 	test("fresh journal errors are visible warnings, not hidden or a read failure", () => {
 		const result = runDeploy([], { mode: "journal-errors" });
 		expect(result.status).toBe(0);
@@ -525,7 +545,7 @@ describe("deployment attempt marker", () => {
 		expect(result.calls).toContain("bun install --frozen-lockfile");
 		expect(result.calls).toContain("bun run app:build");
 		expect(result.markerValue).toBe(result.newRev);
-		expect(existsSync(result.attempt!)).toBe(false);
+		expect(result.attemptExists).toBe(false);
 	});
 
 	test("a linked worktree resolves the attempt marker inside its own gitdir", () => {
@@ -534,7 +554,7 @@ describe("deployment attempt marker", () => {
 		expect(result.attempt).toContain("/.git/worktrees/");
 		expect(result.calls).toContain("bun install --frozen-lockfile");
 		expect(result.calls).toContain("bun run app:build");
-		expect(existsSync(result.attempt!)).toBe(false);
+		expect(result.attemptExists).toBe(false);
 	});
 });
 

@@ -3,7 +3,8 @@
 # Never push, fetch or pull: origin/main remains the separate review baseline.
 # The client is served from disk, so building it and restarting the backend
 # are one approved rollout. Memory assets are never auto-applied.
-# Rollback must restore ignored deps/client as well as the tracked revision.
+# Rollback must restore ignored deps/client as well as the tracked revision;
+# the recipe prints on success and on any failure after the attempt marker.
 set -euo pipefail
 
 fail() { echo "deploy: $*" >&2; exit 1; }
@@ -105,6 +106,31 @@ mv -f "$incomplete_tmp" "$incomplete" ||
 	{ rm -f "$incomplete_tmp"; fail "cannot update deployment attempt marker: $incomplete"; }
 sync -d "$marker_dir" || fail "cannot flush deployment attempt marker directory"
 
+# From here a failure can leave ignored dependencies, the served bundle, or
+# the unit mid-rollout — print recovery on any nonzero exit. Never roll back
+# automatically and never clear the attempt marker from the trap: its
+# presence is what forces the next run's refresh.
+rollback_cmd=""
+if [ -n "$old_rev" ]; then
+	printf -v rollback_marker '%q' "$marker"
+	rollback_cmd="git reset --hard $old_rev && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin && echo $old_rev > $rollback_marker"
+fi
+on_exit() {
+	rc=$?
+	if [ "$rc" -ne 0 ]; then
+		if [ -e "$incomplete" ]; then
+			echo "deploy: FAILED — the attempt marker stays, so the next run refreshes dependencies and client" >&2
+		else
+			echo "deploy: FAILED" >&2
+		fi
+		if [ -n "$rollback_cmd" ]; then
+			echo "deploy: rollback: $rollback_cmd" >&2
+		fi
+	fi
+	exit "$rc"
+}
+trap on_exit EXIT
+
 # --- 2. Refresh deps --------------------------------------------------------
 # Before the gate: the typecheck must read new_rev's dependency tree, not
 # whatever the previous deployment left in node_modules — a merge that adds
@@ -198,7 +224,6 @@ sync -d "$marker_dir" || fail "cannot flush deployment marker directory"
 rm -f "$incomplete" || fail "cannot clear deployment attempt marker: $incomplete"
 sync -d "$marker_dir" || fail "cannot flush deployment attempt marker removal"
 step "done: g7 @ ${new_rev:0:7}"
-if [ -n "$old_rev" ]; then
-	printf -v rollback_marker '%q' "$marker"
-	step "rollback: git reset --hard $old_rev && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin && echo $old_rev > $rollback_marker"
+if [ -n "$rollback_cmd" ]; then
+	step "rollback: $rollback_cmd"
 fi

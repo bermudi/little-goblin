@@ -171,13 +171,15 @@ import type { AuthStore } from "../auth.ts";
 import { CoalescingBuffer } from "./buffer.ts";
 import {
 	flushConversation,
+	handleEditedMessage,
 	handleMessage,
 	handleMessageDurably,
 	replayInbox,
 	InboxRecordError,
+	type BufferedItem,
 	type IntakeEnv,
 } from "./mod.ts";
-import { openTelegramInbox } from "./inbox.ts";
+import { openTelegramInbox, type InboxPayload } from "./inbox.ts";
 import { openPings, type PingStore } from "./pings.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 import { log } from "../log.ts";
@@ -326,12 +328,19 @@ function flushTest(
 			media: null,
 			mediaError: null,
 		});
+		// Mirroring enqueuePersisted's slot bookkeeping — inert here since
+		// fixture items never take the edited_message amend path.
+		const textIndex = item.parts.findIndex(
+			(p) => p.type === "text" && !p.text.startsWith("[replying to:"),
+		);
 		return {
 			parts: item.parts,
 			replyTo: item.replyTo,
 			updateId,
 			chatId: item.chatId ?? -100,
 			...(item.quoted !== undefined ? { quoted: item.quoted } : {}),
+			textIndex: Math.max(0, textIndex),
+			hasText: textIndex >= 0,
 		};
 	});
 	return flushConversation(env, convId, buffered);
@@ -1203,6 +1212,176 @@ describe("durable intake", () => {
 		await Promise.all([...h.env.intake.values()]);
 		expect(h.pushed.map((item) => item.conv)).toEqual(["dm:2", "dm:1", "dm:1"]);
 		expect(h.pushed[2]!.parts).toEqual([{ type: "text", text: "second" }]);
+		h.store.close();
+	});
+});
+
+describe("handleEditedMessage", () => {
+	function realBuffer(h: RouterHarness): {
+		buffer: CoalescingBuffer<BufferedItem>;
+		batches: BufferedItem[][];
+	} {
+		const batches: BufferedItem[][] = [];
+		const buffer = new CoalescingBuffer<BufferedItem>(60_000, (_key, items) => {
+			batches.push(items);
+		});
+		h.env.buffer = buffer;
+		return { buffer, batches };
+	}
+
+	function pendingItem(
+		h: RouterHarness,
+		buffer: CoalescingBuffer<BufferedItem>,
+		over: {
+			updateId: number;
+			lane: string;
+			messageId: number;
+			chatId?: number;
+			text: string;
+			media?: InboxPayload["media"];
+		},
+	): void {
+		const chatId = over.chatId ?? 2;
+		h.env.inbox.record(over.updateId, {
+			conversationId: over.lane,
+			chatId,
+			messageId: over.messageId,
+			text: over.text,
+			media: over.media ?? null,
+			mediaError: null,
+		});
+		const parts: UIMessage["parts"] =
+			over.text === "" ? [] : [{ type: "text", text: over.text }];
+		buffer.push(over.lane, {
+			updateId: over.updateId,
+			parts,
+			chatId,
+			replyTo: over.messageId,
+			textIndex: 0,
+			hasText: over.text !== "",
+		});
+	}
+
+	test("an edit inside the window rewrites the buffered text and the durable row", async () => {
+		const h = routerHarness();
+		const { buffer, batches } = realBuffer(h);
+		pendingItem(h, buffer, {
+			updateId: 700,
+			lane: "dm:2",
+			messageId: 42,
+			text: "helo",
+		});
+		handleEditedMessage(
+			h.env,
+			tgMsg({ message_id: 42, chat: { id: 2, type: "private" }, text: "hello" }),
+		);
+		await h.env.intake.get("dm:2");
+		await buffer.drain();
+		// The edit amends the batch — the fix is what the turn reads.
+		expect(batches).toEqual([
+			[expect.objectContaining({ parts: [{ type: "text", text: "hello" }] })],
+		]);
+		// payload_json holds the corrected text too — a crash-replay sees
+		// the same burst the live buffer carried.
+		expect(h.env.inbox.pending().map((e) => e.payload.text)).toEqual(["hello"]);
+		h.store.close();
+	});
+
+	test("an edit landing mid-intake still finds the item behind the pending media step", async () => {
+		const h = routerHarness();
+		const { buffer, batches } = realBuffer(h);
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		h.env.api.getFile = async () => {
+			await gate;
+			// Absolute path takes the local-copy branch — the copy fails
+			// fast ENOENT, no network in the test.
+			return { file_path: "/nonexistent/f.jpg" } as never;
+		};
+		handleMessage(
+			h.env,
+			tgMsg({
+				message_id: 43,
+				chat: { id: 2, type: "private" },
+				caption: "helo",
+				photo: [{ file_id: "f", file_unique_id: "u-1", width: 8, height: 8 }],
+			}),
+			701,
+		);
+		// The original's getFile is still pending — the edit chains behind
+		// it on the lane, so the amend runs after the push, not before.
+		handleEditedMessage(
+			h.env,
+			tgMsg({
+				message_id: 43,
+				chat: { id: 2, type: "private" },
+				caption: "hello",
+				photo: [{ file_id: "f", file_unique_id: "u-1", width: 8, height: 8 }],
+			}),
+		);
+		release();
+		await Promise.all([...h.env.intake.values()]);
+		await buffer.drain();
+		// Slot 0 is the amended sender text — the failed-attachment tail
+		// sits after it.
+		expect(batches[0]![0]!.parts[0]).toEqual({ type: "text", text: "hello" });
+		expect(h.env.inbox.pending()[0]!.payload.text).toBe("hello");
+		h.store.close();
+	});
+
+	test("an edit after the batch committed changes nothing", async () => {
+		const h = routerHarness();
+		realBuffer(h);
+		h.env.inbox.record(702, {
+			conversationId: "dm:2",
+			chatId: 2,
+			messageId: 44,
+			text: "helo",
+			media: null,
+			mediaError: null,
+		});
+		h.env.inbox.commitBatch([702], "dm:2", () => {});
+		handleEditedMessage(
+			h.env,
+			tgMsg({ message_id: 44, chat: { id: 2, type: "private" }, text: "hello" }),
+		);
+		// No pending row, nothing enqueued — a tombstone replay never
+		// reads and the landed turn keeps its history.
+		expect(h.env.inbox.pending()).toEqual([]);
+		h.store.close();
+	});
+
+	test("an edit that swaps the media leaves the original standing", async () => {
+		const h = routerHarness();
+		const { buffer, batches } = realBuffer(h);
+		pendingItem(h, buffer, {
+			updateId: 703,
+			lane: "dm:2",
+			messageId: 45,
+			text: "helo",
+			media: {
+				fileId: "f1",
+				fileUniqueId: "u-1",
+				fileName: "photo-u-1.jpg",
+				mimeType: "image/jpeg",
+			},
+		});
+		handleEditedMessage(
+			h.env,
+			tgMsg({
+				message_id: 45,
+				chat: { id: 2, type: "private" },
+				caption: "hello",
+				photo: [{ file_id: "f2", file_unique_id: "u-2", width: 8, height: 8 }],
+			}),
+		);
+		await h.env.intake.get("dm:2");
+		await buffer.drain();
+		// fileUniqueId moved — this is a different message, not a fix.
+		expect(batches[0]![0]!.parts).toEqual([{ type: "text", text: "helo" }]);
+		expect(h.env.inbox.pending()[0]!.payload.text).toBe("helo");
 		h.store.close();
 	});
 });

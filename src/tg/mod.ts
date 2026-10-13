@@ -97,7 +97,7 @@ export function conversationAddress(msg: {
 	return { kind: "dm", chatId: msg.chat.id };
 }
 
-interface BufferedItem {
+export interface BufferedItem {
 	updateId: number;
 	// The chat the message arrived in — an app lane needs it to ack the
 	// ping reply, the conversation's own chat_id being the 0 filler.
@@ -107,6 +107,12 @@ interface BufferedItem {
 	// Set when the message quoted another. Presence alone counts as a
 	// reply for rolling-DM routing — an empty quote still joins.
 	quoted?: { messageId: number; text: string };
+	// The edited_message door (design/telegram.md): the slot in parts
+	// where this message's own text/caption lives — or where an
+	// edited-in one goes when hasText is false (the quoted context
+	// always leads at 0). Parts after it are media/error tails.
+	textIndex: number;
+	hasText: boolean;
 }
 
 // A failed durable insert must stop polling, not allow grammy to acknowledge
@@ -547,7 +553,9 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 		if (quoted !== undefined && quoted.text !== "") {
 			parts.push({ type: "text", text: `[replying to: "${quoted.text.slice(0, 2_000)}"]` });
 		}
-		if (text !== "") parts.push({ type: "text", text });
+		const textIndex = parts.length;
+		const hasText = text !== "";
+		if (hasText) parts.push({ type: "text", text });
 		if (mediaError !== null) {
 			log.error("media intake failed", mediaError, { conversation: convId });
 			parts.push({
@@ -596,6 +604,97 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 			chatId: payload.chatId,
 			replyTo: messageId,
 			...(quoted !== undefined ? { quoted } : {}),
+			textIndex,
+			hasText,
+		});
+	});
+}
+
+// Rewrite one buffered item's sender-text slot for an edited_message:
+// replace in place, splice out on an emptied caption, or insert ahead
+// of the media/error tail when the original carried none.
+function amendBufferedText(item: BufferedItem, text: string): void {
+	if (item.hasText) {
+		if (text === "") {
+			item.parts.splice(item.textIndex, 1);
+			item.hasText = false;
+		} else {
+			item.parts[item.textIndex] = { type: "text", text };
+		}
+		return;
+	}
+	if (text !== "") {
+		item.parts.splice(item.textIndex, 0, { type: "text", text });
+		item.hasText = true;
+	}
+}
+
+// Edits never re-enter history — the original already is it — but a
+// fix landing while the burst still coalesces amends the buffered text
+// in place (and the durable row with it, so a crash-replay sees the
+// same correction). Everything else stays an ack + log.
+export function handleEditedMessage(env: IntakeEnv, msg: Message): void {
+	const hit = env.inbox.pendingByMessage(msg.chat.id, msg.message_id);
+	if (hit === null) {
+		log.info("edited message acked — edits do not re-enter history", {
+			chat: msg.chat.id,
+			message: msg.message_id,
+		});
+		return;
+	}
+	// Inside the lane's intake chain the amend lands behind the
+	// message's own media resolution + push — an edit mid-intake still
+	// finds the item, and a commit that raced ahead re-checks to null.
+	// The chain resolves failures quietly (intake step failed is logged);
+	// the update itself is consumed either way.
+	void enqueueIntake(env.intake, hit.laneKey, async () => {
+		const pending = env.inbox.pendingByMessage(msg.chat.id, msg.message_id);
+		if (pending === null) {
+			log.info("edited message arrived after its batch committed", {
+				chat: msg.chat.id,
+				message: msg.message_id,
+			});
+			return;
+		}
+		// Text and caption edits amend; a media swap is a different
+		// message — the original stands. fileUniqueId is the same-file
+		// invariant across the edit.
+		let mediaUniqueId: string | null | undefined;
+		try {
+			mediaUniqueId = mediaFromMessage(msg)?.fileUniqueId ?? null;
+		} catch {
+			mediaUniqueId = undefined;
+		}
+		if (mediaUniqueId !== pending.mediaUniqueId) {
+			log.info("edited message changed media — original stands", {
+				chat: msg.chat.id,
+				message: msg.message_id,
+				updateId: pending.updateId,
+			});
+			return;
+		}
+		const text = msg.text ?? msg.caption ?? "";
+		const amended = env.buffer.amend(
+			pending.laneKey,
+			(item) => item.updateId === pending.updateId,
+			(item) => amendBufferedText(item, text),
+		);
+		if (!amended) {
+			log.info("edited message missed the coalescing window", {
+				chat: msg.chat.id,
+				message: msg.message_id,
+				updateId: pending.updateId,
+			});
+			return;
+		}
+		// The durable row follows the live batch — only while still
+		// pending: a committed row is a tombstone replay never reads.
+		env.inbox.amendPendingText(pending.updateId, text);
+		log.info("edited message amended in flight", {
+			chat: msg.chat.id,
+			message: msg.message_id,
+			updateId: pending.updateId,
+			lane: pending.laneKey,
 		});
 	});
 }
@@ -1123,14 +1222,10 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 
 	bot.on("message", (ctx) => handleMessageDurably(env, ctx.message, ctx.update.update_id));
 
-	// Edits never re-enter history — the original already is it — but
-	// must leave a trace: acked and logged.
-	bot.on("edited_message", (ctx) => {
-		log.info("edited message acked — edits do not re-enter history", {
-			chat: ctx.editedMessage.chat.id,
-			message: ctx.editedMessage.message_id,
-		});
-	});
+	// Edits never re-enter history — the original already is it — but a
+	// fix landing while the burst still coalesces amends the buffered
+	// text in place. Everything else stays an ack + log.
+	bot.on("edited_message", (ctx) => handleEditedMessage(env, ctx.editedMessage));
 
 	bot.callbackQuery(SPEAK_CALLBACK, (ctx) => {
 		void handleSpeakButton(ctx.callbackQuery, {

@@ -160,7 +160,11 @@ release.**
   candidate's own lane and re-checks fresh idle/reservation/lease state
   immediately before removal — a concurrent claim, observation, or pin
   wins the race. `desktops.max` caps the pool (g7 has ~13 GB free; a
-  desktop idles at ~281 MB with Chromium open, measured).
+  desktop idles at ~281 MB with Chromium open, measured). The cap counts
+  rows **plus pending allocations**: `allocate` claims its name in a
+  pool-wide reservation set synchronously, before the first await of
+  container creation, and releases it in `finally` — two parallel
+  allocates can't both pass the check and double-create.
 
 ### The wall: runc now, krun parked
 
@@ -231,6 +235,13 @@ sha256 pinned in the Containerfile). Measured in the probe (cua-driver
   refused.
 - xdotool + scrot stay in the image as the coordinate fallback (E2B's
   primitive set, verified in the same probe).
+- **`goblin-launch` pins the desk identity, not the environment.** Run
+  as root it `setpriv`s to the fixed `desk` uid/gid before dispatching
+  the app; other non-root callers are refused. The session env
+  (`HOME`, `DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR`)
+  is fixed in the script — nothing a session user can write under
+  `/run/desk` is evaluated, and no caller input steers the target
+  identity.
 
 Building the image is operator permission, like pulling one: goblin never
 builds through a tool; a missing image errors with the exact build line.
@@ -248,7 +259,12 @@ of its own**. Bound to one desktop and its lease:
   `launch`. **Bound to the latest observation** (Eliza's mechanism): an
   input names the screenshot id it acted on; a stale id is refused, and a
   repeat of an identical action against an unchanged frame is refused.
-  cua-driver's `effect` field rides back verbatim.
+  cua-driver's `effect` field rides back verbatim. The id is
+  `<name>:<shotSeq>:<uuid>` and the audit frame's basename carries the
+  same uuid: a destroy + re-allocate inside one millisecond can neither
+  replay the old id nor clobber its frame. For `screenshot`,
+  `lastObsId` is written only after the PNG lands on disk — a
+  screenshot id never points at a frame that wasn't written.
 - Terminal outcomes are tools, not inferred from prose: `finish(result)`
   → done; `ask_operator(question)` → needs_input (login, CAPTCHA, an
   ambiguous choice). The operator answers in the origin conversation;
@@ -398,6 +414,30 @@ built once).
   `harness.resume()` after all deps are bound, rows queued/running
   re-monitor and re-check their desktop holder; persisted `stopped`
   wins over any late settlement.
+- **The doc's `inputRev` is the input a request consumed, never the
+  newest admitted intent.** `beforeRequest` binds it inside one
+  `harness.commit`: the generation task's request checkpoint names a
+  transcript cutoff, and the newest admitted revision whose
+  deterministic submission is placed at or below that cutoff is the
+  consumed input. A queued or blocked steer binds nothing. Binding
+  also clears a committed outcome whose rev differs from the consumed
+  one — a stale outcome can neither abort the live request nor settle
+  it — and a binding failure aborts the request loudly rather than
+  guessing a revision. A steer refused by the desktop claim rolls
+  `inputRev` back: the rev never reached Pi, no request id is reused,
+  and the original monitor still owns settlement. Settlement accepts
+  a doc outcome only when `outcome.rev` matches the row's current
+  `inputRev`; on boot a stale outcome falls through to monitoring the
+  latest submission.
+- **A close landing mid-finalize leaves a recoverable row.**
+  Finalization rechecks `closing || harnessClosed` at every boundary
+  — after the doc snapshot, after the export loop (no new screenshot
+  starts), after the final screenshot await, and before every terminal
+  update — and returns with the row still `running`: the durable doc
+  and every landed `exportProgress` record survive, no partial
+  done/failed notice fires, the lease stays. The next boot's finalize
+  resumes export where progress left off — landed files are never
+  recopied — and settles once.
 - **Pinned.** `@earendil-works/pi-durable`, `pi-ai`, `chord` at
   exactly `1.0.2`, `typebox` at `1.3.27` — exact versions in
   package.json; the catalog metadata (context windows, thinking

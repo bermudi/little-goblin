@@ -67,7 +67,12 @@ import type {
 	TextLine,
 	TextLineReader,
 } from "@earendil-works/pi-durable/env";
-import { err, FileError, ok, ExecutionError as PiExecutionError } from "@earendil-works/pi-durable/env";
+import {
+	err,
+	FileError,
+	ok,
+	ExecutionError as PiExecutionError,
+} from "@earendil-works/pi-durable/env";
 import { z } from "zod";
 import type { AuthStore } from "./auth.ts";
 import type { SubagentsConfig } from "./config.ts";
@@ -202,9 +207,7 @@ function kindSpec(config: SubagentsConfig, kind: SubagentKind, profile?: unknown
 		if (!parsed.success) {
 			// A rejected profile must not echo the caller's object — it
 			// could carry anything.
-			throw new SubagentError(
-				`subagents.${kind} explicit model profile failed schema validation`,
-			);
+			throw new SubagentError(`subagents.${kind} explicit model profile failed schema validation`);
 		}
 		const p = parsed.data;
 		if (p.id !== model.id) {
@@ -366,7 +369,13 @@ class SandboxEnv implements ExecutionEnv {
 		argv: string[],
 		opts: { timeoutMs?: number; maxOutput?: number } | undefined,
 		context: Context,
-	): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; truncated: boolean }> {
+	): Promise<{
+		stdout: string;
+		stderr: string;
+		exitCode: number | null;
+		timedOut: boolean;
+		truncated: boolean;
+	}> {
 		// A pre-aborted context makes zero sandbox calls — a stopped
 		// write must not keep running.
 		if (context.abortSignal?.aborted) {
@@ -379,7 +388,16 @@ class SandboxEnv implements ExecutionEnv {
 		});
 		return result;
 	}
-	private check(r: { stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; truncated: boolean }, path?: string): Result<void, FileError> {
+	private check(
+		r: {
+			stdout: string;
+			stderr: string;
+			exitCode: number | null;
+			timedOut: boolean;
+			truncated: boolean;
+		},
+		path?: string,
+	): Result<void, FileError> {
 		if (r.timedOut) {
 			return envErr("unknown", "sandbox command timed out", path);
 		}
@@ -390,7 +408,11 @@ class SandboxEnv implements ExecutionEnv {
 			return envErr("unknown", "sandbox command output was truncated — result incomplete", path);
 		}
 		if (r.exitCode !== 0) {
-			return envErr(procError(r.stderr, path ?? ""), `${path ?? "command"}: ${r.stderr.trim()}`, path);
+			return envErr(
+				procError(r.stderr, path ?? ""),
+				`${path ?? "command"}: ${r.stderr.trim()}`,
+				path,
+			);
 		}
 		return ok<void, FileError>(undefined);
 	}
@@ -443,7 +465,8 @@ class SandboxEnv implements ExecutionEnv {
 		// "x" → one unterminated line, "x\n" → one terminated line,
 		// "x\ny" → terminated then unterminated.
 		const raw = new TextDecoder().decode(r.value);
-		const lines = raw === "" ? [] : raw.endsWith("\n") ? raw.slice(0, -1).split("\n") : raw.split("\n");
+		const lines =
+			raw === "" ? [] : raw.endsWith("\n") ? raw.slice(0, -1).split("\n") : raw.split("\n");
 		let i = 0;
 		return ok<TextLineReader, FileError>({
 			readLine: (): Promise<Result<TextLine | undefined, FileError>> => {
@@ -541,7 +564,11 @@ class SandboxEnv implements ExecutionEnv {
 		size: number,
 		context: Context,
 	): Promise<Result<void, FileError>> {
-		const r = await this.run(["truncate", "-s", String(size), "--", this.resolve(path)], undefined, context);
+		const r = await this.run(
+			["truncate", "-s", String(size), "--", this.resolve(path)],
+			undefined,
+			context,
+		);
 		return this.check(r, path);
 	}
 	async flushFile(path: string, context: Context): Promise<Result<void, FileError>> {
@@ -631,9 +658,7 @@ class SandboxEnv implements ExecutionEnv {
 		if (!out.ok) return out;
 		// realpath emits exactly one trailing newline — strip only it:
 		// a filename ending in "\n" must survive.
-		return ok<string, FileError>(
-			out.value.endsWith("\n") ? out.value.slice(0, -1) : out.value,
-		);
+		return ok<string, FileError>(out.value.endsWith("\n") ? out.value.slice(0, -1) : out.value);
 	}
 	async exists(path: string, context: Context): Promise<Result<boolean, FileError>> {
 		const r = await this.run(
@@ -734,10 +759,7 @@ class SandboxEnv implements ExecutionEnv {
 		// reported spill path is a real, retained file — never a
 		// phantom. `ulimit -f` bounds the file itself so a runaway
 		// command can't write past the 100 MiB wall.
-		const timeoutS = Math.min(
-			options?.timeout ?? SHELL_TIMEOUT_DEFAULT_S,
-			SHELL_TIMEOUT_CAP_S,
-		);
+		const timeoutS = Math.min(options?.timeout ?? SHELL_TIMEOUT_DEFAULT_S, SHELL_TIMEOUT_CAP_S);
 		const pairs = Object.entries(options?.env ?? {});
 		for (const [k] of pairs) {
 			if (!ENV_NAME_RE.test(k)) {
@@ -993,10 +1015,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	// The terminal write is idempotent: a replayed safe tool re-commits
 	// the same outcome under its input revision; a second terminal call
 	// never replaces the first.
-	async function recordOutcome(
-		api: ToolExecutionApi,
-		outcome: RunOutcomeBody,
-	): Promise<void> {
+	async function recordOutcome(api: ToolExecutionApi, outcome: RunOutcomeBody): Promise<void> {
 		await api.commit(async (tx) => {
 			const d = await tx.doc(RunDoc, api.conversationId);
 			if (d.outcome === null) d.outcome = { rev: d.inputRev, ...outcome } as RunOutcome;
@@ -1005,7 +1024,6 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	// Pi ids are branded numbers; goblin rows persist them as text.
 	const asConv = (id: string) => Number(id) as ConversationId;
 	const asSub = (id: string) => Number(id) as SubmissionId;
-
 
 	const envs = new Map<string, SandboxEnv>();
 	function envFor(origin: string): SandboxEnv {
@@ -1161,11 +1179,15 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	});
 
 	const workerTools: ToolRegistration[] = [
-		withLifecycleNote(withTerminalWrap(withRunGuards({ ...createReadTool(), replay: "safe" as const }))),
+		withLifecycleNote(
+			withTerminalWrap(withRunGuards({ ...createReadTool(), replay: "safe" as const })),
+		),
 		withLifecycleNote(withTerminalWrap(withRunGuards(createWriteTool()))),
 		withLifecycleNote(withTerminalWrap(withRunGuards(createEditTool()))),
 		withLifecycleNote(
-			withTerminalWrap(withRunGuards({ ...createBashTool(), description: WORKER_BASH_DESCRIPTION })),
+			withTerminalWrap(
+				withRunGuards({ ...createBashTool(), description: WORKER_BASH_DESCRIPTION }),
+			),
 		),
 		finishTool,
 		askTool,
@@ -1186,7 +1208,11 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 							type: "text",
 							text: `observation_id: ${shot.id}\naudited path: ${shot.path}${shot.note ? `\n${shot.note}` : ""}`,
 						},
-						{ type: "image", data: Buffer.from(shot.bytes).toString("base64"), mimeType: "image/png" },
+						{
+							type: "image",
+							data: Buffer.from(shot.bytes).toString("base64"),
+							mimeType: "image/png",
+						},
 					],
 				};
 			},
@@ -1302,6 +1328,63 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			.catch((err) => log.warn("subagent task abort failed", err));
 	}
 
+	const requestCheckpointSchema = z.object({
+		phase: z.literal("request"),
+		cutoff: z.number().int().positive(),
+	});
+
+	// inputRev means the input this request consumed, never the newest
+	// admitted intent — the request checkpoint's cutoff plus the newest
+	// placed input at or below it says which one. Binding also clears a
+	// stale committed outcome so it can't abort or mis-settle this rev.
+	async function bindConsumedInput(
+		api: HookApi,
+		row: SubagentRun,
+	): Promise<{ inputRev: number; outcome: RunOutcome | null }> {
+		const fresh = runs.get(row.id);
+		if (fresh === null) throw new SubagentError("run row vanished");
+		return await harness.commit(async (tx) => {
+			const task = await tx.task(api.taskId);
+			if (
+				task === undefined ||
+				(task.state.status !== "pending" &&
+					task.state.status !== "running" &&
+					task.state.status !== "waiting")
+			) {
+				throw new SubagentError("generation task is not live — cannot bind its input");
+			}
+			const checkpoint = requestCheckpointSchema.parse(task.state.checkpoint);
+			let consumed: number | null = null;
+			for (let rev = fresh.inputRev; rev >= 1; rev--) {
+				const sub = await tx.submissionByRequest(
+					api.conversationId,
+					`subagent:${row.id}:input:${rev}`,
+				);
+				if (
+					sub !== undefined &&
+					sub.type === "input" &&
+					sub.entry !== undefined &&
+					sub.entry <= checkpoint.cutoff
+				) {
+					consumed = rev;
+					break;
+				}
+			}
+			if (consumed === null) {
+				throw new SubagentError(
+					`no admitted input reached the request transcript (row rev ${fresh.inputRev}, cutoff ${checkpoint.cutoff})`,
+				);
+			}
+			const d = await tx.doc(RunDoc, api.conversationId);
+			d.inputRev = consumed;
+			if (d.outcome !== null && d.outcome.rev !== consumed) d.outcome = null;
+			return {
+				inputRev: consumed,
+				outcome: d.outcome === null ? null : { ...d.outcome },
+			};
+		}, ctx);
+	}
+
 	// Computer runs renew their desktop lease at every model request
 	// too — a lost lease fails the request rather than letting input
 	// land under the wrong holder. A committed terminal outcome also
@@ -1310,27 +1393,39 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	const requestGuard = hook(GenerationTask, {
 		beforeRequest: async (_input, api, context) => {
 			const doc = await api.snapshot(RunDoc, api.conversationId, context);
-			if (doc?.outcome !== undefined && doc?.outcome !== null) {
-				// A committed outcome means the round should already have
-				// terminated — a sibling call kept it alive (a malformed
-				// slot can't terminate). The abort mark signals the
-				// in-flight stream; the task ends `aborted`, the input
-				// settles unanswered, and the monitor classifies from
-				// the doc.
-				log.warn("subagent generation continued past a committed outcome — aborting", {
-					conversation: String(api.conversationId),
-				});
-				abortPiTask(api);
-				return undefined;
-			}
-			const row = doc?.runId !== null && doc !== undefined && doc !== null
-				? runs.get(doc.runId)
-				: rowForConversation(String(api.conversationId));
+			const row =
+				doc?.runId !== null && doc !== undefined && doc !== null
+					? runs.get(doc.runId)
+					: rowForConversation(String(api.conversationId));
 			// No throw here — a hook failure is merely reported and the
 			// request would proceed. Every guard refuses through the
 			// real abort mark instead.
 			if (row === null) {
 				log.warn("subagent request on an unknown row — aborting", {
+					conversation: String(api.conversationId),
+				});
+				abortPiTask(api);
+				return undefined;
+			}
+			let bound: { inputRev: number; outcome: RunOutcome | null };
+			try {
+				bound = await bindConsumedInput(api, row);
+			} catch (err) {
+				log.error("subagent request input binding failed", err, {
+					run: row.id,
+					task: String(api.taskId),
+				});
+				abortPiTask(api);
+				return undefined;
+			}
+			if (bound.outcome !== null) {
+				// A committed outcome for this same input means the round
+				// should already have terminated — a sibling call kept
+				// it alive (a malformed slot can't terminate). The abort
+				// mark signals the in-flight stream; the task ends
+				// `aborted`, the input settles unanswered, and the
+				// monitor classifies from the doc.
+				log.warn("subagent generation continued past a committed outcome — aborting", {
 					conversation: String(api.conversationId),
 				});
 				abortPiTask(api);
@@ -1357,6 +1452,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				kind: row.kind,
 				model: specs.get(row.kind)?.modelId,
 				conversation: row.conversationId,
+				inputRev: bound.inputRev,
 			});
 			return undefined;
 		},
@@ -1513,7 +1609,13 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			// A stop mid-export lands between files — landed artifacts
 			// stay recorded, the rest are simply not copied.
 			const latest = runs.get(row.id);
-			if (closing || latest === null || latest.stopRequested || latest.status === "stopped") {
+			if (
+				closing ||
+				harnessClosed ||
+				latest === null ||
+				latest.stopRequested ||
+				latest.status === "stopped"
+			) {
 				break;
 			}
 			if (row.exportProgress[f] !== undefined) continue;
@@ -1649,9 +1751,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	// A "done" submission ended on a clean provider stop — the last
 	// assistant's recorded stopReason is the only remaining witness for
 	// why no terminal tool ran (length = truncation, not a refusal).
-	async function lastAssistantStopReason(
-		piConversationId: string,
-	): Promise<string | null> {
+	async function lastAssistantStopReason(piConversationId: string): Promise<string | null> {
 		const conv = await harness.conversation(asConv(piConversationId), ctx);
 		if (conv === undefined) return null;
 		const page = await conv.entries({}, 8, undefined, ctx);
@@ -1668,13 +1768,19 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		unanswered?: { reason: string; detail?: string | undefined },
 	): Promise<void> {
 		await lane(rowId, async () => {
+			// A close landing anywhere past the first check leaves the
+			// row recoverable `running`: the doc outcome and any landed
+			// exportProgress are durable, the next boot's finalize
+			// resumes from them — never a partial done/failed notice.
+			const closingNow = () => closing || harnessClosed;
 			const row = runs.get(rowId);
 			if (row === null) return;
 			if (row.status === "stopped" || row.status === "done" || row.status === "failed") return;
 			if (row.stopRequested) return; // the stop path owns the transition
 			if (row.inputRev > rev || row.inputIntent !== null) return; // a newer input owns settlement
-			if (closing || harnessClosed) return;
+			if (closingNow()) return;
 			if (row.piConversationId === null) {
+				if (closingNow()) return;
 				runs.update(rowId, {
 					status: "failed",
 					error: "no Pi conversation recorded",
@@ -1686,10 +1792,15 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			// Pi commits are durable — after waitForIdle a single read is
 			// authoritative; a storage error propagates to the caller.
 			const doc = await harness.snapshot(RunDoc, asConv(row.piConversationId), ctx);
-			const outcome = doc?.outcome ?? null;
+			if (closingNow()) return;
+			const recorded = doc?.outcome ?? null;
+			// An outcome only settles the input it answered — a stale one
+			// must never be attributed to a later submitted steer.
+			const outcome = recorded !== null && recorded.rev === rev ? recorded : null;
 			log.info("subagent settle", { run: rowId, outcome: outcome?.kind ?? null, unanswered });
 			if (outcome?.kind === "done") {
 				const { exported, errors } = await exportOutcomeFiles(row, outcome.files);
+				if (closingNow()) return; // a close during export starts no new screenshot
 				let finalScreenshot = row.finalScreenshot;
 				if (row.kind === "computer" && row.desktop !== null && finalScreenshot === null) {
 					try {
@@ -1706,11 +1817,10 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 							runs.update(rowId, { finalScreenshot });
 						}
 					} catch (err) {
-						errors.push(
-							`final screenshot: ${err instanceof Error ? err.message : String(err)}`,
-						);
+						errors.push(`final screenshot: ${err instanceof Error ? err.message : String(err)}`);
 					}
 				}
+				if (closingNow()) return;
 				// Stop wins over a settlement that raced an export.
 				const latest = runs.get(rowId)!;
 				if (latest.stopRequested || latest.status === "stopped") return;
@@ -1726,6 +1836,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				releaseLeases(done);
 				notify(done);
 			} else if (outcome?.kind === "ask") {
+				if (closingNow()) return;
 				const waiting = runs.update(rowId, {
 					status: "needs_input",
 					question: outcome.question,
@@ -1741,6 +1852,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 						error += ` — ${unanswered.detail}`;
 				} else {
 					const lastStop = await lastAssistantStopReason(row.piConversationId);
+					if (closingNow()) return;
 					error =
 						lastStop === "length"
 							? "the model's reply hit the output limit (stop reason length) before any terminal tool call"
@@ -1904,18 +2016,11 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			throwIfHalted(row.id);
 			const conv = await harness.conversation(asConv(piConv), ctx);
 			if (conv === undefined) throw new SubagentError("Pi conversation vanished");
-			// The doc reset happens only for a NEW revision: if a crash
-			// left the outcome committed under this same rev, it is the
-			// authoritative terminal state — settle reads it, don't
-			// clobber it by re-admitting.
-			const doc = (await harness.snapshot(RunDoc, asConv(piConv), ctx)) ?? undefined;
-			if (!(doc !== undefined && doc.inputRev === rev && doc.outcome !== null)) {
-				await conv.commit(async (tx) => {
-					const d = await tx.doc(RunDoc, asConv(piConv!));
-					d.inputRev = rev;
-					d.outcome = null;
-				}, ctx);
-			}
+			// The doc is NOT touched here: inputRev means the input a
+			// request actually consumed, which only the transcript
+			// checkpoint can say — requestGuard binds it just before
+			// the provider call. A queued or blocked steer must never
+			// stamp its revision over the in-flight one.
 			throwIfHalted(row.id);
 			const requestId = `subagent:${row.id}:input:${rev}`;
 			const prior = await harness.commit(
@@ -1953,6 +2058,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				kind: row.kind,
 				mode,
 				conversation: row.conversationId,
+				inputRev: rev,
 				ms: Date.now() - t0,
 			});
 			monitor(row.id, rev, submission);
@@ -2050,12 +2156,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				const now = Date.now();
 				const candidates = runs
 					.unfinished()
-					.filter(
-						(r) =>
-							r.status === "queued" &&
-							!inflight.has(r.id) &&
-							eligible(r, now),
-					);
+					.filter((r) => r.status === "queued" && !inflight.has(r.id) && eligible(r, now));
 				const row = candidates[0];
 				if (row === undefined) break;
 				inflight.add(row.id);
@@ -2099,9 +2200,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				throw new SubagentError("computer runs need a desktop name");
 			}
 			if (requestId !== undefined) {
-				const existing = runs
-					.listFor(input.conversationId)
-					.find((r) => r.requestId === requestId);
+				const existing = runs.listFor(input.conversationId).find((r) => r.requestId === requestId);
 				if (existing !== undefined) return existing;
 			}
 			const row = runs.create({
@@ -2164,6 +2263,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				}
 				// Steering a live run: persist the intent, then admit
 				// through the same lane so a crash at any gap recovers it.
+				const origRev = row.inputRev;
 				runs.update(id, {
 					inputRev: rev,
 					inputIntent: message,
@@ -2174,12 +2274,11 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					throw new SubagentError(`run #${id} was stopped mid-send`);
 				}
 				if (outcome.kind === "blocked") {
-					// A persisted steer intent has no retry path and
-					// defers settlement forever — roll it back and
-					// report the conflict. inputRev stays bumped: it
-					// only needs to be monotonic for requestId
-					// uniqueness.
-					runs.update(id, { inputIntent: null, inputMode: null });
+					// Blocked means the claim refused before any submit —
+					// this revision was never admitted, so rolling back
+					// reuses no deterministic requestId, and the original
+					// monitor still owns settlement of the in-flight input.
+					runs.update(id, { inputRev: origRev, inputIntent: null, inputMode: null });
 					throw new SubagentError(`run #${id} cannot be steered — ${outcome.reason}`);
 				}
 				return runs.get(id)!;
@@ -2344,10 +2443,13 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 						continue;
 					}
 					const doc = await harness.snapshot(RunDoc, asConv(row.piConversationId), ctx);
-					if (doc?.outcome !== undefined && doc?.outcome !== null) {
+					const outcome = doc?.outcome ?? null;
+					if (outcome !== null && outcome.rev === row.inputRev) {
 						await finalize(row.id, row.inputRev);
 						continue;
 					}
+					// A stale outcome belongs to an older input — the
+					// latest submission still owns settlement.
 					if (row.piSubmissionId !== null) {
 						const sub = await harness.submission(asSub(row.piSubmissionId), ctx);
 						if (sub !== undefined) {

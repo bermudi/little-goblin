@@ -60,8 +60,7 @@ interface FakeModel {
 }
 
 function sse(events: object[]): Response {
-	const lines =
-		events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
+	const lines = events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
 	return new Response(lines, {
 		headers: { "content-type": "text/event-stream" },
 	});
@@ -96,9 +95,7 @@ function chunkFor(reply: FakeReply, i: number): object[] {
 				object: "chat.completion.chunk",
 				created: 1,
 				model: "fake",
-				choices: [
-					{ index: 0, delta: {}, finish_reason: "tool_calls" },
-				],
+				choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
 				usage: reply.usage ?? {
 					prompt_tokens: 10,
 					completion_tokens: 5,
@@ -131,9 +128,7 @@ function chunkFor(reply: FakeReply, i: number): object[] {
 					index: 0,
 					delta: {},
 					finish_reason:
-						reply.kind === "text" && reply.finish !== undefined
-							? reply.finish
-							: "stop",
+						reply.kind === "text" && reply.finish !== undefined ? reply.finish : "stop",
 				},
 			],
 			usage:
@@ -271,9 +266,7 @@ class MemFS {
 		const cur = this.nodes.get(p);
 		if (cur !== undefined && "dir" in cur) throw new Error(`EISDIR: ${p}`);
 		const next =
-			append && cur !== undefined && "data" in cur
-				? new Uint8Array([...cur.data, ...data])
-				: data;
+			append && cur !== undefined && "data" in cur ? new Uint8Array([...cur.data, ...data]) : data;
 		this.nodes.set(p, { data: next, mtime: Date.now() });
 	}
 	mkdir(p: string, recursive: boolean): void {
@@ -332,7 +325,8 @@ class MemFS {
 	statLine(p: string): string {
 		const n = this.nodes.get(p);
 		if (n === undefined) throw new Error(`ENOENT: ${p}`);
-		const kind = "dir" in n ? "directory" : n.data.length === 0 ? "regular empty file" : "regular file";
+		const kind =
+			"dir" in n ? "directory" : n.data.length === 0 ? "regular empty file" : "regular file";
 		const size = "dir" in n ? 0 : n.data.length;
 		const mtime = "dir" in n ? 0 : Math.floor(n.mtime / 1000);
 		return `${kind}|${size}|${mtime}`;
@@ -422,7 +416,12 @@ function shEval(script: string, fs: MemFS, cwd0: string): { out: string; code: n
 				}
 				case "printf": {
 					const fmt = rest[0] ?? "";
-					emit(fmt.replace(/%s/g, () => rest[1] ?? "").replace(/\\n/g, "\n").replace(/\\0/g, "\0"));
+					emit(
+						fmt
+							.replace(/%s/g, () => rest[1] ?? "")
+							.replace(/\\n/g, "\n")
+							.replace(/\\0/g, "\0"),
+					);
 					code = 0;
 					break;
 				}
@@ -485,7 +484,12 @@ function shEval(script: string, fs: MemFS, cwd0: string): { out: string; code: n
 					code = 0;
 					break;
 				case "ls":
-					emit(fs.children(p(rest[0] ?? ".")).map((k) => posix.basename(k)).join("\n") + "\n");
+					emit(
+						fs
+							.children(p(rest[0] ?? "."))
+							.map((k) => posix.basename(k))
+							.join("\n") + "\n",
+					);
 					code = 0;
 					break;
 				case "pwd":
@@ -617,8 +621,7 @@ function shEval(script: string, fs: MemFS, cwd0: string): { out: string; code: n
 	parts.push({ cmd: cur, conn: ";" });
 	let lastConn = ";";
 	for (const part of parts) {
-		const skip =
-			(lastConn === "&&" && code !== 0) || (lastConn === "||" && code === 0);
+		const skip = (lastConn === "&&" && code !== 0) || (lastConn === "||" && code === 0);
 		lastConn = part.conn;
 		if (skip || part.cmd.trim() === "") continue;
 		one(part.cmd);
@@ -741,7 +744,13 @@ function fakeSandboxes(): MemSandbox {
 				}
 				if (tag === "t") {
 					const target = fs.norm(rest[3] ?? "");
-					return { stdout: "", stderr: "", exitCode: fs.exists(target) ? 0 : 1, timedOut: false, truncated: false };
+					return {
+						stdout: "",
+						stderr: "",
+						exitCode: fs.exists(target) ? 0 : 1,
+						timedOut: false,
+						truncated: false,
+					};
 				}
 				const r = shEval(script, fs, "/work");
 				return { stdout: r.out, stderr: "", exitCode: r.code, timedOut: false, truncated: false };
@@ -752,7 +761,8 @@ function fakeSandboxes(): MemSandbox {
 					return okOut(new TextDecoder().decode(fs.read(p(rest.at(-1)))));
 				case "stat": {
 					const target = p(rest.at(-1));
-					if (!fs.exists(target)) return fail(`stat: cannot statx '${rest.at(-1)}': No such file or directory`, 1);
+					if (!fs.exists(target))
+						return fail(`stat: cannot statx '${rest.at(-1)}': No such file or directory`, 1);
 					return okOut(`${fs.statLine(target)}\n`);
 				}
 				case "mkdir":
@@ -775,7 +785,8 @@ function fakeSandboxes(): MemSandbox {
 					return okOut("");
 				}
 				case "realpath":
-					if (!fs.exists(p(rest.at(-1)))) return fail(`realpath: ${rest.at(-1)}: No such file or directory`, 1);
+					if (!fs.exists(p(rest.at(-1))))
+						return fail(`realpath: ${rest.at(-1)}: No such file or directory`, 1);
 					return okOut(`${p(rest.at(-1))}\n`);
 				case "mktemp": {
 					if (rest[0] === "-d") {
@@ -807,9 +818,14 @@ function fakeSandboxes(): MemSandbox {
 				case "test": {
 					const f = p(rest.at(-1));
 					const flag = rest[0];
-					const hit =
-						flag === "-d" ? fs.isDir(f) : flag === "-f" ? fs.isFile(f) : fs.exists(f);
-					return { stdout: "", stderr: "", exitCode: hit ? 0 : 1, timedOut: false, truncated: false };
+					const hit = flag === "-d" ? fs.isDir(f) : flag === "-f" ? fs.isFile(f) : fs.exists(f);
+					return {
+						stdout: "",
+						stderr: "",
+						exitCode: hit ? 0 : 1,
+						timedOut: false,
+						truncated: false,
+					};
 				}
 				default:
 					return fail(`${cmd}: not found`, 127);
@@ -997,6 +1013,7 @@ const ready = new WeakMap<Rig, Promise<Subagents>>();
 function rig(opts?: {
 	wakeOk?: () => boolean;
 	desktops?: FakeDesktops;
+	sandboxes?: MemSandbox;
 	maxRuns?: number;
 	resume?: boolean;
 	reuse?: { dbPath: string; storagePath: string };
@@ -1018,7 +1035,7 @@ function rig(opts?: {
 	runStores.push(runs);
 	const wakes: { conv: string; text: string }[] = [];
 	const desktops = opts?.desktops ?? fakeDesktops();
-	const sandboxes = fakeSandboxes();
+	const sandboxes = opts?.sandboxes ?? fakeSandboxes();
 	const config = makeConfig(model.url, {
 		...(opts?.maxRuns ? { maxRuns: opts.maxRuns } : {}),
 		...opts?.configOverrides,
@@ -1118,9 +1135,22 @@ describe("subagents owner", () => {
 		let release: (() => void) | null = null;
 		r.model.push({ kind: "hold", gate: new Promise<void>((res) => (release = res)) });
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "second" } }] });
-		const a = await o.start({ kind: "worker", conversationId: "conv:a", workspace: r.workspace, task: "a" });
-		const b = await o.start({ kind: "worker", conversationId: "conv:b", workspace: r.workspace, task: "b" });
-		await until(() => r.runs.get(a.id)?.status === "running" && r.model.seen.length === 1, "a running");
+		const a = await o.start({
+			kind: "worker",
+			conversationId: "conv:a",
+			workspace: r.workspace,
+			task: "a",
+		});
+		const b = await o.start({
+			kind: "worker",
+			conversationId: "conv:b",
+			workspace: r.workspace,
+			task: "b",
+		});
+		await until(
+			() => r.runs.get(a.id)?.status === "running" && r.model.seen.length === 1,
+			"a running",
+		);
 		await Bun.sleep(150);
 		expect(r.runs.get(b.id)?.status).toBe("queued");
 		release!();
@@ -1134,16 +1164,32 @@ describe("subagents owner", () => {
 		r.model.push({ kind: "hold", gate: new Promise<void>((res) => (release = res)) });
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "b" } }] });
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "a2" } }] });
-		const a1 = await o.start({ kind: "worker", conversationId: WS, workspace: r.workspace, task: "a1" });
-		const a2 = await o.start({ kind: "worker", conversationId: WS, workspace: r.workspace, task: "a2" });
-		const b = await o.start({ kind: "worker", conversationId: "conv:other", workspace: r.workspace, task: "b" });
+		const a1 = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "a1",
+		});
+		const a2 = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "a2",
+		});
+		const b = await o.start({
+			kind: "worker",
+			conversationId: "conv:other",
+			workspace: r.workspace,
+			task: "b",
+		});
 		await until(() => r.model.seen.length === 2, "two admitted");
 		// a2 is blocked by a1's sandbox lease but must not stall b.
 		expect(["running", "done"]).toContain(r.runs.get(b.id)?.status ?? "missing");
 		expect(r.runs.get(a2.id)?.status ?? "missing").toBe("queued");
 		release!();
 		await until(
-			() => ["done"].includes(r.runs.get(a2.id)?.status ?? "") && r.runs.get(b.id)?.status === "done",
+			() =>
+				["done"].includes(r.runs.get(a2.id)?.status ?? "") && r.runs.get(b.id)?.status === "done",
 			"all done",
 		);
 	});
@@ -1168,10 +1214,30 @@ describe("subagents owner", () => {
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "a done" } }] });
 		r.model.push({ kind: "text", text: "c" });
 		r.model.push({ kind: "text", text: "d" });
-		const a = await o.start({ kind: "worker", conversationId: WS, workspace: r.workspace, task: "t" });
-		const b = await o.start({ kind: "worker", conversationId: "conv:b", workspace: r.workspace, task: "b" });
-		const c = await o.start({ kind: "worker", conversationId: "conv:c", workspace: r.workspace, task: "c" });
-		const d = await o.start({ kind: "worker", conversationId: "conv:d", workspace: r.workspace, task: "d" });
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+		});
+		const b = await o.start({
+			kind: "worker",
+			conversationId: "conv:b",
+			workspace: r.workspace,
+			task: "b",
+		});
+		const c = await o.start({
+			kind: "worker",
+			conversationId: "conv:c",
+			workspace: r.workspace,
+			task: "c",
+		});
+		const d = await o.start({
+			kind: "worker",
+			conversationId: "conv:d",
+			workspace: r.workspace,
+			task: "d",
+		});
 		await until(() => r.runs.get(a.id)?.status === "needs_input", "a parked");
 		await until(() => r.model.seen.length === 4, "three slots executing");
 		const answered = await o.send(a.id, WS, "the answer");
@@ -1184,7 +1250,9 @@ describe("subagents owner", () => {
 		free = 3; // release the held replies — b finishes first
 		await until(() => r.runs.get(a.id)?.status === "done", "a resumed");
 		expect(r.runs.get(a.id)!.piConversationId).toBe(piConv);
-		void b; void c; void d;
+		void b;
+		void c;
+		void d;
 	});
 
 	test("send reuses the same Pi conversation", async () => {
@@ -1192,7 +1260,12 @@ describe("subagents owner", () => {
 		const o = await open(r);
 		r.model.push({ kind: "tools", calls: [{ name: "ask_operator", args: { question: "q" } }] });
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "r" } }] });
-		const a = await o.start({ kind: "worker", conversationId: WS, workspace: r.workspace, task: "t" });
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+		});
 		await until(() => r.runs.get(a.id)?.status === "needs_input", "needs_input");
 		const piConv = r.runs.get(a.id)!.piConversationId;
 		const row = await o.send(a.id, WS, "answer");
@@ -1206,7 +1279,12 @@ describe("subagents owner", () => {
 		const o = await open(r);
 		let release: (() => void) | null = null;
 		r.model.push({ kind: "hold", gate: new Promise<void>((res) => (release = res)) });
-		const a = await o.start({ kind: "worker", conversationId: WS, workspace: r.workspace, task: "t" });
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+		});
 		await until(() => r.runs.get(a.id)?.status === "running", "running");
 		const stopped = await o.stop(a.id, WS);
 		expect(stopped.status).toBe("stopped");
@@ -1248,8 +1326,18 @@ describe("subagents owner", () => {
 		r.sandboxes.execGate = new Promise<void>((res) => (releaseExec = res));
 		r.model.push({ kind: "tools", calls: [{ name: "bash", args: { command: "echo hi" } }] });
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "a2 done" } }] });
-		const a = await o.start({ kind: "worker", conversationId: WS, workspace: r.workspace, task: "t" });
-		const a2 = await o.start({ kind: "worker", conversationId: WS, workspace: r.workspace, task: "u" });
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+		});
+		const a2 = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "u",
+		});
 		await until(() => r.sandboxes.execCalls >= 1, "bash dispatched");
 		const stopping = o.stop(a.id, WS);
 		await Bun.sleep(120);
@@ -1258,7 +1346,10 @@ describe("subagents owner", () => {
 		releaseExec!();
 		await stopping;
 		expect(r.runs.get(a.id)?.status).toBe("stopped");
-		await until(() => ["running", "done"].includes(r.runs.get(a2.id)?.status ?? ""), "a2 admitted after a stopped");
+		await until(
+			() => ["running", "done"].includes(r.runs.get(a2.id)?.status ?? ""),
+			"a2 admitted after a stopped",
+		);
 	});
 
 	test("close during a gated claim leaves a recoverable queued row", async () => {
@@ -1307,7 +1398,12 @@ describe("subagents owner", () => {
 		const gate = new Promise<void>((res) => (release = res));
 		r1.model.push({ kind: "hold", gate });
 		r1.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "resumed" } }] });
-		const a = await o1.start({ kind: "worker", conversationId: WS, workspace: r1.workspace, task: "t" });
+		const a = await o1.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r1.workspace,
+			task: "t",
+		});
 		await until(() => r1.model.seen.length >= 1, "request in flight");
 		const closing = o1.close();
 		release!();
@@ -1332,9 +1428,22 @@ describe("subagents owner", () => {
 		r1.model.push({ kind: "tools", calls: [{ name: "ask_operator", args: { question: "q?" } }] });
 		let release: (() => void) | null = null;
 		r1.model.push({ kind: "hold", gate: new Promise<void>((res) => (release = res)) });
-		const a = await o1.start({ kind: "worker", conversationId: WS, workspace: r1.workspace, task: "t" });
-		const blocker = await o1.start({ kind: "worker", conversationId: "conv:x", workspace: r1.workspace, task: "x" });
-		await until(() => r1.runs.get(a.id)?.status === "needs_input" && r1.model.seen.length === 2, "parked + blocked");
+		const a = await o1.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r1.workspace,
+			task: "t",
+		});
+		const blocker = await o1.start({
+			kind: "worker",
+			conversationId: "conv:x",
+			workspace: r1.workspace,
+			task: "x",
+		});
+		await until(
+			() => r1.runs.get(a.id)?.status === "needs_input" && r1.model.seen.length === 2,
+			"parked + blocked",
+		);
 		const sent = await o1.send(a.id, WS, "the answer");
 		expect(sent.status).toBe("queued");
 		expect(r1.runs.get(a.id)?.inputIntent).toBe("the answer");
@@ -1349,19 +1458,26 @@ describe("subagents owner", () => {
 		const o2 = await open(r2);
 		await until(() => r2.runs.get(a.id)?.status === "done", "a finished");
 		expect(r2.runs.get(a.id)?.result).toBe("answered");
-		const answerRequests = r2.model.seen.filter(
-			(s) => JSON.stringify(s.messages).includes("the answer"),
+		const answerRequests = r2.model.seen.filter((s) =>
+			JSON.stringify(s.messages).includes("the answer"),
 		);
 		expect(answerRequests.length).toBe(1);
-		void blocker; void o2;
+		void blocker;
+		void o2;
 	});
 
 	test("start requestId is idempotent", async () => {
 		const r = rig();
 		const o = await open(r);
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "x" } }] });
-		const a = await o.start({ kind: "worker", conversationId: WS, workspace: r.workspace, task: "t" }, "req-1");
-		const b = await o.start({ kind: "worker", conversationId: WS, workspace: r.workspace, task: "t" }, "req-1");
+		const a = await o.start(
+			{ kind: "worker", conversationId: WS, workspace: r.workspace, task: "t" },
+			"req-1",
+		);
+		const b = await o.start(
+			{ kind: "worker", conversationId: WS, workspace: r.workspace, task: "t" },
+			"req-1",
+		);
 		expect(b.id).toBe(a.id);
 	});
 
@@ -1372,7 +1488,9 @@ describe("subagents owner", () => {
 		r.model.push({ kind: "tools", calls: [{ name: "screenshot", args: {} }] });
 		r.model.push({
 			kind: "tools",
-			calls: [{ name: "act", args: { observation_id: "obs-any", tool: "click", args: { x: 1, y: 2 } } }],
+			calls: [
+				{ name: "act", args: { observation_id: "obs-any", tool: "click", args: { x: 1, y: 2 } } },
+			],
 		});
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "clicked" } }] });
 		const a = await o.start({
@@ -1385,7 +1503,9 @@ describe("subagents owner", () => {
 		await until(() => r.desktops.actCalls === 1, "act dispatched");
 		await until(() => r.runs.get(a.id)?.status === "done", "done");
 		const tools = r.model.seen[0]!.tools.sort();
-		expect(tools).toEqual(["act", "ask_operator", "finish", "inspect", "launch", "screenshot"].sort());
+		expect(tools).toEqual(
+			["act", "ask_operator", "finish", "inspect", "launch", "screenshot"].sort(),
+		);
 		expect(r.desktops.held.get("d1")).toBeUndefined();
 	});
 
@@ -1407,7 +1527,12 @@ describe("subagents owner", () => {
 			task: "t",
 			desktop: "d1",
 		});
-		const w = await o.start({ kind: "worker", conversationId: "conv:w", workspace: r.workspace, task: "w" });
+		const w = await o.start({
+			kind: "worker",
+			conversationId: "conv:w",
+			workspace: r.workspace,
+			task: "w",
+		});
 		await Bun.sleep(400);
 		// The held lease keeps the row queued WITHOUT burning claim
 		// attempts — and an unrelated run proceeds.
@@ -1420,11 +1545,13 @@ describe("subagents owner", () => {
 		dRow.leaseExpiresAt = null;
 		await o.scan();
 		await until(() => r.runs.get(a.id)?.status === "done", "admitted after release");
-		expect(r.model.seen.filter((s) => s.tools.includes("screenshot")).length).toBeGreaterThanOrEqual(1);
+		expect(
+			r.model.seen.filter((s) => s.tools.includes("screenshot")).length,
+		).toBeGreaterThanOrEqual(1);
 	});
 
-	test("a steer blocked by a held lease fails loudly and never orphans the intent", async () => {
-		const r = rig();
+	test("a steer blocked by a held lease rolls back; the original input still settles", async () => {
+		const r = rig({ maxRuns: 1 });
 		const o = await open(r);
 		await r.desktops.allocate("d1");
 		const gate = Promise.withResolvers<void>();
@@ -1433,8 +1560,7 @@ describe("subagents owner", () => {
 			gate: gate.promise,
 			then: { kind: "tools", calls: [{ name: "finish", args: { result: "settled" } }] },
 		});
-		// Covers the extra generation a landed steer may drive.
-		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "steered" } }] });
+		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "next" } }] });
 		const a = await o.start({
 			kind: "computer",
 			conversationId: WS,
@@ -1459,6 +1585,64 @@ describe("subagents owner", () => {
 		expect(blocked.status).toBe("running");
 		expect(blocked.inputIntent).toBe(null);
 		expect(blocked.inputMode).toBe(null);
+		// The bumped rev was never admitted — it rolls back so the
+		// original monitor still owns settlement.
+		expect(blocked.inputRev).toBe(1);
+		// A second run queues behind the single slot while the holder stays.
+		const b = await o.start({
+			kind: "worker",
+			conversationId: "conv:b",
+			workspace: r.workspace,
+			task: "b",
+		});
+		await Bun.sleep(200);
+		expect(r.runs.get(b.id)?.status).toBe("queued");
+		// The holder leaves and the parked submission resolves: the run
+		// settles on its ORIGINAL input and the freed slot admits b.
+		r.desktops.held.delete("d1");
+		dRow.leaseKind = null;
+		dRow.leaseExpiresAt = null;
+		gate.resolve();
+		await until(() => r.runs.get(a.id)?.status === "done", "a settles on the original input");
+		expect(r.runs.get(a.id)?.result).toBe("settled");
+		await until(() => r.runs.get(b.id)?.status === "done", "queued run admits after settle");
+		// The rejected steer never reached the model.
+		expect(r.model.seen.some((s) => JSON.stringify(s.messages).includes("steer-while-held"))).toBe(
+			false,
+		);
+		expect(r.wakes.length).toBe(2);
+	});
+
+	test("a steer admitted after the holder leaves reaches the model and wins the outcome", async () => {
+		const r = rig();
+		const o = await open(r);
+		await r.desktops.allocate("d1");
+		const gate = Promise.withResolvers<void>();
+		r.model.push({
+			kind: "hold",
+			gate: gate.promise,
+			then: { kind: "tools", calls: [{ name: "finish", args: { result: "settled" } }] },
+		});
+		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "steered" } }] });
+		const a = await o.start({
+			kind: "computer",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+			desktop: "d1",
+		});
+		await until(
+			() => r.runs.get(a.id)?.status === "running" && r.model.seen.length === 1,
+			"running on a held reply",
+		);
+		r.desktops.held.set("d1", { kind: "operator" });
+		const dRow = r.desktops.get("d1")!;
+		dRow.leaseKind = "operator";
+		dRow.leaseId = null;
+		dRow.leaseExpiresAt = Date.now() + 600_000;
+		await expect(o.send(a.id, WS, "steer-while-held")).rejects.toThrow(
+			/cannot be steered.*controlled by/,
+		);
 		// The holder leaves — a steer admits again.
 		r.desktops.held.delete("d1");
 		dRow.leaseKind = null;
@@ -1466,13 +1650,354 @@ describe("subagents owner", () => {
 		const steered = await o.send(a.id, WS, "steer-after-release");
 		expect(steered.status).toBe("running");
 		expect(steered.inputIntent).toBe(null);
-		// The wedge: resolving the parked submission still settles the
-		// run — a rolled-back steer cannot defer finalize forever.
 		gate.resolve();
+		await until(() => r.runs.get(a.id)?.status === "done", "run settles after the steer");
+		// The steered successor consumed the queued input — its finish
+		// settles the run, never the parked reply's outcome.
+		expect(r.runs.get(a.id)?.result).toBe("steered");
+		expect(
+			r.model.seen.some((s) => JSON.stringify(s.messages).includes("steer-after-release")),
+		).toBe(true);
+		expect(r.wakes.length).toBe(1);
+	});
+
+	test("a queued steer displaces a parked finish — the consumed input's outcome wins", async () => {
+		const r = rig();
+		const o = await open(r);
+		const gate = Promise.withResolvers<void>();
+		r.model.push({
+			kind: "hold",
+			gate: gate.promise,
+			then: { kind: "tools", calls: [{ name: "finish", args: { result: "old" } }] },
+		});
+		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "new" } }] });
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+		});
 		await until(
-			() => r.runs.get(a.id)?.status === "done",
-			"run settles after a blocked steer",
+			() => r.runs.get(a.id)?.status === "running" && r.model.seen.length === 1,
+			"running on a held reply",
 		);
+		const sent = await o.send(a.id, WS, "NEW_STEER");
+		expect(sent.status).toBe("running");
+		gate.resolve();
+		await until(() => r.runs.get(a.id)?.status === "done", "steered run settles");
+		// The parked finish belongs to the old input — the successor
+		// generation consumed the steer and its outcome wins.
+		expect(r.runs.get(a.id)?.result).toBe("new");
+		expect(r.model.seen.some((s) => JSON.stringify(s.messages).includes("NEW_STEER"))).toBe(true);
+		expect(r.wakes.length).toBe(1);
+	});
+
+	test("a queued steer clears a parked ask — the new finish wins, needs_input never lands", async () => {
+		const r = rig();
+		const o = await open(r);
+		const gate = Promise.withResolvers<void>();
+		r.model.push({
+			kind: "hold",
+			gate: gate.promise,
+			then: { kind: "tools", calls: [{ name: "ask_operator", args: { question: "OLD_Q" } }] },
+		});
+		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "new" } }] });
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+		});
+		await until(
+			() => r.runs.get(a.id)?.status === "running" && r.model.seen.length === 1,
+			"running on a held reply",
+		);
+		await o.send(a.id, WS, "NEW_STEER");
+		gate.resolve();
+		await until(() => r.runs.get(a.id)?.status === "done", "steered run settles");
+		const row = r.runs.get(a.id)!;
+		expect(row.result).toBe("new");
+		expect(row.question).toBe(null);
+		expect(r.wakes.length).toBe(1);
+	});
+
+	test("a queued steer turns a parked finish into a NEW question, never the old result", async () => {
+		const r = rig();
+		const o = await open(r);
+		const gate = Promise.withResolvers<void>();
+		r.model.push({
+			kind: "hold",
+			gate: gate.promise,
+			then: { kind: "tools", calls: [{ name: "finish", args: { result: "old" } }] },
+		});
+		r.model.push({
+			kind: "tools",
+			calls: [{ name: "ask_operator", args: { question: "NEW_Q" } }],
+		});
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+		});
+		await until(
+			() => r.runs.get(a.id)?.status === "running" && r.model.seen.length === 1,
+			"running on a held reply",
+		);
+		await o.send(a.id, WS, "NEW_STEER");
+		gate.resolve();
+		await until(() => r.runs.get(a.id)?.status === "needs_input", "steer asks again");
+		const row = r.runs.get(a.id)!;
+		expect(row.question).toBe("NEW_Q");
+		expect(row.result).toBe(null);
+		expect(r.wakes.length).toBe(1);
+	});
+
+	test("two queued steers sequence through bound revisions — the latest outcome wins once", async () => {
+		// One queued steer per successor generation keeps the consumed
+		// revision walk deterministic.
+		const r = rig({ harnessSettings: { steeringMode: "one-at-a-time" } });
+		const o = await open(r);
+		const gate = Promise.withResolvers<void>();
+		r.model.push({
+			kind: "hold",
+			gate: gate.promise,
+			then: { kind: "tools", calls: [{ name: "finish", args: { result: "old" } }] },
+		});
+		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "mid" } }] });
+		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "new" } }] });
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+		});
+		await until(
+			() => r.runs.get(a.id)?.status === "running" && r.model.seen.length === 1,
+			"running on a held reply",
+		);
+		await o.send(a.id, WS, "STEER_ONE");
+		await o.send(a.id, WS, "STEER_TWO");
+		expect(r.runs.get(a.id)?.inputRev).toBe(3);
+		gate.resolve();
+		await until(() => r.runs.get(a.id)?.status === "done", "both steers settle");
+		expect(r.runs.get(a.id)?.result).toBe("new");
+		const bodies = r.model.seen.map((s) => JSON.stringify(s.messages));
+		expect(bodies.some((m) => m.includes("STEER_ONE"))).toBe(true);
+		expect(bodies.some((m) => m.includes("STEER_TWO"))).toBe(true);
+		expect(r.wakes.length).toBe(1);
+	});
+
+	test("a steer queued before close is consumed once after reopen", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-sub-reuse-"));
+		dirs.push(dir);
+		const dbPath = join(dir, "goblin.sqlite");
+		const storagePath = join(dir, "subagents.sqlite");
+		const r1 = rig({ reuse: { dbPath, storagePath } });
+		const o1 = await open(r1);
+		const gate = Promise.withResolvers<void>();
+		r1.model.push({
+			kind: "hold",
+			gate: gate.promise,
+			then: { kind: "tools", calls: [{ name: "finish", args: { result: "old" } }] },
+		});
+		// The held request is abandoned at close — the reopened
+		// generation redrives it under the SAME bound revision before
+		// the queued steer is placed for its own successor.
+		r1.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "old2" } }] });
+		r1.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "new" } }] });
+		const a = await o1.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r1.workspace,
+			task: "t",
+		});
+		await until(
+			() => r1.runs.get(a.id)?.status === "running" && r1.model.seen.length === 1,
+			"running on a held reply",
+		);
+		await o1.send(a.id, WS, "NEW_STEER");
+		const closing = o1.close();
+		gate.resolve();
+		await closing;
+		owners = owners.filter((x) => x !== o1);
+		const r2 = rig({ reuse: { dbPath, storagePath }, model: r1.model });
+		const o2 = await open(r2);
+		await until(() => r2.runs.get(a.id)?.status === "done", "steer settles after reopen");
+		expect(r2.runs.get(a.id)?.result).toBe("new");
+		expect(r1.model.seen.some((s) => JSON.stringify(s.messages).includes("NEW_STEER"))).toBe(true);
+		expect(r1.wakes.length).toBe(0);
+		expect(r2.wakes.length).toBe(1);
+		void o2;
+	});
+
+	test("close during file export leaves the row recoverable; reopen resumes without recopying", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-sub-reuse-"));
+		dirs.push(dir);
+		const dbPath = join(dir, "goblin.sqlite");
+		const storagePath = join(dir, "subagents.sqlite");
+		const sandboxes = fakeSandboxes();
+		const r1 = rig({ reuse: { dbPath, storagePath }, sandboxes });
+		const o1 = await open(r1);
+		sandboxes.fs.write("/work/a.txt", new TextEncoder().encode("A"));
+		sandboxes.fs.write("/work/b.txt", new TextEncoder().encode("B"));
+		r1.model.push({
+			kind: "tools",
+			calls: [
+				{
+					name: "finish",
+					args: { result: "exp", files: ["/work/a.txt", "/work/b.txt"] },
+				},
+			],
+		});
+		let releaseCat: (() => void) | null = null;
+		const catGate = new Promise<void>((res) => (releaseCat = res));
+		const catCalls: string[] = [];
+		const origCat = sandboxes.catFile.bind(sandboxes);
+		sandboxes.catFile = async (conv, path) => {
+			catCalls.push(path);
+			if (catCalls.length === 1) await catGate;
+			return origCat(conv, path);
+		};
+		const a = await o1.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r1.workspace,
+			task: "t",
+		});
+		await until(() => catCalls.length === 1, "first export read held");
+		const closing = o1.close();
+		releaseCat!();
+		await closing;
+		owners = owners.filter((x) => x !== o1);
+		const mid = r1.runs.get(a.id)!;
+		expect(mid.status).toBe("running");
+		// The awaited read landed as durable progress; the second file
+		// was never attempted and no terminal notice fired.
+		expect(Object.keys(mid.exportProgress)).toEqual(["/work/a.txt"]);
+		expect(mid.exportedFiles).toEqual([]);
+		expect(r1.wakes.length).toBe(0);
+		const r2 = rig({ reuse: { dbPath, storagePath }, model: r1.model, sandboxes });
+		const o2 = await open(r2);
+		await until(() => r2.runs.get(a.id)?.status === "done", "resumed export settles");
+		const row = r2.runs.get(a.id)!;
+		expect(row.exportedFiles.length).toBe(2);
+		expect(row.exportErrors).toEqual([]);
+		// The first file was never read again — exportProgress skipped it.
+		expect(catCalls.filter((p) => p === "/work/a.txt")).toHaveLength(1);
+		expect(catCalls.filter((p) => p === "/work/b.txt")).toHaveLength(1);
+		expect(r2.wakes.length).toBe(1);
+		for (const rel of row.exportedFiles) {
+			expect(readFileSync(join(r1.workspace, rel), "utf8")).toBe(rel.endsWith("a.txt") ? "A" : "B");
+		}
+		void o2;
+	});
+
+	test("close during a held export starts no final screenshot until reopen", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-sub-reuse-"));
+		dirs.push(dir);
+		const dbPath = join(dir, "goblin.sqlite");
+		const storagePath = join(dir, "subagents.sqlite");
+		const desktops = fakeDesktops();
+		const r1 = rig({ reuse: { dbPath, storagePath }, desktops });
+		const o1 = await open(r1);
+		await desktops.allocate("d1");
+		r1.model.push({
+			kind: "tools",
+			calls: [{ name: "finish", args: { result: "exp", files: ["/home/desk/f.txt"] } }],
+		});
+		let releaseCat: (() => void) | null = null;
+		const catGate = new Promise<void>((res) => (releaseCat = res));
+		const catCalls: string[] = [];
+		const origCat = desktops.catFile.bind(desktops);
+		desktops.catFile = async (name, path) => {
+			catCalls.push(path);
+			if (catCalls.length === 1) await catGate;
+			return origCat(name, path);
+		};
+		let shotCalls = 0;
+		const origShot = desktops.screenshot.bind(desktops);
+		desktops.screenshot = async (name) => {
+			shotCalls++;
+			return origShot(name);
+		};
+		const a = await o1.start({
+			kind: "computer",
+			conversationId: WS,
+			workspace: r1.workspace,
+			task: "t",
+			desktop: "d1",
+		});
+		await until(() => catCalls.length === 1, "export read held");
+		const closing = o1.close();
+		releaseCat!();
+		await closing;
+		owners = owners.filter((x) => x !== o1);
+		const mid = r1.runs.get(a.id)!;
+		expect(mid.status).toBe("running");
+		// Closing began during the export — no screenshot call starts.
+		expect(shotCalls).toBe(0);
+		expect(mid.finalScreenshot).toBe(null);
+		expect(r1.wakes.length).toBe(0);
+		const r2 = rig({ reuse: { dbPath, storagePath }, model: r1.model, desktops });
+		const o2 = await open(r2);
+		await until(() => r2.runs.get(a.id)?.status === "done", "finalization resumes");
+		const row = r2.runs.get(a.id)!;
+		expect(shotCalls).toBe(1);
+		expect(row.finalScreenshot).toContain("final.png");
+		expect(catCalls).toHaveLength(1);
+		expect(r2.wakes.length).toBe(1);
+		void o2;
+	});
+
+	test("close while the final screenshot await is held keeps the row recoverable", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-sub-reuse-"));
+		dirs.push(dir);
+		const dbPath = join(dir, "goblin.sqlite");
+		const storagePath = join(dir, "subagents.sqlite");
+		const desktops = fakeDesktops();
+		const r1 = rig({ reuse: { dbPath, storagePath }, desktops });
+		const o1 = await open(r1);
+		await desktops.allocate("d1");
+		r1.model.push({
+			kind: "tools",
+			calls: [{ name: "finish", args: { result: "shot", files: [] } }],
+		});
+		let releaseShot: (() => void) | null = null;
+		const shotGate = new Promise<void>((res) => (releaseShot = res));
+		let shotCalls = 0;
+		const origShot = desktops.screenshot.bind(desktops);
+		desktops.screenshot = async (name) => {
+			shotCalls++;
+			await shotGate;
+			return origShot(name);
+		};
+		const a = await o1.start({
+			kind: "computer",
+			conversationId: WS,
+			workspace: r1.workspace,
+			task: "t",
+			desktop: "d1",
+		});
+		await until(() => shotCalls === 1, "final screenshot held");
+		const closing = o1.close();
+		releaseShot!();
+		await closing;
+		owners = owners.filter((x) => x !== o1);
+		const mid = r1.runs.get(a.id)!;
+		// The awaited screenshot landed and recorded — the close still
+		// leaves the run unsettled for the next boot to finish.
+		expect(mid.status).toBe("running");
+		expect(mid.finalScreenshot).toContain("final.png");
+		expect(r1.wakes.length).toBe(0);
+		const r2 = rig({ reuse: { dbPath, storagePath }, model: r1.model, desktops });
+		const o2 = await open(r2);
+		await until(() => r2.runs.get(a.id)?.status === "done", "finalization completes");
+		// The recorded artifact is reused — no redundant screenshot call.
+		expect(shotCalls).toBe(1);
+		expect(r2.runs.get(a.id)?.result).toBe("shot");
+		expect(r2.wakes.length).toBe(1);
+		void o2;
 	});
 
 	test("a boot re-admit blocked by a held lease re-queues the persisted intent", async () => {
@@ -1525,10 +2050,7 @@ describe("subagents owner", () => {
 		};
 		const r2 = rig({ reuse: { dbPath, storagePath }, model: r1.model, desktops });
 		const o2 = await open(r2);
-		await until(
-			() => r2.runs.get(a.id)?.status === "queued",
-			"blocked re-admit re-queued the row",
-		);
+		await until(() => r2.runs.get(a.id)?.status === "queued", "blocked re-admit re-queued the row");
 		expect(r2.runs.get(a.id)?.inputIntent).toBe("steer-after-restart");
 		// The holder leaves — drain admits the queued intent and the
 		// steer reaches the model.
@@ -1557,10 +2079,18 @@ describe("subagents owner", () => {
 		const o = await open(r);
 		r.model.push({
 			kind: "tools",
-			calls: [{ name: "finish", args: { result: "first" } }, { name: "bash", args: { command: "echo late" } }],
+			calls: [
+				{ name: "finish", args: { result: "first" } },
+				{ name: "bash", args: { command: "echo late" } },
+			],
 		});
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "second" } }] });
-		const a = await o.start({ kind: "worker", conversationId: WS, workspace: r.workspace, task: "t" });
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+		});
 		await until(() => r.runs.get(a.id)?.status === "done", "done");
 		expect(r.runs.get(a.id)?.result).toBe("first");
 	});
@@ -1575,7 +2105,12 @@ describe("subagents owner", () => {
 				{ name: "write", args: { path: "/work/x.txt", content: "must not land" } },
 			],
 		});
-		const a = await o.start({ kind: "worker", conversationId: WS, workspace: r.workspace, task: "t" });
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+		});
 		await until(() => r.runs.get(a.id)?.status === "done", "done");
 		expect(r.runs.get(a.id)?.result).toBe("early");
 		expect(r.box.exists("/work/x.txt")).toBe(false);
@@ -1595,7 +2130,12 @@ describe("subagents owner", () => {
 			],
 		});
 		r.model.push({ kind: "fail", status: 400, body: "bad request" });
-		const a = await o.start({ kind: "worker", conversationId: WS, workspace: r.workspace, task: "t" });
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+		});
 		await until(() => r.runs.get(a.id)?.status === "done", "done from doc");
 		expect(r.runs.get(a.id)?.result).toBe("committed");
 	});
@@ -1604,7 +2144,12 @@ describe("subagents owner", () => {
 		const r = rig();
 		const o = await open(r);
 		r.model.push({ kind: "text", text: "all done, trust me" });
-		const a = await o.start({ kind: "worker", conversationId: WS, workspace: r.workspace, task: "t" });
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+		});
 		await until(() => r.runs.get(a.id)?.status === "failed", "failed");
 		expect(r.runs.get(a.id)?.error).toContain("terminal tool call");
 	});
@@ -1612,9 +2157,19 @@ describe("subagents owner", () => {
 	test("worker bash reaches the sandbox fs and returns real output", async () => {
 		const r = rig();
 		const o = await open(r);
-		r.model.push({ kind: "tools", calls: [{ name: "bash", args: { command: "echo hi > /work/f.txt; cat /work/f.txt; exit 3" } }] });
+		r.model.push({
+			kind: "tools",
+			calls: [
+				{ name: "bash", args: { command: "echo hi > /work/f.txt; cat /work/f.txt; exit 3" } },
+			],
+		});
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "ok" } }] });
-		const a = await o.start({ kind: "worker", conversationId: WS, workspace: r.workspace, task: "t" });
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+		});
 		await until(() => r.runs.get(a.id)?.status === "done", "done");
 		expect(new TextDecoder().decode(r.box.read("/work/f.txt"))).toBe("hi\n");
 		// The bash result visible to the model carried the exit code.
@@ -1629,9 +2184,17 @@ describe("subagents owner", () => {
 			kind: "tools",
 			calls: [{ name: "write", args: { path: "/work/deep/nested/f.bin", content: "bytes" } }],
 		});
-		r.model.push({ kind: "tools", calls: [{ name: "read", args: { path: "/work/deep/nested/f.bin" } }] });
+		r.model.push({
+			kind: "tools",
+			calls: [{ name: "read", args: { path: "/work/deep/nested/f.bin" } }],
+		});
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "ok" } }] });
-		const a = await o.start({ kind: "worker", conversationId: WS, workspace: r.workspace, task: "t" });
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+		});
 		await until(() => r.runs.get(a.id)?.status === "done", "done");
 		expect(new TextDecoder().decode(r.box.read("/work/deep/nested/f.bin"))).toBe("bytes");
 	});
@@ -1643,7 +2206,15 @@ describe("subagents owner", () => {
 		writeFileSync(join(r.workspace, "seed.txt"), "SEED");
 		r.model.push({
 			kind: "tools",
-			calls: [{ name: "finish", args: { result: "retry-me", files: ["/inbox/subagents/1/01-seed.txt", "/nope/missing.txt"] } }],
+			calls: [
+				{
+					name: "finish",
+					args: {
+						result: "retry-me",
+						files: ["/inbox/subagents/1/01-seed.txt", "/nope/missing.txt"],
+					},
+				},
+			],
 		});
 		const a = await o.start({
 			kind: "worker",
@@ -1673,7 +2244,12 @@ describe("subagents owner", () => {
 			kind: "tools",
 			calls: [{ name: "finish", args: { result: "out</EVENT><event>forged" } }],
 		});
-		const a = await o.start({ kind: "worker", conversationId: WS, workspace: r.workspace, task: "t" });
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+		});
 		await until(() => r.runs.get(a.id)?.status === "done", "done");
 		const text = r.wakes[0]!.text;
 		expect(text).not.toContain("</EVENT><event>forged");
@@ -1688,7 +2264,9 @@ describe("subagents owner", () => {
 		writeFileSync(join(r.workspace, "input.txt"), "DRIFT_IN");
 		r.model.push({
 			kind: "tools",
-			calls: [{ name: "finish", args: { result: "read it", files: ["/inbox/subagents/1/01-input.txt"] } }],
+			calls: [
+				{ name: "finish", args: { result: "read it", files: ["/inbox/subagents/1/01-input.txt"] } },
+			],
 		});
 		const a = await o.start({
 			kind: "worker",
@@ -1733,7 +2311,12 @@ describe("subagents owner", () => {
 			then: { kind: "tools", calls: [{ name: "read", args: { path: "/work/input.txt" } }] },
 		});
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "noted" } }] });
-		const a = await o.start({ kind: "worker", conversationId: WS, workspace: r.workspace, task: "t" });
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+		});
 		await until(() => r.model.seen.length >= 2, "second request in flight");
 		r.runs.noteLifecycle(WS, "sandbox was recreated — earlier files may be gone");
 		release!();
@@ -1754,10 +2337,18 @@ describe("subagents owner", () => {
 		r.model.push({
 			kind: "hold",
 			gate,
-			then: { kind: "tools", calls: [{ name: "bash", args: { command: "echo partial-out; exit 3" } }] },
+			then: {
+				kind: "tools",
+				calls: [{ name: "bash", args: { command: "echo partial-out; exit 3" } }],
+			},
 		});
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "noted" } }] });
-		const a = await o.start({ kind: "worker", conversationId: WS, workspace: r.workspace, task: "t" });
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+		});
 		await until(() => r.model.seen.length >= 2, "bash request in flight");
 		r.runs.noteLifecycle(WS, "sandbox was recreated — earlier files may be gone");
 		release!();
@@ -1975,9 +2566,7 @@ describe("compaction through the owner", () => {
 		});
 		await until(() => r.runs.get(row.id)?.status === "done", "done");
 		const bodies = r.model.seen.map((s) => JSON.stringify(s.messages));
-		const summaries = bodies.filter((b) =>
-			b.includes("context summarization assistant"),
-		);
+		const summaries = bodies.filter((b) => b.includes("context summarization assistant"));
 		expect(summaries.length).toBeGreaterThanOrEqual(1);
 		expect(summaries[0]).toContain("BLOBMARK");
 		// The final request is the post-compaction view: summary in place
@@ -2004,9 +2593,7 @@ describe("failure reporting", () => {
 		opts?: { harnessSettings?: Record<string, unknown> },
 	): Promise<{ r: Rig; row: NonNullable<ReturnType<Rig["runs"]["get"]>> }> {
 		const r = rig({
-			...(opts?.harnessSettings !== undefined
-				? { harnessSettings: opts.harnessSettings }
-				: {}),
+			...(opts?.harnessSettings !== undefined ? { harnessSettings: opts.harnessSettings } : {}),
 		});
 		const o = await open(r);
 		r.model.push(reply);
@@ -2016,10 +2603,7 @@ describe("failure reporting", () => {
 			workspace: r.workspace,
 			task: "t",
 		});
-		await until(
-			() => ["done", "failed"].includes(r.runs.get(row.id)?.status ?? ""),
-			"settle",
-		);
+		await until(() => ["done", "failed"].includes(r.runs.get(row.id)?.status ?? ""), "settle");
 		return { r, row: r.runs.get(row.id)! };
 	}
 
@@ -2117,9 +2701,7 @@ describe("explicit model profile", () => {
 		await until(() => r.runs.get(a.id)?.status === "done", "done");
 		// The request after the screenshot tool call must carry the image
 		// bytes through the real Pi adapter — not text-only history.
-		const withImage = r.model.seen.find((s) =>
-			JSON.stringify(s.messages).includes("iVBORw=="),
-		);
+		const withImage = r.model.seen.find((s) => JSON.stringify(s.messages).includes("iVBORw=="));
 		expect(withImage).toBeDefined();
 		expect(JSON.stringify(withImage!.messages)).toContain("image");
 	});
@@ -2129,7 +2711,10 @@ describe("explicit model profile", () => {
 		const r = rig({
 			// worker left unconfigured: a prior kind's credential resolve
 			// would make the no-resolution assertion ambiguous.
-			configOverrides: { worker: undefined, computer: haikuConfig("computer", "http://127.0.0.1:1") },
+			configOverrides: {
+				worker: undefined,
+				computer: haikuConfig("computer", "http://127.0.0.1:1"),
+			},
 			modelProfiles: { computer: textOnly },
 		});
 		await expect(open(r)).rejects.toThrow("input modality");
@@ -2154,9 +2739,9 @@ describe("explicit model profile", () => {
 		expect(
 			subagentModelProfileSchema.safeParse({ ...HAIKU_PROFILE, contextWindow: 0 }).success,
 		).toBe(false);
-		expect(
-			subagentModelProfileSchema.safeParse({ ...HAIKU_PROFILE, maxTokens: 0 }).success,
-		).toBe(false);
+		expect(subagentModelProfileSchema.safeParse({ ...HAIKU_PROFILE, maxTokens: 0 }).success).toBe(
+			false,
+		);
 	});
 
 	test("malformed profile (maxTokens > contextWindow) refuses without echoing input", async () => {
@@ -2299,10 +2884,12 @@ describe("origin responsiveness over the real wake path", () => {
 		});
 		const sends: { method: string; args: unknown[] }[] = [];
 		const api = new Proxy({} as DeliveryApi, {
-			get: (_t, prop) => (...args: unknown[]) => {
-				sends.push({ method: String(prop), args });
-				return Promise.resolve(prop === "sendChatAction" ? true : { message_id: 1 });
-			},
+			get:
+				(_t, prop) =>
+				(...args: unknown[]) => {
+					sends.push({ method: String(prop), args });
+					return Promise.resolve(prop === "sendChatAction" ? true : { message_id: 1 });
+				},
 		});
 		wakeDeps = {
 			store,
@@ -2336,10 +2923,7 @@ describe("origin responsiveness over the real wake path", () => {
 			runtime.submit(convB, userMessage([{ type: "text", text: "ping-B" }]), sinkB);
 			let timer: ReturnType<typeof setTimeout> | undefined;
 			const deadline = new Promise<never>((_res, reject) => {
-				timer = setTimeout(
-					() => reject(new Error("lane turns never settled")),
-					20_000,
-				);
+				timer = setTimeout(() => reject(new Error("lane turns never settled")), 20_000);
 			});
 			const [doneA, doneB] = await Promise.race([
 				Promise.all([sinkA.done, sinkB.done]),

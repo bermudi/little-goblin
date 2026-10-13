@@ -166,7 +166,7 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 	return tool({
 		description: DESKTOP_TOOL_DESCRIPTION,
 		inputSchema: desktopInputSchema,
-		execute: async (raw) => {
+		execute: async (raw, { abortSignal }) => {
 			const parsed = actionSchema.safeParse(raw);
 			if (!parsed.success) {
 				return {
@@ -250,6 +250,10 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 					case "export": {
 						const rel = input.to ?? join("desktop-out", basename(input.from));
 						const { data, note } = await deps.desktops.catFile(input.name, input.from);
+						// The wait above is a cancellation gap: recheck before
+						// the host write so a call cancelled mid-read never
+						// overwrites a workspace file.
+						abortSignal?.throwIfAborted();
 						const out = exportBytes(deps.workspace, rel.includes("/") ? rel.split("/").slice(0, -1).join("/") : "", basename(rel), data);
 						if ("error" in out) return { error: `export ${out.error}` };
 						return {

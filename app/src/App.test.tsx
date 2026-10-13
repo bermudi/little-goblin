@@ -1449,6 +1449,9 @@ describe("app projects surface", () => {
 	let searchScript: Map<string, { fail?: boolean; hold?: Promise<void>; hits?: AppSearchHit[] }>;
 	// A held conversation create answers only once this gate resolves.
 	let createHold: Promise<void> | null;
+	// Same for a note PATCH — the stored row still mutates at request
+	// time (the restore ruling); only the reply is held.
+	let notePatchHold: Promise<void> | null;
 	// Test-owned gates, resolved in afterEach so a failed assertion can
 	// never strand a pending mocked fetch.
 	let pendingGates: PromiseWithResolvers<void>[];
@@ -1533,6 +1536,7 @@ describe("app projects surface", () => {
 		searchCalls = [];
 		searchScript = new Map();
 		createHold = null;
+		notePatchHold = null;
 		pendingGates = [];
 		installGlobal("window", win);
 		installGlobal("document", win.document);
@@ -1729,7 +1733,10 @@ describe("app projects surface", () => {
 						n.updatedAt = "2026-10-12T00:00:00.000Z";
 					}
 				}
-				return Promise.resolve(jsonResponse(noteFull(n, noteBodies[n.id] ?? "")));
+				const reply = () => jsonResponse(noteFull(n, noteBodies[n.id] ?? ""));
+				return Promise.resolve(
+					method === "PATCH" && notePatchHold !== null ? notePatchHold.then(reply) : reply(),
+				);
 			}
 			if (url === "/api/app/notes" || url.startsWith("/api/app/notes?")) {
 				if (method === "POST") {
@@ -2274,6 +2281,43 @@ describe("app projects surface", () => {
 		expect(container.querySelector(".note-version-preview")!.textContent).toContain(
 			"Save or resolve edits before restoring",
 		);
+	});
+
+	test("Enter + blur during a held title PATCH commit once — no false conflict", async () => {
+		notes = [noteRow("Shopping")];
+		const gate = hold();
+		notePatchHold = gate.promise;
+		await notePage("/app/n/n-shopping");
+		const title = container.querySelector("input.note-title")!;
+		await typeInto(title, "Shopping 2", win.HTMLInputElement.prototype);
+		await act(async () => {
+			title.dispatchEvent(
+				new win.KeyboardEvent("keydown", { bubbles: true, key: "Enter" }) as unknown as Event,
+			);
+		});
+		// The first PATCH is in flight — the blur's commit re-arms; a
+		// second write on the same If-Match would land 409 after the
+		// first and raise a conflict that never happened.
+		await act(async () => {
+			(title as HTMLInputElement).blur();
+		});
+		await settle();
+		expect(patchCalls).toBe(1);
+		// The held write already landed server-side (rev 2); releasing
+		// the reply runs the armed commit, which no-ops on the landed
+		// title instead of re-firing.
+		gate.resolve();
+		await settle();
+		expect(patchCalls).toBe(1);
+		expect(container.querySelector(".note-conflict")).toBeNull();
+		// A later distinct commit still writes — the guard isn't a wedge.
+		await typeInto(title, "Shopping 3", win.HTMLInputElement.prototype);
+		await act(async () => {
+			(title as HTMLInputElement).blur();
+		});
+		await settle();
+		expect(patchCalls).toBe(2);
+		expect(notePatches.at(-1)?.ifMatch).toBe('"2"');
 	});
 
 	// Mutate the rendered PM text node — the DOM observer reads it into

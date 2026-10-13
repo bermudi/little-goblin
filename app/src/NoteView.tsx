@@ -335,6 +335,13 @@ export function NoteView({
 	const titleDraftRef = useRef("");
 	const conflictRef = useRef<AppNote | null>(null);
 	const rewriteBusyRef = useRef(false);
+	// One title PATCH at a time — Enter and blur both commit, and a
+	// second write on the same stale If-Match rev lands after the
+	// first and 409s into a false conflict that blocks body autosave.
+	// A commit arriving mid-flight just re-arms: the settle re-runs it
+	// against the landed rev.
+	const titleSavingRef = useRef(false);
+	const titlePendingRef = useRef(false);
 	noteRef.current = note;
 	titleDraftRef.current = titleDraft;
 	conflictRef.current = conflict;
@@ -443,17 +450,27 @@ export function NoteView({
 	};
 
 	const saveTitle = () => {
+		const cur = noteRef.current;
 		// A standing conflict needs an explicit Keep mine — a blur must
 		// not send the local title over the adopted remote rev.
-		if (conflict !== null) return;
-		const t = titleDraft.trim();
-		if (t === "" || t === note.title) {
-			setTitleDraft(note.title);
+		if (cur === null || conflictRef.current !== null) return;
+		const t = titleDraftRef.current.trim();
+		if (t === "" || t === cur.title) {
+			setTitleDraft(cur.title);
 			return;
 		}
-		void patchNote(token, note.id, { title: t }, { ifMatch: note.rev }).then(
+		if (titleSavingRef.current) {
+			titlePendingRef.current = true;
+			return;
+		}
+		titleSavingRef.current = true;
+		void patchNote(token, cur.id, { title: t }, { ifMatch: cur.rev }).then(
 			({ data }) => {
+				titleSavingRef.current = false;
 				adoptRemote(data);
+				// noteRef mirrors on render — the pending re-run below
+				// needs the landed rev's If-Match now, not next render.
+				noteRef.current = data;
 				// The server stored the trimmed title — sync the draft so
 				// leftover whitespace doesn't read as an unsaved edit,
 				// unless the operator typed again while the PATCH flew.
@@ -461,9 +478,18 @@ export function NoteView({
 				// The body didn't change — advance the If-Match rev only;
 				// reload() would discard unsaved body edits.
 				editorRef.current?.adoptRev(data);
+				if (titlePendingRef.current) {
+					titlePendingRef.current = false;
+					saveTitle();
+				}
 			},
 			(err) => {
+				titleSavingRef.current = false;
+				// A dropped pending commit belongs to the failure path —
+				// the conflict bar or the error now owns the UX.
+				titlePendingRef.current = false;
 				if (err instanceof NoteConflictError) {
+					conflictRef.current = err.note;
 					const h = editorRef.current;
 					if (h === null) setConflict(err.note);
 					else h.conflict(err.note);

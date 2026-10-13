@@ -72,17 +72,24 @@ const NO_STORE = { "cache-control": "no-store" };
 
 // State viewer name rules (ruling 2026-10-11): a skill/attachment name
 // is one path segment; a file path inside a skill may carry slashes but
-// never "..". Both gates sit in front of stateview.ts's containment
-// check — validation here is input hygiene, containment is the wall.
+// every segment must itself be a legal name. Ordinary Unicode, spaces,
+// parens and dots are names — only separators, controls and the exact
+// "."/".." traversal segments are refused. Both gates sit in front of
+// stateview.ts's containment check — validation here is input hygiene,
+// containment is the wall.
 const SEGMENT_SCHEMA = z
 	.string()
-	.max(200)
-	.regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
+	.min(1)
+	.max(255)
+	.regex(/^[^/\\\x00-\x1f\x7f]+$/u)
+	.refine((v) => v !== "." && v !== "..");
 const REL_PATH_SCHEMA = z
 	.string()
-	.max(400)
-	.regex(/^[A-Za-z0-9][A-Za-z0-9._/-]*$/)
-	.refine((v) => !v.includes(".."), "no traversal");
+	.min(1)
+	.max(4096)
+	.refine((v) => v.split("/").every((part) => SEGMENT_SCHEMA.safeParse(part).success), {
+		error: "invalid relative path",
+	});
 
 // Serving cap for attachments/file — the upload cap's twin (32 MiB);
 // the viewer never serves what the composer cannot store.

@@ -7,13 +7,17 @@
 // the injected CSP but keeps allow-scripts, handing a remote page
 // network egress and rendering inside trusted chrome. Declarative and
 // click-driven navigations are neutralized at the source (meta refresh
-// stripped in srcdoc(), anchor clicks intercepted); a direct location
-// assignment from script remains the accepted residual.
+// stripped in srcdoc(), every anchor click canceled — a leading "#" is
+// re-expressed as this document's own location.hash instead); a direct
+// location assignment from script remains the accepted residual.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { UiLeaf } from "../../../src/agent/tools/ui-schema.ts";
 
-const CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:">`;
+// base-uri 'none' pins resolution as belt: the click guard sets
+// location.hash verbatim without resolving hrefs, but no static or
+// script-inserted <base href> should ever be usable anyway.
+const CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'">`;
 
 // documentElement.scrollHeight can't drop below the frame's own
 // viewport — a one-way ratchet — so measure body bounds instead
@@ -21,20 +25,21 @@ const CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'no
 // runs; observe after DOMContentLoaded.
 const RESIZE = `<script>addEventListener("DOMContentLoaded",function(){new ResizeObserver(function(){parent.postMessage({goblinUiHeight:Math.ceil(document.body.getBoundingClientRect().height)},"*")}).observe(document.body)})</script>`;
 
-// In-page anchors (#fragments) still work; every other href is out of
-// the leaf's contract ("no network, no external assets") and is a
-// navigation-escape vector, so it never leaves the frame. Capture phase
-// — the document's own handlers must not get to run the default first.
-// Declarative navigations are neutralized at the source: the static meta
-// refresh is stripped in srcdoc(), and — because browsers honor metas
-// inserted after load — the guard also watches the live document and
-// removes any refresh meta that script inserts (or retrofits onto an
-// existing tag). Anchors: non-# clicks and drags are dead. What remains
-// is the documented residual: a direct `location` assignment from
-// script, un-interceptable from inside the document (design/app.md →
+// In-page anchors still work, but no anchor click ever navigates:
+// every a[href] click is canceled, and a leading-# href is written to
+// this document's own location.hash — same-document, resolved against
+// neither <base> nor the inherited parent URL. Capture phase — the
+// document's own handlers must not get to run the default first.
+// Declarative navigations are neutralized at the source too: the static
+// meta refresh is stripped in srcdoc(), and — because browsers honor
+// metas inserted after load — the guard also watches the live document
+// and removes any refresh meta that script inserts (or retrofits onto
+// an existing tag). Drags on anchors are dead. What remains is the
+// documented residual: a direct `location` assignment from script,
+// un-interceptable from inside the document (design/app.md →
 // Intelligent UI → Escape hatch: html).
 const NAVIGATION_GUARD = `<script>
-document.addEventListener("click",function(e){var t=e.target;if(!(t instanceof Element))return;var a=t.closest("a[href]");if(a&&(a.getAttribute("href")||"").charAt(0)!=="#")e.preventDefault()},true);
+document.addEventListener("click",function(e){var t=e.target;if(!(t instanceof Element))return;var a=t.closest("a[href]");if(a){e.preventDefault();var h=a.getAttribute("href")||"";if(h.charAt(0)==="#")location.hash=h}},true);
 document.addEventListener("dragstart",function(e){var t=e.target;if(t instanceof Element&&t.closest("a[href]"))e.preventDefault()},true);
 function isRefresh(m){return m.tagName==="META"&&(m.getAttribute("http-equiv")||"").toLowerCase()==="refresh"}
 new MutationObserver(function(ms){for(var i=0;i<ms.length;i++){var m=ms[i];if(m.type==="attributes"){if(isRefresh(m.target))m.target.remove();continue}for(var j=0;j<m.addedNodes.length;j++){var n=m.addedNodes[j];if(n.nodeType!==1)continue;if(isRefresh(n)){n.remove();continue}var q=n.querySelectorAll("meta");for(var k=0;k<q.length;k++)if(isRefresh(q[k]))q[k].remove()}}}).observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:["http-equiv"]});

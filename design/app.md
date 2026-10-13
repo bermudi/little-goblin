@@ -175,7 +175,11 @@ attachments, and the log. Deliberately out, forever: `auth.jsonl` (no
 route may ever render it, structure included) and any editing surface
 beyond what the console already has — the viewer reads state; writes
 stay where they are. The wall is two layers that each hold alone: the
-router zod-validates every name/path/param, and `src/stateview.ts`
+router zod-validates every name/path/param — a name is one segment and
+a skill-relative path is a `/`-joined run of segments, where a segment
+is any non-empty run without separators or controls and not exactly
+`.` or `..` (spaces, parens, dots and Unicode are ordinary names) —
+and `src/stateview.ts`
 re-verifies containment in **realpath space** (every component —
 including symlinked files and linked parent directories — resolves to
 its target before the prefix check), so neither lexical traversal nor
@@ -552,8 +556,10 @@ splitter, a savings calculator, a small game — the `html` leaf
 renders model-written HTML in `<iframe sandbox="allow-scripts"
 srcdoc>`, never `allow-same-origin`, with an injected CSP meta
 (`default-src 'none'; script-src 'unsafe-inline'; style-src
-'unsafe-inline'; img-src data:`) and a minimal base stylesheet from
-the app's tokens. The opaque origin cannot read the app's token,
+'unsafe-inline'; img-src data:; base-uri 'none'`) and a minimal base
+stylesheet from the app's tokens. `base-uri 'none'` keeps a static or
+script-inserted `<base href>` inert, so no URL-resolution path in the
+document can ever be retargeted. The opaque origin cannot read the app's token,
 storage or DOM; its mutations reach `/api/app/*` as `Origin: null` /
 cross-site and the trust-mode gate refuses them; reads lack CORS.
 Height is reported by an injected resize script via `postMessage`,
@@ -563,8 +569,10 @@ Navigations out of the frame are neutralized at the source (ruling
 2026-10-10): CSP governs fetches, never navigations, and a navigated
 frame sheds the injected CSP while keeping `allow-scripts` — network
 egress plus rendering inside the app's trusted chrome. Meta refresh
-is stripped in `srcdoc()` and an injected capture-phase click guard
-prevents every non-`#` anchor navigation; popups and forms are
+is stripped in `srcdoc()` and the injected capture-phase click guard
+cancels every anchor click — a `#fragment` href is re-expressed as the
+document's own `location.hash`, an in-place update that never resolves
+through `<base>` or the embedding URL; popups and forms are
 already dead under the sandbox flags. **Accepted residual:** a
 direct `location` assignment from script can still navigate the
 frame — un-interceptable from inside the document — so the `html`

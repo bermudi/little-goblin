@@ -94,6 +94,59 @@ describe("state viewer routes", () => {
 		expect([400, 404]).toContain(res.status);
 	});
 
+	test("skills/file round-trips ordinary spaced, dotted and Unicode names", async () => {
+		const name = "my skill 日本語";
+		const files: Record<string, string> = {
+			"SKILL.md": "main",
+			"reference guide.md": "spaced",
+			"ref/(notes).md": "parens",
+			"ref/guide-日本語.md": "unicode",
+			".hidden.md": "dotfile",
+			"file..name.md": "double-dot substring",
+		};
+		for (const origin of ["skills", "skills-proposed"]) {
+			for (const p of Object.keys(files)) {
+				mkdirSync(join(home, "workspace", origin, name, join(p, "..")), { recursive: true });
+				writeFileSync(join(home, "workspace", origin, name, p), `${origin}:${p}`);
+			}
+		}
+		const urlFor = (origin: string, path: string) =>
+			`origin=${origin}&name=${encodeURIComponent(name)}&path=${encodeURIComponent(path)}`;
+		for (const [p] of Object.entries(files)) {
+			const installed = await getWithQuery("skills/file", urlFor("skills", p));
+			expect(installed.status, `skills ${p}`).toBe(200);
+			expect(((await installed.json()) as { content: string }).content).toBe(`skills:${p}`);
+			const proposed = await getWithQuery("skills/file", urlFor("proposed", p));
+			expect(proposed.status, `proposed ${p}`).toBe(200);
+			expect(((await proposed.json()) as { content: string }).content).toBe(`skills-proposed:${p}`);
+		}
+	});
+
+	test("skills/file still rejects traversal, absolute, backslash and NUL", async () => {
+		mkdirSync(join(home, "workspace/skills/weather"), { recursive: true });
+		writeFileSync(join(home, "workspace/skills/weather/SKILL.md"), "content");
+		for (const query of [
+			"name=weather&path=../secret",
+			"name=weather&path=a/../../x",
+			"name=weather&path=/etc/passwd",
+			"name=weather&path=a%5C..%5Cx",
+			"name=weather&path=a%00b",
+			"name=weather&path=dir/../SKILL.md",
+			"name=weather&path=dir//file.md",
+			"name=weather&path=trailing/",
+			"name=weather&path=.",
+			"name=weather&path=..",
+			"name=.&path=SKILL.md",
+			"name=..&path=SKILL.md",
+			"name=a/b&path=SKILL.md",
+			"name=a%5Cb&path=SKILL.md",
+			"name=a%00b&path=SKILL.md",
+		]) {
+			const res = await getWithQuery("skills/file", query);
+			expect(res.status, query).toBe(400);
+		}
+	});
+
 	test("identity serves null contents for missing files", async () => {
 		mkdirSync(join(home, "workspace"), { recursive: true });
 		writeFileSync(join(home, "workspace/SOUL.md"), "# soul");
@@ -137,6 +190,23 @@ describe("state viewer routes", () => {
 		expect(await file.text()).toBe("PNG");
 		const bad = await getWithQuery("attachments/file", "name=..%2Fpic.png");
 		expect(bad.status).toBe(400);
+	});
+
+	test("attachments with ordinary special names serve with inert headers", async () => {
+		mkdirSync(join(home, "workspace/attachments"), { recursive: true });
+		for (const [name, bytes] of [
+			["my report.zip", "ZIP"],
+			["file..name.txt", "TXT"],
+			["日本語.txt", "JP"],
+		] as const) {
+			writeFileSync(join(home, "workspace/attachments", name), bytes);
+			const res = await getWithQuery("attachments/file", `name=${encodeURIComponent(name)}`);
+			expect(res.status, name).toBe(200);
+			expect(res.headers.get("content-disposition")).toBe("attachment");
+			expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+			expect(res.headers.get("content-security-policy")).toBe("sandbox");
+			expect(await res.text()).toBe(bytes);
+		}
 	});
 
 	test("non-GET is refused on every state viewer route", async () => {

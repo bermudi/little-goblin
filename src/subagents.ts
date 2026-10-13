@@ -1115,6 +1115,15 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			execute: async (args: never, api: ToolExecutionApi, context: Context) => {
 				const row = requireRow(api);
 				await deps.desktops.claim(row.desktop!, holderFor(row.id));
+				// The claim await is a cancellation window — stop intent can
+				// persist while it pends, and the entry row is stale. Re-gate
+				// on a fresh read immediately before dispatch.
+				requireLive(requireRow(api));
+				if (context.abortSignal?.aborted) {
+					throw new SubagentError(
+						`run #${row.id} was cancelled during lease acquisition — the action was not performed`,
+					);
+				}
 				return inner(args, api, context);
 			},
 		} as T;

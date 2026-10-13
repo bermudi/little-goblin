@@ -842,6 +842,7 @@ function fakeSandboxes(): MemSandbox {
 interface FakeDesktops extends Desktops {
 	actCalls: number;
 	claimCalls: number;
+	claimWaiting: number;
 	held: Map<string, LeaseHolder>;
 	actGate: Promise<void> | null;
 	claimGate: Promise<void> | null;
@@ -853,6 +854,7 @@ function fakeDesktops(): FakeDesktops {
 	const f: FakeDesktops = {
 		actCalls: 0,
 		claimCalls: 0,
+		claimWaiting: 0,
 		held,
 		actGate: null,
 		claimGate: null,
@@ -881,7 +883,12 @@ function fakeDesktops(): FakeDesktops {
 		list: () => [...rows.values()],
 		get: (name) => rows.get(name) ?? null,
 		claim: async (name, holder) => {
-			if (f.claimGate !== null) await f.claimGate;
+			f.claimWaiting++;
+			try {
+				if (f.claimGate !== null) await f.claimGate;
+			} finally {
+				f.claimWaiting--;
+			}
 			f.claimCalls++;
 			const row = rows.get(name);
 			if (row === undefined) throw new DesktopError(`no desktop named ${name}`);
@@ -1316,6 +1323,47 @@ describe("subagents owner", () => {
 		expect(stopped.status).toBe("stopped");
 		await Bun.sleep(200);
 		expect(r.model.seen.length).toBe(0);
+		expect(r.desktops.actCalls).toBe(0);
+	});
+
+	test("stop during an act tool's lease renewal fences the dispatch", async () => {
+		const r = rig();
+		const o = await open(r);
+		await r.desktops.allocate("d1");
+		const modelGate = Promise.withResolvers<void>();
+		r.model.push({
+			kind: "hold",
+			gate: modelGate.promise,
+			then: {
+				kind: "tools",
+				calls: [
+					{
+						name: "act",
+						args: { observation_id: "obs-any", tool: "click", args: { x: 1, y: 2 } },
+					},
+				],
+			},
+		});
+		const a = await o.start({
+			kind: "computer",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "click it",
+			desktop: "d1",
+		});
+		await until(() => r.runs.get(a.id)?.status === "running", "running");
+		// Admission already claimed; the next claim is the act tool's
+		// renewal — the cancellation window the wrapper must re-gate.
+		let releaseClaim: (() => void) | null = null;
+		r.desktops.claimGate = new Promise<void>((res) => (releaseClaim = res));
+		modelGate.resolve();
+		await until(() => r.desktops.claimWaiting === 1, "renewal pending");
+		const stopping = o.stop(a.id, WS);
+		expect(r.runs.get(a.id)?.stopRequested).toBe(true);
+		releaseClaim!();
+		const stopped = await stopping;
+		expect(stopped.status).toBe("stopped");
+		await Bun.sleep(200);
 		expect(r.desktops.actCalls).toBe(0);
 	});
 

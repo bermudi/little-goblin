@@ -122,7 +122,8 @@ describe("programs store", () => {
 		).toThrow("requires a cron trigger");
 		expect(() => s.update(p.id, { cron: null })).toThrow("requires a cron trigger");
 		expect(s.get(p.id)!.cron).toBe("30 8 * * *");
-		expect(() => s.update(p.id, { maxLatenessMinutes: -1 })).toThrow("non-negative");
+		expect(() => s.update(p.id, { maxLatenessMinutes: -1 })).toThrow("positive");
+		expect(() => s.update(p.id, { maxLatenessMinutes: 0 })).toThrow("positive");
 		expect(() => s.update(p.id, { maxLatenessMinutes: Number.MAX_SAFE_INTEGER + 1 })).toThrow(
 			"safe integer",
 		);

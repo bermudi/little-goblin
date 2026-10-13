@@ -410,7 +410,7 @@ describe("scheduler", () => {
 			{
 				name: "ci",
 				cron: "0 9 * * *",
-				maxLatenessMinutes: 0,
+				maxLatenessMinutes: 60,
 				hookHash: "hook",
 				charter: "check the build",
 				address: { chatId: 1, threadId: null },

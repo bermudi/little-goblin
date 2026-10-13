@@ -90,7 +90,9 @@ const createSchema = z.object({
 	name: z.string().min(1).max(100),
 	charter: z.string().min(1),
 	cron: z.string().min(5).optional(),
-	maxLatenessMinutes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+	// The 30s scan tick is the finest lateness there is — 0 reads as
+	// structurally un-fireable, so the floor is 1 minute.
+	maxLatenessMinutes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
 	hook: z.boolean().optional(),
 	mailFilter: z.string().min(1).max(500).optional(),
 });
@@ -104,7 +106,7 @@ const updateSchema = z.object({
 	maxLatenessMinutes: z
 		.number()
 		.int()
-		.nonnegative()
+		.positive()
 		.max(Number.MAX_SAFE_INTEGER)
 		.nullable()
 		.optional(),

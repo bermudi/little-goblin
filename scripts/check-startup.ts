@@ -92,9 +92,24 @@ async function watchInvocation(
 			throw new Error("startup refuses existing invocation");
 		// Linux uptime includes suspend; it is not systemd's monotonic start clock.
 		attemptedAt = Date.now() * 1000;
-		await run(["systemctl", "--user", "enable", "--now", "goblin.service"], "start service");
+		// enable and start separately, and never --now: a blocking start
+		// inherits the 5s inspection limit but waits on ordered units
+		// (network-online can legitimately outlast it). The acceptance
+		// loop below owns the deadline, so the job is enqueued and the
+		// watch begins immediately.
+		await run(["systemctl", "--user", "enable", "goblin.service"], "start service");
+		await run(
+			["systemctl", "--user", "start", "--no-block", "goblin.service"],
+			"start service",
+		);
 	} else if (baseline.ActiveState !== "active" || baseline.InvocationID === "") {
 		throw new Error("startup watch refuses missing invocation");
+	} else if (baseline.NRestarts !== 0) {
+		// A deploy's manual restart flushes the counter to 0, so a
+		// nonzero baseline means systemd already auto-replaced the
+		// invocation the deploy created — accepting it would bless a
+		// crash loop's replacement as the deploy's own work.
+		throw new Error("startup failed or restarted");
 	}
 	let current: Identity | undefined;
 	let boundPort = port === 0 ? undefined : port;
@@ -102,8 +117,12 @@ async function watchInvocation(
 	while (true) {
 		remaining();
 		const observed = await identity();
+		// A manual start/restart flushes NRestarts to 0 — accept's
+		// baseline can legitimately carry a dead service's stale count,
+		// but the invocation under acceptance must stay at 0: anything
+		// nonzero is an automatic restart, not the deploy's own start.
 		if (
-			observed.NRestarts !== baseline.NRestarts ||
+			observed.NRestarts !== 0 ||
 			observed.ActiveState === "failed" ||
 			observed.ActiveState === "deactivating"
 		)
@@ -183,7 +202,7 @@ async function watchInvocation(
 					if (
 						final.InvocationID !== current.InvocationID ||
 						final.ExecMainStartTimestampMonotonic !== current.ExecMainStartTimestampMonotonic ||
-						final.NRestarts !== baseline.NRestarts ||
+						final.NRestarts !== 0 ||
 						final.ActiveState !== "active"
 					)
 						throw new Error("startup changed during HTTP acceptance");

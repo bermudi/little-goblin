@@ -22,7 +22,12 @@ try {
 	const refs = authReferences(config);
 	const profiles = new Set<string>();
 	let keys = false;
-	for (const record of records) {
+	// Auth resolution is last-record-wins (loadAuth): a retired profile's
+	// overridden record must not render a warm line for it — or reject
+	// the scan on an unsupported command the live records don't carry.
+	const effective = new Map<string, (typeof records)[number]>();
+	for (const record of records) effective.set(record.name, record);
+	for (const record of effective.values()) {
 		const executable = passCommand(record.value);
 		if (executable === undefined) continue;
 		keys = true;

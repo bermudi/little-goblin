@@ -57,7 +57,7 @@ if(process.argv[2]==='identity'){
 if(active&&mode==='stalled-command')await new Promise(resolve=>setTimeout(resolve,10000));
 const changed=existsSync(${JSON.stringify(join(dir, "during-http"))});
 const count=existsSync(countFile)?Number(readFileSync(countFile,'utf8')):0; if(active)writeFileSync(countFile,String(count+1));
-process.stdout.write('InvocationID='+ (active?((mode==='switch'&&count>0)||(mode==='during-http-switch'&&changed)?'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb':id):'')+'\\nExecMainStartTimestampMonotonic='+mono+'\\nNRestarts='+(active&&(mode==='restart'||mode==='during-http-restart'&&changed||mode==='watch-restart'&&count>0)?'1':'0')+'\\nActiveState='+(active?'active':'inactive')+'\\n');
+process.stdout.write('InvocationID='+ (active?((mode==='switch'&&count>0)||(mode==='during-http-switch'&&changed)?'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb':id):'')+'\\nExecMainStartTimestampMonotonic='+mono+'\\nNRestarts='+(active&&(mode==='restart'||mode==='during-http-restart'&&changed||mode==='watch-restart'&&count>0||mode==='watch-prerestart')?'1':'0')+'\\nActiveState='+(active?'active':'inactive')+'\\n');
 }else{
 const names=mode==='boot-error'?['boot failed']:mode==='poll-error'?['long polling failed']:mode==='no-polling'?['goblin up']:['goblin up','long polling started'];
 for(const msg of names)process.stdout.write(JSON.stringify({_SYSTEMD_INVOCATION_ID:mode==='old-logs'?'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb':id,__MONOTONIC_TIMESTAMP:mode==='old-time'?'0':mono,__REALTIME_TIMESTAMP:String(mode==='before-attempt'?0:Date.now()*1000),MESSAGE:JSON.stringify({msg,...(msg==='goblin up'&&mode==='generated'?{port:${server.port}}:msg==='goblin up'&&mode==='wrong-port'?{port:${server.port! + 1}}:msg==='goblin up'&&mode==='invalid-port'?{port:0}:{}),error:'FIXTURE_SECRET',body:'FIXTURE_SECRET'})})+'\\n');
@@ -66,7 +66,7 @@ process.stdout.write(JSON.stringify({_SYSTEMD_INVOCATION_ID:id,__MONOTONIC_TIMES
 		);
 		writeFileSync(
 			join(bin, "systemctl"),
-			`#!/bin/sh\ncase "$*" in\n'--user show goblin.service '*) exec '${process.execPath}' --no-install '${metadata}' identity ;;\n'--user enable --now goblin.service') exec '${process.execPath}' --no-install '${metadata}' start ;;\n*) exit 99 ;;\nesac\n`,
+			`#!/bin/sh\ncase "$*" in\n'--user show goblin.service '*) exec '${process.execPath}' --no-install '${metadata}' identity ;;\n'--user enable goblin.service') exit 0 ;;\n'--user start --no-block goblin.service') exec '${process.execPath}' --no-install '${metadata}' start ;;\n*) exit 99 ;;\nesac\n`,
 			{ mode: 0o755 },
 		);
 		writeFileSync(
@@ -153,6 +153,16 @@ describe("invocation-specific startup acceptance", () => {
 	});
 	test("watch mode gates a crash-restart within budget", async () => {
 		const result = await startupFixture("watch-restart", "healthy", "watch");
+		expect(result.exit).toBe(1);
+		expect(result.output).toContain("startup failed or restarted");
+		expect(result.output).not.toContain("accepted");
+		expect(result.output).not.toContain("FIXTURE_SECRET");
+	});
+	// An auto-restart that lands between the deploy's restart and the
+	// first probe is a replacement invocation — its nonzero count must
+	// fail the baseline, not become the accepted one.
+	test("watch mode refuses an invocation already replaced before the baseline", async () => {
+		const result = await startupFixture("watch-prerestart", "healthy", "watch");
 		expect(result.exit).toBe(1);
 		expect(result.output).toContain("startup failed or restarted");
 		expect(result.output).not.toContain("accepted");

@@ -144,3 +144,37 @@ test("multi-directory direct Pass path recognizes any provisioned profile withou
 	});
 	expect(result.invoked).toBe(false);
 });
+test("an overridden record warms only its replacement's profile — last wins, like loadAuth", () => {
+	const result = inspect(
+		`${config}}`,
+		[
+			'{"name":"fixture","value":"!pass-keys get retired FIXTURE"}',
+			'{"name":"fixture","value":"!pass-keys get current FIXTURE"}',
+		].join("\n"),
+	);
+	expect(result.status).toBe(0);
+	expect(JSON.parse(result.stdout) as unknown).toEqual({
+		delegation: false,
+		keys: true,
+		port: 8787,
+		profiles: ["current"],
+	});
+	expect(result.stderr).toBe("");
+});
+test("an overridden unsupported record does not reject the scan its replacement carries", () => {
+	const result = inspect(
+		`${config}}`,
+		[
+			'{"name":"fixture","value":"!pass-keys run retired -- printenv FIXTURE"}',
+			'{"name":"fixture","value":"!pass-keys get current FIXTURE"}',
+		].join("\n"),
+	);
+	expect(result.status).toBe(0);
+	expect(JSON.parse(result.stdout) as unknown).toEqual({
+		delegation: false,
+		keys: true,
+		port: 8787,
+		profiles: ["current"],
+	});
+	expect(result.stderr).toBe("");
+});

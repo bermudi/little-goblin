@@ -454,6 +454,10 @@ export function NoteView({
 		void patchNote(token, note.id, { title: t }, { ifMatch: note.rev }).then(
 			({ data }) => {
 				adoptRemote(data);
+				// The server stored the trimmed title — sync the draft so
+				// leftover whitespace doesn't read as an unsaved edit,
+				// unless the operator typed again while the PATCH flew.
+				if (titleDraftRef.current.trim() === data.title) setTitleDraft(data.title);
 				// The body didn't change — advance the If-Match rev only;
 				// reload() would discard unsaved body edits.
 				editorRef.current?.adoptRev(data);
@@ -625,6 +629,9 @@ export function NoteView({
 						const cur = noteRef.current;
 						// A restore answering late must not roll a newer rev back.
 						if (cur === null || n.rev < cur.rev) return;
+						// A focus refresh already adopted (and reloaded) this
+						// exact state — edits on top of it are not a conflict.
+						if (n.rev === cur.rev && n.updatedAt === cur.updatedAt) return;
 						const titleDirty = titleDraftRef.current !== cur.title;
 						const bodyDirty = dirtyRef.current || (editorRef.current?.dirty() ?? false);
 						if (bodyDirty || titleDirty) {

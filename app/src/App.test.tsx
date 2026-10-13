@@ -2191,6 +2191,32 @@ describe("app projects surface", () => {
 		});
 	}
 
+	test("a trimmed title save syncs the draft — a remote flip doesn't read it as dirty", async () => {
+		notes = [noteRow("Shopping")];
+		noteBodies = { "n-shopping": "milk" };
+		await notePage("/app/n/n-shopping");
+		const title = container.querySelector("input.note-title")! as HTMLInputElement;
+		await typeInto(title, "Groceries ", win.HTMLInputElement.prototype);
+		await act(async () => {
+			title.dispatchEvent(new win.FocusEvent("focusout", { bubbles: true }) as unknown as Event);
+		});
+		await settle();
+		expect(notePatches).toHaveLength(1);
+		expect((notePatches[0]!.body as { title?: string }).title).toBe("Groceries");
+		// The stored title is trimmed — the draft follows it, or the
+		// trailing whitespace reads as an unsaved edit forever.
+		expect(title.value).toBe("Groceries");
+		// Proof: a remote flag flip under a clean page goes readonly —
+		// a stale-dirty draft would have raised the bar instead.
+		notes[0]!.archivedAt = "2026-10-12T00:00:00.000Z";
+		await act(async () => {
+			win.dispatchEvent(new win.Event("focus"));
+		});
+		await settle();
+		expect(container.querySelector(".note-conflict")).toBeNull();
+		expect(container.querySelector(".note-readonly")!.textContent).toContain("milk");
+	});
+
 	const openVersions = async () => {
 		await click(
 			[...container.querySelectorAll("button")].find((b) => b.textContent === "Versions"),
@@ -2320,6 +2346,36 @@ describe("app projects surface", () => {
 		expect(container.querySelector(".note-conflict")).toBeNull();
 		expect(container.querySelector(".ProseMirror")!.textContent).toContain("oldx");
 		expect(notePatches).toHaveLength(1);
+	});
+
+	test("a restore answer matching the adopted state isn't a conflict over new edits", async () => {
+		restoreFixture();
+		const gate = hold();
+		await notePage("/app/n/n-shopping");
+		const restore = await openVersions();
+		restoreHold = gate.promise;
+		await click(restore);
+		// The POST already wrote server-side — a focus refresh adopts
+		// and reloads rev 6 while the reply is still held.
+		await act(async () => {
+			win.dispatchEvent(new win.Event("focus"));
+		});
+		await settle();
+		expect((container.querySelector("input.note-title") as HTMLInputElement).value).toBe(
+			"Old Title",
+		);
+		await editBody("x");
+		gate.resolve();
+		await settle();
+		// The reply restates exactly what the page holds — the edits on
+		// top of it are unsaved work, not a divergence to resolve.
+		expect(container.querySelector(".note-conflict")).toBeNull();
+		expect(container.querySelector(".ProseMirror")!.textContent).toContain("oldx");
+		// Autosave proceeds against the adopted rev — nothing was held.
+		await settleLong();
+		expect(notePatches).toHaveLength(1);
+		expect(notePatches[0]!.ifMatch).toBe('"6"');
+		expect((notePatches[0]!.body as { body?: string }).body).toContain("oldx");
 	});
 
 	test("a failed restore releases the pending guard", async () => {

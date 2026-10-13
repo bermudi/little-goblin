@@ -1505,9 +1505,7 @@ export function SettingsView({
 						<ChipsEditor
 							values={draft.operators.map(String)}
 							onAdd={(v) => addId("operators", v)}
-							onRemove={(i) =>
-								patchDraft({ operators: draft.operators.filter((_, j) => j !== i) })
-							}
+							onRemove={(i) => patchDraft({ operators: draft.operators.filter((_, j) => j !== i) })}
 							placeholder="telegram user id"
 							ariaLabel="add operator"
 							numeric
@@ -1589,6 +1587,20 @@ export function SettingsView({
 						return notice?.text ?? "";
 					})()}
 				</span>
+				{notice?.kind === "err" && !saving && dirty && (
+					<button
+						type="button"
+						className="ghost-inline"
+						onClick={() => {
+							// Re-arm the attempted guard for this exact state —
+							// without it the debounce would chain retries forever.
+							attempted.current = serialize(draft, provs);
+							void save();
+						}}
+					>
+						retry
+					</button>
+				)}
 			</div>
 
 			{sheet !== null && (

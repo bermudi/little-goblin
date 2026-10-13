@@ -264,7 +264,10 @@ of its own**. Bound to one desktop and its lease:
   same uuid: a destroy + re-allocate inside one millisecond can neither
   replay the old id nor clobber its frame. For `screenshot`,
   `lastObsId` is written only after the PNG lands on disk — a
-  screenshot id never points at a frame that wasn't written.
+  screenshot id never points at a frame that wasn't written. And a
+  container restart invalidates the newest observation BEFORE
+  `podman.start`: the dead frame's id can never dispatch input again,
+  so the restart note tells the caller to observe fresh.
 - Terminal outcomes are tools, not inferred from prose: `finish(result)`
   → done; `ask_operator(question)` → needs_input (login, CAPTCHA, an
   ambiguous choice). The operator answers in the origin conversation;

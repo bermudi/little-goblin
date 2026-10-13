@@ -498,6 +498,52 @@ describe("desktops pool", () => {
 		await desktops.act(name, RUN_A, s2.id, CLICK);
 	});
 
+	test("a restart invalidates the pre-restart observation before any input dispatch", async () => {
+		const engine = fakeEngine({ varyFrames: true });
+		const { desktops, store, name } = await fresh(engine);
+		await desktops.claim(name, RUN_A);
+		const shot = await desktops.screenshot(name);
+		// A host-side stop kills whatever that frame showed.
+		engine.containers.get(containerNameForDesktop(name))!.running = false;
+		const execBefore = engine.execCalls.length;
+		await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(/fresh screenshot/);
+		// The container restarted, but no input was dispatched and the
+		// dead frame is persisted-invalidated while the lease survives.
+		expect(engine.containers.get(containerNameForDesktop(name))!.running).toBe(true);
+		expect(engine.execCalls.length).toBe(execBefore);
+		const row = store.get(name)!;
+		expect(row.lastObsId).toBeNull();
+		expect(row.lastObsHash).toBeNull();
+		expect(row.lastActSig).toBeNull();
+		expect(row.leaseKind).toBe("run");
+		expect(row.shotSeq).toBe(1);
+		// A fresh observation mints a new id and dispatches under the same lease.
+		const shot2 = await desktops.screenshot(name);
+		expect(shot2.id).not.toBe(shot.id);
+		const out = await desktops.act(name, RUN_A, shot2.id, CLICK);
+		expect(out.result).toMatchObject({ effect: "unverifiable" });
+	});
+
+	test("a failed restart still persists the invalidation — the dead frame can't ride a later act", async () => {
+		const engine = fakeEngine({ varyFrames: true });
+		const { desktops, store, name } = await fresh(engine);
+		await desktops.claim(name, RUN_A);
+		const shot = await desktops.screenshot(name);
+		engine.containers.get(containerNameForDesktop(name))!.running = false;
+		const realStart = engine.podman.start.bind(engine.podman);
+		engine.podman.start = async () => {
+			engine.podman.start = realStart;
+			throw new Error("start exploded");
+		};
+		await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(/start exploded/);
+		expect(store.get(name)!.lastObsId).toBeNull();
+		// The retry restarts for real, tells the caller the frame is
+		// gone, and mints a fresh observation id.
+		const obs = await desktops.screenshot(name);
+		expect(obs.note).toContain("fresh screenshot");
+		expect(obs.id).not.toBe(shot.id);
+	});
+
 	test("destroy is refused while another holder's lease is live", async () => {
 		const engine = fakeEngine();
 		const { desktops, name } = await fresh(engine);

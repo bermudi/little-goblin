@@ -564,6 +564,23 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			if (ins.state === "stopped") {
 				// E.g. a host reboot — filesystem intact, network re-applied
 				// from the row (the intent), not from whatever inspect saw.
+				// The restart kills whatever the newest observation showed,
+				// so that frame is dead: persist the invalidation BEFORE
+				// start — a failed start must not leave a dead obs id live
+				// (design/subagents.md, observation binding). Lease,
+				// reserved pin, shot sequence and files survive.
+				if (row.lastObsId !== null) {
+					row.lastObsId = null;
+					row.lastObsUsed = false;
+					row.lastObsHash = null;
+					row.lastActSig = null;
+					row.lastActFrameHash = null;
+					store.put(row);
+					log.info("desktop observation invalidated — restart pending", {
+						desktop: name,
+						container,
+					});
+				}
 				await podman.start(container);
 				await applyNetwork(name, row.network);
 				row.lastUsedAt = now;
@@ -572,7 +589,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				return {
 					row,
 					container,
-					note: "desktop was stopped — restarted it; files and network state restored",
+					note: "desktop was stopped — restarted it; files and network state restored, but the previous frame is gone — take a fresh screenshot before acting",
 				};
 			}
 			// Running: the row's network intent wins over a drifted actual

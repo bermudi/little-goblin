@@ -73,6 +73,8 @@ const manualHints: Readonly<Record<string, string>> = {
 		"Inspect relay and Ollama readiness and model identity; do not change a populated bank's embedding model.",
 	memory:
 		"Inspect memory readiness and local installation metadata under the approved runbook; do not print credentials or alter bank data.",
+	sandbox:
+		"Inspect the podman engine and the configured image locally; images are pulled only with operator approval.",
 };
 
 function result(
@@ -438,27 +440,68 @@ function capacity(path: string, id: string, scope: string): HealthResult {
 	}
 }
 
+// Subsystem tables the diagnostic revision's boot path creates
+// unconditionally (openStore + the unconditional open* calls + bot
+// start). Feature tables join only while their config block exists —
+// delegations needs `delegation`, memory_outage needs `memory`. Lazy
+// tables (forget_listings, tg_dm_navigation*) are deliberately absent:
+// they appear on first use, not at boot.
+function expectedTables(config: Config | undefined): string[] {
+	const boot = [
+		"projects",
+		"notes",
+		"note_versions",
+		"notes_fts",
+		"events_fts",
+		"memory_outbox",
+		"memory_blocked_notices",
+		"memory_contexts",
+		"memory_suppressions",
+		"memory_destinations",
+		"programs",
+		"mail_outbox",
+		"sandboxes",
+		"tg_pings",
+		"tg_inbox",
+		"tg_inbox_archives",
+		"guest_dedup",
+	];
+	if (config?.delegation !== undefined) boot.push("delegations");
+	if (config?.memory !== undefined) boot.push("memory_outage");
+	return boot;
+}
+
 async function sqlite(
 	home: string,
 	phase: HealthReport["phase"],
 	probe: ProbeContext = {},
-): Promise<HealthResult> {
+	config?: Config,
+): Promise<HealthResult[]> {
 	const start = performance.now(),
 		scope = `caller-home:${home};diagnostic-revision`,
 		id = "sqlite";
 	if (phase === "preflight")
-		return result(
-			id,
-			scope,
-			"skip",
-			"Database and additive schema initialized at first boot; not required preflight",
-			start,
-		);
+		return [
+			result(
+				id,
+				scope,
+				"skip",
+				"Database and additive schema initialized at first boot; not required preflight",
+				start,
+			),
+			result("sqlite.subsystems", scope, "skip", "Blocked by sqlite", start),
+		];
 	try {
 		const path = join(home, "state/goblin.sqlite");
 		if (!statSync(path).isFile()) throw new ProbeError("not-regular-file");
 		const raw = await command(
-			[process.execPath, "--no-install", join(import.meta.dir, "health-sqlite.ts"), path],
+			[
+				process.execPath,
+				"--no-install",
+				join(import.meta.dir, "health-sqlite.ts"),
+				path,
+				JSON.stringify(expectedTables(config)),
+			],
 			5000,
 			probe,
 		);
@@ -470,17 +513,115 @@ async function sqlite(
 		}
 		const report = sqliteProbeSchema.safeParse(parsed);
 		if (!report.success) throw new ProbeError("invalid-worker-schema");
-		return result(
+		const base = result(
 			id,
 			scope,
 			report.data.status,
 			report.data.category === "compatible"
-				? "Read-only WAL-aware quick_check and required base structure compatible with diagnostic revision; optional subsystem schemas and installed revision unverified; SHM bookkeeping permitted"
+				? "Read-only WAL-aware quick_check and required base structure compatible with diagnostic revision; installed revision unverified; SHM bookkeeping permitted"
 				: `Diagnostic-revision compatibility/integrity: ${report.data.category}; not a claim of installed-schema corruption`,
 			start,
 		);
+		if (report.data.status !== "pass")
+			return [base, result("sqlite.subsystems", scope, "skip", "Blocked by sqlite", start)];
+		const missing = report.data.missingExpected ?? [];
+		return [
+			base,
+			result(
+				"sqlite.subsystems",
+				scope,
+				missing.length ? "warn" : "pass",
+				missing.length
+					? `Boot-created subsystem tables absent at diagnostic revision: ${missing.join(", ")} — a pre-revision install or a lost store; next boot creates them, this is not a corruption claim`
+					: "All expected subsystem tables present; row contents unverified",
+				start,
+			),
+		];
 	} catch (error) {
-		return failure(id, scope, error, start, "Read-only SQLite worker");
+		return [
+			failure(id, scope, error, start, "Read-only SQLite worker"),
+			result("sqlite.subsystems", scope, "skip", "Blocked by sqlite", start),
+		];
+	}
+}
+
+const unitStateSchema = z.object({
+	LoadState: z.enum(["loaded", "not-found", "error", "masked", "bad-setting"]),
+	ActiveState: z.enum([
+		"active",
+		"inactive",
+		"failed",
+		"activating",
+		"deactivating",
+		"reloading",
+		"refreshing",
+		"maintenance",
+	]),
+	SubState: z.string().max(64),
+});
+
+async function systemdShow(
+	unit: string,
+	properties: readonly string[],
+	probe: ProbeContext,
+): Promise<Record<string, string>> {
+	const raw = await command(
+		["systemctl", "--user", "show", unit, `--property=${properties.join(",")}`],
+		2000,
+		probe,
+	);
+	const out: Record<string, string> = {};
+	for (const line of raw.trim().split("\n")) {
+		const match = /^([A-Za-z]+)=(.*)$/.exec(line);
+		if (!match?.[1] || match[2] === undefined || Object.hasOwn(out, match[1]))
+			throw new ProbeError("invalid-systemd-properties");
+		out[match[1]] = match[2];
+	}
+	return out;
+}
+
+// goblin-herdr.service hosts the delegated-agent session; goblin.service
+// Wants=/After= it but never gates on it, so a dead unit only degrades
+// the delegate tool — fail-tier only while delegation is configured.
+async function herdrUnit(
+	scope: string,
+	delegationConfigured: boolean,
+	probe: ProbeContext,
+): Promise<HealthResult> {
+	const start = performance.now(),
+		id = "service.goblin-herdr";
+	try {
+		const props = await systemdShow(
+			"goblin-herdr.service",
+			["LoadState", "ActiveState", "SubState"],
+			probe,
+		);
+		const parsed = unitStateSchema.safeParse(props);
+		if (!parsed.success) throw new ProbeError("invalid-systemd-properties");
+		const p = parsed.data;
+		const healthy =
+			p.LoadState === "loaded" && p.ActiveState === "active" && p.SubState === "running";
+		return result(
+			id,
+			scope,
+			healthy ? "pass" : delegationConfigured ? "fail" : "warn",
+			`${p.LoadState}/${p.ActiveState}/${p.SubState}; ${
+				healthy
+					? "delegation host session up"
+					: delegationConfigured
+						? "delegation host down — configured delegate calls fail"
+						: "delegation host down; no delegation block configured"
+			}; pane contents and herdr wire unverified`,
+			start,
+		);
+	} catch (error) {
+		return result(
+			id,
+			scope,
+			delegationConfigured ? "fail" : "warn",
+			`Delegation host unit unverified: ${errno(error)}`,
+			start,
+		);
 	}
 }
 
@@ -488,12 +629,14 @@ async function installation(
 	checkout: string,
 	phase: HealthReport["phase"],
 	probe: ProbeContext = {},
+	delegationConfigured = false,
 ): Promise<HealthResult[]> {
 	const start = performance.now(),
 		scope = `diagnostic-revision:${checkout}`;
 	if (phase === "preflight")
 		return [
 			result("service.goblin", scope, "skip", "Unit not required before installation", start),
+			result("service.goblin-herdr", scope, "skip", "Unit not required before installation", start),
 			result(
 				"app.assets",
 				`installed-checkout:${checkout}`,
@@ -504,25 +647,15 @@ async function installation(
 		];
 	let installed: string | undefined;
 	let finding: HealthResult;
+	// The herdr probe shares the systemctl boundary and the same deadline
+	// budget — run it beside the service probe, not after it.
+	const herdr = herdrUnit(scope, delegationConfigured, probe);
 	try {
-		const raw = await command(
-			[
-				"systemctl",
-				"--user",
-				"show",
-				"goblin.service",
-				"--property=LoadState,ActiveState,SubState,WorkingDirectory",
-			],
-			2000,
+		const properties = await systemdShow(
+			"goblin.service",
+			["LoadState", "ActiveState", "SubState", "WorkingDirectory"],
 			probe,
 		);
-		const properties: Record<string, string> = {};
-		for (const line of raw.trim().split("\n")) {
-			const match = /^(LoadState|ActiveState|SubState|WorkingDirectory)=(.*)$/.exec(line);
-			if (!match?.[1] || match[2] === undefined || Object.hasOwn(properties, match[1]))
-				throw new ProbeError("invalid-systemd-properties");
-			properties[match[1]] = match[2];
-		}
 		const parsed = z
 			.object({
 				LoadState: z.enum(["loaded", "not-found", "error", "masked", "bad-setting"]),
@@ -559,6 +692,7 @@ async function installation(
 	if (!installed) assets.detail += "; installed target unknown, diagnostic checkout inspected only";
 	return [
 		finding,
+		await herdr,
 		result(
 			"installation.coverage",
 			scope,
@@ -1077,6 +1211,77 @@ async function memory(
 	];
 }
 
+// The configured sandbox block's engine readiness: podman must answer
+// and the pinned image must already be local (goblin never pulls). Both
+// probes are read-only — no create, no pull, no socket writes.
+async function sandbox(
+	config: Config | undefined,
+	probe: ProbeContext = {},
+): Promise<HealthResult[]> {
+	const scope = "caller-home;configured-sandbox";
+	if (config?.sandbox === undefined)
+		return [
+			result(
+				"sandbox.engine",
+				scope,
+				"skip",
+				config === undefined
+					? "Blocked by config"
+					: "No sandbox block configured — the tool is absent",
+			),
+		];
+	const start = performance.now();
+	try {
+		await command(["podman", "info"], 5000, probe);
+	} catch (error) {
+		return [
+			result(
+				"sandbox.engine",
+				scope,
+				"fail",
+				`podman engine unresponsive: ${errno(error)}; configured sandbox calls cannot run`,
+				start,
+			),
+			result("sandbox.image", scope, "skip", "Blocked by sandbox.engine"),
+		];
+	}
+	const engine = result(
+		"sandbox.engine",
+		scope,
+		"pass",
+		"podman info answered — rootless engine responsive",
+		start,
+	);
+	const imageStart = performance.now();
+	try {
+		await command(["podman", "image", "exists", config.sandbox.image], 5000, probe);
+		return [
+			engine,
+			result(
+				"sandbox.image",
+				scope,
+				"pass",
+				`Configured image ${config.sandbox.image} is in the local store`,
+				imageStart,
+			),
+		];
+	} catch (error) {
+		const category = errno(error);
+		return [
+			engine,
+			result(
+				"sandbox.image",
+				scope,
+				"fail",
+				category === "exit:1"
+					? `Configured image ${config.sandbox.image} not in the local store; pulls need operator approval: podman pull ${config.sandbox.image}`
+					: `Image presence unverified: ${category}`,
+				imageStart,
+			),
+		];
+	}
+}
+
 export async function runHealth(options: {
 	home: string;
 	checkout: string;
@@ -1099,17 +1304,18 @@ export async function runHealth(options: {
 		...options.probe,
 		...(options.signal ? { signal: options.signal } : {}),
 	};
-	const [db, install, keys, mem] = await Promise.all([
-		sqlite(home, options.phase, probe),
-		installation(checkout, options.phase, probe),
+	const [db, install, keys, mem, sbx] = await Promise.all([
+		sqlite(home, options.phase, probe, config.config),
+		installation(checkout, options.phase, probe, config.config?.delegation !== undefined),
 		snapshots(auth.profiles, options.phase, probe),
 		memory(config.config, probe),
+		sandbox(config.config, probe),
 	]);
 	return healthReportSchema.parse({
 		version: 1,
 		checkedAt,
 		phase: options.phase,
 		target: { home, checkout },
-		results: [...local, db, ...install, ...keys, ...mem],
+		results: [...local, ...db, ...install, ...keys, ...mem, ...sbx],
 	});
 }

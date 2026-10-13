@@ -77,8 +77,9 @@ migration before boot has performed existing initialization.
 | Keys | Referenced recognized `pass-keys get` profiles: metadata-only status, required key-name presence, snapshot age; installed refresh unit state |
 | Workspace | Required readable files/directories, explicit optional or preflight skips |
 | Storage | Available bytes and reported inodes for caller home and narrowly discovered local PostgreSQL volume; not a write/fsync guarantee |
-| SQLite | WAL-aware read-only open, bounded integrity inspection and required base schema; no state-owner constructors or migrations |
-| Installation | User-unit state/checkout and readable client index/local asset references; not proof of successful boot or frontend execution |
+| SQLite | WAL-aware read-only open, bounded integrity inspection, required base schema and expected boot-created subsystem-table presence (warn-tier); lazy tables excluded; no state-owner constructors or migrations |
+| Installation | `goblin` and `goblin-herdr` user-unit state/checkout and readable client index/local asset references; the delegation host fails only while delegation is configured and its pane/wire stay unverified; not proof of successful boot or frontend execution |
+| Sandbox | Configured-only: podman answers `info` and the configured image is in the local store; never creates, pulls or executes |
 | Memory | Configured `/health/ready` returns 2xx; credentials, bank permissions and running queues remain unverified |
 | Embedding | Local installation/container binding/mount and allowlisted embedding settings match a host-local relay/model before synthetic embedding; vectors omitted |
 
@@ -108,8 +109,10 @@ SQLite may create/update shared-memory coordination sidecars. The accepted
 contract is no application-data mutation, not literally zero filesystem
 writes. Tests verify uncheckpointed WAL visibility and unchanged main/WAL
 bytes. Do not use `immutable` to ignore WAL or copy a bare main database.
-Optional subsystem schemas and concurrent snapshot copying are not
-claimed verified. Quick-check's error count and busy-timeout do not bound
+Subsystem-table presence is checked against the diagnostic revision's
+boot-created set (config-gated tables only while their block exists;
+lazy tables unchecked), but their columns and row contents, plus
+concurrent snapshot copying, are not claimed verified. Quick-check's error count and busy-timeout do not bound
 query runtime; isolation supplies the deadline.
 
 ## Reports, failures and execution

@@ -4,6 +4,9 @@ import { z } from "zod";
 export const sqliteProbeSchema = z.object({
 	status: z.enum(["pass", "fail"]),
 	category: z.enum(["compatible", "structure", "integrity", "busy", "open-or-query"]),
+	// Boot-created subsystem tables the caller expected but found absent.
+	// Absent (undefined) = the check did not run (base verdict was fail).
+	missingExpected: z.array(z.string()).optional(),
 });
 
 // These are diagnostic-revision requirements, not an exact schema fingerprint.
@@ -61,7 +64,14 @@ const required = {
 	dm_rolls: ["chat_id", "current_id", "n"],
 } as const;
 
-function inspect(path: string): z.infer<typeof sqliteProbeSchema> {
+// Argv is a fixed vocabulary of identifiers — anything else is not a
+// table name, and a bad arg degrades to "no expected check", never SQL.
+const expectedArgSchema = z.array(z.string().regex(/^[a-z][a-z0-9_]{0,63}$/)).max(100);
+
+function inspect(
+	path: string,
+	expectedTables: readonly string[],
+): z.infer<typeof sqliteProbeSchema> {
 	let db: Database | undefined;
 	try {
 		// A normal read-only connection sees WAL; immutable would silently miss it.
@@ -81,9 +91,16 @@ function inspect(path: string): z.infer<typeof sqliteProbeSchema> {
 			.array(z.object({ quick_check: z.string() }))
 			.max(1)
 			.parse(db.query("PRAGMA quick_check(1)").all());
-		return rows.length === 1 && rows[0]?.quick_check === "ok"
-			? { status: "pass", category: "compatible" }
-			: { status: "fail", category: "integrity" };
+		if (rows.length !== 1 || rows[0]?.quick_check !== "ok")
+			return { status: "fail", category: "integrity" };
+		// Presence only: the caller's expected subsystem tables (fixed
+		// identifiers, never row data). Table_info is the same probe the
+		// required pass uses; a missing table returns zero columns.
+		const handle = db;
+		const missingExpected = expectedTables.filter(
+			(table) => handle.query(`PRAGMA table_info(${table})`).all().length === 0,
+		);
+		return { status: "pass", category: "compatible", missingExpected };
 	} catch (error) {
 		const code = z.object({ code: z.string() }).safeParse(error);
 		return {
@@ -100,9 +117,15 @@ function inspect(path: string): z.infer<typeof sqliteProbeSchema> {
 
 if (import.meta.main) {
 	const path = z.string().min(1).safeParse(process.argv[2]);
+	let expected: string[] = [];
+	try {
+		expected = expectedArgSchema.parse(JSON.parse(process.argv[3] ?? "[]"));
+	} catch {
+		expected = [];
+	}
 	process.stdout.write(
 		JSON.stringify(
-			path.success ? inspect(path.data) : { status: "fail", category: "open-or-query" },
+			path.success ? inspect(path.data, expected) : { status: "fail", category: "open-or-query" },
 		),
 	);
 }

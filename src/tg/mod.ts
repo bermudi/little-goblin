@@ -36,6 +36,7 @@ import {
 } from "./commands.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import { makeDeliverySink, SPEAK_CALLBACK } from "./delivery.ts";
+import { floodWaitTransformer } from "./flood-wait.ts";
 import { registerGenerationStop } from "./generation-stop.ts";
 import {
 	type GuestEnv,
@@ -1034,6 +1035,9 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	// apiRoot is structural — applies at process start, not hot-reloaded.
 	const apiRoot = deps.configRef.current.telegram.apiRoot;
 	const bot = new Bot(token, apiRoot ? { client: { apiRoot } } : {});
+	// Honors 429 retry_after on every api call — first transformer, so
+	// init (getMe) is covered too.
+	bot.api.config.use(floodWaitTransformer());
 	// Populates bot.botInfo, needed to route /cmd@botname. Bounded: a
 	// wedged connection must fail boot loudly, not hang.
 	await withTimeout(bot.init(), "getMe");

@@ -178,7 +178,7 @@ coderabbit review --base origin/main
 ```
 
 It refuses a dirty tree, runs the gate (`bun run typecheck`; the full
-suite gates merges, not deploys),
+suite gates merges via `.github/workflows/ci.yml`, not deploys),
 then refreshes what the gate can't cover: `bun install --frozen-lockfile`
 when the dependency manifests moved and `bun run app:build` when `app/`
 or the manifests moved — the bundle inlines dependency code, so a React

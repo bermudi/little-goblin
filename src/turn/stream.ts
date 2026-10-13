@@ -759,6 +759,9 @@ export async function driveStream<M extends WireMember>(
 				// synthesize part ids per request, so step 2 can reuse
 				// step 1's id verbatim. Reset instead of trusting ids.
 				lastTextPartId = null;
+				// Every step start is a provider call spent — the stamp a
+				// trigger owner's retry gate reads on the terminal outcome.
+				state.noteStep();
 				break;
 			case "text-delta":
 				// Distinct text parts are distinct blocks. A multi-step

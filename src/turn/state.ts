@@ -46,6 +46,10 @@ export interface LoopTurnState {
 	watchdogStrikes: number;
 	// Completed tool calls this turn — the watchdog's cadence counter.
 	completedCalls: number;
+	// Model calls started this turn (one per start-step) — the "did the
+	// provider do any work" stamp retry gates read; tool calls are not
+	// a proxy for it.
+	modelCalls: number;
 	warnings: string[];
 	cutKind: ForcedKind | null;
 	forcedKind: ForcedKind | null;
@@ -83,6 +87,7 @@ export class TurnState {
 	private watchdogRing: ToolCallDigest[];
 	private watchdogStrikes: number;
 	private completedCalls: number;
+	private modelCalls: number;
 	private warnings: string[];
 	// Attempt-scoped, never snapshotted: how many warnings this attempt
 	// already sent, whether the forced step was issued, and a check in
@@ -101,6 +106,7 @@ export class TurnState {
 		this.watchdogRing = loop === undefined ? [] : [...loop.watchdogRing];
 		this.watchdogStrikes = loop?.watchdogStrikes ?? 0;
 		this.completedCalls = loop?.completedCalls ?? 0;
+		this.modelCalls = loop?.modelCalls ?? 0;
 		this.warnings = loop === undefined ? [] : [...loop.warnings];
 		this.cutKind = loop?.cutKind ?? null;
 		this.forcedKind = loop?.forcedKind ?? null;
@@ -150,6 +156,14 @@ export class TurnState {
 		const unsent = this.warnings.slice(this.warnCursor);
 		this.warnCursor = this.warnings.length;
 		return unsent;
+	}
+
+	// One model call issued — every start-step is a provider request
+	// spent, which is what a retry gate reads to tell "nothing ran"
+	// from "partial work happened". Text deltas are not the measure:
+	// coalesced members see no sink deltas at all.
+	noteStep(): void {
+		this.modelCalls++;
 	}
 
 	// One completed tool call: feed the repeat detector, grow the
@@ -230,6 +244,7 @@ export class TurnState {
 			watchdogRing: [...this.watchdogRing],
 			watchdogStrikes: this.watchdogStrikes,
 			completedCalls: this.completedCalls,
+			modelCalls: this.modelCalls,
 			warnings: [...this.warnings],
 			cutKind: this.cutKind,
 			forcedKind: this.forcedKind,

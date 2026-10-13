@@ -903,7 +903,7 @@ describe("schedule fire retry ladder", () => {
 	const transientDone: TurnDone = {
 		kind: "error",
 		message: "fetch failed",
-		completedCalls: 0,
+		modelCalls: 0,
 		transient: true,
 	};
 
@@ -926,7 +926,11 @@ describe("schedule fire retry ladder", () => {
 
 	test("a transient zero-call failure re-fires on the ordinary path, cursor untouched", async () => {
 		const h = harness();
-		const now = new Date("2026-10-13T08:00:00");
+		// One clock for both sides: ladderProgram builds "created five
+		// minutes ago" from Date.now(), so the scan time must too — a
+		// fixed past timestamp slips behind the wall clock and the first
+		// occurrence lands after the scan.
+		const now = new Date();
 		const program = ladderProgram(h);
 		const { captured, release } = capture();
 		try {
@@ -988,11 +992,11 @@ describe("schedule fire retry ladder", () => {
 		["a completed turn", { kind: "completed" } as const],
 		[
 			"a non-transient error",
-			{ kind: "error", message: "boom", transient: false, completedCalls: 0 } as const,
+			{ kind: "error", message: "boom", transient: false, modelCalls: 0 } as const,
 		],
 		[
 			"an error that already spent model calls",
-			{ kind: "error", message: "boom", transient: true, completedCalls: 2 } as const,
+			{ kind: "error", message: "boom", transient: true, modelCalls: 2 } as const,
 		],
 		["an error with unknown flags", { kind: "error", message: "boom" } as const],
 	])("no ladder rung on %s", async (_label, done) => {
@@ -1013,6 +1017,50 @@ describe("schedule fire retry ladder", () => {
 		await sink.onDone(transientDone);
 		await Bun.sleep(10);
 		expect(h.submitted).toHaveLength(1);
+	});
+
+	test("occurrences keep separate ladders — a second fire never cancels the first's pending rung", async () => {
+		const h = harness();
+		const program = ladderProgram(h);
+		const now1 = new Date();
+		fireScheduled(h.deps, program, now1, { retryDelaysMs: DELAYS });
+		expect(h.submitted).toHaveLength(1);
+		await h.submitted[0]!.sink.onDone(transientDone);
+		// A minute later the next occurrence fires and fails too. Keyed
+		// by program alone, this fire would evict the pending rung.
+		fireScheduled(h.deps, program, new Date(now1.getTime() + 60_000), {
+			retryDelaysMs: DELAYS,
+		});
+		expect(h.submitted).toHaveLength(2);
+		await h.submitted[1]!.sink.onDone(transientDone);
+		await Bun.sleep(10);
+		// Both occurrences retry — two originals plus two rung-ones.
+		expect(h.submitted).toHaveLength(4);
+	});
+
+	test("a retry that throws inside the timer is logged, not fatal", async () => {
+		const h = harness();
+		const program = ladderProgram(h);
+		const { captured, release } = capture();
+		try {
+			fireScheduled(h.deps, program, new Date(), { retryDelaysMs: DELAYS });
+			await h.submitted[0]!.sink.onDone(transientDone);
+			// The re-read explodes — the timer boundary must absorb it the
+			// same way the scan's per-program boundary does.
+			const originalGet = h.deps.programs.get;
+			h.deps.programs.get = () => {
+				throw new Error("store wedged");
+			};
+			await Bun.sleep(10);
+			h.deps.programs.get = originalGet;
+			expect(h.submitted).toHaveLength(1);
+			expect(lines(captured).find((l) => l.msg === "program retry failed")).toMatchObject({
+				program: program.id,
+				name: "ladder",
+			});
+		} finally {
+			release();
+		}
 	});
 
 	test("a program disabled between attempts drops the retry", async () => {

@@ -77,6 +77,20 @@ describe("nextFire", () => {
 		expect(latest.getTime()).toBe(new Date("2026-09-20T10:00:00").getTime());
 	});
 
+	// The grace anchor runs on the scan loop — a synchronous
+	// occurrence-per-step walk starved every later program and HTTP
+	// request for ~6.6s per year of an every-minute program's lateness.
+	// The anchor must jump, not walk.
+	test("latestFireAtOrBefore answers a two-year-old every-minute program without walking", () => {
+		const through = new Date("2026-10-13T12:34:56Z");
+		const firstMissed = nextFire("* * * * *", new Date("2024-10-13T12:00:00Z"));
+		const t0 = performance.now();
+		const latest = latestFireAtOrBefore("* * * * *", firstMissed, through);
+		expect(latest.toISOString()).toBe("2026-10-13T12:34:00.000Z");
+		// Generous bound — the unbounded walk measured ~13s for this gap.
+		expect(performance.now() - t0).toBeLessThan(2000);
+	});
+
 	test("latestFireAtOrBefore rejects an anchor after the scan time", () => {
 		const cron = "0 9 * * *";
 		expect(() =>

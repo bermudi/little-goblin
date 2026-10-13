@@ -80,7 +80,10 @@ export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler
 // the original fire, so a dropped retry is exactly today's no-ladder
 // behavior, not worse — and startScheduler's stop() clears them.
 const RETRY_DELAYS_MS = [5, 15, 30].map((m) => m * 60_000);
-const fireRetries = new Map<number, ReturnType<typeof setTimeout>>();
+// Keyed by program AND occurrence: a dense program's next occurrence
+// arms its own ladder — an unrelated pending retry is never cleared
+// by a later fire (key = `${id}:${occurrenceMs}`).
+const fireRetries = new Map<string, ReturnType<typeof setTimeout>>();
 
 // Cron: missed occurrences coalesce against the latest occurrence due
 // at this scan — anchored at the due row's next_run and walked with the
@@ -388,9 +391,11 @@ function scheduleRetrySink(
 }
 
 // The ladder decision, from the terminal status: retry only a transient
-// failure the provider spent nothing on — completedCalls 0 and no model
-// output through this sink. Completed, fenced, non-transient, or
-// unknown cause ends the ladder; the error notice already went out.
+// failure the provider spent nothing on — modelCalls 0 on the shared
+// outcome (stamped at the turn level, so coalesced members that saw no
+// sink output still read the spending correctly) and no model output
+// through this sink. Completed, fenced, non-transient, or unknown cause
+// ends the ladder; the error notice already went out.
 function considerRetry(
 	deps: SchedulerDeps,
 	program: Program,
@@ -405,7 +410,7 @@ function considerRetry(
 	if (
 		done.kind !== "error" ||
 		done.transient !== true ||
-		done.completedCalls !== 0 ||
+		done.modelCalls !== 0 ||
 		sawModelOutput
 	) {
 		return;
@@ -426,14 +431,23 @@ function considerRetry(
 		delayMs,
 		reason: done.message.slice(0, 200),
 	});
-	const prior = fireRetries.get(program.id);
-	if (prior !== undefined) clearTimeout(prior);
-	const timer = setTimeout(
-		() => refire(deps, program.id, program.name, scheduledFor, delays, attempt + 1),
-		delayMs,
-	);
+	// Retry state is per occurrence — an every-minute program's next
+	// fire must not cancel this occurrence's pending rung.
+	const key = `${program.id}:${scheduledFor.getTime()}`;
+	const timer = setTimeout(() => {
+		// Timer callbacks get the scan's boundary too: a throw here is
+		// an uncaught timer exception and would take the process down.
+		try {
+			refire(deps, key, program.id, program.name, scheduledFor, delays, attempt + 1);
+		} catch (err) {
+			log.error("program retry failed", err, {
+				program: program.id,
+				name: program.name,
+			});
+		}
+	}, delayMs);
 	timer.unref?.();
-	fireRetries.set(program.id, timer);
+	fireRetries.set(key, timer);
 }
 
 // The next rung: re-read the row — it can change across the delay —
@@ -443,13 +457,14 @@ function considerRetry(
 // ruling): a program disabled or deleted mid-ladder drops the retry.
 function refire(
 	deps: SchedulerDeps,
+	key: string,
 	id: number,
 	name: string,
 	scheduledFor: Date,
 	delays: number[],
 	attempt: number,
 ): void {
-	fireRetries.delete(id);
+	fireRetries.delete(key);
 	const fresh = deps.programs.get(id);
 	if (fresh === null) {
 		log.info("schedule fire retry dropped — program deleted", { program: id, name });

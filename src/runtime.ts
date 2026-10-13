@@ -45,10 +45,10 @@ export type { ForcedKind } from "./turn/state.ts";
 export type TurnDone =
 	| { kind: "completed"; forced?: ForcedKind }
 	| { kind: "fenced" }
-	// completedCalls/transient are stamped only where the runtime can
+	// modelCalls/transient are stamped only where the runtime can
 	// know them — the terminal failure path. Absent means unknown, and
 	// consumers must treat unknown as not-retryable.
-	| { kind: "error"; message: string; completedCalls?: number; transient?: boolean };
+	| { kind: "error"; message: string; modelCalls?: number; transient?: boolean };
 
 // Every submitted sink receives exactly one terminal notification, including
 // work dropped from the queue. This lets channel sinks release typing and
@@ -855,7 +855,7 @@ export class Runtime {
 				const done: TurnDone = {
 					kind: "error",
 					message: terminalFailureMessage(err, recovery !== undefined),
-					completedCalls: state.snapshot().completedCalls,
+					modelCalls: state.snapshot().modelCalls,
 					transient: isTransientTurnFailure(err),
 				};
 				await notifyAll(done);

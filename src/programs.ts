@@ -146,25 +146,75 @@ export function nextFire(cron: string, from: Date): Date {
 // .prev() is a *different* sequence across DST transitions — it skips
 // the spring-forward landing hour (an on-time catch-up reads a day,
 // and a sparse annual cron years, late) and admits the fall-back
-// repeated hour (a stale catch-up reads on-time). Each step rebuilds
-// the expression around the previous occurrence from one shared
-// fields object — the same constructor a fresh parse takes, with
-// fresh search state, at a fraction of the per-step cost (a boot
-// catch-up walks one step per missed occurrence). nextFire is
-// strict, so each step moves past `at` and the walk terminates.
+// repeated hour (a stale catch-up reads on-time).
+//
+// An unbounded walk is per-occurrence synchronous — an every-minute
+// program a year overdue blocked the loop for seconds, stalling every
+// later program plus all HTTP/Telegram work. So .prev() supplies the
+// candidate and the forward sequence *proves* it: stepping onto it
+// from a minute earlier must land exactly on it (a fall-back repeat
+// prev admits but the forward sequence never produces fails here), and
+// stepping forward must overshoot `through` (a spring-forward hour prev
+// skipped fails there). Only when verification declines does the walk
+// run — the common case costs three expression steps. The walk itself
+// is capped: on truncation the last walked occurrence stands, which
+// under-measures lateness and so degrades toward a lateness-grace
+// skip, never toward a stale fire.
+//
+// Every probe is a fresh parse. Sharing one `fields` object across
+// calls is unsafe: the expression carries iterator state, and a
+// .prev() on shared fields changes what a subsequent .next() admits
+// across a fall-back boundary (it starts producing the repeat the
+// pure-forward sequence never yields).
+const MAX_CATCHUP_STEPS = 10_000;
+
 export function latestFireAtOrBefore(cron: string, firstMissed: Date, through: Date): Date {
 	if (firstMissed.getTime() > through.getTime()) {
 		throw new Error(
 			`latestFireAtOrBefore: first missed occurrence ${firstMissed.toISOString()} is after the scan time ${through.toISOString()}`,
 		);
 	}
-	const fields = parseCron(cron, firstMissed).fields;
+	// prev() is exclusive of currentDate — +1ms makes it "at or before".
+	// Verification asks the forward sequence to *reproduce* the
+	// candidate: step back to the previous occurrence, then forward —
+	// a fall-back repeat's predecessor steps over it (the forward
+	// sequence never yields the repeat), while a real member's
+	// predecessor lands on it. Stepping forward from the candidate
+	// must then overshoot `through`, or a member sits between.
+	// Fresh parses only — expression `fields` carry iterator state and
+	// a .prev() on shared fields changes what later .next() calls
+	// admit across a fall-back boundary.
+	try {
+		const cand = parseCron(cron, new Date(through.getTime() + 1))
+			.prev()
+			.toDate();
+		if (cand.getTime() >= firstMissed.getTime()) {
+			const back = parseCron(cron, cand).prev().toDate();
+			if (
+				parseCron(cron, back).next().getTime() === cand.getTime() &&
+				parseCron(cron, cand).next().getTime() > through.getTime()
+			) {
+				return cand;
+			}
+		}
+	} catch {
+		// A boundary with no expressible occurrence (e.g. year bounds)
+		// declines to the walk rather than failing the catch-up.
+	}
 	let latest = firstMissed.getTime();
 	let at = firstMissed;
-	for (;;) {
-		const next = CronExpression.fieldsToExpression(fields, { currentDate: at }).next();
+	for (let steps = 0; ; steps++) {
+		const next = parseCron(cron, at).next();
 		const nextMs = next.getTime();
 		if (nextMs > through.getTime()) return new Date(latest);
+		if (steps >= MAX_CATCHUP_STEPS) {
+			log.warn("schedule catch-up walk truncated — lateness under-measured", {
+				cron,
+				firstMissed: firstMissed.toISOString(),
+				steps,
+			});
+			return new Date(latest);
+		}
 		latest = nextMs;
 		// A plain Date, never the returned CronDate: the CronDate copy
 		// constructor carries the previous search's DST flags into the

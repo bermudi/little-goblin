@@ -310,8 +310,10 @@ describe("provider-filter retry", () => {
 		expect(await sink.done).toEqual({
 			kind: "error",
 			message: "Provider blocked this request again after one retry.",
-			// One probe tool call completed before the second filter block.
-			completedCalls: 1,
+			// Two model calls spent — the first block errored before its
+			// step started; only the probe step and the second filter
+			// block count.
+			modelCalls: 2,
 			transient: false,
 		});
 		while (runtime.busy(conv.id)) await sleep(1);
@@ -1491,7 +1493,7 @@ describe("context overflow recovery", () => {
 		expect(await sink.done).toEqual({
 			kind: "error",
 			message: "Authentication Failed",
-			completedCalls: 0,
+			modelCalls: 0,
 			transient: false,
 		});
 		expect(prompts).toHaveLength(1);

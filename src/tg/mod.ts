@@ -174,7 +174,9 @@ export function accessGate(configRef: { current: Config }) {
 			return;
 		}
 		if (ctx.chat?.type === "private") {
-			if (!cfg.allowedUsers.includes(id)) {
+			// The guest block is the sandbox class's feature switch —
+			// absent, allowed users are strangers wherever intake runs.
+			if (cfg.guest === undefined || !cfg.allowedUsers.includes(id)) {
 				// A stranger DM is a summons: the fixed refusal line is its
 				// whole answer. A failed send never kills the poller.
 				log.info("stranger refused — bot dm", { userId: id });
@@ -663,7 +665,7 @@ export function flushConversation(
 function dmClass(cfg: Config, chatId: number): "personal" | "guest" | null {
 	return cfg.operators.includes(chatId)
 		? "personal"
-		: cfg.allowedUsers.includes(chatId)
+		: cfg.guest !== undefined && cfg.allowedUsers.includes(chatId)
 			? "guest"
 			: null;
 }
@@ -1153,6 +1155,19 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	});
 	bot.callbackQuery(SKILL_CALLBACK_RE, (ctx) => {
 		const q = ctx.callbackQuery;
+		if (!deps.configRef.current.operators.includes(q.from.id)) {
+			// Approval taps are operator authority — the DM gate only
+			// admits the chat, and a demoted account's stale button must
+			// decide nothing. Ack so the tap spinner ends; that's all.
+			log.warn("skill approval tap refused — not operator", { userId: q.from.id });
+			void withTimeout(
+				bot.api.answerCallbackQuery(q.id, { text: "operator only" }),
+				"answerCallbackQuery",
+			).catch((err: unknown) => {
+				log.debug("answerCallbackQuery failed", { error: String(err) });
+			});
+			return;
+		}
 		void skillApproval.handleTap({
 			id: q.id,
 			data: q.data,
@@ -1168,6 +1183,18 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 	});
 
 	bot.callbackQuery(MAIL_CALLBACK_RE, (ctx) => {
+		if (!deps.configRef.current.operators.includes(ctx.callbackQuery.from.id)) {
+			log.warn("mail approval tap refused — not operator", {
+				userId: ctx.callbackQuery.from.id,
+			});
+			void withTimeout(
+				bot.api.answerCallbackQuery(ctx.callbackQuery.id, { text: "operator only" }),
+				"answerCallbackQuery",
+			).catch((err: unknown) => {
+				log.debug("answerCallbackQuery failed", { error: String(err) });
+			});
+			return;
+		}
 		const approval = deps.mail?.();
 		if (!approval) {
 			void withTimeout(

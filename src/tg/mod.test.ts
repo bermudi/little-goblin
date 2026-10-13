@@ -22,6 +22,9 @@ const baseConfig: Config = {
 	thinking: "medium",
 	operators: [1],
 	allowedUsers: [2],
+	// The sandbox lane exists only while the guest block does — without
+	// it allowedUsers are refused at the gate like strangers.
+	guest: { outputChars: 3500 },
 	telegram: { dmGapMinutes: 45, richReplies: true, showReasoning: false },
 	http: { port: 8787 },
 	logLevel: "info",
@@ -65,6 +68,29 @@ describe("accessGate", () => {
 		} finally {
 			warn.mockRestore();
 		}
+	});
+
+	// The guest block is the sandbox class's feature switch — absent,
+	// allowedUsers are strangers wherever intake runs (design.md →
+	// Roles). The list alone must not open the DM lane.
+	test("an allowed user without the guest block gets the refusal, not a turn", async () => {
+		const configRef = {
+			current: { ...baseConfig, guest: undefined } as Config,
+		};
+		const gate = accessGate(configRef);
+		let reached = 0;
+		const next = async (): Promise<void> => {
+			reached++;
+		};
+		const dm = { from: { id: 2 }, chat: { id: 2, type: "private" }, api };
+		const before = tg.calls.length;
+		await gate(dm, next);
+		expect(reached).toBe(0);
+		expect(tg.calls.slice(before)).toEqual([{ method: "sendMessage", args: [2, GUEST_REFUSAL] }]);
+		// Operators are unaffected — the switch gates the sandbox lane,
+		// not the operator lane.
+		await gate({ from: { id: 1 }, chat: { id: 1, type: "private" }, api }, next);
+		expect(reached).toBe(1);
 	});
 });
 

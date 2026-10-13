@@ -173,6 +173,9 @@ export function makeDeliverySink(
 	maxDrainIterations = MAX_DRAIN_ITERATIONS,
 	rating?: DeliveryRatingDeps,
 	rich?: RichSinkOpts,
+	// How long a photo-path file holds for burst siblings before its
+	// album (or solo send) goes out.
+	mediaGroupWindowMs = 400,
 ): TurnSink {
 	// Routing bug alarm (DESIGN.md, App channel): app conversations have
 	// no Telegram door — their sink is the HTTP stream. A silent send
@@ -349,21 +352,186 @@ export function makeDeliverySink(
 		}
 	}
 
+	// Multi-image turns arrive as a burst: one model step fires several
+	// send_file calls in parallel, and their deliver() calls land within
+	// milliseconds of each other. Photo-path files hold in a short batch
+	// window so the burst shares one album; a lone photo just pays the
+	// window once. Documents (as_file, GIFs, non-images) never wait and
+	// never flush the batch — a doc whose stat resolves mid-burst would
+	// split the album for a purely cosmetic ordering win.
+	interface QueuedPhoto {
+		file: OutgoingFile;
+		// Filled by the batch link's stat; the joiner pushes before any
+		// await, so a parallel burst joins in one deterministic tick.
+		bytes: number;
+		// Set by the batch link when this file definitively failed or went
+		// uncertain. undefined = delivered (or fenced-skip, same as the
+		// solo path's silent return).
+		error?: unknown;
+	}
+	let photoQueue: QueuedPhoto[] = [];
+	let photoBatchWait: Promise<void> | null = null;
+	let photoBatchResolve: (() => void) | null = null;
+	let photoKick: ReturnType<typeof setTimeout> | null = null;
+
+	function flushPhotoBatch(): void {
+		if (photoBatchResolve === null) return; // no open batch
+		if (photoKick !== null) {
+			clearTimeout(photoKick);
+			photoKick = null;
+		}
+		const batch = photoQueue;
+		photoQueue = [];
+		const resolve = photoBatchResolve;
+		photoBatchResolve = null;
+		photoBatchWait = null;
+		enqueue(async () => {
+			try {
+				await sendPhotoBatch(batch);
+			} finally {
+				resolve();
+			}
+		});
+	}
+
+	function joinPhotoBatch(q: QueuedPhoto): Promise<void> {
+		photoQueue.push(q);
+		if (photoBatchWait === null) {
+			photoBatchWait = new Promise<void>((resolve) => {
+				photoBatchResolve = resolve;
+			});
+			photoKick = setTimeout(flushPhotoBatch, mediaGroupWindowMs);
+		}
+		return photoBatchWait;
+	}
+
+	async function sendPhotoSolo(
+		q: QueuedPhoto,
+		thread: { message_thread_id?: number },
+	): Promise<void> {
+		try {
+			const sent = await withTimeout(
+				api.sendPhoto(conv.chatId, new InputFile(q.file.path, q.file.filename), {
+					...thread,
+					...(q.file.caption !== undefined ? { caption: q.file.caption } : {}),
+				}),
+				"sendPhoto",
+			);
+			log.debug("file delivered", {
+				conversation: conv.id,
+				message: sent.message_id,
+				path: q.file.path,
+				bytes: q.bytes,
+				kind: "photo",
+				...(conv.threadId !== null ? { thread: conv.threadId } : {}),
+			});
+		} catch (err) {
+			if (err instanceof TelegramTimeoutError) {
+				markUncertain(err, "sendPhoto");
+				throw new DeliveryUncertainError(err);
+			}
+			throw err;
+		}
+	}
+
+	async function sendPhotoBatch(batch: QueuedPhoto[]): Promise<void> {
+		if (!mayDeliver()) return; // entries stay error-free: fenced = skipped
+		const thread = conv.threadId !== null ? { message_thread_id: conv.threadId } : {};
+		// Late stat — the joiner pushed before any await, so the vanished-
+		// file guard lives here: a file that died between the tool's check
+		// and this link fails alone and never takes the burst down.
+		const sendable: QueuedPhoto[] = [];
+		for (const q of batch) {
+			try {
+				q.bytes = (await stat(q.file.path)).size;
+				sendable.push(q);
+			} catch {
+				q.error = new Error(`file unreadable: ${q.file.path}`);
+			}
+		}
+		try {
+			// Telegram caps an album at 10 items; a bigger burst splits.
+			for (let at = 0; at < sendable.length; at += 10) {
+				const group = sendable.slice(at, at + 10);
+				if (group.length === 1) {
+					await sendPhotoSolo(group[0]!, thread);
+					continue;
+				}
+				const media = group.map((q) => ({
+					type: "photo" as const,
+					media: new InputFile(q.file.path, q.file.filename),
+					...(q.file.caption !== undefined ? { caption: q.file.caption } : {}),
+				}));
+				const sent = await withTimeout(
+					api.sendMediaGroup(conv.chatId, media, thread),
+					"sendMediaGroup",
+				);
+				log.debug("media group delivered", {
+					conversation: conv.id,
+					messages: sent.length,
+					files: group.length,
+					...(conv.threadId !== null ? { thread: conv.threadId } : {}),
+				});
+			}
+			return;
+		} catch (err) {
+			if (!(err instanceof TelegramTimeoutError)) {
+				// Definite failure: the album provably never landed, so the
+				// whole burst degrades to solo sends — one bad photo doesn't
+				// take the rest down. Solo failures (including their own
+				// timeouts) record per file below.
+				log.warn("media group failed — falling back to solo sends", err, {
+					conversation: conv.id,
+					chat: conv.chatId,
+					files: sendable.length,
+				});
+			} else {
+				// A group timeout is as ambiguous as a solo one — the album
+				// may have landed. Mark the sink so the remaining delivery
+				// stops, and fail every file in the burst as uncertain.
+				markUncertain(err, "sendMediaGroup");
+				const wrapped = new DeliveryUncertainError(err);
+				for (const q of sendable) q.error = wrapped;
+				return;
+			}
+		}
+		for (const q of sendable) {
+			try {
+				await sendPhotoSolo(q, thread);
+			} catch (err) {
+				q.error = err;
+			}
+		}
+	}
+
 	async function sendFile(file: OutgoingFile): Promise<void> {
 		if (!authoritative()) return;
+		// Images go as photo previews, everything else as documents —
+		// sniffed from magic bytes, never the extension. Two things force
+		// the document path: as_file (sendPhoto re-encodes — a document is
+		// byte-exact) and GIFs (sendPhoto strips animation). Sniffing is
+		// sync, so a photo joins its burst before the first await.
+		const sniff = sniffImage(file.path);
+		const photo = !file.asFile && sniff !== null && sniff.mediaType !== "image/gif";
+		if (photo) {
+			const q: QueuedPhoto = { file, bytes: 0 };
+			const wait = joinPhotoBatch(q);
+			// The batch's verdict for THIS file — a group failure degrades
+			// to solo sends, so siblings can succeed while this one fails.
+			await wait;
+			if (q.error !== undefined) throw q.error;
+			return;
+		}
 		// Fail fast on a file that vanished between the tool's check and
 		// now, so the tool reports it. Send failures below reject too —
 		// see the sentinel comment there.
 		const st = await stat(file.path).catch((err: unknown) => {
 			throw new Error(`file unreadable: ${file.path} (${String(err)})`);
 		});
-		// Images go as photo previews, everything else as documents —
-		// sniffed from magic bytes, never the extension. Two things force
-		// the document path: as_file (sendPhoto re-encodes — a document is
-		// byte-exact) and GIFs (sendPhoto strips animation).
-		const sniff = sniffImage(file.path);
-		const photo = !file.asFile && sniff !== null && sniff.mediaType !== "image/gif";
-		const bytes = st.size;
+		return sendDocumentSolo(file, st.size);
+	}
+
+	async function sendDocumentSolo(file: OutgoingFile, bytes: number): Promise<void> {
 		// The chain never rejects (onDone awaits it bare), so a failed
 		// send can't travel through it. The link records the failure and
 		// rethrows — the chain's catch still warn-logs it — and the
@@ -379,21 +547,16 @@ export function makeDeliverySink(
 				...(file.caption !== undefined ? { caption: file.caption } : {}),
 			};
 			try {
-				const sent = photo
-					? await withTimeout(
-							api.sendPhoto(conv.chatId, new InputFile(file.path, file.filename), extra),
-							"sendPhoto",
-						)
-					: await withTimeout(
-							api.sendDocument(conv.chatId, new InputFile(file.path, file.filename), extra),
-							"sendDocument",
-						);
+				const sent = await withTimeout(
+					api.sendDocument(conv.chatId, new InputFile(file.path, file.filename), extra),
+					"sendDocument",
+				);
 				log.debug("file delivered", {
 					conversation: conv.id,
 					message: sent.message_id,
 					path: file.path,
 					bytes,
-					kind: photo ? "photo" : "document",
+					kind: "document",
 					...(conv.threadId !== null ? { thread: conv.threadId } : {}),
 				});
 			} catch (err) {
@@ -402,7 +565,7 @@ export function makeDeliverySink(
 					// upload may have landed. Mark the sink so the remaining
 					// text/reaction stop and the notice goes out, and fail the
 					// tool as uncertain rather than "didn't arrive".
-					markUncertain(err, photo ? "sendPhoto" : "sendDocument");
+					markUncertain(err, "sendDocument");
 					err = new DeliveryUncertainError(err);
 				}
 				failure = { err };
@@ -1040,6 +1203,11 @@ export function makeDeliverySink(
 				}
 				await sleep(300 * stagnant);
 			}
+			// Safety net for a burst whose window outlives the turn — every
+			// send_file tool call resolved before onDone, so this is normally
+			// a no-op. After the drain, so the link joins the awaited chain.
+			flushPhotoBatch();
+			await chain;
 			if (uncertain) {
 				await notifyUncertain();
 				return;

@@ -6,7 +6,7 @@ import type { Api } from "grammy";
 import type { Conversation } from "../conversation.ts";
 import { setLogFile, setLogWriter } from "../log.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
-import { DeliveryUncertainError } from "../agent/tools/send.ts";
+import { DeliveryUncertainError, type OutgoingFile } from "../agent/tools/send.ts";
 import {
 	isNotModifiedError,
 	makeDeliverySink,
@@ -891,9 +891,11 @@ describe("delivery", () => {
 });
 
 describe("delivery files", () => {
-	function fileApi(fail?: { photo?: boolean; document?: boolean }) {
+	function fileApi(fail?: { photo?: boolean; document?: boolean; group?: boolean | "timeout" }) {
 		const photos: Array<{ caption?: string }> = [];
 		const documents: Array<{ caption?: string }> = [];
+		const mediaGroups: Array<{ files: number; captions: Array<string | undefined> }> = [];
+		let groupAttempts = 0;
 		const api = {
 			sendChatAction: () => Promise.resolve(true),
 			sendMessage: async () => ({ message_id: 1 }),
@@ -908,9 +910,22 @@ describe("delivery files", () => {
 				documents.push({ ...(other?.caption !== undefined ? { caption: other.caption } : {}) });
 				return { message_id: 20 + documents.length };
 			},
+			sendMediaGroup: async (
+				_chat: number,
+				media: Array<{ caption?: string }>,
+			) => {
+				groupAttempts++;
+				if (fail?.group === true) throw new Error("sendMediaGroup wedged");
+				if (fail?.group === "timeout") throw new TelegramTimeoutError("sendMediaGroup", 30_000);
+				mediaGroups.push({
+					files: media.length,
+					captions: media.map((m) => m.caption),
+				});
+				return media.map((_, i) => ({ message_id: 30 + mediaGroups.length * 10 + i }));
+			},
 			setMessageReaction: async () => true,
 		} as unknown as Api;
-		return { api, photos, documents };
+		return { api, photos, documents, mediaGroups, groupAttempts: () => groupAttempts };
 	}
 
 	function pngFile(dir: string): string {
@@ -928,10 +943,101 @@ describe("delivery files", () => {
 		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
 		try {
 			const { api, photos, documents } = fileApi();
-			const sink = makeDeliverySink(api, conv, undefined, 0);
+			const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, undefined, undefined, 50);
 			await sink.onFile!({ path: pngFile(dir), filename: "chart.png" });
 			expect(photos).toHaveLength(1);
 			expect(documents).toHaveLength(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	// Deterministic burst harness: joins are synchronous (the stat lives
+	// in the batch link), so onDone's post-drain flush sends exactly the
+	// burst — no timer, no fs race.
+	async function settledBurst(
+		sink: ReturnType<typeof makeDeliverySink>,
+		files: OutgoingFile[],
+	): Promise<PromiseSettledResult<void>[]> {
+		const pending = files.map((f) => sink.onFile!(f));
+		const done = sink.onDone({ kind: "completed" });
+		const results = await Promise.allSettled([...pending, done]);
+		return results.slice(0, files.length);
+	}
+
+	test("a burst of photos rides one sendMediaGroup, captions per item", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
+		try {
+			const { api, photos, documents, mediaGroups } = fileApi();
+			// A huge window makes the onDone flush the only one — no timer
+			// race against real fs stat latencies under parallel test load.
+			const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, undefined, undefined, 60_000);
+			await settledBurst(sink, [
+				{ path: pngFile(dir), filename: "a.png" },
+				{ path: pngFile(dir), filename: "b.png", caption: "second" },
+				{ path: pngFile(dir), filename: "c.png" },
+			]);
+			expect(mediaGroups).toEqual([{ files: 3, captions: [undefined, "second", undefined] }]);
+			expect(photos).toHaveLength(0);
+			expect(documents).toHaveLength(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a document in the burst stays solo and doesn't join the album", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
+		try {
+			const pdf = join(dir, "report.pdf");
+			writeFileSync(pdf, "pdf-bytes");
+			const { api, photos, documents, mediaGroups } = fileApi();
+			const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, undefined, undefined, 60_000);
+			await settledBurst(sink, [
+				{ path: pngFile(dir), filename: "a.png" },
+				{ path: pdf, filename: "report.pdf" },
+				{ path: pngFile(dir), filename: "b.png" },
+			]);
+			expect(mediaGroups).toEqual([{ files: 2, captions: [undefined, undefined] }]);
+			expect(documents).toHaveLength(1);
+			expect(photos).toHaveLength(0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a failed album degrades to solo photo sends", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
+		try {
+			const { api, photos, mediaGroups, groupAttempts } = fileApi({ group: true });
+			const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, undefined, undefined, 60_000);
+			await settledBurst(sink, [
+				{ path: pngFile(dir), filename: "a.png" },
+				{ path: pngFile(dir), filename: "b.png" },
+			]);
+			expect(groupAttempts()).toBe(1);
+			expect(mediaGroups).toHaveLength(0);
+			expect(photos).toHaveLength(2);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a group timeout fails every file as uncertain", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
+		try {
+			const { api, photos, mediaGroups, groupAttempts } = fileApi({ group: "timeout" });
+			const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, undefined, undefined, 60_000);
+			const results = await settledBurst(sink, [
+				{ path: pngFile(dir), filename: "a.png" },
+				{ path: pngFile(dir), filename: "b.png" },
+			]);
+			expect(groupAttempts()).toBe(1);
+			expect(mediaGroups).toHaveLength(0);
+			expect(photos).toHaveLength(0); // never resent — the album may be live
+			for (const r of results) {
+				expect(r.status).toBe("rejected");
+				if (r.status === "rejected") expect(r.reason).toBeInstanceOf(DeliveryUncertainError);
+			}
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

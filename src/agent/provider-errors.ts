@@ -143,13 +143,19 @@ export class ProviderContentFilterError extends Error {
 	}
 }
 
-export function isContentFilter(err: unknown): boolean {
-	if (err instanceof ProviderContentFilterError) return true;
-	const collected = collectAll(err);
+// The filter verdict over an already-collected walk — shared verbatim
+// with isTransientTurnFailure so a recognized warning riding a 5xx can
+// never be classified both filtered and transient.
+function contentFilterDetected(collected: Collected): boolean {
 	return (
 		collected.contentFiltered ||
 		collected.texts.some((text) => text.toLowerCase().includes(FILTER_WARNING))
 	);
+}
+
+export function isContentFilter(err: unknown): boolean {
+	if (err instanceof ProviderContentFilterError) return true;
+	return contentFilterDetected(collectAll(err));
 }
 
 // Transport- and availability-class phrases, lowercased like the folded
@@ -180,7 +186,7 @@ const TRANSIENT_PHRASES = [
 // false even when a status code might otherwise say transient.
 export function isTransientTurnFailure(err: unknown): boolean {
 	const collected = collectAll(err);
-	if (collected.contentFiltered) return false;
+	if (contentFilterDetected(collected)) return false;
 	const text = collected.texts.join("\n").toLowerCase();
 	if (overflowByPhrases(text)) return false;
 	if (collected.rateLimited) return true;

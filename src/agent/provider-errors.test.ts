@@ -259,6 +259,19 @@ describe("isTransientTurnFailure", () => {
 				),
 			),
 		).toBe(false);
+		// The warning text riding a 5xx: isContentFilter's recognition is
+		// the verdict — the status code alone must not route it onto the
+		// transient retry ladder.
+		const wrapped = new APICallError({
+			message: "Service Unavailable",
+			url: "https://api.example.com",
+			requestBodyValues: {},
+			statusCode: 503,
+			responseBody:
+				"[System detected potentially unsafe or sensitive content in input or generation.]",
+		});
+		expect(isContentFilter(wrapped)).toBe(true);
+		expect(isTransientTurnFailure(wrapped)).toBe(false);
 	});
 
 	test("an overflow is a lost cause on retry — even over a 5xx", () => {

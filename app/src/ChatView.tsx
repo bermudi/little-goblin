@@ -124,10 +124,20 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 		let url: string | null = null;
 		void fetchAttachmentUrl(token, path)
 			.then((u) => {
-				url = u;
-				if (live) setThumb(u);
+				if (live) {
+					url = u;
+					setThumb(u);
+				} else {
+					// Unmounted mid-fetch — the cleanup already ran, so
+					// revoke here or the blob pins until page unload.
+					URL.revokeObjectURL(u);
+				}
 			})
-			.catch(() => {});
+			.catch((e: unknown) => {
+				// A dead prefetch otherwise degrades to the download chip
+				// with no reason — show it like a failed download.
+				if (live) setDlError(e instanceof Error ? e.message : "download failed");
+			});
 		return () => {
 			live = false;
 			if (url !== null) URL.revokeObjectURL(url);
@@ -411,21 +421,26 @@ function useSpeech(token: string | null) {
 				const r = await synthesize(token, text);
 				if (cancelled.current) return;
 				setState("playing");
+				let played = true;
 				for (const b64 of r.chunks) {
 					if (cancelled.current) break;
 					const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 					const url = URL.createObjectURL(
 						new Blob([bytes.buffer as ArrayBuffer], { type: "audio/ogg" }),
 					);
-					await new Promise<void>((resolve) => {
+					played = await new Promise<boolean>((resolve) => {
 						const a = new Audio(url);
 						audio.current = a;
-						a.onended = () => resolve();
-						a.onerror = () => resolve();
-						void a.play().catch(() => resolve());
+						a.onended = () => resolve(true);
+						// Decode/playback failures are per-browser, not
+						// per-chunk — one failure means the rest will too.
+						a.onerror = () => resolve(false);
+						void a.play().catch(() => resolve(false));
 					});
 					URL.revokeObjectURL(url);
+					if (!played) break;
 				}
+				if (!played) setErr("playback failed — this browser may not support ogg audio");
 			} catch (e) {
 				setErr(e instanceof Error ? e.message : "speech failed");
 			}

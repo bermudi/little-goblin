@@ -483,8 +483,7 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 	// routing their reply in would bypass the guest persona + tool filter
 	// the DM lane pins at flush.
 	const pingedConv =
-		quotedReply === undefined ||
-		!deps.configRef.current.operators.includes(msg.from?.id ?? -1)
+		quotedReply === undefined || !deps.configRef.current.operators.includes(msg.from?.id ?? -1)
 			? null
 			: (() => {
 					const hit = env.pings.lookup(msg.chat.id, quotedReply.message_id);

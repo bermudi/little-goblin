@@ -23,15 +23,15 @@ earns its place.
   `scripts/install.sh` is fresh-only and path-substituting: it refuses an
   existing installation, validates provisioned config/auth before enabling
   units, builds client assets, and checks the current boot rather than
-  accepting an active restart loop. That script plus first-boot scaffolding (home layout,
-  SOUL.md/AGENTS.md stubs, fail-loud config pointer) is the entire setup
-  story — no onboarding wizard, ever. Deployment reality: prod is g7 —
-this tree runs `goblin.service` plus the memory stack directly
-(lithium ran prod until 2026-10-09, then retired; its state was
-merged here). `scripts/deploy.sh` is the update path: gate
-(typecheck + tests), rebuild the app client when it moved,
-restart, verify. Git publication is separate: local deployment never
-pushes or updates the remote review baseline (docs/operations.md → Deploying).
+  accepting an active restart loop. That script plus first-boot scaffolding
+  (home layout, SOUL.md/AGENTS.md stubs, fail-loud config pointer) is the
+  entire setup story — no onboarding wizard, ever. Deployment reality: prod
+  is g7 — this tree runs `goblin.service` plus the memory stack directly
+  (lithium ran prod until 2026-10-09, then retired; its state was merged
+  here). `scripts/deploy.sh` is the update path: gate (typecheck + tests),
+  rebuild the app client when it moved, restart, verify. Git publication is
+  separate: local deployment never pushes or updates the remote review
+  baseline (docs/operations.md → Deploying).
 - Telegram is one of two channels: long polling, topics, reactions, files,
   voice — **and Mini Apps, designed in from the start** (the process serves
   them over HTTP; see Telegram intake & delivery). The second channel is

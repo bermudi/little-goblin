@@ -105,6 +105,10 @@ export function MemoryView({ token }: { token: string | null }) {
 	// Same supersede discipline as listSeq — a slow document fetch must
 	// not reopen a sheet the operator already left for a newer open.
 	const detailSeq = useRef(0);
+	// The open sheet's document id, separate from `detail`: while the
+	// sheet's GET is still in flight detail is null, and a forget that
+	// lands in that gap must still fence the pending fetch.
+	const openDocId = useRef<string | null>(null);
 	const latestFilter = useRef<MemoryFilter>({ query: "", token });
 
 	// Live view of the memory queue — polled while the tab is open,
@@ -172,6 +176,7 @@ export function MemoryView({ token }: { token: string | null }) {
 
 	const openDoc = (id: string) => {
 		const seq = ++detailSeq.current;
+		openDocId.current = id;
 		setDetail(null);
 		setDetailErr(null);
 		void getMemoryDocument(token, id).then(
@@ -188,6 +193,7 @@ export function MemoryView({ token }: { token: string | null }) {
 
 	const closeDetail = () => {
 		++detailSeq.current;
+		openDocId.current = null;
 		setDetail(null);
 	};
 
@@ -204,15 +210,15 @@ export function MemoryView({ token }: { token: string | null }) {
 			() => {
 				setForgetting(false);
 				// A forget that resolves late must not dump a document the
-				// operator opened in the meantime — only the forgotten one's
-				// detail closes, and only then is the in-flight detail fetch
-				// invalidated. The updater reads the live value: the closure's
-				// capture predates the forget.
-				setDetail((cur) => {
-					if (cur === null || cur.document.id !== id) return cur;
+				// operator opened in the meantime — and must not skip
+				// invalidation just because the forgotten doc's own sheet is
+				// mid-fetch (detail reads null then). The open id is the live
+				// identity either way.
+				if (openDocId.current === id) {
 					++detailSeq.current;
-					return null;
-				});
+					openDocId.current = null;
+					setDetail(null);
+				}
 				loadDocs(0, latestFilter.current, false);
 				void getMemoryStatus(latestFilter.current.token).then(
 					(s) => {

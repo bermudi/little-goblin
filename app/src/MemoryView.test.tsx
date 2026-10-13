@@ -353,6 +353,51 @@ describe("MemoryView", () => {
 		expect(more().disabled).toBe(false);
 	});
 
+	test("a forget landing while the same doc's GET is pending still kills the sheet", async () => {
+		// The reported gap: Forget held → back → reopen the same doc with
+		// its GET held → DELETE resolves against detail === null → the
+		// delayed GET must still be fenced, not reshow the forgotten text.
+		let finishDelete!: (response: Response) => void;
+		let answerGet!: (response: Response) => void;
+		const deleted = new Promise<Response>((resolve) => {
+			finishDelete = resolve;
+		});
+		const opened = new Promise<Response>((resolve) => {
+			answerGet = resolve;
+		});
+		let gets = 0;
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = new URL(String(input), "http://localhost");
+			if (url.pathname.endsWith("/status")) return Promise.resolve(json(STATUS));
+			if (url.pathname.endsWith("/doc-1")) {
+				if (init?.method === "DELETE") return deleted;
+				if (++gets === 1) return Promise.resolve(json(DETAIL));
+				return opened;
+			}
+			return Promise.resolve(json({ items: [DOC], total: 1, limit: 20, offset: 0 }));
+		}) as typeof fetch;
+		Reflect.set(win, "confirm", () => true);
+		mount();
+		await flush();
+		await click(container.querySelector(".doc-row"));
+		await act(async () => {});
+		expect(container.textContent).toContain("the exchange text");
+
+		await click(container.querySelector(".danger"));
+		await click(container.querySelector(".ops-back button"));
+		await click(container.querySelector(".doc-row"));
+		expect(gets).toBe(2);
+
+		await act(async () => {
+			finishDelete(json({ ok: true, cancelled: 1, redacted: 1 }));
+		});
+		await act(async () => {
+			answerGet(json(DETAIL));
+		});
+		expect(container.textContent).not.toContain("the exchange text");
+		expect(container.textContent).toContain("Retained exchanges");
+	});
+
 	test("a slower open loses to a newer open, and Forget targets the doc on screen", async () => {
 		const resolves = new Map<string, (r: Response) => void>();
 		const deleted: string[] = [];

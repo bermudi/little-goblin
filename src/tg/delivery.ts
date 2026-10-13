@@ -30,6 +30,25 @@ const REASONING_BLOCK_OVERHEAD =
 // sink: the answer bubble and, when showReasoning is on, the reasoning
 // bubble ahead of it.
 let nextDraftId = 1;
+
+// The completed-turn salute: the send itself carries the message effect
+// matching the 🫡 reaction (private chats only — the DM door). The id was
+// pinned against the live API, which rejects garbage with
+// EFFECT_ID_INVALID. Effects are premium-gated at the receiving chat:
+// PREMIUM_ACCOUNT_REQUIRED is a definite 400 (nothing landed), so the
+// one safe retry drops the param, and the memo keeps every later turn
+// this process to a single send. A restart re-probes.
+const SALUTE_EFFECT_ID = "4913930782671635058";
+let messageEffectsUsable = true;
+
+/** Test door for the process-lifetime premium memo. */
+export function resetMessageEffectsGateForTests(): void {
+	messageEffectsUsable = true;
+}
+
+function isPremiumGateError(err: unknown): boolean {
+	return err instanceof Error && err.message.includes("PREMIUM_ACCOUNT_REQUIRED");
+}
 // onDone drains the queue itself — enough headroom for ~95KB of backlog.
 const MAX_DRAIN_ITERATIONS = 25;
 const MAX_STAGNANT = 3;
@@ -1099,18 +1118,33 @@ export function makeDeliverySink(
 						});
 						richMode = false;
 					} else {
+						const base = {
+							...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+							...(replyTo !== undefined ? { reply_parameters: { message_id: replyTo } } : {}),
+						};
+						const effect =
+							done.kind === "completed" && conv.id.startsWith("dm:") && messageEffectsUsable
+								? { message_effect_id: SALUTE_EFFECT_ID }
+								: {};
 						try {
-							const sent = await withTimeout(
-								api.sendRichMessage(
-									conv.chatId,
-									{ markdown: md },
-									{
-										...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
-										...(replyTo !== undefined ? { reply_parameters: { message_id: replyTo } } : {}),
-									},
-								),
-								"sendRichMessage",
-							);
+							let sent;
+							try {
+								sent = await withTimeout(
+									api.sendRichMessage(conv.chatId, { markdown: md }, { ...base, ...effect }),
+									"sendRichMessage",
+								);
+							} catch (err) {
+								if (effect.message_effect_id === undefined || !isPremiumGateError(err)) throw err;
+								messageEffectsUsable = false;
+								log.info("message effect rejected — premium gate; dropped for this process", {
+									conversation: conv.id,
+									chat: conv.chatId,
+								});
+								sent = await withTimeout(
+									api.sendRichMessage(conv.chatId, { markdown: md }, base),
+									"sendRichMessage",
+								);
+							}
 							log.info("delivered rich", {
 								conversation: conv.id,
 								message: sent.message_id,

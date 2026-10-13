@@ -12,7 +12,7 @@ import { parseConfig } from "../config.ts";
 import type { Conversation } from "../conversation.ts";
 import { setLogFile, setLogWriter } from "../log.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
-import { makeDeliverySink } from "./delivery.ts";
+import { makeDeliverySink, resetMessageEffectsGateForTests } from "./delivery.ts";
 
 const conv: Conversation = {
 	id: "dm:1",
@@ -43,7 +43,12 @@ interface DraftCall {
 }
 
 function fakeApi(
-	opts: { failRichDrafts?: boolean; failRichSend?: boolean; timeoutNextRichDraft?: boolean } = {},
+	opts: {
+		failRichDrafts?: boolean;
+		failRichSend?: boolean;
+		timeoutNextRichDraft?: boolean;
+		rejectEffect?: boolean;
+	} = {},
 ) {
 	const drafts: DraftCall[] = [];
 	const richSends: Array<{ markdown: string; other: Record<string, unknown> }> = [];
@@ -51,6 +56,7 @@ function fakeApi(
 	const edits: string[] = [];
 	const reactions: Array<{ chat: number; id: number; emoji: string }> = [];
 	const markups: unknown[] = [];
+	let sendAttempts = 0;
 	const api = {
 		sendChatAction: () => Promise.resolve(true),
 		sendMessage: async (_chat: number, text: string) => {
@@ -83,6 +89,10 @@ function fakeApi(
 			rm: { markdown: string },
 			other: Record<string, unknown>,
 		) => {
+			sendAttempts++;
+			if (opts.rejectEffect && other.message_effect_id !== undefined) {
+				throw new Error("Bad Request: PREMIUM_ACCOUNT_REQUIRED");
+			}
 			if (opts.failRichSend) throw new Error("sendRichMessage failed");
 			richSends.push({ markdown: rm.markdown, other });
 			return { message_id: 900 + richSends.length };
@@ -100,7 +110,16 @@ function fakeApi(
 			return true;
 		},
 	} as unknown as Api;
-	return { api, drafts, richSends, msgs, edits, reactions, markups };
+	return {
+		api,
+		drafts,
+		richSends,
+		msgs,
+		edits,
+		reactions,
+		markups,
+		sendAttempts: () => sendAttempts,
+	};
 }
 
 const silenceLogs = () => {
@@ -439,5 +458,78 @@ describe("rich delivery", () => {
 		expect(off.telegram.richReplies).toBe(false);
 		expect(off.telegram.showReasoning).toBe(true);
 		expect(off.telegram.dmGapMinutes).toBe(45);
+	});
+
+	// The completed-turn salute rides the rich send. The memo is
+	// process-lifetime module state: these tests reset it in finally.
+	test("a completed DM send carries the salute effect; error turns don't", async () => {
+		const done = silenceLogs();
+		try {
+			resetMessageEffectsGateForTests();
+			const { api, richSends } = fakeApi();
+			const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, undefined, {
+				enabled: true,
+			});
+			sink.onTextDelta("done");
+			await sink.onDone({ kind: "completed" });
+			expect(richSends[0]!.other.message_effect_id).toBe("4913930782671635058");
+
+			const errSink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{ enabled: true },
+			);
+			errSink.onTextDelta("failed");
+			await errSink.onDone({ kind: "error", message: "boom" });
+			expect(richSends[1]!.other.message_effect_id).toBeUndefined();
+		} finally {
+			resetMessageEffectsGateForTests();
+			done();
+		}
+	});
+
+	test("a premium-gated effect retries once without it, then memoizes", async () => {
+		const done = silenceLogs();
+		try {
+			resetMessageEffectsGateForTests();
+			const { api, richSends, sendAttempts } = fakeApi({ rejectEffect: true });
+			const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, undefined, {
+				enabled: true,
+			});
+			sink.onTextDelta("first");
+			await sink.onDone({ kind: "completed" });
+			// First turn: attempt with effect, definite 400, safe retry without.
+			expect(sendAttempts()).toBe(2);
+			expect(richSends).toHaveLength(1);
+			expect(richSends[0]!.markdown).toBe("first");
+			expect(richSends[0]!.other.message_effect_id).toBeUndefined();
+
+			// Later turns in the same process skip the param entirely.
+			const sink2 = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{ enabled: true },
+			);
+			sink2.onTextDelta("second");
+			await sink2.onDone({ kind: "completed" });
+			expect(sendAttempts()).toBe(3);
+			expect(richSends).toHaveLength(2);
+			expect(richSends[1]!.other.message_effect_id).toBeUndefined();
+		} finally {
+			resetMessageEffectsGateForTests();
+			done();
+		}
 	});
 });

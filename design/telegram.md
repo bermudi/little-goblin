@@ -49,10 +49,16 @@ model/thinking (history still copies, as specified in design/app.md).
   lost before the inbox was deployed.
 - **Delivery**: `streamText` deltas → throttled message edits (~1/s), final
   flush on completion. Typing indicator while a turn runs. Errors post a short
-  message and log structured detail. A definite Telegram send failure may
-  retry/fall back; a sendMessage timeout is ambiguous (the abandoned request
-  may still land), so never resend that content. Stop the remaining text
-  chunks/drain and completion reaction, log the address and uncertainty, and
+  message and log structured detail. Flood control is honored once, at the api
+  layer: a single transformer wired at bot construction waits out a 429's
+  `retry_after` (bounded wait, capped retries per call) and retries the same
+  call — the drain awaits its in-flight send chain, so a resolved wait never
+  ticks its stagnant ladder. Beyond the cap or the retry budget the 429
+  propagates to the caller's existing failure/uncertainty handling. A definite
+  Telegram send failure may retry/fall back; a sendMessage timeout is ambiguous
+  (the abandoned request may still land), so never resend that content. Stop
+  the remaining text chunks/drain and completion reaction, log the address and
+  uncertainty, and
   best-effort send a distinct "delivery uncertain—check Telegram before
   retrying" notice only while the turn still holds authority. Never retry
   the notice itself. In voice mode a sendVoice timeout likewise stops voice
@@ -640,6 +646,16 @@ and the `stopped_message_generation` handler remains a tripwire, not a
 stop path. Porting the app channel's `ui`
 tool to Telegram would reverse the chat-native ruling in design/app.md and
 needs its own conversation; explicitly out of scope here.
+
+**Completed-turn salute effect.** A completed DM turn's rich send carries
+`message_effect_id` for the 🫡 salute (matching the reaction, which stays
+the real marker). The id is pinned against the live API (`EFFECT_ID_INVALID`
+on garbage); effects are premium-gated at the receiving chat — the first
+`PREMIUM_ACCOUNT_REQUIRED` retries the send once without the param (a 400
+is definite, nothing landed) and drops effects for the process lifetime;
+a restart re-probes. Multi-image `send_file` bursts share one
+`sendMediaGroup` album via a short batch window; documents never wait,
+and a group timeout means the album may be live (uncertain, never resent).
 
 **Prompt.** `prompt.ts` already tells the model Telegram messages are
 Markdown; implementation updates that line to say markdown *renders*, and

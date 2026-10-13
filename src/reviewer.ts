@@ -907,8 +907,10 @@ function proposeSkill(
 	let targetStats: Stats | undefined;
 	try {
 		targetStats = lstatSync(target);
-	} catch {
-		// Not there at all.
+	} catch (e) {
+		// Not there at all — an EACCES/EMFILE is not "not there":
+		// mistaking one for absent would clobber a parked proposal.
+		if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
 	}
 	if (targetStats?.isSymbolicLink()) {
 		log.warn("reviewer proposal skipped — proposal target is a symlink", {

@@ -22,6 +22,7 @@ import {
 	realpathSync,
 	statSync,
 	type Dirent,
+	type Stats,
 } from "node:fs";
 import { join, sep } from "node:path";
 
@@ -219,7 +220,14 @@ export function listAttachments(dir: string): AttachmentsResponse {
 	const files: OperatorAttachmentItem[] = [];
 	for (const entry of entries) {
 		if (!entry.isFile()) continue;
-		const st = statSync(join(dir, entry.name));
+		let st: Stats;
+		try {
+			st = statSync(join(dir, entry.name));
+		} catch (e) {
+			// Vanished between readdir and stat — absent, like a missing dir.
+			if ((e as NodeJS.ErrnoException).code === "ENOENT") continue;
+			throw e;
+		}
 		files.push({ name: entry.name, sizeBytes: st.size, updatedAt: st.mtime.toISOString() });
 	}
 	files.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -289,11 +297,17 @@ export function readAttachmentBytes(
 ): AttachmentBytes | null {
 	const full = attachmentPath(dir, name);
 	if (full === null) return null;
-	const st = statSync(full);
-	if (st.size > capBytes) {
-		throw new AttachmentTooLargeError(`attachment too large to serve (${st.size} bytes)`);
+	try {
+		const st = statSync(full);
+		if (st.size > capBytes) {
+			throw new AttachmentTooLargeError(`attachment too large to serve (${st.size} bytes)`);
+		}
+		return { bytes: readFileSync(full), contentType: attachmentContentType(name) };
+	} catch (e) {
+		// Vanished between attachmentPath's stat and the read — absent.
+		if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw e;
 	}
-	return { bytes: readFileSync(full), contentType: attachmentContentType(name) };
 }
 
 // ---------- identity files ----------

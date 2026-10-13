@@ -447,6 +447,24 @@ def enable_embed_relay(cfg_dir: Path) -> None:
          "definition until 'systemctl --user restart goblin-embed-relay'")
 
 
+def deferred_start_commands(cfg_dir: Path) -> list[str]:
+    """The continuation printed when the stack was installed but not
+    started (--no-start or a declined first start). PRINTED only — this
+    helper runs nothing.
+
+    Same boot/watch policy a confirmed start applies: reload so Quadlet
+    generates the API's boot dependency (and the watch units load),
+    relay before the API when local embeddings are opted in (the API
+    test-embeds during init), API start, then the health watch timer."""
+    commands = ["systemctl --user daemon-reload"]
+    if (cfg_dir / EMBED_RELAY_ENV.name).is_file():
+        commands.append(
+            f"systemctl --user enable --now {RELAY_UNIT} {PIN_TIMER}")
+    commands.append(f"systemctl --user start {API_UNIT}")
+    commands.append(f"systemctl --user enable --now {WATCH_TIMER}")
+    return commands
+
+
 # --------------------------------------------------------------------------
 # System steps — logged, fail loud
 # --------------------------------------------------------------------------
@@ -1195,17 +1213,18 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.no_start:
         print("\nAssets installed, stack NOT started (and NOT enabled at boot —\n"
-              "enablement happens with the first confirmed start). To start later:\n"
-              "  systemctl --user daemon-reload\n"
-              f"  systemctl --user start {API_UNIT}\n"
-              "Then create the bank and wire goblin per docs/memory.md.")
+              "enablement happens with the first confirmed start). To start later:")
+        for command in deferred_start_commands(CFG_DIR):
+            print(f"  {command}")
+        print("Then create the bank and wire goblin per docs/memory.md.")
         return
 
     print("\nStarting can call the embedding provider (dimension detection) "
           "and resume persisted background work — it is not free.")
     if not ask_yes("start the stack now?", default=False):
-        print("Stack not started. Assets and config are in place; start with:\n"
-              f"  systemctl --user daemon-reload && systemctl --user start {API_UNIT}")
+        print("Stack not started. Assets and config are in place; start with:")
+        for command in deferred_start_commands(CFG_DIR):
+            print(f"  {command}")
         return
 
     pre_pull_images()

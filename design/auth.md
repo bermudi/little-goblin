@@ -102,7 +102,8 @@ consumption reads encrypted local snapshots, not Pass. Rulings:
   a snapshot is present. `deploy/goblin-keys.service` renders one
   `warm` line per config-referenced auth record (the preflight-gated
   set, rendered by the installer from `scripts/install-options.ts`
-  output) plus the MCP lane's pinned profile, sequentially, with
+  output — records fold last-wins by name first, so a shadowed pass
+  record warms nothing) plus the MCP lane's pinned profile, sequentially, with
   restart-on-failure every 60 s; `.timer` runs at 06:30/18:30 and
   catches missed runs. `goblin.service` retains `Wants=` but has no
   `After=goblin-keys.service`: foreground resolution must not wait for

@@ -20,9 +20,15 @@ try {
 	// line for an unprovisioned profile: a oneshot unit stops at the
 	// first failing ExecStart and Restart loops it forever.
 	const refs = authReferences(config);
+	// Same-name records overwrite — the last line is the live one, same
+	// as the runtime's own auth map. Without the fold a retired pass
+	// record still marks keys and warms a profile the current record
+	// no longer names.
+	const effective = new Map<string, (typeof records)[number]>();
+	for (const record of records) effective.set(record.name, record);
 	const profiles = new Set<string>();
 	let keys = false;
-	for (const record of records) {
+	for (const record of effective.values()) {
 		const executable = passCommand(record.value);
 		if (executable === undefined) continue;
 		keys = true;

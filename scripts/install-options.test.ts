@@ -130,6 +130,60 @@ test("general credential command inspection never executes the boundary probe", 
 	expect(result.stdout).not.toContain("FIXTURE_SECRET");
 	expect(result.stderr).toBe("");
 });
+test("a same-name record replaced by a later pass record warms only the live profile", () => {
+	const result = inspect(
+		`${config}}`,
+		[
+			'{"name":"fixture","value":"!pass-keys get retired OLD"}',
+			'{"name":"fixture","value":"!pass-keys get current FIXTURE"}',
+		].join("\n"),
+	);
+	expect(result.status).toBe(0);
+	expect(JSON.parse(result.stdout) as unknown).toEqual({
+		delegation: false,
+		keys: true,
+		port: 8787,
+		profiles: ["current"],
+	});
+	expect(result.invoked).toBe(false);
+});
+
+test("an earlier malformed pass record shadowed by a valid one never throws", () => {
+	const result = inspect(
+		`${config}}`,
+		[
+			'{"name":"fixture","value":"!pass-keys frobnicate"}',
+			'{"name":"fixture","value":"!pass-keys get goblin-dev FIXTURE"}',
+		].join("\n"),
+	);
+	expect(result.status).toBe(0);
+	expect(JSON.parse(result.stdout) as unknown).toEqual({
+		delegation: false,
+		keys: true,
+		port: 8787,
+		profiles: ["goblin-dev"],
+	});
+	expect(result.invoked).toBe(false);
+});
+
+test("a pass record shadowed by a plain value retires its warm profile and the keys flag", () => {
+	const result = inspect(
+		`${config}}`,
+		[
+			'{"name":"fixture","value":"!pass-keys get retired OLD"}',
+			'{"name":"fixture","value":"plain-inline-value"}',
+		].join("\n"),
+	);
+	expect(result.status).toBe(0);
+	expect(JSON.parse(result.stdout) as unknown).toEqual({
+		delegation: false,
+		keys: false,
+		port: 8787,
+		profiles: [],
+	});
+	expect(result.invoked).toBe(false);
+});
+
 test("multi-directory direct Pass path recognizes any provisioned profile without execution", () => {
 	const result = inspect(
 		`${config}}`,

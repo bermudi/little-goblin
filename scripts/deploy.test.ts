@@ -162,6 +162,8 @@ esac`,
 'run typecheck') failure=typecheck ;;
 'install --frozen-lockfile') failure=install ;;
 'run app:build') failure=build ;;
+'scripts/check-startup.ts --watch '*)
+  if [ "$MODE" = watch-fail ]; then echo 'startup acceptance failed' >&2; exit 37; fi ;;
 *) echo "unexpected bun boundary: $*" >&2; exit 90 ;;
 esac
 if [ "$MODE" = "$failure" ]; then echo "$failure failed" >&2; exit 32; fi`,
@@ -174,9 +176,6 @@ if [ "$MODE" = "$failure" ]; then echo "$failure failed" >&2; exit 32; fi`,
   printf '%s\\n' "$SERVICE_ROOT" ;;
 '--user restart goblin')
   if [ "$MODE" = restart ]; then echo 'restart failed' >&2; exit 34; fi ;;
-'--user is-active goblin')
-  if [ "$MODE" = inactive ]; then echo failed; exit 3; fi
-  echo active ;;
 '--user show --property=LoadState --value goblin-memory-api.service')
   if [ "$MODE" = load-state ]; then echo 'load-state failed' >&2; exit 35; fi
   if [ "$MODE" = absent ]; then echo not-found; else echo loaded; fi ;;
@@ -363,8 +362,15 @@ describe("local deployment refresh and rollback", () => {
 	test("backend-only deployment gates locally without rebuilding or updating remote refs", () => {
 		const result = runDeploy(["src/index.ts", "src/http/app-channel.ts"]);
 		expect(result.status).toBe(0);
-		expect(result.calls.filter((call) => call.startsWith("bun "))).toEqual(["bun run typecheck"]);
-		const boundaries = ["bun run typecheck", "systemctl --user restart goblin"];
+		expect(result.calls.filter((call) => call.startsWith("bun "))).toEqual([
+			"bun run typecheck",
+			"bun scripts/check-startup.ts --watch 0 75000",
+		]);
+		const boundaries = [
+			"bun run typecheck",
+			"systemctl --user restart goblin",
+			"bun scripts/check-startup.ts --watch 0 75000",
+		];
 		const indexes = boundaries.map((call) => result.calls.indexOf(call));
 		expect(
 			indexes.every((index, i) => index >= 0 && (i === 0 || index > (indexes[i - 1] ?? -1))),
@@ -398,7 +404,10 @@ describe("local deployment refresh and rollback", () => {
 		const result = runDeploy(["deploy/memory/healthcheck.py"]);
 		expect(result.status).toBe(0);
 		expect(result.stdout).toContain("never auto-applied");
-		expect(result.calls.filter((call) => call.startsWith("bun "))).toEqual(["bun run typecheck"]);
+		expect(result.calls.filter((call) => call.startsWith("bun "))).toEqual([
+			"bun run typecheck",
+			"bun scripts/check-startup.ts --watch 0 75000",
+		]);
 		expect(result.calls.filter((call) => call.includes(" restart "))).toEqual([
 			"systemctl --user restart goblin",
 		]);
@@ -411,7 +420,7 @@ describe("local deployment failures and memory probe", () => {
 		"install",
 		"build",
 		"restart",
-		"inactive",
+		"watch-fail",
 		"journal",
 		"storage",
 		"inspect",
@@ -435,8 +444,10 @@ describe("local deployment failures and memory probe", () => {
 			}
 			if (["typecheck", "install", "build"].includes(mode))
 				expect(result.calls).not.toContain("systemctl --user restart goblin");
-			if (mode === "inactive") {
-				expect(result.stderr).toContain("goblin not active after restart");
+			if (mode === "watch-fail") {
+				// Crash-loop detection lives in the acceptance probe: the failure must
+				// ship the fresh journal and never name the deployment done.
+				expect(result.stderr).toContain("goblin failed startup acceptance after restart");
 				expect(result.calls).toContain("journalctl --user -u goblin -n 40 --no-pager");
 			}
 		});

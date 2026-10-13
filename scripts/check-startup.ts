@@ -19,8 +19,15 @@ const lifecycleSchema = z.object({ msg: z.string() });
 const readySchema = z.object({ port: z.number().int().min(1).max(65535).optional() });
 const events = new Set(["goblin up", "long polling started", "boot failed", "long polling failed"]);
 
-export async function acceptStartup(port: number, budgetMs = 60_000): Promise<void> {
-	if (!Number.isInteger(port) || port < 0 || port > 65535 || budgetMs < 1)
+// One grammar, two entries: install starts a confirmed-inactive unit, deploy
+// watches the invocation its restart just created.
+async function watchInvocation(
+	entry: "accept" | "watch",
+	port: number,
+	budgetMs: number,
+): Promise<void> {
+	// NaN budget must fail validation, not become a deadline that never expires.
+	if (!Number.isInteger(port) || port < 0 || port > 65535 || !(budgetMs >= 1))
 		throw new Error("invalid startup arguments");
 	const deadline = performance.now() + budgetMs;
 	const remaining = (): number => {
@@ -77,11 +84,18 @@ export async function acceptStartup(port: number, budgetMs = 60_000): Promise<vo
 		return parsed.data;
 	}
 	const baseline = await identity();
-	if (baseline.ActiveState !== "inactive" || baseline.InvocationID !== "")
-		throw new Error("startup refuses existing invocation");
-	// Linux uptime includes suspend; it is not systemd's monotonic start clock.
-	const attemptedAt = Date.now() * 1000;
-	await run(["systemctl", "--user", "enable", "--now", "goblin.service"], "start service");
+	// accept floors journal evidence at the attempted start; watch's invocation
+	// began before the watch, so its floor is 0 (no realtime filter).
+	let attemptedAt = 0;
+	if (entry === "accept") {
+		if (baseline.ActiveState !== "inactive" || baseline.InvocationID !== "")
+			throw new Error("startup refuses existing invocation");
+		// Linux uptime includes suspend; it is not systemd's monotonic start clock.
+		attemptedAt = Date.now() * 1000;
+		await run(["systemctl", "--user", "enable", "--now", "goblin.service"], "start service");
+	} else if (baseline.ActiveState !== "active" || baseline.InvocationID === "") {
+		throw new Error("startup watch refuses missing invocation");
+	}
 	let current: Identity | undefined;
 	let boundPort = port === 0 ? undefined : port;
 	const seen = new Set<string>();
@@ -95,7 +109,12 @@ export async function acceptStartup(port: number, budgetMs = 60_000): Promise<vo
 		)
 			throw new Error("startup failed or restarted");
 		if (observed.InvocationID !== "") {
-			if (observed.ExecMainStartTimestampMonotonic <= baseline.ExecMainStartTimestampMonotonic)
+			// accept's baseline predates the attempted start; watch's baseline IS the
+			// new invocation, so an equal monotonic start is the expected case there.
+			if (
+				entry === "accept" &&
+				observed.ExecMainStartTimestampMonotonic <= baseline.ExecMainStartTimestampMonotonic
+			)
 				throw new Error("startup identity predates attempted start");
 			current ??= observed;
 			if (
@@ -176,6 +195,14 @@ export async function acceptStartup(port: number, budgetMs = 60_000): Promise<vo
 	}
 }
 
+export async function acceptStartup(port: number, budgetMs = 60_000): Promise<void> {
+	return watchInvocation("accept", port, budgetMs);
+}
+
+export async function watchStartup(port: number, budgetMs = 75_000): Promise<void> {
+	return watchInvocation("watch", port, budgetMs);
+}
+
 async function servedAssets(port: number, deadline: number): Promise<boolean> {
 	const base = new URL(`http://127.0.0.1:${port}/app/`);
 	async function request(url: URL): Promise<string | null> {
@@ -243,16 +270,26 @@ async function servedAssets(port: number, deadline: number): Promise<boolean> {
 }
 
 if (import.meta.main) {
+	const watch = process.argv[2] === "--watch";
 	try {
-		await acceptStartup(Number(process.argv[2]));
-		process.stderr.write("install: current invocation boot/polling/HTTP accepted\n");
+		if (watch)
+			await watchStartup(
+				Number(process.argv[3]),
+				process.argv[4] === undefined ? undefined : Number(process.argv[4]),
+			);
+		else await acceptStartup(Number(process.argv[2]));
+		process.stderr.write(
+			watch
+				? "watch: startup accepted\n"
+				: "install: current invocation boot/polling/HTTP accepted\n",
+		);
 	} catch (error) {
 		// Only locally constructed categories escape this process.
 		const category =
 			error instanceof Error
 				? (startupCategory(error.message) ?? "startup inspection failed")
 				: "startup inspection failed";
-		process.stderr.write(`install: ${category}\n`);
+		process.stderr.write(`${watch ? "watch" : "install"}: ${category}\n`);
 		process.exitCode = 1;
 	}
 }

@@ -185,8 +185,13 @@ or the manifests moved — the bundle inlines dependency code, so a React
 or AI-SDK bump alone must rebuild it, and the client is served from
 disk, so client and backend restart as one rollout. A marker in
 `.git/GOBLIN_DEPLOYED_REV` tracks the last deployed revision (first run
-refreshes unconditionally). It then restarts the unit, verifies it came
-back, scans the fresh journal for error lines, and prints the old→new
+refreshes unconditionally). It then restarts the unit and gates on 75 s
+startup acceptance (`scripts/check-startup.ts --watch`, the installer's
+grammar): both lifecycle events in the new invocation's journal, `/app/`
+HTML and its local assets served on loopback, and no crash-restart
+within the budget — a bare is-active poll closes before slow boot
+failures (e.g. a timed-out provider handshake) show. It then scans the
+fresh journal for error lines, and prints the old→new
 hashes plus a one-line rollback (`git reset --hard <old>`, then
 `bun install` and `bun run app:build` — dist and node_modules are
 gitignored, so the old revision needs its own deps and client — then

@@ -6,6 +6,7 @@ import { join } from "node:path";
 async function startupFixture(
 	mode: string,
 	assetMode = "healthy",
+	kind: "accept" | "watch" = "accept",
 ): Promise<{ exit: number; output: string }> {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-startup-test-"));
 	const bin = join(dir, "bin");
@@ -56,7 +57,7 @@ if(process.argv[2]==='identity'){
 if(active&&mode==='stalled-command')await new Promise(resolve=>setTimeout(resolve,10000));
 const changed=existsSync(${JSON.stringify(join(dir, "during-http"))});
 const count=existsSync(countFile)?Number(readFileSync(countFile,'utf8')):0; if(active)writeFileSync(countFile,String(count+1));
-process.stdout.write('InvocationID='+ (active?((mode==='switch'&&count>0)||(mode==='during-http-switch'&&changed)?'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb':id):'')+'\\nExecMainStartTimestampMonotonic='+mono+'\\nNRestarts='+(active&&(mode==='restart'||mode==='during-http-restart'&&changed)?'1':'0')+'\\nActiveState='+(active?'active':'inactive')+'\\n');
+process.stdout.write('InvocationID='+ (active?((mode==='switch'&&count>0)||(mode==='during-http-switch'&&changed)?'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb':id):'')+'\\nExecMainStartTimestampMonotonic='+mono+'\\nNRestarts='+(active&&(mode==='restart'||mode==='during-http-restart'&&changed||mode==='watch-restart'&&count>0)?'1':'0')+'\\nActiveState='+(active?'active':'inactive')+'\\n');
 }else{
 const names=mode==='boot-error'?['boot failed']:mode==='poll-error'?['long polling failed']:mode==='no-polling'?['goblin up']:['goblin up','long polling started'];
 for(const msg of names)process.stdout.write(JSON.stringify({_SYSTEMD_INVOCATION_ID:mode==='old-logs'?'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb':id,__MONOTONIC_TIMESTAMP:mode==='old-time'?'0':mono,__REALTIME_TIMESTAMP:String(mode==='before-attempt'?0:Date.now()*1000),MESSAGE:JSON.stringify({msg,...(msg==='goblin up'&&mode==='generated'?{port:${server.port}}:msg==='goblin up'&&mode==='wrong-port'?{port:${server.port! + 1}}:msg==='goblin up'&&mode==='invalid-port'?{port:0}:{}),error:'FIXTURE_SECRET',body:'FIXTURE_SECRET'})})+'\\n');
@@ -76,7 +77,9 @@ process.stdout.write(JSON.stringify({_SYSTEMD_INVOCATION_ID:id,__MONOTONIC_TIMES
 		const runner = join(dir, "runner.ts");
 		writeFileSync(
 			runner,
-			`import {acceptStartup} from ${JSON.stringify(join(import.meta.dir, "check-startup.ts"))};\ntry { await acceptStartup(${mode === "generated" || mode === "missing-port" ? 0 : server.port}, 900); process.stdout.write('accepted'); } catch(error) { process.stderr.write(error instanceof Error ? error.message : 'failed'); process.exitCode=1; }`,
+			kind === "watch"
+				? `import {spawnSync} from 'node:child_process';\nimport {watchStartup} from ${JSON.stringify(join(import.meta.dir, "check-startup.ts"))};\nspawnSync(process.execPath, ['--no-install', ${JSON.stringify(metadata)}, 'start']);\ntry { await watchStartup(${server.port}, 900); process.stdout.write('accepted'); } catch(error) { process.stderr.write(error instanceof Error ? error.message : 'failed'); process.exitCode=1; }`
+				: `import {acceptStartup} from ${JSON.stringify(join(import.meta.dir, "check-startup.ts"))};\ntry { await acceptStartup(${mode === "generated" || mode === "missing-port" ? 0 : server.port}, 900); process.stdout.write('accepted'); } catch(error) { process.stderr.write(error instanceof Error ? error.message : 'failed'); process.exitCode=1; }`,
 		);
 		const proc = Bun.spawn([process.execPath, "--no-install", runner], {
 			env: { PATH: `${bin}:/usr/bin`, HOME: dir },
@@ -143,4 +146,16 @@ describe("invocation-specific startup acceptance", () => {
 			expect(result.exit).toBe(1);
 			expect(result.output).not.toContain("accepted");
 		});
+	test("watch mode accepts the already-started invocation a deploy restart created", async () => {
+		const result = await startupFixture("healthy", "healthy", "watch");
+		expect(result.exit).toBe(0);
+		expect(result.output).toBe("accepted");
+	});
+	test("watch mode gates a crash-restart within budget", async () => {
+		const result = await startupFixture("watch-restart", "healthy", "watch");
+		expect(result.exit).toBe(1);
+		expect(result.output).toContain("startup failed or restarted");
+		expect(result.output).not.toContain("accepted");
+		expect(result.output).not.toContain("FIXTURE_SECRET");
+	});
 });

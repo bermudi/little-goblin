@@ -101,21 +101,20 @@ fi
 # --- 5. Restart, verify -----------------------------------------------------
 restart_epoch="$(date +%s)"
 systemctl --user restart goblin
-for _ in $(seq 1 20); do
-	sleep 1
-	[ "$(systemctl --user is-active goblin)" = active ] && break
-done
-if [ "$(systemctl --user is-active goblin)" != active ]; then
+step "verify: startup acceptance"
+# Installer grammar; 75s because slow boot failures (a timed-out provider
+# handshake) land long after an is-active poll turns green.
+if ! bun scripts/check-startup.ts --watch 0 75000 >&2; then
 	journalctl --user -u goblin -n 40 --no-pager >&2
-	fail "goblin not active after restart"
+	fail "goblin failed startup acceptance after restart"
 fi
 sleep 3
 journal="$(journalctl --user -u goblin --since "@$restart_epoch" --no-pager)"
 # grep's 1 means no error lines, not a failed journal read.
 # Deliberate tolerance: error-level lines are reported, not fatal — a
 # long-lived agent logs nonfatal subsystem errors without stopping the
-# unit. The hard gates are the is-active check above and the memory
-# probe below; this print exists so a recurring boot error ships
+# unit. The hard gates are the startup-acceptance probe above and the
+# memory probe below; this print exists so a recurring boot error ships
 # visibly with the deploy that introduced it.
 errors="$(printf '%s\n' "$journal" | grep '"level":"error"' || [ "$?" -eq 1 ])"
 if [ -n "$errors" ]; then

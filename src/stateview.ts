@@ -97,18 +97,21 @@ export function listSkillDir(dir: string): OperatorSkillItem[] {
 		for (const f of files) {
 			try {
 				sizeBytes += statSync(join(skillDir, f)).size;
-			} catch {
+			} catch (e) {
 				// Raced a delete mid-walk — count what's still there.
+				if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
 			}
 		}
 		let updatedAt: string | null = null;
 		try {
 			updatedAt = statSync(join(dir, entry.name, "SKILL.md")).mtime.toISOString();
-		} catch {
+		} catch (e) {
+			if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
 			try {
 				updatedAt = statSync(join(dir, entry.name)).mtime.toISOString();
-			} catch {
-				// Dir vanished mid-walk — skip it.
+			} catch (e2) {
+				// Dir vanished mid-walk — list it without a timestamp.
+				if ((e2 as NodeJS.ErrnoException).code !== "ENOENT") throw e2;
 			}
 		}
 		items.push({ name: entry.name, files, sizeBytes, updatedAt });

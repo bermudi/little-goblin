@@ -165,12 +165,15 @@ describe("rich delivery", () => {
 			expect(richSends[0]!.other.reply_parameters).toEqual({ message_id: 77 });
 			expect(msgs).toEqual([]);
 			expect(edits).toEqual([]);
-			// 🫡 + rating keyboard land on the rich message.
+			// 🫡 reacts on the landed message; the rating keyboard rode the
+			// send itself — no second editMessageReplyMarkup call.
 			expect(reactions).toEqual([{ chat: 1, id: 901, emoji: "🫡" }]);
-			expect(markups).toHaveLength(1);
+			expect(markups).toEqual([]);
 			const keyboard = (
-				markups[0] as { reply_markup: { inline_keyboard: Array<Array<{ callback_data: string }>> } }
-			).reply_markup.inline_keyboard;
+				richSends[0]!.other.reply_markup as {
+					inline_keyboard: Array<Array<{ callback_data: string }>>;
+				}
+			).inline_keyboard;
 			expect(keyboard[0]!.map((b) => b.callback_data)).toEqual([
 				"rate:up|dm:1|42",
 				"rate:down|dm:1|42",
@@ -517,7 +520,7 @@ describe("rich delivery", () => {
 				undefined,
 				undefined,
 				undefined,
-				undefined,
+				{ lastReplyAnchor: () => 7 },
 				{
 					enabled: true,
 				},
@@ -529,6 +532,15 @@ describe("rich delivery", () => {
 			expect(richSends).toHaveLength(1);
 			expect(richSends[0]!.markdown).toBe("first");
 			expect(richSends[0]!.other.message_effect_id).toBeUndefined();
+			// The keyboard rode the retry too — it isn't part of the drop.
+			expect(richSends[0]!.other.reply_markup).toEqual({
+				inline_keyboard: [
+					[
+						{ text: "👍", callback_data: "rate:up|dm:1|7" },
+						{ text: "👎", callback_data: "rate:down|dm:1|7" },
+					],
+				],
+			});
 
 			// Later turns in the same process skip the param entirely.
 			const sink2 = makeDeliverySink(

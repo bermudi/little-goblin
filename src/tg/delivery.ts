@@ -1126,11 +1126,22 @@ export function makeDeliverySink(
 							done.kind === "completed" && conv.id.startsWith("dm:") && messageEffectsUsable
 								? { message_effect_id: SALUTE_EFFECT_ID }
 								: {};
+						// The keyboard rides the send itself — one call, no
+						// post-land editMessageReplyMarkup window where the
+						// reply sits buttonless. The premium-gate retry keeps
+						// it; only the effect param drops.
+						const keyboard = done.kind === "completed" ? buildKeyboard() : null;
+						const markup =
+							keyboard === null ? {} : { reply_markup: { inline_keyboard: keyboard } };
 						try {
 							let sent;
 							try {
 								sent = await withTimeout(
-									api.sendRichMessage(conv.chatId, { markdown: md }, { ...base, ...effect }),
+									api.sendRichMessage(conv.chatId, { markdown: md }, {
+										...base,
+										...effect,
+										...markup,
+									}),
 									"sendRichMessage",
 								);
 							} catch (err) {
@@ -1141,7 +1152,7 @@ export function makeDeliverySink(
 									chat: conv.chatId,
 								});
 								sent = await withTimeout(
-									api.sendRichMessage(conv.chatId, { markdown: md }, base),
+									api.sendRichMessage(conv.chatId, { markdown: md }, { ...base, ...markup }),
 									"sendRichMessage",
 								);
 							}
@@ -1162,18 +1173,6 @@ export function makeDeliverySink(
 								).catch((err: unknown) => {
 									log.debug("rich reaction failed", { error: String(err) });
 								});
-								const keyboard = buildKeyboard();
-								if (keyboard !== null) {
-									await withTimeout(
-										api.editMessageReplyMarkup(conv.chatId, sent.message_id, {
-											reply_markup: { inline_keyboard: keyboard },
-										}),
-										"editMessageReplyMarkup",
-									).catch((err: unknown) => {
-										if (isNotModifiedError(err)) return;
-										log.debug("rich keyboard failed", { error: String(err) });
-									});
-								}
 							}
 							return;
 						} catch (err) {

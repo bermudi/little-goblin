@@ -2,7 +2,7 @@
 // skills (installed + proposed) and workspace files (identity +
 // attachments). Everything here renders what the server already
 // validated; the containment wall lives in src/stateview.ts.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchAttachment, getIdentity, getSkillFile, listAttachments, listSkills } from "./api.ts";
 import { describe, KV, ts, useLoad } from "./opsShared.tsx";
 import type {
@@ -47,14 +47,35 @@ function SkillCard({
 	const [file, setFile] = useState<string | null>(null);
 	const [content, setContent] = useState<string | null>(null);
 	const [err, setErr] = useState<string | null>(null);
+	// Only the newest request may answer — an out-of-order response for
+	// a previous selection must not overwrite it. The counter also
+	// invalidates on unmount and on identity change (deps below), so a
+	// reply addressed to a different card can never land here. Cleanup
+	// only bumps the id — unmount must not write state; the clears
+	// belong to the setup that runs when identity changes.
+	const requestId = useRef(0);
+
+	useEffect(() => {
+		setFile(null);
+		setContent(null);
+		setErr(null);
+		return () => {
+			requestId.current += 1;
+		};
+	}, [token, origin, skill.name]);
 
 	const open = (path: string) => {
+		const id = ++requestId.current;
 		setFile(path);
 		setContent(null);
 		setErr(null);
 		getSkillFile(token, origin, skill.name, path).then(
-			(d) => setContent(d.content),
-			(e) => setErr(describe(e)),
+			(d) => {
+				if (requestId.current === id) setContent(d.content);
+			},
+			(e) => {
+				if (requestId.current === id) setErr(describe(e));
+			},
 		);
 	};
 
@@ -159,9 +180,9 @@ function AttachmentRow({ file, token }: { file: OperatorAttachmentItem; token: s
 		<div className="card">
 			<div className="op-item-head">
 				<span className="op-item-title mono">{file.name}</span>
-				{url === null && kind !== "other" && (
+				{url === null && (
 					<button type="button" className="pill" onClick={open}>
-						preview
+						{kind === "other" ? "fetch file" : "preview"}
 					</button>
 				)}
 			</div>
@@ -175,7 +196,7 @@ function AttachmentRow({ file, token }: { file: OperatorAttachmentItem; token: s
 			{url !== null && kind === "video" && <video className="attach-preview" src={url} controls />}
 			{url !== null && (
 				<a className="attach-download" href={url} download={file.name}>
-					open raw
+					{kind === "other" ? "download" : "open raw"}
 				</a>
 			)}
 		</div>

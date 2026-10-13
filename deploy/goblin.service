@@ -1,6 +1,14 @@
 [Unit]
 Description=Goblin v2 — Telegram-native personal agent
-After=network-online.target
+# network-online.target is a *system* unit — the user manager shows it
+# not-found, so ordering against it silently never applied, and every boot
+# paid repeated Telegram connect timeouts while the link came up. Podman's
+# user wait stub is the user-manager stand-in for system network-online
+# (TimeoutStartSec=90s bounds the wait; on failure Wants= — not Requires= —
+# still starts us). Where the stub is absent (no podman) both lines are
+# skipped: the sandbox tool degrades, not the bot.
+Wants=podman-user-wait-network-online.service
+After=podman-user-wait-network-online.service
 # Delegation rides a sibling herdr session (DESIGN.md, "Delegation") —
 # weak dep: goblin still boots when the unit is absent; the delegate
 # tool is what degrades, not the bot.

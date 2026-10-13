@@ -550,4 +550,79 @@ describe("rich delivery", () => {
 			done();
 		}
 	});
+
+	// /stop landing mid-reject is a new side effect only if authority
+	// still holds — the retry, reaction, and keyboard each re-check.
+	test("authority lost inside the gated send fences the retry, the reaction, and the keyboard", async () => {
+		const done = silenceLogs();
+		try {
+			resetMessageEffectsGateForTests();
+			const { api, richSends, reactions, markups } = fakeApi();
+			let revoke: (() => void) | null = null;
+			let attempts = 0;
+			api.sendRichMessage = (async (
+				_chat: number,
+				_rm: { markdown: string },
+				other: Record<string, unknown>,
+			) => {
+				attempts++;
+				if (other.message_effect_id !== undefined) {
+					revoke?.();
+					throw new Error("Bad Request: PREMIUM_ACCOUNT_REQUIRED");
+				}
+				richSends.push({ markdown: _rm.markdown, other });
+				return { message_id: 901 };
+			}) as typeof api.sendRichMessage;
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				{ lastReplyAnchor: () => 1 },
+				{ enabled: true },
+			);
+			revoke = () => sink.setAuthorityCheck?.(() => false);
+			sink.onTextDelta("stopped mid-finalize");
+			await sink.onDone({ kind: "completed" });
+			expect(attempts).toBe(1); // the ungated retry never went out
+			expect(richSends).toEqual([]);
+			expect(reactions).toEqual([]);
+			expect(markups).toEqual([]);
+		} finally {
+			resetMessageEffectsGateForTests();
+			done();
+		}
+	});
+
+	// Reasoning is operator surface — a guest-persona DM never sees it,
+	// whatever telegram.showReasoning says (design/telegram.md → Roles).
+	test("a guest-persona DM gets rich replies but never the reasoning surface", async () => {
+		const done = silenceLogs();
+		try {
+			const guestConv: Conversation = { ...conv, persona: "guest" };
+			const { api, drafts, richSends } = fakeApi();
+			const sink = makeDeliverySink(
+				api,
+				guestConv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{ enabled: true, reasoning: true },
+			);
+			sink.onReasoningDelta("operator-only thought");
+			sink.onTextDelta("answer");
+			await sink.onDone({ kind: "completed" });
+			expect(drafts.some((d) => d.blocks !== undefined)).toBe(false);
+			expect(richSends[0]!.markdown).toBe("answer");
+			expect(richSends[0]!.markdown).not.toContain("<details>");
+		} finally {
+			done();
+		}
+	});
 });

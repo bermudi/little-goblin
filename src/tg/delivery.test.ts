@@ -12,6 +12,7 @@ import {
 	isNotModifiedError,
 	makeDeliverySink,
 	recentReplyText,
+	resetMessageEffectsGateForTests,
 	SPEAK_CALLBACK,
 } from "./delivery.ts";
 
@@ -1045,6 +1046,129 @@ describe("delivery files", () => {
 			expect(groupAttempts()).toBe(1);
 			expect(mediaGroups).toHaveLength(0);
 			expect(photos).toHaveLength(2);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a second album's failure resends only that group — delivered groups never go twice", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
+		try {
+			const { api, photos, mediaGroups } = fileApi();
+			let attempt = 0;
+			api.sendMediaGroup = (async (
+				_chat: number,
+				media: ReadonlyArray<{ caption?: string }>,
+			) => {
+				attempt++;
+				if (attempt === 2) throw new Error("sendMediaGroup wedged");
+				mediaGroups.push({
+					files: media.length,
+					captions: media.map((m) => m.caption),
+				});
+				return media.map((_, i) => ({ message_id: 100 + i }));
+			}) as unknown as typeof api.sendMediaGroup;
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				60_000,
+			);
+			const results = await settledBurst(
+				sink,
+				Array.from({ length: 12 }, (_, i) => ({
+					path: pngFile(dir),
+					filename: `${i}.png`,
+				})),
+			);
+			expect(attempt).toBe(2);
+			// The first ten rode their album and are never resent; only
+			// the failed group's two files degrade to solo sends.
+			expect(mediaGroups).toEqual([{ files: 10, captions: Array(10).fill(undefined) }]);
+			expect(photos).toHaveLength(2);
+			for (const r of results.slice(0, 10)) expect(r.status).toBe("fulfilled");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("a lone photo timeout reports uncertain — never a second send attempt", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
+		try {
+			const { api } = fileApi();
+			let photoAttempts = 0;
+			api.sendPhoto = async () => {
+				photoAttempts++;
+				throw new TelegramTimeoutError("sendPhoto", 30_000);
+			};
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				60_000,
+			);
+			const results = await settledBurst(sink, [{ path: pngFile(dir), filename: "a.png" }]);
+			// The upload may be live — one attempt, one uncertain verdict.
+			expect(photoAttempts).toBe(1);
+			expect(results[0]!.status).toBe("rejected");
+			if (results[0]!.status === "rejected")
+				expect(results[0]!.reason).toBeInstanceOf(DeliveryUncertainError);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("authority lost mid-burst fences the next album — nothing more sends", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-delivery-file-"));
+		try {
+			const { api, photos, mediaGroups } = fileApi();
+			let revoke: (() => void) | null = null;
+			api.sendMediaGroup = (async (
+				_chat: number,
+				media: ReadonlyArray<{ caption?: string }>,
+			) => {
+				mediaGroups.push({
+					files: media.length,
+					captions: media.map((m) => m.caption),
+				});
+				revoke?.();
+				return media.map((_, i) => ({ message_id: 100 + i }));
+			}) as unknown as typeof api.sendMediaGroup;
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				60_000,
+			);
+			// /stop lands while the first album is in flight.
+			revoke = () => sink.setAuthorityCheck?.(() => false);
+			await settledBurst(
+				sink,
+				Array.from({ length: 12 }, (_, i) => ({
+					path: pngFile(dir),
+					filename: `${i}.png`,
+				})),
+			);
+			expect(mediaGroups).toEqual([{ files: 10, captions: Array(10).fill(undefined) }]);
+			expect(photos).toHaveLength(0);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

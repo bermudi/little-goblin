@@ -6,9 +6,9 @@
 // Error paths carry status to the model; remote error bodies are logged
 // separately, never mixed into trusted tool framing.
 
-import { log } from "../../log.ts";
 import type { AuthStore } from "../../auth.ts";
 import type { Config } from "../../config.ts";
+import { log } from "../../log.ts";
 import type { AcceptsMedia } from "../attachments.ts";
 
 /** Shared deps for the web tools: live config + the secrets store.
@@ -101,15 +101,15 @@ export function resMeta(res: Response, bytes = 0): HttpMeta {
  *  trips, and only a stream that ends within it is assembled whole. A
  *  too-large read returns what it saw — enough for an error head,
  *  never a claim the body was read to its end. */
-export async function readTextCapped(
+export async function readBytesCapped(
 	res: Response,
 	cap: number,
-): Promise<{ tooLarge: boolean; text: string }> {
+): Promise<{ tooLarge: boolean; bytes: Uint8Array }> {
 	if (res.body === null) {
 		// No stream to gate (not reachable for http(s) fetch today) —
 		// there is nothing to stream-cancel either.
-		const text = await res.text();
-		return { tooLarge: Buffer.byteLength(text) > cap, text };
+		const bytes = new Uint8Array(await res.arrayBuffer());
+		return { tooLarge: bytes.byteLength > cap, bytes };
 	}
 	const reader = res.body.getReader();
 	const chunks: Uint8Array[] = [];
@@ -132,6 +132,15 @@ export async function readTextCapped(
 		bytes.set(chunk, at);
 		at += chunk.byteLength;
 	}
+	return { tooLarge, bytes };
+}
+
+/** readBytesCapped for text bodies — same contract, decoded lossily. */
+export async function readTextCapped(
+	res: Response,
+	cap: number,
+): Promise<{ tooLarge: boolean; text: string }> {
+	const { tooLarge, bytes } = await readBytesCapped(res, cap);
 	return { tooLarge, text: new TextDecoder("utf-8", { fatal: false }).decode(bytes) };
 }
 

@@ -15,23 +15,23 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	authReferences,
+	type Config,
 	ensureHomeLayout,
-	paths,
+	fetchEntrySchema,
+	fetchKinds,
 	loadConfig,
+	parseConfig,
+	paths,
 	providerKinds,
 	providerSchema,
-	fetchKinds,
-	fetchEntrySchema,
-	searchKinds,
 	searchEntrySchema,
+	searchKinds,
+	splitModelRef,
 	transcriptionDefaults,
 	transcriptionKinds,
 	transcriptionSchema,
-	splitModelRef,
-	authReferences,
 	writeConfig,
-	parseConfig,
-	type Config,
 } from "./config.ts";
 import { setLogFile } from "./log.ts";
 
@@ -411,6 +411,29 @@ describe("goblin.json5", () => {
 		writeFileSync(join(dir, "goblin.json5"), `${base},tts:""}`);
 		expect(loadConfig()!.tts).toBe(false);
 		writeFileSync(join(dir, "goblin.json5"), `${base},tts:{kind:"edge",voice:""}}`);
+		expect(() => loadConfig()).toThrow("goblin.json5");
+	});
+
+	test("tts openrouter defaults model and auth; voice is optional", () => {
+		const dir = useHome();
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
+		writeFileSync(join(dir, "goblin.json5"), `${base},tts:{kind:"openrouter"}}`);
+		expect(loadConfig()!.tts).toEqual({
+			kind: "openrouter",
+			model: "fish-audio/s2.1-pro-free:free",
+			auth: "openrouter",
+		});
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},tts:{kind:"openrouter",model:"fish-audio/s2.1-pro",auth:"or-tts",voice:"b347db033a6549378b48d00acb0d06cd"}}`,
+		);
+		expect(loadConfig()!.tts).toEqual({
+			kind: "openrouter",
+			model: "fish-audio/s2.1-pro",
+			auth: "or-tts",
+			voice: "b347db033a6549378b48d00acb0d06cd",
+		});
+		writeFileSync(join(dir, "goblin.json5"), `${base},tts:{kind:"openrouter",model:""}}`);
 		expect(() => loadConfig()).toThrow("goblin.json5");
 	});
 

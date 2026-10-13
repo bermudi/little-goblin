@@ -79,10 +79,26 @@ export interface ProvDraft {
 	baseUrl: string;
 	auth: string;
 }
+export type TtsKind = "edge" | "openrouter";
+// Widened like TrDraft: edge-only fields (rate/voices) and
+// openrouter-only fields (model/auth) all ride the draft so a save
+// never drops a hand edit; bodyFromDraft emits each kind's own arm.
 export interface TtsDraft {
+	kind: TtsKind;
 	voice: string;
 	rate: string;
 	voices: string[];
+	model: string;
+	auth: string;
+}
+
+// Identity fields don't carry across kinds: an edge voice name left
+// under openrouter would go upstream as a Fish voice-library id and
+// 400, and a stale model/auth would point a key at the wrong model.
+// Blank falls back to the kind's defaults server-side.
+export function switchTtsKind(t: TtsDraft, kind: TtsKind): TtsDraft {
+	if (kind === t.kind) return t;
+	return { ...t, kind, voice: "", model: "", auth: "" };
 }
 export type TranscriptionKind = (typeof transcriptionKinds)[number];
 
@@ -239,7 +255,14 @@ export function draftFromConfig(c: Config): { draft: SettingsDraft; providers: P
 		tts:
 			c.tts === false || c.tts === undefined
 				? null
-				: { voice: c.tts.voice || "", rate: c.tts.rate || "", voices: [...(c.tts.voices ?? [])] },
+				: {
+						kind: c.tts.kind,
+						voice: c.tts.voice || "",
+						rate: c.tts.kind === "edge" ? c.tts.rate || "" : "",
+						voices: c.tts.kind === "edge" ? [...(c.tts.voices ?? [])] : [],
+						model: c.tts.kind === "openrouter" ? c.tts.model : "",
+						auth: c.tts.kind === "openrouter" ? c.tts.auth : "",
+					},
 		transcription: c.transcription ? transcriptionDraft(c.transcription) : null,
 		vision: c.vision
 			? {
@@ -316,7 +339,8 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 	// covers the typo case without blocking config-before-key.
 	if (!draft.model) return "Pick an app default model.";
 	if (!draft.telegramModel) return "Pick a Telegram model.";
-	if (draft.tts && !draft.tts.voice.trim()) return "Text to speech is on — set a voice.";
+	if (draft.tts && draft.tts.kind === "edge" && !draft.tts.voice.trim())
+		return "Text to speech is on — set a voice.";
 	// No transcription secret check: whistle takes none, and a blank cloud
 	// secret means the kind's default record — the server fills it.
 	if (draft.vision && !draft.vision.model.trim()) return "Vision is on — pick a model.";
@@ -387,12 +411,20 @@ export function bodyFromDraft(
 		tts:
 			draft.tts === null
 				? ""
-				: {
-						kind: "edge",
-						voice: draft.tts.voice.trim(),
-						rate: draft.tts.rate.trim() || undefined,
-						voices: draft.tts.voices.length ? [...draft.tts.voices] : undefined,
-					},
+				: draft.tts.kind === "edge"
+					? {
+							kind: "edge",
+							voice: draft.tts.voice.trim(),
+							rate: draft.tts.rate.trim() || undefined,
+							voices: draft.tts.voices.length ? [...draft.tts.voices] : undefined,
+						}
+					: {
+							kind: "openrouter",
+							// Blanks mean the kind's defaults — materialized server-side.
+							...(draft.tts.model.trim() ? { model: draft.tts.model.trim() } : {}),
+							...(draft.tts.auth.trim() ? { auth: draft.tts.auth.trim() } : {}),
+							...(draft.tts.voice.trim() ? { voice: draft.tts.voice.trim() } : {}),
+						},
 		transcription: draft.transcription === null ? "" : transcriptionBody(draft.transcription),
 		vision:
 			draft.vision === null

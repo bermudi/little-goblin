@@ -3,10 +3,10 @@ import {
 	chunkSpeech,
 	detectLanguage,
 	pickVoice,
+	STATUS_TAIL_MARK,
 	speakable,
 	speechContent,
 	synthesizeSpeech,
-	STATUS_TAIL_MARK,
 } from "./tts.ts";
 
 // Unpaired surrogate units in a piece: a high surrogate not followed by
@@ -100,9 +100,11 @@ describe("tts", () => {
 				voice: "en-US-AriaNeural",
 				rate: "+10%",
 			},
-			synth,
-			15,
-			async () => new Uint8Array([79, 103, 103, 83]),
+			{
+				synthesize: synth,
+				chunkLimit: 15,
+				remux: async () => new Uint8Array([79, 103, 103, 83]),
+			},
 		);
 		expect(calls).toEqual([
 			{
@@ -135,12 +137,13 @@ describe("tts", () => {
 		await synthesizeSpeech(
 			"Hola.",
 			{ ...config, voice: "es-ES-ElviraNeural" },
-			async (_text, options) => {
-				calls.push({ voice: options.voice, lang: options.lang });
-				return new Uint8Array([1]);
+			{
+				synthesize: async (_text, options) => {
+					calls.push({ voice: options.voice, lang: options.lang });
+					return new Uint8Array([1]);
+				},
+				remux: async () => new Uint8Array([79, 103, 103, 83]),
 			},
-			10_000,
-			async () => new Uint8Array([79, 103, 103, 83]),
 		);
 		expect(calls).toEqual([{ voice: "es-ES-ElviraNeural", lang: "es-ES" }]);
 	});
@@ -187,12 +190,13 @@ describe("voice cast", () => {
 		await synthesizeSpeech(
 			"¿Listo para mañana? Sí, claro.",
 			{ kind: "edge", voice: "en-US-AndrewNeural", voices: ["es-MX-JorgeNeural"] },
-			async (_text, options) => {
-				calls.push({ voice: options.voice, lang: options.lang });
-				return new Uint8Array([1]);
+			{
+				synthesize: async (_text, options) => {
+					calls.push({ voice: options.voice, lang: options.lang });
+					return new Uint8Array([1]);
+				},
+				remux: async () => new Uint8Array([79, 103, 103, 83]),
 			},
-			10_000,
-			async () => new Uint8Array([79, 103, 103, 83]),
 		);
 		expect(calls).toEqual([{ voice: "es-MX-JorgeNeural", lang: "es-MX" }]);
 	});

@@ -487,17 +487,30 @@ export const system1ConfigSchema = z.object({
 });
 export type System1Config = z.infer<typeof system1ConfigSchema>;
 
-export const ttsConfigSchema = z.object({
-	kind: z.literal("edge"),
-	voice: z.string().min(1),
-	rate: z
-		.string()
-		.regex(/^[+-]\d+%$/)
-		.optional(),
-	// Language-cast voices: /voice and the 🔊 button pick by each
-	// reply's language, falling back to `voice`.
-	voices: z.array(z.string().min(1)).optional(),
-});
+export const ttsConfigSchema = z.discriminatedUnion("kind", [
+	z.object({
+		kind: z.literal("edge"),
+		voice: z.string().min(1),
+		rate: z
+			.string()
+			.regex(/^[+-]\d+%$/)
+			.optional(),
+		// Language-cast voices: /voice and the 🔊 button pick by each
+		// reply's language, falling back to `voice`.
+		voices: z.array(z.string().min(1)).optional(),
+	}),
+	// OpenRouter's TTS endpoint (design/telegram.md → TTS) — one POST
+	// shape, the model field picks the upstream. voice is the upstream's
+	// voice id (Fish: a voice-library hex id); absent = the model's
+	// default voice. There is no language cast: upstream ids carry no
+	// language prefix to match on.
+	z.object({
+		kind: z.literal("openrouter"),
+		model: z.string().min(1).default("fish-audio/s2.1-pro-free:free"),
+		auth: z.string().min(1).default(authDefaults.openrouter),
+		voice: z.string().optional(),
+	}),
+]);
 export type TtsConfig = z.infer<typeof ttsConfigSchema>;
 
 // Speech kinds — whistle (local) first, then the cloud menu

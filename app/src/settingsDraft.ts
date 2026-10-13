@@ -189,6 +189,8 @@ export interface SettingsDraft {
 	publicUrl: string;
 	apiRoot: string;
 	dmGap: string;
+	richReplies: boolean;
+	showReasoning: boolean;
 	port: string;
 	logLevel: "debug" | "info" | "warn" | "error";
 	memory: MemDraft | null;
@@ -211,6 +213,8 @@ export const EMPTY_DRAFT: SettingsDraft = {
 	publicUrl: "",
 	apiRoot: "",
 	dmGap: "45",
+	richReplies: true,
+	showReasoning: false,
 	port: "8787",
 	logLevel: "info",
 	memory: null,
@@ -251,6 +255,8 @@ export function draftFromConfig(c: Config): { draft: SettingsDraft; providers: P
 		publicUrl: c.publicUrl || "",
 		apiRoot: c.telegram.apiRoot || "",
 		dmGap: c.telegram.dmGapMinutes !== undefined ? String(c.telegram.dmGapMinutes) : "45",
+		richReplies: c.telegram.richReplies,
+		showReasoning: c.telegram.showReasoning,
 		port: c.http !== undefined ? String(c.http.port) : "8787",
 		logLevel: c.logLevel || "info",
 		memory: c.memory
@@ -407,6 +413,8 @@ export function bodyFromDraft(
 			apiRoot: draft.apiRoot.trim(),
 			// raw like http.port — the server validates.
 			dmGapMinutes: Number(draft.dmGap),
+			richReplies: draft.richReplies,
+			showReasoning: draft.showReasoning,
 		},
 		publicUrl: draft.publicUrl.trim(),
 		http: { port: Number(draft.port) },

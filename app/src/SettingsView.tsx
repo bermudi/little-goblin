@@ -59,6 +59,8 @@ const FIELD_LABELS: Record<keyof SettingsDraft, string> = {
 	publicUrl: "public url",
 	apiRoot: "telegram api root",
 	dmGap: "dm gap",
+	richReplies: "rich replies",
+	showReasoning: "show reasoning",
 	port: "http port",
 	logLevel: "log level",
 	memory: "memory",
@@ -1043,6 +1045,28 @@ export function SettingsView({
 								onChange={(v) => patchDraft({ telegramThinking: v as ThinkingLevel })}
 							/>
 						</Row>
+						<Row
+							label="Rich replies"
+							cap="Markdown replies in your DM with a live draft preview while goblin works. Off restores plain text — the off-switch if streaming misbehaves. Applies to new turns."
+						>
+							<Switch
+								on={draft.richReplies}
+								ariaLabel="rich replies"
+								onChange={(on) => patchDraft({ richReplies: on })}
+							/>
+						</Row>
+						{draft.richReplies && (
+							<Row
+								label="Show reasoning"
+								cap="The model's thinking streams into its own preview bubble and lands collapsed above the reply. DMs only."
+							>
+								<Switch
+									on={draft.showReasoning}
+									ariaLabel="show reasoning"
+									onChange={(on) => patchDraft({ showReasoning: on })}
+								/>
+							</Row>
+						)}
 					</div>
 					<h2 className="ops-h2">App defaults</h2>
 					<div className="card">
@@ -1505,9 +1529,7 @@ export function SettingsView({
 						<ChipsEditor
 							values={draft.operators.map(String)}
 							onAdd={(v) => addId("operators", v)}
-							onRemove={(i) =>
-								patchDraft({ operators: draft.operators.filter((_, j) => j !== i) })
-							}
+							onRemove={(i) => patchDraft({ operators: draft.operators.filter((_, j) => j !== i) })}
 							placeholder="telegram user id"
 							ariaLabel="add operator"
 							numeric

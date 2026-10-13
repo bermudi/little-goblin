@@ -11,6 +11,7 @@ import type { Api } from "grammy";
 import { parseConfig } from "../config.ts";
 import type { Conversation } from "../conversation.ts";
 import { setLogFile, setLogWriter } from "../log.ts";
+import { TelegramTimeoutError } from "./deadline.ts";
 import { makeDeliverySink } from "./delivery.ts";
 
 const conv: Conversation = {
@@ -40,7 +41,9 @@ interface DraftCall {
 	markdown?: string;
 }
 
-function fakeApi(opts: { failRichDrafts?: boolean; failRichSend?: boolean } = {}) {
+function fakeApi(
+	opts: { failRichDrafts?: boolean; failRichSend?: boolean; timeoutNextRichDraft?: boolean } = {},
+) {
 	const drafts: DraftCall[] = [];
 	const richSends: Array<{ markdown: string; other: Record<string, unknown> }> = [];
 	const msgs: string[] = [];
@@ -62,6 +65,10 @@ function fakeApi(opts: { failRichDrafts?: boolean; failRichSend?: boolean } = {}
 			return true;
 		},
 		sendRichMessageDraft: async (_chat: number, id: number, rm: { markdown: string }) => {
+			if (opts.timeoutNextRichDraft) {
+				opts.timeoutNextRichDraft = false;
+				throw new TelegramTimeoutError("sendRichMessageDraft", 30_000);
+			}
 			if (opts.failRichDrafts) throw new Error("sendRichMessageDraft failed");
 			drafts.push({ kind: "rich", id, markdown: rm.markdown });
 			return true;
@@ -107,16 +114,26 @@ describe("rich delivery", () => {
 		const done = silenceLogs();
 		try {
 			const { api, drafts, richSends, msgs, edits, reactions, markups } = fakeApi();
-			const sink = makeDeliverySink(api, conv, 77, 0, undefined, undefined, undefined, {
-				lastReplyAnchor: () => 42,
-			}, {
-				enabled: true,
-			});
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				77,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				{
+					lastReplyAnchor: () => 42,
+				},
+				{
+					enabled: true,
+				},
+			);
 			sink.onTextDelta("hello ");
 			sink.onTextDelta("world");
 			await sink.onDone({ kind: "completed" });
 			// Thinking placeholder first, then the accumulated markdown.
-			expect(drafts[0]).toEqual({ kind: "plain", id: drafts[0]!.id, text: "" });
+			expect(drafts[0]).toEqual({ kind: "plain", id: expect.any(Number), text: "" });
 			expect(drafts.some((d) => d.kind === "rich" && d.markdown === "hello world")).toBe(true);
 			// One rich send carries the reply anchor; no plain text went out.
 			expect(richSends).toHaveLength(1);
@@ -130,7 +147,10 @@ describe("rich delivery", () => {
 			const keyboard = (
 				markups[0] as { reply_markup: { inline_keyboard: Array<Array<{ callback_data: string }>> } }
 			).reply_markup.inline_keyboard;
-			expect(keyboard[0]!.map((b) => b.callback_data)).toEqual(["rate:up|dm:1|42", "rate:down|dm:1|42"]);
+			expect(keyboard[0]!.map((b) => b.callback_data)).toEqual([
+				"rate:up|dm:1|42",
+				"rate:down|dm:1|42",
+			]);
 		} finally {
 			done();
 		}
@@ -140,9 +160,19 @@ describe("rich delivery", () => {
 		const done = silenceLogs();
 		try {
 			const { api, richSends, msgs } = fakeApi({ failRichDrafts: true });
-			const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, undefined, {
-				enabled: true,
-			});
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{
+					enabled: true,
+				},
+			);
 			sink.onTextDelta("plain again");
 			await sink.onDone({ kind: "completed" });
 			expect(richSends).toHaveLength(0);
@@ -152,13 +182,57 @@ describe("rich delivery", () => {
 		}
 	});
 
+	// A draft is a disposable preview — its timeout can't have delivered
+	// anything, so it degrades like any other draft failure instead of
+	// marking the turn uncertain (which would drop the reply).
+	test("a draft timeout degrades like any draft failure — the reply lands plain", async () => {
+		const done = silenceLogs();
+		try {
+			const { api, drafts, richSends, msgs } = fakeApi({ timeoutNextRichDraft: true });
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{
+					enabled: true,
+				},
+			);
+			sink.onTextDelta("first");
+			sink.onTextDelta("second");
+			await sink.onDone({ kind: "completed" });
+			expect(richSends).toHaveLength(0);
+			expect(msgs).toContain("firstsecond");
+			expect(msgs.some((m) => m.includes("uncertain"))).toBe(false);
+			// Drafts queued behind the timed-out one never fire — the
+			// enqueued fn re-checks richMode after the degrade.
+			expect(drafts.some((d) => d.kind === "rich")).toBe(false);
+		} finally {
+			done();
+		}
+	});
+
 	test("a rich finalize failure falls through to the plain drain", async () => {
 		const done = silenceLogs();
 		try {
 			const { api, drafts, richSends, msgs } = fakeApi({ failRichSend: true });
-			const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, undefined, {
-				enabled: true,
-			});
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{
+					enabled: true,
+				},
+			);
 			sink.onTextDelta("still delivered");
 			await sink.onDone({ kind: "completed" });
 			expect(drafts.length).toBeGreaterThan(0);
@@ -173,21 +247,57 @@ describe("rich delivery", () => {
 		const done = silenceLogs();
 		try {
 			const { api, drafts, richSends } = fakeApi();
-			const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, undefined, {
-				enabled: true,
-				reasoning: true,
-			});
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{
+					enabled: true,
+					reasoning: true,
+				},
+			);
 			sink.onReasoningDelta("hidden thought");
 			sink.onTextDelta("answer");
 			await sink.onDone({ kind: "completed" });
-			expect(
-				drafts.some((d) => d.kind === "plain" && d.text === "hidden thought"),
-			).toBe(true);
-			expect(richSends[0]!.markdown.startsWith("<details><summary>Thinking</summary>")).toBe(
-				true,
-			);
-			expect(richSends[0]!.markdown).toContain("hidden thought");
+			expect(drafts.some((d) => d.kind === "plain" && d.text === "hidden thought")).toBe(true);
+			expect(richSends[0]!.markdown.startsWith("<details><summary>Thinking</summary>")).toBe(true);
+			// Raw reasoning rides a <pre> so its text stays literal.
+			expect(richSends[0]!.markdown).toContain("<pre>hidden thought</pre>");
 			expect(richSends[0]!.markdown.endsWith("answer")).toBe(true);
+		} finally {
+			done();
+		}
+	});
+
+	test("no reasoning delta, no reasoning bubble — just the answer's placeholder", async () => {
+		const done = silenceLogs();
+		try {
+			const { api, drafts, richSends } = fakeApi();
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{
+					enabled: true,
+					reasoning: true,
+				},
+			);
+			sink.onTextDelta("answer");
+			await sink.onDone({ kind: "completed" });
+			// Exactly one plain draft — the answer's "Thinking…" — not two.
+			expect(drafts.filter((d) => d.kind === "plain")).toHaveLength(1);
+			expect(richSends[0]!.markdown).toBe("answer");
+			expect(richSends[0]!.markdown).not.toContain("<details>");
 		} finally {
 			done();
 		}
@@ -197,9 +307,19 @@ describe("rich delivery", () => {
 		const done = silenceLogs();
 		try {
 			const { api, drafts, richSends } = fakeApi();
-			const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, undefined, {
-				enabled: true,
-			});
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{
+					enabled: true,
+				},
+			);
 			sink.onReasoningDelta("secret");
 			sink.onTextDelta("answer");
 			await sink.onDone({ kind: "completed" });
@@ -245,9 +365,19 @@ describe("rich delivery", () => {
 		const done = silenceLogs();
 		try {
 			const { api, drafts, richSends, msgs } = fakeApi();
-			const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, undefined, {
-				enabled: true,
-			});
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{
+					enabled: true,
+				},
+			);
 			sink.setAuthorityCheck!(() => false);
 			sink.onTextDelta("never delivered");
 			await sink.onDone({ kind: "fenced" });
@@ -263,9 +393,19 @@ describe("rich delivery", () => {
 		const done = silenceLogs();
 		try {
 			const { api, richSends, msgs } = fakeApi();
-			const sink = makeDeliverySink(api, conv, undefined, 0, undefined, undefined, undefined, undefined, {
-				enabled: true,
-			});
+			const sink = makeDeliverySink(
+				api,
+				conv,
+				undefined,
+				0,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{
+					enabled: true,
+				},
+			);
 			sink.onTextDelta("x".repeat(33_000));
 			await sink.onDone({ kind: "completed" });
 			expect(richSends).toHaveLength(0);

@@ -63,6 +63,10 @@ export interface ConfigPostBody {
 		dmGapMinutes: number;
 		model?: string;
 		thinking?: ThinkingLevel;
+		// Rich-reply kill switch + reasoning toggle — the phone-only
+		// operator's off-switch for draft streaming (design/telegram.md).
+		richReplies: boolean;
+		showReasoning: boolean;
 	};
 	publicUrl: string;
 	http: { port: number };

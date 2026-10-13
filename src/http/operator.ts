@@ -174,6 +174,8 @@ const CONFIG_POST_TELEGRAM_KEYS = {
 	dmGapMinutes: true,
 	model: true,
 	thinking: true,
+	richReplies: true,
+	showReasoning: true,
 } as const satisfies Record<keyof ConfigPostBody["telegram"], true>;
 
 // Key shape only — every field is unknown+optional; values stay

@@ -509,6 +509,9 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	let conversations: AppConversationList["conversations"] = [];
 	let settings: typeof SETTINGS;
 	let savedBodies: ConfigPostBody[] = [];
+	// When set, POST /api/app/conversations waits on it — the create is
+	// held in flight while the operator navigates.
+	let createGate: Promise<void> | null = null;
 	const realFetch = globalThis.fetch;
 
 	const installGlobal = (name: string, value: unknown) => {
@@ -538,6 +541,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		conversations = [];
 		settings = SETTINGS;
 		savedBodies = [];
+		createGate = null;
 		installGlobal("window", win);
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
@@ -553,6 +557,10 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		});
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url === "/api/app/conversations" && init?.method === "POST")
+				return (createGate ?? Promise.resolve()).then(() =>
+					jsonResponse({ id: "app/created", title: null, createdAt: "2026-10-10T00:00:00Z" }),
+				);
 			if (url === "/api/app/conversations") return Promise.resolve(jsonResponse({ conversations }));
 			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
 			if (url === "/api/app/conversations/fixture") {
@@ -686,15 +694,12 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await click(container.querySelector(".chip button"));
 		expect(container.textContent).toContain("unsaved");
 	};
-	const typeInto = async (el: Element, value: string) => {
+	const typeInto = async (el: Element, value: string, proto: object) => {
 		await act(async () => {
 			// Focus + keyup too — React's text-input fallback needs it in
 			// this environment (the create-dialog test's ruling).
 			(el as HTMLElement).focus();
-			Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(
-				el,
-				value,
-			);
+			Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
 			el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
 			el.dispatchEvent(
 				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
@@ -908,7 +913,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		const input = field.querySelector("input")!;
 		// Clearing is a VALID value — before staging, the debounce wrote
 		// it and the tab's own origin fell out of the allowlist.
-		await typeInto(input, "");
+		await typeInto(input, "", win.HTMLInputElement.prototype);
 		expect(container.textContent).toContain("unsaved");
 		expect(container.textContent).toContain("public url");
 		// Well past the 800ms debounce — nothing may have posted.
@@ -930,6 +935,43 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(savedBodies.at(-1)?.publicUrl).toBe("");
 		expect(savedBodies.at(-1)?.logLevel).toBe("debug");
 		expect(container.textContent).not.toContain("unsaved");
+	});
+
+	test("a create resolving after navigation to dirty Settings is dropped — no silent close", async () => {
+		win.history.replaceState(null, "", "/app/");
+		let releaseCreate!: () => void;
+		createGate = new Promise<void>((r) => (releaseCreate = r));
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await waitFor(() => container.querySelector("form.composer") !== null, "the composer");
+		const composer = container.querySelector("form.composer")!;
+		await typeInto(
+			composer.querySelector("textarea")!,
+			"hello",
+			win.HTMLTextAreaElement.prototype,
+		);
+		await act(async () => {
+			composer.dispatchEvent(
+				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+			);
+		});
+		// The create is still in flight — the operator opens Settings
+		// (that navigation is what fences the pending send) and dirties
+		// the editor.
+		await openPage("Settings");
+		await dirtyTheForm();
+		const confirmsBefore = confirmCalls;
+		await act(async () => releaseCreate());
+		await settle();
+		// The stale success never reached select(): Settings stays open,
+		// the guard was never asked, the draft survives.
+		expect(win.location.pathname).toBe("/app/settings");
+		expect(container.querySelector(".settings")).not.toBeNull();
+		expect(confirmCalls).toBe(confirmsBefore);
+		expect(container.textContent).toContain("unsaved");
+		expect(operatorChips()).toBe(0);
 	});
 
 	for (const direction of ["back", "forward"] as const) {

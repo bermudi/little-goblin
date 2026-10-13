@@ -1010,6 +1010,10 @@ function AppShell() {
 				token,
 				projectId === null ? undefined : { projectId },
 			);
+			// A navigation while the create was in flight bumped the
+			// sequence — this continuation closes over the old page, so
+			// its select would skip the dirty-settings guard entirely.
+			if (seq !== startSeq.current) return;
 			setSeed({ id: created.id, parts });
 			select(created.id);
 			await refresh();

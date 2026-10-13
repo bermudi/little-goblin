@@ -219,9 +219,16 @@ export async function patchNote(
 		// 'rewrite' marks the accepted proposal so the version names it.
 		source?: "app" | "rewrite";
 	},
-	// keepalive: the pagehide flush — the request must outlive the page.
+	// keepalive: the pagehide flush — best effort that the request
+	// outlives the page, never a guarantee. Browsers cap keepalive
+	// bytes at their own discretion, so past the portable 64KiB bound
+	// the request goes as an ordinary fetch and the durable draft
+	// carries the edit.
 	opts: { ifMatch?: number; keepalive?: boolean } = {},
 ): Promise<{ data: AppNote; etag: string | null }> {
+	const payload = JSON.stringify(patch);
+	const keepalive =
+		opts.keepalive === true && new TextEncoder().encode(payload).byteLength <= 64 * 1024;
 	const res = await fetch(`/api/app/notes/${encodeURIComponent(id)}`, {
 		method: "PATCH",
 		headers: {
@@ -229,8 +236,8 @@ export async function patchNote(
 			"content-type": "application/json",
 			...(opts.ifMatch !== undefined ? { "if-match": `"${opts.ifMatch}"` } : {}),
 		},
-		body: JSON.stringify(patch),
-		...(opts.keepalive === true ? { keepalive: true } : {}),
+		body: payload,
+		...(keepalive ? { keepalive: true } : {}),
 	});
 	if (res.status === 409) {
 		const body = (await res.json()) as { note: AppNote };

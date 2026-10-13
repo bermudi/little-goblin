@@ -131,6 +131,7 @@ beforeEach(() => {
 		"navigator",
 		"localStorage",
 		"Event",
+		"ErrorEvent",
 		"CustomEvent",
 		"MutationObserver",
 		"Range",
@@ -236,6 +237,7 @@ const applyings: boolean[] = [];
 async function mount(
 	body = note.body,
 	saveDelayMs = DELAY,
+	noteOver: Partial<AppNote> = {},
 ): Promise<{ current: NoteEditorHandle | null }> {
 	const ref = createRef<NoteEditorHandle>();
 	await act(async () =>
@@ -244,8 +246,7 @@ async function mount(
 				ref={ref}
 				token={null}
 				noteId={note.id}
-				initialBody={body}
-				initialRev={note.rev}
+				initialNote={{ ...note, ...noteOver, body }}
 				onSaved={(n) => savedNotes.push(n)}
 				onConflict={(n) => conflicts.push(n)}
 				onRewriteBusy={(b) => busies.push(b)}
@@ -279,6 +280,34 @@ async function select(
 
 const toolbarBtn = (): HTMLButtonElement | null =>
 	container.querySelector<HTMLButtonElement>(".note-editor-bar button");
+
+// The durable draft record for this note — the happy-dom localStorage
+// installed as the global is the module's store.
+const DRAFT_KEY = `goblin.note-draft.v1:${encodeURIComponent(note.id)}`;
+interface StoredDraft {
+	version: 1;
+	noteId: string;
+	baseRev: number;
+	baseBody: string;
+	body: string;
+}
+const storedDraft = (): StoredDraft | null => {
+	const raw = (globalThis.localStorage as Storage | undefined)?.getItem(DRAFT_KEY) ?? null;
+	return raw === null ? null : (JSON.parse(raw) as StoredDraft);
+};
+const seedDraft = (over: Partial<StoredDraft> = {}): string => {
+	const rec: StoredDraft = {
+		version: 1,
+		noteId: note.id,
+		baseRev: note.rev,
+		baseBody: note.body,
+		body: "seeded work",
+		...over,
+	};
+	const raw = JSON.stringify(rec);
+	(globalThis.localStorage as Storage).setItem(DRAFT_KEY, raw);
+	return raw;
+};
 const panelText = (sel: string): string | null => container.querySelector(sel)?.textContent ?? null;
 const clickBtn = async (text: string): Promise<void> => {
 	const btn = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
@@ -938,5 +967,293 @@ describe("NoteEditor selection rewrite", () => {
 		expect(forced.body.body).toContain("beta");
 		expect(forced.body.body).not.toContain("rewritten");
 		expect(savedNotes).toHaveLength(1);
+	});
+});
+
+// Durable draft (design/projects.md → Notes): a synchronous plugin
+// capture persists every doc change to same-origin storage, so a
+// typed-then-gone body survives the listener window. The record's base
+// decides the revisit: same base → guarded autosave, stale base → the
+// buffer restores behind the conflict bar, and while a conflict stands
+// captures keep the ORIGINAL base — a revisit can never silently
+// rebase stale local text over the newer remote.
+describe("NoteEditor durable draft", () => {
+	test("pristine mount writes no draft and no autosave — normalization is not an edit", async () => {
+		root = createRoot(container);
+		await mount();
+		await notice();
+		await settle();
+		expect(patches).toHaveLength(0);
+		expect(storedDraft()).toBeNull();
+	});
+
+	test("a >80KiB edit pagehidden before the listener fires is stored whole — keepalive omitted, recover and land", async () => {
+		root = createRoot(container);
+		const ref = await mount(note.body, 60_000);
+		await notice();
+		const big = "x".repeat(90 * 1024);
+		holdPatch(); // the pagehide PATCH is held — the draft is the net
+		await edit(ref, big);
+		// No notice() — the listener hasn't seen the edit; the plugin
+		// captured it synchronously.
+		await act(async () => win.dispatchEvent(new win.Event("pagehide")));
+		await tick(0);
+		const d = storedDraft();
+		expect(d?.body).toContain(big);
+		expect(d?.baseRev).toBe(note.rev);
+		expect(d?.baseBody).toBe(note.body);
+		expect(patches).toHaveLength(1);
+		expect(patches[0]!.body.body).toContain(big);
+		expect(patches[0]!.init.keepalive).not.toBe(true);
+		// Unmount with the flight still held — the draft stands.
+		await act(async () => root!.unmount());
+		expect(storedDraft()?.body).toContain(big);
+		// Remount on the same storage: the draft restores and the
+		// guarded autosave lands, retiring the record.
+		root = createRoot(container);
+		const ref2 = await mount(note.body, DELAY);
+		await notice();
+		await settle();
+		expect(patches.length).toBeGreaterThanOrEqual(2);
+		expect(patches[patches.length - 1]!.body.body).toContain(big);
+		expect(ref2.current?.editor()?.action(getMarkdown())).toContain(big);
+		expect(storedDraft()).toBeNull();
+	});
+
+	test("a draft whose body already landed retires without autosaving", async () => {
+		seedDraft({ body: note.body });
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		await settle();
+		expect(patches).toHaveLength(0);
+		expect(storedDraft()).toBeNull();
+		expect(ref.current?.dirty()).toBe(false);
+	});
+
+	test("a stale-base draft restores behind the conflict bar; keep-mine writes at the current rev", async () => {
+		seedDraft({ body: "mine local" });
+		root = createRoot(container);
+		const ref = await mount("server moved", DELAY, { rev: 2, body: "server moved" });
+		await notice();
+		await settle();
+		expect(conflicts).toHaveLength(1);
+		expect(conflicts[0]!.rev).toBe(2);
+		expect(conflicts[0]!.body).toBe("server moved");
+		expect(patches).toHaveLength(0); // no silent rebase, no write
+		expect(container.querySelector(".note-save-status")!.textContent).toBe("Conflict");
+		expect(ref.current?.editor()?.action(getMarkdown())).toContain("mine local");
+		await act(async () => ref.current?.resolve("mine", conflicts[0]!));
+		await settle();
+		expect(patches).toHaveLength(1);
+		expect((patches[0]!.init.headers as Record<string, string>)["if-match"]).toBe('"2"');
+		expect(patches[0]!.body.body).toContain("mine local");
+		expect(storedDraft()).toBeNull();
+	});
+
+	test("a stale-base draft resolving theirs clears only the local record", async () => {
+		seedDraft({ body: "mine local" });
+		root = createRoot(container);
+		const ref = await mount("server moved", DELAY, { rev: 2, body: "server moved" });
+		await notice();
+		expect(conflicts).toHaveLength(1);
+		await act(async () => ref.current?.resolve("theirs", conflicts[0]!));
+		await settle();
+		expect(ref.current?.editor()?.action(getMarkdown())).toContain("server moved");
+		expect(storedDraft()).toBeNull();
+	});
+
+	test("an edit mid-flight leaves the newer snapshot after the old ack; the next ack clears exactly it", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		holdPatch();
+		await edit(ref, "v2");
+		await notice();
+		await settle();
+		expect(patches).toHaveLength(1); // held — ack pending
+		await edit(ref, "v3");
+		releasePatch();
+		// Flush the old ack — but not the +DELAY save it re-arms — so
+		// the draft still shows the newer body rebased onto the ack's rev.
+		await tick(0);
+		const d = storedDraft();
+		expect(d?.body).toContain("v3");
+		expect(d?.baseRev).toBe(2);
+		await notice();
+		await settle();
+		expect(patches).toHaveLength(2);
+		expect(patches[1]!.body.body).toContain("v3");
+		expect((patches[1]!.init.headers as Record<string, string>)["if-match"]).toBe('"2"');
+		expect(storedDraft()).toBeNull();
+	});
+
+	test("a storage denial shows a persistent alert and emits a diagnostic — the network save still lands", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		const errors: string[] = [];
+		win.addEventListener("error", (e) => errors.push((e as unknown as ErrorEvent).message));
+		const original = globalThis.localStorage as Storage;
+		Reflect.set(globalThis, "localStorage", {
+			getItem: original.getItem.bind(original),
+			setItem: () => {
+				throw new DOMException("quota exceeded", "QuotaExceededError");
+			},
+			removeItem: original.removeItem.bind(original),
+		});
+		try {
+			await edit(ref, "v2");
+			await tick(0);
+			expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+				"Local draft could not be preserved",
+			);
+			expect(errors.some((m) => m.includes("draft"))).toBe(true);
+			await notice();
+			await settle();
+			expect(patches).toHaveLength(1); // the save itself still landed
+			expect(container.querySelector(".note-save-status")!.textContent).toBe("Saved");
+		} finally {
+			Reflect.set(globalThis, "localStorage", original);
+		}
+		// Storage healthy again — the next successful capture retires
+		// the alert.
+		await edit(ref, "v3");
+		await tick(0);
+		expect(container.querySelector('[role="alert"]')).toBeNull();
+	});
+
+	test("a conflicted draft keeps its ORIGINAL base across edits and remounts — never a silent rebase", async () => {
+		seedDraft({ baseRev: 1, baseBody: note.body, body: "local WIP" });
+		root = createRoot(container);
+		const ref = await mount("server moved", DELAY, { rev: 2, body: "server moved" });
+		await notice();
+		await settle();
+		expect(conflicts).toHaveLength(1);
+		expect(patches).toHaveLength(0);
+		// A further local edit while the conflict stands must keep the
+		// draft's ORIGINAL base — rebasing onto rev 2 would make a
+		// revisit think the server never moved.
+		await edit(ref, "more local work");
+		await tick(0);
+		expect(storedDraft()?.body).toContain("more local work");
+		expect(storedDraft()?.baseRev).toBe(1);
+		expect(storedDraft()?.baseBody).toBe(note.body);
+		await act(async () => root!.unmount());
+		expect(storedDraft()?.baseRev).toBe(1);
+		// Remount against the same moved server: still conflicted,
+		// still no write — only explicit resolution unlocks.
+		root = createRoot(container);
+		const ref2 = await mount("server moved", DELAY, { rev: 2, body: "server moved" });
+		await notice();
+		await settle();
+		expect(conflicts).toHaveLength(2);
+		expect(patches).toHaveLength(0);
+		expect(storedDraft()?.baseRev).toBe(1);
+		expect(storedDraft()?.baseBody).toBe(note.body);
+		expect(ref2.current?.editor()?.action(getMarkdown())).toContain("more local work");
+	});
+
+	test("an old ack under a newer conflict keeps the local side recoverable — revisit restores it", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		holdPatch();
+		await edit(ref, "v2");
+		await notice();
+		await settle();
+		expect(patches).toHaveLength(1); // v2 PATCH held
+		// The remote moved to rev3 while the PATCH hung — the bar stands.
+		await act(async () => ref.current?.conflict(theirs({ rev: 3, body: "remote three" })));
+		releasePatch(); // the old ack (rev2/body v2) lands UNDER it
+		await tick(DELAY * 2);
+		// The local body must stay a draft at its ORIGINAL base — a
+		// baseline-equal clear would lose the conflict's local side.
+		const d = storedDraft();
+		expect(d?.body).toContain("v2");
+		expect(d?.baseRev).toBe(1);
+		expect(d?.baseBody).toBe(note.body);
+		expect(patches).toHaveLength(1); // nothing automatic under the bar
+		await act(async () => root!.unmount());
+		expect(storedDraft()?.body).toContain("v2"); // unmount didn't strip it
+		// Remount on the same moved server: local v2 restores behind
+		// the bar, still with no write.
+		root = createRoot(container);
+		const ref2 = await mount("remote three", DELAY, { rev: 3, body: "remote three" });
+		await notice();
+		await settle();
+		expect(conflicts[conflicts.length - 1]!.rev).toBe(3);
+		expect(patches).toHaveLength(1);
+		expect(ref2.current?.editor()?.action(getMarkdown())).toContain("v2");
+	});
+
+	test("a landed draft retires by its verbatim stored bytes — indented JSON still clears", async () => {
+		// Pretty-printed and reordered: parse-equal to a written record
+		// but not the compact bytes a re-serialization would produce.
+		const raw = `{
+  "body": ${JSON.stringify(note.body)},
+  "version": 1,
+  "noteId": "${note.id}",
+  "baseBody": ${JSON.stringify(note.body)},
+  "baseRev": ${note.rev}
+}`;
+		(globalThis.localStorage as Storage).setItem(DRAFT_KEY, raw);
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		await settle();
+		expect(patches).toHaveLength(0); // already landed — no autosave
+		expect(storedDraft()).toBeNull(); // retired against the verbatim snapshot
+		expect(ref.current?.dirty()).toBe(false);
+	});
+
+	test("a corrupt record warns with a fixed message — no stored payload reaches the alert or the diagnostic", async () => {
+		const SENTINEL = "PRIVATE-BODY-zzz";
+		const raw = `{"version":1,"noteId":"${note.id}","body":"${SENTINEL}`;
+		(globalThis.localStorage as Storage).setItem(DRAFT_KEY, raw);
+		const errors: string[] = [];
+		win.addEventListener("error", (e) => errors.push((e as unknown as ErrorEvent).message));
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		const alert = container.querySelector('[role="alert"]')?.textContent ?? "";
+		expect(alert).toContain("Local draft could not be loaded");
+		expect(alert).not.toContain(SENTINEL);
+		expect(errors.length).toBeGreaterThan(0);
+		expect(errors.every((m) => !m.includes(SENTINEL))).toBe(true);
+		// The record stays put and the normal server doc still mounts.
+		expect((globalThis.localStorage as Storage).getItem(DRAFT_KEY)).toBe(raw);
+		expect(ref.current?.editor()?.action(getMarkdown())).toBe("* a\n* b\n");
+	});
+
+	test("a detached ack never overwrites a newer component's draft", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		holdPatch();
+		await edit(ref, "v2");
+		await notice();
+		await settle();
+		expect(patches).toHaveLength(1); // v2 PATCH held
+		await edit(ref, "v3");
+		await act(async () => root!.unmount());
+		expect(storedDraft()?.body).toContain("v3"); // unmount captured v3
+		// A NEW component on the same storage recovers v3, then edits
+		// v4 — the record is now owned by the newer editor.
+		root = createRoot(container);
+		const ref2 = await mount(note.body, 60_000);
+		await notice();
+		expect(ref2.current?.editor()?.action(getMarkdown())).toContain("v3");
+		await edit(ref2, "v4");
+		expect(storedDraft()?.body).toContain("v4");
+		// Release the OLD v2 ack: its detached persist must not roll
+		// the record back to v3. Its drain then fires a last write —
+		// failed once so the loop ends.
+		failPatchOnce = { status: 410, body: "gone" };
+		releasePatch();
+		await tick(DELAY * 4);
+		expect(storedDraft()?.body).toContain("v4");
+		expect(storedDraft()?.baseRev).toBe(1);
+		expect(ref2.current?.editor()?.action(getMarkdown())).toContain("v4");
 	});
 });

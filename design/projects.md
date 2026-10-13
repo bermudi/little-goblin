@@ -158,6 +158,27 @@ never a silent overwrite. The single real conflict — the operator typing
 while the agent edits — surfaces as that 409, and the editor offers
 reload-or-keep-mine. No Yjs/CRDT: one human.
 
+**The buffer outlives the page.** Every document change is captured
+synchronously — a plugin on the editor's doc, not the debounced
+listener — into a same-origin `localStorage` draft keyed per note: the
+current body plus the `{rev, body}` base it was typed against.
+`pagehide`/unmount persist again before the best-effort flush. On
+revisit the draft decides: a body equal to the server's current
+serialization already landed and the record is retired; a matching
+base restores the buffer dirty and resumes the guarded autosave; a
+stale base restores it behind the same conflict bar a remote edit
+raises — the record keeps its original base while the conflict stands,
+so a second revisit never silently rebases over the newer remote. A
+save's ack deletes only the exact snapshot it submitted — a late ack
+can't erase a newer draft or another tab's record — and editing back
+to baseline clears the record this editor wrote. The `pagehide` flush
+carries `keepalive` only under the portable 64KiB bound — browsers may
+reject anything past it, so larger bodies go as an ordinary request
+and rely on the draft.
+Quota-denied or malformed storage surfaces a persistent alert plus a
+diagnostic — the failure is shown, a corrupt record is left in place,
+and no recovery guarantee is claimed that can't be delivered.
+
 **The agent edits through a `note` tool**, mounted on every operator
 conversation (Telegram included — "add this to my groceries note" is
 natural there; guests never). Actions: `list`, `search`, `read`,

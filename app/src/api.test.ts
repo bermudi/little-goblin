@@ -10,6 +10,7 @@ import {
 	getOperatorConfig,
 	listMemoryDocuments,
 	patchConfig,
+	patchNote,
 	patchConversationConfig,
 	saveOperatorConfig,
 } from "./api.ts";
@@ -231,5 +232,53 @@ describe("telegram door", () => {
 		}) as typeof fetch;
 		await getMessages(null, "app/chat-1");
 		expect(new URL(requests[0]!.url).pathname).toBe("/api/conversations/chat-1/messages");
+	});
+});
+
+// patchNote's keepalive is best effort: past the portable 64KiB bound
+// the flag is dropped and the body still leaves whole — the durable
+// draft is the recovery path for big edits.
+describe("patchNote keepalive bound", () => {
+	const NOTE = {
+		id: "n-1",
+		projectId: null,
+		title: "t",
+		body: "x",
+		rev: 2,
+		lastSource: "app",
+		pinnedAt: null,
+		archivedAt: null,
+		createdAt: "x",
+		updatedAt: "x",
+	};
+	const capture = (): { init: RequestInit | undefined; body: string }[] => {
+		const seen: { init: RequestInit | undefined; body: string }[] = [];
+		globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+			seen.push({ init, body: String(init?.body) });
+			return Response.json(NOTE);
+		}) as typeof fetch;
+		return seen;
+	};
+
+	test("an >80KiB body omits keepalive but sends every byte — ASCII and multibyte", async () => {
+		const seen = capture();
+		const big = "x".repeat(80 * 1024);
+		await patchNote(null, "n-1", { body: big }, { keepalive: true });
+		expect(seen[0]!.init?.keepalive).not.toBe(true);
+		expect((JSON.parse(seen[0]!.body) as { body: string }).body).toBe(big);
+
+		// 30Ki multibyte chars ≈ 90KiB UTF-8 — the cap is bytes, not chars.
+		const multi = "日".repeat(30 * 1024);
+		await patchNote(null, "n-1", { body: multi }, { keepalive: true });
+		expect(seen[1]!.init?.keepalive).not.toBe(true);
+		expect((JSON.parse(seen[1]!.body) as { body: string }).body).toBe(multi);
+	});
+
+	test("a small opt-in still rides keepalive; no opt-in stays ordinary", async () => {
+		const seen = capture();
+		await patchNote(null, "n-1", { body: "small" }, { keepalive: true });
+		expect(seen[0]!.init?.keepalive).toBe(true);
+		await patchNote(null, "n-1", { body: "small" });
+		expect(seen[1]!.init?.keepalive).not.toBe(true);
 	});
 });

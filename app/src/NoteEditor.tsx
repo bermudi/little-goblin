@@ -15,13 +15,15 @@
 
 import { Editor, defaultValueCtx, editorViewCtx, rootCtx, serializerCtx } from "@milkdown/kit/core";
 import type { Node as PMNode } from "@milkdown/kit/prose/model";
+import { Plugin } from "@milkdown/kit/prose/state";
 import { listener, listenerCtx } from "@milkdown/kit/plugin/listener";
 import { history } from "@milkdown/kit/plugin/history";
 import { commonmark } from "@milkdown/kit/preset/commonmark";
 import { gfm } from "@milkdown/kit/preset/gfm";
-import { getMarkdown, markdownToSlice, replaceAll } from "@milkdown/kit/utils";
+import { $prose, getMarkdown, markdownToSlice, replaceAll } from "@milkdown/kit/utils";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { ApiError, NoteConflictError, patchNote, rewriteNote } from "./api.ts";
+import { clearNoteDraft, loadNoteDraft, writeNoteDraft, type NoteDraft } from "./noteDraft.ts";
 import type { AppNote } from "../../src/http/app-wire.ts";
 
 export interface NoteEditorHandle {
@@ -77,8 +79,10 @@ const NoteEditor = forwardRef<
 	{
 		token: string | null;
 		noteId: string;
-		initialBody: string;
-		initialRev: number;
+		// The whole note, not just body/rev — a stale draft restores
+		// behind the conflict bar, which needs the genuine current
+		// server record rather than invented metadata or a refetch.
+		initialNote: AppNote;
 		// A successful autosave/resolve reports the note back so the page
 		// tracks the live rev for flag writes and titles.
 		onSaved: (note: AppNote) => void;
@@ -99,8 +103,7 @@ const NoteEditor = forwardRef<
 	{
 		token,
 		noteId,
-		initialBody,
-		initialRev,
+		initialNote,
 		onSaved,
 		onConflict,
 		onDirty,
@@ -112,11 +115,23 @@ const NoteEditor = forwardRef<
 ) {
 	const containerRef = useRef<HTMLDivElement>(null);
 	const editorRef = useRef<Editor | null>(null);
-	const baselineRef = useRef(initialBody);
+	const baselineRef = useRef(initialNote.body);
 	// The raw body the server last acknowledged (initial load, reload,
 	// successful PATCH) — adoptRev compares responses against it.
-	const serverBodyRef = useRef(initialBody);
-	const revRef = useRef(initialRev);
+	const serverBodyRef = useRef(initialNote.body);
+	const revRef = useRef(initialNote.rev);
+	// The server state the stored draft stands on. While a conflict
+	// stands this keeps the draft's ORIGINAL base — a capture during
+	// the block must not rebase onto the newer remote, or a revisit
+	// would see a matching base and autosave stale local text over it.
+	const draftBaseRef = useRef({ rev: initialNote.rev, body: initialNote.body });
+	// Suppresses draft capture during mount/recovery and programmatic
+	// reloads — a restore is not an edit, and the mount-time parse
+	// normalization must never write or autosave.
+	const suppressDraftRef = useRef(true);
+	// The exact serialized record this editor last stored — compare-
+	// delete, so a late ack clears only its own write.
+	const lastDraftRef = useRef<string | null>(null);
 	const dirtyRef = useRef(false);
 	const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const savingRef = useRef(false);
@@ -166,6 +181,9 @@ const NoteEditor = forwardRef<
 	const [ready, setReady] = useState(false);
 	const [status, setStatus] = useState<SaveStatus>("saved");
 	const [statusDetail, setStatusDetail] = useState<string | null>(null);
+	// A draft-storage failure is separate from the save status — an
+	// autosave result must not paint over "recovery is broken".
+	const [draftError, setDraftError] = useState<string | null>(null);
 	const onSavedRef = useRef(onSaved);
 	const onConflictRef = useRef(onConflict);
 	const onDirtyRef = useRef(onDirty);
@@ -187,6 +205,77 @@ const NoteEditor = forwardRef<
 		if (dirtyRef.current === dirty) return;
 		dirtyRef.current = dirty;
 		if (!unmountedRef.current) onDirtyRef.current?.(dirty);
+	}
+
+	// Storage failures stay visible: an ErrorEvent diagnostic plus a
+	// persistent alert, so a broken draft never masquerades as
+	// recovery. No note body or token ever enters either.
+	function reportDraftError(verb: "preserved" | "loaded" | "cleared", e: unknown): void {
+		const msg = e instanceof Error ? e.message : String(e);
+		window.dispatchEvent(new ErrorEvent("error", { message: `note draft ${verb} failed: ${msg}` }));
+		if (!unmountedRef.current) setDraftError(`Local draft could not be ${verb}: ${msg}`);
+	}
+
+	// Store the live body as the durable draft, standing on whatever
+	// base draftBaseRef currently names; returns the exact snapshot
+	// stored, or null when storage refused. A detached component may
+	// only overwrite the snapshot it last wrote — after unmount a
+	// newer editor owns the record, and a late drain/ack write must
+	// never roll it back.
+	function persistDraft(md: string): string | null {
+		const draft: NoteDraft = {
+			version: 1,
+			noteId,
+			baseRev: draftBaseRef.current.rev,
+			baseBody: draftBaseRef.current.body,
+			body: md,
+		};
+		try {
+			const snap = unmountedRef.current
+				? lastDraftRef.current !== null
+					? writeNoteDraft(draft, lastDraftRef.current)
+					: null
+				: writeNoteDraft(draft);
+			if (snap === null) return null;
+			lastDraftRef.current = snap;
+			if (!unmountedRef.current) setDraftError(null);
+			return snap;
+		} catch (e) {
+			reportDraftError("preserved", e);
+			return null;
+		}
+	}
+
+	function dropDraft(snapshot: string): void {
+		try {
+			clearNoteDraft(noteId, snapshot);
+			if (!unmountedRef.current) setDraftError(null);
+		} catch (e) {
+			reportDraftError("cleared", e);
+		}
+	}
+
+	// Every document change: baseline-equal means the buffer landed or
+	// was never dirty — clear only THIS editor's last snapshot, and
+	// only while no conflict stands: under one, even baseline-equal
+	// local text IS the conflict's local side and must stay
+	// recoverable. Anything else is unsaved local work and persists.
+	function captureDraft(md: string): void {
+		if (md === baselineRef.current && conflictRef.current === null) {
+			const snap = lastDraftRef.current;
+			lastDraftRef.current = null;
+			if (snap !== null) dropDraft(snap);
+			return;
+		}
+		persistDraft(md);
+	}
+
+	// Synchronous persist for unload boundaries — runs even while a
+	// conflict or rewrite blocks every automatic write.
+	function persistLive(): void {
+		const ed = editorRef.current;
+		if (ed === null) return;
+		captureDraft(ed.action(getMarkdown()));
 	}
 
 	function clearTimer(): void {
@@ -229,10 +318,16 @@ const NoteEditor = forwardRef<
 		if (ed === null) return;
 		const md = ed.action(getMarkdown());
 		if (opts.force !== true && md === baselineRef.current) {
+			// Doc is clean — a stored draft of ours is stale too.
+			captureDraft(md);
 			markDirty(false);
 			markStatus("saved");
 			return;
 		}
+		// Synchronous capture at save entry covers anything the plugin
+		// missed; the request snapshot is what the ack may later clear,
+		// and only while the live body is still this one.
+		const requestSnap = persistDraft(md);
 		savingRef.current = true;
 		hardFailRef.current = false;
 		markStatus("saving");
@@ -257,6 +352,28 @@ const NoteEditor = forwardRef<
 				// guard drops the stale rev); only the label stays blocked.
 				const c = conflictRef.current;
 				if (c === null || data.rev >= c.rev) conflictRef.current = null;
+				// The draft base advances only on a save that stands
+				// clean — a late old ack under a newer observed conflict
+				// must not rebase the stored draft onto that remote.
+				if (conflictRef.current === null)
+					draftBaseRef.current = { rev: revRef.current, body: serverBodyRef.current };
+				// The ack retires the request snapshot only while the live
+				// body is still the submitted one and no conflict stands —
+				// under a newer remote, the local body (even this exact
+				// one) is the conflict's local side and must stay
+				// recoverable at the draft's ORIGINAL base. Edits that
+				// landed mid-flight persist again at whatever base now
+				// stands — the retained editor answers even after unmount.
+				const liveEd = editorRef.current;
+				const liveMd = liveEd !== null ? liveEd.action(getMarkdown()) : md;
+				if (conflictRef.current === null && liveMd === md) {
+					const snap = lastDraftRef.current;
+					lastDraftRef.current = null;
+					if (snap !== null) dropDraft(snap);
+					if (requestSnap !== null && requestSnap !== snap) dropDraft(requestSnap);
+				} else {
+					persistDraft(liveMd);
+				}
 				if (!unmountedRef.current) {
 					onSavedRef.current(data);
 					if (conflictRef.current === null) markStatus("saved");
@@ -330,16 +447,27 @@ const NoteEditor = forwardRef<
 	// baseline to the serializer's own output (the listener's ~200ms-
 	// debounced markdownUpdated for this replaceAll lands after this
 	// and self-cancels against the new baseline), clear the conflict.
+	// Adoption supersedes the stored draft — the local snapshot this
+	// editor last wrote is cleared once the new body is in.
 	function reload(note: AppNote): void {
 		const ed = editorRef.current;
 		if (ed === null) return;
 		clearTimer();
 		pendingRef.current = null;
 		conflictRef.current = null;
-		ed.action(replaceAll(note.body));
-		baselineRef.current = ed.action(getMarkdown());
+		suppressDraftRef.current = true;
+		try {
+			ed.action(replaceAll(note.body));
+			baselineRef.current = ed.action(getMarkdown());
+		} finally {
+			suppressDraftRef.current = false;
+		}
 		serverBodyRef.current = note.body;
 		revRef.current = note.rev;
+		draftBaseRef.current = { rev: note.rev, body: note.body };
+		const snap = lastDraftRef.current;
+		lastDraftRef.current = null;
+		if (snap !== null) dropDraft(snap);
 		markDirty(false);
 		markStatus("saved");
 	}
@@ -623,10 +751,18 @@ const NoteEditor = forwardRef<
 		const container = containerRef.current;
 		if (container === null) return;
 		let live = true;
+		// Load before the editor exists — a broken record keeps the
+		// normal server doc (never deleted), just with the failure shown.
+		let recovered: { draft: NoteDraft; snapshot: string } | null = null;
+		try {
+			recovered = loadNoteDraft(noteId);
+		} catch (err) {
+			reportDraftError("loaded", err);
+		}
 		const ed = Editor.make()
 			.config((ctx) => {
 				ctx.set(rootCtx, container);
-				ctx.set(defaultValueCtx, initialBody);
+				ctx.set(defaultValueCtx, initialNote.body);
 				const mgr = ctx.get(listenerCtx);
 				// The parser normalizes on load (e.g. `-` bullets become
 				// `*`) — the baseline must be the serializer's own output
@@ -666,6 +802,22 @@ const NoteEditor = forwardRef<
 			.use(gfm)
 			.use(listener)
 			.use(history)
+			// The durable-draft capture: synchronous on EVERY document
+			// change — the listener's debounce owns autosave timing, but
+			// a typed-then-gone body can't wait for it.
+			.use(
+				$prose(
+					(ctx) =>
+						new Plugin({
+							view: () => ({
+								update: (view, prev) => {
+									if (suppressDraftRef.current || view.state.doc.eq(prev.doc)) return;
+									captureDraft(ctx.get(serializerCtx)(view.state.doc));
+								},
+							}),
+						}),
+				),
+			)
 			.create();
 		const detachErr = (err: unknown) =>
 			window.dispatchEvent(
@@ -678,6 +830,42 @@ const NoteEditor = forwardRef<
 				if (live) {
 					editorRef.current = e;
 					baselineRef.current = e.action(getMarkdown());
+					// A stored draft is restored under suppression once the
+					// normalized server baseline exists, then its recorded
+					// base decides what it means:
+					//  · serializes to the baseline — the draft already
+					//    reached the server; retire that exact record.
+					//  · base is this very note — the buffer is genuinely
+					//    dirty; resume the guarded autosave.
+					//  · base moved — the server has newer text; restore
+					//    the buffer local-only behind the conflict bar,
+					//    keeping the draft's ORIGINAL base so no later
+					//    capture can rebase over the remote.
+					if (recovered !== null) {
+						e.action(replaceAll(recovered.draft.body));
+						const restoredMd = e.action(getMarkdown());
+						if (restoredMd === baselineRef.current) {
+							dropDraft(recovered.snapshot);
+						} else {
+							lastDraftRef.current = recovered.snapshot;
+							markDirty(true);
+							if (
+								recovered.draft.baseRev === initialNote.rev &&
+								recovered.draft.baseBody === initialNote.body
+							) {
+								schedule();
+							} else {
+								draftBaseRef.current = {
+									rev: recovered.draft.baseRev,
+									body: recovered.draft.baseBody,
+								};
+								conflictRef.current = initialNote;
+								markStatus("conflict");
+								onConflictRef.current(initialNote);
+							}
+						}
+					}
+					suppressDraftRef.current = false;
 					setReady(true);
 				} else {
 					e.destroy().catch(detachErr);
@@ -691,10 +879,13 @@ const NoteEditor = forwardRef<
 					);
 			},
 		);
-		// Leaving must not lose the debounce window's work: pagehide
-		// flushes the pending save through fetch keepalive so it
-		// survives the unload itself.
-		const onHide = () => flush(true);
+		// Leaving must not lose the debounce window's work: persist the
+		// buffer durably FIRST — it runs even under a conflict or open
+		// rewrite — then the keepalive flush is the best-effort fast path.
+		const onHide = () => {
+			persistLive();
+			flush(true);
+		};
 		const onVis = () => {
 			if (document.visibilityState === "hidden") flush();
 		};
@@ -714,6 +905,9 @@ const NoteEditor = forwardRef<
 			rewriteActiveRef.current = false;
 			onRewriteBusyRef.current?.(false);
 			setApplying(false);
+			// Persist before the drain — a save that never lands still
+			// leaves the body recoverable.
+			persistLive();
 			const e = editorRef.current;
 			// Drain, then destroy: fire the pending write if the
 			// serialized doc still differs from the baseline, wait for
@@ -772,7 +966,20 @@ const NoteEditor = forwardRef<
 					reload(note);
 					return;
 				}
-				if (note.rev > revRef.current) revRef.current = note.rev;
+				if (note.rev > revRef.current) {
+					revRef.current = note.rev;
+					// An unchanged-body response may advance the draft
+					// base — never while a conflict stands — and a dirty
+					// buffer is re-captured at that new base.
+					if (conflictRef.current === null) {
+						draftBaseRef.current = { rev: note.rev, body: note.body };
+						const ed = editorRef.current;
+						if (ed !== null) {
+							const liveMd = ed.action(getMarkdown());
+							if (liveMd !== baselineRef.current) persistDraft(liveMd);
+						}
+					}
+				}
 			},
 			conflict: (note: AppNote): void => {
 				clearTimer();
@@ -793,9 +1000,12 @@ const NoteEditor = forwardRef<
 					return;
 				}
 				// Clear the block only to submit the forced write — a
-				// repeated 409 reblocks via the catch path.
+				// repeated 409 reblocks via the catch path. Keep mine
+				// writes ON TOP of theirs, so the draft base advances to
+				// it before the write leaves.
 				conflictRef.current = null;
 				revRef.current = theirs.rev;
+				draftBaseRef.current = { rev: theirs.rev, body: theirs.body };
 				markStatus("saving");
 				void save(theirs.rev, {
 					force: true,
@@ -877,6 +1087,11 @@ const NoteEditor = forwardRef<
 							{rewrite.phase === "preview" || rewrite.phase === "blocked" ? "Discard" : "Cancel"}
 						</button>
 					</div>
+				</div>
+			)}
+			{draftError !== null && (
+				<div className="note-draft-error" role="alert">
+					{draftError}
 				</div>
 			)}
 			<div className={`note-save-status ${status}`}>{label}</div>

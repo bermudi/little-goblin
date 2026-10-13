@@ -591,8 +591,7 @@ export function NoteView({
 						ref={editorRef}
 						token={token}
 						noteId={note.id}
-						initialBody={note.body}
-						initialRev={note.rev}
+						initialNote={note}
 						onSaved={(n) => {
 							adoptRemote(n);
 							// A landed write clears the bar unless a newer

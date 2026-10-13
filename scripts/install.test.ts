@@ -306,14 +306,18 @@ describe("fresh installer", () => {
 		expect(result.calls).toContain("enable --now goblin-herdr.service");
 		expect(result.calls).toContain("enable --now goblin-keys.timer");
 		expect(result.calls).not.toContain("pass-keys ");
-		// Warm targets render from the reported profiles — one line per
-		// profile, sorted — next to the template's pinned MCP-lane line.
-		expect(result.keysUnit).toContain("warm goblin-main");
-		expect(result.keysUnit).toContain("warm alpha-one");
-		expect(result.keysUnit.indexOf("warm alpha-one")).toBeLessThan(
-			result.keysUnit.indexOf("warm goblin-main"),
-		);
-		expect(result.keysUnit).toContain("warm goblin-mcp-dev");
+		// Warm targets render from the reported profiles — exactly one
+		// ExecStart per profile (sorted) plus the template's pinned
+		// MCP-lane line, each carrying only executable/warm/profile: no
+		// spliced comment text, no duplicates, no leftover placeholder.
+		const execLines = result.keysUnit.split("\n").filter((line) => line.startsWith("ExecStart="));
+		const executable = execLines[0]?.slice("ExecStart=".length).split(" ")[0];
+		expect(execLines).toEqual([
+			`ExecStart=${executable} warm alpha-one`,
+			`ExecStart=${executable} warm goblin-main`,
+			`ExecStart=${executable} warm goblin-mcp-dev`,
+		]);
+		expect(executable).toContain("pass-keys");
 		expect(result.keysUnit).not.toContain("@WARM_AUTH_PROFILES@");
 	});
 });

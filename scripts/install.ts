@@ -297,14 +297,12 @@ async function install(): Promise<void> {
 			// same profile).
 			writeFileSync(
 				join(staging, "goblin-keys.service"),
-				render("goblin-keys.service", [
-					["/home/daniel/.local/bin/pass-keys", passKeys],
-					...common,
-					[
-						"@WARM_AUTH_PROFILES@",
+				render("goblin-keys.service", [["/home/daniel/.local/bin/pass-keys", passKeys], ...common])
+					// Only a standalone placeholder may expand into directives.
+					.replace(/^@WARM_AUTH_PROFILES@$/m, () =>
 						selected.profiles.map((profile) => `ExecStart=${passKeys} warm ${profile}`).join("\n"),
-					],
-				]).replace(/^Environment=PATH=.*$/m, `Environment=PATH=${path}`),
+					)
+					.replace(/^Environment=PATH=.*$/m, `Environment=PATH=${path}`),
 				{ mode: 0o644 },
 			);
 			writeFileSync(

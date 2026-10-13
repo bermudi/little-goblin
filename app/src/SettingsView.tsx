@@ -1209,8 +1209,7 @@ export function SettingsView({
 											placeholder={`${kinds?.ttsDefaults[draft.tts.kind].auth ?? "auth"} — in auth.jsonl`}
 											cap={
 												authWarn(
-													draft.tts.auth.trim() ||
-														(kinds?.ttsDefaults[draft.tts.kind].auth ?? ""),
+													draft.tts.auth.trim() || (kinds?.ttsDefaults[draft.tts.kind].auth ?? ""),
 													authNames,
 												) ??
 												(draft.tts.auth.trim() === ""

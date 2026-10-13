@@ -27,7 +27,15 @@ import type { EngineDeps, EngineTranscript, SpeechEngine, SpeechFile } from "./t
 export type CloudCfg = Extract<
 	TranscriptionConfig,
 	{
-		kind: "groq" | "openai" | "openrouter" | "mistral" | "elevenlabs" | "gemini" | "mimo" | "logfare";
+		kind:
+			| "groq"
+			| "openai"
+			| "openrouter"
+			| "mistral"
+			| "elevenlabs"
+			| "gemini"
+			| "mimo"
+			| "logfare";
 	}
 >;
 
@@ -135,13 +143,7 @@ export function mistralEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDeps =
 // {"text": …} back. Unverified against the live API (no key provisioned
 // yet); the fixture pins the documented shape.
 export function logfareEngine(cfg: CloudCfg, auth: AuthStore, deps: EngineDeps = {}): SpeechEngine {
-	return openAiCompatible(
-		"logfare",
-		cfg,
-		auth,
-		"https://logfare.ai/v1/audio/transcriptions",
-		deps,
-	);
+	return openAiCompatible("logfare", cfg, auth, "https://logfare.ai/v1/audio/transcriptions", deps);
 }
 
 // groq/openai/mistral/logfare share one wire: multipart

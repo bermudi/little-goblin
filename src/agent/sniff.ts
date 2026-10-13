@@ -39,9 +39,7 @@ export function sniffImageBytes(bytes: Uint8Array): SniffedImage | null {
 		return {
 			mediaType: "image/png",
 			ext: "png",
-			...(b.length >= 24
-				? { width: b.readUInt32BE(16), height: b.readUInt32BE(20) }
-				: {}),
+			...(b.length >= 24 ? { width: b.readUInt32BE(16), height: b.readUInt32BE(20) } : {}),
 		};
 	}
 	// JPEG: walk start-of-frame markers; SOF0/1/2 carry 16-bit dims.

@@ -32,9 +32,7 @@ export const IMAGE_MAX_N = 4;
 // `url` is still a valid response we decline — image bytes must arrive
 // in-body, not via a second fetch we never budgeted.
 const imagesResponse = z.object({
-	data: z
-		.array(z.object({ b64_json: z.string().min(1).optional() }))
-		.min(1),
+	data: z.array(z.object({ b64_json: z.string().min(1).optional() })).min(1),
 });
 
 // Error previews bound before scrubbing: a whitespace-collapse over a
@@ -147,7 +145,9 @@ export async function generateImages(
 	const images: GeneratedImage[] = [];
 	for (const item of parsed.data.data) {
 		if (item.b64_json === undefined) {
-			throw new Error("image: provider returned a url item — only b64_json responses are supported");
+			throw new Error(
+				"image: provider returned a url item — only b64_json responses are supported",
+			);
 		}
 		const bytes = Buffer.from(item.b64_json, "base64");
 		if (bytes.byteLength === 0) throw new Error("image: empty image payload");

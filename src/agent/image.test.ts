@@ -106,7 +106,12 @@ describe("generateImages", () => {
 		const { fn, last } = fakeFetch(200, okBody(3));
 		const images = await generateImages(
 			{ prompt: "goblins", size: "512x512", n: 3 },
-			{ configRef: cfgRef({ model: "logfare/flux-1-schnell" }), auth, conversation: "c1", fetchFn: fn },
+			{
+				configRef: cfgRef({ model: "logfare/flux-1-schnell" }),
+				auth,
+				conversation: "c1",
+				fetchFn: fn,
+			},
 		);
 		expect(images).toHaveLength(3);
 		expect(JSON.parse(last().body)).toMatchObject({ size: "512x512", n: 3 });
@@ -181,10 +186,7 @@ describe("generateImages", () => {
 		};
 		const { fn, seen } = fakeFetch(200, okBody(1));
 		await expect(
-			generateImages(
-				{ prompt: "x" },
-				{ configRef: ref, auth, conversation: "c1", fetchFn: fn },
-			),
+			generateImages({ prompt: "x" }, { configRef: ref, auth, conversation: "c1", fetchFn: fn }),
 		).rejects.toThrow("no such secret: gone");
 		expect(seen.length).toBe(0);
 	});

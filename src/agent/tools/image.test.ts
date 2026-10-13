@@ -84,7 +84,13 @@ describe("generate_image tool", () => {
 			{ prompt: "a goblin reading a newspaper" },
 			opts,
 		)) as {
-			images: { path: string; filename: string; bytes: number; mediaType: string; delivered: boolean }[];
+			images: {
+				path: string;
+				filename: string;
+				bytes: number;
+				mediaType: string;
+				delivered: boolean;
+			}[];
 			delivered: number;
 			model: string;
 		};

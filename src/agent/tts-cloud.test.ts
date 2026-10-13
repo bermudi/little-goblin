@@ -157,9 +157,7 @@ describe("logfareSpeech", () => {
 			JSON.stringify({ error: { code: 429, message: "Rate limit exceeded" } }),
 		);
 		const synth = logfareSpeech(logfareCfg, auth, { fetchFn: fn });
-		await expect(synth("hi", options)).rejects.toThrow(
-			"logfare: HTTP 429 — Rate limit exceeded",
-		);
+		await expect(synth("hi", options)).rejects.toThrow("logfare: HTTP 429 — Rate limit exceeded");
 	});
 
 	test("a 200 with no bytes fails loud", async () => {

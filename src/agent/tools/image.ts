@@ -30,7 +30,10 @@ export interface ImageToolDeps {
 }
 
 export const imageInputSchema = z.object({
-	prompt: z.string().min(1).describe("What to generate — be specific about subject, style, composition"),
+	prompt: z
+		.string()
+		.min(1)
+		.describe("What to generate — be specific about subject, style, composition"),
 	size: imageSizeSchema
 		.optional()
 		.describe('Pixel dimensions "WxH" — defaults to the configured size, else the provider\'s'),
@@ -45,8 +48,7 @@ export const imageInputSchema = z.object({
 
 export function imageTool(deps: ImageToolDeps) {
 	return tool({
-		description:
-			`Generate images with the configured image model. Saves to the workspace's attachment store and delivers inline where the channel supports it — otherwise the saved paths are the result; they work with vision (inspect a result) and send_file where it is mounted (resend it).`,
+		description: `Generate images with the configured image model. Saves to the workspace's attachment store and delivers inline where the channel supports it — otherwise the saved paths are the result; they work with vision (inspect a result) and send_file where it is mounted (resend it).`,
 		inputSchema: imageInputSchema,
 		execute: async ({ prompt, size, n }, options) => {
 			let images;

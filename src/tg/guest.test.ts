@@ -288,10 +288,14 @@ describe("openGuestStore", () => {
 
 function fakeApi() {
 	const edits: string[] = [];
+	// Per edit, the shape the call used — "rich" when the InputRichMessage
+	// object form went out, "plain" for a bare string.
+	const editForms: string[] = [];
 	const sends: { chatId: number; text: string; options: Parameters<Api["sendMessage"]>[2] }[] = [];
 	const answers: string[] = [];
 	return {
 		edits,
+		editForms,
 		sends,
 		answers,
 		answerGuestQuery: (async (
@@ -301,8 +305,9 @@ function fakeApi() {
 			answers.push(spec.input_message_content?.message_text ?? "");
 			return { inline_message_id: "im-1" };
 		}) as never,
-		editMessageTextInline: (async (_id: string, text: string) => {
-			edits.push(text);
+		editMessageTextInline: (async (_id: string, text: string | { markdown: string }) => {
+			editForms.push(typeof text === "string" ? "plain" : "rich");
+			edits.push(typeof text === "string" ? text : text.markdown);
 			return true;
 		}) as never,
 		sendMessage: (async (
@@ -468,6 +473,50 @@ describe("GuestSink", () => {
 			});
 		} finally {
 			errorLog.mockRestore();
+		}
+	});
+
+	test("rich mode edits the placeholder as a rich message — the ⏳ never stays up", async () => {
+		const api = fakeApi();
+		const sink = new GuestSink(api as never, "im-1", 3500, 1, true);
+		sink.onTextDelta("**hello** world");
+		await new Promise((r) => setTimeout(r, 10));
+		await sink.onDone({ kind: "completed" });
+		expect(api.editForms.length).toBeGreaterThanOrEqual(1);
+		expect(api.editForms.every((f) => f === "rich")).toBe(true);
+		expect(api.edits[api.edits.length - 1]).toBe("**hello** world");
+	});
+
+	test("a rejected rich edit degrades the rest of the turn to plain — the reply still lands", async () => {
+		const api = fakeApi();
+		const warn = spyOn(log, "warn").mockImplementation(() => {});
+		try {
+			api.editMessageTextInline = (async (
+				_id: string,
+				text: string | { markdown: string },
+			) => {
+				api.editForms.push(typeof text === "string" ? "plain" : "rich");
+				if (typeof text !== "string") throw new Error("400 Bad Request: rich unsupported");
+				api.edits.push(text);
+				return true;
+			}) as never;
+			const sink = new GuestSink(api as never, "im-1", 3500, 1, true);
+			sink.onTextDelta("he");
+			await new Promise((r) => setTimeout(r, 10));
+			sink.onTextDelta("llo");
+			await new Promise((r) => setTimeout(r, 10));
+			await sink.onDone({ kind: "completed" });
+			// One rich attempt, then the retry and every later edit go plain.
+			expect(api.editForms[0]).toBe("rich");
+			expect(api.editForms.slice(1).every((f) => f === "plain")).toBe(true);
+			expect(api.edits[api.edits.length - 1]).toBe("hello");
+			expect(warn).toHaveBeenCalledWith(
+				"guest rich edit rejected — edits go plain",
+				expect.any(Error),
+				{ inline: "im-1" },
+			);
+		} finally {
+			warn.mockRestore();
 		}
 	});
 });

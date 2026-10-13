@@ -192,6 +192,11 @@ export class GuestSink implements TurnSink {
 		private inlineMessageId: string,
 		private outputChars: number,
 		private editIntervalMs = GUEST_EDIT_INTERVAL_MS,
+		// Rich edits ride the same inline primitive — the first
+		// rejection flips the rest of the turn to plain edits, so a
+		// client/platform that never learned InputRichMessage still
+		// gets its reply, just unformatted.
+		private rich = false,
 	) {}
 
 	onTextDelta(delta: string): void {
@@ -234,7 +239,9 @@ export class GuestSink implements TurnSink {
 		if (!stamp && (this.fenced || (this.authority !== null && !this.authority()))) return;
 		try {
 			await withTimeout(
-				this.api.editMessageTextInline(this.inlineMessageId, body),
+				this.rich
+					? this.api.editMessageTextInline(this.inlineMessageId, { markdown: body })
+					: this.api.editMessageTextInline(this.inlineMessageId, body),
 				"editMessageText",
 			);
 			this.edits++;
@@ -252,6 +259,13 @@ export class GuestSink implements TurnSink {
 					edits: this.edits,
 				});
 				return;
+			}
+			if (this.rich) {
+				this.rich = false;
+				log.warn("guest rich edit rejected — edits go plain", err, {
+					inline: this.inlineMessageId,
+				});
+				return this.edit(body, stamp);
 			}
 			// Fail loud but never kill the turn over one edit.
 			log.warn("guest edit failed", err, { edits: this.edits });
@@ -587,7 +601,13 @@ export async function handleGuestUpdate(
 		const admitted = env.runtime.submit(
 			conv,
 			summonMessage(msg),
-			new GuestSink(env.api, inlineMessageId, freshCfg.outputChars),
+			new GuestSink(
+				env.api,
+				inlineMessageId,
+				freshCfg.outputChars,
+				GUEST_EDIT_INTERVAL_MS,
+				env.configRef.current.telegram.richReplies ?? false,
+			),
 		);
 		log.info("guest summons", {
 			chat: chatId,

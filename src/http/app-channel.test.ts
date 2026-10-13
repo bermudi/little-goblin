@@ -2467,6 +2467,38 @@ describe("app notes", () => {
 		}
 	});
 
+	test("a failed content write rolls back a combined patch's flags", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const created = await create(call, { title: "t", body: "v1" });
+			const note = (await created.json()) as { id: string; rev: number };
+			// Stand-in for "disk full": only the body_md write fails —
+			// flag updates don't target the column and still land.
+			store.db.run(`CREATE TRIGGER fault_on_big_body BEFORE UPDATE OF body_md ON notes
+				WHEN length(new.body_md) > 1000
+				BEGIN SELECT RAISE(ABORT, 'injected fault'); END`);
+			const res = await patchJson(
+				call,
+				`/api/app/notes/${note.id}`,
+				{ archived: true, pinned: true, body: "x".repeat(2000) },
+				{ "if-match": '"1"' },
+			);
+			expect(res.status).toBe(500);
+			const after = (await (await call(`/api/app/notes/${note.id}`)).json()) as {
+				body: string;
+				pinnedAt: string | null;
+				archivedAt: string | null;
+				rev: number;
+			};
+			expect(after.body).toBe("v1");
+			expect(after.rev).toBe(1);
+			expect(after.pinnedAt).toBeNull();
+			expect(after.archivedAt).toBeNull();
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("a stale combined patch refuses before any flag mutation", async () => {
 		const { http, call } = setup({ token: APP_TOKEN_NAME });
 		try {

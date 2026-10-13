@@ -1216,20 +1216,12 @@ export async function handleAppApi(
 			expectedRev = rev;
 		}
 		try {
-			if (patch.projectId !== undefined) deps.notes.move(noteId, patch.projectId);
-			if (patch.pinned !== undefined) deps.notes.setPinned(noteId, patch.pinned);
-			if (patch.archived !== undefined) deps.notes.setArchived(noteId, patch.archived);
-			const updated = wantsContent
-				? deps.notes.write(
-						noteId,
-						{
-							...(patch.title !== undefined ? { title: patch.title } : {}),
-							...(patch.body !== undefined ? { body: patch.body } : {}),
-						},
-						patch.source ?? "app",
-						{ expectedRev },
-					)
-				: deps.notes.get(noteId)!;
+			// One store transaction: the flag/move mutations and the
+			// content write commit together or roll back together — a
+			// failed write must not strand a committed archive or move.
+			const updated = deps.notes.patch(noteId, parsed.data, parsed.data.source ?? "app", {
+				expectedRev,
+			});
 			return noteResponse(updated);
 		} catch (err) {
 			const res = noteError(err);

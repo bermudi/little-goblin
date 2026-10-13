@@ -138,6 +138,22 @@ export interface NoteStore {
 		source: NoteSource,
 		opts?: { conversation?: string | undefined; expectedRev?: number | undefined },
 	): Note;
+	// The app PATCH's atomic unit: flag/move mutations and the content
+	// write land together or not at all — a failed body write must not
+	// strand a committed archive or move. expectedRev guards only when
+	// title/body ride the patch; flag-only patches bump nothing.
+	patch(
+		id: string,
+		next: {
+			title?: string | undefined;
+			body?: string | undefined;
+			projectId?: string | null | undefined;
+			pinned?: boolean | undefined;
+			archived?: boolean | undefined;
+		},
+		source: NoteSource,
+		opts?: { expectedRev?: number | undefined },
+	): Note;
 	append(id: string, text: string, source: NoteSource, conversation?: string): Note;
 	// UTF-16 offsets into body_md, each guarded by the text currently
 	// there — a mismatch or overlap refuses the whole call with nothing
@@ -310,13 +326,16 @@ export function openNotes(
 		}
 	}
 
-	function write(
+	// The write guts, run inside the caller's transaction — patch()
+	// composes it with flag mutations, so it can't open its own
+	// (bun:sqlite nesting isn't savepoints: an inner throw leaves the
+	// outer statements committed).
+	function applyWrite(
 		id: string,
 		next: { title?: string | undefined; body?: string | undefined },
 		source: NoteSource,
-		opts: { conversation?: string | undefined; expectedRev?: number | undefined } = {},
+		opts: { conversation?: string | undefined; expectedRev?: number | undefined },
 	): Note {
-		return db.transaction(() => {
 			const current = mustGet(id);
 			if (opts.expectedRev !== undefined && opts.expectedRev !== current.rev) {
 				log.info("note conflict", {
@@ -374,8 +393,38 @@ export function openNotes(
 				bytesAfter: Buffer.byteLength(body),
 				versioned,
 			});
-			return updated;
-		})();
+		return updated;
+	}
+
+	function write(
+		id: string,
+		next: { title?: string | undefined; body?: string | undefined },
+		source: NoteSource,
+		opts: { conversation?: string | undefined; expectedRev?: number | undefined } = {},
+	): Note {
+		return db.transaction(() => applyWrite(id, next, source, opts))();
+	}
+
+	function applyMove(id: string, projectId: string | null): void {
+		checkProjectId(projectId);
+		db.run("UPDATE notes SET project_id = ? WHERE id = ?", [projectId, id]);
+		log.info("note moved", { note: id, project: projectId });
+	}
+
+	function applyPin(id: string, pinned: boolean): void {
+		db.run("UPDATE notes SET pinned_at = ? WHERE id = ?", [
+			pinned ? now().toISOString() : null,
+			id,
+		]);
+		log.info("note pinned", { note: id, pinned });
+	}
+
+	function applyArchive(id: string, archived: boolean): void {
+		db.run("UPDATE notes SET archived_at = ? WHERE id = ?", [
+			archived ? now().toISOString() : null,
+			id,
+		]);
+		log.info("note archived", { note: id, archived });
 	}
 
 	function create(input: {
@@ -446,6 +495,16 @@ export function openNotes(
 			}));
 		},
 		write,
+		patch(id, next, source, opts = {}) {
+			return db.transaction(() => {
+				mustGet(id);
+				if (next.projectId !== undefined) applyMove(id, next.projectId);
+				if (next.pinned !== undefined) applyPin(id, next.pinned);
+				if (next.archived !== undefined) applyArchive(id, next.archived);
+				if (next.title === undefined && next.body === undefined) return mustGet(id);
+				return applyWrite(id, next, source, opts);
+			})();
+		},
 		append(id, text, source, conversation) {
 			const current = mustGet(id);
 			const body = current.body === "" ? text : `${current.body.replace(/\n+$/, "")}\n\n${text}`;
@@ -485,27 +544,17 @@ export function openNotes(
 		},
 		setPinned(id, pinned) {
 			mustGet(id);
-			db.run("UPDATE notes SET pinned_at = ? WHERE id = ?", [
-				pinned ? now().toISOString() : null,
-				id,
-			]);
-			log.info("note pinned", { note: id, pinned });
+			applyPin(id, pinned);
 			return mustGet(id);
 		},
 		setArchived(id, archived) {
 			mustGet(id);
-			db.run("UPDATE notes SET archived_at = ? WHERE id = ?", [
-				archived ? now().toISOString() : null,
-				id,
-			]);
-			log.info("note archived", { note: id, archived });
+			applyArchive(id, archived);
 			return mustGet(id);
 		},
 		move(id, projectId) {
 			mustGet(id);
-			checkProjectId(projectId);
-			db.run("UPDATE notes SET project_id = ? WHERE id = ?", [projectId, id]);
-			log.info("note moved", { note: id, project: projectId });
+			applyMove(id, projectId);
 			return mustGet(id);
 		},
 		listVersions(id) {

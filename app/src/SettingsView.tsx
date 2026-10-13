@@ -683,15 +683,21 @@ export function SettingsView({
 
 	// Which top-level fields differ — serialized both sides so the
 	// comparison sees exactly what dirty sees (provs minus ids).
-	const dirtyFields = (() => {
-		if (!dirty || baseline === null) return [];
+	const { dirtyFields, stagedDirty } = (() => {
+		const none = { dirtyFields: [] as string[], stagedDirty: false };
+		if (!dirty || baseline === null) return none;
 		const cur = JSON.parse(serialize(draft, provs)) as { d: SettingsDraft; ps: unknown[] };
 		const base = JSON.parse(baseline) as { d: SettingsDraft; ps: unknown[] };
-		const out = (Object.keys(FIELD_LABELS) as (keyof SettingsDraft)[])
-			.filter((k) => JSON.stringify(cur.d[k]) !== JSON.stringify(base.d[k]))
-			.map((k) => FIELD_LABELS[k]);
-		if (JSON.stringify(cur.ps) !== JSON.stringify(base.ps)) out.push("providers");
-		return out;
+		const keys = (Object.keys(FIELD_LABELS) as (keyof SettingsDraft)[]).filter(
+			(k) => JSON.stringify(cur.d[k]) !== JSON.stringify(base.d[k]),
+		);
+		// publicUrl IS this tab's origin gate — an intermediate value
+		// ("" between clear and retype) autosaved would 403 the tab's
+		// own next write. It stays staged until the savebar's Save.
+		const stagedDirty = keys.includes("publicUrl");
+		const fields = keys.map((k) => FIELD_LABELS[k]);
+		if (JSON.stringify(cur.ps) !== JSON.stringify(base.ps)) fields.push("providers");
+		return { dirtyFields: fields, stagedDirty };
 	})();
 
 	// A dirty draft that fails validation can't write — it stays dirty
@@ -899,9 +905,12 @@ export function SettingsView({
 	// Save on change: a valid edit writes itself after a short debounce —
 	// rapid edits coalesce, an edit mid-write schedules another. A failed
 	// write isn't retried on the identical state — the next edit re-arms.
+	// A staged field (publicUrl) holds EVERYTHING: the save body is the
+	// whole draft, so while an unstaged write would commit a half-edited
+	// allowlist, nothing goes out until the operator's explicit Save.
 	const attempted = useRef<string | null>(null);
 	useEffect(() => {
-		if (!dirty || invalidReason !== null || saving) return;
+		if (!dirty || stagedDirty || invalidReason !== null || saving) return;
 		const sig = serialize(draft, provs);
 		if (sig === attempted.current) return;
 		const t = setTimeout(() => {
@@ -909,7 +918,7 @@ export function SettingsView({
 			void save();
 		}, 800);
 		return () => clearTimeout(t);
-	}, [dirty, invalidReason, saving, draft, provs]);
+	}, [dirty, stagedDirty, invalidReason, saving, draft, provs]);
 
 	if (loadErr !== null) {
 		return (
@@ -1537,7 +1546,7 @@ export function SettingsView({
 							onChange={(v) => patchDraft({ publicUrl: v })}
 							placeholder="https://…"
 							mono
-							cap="HTTPS door for this app — tailscale serve, funnel, or a reverse proxy pointed at the port below."
+							cap="HTTPS door for this app — tailscale serve, funnel, or a reverse proxy pointed at the port below. Commits only on Save — an in-between value would cut this tab's own access."
 						/>
 						<Field
 							label="Bot api root"
@@ -1590,6 +1599,16 @@ export function SettingsView({
 						return notice?.text ?? "";
 					})()}
 				</span>
+				{stagedDirty && (
+					<button
+						type="button"
+						className="savebar-save"
+						disabled={saving || invalidReason !== null}
+						onClick={() => void save()}
+					>
+						Save
+					</button>
+				)}
 			</div>
 
 			{sheet !== null && (

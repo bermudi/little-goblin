@@ -2006,6 +2006,18 @@ a.hit-title {
 .savebar-msg.err {
 	color: var(--app-danger);
 }
+/* The explicit commit for staged fields — the same solid-fg read as
+   the composer's send button, so "this one needs a click" shows. */
+.savebar-save {
+	border-radius: 8px;
+	padding: 0.35rem 0.7rem;
+	font-size: 12.5px;
+	background: var(--app-fg);
+	color: var(--app-bg);
+}
+.savebar-save:disabled {
+	opacity: 0.35;
+}
 
 /* The model picker — a bottom sheet on narrow screens, centered box
    on wide ones. */

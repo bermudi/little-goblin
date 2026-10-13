@@ -686,6 +686,22 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await click(container.querySelector(".chip button"));
 		expect(container.textContent).toContain("unsaved");
 	};
+	const typeInto = async (el: Element, value: string) => {
+		await act(async () => {
+			// Focus + keyup too — React's text-input fallback needs it in
+			// this environment (the create-dialog test's ruling).
+			(el as HTMLElement).focus();
+			Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(
+				el,
+				value,
+			);
+			el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+			el.dispatchEvent(
+				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			);
+		});
+		await settle();
+	};
 	// The browser has already moved to `path`; popstate is what it delivers.
 	const browserGoesTo = async (path: string) => {
 		await act(async () => {
@@ -878,6 +894,42 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(savedBodies).toHaveLength(0);
 		expect(container.textContent).toContain("unsaved");
 		expect(container.textContent).toContain("Operators must keep at least one Telegram id.");
+	});
+
+	test("publicUrl stages for the explicit Save — the debounce never carries an in-between value", async () => {
+		settings = parseConfig({ ...SETTINGS, publicUrl: "https://g.example.ts.net" });
+		await mount();
+		await click(
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Access")),
+		);
+		const field = [...container.querySelectorAll(".frow")].find(
+			(r) => r.querySelector(".flabel")?.textContent === "Public url",
+		)!;
+		const input = field.querySelector("input")!;
+		// Clearing is a VALID value — before staging, the debounce wrote
+		// it and the tab's own origin fell out of the allowlist.
+		await typeInto(input, "");
+		expect(container.textContent).toContain("unsaved");
+		expect(container.textContent).toContain("public url");
+		// Well past the 800ms debounce — nothing may have posted.
+		for (let i = 0; i < 40; i++) await settle();
+		expect(savedBodies).toHaveLength(0);
+		// Other pending edits wait on the same commit — the save body is
+		// the whole draft, so an unstaged autosave would carry the
+		// half-edited allowlist.
+		await click(
+			[...container.querySelectorAll('[aria-label="Log level"] button')].find(
+				(b) => b.textContent === "debug",
+			),
+		);
+		for (let i = 0; i < 40; i++) await settle();
+		expect(savedBodies).toHaveLength(0);
+		// The explicit Save writes everything at once.
+		await click(container.querySelector(".savebar-save"));
+		await waitFor(() => savedBodies.length > 0, "the explicit save");
+		expect(savedBodies.at(-1)?.publicUrl).toBe("");
+		expect(savedBodies.at(-1)?.logLevel).toBe("debug");
+		expect(container.textContent).not.toContain("unsaved");
 	});
 
 	for (const direction of ["back", "forward"] as const) {

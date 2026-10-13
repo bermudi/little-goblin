@@ -34,7 +34,16 @@ const listSchema = z.object({
 	query: z.string().optional(),
 	scope: z.enum(["here", "all"]).optional(),
 });
-const readSchema = z.object({ action: z.literal("read"), id: z.string().min(1) });
+// read windows the body — the one tool result that otherwise grows
+// with operator data; replace_range offsets always count into the
+// full body regardless of the window shown.
+const READ_CHARS = 64_000;
+const LIST_LIMIT = 200;
+const readSchema = z.object({
+	action: z.literal("read"),
+	id: z.string().min(1),
+	offset: z.number().int().min(0).optional(),
+});
 const createSchema = z.object({
 	action: z.literal("create"),
 	title: z.string().min(1).max(200),
@@ -86,6 +95,7 @@ export const noteInputSchema = z
 		query: z.string().optional(),
 		scope: z.enum(["here", "all"]).optional(),
 		id: z.string().optional(),
+		offset: z.number().int().min(0).optional(),
 		title: z.string().optional(),
 		body: z.string().optional(),
 		where: z.enum(["here", "loose"]).optional(),
@@ -133,7 +143,7 @@ function noteView(n: Note, projects: Pick<ProjectStore, "get">): Record<string, 
 export const noteTool = (deps: NoteToolDeps) =>
 	tool({
 		description:
-			"Notes are the operator's own writing — persistent pages they can watch you edit. Use read before editing. Prefer append or replace_range over replace: replace_range edits by UTF-16 character offsets into the body exactly as read returned it, each guarded by the text currently there; a mismatch means the note changed — read it again. replace requires the rev read returned. `where`/scope \"here\" means this conversation's project (loose notes when unbound).",
+			"Notes are the operator's own writing — persistent pages they can watch you edit. Use read before editing. Prefer append or replace_range over replace: replace_range edits by UTF-16 character offsets into the body exactly as read returned it, each guarded by the text currently there; a mismatch means the note changed — read it again. replace requires the rev read returned. read returns up to 64000 chars of body — page longer notes with offset; replace_range offsets always count into the full body. `where`/scope \"here\" means this conversation's project (loose notes when unbound).",
 		inputSchema: noteInputSchema,
 		execute: async (raw) => {
 			// A malformed call must come back as tool output the model can
@@ -152,12 +162,16 @@ export const noteTool = (deps: NoteToolDeps) =>
 				switch (input.action) {
 					case "list": {
 						const project = input.scope === "all" ? "all" : (deps.projectId ?? "loose");
-						const notes = deps.notes.list({
+						// One extra row reads the truncation honestly.
+						const rows = deps.notes.list({
 							project,
 							...(input.query !== undefined ? { q: input.query } : {}),
+							limit: LIST_LIMIT + 1,
 						});
+						const notes = rows.slice(0, LIST_LIMIT);
 						return {
 							scope: project,
+							...(rows.length > LIST_LIMIT ? { truncated: true } : {}),
 							notes: notes.map((s) => ({
 								id: s.id,
 								title: s.title,
@@ -174,7 +188,22 @@ export const noteTool = (deps: NoteToolDeps) =>
 					case "read": {
 						const note = deps.notes.get(input.id);
 						if (note === null) return { error: `no such note: ${input.id}` };
-						return { note: noteView(note, deps.projects), content: noteFence(note) };
+						const offset = input.offset ?? 0;
+						if (offset > note.body.length) {
+							return {
+								error: `offset ${offset} is beyond end of note (${note.body.length} chars)`,
+							};
+						}
+						const window = note.body.slice(offset, offset + READ_CHARS);
+						const end = offset + window.length;
+						const footer =
+							end < note.body.length
+								? `\n[Showing chars ${offset}–${end} of ${note.body.length}. Read again with offset=${end} to continue.]`
+								: "";
+						return {
+							note: noteView(note, deps.projects),
+							content: noteFence({ ...note, body: window }) + footer,
+						};
 					}
 					case "create": {
 						const projectId = input.where === "loose" ? null : deps.projectId;

@@ -227,6 +227,35 @@ describe("note tool actions", () => {
 		expect(out.content).not.toContain("a </note>");
 		expect(out.content).toContain("<\\/note>");
 	});
+
+	test("read windows a long body; offset pages and out-of-bounds errors", async () => {
+		const { tool, deps } = setup();
+		const n = deps.notes.create({ title: "big", body: "y".repeat(70_000) });
+		const first = (await exec(tool, { action: "read", id: n.id })) as { content: string };
+		expect(first.content).toContain("[Showing chars 0–64000 of 70000");
+		expect(first.content).toContain("offset=64000");
+		expect(first.content).not.toContain("y".repeat(64_001));
+		const rest = (await exec(tool, { action: "read", id: n.id, offset: 64_000 })) as {
+			content: string;
+		};
+		expect(rest.content).toContain("y".repeat(6000));
+		expect(rest.content).not.toContain("[Showing chars");
+		const oob = (await exec(tool, { action: "read", id: n.id, offset: 70_001 })) as {
+			error?: string;
+		};
+		expect(oob.error).toContain("beyond end of note (70000 chars)");
+	});
+
+	test("list caps at the page size and flags truncation", async () => {
+		const { tool, deps } = setup();
+		for (let i = 0; i < 205; i++) deps.notes.create({ title: `n${i}` });
+		const out = (await exec(tool, { action: "list", scope: "all" })) as {
+			notes: unknown[];
+			truncated?: boolean;
+		};
+		expect(out.notes).toHaveLength(200);
+		expect(out.truncated).toBe(true);
+	});
 });
 
 describe("guest exclusion", () => {

@@ -903,7 +903,7 @@ describe("schedule fire retry ladder", () => {
 	const transientDone: TurnDone = {
 		kind: "error",
 		message: "fetch failed",
-		completedCalls: 0,
+		modelCalls: 0,
 		transient: true,
 	};
 
@@ -988,11 +988,11 @@ describe("schedule fire retry ladder", () => {
 		["a completed turn", { kind: "completed" } as const],
 		[
 			"a non-transient error",
-			{ kind: "error", message: "boom", transient: false, completedCalls: 0 } as const,
+			{ kind: "error", message: "boom", transient: false, modelCalls: 0 } as const,
 		],
 		[
 			"an error that already spent model calls",
-			{ kind: "error", message: "boom", transient: true, completedCalls: 2 } as const,
+			{ kind: "error", message: "boom", transient: true, modelCalls: 2 } as const,
 		],
 		["an error with unknown flags", { kind: "error", message: "boom" } as const],
 	])("no ladder rung on %s", async (_label, done) => {
@@ -1013,6 +1013,46 @@ describe("schedule fire retry ladder", () => {
 		await sink.onDone(transientDone);
 		await Bun.sleep(10);
 		expect(h.submitted).toHaveLength(1);
+	});
+
+	test("two occurrences of one program keep their own pending retries", async () => {
+		const h = harness();
+		const program = ladderProgram(h);
+		fireScheduled(h.deps, program, new Date(), { retryDelaysMs: DELAYS });
+		await h.submitted[0]!.sink.onDone(transientDone);
+		// The next occurrence lands while the first's retry is still
+		// armed — an every-minute schedule's rungs are per occurrence,
+		// not per program: the second fire must not cancel the first.
+		const second = h.deps.programs.get(program.id)!;
+		const now2 = new Date(new Date(second.nextRun!).getTime() + 500);
+		fireScheduled(h.deps, second, now2, { retryDelaysMs: DELAYS });
+		await h.submitted[1]!.sink.onDone(transientDone);
+		await Bun.sleep(10);
+		expect(h.submitted).toHaveLength(4);
+	});
+
+	test("a retry-time storage failure logs and leaves the process alive", async () => {
+		const h = harness();
+		const program = ladderProgram(h);
+		const { captured, release } = capture();
+		try {
+			fireScheduled(h.deps, program, new Date(), { retryDelaysMs: DELAYS });
+			await h.submitted[0]!.sink.onDone(transientDone);
+			// Storage dies between the arm and the rung: the timer callback
+			// has no caller left to fail into, so this lands as an error
+			// line — not an uncaught exception taking the process down.
+			h.deps.programs.get = () => {
+				throw new Error("db read failed");
+			};
+			await Bun.sleep(10);
+			expect(h.submitted).toHaveLength(1);
+			expect(lines(captured).find((l) => l.msg === "schedule fire retry failed")).toMatchObject({
+				program: program.id,
+				name: "ladder",
+			});
+		} finally {
+			release();
+		}
 	});
 
 	test("a program disabled between attempts drops the retry", async () => {

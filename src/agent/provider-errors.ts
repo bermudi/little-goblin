@@ -167,7 +167,6 @@ const TRANSIENT_PHRASES = [
 	"und_err",
 	"socket hang up",
 	"fetch failed",
-	"terminated",
 	"other side closed",
 	"premature close",
 	"network connection lost",
@@ -182,13 +181,20 @@ export function isTransientTurnFailure(err: unknown): boolean {
 	const collected = collectAll(err);
 	if (collected.contentFiltered) return false;
 	const text = collected.texts.join("\n").toLowerCase();
-	if (overflowByPhrases(text)) return false;
+	// Rate-limit evidence decides first — isContextOverflow's order in
+	// mirror, so a throttled rejection carrying overflow-ish body prose
+	// can't read as neither transient nor compactable.
 	if (collected.rateLimited) return true;
+	if (RATE_LIMIT_TEXT.test(text)) return true;
+	if (overflowByPhrases(text)) return false;
 	for (const status of collected.statuses) {
 		if (status === 408 || status === 425 || status === 429 || status >= 500) return true;
 	}
 	for (const phrase of TRANSIENT_PHRASES) {
 		if (text.includes(phrase)) return true;
 	}
+	// undici's terminate error is the bare word "terminated" — matched as
+	// a whole message so provider prose merely using the word stays out.
+	if (collected.texts.some((t) => t.trim().toLowerCase() === "terminated")) return true;
 	return false;
 }

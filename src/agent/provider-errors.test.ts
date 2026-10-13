@@ -275,6 +275,30 @@ describe("isTransientTurnFailure", () => {
 		).toBe(false);
 	});
 
+	test("a throttled error carrying overflow prose is transient, not neither", () => {
+		// The z.ai-1261-on-429 shape: rate-limit evidence is decisive in
+		// both classifiers, so the same error can't be neither retried
+		// nor compacted.
+		const err = new APICallError({
+			message: "prompt is too long",
+			url: "https://api.example.com/v1/chat/completions",
+			requestBodyValues: {},
+			statusCode: 429,
+		});
+		expect(isContextOverflow(err)).toBe(false);
+		expect(isTransientTurnFailure(err)).toBe(true);
+	});
+
+	test("a rate limit riding only message text is still transient", () => {
+		expect(isTransientTurnFailure(new Error("Rate limit reached for requests"))).toBe(true);
+	});
+
+	test("prose merely using the word terminated is not a broken connection", () => {
+		expect(
+			isTransientTurnFailure(new Error("your deployment was terminated for policy violations")),
+		).toBe(false);
+	});
+
 	test("non-transient statuses and plain errors are not retryable", () => {
 		expect(
 			isTransientTurnFailure(

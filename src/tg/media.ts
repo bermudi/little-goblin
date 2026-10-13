@@ -26,6 +26,12 @@ export interface IncomingMedia {
 
 export function mediaFromMessage(msg: {
 	photo?: { file_id: string; file_unique_id: string; width: number }[];
+	live_photo?: {
+		file_id: string;
+		file_unique_id: string;
+		photo?: { file_id: string; file_unique_id: string; width: number }[];
+		mime_type?: string;
+	};
 	document?: { file_id: string; file_unique_id: string; file_name?: string; mime_type?: string };
 	voice?: { file_id: string; file_unique_id: string; mime_type?: string };
 	audio?: { file_id: string; file_unique_id: string; file_name?: string; mime_type?: string };
@@ -39,6 +45,40 @@ export function mediaFromMessage(msg: {
 		is_video?: boolean;
 	};
 }): IncomingMedia | null {
+	if (msg.live_photo) {
+		// A live photo is a photo with motion (Bot API 10.0). The still is
+		// the model-worthy half: prefer the LivePhoto's own sizes, then a
+		// top-level photo, and only the video part when no still arrived.
+		// Whether Telegram also populates the message-level `photo` is
+		// unprobed — every combination lands somewhere deliberate.
+		const lp = msg.live_photo;
+		const still =
+			lp.photo !== undefined && lp.photo.length > 0
+				? lp.photo
+				: msg.photo !== undefined && msg.photo.length > 0
+					? msg.photo
+					: null;
+		if (still !== null) {
+			const largest = z
+				.object({
+					file_id: z.string().min(1),
+					file_unique_id: z.string().min(1),
+				})
+				.parse(still[still.length - 1]);
+			return {
+				fileId: largest.file_id,
+				fileUniqueId: largest.file_unique_id,
+				fileName: `photo-${largest.file_unique_id}.jpg`,
+				mimeType: "image/jpeg",
+			};
+		}
+		return {
+			fileId: lp.file_id,
+			fileUniqueId: lp.file_unique_id,
+			fileName: `live-photo-${lp.file_unique_id}.mp4`,
+			mimeType: lp.mime_type ?? "video/mp4",
+		};
+	}
 	if (msg.photo && msg.photo.length > 0) {
 		const largest = z
 			.object({
@@ -124,6 +164,28 @@ export function mediaFromMessage(msg: {
 }
 
 export type { SavedAttachment };
+
+// Media kinds intake deliberately doesn't consume. The router's drop
+// path uses the label to leave a visible trace instead of a debug-only
+// vanish (#128); service messages carry none of these fields.
+export function unhandledMediaKind(msg: {
+	location?: unknown;
+	venue?: unknown;
+	contact?: unknown;
+	poll?: unknown;
+	story?: unknown;
+	dice?: unknown;
+	paid_media?: unknown;
+}): string | null {
+	if (msg.location !== undefined) return "a location";
+	if (msg.venue !== undefined) return "a venue";
+	if (msg.contact !== undefined) return "a contact card";
+	if (msg.poll !== undefined) return "a poll";
+	if (msg.story !== undefined) return "a story";
+	if (msg.dice !== undefined) return "a dice roll";
+	if (msg.paid_media !== undefined) return "paid media";
+	return null;
+}
 
 // Persist to workspace/attachments/ (Telegram still owns the file; this is
 // the agent-reachable copy) without ever buffering the whole file —

@@ -51,7 +51,7 @@ import { registerRateButton } from "./rate-button.ts";
 import { openRatings } from "./ratings.ts";
 import { handleSpeakButton } from "./speak-button.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
-import { mediaFromMessage, mediaParts, saveAttachment } from "./media.ts";
+import { mediaFromMessage, mediaParts, saveAttachment, unhandledMediaKind } from "./media.ts";
 import {
 	openTelegramInbox,
 	validatedInboxMedia,
@@ -225,12 +225,13 @@ function rollDepsOf(deps: BotDeps): RollDeps {
 
 function replyNavigation(env: IntakeEnv, msg: Message, text: string): void {
 	const addr = conversationAddress(msg);
+	// Silent — the operator just sent the command; the receipt is chatter
+	// on a screen they are looking at (#126).
 	void withTimeout(
-		env.api.sendMessage(
-			msg.chat.id,
-			text,
-			addr.kind === "topic" ? { message_thread_id: addr.threadId } : {},
-		),
+		env.api.sendMessage(msg.chat.id, text, {
+			disable_notification: true,
+			...(addr.kind === "topic" ? { message_thread_id: addr.threadId } : {}),
+		}),
 		"sendMessage (navigation reply)",
 	)
 		.then((sent) => {
@@ -445,8 +446,35 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 	}
 
 	if (text === "" && !media && mediaError === null) {
-		// Service messages, join/leave, uncovered media kinds — routine drop.
-		log.debug("dropped message with no text or media", { conversation: lane });
+		const kind = unhandledMediaKind(msg);
+		if (kind === null) {
+			// Service messages, join/leave — routine drop.
+			log.debug("dropped message with no text or media", { conversation: lane });
+			return;
+		}
+		// A real attachment the sender can see land must not vanish
+		// without a trace: one line where the message landed, silent —
+		// the sender is still looking at it (#128).
+		log.info("dropped unhandled media kind", {
+			conversation: lane,
+			kind,
+			message: msg.message_id,
+		});
+		void withTimeout(
+			env.api.sendMessage(
+				msg.chat.id,
+				`⚠ I can't read ${kind} yet — describe it in text if it matters.`,
+				{
+					disable_notification: true,
+					...(addr.kind === "topic" ? { message_thread_id: addr.threadId } : {}),
+				},
+			),
+			"sendMessage (unhandled media note)",
+		)
+			.then(() => undefined)
+			.catch((err: unknown) => {
+				log.warn("unhandled media note failed", err, { chat: msg.chat.id });
+			});
 		return;
 	}
 
@@ -881,7 +909,9 @@ function dropAppBatch(env: FlushEnv, convId: string, items: BufferedItem[]): voi
 	});
 	for (const chat of new Set(items.map((i) => i.chatId))) {
 		void withTimeout(
-			env.api.sendMessage(chat, "not sent — that app conversation was deleted"),
+			env.api.sendMessage(chat, "not sent — that app conversation was deleted", {
+				disable_notification: true,
+			}),
 			"sendMessage (ping reply drop)",
 		).catch((err: unknown) => {
 			if (err instanceof TelegramTimeoutError) {
@@ -927,7 +957,9 @@ function admitAppBatch(
 	// operators' replies into one app batch. Delivery only, never history.
 	for (const chat of new Set(items.map((i) => i.chatId))) {
 		void withTimeout(
-			env.api.sendMessage(chat, `sent to ${conv.title ?? "app conversation"}`),
+			env.api.sendMessage(chat, `sent to ${conv.title ?? "app conversation"}`, {
+				disable_notification: true,
+			}),
 			"sendMessage (ping reply ack)",
 		).catch((err: unknown) => {
 			// Abandoned, not cancelled — the ack may still have landed.

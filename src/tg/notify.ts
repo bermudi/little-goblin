@@ -26,8 +26,10 @@ export function parseConversationAddress(
 
 // Rolling DM boundary marker (design/telegram.md → Rolling DM): a plain
 // message in the chat, never a thread — delivery, not history, so it
-// never lands in store.append. Failure warns and never blocks the
-// turn: the `dm rolled` log line is the record, the marker is a nicety.
+// never lands in store.append. Silent: boundary cosmetics, not news —
+// the answer that follows is the notification (#126). Failure warns and
+// never blocks the turn: the `dm rolled` log line is the record, the
+// marker is a nicety.
 const ROLL_MARKER = "— new conversation —";
 
 export async function sendRollMarker(
@@ -36,7 +38,10 @@ export async function sendRollMarker(
 	toConversation: string,
 ): Promise<void> {
 	try {
-		await withTimeout(api.sendMessage(chatId, ROLL_MARKER), "sendMessage (roll marker)");
+		await withTimeout(
+			api.sendMessage(chatId, ROLL_MARKER, { disable_notification: true }),
+			"sendMessage (roll marker)",
+		);
 	} catch (err) {
 		// Abandoned, not cancelled — the marker may still have landed;
 		// either way it never blocks the turn.

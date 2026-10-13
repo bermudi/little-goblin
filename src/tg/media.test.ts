@@ -13,7 +13,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { File as TgFile } from "grammy/types";
 import { paths } from "../config.ts";
-import { mediaFromMessage, mediaParts, saveAttachment, type IncomingMedia } from "./media.ts";
+import {
+	mediaFromMessage,
+	mediaParts,
+	saveAttachment,
+	unhandledMediaKind,
+	type IncomingMedia,
+} from "./media.ts";
 
 let dirs: string[] = [];
 let prevHome: string | undefined;
@@ -42,6 +48,36 @@ const media: IncomingMedia = {
 };
 
 describe("mediaFromMessage", () => {
+	test("a live photo with still sizes is photo media — largest still wins", () => {
+		const m = mediaFromMessage({
+			live_photo: {
+				file_id: "lpv",
+				file_unique_id: "lv1",
+				photo: [
+					{ file_id: "small", file_unique_id: "s1", width: 90 },
+					{ file_id: "big", file_unique_id: "s2", width: 1280 },
+				],
+			},
+		});
+		expect(m).not.toBeNull();
+		expect(m).toMatchObject({ fileId: "big", fileName: "photo-s2.jpg", mimeType: "image/jpeg" });
+	});
+
+	test("a live photo falls back to the top-level photo, then its video part", () => {
+		const viaTopLevel = mediaFromMessage({
+			live_photo: { file_id: "lpv", file_unique_id: "lv1" },
+			photo: [{ file_id: "still", file_unique_id: "s3", width: 1280 }],
+		});
+		expect(viaTopLevel).toMatchObject({ fileId: "still", mimeType: "image/jpeg" });
+		const viaVideo = mediaFromMessage({
+			live_photo: { file_id: "lpv", file_unique_id: "lv1", mime_type: "video/mp4" },
+		});
+		expect(viaVideo).toMatchObject({
+			fileId: "lpv",
+			fileName: "live-photo-lv1.mp4",
+			mimeType: "video/mp4",
+		});
+	});
 	test("animation (GIF) is picked up as video media", () => {
 		const m = mediaFromMessage({
 			animation: { file_id: "a1", file_unique_id: "u9", mime_type: "video/mp4" },
@@ -359,5 +395,21 @@ describe("saveAttachment", () => {
 		await expect(saveAttachment(media, {} as TgFile, undefined, "token")).rejects.toThrow(
 			"no file_path",
 		);
+	});
+});
+
+describe("unhandledMediaKind", () => {
+	test("labels every kind intake doesn't consume; silence for the rest", () => {
+		expect(unhandledMediaKind({ location: {} })).toBe("a location");
+		expect(unhandledMediaKind({ venue: {} })).toBe("a venue");
+		expect(unhandledMediaKind({ contact: {} })).toBe("a contact card");
+		expect(unhandledMediaKind({ poll: {} })).toBe("a poll");
+		expect(unhandledMediaKind({ story: {} })).toBe("a story");
+		expect(unhandledMediaKind({ dice: {} })).toBe("a dice roll");
+		expect(unhandledMediaKind({ paid_media: {} })).toBe("paid media");
+		expect(unhandledMediaKind({})).toBeNull();
+		// Service fields never trip a label — the helper only knows its list.
+		const service = { new_chat_title: "x" } as unknown as Parameters<typeof unhandledMediaKind>[0];
+		expect(unhandledMediaKind(service)).toBeNull();
 	});
 });

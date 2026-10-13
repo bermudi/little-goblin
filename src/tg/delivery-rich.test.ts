@@ -37,8 +37,9 @@ const groupConv: Conversation = { ...conv, id: "tg:-100", chatId: -100 };
 interface DraftCall {
 	kind: "plain" | "rich";
 	id: number;
-	text?: string;
-	markdown?: string;
+	text?: string | undefined;
+	markdown?: string | undefined;
+	blocks?: Array<{ type: string; text?: unknown }> | undefined;
 }
 
 function fakeApi(
@@ -64,13 +65,17 @@ function fakeApi(
 			drafts.push({ kind: "plain", id, text });
 			return true;
 		},
-		sendRichMessageDraft: async (_chat: number, id: number, rm: { markdown: string }) => {
+		sendRichMessageDraft: async (
+			_chat: number,
+			id: number,
+			rm: { markdown?: string; blocks?: Array<{ type: string; text?: unknown }> },
+		) => {
 			if (opts.timeoutNextRichDraft) {
 				opts.timeoutNextRichDraft = false;
 				throw new TelegramTimeoutError("sendRichMessageDraft", 30_000);
 			}
 			if (opts.failRichDrafts) throw new Error("sendRichMessageDraft failed");
-			drafts.push({ kind: "rich", id, markdown: rm.markdown });
+			drafts.push({ kind: "rich", id, markdown: rm.markdown, blocks: rm.blocks });
 			return true;
 		},
 		sendRichMessage: async (
@@ -264,7 +269,10 @@ describe("rich delivery", () => {
 			sink.onReasoningDelta("hidden thought");
 			sink.onTextDelta("answer");
 			await sink.onDone({ kind: "completed" });
-			expect(drafts.some((d) => d.kind === "plain" && d.text === "hidden thought")).toBe(true);
+			// Reasoning streams inside the native thinking block (Bot API
+			// 10.2) — a rich draft, not plain text.
+			const think = drafts.find((d) => d.kind === "rich" && d.blocks !== undefined);
+			expect(think?.blocks).toEqual([{ type: "thinking", text: "hidden thought" }]);
 			expect(richSends[0]!.markdown.startsWith("<details><summary>Thinking</summary>")).toBe(true);
 			// Raw reasoning rides a <pre> so its text stays literal.
 			expect(richSends[0]!.markdown).toContain("<pre>hidden thought</pre>");

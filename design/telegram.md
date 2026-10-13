@@ -622,10 +622,12 @@ drain remains as fallback only.
 **Reasoning (`telegram.showReasoning`, bool, default false, DMs only).**
 Off by default everywhere. When on, reasoning streams into its own draft
 bubble ahead of the answer and lands in the final message as a collapsed
-block (expandable) above the reply text. The exact collapsible syntax in
-the rich markdown dialect is unprobed — pin it with one probe at
-implementation; if the dialect has none, compose the final message from
-blocks with a details block instead. Reasoning never renders for guests,
+block (expandable) above the reply text. The draft rides the native
+`InputRichBlockThinking` block (Bot API 10.2 — the client's animated
+Thinking UI); the final message keeps the probed `<details>` markdown: the
+exact collapsible syntax in the rich markdown dialect was pinned by probe
+2026-10-12 (`<details>/<summary>` renders collapsed; `<tg-details>` does
+not parse), and the thinking block itself cannot be received in messages. Reasoning never renders for guests,
 regardless of the flag.
 
 **Buttons and small parts.** Rating 👍/👎 keyboards strip themselves after

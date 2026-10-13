@@ -213,12 +213,14 @@ interface RouterHarness {
 		replyTo: number | undefined;
 		updateId: number;
 	}>;
-	apiCalls: Array<{ method: string; text?: string; chat?: unknown }>;
+	apiCalls: Array<{ method: string; text?: string; chat?: unknown; opts?: SendOpts }>;
 	stopped: string[];
 	store: ConversationStore;
 	pings: PingStore;
 	bellConvs: string[];
 }
+
+type SendOpts = { disable_notification?: boolean; message_thread_id?: number };
 
 function routerHarness(config: Config = baseConfig): RouterHarness {
 	const store = openStore(tmpdb());
@@ -229,8 +231,13 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 	const bellConvs: string[] = [];
 	const api = {
 		getFile: (_id: string) => Promise.reject(new Error("file api down")),
-		sendMessage: (chat: unknown, text: string) => {
-			apiCalls.push({ method: "sendMessage", text, chat });
+		sendMessage: (chat: unknown, text: string, opts?: SendOpts) => {
+			apiCalls.push({
+				method: "sendMessage",
+				text,
+				chat,
+				...(opts !== undefined ? { opts } : {}),
+			});
 			return Promise.resolve({ message_id: apiCalls.length });
 		},
 		editMessageText: (_c: unknown, _m: unknown, text: string) => {
@@ -394,7 +401,10 @@ describe("handleMessage", () => {
 	});
 
 	test("a demotion landing mid-follow-up-check still drops the batch at commit", async () => {
-		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false } });
+		const h = routerHarness({
+			...baseConfig,
+			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
+		});
 		// chat 2 = allowedUsers. An answered exchange lets the burst
 		// reach the check instead of joining unanswered.
 		const old = h.store.rollDm(2, "/w");
@@ -551,6 +561,27 @@ describe("handleMessage", () => {
 		);
 		expect(h.pushed).toEqual([]);
 		expect(h.env.intake.size).toBe(0);
+		// Service messages drop silently — no note, no log-worthy send.
+		expect(h.apiCalls.filter((c) => c.method === "sendMessage")).toEqual([]);
+		h.store.close();
+	});
+
+	test("an unhandled media kind leaves a visible, silent note instead of a debug vanish", () => {
+		const h = routerHarness();
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 4,
+				chat: { id: 1, type: "private" },
+				location: { latitude: 52.5, longitude: 13.4 },
+			}),
+		);
+		expect(h.pushed).toEqual([]);
+		expect(h.env.intake.size).toBe(0);
+		const note = h.apiCalls.find((c) => c.method === "sendMessage");
+		expect(note?.text).toContain("I can't read a location yet");
+		expect(note?.opts?.disable_notification).toBe(true);
+		h.store.close();
 	});
 
 	test("a command failure is answered, not promoted to InboxRecordError", async () => {
@@ -689,6 +720,10 @@ describe("ping replies (Spin-off)", () => {
 				(c) => c.method === "sendMessage" && c.chat === 1 && c.text === "sent to the work",
 			),
 		).toBe(true);
+		// The ack is delivery-only chatter — silent (#126).
+		expect(h.apiCalls.find((c) => c.text === "sent to the work")?.opts?.disable_notification).toBe(
+			true,
+		);
 		expect(submitted).toHaveLength(1);
 		expect(submitted[0]!.sink).toBe(nullSink); // the bell, never a delivery sink
 		expect(h.bellConvs).toEqual([app.id]);
@@ -959,6 +994,10 @@ describe("flushConversation", () => {
 		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
 			"not sent — that app conversation was deleted",
 		]);
+		// The ack is chatter on a screen the operator is holding (#126).
+		expect(h.apiCalls.find((c) => c.method === "sendMessage")?.opts?.disable_notification).toBe(
+			true,
+		);
 	});
 });
 
@@ -1207,6 +1246,13 @@ describe("rolling dm", () => {
 		const sends = h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text);
 		expect(sends[0]).toBe("— new conversation —");
 		expect(sends[1]).toBe("turn output");
+		// The marker is silent chatter; the turn's own delivery is not (#126).
+		expect(
+			h.apiCalls.find((c) => c.text === "— new conversation —")?.opts?.disable_notification,
+		).toBe(true);
+		expect(h.apiCalls.find((c) => c.text === "turn output")?.opts?.disable_notification).toBe(
+			undefined,
+		);
 		h.store.close();
 	});
 
@@ -1323,6 +1369,8 @@ describe("manual DM navigation", () => {
 		expect(h.store.history("dm:7:2")).toEqual([]);
 		expect(h.pushed).toEqual([]);
 		expect(h.apiCalls.at(-1)?.text).toBe("— new conversation —");
+		// The receipt is silent — the operator just typed the command (#126).
+		expect(h.apiCalls.at(-1)?.opts?.disable_notification).toBe(true);
 		// Redelivery is not another manual /new.
 		handleMessage(h.env, tgMsg({ message_id: 10, chat, text: "/new" }), 10);
 		expect(h.store.currentDm(chat.id)?.id).toBe("dm:7:2");
@@ -1385,7 +1433,10 @@ describe("manual DM navigation", () => {
 	});
 
 	test("other-bot commands make no routing changes, including unknown commands", async () => {
-		const h = routerHarness({ ...baseConfig, telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false } });
+		const h = routerHarness({
+			...baseConfig,
+			telegram: { dmGapMinutes: 0, richReplies: true, showReasoning: false },
+		});
 		for (const [i, text] of [
 			"/new@otherbot",
 			"/back@otherbot",

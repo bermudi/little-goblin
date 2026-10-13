@@ -459,17 +459,21 @@ export function makeDeliverySink(
 			reasoningSentAt = Date.now();
 			enqueue(async () => {
 				if (!mayDeliver() || !richMode) return;
-				// Raw reasoning is not markdown and the plain draft caps at
-				// 4096 chars — show the tail.
+				// The draft renders inside the client's native thinking block
+				// (Bot API 10.2) — the raw text stays literal, tail-capped:
+				// it's a preview; the final message's collapsed block carries
+				// the fuller cut.
 				const tail = snap.length > 4000 ? `…${snap.slice(-4000)}` : snap;
 				try {
 					await withTimeout(
-						api.sendMessageDraft(conv.chatId, reasonDraftId, tail),
-						"sendMessageDraft",
+						api.sendRichMessageDraft(conv.chatId, reasonDraftId, {
+							blocks: [{ type: "thinking", text: tail }],
+						}),
+						"sendRichMessageDraft",
 					);
 				} catch (err) {
 					if (isNotModifiedError(err)) return;
-					richFailure(err, "sendMessageDraft");
+					richFailure(err, "sendRichMessageDraft");
 				}
 			});
 		}

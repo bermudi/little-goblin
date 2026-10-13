@@ -423,7 +423,10 @@ trust has nothing to admit and a meter has nothing to count. Two
 lists plus a refusal line is the whole model. The `guest` block
 stays the feature switch for the sandbox class (absent →
 operator-only; non-operator summons get the refusal wherever intake
-still runs).
+still runs). Settings and privileged commands (`/voice`, `/memory`,
+`/forget`, `/compact`) are operator-only, checked by sender before
+command routing or conversation creation; approval grants sandbox
+chat, not command authority.
 
 **Sandbox class invariants.** Persona follows class at conversation
 creation, and the sandbox tool filter is **persona-driven**: any

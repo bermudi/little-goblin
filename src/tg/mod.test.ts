@@ -9,7 +9,8 @@ import {
 	SHARED_CHAT_NOTE,
 } from "./mod.ts";
 import { GUEST_REFUSAL } from "./guest.ts";
-import { COMMANDS, DM_COMMANDS } from "./commands.ts";
+import { COMMANDS, DM_COMMANDS, type CommandMemoryDeps } from "./commands.ts";
+import { HindsightClient } from "../hindsight.ts";
 
 const baseConfig: Config = {
 	providers: {
@@ -31,8 +32,13 @@ describe("accessGate", () => {
 		sendMessage: (async () => ({ message_id: 1 })) as unknown as Api["sendMessage"],
 	} as unknown as Api;
 	// The access-control boundary — everything else hangs off it.
+	// The guest block is configured here: without it the sandbox class
+	// is off entirely and an approved user's DM refuses like a
+	// stranger's (design/telegram.md → Roles and permissions).
 	test("operators pass everywhere; friends pass in the DM; strangers get the refusal line", async () => {
-		const configRef = { current: baseConfig };
+		const configRef: { current: Config } = {
+			current: { ...baseConfig, guest: { outputChars: 3500 } },
+		};
 		const gate = accessGate(configRef);
 		let reached = 0;
 		const next = async (): Promise<void> => {
@@ -64,6 +70,37 @@ describe("accessGate", () => {
 			expect(reached).toBe(3);
 		} finally {
 			warn.mockRestore();
+		}
+	});
+
+	test("the guest block is the sandbox switch — an approved DM refuses without it, toggles live", async () => {
+		const configRef: { current: Config } = {
+			current: { ...baseConfig, guest: { outputChars: 3500 } },
+		};
+		const gate = accessGate(configRef);
+		const dm = (id: number) => ({ from: { id }, chat: { id, type: "private" }, api });
+		let reached = 0;
+		const next = async (): Promise<void> => {
+			reached++;
+		};
+		const send = spyOn(api, "sendMessage");
+		try {
+			await gate(dm(2), next);
+			expect(reached).toBe(1);
+			// A mini-app/hand edit that drops the block applies on the
+			// very next message — the same sender is now refused.
+			configRef.current = { ...baseConfig };
+			await gate(dm(2), next);
+			expect(reached).toBe(1);
+			expect(send).toHaveBeenCalledWith(2, GUEST_REFUSAL);
+			// Operators never need the block.
+			await gate(dm(1), next);
+			expect(reached).toBe(2);
+			configRef.current = { ...baseConfig, guest: { outputChars: 3500 } };
+			await gate(dm(2), next);
+			expect(reached).toBe(3);
+		} finally {
+			send.mockRestore();
 		}
 	});
 });
@@ -333,7 +370,12 @@ describe("handleMessage", () => {
 		});
 		handleTestMessage(
 			h.env,
-			tgMsg({ message_id: 1, chat: { id: 1, type: "private" }, text: "/voice" }),
+			tgMsg({
+				message_id: 1,
+				chat: { id: 1, type: "private" },
+				from: { id: 1, is_bot: false, first_name: "op" },
+				text: "/voice",
+			}),
 		);
 		expect(h.pushed).toEqual([]);
 		expect(h.env.intake.size).toBe(0);
@@ -493,6 +535,181 @@ describe("handleMessage", () => {
 		await h.env.intake.get("dm:1");
 		expect(h.pushed).toHaveLength(1);
 		expect(h.pushed[0]!.parts).toEqual([{ type: "text", text: "/notacommand" }]);
+	});
+});
+
+// The privileged-command gate (design/telegram.md → Roles and
+// permissions): /voice /memory /forget /compact are operator-only,
+// refused by sender at the parsed-command boundary — before
+// navigation, routing, conversation creation, or journaling. Approval
+// buys sandbox chat, not command authority.
+describe("operator-only command gate", () => {
+	const REFUSAL = "This command is only available to operators.";
+	const MEM_BLOCK = {
+		baseUrl: "http://127.0.0.1:1",
+		bankId: "g",
+		recallTimeoutMs: 500,
+		maxTokens: 256,
+		budget: "low" as const,
+	};
+	const guestChat = { id: 2, type: "private" } as const;
+	const guestMsg = (text: string, updateId: number): Message =>
+		tgMsg({
+			message_id: updateId,
+			chat: guestChat,
+			from: { id: 2, is_bot: false, first_name: "f" },
+			text,
+		});
+
+	// A memory deps whose remote and queue boundaries are counters —
+	// the proof a refused command never reached recall, delete, or the
+	// outbox. The client is a real HindsightClient (its derived target
+	// must satisfy the queue's validation) with the remote verbs
+	// wrapped; the queue delegates to the store's real one so an
+	// admitted operator command still behaves.
+	function countingMemory(store: ConversationStore): {
+		memory: CommandMemoryDeps;
+		calls: string[];
+	} {
+		const calls: string[] = [];
+		const client = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
+		client.recall = (() => {
+			calls.push("client.recall");
+			return Promise.resolve([]);
+		}) as unknown as typeof client.recall;
+		client.deleteDocument = (() => {
+			calls.push("client.deleteDocument");
+			return Promise.resolve();
+		}) as unknown as typeof client.deleteDocument;
+		client.operation = (() => {
+			calls.push("client.operation");
+			return Promise.resolve(null);
+		}) as unknown as typeof client.operation;
+		const queue = new Proxy(store.memoryQueue, {
+			get(target, prop, recv) {
+				const v = Reflect.get(target, prop, recv);
+				if (typeof v !== "function") return v;
+				return (...args: unknown[]) => {
+					calls.push(`queue.${String(prop)}`);
+					return (v as (...a: unknown[]) => unknown).apply(target, args);
+				};
+			},
+		});
+		return {
+			calls,
+			memory: {
+				client,
+				contexts: store.memoryContexts,
+				queue,
+				withWorkerPaused: <T>(fn: () => Promise<T>): Promise<T> => {
+					calls.push("withWorkerPaused");
+					return fn();
+				},
+				lastRecallOk: () => null,
+				lastRecallAt: () => null,
+			},
+		};
+	}
+
+	test("an approved user's /memory, /forget, /voice, /compact refuse — fixed reply, nothing created", async () => {
+		const h = routerHarness({ ...baseConfig, guest: { outputChars: 3500 }, memory: MEM_BLOCK });
+		const { memory, calls } = countingMemory(h.store);
+		h.env.deps.memory = memory;
+		for (const [i, text] of [
+			"/memory",
+			"/forget private",
+			"/forget delete 1",
+			"/voice on",
+			"/compact",
+		].entries()) {
+			handleMessage(h.env, guestMsg(text, 20 + i), 20 + i);
+		}
+		await Promise.all([...h.env.intake.values()]);
+		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
+			REFUSAL,
+			REFUSAL,
+			REFUSAL,
+			REFUSAL,
+			REFUSAL,
+		]);
+		// No conversation, no journaled or buffered input, no runtime
+		// stop — and neither the recall/delete boundary nor the memory
+		// queue was ever entered.
+		expect(h.store.currentDm(2)).toBeNull();
+		expect(h.env.inbox.pending()).toEqual([]);
+		expect(h.pushed).toEqual([]);
+		expect(h.stopped).toEqual([]);
+		expect(calls).toEqual([]);
+		h.store.close();
+	});
+
+	test("the operator's own privileged command still routes and runs", async () => {
+		const h = routerHarness({ ...baseConfig, memory: MEM_BLOCK });
+		const { memory, calls } = countingMemory(h.store);
+		h.env.deps.memory = memory;
+		handleMessage(
+			h.env,
+			tgMsg({
+				message_id: 30,
+				chat: { id: 1, type: "private" },
+				from: { id: 1, is_bot: false, first_name: "op" },
+				text: "/memory",
+			}),
+			30,
+		);
+		await Promise.resolve();
+		expect(h.store.currentDm(1)?.id).toBe("dm:1:1");
+		const replies = h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text);
+		// The roll marker leads; the status answer is the real command's.
+		expect(replies.at(-1)).toContain("memory:");
+		expect(replies).not.toContain(REFUSAL);
+		expect(calls).toContain("queue.counts");
+		h.store.close();
+	});
+
+	test("a guest's /voice@goblin is refused; /memory@otherbot is not ours — dropped silently", async () => {
+		const h = routerHarness({ ...baseConfig, guest: { outputChars: 3500 }, memory: MEM_BLOCK });
+		const { memory, calls } = countingMemory(h.store);
+		h.env.deps.memory = memory;
+		handleMessage(h.env, guestMsg("/voice@goblin", 40), 40);
+		handleMessage(h.env, guestMsg("/memory@otherbot", 41), 41);
+		await Promise.resolve();
+		expect(h.apiCalls.map((c) => c.text)).toEqual([REFUSAL]);
+		expect(h.store.currentDm(2)).toBeNull();
+		expect(h.env.inbox.pending()).toEqual([]);
+		expect(calls).toEqual([]);
+		h.store.close();
+	});
+
+	test("a senderless update is not an operator — the privileged command refuses", () => {
+		const h = routerHarness();
+		handleMessage(
+			h.env,
+			tgMsg({ message_id: 50, chat: { id: 1, type: "private" }, text: "/memory" }),
+			50,
+		);
+		expect(h.apiCalls.map((c) => c.text)).toEqual([REFUSAL]);
+		expect(h.store.currentDm(1)).toBeNull();
+		h.store.close();
+	});
+
+	test("an approved guest keeps the own-lane commands — /start /stop /new /back", async () => {
+		const h = routerHarness({ ...baseConfig, guest: { outputChars: 3500 } });
+		handleMessage(h.env, guestMsg("/start", 60), 60);
+		handleMessage(h.env, guestMsg("/stop", 61), 61);
+		handleMessage(h.env, guestMsg("/new", 62), 62);
+		handleMessage(h.env, guestMsg("/back", 63), 63);
+		await Promise.resolve();
+		expect(h.apiCalls.map((c) => c.text)).toEqual([
+			// The first DM rolls — its boundary marker leads the greeting.
+			"— new conversation —",
+			expect.stringContaining("goblin online"),
+			"stopped",
+			"— new conversation —",
+			"— previous conversation —",
+		]);
+		expect(h.pushed).toEqual([]);
+		h.store.close();
 	});
 });
 

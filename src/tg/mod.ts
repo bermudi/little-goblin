@@ -74,6 +74,10 @@ const COALESCE_MAX_WAIT_MS = 10_000;
 // Sentinel for media that failed intake — kept out of topic-title input
 // or a download error becomes the conversation's name.
 const ATTACHMENT_FAILED_PREFIX = "[attachment failed to download:";
+const OPERATOR_ONLY_REPLY = "This command is only available to operators.";
+// Settings and memory verbs — refused to non-operators before routing
+// or conversation creation (design/telegram.md → Roles and permissions).
+const OPERATOR_ONLY_COMMANDS = new Set(["/voice", "/memory", "/forget", "/compact"]);
 
 // Conversation identity IS the Telegram address. `message_thread_id`
 // also rides on non-forum comment threads (is_topic_message stays
@@ -146,10 +150,10 @@ export interface RunningBot {
 
 // The access-control boundary (design/telegram.md → Roles and
 // permissions): operators pass everywhere; an allowed user passes in
-// the bot DM only — their standing sandbox lane; a stranger's DM gets
-// the one refusal line; a non-operator's group message drops (the
-// guest router above already took the mentions). Read per-message so
-// mini-app saves apply without a restart.
+// the bot DM while the guest block exists — their sandbox lane; a
+// stranger's DM gets the one refusal line; a non-operator's group
+// message drops (the guest router above already took the mentions).
+// Read per-message so mini-app saves apply without a restart.
 export function accessGate(configRef: { current: Config }) {
 	return async (
 		ctx: {
@@ -171,13 +175,18 @@ export function accessGate(configRef: { current: Config }) {
 			return;
 		}
 		if (ctx.chat?.type === "private") {
-			if (!cfg.allowedUsers.includes(id)) {
+			// The guest block is the sandbox switch: without it an
+			// approved id's DM refuses exactly like a stranger's.
+			if (cfg.guest === undefined || !cfg.allowedUsers.includes(id)) {
 				// A stranger DM is a summons: the fixed refusal line is its
 				// whole answer. A failed send never kills the poller.
-				log.info("stranger refused — bot dm", { userId: id });
+				log.info("dm refused — not an operator", {
+					userId: id,
+					guest: cfg.guest !== undefined,
+				});
 				await withTimeout(ctx.api.sendMessage(id, GUEST_REFUSAL), "sendMessage (refusal)")
 					.then(() => undefined)
-					.catch((err: unknown) => log.warn("stranger refusal failed", err, { userId: id }));
+					.catch((err: unknown) => log.warn("dm refusal failed", err, { userId: id }));
 				return;
 			}
 			await next();
@@ -315,6 +324,28 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 	const command =
 		text !== "" && !media && mediaError === null ? parseCommand(text, env.botUsername) : null;
 	if (command !== null && !command.forThisBot) return;
+	// Privileged commands are refused by sender here — before
+	// navigation, routing, conversation creation, or journaling — so a
+	// refused update leaves no trace but the fixed reply. A senderless
+	// update is not an operator.
+	if (
+		command !== null &&
+		OPERATOR_ONLY_COMMANDS.has(command.command) &&
+		!deps.configRef.current.operators.includes(msg.from?.id ?? -1)
+	) {
+		log.info("privileged command refused — not operator", {
+			command: command.command,
+			userId: msg.from?.id ?? null,
+			chat: msg.chat.id,
+		});
+		void withTimeout(
+			env.api.sendMessage(msg.chat.id, OPERATOR_ONLY_REPLY),
+			"sendMessage (command refusal)",
+		)
+			.then(() => undefined)
+			.catch((err: unknown) => log.warn("command refusal failed", err, { chat: msg.chat.id }));
+		return;
+	}
 	if (command?.command === "/new" || command?.command === "/back") {
 		if (!rolling) {
 			replyNavigation(

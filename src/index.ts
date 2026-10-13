@@ -233,7 +233,12 @@ async function boot() {
 			: config.transcription?.kind === "whistle"
 				? "transcription (whistle)"
 				: "transcription";
-		const ok = await probeFfmpeg(feature);
+		// Edge's remux is a stream copy; openrouter's mp3 must re-encode
+		// to opus, so a binary without libopus would die per chunk.
+		const ok = await probeFfmpeg(
+			feature,
+			config.tts !== false && config.tts?.kind === "openrouter" ? "libopus" : undefined,
+		);
 		if (!ok && config.tts) {
 			configRef.ttsDown = true;
 			log.warn(

@@ -101,7 +101,9 @@ model/thinking (history still copies, as specified in design/app.md).
   through one ffmpeg pipe — Edge's WebM/Opus stream remuxes losslessly,
   openrouter's mp3 re-encodes — a real
   voice-note bubble, not an audio-file card. ffmpeg is probed at boot —
-TTS is default-on, so always; a failed probe takes TTS down for the run
+TTS is default-on, so always — and when TTS is openrouter the probe also
+requires the libopus encoder, since the re-encode dies per chunk without
+it. A failed probe takes TTS down for the run
 with a boot warning (install ffmpeg and restart to re-enable) instead of
 failing message by message.
   `record_voice` chat action runs while synthesis is in flight. The

@@ -107,7 +107,9 @@ tts: {
 
 Omit `voice` to use the model's default voice. The `voices` language cast
 is edge-only — upstream voice ids carry no language to match on, so one
-voice speaks everything (Fish S2 is multilingual on its own).
+voice speaks everything (Fish S2 is multilingual on its own). OpenRouter
+returns mp3 that must be re-encoded to ogg/opus, so the boot ffmpeg probe
+additionally requires the `libopus` encoder for this kind.
 
 Three ways to hear the bot:
 

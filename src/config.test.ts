@@ -435,6 +435,8 @@ describe("goblin.json5", () => {
 		});
 		writeFileSync(join(dir, "goblin.json5"), `${base},tts:{kind:"openrouter",model:""}}`);
 		expect(() => loadConfig()).toThrow("goblin.json5");
+		writeFileSync(join(dir, "goblin.json5"), `${base},tts:{kind:"openrouter",voice:" "}}`);
+		expect(() => loadConfig()).toThrow("goblin.json5");
 	});
 
 	test('transcription defaults its model; "" clears to unset', () => {
@@ -820,14 +822,29 @@ describe("authReferences", () => {
 			operators: [7],
 			allowedUsers: [7],
 			search: [{ kind: "brave", auth: "brave-key" }],
+			tts: { kind: "openrouter", auth: "or-tts" },
 			appToken: "app-token-record",
 		});
 		expect([...authReferences(c)].sort()).toEqual([
 			"app-token-record",
 			"brave-key",
+			"or-tts",
 			"telegram",
 			"zai",
 		]);
+	});
+
+	test("edge tts contributes no auth ref", () => {
+		const c = parseConfig({
+			providers: {
+				zai: { kind: "openai-compatible", baseUrl: "https://fixture.invalid", auth: "zai" },
+			},
+			model: "zai/glm-4.6",
+			operators: [7],
+			allowedUsers: [7],
+			tts: { kind: "edge", voice: "en-US-AriaNeural" },
+		});
+		expect([...authReferences(c)].sort()).toEqual(["telegram", "zai"]);
 	});
 });
 

@@ -674,6 +674,7 @@ export async function synthesizeSpeech(
 	} catch (err) {
 		log.warn("speech synthesis failed", err, {
 			provider: config.kind,
+			...(config.kind === "openrouter" ? { model: config.model } : {}),
 			voice,
 			completedChunks: audio.length,
 		});

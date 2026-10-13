@@ -508,7 +508,7 @@ export const ttsConfigSchema = z.discriminatedUnion("kind", [
 		kind: z.literal("openrouter"),
 		model: z.string().min(1).default("fish-audio/s2.1-pro-free:free"),
 		auth: z.string().min(1).default(authDefaults.openrouter),
-		voice: z.string().optional(),
+		voice: z.string().trim().min(1).optional(),
 	}),
 ]);
 export type TtsConfig = z.infer<typeof ttsConfigSchema>;
@@ -892,12 +892,14 @@ export function authReferences(config: Config): Set<string> {
 	for (const feature of [
 		config.memory,
 		config.transcription,
+		config.tts,
 		config.reviewer,
 		config.system1,
 		...(config.search ?? []),
 		...(config.fetch ?? []),
 	])
-		if (feature && "auth" in feature && feature.auth) refs.add(feature.auth);
+		if (feature && typeof feature === "object" && "auth" in feature && feature.auth)
+			refs.add(feature.auth);
 	if (config.appToken) refs.add(config.appToken);
 	if (config.mail) {
 		refs.add(config.mail.clientSecretAuth);

@@ -244,6 +244,12 @@ const scriptTool = (tools: ToolSet, callable: string[], deps: ScriptDeps) =>
 					});
 					let result: unknown;
 					try {
+						// Taint at dispatch, not on success: a fetch/search
+						// failure — thrown or error-shaped — still carries
+						// remotely shaped text (a mirrored header, a provider
+						// string) into the VM's catch, where the script may
+						// quote it verbatim.
+						if (name === "fetch" || name === "search") tainted = true;
 						// The VM aborts its signal when the script finishes
 						// with the call still unawaited (and on timeout/abort)
 						// — without it a detached nested call keeps running
@@ -266,9 +272,6 @@ const scriptTool = (tools: ToolSet, callable: string[], deps: ScriptDeps) =>
 						noteFail(refused);
 						throw new Error(refused);
 					}
-					// Web content may be quoted verbatim in the output — the
-					// fence rides only when it could (fetch's rule).
-					if (name === "fetch" || name === "search") tainted = true;
 					calls.push({
 						tool: name,
 						args: summarize(args, 200),

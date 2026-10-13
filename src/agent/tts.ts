@@ -438,14 +438,18 @@ function asBuffer(data: RawData): Buffer {
 
 const edgeSynthesize: ChunkSynthesizer = (text, options) =>
 	new Promise<Uint8Array>((resolve, reject) => {
+		// The legacy speech.platform.bing.com synthesis socket answers
+		// 403; Edge itself now dials api.msedgeservices.com, which still
+		// accepts the same client token — renamed — plus the v1 Sec-MS-GEC
+		// pair (upstream fix: rany2/edge-tts#491).
 		const query = new URLSearchParams({
-			TrustedClientToken: EDGE_TOKEN,
+			"Ocp-Apim-Subscription-Key": EDGE_TOKEN,
 			ConnectionId: connectionId(),
 			"Sec-MS-GEC": edgeAuthToken(),
 			"Sec-MS-GEC-Version": `1-${EDGE_VERSION}`,
 		});
 		const socket = new WebSocket(
-			`wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?${query}`,
+			`wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1?${query}`,
 			{
 				handshakeTimeout: 10_000,
 				headers: {

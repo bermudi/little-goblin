@@ -207,7 +207,7 @@ describe.skipIf(!LIVE)("desktop live drift (GOBLIN_DESKTOP_LIVE=1)", () => {
 
 	test("screenshot returns PNG bytes and audits the frame to disk", async () => {
 		const shot = await desktops!.screenshot(DESKTOP);
-		expect(shot.id).toBe(`${DESKTOP}:1`);
+		expect(shot.id).toMatch(new RegExp(`^${DESKTOP}:1:[0-9a-f-]{36}$`));
 		expect([...shot.bytes.slice(0, 4)]).toEqual([0x89, 0x50, 0x4e, 0x47]);
 		expect(await Bun.file(shot.path).exists()).toBe(true);
 	}, 60_000);
@@ -216,7 +216,8 @@ describe.skipIf(!LIVE)("desktop live drift (GOBLIN_DESKTOP_LIVE=1)", () => {
 		const op = { kind: "operator" } as const;
 		await desktops!.claim(DESKTOP, op);
 		await podman!.cp(CONTAINER, join(cwd, "probe.html"), "/tmp/probe.html");
-		const launch = await desktops!.act(DESKTOP, op, `${DESKTOP}:1`, {
+		const pre = await desktops!.screenshot(DESKTOP);
+		const launch = await desktops!.act(DESKTOP, op, pre.id, {
 			kind: "launch",
 			app: "chromium",
 			url: "file:///tmp/probe.html",

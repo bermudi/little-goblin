@@ -59,4 +59,16 @@ describe("Markdown", () => {
 		expect(html).toContain("<s>gone</s>");
 		expect(html).toContain("<strong>bold</strong>");
 	});
+
+	// A note fence mid-stream is a prefix — appending it now would
+	// save content the chunks after it silently drop.
+	test("an unclosed note fence shows the card but withholds the append affordance", () => {
+		const streaming = renderToStaticMarkup(<Markdown text={"```note\npartial body"} />);
+		expect(streaming).toContain("note-card");
+		expect(streaming).toContain("partial body");
+		expect(streaming).not.toContain("note-card-append");
+		// Once the fence closes the affordance appears.
+		const closed = renderToStaticMarkup(<Markdown text={"```note\nfull body\n```"} />);
+		expect(closed).toContain("note-card-append");
+	});
 });

@@ -121,6 +121,31 @@ describe("MessageParts", () => {
 		expect(html).toContain("— 1 failed");
 		expect(html).toContain("a.dev");
 	});
+
+	test("an optimistic note attachment with only an id still renders its chip", () => {
+		// The Composer sends {id} + picked title before the server's
+		// expansion lands — the bubble must never render empty.
+		const html = renderToStaticMarkup(
+			<MessageParts
+				parts={[
+					{ type: "data-note", data: { id: "n1" } } as unknown as UIMessage["parts"][number],
+				]}
+			/>,
+		);
+		expect(html).toContain("note-chip");
+		expect(html).toContain(">Note<");
+		const titled = renderToStaticMarkup(
+			<MessageParts
+				parts={[
+					{
+						type: "data-note",
+						data: { id: "n1", title: "scratch", rev: 4 },
+					} as unknown as UIMessage["parts"][number],
+				]}
+			/>,
+		);
+		expect(titled).toContain("Note · scratch · rev 4");
+	});
 });
 
 // The reload window (#79): history is fetched once on mount, then the

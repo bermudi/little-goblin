@@ -638,6 +638,10 @@ function AppShell() {
 	// The settings editor reports its dirty bit here so navigating away
 	// can ask before discarding unsaved edits.
 	const settingsDirty = useRef(false);
+	// The note editor reports here too — unsaved body/title edits or a
+	// standing 409 conflict bar. Its draft lives only in that
+	// component; an unguarded navigation destroys it silently.
+	const noteDirty = useRef(false);
 	const [navigationError, setNavigationError] = useState<string | null>(null);
 	const navigation = browserNavigation();
 	const position = historyPosition(window.history.state);
@@ -646,10 +650,14 @@ function AppShell() {
 		segment: position?.segment ?? newHistorySegment(),
 		key: navigation?.currentEntry.key ?? null,
 	});
-	const leaveDirtySettings = () =>
-		page !== "settings" ||
-		!settingsDirty.current ||
-		window.confirm("Discard unsaved settings changes?");
+	// Leaving a dirty page asks once, with the page's own wording.
+	const leaveDirty = () => {
+		if (page === "settings" && settingsDirty.current)
+			return window.confirm("Discard unsaved settings changes?");
+		if (page === "note" && noteDirty.current)
+			return window.confirm("Discard unsaved note edits and any conflict?");
+		return true;
+	};
 	const pushRoute = (path: string) => {
 		const actual = historyPosition(window.history.state);
 		// A declined legacy traversal can leave the browser at a different
@@ -744,13 +752,19 @@ function AppShell() {
 		const onPop = () => {
 			const p = pageFromPath(window.location.pathname);
 			const nextPosition = historyPosition(window.history.state);
-			if (p !== "settings" && !leaveDirtySettings()) {
+			// Only a pop that actually leaves the dirty page asks — the
+			// guard's own restoration below lands right back on it, and a
+			// second ask there would double every decline.
+			const stillHome =
+				(page === "settings" && p === "settings") ||
+				(page === "note" && noteFromPath(window.location.pathname) === noteId);
+			if (!stillHome && !leaveDirty()) {
 				// popstate arrives after traversal. Undo it rather than push a
 				// replacement entry, which would erase the forward history.
 				if (navigation !== null && route.current.key !== null) {
 					const failed = (err: unknown) =>
 						setNavigationError(
-							`Couldn't restore settings history: ${err instanceof Error ? err.message : String(err)}`,
+							`Couldn't restore history: ${err instanceof Error ? err.message : String(err)}`,
 						);
 					try {
 						const { committed, finished } = navigation.traverseTo(route.current.key);
@@ -766,7 +780,7 @@ function AppShell() {
 					window.history.go(route.current.index - nextPosition.index);
 				} else {
 					setNavigationError(
-						"Your unsaved settings are still here. This browser cannot restore an older history entry; save or discard your changes before navigating again.",
+						"Your unsaved edits are still here. This browser cannot restore an older history entry; save or discard your changes before navigating again.",
 					);
 				}
 				return;
@@ -807,13 +821,15 @@ function AppShell() {
 		};
 		window.addEventListener("popstate", onPop);
 		return () => window.removeEventListener("popstate", onPop);
-	}, [page]);
+	}, [page, noteId]);
 
 	useEffect(() => {
 		const onUnload = (event: BeforeUnloadEvent) => {
-			if (page !== "settings" || !settingsDirty.current) return;
+			const dirty =
+				page === "settings" ? settingsDirty.current : page === "note" && noteDirty.current;
+			if (!dirty) return;
 			event.preventDefault();
-			event.returnValue = "Unsaved settings";
+			event.returnValue = "Unsaved edits";
 		};
 		window.addEventListener("beforeunload", onUnload);
 		return () => window.removeEventListener("beforeunload", onUnload);
@@ -889,7 +905,7 @@ function AppShell() {
 	// Selection owns the URL — /app/c/<id> for a conversation, /app/
 	// for the list/empty state, matching the deep link the pings carry.
 	const select = (id: string | null) => {
-		if (!leaveDirtySettings()) return;
+		if (!leaveDirty()) return;
 		setPage("chat");
 		setProjectId(null);
 		setNoteId(null);
@@ -899,7 +915,7 @@ function AppShell() {
 	};
 
 	const openProject = (id: string) => {
-		if (!leaveDirtySettings()) return;
+		if (!leaveDirty()) return;
 		setPage("project");
 		setProjectId(id);
 		setNoteId(null);
@@ -908,7 +924,7 @@ function AppShell() {
 	};
 
 	const openProjectsIndex = () => {
-		if (!leaveDirtySettings()) return;
+		if (!leaveDirty()) return;
 		setPage("projects");
 		setProjectId(null);
 		setNoteId(null);
@@ -917,7 +933,7 @@ function AppShell() {
 	};
 
 	const openNotesIndex = () => {
-		if (!leaveDirtySettings()) return;
+		if (!leaveDirty()) return;
 		setPage("notes");
 		setProjectId(null);
 		setNoteId(null);
@@ -926,7 +942,7 @@ function AppShell() {
 	};
 
 	const openNote = (id: string) => {
-		if (!leaveDirtySettings()) return;
+		if (!leaveDirty()) return;
 		setPage("note");
 		setProjectId(null);
 		setNoteId(id);
@@ -945,7 +961,7 @@ function AppShell() {
 			setNavOpen(false);
 			return;
 		}
-		if (!leaveDirtySettings()) return;
+		if (!leaveDirty()) return;
 		setPage(p);
 		setNavOpen(false);
 		pushRoute(`/app/${p}`);
@@ -1254,7 +1270,15 @@ function AppShell() {
 											{ type: "data-note", data: { id: note.id } } as UIMessage["parts"][number],
 										])
 									}
-									onDeleted={openNotesIndex}
+									// A deleted note has no draft left to guard — clear
+									// the bit before the index navigation runs the check.
+									onDeleted={() => {
+										noteDirty.current = false;
+										openNotesIndex();
+									}}
+									onDirtyChange={(d) => {
+										noteDirty.current = d;
+									}}
 								/>
 								{startFailed && (
 									<p className="error" role="alert">

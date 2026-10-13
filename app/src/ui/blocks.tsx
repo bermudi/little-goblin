@@ -24,6 +24,12 @@ export interface UiActionProps {
 	// Input is still arriving: html never mounts at any depth — a
 	// partial srcdoc re-executes its scripts on every delta.
 	streaming?: boolean | undefined;
+	// The transcript's Markdown context — a note fence inside a ui text
+	// leaf renders the same append card as reply markdown, and its
+	// writes need the same auth and project binding.
+	token?: string | null | undefined;
+	noteProjectId?: string | null | undefined;
+	onOpenNote?: ((id: string) => void) | undefined;
 }
 
 function actionsOff({ onAction, busy }: UiActionProps): boolean {
@@ -42,19 +48,39 @@ const PickContext = createContext<{ picked: string | null; pick: (label: string)
 	pick: () => {},
 });
 
-function Text({ leaf }: { leaf: Extract<UiLeaf, { type: "text" }> }) {
+function Text({
+	leaf,
+	token,
+	noteProjectId,
+	onOpenNote,
+}: { leaf: Extract<UiLeaf, { type: "text" }> } & UiActionProps) {
 	return (
 		<div className="ui-text">
-			<Markdown text={leaf.md} />
+			<Markdown
+				text={leaf.md}
+				token={token}
+				noteProjectId={noteProjectId}
+				onOpenNote={onOpenNote}
+			/>
 		</div>
 	);
 }
 
-function Callout({ leaf }: { leaf: Extract<UiLeaf, { type: "callout" }> }) {
+function Callout({
+	leaf,
+	token,
+	noteProjectId,
+	onOpenNote,
+}: { leaf: Extract<UiLeaf, { type: "callout" }> } & UiActionProps) {
 	return (
 		<div className={`ui-callout ui-callout-${leaf.tone ?? "info"}`}>
 			{leaf.title !== undefined && <div className="ui-callout-title">{leaf.title}</div>}
-			<Markdown text={leaf.md} />
+			<Markdown
+				text={leaf.md}
+				token={token}
+				noteProjectId={noteProjectId}
+				onOpenNote={onOpenNote}
+			/>
 		</div>
 	);
 }
@@ -99,7 +125,12 @@ function Table({ leaf }: { leaf: Extract<UiLeaf, { type: "table" }> }) {
 	);
 }
 
-function Steps({ leaf }: { leaf: Extract<UiLeaf, { type: "steps" }> }) {
+function Steps({
+	leaf,
+	token,
+	noteProjectId,
+	onOpenNote,
+}: { leaf: Extract<UiLeaf, { type: "steps" }> } & UiActionProps) {
 	return (
 		<ol className="ui-steps">
 			{leaf.items.map((item, i) => (
@@ -107,7 +138,12 @@ function Steps({ leaf }: { leaf: Extract<UiLeaf, { type: "steps" }> }) {
 					<div className="ui-step-title">{item.title}</div>
 					{item.md !== undefined && (
 						<div className="ui-step-md">
-							<Markdown text={item.md} />
+							<Markdown
+								text={item.md}
+								token={token}
+								noteProjectId={noteProjectId}
+								onOpenNote={onOpenNote}
+							/>
 						</div>
 					)}
 				</li>
@@ -223,9 +259,13 @@ function Tabs({
 	onAction,
 	busy,
 	streaming,
+	token,
+	noteProjectId,
+	onOpenNote,
 }: { block: Extract<UiBlock, { type: "tabs" }> } & UiActionProps) {
 	const [active, setActive] = useState(0);
 	const tab = block.tabs[Math.min(active, block.tabs.length - 1)]!;
+	const md = { token, noteProjectId, onOpenNote };
 	return (
 		<div className="ui-tabs">
 			<div className="ui-tab-bar" role="tablist">
@@ -244,7 +284,7 @@ function Tabs({
 			</div>
 			<div className="ui-tab-panel" role="tabpanel">
 				{tab.blocks.map((leaf, i) => (
-					<Leaf key={i} leaf={leaf} onAction={onAction} busy={busy} streaming={streaming} />
+					<Leaf key={i} leaf={leaf} onAction={onAction} busy={busy} streaming={streaming} {...md} />
 				))}
 			</div>
 		</div>
@@ -256,14 +296,25 @@ function Columns({
 	onAction,
 	busy,
 	streaming,
+	token,
+	noteProjectId,
+	onOpenNote,
 }: { block: Extract<UiBlock, { type: "columns" }> } & UiActionProps) {
+	const md = { token, noteProjectId, onOpenNote };
 	return (
 		<div className="ui-columns" style={{ "--ui-cols": block.columns.length } as CSSProperties}>
 			{block.columns.map((col, i) => (
 				<div key={i} className="ui-column">
 					{col.title !== undefined && <div className="ui-column-title">{col.title}</div>}
 					{col.blocks.map((leaf, j) => (
-						<Leaf key={j} leaf={leaf} onAction={onAction} busy={busy} streaming={streaming} />
+						<Leaf
+							key={j}
+							leaf={leaf}
+							onAction={onAction}
+							busy={busy}
+							streaming={streaming}
+							{...md}
+						/>
 					))}
 				</div>
 			))}
@@ -271,18 +322,27 @@ function Columns({
 	);
 }
 
-export function Leaf({ leaf, onAction, busy, streaming }: { leaf: UiLeaf } & UiActionProps) {
+export function Leaf({
+	leaf,
+	onAction,
+	busy,
+	streaming,
+	token,
+	noteProjectId,
+	onOpenNote,
+}: { leaf: UiLeaf } & UiActionProps) {
+	const md = { token, noteProjectId, onOpenNote };
 	switch (leaf.type) {
 		case "text":
-			return <Text leaf={leaf} />;
+			return <Text leaf={leaf} {...md} />;
 		case "callout":
-			return <Callout leaf={leaf} />;
+			return <Callout leaf={leaf} {...md} />;
 		case "stats":
 			return <Stats leaf={leaf} />;
 		case "table":
 			return <Table leaf={leaf} />;
 		case "steps":
-			return <Steps leaf={leaf} />;
+			return <Steps leaf={leaf} {...md} />;
 		case "chart":
 			return <Chart leaf={leaf} />;
 		case "choices":
@@ -294,12 +354,25 @@ export function Leaf({ leaf, onAction, busy, streaming }: { leaf: UiLeaf } & UiA
 	}
 }
 
-export function Block({ block, onAction, busy, streaming }: { block: UiBlock } & UiActionProps) {
+export function Block({
+	block,
+	onAction,
+	busy,
+	streaming,
+	token,
+	noteProjectId,
+	onOpenNote,
+}: { block: UiBlock } & UiActionProps) {
+	const md = { token, noteProjectId, onOpenNote };
 	if (block.type === "tabs")
-		return <Tabs block={block} onAction={onAction} busy={busy} streaming={streaming} />;
+		return (
+			<Tabs block={block} onAction={onAction} busy={busy} streaming={streaming} {...md} />
+		);
 	if (block.type === "columns")
-		return <Columns block={block} onAction={onAction} busy={busy} streaming={streaming} />;
-	return <Leaf leaf={block} onAction={onAction} busy={busy} streaming={streaming} />;
+		return (
+			<Columns block={block} onAction={onAction} busy={busy} streaming={streaming} {...md} />
+		);
+	return <Leaf leaf={block} onAction={onAction} busy={busy} streaming={streaming} {...md} />;
 }
 
 // One complete interface — the wrapper shared by the finished render
@@ -310,6 +383,9 @@ export function Surface({
 	busy,
 	streaming,
 	messages,
+	token,
+	noteProjectId,
+	onOpenNote,
 }: { input: UiInput; messages?: readonly UIMessage[] | undefined } & UiActionProps) {
 	// The tap sets the highlight instantly; the transcript, when wired
 	// in, re-derives the same label after a reload — the [ui] message
@@ -317,12 +393,20 @@ export function Surface({
 	const [tapped, setTapped] = useState<string | null>(null);
 	const picked =
 		tapped ?? (messages !== undefined ? derivePick(messages, choiceLabels(input.blocks)) : null);
+	const md = { token, noteProjectId, onOpenNote };
 	return (
 		<PickContext.Provider value={{ picked, pick: setTapped }}>
 			<div className="ui">
 				{input.title !== undefined && <div className="ui-title">{input.title}</div>}
 				{input.blocks.map((block, i) => (
-					<Block key={i} block={block} onAction={onAction} busy={busy} streaming={streaming} />
+					<Block
+						key={i}
+						block={block}
+						onAction={onAction}
+						busy={busy}
+						streaming={streaming}
+						{...md}
+					/>
 				))}
 			</div>
 		</PickContext.Provider>

@@ -14,7 +14,13 @@ import { Skeleton } from "../tools/bits.tsx";
 import { ToolRun } from "../tools/mod.tsx";
 import { Block, Surface, type UiActionProps } from "./blocks.tsx";
 
-function StreamingSurface({ input }: { input: unknown }) {
+function StreamingSurface({
+	input,
+	token,
+	noteProjectId,
+	onOpenNote,
+}: { input: unknown } & Pick<UiActionProps, "token" | "noteProjectId" | "onOpenNote">) {
+	const md = { token, noteProjectId, onOpenNote };
 	const rawIn = (typeof input === "object" && input !== null ? input : {}) as Record<
 		string,
 		unknown
@@ -46,7 +52,7 @@ function StreamingSurface({ input }: { input: unknown }) {
 				// invalid blocks are skipped, never skeletons.
 				if (!parsed.success) return last && !tailFragment ? <Skeleton key={i} /> : null;
 				// streaming pins html leaves to skeletons at any depth.
-				return <Block key={i} block={parsed.data} streaming />;
+				return <Block key={i} block={parsed.data} streaming {...md} />;
 			})}
 			{tailFragment && <Skeleton />}
 		</div>
@@ -58,18 +64,38 @@ export function UiPart({
 	onAction,
 	busy,
 	messages,
+	token,
+	noteProjectId,
+	onOpenNote,
 }: {
 	part: ToolUIPart | DynamicToolUIPart;
 	messages?: readonly UIMessage[] | undefined;
 } & UiActionProps) {
 	switch (part.state) {
 		case "input-streaming":
-			return <StreamingSurface input={part.input} />;
+			return (
+				<StreamingSurface
+					input={part.input}
+					token={token}
+					noteProjectId={noteProjectId}
+					onOpenNote={onOpenNote}
+				/>
+			);
 		case "input-available":
 		case "output-available": {
 			const parsed = uiInputSchema.safeParse(normalizeUiInput(part.input).value);
 			if (!parsed.success) return <ToolRun part={part} />;
-			return <Surface input={parsed.data} onAction={onAction} busy={busy} messages={messages} />;
+			return (
+				<Surface
+					input={parsed.data}
+					onAction={onAction}
+					busy={busy}
+					messages={messages}
+					token={token}
+					noteProjectId={noteProjectId}
+					onOpenNote={onOpenNote}
+				/>
+			);
 		}
 		default:
 			// output-error / output-denied / approval states — the

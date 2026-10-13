@@ -214,8 +214,12 @@ function NoteChip({
 		title?: string;
 		rev?: number;
 	};
-	if (typeof d.id !== "string" || typeof d.title !== "string") return null;
-	const label = `Note · ${d.title}${typeof d.rev === "number" ? ` · rev ${d.rev}` : ""}`;
+	if (typeof d.id !== "string") return null;
+	// A just-submitted part may carry only {id} until the server's
+	// expansion replaces it — the chip still renders, without title.
+	const label = `Note${typeof d.title === "string" ? ` · ${d.title}` : ""}${
+		typeof d.rev === "number" ? ` · rev ${d.rev}` : ""
+	}`;
 	if (onOpenNote === undefined) {
 		return (
 			<a className="attachment note-chip" href={`/app/n/${encodeURIComponent(d.id)}`}>
@@ -271,6 +275,9 @@ export function MessageParts({
 						onAction={onAction}
 						busy={busy}
 						messages={messages}
+						token={token}
+						noteProjectId={noteProjectId}
+						onOpenNote={onOpenNote}
 					/>,
 				);
 				continue;
@@ -946,8 +953,13 @@ export function Composer({
 				data: e.speech === true ? { ...e.ref, speech: true } : e.ref,
 			} as UIMessage["parts"][number]);
 		// The client names the note only — intake expands it server-side.
+		// The picked title rides along optimistically so the chip renders
+		// before the expanded message lands; the server's expansion wins.
 		for (const n of stagedNotes)
-			parts.push({ type: "data-note", data: { id: n.id } } as UIMessage["parts"][number]);
+			parts.push({
+				type: "data-note",
+				data: { id: n.id, title: n.title },
+			} as UIMessage["parts"][number]);
 		setDraft("");
 		// Entries that weren't sent — uploads still in flight, failed
 		// chips — stay staged. Clearing them would drop files the

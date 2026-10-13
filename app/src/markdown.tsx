@@ -163,6 +163,7 @@ function NoteAppendCard({
 	token,
 	noteProjectId,
 	onOpenNote,
+	unfinished,
 }: {
 	title: string | null;
 	body: string;
@@ -170,6 +171,9 @@ function NoteAppendCard({
 	// A project-bound conversation files new notes in its project.
 	noteProjectId?: string | null | undefined;
 	onOpenNote?: ((id: string) => void) | undefined;
+	// The fence never closed — the reply is still streaming. The body is
+	// a prefix, so the append affordance stays hidden until it lands.
+	unfinished?: boolean | undefined;
 }) {
 	const [open, setOpen] = useState(false);
 	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
@@ -241,7 +245,7 @@ function NoteAppendCard({
 			<div className="note-card-body">
 				<Markdown text={body} token={token} noteProjectId={noteProjectId} onOpenNote={onOpenNote} />
 			</div>
-			{status === "done" ? (
+			{unfinished === true ? null : status === "done" ? (
 				<p className="note-card-status">
 					Appended to{" "}
 					<button type="button" className="link" onClick={() => onOpenNote?.(done!.id)}>
@@ -334,10 +338,13 @@ export function Markdown({
 				codeLines.push(lines[i]!);
 				i++;
 			}
-			if (i < lines.length) i++; // consume the closing fence
+			const closed = i < lines.length;
+			if (closed) i++; // consume the closing fence
 			const body = codeLines.join("\n");
 			// A `note` fence (the prompt's append convention) renders as a
-			// card — content plus the append affordance, never code.
+			// card — content plus the append affordance, never code. An
+			// unclosed fence mid-stream is a prefix: the card shows but
+			// its affordance waits for the closer.
 			if (info === "note" || info.startsWith("note ")) {
 				const titled = /^note\s+title="([^"]*)"\s*$/.exec(info);
 				const bare = info === "note";
@@ -350,6 +357,7 @@ export function Markdown({
 							token={token ?? null}
 							noteProjectId={noteProjectId}
 							onOpenNote={onOpenNote}
+							unfinished={!closed}
 						/>,
 					);
 					continue;

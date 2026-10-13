@@ -1663,7 +1663,12 @@ describe("app projects surface", () => {
 		const chat = posts.find((p) => p.url === "/api/app/chat");
 		expect(chat).toBeTruthy();
 		const msg = (chat!.body as { message: { parts: { type: string; data?: unknown }[] } }).message;
-		expect(msg.parts).toContainEqual({ type: "data-note", data: { id: "n-shopping" } });
+		// The picked title rides optimistically so the chip renders
+		// before the server's expansion replaces the part.
+		expect(msg.parts).toContainEqual({
+			type: "data-note",
+			data: { id: "n-shopping", title: "Shopping" },
+		});
 	});
 
 	test("a stored data-note part renders as a chip that opens the note", async () => {

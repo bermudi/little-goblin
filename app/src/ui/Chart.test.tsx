@@ -54,6 +54,15 @@ test("a pie's displayed shares always sum to 100", () => {
 	expect(html).toContain("a · 34%");
 });
 
+test("a single full-share slice renders a circle — a coincident arc draws nothing", () => {
+	const html = chart("pie", ["everything"], [42], "km");
+	// SVG arcs with identical endpoints render as zero-length — the
+	// only visible 100% slice is a whole circle.
+	expect(html).toContain("<circle");
+	expect(html).toContain("everything · 100%");
+	expect(html).toContain("<title>everything: 42 km (100%)</title>");
+});
+
 test("a zero-total pie degrades to 0% arcs, never NaN", () => {
 	const html = chart("pie", ["a", "b"], [0, 0]);
 	expect(html.match(/<path /g)?.length).toBe(2);

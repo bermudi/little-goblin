@@ -288,6 +288,7 @@ export function NoteView({
 	projects,
 	onChat,
 	onDeleted,
+	onDirtyChange,
 }: {
 	token: string | null;
 	noteId: string;
@@ -296,6 +297,9 @@ export function NoteView({
 	// bound to the note's project when it has one.
 	onChat: (note: AppNote) => void;
 	onDeleted: () => void;
+	// Reports the leave-guard state: unsaved body or title edits, or a
+	// standing conflict — anything navigation would silently destroy.
+	onDirtyChange?: ((dirty: boolean) => void) | undefined;
 }) {
 	const [note, setNote] = useState<AppNote | null>(null);
 	const [loadError, setLoadError] = useState<string | null>(null);
@@ -333,6 +337,17 @@ export function NoteView({
 				? data
 				: cur,
 		);
+
+	// The leave guard's truth: a dirty body, a dirty title, or a
+	// standing conflict bar — all die silently with the component.
+	const guardedDirty =
+		note !== null && (conflict !== null || dirty || titleDraft !== note.title);
+	useEffect(() => {
+		onDirtyChange?.(guardedDirty);
+	}, [onDirtyChange, guardedDirty]);
+	// Unmount clears the parent's guard — a destroyed editor must not
+	// leave the app refusing navigation forever.
+	useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
 	useEffect(() => {
 		let live = true;
@@ -551,7 +566,14 @@ export function NoteView({
 				<button type="button" className="ghost-inline" onClick={() => setVersionsOpen((v) => !v)}>
 					Versions
 				</button>
-				<button type="button" className="ghost" disabled={rewriteBusy} onClick={() => onChat(note)}>
+				<button
+					type="button"
+					className="ghost"
+					// Chat intake refuses archived attachments — unarchive first.
+					disabled={archived || rewriteBusy}
+					title={archived ? "Unarchive the note first" : undefined}
+					onClick={() => onChat(note)}
+				>
 					Chat with this note
 				</button>
 			</div>

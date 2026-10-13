@@ -50,6 +50,7 @@ export interface NoteEditorHandle {
 	// Run the pending save now (synchronous serialization — the
 	// listener lags edits ~200ms). Blocked while a conflict stands.
 	flush(): void;
+	flushAndWait(): Promise<boolean>;
 	// An external conflict (the page's focus refresh or a title 409):
 	// block automatic writes and raise the bar.
 	conflict(note: AppNote): void;
@@ -234,7 +235,7 @@ const NoteEditor = forwardRef<
 	// only overwrite the snapshot it last wrote — after unmount a
 	// newer editor owns the record, and a late drain/ack write must
 	// never roll it back.
-	function persistDraft(md: string): string | null {
+	function persistDraft(md: string, ownedOnly = false): string | null {
 		// The preserved record owns the key — overwriting bytes nobody
 		// could read back would destroy the unsaved work they hold.
 		// Captures resume only on the operator's explicit discard.
@@ -247,11 +248,12 @@ const NoteEditor = forwardRef<
 			body: md,
 		};
 		try {
-			const snap = unmountedRef.current
-				? lastDraftRef.current !== null
-					? writeNoteDraft(draft, lastDraftRef.current)
-					: null
-				: writeNoteDraft(draft);
+			const snap =
+				unmountedRef.current || ownedOnly
+					? lastDraftRef.current !== null
+						? writeNoteDraft(draft, lastDraftRef.current)
+						: null
+					: writeNoteDraft(draft);
 			if (snap === null) return null;
 			lastDraftRef.current = snap;
 			if (!unmountedRef.current) setDraftError(null);
@@ -378,7 +380,7 @@ const NoteEditor = forwardRef<
 		// Synchronous capture at save entry covers anything the plugin
 		// missed; the request snapshot is what the ack may later clear,
 		// and only while the live body is still this one.
-		const requestSnap = persistDraft(md);
+		const requestSnap = persistDraft(md, opts.force !== true);
 		savingRef.current = true;
 		hardFailRef.current = false;
 		markStatus("saving");
@@ -423,7 +425,7 @@ const NoteEditor = forwardRef<
 					if (snap !== null) dropDraft(snap);
 					if (requestSnap !== null && requestSnap !== snap) dropDraft(requestSnap);
 				} else {
-					persistDraft(liveMd);
+					persistDraft(liveMd, true);
 				}
 				if (!unmountedRef.current) {
 					onSavedRef.current(data);
@@ -492,6 +494,38 @@ const NoteEditor = forwardRef<
 		// hasn't caught up.
 		if (ed.action(getMarkdown()) === baselineRef.current) return;
 		void save(revRef.current, { keepalive });
+	}
+
+	function blocked(): boolean {
+		return (
+			unmountedRef.current ||
+			editorRef.current === null ||
+			conflictRef.current !== null ||
+			rewriteActiveRef.current
+		);
+	}
+
+	async function flushAndWait(): Promise<boolean> {
+		clearTimer();
+		if (blocked() || !ready) return false;
+		for (;;) {
+			const flight = inFlightRef.current;
+			if (flight === null) break;
+			await flight;
+			if (blocked()) return false;
+		}
+		const ed = editorRef.current;
+		if (ed === null) return false;
+		if (ed.action(getMarkdown()) !== baselineRef.current) {
+			await save(revRef.current);
+		}
+		for (;;) {
+			const flight = inFlightRef.current;
+			if (flight === null) break;
+			await flight;
+		}
+		if (blocked() || savingRef.current) return false;
+		return editorRef.current!.action(getMarkdown()) === baselineRef.current;
 	}
 
 	// A server-side content change landed: adopt the note, rebase the
@@ -1000,6 +1034,7 @@ const NoteEditor = forwardRef<
 			},
 			editor: () => editorRef.current,
 			flush: () => flush(),
+			flushAndWait,
 			reload,
 			adoptRev: (note: AppNote): void => {
 				// Stale first: a delayed older response must never touch the
@@ -1032,7 +1067,7 @@ const NoteEditor = forwardRef<
 						const ed = editorRef.current;
 						if (ed !== null) {
 							const liveMd = ed.action(getMarkdown());
-							if (liveMd !== baselineRef.current) persistDraft(liveMd);
+							if (liveMd !== baselineRef.current) persistDraft(liveMd, true);
 						}
 					}
 				}

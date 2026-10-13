@@ -339,11 +339,12 @@ export function Markdown({
 				codeLines.push(lines[i]!);
 				i++;
 			}
-			if (i < lines.length) i++; // consume the closing fence
+			const closed = i < lines.length;
+			if (closed) i++; // consume the closing fence
 			const body = codeLines.join("\n");
 			// A `note` fence (the prompt's append convention) renders as a
 			// card — content plus the append affordance, never code.
-			if (info === "note" || info.startsWith("note ")) {
+			if (closed && (info === "note" || info.startsWith("note "))) {
 				const titled = /^note\s+title="([^"]*)"\s*$/.exec(info);
 				const bare = info === "note";
 				if (bare || titled !== null) {

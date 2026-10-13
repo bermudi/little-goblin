@@ -878,14 +878,27 @@ export function SettingsView({
 		}
 		setSaving(true);
 		setNotice(null);
+		const body = bodyFromDraft(draft, provs, kinds.authDefaults);
+		const submittedProvs = provs;
 		try {
-			const res = await saveOperatorConfig(
-				token,
-				bodyFromDraft(draft, provs, kinds.authDefaults),
-				etag,
-			);
+			const res = await saveOperatorConfig(token, body, etag);
 			if (res.etag !== null) setEtag(res.etag);
-			setBaseline(serialize(draft, provs));
+			const ackProvs = submittedProvs.map((p) => {
+				const stored = body.providers[p.name.trim()];
+				if (stored === undefined) return p;
+				const w = stored as { auth?: string; authFile?: string };
+				return { ...p, auth: w.auth ?? w.authFile ?? p.auth };
+			});
+			setBaseline(serialize(draft, ackProvs));
+			setProvs((cur) =>
+				cur.map((c) => {
+					const sub = submittedProvs.find((s) => s.id === c.id);
+					const ack = ackProvs.find((a) => a.id === c.id);
+					if (sub === undefined || ack === undefined) return c;
+					if (c.kind === sub.kind && c.auth === sub.auth) return { ...c, auth: ack.auth };
+					return c;
+				}),
+			);
 			setNotice({ text: "Saved.", kind: "ok" });
 		} catch (e) {
 			setNotice({
@@ -1515,9 +1528,7 @@ export function SettingsView({
 						<ChipsEditor
 							values={draft.operators.map(String)}
 							onAdd={(v) => addId("operators", v)}
-							onRemove={(i) =>
-								patchDraft({ operators: draft.operators.filter((_, j) => j !== i) })
-							}
+							onRemove={(i) => patchDraft({ operators: draft.operators.filter((_, j) => j !== i) })}
 							placeholder="telegram user id"
 							ariaLabel="add operator"
 							numeric

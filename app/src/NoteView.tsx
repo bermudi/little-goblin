@@ -24,12 +24,7 @@ import {
 	restoreNoteVersion,
 } from "./api.ts";
 import type { NoteEditorHandle } from "./NoteEditor.tsx";
-import {
-	discardNoteDraft,
-	loadNoteDraft,
-	rawNoteDraft,
-	type NoteDraft,
-} from "./noteDraft.ts";
+import { discardNoteDraft, loadNoteDraft, rawNoteDraft, type NoteDraft } from "./noteDraft.ts";
 
 const Editor = lazy(() => import("./NoteEditor.tsx"));
 
@@ -404,6 +399,7 @@ export function NoteView({
 	const [dirty, setDirty] = useState(false);
 	const [versionsOpen, setVersionsOpen] = useState(false);
 	const [busy, setBusy] = useState(false);
+	const [chatBusy, setChatBusy] = useState(false);
 	// A selection rewrite locks the editor — title, flags, restore and
 	// the chat action lock with it so nothing races the apply PATCH.
 	const [rewriteBusy, setRewriteBusy] = useState(false);
@@ -419,6 +415,7 @@ export function NoteView({
 	const titleDraftRef = useRef("");
 	const conflictRef = useRef<AppNote | null>(null);
 	const rewriteBusyRef = useRef(false);
+	const chatBusyRef = useRef(false);
 	// One title PATCH at a time — Enter and blur both commit, and a
 	// second write on the same stale If-Match rev lands after the
 	// first and 409s into a false conflict that blocks body autosave.
@@ -591,6 +588,51 @@ export function NoteView({
 		);
 	};
 
+	const chat = async (): Promise<void> => {
+		const cur = noteRef.current;
+		if (
+			cur === null ||
+			cur.archivedAt !== null ||
+			busy ||
+			chatBusyRef.current ||
+			conflictRef.current !== null ||
+			rewriteBusyRef.current
+		) {
+			return;
+		}
+		chatBusyRef.current = true;
+		setChatBusy(true);
+		try {
+			const h = editorRef.current;
+			if (h === null) {
+				setOpError("The editor isn't ready yet — try again in a moment.");
+				return;
+			}
+			const ok = await h.flushAndWait();
+			if (!ok) {
+				setOpError("Couldn't save pending edits — resolve or retry before starting the chat.");
+				return;
+			}
+			const now = noteRef.current;
+			if (
+				now === null ||
+				now.archivedAt !== null ||
+				conflictRef.current !== null ||
+				rewriteBusyRef.current
+			) {
+				return;
+			}
+			onChat(now);
+		} catch (err) {
+			setOpError(
+				`Couldn't prepare this note for chat: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		} finally {
+			chatBusyRef.current = false;
+			setChatBusy(false);
+		}
+	};
+
 	const archived = note.archivedAt !== null;
 	return (
 		<div className="ops notepage">
@@ -645,7 +687,7 @@ export function NoteView({
 			<div className="row note-flags">
 				<select
 					value={note.projectId ?? ""}
-					disabled={busy || rewriteBusy}
+					disabled={busy || rewriteBusy || chatBusy}
 					onChange={(e) =>
 						flag({ projectId: e.target.value === "" ? null : e.target.value }, "move the note")
 					}
@@ -660,7 +702,7 @@ export function NoteView({
 				<button
 					type="button"
 					className="ghost-inline"
-					disabled={busy || rewriteBusy}
+					disabled={busy || rewriteBusy || chatBusy}
 					onClick={() => flag({ pinned: note.pinnedAt === null }, "pin the note")}
 				>
 					{note.pinnedAt === null ? "Pin" : "Unpin"}
@@ -668,7 +710,7 @@ export function NoteView({
 				<button
 					type="button"
 					className="ghost-inline"
-					disabled={busy || rewriteBusy}
+					disabled={busy || rewriteBusy || chatBusy}
 					onClick={() => flag({ archived: !archived }, "archive the note")}
 				>
 					{archived ? "Unarchive" : "Archive"}
@@ -677,7 +719,7 @@ export function NoteView({
 					<button
 						type="button"
 						className="ghost-inline"
-						disabled={busy || rewriteBusy}
+						disabled={busy || rewriteBusy || chatBusy}
 						onClick={remove}
 					>
 						Delete
@@ -686,7 +728,13 @@ export function NoteView({
 				<button type="button" className="ghost-inline" onClick={() => setVersionsOpen((v) => !v)}>
 					Versions
 				</button>
-				<button type="button" className="ghost" disabled={rewriteBusy} onClick={() => onChat(note)}>
+				<button
+					type="button"
+					className="ghost"
+					disabled={busy || rewriteBusy || chatBusy || archived || conflict !== null}
+					title={archived ? "Unarchive this note to chat with it." : undefined}
+					onClick={() => void chat()}
+				>
 					Chat with this note
 				</button>
 			</div>

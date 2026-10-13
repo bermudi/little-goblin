@@ -512,6 +512,8 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	// When set, POST /api/app/conversations waits on it — the create is
 	// held in flight while the operator navigates.
 	let createGate: Promise<void> | null = null;
+	let settingsGate: Promise<void> | null = null;
+	let settingsReleases: (() => void)[];
 	const realFetch = globalThis.fetch;
 
 	const installGlobal = (name: string, value: unknown) => {
@@ -542,6 +544,8 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		settings = SETTINGS;
 		savedBodies = [];
 		createGate = null;
+		settingsGate = null;
+		settingsReleases = [];
 		installGlobal("window", win);
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
@@ -573,14 +577,14 @@ describe("browser back/forward and the unsaved settings editor", () => {
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
 			if (url === "/api/app/settings" && init?.method === "POST") {
 				savedBodies.push(JSON.parse(String(init.body)) as ConfigPostBody);
-				return Promise.resolve(jsonResponse({ ok: true }));
+				return (settingsGate ?? Promise.resolve()).then(() => jsonResponse({ ok: true }));
 			}
 			if (url === "/api/app/settings")
 				return Promise.resolve(
 					new Response(
 						JSON.stringify({
 							config: settings,
-							providerKinds: ["openai-compatible"],
+							providerKinds: ["openai-compatible", "openrouter"],
 							searchKinds: ["ddg", "brave", "jina"],
 							fetchKinds: ["local", "firecrawl", "jina"],
 							transcriptionKinds,
@@ -637,6 +641,9 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	});
 
 	afterEach(async () => {
+		for (const r of settingsReleases) r();
+		settingsReleases = [];
+		settingsGate = null;
 		if (root !== null) {
 			await act(async () => {
 				root?.unmount();
@@ -649,6 +656,16 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		for (const name of installed) Reflect.deleteProperty(globalThis, name);
 		installed = [];
 	});
+
+	const holdSettingsPost = () => {
+		const g = Promise.withResolvers<void>();
+		settingsGate = g.promise;
+		settingsReleases.push(() => g.resolve());
+		return () => {
+			g.resolve();
+			settingsGate = null;
+		};
+	};
 
 	const settle = async () => {
 		await act(async () => {
@@ -892,6 +909,107 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(container.textContent).not.toContain("unsaved");
 	});
 
+	const openProviders = async () => {
+		await click(
+			[...container.querySelectorAll("button.idx")].find((b) =>
+				b.textContent?.includes("Providers"),
+			),
+		);
+		expect(container.querySelector(".prov.card")).not.toBeNull();
+	};
+	const authInput = () =>
+		container.querySelector('.prov.card input[aria-label="secret name"]') as HTMLInputElement;
+	const nameInput = () =>
+		container.querySelector('.prov.card input[aria-label="provider name"]') as HTMLInputElement;
+	const renameProviderCard = async (name: string) => {
+		await typeInto(nameInput(), name, win.HTMLInputElement.prototype);
+		await act(async () => {
+			nameInput().dispatchEvent(
+				new win.FocusEvent("focusout", { bubbles: true }) as unknown as Event,
+			);
+		});
+		await settle();
+	};
+
+	test("a blanked provider auth materializes from the submitted body — a rename can't re-point it", async () => {
+		await mount();
+		await openProviders();
+		expect(authInput().value).toBe("fixture");
+		await typeInto(authInput(), "", win.HTMLInputElement.prototype);
+		await waitFor(() => savedBodies.length > 0, "the blank-auth save");
+		expect(savedBodies.at(-1)?.providers["main"]).toEqual({
+			kind: "openai-compatible",
+			baseUrl: "https://api.example.test",
+			auth: "main",
+		});
+		await waitFor(() => authInput().value === "main", "the materialized auth input");
+		expect(container.querySelector(".dirty-pill")).toBeNull();
+		await renameProviderCard("primary");
+		await waitFor(() => savedBodies.length > 1, "the rename save");
+		expect(savedBodies.at(-1)?.providers["primary"]).toEqual({
+			kind: "openai-compatible",
+			baseUrl: "https://api.example.test",
+			auth: "main",
+		});
+		expect(savedBodies.at(-1)?.providers["main"]).toBeUndefined();
+	});
+
+	test("edits that land under a held settings ack survive it — rename keeps the credential, explicit edits win", async () => {
+		await mount();
+		await openProviders();
+		await typeInto(authInput(), "", win.HTMLInputElement.prototype);
+		let release = holdSettingsPost();
+		await waitFor(() => savedBodies.length > 0, "the held save");
+		await renameProviderCard("primary");
+		release();
+		await waitFor(() => savedBodies.length > 1, "the rename's save");
+		expect(nameInput().value).toBe("primary");
+		expect(authInput().value).toBe("main");
+		expect(savedBodies.at(-1)?.providers["primary"]).toEqual({
+			kind: "openai-compatible",
+			baseUrl: "https://api.example.test",
+			auth: "main",
+		});
+
+		await typeInto(authInput(), "", win.HTMLInputElement.prototype);
+		release = holdSettingsPost();
+		await waitFor(() => savedBodies.length > 2, "the second held save");
+		await typeInto(authInput(), "rotated", win.HTMLInputElement.prototype);
+		release();
+		await waitFor(() => savedBodies.length > 3, "the rotated save");
+		expect(authInput().value).toBe("rotated");
+		expect(savedBodies.at(-1)?.providers["primary"]).toEqual({
+			kind: "openai-compatible",
+			baseUrl: "https://api.example.test",
+			auth: "rotated",
+		});
+
+		await typeInto(authInput(), "", win.HTMLInputElement.prototype);
+		release = holdSettingsPost();
+		await waitFor(() => savedBodies.length > 4, "the third held save");
+		await act(async () => {
+			const select = container.querySelector(
+				'.prov.card select[aria-label="provider type"]',
+			) as HTMLSelectElement;
+			select.value = "openrouter";
+			select.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+		});
+		await settle();
+		release();
+		await waitFor(() => savedBodies.length > 5, "the kind-change save");
+		expect(
+			(
+				container.querySelector(
+					'.prov.card select[aria-label="provider type"]',
+				) as HTMLSelectElement
+			).value,
+		).toBe("openrouter");
+		expect(savedBodies.at(-1)?.providers["primary"]).toEqual({
+			kind: "openrouter",
+			auth: authDefaults.openrouter,
+		});
+	}, 30_000);
+
 	test("an invalid edit cannot write itself — it stays unsaved with the reason", async () => {
 		await mount();
 		await dirtyTheForm();
@@ -947,11 +1065,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		});
 		await waitFor(() => container.querySelector("form.composer") !== null, "the composer");
 		const composer = container.querySelector("form.composer")!;
-		await typeInto(
-			composer.querySelector("textarea")!,
-			"hello",
-			win.HTMLTextAreaElement.prototype,
-		);
+		await typeInto(composer.querySelector("textarea")!, "hello", win.HTMLTextAreaElement.prototype);
 		await act(async () => {
 			composer.dispatchEvent(
 				new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
@@ -2466,7 +2580,9 @@ describe("app projects surface", () => {
 		// Nothing touched the record — viewing isn't consent to drop it.
 		expect(win.localStorage.getItem(DRAFT_KEY)).toContain("unsaved typing");
 
-		await click([...bar!.querySelectorAll("button")].find((b) => b.textContent === "Discard draft"));
+		await click(
+			[...bar!.querySelectorAll("button")].find((b) => b.textContent === "Discard draft"),
+		);
 		expect(win.localStorage.getItem(DRAFT_KEY)).toBeNull();
 		expect(draftBar()).toBeUndefined();
 	});
@@ -2486,7 +2602,9 @@ describe("app projects surface", () => {
 		expect(win.localStorage.getItem(DRAFT_KEY)).toBe("{not json");
 		expect(bar?.textContent).toContain("Download draft");
 		expect(bar?.textContent).not.toContain("Show draft");
-		await click([...bar!.querySelectorAll("button")].find((b) => b.textContent === "Discard draft"));
+		await click(
+			[...bar!.querySelectorAll("button")].find((b) => b.textContent === "Discard draft"),
+		);
 		expect(win.localStorage.getItem(DRAFT_KEY)).toBeNull();
 	});
 
@@ -2837,6 +2955,75 @@ describe("app projects surface", () => {
 			expect(container.querySelector('p.error[role="alert"]')).toBeNull();
 		});
 	}
+
+	const chatButton = () =>
+		[...container.querySelectorAll(".note-flags button")].find(
+			(b) => b.textContent === "Chat with this note",
+		) as HTMLButtonElement;
+
+	test("chat flushes the pending edit before minting — held PATCH, no early navigation", async () => {
+		notes = [noteRow("Shopping")];
+		noteBodies = { "n-shopping": "milk" };
+		await notePage("/app/n/n-shopping");
+		await editBody("x");
+		const gate = hold();
+		notePatchHold = gate.promise;
+		await click(chatButton());
+		expect(notePatches).toHaveLength(1);
+		expect((notePatches[0]!.body as { body?: string }).body).toContain("milkx");
+		expect(notePatches[0]!.ifMatch).toBe('"1"');
+		expect(posts.some((p) => p.url === "/api/app/conversations")).toBe(false);
+		expect(posts.some((p) => p.url === "/api/app/chat")).toBe(false);
+		expect(win.location.pathname).toBe("/app/n/n-shopping");
+		await click(chatButton());
+		gate.resolve();
+		await settle();
+		await settleSlow();
+		expect(posts.filter((p) => p.url === "/api/app/conversations")).toHaveLength(1);
+		expect(win.location.pathname).toBe("/app/c/minted");
+		const chatPost = posts.find((p) => p.url === "/api/app/chat");
+		expect(chatPost).toBeTruthy();
+		const parts = (chatPost!.body as { message: { parts: unknown[] } }).message.parts;
+		expect(parts).toContainEqual({
+			type: "data-note",
+			data: { id: "n-shopping", title: "Shopping" },
+		});
+	});
+
+	test("a refused flush save blocks the mint — buffer stays, error shows", async () => {
+		notes = [noteRow("Shopping")];
+		noteBodies = { "n-shopping": "milk" };
+		conflictPatch = true;
+		await notePage("/app/n/n-shopping");
+		await editBody("x");
+		await click(chatButton());
+		await settle();
+		expect(notePatches).toHaveLength(1);
+		expect(container.querySelector(".note-conflict")).not.toBeNull();
+		expect(posts.some((p) => p.url === "/api/app/conversations")).toBe(false);
+		expect(posts.some((p) => p.url === "/api/app/chat")).toBe(false);
+		expect(win.location.pathname).toBe("/app/n/n-shopping");
+		expect(container.querySelector(".ProseMirror")!.textContent).toContain("milkx");
+		const alert = container.querySelector('p.error[role="alert"]');
+		expect(alert?.textContent).toContain("Couldn't save pending edits");
+	});
+
+	test("an archived note's chat control is disabled — no mint on click", async () => {
+		notes = [noteRow("Shopping", { archivedAt: "2026-10-12T00:00:00.000Z" })];
+		noteBodies = { "n-shopping": "milk" };
+		win.history.replaceState(null, "", "/app/n/n-shopping");
+		await mount();
+		await settle();
+		const chat = chatButton();
+		expect(chat).toBeTruthy();
+		expect(chat.disabled).toBe(true);
+		expect(chat.title).toBe("Unarchive this note to chat with it.");
+		await click(chat);
+		expect(posts.some((p) => p.url === "/api/app/conversations")).toBe(false);
+		expect(posts.some((p) => p.url === "/api/app/chat")).toBe(false);
+		expect(win.location.pathname).toBe("/app/n/n-shopping");
+		expect(container.querySelector(".note-readonly")).not.toBeNull();
+	});
 
 	const railSearch = () => container.querySelector("input.rail-search")!;
 	const searchAlert = () =>

@@ -431,6 +431,132 @@ describe("NoteEditor save loop", () => {
 		expect(headers["if-match"]).toBe('"2"');
 	});
 
+	test("flushAndWait on a clean buffer resolves true without a PATCH", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		await settle();
+		const verdict = { ok: null as boolean | null };
+		await act(async () => {
+			verdict.ok = await ref.current!.flushAndWait();
+		});
+		expect(verdict.ok).toBe(true);
+		expect(patches).toHaveLength(0);
+	});
+
+	test("flushAndWait rides the held PATCH, then writes the mid-flight edit at the landed rev", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		holdPatch();
+		await edit(ref, "v2");
+		await notice();
+		await settle();
+		expect(patches).toHaveLength(1);
+		const verdict = { ok: null as boolean | null };
+		const flush = ref.current!.flushAndWait().then((ok) => {
+			verdict.ok = ok;
+		});
+		await edit(ref, "v3");
+		await tick(0);
+		expect(verdict.ok).toBeNull();
+		releasePatch();
+		await act(async () => {
+			await flush;
+		});
+		await settle();
+		expect(verdict.ok).toBe(true);
+		expect(patches).toHaveLength(2);
+		expect(patches[1]!.body.body).toContain("v3");
+		const headers = patches[1]!.init.headers as Record<string, string>;
+		expect(headers["if-match"]).toBe('"2"');
+	});
+
+	test("flushAndWait resolves false on a dropped network instead of retry-looping", async () => {
+		root = createRoot(container);
+		const ref = await mount(note.body, 60_000);
+		await notice();
+		rejectPatchOnce = true;
+		await edit(ref, "v2");
+		await notice();
+		const verdict = { ok: null as boolean | null };
+		await act(async () => {
+			verdict.ok = await ref.current!.flushAndWait();
+		});
+		expect(verdict.ok).toBe(false);
+		expect(patches).toHaveLength(1);
+		expect(ref.current?.dirty()).toBe(true);
+	});
+
+	test("flushAndWait rejects on a serializer fault — nothing swallowed, buffer intact", async () => {
+		root = createRoot(container);
+		const ref = await mount(note.body, 60_000);
+		await notice();
+		await edit(ref, "v2");
+		await notice();
+		const ed = ref.current!.editor()!;
+		const origAction = ed.action.bind(ed);
+		let armed = true;
+		(ed as { action: unknown }).action = (ctx: (c: unknown) => unknown) => {
+			if (armed) {
+				armed = false;
+				throw new Error("injected serializer failure");
+			}
+			return origAction(ctx);
+		};
+		await act(async () => {
+			await expect(ref.current!.flushAndWait()).rejects.toThrow("injected serializer failure");
+		});
+		expect(patches).toHaveLength(0);
+		expect(ed.action(getMarkdown())).toContain("v2");
+		const verdict = { ok: null as boolean | null };
+		await act(async () => {
+			verdict.ok = await ref.current!.flushAndWait();
+		});
+		expect(verdict.ok).toBe(true);
+		expect(patches).toHaveLength(1);
+		expect(patches[0]!.body.body).toContain("v2");
+	});
+
+	test("flushAndWait resolves false under a conflict and never PATCHes past the bar", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		conflictOnce = theirs();
+		await edit(ref, "v2");
+		await notice();
+		await settle();
+		expect(patches).toHaveLength(1);
+		const verdict = { ok: null as boolean | null };
+		await act(async () => {
+			verdict.ok = await ref.current!.flushAndWait();
+		});
+		expect(verdict.ok).toBe(false);
+		expect(patches).toHaveLength(1);
+	});
+
+	test("flushAndWait outlives unmount only as a false verdict — no post-unmount writes", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		holdPatch();
+		await edit(ref, "v2");
+		await notice();
+		await settle();
+		expect(patches).toHaveLength(1);
+		const verdict = { ok: null as boolean | null };
+		const flush = ref.current!.flushAndWait().then((ok) => {
+			verdict.ok = ok;
+		});
+		await act(async () => root!.unmount());
+		root = null;
+		releasePatch();
+		await act(async () => {
+			await flush;
+		});
+		expect(verdict.ok).toBe(false);
+	});
+
 	test("a conflict blocks automatic saves and flush until resolve", async () => {
 		root = createRoot(container);
 		const ref = await mount();
@@ -1285,5 +1411,28 @@ describe("NoteEditor durable draft", () => {
 		expect(storedDraft()?.body).toContain("v4");
 		expect(storedDraft()?.baseRev).toBe(1);
 		expect(ref2.current?.editor()?.action(getMarkdown())).toContain("v4");
+	});
+
+	test("a mounted ack can't overwrite another owner's draft — every ack-side write compares", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		holdPatch();
+		await edit(ref, "v2");
+		await notice();
+		await settle();
+		expect(patches).toHaveLength(1);
+		await edit(ref, "v3");
+		const bRaw = seedDraft({ body: "B newer work", baseRev: 9 });
+		releasePatch();
+		await tick(0);
+		expect((globalThis.localStorage as Storage).getItem(DRAFT_KEY)).toBe(bRaw);
+		await notice();
+		await settle();
+		expect(patches).toHaveLength(2);
+		expect(patches[1]!.body.body).toContain("v3");
+		expect((patches[1]!.init.headers as Record<string, string>)["if-match"]).toBe('"2"');
+		expect((globalThis.localStorage as Storage).getItem(DRAFT_KEY)).toBe(bRaw);
+		expect(ref.current?.editor()?.action(getMarkdown())).toContain("v3");
 	});
 });

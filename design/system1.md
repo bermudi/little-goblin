@@ -59,7 +59,7 @@ they are:
 | Skill-review gate | `src/reviewer.ts`, on every completed turn | `design/skills.md` → Skill reviewer | 30 s client default | Gate failure → deterministic fallback trigger (≥ 8 tool calls, trigger: procedure), fallback streak logged |
 | Injection checker | `src/injection.ts` `checkInjection` — direct for watcher fires (`scoredMailEvent`, `src/scheduler.ts`); the loopback endpoint for wrapper reads | `design/mail.md` | 30 s client default | `System1Error` only → "unavailable" verdict, the read proceeds; anything else propagates loud |
 | Rolling DM follow-up check | `src/rolling.ts`, resolved via `followUpGate` | `design/telegram.md` → Rolling DM | 3 s total | No client, `System1Error` or deadline → follow-up (continue), warn-logged |
-| Loop watchdog | `src/loop-watchdog.ts` via `runtime.setLoopWatchdog` | `design/model.md` → No step budget | 30 s client default | Unavailable system1 → warn and skip; the deterministic detector still stands |
+| Loop watchdog | `src/turn/state.ts` (cadence + `decide`) via `runtime.setLoopWatchdog`; questions/ring in `src/loop-watchdog.ts` | `design/model.md` → No step budget | 30 s client default | Unavailable system1 → warn and skip; the deterministic detector still stands |
 
 The checker scores text through two `noul` questions (`injection`,
 `severity`): head-cut at 8 000 chars, `malicious` ≥ 0.7, `suspicious`
@@ -80,8 +80,10 @@ bugs reach the 500 — the text is never logged.
 
 The optional hand-edited `system1` block — `{auth, model?, baseUrl?}` —
 is the shared client's own switch (ruling 2026-10-12): set, the client
-exists and every consumer attaches, `reviewer` block or not; `reviewer`
-still implies the client, so existing configs behave identically.
+exists and its non-reviewer consumers attach, `reviewer` block or not
+(the skill-review gate itself still needs `reviewer`); `reviewer`
+still implies the client — a reviewer config behaves identically,
+a system1-only config gains the client it already named.
 `auth` names the `auth.jsonl` record and resolves live per call,
 falling back to `reviewer.auth`; `model` is a bare decision-model id
 like `typesafe/jev-1.13`, never a `<provider>/<model>` chat ref

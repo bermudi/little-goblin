@@ -131,8 +131,8 @@ export interface BotDeps {
 	// Resolved per tap (built right after the bot — it needs bot.api).
 	// Absent = mail never wired: a stale button gets an answer, never a hang.
 	mail?: () => MailApproval;
-	// The Rolling DM follow-up check, resolved per call (the reviewer is
-	// built after the bot). Absent = no check: a past-gap burst joins current.
+	// The Rolling DM follow-up check, resolved per call (the shared client
+	// is built after the bot). Absent = no check: a past-gap burst joins current.
 	followUpGate?: () => Pick<System1Client, "decide"> | undefined;
 }
 

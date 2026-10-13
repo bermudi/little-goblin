@@ -470,8 +470,9 @@ export const reviewerConfigSchema = z.object({
 export type ReviewerConfig = z.infer<typeof reviewerConfigSchema>;
 
 // System One decisions — the switch and tuning for the shared client
-// feeding the skill-review gate, the mail injection checker, the loop
-// watchdog, and the DM follow-up check. Set on its own it enables the
+// feeding the mail injection checker, the loop watchdog, and the DM
+// follow-up check (the skill-review gate rides it too, but only
+// `reviewer` enables that consumer). Set on its own it enables the
 // client; absent, reviewer still implies it. Fields fall back to
 // reviewer.auth/DEFAULT_MODEL.
 // model is a bare decision-model id, NOT a "<provider>/<model-id>" chat

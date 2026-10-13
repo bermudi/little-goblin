@@ -64,9 +64,9 @@ export interface RollDeps {
 	runtime: Pick<Runtime, "busy">;
 	// Live config read — a mini-app save applies on the next message.
 	gapMinutes: () => number;
-	// The shared reviewer System1Client, resolved per call (it is built
-	// after the bot in the composition root). undefined = no check
-	// available — the burst joins current.
+	// The shared System1Client, resolved per call (it is built after the
+	// bot in the composition root). undefined = no check available — the
+	// burst joins current.
 	gate?: () => Pick<System1Client, "decide"> | undefined;
 	// Injectable clock — tests steer the gap without sleeping.
 	now?: () => Date;

@@ -581,7 +581,8 @@ async function boot() {
 	const reviewerBlock = configRef.current.reviewer;
 	// System One is its own switch (design/system1.md → Config): the shared
 	// client exists whenever a `system1` block is set, and `reviewer` still
-	// implies it — every existing config behaves identically.
+	// implies it — reviewer configs behave identically; a system1-only
+	// config gains the client it already named.
 	const system1Block = configRef.current.system1;
 	const system1Gate =
 		system1Block || reviewerBlock
@@ -604,7 +605,11 @@ async function boot() {
 		// budget"): every 16 completed calls system1 scores the digest ring — warn
 		// once, cut on the second stuck verdict.
 		runtime.setLoopWatchdog({ decide: system1Gate.decide.bind(system1Gate) });
-		if (reviewerBlock === undefined) log.info("system1 enabled", {});
+		if (reviewerBlock === undefined)
+			log.info("system1 enabled", {
+				model: system1Block?.model,
+				baseUrl: system1Block?.baseUrl,
+			});
 	}
 	if (reviewerBlock !== undefined && system1Gate !== null) {
 		// reviewer implies the gate by construction — system1Gate is never null here.

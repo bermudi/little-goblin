@@ -151,11 +151,12 @@
   // },
 
   // --- System One (the small gate model) ---
-  // Set = the shared System One client exists, feeding the skill-review
-  // gate, the mail injection checker, the loop watchdog, and the DM
-  // follow-up check — reviewer block or not (reviewer still implies the
-  // client when this is unset). `model` is a bare decision-model id
-  // (e.g. typesafe/jev-1.13), NOT a <provider>/<model> chat ref.
+  // Set = the shared System One client exists, feeding the mail
+  // injection checker, the loop watchdog, and the DM follow-up check
+  // (the skill-review gate rides it too, but only `reviewer` enables
+  // that consumer). Unset = `reviewer` still implies the client.
+  // `model` is a bare decision-model id (e.g. typesafe/jev-1.13), NOT a
+  // <provider>/<model> chat ref.
   // system1: { auth: "openrouter" },
 
   // --- Delegation (other coding harnesses, via herdr) ---

@@ -1226,6 +1226,36 @@ describe("NoteEditor durable draft", () => {
 		expect(ref.current?.editor()?.action(getMarkdown())).toBe("* a\n* b\n");
 	});
 
+	test("an unreadable record is held until the operator discards it — edits and unload can't overwrite it", async () => {
+		const raw = `{"version":1,"noteId":"${note.id}","body":"unreadable`;
+		(globalThis.localStorage as Storage).setItem(DRAFT_KEY, raw);
+		root = createRoot(container);
+		const ref = await mount(note.body, 60_000); // autosave parked
+		await notice();
+		const alert = () => container.querySelector('[role="alert"]');
+		expect(alert()?.textContent).toContain("Local draft could not be loaded");
+		// The first edit's capture is refused — the bytes stay verbatim
+		// instead of being replaced by the new buffer.
+		await edit(ref, "typed over");
+		await tick(0);
+		expect((globalThis.localStorage as Storage).getItem(DRAFT_KEY)).toBe(raw);
+		// The unload path can't clobber it either — the keepalive save
+		// landed fine, but the preserved record still stands.
+		await act(async () => win.dispatchEvent(new win.Event("pagehide")));
+		await settle();
+		expect(patches).toHaveLength(1);
+		expect((globalThis.localStorage as Storage).getItem(DRAFT_KEY)).toBe(raw);
+		expect(alert()).not.toBeNull();
+		// The explicit discard frees the key; captures resume normally.
+		await clickBtn("Discard draft");
+		await tick(0);
+		expect(alert()).toBeNull();
+		expect(storedDraft()).toBeNull(); // clean doc post-save — nothing owed
+		await edit(ref, "fresh work");
+		await tick(0);
+		expect(storedDraft()?.body).toContain("fresh work");
+	});
+
 	test("a detached ack never overwrites a newer component's draft", async () => {
 		root = createRoot(container);
 		const ref = await mount();

@@ -69,6 +69,27 @@ export function writeNoteDraft(draft: NoteDraft, expectedSnapshot?: string): str
 	return serialized;
 }
 
+// The two explicit paths over a record this module can't read: the
+// verbatim bytes for the operator to salvage, and an unconditional
+// delete for the discard control. Neither parses or compares — the
+// point of preserving an unreadable record is that no code path
+// understands it.
+export function rawNoteDraft(noteId: string): string | null {
+	try {
+		return localStorage.getItem(key(noteId));
+	} catch (e) {
+		throw new Error(`localStorage read failed: ${e instanceof Error ? e.message : String(e)}`);
+	}
+}
+
+export function discardNoteDraft(noteId: string): void {
+	try {
+		localStorage.removeItem(key(noteId));
+	} catch (e) {
+		throw new Error(`localStorage delete failed: ${e instanceof Error ? e.message : String(e)}`);
+	}
+}
+
 // Remove the draft only while the stored record still IS the given
 // snapshot — a late ack must not delete a newer draft, and one tab
 // must not delete another's.

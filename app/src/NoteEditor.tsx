@@ -23,7 +23,14 @@ import { gfm } from "@milkdown/kit/preset/gfm";
 import { $prose, getMarkdown, markdownToSlice, replaceAll } from "@milkdown/kit/utils";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { ApiError, NoteConflictError, patchNote, rewriteNote } from "./api.ts";
-import { clearNoteDraft, loadNoteDraft, writeNoteDraft, type NoteDraft } from "./noteDraft.ts";
+import {
+	clearNoteDraft,
+	discardNoteDraft,
+	loadNoteDraft,
+	rawNoteDraft,
+	writeNoteDraft,
+	type NoteDraft,
+} from "./noteDraft.ts";
 import type { AppNote } from "../../src/http/app-wire.ts";
 
 export interface NoteEditorHandle {
@@ -132,6 +139,11 @@ const NoteEditor = forwardRef<
 	// The exact serialized record this editor last stored — compare-
 	// delete, so a late ack clears only its own write.
 	const lastDraftRef = useRef<string | null>(null);
+	// A stored record that failed to load stays on the key verbatim
+	// until the operator handles it — every capture path funnels
+	// through persistDraft, which refuses while this stands.
+	const preservedRef = useRef(false);
+	const [preserved, setPreserved] = useState(false);
 	const dirtyRef = useRef(false);
 	const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const savingRef = useRef(false);
@@ -223,6 +235,10 @@ const NoteEditor = forwardRef<
 	// newer editor owns the record, and a late drain/ack write must
 	// never roll it back.
 	function persistDraft(md: string): string | null {
+		// The preserved record owns the key — overwriting bytes nobody
+		// could read back would destroy the unsaved work they hold.
+		// Captures resume only on the operator's explicit discard.
+		if (preservedRef.current) return null;
 		const draft: NoteDraft = {
 			version: 1,
 			noteId,
@@ -268,6 +284,41 @@ const NoteEditor = forwardRef<
 			return;
 		}
 		persistDraft(md);
+	}
+
+	// The operator's explicit calls on a preserved record: Download
+	// hands back the raw bytes (recovery), Discard frees the key so the
+	// live buffer becomes the draft again.
+	function downloadPreservedDraft(): void {
+		let raw: string | null;
+		try {
+			raw = rawNoteDraft(noteId);
+		} catch (e) {
+			reportDraftError("loaded", e);
+			return;
+		}
+		if (raw === null || typeof URL.createObjectURL !== "function") return;
+		const url = URL.createObjectURL(new Blob([raw], { type: "text/plain" }));
+		const a = document.createElement("a");
+		a.href = url;
+		a.download = `goblin-note-draft-${noteId}.txt`;
+		a.click();
+		URL.revokeObjectURL(url);
+	}
+
+	function discardPreservedDraft(): void {
+		try {
+			discardNoteDraft(noteId);
+		} catch (e) {
+			reportDraftError("cleared", e);
+			return;
+		}
+		preservedRef.current = false;
+		setPreserved(false);
+		setDraftError(null);
+		// The live buffer may still be unsaved work — capture it now
+		// that the record's key is free.
+		persistLive();
 	}
 
 	// Synchronous persist for unload boundaries — runs even while a
@@ -758,6 +809,11 @@ const NoteEditor = forwardRef<
 			recovered = loadNoteDraft(noteId);
 		} catch (err) {
 			reportDraftError("loaded", err);
+			// The unreadable record is held until the operator's
+			// download or discard — persistDraft blocks while this
+			// stands, so edits can't silently overwrite it.
+			preservedRef.current = true;
+			setPreserved(true);
 		}
 		const ed = Editor.make()
 			.config((ctx) => {
@@ -1091,7 +1147,17 @@ const NoteEditor = forwardRef<
 			)}
 			{draftError !== null && (
 				<div className="note-draft-error" role="alert">
-					{draftError}
+					<span>{draftError}</span>
+					{preserved && (
+						<span className="row note-draft-actions">
+							<button type="button" className="ghost-inline" onClick={downloadPreservedDraft}>
+								Download draft
+							</button>
+							<button type="button" className="ghost-inline" onClick={discardPreservedDraft}>
+								Discard draft
+							</button>
+						</span>
+					)}
 				</div>
 			)}
 			<div className={`note-save-status ${status}`}>{label}</div>

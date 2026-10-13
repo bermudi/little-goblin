@@ -28,6 +28,7 @@ marker_dir="$(dirname "$marker")"
 	fail "deployment marker directory is not writable: $marker_dir"
 old_rev=""
 refresh_all=true
+rollback_available=false
 if [ -e "$marker" ] || [ -L "$marker" ]; then
 	[ -f "$marker" ] || fail "deployment marker is not a regular file: $marker"
 	[ -r "$marker" ] || fail "cannot read deployment marker: $marker"
@@ -44,7 +45,8 @@ if [ -e "$marker" ] || [ -L "$marker" ]; then
 		commit)
 			old_rev="$(git rev-parse --verify "$old_rev^{commit}")" ||
 				fail "cannot resolve deployment marker commit: $marker"
-			refresh_all=false ;;
+			refresh_all=false
+			rollback_available=true ;;
 		"$old_rev missing")
 			step "deployment marker history is missing; refreshing everything" ;;
 		*) fail "invalid commit in deployment marker: $marker ($marker_type)" ;;
@@ -111,7 +113,7 @@ sync -d "$marker_dir" || fail "cannot flush deployment attempt marker directory"
 # automatically and never clear the attempt marker from the trap: its
 # presence is what forces the next run's refresh.
 rollback_cmd=""
-if [ -n "$old_rev" ]; then
+if [ "$rollback_available" = true ]; then
 	printf -v rollback_marker '%q' "$marker"
 	rollback_cmd="git reset --hard $old_rev && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin && echo $old_rev > $rollback_marker"
 fi

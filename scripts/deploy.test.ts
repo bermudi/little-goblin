@@ -379,6 +379,8 @@ describe("local deployment preflight", () => {
 		expect(result.stdout).toContain("deploy/memory/ changed");
 		expect(result.stdout).toContain("history is missing; refreshing everything");
 		expect(result.markerValue).toBe(result.newRev);
+		expect(result.stdout).not.toContain("rollback:");
+		expect(result.stderr).not.toContain("git reset --hard");
 	});
 
 	test("linked worktree marker uses Git's path, not .git as a directory", () => {
@@ -522,6 +524,15 @@ describe("local deployment failures and memory probe", () => {
 		expect(result.status).not.toBe(0);
 		expect(result.stderr).toContain("FAILED — the attempt marker stays");
 		expect(result.stderr).not.toContain("git reset --hard");
+	});
+
+	test("a stale marker's failed run keeps the attempt marker but prints no rollback recipe", () => {
+		const result = runDeploy([], { marker: "unknown", mode: "typecheck" });
+		expect(result.status).not.toBe(0);
+		expect(result.stderr).toContain("FAILED — the attempt marker stays");
+		expect(result.stderr).not.toContain("git reset --hard");
+		expect(result.stderr).not.toContain("rollback:");
+		expect(result.attemptExists).toBe(true);
 	});
 
 	test("fresh journal errors are visible warnings, not hidden or a read failure", () => {

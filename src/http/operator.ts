@@ -901,10 +901,15 @@ export async function handleOperatorRoute(
 		if (!level.success)
 			return Response.json({ error: "bad level" }, { status: 400, headers: NO_STORE });
 		const qRaw = url.searchParams.get("q");
+		const q =
+			qRaw === null || qRaw === ""
+				? { success: true as const, data: null }
+				: z.string().max(300).safeParse(qRaw);
+		if (!q.success) return Response.json({ error: "bad q" }, { status: 400, headers: NO_STORE });
 		const body = tailLog(paths.logFile(), {
 			limit: limit.data,
 			level: level.data,
-			q: qRaw === null || qRaw === "" ? null : qRaw.slice(0, 300),
+			q: q.data,
 		});
 		return Response.json(body, { headers: NO_STORE });
 	}

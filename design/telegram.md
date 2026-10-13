@@ -165,9 +165,19 @@ failing message by message.
   probe, no conversation calls — and opened outside Telegram (empty
   initData) it shows a notice instead of a form that cannot save.
   `telegram-web-app.js` is never fetched: both doors are one origin, the
-  app token lives in that origin's localStorage, and Telegram's own
-  webviews inject `window.Telegram` before page scripts — a client that
-  does not inject gets the same empty-initData notice.
+  app token lives in that origin's localStorage, and no third-party
+  script — live, and per ruling 2026-10-13 not even a pinned copy —
+  executes there. Webviews that inject `window.Telegram` use their own
+  copy; Telegram Desktop does not inject, which silently killed this
+  door there until ruling 2026-10-13. The door therefore installs a
+  local stand-in (`app/src/telegram.ts`) when the object is absent: it
+  parses `tgWebAppData` from the URL hash — the transport every client
+  delivers, and the same one the official script reads — and posts
+  `web_app_ready`/`web_app_expand` through the client bridges in the
+  official precedence order (TelegramWebviewProxy → external.notify →
+  parent-frame postMessage). A hash without `tgWebAppData` — a plain
+  browser — keeps initData empty and gets the same empty-initData
+  notice.
   In-door navigation is component state with no history entries; the
   webview's back gesture closes the mini app natively. A missing build
   fail-louds a 500 + log line exactly like `/app/*` —

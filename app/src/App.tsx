@@ -478,8 +478,8 @@ function TelegramDoor() {
 	const settingsDirty = useRef(false);
 	// initData empty means the page was not opened by Telegram — every
 	// request would 401. Say so instead of rendering a form that cannot
-	// save; the webview injects telegram-web-app.js before page scripts,
-	// so the check is settled by first render.
+	// save; window.Telegram is settled before first render — injected by
+	// the webview, or the local fallback installed in main.tsx.
 	const [authed] = useState(() => (window.Telegram?.WebApp.initData ?? "") !== "");
 	useEffect(() => {
 		window.Telegram?.WebApp.ready?.();

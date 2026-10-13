@@ -10,7 +10,7 @@ import type { DelegationsStore } from "../delegations.ts";
 import { log } from "../log.ts";
 import { readBodyCapped, serveInjectionCheck } from "./check.ts";
 import { serveAppDist } from "./app-dist.ts";
-import { validateInitData, type InitDataUser } from "./auth.ts";
+import { validateInitData, type InitDataResult } from "./auth.ts";
 import { handleOperatorRoute, type OperatorDeps } from "./operator.ts";
 
 // HttpDeps is OperatorDeps (the shared operator surface — settings,
@@ -142,7 +142,7 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 		}
 		return done(landed ? 202 : 500, fresh);
 	}
-	function authedUser(req: Request): InitDataUser | null {
+	function authedUser(req: Request): InitDataResult {
 		const initData = req.headers.get("x-init-data") ?? "";
 		// Read per-request so config writes take effect without a restart.
 		// Mini app door: operators only (design/telegram.md → Roles and
@@ -280,13 +280,15 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 		const operatorTail =
 			OPERATOR_TAILS[url.pathname] ?? (memDocTail ? `memory/documents/${memDocTail[1]}` : null);
 		if (operatorTail !== null) {
-			const user = authedUser(req);
-			if (!user) {
+			const auth = authedUser(req);
+			if (!auth.ok) {
+				// Category and path only — the presented credential never logs.
+				log.warn("mini-app auth refused", { path: url.pathname, why: auth.why });
 				return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
 			}
 			const res = await handleOperatorRoute(
 				deps,
-				{ via: "mini-app", userId: user.id },
+				{ via: "mini-app", userId: auth.user.id },
 				req,
 				operatorTail,
 				url,

@@ -288,7 +288,8 @@ async function appAuth(
 	const header = req.headers.get("authorization") ?? "";
 	const presented = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
 	if (!bearerMatches(presented, expected)) {
-		log.warn("app auth failed", { path: pathname });
+		// `presented` is only whether a Bearer header arrived — never its value.
+		log.warn("app auth failed", { path: pathname, presented: presented !== "" });
 		return Response.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
 	}
 	return null;

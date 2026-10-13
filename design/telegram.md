@@ -167,7 +167,12 @@ failing message by message.
   probe, no conversation calls — and opened outside Telegram (empty
   initData) it shows a notice instead of a form that cannot save.
   In-door navigation is component state with no history entries; the
-  webview's back gesture closes the mini app natively. A missing build
+  webview's back gesture closes the mini app natively. The unsaved-draft
+  protection is two layers of the same contract: the in-door confirm
+  guards page switches, and the draft also arms the webview's native
+  close confirmation (`WebApp.enableClosingConfirmation`) — disarmed on
+  save, on an approved discard, and on unmount, so the guard never
+  outlives the draft it was armed for. A missing build
   fail-louds a 500 + log line exactly like `/app/*` —
   settings-from-Telegram now depends on the app build (deploy.sh gates
   it, rollback rebuilds it; accepted by ruling). Widening the door's

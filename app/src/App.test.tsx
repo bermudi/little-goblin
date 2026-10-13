@@ -1045,6 +1045,7 @@ describe("App telegram door", () => {
 	let root: Root | null = null;
 	let installed: string[] = [];
 	let appDoorHits: string[] = [];
+	let savedBodies: ConfigPostBody[] = [];
 	const realFetch = globalThis.fetch;
 
 	const installGlobal = (name: string, value: unknown) => {
@@ -1072,6 +1073,7 @@ describe("App telegram door", () => {
 		container = div as unknown as HTMLElement;
 		installed = [];
 		appDoorHits = [];
+		savedBodies = [];
 		installGlobal("window", win);
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
@@ -1085,6 +1087,10 @@ describe("App telegram door", () => {
 			if (url.startsWith("/api/app/")) {
 				appDoorHits.push(url);
 				return Promise.resolve(new Response(null, { status: 404 }));
+			}
+			if (url === "/api/settings" && init?.method === "POST") {
+				savedBodies.push(JSON.parse(String(init.body)) as ConfigPostBody);
+				return Promise.resolve(jsonResponse({ ok: true }));
 			}
 			if (url === "/api/settings")
 				return Promise.resolve(
@@ -1184,6 +1190,125 @@ describe("App telegram door", () => {
 		await renderDoor();
 		expect(container.textContent).toContain("Memories");
 		expect(appDoorHits).toEqual([]);
+	});
+
+	// The close guard is the draft's webview-level twin of the in-door
+	// confirm: armed while a draft exists, disarmed on save, discard,
+	// or unmount (design/telegram.md → Mini Apps).
+	const sdkCalls: string[] = [];
+	const stubClosingConfirmation = () => {
+		sdkCalls.length = 0;
+		Reflect.set(win, "Telegram", {
+			WebApp: {
+				initData: "user=%7B%22id%22%3A111%7D&hash=abc",
+				enableClosingConfirmation: () => sdkCalls.push("enable"),
+				disableClosingConfirmation: () => sdkCalls.push("disable"),
+			},
+		});
+	};
+	const settle = async () => {
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 30));
+		});
+	};
+	const waitFor = async (pred: () => boolean, label: string) => {
+		for (let i = 0; i < 100; i++) {
+			if (pred()) return;
+			await settle();
+		}
+		throw new Error(`timed out waiting for ${label}`);
+	};
+	const click = async (el: Element | null | undefined) => {
+		expect(el).toBeTruthy();
+		await act(async () => {
+			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+		});
+		await settle();
+	};
+	const dirtyTheForm = async () => {
+		await click(
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Access")),
+		);
+		// Dropping the only operator can never validate — the draft
+		// stays dirty pending a save that cannot happen.
+		await click(
+			container
+				.querySelector('[aria-label="add operator"]')
+				?.closest(".frow")
+				?.querySelector(".chip button"),
+		);
+		expect(container.textContent).toContain("unsaved");
+	};
+	const memoriesButton = () =>
+		[...container.querySelectorAll(".rail-ops button")].find((b) => b.textContent === "Memories");
+
+	test("a pristine door disarms the closing confirmation at mount", async () => {
+		stubClosingConfirmation();
+		await renderDoor();
+		expect(sdkCalls).toEqual(["disable"]);
+	});
+
+	test("a dirty draft arms the guard; discarding or saving disarms it", async () => {
+		stubClosingConfirmation();
+		let confirmAnswer = false;
+		let confirmCalls = 0;
+		Reflect.set(win, "confirm", () => {
+			confirmCalls += 1;
+			return confirmAnswer;
+		});
+		await renderDoor();
+		await dirtyTheForm();
+		expect(sdkCalls.at(-1)).toBe("enable");
+		// A declined navigation keeps the draft — and the armed guard.
+		await click(memoriesButton());
+		expect(confirmCalls).toBe(1);
+		expect(container.textContent).toContain("unsaved");
+		expect(sdkCalls.at(-1)).toBe("enable");
+		// An accepted navigation throws the draft away: ref cleared,
+		// guard disarmed, page switched.
+		confirmAnswer = true;
+		await click(memoriesButton());
+		expect(confirmCalls).toBe(2);
+		expect(sdkCalls.at(-1)).toBe("disable");
+		expect(container.textContent).toContain("Memories");
+		expect(container.textContent).not.toContain("unsaved");
+	});
+
+	test("a completed autosave disarms the closing confirmation", async () => {
+		stubClosingConfirmation();
+		await renderDoor();
+		await click(
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Access")),
+		);
+		await click(
+			[...container.querySelectorAll('[aria-label="Log level"] button')].find(
+				(b) => b.textContent === "debug",
+			),
+		);
+		expect(sdkCalls.at(-1)).toBe("enable");
+		await waitFor(() => savedBodies.length > 0, "the settings write");
+		expect(savedBodies.at(-1)?.logLevel).toBe("debug");
+		await waitFor(() => sdkCalls.at(-1) === "disable", "the guard to disarm");
+	});
+
+	test("unmounting the door disarms the closing confirmation", async () => {
+		stubClosingConfirmation();
+		await renderDoor();
+		await dirtyTheForm();
+		expect(sdkCalls.at(-1)).toBe("enable");
+		await act(async () => {
+			root?.unmount();
+		});
+		root = null;
+		expect(sdkCalls.at(-1)).toBe("disable");
+	});
+
+	test("a WebApp without the optional methods still renders and edits", async () => {
+		// The fixture's WebApp carries only initData — no guard methods.
+		await renderDoor();
+		expect(container.textContent).not.toContain("Open this page from Telegram");
+		await dirtyTheForm();
+		expect(container.textContent).toContain("unsaved");
 	});
 });
 

@@ -481,9 +481,25 @@ function TelegramDoor() {
 	// save; the webview injects telegram-web-app.js before page scripts,
 	// so the check is settled by first render.
 	const [authed] = useState(() => (window.Telegram?.WebApp.initData ?? "") !== "");
+	// One callback owns the draft bit and the webview's native close
+	// guard — the in-door confirm and the SDK confirmation protect the
+	// same draft. The SDK call mirrors the transition only: the editor
+	// reports its state on every mount too, and re-arming an armed
+	// guard is pointless. Both methods are optional in older clients.
+	const setSettingsDirty = useCallback((dirty: boolean) => {
+		if (settingsDirty.current === dirty) return;
+		settingsDirty.current = dirty;
+		const webApp = window.Telegram?.WebApp;
+		if (dirty) webApp?.enableClosingConfirmation?.();
+		else webApp?.disableClosingConfirmation?.();
+	}, []);
 	useEffect(() => {
 		window.Telegram?.WebApp.ready?.();
 		window.Telegram?.WebApp.expand?.();
+		// Mount clean, unmount clean: the guard must never outlive the
+		// draft it was armed for.
+		window.Telegram?.WebApp.disableClosingConfirmation?.();
+		return () => window.Telegram?.WebApp.disableClosingConfirmation?.();
 	}, []);
 	const openPage = (p: Exclude<Page, "chat">) => {
 		if (p === page) return;
@@ -493,6 +509,8 @@ function TelegramDoor() {
 			!window.confirm("Discard unsaved settings changes?")
 		)
 			return;
+		// Approved navigation throws the draft away — disarm the guard.
+		setSettingsDirty(false);
 		setPage(p);
 	};
 	return (
@@ -546,12 +564,7 @@ function TelegramDoor() {
 					</p>
 				)}
 				{authed && page === "settings" && (
-					<SettingsView
-						token={null}
-						onDirtyChange={(d) => {
-							settingsDirty.current = d;
-						}}
-					/>
+					<SettingsView token={null} onDirtyChange={setSettingsDirty} />
 				)}
 				{authed && page === "memory" && <MemoryView token={null} />}
 			</main>

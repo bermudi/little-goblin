@@ -166,6 +166,10 @@ failing message by message.
   backend guessed. Telegram mode never touches the app door — no token
   probe, no conversation calls — and opened outside Telegram (empty
   initData) it shows a notice instead of a form that cannot save.
+  `telegram-web-app.js` is never fetched: both doors are one origin, the
+  app token lives in that origin's localStorage, and Telegram's own
+  webviews inject `window.Telegram` before page scripts — a client that
+  does not inject gets the same empty-initData notice.
   In-door navigation is component state with no history entries; the
   webview's back gesture closes the mini app natively. A missing build
   fail-louds a 500 + log line exactly like `/app/*` —

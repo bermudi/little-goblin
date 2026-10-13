@@ -99,6 +99,12 @@ if grep -qE '^deploy/memory/' <<< "$changed_paths"; then
 fi
 
 # --- 5. Restart, verify -----------------------------------------------------
+# The gate ran minutes ago against new_rev's tree; a sibling session's
+# commit in between leaves the tree clean (the status check can't see it)
+# and would restart into code the gate never saw, with the marker
+# recording the wrong rev.
+[ "$(git rev-parse --verify "HEAD^{commit}")" = "$new_rev" ] ||
+	fail "HEAD moved during the gate — commit it and redeploy"
 restart_epoch="$(date +%s)"
 systemctl --user restart goblin
 step "verify: startup acceptance"

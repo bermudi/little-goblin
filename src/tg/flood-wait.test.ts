@@ -177,3 +177,86 @@ describe("floodWaitTransformer", () => {
 		expect(calls).toHaveLength(1);
 	});
 });
+
+// The case the transformer exists for: grammy's callApi resolves raw
+// {ok:false} envelopes *through* transformers and only then builds
+// the GrammyError — a real 429 arrives as data, never a throw.
+describe("floodWaitTransformer — raw failure envelopes", () => {
+	const raw429 = (retryAfterS?: number): ApiResponse<Message> => ({
+		ok: false,
+		error_code: 429,
+		description: "Too Many Requests",
+		...(retryAfterS === undefined ? {} : { parameters: { retry_after: retryAfterS } }),
+	});
+
+	test("a raw 429 waits retry_after and retries the same call", async () => {
+		const fail = raw429(5);
+		const { prev, calls } = scriptPrev([fail, SENT]);
+		const { sleeps, sleep } = recordingSleep();
+
+		const res: ApiResponse<Message> = await floodWaitTransformer({ sleep })(
+			prev,
+			"sendMessage",
+			{ chat_id: 1, text: "hi" },
+		);
+
+		expect(res).toEqual(SENT);
+		expect(sleeps).toEqual([5000]);
+		expect(calls).toHaveLength(2);
+		expect(calls.every((c) => c.method === "sendMessage")).toBe(true);
+	});
+
+	test("a raw 429 beyond the cap returns the envelope for callApi's error path", async () => {
+		const fail = raw429(61);
+		const { prev, calls } = scriptPrev([fail]);
+		const { sleeps, sleep } = recordingSleep();
+
+		const res: ApiResponse<Message> = await floodWaitTransformer({ sleep })(
+			prev,
+			"sendMessage",
+			{ chat_id: 1, text: "hi" },
+		);
+
+		expect(res).toBe(fail);
+		expect(sleeps).toEqual([]);
+		expect(calls).toHaveLength(1);
+	});
+
+	test("exhausted raw 429s return the last envelope", async () => {
+		const last = raw429(1);
+		const { prev, calls } = scriptPrev([raw429(1), raw429(1), last]);
+		const { sleeps, sleep } = recordingSleep();
+
+		const res: ApiResponse<Message> = await floodWaitTransformer({ sleep })(
+			prev,
+			"sendMessage",
+			{ chat_id: 1, text: "hi" },
+		);
+
+		expect(res).toBe(last);
+		expect(sleeps).toEqual([1000, 1000]);
+		expect(calls).toHaveLength(3);
+	});
+
+	test("a raw non-429 failure and a 429 without retry_after pass through", async () => {
+		const bad: ApiResponse<Message> = { ok: false, error_code: 400, description: "bad" };
+		const noAfter = raw429();
+		const { prev, calls } = scriptPrev([bad, noAfter]);
+		const { sleeps, sleep } = recordingSleep();
+
+		const first: ApiResponse<Message> = await floodWaitTransformer({ sleep })(
+			prev,
+			"sendMessage",
+			{ chat_id: 1, text: "hi" },
+		);
+		const second: ApiResponse<Message> = await floodWaitTransformer({ sleep })(
+			prev,
+			"sendMessage",
+			{ chat_id: 1, text: "hi" },
+		);
+		expect(first).toBe(bad);
+		expect(second).toBe(noAfter);
+		expect(sleeps).toEqual([]);
+		expect(calls).toHaveLength(2);
+	});
+});

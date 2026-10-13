@@ -28,33 +28,65 @@ export function floodWaitTransformer(opts: FloodWaitOpts = {}): Transformer {
 	const maxWaitMs = opts.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
 	const maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
 	const wait = opts.sleep ?? sleep;
+	// Whether to wait out this retry_after and retry. Caps and logging
+	// live here once — a real 429 resolves as {ok:false} data (the
+	// GrammyError is built after transformers run), while an upstream
+	// transformer can still throw one.
+	const honor = async (
+		method: string,
+		retryAfterS: number,
+		attempt: number,
+	): Promise<boolean> => {
+		const demanded = retryAfterS * 1000;
+		if (demanded > maxWaitMs) {
+			log.warn("telegram flood wait beyond cap", { method, retryAfterS });
+			return false;
+		}
+		if (attempt >= maxRetries) {
+			log.warn("telegram flood wait retries exhausted", { method, retryAfterS });
+			return false;
+		}
+		log.warn("telegram flood wait", { method, retryAfterS, attempt: attempt + 1 });
+		await wait(demanded);
+		return true;
+	};
 	return async (prev, method, payload, signal) => {
 		for (let attempt = 0; ; attempt++) {
 			try {
-				return await prev(method, payload, signal);
+				const envelope = await prev(method, payload, signal);
+				if (envelope.ok) return envelope;
+				const retryAfterS = floodRetryAfter(envelope);
+				if (retryAfterS === undefined || !(await honor(method, retryAfterS, attempt)))
+					return envelope;
 			} catch (err) {
 				const retryAfterS = floodRetryAfter(err);
-				if (retryAfterS === undefined) throw err;
-				const demanded = retryAfterS * 1000;
-				if (demanded > maxWaitMs) {
-					log.warn("telegram flood wait beyond cap", { method, retryAfterS });
+				if (retryAfterS === undefined || !(await honor(method, retryAfterS, attempt)))
 					throw err;
-				}
-				if (attempt >= maxRetries) {
-					log.warn("telegram flood wait retries exhausted", { method, retryAfterS });
-					throw err;
-				}
-				log.warn("telegram flood wait", { method, retryAfterS, attempt: attempt + 1 });
-				await wait(demanded);
 			}
 		}
 	};
 }
 
 // Only a 429 carrying a numeric retry_after is waitable; anything
-// else — other errors, or a 429 without the parameter — rethrows.
+// else — other errors, or a 429 without the parameter — passes through
+// to the caller's normal failure handling.
 function floodRetryAfter(err: unknown): number | undefined {
-	if (!(err instanceof GrammyError) || err.error_code !== 429) return undefined;
-	const retryAfter = err.parameters.retry_after;
-	return typeof retryAfter === "number" ? retryAfter : undefined;
+	if (err instanceof GrammyError) {
+		if (err.error_code !== 429) return undefined;
+		const retryAfter = err.parameters.retry_after;
+		return typeof retryAfter === "number" ? retryAfter : undefined;
+	}
+	// The resolved failure envelope: transformers run before callApi
+	// turns {ok:false} into a GrammyError, so a real 429 arrives as
+	// data — {ok:false, error_code:429, parameters:{retry_after}}.
+	if (typeof err === "object" && err !== null) {
+		const envelope = err as {
+			error_code?: unknown;
+			parameters?: { retry_after?: unknown };
+		};
+		if (envelope.error_code !== 429) return undefined;
+		const retryAfter = envelope.parameters?.retry_after;
+		return typeof retryAfter === "number" ? retryAfter : undefined;
+	}
+	return undefined;
 }

@@ -957,8 +957,12 @@ let servers: FakeModel[] = [];
 let owners: Subagents[] = [];
 let runStores: SubagentRuns[] = [];
 
-afterEach(() => {
-	for (const o of owners) void o.close().catch(() => {});
+afterEach(async () => {
+	// Owner close is async — it joins in-flight admissions and
+	// monitors that may still write through the run stores and into
+	// the temp dirs. Deleting either under an in-flight close races
+	// the drain into removed paths.
+	await Promise.allSettled(owners.map((o) => o.close()));
 	owners = [];
 	for (const r of runStores) r.close();
 	runStores = [];

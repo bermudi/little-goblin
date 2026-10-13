@@ -21,6 +21,7 @@ import {
 	type MemDraft,
 	type TranscriptionKind,
 	emptyTranscription,
+	switchProviderKind,
 	switchTranscriptionKind,
 } from "./settingsDraft.ts";
 import type { ThinkingLevel } from "../../src/config.ts";
@@ -572,7 +573,7 @@ function ProviderCard({
 					className="mono"
 					value={prov.kind}
 					aria-label="provider type"
-					onChange={(e) => onPatch({ kind: e.target.value })}
+					onChange={(e) => onPatch(switchProviderKind(prov, e.target.value))}
 				>
 					{kinds.map((k) => (
 						<option key={k} value={k}>

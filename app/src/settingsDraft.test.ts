@@ -5,6 +5,7 @@ import {
 	displayLevel,
 	draftFromConfig,
 	emptyTranscription,
+	switchProviderKind,
 	switchTranscriptionKind,
 	validateDraft,
 	type ProvDraft,
@@ -449,5 +450,38 @@ describe("transcription block", () => {
 	test("re-selecting the current kind keeps what the operator typed", () => {
 		const groq = { ...emptyTranscription("groq"), model: "my-model", auth: "MY_KEY" };
 		expect(switchTranscriptionKind(groq, "groq")).toEqual(groq);
+	});
+});
+
+describe("provider kind switch", () => {
+	// The auth reference is kind-scoped: a vendor's secret name carried
+	// across a kind switch resolved under the new endpoint, and the
+	// model call sent that credential to it. Blank materializes to the
+	// provider's own name (openrouter: its default record) at save.
+	test("switching kinds clears the old auth reference", () => {
+		const p = prov({ kind: "openai-compatible", auth: "VENDOR_KEY" });
+		const switched = switchProviderKind(p, "openrouter");
+		expect(switched).toMatchObject({ kind: "openrouter", auth: "" });
+		// Not a credential — rides along so switching back restores it.
+		expect(switched.baseUrl).toBe(p.baseUrl);
+
+		const { draft: d } = draftFromConfig(baseConfig());
+		const body = bodyFromDraft(d, [switched], authDefaults);
+		expect(body.providers!["main"]).toEqual({ kind: "openrouter", auth: "openrouter" });
+	});
+
+	// The codex arm's auth is a file path — just as kind-scoped: a
+	// leftover path under a keyed kind is a broken secret name, and a
+	// leftover secret name under codex is a broken path.
+	test("codex's auth file clears on the way out too", () => {
+		const cx = prov({ kind: "codex", auth: "~/.codex/auth.json" });
+		expect(switchProviderKind(cx, "openrouter")).toMatchObject({ kind: "openrouter", auth: "" });
+		const keyed = prov({ kind: "openrouter", auth: "OR_KEY" });
+		expect(switchProviderKind(keyed, "codex")).toMatchObject({ kind: "codex", auth: "" });
+	});
+
+	test("re-selecting the current kind keeps what the operator typed", () => {
+		const p = prov({ auth: "KEY" });
+		expect(switchProviderKind(p, "openai-compatible")).toEqual(p);
 	});
 });

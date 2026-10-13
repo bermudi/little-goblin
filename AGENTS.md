@@ -77,8 +77,10 @@ it can be gold-mine of prover patterns. Compaction, tool calling, etc.
   box's state, and the archives (snapshots, DB bundle, memory dump)
   live in `~/goblin-migration-20261008/`. The only sanctioned prod
   update is `scripts/deploy.sh`: gate (typecheck) →
-  conditional `bun install`/`app:build` (marker
-  `.git/GOBLIN_DEPLOYED_REV`) → restart → verify. Deployment never
+  conditional `bun install`/`app:build` (markers
+  `.git/GOBLIN_DEPLOYED_REV` + `.git/GOBLIN_DEPLOY_INCOMPLETE` — a
+  leftover attempt marker forces the refresh) → restart → verify.
+  Deployment never
   pushes, fetches, or pulls: `origin/main` stays the baseline for
   `coderabbit review --base origin/main`. Publishing main is separate
   and needs bermudi's OK. Deployment restarts prod and also needs

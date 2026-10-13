@@ -50,6 +50,25 @@ if [ -e "$marker" ] || [ -L "$marker" ]; then
 	esac
 fi
 
+# A leftover attempt marker means the last deploy died after publishing
+# its revision — gate, build, restart or verification. Its diff against
+# the successful marker is untrustworthy (the refresh may have half-landed),
+# so it forces dependency install and client rebuild on this run. Same
+# Git-owned per-worktree location and file-shape contract as the
+# successful marker: anything else fails loudly rather than being cleared.
+incomplete="$(git rev-parse --git-path GOBLIN_DEPLOY_INCOMPLETE)" ||
+	fail "cannot resolve deployment attempt marker"
+interrupted=false
+if [ -e "$incomplete" ] || [ -L "$incomplete" ]; then
+	[ -L "$incomplete" ] &&
+		fail "deployment attempt marker is not a regular file (symlink): $incomplete"
+	[ -f "$incomplete" ] ||
+		fail "deployment attempt marker is not a regular file: $incomplete"
+	[ -r "$incomplete" ] && [ -w "$incomplete" ] ||
+		fail "deployment attempt marker is not readable/writable: $incomplete"
+	interrupted=true
+fi
+
 # --- 1. What gets deployed is a commit, on a branch ----------------------
 tree_status="$(git status --porcelain)" || fail "cannot read working tree status"
 [ -z "$tree_status" ] ||
@@ -67,6 +86,24 @@ else
 fi
 revision_summary="$(git log -1 --format='%h %s' "$new_rev")" || fail "cannot read deployment commit"
 step "deploying $branch @ $revision_summary${old_rev:+ (was ${old_rev:0:7})}"
+if [ "$interrupted" = true ]; then
+	step "incomplete previous deploy attempt — forcing dependency and client refresh"
+fi
+
+# Publish this attempt BEFORE any mutation, durably like the successful
+# marker. Any failure after this point — gate, build, restart,
+# verification — leaves the marker, forcing the next run's refresh; it
+# is never cleared by a trap and only unlinked after full verification
+# below. Conservatively written on every run, even one with nothing to
+# refresh.
+incomplete_tmp="$(mktemp "$marker_dir/.GOBLIN_DEPLOY_INCOMPLETE.XXXXXX")" ||
+	fail "cannot create deployment attempt marker temp file"
+printf '%s\n' "$new_rev" >"$incomplete_tmp" ||
+	{ rm -f "$incomplete_tmp"; fail "cannot write deployment attempt marker"; }
+sync -d "$incomplete_tmp" || fail "cannot flush deployment attempt marker temp file"
+mv -f "$incomplete_tmp" "$incomplete" ||
+	{ rm -f "$incomplete_tmp"; fail "cannot update deployment attempt marker: $incomplete"; }
+sync -d "$marker_dir" || fail "cannot flush deployment attempt marker directory"
 
 # --- 2. Refresh deps --------------------------------------------------------
 # Before the gate: the typecheck must read new_rev's dependency tree, not
@@ -74,7 +111,7 @@ step "deploying $branch @ $revision_summary${old_rev:+ (was ${old_rev:0:7})}"
 # or upgrades a dependency would otherwise gate on missing/stale modules.
 # The rollback line restores ignored dependencies, so syncing them here adds
 # no new recovery requirement.
-if grep -qE '^(bun\.lock|package\.json)$' <<< "$changed_paths"; then
+if [ "$interrupted" = true ] || grep -qE '^(bun\.lock|package\.json)$' <<< "$changed_paths"; then
 	bun install --frozen-lockfile
 fi
 
@@ -85,7 +122,8 @@ step "gate: bun run typecheck"
 bun run typecheck
 
 # --- 4. Refresh the served bundle -------------------------------------------
-if grep -qE '^(app/|package\.json$|bun\.lock$|src/agent/tools/ui-schema\.ts$)' <<< "$changed_paths"; then
+if [ "$interrupted" = true ] ||
+	grep -qE '^(app/|package\.json$|bun\.lock$|src/agent/tools/ui-schema\.ts$)' <<< "$changed_paths"; then
 	# The bundle inlines dependencies and the shared UI schema, not just app/.
 	bun run app:build
 fi
@@ -152,7 +190,13 @@ marker_tmp="$(mktemp "$marker_dir/.GOBLIN_DEPLOYED_REV.XXXXXX")" || fail "cannot
 printf '%s\n' "$new_rev" >"$marker_tmp" || { rm -f "$marker_tmp"; fail "cannot write deployment marker"; }
 sync -d "$marker_tmp" || fail "cannot flush deployment marker temp file"
 mv -f "$marker_tmp" "$marker" || { rm -f "$marker_tmp"; fail "cannot update deployment marker: $marker"; }
-sync -d "$marker_dir" || true
+sync -d "$marker_dir" || fail "cannot flush deployment marker directory"
+# Verification passed and the successful marker landed durably — only
+# now does the attempt marker go away. A failure here reports failure
+# even though the restart succeeded; the stale marker just makes the
+# next run refresh again.
+rm -f "$incomplete" || fail "cannot clear deployment attempt marker: $incomplete"
+sync -d "$marker_dir" || fail "cannot flush deployment attempt marker removal"
 step "done: g7 @ ${new_rev:0:7}"
 if [ -n "$old_rev" ]; then
 	printf -v rollback_marker '%q' "$marker"

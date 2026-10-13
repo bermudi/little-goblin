@@ -185,7 +185,12 @@ or the manifests moved — the bundle inlines dependency code, so a React
 or AI-SDK bump alone must rebuild it, and the client is served from
 disk, so client and backend restart as one rollout. A marker in
 `.git/GOBLIN_DEPLOYED_REV` tracks the last deployed revision (first run
-refreshes unconditionally). It then restarts the unit, verifies it came
+refreshes unconditionally). A second marker,
+`.git/GOBLIN_DEPLOY_INCOMPLETE`, is published before any mutation and
+removed only after the restart verifies — a leftover means the last
+deploy died mid-refresh, so the next run reinstalls dependencies and
+rebuilds the client regardless of the source diff. It then restarts
+the unit, verifies it came
 back, scans the fresh journal for error lines, and prints the old→new
 hashes plus a one-line rollback (`git reset --hard <old>`, then
 `bun install` and `bun run app:build` — dist and node_modules are

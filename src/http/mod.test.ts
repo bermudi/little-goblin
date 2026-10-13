@@ -63,6 +63,7 @@ function setup(
 	memory?: HttpDeps["memory"],
 	beforeConfigWritten?: HttpDeps["beforeConfigWritten"],
 	authNames?: () => string[],
+	appDistDir?: string,
 ) {
 	useHome();
 	const memoryBlock: MemoryConfig | undefined = memory
@@ -78,6 +79,7 @@ function setup(
 		...(memory ? { memory } : {}),
 		...(beforeConfigWritten ? { beforeConfigWritten } : {}),
 		...(authNames ? { authNames } : {}),
+		...(appDistDir !== undefined ? { appDistDir } : {}),
 	});
 	const initData = makeInitData({
 		auth_date: String(Math.floor(Date.now() / 1000)),
@@ -1288,6 +1290,61 @@ describe("app deep links (Notes)", () => {
 			expect((await get("/app/n/valid/extra")).status).toBe(404);
 		} finally {
 			http.stop();
+		}
+	});
+
+	test("the state-viewer console routes serve the shell, slash or not", async () => {
+		const { http, get } = setup();
+		try {
+			for (const page of ["skills", "files", "log"]) {
+				await shellOrLoud500(await get(`/app/${page}`));
+				await shellOrLoud500(await get(`/app/${page}/`));
+			}
+			// Unknown client routes never get the shell — the regex is
+			// exact, and the file fallthrough answers a real miss (404)
+			// or the loud-500 when no build exists.
+			for (const p of ["/app/skills/x", "/app/nope"]) {
+				expect((await get(p)).status).toBe(distExists ? 404 : 500);
+			}
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a fixture build proves the shell dispatch actually serves the shell", async () => {
+		// With app/dist absent, an omitted shell route and a file miss
+		// answer the same loud 500 — only a real (test-owned) root
+		// distinguishes shell-dispatch from fallthrough.
+		const dir = mkdtempSync(join(tmpdir(), "goblin-appdist-"));
+		try {
+			mkdirSync(join(dir, "assets"), { recursive: true });
+			writeFileSync(join(dir, "index.html"), "<html><body>SENTINEL SHELL</body></html>\n");
+			writeFileSync(join(dir, "assets", "fixture.a1b2c3.js"), "export {};\n");
+			const { http, get } = setup(undefined, undefined, undefined, dir);
+			try {
+				for (const page of ["skills", "files", "log"]) {
+					for (const path of [`/app/${page}`, `/app/${page}/`]) {
+						const res = await get(path);
+						expect(res.status, path).toBe(200);
+						expect(res.headers.get("content-type")).toContain("text/html");
+						expect(res.headers.get("cache-control")).toBe("no-store");
+						expect(await res.text()).toContain("SENTINEL SHELL");
+					}
+				}
+				// Unknown tails fall through to file dispatch — a miss is a
+				// 404, never a guessed shell.
+				for (const p of ["/app/skills/x", "/app/nope"]) {
+					expect((await get(p)).status).toBe(404);
+				}
+				// Real assets still serve, immutable under assets/.
+				const asset = await get("/app/assets/fixture.a1b2c3.js");
+				expect(asset.status).toBe(200);
+				expect(asset.headers.get("cache-control")).toContain("immutable");
+			} finally {
+				http.stop();
+			}
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 });

@@ -7,12 +7,12 @@
 
 import { useState, type CSSProperties } from "react";
 import type { UiBlock, UiLeaf, UiInput } from "../../../src/agent/tools/ui-schema.ts";
-import { Markdown } from "../markdown.tsx";
+import { Markdown, type MarkdownNoteContext } from "../markdown.tsx";
 import { Skeleton } from "../tools/bits.tsx";
 import { Chart } from "./Chart.tsx";
 import { HtmlFrame } from "./HtmlFrame.tsx";
 
-export interface UiActionProps {
+export interface UiActionProps extends MarkdownNoteContext {
 	// Sends an ordinary user message ("[ui] …"). Undefined while the
 	// part streams — a half-rendered interface is never tappable.
 	onAction?: ((text: string) => void) | undefined;
@@ -27,19 +27,25 @@ function actionsOff({ onAction, busy }: UiActionProps): boolean {
 	return busy === true || onAction === undefined;
 }
 
-function Text({ leaf }: { leaf: Extract<UiLeaf, { type: "text" }> }) {
+function Text({
+	leaf,
+	...note
+}: { leaf: Extract<UiLeaf, { type: "text" }> } & MarkdownNoteContext) {
 	return (
 		<div className="ui-text">
-			<Markdown text={leaf.md} />
+			<Markdown text={leaf.md} {...note} />
 		</div>
 	);
 }
 
-function Callout({ leaf }: { leaf: Extract<UiLeaf, { type: "callout" }> }) {
+function Callout({
+	leaf,
+	...note
+}: { leaf: Extract<UiLeaf, { type: "callout" }> } & MarkdownNoteContext) {
 	return (
 		<div className={`ui-callout ui-callout-${leaf.tone ?? "info"}`}>
 			{leaf.title !== undefined && <div className="ui-callout-title">{leaf.title}</div>}
-			<Markdown text={leaf.md} />
+			<Markdown text={leaf.md} {...note} />
 		</div>
 	);
 }
@@ -83,7 +89,10 @@ function Table({ leaf }: { leaf: Extract<UiLeaf, { type: "table" }> }) {
 	);
 }
 
-function Steps({ leaf }: { leaf: Extract<UiLeaf, { type: "steps" }> }) {
+function Steps({
+	leaf,
+	...note
+}: { leaf: Extract<UiLeaf, { type: "steps" }> } & MarkdownNoteContext) {
 	return (
 		<ol className="ui-steps">
 			{leaf.items.map((item, i) => (
@@ -91,7 +100,7 @@ function Steps({ leaf }: { leaf: Extract<UiLeaf, { type: "steps" }> }) {
 					<div className="ui-step-title">{item.title}</div>
 					{item.md !== undefined && (
 						<div className="ui-step-md">
-							<Markdown text={item.md} />
+							<Markdown text={item.md} {...note} />
 						</div>
 					)}
 				</li>
@@ -187,6 +196,7 @@ function Tabs({
 	onAction,
 	busy,
 	streaming,
+	...note
 }: { block: Extract<UiBlock, { type: "tabs" }> } & UiActionProps) {
 	const [active, setActive] = useState(0);
 	const tab = block.tabs[Math.min(active, block.tabs.length - 1)]!;
@@ -208,7 +218,14 @@ function Tabs({
 			</div>
 			<div className="ui-tab-panel" role="tabpanel">
 				{tab.blocks.map((leaf, i) => (
-					<Leaf key={i} leaf={leaf} onAction={onAction} busy={busy} streaming={streaming} />
+					<Leaf
+						key={i}
+						leaf={leaf}
+						onAction={onAction}
+						busy={busy}
+						streaming={streaming}
+						{...note}
+					/>
 				))}
 			</div>
 		</div>
@@ -220,6 +237,7 @@ function Columns({
 	onAction,
 	busy,
 	streaming,
+	...note
 }: { block: Extract<UiBlock, { type: "columns" }> } & UiActionProps) {
 	return (
 		<div className="ui-columns" style={{ "--ui-cols": block.columns.length } as CSSProperties}>
@@ -227,7 +245,14 @@ function Columns({
 				<div key={i} className="ui-column">
 					{col.title !== undefined && <div className="ui-column-title">{col.title}</div>}
 					{col.blocks.map((leaf, j) => (
-						<Leaf key={j} leaf={leaf} onAction={onAction} busy={busy} streaming={streaming} />
+						<Leaf
+							key={j}
+							leaf={leaf}
+							onAction={onAction}
+							busy={busy}
+							streaming={streaming}
+							{...note}
+						/>
 					))}
 				</div>
 			))}
@@ -235,18 +260,24 @@ function Columns({
 	);
 }
 
-export function Leaf({ leaf, onAction, busy, streaming }: { leaf: UiLeaf } & UiActionProps) {
+export function Leaf({
+	leaf,
+	onAction,
+	busy,
+	streaming,
+	...note
+}: { leaf: UiLeaf } & UiActionProps) {
 	switch (leaf.type) {
 		case "text":
-			return <Text leaf={leaf} />;
+			return <Text leaf={leaf} {...note} />;
 		case "callout":
-			return <Callout leaf={leaf} />;
+			return <Callout leaf={leaf} {...note} />;
 		case "stats":
 			return <Stats leaf={leaf} />;
 		case "table":
 			return <Table leaf={leaf} />;
 		case "steps":
-			return <Steps leaf={leaf} />;
+			return <Steps leaf={leaf} {...note} />;
 		case "chart":
 			return <Chart leaf={leaf} />;
 		case "choices":
@@ -258,22 +289,43 @@ export function Leaf({ leaf, onAction, busy, streaming }: { leaf: UiLeaf } & UiA
 	}
 }
 
-export function Block({ block, onAction, busy, streaming }: { block: UiBlock } & UiActionProps) {
+export function Block({
+	block,
+	onAction,
+	busy,
+	streaming,
+	...note
+}: { block: UiBlock } & UiActionProps) {
 	if (block.type === "tabs")
-		return <Tabs block={block} onAction={onAction} busy={busy} streaming={streaming} />;
+		return <Tabs block={block} onAction={onAction} busy={busy} streaming={streaming} {...note} />;
 	if (block.type === "columns")
-		return <Columns block={block} onAction={onAction} busy={busy} streaming={streaming} />;
-	return <Leaf leaf={block} onAction={onAction} busy={busy} streaming={streaming} />;
+		return (
+			<Columns block={block} onAction={onAction} busy={busy} streaming={streaming} {...note} />
+		);
+	return <Leaf leaf={block} onAction={onAction} busy={busy} streaming={streaming} {...note} />;
 }
 
 // One complete interface — the wrapper shared by the finished render
 // and (block-by-block) the streaming one.
-export function Surface({ input, onAction, busy, streaming }: { input: UiInput } & UiActionProps) {
+export function Surface({
+	input,
+	onAction,
+	busy,
+	streaming,
+	...note
+}: { input: UiInput } & UiActionProps) {
 	return (
 		<div className="ui">
 			{input.title !== undefined && <div className="ui-title">{input.title}</div>}
 			{input.blocks.map((block, i) => (
-				<Block key={i} block={block} onAction={onAction} busy={busy} streaming={streaming} />
+				<Block
+					key={i}
+					block={block}
+					onAction={onAction}
+					busy={busy}
+					streaming={streaming}
+					{...note}
+				/>
 			))}
 		</div>
 	);

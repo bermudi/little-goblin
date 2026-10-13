@@ -671,8 +671,10 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	// The invalid edit removes the operator chip — scope chip counts to
 	// that editor (the allowed-users editor keeps its fixture chip).
 	const operatorChips = (): number =>
-		container.querySelector('[aria-label="add operator"]')?.closest(".frow")?.querySelectorAll(".chip")
-			.length ?? -1;
+		container
+			.querySelector('[aria-label="add operator"]')
+			?.closest(".frow")
+			?.querySelectorAll(".chip").length ?? -1;
 
 	const dirtyTheForm = async () => {
 		await click(
@@ -1216,14 +1218,16 @@ describe("app projects surface", () => {
 	let noteBodies: Record<string, string>;
 	let versionRows: AppNoteVersionMeta[];
 	let versionPreview: AppNoteVersion | null;
+	// Restore endpoint: the reply a held-or-failed POST eventually
+	// returns — tests hold it to land edits mid-flight.
+	let restoreReply: AppNote | null;
+	let restoreHold: Promise<void> | null;
+	let restoreFail: boolean;
 	let posts: { url: string; body: unknown }[];
 	// Scripted /api/app/search replies keyed by decoded q — a hold gate
 	// keeps the reply pending until the test releases it.
 	let searchCalls: string[];
-	let searchScript: Map<
-		string,
-		{ fail?: boolean; hold?: Promise<void>; hits?: AppSearchHit[] }
-	>;
+	let searchScript: Map<string, { fail?: boolean; hold?: Promise<void>; hits?: AppSearchHit[] }>;
 	// A held conversation create answers only once this gate resolves.
 	let createHold: Promise<void> | null;
 	// Test-owned gates, resolved in afterEach so a failed assertion can
@@ -1303,6 +1307,9 @@ describe("app projects surface", () => {
 		noteBodies = {};
 		versionRows = [];
 		versionPreview = null;
+		restoreReply = null;
+		restoreHold = null;
+		restoreFail = false;
 		posts = [];
 		searchCalls = [];
 		searchScript = new Map();
@@ -1408,6 +1415,29 @@ describe("app projects surface", () => {
 				}
 				if (url.endsWith("/versions"))
 					return Promise.resolve(jsonResponse({ versions: versionRows }));
+				if (/\/versions\/\d+\/restore$/.test(url) && method === "POST") {
+					posts.push({ url, body });
+					// The restore write lands when the POST does — a held
+					// gate can only delay the reply, not the stored state.
+					if (!restoreFail && restoreReply !== null) {
+						const restored = notes.find((x) => x.id === restoreReply!.id);
+						if (restored !== undefined) {
+							restored.rev = restoreReply.rev;
+							restored.title = restoreReply.title;
+							restored.updatedAt = restoreReply.updatedAt;
+							noteBodies[restored.id] = restoreReply.body;
+						}
+					}
+					const reply = () =>
+						restoreFail
+							? Promise.resolve(jsonResponse({ error: "restore down" }, 500))
+							: Promise.resolve(
+									restoreReply === null
+										? jsonResponse({ error: "not found" }, 404)
+										: jsonResponse(restoreReply),
+								);
+					return restoreHold === null ? reply() : restoreHold.then(reply);
+				}
 				if (/\/versions\/\d+$/.test(url))
 					return Promise.resolve(
 						versionPreview === null
@@ -1420,21 +1450,67 @@ describe("app projects surface", () => {
 					notePatches.push({ id, ifMatch: headers["if-match"] ?? null, body });
 				}
 				if (method === "PATCH" && conflictPatch) {
+					conflictPatch = false;
 					const n = notes.find((x) => x.id === id);
-					return Promise.resolve(
-						jsonResponse({ error: "conflict", note: { ...noteFull(n!), rev: 5 } }, 409),
-					);
+					// The write that won already landed server-side — the
+					// stored row moves to the rev the 409 reports.
+					const remote = { ...noteFull(n!, noteBodies[n!.id] ?? ""), rev: 5 };
+					n!.rev = remote.rev;
+					n!.updatedAt = remote.updatedAt;
+					return Promise.resolve(jsonResponse({ error: "conflict", note: remote }, 409));
 				}
 				if (method === "GET") {
 					if (noteGetFail) return Promise.resolve(jsonResponse({ error: "list down" }, 500));
 					if (noteGetOverride !== null) return Promise.resolve(jsonResponse(noteGetOverride));
 				}
 				const n = notes.find((x) => x.id === id);
-				return Promise.resolve(
-					n === undefined
-						? jsonResponse({ error: "not found" }, 404)
-						: jsonResponse(noteFull(n, noteBodies[n.id] ?? "")),
-				);
+				if (n === undefined) return Promise.resolve(jsonResponse({ error: "not found" }, 404));
+				if (method === "PATCH") {
+					// app-channel.ts semantics: a content write rides the
+					// If-Match etag (refused before any field mutates), flag
+					// writes apply guard-free, and only an actual title/body
+					// change bumps rev and updatedAt (notes.ts).
+					const req = body as {
+						title?: string;
+						body?: string;
+						pinned?: boolean;
+						archived?: boolean;
+						projectId?: string | null;
+					};
+					const wantsContent = req.title !== undefined || req.body !== undefined;
+					if (wantsContent) {
+						const headers = (init?.headers ?? {}) as Record<string, string>;
+						const im = headers["if-match"];
+						if (im === undefined)
+							return Promise.resolve(
+								jsonResponse({ error: "If-Match required for content writes" }, 428),
+							);
+						if (Number(im.replaceAll('"', "")) !== n.rev)
+							return Promise.resolve(
+								jsonResponse(
+									{
+										error: "conflict",
+										note: noteFull(n, noteBodies[n.id] ?? ""),
+									},
+									409,
+								),
+							);
+					}
+					if (req.pinned !== undefined) n.pinnedAt = req.pinned ? "2026-10-12T00:00:00.000Z" : null;
+					if (req.archived !== undefined)
+						n.archivedAt = req.archived ? "2026-10-12T00:00:00.000Z" : null;
+					if (req.projectId !== undefined) n.projectId = req.projectId;
+					const storedBody = noteBodies[n.id] ?? "";
+					const nextTitle = req.title ?? n.title;
+					const nextBody = req.body ?? storedBody;
+					if (nextTitle !== n.title || nextBody !== storedBody) {
+						n.title = nextTitle;
+						noteBodies[n.id] = nextBody;
+						n.rev += 1;
+						n.updatedAt = "2026-10-12T00:00:00.000Z";
+					}
+				}
+				return Promise.resolve(jsonResponse(noteFull(n, noteBodies[n.id] ?? "")));
 			}
 			if (url === "/api/app/notes" || url.startsWith("/api/app/notes?")) {
 				if (method === "POST") {
@@ -1703,7 +1779,58 @@ describe("app projects surface", () => {
 		const chat = posts.find((p) => p.url === "/api/app/chat");
 		expect(chat).toBeTruthy();
 		const msg = (chat!.body as { message: { parts: { type: string; data?: unknown }[] } }).message;
-		expect(msg.parts).toContainEqual({ type: "data-note", data: { id: "n-shopping" } });
+		// The display title rides along for the optimistic chip; the
+		// server still expands the stored note authoritatively.
+		expect(msg.parts).toContainEqual({
+			type: "data-note",
+			data: { id: "n-shopping", title: "Shopping" },
+		});
+		// The live transcript labels the just-sent chip before any
+		// history reload — and the chip still navigates.
+		const chips = container.querySelectorAll(".note-chip");
+		expect(chips).toHaveLength(1);
+		expect(chips[0]!.textContent).toContain("Note · Shopping");
+		await click(chips[0]!.querySelector("button.attachment-name"));
+		expect(win.location.pathname).toBe("/app/n/n-shopping");
+	});
+
+	test("the note picker's Enter and Escape stay picker-local — no send, draft kept", async () => {
+		notes = [noteRow("Shopping")];
+		await mount();
+		const draft = container.querySelector("form.composer textarea")! as HTMLTextAreaElement;
+		await typeInto(draft, "keep me", win.HTMLTextAreaElement.prototype);
+
+		await click(container.querySelector('button[aria-label="Attach a note"]'));
+		const picker = container.querySelector(".composer-pick input")!;
+		expect(picker).not.toBeNull();
+
+		// Enter inside a form input would implicitly submit — the picker
+		// cancels and contains it, so no chat POST and the draft stands.
+		const enter = new win.KeyboardEvent("keydown", {
+			bubbles: true,
+			cancelable: true,
+			key: "Enter",
+		});
+		await act(async () => {
+			picker.dispatchEvent(enter as unknown as Event);
+		});
+		expect(enter.defaultPrevented).toBe(true);
+		expect(posts.some((p) => p.url === "/api/app/chat")).toBe(false);
+		expect(draft.value).toBe("keep me");
+		expect(container.querySelector(".composer-pick")).not.toBeNull();
+
+		// Escape closes the picker without touching the draft.
+		const escape = new win.KeyboardEvent("keydown", {
+			bubbles: true,
+			cancelable: true,
+			key: "Escape",
+		});
+		await act(async () => {
+			picker.dispatchEvent(escape as unknown as Event);
+		});
+		expect(escape.defaultPrevented).toBe(true);
+		expect(container.querySelector(".composer-pick")).toBeNull();
+		expect(draft.value).toBe("keep me");
 	});
 
 	test("a stored data-note part renders as a chip that opens the note", async () => {
@@ -1928,6 +2055,288 @@ describe("app projects surface", () => {
 		expect(container.querySelector(".note-version-preview")!.textContent).toContain(
 			"Save or resolve edits before restoring",
 		);
+	});
+
+	// Mutate the rendered PM text node — the DOM observer reads it into
+	// the doc, dirty lands synchronously via editor.dirty() even though
+	// the autosave debounce (~1s) hasn't fired.
+	const editBody = async (extra: string) => {
+		const pm = container.querySelector(".ProseMirror")!;
+		expect(pm).not.toBeNull();
+		const textNode = pm.querySelector("p")!.firstChild!;
+		await act(async () => {
+			textNode.nodeValue = `${textNode.nodeValue ?? ""}${extra}`;
+		});
+		await settleSlow();
+	};
+
+	test("a same-rev archive flip under a dirty body raises the bar — the editor survives", async () => {
+		notes = [noteRow("Shopping")];
+		noteBodies = { "n-shopping": "milk" };
+		await notePage("/app/n/n-shopping");
+		const pm = container.querySelector(".ProseMirror")!;
+		await editBody("x");
+		expect(notePatches).toHaveLength(0);
+		// The server side archived the note — flag flips don't bump rev
+		// and don't touch the stored body.
+		notes[0]!.archivedAt = "2026-10-12T00:00:00.000Z";
+		await act(async () => {
+			win.dispatchEvent(new win.Event("focus"));
+		});
+		await settle();
+		expect(container.querySelector(".note-conflict")).not.toBeNull();
+		// The same editor element stayed mounted — the readonly swap
+		// would have dropped the dirty buffer it warns about.
+		expect(container.querySelector(".ProseMirror")).toBe(pm);
+		expect(pm.textContent).toContain("milkx");
+		expect(container.querySelector(".note-readonly")).toBeNull();
+		// No autosave may slip past the bar.
+		await settleLong();
+		expect(notePatches).toHaveLength(0);
+	});
+
+	test("Keep mine on an edited+archived conflict saves the buffer at the remote rev, then reads readonly", async () => {
+		notes = [noteRow("Shopping")];
+		noteBodies = { "n-shopping": "milk" };
+		await notePage("/app/n/n-shopping");
+		await editBody("x");
+		// Remote wrote new content AND archived — a real rev bump.
+		notes[0]!.rev = 2;
+		notes[0]!.title = "Remote";
+		notes[0]!.archivedAt = "2026-10-12T00:00:00.000Z";
+		notes[0]!.updatedAt = "2026-10-12T00:00:00.000Z";
+		noteBodies["n-shopping"] = "remote body";
+		await act(async () => {
+			win.dispatchEvent(new win.Event("focus"));
+		});
+		await settle();
+		expect(container.querySelector(".note-conflict")).not.toBeNull();
+		await click(
+			[...container.querySelectorAll("button")].find((b) => b.textContent === "Keep mine"),
+		);
+		await settle();
+		const mine = notePatches.at(-1);
+		expect(mine).toBeTruthy();
+		expect(mine!.ifMatch).toBe('"2"');
+		expect((mine!.body as { body?: string }).body).toContain("milkx");
+		// The saved note is still archived — the page settles to the
+		// readonly view of what was written.
+		expect(container.querySelector(".note-conflict")).toBeNull();
+		expect(container.querySelector(".note-readonly")!.textContent).toContain("milkx");
+	});
+
+	test("Load theirs on an edited+archived conflict discards the buffer only on the click", async () => {
+		notes = [noteRow("Shopping")];
+		noteBodies = { "n-shopping": "milk" };
+		await notePage("/app/n/n-shopping");
+		const pm = container.querySelector(".ProseMirror")!;
+		await editBody("x");
+		notes[0]!.rev = 2;
+		notes[0]!.title = "Remote";
+		notes[0]!.archivedAt = "2026-10-12T00:00:00.000Z";
+		notes[0]!.updatedAt = "2026-10-12T00:00:00.000Z";
+		noteBodies["n-shopping"] = "remote body";
+		await act(async () => {
+			win.dispatchEvent(new win.Event("focus"));
+		});
+		await settle();
+		// Before the click the buffer is still there.
+		expect(pm.textContent).toContain("milkx");
+		expect(notePatches).toHaveLength(0);
+		await click(
+			[...container.querySelectorAll("button")].find((b) => b.textContent === "Load theirs"),
+		);
+		await settle();
+		expect(container.querySelector(".note-conflict")).toBeNull();
+		const ro = container.querySelector(".note-readonly");
+		expect(ro).not.toBeNull();
+		expect(ro!.textContent).toContain("remote body");
+		expect((container.querySelector("input.note-title") as HTMLInputElement).value).toBe("Remote");
+	});
+
+	test("a same-rev archive flip on a clean page just goes readonly", async () => {
+		notes = [noteRow("Shopping")];
+		noteBodies = { "n-shopping": "milk" };
+		await notePage("/app/n/n-shopping");
+		notes[0]!.archivedAt = "2026-10-12T00:00:00.000Z";
+		await act(async () => {
+			win.dispatchEvent(new win.Event("focus"));
+		});
+		await settle();
+		expect(container.querySelector(".note-conflict")).toBeNull();
+		expect(container.querySelector(".note-readonly")!.textContent).toContain("milk");
+	});
+
+	// A cleared title is a real in-progress edit too — the dirty
+	// predicate compares drafts, not truthiness.
+	for (const draft of ["Local title", ""]) {
+		test(`a same-rev archive flip under a dirty title (${draft === "" ? "cleared" : "typed"}) keeps the draft and raises the bar`, async () => {
+			notes = [noteRow("Shopping")];
+			noteBodies = { "n-shopping": "milk" };
+			await notePage("/app/n/n-shopping");
+			const pm = container.querySelector(".ProseMirror")!;
+			const title = container.querySelector("input.note-title")! as HTMLInputElement;
+			await typeInto(title, draft, win.HTMLInputElement.prototype);
+			notes[0]!.archivedAt = "2026-10-12T00:00:00.000Z";
+			await act(async () => {
+				win.dispatchEvent(new win.Event("focus"));
+			});
+			await settle();
+			expect(container.querySelector(".note-conflict")).not.toBeNull();
+			expect(title.value).toBe(draft);
+			expect(container.querySelector(".ProseMirror")).toBe(pm);
+			// The bar holds the autosave — nothing may PATCH under it.
+			await settleLong();
+			expect(notePatches).toHaveLength(0);
+		});
+	}
+
+	const openVersions = async () => {
+		await click(
+			[...container.querySelectorAll("button")].find((b) => b.textContent === "Versions"),
+		);
+		await click(container.querySelector(".note-versions button.link"));
+		return [...container.querySelectorAll(".note-version-preview button")].find(
+			(b) => b.textContent === "Restore" || b.textContent === "Restoring…",
+		) as HTMLButtonElement;
+	};
+
+	// The real restore endpoint writes the version's title/body at a
+	// fresh rev — the fixture store reflects that the moment the POST
+	// lands, so GETs and held replies stay coherent.
+	const restoreFixture = () => {
+		notes = [noteRow("Shopping", { rev: 5 })];
+		noteBodies = { "n-shopping": "current" };
+		versionRows = [{ rev: 1, source: "app", conversation: null, at: "x", bytes: 4 }];
+		versionPreview = {
+			rev: 1,
+			source: "app",
+			conversation: null,
+			at: "x",
+			bytes: 4,
+			title: "Old Title",
+			body: "old",
+		};
+		restoreReply = {
+			...noteFull(notes[0]!, "old"),
+			rev: 6,
+			title: "Old Title",
+			updatedAt: "2026-10-12T00:00:00.000Z",
+		};
+	};
+
+	test("an in-flight restore can't clobber intervening edits — the bar decides", async () => {
+		restoreFixture();
+		const gate = hold();
+		await notePage("/app/n/n-shopping");
+		const restore = await openVersions();
+		expect(restore.disabled).toBe(false);
+		restoreHold = gate.promise;
+		await click(restore);
+		expect(posts.filter((p) => p.url.endsWith("/restore"))).toHaveLength(1);
+		// A duplicate click can't launch a second swap while one flies.
+		expect(
+			(
+				[...container.querySelectorAll(".note-version-preview button")].find(
+					(b) => b.textContent === "Restoring…",
+				) as HTMLButtonElement
+			).disabled,
+		).toBe(true);
+		await editBody("x");
+		gate.resolve();
+		await settle();
+		// The edit wins the swap decision — bar up, buffer kept.
+		expect(container.querySelector(".note-conflict")).not.toBeNull();
+		expect(container.querySelector(".ProseMirror")!.textContent).toContain("currentx");
+		expect((container.querySelector("input.note-title") as HTMLInputElement).value).toBe(
+			"Shopping",
+		);
+		// No autosave may overwrite while the bar stands.
+		await settleLong();
+		expect(notePatches).toHaveLength(0);
+		// Keep mine saves the local buffer at the restore's rev.
+		await click(
+			[...container.querySelectorAll("button")].find((b) => b.textContent === "Keep mine"),
+		);
+		await settle();
+		const mine = notePatches.at(-1)!;
+		expect(mine.ifMatch).toBe('"6"');
+		expect((mine.body as { body?: string }).body).toContain("currentx");
+	});
+
+	test("an in-flight restore meeting an unsaved title keeps the draft and adopts metadata", async () => {
+		restoreFixture();
+		const gate = hold();
+		await notePage("/app/n/n-shopping");
+		const restore = await openVersions();
+		restoreHold = gate.promise;
+		await click(restore);
+		const title = container.querySelector("input.note-title")! as HTMLInputElement;
+		await typeInto(title, "Local title", win.HTMLInputElement.prototype);
+		gate.resolve();
+		await settle();
+		expect(container.querySelector(".note-conflict")).not.toBeNull();
+		// The draft survives — the returned title is not stamped over it.
+		expect(title.value).toBe("Local title");
+		expect(container.querySelector(".ProseMirror")!.textContent).toContain("current");
+	});
+
+	test("a restore on a clean buffer reloads the doc and title", async () => {
+		restoreFixture();
+		await notePage("/app/n/n-shopping");
+		await click(await openVersions());
+		await settle();
+		expect(container.querySelector(".ProseMirror")!.textContent).toContain("old");
+		expect((container.querySelector("input.note-title") as HTMLInputElement).value).toBe(
+			"Old Title",
+		);
+		expect(container.querySelector(".note-conflict")).toBeNull();
+	});
+
+	test("a stale restore answer can't roll back a newer saved rev", async () => {
+		restoreFixture();
+		const gate = hold();
+		await notePage("/app/n/n-shopping");
+		const restore = await openVersions();
+		restoreHold = gate.promise;
+		await click(restore);
+		// The restore landed server-side the moment the POST did — a
+		// focus refresh adopts it cleanly while the reply is held.
+		await act(async () => {
+			win.dispatchEvent(new win.Event("focus"));
+		});
+		await settle();
+		expect((container.querySelector("input.note-title") as HTMLInputElement).value).toBe(
+			"Old Title",
+		);
+		await editBody("x");
+		await settleLong();
+		expect(notePatches).toHaveLength(1);
+		expect(notePatches[0]!.ifMatch).toBe('"6"');
+		gate.resolve();
+		await settle();
+		// The rev-6 reply under a rev-7 page is stale — ignored, no
+		// bar, the saved buffer stands.
+		expect(container.querySelector(".note-conflict")).toBeNull();
+		expect(container.querySelector(".ProseMirror")!.textContent).toContain("oldx");
+		expect(notePatches).toHaveLength(1);
+	});
+
+	test("a failed restore releases the pending guard", async () => {
+		restoreFixture();
+		restoreFail = true;
+		await notePage("/app/n/n-shopping");
+		await click(await openVersions());
+		await settle();
+		expect(container.querySelector(".note-versions .error")!.textContent).toContain(
+			"Couldn't restore",
+		);
+		const again = [...container.querySelectorAll(".note-version-preview button")].find(
+			(b) => b.textContent === "Restore",
+		) as HTMLButtonElement;
+		expect(again).toBeTruthy();
+		expect(again.disabled).toBe(false);
+		expect(posts.filter((p) => p.url.endsWith("/restore"))).toHaveLength(1);
 	});
 
 	test("a rewrite flow locks the page controls until it closes", async () => {
@@ -2158,10 +2567,7 @@ describe("app projects surface", () => {
 			convs = [convRow("fixture chat")];
 			const gate = hold();
 			searchScript = new Map([
-				[
-					"gone",
-					{ hold: gate.promise, fail: outcome === "failure", hits: [searchHit("needle")] },
-				],
+				["gone", { hold: gate.promise, fail: outcome === "failure", hits: [searchHit("needle")] }],
 			]);
 			await mount();
 			const box = railSearch();
@@ -2208,9 +2614,7 @@ describe("app projects surface", () => {
 		expect(startAlert()).toContain("Couldn't start a conversation");
 
 		await click(
-			[...container.querySelectorAll("button.idx")].find((b) =>
-				b.textContent?.startsWith("Spec"),
-			),
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.startsWith("Spec")),
 		);
 		expect(win.location.pathname).toBe("/app/n/n-spec");
 		expect(startAlert()).toBeNull();
@@ -2261,9 +2665,7 @@ describe("app projects surface", () => {
 		expect(win.location.pathname).toBe("/app/projects");
 		expect(startAlert()).toBeNull();
 		await click(
-			[...container.querySelectorAll(".rail-ops button")].find(
-				(b) => b.textContent === "Settings",
-			),
+			[...container.querySelectorAll(".rail-ops button")].find((b) => b.textContent === "Settings"),
 		);
 		expect(win.location.pathname).toBe("/app/settings");
 		expect(startAlert()).toBeNull();
@@ -2356,9 +2758,7 @@ describe("app projects surface", () => {
 		);
 
 		await click(
-			[...container.querySelectorAll(".rail-projects .proj")].find(
-				(b) => b.textContent === "Beta",
-			),
+			[...container.querySelectorAll(".rail-projects .proj")].find((b) => b.textContent === "Beta"),
 		);
 		expect(win.location.pathname).toBe("/app/p/p-beta");
 		// B's own fresh state: its instructions, no rename box, a clean

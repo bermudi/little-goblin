@@ -204,8 +204,13 @@ function NoteChip({
 		title?: string;
 		rev?: number;
 	};
-	if (typeof d.id !== "string" || typeof d.title !== "string") return null;
-	const label = `Note · ${d.title}${typeof d.rev === "number" ? ` · rev ${d.rev}` : ""}`;
+	if (typeof d.id !== "string") return null;
+	// An optimistic part (or older history) may carry only the id — it
+	// labels itself rather than dropping the chip. A rev only displays
+	// when the server's expansion actually stamped one.
+	const label = `Note · ${typeof d.title === "string" ? d.title : d.id}${
+		typeof d.rev === "number" ? ` · rev ${d.rev}` : ""
+	}`;
 	if (onOpenNote === undefined) {
 		return (
 			<a className="attachment note-chip" href={`/app/n/${encodeURIComponent(d.id)}`}>
@@ -256,6 +261,9 @@ export function MessageParts({
 						part={p}
 						onAction={onAction}
 						busy={busy}
+						token={token}
+						noteProjectId={noteProjectId}
+						onOpenNote={onOpenNote}
 					/>,
 				);
 				continue;
@@ -640,7 +648,17 @@ function NotePicker({
 				autoFocus
 				onChange={(e) => setQuery(e.target.value)}
 				onKeyDown={(e) => {
-					if (e.key === "Escape") onClose();
+					// The input lives inside the composer form — an
+					// unguarded Enter would implicitly submit the draft.
+					// Both keys stay picker-local.
+					if (e.key === "Enter") {
+						e.preventDefault();
+						e.stopPropagation();
+					} else if (e.key === "Escape") {
+						e.preventDefault();
+						e.stopPropagation();
+						onClose();
+					}
 				}}
 			/>
 			{failed && <p className="error">Couldn't list notes.</p>}
@@ -920,9 +938,13 @@ export function Composer({
 				type: "data-attachment",
 				data: e.speech === true ? { ...e.ref, speech: true } : e.ref,
 			} as UIMessage["parts"][number]);
-		// The client names the note only — intake expands it server-side.
+		// Intake expands the id into the authoritative snapshot; the
+		// title rides along only so the just-sent chip isn't bare.
 		for (const n of stagedNotes)
-			parts.push({ type: "data-note", data: { id: n.id } } as UIMessage["parts"][number]);
+			parts.push({
+				type: "data-note",
+				data: { id: n.id, title: n.title },
+			} as UIMessage["parts"][number]);
 		setDraft("");
 		// Entries that weren't sent — uploads still in flight, failed
 		// chips — stay staged. Clearing them would drop files the

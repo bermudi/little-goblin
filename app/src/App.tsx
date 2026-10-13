@@ -1272,7 +1272,10 @@ function AppShell() {
 									projects={projectList}
 									onChat={(note: AppNote) =>
 										void startChat(note.projectId, [
-											{ type: "data-note", data: { id: note.id } } as UIMessage["parts"][number],
+											{
+												type: "data-note",
+												data: { id: note.id, title: note.title },
+											} as UIMessage["parts"][number],
 										])
 									}
 									onDeleted={openNotesIndex}

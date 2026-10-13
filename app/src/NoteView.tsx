@@ -191,6 +191,7 @@ function VersionsPanel({
 	token,
 	note,
 	canRestore,
+	canRestoreNow,
 	onRestored,
 }: {
 	token: string | null;
@@ -198,11 +199,16 @@ function VersionsPanel({
 	// Restore swaps the doc wholesale — locked while local edits or a
 	// conflict stand so it can't clobber an unsaved buffer.
 	canRestore: boolean;
+	// Click-time recheck — the rendered flag can lag a dirty flip
+	// that landed between render and the tap.
+	canRestoreNow: () => boolean;
 	onRestored: (note: AppNote) => void;
 }) {
 	const [versions, setVersions] = useState<AppNoteVersionMeta[] | null>(null);
 	const [preview, setPreview] = useState<AppNoteVersion | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	// One restore in flight — a double-tap must not launch two swaps.
+	const [restoring, setRestoring] = useState(false);
 	useEffect(() => {
 		void listNoteVersions(token, note.id).then(
 			(v) => setVersions(v.versions),
@@ -218,12 +224,18 @@ function VersionsPanel({
 		);
 	};
 	const restore = (rev: number) => {
+		if (restoring || !canRestoreNow()) return;
+		setRestoring(true);
 		void restoreNoteVersion(token, note.id, rev).then(
 			(n) => {
+				setRestoring(false);
 				setPreview(null);
 				onRestored(n);
 			},
-			(err) => setError(`Couldn't restore: ${err instanceof Error ? err.message : String(err)}`),
+			(err) => {
+				setRestoring(false);
+				setError(`Couldn't restore: ${err instanceof Error ? err.message : String(err)}`);
+			},
 		);
 	};
 	return (
@@ -261,10 +273,10 @@ function VersionsPanel({
 						<button
 							type="button"
 							className="ghost-inline"
-							disabled={!canRestore}
+							disabled={!canRestore || restoring}
 							onClick={() => restore(preview.rev)}
 						>
-							Restore
+							{restoring ? "Restoring…" : "Restore"}
 						</button>
 						{!canRestore && <small className="hint">Save or resolve edits before restoring</small>}
 						<button type="button" className="ghost-inline" onClick={() => setPreview(null)}>
@@ -316,12 +328,17 @@ export function NoteView({
 	const [rewriteApplying, setRewriteApplying] = useState(false);
 	const editorRef = useRef<NoteEditorHandle>(null);
 	const dirtyRef = useRef(false);
-	// Refs mirror what the focus check reads outside render: the loaded
-	// note, and the title draft (an unsaved title is a local edit).
+	// Refs mirror what the focus check and the async restore guard
+	// read outside render — including the title draft, itself an
+	// unsaved local edit.
 	const noteRef = useRef<AppNote | null>(null);
 	const titleDraftRef = useRef("");
+	const conflictRef = useRef<AppNote | null>(null);
+	const rewriteBusyRef = useRef(false);
 	noteRef.current = note;
 	titleDraftRef.current = titleDraft;
+	conflictRef.current = conflict;
+	rewriteBusyRef.current = rewriteBusy;
 
 	// Adopt remote state only forward — a delayed response must never
 	// roll the page's rev (or flags) backwards.
@@ -358,8 +375,10 @@ export function NoteView({
 
 	// Refetch on window focus — refresh without push (design →
 	// Refresh). A newer rev under a clean page loads silently; under a
-	// dirty title or body it raises the conflict bar. Same-rev data
-	// (flags, project) always lands on a clean page.
+	// dirty title or body it raises the conflict bar. Archiving doesn't
+	// bump the rev, so a flag flip under a dirty buffer counts as the
+	// same "changed elsewhere" — silently flipping to readonly would
+	// strand the edits.
 	useEffect(() => {
 		let live = true;
 		const check = () => {
@@ -368,9 +387,11 @@ export function NoteView({
 					if (!live) return;
 					const cur = noteRef.current;
 					if (cur === null || data.rev < cur.rev) return;
-					const titleDirty = titleDraftRef.current !== "" && titleDraftRef.current !== cur.title;
+					// A cleared title is still an in-progress edit — no
+					// empty-string exemption or remote flips slip under it.
+					const titleDirty = titleDraftRef.current !== cur.title;
 					const bodyDirty = dirtyRef.current || (editorRef.current?.dirty() ?? false);
-					if (data.rev > cur.rev) {
+					if (data.rev > cur.rev || data.archivedAt !== cur.archivedAt) {
 						if (bodyDirty || titleDirty) {
 							// Hand the block to the editor — autosave must stop,
 							// not just show a bar. No editor (archived note) →
@@ -555,7 +576,10 @@ export function NoteView({
 					Chat with this note
 				</button>
 			</div>
-			{archived ? (
+			{/* While a conflict stands the editor stays mounted even on
+			    an archived note — unmounting would drop the dirty buffer
+			    the bar is asking about, and Keep mine needs the handle. */}
+			{archived && conflict === null ? (
 				<pre className="note-readonly">{note.body}</pre>
 			) : (
 				<Suspense fallback={<p className="loading">Loading editor…</p>}>
@@ -586,8 +610,32 @@ export function NoteView({
 				<VersionsPanel
 					token={token}
 					note={note}
-					canRestore={conflict === null && !dirty && !rewriteBusy}
+					canRestore={conflict === null && !dirty && !rewriteBusy && titleDraft === note.title}
+					canRestoreNow={() => {
+						const cur = noteRef.current;
+						return (
+							cur !== null &&
+							conflictRef.current === null &&
+							!rewriteBusyRef.current &&
+							titleDraftRef.current === cur.title &&
+							!(dirtyRef.current || (editorRef.current?.dirty() ?? false))
+						);
+					}}
 					onRestored={(n) => {
+						const cur = noteRef.current;
+						// A restore answering late must not roll a newer rev back.
+						if (cur === null || n.rev < cur.rev) return;
+						const titleDirty = titleDraftRef.current !== cur.title;
+						const bodyDirty = dirtyRef.current || (editorRef.current?.dirty() ?? false);
+						if (bodyDirty || titleDirty) {
+							// Edits landed while the restore flew — keep them,
+							// adopt the metadata, let the bar carry the swap.
+							adoptRemote(n);
+							const h = editorRef.current;
+							if (h === null) setConflict(n);
+							else h.conflict(n);
+							return;
+						}
 						adoptRemote(n);
 						setTitleDraft(n.title);
 						editorRef.current?.reload(n);

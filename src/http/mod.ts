@@ -52,6 +52,10 @@ export interface HttpDeps extends OperatorDeps {
 	// channel's import graph (runtime, the AI SDK, undici form types).
 	// Absent = every /api/app/* refuses 503 with a log line.
 	appApi?: (req: Request, url: URL) => Promise<Response>;
+	// Constructor-only client-root override for tests and verification —
+	// production leaves it undefined and the shell resolves against the
+	// real app/dist. No config/env/HTTP surface for it.
+	appDistDir?: string;
 }
 
 const NO_STORE = { "cache-control": "no-store" };
@@ -92,6 +96,9 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 	// One fire per program per 60 s — in-memory: a restart resets the
 	// window, which is acceptable (the program just runs again).
 	const hookLastFired = new Map<number, number>();
+	// The client shell/assets dispatch — one seam so a test can point
+	// the root at a fixture build instead of the real app/dist.
+	const serveClient = (rel: string) => serveAppDist(rel, deps.appDistDir);
 
 	async function handleHook(req: Request, token: string): Promise<Response> {
 		const t0 = Date.now();
@@ -208,7 +215,7 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 		// turn {publicUrl}/app into a bounce to a dead 127.0.0.1 URL
 		// (#105) — the deep-link routes below serve it directly too.
 		if (url.pathname === "/app") {
-			return serveAppDist("");
+			return serveClient("");
 		}
 		// The spin-off deep link (design/app.md → Spin-off → Links):
 		// /app/c/<appId> opens one conversation — serve the same
@@ -220,16 +227,16 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 			if (!APP_ID_RE.test(appId)) {
 				return Response.json({ error: "not found" }, { status: 404 });
 			}
-			return serveAppDist("");
+			return serveClient("");
 		}
 		// The operator-console client routes (settings, memory, …) —
 		// same reasoning as /app/c/<id>: the shell resolves them.
 		if (
-			/^\/app\/(?:settings|memory|delegations|programs|status|projects|notes)\/?$/.test(
+			/^\/app\/(?:settings|memory|delegations|programs|status|projects|notes|skills|files|log)\/?$/.test(
 				url.pathname,
 			)
 		) {
-			return serveAppDist("");
+			return serveClient("");
 		}
 		// Project pages (design/projects.md): /app/p/<projectId> — same
 		// shell dispatch as /app/c/<id>. Project ids are randomUUIDs,
@@ -239,7 +246,7 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 			if (!APP_ID_RE.test(projectId)) {
 				return Response.json({ error: "not found" }, { status: 404 });
 			}
-			return serveAppDist("");
+			return serveClient("");
 		}
 		// Note pages (design/projects.md → Notes): /app/n/<noteId> —
 		// the same shell dispatch; note ids are randomUUIDs too.
@@ -248,10 +255,10 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 			if (!APP_ID_RE.test(noteId)) {
 				return Response.json({ error: "not found" }, { status: 404 });
 			}
-			return serveAppDist("");
+			return serveClient("");
 		}
 		if (url.pathname.startsWith("/app/")) {
-			return serveAppDist(url.pathname.slice("/app/".length));
+			return serveClient(url.pathname.slice("/app/".length));
 		}
 		// The Telegram mini app door (design/telegram.md → Mini Apps):
 		// the same built client as /app, at the deep links the menu
@@ -264,7 +271,7 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 			url.pathname === "/t/" ||
 			/^\/t\/(?:settings|memory)\/?$/.test(url.pathname)
 		) {
-			return serveAppDist("");
+			return serveClient("");
 		}
 		if (url.pathname === "/" || url.pathname === "/index.html") {
 			// The plain-JS mini app lived here; the menu button now points

@@ -291,6 +291,15 @@ function NoteAppendCard({
 	);
 }
 
+// What a `note` fence card needs from its host: the caller's auth, the
+// conversation's project (a card-created note binds to it), and note
+// navigation — threaded through every markdown-rendering container.
+export interface MarkdownNoteContext {
+	token?: string | null | undefined;
+	noteProjectId?: string | null | undefined;
+	onOpenNote?: ((id: string) => void) | undefined;
+}
+
 export function Markdown({
 	text,
 	token,
@@ -298,11 +307,7 @@ export function Markdown({
 	onOpenNote,
 }: {
 	text: string;
-	token?: string | null | undefined;
-	// The conversation's project — a card-created note binds to it.
-	noteProjectId?: string | null | undefined;
-	onOpenNote?: ((id: string) => void) | undefined;
-}) {
+} & MarkdownNoteContext) {
 	const blocks: ReactNode[] = [];
 	const lines = text.split("\n");
 	let i = 0;

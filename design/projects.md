@@ -177,22 +177,30 @@ from a third party.
   `## project` section: id + title, pinned first then most recent,
   capped at 50 entries. Current text is a `note read` away.
 - **Attach.** The composer's attach picker adds notes. The client sends
-  only a reference (`data-note` with the id); intake resolves it and
-  stores the expanded part — id, title, rev, and the body as of send —
-  so history holds what the server read, never a client-supplied body.
-  The model view renders it fenced. Appended content — the cache invariant
-  holds — and an honest snapshot: a later edit is visible through `note
-  read`, never by rewriting the old message.
+  a reference (`data-note` with the id) and may add a display title —
+  labels only, so the just-sent chip isn't bare; the server ignores it.
+  Intake resolves the id and stores the expanded part — id, title, rev,
+  and the body as of send — so history holds what the server read, never
+  client-supplied content. The model view renders it fenced. Appended
+  content — the cache invariant holds — and an honest snapshot: a later
+  edit is visible through `note read`, never by rewriting the old
+  message.
 - "Chat with a note" is a new conversation with that note attached to
   its first message. No separate mechanism.
 
 **Refresh without push.** The editor fetches on mount and on window
 focus; a newer server rev under a clean editor reloads silently, under
-a dirty one it raises the conflict choice. In v1 a note and a chat
-never share a screen, so there is no open editor for a streamed `note`
-tool result to refresh; when they do share one, that tool result is the
-refetch trigger. No socket, no new push channel (Streaming members'
-"parked" ruling stands).
+a dirty one it raises the conflict choice. Flag flips don't bump the
+rev — an archive arriving under a dirty buffer is the same conflict,
+and the mounted editor survives it so Keep mine can write back; only a
+clean page swaps to the archived readonly view. An in-flight restore
+holds the same rule: edits that land while the POST flies raise the
+conflict instead of being replaced, and a reply that arrives under a
+newer rev is ignored. In v1 a note and a chat never share a screen, so
+there is no open editor for a streamed `note` tool result to refresh;
+when they do share one, that tool result is the refetch trigger. No
+socket, no new push channel (Streaming members' "parked" ruling
+stands).
 
 **Fenced reply → append** (operator ask). In app conversations the
 model may wrap note-ready content in a `note` fence — four backticks so

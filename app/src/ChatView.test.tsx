@@ -121,6 +121,27 @@ describe("MessageParts", () => {
 		expect(html).toContain("— 1 failed");
 		expect(html).toContain("a.dev");
 	});
+
+	test("an id-only data-note part still renders a chip — the id is its own label", () => {
+		const html = renderToStaticMarkup(
+			<MessageParts
+				parts={[{ type: "data-note", data: { id: "n-abc" } } as UIMessage["parts"][number]]}
+			/>,
+		);
+		expect(html).toContain("note-chip");
+		expect(html).toContain("Note · n-abc");
+		expect(html).toContain('href="/app/n/n-abc"');
+		expect(html).not.toContain("rev");
+	});
+
+	test("a data-note part without an id renders nothing", () => {
+		const html = renderToStaticMarkup(
+			<MessageParts
+				parts={[{ type: "data-note", data: { wrong: true } } as UIMessage["parts"][number]]}
+			/>,
+		);
+		expect(html).not.toContain("note-chip");
+	});
 });
 
 // The reload window (#79): history is fetched once on mount, then the

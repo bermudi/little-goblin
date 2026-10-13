@@ -2589,8 +2589,9 @@ describe("app notes", () => {
 			await res.text();
 			const history = store.history("app/n-attach");
 			const part = history[0]?.parts.find((p) => p.type === "data-note") as
-				| { data?: { body?: string; title?: string; rev?: number } }
+				| { data?: { id?: string; body?: string; title?: string; rev?: number } }
 				| undefined;
+			expect(part?.data?.id).toBe(note.id);
 			expect(part?.data?.body).toBe("the real body");
 			expect(part?.data?.title).toBe("ref");
 			expect(part?.data?.rev).toBe(note.rev);

@@ -727,6 +727,7 @@ describe("ping replies (Spin-off)", () => {
 			tgMsg({
 				message_id: 7,
 				chat: { id: 1, type: "private" },
+				from: { id: 1 },
 				text: "looks good",
 				reply_to_message: { message_id: 99, text: "the work: deployed" },
 			}),
@@ -735,6 +736,36 @@ describe("ping replies (Spin-off)", () => {
 		expect(h.env.inbox.pending()[0]!.payload.conversationId).toBe(app.id);
 		expect(h.pushed.map((p) => p.conv)).toEqual([app.id]);
 		expect(h.pushed[0]!.parts).toEqual([{ type: "text", text: "looks good" }]);
+		h.store.close();
+	});
+
+	// The ping route is operator-only: a demoted operator still holds
+	// the pings in their chat, but their reply must take the ordinary
+	// DM lane — the guest-persona pin and tool filter apply there.
+	test("a demoted operator's ping reply stays in their own DM lane", async () => {
+		const h = routerHarness();
+		const src = h.store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const app = h.store.forkToApp(src.id, "spun-1", "/w", "the work");
+		h.pings.record(2, 99, app.id); // delivered while 2 was an operator
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 7,
+				chat: { id: 2, type: "private" },
+				from: { id: 2 },
+				text: "looks good",
+				reply_to_message: { message_id: 99, text: "the work: deployed" },
+			}),
+		);
+		await h.env.intake.get("dm:2");
+		expect(h.env.inbox.pending()[0]!.payload.conversationId).toBe("dm:2");
+		expect(h.pushed.map((p) => p.conv)).toEqual(["dm:2"]);
+		// The ping text degrades to an ordinary quote — nothing reaches
+		// the app conversation.
+		expect((h.pushed[0]!.parts[0] as { text: string }).text).toBe(
+			'[replying to: "the work: deployed"]',
+		);
+		expect(h.store.lastSeq(app.id)).toBeNull();
 		h.store.close();
 	});
 
@@ -787,6 +818,7 @@ describe("ping replies (Spin-off)", () => {
 			tgMsg({
 				message_id: 8,
 				chat: { id: 1, type: "private" },
+				from: { id: 1 },
 				text: "and?",
 				reply_to_message: { message_id: 99, text: "old ping" },
 			}),
@@ -811,6 +843,7 @@ describe("ping replies (Spin-off)", () => {
 		const reply = tgMsg({
 			message_id: 51,
 			chat: { id: 1, type: "private" },
+			from: { id: 1 },
 			text: "looks good",
 			reply_to_message: { message_id: 99, text: "the work: deployed" },
 		});
@@ -844,6 +877,7 @@ describe("ping replies (Spin-off)", () => {
 		const reply = tgMsg({
 			message_id: 51,
 			chat: { id: 1, type: "private" },
+			from: { id: 1 },
 			text: "looks good",
 			reply_to_message: { message_id: 99, text: "the work: deployed" },
 		});

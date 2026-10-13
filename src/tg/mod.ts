@@ -479,8 +479,12 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 	// A swipe-reply to a delegation ping routes into the app conversation
 	// that rang; the payload carries no quoted part — the app conversation
 	// doesn't need the ping text. A deleted target degrades to ordinary.
+	// Operator-only: a demoted operator's chat still holds the pings, and
+	// routing their reply in would bypass the guest persona + tool filter
+	// the DM lane pins at flush.
 	const pingedConv =
-		quotedReply === undefined
+		quotedReply === undefined ||
+		!deps.configRef.current.operators.includes(msg.from?.id ?? -1)
 			? null
 			: (() => {
 					const hit = env.pings.lookup(msg.chat.id, quotedReply.message_id);

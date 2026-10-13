@@ -415,8 +415,9 @@ export function ensurePersonaClass(
 	// events would stay readable to the sandboxed caller, who could
 	// prompt their disclosure. Reset to a fresh conversation —
 	// history, compaction, and snapshot gone — after fencing any
-	// running turn (delete requires a fenced lane; the fresh row's
-	// epoch 0 fences the old turn's authority check, and stop's abort
+	// running turn (delete requires a fenced lane; the recreated id's
+	// epoch starts above the deleted row's high-water mark, so the
+	// old turn's captured token still fences it, and stop's abort
 	// keeps its trailing reply out of the new history). Promotion
 	// keeps history: sandbox exchanges are safe for the operator to
 	// see.

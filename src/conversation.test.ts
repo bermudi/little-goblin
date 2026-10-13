@@ -175,6 +175,27 @@ describe("conversation store", () => {
 		reopened.close();
 	});
 
+	test("a deleted id's epoch floor survives recreation and reopen", () => {
+		const path = tmpdb();
+		const store = openStore(path);
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		// A token captured under the first generation (epoch 0 — the
+		// demotion-reset case) must not authorize anything against the
+		// recreated row.
+		store.deleteConversation(c.id);
+		const fresh = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		expect(fresh.id).toBe(c.id);
+		expect(fresh.epoch).toBe(1);
+		// Later generations keep climbing off the high-water mark.
+		store.bumpEpoch(fresh.id);
+		store.deleteConversation(fresh.id);
+		store.close();
+		const reopened: ConversationStore = openStore(path);
+		const third = reopened.resolve({ kind: "dm", chatId: 1 }, "/w");
+		expect(third.epoch).toBe(3);
+		reopened.close();
+	});
+
 	test("applySettings patches meta and bumps epoch atomically", () => {
 		const store = openStore(tmpdb());
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");

@@ -164,6 +164,8 @@ esac`,
 'run app:build') failure=build ;;
 'scripts/check-startup.ts --watch '*)
   if [ "$MODE" = watch-fail ]; then echo 'startup acceptance failed' >&2; exit 37; fi ;;
+'scripts/check-startup.ts --brief '*)
+  echo 'systemd[1]: Started goblin.service.' ;;
 *) echo "unexpected bun boundary: $*" >&2; exit 90 ;;
 esac
 if [ "$MODE" = "$failure" ]; then echo "$failure failed" >&2; exit 32; fi`,
@@ -176,6 +178,9 @@ if [ "$MODE" = "$failure" ]; then echo "$failure failed" >&2; exit 32; fi`,
   printf '%s\\n' "$SERVICE_ROOT" ;;
 '--user restart goblin')
   if [ "$MODE" = restart ]; then echo 'restart failed' >&2; exit 34; fi ;;
+'--user show goblin.service --property=InvocationID,ExecMainStartTimestampMonotonic --value')
+  if [ "$MODE" = floor ]; then echo 'floor failed' >&2; exit 33; fi
+  printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n42000000\n' ;;
 '--user show --property=LoadState --value goblin-memory-api.service')
   if [ "$MODE" = load-state ]; then echo 'load-state failed' >&2; exit 35; fi
   if [ "$MODE" = absent ]; then echo not-found; else echo loaded; fi ;;
@@ -364,12 +369,15 @@ describe("local deployment refresh and rollback", () => {
 		expect(result.status).toBe(0);
 		expect(result.calls.filter((call) => call.startsWith("bun "))).toEqual([
 			"bun run typecheck",
-			"bun scripts/check-startup.ts --watch 0 75000",
+			"bun scripts/check-startup.ts --watch 0 75000 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 42000000",
 		]);
 		const boundaries = [
 			"bun run typecheck",
+			// The watcher's floor is read BEFORE the restart — an invocation
+			// that predates it can never be accepted.
+			"systemctl --user show goblin.service --property=InvocationID,ExecMainStartTimestampMonotonic --value",
 			"systemctl --user restart goblin",
-			"bun scripts/check-startup.ts --watch 0 75000",
+			"bun scripts/check-startup.ts --watch 0 75000 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 42000000",
 		];
 		const indexes = boundaries.map((call) => result.calls.indexOf(call));
 		expect(
@@ -406,7 +414,7 @@ describe("local deployment refresh and rollback", () => {
 		expect(result.stdout).toContain("never auto-applied");
 		expect(result.calls.filter((call) => call.startsWith("bun "))).toEqual([
 			"bun run typecheck",
-			"bun scripts/check-startup.ts --watch 0 75000",
+			"bun scripts/check-startup.ts --watch 0 75000 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 42000000",
 		]);
 		expect(result.calls.filter((call) => call.includes(" restart "))).toEqual([
 			"systemctl --user restart goblin",
@@ -419,6 +427,7 @@ describe("local deployment failures and memory probe", () => {
 		"typecheck",
 		"install",
 		"build",
+		"floor",
 		"restart",
 		"watch-fail",
 		"journal",
@@ -434,7 +443,7 @@ describe("local deployment failures and memory probe", () => {
 			expect(result.stderr.length).toBeGreaterThan(0);
 			expect(result.markerValue).toBe(result.oldRev);
 			expect(result.stdout).not.toContain("deploy: done:");
-			if (["typecheck", "install", "build", "restart", "journal"].includes(mode))
+			if (["typecheck", "install", "build", "restart", "journal", "floor"].includes(mode))
 				expect(result.stderr).toContain(`${mode} failed`);
 			if (mode === "typecheck") {
 				// Deps sync precedes the gate (it must read new_rev's tree),
@@ -442,13 +451,14 @@ describe("local deployment failures and memory probe", () => {
 				// builds or restarts.
 				expect(result.calls).not.toContain("bun run app:build");
 			}
-			if (["typecheck", "install", "build"].includes(mode))
+			if (["typecheck", "install", "build", "floor"].includes(mode))
 				expect(result.calls).not.toContain("systemctl --user restart goblin");
 			if (mode === "watch-fail") {
-				// Crash-loop detection lives in the acceptance probe: the failure must
-				// ship the fresh journal and never name the deployment done.
+				// Crash-loop detection lives in the acceptance probe: the failure
+				// prints the allowlisted brief and never raw journal bodies.
 				expect(result.stderr).toContain("goblin failed startup acceptance after restart");
-				expect(result.calls).toContain("journalctl --user -u goblin -n 40 --no-pager");
+				expect(result.calls).toContain("bun scripts/check-startup.ts --brief 40");
+				expect(result.calls.some((call) => call.startsWith("journalctl"))).toBe(false);
 			}
 		});
 	}

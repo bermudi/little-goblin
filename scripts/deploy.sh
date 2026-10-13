@@ -100,12 +100,23 @@ fi
 
 # --- 5. Restart, verify -----------------------------------------------------
 restart_epoch="$(date +%s)"
+# The watcher's floor: the invocation this restart must replace, read
+# BEFORE the restart — a crash/restart that lands ahead of the watch can
+# never be adopted as the accepted one.
+pre_restart="$(systemctl --user show goblin.service --property=InvocationID,ExecMainStartTimestampMonotonic --value)" ||
+	fail "cannot read goblin.service pre-restart identity"
+mapfile -t watch_floor <<< "$pre_restart"
+if [ "${#watch_floor[@]}" -ne 2 ]; then
+	fail "unreadable goblin.service pre-restart identity"
+fi
 systemctl --user restart goblin
 step "verify: startup acceptance"
 # Installer grammar; 75s because slow boot failures (a timed-out provider
 # handshake) land long after an is-active poll turns green.
-if ! bun scripts/check-startup.ts --watch 0 75000 >&2; then
-	journalctl --user -u goblin -n 40 --no-pager >&2
+if ! bun scripts/check-startup.ts --watch 0 75000 "${watch_floor[0]}" "${watch_floor[1]}" >&2; then
+	# Failure diagnostics under the same allowlist the watcher enforces —
+	# raw journal bodies carry private runtime fields.
+	bun scripts/check-startup.ts --brief 40 >&2 || true
 	fail "goblin failed startup acceptance after restart"
 fi
 sleep 3

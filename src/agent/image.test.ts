@@ -28,6 +28,7 @@ interface SeenRequest {
 	url: string;
 	headers: Record<string, string>;
 	body: string;
+	signal?: AbortSignal | null | undefined;
 }
 
 const fakeFetch = (status: number, body: string | Uint8Array) => {
@@ -37,6 +38,7 @@ const fakeFetch = (status: number, body: string | Uint8Array) => {
 			url: String(url),
 			headers: Object.fromEntries(Object.entries((init?.headers as Record<string, string>) ?? {})),
 			body: String(init?.body),
+			signal: init?.signal,
 		});
 		return new Response(body, { status });
 	}) as typeof fetch;
@@ -185,5 +187,50 @@ describe("generateImages", () => {
 			),
 		).rejects.toThrow("no such secret: gone");
 		expect(seen.length).toBe(0);
+	});
+
+	test("the wire signal aborts with the turn's signal", async () => {
+		const controller = new AbortController();
+		const { fn, last } = fakeFetch(200, okBody(1));
+		await generateImages(
+			{ prompt: "x" },
+			{
+				configRef: cfgRef(imageCfg),
+				auth,
+				conversation: "c1",
+				fetchFn: fn,
+				signal: controller.signal,
+			},
+		);
+		// The wire gets the combined turn+timeout signal — prove the
+		// turn's half propagates (vision's seam lesson).
+		expect(last().signal?.aborted).toBe(false);
+		controller.abort();
+		expect(last().signal?.aborted).toBe(true);
+	});
+
+	test("a stopped turn settles the in-flight call instead of paying for it", async () => {
+		const controller = new AbortController();
+		// A provider edge that hangs until the wire signal fires — what a
+		// real fetch does under /stop.
+		const hang = (async (_url: string | URL | Request, init?: RequestInit) =>
+			new Promise<Response>((_resolve, reject) => {
+				init?.signal?.addEventListener("abort", () =>
+					reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError" })),
+				);
+			})) as typeof fetch;
+		const pending = generateImages(
+			{ prompt: "x" },
+			{
+				configRef: cfgRef(imageCfg),
+				auth,
+				conversation: "c1",
+				fetchFn: hang,
+				signal: controller.signal,
+				timeoutMs: 5_000,
+			},
+		);
+		setTimeout(() => controller.abort(), 20);
+		await expect(pending).rejects.toThrow("image: request failed");
 	});
 });

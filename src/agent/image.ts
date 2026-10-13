@@ -14,6 +14,7 @@ import type { AuthStore } from "../auth.ts";
 import type { ConfigRef } from "../config.ts";
 import { splitModelRef } from "../config.ts";
 import { log } from "../log.ts";
+import { sniffImageBytes } from "./sniff.ts";
 import { readBytesCapped, readTextCapped } from "./tools/web.ts";
 import { renderError } from "./transcribe-cloud.ts";
 
@@ -36,6 +37,12 @@ const imagesResponse = z.object({
 		.min(1),
 });
 
+// Error previews bound before scrubbing: a whitespace-collapse over a
+// garbage body up to RESPONSE_CAP would build a full-size string for
+// 300 kept chars.
+const bodyPreview = (s: string): string =>
+	s.slice(0, 2048).replace(/\s+/g, " ").trim().slice(0, 300);
+
 export interface ImageInput {
 	prompt: string;
 	/** "WxH" — overrides the image block's default size when present. */
@@ -54,30 +61,14 @@ export interface ImageCallDeps {
 	configRef: ConfigRef;
 	auth: AuthStore;
 	conversation: string;
+	/** The turn's abort signal (/stop, a superseded turn) — raced with
+	 *  the timeout so a killed turn cancels the billed call, same seam
+	 *  as vision. */
+	signal?: AbortSignal | undefined;
 	/** Test door over the provider edge (production: fetch). */
 	fetchFn?: typeof fetch | undefined;
 	/** Test door over the timeout (production: IMAGE_TIMEOUT_MS). */
 	timeoutMs?: number | undefined;
-}
-
-// Magic bytes pick the extension — a provider that re-encodes silently
-// must not name a jpeg ".png" in the operator's downloads.
-const SNIFFS: { bytes: number[]; mediaType: string; ext: string }[] = [
-	{ bytes: [0x89, 0x50, 0x4e, 0x47], mediaType: "image/png", ext: "png" },
-	{ bytes: [0xff, 0xd8, 0xff], mediaType: "image/jpeg", ext: "jpg" },
-	{ bytes: [0x47, 0x49, 0x46, 0x38], mediaType: "image/gif", ext: "gif" },
-	// RIFF container: bytes 0-3 "RIFF", 8-11 "WEBP".
-	{ bytes: [0x52, 0x49, 0x46, 0x46, -1, -1, -1, -1, 0x57, 0x45, 0x42, 0x50], mediaType: "image/webp", ext: "webp" },
-];
-
-function sniffGenerated(bytes: Uint8Array): { mediaType: string; ext: string } | null {
-	for (const s of SNIFFS) {
-		if (bytes.byteLength < s.bytes.length) continue;
-		if (s.bytes.every((b, i) => b === -1 || bytes[i] === b)) {
-			return { mediaType: s.mediaType, ext: s.ext };
-		}
-	}
-	return null;
 }
 
 /** Config → engine. Resolves the image block's provider ref to a
@@ -128,7 +119,10 @@ export async function generateImages(
 				...(n !== 1 ? { n } : {}),
 				response_format: "b64_json",
 			}),
-			signal: AbortSignal.timeout(deps.timeoutMs ?? IMAGE_TIMEOUT_MS),
+			signal: AbortSignal.any([
+				...(deps.signal ? [deps.signal] : []),
+				AbortSignal.timeout(deps.timeoutMs ?? IMAGE_TIMEOUT_MS),
+			]),
 		});
 	} catch (err) {
 		throw new Error(`image: request failed (${endpoint.url}) — ${(err as Error).message}`);
@@ -139,19 +133,16 @@ export async function generateImages(
 	}
 	const { tooLarge, bytes: raw } = await readBytesCapped(res, RESPONSE_CAP);
 	if (tooLarge) throw new Error(`image: response over ${RESPONSE_CAP} bytes`);
+	const text = new TextDecoder().decode(raw);
 	let json: unknown;
 	try {
-		json = JSON.parse(new TextDecoder().decode(raw));
+		json = JSON.parse(text);
 	} catch {
-		throw new Error(
-			`image: response is not JSON — ${new TextDecoder().decode(raw).replace(/\s+/g, " ").trim().slice(0, 300)}`,
-		);
+		throw new Error(`image: response is not JSON — ${bodyPreview(text)}`);
 	}
 	const parsed = imagesResponse.safeParse(json);
 	if (!parsed.success) {
-		throw new Error(
-			`image: unexpected response shape — ${new TextDecoder().decode(raw).replace(/\s+/g, " ").trim().slice(0, 300)}`,
-		);
+		throw new Error(`image: unexpected response shape — ${bodyPreview(text)}`);
 	}
 	const images: GeneratedImage[] = [];
 	for (const item of parsed.data.data) {
@@ -160,7 +151,9 @@ export async function generateImages(
 		}
 		const bytes = Buffer.from(item.b64_json, "base64");
 		if (bytes.byteLength === 0) throw new Error("image: empty image payload");
-		const sniff = sniffGenerated(bytes);
+		// Magic bytes pick the extension — a provider that re-encodes
+		// silently must not name a jpeg ".png" in the operator's downloads.
+		const sniff = sniffImageBytes(bytes);
 		if (sniff === null) {
 			throw new Error(
 				`image: unrecognized image bytes (first bytes ${Array.from(bytes.subarray(0, 4)).join(",")})`,

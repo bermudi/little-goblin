@@ -3,6 +3,7 @@ import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } fr
 import { basename, dirname } from "node:path";
 import { z } from "zod";
 import { log } from "../../log.ts";
+import { SNIFF_HEAD, sniffImageBytes, type SniffedImage } from "../sniff.ts";
 import { resolvePath, unicodeTwin } from "./paths.ts";
 
 const MAX_LINES = 2000;
@@ -156,13 +157,10 @@ function readTextFileSmart(abs: string, display: string): { text: string } | Rea
 }
 
 // Image sniffing for the tool layer: providers carry tool results as
-// strings, so image bytes must never reach the model. Reads at most the
-// first few KB — never the whole file. JPEG needs the headroom: APP0/
-// EXIF/DQT segments routinely push the SOF frame header past 64 bytes.
-const SNIFF_BYTES = 4096;
-export function sniffImage(
-	abs: string,
-): { mediaType: string; width?: number; height?: number } | null {
+// strings, so image bytes must never reach the model. Reads only the
+// head window — the classifier itself lives in agent/sniff.ts, shared
+// with generated-image naming so the two can never drift.
+export function sniffImage(abs: string): SniffedImage | null {
 	let fd: number;
 	try {
 		fd = openSync(abs, "r");
@@ -170,60 +168,9 @@ export function sniffImage(
 		return null;
 	}
 	try {
-		const buf = Buffer.alloc(SNIFF_BYTES);
-		const n = readSync(fd, buf, 0, SNIFF_BYTES, 0);
-		const b = buf.subarray(0, n);
-		// PNG: signature then IHDR chunk — dims at offset 16/20, big-endian.
-		if (b.length >= 24 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) {
-			return { mediaType: "image/png", width: b.readUInt32BE(16), height: b.readUInt32BE(20) };
-		}
-		// JPEG: walk start-of-frame markers; SOF0/1/2 carry 16-bit dims.
-		if (b.length >= 4 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) {
-			let i = 2;
-			while (i + 9 < b.length) {
-				if (b[i] !== 0xff) {
-					i++;
-					continue;
-				}
-				const marker = b[i + 1]!;
-				// SOF0..SOF15, excluding DAC (C4), JPG (C8), RST segments.
-				if (
-					marker >= 0xc0 &&
-					marker <= 0xcf &&
-					marker !== 0xc4 &&
-					marker !== 0xc8 &&
-					marker !== 0xcc
-				) {
-					return {
-						mediaType: "image/jpeg",
-						height: b.readUInt16BE(i + 5),
-						width: b.readUInt16BE(i + 7),
-					};
-				}
-				// Skip this segment by its length; stop if it runs past the window.
-				if (i + 3 >= b.length) break;
-				i += 2 + b.readUInt16BE(i + 2);
-			}
-			return { mediaType: "image/jpeg" };
-		}
-		// GIF: magic "GIF8", little-endian dims at offset 6.
-		if (b.length >= 10 && b.subarray(0, 4).toString("latin1") === "GIF8") {
-			return { mediaType: "image/gif", width: b.readUInt16LE(6), height: b.readUInt16LE(8) };
-		}
-		// BMP: "BM", little-endian dims at offset 18.
-		if (b.length >= 26 && b[0] === 0x42 && b[1] === 0x4d) {
-			return { mediaType: "image/bmp", width: b.readInt32LE(18), height: b.readInt32LE(22) };
-		}
-		// WEBP: RIFF container with WEBP fourcc — dims live deeper in the
-		// chunk stream, mediaType only.
-		if (
-			b.length >= 12 &&
-			b.subarray(0, 4).toString("latin1") === "RIFF" &&
-			b.subarray(8, 12).toString("latin1") === "WEBP"
-		) {
-			return { mediaType: "image/webp" };
-		}
-		return null;
+		const buf = Buffer.alloc(SNIFF_HEAD);
+		const n = readSync(fd, buf, 0, SNIFF_HEAD, 0);
+		return sniffImageBytes(buf.subarray(0, n));
 	} finally {
 		closeSync(fd);
 	}

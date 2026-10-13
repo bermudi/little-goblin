@@ -928,7 +928,7 @@ describe("delivery files", () => {
 	function pngFile(dir: string): string {
 		// Minimal PNG head: signature + IHDR dims — enough for magic sniffing.
 		const head = Buffer.alloc(24);
-		head.set([0x89, 0x50, 0x4e, 0x47], 0);
+		head.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
 		head.writeUInt32BE(2, 16);
 		head.writeUInt32BE(3, 20);
 		const f = join(dir, "chart.png");

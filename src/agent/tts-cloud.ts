@@ -1,13 +1,15 @@
 // Cloud speech synthesis — hand-rolled HTTP like transcription
-// (transcribe-cloud.ts), no provider SDK. OpenRouter and Logfare expose
-// the same POST shape for every upstream speech model: {model, input,
-// voice?, response_format} in, raw audio bytes out — never JSON on
-// success; errors are the usual {"error": {code, message}} envelope.
-// The wire contract is pinned verbatim in tts-cloud.test.ts against
-// the OpenRouter TTS docs (mp3 is the self-describing container —
-// pcm needs rate/channels parsed out of Content-Type to be usable);
-// the logfare arm pins the documented shape and is unverified live
-// until a key is provisioned. Resolved keys never enter logs.
+// (transcribe-cloud.ts), no provider SDK. Both gateways take OpenAI's
+// speech POST — {model, input, voice?, response_format} — except
+// logfare, whose documented speech table stops at `voice`, so its arm
+// omits response_format (mp3 is the endpoint default either way). Raw
+// audio bytes out — never JSON on success; errors are the usual
+// {"error": {code, message}} envelope. The wire contract is pinned
+// verbatim in tts-cloud.test.ts against the OpenRouter TTS docs (mp3
+// is the self-describing container — pcm needs rate/channels parsed
+// out of Content-Type to be usable); the logfare arm pins the
+// documented shape and is unverified live until a key is provisioned.
+// Resolved keys never enter logs.
 
 import type { AuthStore } from "../auth.ts";
 import type { TtsConfig } from "../config.ts";
@@ -48,7 +50,12 @@ export function logfareSpeech(
 	auth: AuthStore,
 	deps: { fetchFn?: typeof fetch | undefined } = {},
 ): ChunkSynthesizer {
-	return openaiShapeSpeech("logfare", LOGFARE_SPEECH_URL, cfg, auth, deps);
+	// Doc-pinned means matching the doc: logfare's /audio/speech table
+	// lists only model/input/voice, so response_format stays off the
+	// wire rather than betting the relay ignores unknown fields.
+	return openaiShapeSpeech("logfare", LOGFARE_SPEECH_URL, cfg, auth, deps, {
+		responseFormat: false,
+	});
 }
 
 // One wire, two gateways: {model, input, voice?, response_format} →
@@ -60,6 +67,8 @@ function openaiShapeSpeech(
 	cfg: CloudTtsCfg,
 	auth: AuthStore,
 	deps: { fetchFn?: typeof fetch | undefined },
+	// Fields beyond the OpenAI speech core are per-gateway docs.
+	wire: { responseFormat: boolean } = { responseFormat: true },
 ): ChunkSynthesizer {
 	const fetchFn = deps.fetchFn ?? fetch;
 	return async (text, options) => {
@@ -78,7 +87,7 @@ function openaiShapeSpeech(
 					// "" asks the model for its default voice — the field rides
 					// only when a voice is actually named.
 					...(options.voice !== "" ? { voice: options.voice } : {}),
-					response_format: options.outputFormat,
+					...(wire.responseFormat ? { response_format: options.outputFormat } : {}),
 				}),
 				signal: AbortSignal.timeout(timeoutMs(text.length)),
 			});

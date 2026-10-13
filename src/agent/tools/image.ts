@@ -11,7 +11,7 @@ import { writeFile } from "node:fs/promises";
 import { tool } from "ai";
 import { z } from "zod";
 import type { AuthStore } from "../../auth.ts";
-import type { ConfigRef } from "../../config.ts";
+import { imageSizeSchema, type ConfigRef } from "../../config.ts";
 import { log } from "../../log.ts";
 import { persistAttachment } from "../attachments.ts";
 import { generateImages, IMAGE_MAX_N } from "../image.ts";
@@ -31,9 +31,7 @@ export interface ImageToolDeps {
 
 export const imageInputSchema = z.object({
 	prompt: z.string().min(1).describe("What to generate — be specific about subject, style, composition"),
-	size: z
-		.string()
-		.regex(/^\d{2,5}x\d{2,5}$/, 'size must be "WxH" like "1024x1024"')
+	size: imageSizeSchema
 		.optional()
 		.describe('Pixel dimensions "WxH" — defaults to the configured size, else the provider\'s'),
 	n: z
@@ -48,9 +46,9 @@ export const imageInputSchema = z.object({
 export function imageTool(deps: ImageToolDeps) {
 	return tool({
 		description:
-			`Generate images with the configured image model and send them to the operator. Saves to the workspace's attachment store and delivers inline; the returned paths work with vision (inspect a result) and send_file (resend it).`,
+			`Generate images with the configured image model. Saves to the workspace's attachment store and delivers inline where the channel supports it — otherwise the saved paths are the result; they work with vision (inspect a result) and send_file where it is mounted (resend it).`,
 		inputSchema: imageInputSchema,
-		execute: async ({ prompt, size, n }) => {
+		execute: async ({ prompt, size, n }, options) => {
 			let images;
 			try {
 				images = await generateImages(
@@ -59,6 +57,9 @@ export function imageTool(deps: ImageToolDeps) {
 						configRef: deps.configRef,
 						auth: deps.auth,
 						conversation: deps.conversation,
+						// exactOptionalPropertyTypes: never assign an explicit
+						// undefined to an optional field.
+						...(options.abortSignal ? { signal: options.abortSignal } : {}),
 						...(deps.fetchFn !== undefined ? { fetchFn: deps.fetchFn } : {}),
 					},
 				);

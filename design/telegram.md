@@ -97,9 +97,11 @@ model/thinking (history still copies, as specified in design/app.md).
   `openrouter` is OpenRouter's `POST /api/v1/audio/speech` — one
   JSON shape for every upstream speech model (`model`, `input`,
   `voice?`, `response_format`), raw mp3 back, resolved via its `auth`
-  record like every cloud provider — and `logfare` is the same shape
-  against `logfare.ai/v1/audio/speech` (Deepgram Aura catalog,
-  `aura-2-en` default; doc-pinned, unverified live). Failures
+  record like every cloud provider — and `logfare` is the same call
+  against `logfare.ai/v1/audio/speech` minus `response_format`, which
+  its documented speech table doesn't list (mp3 is the endpoint
+  default; Deepgram Aura catalog, `aura-2-en` default; doc-pinned,
+  unverified live). Failures
   surface as a warn + a short chat message, never a turn failure — the 🔊 tap is
   answered immediately because Telegram expires callback queries in
   seconds and synthesis outruns them, so an outcome can't ride the

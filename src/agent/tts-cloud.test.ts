@@ -112,9 +112,10 @@ describe("openrouterSpeech", () => {
 	});
 });
 
-// Logfare documents the same OpenAI speech wire
-// (https://logfare.ai/docs) — pinned from the docs, unverified live
-// until an operator provisions a logfare auth record.
+// Logfare documents the same OpenAI speech wire minus response_format —
+// its /audio/speech table lists only model/input/voice
+// (https://logfare.ai/docs). Pinned from the docs, unverified live until
+// an operator provisions a logfare auth record.
 describe("logfareSpeech", () => {
 	const logfareCfg = {
 		kind: "logfare" as const,
@@ -122,7 +123,7 @@ describe("logfareSpeech", () => {
 		auth: "logfare",
 	};
 
-	test("posts the speech request and returns the raw audio bytes", async () => {
+	test("posts the documented three-field body and returns the raw audio bytes", async () => {
 		const { fn, last } = fakeFetch(200, MP3);
 		const synth = logfareSpeech(logfareCfg, auth, { fetchFn: fn });
 		const audio = await synth("Say the thing.", options);
@@ -131,10 +132,11 @@ describe("logfareSpeech", () => {
 		expect(req.url).toBe("https://logfare.ai/v1/audio/speech");
 		expect(req.headers.authorization).toBe("Bearer test-key-material");
 		expect(req.headers["content-type"]).toBe("application/json");
+		// toEqual pins the absence of response_format — undocumented fields
+		// must not ride a doc-pinned wire.
 		expect(JSON.parse(req.body)).toEqual({
 			model: "aura-2-en",
 			input: "Say the thing.",
-			response_format: "mp3",
 		});
 	});
 

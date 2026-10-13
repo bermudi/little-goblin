@@ -339,6 +339,12 @@ export const visionConfigSchema = z.object({
 });
 export type VisionConfig = z.infer<typeof visionConfigSchema>;
 
+// "WxH" like "1024x1024" — one validator for the image config block
+// and the generate_image tool's input, so the grammar can't fork.
+export const imageSizeSchema = z
+	.string()
+	.regex(/^\d{2,5}x\d{2,5}$/, 'size must be "WxH" like "1024x1024"');
+
 // Image generation behind the generate_image tool — absent = off.
 // model is a "<provider>/<model-id>" ref whose provider must carry a
 // baseUrl (openai-compatible/responses): the call is the OpenAI images
@@ -346,10 +352,7 @@ export type VisionConfig = z.infer<typeof visionConfigSchema>;
 // tool's calls ("WxH" — logfare maps it to width/height upstream).
 export const imageConfigSchema = z.object({
 	model: z.string().min(1),
-	size: z
-		.string()
-		.regex(/^\d{2,5}x\d{2,5}$/, 'size must be "WxH" like "1024x1024"')
-		.optional(),
+	size: imageSizeSchema.optional(),
 });
 export type ImageConfig = z.infer<typeof imageConfigSchema>;
 
@@ -537,7 +540,8 @@ export const ttsConfigSchema = z.discriminatedUnion("kind", [
 	// the model's default voice. There is no language cast: upstream ids
 	// carry no language prefix to match on.
 	cloudTtsSchema("openrouter"),
-	// Logfare's TTS catalog is Deepgram Aura — aura-2-en today.
+	// Logfare's TTS catalog is Deepgram Aura — aura-2-en today. Its
+	// documented speech table drops response_format (see tts-cloud.ts).
 	cloudTtsSchema("logfare"),
 ]);
 export type TtsConfig = z.infer<typeof ttsConfigSchema>;

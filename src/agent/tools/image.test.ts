@@ -22,9 +22,9 @@ const okBody = JSON.stringify({
 });
 
 const fakeFetch = (status: number, body: string) => {
-	const seen: { url: string; body: string }[] = [];
+	const seen: { url: string; body: string; signal?: AbortSignal | null | undefined }[] = [];
 	const fn = (async (url: string | URL | Request, init?: RequestInit) => {
-		seen.push({ url: String(url), body: String(init?.body) });
+		seen.push({ url: String(url), body: String(init?.body), signal: init?.signal });
 		return new Response(body, { status });
 	}) as typeof fetch;
 	return { fn, seen };
@@ -146,6 +146,18 @@ describe("generate_image tool", () => {
 		expect(out.images[0]?.deliveryNote).toContain("delivery uncertain");
 		expect(out.delivered).toBe(0);
 		expect(readdirSync(paths.attachments())).toHaveLength(1);
+	});
+
+	test("the turn's abort signal reaches the provider wire", async () => {
+		const controller = new AbortController();
+		const { fn, seen } = fakeFetch(200, okBody);
+		await imageTool(deps(fn)).execute!(
+			{ prompt: "x" },
+			{ ...opts, abortSignal: controller.signal },
+		);
+		expect(seen[0]?.signal?.aborted).toBe(false);
+		controller.abort();
+		expect(seen[0]?.signal?.aborted).toBe(true);
 	});
 
 	test("n images name and deliver independently", async () => {

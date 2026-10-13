@@ -5,15 +5,15 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 ## Tools (v1)
 
-Hand-rolled, zod-validated, eighteen:
+Hand-rolled, zod-validated, nineteen:
 
 `read_file` `write_file` `edit_file` `bash` (timeout) `speak` `transcribe`
 `vision` `program` `delegate` `mail` `send_file` `memory_search` `search`
-`fetch` `history_search` `sandbox` `script` `ui`
+`fetch` `history_search` `note` `sandbox` `script` `ui`
 
-All tools run in the deployment workspace — conversations have no cwd and
-there is no `/cd`. Working elsewhere is the agent's own business (`cd x &&
-…` inside `bash`), not conversation state.
+Tools run in the conversation's cwd — `workspace/` by default, a project
+conversation's `dir` under projects (design/projects.md → cwd). Working
+elsewhere stays the agent's own business (`cd x && …` inside `bash`).
 
 The static bash description advertises `../doctor --json` for dependency
 diagnosis, not repairs or restarts. This is an existing tool's discoverable

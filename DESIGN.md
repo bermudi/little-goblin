@@ -28,8 +28,9 @@ earns its place.
   entire setup story — no onboarding wizard, ever. Deployment reality: prod
   is g7 — this tree runs `goblin.service` plus the memory stack directly
   (lithium ran prod until 2026-10-09, then retired; its state was merged
-  here). `scripts/deploy.sh` is the update path: gate (typecheck + tests),
-  rebuild the app client when it moved, restart, verify. Git publication is
+  here). `scripts/deploy.sh` is the update path: gate (typecheck; the test
+  suite gates merges in CI, not deploys), rebuild the app client when it
+  moved, restart, verify. Git publication is
   separate: local deployment never pushes or updates the remote review
   baseline (docs/operations.md → Deploying).
 - Telegram is one of two channels: long polling, topics, reactions, files,
@@ -252,8 +253,8 @@ the spec.
 - [`design/mail.md`](design/mail.md) — Email (Gmail) + Workspace via gws, Reads ride gws; goblin holds no read credential, Scopes: readonly is the wall, Every read injection-checked and fenced, The `mail` tool is send-only, Google OAuth with split authority, Mail is a program trigger, Reads ride the shared System One gate (design/system1.md), Logging
 - [`design/memory.md`](design/memory.md) — Long-term memory, Slice 2 rulings (locked), Deployment and configuration, Retain: a durable projection of completed exchanges, Recall: evidence, not instructions, Control, correction, and forgetting, Operations and verification
 - [`design/auth.md`](design/auth.md) — Auth, Proton Pass (2026-09-26), Goblin's own agent token, Never the owner session, by mechanism, Goblin's own keys resolve through pass-keys, Warmer, Secrets during tasks: the `pass-cli` skill, Honest boundary
-- [`design/telegram.md`](design/telegram.md) — Telegram intake & delivery, Coalescing buffer, Delivery, TTS, Files, Voice mode, Mini Apps, Commands, Large files, Rolling DM (ruling 2026-10-03)
-- [`design/app.md`](design/app.md) — App channel (PWA → APK), Spin-off (ruling 2026-10-03)
+- [`design/telegram.md`](design/telegram.md) — Telegram intake & delivery, Coalescing buffer, Delivery, TTS, Files, Voice mode, Mini Apps, Commands, Large files, Rolling DM (ruling 2026-10-03), Shared model/thinking selection, Guest mode, Roles and permissions (ruling 2026-10-11), Formatted replies & draft streaming (ruling 2026-10-12)
+- [`design/app.md`](design/app.md) — App channel (PWA → APK), Spin-off (ruling 2026-10-03), Operator console in the PWA, Streaming members & resumable streams, Model/thinking scope, the SSE heartbeat rule, Archiving, Pinning, Intelligent UI
 - [`design/sandbox.md`](design/sandbox.md) — Sandbox (ruling 2026-10-10): a disposable rootless-podman container per conversation behind the `sandbox` tool — the wall, the lifetime, network off by default, images pulled only with operator permission
 - [`design/projects.md`](design/projects.md) — Projects & Notes (ruling 2026-10-10): projects scope app conversations (cwd, instructions, memory choice, fixed binding); notes are server-mediated SQLite rows (markdown only, versions, the `note` tool, attach, fenced append, AI rewrite); Pi Durable rejected as a second harness
 
@@ -320,9 +321,11 @@ future conversations, independent shared `telegram.model`/`telegram.thinking`,
 optional `transcription` block, optional `vision` block (absent =
 vision tool absent; `model` + `maxTokens`), optional `search` block (absent =
 search tool absent), optional `memory` block (absent = memory
-disabled), optional `delegation` block (`maxRunning`, default 3;
-`harnesses`: name → `{ kind, args? }` — absent = delegate tool
-absent; the herdr session name is not config, it belongs to
+disabled), optional `delegation` block (`harnesses`: name →
+`{ kind, args? }`, `machines`: label → `{ machine|session, root?,
+harnesses? }` — absent = delegate tool absent; concurrency is uncapped,
+there is no `maxRunning` knob (design/delegation.md → Targets); the
+herdr session name is not config, it belongs to
 `deploy/goblin-herdr.service`), optional `mail` block (`clientId`,
 `clientSecretAuth`, `sendAuth` — the send credential only; reads ride
 `gws auth login`, absent = no mail tool, no mail watcher), optional
@@ -359,7 +362,14 @@ src/
   conversation.ts   store: SQLite-backed resolve/load/append events, meta, epoch
   memory.ts         recall contexts, retention builders, status, worker timer
                     (wire client in hindsight.ts, outbox in memory-queue.ts,
-                    outage episodes in memory-outage.ts)
+                    outage episodes in memory-outage.ts, destinations in
+                    memory-destinations.ts, forget in memory-forget.ts)
+  projects.ts       projects — rows + goblin-owned home scoping an app
+                    conversation's cwd, instructions and memory choice
+                    (design/projects.md → Projects)
+  notes.ts          notes — server-mediated markdown rows, versions and
+                    FTS; fenced append/attach behind the `note` tool
+                    (design/projects.md → Notes)
   programs.ts       standing programs — rows in goblin.sqlite, cron
                     validated at the boundary, webhook token hashes
   scheduler.ts      ticker: due programs → turns in their pinned
@@ -380,6 +390,9 @@ src/
   spinoff.ts        the spin-off fork and where a delegation launch
                     pins its notices (launchPin — the Spin-off trigger
                     map, design/app.md → Spin-off)
+  rolling.ts        the Rolling DM address and cadence — dm:<chat>:<n>
+                    routing, the current-row rule, the gap check
+                    (design/telegram.md → Rolling DM)
   podman.ts         the podman CLI adapter (the only podman-aware
                     module); argv seams for tests, every call logged —
                     create/inspect/lifecycle/exec/cp/network ops only,
@@ -394,12 +407,16 @@ src/
   mail-watcher.ts   the mail trigger's ticker: gws poll → the firing
                     owner's mail entry point (never writes program state)
   mail.ts           the send client (operator-gated) + shared mail shapes
-                    (MailHit, ThreadContext, HistoryExpiredError, MailPoller)
+                    (MailHit, ThreadContext, HistoryExpiredError,
+                    MailPoller); the approval-gated queue is mail-outbox.ts
   injection.ts      System One injection checker: shared System One gate →
                     clean/suspicious/malicious/unavailable verdicts, fail-open
   system1.ts        the System One boundary — the OpenRouter Decisions
                     client shared by all four consumers
                     (design/system1.md)
+  reviewer.ts       the skill reviewer — a System One gate on every
+                    completed turn, bounded digest → staged proposal
+                    (design/skills.md → Reviewer)
   runtime.ts        per-conversation queue, lane drain, checkAuthority,
                     stop/shutdown, the attempt loop — the turn's phases
                     live in turn/ (design/runtime-turn.md)
@@ -440,11 +457,15 @@ src/
                     conversation (prompt_snapshots): edits load at
                     boundaries (roll/compaction), never mid-run
     skills.ts       catalog scan + frontmatter validation → ## skills section
-    tools/          the eighteen tools (read, write, edit, bash, speak,
+    tools/          the nineteen tools (read, write, edit, bash, speak,
                     transcribe, vision, program, delegate, mail
                     (send-only; reads ride the goblin-mail wrapper via
                     bash), send_file, memory_search, search, fetch,
-                    history_search, sandbox, script, ui)
+                    history_search, note, sandbox, script, ui)
+  stateview.ts      read-only views over $GOBLIN_HOME for the operator
+                    console — skills, attachments, identity files, log
+                    tail; realpath containment re-verified
+                    (design/app.md → Operator console)
   http/             the HTTP doors: /t/ and /app/ serve the built
                     client (app/dist) — the Telegram mini app and the
                     PWA are one client with two entries — plus the
@@ -453,7 +474,12 @@ src/
                     gate; value imports live in check.ts, never mod.ts)
 ```
 
-Flat modules, one job each, tests colocated.
+Flat modules, one job each, tests colocated. The map names rule owners;
+leaf plumbing sits below its line — durable writes (`durable.ts`),
+process boundaries (`proc.ts`), harness first-run trust
+(`harness-trust.ts`), the SQLite probe worker (`health-sqlite.ts`), loop
+detectors, tag markers, link helpers — covered by its owner's row or the
+area doc that rules it.
 
 ## Non-goals (v1 — return only on demand)
 

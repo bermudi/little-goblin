@@ -1182,7 +1182,7 @@ export function Composer({
 							>
 								{[...new Set([cfg.thinking, ...cfg.thinkingLevels])].map((l) => (
 									<option key={l} value={l}>
-										{l === "off" ? "think off" : `think ${l}`}
+										{l}
 									</option>
 								))}
 							</select>

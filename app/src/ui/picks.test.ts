@@ -13,7 +13,10 @@ const surface: UiBlock[] = [
 	{
 		type: "table",
 		columns: ["Ride", "km"],
-		rows: [["Road loop", "42"], ["Gravel trail", "60"]],
+		rows: [
+			["Road loop", "42"],
+			["Gravel trail", "60"],
+		],
 	},
 	{
 		type: "choices",
@@ -61,7 +64,10 @@ describe("derivePick", () => {
 
 	test("form submits and prose mentions do not match", () => {
 		expect(
-			derivePick([userText("[ui] Plan ride: distance=30"), userText("consider [ui] Road loop")], labels),
+			derivePick(
+				[userText("[ui] Plan ride: distance=30"), userText("consider [ui] Road loop")],
+				labels,
+			),
 		).toBeNull();
 	});
 

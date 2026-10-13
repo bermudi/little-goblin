@@ -58,7 +58,10 @@ export function UiPart({
 	onAction,
 	busy,
 	messages,
-}: { part: ToolUIPart | DynamicToolUIPart; messages?: readonly UIMessage[] | undefined } & UiActionProps) {
+}: {
+	part: ToolUIPart | DynamicToolUIPart;
+	messages?: readonly UIMessage[] | undefined;
+} & UiActionProps) {
 	switch (part.state) {
 		case "input-streaming":
 			return <StreamingSurface input={part.input} />;

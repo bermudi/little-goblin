@@ -318,7 +318,10 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 				{
 					type: "table",
 					columns: ["Ride", "km"],
-					rows: [["Road loop", "42"], ["Gravel trail", "60"]],
+					rows: [
+						["Road loop", "42"],
+						["Gravel trail", "60"],
+					],
 				},
 				{
 					type: "choices",

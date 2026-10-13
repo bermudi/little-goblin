@@ -670,8 +670,10 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	// The invalid edit removes the operator chip — scope chip counts to
 	// that editor (the allowed-users editor keeps its fixture chip).
 	const operatorChips = (): number =>
-		container.querySelector('[aria-label="add operator"]')?.closest(".frow")?.querySelectorAll(".chip")
-			.length ?? -1;
+		container
+			.querySelector('[aria-label="add operator"]')
+			?.closest(".frow")
+			?.querySelectorAll(".chip").length ?? -1;
 
 	const dirtyTheForm = async () => {
 		await click(

@@ -315,7 +315,8 @@ export function Surface({
 	// in, re-derives the same label after a reload — the [ui] message
 	// is the only record, and it is already persisted.
 	const [tapped, setTapped] = useState<string | null>(null);
-	const picked = tapped ?? (messages !== undefined ? derivePick(messages, choiceLabels(input.blocks)) : null);
+	const picked =
+		tapped ?? (messages !== undefined ? derivePick(messages, choiceLabels(input.blocks)) : null);
 	return (
 		<PickContext.Provider value={{ picked, pick: setTapped }}>
 			<div className="ui">

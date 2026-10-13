@@ -368,6 +368,20 @@ describe("NoteEditor save loop", () => {
 		expect(patches[0]!.init.keepalive).toBe(true);
 	});
 
+	test("pagehide on a body past the keepalive cap flushes a plain PATCH", async () => {
+		root = createRoot(container);
+		const ref = await mount(note.body, 60_000);
+		await notice();
+		await edit(ref, "x".repeat(70_000));
+		await notice();
+		await act(async () => win.dispatchEvent(new win.Event("pagehide")));
+		await tick(0);
+		// keepalive would reject a body this size with a TypeError the
+		// unload can't surface — the flush sends it plain instead.
+		expect(patches).toHaveLength(1);
+		expect(patches[0]!.init.keepalive).toBeUndefined();
+	});
+
 	test("an edit flushed by unmount PATCHes without waiting for the listener", async () => {
 		root = createRoot(container);
 		const ref = await mount(note.body, 60_000);

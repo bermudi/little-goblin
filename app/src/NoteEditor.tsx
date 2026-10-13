@@ -71,6 +71,12 @@ interface RewriteFlow {
 }
 
 const DEBOUNCE_MS = 1000;
+// fetch keepalive rejects request bodies past ~64KiB with a TypeError
+// the unloading page can't show anyone — pagehide keeps keepalive only
+// under the cap; a bigger body rides the same flush as a plain PATCH
+// (the hidden-page flush already sent one without it).
+const KEEPALIVE_BODY_MAX = 60_000;
+const utf8 = new TextEncoder();
 
 const NoteEditor = forwardRef<
 	NoteEditorHandle,
@@ -322,8 +328,11 @@ const NoteEditor = forwardRef<
 		// Synchronous check — the listener lags edits ~200ms, so a
 		// typed-then-left window is still dirty even though dirtyRef
 		// hasn't caught up.
-		if (ed.action(getMarkdown()) === baselineRef.current) return;
-		void save(revRef.current, { keepalive });
+		const md = ed.action(getMarkdown());
+		if (md === baselineRef.current) return;
+		void save(revRef.current, {
+			keepalive: keepalive && utf8.encode(md).length <= KEEPALIVE_BODY_MAX,
+		});
 	}
 
 	// A server-side content change landed: adopt the note, rebase the
@@ -693,7 +702,8 @@ const NoteEditor = forwardRef<
 		);
 		// Leaving must not lose the debounce window's work: pagehide
 		// flushes the pending save through fetch keepalive so it
-		// survives the unload itself.
+		// survives the unload itself (past the keepalive body cap the
+		// flush degrades to a plain PATCH — see KEEPALIVE_BODY_MAX).
 		const onHide = () => flush(true);
 		const onVis = () => {
 			if (document.visibilityState === "hidden") flush();

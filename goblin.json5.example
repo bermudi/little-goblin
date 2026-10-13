@@ -66,6 +66,16 @@
   //   // matching voice, falling back to `voice` above.
   //   voices: [],
   // },
+  // Cloud TTS via OpenRouter's speech endpoint — model/auth default as
+  // shown (auth names the auth.jsonl record holding the OpenRouter
+  // key); voice is the upstream voice id (a Fish voice-library hex id
+  // for fish-audio models), absent = the model's default voice.
+  // tts: {
+  //   kind: "openrouter",
+  //   model: "fish-audio/s2.1-pro-free:free",
+  //   auth: "openrouter",
+  //   voice: "b347db033a6549378b48d00acb0d06cd",
+  // },
 
   // Speech → text for voice and video notes — transcribed once at
   // intake, and models that can't consume audio read the transcript

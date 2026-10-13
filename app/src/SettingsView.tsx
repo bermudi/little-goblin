@@ -1,29 +1,31 @@
 import { useEffect, useId, useRef, useState } from "react";
+import type { ThinkingLevel } from "../../src/config.ts";
 import type { ConfigResponse } from "../../src/http/operator-wire.ts";
 import { ApiError, getOperatorConfig, getThinkingLevels, saveOperatorConfig } from "./api.ts";
 import {
 	bodyFromDraft,
+	type ChainEntry,
 	displayLevel,
 	draftFromConfig,
 	EMPTY_DRAFT,
+	emptyTranscription,
 	FETCH_META,
-	SEARCH_META,
-	THINKING_ORDER,
-	validateDraft,
-	VOICE_SUGGESTIONS,
-	type ChainEntry,
 	type KindMeta,
+	type MemDraft,
 	type ProvDraft,
+	SEARCH_META,
 	type SettingsDraft,
+	switchTranscriptionKind,
+	switchTtsKind,
+	THINKING_ORDER,
+	type TranscriptionKind,
 	type TrDraft,
 	type TtsDraft,
+	type TtsKind,
 	type VisDraft,
-	type MemDraft,
-	type TranscriptionKind,
-	emptyTranscription,
-	switchTranscriptionKind,
+	VOICE_SUGGESTIONS,
+	validateDraft,
 } from "./settingsDraft.ts";
-import type { ThinkingLevel } from "../../src/config.ts";
 
 type Section = "chat" | "voice" | "web" | "memory" | "providers" | "access";
 type SheetMode = "model" | "telegram" | "title" | "vision";
@@ -684,6 +686,8 @@ export function SettingsView({
 		setDraft((d) =>
 			d.transcription === null ? d : { ...d, transcription: { ...d.transcription, ...p } },
 		);
+	const patchTts = (p: Partial<TtsDraft>) =>
+		setDraft((d) => (d.tts === null ? d : { ...d, tts: { ...d.tts, ...p } }));
 
 	const dirty = baseline !== null && serialize(draft, provs) !== baseline;
 	useEffect(() => onDirtyChange?.(dirty), [dirty, onDirtyChange]);
@@ -1147,7 +1151,14 @@ export function SettingsView({
 										if (on) {
 											return {
 												...d,
-												tts: last.current.tts ?? { voice: "", rate: "", voices: [] },
+												tts: last.current.tts ?? {
+													kind: "edge",
+													voice: "",
+													rate: "",
+													voices: [],
+													model: "",
+													auth: "",
+												},
 											};
 										}
 										last.current.tts = d.tts;
@@ -1158,53 +1169,95 @@ export function SettingsView({
 						</Row>
 						{draft.tts !== null && (
 							<>
+								<Row
+									label="Engine"
+									cap="Edge runs free and unofficial on this machine's ffmpeg; openrouter rides your key through its speech endpoint."
+								>
+									<select
+										className="mono"
+										aria-label="tts kind"
+										value={draft.tts.kind}
+										onChange={(e) =>
+											setDraft((d) =>
+												d.tts === null
+													? d
+													: { ...d, tts: switchTtsKind(d.tts, e.target.value as TtsKind) },
+											)
+										}
+									>
+										<option value="edge">edge</option>
+										<option value="openrouter">openrouter</option>
+									</select>
+								</Row>
+								{draft.tts.kind === "openrouter" && (
+									<>
+										<Field
+											label="Model"
+											value={draft.tts.model}
+											onChange={(v) => patchTts({ model: v })}
+											placeholder="fish-audio/s2.1-pro-free:free"
+											mono
+											cap="Blank uses fish-audio/s2.1-pro-free:free."
+										/>
+										<Field
+											label="Secret name"
+											value={draft.tts.auth}
+											onChange={(v) => patchTts({ auth: v })}
+											placeholder="openrouter — in auth.jsonl"
+											cap={
+												authWarn(draft.tts.auth.trim() || "openrouter", authNames) ??
+												(draft.tts.auth.trim() === "" ? "Blank uses openrouter." : undefined)
+											}
+											mono
+											list={AUTH_DL}
+										/>
+									</>
+								)}
 								<Field
 									label="Voice"
 									value={draft.tts.voice}
-									onChange={(v) =>
-										setDraft((d) => ({
-											...d,
-											tts: d.tts === null ? d.tts : { ...d.tts, voice: v },
-										}))
-									}
-									placeholder="en-US-AriaNeural"
+									onChange={(v) => patchTts({ voice: v })}
+									placeholder={draft.tts.kind === "edge" ? "en-US-AriaNeural" : "model default"}
 									mono
-									cap="Default for /voice mode, the speaker button, and the speak tool — an alternate matching the reply's language wins; this speaks when the language is unclear or none matches."
-								/>
-								<Field
-									label="Rate"
-									value={draft.tts.rate}
-									onChange={(v) =>
-										setDraft((d) => ({
-											...d,
-											tts: d.tts === null ? d.tts : { ...d.tts, rate: v },
-										}))
+									cap={
+										draft.tts.kind === "edge"
+											? "Default for /voice mode, the speaker button, and the speak tool — an alternate matching the reply's language wins; this speaks when the language is unclear or none matches."
+											: "The upstream voice id — a Fish voice-library hex id for fish-audio models. Blank speaks the model's default voice."
 									}
-									placeholder="+10%"
-									mono
 								/>
-								<ChipsEditor
-									values={draft.tts.voices}
-									onAdd={(v) =>
-										setDraft((d) => ({
-											...d,
-											tts: d.tts === null ? d.tts : { ...d.tts, voices: [...d.tts.voices, v] },
-										}))
-									}
-									onRemove={(i) =>
-										setDraft((d) => ({
-											...d,
-											tts:
-												d.tts === null
-													? d.tts
-													: { ...d.tts, voices: d.tts.voices.filter((_, j) => j !== i) },
-										}))
-									}
-									placeholder="add a voice"
-									ariaLabel="add alternate voice"
-									suggestions={VOICE_SUGGESTIONS}
-									cap="Alternate voices — picked by reply language wherever speech is synthesized; the speak tool may also name one per call. Language follows the voice name."
-								/>
+								{draft.tts.kind === "edge" && (
+									<>
+										<Field
+											label="Rate"
+											value={draft.tts.rate}
+											onChange={(v) => patchTts({ rate: v })}
+											placeholder="+10%"
+											mono
+										/>
+										<ChipsEditor
+											values={draft.tts.voices}
+											onAdd={(v) =>
+												setDraft((d) => ({
+													...d,
+													tts: d.tts === null ? d.tts : { ...d.tts, voices: [...d.tts.voices, v] },
+												}))
+											}
+											onRemove={(i) =>
+												setDraft((d) => ({
+													...d,
+													tts:
+														d.tts === null
+															? d.tts
+															: { ...d.tts, voices: d.tts.voices.filter((_, j) => j !== i) },
+												}))
+											}
+											placeholder="add a voice"
+											ariaLabel="add alternate voice"
+											suggestions={VOICE_SUGGESTIONS}
+											cap="Alternate voices — picked by reply language wherever speech is synthesized; the speak tool may also name one per call. Language follows the voice name."
+										/>
+									</>
+								)}
 							</>
 						)}
 					</div>

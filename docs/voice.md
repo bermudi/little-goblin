@@ -88,6 +88,29 @@ like `en-US-AriaNeural`. Two caveats, up front: it's unofficial and can
 break, and `ffmpeg` must be installed (it repackages the audio into a real
 Telegram voice-note bubble). A synthesis failure is always reported, never
 silent — and never fails the whole reply because of it.
+
+### Cloud voices via OpenRouter
+
+`kind: "openrouter"` speaks through OpenRouter's text-to-speech endpoint
+instead — one request shape for every speech model they route. It needs an
+`openrouter` key in `auth.jsonl` and defaults to
+`fish-audio/s2.1-pro-free:free`:
+
+```json5
+tts: {
+  kind: "openrouter",
+  model: "fish-audio/s2.1-pro-free:free", // default
+  auth: "openrouter",                   // default
+  voice: "b347db033a6549378b48d00acb0d06cd", // optional — Fish voice-library id
+},
+```
+
+Omit `voice` to use the model's default voice. The `voices` language cast
+is edge-only — upstream voice ids carry no language to match on, so one
+voice speaks everything (Fish S2 is multilingual on its own). OpenRouter
+returns mp3 that must be re-encoded to ogg/opus, so the boot ffmpeg probe
+additionally requires the `libopus` encoder for this kind.
+
 Three ways to hear the bot:
 
 1. **`/voice` mode** — per topic. The reply arrives as voice notes instead

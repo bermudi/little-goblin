@@ -92,8 +92,12 @@ model/thinking (history still copies, as specified in design/app.md).
 - **TTS**: default-on — absent config means
   `tts: {kind: "edge", voice: "en-US-AriaNeural"}`; `tts: ""` is the
   explicit off (it parses to `false` so the mini app's whole-file
-  rewrite can't silently lose it and reload as on). The service is the
-  Edge read-aloud websocket (no auth, unofficial, it can break; failures
+  rewrite can't silently lose it and reload as on). Two kinds: `edge`
+  is the Edge read-aloud websocket (no auth, unofficial, it can break)
+  and `openrouter` is OpenRouter's `POST /api/v1/audio/speech` — one
+  JSON shape for every upstream speech model (`model`, `input`,
+  `voice?`, `response_format`), raw mp3 back, resolved via its `auth`
+  record like every cloud provider. Failures
   surface as a warn + a short chat message, never a turn failure — the 🔊 tap is
   answered immediately because Telegram expires callback queries in
   seconds and synthesis outruns them, so an outcome can't ride the
@@ -108,10 +112,13 @@ model/thinking (history still copies, as specified in design/app.md).
   guard, never a control-flow path the model must recover from. Button
   text is stripped of the tool-status tail, code blocks, long URLs, and
   markdown before synthesis (`speakable`); tool input is already authored
-  for speech. Edge's supported
-  WebM/Opus stream is remuxed losslessly through ffmpeg to ogg/opus — a real
+  for speech. Provider audio lands as ogg/opus
+  through one ffmpeg pipe — Edge's WebM/Opus stream remuxes losslessly,
+  openrouter's mp3 re-encodes — a real
   voice-note bubble, not an audio-file card. ffmpeg is probed at boot —
-TTS is default-on, so always; a failed probe takes TTS down for the run
+TTS is default-on, so always — and when TTS is openrouter the probe also
+requires the libopus encoder, since the re-encode dies per chunk without
+it. A failed probe takes TTS down for the run
 with a boot warning (install ffmpeg and restart to re-enable) instead of
 failing message by message.
   `record_voice` chat action runs while synthesis is in flight. The
@@ -124,7 +131,9 @@ failing message by message.
   voice per call, and `/voice` mode and the 🔊 button sniff the
   speakable text and cast the matching voice from `voice` + `voices` —
   one cast list, three consumers; `voice` speaks when the language is
-  unclear or no cast member matches.
+  unclear or no cast member matches. The cast is edge-only — openrouter
+  voice ids carry no language to match on, so that arm speaks its one
+  configured voice (or the model default) regardless of language.
 - **Files**: `send_file` is the file-out twin of intake media: it
   *names*, it does not send. The tool hands a workspace path (+ optional
   caption) to the turn's delivery sink (`sink.onFile`), which owns the

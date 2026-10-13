@@ -36,7 +36,12 @@ export interface ConfigPostBody {
 	titleModel: string;
 	favorites: string[];
 	thinking: ThinkingLevel;
-	tts: "" | { kind: "edge"; voice: string; rate: string | undefined; voices: string[] | undefined };
+	// Blank model/auth on the openrouter arm mean the kind's defaults —
+	// the schema materializes them server-side like transcription.
+	tts:
+		| ""
+		| { kind: "edge"; voice: string; rate: string | undefined; voices: string[] | undefined }
+		| { kind: "openrouter"; model?: string; auth?: string; voice?: string };
 	// Absent/blank fields mean "the kind's default" (model, auth) or
 	// "detect" (language); keywords/engine/weights are whistle-only and
 	// round-tripped untouched so a page save never drops hand edits.
@@ -219,13 +224,13 @@ export interface OperatorStatusResponse {
 // and validated in stateview.ts next to the containment wall they
 // describe; re-exported here so the client keeps one contract module.
 export type {
-	OperatorSkillItem,
-	SkillsResponse,
-	SkillFileResponse,
-	OperatorAttachmentItem,
 	AttachmentsResponse,
 	IdentityFile,
 	IdentityResponse,
 	LogTailItem,
 	LogTailResponse,
+	OperatorAttachmentItem,
+	OperatorSkillItem,
+	SkillFileResponse,
+	SkillsResponse,
 } from "../stateview.ts";

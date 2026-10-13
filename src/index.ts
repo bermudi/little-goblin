@@ -1,86 +1,86 @@
 // Composition root — it wires, it never rules (DESIGN.md → Module map).
 
+import { homedir } from "node:os";
+import { generateText } from "ai";
 import pkg from "../package.json";
-import { loadAuth } from "./auth.ts";
+import type { MediaPosition } from "./agent/attachments.ts";
 import {
 	contextLimit,
 	ensureOpenRouterCatalog,
 	inputModalities,
 	inputModalitiesCached,
 } from "./agent/models-dev.ts";
-import { systemPromptFor } from "./agent/prompt.ts";
-import { observedModel, carriesMedia, resolveModel, thinkingOptions } from "./agent/providers.ts";
-import type { MediaPosition } from "./agent/attachments.ts";
-import { generateTopicTitle } from "./agent/title.ts";
 import { generateNoteRewrite } from "./agent/note-rewrite.ts";
-import { generateText } from "ai";
-import { homedir } from "node:os";
+import { systemPromptFor } from "./agent/prompt.ts";
+import { carriesMedia, observedModel, resolveModel, thinkingOptions } from "./agent/providers.ts";
+import { generateTopicTitle } from "./agent/title.ts";
+import { makeTools, toolNames, type VisionToolDeps } from "./agent/tools/mod.ts";
+import { makePrivateSender } from "./agent/tools/program.ts";
+import { withScript } from "./agent/tools/script.ts";
 import { probeFfmpeg, speechEngine, transcribeAudio } from "./agent/transcribe.ts";
 import { whistleArtifactPresence } from "./agent/transcribe-whistle.ts";
 import { synthesizeSpeech } from "./agent/tts.ts";
-import { makeTools, toolNames, type VisionToolDeps } from "./agent/tools/mod.ts";
-import { withScript } from "./agent/tools/script.ts";
-import { makePrivateSender } from "./agent/tools/program.ts";
+import { loadAuth } from "./auth.ts";
 import {
+	type Config,
+	type ConfigRef,
 	ensureHomeLayout,
 	goblinHome,
 	loadConfig,
 	paths,
 	splitModelRef,
-	type Config,
-	type ConfigRef,
 	type ThinkingLevel,
 	type TtsConfig,
 } from "./config.ts";
 import {
+	type Conversation,
 	captureConversationSettings,
 	channelOf,
 	openStore,
 	prepareAppSettingsForConfig,
-	type Conversation,
 } from "./conversation.ts";
-import { openDelegations } from "./delegations.ts";
 import {
-	delegationWake,
-	startDelegationLifecycle,
 	type DelegationLifecycle,
 	type DelegationTargetDeps,
+	delegationWake,
+	startDelegationLifecycle,
 } from "./delegation-lifecycle.ts";
+import { openDelegations } from "./delegations.ts";
 import { makeHerdr } from "./herdr.ts";
-import { makeSender, type MailPoller, type MailSender } from "./mail.ts";
+import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
+import { startHttp } from "./http/mod.ts";
+import { log, setLogFile, setLogLevel } from "./log.ts";
+import { type MailPoller, type MailSender, makeSender } from "./mail.ts";
 import { makeGwsReader } from "./mail-gws.ts";
 import { openOutbox } from "./mail-outbox.ts";
 import { startMailWatcher } from "./mail-watcher.ts";
-import { makePodman } from "./podman.ts";
-import { openPrograms } from "./programs.ts";
-import { openNotes } from "./notes.ts";
-import { openProjects, projectWorkdir } from "./projects.ts";
-import { makeSandboxes, openSandboxes } from "./sandboxes.ts";
 import {
 	buildDestinationClient,
 	buildMemoryClient,
-	startMemoryWorker,
 	type MemoryWorker,
+	startMemoryWorker,
 } from "./memory.ts";
-import { System1Client } from "./system1.ts";
-import { cleanupStaging, Reviewer } from "./reviewer.ts";
 import { OutageTracker } from "./memory-outage.ts";
-import { fireMail, fireWebhook, startScheduler, type SchedulerDeps } from "./scheduler.ts";
-import { startHttp } from "./http/mod.ts";
-import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
-import { launchPin, type SpinOffDeps } from "./spinoff.ts";
-import { makeWakeDeps } from "./wake.ts";
-import { log, setLogFile, setLogLevel } from "./log.ts";
+import { openNotes } from "./notes.ts";
+import { makePodman } from "./podman.ts";
+import { openPrograms } from "./programs.ts";
+import { openProjects, projectWorkdir } from "./projects.ts";
+import { cleanupStaging, Reviewer } from "./reviewer.ts";
 import { Runtime } from "./runtime.ts";
-import { applyMenuButton, AUTH_TELEGRAM_TOKEN, startBot } from "./tg/mod.ts";
-import { sendMailNotice, startMailApproval } from "./tg/mail-approval.ts";
+import { makeSandboxes, openSandboxes } from "./sandboxes.ts";
+import { fireMail, fireWebhook, type SchedulerDeps, startScheduler } from "./scheduler.ts";
+import { launchPin, type SpinOffDeps } from "./spinoff.ts";
+import { System1Client } from "./system1.ts";
 import { filterGuestTools } from "./tg/guest.ts";
+import { sendMailNotice, startMailApproval } from "./tg/mail-approval.ts";
+import { AUTH_TELEGRAM_TOKEN, applyMenuButton, startBot } from "./tg/mod.ts";
 import {
 	sendMemoryBlockedNotice,
 	sendMemoryOutageNotice,
 	sendSkillProposedNotice,
 } from "./tg/notify.ts";
 import { openPings } from "./tg/pings.ts";
+import { makeWakeDeps } from "./wake.ts";
 
 // The file sink attaches before anything that can fail — boot errors
 // must land in goblin.log, not stderr against an empty log.
@@ -233,7 +233,12 @@ async function boot() {
 			: config.transcription?.kind === "whistle"
 				? "transcription (whistle)"
 				: "transcription";
-		const ok = await probeFfmpeg(feature);
+		// Edge's remux is a stream copy; openrouter's mp3 must re-encode
+		// to opus, so a binary without libopus would die per chunk.
+		const ok = await probeFfmpeg(
+			feature,
+			config.tts !== false && config.tts?.kind === "openrouter" ? "libopus" : undefined,
+		);
 		if (!ok && config.tts) {
 			configRef.ttsDown = true;
 			log.warn(
@@ -399,12 +404,21 @@ async function boot() {
 						? {
 								// A per-call voice replaces the config voice outright — Edge
 								// derives the language from the voice name; the allowlist
-								// always carries the default.
+								// always carries the default. The cast is edge-only:
+								// openrouter voice ids carry no language to match on.
 								synthesize: (text, voice) =>
-									synthesizeSpeech(text, voice ? { ...tts, voice, voices: [] } : tts),
+									synthesizeSpeech(
+										text,
+										voice !== undefined && tts.kind === "edge"
+											? { ...tts, voice, voices: [] }
+											: tts,
+										{ auth },
+									),
 								deliver: deliverVoice,
 								...(recording ? { recording } : {}),
-								...(tts.voices?.length ? { voices: [...new Set([tts.voice, ...tts.voices])] } : {}),
+								...(tts.kind === "edge" && tts.voices?.length
+									? { voices: [...new Set([tts.voice, ...tts.voices])] }
+									: {}),
 							}
 						: undefined,
 				// sendPrivate keeps hook URLs out of model context — a DM per
@@ -542,7 +556,7 @@ async function boot() {
 		runtime,
 		titleFor,
 		async synthesize(text, tts) {
-			return synthesizeSpeech(text, tts);
+			return synthesizeSpeech(text, tts, { auth });
 		},
 		transcribe: transcribeFile,
 		...(memorySurfaces ? { memory: { ...memorySurfaces } } : {}),
@@ -662,7 +676,7 @@ async function boot() {
 		runtime,
 		api: tg.bot.api,
 		configRef,
-		synthesize: (text: string, tts: TtsConfig) => synthesizeSpeech(text, tts),
+		synthesize: (text: string, tts: TtsConfig) => synthesizeSpeech(text, tts, { auth }),
 		followUpGate: () => system1Gate ?? undefined,
 		pings,
 	});
@@ -827,7 +841,7 @@ async function boot() {
 				speak: async (text) => {
 					const tts = configRef.current.tts;
 					if (!tts || configRef.ttsDown) return null;
-					return synthesizeSpeech(text, tts);
+					return synthesizeSpeech(text, tts, { auth });
 				},
 				titleFor,
 				// Selection rewrite — the configured root model/thinking;

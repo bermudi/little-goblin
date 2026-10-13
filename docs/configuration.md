@@ -106,7 +106,9 @@ only offers the levels the current model supports.
 ```
 
 TTS is on by default with Edge's `en-US-AriaNeural` voice; configure `tts`
-to change the voice or rate, or set `tts: ""` to turn it off. It powers
+to change the voice or rate, set `kind: "openrouter"` for OpenRouter's
+cloud speech models (`fish-audio/s2.1-pro-free:free` by default, needs the
+`openrouter` auth record), or set `tts: ""` to turn it off. It powers
 spoken replies (`/voice`, the 🔊 button, the `speak` tool). Transcription
 is off when unset; configuring it transcribes incoming voice and video
 notes so text-only models can read them, and gives the bot a `transcribe`

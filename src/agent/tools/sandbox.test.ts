@@ -190,4 +190,34 @@ describe("sandbox tool — export containment", () => {
 		expect(existsSync(join(outsideDir, "a"))).toBe(false);
 		expect(recorded.catFile).toHaveLength(0);
 	});
+
+	test("an export cancelled while the container read is pending never writes the host file", async () => {
+		const ws = workspace();
+		const recorded = { cpIn: [] as string[][], catFile: [] as string[] };
+		const controller = new AbortController();
+		// Hold catFile open so the abort lands inside the wait.
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		const deps: SandboxToolDeps = {
+			conversation: "dm:test",
+			workspace: ws,
+			sandboxes: {
+				...fakeSandboxes(recorded),
+				catFile: async (_conv, path) => {
+					recorded.catFile.push(path);
+					await gate;
+					return { data: new TextEncoder().encode("sandbox-file-bytes") };
+				},
+			},
+		};
+		const out = sandboxTool(deps).execute!(
+			{ action: "export", from: "/work/result.bin" },
+			{ ...opts, abortSignal: controller.signal },
+		);
+		controller.abort();
+		release();
+		await expect(out).rejects.toThrow();
+		expect(recorded.catFile).toEqual(["/work/result.bin"]);
+		expect(existsSync(join(ws, "sandbox-out", "result.bin"))).toBe(false);
+	});
 });

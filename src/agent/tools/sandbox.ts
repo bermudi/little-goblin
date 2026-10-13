@@ -192,6 +192,11 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 							};
 						}
 						const { data, note } = await deps.sandboxes.catFile(conv, input.from);
+						// The wait above is a cancellation gap: recheck before
+						// the host write so a call cancelled mid-read (or a nested
+						// export the script VM killed) never overwrites a
+						// workspace file.
+						abortSignal?.throwIfAborted();
 						durableWriteBytes(through.target, data);
 						return {
 							exported: rel,

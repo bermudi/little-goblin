@@ -561,7 +561,7 @@ describe("delivery", () => {
 		]);
 	});
 
-	test("rating row and 🔊 ride one keyboard edit — neither erases the other", async () => {
+	test("rating and 🔊 share one row in one keyboard edit — neither erases the other", async () => {
 		const { api, markups } = fakeApi({});
 		const sink = makeDeliverySink(
 			api,
@@ -582,8 +582,8 @@ describe("delivery", () => {
 						[
 							{ text: "👍", callback_data: "rate:up|dm:1|7" },
 							{ text: "👎", callback_data: "rate:down|dm:1|7" },
+							{ text: "🔊", callback_data: SPEAK_CALLBACK },
 						],
-						[{ text: "🔊", callback_data: SPEAK_CALLBACK }],
 					],
 				},
 			},

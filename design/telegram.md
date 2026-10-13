@@ -59,8 +59,9 @@ model/thinking (history still copies, as specified in design/app.md).
   output without falling back to duplicate text; use the same notice.
   Fencing suppresses any new output, including the notice.
 - **Reply ratings**: a clean-completed reply's last bubble also carries a
-  👍/👎 row, stamped in the same `editMessageReplyMarkup` as the 🔊 row
-  (markup is whole-keyboard replacement — they must ride one call).
+  👍/👎 row, stamped on one row with the 🔊 button in the same
+  `editMessageReplyMarkup` (markup is whole-keyboard replacement — they
+  must ride one call).
   Same gate as the 🫡: errors, fenced turns, and voice-mode replies get
   none. Guest replies get none either — same reason they get no 🔊:
   a guest's tap can't answer past the allowed-user gate, so a rendered

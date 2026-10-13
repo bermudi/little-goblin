@@ -782,28 +782,21 @@ export function makeDeliverySink(
 							"setMessageReaction",
 						);
 					});
-					// One keyboard, one edit — editMessageReplyMarkup
-					// replaces the whole markup, so the rating row and 🔊
-					// stamp together or the second call erases the first.
+					// One keyboard, one row, one edit —
+					// editMessageReplyMarkup replaces the whole markup, so
+					// rating and 🔊 stamp together or the second call erases the
+					// first.
 					if (rating !== undefined || voice !== undefined) {
 						const anchor = rating?.lastReplyAnchor(conv.id) ?? null;
-						const keyboard = [
-							...(rating === undefined
-								? []
-								: [
-										[
-											{
-												text: "👍",
-												callback_data: rateCallbackData("up", conv.id, anchor),
-											},
-											{
-												text: "👎",
-												callback_data: rateCallbackData("down", conv.id, anchor),
-											},
-										],
-									]),
-							...(voice === undefined ? [] : [[{ text: "🔊", callback_data: SPEAK_CALLBACK }]]),
-						];
+						const row: Array<{ text: string; callback_data: string }> = [];
+						if (rating !== undefined) {
+							row.push(
+								{ text: "👍", callback_data: rateCallbackData("up", conv.id, anchor) },
+								{ text: "👎", callback_data: rateCallbackData("down", conv.id, anchor) },
+							);
+						}
+						if (voice !== undefined) row.push({ text: "🔊", callback_data: SPEAK_CALLBACK });
+						const keyboard = [row];
 						enqueue(async () => {
 							if (!mayDeliver()) return;
 							try {

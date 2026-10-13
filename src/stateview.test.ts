@@ -330,10 +330,18 @@ describe("tailLog", () => {
 		expect(res.truncated).toBe(true);
 	});
 
-	test("malformed lines are skipped, not fatal", () => {
+	test("malformed lines are skipped, not fatal — and count as truncation", () => {
 		const f = writeLog(["{torn write", JSON.stringify({ ts: "t1", level: "info", msg: "ok" })]);
 		const res = tailLog(f, { limit: 10 });
 		expect(res.lines.map((l) => l.msg)).toEqual(["ok"]);
+		expect(res.truncated).toBe(true);
+	});
+
+	test("a non-object JSON line also reads as truncation", () => {
+		const f = writeLog(["42", JSON.stringify({ ts: "t1", level: "info", msg: "ok" })]);
+		const res = tailLog(f, { limit: 10 });
+		expect(res.lines.map((l) => l.msg)).toEqual(["ok"]);
+		expect(res.truncated).toBe(true);
 	});
 
 	test("missing log file is an empty view", () => {

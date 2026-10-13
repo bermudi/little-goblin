@@ -85,6 +85,25 @@ describe("state viewer routes", () => {
 		expect(missing.status).toBe(404);
 	});
 
+	test("skills/file serves dotfiles and __dunder__ names the listing exposes", async () => {
+		mkdirSync(join(home, "workspace/skills/weather"), { recursive: true });
+		writeFileSync(join(home, "workspace/skills/weather/.gitignore"), "node_modules");
+		writeFileSync(join(home, "workspace/skills/weather/__init__.py"), "# pkg");
+		for (const path of [".gitignore", "__init__.py"]) {
+			const res = await getWithQuery("skills/file", `name=weather&path=${path}`);
+			expect(res.status).toBe(200);
+		}
+	});
+
+	test("skills/file still refuses traversal shaped like a dotfile", async () => {
+		mkdirSync(join(home, "workspace/skills/weather"), { recursive: true });
+		writeFileSync(join(home, "workspace/skills/weather/SKILL.md"), "content");
+		for (const path of ["..hidden", ".dot/..", "a/../../x"]) {
+			const res = await getWithQuery("skills/file", `name=weather&path=${path}`);
+			expect([400, 404]).toContain(res.status);
+		}
+	});
+
 	test("skills/file rejects a path that escapes", async () => {
 		mkdirSync(join(home, "workspace/skills/weather"), { recursive: true });
 		writeFileSync(join(home, "workspace/skills/weather/SKILL.md"), "content");

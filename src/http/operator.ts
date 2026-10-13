@@ -81,7 +81,9 @@ const SEGMENT_SCHEMA = z
 const REL_PATH_SCHEMA = z
 	.string()
 	.max(400)
-	.regex(/^[A-Za-z0-9][A-Za-z0-9._/-]*$/)
+	// Dotfiles and __underscores__ are legitimate names the listing
+	// exposes; the ".." refine keeps them from becoming traversal.
+	.regex(/^[A-Za-z0-9._][A-Za-z0-9._/-]*$/)
 	.refine((v) => !v.includes(".."), "no traversal");
 
 // Serving cap for attachments/file — the upload cap's twin (32 MiB);

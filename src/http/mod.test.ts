@@ -1271,6 +1271,30 @@ describe("app deep links (Notes)", () => {
 		}
 	});
 
+	// Every page the client routes to must deep-link — a missing one is
+	// a 404 on refresh or bookmark, not a screen.
+	test("every operator-console page serves the client shell", async () => {
+		const { http, get } = setup();
+		try {
+			for (const page of [
+				"settings",
+				"memory",
+				"delegations",
+				"programs",
+				"status",
+				"projects",
+				"notes",
+				"skills",
+				"files",
+				"log",
+			]) {
+				await shellOrLoud500(await get(`/app/${page}`));
+			}
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("/app/n/<uuid> serves the client shell", async () => {
 		const { http, get } = setup();
 		try {

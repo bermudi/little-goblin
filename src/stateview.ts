@@ -381,6 +381,10 @@ export function tailLog(logFile: string, opts: LogTailOptions): LogTailResponse 
 	const q = opts.q ?? null;
 	const level = opts.level ?? null;
 	const matching: LogTailItem[] = [];
+	// Lines the view drops without parsing — torn writes, non-JSON
+	// noise — are hidden content, so they count as truncation the same
+	// way a cut window does.
+	let dropped = false;
 	for (const line of rawLines) {
 		if (line === "") continue;
 		if (q !== null && !line.includes(q)) continue;
@@ -390,9 +394,13 @@ export function tailLog(logFile: string, opts: LogTailOptions): LogTailResponse 
 		} catch {
 			// A torn write can leave a half line; skip it, it counts as
 			// truncation so the view never silently hides content.
+			dropped = true;
 			continue;
 		}
-		if (typeof parsed !== "object" || parsed === null) continue;
+		if (typeof parsed !== "object" || parsed === null) {
+			dropped = true;
+			continue;
+		}
 		const rec = parsed as Record<string, unknown>;
 		if (level !== null && rec["level"] !== level) continue;
 		matching.push({
@@ -406,7 +414,7 @@ export function tailLog(logFile: string, opts: LogTailOptions): LogTailResponse 
 	const lines = matching.slice(-limit);
 	return {
 		lines,
-		truncated: windowCut || matching.length > limit,
+		truncated: windowCut || dropped || matching.length > limit,
 		scannedBytes: len,
 	};
 }

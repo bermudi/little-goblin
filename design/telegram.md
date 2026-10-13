@@ -46,7 +46,16 @@ model/thinking (history still copies, as specified in design/app.md).
   stops polling rather than acknowledging input held only in RAM. This
   store connection uses WAL/FULL so an acknowledged journal commit also
   survives a host power loss. This protects future updates, not input
-  lost before the inbox was deployed.
+  lost before the inbox was deployed. An `edited_message` is not a
+  second message (ruling 2026-10-13): while its original still
+  coalesces, the edit amends the buffered text in place — the journaled
+  `payload_json` with it, so crash-replay sees the fix the live batch
+  carried. The amend runs inside the lane's intake chain (behind the
+  original's own media resolution and push) and is bounded by the
+  row's pending state: after the batch commits the edit stays
+  ack-and-log — the landed turn's history is the record. A media swap
+  (`file_unique_id` moved) is a different message, not a fix; the
+  original stands.
 - **Delivery**: `streamText` deltas → throttled message edits (~1/s), final
   flush on completion. Typing indicator while a turn runs. Errors post a short
   message and log structured detail. Flood control is honored once, at the api
@@ -611,11 +620,32 @@ streams its accumulated markdown into `sendRichMessageDraft` (same
 the TTL) and on completion sends the same content once via
 `sendRichMessage`. The preview is the message, formatting included; the
 hand-off (draft vanishes, real message lands) is accepted behavior, not a
-bug to smooth over. Drafts replace the typing indicator entirely.
+bug to smooth over. Drafts replace the typing indicator entirely. The
+finalizing send carries everything the message needs in one call —
+`reply_markup` included (ruling 2026-10-13): the completed-turn rating
+row goes out on the `sendRichMessage`, not a follow-up
+`editMessageReplyMarkup` that could lose the race between "bubble up"
+and "buttons on". The premium-gate retry that drops
+`message_effect_id` keeps the markup.
 
 **DMs only in v1.** Group and topic conversations keep the current
 edit-streaming sink untouched; group rich rendering and reply-threading are
-unprobed. Guests never see either primitive.
+unprobed.
+
+**Guest answers edit into rich (ruling 2026-10-13).** The earlier line —
+guests never see either primitive — rested on a stale premise: there is
+no inline-scoped rich primitive. There is: `editMessageText`'s
+`text_or_rich_message` accepts an `InputRichMessage` (`{markdown}`) with
+`inline_message_id`, so the guest placeholder edits *into* a rich answer
+— the ⏳ is updated in place, never replaced by a second message. The
+boundary is the send side, not the receive side: a *sent* rich message
+can't be edited, but editing a plain inline message *to* rich content is
+the documented shape. Live behavior is **unprobed** (types pinned, API
+not exercised): the first rejected rich edit flips that sink to plain
+edits for the rest of the turn — warn-logged `guest rich edit rejected`,
+the reply still lands. The placeholder itself stays plain text in
+`answerGuestQuery` — a platform that can't answer rich would drop the
+summons at placement, not just the formatting.
 
 **Kill switch, not feature flag.** `telegram.richReplies` (bool, default
 true): false restores the plain-text sink verbatim. A phone-only operator

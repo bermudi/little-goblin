@@ -198,7 +198,13 @@ describe("coalescing buffer", () => {
 			),
 		).toBe(true);
 		// A miss fabricates nothing — no bucket, no item.
-		expect(buf.amend("c1", (i) => i.id === 9, () => {})).toBe(false);
+		expect(
+			buf.amend(
+				"c1",
+				(i) => i.id === 9,
+				() => {},
+			),
+		).toBe(false);
 		expect(
 			buf.amend(
 				"nope",

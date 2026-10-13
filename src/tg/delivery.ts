@@ -1131,17 +1131,20 @@ export function makeDeliverySink(
 						// reply sits buttonless. The premium-gate retry keeps
 						// it; only the effect param drops.
 						const keyboard = done.kind === "completed" ? buildKeyboard() : null;
-						const markup =
-							keyboard === null ? {} : { reply_markup: { inline_keyboard: keyboard } };
+						const markup = keyboard === null ? {} : { reply_markup: { inline_keyboard: keyboard } };
 						try {
 							let sent;
 							try {
 								sent = await withTimeout(
-									api.sendRichMessage(conv.chatId, { markdown: md }, {
-										...base,
-										...effect,
-										...markup,
-									}),
+									api.sendRichMessage(
+										conv.chatId,
+										{ markdown: md },
+										{
+											...base,
+											...effect,
+											...markup,
+										},
+									),
 									"sendRichMessage",
 								);
 							} catch (err) {

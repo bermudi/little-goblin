@@ -926,7 +926,9 @@ describe("schedule fire retry ladder", () => {
 
 	test("a transient zero-call failure re-fires on the ordinary path, cursor untouched", async () => {
 		const h = harness();
-		const now = new Date("2026-10-13T08:00:00");
+		// Real clock — the program's nextRun is derived from Date.now(),
+		// so a fixed scan timestamp rots the moment wall time passes it.
+		const now = new Date();
 		const program = ladderProgram(h);
 		const { captured, release } = capture();
 		try {

@@ -491,10 +491,7 @@ describe("GuestSink", () => {
 		const api = fakeApi();
 		const warn = spyOn(log, "warn").mockImplementation(() => {});
 		try {
-			api.editMessageTextInline = (async (
-				_id: string,
-				text: string | { markdown: string },
-			) => {
+			api.editMessageTextInline = (async (_id: string, text: string | { markdown: string }) => {
 				api.editForms.push(typeof text === "string" ? "plain" : "rich");
 				if (typeof text !== "string") throw new Error("400 Bad Request: rich unsupported");
 				api.edits.push(text);

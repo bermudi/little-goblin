@@ -790,7 +790,14 @@ describe("ping replies (Spin-off)", () => {
 		expect(h.env.inbox.pending().map((e) => e.updateId)).toEqual([100]);
 		expect(h.env.inbox.pending()[0]!.payload.conversationId).toBe(app.id);
 		await flushConversation(h.env, app.id, [
-			{ updateId: 100, chatId: 1, parts: [{ type: "text", text: "looks good" }], replyTo: 51 },
+			{
+				updateId: 100,
+				chatId: 1,
+				parts: [{ type: "text", text: "looks good" }],
+				replyTo: 51,
+				textIndex: 0,
+				hasText: true,
+			},
 		]);
 		expect(h.env.inbox.pending()).toHaveLength(0);
 		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
@@ -816,7 +823,14 @@ describe("ping replies (Spin-off)", () => {
 		await h.env.intake.get(app.id);
 		h.store.deleteConversation(app.id);
 		void flushConversation(h.env, app.id, [
-			{ updateId: 100, chatId: 1, parts: [{ type: "text", text: "looks good" }], replyTo: 51 },
+			{
+				updateId: 100,
+				chatId: 1,
+				parts: [{ type: "text", text: "looks good" }],
+				replyTo: 51,
+				textIndex: 0,
+				hasText: true,
+			},
 		]);
 		expect(h.env.inbox.pending()).toHaveLength(0);
 		h.apiCalls.length = 0;
@@ -967,7 +981,14 @@ describe("flushConversation", () => {
 		// dm:1 is a rolling lane — the flush is async and the failure is a rejection.
 		await expect(
 			flushConversation(h.env, conv.id, [
-				{ updateId: 710, parts: [{ type: "text", text: "hi" }], replyTo: 71, chatId: 1 },
+				{
+					updateId: 710,
+					parts: [{ type: "text", text: "hi" }],
+					replyTo: 71,
+					chatId: 1,
+					textIndex: 0,
+					hasText: true,
+				},
 			]) as Promise<void>,
 		).rejects.toThrow("disk failed");
 		await Bun.sleep(10);
@@ -1107,6 +1128,8 @@ describe("durable intake", () => {
 			parts: [{ type: "text" as const, text: "retry" }],
 			replyTo: 70,
 			chatId: 1,
+			textIndex: 0,
+			hasText: true,
 		};
 		const originalStore = h.store;
 		h.env.deps.store = {
@@ -1250,8 +1273,7 @@ describe("handleEditedMessage", () => {
 			media: over.media ?? null,
 			mediaError: null,
 		});
-		const parts: UIMessage["parts"] =
-			over.text === "" ? [] : [{ type: "text", text: over.text }];
+		const parts: UIMessage["parts"] = over.text === "" ? [] : [{ type: "text", text: over.text }];
 		buffer.push(over.lane, {
 			updateId: over.updateId,
 			parts,
@@ -1531,7 +1553,12 @@ describe("rolling dm", () => {
 describe("manual DM navigation", () => {
 	const chat = { id: 7, type: "private" } as const;
 	function batch(h: RouterHarness) {
-		return h.pushed.map((item) => ({ ...item, chatId: chat.id }));
+		return h.pushed.map((item) => ({
+			...item,
+			chatId: chat.id,
+			textIndex: 0,
+			hasText: item.parts.some((p) => p.type === "text"),
+		}));
 	}
 
 	test("/new is immediate while busy, stops the outgoing turn, and preserves its history", () => {

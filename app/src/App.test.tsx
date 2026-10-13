@@ -2430,6 +2430,66 @@ describe("app projects surface", () => {
 		expect(container.querySelector(".note-readonly")!.textContent).toContain("milk");
 	});
 
+	// An archived note never mounts the editor — a stored draft would
+	// hide in localStorage until somebody unarchived on faith. The bar
+	// discloses it and offers the explicit paths without unarchiving.
+	const DRAFT_KEY = `goblin.note-draft.v1:${encodeURIComponent("n-shopping")}`;
+	const draftBar = () =>
+		[...container.querySelectorAll('[role="alert"]')].find((el) =>
+			el.textContent?.includes("draft"),
+		);
+
+	test("an archived note with a stored draft discloses it — show and discard", async () => {
+		notes = [noteRow("Shopping", { archivedAt: "2026-10-12T00:00:00.000Z" })];
+		noteBodies = { "n-shopping": "milk" };
+		win.localStorage.setItem(
+			DRAFT_KEY,
+			JSON.stringify({
+				version: 1,
+				noteId: "n-shopping",
+				baseRev: 1,
+				baseBody: "milk",
+				body: "unsaved typing",
+			}),
+		);
+		win.history.replaceState(null, "", "/app/n/n-shopping");
+		await mount();
+		await settle();
+
+		expect(container.querySelector(".ProseMirror")).toBeNull();
+		expect(container.querySelector(".note-readonly")!.textContent).toContain("milk");
+		const bar = draftBar();
+		expect(bar?.textContent).toContain("Unsaved local edits");
+
+		await click([...bar!.querySelectorAll("button")].find((b) => b.textContent === "Show draft"));
+		expect(container.textContent).toContain("unsaved typing");
+		// Nothing touched the record — viewing isn't consent to drop it.
+		expect(win.localStorage.getItem(DRAFT_KEY)).toContain("unsaved typing");
+
+		await click([...bar!.querySelectorAll("button")].find((b) => b.textContent === "Discard draft"));
+		expect(win.localStorage.getItem(DRAFT_KEY)).toBeNull();
+		expect(draftBar()).toBeUndefined();
+	});
+
+	test("an unreadable stored draft on an archived note warns without deleting it", async () => {
+		notes = [noteRow("Shopping", { archivedAt: "2026-10-12T00:00:00.000Z" })];
+		win.localStorage.setItem(DRAFT_KEY, "{not json");
+		win.history.replaceState(null, "", "/app/n/n-shopping");
+		await mount();
+		await settle();
+
+		const bar = draftBar();
+		expect(bar?.textContent).toContain("couldn't be read");
+		// The raw bytes never reach the alert text.
+		expect(bar?.textContent).not.toContain("not json");
+		// Held until the operator's explicit discard.
+		expect(win.localStorage.getItem(DRAFT_KEY)).toBe("{not json");
+		expect(bar?.textContent).toContain("Download draft");
+		expect(bar?.textContent).not.toContain("Show draft");
+		await click([...bar!.querySelectorAll("button")].find((b) => b.textContent === "Discard draft"));
+		expect(win.localStorage.getItem(DRAFT_KEY)).toBeNull();
+	});
+
 	// A cleared title is a real in-progress edit too — the dirty
 	// predicate compares drafts, not truthiness.
 	for (const draft of ["Local title", ""]) {

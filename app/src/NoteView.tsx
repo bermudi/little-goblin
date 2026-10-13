@@ -24,6 +24,12 @@ import {
 	restoreNoteVersion,
 } from "./api.ts";
 import type { NoteEditorHandle } from "./NoteEditor.tsx";
+import {
+	discardNoteDraft,
+	loadNoteDraft,
+	rawNoteDraft,
+	type NoteDraft,
+} from "./noteDraft.ts";
 
 const Editor = lazy(() => import("./NoteEditor.tsx"));
 
@@ -286,6 +292,84 @@ function VersionsPanel({
 					<pre>{preview.body}</pre>
 				</div>
 			)}
+		</div>
+	);
+}
+
+// An archived note renders the server body read-only and never mounts
+// the editor — without this disclosure a stored draft sits invisible
+// until someone unarchives on faith. The bar names it and offers the
+// explicit paths only: view/download the text, or discard the record.
+// An unreadable record keeps the editor's hold-until-explicit rule —
+// nothing here auto-deletes it.
+function ArchivedDraft({ noteId }: { noteId: string }) {
+	const [draft, setDraft] = useState<NoteDraft | "unreadable" | null>(null);
+	const [open, setOpen] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+	useEffect(() => {
+		try {
+			setDraft(loadNoteDraft(noteId)?.draft ?? null);
+		} catch {
+			setDraft("unreadable");
+		}
+	}, [noteId]);
+
+	const discard = () => {
+		try {
+			discardNoteDraft(noteId);
+		} catch (e) {
+			setError(`Couldn't discard the draft: ${e instanceof Error ? e.message : String(e)}`);
+			return;
+		}
+		setDraft(null);
+		setOpen(false);
+	};
+	const download = (text: string, ext: string) => {
+		if (typeof URL.createObjectURL !== "function") return;
+		const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+		const a = document.createElement("a");
+		a.href = url;
+		a.download = `goblin-note-draft-${noteId}.${ext}`;
+		a.click();
+		URL.revokeObjectURL(url);
+	};
+
+	if (draft === null) {
+		return error === null ? null : (
+			<p className="error" role="alert">
+				{error}
+			</p>
+		);
+	}
+	return (
+		<div className="note-draft-error" role="alert">
+			{draft === "unreadable" ? (
+				<span>A stored draft for this note couldn't be read — it stays put until you act.</span>
+			) : (
+				<span>Unsaved local edits exist for this note — drafted against rev {draft.baseRev}.</span>
+			)}
+			<span className="row note-draft-actions">
+				{draft !== "unreadable" && (
+					<button type="button" className="ghost-inline" onClick={() => setOpen((v) => !v)}>
+						{open ? "Hide draft" : "Show draft"}
+					</button>
+				)}
+				<button
+					type="button"
+					className="ghost-inline"
+					onClick={() => {
+						const raw = draft === "unreadable" ? rawNoteDraft(noteId) : draft.body;
+						if (raw !== null) download(raw, draft === "unreadable" ? "txt" : "md");
+					}}
+				>
+					Download draft
+				</button>
+				<button type="button" className="ghost-inline" onClick={discard}>
+					Discard draft
+				</button>
+			</span>
+			{open && draft !== "unreadable" && <pre className="note-readonly">{draft.body}</pre>}
+			{error !== null && <span className="error">{error}</span>}
 		</div>
 	);
 }
@@ -610,7 +694,10 @@ export function NoteView({
 			    an archived note — unmounting would drop the dirty buffer
 			    the bar is asking about, and Keep mine needs the handle. */}
 			{archived && conflict === null ? (
-				<pre className="note-readonly">{note.body}</pre>
+				<>
+					<ArchivedDraft noteId={note.id} />
+					<pre className="note-readonly">{note.body}</pre>
+				</>
 			) : (
 				<Suspense fallback={<p className="loading">Loading editor…</p>}>
 					<Editor

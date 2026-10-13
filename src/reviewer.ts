@@ -899,7 +899,21 @@ function proposeSkill(
 ): ProposeOutcome {
 	const drifted = liveDrifted(skillsDir, manifest, skill);
 	if (drifted.length > 0) return { proposed: false, reason: "conflict", drifted };
-	mkdirSync(proposedDir, { recursive: true });
+	let rootStats: Stats | undefined;
+	try {
+		rootStats = lstatSync(proposedDir);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+	}
+	if (rootStats === undefined) {
+		mkdirSync(proposedDir, { recursive: true });
+		rootStats = lstatSync(proposedDir);
+	}
+	if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
+		throw new Error(
+			`reviewer proposals dir ${proposedDir} is ${rootStats.isSymbolicLink() ? "a symlink" : "not a directory"} — refusing to park proposals`,
+		);
+	}
 	const target = join(proposedDir, skill);
 	// lstat, not existsSync: a symlink parked on the target name is
 	// operator state, not an earlier proposal — never trashed, and a

@@ -533,6 +533,92 @@ describe("review run — staging and publication", () => {
 		h.store.close();
 	});
 
+	test("a symlinked proposals dir refuses the swap wholesale — live tree and link untouched", async () => {
+		const h = harness();
+		const logFile = join(h.workspace, "goblin.log");
+		setLogFile(logFile);
+		mkdirSync(join(h.skills, "linked"), { recursive: true });
+		writeFileSync(join(h.skills, "linked", "SKILL.md"), SKILL_MD("linked", "source of truth"));
+		symlinkSync(h.skills, h.proposed);
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0 },
+			script: [
+				{
+					calls: [
+						{
+							name: "write_file",
+							input: {
+								path: "linked/SKILL.md",
+								content: SKILL_MD("linked", "review's take"),
+							},
+						},
+					],
+				},
+				{ text: "saved" },
+			],
+		});
+		await expect(new Reviewer(deps).considerTurn(turn())).rejects.toThrow(/proposals dir.*symlink/);
+		expect(lstatSync(h.proposed).isSymbolicLink()).toBe(true);
+		expect(readFileSync(join(h.skills, "linked", "SKILL.md"), "utf8")).toContain("source of truth");
+		expect(readdirSync(h.staging)).toEqual([]);
+		expect(h.notified).toEqual([]);
+		expect(h.store.history(h.convId)).toHaveLength(0);
+		expect(readFileSync(logFile, "utf8")).toContain("reviewer proposal failed");
+		h.store.close();
+	});
+
+	test("a broken symlink at the proposals dir refuses proposals — the link is left alone", async () => {
+		const h = harness();
+		symlinkSync(join(h.workspace, "missing-target"), h.proposed);
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0 },
+			script: [
+				{
+					calls: [
+						{
+							name: "write_file",
+							input: { path: "fresh/SKILL.md", content: SKILL_MD("fresh") },
+						},
+					],
+				},
+				{ text: "saved" },
+			],
+		});
+		await expect(new Reviewer(deps).considerTurn(turn())).rejects.toThrow(/proposals dir.*symlink/);
+		expect(lstatSync(h.proposed).isSymbolicLink()).toBe(true);
+		expect(existsSync(join(h.workspace, "missing-target"))).toBe(false);
+		expect(readdirSync(h.staging)).toEqual([]);
+		expect(h.notified).toEqual([]);
+		expect(h.store.history(h.convId)).toHaveLength(0);
+		h.store.close();
+	});
+
+	test("a regular file at the proposals dir path refuses proposals — the file is left alone", async () => {
+		const h = harness();
+		writeFileSync(h.proposed, "occupied");
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0 },
+			script: [
+				{
+					calls: [
+						{
+							name: "write_file",
+							input: { path: "fresh/SKILL.md", content: SKILL_MD("fresh") },
+						},
+					],
+				},
+				{ text: "saved" },
+			],
+		});
+		await expect(new Reviewer(deps).considerTurn(turn())).rejects.toThrow(
+			/proposals dir.*not a directory/,
+		);
+		expect(readFileSync(h.proposed, "utf8")).toBe("occupied");
+		expect(h.notified).toEqual([]);
+		expect(h.store.history(h.convId)).toHaveLength(0);
+		h.store.close();
+	});
+
 	test("proposing an edited skill preserves the executable mode of copied helpers", async () => {
 		const h = harness();
 		mkdirSync(join(h.skills, "existing"));

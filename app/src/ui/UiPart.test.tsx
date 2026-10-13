@@ -278,6 +278,48 @@ describe("UiPart + MessageParts (happy-dom)", () => {
 		expect(actions).toEqual(["[ui] Plan ride: distance=30.5, terrain=flat, notes="]);
 	});
 
+	test("a form's uncontrolled inputs never leak into the next tab at the same index", async () => {
+		const actions: string[] = [];
+		const tabbedForm = (tag: string) => ({
+			type: "form",
+			fields: [{ name: "amount", label: "Amount", kind: "number" }],
+			submit: tag,
+		});
+		const input = {
+			blocks: [
+				{
+					type: "tabs",
+					tabs: [
+						{ label: "A", blocks: [tabbedForm("Send A")] },
+						{ label: "B", blocks: [tabbedForm("Send B")] },
+					],
+				},
+			],
+		};
+		await mount(
+			<UiPart
+				part={uiPart({ state: "output-available", input, output: "shown" })}
+				onAction={(t) => actions.push(t)}
+			/>,
+		);
+		const aInput = container.querySelector<HTMLInputElement>(
+			'.ui-field input[type="number"]',
+		)!;
+		aInput.value = "750";
+		// Switch tabs — the same-index form must mount fresh, not
+		// reuse A's DOM node and its typed value.
+		await clickEl([...container.querySelectorAll("[role='tab']")][1] ?? null);
+		const bInput = container.querySelector<HTMLInputElement>(
+			'.ui-field input[type="number"]',
+		)!;
+		expect(bInput).not.toBe(aInput);
+		expect(bInput.value).toBe("");
+		await act(async () => {
+			container.querySelector<HTMLButtonElement>(".ui-submit")!.click();
+		});
+		expect(actions).toEqual(["[ui] Send B: amount="]);
+	});
+
 	// Note fences inside ui blocks get the transcript's note context —
 	// token, project binding, in-app navigation — through every
 	// container depth (design/projects.md → Notes).

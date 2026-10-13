@@ -216,7 +216,10 @@ function Tabs({
 					</button>
 				))}
 			</div>
-			<div className="ui-tab-panel" role="tabpanel">
+			{/* The active tab is part of the panel's key: leaf indexes alone
+			    collide across tabs, and uncontrolled form inputs would carry
+			    one tab's DOM values into another's submit. */}
+			<div className="ui-tab-panel" role="tabpanel" key={active}>
 				{tab.blocks.map((leaf, i) => (
 					<Leaf
 						key={i}

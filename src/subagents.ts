@@ -1828,10 +1828,20 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		if (row.stopRequested || row.status === "stopped") throw new SubagentError("stopped");
 	}
 
+	// Admit's verdict distinguishes the two non-admissions callers
+	// must answer differently: "halted" means stop/close owns the row,
+	// while "blocked" is a lease conflict carrying the reason — a
+	// caller that persisted an intent must roll it back or re-queue,
+	// since drain only retries queued rows.
+	type AdmitOutcome =
+		| { kind: "admitted" }
+		| { kind: "halted" }
+		| { kind: "blocked"; reason: string };
+
 	// One admission path for all three input modes: initial (task),
 	// resume (needs_input answer) and steer (live input). Every step
 	// re-checks the persisted row before the next external effect.
-	async function admit(row: SubagentRun): Promise<"admitted" | "blocked" | "halted"> {
+	async function admit(row: SubagentRun): Promise<AdmitOutcome> {
 		const t0 = Date.now();
 		try {
 			if (row.kind === "computer") {
@@ -1842,7 +1852,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					const msg = err instanceof Error ? err.message : String(err);
 					if (/is controlled by/.test(msg)) {
 						retryAfter.set(row.id, Date.now() + LEASE_RETRY_MS);
-						return "blocked";
+						return { kind: "blocked", reason: msg };
 					}
 					throw err;
 				}
@@ -1946,13 +1956,13 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				ms: Date.now() - t0,
 			});
 			monitor(row.id, rev, submission);
-			return "admitted";
+			return { kind: "admitted" };
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			if (msg === "stopped" || msg === "owner closing" || msg === "run row vanished") {
-				return "halted";
+				return { kind: "halted" };
 			}
-			if (closing || runs.get(row.id)?.stopRequested === true) return "halted";
+			if (closing || runs.get(row.id)?.stopRequested === true) return { kind: "halted" };
 			const failed = runs.update(row.id, {
 				status: "failed",
 				error: msg,
@@ -1961,8 +1971,22 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 			});
 			releaseLeases(failed);
 			notify(failed);
-			return "halted";
+			return { kind: "halted" };
 		}
+	}
+
+	// A blocked boot re-admit already armed the lease backoff drain
+	// consults — re-queue so the retry actually happens. Dropping the
+	// outcome here orphans the row the way send() did: a persisted
+	// intent defers settlement forever, and a running row with no
+	// monitor is never finalized — drain only retries queued rows.
+	function queueBlockedReadmit(row: SubagentRun, outcome: AdmitOutcome): void {
+		if (outcome.kind !== "blocked") return;
+		runs.update(row.id, { status: "queued" });
+		log.warn("subagent re-admit blocked by a held lease — queued for retry", {
+			run: row.id,
+			reason: outcome.reason,
+		});
 	}
 
 	// ---------- queue admission ----------
@@ -2146,8 +2170,17 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					inputMode: "steer",
 				});
 				const outcome = await admit(runs.get(id)!);
-				if (outcome === "halted") {
+				if (outcome.kind === "halted") {
 					throw new SubagentError(`run #${id} was stopped mid-send`);
+				}
+				if (outcome.kind === "blocked") {
+					// A persisted steer intent has no retry path and
+					// defers settlement forever — roll it back and
+					// report the conflict. inputRev stays bumped: it
+					// only needs to be monotonic for requestId
+					// uniqueness.
+					runs.update(id, { inputIntent: null, inputMode: null });
+					throw new SubagentError(`run #${id} cannot be steered — ${outcome.reason}`);
 				}
 				return runs.get(id)!;
 			});
@@ -2305,7 +2338,9 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					if (row.inputIntent !== null) {
 						// A persisted answer/steer the row never received —
 						// re-admit through the idempotent path.
-						void lane(row.id, () => admit(row));
+						void lane(row.id, async () => {
+							queueBlockedReadmit(row, await admit(row));
+						});
 						continue;
 					}
 					const doc = await harness.snapshot(RunDoc, asConv(row.piConversationId), ctx);
@@ -2322,7 +2357,9 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					}
 					// No reacquirable submission — idempotent re-admission
 					// finds the admitted requestId or admits once.
-					void lane(row.id, () => admit(row));
+					void lane(row.id, async () => {
+						queueBlockedReadmit(row, await admit(row));
+					});
 				} catch (err) {
 					log.error("subagent recovery failed", err, { run: row.id });
 				}

@@ -1423,6 +1423,135 @@ describe("subagents owner", () => {
 		expect(r.model.seen.filter((s) => s.tools.includes("screenshot")).length).toBeGreaterThanOrEqual(1);
 	});
 
+	test("a steer blocked by a held lease fails loudly and never orphans the intent", async () => {
+		const r = rig();
+		const o = await open(r);
+		await r.desktops.allocate("d1");
+		const gate = Promise.withResolvers<void>();
+		r.model.push({
+			kind: "hold",
+			gate: gate.promise,
+			then: { kind: "tools", calls: [{ name: "finish", args: { result: "settled" } }] },
+		});
+		// Covers the extra generation a landed steer may drive.
+		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "steered" } }] });
+		const a = await o.start({
+			kind: "computer",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+			desktop: "d1",
+		});
+		await until(
+			() => r.runs.get(a.id)?.status === "running" && r.model.seen.length === 1,
+			"running on a held reply",
+		);
+		// The 10-minute lease lapsed mid-run; an operator took the desktop.
+		r.desktops.held.set("d1", { kind: "operator" });
+		const dRow = r.desktops.get("d1")!;
+		dRow.leaseKind = "operator";
+		dRow.leaseId = null;
+		dRow.leaseExpiresAt = Date.now() + 600_000;
+		await expect(o.send(a.id, WS, "steer-while-held")).rejects.toThrow(
+			/cannot be steered.*controlled by/,
+		);
+		const blocked = r.runs.get(a.id)!;
+		expect(blocked.status).toBe("running");
+		expect(blocked.inputIntent).toBe(null);
+		expect(blocked.inputMode).toBe(null);
+		// The holder leaves — a steer admits again.
+		r.desktops.held.delete("d1");
+		dRow.leaseKind = null;
+		dRow.leaseExpiresAt = null;
+		const steered = await o.send(a.id, WS, "steer-after-release");
+		expect(steered.status).toBe("running");
+		expect(steered.inputIntent).toBe(null);
+		// The wedge: resolving the parked submission still settles the
+		// run — a rolled-back steer cannot defer finalize forever.
+		gate.resolve();
+		await until(
+			() => r.runs.get(a.id)?.status === "done",
+			"run settles after a blocked steer",
+		);
+	});
+
+	test("a boot re-admit blocked by a held lease re-queues the persisted intent", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-sub-reuse-"));
+		dirs.push(dir);
+		const dbPath = join(dir, "goblin.sqlite");
+		const storagePath = join(dir, "subagents.sqlite");
+		const desktops = fakeDesktops();
+		const r1 = rig({ reuse: { dbPath, storagePath }, desktops });
+		const o1 = await open(r1);
+		await desktops.allocate("d1");
+		const gate = Promise.withResolvers<void>();
+		r1.model.push({ kind: "hold", gate: gate.promise });
+		const a = await o1.start({
+			kind: "computer",
+			conversationId: WS,
+			workspace: r1.workspace,
+			task: "computer-task",
+			desktop: "d1",
+		});
+		await until(() => r1.model.seen.length === 1, "request in flight");
+		// A steer intent persisted before a crash — the row never
+		// received it. The rev bump matters: the deterministic
+		// requestId would otherwise collide with the task's.
+		const cur = r1.runs.get(a.id)!;
+		r1.runs.update(a.id, {
+			inputRev: cur.inputRev + 1,
+			inputIntent: "steer-after-restart",
+			inputMode: "steer",
+		});
+		const closing = o1.close();
+		gate.resolve();
+		await closing;
+		owners = owners.filter((x) => x !== o1);
+		// The lease flips between resume's Phase A re-claim and the
+		// Phase C re-admit: claim #2 evicts the run for an operator.
+		let claims = 0;
+		const origClaim = desktops.claim.bind(desktops);
+		desktops.claim = async (name, holder) => {
+			claims++;
+			if (claims === 2) {
+				const row = desktops.get(name)!;
+				row.leaseKind = "operator";
+				row.leaseId = null;
+				row.leaseExpiresAt = Date.now() + 600_000;
+				desktops.held.set(name, { kind: "operator" });
+				throw new DesktopError(`desktop ${name} is controlled by operator`);
+			}
+			return origClaim(name, holder);
+		};
+		const r2 = rig({ reuse: { dbPath, storagePath }, model: r1.model, desktops });
+		const o2 = await open(r2);
+		await until(
+			() => r2.runs.get(a.id)?.status === "queued",
+			"blocked re-admit re-queued the row",
+		);
+		expect(r2.runs.get(a.id)?.inputIntent).toBe("steer-after-restart");
+		// The holder leaves — drain admits the queued intent and the
+		// steer reaches the model.
+		desktops.held.delete("d1");
+		const dRow = desktops.get("d1")!;
+		dRow.leaseKind = null;
+		dRow.leaseExpiresAt = null;
+		r2.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "steered" } }] });
+		await until(
+			async () => {
+				await o2.scan();
+				return r2.runs.get(a.id)?.status === "done";
+			},
+			"queued intent admits after release",
+			30_000,
+		);
+		const steerSeen = r2.model.seen.some((s) =>
+			JSON.stringify(s.messages).includes("steer-after-restart"),
+		);
+		expect(steerSeen).toBe(true);
+		void o2;
+	}, 30_000);
+
 	test("a second identical-looking finish cannot replace a recorded outcome", async () => {
 		const r = rig();
 		const o = await open(r);

@@ -55,7 +55,6 @@ const unsupportedSyncDirs = new Set<string>();
  *  just the data of the file it points at. Only an explicitly
  *  unsupported directory fsync may degrade; EIO and other failures leave
  *  the entry's durability unknown and propagate. */
-
 export function fsyncDirectory(dir: string): void {
 	const dfd = openSync(dir, constants.O_RDONLY);
 	try {

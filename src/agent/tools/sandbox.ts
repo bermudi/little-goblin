@@ -233,12 +233,7 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 				// expected — are refusals the model can fix, not step-fatal.
 				// Resource/device errors (ENOSPC, EIO) stay loud.
 				const code = (err as NodeJS.ErrnoException).code;
-				if (
-					code === "EEXIST" ||
-					code === "ENOTDIR" ||
-					code === "EISDIR" ||
-					code === "ENOTEMPTY"
-				) {
+				if (code === "EEXIST" || code === "ENOTDIR" || code === "EISDIR" || code === "ENOTEMPTY") {
 					return { error: (err as Error).message };
 				}
 				throw err;

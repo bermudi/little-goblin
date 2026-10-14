@@ -87,9 +87,7 @@ export function resolveLinkedDir(input: string): string {
 		homeReal = goblinHome();
 	}
 	if (real === homeReal || real.startsWith(`${homeReal}/`)) {
-		throw new ProjectInputError(
-			`project dir must not be inside goblin's home directory: ${input}`,
-		);
+		throw new ProjectInputError(`project dir must not be inside goblin's home directory: ${input}`);
 	}
 	return real;
 }

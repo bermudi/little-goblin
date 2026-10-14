@@ -39,9 +39,7 @@ export function floodWaitTransformer(opts: FloodWaitOpts = {}): Transformer {
 	// transformer can still throw one.
 	const honor = async (method: string, retryAfterS: number, attempt: number): Promise<boolean> => {
 		const demanded = retryAfterS * 1000;
-		const cap = method.startsWith("answer")
-			? Math.min(maxWaitMs, ANSWER_MAX_WAIT_MS)
-			: maxWaitMs;
+		const cap = method.startsWith("answer") ? Math.min(maxWaitMs, ANSWER_MAX_WAIT_MS) : maxWaitMs;
 		if (demanded > cap) {
 			log.warn("telegram flood wait beyond cap", { method, retryAfterS });
 			return false;

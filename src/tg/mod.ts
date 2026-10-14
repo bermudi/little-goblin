@@ -185,9 +185,7 @@ export function accessGate(configRef: { current: Config }) {
 				if (refusalDue(id))
 					await withTimeout(ctx.api.sendMessage(id, GUEST_REFUSAL), "sendMessage (refusal)")
 						.then(() => undefined)
-						.catch((err: unknown) =>
-							log.warn("stranger refusal failed", err, { userId: id }),
-						);
+						.catch((err: unknown) => log.warn("stranger refusal failed", err, { userId: id }));
 				return;
 			}
 			await next();
@@ -201,11 +199,12 @@ export function accessGate(configRef: { current: Config }) {
 			const q = ctx.update.callback_query;
 			log.info("callback tap refused — not operator", { userId: id, chat: ctx.chat?.id });
 			if (q !== undefined) {
-				await withTimeout(ctx.api.answerCallbackQuery(q.id, { text: "operator only" }), "answerCallbackQuery")
+				await withTimeout(
+					ctx.api.answerCallbackQuery(q.id, { text: "operator only" }),
+					"answerCallbackQuery",
+				)
 					.then(() => undefined)
-					.catch((err: unknown) =>
-						log.debug("answerCallbackQuery failed", { error: String(err) }),
-					);
+					.catch((err: unknown) => log.debug("answerCallbackQuery failed", { error: String(err) }));
 			}
 			return;
 		}

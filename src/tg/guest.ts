@@ -677,8 +677,7 @@ export async function routeMemberGuestMessage(
 			update: updateId,
 			surface: "member",
 		});
-		if (refusalDue(chatId))
-			void sendMemberLine(env, chatId, GUEST_REFUSAL, msg.message_thread_id);
+		if (refusalDue(chatId)) void sendMemberLine(env, chatId, GUEST_REFUSAL, msg.message_thread_id);
 		return true;
 	}
 

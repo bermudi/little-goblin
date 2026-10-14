@@ -246,14 +246,7 @@ interface NoteRow {
 // fields it doesn't select (last_source, created_at) are unused there.
 type NoteListRow = Pick<
 	NoteRow,
-	| "id"
-	| "project_id"
-	| "title"
-	| "rev"
-	| "pinned_at"
-	| "archived_at"
-	| "updated_at"
-	| "body_md"
+	"id" | "project_id" | "title" | "rev" | "pinned_at" | "archived_at" | "updated_at" | "body_md"
 >;
 
 interface VersionRow {

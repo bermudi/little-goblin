@@ -2564,24 +2564,18 @@ describe("app notes", () => {
 			const created = await create(call, { title: "t", body: "v1" });
 			const note = (await created.json()) as { id: string };
 			await postJson(call, `/api/app/notes/${note.id}/append`, { text: "x" });
-			expect(
-				(await patchJson(call, `/api/app/notes/${note.id}`, { archived: true })).status,
-			).toBe(200);
+			expect((await patchJson(call, `/api/app/notes/${note.id}`, { archived: true })).status).toBe(
+				200,
+			);
 
 			// Body patch, append, restore — all refuse as input errors.
 			expect(
-				(
-					await patchJson(
-						call,
-						`/api/app/notes/${note.id}`,
-						{ body: "v2" },
-						{ "if-match": '"2"' },
-					)
-				).status,
+				(await patchJson(call, `/api/app/notes/${note.id}`, { body: "v2" }, { "if-match": '"2"' }))
+					.status,
 			).toBe(422);
-			expect(
-				(await postJson(call, `/api/app/notes/${note.id}/append`, { text: "y" })).status,
-			).toBe(422);
+			expect((await postJson(call, `/api/app/notes/${note.id}/append`, { text: "y" })).status).toBe(
+				422,
+			);
 			expect(
 				(await postJson(call, `/api/app/notes/${note.id}/versions/1/restore`, {})).status,
 			).toBe(422);
@@ -2593,18 +2587,12 @@ describe("app notes", () => {
 			expect(got.body).toBe("v1\n\nx");
 			expect(got.rev).toBe(2);
 			// Unarchive is a flag write — then content lands again.
+			expect((await patchJson(call, `/api/app/notes/${note.id}`, { archived: false })).status).toBe(
+				200,
+			);
 			expect(
-				(await patchJson(call, `/api/app/notes/${note.id}`, { archived: false })).status,
-			).toBe(200);
-			expect(
-				(
-					await patchJson(
-						call,
-						`/api/app/notes/${note.id}`,
-						{ body: "v3" },
-						{ "if-match": '"2"' },
-					)
-				).status,
+				(await patchJson(call, `/api/app/notes/${note.id}`, { body: "v3" }, { "if-match": '"2"' }))
+					.status,
 			).toBe(200);
 		} finally {
 			http.stop();
@@ -2619,14 +2607,8 @@ describe("app notes", () => {
 			const created = await create(call, { title: "t" });
 			const note = (await created.json()) as { id: string };
 			expect(
-				(
-					await patchJson(
-						call,
-						`/api/app/notes/${note.id}`,
-						{ body: over },
-						{ "if-match": '"1"' },
-					)
-				).status,
+				(await patchJson(call, `/api/app/notes/${note.id}`, { body: over }, { "if-match": '"1"' }))
+					.status,
 			).toBe(422);
 			expect(
 				(await postJson(call, `/api/app/notes/${note.id}/append`, { text: over })).status,

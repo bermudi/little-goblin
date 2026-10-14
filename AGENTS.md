@@ -79,8 +79,8 @@ it can be gold-mine of prover patterns. Compaction, tool calling, etc.
   update is `scripts/deploy.sh`: gate (typecheck) →
   conditional `bun install`/`app:build` (marker
   `.git/GOBLIN_DEPLOYED_REV`) → restart → verify. Deployment never
-  pushes, fetches, or pulls: `origin/main` stays the baseline for
-  `coderabbit review --base origin/main`. Publishing main is separate
+  pushes, fetches, or pulls — `origin/main` moves only when main is
+  published, so local `main` can run ahead of it. Publishing main is separate
   and needs bermudi's OK. Deployment restarts prod and also needs
   bermudi's OK each time, which running the script IS.
   The memory stack is never auto-deployed; `deploy/memory/`

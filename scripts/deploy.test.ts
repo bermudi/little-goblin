@@ -137,7 +137,19 @@ function runDeploy(changed: string[] = [], options: Options = {}) {
 							: repo;
 		const bin = join(dir, "bin");
 		mkdirSync(bin);
-		for (const name of ["dirname", "cat", "grep", "date", "seq", "tail", "mktemp", "mv"]) {
+		for (const name of [
+			"dirname",
+			"cat",
+			"grep",
+			"date",
+			"seq",
+			"tail",
+			"mktemp",
+			"mv",
+			// Real flock, not a stub — the deploy lock should really lock
+			// in the harness (one process per test never contends).
+			"flock",
+		]) {
 			symlinkSync(commandPath(name), join(bin, name));
 		}
 		const callsFile = join(dir, "calls");

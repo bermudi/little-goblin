@@ -636,6 +636,9 @@ function AppShell() {
 	// Navigation (or a newer start) fences off a stale failure — the
 	// alert belongs to the page that saw the failed send, nowhere else.
 	const startSeq = useRef(0);
+	// Guard before the sequence bump: a duplicate start must not fence
+	// the first continuation or mint an empty conversation.
+	const startBusyRef = useRef(false);
 	const clearStartFailure = () => {
 		startSeq.current += 1;
 		setStartFailed(false);
@@ -666,6 +669,13 @@ function AppShell() {
 	// The settings editor reports its dirty bit here so navigating away
 	// can ask before discarding unsaved edits.
 	const settingsDirty = useRef(false);
+	// Stale async completions — a held create's onCreated/onOpen firing
+	// after the operator already navigated — run the navigation guards
+	// from the render that issued them. The guard must ask which page
+	// is mounted now (a declined traversal deliberately leaves the old
+	// editor mounted), not which page rendered the callback.
+	const pageRef = useRef(page);
+	pageRef.current = page;
 	const [navigationError, setNavigationError] = useState<string | null>(null);
 	const navigation = browserNavigation();
 	const position = historyPosition(window.history.state);
@@ -675,7 +685,7 @@ function AppShell() {
 		key: navigation?.currentEntry.key ?? null,
 	});
 	const leaveDirtySettings = () =>
-		page !== "settings" ||
+		pageRef.current !== "settings" ||
 		!settingsDirty.current ||
 		window.confirm("Discard unsaved settings changes?");
 	const pushRoute = (path: string) => {
@@ -1042,6 +1052,8 @@ function AppShell() {
 	};
 
 	const startChat = async (projectId: string | null, parts: UIMessage["parts"]) => {
+		if (startBusyRef.current) return;
+		startBusyRef.current = true;
 		const seq = ++startSeq.current;
 		setStarting(true);
 		setStartFailed(false);
@@ -1063,6 +1075,7 @@ function AppShell() {
 		} catch {
 			if (seq === startSeq.current) setStartFailed(true);
 		} finally {
+			startBusyRef.current = false;
 			setStarting(false);
 		}
 	};
@@ -1331,7 +1344,7 @@ function AppShell() {
 									noteId={noteId}
 									projects={projectList}
 									onChat={(note: AppNote) =>
-										void startChat(note.projectId, [
+										startChat(note.projectId, [
 											{
 												type: "data-note",
 												data: { id: note.id, title: note.title },

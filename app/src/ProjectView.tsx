@@ -27,8 +27,26 @@ export function NewProjectDialog({
 	const [memory, setMemory] = useState<"shared" | "off">("shared");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	// A dismissed dialog's in-flight create still lands server-side,
+	// but its completion must not run: a late onCreated would navigate
+	// away from (or confirm over) whatever the operator opened next.
+	// `live` drops synchronously in dismiss — before the unmount's
+	// effect cleanup — so a reply already queued can't slip through
+	// the gap; the request id fences a superseded submit the same way.
+	const live = useRef(true);
+	const reqSeq = useRef(0);
+	useEffect(() => {
+		return () => {
+			live.current = false;
+		};
+	}, []);
+	const dismiss = () => {
+		live.current = false;
+		onClose();
+	};
 	const canSubmit = !busy && name.trim() !== "" && (home === "managed" || dir.trim() !== "");
 	const submit = async () => {
+		const req = ++reqSeq.current;
 		setBusy(true);
 		setError(null);
 		try {
@@ -38,19 +56,21 @@ export function NewProjectDialog({
 				...(memory === "off" ? { memory } : {}),
 				...(home === "linked" ? { dir: dir.trim() } : {}),
 			});
+			if (!live.current || req !== reqSeq.current) return;
 			onCreated(created);
 		} catch (err) {
+			if (!live.current || req !== reqSeq.current) return;
 			setError(
 				err instanceof ApiError && err.status === 422
 					? err.message
 					: `Couldn't create the project: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		} finally {
-			setBusy(false);
+			if (live.current && req === reqSeq.current) setBusy(false);
 		}
 	};
 	return (
-		<div className="veil" onClick={onClose}>
+		<div className="veil" onClick={dismiss}>
 			<div
 				className="msheet"
 				role="dialog"
@@ -59,7 +79,7 @@ export function NewProjectDialog({
 			>
 				<header className="msheet-head">
 					<h3>New project</h3>
-					<button type="button" aria-label="Close" onClick={onClose}>
+					<button type="button" aria-label="Close" onClick={dismiss}>
 						×
 					</button>
 				</header>
@@ -226,6 +246,15 @@ function ProjectNotes({
 }) {
 	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	// A create finishing after the page unmounted must not navigate —
+	// the operator already left; the note itself still exists.
+	const mounted = useRef(true);
+	const createSeq = useRef(0);
+	useEffect(() => {
+		return () => {
+			mounted.current = false;
+		};
+	}, []);
 	useEffect(() => {
 		let live = true;
 		const run = () => {
@@ -250,10 +279,16 @@ function ProjectNotes({
 		};
 	}, [token, project.id]);
 	const newNote = () => {
+		const seq = ++createSeq.current;
 		void createNote(token, { title: "Untitled note", projectId: project.id }).then(
-			(n) => onOpenNote(n.id),
-			(err) =>
-				setError(`Couldn't create the note: ${err instanceof Error ? err.message : String(err)}`),
+			(n) => {
+				if (!mounted.current || seq !== createSeq.current) return;
+				onOpenNote(n.id);
+			},
+			(err) => {
+				if (!mounted.current || seq !== createSeq.current) return;
+				setError(`Couldn't create the note: ${err instanceof Error ? err.message : String(err)}`);
+			},
 		);
 	};
 	return (

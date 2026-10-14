@@ -69,6 +69,16 @@ export function NotesIndex({
 	const [archived, setArchived] = useState<AppNoteSummary[] | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const seq = useRef(0);
+	const mounted = useRef(true);
+	const createSeq = useRef(0);
+	useEffect(() => {
+		mounted.current = true;
+		return () => {
+			mounted.current = false;
+			createSeq.current += 1;
+			seq.current += 1;
+		};
+	}, []);
 
 	const projectName = (id: string | null): string | null =>
 		id === null ? null : (projects.find((p) => p.id === id)?.name ?? "project");
@@ -113,13 +123,19 @@ export function NotesIndex({
 	}, [query, filter, token]);
 
 	const newNote = () => {
+		const req = ++createSeq.current;
 		void createNote(token, {
 			title: "Untitled note",
 			...(filter !== "all" && filter !== "loose" ? { projectId: filter } : {}),
 		}).then(
-			(n) => onOpen(n.id),
-			(err) =>
-				setError(`Couldn't create the note: ${err instanceof Error ? err.message : String(err)}`),
+			(n) => {
+				if (!mounted.current || req !== createSeq.current) return;
+				onOpen(n.id);
+			},
+			(err) => {
+				if (!mounted.current || req !== createSeq.current) return;
+				setError(`Couldn't create the note: ${err instanceof Error ? err.message : String(err)}`);
+			},
 		);
 	};
 
@@ -399,7 +415,7 @@ export function NoteView({
 	projects: AppProject[];
 	// Starts a conversation carrying this note as an attachment —
 	// bound to the note's project when it has one.
-	onChat: (note: AppNote) => void;
+	onChat: (note: AppNote) => Promise<void>;
 	onDeleted: () => void;
 }) {
 	const [note, setNote] = useState<AppNote | null>(null);
@@ -710,7 +726,7 @@ export function NoteView({
 			) {
 				return;
 			}
-			onChat(now);
+			await onChat(now);
 		} catch (err) {
 			setOpError(
 				`Couldn't prepare this note for chat: ${err instanceof Error ? err.message : String(err)}`,

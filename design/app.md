@@ -242,6 +242,12 @@ the half-typed name yet announce "Saved" — and the explicit Save
 refuses for the same reason; the savebar discloses the pending name.
 Committing a valid rename is ordinary serialized dirty: it autosaves
 and the guard clears on the ack.
+Async creation does not retain navigation authority after its dialog or
+page is dismissed: project creation and both note indexes fence late
+completion, while navigation guards consult the currently mounted page
+rather than a captured page. Conversation starts have a synchronous
+single-flight guard before advancing their sequence; "Chat with this
+note" awaits that start and keeps its busy guard until it settles.
 Memory pagination belongs to the loaded filter, not the
 search box's pending text, and waits for replacement loads to finish.
 The memory view is the Memories tab's browser plus status polling;

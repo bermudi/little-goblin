@@ -33,6 +33,7 @@ let installed: string[] = [];
 let stored: AppNote;
 const patches: PatchCall[] = [];
 const milkdowns: Editor[] = [];
+const pendingChats: PromiseWithResolvers<void>[] = [];
 const realFetch = globalThis.fetch;
 const realMake = Editor.make;
 
@@ -113,6 +114,10 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+	await act(async () => {
+		for (const gate of pendingChats) gate.resolve();
+		pendingChats.length = 0;
+	});
 	if (root !== null) {
 		await act(async () => root!.unmount());
 		root = null;
@@ -125,7 +130,7 @@ afterEach(async () => {
 	globalThis.fetch = realFetch;
 });
 
-const mount = async (onChat: (n: AppNote) => void) => {
+const mount = async (onChat: (n: AppNote) => Promise<void>) => {
 	root = createRoot(container);
 	await act(async () => {
 		root!.render(
@@ -163,7 +168,9 @@ const alertText = (): string | null =>
 describe("NoteView chat preparation", () => {
 	test("a flushAndWait rejection surfaces inline — no mint, buffer stays, button frees", async () => {
 		const chats: AppNote[] = [];
-		await mount((n) => chats.push(n));
+		await mount(async (n) => {
+			chats.push(n);
+		});
 		await editBody("milkx");
 		const ed = milkdowns[0]!;
 		const origAction = ed.action.bind(ed);
@@ -188,7 +195,7 @@ describe("NoteView chat preparation", () => {
 
 	test("a throwing onChat surfaces inline — the flush save landed, buffer untouched", async () => {
 		let calls = 0;
-		await mount(() => {
+		await mount(async () => {
 			calls += 1;
 			throw new Error("injected mint failure");
 		});
@@ -201,5 +208,47 @@ describe("NoteView chat preparation", () => {
 		expect(alertText()).toContain("Couldn't prepare this note for chat: injected mint failure");
 		expect(container.querySelector(".ProseMirror")!.textContent).toContain("milkx");
 		expect(btn.disabled).toBe(false);
+	});
+
+	test("chat stays busy through asynchronous minting and ignores duplicate clicks", async () => {
+		const gate = Promise.withResolvers<void>();
+		pendingChats.push(gate);
+		let calls = 0;
+		await mount(async () => {
+			calls += 1;
+			await gate.promise;
+		});
+		const btn = chatButton();
+		await click(btn);
+		expect(calls).toBe(1);
+		expect(btn.disabled).toBe(true);
+		await click(btn);
+		expect(calls).toBe(1);
+		expect(btn.disabled).toBe(true);
+
+		await act(async () => gate.resolve());
+		await settle();
+		expect(btn.disabled).toBe(false);
+	});
+
+	test("an asynchronous mint failure surfaces inline and releases the busy guard", async () => {
+		const gate = Promise.withResolvers<void>();
+		pendingChats.push(gate);
+		let calls = 0;
+		await mount(async () => {
+			calls += 1;
+			if (calls === 1) await gate.promise;
+		});
+		const btn = chatButton();
+		await click(btn);
+		expect(btn.disabled).toBe(true);
+		await act(async () => gate.reject(new Error("mint acknowledgement failed")));
+		await settle();
+		expect(alertText()).toContain(
+			"Couldn't prepare this note for chat: mint acknowledgement failed",
+		);
+		expect(btn.disabled).toBe(false);
+		await click(btn);
+		expect(calls).toBe(2);
 	});
 });

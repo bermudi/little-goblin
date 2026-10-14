@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import {
-	ApiError,
 	forgetMemoryDocument,
 	getMemoryDocument,
 	getMemoryStatus,
 	listMemoryDocuments,
 } from "./api.ts";
+import { describe } from "./opsShared.tsx";
 import type {
 	MemoryDocDetailResponse,
 	MemoryDocListItem,
@@ -29,10 +29,6 @@ function relTime(iso: string | null): string {
 		hour: "2-digit",
 		minute: "2-digit",
 	});
-}
-
-function describe(err: unknown): string {
-	return err instanceof ApiError ? err.message : "Couldn't reach goblin — check the tailnet.";
 }
 
 function StatusCard({ status }: { status: MemoryStatusResponse }) {

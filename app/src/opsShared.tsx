@@ -28,6 +28,12 @@ export function uptime(sec: number): string {
 	return `${Math.floor(sec / 86400)}d ${Math.floor((sec % 86400) / 3600)}h`;
 }
 
+export function bytes(n: number): string {
+	if (n < 1024) return `${n} B`;
+	if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+	return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function KV({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
 	return (
 		<div className="kv">

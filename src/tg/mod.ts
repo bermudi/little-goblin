@@ -44,6 +44,7 @@ import {
 	GUEST_REFUSAL,
 	handleGuestUpdate,
 	openGuestStore,
+	refusalDue,
 	routeMemberGuestMessage,
 } from "./guest.ts";
 import { MAIL_CALLBACK_RE, type MailApproval } from "./mail-approval.ts";
@@ -180,9 +181,12 @@ export function accessGate(configRef: { current: Config }) {
 				// A stranger DM is a summons: the fixed refusal line is its
 				// whole answer. A failed send never kills the poller.
 				log.info("stranger refused — bot dm", { userId: id });
-				await withTimeout(ctx.api.sendMessage(id, GUEST_REFUSAL), "sendMessage (refusal)")
-					.then(() => undefined)
-					.catch((err: unknown) => log.warn("stranger refusal failed", err, { userId: id }));
+				if (refusalDue(id))
+					await withTimeout(ctx.api.sendMessage(id, GUEST_REFUSAL), "sendMessage (refusal)")
+						.then(() => undefined)
+						.catch((err: unknown) =>
+							log.warn("stranger refusal failed", err, { userId: id }),
+						);
 				return;
 			}
 			await next();
@@ -671,8 +675,10 @@ function dmClass(cfg: Config, chatId: number): "personal" | "guest" | null {
 }
 
 // The one refusal line, fire-and-forget — a failed send never kills
-// the lane's work.
+// the lane's work. The latch bounds it: one send per stranger chat per
+// window, however many messages drive the refusal.
 function refuseStranger(api: Api, chatId: number): void {
+	if (!refusalDue(chatId)) return;
 	void withTimeout(api.sendMessage(chatId, GUEST_REFUSAL), "sendMessage (refusal)").catch(
 		(err: unknown) => log.warn("stranger refusal failed", err, { userId: chatId }),
 	);

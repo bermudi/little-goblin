@@ -31,6 +31,8 @@ import {
 	handleGuestUpdate,
 	mentionsBot,
 	openGuestStore,
+	refusalDue,
+	resetRefusalLatchForTests,
 	routeMemberGuestMessage,
 	summonMessage,
 } from "./guest.ts";
@@ -45,6 +47,7 @@ function tmpdb(): string {
 }
 afterEach(() => {
 	for (const d of dirs) rmSync(d, { recursive: true, force: true });
+	resetRefusalLatchForTests();
 });
 
 const baseConfig = (over: Partial<Config> = {}): Config =>
@@ -863,6 +866,23 @@ describe("routeMemberGuestMessage", () => {
 		expect(submitted.length).toBe(0);
 		expect(api.sends).toHaveLength(1);
 		expect(api.sends[0]?.text).toBe(GUEST_REFUSAL);
+	});
+	test("repeat stranger mentions in one window send one refusal", async () => {
+		const { env, submitted, api } = makeEnv();
+		expect(await routeMemberGuestMessage(env, memberMsg({}), 24)).toBe(true);
+		expect(await routeMemberGuestMessage(env, memberMsg({}), 25)).toBe(true);
+		expect(submitted.length).toBe(0);
+		expect(api.sends).toHaveLength(1);
+		expect(api.sends[0]?.text).toBe(GUEST_REFUSAL);
+		// A different stranger chat is not latched by the first.
+		expect(
+			await routeMemberGuestMessage(
+				env,
+				memberMsg({ chat: { id: -200, type: "supergroup" } as never }),
+				26,
+			),
+		).toBe(true);
+		expect(api.sends).toHaveLength(2);
 	});
 	test("a bare operator command is ordinary intake, not guest machinery", async () => {
 		const { env } = makeEnv();

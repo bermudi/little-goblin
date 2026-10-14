@@ -9,7 +9,7 @@ import {
 	conversationAddress,
 	SHARED_CHAT_NOTE,
 } from "./mod.ts";
-import { GUEST_REFUSAL } from "./guest.ts";
+import { GUEST_REFUSAL, resetRefusalLatchForTests } from "./guest.ts";
 import { COMMANDS, DM_COMMANDS } from "./commands.ts";
 
 const baseConfig: Config = {
@@ -222,6 +222,7 @@ function tmpdb(): string {
 afterEach(() => {
 	for (const d of intakeDirs) rmSync(d, { recursive: true, force: true });
 	intakeDirs = [];
+	resetRefusalLatchForTests();
 });
 
 function tgMsg(p: Record<string, unknown>): Message {
@@ -426,6 +427,24 @@ describe("handleMessage", () => {
 		]);
 		// Tombstoned, not pending — boot replay doesn't retry the drop.
 		expect(h.env.inbox.pending().filter((e) => e.payload.conversationId === "dm:2")).toEqual([]);
+	});
+
+	test("a promotion to operator clears the guest lane's class-forced exclusion", async () => {
+		const h = routerHarness();
+		h.env.deps.runtime.submitPersisted = () => true;
+		// chat 2 is allowedUsers — its DM is the sandbox lane: persona
+		// guest, off the record.
+		await flushTest(h.env, "dm:2", [{ parts: [{ type: "text", text: "hi" }], chatId: 2 }]);
+		const lane = h.store.currentDm(2)!;
+		expect(h.store.get(lane.id)?.persona).toBe("guest");
+		expect(h.store.get(lane.id)?.memoryExcluded).toBe(true);
+		// Promoted: chat 2 joins operators — the same lane turns personal
+		// and must not keep the sandbox's off-the-record stamp.
+		h.env.deps.configRef.current = { ...baseConfig, operators: [1, 2] };
+		await flushTest(h.env, "dm:2", [{ parts: [{ type: "text", text: "now" }], chatId: 2 }]);
+		expect(h.store.get(lane.id)?.persona).toBe("personal");
+		expect(h.store.get(lane.id)?.memoryExcluded).toBe(false);
+		h.store.close();
 	});
 
 	test("a demotion landing mid-follow-up-check still drops the batch at commit", async () => {

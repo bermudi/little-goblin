@@ -84,15 +84,20 @@ function installProposal(deps: SkillApprovalDeps, skill: string): InstallOutcome
 	let proposedStats;
 	try {
 		proposedStats = lstatSync(proposed);
-	} catch {
+	} catch (err) {
+		// ENOENT alone means gone — an EACCES/EMFILE is not a tap on a
+		// decided proposal and must not answer as one.
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 		return { ok: false, reason: "gone" };
 	}
 	if (proposedStats.isSymbolicLink()) return { ok: false, reason: "proposal dir is a symlink" };
 	let targetStats;
 	try {
 		targetStats = lstatSync(target);
-	} catch {
-		// Live copy not there at all — plain move.
+	} catch (err) {
+		// Live copy not there at all — plain move. Anything but ENOENT
+		// (an unreadable skills dir) is not "not there" — propagate.
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 	}
 	if (targetStats?.isSymbolicLink()) return { ok: false, reason: "live skill is a symlink" };
 	mkdirSync(deps.skillsDir, { recursive: true });
@@ -128,7 +133,8 @@ function discardProposal(deps: SkillApprovalDeps, skill: string): { ok: boolean;
 	let stats;
 	try {
 		stats = lstatSync(proposed);
-	} catch {
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 		return { ok: false, reason: "gone" };
 	}
 	if (stats.isSymbolicLink()) return { ok: false, reason: "proposal dir is a symlink" };

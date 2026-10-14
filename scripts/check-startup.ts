@@ -13,6 +13,9 @@ const journalSchema = z.object({
 	_SYSTEMD_INVOCATION_ID: z.string(),
 	__MONOTONIC_TIMESTAMP: z.string().regex(/^\d+$/),
 	__REALTIME_TIMESTAMP: z.string().regex(/^\d+$/),
+	// The entry's opaque journal cursor — carried so the next poll can
+	// resume after it instead of re-reading the whole invocation.
+	__CURSOR: z.string().optional(),
 	MESSAGE: z.string(),
 });
 const lifecycleSchema = z.object({ msg: z.string() });
@@ -111,6 +114,11 @@ async function watchInvocation(
 	let current: Identity | undefined;
 	let boundPort = port === 0 ? undefined : port;
 	const seen = new Set<string>();
+	// A poll that re-read the invocation's whole journal each ~250ms would
+	// hit the output cap on a flood — the run keeps a cursor instead and
+	// each journalctl resumes after the last consumed record. Absent the
+	// field (old systemd), the poll degrades to today's full re-read.
+	let journalCursor: string | undefined;
 	while (true) {
 		remaining();
 		const observed = await identity();
@@ -139,19 +147,18 @@ async function watchInvocation(
 			)
 				throw new Error("startup invocation changed");
 			if (observed.ActiveState === "inactive") throw new Error("startup exited");
-			const raw = await run(
-				[
-					"journalctl",
-					"--user",
-					"--unit=goblin.service",
-					"--no-pager",
-					"--quiet",
-					"--output=json",
-					"--output-fields=_SYSTEMD_INVOCATION_ID,__MONOTONIC_TIMESTAMP,__REALTIME_TIMESTAMP,MESSAGE",
-					`_SYSTEMD_INVOCATION_ID=${current.InvocationID}`,
-				],
-				"startup evidence",
-			);
+			const args = [
+				"journalctl",
+				"--user",
+				"--unit=goblin.service",
+				"--no-pager",
+				"--quiet",
+				"--output=json",
+				"--output-fields=_SYSTEMD_INVOCATION_ID,__MONOTONIC_TIMESTAMP,__REALTIME_TIMESTAMP,__CURSOR,MESSAGE",
+				`_SYSTEMD_INVOCATION_ID=${current.InvocationID}`,
+			];
+			if (journalCursor !== undefined) args.push(`--after-cursor=${journalCursor}`);
+			const raw = await run(args, "startup evidence");
 			for (const line of raw.split("\n").filter(Boolean)) {
 				let value: unknown;
 				try {
@@ -161,6 +168,8 @@ async function watchInvocation(
 				}
 				const record = journalSchema.safeParse(value);
 				if (!record.success) throw new Error("startup evidence: invalid record");
+				// Consumed either way — the filters below are idempotent.
+				if (record.data.__CURSOR !== undefined) journalCursor = record.data.__CURSOR;
 				if (
 					record.data._SYSTEMD_INVOCATION_ID !== current.InvocationID ||
 					Number(record.data.__MONOTONIC_TIMESTAMP) < current.ExecMainStartTimestampMonotonic ||

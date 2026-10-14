@@ -25,7 +25,10 @@ out="$dir/goblin-$stamp.sqlite"
 # truncates an existing target — a lost snapshot must be loud, not silent.
 [[ -e $out ]] &&
 	{ echo "backup-state: $out already exists — refusing to overwrite" >&2; exit 1; }
-sqlite3 "$db" ".backup '$out'"
+# Dot-command arguments are parsed by sqlite3's own tokenizer, not SQL —
+# an apostrophe in GOBLIN_HOME would end the quote early. Keep the target
+# stamp-shaped (no quoting possible) by running it relative inside $dir.
+(cd "$dir" && sqlite3 "$db" ".backup '$(basename "$out")'")
 [[ $(sqlite3 "$out" "PRAGMA quick_check(1)") == ok ]] ||
 	{ echo "backup-state: $out failed quick_check" >&2; exit 1; }
 # The config is the snapshot's other half — a plain file, safe to copy.

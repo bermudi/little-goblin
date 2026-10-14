@@ -157,9 +157,9 @@ export function nextFire(cron: string, from: Date): Date {
 // stepping forward must overshoot `through` (a spring-forward hour prev
 // skipped fails there). Only when verification declines does the walk
 // run — the common case costs three expression steps. The walk itself
-// is capped: on truncation the last walked occurrence stands, which
-// under-measures lateness and so degrades toward a lateness-grace
-// skip, never toward a stale fire.
+// is capped: on truncation the last walked occurrence stands — earlier
+// than the true latest, so lateness is over-measured and the result
+// degrades toward a lateness-grace skip, never toward a stale fire.
 //
 // Every probe is a fresh parse. Sharing one `fields` object across
 // calls is unsafe: the expression carries iterator state, and a
@@ -208,7 +208,7 @@ export function latestFireAtOrBefore(cron: string, firstMissed: Date, through: D
 		const nextMs = next.getTime();
 		if (nextMs > through.getTime()) return new Date(latest);
 		if (steps >= MAX_CATCHUP_STEPS) {
-			log.warn("schedule catch-up walk truncated — lateness under-measured", {
+			log.warn("schedule catch-up walk truncated — lateness over-measured", {
 				cron,
 				firstMissed: firstMissed.toISOString(),
 				steps,

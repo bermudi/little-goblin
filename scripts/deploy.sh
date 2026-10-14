@@ -132,14 +132,16 @@ if ! bun scripts/check-startup.ts --watch 0 75000 >&2; then
 	fail "goblin failed startup acceptance after restart"
 fi
 sleep 3
-journal="$(journalctl --user -u goblin --since "@$restart_epoch" --no-pager)"
-# grep's 1 means no error lines, not a failed journal read.
-# Deliberate tolerance: error-level lines are reported, not fatal — a
-# long-lived agent logs nonfatal subsystem errors without stopping the
-# unit. The hard gates are the startup-acceptance probe above and the
+# The journal read and the grep are reported, not fatal — a rotation
+# race or a grep miss must not abort between the restart and the marker
+# write. The hard gates are the startup-acceptance probe above and the
 # memory probe below; this print exists so a recurring boot error ships
 # visibly with the deploy that introduced it.
-errors="$(printf '%s\n' "$journal" | grep '"level":"error"' || [ "$?" -eq 1 ])"
+if ! journal="$(journalctl --user -u goblin --since "@$restart_epoch" --no-pager)"; then
+	journal=""
+	echo "deploy: WARNING — could not read the fresh journal; error scan skipped" >&2
+fi
+errors="$(printf '%s\n' "$journal" | grep '"level":"error"' || true)"
 if [ -n "$errors" ]; then
 	echo "deploy: WARNING — error lines in the fresh journal:" >&2
 	printf '%s\n' "$errors" | tail -5 >&2
@@ -180,5 +182,5 @@ sync "$marker_dir" || fail "cannot flush deployment marker directory — the ren
 step "done: g7 @ ${new_rev:0:7}"
 if [ -n "$old_rev" ]; then
 	printf -v rollback_marker '%q' "$marker"
-	step "rollback: git reset --hard $old_rev && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin && echo $old_rev > $rollback_marker"
+	step "rollback: git reset --hard $old_rev && bun install --frozen-lockfile && bun run app:build && systemctl --user restart goblin && echo $old_rev > $rollback_marker && sync $rollback_marker"
 fi

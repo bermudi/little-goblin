@@ -82,6 +82,8 @@ export const GUEST_REFUSAL = "🚫 I only talk to my operator and approved users
 // One outbound refusal per stranger chat per window. The line is the
 // whole answer to a summons — without the latch a hostile stranger
 // drives 1:1 sends against the bot's global quota at zero cost.
+// Process-scoped like the recentReplies ring: a restart resets every
+// window, so a stranger re-summoning after boot earns one more line.
 const REFUSAL_LATCH_MS = 10 * 60_000;
 const refusalLatch = new Map<number, number>();
 

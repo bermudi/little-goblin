@@ -757,10 +757,13 @@ export async function driveStream<M extends WireMember>(
 		if (!holdForRecovery) {
 			emitChunk(convId, members, live, chunk);
 		}
-		// The step's provider call is spent on its first payload part —
-		// or on a clean finish-step, since an empty step was still a
-		// served request. An error part never spends it: it fails the
-		// step having produced nothing (see pendingStep).
+		// The step's provider call is spent on its first non-error
+		// chunk — a clean finish-step included, since an empty step was
+		// still a served request. A blacklist, not a payload whitelist,
+		// on purpose: modelCalls gates the scheduler's retry ladder, so
+		// an unrecognized chunk type must fail closed (no retry on a
+		// turn that may have produced output), never open. An error
+		// part never spends (see pendingStep).
 		if (pendingStep && chunk.type !== "error") {
 			state.noteStep();
 			pendingStep = false;

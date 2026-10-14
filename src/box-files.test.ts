@@ -6,10 +6,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	symlinkSync,
 	truncateSync,
 	writeFileSync,
@@ -22,6 +24,7 @@ import {
 	exportNamedBytes,
 	resolveExport,
 	resolveImport,
+	writeExportBytes,
 } from "./box-files.ts";
 
 const dirs: string[] = [];
@@ -172,5 +175,54 @@ describe("exportNamedBytes", () => {
 		expect("rel" in a && a.rel).toBe(join("subagents", "7", "result.txt"));
 		expect("rel" in b && b.rel).toBe(join("subagents", "7", "result.txt"));
 		expect(readFileSync(join(workspace, "subagents", "7", "result.txt"))[0]).toBe(2);
+	});
+});
+
+// writeExportBytes is the resolve+write step callers holding bytes
+// across an await must use: containment is re-derived at write time and
+// the destination's real parent is pinned to an open FD, so an ancestor
+// swapped out from under the path cannot steer the write.
+describe("writeExportBytes", () => {
+	test("writes exact destinations, overwriting in place and keeping the existing mode", () => {
+		const { workspace } = ws();
+		writeFileSync(join(workspace, "out.txt"), "old", { mode: 0o600 });
+		const out = writeExportBytes(workspace, "out.txt", new Uint8Array([9, 9]));
+		expect("path" in out && out.path.endsWith("out.txt")).toBe(true);
+		expect(readFileSync(join(workspace, "out.txt"))).toEqual(Buffer.from([9, 9]));
+		expect(statSync(join(workspace, "out.txt")).mode & 0o777).toBe(0o600);
+	});
+
+	test("a contained leaf symlink is still written through via the pinned parent", () => {
+		const { workspace } = ws();
+		mkdirSync(join(workspace, "other"));
+		writeFileSync(join(workspace, "other", "real.txt"), "old");
+		symlinkSync(join("other", "real.txt"), join(workspace, "link.txt"));
+		const out = writeExportBytes(workspace, "link.txt", new Uint8Array([5]));
+		expect("path" in out && out.path.endsWith("real.txt")).toBe(true);
+		expect(lstatSync(join(workspace, "link.txt")).isSymbolicLink()).toBe(true);
+		expect(readFileSync(join(workspace, "other", "real.txt"))[0]).toBe(5);
+	});
+
+	test("a parent dir replaced by an outside symlink is refused and the outside is untouched", () => {
+		const { dir, workspace } = ws();
+		mkdirSync(join(workspace, "sub"));
+		writeFileSync(join(dir, "keep.txt"), "untouched");
+		// The destination resolved while `sub` was a real dir — then the
+		// ancestor was swapped for an outside link before the write.
+		rmSync(join(workspace, "sub"), { recursive: true });
+		symlinkSync(dir, join(workspace, "sub"));
+		const out = writeExportBytes(workspace, join("sub", "keep.txt"), new Uint8Array([7]));
+		expect("error" in out).toBe(true);
+		expect(readFileSync(join(dir, "keep.txt"), "utf8")).toBe("untouched");
+		expect(existsSync(join(dir, "sub"))).toBe(false);
+	});
+
+	test("a dangling leaf symlink is refused, and over-cap data never resolves", () => {
+		const { workspace } = ws();
+		symlinkSync(join(workspace, "gone.txt"), join(workspace, "dangling.txt"));
+		const dangle = writeExportBytes(workspace, "dangling.txt", new Uint8Array([1]));
+		expect("error" in dangle && dangle.error).toContain("dangling symlink");
+		const big = writeExportBytes(workspace, "big.bin", new Uint8Array(BOX_FILE_MAX_BYTES + 1));
+		expect("error" in big && big.error).toContain("MiB cap");
 	});
 });

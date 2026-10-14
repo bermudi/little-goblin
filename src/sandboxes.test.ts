@@ -11,7 +11,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sandboxConfigSchema, type SandboxConfig } from "./config.ts";
-import { makePodman, type PodmanExecOpts } from "./podman.ts";
+import { makePodman, type Podman, type PodmanExecOpts } from "./podman.ts";
 import type { BoundedProc, BoundedProcBytes } from "./proc.ts";
 import { containerNameFor, makeSandboxes, openSandboxes } from "./sandboxes.ts";
 
@@ -823,5 +823,127 @@ describe("output-capped execs restart the sandbox", () => {
 		};
 		const out = await sandboxes.execBytesArgv(conv, ["cat", "big.bin"], execOpts);
 		expectRestarted(engine, name, out.note, notes);
+	});
+});
+
+// Cancellation: a signal that lands while a call is parked — inside a
+// deferred preflight or queued on the conversation lane — must stop the
+// call before any mutation dispatches, not after.
+describe("aborted lifecycle calls never start a mutation", () => {
+	function seeded(conv: string) {
+		const name = containerNameFor(conv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name }] });
+		const rigged = rig(engine);
+		rigged.store.put({
+			conversationId: conv,
+			container: name,
+			image: IMAGE,
+			network: false,
+			createdAt: 1,
+			lastUsedAt: 1,
+		});
+		engine.containers.get(name)!.files.set("/work/keep.txt", new TextEncoder().encode("k"));
+		return { engine, ...rigged, name };
+	}
+
+	const until = async (cond: () => boolean): Promise<void> => {
+		for (let i = 0; i < 200 && !cond(); i++) {
+			await new Promise((r) => setImmediate(r));
+		}
+	};
+
+	// A podman read parked on a gate: `entered` flips when the op
+	// reaches it, `release()` lets it complete.
+	function hold(
+		podman: Podman,
+		method: "inspect" | "imageExists",
+	): { entered: () => boolean; release: () => void } {
+		let entered = false;
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		if (method === "inspect") {
+			const orig = podman.inspect.bind(podman);
+			podman.inspect = async (n, c) => {
+				entered = true;
+				await gate;
+				return orig(n, c);
+			};
+		} else {
+			const orig = podman.imageExists.bind(podman);
+			podman.imageExists = async (ref, c) => {
+				entered = true;
+				await gate;
+				return orig(ref, c);
+			};
+		}
+		return { entered: () => entered, release };
+	}
+
+	test("reset aborted inside a deferred preflight never rms or recreates", async () => {
+		const conv = "dm:abort-preflight";
+		const { engine, sandboxes, store, name } = seeded(conv);
+		const gate = hold(engine.podman, "imageExists");
+		const ctl = new AbortController();
+		const pending = sandboxes.reset(conv, undefined, { abortSignal: ctl.signal });
+		await until(gate.entered);
+		ctl.abort();
+		gate.release();
+		await expect(pending).rejects.toThrow();
+		expect(engine.calls.some((a) => a[0] === "rm")).toBe(false);
+		expect(engine.calls.some((a) => a[0] === "run")).toBe(false);
+		expect(engine.containers.get(name)!.files.has("/work/keep.txt")).toBe(true);
+		expect(store.get(conv)!.container).toBe(name);
+	});
+
+	test("reset aborted while parked behind the lane never rms or recreates", async () => {
+		const conv = "dm:abort-lane";
+		const { engine, sandboxes, store, name } = seeded(conv);
+		// Park a network toggle inside the lane; the reset queues behind it.
+		const gate = hold(engine.podman, "inspect");
+		const first = sandboxes.setNetwork(conv, true);
+		await until(gate.entered);
+		const ctl = new AbortController();
+		const pending = sandboxes.reset(conv, undefined, { abortSignal: ctl.signal });
+		await new Promise((r) => setImmediate(r));
+		ctl.abort();
+		gate.release();
+		await expect(pending).rejects.toThrow();
+		await first;
+		expect(engine.calls.some((a) => a[0] === "rm")).toBe(false);
+		expect(engine.calls.some((a) => a[0] === "run")).toBe(false);
+		expect(engine.containers.get(name)!.files.has("/work/keep.txt")).toBe(true);
+	});
+
+	test("setNetwork aborted mid-reconcile never connects or disconnects", async () => {
+		const conv = "dm:abort-net";
+		const { engine, sandboxes, store, name } = seeded(conv);
+		const gate = hold(engine.podman, "inspect");
+		const ctl = new AbortController();
+		const pending = sandboxes.setNetwork(conv, true, { abortSignal: ctl.signal });
+		await until(gate.entered);
+		ctl.abort();
+		gate.release();
+		await expect(pending).rejects.toThrow();
+		expect(
+			engine.calls.some((a) => a[0] === "network" && (a[1] === "connect" || a[1] === "disconnect")),
+		).toBe(false);
+		expect(engine.containers.get(name)!.networks.size).toBe(0);
+		expect(store.get(conv)!.network).toBe(false);
+	});
+
+	test("cpIn aborted while parked behind the lane never copies", async () => {
+		const conv = "dm:abort-import";
+		const { engine, sandboxes } = seeded(conv);
+		const gate = hold(engine.podman, "inspect");
+		const first = sandboxes.setNetwork(conv, true);
+		await until(gate.entered);
+		const ctl = new AbortController();
+		const pending = sandboxes.cpIn(conv, "/tmp/nope", "/work/x", { abortSignal: ctl.signal });
+		await new Promise((r) => setImmediate(r));
+		ctl.abort();
+		gate.release();
+		await expect(pending).rejects.toThrow();
+		await first;
+		expect(engine.calls.some((a) => a[0] === "cp")).toBe(false);
 	});
 });

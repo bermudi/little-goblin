@@ -8,6 +8,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
 	existsSync,
 	lstatSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
@@ -225,6 +226,43 @@ describe("sandbox tool — export containment", () => {
 		expect(out.error).toBeUndefined();
 		expect(lstatSync(join(ws, "link.txt")).isSymbolicLink()).toBe(true);
 		expect(readFileSync(join(ws, "real.txt"), "utf8")).toBe("sandbox-file-bytes");
+	});
+
+	// The destination was resolved before the container read — an
+	// ancestor swapped for an outside symlink while the read is held
+	// must not steer the write outside.
+	test("an ancestor swapped to an outside symlink mid-read is refused at write time", async () => {
+		const ws = workspace();
+		mkdirSync(join(ws, "sub"));
+		const outsideDir = mkdtempSync(join(tmpdir(), "goblin-sbx-ext-"));
+		dirs.push(outsideDir);
+		const recorded = { cpIn: [] as string[][], catFile: [] as string[] };
+		let release!: () => void;
+		const gate = new Promise<void>((r) => (release = r));
+		const deps: SandboxToolDeps = {
+			conversation: "dm:test",
+			workspace: ws,
+			sandboxes: {
+				...fakeSandboxes(recorded),
+				catFile: async (_conv, path) => {
+					recorded.catFile.push(path);
+					await gate;
+					return { data: new TextEncoder().encode("sandbox-file-bytes") };
+				},
+			},
+		};
+		const out = sandboxTool(deps).execute!(
+			{ action: "export", from: "/work/result.bin", to: "sub/result.bin" },
+			opts,
+		);
+		await new Promise((r) => setImmediate(r));
+		expect(recorded.catFile).toEqual(["/work/result.bin"]);
+		rmSync(join(ws, "sub"), { recursive: true });
+		symlinkSync(outsideDir, join(ws, "sub"));
+		release();
+		const res = (await out) as Record<string, unknown>;
+		expect(String(res.error)).toContain("outside the workspace");
+		expect(existsSync(join(outsideDir, "result.bin"))).toBe(false);
 	});
 
 	test("an export cancelled while the container read is pending never writes the host file", async () => {

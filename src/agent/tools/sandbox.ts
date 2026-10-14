@@ -10,9 +10,8 @@ import { tool } from "ai";
 import { realpathSync } from "node:fs";
 import { basename, join, resolve, sep } from "node:path";
 import { z } from "zod";
-import { resolveExport } from "../../box-files.ts";
+import { resolveExport, writeExportBytes } from "../../box-files.ts";
 import { imageRefSchema } from "../../config.ts";
-import { durableWriteBytes } from "../../durable.ts";
 import { PodmanError } from "../../podman.ts";
 import { SandboxError, type Sandboxes } from "../../sandboxes.ts";
 import { resolvePath } from "./paths.ts";
@@ -89,6 +88,9 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 		inputSchema: sandboxInputSchema,
 		execute: async (raw, { abortSignal }) => {
 			const input = actionSchema.parse(raw);
+			// Every action is a mutation or an engine read past this point —
+			// a dead call never starts one.
+			abortSignal?.throwIfAborted();
 			const conv = deps.conversation;
 			try {
 				switch (input.action) {
@@ -136,23 +138,33 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 								error: `import refused: ${input.from} resolves to ${real}, outside the workspace — copy it into the workspace first if this is deliberate`,
 							};
 						}
-						const { note } = await deps.sandboxes.cpIn(conv, real, input.to);
+						const { note } = await deps.sandboxes.cpIn(conv, real, input.to, {
+							...(abortSignal ? { abortSignal } : {}),
+						});
 						return { imported: input.to, ...(note !== undefined ? { note } : {}) };
 					}
 					case "export": {
 						const rel = input.to ?? join("sandbox-out", basename(input.from));
 						// box-files owns the containment checks; unlike its export
 						// helpers, the sandbox writes the exact destination,
-						// overwriting in place rather than numbering.
-						const dest = resolveExport(deps.workspace, rel);
-						if ("error" in dest) return { error: dest.error };
-						const { data, note } = await deps.sandboxes.catFile(conv, input.from);
+						// overwriting in place rather than numbering. The early
+						// resolve refuses bad destinations before paying the
+						// container read.
+						const early = resolveExport(deps.workspace, rel);
+						if ("error" in early) return { error: early.error };
+						const { data, note } = await deps.sandboxes.catFile(conv, input.from, {
+							...(abortSignal ? { abortSignal } : {}),
+						});
 						// The wait above is a cancellation gap: recheck before
 						// the host write so a call cancelled mid-read (or a nested
 						// export the script VM killed) never overwrites a
 						// workspace file.
 						abortSignal?.throwIfAborted();
-						durableWriteBytes(dest.path, data);
+						// The resolved path is stale after the read — the write
+						// re-derives containment and pins the parent dir FD so a
+						// swapped ancestor can't redirect it.
+						const written = writeExportBytes(deps.workspace, rel, data);
+						if ("error" in written) return { error: written.error };
 						return {
 							exported: rel,
 							bytes: data.byteLength,
@@ -160,7 +172,9 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 						};
 					}
 					case "network": {
-						const { note } = await deps.sandboxes.setNetwork(conv, input.enabled);
+						const { note } = await deps.sandboxes.setNetwork(conv, input.enabled, {
+							...(abortSignal ? { abortSignal } : {}),
+						});
 						return {
 							enabled: input.enabled,
 							...(input.enabled
@@ -173,7 +187,9 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 						};
 					}
 					case "reset": {
-						const { note } = await deps.sandboxes.reset(conv, input.image);
+						const { note } = await deps.sandboxes.reset(conv, input.image, {
+							...(abortSignal ? { abortSignal } : {}),
+						});
 						return { reset: true, ...(note !== undefined ? { note } : {}) };
 					}
 				}

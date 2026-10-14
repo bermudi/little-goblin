@@ -5,7 +5,16 @@
 // ancestors and leaf can't aim the write outside. Host reads/writes
 // are deliberate acts — these are the only gates.
 
-import { existsSync, lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import {
+	closeSync,
+	constants,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	openSync,
+	realpathSync,
+	statSync,
+} from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { durableWriteBytes } from "./durable.ts";
 import { writeThroughTarget } from "./agent/tools/paths.ts";
@@ -129,6 +138,58 @@ export function resolveExport(workspace: string, rel: string): BoxPathResult {
 	return { path: through.target };
 }
 
+/** Resolve-and-write in one step, for callers holding bytes across an
+ *  await (the sandbox's container read). Containment is derived at
+ *  write time and the destination's real parent dir is pinned to an
+ *  open FD, so an ancestor swapped for an outside symlink while the
+ *  read was in flight can't aim the write anywhere — revalidating a
+ *  stale path would only narrow that window, not close it. The durable
+ *  write's tmp/rename/fsync run through `/proc/self/fd/<fd>` and land
+ *  in the pinned directory even if its path is moved mid-write; leaf
+ *  write-through and mode preservation are unchanged. */
+export function writeExportBytes(
+	workspace: string,
+	rel: string,
+	data: Uint8Array,
+): { path: string } | { error: string } {
+	if (data.byteLength > BOX_FILE_MAX_BYTES) {
+		return {
+			error: `refused: export exceeds the ${BOX_FILE_MAX_BYTES / (1024 * 1024)} MiB cap`,
+		};
+	}
+	const dest = resolveExport(workspace, rel);
+	if ("error" in dest) return dest;
+	const wsReal = realpathSync(workspace);
+	const parent = dirname(dest.path);
+	// O_NOFOLLOW: the parent's final component must be the real dir the
+	// resolver saw — a swap to a symlink is a containment verdict, and
+	// the fd realpath below proves where the FD actually landed.
+	let fd: number;
+	try {
+		fd = openSync(parent, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP") {
+			return {
+				error: `refused: ${rel}'s directory is no longer a contained directory (${code})`,
+			};
+		}
+		throw err;
+	}
+	try {
+		const realParent = realpathSync(`/proc/self/fd/${fd}`);
+		if (!inside(wsReal, realParent)) {
+			return {
+				error: `refused: ${rel} resolves into ${realParent}, outside the workspace`,
+			};
+		}
+		durableWriteBytes(join(`/proc/self/fd/${fd}`, basename(dest.path)), data);
+		return { path: dest.path };
+	} finally {
+		closeSync(fd);
+	}
+}
+
 /** Write exported bytes under `<relDir>/<numbered basename>` inside the
  *  workspace; returns the workspace-relative path actually used. */
 export function exportBytes(
@@ -147,9 +208,8 @@ export function exportBytes(
 	const dir = resolveExportDir(workspace, relDir);
 	if ("error" in dir) return dir;
 	const base = numberedName(dir.path, basename(sourceBaseName));
-	const dest = resolveExport(workspace, join(relDir, base));
-	if ("error" in dest) return dest;
-	durableWriteBytes(dest.path, data);
+	const written = writeExportBytes(workspace, join(relDir, base), data);
+	if ("error" in written) return written;
 	return { rel: join(relDir, base) };
 }
 
@@ -168,8 +228,8 @@ export function exportNamedBytes(
 			error: `refused: export exceeds the ${BOX_FILE_MAX_BYTES / (1024 * 1024)} MiB cap`,
 		};
 	}
-	const dest = resolveExport(workspace, join(relDir, basename(name)));
-	if ("error" in dest) return dest;
-	durableWriteBytes(dest.path, data);
-	return { rel: join(relDir, basename(name)) };
+	const rel = join(relDir, basename(name));
+	const written = writeExportBytes(workspace, rel, data);
+	if ("error" in written) return written;
+	return { rel };
 }

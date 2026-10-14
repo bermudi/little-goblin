@@ -146,7 +146,13 @@ tool already makes. Flat schema, per-action contract enforced inside
   host write anywhere. Written tmp + fsync + rename; capped (100 MiB);
   non-regular files (directories, symlinks, devices) are refused outright
   rather than tarred — the safe subset ships, the tar path was never
-  built.
+  built. The destination is resolved once before the read (a bad path
+  refuses early), then re-derived at write time by
+  `box-files.writeExportBytes`, which pins the real parent to a
+  directory FD (`O_DIRECTORY|O_NOFOLLOW`, verified against the
+  realpath'd workspace via `/proc/self/fd/<fd>`) — a host path resolved
+  before the container await is stale, and an ancestor swapped for an
+  outside symlink while the read was in flight must not aim the write.
 - `network` — `enabled: boolean`; connect/disconnect, row updated, state
   verified by inspect. Fail closed: a sandbox whose network state can't be
   confirmed off when off is intended is removed, not used.
@@ -155,6 +161,15 @@ tool already makes. Flat schema, per-action contract enforced inside
   verifies the target image is in the local store and the isolated
   network exists BEFORE removing the incumbent — an unavailable
   replacement never destroys the existing sandbox, its files or its row.
+
+Cancellation: `import`, `export`, `network` and `reset` take the call's
+abort signal and check it before the call, after the sweep and lane
+waits, after each preflight read, and immediately before a mutation
+dispatches — a `/stop`'d call parked behind the lane never starts a
+rm/create/connect/cp afterwards. Once a mutation has been dispatched
+its reconciliation finishes anyway (a begun `rm` still gets its
+recreate and row; a begun connect/disconnect still gets its verifying
+inspect) — an abort never leaves a half-reset or unverified state.
 
 The description says what the model needs: not the host; root inside;
 nothing here touches the operator's machine, files or services; network

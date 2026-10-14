@@ -159,19 +159,50 @@ function attachmentKind(name: string): "image" | "audio" | "video" | "other" {
 function AttachmentRow({ file, token }: { file: OperatorAttachmentItem; token: string | null }) {
 	const [url, setUrl] = useState<string | null>(null);
 	const [err, setErr] = useState<string | null>(null);
-
+	const [busy, setBusy] = useState(false);
+	// The blob URL is owned by refs, not by render state: a response
+	// landing after unmount must never mint one, and unmount revokes
+	// whatever was minted whether or not it ever rendered. seq gates
+	// late answers; fetching blocks a second click synchronously —
+	// url state lags a frame and would orphan the older fetch's URL.
+	const urlRef = useRef<string | null>(null);
+	const live = useRef(false);
+	const seq = useRef(0);
+	const fetching = useRef(false);
 	useEffect(() => {
-		if (url === null) return;
+		live.current = true;
 		return () => {
-			URL.revokeObjectURL(url);
+			live.current = false;
+			seq.current += 1;
+			fetching.current = false;
+			if (urlRef.current !== null) {
+				URL.revokeObjectURL(urlRef.current);
+				urlRef.current = null;
+			}
 		};
-	}, [url]);
+	}, []);
 
 	const open = () => {
-		if (url !== null) return;
+		if (fetching.current || urlRef.current !== null) return;
+		fetching.current = true;
+		setBusy(true);
+		setErr(null);
+		const id = ++seq.current;
 		fetchAttachment(token, file.name).then(
-			(b) => setUrl(URL.createObjectURL(b)),
-			(e) => setErr(describe(e)),
+			(b) => {
+				fetching.current = false;
+				if (!live.current || seq.current !== id) return;
+				const u = URL.createObjectURL(b);
+				urlRef.current = u;
+				setBusy(false);
+				setUrl(u);
+			},
+			(e) => {
+				fetching.current = false;
+				if (!live.current || seq.current !== id) return;
+				setBusy(false);
+				setErr(describe(e));
+			},
 		);
 	};
 
@@ -181,7 +212,7 @@ function AttachmentRow({ file, token }: { file: OperatorAttachmentItem; token: s
 			<div className="op-item-head">
 				<span className="op-item-title mono">{file.name}</span>
 				{url === null && (
-					<button type="button" className="pill" onClick={open}>
+					<button type="button" className="pill" onClick={open} disabled={busy}>
 						{kind === "other" ? "fetch file" : "preview"}
 					</button>
 				)}

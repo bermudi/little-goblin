@@ -245,6 +245,124 @@ test("non-media attachments fetch on demand and expose a download link", async (
 	expect(requests.filter((u) => u.startsWith("/api/app/attachments/file")).length).toBe(3);
 });
 
+// Held-response harness for attachment bytes: the file request parks
+// in `pending` until the test resolves it, so late arrivals relative
+// to unmount are exercisable (finding #19's leak window).
+function heldAttachmentHarness(files: { name: string; bytes: Uint8Array }[]) {
+	const pending = new Map<string, (r: Response) => void>();
+	const requests: string[] = [];
+	globalThis.fetch = Object.assign(
+		async (input: string | URL | Request) => {
+			const url = new URL(input instanceof Request ? input.url : String(input), "http://localhost");
+			if (url.pathname === "/api/app/identity") return Response.json({ files: [] });
+			if (url.pathname === "/api/app/attachments")
+				return Response.json({
+					files: files.map((f) => ({
+						name: f.name,
+						sizeBytes: f.bytes.length,
+						updatedAt: "2026-10-12T00:00:00Z",
+					})),
+				});
+			if (url.pathname === "/api/app/attachments/file") {
+				const name = url.searchParams.get("name") ?? "";
+				requests.push(name);
+				return new Promise<Response>((resolve) => pending.set(name, resolve));
+			}
+			throw new Error(`unexpected request: ${url.pathname}`);
+		},
+		{ preconnect: realFetch.preconnect },
+	);
+	return { pending, requests };
+}
+
+const blobResponse = (bytes: Uint8Array) => new Response(bytes.slice().buffer as ArrayBuffer);
+
+test("a fetch resolving after unmount mints no blob url", async () => {
+	const { pending } = heldAttachmentHarness([
+		{ name: "report.pdf", bytes: new TextEncoder().encode("PDF") },
+	]);
+	const created: string[] = [];
+	const realCreate = URL.createObjectURL;
+	URL.createObjectURL = (b: Blob) => {
+		const u = realCreate(b);
+		created.push(u);
+		return u;
+	};
+	try {
+		root = createRoot(container);
+		await act(async () => root?.render(<FilesView token={null} />));
+		const card = container.querySelector(".card")!;
+		await act(async () => cardButton(card, "fetch file")?.click());
+		expect(pending.size).toBe(1);
+		await act(async () => root?.unmount());
+		root = null;
+		// The held bytes land on a dead row — nothing may be minted.
+		await act(async () => {
+			pending.get("report.pdf")!(blobResponse(new TextEncoder().encode("PDF")));
+			await new Promise((r) => setTimeout(r, 10));
+		});
+		expect(created).toEqual([]);
+	} finally {
+		URL.createObjectURL = realCreate;
+	}
+});
+
+test("a second click while the fetch is held sends no second request", async () => {
+	const { pending, requests } = heldAttachmentHarness([
+		{ name: "pic.png", bytes: new TextEncoder().encode("PNG") },
+	]);
+	root = createRoot(container);
+	await act(async () => root?.render(<FilesView token={null} />));
+	const card = container.querySelector(".card")!;
+	await act(async () => cardButton(card, "preview")?.click());
+	await act(async () => cardButton(card, "preview")?.click());
+	expect(requests).toEqual(["pic.png"]);
+	expect(pending.size).toBe(1);
+	await act(async () => {
+		pending.get("pic.png")!(blobResponse(new TextEncoder().encode("PNG")));
+	});
+	expect(card.querySelector("img")?.getAttribute("src")?.startsWith("blob:")).toBe(true);
+});
+
+test("a failed fetch reports the error and the retry refetches", async () => {
+	const bytes = new TextEncoder().encode("PDF");
+	let fail = true;
+	const requests: string[] = [];
+	globalThis.fetch = Object.assign(
+		async (input: string | URL | Request) => {
+			const url = new URL(input instanceof Request ? input.url : String(input), "http://localhost");
+			if (url.pathname === "/api/app/identity") return Response.json({ files: [] });
+			if (url.pathname === "/api/app/attachments")
+				return Response.json({
+					files: [
+						{ name: "report.pdf", sizeBytes: bytes.length, updatedAt: "2026-10-12T00:00:00Z" },
+					],
+				});
+			if (url.pathname === "/api/app/attachments/file") {
+				requests.push(url.searchParams.get("name") ?? "");
+				if (fail) {
+					fail = false;
+					return Response.json({ error: "nope" }, { status: 500 });
+				}
+				return blobResponse(bytes);
+			}
+			throw new Error(`unexpected request: ${url.pathname}`);
+		},
+		{ preconnect: realFetch.preconnect },
+	);
+	root = createRoot(container);
+	await act(async () => root?.render(<FilesView token={null} />));
+	const card = container.querySelector(".card")!;
+	await act(async () => cardButton(card, "fetch file")?.click());
+	expect(card.querySelector(".error")?.textContent).toContain("http 500");
+	await act(async () => cardButton(card, "fetch file")?.click());
+	expect(requests).toEqual(["report.pdf", "report.pdf"]);
+	expect(card.querySelector("a.attach-download")?.getAttribute("href")?.startsWith("blob:")).toBe(
+		true,
+	);
+	expect(card.querySelector(".error")).toBeNull();
+});
+
 test("a failed fetch shows the error; the blob is revoked on unmount", async () => {
 	const files = [{ name: "report.pdf", bytes: new TextEncoder().encode("PDF") }];
 	const requests = filesHarness(files, 500);

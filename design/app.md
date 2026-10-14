@@ -199,7 +199,12 @@ raw-log dump cannot ride a wide-open query. Attachment bytes ride their
 own route with a conservative content-type map (svg deliberately
 absent — it downloads instead of rendering same-origin), a serve cap
 equal to the upload cap, and the read-back route's inert-byte headers
-(nosniff, sandbox CSP, attachment disposition for non-media). Tails:
+(nosniff, sandbox CSP, attachment disposition for non-media). Client
+side, an attachment's object URL is owned by the row's lifecycle, not
+by render state (ruling 2026-10-13, finding #19): a fetch resolving
+after unmount mints nothing, unmount revokes whatever was minted
+whether it rendered or not, and an in-flight click can't start a
+second fetch. Tails:
 `skills`, `skills/file`, `attachments`, `attachments/file`, `identity`,
 `log`; pages `/app/skills`, `/app/files`, `/app/log`. The tails mount
 on both doors like the rest of the console — `/api/app/attachments` is
@@ -225,7 +230,18 @@ an entry, using native Navigation API keys or our indexed history.
 For legacy unindexed entries or gaps in a browser without Navigation
 API, direction/distance cannot be recovered: retain the draft and show a warning,
 never overwrite history or guess a traversal direction. A dirty-only
-`beforeunload` guard covers cross-document departures.
+`beforeunload` guard covers cross-document departures. "Dirty" for all
+of these is the departure flag, not the serialized diff alone (ruling
+2026-10-13, finding #15): a provider name still sitting in its card's
+blur-commit field is draft state no serialized field can see, so each
+card reports its divergence up and the flag is `serialized dirty OR
+any pending name`, keyed by the provider's render id and discharged on
+commit, invalid/no-op restore, or card unmount. While any name is
+pending the autosave is held — a write would land everything except
+the half-typed name yet announce "Saved" — and the explicit Save
+refuses for the same reason; the savebar discloses the pending name.
+Committing a valid rename is ordinary serialized dirty: it autosaves
+and the guard clears on the ack.
 Memory pagination belongs to the loaded filter, not the
 search box's pending text, and waits for replacement loads to finish.
 The memory view is the Memories tab's browser plus status polling;

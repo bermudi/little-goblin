@@ -281,6 +281,78 @@ describe("ChatView reload window (issue #79)", () => {
 		expect(historyFetches).toBe(2);
 		expect(reconnects).toBe(1);
 	});
+	test("resuming a live reply keeps historical unclosed note cards actionable", async () => {
+		const stored: UIMessage[] = [
+			userMsg("u1", "first note"),
+			assistantMsg("a1", "```note\nsaved note"),
+			userMsg("u2", "next note"),
+		];
+		let live!: ReadableStreamDefaultController<Uint8Array>;
+		const encoder = new TextEncoder();
+		const send = (chunk: unknown) =>
+			live.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+		const stream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				live = controller;
+				send({ type: "start", messageId: "a2" });
+				send({ type: "text-start", id: "t2" });
+				send({ type: "text-delta", id: "t2", delta: "```note\nlive note" });
+			},
+		});
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages")) return jsonResponse({ messages: stored });
+				if (url.endsWith("/stream"))
+					return new Response(stream, {
+						headers: { "content-type": "text/event-stream", "x-vercel-ai-ui-message-stream": "v1" },
+					});
+				return jsonResponse({
+					model: "prov/model",
+					thinking: "off",
+					favorites: [],
+					thinkingLevels: ["off"],
+				});
+			},
+			{ preconnect: realFetch.preconnect },
+		);
+		root = createRoot(container);
+		await act(async () =>
+			root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-01"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		for (let i = 0; i < 100 && container.querySelectorAll(".note-card").length < 2; i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		const cards = [...container.querySelectorAll(".note-card")];
+		expect(cards).toHaveLength(2);
+		expect(cards[0]!.textContent).toContain("saved note");
+		expect(cards[0]!.querySelector(".note-card-append")).not.toBeNull();
+		expect(cards[1]!.textContent).toContain("live note");
+		expect(cards[1]!.querySelector(".note-card-append")).toBeNull();
+		await act(async () => {
+			send({ type: "text-end", id: "t2" });
+			send({ type: "finish" });
+			live.enqueue(encoder.encode("data: [DONE]\n\n"));
+			live.close();
+		});
+		expect(container.querySelectorAll(".note-card-append")).toHaveLength(2);
+	});
 });
 
 // The reconcile merge behind #79's fix — union by id, nothing dropped:
@@ -423,5 +495,83 @@ describe("AttachmentChip download failure", () => {
 		const err = container.querySelector(".msg-err");
 		expect(err).not.toBeNull();
 		expect(err?.textContent).toContain("http 404");
+	});
+});
+
+// The note fence's append affordance gates on the message's own
+// streaming flag, not on whether the fence closed: mid-turn the
+// unclosed fence is a prefix; once the turn settles — or the
+// transcript is reloaded, which always mounts settled — the truncated
+// body is all there is, so the affordance shows.
+describe("MessageParts note-fence affordance (happy-dom)", () => {
+	let win: Window;
+	let container: HTMLElement;
+	let root: Root | null = null;
+	let installed: string[] = [];
+
+	const installGlobal = (name: string, value: unknown) => {
+		Reflect.set(globalThis, name, value);
+		installed.push(name);
+	};
+
+	beforeEach(() => {
+		win = new Window();
+		const div = win.document.createElement("div");
+		win.document.body.appendChild(div);
+		container = div as unknown as HTMLElement;
+		installed = [];
+		installGlobal("window", win);
+		installGlobal("document", win.document);
+		installGlobal("navigator", win.navigator);
+		installGlobal("localStorage", win.localStorage);
+		installGlobal("Event", win.Event);
+		installGlobal("CustomEvent", win.CustomEvent);
+		installGlobal("getComputedStyle", win.getComputedStyle);
+		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+	});
+
+	afterEach(async () => {
+		if (root !== null) {
+			await act(async () => {
+				root?.unmount();
+			});
+			root = null;
+		}
+		await win.happyDOM.close();
+		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+		for (const name of installed) Reflect.deleteProperty(globalThis, name);
+		installed = [];
+	});
+
+	const parts: UIMessage["parts"] = [{ type: "text", text: "```note\npartial body" }];
+
+	test("busy hides the append affordance; settling exposes it", async () => {
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<MessageParts parts={parts} busy streaming />);
+		});
+		expect(container.querySelector(".note-card")).not.toBeNull();
+		expect(container.querySelector(".note-card")?.textContent).toContain("partial body");
+		expect(container.querySelector(".note-card-append")).toBeNull();
+		await act(async () => {
+			root?.render(<MessageParts parts={parts} busy={false} streaming={false} />);
+		});
+		expect(container.querySelector(".note-card-append")).not.toBeNull();
+	});
+
+	test("a mounted-settled render (the reload shape) shows the affordance", async () => {
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<MessageParts parts={parts} />);
+		});
+		expect(container.querySelector(".note-card-append")).not.toBeNull();
+	});
+
+	test("a later busy turn leaves a settled message's affordance visible", async () => {
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<MessageParts parts={parts} busy streaming={false} />);
+		});
+		expect(container.querySelector(".note-card-append")).not.toBeNull();
 	});
 });

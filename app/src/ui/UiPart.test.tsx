@@ -113,6 +113,23 @@ describe("UiPart (static markup)", () => {
 		}
 	});
 
+	// A leaf's md can be a still-arriving prefix — an unclosed note
+	// fence inside one must not offer its append affordance until the
+	// input lands (or the transcript reloads settled).
+	test("an unclosed note fence stays non-actionable while its ui block streams", () => {
+		const input = { blocks: [{ type: "text", md: "```note\npartial body" }] };
+		const streaming = renderToStaticMarkup(
+			<UiPart part={uiPart({ state: "input-streaming", input })} />,
+		);
+		expect(streaming).toContain("note-card");
+		expect(streaming).toContain("partial body");
+		expect(streaming).not.toContain("note-card-append");
+		const settled = renderToStaticMarkup(
+			<UiPart part={uiPart({ state: "output-available", input, output: "shown" })} />,
+		);
+		expect(settled).toContain("note-card-append");
+	});
+
 	test("a schema-failing input falls back to the generic tool row", () => {
 		const html = renderToStaticMarkup(
 			<UiPart

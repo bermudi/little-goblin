@@ -48,6 +48,9 @@ export interface NoteEditorHandle {
 	// "mine" force-writes local content (and title, when the caller
 	// carries a draft) on top of theirs.rev — a repeated 409 reblocks.
 	resolve(mode: "theirs" | "mine", theirs: AppNote, title?: string): void;
+	// Drop pending body writes, including the unmount drain. Already-sent
+	// PATCHes cannot be recalled; later edits still re-arm autosave.
+	discard(): void;
 	// The save-loop tests drive document changes through this.
 	editor(): Editor | null;
 }
@@ -148,6 +151,8 @@ const NoteEditor = forwardRef<
 	// A permanent write failure (4xx, deleted note) — the buffer stays
 	// dirty but nothing auto-reschedules; the next edit retries.
 	const hardFailRef = useRef(false);
+	// A late save acknowledgement must not re-dirty a discarded buffer.
+	const discardedBodyRef = useRef<string | null>(null);
 	const inFlightRef = useRef<Promise<void> | null>(null);
 	// The live PM selection, mirrored for the toolbar button — it must
 	// be a doc-position range, not the DOM selection the panel steals.
@@ -237,7 +242,7 @@ const NoteEditor = forwardRef<
 		const ed = editorRef.current;
 		if (ed === null) return;
 		const md = ed.action(getMarkdown());
-		if (opts.force !== true && md === baselineRef.current) {
+		if (opts.force !== true && (md === baselineRef.current || md === discardedBodyRef.current)) {
 			markDirty(false);
 			markStatus("saved");
 			return;
@@ -305,9 +310,13 @@ const NoteEditor = forwardRef<
 				}
 				// Reconcile anything that landed mid-flight: compare the
 				// live doc to the (possibly just-updated) baseline rather
-				// than a dirty flag set before the PATCH resolved.
+				// than a dirty flag set before the PATCH resolved. A
+				// disclaimed buffer isn't dirty just because the landed
+				// write moved the baseline under it.
 				const live = editorRef.current;
-				const dirtyNow = live !== null && live.action(getMarkdown()) !== baselineRef.current;
+				const liveMd = live === null ? null : live.action(getMarkdown());
+				const dirtyNow =
+					liveMd !== null && liveMd !== baselineRef.current && liveMd !== discardedBodyRef.current;
 				markDirty(dirtyNow);
 				const pending = pendingRef.current;
 				pendingRef.current = null;
@@ -333,10 +342,19 @@ const NoteEditor = forwardRef<
 		// typed-then-left window is still dirty even though dirtyRef
 		// hasn't caught up.
 		const md = ed.action(getMarkdown());
-		if (md === baselineRef.current) return;
+		if (md === baselineRef.current || md === discardedBodyRef.current) return;
 		// save() measures the serialized patch against the keepalive cap
 		// itself — call sites only pass the intent.
 		void save(revRef.current, { keepalive });
+	}
+
+	function discard(): void {
+		const ed = editorRef.current;
+		if (ed === null) return;
+		clearTimer();
+		pendingRef.current = null;
+		discardedBodyRef.current = ed.action(getMarkdown());
+		markDirty(false);
 	}
 
 	// A server-side content change landed: adopt the note, rebase the
@@ -349,6 +367,8 @@ const NoteEditor = forwardRef<
 		clearTimer();
 		pendingRef.current = null;
 		conflictRef.current = null;
+		// The disclaimed text left the doc entirely — its pass expires.
+		discardedBodyRef.current = null;
 		ed.action(replaceAll(note.body));
 		baselineRef.current = ed.action(getMarkdown());
 		serverBodyRef.current = note.body;
@@ -391,7 +411,8 @@ const NoteEditor = forwardRef<
 		// a retry — rearm now that automatic writes are allowed again.
 		if (unmountedRef.current) return;
 		const ed = editorRef.current;
-		if (ed !== null && ed.action(getMarkdown()) !== baselineRef.current) {
+		const md = ed?.action(getMarkdown());
+		if (md !== undefined && md !== baselineRef.current && md !== discardedBodyRef.current) {
 			markDirty(true);
 			schedule();
 		}
@@ -651,7 +672,8 @@ const NoteEditor = forwardRef<
 				});
 				mgr.markdownUpdated((_c, md) => {
 					if (unmountedRef.current) return;
-					if (md === baselineRef.current) {
+					if (md !== discardedBodyRef.current) discardedBodyRef.current = null;
+					if (md === baselineRef.current || md === discardedBodyRef.current) {
 						clearTimer();
 						markDirty(false);
 						// Undoing back to the baseline doesn't resolve a
@@ -733,7 +755,9 @@ const NoteEditor = forwardRef<
 			// serialized doc still differs from the baseline, wait for
 			// the in-flight PATCH (whose response may re-dirty — the
 			// loop sends the latest body at the new rev), then tear
-			// down. A blocked or dead write stops the drain.
+			// down. A blocked or dead write stops the drain — and a
+			// confirmed discard keeps the drain from persisting the
+			// disclaimed buffer on the way out.
 			void (async () => {
 				while (e !== null && conflictRef.current === null && !drainDeadRef.current) {
 					const flight = inFlightRef.current;
@@ -741,7 +765,8 @@ const NoteEditor = forwardRef<
 						await flight;
 						continue;
 					}
-					if (e.action(getMarkdown()) === baselineRef.current) break;
+					const drainMd = e.action(getMarkdown());
+					if (drainMd === baselineRef.current || drainMd === discardedBodyRef.current) break;
 					void save(revRef.current);
 				}
 				if (e !== null) e.destroy().catch(detachErr);
@@ -760,10 +785,13 @@ const NoteEditor = forwardRef<
 				// apply PATCH doesn't ride savingRef.
 				if (savingRef.current || rewriteActiveRef.current) return true;
 				const ed = editorRef.current;
-				return ed !== null && ed.action(getMarkdown()) !== baselineRef.current;
+				if (ed === null) return false;
+				const md = ed.action(getMarkdown());
+				return md !== baselineRef.current && md !== discardedBodyRef.current;
 			},
 			editor: () => editorRef.current,
 			flush: () => flush(),
+			discard,
 			reload,
 			adoptRev: (note: AppNote): void => {
 				// Stale first: a delayed older response must never touch the

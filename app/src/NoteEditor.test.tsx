@@ -123,6 +123,7 @@ beforeEach(() => {
 	conflicts.length = 0;
 	busies.length = 0;
 	applyings.length = 0;
+	dirtyReports.length = 0;
 	// happy-dom's realm, same seam as the other mounted tests plus the
 	// ProseMirror-facing globals noteMarkdown.test.ts installs.
 	for (const name of [
@@ -232,6 +233,7 @@ const savedNotes: AppNote[] = [];
 const conflicts: AppNote[] = [];
 const busies: boolean[] = [];
 const applyings: boolean[] = [];
+const dirtyReports: boolean[] = [];
 
 async function mount(
 	body = note.body,
@@ -248,6 +250,7 @@ async function mount(
 				initialRev={note.rev}
 				onSaved={(n) => savedNotes.push(n)}
 				onConflict={(n) => conflicts.push(n)}
+				onDirty={(dirty) => dirtyReports.push(dirty)}
 				onRewriteBusy={(b) => busies.push(b)}
 				onRewriteApplying={(a) => applyings.push(a)}
 				saveDelayMs={saveDelayMs}
@@ -609,6 +612,126 @@ describe("NoteEditor save loop", () => {
 		// the retry landed inside the debounce window.
 		expect(patches).toHaveLength(2);
 		expect(container.querySelector(".note-save-status")!.textContent).toBe("Saved");
+	});
+});
+
+// The leave guard's confirmed "Discard" (design/app.md → the guard):
+// the disclaimed serialization must not reach the wire — not via the
+// armed debounce, not a queued trailing save, not the unmount drain.
+// A PATCH already in flight still lands; an edit after a discard whose
+// navigation never committed is an ordinary dirty buffer again.
+describe("NoteEditor discard", () => {
+	test("a disclaimed buffer never reaches the wire — debounce, flush, drain", async () => {
+		root = createRoot(container);
+		// A long debounce keeps the edit pending until the drain.
+		const ref = await mount(note.body, 60_000);
+		await notice();
+		await edit(ref, "typed then discarded");
+		await act(async () => ref.current?.discard());
+		expect(ref.current?.dirty()).toBe(false);
+		// An explicit flush passes the disclaimed text by too.
+		await act(async () => ref.current?.flush());
+		await act(async () => root!.unmount());
+		await tick(DELAY * 5);
+		expect(patches).toHaveLength(0);
+	});
+
+	test("a queued trailing save is dropped; the in-flight PATCH still lands", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		holdPatch();
+		await edit(ref, "v2");
+		await notice();
+		await settle();
+		expect(patches).toHaveLength(1); // PATCH #1 held
+		// A second edit while #1 is held queues a trailing save.
+		await edit(ref, "v3");
+		await notice();
+		await tick(DELAY * 2);
+		await act(async () => ref.current?.discard());
+		await act(async () => root!.unmount());
+		releasePatch();
+		await tick(DELAY * 10);
+		// Only the write already on the wire persists — neither the
+		// queued trailing save nor a drain re-write of v3 follows it.
+		expect(patches).toHaveLength(1);
+		expect(patches[0]!.body.body).toContain("v2");
+	});
+
+	test("edits after a discard whose navigation never committed save normally", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		holdPatch();
+		await edit(ref, "v2");
+		await notice();
+		await settle();
+		expect(patches).toHaveLength(1); // PATCH #1 held — lands anyway
+		// The guard's answer didn't unmount the editor (a chat mint can
+		// fail after confirm) — the next edit must not find a muted
+		// save loop.
+		await act(async () => ref.current?.discard());
+		await edit(ref, "v3");
+		await notice();
+		releasePatch();
+		await settle();
+		expect(patches).toHaveLength(2);
+		expect(patches[1]!.body.body).toContain("v3");
+	});
+
+	test("a discard on a clean buffer doesn't mute the drain for later edits", async () => {
+		root = createRoot(container);
+		const ref = await mount(note.body, 60_000);
+		await notice();
+		await act(async () => ref.current?.discard());
+		await edit(ref, "typed after a clean discard");
+		await act(async () => root!.unmount());
+		await tick(DELAY * 5);
+		expect(patches).toHaveLength(1);
+		expect(patches[0]!.body.body).toContain("typed after a clean discard");
+	});
+
+	test("a later edit revokes the discard exemption even if the discarded text returns", async () => {
+		root = createRoot(container);
+		const ref = await mount(note.body, 60_000);
+		await notice();
+		await edit(ref, "discarded");
+		await act(async () => ref.current?.discard());
+		await edit(ref, "new edit");
+		await notice();
+		await act(async () => ref.current?.flush());
+		await settle();
+		expect(patches).toHaveLength(1);
+		await edit(ref, "discarded");
+		await notice();
+		await act(async () => ref.current?.flush());
+		await settle();
+		expect(patches).toHaveLength(2);
+		expect(patches[1]!.body.body).toContain("discarded");
+	});
+
+	test("canceling a blocked rewrite does not re-dirty a discarded buffer", async () => {
+		root = createRoot(container);
+		const ref = await mount("alpha beta", 60_000);
+		await notice();
+		await edit(ref, "alpha beta gamma");
+		await notice();
+		failPatchOnce = { status: 503, body: { error: "offline" } };
+		await select(ref, 1, 6);
+		await clickBtn("Rewrite selection");
+		await settle();
+		expect(patches).toHaveLength(1);
+		expect(container.querySelector(".note-rewrite")).not.toBeNull();
+		await act(async () => ref.current?.discard());
+		dirtyReports.length = 0;
+		await clickBtn("Discard");
+		expect(container.querySelector(".note-rewrite")).toBeNull();
+		expect(dirtyReports).not.toContain(true);
+		expect(ref.current?.dirty()).toBe(false);
+		await act(async () => root!.unmount());
+		await tick(DELAY * 5);
+		expect(patches).toHaveLength(1);
 	});
 });
 

@@ -53,6 +53,7 @@ function Text({
 	token,
 	noteProjectId,
 	onOpenNote,
+	streaming,
 }: { leaf: Extract<UiLeaf, { type: "text" }> } & UiActionProps) {
 	return (
 		<div className="ui-text">
@@ -61,6 +62,7 @@ function Text({
 				token={token}
 				noteProjectId={noteProjectId}
 				onOpenNote={onOpenNote}
+				streaming={streaming}
 			/>
 		</div>
 	);
@@ -71,6 +73,7 @@ function Callout({
 	token,
 	noteProjectId,
 	onOpenNote,
+	streaming,
 }: { leaf: Extract<UiLeaf, { type: "callout" }> } & UiActionProps) {
 	return (
 		<div className={`ui-callout ui-callout-${leaf.tone ?? "info"}`}>
@@ -80,6 +83,7 @@ function Callout({
 				token={token}
 				noteProjectId={noteProjectId}
 				onOpenNote={onOpenNote}
+				streaming={streaming}
 			/>
 		</div>
 	);
@@ -130,6 +134,7 @@ function Steps({
 	token,
 	noteProjectId,
 	onOpenNote,
+	streaming,
 }: { leaf: Extract<UiLeaf, { type: "steps" }> } & UiActionProps) {
 	return (
 		<ol className="ui-steps">
@@ -143,6 +148,7 @@ function Steps({
 								token={token}
 								noteProjectId={noteProjectId}
 								onOpenNote={onOpenNote}
+								streaming={streaming}
 							/>
 						</div>
 					)}
@@ -331,7 +337,7 @@ export function Leaf({
 	noteProjectId,
 	onOpenNote,
 }: { leaf: UiLeaf } & UiActionProps) {
-	const md = { token, noteProjectId, onOpenNote };
+	const md = { token, noteProjectId, onOpenNote, streaming };
 	switch (leaf.type) {
 		case "text":
 			return <Text leaf={leaf} {...md} />;

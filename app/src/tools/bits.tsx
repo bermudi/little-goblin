@@ -74,10 +74,16 @@ export function ErrBox({ text }: { text: string }) {
 }
 
 export function CopyBtn({ text }: { text: string }) {
-	const { copied, copy } = useCopy();
+	const { copied, failed, copy } = useCopy();
 	return (
-		<button type="button" className="codeblock-copy" onClick={() => copy(text)}>
-			{copied ? "✓" : "copy"}
+		<button
+			type="button"
+			className="codeblock-copy"
+			aria-label={failed ? "Copy failed" : undefined}
+			aria-live="polite"
+			onClick={() => copy(text)}
+		>
+			{copied ? "✓" : failed ? "copy failed" : "copy"}
 		</button>
 	);
 }

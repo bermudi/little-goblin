@@ -647,6 +647,8 @@ function AppShell() {
 	// standing 409 conflict bar. Its draft lives only in that
 	// component; an unguarded navigation destroys it silently.
 	const noteDirty = useRef(false);
+	// Confirmed discards must reach the editor before its unmount drain.
+	const noteDiscard = useRef<(() => void) | null>(null);
 	const [navigationError, setNavigationError] = useState<string | null>(null);
 	const navigation = browserNavigation();
 	const position = historyPosition(window.history.state);
@@ -659,8 +661,11 @@ function AppShell() {
 	const leaveDirty = () => {
 		if (page === "settings" && settingsDirty.current)
 			return window.confirm("Discard unsaved settings changes?");
-		if (page === "note" && noteDirty.current)
-			return window.confirm("Discard unsaved note edits and any conflict?");
+		if (page === "note" && noteDirty.current) {
+			if (!window.confirm("Discard unsaved note edits and any conflict?")) return false;
+			noteDiscard.current?.();
+			return true;
+		}
 		return true;
 	};
 	const pushRoute = (path: string) => {
@@ -947,6 +952,10 @@ function AppShell() {
 	};
 
 	const openNote = (id: string) => {
+		if (page === "note" && noteId === id) {
+			setNavOpen(false);
+			return;
+		}
 		if (!leaveDirty()) return;
 		setPage("note");
 		setProjectId(null);
@@ -1282,6 +1291,7 @@ function AppShell() {
 									token={token}
 									noteId={noteId}
 									projects={projectList}
+									discardRef={noteDiscard}
 									onChat={(note: AppNote) =>
 										void startChat(note.projectId, [
 											{ type: "data-note", data: { id: note.id } } as UIMessage["parts"][number],

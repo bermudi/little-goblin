@@ -236,6 +236,7 @@ export function MessageParts({
 	onAction,
 	onOpenNote,
 	busy,
+	streaming,
 	messages,
 }: {
 	parts: UIMessage["parts"];
@@ -248,6 +249,8 @@ export function MessageParts({
 	// Note chips and the fenced note card navigate in-app when wired.
 	onOpenNote?: ((id: string) => void) | undefined;
 	busy?: boolean | undefined;
+	// This message is still arriving; older cards stay actionable during later turns.
+	streaming?: boolean | undefined;
 	// The full transcript, when the caller has it: ui surfaces re-derive
 	// their picked choice row from persisted [ui] messages.
 	messages?: readonly UIMessage[] | undefined;
@@ -294,6 +297,7 @@ export function MessageParts({
 					token={token}
 					noteProjectId={noteProjectId}
 					onOpenNote={onOpenNote}
+					streaming={streaming}
 				/>,
 			);
 		// Empty reasoning parts exist in history — providers that seal
@@ -468,12 +472,17 @@ function ActionBar({
 	token: string | null;
 }) {
 	const text = messageText(message);
-	const { copied, copy } = useCopy();
+	const { copied, failed, copy } = useCopy();
 	const { speech, play, err: speechErr } = useSpeech(token);
 	return (
 		<div className="msg-actions">
-			<button type="button" onClick={() => copy(text)} aria-label="Copy">
-				{copied ? "✓ copied" : "copy"}
+			<button
+				type="button"
+				onClick={() => copy(text)}
+				aria-label={failed ? "Copy failed" : copied ? "Copied" : "Copy"}
+				aria-live="polite"
+			>
+				{copied ? "✓ copied" : failed ? "✗ copy failed" : "copy"}
 			</button>
 			{text !== "" && (
 				<button
@@ -635,6 +644,9 @@ function NotePicker({
 }) {
 	const [query, setQuery] = useState("");
 	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
+	// The wire's hit-the-bound bit — a capped list must say so, not
+	// read as complete (same contract as the notes index).
+	const [truncated, setTruncated] = useState(false);
 	const [failed, setFailed] = useState(false);
 	const seq = useRef(0);
 	useEffect(() => {
@@ -644,6 +656,7 @@ function NotePicker({
 				(r) => {
 					if (n === seq.current) {
 						setNotes(r.notes);
+						setTruncated(r.truncated);
 						setFailed(false);
 					}
 				},
@@ -686,6 +699,11 @@ function NotePicker({
 					<li className="empty">{query === "" ? "No notes yet." : "No matches."}</li>
 				)}
 			</ul>
+			{truncated && notes !== null && notes.length > 0 && (
+				<p className="empty" role="status">
+					Showing the first {notes.length} matching notes — narrow the search to find the rest.
+				</p>
+			)}
 		</div>
 	);
 }
@@ -1551,6 +1569,7 @@ function Chat({
 									token={token}
 									noteProjectId={noteProjectId}
 									busy={busy}
+									streaming={status === "streaming" && m.id === lastAssistantId}
 									messages={messages}
 									onOpenNote={onOpenNote}
 									onAction={(text) => {

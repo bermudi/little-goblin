@@ -5,7 +5,7 @@
 // never die silently on navigation.
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { act, forwardRef, type ReactNode } from "react";
+import { act, createRef, forwardRef, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import type { AppNote, AppNoteSummary } from "../../src/http/app-wire.ts";
@@ -188,6 +188,52 @@ describe("NoteView", () => {
 		});
 		root = null;
 		expect(reports.at(-1)).toBe(false);
+	});
+
+	test("confirmed discard clears a title draft before a trailing blur can save it", async () => {
+		const discard = createRef<(() => void) | null>();
+		let patches = 0;
+		const fetchPage = globalThis.fetch;
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				if (init?.method === "PATCH") patches++;
+				return fetchPage(input, init);
+			},
+			{ preconnect: realFetch.preconnect },
+		);
+		await mount(
+			<NoteView
+				token={null}
+				noteId="n1"
+				projects={[]}
+				onChat={() => {}}
+				onDeleted={() => {}}
+				discardRef={discard}
+			/>,
+		);
+		const title = container.querySelector<HTMLInputElement>(".note-title")!;
+		await act(async () => {
+			title.focus();
+			Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(
+				title,
+				"discarded title",
+			);
+			title.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+			title.dispatchEvent(
+				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			);
+		});
+		expect(title.value).toBe("discarded title");
+		expect(discard.current).not.toBeNull();
+		await act(async () => {
+			discard.current?.();
+			title.dispatchEvent(new win.FocusEvent("focusout", { bubbles: true }) as unknown as Event);
+		});
+		expect(patches).toBe(0);
+		expect(title.value).toBe(note.title);
+		await act(async () => root?.unmount());
+		root = null;
+		expect(discard.current).toBeNull();
 	});
 });
 

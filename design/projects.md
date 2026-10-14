@@ -156,6 +156,11 @@ never a silent overwrite. The single real conflict — the operator typing
 while the agent edits — surfaces as that 409, and the editor offers
 reload-or-keep-mine. No Yjs/CRDT: one human.
 
+Leaving a dirty note asks before discarding. Confirmation drops unsent
+body/title work, including the editor's debounce and unmount drain;
+already-sent PATCHes cannot be recalled. Declining keeps the draft.
+Reopening the same note neither asks nor adds a history entry.
+
 **The agent edits through a `note` tool**, mounted on every operator
 conversation (Telegram included — "add this to my groceries note" is
 natural there; guests never). Actions: `list`, `search`, `read`,
@@ -212,6 +217,9 @@ the fence body is appended — never the surrounding "OK, here's…"
 prose. The append is an ordinary note write (`source: append`, version
 first). One prompt line on app conversations states the convention;
 it loads at each conversation's next boundary.
+An unclosed fence hides its append action only while its message is
+streaming, including inside UI blocks. Once settled or reloaded, its
+visible body is final and may be appended even without a closing fence.
 
 **AI rewrite on selection.** The editor serializes the selection to
 markdown and posts `{selection, instruction}` to

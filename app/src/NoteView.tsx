@@ -3,7 +3,15 @@
 // lazy Milkdown editor, project pin/archive/delete, versions, and
 // "Chat with this note".
 
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import {
+	lazy,
+	Suspense,
+	useEffect,
+	useImperativeHandle,
+	useRef,
+	useState,
+	type RefObject,
+} from "react";
 import type {
 	AppNote,
 	AppNoteSummary,
@@ -316,6 +324,7 @@ export function NoteView({
 	onChat,
 	onDeleted,
 	onDirtyChange,
+	discardRef,
 }: {
 	token: string | null;
 	noteId: string;
@@ -327,6 +336,7 @@ export function NoteView({
 	// Reports the leave-guard state: unsaved body or title edits, or a
 	// standing conflict — anything navigation would silently destroy.
 	onDirtyChange?: ((dirty: boolean) => void) | undefined;
+	discardRef?: RefObject<(() => void) | null> | undefined;
 }) {
 	const [note, setNote] = useState<AppNote | null>(null);
 	const [loadError, setLoadError] = useState<string | null>(null);
@@ -353,6 +363,19 @@ export function NoteView({
 	const titleDraftRef = useRef("");
 	noteRef.current = note;
 	titleDraftRef.current = titleDraft;
+
+	useImperativeHandle(
+		discardRef,
+		() => () => {
+			editorRef.current?.discard();
+			const current = noteRef.current;
+			if (current !== null) {
+				titleDraftRef.current = current.title;
+				setTitleDraft(current.title);
+			}
+		},
+		[],
+	);
 
 	// Adopt remote state only forward — a delayed response must never
 	// roll the page's rev (or flags) backwards.
@@ -469,7 +492,7 @@ export function NoteView({
 		// A standing conflict needs an explicit Keep mine — a blur must
 		// not send the local title over the adopted remote rev.
 		if (conflict !== null) return;
-		const t = titleDraft.trim();
+		const t = titleDraftRef.current.trim();
 		if (t === "" || t === note.title) {
 			setTitleDraft(note.title);
 			return;

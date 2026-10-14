@@ -61,14 +61,20 @@ describe("Markdown", () => {
 	});
 
 	// A note fence mid-stream is a prefix — appending it now would
-	// save content the chunks after it silently drop.
-	test("an unclosed note fence shows the card but withholds the append affordance", () => {
-		const streaming = renderToStaticMarkup(<Markdown text={"```note\npartial body"} />);
+	// save content the chunks after it silently drop. Once the reply
+	// settles (or lands from history) the prefix is all there is, so
+	// the affordance shows even without the closing fence.
+	test("an unclosed note fence withholds the affordance only while streaming", () => {
+		const streaming = renderToStaticMarkup(<Markdown text={"```note\npartial body"} streaming />);
 		expect(streaming).toContain("note-card");
 		expect(streaming).toContain("partial body");
 		expect(streaming).not.toContain("note-card-append");
-		// Once the fence closes the affordance appears.
-		const closed = renderToStaticMarkup(<Markdown text={"```note\nfull body\n```"} />);
+		// Settled — the default for callers with no stream. The card's
+		// truncated body is final, so the affordance appears anyway.
+		const settled = renderToStaticMarkup(<Markdown text={"```note\npartial body"} />);
+		expect(settled).toContain("note-card-append");
+		// A closed fence shows it even mid-stream.
+		const closed = renderToStaticMarkup(<Markdown text={"```note\nfull body\n```"} streaming />);
 		expect(closed).toContain("note-card-append");
 	});
 });

@@ -76,7 +76,7 @@ import {
 import { z } from "zod";
 import type { AuthStore } from "./auth.ts";
 import type { SubagentsConfig } from "./config.ts";
-import type { Desktops, CuaTool, LeaseHolder } from "./desktops.ts";
+import { CUA_TOOLS, type Desktops, type CuaTool, type LeaseHolder } from "./desktops.ts";
 import type { Sandboxes } from "./sandboxes.ts";
 import {
 	MAX_INPUT_FILES,
@@ -112,6 +112,14 @@ export class SubagentError extends Error {
 const ctx: Context = BACKGROUND_CONTEXT;
 const SCAN_MS = 30_000;
 const LEASE_RETRY_MS = 5_000;
+// Transient admission failures re-queue the run with exponential
+// backoff off this base; only the attempt bound settles it terminal.
+const ADMIT_MAX_ATTEMPTS = 5;
+const ADMIT_RETRY_BASE_MS = 5_000;
+// Recovery (re-attaching a dead monitor) retries once per scan; past
+// this many consecutive failures the run settles failed — no lifecycle
+// path may hold its slot and lease forever.
+const RECOVERY_MAX_ATTEMPTS = 10;
 const READ_CAP = 100 * 1024 * 1024;
 const SHELL_TIMEOUT_DEFAULT_S = 60;
 const SHELL_TIMEOUT_CAP_S = 600;
@@ -276,6 +284,9 @@ export interface SubagentsDeps {
 	 *  our defaults (tests shrink compaction windows or disable retry
 	 *  backoff; production passes nothing). */
 	harnessSettings?: Record<string, unknown>;
+	/** Test seam: base delay (ms) for admission-retry backoff, doubled
+	 *  per attempt. Production default 5s. */
+	admitRetryMs?: number;
 }
 
 export interface SubagentStart {
@@ -305,21 +316,6 @@ export interface Subagents {
 	 *  shutdown. */
 	close(): Promise<void>;
 }
-
-const CUA_TOOLS: ReadonlySet<string> = new Set([
-	"click",
-	"double_click",
-	"right_click",
-	"press_key",
-	"hotkey",
-	"type_text",
-	"scroll",
-	"drag",
-	"set_value",
-	"bring_to_front",
-	"invoke_menu",
-	"set_window_frame",
-]);
 
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -861,13 +857,23 @@ class SandboxEnv implements ExecutionEnv {
 				),
 			);
 		}
-		if (bytes >= SPILL_CAP_BYTES && exitCode === 153) {
-			await this.guestRm([spill, rcpath]);
-			return err<ShellExecResult, ExecutionError>(
-				new PiExecutionError(
-					"unknown",
-					`command output exceeded the ${SPILL_CAP_BYTES / (1024 * 1024)} MiB wall — killed by ulimit, output not claimed`,
-				),
+		if (exitCode === 153) {
+			// 128+SIGXFSZ: `ulimit -f` caps EVERY file this command writes,
+			// not just the spill — a legitimate large artifact dies as a
+			// bare 153 unless the explanation always rides along. The
+			// spill-sized case stays a hard error: nothing is claimed.
+			if (bytes >= SPILL_CAP_BYTES) {
+				await this.guestRm([spill, rcpath]);
+				return err<ShellExecResult, ExecutionError>(
+					new PiExecutionError(
+						"unknown",
+						`command output exceeded the ${SPILL_CAP_BYTES / (1024 * 1024)} MiB wall — killed by ulimit, output not claimed`,
+					),
+				);
+			}
+			options?.onOutput?.(
+				`[goblin] exit 153: a file write exceeded the sandbox's ${SPILL_CAP_BYTES / (1024 * 1024)} MiB per-file cap (SIGXFSZ) — produce large artifacts in chunks or stream them\n`,
+				context,
 			);
 		}
 		const afterBytes = options?.spill?.afterBytes ?? 100 * 1024;
@@ -984,10 +990,18 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 	// Lease-conflicted rows retry no sooner than this — a blocked
 	// desktop never spins the drain loop.
 	const retryAfter = new Map<number, number>();
+	// Consecutive transient admission failures per run — past the bound
+	// the run settles terminal instead of re-queueing again.
+	const admitAttempts = new Map<number, number>();
+	const admitRetryBaseMs = deps.admitRetryMs ?? ADMIT_RETRY_BASE_MS;
 	// In-flight monitors and admissions — close joins them so a paused
 	// run is left durable, never mutated after close.
 	const monitorTasks = new Set<Promise<void>>();
 	const recoveryPending = new Set<number>();
+	// Consecutive failed recovery attempts per run — recovery is the
+	// only thing that re-attaches settlement, so past the bound the run
+	// settles failed and frees its slot instead of hanging forever.
+	const recoveryAttempts = new Map<number, number>();
 
 	// ---------- the run row behind a Pi conversation ----------
 
@@ -1744,6 +1758,10 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				await conv?.abort(ctx);
 			}
 			const stopped = runs.update(id, { status: "stopped", finishedAt: Date.now() });
+			// A stopped row is never re-admitted — its retry budget and
+			// backoff entry are dead weight.
+			admitAttempts.delete(id);
+			retryAfter.delete(id);
 			log.info("subagent stopped", { run: id, kind: stopped.kind });
 			releaseLeases(stopped);
 			notify(stopped);
@@ -1931,15 +1949,18 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		if (row.stopRequested || row.status === "stopped") throw new SubagentError("stopped");
 	}
 
-	// Admit's verdict distinguishes the two non-admissions callers
-	// must answer differently: "halted" means stop/close owns the row,
-	// while "blocked" is a lease conflict carrying the reason — a
-	// caller that persisted an intent must roll it back or re-queue,
-	// since drain only retries queued rows.
+	// Admit's verdict distinguishes the non-admissions callers must
+	// answer differently: "halted" means stop/close owns the row,
+	// "blocked" is a lease conflict carrying the reason — a caller that
+	// persisted an intent must roll it back or re-queue, since drain
+	// only retries queued rows — and "requeued" means a transient
+	// failure deferred THIS admission: the intent stays persisted and
+	// the drain retries it, so callers must not roll back.
 	type AdmitOutcome =
 		| { kind: "admitted" }
 		| { kind: "halted" }
-		| { kind: "blocked"; reason: string };
+		| { kind: "blocked"; reason: string }
+		| { kind: "requeued"; reason: string };
 
 	// One admission path for all three input modes: initial (task),
 	// resume (needs_input answer) and steer (live input). Every step
@@ -2059,6 +2080,8 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				inputRev: rev,
 				ms: Date.now() - t0,
 			});
+			admitAttempts.delete(row.id);
+			retryAfter.delete(row.id);
 			monitor(row.id, rev, submission);
 			return { kind: "admitted" };
 		} catch (err) {
@@ -2067,9 +2090,46 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				return { kind: "halted" };
 			}
 			if (closing || runs.get(row.id)?.stopRequested === true) return { kind: "halted" };
+			// A row that settled while this admission failed must never be
+			// resurrected queued — only a still-unsettled row retries.
+			const cur = runs.get(row.id);
+			if (
+				cur === null ||
+				cur.stopRequested ||
+				(cur.status !== "queued" && cur.status !== "running")
+			) {
+				return { kind: "halted" };
+			}
+			// Transient infra failures must not end a durable run: re-queue
+			// with backoff and let the drain retry the idempotent path —
+			// the deterministic requestId reuses a submission that landed
+			// before the error, and a persisted answer/steer intent is
+			// never touched here. Only the attempt bound settles terminal.
+			const attempts = (admitAttempts.get(row.id) ?? 0) + 1;
+			if (attempts < ADMIT_MAX_ATTEMPTS) {
+				admitAttempts.set(row.id, attempts);
+				const delay = admitRetryBaseMs * 2 ** (attempts - 1);
+				retryAfter.set(row.id, Date.now() + delay);
+				runs.update(row.id, { status: "queued" });
+				log.warn("subagent admission failed — re-queued for retry", err, {
+					run: row.id,
+					attempt: attempts,
+					maxAttempts: ADMIT_MAX_ATTEMPTS,
+					retryInMs: delay,
+				});
+				// The drain microtask fires before the backoff expires and
+				// finds nothing eligible — wake it again when the row is due
+				// instead of waiting out a full scan interval.
+				setTimeout(scheduleDrain, delay).unref?.();
+				scheduleDrain();
+				return { kind: "requeued", reason: msg };
+			}
+			admitAttempts.delete(row.id);
+			retryAfter.delete(row.id);
+			log.error("subagent admission failed terminally", err, { run: row.id, attempts });
 			const failed = runs.update(row.id, {
 				status: "failed",
-				error: msg,
+				error: `admission failed after ${attempts} attempts: ${msg}`,
 				noticePending: true,
 				finishedAt: Date.now(),
 			});
@@ -2348,6 +2408,14 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 					runs.update(id, { inputRev: origRev, inputIntent: null, inputMode: null });
 					throw new SubagentError(`run #${id} cannot be steered — ${outcome.reason}`);
 				}
+				if (outcome.kind === "requeued") {
+					// Past the claim, the admission may already have placed a
+					// submission — rolling back could orphan it. The intent
+					// stays persisted; the drain retries the idempotent path.
+					throw new SubagentError(
+						`run #${id} could not be steered — ${outcome.reason}; the steer stays persisted and retries`,
+					);
+				}
 				return runs.get(id)!;
 			});
 		},
@@ -2390,11 +2458,50 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 				try {
 					recoveryPending.delete(id);
 					const row = runs.get(id);
-					if (row === null || row.status !== "running" || row.stopRequested) continue;
+					if (row === null || row.status !== "running" || row.stopRequested) {
+						recoveryAttempts.delete(id);
+						continue;
+					}
 					await recoverRun(row);
 				} catch (err) {
-					log.error("subagent recovery retry failed — stays pending", err, { run: id });
-					recoveryPending.add(id);
+					const attempts = (recoveryAttempts.get(id) ?? 0) + 1;
+					if (attempts < RECOVERY_MAX_ATTEMPTS) {
+						recoveryAttempts.set(id, attempts);
+						recoveryPending.add(id);
+						log.error("subagent recovery retry failed — stays pending", err, {
+							run: id,
+							attempt: attempts,
+							maxAttempts: RECOVERY_MAX_ATTEMPTS,
+						});
+						continue;
+					}
+					recoveryAttempts.delete(id);
+					const msg = err instanceof Error ? err.message : String(err);
+					log.error("subagent recovery exhausted — settling the run failed", err, {
+						run: id,
+						attempts,
+					});
+					const row = runs.get(id);
+					if (row !== null && row.status === "running" && !row.stopRequested) {
+						// Recovery is what re-attaches settlement — with it
+						// exhausted the run's Pi work would burn unwatched.
+						if (row.piConversationId !== null) {
+							try {
+								const conv = await harness.conversation(asConv(row.piConversationId), ctx);
+								await conv?.abort(ctx);
+							} catch (abortErr) {
+								log.warn("recovery-exhaustion abort failed", abortErr, { run: id });
+							}
+						}
+						const failed = runs.update(id, {
+							status: "failed",
+							error: `recovery failed after ${attempts} attempts: ${msg}`,
+							noticePending: true,
+							finishedAt: Date.now(),
+						});
+						releaseLeases(failed);
+						notify(failed);
+					}
 				}
 			}
 			await drain();

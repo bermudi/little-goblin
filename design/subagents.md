@@ -83,8 +83,16 @@ store):
   goblin's chat, so the cap protects the bot's own responsiveness.
   Beyond it, `start` queues the run (`queued` status) and says so; the
   queue drains in start order as runs settle.
-- **No timeout-and-revive.** Runs are durable; they end by outcome or by
-  an explicit stop.
+- **No timeout-and-revive.** Runs are durable; they end by outcome or
+  by an explicit stop — or by an *exhausted retry budget*, never by a
+  single infra hiccup: a transient failure during admission (an import
+  exec timeout, a cpIn error, a harness hiccup) re-queues the run with
+  exponential backoff and retries the idempotent admission up to five
+  times before settling `failed` with an origin notice; recovery —
+  re-attaching a dead monitor — is bounded the same way (ten scan
+  attempts), and exhaustion aborts the run's Pi work best-effort,
+  settles `failed`, notifies the origin and releases the lease. Halt
+  intents (stop, close, vanished row) are never retried.
 - **Goblin starts them and owns the outcome.** Results return to the
   origin conversation fenced (`<event source="subagent">`, the delegation
   fence rule) — a subagent that read arbitrary screens gains no authority
@@ -159,12 +167,20 @@ release.**
   removed, logged. The sweep lists stale rows globally, then joins the
   candidate's own lane and re-checks fresh idle/reservation/lease state
   immediately before removal — a concurrent claim, observation, or pin
-  wins the race. `desktops.max` caps the pool (g7 has ~13 GB free; a
+  wins the race. The listing is synchronous in the caller's call (the
+  caller's own desktop exempt) but the removals run on one detached,
+  single-flight reaper chain: reaping desktop B never blocks acting on
+  desktop A. `desktops.max` caps the pool (g7 has ~13 GB free; a
   desktop idles at ~281 MB with Chromium open, measured). The cap counts
   rows **plus pending allocations**: `allocate` claims its name in a
   pool-wide reservation set synchronously, before the first await of
   container creation, and releases it in `finally` — two parallel
   allocates can't both pass the check and double-create.
+- **Audit-frame retention** (ruling): screenshots are bounded at the
+  newest 200 PNGs per desktop under `state/desktops/<name>/shots/`,
+  pruned by the sweep — the caller's dir every call, a reaped desktop's
+  at removal. Destroy freezes the remaining trail on purpose: the audit
+  exists for the post-mortem, not for space reclamation.
 
 ### The wall: runc now, krun parked
 
@@ -392,7 +408,10 @@ built once).
   and processes are still the answer it waits on), while a computer
   `needs_input` releases the desktop controller lease so the operator
   can act. `send` requeues the same Pi conversation and re-acquires
-  before executing.
+  before executing. A transient admission failure re-queues through
+  the same drain: the retry delay rides the lease backoff map, a
+  timer wakes the drain when it expires, and a persisted
+  answer/steer intent survives the failed attempt untouched.
 - **Idempotent dual-store.** Two stores advance one run:
   `subagent_runs` rows in goblin.sqlite (routing) and Pi Durable's own
   sqlite (transcripts + the typed run-state doc). The recipe: insert

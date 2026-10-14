@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
+import type { Context } from "@earendil-works/chord";
 import type { LanguageModel } from "ai";
 import { Harness } from "@earendil-works/pi-durable";
 import { openStore } from "./conversation.ts";
@@ -23,6 +24,7 @@ import { DesktopError } from "./desktops.ts";
 import type { Sandboxes } from "./sandboxes.ts";
 import { openSubagentRuns, type SubagentRuns } from "./subagent-runs.ts";
 import {
+	makeSandboxEnv,
 	openSubagents,
 	subagentModelProfileSchema,
 	type SubagentModelProfile,
@@ -531,7 +533,9 @@ function shEval(script: string, fs: MemFS, cwd0: string): { out: string; code: n
 					const f = p(rest.at(-1) ?? "");
 					const data = fs.read(f);
 					const nl = data.filter((b) => b === 10).length;
-					emit(rest.includes("-c") ? `${data.length} ${f}\n` : `${nl} ${data.length} ${f}\n`);
+					// `wc -l -c f` prints two numbers then the name — the
+					// env's spill measurement parses exactly that shape.
+					emit(`${nl} ${data.length} ${f}\n`);
 					code = 0;
 					break;
 				}
@@ -1034,6 +1038,7 @@ function rig(opts?: {
 	configOverrides?: Partial<SubagentsConfig>;
 	modelProfiles?: Partial<Record<"worker" | "computer", SubagentModelProfile>>;
 	harnessSettings?: Record<string, unknown>;
+	admitRetryMs?: number;
 }): Rig {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-sub-"));
 	dirs.push(dir);
@@ -1087,6 +1092,7 @@ function rig(opts?: {
 		},
 		...(opts?.modelProfiles !== undefined ? { modelProfiles: opts.modelProfiles } : {}),
 		...(opts?.harnessSettings !== undefined ? { harnessSettings: opts.harnessSettings } : {}),
+		...(opts?.admitRetryMs !== undefined ? { admitRetryMs: opts.admitRetryMs } : {}),
 	}).then(async (owner) => {
 		owners.push(owner);
 		r.owner = owner;
@@ -1112,6 +1118,45 @@ async function until(
 		await Bun.sleep(40);
 	}
 	throw new Error(`timed out waiting for: ${what}`);
+}
+
+// Makes the NEXT conversation submit (one admission attempt) throw —
+// the transient-infra injection for admit's retry paths. Consumed on
+// first use; the retry submit (and any later one) awaits holdRetry
+// first when provided, so a test can observe the requeued row before
+// the retry lands. restore() unwraps Harness.open.
+function armSubmitFault(holdRetry?: Promise<void>): { arm: () => void; restore: () => void } {
+	const origOpen = Harness.open;
+	let armed = false;
+	Harness.open = (async (...args: Parameters<typeof Harness.open>) => {
+		const h = await origOpen(...args);
+		const origConversation = h.conversation.bind(h) as (...cArgs: unknown[]) => Promise<unknown>;
+		(h as unknown as { conversation: unknown }).conversation = async (...cArgs: unknown[]) => {
+			const conv = await origConversation(...cArgs);
+			if (conv === undefined || conv === null || !armed) return conv;
+			const target = conv as {
+				submit: (...sArgs: unknown[]) => Promise<unknown>;
+			};
+			const origSubmit = target.submit.bind(target);
+			target.submit = async (...sArgs: unknown[]) => {
+				if (!armed) {
+					if (holdRetry !== undefined) await holdRetry;
+					return origSubmit(...sArgs);
+				}
+				armed = false;
+				throw new Error("injected transient submit failure");
+			};
+			return conv;
+		};
+		return h;
+	}) as typeof Harness.open;
+	return {
+		arm: () => (armed = true),
+		restore: () => {
+			armed = false;
+			Harness.open = origOpen;
+		},
+	};
 }
 
 // ---------- tests ----------
@@ -2722,7 +2767,9 @@ describe("subagents owner", () => {
 	});
 
 	test("out-of-workspace import fails the run at admission", async () => {
-		const r = rig();
+		// A deterministic refusal still burns the bounded retry budget
+		// before the terminal row — the short base keeps the test fast.
+		const r = rig({ admitRetryMs: 1 });
 		const o = await open(r);
 		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "x" } }] });
 		const a = await o.start({
@@ -2805,7 +2852,9 @@ describe("subagents owner", () => {
 				`desktop ${name} has no container — run podman build -f deploy/desktop/Containerfile -t localhost/goblin-desktop:1`,
 			);
 		};
-		const r = rig({ desktops });
+		// The claim refusal is deterministic — it repeats through the
+		// bounded retry budget; the short base keeps the test fast.
+		const r = rig({ desktops, admitRetryMs: 1 });
 		const o = await open(r);
 		const a = await o.start({
 			kind: "computer",
@@ -2909,6 +2958,244 @@ describe("subagents owner", () => {
 		expect(r.model.seen.length).toBe(0);
 		expect(r.runs.get(a.id)?.status).toBe("stopped");
 	});
+
+	// A transient infra fault during admission re-queues the run with
+	// backoff instead of settling it terminal — the deterministic
+	// requestId makes the retry idempotent.
+	test("a transient admission failure requeues; the retry admits and settles", async () => {
+		const r = rig({ admitRetryMs: 1 });
+		writeFileSync(join(r.workspace, "a.txt"), "A");
+		const origCp = r.sandboxes.cpIn.bind(r.sandboxes);
+		let cpAttempts = 0;
+		const pass = Promise.withResolvers<void>();
+		r.sandboxes.cpIn = async (conv, host, dest) => {
+			cpAttempts++;
+			if (cpAttempts === 1) throw new Error("EIO: transient podman fault");
+			await pass.promise;
+			return origCp(conv, host, dest);
+		};
+		const o = await open(r);
+		r.model.push({
+			kind: "tools",
+			calls: [{ name: "finish", args: { result: "ok-after-retry" } }],
+		});
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+			files: ["a.txt"],
+		});
+		// Attempt one threw; the retry parks in cp while still queued —
+		// the row was re-queued, not failed.
+		await until(
+			() => cpAttempts >= 2 && r.runs.get(a.id)?.status === "queued",
+			"transient failure requeued the run",
+		);
+		const mid = r.runs.get(a.id)!;
+		expect(mid.error).toBeNull();
+		expect(mid.stopRequested).toBe(false);
+		expect(mid.inputRev).toBe(0);
+		expect(r.wakes.length).toBe(0);
+		pass.resolve();
+		await until(() => r.runs.get(a.id)?.status === "done", "retry admitted and settled");
+		expect(r.runs.get(a.id)?.result).toBe("ok-after-retry");
+		expect(r.runs.get(a.id)?.inbox).toEqual([`/inbox/subagents/${a.id}/01-a.txt`]);
+		expect(r.wakes.length).toBe(1);
+	});
+
+	test("admission failures past the attempt bound settle terminal and notify", async () => {
+		const r = rig({ admitRetryMs: 1 });
+		writeFileSync(join(r.workspace, "a.txt"), "A");
+		let cpAttempts = 0;
+		r.sandboxes.cpIn = async () => {
+			cpAttempts++;
+			throw new Error("EIO: persistent podman fault");
+		};
+		const o = await open(r);
+		const a = await o.start({
+			kind: "worker",
+			conversationId: WS,
+			workspace: r.workspace,
+			task: "t",
+			files: ["a.txt"],
+		});
+		await until(() => r.runs.get(a.id)?.status === "failed", "exhaustion settles terminal", 20_000);
+		const row = r.runs.get(a.id)!;
+		expect(row.error).toContain("admission failed after 5 attempts");
+		expect(row.error).toContain("persistent podman fault");
+		expect(row.finishedAt).not.toBeNull();
+		// Bounded: five attempts, not an infinite spin.
+		expect(cpAttempts).toBe(5);
+		expect(r.wakes.length).toBe(1);
+		expect(r.wakes[0]!.text).toContain("admission failed after 5 attempts");
+		// The terminal row frees its slot for other work.
+		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "next" } }] });
+		const b = await o.start({
+			kind: "worker",
+			conversationId: "conv:b",
+			workspace: r.workspace,
+			task: "b",
+		});
+		await until(() => r.runs.get(b.id)?.status === "done", "slot freed for other work");
+	});
+
+	test("a transient failure on the needs_input resume path keeps the persisted answer", async () => {
+		// The retry's submit parks until the requeued row was observed.
+		const pass = Promise.withResolvers<void>();
+		const fault = armSubmitFault(pass.promise);
+		try {
+			const r = rig({ admitRetryMs: 1 });
+			const o = await open(r);
+			r.model.push({
+				kind: "tools",
+				calls: [{ name: "ask_operator", args: { question: "which login?" } }],
+			});
+			r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "resumed-ok" } }] });
+			const a = await o.start({
+				kind: "worker",
+				conversationId: WS,
+				workspace: r.workspace,
+				task: "t",
+			});
+			await until(() => r.runs.get(a.id)?.status === "needs_input", "parked on the question");
+			expect(r.wakes.length).toBe(1);
+			// The NEXT submit (the resume admission) fails once, transiently;
+			// the retry parks inside submit until the row was observed.
+			fault.arm();
+			await o.send(a.id, WS, "the operator answer");
+			// The retry parks inside its submit (the persist step has
+			// already flipped the row running) — the answer must still be
+			// sitting on the row at that point.
+			await until(() => {
+				const row = r.runs.get(a.id);
+				return row?.status === "running" && row.inputIntent === "the operator answer";
+			}, "resume admission requeued after the transient failure");
+			const mid = r.runs.get(a.id)!;
+			// The answer and its revision survive the failed admission.
+			expect(mid.inputIntent).toBe("the operator answer");
+			expect(mid.inputMode).toBe("resume");
+			expect(mid.inputRev).toBe(2);
+			expect(mid.error).toBeNull();
+			pass.resolve();
+			await until(() => r.runs.get(a.id)?.status === "done", "retry settles the run");
+			expect(r.runs.get(a.id)?.result).toBe("resumed-ok");
+			// The answer reached the model exactly once.
+			const withAnswer = r.model.seen.filter((s) =>
+				JSON.stringify(s.messages).includes("the operator answer"),
+			);
+			expect(withAnswer.length).toBe(1);
+			expect(r.wakes.length).toBe(2);
+		} finally {
+			fault.restore();
+		}
+	});
+
+	test("a transient steer failure stays persisted, rejects the send, and retries", async () => {
+		const fault = armSubmitFault();
+		try {
+			const r = rig({ admitRetryMs: 1 });
+			const o = await open(r);
+			const gate = Promise.withResolvers<void>();
+			r.model.push({
+				kind: "hold",
+				gate: gate.promise,
+				then: { kind: "tools", calls: [{ name: "finish", args: { result: "settled" } }] },
+			});
+			r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "steered" } }] });
+			const a = await o.start({
+				kind: "worker",
+				conversationId: WS,
+				workspace: r.workspace,
+				task: "t",
+			});
+			await until(
+				() => r.runs.get(a.id)?.status === "running" && r.model.seen.length === 1,
+				"running on a held reply",
+			);
+			fault.arm();
+			await expect(o.send(a.id, WS, "steer-into-transient")).rejects.toThrow(
+				/stays persisted and retries/,
+			);
+			// The retry runs on the backoff timer — it may already have
+			// admitted by the time send rejects; assert the end state.
+			await until(() => {
+				const row = r.runs.get(a.id);
+				return row?.status === "running" && row.inputIntent === null;
+			}, "steer retry admitted with the intent cleared");
+			gate.resolve();
+			await until(() => r.runs.get(a.id)?.status === "done", "steered successor settles");
+			expect(r.runs.get(a.id)?.result).toBe("steered");
+			expect(
+				r.model.seen.filter((s) => JSON.stringify(s.messages).includes("steer-into-transient"))
+					.length,
+			).toBe(1);
+		} finally {
+			fault.restore();
+		}
+	});
+
+	test("recovery retries are bounded: exhaustion settles the run failed and wakes the origin", async () => {
+		const origOpen = Harness.open;
+		let injected = true;
+		try {
+			Harness.open = (async (...args: Parameters<typeof Harness.open>) => {
+				const h = await origOpen(...args);
+				const origSnapshot = h.snapshot;
+				h.snapshot = (async (token: unknown, ...rest: unknown[]) => {
+					const kind = (token as { definition?: { kind?: unknown } } | null)?.definition?.kind;
+					if (injected && kind === "goblin.subagent-run") {
+						throw new Error("injected storage failure");
+					}
+					return (origSnapshot as (...sArgs: unknown[]) => Promise<unknown>).apply(h, [
+						token,
+						...rest,
+					]);
+				}) as typeof h.snapshot;
+				return h;
+			}) as typeof Harness.open;
+			const r = rig();
+			const o = await open(r);
+			r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "never read" } }] });
+			const a = await o.start({
+				kind: "worker",
+				conversationId: WS,
+				workspace: r.workspace,
+				task: "t",
+			});
+			// The settle's doc read fails — the monitor hands the run to
+			// recovery and the row stays owned (running, no notice).
+			await until(() => r.model.seen.length === 1, "the round completed");
+			await Bun.sleep(200);
+			expect(r.runs.get(a.id)?.status).toBe("running");
+			expect(r.wakes.length).toBe(0);
+			// One recovery attempt per scan; past the bound it settles.
+			for (let i = 0; i < 15; i++) {
+				if (r.runs.get(a.id)?.status === "failed") break;
+				await o.scan();
+			}
+			const row = r.runs.get(a.id)!;
+			expect(row.status).toBe("failed");
+			expect(row.error).toContain("recovery failed after 10 attempts");
+			expect(row.error).toContain("injected storage failure");
+			expect(row.finishedAt).not.toBeNull();
+			expect(r.wakes.length).toBe(1);
+			expect(r.wakes[0]!.text).toContain("recovery failed after 10 attempts");
+			// Heal the storage — the freed slot must admit and settle new work.
+			injected = false;
+			r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "next" } }] });
+			const b = await o.start({
+				kind: "worker",
+				conversationId: "conv:b",
+				workspace: r.workspace,
+				task: "b",
+			});
+			await until(() => r.runs.get(b.id)?.status === "done", "slot freed after exhaustion");
+			expect(r.wakes.length).toBe(2);
+		} finally {
+			Harness.open = origOpen;
+		}
+	}, 20_000);
 });
 
 // ---------- explicit model profile seam (phase 4 experiment) ----------
@@ -3399,5 +3686,63 @@ describe("origin responsiveness over the real wake path", () => {
 			await runtime.shutdown();
 			store.close();
 		}
+	});
+});
+
+// ---------- the worker shell wall (SandboxEnv.exec) ----------
+
+// Stages the wrapped-shell outcome directly: the `env` call writes the
+// given rc + spill into the guest fs instead of evaluating a script,
+// so the SIGXFSZ exit can be pinned without a 100 MiB stdout.
+function stageShellExit(sb: MemSandbox, rc: number, spillText: string): void {
+	const enc = new TextEncoder();
+	const real = sb.execArgv;
+	sb.execArgv = async (conv, argv, opts) => {
+		if (argv[0] === "env") {
+			const rest = argv.slice(1);
+			const shIdx = rest.indexOf("/bin/sh");
+			const spill = rest[shIdx + 5] ?? "/tmp/x";
+			const rcPath = rest[shIdx + 6] ?? "/tmp/y";
+			sb.fs.write(sb.fs.norm(spill), enc.encode(spillText));
+			sb.fs.write(sb.fs.norm(rcPath), enc.encode(String(rc)));
+			return {
+				result: { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false },
+			};
+		}
+		return real(conv, argv, opts);
+	};
+}
+
+describe("worker shell wall", () => {
+	const CTX = {} as Context; // no abortSignal, no scope
+
+	test("exit 153 below the spill cap explains the file-size kill and returns the real exit code", async () => {
+		const sb = fakeSandboxes();
+		stageShellExit(sb, 153, "partial output\n");
+		const env = makeSandboxEnv(sb, join(tmpdir(), "goblin-wall-under"), "conv:wall");
+		let streamed = "";
+		const r = await env.exec(
+			"curl -o /work/big.bin https://example.com/huge",
+			{ onOutput: (s) => (streamed += s) },
+			CTX,
+		);
+		expect(r.ok).toBe(true);
+		if (!r.ok) return;
+		expect(r.value.exitCode).toBe(153);
+		expect(streamed).toContain("exit 153");
+		expect(streamed).toContain("100 MiB per-file cap");
+		expect(streamed).toContain("chunks or stream");
+		// The command's own output still rides back under the note.
+		expect(streamed).toContain("partial output");
+	});
+
+	test("a spill that reached the cap still refuses with the wall error", async () => {
+		const sb = fakeSandboxes();
+		stageShellExit(sb, 153, "x".repeat(100 * 1024 * 1024));
+		const env = makeSandboxEnv(sb, join(tmpdir(), "goblin-wall-cap"), "conv:wall");
+		const r = await env.exec("seq 100000000", undefined, CTX);
+		expect(r.ok).toBe(false);
+		if (r.ok) return;
+		expect(r.error.message).toContain("MiB wall");
 	});
 });

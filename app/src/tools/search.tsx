@@ -1,5 +1,6 @@
 // search — result rows: violet-linked title, URL, snippet.
 
+import { isHttpUrl } from "../url.ts";
 import { Clip, ErrBox, Icon, type Face, type ToolView } from "./bits.tsx";
 import { clipHead, firstLine, joinSummary, parseSearchOutput } from "./parse.ts";
 import { searchInputSchema, searchOutputSchema } from "./schemas.ts";
@@ -53,14 +54,14 @@ export const searchView: ToolView = {
 						<ul className="hits">
 							{parsed.hits.map((h, i) => (
 								<li key={i}>
-									{h.url === "" || !/^https?:\/\//.test(h.url) ? (
-										// Provider data is untrusted — only http(s) earns an
-										// anchor (the same scheme rule markdown links get).
-										<span className="hit-title">{h.title === "" ? h.url : h.title}</span>
-									) : (
+									{isHttpUrl(h.url) ? (
 										<a className="hit-title" href={h.url} target="_blank" rel="noreferrer">
 											{h.title === "" ? h.url : h.title}
 										</a>
+									) : (
+										// Provider data is untrusted — isHttpUrl is the
+										// only gate that turns it into an anchor.
+										<span className="hit-title">{h.title === "" ? h.url : h.title}</span>
 									)}
 									{h.url !== "" && h.title !== "" && <span className="hit-url">{h.url}</span>}
 									{h.snippet !== "" && <span className="hit-snip">{h.snippet}</span>}

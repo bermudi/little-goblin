@@ -3,6 +3,7 @@
 // string, a structured refusal, or a PDF ref), so the summary is host +
 // size, not "200".
 
+import { isHttpUrl } from "../url.ts";
 import { Clip, ErrBox, Icon, PathChip, type ToolView } from "./bits.tsx";
 import {
 	clipHead,
@@ -47,10 +48,9 @@ export const fetchView: ToolView = {
 				detail: (
 					<div className="tool-body">
 						{target !== null &&
-							// Tool output is provider-shaped data — only http(s)
-							// earns an anchor (the same rule the search hits and
-							// markdown links get).
-							(/^https?:\/\//.test(target) ? (
+							// Tool output is provider-shaped data — the shared
+							// isHttpUrl decides what earns an anchor.
+							(isHttpUrl(target) ? (
 								<a href={target} target="_blank" rel="noreferrer" className="fetch-src">
 									{target}
 								</a>
@@ -69,7 +69,7 @@ export const fetchView: ToolView = {
 				summary: joinSummary(hostOf(pdf.url), `pdf ${fmtBytes(pdf.size)}`),
 				detail: (
 					<div className="tool-body">
-						{/^(https?:\/\/)/.test(pdf.url) ? (
+						{isHttpUrl(pdf.url) ? (
 							<a href={pdf.url} target="_blank" rel="noreferrer" className="fetch-src">
 								{pdf.url}
 							</a>

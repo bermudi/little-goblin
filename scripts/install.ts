@@ -297,7 +297,7 @@ async function install(): Promise<void> {
 			// same profile).
 			writeFileSync(
 				join(staging, "goblin-keys.service"),
-				render("goblin-keys.service", [
+				render("goblin-keys.service.in", [
 					["/home/daniel/.local/bin/pass-keys", passKeys],
 					...common,
 					[

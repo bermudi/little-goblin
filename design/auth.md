@@ -99,7 +99,7 @@ consumption reads encrypted local snapshots, not Pass. Rulings:
   or proven; linger alone does not unlock a wallet.
 - **Warmer** means explicit background sync, not a foreground cache
   check: `pass-keys warm PROFILE` always refreshes from Pass even when
-  a snapshot is present. `deploy/goblin-keys.service` renders one
+  a snapshot is present. `deploy/goblin-keys.service.in` renders one
   `warm` line per config-referenced auth record (the preflight-gated
   set, rendered by the installer from `scripts/install-options.ts`
   output) plus the MCP lane's pinned profile, sequentially, with

@@ -188,3 +188,10 @@ No Litespec, no specs tree, no decision records. Small commits, often, on
 main or short-lived branches. If a design tension is real enough to argue
 about, write the ruling into the design docs (`DESIGN.md` or
 `design/<area>.md`) — the docs are the spec.
+
+**Fetch is fetch** (2026-10-14: "pull" was executed as an unasked
+fast-forward merge onto main). Retrieving a branch — an `arena/*` session
+branch, a review branch, anything — only fetches it. Moving `main`,
+including a trivially clean fast-forward, integrating a branch, or
+committing onto main past fetched work, is an explicit bermudi instruction,
+never an inference from how safe or reversible it looks.

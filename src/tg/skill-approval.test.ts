@@ -233,13 +233,19 @@ describe("skill approval taps", () => {
 		}
 	});
 
-	test("a tap on a gone proposal strips buttons, no history", async () => {
+	test("a tap on a gone proposal answers and stamps the card, no history", async () => {
 		const done = silenceLogs();
 		const h = harness([]);
 		try {
 			await h.handle({ data: skillDiscardData("dm:42", "vanished") });
-			expect(h.strips).toEqual([55]);
-			expect(h.edits).toEqual([]);
+			// The header contract: "a tap on a gone proposal answers 'already
+			// handled'" — a textless answer is a dead press from the operator's
+			// side, and a bare button-strip leaves "approve to install" lying.
+			expect(h.strips).toEqual([]);
+			expect(h.edits.length).toBe(1);
+			expect(h.edits[0]!.text).toContain("no longer exists");
+			expect(h.edits[0]!.keyboard).toEqual({ inline_keyboard: [] });
+			expect(h.answers).toEqual(["already handled — the proposal is gone, nothing applied"]);
 			expect(h.appends).toEqual([]);
 		} finally {
 			h.cleanup();

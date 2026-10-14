@@ -173,7 +173,11 @@ export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
 		try {
 			// A missing notice only loses the stamp — the action still
 			// decides on disk with a null query.
-			await runDecision(parsed, query.message === undefined ? null : query);
+			const answerText = await runDecision(
+				parsed,
+				query.message === undefined ? null : query,
+			);
+			await answer(answerText);
 		} catch (err) {
 			// A filesystem error that isn't absence — the decision did not
 			// happen, the buttons stay, and the tap gets the failure line
@@ -187,7 +191,7 @@ export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
 	const runDecision = async (
 		parsed: { op: "install" | "discard"; conversationId: string; skill: string },
 		query: SkillApprovalQuery | null,
-	): Promise<void> => {
+	): Promise<string | undefined> => {
 		const { op, conversationId, skill } = parsed;
 		const stamp = async (text: string) => {
 			if (query === null) return;
@@ -199,17 +203,6 @@ export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
 			).catch((err: unknown) => {
 				// Cosmetic — the log line already carries the decision.
 				log.debug("skill proposal stamp failed", { skill, error: String(err) });
-			});
-		};
-		const strip = async () => {
-			if (query === null) return;
-			await withTimeout(
-				deps.api.editMessageReplyMarkup(query.message!.chat.id, query.message!.message_id, {
-					reply_markup: { inline_keyboard: [] },
-				}),
-				"editMessageReplyMarkup",
-			).catch((err: unknown) => {
-				log.debug("skill button strip failed", { skill, error: String(err) });
 			});
 		};
 		const appendHistory = (text: string) => {
@@ -231,8 +224,8 @@ export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
 			const outcome = installProposal(deps, skill);
 			if (!outcome.ok && outcome.reason === "gone") {
 				log.info("skill proposal tap on gone proposal", { skill, conversation: conversationId });
-				await strip();
-				return;
+				await stamp(`⚠ skill ${skill} not installed — proposal no longer exists (handled elsewhere)`);
+				return "already handled — the proposal is gone, nothing applied";
 			}
 			if (!outcome.ok) {
 				log.warn("skill proposal install conflict", {
@@ -261,8 +254,8 @@ export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
 		const outcome = discardProposal(deps, skill);
 		if (!outcome.ok && outcome.reason === "gone") {
 			log.info("skill proposal tap on gone proposal", { skill, conversation: conversationId });
-			await strip();
-			return;
+			await stamp(`⚠ skill ${skill} not discarded — proposal no longer exists (handled elsewhere)`);
+			return "already handled — the proposal is gone, nothing applied";
 		}
 		if (!outcome.ok) {
 			log.warn("skill proposal discard conflict", {

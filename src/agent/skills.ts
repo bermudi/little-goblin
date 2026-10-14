@@ -53,6 +53,8 @@ export interface SkillCatalog {
 	entries: SkillEntry[];
 	/** Entries skipped as malformed — each already log.warn'ed. */
 	skipped: number;
+	/** Basename of the scanned root — the leaf dir that entries and the section prose share. */
+	root: string;
 }
 
 // Bounded read of the file head — enough for frontmatter, never the body.
@@ -95,12 +97,14 @@ function parseSkill(head: string): { fm: Frontmatter } | { err: string } {
 }
 
 export function loadCatalog(root: string): SkillCatalog {
+	const leaf = basename(root);
 	let dirents;
 	try {
 		dirents = readdirSync(root, { withFileTypes: true });
 	} catch (err) {
 		// No catalog dir is an empty catalog, not an error.
-		if ((err as NodeJS.ErrnoException).code === "ENOENT") return { entries: [], skipped: 0 };
+		if ((err as NodeJS.ErrnoException).code === "ENOENT")
+			return { entries: [], skipped: 0, root: leaf };
 		throw err;
 	}
 
@@ -160,7 +164,7 @@ export function loadCatalog(root: string): SkillCatalog {
 			name: fm.name,
 			description: fm.description,
 			...(fm.compatibility !== undefined ? { compatibility: fm.compatibility } : {}),
-			path: join(basename(root), dirent.name, "SKILL.md"),
+			path: join(leaf, dirent.name, "SKILL.md"),
 		});
 	}
 
@@ -173,7 +177,7 @@ export function loadCatalog(root: string): SkillCatalog {
 		});
 		entries.length = MAX_ENTRIES;
 	}
-	return { entries, skipped };
+	return { entries, skipped, root: leaf };
 }
 
 // The prompt section. Renders even when empty — it's also the notice
@@ -189,10 +193,10 @@ export function formatSkillsSection(
 	proposals?: SkillCatalog,
 	linkBase?: string,
 ): string[] {
-	const skillsRoot = linkBase === undefined ? "skills" : join(linkBase, "skills");
+	const skillsRoot = linkBase === undefined ? catalog.root : join(linkBase, catalog.root);
 	const validatePath =
 		linkBase === undefined
-			? "./skills/<name>"
+			? `./${catalog.root}/<name>`
 			: `'${join(skillsRoot, "<name>").replace(/'/g, "'\\''")}'`;
 	const lines = [
 		"## skills",
@@ -223,8 +227,7 @@ export function formatSkillsSection(
 		// The prose must resolve from the conversation's cwd too — under a
 		// project linkBase, a relative `skills-proposed/` would point inside
 		// the project, not the workspace.
-		const proposalsRoot =
-			linkBase === undefined ? "skills-proposed" : join(linkBase, "skills-proposed");
+		const proposalsRoot = linkBase === undefined ? proposals.root : join(linkBase, proposals.root);
 		lines.push(
 			"",
 			`Pending proposals — reviewer drafts under \`${proposalsRoot}/\`, NOT installed:`,

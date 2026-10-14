@@ -162,8 +162,11 @@ natural there; guests never). Actions: `list`, `search`, `read`,
 `create`, `append`, `replace` (whole body), `replace_range` (`start`,
 `end` character offsets into `body_md`, required `expected` — the text
 currently at that range; mismatch refuses with the current text so the
-model can retry). Ranges in one call must not overlap and apply
-back-to-front. `list`/`search` default to the conversation's project
+model can retry). `read` windows long bodies; its footer reports the
+returned absolute character range (final window included), and
+`replace_range` offsets always count into the full body — a paged
+window's base plus the position inside it. Ranges in one call must not
+overlap and apply back-to-front. `list`/`search` default to the conversation's project
 (loose notes outside a project); `scope: "all"` widens. `create`
 defaults to the current project. Results ride fenced like other
 operator data; note bodies are the operator's words, not instructions
@@ -248,7 +251,13 @@ trust-mode origin check; JSON bodies require `application/json`.
   `notes/<id>` (GET, PATCH with `If-Match`, DELETE only when archived —
   the conversation archive pattern), `notes/<id>/versions` (GET),
   `notes/<id>/versions/<rev>/restore` (POST — a write like any other,
-  current body versioned first), `notes/<id>/rewrite` (POST).
+  current body versioned first), `notes/<id>/rewrite` (POST). The list
+  is bounded at 1000 rows per filtered read, and the response carries
+  `truncated`: true when the filter
+  matched beyond the bound (the store is asked for limit+1, so the
+  flag needs no second query), telling the client to say so rather
+  than show a capped shelf as complete. No pagination: a narrower
+  `project`/`q` is how the rest is reached.
 - `conversations` POST accepts `projectId`; the list payload carries
   `projectId` per summary.
 
@@ -260,8 +269,9 @@ memory); `project memory off propagated` (project, conversation count);
 `note conflict` (note, expected rev, current rev); `note range refused`
 (note, conversation, reason); `note restored` (note, from rev, new rev);
 `note rewrite` (note, model, selection bytes, outcome, ms) — the model
-call also rides the shared observed-model line. `prompt snapshot built`
-carries the project sources.
+call also rides the shared observed-model line. `app note list
+truncated` (project, q, archived) marks a capped index read. `prompt
+snapshot built` carries the project sources.
 
 ### Phases
 

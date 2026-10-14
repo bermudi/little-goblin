@@ -386,7 +386,11 @@ const scriptTool = (tools: ToolSet, callable: string[], deps: ScriptDeps) =>
 				} catch (e) {
 					log.warn("scriptcache sweep failed", e, { conversation: deps.conversation });
 				}
-				footer = truncatedFooter(file, body.length);
+				footer = truncatedFooter(
+					file,
+					body.length,
+					"This is a temporary retained file — a later script's scriptcache sweep may reclaim it",
+				);
 			}
 			const seconds = ((Date.now() - started) / 1000).toFixed(1);
 			const status =

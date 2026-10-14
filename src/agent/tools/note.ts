@@ -198,10 +198,13 @@ export const noteTool = (deps: NoteToolDeps) =>
 						}
 						const window = note.body.slice(offset, offset + READ_CHARS);
 						const end = offset + window.length;
+						// The footer rides every read, last window included: it
+						// states the absolute range and the base+position arithmetic
+						// replace_range's absolute offsets need.
 						const footer =
-							end < note.body.length
-								? `\n[Showing chars ${offset}–${end} of ${note.body.length}. Read again with offset=${end} to continue.]`
-								: "";
+							`\n[Showing chars ${offset}–${end} of ${note.body.length}.` +
+							(end < note.body.length ? ` Read again with offset=${end} to continue.` : "") +
+							` replace_range start/end are absolute character offsets into the full body — a character at position p in this window sits at offset ${offset} + p.]`;
 						return {
 							note: noteView(note, deps.projects),
 							content: noteFence({ ...note, body: window }) + footer,

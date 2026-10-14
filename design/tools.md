@@ -156,7 +156,9 @@ exposure, `mode: only`, and Cloudflare sandboxes.
   time, call count) plus the script's `text()`/`console` items and
   return value, in fetch's head+tail window (15k chars) with the full
   text spilled to `state/scriptcache/<sha>.txt` and the footer naming
-  the `read_file` call. When any nested `fetch` or `search` completed,
+  the `read_file` call. Unlike webcache spills, a scriptcache spill is
+  temporary — a later script's sweep may reclaim it, and the footer
+  says so. When any nested `fetch` or `search` completed,
   the body rides in `fenceUntrusted("web", …)` — slicing a fenced
   result strips its fence, and the script's output may quote the page
   verbatim. Untainted output stays bare: fencing local data too would

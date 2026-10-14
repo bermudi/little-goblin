@@ -418,6 +418,7 @@ describe("pass-keys status source contract (fixtures, not a live wallet)", () =>
 	});
 	test.each([
 		"!GOBLIN_PROBE=/missing/pass-keys get fixture BOT_TOKEN",
+		"!GOBLIN_PROBE+=/missing/pass-keys get fixture BOT_TOKEN",
 		"!#/missing/pass-keys get fixture BOT_TOKEN",
 	])("shell non-executables remain unverified without a snapshot probe (%#)", async (value) => {
 		const f = fixture();

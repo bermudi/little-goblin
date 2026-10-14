@@ -128,6 +128,7 @@ describe("pass-keys command recognition (installer/doctor shared grammar)", () =
 	test("shell assignments and comments are not executable words", () => {
 		for (const value of [
 			"!GOBLIN_PROBE=/missing/pass-keys get goblin-dev KEY",
+			"!GOBLIN_PROBE+=/missing/pass-keys get goblin-dev KEY",
 			"!_PROBE_2=/missing/pass-keys get goblin-dev KEY",
 			"!#/missing/pass-keys get goblin-dev KEY",
 		]) {

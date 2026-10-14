@@ -79,7 +79,7 @@ export function invokesPassCliDirectly(command: string): boolean {
 export function passKeysCommandExecutable(value: string): string | undefined {
 	if (!value.startsWith("!")) return undefined;
 	const executable = value.slice(1).match(/^[^\s;&|()"'`]+/)?.[0];
-	if (executable?.startsWith("#") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(executable ?? "")) {
+	if (executable?.startsWith("#") || /^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(executable ?? "")) {
 		return undefined;
 	}
 	return executable !== undefined && basename(executable) === "pass-keys" ? executable : undefined;

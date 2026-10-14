@@ -1,23 +1,55 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
 import {
 	ApiError,
+	clearToken,
 	forgetMemoryDocument,
 	getConfig,
 	getConversationConfig,
 	getMessages,
 	getOperatorConfig,
 	listMemoryDocuments,
+	loadToken,
 	patchConfig,
 	patchNote,
 	patchConversationConfig,
 	saveOperatorConfig,
+	saveToken,
 } from "./api.ts";
 
 const originalFetch = globalThis.fetch;
 afterEach(() => {
 	globalThis.fetch = originalFetch;
+});
+
+// sessionStorage, not localStorage — /t/ and /app/ are one origin, so
+// this only narrows exposure (the credential dies with the tab), it
+// does not isolate; pinning the scope here so a casual revert to
+// localStorage has to argue with a test.
+describe("token store", () => {
+	const win = new Window();
+	const originalSession = globalThis.sessionStorage;
+
+	beforeEach(() => {
+		win.sessionStorage.clear();
+		Reflect.set(globalThis, "sessionStorage", win.sessionStorage);
+	});
+
+	afterEach(() => {
+		if (originalSession !== undefined) globalThis.sessionStorage = originalSession;
+		else Reflect.deleteProperty(globalThis, "sessionStorage");
+	});
+
+	test("the token round-trips through session storage and clears clean", () => {
+		expect(loadToken()).toBeNull();
+		saveToken("tok-1");
+		expect(loadToken()).toBe("tok-1");
+		expect(win.sessionStorage.getItem("goblin.appToken")).toBe("tok-1");
+		clearToken();
+		expect(loadToken()).toBeNull();
+		expect(win.sessionStorage.getItem("goblin.appToken")).toBeNull();
+	});
 });
 
 describe("model setting scopes", () => {

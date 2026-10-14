@@ -701,6 +701,8 @@ export function Composer({
 	onStop,
 	quote,
 	focusSignal,
+	draftRestore,
+	onDraftRestored,
 }: {
 	token: string | null;
 	conversationId?: string;
@@ -719,6 +721,11 @@ export function Composer({
 	// "New conversation" click) — covers the already-mounted case that
 	// an autoFocus attribute can't.
 	focusSignal?: number;
+	// A fenced start's restored draft — the twin of `quote`: the payload
+	// carries n, each n applies once and reports via onDraftRestored, so
+	// a remount never re-applies a consumed restore over newer edits.
+	draftRestore?: { text: string; n: number } | null;
+	onDraftRestored?: () => void;
 }) {
 	const [draft, setDraft] = useState("");
 	const [notePickerOpen, setNotePickerOpen] = useState(false);
@@ -737,6 +744,20 @@ export function Composer({
 			requestAnimationFrame(() => ta.setSelectionRange(ta.value.length, ta.value.length));
 		}
 	}, [quote]);
+	// The restore twin of the quote effect — replaces rather than
+	// appends: the send that produced this signal had cleared the draft.
+	// Keyed on the payload only (like [quote] above): the report callback
+	// is fire-once bookkeeping, not an input.
+	useEffect(() => {
+		if (draftRestore == null || draftRestore.n === 0) return;
+		setDraft(draftRestore.text);
+		onDraftRestored?.();
+		const ta = textareaRef.current;
+		if (ta !== null) {
+			ta.focus();
+			requestAnimationFrame(() => ta.setSelectionRange(ta.value.length, ta.value.length));
+		}
+	}, [draftRestore]);
 	// An entry leaves the staged list (sent or removed) — its preview
 	// URL goes with it. A composer unmount revokes nothing: staged
 	// entries outlive any one composer (#118), and an undropped thumb

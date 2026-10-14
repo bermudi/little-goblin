@@ -117,6 +117,7 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
 		installGlobal("localStorage", win.localStorage);
+		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
@@ -302,6 +303,7 @@ describe("rail row actions and the pinned pool", () => {
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
 		installGlobal("localStorage", win.localStorage);
+		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
@@ -550,9 +552,13 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
 		installGlobal("localStorage", win.localStorage);
+		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		// The restore effect parks the cursor via rAF — must ride the
+		// happy-dom realm like the rest of the DOM globals here.
+		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		Reflect.set(win, "confirm", (message: string) => {
 			confirmCalls += 1;
@@ -1088,6 +1094,57 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(operatorChips()).toBe(0);
 	});
 
+	test("a start fenced by navigation hands the composer its input back", async () => {
+		win.history.replaceState(null, "", "/app/");
+		let releaseCreate!: () => void;
+		createGate = new Promise<void>((r) => (releaseCreate = r));
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await waitFor(() => container.querySelector("form.composer") !== null, "the composer");
+		await typeInto(
+			container.querySelector("form.composer textarea")!,
+			"hello",
+			win.HTMLTextAreaElement.prototype,
+		);
+		await act(async () => {
+			container
+				.querySelector("form.composer")!
+				.dispatchEvent(
+					new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+				);
+		});
+		await settle();
+		// The create is still in flight — the operator opens Settings,
+		// and that navigation is what fences the pending send.
+		await openPage("Settings");
+		await act(async () => releaseCreate());
+		await settle();
+		// No alert — deliberately: the fenced path sets no failure. The
+		// input must not be gone with it: back on the empty state the
+		// composer holds the cleared text, exactly once.
+		expect(container.textContent).not.toContain("Couldn't start a conversation");
+		const newChat = () =>
+			click(
+				[...container.querySelectorAll("nav button.new")].find(
+					(b) => b.textContent === "New conversation",
+				),
+			);
+		await newChat();
+		await waitFor(() => container.querySelector("form.composer") !== null, "the composer again");
+		const restored = container.querySelector("form.composer textarea")! as HTMLTextAreaElement;
+		expect(restored.value).toBe("hello");
+		// Away and back — a consumed restore must not replay over a fresh
+		// composer on remount.
+		await openPage("Settings");
+		await newChat();
+		await waitFor(() => container.querySelector("form.composer") !== null, "the composer third");
+		expect((container.querySelector("form.composer textarea")! as HTMLTextAreaElement).value).toBe(
+			"",
+		);
+	});
+
 	for (const direction of ["back", "forward"] as const) {
 		test(`declining real browser ${direction} preserves the history stack and draft`, async () => {
 			await mount();
@@ -1286,6 +1343,7 @@ describe("App telegram door", () => {
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
 		installGlobal("localStorage", win.localStorage);
+		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
@@ -1656,6 +1714,7 @@ describe("app projects surface", () => {
 		installGlobal("document", win.document);
 		installGlobal("navigator", win.navigator);
 		installGlobal("localStorage", win.localStorage);
+		installGlobal("sessionStorage", win.sessionStorage);
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
@@ -3425,5 +3484,171 @@ describe("app projects surface", () => {
 		expect(notePatches[0]!.id).toBe("n-beta");
 		expect(notePatches[0]!.ifMatch).toBe('"4"');
 		expect((notePatches[0]!.body as { body?: string }).body).toContain("beta bodyx");
+	});
+});
+
+// The refresh error path fences like its success path: a stale failure
+// resolving after a newer refresh settled must not paint "Couldn't
+// refresh the list." over a list that did refresh. The overlap is
+// routine — the gate effect, row actions, and startChat all refresh.
+describe("a stale refresh failure does not clobber a newer refresh", () => {
+	let win: Window;
+	let container: HTMLElement;
+	let root: Root | null = null;
+	let installed: string[] = [];
+	let created = false;
+	// Conversations GETs queue in order: [probe, refresh #1, refresh #2].
+	let gets: PromiseWithResolvers<Response>[] = [];
+	const realFetch = globalThis.fetch;
+
+	const installGlobal = (name: string, value: unknown) => {
+		Reflect.set(globalThis, name, value);
+		installed.push(name);
+	};
+
+	beforeEach(() => {
+		win = new Window();
+		const div = win.document.createElement("div");
+		win.document.body.appendChild(div);
+		container = div as unknown as HTMLElement;
+		installed = [];
+		created = false;
+		gets = [];
+		installGlobal("window", win);
+		installGlobal("document", win.document);
+		installGlobal("navigator", win.navigator);
+		installGlobal("localStorage", win.localStorage);
+		installGlobal("sessionStorage", win.sessionStorage);
+		installGlobal("Event", win.Event);
+		installGlobal("CustomEvent", win.CustomEvent);
+		installGlobal("getComputedStyle", win.getComputedStyle);
+		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+			if (url === "/api/app/conversations") {
+				if (method === "POST") {
+					created = true;
+					return Promise.resolve(jsonResponse({ id: "app/kept", title: null }));
+				}
+				const g = Promise.withResolvers<Response>();
+				gets.push(g);
+						return g.promise;
+			}
+			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
+			if (url.endsWith("/messages")) return Promise.resolve(jsonResponse({ messages: [] }));
+			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
+			if (url.endsWith("/chat"))
+				return Promise.resolve(
+					new Response("data: [DONE]\n\n", {
+						status: 200,
+						headers: {
+							"content-type": "text/event-stream",
+							"x-vercel-ai-ui-message-stream": "v1",
+						},
+					}),
+				);
+			return Promise.resolve(
+				jsonResponse({
+					model: "fixture/model",
+					thinking: "off",
+					favorites: [],
+					thinkingLevels: ["off"],
+				}),
+			);
+		}) as typeof fetch;
+	});
+
+	afterEach(async () => {
+		if (root !== null) {
+			await act(async () => {
+				root?.unmount();
+			});
+			root = null;
+		}
+		await win.happyDOM.close();
+		globalThis.fetch = realFetch;
+		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+		for (const name of installed) Reflect.deleteProperty(globalThis, name);
+		installed = [];
+	});
+
+	const settle = async () => {
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 30));
+		});
+	};
+
+	test("a failure landing after a settled refresh paints nothing", async () => {
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await settle();
+		// Probe queued. Answer it (trust mode — gate passes); refresh #1
+		// queues behind the flip.
+		expect(gets.length).toBe(1);
+		await act(async () => gets[0]!.resolve(jsonResponse({ conversations: [] })));
+		await settle();
+		expect(gets.length).toBe(2);
+		// Send from the empty state: the create resolves, selects the new
+		// conversation, and its refresh — the newer sequence — settles
+		// with the row.
+		await act(async () => {
+			const ta = container.querySelector("form.composer textarea")! as HTMLTextAreaElement;
+			ta.focus();
+			Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, "value")!.set!.call(
+				ta,
+				"hi",
+			);
+			ta.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+			ta.dispatchEvent(
+				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			);
+			container
+				.querySelector("form.composer")!
+				.dispatchEvent(
+					new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+				);
+		});
+		await settle();
+		expect(created).toBe(true);
+		// startChat's refresh — plus possibly one from the seeded turn's
+		// onTurnDone, which lands in the same settle window. Either way
+		// every GET after the held one carries a newer sequence.
+		expect(gets.length).toBeGreaterThanOrEqual(3);
+		await act(async () =>
+			gets[gets.length - 1]!.resolve(
+				jsonResponse({
+					conversations: [
+						{
+							id: "app/kept",
+							title: "kept chat",
+							preview: "",
+							createdAt: "2026-10-13T00:00:00Z",
+							updatedAt: "2026-10-13T00:00:00Z",
+							archivedAt: null,
+							pinnedAt: null,
+							projectId: null,
+						},
+					],
+				}),
+			),
+		);
+		await settle();
+		expect(container.textContent).toContain("kept chat");
+		// Only now does the stale failure land — after the newer refresh
+		// settled. It must paint nothing.
+		await act(async () =>
+			gets[1]!.resolve(
+				new Response(JSON.stringify({ error: "boom" }), {
+					status: 500,
+					headers: { "content-type": "application/json" },
+				}),
+			),
+		);
+		await settle();
+		expect(container.textContent).not.toContain("Couldn't refresh the list.");
+		expect(container.textContent).toContain("kept chat");
 	});
 });

@@ -3,12 +3,15 @@ import { App } from "./App.tsx";
 import { telegramDoor } from "./api.ts";
 import "./styles.css";
 
-// Telegram's SDK is fetched only on the mini-app door: on /app/ it would
-// execute a third-party script in the origin that holds the bearer token
-// (supply-chain surface for nothing — the PWA never reads it). Telegram's
-// own webviews inject the object before page scripts run, so the fetched
-// copy is a fallback for clients that don't; a failure or timeout leaves
-// initData empty and the door shows its notice — visible, not broken.
+// Telegram's SDK is fetched only on the mini-app door. /t/ and /app/ are
+// the same origin, so a compromised copy of this script could read
+// everything the PWA can, bearer token included — fetching it here only
+// narrows exposure (the PWA's tab never pulls it), it does not isolate;
+// the accepted residual is ruled on in design/telegram.md → Mini Apps.
+// Telegram's own webviews inject the object before page scripts run, so
+// the fetched copy is a fallback for clients that don't; a failure or
+// timeout leaves initData empty and the door shows its notice — visible,
+// not broken.
 async function boot(): Promise<void> {
 	if (telegramDoor() && window.Telegram === undefined) {
 		await new Promise<void>((resolve) => {

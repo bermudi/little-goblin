@@ -166,6 +166,17 @@ failing message by message.
   backend guessed. Telegram mode never touches the app door — no token
   probe, no conversation calls — and opened outside Telegram (empty
   initData) it shows a notice instead of a form that cannot save.
+  **Same-origin residual (ruling 2026-10-13).** Both doors serve one
+  bundle from one origin, so origin-scoped client storage is shared:
+  any script executing in the origin — including a compromised
+  `telegram.org/js/telegram-web-app.js`, which the /t/ door fetches as
+  a fallback — can read the PWA's bearer credential. The mitigations
+  narrow exposure, they do not isolate: the token lives in
+  `sessionStorage` (dies with the tab, never persists across browser
+  sessions) and the SDK is fetched only on the /t/ door. Accepted for
+  a single-operator agent that already hands that SDK its initData;
+  the clean fix — one origin per door — is declined as
+  disproportionate.
   In-door navigation is component state with no history entries; the
   webview's back gesture closes the mini app natively. The unsaved-draft
   protection is two layers of the same contract: the in-door confirm

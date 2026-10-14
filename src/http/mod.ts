@@ -264,8 +264,10 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 		// the same built client as /app, at the deep links the menu
 		// button and history carry. The page is public like /app's —
 		// telegram mode (client-side: the /t/ prefix) authenticates with
-		// initData against /api/*. The page scope is deliberate
-		// (settings + memories); everything else under /t/ is a 404.
+		// initData against /api/*. Same origin as /app: client-side this
+		// is one security boundary — the door split narrows exposure, it
+		// does not isolate. The page scope is deliberate (settings +
+		// memories); everything else under /t/ is a 404.
 		if (
 			url.pathname === "/t" ||
 			url.pathname === "/t/" ||

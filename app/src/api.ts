@@ -46,18 +46,21 @@ import type {
 	ThinkingLevelsResponse,
 } from "../../src/http/operator-wire.ts";
 
+// sessionStorage, not localStorage — /t/ and /app/ are one origin, so
+// nothing origin-scoped isolates this key from the mini app's scripts;
+// the win is only that the credential dies with the tab.
 const TOKEN_KEY = "goblin.appToken";
 
 export function loadToken(): string | null {
-	return localStorage.getItem(TOKEN_KEY);
+	return sessionStorage.getItem(TOKEN_KEY);
 }
 
 export function saveToken(token: string): void {
-	localStorage.setItem(TOKEN_KEY, token);
+	sessionStorage.setItem(TOKEN_KEY, token);
 }
 
 export function clearToken(): void {
-	localStorage.removeItem(TOKEN_KEY);
+	sessionStorage.removeItem(TOKEN_KEY);
 }
 
 export class ApiError extends Error {

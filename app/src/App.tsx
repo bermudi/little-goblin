@@ -15,6 +15,7 @@ import {
 	telegramDoor,
 } from "./api.ts";
 import { ChatView, Composer, type StagedNote, type StagedUpload } from "./ChatView.tsx";
+import type { AttachmentRef } from "../../src/agent/attachments.ts";
 import { SettingsView } from "./SettingsView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
 import { DelegationsView, ProgramsView, StatusView } from "./OperatorViews.tsx";
@@ -172,7 +173,8 @@ export function deepLinkConv(pathname: string): string | null {
 }
 
 // The token is the operator-pasted credential (the value behind the
-// auth.jsonl record config.appToken names), kept in localStorage. When
+// auth.jsonl record config.appToken names), kept in sessionStorage — it
+// dies with the tab, so a new browser session re-asks for it. When
 // the server runs trust mode (appToken unset) no credential exists —
 // App probes unauthenticated first so the gate never shows.
 
@@ -625,6 +627,12 @@ function AppShell() {
 	const [composerFocus, setComposerFocus] = useState(0);
 	const [starting, setStarting] = useState(false);
 	const [startFailed, setStartFailed] = useState(false);
+	// A fenced start hands the cleared composer input back: the text
+	// rides here, chips go straight into the staged state they were
+	// cleared from (restoreStartInput). n bumps per restore — the
+	// composer applies each n once and reports, so a later remount
+	// can't re-apply a consumed restore over newer edits.
+	const [draftRestore, setDraftRestore] = useState<{ text: string; n: number } | null>(null);
 	// Navigation (or a newer start) fences off a stale failure — the
 	// alert belongs to the page that saw the failed send, nowhere else.
 	const startSeq = useRef(0);
@@ -736,6 +744,9 @@ function AppShell() {
 			setListError(null);
 			setRowError(null);
 		} catch (err) {
+			// Same fence as the success path — a stale failure arriving
+			// after a newer refresh settled must not paint over its state.
+			if (seq !== listSeq.current) return;
 			setListError(err instanceof ApiError && err.status === 401 ? "unauthorized" : "list failed");
 		}
 	}, [token]);
@@ -1001,6 +1012,35 @@ function AppShell() {
 	// One start path for every composer — the empty state passes null,
 	// a project page its id, and both ride the same create → seed →
 	// select flow (design/projects.md: binding is fixed at creation).
+	// Composer.send clears itself before onSend, so a start fenced by a
+	// mid-flight navigation must reassemble the input from the parts or
+	// the operator's message is simply gone. The parts' shape is this
+	// session's own send assembly (Composer.send), not wire input.
+	const restoreStartInput = (parts: UIMessage["parts"]) => {
+		const text = parts
+			.filter((p) => p.type === "text")
+			.map((p) => p.text)
+			.join("\n\n");
+		if (text !== "") setDraftRestore((prev) => ({ text, n: (prev?.n ?? 0) + 1 }));
+		const uploads: StagedUpload[] = [];
+		const notes: StagedNote[] = [];
+		for (const p of parts) {
+			if (p.type === "data-attachment") {
+				const data = p.data as AttachmentRef & { speech?: boolean };
+				uploads.push({
+					key: crypto.randomUUID(),
+					ref: data,
+					...(data.speech === true ? { speech: true } : {}),
+				});
+			} else if (p.type === "data-note") {
+				const data = p.data as { id: string; title: string };
+				notes.push({ key: crypto.randomUUID(), id: data.id, title: data.title });
+			}
+		}
+		if (uploads.length > 0) setStaged((prev) => [...prev, ...uploads]);
+		if (notes.length > 0) setStagedNotes((prev) => [...prev, ...notes]);
+	};
+
 	const startChat = async (projectId: string | null, parts: UIMessage["parts"]) => {
 		const seq = ++startSeq.current;
 		setStarting(true);
@@ -1013,7 +1053,10 @@ function AppShell() {
 			// A navigation while the create was in flight bumped the
 			// sequence — this continuation closes over the old page, so
 			// its select would skip the dirty-settings guard entirely.
-			if (seq !== startSeq.current) return;
+			if (seq !== startSeq.current) {
+				restoreStartInput(parts);
+				return;
+			}
 			setSeed({ id: created.id, parts });
 			select(created.id);
 			await refresh();
@@ -1334,6 +1377,8 @@ function AppShell() {
 										setStaged={setStaged}
 										stagedNotes={stagedNotes}
 										setStagedNotes={setStagedNotes}
+										draftRestore={draftRestore}
+										onDraftRestored={() => setDraftRestore(null)}
 										onSend={(parts) => void startChat(currentProject.id, parts)}
 									/>
 								) : (
@@ -1368,6 +1413,8 @@ function AppShell() {
 								stagedNotes={stagedNotes}
 								setStagedNotes={setStagedNotes}
 								focusSignal={composerFocus}
+								draftRestore={draftRestore}
+								onDraftRestored={() => setDraftRestore(null)}
 								onSend={(parts) => void startConversation(parts)}
 							/>
 						</div>

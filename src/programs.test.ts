@@ -11,6 +11,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setLogFile, setLogWriter } from "./log.ts";
 import {
 	latestFireAtOrBefore,
 	nextFire,
@@ -100,6 +101,57 @@ describe("nextFire", () => {
 				new Date("2026-09-20T00:00:00Z"),
 			),
 		).toThrow("is after the scan time");
+	});
+
+	// The fast path declines to the walk on any probe throw — that is the
+	// designed answer for an unexpressible boundary, but the reason must
+	// be logged rather than swallowed: an unexpected throw is
+	// indistinguishable from a cron-parser regression otherwise.
+	test("a declined catch-up probe logs the reason before the walk answers", () => {
+		const captured: string[] = [];
+		setLogFile("catchup-decline-test.log");
+		setLogWriter((_p, line) => captured.push(line));
+		let latest: Date;
+		try {
+			// through+1ms crosses Date's range — the candidate probe's parse
+			// throws "unhandled timestamp", the walk answers instead.
+			const firstMissed = nextFire("* * * * *", new Date("2026-09-20T09:00:00"));
+			latest = latestFireAtOrBefore("* * * * *", firstMissed, new Date(8640000000000000));
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		// The walk ran to its cap: last walked occurrence stands.
+		expect(latest!.getTime()).toBeGreaterThan(0);
+		const declined = captured
+			.map((l) => JSON.parse(l) as Record<string, unknown>)
+			.filter(
+				(l) => l.msg === "schedule catch-up probe declined — falling back to the forward walk",
+			);
+		expect(declined).toHaveLength(1);
+		expect(declined[0]).toMatchObject({ level: "warn", cron: "* * * * *" });
+		expect(String(declined[0]!.error)).toContain("unhandled timestamp");
+	});
+
+	test("an invalid stored cron logs the decline, then still fails loud", () => {
+		const captured: string[] = [];
+		setLogFile("catchup-decline-bad-test.log");
+		setLogWriter((_p, line) => captured.push(line));
+		try {
+			expect(() =>
+				latestFireAtOrBefore("not a cron", new Date("2026-09-20T09:00:00"), NOW),
+			).toThrow("invalid cron");
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		const declined = captured
+			.map((l) => JSON.parse(l) as Record<string, unknown>)
+			.filter(
+				(l) => l.msg === "schedule catch-up probe declined — falling back to the forward walk",
+			);
+		expect(declined).toHaveLength(1);
+		expect(String(declined[0]!.error)).toContain("invalid cron");
 	});
 
 	// Around DST transitions cron-parser's backward lookup walks a

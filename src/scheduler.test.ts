@@ -334,6 +334,188 @@ describe("scheduler", () => {
 		await closeSinks(h);
 	});
 
+	test("a fence for a deleted program is dropped by the scan — never retried against the gone row", async () => {
+		const h = harness();
+		const createdAt = new Date("2026-09-20T07:05:00");
+		const scanAt = new Date("2026-09-20T10:05:00");
+		const program = h.deps.programs.create(
+			{
+				name: "doomed",
+				cron: "*/30 * * * *",
+				charter: "check once",
+				address: { chatId: -100, threadId: 7 },
+			},
+			createdAt,
+		);
+		let failing = true;
+		const markCalls: number[] = [];
+		const flakyPrograms = {
+			...h.deps.programs,
+			markRan: (id: number, now: Date) => {
+				markCalls.push(id);
+				if (failing) throw new Error("SQLITE_BUSY");
+				h.deps.programs.markRan(id, now);
+			},
+		};
+		const deps: SchedulerDeps = { ...h.deps, programs: flakyPrograms };
+		fireScheduled(deps, program, scanAt);
+		expect(h.submitted).toHaveLength(1);
+		// The operator deletes the program while its consume write is
+		// fenced — the occurrence can never re-offer, so the fence is moot.
+		h.deps.programs.remove(program.id);
+		failing = false;
+		const captured: string[] = [];
+		setLogFile("fence-drop-delete-test.log");
+		setLogWriter((_p, line) => captured.push(line));
+		try {
+			const s = startScheduler(deps, 3_600_000); // boot scan reconciles
+			s.stop();
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		const lines = captured.map((l) => JSON.parse(l) as Record<string, unknown>);
+		expect(
+			lines.find(
+				(l) =>
+					l.msg === "program run-mark fence dropped — program deleted, disabled, or rescheduled",
+			),
+		).toMatchObject({ program: program.id });
+		// The stale write is dropped, not attempted against the dead row —
+		// the only markRan call ever made was the original failing one.
+		expect(markCalls).toEqual([program.id]);
+		expect(h.submitted).toHaveLength(1);
+		await closeSinks(h);
+	});
+
+	test("a fence for a disabled program is dropped — re-enable schedules a clean occurrence", async () => {
+		const h = harness();
+		const createdAt = new Date("2026-09-20T07:05:00");
+		const scanAt = new Date("2026-09-20T10:05:00");
+		const program = h.deps.programs.create(
+			{
+				name: "paused",
+				cron: "*/30 * * * *",
+				charter: "check once",
+				address: { chatId: -100, threadId: 7 },
+			},
+			createdAt,
+		);
+		let failing = true;
+		const markCalls: number[] = [];
+		const flakyPrograms = {
+			...h.deps.programs,
+			markRan: (id: number, now: Date) => {
+				markCalls.push(id);
+				if (failing) throw new Error("SQLITE_BUSY");
+				h.deps.programs.markRan(id, now);
+			},
+		};
+		const deps: SchedulerDeps = { ...h.deps, programs: flakyPrograms };
+		fireScheduled(deps, program, scanAt);
+		expect(h.submitted).toHaveLength(1);
+		h.deps.programs.update(program.id, { enabled: false }, scanAt);
+		failing = false;
+		const captured: string[] = [];
+		setLogFile("fence-drop-disable-test.log");
+		setLogWriter((_p, line) => captured.push(line));
+		try {
+			const s = startScheduler(deps, 3_600_000);
+			s.stop();
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		const lines = captured.map((l) => JSON.parse(l) as Record<string, unknown>);
+		expect(
+			lines.find(
+				(l) =>
+					l.msg === "program run-mark fence dropped — program deleted, disabled, or rescheduled",
+			),
+		).toMatchObject({ program: program.id });
+		// A disabled row never reaches the retry — the fence is gone, not
+		// held against a program that cannot fire.
+		expect(markCalls).toEqual([program.id]);
+		// Re-enable re-bases the schedule; the next occurrence fires and
+		// consumes normally — the dropped fence left no residue.
+		const reEnabled = h.deps.programs.update(
+			program.id,
+			{ enabled: true },
+			new Date("2026-09-21T09:00:00"),
+		)!;
+		const fireAt = new Date(reEnabled.nextRun!);
+		fireScheduled(deps, h.deps.programs.get(program.id)!, fireAt);
+		expect(h.submitted).toHaveLength(2);
+		expect(h.deps.programs.get(program.id)!.lastRun).toBe(fireAt.toISOString());
+		await closeSinks(h);
+	});
+
+	test("a stale fence drops when the row's occurrence moved — the new occurrence fences on its own write failure", async () => {
+		const h = harness();
+		const createdAt = new Date("2026-09-20T07:05:00");
+		const scanAt = new Date("2026-09-20T10:05:00");
+		const program = h.deps.programs.create(
+			{
+				name: "moved",
+				cron: "*/30 * * * *",
+				charter: "check once",
+				address: { chatId: -100, threadId: 7 },
+			},
+			createdAt,
+		);
+		let failing = true;
+		const flakyPrograms = {
+			...h.deps.programs,
+			markRan: (id: number, now: Date) => {
+				if (failing) throw new Error("SQLITE_BUSY");
+				h.deps.programs.markRan(id, now);
+			},
+		};
+		const deps: SchedulerDeps = { ...h.deps, programs: flakyPrograms };
+		fireScheduled(deps, program, scanAt);
+		expect(h.submitted).toHaveLength(1);
+		// An edit lands while the write is fenced: next_run is recomputed
+		// off the edit's now — the fenced occurrence no longer exists.
+		const edited = h.deps.programs.update(
+			program.id,
+			{ cron: "15 9 * * *" },
+			new Date("2026-09-20T10:10:00"),
+		)!;
+		expect(edited.nextRun).not.toBe(program.nextRun);
+		failing = false;
+		const captured: string[] = [];
+		setLogFile("fence-drop-moved-test.log");
+		setLogWriter((_p, line) => captured.push(line));
+		try {
+			// The row is due again on its new occurrence: the stale fence
+			// drops instead of writing the old cursor over the new schedule.
+			const fireAt = new Date(edited.nextRun!);
+			fireScheduled(deps, h.deps.programs.get(program.id)!, fireAt);
+			expect(h.submitted).toHaveLength(2);
+			expect(h.deps.programs.get(program.id)!.lastRun).toBe(fireAt.toISOString());
+			const lines = captured.map((l) => JSON.parse(l) as Record<string, unknown>);
+			expect(
+				lines.find((l) => l.msg === "program run-mark fence dropped — the row's occurrence moved"),
+			).toMatchObject({ program: program.id, fencedNextRun: program.nextRun });
+			// And the map still bounds itself per program: a write failure
+			// on a LATER occurrence fences that one — retried, never refired.
+			const nextDue = new Date(h.deps.programs.get(program.id)!.nextRun!);
+			failing = true;
+			fireScheduled(deps, h.deps.programs.get(program.id)!, nextDue);
+			expect(h.submitted).toHaveLength(3);
+			fireScheduled(deps, h.deps.programs.get(program.id)!, new Date(nextDue.getTime() + 30_000));
+			expect(h.submitted).toHaveLength(3);
+			failing = false;
+			fireScheduled(deps, h.deps.programs.get(program.id)!, new Date(nextDue.getTime() + 60_000));
+			expect(h.submitted).toHaveLength(3);
+			expect(h.deps.programs.get(program.id)!.lastRun).toBe(nextDue.toISOString());
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		await closeSinks(h);
+	});
+
 	// DST regression (review 2026-10-12): the grace anchor must be the
 	// scheduler's forward occurrence sequence — the steps that persist
 	// next_run — never a backward lookup, which disagrees across

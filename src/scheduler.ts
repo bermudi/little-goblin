@@ -45,6 +45,7 @@ const TICK_MS = 30_000;
 export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler {
 	const scan = (): void => {
 		const now = new Date();
+		reconcilePendingMarks(deps);
 		for (const program of deps.programs.due(now)) {
 			// One bad row must not take the scan down with it — but it
 			// surfaces as an error line, never a swallow.
@@ -85,6 +86,13 @@ const RETRY_DELAYS_MS = [5, 15, 30].map((m) => m * 60_000);
 // by a later fire (key = `${id}:${occurrenceMs}`).
 const fireRetries = new Map<string, ReturnType<typeof setTimeout>>();
 
+interface PendingCursorWrite {
+	/** The fenced occurrence — the due row's next_run at fire time. */
+	nextRun: string;
+	/** The original fire time the retried markRan must still write with. */
+	at: Date;
+}
+
 // The consume record is "submit first, then markRan" (design/programs.md
 // — one attempt per occurrence). When the markRan *write* fails after
 // the submit landed, the row stays due and every tick would re-submit
@@ -93,9 +101,41 @@ const fireRetries = new Map<string, ReturnType<typeof setTimeout>>();
 // retries the cursor write (with the original fire time, so occurrences
 // that came due during the outage coalesce the usual way) but never
 // re-fires; a restart re-offers the still-due row once — the same
-// at-least-once a crash gets. Keyed per store so test stores can't
-// share fences.
-const pendingCursorWrites = new WeakMap<ProgramsStore, Map<string, Date>>();
+// at-least-once a crash gets. One record per program id — a second
+// fence for the same program cannot arise while the first holds (the
+// row stays due, and every due pass takes the retry branch) — and the
+// scan drops entries whose row was deleted, disabled, or rescheduled
+// underneath them, so a fence can't outlive the program that created
+// it. Keyed per store so test stores can't share fences.
+const pendingCursorWrites = new WeakMap<ProgramsStore, Map<number, PendingCursorWrite>>();
+
+// A fence goes moot when its row moves past it — deleted, disabled, or
+// rescheduled — because due() never surfaces it for the retry branch
+// again. The scan drops those entries itself so a dead program id can't
+// linger; a still-due row keeps its fence for the retry below. Writing
+// a stale markRan back is NOT the cleanup: it would clobber the new
+// next_run with a cursor computed off the old fire time.
+function reconcilePendingMarks(deps: SchedulerDeps): void {
+	const pending = pendingCursorWrites.get(deps.programs);
+	if (pending === undefined) return;
+	for (const [id, mark] of pending) {
+		let fresh: Program | null;
+		try {
+			fresh = deps.programs.get(id);
+		} catch (err) {
+			// A wedged read keeps the entry — the next scan retries.
+			log.error("program run-mark reconcile failed", err, { program: id });
+			continue;
+		}
+		if (fresh !== null && fresh.enabled && fresh.nextRun === mark.nextRun) continue;
+		pending.delete(id);
+		log.info("program run-mark fence dropped — program deleted, disabled, or rescheduled", {
+			program: id,
+			...(fresh === null ? {} : { name: fresh.name }),
+			fencedNextRun: mark.nextRun,
+		});
+	}
+}
 
 // Cron: missed occurrences coalesce against the latest occurrence due
 // at this scan — anchored at the due row's next_run and walked with the
@@ -117,26 +157,38 @@ export function fireScheduled(
 	if (program.cron === null || program.nextRun === null) {
 		throw new Error(`due program ${program.id} has no scheduled occurrence`);
 	}
-	const occurrenceKey = `${program.id}:${program.nextRun}`;
-	const pendingMark = pendingCursorWrites.get(deps.programs)?.get(occurrenceKey);
+	const pendingMark = pendingCursorWrites.get(deps.programs)?.get(program.id);
 	if (pendingMark !== undefined) {
-		// The submit landed but the cursor write didn't — retry the write
-		// every tick; the occurrence itself is never re-fired.
-		try {
-			deps.programs.markRan(program.id, pendingMark);
-			pendingCursorWrites.get(deps.programs)?.delete(occurrenceKey);
-			log.info("program run-mark write recovered", {
-				program: program.id,
-				name: program.name,
-			});
-		} catch (err) {
-			log.debug("program run-mark write still failing", {
-				program: program.id,
-				name: program.name,
-				error: String(err),
-			});
+		if (pendingMark.nextRun === program.nextRun) {
+			// The submit landed but the cursor write didn't — retry the
+			// write every tick; the occurrence itself is never re-fired.
+			try {
+				deps.programs.markRan(program.id, pendingMark.at);
+				pendingCursorWrites.get(deps.programs)?.delete(program.id);
+				log.info("program run-mark write recovered", {
+					program: program.id,
+					name: program.name,
+				});
+			} catch (err) {
+				log.debug("program run-mark write still failing", {
+					program: program.id,
+					name: program.name,
+					error: String(err),
+				});
+			}
+			return;
 		}
-		return;
+		// The fenced occurrence is gone — an edit or re-enable rewrote
+		// next_run while the write was pending. Retrying the stale write
+		// would clobber the new schedule; this due row is a different
+		// occurrence and fires normally.
+		pendingCursorWrites.get(deps.programs)?.delete(program.id);
+		log.info("program run-mark fence dropped — the row's occurrence moved", {
+			program: program.id,
+			name: program.name,
+			fencedNextRun: pendingMark.nextRun,
+			nextRun: program.nextRun,
+		});
 	}
 	const scheduledFor = latestFireAtOrBefore(program.cron, new Date(program.nextRun), now);
 	const lateMs = Math.max(0, now.getTime() - scheduledFor.getTime());
@@ -173,7 +225,7 @@ export function fireScheduled(
 				pending = new Map();
 				pendingCursorWrites.set(deps.programs, pending);
 			}
-			pending.set(occurrenceKey, now);
+			pending.set(program.id, { nextRun: program.nextRun, at: now });
 			log.error(
 				"program run-mark write failed — occurrence fenced until the store accepts it",
 				err,

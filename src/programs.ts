@@ -197,9 +197,16 @@ export function latestFireAtOrBefore(cron: string, firstMissed: Date, through: D
 				return cand;
 			}
 		}
-	} catch {
+	} catch (err) {
 		// A boundary with no expressible occurrence (e.g. year bounds)
-		// declines to the walk rather than failing the catch-up.
+		// declines to the walk rather than failing the catch-up — but the
+		// reason must surface: an unexpected throw here swallowed whole
+		// would be indistinguishable from a cron-parser regression.
+		log.warn("schedule catch-up probe declined — falling back to the forward walk", err, {
+			cron,
+			firstMissed: firstMissed.toISOString(),
+			through: through.toISOString(),
+		});
 	}
 	let latest = firstMissed.getTime();
 	let at = firstMissed;

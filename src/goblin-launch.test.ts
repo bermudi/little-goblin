@@ -24,8 +24,9 @@ afterEach(() => {
 
 // id answers -u/-un from the caller's FAKE_UID/FAKE_USER. setpriv only
 // records its argv — it must never see the app spawn around it.
-// chromium records the identity and env it actually got.
-function stubs(dir: string): string {
+// chromium records the identity and env it actually got; a chromiumBody
+// overrides the whole stub (e.g. a crash on startup).
+function stubs(dir: string, chromiumBody?: string): string {
 	const bin = join(dir, "bin");
 	mkdirSync(bin, { recursive: true });
 	writeFileSync(
@@ -38,7 +39,8 @@ function stubs(dir: string): string {
 	});
 	writeFileSync(
 		join(bin, "chromium"),
-		'#!/bin/sh\n{ printf "user=%s\\n" "$(id -un)"; printf "DISPLAY=%s\\n" "${DISPLAY:-unset}"; printf "DBUS=%s\\n" "${DBUS_SESSION_BUS_ADDRESS:-unset}"; printf "HOME=%s\\n" "${HOME:-unset}"; printf "XDG=%s\\n" "${XDG_RUNTIME_DIR:-unset}"; printf "argv=%s\\n" "$*"; } > "${STUB_LOG}.app"\n',
+		chromiumBody ??
+			'#!/bin/sh\n{ printf "user=%s\\n" "$(id -un)"; printf "DISPLAY=%s\\n" "${DISPLAY:-unset}"; printf "DBUS=%s\\n" "${DBUS_SESSION_BUS_ADDRESS:-unset}"; printf "HOME=%s\\n" "${HOME:-unset}"; printf "XDG=%s\\n" "${XDG_RUNTIME_DIR:-unset}"; printf "argv=%s\\n" "$*"; } > "${STUB_LOG}.app"\n',
 		{ mode: 0o755 },
 	);
 	return bin;
@@ -55,14 +57,19 @@ async function readWhenLanded(path: string, ms = 3000): Promise<string | null> {
 
 // The launcher's own environment is poisoned with attacker values —
 // every assertion below expects the fixed constants, never these.
+// GOBLIN_LAUNCH_LOG_DIR points the owned app log at the run's tmp dir
+// (the /run/desk default only exists inside the image).
 function run(
 	args: string[],
 	who: { uid: string; user: string },
-): Promise<{ code: number; err: string; log: string }> {
+	opts?: { chromiumBody?: string },
+): Promise<{ code: number; err: string; log: string; logDir: string }> {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-launch-"));
 	dirs.push(dir);
-	const bin = stubs(dir);
+	const bin = stubs(dir, opts?.chromiumBody);
 	const log = join(dir, "stub");
+	const logDir = join(dir, "launch-logs");
+	mkdirSync(logDir, { recursive: true });
 	const proc = Bun.spawn(["/bin/sh", SCRIPT, ...args], {
 		env: {
 			PATH: `${bin}:/usr/bin:/bin`,
@@ -75,19 +82,20 @@ function run(
 			DBUS_SESSION_BUS_ADDRESS: "unix:path=/tmp/evil-bus",
 			HOME: "/tmp/evil",
 			XDG_RUNTIME_DIR: "/tmp/evil",
+			GOBLIN_LAUNCH_LOG_DIR: logDir,
 		},
 		stdout: "pipe",
 		stderr: "pipe",
 	});
 	return (async () => {
 		const [err, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
-		return { code, err, log };
+		return { code, err, log, logDir };
 	})();
 }
 
 describe("goblin-launch", () => {
 	test("a root invocation detaches through setpriv to the fixed desk identity and session env", async () => {
-		const { code, log } = await run(["chromium", "https://example.com/"], {
+		const { code, log, logDir } = await run(["chromium", "https://example.com/"], {
 			uid: "0",
 			user: "root",
 		});
@@ -103,6 +111,11 @@ describe("goblin-launch", () => {
 			"DISPLAY=:99",
 			"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/desk/bus",
 			"XDG_RUNTIME_DIR=/home/desk/.runtime",
+			`GOBLIN_LAUNCH_LOG=${logDir}/goblin-launch-chromium.log`,
+			"/bin/sh",
+			"-c",
+			'exec "$@" >>"${GOBLIN_LAUNCH_LOG}" 2>&1',
+			"goblin-launch",
 			"chromium",
 			"--force-renderer-accessibility",
 			"https://example.com/",
@@ -144,6 +157,26 @@ describe("goblin-launch", () => {
 		expect(err).toContain("refusing to detach");
 		expect(await readWhenLanded(`${log}.setpriv`, 300)).toBeNull();
 		expect(await readWhenLanded(`${log}.app`, 300)).toBeNull();
+	});
+
+	// The finding behind the owned log: the detached app's startup
+	// diagnostics used to die on /dev/null. Now they land in
+	// <logdir>/goblin-launch-chromium.log even when the app crashes
+	// before its first window, and the launcher still returns cleanly.
+	// Exercised on the desk path — the setpriv stub records argv
+	// without exec'ing it, so the root path's coverage is the argv
+	// pin above (identical redirect shape).
+	test("a chromium crash on startup lands in the owned app log", async () => {
+		const { code, logDir } = await run(
+			["chromium", "https://example.com/"],
+			{ uid: "1000", user: "desk" },
+			{
+				chromiumBody: '#!/bin/sh\necho "zygote_linux.cc: failed to enter sandbox" >&2\nexit 42\n',
+			},
+		);
+		expect(code).toBe(0);
+		const captured = await readWhenLanded(`${logDir}/goblin-launch-chromium.log`);
+		expect(captured).toBe("zygote_linux.cc: failed to enter sandbox\n");
 	});
 
 	test("the whitelist still refuses non-url argv and unknown apps", async () => {

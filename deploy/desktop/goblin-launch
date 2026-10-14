@@ -10,25 +10,46 @@ set -eu
 
 DESK_USER=desk
 DESK_HOME=/home/desk
+# The detached app's stdout/stderr land in an owned per-app log —
+# /dev/null made a startup crash invisible to every later debugging
+# pass. The detached context opens the file itself, so the log is
+# desk-owned under any caller; the launcher's own fds stay /dev/null
+# so the spawning exec returns at once. The dir is the fixed session
+# dir; the override exists for the stubbed test — prod never sets it.
+LOG_DIR="${GOBLIN_LAUNCH_LOG_DIR:-/run/desk}"
 
 run_detached() {
 	if [ "$(id -u)" = "0" ]; then
+		via=root
+	elif [ "$(id -un)" = "${DESK_USER}" ]; then
+		via=desk
+	else
+		echo "goblin-launch: refusing to detach as '$(id -un)' — run as root or ${DESK_USER}" >&2
+		exit 64
+	fi
+	if [ ! -d "${LOG_DIR}" ]; then
+		echo "goblin-launch: ${LOG_DIR} is missing — nowhere to put the app log" >&2
+		exit 1
+	fi
+	log="${LOG_DIR}/goblin-launch-$1.log"
+	if [ "${via}" = "root" ]; then
 		setpriv --reuid="${DESK_USER}" --regid="${DESK_USER}" --clear-groups \
 			--reset-env \
 			env HOME="${DESK_HOME}" \
 				DISPLAY=":99" \
 				DBUS_SESSION_BUS_ADDRESS="unix:path=/run/desk/bus" \
 				XDG_RUNTIME_DIR="${DESK_HOME}/.runtime" \
-				"$@" </dev/null >/dev/null 2>&1 &
-	elif [ "$(id -un)" = "${DESK_USER}" ]; then
+				GOBLIN_LAUNCH_LOG="${log}" \
+				/bin/sh -c 'exec "$@" >>"${GOBLIN_LAUNCH_LOG}" 2>&1' \
+				goblin-launch "$@" </dev/null >/dev/null 2>&1 &
+	else
 		env HOME="${DESK_HOME}" \
 			DISPLAY=":99" \
 			DBUS_SESSION_BUS_ADDRESS="unix:path=/run/desk/bus" \
 			XDG_RUNTIME_DIR="${DESK_HOME}/.runtime" \
-			"$@" </dev/null >/dev/null 2>&1 &
-	else
-		echo "goblin-launch: refusing to detach as '$(id -un)' — run as root or ${DESK_USER}" >&2
-		exit 64
+			GOBLIN_LAUNCH_LOG="${log}" \
+			/bin/sh -c 'exec "$@" >>"${GOBLIN_LAUNCH_LOG}" 2>&1' \
+			goblin-launch "$@" </dev/null >/dev/null 2>&1 &
 	fi
 }
 

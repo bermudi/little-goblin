@@ -79,6 +79,7 @@ describe("navigation races: late completions", () => {
 	let noteBodies: Record<string, string>;
 	let posts: { url: string; body: unknown }[];
 	let confirmCalls: number;
+	let deletedConversations: string[];
 	// Held replies — a POST waits on its gate until the test releases
 	// it; pendingGates resolve in afterEach so a failed assertion can
 	// never strand a pending mocked fetch.
@@ -105,6 +106,7 @@ describe("navigation races: late completions", () => {
 		noteBodies = {};
 		posts = [];
 		confirmCalls = 0;
+		deletedConversations = [];
 		convCreateHold = null;
 		projCreateHold = null;
 		noteCreateHold = null;
@@ -146,6 +148,10 @@ describe("navigation races: late completions", () => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
 			const body = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined;
+			if (method === "DELETE" && url.startsWith("/api/app/conversations/")) {
+				deletedConversations.push(url);
+				return Promise.resolve(jsonResponse({ ok: true }));
+			}
 			if (url === "/api/app/conversations") {
 				if (method === "POST") {
 					posts.push({ url, body });
@@ -510,6 +516,82 @@ describe("navigation races: late completions", () => {
 		await settle();
 		expect(win.location.pathname).toBe("/app/n/n-new");
 		await waitFor(() => container.querySelector(".note-title") !== null, "new note");
+	});
+
+	test("a cancelled project start restores only its origin, preserves the destination draft, and removes its row", async () => {
+		projs = [projRow("Alpha"), projRow("Beta")];
+		win.history.replaceState(null, "", "/app/p/p-alpha");
+		await mount();
+		const gate = hold();
+		convCreateHold = gate.promise;
+		const composer = () => container.querySelector<HTMLTextAreaElement>(".composer textarea")!;
+		await typeInto(composer(), "Alpha message", win.HTMLTextAreaElement.prototype);
+		await act(async () => {
+			composer().dispatchEvent(
+				new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }) as unknown as Event,
+			);
+		});
+		await settle();
+		await click(
+			[...container.querySelectorAll(".rail-projects .proj")].find((b) => b.textContent === "Beta"),
+		);
+		await typeInto(composer(), "Beta draft", win.HTMLTextAreaElement.prototype);
+		gate.resolve();
+		await settle();
+		expect(composer().value).toBe("Beta draft");
+		expect(deletedConversations).toEqual(["/api/app/conversations/minted"]);
+		await click(
+			[...container.querySelectorAll(".rail-projects .proj")].find(
+				(b) => b.textContent === "Alpha",
+			),
+		);
+		expect(composer().value).toBe("Alpha message");
+	});
+
+	test("restoration preserves edits typed in the originating composer after its send", async () => {
+		projs = [projRow("Alpha"), projRow("Beta")];
+		win.history.replaceState(null, "", "/app/p/p-alpha");
+		await mount();
+		const gate = hold();
+		convCreateHold = gate.promise;
+		const composer = () => container.querySelector<HTMLTextAreaElement>(".composer textarea")!;
+		await typeInto(composer(), "sent message", win.HTMLTextAreaElement.prototype);
+		await act(async () => {
+			composer().dispatchEvent(
+				new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }) as unknown as Event,
+			);
+		});
+		await click(
+			[...container.querySelectorAll(".rail-projects .proj")].find((b) => b.textContent === "Beta"),
+		);
+		await click(
+			[...container.querySelectorAll(".rail-projects .proj")].find(
+				(b) => b.textContent === "Alpha",
+			),
+		);
+		await typeInto(composer(), "newer draft", win.HTMLTextAreaElement.prototype);
+		gate.resolve();
+		await settle();
+		expect(composer().value).toBe("newer draft");
+	});
+
+	test("a fenced note chat removes its row without staging the note in a composer", async () => {
+		notes = [noteRow("Shopping")];
+		win.history.replaceState(null, "", "/app/n/n-shopping");
+		await mount();
+		await waitFor(() => container.querySelector(".ProseMirror") !== null, "note editor");
+		const gate = hold();
+		convCreateHold = gate.promise;
+		await click(
+			[...container.querySelectorAll("button")].find(
+				(b) => b.textContent === "Chat with this note",
+			),
+		);
+		await click(container.querySelector("button.new"));
+		gate.resolve();
+		await settle();
+		expect(deletedConversations).toEqual(["/api/app/conversations/minted"]);
+		expect(container.querySelector(".composer")!.textContent).not.toContain("Shopping");
 	});
 
 	test("a second chat start while the mint is held mints once — the first id wins", async () => {

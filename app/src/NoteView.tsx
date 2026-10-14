@@ -493,9 +493,8 @@ export function NoteView({
 	// Forward-only adoption of a server note — the single reconcile
 	// path for focus refreshes, flag acks, restore acks, and own-save
 	// acks (own = true: our own write's answer never reads as a remote
-	// conflict). `stateRev` is the order token — content `rev` can't
-	// see flag writes, so a response that isn't strictly newer is
-	// ignored entirely (no adoptRev, no flag merge, no conflict clear).
+	// conflict). Equal-state own acks may resolve a conflict raised by
+	// a refresh that observed the write before its response arrived.
 	// Before the row moves, the title draft reconciles: a clean draft
 	// takes the landed title, a dirty draft meeting a remote rename
 	// keeps its text behind the conflict bar, and a dirty draft that
@@ -503,7 +502,16 @@ export function NoteView({
 	// an unsaved edit.
 	const adoptRemote = (data: AppNote, own = false): void => {
 		const cur = noteRef.current;
-		if (cur !== null && data.id === cur.id && data.stateRev <= cur.stateRev) return;
+		if (cur !== null && data.id === cur.id) {
+			if (data.stateRev < cur.stateRev) return;
+			if (data.stateRev === cur.stateRev) {
+				if (own && conflictRef.current !== null && data.stateRev >= conflictRef.current.stateRev) {
+					conflictRef.current = null;
+					setConflict(null);
+				}
+				return;
+			}
+		}
 		const standing = conflictRef.current;
 		if (standing !== null && data.id === standing.id && data.stateRev < standing.stateRev) return;
 		const draft = titleDraftRef.current;
@@ -528,9 +536,8 @@ export function NoteView({
 			return;
 		}
 		if (
-			cur !== null &&
-			data.title !== draft &&
-			(draft.trim() === data.title || (!titleDirty && !flightEdited))
+			cur === null ||
+			(data.title !== draft && (draft.trim() === data.title || (!titleDirty && !flightEdited)))
 		) {
 			// A clean draft adopts a remote rename; an acked own title
 			// syncs the draft to the server's trimmed store. The ref
@@ -562,8 +569,7 @@ export function NoteView({
 		void getNote(token, noteId).then(
 			({ data }) => {
 				if (!live) return;
-				setNote(data);
-				setTitleDraft(data.title);
+				adoptRemote(data);
 			},
 			(err) => {
 				if (!live) return;
@@ -631,14 +637,14 @@ export function NoteView({
 		// A standing conflict needs an explicit Keep mine — a blur must
 		// not send the local title over the adopted remote rev.
 		if (cur === null || conflictRef.current !== null) return;
+		if (titleSavingRef.current) {
+			titlePendingRef.current = true;
+			return;
+		}
 		const t = titleDraftRef.current.trim();
 		if (t === "" || t === cur.title) {
 			titleDraftRef.current = cur.title;
 			setTitleDraft(cur.title);
-			return;
-		}
-		if (titleSavingRef.current) {
-			titlePendingRef.current = true;
 			return;
 		}
 		const h = editorRef.current;

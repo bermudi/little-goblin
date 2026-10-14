@@ -721,13 +721,11 @@ export function Composer({
 	// "New conversation" click) — covers the already-mounted case that
 	// an autoFocus attribute can't.
 	focusSignal?: number;
-	// A fenced start's restored draft — the twin of `quote`: the payload
-	// carries n, each n applies once and reports via onDraftRestored, so
-	// a remount never re-applies a consumed restore over newer edits.
-	draftRestore?: { text: string; n: number } | null;
+	draftRestore?: { parts: UIMessage["parts"] } | null;
 	onDraftRestored?: () => void;
 }) {
 	const [draft, setDraft] = useState("");
+	const editedAfterSend = useRef(false);
 	const [notePickerOpen, setNotePickerOpen] = useState(false);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	useEffect(() => {
@@ -735,6 +733,7 @@ export function Composer({
 	}, [focusSignal]);
 	useEffect(() => {
 		if (quote == null || quote.n === 0) return;
+		editedAfterSend.current = true;
 		setDraft((d) => appendQuote(d, quote.text));
 		const ta = textareaRef.current;
 		if (ta !== null) {
@@ -744,13 +743,32 @@ export function Composer({
 			requestAnimationFrame(() => ta.setSelectionRange(ta.value.length, ta.value.length));
 		}
 	}, [quote]);
-	// The restore twin of the quote effect — replaces rather than
-	// appends: the send that produced this signal had cleared the draft.
-	// Keyed on the payload only (like [quote] above): the report callback
-	// is fire-once bookkeeping, not an input.
+	// The parent scopes this payload to its originating composer. Never
+	// replace text the operator wrote after the cancelled send.
 	useEffect(() => {
-		if (draftRestore == null || draftRestore.n === 0) return;
-		setDraft(draftRestore.text);
+		if (draftRestore == null) return;
+		const text = draftRestore.parts
+			.filter((p) => p.type === "text")
+			.map((p) => p.text)
+			.join("\n\n");
+		if (!editedAfterSend.current) setDraft(text);
+		const uploads: StagedUpload[] = [];
+		const notes: StagedNote[] = [];
+		for (const p of draftRestore.parts) {
+			if (p.type === "data-attachment") {
+				const data = p.data as AttachmentRef & { speech?: boolean };
+				uploads.push({
+					key: crypto.randomUUID(),
+					ref: data,
+					...(data.speech === true ? { speech: true } : {}),
+				});
+			} else if (p.type === "data-note") {
+				const data = p.data as { id: string; title: string };
+				notes.push({ key: crypto.randomUUID(), id: data.id, title: data.title });
+			}
+		}
+		if (uploads.length > 0) setStaged((prev) => [...prev, ...uploads]);
+		if (notes.length > 0) setStagedNotes((prev) => [...prev, ...notes]);
 		onDraftRestored?.();
 		const ta = textareaRef.current;
 		if (ta !== null) {
@@ -967,6 +985,7 @@ export function Composer({
 				data: { id: n.id, title: n.title },
 			} as UIMessage["parts"][number]);
 		setDraft("");
+		editedAfterSend.current = false;
 		// Entries that weren't sent — uploads still in flight, failed
 		// chips — stay staged. Clearing them would drop files the
 		// operator still sees in the composer.
@@ -1076,7 +1095,10 @@ export function Composer({
 					value={draft}
 					rows={1}
 					placeholder="Message goblin"
-					onChange={(e) => setDraft(e.target.value)}
+					onChange={(e) => {
+						editedAfterSend.current = true;
+						setDraft(e.target.value);
+					}}
 					onKeyDown={(e) => {
 						// isComposing: Enter that confirms an IME candidate is
 						// not a send.

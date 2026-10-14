@@ -248,6 +248,10 @@ completion, while navigation guards consult the currently mounted page
 rather than a captured page. Conversation starts have a synchronous
 single-flight guard before advancing their sequence; "Chat with this
 note" awaits that start and keeps its busy guard until it settles.
+A start fenced by navigation deletes its unselected server row; cleanup
+failure is visible. Composer sends restore only into their originating
+composer, never over newer text. Note-originated starts restore no draft
+or chips: attaching that note was an action, not a composer draft.
 Memory pagination belongs to the loaded filter, not the
 search box's pending text, and waits for replacement loads to finish.
 The memory view is the Memories tab's browser plus status polling;

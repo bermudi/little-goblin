@@ -15,7 +15,6 @@ import {
 	telegramDoor,
 } from "./api.ts";
 import { ChatView, Composer, type StagedNote, type StagedUpload } from "./ChatView.tsx";
-import type { AttachmentRef } from "../../src/agent/attachments.ts";
 import { SettingsView } from "./SettingsView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
 import { DelegationsView, ProgramsView, StatusView } from "./OperatorViews.tsx";
@@ -627,12 +626,16 @@ function AppShell() {
 	const [composerFocus, setComposerFocus] = useState(0);
 	const [starting, setStarting] = useState(false);
 	const [startFailed, setStartFailed] = useState(false);
-	// A fenced start hands the cleared composer input back: the text
-	// rides here, chips go straight into the staged state they were
-	// cleared from (restoreStartInput). n bumps per restore — the
-	// composer applies each n once and reports, so a later remount
-	// can't re-apply a consumed restore over newer edits.
-	const [draftRestore, setDraftRestore] = useState<{ text: string; n: number } | null>(null);
+	// A cancelled send belongs only to the composer that dispatched it.
+	const [draftRestores, setDraftRestores] = useState<Record<string, { parts: UIMessage["parts"] }>>(
+		{},
+	);
+	const consumeRestore = (scope: string) =>
+		setDraftRestores((prev) => {
+			const next = { ...prev };
+			delete next[scope];
+			return next;
+		});
 	// Navigation (or a newer start) fences off a stale failure — the
 	// alert belongs to the page that saw the failed send, nowhere else.
 	const startSeq = useRef(0);
@@ -1022,36 +1025,11 @@ function AppShell() {
 	// One start path for every composer — the empty state passes null,
 	// a project page its id, and both ride the same create → seed →
 	// select flow (design/projects.md: binding is fixed at creation).
-	// Composer.send clears itself before onSend, so a start fenced by a
-	// mid-flight navigation must reassemble the input from the parts or
-	// the operator's message is simply gone. The parts' shape is this
-	// session's own send assembly (Composer.send), not wire input.
-	const restoreStartInput = (parts: UIMessage["parts"]) => {
-		const text = parts
-			.filter((p) => p.type === "text")
-			.map((p) => p.text)
-			.join("\n\n");
-		if (text !== "") setDraftRestore((prev) => ({ text, n: (prev?.n ?? 0) + 1 }));
-		const uploads: StagedUpload[] = [];
-		const notes: StagedNote[] = [];
-		for (const p of parts) {
-			if (p.type === "data-attachment") {
-				const data = p.data as AttachmentRef & { speech?: boolean };
-				uploads.push({
-					key: crypto.randomUUID(),
-					ref: data,
-					...(data.speech === true ? { speech: true } : {}),
-				});
-			} else if (p.type === "data-note") {
-				const data = p.data as { id: string; title: string };
-				notes.push({ key: crypto.randomUUID(), id: data.id, title: data.title });
-			}
-		}
-		if (uploads.length > 0) setStaged((prev) => [...prev, ...uploads]);
-		if (notes.length > 0) setStagedNotes((prev) => [...prev, ...notes]);
-	};
-
-	const startChat = async (projectId: string | null, parts: UIMessage["parts"]) => {
+	const startChat = async (
+		projectId: string | null,
+		parts: UIMessage["parts"],
+		composerScope?: string,
+	) => {
 		if (startBusyRef.current) return;
 		startBusyRef.current = true;
 		const seq = ++startSeq.current;
@@ -1066,7 +1044,17 @@ function AppShell() {
 			// sequence — this continuation closes over the old page, so
 			// its select would skip the dirty-settings guard entirely.
 			if (seq !== startSeq.current) {
-				restoreStartInput(parts);
+				if (composerScope !== undefined) {
+					setDraftRestores((prev) => ({ ...prev, [composerScope]: { parts } }));
+				}
+				try {
+					await deleteConversation(token, created.id);
+					await refresh();
+				} catch (err) {
+					setRowError(
+						`Couldn't remove the cancelled conversation: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
 				return;
 			}
 			setSeed({ id: created.id, parts });
@@ -1080,7 +1068,7 @@ function AppShell() {
 		}
 	};
 
-	const startConversation = (parts: UIMessage["parts"]) => startChat(null, parts);
+	const startConversation = (parts: UIMessage["parts"]) => startChat(null, parts, "chat");
 
 	const currentTitle = conversations?.find((c) => c.id === current)?.title ?? null;
 
@@ -1384,15 +1372,16 @@ function AppShell() {
 								)}
 								{currentProject.archivedAt === null ? (
 									<Composer
+										key={`composer:${currentProject.id}`}
 										token={token}
 										busy={starting}
 										staged={staged}
 										setStaged={setStaged}
 										stagedNotes={stagedNotes}
 										setStagedNotes={setStagedNotes}
-										draftRestore={draftRestore}
-										onDraftRestored={() => setDraftRestore(null)}
-										onSend={(parts) => void startChat(currentProject.id, parts)}
+										draftRestore={draftRestores[currentProject.id] ?? null}
+										onDraftRestored={() => consumeRestore(currentProject.id)}
+										onSend={(parts) => void startChat(currentProject.id, parts, currentProject.id)}
 									/>
 								) : (
 									<p className="empty">
@@ -1426,8 +1415,8 @@ function AppShell() {
 								stagedNotes={stagedNotes}
 								setStagedNotes={setStagedNotes}
 								focusSignal={composerFocus}
-								draftRestore={draftRestore}
-								onDraftRestored={() => setDraftRestore(null)}
+								draftRestore={draftRestores.chat ?? null}
+								onDraftRestored={() => consumeRestore("chat")}
 								onSend={(parts) => void startConversation(parts)}
 							/>
 						</div>

@@ -2499,6 +2499,94 @@ describe("app projects surface", () => {
 		);
 	});
 
+	test("an equal-state own save acknowledgement clears the focus-refresh conflict", async () => {
+		notes = [noteRow("Shopping")];
+		noteBodies = { "n-shopping": "milk" };
+		await notePage("/app/n/n-shopping");
+		const title = container.querySelector("input.note-title")!;
+		const gate = hold();
+		notePatchHold = gate.promise;
+		await typeInto(title, "Groceries", win.HTMLInputElement.prototype);
+		await act(async () => {
+			(title as HTMLInputElement).blur();
+		});
+		expect(notePatches).toHaveLength(1);
+		await act(async () => {
+			win.dispatchEvent(new win.Event("focus"));
+		});
+		await settle();
+		expect(container.querySelector(".note-conflict")).not.toBeNull();
+		gate.resolve();
+		await settle();
+		expect(container.querySelector(".note-conflict")).toBeNull();
+		const chat = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+			(b) => b.textContent === "Chat with this note",
+		)!;
+		expect(chat.disabled).toBe(false);
+		expect(notePatches).toHaveLength(1);
+		expect(container.querySelector(".ProseMirror")!.textContent).toContain("milk");
+	});
+
+	test("a title reverted and blurred before the rename acknowledgement is saved next", async () => {
+		notes = [noteRow("Shopping")];
+		await notePage("/app/n/n-shopping");
+		const title = container.querySelector("input.note-title")! as HTMLInputElement;
+		const gate = hold();
+		notePatchHold = gate.promise;
+		await typeInto(title, "Groceries", win.HTMLInputElement.prototype);
+		await act(async () => {
+			title.blur();
+		});
+		await typeInto(title, "Shopping", win.HTMLInputElement.prototype);
+		await act(async () => {
+			title.blur();
+		});
+		expect(notePatches).toHaveLength(1);
+		gate.resolve();
+		await settle();
+		expect(notePatches).toHaveLength(2);
+		expect((notePatches[1]!.body as { title: string }).title).toBe("Shopping");
+		expect(notes[0]!.title).toBe("Shopping");
+		expect(title.value).toBe("Shopping");
+	});
+
+	test("a delayed initial note fetch cannot roll back a newer focus response", async () => {
+		notes = [noteRow("Shopping")];
+		noteBodies = { "n-shopping": "old body" };
+		const gate = hold();
+		const fetch = globalThis.fetch;
+		let first = true;
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const result = fetch(input, init);
+			if (first && input === "/api/app/notes/n-shopping" && (init?.method ?? "GET") === "GET") {
+				first = false;
+				return gate.promise.then(() => result);
+			}
+			return result;
+		}) as typeof fetch;
+		win.history.replaceState(null, "", "/app/n/n-shopping");
+		await mount();
+		noteGetOverride = {
+			...noteFull(notes[0]!, "new body"),
+			title: "Groceries",
+			rev: 2,
+			stateRev: 2,
+		};
+		await act(async () => {
+			win.dispatchEvent(new win.Event("focus"));
+		});
+		await settle();
+		expect((container.querySelector("input.note-title") as HTMLInputElement).value).toBe(
+			"Groceries",
+		);
+		gate.resolve();
+		await settle();
+		expect((container.querySelector("input.note-title") as HTMLInputElement).value).toBe(
+			"Groceries",
+		);
+		expect(container.querySelector(".ProseMirror")!.textContent).toContain("new body");
+	});
+
 	test("Enter + blur during a held title PATCH commit once — no false conflict", async () => {
 		notes = [noteRow("Shopping")];
 		const gate = hold();

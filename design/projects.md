@@ -217,9 +217,12 @@ from a third party.
   its first message. No separate mechanism.
 
 **Refresh without push.** The editor fetches on mount and on window
-focus; adoption is forward-only on `state_rev` — a response that isn't
-strictly newer than the accepted state is ignored entirely, so a
-delayed flag answer can't resurrect older flags or roll a title back.
+focus; adoption is forward-only on `state_rev`, including the initial
+fetch. Older responses and equal-state refreshes are ignored. An
+equal-state own-save acknowledgement may clear a conflict at that
+same state without replacing content: focus can observe our landed
+write before its acknowledgement arrives. A delayed flag answer
+cannot resurrect older flags or roll a title back.
 A newer server state under a clean editor reloads silently — a clean
 title draft takes a remote rename and trim-equivalent drafts sync,
 while text typed over an in-flight title write stays dirty work — and

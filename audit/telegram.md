@@ -8,8 +8,8 @@ headline findings below were re-verified by direct reads before filing.
 ## Baseline
 
 - `bun test src/tg/`: **392 pass, 0 fail** (22 files, 6.7s).
-- Full `bun test`: **not completed** — timed out at the 120s tool limit. Not a code signal; the tg
-  subset covering this area is green. Pre-existing failures outside `src/tg/`: unknown (not measured).
+- Full `bun test`: **2626 pass, 36 skip, 0 fail** (`2662` tests across 151 files, 142.59s). tg subset
+  covering this area is green; no pre-existing failures anywhere.
 - `bun run typecheck` (both tsc programs): **exit 0**.
 - `rg "from 'grammy'" src --glob '!src/tg/**'`: zero hits. `rg "grammy" src --glob '!src/tg/**'`:
   exactly one hit, `src/rolling.ts:5`, comment-only (verified by read).

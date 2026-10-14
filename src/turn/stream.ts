@@ -643,6 +643,11 @@ export async function driveStream<M extends WireMember>(
 	// phantom "\n\n" before its first delta.
 	let lastTextPartId: string | null = null;
 	let seenText = deps.seenText;
+	// Opened by start-step, spent by the step's first real part — the
+	// SDK emits start-step before an error part, so an error-only step
+	// (a mid-stream 429 wearing a 200, the scheduler ladder's target
+	// failure shape) must leave modelCalls at 0.
+	let pendingStep = false;
 	// Stream errors arrive as `error` chunks — they don't throw. The
 	// authoritative signal is the finish outcome: "failed" means the
 	// turn must surface an error, not commit partial output as a
@@ -752,6 +757,14 @@ export async function driveStream<M extends WireMember>(
 		if (!holdForRecovery) {
 			emitChunk(convId, members, live, chunk);
 		}
+		// The step's provider call is spent on its first payload part —
+		// or on a clean finish-step, since an empty step was still a
+		// served request. An error part never spends it: it fails the
+		// step having produced nothing (see pendingStep).
+		if (pendingStep && chunk.type !== "error") {
+			state.noteStep();
+			pendingStep = false;
+		}
 		switch (chunk.type) {
 			case "start-step":
 				// A new step is always a new block — and id comparison
@@ -759,9 +772,7 @@ export async function driveStream<M extends WireMember>(
 				// synthesize part ids per request, so step 2 can reuse
 				// step 1's id verbatim. Reset instead of trusting ids.
 				lastTextPartId = null;
-				// Every step start is a provider call spent — the stamp a
-				// trigger owner's retry gate reads on the terminal outcome.
-				state.noteStep();
+				pendingStep = true;
 				break;
 			case "text-delta":
 				// Distinct text parts are distinct blocks. A multi-step
@@ -887,6 +898,9 @@ export async function driveStream<M extends WireMember>(
 				noteCompletedCall(chunk.toolCallId, chunk.errorText, true);
 				break;
 			case "error":
+				// An error before any part is the step's whole output —
+				// the call spent nothing the retry gate should see.
+				pendingStep = false;
 				streamError = chunk.errorText;
 				break;
 		}

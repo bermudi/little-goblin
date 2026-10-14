@@ -310,10 +310,10 @@ describe("provider-filter retry", () => {
 		expect(await sink.done).toEqual({
 			kind: "error",
 			message: "Provider blocked this request again after one retry.",
-			// Two model calls spent — the first block errored before its
-			// step started; only the probe step and the second filter
-			// block count.
-			modelCalls: 2,
+			// One provider call spent — only the probe step produced
+			// work; each filter block's stream died on its error part
+			// before any step output.
+			modelCalls: 1,
 			transient: false,
 		});
 		while (runtime.busy(conv.id)) await sleep(1);
@@ -1498,6 +1498,33 @@ describe("context overflow recovery", () => {
 		});
 		expect(prompts).toHaveLength(1);
 		expect(store.getCompaction(conv.id)).toBeNull();
+		store.close();
+	});
+
+	test("a mid-stream provider error leaves modelCalls at 0 — the retry ladder's precondition", async () => {
+		const store = openStore(tmpdb());
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		seedExchanges(store, conv.id);
+		// The error arrives as a stream part, not a doStream rejection —
+		// the 200-then-SSE-error shape (upstream 429s) the scheduler's
+		// zero-call retry ladder exists to re-fire.
+		const { model, prompts } = scriptedModel([
+			[{ type: "error", error: new Error("Rate limit reached for requests") }],
+		]);
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test", contextWindow: 1000 }),
+			makeTools: () => ({}),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		expect(await sink.done).toEqual({
+			kind: "error",
+			message: "Rate limit reached for requests",
+			modelCalls: 0,
+			transient: true,
+		});
+		expect(prompts).toHaveLength(1);
 		store.close();
 	});
 

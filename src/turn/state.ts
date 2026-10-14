@@ -158,9 +158,10 @@ export class TurnState {
 		return unsent;
 	}
 
-	// One model call issued — every start-step is a provider request
-	// spent, which is what a retry gate reads to tell "nothing ran"
-	// from "partial work happened". Text deltas are not the measure:
+	// One provider call spent — the stream fires this on a step's
+	// first payload part or clean finish, so an error-only step stays
+	// at 0; a retry gate reads that to tell "nothing ran" from
+	// "partial work happened". Text deltas are not the measure:
 	// coalesced members see no sink deltas at all.
 	noteStep(): void {
 		this.modelCalls++;

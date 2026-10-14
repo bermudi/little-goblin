@@ -79,8 +79,17 @@ async function command(argv: string[], label: string, timeoutMs = 30_000): Promi
 			maxOutput: 4 * 1024 * 1024,
 			abortSignal: commandAbort.signal,
 		});
-	} catch {
-		return fail(`${label}: spawn-failed`);
+	} catch (error) {
+		// boundedRun's promise always settles; only spawnProc throws here, and
+		// its errno (ENOENT vs EACCES) is the diagnosable part.
+		const code =
+			typeof error === "object" &&
+			error !== null &&
+			"code" in error &&
+			typeof error.code === "string"
+				? error.code
+				: "unknown";
+		return fail(`${label}: spawn-failed:${code}`);
 	} finally {
 		cancellation.signal.removeEventListener("abort", stop);
 		if (escalation) clearTimeout(escalation);

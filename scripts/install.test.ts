@@ -278,6 +278,18 @@ describe("fresh installer", () => {
 		expect(result.calls).not.toContain("install --frozen-lockfile");
 		expect(result.stderr).toContain("insecure-mode");
 	});
+	test("spawn failure reports the errno and stops before any mutation", () => {
+		// An exec-bit file with an invalid format passes Bun.which's
+		// prerequisite guard but fails posix_spawn — the only reproducible
+		// spawn error the PATH-guarded commands can hit.
+		const result = fixture("healthy", (home) =>
+			writeFileSync(join(home, "..", "bin", "systemctl"), "not an executable\n", { mode: 0o700 }),
+		);
+		expect(result.status).not.toBe(0);
+		expect(result.stderr).toContain("inspect existing target: spawn-failed:ENOEXEC");
+		expect(result.calls).not.toContain("install --frozen-lockfile");
+		expect(result.units).toBe("");
+	});
 	for (const mode of ["dependency", "preflight", "badoptions", "build", "assets", "unit"])
 		test(`${mode} failure prevents unit installation/start and does not echo subprocess secrets`, () => {
 			const result = fixture(mode);

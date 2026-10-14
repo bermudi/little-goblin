@@ -154,21 +154,21 @@ describe("diagnostic boundary and phases", () => {
 		);
 		expect(JSON.stringify(await runHealth(f.options))).not.toContain(secret);
 	});
-	test("auth strict poison scan covers overridden records, mode and missing effective references; never executes refs", async () => {
+	test("auth strict poison scan covers live records, mode and missing effective references; never executes refs", async () => {
 		const f = fixture(),
 			marker = join(f.root, "executed");
 		writeFileSync(
 			join(f.home, "auth.jsonl"),
 			[
 				{ name: "telegram", value: `!touch ${marker}` },
-				{ name: "unused", value: `!pass-cli ${secret}` },
 				{ name: "unused", value: secret },
+				{ name: "unused", value: `!pass-cli ${secret}` },
 			]
 				.map((record) => JSON.stringify(record))
 				.join("\n"),
 		);
 		expect(finding(await runHealth(f.options), "auth.metadata").detail).toContain(
-			"prohibited-owner-session-command:line:2",
+			"prohibited-owner-session-command:line:3",
 		);
 		writeFileSync(
 			join(f.home, "auth.jsonl"),
@@ -185,6 +185,37 @@ describe("diagnostic boundary and phases", () => {
 		expect(finding(await runHealth(f.options), "auth.metadata").detail).toContain(
 			"1 referenced auth records missing",
 		);
+	});
+	test("the poison lint folds last-wins like the runtime: a clean override un-poisons", async () => {
+		const f = fixture();
+		// Unshadowed pass-cli record still hard-fails, naming the live line.
+		writeFileSync(
+			join(f.home, "auth.jsonl"),
+			[
+				{ name: "telegram", value: secret },
+				{ name: "telegram", value: `!pass-cli ${secret}` },
+			]
+				.map((record) => JSON.stringify(record))
+				.join("\n"),
+		);
+		expect(finding(await runHealth(f.options), "auth.metadata").detail).toContain(
+			"prohibited-owner-session-command:line:2",
+		);
+		// The identical raw line shadowed by a later clean same-name record
+		// leaves the live record set clean — the diagnostic must pass it.
+		writeFileSync(
+			join(f.home, "auth.jsonl"),
+			[
+				{ name: "telegram", value: `!pass-cli ${secret}` },
+				{ name: "telegram", value: secret },
+			]
+				.map((record) => JSON.stringify(record))
+				.join("\n"),
+		);
+		const report = await runHealth(f.options);
+		expect(finding(report, "auth.metadata").status).toBe("pass");
+		expect(JSON.stringify(report)).not.toContain("prohibited-owner-session-command");
+		expect(JSON.stringify(report)).not.toContain(secret);
 	});
 	test("nonregular and oversized config files are bounded; ENOTDIR is not missing", async () => {
 		const f = fixture();

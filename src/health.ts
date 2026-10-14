@@ -313,11 +313,14 @@ function authCheck(
 			const line = error instanceof Error ? /:(\d+):/.exec(error.message)?.[1] : undefined;
 			throw new ProbeError(`invalid-auth-record${line ? `:line:${line}` : ""}`);
 		}
-		const poisoned = records.find(
+		// The lint folds last-wins like the runtime loader: a clean override
+		// un-poisons an earlier same-name pass-cli record, so raw-record
+		// scanning would fail a live-clean file.
+		const effective = new Map(records.map((r) => [r.name, r]));
+		const poisoned = [...effective.values()].find(
 			(r) => r.value.startsWith("!") && invokesPassCliDirectly(r.value.slice(1)),
 		);
 		if (poisoned) throw new ProbeError(`prohibited-owner-session-command:line:${poisoned.line}`);
-		const effective = new Map(records.map((r) => [r.name, r]));
 		const refs = config ? authReferences(config) : new Set<string>();
 		let missing = 0,
 			general = 0,

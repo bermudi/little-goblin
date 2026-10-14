@@ -4,7 +4,9 @@
 # The client is served from disk, so building it and restarting the backend
 # are one approved rollout. Memory assets are never auto-applied.
 # Rollback must restore ignored deps/client as well as the tracked revision;
-# the recipe prints on success and on any failure after the attempt marker.
+# when the previous revision is known, its recipe prints on success and on
+# any failure after the attempt marker — otherwise failures print manual
+# recovery steps, since no automated recipe can exist.
 set -euo pipefail
 
 fail() { echo "deploy: $*" >&2; exit 1; }
@@ -109,9 +111,10 @@ mv -f "$incomplete_tmp" "$incomplete" ||
 sync -d "$marker_dir" || fail "cannot flush deployment attempt marker directory"
 
 # From here a failure can leave ignored dependencies, the served bundle, or
-# the unit mid-rollout — print recovery on any nonzero exit. Never roll back
-# automatically and never clear the attempt marker from the trap: its
-# presence is what forces the next run's refresh.
+# the unit mid-rollout — every nonzero exit prints recovery: the automated
+# recipe when the previous revision is known, the manual steps otherwise.
+# Never roll back automatically and never clear the attempt marker from the
+# trap: its presence is what forces the next run's refresh.
 rollback_cmd=""
 if [ "$rollback_available" = true ]; then
 	printf -v rollback_marker '%q' "$marker"
@@ -127,6 +130,14 @@ on_exit() {
 		fi
 		if [ -n "$rollback_cmd" ]; then
 			echo "deploy: rollback: $rollback_cmd" >&2
+		else
+			# No known previous revision (first deploy or stale marker): the
+			# automated recipe is impossible, so leave the manual recovery
+			# instead of nothing while prod may run unverified code.
+			echo "deploy: recovery: previous deployed revision unknown — manual steps:" >&2
+			echo "deploy:   check $marker (last verified rev) and $incomplete (this attempt)" >&2
+			echo "deploy:   verify the running service: systemctl --user status goblin" >&2
+			echo "deploy:   redeploy from the origin/main baseline" >&2
 		fi
 	fi
 	exit "$rc"

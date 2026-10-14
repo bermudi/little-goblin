@@ -519,17 +519,25 @@ describe("local deployment failures and memory probe", () => {
 		});
 	}
 
-	test("a failed first deployment reports failure state but no rollback recipe", () => {
+	test("a failed first deployment reports failure state with manual recovery", () => {
 		const result = runDeploy([], { marker: "missing", mode: "typecheck" });
 		expect(result.status).not.toBe(0);
 		expect(result.stderr).toContain("FAILED — the attempt marker stays");
+		expect(result.stderr).toContain("previous deployed revision unknown");
+		expect(result.stderr).toContain("GOBLIN_DEPLOYED_REV");
+		expect(result.stderr).toContain("GOBLIN_DEPLOY_INCOMPLETE");
+		expect(result.stderr).toContain("redeploy from the origin/main baseline");
 		expect(result.stderr).not.toContain("git reset --hard");
+		expect(result.stderr).not.toContain("rollback:");
 	});
 
-	test("a stale marker's failed run keeps the attempt marker but prints no rollback recipe", () => {
-		const result = runDeploy([], { marker: "unknown", mode: "typecheck" });
+	test("a stale marker's post-restart failure keeps the attempt marker and prints manual recovery", () => {
+		const result = runDeploy([], { marker: "unknown", mode: "inactive" });
 		expect(result.status).not.toBe(0);
 		expect(result.stderr).toContain("FAILED — the attempt marker stays");
+		expect(result.stderr).toContain("goblin not active after restart");
+		expect(result.stderr).toContain("previous deployed revision unknown");
+		expect(result.stderr).toContain("redeploy from the origin/main baseline");
 		expect(result.stderr).not.toContain("git reset --hard");
 		expect(result.stderr).not.toContain("rollback:");
 		expect(result.attemptExists).toBe(true);

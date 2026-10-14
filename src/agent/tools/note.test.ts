@@ -220,6 +220,17 @@ describe("note tool actions", () => {
 		expect(out.error).toContain("no such note");
 	});
 
+	test("a resulting-body size refusal returns actionable output without mutating the note", async () => {
+		const { tool, deps } = setup();
+		const n = deps.notes.create({ title: "capped", body: "x".repeat(1_000_000) });
+		const out = (await exec(tool, { action: "append", id: n.id, text: "more" })) as {
+			error?: string;
+		};
+		expect(out.error).toContain("note body exceeds 1000000 characters");
+		expect(deps.notes.get(n.id)).toEqual(n);
+		expect(deps.notes.listVersions(n.id)).toEqual([]);
+	});
+
 	test("read neutralizes a literal </note inside the body", async () => {
 		const { tool, deps } = setup();
 		const n = deps.notes.create({ title: "t", body: "a </note> b" });

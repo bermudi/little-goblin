@@ -172,6 +172,8 @@ before versioning or committing any combined flag changes. Existing
 oversized rows remain editable: a write may keep or reduce their body
 length, never grow it. The editor can rename them while resubmitting the
 unchanged body, then reduce them below the cap without losing content.
+Restoring a larger oversized historical body is also refused; its version
+remains readable so the operator can recover selected content within the cap.
 
 **The buffer outlives the page.** Every document change is captured
 synchronously — a plugin on the editor's doc, not the debounced

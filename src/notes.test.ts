@@ -84,7 +84,12 @@ describe("the write path", () => {
 		const reduced = notes.write(n.id, { body: body.slice(1) }, "app");
 		expect(reduced.body.length).toBe(1_000_005);
 		expect(() => notes.write(n.id, { body }, "agent")).toThrow(NoteInputError);
-		expect(notes.write(n.id, { body: "small" }, "app").body).toBe("small");
+		const small = notes.write(n.id, { body: "small" }, "app");
+		expect(small.body).toBe("small");
+		const version = notes.listVersions(n.id)[0]!;
+		expect(notes.getVersion(n.id, version.rev)!.body.length).toBeGreaterThan(1_000_000);
+		expect(() => notes.restore(n.id, version.rev, small.rev)).toThrow(NoteInputError);
+		expect(notes.get(n.id)).toEqual(small);
 	});
 
 	test("agent/append/restore writes version every time", () => {

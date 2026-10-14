@@ -177,6 +177,11 @@ Publishing to GitHub is a separate, explicitly approved action. This keeps
 coderabbit review --base origin/main
 ```
 
+Each deploy annotates `goblin.log` itself — `deploy restarting goblin`
+just before the restart, `deploy restart accepted — goblin live at
+deployed rev` once startup acceptance passes — so a deploy-initiated
+restart is distinguishable from a spontaneous one in the operational log.
+
 It refuses a dirty tree, runs the gate (`bun run typecheck`; the full
 suite gates merges via `.github/workflows/ci.yml`, not deploys),
 then refreshes what the gate can't cover: `bun install --frozen-lockfile`

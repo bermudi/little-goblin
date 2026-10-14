@@ -9,6 +9,34 @@ set -euo pipefail
 fail() { echo "deploy: $*" >&2; exit 1; }
 step() { echo "deploy: $*"; }
 
+# goblin.log annotation: a deploy-initiated restart must be distinguishable
+# from a spontaneous one in the operational log — an unexplained "shutting
+# down" reads as an incident until proven otherwise. Lines match src/log.ts's
+# JSONL shape (ts ISO ms UTC, level, msg + free fields). Diagnostics, not
+# gating: every failure here warns on stderr and continues.
+annotate_log() {
+	[ -n "$goblin_log" ] || return 0
+	local msg="$1" was="${2-}"
+	local line
+	if [ -n "$was" ]; then
+		line="$(jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
+			--arg msg "deploy $msg" --arg rev "$new_rev" --arg was "$was" \
+			'{ts:$ts,level:"info",msg:$msg,rev:$rev,was:$was}')" || {
+			echo "deploy: WARNING — goblin.log annotation build failed" >&2
+			return 0
+		}
+	else
+		line="$(jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" \
+			--arg msg "deploy $msg" --arg rev "$new_rev" \
+			'{ts:$ts,level:"info",msg:$msg,rev:$rev}')" || {
+			echo "deploy: WARNING — goblin.log annotation build failed" >&2
+			return 0
+		}
+	fi
+	printf '%s\n' "$line" >>"$goblin_log" 2>/dev/null ||
+		echo "deploy: WARNING — could not append goblin.log annotation" >&2
+}
+
 repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
 cd "$repo_root"
 # A branch clone or linked worktree must not restart a different checkout.
@@ -109,6 +137,19 @@ mapfile -t watch_floor <<< "$pre_restart"
 if [ "${#watch_floor[@]}" -ne 2 ]; then
 	fail "unreadable goblin.service pre-restart identity"
 fi
+# The log the unit's goblin writes: GOBLIN_HOME rides the unit Environment,
+# not this shell. Absent home, missing file, or no jq → warn, deploy anyway.
+goblin_log=""
+unit_env="$(systemctl --user show goblin.service --property=Environment --value 2>/dev/null || true)"
+goblin_home="$(printf '%s\n' "$unit_env" | grep -o 'GOBLIN_HOME=[^ ]*' | head -1 | cut -d= -f2- || true)"
+if ! command -v jq >/dev/null 2>&1; then
+	echo "deploy: WARNING — jq unavailable; goblin.log will not carry deploy context" >&2
+elif [ -n "$goblin_home" ] && [ -f "$goblin_home/state/goblin.log" ]; then
+	goblin_log="$goblin_home/state/goblin.log"
+else
+	echo "deploy: WARNING — goblin.log not resolvable (GOBLIN_HOME='${goblin_home:-unset}'); restart will read unexplained" >&2
+fi
+annotate_log "restarting goblin" "${old_rev:-none}"
 systemctl --user restart goblin
 step "verify: startup acceptance"
 # Installer grammar; 75s because slow boot failures (a timed-out provider
@@ -119,6 +160,7 @@ if ! bun scripts/check-startup.ts --watch 0 75000 "${watch_floor[0]}" "${watch_f
 	bun scripts/check-startup.ts --brief 40 >&2 || true
 	fail "goblin failed startup acceptance after restart"
 fi
+annotate_log "restart accepted — goblin live at deployed rev"
 sleep 3
 journal="$(journalctl --user -u goblin --since "@$restart_epoch" --no-pager)"
 # grep's 1 means no error lines, not a failed journal read.

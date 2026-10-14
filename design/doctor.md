@@ -112,7 +112,12 @@ bytes. Do not use `immutable` to ignore WAL or copy a bare main database.
 Subsystem-table presence is checked against the diagnostic revision's
 boot-created set (config-gated tables only while their block exists;
 lazy tables unchecked), but their columns and row contents, plus
-concurrent snapshot copying, are not claimed verified. Quick-check's error count and busy-timeout do not bound
+concurrent snapshot copying, are not claimed verified. Absent tables
+warn as revision-scoped expectation drift — never a corruption or
+store-loss claim without evidence. The expected-table list is a
+validated argv contract of its own: a present-but-malformed list fails
+the worker (open-or-query) rather than silently checking nothing; only
+an absent list skips the check. Quick-check's error count and busy-timeout do not bound
 query runtime; isolation supplies the deadline.
 
 ## Reports, failures and execution

@@ -65,7 +65,9 @@ const required = {
 } as const;
 
 // Argv is a fixed vocabulary of identifiers — anything else is not a
-// table name, and a bad arg degrades to "no expected check", never SQL.
+// table name and never becomes SQL. A present-but-invalid list is a
+// caller-contract violation, not an empty expectation: the probe fails
+// rather than reporting a subsystem check that never ran.
 const expectedArgSchema = z.array(z.string().regex(/^[a-z][a-z0-9_]{0,63}$/)).max(100);
 
 function inspect(
@@ -117,15 +119,24 @@ function inspect(
 
 if (import.meta.main) {
 	const path = z.string().min(1).safeParse(process.argv[2]);
-	let expected: string[] = [];
-	try {
-		expected = expectedArgSchema.parse(JSON.parse(process.argv[3] ?? "[]"));
-	} catch {
+	// A missing list means no expected-table check; a present one that
+	// fails to parse or validate fails the probe, never a silent [].
+	let expected: string[] | undefined;
+	const expectedArg = process.argv[3];
+	if (expectedArg === undefined) {
 		expected = [];
+	} else {
+		try {
+			expected = expectedArgSchema.parse(JSON.parse(expectedArg));
+		} catch {
+			expected = undefined;
+		}
 	}
 	process.stdout.write(
 		JSON.stringify(
-			path.success ? inspect(path.data, expected) : { status: "fail", category: "open-or-query" },
+			path.success && expected !== undefined
+				? inspect(path.data, expected)
+				: { status: "fail", category: "open-or-query" },
 		),
 	);
 }

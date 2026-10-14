@@ -532,7 +532,7 @@ async function sqlite(
 				scope,
 				missing.length ? "warn" : "pass",
 				missing.length
-					? `Boot-created subsystem tables absent at diagnostic revision: ${missing.join(", ")} — a pre-revision install or a lost store; next boot creates them, this is not a corruption claim`
+					? `Boot-created subsystem tables absent under this diagnostic revision's expectations: ${missing.join(", ")} — the expected list tracks the diagnostic revision, so a store predating it is the ordinary explanation; next boot creates them. Absence alone is not evidence of corruption or store loss`
 					: "All expected subsystem tables present; row contents unverified",
 				start,
 			),

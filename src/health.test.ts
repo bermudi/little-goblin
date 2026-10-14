@@ -421,6 +421,79 @@ describe("read-only WAL-aware SQL worker", () => {
 			store.close();
 		}
 	});
+	// The worker's argv contract, exercised in a real process: a present
+	// but malformed or wrongly-shaped expected-table list fails the probe
+	// (open-or-query) instead of silently degrading to a skipped check.
+	describe("worker argv contract (real worker process)", () => {
+		const WORKER = join(import.meta.dir, "health-sqlite.ts");
+		const probe = (
+			...args: string[]
+		): { code: number; report: Record<string, unknown>; raw: string } => {
+			const r = Bun.spawnSync([process.execPath, "--no-install", WORKER, ...args], {
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const raw = r.stdout.toString();
+			return { code: r.exitCode, report: JSON.parse(raw) as Record<string, unknown>, raw };
+		};
+		function baseSchema(): { path: string; close(): void } {
+			const dir = mkdtempSync(join(tmpdir(), "goblin-health-worker-"));
+			roots.push(dir);
+			const path = join(dir, "probe.sqlite");
+			const store = openStore(path);
+			return { path, close: () => store.close() };
+		}
+		test("a missing expected-list arg runs the probe with no expectations", () => {
+			const { path, close } = baseSchema();
+			try {
+				const { report } = probe(path);
+				expect(report).toEqual({
+					status: "pass",
+					category: "compatible",
+					missingExpected: [],
+				});
+			} finally {
+				close();
+			}
+		});
+		test("valid empty and populated lists report missingExpected honestly", () => {
+			const { path, close } = baseSchema();
+			try {
+				expect(probe(path, "[]").report).toEqual({
+					status: "pass",
+					category: "compatible",
+					missingExpected: [],
+				});
+				// openStore's schema covers notes but not the later
+				// subsystem tables — the split is reported by name.
+				expect(probe(path, '["programs","notes","mail_outbox"]').report).toEqual({
+					status: "pass",
+					category: "compatible",
+					missingExpected: ["programs", "mail_outbox"],
+				});
+			} finally {
+				close();
+			}
+		});
+		for (const arg of [
+			"{not json",
+			'{"tables":["programs"]}',
+			'["programs","BAD TABLE"]',
+			'["ok",5]',
+			'"programs"',
+		])
+			test(`invalid arg ${JSON.stringify(arg)} fails open-or-query, never a false pass`, () => {
+				const { path, close } = baseSchema();
+				try {
+					expect(probe(path, arg).report).toEqual({
+						status: "fail",
+						category: "open-or-query",
+					});
+				} finally {
+					close();
+				}
+			});
+	});
 	test("structure mismatch is diagnostic compatibility, not installed corruption; extra schema is permitted", async () => {
 		const f = fixture();
 		installLayout(f.home);
@@ -491,6 +564,11 @@ describe("delegation host, subsystem tables and configured sandbox", () => {
 		expect(subsystems.status).toBe("warn");
 		for (const table of ["programs", "mail_outbox", "sandboxes", "tg_inbox", "guest_dedup"])
 			expect(subsystems.detail).toContain(table);
+		// Wording is revision-scoped expectation drift, never a
+		// corruption or store-loss claim without evidence.
+		expect(subsystems.detail).toContain("diagnostic revision");
+		expect(subsystems.detail).toContain("not evidence of corruption or store loss");
+		expect(subsystems.detail).not.toContain("a lost store");
 		// Lazy tables are absent from the expectation entirely.
 		expect(subsystems.detail).not.toContain("forget_listings");
 		expect(subsystems.detail).not.toContain("tg_dm_navigation");

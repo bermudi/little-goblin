@@ -7,14 +7,14 @@
 // a host path the container could aim).
 
 import { tool } from "ai";
-import { realpathSync } from "node:fs";
-import { basename, join, resolve, sep } from "node:path";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { z } from "zod";
-import { resolveExport, writeExportBytes } from "../../box-files.ts";
+import { readImport, resolveExport, writeExportBytes } from "../../box-files.ts";
 import { imageRefSchema } from "../../config.ts";
 import { PodmanError } from "../../podman.ts";
 import { SandboxError, type Sandboxes } from "../../sandboxes.ts";
-import { resolvePath } from "./paths.ts";
 import { truncateTail } from "./truncate.ts";
 
 const MAX_OUTPUT = 100 * 1024;
@@ -112,36 +112,20 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 						};
 					}
 					case "import": {
-						const resolved = resolvePath(deps.workspace, input.from);
-						const wsReal = realpathSync(deps.workspace);
-						// A lexical `..` escape is refused before the
-						// filesystem is touched — the realpath check below
-						// only runs once the path exists, and an absolute
-						// `from` is refused the same way.
-						const wsLex = resolve(deps.workspace);
-						if (resolved !== wsLex && !resolved.startsWith(wsLex + sep)) {
-							return {
-								error: `import refused: ${input.from} resolves to ${resolved}, outside the workspace — copy it into the workspace first if this is deliberate`,
-							};
-						}
-						let real: string;
+						const stage = await mkdtemp(join(tmpdir(), "goblin-sbx-imp-"));
 						try {
-							real = realpathSync(resolved);
-						} catch (err) {
-							if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-								return { error: `import source not found: ${input.from}` };
-							}
-							throw err;
+							abortSignal?.throwIfAborted();
+							const source = readImport(deps.workspace, input.from);
+							if ("error" in source) return { error: `import ${source.error}` };
+							const staged = join(stage, basename(source.path));
+							await writeFile(staged, source.data);
+							const { note } = await deps.sandboxes.cpIn(conv, staged, input.to, {
+								...(abortSignal ? { abortSignal } : {}),
+							});
+							return { imported: input.to, ...(note !== undefined ? { note } : {}) };
+						} finally {
+							await rm(stage, { recursive: true, force: true });
 						}
-						if (real !== wsReal && !real.startsWith(wsReal + sep)) {
-							return {
-								error: `import refused: ${input.from} resolves to ${real}, outside the workspace — copy it into the workspace first if this is deliberate`,
-							};
-						}
-						const { note } = await deps.sandboxes.cpIn(conv, real, input.to, {
-							...(abortSignal ? { abortSignal } : {}),
-						});
-						return { imported: input.to, ...(note !== undefined ? { note } : {}) };
 					}
 					case "export": {
 						const rel = input.to ?? join("sandbox-out", basename(input.from));

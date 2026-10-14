@@ -8,11 +8,11 @@
 // enforced in desktops.ts.
 
 import { tool } from "ai";
-import { copyFile, mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
-import { exportBytes, resolveImport } from "../../box-files.ts";
+import { exportBytes, readImport } from "../../box-files.ts";
 import { imageRefSchema } from "../../config.ts";
 import { DesktopError, type DesktopRow, type Desktops, type LeaseHolder } from "../../desktops.ts";
 import { PodmanError } from "../../podman.ts";
@@ -224,18 +224,20 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 						};
 					}
 					case "import": {
-						const resolved = resolveImport(deps.workspace, input.from);
-						if ("error" in resolved) return { error: `import ${resolved.error}` };
 						// cpIn takes a host path — stage a copy so the workspace
 						// file itself is never the argument a caller controls.
 						const stage = await mkdtemp(join(tmpdir(), "goblin-desk-imp-"));
 						try {
+							abortSignal?.throwIfAborted();
+							const resolved = readImport(deps.workspace, input.from);
+							if ("error" in resolved) return { error: `import ${resolved.error}` };
 							const staged = join(stage, basename(resolved.path));
-							await copyFile(resolved.path, staged);
+							await writeFile(staged, resolved.data);
+							abortSignal?.throwIfAborted();
 							const { note } = await deps.desktops.cpIn(input.name, staged, input.to);
 							return {
 								imported: input.to,
-								bytes: resolved.bytes,
+								bytes: resolved.data.byteLength,
 								...(note !== undefined ? { note } : {}),
 							};
 						} finally {
@@ -244,17 +246,17 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 					}
 					case "export": {
 						const rel = input.to ?? join("desktop-out", basename(input.from));
+						if (isAbsolute(rel)) {
+							return {
+								error: `export destination must be workspace-relative, got absolute: ${rel}`,
+							};
+						}
 						const { data, note } = await deps.desktops.catFile(input.name, input.from);
 						// The wait above is a cancellation gap: recheck before
 						// the host write so a call cancelled mid-read never
 						// overwrites a workspace file.
 						abortSignal?.throwIfAborted();
-						const out = exportBytes(
-							deps.workspace,
-							rel.includes("/") ? rel.split("/").slice(0, -1).join("/") : "",
-							basename(rel),
-							data,
-						);
+						const out = exportBytes(deps.workspace, dirname(rel), basename(rel), data);
 						if ("error" in out) return { error: `export ${out.error}` };
 						return {
 							exported: out.rel,
@@ -263,7 +265,11 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 						};
 					}
 					case "destroy": {
-						await deps.desktops.destroy(input.name, selfHolder());
+						await deps.desktops.destroy(
+							input.name,
+							selfHolder(),
+							abortSignal === undefined ? undefined : { abortSignal },
+						);
 						return { destroyed: input.name };
 					}
 				}

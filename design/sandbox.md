@@ -138,7 +138,10 @@ tool already makes. Flat schema, per-action contract enforced inside
   must stay inside the workspace) → `to` (container path), via `podman
   cp`. The containment is the mechanical wall against copying host secrets
   into a networked sandbox by this path; moving something into the
-  workspace first is a deliberate act.
+  workspace first is a deliberate act. The shared `box-files.readImport`
+  pins an open regular file, validates the FD's realpath inside the
+  workspace and bounds its read before staging. Podman never reopens the
+  caller's mutable workspace pathname.
 - `export` — `from` (a regular file in the container) → `to` (relative
   path inside the workspace, default `sandbox-out/<basename>`). Bytes come
   out through `podman exec cat --` — file content only, never metadata, so

@@ -3,7 +3,8 @@
 // exports get a workspace-relative destination whose ancestors and
 // leaf are checked before any directory is created.
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import {
 	existsSync,
 	lstatSync,
@@ -24,6 +25,7 @@ import {
 	exportNamedBytes,
 	resolveExport,
 	resolveImport,
+	readImport,
 	writeExportBytes,
 } from "./box-files.ts";
 
@@ -76,6 +78,38 @@ describe("resolveImport", () => {
 		truncateSync(join(workspace, "big.bin"), BOX_FILE_MAX_BYTES + 1);
 		const big = resolveImport(workspace, "big.bin");
 		expect("error" in big && big.error).toContain("MiB cap");
+	});
+});
+
+describe("readImport", () => {
+	test("reads regular files through an inside-workspace symlink", () => {
+		const { workspace } = ws();
+		writeFileSync(join(workspace, "in.txt"), "pinned bytes");
+		symlinkSync("in.txt", join(workspace, "link.txt"));
+		const result = readImport(workspace, "link.txt");
+		expect("data" in result && new TextDecoder().decode(result.data)).toBe("pinned bytes");
+	});
+
+	test("a source swapped after pathname validation is refused before reading the opened inode", () => {
+		const { dir, workspace } = ws();
+		const source = join(workspace, "in.txt");
+		const outside = join(dir, "outside.txt");
+		writeFileSync(source, "inside");
+		writeFileSync(outside, "outside");
+		const open = fs.openSync;
+		const fault = spyOn(fs, "openSync").mockImplementation((...args: Parameters<typeof open>) => {
+			if (args[0] === source) {
+				fs.unlinkSync(source);
+				symlinkSync(outside, source);
+			}
+			return open(...args);
+		});
+		try {
+			const result = readImport(workspace, "in.txt");
+			expect("error" in result && result.error).toContain("outside the workspace");
+		} finally {
+			fault.mockRestore();
+		}
 	});
 });
 

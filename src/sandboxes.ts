@@ -387,7 +387,7 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				if (ins.state === "stopped") {
 					signal?.throwIfAborted();
 					await podman.start(name, conv);
-					await applyNetwork(name, adopted.network, conv, signal);
+					await applyNetwork(name, adopted.network, conv);
 					log.info("sandbox adopted and started", { conversation: conv, container: name });
 					return {
 						container: name,
@@ -406,7 +406,8 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				// but anything background the worker left running is gone.
 				signal?.throwIfAborted();
 				await podman.start(name, conv);
-				await applyNetwork(name, row.network, conv, signal);
+				// Startup already dispatched: finish the safety reconciliation even on cancellation.
+				await applyNetwork(name, row.network, conv);
 				store.touch(conv, now);
 				const note =
 					"sandbox was stopped (e.g. host reboot) — restarted it; files and network state restored, but any background processes have died";
@@ -696,6 +697,12 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				// preflight throws here and the incumbent survives.
 				const prepared = await prepareContainer(target, conv, opts?.abortSignal);
 				opts?.abortSignal?.throwIfAborted();
+				const currentLease = deps.runLease?.(conv);
+				if (currentLease != null) {
+					throw new SandboxError(
+						`sandbox reset refused — run #${currentLease.id} (${currentLease.status}) holds this sandbox; stop it first`,
+					);
+				}
 				if (ins.state !== "missing") await podman.rm(name, conv);
 				// rm already landed — the recreate runs without the signal:
 				// a cancelled call must still leave a coherent container and

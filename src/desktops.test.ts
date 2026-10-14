@@ -593,6 +593,50 @@ describe("desktops pool", () => {
 		expect(engine.containers.has(containerNameForDesktop(name))).toBe(false);
 	});
 
+	test.each(["lane", "inspect"] as const)(
+		"cancelled destroy during %s preserves the desktop",
+		async (wait) => {
+			const engine = fakeEngine();
+			const { desktops, store, name } = await fresh(engine);
+			const entered = Promise.withResolvers<void>();
+			const gate = Promise.withResolvers<void>();
+			const inspect = engine.podman.inspect.bind(engine.podman);
+			engine.podman.inspect = async (...args) => {
+				entered.resolve();
+				await gate.promise;
+				return inspect(...args);
+			};
+			const controller = new AbortController();
+			const first = wait === "lane" ? desktops.screenshot(name) : undefined;
+			const pending = desktops.destroy(name, RUN_A, { abortSignal: controller.signal });
+			await entered.promise;
+			controller.abort();
+			gate.resolve();
+			await expect(pending).rejects.toThrow();
+			await first;
+			expect(engine.calls.some((args) => args[0] === "rm")).toBe(false);
+			expect(store.get(name)).not.toBeNull();
+			expect(engine.containers.has(containerNameForDesktop(name))).toBe(true);
+		},
+	);
+
+	test.each(["stopped", "missing", "adopted"] as const)(
+		"the first observation after %s reconciliation can drive input",
+		async (state) => {
+			const engine = fakeEngine();
+			const { desktops, store, name } = await fresh(engine);
+			if (state === "missing") engine.containers.delete(containerNameForDesktop(name));
+			else engine.containers.get(containerNameForDesktop(name))!.running = false;
+			if (state === "adopted") store.delete(name);
+			const shot = await desktops.screenshot(name);
+			expect(store.get(name)!.bootGen).toBe(
+				engine.containers.get(containerNameForDesktop(name))!.startedAt,
+			);
+			await desktops.claim(name, RUN_A);
+			await desktops.act(name, RUN_A, shot.id, CLICK);
+		},
+	);
+
 	test("the sweep skips leased, reserved and the caller; idleHours 0 never reaps", async () => {
 		const engine = fakeEngine();
 		const { desktops, store } = rig(engine, { idleHours: 1 });
@@ -636,8 +680,9 @@ describe("desktops pool", () => {
 		store.put(pinned);
 		await desktops.screenshot("caller");
 		// The reap is detached from the caller — wait it out.
-		await waitFor("stale desktop reaped", () =>
-			!engine.containers.has(containerNameForDesktop("stale")),
+		await waitFor(
+			"stale desktop reaped",
+			() => !engine.containers.has(containerNameForDesktop("stale")),
 		);
 		expect(store.get("stale")).toBeNull();
 		for (const kept of ["leased", "pinned", "caller"]) {
@@ -778,12 +823,8 @@ describe("desktops pool", () => {
 			// The reap is detached — wait for its verdict on the log,
 			// then pin it: the squatter is untouched, the row kept for
 			// the retry, exactly like every other removal path.
-			await waitFor(
-				"the refused reap logged",
-				() =>
-					lines.some(
-						(l) => l.msg === "desktop reap failed — row kept" && l.desktop === name,
-					),
+			await waitFor("the refused reap logged", () =>
+				lines.some((l) => l.msg === "desktop reap failed — row kept" && l.desktop === name),
 			);
 			expect(
 				engine.calls.some((c) => c[0] === "rm" && c.at(-1) === containerNameForDesktop(name)),

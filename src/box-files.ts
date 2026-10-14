@@ -9,9 +9,11 @@ import {
 	closeSync,
 	constants,
 	existsSync,
+	fstatSync,
 	lstatSync,
 	mkdirSync,
 	openSync,
+	readSync,
 	realpathSync,
 	statSync,
 } from "node:fs";
@@ -76,6 +78,41 @@ export function resolveImport(workspace: string, from: string): BoxImportResult 
 		};
 	}
 	return { path: real, bytes: st.size };
+}
+
+/** Validate the opened inode, not a pathname checked before an await. */
+export function readImport(
+	workspace: string,
+	from: string,
+): { path: string; data: Uint8Array } | { error: string } {
+	const resolved = resolveImport(workspace, from);
+	if ("error" in resolved) return resolved;
+	const fd = openSync(resolved.path, constants.O_RDONLY | constants.O_NONBLOCK);
+	try {
+		const path = realpathSync(`/proc/self/fd/${fd}`);
+		if (!inside(realpathSync(workspace), path)) {
+			return { error: `refused: ${from} resolves outside the workspace` };
+		}
+		const st = fstatSync(fd);
+		if (!st.isFile()) return { error: `refused: ${from} is not a regular file` };
+		if (st.size > BOX_FILE_MAX_BYTES) {
+			return {
+				error: `refused: ${from} exceeds the ${BOX_FILE_MAX_BYTES / (1024 * 1024)} MiB cap`,
+			};
+		}
+		// One extra byte detects growth without allowing an unbounded read.
+		const data = Buffer.alloc(st.size + 1);
+		let bytes = 0;
+		while (bytes < data.length) {
+			const n = readSync(fd, data, bytes, data.length - bytes, null);
+			if (n === 0) break;
+			bytes += n;
+		}
+		if (bytes > st.size) return { error: `refused: ${from} grew during import; retry it` };
+		return { path, data: data.subarray(0, bytes) };
+	} finally {
+		closeSync(fd);
+	}
 }
 
 /** The real directory an export lands in. The nearest existing

@@ -879,6 +879,43 @@ describe("aborted lifecycle calls never start a mutation", () => {
 		return { entered: () => entered, release };
 	}
 
+	test("cancellation during start still reconciles the stored network-off intent", async () => {
+		const conv = "dm:abort-start";
+		const { engine, sandboxes, name } = seeded(conv);
+		const container = engine.containers.get(name)!;
+		container.running = false;
+		container.networks.add(NETWORK);
+		const ctl = new AbortController();
+		const start = engine.podman.start.bind(engine.podman);
+		engine.podman.start = async (...args) => {
+			await start(...args);
+			ctl.abort();
+		};
+		await expect(
+			sandboxes.catFile(conv, "/work/keep.txt", { abortSignal: ctl.signal }),
+		).rejects.toThrow();
+		expect(container.running).toBe(true);
+		expect(container.networks.size).toBe(0);
+	});
+
+	test("reset rechecks a lease acquired during replacement preflight", async () => {
+		const conv = "dm:lease-preflight";
+		const name = containerNameFor(conv, PREFIX);
+		const engine = fakeEngine({ containers: [{ name }] });
+		let leased = false;
+		const { sandboxes } = rig(engine, undefined, {
+			runLease: () => (leased ? { id: 9, status: "queued" } : null),
+		});
+		const gate = hold(engine.podman, "imageExists");
+		const pending = sandboxes.reset(conv);
+		await until(gate.entered);
+		leased = true;
+		gate.release();
+		await expect(pending).rejects.toThrow(/run #9/);
+		expect(engine.calls.some((args) => args[0] === "rm")).toBe(false);
+		expect(engine.containers.has(name)).toBe(true);
+	});
+
 	test("reset aborted inside a deferred preflight never rms or recreates", async () => {
 		const conv = "dm:abort-preflight";
 		const { engine, sandboxes, store, name } = seeded(conv);

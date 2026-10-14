@@ -46,6 +46,8 @@ export class DesktopError extends Error {
 	}
 }
 
+export class DesktopLeaseError extends DesktopError {}
+
 export type LeaseHolder =
 	| { kind: "run"; id: string }
 	| { kind: "conversation"; id: string }
@@ -207,7 +209,10 @@ export function openDesktops(dbPath: string): DesktopStore {
 	// backfilled; NULL reads as unknown generation, so the first
 	// reconcile invalidates any recorded observation — fail-closed.
 	const cols = new Set(
-		db.query<{ name: string }, []>("PRAGMA table_info(desktops)").all().map((c) => c.name),
+		db
+			.query<{ name: string }, []>("PRAGMA table_info(desktops)")
+			.all()
+			.map((c) => c.name),
 	);
 	if (!cols.has("boot_gen")) db.run("ALTER TABLE desktops ADD COLUMN boot_gen TEXT");
 	const qGet = db.query("SELECT * FROM desktops WHERE name = ?");
@@ -403,7 +408,7 @@ export interface Desktops {
 	handoff(name: string, from: LeaseHolder, to: LeaseHolder): Promise<void>;
 	reserve(name: string, reserved: boolean): Promise<void>;
 	setNetwork(name: string, enabled: boolean): Promise<void>;
-	destroy(name: string, by: LeaseHolder): Promise<void>;
+	destroy(name: string, by: LeaseHolder, opts?: { abortSignal?: AbortSignal }): Promise<void>;
 	screenshot(name: string): Promise<{ id: string; path: string; bytes: Uint8Array; note?: string }>;
 	inspect(
 		name: string,
@@ -591,10 +596,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				store.put(adopted);
 				if (ins.state === "stopped") {
 					await podman.start(container);
-					// A start is a new boot — the generation we just
-					// recorded is void until the next running reconcile.
-					adopted.bootGen = null;
 					await applyNetwork(name, adopted.network);
+					adopted.bootGen = (await podman.inspect(container)).startedAt;
 					adopted.lastUsedAt = now;
 					store.put(adopted);
 					log.info("desktop adopted and started", { desktop: name, container });
@@ -633,11 +636,10 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 						container,
 					});
 				}
-				// A start is a new boot — the recorded generation is void
-				// until the next running reconcile reads the new StartedAt.
 				row.bootGen = null;
 				await podman.start(container);
 				await applyNetwork(name, row.network);
+				row.bootGen = (await podman.inspect(container)).startedAt;
 				row.lastUsedAt = now;
 				store.put(row);
 				log.info("desktop restarted", { desktop: name, container });
@@ -681,7 +683,11 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			// pin survives — and so does the shot sequence, which names
 			// the audit frames and obs ids minted before the loss.
 			await createContainer(name, row.image, row.network);
-			const kept = freshRow(name, { image: row.image, network: row.network });
+			const kept = freshRow(name, {
+				image: row.image,
+				network: row.network,
+				startedAt: (await podman.inspect(container)).startedAt,
+			});
 			kept.reserved = row.reserved;
 			kept.createdAt = row.createdAt;
 			kept.shotSeq = row.shotSeq;
@@ -964,12 +970,13 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				const row = ready.row;
 				const now = Date.now();
 				if (leaseLive(row, now) && !leaseHeldBy(row, holder, now)) {
-					throw refuse(
+					const refusal = refuse(
 						name,
 						"claim",
 						`desktop ${name} is controlled by ${rowHolderLabel(row)} until ${new Date(row.leaseExpiresAt!).toISOString()} — release or wait for expiry`,
 						holder,
 					);
+					throw new DesktopLeaseError(refusal.message);
 				}
 				const transition =
 					row.leaseKind === null
@@ -1079,9 +1086,11 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			});
 		},
 
-		async destroy(name, by) {
+		async destroy(name, by, opts) {
+			opts?.abortSignal?.throwIfAborted();
 			sweepOnce(name);
 			await lane(name, async () => {
+				opts?.abortSignal?.throwIfAborted();
 				const row = store.get(name);
 				const now = Date.now();
 				if (row !== null && leaseLive(row, now) && !leaseHeldBy(row, by, now)) {
@@ -1094,6 +1103,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				}
 				const container = containerNameForDesktop(name);
 				const ins = await podman.inspect(container);
+				opts?.abortSignal?.throwIfAborted();
 				if (ins.state !== "missing") {
 					requireOurs(name, ins);
 					await podman.rm(container);

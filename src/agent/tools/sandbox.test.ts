@@ -103,7 +103,7 @@ describe("sandboxInputSchema", () => {
 });
 
 describe("sandbox tool — import containment", () => {
-	test("a workspace file imports by realpath", async () => {
+	test("a workspace file imports from a pinned staged copy", async () => {
 		const ws = workspace();
 		writeFileSync(join(ws, "payload.txt"), "x");
 		const recorded = { cpIn: [] as string[][], catFile: [] as string[] };
@@ -113,7 +113,9 @@ describe("sandbox tool — import containment", () => {
 			opts,
 		)) as Record<string, unknown>;
 		expect(out.error).toBeUndefined();
-		expect(recorded.cpIn).toEqual([[join(ws, "payload.txt"), "/work/payload.txt"]]);
+		expect(recorded.cpIn).toHaveLength(1);
+		expect(recorded.cpIn[0]![0]).not.toBe(join(ws, "payload.txt"));
+		expect(recorded.cpIn[0]![1]).toBe("/work/payload.txt");
 	});
 
 	test("../ escapes are refused before touching the sandbox", async () => {

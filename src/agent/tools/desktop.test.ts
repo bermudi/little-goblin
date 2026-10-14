@@ -5,7 +5,15 @@
 // reaches the pool.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DesktopError, type DesktopRow, type Desktops, type LeaseHolder } from "../../desktops.ts";
@@ -211,6 +219,40 @@ describe("desktop tool", () => {
 		expect(cp[0]).toBe("d1");
 		expect(String(cp[1])).not.toBe(join(ws, "payload.txt")); // staged copy
 		expect(cp[2]).toBe("/home/desk/payload.txt");
+	});
+
+	test("an import source swapped while staging cannot read outside the workspace", async () => {
+		const { tool, workspace } = rig({
+			cpIn: async (_name, staged) => {
+				expect(readFileSync(staged, "utf8")).not.toBe("outside");
+				return {};
+			},
+		});
+		const outsideDir = mkdtempSync(join(tmpdir(), "goblin-dt-out-"));
+		dirs.push(outsideDir);
+		const source = join(workspace, "payload.txt");
+		const outside = join(outsideDir, "payload.txt");
+		writeFileSync(source, "inside");
+		writeFileSync(outside, "outside");
+		const pending = tool.execute!(
+			{ action: "import", name: "d1", from: "payload.txt", to: "/tmp/payload" },
+			opts,
+		);
+		unlinkSync(source);
+		symlinkSync(outside, source);
+		const result = (await pending) as Record<string, unknown>;
+		expect(String(result.error)).toContain("outside the workspace");
+	});
+
+	test("absolute export destinations are refused before a guest read or host write", async () => {
+		const { tool, calls, workspace } = rig({});
+		const result = (await tool.execute!(
+			{ action: "export", name: "d1", from: "/tmp/report.txt", to: "/report.txt" },
+			opts,
+		)) as Record<string, unknown>;
+		expect(String(result.error)).toContain("workspace-relative");
+		expect(calls.some((call) => call.name === "catFile")).toBe(false);
+		expect(existsSync(join(workspace, "report.txt"))).toBe(false);
 	});
 
 	test("export lands under the workspace via the boundary helper", async () => {

@@ -192,6 +192,16 @@ describe("doctor process boundary", () => {
 				}
 			`;
 			let ids: number[] = [];
+			const alive = (pid: number): boolean => {
+				try {
+					return readFileSync(`/proc/${pid}/stat`, "utf8").split(" ")[2] !== "Z";
+				} catch (error) {
+					// Linux can return ESRCH when a fixture task vanishes during the stat read.
+					const code = (error as NodeJS.ErrnoException).code;
+					if (code === "ENOENT" || code === "ESRCH") return false;
+					throw error;
+				}
+			};
 			try {
 				const pending = collectDoctorReport({
 					phase: "installed",
@@ -218,21 +228,10 @@ describe("doctor process boundary", () => {
 						outcome === "cancel" ? "diagnostics cancelled" : "diagnostic deadline exceeded",
 					);
 				for (let i = 0; i < 100; i++) {
-					const alive = ids.filter((pid) => {
-						try {
-							return readFileSync(`/proc/${pid}/stat`, "utf8").split(" ")[2] !== "Z";
-						} catch (error) {
-							if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-							throw error;
-						}
-					});
-					if (!alive.length) break;
+					if (!ids.some(alive)) break;
 					await Bun.sleep(5);
 				}
-				for (const pid of ids) {
-					if (existsSync(`/proc/${pid}/stat`))
-						expect(readFileSync(`/proc/${pid}/stat`, "utf8").split(" ")[2]).toBe("Z");
-				}
+				expect(ids.filter(alive)).toEqual([]);
 			} finally {
 				for (const pid of ids) {
 					try {

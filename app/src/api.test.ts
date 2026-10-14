@@ -32,15 +32,20 @@ afterEach(() => {
 describe("token store", () => {
 	const win = new Window();
 	const originalSession = globalThis.sessionStorage;
+	const originalLocal = globalThis.localStorage;
 
 	beforeEach(() => {
 		win.sessionStorage.clear();
+		win.localStorage.clear();
 		Reflect.set(globalThis, "sessionStorage", win.sessionStorage);
+		Reflect.set(globalThis, "localStorage", win.localStorage);
 	});
 
 	afterEach(() => {
 		if (originalSession !== undefined) globalThis.sessionStorage = originalSession;
 		else Reflect.deleteProperty(globalThis, "sessionStorage");
+		if (originalLocal !== undefined) globalThis.localStorage = originalLocal;
+		else Reflect.deleteProperty(globalThis, "localStorage");
 	});
 
 	test("the token round-trips through session storage and clears clean", () => {
@@ -51,6 +56,35 @@ describe("token store", () => {
 		clearToken();
 		expect(loadToken()).toBeNull();
 		expect(win.sessionStorage.getItem("goblin.appToken")).toBeNull();
+	});
+
+	// Upgraded installs: the pre-sessionStorage copy lived in
+	// localStorage under the same key and the move never deleted it.
+	test("a leftover localStorage token migrates into the session and the persistent copy dies", () => {
+		win.localStorage.setItem("goblin.appToken", "legacy");
+		expect(loadToken()).toBe("legacy");
+		expect(win.localStorage.getItem("goblin.appToken")).toBeNull();
+		expect(win.sessionStorage.getItem("goblin.appToken")).toBe("legacy");
+		// The credential now dies with the tab — later reads stay
+		// session-scoped.
+		expect(loadToken()).toBe("legacy");
+	});
+
+	test("a live session token wins; the stale local copy is still evicted", () => {
+		saveToken("session");
+		win.localStorage.setItem("goblin.appToken", "stale");
+		expect(loadToken()).toBe("session");
+		expect(win.localStorage.getItem("goblin.appToken")).toBeNull();
+		expect(win.sessionStorage.getItem("goblin.appToken")).toBe("session");
+	});
+
+	test("clearToken removes the persistent local copy too", () => {
+		win.localStorage.setItem("goblin.appToken", "legacy");
+		saveToken("tok-1");
+		clearToken();
+		expect(win.localStorage.getItem("goblin.appToken")).toBeNull();
+		expect(win.sessionStorage.getItem("goblin.appToken")).toBeNull();
+		expect(loadToken()).toBeNull();
 	});
 });
 

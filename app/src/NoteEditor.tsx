@@ -499,8 +499,9 @@ const NoteEditor = forwardRef<
 			} finally {
 				savingRef.current = false;
 				if (unmountedRef.current) {
-					// The drain loop re-serializes and decides for itself.
-					pendingRef.current = null;
+					// The drain loop owns pendingRef now — it consumes and
+					// dispatches the queued write itself, so a title
+					// committed behind this in-flight PATCH still lands.
 					return;
 				}
 				// Reconcile anything that landed mid-flight: compare the
@@ -1121,7 +1122,10 @@ const NoteEditor = forwardRef<
 			// serialized doc still differs from the baseline, wait for
 			// the in-flight PATCH (whose response may re-dirty — the
 			// loop sends the latest body at the new rev), then tear
-			// down. A blocked or dead write stops the drain.
+			// down. A write queued behind the in-flight PATCH — a title
+			// commit carries no body diff — is consumed and dispatched
+			// too, or it would die with the editor. A blocked or dead
+			// write stops the drain.
 			void (async () => {
 				while (e !== null && conflictRef.current === null && !drainDeadRef.current) {
 					const flight = inFlightRef.current;
@@ -1129,8 +1133,10 @@ const NoteEditor = forwardRef<
 						await flight;
 						continue;
 					}
-					if (e.action(getMarkdown()) === baselineRef.current) break;
-					void save(revRef.current);
+					const queued = pendingRef.current;
+					pendingRef.current = null;
+					if (queued === null && e.action(getMarkdown()) === baselineRef.current) break;
+					void save(revRef.current, queued ?? {});
 				}
 				if (e !== null) e.destroy().catch(detachErr);
 				editorRef.current = null;

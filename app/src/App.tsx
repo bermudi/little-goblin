@@ -1030,7 +1030,18 @@ function AppShell() {
 		parts: UIMessage["parts"],
 		composerScope?: string,
 	) => {
-		if (startBusyRef.current) return;
+		if (startBusyRef.current) {
+			// Refuse loudly — a silent no-op reads as success to awaited
+			// callers (the note page's chat surfaces this rejection as an
+			// opError; fire-and-forget composer sends catch it at the
+			// call site). A composer-scoped send parks its parts back in
+			// the draft first, the same shape as the fenced path —
+			// note-originated starts carry no scope and restore nothing.
+			if (composerScope !== undefined) {
+				setDraftRestores((prev) => ({ ...prev, [composerScope]: { parts } }));
+			}
+			throw new Error("a conversation is still starting — resend once it finishes");
+		}
 		startBusyRef.current = true;
 		const seq = ++startSeq.current;
 		setStarting(true);
@@ -1069,6 +1080,12 @@ function AppShell() {
 	};
 
 	const startConversation = (parts: UIMessage["parts"]) => startChat(null, parts, "chat");
+
+	// Composer sends are fire-and-forget — the only rejection startChat
+	// produces is the deliberate busy refusal, so it surfaces on the
+	// rail rather than dying as an unhandled rejection.
+	const reportStartRefusal = (err: unknown) =>
+		setRowError(err instanceof Error ? err.message : String(err));
 
 	const currentTitle = conversations?.find((c) => c.id === current)?.title ?? null;
 
@@ -1381,7 +1398,11 @@ function AppShell() {
 										setStagedNotes={setStagedNotes}
 										draftRestore={draftRestores[currentProject.id] ?? null}
 										onDraftRestored={() => consumeRestore(currentProject.id)}
-										onSend={(parts) => void startChat(currentProject.id, parts, currentProject.id)}
+										onSend={(parts) =>
+											void startChat(currentProject.id, parts, currentProject.id).catch(
+												reportStartRefusal,
+											)
+										}
 									/>
 								) : (
 									<p className="empty">
@@ -1417,7 +1438,7 @@ function AppShell() {
 								focusSignal={composerFocus}
 								draftRestore={draftRestores.chat ?? null}
 								onDraftRestored={() => consumeRestore("chat")}
-								onSend={(parts) => void startConversation(parts)}
+								onSend={(parts) => void startConversation(parts).catch(reportStartRefusal)}
 							/>
 						</div>
 					) : (

@@ -51,15 +51,34 @@ import type {
 // the win is only that the credential dies with the tab.
 const TOKEN_KEY = "goblin.appToken";
 
+// Upgraded installs may still carry the same key in localStorage —
+// the tab-scoped move never deleted it, so without an eviction the
+// credential would stay persistently stored forever. Every credential
+// touch removes the local copy; a read with no session value adopts it
+// into this tab's session first, so the migration keeps the operator
+// logged in instead of dropping them at the gate.
+function evictLocalToken(): string | null {
+	const legacy = localStorage.getItem(TOKEN_KEY);
+	if (legacy !== null) localStorage.removeItem(TOKEN_KEY);
+	return legacy;
+}
+
 export function loadToken(): string | null {
-	return sessionStorage.getItem(TOKEN_KEY);
+	const session = sessionStorage.getItem(TOKEN_KEY);
+	const legacy = evictLocalToken();
+	if (session !== null) return session;
+	if (legacy === null) return null;
+	sessionStorage.setItem(TOKEN_KEY, legacy);
+	return legacy;
 }
 
 export function saveToken(token: string): void {
+	evictLocalToken();
 	sessionStorage.setItem(TOKEN_KEY, token);
 }
 
 export function clearToken(): void {
+	evictLocalToken();
 	sessionStorage.removeItem(TOKEN_KEY);
 }
 

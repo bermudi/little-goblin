@@ -84,6 +84,7 @@ describe("navigation races: late completions", () => {
 	// it; pendingGates resolve in afterEach so a failed assertion can
 	// never strand a pending mocked fetch.
 	let convCreateHold: Promise<void> | null;
+	let convDeleteHold: Promise<void> | null;
 	let projCreateHold: Promise<void> | null;
 	let noteCreateHold: Promise<void> | null;
 	let pendingGates: PromiseWithResolvers<void>[];
@@ -108,6 +109,7 @@ describe("navigation races: late completions", () => {
 		confirmCalls = 0;
 		deletedConversations = [];
 		convCreateHold = null;
+		convDeleteHold = null;
 		projCreateHold = null;
 		noteCreateHold = null;
 		pendingGates = [];
@@ -150,7 +152,8 @@ describe("navigation races: late completions", () => {
 			const body = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined;
 			if (method === "DELETE" && url.startsWith("/api/app/conversations/")) {
 				deletedConversations.push(url);
-				return Promise.resolve(jsonResponse({ ok: true }));
+				const reply = () => Promise.resolve(jsonResponse({ ok: true }));
+				return convDeleteHold === null ? reply() : convDeleteHold.then(reply);
 			}
 			if (url === "/api/app/conversations") {
 				if (method === "POST") {
@@ -617,5 +620,71 @@ describe("navigation races: late completions", () => {
 		gate.resolve();
 		await settle();
 		expect(win.location.pathname).toBe("/app/c/minted");
+	});
+
+	test("a note chat click during a fenced start's held cleanup fails loud, then succeeds once free", async () => {
+		notes = [noteRow("Shopping")];
+		noteBodies = { "n-shopping": "milk" };
+		await mount();
+		const gate = hold();
+		convCreateHold = gate.promise;
+		const composer = () => container.querySelector<HTMLTextAreaElement>(".composer textarea")!;
+		await typeInto(composer(), "hi", win.HTMLTextAreaElement.prototype);
+		await act(async () => {
+			composer().dispatchEvent(
+				new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }) as unknown as Event,
+			);
+		});
+		await settle();
+		expect(posts.filter((p) => p.url === "/api/app/conversations")).toHaveLength(1);
+
+		// The operator moves to a note while the mint is held — the
+		// navigation fences the start's continuation, whose cleanup
+		// (delete the unselected row, refresh) still holds the start
+		// lane busy.
+		await click(
+			[...container.querySelectorAll(".rail-projects button")].find(
+				(b) => b.textContent === "Notes",
+			),
+		);
+		// The index debounces its fetch — wait for the row, not the chrome.
+		await waitFor(
+			() =>
+				[...container.querySelectorAll("button.idx")].some((b) =>
+					b.textContent?.includes("Shopping"),
+				),
+			"the notes index row",
+		);
+		await click(
+			[...container.querySelectorAll("button.idx")].find((b) =>
+				b.textContent?.includes("Shopping"),
+			),
+		);
+		await waitFor(() => container.querySelector(".ProseMirror") !== null, "the note editor");
+
+		// Hold the cleanup's delete so the busy window stays open.
+		const delGate = hold();
+		convDeleteHold = delGate.promise;
+		gate.resolve();
+		await settle();
+		expect(deletedConversations).toEqual(["/api/app/conversations/minted"]);
+
+		const chatButton = () =>
+			[...container.querySelectorAll(".note-flags button")].find(
+				(b) => b.textContent === "Chat with this note",
+			) as HTMLButtonElement;
+		await click(chatButton());
+		// The busy start refused loudly — a named error, and no second
+		// mint slipped through.
+		expect(posts.filter((p) => p.url === "/api/app/conversations")).toHaveLength(1);
+		expect(container.querySelector('p.error[role="alert"]')?.textContent).toContain(
+			"still starting",
+		);
+
+		delGate.resolve();
+		await settle();
+		await click(chatButton());
+		await waitFor(() => win.location.pathname === "/app/c/minted", "the chat opens");
+		expect(posts.filter((p) => p.url === "/api/app/conversations")).toHaveLength(2);
 	});
 });

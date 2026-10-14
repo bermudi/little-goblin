@@ -837,6 +837,33 @@ describe("NoteEditor save loop", () => {
 		expect(patches[1]!.body.body).toContain("v3");
 	});
 
+	test("a title queued behind a held body PATCH drains on unmount instead of dying", async () => {
+		root = createRoot(container);
+		const ref = await mount();
+		await notice();
+		holdPatch();
+		await edit(ref, "v2");
+		await notice();
+		await settle();
+		expect(patches).toHaveLength(1); // body PATCH held
+		const verdict = ref.current!.saveTitle("New Title"); // queues {title}
+		await tick(0);
+		await act(async () => root!.unmount());
+		root = null;
+		releasePatch();
+		await tick(DELAY * 10);
+		// The cleanup drain consumed the queued write: the title lands
+		// on the rev the held PATCH returned, even though the body it
+		// rides with was already clean.
+		expect(patches).toHaveLength(2);
+		expect(patches[1]!.body.title).toBe("New Title");
+		expect((patches[1]!.init.headers as Record<string, string>)["if-match"]).toBe('"2"');
+		expect(stored.title).toBe("New Title");
+		// The awaiting verdict can't be claimed past unmount — false,
+		// though the write landed.
+		await act(async () => expect(await verdict).toBe(false));
+	});
+
 	test("a permanent refusal stops the loop with a visible error", async () => {
 		root = createRoot(container);
 		const ref = await mount();
